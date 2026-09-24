@@ -26,6 +26,7 @@ can be torn - R1176), never written. Run:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import pathlib
@@ -59,8 +60,13 @@ def _rebuild_fts(con: sqlite3.Connection, ddl: str) -> None:
     con.execute(f"INSERT INTO series_fts({cols}) SELECT {cols} FROM series")
 
 
-def build(catalogue: str, out_dir: str) -> dict:
-    """Write out_dir/primary.sqlite and out_dir/climate.sqlite; return the checked counts."""
+def build(catalogue: str, out_dir: str, lock=None) -> dict:
+    """Write out_dir/primary.sqlite and out_dir/climate.sqlite; return the checked counts.
+
+    `lock` (a callable returning a context manager, e.g. the catalogue writer lock after T0) is held ONLY
+    while the catalogue is READ - the count, the backup and the climate rows, all from one state of the
+    file. The shard deletes, the recount, the index rebuild and the checks touch only the copies and run
+    after it is released (R1185: holding it for the whole build doubled the time writers are refused)."""
     os.makedirs(out_dir, exist_ok=True)
     primary, climate = os.path.join(out_dir, "primary.sqlite"), os.path.join(out_dir, "climate.sqlite")
     for p in (primary, climate):
@@ -69,40 +75,45 @@ def build(catalogue: str, out_dir: str) -> dict:
                 os.remove(p + suffix)
     opened: list[sqlite3.Connection] = []
     try:
-        src = _ro(catalogue)
-        opened.append(src)
-        total = src.execute("SELECT COUNT(*) FROM series").fetchone()[0]
-        schema = {n: s for n, s in src.execute(
-            "SELECT name, sql FROM sqlite_master WHERE name IN ('series','series_fts','source','license')")}
-        missing = {"series", "series_fts", "source", "license"} - set(schema)
-        if missing:
-            raise RuntimeError(f"the catalogue has no {sorted(missing)} table")
+        with (lock() if lock else contextlib.nullcontext()):
+            src = _ro(catalogue)
+            opened.append(src)
+            total = src.execute("SELECT COUNT(*) FROM series").fetchone()[0]
+            schema = {n: s for n, s in src.execute(
+                "SELECT name, sql FROM sqlite_master WHERE name IN ('series','series_fts','source','license')")}
+            missing = {"series", "series_fts", "source", "license"} - set(schema)
+            if missing:
+                raise RuntimeError(f"the catalogue has no {sorted(missing)} table")
 
-        # primary: a consistent copy through the backup API, then the shard sources taken out
-        dst = sqlite3.connect(primary)
-        opened.append(dst)
-        src.backup(dst)
+            # primary: a consistent copy through the backup API (the shard sources come out below)
+            dst = sqlite3.connect(primary)
+            opened.append(dst)
+            src.backup(dst)
+
+            # climate: the shard sources only, from the catalogue itself (not from the primary copy). Opened
+            # by URI: ATTACH reads a file: URI only on a connection that was itself opened with URIs enabled.
+            c = sqlite3.connect(pathlib.Path(climate).resolve().as_uri() + "?mode=rwc", uri=True)
+            opened.append(c)
+            for name in ("series", "source", "license"):
+                c.execute(schema[name])
+            c.execute("CREATE INDEX ix_series_source_id ON series(source_id)")
+            c.execute("ATTACH DATABASE ? AS b", (pathlib.Path(catalogue).resolve().as_uri() + "?mode=ro",))
+            for s in SHARD_SOURCES:
+                c.execute("INSERT INTO series SELECT * FROM b.series WHERE source_id=?", (s,))
+                c.execute("INSERT OR IGNORE INTO source SELECT * FROM b.source WHERE source_id=?", (s,))
+            c.execute("INSERT OR IGNORE INTO license SELECT * FROM b.license WHERE license_id IN "
+                      "(SELECT license_id FROM source UNION SELECT license_id FROM series)")
+            c.commit()
+            c.execute("DETACH DATABASE b")
+            src.close()
+            opened.remove(src)
+
+        # the catalogue is no longer read: only the copies are written from here on
         for s in SHARD_SOURCES:
             dst.execute("DELETE FROM series WHERE source_id=?", (s,))
         _recount(dst)
         _rebuild_fts(dst, schema["series_fts"])
         dst.commit()
-
-        # climate: the shard sources only, from the catalogue itself (not from the primary copy). Opened
-        # by URI: ATTACH reads a file: URI only on a connection that was itself opened with URIs enabled.
-        c = sqlite3.connect(pathlib.Path(climate).resolve().as_uri() + "?mode=rwc", uri=True)
-        opened.append(c)
-        for name in ("series", "source", "license"):
-            c.execute(schema[name])
-        c.execute("CREATE INDEX ix_series_source_id ON series(source_id)")
-        c.execute("ATTACH DATABASE ? AS b", (pathlib.Path(catalogue).resolve().as_uri() + "?mode=ro",))
-        for s in SHARD_SOURCES:
-            c.execute("INSERT INTO series SELECT * FROM b.series WHERE source_id=?", (s,))
-            c.execute("INSERT OR IGNORE INTO source SELECT * FROM b.source WHERE source_id=?", (s,))
-        c.execute("INSERT OR IGNORE INTO license SELECT * FROM b.license WHERE license_id IN "
-                  "(SELECT license_id FROM source UNION SELECT license_id FROM series)")
-        c.commit()
-        c.execute("DETACH DATABASE b")
         _recount(c)
         _rebuild_fts(c, schema["series_fts"])
         c.commit()

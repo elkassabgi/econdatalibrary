@@ -44,21 +44,41 @@ def legacy_catalogue(root: str = ROOT) -> tuple[bool, str]:
     return not n, f"{len(n)} file(s) still open the catalogue outside core.catalog_path"
 
 
+NAME = "LEGACY_REMOTE_D1"
+
+
 def legacy_remote_d1(root: str = ROOT) -> tuple[bool, str]:
-    src = open(os.path.join(root, "tests", "test_d1_remote.py"), encoding="utf-8").read()
-    for node in ast.walk(ast.parse(src)):
-        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "LEGACY_REMOTE_D1" for t in node.targets):
-            v = node.value
-            # Only a set literal or a bare `set()` can be read; anything else (frozenset({...}), set([...]),
-            # a name) is "cannot tell", never "empty" (R1183: any call used to read as empty = READY).
-            if isinstance(v, ast.Set):
-                value = ast.literal_eval(v)
-            elif isinstance(v, ast.Call) and getattr(v.func, "id", None) == "set" and not v.args and not v.keywords:
-                value = set()
-            else:
-                return False, f"LEGACY_REMOTE_D1 is written as {ast.unparse(v)[:60]!r} - cannot tell; use a set literal"
-            return not value, f"{len(value)} file(s) still call D1 remotely outside core.d1_remote"
-    return False, "LEGACY_REMOTE_D1 not found in tests/test_d1_remote.py - cannot tell"
+    """Read the list only when it is bound EXACTLY ONCE, as a plain set literal or a bare set(), and never
+    changed anywhere in the file (no |=, no .add/.update/..., no second assignment). Anything else is
+    "cannot tell", never "empty" (R1183: any call read as empty; R1185: a later |= or .add was not seen)."""
+    tree = ast.parse(open(os.path.join(root, "tests", "test_d1_remote.py"), encoding="utf-8").read())
+    binds, changes = [], []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == NAME for t in node.targets):
+            binds.append(node)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)) and getattr(node.target, "id", None) == NAME:
+            changes.append(ast.unparse(node)[:60])
+        elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+              and getattr(node.func.value, "id", None) == NAME):
+            changes.append(ast.unparse(node)[:60])
+        elif isinstance(node, (ast.Delete, ast.Global)) and NAME in ast.unparse(node):
+            changes.append(ast.unparse(node)[:60])
+    if not binds:
+        return False, f"{NAME} not found in tests/test_d1_remote.py - cannot tell"
+    if len(binds) > 1 or changes:
+        return False, (f"{NAME} is bound {len(binds)} times and changed by {changes[:2]} - cannot tell; "
+                       "write it once as a set literal")
+    v = binds[0].value
+    try:
+        if isinstance(v, ast.Set):
+            value = ast.literal_eval(v)
+        elif isinstance(v, ast.Call) and getattr(v.func, "id", None) == "set" and not v.args and not v.keywords:
+            value = set()
+        else:
+            raise ValueError
+    except ValueError:                                  # {*X}, frozenset({...}), set([...]), a name ...
+        return False, f"{NAME} is written as {ast.unparse(v)[:60]!r} - cannot tell; use a set literal"
+    return not value, f"{len(value)} file(s) still call D1 remotely outside core.d1_remote"
 
 
 def ratchets(root: str = ROOT) -> tuple[bool, str]:

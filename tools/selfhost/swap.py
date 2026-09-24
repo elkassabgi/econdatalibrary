@@ -177,8 +177,9 @@ def discover_slots(worker_dir: str = WORKER_DIR, config: str = CONFIG) -> dict:
 
 def check_space(work: str, catalogue: str, worker_dir: str) -> None:
     """A generation needs about the catalogue's size again (the primary copy is not vacuumed), the climate
-    copy, and the frozen worker; refuse unless 1.5 x the catalogue + the worker + 2 GB is free."""
-    need = int(os.path.getsize(catalogue) * 1.5) + _tree_size(os.path.join(worker_dir, "node_modules")) + (2 << 30)
+    copy, their journals while they are written, and the frozen worker; refuse unless 2 x the catalogue + the
+    worker + 2 GB is free (R1185 measured 1.76 x at the peak on a synthetic catalogue)."""
+    need = int(os.path.getsize(catalogue) * 2.0) + _tree_size(os.path.join(worker_dir, "node_modules")) + (2 << 30)
     free = shutil.disk_usage(work).free
     if free < need:
         raise SwapRefused(f"{free / 2**30:.1f} GB free in {work}, a generation needs about {need / 2**30:.1f} GB")
@@ -194,23 +195,37 @@ def _tree_size(path: str) -> int:
 
 
 def build_copies(catalogue: str, out_dir: str, *, lock_wait: float = 1800.0) -> dict:
-    """origin_copies.build. After T0 the catalogue must be THE build, and the copy runs under the writer lock
-    (AR-153); the updater holding it is waited for, up to lock_wait seconds (R1180 finding 7)."""
+    """origin_copies.build. After T0 the catalogue must be THE build, and its READS run under the writer lock
+    (AR-153; only the reads - R1185); the updater holding it is waited for, up to lock_wait seconds (R1180
+    finding 7)."""
     from core import cutover
     if not cutover.is_cut_over():
         return origin_copies.build(catalogue, out_dir)
     from core import catalog_path
     if not _same(catalogue, catalog_path.catalog_path()):
         raise SwapRefused(f"after T0 the swap copies only the build {catalog_path.catalog_path()}, not {catalogue}")
+    return origin_copies.build(catalogue, out_dir, lock=lambda: _waiting_writer_lock(lock_wait))
+
+
+@contextlib.contextmanager
+def _waiting_writer_lock(lock_wait: float):
+    """The catalogue writer lock, waited for (30 s between tries) up to lock_wait seconds."""
+    from core import catalog_path, cutover
     deadline = time.monotonic() + lock_wait
     while True:
+        held = catalog_path.writer_lock()
         try:
-            with catalog_path.writer_lock():
-                return origin_copies.build(catalogue, out_dir)
+            held.__enter__()
         except cutover.CutoverRefused:
             if time.monotonic() > deadline:
                 raise SwapRefused(f"the catalogue writer lock stayed held for {lock_wait:.0f} s") from None
             time.sleep(30)
+            continue
+        break
+    try:
+        yield
+    finally:
+        held.__exit__(None, None, None)
 
 
 def samples(primary: str, climate: str) -> dict:

@@ -306,6 +306,15 @@ def test_the_drain_needs_two_zero_readings(monkeypatch):
     assert len(seen) >= 4, "a single 0 followed by a request in flight did not end the drain"
 
 
+def test_the_drain_waits_the_whole_settle_time(monkeypatch):
+    """S6 survived: the drain may end only after 0 in flight has held for `settle` seconds, not at the
+    second 0 it reads."""
+    monkeypatch.setattr(swap, "router_status", lambda u: {"active": "g", "inflight": {}})
+    t = time.monotonic()
+    assert swap.drain("http://r", "b", "g", timeout=30, poll=0.01, settle=0.5) is True
+    assert time.monotonic() - t >= 0.5
+
+
 def test_the_drain_refuses_a_router_that_did_not_flip(monkeypatch):
     monkeypatch.setattr(swap, "router_status", lambda u: {"active": "b", "inflight": {}})
     with pytest.raises(swap.SwapRefused, match="not the router this swap flipped"):
@@ -316,8 +325,10 @@ def test_prune_compares_folders_not_spellings(tmp_path):
     work = tmp_path / "Work"
     (work / "gen-blue-1").mkdir(parents=True)
     (work / "gen-green-0").mkdir()
-    keep = [str(tmp_path / "work" / "gen-blue-1").upper() if os.name == "nt" else str(work / "gen-blue-1"),
-            str(work / "." / "gen-blue-1")]
+    keep = [os.path.join(str(work), ".", "gen-blue-1")]                   # os.path keeps the "."
+    if os.name == "nt":
+        keep = [os.path.join(str(tmp_path), "WORK", ".", "GEN-BLUE-1")]
+    assert str(work / "gen-blue-1") not in keep, "precondition: no keep entry equals the folder as text"
     removed, errors = swap.prune(str(work), keep)
     assert (work / "gen-blue-1").is_dir(), "a recorded generation spelled differently is kept"
     assert removed == [str(work / "gen-green-0")] and errors == []
@@ -460,7 +471,11 @@ def test_after_t0_only_the_build_is_copied_under_the_writer_lock(tmp_path, monke
     build.write_bytes(b"")
     monkeypatch.setattr(catalog_path, "writer_lock", lock)
     monkeypatch.setattr(catalog_path, "catalog_path", lambda: str(build))
-    monkeypatch.setattr(swap.origin_copies, "build", lambda c, o: seen.append("build") or {"ok": 1})
+    def fake_build(c, o, lock=None):
+        with (lock() if lock else contextlib.nullcontext()):
+            seen.append("build")
+        return {"ok": 1}
+    monkeypatch.setattr(swap.origin_copies, "build", fake_build)
     monkeypatch.setattr(cutover, "is_cut_over", lambda: False)
     swap.build_copies("anything", "o")
     assert seen == ["build"], "before T0 no lock (CI's writer runs elsewhere)"
@@ -487,6 +502,11 @@ def test_after_t0_a_held_lock_is_waited_for_then_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(catalog_path, "catalog_path", lambda: str(build))
     monkeypatch.setattr(cutover, "is_cut_over", lambda: True)
     monkeypatch.setattr(swap.time, "sleep", lambda s: None)
+
+    def fake_build(c, o, lock=None):
+        with lock():
+            raise AssertionError("the lock was never free, so the build must not run")
+    monkeypatch.setattr(swap.origin_copies, "build", fake_build)
     clock = iter(range(0, 10_000, 10))
     monkeypatch.setattr(swap.time, "monotonic", lambda: next(clock))
     with pytest.raises(swap.SwapRefused, match="stayed held"):

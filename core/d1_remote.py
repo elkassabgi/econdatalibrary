@@ -182,37 +182,52 @@ def rows(database: str, sql: str, *, timeout: int = 900) -> tuple[list[dict], in
             sum(int((e.get("meta") or {}).get("rows_read") or 0) for e in out))
 
 
-def execute_file(database: str, path: str, *, timeout: int = 3600, tries: int = 1, on_retry=None) -> str:
+def _last_line(text: str) -> str:
+    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
+    return lines[-1] if lines else ""
+
+
+def execute_file(database: str, path: str, *, timeout: int = 3600, tries: int = 1, retry_timeouts: bool = False,
+                 on_retry=None) -> str:
     """`wrangler d1 execute <db> --remote --file <path> --yes` - the bulk loaders' road. Refuses after T0.
 
-    By default it runs ONCE: an import that failed after it started may have applied part of the file, and
-    not every file is idempotent (series_fts inserts are not), so a retry is the CALLER's decision (R1183).
-    tries > 1 retries any failure or timeout with 5 s, 10 s, ... between attempts - the daily sync's policy
-    (core/sync_state_d1.py). on_retry(attempt, why) is told about each retry. Returns wrangler's stdout;
-    the final failure raises RuntimeError (D1Unreachable when D1 was never reached)."""
+    By default it runs ONCE, and a retry is the CALLER's decision (R1183). tries > 1 retries a failed EXIT
+    (a failed import is rolled back - Cloudflare's D1 docs: it "will return to its original state and you
+    can safely retry"), with 5 s, 10 s, ... between attempts. A TIMEOUT is different: the server may have
+    committed the file after the client gave up, so it is retried only with retry_timeouts=True - for
+    files that are safe to apply twice (INSERT OR REPLACE / deletes by key). A plain `INSERT INTO
+    series_fts` is not (R1185 measured up to 4,120 duplicate index rows from one re-applied file).
+    on_retry(attempt, why) is told about each retry; `why` is wrangler's own last error line. Returns
+    wrangler's stdout; the final failure raises RuntimeError (D1Unreachable when D1 was never reached)
+    carrying .stdout and .stderr in full."""
     import time                                                                 # noqa: PLC0415
     if database not in DATABASES:
         raise ValueError(f"unknown D1 database {database!r}; known: {sorted(DATABASES)}")
     if is_cut_over():
         raise CutoverRefused(f"refused: wrangler d1 execute --remote --file on {database} after T0 (D1 is frozen)")
-    why, unreachable = "", False
+    why, unreachable, out, err_text = "", False, "", ""
     for attempt in range(max(1, tries)):
+        timed_out = False
         try:
             r = _wrangler(["d1", "execute", database, "--remote", "--yes", f"--file={os.path.abspath(path)}"],
                           timeout=timeout, retries=0)
         except D1Unreachable as e:
-            why, unreachable = str(e), True
+            why, unreachable, timed_out = str(e), True, "timed out" in str(e)
         else:
             if r.returncode == 0:
                 return r.stdout or ""
-            why, unreachable = (f"exit {r.returncode}: stdout={(r.stdout or '')[-600:]!r} "
-                                f"stderr={(r.stderr or '')[-600:]!r}"), False
-        if attempt < tries - 1:
+            out, err_text, unreachable = r.stdout or "", r.stderr or "", False
+            why = f"exit {r.returncode}: {_last_line(err_text) or _last_line(out)}"
+        if attempt < tries - 1 and not (timed_out and not retry_timeouts):
             if on_retry:
                 on_retry(attempt + 1, why)
             time.sleep(5 * (attempt + 1))
-    err = D1Unreachable if unreachable else RuntimeError
-    raise err(f"D1 {database}: --file {path} failed after {max(1, tries)} attempt(s): {why}")
+            continue
+        break
+    exc = (D1Unreachable if unreachable else RuntimeError)(
+        f"D1 {database}: --file {path} failed after {attempt + 1} attempt(s): {why}")
+    exc.stdout, exc.stderr = out, err_text
+    raise exc
 
 
 def query(database: str, sql: str, params: list | None = None, *, timeout: int = 120) -> dict:

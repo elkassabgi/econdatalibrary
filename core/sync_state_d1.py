@@ -17,10 +17,11 @@ the wrangler payload limit (api/worker/README.md:86). Emitted SQL is verified by
 replay into in-memory SQLite (row-for-row equality with the source db) BEFORE any
 wrangler call — broken SQL never reaches remote D1.
 
-Execution: each chunk runs via `npx wrangler d1 execute econ-catalog --remote
+Execution: each chunk runs through core.d1_remote.execute_file - `node
+api/worker/node_modules/wrangler/bin/wrangler.js d1 execute econ-catalog --remote
 --file=<abs path>` with cwd=api/worker (wrangler.toml + the version-pinned local
-wrangler install live there; we refuse to run if node_modules/wrangler is absent so
-npx can never float to an unpinned version). Any nonzero wrangler exit aborts
+wrangler install live there; we refuse to run if that install is absent, so the
+version can never float). Any nonzero wrangler exit aborts
 loudly (honesty rule §5.3: failures are loud, never silent). Headless auth needs
 CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID in the environment (plan item A2);
 local runs may use the machine's wrangler OAuth instead.
@@ -311,16 +312,21 @@ def verify_replay(state_db: str, files: list[str], counts: dict[str, int],
         mem.close()
 
 
-def execute_remote(files: list[str], database: str | None = None) -> None:
+def execute_remote(files: list[str], database: str | None = None, *, idempotent: bool = False) -> None:
     """Run each chunk via wrangler from api/worker (wrangler.toml lives there).
 
-    `database` overrides the primary for shard-routed work (CATALOG_SHARD_FOR)."""
+    `database` overrides the primary for shard-routed work (CATALOG_SHARD_FOR). A failed EXIT is retried
+    (a failed import is rolled back). A TIMEOUT is retried only when the caller says its files are safe to
+    apply twice (idempotent=True: this module's own freshness sync, INSERT OR REPLACE / deletes by key).
+    sync_catalog_d1 and migrate_noaa_shard emit plain `INSERT INTO series_fts`, which duplicate on a
+    re-application after a server-side commit (R1185), so they keep the default."""
+    from core import d1_remote                                               # noqa: PLC0415
     if not shutil.which("node"):
         raise SystemExit("FATAL: node not on PATH — install Node.js")
-    if not os.path.isdir(os.path.join(WORKER_DIR, "node_modules", "wrangler")):
+    if not os.path.isfile(d1_remote.WRANGLER_JS):     # the wrangler that actually runs (R1185 finding 6)
         raise SystemExit(
-            f"FATAL: no local wrangler install under {WORKER_DIR} — run `npm install` "
-            "there first (the pinned wrangler is the one core.d1_remote runs)")
+            f"FATAL: no local wrangler install at {d1_remote.WRANGLER_JS} — run `npm ci` "
+            "in api/worker first (the pinned wrangler is the one core.d1_remote runs)")
     # RETRY, because one transient blip used to cost the whole sync. A usda run of 93 chunks
     # died on chunk 0 with Cloudflare "Authentication error [code: 10000]" from the /d1/import
     # endpoint -- while `d1 execute` against the same database, with the same credentials,
@@ -333,22 +339,22 @@ def execute_remote(files: list[str], database: str | None = None) -> None:
     # worse than a failed sync, so this makes the transient case survivable without making the
     # real case quiet.
     # The road is core.d1_remote.execute_file (plan step 1): the same wrangler call with the encoding pinned
-    # to utf-8/replace (cp1252 once turned a SUCCESSFUL write into a crash), refused after T0. This sync's
-    # chunks are written to be re-run (INSERT OR REPLACE, deletes by key), so it keeps its 4-try policy.
-    from core import d1_remote                                               # noqa: PLC0415
+    # to utf-8/replace (cp1252 once turned a SUCCESSFUL write into a crash), refused after T0.
     TRIES = 4
     for p in files:
         print(f"  executing {os.path.basename(p)} ...")
         try:
             out = d1_remote.execute_file(
-                database or D1_DATABASE, p, timeout=600, tries=TRIES,
-                on_retry=lambda n, why: print(_echo(f"    {why[:140]} - retry {n}/{TRIES - 1} in {5 * n}s"),
+                database or D1_DATABASE, p, timeout=600, tries=TRIES, retry_timeouts=idempotent,
+                on_retry=lambda n, why: print(_echo(f"    {why[:160]} - retry {n}/{TRIES - 1} in {5 * n}s"),
                                               flush=True))
         except RuntimeError as e:
+            sys.stderr.write(_echo(getattr(e, "stdout", "") or ""))          # wrangler's output IN FULL, as before
+            sys.stderr.write(_echo(getattr(e, "stderr", "") or ""))
             sys.stderr.write(_echo(str(e)) + "\n")
             raise SystemExit(
-                f"FATAL: wrangler failed on {p} after {TRIES} attempts — D1 sync aborted; remaining "
-                f"chunks NOT executed; SQL kept for inspection") from None
+                f"FATAL: {p}: {str(e)[:300]} — D1 sync aborted; remaining chunks NOT executed; SQL kept for "
+                f"inspection") from None
         tail = (out or "").strip().splitlines()
         if tail:
             print(f"    {tail[-1]}")
@@ -380,7 +386,7 @@ def main(argv: list[str] | None = None) -> None:
             print(f"  {p}")
         return
 
-    execute_remote(files)
+    execute_remote(files, idempotent=True)     # INSERT OR REPLACE / deletes by key: safe to re-apply
     shutil.rmtree(out_dir, ignore_errors=True)
     print(f"D1 sync OK: {total} rows upserted across {len(files)} file(s)")
 

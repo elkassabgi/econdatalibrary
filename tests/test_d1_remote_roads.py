@@ -207,18 +207,101 @@ def test_the_daily_sync_keeps_its_four_tries_and_its_fatal_exit(monkeypatch, tmp
     seen = []
 
     def execute_file(db, path, **kw):
-        seen.append((db, kw.get("tries"), kw.get("timeout")))
+        seen.append((db, kw.get("tries"), kw.get("timeout"), kw.get("retry_timeouts")))
         if path.endswith("bad.sql"):
-            raise d1_remote.D1Unreachable("wrangler timed out after 600 s")
+            e = d1_remote.D1Unreachable("wrangler timed out after 600 s")
+            e.stdout, e.stderr = "FULL STDOUT", "FULL STDERR"
+            raise e
         return "Executed 3 commands"
     monkeypatch.setattr(d1_remote, "execute_file", execute_file)
     monkeypatch.setattr(sync_state_d1.shutil, "which", lambda n: "node")
-    monkeypatch.setattr(sync_state_d1.os.path, "isdir", lambda p: True)
+    js = tmp_path / "wrangler.js"
+    js.write_text("")
+    monkeypatch.setattr(d1_remote, "WRANGLER_JS", str(js))
+    sync_state_d1.execute_remote([str(tmp_path / "a.sql")], idempotent=True)
+    assert seen == [(sync_state_d1.D1_DATABASE, 4, 600, True)]
     sync_state_d1.execute_remote([str(tmp_path / "a.sql")])
-    assert seen == [(sync_state_d1.D1_DATABASE, 4, 600)]
+    assert seen[-1][3] is False, "only an idempotent caller may retry a timeout (R1185)"
     with pytest.raises(SystemExit, match="remaining chunks NOT executed"):
         sync_state_d1.execute_remote([str(tmp_path / "bad.sql"), str(tmp_path / "never.sql")], database="econ-catalog-climate")
-    assert seen[-1][0] == "econ-catalog-climate" and len(seen) == 2, "it stopped at the first failed chunk"
+    assert seen[-1][0] == "econ-catalog-climate" and len(seen) == 3, "it stopped at the first failed chunk"
+
+
+def test_the_fatal_path_writes_wrangler_s_output_in_full(monkeypatch, tmp_path, capsys):
+    from core import sync_state_d1
+
+    def execute_file(db, path, **kw):
+        e = RuntimeError("D1 econ-catalog: --file x failed after 4 attempt(s): exit 1: SQLITE_TOOBIG")
+        e.stdout, e.stderr = "WRANGLER STDOUT LINE", "WRANGLER STDERR LINE"
+        raise e
+    monkeypatch.setattr(d1_remote, "execute_file", execute_file)
+    monkeypatch.setattr(sync_state_d1.shutil, "which", lambda n: "node")
+    js = tmp_path / "wrangler.js"
+    js.write_text("")
+    monkeypatch.setattr(d1_remote, "WRANGLER_JS", str(js))
+    with pytest.raises(SystemExit):
+        sync_state_d1.execute_remote([str(tmp_path / "a.sql")])
+    err = capsys.readouterr().err
+    assert "WRANGLER STDOUT LINE" in err and "WRANGLER STDERR LINE" in err and "SQLITE_TOOBIG" in err
+
+
+def test_no_node_or_no_wrangler_is_fatal_before_any_call(monkeypatch, tmp_path):
+    """M16: the checks look at the wrangler that actually runs (R1185 finding 6)."""
+    from core import sync_state_d1
+    monkeypatch.setattr(d1_remote, "execute_file", lambda *a, **k: pytest.fail("ran without its checks"))
+    monkeypatch.setattr(sync_state_d1.shutil, "which", lambda n: None)
+    with pytest.raises(SystemExit, match="node not on PATH"):
+        sync_state_d1.execute_remote(["a.sql"])
+    monkeypatch.setattr(sync_state_d1.shutil, "which", lambda n: "node")
+    monkeypatch.setattr(d1_remote, "WRANGLER_JS", str(tmp_path / "missing.js"))
+    with pytest.raises(SystemExit, match="no local wrangler install"):
+        sync_state_d1.execute_remote(["a.sql"])
+
+
+def test_the_retry_line_names_wrangler_s_error_not_its_banner(before_t0, monkeypatch, capsys):
+    """M14 + R1185 finding 5: the retry line carries wrangler's LAST error line."""
+    from core import sync_state_d1
+    monkeypatch.setattr(sync_state_d1.shutil, "which", lambda n: "node")
+    _fake(monkeypatch, (1, "wrangler 3.114.17 banner", "noise\nERROR: D1 import busy [code: 7500]"),
+          (0, "Executed 1 command", ""))
+    sync_state_d1.execute_remote(["a.sql"])
+    out = capsys.readouterr().out
+    assert "ERROR: D1 import busy [code: 7500] - retry 1/3" in out and "banner" not in out
+
+
+def test_a_timeout_is_retried_only_when_the_caller_says_the_file_is_idempotent(before_t0, monkeypatch):
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append(1)
+        raise subprocess.TimeoutExpired(cmd, 600)
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(d1_remote.D1Unreachable, match="after 1 attempt"):
+        d1_remote.execute_file("econ-catalog", "fts.sql", tries=4)
+    assert len(calls) == 1, "a plain INSERT INTO series_fts may have been committed: never re-applied"
+    calls.clear()
+    with pytest.raises(d1_remote.D1Unreachable, match="after 4 attempt"):
+        d1_remote.execute_file("econ-catalog", "freshness.sql", tries=4, retry_timeouts=True)
+    assert len(calls) == 4
+
+
+def test_the_retries_wait_5_10_15_seconds(before_t0, monkeypatch):
+    """M5: the back-off between attempts."""
+    slept = []
+    monkeypatch.setattr("time.sleep", lambda s: slept.append(s))
+    _fake(monkeypatch, (1, "", "busy"))
+    with pytest.raises(RuntimeError):
+        d1_remote.execute_file("econ-catalog", "x.sql", tries=4)
+    assert slept == [5, 10, 15]
+
+
+def test_never_reaching_d1_stays_unreachable_to_the_end(before_t0, monkeypatch):
+    """M4: the final error of attempts that never reached D1 is D1Unreachable, not a plain RuntimeError."""
+    def run(cmd, **kw):
+        raise FileNotFoundError(2, "node")
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(d1_remote.D1Unreachable):
+        d1_remote.execute_file("econ-catalog", "x.sql", tries=3)
 
 
 def test_the_audit_says_could_not_look(monkeypatch):

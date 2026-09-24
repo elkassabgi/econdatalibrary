@@ -30,7 +30,10 @@ def test_empty_legacy_lists_pass(tmp_path):
     assert T.legacy_catalogue(r)[0] is True and T.legacy_remote_d1(r)[0] is True
 
 
-@pytest.mark.parametrize("written", ["frozenset({'a.py'})", "set(['a.py'])", "OTHER", "set(OTHER)"])
+@pytest.mark.parametrize("written", ["frozenset({'a.py'})", "set(['a.py'])", "OTHER", "set(OTHER)", "{*OTHER}",
+                                     # R1185: bound once, then changed - the change must be seen
+                                     "set()\nLEGACY_REMOTE_D1 |= {'a.py'}", "set()\nLEGACY_REMOTE_D1.add('a.py')",
+                                     "set()\nLEGACY_REMOTE_D1 = {'a.py'}", "set()\nLEGACY_REMOTE_D1.update(OTHER)"])
 def test_a_list_it_cannot_read_is_a_failure_not_empty(tmp_path, written):
     """R1183: any call used to read as the empty set, so frozenset({...}) printed READY."""
     (tmp_path / "tests").mkdir()

@@ -136,6 +136,36 @@ def test_each_copy_s_search_index_is_rebuilt_from_its_series(tmp_path):
         "CREATE VIRTUAL TABLE series_fts USING fts5"), "the catalogue's own FTS definition"
 
 
+def test_the_lock_covers_the_reads_and_only_the_reads(tmp_path):
+    """R1185: the catalogue is read inside the lock - so a writer that commits the moment the lock is
+    released changes nothing in the copies - and the rebuild runs after it is released."""
+    cat = tmp_path / "catalog.db"
+    _catalogue(cat)
+    events = []
+
+    class Lock:
+        def __enter__(self):
+            events.append("held")
+
+        def __exit__(self, *exc):
+            events.append("released")
+            c = sqlite3.connect(cat)                       # a writer gets in the moment it is free
+            c.execute("INSERT INTO series VALUES ('ecb:late', 'ecb', 't late', 'g', 'pd')")
+            c.execute("INSERT INTO series_fts VALUES ('ecb:late', 't late', 'g')")
+            c.commit()
+            c.close()
+
+    report = oc.build(str(cat), str(tmp_path / "out"), lock=Lock)
+    assert events == ["held", "released"]
+    assert report["catalogue_series"] == 5 and report["primary"]["series"] + report["climate"]["series"] == 5, \
+        "the copies are the state read under the lock, not the late row"
+    con = sqlite3.connect(tmp_path / "out" / "primary.sqlite")
+    try:
+        assert con.execute("SELECT COUNT(*) FROM series WHERE series_id='ecb:late'").fetchone() == (0,)
+    finally:
+        con.close()
+
+
 def test_the_shard_list_is_the_worker_s():
     util = open(os.path.join(ROOT, "api", "worker", "src", "util.ts"), encoding="utf-8").read()
     m = re.search(r"SHARDED_SOURCES: ReadonlySet<string> = new Set\(\[([^\]]*)\]\)", util)
