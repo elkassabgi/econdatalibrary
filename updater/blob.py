@@ -519,6 +519,13 @@ def _refuse_plain_gzip(key: str, data: bytes) -> None:
         raise ValueError(f"{key}: plain=True with a gzip body - it would be stored as text/csv garbage")
 
 
+def _refuse_not_gzip_file(key: str, path: str) -> None:
+    with open(path, "rb") as fh:
+        if fh.read(2) != b"\x1f\x8b":
+            raise ValueError(f"{key}: put_gzip_file with a file that is not gzip ({path}) - it would be served "
+                             f"as compressed garbage or lose its encoding")
+
+
 def _count_skip() -> None:
     with _SKIPPED_LOCK:
         SKIPPED_IDENTICAL[0] += 1
@@ -648,6 +655,30 @@ class R2Blob:
             kw["ContentType"] = ct
         self.client.upload_file(src_path, self.bucket, key,
                                 ExtraArgs=kw or None)
+
+    def put_gzip_file(self, key: str, src_path: str, metadata: dict | None = None) -> None:
+        """Stream an ALREADY-GZIPPED series CSV file as one object marked ContentEncoding gzip - what
+        core.derive_csv's streaming derive writes (plan step 1 batch 4). put_file would store it with no
+        encoding marker, and the worker would serve the compressed bytes as text/csv (the R560 class), so
+        this refuses a file that is not gzip. The file is reopened by every caller's retry."""
+        _refuse_not_gzip_file(key, src_path)
+        with open(src_path, "rb") as fh:
+            self.client.put_object(Bucket=self.bucket, Key=key, Body=fh, Metadata=dict(metadata or {}),
+                                   ContentType="text/csv", ContentEncoding="gzip")
+
+    def head_meta(self, key: str) -> dict | None:
+        """{ContentLength, ETag, Metadata, ContentEncoding} of a stored object in R2's shape, or None when
+        it does not exist - for a caller that judges what it is about to replace (derive_one's shrink
+        check). Any error but not-found raises."""
+        from botocore.exceptions import ClientError
+        try:
+            resp = self.client.head_object(Bucket=self.bucket, Key=key)
+        except ClientError as e:
+            if _is_404(e):
+                return None
+            raise
+        return {"ContentLength": resp.get("ContentLength"), "ETag": resp.get("ETag"),
+                "Metadata": dict(resp.get("Metadata") or {}), "ContentEncoding": resp.get("ContentEncoding")}
 
     def etag(self, key: str) -> str | None:
         from botocore.exceptions import ClientError
@@ -796,6 +827,22 @@ class SelfhostBlob:
             data = f.read()
         self.store.put(key, data, etag=hashlib.md5(data).hexdigest(),     # noqa: S324
                        content_type=_CONTENT_TYPES.get(os.path.splitext(key)[1].lower()))
+
+    def put_gzip_file(self, key: str, src_path: str, metadata: dict | None = None) -> None:
+        """R2Blob.put_gzip_file's twin: the gzip bytes as they are, marked gzip, text/csv, with metadata."""
+        _refuse_not_gzip_file(key, src_path)
+        with open(src_path, "rb") as f:
+            data = f.read()
+        self.store.put(key, data, etag=hashlib.md5(data).hexdigest(),     # noqa: S324
+                       content_encoding="gzip", content_type="text/csv", custom_metadata=dict(metadata or {}))
+
+    def head_meta(self, key: str) -> dict | None:
+        """R2Blob.head_meta's twin, from the store's index (a quoted ETag, as R2 returns it)."""
+        meta = self.store.head(key)
+        if meta is None:
+            return None
+        return {"ContentLength": meta["size"], "ETag": f'"{meta["etag"]}"',
+                "Metadata": dict(meta.get("custom_metadata") or {}), "ContentEncoding": meta.get("content_encoding")}
 
     def etag(self, key: str) -> str | None:
         meta = self.store.head(key)

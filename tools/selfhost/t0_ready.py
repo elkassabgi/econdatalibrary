@@ -16,6 +16,10 @@ Each check is mechanical and names what fails:
                      --pull-state / --push-state (the preflight would refuse every run otherwise)
   preflight          updater/run.py's own post-T0 preflight passes from THIS checkout, run as if cut over
   ci-writers         updater-daily, updater-heavy and sec-edgar-daily are disabled on GitHub (gh workflow list)
+  ci-drained         and none of their runs is still queued, pending, waiting or in progress (gh run list):
+                     a disabled workflow is not a drained one, and a late run is old code (R1207)
+  thirteen-f         the 13F rename is in THIS checkout (registry: sec_edgar_13f, no sec_edgar) and has run on
+                     the live state.db (nothing left under sec_edgar) - by content, not by commit id (R1207)
   edge-state         the deployed edge reports edge_state "users" (plan step 5 is done)
   state-db           the live state.db has unit_state and source_state rows: the origin copies build the
                      freshness projection (/v1/last-updates) from it - the production catalog.db has none of
@@ -144,6 +148,48 @@ def ci_writers(run=subprocess.run) -> tuple[bool, str]:
     return not bad, ("still enabled: " + ", ".join(bad)) if bad else "all disabled"
 
 
+def ci_drained(run=subprocess.run) -> tuple[bool, str]:
+    """No run of the CI writers is still to happen (R1207: a DISABLED workflow is not a DRAINED one - a run
+    queued before the disable, or waiting on the shared concurrency group, still runs old code after T0)."""
+    waiting = []
+    for name in CI_WRITERS:
+        r = run(["gh", "run", "list", "--workflow", f"{name}.yml", "--limit", "200", "--json",
+                 "databaseId,status,headSha"], cwd=ROOT, capture_output=True, text=True)
+        if r.returncode != 0:
+            return False, f"gh run list --workflow {name}.yml failed: {r.stderr.strip()[:200]} - cannot tell"
+        waiting += [f"{name}#{x['databaseId']}={x['status']}" for x in json.loads(r.stdout)
+                    if x.get("status") != "completed"]
+    return not waiting, ("not completed: " + ", ".join(waiting[:10])) if waiting else "no run left to happen"
+
+
+def thirteen_f(root: str = ROOT, state_path: str | None = None) -> tuple[bool, str]:
+    """The 13F rename is in THIS checkout and has run on the live state (R1207: the gate was plan prose).
+    By CONTENT, not by commit id (history rewrites make an ancestor check fail for ever): the registry names
+    sec_edgar_13f and no entry sec_edgar - else after T0 the 13F product writes source_state('sec_edgar'), the
+    SERVED XBRL product's freshness (the R1193 collision); the move module exists; and on the live state.db,
+    read-only, nothing is left for it to move."""
+    import sqlite3
+    import yaml
+    reg = yaml.safe_load(open(os.path.join(root, "updater", "registry.yaml"), encoding="utf-8"))
+    ids = {s.get("source_id") for s in reg.get("sources", [])}
+    if "sec_edgar" in ids or "sec_edgar_13f" not in ids:
+        return False, ("the 13F rename is not in this checkout: registry has "
+                       f"sec_edgar={'sec_edgar' in ids} sec_edgar_13f={'sec_edgar_13f' in ids}")
+    if not os.path.isfile(os.path.join(root, "updater", "state_migrations.py")):
+        return False, "updater/state_migrations.py is missing - the 13F state move is not in this checkout"
+    sys.path.insert(0, root)
+    from updater import state_migrations
+    from core import catalog_path
+    p = state_path or os.path.join(catalog_path.LIVE_STATE_DIR, "state.db")
+    con = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+    try:
+        left = state_migrations.pending(con)
+    finally:
+        con.close()
+    return left == 0, (f"{p}: {left} 13F row(s) still under sec_edgar - open the state store once "
+                       "(any updater run) so the migration moves them" if left else f"{p}: moved")
+
+
 def edge_state() -> tuple[bool, str]:
     sys.path.insert(0, os.path.join(ROOT, "tools", "selfhost"))
     import watch_edge
@@ -196,6 +242,7 @@ def flag() -> tuple[bool, str]:
 
 CHECKS = [("legacy-catalogue", legacy_catalogue), ("legacy-remote-d1", legacy_remote_d1), ("ratchets", ratchets),
           ("launcher", launcher), ("preflight", preflight), ("ci-writers", ci_writers),
+          ("ci-drained", ci_drained), ("thirteen-f", thirteen_f),
           ("edge-state", edge_state), ("state-db", state_db), ("d1-only-sources", d1_only_sources),
           ("flag", flag)]
 

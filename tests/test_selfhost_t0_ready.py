@@ -162,6 +162,82 @@ def test_a_d1_only_source_without_a_local_writer_is_not_ready(monkeypatch):
     assert ("d1-only-sources", T.d1_only_sources) in T.CHECKS
 
 
+# ---- R1207: the 13F gate and the drained CI, as checks, not plan prose ------------------------------------------
+def _runs(by_workflow, rc=0):
+    def run(cmd, **kw):
+        assert cmd[:3] == ["gh", "run", "list"] and "--workflow" in cmd
+        wf = cmd[cmd.index("--workflow") + 1].replace(".yml", "")
+        out = [{"databaseId": i, "status": s, "headSha": "abc"} for i, s in enumerate(by_workflow.get(wf, []))]
+        return types.SimpleNamespace(returncode=rc, stdout=json.dumps(out), stderr="auth required" if rc else "")
+    return run
+
+
+def test_ci_drained_needs_every_run_completed():
+    done = {n: ["completed", "completed"] for n in T.CI_WRITERS}
+    assert T.ci_drained(_runs(done)) == (True, "no run left to happen")
+    for status in ("queued", "in_progress", "pending", "waiting", "requested"):
+        ok, detail = T.ci_drained(_runs({**done, "updater-heavy": ["completed", status]}))
+        assert not ok and f"updater-heavy#1={status}" in detail, (status, detail)
+    assert T.ci_drained(_runs(done, rc=1))[0] is False, "gh failing is a failure, never a pass"
+
+
+def _registry(tmp_path, ids, with_module=True):
+    (tmp_path / "updater").mkdir(exist_ok=True)
+    (tmp_path / "updater" / "registry.yaml").write_text(
+        "sources:\n" + "".join(f"- source_id: {i}\n" for i in ids), encoding="utf-8")
+    if with_module:
+        (tmp_path / "updater" / "state_migrations.py").write_text("# the move\n", encoding="utf-8")
+    return str(tmp_path)
+
+
+@pytest.fixture
+def fake_move(monkeypatch, tmp_path):
+    """updater.state_migrations as the 13F branch ships it: pending(conn) -> rows left to move."""
+    left = {"n": 0}
+    mod = types.SimpleNamespace(pending=lambda con: left["n"])
+    import updater
+    monkeypatch.setitem(sys.modules, "updater.state_migrations", mod)
+    monkeypatch.setattr(updater, "state_migrations", mod, raising=False)
+    db = tmp_path / "state.db"
+    import sqlite3
+    sqlite3.connect(db).close()
+    return left, str(db)
+
+
+def test_thirteen_f_needs_the_rename_in_this_checkout(tmp_path, fake_move):
+    left, db = fake_move
+    ok, detail = T.thirteen_f(_registry(tmp_path, ["sec_edgar", "ecb"]), db)
+    assert not ok and "not in this checkout" in detail, "an entry still named sec_edgar is the R1193 collision"
+    ok, detail = T.thirteen_f(_registry(tmp_path, ["ecb"]), db)
+    assert not ok and "sec_edgar_13f=False" in detail
+
+
+def test_thirteen_f_needs_the_move_module_and_nothing_left_to_move(tmp_path, fake_move):
+    left, db = fake_move
+    root = tmp_path / "noshim"
+    root.mkdir()
+    ok, detail = T.thirteen_f(_registry(root, ["sec_edgar_13f"], with_module=False), db)
+    assert not ok and "state_migrations.py is missing" in detail
+    root = _registry(tmp_path, ["sec_edgar_13f", "ecb"])
+    left["n"] = 13
+    ok, detail = T.thirteen_f(root, db)
+    assert not ok and "13 13F row(s) still under sec_edgar" in detail
+    left["n"] = 0
+    assert T.thirteen_f(root, db) == (True, f"{db}: moved")
+
+
+def test_this_checkout_is_not_ready_until_the_13f_rename_merges():
+    """While this branch's registry still names the 13F entry sec_edgar, T0 must be refused - the ordering
+    R1207 asked for, measured on the real file (flip this when the 13F branch has merged)."""
+    import yaml
+    ids = {s.get("source_id") for s in yaml.safe_load(open(os.path.join(ROOT, "updater", "registry.yaml"),
+                                                            encoding="utf-8"))["sources"]}
+    if "sec_edgar" in ids:
+        ok, detail = T.thirteen_f()
+        assert not ok and "not in this checkout" in detail
+    assert ("thirteen-f", T.thirteen_f) in T.CHECKS and ("ci-drained", T.ci_drained) in T.CHECKS
+
+
 def test_it_writes_nothing():
     """No write verb in the tool: it only reads files, runs pytest and gh list, and GETs the edge."""
     src = open(os.path.join(ROOT, "tools", "selfhost", "t0_ready.py"), encoding="utf-8").read()

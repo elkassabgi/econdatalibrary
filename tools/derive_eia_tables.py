@@ -146,9 +146,10 @@ def main() -> int:
         print("pass --bucket to write")
         return 2
 
-    from core import r2_util
     from core.derive_csv import _put_with_backoff
-    s3 = r2_util.client()
+    from updater import blob as _blob
+    # plan step 1: the CSV store - R2 before T0, the self-hosted blob store after it; gzip at rest as before
+    store = _blob.csv_store(a.bucket)
     q = duckdb.connect()
     # EBA is a 147.5M-row single file: its ORDER BY under a bare 6GB memory_limit
     # SEGFAULTED (exit 139) because DuckDB had nowhere to spill. Give it a disk spill
@@ -161,20 +162,9 @@ def main() -> int:
 
     # RESUMABLE: list existing eia table objects once (prefix carries the encoded colon,
     # R129) and skip tables already written by an earlier interrupted pass.
-    existing: set = set()
-    tok = None
     listing_prefix = f"{a.prefix}/" + urllib.parse.quote("eia:", safe="")
-    while True:
-        kw = {"Bucket": a.bucket, "Prefix": listing_prefix, "MaxKeys": 1000}
-        if tok:
-            kw["ContinuationToken"] = tok
-        resp = s3.list_objects_v2(**kw)
-        for o in resp.get("Contents", []):
-            existing.add(o["Key"])
-        if not resp.get("IsTruncated"):
-            break
-        tok = resp.get("NextContinuationToken")
-    print(f"resume: {len(existing):,} eia objects already in R2 (skipped)", flush=True)
+    existing: set = set(store.list_keys(listing_prefix))
+    print(f"resume: {len(existing):,} eia objects already in the CSV store (skipped)", flush=True)
 
     put = skipped = resumed = 0
     for name, path, depth in sets:
@@ -187,7 +177,7 @@ def main() -> int:
             if key in existing:
                 resumed += 1
                 continue
-            _put_with_backoff(s3, a.bucket, key, _csv_bytes(rows))
+            _put_with_backoff(store, key, _csv_bytes(rows))
             put += 1
             if put % 5000 == 0:
                 print(f"   put {put:,}", flush=True)

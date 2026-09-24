@@ -110,7 +110,12 @@ def test_the_put_helper_carries_metadata_to_boto3():
     sig = inspect.signature(d._put_gzip_file_with_backoff)
     assert "metadata" in sig.parameters, sig
     src = inspect.getsource(d._put_gzip_file_with_backoff)
-    assert "Metadata=(metadata or {})" in src, "metadata never reaches put_object"
+    # since plan step 1 the helper writes through the CSV store; the store puts the metadata on the object
+    # (behaviourally: tests/test_skip_identical_upload.py::test_metadata_still_reaches_a_real_upload)
+    assert "put_gzip_file(key, path, metadata=metadata)" in src, "metadata never reaches the store"
+    from updater import blob
+    assert "Metadata=dict(metadata or {})" in inspect.getsource(blob.R2Blob.put_gzip_file)
+    assert "custom_metadata=dict(metadata or {})" in inspect.getsource(blob.SelfhostBlob.put_gzip_file)
 
 
 def test_a_PRE_FIX_object_is_not_read_as_a_row_count():
@@ -155,18 +160,15 @@ def test_main_passes_ROWS_as_rows_and_BYTES_as_bytes(tmp_path, monkeypatch, caps
     ROWS, BYTES = 4_242, 9_000_001
     captured = {}
 
-    class FakeClient:
-        def head_object(self, **kw):
-            raise RuntimeError("no such key")        # a first upload
+    class FakeStore:                                  # what csv_store() hands derive_one (plan step 1)
+        def head_meta(self, key):
+            return None                               # a first upload
 
-    class FakeR2:
-        client = FakeClient()
-
-    def fake_put(client, bucket, key, path, metadata=None):
+    def fake_put(store, key, path, metadata=None):
         captured["metadata"] = dict(metadata or {})
         captured["key"] = key
 
-    monkeypatch.setattr(b, "R2Blob", FakeR2)
+    monkeypatch.setattr(b, "csv_store", lambda bucket=None, **k: FakeStore())
     monkeypatch.setattr(m, "_row_count", lambda _sid: ROWS)
     monkeypatch.setattr(d, "_series_csv_to_file_sorted", lambda _sid, out: BYTES)
     monkeypatch.setattr(d, "_put_gzip_file_with_backoff", fake_put)
@@ -192,15 +194,12 @@ def test_main_REFUSES_when_the_new_object_would_lose_rows(tmp_path, monkeypatch,
 
     uploaded = []
 
-    class FakeClient:
-        def head_object(self, **kw):
+    class FakeStore:
+        def head_meta(self, key):
             return {"ContentLength": 9_000_000,
                     "Metadata": {"rows": "5000", "bytes": "9000000"}}
 
-    class FakeR2:
-        client = FakeClient()
-
-    monkeypatch.setattr(b, "R2Blob", FakeR2)
+    monkeypatch.setattr(b, "csv_store", lambda bucket=None, **k: FakeStore())
     monkeypatch.setattr(m, "_row_count", lambda _sid: 4_000)          # 1,000 fewer
     monkeypatch.setattr(d, "_series_csv_to_file_sorted", lambda _sid, out: 8_900_000)
     monkeypatch.setattr(d, "_put_gzip_file_with_backoff",
@@ -211,3 +210,26 @@ def test_main_REFUSES_when_the_new_object_would_lose_rows(tmp_path, monkeypatch,
     out = capsys.readouterr().out
     assert "REFUSE" in out and "1,000 fewer" in out, out
     assert not uploaded, "a regression was uploaded despite the refusal"
+
+
+def test_main_FAILS_CLOSED_when_the_served_head_cannot_be_read(monkeypatch, capsys):
+    """An error reading the served object used to read as "no existing object", which skipped the shrink
+    guard and uploaded over whatever was there (plan step 1 batch 4)."""
+    import tools.derive_one as m
+    from core import derive_csv as d
+    from updater import blob as b
+
+    uploaded = []
+
+    class FlakyStore:
+        def head_meta(self, key):
+            raise OSError("503 SlowDown")
+
+    monkeypatch.setattr(b, "csv_store", lambda bucket=None, **k: FlakyStore())
+    monkeypatch.setattr(m, "_row_count", lambda _sid: 10)
+    monkeypatch.setattr(d, "_series_csv_to_file_sorted", lambda _sid, out: 100)
+    monkeypatch.setattr(d, "_put_gzip_file_with_backoff", lambda *a, **k: uploaded.append(1))
+    monkeypatch.setattr(m.sys, "argv", ["derive_one.py", "probe:one", "--force"])
+    assert m.main() == 1
+    assert "FAIL probe:one could not read the served object's head" in capsys.readouterr().out
+    assert not uploaded

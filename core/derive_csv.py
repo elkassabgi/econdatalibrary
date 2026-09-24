@@ -215,7 +215,7 @@ class _ResolveZero(Exception):
     """Streamed a series and found no rows — same meaning as read_native's zero-row error."""
 
 
-def _derive_and_put(s3, bucket: str, key: str, series_id: str) -> None:
+def _derive_and_put(store, key: str, series_id: str) -> None:
     """Derive one series and PUT it, choosing the memory-safe path by table size.
 
     Small tables go through _series_csv_bytes, which is what every other source has
@@ -262,14 +262,14 @@ def _derive_and_put(s3, bucket: str, key: str, series_id: str) -> None:
         os.close(fd)
         try:
             _series_csv_to_file_sorted(series_id, tmp)
-            _put_gzip_file_with_backoff(s3, bucket, key, tmp)
+            _put_gzip_file_with_backoff(store, key, tmp)
         finally:
             try:
                 os.remove(tmp)
             except OSError:
                 pass
         return
-    _put_with_backoff(s3, bucket, key, body)
+    _put_with_backoff(store, key, body)
 
 
 def resolved_paths(res) -> list:
@@ -368,7 +368,7 @@ def _file_md5(path: str) -> str:
     return h.hexdigest()
 
 
-def object_is_identical(s3, bucket: str, key: str, path: str) -> bool:
+def object_is_identical(store, key: str, path: str) -> bool:
     """True only when R2 already holds EXACTLY these bytes.
 
     WHY THIS IS SAFE TO TRUST. `sorted_csv_gz` gzips with mtime=0 and no filename, and every
@@ -391,9 +391,11 @@ def object_is_identical(s3, bucket: str, key: str, path: str) -> bool:
     econ-data, ~320,000 a day, on a publish path that never compared anything.
     """
     try:
-        head = s3.head_object(Bucket=bucket, Key=key)
+        head = store.head_meta(key)                                  # plan step 1: the CSV store's head
     except Exception:                                                # noqa: BLE001
-        return False                                                 # absent, or cannot ask
+        return False                                                 # cannot ask
+    if head is None:
+        return False                                                 # absent
     etag = str(head.get("ETag") or "").strip('"')
     if not etag or "-" in etag:
         return False                                                 # multipart: not comparable
@@ -404,7 +406,7 @@ def object_is_identical(s3, bucket: str, key: str, path: str) -> bool:
     except OSError:
         return False
 
-def _put_gzip_file_with_backoff(s3, bucket, key, path, metadata=None,
+def _put_gzip_file_with_backoff(store, key, path, metadata=None,
                                 skip_identical=True) -> None:
     """PUT an ALREADY-GZIPPED file by streaming it, same backoff as the in-memory put.
 
@@ -417,16 +419,17 @@ def _put_gzip_file_with_backoff(s3, bucket, key, path, metadata=None,
     a source that marks every series changed republishes identical bytes daily. The check is
     an exact MD5-vs-ETag match and refuses to guess; see `object_is_identical`. Pass
     skip_identical=False to force the write.
+
+    `store` is the CSV store (plan step 1: updater.blob.csv_store - R2 before T0, the self-hosted blob
+    store after it); its put_gzip_file keeps text/csv + ContentEncoding gzip + the metadata, as this did.
     """
     import time as _time                                             # noqa: PLC0415
-    if skip_identical and object_is_identical(s3, bucket, key, path):
+    if skip_identical and object_is_identical(store, key, path):
         _SKIPPED_IDENTICAL[0] += 1
         return
     for attempt in range(7):
         try:
-            with open(path, "rb") as fh:
-                s3.put_object(Bucket=bucket, Key=key, Body=fh, Metadata=(metadata or {}), ContentType="text/csv",
-                              ContentEncoding="gzip")
+            store.put_gzip_file(key, path, metadata=metadata)       # reopens the file every attempt
             return
         except Exception as e:                               # noqa: BLE001
             if attempt == 6:
@@ -436,7 +439,7 @@ def _put_gzip_file_with_backoff(s3, bucket, key, path, metadata=None,
             _time.sleep(wait)
 
 
-def _put_with_backoff(s3, bucket, key, body) -> None:
+def _put_with_backoff(store, key, body) -> None:
     """PUT one object, gzip-compressed. R2 throws transient ServiceUnavailable/SlowDown
     throttles that outlast botocore's 5 built-in retries (that killed the 2026-07-02 run at
     103k objects). Patient app-level backoff: 7 tries, ~2 min total, then re-raise loudly
@@ -450,18 +453,19 @@ def _put_with_backoff(s3, bucket, key, body) -> None:
     freshly-derived expectations, and a timestamp in the header would break equality for
     identical CSV content."""
     import time as _time
-    from .r2_util import gzip_bytes
     if isinstance(body, str):
         body = body.encode()
-    # gzip_bytes, not gzip.compress: on Python 3.11 (what CI pins) the header's OS byte comes
-    # from zlib's build platform and is 3 on Linux; on 3.14 (the desktop) gzip.compress forces
-    # it to 255. The same CSV therefore becomes two different objects depending on where this
-    # ran, which defeats every digest comparison downstream.
-    body = gzip_bytes(body)
+    # PLAN STEP 1: through the CSV store (updater.blob.csv_store - R2 before T0, the self-hosted blob store
+    # after it). Its put_atomic gzips a series/*.csv key through the ONE shared definition,
+    # r2_util.series_csv_put_args (gzip_bytes, so the header is the same on 3.11 and 3.14 - see gzip_bytes),
+    # marks it text/csv + gzip as this did, adds the plain CSV's md5, and skips bytes the store holds.
+    # It gzips ONLY series/*.csv keys, and this always gzipped, so any other key is refused rather than
+    # silently stored plain.
+    if not (key.startswith("series/") and key.endswith(".csv")):
+        raise ValueError(f"{key}: _put_with_backoff stores series CSVs (series/<id>.csv) only")
     for attempt in range(7):
         try:
-            s3.put_object(Bucket=bucket, Key=key, Body=body, ContentType="text/csv",
-                          ContentEncoding="gzip")
+            store.put_atomic(key, body)
             return
         except Exception as e:                               # noqa: BLE001
             if attempt == 6:
@@ -519,6 +523,13 @@ def _mirror_behind_store(sources, sample: int = 0):
     import tempfile
 
     out = []
+    # AFTER T0 THERE IS NOTHING TO BE BEHIND (plan step 1): the local store IS the published store, and
+    # r2_util.client() refuses every operation. Said, not silently passed - and before T0 it runs as always.
+    from core import cutover                                          # noqa: PLC0415
+    if cutover.is_cut_over():
+        print("[preflight] after the cutover the local store is the published store - no R2 copy to be "
+              "behind of; mirror check not run")
+        return out
     try:
         import duckdb
         from core import r2_util
@@ -897,7 +908,11 @@ def main() -> None:
 
     if not a.bucket:
         ap.error("--bucket is required for a real run")
-    s3 = r2_util.client(write=True)
+    # PLAN STEP 1: the CSV store - R2 before T0, the self-hosted blob store after it (never LocalBlob,
+    # R1200). Its R2 client's pool is sized to the workers: botocore's default of 10 caps any worker count
+    # at ~10 concurrent PUTs (tools/_derive_bea_bulk.py measured it).
+    from updater import blob as _blob                                  # noqa: PLC0415
+    store = _blob.csv_store(a.bucket, pool=(a.workers + 4) if a.workers > 8 else None)
 
     if a.shard:
         try:
@@ -935,20 +950,13 @@ def main() -> None:
         if a.source and len(a.source) == 1:
             listing_prefix = f"{a.prefix}/{urllib.parse.quote(a.source[0] + ':', safe='')}"
         print(f"skip-newer-than {cutoff.isoformat()} scoped to {listing_prefix}", flush=True)
-        tok = None
         seen = 0
-        while True:
-            kw = {"Bucket": a.bucket, "Prefix": listing_prefix, "MaxKeys": 1000}
-            if tok:
-                kw["ContinuationToken"] = tok
-            resp = s3.list_objects_v2(**kw)
-            for o in resp.get("Contents", []):
-                seen += 1
-                if o["LastModified"] >= cutoff:
-                    existing.add(o["Key"])
-            if not resp.get("IsTruncated"):
-                break
-            tok = resp.get("NextContinuationToken")
+        # the store's (key, last-modified UTC) listing: R2's LastModified before T0, the self-hosted
+        # store's stored_utc after it (import_from_r2 keeps R2's time for an imported object)
+        for k, modified in store.list_modified(listing_prefix):
+            seen += 1
+            if modified >= cutoff:
+                existing.add(k)
         print(f"skip-newer-than: {len(existing):,} of {seen:,} objects already re-derived "
               f"this campaign; the rest will be rewritten", flush=True)
     elif a.skip_existing:
@@ -964,18 +972,8 @@ def main() -> None:
                     if a.source else [f"{a.prefix}/"])
         for listing_prefix in prefixes:
             print(f"skip-existing scoped to {listing_prefix}", flush=True)
-            tok = None
-            while True:
-                kw = {"Bucket": a.bucket, "Prefix": listing_prefix, "MaxKeys": 1000}
-                if tok:
-                    kw["ContinuationToken"] = tok
-                resp = s3.list_objects_v2(**kw)
-                for o in resp.get("Contents", []):
-                    existing.add(o["Key"])
-                if not resp.get("IsTruncated"):
-                    break
-                tok = resp.get("NextContinuationToken")
-        print(f"skip-existing: {len(existing):,} objects already in R2", flush=True)
+            existing.update(store.list_keys(listing_prefix))
+        print(f"skip-existing: {len(existing):,} objects already in the CSV store", flush=True)
 
     todo = []
     skip = 0
@@ -996,7 +994,7 @@ def main() -> None:
         def work(item):
             sid, src, key = item
             try:
-                _derive_and_put(s3, a.bucket, key, sid)
+                _derive_and_put(store, key, sid)
             except Exception as e:                           # noqa: BLE001
                 return ("miss", sid, str(e)[:80])
             return ("put", sid, None)
@@ -1027,7 +1025,7 @@ def main() -> None:
                           flush=True)
                 cur_src = src
             try:
-                _derive_and_put(s3, a.bucket, key, sid)
+                _derive_and_put(store, key, sid)
             except Exception as e:                           # noqa: BLE001
                 miss += 1
                 print(f"  unresolvable {sid}: {str(e)[:80]}")

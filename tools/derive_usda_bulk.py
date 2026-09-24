@@ -146,10 +146,11 @@ def main() -> int:
         print("pass --bucket to write")
         return 2
 
-    from core import r2_util
     from core.derive_csv import _put_with_backoff
+    from updater import blob as _blob
     import urllib.parse
-    s3 = r2_util.client()
+    # plan step 1: the CSV store - R2 before T0, the self-hosted blob store after it; gzip at rest as before
+    store = _blob.csv_store(a.bucket)
     q = duckdb.connect(); q.execute("PRAGMA memory_limit='6GB'")
     put = skipped = 0
     for cid, rows in _stream(q, files):
@@ -157,7 +158,7 @@ def main() -> int:
             skipped += 1                      # a table the catalogue does not offer
             continue
         key = f"{a.prefix}/" + urllib.parse.quote(cid, safe="") + ".csv"
-        _put_with_backoff(s3, a.bucket, key, _csv_bytes(rows))
+        _put_with_backoff(store, key, _csv_bytes(rows))
         put += 1
         if put % 5000 == 0:
             print(f"   put {put:,}", flush=True)
