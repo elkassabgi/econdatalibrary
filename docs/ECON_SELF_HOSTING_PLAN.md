@@ -1,9 +1,23 @@
-# Econ self-hosting plan (draft 9, 2026-09-24) - answers reviews R1158, R1160, R1161, R1163-R1167
+# Econ self-hosting plan (draft 10, 2026-09-24) - answers reviews R1158, R1160, R1161, R1163-R1167, R1169, R1171, R1172
 
-Build status: code change 2 (local mode + wrangler.origin.toml, effc6784f) and code change 3 (blob store,
-sidecar, R2 import tool, LocalBucket adapter, d18698a2d) are on branch feat/econ-selfhost-origin, verified
-locally (NUMBERS rows 1103, 1105: a real series served byte-identical to its R2 object). Changes 1, 3 and 6 may be built now; changes 4 and 5
-follow the rules in section 3.4a-c (R1167 A-C).
+Build status (branch feat/econ-selfhost-origin):
+- Code change 2 (local mode + wrangler.origin.toml, effc6784f) and code change 3 (blob store, sidecar, R2
+  import tool, LocalBucket adapter, d18698a2d, f4b338dbc) are built. They were verified locally: NUMBERS
+  rows 1103 and 1105 show a real series served byte-identical to its R2 object.
+- Code change 1 (the forwarding edge) is built: e2b2855e1, then 472611585 (page views and cost-guard status
+  on USERS). Three reviews failed:
+  - R1169: the secret could be sent to a host the client chose;
+  - R1171: the origin tests did not run from the CI root;
+  - R1172: a missing table hid a cost breach.
+- All three are fixed in a897ecd11 and 8f4ba04c4, and a verification review is running.
+- Still to build in change 1:
+  - the EDGE_STATE switch (step 5, below);
+  - the /v1/pv/report edge cache;
+  - the status route of change 6.
+- Changes 4 and 5 follow the rules in section 3.4a-c (R1167 A-C).
+
+Measured 2026-09-24T01:33:51Z: the live worker's Cache API works on workers.dev (CF-Cache-Status HIT,
+Age 10766 on /v1/stats). The docs name only custom domains, so this was checked.
 
 Owner decision (Ahmed, 2026-09-23 ~22:00Z): host ALL of econ on his UCA workstation; UCA approved and
 offered funding; minimise cost because more databases are coming. hf, ip and the portal are out of scope
@@ -42,23 +56,31 @@ offered funding; minimise cost because more databases are coming. hf, ip and the
 
 ```
 client -> econdl-api.elkassabgi.workers.dev   EDGE worker (same name, forever)
-            itself: OPTIONS; /v1/public-stats (USERS + an edge-cached sources.json from the origin, stale
-                    fallback when the origin is down); /v1/pv and /v1/pv/report on a `pageview` table
-                    MOVED TO USERS (same upsert, same GROUP BY report) - both unauthenticated, so /v1/pv is
-                    rate-limited with the Workers rate-limit binding (keys: a constant per-location cap
-                    plus per-IP; declared for the pinned wrangler 3.114.17 as [[unsafe.bindings]]
-                    type="ratelimit"; the code REFUSES the write when the binding is missing) and
-                    /v1/pv/report is edge-cached. The binding counts per Cloudflare location and is
-                    eventually consistent (docs), so it REDUCES a flood's load on the family login DB; it
-                    does not stop a flood spread over many locations. The */30 cost guard with its status
-                    in a KV key (48 writes/day)
+            itself: OPTIONS; /v1/public-stats (USERS + the origin's /v1/sources, with a 30-day last-good
+                    copy at the edge; with neither, it answers without a top-sources list, never 500);
+                    /v1/pv and /v1/pv/report on table `econ_pageview` IN USERS (same columns, same upsert,
+                    same report; the table is created on first use if the migration was missed); the */30
+                    cost guard with its status in USERS table `econ_ops_status` (48 upserts/day; no KV
+                    namespace to create). Both move when EDGE_STATE = "users" (step 5) or FORWARD = "on".
+                    A failed status write never replaces the guard's verdict (R1172).
+                    Rate limit on /v1/pv: NOT built. The rate-limit binding needs wrangler >= 4.36 (the
+                    worker pins 3.114.17), and its docs page gives no price. /v1/pv today writes econ D1
+                    with no limit, so the move keeps today's exposure but puts it on the family login DB.
+                    Decision open (section 8).
+            forwarding rules (R1169): only the origin's own routes are forwarded, anything else is the
+                    edge's 404; the upstream URL is ORIGIN_URL with the client's path SET on it and must
+                    keep ORIGIN_URL's origin; redirects are never followed; any 3xx, or any answer without
+                    the origin's x-econ-origin mark (a tunnel error page, an Access login page), is a 502
+                    that is never cached or logged; an allowlist of request headers; a 30 s wait for
+                    response headers (504); edge cache per route (catalog and stats 6 h as today, sources
+                    and last-updates 5 min, metadata 1 h, bundle and data never), keyed without api_key
             data requests: licence gate (451 before auth, as today) -> auth (USERS) -> rate limit ->
                     strip X-API-Key / Authorization / ?api_key= -> overwrite identity + secret headers ->
-                    forward -> download log: content-length when present; when the ORIGIN SETS
-                    `x-econ-count: 1` (answers it builds without a length) the edge pipes through a counting
-                    stream and writes the row on completion AND on abort (pipe promise; waitUntil runs up to
-                    30 s after a disconnect), so no download goes unlogged (R593/R599); gzip passthrough
-                    bodies are never read
+                    forward -> download log: content-length when present; a 200 WITHOUT a length is
+                    counted through a stream whatever the origin's x-econ-count says (a hop can drop the
+                    length, R1169 M2), and the row is written on completion AND on abort (pipe promise;
+                    waitUntil runs up to 30 s after a disconnect), so no download goes unlogged
+                    (R593/R599); gzip passthrough bodies carry a length and are never read
           PRIVATE ORIGIN: Workers VPC binding to the tunnel (beta, free); fallback Access service token +
             Cache Rule bypass on the tunnel hostname. The origin sends private, no-store on EVERY answer.
           -> workstation, 127.0.0.1 only:
@@ -87,10 +109,12 @@ client -> econdl-api.elkassabgi.workers.dev   EDGE worker (same name, forever)
 
 ## 3. Code changes
 
-1. Edge worker: today's worker + FORWARD (committed in wrangler.toml) + /v1/pv and /v1/pv/report on USERS
-   + cost guard to KV + the counting stream on `x-econ-count` + sources.json for public-stats; a CI test
-   fails if FORWARD is off after the committed cutover date. At STEP 7 (decommission, never earlier) it is
-   redeployed without CATALOG, CLIMATE and R2 bindings.
+1. Edge worker: today's worker + FORWARD (committed in wrangler.toml) + EDGE_STATE (page views and the
+   cost-guard status on USERS, deployable at step 5 with FORWARD still off) + the counting stream + the
+   origin's /v1/sources for public-stats; migrations/users_selfhost.sql (additive, IF NOT EXISTS); a CI
+   test fails if FORWARD is off after the committed cutover date. The tests run the FORWARD-on edge with
+   the CATALOG, CLIMATE and R2 bindings REMOVED from its config, so no path can still depend on them. At
+   STEP 7 (decommission, never earlier) it is redeployed without those bindings.
 2. `wrangler.origin.toml` (undeployable, as above) + LOCAL mode in the same codebase.
 3. SERIES_BUCKET adapter + blob sidecar + local router.
 4. Updater: LocalBlob fixed root + gzip at rest; local state with a single-writer lock replacing
@@ -174,17 +198,21 @@ client -> econdl-api.elkassabgi.workers.dev   EDGE worker (same name, forever)
    with 8 MiB and 64 MiB parts, then the MiB interval the part count allows - no match is a copy failure;
    stores also byte-compared with the independent local mirror copy.
 3. Measure locally: the route mix, /v1/catalog and search/browse counts under concurrency at the origin
-   (the edge no longer caches them) against the 125 s origin timeout.
+   (the edge caches each distinct URL 6 h, so every NEW query still reaches the origin) against the
+   edge's 30 s wait for response headers (ORIGIN_TIMEOUT_MS; the tunnel's own limit is 125 s), including
+   the time a large streamed download takes to prime before its headers leave the origin.
 4. Soak behind a SECOND workers.dev name (its cron disabled) for several days. Tests: keyed GET via edge
    ok; unkeyed GET to the origin fails; same URL unkeyed via edge -> 401; headers across the tunnel for
    all three download shapes (whole object, range, filtered/inflated); edge CPU on the largest filtered
    answer; a length-less download logs on completion and on abort; a service stop kills the workerd
-   children; the origin refuses when its secret is unset; /v1/pv answers 429 past its limit and refuses
-   when its binding is missing.
-5. Before T0: create `pageview` in hfdatalibrary-db with CREATE TABLE (no IF NOT EXISTS - a schema write
-   on hf's production DB, stated and reviewed); deploy the edge with FORWARD off but /v1/pv(+report) on
-   USERS and the cost guard on KV, so the production worker stops writing econ-data and econ D1; THEN copy
-   the old rows with an upsert that adds (hits = hits + excluded.hits).
+   children; the origin refuses when its secret is unset; an Access login page and a tunnel error page
+   reach the client as 502, not as data.
+5. Before T0: apply migrations/users_selfhost.sql to hfdatalibrary-db (two new tables, IF NOT EXISTS, no
+   hf table touched - a schema write on hf's production DB, stated and reviewed); deploy the edge with
+   FORWARD off and EDGE_STATE = "users", so the production worker stops writing econ-data and econ D1
+   (otherwise the 6a freeze proof sees the cron's R2 write every 30 min and every page view in D1); at
+   least 10 minutes later, merge the old page-view rows ONCE through a staging table under a marker row
+   (the recipe is in the migration header; a second run is refused - R1172).
 6. Cutover:
    a. Freeze at T0: `gh workflow disable` updater-daily, updater-heavy and sec-edgar-daily (their
       workflow_dispatch otherwise survives, on every branch that has the file) and prove it with
@@ -224,9 +252,9 @@ deploy, Ahmed). No cloud storage cost.
 ## 6. Cost
 
 After step 7: R2 econ-data (~$12/mo) and econ's D1 storage go. The edge worker (inside the account's
-Workers plan and included requests), KV (free tier), the tunnel and DNS add nothing; the rate-limit
-binding's price is NOT yet confirmed (no price line found in the docs - checked in step 1 before it is
-used; if it is billed, /v1/pv falls back to a per-IP check on USERS); USERS reads/writes by primary key (incl. the moved pageview table) add nothing at today's volume
+Workers plan and included requests), the tunnel and DNS add nothing; no KV namespace is used; the
+rate-limit binding is not used (price not published on its docs page, checked 2026-09-24); USERS
+reads/writes by primary key (the moved page-view table, 48 status upserts/day) add nothing at today's volume
 (80 pageview rows so far) - a traffic change would be seen by the billing guard. During the fallback period R2 storage continues. Caveats:
 Workers VPC is free only in beta; an off-machine backup in R2 would bring ~$12/mo back. New databases cost
 local disk only.
@@ -245,6 +273,8 @@ cached public answers.
 - Off-machine backup location: UCA storage, rotated external drives, or R2 (~$12/mo).
 - Static site econdatalibrary.com: stay on Pages ($0) or move to the tunnel.
 - Fallback period (proposed 14 days).
+- /v1/pv flood protection: keep it as today (no limit; the family login DB takes the writes), or upgrade
+  wrangler to 4.x for the rate-limit binding once its price is confirmed.
 - His actions: creating C:\ProgramData\econ elevated with its ACL and owner; creating the flag file,
   elevated, at T0; the Workers VPC service or Access
   setup; the edge `wrangler deploy`s (steps 5, 6d, 7); creating an Object-Read-only R2 token for the
