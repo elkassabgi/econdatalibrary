@@ -95,6 +95,8 @@ def _catalog_ids(source_id: str) -> set:
                 "SELECT series_id FROM series WHERE source_id=?", (source_id,))}
         finally:
             con.close()
+    except catalog_path.CutoverRefused:
+        raise                                                 # a wrong checkout after T0: not transient
     except Exception as e:                                    # noqa: BLE001
         raise TransientError(f"{source_id}: catalogue unreadable, the id self-check cannot run: {e!r}") from e
 

@@ -44,7 +44,9 @@ import urllib.request
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
-OUT_PATH = os.path.join(ROOT, "dist", "titles", "ei_statreview.json")   # beside the catalogue it read
+# beside the catalogue it reads: the checkout's before T0, the build's after (not this worktree's dist/)
+OUT_PATH = os.path.join(os.path.dirname(os.path.dirname(catalog_path.catalog_path())), "dist", "titles",
+                        "ei_statreview.json")
 SOURCE_ID = "ei_statreview"
 
 CODEBOOK_URL = "https://raw.githubusercontent.com/owid/energy-data/master/owid-energy-codebook.csv"

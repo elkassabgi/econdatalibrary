@@ -100,11 +100,16 @@ def _published_indicators(source_id: str, prefix: str) -> list[str]:
     if not os.path.exists(path):
         raise TransientError(f"{source_id}: no catalogue at {path}; cannot "
                              f"determine which indicators to fetch")
-    con = catalog_path.connect_path(path, write=False)
     try:
-        rows = con.execute("SELECT series_id FROM series WHERE source_id=?", (source_id,)).fetchall()
-    finally:
-        con.close()
+        con = catalog_path.connect_path(path, write=False)
+        try:
+            rows = con.execute("SELECT series_id FROM series WHERE source_id=?", (source_id,)).fetchall()
+        finally:
+            con.close()
+    except catalog_path.CutoverRefused:
+        raise                                                 # a wrong checkout after T0: not transient
+    except Exception as e:                                    # noqa: BLE001 - garbage, a hot journal
+        raise TransientError(f"{source_id}: catalogue unreadable: {e!r}") from e
     tag = f"{prefix}:"
     out = set()
     for (sid,) in rows:
