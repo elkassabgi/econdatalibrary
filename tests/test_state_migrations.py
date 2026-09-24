@@ -2,6 +2,8 @@
 StateStore open, idempotently and in either order of old and new code (review R1197)."""
 import sqlite3
 
+import pytest
+
 from updater import state_migrations as M
 from updater.state import StateStore
 
@@ -102,20 +104,22 @@ def test_a_series_cursor_on_both_ids_keeps_the_new_one(tmp_path):
     assert got == [("sec_edgar_13f", "k1"), ("sec_edgar_13f", "k2")]
 
 
-# ---- after T0: the XBRL product owns `sec_edgar` (review R1201) -----------------------------------------------
+
+# ---- after T0: the XBRL product owns `sec_edgar` (reviews R1201, R1202) --------------------------------------
 POST_T0 = [
     ("INSERT INTO source_state(source_id, strategy, cadence, status) VALUES "
      "('sec_edgar','edgar_delta','daily','ok')", ()),
     ("INSERT INTO source_state(source_id, strategy, cadence, status) VALUES "
      "('sec_edgar_13f','giant_changed_units','quarterly','ok')", ()),
     ("INSERT INTO unit_state(source_id, unit_id, strategy, status) VALUES ('sec_edgar_13f','_all','giant_changed_units','ok')", ()),
-    # rows an XBRL writer may keep under its own id - including ones shaped like 13F's
-    ("INSERT INTO unit_state(source_id, unit_id, strategy, status) VALUES ('sec_edgar','_all','giant_changed_units','ok')", ()),
+    # rows the XBRL writer may keep under its own id - including a run shaped like 13F's (unit '_all')
     ("INSERT INTO unit_state(source_id, unit_id, strategy, status) VALUES ('sec_edgar','daily','edgar_delta','ok')", ()),
     ("INSERT INTO runs(ts_utc, source_id, unit_id) VALUES ('2026-10-02T00:00:00+00:00','sec_edgar','_all')", ()),
     ("INSERT INTO csv_retry_queue(series_id, source_id) VALUES ('sec_edgar:0000320193','sec_edgar')", ()),
     ("INSERT INTO full_rederive_owed(source_id, note) VALUES ('sec_edgar','xbrl debt')", ()),
 ]
+STRANDED_13F_UNIT = ("INSERT INTO unit_state(source_id, unit_id, strategy, status) "
+                     "VALUES ('sec_edgar','_all','giant_changed_units','no_change')", ())
 
 
 def _snapshot(path):
@@ -136,12 +140,28 @@ def test_after_t0_nothing_under_the_xbrl_id_is_touched(tmp_path):
     assert _snapshot(p) == before
 
 
-def test_a_row_of_unknown_strategy_is_left_alone(tmp_path):
+def test_a_stranded_13f_unit_row_moves_even_after_ownership(tmp_path):
+    """R1202 finding 5: a race can leave unit_state('sec_edgar','_all') with the 13F strategy after the XBRL
+    product owns the id; the sync would push it to D1 as the XBRL freshness. StateStore refuses a sec_edgar
+    unit row with that strategy, so the row can only be 13F's: it moves (here: the new-id row wins)."""
+    p = str(tmp_path / "state.db")
+    _seed(p, POST_T0 + [STRANDED_13F_UNIT])
+    StateStore(p).close()
+    c = sqlite3.connect(p)
+    assert c.execute("SELECT unit_id FROM unit_state WHERE source_id='sec_edgar'").fetchall() == [("daily",)]
+    c.close()
+    assert _count(p, "runs", "sec_edgar") == 1, "the XBRL product's own '_all' run stays (ambiguous: gated)"
+    assert _count(p, "full_rederive_owed", "sec_edgar") == 1
+
+
+def test_a_row_of_unknown_strategy_turns_off_only_the_ambiguous_tables(tmp_path):
     p = str(tmp_path / "state.db")
     _seed(p, [("INSERT INTO source_state(source_id, status) VALUES ('sec_edgar','ok')", ())] + THIRTEEN_F[1:])
-    before = _snapshot(p)
     StateStore(p).close()
-    assert _snapshot(p) == before
+    assert _count(p, "source_state", "sec_edgar") == 1, "a NULL-strategy row is not guessed at"
+    assert [_count(p, t, "sec_edgar") for t in ("runs", "full_rederive_owed")] == [2, 1], "gated off"
+    assert _count(p, "unit_state", "sec_edgar") == 0 and _count(p, "unit_state", "sec_edgar_13f") == 1, \
+        "the 13F-strategy unit row is unambiguous and moves"
 
 
 def _locked(path):
@@ -151,10 +171,19 @@ def _locked(path):
     return h
 
 
+# before ownership, rows under `sec_edgar` that no predicate selects: the early exit must not count them
+UNMATCHED = [
+    ("INSERT INTO unit_state(source_id, unit_id, strategy, status) VALUES ('sec_edgar','daily','edgar_delta','ok')", ()),
+    ("INSERT INTO runs(ts_utc, source_id, unit_id) VALUES ('2026-10-02T00:00:00+00:00','sec_edgar','daily')", ()),
+    ("INSERT INTO csv_retry_queue(series_id, source_id) VALUES ('sec_edgar:0000320193','sec_edgar')", ()),
+]
+
+
 def test_with_nothing_to_move_the_open_takes_no_write_lock(tmp_path):
     """R1201 finding 1: the early exit counted every `sec_edgar` row, so after T0 every open ran BEGIN
-    IMMEDIATE, for ever. Both steady states - after the move, and after T0 - must be plain reads."""
-    for name, rows in (("moved", THIRTEEN_F), ("post_t0", POST_T0)):
+    IMMEDIATE, for ever. Every steady state must be a plain read - including one with sec_edgar rows that
+    no predicate selects (R1202: a pending() counting every row survived the first version of this test)."""
+    for name, rows in (("moved", THIRTEEN_F), ("post_t0", POST_T0), ("unmatched", THIRTEEN_F + UNMATCHED)):
         p = str(tmp_path / f"{name}.db")
         _seed(p, rows)
         StateStore(p).close()                                 # the move, if any, is done
@@ -184,18 +213,65 @@ def test_with_nothing_to_move_the_open_takes_no_write_lock(tmp_path):
         h.close()
 
 
-def test_each_statement_keeps_its_own_guard_without_the_gate(tmp_path):
-    """_move is called directly, bypassing the ownership gate, on a post-T0 store: every statement's own
-    predicate must still spare the XBRL product's rows (kills a guard dropped from any one statement)."""
+ALONE = {
+    "source_state": ("INSERT INTO source_state(source_id, strategy, status) VALUES ('sec_edgar','giant_changed_units','ok')", ()),
+    "unit_state": ("INSERT INTO unit_state(source_id, unit_id, strategy, status) VALUES ('sec_edgar','_all','giant_changed_units','ok')", ()),
+    "runs": ("INSERT INTO runs(ts_utc, source_id, unit_id) VALUES ('2026-09-23T00:00:00+00:00','sec_edgar','_all')", ()),
+    "series_cursor": ("INSERT INTO series_cursor(source_id, series_key, last_obs_date) VALUES ('sec_edgar','k1','2026-01-01')", ()),
+    "full_rederive_owed": ("INSERT INTO full_rederive_owed(source_id, note) VALUES ('sec_edgar','csv coherence unmet')", ()),
+}
+
+
+@pytest.mark.parametrize("table", sorted(ALONE))
+def test_each_table_alone_is_seen_by_the_early_exit(tmp_path, table):
+    """R1202: pending() ignoring one table survived - with only that table's rows pending, nothing moved."""
     p = str(tmp_path / "state.db")
-    _seed(p, POST_T0[:3] + [                   # the XBRL row, and the 13F rows already under the new id
-        ("INSERT INTO unit_state(source_id, unit_id, strategy, status) VALUES ('sec_edgar','daily','edgar_delta','ok')", ()),
+    _seed(p, [ALONE[table]])
+    StateStore(p).close()
+    assert _count(p, table, "sec_edgar") == 0, f"{table}: the only pending rows were never processed"
+
+
+def test_the_predicates_are_reread_under_the_lock(tmp_path, monkeypatch):
+    """R1202: the XBRL writer may take the id between the lock-free read and the lock. Simulated by an early
+    exit that says 'something to do' on a store the XBRL product owns: the ambiguous rows must stay."""
+    p = str(tmp_path / "state.db")
+    _seed(p, POST_T0)
+    before = _snapshot(p)
+    monkeypatch.setattr(M, "pending", lambda db: 1)
+    c = sqlite3.connect(p)
+    assert M.apply_all(c) == {}
+    c.close()
+    assert _snapshot(p) == before
+
+
+def test_the_move_takes_the_write_lock_first(tmp_path):
+    """BEGIN IMMEDIATE, not a deferred BEGIN: the predicates are read and the rows written under ONE lock."""
+    p = str(tmp_path / "state.db")
+    _seed(p, THIRTEEN_F)
+    c = sqlite3.connect(p)
+    seen = []
+    c.set_trace_callback(seen.append)
+    assert M.apply_all(c)
+    c.close()
+    begins = [s for s in seen if s.strip().upper().startswith("BEGIN")]
+    assert begins == ["BEGIN IMMEDIATE"], begins
+    under_lock = seen[seen.index("BEGIN IMMEDIATE") + 1:]
+    first_write = next(i for i, s in enumerate(under_lock) if s.lstrip().upper().startswith(("UPDATE", "DELETE")))
+    assert any("strategy IS NOT" in s for s in under_lock[:first_write]), \
+        "the ownership is re-read under the lock, before the first write"
+
+
+def test_each_statement_keeps_its_own_guard_without_the_gate(tmp_path):
+    """_move is called directly with EVERY table, bypassing the ownership gate, on a post-T0 store: every
+    statement's own predicate must still spare the XBRL product's rows (kills a guard dropped from any one)."""
+    p = str(tmp_path / "state.db")
+    _seed(p, POST_T0[:4] + [                   # the XBRL row, its unit, and the 13F rows under the new id
         ("INSERT INTO runs(ts_utc, source_id, unit_id) VALUES ('2026-10-02T00:00:00+00:00','sec_edgar','daily')", ()),
         ("INSERT INTO csv_retry_queue(series_id, source_id) VALUES ('sec_edgar:0000320193','sec_edgar')", ()),
     ])
     c = sqlite3.connect(p)
     c.execute("BEGIN IMMEDIATE")
-    M._move(c)
+    M._move(c, {**M._SELECT_ALWAYS, **M._SELECT_GATED})
     c.execute("COMMIT")
     c.close()
     assert _count(p, "source_state", "sec_edgar") == 1, "the XBRL row survives the DELETE"
@@ -219,20 +295,55 @@ def test_the_csv_queues_are_never_moved(tmp_path):
     assert _count(p, "csv_retry_queue", "sec_edgar") == 1 and _count(p, "csv_desktop_owed", "sec_edgar") == 1
 
 
-def test_the_xbrl_row_must_carry_its_own_strategy(tmp_path):
-    """R1201 finding 4: a `sec_edgar` write without a strategy of its own is refused."""
-    import pytest
+def test_the_xbrl_rows_must_carry_their_own_strategy(tmp_path):
+    """R1201 finding 4, R1202 finding 6: a `sec_edgar` source or unit write without a strategy of its own -
+    none, empty, or the 13F one in any case - is refused."""
     s = StateStore(str(tmp_path / "state.db"))
     try:
-        for kw in ({"status": "ok"}, {"status": "ok", "strategy": M.THIRTEEN_F_STRATEGY}):
+        for kw in ({"status": "ok"}, {"status": "ok", "strategy": M.THIRTEEN_F_STRATEGY},
+                   {"strategy": ""}, {"strategy": " GIANT_CHANGED_UNITS "}):
             with pytest.raises(ValueError, match="own strategy"):
                 s.upsert_source("sec_edgar", **kw)
+            with pytest.raises(ValueError, match="own strategy"):
+                s.upsert_unit("sec_edgar", "_all", **kw)
         s.upsert_source("sec_edgar", strategy="edgar_delta", status="ok")
         s.upsert_source("sec_edgar", status="ok", last_success_utc="2026-10-02T00:00:00+00:00")   # keeps its own
         assert s.get_source("sec_edgar")["strategy"] == "edgar_delta"
+        s.upsert_unit("sec_edgar", "daily", strategy="edgar_delta", status="ok")
         s.upsert_source("ecb", status="ok")                                   # other ids unaffected
+        s.upsert_unit("ecb", "_all", status="ok")
     finally:
         s.close()
+
+
+def test_strategyless_writes_under_the_old_id_wait_for_ownership(tmp_path):
+    """R1202 finding 4: 'the XBRL writer's first write is its source_state row' was prose. Runs, cursors and
+    owed rows under `sec_edgar` are refused until the XBRL product owns the id."""
+    s = StateStore(str(tmp_path / "state.db"))
+    try:
+        writes = (lambda: s.log_run("sec_edgar", "_all", "ok"),
+                  lambda: s.put_series_cursors("sec_edgar", {"k": "2026-01-01"}),
+                  lambda: s.note_full_rederive_owed("sec_edgar", note="x"))
+        for w in writes:
+            with pytest.raises(ValueError, match="owns the id"):
+                w()
+        s.log_run("ecb", "_all", "ok")                                        # other ids unaffected
+        s.upsert_source("sec_edgar", strategy="edgar_delta", status="ok")
+        for w in writes:
+            w()
+        assert _count(str(tmp_path / "state.db"), "runs", "sec_edgar") == 1
+    finally:
+        s.close()
+
+
+def test_the_migration_line_goes_to_stderr(tmp_path, capsys):
+    """R1201 finding 6: a read-purpose caller (health --json) prints JSON on stdout."""
+    p = str(tmp_path / "state.db")
+    _seed(p, THIRTEEN_F)
+    capsys.readouterr()
+    StateStore(p).close()
+    got = capsys.readouterr()
+    assert "[state] migrated" in got.err and "[state] migrated" not in got.out
 
 
 def test_no_registry_entry_uses_the_old_id():
@@ -268,6 +379,7 @@ def test_a_failure_rolls_the_whole_move_back(tmp_path, monkeypatch):
         pass
     else:
         raise AssertionError("expected the injected failure")
+    assert not c.in_transaction, "the failed move left its transaction open on the caller's connection"
     c.close()
     assert _count(p, "source_state", "sec_edgar") == 1 and _count(p, "source_state", "sec_edgar_13f") == 0, \
         "rolled back"

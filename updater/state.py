@@ -139,17 +139,29 @@ class StateStore:
         r = self.db.execute("SELECT * FROM source_state WHERE source_id=?", (sid,)).fetchone()
         return dict(r) if r else None
 
+    # ---- the old 13F id (updater/state_migrations.py, reviews R1201/R1202) ----
+    # `sec_edgar` is the SERVED XBRL product's id; the 13F entry is sec_edgar_13f. A row under `sec_edgar`
+    # is the XBRL product's only when that product's own strategy says so, so every write under it is
+    # checked here - mechanically, not by a rule its future writer must remember:
+    #   - a source or unit row must carry a strategy that is not the 13F one (a write without one would
+    #     merge into a leftover 13F row, keep its strategy, and the migration would move it away);
+    #   - rows with no strategy column (runs, cursors, owed) only once the XBRL product owns the id, so its
+    #     writer's FIRST write is its source_state row.
+    def _guard_old_id(self, source_id, what, strategy=None, check_strategy=False):
+        from . import state_migrations as _m                               # noqa: PLC0415
+        if source_id != _m.OLD:
+            return
+        if check_strategy and _m.is_thirteen_f_strategy(strategy):
+            raise ValueError(f"{what}({_m.OLD!r}) must carry the XBRL product's own strategy "
+                             f"(got {strategy!r}); the 13F entry is {_m.NEW!r}")
+        if not check_strategy and not _m.xbrl_owns(self.db):
+            raise ValueError(f"{what} under {_m.OLD!r} before the XBRL product owns the id: write its "
+                             f"source_state row first (the 13F entry is {_m.NEW!r})")
+
     def upsert_source(self, source_id, **kw):
         current = self.get_source(source_id)
-        from . import state_migrations as _m                               # noqa: PLC0415
-        if source_id == _m.OLD:
-            # R1201 finding 4: a `sec_edgar` row is the XBRL product's only when it carries that product's
-            # own strategy - a write without one would merge into a leftover 13F row, keep its strategy,
-            # and the migration would then move the XBRL product's freshness to sec_edgar_13f
-            strategy = kw.get("strategy", (current or {}).get("strategy"))
-            if strategy in (None, _m.THIRTEEN_F_STRATEGY):
-                raise ValueError(f"source_state({_m.OLD!r}) must carry the XBRL product's own strategy "
-                                 f"(got {strategy!r}); the 13F entry is {_m.NEW!r}")
+        self._guard_old_id(source_id, "source_state", kw.get("strategy", (current or {}).get("strategy")),
+                           check_strategy=True)
         self._upsert("source_state", _SRC_COLS, ["source_id"],
                      current, {"source_id": source_id, **kw})
 
@@ -163,8 +175,11 @@ class StateStore:
         return dict(r) if r else None
 
     def upsert_unit(self, source_id, unit_id, **kw):
+        current = self.get_unit(source_id, unit_id)
+        self._guard_old_id(source_id, "unit_state", kw.get("strategy", (current or {}).get("strategy")),
+                           check_strategy=True)
         self._upsert("unit_state", _UNIT_COLS, ["source_id", "unit_id"],
-                     self.get_unit(source_id, unit_id),
+                     current,
                      {"source_id": source_id, "unit_id": unit_id, **kw})
 
     def units_for_source(self, sid):
@@ -180,6 +195,7 @@ class StateStore:
             "SELECT series_key,last_obs_date FROM series_cursor WHERE source_id=?", (sid,))}
 
     def put_series_cursors(self, sid, mapping: dict):
+        self._guard_old_id(sid, "series_cursor")
         self.db.executemany(
             "INSERT INTO series_cursor(source_id,series_key,last_obs_date) VALUES(?,?,?) "
             "ON CONFLICT(source_id,series_key) DO UPDATE SET last_obs_date=excluded.last_obs_date",
@@ -270,6 +286,7 @@ class StateStore:
 
     # ---- run log ----
     def log_run(self, sid, uid, status, obs=0, dur_s=0.0, note=None):
+        self._guard_old_id(sid, "runs")
         self.db.execute(
             "INSERT INTO runs(ts_utc,source_id,unit_id,status,obs,dur_s,note) VALUES(?,?,?,?,?,?,?)",
             (now_utc(), sid, uid, status, obs, dur_s, note))
@@ -283,6 +300,7 @@ class StateStore:
     # way. This row is the debt's persistence; only a completed wholesale derive campaign
     # (derive_csv_bulk's success stamp) clears it.
     def note_full_rederive_owed(self, source_id, vintage=None, note=None):
+        self._guard_old_id(source_id, "full_rederive_owed")
         self.db.execute(
             "INSERT INTO full_rederive_owed(source_id,vintage,noted_utc,note) "
             "VALUES(?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET "
