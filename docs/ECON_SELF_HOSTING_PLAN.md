@@ -91,6 +91,19 @@ Build status (branch feat/econ-selfhost-origin):
     unchanged by a rename, but checked in the same commit - R347), which also closes R275; its state rows
     move with it. The XBRL refresher then writes the WHOLE source_state('sec_edgar') row (strategy
     included), and no 13F unit shows under sec_edgar in /v1/last-updates or metadata.ts's last_updated.
+    Built on branch feat/econ-13f-own-key: updater/state_migrations.py moves the rows on every StateStore
+    open until source_state('sec_edgar') carries another strategy, then never again; upsert_source
+    refuses a sec_edgar row without the XBRL product's own strategy, so the refresher's FIRST write must
+    be that row (R1201).
+  * THE 13F D1 CLEAN-UP (R1201 finding 5). The local move does not heal D1: sync_state_d1 upserts and never
+    deletes, so unit_state('sec_edgar','_all') and source_state('sec_edgar') stay in D1 until removed, and
+    any run of OLD code re-creates them locally and the next sync re-upserts them. So the clean-up (two
+    PK DELETEs - costed first with the same statements as SELECTs) runs only when ALL hold: (1) no
+    workflow run created before the merge is queued or in progress (gh run list, read at the time);
+    (2) the E: checkout that runs the desktop passes is at or after the merge commit; (3) one sync from
+    new code has pushed the sec_edgar_13f rows. Then re-read the two keys from D1 to prove them gone.
+    Expected after the rename: /v1/last-updates lists the 13F unit as sec_edgar_13f/_all - the same row
+    it listed as sec_edgar/_all before, under its own id.
   * data_through: computed by the origin copy from the catalogue with this source's rule, MAX(end_date)
     over end_date <= today UTC (the stamp tool's rule). It equals D1's stamp while the rows are equal.
     But the clamp hides a forward row instead of failing (R737), and the refresher can write one
