@@ -109,6 +109,11 @@ class StateStore:
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(DDL)
         self.db.commit()
+        # idempotent, order-proof data migrations (updater/state_migrations.py - the 13F rename, R1197)
+        from . import state_migrations                                     # noqa: PLC0415
+        moved = state_migrations.apply_all(self.db)
+        if moved:
+            print(f"[state] migrated {self.path}: {moved}", flush=True)
 
     def close(self):
         self.db.close()

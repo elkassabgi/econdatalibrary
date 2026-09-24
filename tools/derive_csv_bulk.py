@@ -291,7 +291,7 @@ def main() -> int:
     # registry entries. For the other two it is the WRONG PRODUCT, because sec_edgar's pair
     # have their directory names inverted:
     #
-    #     source_id=sec_edgar        out_dir=edgar_13f   (relational 13F/insider, nothing served)
+    #     source_id=sec_edgar_13f    out_dir=edgar_13f   (relational 13F/insider, nothing served; was `sec_edgar` until 2026-09-24)
     #     source_id=sec_edgar_xbrl   out_dir=sec_edgar   (the 17,467 served company-facts CSVs)
     #
     # So `--source sec_edgar` resolves clean_grouped/sec_edgar — the OTHER entry's store. On
@@ -311,7 +311,7 @@ def main() -> int:
     if a.source == "sec_edgar":
         print("REFUSING: --source sec_edgar is the XBRL company-facts product (registry entry "
               "sec_edgar_xbrl). Its CSVs are written by tools/refresh_sec_edgar.py, not by this tool "
-              "(R275/R1050); the 13F product is --source sec_edgar_13f.")
+              "(R275/R1050); the 13F product (sec_edgar_13f, store clean_full/edgar_13f) is wide tables with no series CSVs.")
         return 2
     try:
         import yaml                                                   # noqa: PLC0415
