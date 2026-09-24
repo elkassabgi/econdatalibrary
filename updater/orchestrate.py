@@ -296,6 +296,29 @@ def _unit_window_min() -> float:
     return max(0.0, min(t, rem / 2.0))
 
 
+def _csv_fence_min() -> float:
+    """The hard SIGALRM fence around one unit's whole CSV phase, in minutes.
+
+    None from _remaining_run_min means NO run ceiling is set (AQUEDUCT_RUN_BUDGET_MIN <= 0, or a
+    caller outside run_once): the remainder is unknown, so the fence is the 60-minute cap. A
+    remainder of 0.0 means the ceiling has already PASSED (_remaining_run_min clamps a negative
+    remainder to 0.0): there is no budget left, so the fence is the 1-minute floor and gets no
+    grace. Otherwise the remainder plus 2 minutes of grace (derive_and_put's soft budget, capped
+    by the same remainder in _capped_derive_budget, runs out first), capped at 60 - always above
+    the floor, since rem > 0 there.
+
+    `(_remaining_run_min() or 60.0)` read 0.0 as falsy, so a unit reaching its CSV phase past
+    the ceiling got the full 60-minute fence - enough to carry the run into the 300-minute step
+    kill this fence exists to prevent (review R1144, "Outside this branch").
+    """
+    rem = _remaining_run_min()
+    if rem is None:
+        return 60.0
+    if rem <= 0.0:
+        return 1.0
+    return min(60.0, rem + 2.0)
+
+
 def _capped_derive_budget() -> dict:
     """kwargs for derive_and_put: budget capped by the run ceiling's remainder.
 
@@ -2077,8 +2100,9 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 # all. Sized to the run's remaining minutes (+2 grace) capped at
                 # 60 — on trip, the phase is abandoned as a budget note (the
                 # next run re-derives; cursors are already recorded) rather than
-                # the run being executed at the step ceiling.
-                _csv_fence = max(1.0, min(60.0, (_remaining_run_min() or 60.0) + 2.0))
+                # the run being executed at the step ceiling. Past the ceiling
+                # the fence is 1 minute, not 60 (see _csv_fence_min).
+                _csv_fence = _csv_fence_min()
                 try:
                     with _unit_deadline(unit.key + " (csv phase)", _csv_fence):
                         csv_failed, csv_err, csv_deferred, csv_reasons = _derive_changed_csvs(unit, res, blob, store)
