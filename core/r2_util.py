@@ -113,10 +113,46 @@ def client(write: bool = False):
             "Add real values — current ones are absent or placeholders.")
     import boto3
     from botocore.config import Config
-    return boto3.client(
+    s3 = boto3.client(
         "s3", endpoint_url=c["endpoint"], aws_access_key_id=c["key"],
         aws_secret_access_key=c["secret"], region_name="auto",
         config=Config(signature_version="s3v4", retries={"max_attempts": 5, "mode": "standard"}))
+    guard_client(s3)
+    return s3
+
+
+# ---------------------------------------------------------------------------
+# THE R2 WRITE CHOKEPOINT OF THE SELF-HOSTING MOVE (docs/ECON_SELF_HOSTING_PLAN.md, section 3, change 5).
+#
+# After T0 the econ bucket is a frozen copy and nothing may write to it. The check is on the OPERATION,
+# not on a flag each caller must remember: every client this module builds refuses, once the machine-wide
+# CUTOVER flag exists (core/cutover.py), every S3 operation that is not in READ_OPERATIONS - PutObject,
+# CopyObject, DeleteObject(s), every multipart call (s3transfer's upload_file goes through the same
+# events, so a large upload is refused at CreateMultipartUpload), bucket configuration, anything new.
+# It is an ALLOW-list of reads, so an operation added to boto3 later is refused, not missed.
+#
+# The flag is read on EVERY call, not when the client is built: a long-running process that built its
+# client before T0 is stopped at T0 too. It is one os.stat per call.
+# ---------------------------------------------------------------------------
+READ_OPERATIONS = frozenset({"GetObject", "HeadObject", "ListObjects", "ListObjectsV2", "HeadBucket"})
+
+
+def _refuse_writes_after_cutover(model=None, **_kwargs):
+    from core.cutover import refuse_if_cut_over
+    name = getattr(model, "name", None)
+    if name not in READ_OPERATIONS:
+        refuse_if_cut_over(f"R2 {name or 'unknown operation'}")
+
+
+def guard_client(s3):
+    """Install the cutover write guard on an S3 client (idempotent). Registered FIRST on before-call, so
+    nothing that answers the call earlier (a stubber, a cache) can let a write through."""
+    if getattr(s3, "_econ_cutover_guard", False):
+        return s3
+    s3.meta.events.register_first("before-call.s3", _refuse_writes_after_cutover,
+                                  unique_id="econ-cutover-guard")
+    s3._econ_cutover_guard = True
+    return s3
 
 
 # ---------------------------------------------------------------------------
