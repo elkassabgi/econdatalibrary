@@ -48,11 +48,13 @@ import argparse
 import datetime as dt
 import io
 import os
-import sqlite3
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LOCAL = os.path.join(ROOT, "data", "catalog.db")
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
+LOCAL = catalog_path.catalog_path()           # the checkout's before T0, the build after
 WORKER_DIR = os.path.join(ROOT, "api", "worker")
 
 # Both catalogue databases. types.ts:17 binds CATALOG_CLIMATE; util.ts:510 SHARDED_SOURCES and
@@ -98,7 +100,7 @@ def local_counts(sources) -> dict:
         raise RuntimeError(f"local catalogue not found at {LOCAL}")
     gb = os.path.getsize(LOCAL) / 1e9
     age_d = (dt.datetime.now() - dt.datetime.fromtimestamp(os.path.getmtime(LOCAL))).days
-    con = sqlite3.connect(f"file:{LOCAL.replace(os.sep, '/')}?mode=ro", uri=True, timeout=300.0)
+    con = catalog_path.connect_path(LOCAL, write=False, timeout=300.0)
     con.execute("PRAGMA busy_timeout = 300000")   # crawlers hold this file continuously
     try:
         # STALENESS IS THE FAILURE MODE OF THIS WHOLE MODE, so say the age out loud. In CI the
@@ -170,7 +172,7 @@ def main(argv=None) -> int:
                     help="print the repair SQL for each mismatch; writes NOTHING")
     a = ap.parse_args(argv)
 
-    truth_label = "D1 series" if a.remote_truth else "local catalog.db"
+    truth_label = "D1 series" if a.remote_truth else "the local catalogue"
     print(f"source_counts audit -- cache vs {truth_label}")
 
     cache, truth, read = {}, {}, 0

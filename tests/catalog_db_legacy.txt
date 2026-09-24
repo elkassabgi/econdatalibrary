@@ -32,7 +32,6 @@ tools/_cat_tradeservcatbypartner.py
 tools/apply_license_class.py
 tools/apply_series_names.py
 tools/audit_catalogue_impossible_dates.py
-tools/audit_d1_source_counts.py
 tools/audit_r2_vs_catalog.py
 tools/audit_schedule_coverage.py
 tools/audit_serving_coherence.py
