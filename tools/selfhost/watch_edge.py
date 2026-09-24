@@ -5,20 +5,23 @@ check that runs on the machine it watches goes silent exactly when that machine 
 
 Three checks, each a FAILURE when it cannot measure (a blind check is louder than a passing one):
 
-  1. UP AND FRESH - the public edge answers /v1/sources and /v1/last-updates with 200 JSON.
-  2. THE DEPLOYED EDGE IS THE EXPECTED ONE - /v1/edge-status reports FORWARD and EDGE_STATE; they must
-     equal what api/worker/wrangler.toml in this checkout commits. An old copy of the config (a stale
-     worktree, the _OLD folder) redeployed by accident would serve the frozen cloud copy while every
-     other check stays green (plan section 3, change 6; R1165). Before the status route is deployed the
-     check reports "not deployed" and fails only with --require-status.
-  3. NO WRITES TO THE RETIRED CLOUD COPY - from T0 (--no-writes-since DATE) until decommission, any R2
-     write operation on the econ bucket or any D1 row written to the two econ catalogue databases,
-     read from Cloudflare's GraphQL analytics, is a failure. That is the only proof the freeze holds:
-     hooks cannot see writes made inside scripts.
+  1. UP AND FRESH - the public edge answers /v1/sources and /v1/last-updates with 200 JSON, and the
+     newest `last_updated` in /v1/last-updates is under FRESH_HOURS old (an edge serving cached answers
+     while nothing updates would otherwise pass).
+  2. THE DEPLOYED EDGE IS THE EXPECTED ONE - /v1/edge-status must report the same effective state AND the
+     same raw FORWARD / EDGE_STATE values that api/worker/wrangler.toml in this checkout commits. Whenever
+     the committed state is not the default (FORWARD on, or EDGE_STATE users), a missing route (404) or a
+     missing commit id is a FAILURE: the old worker has no route, and "no route" must never read as fine
+     (review R1174 blocker - a stale deploy passed).
+  3. NO WRITES TO THE RETIRED CLOUD COPY - from T0 (--no-writes-since, an ISO UTC moment such as
+     2026-10-05T14:00:00Z) any R2 write on the econ bucket, and any D1 row or write query on the two econ
+     catalogue databases, read from Cloudflare's GraphQL analytics, is a failure. The window is the last
+     WINDOW_DAYS days clipped at T0 (the datasets refuse ranges over 32 days, R1174). The SAME queries
+     carry positive controls - buckets and the users database that are active every day (measured 8 of
+     8 days, NUMBERS) - and no activity for a control means the check is BLIND, never "zero writes".
 
 Exit 1 on any failure, with an email through Resend when RESEND_API_KEY is set; the red workflow run is
-the second delivery path. Needs CF_ANALYTICS_TOKEN (Account Analytics: Read) and CLOUDFLARE_ACCOUNT_ID
-for check 3 only.
+the second delivery path. Needs CF_ANALYTICS_TOKEN (Account Analytics: Read) for check 3 only.
 """
 from __future__ import annotations
 
@@ -26,17 +29,20 @@ import argparse
 import datetime as dt
 import json
 import os
-import re
 import sys
 import tomllib
+import urllib.error
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 WRANGLER = os.path.join(ROOT, "api", "worker", "wrangler.toml")
 EDGE = "https://econdl-api.elkassabgi.workers.dev"
 BUCKET = "econ-data"
+CONTROL_BUCKETS = ("hfdatalibrary-data", "ipdatalibrary")      # active every day, measured 2026-09-24
+WINDOW_DAYS = 30
+FRESH_HOURS = 48
 UA = "econdatalibrary-selfhost-watch/1.0"
-# R2 operations that do not write (class B and listing). Everything else counts as a write.
+# R2 operations that do not write. Everything else (incl. a FAILED write attempt) counts as a write.
 R2_READ_ACTIONS = frozenset({"GetObject", "HeadObject", "HeadBucket", "ListBuckets", "GetBucket",
                              "ListObjects", "ListObjectsV2", "ListMultipartUploads", "ListParts",
                              "UsageSummary", "GetBucketEncryption", "GetBucketLocation",
@@ -44,18 +50,21 @@ R2_READ_ACTIONS = frozenset({"GetObject", "HeadObject", "HeadBucket", "ListBucke
 
 
 def committed_config(path: str = WRANGLER) -> dict:
-    """What this checkout says the deployed edge must be: FORWARD, EDGE_STATE and the econ D1 ids.
-    account_id sits inside [limits] in today's wrangler.toml (misplaced; plan section 2), so both are read."""
+    """What this checkout says the deployed edge must be. account_id sits inside [limits] in today's
+    wrangler.toml (misplaced; plan section 2), so both places are read."""
     with open(path, "rb") as fh:
         cfg = tomllib.load(fh)
     v = cfg.get("vars", {})
     ids = {d["binding"]: d["database_id"] for d in cfg.get("d1_databases", [])}
-    econ = [ids[b] for b in ("CATALOG", "CATALOG_CLIMATE") if b in ids]
-    if len(econ) != 2:
-        raise SystemExit(f"{path}: expected CATALOG and CATALOG_CLIMATE bindings, found {sorted(ids)}")
-    return {"forward": v.get("FORWARD") == "on",
-            "edge_state": "users" if (v.get("FORWARD") == "on" or v.get("EDGE_STATE") == "users") else "econ",
-            "econ_d1_ids": econ, "account_id": cfg.get("account_id") or cfg.get("limits", {}).get("account_id", "")}
+    missing = [b for b in ("CATALOG", "CATALOG_CLIMATE", "USERS") if b not in ids]
+    if missing:
+        raise SystemExit(f"{path}: D1 bindings {missing} not found (have {sorted(ids)})")
+    forward_raw, state_raw = v.get("FORWARD", ""), v.get("EDGE_STATE", "")
+    return {"forward": forward_raw == "on",
+            "edge_state": "users" if (forward_raw == "on" or state_raw == "users") else "econ",
+            "forward_raw": forward_raw, "edge_state_raw": state_raw,
+            "econ_d1_ids": [ids["CATALOG"], ids["CATALOG_CLIMATE"]], "users_d1_id": ids["USERS"],
+            "account_id": cfg.get("account_id") or cfg.get("limits", {}).get("account_id", "")}
 
 
 def get_json(url: str, timeout: int = 60) -> tuple[int, object]:
@@ -69,26 +78,40 @@ def get_json(url: str, timeout: int = 60) -> tuple[int, object]:
         return 0, f"{type(e).__name__}: {e}"
 
 
-def check_up(edge: str) -> list[str]:
+def check_up(edge: str, now: dt.datetime) -> list[str]:
     bad = []
-    for path in ("/v1/sources", "/v1/last-updates"):
-        code, body = get_json(edge + path)
-        if code != 200 or not isinstance(body, (dict, list)):
-            bad.append(f"{path}: HTTP {code} {str(body)[:120] if body else ''}".rstrip())
+    code, _ = get_json(edge + "/v1/sources")
+    if code != 200:
+        bad.append(f"/v1/sources: HTTP {code}")
+    code, body = get_json(edge + "/v1/last-updates")
+    if code != 200 or not isinstance(body, dict) or not isinstance(body.get("datasets"), list):
+        return bad + [f"/v1/last-updates: HTTP {code}, no datasets list"]
+    stamps = [d["last_updated"] for d in body["datasets"] if isinstance(d, dict) and d.get("last_updated")]
+    if not stamps:
+        return bad + ["/v1/last-updates: no dataset has a last_updated time"]
+    newest = max(dt.datetime.fromisoformat(s.replace("Z", "+00:00")) for s in stamps)
+    age = (now - newest).total_seconds() / 3600
+    if age > FRESH_HOURS:
+        bad.append(f"STALE: the newest last_updated is {newest.isoformat()} ({age:.0f} h old > {FRESH_HOURS} h)")
     return bad
 
 
-def check_status(edge: str, want: dict, require: bool) -> list[str]:
+def check_status(edge: str, want: dict) -> list[str]:
+    required = want["forward"] or want["edge_state"] != "econ"
     code, body = get_json(edge + "/v1/edge-status")
     if code == 404:
-        return ["/v1/edge-status is not deployed yet"] if require else []
+        return (["/v1/edge-status is missing, but this checkout commits "
+                 f"forward={want['forward']} edge_state={want['edge_state']}: the deployed edge is older"]
+                if required else [])
     if code != 200 or not isinstance(body, dict):
         return [f"/v1/edge-status: HTTP {code} {str(body)[:120] if body else ''}".rstrip()]
     bad = []
-    for k in ("forward", "edge_state"):
+    for k in ("forward", "edge_state", "forward_raw", "edge_state_raw"):
         if body.get(k) != want[k]:
             bad.append(f"deployed edge has {k}={body.get(k)!r}, this checkout commits {want[k]!r}"
                        f" (deployed commit {body.get('commit')!r})")
+    if required and not body.get("commit"):
+        bad.append("the deployed edge carries no commit id (deploy through tools/selfhost/deploy_edge.sh)")
     return bad
 
 
@@ -116,33 +139,63 @@ def rows_of(acct: dict, field: str, limit: int) -> list[dict]:
     return rows
 
 
-def check_writes(token: str, acct_id: str, since: str, today: str, d1_ids: list[str]) -> list[str]:
-    """Every R2 write on the econ bucket and every D1 row written to the econ databases since `since`."""
-    v = {"acct": acct_id, "start": since, "end": today}
+def window(t0: dt.datetime, now: dt.datetime) -> tuple[str, str]:
+    start = max(t0, now - dt.timedelta(days=WINDOW_DAYS))
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    return start.strftime(fmt), now.strftime(fmt)
+
+
+def check_writes(token: str, acct_id: str, t0: dt.datetime, now: dt.datetime, want: dict) -> list[str]:
+    """Every write to the retired cloud copy since max(T0, now - WINDOW_DAYS). Raises when blind."""
+    start, end = window(t0, now)
+    v = {"acct": acct_id, "start": start, "end": end}
+    buckets = [BUCKET, *CONTROL_BUCKETS]
     r2 = graphql(token, """
-query($acct: String!, $start: Date!, $end: Date!, $bucket: String!) {
+query($acct: String!, $start: Time!, $end: Time!, $buckets: [string!]) {
   viewer { accounts(filter: {accountTag: $acct}) {
-    r2OperationsAdaptiveGroups(limit: 5000, filter: {date_geq: $start, date_leq: $end, bucketName: $bucket}) {
-      dimensions { date actionType bucketName } sum { requests } } } } }""", {**v, "bucket": BUCKET})
-    bad = []
+    r2OperationsAdaptiveGroups(limit: 5000, filter: {datetime_geq: $start, datetime_leq: $end, bucketName_in: $buckets}) {
+      dimensions { date actionType bucketName } sum { requests } } } } }""", {**v, "buckets": buckets})
+    bad, control = [], {b: 0 for b in CONTROL_BUCKETS}
     for r in rows_of(r2, "r2OperationsAdaptiveGroups", 5000):
         d = r["dimensions"]
-        if d.get("bucketName") != BUCKET:          # the filter must have held; if not, the check is void
-            raise RuntimeError(f"R2 analytics returned bucket {d.get('bucketName')!r} under a {BUCKET} filter")
-        if d["actionType"] not in R2_READ_ACTIONS and r["sum"]["requests"] > 0:
+        b = d.get("bucketName")
+        if b not in buckets:                       # the filter must have held; if not, the check is void
+            raise RuntimeError(f"R2 analytics returned bucket {b!r} outside the filter")
+        if b in control:
+            control[b] += r["sum"]["requests"]
+        elif d["actionType"] not in R2_READ_ACTIONS and r["sum"]["requests"] > 0:
             bad.append(f"R2 {BUCKET} {d['date']}: {r['sum']['requests']:,} x {d['actionType']}")
+    if not any(control.values()):
+        raise RuntimeError(f"no R2 activity at all for the control buckets {list(CONTROL_BUCKETS)} "
+                           f"in {start}..{end}: the analytics answer cannot be trusted")
+    ids = [*want["econ_d1_ids"], want["users_d1_id"]]
     d1 = graphql(token, """
-query($acct: String!, $start: Date!, $end: Date!, $ids: [string!]) {
+query($acct: String!, $start: Time!, $end: Time!, $ids: [string!]) {
   viewer { accounts(filter: {accountTag: $acct}) {
-    d1AnalyticsAdaptiveGroups(limit: 5000, filter: {date_geq: $start, date_leq: $end, databaseId_in: $ids}) {
-      dimensions { date databaseId } sum { rowsWritten } } } } }""", {**v, "ids": d1_ids})
+    d1AnalyticsAdaptiveGroups(limit: 5000, filter: {datetime_geq: $start, datetime_leq: $end, databaseId_in: $ids}) {
+      dimensions { date databaseId } sum { rowsWritten writeQueries readQueries } } } } }""", {**v, "ids": ids})
+    users_activity = 0
     for r in rows_of(d1, "d1AnalyticsAdaptiveGroups", 5000):
-        d = r["dimensions"]
-        if d.get("databaseId") not in d1_ids:
+        d, s = r["dimensions"], r["sum"]
+        if d.get("databaseId") not in ids:
             raise RuntimeError(f"D1 analytics returned database {d.get('databaseId')!r} outside the filter")
-        if r["sum"]["rowsWritten"] > 0:
-            bad.append(f"D1 {d['databaseId']} {d['date']}: {r['sum']['rowsWritten']:,} rows written")
+        if d["databaseId"] == want["users_d1_id"]:
+            users_activity += s["readQueries"] + s["writeQueries"]
+        elif s["rowsWritten"] > 0 or s["writeQueries"] > 0:
+            bad.append(f"D1 {d['databaseId']} {d['date']}: {s['rowsWritten']:,} rows written, "
+                       f"{s['writeQueries']:,} write queries")
+    if not users_activity:
+        raise RuntimeError(f"no D1 activity at all for the users database (control) in {start}..{end}: "
+                           "the analytics answer cannot be trusted")
     return bad
+
+
+def parse_t0(s: str) -> dt.datetime:
+    """An ISO UTC moment, e.g. 2026-10-05T14:00:00Z. A bare date is refused: T0 is a moment, and a date
+    either fails on the writes made before the freeze that day or leaves the rest of the day unwatched."""
+    if "T" not in s or not s.endswith("Z"):
+        raise ValueError(f"T0 {s!r} must be an ISO UTC moment like 2026-10-05T14:00:00Z")
+    return dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 
 def send_alert(subject: str, body: str) -> None:
@@ -164,31 +217,30 @@ def send_alert(subject: str, body: str) -> None:
         print(f"alert email failed ({type(e).__name__}) - relying on the red workflow")
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, now: dt.datetime | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--edge", default=os.environ.get("SELFHOST_EDGE") or EDGE)
-    ap.add_argument("--require-status", action="store_true",
-                    default=os.environ.get("SELFHOST_REQUIRE_STATUS", "") == "1")
     ap.add_argument("--no-writes-since", default=os.environ.get("SELFHOST_NO_WRITES_SINCE", ""),
-                    help="YYYY-MM-DD (T0); unset = check 3 is off (before T0 the cloud copy is still written)")
+                    help="T0 as an ISO UTC moment; unset = check 3 is off (before T0 the cloud copy is written)")
     a = ap.parse_args(argv)
+    now = now or dt.datetime.now(dt.timezone.utc)
     want = committed_config()
     failures: list[str] = []
-    failures += [f"UP: {m}" for m in check_up(a.edge)]
-    failures += [f"STATUS: {m}" for m in check_status(a.edge, want, a.require_status)]
+    failures += [f"UP: {m}" for m in check_up(a.edge, now)]
+    failures += [f"STATUS: {m}" for m in check_status(a.edge, want)]
     if a.no_writes_since:
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", a.no_writes_since):
-            failures.append(f"WRITES: --no-writes-since {a.no_writes_since!r} is not YYYY-MM-DD")
+        try:
+            t0 = parse_t0(a.no_writes_since)
+        except ValueError as e:
+            failures.append(f"WRITES: {e}")
         else:
             token = os.environ.get("CF_ANALYTICS_TOKEN", "").strip()
             acct = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip() or want["account_id"]
             if not token or not acct:
-                failures.append("WRITES: BLIND - CF_ANALYTICS_TOKEN or CLOUDFLARE_ACCOUNT_ID is not set")
+                failures.append("WRITES: BLIND - CF_ANALYTICS_TOKEN or the account id is not set")
             else:
-                today = dt.datetime.now(dt.timezone.utc).date().isoformat()
                 try:
-                    failures += [f"WRITES: {m}" for m in
-                                 check_writes(token, acct, a.no_writes_since, today, want["econ_d1_ids"])]
+                    failures += [f"WRITES: {m}" for m in check_writes(token, acct, t0, now, want)]
                 except Exception as e:  # noqa: BLE001 - a check that could not measure is a failure
                     failures.append(f"WRITES: BLIND - {type(e).__name__}: {str(e)[:300]}")
     print(f"edge {a.edge}; committed forward={want['forward']} edge_state={want['edge_state']}; "
