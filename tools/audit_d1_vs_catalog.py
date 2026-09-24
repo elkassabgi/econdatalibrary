@@ -35,7 +35,6 @@ from __future__ import annotations
 import argparse
 import os
 import re
-import sqlite3
 import sys
 import urllib.error
 import urllib.parse
@@ -44,6 +43,7 @@ import urllib.request
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 API = "https://econdl-api.elkassabgi.workers.dev"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126 Safari/537.36")
@@ -106,8 +106,7 @@ def main() -> int:
     a = ap.parse_args()
 
     sup = supported()
-    con = sqlite3.connect(f"file:{os.path.join(ROOT, 'data', 'catalog.db')}?mode=ro",
-                          uri=True, timeout=180.0)
+    con = catalog_path.connect(timeout=180.0)
     cat = dict(con.execute("select source_id, count(*) from series group by 1").fetchall())
     served = {s: n for s, n in cat.items() if s in sup and n}
     d1 = d1_counts()

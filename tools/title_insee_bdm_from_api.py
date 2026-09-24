@@ -22,13 +22,14 @@ from __future__ import annotations
 import json
 import os
 import re
-import sqlite3
 import sys
 import time
 
 import requests
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 URL = "https://api.insee.fr/series/BDM/V1/data/SERIES_BDM/%s"
 def _series_elements(xml: str):
     """Yield each complete <Series ...> start tag, ignoring > inside quoted attributes."""
@@ -58,8 +59,7 @@ BATCH = 40
 
 def main() -> int:
     write = "--write" in sys.argv
-    con = sqlite3.connect("file:%s?mode=ro" % os.path.join(ROOT, "data", "catalog.db").replace("\\", "/"),
-                          uri=True, timeout=180)
+    con = catalog_path.connect(timeout=180)
     try:
         rows = con.execute("SELECT series_id, title FROM series WHERE source_id='insee_bdm'").fetchall()
     finally:

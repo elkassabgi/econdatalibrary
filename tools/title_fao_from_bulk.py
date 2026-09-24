@@ -22,13 +22,14 @@ import csv
 import io
 import json
 import os
-import sqlite3
 import sys
 import zipfile
 
 import requests
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 CACHE = os.environ.get("FAO_BULK_CACHE") or r"D:\temp\claude\fao"
 MANIFEST = "https://bulks-faostat.fao.org/production/datasets_E.json"
 # fao_et added 2026-08-24: its 13 untitled rows are element 6078 (Standard Deviation)
@@ -81,8 +82,7 @@ def _maps(code: str):
 def main() -> int:
     write = "--write" in sys.argv
     want = [a for a in sys.argv[1:] if not a.startswith("--")] or sorted(SOURCES)
-    con = sqlite3.connect("file:%s?mode=ro" % os.path.join(ROOT, "data", "catalog.db").replace("\\", "/"),
-                          uri=True, timeout=300)
+    con = catalog_path.connect(timeout=300)
     grand = 0
     for sid_src in want:
         code = SOURCES.get(sid_src)

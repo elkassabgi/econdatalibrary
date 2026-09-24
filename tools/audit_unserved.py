@@ -35,13 +35,13 @@ import glob
 import io
 import os
 import re
-import sqlite3
 import sys
 
 import pyarrow.parquet as pq
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB = os.path.join(ROOT, "data", "catalog.db")
+sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 DENY = os.path.join(ROOT, "api", "worker", "src", "denylist.ts")
 
 
@@ -85,7 +85,7 @@ def audited(low, sid, name, homepage):
 
 
 def load_context():
-    con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
+    con = catalog_path.connect()
     catalogued = {r[0] for r in con.execute("SELECT DISTINCT source_id FROM series")}
     srcrow = {r[0]: (r[1], r[2], r[3]) for r in con.execute(
         "SELECT source_id, license_id, name, homepage FROM source")}

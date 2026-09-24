@@ -27,12 +27,12 @@ import csv
 import io
 import os
 import random
-import sqlite3
 import sys
 import urllib.parse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 sys.path.insert(0, os.path.join(ROOT, "clients", "python"))
 
 from tools.catalog_eia_tables import DEPTH, SKIP, STORE  # noqa: E402  (one source of truth)
@@ -41,7 +41,7 @@ SRC = "eia"
 
 
 def _catalogued() -> set:
-    con = sqlite3.connect(f"file:{os.path.join(ROOT, 'data', 'catalog.db')}?mode=ro", uri=True)
+    con = catalog_path.connect()
     con.execute("PRAGMA busy_timeout = 180000")
     return {r[0] for r in con.execute(
         "select series_id from series where source_id=?", (SRC,))}

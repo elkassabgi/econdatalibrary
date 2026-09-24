@@ -18,11 +18,11 @@ from __future__ import annotations
 
 import argparse
 import os
-import sqlite3
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 
 
 def r2_store_files(source: str) -> set[str]:
@@ -52,10 +52,10 @@ def local_store_files(source: str) -> set[str]:
 
 
 def catalogue_ids(source: str) -> set[str]:
-    db = os.path.join(ROOT, "data", "catalog.db")
-    if not os.path.exists(db):
+    try:
+        con = catalog_path.connect()
+    except FileNotFoundError:                 # no catalogue here: as before, no ids
         return set()
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     try:
         return {r[0].split(":", 1)[1] for r in con.execute(
             "SELECT series_id FROM series WHERE source_id=?", (source,))}

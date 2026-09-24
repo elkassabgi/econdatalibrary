@@ -19,13 +19,14 @@ from __future__ import annotations
 import json
 import os
 import re
-import sqlite3
 import sys
 import time
 
 import requests
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 CODED = re.compile(r"^[0-9A-Z_.\-]+$")
 OUTLOOK = {"AEO": "aeo", "IEO": "ieo"}
 
@@ -40,8 +41,7 @@ def _key() -> str:
 def main() -> int:
     write = "--write" in sys.argv
     key = _key()
-    con = sqlite3.connect("file:%s?mode=ro" % os.path.join(ROOT, "data", "catalog.db").replace("\\", "/"),
-                          uri=True, timeout=180)
+    con = catalog_path.connect(timeout=180)
     try:
         rows = con.execute("SELECT series_id, title FROM series WHERE source_id='eia'").fetchall()
     finally:
