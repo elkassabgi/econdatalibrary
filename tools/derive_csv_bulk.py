@@ -305,6 +305,14 @@ def main() -> int:
     # id neither answer is a campaign the tool can actually run (the served files carry no
     # series_key column, so the uniform-long filter writes zero objects; the 13F store has no
     # catalogued series at all).
+    # Since 2026-09-24 the 13F entry is `sec_edgar_13f`, so no registry entry is named `sec_edgar` and the
+    # check below would find nothing and PROCEED on clean_grouped/sec_edgar. That store is the catalogue's
+    # XBRL product, whose CSVs tools/refresh_sec_edgar.py derives; its files carry no series_key. Refuse.
+    if a.source == "sec_edgar":
+        print("REFUSING: --source sec_edgar is the XBRL company-facts product (registry entry "
+              "sec_edgar_xbrl). Its CSVs are written by tools/refresh_sec_edgar.py, not by this tool "
+              "(R275/R1050); the 13F product is --source sec_edgar_13f.")
+        return 2
     try:
         import yaml                                                   # noqa: PLC0415
         from updater import config as _cfg                            # noqa: PLC0415

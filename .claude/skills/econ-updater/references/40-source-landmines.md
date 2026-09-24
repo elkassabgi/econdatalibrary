@@ -92,6 +92,7 @@
 |---|---|---|
 | sec_edgar | One id, two products: serving = XBRL company facts (17,276 series, refreshed by `sec-edgar-daily.yml` OUTSIDE the registry, with its own end-to-end parity gate); registry's `sec_edgar` = 13F/insider bulk trees, not catalogued. Serving reads `clean_grouped/`, not `clean_full/`. | (R275, R276, R289) |
 | sec_edgar | Year-6 timestamp crash only on CI's pandas 3.x (`datetime64[us]` kept); invisible on dev's 2.3.3 — repro must build the us-array directly. | (R297, R312) |
+| sec_edgar_13f | 2026-09-24: the 13F/insider registry entry is `sec_edgar_13f` now (fetcher `fetchers/sec_edgar_13f.py`, out_dir `edgar_13f` unchanged). Under the shared id its source_state/unit_state rows were pushed to D1 as the SERVED XBRL product's freshness. Its state.db rows move with `tools/rekey_state_source.py --from sec_edgar --to sec_edgar_13f` (pull, move, push, in the same CI gap as the merge). The rows above that say "registry `sec_edgar`" describe the time before. Public id `sec_edgar` (XBRL) is unchanged. | (R275, R1193) |
 | pwt / penn_world_table | `pwt` is SUPERSEDED by `penn_world_table` (PWT 11.0, current). Real defect: catalogue serves 7,159 rows for old 10.0 vs 60 for 11.0. | (R317) |
 | ksh / zillow | `live: False` — retired; RED-UNRUN rows for them are display noise, not gate failures. D1 absence checks on them need a present control. | (R276, R338) |
 | cbs_nl, gus_dbw | Registered with `run_location: local` — never expect them from the cloud pass. | (R276) |

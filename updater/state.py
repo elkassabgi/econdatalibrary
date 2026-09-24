@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS source_state(
 -- It is whatever the fetcher passed finalize() as `total_rows`, and the parameter is named
 -- that for a reason: MOST FETCHERS PASS THE STORE'S TOTAL ROW COUNT, not rows merged this run.
 -- Measured 2026-09-03: of ~123 finalize() call sites, THREE pass a genuine added count
--- (gleif.py:187, sec_edgar.py:634, and one tally.added); the rest pass `before`, which is
+-- (gleif.py:187, sec_edgar_13f.py:634, and one tally.added); the rest pass `before`, which is
 -- `blob.row_count(path)` - the whole store.
 --
 -- This comment used to say "Most pass ROWS MERGED THIS RUN", which is the opposite, and that
