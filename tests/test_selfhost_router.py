@@ -426,7 +426,7 @@ def test_the_pool_never_hands_out_an_aged_connection_and_ages_out_every_target()
     p.put("127.0.0.1", 1, a)
     p.put("127.0.0.1", 2, b)
     p.IDLE_S = 0.0
-    time.sleep(0.01)
+    time.sleep(0.1)                   # well past time.monotonic's ~15.6 ms step on Windows (0.01 flaked, R1235)
     conn, reused = p.get("127.0.0.1", 1)
     assert conn is not a and reused is False
     assert p.idle_count("127.0.0.1", 2) == 0, "the other target's aged connection went too (R1229: after a flip)"
@@ -584,6 +584,66 @@ def test_a_1xx_answer_never_leaves_its_connection_in_the_pool(tmp_path):
         assert srv.pool.idle_count("127.0.0.1", origin.server_address[1]) == 0
         body = _get(srv.server_address[1], "/b")[2]
         assert b"SECRET-FOR /a" not in body, "client B got client A's response"
+    finally:
+        srv.shutdown()
+        origin.shutdown()
+        origin.server_close()
+
+
+def _scripted_origin(answers):
+    """A raw origin that gives the Nth request it reads answers[N] (bytes to send, or None = close the connection
+    without a byte), counting connections and requests."""
+    import socketserver
+    seen = {"connections": 0, "requests": 0}
+
+    class Raw(socketserver.StreamRequestHandler):
+        def handle(self):
+            seen["connections"] += 1
+            while True:
+                if not self.rfile.readline():
+                    return
+                while self.rfile.readline() not in (b"\r\n", b"\n", b""):
+                    pass
+                n = seen["requests"]
+                seen["requests"] += 1
+                answer = answers[min(n, len(answers) - 1)]
+                if answer is None:
+                    return                                  # closed before any byte of an answer
+                self.wfile.write(answer)
+                self.wfile.flush()
+
+    origin = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Raw)
+    threading.Thread(target=origin.serve_forever, daemon=True).start()
+    return origin, seen
+
+
+OK_ANSWER = b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok"
+
+
+def test_a_failure_on_a_fresh_connection_is_not_retried(tmp_path):
+    """R1235 mutant R6: only a REUSED connection that the origin had closed is retried - a fresh connection that
+    fails is a real failure, answered 502 after ONE attempt (not sent twice to an origin that is failing)."""
+    origin, seen = _scripted_origin([None])
+    srv = _router_for(tmp_path, origin.server_address[1])
+    try:
+        assert _get(srv.server_address[1], "/a")[0] == 502
+        assert seen == {"connections": 1, "requests": 1}
+    finally:
+        srv.shutdown()
+        origin.shutdown()
+        origin.server_close()
+
+
+def test_a_malformed_answer_on_a_reused_connection_is_not_retried(tmp_path):
+    """R1235 mutant R7: a retry is for a connection closed under us, not for any error - an origin that answered
+    garbage has seen the request, and must not get it twice."""
+    origin, seen = _scripted_origin([OK_ANSWER, b"NOT HTTP AT ALL\r\n\r\n"])
+    srv = _router_for(tmp_path, origin.server_address[1])
+    try:
+        assert _get(srv.server_address[1], "/a")[0] == 200
+        assert srv.pool.idle_count("127.0.0.1", origin.server_address[1]) == 1, "precondition: pooled"
+        assert _get(srv.server_address[1], "/b")[0] == 502
+        assert seen["requests"] == 2, f"the malformed answer's request was sent again: {seen}"
     finally:
         srv.shutdown()
         origin.shutdown()

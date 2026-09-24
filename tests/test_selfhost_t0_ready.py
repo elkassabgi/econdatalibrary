@@ -267,7 +267,9 @@ def test_thirteen_f_never_creates_a_missing_state_db(tmp_path, fake_move):
 WF_STEP = ("      - name: Check the workstation watchdog's heartbeat\n"
            "        if: ${{ always() && vars.GUARD_HEARTBEAT_URL != '' }}\n"
            "        run: python -B tools/guard_heartbeat.py --check --from-url \"${{ vars.GUARD_HEARTBEAT_URL }}\"\n")
-WF_WITH = "name: w\non: push\njobs:\n  watch:\n    runs-on: x\n    steps:\n      - run: echo hi\n" + WF_STEP
+# THE COMMITTED WORKFLOW is the positive control (R1235): the allowlist must accept the file this branch ships
+WF_WITH = open(os.path.join(ROOT, ".github", "workflows", "selfhost-watch.yml"), encoding="utf-8").read()
+assert WF_STEP in WF_WITH, "the committed selfhost-watch.yml changed its heartbeat step - update WF_STEP and the check"
 
 
 def _gh_hb(var, watch_state, main_wf=WF_WITH, var_rc=None, fetch_rc=0, main_only=True):
@@ -313,13 +315,47 @@ def test_the_heartbeat_needs_a_reader_before_t0():
     # R1230: a failed fetch is "cannot tell", and the step must really run the check
     ok, detail = T.heartbeat_reader(_gh_hb(url, "active", fetch_rc=128), check=lambda u, a: 0)
     assert not ok and "fetch origin main failed" in detail
-    base = WF_WITH.replace(WF_STEP, "")
-    for bad in (base + "".join("#" + ln + "\n" for ln in WF_STEP.splitlines()),          # commented out
-                WF_WITH.replace("if: ${{ always() && vars.GUARD_HEARTBEAT_URL != '' }}", "if: false"),
-                WF_WITH.replace("run: python -B tools/", "run: echo python -B tools/"),
-                WF_WITH.replace("  watch:\n    runs-on: x\n", "  watch:\n    if: false\n    runs-on: x\n")):
-        ok, detail = T.heartbeat_reader(_gh_hb(url, "active", main_wf=bad), check=lambda u, a: 0)
-        assert not ok and "does not run guard_heartbeat.py" in detail, bad
+
+IF_ = "if: ${{ always() && vars.GUARD_HEARTBEAT_URL != '' }}"
+RUN_ = "run: python -B tools/guard_heartbeat.py --check --from-url \"${{ vars.GUARD_HEARTBEAT_URL }}\""
+JOB_ = "  watch:\n    runs-on: ubuntu-latest\n"
+BAD_WORKFLOWS = {
+    # R1230
+    "commented out": WF_WITH.replace(WF_STEP, "".join("#" + ln + "\n" for ln in WF_STEP.splitlines())),
+    "step if false": WF_WITH.replace(IF_, "if: false"),
+    "an echo": WF_WITH.replace("run: python -B tools/", "run: echo python -B tools/"),
+    "job if false": WF_WITH.replace(JOB_, "  watch:\n    if: false\n    runs-on: ubuntu-latest\n"),
+    # R1235 - each passed the deny-list
+    "no schedule": WF_WITH.replace("  schedule:\n    - cron: '41 6 * * *'", "  push:\n    branches: [main]"),
+    "continue-on-error": WF_WITH.replace(IF_, IF_ + "\n        continue-on-error: true"),
+    "|| true": WF_WITH.replace(RUN_, RUN_ + " || true"),
+    "if without always()": WF_WITH.replace(IF_, "if: ${{ vars.GUARD_HEARTBEAT_URL != '' }}"),
+    "if only when unset": WF_WITH.replace(IF_, "if: ${{ always() && vars.GUARD_HEARTBEAT_URL == '' }}"),
+    "job ${{false}}": WF_WITH.replace(JOB_, "  watch:\n    if: ${{false}}\n    runs-on: ubuntu-latest\n"),
+    "job if never fires": WF_WITH.replace(JOB_, "  watch:\n    if: github.event_name == 'release'\n"
+                                                "    runs-on: ubuntu-latest\n"),
+    "needs a disabled job": WF_WITH.replace("jobs:\n", "jobs:\n  off:\n    if: false\n    runs-on: ubuntu-latest\n"
+                                                        "    steps:\n      - run: 'true'\n", 1)
+                                   .replace(JOB_, "  watch:\n    needs: off\n    runs-on: ubuntu-latest\n"),
+    "only in a comment of a multi-line run": WF_WITH.replace(
+        RUN_, "run: |\n          # python -B tools/guard_heartbeat.py --check --from-url \"${{ vars.GUARD_HEARTBEAT_URL }}\"\n"
+              "          echo skipped"),
+    "a shell that swallows it": WF_WITH.replace(IF_, IF_ + "\n        shell: bash {0} || true"),
+    "defaults": WF_WITH.replace("jobs:\n", "defaults:\n  run:\n    shell: bash {0}\njobs:\n", 1),
+}
+
+
+@pytest.mark.parametrize("name", sorted(BAD_WORKFLOWS))
+def test_a_workflow_that_does_not_read_the_beat_is_refused(name):
+    bad = BAD_WORKFLOWS[name]
+    assert bad != WF_WITH, f"precondition: the {name!r} variant changed the workflow"
+    url = "https://edge.example/v1/guard-heartbeat"
+    ok, detail = T.heartbeat_reader(_gh_hb(url, "active", main_wf=bad), check=lambda u, a: 0)
+    assert not ok and "does not run guard_heartbeat.py" in detail, name
+
+
+def test_the_committed_workflow_is_accepted():
+    assert T._runs_the_heartbeat_check(WF_WITH)
 
 
 def test_the_stats_object_must_be_in_the_served_store():

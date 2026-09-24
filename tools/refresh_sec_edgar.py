@@ -1233,7 +1233,11 @@ def _refresh_local(a, todo, t2c) -> int:
             raise cutover.CutoverRefused(f"refused: {why}")
     from core import catalog_path                                    # noqa: PLC0415
     stage = tempfile.mkdtemp(prefix="sec_edgar_stage_", dir=os.path.dirname(os.path.dirname(GROUPED)))
-    staged, failed, errors, n_with_baseline = [], 0, [], 0
+    # `failed` = SEC fetches that failed (transient; up to 5% still makes an ok day, as before T0); `refused` =
+    # companies the STORE refused (unreadable file, catalogued without a file, a merge that would shrink) -
+    # never transient, so any one of them makes the day partial (R1235: they were counted as fetch failures,
+    # and a company refused every day was stamped ok every day)
+    staged, failed, refused, errors, n_with_baseline = [], 0, 0, [], 0
     cat = catalog_path.connect()                                     # read-only: spans, and "is it catalogued"
     try:
         for i, cik in enumerate(todo, 1):
@@ -1258,11 +1262,11 @@ def _refresh_local(a, todo, t2c) -> int:
                 digest = _file_digest(path)          # FIRST: a change after this is caught under the lock
                 prior = prior_facts(None, path)      # the local store IS the store
             except Exception as e:                                   # noqa: BLE001
-                failed += 1                          # an unreadable file is REFUSED, never read as "new"
+                refused += 1                         # an unreadable file is REFUSED, never read as "new"
                 errors.append(f"{ident}:read:{type(e).__name__}")
                 continue
             if prior is None and row is not None:
-                failed += 1                          # catalogued but no store file: REFUSED, never "new" (R386)
+                refused += 1                         # catalogued but no store file: REFUSED, never "new" (R386)
                 errors.append(f"{ident}:catalogued-but-no-store-file")
                 continue
             before = len(prior["metric"]) if prior else 0
@@ -1271,7 +1275,7 @@ def _refresh_local(a, todo, t2c) -> int:
             try:
                 metric, odate, vals, vint = merge_facts(prior, (metric, odate, vals, vint))
             except AssertionError as e:
-                failed += 1
+                refused += 1
                 errors.append(f"{ident}:merge:{e}")
                 continue
             lo, hi = coverage_span(odate, vint)
@@ -1292,23 +1296,25 @@ def _refresh_local(a, todo, t2c) -> int:
                            "after": len(metric), "span": (ident, lo, hi, title, cik),
                            "csv": csv_bytes(metric, odate, vals) if a.apply else None})
             if i % 50 == 0:
-                print(f"  {i}/{len(todo)} probed, {len(staged)} changed, {failed} failed", flush=True)
+                print(f"  {i}/{len(todo)} probed, {len(staged)} changed, {failed} failed, {refused} refused",
+                      flush=True)
 
         print(f"\ncompanies probed : {len(todo):,}\ncompanies CHANGED: {len(staged):,}  "
               f"({n_with_baseline:,} had a store baseline)" + ("" if a.apply else "  - dry run, nothing written"))
-        print(f"fetch failures   : {failed:,}{('  e.g. ' + str(errors[:4])) if errors else ''}")
+        print(f"fetch failures   : {failed:,}\nstore refusals   : {refused:,}"
+              f"{('  e.g. ' + str(errors[:4])) if errors else ''}")
         if not a.apply:
             return 0
-        ok_day = failed == 0 or failed * 20 <= len(todo)             # >=95% fetched, as stamp_freshness_d1
         when = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
         store = blob.SelfhostBlob()
         with _waiting_writer_lock():
-            written = []
+            written, skipped, missing = [], 0, []
             for s in staged:
                 if _file_digest(s["path"]) != s["digest"]:
                     # the stored FILE changed since this company was merged (a row count can stay the same):
                     # never write a union of a stale read
                     print(f"  SKIPPED {s['ident']}: the store file changed after the merge read it")
+                    skipped += 1
                     continue
                 # THE CSV FIRST, then the parquet. The other order lost the CSV for good on a crash between the
                 # two: the next run found the new facts already in the store and, when the span had not moved,
@@ -1316,7 +1322,8 @@ def _refresh_local(a, todo, t2c) -> int:
                 # merges again and writes both.
                 key = "series/" + urllib.parse.quote(f"sec_edgar:{s['ident']}", safe="") + ".csv"
                 store.put_atomic(key, s["csv"], plain=True)          # stored plain, as this tool always did (R1206)
-                os.replace(s["staged"], s["path"])
+                from core.atomic import atomic_replace               # noqa: PLC0415
+                atomic_replace(s["staged"], s["path"])                # retries a reader's brief hold (WinError 5)
                 written.append(s)
             spans = [s["span"] for s in written]
             if spans:
@@ -1325,7 +1332,10 @@ def _refresh_local(a, todo, t2c) -> int:
                 if missing:
                     print(f"FAIL: parquet + CSV written but the catalogue does not carry {len(missing)} span(s) "
                           f"(e.g. {missing[:3]}) - after T0 there is no D1 to fall back on", flush=True)
-                    return 1
+            # OK only when the day is whole: <=5% transient fetch failures (as before T0), and nothing refused,
+            # skipped or missing from the catalogue. Anything else is partial, which NEVER sets last_success (the
+            # econ rule; R1235 found skipped and refused days stamped ok).
+            ok_day = failed * 20 <= len(todo) and not refused and not skipped and not missing
             from updater.state import StateStore                     # noqa: PLC0415
             st = StateStore()
             try:
@@ -1336,7 +1346,7 @@ def _refresh_local(a, todo, t2c) -> int:
                 st.close()
         print(f"written: {len(written):,} company(ies) (parquet + CSV + catalogue); freshness stamped "
               f"{'ok' if ok_day else 'partial'} at {when}")
-        return 0 if len(written) == len(staged) else 1
+        return 0 if ok_day and len(written) == len(staged) else 1
     finally:
         cat.close()
         shutil.rmtree(stage, ignore_errors=True)

@@ -235,27 +235,40 @@ def d1_only_sources() -> tuple[bool, str]:
         "every D1-stamped source has a local writer that imports"
 
 
+# THE ONE SHAPE ACCEPTED (an allowlist, R1235): listing bad shapes let nine more through - no schedule,
+# continue-on-error, `|| true`, an `if` without always(), an `if` true only when the URL is unset, `${{false}}`
+# without spaces, a job `if` on an event that never fires, `needs` on a disabled job, the command only in a
+# comment of a multi-line run. Any change to the step or its job fails closed until this is updated with it.
+HEARTBEAT_STEP_IF = "${{ always() && vars.GUARD_HEARTBEAT_URL != '' }}"
+HEARTBEAT_STEP_RUN = 'python -B tools/guard_heartbeat.py --check --from-url "${{ vars.GUARD_HEARTBEAT_URL }}"'
+
+
 def _runs_the_heartbeat_check(workflow_text: str) -> bool:
-    """A step of the workflow RUNS the check (R1230: a text search passed a commented-out step, `if: false` and
-    an `echo` of the command): parsed as YAML, a step whose `run` starts with python and calls
-    guard_heartbeat.py --check --from-url, whose `if` - when present - is not false and names
-    GUARD_HEARTBEAT_URL, in a job that is not switched off."""
+    """The workflow RUNS the check on its schedule: parsed as YAML, it has a cron schedule and no `defaults`;
+    one job without `if`, `needs` or `continue-on-error` has a step whose `if` is exactly HEARTBEAT_STEP_IF, whose
+    `run` is exactly HEARTBEAT_STEP_RUN (one line), and which sets no `continue-on-error` or `shell`
+    (R1230 found a text search passing a commented-out step; R1235 nine shapes a deny-list passed)."""
     import yaml
     try:
         doc = yaml.safe_load(workflow_text) or {}
     except yaml.YAMLError:
         return False
+    if not isinstance(doc, dict) or "defaults" in doc:
+        return False
+    on = doc.get("on", doc.get(True))                   # YAML 1.1 reads a bare `on:` key as True
+    schedule = on.get("schedule") if isinstance(on, dict) else None
+    if not (isinstance(schedule, list) and any(isinstance(s, dict) and s.get("cron") for s in schedule)):
+        return False
+    squash = lambda v: " ".join(str(v).split())         # noqa: E731 - spacing inside the expression is free
     for job in (doc.get("jobs") or {}).values():
-        if not isinstance(job, dict) or str(job.get("if", "true")).strip().lower() in ("false", "${{ false }}"):
+        if not isinstance(job, dict) or any(k in job for k in ("if", "needs", "continue-on-error")):
             continue
         for step in job.get("steps") or []:
-            if not isinstance(step, dict):
+            if not isinstance(step, dict) or any(k in step for k in ("continue-on-error", "shell")):
                 continue
-            cmd = str(step.get("run", "")).strip()
-            cond = step.get("if")
-            if not (cmd.startswith("python") and "guard_heartbeat.py --check --from-url" in cmd):
-                continue
-            if cond is None or ("GUARD_HEARTBEAT_URL" in str(cond) and "false" not in str(cond).lower()):
+            run = step.get("run")
+            if isinstance(run, str) and run.strip() == HEARTBEAT_STEP_RUN and "\n" not in run.strip() \
+                    and squash(step.get("if", "")) == squash(HEARTBEAT_STEP_IF):
                 return True
     return False
 

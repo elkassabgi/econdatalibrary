@@ -136,12 +136,64 @@ def test_a_catalogue_that_fell_behind_is_caught_up(world, monkeypatch):
     assert _span(build) == ("2019-12-31", "2020-12-31")
 
 
+def _freshness(tmp):
+    from updater.state import StateStore
+    st = StateStore(path=str(tmp / "state" / "state.db"))
+    try:
+        return st.get_source("sec_edgar")
+    finally:
+        st.close()
+
+
 def test_catalogued_but_no_store_file_is_refused_not_new(world, monkeypatch, capsys):
+    """Refused - and the day is PARTIAL, every day it happens (R1235: counted as a fetch failure, it was
+    stamped ok with last_success, rc 0, on day 1 and day 2)."""
     tmp, live, grouped, build, _p = world
     (grouped / "XOM.parquet").unlink()
-    assert _run(monkeypatch, "--apply") == 0
-    assert not (grouped / "XOM.parquet").exists(), "never written as a NEW company over a catalogued one"
-    assert "catalogued-but-no-store-file" in capsys.readouterr().out
+    for _day in (1, 2):
+        assert _run(monkeypatch, "--apply") == 1
+        assert not (grouped / "XOM.parquet").exists(), "never written as a NEW company over a catalogued one"
+        out = capsys.readouterr().out
+        assert "catalogued-but-no-store-file" in out and "store refusals   : 1" in out
+        row = _freshness(tmp)
+        assert row["status"] == "partial" and row["last_success_utc"] is None and row["last_attempt_utc"]
+
+
+def test_a_failed_fetch_on_a_small_run_is_partial(world, monkeypatch):
+    """The 5% tolerance is for transient SEC failures over a big day; 1 of 1 failed is not a success."""
+    tmp, *_ = world
+    monkeypatch.setattr(R, "_get", lambda *a, **k: (_ for _ in ()).throw(OSError("SEC down")))
+    assert _run(monkeypatch, "--apply") == 1
+    row = _freshness(tmp)
+    assert row["status"] == "partial" and row["last_success_utc"] is None
+
+
+def test_the_13f_blocker_opens_state_db_read_only(tmp_path, monkeypatch):
+    """R1235 mutant S13 (mode=rwc) survived: the blocker's open must not be able to write, and must not create
+    a missing state.db."""
+    import types
+    seen = {}
+
+    def pending(con):
+        try:
+            con.execute("CREATE TABLE probe (x)")
+            seen["wrote"] = True
+        except sqlite3.OperationalError as e:
+            seen["wrote"] = False
+            seen["why"] = str(e)
+        return 0
+    monkeypatch.setitem(sys.modules, "updater.state_migrations", types.SimpleNamespace(pending=pending))
+    import updater
+    monkeypatch.setattr(updater, "state_migrations", sys.modules["updater.state_migrations"], raising=False)
+    db = tmp_path / "state.db"
+    sqlite3.connect(db).close()
+    monkeypatch.setattr(updater_config, "STATE_DB", str(db))
+    assert R._thirteen_f_blocker() is None
+    assert seen == {"wrote": False, "why": "attempt to write a readonly database"}
+    monkeypatch.setattr(updater_config, "STATE_DB", str(tmp_path / "absent.db"))
+    with pytest.raises(sqlite3.OperationalError):
+        R._thirteen_f_blocker()
+    assert not (tmp_path / "absent.db").exists(), "a missing state.db is not created"
 
 
 @pytest.mark.parametrize("flag", ["--d1", "--audit", "--respan=XOM"])
@@ -237,6 +289,8 @@ def test_a_store_file_changed_after_the_merge_is_skipped(world, monkeypatch, cap
         "the other writer's file was not overwritten with a merge of the old one"
     assert "SKIPPED XOM" in capsys.readouterr().out
     assert _served_csv() is None and _span(build) == ("2019-12-31", "2020-12-31")
+    row = _freshness(tmp)
+    assert row["status"] == "partial" and row["last_success_utc"] is None, "a skipped company is not an ok day"
 
 
 def test_written_rows_carry_last_updated_and_others_do_not(world, monkeypatch):
@@ -269,3 +323,22 @@ def test_a_catalogue_write_without_last_updated_is_a_failure(world, monkeypatch,
     monkeypatch.setattr(R, "update_catalog", lambda spans, d1, last_updated=None: real(spans, d1))
     assert _run(monkeypatch, "--apply") == 1
     assert "FAIL: parquet + CSV written but the catalogue does not carry" in capsys.readouterr().out
+    row = _freshness(world[0])
+    assert row["status"] == "partial" and row["last_success_utc"] is None and row["last_attempt_utc"]
+
+
+def test_a_change_just_after_the_merge_read_is_caught(world, monkeypatch, capsys):
+    """The digest is taken BEFORE the merge reads the facts (R1235 mutant S14 took it after, and survived): a
+    write that lands between the read and a later digest would be hashed as if the merge had seen it."""
+    tmp, live, grouped, build, _p = world
+    real = R.prior_facts
+
+    def read_then_another_writer(client, path, *a, **k):
+        out = real(client, path, *a, **k)
+        t = pq.read_table(path)
+        pq.write_table(pa.concat_tables([t, t]), path)          # lands right after this read
+        return out
+    monkeypatch.setattr(R, "prior_facts", read_then_another_writer)
+    assert _run(monkeypatch, "--apply") == 1
+    assert pq.read_table(grouped / "XOM.parquet").num_rows == 4, "the other writer's file was kept"
+    assert "SKIPPED XOM" in capsys.readouterr().out

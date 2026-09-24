@@ -90,6 +90,7 @@ import sys, time
 sys.path.insert(0, sys.argv[1])
 from core import catalog_path as cp, cutover
 cp.LOCK_PATH, cutover.FLAG_PATH, cp.BUILD_PATH, cp.CHECKOUT_PATH = sys.argv[2:6]   # never the machine's (R1230)
+print("|".join((cp.LOCK_PATH, cutover.FLAG_PATH, cp.BUILD_PATH, cp.CHECKOUT_PATH)), flush=True)
 with cp.writer_lock():
     print("held", flush=True)
     time.sleep(30)
@@ -98,9 +99,12 @@ with cp.writer_lock():
 
 def test_a_second_process_is_refused_not_queued(paths):
     lock = str(paths / "live" / "state" / "writer.lock")
-    p = subprocess.Popen([sys.executable, "-B", "-c", HOLDER, ROOT, lock, cutover.FLAG_PATH, cp.BUILD_PATH,
-                          cp.CHECKOUT_PATH], stdout=subprocess.PIPE, text=True)
+    mine = (lock, cutover.FLAG_PATH, cp.BUILD_PATH, cp.CHECKOUT_PATH)
+    p = subprocess.Popen([sys.executable, "-B", "-c", HOLDER, ROOT, *mine], stdout=subprocess.PIPE, text=True)
     try:
+        # the child runs on THIS test's paths, every one of them (R1235 mutant C6: a child given the lock alone
+        # passed - and would have read the machine's flag and build)
+        assert p.stdout.readline().strip() == "|".join(mine)
         assert p.stdout.readline().strip() == "held"
         t0 = time.monotonic()
         with pytest.raises(cutover.CutoverRefused, match="another process"):
