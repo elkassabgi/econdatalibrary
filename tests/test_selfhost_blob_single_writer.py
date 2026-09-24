@@ -90,6 +90,28 @@ def test_after_t0_a_root_elsewhere_is_refused(world, monkeypatch, override):
     assert not sb.exists(KEY) and catalog_path._held is None
 
 
+def test_import_from_r2_reports_a_refused_key_and_goes_on(world, monkeypatch, capsys):
+    """R1225: one refused key ended the whole batch, with no FAIL line and no final count."""
+    import import_from_r2
+    calls = []
+
+    def copy_one(s3, store, key, overwrite=False, restore_missing=False):
+        calls.append(key)
+        if key == "series/gone%3A1.csv":
+            raise cutover.CutoverRefused("refused: under a licence removal")
+        return True, f"{key} ok"
+    monkeypatch.setattr(import_from_r2, "copy_one", copy_one)
+    from core import r2_util
+    monkeypatch.setattr(r2_util, "cloud_client", lambda *a, **k: object())
+    tmp_path, _sb = world
+    monkeypatch.setattr(sys, "argv", ["import_from_r2.py", "--root", str(tmp_path / "blobs"),
+                                      "--key", "series/gone%3A1.csv", "--key", "series/kept%3A1.csv"])
+    assert import_from_r2.main() == 1
+    out = capsys.readouterr().out
+    assert calls == ["series/gone%3A1.csv", "series/kept%3A1.csv"], "the batch went on"
+    assert "FAIL series/gone%3A1.csv REFUSED" in out and "copied 1 of 2; failures 1" in out
+
+
 def test_the_checkout_verdict_is_kept_for_the_same_inputs_only(world, monkeypatch):
     """R1220 finding 3: ~10 ms of realpath per write. A pass is kept for the same inputs; a change is checked."""
     tmp_path, sb = world
@@ -212,6 +234,9 @@ def test_after_t0_import_from_r2_never_restores_what_was_removed(world):
         with pytest.raises(cutover.CutoverRefused, match="licence removal"):
             import_from_r2.copy_one(S3(), sb.store, key, overwrite=True, restore_missing=True)
         assert not sb.exists(key)
+    # R1225: a purge of ONE prefix blocks that prefix only, not the whole source (bar's other CSVs restore)
+    ok, _msg = import_from_r2.copy_one(S3(), sb.store, "series/bar%3Aother.csv", restore_missing=True)
+    assert ok and sb.exists("series/bar%3Aother.csv")
     with open(os.path.join(catalog_path.LIVE_STATE_DIR, "licence_removals.jsonl"), "a", encoding="utf-8") as fh:
         fh.write("{torn")
     with pytest.raises(ValueError):                          # an unreadable log is never "nothing removed"

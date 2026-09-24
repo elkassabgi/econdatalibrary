@@ -134,7 +134,7 @@ def main() -> int:
         key = r2_key(f"unsdg:{code}")
         # PLAIN at rest, as this tool always stored it (R1206: gzip changes what the worker serves)
         if not _derive._put_with_retry(store, key, body, plain=True):
-            raise RuntimeError(f"{key}: gave up after {_derive.PUT_TRIES} tries")
+            raise RuntimeError(f"{key}: PUT failed (refused at once, or {_derive.PUT_TRIES} tries used up - see the line above)")
         return len(body)
 
     done = total_bytes = 0

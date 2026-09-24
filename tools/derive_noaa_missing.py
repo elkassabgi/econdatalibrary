@@ -150,7 +150,7 @@ def main() -> int:
             if a.apply:
                 # PLAIN at rest, as this tool always stored it (R1206: gzip changes what the worker serves)
                 if not _derive._put_with_retry(store, _r2_key(k), body, plain=True):
-                    raise SystemExit(f"{_r2_key(k)}: gave up after {_derive.PUT_TRIES} tries")
+                    raise SystemExit(f"{_r2_key(k)}: PUT failed (refused at once, or {_derive.PUT_TRIES} tries used up - see the line above)")
             written += 1
         print(f"  {shard:<24} {len(grouped):>5} series {'written' if a.apply else 'ready'}",
               flush=True)

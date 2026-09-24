@@ -54,10 +54,10 @@ def removed_csv_prefixes() -> list[str]:
             if not line.strip():
                 continue
             rec = json.loads(line)                    # a torn line raises: never read as "nothing removed"
-            out.add(csv_prefix(rec["source"]))
-            for word in str(rec.get("what", "")).split():
-                if word.startswith("series/"):
-                    out.add(word)
+            named = [w for w in str(rec.get("what", "")).split() if w.startswith("series/")]
+            # a purge of ONE prefix names it, and blocks only it (R1225: it blocked the whole source); a
+            # retirement or a delisting names no prefix, and blocks all of the source's CSVs
+            out.update(named or [csv_prefix(rec["source"])])
     return sorted(out)
 
 

@@ -342,7 +342,7 @@ def main() -> int:
                 # put_atomic stores an already-gzipped body as-is with ContentEncoding gzip (R560), and
                 # _put_with_retry adds the updater's 7 app-level tries this uploader never had
                 if not _derive._put_with_retry(store, key, body):
-                    raise RuntimeError(f"gave up after {_derive.PUT_TRIES} tries")
+                    raise RuntimeError(f"PUT failed (refused at once, or {_derive.PUT_TRIES} tries used up - see the line above)")
                 with lock:
                     counts["put"] += 1
                     if counts["put"] % 500 == 0:

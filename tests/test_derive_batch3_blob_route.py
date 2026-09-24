@@ -126,7 +126,7 @@ def test_unsdg_a_failed_put_fails_the_run(pre_t0, monkeypatch):
     from updater import derive
     monkeypatch.setattr(derive, "_put_with_retry", lambda *a, **k: False)
     monkeypatch.setattr(sys, "argv", ["x", "--bucket", "econ-data", "--threads", "1"])
-    with pytest.raises(RuntimeError, match="gave up"):
+    with pytest.raises(RuntimeError, match="PUT failed"):
         m.main()
 
 
@@ -324,7 +324,7 @@ def test_noaa_missing_a_failed_upload_fails_the_run(pre_t0, monkeypatch):
     _route(monkeypatch, Store())
     monkeypatch.setattr(m._derive, "_put_with_retry", _never)
     monkeypatch.setattr(sys, "argv", ["x", "--apply", "--workers", "1"])
-    with pytest.raises(SystemExit, match="gave up"):
+    with pytest.raises(SystemExit, match="PUT failed"):
         m.main()
 
 
@@ -357,7 +357,7 @@ def test_flowgrain_a_failed_upload_fails_the_run(pre_t0, monkeypatch, name):
     from updater import derive
     monkeypatch.setattr(derive, "_put_with_retry", _never)
     monkeypatch.setattr(sys, "argv", ["x", "--upload", *extra])
-    with pytest.raises(SystemExit, match="gave up"):
+    with pytest.raises(SystemExit, match="PUT failed"):
         m.main()
 
 

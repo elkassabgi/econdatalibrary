@@ -143,26 +143,85 @@ def test_the_publish_waits_for_the_lock_then_takes_it(monkeypatch):
         if len(calls) < 3:
             raise cutover.CutoverRefused("refused: another process holds the catalogue writer lock X")
     monkeypatch.setattr(blob, "_refuse_or_own_store_write", refuse_twice)
-    monkeypatch.setattr(series_census, "_own_the_store_waiting", series_census._own_the_store_waiting)
     import time as _t
     monkeypatch.setattr(_t, "sleep", lambda s: None)
     series_census._own_the_store_waiting(max_wait_s=60, step_s=0)
     assert len(calls) == 3
-    monkeypatch.setattr(blob, "_refuse_or_own_store_write",
-                        lambda what: (_ for _ in ()).throw(cutover.CutoverRefused("refused: the code's own checkout")))
-    with pytest.raises(cutover.CutoverRefused, match="own checkout"):     # not a lock wait: at once
+
+
+def test_any_other_refusal_is_not_waited_for(monkeypatch):
+    """R1225: a mutant that waited on EVERY refusal passed - the test allowed 60 s of retries. One call."""
+    calls = []
+
+    def refuse(what):
+        calls.append(what)
+        raise cutover.CutoverRefused("refused: the code's own checkout is elsewhere")
+    monkeypatch.setattr(blob, "_refuse_or_own_store_write", refuse)
+    import time as _t
+    monkeypatch.setattr(_t, "sleep", lambda s: pytest.fail("not a lock wait: no sleeping"))
+    with pytest.raises(cutover.CutoverRefused, match="own checkout"):
         series_census._own_the_store_waiting(max_wait_s=60, step_s=0)
+    assert len(calls) == 1
 
 
-def test_a_missing_publish_store_fails_before_the_counting(world, monkeypatch, tmp_path):
-    """R1221 finding 5: the store was opened only after the multi-hour count."""
+def test_the_lock_wait_is_bounded(monkeypatch):
+    """R1225: a mutant with no time limit passed. A lock that never frees ends in the refusal, not a hang."""
+    calls = []
+
+    def always_held(what):
+        calls.append(what)
+        if len(calls) > 50:
+            pytest.fail("the wait did not end")
+        raise cutover.CutoverRefused("refused: another process holds the catalogue writer lock X")
+    monkeypatch.setattr(blob, "_refuse_or_own_store_write", always_held)
+    import time as _t
+    monkeypatch.setattr(_t, "sleep", lambda s: None)
+    with pytest.raises(cutover.CutoverRefused, match="another process holds"):
+        series_census._own_the_store_waiting(max_wait_s=0.0, step_s=0)
+    assert 1 <= len(calls) <= 2
+
+
+def test_after_t0_the_publish_takes_the_lock_through_the_wait(world, monkeypatch):
+    """R1225: a main() that never called the wait passed every test."""
+    waited = []
+    monkeypatch.setattr(series_census, "_own_the_store_waiting", lambda *a, **k: waited.append(1))
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=60: io.BytesIO(
+        json.dumps({"as_of": __import__("datetime").date.today().isoformat()}).encode()))
+    monkeypatch.setattr(sys, "argv", ["series_census.py", "--publish"])
+    assert series_census.main() == 0
+    assert waited == [1]
+
+
+def test_a_missing_publish_store_fails_before_anything_is_read(world, monkeypatch, tmp_path):
+    """R1221 finding 5: the store was opened only after the multi-hour count. R1225: the first version of this
+    test passed with the store opened late, because keep_served opened it first - so assert that nothing at
+    all is read before the refusal."""
     monkeypatch.setattr(blob, "SELFHOST_BLOB_ROOT", str(tmp_path / "no_store_here"))
     monkeypatch.setattr(sys, "argv", ["series_census.py", "--publish"])
-    counted = []
-    monkeypatch.setattr(series_census, "_rows_and_key_batch", lambda *a: counted.append(a) or (0, [], 0))
-    with pytest.raises(Exception):
+    seen = []
+    monkeypatch.setattr(series_census, "keep_served", lambda srcs: seen.append("keep_served") or ({}, {}))
+    monkeypatch.setattr(series_census, "source_files", lambda: seen.append("source_files") or {})
+    with pytest.raises(Exception, match="no_store_here|store"):
         series_census.main()
-    assert counted == []
+    assert seen == []
+
+
+def test_a_source_s_csv_prefix_is_terminated(world, monkeypatch):
+    """R1225: counting CSVs under 'series/' + src without the terminator let `ilo` borrow `ilostat`'s CSVs."""
+    _tmp, _live, full = world
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    for src in ("ilo", "ilostat"):
+        (full / src).mkdir()
+        pq.write_table(pa.table({"series_key": ["k"]}), full / src / "t.parquet")
+    (world[0] / "CUTOVER").unlink()
+    blob.SelfhostBlob().put_atomic("series/ilostat%3Ak.csv", b"series_id,obs_date,value\n")
+    (world[0] / "CUTOVER").write_text("")
+    monkeypatch.setattr(series_census, "resolvable_sources",
+                        lambda: {"eurostat", "oecd", "bls", "ilo", "ilostat", "bea", "worldbank"})
+    kept, dropped = series_census.keep_served(series_census.source_files())
+    assert "ilostat" in kept and "ilo" not in kept and dropped.get("ilo") == 1
 
 
 def test_after_t0_a_publish_lands_in_the_self_hosted_store(world, monkeypatch):

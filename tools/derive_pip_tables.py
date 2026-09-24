@@ -68,7 +68,7 @@ def main() -> int:
     def put(key: str, body: bytes):
         # PLAIN at rest, as this tool always stored it (R1206: gzip changes what the worker serves)
         if not _derive._put_with_retry(csv_out, key, body, plain=True):
-            raise RuntimeError(f"gave up after {_derive.PUT_TRIES} tries")
+            raise RuntimeError(f"PUT failed (refused at once, or {_derive.PUT_TRIES} tries used up - see the line above)")
 
     n_tables = n_rows = n_put = errors = 0
     cur_tbl, rows = None, []

@@ -165,6 +165,20 @@ def test_after_t0_an_interrupted_retirement_still_blocks_the_restore(live, monke
     assert not sb.exists(gone[0])
 
 
+def test_after_t0_the_removal_is_logged_before_the_first_change(live, monkeypatch):
+    """R1225: moving the log line to just before the CSV deletes (step 4) passed every test, because only a
+    failure DURING those deletes was tested. A failure in step 1 (the archive) must find it logged already."""
+    tmp, store, sb = live
+
+    def archive_fails(self, key, dst):
+        raise OSError("the archive disk is full")
+    monkeypatch.setattr(lt.Targets, "archive", archive_fails)
+    with pytest.raises(OSError, match="archive disk"):
+        retire_source.main(["foo", "--apply"])
+    assert [r["source"] for r in _log(tmp)] == ["foo"]
+    assert _rows(tmp / "live" / "catalog.db")[0] != ["foo_direct:a"], "precondition: nothing else changed yet"
+
+
 def test_after_t0_an_unfinished_csv_purge_still_blocks_the_restore(live, monkeypatch):
     tmp, store, sb = live
     monkeypatch.setattr(blob.SelfhostBlob, "delete", lambda self, key: None)      # deletes nothing

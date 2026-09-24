@@ -119,9 +119,15 @@ def main() -> int:
             if not resp.get("IsTruncated"):
                 break
             tok = resp["NextContinuationToken"]
+    from core.cutover import CutoverRefused  # noqa: PLC0415
     bad = 0
     for k in keys:
-        ok, msg = copy_one(s3, store, k, overwrite=a.overwrite, restore_missing=a.restore_missing)
+        try:
+            ok, msg = copy_one(s3, store, k, overwrite=a.overwrite, restore_missing=a.restore_missing)
+        except CutoverRefused as e:
+            # one refused key (under a licence removal, say) is a FAIL line, not the end of the batch with no
+            # count (R1225); a refusal of the whole run (another checkout, another writer) repeats per key
+            ok, msg = False, f"{k} REFUSED: {e}"
         bad += not ok
         print(("OK   " if ok else "FAIL ") + msg, flush=True)
     print(f"copied {len(keys) - bad} of {len(keys)}; failures {bad}")

@@ -142,7 +142,7 @@ def main():
                 k = "series/" + urllib.parse.quote(sid, safe="") + ".csv"
                 # PLAIN at rest, as this tool always stored it (R1206: gzip changes what the worker serves)
                 if not _derive._put_with_retry(store, k, csv_b, plain=True):
-                    raise SystemExit(f"{k}: gave up after {_derive.PUT_TRIES} tries")
+                    raise SystemExit(f"{k}: PUT failed (refused at once, or {_derive.PUT_TRIES} tries used up - see the line above)")
                 put_ok += 1
 
     tot_rows = sum(s[1] for s in stats)

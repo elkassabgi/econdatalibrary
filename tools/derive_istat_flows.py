@@ -338,7 +338,7 @@ def main() -> int:
                 # since plan step 1 through the CSV store: put_atomic runs that same helper
                 # (series_csv_put_args) and adds the updater's 7 app-level tries
                 if not _derive._put_with_retry(store, key, body):
-                    raise RuntimeError(f"gave up after {_derive.PUT_TRIES} tries")
+                    raise RuntimeError(f"PUT failed (refused at once, or {_derive.PUT_TRIES} tries used up - see the line above)")
                 with lock:
                     counts["put"] += 1
                     if counts["put"] % 200 == 0:

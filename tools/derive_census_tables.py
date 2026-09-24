@@ -244,7 +244,7 @@ def main() -> int:
         try:
             # PLAIN at rest, as this tool always stored it (R1206: gzip changes what the worker serves)
             if not _derive._put_with_retry(store, key, body, plain=True):
-                raise RuntimeError(f"gave up after {_derive.PUT_TRIES} tries")
+                raise RuntimeError(f"PUT failed (refused at once, or {_derive.PUT_TRIES} tries used up - see the line above)")
             put += 1
             if put % 25 == 0:
                 print(f"  put {put:,}/{len(ids):,}  {time.time()-t0:,.0f}s", flush=True)

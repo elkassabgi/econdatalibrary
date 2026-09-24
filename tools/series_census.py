@@ -257,15 +257,22 @@ def keep_served(srcs: dict[str, list[str]]) -> tuple[dict[str, list[str]], dict[
     return kept, dropped
 
 
+_CSV_COUNTS: dict[str, int] = {}                     # after T0: served CSVs per counted source
+
+
 def _keep_served_after_t0(srcs: dict[str, list[str]]) -> tuple[dict[str, list[str]], dict[str, int]]:
     """keep_served() after T0. The worker serves no parquet: a user downloads a source's SERIES CSVs, which
     live in the self-hosted blob store. So a source counts when the worker resolves it AND the served store
-    holds CSVs for it; one with none is not downloadable and is dropped (R1221 finding 1: counting every
-    local parquet would admit what the 2026-08-26 census dropped as local-only - 10,883 files, 2,676 of them
-    outside statcan). The judgement is per
-    SOURCE - which parquet file a CSV came from is not recorded - so a partly served source counts whole; the
-    CSV count printed beside it is the evidence. Every file is read LOCALLY: nothing is sent to R2, whatever
-    the sizes say (R1221 finding 2: a file rewritten mid-run sent DuckDB to s3:// with the write key)."""
+    holds CSVs for it; one with none is not downloadable and is dropped.
+    WHAT THIS DOES NOT DO (R1225): the judgement is per SOURCE, because which parquet file a CSV came from is
+    not recorded (and a flow-grain CSV is a whole table, not one series). A source with even ONE served CSV
+    counts every local parquet file it has - so this does NOT keep out local-only files inside a served
+    source, which is where the 2026-08-26 census's 10,883 local-only files were (statcan, istat, cbs_nl and
+    others, all with CSVs). The CSV count per source goes to the console and the history file, and the
+    published method string says the rule. Whether this is the right public number is Ahmed's decision; the
+    R420 gate refuses the first post-T0 publish until someone decides and passes --force-publish.
+    Every file is read LOCALLY: nothing is sent to R2, whatever the sizes say (R1221 finding 2: a file
+    rewritten mid-run sent DuckDB to s3:// with the write key)."""
     from updater import blob                                          # noqa: PLC0415
     from core.licence_targets import csv_prefix                       # noqa: PLC0415
     resolvable = resolvable_sources()
@@ -282,6 +289,7 @@ def _keep_served_after_t0(srcs: dict[str, list[str]]) -> tuple[dict[str, list[st
             dropped[src] = len(files)                     # no CSV in the served store: not downloadable
             continue
         kept[src] = list(files)
+        _CSV_COUNTS[src] = n_csv                          # into the history file: the evidence per source
         print(f"  {src}: {len(files):,} local parquet file(s), {n_csv:,} served CSV(s)", flush=True)
     if dropped:
         print("  NOT counted - the worker resolves them, but the served store holds no CSV for them: "
@@ -656,6 +664,9 @@ def main() -> int:
                    f"HyperLogLog for {_n_approx} source(s) too large to count exactly "
                    "within the memory limit (per-source method in "
                    "per_source_series_method). observations = exact parquet row counts. "
+                   + ("The served store: sources the API resolves whose series CSVs the self-hosted "
+                      "store holds, each counted over all of its local parquet (a source with any "
+                      "served CSV counts whole). " if selfhosted else "") +
                    "Refresh by re-running the census (tools/series_census.py) and "
                    "re-uploading this object."),
     }
@@ -667,7 +678,8 @@ def main() -> int:
     os.makedirs(os.path.join(ROOT, "logs"), exist_ok=True)
     hist = os.path.join(ROOT, "logs", f"stats-{today}.json")
     detail = {**stats, "per_source_obs": obs_by_src, "per_source_series": ser_by_src,
-              "per_source_series_method": method_by_src}
+              "per_source_series_method": method_by_src,
+              **({"per_source_served_csvs": dict(_CSV_COUNTS)} if selfhosted else {})}
     with open(hist, "w", encoding="utf-8") as fh:
         json.dump(detail, fh, indent=1)
     print(f"history written: {hist}")
