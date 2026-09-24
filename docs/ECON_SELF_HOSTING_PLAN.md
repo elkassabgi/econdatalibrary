@@ -137,7 +137,14 @@ Build status (branch feat/econ-selfhost-origin):
 - Still to do in step 1: the local sec_edgar refresher (above); move the remaining catalogue callers and remote-D1 callers onto the
   chokepoints (the ratchets list them and may only shrink; the catalogue callers go through
   core.catalog_path.connect / connect_path, which keeps a tool's --db argument before T0); the direct put_series_csv writers onto
-  SelfhostBlob; delist_timeless_tables.py onto licence_targets (purge_unpermitted_r2.py stays defused
+  the CSV store (updater.blob.csv_store(bucket): SelfhostBlob once the cutover flag is set or
+  AQUEDUCT_BACKEND=selfhost, R2Blob otherwise, never LocalBlob - R1200; writes by
+  updater.derive._put_with_retry -> put_atomic, which gzips a series CSV through
+  series_csv_put_args in both stores). Progress is the shrink-only list
+  tests/test_object_writers_ratchet.py LEGACY_OBJECT_WRITERS (added with batch 2): 24 left after
+  batches 1 (statcan, csv_bulk) and 2 (pxweb_flowgrain, the four IMF table tools, usda, census,
+  ilostat, istat);
+  delist_timeless_tables.py onto licence_targets (purge_unpermitted_r2.py stays defused
   until re-armed, then on licence_targets); a self-hosted path for tools/run_local_heavy.ps1 and
   make_servable.py (after T0 both fail closed today: the heavy run asks for --pull-state and the R2
   backend, make_servable forces R2); the verifier re-pointing (6d).
