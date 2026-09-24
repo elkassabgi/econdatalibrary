@@ -66,10 +66,53 @@ def test_every_write_is_refused_after_cutover(s3, cut_over, op, kw):
         getattr(s3, op)(**kw)
 
 
+@pytest.fixture
+def cloud(monkeypatch):
+    monkeypatch.setattr(r2_util, "creds", lambda write=False: {
+        "endpoint": "http://127.0.0.1:9", "key": "k", "secret": "s", "mode": "read"})
+    c = r2_util.cloud_client()
+    c.meta.events.register("before-call.s3", _reached)
+    return c
+
+
 @pytest.mark.parametrize("op,kw", READS)
-def test_reads_still_reach_the_network_after_cutover(s3, cut_over, op, kw):
+def test_after_cutover_r2_util_client_refuses_reads_too(s3, cut_over, op, kw):
+    """Design review 2026-09-24: a read of the frozen copy is stale data presented as current."""
+    with pytest.raises(cutover.CutoverRefused, match="self-hosted"):
+        getattr(s3, op)(**kw)
+
+
+@pytest.mark.parametrize("op,kw", READS)
+def test_before_cutover_r2_util_client_reads(s3, not_cut_over, op, kw):
     with pytest.raises(Reached):
         getattr(s3, op)(**kw)
+
+
+@pytest.mark.parametrize("op,kw", READS)
+def test_the_cloud_client_still_reads_after_cutover(cloud, cut_over, op, kw):
+    with pytest.raises(Reached):
+        getattr(cloud, op)(**kw)
+
+
+@pytest.mark.parametrize("op,kw", WRITES)
+def test_the_cloud_client_never_writes_after_cutover(cloud, cut_over, op, kw):
+    with pytest.raises(cutover.CutoverRefused):
+        getattr(cloud, op)(**kw)
+
+
+def test_only_the_named_final_sync_readers_use_the_cloud_client():
+    """Plan step 6b's readers. A new caller is a new way to read stale data after T0."""
+    import re as _r
+    callers = set()
+    for dirpath, dirs, files in _os.walk(_ROOT):
+        dirs[:] = [d for d in dirs if d not in _SKIP]
+        for f in files:
+            if f.endswith(".py"):
+                p = _os.path.join(dirpath, f)
+                if _r.search(r"\bcloud_client\(", open(p, encoding="utf-8", errors="replace").read()):
+                    callers.add(_os.path.relpath(p, _ROOT).replace(_os.sep, "/"))
+    callers.discard("core/r2_util.py")
+    assert callers == {"tools/footer_diff.py", "tools/mirror_sync.py", "tools/selfhost/import_from_r2.py"}
 
 
 @pytest.mark.parametrize("op,kw", WRITES[:3])
@@ -112,9 +155,9 @@ def test_the_read_list_is_exactly_the_plan_s(s3):
     assert r2_util.guard_client(s3) is s3 and s3._econ_cutover_guard is True
 
 
-def test_list_buckets_is_a_read(s3, cut_over):
+def test_list_buckets_is_a_read(cloud, cut_over):
     with pytest.raises(Reached):
-        s3.list_buckets()
+        cloud.list_buckets()
 
 
 # ---- the ratchet: no raw boto3 client may skip the guard (AR-151 finding 1) ---------------------------

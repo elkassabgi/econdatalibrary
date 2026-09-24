@@ -76,7 +76,7 @@ def main() -> int:
     ap.add_argument("--create", action="store_true", help="create the blob store if it does not exist")
     a = ap.parse_args()
     from core import r2_util  # noqa: PLC0415
-    s3 = r2_util.client()
+    s3 = r2_util.cloud_client()     # a named final-sync reader: keeps reading the cloud after T0
     store = BlobStore(a.root, create=a.create)
     keys = list(a.key)
     for p in a.prefix:

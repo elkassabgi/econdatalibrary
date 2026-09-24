@@ -278,7 +278,7 @@ def main() -> int:
     a = ap.parse_args()
 
     from core import r2_util
-    s3 = r2_util.client()
+    s3 = r2_util.cloud_client()     # a named final-sync reader: keeps reading the cloud after T0
     if not a.all:
         if len(a.source) != 1:
             print("pass exactly one --source, or --all")

@@ -741,5 +741,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     from core import r2_util
-    s3 = r2_util.client()
+    s3 = r2_util.cloud_client()     # a named final-sync reader: keeps reading the cloud after T0
     sys.exit(main())
