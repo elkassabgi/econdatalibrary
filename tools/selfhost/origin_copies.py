@@ -8,10 +8,12 @@ it - measured 2026-09-24 on the probe copy: the primary held all 13,952,906 seri
 shard's, and the climate copy was empty, so those series were unreachable and would have been double-counted
 had both held them:
 
-  primary  = every table of the catalogue, minus the shard sources' series / series_fts / source_counts rows
-  climate  = the shard sources' series and series_fts rows, their source and license parent rows, and their
-             source_counts rows
+  primary  = every table of the catalogue, minus the shard sources' series / source_counts rows
+  climate  = the shard sources' series rows, their source and license parent rows, and their source_counts
   source_counts is recomputed in both from `series` itself (a copy cannot inherit a drifted count - R709)
+  series_fts is REBUILT in both from `series` itself (review R1183: 31 writers change `series` without
+             touching series_fts - a retitle, a new series, a re-keyed id - and a count check cannot see a
+             retitle; the catalogue's own index is never copied, so search answers from what `series` holds)
 
 Checks, all before a copy can be used (any failure deletes the half-built copies and raises):
   PRAGMA quick_check = ok on both; primary + climate series = the catalogue's series; per file,
@@ -42,15 +44,19 @@ def _ro(path: str) -> sqlite3.Connection:
     return sqlite3.connect(pathlib.Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=120)
 
 
-def _range(source: str) -> tuple[str, str]:
-    """The series_id range of one source: 'src:' <= id < 'src;' (';' sorts right after ':')."""
-    return f"{source}:", f"{source};"
-
-
 def _recount(con: sqlite3.Connection) -> None:
     con.execute("DROP TABLE IF EXISTS source_counts")
     con.execute(COUNTS_DDL)
     con.execute("INSERT INTO source_counts(source_id, n) SELECT source_id, COUNT(*) FROM series GROUP BY source_id")
+
+
+def _rebuild_fts(con: sqlite3.Connection, ddl: str) -> None:
+    """Drop and re-create series_fts from the catalogue's own DDL, then fill it from this copy's `series`
+    (every FTS column is a `series` column: series_id UNINDEXED, title, geography)."""
+    con.execute("DROP TABLE IF EXISTS series_fts")
+    con.execute(ddl)
+    cols = ", ".join(r[1] for r in con.execute("PRAGMA table_info(series_fts)"))
+    con.execute(f"INSERT INTO series_fts({cols}) SELECT {cols} FROM series")
 
 
 def build(catalogue: str, out_dir: str) -> dict:
@@ -77,30 +83,28 @@ def build(catalogue: str, out_dir: str) -> dict:
         opened.append(dst)
         src.backup(dst)
         for s in SHARD_SOURCES:
-            lo, hi = _range(s)
             dst.execute("DELETE FROM series WHERE source_id=?", (s,))
-            dst.execute("DELETE FROM series_fts WHERE series_id >= ? AND series_id < ?", (lo, hi))
         _recount(dst)
+        _rebuild_fts(dst, schema["series_fts"])
         dst.commit()
 
         # climate: the shard sources only, from the catalogue itself (not from the primary copy). Opened
         # by URI: ATTACH reads a file: URI only on a connection that was itself opened with URIs enabled.
         c = sqlite3.connect(pathlib.Path(climate).resolve().as_uri() + "?mode=rwc", uri=True)
         opened.append(c)
-        for name in ("series", "series_fts", "source", "license"):
+        for name in ("series", "source", "license"):
             c.execute(schema[name])
         c.execute("CREATE INDEX ix_series_source_id ON series(source_id)")
         c.execute("ATTACH DATABASE ? AS b", (pathlib.Path(catalogue).resolve().as_uri() + "?mode=ro",))
         for s in SHARD_SOURCES:
-            lo, hi = _range(s)
             c.execute("INSERT INTO series SELECT * FROM b.series WHERE source_id=?", (s,))
-            c.execute("INSERT INTO series_fts SELECT * FROM b.series_fts WHERE series_id >= ? AND series_id < ?", (lo, hi))
             c.execute("INSERT OR IGNORE INTO source SELECT * FROM b.source WHERE source_id=?", (s,))
         c.execute("INSERT OR IGNORE INTO license SELECT * FROM b.license WHERE license_id IN "
                   "(SELECT license_id FROM source UNION SELECT license_id FROM series)")
         c.commit()
         c.execute("DETACH DATABASE b")
         _recount(c)
+        _rebuild_fts(c, schema["series_fts"])
         c.commit()
         for con in opened:
             con.close()

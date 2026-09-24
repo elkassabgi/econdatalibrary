@@ -120,8 +120,9 @@ def test_after_t0_a_write_is_refused_before_any_network(after_t0, monkeypatch):
 
 def test_execute_file_before_and_after_t0(before_t0, monkeypatch, tmp_path):
     calls = _fake(monkeypatch, (0, "ok", ""))
-    d1_remote.execute_file("econ-catalog", "load.sql")
-    assert calls[0][2:] == ["d1", "execute", "econ-catalog", "--remote", "--file", "load.sql", "--yes"]
+    assert d1_remote.execute_file("econ-catalog", "load.sql") == "ok"
+    assert calls[0][2:] == ["d1", "execute", "econ-catalog", "--remote", "--yes",
+                            f"--file={os.path.abspath('load.sql')}"]
     _fake(monkeypatch, (1, "", "SQLITE_TOOBIG"))
     with pytest.raises(RuntimeError, match="SQLITE_TOOBIG"):
         d1_remote.execute_file("econ-catalog", "load.sql")
@@ -130,6 +131,106 @@ def test_execute_file_before_and_after_t0(before_t0, monkeypatch, tmp_path):
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("wrangler was run after T0"))
     with pytest.raises(cutover.CutoverRefused):
         d1_remote.execute_file("econ-catalog", "load.sql")
+
+
+# ---- R1183: the "could not look" contract, and the retry policy ------------------------------------------
+@pytest.mark.parametrize("exc", [subprocess.TimeoutExpired(["node"], 900), FileNotFoundError(2, "node")])
+def test_not_reaching_d1_is_always_a_runtime_error(before_t0, monkeypatch, exc):
+    def run(cmd, **kw):
+        raise exc
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(d1_remote.D1Unreachable):
+        d1_remote.run_json("econ-catalog", "SELECT 1")
+    assert issubclass(d1_remote.D1Unreachable, RuntimeError) and not issubclass(d1_remote.D1Unreachable, SystemExit)
+
+
+def test_after_t0_a_network_failure_is_a_runtime_error(after_t0, monkeypatch):
+    import urllib.error
+    monkeypatch.setenv("D1_READ_TOKEN", "t")
+
+    def down(*a, **k):
+        raise urllib.error.URLError("no route")
+    monkeypatch.setattr(d1_remote.urllib.request, "urlopen", down)
+    with pytest.raises(d1_remote.D1Unreachable, match="URLError"):
+        d1_remote.run_json("econ-catalog", "SELECT 1")
+
+
+def test_the_auth_transient_on_stdout_is_retried_too(before_t0, monkeypatch):
+    """wrangler --json prints its errors on STDOUT."""
+    calls = _fake(monkeypatch, (1, '{"error": {"text": "Authentication error [code: 10000]"}}', ""), (0, PAYLOAD, ""))
+    assert d1_remote.run_json("econ-catalog", "SELECT 1")[0]["results"] == [{"n": 3}] and len(calls) == 2
+
+
+def test_a_success_is_never_retried(before_t0, monkeypatch):
+    calls = _fake(monkeypatch, (0, PAYLOAD + " code: 10000 appears in a title", ""))
+    d1_remote.run_json("econ-catalog", "SELECT 1")
+    assert len(calls) == 1
+
+
+def test_an_empty_array_is_not_a_result():
+    with pytest.raises(RuntimeError, match="no query result"):
+        d1_remote.statement_results("[]")
+
+
+def test_the_timeout_reaches_wrangler(before_t0, monkeypatch):
+    seen = []
+
+    def run(cmd, **kw):
+        seen.append(kw.get("timeout"))
+        return types.SimpleNamespace(returncode=0, stdout=PAYLOAD, stderr="")
+    monkeypatch.setattr(subprocess, "run", run)
+    d1_remote.run_json("econ-catalog", "SELECT 1", timeout=300)
+    d1_remote.execute_file("econ-catalog", "x.sql", timeout=600)
+    assert seen == [300, 600]
+
+
+def test_execute_file_runs_once_by_default_even_on_the_auth_error(before_t0, monkeypatch):
+    """An import that failed after it started may have applied part of the file (R1183 finding 4)."""
+    calls = _fake(monkeypatch, (1, "", "Authentication error [code: 10000]"))
+    with pytest.raises(RuntimeError, match="after 1 attempt"):
+        d1_remote.execute_file("econ-catalog", "x.sql")
+    assert len(calls) == 1
+
+
+def test_execute_file_retries_only_when_the_caller_asks(before_t0, monkeypatch):
+    calls = _fake(monkeypatch, (1, "", "busy"), (1, "", "busy"), (0, "done", ""))
+    told = []
+    assert d1_remote.execute_file("econ-catalog", "x.sql", tries=4, on_retry=lambda n, why: told.append(n)) == "done"
+    assert len(calls) == 3 and told == [1, 2]
+    _fake(monkeypatch, (1, "", "still busy"))
+    with pytest.raises(RuntimeError, match="after 4 attempt"):
+        d1_remote.execute_file("econ-catalog", "x.sql", tries=4)
+
+
+def test_the_daily_sync_keeps_its_four_tries_and_its_fatal_exit(monkeypatch, tmp_path):
+    from core import sync_state_d1
+    seen = []
+
+    def execute_file(db, path, **kw):
+        seen.append((db, kw.get("tries"), kw.get("timeout")))
+        if path.endswith("bad.sql"):
+            raise d1_remote.D1Unreachable("wrangler timed out after 600 s")
+        return "Executed 3 commands"
+    monkeypatch.setattr(d1_remote, "execute_file", execute_file)
+    monkeypatch.setattr(sync_state_d1.shutil, "which", lambda n: "node")
+    monkeypatch.setattr(sync_state_d1.os.path, "isdir", lambda p: True)
+    sync_state_d1.execute_remote([str(tmp_path / "a.sql")])
+    assert seen == [(sync_state_d1.D1_DATABASE, 4, 600)]
+    with pytest.raises(SystemExit, match="remaining chunks NOT executed"):
+        sync_state_d1.execute_remote([str(tmp_path / "bad.sql"), str(tmp_path / "never.sql")], database="econ-catalog-climate")
+    assert seen[-1][0] == "econ-catalog-climate" and len(seen) == 2, "it stopped at the first failed chunk"
+
+
+def test_the_audit_says_could_not_look(monkeypatch):
+    """audit_d1_vs_catalog: D1 unreachable is SystemExit from d1_counts and an empty set from d1_ids."""
+    import tools.audit_d1_vs_catalog as audit
+
+    def down(db, sql, **kw):
+        raise d1_remote.D1Unreachable("no wrangler")
+    monkeypatch.setattr(d1_remote, "rows", down)
+    with pytest.raises(SystemExit, match="no wrangler"):
+        audit.d1_counts()
+    assert audit.d1_ids("ecb") == set()
 
 
 def test_the_worker_dir_is_the_repo_s():

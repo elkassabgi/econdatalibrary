@@ -110,16 +110,28 @@ WRANGLER_JS = os.path.join(WORKER_DIR, "node_modules", "wrangler", "bin", "wrang
 _AUTH_TRANSIENT = "code: 10000"          # wrangler's intermittent OAuth error; retried twice (R733)
 
 
+class D1Unreachable(RuntimeError):
+    """D1 could not be asked at all: no wrangler or node, a timeout, a network failure. A RuntimeError, never
+    SystemExit, so every caller that tells "could not look" from a finding keeps doing so (R1183: a timeout,
+    a missing node and a network error used to escape as other exception types)."""
+
+
 def _wrangler(args: list[str], *, timeout: int, retries: int = 2):
+    """Run wrangler; retry ONLY its intermittent auth error (code 10000, on stdout or stderr), `retries`
+    times. Every way of not reaching D1 raises D1Unreachable."""
     import subprocess                                                           # noqa: PLC0415
     import time                                                                 # noqa: PLC0415
     if not os.path.isfile(WRANGLER_JS):
-        # RuntimeError, never SystemExit: callers tell "could not look" from a finding by it
-        raise RuntimeError(f"no wrangler at {WRANGLER_JS} (run npm ci in api/worker); cannot reach D1")
+        raise D1Unreachable(f"no wrangler at {WRANGLER_JS} (run npm ci in api/worker); cannot reach D1")
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
     for attempt in range(retries + 1):
-        r = subprocess.run(["node", WRANGLER_JS, *args], cwd=WORKER_DIR, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", env=env, timeout=timeout)
+        try:
+            r = subprocess.run(["node", WRANGLER_JS, *args], cwd=WORKER_DIR, capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", env=env, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise D1Unreachable(f"wrangler timed out after {timeout} s") from None
+        except OSError as e:                                    # node missing, cannot start
+            raise D1Unreachable(f"wrangler could not run: {type(e).__name__}: {e}") from None
         if r.returncode == 0 or _AUTH_TRANSIENT not in (r.stderr or "") + (r.stdout or "") or attempt == retries:
             return r
         time.sleep(10)
@@ -151,7 +163,11 @@ def run_json(database: str, sql: str, *, timeout: int = 900) -> list[dict]:
     if database not in DATABASES:
         raise ValueError(f"unknown D1 database {database!r}; known: {sorted(DATABASES)}")
     if is_cut_over():
-        return [query(database, sql, timeout=timeout)]
+        import urllib.error                                                     # noqa: PLC0415
+        try:
+            return [query(database, sql, timeout=timeout)]
+        except (urllib.error.URLError, OSError, ValueError) as e:      # the network, or a garbled answer
+            raise D1Unreachable(f"D1 {database}: {type(e).__name__}: {e}") from None
     r = _wrangler(["d1", "execute", database, "--remote", "--json", "--command", sql], timeout=timeout)
     if r.returncode != 0:
         raise RuntimeError(f"D1 {database}: wrangler exit {r.returncode}: stderr={(r.stderr or '')[-400:]!r} "
@@ -166,16 +182,37 @@ def rows(database: str, sql: str, *, timeout: int = 900) -> tuple[list[dict], in
             sum(int((e.get("meta") or {}).get("rows_read") or 0) for e in out))
 
 
-def execute_file(database: str, path: str, *, timeout: int = 3600) -> None:
-    """`wrangler d1 execute <db> --remote --file <path> --yes` - the bulk loaders' road. Refuses after T0."""
+def execute_file(database: str, path: str, *, timeout: int = 3600, tries: int = 1, on_retry=None) -> str:
+    """`wrangler d1 execute <db> --remote --file <path> --yes` - the bulk loaders' road. Refuses after T0.
+
+    By default it runs ONCE: an import that failed after it started may have applied part of the file, and
+    not every file is idempotent (series_fts inserts are not), so a retry is the CALLER's decision (R1183).
+    tries > 1 retries any failure or timeout with 5 s, 10 s, ... between attempts - the daily sync's policy
+    (core/sync_state_d1.py). on_retry(attempt, why) is told about each retry. Returns wrangler's stdout;
+    the final failure raises RuntimeError (D1Unreachable when D1 was never reached)."""
+    import time                                                                 # noqa: PLC0415
     if database not in DATABASES:
         raise ValueError(f"unknown D1 database {database!r}; known: {sorted(DATABASES)}")
     if is_cut_over():
         raise CutoverRefused(f"refused: wrangler d1 execute --remote --file on {database} after T0 (D1 is frozen)")
-    r = _wrangler(["d1", "execute", database, "--remote", "--file", path, "--yes"], timeout=timeout)
-    if r.returncode != 0:
-        raise RuntimeError(f"D1 {database}: --file {path} failed, wrangler exit {r.returncode}: "
-                           f"{(r.stderr or '')[-400:]!r}")
+    why, unreachable = "", False
+    for attempt in range(max(1, tries)):
+        try:
+            r = _wrangler(["d1", "execute", database, "--remote", "--yes", f"--file={os.path.abspath(path)}"],
+                          timeout=timeout, retries=0)
+        except D1Unreachable as e:
+            why, unreachable = str(e), True
+        else:
+            if r.returncode == 0:
+                return r.stdout or ""
+            why, unreachable = (f"exit {r.returncode}: stdout={(r.stdout or '')[-600:]!r} "
+                                f"stderr={(r.stderr or '')[-600:]!r}"), False
+        if attempt < tries - 1:
+            if on_retry:
+                on_retry(attempt + 1, why)
+            time.sleep(5 * (attempt + 1))
+    err = D1Unreachable if unreachable else RuntimeError
+    raise err(f"D1 {database}: --file {path} failed after {max(1, tries)} attempt(s): {why}")
 
 
 def query(database: str, sql: str, params: list | None = None, *, timeout: int = 120) -> dict:

@@ -126,14 +126,15 @@ def test_only_the_two_econ_databases(sent, before_t0, monkeypatch):
 # step 1; this list may only SHRINK. A new file on it is a new unguarded write path after T0.
 LEGACY_REMOTE_D1 = {
     ".github/workflows/sec-edgar-daily.yml", "core/export_d1.py", "core/load_d1_chunked.py",
-    "core/load_d1_rest.py", "core/sync_state_d1.py", "tools/audit_site.py", "tools/billing_guard.py",
+    "core/load_d1_rest.py", "tools/audit_site.py", "tools/billing_guard.py",
     "tools/delist_timeless_tables.py", "tools/enrich_sec_edgar_tickers.py", "tools/migrate_noaa_shard.py",
     "tools/rebuild_series_fts.py", "tools/refresh_flowgrain_dates.py", "tools/refresh_sec_edgar.py",
     "tools/sync_titles_to_d1.py",
 }
 # Left on 2026-09-24 (plan step 1): the six D1 readers moved onto d1_remote.rows / run_json; five files
-# named `--remote` only in a docstring, a comment or a tool's own --remote-truth option (sync_catalog_d1
-# reaches D1 through core/sync_state_d1.execute_remote, which is still listed here).
+# named `--remote` only in a docstring, a comment or a tool's own --remote-truth option; then
+# core/sync_state_d1.py, whose execute_remote (the daily sync's and sync_catalog_d1's bulk writer) now runs
+# d1_remote.execute_file.
 # `--remote` as wrangler's flag, not a tool's own option that starts with it (--remote-truth).
 REMOTE = re.compile(r"--remote(?![\w-])|/d1/database/")
 

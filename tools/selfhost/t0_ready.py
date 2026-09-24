@@ -48,7 +48,15 @@ def legacy_remote_d1(root: str = ROOT) -> tuple[bool, str]:
     src = open(os.path.join(root, "tests", "test_d1_remote.py"), encoding="utf-8").read()
     for node in ast.walk(ast.parse(src)):
         if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "LEGACY_REMOTE_D1" for t in node.targets):
-            value = ast.literal_eval(node.value) if not isinstance(node.value, ast.Call) else set()
+            v = node.value
+            # Only a set literal or a bare `set()` can be read; anything else (frozenset({...}), set([...]),
+            # a name) is "cannot tell", never "empty" (R1183: any call used to read as empty = READY).
+            if isinstance(v, ast.Set):
+                value = ast.literal_eval(v)
+            elif isinstance(v, ast.Call) and getattr(v.func, "id", None) == "set" and not v.args and not v.keywords:
+                value = set()
+            else:
+                return False, f"LEGACY_REMOTE_D1 is written as {ast.unparse(v)[:60]!r} - cannot tell; use a set literal"
             return not value, f"{len(value)} file(s) still call D1 remotely outside core.d1_remote"
     return False, "LEGACY_REMOTE_D1 not found in tests/test_d1_remote.py - cannot tell"
 

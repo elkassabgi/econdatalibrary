@@ -27,16 +27,19 @@ def code_text(src: str, drop_functions: frozenset[str] = frozenset()) -> str:
         tree = ast.parse(src)
     except (SyntaxError, ValueError):
         return src
-    def keep(n) -> bool:
+    def keep(n, top: bool) -> bool:
         if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant) and isinstance(n.value.value, str):
             return False              # a docstring, or any bare string statement: a no-op, never code
-        return not (isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in drop_functions)
+        # the exemption names MODULE-LEVEL functions only - a method or nested function of the same name is
+        # still scanned (R1183 finding 6)
+        return not (top and isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in drop_functions)
 
     for node in ast.walk(tree):
         for field in ("body", "orelse", "finalbody"):
             stmts = getattr(node, field, None)
             if isinstance(stmts, list) and stmts and isinstance(stmts[0], ast.stmt):
-                setattr(node, field, [n for n in stmts if keep(n)] or ([ast.Pass()] if field == "body" else []))
+                top = isinstance(node, ast.Module)
+                setattr(node, field, [n for n in stmts if keep(n, top)] or ([ast.Pass()] if field == "body" else []))
     return ast.unparse(tree)
 
 

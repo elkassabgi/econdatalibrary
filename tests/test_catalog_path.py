@@ -265,6 +265,8 @@ def test_the_catalogue_ratchet_can_fail():
     assert NAMES_CATALOGUE.search(_code_only(run, ".py", "updater/run.py")), "the rest of run.py is scanned"
     assert not NAMES_CATALOGUE.search(_code_only(run.split("\n\n")[0], ".py", "updater/run.py"))
     assert NAMES_CATALOGUE.search(_code_only("x = (", ".py") + "catalog.db"), "unparsable: scanned raw"
+    nested = 'class C:\n    def _selfhost_preflight(self):\n        return "catalog.db"'
+    assert NAMES_CATALOGUE.search(_code_only(nested, ".py", "updater/run.py")), "only the module-level function is exempt"
 
 
 def test_no_new_file_names_catalog_db_outside_the_resolver():

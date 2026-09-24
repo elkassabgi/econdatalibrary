@@ -106,6 +106,36 @@ def test_the_checks_catch_a_shard_series_in_the_primary_and_a_lost_series(tmp_pa
         oc.check(str(tmp_path / "out2" / "primary.sqlite"), str(tmp_path / "out2" / "climate.sqlite"), 6)
 
 
+def test_each_copy_s_search_index_is_rebuilt_from_its_series(tmp_path):
+    """R1183: writers change `series` without touching series_fts. A stale catalogue index - a retitle, a
+    series with no index row, an orphan index row - must not reach the copies."""
+    cat = tmp_path / "catalog.db"
+    _catalogue(cat)
+    c = sqlite3.connect(cat)
+    c.execute("UPDATE series SET title='zebra retitled' WHERE series_id='ecb:x'")            # index still 't ecb:x'
+    c.execute("UPDATE series SET title='walrus climate' WHERE series_id='noaa:a'")
+    c.execute("DELETE FROM series_fts WHERE series_id='ecb:y'")                            # no index row
+    c.execute("INSERT INTO series_fts VALUES ('ecb:gone', 't gone', 'g')")                 # an orphan
+    c.commit()
+    c.close()
+    oc.build(str(cat), str(tmp_path / "out"))
+
+    def q(name, sql, *a):
+        con = sqlite3.connect(tmp_path / "out" / name)
+        try:
+            return con.execute(sql, a).fetchall()
+        finally:
+            con.close()
+    match = "SELECT series_id FROM series_fts WHERE series_fts MATCH ?"
+    assert q("primary.sqlite", match, "zebra") == [("ecb:x",)], "the new title is searchable"
+    assert q("primary.sqlite", match, '"t ecb:x"') == [], "the old title is gone"
+    assert q("primary.sqlite", "SELECT COUNT(*) FROM series_fts WHERE series_id='ecb:y'") == [(1,)]
+    assert q("primary.sqlite", "SELECT COUNT(*) FROM series_fts WHERE series_id='ecb:gone'") == [(0,)]
+    assert q("climate.sqlite", match, "walrus") == [("noaa:a",)], "the climate copy too"
+    assert q("primary.sqlite", "SELECT sql FROM sqlite_master WHERE name='series_fts'")[0][0].startswith(
+        "CREATE VIRTUAL TABLE series_fts USING fts5"), "the catalogue's own FTS definition"
+
+
 def test_the_shard_list_is_the_worker_s():
     util = open(os.path.join(ROOT, "api", "worker", "src", "util.ts"), encoding="utf-8").read()
     m = re.search(r"SHARDED_SOURCES: ReadonlySet<string> = new Set\(\[([^\]]*)\]\)", util)
