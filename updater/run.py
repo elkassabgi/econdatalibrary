@@ -90,7 +90,7 @@ def _state_db_holders() -> list[str]:
     """
     lines: list[str] = []
     try:
-        con = sqlite3.connect(f"file:{config.STATE_DB}?mode=ro", uri=True, timeout=10)
+        con = sqlite3.connect(f"file:{config.STATE_DB}?mode=ro", uri=True, timeout=10)  # plain-open: the updater's state.db, read-only
         rows = list(con.execute("select key, owner, expires_utc from leases"))
         con.close()
     except Exception as e:                                   # noqa: BLE001
@@ -261,7 +261,7 @@ def push_state() -> int:
     if _remote_bytes >= _SUBSTANTIAL_REMOTE and not os.environ.get("AQUEDUCT_ALLOW_SHRINK"):
         local_bytes = os.path.getsize(config.STATE_DB) if os.path.exists(config.STATE_DB) else 0
         try:
-            _c = sqlite3.connect(f"file:{config.STATE_DB}?mode=ro", uri=True, timeout=30)
+            _c = sqlite3.connect(f"file:{config.STATE_DB}?mode=ro", uri=True, timeout=30)  # plain-open: the updater's state.db, read-only
             n_src = _c.execute("SELECT COUNT(*) FROM source_state").fetchone()[0]
             n_run = _c.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
             _c.close()
@@ -285,7 +285,7 @@ def push_state() -> int:
     tmp_db = os.path.join(config.STATE_DIR,
                           f"state.vacuum.{os.getpid()}.{uuid.uuid4().hex[:8]}.db")
     try:
-        con = sqlite3.connect(config.STATE_DB)
+        con = sqlite3.connect(config.STATE_DB)  # plain-open: the updater's state.db
         try:
             con.execute("VACUUM INTO ?", (tmp_db,))
         finally:
@@ -387,8 +387,12 @@ def _selfhost_preflight(a) -> bool:
     # run imports it - core.derive_csv puts this checkout's clients/python first on sys.path.
     import core.derive_csv  # noqa: F401, PLC0415
     from econdl import _catalog as econdl_catalog, _resolve as econdl_resolve  # noqa: PLC0415
+    try:
+        econdl_db = econdl_catalog.default_db()
+    except RuntimeError as e:                 # econdl's own refusal (an $ECONDL_CATALOG override): listed, not raised
+        econdl_db = f"<refused by econdl: {e}>"
     places += [
-        (f"econdl's catalogue ({econdl_catalog.__file__} default_db())", econdl_catalog.default_db(), BUILD_PATH),
+        (f"econdl's catalogue ({econdl_catalog.__file__} default_db())", econdl_db, BUILD_PATH),
         (f"econdl's data root ({econdl_resolve.__file__} default_data_root())", econdl_resolve.default_data_root(),
          data),
     ]

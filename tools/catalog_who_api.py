@@ -28,7 +28,6 @@ import collections
 import datetime as dt
 import json
 import os
-import sqlite3
 import sys
 import time
 import urllib.error
@@ -36,6 +35,8 @@ import urllib.parse
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (no ECONDL_CATALOG override: plan 4a)
 BASE = "https://ghoapi.azureedge.net/api"
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com",
       "Accept": "application/json"}
@@ -72,15 +73,14 @@ def key_of(v, prefix):
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(allow_abbrev=False)  # the lock choice in __main__ reads the exact flag
     ap.add_argument("source", choices=sorted(PREFIX))
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--limit", type=int, default=0, help="cap indicators (smoke test only)")
     a = ap.parse_args()
     src, pref = a.source, PREFIX[a.source]
 
-    cat = os.environ.get("ECONDL_CATALOG") or os.path.join(ROOT, "data", "catalog.db")
-    con = sqlite3.connect(cat)
+    con = catalog_path.connect(write=not a.dry_run)     # the resolver; a dry run only reads
     have = {r[0] for r in con.execute("SELECT series_id FROM series WHERE source_id=?", (src,))}
     if not have:
         raise SystemExit(f"{src}: no existing catalogue rows — refusing to invent a template")
@@ -172,4 +172,7 @@ def main():
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    if "--dry-run" in sys.argv[1:]:
+        raise SystemExit(main())             # reads only: no lock
+    with catalog_path.write_session():       # after T0: the single-writer lock
+        raise SystemExit(main())

@@ -161,9 +161,8 @@ def _meta(path_or_file):
 
 
 def catalogued_sources():
-    import sqlite3
-    con = sqlite3.connect(
-        f"file:{os.path.join(ROOT, 'data', 'catalog.db')}?mode=ro", uri=True)
+    from core import catalog_path                                     # noqa: PLC0415 - plan step 1
+    con = catalog_path.connect()
     return [r[0] for r in con.execute(
         "select distinct source_id from series order by source_id")]
 

@@ -22,6 +22,7 @@ import contextlib
 import os
 import pathlib
 import sqlite3
+import sys
 
 from core.cutover import CutoverRefused, is_cut_over
 
@@ -39,6 +40,58 @@ LOCK_PATH = r"E:\econ_live\state\writer.lock"
 _held: object | None = None           # the open lock file while this process holds the writer lock
 
 
+# ---- THE RUNTIME GUARD (review R1209) ------------------------------------------------------------------------
+# The static rules (tests/test_catalogue_writers_*) see only the spellings they were written for: an alias of
+# this module, `from core.catalog_path import BUILD_PATH`, a helper in another module, sqlite3.dbapi2.connect
+# or a file with a byte-order mark all passed them, and after T0 wrote the build with no lock. Python's audit
+# hook on the sqlite3.connect event fires for EVERY spelling, so the rule lives here: after T0, an open of the
+# build that is not read-only needs this process to hold the writer lock - whoever makes the open. It is
+# installed once, when this module is imported (every tool that learns the build's path imports it).
+def _open_target(database) -> tuple[str, bool] | None:
+    """(normalised path, read_only) of a sqlite3.connect target; None for :memory: or anything not a path."""
+    import urllib.parse                                                     # noqa: PLC0415
+    if isinstance(database, bytes):
+        database = database.decode(errors="replace")
+    if not isinstance(database, (str, os.PathLike)):
+        return None
+    s = os.fspath(database)
+    if s in ("", ":memory:"):
+        return None
+    read_only = False
+    if s.startswith("file:"):
+        path, _, query = s[len("file:"):].partition("?")
+        q = urllib.parse.parse_qs(query)
+        read_only = q.get("mode", [""])[0] == "ro" or q.get("immutable", ["0"])[0] == "1"
+        path = urllib.parse.unquote(path)
+        if path.startswith("//"):                                           # file://host/path or file:///C:/x
+            path = path[2:]
+            path = path[path.find("/"):] if not path.startswith("/") else path
+        if len(path) >= 3 and path[0] == "/" and path[2] == ":":           # /C:/x -> C:/x
+            path = path[1:]
+        s = path
+    return os.path.normcase(os.path.realpath(s)), read_only
+
+
+def _audit(event: str, args) -> None:
+    if event != "sqlite3.connect" or not args:
+        return
+    target = _open_target(args[0])
+    if target is None or target[1]:
+        return
+    if target[0] != os.path.normcase(os.path.realpath(BUILD_PATH)) or _held is not None or not is_cut_over():
+        return
+    raise CutoverRefused(f"refused: a read-write sqlite3 open of the catalogue build {BUILD_PATH} without the "
+                         f"single-writer lock ({LOCK_PATH}) - open it with core.catalog_path.connect(write=True) "
+                         "inside write_session() (R1209: the runtime guard behind the static rules)")
+
+
+# once per process: a hook cannot be removed, and a second copy of this module (a test that loads it by path)
+# must not add a second one - the first reads this module's globals, which the tests monkeypatch
+if not getattr(sys, "_econ_catalog_audit_installed", False):
+    sys.addaudithook(_audit)
+    sys._econ_catalog_audit_installed = True
+
+
 def catalog_path() -> str:
     """The catalogue this process must use: the fixed build after T0, the checkout's before."""
     return BUILD_PATH if is_cut_over() else CHECKOUT_PATH
@@ -54,6 +107,56 @@ def connect(*, write: bool = False, timeout: float = 60.0) -> sqlite3.Connection
         raise FileNotFoundError(f"no catalogue at {path} (it is never created implicitly)")
     uri = pathlib.Path(path).resolve().as_uri() + ("?mode=rw" if write else "?mode=ro")
     return sqlite3.connect(uri, uri=True, timeout=timeout)
+
+
+def under(root: str | os.PathLike) -> str:
+    """<root>/data/catalog.db: the catalogue of the checkout at `root`, for a tool that keeps its own ROOT (a
+    test points it at a temporary folder). Open it with connect_path(), which after T0 accepts only the
+    build - so a production run is unchanged and a worktree's copy is refused."""
+    return os.path.join(os.fspath(root), "data", "catalog.db")
+
+
+def connect_path(path: str | os.PathLike, *, write: bool, timeout: float = 60.0, **kw) -> sqlite3.Connection:
+    """The one-line replacement for a tool's own `sqlite3.connect(<catalogue path>)` (plan step 1): the tool
+    keeps its --db argument and its tests keep their temporary catalogues.
+
+    Before T0 it opens `path` as the tool did (mode=ro for a read, which a reader never needed to write;
+    mode=rw for a write - neither creates a missing file). After T0 it opens only THE build: any other path
+    is refused (a copy, a worktree's data/catalog.db, a stale path in a script), and a write needs
+    writer_lock() held by this process. `kw` goes to sqlite3.connect (detect_types, check_same_thread...)."""
+    p = os.fspath(path)
+    if is_cut_over():
+        if os.path.normcase(os.path.realpath(p)) != os.path.normcase(os.path.realpath(BUILD_PATH)):
+            raise CutoverRefused(f"refused: after T0 the catalogue is {BUILD_PATH}, not {p}")
+        if write and _held is None:
+            raise CutoverRefused(f"refused: a write to the catalogue build {p} needs the single-writer lock "
+                                 f"({LOCK_PATH}); take it with core.catalog_path.writer_lock()")
+    if not os.path.isfile(p):
+        raise FileNotFoundError(f"no catalogue at {p} (it is never created implicitly)")
+    uri = pathlib.Path(p).resolve().as_uri() + ("?mode=rw" if write else "?mode=ro")
+    return sqlite3.connect(uri, uri=True, timeout=timeout, **kw)
+
+
+@contextlib.contextmanager
+def write_session():
+    """What a catalogue WRITER wraps its writes in (plan step 1): after T0 the single-writer lock - taken
+    here, or already held by this process (the updater holds it for its whole run and may call a
+    cataloguer in-process) - and before T0 nothing, so CI and the pre-T0 desktop write as today (and CI's
+    Linux runner never creates the Windows lock folder)."""
+    if not is_cut_over() or _held is not None:
+        yield
+        return
+    with writer_lock():
+        yield
+
+
+def write_session_for_process() -> None:
+    """write_session() for a top-level cataloguing SCRIPT (module code, no main() to wrap): entered now,
+    left at interpreter exit (atexit). The lock is an OS file lock, so even a killed script releases it."""
+    import atexit                                                           # noqa: PLC0415
+    session = write_session()
+    session.__enter__()
+    atexit.register(session.__exit__, None, None, None)
 
 
 @contextlib.contextmanager

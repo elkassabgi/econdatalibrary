@@ -15,7 +15,6 @@ from __future__ import annotations
 import argparse
 import os
 import random
-import sqlite3
 import sys
 import urllib.parse
 
@@ -96,7 +95,8 @@ def main() -> int:
                     help="byte-compare this many RANDOM served objects against the resolver")
     a = ap.parse_args()
 
-    con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=180.0)
+    from core import catalog_path                                     # noqa: PLC0415 - plan step 1
+    con = catalog_path.connect(timeout=180.0)
     con.execute("PRAGMA busy_timeout = 180000")
     cat = {r[0] for r in con.execute(
         # PK RANGE, not WHERE source_id=?: series has only its primary-key index, so the

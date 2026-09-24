@@ -296,7 +296,7 @@ def samples(primary: str, climate: str) -> dict:
     451 before any catalogue lookup and so proves nothing about which file is behind which binding."""
     out = {}
     for label, path in (("primary", primary), ("climate", climate)):
-        con = sqlite3.connect(f"file:{os.path.abspath(path)}?mode=ro", uri=True)
+        con = sqlite3.connect(f"file:{os.path.abspath(path)}?mode=ro", uri=True)  # plain-open: a checked origin copy, read-only
         try:
             found = []
             for (src,) in con.execute("SELECT source_id FROM source ORDER BY source_id").fetchall():
@@ -318,7 +318,7 @@ def place(copies_dir: str, persist: str, slots: dict) -> None:
     os.makedirs(dest)
     for name, binding in (("primary.sqlite", "CATALOG"), ("climate.sqlite", "CATALOG_CLIMATE")):
         src = os.path.join(copies_dir, name)
-        con = sqlite3.connect(src)
+        con = sqlite3.connect(src)  # plain-open: an origin copy being placed, not the catalogue
         try:
             mode = con.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
         finally:

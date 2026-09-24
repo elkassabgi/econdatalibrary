@@ -80,6 +80,13 @@ def pre_t0(tmp_path, monkeypatch):
     return tmp_path
 
 
+def _catalog_path():
+    """core.catalog_path: since the catpath merge noaa_missing and bea read the catalogue through
+    catalog_path.connect(), which before T0 opens CHECKOUT_PATH - the tests point it at their own file."""
+    from core import catalog_path
+    return catalog_path
+
+
 def _route(monkeypatch, store, seen=None):
     def make(*a, **k):
         if seen is not None:
@@ -134,7 +141,7 @@ def test_noaa_missing_writes_only_what_the_csv_store_lacks(pre_t0, monkeypatch):
     cat = pre_t0 / "catalog.db"
     _catalog(str(cat), [("noaa:gsom:AYM001:DSND", "noaa")])
     monkeypatch.setattr(m, "STORE", str(store_dir))
-    monkeypatch.setattr(m, "CAT", str(cat))
+    monkeypatch.setattr(_catalog_path(), "CHECKOUT_PATH", str(cat))     # catalog_path.connect() before T0
     have = m._r2_key("gsom:AYM002:DSND")
     store = Store({have: b"x"})
     _route(monkeypatch, store)
@@ -153,7 +160,7 @@ def test_noaa_missing_a_dry_run_writes_nothing(pre_t0, monkeypatch):
     (store_dir / "gsom__AY.parquet").write_bytes(_parquet_bytes(["gsom:AYM003:DSND"]))
     _catalog(str(pre_t0 / "catalog.db"))
     monkeypatch.setattr(m, "STORE", str(store_dir))
-    monkeypatch.setattr(m, "CAT", str(pre_t0 / "catalog.db"))
+    monkeypatch.setattr(_catalog_path(), "CHECKOUT_PATH", str(pre_t0 / "catalog.db"))
     store = Store()
     _route(monkeypatch, store)
     monkeypatch.setattr(sys, "argv", ["x"])
@@ -237,6 +244,7 @@ def test_bea_writes_through_the_csv_store_with_a_wide_pool(pre_t0, monkeypatch):
     _catalog(str(pre_t0 / "data" / "catalog.db"), [(f"bea:{k}", "bea") for k in rows])
     monkeypatch.setattr(m, "STORE", str(pre_t0 / "clean_full" / "bea"))
     monkeypatch.setattr(m, "ROOT", str(pre_t0))
+    monkeypatch.setattr(_catalog_path(), "CHECKOUT_PATH", str(pre_t0 / "data" / "catalog.db"))
     monkeypatch.setattr(m, "MUST_VERIFY", [])
     from core import derive_csv
     monkeypatch.setattr(derive_csv, "_series_csv_bytes",
@@ -312,7 +320,7 @@ def test_noaa_missing_a_failed_upload_fails_the_run(pre_t0, monkeypatch):
     (store_dir / "gsom__AY.parquet").write_bytes(_parquet_bytes(["gsom:AYM003:DSND"]))
     _catalog(str(pre_t0 / "catalog.db"))
     monkeypatch.setattr(m, "STORE", str(store_dir))
-    monkeypatch.setattr(m, "CAT", str(pre_t0 / "catalog.db"))
+    monkeypatch.setattr(_catalog_path(), "CHECKOUT_PATH", str(pre_t0 / "catalog.db"))
     _route(monkeypatch, Store())
     monkeypatch.setattr(m._derive, "_put_with_retry", _never)
     monkeypatch.setattr(sys, "argv", ["x", "--apply", "--workers", "1"])
@@ -329,7 +337,7 @@ def test_noaa_missing_an_error_is_not_read_as_absent(pre_t0, monkeypatch):
     (store_dir / "gsom__AY.parquet").write_bytes(_parquet_bytes(["gsom:AYM003:DSND"]))
     _catalog(str(pre_t0 / "catalog.db"))
     monkeypatch.setattr(m, "STORE", str(store_dir))
-    monkeypatch.setattr(m, "CAT", str(pre_t0 / "catalog.db"))
+    monkeypatch.setattr(_catalog_path(), "CHECKOUT_PATH", str(pre_t0 / "catalog.db"))
 
     class Flaky(Store):
         def exists(self, key):
@@ -380,6 +388,7 @@ def test_bea_a_failed_upload_fails_the_run(pre_t0, monkeypatch):
     _catalog(str(pre_t0 / "data" / "catalog.db"), [("bea:712:1", "bea")])
     monkeypatch.setattr(m, "STORE", str(pre_t0 / "clean_full" / "bea"))
     monkeypatch.setattr(m, "ROOT", str(pre_t0))
+    monkeypatch.setattr(_catalog_path(), "CHECKOUT_PATH", str(pre_t0 / "data" / "catalog.db"))
     monkeypatch.setattr(m, "MUST_VERIFY", [])
     from core import derive_csv
     monkeypatch.setattr(derive_csv, "_series_csv_bytes",

@@ -20,14 +20,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sqlite3
 import sys
 import time
 
 import requests
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CATALOG = os.path.join(ROOT, "data", "catalog.db")
+sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 CACHE = os.path.join(ROOT, "data", "_bea_line_descriptions.json")
 API = "https://apps.bea.gov/api/data"
 
@@ -115,7 +115,7 @@ def main() -> int:
     a = ap.parse_args()
 
     key = _key()
-    con = sqlite3.connect(CATALOG, timeout=180)
+    con = catalog_path.connect(write=True, timeout=180)
     con.execute("PRAGMA busy_timeout=180000")
 
     untitled = _untitled(con)
@@ -192,4 +192,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    with catalog_path.write_session():   # after T0: the single-writer lock
+        sys.exit(main())

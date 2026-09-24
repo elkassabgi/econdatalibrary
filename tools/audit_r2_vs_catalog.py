@@ -59,7 +59,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import sqlite3
 import sys
 import urllib.parse
 
@@ -84,8 +83,8 @@ def count_prefix(s3, bucket: str, prefix: str, cap: int) -> tuple[int, bool]:
 
 
 def catalogue_counts() -> dict:
-    con = sqlite3.connect(
-        f"file:{os.path.join(ROOT, 'data', 'catalog.db')}?mode=ro", uri=True)
+    from core import catalog_path                                     # noqa: PLC0415 - plan step 1
+    con = catalog_path.connect()
     try:
         return dict(con.execute("SELECT source_id, count(*) FROM series GROUP BY 1"))
     finally:
@@ -200,7 +199,7 @@ def main() -> int:
         # synced from a machine this one has not caught up with - and when they disagree the
         # difference lands here looking exactly like a publishing gap.
         print()
-        print("  THE `catalogue rows` COLUMN IS THE LOCAL data/catalog.db, NOT D1. A non-zero")
+        print("  THE `catalogue rows` COLUMN IS THE LOCAL CATALOGUE (core.catalog_path), NOT D1. A non-zero")
         print("  difference is a QUESTION, not a finding: check the ids against D1 by primary")
         print("  key (an index seek, ~2 rows read per id, free) before calling anything")
         print("  unlisted. On 2026-09-07 all 82 of fed_board's 21 and fhfa's 61 'unlisted'")

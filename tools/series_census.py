@@ -61,7 +61,6 @@ import datetime as dt
 import glob
 import json
 import os
-import sqlite3
 import sys
 import tempfile
 
@@ -528,8 +527,8 @@ def main() -> int:
         print(f"  [{i}/{len(srcs)}] {src}: {obs:,} obs, "
               f"~{ser_by_src[src]:,} series", flush=True)
 
-    cat = sqlite3.connect(f"file:{os.path.join(ROOT, 'data', 'catalog.db')}?mode=ro",
-                          uri=True)
+    from core import catalog_path                                    # noqa: PLC0415 - plan step 1
+    cat = catalog_path.connect()                                     # read-only
     n_sources = cat.execute("SELECT COUNT(DISTINCT source_id) FROM series").fetchone()[0]
     cat.close()
 

@@ -29,11 +29,11 @@ import argparse
 import io
 import json
 import os
-import sqlite3
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CATALOG = os.path.join(ROOT, "data", "catalog.db")
+sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 CACHE = os.path.join(ROOT, "data", "_eia_eba_respondents.json")
 API = "https://api.eia.gov/v2/electricity/rto/region-data/facet/respondent/"
 
@@ -69,7 +69,7 @@ def main() -> int:
     a = ap.parse_args()
 
     names = respondents()
-    con = sqlite3.connect(CATALOG, timeout=600)
+    con = catalog_path.connect(write=True, timeout=600)
     con.execute("PRAGMA busy_timeout=600000")
     rows = con.execute("""SELECT series_id FROM series WHERE source_id='eia'
         AND series_id LIKE 'eia:EBA.%-ALL'
@@ -106,4 +106,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    with catalog_path.write_session():   # after T0: the single-writer lock
+        sys.exit(main())

@@ -147,13 +147,13 @@ def test_taking_the_lock_recovers_a_writer_killed_mid_transaction(paths):
 def test_a_persist_mode_journal_is_not_hot(paths):
     """AR-153: journal_mode=PERSIST keeps the journal after a commit with a zeroed header - not hot. The lock
     refused every such catalogue when it tested only "exists and is not empty"."""
-    (paths / "CUTOVER").write_text("")
     build = cp.BUILD_PATH
-    c = sqlite3.connect(build)
+    c = sqlite3.connect(build)                      # the setup is a writer: before the flag (R1209's hook)
     c.execute("PRAGMA journal_mode=PERSIST")
     c.execute("INSERT INTO which VALUES ('committed')")
     c.commit()
     c.close()
+    (paths / "CUTOVER").write_text("")
     j = build + "-journal"
     assert os.path.getsize(j) > 0 and not cp.journal_is_hot(j), "precondition: a kept, zeroed journal"
     with cp.writer_lock():
@@ -200,6 +200,132 @@ def test_a_busy_catalogue_names_the_unlocked_writer(paths, monkeypatch):
             pass
 
 
+# ---- connect_path: the one-line replacement for a tool's own sqlite3.connect(<catalogue>) ---------------
+def test_connect_path_before_t0_opens_the_tool_s_own_path(paths, tmp_path):
+    other = tmp_path / "a_test_catalogue.db"
+    with sqlite3.connect(other) as c:
+        c.execute("CREATE TABLE which (name TEXT)")
+        c.execute("INSERT INTO which VALUES ('other')")
+    assert _which(cp.connect_path(other, write=False)) == "other", "a --db argument or a test's copy still works"
+    with pytest.raises(sqlite3.OperationalError):
+        cp.connect_path(other, write=False).execute("INSERT INTO which VALUES ('x')")
+    w = cp.connect_path(str(other), write=True)
+    w.execute("INSERT INTO which VALUES ('x')")
+    w.commit()
+    with pytest.raises(FileNotFoundError):
+        cp.connect_path(tmp_path / "missing.db", write=True)
+    assert not (tmp_path / "missing.db").exists(), "never created"
+
+
+def test_connect_path_after_t0_opens_only_the_build(paths, tmp_path):
+    (paths / "CUTOVER").write_text("")
+    with pytest.raises(cutover.CutoverRefused, match="not"):
+        cp.connect_path(cp.CHECKOUT_PATH, write=False)               # a worktree's data/catalog.db
+    assert _which(cp.connect_path(cp.BUILD_PATH, write=False)) == "build"
+    spelled = os.path.join(os.path.dirname(cp.BUILD_PATH), ".", os.path.basename(cp.BUILD_PATH))
+    assert _which(cp.connect_path(spelled.upper() if os.name == "nt" else spelled, write=False)) == "build"
+    with pytest.raises(cutover.CutoverRefused, match="lock"):
+        cp.connect_path(cp.BUILD_PATH, write=True)
+    with cp.writer_lock():
+        cp.connect_path(cp.BUILD_PATH, write=True).execute("INSERT INTO which VALUES ('y')").connection.commit()
+
+
+def test_write_session_before_t0_takes_no_lock(paths):
+    lock_dir = os.path.dirname(cp.LOCK_PATH)
+    with cp.write_session():
+        c = cp.connect(write=True)
+        c.execute("INSERT INTO which VALUES ('w')")
+        c.commit()
+        c.close()
+    assert not os.path.exists(lock_dir), "no lock folder is made before T0 (CI's Linux runner)"
+
+
+def test_write_session_after_t0_holds_the_lock_and_is_reentrant(paths):
+    (paths / "CUTOVER").write_text("")
+    with pytest.raises(cutover.CutoverRefused, match="single-writer lock"):
+        cp.connect(write=True)
+    with cp.write_session():
+        with cp.write_session():                          # the updater holds it; a cataloguer inside it
+            c = cp.connect(write=True)
+            c.execute("INSERT INTO which VALUES ('w')")
+            c.commit()
+            c.close()
+        assert cp._held is not None, "the inner session did not release the outer one's lock"
+    assert cp._held is None
+    with pytest.raises(cutover.CutoverRefused):
+        cp.connect(write=True)                           # released again
+
+
+SCRIPT = r"""
+import sys, time
+sys.path.insert(0, {root!r})
+from core import catalog_path as cp, cutover
+cp.LOCK_PATH, cp.BUILD_PATH, cutover.FLAG_PATH = {lock!r}, {build!r}, {flag!r}
+cp.write_session_for_process()
+c = cp.connect(write=True)
+c.execute("INSERT INTO which VALUES ('script')")
+c.commit()
+print("HELD", flush=True)
+time.sleep(float(sys.argv[1]))
+"""
+
+
+def test_a_top_level_script_holds_the_lock_until_it_exits(paths):
+    """write_session_for_process: a cataloguing script with no main() holds the lock for its whole life, and
+    its exit - clean or killed - releases it."""
+    (paths / "CUTOVER").write_text("")
+    code = SCRIPT.format(root=ROOT, lock=cp.LOCK_PATH, build=cp.BUILD_PATH, flag=str(paths / "CUTOVER"))
+    for how in ("exit", "kill"):
+        p = subprocess.Popen([sys.executable, "-B", "-c", code, "2" if how == "exit" else "60"],
+                             stdout=subprocess.PIPE, text=True)
+        assert p.stdout.readline().strip() == "HELD"
+        with pytest.raises(cutover.CutoverRefused, match="another process"):
+            with cp.writer_lock():
+                pass
+        if how == "kill":
+            p.kill()
+        p.wait(30)
+        with cp.writer_lock():                               # free again
+            pass
+    import pathlib
+    c = sqlite3.connect(pathlib.Path(cp.BUILD_PATH).resolve().as_uri() + "?mode=ro", uri=True)   # a check reads
+    assert [r[0] for r in c.execute("SELECT name FROM which WHERE name='script'")] == ["script", "script"]
+    c.close()
+
+
+def test_under_names_the_checkout_s_catalogue():
+    """The real (unpatched) constants: a tool's own ROOT names the checkout's file, production's the build."""
+    assert cp.under(cp.ROOT) == cp.CHECKOUT_PATH
+    assert cp.under(cp.LIVE_STORE_ROOT) == cp.BUILD_PATH, "production's own ROOT names the build"
+
+
+def test_connect_path_passes_sqlite_options(paths, tmp_path):
+    sqlite3.register_converter("cp_test_marked", lambda b: ("converted", b.decode()))   # a type only this test uses
+    with sqlite3.connect(cp.CHECKOUT_PATH) as w:
+        w.execute("CREATE TABLE stamped (d cp_test_marked)")
+        w.execute("INSERT INTO stamped VALUES ('2026-09-24')")
+    w.close()
+    c = cp.connect_path(cp.CHECKOUT_PATH, write=False, detect_types=sqlite3.PARSE_DECLTYPES, check_same_thread=False)
+    assert _which(c) == "checkout"
+    got = c.execute("SELECT d FROM stamped").fetchone()[0]
+    assert got == ("converted", "2026-09-24"), f"detect_types did not reach sqlite3.connect: {got!r}"
+
+
+def test_after_t0_a_link_to_the_build_opens_it(paths, tmp_path):
+    """A junction (Windows) or symlink to the build's folder names the same file: realpath, not abspath."""
+    link = tmp_path / "link_to_build"
+    target = os.path.dirname(cp.BUILD_PATH)
+    if os.name == "nt":
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), target], capture_output=True).returncode == 0
+    else:
+        os.symlink(target, link)
+        made = True
+    if not made:
+        pytest.skip("could not make a junction here")
+    (paths / "CUTOVER").write_text("")
+    assert _which(cp.connect_path(link / "catalog.db", write=False)) == "build"
+
+
 def test_the_lock_is_not_reentrant(paths):
     with cp.writer_lock():
         with pytest.raises(RuntimeError):
@@ -226,6 +352,14 @@ LEGACY = os.path.join(ROOT, "tests", "catalog_db_legacy.txt")
 NAMES_CATALOGUE = re.compile(r"catalog\.db|ECONDL_CATALOG|\bCATALOG_DB\b|[\"']catalog[\"']\s*[+,]\s*[\"']\.db[\"']")
 # A narrow exemption: only the named function of the named file is left out of the scan.
 EXEMPT_FUNCTIONS = {"updater/run.py": frozenset({"_selfhost_preflight"})}   # names ECONDL_CATALOG to REFUSE it
+# Whole files outside the resolver BY DESIGN, each with the premise that makes it safe pinned below.
+EXEMPT_FILES = {
+    # The PUBLISHED client (pip install econdl): standalone, so it cannot import core.catalog_path, and its
+    # users point it at their own copy. It opens mode=ro only (pinned by the test below), and in-repo the
+    # updater's post-T0 preflight refuses to run unless econdl's default_db() IS the build
+    # (updater/run.py _selfhost_preflight).
+    "clients/python/econdl/_catalog.py",
+}
 
 
 def _code_only(src: str, ext: str, rel: str = "") -> str:
@@ -246,7 +380,69 @@ def _naming_files():
             if NAMES_CATALOGUE.search(_code_only(fh.read(), os.path.splitext(p)[1], rel)):
                 found.add(rel)
     found.discard("core/catalog_path.py")
-    return found
+    return found - EXEMPT_FILES
+
+
+def test_the_exempt_client_opens_read_only_and_the_preflight_checks_it(tmp_path):
+    """The premises of EXEMPT_FILES: econdl's catalogue open cannot write, and updater/run.py's preflight
+    compares econdl's default_db() with the build."""
+    sys.path.insert(0, os.path.join(ROOT, "clients", "python"))
+    from econdl import _catalog
+    db = tmp_path / "c.db"
+    with sqlite3.connect(db) as c:
+        c.execute("CREATE TABLE series (series_id TEXT)")
+    c.close()
+    con = _catalog.connect(str(db))
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        con.execute("INSERT INTO series VALUES ('x')")
+    con.close()
+    run_src = open(os.path.join(ROOT, "updater", "run.py"), encoding="utf-8").read()
+    pre = run_src[run_src.index("def _selfhost_preflight"):]
+    body = pre[:pre.index("\ndef ")]
+    assert "econdl_db = econdl_catalog.default_db()" in body and "econdl_db, BUILD_PATH" in body
+    assert EXEMPT_FILES == {"clients/python/econdl/_catalog.py"}, "a new exemption needs its own premise test"
+
+
+def test_the_exempt_client_answers_only_the_build_after_t0(tmp_path, monkeypatch):
+    """R1194 finding 2: the preflight guards updater/run.py only, yet core/derive_csv.py and other in-repo
+    users read through econdl's default_db(). After the cutover it answers the build or refuses."""
+    sys.path.insert(0, os.path.join(ROOT, "clients", "python"))
+    from econdl import _catalog
+    assert _catalog._CUTOVER_FLAG == cutover.FLAG_PATH and _catalog._BUILD_DB == cp.BUILD_PATH, \
+        "the client's copies of the two paths drifted from core"
+    build, other = tmp_path / "build.db", tmp_path / "other.db"
+    for p in (build, other):
+        p.write_bytes(b"")
+    monkeypatch.setattr(_catalog, "_CUTOVER_FLAG", str(tmp_path / "CUTOVER"))
+    monkeypatch.setattr(_catalog, "_BUILD_DB", str(build))
+    monkeypatch.setattr(_catalog, "_DEFAULT_DB", str(other))
+    monkeypatch.setenv("ECONDL_CATALOG", str(other))
+    assert _catalog.default_db() == str(other), "before the cutover: unchanged"
+    (tmp_path / "CUTOVER").write_text("")
+    with pytest.raises(RuntimeError, match="refused"):
+        _catalog.default_db()                                  # the override
+    spelled = os.path.join(str(tmp_path), ".", "BUILD.DB" if os.name == "nt" else "build.db")
+    monkeypatch.setenv("ECONDL_CATALOG", spelled)
+    assert _catalog.default_db() == str(build), "the build under another spelling is the build (realpath/normcase)"
+    monkeypatch.delenv("ECONDL_CATALOG")
+    assert _catalog.default_db() == str(build), \
+        "a checkout whose own copy is not the build gets the build - core.catalog_path's answer (R1199)"
+
+
+def test_the_exempt_clients_flag_rule_is_cores(tmp_path, monkeypatch):
+    """R1199: econdl used os.path.exists; core.cutover counts an UNREADABLE flag as cut over (fail closed)."""
+    sys.path.insert(0, os.path.join(ROOT, "clients", "python"))
+    from econdl import _catalog
+    monkeypatch.setattr(_catalog, "_CUTOVER_FLAG", str(tmp_path / "CUTOVER"))
+    assert _catalog._cut_over() is False
+    real = os.stat
+
+    def unreadable(p, *a, **k):
+        if str(p) == str(tmp_path / "CUTOVER"):
+            raise PermissionError(13, "denied")
+        return real(p, *a, **k)
+    monkeypatch.setattr(_catalog.os, "stat", unreadable)
+    assert _catalog._cut_over() is True
 
 
 def test_the_catalogue_ratchet_can_fail():

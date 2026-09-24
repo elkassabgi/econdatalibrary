@@ -27,6 +27,7 @@ import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 
 SOURCE = "cepii_baci"
 LIC = "etalab-2.0"
@@ -59,7 +60,7 @@ def main() -> int:
     from updater import blob, config
     from updater.strategies.fetchers.cepii_baci import PAIRS_BASENAME
 
-    con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=120.0)
+    con = catalog_path.connect(write=True, timeout=120.0)
     con.execute("PRAGMA busy_timeout = 120000")
 
     # --- licence gate FIRST -----------------------------------------------------------
@@ -164,4 +165,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    with catalog_path.write_session():   # after T0: the single-writer lock
+        sys.exit(main())

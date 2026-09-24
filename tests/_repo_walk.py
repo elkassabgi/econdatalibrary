@@ -43,6 +43,20 @@ def code_text(src: str, drop_functions: frozenset[str] = frozenset()) -> str:
     return ast.unparse(tree)
 
 
+def read_code(path: str) -> str:
+    """A code file's text as the interpreter reads it: UTF-8, with or without a byte-order mark. Ten jobs/
+    files carry the mark (written by PowerShell); read as plain utf-8 they failed to parse and a ratchet that
+    skipped them passed by not looking (R1209)."""
+    with open(path, encoding="utf-8-sig") as fh:
+        return fh.read()
+
+
+def parse_code(path: str):
+    """read_code, parsed. A file that does not parse RAISES - a ratchet never skips what it cannot read."""
+    import ast
+    return ast.parse(read_code(path), filename=path)
+
+
 def code_files(extensions: tuple[str, ...], root: str = ROOT) -> Iterator[tuple[str, str]]:
     """(repo-relative path with forward slashes, absolute path) for every file ending in `extensions`."""
     for dirpath, dirs, files in os.walk(root):

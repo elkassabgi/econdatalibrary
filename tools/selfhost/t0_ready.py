@@ -181,7 +181,7 @@ def thirteen_f(root: str = ROOT, state_path: str | None = None) -> tuple[bool, s
     from updater import state_migrations
     from core import catalog_path
     p = state_path or os.path.join(catalog_path.LIVE_STATE_DIR, "state.db")
-    con = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+    con = sqlite3.connect(f"file:{p}?mode=ro", uri=True)  # plain-open: the updater's state.db, read-only
     try:
         left = state_migrations.pending(con)
     finally:
@@ -205,7 +205,7 @@ def state_db(path: str | None = None) -> tuple[bool, str]:
     p = path or os.path.join(catalog_path.LIVE_STATE_DIR, "state.db")
     if not os.path.isfile(p):
         return False, f"no state.db at {p}"
-    con = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+    con = sqlite3.connect(f"file:{p}?mode=ro", uri=True)  # plain-open: the updater's state.db, read-only
     try:
         n = {t: con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ("unit_state", "source_state")}
     except sqlite3.Error as e:

@@ -12,15 +12,15 @@ shipping an opaque title. Units: FDIC reports dollar amounts in thousands of
 US dollars. Exact gate: keys scanned == rows inserted == rows counted.
 """
 import os
-import sqlite3
 import sys
 
 import duckdb
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 FIN = os.path.join(ROOT, "data", "clean_full", "fdic", "financials.parquet").replace("\\", "/")
 INST = os.path.join(ROOT, "data", "clean_full", "fdic", "institutions.parquet").replace("\\", "/")
-CAT = os.path.join(ROOT, "data", "catalog.db")
 
 # Official FDIC RIS variable names (BankFind Suite financials definitions).
 METRIC = {
@@ -57,7 +57,7 @@ def main() -> int:
         print(f"FATAL: unmapped metric codes {unmapped} — extend METRIC, never ship opaque titles")
         return 1
 
-    db = sqlite3.connect(CAT, timeout=7200)
+    db = catalog_path.connect(write=True, timeout=7200)
     db.execute("PRAGMA busy_timeout=7200000")
     ins = 0
     batch = []
@@ -89,4 +89,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    with catalog_path.write_session():   # after T0: the single-writer lock
+        sys.exit(main())

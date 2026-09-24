@@ -18,20 +18,20 @@ from __future__ import annotations
 import json
 import os
 import re
-import sqlite3
 import sys
 
 import requests
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 LIST_URL = "https://www.bankofcanada.ca/valet/lists/series/json"
 CODED = re.compile(r"^[0-9A-Z_.\-]+$")
 
 
 def main() -> int:
     write = "--write" in sys.argv
-    con = sqlite3.connect("file:%s?mode=ro" % os.path.join(ROOT, "data", "catalog.db").replace("\\", "/"),
-                          uri=True, timeout=180)
+    con = catalog_path.connect(timeout=180)
     try:
         rows = con.execute("SELECT series_id, title FROM series WHERE source_id='boc'").fetchall()
     finally:
