@@ -24,6 +24,7 @@ import { handleLastUpdates } from "./lastUpdates.ts";
 import { handleMetadata } from "./metadata.ts";
 import { handleSeriesCsv } from "./series.ts";
 import { handleBundle } from "./bundle.ts";
+import { handleGuardHeartbeat } from "./guardHeartbeat.ts";
 import { requireDownloadAuth, logDownload } from "./auth.ts";
 import { isGated } from "./denylist.ts";
 import { handlePublicStats } from "./publicStats.ts";
@@ -127,6 +128,7 @@ async function route(request: Request, env: Env, ctx: ExecutionContext, local: b
         }
         return fresh;
       }
+      if (path === "/v1/guard-heartbeat") return await handleGuardHeartbeat(env);
       if (path === "/v1/sources") return await handleSources(env);
       if (path === "/v1/last-updates") return await handleLastUpdates(env);
       if (path === "/v1/bundle") return await handleBundle(url, env);

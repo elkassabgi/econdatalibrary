@@ -38,3 +38,10 @@ jobs:
           DIGEST_TO: ${{ secrets.DIGEST_TO }}
           SELFHOST_NO_WRITES_SINCE: ${{ vars.SELFHOST_NO_WRITES_SINCE }}
         run: python -B tools/selfhost/watch_edge.py
+      # THE WATCHDOG'S BEAT, read off the machine (review R1210): at T0 updater-daily's --check - the beat's
+      # only reader - is switched off, and the beat moves into the self-hosted store. This reads it through
+      # the public /v1/guard-heartbeat route (timestamp and counts only). Runs once the repository variable
+      # GUARD_HEARTBEAT_URL is set, which is after the worker with that route is deployed.
+      - name: Check the workstation watchdog's heartbeat
+        if: ${{ vars.GUARD_HEARTBEAT_URL != '' }}
+        run: python -B tools/guard_heartbeat.py --check --from-url "${{ vars.GUARD_HEARTBEAT_URL }}"

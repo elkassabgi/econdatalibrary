@@ -797,7 +797,14 @@ def refuse_unless_live_checkout(what: str) -> None:
     _live_checkout_ok[places] = _time.monotonic()
 
 
-def _refuse_or_own_store_write(what: str) -> None:
+# STATUS OBJECTS, NOT DATA: written from the live checkout without the single-writer lock, because the lock
+# is the updater's for its whole run and the watchdog beats every ~5 minutes (a beat refused for hours would
+# read as a dead watchdog). The live-checkout rule still applies; the blob store itself is safe for writers
+# in several processes (every write is one BEGIN IMMEDIATE transaction). Nothing a user downloads is here.
+_LOCK_FREE_KEYS = frozenset({"_aqueduct/guard_heartbeat.json"})
+
+
+def _refuse_or_own_store_write(what: str, key: str | None = None) -> None:
     """THE SERVED STORE HAS THE CATALOGUE'S SINGLE-WRITER RULE (review R1203 finding 2). After T0 a write
     is refused outside the live checkout (refuse_unless_live_checkout), and it needs the writer lock
     (core.catalog_path): held already (the updater holds it for its whole run), or taken here for the rest
@@ -808,6 +815,8 @@ def _refuse_or_own_store_write(what: str) -> None:
     if not cutover.is_cut_over():
         return
     refuse_unless_live_checkout(what)
+    if key in _LOCK_FREE_KEYS:
+        return
     with _own_store_guard:                  # one acquisition however many threads write first
         if catalog_path._held is None:
             _process_session = catalog_path.write_session_for_process()
@@ -852,7 +861,7 @@ class SelfhostBlob:
             return f.read()
 
     def put_atomic(self, key: str, data: bytes, *, plain: bool = False) -> None:
-        _refuse_or_own_store_write(f"put {key}")
+        _refuse_or_own_store_write(f"put {key}", key)
         # Same rules as R2Blob.put_atomic: ContentType by extension; series CSVs gzip at rest through the
         # ONE shared definition (core.r2_util.series_csv_put_args), unless plain=True (_refuse_plain_gzip);
         # bytes the store already holds are not written again.

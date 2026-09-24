@@ -68,6 +68,7 @@ export function edgeStatus(env: EdgeEnv & { EDGE_STATE?: string; GIT_COMMIT?: st
 /** Routes the origin answers. Everything else gets the edge's own 404 and is never forwarded. */
 const FORWARDED_PATHS: ReadonlySet<string> = new Set([
   "/", "/v1", "/v1/", "/v1/catalog", "/v1/sources", "/v1/last-updates", "/v1/stats", "/v1/bundle",
+  "/v1/guard-heartbeat",
 ]);
 
 export function isForwardable(path: string): boolean {

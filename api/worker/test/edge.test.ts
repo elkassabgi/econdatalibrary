@@ -71,7 +71,9 @@ test("no client path can move the request off ORIGIN_URL's host", () => {
 
 test("only the origin's own routes are forwarded", () => {
   for (const p of ["/", "/v1", "/v1/", "/v1/catalog", "/v1/sources", "/v1/last-updates", "/v1/stats", "/v1/bundle",
-                   "/v1/series/a%3Ab.csv", "/v1/series/a%3Ab.metadata.json"]) assert.equal(edge.isForwardable(p), true, p);
+                   "/v1/series/a%3Ab.csv", "/v1/series/a%3Ab.metadata.json", "/v1/guard-heartbeat"]) {
+    assert.equal(edge.isForwardable(p), true, p);
+  }
   for (const p of ["//evil.example/v1/sources", "/v1/pv", "/v1/public-stats", "/v1/nope", "/admin", "/v1/catalogX"]) {
     assert.equal(edge.isForwardable(p), false, p);
   }
@@ -81,6 +83,7 @@ test("cache times per route: data, bundle and the rest are never cached", () => 
   const want: Record<string, number> = {
     "/v1/catalog": 21600, "/v1/stats": 21600, "/v1/sources": 300, "/v1/last-updates": 300,
     "/v1/series/a%3Ab.metadata.json": 3600, "/v1/series/a%3Ab.csv": 0, "/v1/bundle": 0, "/": 0, "/v1/pv": 0,
+    "/v1/guard-heartbeat": 0,                        // a liveness beat must never be served from a cache
   };
   for (const [p, s] of Object.entries(want)) assert.equal(edge.cacheSeconds(p), s, p);
   assert.equal(new URL(edge.cacheKey(new Request("https://e.example/v1/catalog?q=a&api_key=K")).url).search, "?q=a");

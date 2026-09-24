@@ -296,10 +296,16 @@ def publish() -> int:
         "tracked": list(TRACKED),
         "emptiness": _emptiness_verdict(),
     }
-    c = r2_util.client(write=True)
-    c.put_object(Bucket=BUCKET, Key=KEY,
-                 Body=json.dumps(body, indent=2).encode("utf-8"),
-                 ContentType="application/json")
+    data = json.dumps(body, indent=2).encode("utf-8")
+    from core import cutover                                 # noqa: PLC0415
+    if cutover.is_cut_over():
+        # AFTER T0 the beat goes where /v1/guard-heartbeat reads it: the self-hosted store (R2 is frozen, and
+        # its write key is revoked). A status key: the live checkout, but not the updater's writer lock.
+        from updater.blob import SelfhostBlob                # noqa: PLC0415
+        SelfhostBlob().put_atomic(KEY, data)
+    else:
+        c = r2_util.client(write=True)
+        c.put_object(Bucket=BUCKET, Key=KEY, Body=data, ContentType="application/json")
     print(f"published {KEY}: {body['utc']} host={body['host']} "
           + (f"jobs_alive={len(body['jobs_alive'])}/{len(TRACKED)}" if detail is not None
              else "jobs_alive=UNKNOWN (process table unreadable)"))
@@ -392,14 +398,54 @@ def check(max_age_min: float) -> int:
     return 0
 
 
+def check_url(url: str, max_age_min: float) -> int:
+    """The OFF-MACHINE check after T0: read the beat through the public /v1/guard-heartbeat route (the edge,
+    then the workstation's origin), which serves only its timestamp and counts. Every failure to get a fresh
+    beat is a failure - a workstation that is down answers "unavailable", and that is exactly the outage this
+    exists to catch (R1210: T0 switches off updater-daily's --check, the beat's only reader)."""
+    import urllib.request                                    # noqa: PLC0415
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "guard-heartbeat-check"})
+        with urllib.request.urlopen(req, timeout=60) as r:   # noqa: S310 - a fixed https URL from the workflow
+            body = json.loads(r.read().decode("utf-8"))
+    except Exception as e:                                   # noqa: BLE001
+        print(f"GUARD HEARTBEAT UNREACHABLE via {url} ({type(e).__name__}: {str(e)[:160]}) - the workstation "
+              f"origin is down or the beat is absent; either way the watchdog is not proven alive.")
+        return 1
+    try:
+        beat = dt.datetime.fromisoformat(body["utc"])
+    except Exception as e:                                   # noqa: BLE001
+        print(f"GUARD HEARTBEAT UNREADABLE via {url} ({type(e).__name__}): {str(body)[:200]}")
+        return 1
+    if beat.tzinfo is None:
+        beat = beat.replace(tzinfo=dt.timezone.utc)
+    age = (dt.datetime.now(dt.timezone.utc) - beat).total_seconds() / 60.0
+    jobs = f"jobs_alive={body.get('jobs_alive')}/{body.get('jobs_tracked')}" if body.get("table_ok") else \
+        "jobs_alive=UNKNOWN (process table unreadable)"
+    if age > max_age_min:
+        print(f"GUARD HEARTBEAT STALE: last tick {beat.isoformat()} ({age:.1f} min ago > {max_age_min:.0f}) - {jobs}")
+        return 1
+    if body.get("emptiness_ran") and body.get("fetch_without_write"):
+        print(f"CRAWL EMPTINESS DEFECT: {body['fetch_without_write']} unit(s) are fetching and writing nothing "
+              f"(the names are on the workstation: python tools/guard_heartbeat.py --check --local)")
+        return 1
+    print(f"guard heartbeat OK: {age:.1f} min old ({beat.isoformat()}) - {jobs}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--publish", action="store_true", help="workstation: stamp a completed tick")
     g.add_argument("--check", action="store_true", help="CI: fail if the beat is stale")
     ap.add_argument("--max-age-min", type=float, default=DEFAULT_MAX_AGE_MIN)
+    ap.add_argument("--from-url", default=None,
+                    help="with --check: read the beat through this /v1/guard-heartbeat URL (the off-machine "
+                         "reader after T0) instead of R2")
     a = ap.parse_args()
-    return publish() if a.publish else check(a.max_age_min)
+    if a.publish:
+        return publish()
+    return check_url(a.from_url, a.max_age_min) if a.from_url else check(a.max_age_min)
 
 
 if __name__ == "__main__":
