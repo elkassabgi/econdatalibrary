@@ -27,6 +27,15 @@ def _catalogue(path):
         c.executemany("INSERT INTO series VALUES (?, ?)", [("foo:a", "foo"), ("foo:b", "foo"),
                                                            ("foo_direct:a", "foo_direct")])
         c.executemany("INSERT INTO source VALUES (?)", [("foo",), ("foo_direct",)])
+        for table in ("source_counts", "unit_state", "source_state", "source_data_through"):
+            c.execute(f"CREATE TABLE {table} (source_id TEXT, v INTEGER)")
+            c.executemany(f"INSERT INTO {table} VALUES (?, 1)", [("foo",), ("foo_direct",)])
+
+
+def _extras(path):
+    with sqlite3.connect(path) as c:
+        return {t: sorted(r[0] for r in c.execute(f"SELECT source_id FROM {t}"))
+                for t in ("source_counts", "unit_state", "source_state", "source_data_through")}
 
 
 def _rows(path):
@@ -65,6 +74,7 @@ def test_after_t0_a_retirement_acts_only_on_the_self_hosted_places(live, capsys)
     tmp, store, sb = live
     assert retire_source.main(["foo", "--apply"]) == 0
     assert _rows(tmp / "live" / "catalog.db") == (["foo_direct:a"], ["foo_direct"])
+    assert set(map(tuple, _extras(tmp / "live" / "catalog.db").values())) == {("foo_direct",)},         "after T0 the freshness tables go too (R709) - D1 no longer does it"
     assert sb.list_keys("series/") == ["series/foo_direct%3Aa.csv"], "the _direct neighbour survives"
     assert not (store / "data" / "clean_full" / "foo" / "x.parquet").exists()
     assert not (store / "data" / "clean_full" / "foo" / "sub" / "y.parquet").exists()
@@ -140,6 +150,7 @@ def test_before_t0_the_calls_are_todays(tmp_path, monkeypatch):
     assert d1[0][0] == "econ-catalog" and len(d1[0][1]) == 6
     assert all("source_id='foo'" in s for s in d1[0][1])
     assert _rows(tmp_path / "checkout" / "catalog.db") == (["foo_direct:a"], ["foo_direct"])
+    assert set(map(tuple, _extras(tmp_path / "checkout" / "catalog.db").values())) == {("foo", "foo_direct")},         "before T0 only series + source are deleted locally, as always (D1 carries the rest)"
 
 
 def test_before_t0_a_d1_failure_stops_before_the_purge(tmp_path, monkeypatch):
@@ -159,3 +170,37 @@ def test_execute_wrangler_refuses_after_t0(tmp_path, monkeypatch):
     monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "CUTOVER"))
     with pytest.raises(cutover.CutoverRefused):
         d1_remote.execute_wrangler("econ-catalog", ["DELETE FROM series"])
+
+
+# ---- tools/delist_source_rows.py on the same helper -----------------------------------------------------
+import delist_source_rows  # noqa: E402
+
+
+def test_after_t0_a_delisting_removes_rows_only(live, capsys):
+    tmp, store, sb = live
+    assert delist_source_rows.main(["foo", "--apply"]) == 0
+    assert _rows(tmp / "live" / "catalog.db") == (["foo_direct:a"], ["foo_direct"])
+    assert set(map(tuple, _extras(tmp / "live" / "catalog.db").values())) == {("foo_direct",)}
+    assert len(sb.list_keys("series/")) == 3, "a delisting never touches stored objects"
+    assert (store / "data" / "clean_full" / "foo" / "x.parquet").exists()
+    assert "D1: skipped" in capsys.readouterr().out
+
+
+def test_after_t0_the_csv_only_mode_touches_nothing_else(live):
+    tmp, store, sb = live
+    assert delist_source_rows.main(["foo", "--purge-csv-prefix", "a", "--apply"]) == 0
+    assert sb.list_keys("series/") == ["series/foo%3Ab.csv", "series/foo_direct%3Aa.csv"]
+    assert _rows(tmp / "live" / "catalog.db")[0] == ["foo:a", "foo:b", "foo_direct:a"], "catalogue untouched"
+
+
+def test_before_t0_a_delisting_makes_todays_calls(tmp_path, monkeypatch):
+    monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "absent" / "CUTOVER"))
+    monkeypatch.setattr(catalog_path, "CHECKOUT_PATH", str(tmp_path / "checkout" / "catalog.db"))
+    _catalogue(tmp_path / "checkout" / "catalog.db")
+    from core import r2_util
+    monkeypatch.setattr(r2_util, "client", lambda write=False: pytest.fail("a delisting must not touch R2"))
+    d1 = []
+    monkeypatch.setattr(d1_remote, "execute_wrangler", lambda db, stmts, **k: d1.append((db, stmts)) or True)
+    assert delist_source_rows.main(["foo", "--apply"]) == 0
+    assert d1 == [("econ-catalog", lt.Targets.d1_statements("foo"))] and len(d1[0][1]) == 6
+    assert _rows(tmp_path / "checkout" / "catalog.db") == (["foo_direct:a"], ["foo_direct"])

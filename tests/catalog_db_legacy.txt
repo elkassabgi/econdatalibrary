@@ -87,7 +87,6 @@ tools/catalog_whr.py
 tools/catalog_worldbank_esg_gaps.py
 tools/clear_ksh_mojibake_vintages.py
 tools/cost/idb_baseline.py
-tools/delist_source_rows.py
 tools/delist_timeless_tables.py
 tools/derive_csv_bulk.py
 tools/derive_eia_tables.py

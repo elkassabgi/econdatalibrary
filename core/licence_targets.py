@@ -25,6 +25,10 @@ from core.cutover import is_cut_over
 
 BUCKET = "econ-data"
 D1_NAME = "econ-catalog"
+# Every table that names a source by source_id: /v1/sources needs series + source; source_counts is what
+# /v1/catalog serves as `total` and /v1/stats sums (R709); unit_state / source_state / source_data_through
+# are the freshness projection /v1/last-updates reads with no join to `source`.
+SOURCE_TABLES = ("series", "source", "source_counts", "unit_state", "source_state", "source_data_through")
 
 
 def csv_prefix(source: str) -> str:
@@ -144,7 +148,27 @@ class Targets:
         con.execute("PRAGMA busy_timeout=120000")
         return con
 
+    def remove_source_rows(self, con: sqlite3.Connection, source: str) -> int:
+        """Delete a source's catalogue rows; returns the residual `series` rows (must be 0).
+
+        Before T0: series + source, as the tools always did locally (the other tables live only in D1).
+        After T0 the build ALSO carries the tables D1 carried - source_counts, unit_state, source_state,
+        source_data_through - and D1 is skipped, so they are deleted here: leaving them would keep the
+        source in /v1/catalog totals and /v1/last-updates (R709; 15 ids served that way on 2026-09-21)."""
+        tables = SOURCE_TABLES if self.selfhosted else SOURCE_TABLES[:2]
+        present = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for table in tables:
+            if table in present:
+                con.execute(f"DELETE FROM {table} WHERE source_id=?", (source,))
+        con.commit()
+        return con.execute("SELECT COUNT(*) FROM series WHERE source_id=?", (source,)).fetchone()[0]
+
     # -- D1 ---------------------------------------------------------------------------------------------
+    @staticmethod
+    def d1_statements(source: str) -> list[str]:
+        """The D1 deletes for one source, every table that names it (R709 and the freshness projection)."""
+        return [f"DELETE FROM {table} WHERE source_id='{source}';" for table in SOURCE_TABLES]
+
     def skip_d1(self) -> bool:
         """True after T0: D1 is the frozen copy and is not written. Prints what a rollback then needs."""
         if self.selfhosted:

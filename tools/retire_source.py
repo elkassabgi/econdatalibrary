@@ -85,11 +85,8 @@ def _retire(src: str, apply: bool, t: Targets) -> int:
         t.archive(k, f"archive/retired/{src}/{os.path.basename(k)}")
     print(f"  archived {len(parquets)} parquet(s) -> archive/retired/{src}/")
 
-    # 2. the catalogue
-    con.execute("DELETE FROM series WHERE source_id=?", (src,))
-    con.execute("DELETE FROM source WHERE source_id=?", (src,))
-    con.commit()
-    left = con.execute("SELECT COUNT(*) FROM series WHERE source_id=?", (src,)).fetchone()[0]
+    # 2. the catalogue (after T0 also the tables D1 used to carry - see Targets.remove_source_rows)
+    left = t.remove_source_rows(con, src)
     print(f"  catalogue: deleted; residual rows={left} (must be 0)")
 
     # 3. D1
@@ -109,12 +106,7 @@ def _retire(src: str, apply: bool, t: Targets) -> int:
     # (A D1 error report that crashed on the console's encoding once left a source deleted locally but
     # live in D1 - R363/R234; core.d1_remote.execute_wrangler keeps that fix.)
     if not t.skip_d1():
-        if not t.d1_execute([f"DELETE FROM series WHERE source_id='{src}';",
-                             f"DELETE FROM source WHERE source_id='{src}';",
-                             f"DELETE FROM source_counts WHERE source_id='{src}';",
-                             f"DELETE FROM unit_state WHERE source_id='{src}';",
-                             f"DELETE FROM source_state WHERE source_id='{src}';",
-                             f"DELETE FROM source_data_through WHERE source_id='{src}';"]):
+        if not t.d1_execute(t.d1_statements(src)):
             return 1
 
     # 4. purge (batched; every key re-checked against the terminated prefixes)
