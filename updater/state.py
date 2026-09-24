@@ -147,13 +147,19 @@ class StateStore:
     #     merge into a leftover 13F row, keep its strategy, and the migration would move it away);
     #   - rows with no strategy column (runs, cursors, owed) only once the XBRL product owns the id, so its
     #     writer's FIRST write is its source_state row.
-    def _guard_old_id(self, source_id, what, strategy=None, check_strategy=False):
+    def _guard_old_id(self, source_id, what, strategy=None, check_strategy=False, current=None):
         from . import state_migrations as _m                               # noqa: PLC0415
         if source_id != _m.OLD:
             return
         if check_strategy and _m.is_thirteen_f_strategy(strategy):
             raise ValueError(f"{what}({_m.OLD!r}) must carry the XBRL product's own strategy "
                              f"(got {strategy!r}); the 13F entry is {_m.NEW!r}")
+        if check_strategy and current and _m.is_thirteen_f_strategy(current.get("strategy")) \
+                and current.get("strategy"):
+            # R1205 probe D: the row being written over is still the 13F one (old code wrote it after this
+            # store was opened) - merging the XBRL write into it would keep 13F's cadence and dates
+            raise ValueError(f"{what}({_m.OLD!r}) still holds the 13F row: reopen the state store so the "
+                             f"migration moves it to {_m.NEW!r}, then write")
         if not check_strategy and not _m.xbrl_owns(self.db):
             raise ValueError(f"{what} under {_m.OLD!r} before the XBRL product owns the id: write its "
                              f"source_state row first (the 13F entry is {_m.NEW!r})")
@@ -161,7 +167,7 @@ class StateStore:
     def upsert_source(self, source_id, **kw):
         current = self.get_source(source_id)
         self._guard_old_id(source_id, "source_state", kw.get("strategy", (current or {}).get("strategy")),
-                           check_strategy=True)
+                           check_strategy=True, current=current)
         self._upsert("source_state", _SRC_COLS, ["source_id"],
                      current, {"source_id": source_id, **kw})
 
@@ -177,7 +183,7 @@ class StateStore:
     def upsert_unit(self, source_id, unit_id, **kw):
         current = self.get_unit(source_id, unit_id)
         self._guard_old_id(source_id, "unit_state", kw.get("strategy", (current or {}).get("strategy")),
-                           check_strategy=True)
+                           check_strategy=True, current=current)
         self._upsert("unit_state", _UNIT_COLS, ["source_id", "unit_id"],
                      current,
                      {"source_id": source_id, "unit_id": unit_id, **kw})

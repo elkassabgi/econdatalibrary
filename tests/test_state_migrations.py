@@ -117,6 +117,8 @@ POST_T0 = [
     ("INSERT INTO runs(ts_utc, source_id, unit_id) VALUES ('2026-10-02T00:00:00+00:00','sec_edgar','_all')", ()),
     ("INSERT INTO csv_retry_queue(series_id, source_id) VALUES ('sec_edgar:0000320193','sec_edgar')", ()),
     ("INSERT INTO full_rederive_owed(source_id, note) VALUES ('sec_edgar','xbrl debt')", ()),
+    # R1205 N1: a cursor the XBRL writer keeps - a series_cursor that always moved survived without it
+    ("INSERT INTO series_cursor(source_id, series_key, last_obs_date) VALUES ('sec_edgar','0000320193','2026-09-30')", ()),
 ]
 STRANDED_13F_UNIT = ("INSERT INTO unit_state(source_id, unit_id, strategy, status) "
                      "VALUES ('sec_edgar','_all','giant_changed_units','no_change')", ())
@@ -312,6 +314,33 @@ def test_the_xbrl_rows_must_carry_their_own_strategy(tmp_path):
         s.upsert_unit("sec_edgar", "daily", strategy="edgar_delta", status="ok")
         s.upsert_source("ecb", status="ok")                                   # other ids unaffected
         s.upsert_unit("ecb", "_all", status="ok")
+    finally:
+        s.close()
+
+
+def test_an_xbrl_write_over_an_unmoved_13f_row_is_refused(tmp_path):
+    """R1205 probe D: old code wrote the 13F row AFTER this store was opened (so the migration has not moved
+    it). The XBRL write carries its own strategy, but merging it into that row would keep 13F's cadence and
+    dates - refused, with the way out: reopen the store."""
+    p = str(tmp_path / "state.db")
+    s = StateStore(p)
+    try:
+        c = sqlite3.connect(p)
+        for sql, args in THIRTEEN_F[:2]:                       # old code, behind this store's back
+            c.execute(sql, args)
+        c.commit()
+        c.close()
+        with pytest.raises(ValueError, match="still holds the 13F row"):
+            s.upsert_source("sec_edgar", strategy="edgar_delta", status="ok")
+        with pytest.raises(ValueError, match="still holds the 13F row"):
+            s.upsert_unit("sec_edgar", "_all", strategy="edgar_delta", status="ok")
+    finally:
+        s.close()
+    s = StateStore(p)                                         # the reopen moves it; now the write lands
+    try:
+        s.upsert_source("sec_edgar", strategy="edgar_delta", status="ok")
+        assert s.get_source("sec_edgar")["cadence"] is None, "nothing of 13F's row merged in"
+        assert s.get_source("sec_edgar_13f")["strategy"] == M.THIRTEEN_F_STRATEGY
     finally:
         s.close()
 
