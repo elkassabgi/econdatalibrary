@@ -26,7 +26,7 @@ def _count(path, table, sid):
 THIRTEEN_F = [
     ("INSERT INTO source_state(source_id, strategy, cadence, status) VALUES "
      "('sec_edgar','giant_changed_units','quarterly','ok')", ()),
-    ("INSERT INTO unit_state(source_id, unit_id, status, obs_count) VALUES ('sec_edgar','_all','no_change',4333518)", ()),
+    ("INSERT INTO unit_state(source_id, unit_id, strategy, status, obs_count) VALUES ('sec_edgar','_all','giant_changed_units','no_change',4333518)", ()),
     ("INSERT INTO runs(ts_utc, source_id, unit_id) VALUES ('2026-09-23T00:00:00+00:00','sec_edgar','_all')", ()),
     ("INSERT INTO runs(ts_utc, source_id, unit_id) VALUES ('2026-09-22T00:00:00+00:00','sec_edgar','_all')", ()),
     ("INSERT INTO full_rederive_owed(source_id, note) VALUES ('sec_edgar','csv coherence unmet')", ()),
@@ -100,6 +100,152 @@ def test_a_series_cursor_on_both_ids_keeps_the_new_one(tmp_path):
     got = sorted(c.execute("SELECT source_id, series_key FROM series_cursor").fetchall())
     c.close()
     assert got == [("sec_edgar_13f", "k1"), ("sec_edgar_13f", "k2")]
+
+
+# ---- after T0: the XBRL product owns `sec_edgar` (review R1201) -----------------------------------------------
+POST_T0 = [
+    ("INSERT INTO source_state(source_id, strategy, cadence, status) VALUES "
+     "('sec_edgar','edgar_delta','daily','ok')", ()),
+    ("INSERT INTO source_state(source_id, strategy, cadence, status) VALUES "
+     "('sec_edgar_13f','giant_changed_units','quarterly','ok')", ()),
+    ("INSERT INTO unit_state(source_id, unit_id, strategy, status) VALUES ('sec_edgar_13f','_all','giant_changed_units','ok')", ()),
+    # rows an XBRL writer may keep under its own id - including ones shaped like 13F's
+    ("INSERT INTO unit_state(source_id, unit_id, strategy, status) VALUES ('sec_edgar','_all','giant_changed_units','ok')", ()),
+    ("INSERT INTO unit_state(source_id, unit_id, strategy, status) VALUES ('sec_edgar','daily','edgar_delta','ok')", ()),
+    ("INSERT INTO runs(ts_utc, source_id, unit_id) VALUES ('2026-10-02T00:00:00+00:00','sec_edgar','_all')", ()),
+    ("INSERT INTO csv_retry_queue(series_id, source_id) VALUES ('sec_edgar:0000320193','sec_edgar')", ()),
+    ("INSERT INTO full_rederive_owed(source_id, note) VALUES ('sec_edgar','xbrl debt')", ()),
+]
+
+
+def _snapshot(path):
+    c = sqlite3.connect(path)
+    try:
+        return {t: sorted(map(tuple, c.execute(f"SELECT * FROM {t}").fetchall()))
+                for t in ("source_state", "unit_state", "runs", "series_cursor", "csv_retry_queue",
+                          "full_rederive_owed", "csv_desktop_owed")}
+    finally:
+        c.close()
+
+
+def test_after_t0_nothing_under_the_xbrl_id_is_touched(tmp_path):
+    p = str(tmp_path / "state.db")
+    _seed(p, POST_T0)
+    before = _snapshot(p)
+    StateStore(p).close()
+    assert _snapshot(p) == before
+
+
+def test_a_row_of_unknown_strategy_is_left_alone(tmp_path):
+    p = str(tmp_path / "state.db")
+    _seed(p, [("INSERT INTO source_state(source_id, status) VALUES ('sec_edgar','ok')", ())] + THIRTEEN_F[1:])
+    before = _snapshot(p)
+    StateStore(p).close()
+    assert _snapshot(p) == before
+
+
+def _locked(path):
+    """A second connection holding the write lock, as a running writer would."""
+    h = sqlite3.connect(path, isolation_level=None)
+    h.execute("BEGIN IMMEDIATE")
+    return h
+
+
+def test_with_nothing_to_move_the_open_takes_no_write_lock(tmp_path):
+    """R1201 finding 1: the early exit counted every `sec_edgar` row, so after T0 every open ran BEGIN
+    IMMEDIATE, for ever. Both steady states - after the move, and after T0 - must be plain reads."""
+    for name, rows in (("moved", THIRTEEN_F), ("post_t0", POST_T0)):
+        p = str(tmp_path / f"{name}.db")
+        _seed(p, rows)
+        StateStore(p).close()                                 # the move, if any, is done
+        h = _locked(p)
+        try:
+            c = sqlite3.connect(p, timeout=0.2)
+            assert M.apply_all(c) == {}, name                 # raises "database is locked" if it locks
+            c.close()
+        finally:
+            h.rollback()
+            h.close()
+    # control: with something to move, the same open DOES need the lock
+    p = str(tmp_path / "pending.db")
+    _seed(p, THIRTEEN_F)
+    h = _locked(p)
+    try:
+        c = sqlite3.connect(p, timeout=0.2)
+        try:
+            M.apply_all(c)
+        except sqlite3.OperationalError as e:
+            assert "locked" in str(e)
+        else:
+            raise AssertionError("the control moved rows without the write lock - the probe sees nothing")
+        c.close()
+    finally:
+        h.rollback()
+        h.close()
+
+
+def test_each_statement_keeps_its_own_guard_without_the_gate(tmp_path):
+    """_move is called directly, bypassing the ownership gate, on a post-T0 store: every statement's own
+    predicate must still spare the XBRL product's rows (kills a guard dropped from any one statement)."""
+    p = str(tmp_path / "state.db")
+    _seed(p, POST_T0[:3] + [                   # the XBRL row, and the 13F rows already under the new id
+        ("INSERT INTO unit_state(source_id, unit_id, strategy, status) VALUES ('sec_edgar','daily','edgar_delta','ok')", ()),
+        ("INSERT INTO runs(ts_utc, source_id, unit_id) VALUES ('2026-10-02T00:00:00+00:00','sec_edgar','daily')", ()),
+        ("INSERT INTO csv_retry_queue(series_id, source_id) VALUES ('sec_edgar:0000320193','sec_edgar')", ()),
+    ])
+    c = sqlite3.connect(p)
+    c.execute("BEGIN IMMEDIATE")
+    M._move(c)
+    c.execute("COMMIT")
+    c.close()
+    assert _count(p, "source_state", "sec_edgar") == 1, "the XBRL row survives the DELETE"
+    cc = sqlite3.connect(p)
+    assert cc.execute("SELECT strategy FROM source_state WHERE source_id='sec_edgar'").fetchone() == ("edgar_delta",)
+    assert cc.execute("SELECT unit_id FROM unit_state WHERE source_id='sec_edgar'").fetchall() == [("daily",)]
+    assert cc.execute("SELECT unit_id FROM runs WHERE source_id='sec_edgar'").fetchall() == [("daily",)]
+    cc.close()
+    assert _count(p, "csv_retry_queue", "sec_edgar") == 1, "the csv queues are never moved"
+
+
+def test_the_csv_queues_are_never_moved(tmp_path):
+    """They are keyed by series_id and 13F has no series CSVs: any `sec_edgar` row there is XBRL's."""
+    p = str(tmp_path / "state.db")
+    _seed(p, THIRTEEN_F + [
+        ("INSERT INTO csv_retry_queue(series_id, source_id) VALUES ('sec_edgar:0000320193','sec_edgar')", ()),
+        ("INSERT INTO csv_desktop_owed(series_id, source_id) VALUES ('sec_edgar:0000789019','sec_edgar')", ()),
+    ])
+    StateStore(p).close()
+    assert _count(p, "source_state", "sec_edgar_13f") == 1, "precondition: the move ran"
+    assert _count(p, "csv_retry_queue", "sec_edgar") == 1 and _count(p, "csv_desktop_owed", "sec_edgar") == 1
+
+
+def test_the_xbrl_row_must_carry_its_own_strategy(tmp_path):
+    """R1201 finding 4: a `sec_edgar` write without a strategy of its own is refused."""
+    import pytest
+    s = StateStore(str(tmp_path / "state.db"))
+    try:
+        for kw in ({"status": "ok"}, {"status": "ok", "strategy": M.THIRTEEN_F_STRATEGY}):
+            with pytest.raises(ValueError, match="own strategy"):
+                s.upsert_source("sec_edgar", **kw)
+        s.upsert_source("sec_edgar", strategy="edgar_delta", status="ok")
+        s.upsert_source("sec_edgar", status="ok", last_success_utc="2026-10-02T00:00:00+00:00")   # keeps its own
+        assert s.get_source("sec_edgar")["strategy"] == "edgar_delta"
+        s.upsert_source("ecb", status="ok")                                   # other ids unaffected
+    finally:
+        s.close()
+
+
+def test_no_registry_entry_uses_the_old_id():
+    """While this migration exists, a registry entry named `sec_edgar` (renaming sec_edgar_xbrl to match its
+    catalogue id is the natural next step) would have its orchestrator rows moved away. It must first
+    write source_state('sec_edgar') with its own strategy - and this test must then be revisited."""
+    import os
+    import yaml
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    reg = yaml.safe_load(open(os.path.join(root, "updater", "registry.yaml"), encoding="utf-8"))
+    ids = {s["source_id"] for s in reg["sources"]}
+    assert M.NEW in ids, "precondition: the 13F entry is read"
+    assert M.OLD not in ids
 
 
 def test_a_failure_rolls_the_whole_move_back(tmp_path, monkeypatch):

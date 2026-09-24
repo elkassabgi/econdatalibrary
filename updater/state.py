@@ -6,6 +6,7 @@ is the architectural fix for the 79 sources that froze existing series on re-run
 """
 from __future__ import annotations
 import sqlite3
+import sys
 from datetime import datetime, timezone, timedelta
 
 from . import config
@@ -113,7 +114,8 @@ class StateStore:
         from . import state_migrations                                     # noqa: PLC0415
         moved = state_migrations.apply_all(self.db)
         if moved:
-            print(f"[state] migrated {self.path}: {moved}", flush=True)
+            # stderr: a read-purpose caller (health --json) prints JSON on stdout (R1201 finding 6)
+            print(f"[state] migrated {self.path}: {moved}", file=sys.stderr, flush=True)
 
     def close(self):
         self.db.close()
@@ -138,8 +140,18 @@ class StateStore:
         return dict(r) if r else None
 
     def upsert_source(self, source_id, **kw):
+        current = self.get_source(source_id)
+        from . import state_migrations as _m                               # noqa: PLC0415
+        if source_id == _m.OLD:
+            # R1201 finding 4: a `sec_edgar` row is the XBRL product's only when it carries that product's
+            # own strategy - a write without one would merge into a leftover 13F row, keep its strategy,
+            # and the migration would then move the XBRL product's freshness to sec_edgar_13f
+            strategy = kw.get("strategy", (current or {}).get("strategy"))
+            if strategy in (None, _m.THIRTEEN_F_STRATEGY):
+                raise ValueError(f"source_state({_m.OLD!r}) must carry the XBRL product's own strategy "
+                                 f"(got {strategy!r}); the 13F entry is {_m.NEW!r}")
         self._upsert("source_state", _SRC_COLS, ["source_id"],
-                     self.get_source(source_id), {"source_id": source_id, **kw})
+                     current, {"source_id": source_id, **kw})
 
     def all_sources(self):
         return [dict(r) for r in self.db.execute("SELECT * FROM source_state")]
