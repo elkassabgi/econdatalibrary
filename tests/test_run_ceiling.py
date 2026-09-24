@@ -151,37 +151,10 @@ def test_the_csv_phase_arms_its_fence_from_the_helper():
     # what the fence COVERS (R1245 RV5: the work moved out of the `with` passed every test)
     inside = {getattr(n.func, "id", None) for s in fenced[0].body for n in ast.walk(s) if isinstance(n, ast.Call)}
     assert "_derive_changed_csvs" in inside, inside
-
-
-def test_the_retry_drain_has_its_own_fence_and_a_trip_clears_nothing():
-    """R1245 finding 4: the drain ran after the csv fence exited, bound only by a soft budget checked between
-    ids. Its derive_and_put must sit inside its own _unit_deadline (minutes from _csv_fence_min()), and the
-    UnitTimeout handler must book EVERY id as failed - an empty answer reads as "all derived" and clears them."""
-    import ast
-    run_once = _run_once_ast()
-    tries = []
-    for t in ast.walk(run_once):
-        if not isinstance(t, ast.Try):
-            continue
-        withs = [w for w in t.body if isinstance(w, ast.With) and any(      # DIRECTLY in this try's body
-            isinstance(i.context_expr, ast.Call) and "(csv retry drain)" in ast.unparse(i.context_expr) for i in w.items)]
-        if withs:
-            tries.append((t, withs))
-    assert len(tries) == 1, len(tries)
-    t, withs = tries[0]
-    call = withs[0].items[0].context_expr
-    assert getattr(call.func, "id", None) == "_unit_deadline" and ast.unparse(call.args[1]) == "_csv_fence_min()", \
-        ast.unparse(call)
-    inside = {ast.unparse(n.func) for s in withs[0].body for n in ast.walk(s) if isinstance(n, ast.Call)}
-    assert "_derive_mod.derive_and_put" in inside, inside
-    handlers = [h for h in t.handlers if isinstance(h.type, ast.Name) and h.type.id == "UnitTimeout"]
-    assert len(handlers) == 1
-    assigns = [ast.unparse(s) for s in handlers[0].body if isinstance(s, ast.Assign)]
-    assert assigns == ["_out = {'failed': list(_retry_ids)}"], assigns
-    # and nothing else in run_once calls the drain's derive outside that fence
-    outside = [n for n in ast.walk(run_once) if isinstance(n, ast.Call)
-               and ast.unparse(n.func) == "_derive_mod.derive_and_put"]
-    assert len(outside) == 1, len(outside)
+    # and neither name the fence is built from is rebound inside run_once (R1246 N3-N6: a local shadow of
+    # _unit_deadline made every fence a no-op and passed)
+    for name in ("_unit_deadline", "_csv_fence_min", "_unit_window_min"):
+        assert not _bindings(run_once, name), (name, [ast.unparse(b)[:120] for b in _bindings(run_once, name)])
 
 
 def test_the_binding_scan_can_fail():
@@ -212,7 +185,20 @@ def test_unit_window_unchanged_inside_the_budget_and_with_no_ceiling(monkeypatch
     assert orchestrate._unit_window_min() == 45.0
 
 
-@pytest.mark.parametrize("t", ["0", "-5"])
+def test_unit_window_inside_the_budget_is_never_floored(monkeypatch):
+    """R1246 W2: the floor is for a PASSED ceiling only - 1 minute left gives a 30-second window, not 1 minute."""
+    monkeypatch.delenv("AQUEDUCT_UNIT_TIMEOUT_MIN", raising=False)
+    orchestrate._RUN_DEADLINE_TS = time.time() + 60
+    assert 0.49 < orchestrate._unit_window_min() <= 0.5
+
+
+def test_past_the_ceiling_a_shorter_configured_timeout_wins(monkeypatch):
+    monkeypatch.setenv("AQUEDUCT_UNIT_TIMEOUT_MIN", "0.5")
+    orchestrate._RUN_DEADLINE_TS = time.time() - 60
+    assert orchestrate._unit_window_min() == 0.5
+
+
+@pytest.mark.parametrize("t", ["0", "-5", "nan"])
 def test_a_disabled_unit_timeout_stays_disabled_past_the_ceiling(monkeypatch, t):
     monkeypatch.setenv("AQUEDUCT_UNIT_TIMEOUT_MIN", t)
     orchestrate._RUN_DEADLINE_TS = time.time() - 60

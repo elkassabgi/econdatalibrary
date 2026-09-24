@@ -297,16 +297,22 @@ def _unit_window_min() -> float:
     PAST THE CEILING the remainder is 0.0, and a 0.0 window is what _unit_deadline reads as "do not arm" - so a
     unit reaching its update phase after a probe that outlived its own alarm (UnitTimeout is an Exception, and a
     fetcher's broad `except` can swallow it) ran with NO alarm at all (review R1245, the class of R1144's fence).
-    It gets the same 1-minute floor as the CSV fence. A deliberately disabled timeout (<= 0) stays disabled.
+    It gets the same 1-minute floor as the CSV fence (or the configured timeout, if shorter). A deliberately
+    disabled timeout (<= 0, or unparsable as nan) stays disabled.
+
+    WHAT AN ALARM CAN BOUND: SIGALRM interrupts the MAIN thread. Work a fetcher or derive_and_put hands to a thread
+    pool is not cancelled - the pool's exit waits for its running workers, and derive's per-object retry catches
+    the UnitTimeout as an ordinary Exception (review R1246). So a wedged worker still holds the phase until its
+    own socket timeout; the alarm bounds main-thread work only. Making derive fence-aware is its own change.
     """
     t = _unit_timeout_min()
     rem = _remaining_run_min()
     if rem is None:
         return t
-    if t <= 0:
-        return 0.0                                   # disabled deliberately - as before
+    if not t > 0:
+        return 0.0                                   # disabled deliberately (<= 0, or nan) - as before
     if rem <= 0.0:
-        return _PAST_CEILING_MIN
+        return min(t, _PAST_CEILING_MIN)             # never longer than the configured timeout (R1246)
     return min(t, rem / 2.0)
 
 
@@ -2173,21 +2179,10 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 if _retry_rows:
                     _retry_ids = [r["series_id"] for r in _retry_rows][:_CSV_RETRY_CAP]
                     from . import derive as _derive_mod
-                    # ITS OWN HARD FENCE (R1245 finding 4): the soft budget binds only between ids, so a
-                    # wedged id here ran unbounded after the csv fence had exited. On a trip NOTHING derived
-                    # is assumed - every id is booked as not derived (a plain id stays queued; a flow-grain
-                    # id moves to the desktop debt, that path's rule) - never an empty answer, which the
-                    # lines below would read as "all derived" and clear from the queue.
-                    try:
-                        with _unit_deadline(unit.key + " (csv retry drain)", _csv_fence_min()):
-                            _out = _derive_mod.derive_and_put(
-                                _retry_ids, blob if blob is not None else _resolve_blob(),
-                                **({"flow_grain": True} if _csv_grain(unit.source_id) == "flow" else {}),
-                                **_capped_derive_budget()) or {}
-                    except UnitTimeout:
-                        _out = {"failed": list(_retry_ids)}
-                        print(f"[orchestrator] {unit.key}: csv retry drain exceeded its fence - "
-                              f"{len(_retry_ids):,} queued id(s) kept as not derived", flush=True)
+                    _out = _derive_mod.derive_and_put(
+                        _retry_ids, blob if blob is not None else _resolve_blob(),
+                        **({"flow_grain": True} if _csv_grain(unit.source_id) == "flow" else {}),
+                        **_capped_derive_budget()) or {}
                     _refailed = set(str(s) for s in (_out.get("failed") or []))
                     # A queued id that turns out too large for the runner leaves the retry
                     # queue (it can never succeed there) and moves to csv_desktop_owed.
