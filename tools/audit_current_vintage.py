@@ -51,9 +51,12 @@ import traceback
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-os.environ.setdefault("AQUEDUCT_BACKEND", "r2")
+if __name__ == "__main__":
+    # ONLY as a script, and still BEFORE updater.config reads the backend: an import must not move the importing
+    # process onto R2 (R1239's class - found by the conftest guard when a test imported this file, R1243)
+    os.environ.setdefault("AQUEDUCT_BACKEND", "r2")
 
-from updater import config, registry                               # noqa: E402
+from updater import config, registry                              # noqa: E402
 from updater.errors import TransientError                          # noqa: E402
 from tools._store_banner import banner                             # noqa: E402
 

@@ -50,6 +50,18 @@ def test_after_t0_a_stuck_rotation_is_found_in_the_live_store(live, monkeypatch,
     assert "STUCK zz" in out and "files=   21" in out, out
 
 
+def test_after_t0_only_parquet_files_are_counted(live, monkeypatch, capsys):
+    """R1243 R3: a store dir also holds sidecars (_incr_state.json, _manifest.jsonl, .done markers); counted,
+    their fresh write times would hide a stuck rotation - the R2 listing counted .parquet only."""
+    zz = live / "live" / "data" / "clean_full" / "zz"
+    for name in ("_incr_state.json", "_manifest.jsonl", "a.done", "b.done"):
+        (zz / name).write_text("x")
+    monkeypatch.setattr(sys, "argv", ["audit_rotation_progress.py", "--verbose"])
+    R.main()
+    out = capsys.readouterr().out
+    assert "STUCK zz" in out and "files=   21" in out, out
+
+
 def test_after_t0_another_checkout_is_refused(live, monkeypatch, tmp_path):
     monkeypatch.setattr(blob, "_code_root", lambda: str(tmp_path / "a_worktree"))
     monkeypatch.setattr(sys, "argv", ["audit_rotation_progress.py"])

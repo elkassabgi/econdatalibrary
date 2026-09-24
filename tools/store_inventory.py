@@ -75,14 +75,21 @@ def main_selfhosted(a) -> int:
     is a worktree's scratch, the exact mistake this tool exists to prevent). R2 is not asked."""
     from updater import blob                                         # noqa: PLC0415
     blob.refuse_unless_live_checkout("store_inventory (after T0 it counts the live store)")
-    # EVERY FILE UNDER THE SOURCE, like the R2 prefix listing it replaces (basenames, recursive). The top-level
-    # os.listdir counted bea as 1 file of 592 and edgar_13f as 0 of 371, and called the result THE STORE (R1242).
-    loc = set()
+    # EVERY FILE UNDER THE SOURCE (recursive). The top-level os.listdir counted bea as 1 file of 592 and edgar_13f
+    # as 0 of 371 (R1242). And the count is FILES, not distinct names: partitioned stores repeat one name per
+    # partition - edgar_pointers 256 files / 1 name, edgar_13f 371 / 7 (R1243). Names are kept apart, because
+    # catalogue ids are compared with file NAMES below.
+    loc, n_files = set(), 0
     for _dirpath, _dirs, files in os.walk(os.path.join(ROOT, "data", "clean_full", a.source)):
-        loc.update(f[: -len(".parquet")] for f in files if f.endswith(".parquet"))
+        for f in files:
+            if f.endswith(".parquet"):
+                n_files += 1
+                loc.add(f[: -len(".parquet")])
     cat = catalogue_ids(a.source, pk_range=True)
     print(f"{a.source}")
-    print(f"  local store files : {len(loc):>7,}   <- THE STORE (self-hosted since T0; R2 is a frozen copy)")
+    print(f"  local store files : {n_files:>7,}   <- THE STORE (self-hosted since T0; R2 is a frozen copy)")
+    if len(loc) != n_files:
+        print(f"  distinct file names: {len(loc):>6,}   (partitions repeat a name; ids are compared by name)")
     print(f"  catalogue ids     : {len(cat):>7,}")
     if cat:
         if cat & loc:

@@ -135,6 +135,85 @@ def test_after_t0_carved_series_are_not_expected_to_be_served(live, monkeypatch,
     assert "carved out     : 1" in out and "SERVED (edge) : 1 row(s)  — matches the catalogue" in out
 
 
+def test_after_t0_a_three_part_id_is_carved_on_its_indicator_segment(live, monkeypatch, capsys):
+    """R1243 F11: the worker carves on segment [1] for every id shape (denylist.ts seriesIndicator); a
+    three-part id must match the same way - and one whose LAST segment is the code must not."""
+    tmp, store, served = live
+    with catalog_path.writer_lock():                          # after T0 the build is written only under the lock
+        c = catalog_path.connect(write=True)
+        with c:
+            c.executemany("INSERT INTO series VALUES (?, 'zz')", [("zz:b:x",), ("zz:b:y",), ("zz:x:b",)])
+        c.close()
+        for sid in ("zz:b:x", "zz:b:y", "zz:x:b"):
+            store.put_atomic("series/" + sid.replace(":", "%3A") + ".csv", _csv(sid))
+    from core import gen_denylist
+    monkeypatch.setattr(gen_denylist, "committed_carveouts", lambda *a, **k: {"zz": ["b"]})
+    # carved on segment [1]: zz:b, zz:b:x, zz:b:y (3); served zz:a, zz:x:b (2). ASYMMETRIC on purpose - matching
+    # the LAST segment instead carves zz:b and zz:x:b (2), so the counts differ (R1243 F11 survived a symmetric set)
+    served["n"] = 2
+    assert _run(monkeypatch) == 0
+    out = capsys.readouterr().out
+    assert "carved out     : 3" in out and "SERVED (edge) : 2 row(s)  — matches the catalogue" in out, out
+
+
+def test_after_t0_a_served_catalogue_ahead_of_a_shrunk_build_is_not_in_step(live, monkeypatch, capsys):
+    """R1243 finding 6: the edge serving MORE than the build holds is the swap not having run."""
+    tmp, store, served = live
+    served["n"] = 3
+    assert _run(monkeypatch) == 1
+    out = capsys.readouterr().out
+    assert "1 MORE than the catalogue" in out and "still holds ids the build removed" in out, out
+    assert "in step" not in out
+
+
+class _FakeS3:
+    """Pre-T0 R2: the two series objects the catalogue names."""
+
+    def __init__(self, objs):
+        self.objs = objs
+
+    def list_objects_v2(self, Bucket, Prefix="", ContinuationToken=None, **kw):
+        ks = sorted(k for k in self.objs if k.startswith(Prefix))
+        return {"Contents": [{"Key": k, "Size": len(self.objs[k])} for k in ks], "IsTruncated": False,
+                "KeyCount": len(ks)}
+
+    def get_paginator(self, name):
+        s3 = self
+
+        class P:
+            def paginate(self, Bucket, Prefix="", **kw):
+                yield s3.list_objects_v2(Bucket=Bucket, Prefix=Prefix)
+        return P()
+
+    def head_object(self, Bucket, Key):
+        if Key not in self.objs:
+            raise KeyError(Key)
+        return {"ContentLength": len(self.objs[Key]), "ETag": '"e"'}
+
+    def get_object(self, Bucket, Key):
+        import io
+        return {"Body": io.BytesIO(self.objs[Key])}
+
+
+def test_before_t0_carve_outs_are_not_subtracted_from_d1(live, monkeypatch, capsys):
+    """R1243 F12: D1's COUNT(*) holds carved rows too, so before T0 the expectation stays the catalogue."""
+    tmp, store, served = live
+    (tmp / "CUTOVER").unlink()
+    monkeypatch.setattr(catalog_path, "CHECKOUT_PATH", catalog_path.BUILD_PATH)   # before T0: the checkout's
+    objs = {"series/" + s.replace(":", "%3A") + ".csv": _csv(s) for s in ("zz:a", "zz:b")}
+    monkeypatch.setattr(r2_util, "client", lambda *a, **k: _FakeS3(objs))
+    monkeypatch.setattr(V, "_d1_count", lambda s: (2, None))
+    monkeypatch.setattr(V, "_served_count", lambda s: pytest.fail("the edge asked before T0"))
+    import core.derive_csv as dc
+    monkeypatch.setattr(dc, "_mirror_behind_store", lambda *a, **k: [])    # before T0 the mirror IS checked
+    from core import gen_denylist
+    monkeypatch.setattr(gen_denylist, "committed_carveouts", lambda *a, **k: {"zz": ["b"]})
+    rc = _run(monkeypatch)
+    out = capsys.readouterr().out
+    assert "carved out" not in out, out
+    assert "D1             : 2 row(s)  — matches the catalogue" in out and rc == 0, (rc, out)
+
+
 class _Resp:
     def __init__(self, body):
         self.body = body
@@ -162,12 +241,26 @@ def test_the_served_count_reads_total_for_this_source_fresh_every_time(monkeypat
     assert "source=zz" in seen[0] and "&_fresh=" in seen[0] and seen[0] != seen[1], seen
 
 
-@pytest.mark.parametrize("body,why", [(b'{"count": 7}', "no integer `total`"), (b"[]", "no integer `total`")])
+@pytest.mark.parametrize("body,why", [(b'{"count": 7}', "no integer `total`"), (b"[]", "no integer `total`"),
+                                      (b'{"total": true}', "no integer `total`")])       # R1243 F15: bool is int
 def test_an_answer_without_a_total_is_unchecked_not_zero(monkeypatch, body, why):
     import urllib.request
     monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: _Resp(body))
     n, err = V._served_count("zz")
     assert n == 0 and why in err
+
+
+@pytest.mark.parametrize("code,why", [(500, "HTTP 500"), (451, "GATED")])
+def test_an_http_error_is_unchecked_not_zero(monkeypatch, code, why):
+    """R1243 F14: an HTTP error answered (0, None) - i.e. 0 rows served - survived every test."""
+    import urllib.error
+    import urllib.request
+
+    def urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, code, "x", {}, None)
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    n, err = V._served_count("zz")
+    assert n == 0 and err and why in err, (n, err)
 
 
 def test_a_network_failure_is_unchecked_not_zero(monkeypatch):

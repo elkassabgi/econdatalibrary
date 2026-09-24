@@ -40,6 +40,8 @@ from updater.state import StateStore  # noqa: E402
 
 
 def main() -> int:
+    from core import cutover                                         # noqa: PLC0415
+    cutover.refuse_if_cut_over("audit_cursor_grain - it judges the store from R2, a frozen copy after T0; a self-hosted port is owed (plan step 6d)")
     ap = argparse.ArgumentParser()
     ap.add_argument("--sample", type=int, default=200)
     ap.add_argument("--source", nargs="*", default=None)

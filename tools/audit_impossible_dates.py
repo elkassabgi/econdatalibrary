@@ -222,6 +222,14 @@ def main() -> int:
                          f"counter-as-year starts at 1, so the low side is where most "
                          f"fabrication lives; a future-only sweep never looks.")
     a = ap.parse_args()
+    from core import cutover                                         # noqa: PLC0415
+    if cutover.is_cut_over():
+        # AFTER T0 (plan step 6d, R1243): R2 is a frozen copy, and the local tree is the store only in the LIVE
+        # checkout - anywhere else it is scratch, and a clean answer about scratch is the R296 all-clear
+        if a.r2:
+            cutover.refuse_if_cut_over("audit_impossible_dates --r2 - R2 is a frozen copy after T0; "
+                                       "run --local from the live checkout")
+        blob.refuse_unless_live_checkout("audit_impossible_dates --local (after T0 it reads the live store)")
 
     bound = a.after
     lo = a.before

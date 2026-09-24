@@ -139,6 +139,7 @@ def main() -> int:
         def counter(pre):
             return _store.count_keys(pre), False
         column = "store objects"
+        selfhosted = True
     else:
         from core import r2_util                               # noqa: PLC0415  (boto3 late)
         s3 = r2_util.client()
@@ -146,6 +147,7 @@ def main() -> int:
         def counter(pre):
             return count_prefix(s3, a.bucket, pre, a.max)
         column = "R2 objects"
+        selfhosted = False
 
     print(f"{'source':<24}{column:>14}{'catalogue rows':>16}{'difference':>13}  verdict")
     agree = disagree = 0
@@ -168,6 +170,13 @@ def main() -> int:
         d = n - cat
         if d == 0:
             verdict, agree = "agree", agree + 1
+        elif d > 0 and selfhosted:
+            # after T0 there is no D1: the build IS the catalogue the origin serves (from its last swap) - R1243
+            verdict, disagree = ("OBJECTS WITH NO CATALOGUE ROW — the build does not list them, so no id "
+                                 "reaches them"), disagree + 1
+        elif d < 0 and selfhosted:
+            verdict, disagree = ("CATALOGUE ROWS WITH NO OBJECT — once swapped, a user gets 502 "
+                                 "data_unavailable"), disagree + 1
         elif d > 0:
             # "no LOCAL catalogue row". Measured 2026-09-07: fed_board's 21 and fhfa's 61 were
             # reported here as published-but-unlisted, and ALL 82 turned out to be present in
@@ -208,7 +217,11 @@ def main() -> int:
                   f"a larger --max")
         for s, why in unchecked:
             print(f"     {s:<22}listing failed: {why}")
-    if disagree:
+    if disagree and selfhosted:
+        print()
+        print("  THE `catalogue rows` COLUMN IS THE LIVE CATALOGUE BUILD. The origin serves the copy made at the")
+        print("  last swap, so a difference in a source changed since then reaches users only at the next swap.")
+    elif disagree:
         # THE DISCLOSURE THAT WAS MISSING, and it cost two wrong entries in NUMBERS.md.
         # `catalogue_counts()` reads data/catalog.db. Users are served from D1. The two
         # disagree whenever a source is written straight to D1 (sec_edgar's refresher) or

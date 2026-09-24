@@ -57,6 +57,9 @@ def test_after_t0_objects_are_counted_in_the_self_hosted_store(live, monkeypatch
     assert zz.split()[1:3] == ["2", "2"], zz                          # zzz's objects not counted under zz
     assert zzz.split()[1:4] == ["2", "1", "+1"], zzz
     assert "where the store and the catalogue agree" in out
+    # R1243: after T0 there is no D1 to "verify against" - the verdict and the note name the build
+    assert "OBJECTS WITH NO CATALOGUE ROW" in zzz and "D1" not in out, out
+    assert "THE `catalogue rows` COLUMN IS THE LIVE CATALOGUE BUILD" in out, out
 
 
 def test_after_t0_another_checkout_is_refused(live, monkeypatch, tmp_path):

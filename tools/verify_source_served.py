@@ -102,7 +102,8 @@ def _served_count(source: str):
         with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "econdl-verify/1.0"}),
                                     timeout=90) as f:
             body = json.load(f)
-        if not isinstance(body, dict) or not isinstance(body.get("total"), int):
+        # `type(...) is int`, not isinstance: bool IS an int in Python, and `"total": true` must not read as 1 row
+        if not isinstance(body, dict) or type(body.get("total")) is not int:
             return 0, "the answer carries no integer `total` - cannot tell"   # never read as 0 rows (R1242)
         return body["total"], None
     except urllib.error.HTTPError as e:
@@ -292,8 +293,13 @@ def main() -> int:
         print(f"{leg} : UNCHECKED ({d1_err})")
     else:
         gap = expected - d1_n
-        print(f"{leg} : {d1_n:,} row(s)"
-              + (f"  — {gap:,} {behind}" if gap > 0 else "  — matches the catalogue"))
+        if selfhosted and gap < 0:
+            # the edge serves MORE than the build holds: the build dropped ids and the swap has not run (R1243)
+            print(f"{leg} : {d1_n:,} row(s)  — {-gap:,} MORE than the catalogue: ids the build removed are "
+                  f"served until the next swap")
+        else:
+            print(f"{leg} : {d1_n:,} row(s)"
+                  + (f"  — {gap:,} {behind}" if gap > 0 else "  — matches the catalogue"))
     # one expression per f-string field, on one line: a field spanning lines is Python 3.12+ (PEP 701) and CI
     # runs 3.11, where this file did not parse (R1232)
     listed = ("listed — discoverable on the deployed API" if in_sup
@@ -302,7 +308,13 @@ def main() -> int:
 
     coherent = not missing and not junk and not bad
     store_word = "the self-hosted store" if selfhosted else "R2"
-    reachable = (d1_err is None and d1_n >= expected) and in_sup is not False
+    # Before T0, D1 may hold MORE rows than the catalogue (retained legacy ids) and that is in step. After T0 the
+    # edge's total is a copy of this same build, so any difference is the swap not having run - in step means
+    # EQUAL (R1243: `>=` read a build that shrank and was not yet swapped as "in step").
+    if selfhosted:
+        reachable = (d1_err is None and d1_n == expected) and in_sup is not False
+    else:
+        reachable = (d1_err is None and d1_n >= expected) and in_sup is not False
     if coherent and reachable:
         # Say what was actually verified. "ORPHANED 0" would be false here — there are 21
         # retained legacy objects — and a summary line that overstates is how a check stops
@@ -321,6 +333,8 @@ def main() -> int:
         why = []
         if d1_err is None and d1_n < expected:
             why.append("the served catalogue is behind (the next swap publishes it)" if selfhosted else "D1 is behind")
+        if selfhosted and d1_err is None and d1_n > expected:
+            why.append("the served catalogue still holds ids the build removed (the next swap drops them)")
         if in_sup is False:
             why.append("the source is absent from SUPPORTED_SOURCES")
         if why:
