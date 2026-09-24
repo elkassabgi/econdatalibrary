@@ -85,6 +85,19 @@ def connect_path(path: str | os.PathLike, *, write: bool, timeout: float = 60.0,
 
 
 @contextlib.contextmanager
+def write_session():
+    """What a catalogue WRITER wraps its writes in (plan step 1): after T0 the single-writer lock - taken
+    here, or already held by this process (the updater holds it for its whole run and may call a
+    cataloguer in-process) - and before T0 nothing, so CI and the pre-T0 desktop write as today (and CI's
+    Linux runner never creates the Windows lock folder)."""
+    if not is_cut_over() or _held is not None:
+        yield
+        return
+    with writer_lock():
+        yield
+
+
+@contextlib.contextmanager
 def writer_lock():
     """Hold the machine-wide single-writer lock for the duration. Fails at once (never waits) when another
     process holds it: two writers are refused, not queued behind each other unseen."""

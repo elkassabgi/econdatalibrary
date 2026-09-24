@@ -230,6 +230,32 @@ def test_connect_path_after_t0_opens_only_the_build(paths, tmp_path):
         cp.connect_path(cp.BUILD_PATH, write=True).execute("INSERT INTO which VALUES ('y')").connection.commit()
 
 
+def test_write_session_before_t0_takes_no_lock(paths):
+    lock_dir = os.path.dirname(cp.LOCK_PATH)
+    with cp.write_session():
+        c = cp.connect(write=True)
+        c.execute("INSERT INTO which VALUES ('w')")
+        c.commit()
+        c.close()
+    assert not os.path.exists(lock_dir), "no lock folder is made before T0 (CI's Linux runner)"
+
+
+def test_write_session_after_t0_holds_the_lock_and_is_reentrant(paths):
+    (paths / "CUTOVER").write_text("")
+    with pytest.raises(cutover.CutoverRefused, match="single-writer lock"):
+        cp.connect(write=True)
+    with cp.write_session():
+        with cp.write_session():                          # the updater holds it; a cataloguer inside it
+            c = cp.connect(write=True)
+            c.execute("INSERT INTO which VALUES ('w')")
+            c.commit()
+            c.close()
+        assert cp._held is not None, "the inner session did not release the outer one's lock"
+    assert cp._held is None
+    with pytest.raises(cutover.CutoverRefused):
+        cp.connect(write=True)                           # released again
+
+
 def test_under_names_the_checkout_s_catalogue():
     """The real (unpatched) constants: a tool's own ROOT names the checkout's file, production's the build."""
     assert cp.under(cp.ROOT) == cp.CHECKOUT_PATH
