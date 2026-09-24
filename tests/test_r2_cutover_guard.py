@@ -161,9 +161,11 @@ import re as _re
 
 import _repo_walk as _walk                              # the one shared walk (R1178)
 
-# every way to get an S3 client without r2_util (R1178 measured the last five getting through)
-_RAW = _re.compile(r"boto3\.(client|resource)\s*\(|boto3\.session\.Session\s*\(|\bSession\([^)]*\)\s*\.\s*(client|resource)\s*\("
-                   r"|\bboto3\.Session\s*\(|from\s+boto3\s+import|import\s+boto3\s+as|\.create_client\s*\(|\bs3fs\b")
+# The ways to get an S3 client without r2_util found SO FAR (R1178, R1179 each measured more getting
+# through) - a list, not a proof: a new spelling found later goes here with a planted positive below.
+# boto3.client / boto3.resource count WITHOUT a call too: `f = boto3.client` is an alias (R1179).
+_RAW = _re.compile(r"\bboto3\.(client|resource)\b|boto3\.session\.Session\s*\(|\bSession\([^)]*\)\s*\.\s*(client|resource)\s*\("
+                   r"|\bboto3\.Session\b|from\s+boto3(\.session)?\s+import|import\s+boto3\s+as|\.create_client\s*\(|\bs3fs\b")
 _GUARDED = _re.compile(r"guard_client\(\s*boto3\.client\(")
 
 
@@ -172,7 +174,8 @@ def test_every_boto3_client_in_the_repo_is_guarded():
     unguarded client would be a write road to the retired copy that nothing refuses after T0."""
     bad = []
     for rel, p in _walk.code_files((".py",)):
-        src = open(p, encoding="utf-8", errors="replace").read()
+        # code only: now that an alias without a call counts, a comment naming boto3.client must not
+        src = _walk.code_text(open(p, encoding="utf-8", errors="replace").read())
         raw = len(_RAW.findall(src))
         guarded = len(_GUARDED.findall(src))
         if rel == "core/r2_util.py":
@@ -186,8 +189,13 @@ def test_the_client_ratchet_can_fail():
     assert _RAW.search('s3 = boto3.client("s3", endpoint_url=e)')
     for form in ('boto3.client ("s3")', "boto3.Session().client('s3')", "from boto3 import client",
                  "import boto3 as b3", "botocore.session.get_session().create_client('s3')",
-                 "fs = s3fs.S3FileSystem()", "boto3.session.Session() . client('s3')"):
+                 "fs = s3fs.S3FileSystem()", "boto3.session.Session() . client('s3')",
+                 "f = boto3.client", "from boto3.session import Session"):     # R1179
         assert _RAW.search(form), form                       # R1178: each of these got through before
     assert not _RAW.search("import boto3") and not _RAW.search("r2_util.client(write=True)")
+    assert not _RAW.search("from boto3.s3.transfer import TransferConfig"), "a settings class, not a client"
+    assert not _RAW.search(_walk.code_text("# see boto3.client below\nx = 1")), "a comment is not code"
+    assert _GUARDED.search(_walk.code_text('s3 = guard_client(boto3.client("s3", endpoint_url=e))')), \
+        "the guarded form survives the code reader's re-printing"
     assert _GUARDED.search('s3 = guard_client(boto3.client("s3", endpoint_url=e))')
     assert not _GUARDED.search('s3 = boto3.client("s3", endpoint_url=e)')

@@ -14,9 +14,9 @@
 // the .csv body is the source of truth for the actual row count.
 // ---------------------------------------------------------------------------
 
-import type { Env, SeriesRow, SourceRow, LicenseRow, LastUpdateRow } from "./types";
-import { SELECT_SERIES, SELECT_SOURCE, SELECT_LICENSE, UNIT_STATE_FOR_SOURCE } from "./sql";
-import { json, notFound, licenseBlock, sourceOf, localizedTitle, dbForSeries } from "./util";
+import type { Env, SeriesRow, SourceRow, LicenseRow, LastUpdateRow } from "./types.ts";
+import { SELECT_SERIES, SELECT_SOURCE, SELECT_LICENSE, UNIT_STATE_FOR_SOURCE } from "./sql.ts";
+import { json, notFound, licenseBlock, sourceOf, localizedTitle, dbForSeries } from "./util.ts";
 
 interface SeriesMeta {
   citation?: string;

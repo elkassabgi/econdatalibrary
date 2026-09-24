@@ -203,3 +203,20 @@ export function notConfigured(): Response {
 export function refusedPath(): Response {
   return gatewayError(400, "bad_request", "this path cannot be forwarded");
 }
+
+/** How long a kept copy of the source names counts as fresh (SOURCE_NAMES_MAX_AGE_S, default 1 h). "0" is
+ *  a real setting (always ask the origin; the tests use it); unset, empty or not a number = the default. */
+export function sourceNamesMaxAgeMs(env: { SOURCE_NAMES_MAX_AGE_S?: string }): number {
+  const raw = env.SOURCE_NAMES_MAX_AGE_S;
+  const s = raw === undefined || raw.trim() === "" ? NaN : Number(raw);
+  return (Number.isFinite(s) && s >= 0 ? s : 3600) * 1000;
+}
+
+/** How long to wait after a failed source-names refresh before asking the origin again (AR-151 finding 8;
+ *  R1179: "" used to give 0 = no back-off). SOURCE_NAMES_BACKOFF_S when it is a number >= 1, else 60 s -
+ *  production sets nothing, so 60 s is the value that runs, and test/edge.test.ts pins it. */
+export function sourceNamesBackoffMs(env: { SOURCE_NAMES_BACKOFF_S?: string }): number {
+  const raw = env.SOURCE_NAMES_BACKOFF_S;
+  const s = raw === undefined || raw.trim() === "" ? NaN : Number(raw);
+  return (Number.isFinite(s) && s >= 1 ? s : 60) * 1000;
+}

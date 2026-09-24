@@ -34,11 +34,23 @@ def _alive(pid):
     if os.name == "nt":
         out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
         return str(pid) in out
+    # POSIX: a killed CHILD of this test process stays a zombie (and answers kill(pid, 0)) until it is
+    # reaped - CI measured exactly that (PR #85). Reap it first; a pid that is not our child raises.
+    try:
+        done, _status = os.waitpid(pid, os.WNOHANG)
+        if done == pid:
+            return False
+    except ChildProcessError:
+        pass
     try:
         os.kill(pid, 0)
     except OSError:
         return False
-    return True
+    try:                                                   # an orphan zombie not yet reaped by init
+        with open(f"/proc/{pid}/stat") as fh:
+            return fh.read().split(")")[-1].split()[0] != "Z"
+    except OSError:
+        return True
 
 
 def _eventually(pred, timeout=20.0):

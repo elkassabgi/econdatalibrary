@@ -9,7 +9,8 @@ ban was once hf-only), as a PreToolUse hook on Bash and PowerShell:
      "hooks": [{"type": "command", "command": "python <repo>/tools/selfhost/cutover_hook.py"}]}
 
 Two rules:
-  1. ALWAYS, from install: refuse any command that names the flag path. The flag is Ahmed's to create at
+  1. ALWAYS, from install: refuse any command line that names the flag folder (see _FOLDER below - the
+     folder's ACL is the real protection; this catches plain mistakes only). The flag is Ahmed's to create at
      T0 (elevated); an agent must never create, move or delete it - "not cut over" is the state that
      allows writes.
   2. ONCE THE FLAG EXISTS: refuse the command-line roads to the retired copy - wrangler r2 object
@@ -43,36 +44,52 @@ FLAG_PATH = r"C:\ProgramData\econ\CUTOVER"
 ECON_BUCKET = "econ-data"
 ECON_D1 = ("econ-catalog", "econ-catalog-climate",
            "1a6d0755-ecef-46d0-a478-46cad1cf064c", "e34114f2-c0be-43d9-bcb5-798a3952414c")
+# The worker's BINDING names: wrangler resolves `d1 execute CATALOG` through the config (R1179). Matched
+# case-SENSITIVELY, as wrangler matches them, so hf's `--file dist/catalog.sql` is not a hit.
+ECON_D1_BINDINGS = ("CATALOG_CLIMATE", "CATALOG")
 
-# The flag folder in any spelling a shell accepts: C:\ProgramData\econ, $env:ProgramData\econ,
-# %ProgramData%\econ, /c/ProgramData/econ, the 8.3 name PROGRA~3, %ALLUSERSPROFILE%\econ, and the .NET
-# CommonApplicationData folder - with either slash and any case (R1178: the last three got through).
-_FLAG_NAME = re.compile(r"(programdata|progra~\d|allusersprofile)%?\)?[\\/]+econ(?![\w-])"
-                        r"|commonapplicationdata", re.I)
-_D1_NAME = "|".join(re.escape(n) for n in ECON_D1)
+# The flag folder. NOT COMPLETE, and it cannot be: a shell reaches a folder by more spellings than a pattern
+# can list (Join-Path, a variable, `cd` then a relative name, the "All Users" junction, python's os.environ).
+# The folder's ACL (Users read only, owner Administrators - plan 3.5) is the real protection; this rule only
+# catches the plain mistakes. It refuses a line that names the ProgramData folder in any of the spellings
+# below ANYWHERE and also names `econ` or `CUTOVER` anywhere (R1179: adjacency let `Join-Path
+# $env:ProgramData econ` and `"C:\ProgramData"\econ` through).
+_FOLDER = re.compile(r"programdata|progra~\d|allusersprofile|all\s+users|commonapplicationdata", re.I)
+_FLAG_WORD = re.compile(r"(?<![\w-])(econ|cutover)(?![\w-])", re.I)
+_D1_NAME = "|".join(re.escape(n) for n in ECON_D1) + "|(?-i:" + "|".join(ECON_D1_BINDINGS) + ")"
 _B = re.escape(ECON_BUCKET)
 # wrangler in every spelling a shell reaches it by: wrangler, wrangler@4, wrangler.cmd, .../wrangler.js, ...
-_W = r"wrangler(?:@[\w.\-]+)?(?:\.cmd|\.js|\.mjs|\.ps1|\.exe)?"
+# followed by ANY options before the subcommand (`wrangler -c x.toml d1 ...`, R1179).
+_W = r"\bwrangler(?:@[\w.\-]+)?(?:\.cmd|\.js|\.mjs|\.ps1|\.exe)?\b.*?"
+# aws / rclone, with any global options before the subcommand (`aws --endpoint-url e s3 rm`, R1179)
+_AWS = r"\baws\b.*?\bs3(?:api)?\s+"
+_RCLONE = r"\brclone\b.*?\b"
 _WRITE_ROADS = [
-    re.compile(rf"{_W}\s+r2\s+object\s+(put|delete)\b.*?\b{_B}(?![\w-])", re.I),
+    re.compile(rf"{_W}\br2\s+object\s+(put|delete)\b.*?\b{_B}(?![\w-])", re.I),
     # whole-bucket changes the off-machine check cannot see (R1178)
-    re.compile(rf"{_W}\s+r2\s+bucket\s+(delete|lifecycle|cors|notification|sippy|domain|dev-url|lock|update|catalog)"
+    re.compile(rf"{_W}\br2\s+bucket\s+(delete|lifecycle|cors|notification|sippy|domain|dev-url|lock|update|catalog)"
                rf"\b.*?\b{_B}(?![\w-])", re.I),
-    re.compile(rf"{_W}\s+d1\s+(execute|migrations\s+apply)\b(?=.*--remote).*?\b({_D1_NAME})(?![\w-])", re.I),
+    re.compile(rf"{_W}\bd1\s+(execute|migrations\s+apply)\b(?=.*--remote).*?(?<![\w-])({_D1_NAME})(?![\w-])", re.I),
     # deleting or rewinding a whole database - also invisible to the off-machine check (R1178)
-    re.compile(rf"{_W}\s+d1\s+(delete|time-travel)\b.*?\b({_D1_NAME})(?![\w-])", re.I),
+    re.compile(rf"{_W}\bd1\s+(delete|time-travel)\b.*?(?<![\w-])({_D1_NAME})(?![\w-])", re.I),
     re.compile(rf"/d1/database/({_D1_NAME})\b", re.I),
-    re.compile(rf"\baws\s+s3(api)?\s+(cp|mv|rm|sync|put-object|delete-object|delete-objects|delete-bucket|rb)\b.*?"
-               rf"{_B}(?![\w-])", re.I),
-    re.compile(rf"\brclone\s+(copy|copyto|move|moveto|sync|delete|deletefile|purge|rcat)\b.*?{_B}(?![\w-])", re.I),
+    re.compile(rf"/r2/buckets/{_B}(?![\w-])", re.I),                       # the REST API (R1179)
+    re.compile(rf"{_AWS}(cp|mv|rm|sync|rb|put-\S+|delete-\S+|copy-object|create-multipart-upload|upload-part\S*"
+               rf"|complete-multipart-upload|abort-multipart-upload|restore-object)\b.*?{_B}(?![\w-])", re.I),
+    re.compile(rf"{_RCLONE}(copy|copyto|copyurl|move|moveto|sync|bisync|delete|deletefile|purge|rcat|touch|mkdir"
+               rf"|rmdir|rmdirs|settier|dedupe|backend)\b.*?{_B}(?![\w-])", re.I),
+    # the other S3 command-line clients (R1179)
+    re.compile(rf"\b(s5cmd|mc)\b.*?\b(rm|cp|mv|sync|rb|mirror|put|pipe|del)\b.*?{_B}(?![\w-])", re.I),
+    re.compile(rf"{_W}\br2\s+bulk\b.*?\b{_B}(?![\w-])", re.I),
 ]
 
 
-def _one_line(command: str) -> str:
-    """The command as ONE line: line continuations (PowerShell backtick, POSIX backslash, cmd caret) joined and
-    every newline turned into a space, so `wrangler d1 execute` and the database name on the next line are
-    still one command to the patterns (R1178)."""
-    return re.sub(r"[`\\^]?\r?\n", " ", command)
+def _lines(command: str) -> list[str]:
+    """The command's logical lines: a line CONTINUED onto the next (PowerShell backtick, POSIX backslash,
+    cmd caret at the end of the line) is joined to it, so `wrangler d1 execute` and the database name on the
+    next line are one command (R1178); separate lines stay separate, so an hf command on one line and a
+    mention of econ on the next are not one write (R1179 finding 7)."""
+    return re.sub(r"[`\\^]\r?\n", " ", command).splitlines() or [""]
 
 
 def cut_over(flag_path: str = FLAG_PATH) -> bool:
@@ -88,14 +105,15 @@ def cut_over(flag_path: str = FLAG_PATH) -> bool:
 
 def decide(command: str, flag_path: str = FLAG_PATH) -> str | None:
     """The reason to deny `command`, or None to let it run."""
-    if _FLAG_NAME.search(command):
+    if any(_FOLDER.search(line) and _FLAG_WORD.search(line) for line in _lines(command)):
         return ("REFUSED: this command names the econ CUTOVER flag folder (C:\\ProgramData\\econ). Only Ahmed "
                 "creates or changes it, elevated, at T0 (docs/ECON_SELF_HOSTING_PLAN.md step 6a).")
     if cut_over(flag_path):
-        line = _one_line(command)
-        for road in _WRITE_ROADS:
-            m = road.search(line)
-            if m:
+        for line in _lines(command):
+            for road in _WRITE_ROADS:
+                m = road.search(line)
+                if not m:
+                    continue
                 return (f"REFUSED after T0: '{m.group(0)[:80]}' writes to the retired econ cloud copy. econ is "
                         "self-hosted; read D1 through core/d1_remote.py (read-only token), write locally.")
     return None

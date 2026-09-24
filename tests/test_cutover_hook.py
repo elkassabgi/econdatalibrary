@@ -21,8 +21,23 @@ FLAG_NAMES = [
     # R1178: the 8.3 name, ALLUSERSPROFILE and the .NET special folder
     r"del C:\PROGRA~3\econ\CUTOVER",
     r"Remove-Item $env:ALLUSERSPROFILE\econ\CUTOVER",
-    r"[Environment]::GetFolderPath('CommonApplicationData')",
+    r"Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) econ",
+    # R1179: the folder and `econ` need not be next to each other
+    r"Remove-Item ${env:ProgramData}\econ\CUTOVER",
+    r"Join-Path $env:ProgramData econ",
+    r"Remove-Item (Join-Path $env:ProgramData 'econ') -Recurse",
+    "python -c \"import os; os.remove(os.path.join(os.environ['PROGRAMDATA'], 'econ', 'CUTOVER'))\"",
+    r"Remove-Item 'C:\Users\All Users\econ\CUTOVER'",
+    r'del "C:\Documents and Settings\All Users\econ\CUTOVER"',
+    r"del C:\ProgramData\.\econ\CUTOVER",
+    r"cd C:\ProgramData; Remove-Item econ -Recurse",
+    r'del "C:\ProgramData"\econ\CUTOVER',
+    r"del %SystemDrive%\ProgramData\econ\CUTOVER",
+    r"del \\?\C:\ProgramData\econ\CUTOVER",
+    r"del \\localhost\c$\ProgramData\econ\CUTOVER",
 ]
+# Spellings the rule does NOT catch - stated, not hidden: the folder's ACL is the protection (plan 3.5).
+FLAG_NAMES_NOT_CAUGHT = [r"$p='C:\Program'+'Data\econ'; rm $p"]
 WRITES = [
     "npx wrangler r2 object put econ-data/series/x.csv --file x.csv",
     "wrangler r2 object delete econ-data/_aqueduct/stats.json --remote",
@@ -47,6 +62,31 @@ WRITES = [
     "npx wrangler d1 execute `\n  econ-catalog --remote --command \"DELETE FROM series\"",
     "npx wrangler d1 execute \\\n  econ-catalog --remote --file f.sql",
     "aws s3 rb s3://econ-data --force",
+    # R1179: binding names, options before the subcommand, bucket-level verbs, the REST path, other clients
+    "npx wrangler d1 execute CATALOG --remote --command \"DELETE FROM series\"",
+    "npx wrangler d1 migrations apply CATALOG_CLIMATE --remote",
+    "npx wrangler --config api/worker/wrangler.toml d1 execute econ-catalog --remote --command \"DELETE FROM series\"",
+    "npx wrangler -c api/worker/wrangler.toml d1 delete econ-catalog -y",
+    "npx wrangler --cwd api/worker r2 object put econ-data/x --file x",
+    "npx wrangler r2 bulk put econ-data --filename list.json",
+    "aws --endpoint-url https://acct.r2.cloudflarestorage.com s3 rm s3://econ-data --recursive",
+    "aws --profile r2 s3 rb s3://econ-data --force",
+    "aws s3api put-bucket-lifecycle-configuration --bucket econ-data --lifecycle-configuration file://l.json",
+    "aws s3api copy-object --bucket econ-data --key a --copy-source econ-data/b",
+    "aws s3api put-bucket-policy --bucket econ-data --policy file://p.json",
+    "curl -X DELETE https://api.cloudflare.com/client/v4/accounts/ACC/r2/buckets/econ-data",
+    "rclone --config r.conf sync ./x r2:econ-data",
+    "rclone bisync ./x r2:econ-data",
+    "rclone copyurl https://x r2:econ-data/k",
+    "rclone touch r2:econ-data/k",
+    "npx wrangler d1 execute ECON-CATALOG --remote --command \"DELETE FROM series\"",
+    "npx wrangler d1 execute econ-catalog --remote=true --command \"DELETE FROM series\"",
+    "npx wrangler d1 execute ^\r\n econ-catalog --remote --file f.sql",
+    "npx -y wrangler d1 time-travel restore econ-catalog --bookmark x",
+    "pnpm dlx wrangler r2 bucket delete econ-data",
+    "bunx wrangler d1 delete 1A6D0755-ECEF-46D0-A478-46CAD1CF064C",
+    "s5cmd rm s3://econ-data/*",
+    "mc rm --recursive --force r2/econ-data",
 ]
 FINE = [
     "npx wrangler r2 object get econ-data/series/x.csv --file x.csv",
@@ -60,6 +100,13 @@ FINE = [
     "npx wrangler d1 list",
     "npx wrangler r2 bucket list",
     "npx wrangler d1 time-travel info hfdatalibrary-db",
+    # R1179 finding 7: separate lines are separate commands
+    "npx wrangler d1 execute hfdatalibrary-db --remote --command \"SELECT 1\"\necho econ-catalog done",
+    # binding names are case-sensitive, as in wrangler: hf's lower-case `catalog` is not the binding
+    "npx wrangler d1 execute hfdatalibrary-db --remote --file dist/catalog.sql",
+    "wrangler r2 bucket info econ-data",
+    "wrangler d1 info econ-catalog",
+    r"[Environment]::GetFolderPath('CommonApplicationData')",      # the folder alone, no econ
 ]
 
 
@@ -89,6 +136,12 @@ def test_write_roads_are_refused_only_after_t0(cmd, no_flag, flag):
 @pytest.mark.parametrize("cmd", FINE)
 def test_everything_else_runs(cmd, flag):
     assert H.decide(cmd, flag) is None, cmd
+
+
+@pytest.mark.parametrize("cmd", FLAG_NAMES_NOT_CAUGHT)
+def test_the_known_gaps_are_still_gaps(cmd, flag):
+    """If one of these starts being caught, move it to FLAG_NAMES; the docstring's honesty depends on it."""
+    assert H.decide(cmd, flag) is None
 
 
 def test_an_unreadable_flag_counts_as_cut_over(monkeypatch):

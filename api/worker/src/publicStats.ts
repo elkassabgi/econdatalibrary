@@ -17,9 +17,9 @@
 // Read-only. No auth. Aggregated only — no PII leaves this endpoint. CORS "*".
 // ---------------------------------------------------------------------------
 
-import type { Env } from "./types";
-import { NON_REDISTRIBUTABLE } from "./denylist";
-import { json } from "./util";
+import type { Env } from "./types.ts";
+import { NON_REDISTRIBUTABLE } from "./denylist.ts";
+import { json } from "./util.ts";
 
 // Full-name / abbreviation -> ISO-3166 alpha-2. Mirrors hf's COUNTRY_TO_ISO so
 // the normalized world map matches HF exactly. Keyed by LOWER(TRIM(value)).

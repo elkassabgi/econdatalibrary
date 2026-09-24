@@ -15,23 +15,23 @@
 //     GET /v1/series/{id}.csv               (streams series/<id>.csv from R2)
 // ---------------------------------------------------------------------------
 
-import type { Env } from "./types";
-import { runCostGuard, type CostGuardEnv } from "./costGuard";
-import { handlePageview, handlePageviewReport, reportDays } from "./pageview";
-import { handleCatalog } from "./catalog";
-import { handleSources } from "./sources";
-import { handleLastUpdates } from "./lastUpdates";
-import { handleMetadata } from "./metadata";
-import { handleSeriesCsv } from "./series";
-import { handleBundle } from "./bundle";
-import { requireDownloadAuth, logDownload } from "./auth";
-import { isGated } from "./denylist";
-import { handlePublicStats } from "./publicStats";
-import { json, reqLang } from "./util";
-import { isLocal, originGate, finalizeLocal, isDownloadPath } from "./localMode";
-import { LocalBucket } from "./localBucket";
-import { edgeStatus, isForward, isForwardable, cacheSeconds, cacheKey, originRequest, fetchOrigin, countingBody,
-  clientResponse, notConfigured, refusedPath } from "./edge";
+import type { Env } from "./types.ts";
+import { runCostGuard, type CostGuardEnv } from "./costGuard.ts";
+import { handlePageview, handlePageviewReport, reportDays } from "./pageview.ts";
+import { handleCatalog } from "./catalog.ts";
+import { handleSources } from "./sources.ts";
+import { handleLastUpdates } from "./lastUpdates.ts";
+import { handleMetadata } from "./metadata.ts";
+import { handleSeriesCsv } from "./series.ts";
+import { handleBundle } from "./bundle.ts";
+import { requireDownloadAuth, logDownload } from "./auth.ts";
+import { isGated } from "./denylist.ts";
+import { handlePublicStats } from "./publicStats.ts";
+import { json, reqLang } from "./util.ts";
+import { isLocal, originGate, finalizeLocal, isDownloadPath } from "./localMode.ts";
+import { LocalBucket } from "./localBucket.ts";
+import { sourceNamesBackoffMs, sourceNamesMaxAgeMs, edgeStatus, isForward, isForwardable, cacheSeconds, cacheKey, originRequest, fetchOrigin, countingBody,
+  clientResponse, notConfigured, refusedPath } from "./edge.ts";
 
 const CORS_PREFLIGHT: Record<string, string> = {
   "access-control-allow-origin": "*",
@@ -423,8 +423,8 @@ async function originSourceNames(request: Request, env: Env, ctx: ExecutionConte
   const keptKey = new Request(new URL("/__edge/source-names", u).toString(), { method: "GET" });
   const keptResp = await caches.default.match(keptKey);
   const kept = keptResp ? await keptResp.json() as { at: number; names: Record<string, string> } : null;
-  const maxAge = Number(env.SOURCE_NAMES_MAX_AGE_S ?? 3600);
-  if (kept && Date.now() - kept.at < (Number.isFinite(maxAge) ? maxAge : 3600) * 1000) return kept.names;
+  const ageMs = sourceNamesMaxAgeMs(env);
+  if (kept && Date.now() - kept.at < ageMs) return kept.names;
   try {
     const oreq = originRequest(new Request(new URL("/v1/sources", u).toString(), { method: "GET" }), env);
     if (!oreq) throw new Error("origin not configured");
@@ -442,13 +442,11 @@ async function originSourceNames(request: Request, env: Env, ctx: ExecutionConte
     return names;
   } catch (e) {
     console.log("public-stats: origin source names unavailable, using the kept copy:", String(e));
-    // Back off for 60 s (AR-151 finding 8): without this, every request during an outage waited the
-    // full origin timeout. The kept names - or none - are re-stamped to look fresh for one more minute.
+    // Back off (AR-151 finding 8; 60 s unless SOURCE_NAMES_BACKOFF_S says otherwise): without this, every
+    // request during an outage waited the full origin timeout. The kept names - or none - are re-stamped
+    // so they count as fresh for the back-off, and no longer.
     const names = kept ? kept.names : {};
-    const ageMs = (Number.isFinite(maxAge) ? maxAge : 3600) * 1000;
-    const backoff = Number(env.SOURCE_NAMES_BACKOFF_S ?? 60);
-    const backoffMs = (Number.isFinite(backoff) && backoff >= 0 ? backoff : 60) * 1000;
-    ctx.waitUntil(caches.default.put(keptKey, new Response(JSON.stringify({ at: Date.now() - ageMs + backoffMs, names }), {
+    ctx.waitUntil(caches.default.put(keptKey, new Response(JSON.stringify({ at: Date.now() - ageMs + sourceNamesBackoffMs(env), names }), {
       headers: { "content-type": "application/json", "cache-control": "public, s-maxage=2592000" },
     })));
     return names;
