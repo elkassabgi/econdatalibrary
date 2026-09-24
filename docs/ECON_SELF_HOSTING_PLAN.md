@@ -17,9 +17,15 @@ Build status (branch feat/econ-selfhost-origin):
   one resolver and the single-writer lock, with a ratchet of 154 files still to move (4a); SelfhostBlob
   (AQUEDUCT_BACKEND=selfhost, 4); the updater's post-T0 preflight (4); tools/selfhost/cutover_hook.py
   (5, written and tested, NOT installed - Ahmed approves it first).
-- Still to do in step 1: move the 154 catalogue callers and the 27 remote-D1 callers onto the
-  chokepoints; the direct put_series_csv writers onto SelfhostBlob; the licence tools' local backend;
-  the verifier re-pointing (6d).
+- Built after that: core/licence_targets.py with retire_source.py and delist_source_rows.py on it
+  (licence enforcement has its local backend before anything else moves); the R1176 fixes (one
+  catalogue, every override refused, hot-journal recovery).
+- Still to do in step 1: move the 137 catalogue callers and the 25 remote-D1 callers onto the
+  chokepoints (the ratchets list them and may only shrink); the direct put_series_csv writers onto
+  SelfhostBlob; delist_timeless_tables.py onto licence_targets (purge_unpermitted_r2.py stays defused
+  until re-armed, then on licence_targets); a self-hosted path for tools/run_local_heavy.ps1 and
+  make_servable.py (after T0 both fail closed today: the heavy run asks for --pull-state and the R2
+  backend, make_servable forces R2); the verifier re-pointing (6d).
 - Changes 4 and 5 follow the rules in section 3.4a-c (R1167 A-C).
 
 Measured 2026-09-24T01:33:51Z: the live worker's Cache API works on workers.dev (CF-Cache-Status HIT,
@@ -101,8 +107,9 @@ client -> econdl-api.elkassabgi.workers.dev   EDGE worker (same name, forever)
                 sets x-econ-count on length-less answers; no-store everywhere; the Cache API is off (or a
                 fresh persist dir per swap), so a swap is never hidden for 6 h
               - CATALOG / CATALOG_CLIMATE: per-swap DISPOSABLE COPIES of the build, made with the SQLite
-                backup API (or under the single-writer lock - a plain copy of a rollback-journal file
-                during a write can be torn), then PRAGMA quick_check, total = primary + climate, and
+                backup API ONLY (no plain file copy, even under the lock: a writer killed mid-transaction
+                leaves a hot journal that makes any plain copy torn - R1176; the lock's holder rolls it
+                back first), then PRAGMA quick_check, total = primary + climate, and
                 COUNT(series_fts) = COUNT(series) per file, before the flip; noaa only in CLIMATE; the
                 service account is read-only on the build and the store
               - SERIES_BUCKET: adapter over the blob sidecar (content-addressed files + SQLite index
@@ -125,16 +132,19 @@ client -> econdl-api.elkassabgi.workers.dev   EDGE worker (same name, forever)
 3. SERIES_BUCKET adapter + blob sidecar + local router.
 4. Updater: LocalBlob fixed root + gzip at rest; local state with a single-writer lock replacing
    --pull/--push-state and ci_writer_gate - active only behind the CUTOVER flag, because CI keeps running
-   from main until T0. The lock, the state and the catalogue build live at FIXED MACHINE-WIDE paths
-   (not under the checkout: STATE_DIR follows AQUEDUCT_STATE_DIR and 159 modules open
-   ROOT/data/catalog.db), and after the flag any write whose resolved catalogue, store or state dir is
-   not the build is refused - so a run from any of the 67 worktrees cannot become a second writer;
+   from main until T0. The catalogue build and the state are the PRODUCTION CHECKOUT'S own files
+   (E:\research\econfindatalibrary\data\catalog.db and data\_aqueduct\ - review R1176: a separate build
+   path left the updater and ~150 modules that open ROOT/data/catalog.db writing a different file), and
+   after the flag updater/run.py refuses a run unless the code, config.ROOT, STATE_DIR, DATA_ROOT,
+   REGISTRY, ECONDL_CATALOG and ECONDL_DATA all resolve to that checkout - so a run from any of the 67
+   worktrees cannot become a second writer. Only the lock lives outside the checkout;
    4a. ONE CATALOGUE RESOLVER (R1167 A): 144 non-test modules name catalog.db without ECONDL_CATALOG and
        128 of them connect, so every catalogue open goes through one function (core/catalog_path.py),
        with a CI test failing on any other `catalog.db` open. It opens the build with a mode=rw or mode=ro
        URI, which never creates a file (a missing build is an error, never an empty catalogue). Fixed
-       paths: the build at E:\econ_live\catalog\catalog.db, state at E:\econ_live\state\, the lock at
-       E:\econ_live\state\writer.lock (NOT under C:\ProgramData\econ, where Users can only read).
+       paths: the build and the state as above; the lock at E:\econ_live\state\writer.lock (NOT under
+       C:\ProgramData\econ, where Users can only read). Taking the lock rolls back a hot journal left by
+       a killed writer before anything reads or copies the catalogue (R1176).
    4b. THE FLAG PATH IS A MODULE CONSTANT (R1167 B) with no environment or config override (an override
        would let any process point it at a missing file = "not cut over"). Tests monkeypatch the constant;
        a CI test fails on any environment read in the flag module.
