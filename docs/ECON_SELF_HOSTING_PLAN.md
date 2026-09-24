@@ -64,6 +64,14 @@ Build status (branch feat/econ-selfhost-origin):
     ok|partial) + source_data_through (stamp_source_data_through: MAX(end_date <= today) over D1). No
     unit_state.
   DRAFT 1 OF THE REST FAILED REVIEW R1193 (2026-09-24); DRAFT 2 BELOW TAKES ITS CORRECTIONS.
+  BUILT 2026-09-24 on feat/econ-selfhost-origin (tools/refresh_sec_edgar.py _refresh_local, under review):
+  after T0 --d1/--audit/--respan are refused first; the fetch and merge are staged under data/ without the
+  lock; the commit (parquet os.replace, CSV put plain as today, catalogue span/insert, series.last_updated,
+  source_state('sec_edgar') edgar_delta/daily) holds the writer lock and re-checks the stored facts first.
+  Its FIRST RUN is gated on feat/econ-13f-own-key merging: without updater/state_migrations.py, or with any
+  13F row still under sec_edgar, it refuses (the upsert would overwrite the 13F product's row). Still owed
+  (not built): the local read-back proof, --respan/--audit, the time of day, and step 6b's footer_diff
+  showing the local sec_edgar store whole.
   * ONE STORE, AND IT MUST BE WHOLE FIRST. After T0 the parquet store is LOCAL: under
     AQUEDUCT_BACKEND=selfhost updater.blob reads and writes files under the live checkout
     (blob._r2_routed() is None); only series/ CSVs go to the SelfhostBlob store. Draft 1 read "prior facts"
@@ -250,8 +258,14 @@ Build status (branch feat/econ-selfhost-origin):
   TIME_WAIT, and overlapping suites reached 12,289 of 16,384 ephemeral ports; tests then failed with
   WinError 10048. After T0 the live router opens a new connection to the origin for every request on this
   same machine, so a suite run could make it answer 502. Before T0: the load test reuses its client
-  connections and caps its requests (done). Open: pool the router's origin connections, and do not run
-  overlapping suites on the host after T0.
+  connections and caps its requests (done). The router pools its origin connections (done 2026-09-24,
+  R1218/R1229): idle ones are kept 4 s, below workerd's measured ~5 s idle close; a retry takes a NEW
+  connection and happens only when a reused one was closed before any answer, never on a timeout; a 1xx
+  answer never leaves its connection pooled. Still open: do not run overlapping suites on the host after T0.
+  A TEST NEVER REACHES THE LIVE PATHS (R1227/R1230): tools/pretest.py runs the suite in the production
+  checkout, so tests/conftest.py gives every test its own non-existent flag, lock, build, checkout
+  catalogue and blob root (econdl's own copies too); a test that forgets one runs before T0 against
+  nothing, whatever the machine is.
   delist_timeless_tables.py onto licence_targets (purge_unpermitted_r2.py stays defused
   until re-armed, then on licence_targets); a self-hosted path for tools/run_local_heavy.ps1 and
   make_servable.py (after T0 both fail closed today: the heavy run asks for --pull-state and the R2
