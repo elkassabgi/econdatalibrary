@@ -131,7 +131,7 @@ LEGACY_REMOTE_D1 = {
     "tools/audit_d1_source_counts.py", "tools/audit_d1_vs_catalog.py", "tools/audit_licence_disclosure.py",
     "tools/audit_site.py", "tools/billing_guard.py", "tools/delist_source_rows.py", "tools/delist_timeless_tables.py",
     "tools/enrich_sec_edgar_tickers.py", "tools/migrate_noaa_shard.py", "tools/rebuild_series_fts.py",
-    "tools/refresh_flowgrain_dates.py", "tools/refresh_sec_edgar.py", "tools/retire_source.py",
+    "tools/refresh_flowgrain_dates.py", "tools/refresh_sec_edgar.py",
     "tools/stamp_source_data_through.py", "tools/sync_source_rows_d1_to_local.py", "tools/sync_titles_to_d1.py",
     "tools/verify_source_served.py",
 }

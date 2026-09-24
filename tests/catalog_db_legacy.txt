@@ -115,7 +115,6 @@ tools/refresh_sec_edgar.py
 tools/rekey_fao_series.py
 tools/repair_stale_csvs.py
 tools/resync_and_repair.py
-tools/retire_source.py
 tools/sample_source_coverage.py
 tools/series_census.py
 tools/status_where_and_proven.py

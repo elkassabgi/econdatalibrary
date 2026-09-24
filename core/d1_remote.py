@@ -72,6 +72,34 @@ def read_statement_problem(sql: str) -> str | None:
     return None
 
 
+def execute_wrangler(database: str, statements: list[str], *, cwd: str | None = None) -> bool:
+    """Run statements on a remote econ D1 database through `wrangler d1 execute --remote` - the road the
+    licence tools write D1 by today (wrangler's OAuth login; the desktop .env holds no API token). Stops at
+    the first failure and prints why. AFTER T0 it refuses outright: the OAuth login can write, and D1 is
+    the frozen copy (reads after T0 go through query() with the read-only token)."""
+    import subprocess                                                           # noqa: PLC0415
+    import sys                                                                  # noqa: PLC0415
+    if database not in DATABASES:
+        raise ValueError(f"unknown D1 database {database!r}; known: {sorted(DATABASES)}")
+    if is_cut_over():
+        raise CutoverRefused(f"refused: wrangler d1 execute --remote on {database} after T0 (D1 is frozen)")
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    for stmt in statements:
+        r = subprocess.run(["npx", "wrangler", "d1", "execute", database, "--remote", "--command", stmt],
+                           cwd=cwd or os.path.join(root, "api", "worker"), capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", env=env, shell=(os.name == "nt"))
+        ok = r.returncode == 0
+        print(f"  D1: {stmt.split(' WHERE')[0]} -> {'ok' if ok else 'FAILED'}")
+        if not ok:
+            # captured as utf-8, printed to a console that may be cp1252: never let the error report crash
+            detail = (r.stderr or r.stdout or "")[-600:]
+            enc = sys.stdout.encoding or "utf-8"
+            sys.stdout.write(detail.encode(enc, "replace").decode(enc, "replace") + "\n")
+            return False
+    return True
+
+
 def query(database: str, sql: str, params: list | None = None, *, timeout: int = 120) -> dict:
     """Run ONE statement on a remote econ D1 database; returns the REST result ({results, meta, ...})."""
     if database not in DATABASES:
