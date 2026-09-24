@@ -115,6 +115,27 @@ def check_status(edge: str, want: dict) -> list[str]:
     return bad
 
 
+def undeployed_worker_changes(edge: str) -> str | None:
+    """A WARNING (not a failure: deploys are Ahmed's and follow merges with a lag) when this checkout's
+    api/worker differs from the deployed commit's - main has worker changes that are not live (AR-151
+    finding 7). None when they match, or when nothing can be compared (reported as such)."""
+    import subprocess                                                        # noqa: PLC0415
+    code, body = get_json(edge + "/v1/edge-status")
+    commit = body.get("commit") if code == 200 and isinstance(body, dict) else None
+    if not commit:
+        return None
+    try:
+        r = subprocess.run(["git", "diff", "--quiet", commit, "HEAD", "--", "api/worker"], cwd=ROOT,
+                           capture_output=True, timeout=60)
+    except Exception as e:  # noqa: BLE001
+        return f"could not compare the deployed commit {commit} with this checkout ({type(e).__name__})"
+    if r.returncode == 0:
+        return None
+    if r.returncode == 1:
+        return f"main has api/worker changes after the deployed commit {commit[:12]}: they are not live"
+    return f"the deployed commit {commit[:12]} is not in this checkout's history (git exit {r.returncode})"
+
+
 def graphql(token: str, query: str, variables: dict) -> dict:
     req = urllib.request.Request(
         "https://api.cloudflare.com/client/v4/graphql",
@@ -245,6 +266,9 @@ def main(argv: list[str] | None = None, now: dt.datetime | None = None) -> int:
                     failures.append(f"WRITES: BLIND - {type(e).__name__}: {str(e)[:300]}")
     print(f"edge {a.edge}; committed forward={want['forward']} edge_state={want['edge_state']}; "
           f"writes check {'from ' + a.no_writes_since if a.no_writes_since else 'off'}")
+    warn = undeployed_worker_changes(a.edge)
+    if warn:
+        print("WARN " + warn)
     if failures:
         body = "\n".join(failures)
         print("FAIL\n" + body)

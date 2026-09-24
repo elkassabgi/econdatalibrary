@@ -128,6 +128,18 @@ test("a header timeout ABORTS the pending request to the origin", async (t) => {
   assert.equal(closedEarly, 1, "the origin saw the request closed long before it answered");
 });
 
+test("the edge's own writers touch econ storage in exactly ONE place each (AR-151 finding 3)", () => {
+  // A guarded access (`if (env.CATALOG) ...`) slips past the edge-only config test and the table checks,
+  // so the sources are pinned: the store choice in pageview.ts, and the R2 branch of the cost guard.
+  const src = (f: string) => readFileSync(at("src", f), "utf8").replace(/^\s*\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+  const count = (s: string, needle: string) => s.split(needle).length - 1;
+  assert.equal(count(src("pageview.ts"), "env.CATALOG"), 1, "pageview.ts reaches econ D1 only through store()");
+  assert.equal(count(src("pageview.ts"), "env.CATALOG_CLIMATE"), 0);
+  assert.equal(count(src("pageview.ts"), "env.SERIES_BUCKET"), 0);
+  assert.equal(count(src("costGuard.ts"), "env.SERIES_BUCKET"), 1, "costGuard.ts reaches econ R2 only in writeStatus");
+  assert.equal(count(src("costGuard.ts"), "env.CATALOG"), 0);
+});
+
 test("the client never sees the internal headers", () => {
   const o = new Response("x", { headers: { "x-econ-count": "1", "x-econ-origin": "1", "content-type": "text/csv" } });
   const c = edge.clientResponse(o, o.body);
@@ -382,6 +394,12 @@ test("FORWARD on: the real edge, with no econ D1 or R2 binding, against a stand-
     assert.equal(down.status, 200, down.text.slice(0, 200));
     assert.ok(calls() > before, "the origin was asked (and failed), so this is the fallback, not a cache hit");
     assert.deepEqual(topNames(down.text), [["zz", "ZZ"]], "names from the kept copy while the origin is down");
+    await new Promise((r) => setTimeout(r, 300));                  // the back-off record is put in waitUntil
+    const asked = calls();
+    const again = await get(w, "/v1/public-stats");
+    assert.equal(again.status, 200);
+    assert.equal(calls(), asked, "during the 60 s back-off the origin is not asked again (AR-151 finding 8)");
+    assert.deepEqual(topNames(again.text), [["zz", "ZZ"]]);
     origin.setSourcesDown(false);
     const pv = await get(w, "/v1/pv?p=%2Fabout");
     assert.equal(pv.status, 200);

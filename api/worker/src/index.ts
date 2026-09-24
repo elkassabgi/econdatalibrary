@@ -442,7 +442,14 @@ async function originSourceNames(request: Request, env: Env, ctx: ExecutionConte
     return names;
   } catch (e) {
     console.log("public-stats: origin source names unavailable, using the kept copy:", String(e));
-    return kept ? kept.names : {};
+    // Back off for 60 s (AR-151 finding 8): without this, every request during an outage waited the
+    // full origin timeout. The kept names - or none - are re-stamped to look fresh for one more minute.
+    const names = kept ? kept.names : {};
+    const ageMs = (Number.isFinite(maxAge) ? maxAge : 3600) * 1000;
+    ctx.waitUntil(caches.default.put(keptKey, new Response(JSON.stringify({ at: Date.now() - ageMs + 60_000, names }), {
+      headers: { "content-type": "application/json", "cache-control": "public, s-maxage=2592000" },
+    })));
+    return names;
   }
 }
 

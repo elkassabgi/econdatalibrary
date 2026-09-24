@@ -137,6 +137,17 @@ def test_a_planted_write_is_seen_and_reads_are_not(monkeypatch):
     assert len(seen) == 2
 
 
+@pytest.mark.parametrize("action", ["DeleteObject", "DeleteObjects", "CopyObject", "CreateMultipartUpload",
+                                    "UploadPart", "CompleteMultipartUpload", "PutBucketLifecycleConfiguration",
+                                    "SomeFutureWrite"])
+def test_every_non_read_action_is_a_write(monkeypatch, action):
+    """AR-151 finding 2: a check that counted only PutObject survived. Anything not on the read list is a
+    write - including an action name that does not exist yet."""
+    monkeypatch.setattr(W, "graphql", _fake(CONTROL_R2 + [r2row("econ-data", action, 1)], CONTROL_D1, []))
+    bad = W.check_writes("t", "acct", T0, NOW, WANT)
+    assert len(bad) == 1 and action in bad[0]
+
+
 def test_a_write_query_that_wrote_no_rows_still_counts(monkeypatch):
     monkeypatch.setattr(W, "graphql", _fake(CONTROL_R2, CONTROL_D1 + [d1row("e1", written=0, wq=1)], []))
     assert len(W.check_writes("t", "acct", T0, NOW, WANT)) == 1, "a DROP TABLE can write zero rows"
@@ -174,7 +185,25 @@ def test_a_truncated_answer_is_refused():
 def _quiet(monkeypatch):
     monkeypatch.setattr(W, "check_up", lambda edge, now: [])
     monkeypatch.setattr(W, "check_status", lambda edge, want: [])
+    monkeypatch.setattr(W, "undeployed_worker_changes", lambda edge: None)
     monkeypatch.delenv("RESEND_API_KEY", raising=False)
+
+
+@pytest.mark.parametrize("rc,expect", [(0, None), (1, "not live"), (128, "not in this checkout")])
+def test_undeployed_worker_changes_is_a_warning(monkeypatch, rc, expect):
+    import subprocess
+    monkeypatch.setattr(W, "get_json", lambda url, timeout=60: (200, {"commit": "abc123def456789"}))
+    seen = {}
+
+    def run(cmd, **kw):
+        seen["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, rc)
+    monkeypatch.setattr(subprocess, "run", run)
+    got = W.undeployed_worker_changes("https://e")
+    assert (got is None) if expect is None else (expect in got)
+    assert seen["cmd"] == ["git", "diff", "--quiet", "abc123def456789", "HEAD", "--", "api/worker"]
+    monkeypatch.setattr(W, "get_json", lambda url, timeout=60: (404, None))
+    assert W.undeployed_worker_changes("https://e") is None, "no route, no commit: nothing to compare"
 
 
 def test_writes_check_without_a_token_is_blind_and_fails(monkeypatch, capsys):

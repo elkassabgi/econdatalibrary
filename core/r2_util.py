@@ -134,7 +134,7 @@ def client(write: bool = False):
 # The flag is read on EVERY call, not when the client is built: a long-running process that built its
 # client before T0 is stopped at T0 too. It is one os.stat per call.
 # ---------------------------------------------------------------------------
-READ_OPERATIONS = frozenset({"GetObject", "HeadObject", "ListObjects", "ListObjectsV2", "HeadBucket"})
+READ_OPERATIONS = frozenset({"GetObject", "HeadObject", "ListObjects", "ListObjectsV2", "HeadBucket", "ListBuckets"})
 
 
 def _refuse_writes_after_cutover(model=None, **_kwargs):

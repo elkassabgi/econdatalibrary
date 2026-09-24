@@ -34,9 +34,12 @@ from core import config                                             # noqa: E402
 
 config.load_env(".env.local")
 config.load_env(".env")
-s3 = boto3.client("s3", endpoint_url=os.environ["R2_WRITE_ENDPOINT"],
-                  aws_access_key_id=os.environ["R2_WRITE_ACCESS_KEY_ID"],
-                  aws_secret_access_key=os.environ["R2_WRITE_SECRET_ACCESS_KEY"])
+from core.r2_util import guard_client                               # noqa: E402
+
+# The self-hosting cutover guard: after T0 this client may only read (its deletes are refused).
+s3 = guard_client(boto3.client("s3", endpoint_url=os.environ["R2_WRITE_ENDPOINT"],
+                               aws_access_key_id=os.environ["R2_WRITE_ACCESS_KEY_ID"],
+                               aws_secret_access_key=os.environ["R2_WRITE_SECRET_ACCESS_KEY"]))
 
 total = 0
 for prefix in ("series/statcan%3A", "clean_full/statcan/"):

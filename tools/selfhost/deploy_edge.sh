@@ -30,7 +30,7 @@ fi
 commit="$(git rev-parse HEAD)"
 
 echo "deploying econdl-api at $commit"
-(cd api/worker && npx wrangler deploy --var "GIT_COMMIT:$commit")
+(cd api/worker && npx wrangler deploy --config wrangler.toml --var "GIT_COMMIT:$commit")   # --config: wrangler 3 obeys a stray .wrangler/deploy/config.json otherwise (AR-151)
 
 for i in 1 2 3 4 5 6; do
   got="$(curl -s "$EDGE/v1/edge-status" | python -c 'import sys,json; print(json.load(sys.stdin).get("commit") or "")' 2>/dev/null || true)"

@@ -147,11 +147,11 @@ def main() -> int:
     import boto3
     from botocore.config import Config
     _c = r2_util.creds(write=True)
-    s3 = boto3.client(
+    s3 = r2_util.guard_client(boto3.client(                  # the cutover guard: read-only after T0
         "s3", endpoint_url=_c["endpoint"], aws_access_key_id=_c["key"],
         aws_secret_access_key=_c["secret"], region_name="auto",
         config=Config(signature_version="s3v4", max_pool_connections=96,
-                      retries={"max_attempts": 5, "mode": "standard"}))
+                      retries={"max_attempts": 5, "mode": "standard"})))
     existing: set[str] = set()
     lp = csv_key_prefix(PREFIX, SRC)
     tok = None

@@ -123,9 +123,11 @@ class BlobStore:
         path = self._path(sha)
         with self._wlock:
             self._w.execute("BEGIN IMMEDIATE")           # held from the file write to the index row
-            self._w.execute("SAVEPOINT put_start")
             created = False
             try:
+                # inside the try (AR-151 finding 9): if it ever failed, the except below still ends the
+                # transaction instead of leaving BEGIN IMMEDIATE open on the shared write connection
+                self._w.execute("SAVEPOINT put_start")
                 if not os.path.exists(path):
                     created = True
                     os.makedirs(os.path.dirname(path), exist_ok=True)

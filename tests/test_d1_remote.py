@@ -17,6 +17,7 @@ READS = [
     "SELECT title FROM series WHERE title LIKE '%delete%' OR title = 'x; drop table y'",
     'SELECT "insert" FROM t',
     "SELECT replace(title, 'a', 'b') FROM series",
+    "SELECT CASE WHEN n > 1 THEN 'many' ELSE 'one' END FROM counts",   # AR-151: END closes a CASE
     "  SELECT 1  ",
 ]
 NOT_READS = {
@@ -160,6 +161,7 @@ def test_no_new_file_calls_d1_remotely_outside_the_chokepoint():
             if REMOTE.search(fh.read()):
                 found.add(rel)
     found.discard("core/d1_remote.py")
+    found.discard("tools/selfhost/cutover_hook.py")   # names the roads in order to REFUSE them (plan change 5)
     assert found - LEGACY_REMOTE_D1 == set(), "new remote-D1 callers: route them through core/d1_remote.query"
     gone = LEGACY_REMOTE_D1 - found
     assert not gone, f"these no longer call D1 remotely - remove them from LEGACY_REMOTE_D1: {sorted(gone)}"

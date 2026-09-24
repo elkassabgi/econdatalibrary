@@ -105,6 +105,51 @@ def test_an_unreadable_flag_refuses(s3, monkeypatch):
 
 
 def test_the_read_list_is_exactly_the_plan_s(s3):
-    """An ALLOW-list: widening it is a decision, so it is pinned (plan section 3, change 5)."""
-    assert r2_util.READ_OPERATIONS == {"GetObject", "HeadObject", "ListObjects", "ListObjectsV2", "HeadBucket"}
+    """An ALLOW-list: widening it is a decision, so it is pinned (plan section 3, change 5). ListBuckets
+    was added with AR-151: jobs/r2_bucket_sizes.py reads it, and it writes nothing."""
+    assert r2_util.READ_OPERATIONS == {"GetObject", "HeadObject", "ListObjects", "ListObjectsV2", "HeadBucket",
+                                       "ListBuckets"}
     assert r2_util.guard_client(s3) is s3 and s3._econ_cutover_guard is True
+
+
+def test_list_buckets_is_a_read(s3, cut_over):
+    with pytest.raises(Reached):
+        s3.list_buckets()
+
+
+# ---- the ratchet: no raw boto3 client may skip the guard (AR-151 finding 1) ---------------------------
+import os as _os
+import re as _re
+
+_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_SKIP = {".git", "node_modules", "data", "dist", "tests", "docs", "scratchpad", ".wrangler", "__pycache__",
+         ".claude", "logs", "state"}
+_RAW = _re.compile(r"boto3\.(client|resource)\(|boto3\.session\.Session\(|\bSession\([^)]*\)\.(client|resource)\(")
+_GUARDED = _re.compile(r"guard_client\(\s*boto3\.client\(")
+
+
+def test_every_boto3_client_in_the_repo_is_guarded():
+    """Every raw S3 client must be built INSIDE guard_client(...), or come from r2_util.client(). A new
+    unguarded client would be a write road to the retired copy that nothing refuses after T0."""
+    bad = []
+    for dirpath, dirs, files in _os.walk(_ROOT):
+        dirs[:] = [d for d in dirs if d not in _SKIP]
+        for f in files:
+            if not f.endswith(".py"):
+                continue
+            p = _os.path.join(dirpath, f)
+            rel = _os.path.relpath(p, _ROOT).replace(_os.sep, "/")
+            src = open(p, encoding="utf-8", errors="replace").read()
+            raw = len(_RAW.findall(src))
+            guarded = len(_GUARDED.findall(src))
+            if rel == "core/r2_util.py":
+                guarded += 1                         # client() builds, then guard_client(s3) on the next line
+            if raw > guarded:
+                bad.append(f"{rel}: {raw} raw client(s), {guarded} guarded")
+    assert not bad, "wrap these in core.r2_util.guard_client(...): " + "; ".join(bad)
+
+
+def test_the_client_ratchet_can_fail():
+    assert _RAW.search('s3 = boto3.client("s3", endpoint_url=e)')
+    assert _GUARDED.search('s3 = guard_client(boto3.client("s3", endpoint_url=e))')
+    assert not _GUARDED.search('s3 = boto3.client("s3", endpoint_url=e)')

@@ -88,8 +88,12 @@ def r2():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             k, _, v = line.partition("="); env[k.strip()] = v.strip().strip('"').strip("'")
-    return boto3.client("s3", endpoint_url=env["R2_WRITE_ENDPOINT"], aws_access_key_id=env["R2_WRITE_ACCESS_KEY_ID"],
-                        aws_secret_access_key=env["R2_WRITE_SECRET_ACCESS_KEY"], region_name="auto")
+    # The self-hosting cutover guard (core/r2_util.guard_client): after T0 this client may only read.
+    sys.path.insert(0, ROOT)
+    from core.r2_util import guard_client                                      # noqa: PLC0415
+    return guard_client(boto3.client("s3", endpoint_url=env["R2_WRITE_ENDPOINT"],
+                                     aws_access_key_id=env["R2_WRITE_ACCESS_KEY_ID"],
+                                     aws_secret_access_key=env["R2_WRITE_SECRET_ACCESS_KEY"], region_name="auto"))
 
 
 def r2_exists(c, key: str) -> bool:

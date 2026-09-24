@@ -37,7 +37,9 @@ DATABASES = {
 
 _WRITE_WORDS = frozenset("""
     INSERT UPDATE DELETE REPLACE UPSERT CREATE DROP ALTER ATTACH DETACH PRAGMA VACUUM REINDEX RETURNING
-    TRIGGER ANALYZE BEGIN COMMIT END ROLLBACK SAVEPOINT RELEASE TRANSACTION INTO""".split())
+    TRIGGER ANALYZE BEGIN COMMIT ROLLBACK SAVEPOINT RELEASE TRANSACTION INTO""".split())
+# END is not listed: it closes every CASE expression, and a bare END (= COMMIT) cannot start a statement here.
+# BEGIN and COMMIT stay: neither appears inside a read.
 _LITERALS = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|`[^`]*`|\[[^\]]*\]")
 _WORD = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
 

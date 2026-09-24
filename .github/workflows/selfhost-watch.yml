@@ -25,6 +25,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # the deployed commit is compared with HEAD (undeployed worker changes)
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
