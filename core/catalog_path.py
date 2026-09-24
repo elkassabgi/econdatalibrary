@@ -93,12 +93,30 @@ def _recover_hot_journal() -> None:
     con = sqlite3.connect(pathlib.Path(path).resolve().as_uri() + "?mode=rw", uri=True, timeout=60)
     try:
         con.execute("SELECT count(*) FROM sqlite_master").fetchone()
+    except sqlite3.OperationalError as e:
+        raise RuntimeError(f"the catalogue at {path} could not be opened for recovery ({e}): another process is "
+                           "writing it WITHOUT the writer lock - a legacy opener (tests/catalog_db_legacy.txt)? "
+                           "Find and stop it; do not copy or serve the catalogue meanwhile") from None
     finally:
         con.close()
-    journal = path + "-journal"
-    if os.path.exists(journal) and os.path.getsize(journal) > 0:
-        raise RuntimeError(f"the catalogue at {path} still has a rollback journal after recovery; "
-                           "do not copy or serve it - inspect it first")
+    if journal_is_hot(path + "-journal"):
+        raise RuntimeError(f"the catalogue at {path} still has a live rollback journal after recovery: another "
+                           "process is mid-write WITHOUT the writer lock (a legacy opener?), or the journal is "
+                           "damaged. Do not copy or serve it - inspect it first")
+
+
+# The first 8 bytes of a rollback journal that still holds a transaction. journal_mode=PERSIST leaves the
+# file in place after a commit with its header ZEROED, and TRUNCATE leaves it empty - neither is hot, and
+# refusing on "exists and not empty" alone refused every PERSIST-mode catalogue (AR-153).
+JOURNAL_MAGIC = bytes.fromhex("d9d505f920a163d7")
+
+
+def journal_is_hot(journal: str) -> bool:
+    try:
+        with open(journal, "rb") as fh:
+            return fh.read(8) == JOURNAL_MAGIC
+    except FileNotFoundError:
+        return False
 
 
 if os.name == "nt":

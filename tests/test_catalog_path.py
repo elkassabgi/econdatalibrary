@@ -144,6 +144,62 @@ def test_taking_the_lock_recovers_a_writer_killed_mid_transaction(paths):
     assert cp.connect().execute("SELECT name FROM which").fetchall() == [("build",)], "the torn rows are gone"
 
 
+def test_a_persist_mode_journal_is_not_hot(paths):
+    """AR-153: journal_mode=PERSIST keeps the journal after a commit with a zeroed header - not hot. The lock
+    refused every such catalogue when it tested only "exists and is not empty"."""
+    (paths / "CUTOVER").write_text("")
+    build = cp.BUILD_PATH
+    c = sqlite3.connect(build)
+    c.execute("PRAGMA journal_mode=PERSIST")
+    c.execute("INSERT INTO which VALUES ('committed')")
+    c.commit()
+    c.close()
+    j = build + "-journal"
+    assert os.path.getsize(j) > 0 and not cp.journal_is_hot(j), "precondition: a kept, zeroed journal"
+    with cp.writer_lock():
+        pass
+    assert sorted(r[0] for r in cp.connect().execute("SELECT name FROM which")) == ["build", "committed"]
+
+
+class _NoRollback:
+    """A connection that opens fine but leaves the journal where it is (as a live writer's journal stays)."""
+    def execute(self, *_a):
+        return self
+
+    def fetchone(self):
+        return (1,)
+
+    def close(self):
+        pass
+
+
+def test_a_live_journal_is_hot_and_refused(paths, monkeypatch):
+    """Positive control for the magic check, and the message names the likely cause."""
+    (paths / "CUTOVER").write_text("")
+    j = cp.BUILD_PATH + "-journal"
+    assert not cp.journal_is_hot(j), "no journal: not hot"
+    with open(j, "wb") as fh:
+        fh.write(cp.JOURNAL_MAGIC + bytes(504))
+    assert cp.journal_is_hot(j)
+    monkeypatch.setattr(cp.sqlite3, "connect", lambda *a, **k: _NoRollback())
+    with pytest.raises(RuntimeError, match="WITHOUT the writer lock"):
+        with cp.writer_lock():
+            pass
+
+
+def test_a_busy_catalogue_names_the_unlocked_writer(paths, monkeypatch):
+    (paths / "CUTOVER").write_text("")
+
+    class Busy(_NoRollback):
+        def execute(self, *_a):
+            raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(cp.sqlite3, "connect", lambda *a, **k: Busy())
+    with pytest.raises(RuntimeError, match="WITHOUT the writer lock"):
+        with cp.writer_lock():
+            pass
+
+
 def test_the_lock_is_not_reentrant(paths):
     with cp.writer_lock():
         with pytest.raises(RuntimeError):

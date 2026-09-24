@@ -33,6 +33,18 @@ def live(tmp_path, monkeypatch):
     return tmp_path
 
 
+def _econdl_catalog():
+    import core.derive_csv  # noqa: F401 - the same sys.path the preflight and the run use
+    from econdl import _catalog
+    return _catalog
+
+
+def _econdl_resolve():
+    import core.derive_csv  # noqa: F401
+    from econdl import _resolve
+    return _resolve
+
+
 def _args(**kw):
     base = dict(pull_state=False, push_state=False, source=None, strategy=None, cadence=None, force=False, dry=True)
     return types.SimpleNamespace(**{**base, **kw})
@@ -60,6 +72,11 @@ def test_the_correct_configuration_passes(live):
     (lambda mp, t: mp.setattr(config, "REGISTRY", str(t / "registry.yaml")), "REGISTRY"),
     (lambda mp, t: mp.setenv("ECONDL_CATALOG", str(t / "catalog.db")), "ECONDL_CATALOG"),
     (lambda mp, t: mp.setenv("ECONDL_DATA", str(t / "clean_full")), "ECONDL_DATA"),
+    # AR-153: what econdl itself resolves - an econdl imported from somewhere else names its own folder
+    (lambda mp, t: mp.setattr(_econdl_catalog(), "_DEFAULT_DB", str(t / "site" / "data" / "catalog.db")),
+     "econdl's catalogue"),
+    (lambda mp, t: mp.setattr(_econdl_resolve(), "_DEFAULT_DATA", str(t / "site" / "data" / "clean_full")),
+     "econdl's data root"),
     # the code runs from a worktree while every setting names production (econdl follows the code)
     (lambda mp, t: (mp.setattr(catalog_path, "LIVE_STORE_ROOT", str(t / "prod")),
                     mp.setattr(catalog_path, "LIVE_STATE_DIR", str(t / "prod" / "data" / "_aqueduct")),

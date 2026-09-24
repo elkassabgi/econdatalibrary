@@ -382,6 +382,16 @@ def _selfhost_preflight(a) -> bool:
         ("ECONDL_CATALOG", os.environ.get("ECONDL_CATALOG") or BUILD_PATH, BUILD_PATH),
         ("ECONDL_DATA", os.environ.get("ECONDL_DATA") or data, data),
     ]
+    # What econdl ITSELF resolves (AR-153): its defaults follow the location of the econdl that is imported,
+    # so a pip-installed copy ahead of the checkout's would name its own data folder. Imported the way the
+    # run imports it - core.derive_csv puts this checkout's clients/python first on sys.path.
+    import core.derive_csv  # noqa: F401, PLC0415
+    from econdl import _catalog as econdl_catalog, _resolve as econdl_resolve  # noqa: PLC0415
+    places += [
+        (f"econdl's catalogue ({econdl_catalog.__file__} default_db())", econdl_catalog.default_db(), BUILD_PATH),
+        (f"econdl's data root ({econdl_resolve.__file__} default_data_root())", econdl_resolve.default_data_root(),
+         data),
+    ]
     same = lambda x, y: os.path.normcase(os.path.abspath(x)) == os.path.normcase(os.path.abspath(y))  # noqa: E731
     wrong = [f"{name} is {actual}, must be {want}" for name, actual, want in places if not same(actual, want)]
     if wrong:
