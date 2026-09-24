@@ -93,11 +93,18 @@ def _served_count(source: str):
     import json                                                          # noqa: PLC0415
     import urllib.error                                                  # noqa: PLC0415
     import urllib.request                                                # noqa: PLC0415
-    url = f"{API_BASE}/v1/catalog?source={urllib.parse.quote(source, safe='')}&limit=1"
+    import time                                                          # noqa: PLC0415
+    # a parameter the API ignores, different on every run: the edge caches /v1/catalog for 6 h keyed on the URL,
+    # and a swap does not clear it - without this the leg reads the PREVIOUS catalogue for hours (R1242)
+    url = (f"{API_BASE}/v1/catalog?source={urllib.parse.quote(source, safe='')}&limit=1"
+           f"&_fresh={time.time_ns()}")
     try:
         with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "econdl-verify/1.0"}),
                                     timeout=90) as f:
-            return int(json.load(f).get("total", 0)), None
+            body = json.load(f)
+        if not isinstance(body, dict) or not isinstance(body.get("total"), int):
+            return 0, "the answer carries no integer `total` - cannot tell"   # never read as 0 rows (R1242)
+        return body["total"], None
     except urllib.error.HTTPError as e:
         return 0, ("GATED (451 non-redistributable)" if e.code == 451 else f"HTTP {e.code}")
     except Exception as e:                                               # noqa: BLE001
@@ -112,6 +119,15 @@ def main() -> int:
     ap.add_argument("--sample", type=int, default=40,
                     help="byte-compare this many RANDOM served objects against the resolver")
     a = ap.parse_args()
+
+    # After T0 only the live checkout may answer - refused FIRST, before the catalogue is opened (R1242)
+    from core import cutover                                         # noqa: PLC0415
+    selfhosted = cutover.is_cut_over()
+    if selfhosted:
+        from updater import blob as _blob                            # noqa: PLC0415
+        _blob.refuse_unless_live_checkout("verify_source_served (after T0 it judges the live store)")
+        if a.bucket != "econ-data":
+            print(f"(--bucket {a.bucket} is ignored after T0: the store is the self-hosted one)")
 
     from core import catalog_path                                     # noqa: PLC0415 - plan step 1
     con = catalog_path.connect(timeout=180.0)
@@ -128,13 +144,9 @@ def main() -> int:
     # THE STORE USERS ARE SERVED FROM: R2 before T0; after T0 the self-hosted blob store the origin serves (step
     # 6d - R2 is a frozen copy then, and every answer about it would be about a system nobody reaches). Only the
     # live checkout may answer after T0: anywhere else the catalogue and the resolver's store are a worktree's.
-    from core import cutover                                         # noqa: PLC0415
-    selfhosted = cutover.is_cut_over()
     pref = f"{a.prefix}/{urllib.parse.quote(a.source + ':', safe='')}"
     keys = set()
     if selfhosted:
-        from updater import blob as _blob                            # noqa: PLC0415
-        _blob.refuse_unless_live_checkout("verify_source_served (after T0 it judges the live store)")
         store = _blob.SelfhostBlob()
         for k in store.list_keys(pref):
             if k.endswith(".csv"):
@@ -262,12 +274,24 @@ def main() -> int:
     leg = "SERVED (edge)" if selfhosted else "D1            "
     behind = ("CATALOGUED BUT NOT SERVED: those ids wait for the next swap" if selfhosted
               else "CATALOGUED BUT NOT IN D1: those ids 404 at the API")
+    # What the served count SHOULD be. D1's COUNT(*) held every row; the edge's /v1/catalog total leaves out
+    # series-level CARVE-OUTS (gated third-party indicators of a served source), so after T0 those are taken off
+    # the expectation - read from the committed denylist by core.gen_denylist, the repo's one reader (R1242: every
+    # carve-out source otherwise read "not served" for ever).
+    expected = len(cat)
+    if selfhosted:
+        from core import gen_denylist                                    # noqa: PLC0415
+        carved = set(gen_denylist.committed_carveouts().get(a.source, ()))
+        n_carved = sum(1 for s in cat if s.split(":")[1:2] and s.split(":")[1] in carved)
+        expected -= n_carved
+        if n_carved:
+            print(f"carved out     : {n_carved:,} catalogued series are gated (third-party), not served")
     # Probe the DEPLOYED worker with a real id from this source, not the local util.ts.
     in_sup = _listed_live(a.source)
     if d1_err:
         print(f"{leg} : UNCHECKED ({d1_err})")
     else:
-        gap = len(cat) - d1_n
+        gap = expected - d1_n
         print(f"{leg} : {d1_n:,} row(s)"
               + (f"  — {gap:,} {behind}" if gap > 0 else "  — matches the catalogue"))
     # one expression per f-string field, on one line: a field spanning lines is Python 3.12+ (PEP 701) and CI
@@ -277,7 +301,8 @@ def main() -> int:
     print(f"LIVE /v1/sources : {listed}")
 
     coherent = not missing and not junk and not bad
-    reachable = (d1_err is None and d1_n >= len(cat)) and in_sup is not False
+    store_word = "the self-hosted store" if selfhosted else "R2"
+    reachable = (d1_err is None and d1_n >= expected) and in_sup is not False
     if coherent and reachable:
         # Say what was actually verified. "ORPHANED 0" would be false here — there are 21
         # retained legacy objects — and a summary line that overstates is how a check stops
@@ -294,12 +319,12 @@ def main() -> int:
         # with D1 2,550 in step. An instrument that reports an outage when it merely lost its
         # connection is worse than one that says nothing.
         why = []
-        if d1_err is None and d1_n < len(cat):
+        if d1_err is None and d1_n < expected:
             why.append("the served catalogue is behind (the next swap publishes it)" if selfhosted else "D1 is behind")
         if in_sup is False:
             why.append("the source is absent from SUPPORTED_SOURCES")
         if why:
-            note = ("STORE COHERENT BUT NOT REACHABLE — catalogue and R2 agree, but "
+            note = ("STORE COHERENT BUT NOT REACHABLE — catalogue and " + store_word + " agree, but "
                     + " and ".join(why) + ". Users cannot fetch these ids yet.")
         else:
             unknown = []
@@ -307,7 +332,7 @@ def main() -> int:
                 unknown.append(f"the {'served-count' if selfhosted else 'D1'} probe failed ({d1_err})")
             if in_sup is None:
                 unknown.append("the live /v1/sources probe failed")
-            note = ("STORE COHERENT, REACHABILITY NOT VERIFIED — catalogue and R2 agree and the "
+            note = ("STORE COHERENT, REACHABILITY NOT VERIFIED — catalogue and " + store_word + " agree and the "
                     "sampled bytes match, but " + " and ".join(unknown or ["a probe failed"])
                     + ". This is NOT evidence of an outage; re-run before treating it as one.")
     else:

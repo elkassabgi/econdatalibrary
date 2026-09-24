@@ -170,10 +170,17 @@ def main():
     if not cls:
         print("no structured classifications found in DATABASE_LICENSES_VERBATIM.md")
         return 2
-    served = served_from_local() if a.local else served_from_d1()
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import cutover                                             # noqa: PLC0415
+    # AFTER T0 (plan step 6d) the origin serves copies of the catalogue BUILD (D1 is frozen), and core.catalog_path
+    # opens the build from any checkout - so the build IS the serving catalogue (as of the last swap)
+    selfhosted = cutover.is_cut_over()
+    served = served_from_local() if (a.local or selfhosted) else served_from_d1()
     if served is None:
         return 2
-    where = "the LOCAL catalogue (NOT the serving store)" if a.local else "D1 (serving store)"
+    where = ("the catalogue BUILD (what the origin serves since T0, as of the last swap)" if selfhosted
+             else "the LOCAL catalogue (NOT the serving store)" if a.local else "D1 (serving store)")
     print(f"audit classifications: {len(cls)}   |   read from: {where}")
     print()
 

@@ -28,11 +28,10 @@ HANDLES_T0 = re.compile(r"is_cut_over|refuse_if_cut_over|refuse_unless_live_chec
 
 # Judges "served" / store health FROM the cloud copy: after T0 every answer is about the frozen copy. Step 6d
 # re-points each to the edge or the local store, or makes it refuse.
-VERIFIERS_6D = {
-    "tools/audit_csv_staleness.py", "tools/audit_licence_disclosure.py", "tools/audit_r2_vs_catalog.py", "tools/audit_rotation_progress.py",
-    "tools/audit_site.py", "tools/audit_untouched_files.py",
-    "tools/audit_unwritten_store_regions.py", "tools/sample_source_coverage.py",
-    "tools/verify_derive_parity.py", }
+VERIFIERS_6D = set()   # all re-pointed or refusing (2026-09-24); a new one must be ported, not listed here
+# Reads what USERS get, before and after T0 alike: the public site, the edge API (econdl-api.workers.dev, which
+# forwards to the origin after T0) and hf's own login database (stays in D1). Nothing to re-point.
+USER_FACING = {"tools/audit_site.py"}
 # Measures the cloud copy ITSELF (its size, cost, reads, public answers): still true after T0, until the copy is
 # decommissioned - that is exactly what these are for (plan: R2/D1 analytics until step 7).
 CLOUD_COST = {
@@ -57,7 +56,7 @@ CI_ONLY = {"updater/send_digest.py"}
 # Names the cloud roads in order to REFUSE them (plan change 5).
 BY_DESIGN = {"tools/selfhost/cutover_hook.py"}
 
-CLASSES = {"VERIFIERS_6D": VERIFIERS_6D, "CLOUD_COST": CLOUD_COST, "CLOUD_WRITE_REFUSED": CLOUD_WRITE_REFUSED,
+CLASSES = {"VERIFIERS_6D": VERIFIERS_6D, "USER_FACING": USER_FACING, "CLOUD_COST": CLOUD_COST, "CLOUD_WRITE_REFUSED": CLOUD_WRITE_REFUSED,
            "OFFLINE": OFFLINE, "DEFUSED": DEFUSED, "CI_ONLY": CI_ONLY, "BY_DESIGN": BY_DESIGN}
 
 
