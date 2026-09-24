@@ -172,7 +172,45 @@ def _stub_fao(monkeypatch, tmp):
     return lambda: _faostat.run("fao_qcl")
 
 
+def _stub_unesco(monkeypatch, tmp, spoil=None):
+    """unesco_dem.update() reads the catalogue TWICE: the indicator list first, then its id self-check
+    after the fetch. `spoil(cat)` runs inside the fetch, so the self-check meets a catalogue that the
+    first read found healthy (R1192 finding 3)."""
+    _stub_common(unesco_dem, monkeypatch, tmp)
+
+    def get(url, timeout=300):
+        if spoil:
+            spoil(tmp / "data" / "catalog.db")
+        return {"records": [{"value": 1.0, "year": 2020, "geoUnit": "AFG", "indicatorId": "CR.1"}]}
+    monkeypatch.setattr(unesco_dem, "_get", get)
+    return lambda: unesco_dem.update(None, None)
+
+
+def _garbage(cat):
+    cat.write_bytes(b"not a database" * 100)
+
+
 RUNS = [("_imf_mapped", _stub_imf), ("_faostat", _stub_fao)]
+
+
+def test_unesco_update_passes_its_self_check_on_a_readable_catalogue(root, monkeypatch):
+    """Positive control for the test below: the same stubs get PAST the self-check read."""
+    seen = []
+    real = unesco_dem._catalog_ids
+    monkeypatch.setattr(unesco_dem, "_catalog_ids", lambda s: seen.append(s) or real(s))
+    run = _stub_unesco(monkeypatch, root.path)
+    from updater.errors import DefinitiveError
+    try:
+        run()
+    except (_Merged, DefinitiveError):     # merged, or the self-check refused these test ids: both got past the read
+        pass
+    assert seen == ["unesco_dem"]
+
+
+def test_unesco_update_refuses_when_its_self_check_cannot_read(root, monkeypatch):
+    run = _stub_unesco(monkeypatch, root.path, spoil=_garbage)
+    with pytest.raises(TransientError, match="catalogue unreadable"):
+        run()
 
 
 @pytest.mark.parametrize("name,stub", RUNS, ids=[r[0] for r in RUNS])
