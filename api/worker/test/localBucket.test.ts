@@ -13,6 +13,8 @@ const OBJECTS: Record<string, { body: Buffer; etag: string; enc?: string; meta?:
   "series/g.csv": { body: Buffer.from([0x1f, 0x8b, 8, 0, 1, 2, 3]), etag: "e-g", enc: "gzip" },
 };
 
+const rangesSeen: string[] = [];
+
 function fakeSidecar(): Promise<{ server: Server; base: string }> {
   const server = createServer((req, res) => {
     const key = decodeURIComponent((req.url ?? "").replace(/^\/o\//, ""));
@@ -25,6 +27,7 @@ function fakeSidecar(): Promise<{ server: Server; base: string }> {
     if (o.enc) h["x-blob-content-encoding"] = o.enc;
     const im = req.headers["if-match"];
     if (im && String(im).replace(/"/g, "") !== o.etag) { res.writeHead(412, { ...h, "content-length": "0" }); res.end(); return; }
+    if (req.headers["range"]) rangesSeen.push(String(req.headers["range"]));
     const m = /^bytes=(\d+)-(\d*)$/.exec(String(req.headers["range"] ?? ""));
     if (m) {
       const a = Number(m[1]);
@@ -70,6 +73,12 @@ test("LocalBucket mirrors the R2 behaviours series.ts relies on", async (t) => {
   assert.ok(tail && "body" in tail);
   assert.equal(tail.size, size, "a range still reports the FULL size");
   assert.equal(await tail.text(), OBJECTS["series/a.csv"].body.subarray(size - 4).toString());
+
+  // a range in the MIDDLE (R1171: the tail range above cannot see an end off by one - the fake clamps it)
+  const mid = await b.get("series/a.csv", { range: { offset: 10, length: 10 } });
+  assert.ok(mid && "body" in mid);
+  assert.equal(await mid.text(), OBJECTS["series/a.csv"].body.subarray(10, 20).toString(), "exactly bytes 10..19");
+  assert.equal(rangesSeen.at(-1), "bytes=10-19", "the Range header is inclusive of the last byte");
 
   const same = await b.get("series/a.csv", { onlyIf: { etagMatches: "e-a" } });
   assert.ok(same && "body" in same, "a matching onlyIf returns the body");

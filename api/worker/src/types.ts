@@ -65,6 +65,7 @@ export interface Env {
   ORIGIN_URL?: string;
   ORIGIN_ACCESS_ID?: string;
   ORIGIN_ACCESS_SECRET?: string;
+  ORIGIN_TIMEOUT_MS?: string;        // how long the edge waits for the origin's response headers (default 30000)
 }
 
 // --- D1 row shapes (one per SELECT column list in sql.ts) ------------------

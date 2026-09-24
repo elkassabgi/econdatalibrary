@@ -21,6 +21,9 @@
 
 export const ORIGIN_SECRET_HEADER = "x-econ-origin-secret";
 export const COUNT_HEADER = "x-econ-count";
+// Set on EVERY answer the origin gives: the edge refuses (502) any answer without it, so a tunnel error
+// page or an Access login page can never be served, cached or logged as data (R1169).
+export const ORIGIN_MARK_HEADER = "x-econ-origin";
 
 /** Routes the origin never answers: the edge owns them (they read or write USERS). */
 export const EDGE_ONLY_PATHS: ReadonlySet<string> = new Set(["/v1/pv", "/v1/pv/report", "/v1/public-stats"]);
@@ -81,6 +84,7 @@ export function finalizeLocal(resp: Response, opts: { download: boolean } = { do
   const out = new Response(resp.body, resp);
   const noTransform = /(^|,)\s*no-transform\s*(,|$)/i.test(resp.headers.get("cache-control") ?? "");
   out.headers.set("cache-control", noTransform ? "private, no-store, no-transform" : "private, no-store");
+  out.headers.set(ORIGIN_MARK_HEADER, "1");
   if (opts.download && out.status === 200 && !out.headers.has("content-length")) {
     out.headers.set(COUNT_HEADER, "1");
   } else {

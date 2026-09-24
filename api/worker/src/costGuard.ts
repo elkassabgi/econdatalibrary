@@ -51,6 +51,9 @@ export const LIMITS = {
 
 const GQL = "https://api.cloudflare.com/client/v4/graphql";
 const STATUS_KEY = "_aqueduct/cost_status.json";
+// Identical to migrations/users_selfhost.sql (test/edge.test.ts pins the two equal).
+export const OPS_STATUS_DDL = "CREATE TABLE IF NOT EXISTS econ_ops_status (key TEXT PRIMARY KEY, " +
+  "body TEXT NOT NULL, updated_at TEXT NOT NULL)";
 
 /** The durable status record: R2 today; with FORWARD = "on", the econ_ops_status row keyed by STATUS_KEY
  *  in the users db. A failed write throws either way - a record that silently was not written is a
@@ -58,10 +61,15 @@ const STATUS_KEY = "_aqueduct/cost_status.json";
 async function writeStatus(env: CostGuardEnv, body: object): Promise<void> {
   const text = JSON.stringify(body, null, 2);
   if (isForward(env)) {
-    await env.USERS.prepare(
-      "INSERT INTO econ_ops_status (key, body, updated_at) VALUES (?1, ?2, datetime('now')) " +
-      "ON CONFLICT(key) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at",
-    ).bind(STATUS_KEY, text).run();
+    // The table is created in the same batch (one transaction), so a flip made before the migration was
+    // applied still records every tick instead of failing all of them (R1172).
+    await env.USERS.batch([
+      env.USERS.prepare(OPS_STATUS_DDL),
+      env.USERS.prepare(
+        "INSERT INTO econ_ops_status (key, body, updated_at) VALUES (?1, ?2, datetime('now')) " +
+        "ON CONFLICT(key) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at",
+      ).bind(STATUS_KEY, text),
+    ]);
     return;
   }
   await env.SERIES_BUCKET.put(STATUS_KEY, text, { httpMetadata: { contentType: "application/json" } });
@@ -141,8 +149,7 @@ export async function runCostGuard(env: CostGuardEnv): Promise<void> {
   if (!token || !acct) {
     const body = { at, ok: false, blind: true,
                    note: "CF_ANALYTICS_TOKEN / CF_ACCOUNT_ID not bound; nothing was measured" };
-    await writeStatus(env, body);
-    throw new Error("cost guard is BLIND: CF_ANALYTICS_TOKEN / CF_ACCOUNT_ID not bound");
+    return record(env, body, new Error("cost guard is BLIND: CF_ANALYTICS_TOKEN / CF_ACCOUNT_ID not bound"));
   }
 
   let totals: DayTotals;
@@ -150,14 +157,24 @@ export async function runCostGuard(env: CostGuardEnv): Promise<void> {
     totals = await measureToday(token, acct);
   } catch (e) {
     const body = { at, ok: false, blind: true, note: `measurement failed: ${String(e).slice(0, 200)}` };
-    await writeStatus(env, body);
-    throw e;
+    return record(env, body, e instanceof Error ? e : new Error(String(e)));
   }
 
   const breaches = breachesOf(totals);
   const body = { at, ok: breaches.length === 0, blind: false, totals, limits: LIMITS, breaches };
-  await writeStatus(env, body);
-  if (breaches.length) {
-    throw new Error("COST BREACH: " + breaches.join(" | "));
+  return record(env, body, breaches.length ? new Error("COST BREACH: " + breaches.join(" | ")) : null);
+}
+
+/** Write the status record, then raise the verdict. A failed write never REPLACES the verdict (R1172: a
+ *  missing table turned every breach into the same generic D1 error): the one error thrown carries the
+ *  verdict first and the write failure after it, so a breach still reads as a breach in the Worker's
+ *  error log and in Cloudflare's error notification. */
+async function record(env: CostGuardEnv, body: object, verdict: Error | null): Promise<void> {
+  try {
+    await writeStatus(env, body);
+  } catch (w) {
+    const lead = verdict ? verdict.message : "cost guard OK";
+    throw new Error(`${lead} | AND the status record could not be written: ${String(w).slice(0, 200)}`);
   }
+  if (verdict) throw verdict;
 }

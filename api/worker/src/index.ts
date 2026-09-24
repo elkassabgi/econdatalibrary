@@ -28,9 +28,10 @@ import { requireDownloadAuth, logDownload } from "./auth";
 import { isGated } from "./denylist";
 import { handlePublicStats } from "./publicStats";
 import { json, reqLang } from "./util";
-import { isLocal, originGate, finalizeLocal, isDownloadPath, COUNT_HEADER } from "./localMode";
+import { isLocal, originGate, finalizeLocal, isDownloadPath } from "./localMode";
 import { LocalBucket } from "./localBucket";
-import { isForward, isCacheable, originRequest, countingBody, clientResponse, notConfigured } from "./edge";
+import { isForward, isForwardable, cacheSeconds, cacheKey, originRequest, fetchOrigin, countingBody,
+  clientResponse, notConfigured, refusedPath } from "./edge";
 
 const CORS_PREFLIGHT: Record<string, string> = {
   "access-control-allow-origin": "*",
@@ -346,13 +347,19 @@ async function route(request: Request, env: Env, ctx: ExecutionContext, local: b
     }
 }
 
+// The gate's two messages, exactly as the non-forwarding routes above word them.
 const NOT_REDISTRIBUTABLE_DATA = "This source's licence does not permit third-party redistribution of the data. " +
   "Please obtain it directly from the original provider.";
+const NOT_REDISTRIBUTABLE_META = "This source's licence does not permit third-party redistribution. " +
+  "Please obtain it directly from the original provider.";
 
-/** The forwarding edge's answer for every route the origin serves (src/edge.ts). The licence gate and
- *  download auth run HERE, before anything is forwarded; the download log is written here from the
- *  origin's content-length, or from the counted body when the origin marked it x-econ-count. */
+/** The forwarding edge's answer for every route the origin serves (src/edge.ts). Only known routes are
+ *  forwarded; the licence gate and download auth run HERE, before anything is forwarded; the download log
+ *  is written here - from content-length when the answer has one, otherwise from the bytes the client
+ *  actually takes (whatever the origin's own marker says: a hop can drop content-length, R1169 M2). */
 async function forwardRoute(request: Request, env: Env, ctx: ExecutionContext, path: string): Promise<Response> {
+  if (!isForwardable(path)) return json({ error: "not_found", detail: `no route for ${path}` }, 404);
+  if (!env.ORIGIN_URL || !env.ORIGIN_SECRET) return notConfigured();
   const seriesPrefix = "/v1/series/";
   if (path.startsWith(seriesPrefix) && (path.endsWith(".csv") || path.endsWith(".metadata.json"))) {
     const csv = path.endsWith(".csv");
@@ -360,55 +367,67 @@ async function forwardRoute(request: Request, env: Env, ctx: ExecutionContext, p
     const id = decodeURIComponent(enc);
     if (!id) return json({ error: "bad_request", detail: "empty series id" }, 400);
     if (isGated(id)) {
-      return json({ error: "not_redistributable", series_id: id, detail: NOT_REDISTRIBUTABLE_DATA }, 451);
+      return json({ error: "not_redistributable", series_id: id,
+                    detail: csv ? NOT_REDISTRIBUTABLE_DATA : NOT_REDISTRIBUTABLE_META }, 451);
     }
     if (csv) {
       const auth = await requireDownloadAuth(request, env);
       if (auth instanceof Response) return auth;
       const oreq = originRequest(request, env);
-      if (!oreq) return notConfigured();
-      const oresp = await fetch(oreq);
+      if (!oreq) return refusedPath();
+      const oresp = await fetchOrigin(oreq, env);
+      if (oresp.status !== 200 || !oresp.body) return clientResponse(oresp, oresp.body);
       const userId = auth.user.id;
-      if (oresp.status === 200 && oresp.headers.get(COUNT_HEADER) === "1" && oresp.body) {
-        const body = countingBody(oresp.body, async (bytes) => {
-          if (bytes > 0) await logDownload(env, userId, id, request, bytes);
-        }, ctx);
-        return clientResponse(oresp, body);
-      }
-      if (oresp.status === 200 && oresp.headers.has("content-length")) {
+      if (oresp.headers.has("content-length")) {
         await logDownload(env, userId, id, request, Number(oresp.headers.get("content-length")) || 0);
+        return clientResponse(oresp, oresp.body);               // body never read: gzip stays gzip
       }
-      return clientResponse(oresp, oresp.body);                 // body never read: gzip stays gzip
+      const body = countingBody(oresp.body, async (bytes) => {
+        if (bytes > 0) await logDownload(env, userId, id, request, bytes);
+      }, ctx);
+      return clientResponse(oresp, body);
     }
   }
-  const cacheable = isCacheable(path);
-  const key = new Request(new URL(request.url).toString(), { method: "GET" });
-  if (cacheable) {
+  const ttl = cacheSeconds(path);
+  const key = cacheKey(request);
+  if (ttl > 0) {
     const hit = await caches.default.match(key);
     if (hit) return hit;
   }
   const oreq = originRequest(request, env);
-  if (!oreq) return notConfigured();
-  const oresp = await fetch(oreq);
+  if (!oreq) return refusedPath();
+  const oresp = await fetchOrigin(oreq, env);
   const out = clientResponse(oresp, oresp.body);
-  if (cacheable && oresp.status === 200) {
+  if (ttl > 0 && oresp.status === 200) {
     const toCache = new Response(out.body, out);
-    toCache.headers.set("cache-control", "public, max-age=300, s-maxage=21600");
+    toCache.headers.set("cache-control", `public, max-age=300, s-maxage=${ttl}`);
     ctx.waitUntil(caches.default.put(key, toCache.clone()));
     return toCache;
   }
   return out;
 }
 
-/** Source names for /v1/public-stats from the origin's /v1/sources (edge-cached like any public
- *  answer), so the route needs no econ D1 once the catalogue lives on the workstation. */
+/** Source names for /v1/public-stats from the origin's /v1/sources, so the route needs no econ D1 once
+ *  the catalogue lives on the workstation. Each good answer is also kept for 30 days under an edge-only
+ *  key; when the origin is down the last good names are used, and with none at all the route still
+ *  answers - with no top-sources list (the whitelist then admits nothing), never a 500 (R1169 M4). */
 async function originSourceNames(request: Request, env: Env, ctx: ExecutionContext): Promise<Record<string, string>> {
   const u = new URL(request.url);
-  const sourcesReq = new Request(new URL("/v1/sources", u).toString(), { method: "GET", headers: request.headers });
-  const resp = await forwardRoute(sourcesReq, env, ctx, "/v1/sources");
-  if (resp.status !== 200) throw new Error(`origin /v1/sources answered ${resp.status}`);
-  const body = await resp.json() as { sources?: { source?: string; name?: string | null }[] };
-  const out: Record<string, string> = {};
-  for (const s of body.sources ?? []) if (s.source) out[s.source] = s.name || s.source;
-  return out;
+  const staleKey = new Request(new URL("/__edge/source-names", u).toString(), { method: "GET" });
+  try {
+    const resp = await forwardRoute(new Request(new URL("/v1/sources", u).toString(), { method: "GET" }),
+                                    env, ctx, "/v1/sources");
+    if (resp.status !== 200) throw new Error(`origin /v1/sources answered ${resp.status}`);
+    const body = await resp.json() as { sources?: { source?: string; name?: string | null }[] };
+    const out: Record<string, string> = {};
+    for (const s of body.sources ?? []) if (s.source) out[s.source] = s.name || s.source;
+    ctx.waitUntil(caches.default.put(staleKey, new Response(JSON.stringify(out), {
+      headers: { "content-type": "application/json", "cache-control": "public, s-maxage=2592000" },
+    })));
+    return out;
+  } catch (e) {
+    console.log("public-stats: origin source names unavailable, using the last good copy:", String(e));
+    const stale = await caches.default.match(staleKey);
+    return stale ? await stale.json() as Record<string, string> : {};
+  }
 }

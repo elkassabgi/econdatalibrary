@@ -101,8 +101,10 @@ class BlobStore:
         path = self._path(sha)
         with self._wlock:
             self._w.execute("BEGIN IMMEDIATE")           # held from the file write to the index row
+            created = False
             try:
                 if not os.path.exists(path):
+                    created = True
                     os.makedirs(os.path.dirname(path), exist_ok=True)
                     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-")
                     with os.fdopen(fd, "wb") as fh:
@@ -124,28 +126,38 @@ class BlobStore:
                 self._w.execute("COMMIT")
             except BaseException:
                 self._w.execute("ROLLBACK")
+                # A file this put created and no committed row names is an orphan gc would never find
+                # (it has no retired row): remove it (R1171 minor 5). The write lock is still held, so
+                # no other put can have started using it.
+                if created and not self._w.execute("SELECT 1 FROM blobs WHERE sha256=?", (sha,)).fetchone():
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
                 raise
         return sha
 
     def gc(self, grace_hours: float = 24.0) -> int:
         """Delete files retired more than grace_hours ago that no key references. Returns files removed.
-        The live set is read INSIDE the write transaction, so a concurrent put that re-uses a retired
-        file cannot lose it. A file Windows holds open is kept queued for the next run."""
+        The grace counts from the NEWEST retirement of a file (a file re-used and retired again restarts
+        its grace, R1171 minor 4). The live set is read INSIDE the write transaction, so a concurrent put
+        that re-uses a retired file cannot lose it. A file Windows holds open is kept for the next run."""
         cutoff = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=grace_hours)).isoformat(timespec="seconds")
         gone = 0
         with self._wlock:
             self._w.execute("BEGIN IMMEDIATE")
             try:
                 live = {r[0] for r in self._w.execute("SELECT DISTINCT sha256 FROM blobs")}
-                rows = self._w.execute("SELECT rowid, sha256 FROM retired WHERE retired_utc < ?", (cutoff,)).fetchall()
-                for rowid, sha in rows:
+                due = [r[0] for r in self._w.execute(
+                    "SELECT sha256 FROM retired GROUP BY sha256 HAVING MAX(retired_utc) < ?", (cutoff,))]
+                for sha in due:
                     if sha not in live and os.path.exists(self._path(sha)):
                         try:
                             os.remove(self._path(sha))
                         except PermissionError:
-                            continue                     # open elsewhere (Windows): keep the row, retry later
+                            continue                     # open elsewhere (Windows): keep the rows, retry later
                         gone += 1
-                    self._w.execute("DELETE FROM retired WHERE rowid=?", (rowid,))
+                    self._w.execute("DELETE FROM retired WHERE sha256=?", (sha,))
                 self._w.execute("COMMIT")
             except BaseException:
                 self._w.execute("ROLLBACK")

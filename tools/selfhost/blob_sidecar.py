@@ -108,6 +108,14 @@ def make_handler(store: BlobStore):
                 self.send_header("content-length", "0")
                 self.end_headers()
                 return
+            # A file whose size is not the indexed size (truncated, damaged) is a 500 too, never a 200 that
+            # promises bytes it cannot send (R1171 minor 6).
+            if os.fstat(fh.fileno()).st_size != meta["size"]:
+                fh.close()
+                self.send_response(500)
+                self.send_header("content-length", "0")
+                self.end_headers()
+                return
             with fh:
                 self._headers(meta, status, length)
                 fh.seek(start)

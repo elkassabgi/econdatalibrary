@@ -21,16 +21,37 @@
 // WHERE IT LIVES (docs/ECON_SELF_HOSTING_PLAN.md): today, table `pageview` in econ D1 (CATALOG). With
 // FORWARD = "on" the econ catalogue lives on the workstation and econ D1 is retired, so the edge counts
 // into `econ_pageview` in the shared users db (USERS) instead - the same db that already holds
-// econ_download_log. Same columns, same allowlist; migrations/users_selfhost.sql creates it. The cutover
-// copies the old rows in AFTER the flip with hits = hits + excluded.hits, so nothing is lost or doubled.
+// econ_download_log. Same columns, same allowlist; migrations/users_selfhost.sql creates it, and so does
+// the first hit if the flip came before the migration (a missing table must not drop every page view
+// silently, R1172). The one-time merge of the old rows is in that migration file's header.
 import type { Env } from "./types";
 import { isForward } from "./edge";
 
 const CORS = { "Access-Control-Allow-Origin": "*" };
 
+type Store = { db: D1Database; table: "econ_pageview" | "pageview" };
+
 /** The db and table page views are counted in: econ D1 until FORWARD is on, the users db after. */
-function store(env: Env): { db: D1Database; table: string } {
+function store(env: Env): Store {
   return isForward(env) ? { db: env.USERS, table: "econ_pageview" } : { db: env.CATALOG, table: "pageview" };
+}
+
+// Identical columns to econ D1's `pageview` and to migrations/users_selfhost.sql (pinned by a test).
+export function pageviewDdl(table: Store["table"]): string {
+  return `CREATE TABLE IF NOT EXISTS ${table} (path TEXT NOT NULL, day TEXT NOT NULL, ` +
+    "hits INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (path, day))";
+}
+
+/** Run `fn` on the store; if its table does not exist yet, create it and run `fn` once more. */
+async function onStore<T>(env: Env, fn: (s: Store) => Promise<T>): Promise<T> {
+  const s = store(env);
+  try {
+    return await fn(s);
+  } catch (e) {
+    if (!/no such table/i.test(String(e))) throw e;
+    await s.db.prepare(pageviewDdl(s.table)).run();
+    return await fn(s);
+  }
 }
 
 // Only paths we actually publish. An open counter keyed on caller-supplied text
@@ -82,11 +103,10 @@ export async function handlePageview(url: URL, env: Env): Promise<Response> {
   if (path) {
     const day = new Date().toISOString().slice(0, 10);
     try {
-      const { db, table } = store(env);
-      await db.prepare(
+      await onStore(env, ({ db, table }) => db.prepare(
         `INSERT INTO ${table} (path, day, hits) VALUES (?1, ?2, 1) ` +
         "ON CONFLICT(path, day) DO UPDATE SET hits = hits + 1",
-      ).bind(path, day).run();
+      ).bind(path, day).run());
     } catch {
       // A counter must never break a page. Swallow and still return the pixel.
     }
@@ -97,15 +117,16 @@ export async function handlePageview(url: URL, env: Env): Promise<Response> {
 export async function handlePageviewReport(url: URL, env: Env): Promise<Response> {
   const days = Math.min(Math.max(Number(url.searchParams.get("days") ?? 90), 1), 3650);
   const since = new Date(Date.now() - days * 86400_000).toISOString().slice(0, 10);
-  const { db, table } = store(env);
-  const rows = await db.prepare(
-    "SELECT path, SUM(hits) AS hits, MIN(day) AS first_day, MAX(day) AS last_day " +
-    `FROM ${table} WHERE day >= ?1 GROUP BY path ORDER BY hits DESC`,
-  ).bind(since).all<{ path: string; hits: number; first_day: string; last_day: string }>();
-  const daily = await db.prepare(
-    `SELECT day, SUM(hits) AS hits FROM ${table} WHERE day >= ?1 ` +
-    "GROUP BY day ORDER BY day DESC LIMIT 90",
-  ).bind(since).all<{ day: string; hits: number }>();
+  const { rows, daily } = await onStore(env, async ({ db, table }) => ({
+    rows: await db.prepare(
+      "SELECT path, SUM(hits) AS hits, MIN(day) AS first_day, MAX(day) AS last_day " +
+      `FROM ${table} WHERE day >= ?1 GROUP BY path ORDER BY hits DESC`,
+    ).bind(since).all<{ path: string; hits: number; first_day: string; last_day: string }>(),
+    daily: await db.prepare(
+      `SELECT day, SUM(hits) AS hits FROM ${table} WHERE day >= ?1 ` +
+      "GROUP BY day ORDER BY day DESC LIMIT 90",
+    ).bind(since).all<{ day: string; hits: number }>(),
+  }));
 
   return new Response(JSON.stringify({
     window_days: days,

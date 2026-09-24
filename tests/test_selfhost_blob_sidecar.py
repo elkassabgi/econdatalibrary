@@ -171,6 +171,47 @@ def test_a_missing_file_is_a_500_not_a_broken_200(served):
     assert status == 500 and body == b""
 
 
+def test_a_short_file_is_a_500_not_a_broken_200(served):
+    store, port = served
+    store.put("series/short.csv", b"0123456789", etag="s")
+    with open(store.head("series/short.csv")["path"], "r+b") as fh:
+        fh.truncate(4)
+    status, _h, body = _get(port, "series/short.csv")
+    assert status == 500 and body == b""
+
+
+def test_the_grace_counts_from_the_newest_retirement(served):
+    """R1171 minor 4: a file retired long ago, re-used, then retired again must get a FULL grace again."""
+    store, _port = served
+    store.put("series/a.csv", b"shared", etag="1")
+    path = store.head("series/a.csv")["path"]
+    store.put("series/a.csv", b"other", etag="2")                  # retires 'shared'
+    store._w.execute("UPDATE retired SET retired_utc='2000-01-01T00:00:00+00:00'")   # long ago
+    store.put("series/a.csv", b"shared", etag="1")                 # re-used ...
+    store.put("series/a.csv", b"other", etag="2")                  # ... and retired again, just now
+    assert store.gc(grace_hours=24) == 0 and os.path.exists(path), "the newest retirement is inside the grace"
+    assert store.gc(grace_hours=-1) == 1 and not os.path.exists(path)
+
+
+def test_a_failed_put_leaves_no_orphan_file(served, monkeypatch):
+    """R1171 minor 5: a put that fails after writing its file must not leave a file gc can never find."""
+    import blobstore
+    store, _port = served
+    data = b"never indexed"
+    orphan = store._path(__import__("hashlib").sha256(data).hexdigest())
+
+    def boom(*_a, **_k):
+        raise RuntimeError("index write failed")
+    monkeypatch.setattr(blobstore.json, "dumps", boom)
+    with pytest.raises(RuntimeError):
+        store.put("series/x.csv", data, etag="x")
+    monkeypatch.undo()
+    assert not os.path.exists(orphan)
+    assert store.head("series/x.csv") is None
+    store.put("series/x.csv", data, etag="x")                      # and the store still works
+    assert os.path.exists(orphan)
+
+
 def test_the_sidecar_binds_localhost_only(tmp_path):
     BlobStore(str(tmp_path / "b"), create=True)
     srv = blob_sidecar.serve(str(tmp_path / "b"), 0)

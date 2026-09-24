@@ -1,21 +1,30 @@
 // The forwarding edge (src/edge.ts, plan code change 1): unit rules, then the REAL index.ts in workerd
-// (unstable_dev) forwarding to a stand-in origin that records what it receives.
+// (unstable_dev) forwarding to a stand-in origin that records what it receives, with a second server
+// standing for any host a client might try to steer the secret to (review R1169).
+//
+// The FORWARD-on worker runs with the EDGE-ONLY config (test/_harness.ts): the econ D1 and econ R2
+// bindings are removed, so any path that still touches them fails instead of reading an empty simulation
+// (review R1172). A planted positive proves the removal bites.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer, type IncomingHttpHeaders } from "node:http";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
+import { createServer, request as httpRequest, type IncomingHttpHeaders, type Server } from "node:http";
 import { test } from "node:test";
-
-import { unstable_dev } from "wrangler";
 
 import * as edge from "../src/edge.ts";
 import * as localMode from "../src/localMode.ts";
+import { NON_REDISTRIBUTABLE } from "../src/denylist.ts";
+import { all, at, EDGE_CONFIG, edgeOnlyConfig, execSql, newPersist, start, withBindings, type Dev } from "./_harness.ts";
 
 test("the header names match the origin's", () => {
   assert.equal(edge.ORIGIN_SECRET_HEADER, localMode.ORIGIN_SECRET_HEADER);
   assert.equal(edge.COUNT_HEADER, localMode.COUNT_HEADER);
+  assert.equal(edge.ORIGIN_MARK_HEADER, localMode.ORIGIN_MARK_HEADER);
+});
+
+test("the origin marks every answer it gives", () => {
+  for (const r of [new Response("x"), new Response("e", { status: 500 }), new Response(null, { status: 404 })]) {
+    assert.equal(localMode.finalizeLocal(r).headers.get(localMode.ORIGIN_MARK_HEADER), "1");
+  }
 });
 
 test("forwarding is on only for FORWARD = 'on'", () => {
@@ -23,29 +32,55 @@ test("forwarding is on only for FORWARD = 'on'", () => {
   for (const v of [undefined, "", "off", "1", "true", "ON"]) assert.equal(edge.isForward({ FORWARD: v }), false, String(v));
 });
 
-test("the origin request strips the client's credentials and sets the secret", () => {
+const CONFIGURED = { ORIGIN_URL: "https://o.example", ORIGIN_SECRET: "real" };
+
+test("the origin request carries only allowlisted headers, never the client's credentials", () => {
   const client = new Request("https://edge.example/v1/series/x.csv?api_key=CLIENTKEY&from=2020-01-01", {
     headers: { "x-api-key": "CLIENTKEY", authorization: "Bearer T", cookie: "c=1",
-               "x-econ-origin-secret": "forged", "cf-access-client-id": "forged", "user-agent": "ua" },
+               "x-econ-origin-secret": "forged", "cf-access-client-id": "forged", "cf-connecting-ip": "1.2.3.4",
+               "x-forwarded-for": "1.2.3.4", "x-elkassabgi-client": "py", referer: "https://r.example/",
+               "user-agent": "ua", accept: "text/csv", "accept-language": "fr" },
   });
   assert.equal(edge.originRequest(client, {}), null, "no origin configured -> nothing forwarded");
   assert.equal(edge.originRequest(client, { ORIGIN_URL: "https://o.example" }), null, "no secret -> nothing forwarded");
-  const r = edge.originRequest(client, { ORIGIN_URL: "https://o.example", ORIGIN_SECRET: "real",
-                                          ORIGIN_ACCESS_ID: "id", ORIGIN_ACCESS_SECRET: "sec" })!;
+  assert.equal(edge.originRequest(client, { ...CONFIGURED, ORIGIN_URL: "https://o.example/base" }), null,
+               "ORIGIN_URL must be a bare origin");
+  assert.equal(edge.originRequest(client, { ...CONFIGURED, ORIGIN_URL: "not a url" }), null);
+  const r = edge.originRequest(client, { ...CONFIGURED, ORIGIN_ACCESS_ID: "id", ORIGIN_ACCESS_SECRET: "sec" })!;
   const u = new URL(r.url);
   assert.equal(u.origin + u.pathname, "https://o.example/v1/series/x.csv");
   assert.equal(u.searchParams.get("api_key"), null);
   assert.equal(u.searchParams.get("from"), "2020-01-01");
-  for (const h of ["x-api-key", "authorization", "cookie"]) assert.equal(r.headers.get(h), null, h);
+  assert.deepEqual([...r.headers.keys()].sort(),
+    ["accept", "accept-language", "cf-access-client-id", "cf-access-client-secret", "user-agent", "x-econ-origin-secret"]);
   assert.equal(r.headers.get("x-econ-origin-secret"), "real", "overwritten, never passed through");
   assert.equal(r.headers.get("cf-access-client-id"), "id");
-  assert.equal(r.headers.get("user-agent"), "ua");
+  assert.equal(r.redirect, "manual");
 });
 
-test("public answers are cacheable; data never is", () => {
-  for (const p of ["/v1/catalog", "/v1/sources", "/v1/stats", "/v1/last-updates", "/v1/bundle",
-                   "/v1/series/a%3Ab.metadata.json"]) assert.equal(edge.isCacheable(p), true, p);
-  for (const p of ["/v1/series/a%3Ab.csv", "/v1/pv", "/v1/public-stats"]) assert.equal(edge.isCacheable(p), false, p);
+test("no client path can move the request off ORIGIN_URL's host", () => {
+  for (const p of ["//evil.example/v1/sources", "/\\evil.example/v1/sources", "//evil.example:8443/x",
+                   "/%2F%2Fevil.example/x", "/v1/series/..%2F..%2F@evil.example.csv"]) {
+    const r = edge.originRequest(new Request("https://edge.example" + p), CONFIGURED);
+    if (r) assert.equal(new URL(r.url).origin, "https://o.example", p);
+  }
+});
+
+test("only the origin's own routes are forwarded", () => {
+  for (const p of ["/", "/v1", "/v1/", "/v1/catalog", "/v1/sources", "/v1/last-updates", "/v1/stats", "/v1/bundle",
+                   "/v1/series/a%3Ab.csv", "/v1/series/a%3Ab.metadata.json"]) assert.equal(edge.isForwardable(p), true, p);
+  for (const p of ["//evil.example/v1/sources", "/v1/pv", "/v1/public-stats", "/v1/nope", "/admin", "/v1/catalogX"]) {
+    assert.equal(edge.isForwardable(p), false, p);
+  }
+});
+
+test("cache times per route: data, bundle and the rest are never cached", () => {
+  const want: Record<string, number> = {
+    "/v1/catalog": 21600, "/v1/stats": 21600, "/v1/sources": 300, "/v1/last-updates": 300,
+    "/v1/series/a%3Ab.metadata.json": 3600, "/v1/series/a%3Ab.csv": 0, "/v1/bundle": 0, "/": 0, "/v1/pv": 0,
+  };
+  for (const [p, s] of Object.entries(want)) assert.equal(edge.cacheSeconds(p), s, p);
+  assert.equal(new URL(edge.cacheKey(new Request("https://e.example/v1/catalog?q=a&api_key=K")).url).search, "?q=a");
 });
 
 test("a counted body reports the bytes on completion and on abort", async () => {
@@ -70,165 +105,329 @@ test("a counted body reports the bytes on completion and on abort", async () => 
   assert.ok(seen[1][0] > 0, "with the bytes that were taken");
 });
 
-// ---- the real worker, forwarding to a recording stand-in origin ---------------------------------------
-type Seen = { url: string; headers: IncomingHttpHeaders };
-
-async function standInOrigin() {
-  const seen: Seen[] = [];
-  const server = createServer((req, res) => {
-    seen.push({ url: req.url ?? "", headers: req.headers });
-    if ((req.url ?? "").startsWith("/v1/series/")) {
-      res.writeHead(200, { "content-type": "text/csv", "cache-control": "private, no-store", "x-econ-count": "1" });
-      res.end("series_id,obs_date,value\nx,2020-01-01,1\n");
-      return;
-    }
-    res.writeHead(200, { "content-type": "application/json", "cache-control": "private, no-store" });
-    res.end(JSON.stringify({ total: 1, sources: [{ source: "zz", name: "ZZ" }] }));
-  });
-  await new Promise<void>((ok) => server.listen(0, "127.0.0.1", () => ok()));
-  const a = server.address();
-  return { server, seen, url: `http://127.0.0.1:${typeof a === "object" && a ? a.port : 0}` };
-}
-
-// wrangler is run as node + its own entry script, with the SQL in a file: npx.cmd under a shell mangles
-// the quotes and parentheses of an inline --command on Windows (it crashed, 0xC0000409).
-const WRANGLER = join("node_modules", "wrangler", "bin", "wrangler.js");
-let sqlFiles = 0;
-
-function d1Local(persist: string, sql: string, json = false, db = "hfdatalibrary-db"): string {
-  const file = join(persist, `q${sqlFiles++}.sql`);
-  writeFileSync(file, sql);
-  return execFileSync(process.execPath,
-    [WRANGLER, "d1", "execute", db, "--local", "--persist-to", persist, "--file", file,
-     ...(json ? ["--json"] : [])], { encoding: "utf8" });
-}
-
-function rows(out: string): Record<string, unknown>[] {
-  return JSON.parse(out)[0].results;
-}
-
-function seedUsers(persist: string) {
-  // A real key in the LOCAL simulation of hfdatalibrary-db, plus the two tables auth writes.
-  d1Local(persist, [
-    "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, is_vip INTEGER, api_key TEXT, is_active INTEGER, api_key_expires_at TEXT);",
-    "INSERT INTO users VALUES (7, 'u@example.org', 0, 'GOODKEY', 1, NULL);",
-    "CREATE TABLE rate_limits (key TEXT PRIMARY KEY, count INTEGER, window_start TEXT);",
-    "CREATE TABLE econ_download_log (user_id INTEGER, series_id TEXT, ip TEXT, channel TEXT, bytes INTEGER, ts TEXT DEFAULT CURRENT_TIMESTAMP);",
-  ].join(" "));
-}
-
-function countDownloads(persist: string): string {
-  return d1Local(persist, "SELECT COUNT(*) AS n, COALESCE(SUM(bytes),0) AS b FROM econ_download_log;", true);
-}
-
-test("FORWARD on: the edge gates, strips, forwards, caches public answers and logs downloads",
-     { timeout: 300_000 }, async (t) => {
-  const origin = await standInOrigin();
-  t.after(() => origin.server.close());
-  const persist = mkdtempSync(join(tmpdir(), "econ-edge-"));
-  seedUsers(persist);
-  const w = await unstable_dev("src/index.ts", {
-    config: "wrangler.toml", local: true, persistTo: persist, logLevel: "none",
-    vars: { FORWARD: "on", ORIGIN_URL: origin.url, ORIGIN_SECRET: "edge-test-secret" },
-    experimental: { disableExperimentalWarning: true, disableDevRegistry: true },
-  });
-  t.after(() => w.stop());
-
-  // a download with no key: refused at the edge, the origin never asked
-  const noKey = await w.fetch("/v1/series/zz%3Aa.csv");
-  assert.equal(noKey.status, 401);
-  await noKey.arrayBuffer();
-  assert.equal(origin.seen.length, 0);
-
-  // a keyed download: forwarded without the key, with the secret; counted and logged
-  const ok = await w.fetch("/v1/series/zz%3Aa.csv?api_key=GOODKEY");
-  assert.equal(ok.status, 200);
-  const body = await ok.text();
-  assert.match(body, /x,2020-01-01,1/);
-  assert.equal(ok.headers.get("x-econ-count"), null, "the internal marker never reaches the client");
-  const got = origin.seen.at(-1)!;
-  assert.equal(new URL(got.url, "http://x").searchParams.get("api_key"), null);
-  assert.equal(got.headers["x-api-key"], undefined);
-  assert.equal(got.headers["x-econ-origin-secret"], "edge-test-secret");
-  await new Promise((r) => setTimeout(r, 500));                   // the log is written in waitUntil
-  const logged = JSON.parse(countDownloads(persist))[0].results[0];
-  assert.equal(logged.n, 1);
-  assert.equal(logged.b, Buffer.byteLength(body));
-
-  // a public answer: forwarded once, then served from the edge cache
-  const before = origin.seen.length;
-  for (let i = 0; i < 2; i++) {
-    const r = await w.fetch("/v1/sources");
-    assert.equal(r.status, 200);
-    await r.arrayBuffer();
-  }
-  assert.equal(origin.seen.length - before, 1, "the second /v1/sources came from the edge cache");
+test("the client never sees the internal headers", () => {
+  const o = new Response("x", { headers: { "x-econ-count": "1", "x-econ-origin": "1", "content-type": "text/csv" } });
+  const c = edge.clientResponse(o, o.body);
+  assert.equal(c.headers.get("x-econ-count"), null);
+  assert.equal(c.headers.get("x-econ-origin"), null);
+  assert.equal(c.headers.get("content-type"), "text/csv");
 });
 
-// ---- the edge's own writes leave econ D1 and econ R2 once FORWARD is on (users db, migration file) -----
-const MIGRATION = readFileSync(join("migrations", "users_selfhost.sql"), "utf8");
+// ---- the real worker ----------------------------------------------------------------------------------
+type Seen = { url: string; headers: IncomingHttpHeaders };
+const CSV = "series_id,obs_date,value\nx,2020-01-01,1\n";
+const MIGRATION = readFileSync(at("migrations", "users_selfhost.sql"), "utf8");
 const OLD_PAGEVIEW = "CREATE TABLE pageview (path TEXT NOT NULL, day TEXT NOT NULL, " +
-                     "hits INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (path, day));";
+                     "hits INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (path, day))";
+const USERS_SCHEMA = `
+  CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, is_vip INTEGER, api_key TEXT, is_active INTEGER,
+    api_key_expires_at TEXT, country TEXT DEFAULT '', institution TEXT DEFAULT '', hide_institution INTEGER);
+  INSERT INTO users (id, email, is_vip, api_key, is_active) VALUES (7, 'u@example.org', 0, 'GOODKEY', 1);
+  CREATE TABLE login_history (user_id INTEGER, country TEXT);
+  CREATE TABLE rate_limits (key TEXT PRIMARY KEY, count INTEGER, window_start TEXT);
+  CREATE TABLE econ_download_log (user_id INTEGER, series_id TEXT, ip TEXT, channel TEXT, bytes INTEGER,
+    ts TEXT DEFAULT CURRENT_TIMESTAMP);`;
 
-async function beacon(w: Awaited<ReturnType<typeof unstable_dev>>, p: string) {
-  const r = await w.fetch(`/v1/pv?p=${encodeURIComponent(p)}`);
-  assert.equal(r.status, 200);
-  await r.arrayBuffer();
+/** A persist folder whose users db has a real key, the tables auth and public-stats read, and (unless
+ *  told otherwise) the migration; econ D1 gets today's pageview table. */
+async function seeded(migrate = true): Promise<string> {
+  const persist = newPersist("econ-edge-");
+  await withBindings(EDGE_CONFIG, persist, async (env) => {
+    await execSql(env.USERS, USERS_SCHEMA);
+    if (migrate) await execSql(env.USERS, MIGRATION);
+    await execSql(env.CATALOG, OLD_PAGEVIEW);
+  });
+  return persist;
 }
 
-for (const forward of [true, false]) {
-  test(`page views and the cost-guard status: FORWARD ${forward ? "on -> users db" : "unset -> econ D1 / R2 (unchanged)"}`,
-       { timeout: 300_000 }, async (t) => {
-    const persist = mkdtempSync(join(tmpdir(), "econ-edge-"));
-    d1Local(persist, MIGRATION);                                   // the migration file itself, as shipped
-    d1Local(persist, OLD_PAGEVIEW, false, "econ-catalog");         // today's table in econ D1
-    const w = await unstable_dev("src/index.ts", {
-      config: "wrangler.toml", local: true, persistTo: persist, logLevel: "none",
-      vars: forward ? { FORWARD: "on", ORIGIN_URL: "http://127.0.0.1:9", ORIGIN_SECRET: "s" } : {},
-      experimental: { disableExperimentalWarning: true, disableDevRegistry: true, testScheduled: true },
-    });
-    t.after(() => w.stop());
+async function listen(server: Server): Promise<string> {
+  await new Promise<void>((ok) => server.listen(0, "127.0.0.1", () => ok()));
+  const a = server.address();
+  return `127.0.0.1:${typeof a === "object" && a ? a.port : 0}`;
+}
 
-    await beacon(w, "/about");
-    await beacon(w, "/about");
-    await beacon(w, "/not-a-tracked-path");                       // the allowlist still holds
-    const users = rows(d1Local(persist, "SELECT path, hits FROM econ_pageview ORDER BY path;", true));
-    const econ = rows(d1Local(persist, "SELECT path, hits FROM pageview ORDER BY path;", true, "econ-catalog"));
-    const counted = [{ path: "/about", hits: 2 }];
-    assert.deepEqual(forward ? users : econ, counted, "counted in the right db");
-    assert.deepEqual(forward ? econ : users, [], "and nothing in the other");
+/** Any host a client might try to aim the edge at. It must never receive a request. */
+async function collector() {
+  const seen: Seen[] = [];
+  const server = createServer((req, res) => { seen.push({ url: req.url ?? "", headers: req.headers }); res.end("stolen"); });
+  return { server, seen, host: await listen(server) };
+}
 
-    const rep = await w.fetch("/v1/pv/report?days=3");
-    assert.equal(rep.status, 200);
-    const body = await rep.json() as { by_path: { path: string; hits: number }[] };
-    assert.deepEqual(body.by_path.map((r) => [r.path, r.hits]), [["/about", 2]], "the report reads the same db");
-
-    // The scheduled cost guard with no analytics token: it must write a BLIND record, then throw.
-    const s = await w.fetch("/__scheduled?cron=*/30+*+*+*+*");
-    await s.arrayBuffer();
-    const status = rows(d1Local(persist, "SELECT key, body FROM econ_ops_status;", true));
-    if (forward) {
-      assert.equal(status.length, 1, "the status record is in the users db");
-      assert.equal(status[0].key, "_aqueduct/cost_status.json");
-      assert.equal(JSON.parse(String(status[0].body)).blind, true);
-    } else {
-      assert.deepEqual(status, [], "unset: the users db is untouched");
-      const out = join(persist, "status.json");
-      execFileSync(process.execPath, [WRANGLER, "r2", "object", "get", "econ-data/_aqueduct/cost_status.json",
-        "--local", "--persist-to", persist, "--file", out], { encoding: "utf8" });
-      assert.equal(JSON.parse(readFileSync(out, "utf8")).blind, true, "the record went to R2, as before");
+/** The stand-in origin. Each path/mode stands for one thing a real origin or tunnel can answer. */
+async function standInOrigin(collectorHost: string) {
+  const seen: Seen[] = [];
+  let sourcesDown = false;
+  const mark = { "x-econ-origin": "1", "cache-control": "private, no-store" };
+  const server = createServer((req, res) => {
+    const url = req.url ?? "";
+    seen.push({ url, headers: req.headers });
+    const u = new URL(url, "http://x");
+    const mode = u.searchParams.get("mode");
+    if (mode === "redirect") {
+      res.writeHead(302, { ...mark, location: `http://${collectorHost}/stolen` }); res.end(); return;
     }
+    if (mode === "unmarked") {                                    // a tunnel error page, an Access login page
+      res.writeHead(200, { "content-type": "text/html" }); res.end("<html>login</html>"); return;
+    }
+    if (mode === "slow") { setTimeout(() => { res.writeHead(200, mark); res.end("{}"); }, 3000); return; }
+    if (u.pathname === "/v1/series/zz%3Alen.csv") {
+      res.writeHead(200, { ...mark, "content-type": "text/csv", "content-length": String(Buffer.byteLength(CSV)) });
+      res.end(CSV); return;
+    }
+    if (u.pathname === "/v1/series/zz%3Achunk.csv") {             // no content-length AND no count marker
+      res.writeHead(200, { ...mark, "content-type": "text/csv" });
+      res.write(CSV); res.end(CSV); return;
+    }
+    if (u.pathname === "/v1/series/zz%3Aerr.csv") {
+      res.writeHead(500, { ...mark, "content-type": "application/json" }); res.end('{"error":"x"}'); return;
+    }
+    if (u.pathname === "/v1/sources" && sourcesDown) {
+      res.writeHead(500, { ...mark, "content-type": "application/json" }); res.end('{"error":"down"}'); return;
+    }
+    res.writeHead(200, { ...mark, "content-type": "application/json" });
+    res.end(JSON.stringify({ total: 1, sources: [{ source: "zz", name: "ZZ" }] }));
+  });
+  return { server, seen, host: await listen(server), setSourcesDown: (v: boolean) => { sourcesDown = v; } };
+}
+
+function raw(w: Dev, path: string): Promise<number> {
+  return new Promise((ok, bad) => {
+    const r = httpRequest({ host: w.address, port: w.port, path, method: "GET" }, (res) => {
+      res.resume(); res.on("end", () => ok(res.statusCode ?? 0));
+    });
+    r.on("error", bad); r.end();
   });
 }
+
+async function get(w: Dev, path: string) {
+  const r = await w.fetch(path);
+  const text = await r.text();
+  return { status: r.status, text, headers: r.headers };
+}
+
+const settle = (ms = 800) => new Promise((r) => setTimeout(r, ms));    // rows written in waitUntil
+
+test("the edge-only config really has no econ D1 / R2 (planted positive)", { timeout: 120_000 }, async (t) => {
+  const w = await start(edgeOnlyConfig(), { FORWARD: "" }, await seeded());
+  t.after(() => w.stop());
+  assert.equal((await get(w, "/v1/sources")).status, 500, "FORWARD unset needs econ D1, and it is gone");
+});
+
+test("FORWARD on: the real edge, with no econ D1 or R2 binding, against a stand-in origin",
+     { timeout: 300_000 }, async (t) => {
+  const evil = await collector();
+  const origin = await standInOrigin(evil.host);
+  t.after(() => { origin.server.close(); evil.server.close(); });
+  const persist = await seeded();
+  const w = await start(edgeOnlyConfig(), {
+    FORWARD: "on", ORIGIN_URL: `http://${origin.host}`, ORIGIN_SECRET: "edge-test-secret", ORIGIN_TIMEOUT_MS: "1000",
+  }, persist);
+  t.after(() => w.stop());
+  const calls = () => origin.seen.length;
+  const downloads = () => withBindings(EDGE_CONFIG, persist, (env) =>
+    all(env.USERS, "SELECT series_id, bytes FROM econ_download_log ORDER BY series_id"));
+
+  await t.test("a client path can never reach another host (R1169 B1)", async () => {
+    assert.equal(await raw(w, `//${evil.host}/v1/sources`), 404);
+    assert.equal(await raw(w, `/\\${evil.host}/v1/sources`), 404);
+    assert.equal(await raw(w, `//${evil.host}/v1/series/zz%3Alen.csv?api_key=GOODKEY`), 404);
+    assert.equal(evil.seen.length, 0, "the collector received nothing");
+    assert.equal(calls(), 0, "and nothing was forwarded");
+  });
+
+  await t.test("unknown paths are the edge's own 404", async () => {
+    assert.equal((await get(w, "/v1/nope")).status, 404);
+    assert.equal(calls(), 0);
+  });
+
+  await t.test("the licence gate answers 451 before auth and before the origin", async () => {
+    const src = [...NON_REDISTRIBUTABLE][0];
+    assert.ok(src, "the gate list is not empty");
+    const id = encodeURIComponent(`${src}:x`);
+    assert.equal((await get(w, `/v1/series/${id}.csv`)).status, 451);
+    assert.equal((await get(w, `/v1/series/${id}.metadata.json`)).status, 451);
+    assert.equal(calls(), 0);
+  });
+
+  await t.test("a download with no key is refused at the edge", async () => {
+    assert.equal((await get(w, "/v1/series/zz%3Alen.csv")).status, 401);
+    assert.equal(calls(), 0);
+  });
+
+  await t.test("keyed downloads: stripped, marked answers only, logged by length or by counting", async () => {
+    const a = await get(w, "/v1/series/zz%3Alen.csv?api_key=GOODKEY");
+    assert.equal(a.status, 200);
+    assert.equal(a.text, CSV);
+    assert.equal(a.headers.get("x-econ-origin"), null);
+    const got = origin.seen.at(-1)!;
+    assert.equal(new URL(got.url, "http://x").searchParams.get("api_key"), null);
+    assert.equal(got.headers["x-api-key"], undefined);
+    assert.equal(got.headers["x-econ-origin-secret"], "edge-test-secret");
+
+    const b = await get(w, "/v1/series/zz%3Achunk.csv?api_key=GOODKEY");
+    assert.equal(b.status, 200);
+    assert.equal(b.text, CSV + CSV);
+    assert.equal((await get(w, "/v1/series/zz%3Aerr.csv?api_key=GOODKEY")).status, 500);
+    await settle();
+    assert.deepEqual(await downloads(), [
+      { series_id: "zz:chunk", bytes: Buffer.byteLength(CSV) * 2 },   // no length, no marker: still logged
+      { series_id: "zz:len", bytes: Buffer.byteLength(CSV) },         // from content-length
+    ], "one row per successful download, none for the 500");
+  });
+
+  await t.test("redirects and unmarked answers are 502, never followed, cached or served", async () => {
+    const before = calls();
+    for (let i = 0; i < 2; i++) {
+      const r = await get(w, "/v1/sources?mode=redirect");
+      assert.equal(r.status, 502);
+      assert.doesNotMatch(r.text, /stolen/);
+      const u = await get(w, "/v1/catalog?mode=unmarked");
+      assert.equal(u.status, 502);
+      assert.doesNotMatch(u.text, /login/);
+    }
+    assert.equal(calls() - before, 4, "a refused answer is never served from the cache");
+    assert.equal(evil.seen.length, 0, "the redirect target was never contacted");
+    assert.equal((await get(w, "/v1/series/zz%3Alen.csv?api_key=GOODKEY&mode=redirect")).status, 502);
+    assert.equal((await get(w, "/v1/series/zz%3Alen.csv?api_key=GOODKEY&mode=unmarked")).status, 502);
+    await settle(500);
+    assert.equal((await downloads()).length, 2, "a refused download is not logged");
+  });
+
+  await t.test("a slow origin is a 504 after ORIGIN_TIMEOUT_MS", async () => {
+    const t0 = Date.now();
+    assert.equal((await get(w, "/v1/last-updates?mode=slow")).status, 504);
+    assert.ok(Date.now() - t0 < 2800, "answered before the origin did");
+  });
+
+  await t.test("public answers are cached without api_key in the key; bundle never", async () => {
+    const before = calls();
+    assert.equal((await get(w, "/v1/sources?api_key=A")).status, 200);
+    assert.equal((await get(w, "/v1/sources?api_key=B")).status, 200);
+    assert.equal((await get(w, "/v1/sources")).status, 200);
+    assert.equal(calls() - before, 1, "one origin call for three requests differing only in api_key");
+    const b0 = calls();
+    await get(w, "/v1/bundle");
+    await get(w, "/v1/bundle");
+    assert.equal(calls() - b0, 2, "the bundle is never cached");
+  });
+
+  await t.test("public-stats, the beacon and its report work with no econ D1", async () => {
+    origin.setSourcesDown(true);
+    const r = await get(w, "/v1/public-stats");
+    assert.equal(r.status, 200, r.text.slice(0, 200));
+    origin.setSourcesDown(false);
+    assert.equal((await get(w, "/v1/pv?p=%2Fabout")).status, 200);
+    const rep = await get(w, "/v1/pv/report?days=3");
+    assert.equal(rep.status, 200, rep.text.slice(0, 200));
+    assert.deepEqual(JSON.parse(rep.text).by_path.map((x: { path: string; hits: number }) => [x.path, x.hits]),
+                     [["/about", 1]]);
+  });
+});
+
+test("FORWARD on, cold, origin unreachable: public-stats still answers", { timeout: 120_000 }, async (t) => {
+  const w = await start(edgeOnlyConfig(), { FORWARD: "on", ORIGIN_URL: "http://127.0.0.1:9", ORIGIN_SECRET: "s" },
+                        await seeded());
+  t.after(() => w.stop());
+  const r = await get(w, "/v1/public-stats");
+  assert.equal(r.status, 200, r.text.slice(0, 200));
+  assert.equal((await get(w, "/v1/sources")).status, 502, "and a data route says the origin is unreachable");
+});
+
+test("FORWARD unset: nothing is forwarded even with an origin configured", { timeout: 120_000 }, async (t) => {
+  const evil = await collector();
+  const origin = await standInOrigin(evil.host);
+  t.after(() => { origin.server.close(); evil.server.close(); });
+  const w = await start(EDGE_CONFIG, { ORIGIN_URL: `http://${origin.host}`, ORIGIN_SECRET: "s" });
+  t.after(() => w.stop());
+  for (const p of ["/v1/sources", "/v1/catalog", "/v1/series/zz%3Alen.metadata.json", "/", "/v1/nope"]) await get(w, p);
+  assert.equal(origin.seen.length, 0);
+});
 
 test("FORWARD on without an origin configured answers 503 and forwards nothing", { timeout: 120_000 }, async (t) => {
-  const w = await unstable_dev("src/index.ts", {
-    config: "wrangler.toml", local: true, persistTo: mkdtempSync(join(tmpdir(), "econ-edge-")), logLevel: "none",
-    vars: { FORWARD: "on", ORIGIN_URL: "", ORIGIN_SECRET: "" },
-    experimental: { disableExperimentalWarning: true, disableDevRegistry: true },
-  });
+  const w = await start(edgeOnlyConfig(), { FORWARD: "on", ORIGIN_URL: "", ORIGIN_SECRET: "" });
   t.after(() => w.stop());
-  const r = await w.fetch("/v1/sources");
-  assert.equal(r.status, 503);
-  await r.arrayBuffer();
+  assert.equal((await get(w, "/v1/sources")).status, 503);
+});
+
+// ---- the edge's own writes: users db with FORWARD on, econ D1 / R2 unchanged without ------------------
+for (const forward of [true, false]) {
+  test(`page views and the cost-guard status: FORWARD ${forward ? "on -> users db only" : "unset -> econ D1 / R2 only"}`,
+       { timeout: 300_000 }, async (t) => {
+    const persist = await seeded();
+    // the FULL config here, on purpose: econ D1 and R2 exist, so "nowhere else" is measured, not assumed
+    const w = await start(EDGE_CONFIG, forward ? { FORWARD: "on", ORIGIN_URL: "http://127.0.0.1:9", ORIGIN_SECRET: "s" }
+                                               : { FORWARD: "" }, persist, true);
+    t.after(() => w.stop());
+
+    for (const p of ["/about", "/about", "/not-a-tracked-path"]) assert.equal((await get(w, `/v1/pv?p=${encodeURIComponent(p)}`)).status, 200);
+    const rep = await get(w, "/v1/pv/report?days=3");
+    assert.equal(rep.status, 200);
+    assert.deepEqual(JSON.parse(rep.text).by_path.map((x: { path: string; hits: number }) => [x.path, x.hits]),
+                     [["/about", 2]], "the report reads the same db");
+    await get(w, "/__scheduled?cron=*/30+*+*+*+*");               // no analytics token: a BLIND record, then throw
+
+    await withBindings(EDGE_CONFIG, persist, async (env) => {
+      const users = await all(env.USERS, "SELECT path, hits FROM econ_pageview ORDER BY path");
+      const econ = await all(env.CATALOG, "SELECT path, hits FROM pageview ORDER BY path");
+      assert.deepEqual(forward ? users : econ, [{ path: "/about", hits: 2 }], "counted in the right db");
+      assert.deepEqual(forward ? econ : users, [], "and nothing in the other");
+      const status = await all(env.USERS, "SELECT key, body FROM econ_ops_status");
+      const r2 = await env.SERIES_BUCKET.get("_aqueduct/cost_status.json");
+      if (forward) {
+        assert.equal(status.length, 1, "the status record is in the users db");
+        assert.equal(status[0].key, "_aqueduct/cost_status.json");
+        assert.equal(JSON.parse(String(status[0].body)).blind, true);
+        assert.equal(r2, null, "and NOT in econ R2");
+      } else {
+        assert.deepEqual(status, [], "the users db is untouched");
+        assert.ok(r2, "the record went to R2, as before");
+        assert.equal(JSON.parse(await r2.text()).blind, true);
+      }
+    });
+  });
+}
+
+test("FORWARD on before the migration: the tables heal themselves, same columns as the migration",
+     { timeout: 300_000 }, async (t) => {
+  const persist = await seeded(false);
+  const w = await start(edgeOnlyConfig(), { FORWARD: "on", ORIGIN_URL: "http://127.0.0.1:9", ORIGIN_SECRET: "s" },
+                        persist, true);
+  t.after(() => w.stop());
+  assert.equal((await get(w, "/v1/pv/report?days=3")).status, 200, "the report does not 500 on a missing table");
+  await get(w, "/v1/pv?p=%2Fabout");
+  await get(w, "/__scheduled?cron=*/30+*+*+*+*");
+  const healed = await withBindings(EDGE_CONFIG, persist, async (env) => ({
+    hits: await all(env.USERS, "SELECT path, hits FROM econ_pageview"),
+    status: await all(env.USERS, "SELECT key FROM econ_ops_status"),
+    cols: [await all(env.USERS, "PRAGMA table_info(econ_pageview)"), await all(env.USERS, "PRAGMA table_info(econ_ops_status)")],
+  }));
+  assert.deepEqual(healed.hits, [{ path: "/about", hits: 1 }], "the first hit after the flip is counted");
+  assert.deepEqual(healed.status, [{ key: "_aqueduct/cost_status.json" }], "the first tick is recorded");
+  const fromMigration = await withBindings(EDGE_CONFIG, newPersist("econ-mig-"), async (env) => {
+    await execSql(env.USERS, MIGRATION);
+    return [await all(env.USERS, "PRAGMA table_info(econ_pageview)"), await all(env.USERS, "PRAGMA table_info(econ_ops_status)")];
+  });
+  assert.deepEqual(healed.cols, fromMigration, "the worker's DDL and the migration's are the same tables");
+});
+
+test("the one-time page-view merge in the migration header is safe to run twice", { timeout: 120_000 }, async () => {
+  await withBindings(EDGE_CONFIG, newPersist("econ-merge-"), async (env) => {
+    await execSql(env.USERS, MIGRATION);
+    await execSql(env.USERS, `
+      CREATE TABLE econ_pageview_import (path TEXT NOT NULL, day TEXT NOT NULL, hits INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (path, day));
+      INSERT INTO econ_pageview_import VALUES ('/about', '2026-09-01', 5), ('/', '2026-09-02', 3);
+      INSERT INTO econ_pageview VALUES ('/about', '2026-09-01', 2)`);
+    const merge = () => env.USERS.batch([
+      env.USERS.prepare(
+        "INSERT INTO econ_pageview (path, day, hits) SELECT path, day, hits FROM econ_pageview_import " +
+        "WHERE NOT EXISTS (SELECT 1 FROM econ_ops_status WHERE key = 'pageview_import_merged') " +
+        "ON CONFLICT(path, day) DO UPDATE SET hits = hits + excluded.hits"),
+      env.USERS.prepare("INSERT INTO econ_ops_status (key, body, updated_at) " +
+                        "VALUES ('pageview_import_merged', '{}', datetime('now'))"),
+    ]);
+    await merge();
+    await assert.rejects(merge(), "a second run is refused");
+    assert.deepEqual(await all(env.USERS, "SELECT path, day, hits FROM econ_pageview ORDER BY path"),
+                     [{ path: "/", day: "2026-09-02", hits: 3 }, { path: "/about", day: "2026-09-01", hits: 7 }]);
+  });
 });
