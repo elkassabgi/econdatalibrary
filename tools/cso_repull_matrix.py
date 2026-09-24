@@ -135,6 +135,15 @@ def main() -> int:
         print("Re-run when the run finishes. Nothing was written.")
         return 1
 
+    # after T0 the cursor and the parquets are the local store the updater writes: the whole change holds the
+    # writer lock (refused at once while the updater runs); before T0 write_session changes nothing
+    from core import catalog_path                                       # noqa: PLC0415
+    with catalog_path.write_session():
+        return _apply(out_dir, found, all_bad)
+
+
+def _apply(out_dir, found, all_bad) -> int:
+    from core import cutover                                            # noqa: PLC0415
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
     # ---- 1. CURSOR FIRST. If this fails, the store is untouched and nothing is lost. --------
@@ -159,13 +168,13 @@ def main() -> int:
     # ---- 2. ROWS SECOND, each file backed up and the backup proved readable before writing. --
     for fn, (bad, drop, rows) in sorted(found.items()):
         path = os.path.join(out_dir, fn)
-        r2 = blob.R2Blob()
-        key = blob._path_to_key(path)
         backup = f"_backup/cso_repull_matrix/{stamp}/{fn}"
-        r2.client.copy_object(Bucket=r2.bucket, Key=backup,
-                              CopySource={"Bucket": r2.bucket, "Key": key})
-        if not r2.exists(backup):
-            print(f"  ABORT on {fn}: backup not readable after copy — original untouched.")
+        try:
+            where = blob.backup_store_object(path, backup)  # R2 before T0, local after (updater.blob)
+        except cutover.CutoverRefused:
+            raise                        # a refusal (another checkout, no lock) is not a failed backup
+        except (RuntimeError, OSError) as e:
+            print(f"  ABORT on {fn}: backup not proved ({e}) — original untouched.")
             return 1
         t = blob.read_table(path)
         keep_mask = [matrix_of(k) not in bad for k in t.column("series_key").to_pylist()]
@@ -176,7 +185,7 @@ def main() -> int:
             print(f"  WARNING {fn}: expected {rows - drop:,} rows after removal, store has "
                   f"{after:,} — inspect before trusting this file.")
         else:
-            print(f"  {fn}: {rows:,} -> {after:,} ({drop:,} removed), backup r2://{backup}")
+            print(f"  {fn}: {rows:,} -> {after:,} ({drop:,} removed), backup {where}")
 
     print(f"\nDONE. {len(all_bad):,} matrices queued for a clean re-pull by the normal fetcher.")
     return 0

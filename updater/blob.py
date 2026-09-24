@@ -1063,3 +1063,66 @@ def from_env(backend: str | None = None) -> LocalBlob | R2Blob | SelfhostBlob:
             "is a v1 non-goal (UPDATER_BUILD_PLAN.md §7). Use AQUEDUCT_BACKEND=r2 for "
             "the R2 object backend, or 'local' for the filesystem.")
     raise ValueError(f"unknown AQUEDUCT_BACKEND {b!r}; expected 'local', 'r2' or 'selfhost'")
+
+
+# ---- RETIRING A STORE FILE (tools/repull_file.py, cso_repull_matrix.py, cso_repull_subject.py) ------------------
+# The "back it up, then remove or rewrite it" operation those tools share (R22: a clean re-pull, never a merge,
+# made reversible). Before T0 the parquet store is R2 and the backup is a server-side copy there; after T0 the
+# store is the LOCAL one (plan: ONE STORE) - R2 is a frozen copy and its write key is revoked - so the backup is
+# a local copy under <data>/_backup/..., beside the store. Whoever calls these after T0 holds the writer lock
+# (core.catalog_path.write_session: the updater writes the same files) and runs from the live checkout.
+
+def _local_backup_path(backup_key: str) -> str:
+    """<data>/<backup_key>: the store's own root (the parent of clean_full), as the R2 key sits at the bucket's."""
+    from . import config                                                  # noqa: PLC0415
+    if ".." in backup_key.split("/") or "\\" in backup_key or ":" in backup_key or not backup_key.startswith("_backup/"):
+        raise ValueError(f"{backup_key!r} is not a _backup/ key")
+    return os.path.join(os.path.dirname(os.path.abspath(config.DATA_ROOT)), *backup_key.split("/"))
+
+
+def _refuse_store_change_without_the_lock(what: str) -> None:
+    """After T0 a change to the local store needs the live checkout and the writer lock held by this process."""
+    from core import catalog_path, cutover                                # noqa: PLC0415
+    if not cutover.is_cut_over():
+        return
+    refuse_unless_live_checkout(what)
+    if catalog_path._held is None:
+        raise cutover.CutoverRefused(f"refused: {what} changes the store the updater writes; after T0 hold the "
+                                     f"writer lock (core.catalog_path.write_session) around it")
+
+
+def backup_store_object(path: str, backup_key: str) -> str:
+    """Copy the store object at `path` to `backup_key` and PROVE the copy readable; returns where it went.
+    Raises if the copy cannot be proved - the caller must then leave the original untouched. Before T0 this is
+    exactly what the tools did (a server-side R2 copy, whatever AQUEDUCT_BACKEND says); after T0, local."""
+    from core import cutover                                              # noqa: PLC0415
+    if not cutover.is_cut_over():
+        r2 = R2Blob()
+        key = _path_to_key(path)
+        r2.client.copy_object(Bucket=r2.bucket, Key=backup_key, CopySource={"Bucket": r2.bucket, "Key": key})
+        if not r2.exists(backup_key):
+            raise RuntimeError(f"backup {backup_key} is not readable after the copy")
+        return f"r2://{backup_key}"
+    import filecmp                                                        # noqa: PLC0415
+    import shutil                                                         # noqa: PLC0415
+    _refuse_store_change_without_the_lock(f"a backup of {path}")
+    dst = _local_backup_path(backup_key)
+    if os.path.exists(dst):
+        raise FileExistsError(f"backup {dst} already exists - never overwritten")
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copy2(path, dst)
+    if not filecmp.cmp(path, dst, shallow=False):
+        raise RuntimeError(f"backup {dst} does not match {path} byte for byte")
+    return dst
+
+
+def delete_store_object(path: str) -> None:
+    """Remove the store object at `path` (after a proved backup_store_object). Before T0 the R2 object, as the
+    tools did; after T0 the local file."""
+    from core import cutover                                              # noqa: PLC0415
+    if not cutover.is_cut_over():
+        r2 = R2Blob()
+        r2.client.delete_object(Bucket=r2.bucket, Key=_path_to_key(path))
+        return
+    _refuse_store_change_without_the_lock(f"a delete of {path}")
+    os.remove(path)

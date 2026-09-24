@@ -33,10 +33,12 @@ CHOKEPOINTS = {"updater/blob.py", "core/r2_util.py", "core/licence_targets.py"}
 #   MOVE + A NEW READER - guard_heartbeat: its beat's only reader is updater-daily.yml's --check, and T0
 #     disables that workflow (t0_ready ci-writers), so the move must also name an off-machine reader
 #     (R1210);
-#   LOCAL - a store file or state that is a local file after T0: cso_repull_matrix, cso_repull_subject,
-#     repull_file (backup + retire a store file), rebuild_cso_retired_from_csv (its local write exists),
-#     sec_edgar_union_repair; and probe_csv_freshness (its bookmark) - which ALSO needs a scheduler: it
-#     runs only in updater-daily.yml today (R1210);
+#   LOCAL - a store file or state that is a local file after T0: rebuild_cso_retired_from_csv (its local
+#     write exists), sec_edgar_union_repair; and probe_csv_freshness (its bookmark) - which ALSO needs a
+#     scheduler: it runs only in updater-daily.yml today (R1210). (cso_repull_matrix, cso_repull_subject and
+#     repull_file moved 2026-09-24: updater.blob.backup_store_object / delete_store_object, under the lock.)
+#   (guard_heartbeat stays listed: its R2 write is the pre-T0 branch; after T0 it writes the self-hosted
+#     store, and its new reader is the /v1/guard-heartbeat route - moved 2026-09-24.)
 #   LICENCE - through core.licence_targets: purge_unpermitted_r2 (defused);
 #   RETIRE AT T0 - they only copy to or delete from R2, which is frozen then: core/upload_r2,
 #     _upload_biotrademerch_store, _upload_clean_full_parquet, upload_statcan_store, refresh_r2_catalog
@@ -46,10 +48,10 @@ CHOKEPOINTS = {"updater/blob.py", "core/r2_util.py", "core/licence_targets.py"}
 LEGACY_OBJECT_WRITERS = {
     "core/upload_r2.py",
     "tools/_delete_statcan_r2.py", "tools/_upload_biotrademerch_store.py",
-    "tools/_upload_clean_full_parquet.py", "tools/cso_repull_matrix.py", "tools/cso_repull_subject.py",
+    "tools/_upload_clean_full_parquet.py",
     "tools/delist_timeless_tables.py", "tools/guard_heartbeat.py",
     "tools/probe_csv_freshness.py", "tools/purge_unpermitted_r2.py", "tools/rebuild_cso_retired_from_csv.py",
-    "tools/refresh_r2_catalog.py", "tools/refresh_sec_edgar.py", "tools/repull_file.py",
+    "tools/refresh_r2_catalog.py", "tools/refresh_sec_edgar.py",
     "tools/sec_edgar_union_repair.py", "tools/trim_bfs_corrupt_tail.py",
     "tools/upload_statcan_store.py",
 }
