@@ -243,15 +243,18 @@ HEARTBEAT_STEP_IF = "${{ always() && vars.GUARD_HEARTBEAT_URL != '' }}"
 HEARTBEAT_STEP_RUN = 'python -B tools/guard_heartbeat.py --check --from-url "${{ vars.GUARD_HEARTBEAT_URL }}"'
 
 
-def _same_workflow(main_text: str, local_path: str) -> bool:
-    """origin/main's workflow parses to the same document as the reviewed copy in this checkout."""
-    import yaml
-    try:
-        with open(local_path, encoding="utf-8-sig") as f:
-            local = yaml.safe_load(f)
-        return local is not None and yaml.safe_load(main_text) == local
-    except (OSError, yaml.YAMLError):
-        return False
+# THE REVIEWED selfhost-watch.yml, PINNED BY ITS BYTES (R1238). Comparing main's file with this checkout's copy
+# proved nothing in production: t0_ready runs from the live checkout, which IS main after the merge, so the file
+# was compared with itself. And a PARSED comparison let through what PyYAML reads alike and GitHub does not (an
+# `on:` spelled `yes:`, a duplicate `run:`, a `<<` merge key). So: the sha256 of the reviewed file's text (line
+# ends as LF). Changing the workflow now needs a visible edit HERE, in the gate, which the review of that change
+# sees; tests/test_selfhost_t0_ready.py fails when the committed file and this constant disagree.
+REVIEWED_WORKFLOW_SHA256 = "11452c92b7c8fffd066e5e6247d949e91cb64ab3f172d25ea682442c37581f2c"
+
+
+def _is_reviewed_workflow(text: str) -> bool:
+    import hashlib                                                   # noqa: PLC0415
+    return hashlib.sha256(text.replace("\r\n", "\n").encode("utf-8")).hexdigest() == REVIEWED_WORKFLOW_SHA256
 
 
 def _runs_the_heartbeat_check(workflow_text: str) -> bool:
@@ -315,14 +318,13 @@ def heartbeat_reader(run=subprocess.run, check=None) -> tuple[bool, str]:
              capture_output=True, text=True)
     if wf.returncode != 0 or not _runs_the_heartbeat_check(wf.stdout or ""):
         return False, "origin/main's selfhost-watch.yml does not run guard_heartbeat.py --check --from-url"
-    # AND IT IS THE REVIEWED WORKFLOW, WHOLE (R1236): the step check cannot see the job around it - a job-level
-    # `defaults: run: shell`, an earlier step that rewrites the script or $GITHUB_ENV, a job `env`, a runner
-    # label no runner serves, a cron that never fires all passed it. So main's file must PARSE to the same
-    # document as this checkout's copy, which the tests hold to the one reviewed shape. Any other change fails
-    # closed until it is reviewed here too (comments and spacing are free).
-    if not _same_workflow(wf.stdout or "", os.path.join(ROOT, ".github", "workflows", "selfhost-watch.yml")):
-        return False, ("origin/main's selfhost-watch.yml does not run guard_heartbeat.py as reviewed: it differs "
-                       "from this checkout's copy - review the change, then update this checkout")
+    # AND IT IS THE REVIEWED WORKFLOW, BYTE FOR BYTE (R1236, R1238): the step check cannot see the job around it
+    # (a job-level `defaults: run: shell`, an earlier step that rewrites the script or $GITHUB_ENV, a job `env`, a
+    # dead runner label, a cron that never fires all passed it), so main's file must be the pinned reviewed text.
+    if not _is_reviewed_workflow(wf.stdout or ""):
+        return False, ("origin/main's selfhost-watch.yml does not run guard_heartbeat.py as reviewed: it is not "
+                       "the pinned reviewed file (t0_ready.REVIEWED_WORKFLOW_SHA256) - review the change and "
+                       "update the pin with it")
     if check is None:
         sys.path.insert(0, os.path.join(ROOT, "tools"))
         import guard_heartbeat

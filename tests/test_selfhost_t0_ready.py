@@ -367,12 +367,39 @@ def test_the_step_check_itself_refuses_the_job_shapes(name):
     assert not T._runs_the_heartbeat_check(BAD_WORKFLOWS[name])
 
 
-def test_main_must_equal_the_reviewed_copy(tmp_path):
-    local = tmp_path / "w.yml"
-    local.write_text(WF_WITH, encoding="utf-8")
-    assert T._same_workflow(WF_WITH.replace("\n", "\r\n") + "\n# a comment\n", str(local)), "spacing and comments free"
-    assert not T._same_workflow(BAD_WORKFLOWS["a cron that never fires"], str(local))
-    assert not T._same_workflow(WF_WITH, str(tmp_path / "absent.yml")), "no reviewed copy = cannot tell"
+def test_the_committed_workflow_is_the_pinned_one():
+    """Editing selfhost-watch.yml without the pin in t0_ready.py fails here (R1238): the gate's constant is the
+    visible edit a review of the change sees. Line ends do not matter; any other byte does."""
+    assert T._is_reviewed_workflow(WF_WITH), "the committed workflow changed - review it, then update the pin"
+    assert T._is_reviewed_workflow(WF_WITH.replace("\n", "\r\n"))
+    assert not T._is_reviewed_workflow(WF_WITH + "\n# a comment\n")
+
+
+# R1238: shapes PyYAML parses alike and GitHub does not - refused by the byte pin even where the step check (and a
+# parsed comparison) would have passed them
+YAML_QUIRKS = {
+    "on spelled yes": WF_WITH.replace("\non:\n", "\nyes:\n"),
+    "on spelled On": WF_WITH.replace("\non:\n", "\nOn:\n"),
+    "a duplicate run key": WF_WITH.replace(
+        "        run: python -B tools/guard_heartbeat.py",
+        "        run: 'true'\n        run: python -B tools/guard_heartbeat.py"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(YAML_QUIRKS))
+def test_yaml_quirks_are_refused(name):
+    bad = YAML_QUIRKS[name]
+    assert bad != WF_WITH, "precondition"
+    url = "https://edge.example/v1/guard-heartbeat"
+    ok, detail = T.heartbeat_reader(_gh_hb(url, "active", main_wf=bad), check=lambda u, a: 0)
+    assert not ok and "does not run guard_heartbeat.py" in detail, name
+
+
+def test_the_step_check_refuses_workflow_env_and_any_bad_cron():
+    """R1238 mutants A7 (workflow env allowed) and A8 (`any` cron valid instead of `all`) survived."""
+    assert not T._runs_the_heartbeat_check(WF_WITH.replace("\npermissions:", "\nenv:\n  X: y\npermissions:", 1))
+    two = WF_WITH.replace("    - cron: '41 6 * * *'", "    - cron: '41 6 * * *'\n    - cron: 'never'")
+    assert two != WF_WITH and not T._runs_the_heartbeat_check(two)
 
 
 @pytest.mark.parametrize("name", sorted(BAD_WORKFLOWS))

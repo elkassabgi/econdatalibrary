@@ -49,13 +49,19 @@ def refuse_if_cut_over(what: str) -> None:
             "the cloud copy is frozen and nothing may write to it")
 
 
+CLOUD_STEPS = ("refresh_r2_catalog", "sync_catalog_d1", "the cloud `wrangler deploy`")
+
+
 def next_steps(pre_t0: str) -> str:
-    """A catalogue tool's closing "NEXT:" line. Before T0 it is `pre_t0`, unchanged. After T0 the steps it
-    names (refresh_r2_catalog, sync_catalog_d1, wrangler deploy of the cloud worker) write a frozen cloud copy
-    or are refused, so the line says what publishes a catalogue change instead - the blue/green swap - and
-    shows the old steps only as ones NOT to run (R1234: seven tools still pointed at refresh_r2_catalog)."""
+    """A catalogue tool's closing "NEXT:" line. Before T0 it is `pre_t0`, unchanged. After T0 three of the steps
+    such a line names write the frozen cloud copy or are refused - refresh_r2_catalog, sync_catalog_d1 and the
+    cloud worker's `wrangler deploy` (R1234: seven tools still pointed at refresh_r2_catalog). The others still
+    stand (a derive, util.ts, a registry edit, a live check), so the line keeps them and names ONLY those three as
+    skipped (R1238: "do NOT run" over the whole line forbade steps that are still required); what publishes is the
+    blue/green swap, which serves the COMMITTED checkout - so a code or registry edit is committed first."""
     if not is_cut_over():
         return pre_t0
-    return ("NEXT (after T0 - the cloud copy is frozen): the catalogue change reaches users through the blue/green "
-            "swap, tools/selfhost/swap.py (docs/ECON_SELF_HOSTING_PLAN.md, section 2), run on this machine. Do "
-            "NOT run the pre-T0 steps this tool used to name: " + " ".join(pre_t0.split()))
+    return ("NEXT (after T0 - the cloud copy is frozen): " + " ".join(pre_t0.split()) + "  -- EXCEPT "
+            + ", ".join(CLOUD_STEPS) + ", which are skipped after T0. Commit any code, util.ts or registry edit, "
+            "then publish with the blue/green swap, tools/selfhost/swap.py (docs/ECON_SELF_HOSTING_PLAN.md, "
+            "section 2), on this machine.")

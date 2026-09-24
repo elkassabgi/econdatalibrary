@@ -344,10 +344,10 @@ def test_a_change_just_after_the_merge_read_is_caught(world, monkeypatch, capsys
     assert "SKIPPED XOM" in capsys.readouterr().out
 
 
-def _twenty(monkeypatch, fail=(), answer=None):
-    """A day of 20 filers: XOM (catalogued, stored) and 19 new ones. `fail` = CIKs whose fetch raises; `answer`
+def _twenty(monkeypatch, fail=(), answer=None, n=20):
+    """A day of `n` filers: XOM (catalogued, stored) and n-1 new ones. `fail` = CIKs whose fetch raises; `answer`
     = a payload for every CIK instead of the world's (e.g. one the parser reads as no facts)."""
-    ciks = [CIK] + [900000 + i for i in range(19)]
+    ciks = [CIK] + [900000 + i for i in range(n - 1)]
     monkeypatch.setattr(R, "ticker_map", lambda: {c: ["XOM" if c == CIK else f"T{c}"] for c in ciks})
 
     def get(url, timeout=180, binary=False):
@@ -369,6 +369,27 @@ def test_an_all_empty_day_is_a_structural_failure(world, monkeypatch, capsys):
     assert "STRUCTURAL" in capsys.readouterr().out
     row = _freshness(tmp)
     assert row["status"] == "partial" and row["last_success_utc"] is None
+
+
+EMPTY = json.dumps({"entityName": "E", "facts": {}})
+
+
+@pytest.mark.parametrize("n,n_fail,ok", [(10, 0, True), (11, 0, False), (21, 1, False)],
+                         ids=["10 of 10 empty is below the floor", "11 of 11 empty",
+                              "20 answered empty, 1 failed (within the 5%)"])
+def test_the_all_empty_boundary(world, monkeypatch, n, n_fail, ok):
+    """The econ-updater rule (updater/strategies/fetchers/_common.py: all empty over MORE than 10 attempted): 10
+    empty answers are still ok, 11 are not; and the count is over ANSWERS - a failed fetch is not an answer, so 11
+    empty answers with 1 failure is all-empty (R1238 mutants E2/E6 moved the floor, E3 counted fetches)."""
+    tmp, *_ = world
+    ciks = _twenty(monkeypatch, n=n, answer=EMPTY)
+    _twenty(monkeypatch, n=n, answer=EMPTY, fail=set(ciks[1:1 + n_fail]))
+    rc = R.main()
+    row = _freshness(tmp)
+    if ok:
+        assert (rc, row["status"]) == (0, "ok")
+    else:
+        assert (rc, row["status"], row["last_success_utc"]) == (1, "partial", None)
 
 
 @pytest.mark.parametrize("n_fail,ok", [(1, True), (2, False)])
