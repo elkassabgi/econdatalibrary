@@ -235,6 +235,28 @@ def d1_only_sources() -> tuple[bool, str]:
         "every D1-stamped source has a local writer that imports"
 
 
+def heartbeat_reader(run=subprocess.run, check=None) -> tuple[bool, str]:
+    """The watchdog's beat has a reader OFF the machine before T0 switches off the old one (R1210, R1226): the
+    repository variable GUARD_HEARTBEAT_URL is set, selfhost-watch (which runs the check) is active, and the
+    route answers with a fresh beat now."""
+    r = run(["gh", "variable", "get", "GUARD_HEARTBEAT_URL"], cwd=ROOT, capture_output=True, text=True)
+    url = (r.stdout or "").strip() if r.returncode == 0 else ""
+    if not url:
+        return False, "repository variable GUARD_HEARTBEAT_URL is not set - the beat would have no reader after T0"
+    w = run(["gh", "workflow", "list", "--all", "--json", "name,path,state"], cwd=ROOT, capture_output=True,
+            text=True)
+    if w.returncode != 0:
+        return False, f"gh workflow list failed: {w.stderr.strip()[:200]} - cannot tell"
+    state = {os.path.splitext(os.path.basename(x["path"]))[0]: x["state"] for x in json.loads(w.stdout)}
+    if state.get("selfhost-watch") != "active":
+        return False, f"selfhost-watch is {state.get('selfhost-watch', 'MISSING')} - nothing runs the check"
+    if check is None:
+        sys.path.insert(0, os.path.join(ROOT, "tools"))
+        import guard_heartbeat
+        check = guard_heartbeat.check_url
+    return (check(url, 45.0) == 0), f"{url} checked (see the line above)"
+
+
 def flag() -> tuple[bool, str]:
     from core import cutover
     return (not cutover.is_cut_over()), ("not set yet" if not cutover.is_cut_over() else "ALREADY SET")
@@ -244,7 +266,7 @@ CHECKS = [("legacy-catalogue", legacy_catalogue), ("legacy-remote-d1", legacy_re
           ("launcher", launcher), ("preflight", preflight), ("ci-writers", ci_writers),
           ("ci-drained", ci_drained), ("thirteen-f", thirteen_f),
           ("edge-state", edge_state), ("state-db", state_db), ("d1-only-sources", d1_only_sources),
-          ("flag", flag)]
+          ("heartbeat-reader", heartbeat_reader), ("flag", flag)]
 
 
 def main() -> int:

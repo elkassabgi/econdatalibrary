@@ -262,3 +262,25 @@ def test_thirteen_f_never_creates_a_missing_state_db(tmp_path, fake_move):
     with pytest.raises(Exception):
         T.thirteen_f(root, str(missing))
     assert not missing.exists(), "the check created the file it reads"
+
+
+def _gh_hb(var, watch_state):
+    def run(cmd, **kw):
+        if cmd[:3] == ["gh", "variable", "get"]:
+            return types.SimpleNamespace(returncode=0 if var else 1, stdout=(var or "") + "\n", stderr="")
+        return _gh({"selfhost-watch": watch_state})(cmd, **kw)
+    return run
+
+
+def test_the_heartbeat_needs_a_reader_before_t0():
+    """R1226: T0 switches off the beat's only reader; nothing required the new one."""
+    url = "https://edge.example/v1/guard-heartbeat"
+    ok, detail = T.heartbeat_reader(_gh_hb(None, "active"), check=lambda u, a: 0)
+    assert not ok and "GUARD_HEARTBEAT_URL is not set" in detail
+    ok, detail = T.heartbeat_reader(_gh_hb(url, "disabled_manually"), check=lambda u, a: 0)
+    assert not ok and "selfhost-watch is disabled_manually" in detail
+    assert T.heartbeat_reader(_gh_hb(url, "active"), check=lambda u, a: 1)[0] is False, "a stale beat fails"
+    seen = []
+    assert T.heartbeat_reader(_gh_hb(url, "active"), check=lambda u, a: seen.append(u) or 0)[0] is True
+    assert seen == [url]
+    assert ("heartbeat-reader", T.heartbeat_reader) in T.CHECKS

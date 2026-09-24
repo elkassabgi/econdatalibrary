@@ -42,6 +42,7 @@ jobs:
       # only reader - is switched off, and the beat moves into the self-hosted store. This reads it through
       # the public /v1/guard-heartbeat route (timestamp and counts only). Runs once the repository variable
       # GUARD_HEARTBEAT_URL is set, which is after the worker with that route is deployed.
+      # always(): an edge check that failed must not hide a dead watchdog (R1226; updater-daily did the same)
       - name: Check the workstation watchdog's heartbeat
-        if: ${{ vars.GUARD_HEARTBEAT_URL != '' }}
+        if: ${{ always() && vars.GUARD_HEARTBEAT_URL != '' }}
         run: python -B tools/guard_heartbeat.py --check --from-url "${{ vars.GUARD_HEARTBEAT_URL }}"

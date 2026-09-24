@@ -7,7 +7,8 @@ was produced by throwaway scripts that were not retained; five weeks of serves
 (noaa, bea, the UNCTAD giants) and 34 retirements later, this makes the census a
 TOOL, not an artifact.
 
-METHOD (mirrors the published method string exactly):
+METHOD (as first built; the published "method" string is the authority - it now says which sources were
+counted exactly and which by HyperLogLog, and after T0 which rule decided what is served):
   * observations       — exact parquet metadata row counts (pq.read_metadata,
                          no data read), every .parquet under data/clean_full and
                          data/clean_grouped, minus exclusions below.
@@ -54,9 +55,11 @@ AFTER T0 (docs/ECON_SELF_HOSTING_PLAN.md; core/cutover.py): R2 is a frozen copy 
 store is the LOCAL one under the live checkout. So served_keys() lists local files, nothing is read over
 s3:// (the R2 credentials are not handed to DuckDB at all), and stats.json is published through
 updater.blob.csv_store() - the self-hosted blob store /v1/stats reads, under its single-writer rule (the live
-checkout and the writer lock, taken at the publish). EXPECT A STEP at the first post-T0 publish: statcan's
-local parquet (175 GB, never on R2, served through its CSVs) is counted from then on, and the R420 gate
-below refuses the jump until it is explained and published with --force-publish.
+checkout and the writer lock, taken at the publish). WHAT COUNTS CHANGES AT T0 (see _keep_served_after_t0),
+and the size of the change is not the point: R1226 estimated it at about +0.5% observations (statcan has
+been on R2 since its 2026-09-05 restore - an earlier version of this note said it never was), far under
+R420's 20% gate. So the RULE is marked in the object ("served_rule"), and a publish that would change the
+rule the live object was counted under is refused until someone decides it and passes --force-publish.
 PUBLISH GATE (mechanical, per R420): before uploading, fetch the CURRENTLY
 published object; if individual_series or observations moves >20%, REFUSE
 unless --force-publish. Running without --publish computes and writes history
@@ -258,6 +261,8 @@ def keep_served(srcs: dict[str, list[str]]) -> tuple[dict[str, list[str]], dict[
 
 
 _CSV_COUNTS: dict[str, int] = {}                     # after T0: served CSVs per counted source
+# the name of the rule _keep_served_after_t0 applies, published in stats.json; a change of name is a decision
+SERVED_RULE_AFTER_T0 = "selfhost-csv-per-source-v1"
 
 
 def _keep_served_after_t0(srcs: dict[str, list[str]]) -> tuple[dict[str, list[str]], dict[str, int]]:
@@ -670,6 +675,8 @@ def main() -> int:
                    "Refresh by re-running the census (tools/series_census.py) and "
                    "re-uploading this object."),
     }
+    if selfhosted:
+        stats["served_rule"] = SERVED_RULE_AFTER_T0              # before T0 the object is as it always was
     print(f"\nTOTALS: {stats['individual_series']:,} series / "
           f"{stats['observations']:,} obs / {n_sources} catalogued sources "
           f"({no_key_files} files had no series_key column; "
@@ -730,6 +737,13 @@ def main() -> int:
         cur = json.loads(raw) if raw else None
     except Exception:                                        # noqa: BLE001
         cur = None
+    # THE RULE GATE (R1226): the live object records which "served" rule it was counted under; a publish under
+    # another rule is a change to the public number's DEFINITION - whatever its size - and is Ahmed's decision.
+    if cur is not None and cur.get("served_rule") != stats.get("served_rule") and "--force-publish" not in sys.argv:
+        print(f"REFUSING to publish: the live figure was counted under served_rule "
+              f"{cur.get('served_rule')!r}, this run under {stats.get('served_rule')!r}. What counts in the "
+              f"public number is a decision, not a side effect: decide it, then re-run with --force-publish.")
+        return 1
     if cur and "--force-publish" not in sys.argv:
         for k in ("individual_series", "observations"):
             old_v, new_v = cur.get(k) or 0, stats[k]

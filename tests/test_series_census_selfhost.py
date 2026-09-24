@@ -127,12 +127,58 @@ def test_after_t0_the_r420_gate_compares_with_the_served_object(world, monkeypat
     """A mutant that never read the current object survived R1221: a >20% move must be refused."""
     sb = blob.SelfhostBlob()
     (world[0] / "CUTOVER").unlink()
-    sb.put_atomic(series_census.KEY, json.dumps({"observations": 100, "individual_series": 3}).encode())
+    sb.put_atomic(series_census.KEY, json.dumps({"observations": 100, "individual_series": 3,
+                                                 "served_rule": series_census.SERVED_RULE_AFTER_T0}).encode())
     (world[0] / "CUTOVER").write_text("")
     monkeypatch.setattr(sys, "argv", ["series_census.py", "--publish"])
     assert series_census.main() == 1
     assert "REFUSING to publish: observations moves 100 -> 4" in capsys.readouterr().out
     assert json.loads(sb.get(series_census.KEY))["observations"] == 100, "the served object is unchanged"
+
+
+def _fresh_verify(monkeypatch):
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=60: io.BytesIO(
+        json.dumps({"as_of": __import__("datetime").date.today().isoformat()}).encode()))
+
+
+def test_a_publish_under_a_new_rule_is_a_decision_whatever_its_size(world, monkeypatch, capsys):
+    """R1226: the post-T0 step is ~0.5%, far under R420's 20% - so the RULE, not the size, is gated. A live
+    object counted without the post-T0 rule refuses the publish until --force-publish."""
+    sb = blob.SelfhostBlob()
+    (world[0] / "CUTOVER").unlink()
+    sb.put_atomic(series_census.KEY, json.dumps({"observations": 4, "individual_series": 3}).encode())
+    (world[0] / "CUTOVER").write_text("")
+    _fresh_verify(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["series_census.py", "--publish"])
+    assert series_census.main() == 1
+    assert "counted under served_rule None" in capsys.readouterr().out
+    assert "served_rule" not in json.loads(sb.get(series_census.KEY)), "unchanged"
+    monkeypatch.setattr(sys, "argv", ["series_census.py", "--publish", "--force-publish"])
+    assert series_census.main() == 0
+    published = json.loads(sb.get(series_census.KEY))
+    assert published["served_rule"] == series_census.SERVED_RULE_AFTER_T0
+    # R1226 mutants: the method sentence and the history file's CSV counts
+    assert "a source with any served CSV counts whole" in published["method"]
+    hist = json.loads(open(os.path.join(series_census.ROOT, "logs",
+                                        f"stats-{__import__('datetime').date.today().isoformat()}.json"),
+                           encoding="utf-8").read())
+    assert hist["per_source_served_csvs"] == {"eurostat": 1, "oecd": 1}
+
+
+def test_the_lock_is_waited_for_before_the_object_is_read_or_written(world, monkeypatch):
+    """R1226: a wait moved after put_atomic survived. The wait comes first: before the gate reads the live
+    object and before anything is written."""
+    order = []
+    monkeypatch.setattr(series_census, "_own_the_store_waiting", lambda *a, **k: order.append("wait"))
+    real_get, real_put = blob.SelfhostBlob.get, blob.SelfhostBlob.put_atomic
+    monkeypatch.setattr(blob.SelfhostBlob, "get", lambda self, k: order.append("get") or real_get(self, k))
+    monkeypatch.setattr(blob.SelfhostBlob, "put_atomic",
+                        lambda self, k, d, plain=False: order.append("put") or real_put(self, k, d, plain=plain))
+    _fresh_verify(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["series_census.py", "--publish", "--force-publish"])
+    assert series_census.main() == 0
+    assert order[0] == "wait" and order.index("wait") < order.index("put")
 
 
 def test_the_publish_waits_for_the_lock_then_takes_it(monkeypatch):

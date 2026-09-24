@@ -312,10 +312,17 @@ def publish() -> int:
     return 0
 
 
-def check(max_age_min: float) -> int:
-    c = r2_util.client()
+def check(max_age_min: float, local: bool = False) -> int:
+    """The full check, names included. From R2 (before T0, CI), or with local=True from the self-hosted store
+    on this machine (after T0: the beat's full text, which the public route does not carry)."""
     try:
-        raw = c.get_object(Bucket=BUCKET, Key=KEY)["Body"].read()
+        if local:
+            from updater.blob import SelfhostBlob            # noqa: PLC0415
+            raw = SelfhostBlob().get(KEY)
+            if raw is None:
+                raise FileNotFoundError(KEY)
+        else:
+            raw = r2_util.client().get_object(Bucket=BUCKET, Key=KEY)["Body"].read()
     except Exception as e:                                   # noqa: BLE001
         # ABSENT IS NOT HEALTHY, but it is also not proof of an outage — it is proof the
         # instrument was never installed. Say which, so nobody reads a missing file as a pass.
@@ -439,13 +446,18 @@ def main() -> int:
     g.add_argument("--publish", action="store_true", help="workstation: stamp a completed tick")
     g.add_argument("--check", action="store_true", help="CI: fail if the beat is stale")
     ap.add_argument("--max-age-min", type=float, default=DEFAULT_MAX_AGE_MIN)
-    ap.add_argument("--from-url", default=None,
-                    help="with --check: read the beat through this /v1/guard-heartbeat URL (the off-machine "
-                         "reader after T0) instead of R2")
+    src = ap.add_mutually_exclusive_group()
+    src.add_argument("--from-url", default=None,
+                     help="with --check: read the beat through this /v1/guard-heartbeat URL (the off-machine "
+                          "reader after T0) instead of R2")
+    src.add_argument("--local", action="store_true",
+                     help="with --check: read the full beat from the self-hosted store on this machine")
     a = ap.parse_args()
     if a.publish:
         return publish()
-    return check_url(a.from_url, a.max_age_min) if a.from_url else check(a.max_age_min)
+    if a.from_url:
+        return check_url(a.from_url, a.max_age_min)
+    return check(a.max_age_min, local=a.local)
 
 
 if __name__ == "__main__":

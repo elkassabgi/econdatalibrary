@@ -106,6 +106,31 @@ def test_the_off_machine_check_passes_a_fresh_beat(monkeypatch, capsys):
     assert "jobs_alive=2/3" in capsys.readouterr().out
 
 
+def test_an_unreadable_process_table_is_reported_as_unknown(monkeypatch, capsys):
+    """R1226: a check_url that ignored table_ok survived."""
+    _serve(monkeypatch, {"utc": _now(3), "table_ok": False, "jobs_alive": 0, "jobs_tracked": 3,
+                         "emptiness_ran": True, "fetch_without_write": 0})
+    assert gh.check_url("https://edge.example/v1/guard-heartbeat", 45) == 0
+    assert "UNKNOWN" in capsys.readouterr().out
+
+
+def test_main_routes_from_url_and_local(monkeypatch):
+    """R1226: a main() that ignored --from-url survived; --local was named in a message and did not exist."""
+    seen = []
+    monkeypatch.setattr(gh, "check_url", lambda url, age: seen.append(("url", url)) or 0)
+    monkeypatch.setattr(gh, "check", lambda age, local=False: seen.append(("check", local)) or 0)
+    for argv in (["--check", "--from-url", "https://x/v1/guard-heartbeat"], ["--check", "--local"], ["--check"]):
+        monkeypatch.setattr(sys, "argv", ["guard_heartbeat.py", *argv])
+        assert gh.main() == 0
+    assert seen == [("url", "https://x/v1/guard-heartbeat"), ("check", True), ("check", False)]
+
+
+def test_the_local_check_reads_the_full_beat_from_the_self_hosted_store(t0, capsys):
+    assert gh.publish() == 0
+    assert gh.check(45, local=True) == 0
+    assert "guard heartbeat OK" in capsys.readouterr().out
+
+
 @pytest.mark.parametrize("case", ["stale", "unreachable", "unreadable", "emptiness"])
 def test_the_off_machine_check_fails_what_is_not_a_fresh_clean_beat(monkeypatch, case):
     import urllib.error
