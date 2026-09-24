@@ -35,7 +35,6 @@ import argparse
 import json
 import os
 import random
-import sqlite3
 import sys
 import urllib.parse
 
@@ -227,7 +226,8 @@ def main() -> int:
     from core.derive_csv import _series_csv_bytes
     from updater import blob
 
-    cat = sqlite3.connect(f"file:{os.path.join(ROOT,'data','catalog.db')}?mode=ro", uri=True)
+    from core import catalog_path                                    # noqa: PLC0415 - plan step 1
+    cat = catalog_path.connect()                                     # read-only
     by_src: dict[str, int] = {r[0]: r[1] for r in cat.execute(
         "SELECT source_id, count(*) FROM series GROUP BY source_id")}
 

@@ -30,12 +30,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "clients", "python"))
 
-from core import r2_util  # noqa: E402
+from core import catalog_path, r2_util  # noqa: E402
 from tools.derive_csv_bulk import csv_key_prefix  # noqa: E402  THE writer's own layout
 
 
 def catalog_ids(db: str, source: str) -> set:
-    con = sqlite3.connect(db)
+    con = catalog_path.connect_path(db, write=False)       # read-only (it opened read-write); after T0 the build only
     try:
         rows = con.execute(
             "select series_id from series where source_id = ?", (source,)).fetchall()
@@ -79,8 +79,7 @@ def main() -> int:
     ap.add_argument("--source", required=True)
     ap.add_argument("--bucket", default="econ-data")
     ap.add_argument("--prefix", default="series")
-    ap.add_argument("--catalog", default=os.environ.get("ECONDL_CATALOG")
-                    or os.path.join(ROOT, "data", "catalog.db"))
+    ap.add_argument("--catalog", default=catalog_path.catalog_path())   # no ECONDL_CATALOG override (plan 4a)
     ap.add_argument("--show", type=int, default=10)
     args = ap.parse_args()
 

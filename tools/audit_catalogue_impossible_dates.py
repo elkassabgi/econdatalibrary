@@ -21,7 +21,7 @@ economic history); eurostat uses 9999-12-31 as a publisher sentinel. Everything 
 a cross-tabulation catalogued as a time series (delist) or a period-parser error (repair).
 """
 from __future__ import annotations
-import argparse, sqlite3, sys, time
+import argparse, os, sqlite3, sys, time
 
 LEGIT = {"ggdc": "deep history (Maddison lineage) — starts year 1", "maddison": "deep history — starts year 1",
          "gapminder": "deep history — starts 730", "eurostat": "publisher sentinel 9999-12-31"}
@@ -36,7 +36,11 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("db"); ap.add_argument("--list", nargs="*", default=None, help="list rows (all named sources, or these)")
     a = ap.parse_args()
-    if a.db.replace("\\", "/").endswith("data/catalog.db"):
+    # a SNAPSHOT is what this reads (plain read-only open, any path); warn when it is the resolver's own file
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from core import catalog_path                                   # noqa: PLC0415
+    live = {os.path.normcase(os.path.realpath(p)) for p in (catalog_path.CHECKOUT_PATH, catalog_path.BUILD_PATH)}
+    if os.path.normcase(os.path.realpath(a.db)) in live:
         print("WARNING: this is the live catalogue; with a crawler writing, this scan blocks and is blocked. Prefer a copy.", file=sys.stderr)
     con = sqlite3.connect("file:%s?mode=ro" % a.db.replace("\\", "/"), uri=True, timeout=60)
     t0 = time.time()

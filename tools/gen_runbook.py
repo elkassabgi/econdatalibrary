@@ -83,11 +83,11 @@ def load_state():
 def load_catalog_counts():
     """{source_id: catalogued series} — range scan per source, uses the PK index."""
     out = {}
-    p = os.path.join(ROOT, "data", "catalog.db")
-    if not os.path.exists(p):
+    from core import catalog_path                                    # noqa: PLC0415 - plan step 1
+    if not os.path.exists(catalog_path.catalog_path()):
         return out
     try:
-        con = sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=300)
+        con = catalog_path.connect(timeout=300)                      # read-only
         for (sid,) in con.execute(
                 "SELECT DISTINCT substr(series_id,1,instr(series_id,':')-1) FROM series"):
             if sid:
