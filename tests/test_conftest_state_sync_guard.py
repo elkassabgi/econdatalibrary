@@ -37,6 +37,12 @@ def test_os_system_is_guarded_too():
         os.system(f'"{sys.executable}" -m updater.run --pull-state')
 
 
+def test_no_test_holds_the_production_writer_lock():
+    """The conftest points core.catalog_path.LOCK_PATH somewhere of this test's own (see the fixture)."""
+    from core import catalog_path
+    assert "econ_live" not in catalog_path.LOCK_PATH and not os.path.exists(catalog_path.LOCK_PATH)
+
+
 def test_the_default_env_file_is_not_the_checkout_s(monkeypatch):
     """R1218: a conftest without the core.config._DEFAULT patch survived. load_env() with no path reads
     _DEFAULT - the checkout's .env, which holds the write keys on the production checkout. Under the guard it

@@ -339,7 +339,11 @@ def test_the_resolver_has_no_override():
     code = "\n".join(l for l in code.splitlines() if not l.lstrip().startswith("#"))
     for banned in ("environ", "getenv", "argv"):
         assert banned not in code, f"core/catalog_path.py reads {banned!r}: the paths must not be overridable"
-    assert cp.LIVE_STORE_ROOT == r"E:\research\econfindatalibrary" and cp.LOCK_PATH == r"E:\econ_live\state\writer.lock"
+    # the DEFAULTS, read from the source: tests/conftest.py points LOCK_PATH at a temporary path for every
+    # test (a test once took the production lock path), so the live attribute is not the default here
+    assert 'LIVE_STORE_ROOT = r"E:\\research\\econfindatalibrary"' in src
+    assert 'LOCK_PATH = r"E:\\econ_live\\state\\writer.lock"' in src
+    assert cp.LIVE_STORE_ROOT == r"E:\research\econfindatalibrary"
     assert cp.BUILD_PATH == os.path.join(cp.LIVE_STORE_ROOT, "data", "catalog.db"), "the production checkout IS the build"
     assert cp.LIVE_STATE_DIR == os.path.join(cp.LIVE_STORE_ROOT, "data", "_aqueduct")
 

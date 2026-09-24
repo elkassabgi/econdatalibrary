@@ -58,6 +58,26 @@ def _no_cloud_credentials_in_a_test(tmp_path_factory):
         yield
 
 
+@pytest.fixture(autouse=True)
+def _no_production_writer_lock(tmp_path_factory):
+    """AND NO TEST TAKES THE PRODUCTION WRITER LOCK. core.catalog_path.LOCK_PATH is E:\\econ_live\\state\\
+    writer.lock - the machine's single-writer lock after T0. A test that forgot to point it elsewhere took it
+    (2026-09-24, tests/test_probe_csv_freshness_selfhost.py; it existed and was not changed, but a test must
+    never hold what the live updater holds). Every test starts with a path of its own that does not exist yet
+    (a folder is not made: tests assert that no lock folder is created before T0); a test that sets its own
+    path wins, since its setattr comes after this one."""
+    import uuid
+    try:
+        from core import catalog_path
+    except Exception:                                    # noqa: BLE001 - a test tree without core/
+        yield
+        return
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(catalog_path, "LOCK_PATH",
+                   str(tmp_path_factory.getbasetemp() / "writer-locks" / uuid.uuid4().hex / "writer.lock"))
+        yield
+
+
 def pytest_configure(config):
     config.addinivalue_line("markers", "state_sync_refusal_expected: the guard's own can-fail test")
 
