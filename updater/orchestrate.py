@@ -269,6 +269,11 @@ def _unit_timeout_min() -> float:
 _RUN_DEADLINE_TS: float | None = None
 
 
+# PAST THE CEILING (_remaining_run_min() == 0.0) every hard alarm still ARMS, at this many minutes: 0 is what
+# _unit_deadline reads as "do not arm", which is how both R1144's CSV fence and R1245's unit windows went unbounded.
+_PAST_CEILING_MIN = 1.0
+
+
 def _remaining_run_min() -> float | None:
     if _RUN_DEADLINE_TS is None:
         return None
@@ -288,12 +293,21 @@ def _unit_window_min() -> float:
     budget CANNOT outlive it however badly it overruns its estimate. That is strictly
     stronger than the old rule, under which a unit starting with exactly 90 min left could
     consume exactly 90.
+
+    PAST THE CEILING the remainder is 0.0, and a 0.0 window is what _unit_deadline reads as "do not arm" - so a
+    unit reaching its update phase after a probe that outlived its own alarm (UnitTimeout is an Exception, and a
+    fetcher's broad `except` can swallow it) ran with NO alarm at all (review R1245, the class of R1144's fence).
+    It gets the same 1-minute floor as the CSV fence. A deliberately disabled timeout (<= 0) stays disabled.
     """
     t = _unit_timeout_min()
     rem = _remaining_run_min()
     if rem is None:
         return t
-    return max(0.0, min(t, rem / 2.0))
+    if t <= 0:
+        return 0.0                                   # disabled deliberately - as before
+    if rem <= 0.0:
+        return _PAST_CEILING_MIN
+    return min(t, rem / 2.0)
 
 
 def _csv_fence_min() -> float:
@@ -302,20 +316,22 @@ def _csv_fence_min() -> float:
     None from _remaining_run_min means NO run ceiling is set (AQUEDUCT_RUN_BUDGET_MIN <= 0, or a
     caller outside run_once): the remainder is unknown, so the fence is the 60-minute cap. A
     remainder of 0.0 means the ceiling has already PASSED (_remaining_run_min clamps a negative
-    remainder to 0.0): there is no budget left, so the fence is the 1-minute floor and gets no
-    grace. Otherwise the remainder plus 2 minutes of grace (derive_and_put's soft budget, capped
+    remainder to 0.0): there is no budget left, so the fence is the _PAST_CEILING_MIN floor and gets
+    no grace. Otherwise the remainder plus 2 minutes of grace (derive_and_put's soft budget, capped
     by the same remainder in _capped_derive_budget, runs out first), capped at 60 - always above
-    the floor, since rem > 0 there.
+    the floor, since rem > 0 there. (So the fence steps from 1 to ~2 minutes as the remainder
+    leaves 0.0; both are bounded, and 0.0 only means the ceiling has already passed.)
 
     `(_remaining_run_min() or 60.0)` read 0.0 as falsy, so a unit reaching its CSV phase past
-    the ceiling got the full 60-minute fence - enough to carry the run into the 300-minute step
-    kill this fence exists to prevent (review R1144, "Outside this branch").
+    the ceiling got the full 60-minute fence - more than the 15 minutes between updater-daily's
+    290-minute run budget and its 305-minute step timeout, and a kill there loses the state push
+    and the digest, which this fence exists to prevent (review R1144, "Outside this branch").
     """
     rem = _remaining_run_min()
     if rem is None:
         return 60.0
     if rem <= 0.0:
-        return 1.0
+        return _PAST_CEILING_MIN
     return min(60.0, rem + 2.0)
 
 
@@ -2157,10 +2173,21 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 if _retry_rows:
                     _retry_ids = [r["series_id"] for r in _retry_rows][:_CSV_RETRY_CAP]
                     from . import derive as _derive_mod
-                    _out = _derive_mod.derive_and_put(
-                        _retry_ids, blob if blob is not None else _resolve_blob(),
-                        **({"flow_grain": True} if _csv_grain(unit.source_id) == "flow" else {}),
-                        **_capped_derive_budget()) or {}
+                    # ITS OWN HARD FENCE (R1245 finding 4): the soft budget binds only between ids, so a
+                    # wedged id here ran unbounded after the csv fence had exited. On a trip NOTHING derived
+                    # is assumed - every id is booked as not derived (a plain id stays queued; a flow-grain
+                    # id moves to the desktop debt, that path's rule) - never an empty answer, which the
+                    # lines below would read as "all derived" and clear from the queue.
+                    try:
+                        with _unit_deadline(unit.key + " (csv retry drain)", _csv_fence_min()):
+                            _out = _derive_mod.derive_and_put(
+                                _retry_ids, blob if blob is not None else _resolve_blob(),
+                                **({"flow_grain": True} if _csv_grain(unit.source_id) == "flow" else {}),
+                                **_capped_derive_budget()) or {}
+                    except UnitTimeout:
+                        _out = {"failed": list(_retry_ids)}
+                        print(f"[orchestrator] {unit.key}: csv retry drain exceeded its fence - "
+                              f"{len(_retry_ids):,} queued id(s) kept as not derived", flush=True)
                     _refailed = set(str(s) for s in (_out.get("failed") or []))
                     # A queued id that turns out too large for the runner leaves the retry
                     # queue (it can never succeed there) and moves to csv_desktop_owed.
