@@ -32,7 +32,7 @@ V_REV, V_SAME = 41690973, 41690974
 D_OLD = dt.date(2024, 1, 1)
 
 
-def _store(tmp_path, rows):
+def _store(tmp_path, rows, pid=PID):
     """Write the cube in the on-disk schema. rows: [(vector id, date, value)]."""
     t = pa.table({
         "series_key": pa.array([f"v{v}" for v, _d, _x in rows], pa.string()),
@@ -43,16 +43,16 @@ def _store(tmp_path, rows):
         "coordinate": pa.array(["1.1"] * len(rows), pa.string()),
         "status": pa.array([""] * len(rows), pa.string()),
     }, schema=sc.SCHEMA)
-    pq.write_table(t, str(tmp_path / f"{PID}.parquet"))
+    pq.write_table(t, str(tmp_path / f"{pid}.parquet"))
 
 
-def _wire(monkeypatch, tmp_path, tail):
-    """tail: [(vector id, date, value)] - what getBulkVectorDataByRange returns for the cube."""
+def _wire(monkeypatch, tmp_path, tail, pids=(PID,)):
+    """tail: [(vector id, date, value)] - what getBulkVectorDataByRange returns (by vector, across cubes)."""
     monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
     monkeypatch.setattr(sc.config, "BACKEND", "local")
     monkeypatch.setattr(sc, "OUT_DIR", str(tmp_path))
     monkeypatch.setattr(sc, "STATE", str(tmp_path / "_incr_state.json"))
-    monkeypatch.setattr(sc, "_changed_pids", lambda since: {PID})
+    monkeypatch.setattr(sc, "_changed_pids", lambda since: set(pids))
     monkeypatch.setattr(sc.time, "sleep", lambda s: None)
 
     def _post(endpoint, payload, tries=5):
@@ -77,8 +77,10 @@ def _catalog(tmp_path, monkeypatch, ids):
     monkeypatch.setenv("ECONDL_CATALOG", str(p))
 
 
-def _derived(monkeypatch, tmp_path, res):
+def _derived(monkeypatch, tmp_path, res, backend=None):
     _catalog(tmp_path, monkeypatch, [f"statcan:V{V_REV}", f"statcan:V{V_SAME}"])
+    if backend:
+        monkeypatch.setattr(orchestrate.config, "BACKEND", backend)   # the local route runs statcan on r2
     orchestrate._REG_ENTRIES = None
     asked = []
     from updater import derive
@@ -129,32 +131,42 @@ def test_a_revision_riding_with_a_new_row_is_booked_as_added(monkeypatch, tmp_pa
     assert res.status == "ok" and "+1 new rows" in res.error and "revised" not in res.error, res.error
 
 
-def test_an_over_cap_merge_without_a_report_is_not_claimed_as_revised(monkeypatch, tmp_path):
-    """No report means no measurement: the over-cap path keeps its old booking and poisons changed_keys."""
+def test_a_tail_over_the_merges_default_cap_is_still_measured_and_derived_under_r2(monkeypatch, tmp_path):
+    """R1244: a tail over the merge's default report cap (2M rows) was merged WITHOUT a report, booked empty
+    - R1125 left open - and dropped changed_keys to None, which under r2 maps to no id. Every merge now asks
+    for a cap of its own size. The default cap is lowered to 1 so a 2-row tail is 'over' it."""
     _store(tmp_path, [(V_REV, D_OLD, 1.0), (V_SAME, D_OLD, 2.0)])
     _wire(monkeypatch, tmp_path, [(V_REV, D_OLD, 1.5), (V_SAME, D_OLD, 2.0)])
-    real = sc.merge.merge_and_write
+    monkeypatch.setattr(sc.merge, "CHANGED_KEYS_CAP", 1)
+    seen, real = [], sc.merge.merge_and_write
 
-    def _no_report(path, tbl, **kw):
-        assert not kw.get("report_changed_keys"), "the over-cap path must not ask for a report"
+    def _spy(path, tbl, **kw):
+        seen.append((tbl.num_rows, kw.get("report_changed_keys"), kw.get("changed_keys_cap")))
         return real(path, tbl, **kw)
-    # route to the over-cap branch without building 2M rows: the branch keys on tbl.num_rows
-    orig_tail = sc._fetch_cube_tail
-
-    class _Big:
-        def __init__(self, t):
-            self._t = t
-
-        def __getattr__(self, a):
-            return getattr(self._t, a)
-
-        @property
-        def num_rows(self):
-            return 2_000_001
-    monkeypatch.setattr(sc, "_fetch_cube_tail", lambda *a, **k: _Big(orig_tail(*a, **k)))
-    monkeypatch.setattr(sc.merge, "merge_and_write", lambda path, tbl, **kw: _no_report(path, tbl._t, **kw))
+    monkeypatch.setattr(sc.merge, "merge_and_write", _spy)
     res = sc.update(None, None)
-    assert res.changed_keys is None and res.status == "no_change", (res.status, res.changed_keys, res.error)
+    assert seen == [(2, True, 2)], seen
+    assert res.status == "ok" and "1 sub-unit(s) revised" in res.error, (res.status, res.error)
+    assert res.changed_keys == {f"v{V_REV}": D_OLD.isoformat()}, res.changed_keys
+    assert _derived(monkeypatch, tmp_path, res, backend="r2") == [f"statcan:V{V_REV}"]
+
+
+def test_two_cubes_one_revised_one_identical(monkeypatch, tmp_path):
+    """A revision in one cube must not make the next cube 'revised' (R1244 R1: `bool(changed_all)` leaked it),
+    and after a revised cube the resume set closes and the watermark advances like any finished window."""
+    import json
+    P2 = "10000002"
+    V2 = 50000001
+    _store(tmp_path, [(V_REV, D_OLD, 1.0)], pid=PID)
+    _store(tmp_path, [(V2, D_OLD, 7.0)], pid=P2)
+    _wire(monkeypatch, tmp_path, [(V_REV, D_OLD, 1.5), (V2, D_OLD, 7.0)], pids=(PID, P2))   # PID sorts first
+    res = sc.update(None, None)
+    assert res.status == "ok" and "1 sub-unit(s) revised" in res.error, res.error
+    assert "2 sub-unit(s) revised" not in res.error, res.error
+    assert res.changed_keys == {f"v{V_REV}": D_OLD.isoformat()}, res.changed_keys
+    st = json.loads((tmp_path / "_incr_state.json").read_text())
+    assert st.get(sc.RESUME_WINDOW_KEY) == {}, st                          # window closed
+    assert st.get("last_release_date") == dt.date.today().isoformat(), st   # watermark advanced
 
 
 def test_finalize_many_revised_sub_units_are_ok_not_an_all_empty_break():
@@ -181,3 +193,26 @@ def test_a_revised_sub_unit_counts_as_attempted():
     t.transient_unit("c2")
     res = finalize(t, 0, "2024-01-01", source="x")
     assert res.status == "partial" and "1/2 sub-unit(s) transient-failed" in res.error, (res.status, res.error)
+
+
+def test_the_status_gate_admits_exactly_ok_and_partial():
+    """R1244 O2: the predicate itself - a revision-only pass reads ok, and ok must be admitted."""
+    assert [s for s in ("ok", "partial", "no_change", "transient_fail") if orchestrate._should_derive_csvs(s)] \
+        == ["ok", "partial"]
+
+
+def test_run_once_runs_the_csv_phase_behind_that_gate():
+    """R1244 O1: a mutant that never fired run_once's gate survived 73 run_once tests. Pinned through the
+    parser: the one call of _derive_changed_csvs in run_once sits under `if _should_derive_csvs(status) and
+    not dry:`."""
+    import ast
+    import inspect
+    fn = next(n for n in ast.parse(inspect.getsource(orchestrate)).body
+              if isinstance(n, ast.FunctionDef) and n.name == "run_once")
+    gates = [n for n in ast.walk(fn) if isinstance(n, ast.If)
+             and ast.unparse(n.test) == "_should_derive_csvs(status) and (not dry)"]
+    assert len(gates) == 1, [ast.unparse(g.test) for g in gates]
+    calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_derive_changed_csvs"]
+    inside = [n for s in gates[0].body for n in ast.walk(s)
+              if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_derive_changed_csvs"]
+    assert len(calls) == 1 and len(inside) == 1, (len(calls), len(inside))
