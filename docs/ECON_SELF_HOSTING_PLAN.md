@@ -1,4 +1,8 @@
-# Econ self-hosting plan (draft 8, 2026-09-24) - answers reviews R1158, R1160, R1161, R1163-R1166
+# Econ self-hosting plan (draft 9, 2026-09-24) - answers reviews R1158, R1160, R1161, R1163-R1167
+
+Build status: code change 2 (local mode + wrangler.origin.toml) is on branch feat/econ-selfhost-origin
+(effc6784f), verified locally (NUMBERS row 1103). Changes 1, 3 and 6 may be built now; changes 4 and 5
+follow the rules in section 3.4a-c (R1167 A-C).
 
 Owner decision (Ahmed, 2026-09-23 ~22:00Z): host ALL of econ on his UCA workstation; UCA approved and
 offered funding; minimise cost because more databases are coming. hf, ip and the portal are out of scope
@@ -92,8 +96,21 @@ client -> econdl-api.elkassabgi.workers.dev   EDGE worker (same name, forever)
    --pull/--push-state and ci_writer_gate - active only behind the CUTOVER flag, because CI keeps running
    from main until T0. The lock, the state and the catalogue build live at FIXED MACHINE-WIDE paths
    (not under the checkout: STATE_DIR follows AQUEDUCT_STATE_DIR and 159 modules open
-   ROOT/data/catalog.db), and after the flag any write whose resolved catalogue or store is not the build
-   is refused - so a run from any of the 67 worktrees cannot become a second writer; run_local_heavy.ps1:253; the freshness / source_counts / data_through writers
+   ROOT/data/catalog.db), and after the flag any write whose resolved catalogue, store or state dir is
+   not the build is refused - so a run from any of the 67 worktrees cannot become a second writer;
+   4a. ONE CATALOGUE RESOLVER (R1167 A): 144 non-test modules name catalog.db without ECONDL_CATALOG and
+       128 of them connect, so every catalogue open goes through one function (core/catalog_path.py),
+       with a CI test failing on any other `catalog.db` open. It opens the build with a mode=rw or mode=ro
+       URI, which never creates a file (a missing build is an error, never an empty catalogue). Fixed
+       paths: the build at E:\econ_live\catalog\catalog.db, state at E:\econ_live\state\, the lock at
+       E:\econ_live\state\writer.lock (NOT under C:\ProgramData\econ, where Users can only read).
+   4b. THE FLAG PATH IS A MODULE CONSTANT (R1167 B) with no environment or config override (an override
+       would let any process point it at a missing file = "not cut over"). Tests monkeypatch the constant;
+       a CI test fails on any environment read in the flag module.
+   4c. D1 READ VERSUS WRITE (R1167 C): step 6b reads both D1 databases after the flag. After the flag,
+       every D1 access goes over the REST API with a D1 READ-ONLY token, so the server refuses writes;
+       d1_remote() also allows only ONE statement that is SELECT or WITH ... SELECT, with no semicolon,
+       no RETURNING, no PRAGMA or ATTACH, and no --file - anything else is refused (fail closed). run_local_heavy.ps1:253; the freshness / source_counts / data_through writers
    target the local build; FTS rebuilt locally from `series`.
 5. Chokepoints on the OPERATION, not on a flag a caller may forget:
    - The flag is ONE machine-wide file (`C:\ProgramData\econ\CUTOVER`), not per checkout. It is checked
@@ -102,8 +119,11 @@ client -> econdl-api.elkassabgi.workers.dev   EDGE worker (same name, forever)
      never exists, keep writing until T0); any other exception = cut over (fail closed). Tested for all
      three outcomes on ubuntu and Windows, with an injected temp path - tests never create the real
      folder. Ahmed creates `C:\ProgramData\econ` ELEVATED with an explicit ACL (SYSTEM and Administrators
-     full, Users read only, no CREATOR OWNER), so the non-elevated user that runs the writers and the
-     agent sessions cannot delete the flag; a non-elevated delete attempt is shown to fail.
+     full, Users read only, no CREATOR OWNER) and its OWNER set to BUILTIN\Administrators (an owner can
+     always change permissions, and the owner of files an elevated admin makes is not predictable on this
+     machine) - or a High integrity label; if the folder already exists it is re-owned or re-created. A
+     non-elevated delete AND a non-elevated `icacls` grant are both shown to fail. The flag file itself is
+     created by Ahmed, elevated, at T0 (Users can only read the folder).
    - R2: every S3 client r2_util builds gets a botocore before-call hook that ALLOWS ONLY reads
      (GetObject, HeadObject, ListObjects, ListObjectsV2, HeadBucket) and refuses every other operation
      (PutObject, CopyObject, UploadPart, UploadPartCopy, DeleteObject(s), multipart, bucket lifecycle,
@@ -118,11 +138,13 @@ client -> econdl-api.elkassabgi.workers.dev   EDGE worker (same name, forever)
      core/load_d1_rest.py and core/load_d1_chunked.py move into it; a CI test fails on any `--remote` or
      `/d1/database/` call outside it.
    - Hand and agent writes: a PreToolUse deny in the USER-GLOBAL ~/.claude/settings.json (hooks are per
-     project; the R251 ban was once hf-only), active once the flag exists, matching the econ binding
-     names, both database ids, the bucket, `wrangler r2 object put/delete`, `wrangler d1 execute/
-     migrations apply ... --remote`, the D1 REST path, and ANY command that names the flag path. It cannot
-     see writes made inside scripts; the daily analytics check (code change 6) is the proof. The settings
-     change is shown to Ahmed before it is made.
+     project; the R251 ban was once hf-only). Its flag-path rule (refuse ANY command that names the flag
+     path) is active from install; its write rules are active once the flag exists, matching the econ
+     binding names, the database NAMES (econ-catalog, econ-catalog-climate) and ids, the bucket,
+     `wrangler r2 object put/delete`, `wrangler d1 execute/migrations apply ... --remote` and the D1 REST
+     path. The hook script and settings are editable by the same user, so it stops mistakes, not intent;
+     it cannot see writes made inside scripts; the daily analytics check (code change 6) is the proof.
+     The settings change is shown to Ahmed before it is made.
    - The VERIFIERS move in step 6d, with the served store: ledger_check.py (its D1 and head_object
      checks), tools/audit_d1_*, audit_r2_vs_catalog, audit_serving_coherence, verify_source_served,
      probe_csv_freshness and every other tool that reads D1/R2 to prove "served" (the full list is
@@ -159,8 +181,9 @@ client -> econdl-api.elkassabgi.workers.dev   EDGE worker (same name, forever)
    a. Freeze at T0: `gh workflow disable` updater-daily, updater-heavy and sec-edgar-daily (their
       workflow_dispatch otherwise survives, on every branch that has the file) and prove it with
       `gh workflow list --all`; Ahmed replaces CLOUDFLARE_API_TOKEN with a token that has no D1 Edit and
-      no R2 write, if billing-guard's d1 insights works with D1 Read (measured in step 1; any workflow
-      file pushed on any branch can use the repo's token); remove their schedules on main; delete the econ repo's R2_WRITE_* secrets
+      no R2 write but keeps what deploy-site.yml needs (Pages Edit, once granted); if billing-guard's d1
+      insights needs more than D1 Read, its D1 check moves to the GraphQL analytics under
+      CF_ANALYTICS_TOKEN first (any workflow file pushed on any branch can use the repo's token); remove their schedules on main; delete the econ repo's R2_WRITE_* secrets
       except the endpoint/account id billing-guard needs - Ahmed; stop EconGuard and the crawlers; create
       the machine-wide CUTOVER flag; REVOKE the econ R2 write key (not rotate - a new key with no home is a
       live write path) - Ahmed. Prove the freeze with R2 and D1 GraphQL analytics by bucket/database and
@@ -193,8 +216,9 @@ deploy, Ahmed). No cloud storage cost.
 ## 6. Cost
 
 After step 7: R2 econ-data (~$12/mo) and econ's D1 storage go. The edge worker (inside the account's
-Workers plan and included requests), KV (free tier), the rate-limit binding, the tunnel and DNS add
-nothing; USERS reads/writes by primary key (incl. the moved pageview table) add nothing at today's volume
+Workers plan and included requests), KV (free tier), the tunnel and DNS add nothing; the rate-limit
+binding's price is NOT yet confirmed (no price line found in the docs - checked in step 1 before it is
+used; if it is billed, /v1/pv falls back to a per-IP check on USERS); USERS reads/writes by primary key (incl. the moved pageview table) add nothing at today's volume
 (80 pageview rows so far) - a traffic change would be seen by the billing guard. During the fallback period R2 storage continues. Caveats:
 Workers VPC is free only in beta; an off-machine backup in R2 would bring ~$12/mo back. New databases cost
 local disk only.
@@ -213,7 +237,8 @@ cached public answers.
 - Off-machine backup location: UCA storage, rotated external drives, or R2 (~$12/mo).
 - Static site econdatalibrary.com: stay on Pages ($0) or move to the tunnel.
 - Fallback period (proposed 14 days).
-- His actions: creating C:\ProgramData\econ elevated with its ACL; the Workers VPC service or Access
+- His actions: creating C:\ProgramData\econ elevated with its ACL and owner; creating the flag file,
+  elevated, at T0; the Workers VPC service or Access
   setup; the edge `wrangler deploy`s (steps 5, 6d, 7); confirming the R2 READ key is read-only;
   approving the user-global deny hook; at T0 deleting the econ repo's R2_WRITE_* secrets, REVOKING the
   econ R2 write key and replacing CLOUDFLARE_API_TOKEN with a narrower one; a bucket-scoped token for an
