@@ -106,9 +106,11 @@ Build status (branch feat/econ-selfhost-origin):
     last_updated until the next fully-ok stamp. After the move the sync stops pushing it and the stamp
     overwrites every served column; only `strategy` stays stale, and the worker does not read it.
     It runs only when ALL hold, each read at the time:
-      (1) OLD CODE CANNOT RUN (R1205 made this checkable). RENAME = the SQUASH commit of the rename PR ON
-          main (the repo squash-merges, so the branch commit is never an ancestor of main). Then, for each
-          of updater-daily.yml and updater-heavy.yml:
+      (1) OLD CODE CANNOT RUN (R1205 made this checkable). RENAME = the rename PR's commit ON main:
+              gh pr view <N> --json mergeCommit -q .mergeCommit.oid
+          (right for a squash, a merge commit or a rebase merge; the repo allows all three - R1207). If main
+          is rewritten after the merge, RENAME must be found again: an old id is an ancestor of nothing and
+          the check then fails closed for ever. Then, for each of updater-daily.yml and updater-heavy.yml:
               git fetch origin
               gh run list --workflow <file> --limit 200 --json databaseId,headSha,status
           every run whose status is NOT completed - queued, in_progress, pending (waiting on the shared
@@ -422,8 +424,11 @@ client -> econdl-api.elkassabgi.workers.dev   EDGE worker (same name, forever)
       except the endpoint/account id billing-guard needs - Ahmed; stop EconGuard and the crawlers; create
       the machine-wide CUTOVER flag ONLY after `python tools/selfhost/t0_ready.py`, run from the
       production checkout, prints READY (legacy lists empty, ratchets pass, the launcher self-hosted, the
-      updater preflight passes, the three CI writers disabled, the edge on EDGE_STATE users, the live
-      state.db has rows, every D1-only source has a local freshness writer); REVOKE the
+      updater preflight passes, the three CI writers disabled AND drained - no run of them queued,
+      pending, waiting or in progress (R1207: disabled is not drained) - the 13F rename in this checkout by
+      CONTENT (registry: sec_edgar_13f, no entry sec_edgar) and moved on the live state.db (R1207), the edge
+      on EDGE_STATE users, the live state.db has rows, every D1-only source has a local freshness writer);
+      REVOKE the
       econ R2 write key (not rotate - a new key with no home is a
       live write path) - Ahmed. Prove the freeze with R2 and D1 GraphQL analytics by bucket/database and
       action type (deletes included): zero writes for one hour, and then checked daily until step 7 by the
