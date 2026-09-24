@@ -20,9 +20,26 @@ _THIS = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_DB = os.path.normpath(os.path.join(_THIS, "..", "..", "..", "data", "catalog.db"))
 
 
+# The econ WORKSTATION after its self-hosting cutover (docs/ECON_SELF_HOSTING_PLAN.md): one catalogue, the
+# build. This published client cannot import the repo's core package, so the two paths are repeated here;
+# tests/test_catalog_path.py pins them equal to core.cutover.FLAG_PATH and core.catalog_path.BUILD_PATH.
+# On any other machine the flag does not exist and nothing below changes behaviour.
+_CUTOVER_FLAG = r"C:\ProgramData\econ\CUTOVER"
+_BUILD_DB = r"E:\research\econfindatalibrary\data\catalog.db"
+
+
 def default_db() -> str:
-    """Path to the bundled local registry, overridable via $ECONDL_CATALOG."""
-    return os.environ.get("ECONDL_CATALOG", _DEFAULT_DB)
+    """Path to the bundled local registry, overridable via $ECONDL_CATALOG.
+
+    On the econ workstation after its cutover the default is the build and nothing else: an
+    $ECONDL_CATALOG override, or a checkout whose own data/catalog.db is not the build, is refused
+    (review R1194 - in-repo users such as core/derive_csv.py read through this default)."""
+    path = os.environ.get("ECONDL_CATALOG", _DEFAULT_DB)
+    if os.path.exists(_CUTOVER_FLAG) and \
+            os.path.normcase(os.path.realpath(path)) != os.path.normcase(os.path.realpath(_BUILD_DB)):
+        raise RuntimeError(f"refused: after the econ cutover the catalogue is {_BUILD_DB}, not {path} "
+                           "($ECONDL_CATALOG or another checkout's copy)")
+    return path
 
 
 def connect(db: str | None = None) -> sqlite3.Connection:

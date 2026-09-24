@@ -401,6 +401,31 @@ def test_the_exempt_client_opens_read_only_and_the_preflight_checks_it(tmp_path)
     assert EXEMPT_FILES == {"clients/python/econdl/_catalog.py"}, "a new exemption needs its own premise test"
 
 
+def test_the_exempt_client_answers_only_the_build_after_t0(tmp_path, monkeypatch):
+    """R1194 finding 2: the preflight guards updater/run.py only, yet core/derive_csv.py and other in-repo
+    users read through econdl's default_db(). After the cutover it answers the build or refuses."""
+    sys.path.insert(0, os.path.join(ROOT, "clients", "python"))
+    from econdl import _catalog
+    assert _catalog._CUTOVER_FLAG == cutover.FLAG_PATH and _catalog._BUILD_DB == cp.BUILD_PATH, \
+        "the client's copies of the two paths drifted from core"
+    build, other = tmp_path / "build.db", tmp_path / "other.db"
+    for p in (build, other):
+        p.write_bytes(b"")
+    monkeypatch.setattr(_catalog, "_CUTOVER_FLAG", str(tmp_path / "CUTOVER"))
+    monkeypatch.setattr(_catalog, "_BUILD_DB", str(build))
+    monkeypatch.setattr(_catalog, "_DEFAULT_DB", str(other))
+    monkeypatch.setenv("ECONDL_CATALOG", str(other))
+    assert _catalog.default_db() == str(other), "before the cutover: unchanged"
+    (tmp_path / "CUTOVER").write_text("")
+    with pytest.raises(RuntimeError, match="refused"):
+        _catalog.default_db()                                  # the override
+    monkeypatch.delenv("ECONDL_CATALOG")
+    with pytest.raises(RuntimeError, match="refused"):
+        _catalog.default_db()                                  # a checkout whose own copy is not the build
+    monkeypatch.setattr(_catalog, "_DEFAULT_DB", str(build))
+    assert _catalog.default_db() == str(build)
+
+
 def test_the_catalogue_ratchet_can_fail():
     for code in ('p = os.path.join(ROOT, "data", "catalog.db")', 'os.environ.get("ECONDL_CATALOG")',
                  'name = "catalog" + ".db"', 'os.path.join(d, "catalog", ".db")'):
