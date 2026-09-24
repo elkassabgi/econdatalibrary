@@ -163,12 +163,38 @@ class StateStore:
             raise ValueError(f"{what} under {_m.OLD!r} before the XBRL product owns the id: write its "
                              f"source_state row first (the 13F entry is {_m.NEW!r})")
 
+    def _old_id_transaction(self, source_id):
+        """For the old 13F id, the read of the current row, the guard and the write in ONE write transaction
+        (R1237): the guard read the stored row again after `current` was read, so a row moved between the two
+        reads let the XBRL write merge the 13F row's cadence and dates. BEGIN IMMEDIATE takes the write lock
+        before the read, so no other connection can move or rewrite the row until the write commits. Other
+        ids are unchanged."""
+        import contextlib                                                  # noqa: PLC0415
+        from . import state_migrations as _m                               # noqa: PLC0415
+
+        @contextlib.contextmanager
+        def txn():
+            if source_id != _m.OLD or self.db.in_transaction:
+                yield
+                return
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                yield                               # the write inside commits (_upsert)
+            except BaseException:
+                if self.db.in_transaction:
+                    self.db.rollback()
+                raise
+            if self.db.in_transaction:              # a path that wrote nothing: release the lock
+                self.db.commit()
+        return txn()
+
     def upsert_source(self, source_id, **kw):
-        current = self.get_source(source_id)
-        self._guard_old_id(source_id, "source_state", kw.get("strategy", (current or {}).get("strategy")),
-                           check_strategy=True, current=current)
-        self._upsert("source_state", _SRC_COLS, ["source_id"],
-                     current, {"source_id": source_id, **kw})
+        with self._old_id_transaction(source_id):
+            current = self.get_source(source_id)
+            self._guard_old_id(source_id, "source_state", kw.get("strategy", (current or {}).get("strategy")),
+                               check_strategy=True, current=current)
+            self._upsert("source_state", _SRC_COLS, ["source_id"],
+                         current, {"source_id": source_id, **kw})
 
     def all_sources(self):
         return [dict(r) for r in self.db.execute("SELECT * FROM source_state")]
@@ -180,12 +206,13 @@ class StateStore:
         return dict(r) if r else None
 
     def upsert_unit(self, source_id, unit_id, **kw):
-        current = self.get_unit(source_id, unit_id)
-        self._guard_old_id(source_id, "unit_state", kw.get("strategy", (current or {}).get("strategy")),
-                           check_strategy=True, current=current, unit_id=unit_id)
-        self._upsert("unit_state", _UNIT_COLS, ["source_id", "unit_id"],
-                     current,
-                     {"source_id": source_id, "unit_id": unit_id, **kw})
+        with self._old_id_transaction(source_id):
+            current = self.get_unit(source_id, unit_id)
+            self._guard_old_id(source_id, "unit_state", kw.get("strategy", (current or {}).get("strategy")),
+                               check_strategy=True, current=current, unit_id=unit_id)
+            self._upsert("unit_state", _UNIT_COLS, ["source_id", "unit_id"],
+                         current,
+                         {"source_id": source_id, "unit_id": unit_id, **kw})
 
     def units_for_source(self, sid):
         return [dict(r) for r in self.db.execute(

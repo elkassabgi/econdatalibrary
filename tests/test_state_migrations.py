@@ -548,3 +548,103 @@ def test_a_bytes_strategy_is_refused_on_the_way_in(tmp_path):
             s.upsert_source("sec_edgar", strategy=b"edgar_delta", status="ok")
     finally:
         s.close()
+
+
+@pytest.mark.parametrize("table", ["source_state", "unit_state"])
+@pytest.mark.parametrize("stored", AGREE, ids=repr)
+def test_the_write_is_refused_exactly_when_the_next_open_moves_the_row(tmp_path, table, stored):
+    """The GUARD, not only its SQL (R1237: mutants that put back the R1233 Python copy, or had the unit guard
+    ask source_state, passed the whole suite). A row written behind an open store (old code, after the open);
+    then the XBRL write through that store: refused exactly when the next open moves the row."""
+    p = str(tmp_path / "state.db")
+    s = StateStore(p)
+    try:
+        raw = sqlite3.connect(p)
+        if table == "source_state":
+            raw.execute("INSERT INTO source_state(source_id, strategy, status) VALUES ('sec_edgar', ?, 'ok')",
+                        (stored,))
+        else:
+            raw.execute("INSERT INTO unit_state(source_id, unit_id, strategy) VALUES ('sec_edgar', '_all', ?)",
+                        (stored,))
+        raw.commit()
+        raw.close()
+        try:
+            if table == "source_state":
+                s.upsert_source("sec_edgar", strategy="edgar_delta", status="ok")
+            else:
+                s.upsert_source("sec_edgar", strategy="edgar_delta", status="ok")   # ownership first
+                s.upsert_unit("sec_edgar", "_all", strategy="edgar_delta", status="ok")
+            refused = False
+        except ValueError:
+            refused = True
+    finally:
+        s.close()
+    probe = str(tmp_path / "probe.db")                     # the same stored row, and one open: is it moved?
+    StateStore(probe).close()
+    db = sqlite3.connect(probe)
+    if table == "source_state":
+        db.execute("INSERT INTO source_state(source_id, strategy, status) VALUES ('sec_edgar', ?, 'ok')", (stored,))
+    else:
+        db.execute("INSERT INTO unit_state(source_id, unit_id, strategy) VALUES ('sec_edgar', '_all', ?)", (stored,))
+    db.commit()
+    db.close()
+    StateStore(probe).close()
+    moved = _count(probe, table, "sec_edgar") == 0
+    assert refused == moved, (stored, refused, moved)
+
+
+@pytest.mark.parametrize("strategy", [b"edgar_delta", bytearray(b"edgar_delta"), memoryview(b"edgar_delta"), 7, 7.5,
+                                      True], ids=lambda v: type(v).__name__)
+def test_every_non_text_strategy_is_refused_on_the_way_in(tmp_path, strategy):
+    """R1237 mutant N6 refused only bytes; the rest were stored."""
+    p = str(tmp_path / "state.db")
+    s = StateStore(p)
+    try:
+        for write in (lambda: s.upsert_source("sec_edgar", strategy=strategy, status="ok"),
+                      lambda: s.upsert_unit("sec_edgar", "_all", strategy=strategy, status="ok")):
+            with pytest.raises(ValueError):
+                write()
+    finally:
+        s.close()
+    assert _count(p, "source_state", "sec_edgar") == 0 and _count(p, "unit_state", "sec_edgar") == 0
+
+
+def test_no_other_connection_can_move_the_row_between_the_read_and_the_write(tmp_path, monkeypatch):
+    """R1237 finding 1: `current` was read, then the guard read the row AGAIN; a move in between let the XBRL
+    write merge the 13F row's cadence and dates. Now the read, the guard and the write hold the write lock: a
+    move attempted right after the read cannot happen, and the write is refused on the row it read."""
+    p = str(tmp_path / "state.db")
+    s = StateStore(p)
+    raw = sqlite3.connect(p)
+    raw.execute("INSERT INTO source_state(source_id, strategy, cadence, status) "
+                "VALUES ('sec_edgar', 'giant_changed_units', 'quarterly', 'ok')")
+    raw.commit()
+    raw.close()
+    tried = {}
+    real = StateStore.get_source
+
+    def read_then_another_process_moves_it(self, sid):
+        row = real(self, sid)
+        other = sqlite3.connect(p, timeout=0.2)
+        try:
+            other.execute("UPDATE source_state SET source_id='sec_edgar_13f' WHERE source_id='sec_edgar'")
+            other.commit()
+            tried["moved"] = True
+        except sqlite3.OperationalError as e:
+            tried["moved"] = False
+            tried["why"] = str(e)
+        finally:
+            other.close()
+        return row
+    monkeypatch.setattr(StateStore, "get_source", read_then_another_process_moves_it)
+    try:
+        with pytest.raises(ValueError, match="still holds the 13F row"):
+            s.upsert_source("sec_edgar", strategy="edgar_delta", status="ok")
+    finally:
+        monkeypatch.undo()
+        s.close()
+    assert tried == {"moved": False, "why": "database is locked"}
+    db = sqlite3.connect(p)
+    assert db.execute("SELECT strategy, cadence FROM source_state WHERE source_id='sec_edgar'").fetchall() == \
+        [("giant_changed_units", "quarterly")], "nothing merged, nothing moved under the write"
+    db.close()
