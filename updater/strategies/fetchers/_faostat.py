@@ -34,7 +34,6 @@ import datetime as dt
 import io
 import json
 import os
-import sqlite3
 import urllib.request
 import zipfile
 
@@ -91,11 +90,9 @@ def vintage(source_id: str):
 
 
 def _catalog_ids(source_id: str) -> set:
-    db = os.path.join(config.ROOT, "data", "catalog.db")
-    if not os.path.exists(db):
-        db = os.path.join("data", "catalog.db")
+    from core import catalog_path                                  # noqa: PLC0415 - plan step 1
     try:
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        con = catalog_path.connect_path(catalog_path.under(config.ROOT), write=False)
         # Strip ONLY the source prefix. A catalog id is
         # `fao_qcl:FAO_QCL:5111.1.1016` and the key this fetcher builds is
         # `FAO_QCL:5111.1.1016`, so the comparison must keep the middle segment.

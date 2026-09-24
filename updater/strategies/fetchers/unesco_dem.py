@@ -70,11 +70,8 @@ def current_vintage(unit):
 
 def _published_indicators(source_id: str):
     """Indicator codes THIS source publishes, read from our own catalog."""
-    import sqlite3
-    db = os.path.join(config.ROOT, "data", "catalog.db")
-    if not os.path.exists(db):
-        db = os.path.join("data", "catalog.db")
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    from core import catalog_path                                  # noqa: PLC0415 - plan step 1
+    con = catalog_path.connect_path(catalog_path.under(config.ROOT), write=False)
     out = set()
     for (sid,) in con.execute("SELECT series_id FROM series WHERE source_id=?",
                               (source_id,)):
@@ -87,11 +84,8 @@ def _published_indicators(source_id: str):
 
 
 def _catalog_ids(source_id: str) -> set:
-    import sqlite3
-    db = os.path.join(config.ROOT, "data", "catalog.db")
-    if not os.path.exists(db):
-        db = os.path.join("data", "catalog.db")
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    from core import catalog_path                                  # noqa: PLC0415 - plan step 1
+    con = catalog_path.connect_path(catalog_path.under(config.ROOT), write=False)
     return {r[0].split(":", 1)[1] for r in con.execute(
         "SELECT series_id FROM series WHERE source_id=?", (source_id,)) if ":" in r[0]}
 

@@ -96,8 +96,4 @@ tools/title_unhcr_from_siblings.py
 tools/title_vdem_from_codebook.py
 tools/verify_derive_parity.py
 updater/orchestrate.py
-updater/strategies/fetchers/_faostat.py
-updater/strategies/fetchers/_imf_mapped.py
-updater/strategies/fetchers/_who_base.py
-updater/strategies/fetchers/unesco_dem.py
 updater/strategies/fetchers/worldbank.py

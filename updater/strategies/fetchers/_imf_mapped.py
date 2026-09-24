@@ -33,7 +33,6 @@ import datetime as dt
 import io
 import json
 import os
-import sqlite3
 import xml.etree.ElementTree as ET
 
 import pyarrow as pa
@@ -83,12 +82,10 @@ def _period(p: str, conv: str):
 
 
 def _catalog_ids(source_id: str) -> set:
-    db = os.path.join(config.ROOT if hasattr(config, "ROOT") else ".",
-                      "data", "catalog.db")
-    if not os.path.exists(db):
-        db = os.path.join("data", "catalog.db")
+    from core import catalog_path                                  # noqa: PLC0415 - plan step 1
     try:
-        con = sqlite3.connect(db)
+        con = catalog_path.connect_path(catalog_path.under(config.ROOT if hasattr(config, "ROOT") else "."),
+                                        write=False)
         return {r[0].split(":", 1)[1] for r in con.execute(
             "SELECT series_id FROM series WHERE source_id=?", (source_id,))}
     except Exception:                                         # noqa: BLE001
