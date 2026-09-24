@@ -27,12 +27,12 @@ import argparse
 import io
 import json
 import os
-import sqlite3
 import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CATALOG = os.path.join(ROOT, "data", "catalog.db")
+sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 CACHE = os.path.join(ROOT, "data", "_noaa_station_names.json")
 SEARCH = "https://www.ncei.noaa.gov/access/services/search/v1/data"
 DATASET_FOR = {"gsom": "global-summary-of-the-month", "gsoy": "global-summary-of-the-year"}
@@ -68,7 +68,7 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true")
     a = ap.parse_args()
 
-    con = sqlite3.connect(CATALOG, timeout=300)
+    con = catalog_path.connect(write=True, timeout=300)
     con.execute("PRAGMA busy_timeout=300000")
     rows = con.execute("SELECT series_id, title FROM series WHERE source_id='noaa'").fetchall()
 
@@ -137,4 +137,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    with catalog_path.write_session():   # after T0: the single-writer lock
+        sys.exit(main())
