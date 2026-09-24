@@ -27,6 +27,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 import imf_direct_titles as T                                    # noqa: E402
@@ -59,7 +60,7 @@ def main() -> int:
     # what happened on the first batch: 4 of 7 sources failed and, because the loop grepped
     # stdout for a success line, the tracebacks went to stderr and the failures looked like
     # silence. Wait for the lock instead of losing the work.
-    con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=120.0)
+    con = catalog_path.connect(write=True, timeout=120.0)
     con.execute("PRAGMA busy_timeout = 120000")
 
     # --- licence gate, before anything else -------------------------------------------
@@ -220,4 +221,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    with catalog_path.write_session():   # after T0: the single-writer lock
+        sys.exit(main())

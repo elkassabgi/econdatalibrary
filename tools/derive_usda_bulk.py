@@ -38,11 +38,11 @@ import glob
 import io
 import os
 import random
-import sqlite3
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 sys.path.insert(0, os.path.join(ROOT, "clients", "python"))
 
 SRC = "usda"
@@ -55,7 +55,7 @@ def _files():
 
 
 def _catalogued() -> set:
-    con = sqlite3.connect(f"file:{os.path.join(ROOT, 'data', 'catalog.db')}?mode=ro", uri=True)
+    con = catalog_path.connect()
     con.execute("PRAGMA busy_timeout = 180000")
     return {r[0] for r in con.execute(
         "select series_id from series where source_id=?", (SRC,))}
@@ -146,10 +146,11 @@ def main() -> int:
         print("pass --bucket to write")
         return 2
 
-    from core import r2_util
     from core.derive_csv import _put_with_backoff
+    from updater import blob as _blob
     import urllib.parse
-    s3 = r2_util.client()
+    # plan step 1: the CSV store - R2 before T0, the self-hosted blob store after it; gzip at rest as before
+    store = _blob.csv_store(a.bucket)
     q = duckdb.connect(); q.execute("PRAGMA memory_limit='6GB'")
     put = skipped = 0
     for cid, rows in _stream(q, files):
@@ -157,7 +158,7 @@ def main() -> int:
             skipped += 1                      # a table the catalogue does not offer
             continue
         key = f"{a.prefix}/" + urllib.parse.quote(cid, safe="") + ".csv"
-        _put_with_backoff(s3, a.bucket, key, _csv_bytes(rows))
+        _put_with_backoff(store, key, _csv_bytes(rows))
         put += 1
         if put % 5000 == 0:
             print(f"   put {put:,}", flush=True)

@@ -10,11 +10,13 @@ emitted. Labels are copied VERBATIM from INSEE — no fabrication.
     python core/title_insee_bdm.py
 """
 from __future__ import annotations
-import glob, html, json, os, re, sqlite3, time, urllib.request, urllib.error
+import glob, html, json, os, re, time, urllib.request, urllib.error
 
 _THIS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(_THIS, ".."))
-CATALOG = os.path.join(ROOT, "data", "catalog.db")
+import sys  # noqa: E402
+sys.path.insert(0, ROOT)                    # `python core/title_insee_bdm.py`: core.* needs the root
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 DATADIR = os.path.join(ROOT, "data", "clean_full", "insee_bdm")
 OUT = os.path.join(ROOT, "dist", "titles", "insee_bdm.json")
 BASE = "https://api.insee.fr/series/BDM/V1"
@@ -39,7 +41,7 @@ def fetch(url: str, tries: int = 5) -> str | None:
 
 
 def main() -> None:
-    conn = sqlite3.connect(CATALOG)
+    conn = catalog_path.connect()
     valid = {r[0].split(":", 1)[1] for r in
              conn.execute("SELECT series_id FROM series WHERE source_id='insee_bdm'")}
     conn.close()

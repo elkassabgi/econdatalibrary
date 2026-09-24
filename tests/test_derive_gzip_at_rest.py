@@ -52,11 +52,19 @@ def test_no_derive_puts_an_uncompressed_series_csv():
 def test_the_two_fixed_tools_use_the_shared_helper():
     """R560's magic-byte check lives in `series_csv_put_args`. Re-implementing the gzip locally
     is how a tool ends up double-gzipping a body its producer already compressed."""
+    # since plan step 1 both write through the CSV store's put_atomic, and BOTH stores' put_atomic run
+    # the shared helper on a series/*.csv key - pinned here so neither store can drop it
+    blob_src = io.open(os.path.join(os.path.dirname(_TOOLS), "updater", "blob.py"), encoding="utf-8").read()
+    for cls in ("class R2Blob", "class SelfhostBlob"):
+        body = blob_src[blob_src.index(cls):]
+        body = body[body.index("def put_atomic("):]
+        body = body[:body.index("\n    def ", 1)]
+        assert "series_csv_put_args(data)" in body, f"{cls}.put_atomic lost the shared gzip helper"
     for fn in ("derive_istat_flows.py", "derive_ilostat_indicators.py"):
         src = _src(fn)
-        assert "r2_util.series_csv_put_args(body)" in src, (
-            f"{fn}: must compress through the shared helper, not a private gzip call")
-        assert "s3.put_object(Bucket=a.bucket, Key=key, Body=_body, **_kw)" in src, fn
+        assert "_derive._put_with_retry(store, key, body)" in src, (
+            f"{fn}: must write through the CSV store (whose put_atomic compresses), not its own client")
+        assert "gzip.compress" not in src and "put_object" not in src, fn
 
 
 def test_statcan_keeps_its_own_guarded_uploader():
@@ -64,7 +72,31 @@ def test_statcan_keeps_its_own_guarded_uploader():
     check is therefore load-bearing and must not be 'simplified' away."""
     src = _src("derive_statcan_tables.py")
     assert 'body[:2] != b"\\x1f\\x8b"' in src, "statcan lost its double-gzip guard"
-    assert 'ContentEncoding="gzip"' in src
+    # since plan step 1 the upload is the blob store's put_atomic (R2 before T0, the self-hosted store
+    # after), which marks an already-gzipped body ContentEncoding gzip through series_csv_put_args -
+    # pinned behaviourally by test_an_already_gzipped_body_is_stored_as_is below
+    assert "_derive._put_with_retry(store, key, body)" in src and "put_object" not in src
+
+
+def test_an_already_gzipped_body_is_stored_as_is():
+    """What statcan's enqueue-time gzip relies on: put_atomic neither re-gzips nor strips the marker."""
+    import gzip
+    import sys
+    sys.path.insert(0, _ROOT)
+    from updater import blob
+    gz = gzip.compress(b"series_id,obs_date,value\nx,2020-01-01,1\n", mtime=0)
+    calls = []
+
+    class Client:
+        def put_object(self, **kw):
+            calls.append(kw)
+
+        def head_object(self, **kw):
+            raise Exception("404")
+    b = blob.R2Blob("econ-data")
+    b._client = Client()
+    b.put_atomic("series/statcan%3A1.csv", gz)
+    assert calls and calls[0]["Body"] == gz and calls[0]["ContentEncoding"] == "gzip", calls
 
 
 def test_the_shared_helper_still_refuses_to_double_gzip():

@@ -71,7 +71,6 @@ import argparse
 import glob
 import io
 import os
-import sqlite3
 import sys
 import time
 
@@ -126,10 +125,9 @@ def _grain_from_resolver(_resolve) -> dict:
     of measurement, not evidence of series grain. The declaration lists cover that case.
     Resolving builds a path and an expression; NO parquet data is read.
     """
-    import sqlite3                                                   # noqa: PLC0415
+    from core import catalog_path                                    # noqa: PLC0415 - plan step 1
     out: dict[str, str] = {}
-    con = sqlite3.connect(
-        f"file:{os.path.join(ROOT, 'data', 'catalog.db')}?mode=ro", uri=True, timeout=60.0)
+    con = catalog_path.connect_path(catalog_path.under(ROOT), write=False, timeout=60.0)   # this tool's ROOT
     tried = unresolved = norow = 0
     reasons: dict[str, int] = {}
     try:
@@ -473,7 +471,8 @@ def main() -> int:
     if a.summarise:
         return summarise(a.summarise)
 
-    con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=180.0)
+    from core import catalog_path                                    # noqa: PLC0415 - plan step 1
+    con = catalog_path.connect_path(catalog_path.under(ROOT), write=False, timeout=180.0)  # it only counts
     con.execute("PRAGMA busy_timeout = 180000")
     counts = dict(con.execute("select source_id, count(*) from series group by 1").fetchall())
     con.close()

@@ -14,16 +14,14 @@ Run: python core/load_d1_chunked.py  (CLOUDFLARE_API_TOKEN in env)
 """
 from __future__ import annotations
 
-import json
 import os
 import sqlite3
-import subprocess
 import sys
 import time
-import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+sys.path.insert(0, ROOT)          # `python core/<this>.py`: core.d1_remote needs the root
 DUMP = os.path.join(ROOT, "dist", "d1", "econ_catalog.sql")
 CHUNK_DIR = os.path.join(ROOT, "dist", "d1", "chunks")
 WORKER_DIR = os.path.join(ROOT, "api", "worker")
@@ -75,32 +73,31 @@ def split_dump() -> list[str]:
 
 
 def run_chunk(path: str) -> bool:
+    """One chunk through core.d1_remote.execute_file (plan step 1): the repo's PINNED wrangler (this loader
+    used to float to `npx wrangler@4`), utf-8 decoding, refused after T0. Three attempts, 20 s apart, and
+    an "ERROR" in wrangler's output counts as a failure even at exit 0 - as before. The chunks are
+    INSERT OR REPLACE, so a re-run is safe."""
+    from core import d1_remote
     for attempt in (1, 2, 3):
-        r = subprocess.run(
-            ["npx", "--yes", "wrangler@4", "d1", "execute", DB_NAME, "--remote",
-             "--file", path, "-y"],
-            cwd=WORKER_DIR, capture_output=True, text=True, timeout=1800,
-            encoding="utf-8", errors="replace",   # Windows default cp1252 decode
-                                                  # CRASHED on wrangler's output
-            shell=True if os.name == "nt" else False)
-        out = (r.stdout or "") + (r.stderr or "")
-        if r.returncode == 0 and "ERROR" not in out:
-            return True
-        log(f"  !! attempt {attempt} failed rc={r.returncode}: {out[-200:].strip()}")
+        try:
+            out = d1_remote.execute_file(DB_NAME, path, timeout=1800)
+            if "ERROR" not in out:
+                return True
+            why = out[-200:].strip()
+        except d1_remote.CutoverRefused:
+            raise
+        except RuntimeError as e:
+            why = str(e)[-200:]
+        log(f"  !! attempt {attempt} failed: {why}")
         time.sleep(20)
     return False
 
 
 def remote_count(token: str, table: str) -> int:
-    req = urllib.request.Request(
-        f"https://api.cloudflare.com/client/v4/accounts/{ACCT}/d1/database/{DB_ID}/query",
-        method="POST",
-        data=json.dumps({"sql": f"SELECT COUNT(*) AS n FROM {table}"}).encode(),
-        headers={"Authorization": f"Bearer {token}",
-                 "Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        d = json.load(resp)
-    return d["result"][0]["results"][0]["n"]
+    """COUNT(*) of one table through core.d1_remote.query. A full scan per table - D1 bills it (CLAUDE.md
+    COST); this loader runs once, not on a schedule."""
+    from core import d1_remote
+    return d1_remote.query(DB_NAME, f"SELECT COUNT(*) AS n FROM {table}", timeout=60)["results"][0]["n"]
 
 
 def main() -> None:
