@@ -70,6 +70,8 @@ SHAPES = {
 
 @pytest.mark.parametrize("shape", sorted(SHAPES))
 def test_every_spelling_of_a_write_is_refused_after_t0(build, shape):
+    if shape == "a \\\\?\\ prefix" and os.name != "nt":
+        pytest.skip("the \\\\?\\ prefix is a Windows path spelling (CI runs Linux, where it names no file)")
     conn = SHAPES[shape](build)
     try:
         with pytest.raises(NOT_AUTHORIZED, match="not authorized"):

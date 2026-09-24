@@ -234,14 +234,19 @@ def test_flips_under_load_never_fail_a_request(pair):
     threads = [threading.Thread(target=client) for _ in range(8)]
     for th in threads:
         th.start()
-    for i in range(100):
-        router.flip(str(state), "green" if i % 2 == 0 else "blue")
+    # FLIP UNTIL EVERY CLIENT HAS MADE ALL ITS REQUESTS (and at least 100 times): a fixed 100 flips 2 ms apart
+    # is a ~0.2 s window, and on CI's faster runner only 64 requests fell inside it (the test measured nothing)
+    flips, deadline = 0, time.monotonic() + 120
+    while (flips < 100 or any(th.is_alive() for th in threads)) and time.monotonic() < deadline:
+        router.flip(str(state), "green" if flips % 2 == 0 else "blue")
+        flips += 1
         time.sleep(0.002)                      # spread the flips over the requests instead of racing past them
     stop.set()
     for th in threads:
         th.join()
-    assert bad == [], f"{len(bad)} failed request(s) during 100 flips: {sorted(set(map(str, bad)))}"
-    assert sum(served) >= 200, f"only {sum(served)} requests ran during the flips: the test measured nothing"
+    assert bad == [], f"{len(bad)} failed request(s) during {flips} flips: {sorted(set(map(str, bad)))}"
+    assert sum(served) == 8 * cap, f"only {sum(served)} of {8 * cap} requests ran during the flips"
+    assert flips >= 100
 
 
 def test_the_status_route_reports_in_flight_requests(pair):
