@@ -27,6 +27,8 @@ def _catalogue(path):
         c.executemany("INSERT INTO series VALUES (?, ?)", [("foo:a", "foo"), ("foo:b", "foo"),
                                                            ("foo_direct:a", "foo_direct")])
         c.executemany("INSERT INTO source VALUES (?)", [("foo",), ("foo_direct",)])
+        c.execute("CREATE VIRTUAL TABLE series_fts USING fts5(series_id UNINDEXED, title)")
+        c.executemany("INSERT INTO series_fts VALUES (?, 't')", [("foo:a",), ("foo:b",), ("foo_direct:a",)])
         for table in ("source_counts", "unit_state", "source_state", "source_data_through"):
             c.execute(f"CREATE TABLE {table} (source_id TEXT, v INTEGER)")
             c.executemany(f"INSERT INTO {table} VALUES (?, 1)", [("foo",), ("foo_direct",)])
@@ -57,6 +59,7 @@ def live(tmp_path, monkeypatch):
     monkeypatch.setattr(catalog_path, "LIVE_STORE_ROOT", str(store_root))
     monkeypatch.setattr(catalog_path, "BUILD_PATH", str(tmp_path / "live" / "catalog.db"))
     monkeypatch.setattr(catalog_path, "LOCK_PATH", str(tmp_path / "live" / "writer.lock"))
+    monkeypatch.setattr(catalog_path, "LIVE_STATE_DIR", str(tmp_path / "live" / "state"))
     _catalogue(tmp_path / "live" / "catalog.db")
     BlobStore(str(tmp_path / "blobs"), create=True)
     monkeypatch.setattr(blob, "SELFHOST_BLOB_ROOT", str(tmp_path / "blobs"))
@@ -204,3 +207,87 @@ def test_before_t0_a_delisting_makes_todays_calls(tmp_path, monkeypatch):
     assert delist_source_rows.main(["foo", "--apply"]) == 0
     assert d1 == [("econ-catalog", lt.Targets.d1_statements("foo"))] and len(d1[0][1]) == 6
     assert _rows(tmp_path / "checkout" / "catalog.db") == (["foo_direct:a"], ["foo_direct"])
+
+
+# ---- AR-153 ------------------------------------------------------------------------------------------
+import json as _json  # noqa: E402
+
+
+def _fts(path):
+    with sqlite3.connect(path) as c:
+        return sorted(r[0] for r in c.execute("SELECT series_id FROM series_fts"))
+
+
+def _log(tmp):
+    p = tmp / "live" / "state" / lt.REMOVAL_LOG
+    return [_json.loads(l) for l in open(p, encoding="utf-8")] if p.exists() else []
+
+
+def test_after_t0_the_search_index_and_the_empty_folders_go_and_the_removal_is_logged(live):
+    tmp, store, sb = live
+    assert retire_source.main(["foo", "--apply"]) == 0
+    assert _fts(tmp / "live" / "catalog.db") == ["foo_direct:a"], "no FTS orphans (the swap check counts them)"
+    assert not (store / "data" / "clean_full" / "foo").exists(), "the emptied source folder is removed"
+    assert (store / "data" / "clean_full" / "foo_direct").exists()
+    assert (store / "data").exists(), "never above the store's data folder"
+    log = _log(tmp)
+    assert [(e["tool"], e["source"]) for e in log] == [("retire_source", "foo")] and log[0]["at"]
+    assert delist_source_rows.main(["foo_direct", "--apply"]) == 0
+    assert [(e["tool"], e["source"]) for e in _log(tmp)][-1] == ("delist_source_rows", "foo_direct")
+
+
+def test_before_t0_nothing_is_logged_and_the_fts_is_untouched_locally(tmp_path, monkeypatch):
+    monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "absent" / "CUTOVER"))
+    monkeypatch.setattr(catalog_path, "CHECKOUT_PATH", str(tmp_path / "checkout" / "catalog.db"))
+    monkeypatch.setattr(catalog_path, "LIVE_STATE_DIR", str(tmp_path / "live" / "state"))
+    _catalogue(tmp_path / "checkout" / "catalog.db")
+    monkeypatch.setattr(d1_remote, "execute_wrangler", lambda db, stmts, **k: True)
+    assert delist_source_rows.main(["foo", "--apply"]) == 0
+    assert _log(tmp_path) == []
+    assert _fts(tmp_path / "checkout" / "catalog.db") == ["foo:a", "foo:b", "foo_direct:a"], "as before T0 always"
+
+
+def test_archived_series_objects_keep_their_metadata(live):
+    tmp, store, sb = live
+    t = lt.Targets()
+    t.archive("series/foo%3Aa.csv", "archive/retired/foo/foo%3Aa.csv")
+    src, dst = sb.store.head("series/foo%3Aa.csv"), sb.store.head("archive/retired/foo/foo%3Aa.csv")
+    for k in ("etag", "size", "content_encoding", "content_type", "custom_metadata", "sha256"):
+        assert dst[k] == src[k], k
+    assert sb.get("archive/retired/foo/foo%3Aa.csv") == sb.get("series/foo%3Aa.csv")
+
+
+def test_after_t0_a_dry_run_needs_no_lock(live, monkeypatch):
+    class Busy:
+        def __enter__(self):
+            raise cutover.CutoverRefused("refused: another process holds the catalogue writer lock")
+
+        def __exit__(self, *a):
+            return False
+    monkeypatch.setattr(catalog_path, "writer_lock", lambda: Busy())
+    assert retire_source.main(["foo"]) == 0
+    assert delist_source_rows.main(["foo"]) == 0
+
+
+def test_before_t0_a_sharded_source_is_deleted_on_the_shard_too(tmp_path, monkeypatch):
+    plan = lt.Targets.d1_plan("noaa")
+    assert plan[0] == ("econ-catalog", lt.Targets.d1_statements("noaa"))
+    assert plan[1] == ("econ-catalog-climate", ["DELETE FROM series WHERE source_id='noaa';",
+                                                "DELETE FROM source_counts WHERE source_id='noaa';"])
+    assert lt.Targets.d1_plan("foo") == [("econ-catalog", lt.Targets.d1_statements("foo"))]
+    monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "absent" / "CUTOVER"))
+    calls = []
+    monkeypatch.setattr(d1_remote, "execute_wrangler", lambda db, stmts, **k: calls.append(db) or db != "econ-catalog-climate")
+    assert lt.Targets().d1_execute("noaa") is False, "a failure on the shard is a failure"
+    assert calls == ["econ-catalog", "econ-catalog-climate"]
+
+
+def test_residual_rows_fail_the_delisting(live, monkeypatch):
+    monkeypatch.setattr(lt.Targets, "remove_source_rows", lambda self, con, src: 1)
+    assert delist_source_rows.main(["foo", "--apply"]) == 1
+
+
+def test_residual_objects_fail_the_csv_purge(live, monkeypatch):
+    monkeypatch.setattr(lt.Targets, "delete", lambda self, keys, allowed: 0)        # nothing really removed
+    assert delist_source_rows.main(["foo", "--purge-csv-prefix", "a", "--apply"]) == 1
+    assert _log(live[0]) == [], "a failed purge is not logged as a removal"

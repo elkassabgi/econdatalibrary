@@ -29,6 +29,8 @@ D1_NAME = "econ-catalog"
 # /v1/catalog serves as `total` and /v1/stats sums (R709); unit_state / source_state / source_data_through
 # are the freshness projection /v1/last-updates reads with no join to `source`.
 SOURCE_TABLES = ("series", "source", "source_counts", "unit_state", "source_state", "source_data_through")
+# After T0, one JSON line per removal, in the state folder (Targets.record_removal).
+REMOVAL_LOG = "licence_removals.jsonl"
 
 
 def csv_prefix(source: str) -> str:
@@ -112,7 +114,9 @@ class Targets:
             return
         if key.startswith("series/"):
             b = self._blobs()
-            b.store.put(dst, b.get(key), etag=b.etag(key) or "")
+            meta = b.store.head(key)                         # R2's copy_object keeps all of these (AR-153)
+            b.store.put(dst, b.get(key), etag=meta["etag"], content_encoding=meta["content_encoding"],
+                        content_type=meta["content_type"], custom_metadata=meta["custom_metadata"])
             return
         target = self._store_path(dst)
         os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -129,6 +133,7 @@ class Targets:
                 self._write().delete_objects(Bucket=BUCKET,
                                              Delete={"Objects": [{"Key": k} for k in batch], "Quiet": True})
             return len(keys)
+        dirs = set()
         for k in keys:
             if k.startswith("series/"):
                 self._blobs().delete(k)
@@ -136,15 +141,23 @@ class Targets:
                 p = self._store_path(k)
                 if os.path.exists(p):
                     os.remove(p)
+                dirs.add(os.path.dirname(p))
+        # the now-empty folders go too (AR-153), deepest first, never above the store's data folder
+        stop = os.path.normcase(os.path.abspath(self._store_path("")))
+        for d in sorted(dirs, key=len, reverse=True):
+            while os.path.normcase(os.path.abspath(d)) != stop and os.path.isdir(d) and not os.listdir(d):
+                os.rmdir(d)
+                d = os.path.dirname(d)
         return len(keys)
 
     # -- the catalogue ----------------------------------------------------------------------------------
-    def catalogue(self) -> sqlite3.Connection:
-        """A WRITE connection to the catalogue through the one resolver (core.catalog_path): the checkout's
-        catalogue before T0 (the same file as today), the one build after T0 - which needs
-        core.catalog_path.writer_lock() held by the caller."""
+    def catalogue(self, write: bool = True) -> sqlite3.Connection:
+        """A connection to the catalogue through the one resolver (core.catalog_path): the checkout's
+        catalogue before T0 (the same file as today), the one build after T0. A WRITE connection after T0
+        needs core.catalog_path.writer_lock() held by the caller; a dry run reads (write=False) and so
+        needs no lock (AR-153)."""
         from core.catalog_path import connect                                       # noqa: PLC0415
-        con = connect(write=True, timeout=120)
+        con = connect(write=write, timeout=120)
         con.execute("PRAGMA busy_timeout=120000")
         return con
 
@@ -160,6 +173,10 @@ class Targets:
         for table in tables:
             if table in present:
                 con.execute(f"DELETE FROM {table} WHERE source_id=?", (source,))
+        if self.selfhosted and "series_fts" in present:
+            # the search index rows too (AR-153: orphans broke the swap's fts = series check). One range scan
+            # of the FTS table; 'src:' <= id < 'src;' never reaches a 'src_direct:' neighbour.
+            con.execute("DELETE FROM series_fts WHERE series_id >= ? AND series_id < ?", (f"{source}:", f"{source};"))
         con.commit()
         return con.execute("SELECT COUNT(*) FROM series WHERE source_id=?", (source,)).fetchone()[0]
 
@@ -169,17 +186,47 @@ class Targets:
         """The D1 deletes for one source, every table that names it (R709 and the freshness projection)."""
         return [f"DELETE FROM {table} WHERE source_id='{source}';" for table in SOURCE_TABLES]
 
+    @staticmethod
+    def d1_plan(source: str) -> list[tuple[str, list[str]]]:
+        """(database, statements) for one source. A source routed to the climate shard
+        (core.sync_state_d1.CATALOG_SHARD_FOR) has its series and source_counts rows THERE, so they are
+        deleted there too - the tools used to delete only on the primary (AR-153 finding 8)."""
+        from core.sync_state_d1 import CATALOG_SHARD_FOR                          # noqa: PLC0415
+        plan = [(D1_NAME, Targets.d1_statements(source))]
+        shard = CATALOG_SHARD_FOR.get(source)
+        if shard:
+            plan.append((shard, [f"DELETE FROM {t} WHERE source_id='{source}';" for t in ("series", "source_counts")]))
+        return plan
+
     def skip_d1(self) -> bool:
         """True after T0: D1 is the frozen copy and is not written. Prints what a rollback then needs."""
         if self.selfhosted:
             print("  D1: skipped - econ is self-hosted; D1 is the frozen T0 copy. Before any rollback onto it, "
-                  "put this removal on the edge denylist (plan, step 6 fallback).")
+                  "every removal in the licence-removal log must be on the edge denylist (plan, step 6 fallback).")
         return self.selfhosted
 
-    def d1_execute(self, statements: list[str]) -> bool:
-        """Before T0: run each statement on econ D1 (core.d1_remote.execute_wrangler, the one D1 chokepoint),
+    def d1_execute(self, source: str) -> bool:
+        """Before T0: run the source's D1 plan (core.d1_remote.execute_wrangler, the one D1 chokepoint),
         stopping at the first failure. After T0: never called for writes (skip_d1 first); it refuses."""
         if self.selfhosted:
             raise RuntimeError("d1_execute after T0: D1 is frozen; call skip_d1() first")
         from core.d1_remote import execute_wrangler                                # noqa: PLC0415
-        return execute_wrangler(D1_NAME, statements)
+        return all(execute_wrangler(db, stmts) for db, stmts in self.d1_plan(source))
+
+    def record_removal(self, tool: str, source: str, what: str) -> None:
+        """After T0, append the removal to the durable licence-removal log in the state folder (AR-153
+        finding 2): a rollback onto the frozen D1/R2 copy within the fallback period must deny every one of
+        these at the edge first, and console output is not a record. Before T0 D1 itself is updated, so
+        there is nothing to record."""
+        if not self.selfhosted:
+            return
+        import datetime as dt                                                      # noqa: PLC0415
+        import json                                                                # noqa: PLC0415
+        from core.catalog_path import LIVE_STATE_DIR                               # noqa: PLC0415
+        os.makedirs(LIVE_STATE_DIR, exist_ok=True)
+        line = json.dumps({"at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+                           "tool": tool, "source": source, "what": what})
+        with open(os.path.join(LIVE_STATE_DIR, REMOVAL_LOG), "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())

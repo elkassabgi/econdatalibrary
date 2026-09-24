@@ -51,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     t = Targets()
-    if t.selfhosted:
+    if t.selfhosted and a.apply:                    # a dry run only reads, so it takes no lock (AR-153)
         from core.catalog_path import writer_lock                           # noqa: PLC0415
         lock = writer_lock()
     else:
@@ -61,7 +61,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _retire(src: str, apply: bool, t: Targets) -> int:
-    con = t.catalogue()
+    con = t.catalogue(write=apply)
     n_series = con.execute("SELECT COUNT(*) FROM series WHERE source_id=?", (src,)).fetchone()[0]
     n_source = con.execute("SELECT COUNT(*) FROM source WHERE source_id=?", (src,)).fetchone()[0]
 
@@ -106,7 +106,7 @@ def _retire(src: str, apply: bool, t: Targets) -> int:
     # (A D1 error report that crashed on the console's encoding once left a source deleted locally but
     # live in D1 - R363/R234; core.d1_remote.execute_wrangler keeps that fix.)
     if not t.skip_d1():
-        if not t.d1_execute(t.d1_statements(src)):
+        if not t.d1_execute(src):
             return 1
 
     # 4. purge (batched; every key re-checked against the terminated prefixes)
@@ -115,6 +115,7 @@ def _retire(src: str, apply: bool, t: Targets) -> int:
     n = t.delete([k for k, _ in store_objs], (cp, sp))
     print(f"  {where}: deleted {n:,} store object(s)")
 
+    t.record_removal("retire_source", src, "retired: catalogue rows, series CSVs and store objects")
     print(f"{src}: RETIRED (data plane). Now: util.ts removal + registry retire/count bump "
           f"+ deploy + live absence check + refresh_r2_catalog.")
     return 0

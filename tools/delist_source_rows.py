@@ -49,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
                          "untouched. Empty string = every CSV of the source.")
     a = ap.parse_args(argv)
     t = Targets()
-    if t.selfhosted:
+    if t.selfhosted and a.apply:                    # a dry run only reads, so it takes no lock (AR-153)
         from core.catalog_path import writer_lock                           # noqa: PLC0415
         lock = writer_lock()
     else:
@@ -70,11 +70,13 @@ def _purge_csvs(src: str, native_prefix: str, apply: bool, t: Targets) -> int:
     t.delete(keys, (pfx,))
     left = t.list(pfx)
     print(f"  purged; residual objects: {len(left)} (must be 0)")
+    if not left:
+        t.record_removal("delist_source_rows", src, f"series CSVs under {pfx}")
     return 0 if not left else 1
 
 
 def _delist(src: str, apply: bool, t: Targets) -> int:
-    con = t.catalogue()
+    con = t.catalogue(write=apply)
     n_series = con.execute("SELECT COUNT(*) FROM series WHERE source_id=?", (src,)).fetchone()[0]
     n_source = con.execute("SELECT COUNT(*) FROM source WHERE source_id=?", (src,)).fetchone()[0]
     print(f"{src}: catalog series={n_series:,} source_row={n_source} (stored objects untouched by design)")
@@ -91,8 +93,9 @@ def _delist(src: str, apply: bool, t: Targets) -> int:
     # D1: every table that names the source (Targets.d1_statements - source_counts is R709, and the
     # freshness projection is what /v1/last-updates serves with no join to `source`: measured 2026-09-21,
     # 15 such ids were live, 11 of them gated).
-    if not t.skip_d1() and not t.d1_execute(t.d1_statements(src)):
+    if not t.skip_d1() and not t.d1_execute(src):
         return 1
+    t.record_removal("delist_source_rows", src, "delisted: catalogue rows")
 
     print(f"{src}: DELISTED (catalogue{'' if t.selfhosted else ' + D1'}). Now: util.ts removal + deploy + "
           f"live absence check + refresh_r2_catalog --allow-shrink {src}.")
