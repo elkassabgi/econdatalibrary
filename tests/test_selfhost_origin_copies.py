@@ -275,6 +275,56 @@ def test_emit_sql_honours_data_through_false_with_a_catalogue_present(tmp_path):
     assert "source_data_through" not in counts
 
 
+def test_the_check_reads_the_climate_copy_too(tmp_path, monkeypatch):
+    """R1200 W2: a shard source (noaa) lives only in the climate copy; dropping that copy from the 'dated'
+    read passed every test. Here noaa's data_through is withheld: the check must name it."""
+    from core import sync_state_d1
+    real = sync_state_d1.data_through_rows
+    monkeypatch.setattr(sync_state_d1, "data_through_rows",
+                        lambda con, gated: [r for r in real(con, gated) if r[0] != "noaa"])
+    cat, st = tmp_path / "catalog.db", tmp_path / "state.db"
+    _dated_catalogue(cat)
+    _state_db(st, ["ecb", "noaa"])
+    with pytest.raises(RuntimeError, match=r"no data_through for \['noaa'\]"):
+        oc.build(str(cat), str(tmp_path / "out"), state_db=str(st))
+
+
+def test_a_source_dated_only_past_2900_is_not_demanded(tmp_path):
+    """R1200 W4: the check's predicate is data_through_rows' own (end_date < 2900 - an open-ended sentinel
+    such as 9999-12-31 is not a date). Dropping the bound demanded a row nobody writes."""
+    cat, st = tmp_path / "catalog.db", tmp_path / "state.db"
+    _dated_catalogue(cat)
+    c = sqlite3.connect(cat)
+    c.execute("INSERT INTO source VALUES ('open', 'Open-ended', 'pd')")
+    c.execute("INSERT INTO series VALUES ('open:x', 'open', 't', 'g', 'pd', '9999-12-31')")
+    c.execute("INSERT INTO series_fts VALUES ('open:x', 't', 'g')")
+    c.commit()
+    c.close()
+    _state_db(st, ["ecb", "noaa"])
+    report = oc.build(str(cat), str(tmp_path / "out"), state_db=str(st))
+    assert report["freshness"]["source_data_through"] >= 1
+
+
+def test_a_gated_d1_only_source_gets_no_local_writer_row(tmp_path, monkeypatch):
+    """R1200 W7: local_writer_rows ignoring the licence gate survived (the V17 class again)."""
+    from core import sync_state_d1
+    (tmp_path / "fake_sec_writer2.py").write_text("def data_through(conn):\n    return '2026-09-04'\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(sync_state_d1, "LOCAL_FRESHNESS_WRITERS", {"sec_edgar": "fake_sec_writer2"})
+    monkeypatch.setattr(sync_state_d1, "_gated_ids", lambda: {"sec_edgar"})
+    cat, st = tmp_path / "catalog.db", tmp_path / "state.db"
+    _dated_catalogue(cat)
+    _with_sec_edgar(cat)
+    _state_db(st, ["ecb", "noaa"])
+    oc.build(str(cat), str(tmp_path / "out"), state_db=str(st))
+    con = sqlite3.connect(tmp_path / "out" / "primary.sqlite")
+    try:
+        got = {r[0] for r in con.execute("SELECT source_id FROM source_data_through")}
+    finally:
+        con.close()
+    assert "sec_edgar" not in got
+
+
 def test_the_check_refuses_an_empty_projection(tmp_path):
     """R1191 mutant N4: check()'s empty-projection branch had no test - the tables present, with no rows."""
     cat = tmp_path / "catalog.db"

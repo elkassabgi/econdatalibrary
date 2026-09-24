@@ -49,7 +49,7 @@ def main() -> int:
     a = ap.parse_args()
 
     import duckdb
-    from core import r2_util
+    from updater import blob as _blob, derive as _derive     # the CSV store (plan step 1)
     from updater import config
 
     store = os.path.join(config.source_dir(SOURCE), f"{SOURCE}.parquet")
@@ -69,13 +69,15 @@ def main() -> int:
         ORDER BY 1, 2, 3
     """)
 
-    client = r2_util.client(write=True) if (a.bucket and not a.dry_run) else None
-    pool = ThreadPoolExecutor(max_workers=a.threads) if client else None
+    # R2 before T0, the self-hosted blob store after it - never local files
+    csv_out = _blob.csv_store(a.bucket) if (a.bucket and not a.dry_run) else None
+    pool = ThreadPoolExecutor(max_workers=a.threads) if csv_out else None
     futures = []
 
     def put(key: str, body: bytes):
-        client.put_object(Bucket=a.bucket, Key=key, Body=body,
-                          ContentType="text/csv; charset=utf-8")
+        # gzipped at rest with the CSV's md5 (series_csv_put_args), 7 app-level tries; plain before
+        if not _derive._put_with_retry(csv_out, key, body):
+            raise RuntimeError(f"gave up after {_derive.PUT_TRIES} tries")
 
     n_tables = n_rows = n_put = errors = 0
     sampled = 0
@@ -99,7 +101,7 @@ def main() -> int:
             if n_tables <= 3:
                 print(f"  would PUT series/{urllib.parse.quote(cid, safe='')}.csv "
                       f"({len(body):,} B, {len(rows):,} rows)")
-        elif client:
+        elif csv_out:
             futures.append(pool.submit(put,
                                        f"series/{urllib.parse.quote(cid, safe='')}.csv",
                                        body))
@@ -128,7 +130,7 @@ def main() -> int:
         pool.shutdown()
 
     print(f"done: {n_tables:,} tables / {n_rows:,} rows in {time.time()-t0:.0f}s"
-          + (f", put {n_put:,}, errors {errors}" if client else " (no upload)"))
+          + (f", put {n_put:,}, errors {errors}" if csv_out else " (no upload)"))
     return 1 if errors else 0
 
 

@@ -710,6 +710,9 @@ class SelfhostBlob:
     never created here - a missing store is an error, not a new empty one.
     """
 
+    # the LOGICAL bucket these keys belonged to on R2 - so a tool's --bucket check means the same after T0
+    bucket = R2_BUCKET
+
     def __init__(self, root: str | None = None):
         self.root = root or SELFHOST_BLOB_ROOT
         self._store = None
@@ -786,6 +789,29 @@ class SelfhostBlob:
 
     def delete(self, key: str) -> None:
         self.store.delete(key)
+
+
+def csv_store(bucket: str | None = None) -> R2Blob | SelfhostBlob:
+    """The object store the SERVED series CSVs live in - for the tools that write or list them.
+
+    Series CSVs are never local files: the worker serves them from the object store. So this is the
+    self-hosted blob store when AQUEDUCT_BACKEND=selfhost (after T0), and R2 otherwise - where these tools
+    have always written (after T0 an R2 client is refused, so a run that forgot the backend fails closed).
+    NOT from_env(): its default is LocalBlob, which would have turned a desktop run with no backend set into
+    CSVs written to local paths instead of R2. `bucket` (a tool's --bucket) must be the store's."""
+    from core import cutover                                              # noqa: PLC0415
+    b = os.environ.get("AQUEDUCT_BACKEND", "").strip().lower()
+    # THE CUTOVER FLAG decides, not only the environment (review R1200): after T0 the self-hosted store,
+    # whatever a shell forgot to set. AQUEDUCT_BACKEND=selfhost before T0 is a deliberate probe of that store.
+    selfhost = cutover.is_cut_over() or b == "selfhost"
+    store = SelfhostBlob() if selfhost else R2Blob()
+    if bucket is not None and bucket != store.bucket:
+        raise SystemExit(f"--bucket {bucket} is not the CSV store's bucket {store.bucket}")
+    if selfhost:
+        store.store             # opens it now: a missing store fails here, not after 7 retries per object
+    print(f"[csv-store] {'the self-hosted blob store ' + store.root if selfhost else 'R2 ' + store.bucket}",
+          flush=True)
+    return store
 
 
 def from_env(backend: str | None = None) -> LocalBlob | R2Blob | SelfhostBlob:

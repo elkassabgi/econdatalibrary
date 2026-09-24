@@ -306,13 +306,9 @@ def main() -> int:
         # THE BLOB STORE, not a bare R2 client (plan step 1): R2 before T0, the self-hosted store after it
         # (AQUEDUCT_BACKEND=selfhost), the same keys and bytes either way; after T0 an R2 client is refused.
         from updater import blob as _blob, derive as _derive            # noqa: PLC0415
-        store = _blob.from_env()
-        if getattr(store, "bucket", a.bucket) != a.bucket:
-            raise SystemExit(f"--bucket {a.bucket} is not the blob store's bucket {store.bucket}")
+        store = _blob.csv_store(a.bucket)             # R2, or the self-hosted store after T0 - never local files
         if a.skip_existing:
             pref = f"{a.prefix}/{urllib.parse.quote(SOURCE + ':', safe='')}"
-            if not hasattr(store, "list_keys"):
-                raise SystemExit(f"--skip-existing needs a listable store; {type(store).__name__} is not")
             existing.update(store.list_keys(pref))
             print(f"skip-existing: {len(existing):,} already in the store", flush=True)
 

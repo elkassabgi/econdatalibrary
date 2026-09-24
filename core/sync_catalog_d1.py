@@ -334,6 +334,11 @@ def execute_plans(plans) -> None:
                 execute_remote([p], database=db, idempotent=safe, tries=4 if safe else 1)
             except SystemExit:
                 if safe:
+                    if restarted:            # the DELETE file itself failed during the restart (R1200)
+                        print(f"FATAL: {os.path.basename(p)} failed while restarting after a whole-source "
+                              "DELETE: the source's search index is PARTLY rebuilt. Re-run the same "
+                              "command - it starts again with the DELETE and leaves the index whole.",
+                              file=sys.stderr, flush=True)
                     raise
                 # a bare-INSERT file after the range DELETE failed: the source's search index is PARTLY
                 # rebuilt. Go back ONCE to the file that holds the DELETE (re-deleting, then re-inserting)

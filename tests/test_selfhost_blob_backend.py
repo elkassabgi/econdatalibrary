@@ -126,6 +126,13 @@ def test_the_store_keeps_a_given_stored_time_and_lists_it(sb):
     assert list(got) == ["series/a%3A1.csv", "series/a%3A2.csv"]
 
 
+def test_list_stored_stays_inside_its_prefix(sb):
+    """R1200 W20: without the upper bound a prefix listing ran on into every later key."""
+    for k in ("series/a%3A1.csv", "series/a%3A2.csv", "series/b%3A1.csv", "series/a%3B.csv"):
+        sb.store.put(k, b"x", etag="e")
+    assert [k for k, _t in sb.store.list_stored("series/a%3A")] == ["series/a%3A1.csv", "series/a%3A2.csv"]
+
+
 def test_the_importer_passes_r2s_last_modified(tmp_path):
     import datetime as dt
     import import_from_r2
@@ -139,6 +146,39 @@ def test_the_importer_passes_r2s_last_modified(tmp_path):
                     "LastModified": lm}
     ok, _msg = import_from_r2.copy_one(S3(), store, "series/b%3A1.csv")
     assert ok and store.list_stored("series/") == [("series/b%3A1.csv", "2025-05-06T12:08:09+00:00")]
+
+
+@pytest.mark.parametrize("cut_over,backend,kind", [
+    (False, None, "R2Blob"), (False, "local", "R2Blob"), (False, "r2", "R2Blob"),
+    (False, "selfhost", "SelfhostBlob"),                 # a deliberate pre-T0 probe of the self-hosted store
+    (True, None, "SelfhostBlob"), (True, "r2", "SelfhostBlob"),       # after T0 the FLAG decides (R1200)
+])
+def test_the_csv_store_is_never_local_files(tmp_path, monkeypatch, capsys, cut_over, backend, kind):
+    """blob.csv_store(): series CSVs live in an object store. from_env()'s LocalBlob default sent a run with
+    no backend set to local files in the current folder, and reported success (review R1200, probes P1/P2)."""
+    from core import cutover
+    flag = tmp_path / "CUTOVER"
+    if cut_over:
+        flag.write_text("")
+    monkeypatch.setattr(cutover, "FLAG_PATH", str(flag))
+    BlobStore(str(tmp_path / "blobs"), create=True)
+    monkeypatch.setattr(blob, "SELFHOST_BLOB_ROOT", str(tmp_path / "blobs"))
+    monkeypatch.setenv("AQUEDUCT_BACKEND", backend or "x")
+    if backend is None:
+        monkeypatch.delenv("AQUEDUCT_BACKEND")
+    store = blob.csv_store("econ-data")
+    assert type(store).__name__ == kind and store.bucket == "econ-data"
+    assert ("self-hosted" if kind == "SelfhostBlob" else "R2 econ-data") in capsys.readouterr().out
+    with pytest.raises(SystemExit, match="not the CSV store's bucket"):
+        blob.csv_store("other-bucket")
+
+
+def test_a_missing_self_hosted_store_fails_at_once(tmp_path, monkeypatch):
+    """Not after 7 retries per object (R1200 finding 2)."""
+    monkeypatch.setenv("AQUEDUCT_BACKEND", "selfhost")
+    monkeypatch.setattr(blob, "SELFHOST_BLOB_ROOT", str(tmp_path / "no_store"))
+    with pytest.raises(FileNotFoundError, match="no blob store"):
+        blob.csv_store("econ-data")
 
 
 def test_the_backend_is_selected_by_name():

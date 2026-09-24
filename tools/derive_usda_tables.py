@@ -70,7 +70,6 @@ import shutil
 
 from core import duck_spill  # noqa: E402  (after the sys.path insert above)
 
-from core import r2_util                                       # noqa: E402
 
 SOURCE = "usda"
 STORE = os.path.join(ROOT, "data", "clean_full", SOURCE)
@@ -103,7 +102,7 @@ def run_scope(a) -> str:
     THE SAME FUNCTION AS `derive_statcan_tables.run_scope`, deliberately duplicated.
 
     NOT because an import would fail -- a review checked and it would not: `from core import
-    r2_util` is at MODULE level in all four derives, and every cataloguer already imports its
+    r2_util` was at MODULE level in all four derives when this was written, and every cataloguer imports its
     derive at module level after `sys.path.insert(0, .../tools)`. The first version of this
     docstring claimed otherwise and was wrong. The real reason is coupling: importing this from
     `derive_statcan_tables` would make three unrelated sources fail to start if statcan's module
@@ -165,22 +164,15 @@ def main() -> int:
     lst = "[" + ",".join(f"'{f}'" for f in files) + "]"
 
     existing = set()
-    s3 = None
+    store = None
     if not a.dry_run:
-        s3 = r2_util.client(write=True)
+        # THE CSV STORE (plan step 1): R2 before T0, the self-hosted blob store after it - never local files
+        from updater import blob as _blob, derive as _derive              # noqa: PLC0415
+        store = _blob.csv_store(a.bucket)
         if a.skip_existing:
             pref = f"{a.prefix}/{urllib.parse.quote(SOURCE + ':', safe='')}"
-            tok = None
-            while True:
-                kw = {"Bucket": a.bucket, "Prefix": pref, "MaxKeys": 1000}
-                if tok:
-                    kw["ContinuationToken"] = tok
-                r = s3.list_objects_v2(**kw)
-                existing.update(o["Key"] for o in r.get("Contents", []))
-                if not r.get("IsTruncated"):
-                    break
-                tok = r["NextContinuationToken"]
-            print(f"skip-existing: {len(existing):,} already in R2", flush=True)
+            existing.update(store.list_keys(pref))
+            print(f"skip-existing: {len(existing):,} already in the store", flush=True)
 
     q: queue.Queue = queue.Queue(maxsize=2000)
     counts = {"put": 0, "skip": 0, "err": 0}
@@ -195,7 +187,9 @@ def main() -> int:
                 return
             key, body = item
             try:
-                s3.put_object(Bucket=a.bucket, Key=key, Body=body, ContentType="text/csv")
+                # gzipped at rest with the CSV's md5 (series_csv_put_args), 7 app-level tries; plain before
+                if not _derive._put_with_retry(store, key, body):
+                    raise RuntimeError(f"gave up after {_derive.PUT_TRIES} tries")
                 with lock:
                     counts["put"] += 1
                     if counts["put"] % 5_000 == 0:

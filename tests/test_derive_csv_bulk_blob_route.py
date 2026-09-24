@@ -1,5 +1,5 @@
 """tools/derive_csv_bulk.py writes through the blob store (plan step 1): R2 before T0, the self-hosted store
-after it. Run END TO END (in process) on a one-parquet store with a recording store for blob.from_env()."""
+after it. Run END TO END (in process) on a one-parquet store with a recording store in place of the R2 store blob.csv_store() builds."""
 import datetime as dt
 import gzip
 import os
@@ -54,7 +54,11 @@ def run(tmp_path, monkeypatch):
     monkeypatch.setattr(ucfg, "STATE_DB", str(state_dir / "state.db"))
 
     def go(store, *extra):
-        monkeypatch.setattr(blob, "from_env", lambda *a, **k: store)
+        monkeypatch.setenv("AQUEDUCT_BACKEND", "x")                       # then DELETED: the default route (R1200)
+        monkeypatch.delenv("AQUEDUCT_BACKEND")
+        from core import cutover
+        monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "no_flag" / "CUTOVER"))
+        monkeypatch.setattr(blob, "R2Blob", lambda *a, **k: store)          # what csv_store() builds before T0
         monkeypatch.setattr(sys, "argv", ["derive_csv_bulk.py", "--source", "zzsrc", "--bucket", "econ-data",
                                           "--verify", "0", "--failed-keys-file", str(tmp_path / "failed.tsv"),
                                           *extra])
@@ -81,8 +85,13 @@ def test_skip_newer_than_uses_the_store_listing_times(run):
     store = Store(listed=[(written[0], new), (written[1], old)])
     run(store, "--skip-newer-than", "2026-09-24T00:00:00Z")
     assert sorted(store.put) == [written[1]], "only what this campaign did NOT already write is re-put"
+    # R1200 W14: an object written AT the cutoff is this campaign's (>=, not >)
+    at = dt.datetime(2026, 9, 24, 0, 0, tzinfo=UTC)
+    store = Store(listed=[(written[0], at), (written[1], old)])
+    run(store, "--skip-newer-than", "2026-09-24T00:00:00Z")
+    assert sorted(store.put) == [written[1]]
 
 
 def test_a_bucket_other_than_the_stores_is_refused(run):
-    with pytest.raises(SystemExit, match="not the blob store's bucket"):
+    with pytest.raises(SystemExit, match="not the CSV store's bucket"):
         run(Store(), "--bucket", "other")

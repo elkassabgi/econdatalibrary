@@ -144,6 +144,21 @@ def test_a_failed_file_after_the_range_delete_restarts_once_from_the_delete(tmp_
     with pytest.raises(SystemExit):
         sc.execute_plans([("econ-catalog", rows, files)])
     assert "Re-run the same command" in capsys.readouterr().err
+    # R1200: the DELETE file itself failing during the restart also says how to recover
+    fail_on = {unsafe[0]: 1, delete_file: 1}
+    first_delete_send = {"done": False}
+    real = execute_remote
+
+    def delete_fails_on_restart(fs, database=None, **kw):
+        if fs[0] == delete_file and not first_delete_send["done"]:
+            first_delete_send["done"] = True           # its first send (before the failure) succeeds
+            sent.append(fs[0])
+            return
+        return real(fs, database, **kw)
+    monkeypatch.setattr(sc, "execute_remote", delete_fails_on_restart)
+    with pytest.raises(SystemExit):
+        sc.execute_plans([("econ-catalog", rows, files)])
+    assert "failed while restarting" in capsys.readouterr().err
 
 
 def test_main_sends_through_execute_plans():

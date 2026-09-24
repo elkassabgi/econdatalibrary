@@ -1,5 +1,5 @@
 """tools/derive_statcan_tables.py writes through the blob store (plan step 1): R2 before T0, the self-hosted
-store after it. Run END TO END on a one-table store with a recording store in place of blob.from_env()."""
+store after it. Run END TO END on a one-table store with a recording store in place of the R2 store blob.csv_store() builds."""
 import datetime as dt
 import gzip
 import os
@@ -39,7 +39,11 @@ def run(tmp_path, monkeypatch):
     monkeypatch.setattr(D, "ROOT", str(tmp_path))
 
     def go(store, *extra):
-        monkeypatch.setattr(blob, "from_env", lambda *a, **k: store)
+        monkeypatch.setenv("AQUEDUCT_BACKEND", "x")                       # then DELETED: the default route (R1200)
+        monkeypatch.delenv("AQUEDUCT_BACKEND")
+        from core import cutover
+        monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "no_flag" / "CUTOVER"))
+        monkeypatch.setattr(blob, "R2Blob", lambda *a, **k: store)          # what csv_store() builds before T0
         monkeypatch.setattr(sys, "argv", ["derive_statcan_tables.py", "--bucket", "econ-data", "--workers", "1",
                                           *extra])
         return D.main()
@@ -63,5 +67,5 @@ def test_skip_existing_lists_the_blob_store(run):
 
 
 def test_a_bucket_other_than_the_stores_is_refused(run):
-    with pytest.raises(SystemExit, match="not the blob store's bucket"):
+    with pytest.raises(SystemExit, match="not the CSV store's bucket"):
         run(Store(), "--bucket", "some-other-bucket")

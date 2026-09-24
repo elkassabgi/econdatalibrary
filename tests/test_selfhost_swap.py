@@ -113,31 +113,42 @@ def rig(tmp_path):
     swap.place(str(gen / "copies"), str(gen / "persist"), SLOTS)
     # A random port can be taken between the pick and the bind (other test processes on the machine): a
     # stand-in that exits is started again on a fresh port, and a slow start is given a minute.
-    for _attempt in range(3):
-        blue = swap.start(_fake_cmd()(ports["blue"], str(gen / "persist"), "blue-instance"), str(worker),
-                          str(gen / "instance.log"))
-        if _eventually(lambda: swap.port_in_use(ports["blue"]) or blue.poll() is not None, 60) \
-                and blue.poll() is None:
-            break
-        ports["blue"] = _port()
-        state.write_text(json.dumps({"active": "blue", "targets": {n: f"http://127.0.0.1:{p}" for n, p in ports.items()}}))
-    swap.save_instances(str(work), {"blue": {"pid": blue.pid, "created": swap.created(blue.pid), "gen": str(gen),
-                                             "port": ports["blue"], "instance": "blue-instance", "state": "active"}})
-    stale = work / "gen-green-20250101T000000Z"          # an older generation nothing uses
-    stale.mkdir()
-    rt = router.serve(str(state), 0)
-    threading.Thread(target=rt.serve_forever, daemon=True).start()
-    assert _eventually(lambda: swap.port_in_use(ports["blue"]), 60), \
-        "blue never listened: " + open(gen / "instance.log", encoding="utf-8", errors="replace").read()[-500:]
-    r = dict(cat=str(cat), worker=str(worker), work=str(work), state=str(state), ports=ports, gen=str(gen),
-             router_port=rt.server_address[1], router_url=f"http://127.0.0.1:{rt.server_address[1]}",
-             blue=blue, stale=str(stale))
-    yield r
-    rt.shutdown()
-    rt.server_close()
-    for inst in swap.load_instances(str(work)).values():
-        swap.stop(inst["pid"], inst.get("created"))
-    swap.stop(blue.pid, swap.created(blue.pid))
+    # Every stand-in started here is stopped at teardown - also one abandoned by a retry, and also when the
+    # setup itself fails before the yield (a leaked blue once outlived its suite by hours, holding its port).
+    started, rt = [], None
+    try:
+        for _attempt in range(3):
+            blue = swap.start(_fake_cmd()(ports["blue"], str(gen / "persist"), "blue-instance"), str(worker),
+                              str(gen / "instance.log"))
+            started.append((blue.pid, swap.created(blue.pid)))
+            if _eventually(lambda: swap.port_in_use(ports["blue"]) or blue.poll() is not None, 60) \
+                    and blue.poll() is None:
+                break
+            swap.stop(blue.pid, started[-1][1])             # slow or dead: never left running behind the retry
+            ports["blue"] = _port()
+            state.write_text(json.dumps({"active": "blue",
+                                         "targets": {n: f"http://127.0.0.1:{p}" for n, p in ports.items()}}))
+        swap.save_instances(str(work), {"blue": {"pid": blue.pid, "created": swap.created(blue.pid),
+                                                 "gen": str(gen), "port": ports["blue"],
+                                                 "instance": "blue-instance", "state": "active"}})
+        stale = work / "gen-green-20250101T000000Z"          # an older generation nothing uses
+        stale.mkdir()
+        rt = router.serve(str(state), 0)
+        threading.Thread(target=rt.serve_forever, daemon=True).start()
+        assert _eventually(lambda: swap.port_in_use(ports["blue"]), 60), \
+            "blue never listened: " + open(gen / "instance.log", encoding="utf-8", errors="replace").read()[-500:]
+        r = dict(cat=str(cat), worker=str(worker), work=str(work), state=str(state), ports=ports, gen=str(gen),
+                 router_port=rt.server_address[1], router_url=f"http://127.0.0.1:{rt.server_address[1]}",
+                 blue=blue, stale=str(stale))
+        yield r
+    finally:
+        if rt is not None:
+            rt.shutdown()
+            rt.server_close()
+        for inst in swap.load_instances(str(work)).values():
+            swap.stop(inst["pid"], inst.get("created"))
+        for pid, created in started:
+            swap.stop(pid, created)
 
 
 STOLEN_PORT = re.compile(r"the idle port \d+ (?:was taken while the copies were built|\(.*?\) already answers)")

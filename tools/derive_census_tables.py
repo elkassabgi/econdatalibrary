@@ -39,7 +39,6 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "clients", "python"))
 
-from core import r2_util                                       # noqa: E402
 from core.derive_csv import _series_csv_bytes                  # noqa: E402
 
 SOURCE = "census"
@@ -172,22 +171,15 @@ def main() -> int:
     os.makedirs(spill, exist_ok=True)
 
     existing = set()
-    s3 = None
+    store = None
     if not a.dry_run:
-        s3 = r2_util.client(write=True)
+        # THE CSV STORE (plan step 1): R2 before T0, the self-hosted blob store after it - never local files
+        from updater import blob as _blob, derive as _derive              # noqa: PLC0415
+        store = _blob.csv_store(a.bucket)
         if a.skip_existing:
             pref = f"{a.prefix}/{urllib.parse.quote(SOURCE + ':', safe='')}"
-            tok = None
-            while True:
-                kw = {"Bucket": a.bucket, "Prefix": pref, "MaxKeys": 1000}
-                if tok:
-                    kw["ContinuationToken"] = tok
-                r = s3.list_objects_v2(**kw)
-                existing.update(o["Key"] for o in r.get("Contents", []))
-                if not r.get("IsTruncated"):
-                    break
-                tok = r["NextContinuationToken"]
-            print(f"skip-existing: {len(existing):,} already in R2", flush=True)
+            existing.update(store.list_keys(pref))
+            print(f"skip-existing: {len(existing):,} already in the store", flush=True)
 
     split_map, refused, ids = {}, [], []
     for i, f in enumerate(files, 1):
@@ -250,7 +242,9 @@ def main() -> int:
                 print(f"  would PUT {key} ({len(body):,} B)")
             continue
         try:
-            s3.put_object(Bucket=a.bucket, Key=key, Body=body, ContentType="text/csv")
+            # gzipped at rest with the CSV's md5 (series_csv_put_args), 7 app-level tries; plain before
+            if not _derive._put_with_retry(store, key, body):
+                raise RuntimeError(f"gave up after {_derive.PUT_TRIES} tries")
             put += 1
             if put % 25 == 0:
                 print(f"  put {put:,}/{len(ids):,}  {time.time()-t0:,.0f}s", flush=True)
