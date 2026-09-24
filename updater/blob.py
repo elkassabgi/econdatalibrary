@@ -752,6 +752,58 @@ def _blobstore_module():
     return mod
 
 
+_own_store_guard = threading.Lock()
+_process_session = None          # the write session a store write entered for this process (see below)
+
+
+def _code_root() -> str:
+    """The checkout this code runs from (a function, so a test can stand a temporary store in for it)."""
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def refuse_unless_live_checkout(what: str) -> None:
+    """After T0 only the LIVE checkout changes what users are served (review R1203 finding 2: a worktree's
+    derive published CSVs built from the worktree's parquets). Refused unless this code and every root a
+    writer reads through - config.ROOT (ECONDL_ROOT, where derive_csv_bulk reads parquets: R1217 finding 5),
+    config.DATA_ROOT, ECONDL_DATA, ECONDL_CATALOG - are the live checkout's, as updater/run.py requires of a
+    run. A tool whose FIRST change is not a store write calls this up front (core.licence_targets.Targets),
+    so a refusal comes before anything changed (R1217 finding 2). Before T0 nothing."""
+    from core import catalog_path, cutover                                # noqa: PLC0415
+    if not cutover.is_cut_over():
+        return
+    from . import config                                                  # noqa: PLC0415
+    live = catalog_path.LIVE_STORE_ROOT
+    data = os.path.join(live, "data", "clean_full")
+    same = lambda x, y: os.path.normcase(os.path.realpath(x)) == os.path.normcase(os.path.realpath(y))  # noqa: E731
+    places = [("the code's own checkout", _code_root(), live),
+              ("config.ROOT (ECONDL_ROOT)", config.ROOT, live),
+              ("config.DATA_ROOT (AQUEDUCT_DATA_ROOT)", config.DATA_ROOT, data),
+              ("ECONDL_DATA", os.environ.get("ECONDL_DATA") or data, data),
+              ("ECONDL_CATALOG", os.environ.get("ECONDL_CATALOG") or catalog_path.BUILD_PATH,
+               catalog_path.BUILD_PATH)]
+    wrong = [f"{name} is {actual}, must be {want}" for name, actual, want in places if not same(actual, want)]
+    if wrong:
+        raise cutover.CutoverRefused(f"refused: {what} changes what users are served, and after T0 only the "
+                                     f"live checkout may: " + "; ".join(wrong) + " (R1203)")
+
+
+def _refuse_or_own_store_write(what: str) -> None:
+    """THE SERVED STORE HAS THE CATALOGUE'S SINGLE-WRITER RULE (review R1203 finding 2). After T0 a write
+    is refused outside the live checkout (refuse_unless_live_checkout), and it needs the writer lock
+    (core.catalog_path): held already (the updater holds it for its whole run), or taken here for the rest
+    of this process - failing at once if another process holds it, so a derive never runs beside the
+    updater. Before T0 nothing changes (AQUEDUCT_BACKEND=selfhost is then a deliberate probe)."""
+    global _process_session
+    from core import catalog_path, cutover                                # noqa: PLC0415
+    if not cutover.is_cut_over():
+        return
+    refuse_unless_live_checkout(what)
+    with _own_store_guard:                  # one acquisition however many threads write first
+        if catalog_path._held is None:
+            _process_session = catalog_path.write_session_for_process()
+            print(f"[csv-store] took the single-writer lock {catalog_path.LOCK_PATH} for this process", flush=True)
+
+
 class SelfhostBlob:
     """The self-hosted twin of R2Blob (docs/ECON_SELF_HOSTING_PLAN.md, change 4): the same keys, and the
     same bytes, etag, content encoding and metadata R2Blob would store - written to the local blob store
@@ -790,6 +842,7 @@ class SelfhostBlob:
             return f.read()
 
     def put_atomic(self, key: str, data: bytes, *, plain: bool = False) -> None:
+        _refuse_or_own_store_write(f"put {key}")
         # Same rules as R2Blob.put_atomic: ContentType by extension; series CSVs gzip at rest through the
         # ONE shared definition (core.r2_util.series_csv_put_args), unless plain=True (_refuse_plain_gzip);
         # bytes the store already holds are not written again.
@@ -826,6 +879,7 @@ class SelfhostBlob:
         return bool(tag) and "-" not in tag and tag == hashlib.md5(data).hexdigest()   # noqa: S324
 
     def put_file(self, key: str, src_path: str) -> None:
+        _refuse_or_own_store_write(f"put {key}")
         with open(src_path, "rb") as f:
             data = f.read()
         self.store.put(key, data, etag=hashlib.md5(data).hexdigest(),     # noqa: S324
@@ -833,11 +887,22 @@ class SelfhostBlob:
 
     def put_gzip_file(self, key: str, src_path: str, metadata: dict | None = None) -> None:
         """R2Blob.put_gzip_file's twin: the gzip bytes as they are, marked gzip, text/csv, with metadata."""
+        _refuse_or_own_store_write(f"put {key}")
         _refuse_not_gzip_file(key, src_path)
         with open(src_path, "rb") as f:
             data = f.read()
         self.store.put(key, data, etag=hashlib.md5(data).hexdigest(),     # noqa: S324
                        content_encoding="gzip", content_type="text/csv", custom_metadata=dict(metadata or {}))
+
+    def copy(self, key: str, dst: str) -> None:
+        """R2's copy_object: the same bytes, etag, encoding, type and metadata under `dst` (AR-153). Through the
+        write rule like every other write - `self.store.put` directly would skip it (R1217 finding 4)."""
+        _refuse_or_own_store_write(f"copy {key} -> {dst}")
+        meta = self.store.head(key)
+        if meta is None:
+            raise FileNotFoundError(f"{key} is not in the store {self.root}")
+        self.store.put(dst, self.get(key), etag=meta["etag"], content_encoding=meta["content_encoding"],
+                       content_type=meta["content_type"], custom_metadata=meta["custom_metadata"])
 
     def head_meta(self, key: str) -> dict | None:
         """R2Blob.head_meta's twin, from the store's index (a quoted ETag, as R2 returns it)."""
@@ -868,6 +933,7 @@ class SelfhostBlob:
         return [(k, datetime.fromisoformat(t)) for k, t in self.store.list_stored(prefix)]
 
     def delete(self, key: str) -> None:
+        _refuse_or_own_store_write(f"delete {key}")
         self.store.delete(key)
 
 

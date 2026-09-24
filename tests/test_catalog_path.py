@@ -351,7 +351,8 @@ LEGACY = os.path.join(ROOT, "tests", "catalog_db_legacy.txt")
 # the module constant several files import instead of naming the file (AR-153).
 NAMES_CATALOGUE = re.compile(r"catalog\.db|ECONDL_CATALOG|\bCATALOG_DB\b|[\"']catalog[\"']\s*[+,]\s*[\"']\.db[\"']")
 # A narrow exemption: only the named function of the named file is left out of the scan.
-EXEMPT_FUNCTIONS = {"updater/run.py": frozenset({"_selfhost_preflight"})}   # names ECONDL_CATALOG to REFUSE it
+EXEMPT_FUNCTIONS = {"updater/run.py": frozenset({"_selfhost_preflight"}),   # names ECONDL_CATALOG to REFUSE it
+                    "updater/blob.py": frozenset({"refuse_unless_live_checkout"})}   # the same refusal (R1217)
 # Whole files outside the resolver BY DESIGN, each with the premise that makes it safe pinned below.
 EXEMPT_FILES = {
     # The PUBLISHED client (pip install econdl): standalone, so it cannot import core.catalog_path, and its

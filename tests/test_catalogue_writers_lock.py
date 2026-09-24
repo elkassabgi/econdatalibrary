@@ -129,9 +129,36 @@ def test_broaden_writes_only_with_the_lock_after_t0(t0, broaden, monkeypatch):
 
 # ---- static ratchets over the whole repo ---------------------------------------------------------------------
 LOCKERS = {"write_session", "writer_lock", "write_session_for_process"}
-# what names THE CATALOGUE among core.catalog_path's values - not LIVE_STATE_DIR or LOCK_PATH: t0_ready opens
-# the live state.db from LIVE_STATE_DIR read-only, and the first merge of the two branches flagged it
-_CATALOGUE_SOURCE = re.compile(r"catalog_path\.(catalog_path|BUILD_PATH|CHECKOUT_PATH|under|LIVE_STORE_ROOT)\b")
+# WHAT COUNTS AS A VALUE FROM core.catalog_path: ANY attribute of the module, under any alias, and any name
+# imported from it. The first merge narrowed this to a list of five names to let t0_ready's state.db opens
+# through, and catalog_path.ROOT - joined with data/catalog.db, the catalogue itself - then passed every rule
+# (R1216). A list of allowed names also lets through every attribute added later. So the source stays broad,
+# and the state.db opens are exempted one by one below (_EXEMPT_OPENS), each proven read-only and proven to
+# take its taint from LIVE_STATE_DIR alone.
+_MODULE = "core.catalog_path"
+
+
+def _catalog_bindings(tree) -> tuple[set, dict]:
+    """(names bound to the module, {local name: original name} for names imported from it)."""
+    mods, names = {"catalog_path", _MODULE}, {}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ImportFrom) and n.module == "core":
+            mods |= {a.asname or a.name for a in n.names if a.name == "catalog_path"}
+        elif isinstance(n, ast.ImportFrom) and n.module == _MODULE:
+            names.update({a.asname or a.name: a.name for a in n.names})
+        elif isinstance(n, ast.Import):
+            mods |= {a.asname for a in n.names if a.name == _MODULE and a.asname}
+    return mods, names
+
+
+def _is_source(node, bindings, ignore=frozenset()) -> bool:
+    mods, names = bindings
+    for x in ast.walk(node):
+        if isinstance(x, ast.Attribute) and ast.unparse(x.value) in mods and x.attr not in ignore:
+            return True
+        if isinstance(x, ast.Name) and x.id in names and names[x.id] not in ignore:
+            return True
+    return False
 
 
 def _calls(tree):
@@ -175,9 +202,10 @@ def test_the_lock_ratchet_can_fail(tmp_path):
 
 
 def _plain_opens_of_resolver_paths(tree):
+    b = _catalog_bindings(tree)
     for n in _calls(tree):
         if n.func.attr == "connect" and ast.unparse(n.func.value) == "sqlite3" and n.args:
-            if _CATALOGUE_SOURCE.search(ast.unparse(n.args[0])):
+            if _is_source(n.args[0], b):
                 yield n
 
 
@@ -232,9 +260,10 @@ def _sqlite_opens(tree):
             yield n
 
 
-def _tainted_names(tree) -> set:
-    """Names assigned (anywhere in the file) from a value that mentions `catalog_path.` or another tainted
-    name - a fixpoint, so `p = catalog_path.x(); q = f"file:{p}"` taints both."""
+def _tainted_names(tree, ignore=frozenset()) -> set:
+    """Names assigned (anywhere in the file) from a value that comes from core.catalog_path (_is_source) or
+    from another tainted name - a fixpoint, so `p = catalog_path.x(); q = f"file:{p}"` taints both."""
+    b = _catalog_bindings(tree)
     assigns = []
     for n in ast.walk(tree):
         if isinstance(n, (ast.Assign, ast.AnnAssign, ast.AugAssign)) and n.value is not None:
@@ -250,21 +279,56 @@ def _tainted_names(tree) -> set:
             if names <= tainted:
                 continue
             used = {x.id for x in ast.walk(value) if isinstance(x, ast.Name)}
-            if _CATALOGUE_SOURCE.search(ast.unparse(value)) or used & tainted:
+            if _is_source(value, b, ignore) or used & tainted:
                 tainted |= names
                 grew = True
         if not grew:
             return tainted
 
 
-def _tainted_opens(tree):
-    tainted = _tainted_names(tree)
+def _open_arg(n):
+    return n.args[0] if n.args else next((k.value for k in n.keywords if k.arg == "database"), None)
+
+
+def _tainted_opens(tree, ignore=frozenset()):
+    b = _catalog_bindings(tree)
+    tainted = _tainted_names(tree, ignore)
     for n in _sqlite_opens(tree):
-        arg = n.args[0] if n.args else next((k.value for k in n.keywords if k.arg == "database"), None)
+        arg = _open_arg(n)
         if arg is None:
             continue
-        if _CATALOGUE_SOURCE.search(ast.unparse(arg)) or {x.id for x in ast.walk(arg) if isinstance(x, ast.Name)} & tainted:
+        if _is_source(arg, b, ignore) or {x.id for x in ast.walk(arg) if isinstance(x, ast.Name)} & tainted:
             yield n
+
+
+# The ONLY plain opens of a catalog_path-derived path allowed: t0_ready reading the updater's state.db. Each is
+# named by (file, the open's argument as written) and must (a) be read-only - mode=ro in a file: URI opened
+# with uri=True - and (b) take its taint from LIVE_STATE_DIR ALONE: with LIVE_STATE_DIR not counted as a
+# source the open is clean, so a catalogue value (ROOT, BUILD_PATH, ...) mixed into it is still caught. The
+# count is exact, so a new open with the same text is not silently covered.
+_EXEMPT_OPENS = {("tools/selfhost/t0_ready.py", "f'file:{p}?mode=ro'"): 2}
+_STATE_ONLY = frozenset({"LIVE_STATE_DIR"})
+
+
+def _exempt(rel, tree, n) -> bool:
+    arg = _open_arg(n)
+    if (rel, ast.unparse(arg)) not in _EXEMPT_OPENS or "mode=ro" not in ast.unparse(arg):
+        return False
+    if not any(k.arg == "uri" and isinstance(k.value, ast.Constant) and k.value.value is True for k in n.keywords):
+        return False
+    return all(m.lineno != n.lineno for m in _tainted_opens(tree, ignore=_STATE_ONLY))
+
+
+def _violations(rel, tree):
+    """(tainted opens that are not exempt, how many exempt opens were used per key)."""
+    bad, used = [], {}
+    for n in _tainted_opens(tree):
+        if _exempt(rel, tree, n):
+            key = (rel, ast.unparse(_open_arg(n)))
+            used[key] = used.get(key, 0) + 1
+        else:
+            bad.append(n)
+    return bad, used
 
 
 _MARKER = re.compile(r"#\s*plain-open:\s*\S")
@@ -287,9 +351,15 @@ def _code_files_with_source():
 
 
 def test_no_plain_open_of_a_path_that_came_from_catalog_path():
-    bad = [f"{rel}:{n.lineno}" for rel, tree, _s in _code_files_with_source() for n in _tainted_opens(tree)]
+    bad, used = [], {}
+    for rel, tree, _s in _code_files_with_source():
+        b, u = _violations(rel, tree)
+        bad += [f"{rel}:{n.lineno}" for n in b]
+        for k, v in u.items():
+            used[k] = used.get(k, 0) + v
     assert not bad, ("a plain sqlite3 open of a path taken from core.catalog_path bypasses its read-only mode "
                      "and its lock - use catalog_path.connect() / connect_path():\n  " + "\n  ".join(bad))
+    assert used == _EXEMPT_OPENS, "each exemption is used exactly as often as it is listed"
 
 
 def test_every_plain_open_in_a_catalog_path_file_says_why():
@@ -318,3 +388,36 @@ def test_the_r1203_rules_can_fail():
     assert len(list(_unmarked_opens(ast.parse(empty_reason), empty_reason))) == 1, "a marker needs a reason"
     assert _imports_catalog_path(ast.parse("import core.catalog_path\n"))
     assert not _imports_catalog_path(ast.parse("# core.catalog_path\nimport os\n"))
+
+
+@pytest.mark.parametrize("src", [
+    # R1216's planted escapes: the catalogue reached through names the narrowed rule did not list
+    "c = sqlite3.connect(os.path.join(catalog_path.ROOT, 'data', 'catalog.db'))  # plain-open: read-only lookup\n",
+    "c = sqlite3.connect(os.path.join(catalog_path.LIVE_STATE_DIR, '..', 'catalog.db'))  # plain-open: x\n",
+    "d = os.path.dirname(catalog_path.LIVE_STATE_DIR)\nc = sqlite3.connect(os.path.join(d, 'catalog.db'))\n",
+    "c = sqlite3.connect(catalog_path.A_NAME_ADDED_LATER)\n",
+    # the two gaps that predate the merge
+    "from core.catalog_path import BUILD_PATH\nc = sqlite3.connect(BUILD_PATH)\n",
+    "from core.catalog_path import BUILD_PATH as B\nq = f'file:{B}'\nc = sqlite3.connect(q, uri=True)\n",
+    "import core.catalog_path as cp\nc = sqlite3.connect(cp.BUILD_PATH)\n",
+    "from core import catalog_path as cp\nc = sqlite3.connect(cp.CHECKOUT_PATH)\n",
+])
+def test_the_r1216_taint_rule_can_fail(src):
+    src = "import os\nimport sqlite3\nfrom core import catalog_path\n" + src
+    bad, _used = _violations("tools/x.py", ast.parse(src))
+    assert len(bad) == 1, src
+
+
+def test_the_state_db_exemption_is_exact():
+    head = "import os\nimport sqlite3\nfrom core import catalog_path\n"
+    ok = head + ("p = os.path.join(catalog_path.LIVE_STATE_DIR, 'state.db')\n"
+                 "c = sqlite3.connect(f'file:{p}?mode=ro', uri=True)  # plain-open: state.db\n")
+    assert _violations("tools/selfhost/t0_ready.py", ast.parse(ok)) == \
+        ([], {("tools/selfhost/t0_ready.py", "f'file:{p}?mode=ro'"): 1})
+    assert len(_violations("tools/other.py", ast.parse(ok))[0]) == 1, "another file is not exempt"
+    mixed = ok.replace("catalog_path.LIVE_STATE_DIR, 'state.db'", "catalog_path.ROOT, 'data', 'catalog.db'")
+    assert len(_violations("tools/selfhost/t0_ready.py", ast.parse(mixed))[0]) == 1, "a catalogue value in it"
+    no_uri = ok.replace(", uri=True", "")
+    assert len(_violations("tools/selfhost/t0_ready.py", ast.parse(no_uri))[0]) == 1, "mode=ro needs uri=True"
+    also = ok + "p = catalog_path.BUILD_PATH\n"
+    assert len(_violations("tools/selfhost/t0_ready.py", ast.parse(also))[0]) == 1, "p tainted elsewhere too"

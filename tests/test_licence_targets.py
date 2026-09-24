@@ -9,6 +9,7 @@ import pytest
 
 from core import catalog_path, cutover, d1_remote, licence_targets as lt
 from updater import blob
+from updater import config as updater_config
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tools", "selfhost"))
@@ -68,18 +69,42 @@ def live(tmp_path, monkeypatch):
     monkeypatch.setattr(catalog_path, "BUILD_PATH", str(tmp_path / "live" / "catalog.db"))
     monkeypatch.setattr(catalog_path, "LOCK_PATH", str(tmp_path / "live" / "writer.lock"))
     monkeypatch.setattr(catalog_path, "LIVE_STATE_DIR", str(tmp_path / "live" / "state"))
+    # this code stands in for the live checkout's (R1203/R1217: after T0 only that checkout changes the store)
+    monkeypatch.setattr(blob, "_code_root", lambda: str(store_root))
+    monkeypatch.setattr(updater_config, "ROOT", str(store_root))
+    monkeypatch.setattr(updater_config, "DATA_ROOT", str(store_root / "data" / "clean_full"))
+    monkeypatch.delenv("ECONDL_DATA", raising=False)
+    monkeypatch.delenv("ECONDL_CATALOG", raising=False)
     _catalogue(tmp_path / "live" / "catalog.db")
-    (tmp_path / "CUTOVER").write_text("")                    # T0, now that the build exists
     BlobStore(str(tmp_path / "blobs"), create=True)
     monkeypatch.setattr(blob, "SELFHOST_BLOB_ROOT", str(tmp_path / "blobs"))
     sb = blob.SelfhostBlob()
     for k in ("series/foo%3Aa.csv", "series/foo%3Ab.csv", "series/foo_direct%3Aa.csv"):
-        sb.put_atomic(k, CSV)
+        sb.put_atomic(k, CSV)                                # before T0: seeding takes no lock
+    (tmp_path / "CUTOVER").write_text("")                    # T0, now that the build and the store exist
 
     def no_d1(*a, **k):
         raise AssertionError("D1 must not be written after T0")
     monkeypatch.setattr(d1_remote, "execute_wrangler", no_d1)
-    return tmp_path, store_root, sb
+    yield tmp_path, store_root, sb
+    if blob._process_session is not None:      # a store write outside the tool's lock took one: let go
+        blob._process_session.__exit__(None, None, None)
+        blob._process_session = None
+
+
+def test_after_t0_a_retirement_from_another_checkout_changes_nothing(live, monkeypatch, tmp_path):
+    """R1217 finding 2: the refusal came at the first CSV delete - after the catalogue rows and parquets were
+    gone. It comes before any change now."""
+    tmp, store, sb = live
+    monkeypatch.setattr(blob, "_code_root", lambda: str(tmp_path / "a_worktree"))
+    before_rows = _rows(tmp / "live" / "catalog.db")
+    with pytest.raises(cutover.CutoverRefused, match="the code's own checkout"):
+        retire_source.main(["foo", "--apply"])
+    assert _rows(tmp / "live" / "catalog.db") == before_rows
+    assert (store / "data" / "clean_full" / "foo" / "x.parquet").exists()
+    assert sorted(sb.list_keys("series/")) == ["series/foo%3Aa.csv", "series/foo%3Ab.csv",
+                                               "series/foo_direct%3Aa.csv"]
+    assert catalog_path._held is None
 
 
 def test_after_t0_a_retirement_acts_only_on_the_self_hosted_places(live, capsys):

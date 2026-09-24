@@ -56,6 +56,12 @@ class Targets:
     def __init__(self):
         self.selfhosted = is_cut_over()
         self._r2_read = self._r2_write = self._blob = None
+        if self.selfhosted:
+            # up front, before the run changes anything: a removal from a worktree deleted catalogue rows and
+            # archived parquets, then had its CSV delete refused - the source gone from the catalogue while
+            # its CSVs stayed served (R1217 finding 2). The lock is the caller's (catalogue writes need it).
+            from updater.blob import refuse_unless_live_checkout                  # noqa: PLC0415
+            refuse_unless_live_checkout("a licence removal")
 
     # -- objects ----------------------------------------------------------------------------------------
     def _read(self):
@@ -113,10 +119,7 @@ class Targets:
             self._write().copy_object(Bucket=BUCKET, CopySource={"Bucket": BUCKET, "Key": key}, Key=dst)
             return
         if key.startswith("series/"):
-            b = self._blobs()
-            meta = b.store.head(key)                         # R2's copy_object keeps all of these (AR-153)
-            b.store.put(dst, b.get(key), etag=meta["etag"], content_encoding=meta["content_encoding"],
-                        content_type=meta["content_type"], custom_metadata=meta["custom_metadata"])
+            self._blobs().copy(key, dst)                     # R2's copy_object keeps all of these (AR-153)
             return
         target = self._store_path(dst)
         os.makedirs(os.path.dirname(target), exist_ok=True)

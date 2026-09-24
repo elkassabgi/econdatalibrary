@@ -150,13 +150,15 @@ def write_session():
         yield
 
 
-def write_session_for_process() -> None:
+def write_session_for_process():
     """write_session() for a top-level cataloguing SCRIPT (module code, no main() to wrap): entered now,
-    left at interpreter exit (atexit). The lock is an OS file lock, so even a killed script releases it."""
+    left at interpreter exit (atexit). The lock is an OS file lock, so even a killed script releases it.
+    Returns the entered session, so a caller that must let go earlier (a test) can __exit__ it."""
     import atexit                                                           # noqa: PLC0415
     session = write_session()
     session.__enter__()
     atexit.register(session.__exit__, None, None, None)
+    return session
 
 
 @contextlib.contextmanager
