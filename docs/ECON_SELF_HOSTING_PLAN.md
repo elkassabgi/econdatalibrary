@@ -486,7 +486,13 @@ client -> econdl-api.elkassabgi.workers.dev   EDGE worker (same name, forever)
      enumerated by grep in step 1 and attached to the step-6d change - DONE 2026-09-24:
      tests/test_verifiers_6d.py TO_REPOINT_6D holds the 15 tools that read the cloud copy and do nothing at
      T0, and fails on a new one or a stale entry; after T0 D1 still answers reads with the read token and
-     R2 reads are not guarded, so each would otherwise check the FROZEN copy) are re-pointed to the EDGE (the
+     R2 reads are not guarded, so each would otherwise check the FROZEN copy - BUILT 2026-09-24 on branch
+     feat/econ-selfhost-6d, under review: store_inventory, verify_source_served (third leg = the edge's
+     /v1/catalog total), verify_derive_parity, sample_source_coverage, audit_r2_vs_catalog,
+     audit_csv_staleness, audit_untouched_files, audit_unwritten_store_regions and audit_rotation_progress
+     judge the self-hosted store / live store from the live checkout; audit_licence_disclosure reads the
+     build; footer_diff, verify_statcan_store_bytes, audit_d1_vs_catalog, audit_d1_source_counts and
+     audit_serving_coherence refuse; audit_site is user-facing already; the owed list is EMPTY) are re-pointed to the EDGE (the
      address users get), or refuse after the flag; CLAUDE.md, DESKTOP_FIRST.md, the econ-updater skill
      and the runbooks change in the same 6d commit.
    - The licence tools (purge_unpermitted_r2, retire_source, delist_source_rows) get their local backend
