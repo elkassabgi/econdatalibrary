@@ -10,10 +10,16 @@ Build status (branch feat/econ-selfhost-origin):
   - R1171: the origin tests did not run from the CI root;
   - R1172: a missing table hid a cost breach.
 - All three are fixed in a897ecd11 and 8f4ba04c4, and a verification review is running.
-- Still to build in change 1:
-  - the EDGE_STATE switch (step 5, below);
-  - the /v1/pv/report edge cache;
-  - the status route of change 6.
+- Built since, each reviewed (R1174 FAIL -> fixed; AR-151 PASS-WITH-CHANGES -> its required changes in
+  7e950c02b): EDGE_STATE and /v1/edge-status; the report cache; the off-machine check and its workflow
+  (change 6); tools/selfhost/deploy_edge.sh; core/cutover.py (4b); the R2 write guard on every client
+  in the repo, with a ratchet (5); core/d1_remote.py with a ratchet (4c, 5); core/catalog_path.py, the
+  one resolver and the single-writer lock, with a ratchet of 154 files still to move (4a); SelfhostBlob
+  (AQUEDUCT_BACKEND=selfhost, 4); the updater's post-T0 preflight (4); tools/selfhost/cutover_hook.py
+  (5, written and tested, NOT installed - Ahmed approves it first).
+- Still to do in step 1: move the 154 catalogue callers and the 27 remote-D1 callers onto the
+  chokepoints; the direct put_series_csv writers onto SelfhostBlob; the licence tools' local backend;
+  the verifier re-pointing (6d).
 - Changes 4 and 5 follow the rules in section 3.4a-c (R1167 A-C).
 
 Measured 2026-09-24T01:33:51Z: the live worker's Cache API works on workers.dev (CF-Cache-Status HIT,
@@ -304,6 +310,9 @@ cache-busting query parameters on browse routes reach the origin, and browse rou
   elevated, at T0; the Workers VPC service or Access
   setup; the edge `wrangler deploy`s (steps 5, 6d, 7); creating an Object-Read-only R2 token for the
   desktop before T0 (today's read-key entries are placeholders);
-  approving the user-global deny hook; at T0 deleting the econ repo's R2_WRITE_* secrets, REVOKING the
+  approving the user-global deny hook (tools/selfhost/cutover_hook.py; its settings snippet is in its
+  header); creating a D1-READ-only API token for core/d1_remote.py (D1_READ_TOKEN) and, before T0,
+  proving on a scratch database that the server refuses a write made with it (AR-151 finding 5 - plan
+  4c relies on the server refusing, not only on the SQL check); at T0 deleting the econ repo's R2_WRITE_* secrets, REVOKING the
   econ R2 write key and replacing CLOUDFLARE_API_TOKEN with a narrower one; a bucket-scoped token for an
   R2 backup if he chooses R2; approving the 6c diff; the step-7 deletion.
