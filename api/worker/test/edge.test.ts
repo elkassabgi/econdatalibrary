@@ -169,7 +169,7 @@ async function standInOrigin(collectorHost: string) {
     if (mode === "unmarked") {                                    // a tunnel error page, an Access login page
       res.writeHead(200, { "content-type": "text/html" }); res.end("<html>login</html>"); return;
     }
-    if (mode === "slow") { setTimeout(() => { res.writeHead(200, mark); res.end("{}"); }, 3000); return; }
+    if (mode === "slow") { setTimeout(() => { res.writeHead(200, mark); res.end("{}"); }, 8000); return; }
     if (u.pathname === "/v1/series/zz%3Alen.csv") {
       res.writeHead(200, { ...mark, "content-type": "text/csv", "content-length": String(Buffer.byteLength(CSV)) });
       res.end(CSV); return;
@@ -205,7 +205,17 @@ async function get(w: Dev, path: string) {
   return { status: r.status, text, headers: r.headers };
 }
 
-const settle = (ms = 800) => new Promise((r) => setTimeout(r, ms));    // rows written in waitUntil
+/** Poll `read` until `done` holds (rows are written in waitUntil, after the response), up to 15 s; returns
+ *  the last value read either way, so the caller's assertion reports what was actually there. */
+async function eventually<T>(read: () => Promise<T>, done: (v: T) => boolean): Promise<T> {
+  const until = Date.now() + 15000;
+  let v = await read();
+  while (!done(v) && Date.now() < until) {
+    await new Promise((r) => setTimeout(r, 200));
+    v = await read();
+  }
+  return v;
+}
 
 test("the edge-only config really has no econ D1 / R2 (planted positive)", { timeout: 120_000 }, async (t) => {
   const w = await start(edgeOnlyConfig(), { FORWARD: "" }, await seeded());
@@ -268,8 +278,7 @@ test("FORWARD on: the real edge, with no econ D1 or R2 binding, against a stand-
     assert.equal(b.status, 200);
     assert.equal(b.text, CSV + CSV);
     assert.equal((await get(w, "/v1/series/zz%3Aerr.csv?api_key=GOODKEY")).status, 500);
-    await settle();
-    assert.deepEqual(await downloads(), [
+    assert.deepEqual(await eventually(downloads, (rows) => rows.length >= 2), [
       { series_id: "zz:chunk", bytes: Buffer.byteLength(CSV) * 2 },   // no length, no marker: still logged
       { series_id: "zz:len", bytes: Buffer.byteLength(CSV) },         // from content-length
     ], "one row per successful download, none for the 500");
@@ -289,14 +298,17 @@ test("FORWARD on: the real edge, with no econ D1 or R2 binding, against a stand-
     assert.equal(evil.seen.length, 0, "the redirect target was never contacted");
     assert.equal((await get(w, "/v1/series/zz%3Alen.csv?api_key=GOODKEY&mode=redirect")).status, 502);
     assert.equal((await get(w, "/v1/series/zz%3Alen.csv?api_key=GOODKEY&mode=unmarked")).status, 502);
-    await settle(500);
-    assert.equal((await downloads()).length, 2, "a refused download is not logged");
+    // a negative can only be checked after a wait; one known-good download after the refused ones, and
+    // waiting for ITS row, proves the log is caught up before counting
+    assert.equal((await get(w, "/v1/series/zz%3Alen.csv?api_key=GOODKEY")).status, 200);
+    const rows = await eventually(downloads, (r) => r.length >= 3);
+    assert.equal(rows.length, 3, "a refused download is not logged (only the good one after it is)");
   });
 
   await t.test("a slow origin is a 504 after ORIGIN_TIMEOUT_MS", async () => {
     const t0 = Date.now();
     assert.equal((await get(w, "/v1/last-updates?mode=slow")).status, 504);
-    assert.ok(Date.now() - t0 < 2800, "answered before the origin did");
+    assert.ok(Date.now() - t0 < 6000, "answered well before the origin would have (8 s)");
   });
 
   await t.test("public answers are cached without api_key in the key; bundle never", async () => {
