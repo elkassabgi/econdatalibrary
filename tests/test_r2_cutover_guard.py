@@ -164,8 +164,9 @@ import _repo_walk as _walk                              # the one shared walk (R
 # The ways to get an S3 client without r2_util found SO FAR (R1178, R1179 each measured more getting
 # through) - a list, not a proof: a new spelling found later goes here with a planted positive below.
 # boto3.client / boto3.resource count WITHOUT a call too: `f = boto3.client` is an alias (R1179).
-_RAW = _re.compile(r"\bboto3\.(client|resource)\b|boto3\.session\.Session\s*\(|\bSession\([^)]*\)\s*\.\s*(client|resource)\s*\("
-                   r"|\bboto3\.Session\b|from\s+boto3(\.session)?\s+import|import\s+boto3\s+as|\.create_client\s*\(|\bs3fs\b")
+_RAW = _re.compile(r"\bboto3\.(client|resource)\b|boto3\.session\.Session\b|\bSession\([^)]*\)\s*\.\s*(client|resource)\s*\("
+                   r"|\bboto3\.Session\b|from\s+boto3(\.session)?\s+import|import\s+boto3(\.\w+)*\s+as"
+                   r"|\.create_client\s*\(|\bs3fs\b")
 _GUARDED = _re.compile(r"guard_client\(\s*boto3\.client\(")
 
 
@@ -190,7 +191,8 @@ def test_the_client_ratchet_can_fail():
     for form in ('boto3.client ("s3")', "boto3.Session().client('s3')", "from boto3 import client",
                  "import boto3 as b3", "botocore.session.get_session().create_client('s3')",
                  "fs = s3fs.S3FileSystem()", "boto3.session.Session() . client('s3')",
-                 "f = boto3.client", "from boto3.session import Session"):     # R1179
+                 "f = boto3.client", "from boto3.session import Session",       # R1179
+                 "import boto3.session as bs", "S = boto3.session.Session"):     # R1184
         assert _RAW.search(form), form                       # R1178: each of these got through before
     assert not _RAW.search("import boto3") and not _RAW.search("r2_util.client(write=True)")
     assert not _RAW.search("from boto3.s3.transfer import TransferConfig"), "a settings class, not a client"

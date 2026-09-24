@@ -37,7 +37,8 @@ FLAG_NAMES = [
     r"del \\localhost\c$\ProgramData\econ\CUTOVER",
 ]
 # Spellings the rule does NOT catch - stated, not hidden: the folder's ACL is the protection (plan 3.5).
-FLAG_NAMES_NOT_CAUGHT = [r"$p='C:\Program'+'Data\econ'; rm $p"]
+FLAG_NAMES_NOT_CAUGHT = [r"$p='C:\Program'+'Data\econ'; rm $p",
+                         r"[Environment]::GetFolderPath(35) + '\econ\CUTOVER' | Remove-Item"]
 WRITES = [
     "npx wrangler r2 object put econ-data/series/x.csv --file x.csv",
     "wrangler r2 object delete econ-data/_aqueduct/stats.json --remote",
@@ -87,7 +88,33 @@ WRITES = [
     "bunx wrangler d1 delete 1A6D0755-ECEF-46D0-A478-46CAD1CF064C",
     "s5cmd rm s3://econ-data/*",
     "mc rm --recursive --force r2/econ-data",
+    # R1184: options between the levels of a subcommand
+    'npx wrangler d1 -c api/worker/wrangler.toml execute CATALOG --remote --command "DELETE FROM series"',
+    'npx wrangler d1 --config=wrangler.toml execute econ-catalog --remote --command "DELETE FROM series"',
+    "npx wrangler d1 -c wrangler.toml delete econ-catalog -y",
+    "npx wrangler r2 object -c wrangler.toml put econ-data/x --file x",
+    "npx wrangler r2 -c wrangler.toml object delete econ-data/x",
+    'npx wrangler d1 -e production execute CATALOG --remote --command "DELETE FROM series"',
+    # R1184: a newline INSIDE a quoted --command is part of the command
+    'npx wrangler d1 execute econ-catalog --command "\nDELETE FROM series\n" --remote',
+    'npx wrangler d1 execute --remote --command "\nDELETE FROM series\n" econ-catalog',
+    'npx wrangler d1 execute CATALOG --command @"\nDELETE FROM series\n"@ --remote',
+    'npx wrangler d1 execute CATALOG -e production --remote --command "DELETE FROM series"',
+    'cmd /c "npx wrangler d1 execute econ-catalog --remote --command \\"DELETE FROM series\\""',
+    'npx wrangler d1 execute "econ-catalog" --remote --file f.sql',
+    "npx wrangler d1 execute 'CATALOG' --remote --file f.sql",
+    "aws s3 --endpoint-url https://r2 rm s3://econ-data --recursive",
+    "aws s3api --endpoint-url https://r2 delete-object --bucket econ-data --key x",
+    "aws s3api --bucket econ-data --key x delete-object",
+    "rclone --dry-run=false delete r2:econ-data/x",
+    'rclone deletefile r2:"econ-data"/x',
+    "npx wrangler d1 time-travel restore CATALOG --timestamp 1",
+    # downloads from the frozen bucket are refused too (stated in the hook: reads go through cloud_client)
+    "aws s3 cp s3://econ-data/x .",
+    "rclone copy r2:econ-data ./backup",
 ]
+# Write roads the patterns cannot see - stated, not hidden: the revoked write key is the protection.
+WRITES_NOT_CAUGHT = ['$a = @("d1","execute","econ-catalog","--remote"); npx wrangler @a']
 FINE = [
     "npx wrangler r2 object get econ-data/series/x.csv --file x.csv",
     "npx wrangler r2 object put hfdatalibrary-data/x.csv --file x.csv",
@@ -107,6 +134,14 @@ FINE = [
     "wrangler r2 bucket info econ-data",
     "wrangler d1 info econ-catalog",
     r"[Environment]::GetFolderPath('CommonApplicationData')",      # the folder alone, no econ
+    # R1184: hf work after T0 that names CATALOG in its SQL or a file name
+    'npx wrangler d1 execute hfdatalibrary-db --remote --command "SELECT COUNT(*) FROM CATALOG"',
+    "npx wrangler d1 execute hfdatalibrary-db --remote --command \"SELECT * FROM sqlite_master WHERE name='CATALOG'\"",
+    r"npx wrangler d1 execute DB --remote --file D:\research\hfdatalibrary\api\CATALOG_fix.sql",
+    "npx wrangler d1 execute DB --remote --command \"UPDATE tickers SET note='see CATALOG'\"",
+    "git log --grep=econ-data",
+    "aws s3 ls s3://econ-data",
+    'git commit -m "econ: notify all users of the new page"',            # "all users" with no path
 ]
 
 
@@ -136,6 +171,11 @@ def test_write_roads_are_refused_only_after_t0(cmd, no_flag, flag):
 @pytest.mark.parametrize("cmd", FINE)
 def test_everything_else_runs(cmd, flag):
     assert H.decide(cmd, flag) is None, cmd
+
+
+@pytest.mark.parametrize("cmd", WRITES_NOT_CAUGHT)
+def test_the_known_write_gaps_are_still_gaps(cmd, flag):
+    assert H.decide(cmd, flag) is None
 
 
 @pytest.mark.parametrize("cmd", FLAG_NAMES_NOT_CAUGHT)

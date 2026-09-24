@@ -54,9 +54,13 @@ ECON_D1_BINDINGS = ("CATALOG_CLIMATE", "CATALOG")
 # catches the plain mistakes. It refuses a line that names the ProgramData folder in any of the spellings
 # below ANYWHERE and also names `econ` or `CUTOVER` anywhere (R1179: adjacency let `Join-Path
 # $env:ProgramData econ` and `"C:\ProgramData"\econ` through).
-_FOLDER = re.compile(r"programdata|progra~\d|allusersprofile|all\s+users|commonapplicationdata", re.I)
+_FOLDER = re.compile(r"programdata|progra~\d|allusersprofile|all\s+users[\\/]|commonapplicationdata", re.I)
 _FLAG_WORD = re.compile(r"(?<![\w-])(econ|cutover)(?![\w-])", re.I)
-_D1_NAME = "|".join(re.escape(n) for n in ECON_D1) + "|(?-i:" + "|".join(ECON_D1_BINDINGS) + ")"
+_D1_NAME = "|".join(re.escape(n) for n in ECON_D1)
+_BINDING = "(?-i:" + "|".join(ECON_D1_BINDINGS) + ")"
+# Options between the levels of a subcommand (`d1 -c x.toml execute`, `r2 object --config=x put`): wrangler
+# accepts them there (R1184 measured `d1 -c wrangler.toml delete econ-catalog` getting through).
+_O = r"(?:\s+-\S*(?:\s+[^-\s]\S*)?)*"
 _B = re.escape(ECON_BUCKET)
 # wrangler in every spelling a shell reaches it by: wrangler, wrangler@4, wrangler.cmd, .../wrangler.js, ...
 # followed by ANY options before the subcommand (`wrangler -c x.toml d1 ...`, R1179).
@@ -65,31 +69,67 @@ _W = r"\bwrangler(?:@[\w.\-]+)?(?:\.cmd|\.js|\.mjs|\.ps1|\.exe)?\b.*?"
 _AWS = r"\baws\b.*?\bs3(?:api)?\s+"
 _RCLONE = r"\brclone\b.*?\b"
 _WRITE_ROADS = [
-    re.compile(rf"{_W}\br2\s+object\s+(put|delete)\b.*?\b{_B}(?![\w-])", re.I),
+    re.compile(rf"{_W}\br2{_O}\s+object{_O}\s+(put|delete)\b.*?\b{_B}(?![\w-])", re.I),
     # whole-bucket changes the off-machine check cannot see (R1178)
-    re.compile(rf"{_W}\br2\s+bucket\s+(delete|lifecycle|cors|notification|sippy|domain|dev-url|lock|update|catalog)"
-               rf"\b.*?\b{_B}(?![\w-])", re.I),
-    re.compile(rf"{_W}\bd1\s+(execute|migrations\s+apply)\b(?=.*--remote).*?(?<![\w-])({_D1_NAME})(?![\w-])", re.I),
+    re.compile(rf"{_W}\br2{_O}\s+bucket{_O}\s+(delete|lifecycle|cors|notification|sippy|domain|dev-url|lock|update"
+               rf"|catalog)\b.*?\b{_B}(?![\w-])", re.I),
+    re.compile(rf"{_W}\bd1{_O}\s+(execute|migrations{_O}\s+apply)\b(?=.*--remote).*?(?<![\w-])({_D1_NAME})(?![\w-])",
+               re.I),
     # deleting or rewinding a whole database - also invisible to the off-machine check (R1178)
-    re.compile(rf"{_W}\bd1\s+(delete|time-travel)\b.*?(?<![\w-])({_D1_NAME})(?![\w-])", re.I),
+    re.compile(rf"{_W}\bd1{_O}\s+(delete|time-travel)\b.*?(?<![\w-])({_D1_NAME})(?![\w-])", re.I),
+    # a BINDING name only as the database argument (R1184: CATALOG in an hf command's SQL is not a database)
+    re.compile(rf"{_W}\bd1{_O}\s+(execute|migrations{_O}\s+apply)\b(?=.*--remote){_O}\s+[\"']?{_BINDING}(?![\w-])",
+               re.I),
+    re.compile(rf"{_W}\bd1{_O}\s+(delete|time-travel{_O}\s+restore){_O}\s+[\"']?{_BINDING}(?![\w-])", re.I),
     re.compile(rf"/d1/database/({_D1_NAME})\b", re.I),
     re.compile(rf"/r2/buckets/{_B}(?![\w-])", re.I),                       # the REST API (R1179)
-    re.compile(rf"{_AWS}(cp|mv|rm|sync|rb|put-\S+|delete-\S+|copy-object|create-multipart-upload|upload-part\S*"
-               rf"|complete-multipart-upload|abort-multipart-upload|restore-object)\b.*?{_B}(?![\w-])", re.I),
+    # the verb anywhere after `s3` / `s3api`: options may come first (`aws s3api --bucket econ-data delete-object`)
+    re.compile(rf"\baws\b.*?\bs3(?:api)?\b(?=.*?(?<![\w-])(cp|mv|rm|sync|rb|put-\S+|delete-\S+|copy-object"
+               rf"|create-multipart-upload|upload-part\S*|complete-multipart-upload|abort-multipart-upload"
+               rf"|restore-object)(?![\w-])).*?{_B}(?![\w-])", re.I),
     re.compile(rf"{_RCLONE}(copy|copyto|copyurl|move|moveto|sync|bisync|delete|deletefile|purge|rcat|touch|mkdir"
                rf"|rmdir|rmdirs|settier|dedupe|backend)\b.*?{_B}(?![\w-])", re.I),
     # the other S3 command-line clients (R1179)
     re.compile(rf"\b(s5cmd|mc)\b.*?\b(rm|cp|mv|sync|rb|mirror|put|pipe|del)\b.*?{_B}(?![\w-])", re.I),
-    re.compile(rf"{_W}\br2\s+bulk\b.*?\b{_B}(?![\w-])", re.I),
+    re.compile(rf"{_W}\br2{_O}\s+bulk\b.*?\b{_B}(?![\w-])", re.I),
 ]
+# NOTE: the aws / rclone / s5cmd / mc roads refuse DOWNLOADS from the bucket too (`aws s3 cp s3://econ-data/x .`,
+# `rclone copy r2:econ-data ./x`): after T0 the bucket is the frozen copy, and the reads that step 6b needs
+# go through core.r2_util.cloud_client, not a shell (fail closed; none of these CLIs is installed today).
 
 
-def _lines(command: str) -> list[str]:
-    """The command's logical lines: a line CONTINUED onto the next (PowerShell backtick, POSIX backslash,
-    cmd caret at the end of the line) is joined to it, so `wrangler d1 execute` and the database name on the
-    next line are one command (R1178); separate lines stay separate, so an hf command on one line and a
-    mention of econ on the next are not one write (R1179 finding 7)."""
-    return re.sub(r"[`\\^]\r?\n", " ", command).splitlines() or [""]
+def _segments(command: str) -> list[str]:
+    """The separate COMMANDS in `command`. A line continued onto the next (PowerShell backtick, POSIX
+    backslash, cmd caret) is joined first (R1178); then the text is cut at ; && || | and newlines that are
+    OUTSIDE quotes. A newline inside a quoted --command "..." stays part of its command (R1184: cutting at
+    every physical line let `--remote` or the database name after that newline through), and an hf command
+    and a mention of econ in the NEXT command are not one write (R1179 finding 7). An unclosed quote keeps
+    the rest as one segment: more text scanned together, never less."""
+    text = re.sub(r"[`\\^]\r?\n", " ", command)
+    out, cur, quote, i = [], [], None, 0
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch in "\\`" and quote == '"' and i + 1 < len(text):     # an escaped character inside "..."
+                cur.append(ch + text[i + 1])
+                i += 2
+                continue
+            cur.append(" " if ch in "\r\n" else ch)
+            if ch == quote:
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+            cur.append(ch)
+        elif ch in "\r\n;|" or text.startswith("&&", i):
+            out.append("".join(cur))
+            cur = []
+            if text.startswith("&&", i) or text.startswith("||", i):
+                i += 1
+        else:
+            cur.append(ch)
+        i += 1
+    out.append("".join(cur))
+    return [x for x in out if x.strip()] or [""]
 
 
 def cut_over(flag_path: str = FLAG_PATH) -> bool:
@@ -105,17 +145,23 @@ def cut_over(flag_path: str = FLAG_PATH) -> bool:
 
 def decide(command: str, flag_path: str = FLAG_PATH) -> str | None:
     """The reason to deny `command`, or None to let it run."""
-    if any(_FOLDER.search(line) and _FLAG_WORD.search(line) for line in _lines(command)):
-        return ("REFUSED: this command names the econ CUTOVER flag folder (C:\\ProgramData\\econ). Only Ahmed "
-                "creates or changes it, elevated, at T0 (docs/ECON_SELF_HOSTING_PLAN.md step 6a).")
+    # Rule 1 reads the WHOLE command, not per segment: `cd C:\ProgramData; Remove-Item econ` is one act in two
+    # commands. A false refusal here costs a `-F file`; a miss costs the flag (R1184 finding 5, weighed).
+    whole = " ".join(_segments(command))
+    if _FOLDER.search(whole) and _FLAG_WORD.search(whole):
+        return ("REFUSED: this command names the ProgramData folder AND `econ` or `CUTOVER` - it may reach the "
+                "econ CUTOVER flag folder (C:\\ProgramData\\econ), which only Ahmed creates or changes, elevated, "
+                "at T0 (docs/ECON_SELF_HOSTING_PLAN.md step 6a). Mentioning both on purpose? Put the text in a "
+                "file (git commit -F, a script) - the rule reads only command lines.")
     if cut_over(flag_path):
-        for line in _lines(command):
+        for line in _segments(command):
             for road in _WRITE_ROADS:
                 m = road.search(line)
                 if not m:
                     continue
-                return (f"REFUSED after T0: '{m.group(0)[:80]}' writes to the retired econ cloud copy. econ is "
-                        "self-hosted; read D1 through core/d1_remote.py (read-only token), write locally.")
+                return (f"REFUSED after T0: '{m.group(0)[:80]}' touches the retired econ cloud copy. econ is "
+                        "self-hosted: write locally; read D1 through core/d1_remote.py (read-only token) and R2 "
+                        "through core.r2_util.cloud_client.")
     return None
 
 
