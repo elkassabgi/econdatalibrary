@@ -1,5 +1,5 @@
 # Econ self-hosting plan (draft 14, 2026-09-24) - answers reviews R1158, R1160, R1161, R1163-R1167, R1169, R1171,
-# R1172, R1174, R1176-R1192, AR-151-AR-153
+# R1172, R1174, R1176-R1193, AR-151-AR-153
 
 Build status (branch feat/econ-selfhost-origin):
 - Code change 2 (local mode + wrangler.origin.toml, effc6784f) and code change 3 (blob store, sidecar, R2
@@ -63,26 +63,56 @@ Build status (branch feat/econ-selfhost-origin):
     new) + series_fts for new ids + source_counts + source_state('sec_edgar', edgar_delta, daily,
     ok|partial) + source_data_through (stamp_source_data_through: MAX(end_date <= today) over D1). No
     unit_state.
-  * AFTER T0, ONE LOCAL RUN (tools/refresh_sec_edgar.py gains a self-hosted mode, run by the desktop
-    scheduler, not CI): prior facts from the SERVED store (SelfhostBlob), never the mirror (R386: the
-    mirror can be months behind; a CIK change then loses history); merge_facts (multiset union, never
-    shrink - R386/R387); writes through SelfhostBlob.put_atomic (parquet + CSV); the catalogue through
-    core.catalog_path.connect(write=True) inside writer_lock (span UPDATE, new-row INSERT + series_fts,
-    and the FTS title refreshed on a rename); state.db source_state('sec_edgar') ok|partial by today's
-    95 % rule.
-  * data_through: computed by the origin copy from the catalogue with THIS source's rule, MAX(end_date)
-    over end_date <= today (the stamp tool's rule), not the generic MAX(< 2900). R737's objection was to
-    the STALE coherence copy (forward old-rule rows, 207 dated after today); it holds while the local rows
-    are not D1's. So two prerequisites: (1) before T0, sync sec_edgar's rows D1 -> local
-    (tools/sync_source_rows_d1_to_local.py --update-differing) and prove local == D1 on count, spans and
-    the computed data_through against D1's stamp (one PK read of source_data_through); (2) only the local
-    refresher writes those rows afterwards. Then LOCAL_FRESHNESS_WRITERS gets sec_edgar.
-  * THE source_state COLLISION: the orchestrator upserts source_state('sec_edgar') for the 13F entry when
-    it runs ok (orchestrate.py ~1977/2229), which would overwrite the XBRL row that /v1/sources shows. The
-    orchestrator must not write source_state for a source in LOCAL_FRESHNESS_WRITERS (or the 13F entry
-    moves to its own key - a registry change, R347).
+  DRAFT 1 OF THE REST FAILED REVIEW R1193 (2026-09-24); DRAFT 2 BELOW TAKES ITS CORRECTIONS.
+  * ONE STORE, AND IT MUST BE WHOLE FIRST. After T0 the parquet store is LOCAL: under
+    AQUEDUCT_BACKEND=selfhost updater.blob reads and writes files under the live checkout
+    (blob._r2_routed() is None); only series/ CSVs go to the SelfhostBlob store. Draft 1 read "prior facts"
+    from SelfhostBlob, which holds no clean_grouped/ - every company would look new and merge_facts would
+    REPLACE its history (R386's XOM case, 20,903 rows -> 274). So: prior facts and the parquet write go
+    through the updater.blob path functions (the local store after T0); the CSV through SelfhostBlob.
+    Measured 2026-09-24 (R1193): the local store holds 17,467 sec_edgar parquets, newest written 2026-09-05
+    - about 19 days behind CI's daily R2 writes. So the refresher is enabled only after step 6b's
+    footer_diff for sec_edgar shows 0 behind and 0 R2-only, with its AHEAD queue merged.
+  * NEVER "NEW" BY ACCIDENT. A company whose ident the catalogue holds but whose store file is missing, or
+    whose read fails for any reason but not-found, is REFUSED, never treated as new. The written row count
+    is asserted >= the stored file's (never shrink, R386).
+  * THE LOCK. core.catalog_path.writer_lock is taken BEFORE the first store write (a bounded wait, as
+    swap._waiting_writer_lock does - the updater holds it for its whole run) and held through the catalogue
+    and state.db writes. Any catalogue failure is fatal (today it prints "continuing to D1"; after T0
+    there is no D1). The skip rule ("merged facts equal the store") also compares the catalogue span, so a
+    run that died after its store write is caught up on the next run (R730).
+  * CATALOGUE: span UPDATE and new-row INSERT (+ series_fts for a new id) through
+    catalog_path.connect(write=True); series.last_updated set on refreshed rows. No per-id DELETE on
+    series_fts for a rename (a full scan of the fts5 table inside the lock): the origin copies rebuild
+    series_fts from series (origin_copies._rebuild_fts).
+  * THE STATE COLLISION IS REAL TODAY. Read-only on the live state.db (R1193): source_state('sec_edgar') =
+    giant_changed_units / quarterly / ok (the 13F product) and unit_state('sec_edgar','_all') = 13F. So
+    the fix is the 13F entry's own key (e.g. sec_edgar_13f): a registry change (EXPECTED_SOURCE_COUNT
+    unchanged by a rename, but checked in the same commit - R347), which also closes R275; its state rows
+    move with it. The XBRL refresher then writes the WHOLE source_state('sec_edgar') row (strategy
+    included), and no 13F unit shows under sec_edgar in /v1/last-updates or metadata.ts's last_updated.
+  * data_through: computed by the origin copy from the catalogue with this source's rule, MAX(end_date)
+    over end_date <= today UTC (the stamp tool's rule). It equals D1's stamp while the rows are equal.
+    But the clamp hides a forward row instead of failing (R737), and the refresher can write one
+    (coverage_span falls back to max(obs_date) when no fact has ended; EDGAR dates filings after 17:30 ET
+    to the next business day). So the origin copy's check REFUSES any sec_edgar row with end_date after
+    today UTC.
+  * THE PROOF, AND WHEN. After sec-edgar-daily.yml is disabled AND no run of it is queued or in progress
+    (gh run list), sync sec_edgar's rows D1 -> local and compare ALL columns (tools/
+    sync_source_rows_d1_to_local.py --update-differing compares only start/end/title - it is extended),
+    listing local-only ids too; D1 cost: one primary-key range read (~17,468 rows_read, R1193). The proof
+    writes a receipt; t0_ready's d1-only-sources check reads that receipt and checks that the desktop
+    scheduled task exists, not only that LOCAL_FRESHNESS_WRITERS names sec_edgar.
+  * THE SCAN WINDOW is a watermark (the last successful scan's date), not a fixed --days 4: a gap longer
+    than four days (the 6c owner gate, the machine off) would miss a filer until its next filing.
+  * ALSO LOCAL: CI's read-back proof (parquet rows == CSV rows, plus a control company), --respan and
+    --audit (both read R2 today), receipts, the gate check, and a time of day away from the updater run and
+    the swap.
   * enrich_sec_edgar_tickers.py and the remaining D1 roads of refresh_sec_edgar.py leave
     LEGACY_REMOTE_D1 (a local mode; the D1 half refused after T0).
+  * NOT ONLY sec_edgar: R1193 found sec_edgar is the only D1-only FRESHNESS writer, but other sources may
+    have catalogue ROWS only in D1 (updater-daily.yml notes "D1 +285 rows vs local"; sec_edgar was 161 of
+    them). Step 6b's reconcile is their road; it is measured before T0.
 - Also built on 2026-09-24, each answering a parallel review: R1191 (01938a010) - a D1 file that a retry
   re-applies is safe twice (sync_catalog_d1 keeps each id-list DELETE in one file with its INSERTs; a
   file that is not safe twice runs once; migrate_noaa_shard never retries or resumes after a failure),
