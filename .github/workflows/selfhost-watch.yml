@@ -1,11 +1,14 @@
 # Off-machine daily check of the self-hosted econ API (docs/ECON_SELF_HOSTING_PLAN.md, code change 6;
 # tools/selfhost/watch_edge.py). It runs HERE, not on the workstation it watches.
 #
-# Before T0 it checks that the public edge is up and (once the status route is deployed) that the deployed
-# edge's FORWARD / EDGE_STATE match what this branch commits. From T0 until decommission, set the repository
-# variable SELFHOST_NO_WRITES_SINCE to the T0 date: every write to the retired cloud copy (econ R2 bucket,
-# econ D1 catalogue databases) then fails the run and sends an email. SELFHOST_REQUIRE_STATUS=1 makes a
-# missing status route a failure (set it once the step-5 edge is deployed).
+# Always: the public edge is up and fresh, and the deployed edge's FORWARD / EDGE_STATE match what this
+# branch commits (a missing status route fails once the committed state is not the default).
+# From T0 until decommission, set the repository variable SELFHOST_NO_WRITES_SINCE to the T0 MOMENT
+# (e.g. 2026-10-05T14:00:00Z): every write to the retired cloud copy (econ R2 bucket, econ D1 catalogue
+# databases) then fails the run and sends an email.
+#
+# Scheduled runs fire only from the default branch and read ITS wrangler.toml. GitHub disables scheduled
+# workflows in a public repository after 60 days without a commit - see the plan's section 7.
 name: selfhost-watch
 
 on:
@@ -32,5 +35,4 @@ jobs:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           DIGEST_TO: ${{ secrets.DIGEST_TO }}
           SELFHOST_NO_WRITES_SINCE: ${{ vars.SELFHOST_NO_WRITES_SINCE }}
-          SELFHOST_REQUIRE_STATUS: ${{ vars.SELFHOST_REQUIRE_STATUS }}
         run: python -B tools/selfhost/watch_edge.py
