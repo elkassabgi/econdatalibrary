@@ -69,6 +69,14 @@ def main() -> int:
 
     os.environ.setdefault("AQUEDUCT_BACKEND", "r2")
     from updater import blob, config                                # noqa: E402
+    from core import cutover                                        # noqa: PLC0415
+    if cutover.is_cut_over():
+        # AFTER T0 (R1249): r2 is a frozen copy; any other backend reads THIS checkout's tree, the store only in
+        # the live checkout
+        if os.environ["AQUEDUCT_BACKEND"].strip().lower() == "r2":
+            cutover.refuse_if_cut_over("audit_tree_frontier on r2 - R2 is a frozen copy after T0; run it with "
+                                       "AQUEDUCT_BACKEND=selfhost from the live checkout")
+        blob.refuse_unless_live_checkout("audit_tree_frontier (after T0 it reads the live store)")
 
     print(f"read at {_stamp()}   backend {config.BACKEND}")
     out_dir = config.source_dir(a.source)

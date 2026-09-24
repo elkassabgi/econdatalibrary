@@ -59,3 +59,31 @@ def test_after_t0_another_checkout_is_refused(live, monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "argv", ["sample_source_coverage.py", "--source", "zz"])
     with pytest.raises(cutover.CutoverRefused, match="R1203"):
         C.main()
+
+
+def _trace_series_reads(monkeypatch):
+    """Every SQL statement the tool sends through the catalogue resolver (both roads)."""
+    import re as _re
+    sql = []
+    for name in ("connect", "connect_path"):
+        real = getattr(catalog_path, name)
+
+        def traced(*a, _real=real, **k):
+            con = _real(*a, **k)
+            con.set_trace_callback(sql.append)
+            return con
+        monkeypatch.setattr(catalog_path, name, traced)
+
+    def whole_table_reads():
+        reads = [q for q in sql if "FROM series" in q or "from series" in q]
+        return reads, [q for q in reads if "GROUP BY" in q.upper() or _re.search(r"source_id\s*=\s*", q)]
+    return whole_table_reads
+
+
+def test_after_t0_the_sample_is_read_by_primary_key_range(live, monkeypatch, capsys):
+    """R1249 G8: `source_id=?` has no index - a full scan of the live build, twice, one with ORDER BY RANDOM()."""
+    check = _trace_series_reads(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["sample_source_coverage.py", "--source", "zz", "--sample", "4", "--workers", "2"])
+    C.main()
+    reads, bad = check()
+    assert len(reads) == 2 and not bad and all("series_id >=" in q for q in reads), reads

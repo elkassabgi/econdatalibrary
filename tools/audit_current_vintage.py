@@ -78,6 +78,15 @@ def main() -> int:
     ap.add_argument("sources", nargs="*", help="fetcher module names (default: all)")
     ap.add_argument("--live", action="store_true", help="only registry live:true sources")
     a = ap.parse_args()
+    from core import cutover                                         # noqa: PLC0415
+    if cutover.is_cut_over():
+        # AFTER T0 (R1249): r2 is a frozen copy; any other backend reads THIS checkout's tree, the store only in
+        # the live checkout
+        if os.environ.get("AQUEDUCT_BACKEND", "local").strip().lower() == "r2":
+            cutover.refuse_if_cut_over("audit_current_vintage on r2 - R2 is a frozen copy after T0; run it with "
+                                       "AQUEDUCT_BACKEND=selfhost from the live checkout")
+        from updater import blob                                     # noqa: PLC0415
+        blob.refuse_unless_live_checkout("audit_current_vintage (after T0 it reads the live store)")
 
     # setdefault above means an INHERITED AQUEDUCT_BACKEND still wins, so this can silently be
     # pointed at the local mirror by the shell that launched it. Say which one it got (R296).

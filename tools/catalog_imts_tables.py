@@ -41,6 +41,12 @@ FREQ_LABEL = {"A": "annual", "M": "monthly", "Q": "quarterly"}
 
 
 def main() -> int:
+    from core import cutover                                         # noqa: PLC0415
+    if cutover.is_cut_over():
+        # AFTER T0 it writes the LIVE build from THIS checkout's store, which is the store only in the live
+        # checkout - a worktree's is scratch (R1249: a worktree run replaced live catalogue rows)
+        from updater import blob                                     # noqa: PLC0415
+        blob.refuse_unless_live_checkout("catalog_imts_tables (after T0 it writes the live catalogue from this checkout's store)")
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true")
     a = ap.parse_args()

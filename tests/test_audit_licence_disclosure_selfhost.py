@@ -68,6 +68,23 @@ def test_the_chunked_build_read_equals_the_group_by(tmp_path, monkeypatch):
         assert sorted(L.served_from_build(chunk=chunk), key=repr) == want, chunk
 
 
+def test_iter_series_reads_every_row_once_including_null_and_empty_ids(tmp_path):
+    """R1249 finding 4: `series_id > ''` never reaches '' or NULL - a TEXT PRIMARY KEY allows both."""
+    import collections
+    b = _build(tmp_path)
+    with sqlite3.connect(b) as c:
+        c.executemany("INSERT INTO series VALUES (?,?,?)", [("", "aa", "odc"), (None, "bb", "odc")])
+    c.close()
+    con = sqlite3.connect(b)
+    want = collections.Counter(con.execute("SELECT source_id, license_id FROM series").fetchall())
+    for chunk in (1, 2, 7, 1000):
+        got = collections.Counter(catalog_path.iter_series(con, ("source_id", "license_id"), chunk=chunk))
+        assert got == want, chunk
+    with pytest.raises(ValueError):
+        list(catalog_path.iter_series(con, ("source_id; DROP TABLE series",)))
+    con.close()
+
+
 def test_the_build_is_read_in_bounded_chunks_never_one_group_by(tmp_path, monkeypatch):
     monkeypatch.setattr(catalog_path, "CHECKOUT_PATH", str(_build(tmp_path)))
     monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "NO_FLAG"))
@@ -80,4 +97,7 @@ def test_the_build_is_read_in_bounded_chunks_never_one_group_by(tmp_path, monkey
     monkeypatch.setattr(catalog_path, "connect", traced)
     L.served_from_build(chunk=3)
     reads = [q for q in sql if "FROM series" in q]
-    assert len(reads) == 4 and all("LIMIT 3" in q and "GROUP BY" not in q for q in reads), reads
+    chunks = [q for q in reads if "LIMIT 3" in q]
+    nulls = [q for q in reads if "IS NULL" in q]
+    assert len(chunks) == 4 and len(nulls) == 1 and len(reads) == 5, reads
+    assert not any("GROUP BY" in q for q in reads), reads

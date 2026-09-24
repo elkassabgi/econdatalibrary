@@ -141,19 +141,31 @@ def main() -> int:
     ap.add_argument("--max-objects", type=int, default=200_000)
     a = ap.parse_args()
 
-    served = _served_sources()
+    from core import cutover                                          # noqa: PLC0415
+    if cutover.is_cut_over():
+        # AFTER T0 the catalogue is the LIVE build: refuse outside the live checkout BEFORE reading it, and count it
+        # in short primary-key chunks - one GROUP BY holds the build's read lock and the writer waits (R1249)
+        from updater import blob                                      # noqa: PLC0415
+        blob.refuse_unless_live_checkout("audit_csv_staleness (after T0 it judges the live store)")
+        import collections                                            # noqa: PLC0415
+        from core import catalog_path                                 # noqa: PLC0415
+        _con = catalog_path.connect()
+        try:
+            served = dict(collections.Counter(s for (s,) in catalog_path.iter_series(_con, ("source_id",))))
+        finally:
+            _con.close()
+    else:
+        served = _served_sources()
     targets = a.source or sorted(served)
     if a.never_ok_only:
         never = _never_ok_sources()
         targets = [t for t in targets if t in never]
     print(f"screening {len(targets)} source(s); cap {a.max_objects:,} objects each\n")
 
-    from core import cutover                                          # noqa: PLC0415
     if cutover.is_cut_over():
         # AFTER T0 (plan step 6d): the parquets are the live local store and the served CSVs the self-hosted
-        # store (R2 is a frozen copy) - from the live checkout only
+        # store (R2 is a frozen copy) - the live-checkout refusal ran above, before the catalogue was read
         from updater import blob                                      # noqa: PLC0415
-        blob.refuse_unless_live_checkout("audit_csv_staleness (after T0 it judges the live store)")
         _store = blob.SelfhostBlob()
 
         def newest_of(src):

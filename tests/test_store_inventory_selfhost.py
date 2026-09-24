@@ -105,3 +105,13 @@ def test_before_t0_r2_is_the_store_and_unreachable_is_a_refusal(live, monkeypatc
     monkeypatch.setattr(sys, "argv", ["store_inventory.py", "zz"])
     assert S.main() == 2
     assert "REFUSING to answer from the local disk" in capsys.readouterr().out
+
+
+def test_after_t0_sidecar_files_are_not_store_files(live, monkeypatch, capsys):
+    """R1249 A3: the live tree holds sidecars (edgar_pointers: 256 parquet of 258 files); they are not counted."""
+    zz = live / "live" / "data" / "clean_full" / "zz"
+    for name in ("_incr_state.json", "_manifest.jsonl", "a.done"):
+        (zz / name).write_text("x")
+    monkeypatch.setattr(sys, "argv", ["store_inventory.py", "zz"])
+    assert S.main() == 0
+    assert "local store files :       2   <- THE STORE" in capsys.readouterr().out

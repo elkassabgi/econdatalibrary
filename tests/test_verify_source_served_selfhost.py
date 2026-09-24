@@ -242,7 +242,8 @@ def test_the_served_count_reads_total_for_this_source_fresh_every_time(monkeypat
 
 
 @pytest.mark.parametrize("body,why", [(b'{"count": 7}', "no integer `total`"), (b"[]", "no integer `total`"),
-                                      (b'{"total": true}', "no integer `total`")])       # R1243 F15: bool is int
+                                      (b'{"total": true}', "no integer `total`"),        # R1243 F15: bool is int
+                                      (b'{"total": 7.0}', "no integer `total`")])        # R1249 A16
 def test_an_answer_without_a_total_is_unchecked_not_zero(monkeypatch, body, why):
     import urllib.request
     monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: _Resp(body))

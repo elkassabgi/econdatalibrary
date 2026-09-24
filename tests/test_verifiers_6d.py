@@ -64,23 +64,15 @@ DEFUSED = {"tools/_delete_statcan_r2.py", "tools/trim_bfs_corrupt_tail.py", "too
 CI_ONLY = {"updater/send_digest.py"}
 # Names the cloud roads in order to REFUSE them (plan change 5).
 BY_DESIGN = {"tools/selfhost/cutover_hook.py"}
-# Read the store through updater.blob, whose road is the CALLER's AQUEDUCT_BACKEND (read on every call): r2 is
-# only their DEFAULT (setdefault or a --backend/--r2 flag). Run bare after T0 they route to r2 and fail at the
-# first call - r2_util.client() refuses reads after T0 (audit_store_present prints ERR per source). Run by the
-# self-hosted pipeline (make_servable sets AQUEDUCT_BACKEND=selfhost and calls catalog_complete) they read the
-# running checkout's tree: the store in the LIVE checkout, scratch anywhere else. The first 6d scan could not see
-# this road at all (R1243); refusing them outright broke make_servable's self-hosted path (7 tests), so they are
-# classified, not refused. test_env_routed_tools_have_no_road_of_their_own pins that r2 is only their default.
-ENV_ROUTED = {
-    "tools/audit_current_vintage.py", "tools/audit_tree_frontier.py", "tools/audit_store_present.py",
-    "tools/catalog_cepii_baci.py", "tools/catalog_complete.py", "tools/catalog_dip_tables.py",
-    "tools/catalog_imts_tables.py", "tools/catalog_mfs_tables.py", "tools/catalog_pip_tables.py",
-}
+# (R1243 round 3 had an ENV_ROUTED class here: nine tools whose r2 is only a default of AQUEDUCT_BACKEND. R1249
+# showed it false for four catalogue writers that read the checkout's parquet with duckdb whatever the backend,
+# and a worktree run after T0 replaced live catalogue rows. Every one of the nine now handles T0 itself - a
+# catalogue writer runs only from the live checkout; an audit refuses r2 and a non-live checkout - so the scan no
+# longer lists them and the class is gone. test_after_t0_the_backend_routed_tools_refuse_outside_the_live_checkout.)
 
 CLASSES = {"VERIFIERS_6D": VERIFIERS_6D, "USER_FACING": USER_FACING, "CLOUD_COST": CLOUD_COST,
            "COST_REFUSED_AFTER_T0": COST_REFUSED_AFTER_T0, "CLOUD_WRITE_REFUSED": CLOUD_WRITE_REFUSED,
-           "OFFLINE": OFFLINE, "DEFUSED": DEFUSED, "CI_ONLY": CI_ONLY, "BY_DESIGN": BY_DESIGN,
-           "ENV_ROUTED": ENV_ROUTED}
+           "OFFLINE": OFFLINE, "DEFUSED": DEFUSED, "CI_ONLY": CI_ONLY, "BY_DESIGN": BY_DESIGN}
 
 
 def _code_only(src):
@@ -206,16 +198,66 @@ def test_after_t0_a_meaningless_verifier_refuses_first(tmp_path, monkeypatch, na
         mod.main()
 
 
-def test_env_routed_tools_have_no_road_of_their_own():
-    """ENV_ROUTED is a claim about the road: r2 only as a DEFAULT of AQUEDUCT_BACKEND (so the caller's choice
-    wins), never `config.BACKEND = "r2"` forced over it, and no R2/D1 client of their own."""
-    own = re.compile(r"""\bBACKEND = ['"]r2['"]|r2_util \. (?:client|cloud_client)|boto3|d1_remote|"""
-                     r"""['"]AQUEDUCT_BACKEND['"] \] = ['"]r2['"]""")
-    default = re.compile(r"""setdefault \( ['"]AQUEDUCT_BACKEND['"] , ['"]r2['"]|"""
-                         r"""['"]--backend['"] , default = ['"]r2['"]""")
-    for rel in sorted(ENV_ROUTED):
-        code = _code_only(open(os.path.join(ROOT, rel), encoding="utf-8-sig").read())
-        assert default.search(code) and not own.search(code), rel
+def _t0_elsewhere(tmp_path, monkeypatch):
+    """T0 on, and this process is NOT the live checkout."""
+    from core import cutover, catalog_path
+    from updater import blob
+    monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "CUTOVER"))
+    (tmp_path / "CUTOVER").write_text("")
+    monkeypatch.setattr(blob, "_code_root", lambda: str(tmp_path / "a_worktree"))
+    monkeypatch.setattr(catalog_path, "connect", lambda *a, **k: pytest.fail("the catalogue was opened first"))
+    monkeypatch.setattr(catalog_path, "write_session", lambda *a, **k: pytest.fail("the writer lock was taken first"))
+    return cutover
+
+
+# (tool, argv, how main is called). R1249: a catalogue writer run from a worktree after T0 replaced live
+# catalogue rows from scratch data; four verifiers read the live build before they refused.
+BACKEND_ROUTED = [
+    ("catalog_complete", [], "sources"), ("catalog_cepii_baci", [], None), ("catalog_dip_tables", [], None),
+    ("catalog_imts_tables", [], None), ("catalog_mfs_tables", [], None), ("catalog_pip_tables", [], None),
+    ("audit_tree_frontier", ["--source", "zz"], None), ("audit_current_vintage", [], None),
+    ("audit_store_present", ["--backend", "local"], None),
+    ("audit_r2_vs_catalog", ["zz"], None), ("audit_csv_staleness", ["--source", "zz"], None),
+    ("sample_source_coverage", ["--source", "zz"], None), ("verify_derive_parity", ["--source", "zz"], None),
+]
+
+
+@pytest.mark.parametrize("name,argv,call", BACKEND_ROUTED, ids=[b[0] for b in BACKEND_ROUTED])
+def test_after_t0_the_backend_routed_tools_refuse_outside_the_live_checkout(tmp_path, monkeypatch, name, argv, call):
+    import importlib
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    mod = importlib.import_module(name)
+    cutover = _t0_elsewhere(tmp_path, monkeypatch)
+    monkeypatch.setenv("AQUEDUCT_BACKEND", "selfhost")
+    monkeypatch.setattr(sys, "argv", [name, *argv])
+    with pytest.raises(cutover.CutoverRefused, match="R1203"):
+        mod.main(["zz"]) if call == "sources" else mod.main()
+
+
+@pytest.mark.parametrize("name,argv", [("audit_tree_frontier", ["--source", "zz"]), ("audit_current_vintage", []),
+                                       ("audit_store_present", ["--backend", "r2"])])
+def test_after_t0_an_audit_on_r2_refuses_even_in_the_live_checkout(tmp_path, monkeypatch, name, argv):
+    """r2 after T0 is a frozen copy: the refusal names it, and comes before any read."""
+    import importlib
+    from updater import blob
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    mod = importlib.import_module(name)
+    cutover = _t0_elsewhere(tmp_path, monkeypatch)
+    monkeypatch.setattr(blob, "refuse_unless_live_checkout", lambda *a, **k: None)   # as if live
+    monkeypatch.setenv("AQUEDUCT_BACKEND", "r2")
+    monkeypatch.setattr(sys, "argv", [name, *argv])
+    with pytest.raises(cutover.CutoverRefused, match="frozen copy after T0"):
+        mod.main()
+
+
+def test_importing_audit_current_vintage_leaves_the_backend_alone(monkeypatch):
+    """R1249 A11: the env line runs only as a script; an import must not move this process onto R2 (R1239)."""
+    import importlib
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    sys.modules.pop("audit_current_vintage", None)
+    importlib.import_module("audit_current_vintage")
+    assert os.environ.get("AQUEDUCT_BACKEND") is None
 
 
 def test_after_t0_audit_impossible_dates_refuses_r2_and_scratch(tmp_path, monkeypatch):

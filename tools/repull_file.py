@@ -168,7 +168,8 @@ def main() -> int:
     if cutover.is_cut_over():
         print(f"\n  NEXT: run the updater for it on this machine, e.g.\n"
               f"    python -m updater.run --source {a.source} --force\n"
-              f"  then re-run tools/audit_impossible_dates.py --source {a.source} and expect zero.")
+              f"  then re-run tools/audit_impossible_dates.py --local --source {a.source} from the live checkout "
+              f"and expect zero.")
     else:
         print(f"\n  NEXT: dispatch the fetcher, e.g.\n"
               f"    gh workflow run updater-daily.yml -f source={a.source} -f force=true\n"
