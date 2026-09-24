@@ -413,6 +413,26 @@ def test_a_connection_the_origin_asked_to_close_is_not_reused(pooled):
     assert srv.pool.idle_count("127.0.0.1", origin.server_address[1]) == 0, "a closed connection is not kept"
 
 
+def test_the_pool_never_hands_out_an_aged_connection_and_ages_out_every_target():
+    """Unit level: through the router, http.client silently reopens a closed connection, so a mutant that kept
+    aged entries still passed the request test."""
+    p = router.OriginPool()
+    a, b = p.fresh("127.0.0.1", 1), p.fresh("127.0.0.1", 2)
+    p.put("127.0.0.1", 1, a)
+    p.put("127.0.0.1", 2, b)
+    p.IDLE_S = 0.0
+    time.sleep(0.01)
+    conn, reused = p.get("127.0.0.1", 1)
+    assert conn is not a and reused is False
+    assert p.idle_count("127.0.0.1", 2) == 0, "the other target's aged connection went too (R1229: after a flip)"
+
+
+def test_the_idle_limit_is_below_the_origins_own_idle_close():
+    """R1229: workerd (pinned 1.20250718.0) closes an idle keep-alive connection after ~5 s. Above that, every
+    lull hands out dead connections (answered only because the retry takes a fresh one)."""
+    assert router.OriginPool.IDLE_S < 5.0
+
+
 def test_an_idle_connection_past_its_age_is_not_reused(pooled):
     port, conns, origin, srv = pooled
     assert _get(port, "/v1/x")[0] == 200
@@ -442,3 +462,124 @@ def test_a_client_that_leaves_mid_body_does_not_return_the_connection(pooled):
     assert srv.pool.idle_count("127.0.0.1", origin.server_address[1]) == 0
     assert _get(port, "/v1/x")[0] == 200
     assert len(conns) == 2, "the abandoned connection was not reused"
+
+
+# ---- R1229: an origin that closes idle connections, a timeout, a 1xx -----------------------------------------
+def _serve_origin(handler_cls):
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def _router_for(tmp_path, origin_port):
+    state = tmp_path / "router.json"
+    state.write_text(json.dumps({"active": "blue", "targets": {
+        "blue": f"http://127.0.0.1:{origin_port}", "green": f"http://127.0.0.1:{origin_port}"}}))
+    srv = router.serve(str(state), 0)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def test_after_the_origin_closes_idle_connections_every_request_still_succeeds(tmp_path):
+    """R1229: workerd closes an idle keep-alive connection after ~5 s. This origin does it after 1 s. A burst,
+    a lull longer than that (and shorter than the pool's IDLE_S), and a burst again: no 502 - the retry takes a
+    NEW connection, not another dead pooled one."""
+    ran = []
+
+    class H(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        timeout = 1                                            # closes an idle kept-alive connection after 1 s
+
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            ran.append(self.path)
+            time.sleep(0.2)                                    # so the burst needs several connections
+            body = b"ok"
+            self.send_response(200)
+            self.send_header("content-length", "2")
+            self.end_headers()
+            self.wfile.write(body)
+    origin = _serve_origin(H)
+    srv = _router_for(tmp_path, origin.server_address[1])
+    try:
+        for burst in range(2):
+            out = []
+            threads = [threading.Thread(target=lambda: out.append(_get(srv.server_address[1], "/v1/x")[0]))
+                       for _ in range(8)]
+            for th in threads:
+                th.start()
+            for th in threads:
+                th.join()
+            assert out == [200] * 8, f"burst {burst}: {out}"
+            if burst == 0:
+                assert srv.pool.idle_count("127.0.0.1", origin.server_address[1]) >= 2, "precondition: pooled"
+                time.sleep(1.8)                                # past the origin's close, inside IDLE_S (4 s)
+    finally:
+        srv.shutdown()
+        origin.shutdown()
+
+
+def test_a_timeout_is_not_retried(tmp_path):
+    """R1229: a timeout is an OSError, and was retried - the origin ran the slow request twice."""
+    ran = []
+
+    class H(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            ran.append(self.path)
+            if self.path == "/slow-answer":
+                time.sleep(2.0)
+            self.send_response(200)
+            self.send_header("content-length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+    origin = _serve_origin(H)
+    srv = _router_for(tmp_path, origin.server_address[1])
+    try:
+        srv.pool.TIMEOUT_S = 1
+        assert _get(srv.server_address[1], "/v1/x")[0] == 200                # pools a connection (1 s timeout)
+        assert _get(srv.server_address[1], "/slow-answer")[0] == 502
+        time.sleep(2.5)
+        assert ran.count("/slow-answer") == 1, f"the origin ran it {ran.count('/slow-answer')} times"
+    finally:
+        srv.shutdown()
+        origin.shutdown()
+
+
+def test_a_1xx_answer_never_leaves_its_connection_in_the_pool(tmp_path):
+    """R1229: http.client skips only 100; a 103 was forwarded as the answer and the connection pooled with the
+    real response unread - the NEXT client got it."""
+    import socketserver
+
+    class Raw(socketserver.StreamRequestHandler):
+        def handle(self):
+            while True:
+                line = self.rfile.readline()
+                if not line:
+                    return
+                path = line.split()[1].decode()
+                while self.rfile.readline() not in (b"\r\n", b"\n", b""):
+                    pass
+                body = ("SECRET-FOR " + path).encode()
+                self.wfile.write(b"HTTP/1.1 103 Early Hints\r\nlink: </x>\r\n\r\n")
+                self.wfile.write(b"HTTP/1.1 200 OK\r\ncontent-length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+                self.wfile.flush()
+
+    origin = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Raw)
+    threading.Thread(target=origin.serve_forever, daemon=True).start()
+    srv = _router_for(tmp_path, origin.server_address[1])
+    try:
+        _get(srv.server_address[1], "/a")
+        assert srv.pool.idle_count("127.0.0.1", origin.server_address[1]) == 0
+        body = _get(srv.server_address[1], "/b")[2]
+        assert b"SECRET-FOR /a" not in body, "client B got client A's response"
+    finally:
+        srv.shutdown()
+        origin.shutdown()
+        origin.server_close()

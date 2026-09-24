@@ -140,28 +140,35 @@ class OriginPool:
     have dropped it) - a reused one that turns out dead is retried ONCE on a fresh connection, which is safe
     because the router forwards only GET, HEAD and OPTIONS."""
     MAX_IDLE = 32
-    IDLE_S = 30.0
+    # BELOW THE ORIGIN'S OWN IDLE CLOSE (R1229): workerd closes an idle keep-alive connection after ~5 s
+    # (measured on the pinned 1.20250718.0), so a pool that kept them 30 s handed out dead ones after every
+    # quiet spell - 4 of 8 requests answered 502 after a 7 s lull.
+    IDLE_S = 4.0
+    TIMEOUT_S = 130
 
     def __init__(self):
         self._lock = threading.Lock()
         self._idle: dict = {}                               # (host, port) -> [(conn, returned_at)]
 
+    def fresh(self, host: str, port: int):
+        return http.client.HTTPConnection(host, port, timeout=self.TIMEOUT_S)
+
     def get(self, host: str, port: int):
-        """(connection, reused?)."""
+        """(connection, reused?). Idle connections past IDLE_S are closed - for EVERY target, so an old
+        target's connections after a flip do not stay open until the next flip back (R1229)."""
         now = time.monotonic()
         stale = []
+        found = None
         with self._lock:
+            for key, entries in self._idle.items():
+                self._idle[key] = [(c, at) for c, at in entries if now - at <= self.IDLE_S]
+                stale += [c for c, at in entries if now - at > self.IDLE_S]
             idle = self._idle.get((host, port), [])
-            while idle:
-                conn, at = idle.pop()
-                if now - at <= self.IDLE_S:
-                    for s in stale:
-                        s.close()
-                    return conn, True
-                stale.append(conn)
+            if idle:
+                found = idle.pop()[0]
         for s in stale:
             s.close()
-        return http.client.HTTPConnection(host, port, timeout=130), False
+        return (found, True) if found is not None else (self.fresh(host, port), False)
 
     def put(self, host: str, port: int, conn) -> None:
         with self._lock:
@@ -230,8 +237,8 @@ def make_handler(state: State, inflight: Inflight, pool: "OriginPool | None" = N
 
         def _proxy(self, t):
             drop = _dropped(self.headers) | {"host", "content-length"}
+            conn, reused = pool.get(t.hostname, t.port)
             for attempt in (0, 1):
-                conn, reused = pool.get(t.hostname, t.port)
                 try:
                     conn.putrequest(self.command, self.path, skip_host=True, skip_accept_encoding=True)
                     conn.putheader("host", t.netloc)
@@ -241,10 +248,16 @@ def make_handler(state: State, inflight: Inflight, pool: "OriginPool | None" = N
                     conn.endheaders()
                     resp = conn.getresponse()
                     break
-                except (OSError, http.client.HTTPException):
+                except (OSError, http.client.HTTPException) as e:
                     conn.close()
-                    if reused and attempt == 0:
-                        continue                  # a pooled connection the origin had dropped: once more, fresh
+                    # ONCE MORE, on a NEW connection (not another pooled one, which may be as dead - R1229), and
+                    # only when a REUSED connection turned out closed before any answer: never a timeout, which
+                    # means the origin had the request and may have run it (R1229: a slow request ran twice)
+                    closed = isinstance(e, (ConnectionError, http.client.RemoteDisconnected,
+                                            http.client.CannotSendRequest)) and not isinstance(e, TimeoutError)
+                    if reused and attempt == 0 and closed:
+                        conn = pool.fresh(t.hostname, t.port)
+                        continue
                     return self._refuse(502, "origin_instance_unreachable")
             finished = False
             try:
@@ -284,7 +297,9 @@ def make_handler(state: State, inflight: Inflight, pool: "OriginPool | None" = N
             finally:
                 # back to the pool only a response read to the end that the origin did not ask to close;
                 # anything else is closed - the origin stops work on a closed connection
-                if finished and resp.isclosed() and not resp.will_close:
+                # never after a 1xx: http.client skips only 100, so a 103 was forwarded as the answer and the
+                # real response left unread on the connection - the next client got it (R1229)
+                if finished and resp.isclosed() and not resp.will_close and resp.status >= 200:
                     pool.put(t.hostname, t.port, conn)
                 else:
                     conn.close()

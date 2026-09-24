@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import sqlite3
 import subprocess
@@ -659,13 +660,27 @@ def test_stop_ends_the_whole_process_tree(tmp_path):
     swap.place(str(tmp_path / "cp"), persist, SLOTS)
     pidfile = tmp_path / "child.pid"
     p = swap.start(_fake_cmd(("--child", str(pidfile)))(_port(), persist, "x"), str(tmp_path), str(tmp_path / "log"))
-    assert _eventually(lambda: pidfile.exists() and pidfile.read_text().strip() != "")
-    child = int(pidfile.read_text())
-    assert _alive(child) and _alive(p.pid), "positive control: both are running"
-    st = swap.stop(p.pid, swap.created(p.pid))
-    assert st["stopped"] and st["alive"] == [] and st["detail"].startswith(f"stopped pid {p.pid} and 1 child")
-    p.wait(15)
-    assert _eventually(lambda: not _alive(p.pid) and not _alive(child)), "the child (workerd) went too"
+    child = None
+    try:
+        assert _eventually(lambda: pidfile.exists() and pidfile.read_text().strip() != "")
+        child = int(pidfile.read_text())
+        assert _alive(child) and _alive(p.pid), "positive control: both are running"
+        st = swap.stop(p.pid, swap.created(p.pid))
+        assert st["stopped"] and st["alive"] == [] and st["detail"].startswith(f"stopped pid {p.pid} and 1 child")
+        p.wait(15)
+        assert _eventually(lambda: not _alive(p.pid) and not _alive(child)), "the child (workerd) went too"
+    finally:
+        # a FAILED assertion above must not leave the fake origin and its child running for the rest of the
+        # session (a leaked _fake_origin.py was found after one such failure, 2026-09-24)
+        for pid in (child, p.pid):
+            if pid is not None and _alive(pid):
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except OSError:
+                    pass
+        if p.poll() is None:
+            p.kill()
+            p.wait(15)
 
 
 def test_stop_never_kills_a_reused_pid(tmp_path):
