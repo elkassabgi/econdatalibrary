@@ -71,7 +71,11 @@ Build status (branch feat/econ-selfhost-origin):
   Its FIRST RUN is gated on feat/econ-13f-own-key merging: without updater/state_migrations.py, or with any
   13F row still under sec_edgar, it refuses (the upsert would overwrite the 13F product's row). Still owed
   (not built): the local read-back proof, --respan/--audit, the time of day, and step 6b's footer_diff
-  showing the local sec_edgar store whole.
+  showing the local sec_edgar store whole. Day status after T0 (R1235/R1236): OK only with <=5% transient
+  fetch failures and nothing refused by the store, skipped under the lock, missing from the catalogue
+  read-back, or all-empty (>10 answers parsing to no facts); anything else is partial (never last_success)
+  and exits 1. The heartbeat reader check (t0_ready) also requires origin/main's selfhost-watch.yml to parse
+  to the same document as the reviewed copy (R1236).
   * ONE STORE, AND IT MUST BE WHOLE FIRST. After T0 the parquet store is LOCAL: under
     AQUEDUCT_BACKEND=selfhost updater.blob reads and writes files under the live checkout
     (blob._r2_routed() is None); only series/ CSVs go to the SelfhostBlob store. Draft 1 read "prior facts"
@@ -272,7 +276,8 @@ Build status (branch feat/econ-selfhost-origin):
   completed one-shot on a fixed list, R1210 - and refuses after T0 since cd1572c48); seven tools still end
   with "NEXT: refresh_r2_catalog", which refuses after T0 (catalog_complete, delist_source_rows,
   retire_source, derive_unsdg_flows, catalog_eia_tables, catalog_imts_tables, catalog_cepii_baci - R1234):
-  after T0 their NEXT line must name the local step instead; a self-hosted path for tools/run_local_heavy.ps1 and
+  DONE f4dbbed81 - after T0 core.cutover.next_steps names the swap instead, and a ratchet holds every printed
+  refresh_r2_catalog to it; a self-hosted path for tools/run_local_heavy.ps1 and
   make_servable.py (after T0 both fail closed today: the heavy run asks for --pull-state and the R2
   backend, make_servable forces R2); the verifier re-pointing (6d).
 - Changes 4 and 5 follow the rules in section 3.4a-c (R1167 A-C).
