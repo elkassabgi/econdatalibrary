@@ -257,9 +257,12 @@ Build status (branch feat/econ-selfhost-origin):
   backup_store_object / delete_store_object). probe_csv_freshness reads the self-hosted store after T0,
   keeps its bookmark locally and refuses outside the live checkout. rebuild_cso_retired_from_csv and
   sec_edgar_union_repair refuse to run after T0 (their work has no meaning there).
-  AHMED'S STEP for the probe: it ran only in updater-daily.yml, which T0 switches off. Something on the
-  workstation must run `python tools/probe_csv_freshness.py` daily after T0 (a scheduled task, or a line
-  in the guard loop). That is a change to the machine's configuration, so it is his to approve.
+  THE PROBE'S DAILY RUN (a T0 step; Ahmed delegated it 2026-09-24): it ran only in updater-daily.yml, which T0
+  switches off. The workstation has no econ scheduled task - its watchdog starts from the Startup folder
+  (EconGuard.cmd -> RELAUNCH_GUARD_LOOP.ps1) - so the probe joins THAT loop the way run_local_heavy does
+  (-IfDue: a stamp file, run when >20 h old), at T0 and not before (before T0 it would run beside CI's
+  copy). Command: `python tools/probe_csv_freshness.py` from the live checkout; a non-zero exit (stale
+  served bytes) goes to the guard log and the digest.
   THE HOST RUNS THE TESTS TOO (R1218 finding 5): one run of the router load test left 7,453 sockets in
   TIME_WAIT, and overlapping suites reached 12,289 of 16,384 ephemeral ports; tests then failed with
   WinError 10048. After T0 the live router opens a new connection to the origin for every request on this
