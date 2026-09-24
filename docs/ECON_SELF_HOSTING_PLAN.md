@@ -109,7 +109,12 @@ client -> econdl-api.elkassabgi.workers.dev   EDGE worker (same name, forever)
               - CATALOG / CATALOG_CLIMATE: per-swap DISPOSABLE COPIES of the build, made with the SQLite
                 backup API ONLY (no plain file copy, even under the lock: a writer killed mid-transaction
                 leaves a hot journal that makes any plain copy torn - R1176; the lock's holder rolls it
-                back first), then PRAGMA quick_check, total = primary + climate, and
+                back first), SPLIT as the D1 sync splits (tools/selfhost/origin_copies.py: the shard
+                sources' series, series_fts and source_counts rows only in the climate copy, their
+                source/license parents in both; source_counts recomputed from series - measured
+                2026-09-24: the probe's primary copy held all 13,952,906 series incl. 3,138,159 noaa and
+                its climate copy was empty, so noaa series were unreachable through the worker's
+                routing), then PRAGMA quick_check, total = primary + climate, and
                 COUNT(series_fts) = COUNT(series) per file, before the flip; noaa only in CLIMATE; the
                 service account is read-only on the build and the store
               - SERIES_BUCKET: adapter over the blob sidecar (content-addressed files + SQLite index
