@@ -284,6 +284,23 @@ def test_the_retry_line_names_wrangler_s_error_not_its_banner(before_t0, monkeyp
     assert "ERROR: D1 import busy [code: 7500] - retry 1/3" in out and "banner" not in out
 
 
+# wrangler 3.114.17's real closing lines on a failure (R1191 finding 3: the log pointer comes AFTER the error)
+REAL_TAIL = ("\n\u2718 [ERROR] A request to the Cloudflare API failed. Authentication error [code: 10000]\n\n"
+             "\U0001fab5  Logs were written to \"C:\\Users\\x\\.wrangler\\logs\\wrangler-2026-09-24.log\"\n")
+
+
+def test_the_retry_line_skips_wrangler_s_log_pointer(before_t0, monkeypatch):
+    told = []
+    _fake(monkeypatch, (1, "", "noise" + REAL_TAIL), (0, "done", ""))
+    assert d1_remote.execute_file("econ-catalog", "x.sql", tries=2, on_retry=lambda n, why: told.append(why)) == "done"
+    assert told == ["exit 1: \u2718 [ERROR] A request to the Cloudflare API failed. Authentication error [code: 10000]"]
+
+
+def test_without_an_error_line_the_reason_is_the_last_line_but_never_the_log_pointer():
+    assert d1_remote._last_line("first\nsecond\n\U0001fab5  Logs were written to \"x.log\"\n") == "second"
+    assert d1_remote._last_line("") == ""
+
+
 def test_a_timeout_is_retried_only_when_the_caller_says_the_file_is_idempotent(before_t0, monkeypatch):
     calls = []
 

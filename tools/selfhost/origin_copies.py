@@ -112,10 +112,17 @@ def build(catalogue: str, out_dir: str, lock=None, state_db: str | None = None) 
             c.execute("DETACH DATABASE b")
             src.close()
             opened.remove(src)
-            # the freshness projection, from the same moment (state.db is written under the same lock)
-            fresh_sql = _emit_freshness(state_db, catalogue, out_dir) if state_db else None
+            # the state half of the freshness projection, from the same moment (state.db is written under
+            # the same lock). ONLY state.db is read here: data_through is a GROUP BY over 13.9M series rows
+            # (1,833 s cold on production), and it is computed below from the copy (R1191 finding 5)
+            fresh_sql = _emit_freshness(state_db, out_dir) if state_db else None
 
-        # the catalogue is no longer read: only the copies are written from here on
+        # the catalogue is no longer read: only the copies are written from here on. data_through first,
+        # while the primary copy still holds every source (the shard's rows leave it next)
+        dt_rows = None
+        if fresh_sql:
+            from core import sync_state_d1
+            dt_rows = sync_state_d1.data_through_rows(dst, sync_state_d1._gated_ids())
         for s in SHARD_SOURCES:
             dst.execute("DELETE FROM series WHERE source_id=?", (s,))
         _recount(dst)
@@ -129,6 +136,7 @@ def build(catalogue: str, out_dir: str, lock=None, state_db: str | None = None) 
                 dst.executescript(open(f, encoding="utf-8").read())
                 os.remove(f)
             os.rmdir(os.path.dirname(fresh_sql[0]))
+            dst.executescript("\n".join(sync_state_d1.data_through_stmts(dt_rows)))
         dst.commit()
         _recount(c)
         _rebuild_fts(c, schema["series_fts"])
@@ -147,13 +155,14 @@ def build(catalogue: str, out_dir: str, lock=None, state_db: str | None = None) 
         raise
 
 
-def _emit_freshness(state_db: str, catalogue: str, out_dir: str) -> list[str]:
-    """The D1 sync's own freshness SQL (gate applied), written beside the copies; applied, then removed."""
+def _emit_freshness(state_db: str, out_dir: str) -> list[str]:
+    """The D1 sync's own state-table SQL (gate applied), written beside the copies; applied, then removed.
+    source_data_through is left out here (data_through=False) and built from the copy by build()."""
     from core import sync_state_d1
     tmp = os.path.join(out_dir, "freshness_sql")
     os.makedirs(tmp, exist_ok=True)
     try:
-        files, _counts = sync_state_d1.emit_sql(state_db, tmp, catalogue=catalogue)
+        files, _counts = sync_state_d1.emit_sql(state_db, tmp, data_through=False)
     except SystemExit as e:               # e.g. its zero-row refusal: a failed build here, not an exit
         raise RuntimeError(f"freshness projection refused: {e}") from None
     return files

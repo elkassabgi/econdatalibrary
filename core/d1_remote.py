@@ -183,8 +183,15 @@ def rows(database: str, sql: str, *, timeout: int = 900) -> tuple[list[dict], in
 
 
 def _last_line(text: str) -> str:
+    """wrangler's own error line: the LAST line naming an error (`✘ [ERROR] ...`, `ERROR: ...`), else the last
+    line that is not the log-file pointer. wrangler ends a failure with `Logs were written to "<path>"`, AFTER
+    its [ERROR] line (R1191 finding 3: the plain last line named the log file every time)."""
     lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
-    return lines[-1] if lines else ""
+    errors = [l for l in lines if "[ERROR]" in l or l.startswith("ERROR")]
+    if errors:
+        return errors[-1]
+    rest = [l for l in lines if "Logs were written to" not in l]
+    return (rest or lines or [""])[-1]
 
 
 def execute_file(database: str, path: str, *, timeout: int = 3600, tries: int = 1, retry_timeouts: bool = False,

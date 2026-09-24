@@ -141,6 +141,19 @@ def test_the_state_db_check(tmp_path):
     assert T.state_db(str(p))[0] is True
 
 
+def test_a_d1_only_source_without_a_local_writer_is_not_ready(monkeypatch):
+    """R1191 finding 1: sec_edgar's freshness lives only in D1 (R737: the catalogue copy is not its truth)."""
+    from core import sync_state_d1
+    ok, detail = T.d1_only_sources()
+    assert ok is False and "sec_edgar" in detail, "the real state today: no local sec_edgar writer yet"
+    monkeypatch.setattr(sync_state_d1, "LOCAL_FRESHNESS_WRITERS", {"sec_edgar": "jobs.sec_edgar_local"})
+    assert T.d1_only_sources()[0] is True
+    monkeypatch.setattr(sync_state_d1, "DATA_THROUGH_FROM_D1", frozenset({"sec_edgar", "other"}))
+    ok, detail = T.d1_only_sources()
+    assert ok is False and "other" in detail and "sec_edgar" not in detail
+    assert ("d1-only-sources", T.d1_only_sources) in T.CHECKS
+
+
 def test_it_writes_nothing():
     """No write verb in the tool: it only reads files, runs pytest and gh list, and GETs the edge."""
     src = open(os.path.join(ROOT, "tools", "selfhost", "t0_ready.py"), encoding="utf-8").read()

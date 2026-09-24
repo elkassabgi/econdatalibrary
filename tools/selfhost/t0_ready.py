@@ -20,7 +20,11 @@ Each check is mechanical and names what fails:
   state-db           the live state.db has unit_state and source_state rows: the origin copies build the
                      freshness projection (/v1/last-updates) from it - the production catalog.db has none of
                      those tables (R1186)
-  flag               the flag does not exist yet (information: a READY with the flag present is a late check)
+  d1-only-sources    every source whose freshness only D1 holds today (sync_state_d1.DATA_THROUGH_FROM_D1:
+                     sec_edgar) has a local writer (LOCAL_FRESHNESS_WRITERS). D1 is frozen after T0, and the
+                     catalogue copy is not their truth (R737), so without one their data_through reads null
+                     and their state stops moving (R1191)
+  flag              the flag does not exist yet (information: a READY with the flag present is a late check)
 Nothing here writes anything.
 """
 from __future__ import annotations
@@ -165,6 +169,13 @@ def state_db(path: str | None = None) -> tuple[bool, str]:
     return all(n.values()), f"{p}: {n}"
 
 
+def d1_only_sources() -> tuple[bool, str]:
+    from core import sync_state_d1
+    missing = sorted(set(sync_state_d1.DATA_THROUGH_FROM_D1) - set(sync_state_d1.LOCAL_FRESHNESS_WRITERS))
+    return not missing, (("no local freshness writer yet for: " + ", ".join(missing)) if missing
+                         else "every D1-stamped source has a local writer")
+
+
 def flag() -> tuple[bool, str]:
     from core import cutover
     return (not cutover.is_cut_over()), ("not set yet" if not cutover.is_cut_over() else "ALREADY SET")
@@ -172,7 +183,8 @@ def flag() -> tuple[bool, str]:
 
 CHECKS = [("legacy-catalogue", legacy_catalogue), ("legacy-remote-d1", legacy_remote_d1), ("ratchets", ratchets),
           ("launcher", launcher), ("preflight", preflight), ("ci-writers", ci_writers),
-          ("edge-state", edge_state), ("state-db", state_db), ("flag", flag)]
+          ("edge-state", edge_state), ("state-db", state_db), ("d1-only-sources", d1_only_sources),
+          ("flag", flag)]
 
 
 def main() -> int:

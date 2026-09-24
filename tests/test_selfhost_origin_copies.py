@@ -194,6 +194,66 @@ def test_the_freshness_check_can_fail(tmp_path):
                  freshness=True)
 
 
+def test_the_check_refuses_an_empty_projection(tmp_path):
+    """R1191 mutant N4: check()'s empty-projection branch had no test - the tables present, with no rows."""
+    cat = tmp_path / "catalog.db"
+    _catalogue(cat)
+    oc.build(str(cat), str(tmp_path / "out"))
+    p = tmp_path / "out" / "primary.sqlite"
+    con = sqlite3.connect(p)
+    con.executescript("DELETE FROM unit_state; CREATE TABLE source_state (source_id TEXT);"
+                      "CREATE TABLE source_data_through (source_id TEXT, data_through TEXT);")
+    con.commit()
+    con.close()
+    with pytest.raises(RuntimeError, match="empty freshness projection"):
+        oc.check(str(p), str(tmp_path / "out" / "climate.sqlite"), 5, freshness=True)
+    con = sqlite3.connect(p)
+    con.execute("INSERT INTO unit_state VALUES ('ecb', 'u1')")
+    con.execute("INSERT INTO source_state VALUES ('ecb')")
+    con.commit()
+    con.close()
+    assert oc.check(str(p), str(tmp_path / "out" / "climate.sqlite"), 5, freshness=True)["freshness"]["unit_state"] == 1
+
+
+def test_state_db_is_read_inside_the_lock_and_data_through_from_the_copy_after_it(tmp_path, monkeypatch):
+    """R1191 finding 5: the data_through GROUP BY over 13.9M rows (1,833 s cold) ran inside the writer lock.
+    Only state.db is read under the lock now; data_through comes from the primary copy after it, while
+    the copy still holds the shard's rows (noaa keeps its row)."""
+    from core import sync_state_d1
+    cat, st = tmp_path / "catalog.db", tmp_path / "state.db"
+    _dated_catalogue(cat)
+    _state_db(st, ["ecb", "noaa"])
+    held, seen = [False], {}
+
+    class Lock:
+        def __enter__(self):
+            held[0] = True
+
+        def __exit__(self, *exc):
+            held[0] = False
+
+    real_emit, real_rows = sync_state_d1.emit_sql, sync_state_d1.data_through_rows
+
+    def emit(*a, **kw):
+        seen["emit"] = (held[0], kw.get("data_through"))
+        return real_emit(*a, **kw)
+
+    def rows(con, gated):
+        seen["rows"] = (held[0], os.path.basename(con.execute("PRAGMA database_list").fetchone()[2]))
+        return real_rows(con, gated)
+    monkeypatch.setattr(sync_state_d1, "emit_sql", emit)
+    monkeypatch.setattr(sync_state_d1, "data_through_rows", rows)
+    oc.build(str(cat), str(tmp_path / "out"), lock=Lock, state_db=str(st))
+    assert seen["emit"] == (True, False), "state.db inside the lock, and without the data_through query"
+    assert seen["rows"] == (False, "primary.sqlite"), "data_through after the lock, from the copy"
+    con = sqlite3.connect(tmp_path / "out" / "primary.sqlite")
+    try:
+        got = dict(con.execute("SELECT source_id, data_through FROM source_data_through").fetchall())
+    finally:
+        con.close()
+    assert got.get("ecb") == "2026-06-30" and got.get("noaa") == "2026-06-30", got
+
+
 def test_the_lock_covers_the_reads_and_only_the_reads(tmp_path):
     """R1185: the catalogue is read inside the lock - so a writer that commits the moment the lock is
     released changes nothing in the copies - and the rebuild runs after it is released."""

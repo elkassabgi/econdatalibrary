@@ -42,6 +42,7 @@ SOURCE = "noaa"
 CATALOG_DB = os.path.join(ROOT, "data", "catalog.db")
 OUT_DIR = os.path.join(ROOT, "data", "_noaa_shard_sql")
 DONE_LIST = os.path.join(OUT_DIR, "_pushed.txt")
+FAILED_MARK = os.path.join(OUT_DIR, "_failed.txt")
 COLS = ["series_id", "source_id", "title", "frequency", "unit", "geography",
         "category", "license_id", "start_date", "end_date", "last_updated", "metadata"]
 # Per-STATEMENT byte cap, not a row count. The first emit used 400 rows/statement and
@@ -165,6 +166,17 @@ def _shard_fts_count() -> int:
 
 
 def push(force_wipe: bool = False) -> None:
+    # A FAILED FILE IS NOT RETRIED OR RESUMED (R1191 finding 2). wrangler can exit nonzero after the server
+    # took the file, and every file after the first holds bare FTS INSERTs, so neither a retry nor a resume
+    # can know whether they already landed. The only safe way on is --force-wipe: the done-list and this
+    # mark are cleared, the scoped DELETE runs, and the whole emission re-applies from the top.
+    if force_wipe:
+        for p in (DONE_LIST, FAILED_MARK):
+            if os.path.exists(p):
+                os.remove(p)
+    elif os.path.exists(FAILED_MARK):
+        raise SystemExit(f"REFUSING: the last push failed on {open(FAILED_MARK, encoding='utf-8').read().strip()}; "
+                         f"D1 may hold part of it. Re-run with --force-wipe.")
     done = set()
     if os.path.exists(DONE_LIST):
         done = {ln.strip() for ln in open(DONE_LIST, encoding="utf-8") if ln.strip()}
@@ -204,7 +216,12 @@ def push(force_wipe: bool = False) -> None:
                 cwd=st.WORKER_DIR, check=True, timeout=1800)
 
     for p in todo:
-        st.execute_remote([p])          # loud abort on final failure, per-file
+        try:
+            st.execute_remote([p], tries=1)          # once: see the top of push(); loud abort on failure
+        except BaseException:
+            with open(FAILED_MARK, "w", encoding="utf-8") as fh:
+                fh.write(os.path.basename(p) + "\n")
+            raise
         with open(DONE_LIST, "a", encoding="utf-8") as fh:
             fh.write(os.path.basename(p) + "\n")
     print("push DONE")

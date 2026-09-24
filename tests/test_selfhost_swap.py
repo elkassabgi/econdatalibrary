@@ -372,8 +372,9 @@ def test_the_drain_refuses_a_router_that_did_not_flip(monkeypatch):
 
 def test_the_drain_rides_out_an_unreadable_state_and_a_router_hiccup(monkeypatch):
     """One {"active": None} reading (the state file being replaced) or a refused connection is not the end."""
-    readings = iter([{"active": None, "error": "PermissionError"}, OSError("refused"), {"active": "g", "inflight": {}},
-                     {"active": "g", "inflight": {}}, {"active": "g", "inflight": {}}])
+    readings = iter([{"active": None, "error": "PermissionError"}, OSError("refused"),
+                     http.client.IncompleteRead(b"{"), http.client.BadStatusLine("x"),     # R1191 finding 4
+                     {"active": "g", "inflight": {}}, {"active": "g", "inflight": {}}, {"active": "g", "inflight": {}}])
 
     def status(u):
         r = next(readings)
@@ -414,6 +415,165 @@ def test_a_failed_stop_is_recorded_as_failed(rig, monkeypatch):
     out = _swap(rig)
     assert out["active"] == "green" and out["old_stopped"] is False and "stop_with" in out
     assert swap.load_instances(rig["work"])["blue"]["state"] == "stop-failed"
+
+
+def _main_with_rig(rig, monkeypatch):
+    orig = swap.swap                                   # main() looks `swap` up at call time: wrap it with the rig
+    monkeypatch.setattr(swap, "swap", lambda **kw: orig(**{**kw, **dict(
+        worker_dir=rig["worker"], command=_fake_cmd(), freeze=_copy_freeze, slots=SLOTS, health_timeout=30,
+        space_check=False, log=lambda *_: None)}))
+    return ["--work", rig["work"], "--state", rig["state"], "--router", rig["router_url"], "--catalogue", rig["cat"]]
+
+
+def test_any_error_after_the_flip_is_reported_as_flipped_never_raised(rig, monkeypatch, capsys):
+    """R1191 finding 4: an exception after router.flip used to escape main() as a traceback, exit code unset."""
+    def boom(pid, created):
+        raise RuntimeError("stop blew up")
+    monkeypatch.setattr(swap, "stop", boom)
+    assert swap.main(_main_with_rig(rig, monkeypatch)) == 3
+    out = json.loads(capsys.readouterr().out)
+    assert out["active"] == "green" and out["post_flip_error"] == "RuntimeError: stop blew up"
+    assert out["old_stopped"] is False and "--stop blue" in out["stop_with"]
+    assert json.load(open(rig["state"]))["active"] == "green"
+
+
+def test_stop_reports_access_denied_and_never_raises(monkeypatch):
+    import psutil
+
+    class Denied:
+        pid = 4242
+
+        def create_time(self):
+            raise psutil.AccessDenied(4242)
+    monkeypatch.setattr(psutil, "Process", lambda pid: Denied())
+    got = swap.stop(4242, 1.0)
+    assert got["stopped"] is False and got["alive"] == [4242] and "access denied" in got["detail"]
+
+    class Unkillable:
+        pid = 4243
+
+        def create_time(self):
+            return 1.0
+
+        def children(self, recursive=False):
+            return []
+
+        def kill(self):
+            raise psutil.AccessDenied(4243)
+    proc = Unkillable()
+    monkeypatch.setattr(psutil, "Process", lambda pid: proc)
+    monkeypatch.setattr(psutil, "wait_procs", lambda procs, timeout: ([], list(procs)))
+    got = swap.stop(4243, 1.0)
+    assert got["stopped"] is False and got["alive"] == [4243]
+
+
+def test_an_unrecorded_old_instance_that_still_answers_is_not_a_clean_swap(rig):
+    """R1191 finding 7: with no record for the active target, main() used to exit 0 while it still served."""
+    swap.save_instances(rig["work"], {})
+    out = _swap(rig)
+    assert out["active"] == "green" and out["old_stopped"] is False
+    assert "no record" in out["stop_with"] and _alive(rig["blue"].pid)
+
+
+def test_two_work_folders_cannot_swap_one_router(rig, tmp_path):
+    """R1191 mutant N1: the state-file lock had no test. Another --work folder holding it refuses the swap."""
+    with swap.swap_lock(str(tmp_path / "other_work"), os.path.abspath(rig["state"]) + ".swaplock"):
+        with pytest.raises(swap.SwapRefused, match="another swap"):
+            _swap(rig, port_retry=False)
+    assert json.load(open(rig["state"]))["active"] == "blue"
+
+
+def test_stop_kills_a_child_started_after_its_first_look(monkeypatch):
+    """R1191 mutant N2: the second look for late children had no test. A fake tree whose parent has a new
+    child on the second look: that child is killed and waited for too."""
+    import psutil
+    killed = []
+
+    class P:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def kill(self):
+            killed.append(self.pid)
+
+    kid, late = P(11), P(12)
+
+    class Parent(P):
+        looks = 0
+
+        def create_time(self):
+            return 1.0
+
+        def children(self, recursive=False):
+            Parent.looks += 1
+            return [kid] if Parent.looks == 1 else [kid, late]
+    parent = Parent(10)
+    monkeypatch.setattr(psutil, "Process", lambda pid: parent)
+    waited = []
+    monkeypatch.setattr(psutil, "wait_procs", lambda procs, timeout: (waited.extend(p.pid for p in procs), ([], []))[1])
+    got = swap.stop(10, 1.0)
+    assert killed == [11, 12, 10] and sorted(waited) == [10, 11, 12] and got["stopped"] is True
+
+
+def test_a_failed_stop_command_is_a_refusal_and_recorded(rig, monkeypatch, capsys):
+    """R1191 mutant N10: --stop whose stop failed must not exit 0."""
+    base = ["--work", rig["work"], "--state", rig["state"], "--router", rig["router_url"]]
+    assert _swap(rig, drain_timeout=0.01)["active"] == "green"        # blue retired, left running
+    monkeypatch.setattr(swap, "stop", lambda pid, created: {"stopped": False, "alive": [pid],
+                                                           "detail": f"STILL ALIVE: [{pid}]"})
+    assert swap.main(base + ["--stop", "blue", "--force"]) == 2
+    assert "STILL ALIVE" in capsys.readouterr().err
+    assert swap.load_instances(rig["work"])["blue"]["state"] == "stop-failed"
+
+
+def test_a_swap_whose_stop_failed_exits_3(rig, monkeypatch, capsys):
+    """R1191 mutant N11: a failed stop (no drain error) must exit 3, not 0."""
+    monkeypatch.setattr(swap, "stop", lambda pid, created: {"stopped": False, "alive": [pid],
+                                                           "detail": f"STILL ALIVE: [{pid}]"})
+    assert swap.main(_main_with_rig(rig, monkeypatch)) == 3
+    out = json.loads(capsys.readouterr().out)
+    assert out["old_stopped"] is False and "drain_error" not in out and "stop_with" in out
+
+
+def test_the_swap_builds_with_the_state_db(rig, monkeypatch):
+    """R1191 mutant N13: nothing checked that swap() passes state_db_path() to the build."""
+    seen = {}
+
+    def fake_build(cat, out, **kw):
+        seen.update(kw)
+        raise swap.SwapRefused("stop here")
+    monkeypatch.setattr(swap, "state_db_path", lambda: "SENTINEL-state.db")
+    monkeypatch.setattr(swap, "build_copies", fake_build)
+    with pytest.raises(swap.SwapRefused, match="stop here"):
+        _swap(rig, port_retry=False)
+    assert seen.get("state_db") == "SENTINEL-state.db"
+
+
+def test_the_drain_grace_counts_misses_in_a_row(monkeypatch):
+    """R1191 mutant N14: a good reading resets the miss count - grace is misses IN A ROW, not in total."""
+    readings = iter([None, None, {"active": "g", "inflight": {"b": 1}}, None, None,
+                     {"active": "g", "inflight": {}}, {"active": "g", "inflight": {}}, {"active": "g", "inflight": {}}])
+
+    def status(u):
+        r = next(readings)
+        if r is None:
+            raise OSError("refused")
+        return r
+    monkeypatch.setattr(swap, "router_status", status)
+    assert swap.drain("http://r", "b", "g", timeout=30, poll=0.001, settle=0.001, grace=2) is True
+
+
+def test_the_stop_command_refuses_when_the_drain_cannot_be_watched(rig, monkeypatch, capsys):
+    """R1191 finding 4: DrainAborted escaped --stop as a traceback."""
+    base = ["--work", rig["work"], "--state", rig["state"], "--router", rig["router_url"]]
+    assert _swap(rig, drain_timeout=0.01)["active"] == "green"        # blue retired, left running
+
+    def broken(*a, **k):
+        raise swap.DrainAborted("the router at x gave no usable status 11 times")
+    monkeypatch.setattr(swap, "drain", broken)
+    assert swap.main(base + ["--stop", "blue"]) == 2
+    assert "could not be watched" in capsys.readouterr().err and _alive(rig["blue"].pid)
+    assert swap.load_instances(rig["work"])["blue"]["state"] == "draining", "nothing was recorded as stopped"
 
 
 def test_a_failed_swap_keeps_the_retired_generation_s_record(rig):

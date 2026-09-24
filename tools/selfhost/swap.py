@@ -372,20 +372,24 @@ def stop(pid: int, created_at: float | None) -> dict:
         tree = p.children(recursive=True) + [p]
     except psutil.NoSuchProcess:
         return {"stopped": True, "alive": [], "detail": f"pid {pid} is gone already"}
+    except psutil.AccessDenied as e:                      # never raise: the caller records a failed stop
+        return {"stopped": False, "alive": [pid], "detail": f"pid {pid}: access denied ({e}): NOT stopped"}
     # descendants first, then a second look while the parent still lives (a child it started after the
     # first snapshot is found there), then the parent
     kids = tree[:-1]
+    # AccessDenied is suppressed like NoSuchProcess: whatever survives is found by wait_procs below and
+    # reported as alive (R1191 finding 4: it used to escape main() as a traceback after the flip)
     for proc in kids:
-        with contextlib.suppress(psutil.NoSuchProcess):
+        with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
             proc.kill()
     try:
         late = [c for c in p.children(recursive=True) if c.pid not in {k.pid for k in kids}]
-    except psutil.NoSuchProcess:
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
         late = []
     for c in late:
-        with contextlib.suppress(psutil.NoSuchProcess):
+        with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
             c.kill()
-    with contextlib.suppress(psutil.NoSuchProcess):
+    with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
         p.kill()
     everything = kids + late + [p]
     _gone, alive = psutil.wait_procs(everything, timeout=15)
@@ -486,7 +490,7 @@ def drain(router_url: str, name: str, now_active: str, timeout: float, poll: flo
     while True:
         try:
             d = router_status(router_url)
-        except (OSError, ValueError) as e:
+        except (OSError, ValueError, http.client.HTTPException) as e:     # IncompleteRead, BadStatusLine...
             d, last = None, f"{type(e).__name__}: {e}"
         if d is None or d.get("active") is None:
             misses += 1
@@ -609,30 +613,50 @@ def _swap(catalogue, state_path, router_url, work, worker_dir, command, freeze, 
         save_instances(work, instances)
         raise
 
+    # FROM HERE THE ROUTER SERVES THE NEW INSTANCE. Nothing below is a refusal (R1186 finding 1), and nothing
+    # below may escape as a traceback: any error is recorded and the swap reports "flipped, the old one may
+    # still run" - main() exits 3 (R1191 finding 4).
+    log(f"flipped the router to {idle}")
+    result = {"active": idle, "retired": active, "commit": sha, "counts": counts, "health": checked,
+              "old_stopped": False}
+    how_to_stop = (f"python tools/selfhost/swap.py --work {work} --state {state_path} --router {router_url} "
+                   f"--stop {active}")
+    try:
+        _after_flip(result, instances, work, active, idle, st, router_url, drain_timeout, how_to_stop, log)
+    except Exception as e:                                # noqa: BLE001 - reported, never raised after the flip
+        result["post_flip_error"] = f"{type(e).__name__}: {e}"
+        result["old_stopped"] = False
+        result.setdefault("stop_with", how_to_stop)
+        log(f"FLIPPED to {idle}, then failed: {result['post_flip_error']}; {active} may still run: {how_to_stop}")
+    return result
+
+
+def _after_flip(result, instances, work, active, idle, st, router_url, drain_timeout, how_to_stop, log) -> None:
     instances[idle]["state"] = "active"
     old = instances.get(active)
     if old:
         old["state"] = "draining"
     save_instances(work, instances)
-    log(f"flipped the router to {idle}")
-
-    result = {"active": idle, "retired": active, "commit": sha, "counts": counts, "health": checked,
-              "old_stopped": False}
-    how_to_stop = (f"python tools/selfhost/swap.py --work {work} --state {state_path} --router {router_url} "
-                   f"--stop {active}")
+    if not old:
+        # no record: whatever answers on the retired port was not started by swap.py and is not stopped here
+        # (R1191 finding 7: this used to exit 0 as if there were no old instance)
+        old_port = port_of(st["targets"][active])
+        if port_in_use(old_port):
+            result["stop_with"] = (f"{active} has no record in instances.json, and port {old_port} still answers "
+                                   f"({port_holder(old_port)}): stop that process by hand")
+            log(f"{active} is unrecorded and still answers on {old_port}: LEFT RUNNING")
     if old:
-        # FROM HERE THE ROUTER SERVES THE NEW INSTANCE: nothing below is a refusal (R1186 finding 1)
         try:
             drained = drain(router_url, active, idle, drain_timeout)
         except DrainAborted as e:
             drained, result["drain_error"] = False, str(e)
             log(f"FLIPPED to {idle}, but the drain of {active} could not be watched: {e}; {active} LEFT RUNNING")
         if drained:
-            st = stop(old["pid"], old.get("created"))
-            result["stop"] = st["detail"]
-            old["state"] = "stopped" if st["stopped"] else "stop-failed"
-            result["old_stopped"] = st["stopped"]
-            log(f"{active} drained: {st['detail']}")
+            stopped = stop(old["pid"], old.get("created"))
+            result["stop"] = stopped["detail"]
+            old["state"] = "stopped" if stopped["stopped"] else "stop-failed"
+            result["old_stopped"] = stopped["stopped"]
+            log(f"{active} drained: {stopped['detail']}")
         elif "drain_error" not in result:
             log(f"{active} still has requests in flight after {drain_timeout:.0f} s: LEFT RUNNING (pid "
                 f"{old['pid']}); stop it with: {how_to_stop}")
@@ -641,7 +665,6 @@ def _swap(catalogue, state_path, router_url, work, worker_dir, command, freeze, 
         save_instances(work, instances)
     keep = [i["gen"] for i in instances.values() if i.get("gen")]
     result["pruned"], result["prune_errors"] = prune(work, keep)
-    return result
 
 
 def stop_recorded(work: str, state_path: str, target: str, router_url: str, *, force: bool = False,
@@ -655,7 +678,11 @@ def stop_recorded(work: str, state_path: str, target: str, router_url: str, *, f
             active = json.load(fh)["active"]
         if active == target:
             raise SwapRefused(f"{target} is the ACTIVE instance; flip the router first")
-        if not force and not drain(router_url, target, active, drain_timeout):
+        try:
+            drained = force or drain(router_url, target, active, drain_timeout)
+        except DrainAborted as e:                         # nothing was stopped: a refusal (R1191 finding 4)
+            raise SwapRefused(f"{target}: the drain could not be watched ({e}); nothing was stopped") from e
+        if not drained:
             raise SwapRefused(f"{target} still has requests in flight; wait, or pass --force to cut them off")
         st = stop(instances[target]["pid"], instances[target].get("created"))
         instances[target]["state"] = "stopped" if st["stopped"] else "stop-failed"
