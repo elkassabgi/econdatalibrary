@@ -468,7 +468,7 @@ def test_a_failure_rolls_the_whole_move_back(tmp_path, monkeypatch):
         "rolled back"
 
 
-@pytest.mark.parametrize("ws", ["\t", "\n", "\r", " \t "])
+@pytest.mark.parametrize("ws", ["\t", "\n", "\r", " \t ", "\r\n", "\x0b", "\x0c"])
 def test_whitespace_around_the_13f_strategy_is_trimmed_the_same_on_both_sides(tmp_path, ws):
     """R1211: SQLite trim() removed spaces only; Python strip() all whitespace. A 13F row with a tab was never
     moved, refused the XBRL write for ever, and read "moved" to t0_ready. Now it moves, like a space would."""
@@ -482,3 +482,39 @@ def test_whitespace_around_the_13f_strategy_is_trimmed_the_same_on_both_sides(tm
     finally:
         s.close()
     assert M.is_thirteen_f_strategy(ws + "GIANT_CHANGED_UNITS" + ws) and M.is_thirteen_f_strategy(ws)
+
+
+@pytest.mark.parametrize("ws", ["\t", "\x0b", "\x0c", "\r\n"])
+def test_a_unit_row_with_whitespace_around_the_13f_strategy_moves_too(tmp_path, ws):
+    """The unit_state predicate carries WS as well (a mutant without it survived review R1218)."""
+    p = str(tmp_path / "state.db")
+    _seed(p, [("INSERT INTO unit_state(source_id, unit_id, strategy) VALUES ('sec_edgar', '_all', ?)",
+               (ws + "giant_changed_units",))])
+    StateStore(p).close()
+    assert _count(p, "unit_state", "sec_edgar") == 0 and _count(p, "unit_state", "sec_edgar_13f") == 1
+
+
+@pytest.mark.parametrize("existing", [" ", "\t", "\r\n", "\x0b\x0c", "", None, " giant_changed_units"])
+def test_a_row_the_migration_does_not_move_does_not_block_the_xbrl_write(tmp_path, existing):
+    """R1218 finding 2: a whitespace-only strategy read as 13F to the guard ("reopen so the migration moves
+    it") while the migration never moves it, pending() is 0 and t0_ready says "moved" - the XBRL write was
+    refused for ever. The guard now asks exactly what the migration selects. A non-breaking space is not in
+    WS on either side, so that row is not 13F to either (a strip()-everything mutant survived R1218)."""
+    p = str(tmp_path / "state.db")
+    _seed(p, [("INSERT INTO source_state(source_id, strategy, status) VALUES ('sec_edgar', ?, 'ok')",
+               (existing,))])
+    s = StateStore(p)
+    try:
+        assert M.pending(s.db) == 0 and not M.is_thirteen_f_row(existing)
+        assert s.get_source("sec_edgar") is not None, "not moved"
+        s.upsert_source("sec_edgar", strategy="edgar_delta", status="ok")
+        assert s.get_source("sec_edgar")["strategy"] == "edgar_delta"
+    finally:
+        s.close()
+
+
+def test_the_guard_and_the_migration_agree_on_what_a_13f_row_is():
+    for v in ("giant_changed_units", " GIANT_changed_units\t", "\x0bgiant_changed_units\x0c"):
+        assert M.is_thirteen_f_row(v)
+    for v in ("", " ", None, "edgar_delta", " giant_changed_units", "giant_changed_units x"):
+        assert not M.is_thirteen_f_row(v)

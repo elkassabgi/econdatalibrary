@@ -62,6 +62,13 @@ def is_thirteen_f_strategy(strategy) -> bool:
     return s == "" or s == THIRTEEN_F_STRATEGY
 
 
+def is_thirteen_f_row(strategy) -> bool:
+    """Whether an EXISTING row is the 13F product's: exactly the rows _SELECT_ALWAYS moves (the 13F strategy
+    after trimming WS, any case). An empty or whitespace-only strategy is NOT - the migration never moves such
+    a row, so a guard that called it 13F refused the XBRL write for ever (R1218 finding 2)."""
+    return str(strategy or "").strip(WS).lower() == THIRTEEN_F_STRATEGY
+
+
 def xbrl_owns(db: sqlite3.Connection) -> bool:
     """True once source_state('sec_edgar') is anything but the 13F row - the XBRL product's own row, or a row
     of unknown strategy (left alone rather than guessed at)."""

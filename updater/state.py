@@ -154,8 +154,7 @@ class StateStore:
         if check_strategy and _m.is_thirteen_f_strategy(strategy):
             raise ValueError(f"{what}({_m.OLD!r}) must carry the XBRL product's own strategy "
                              f"(got {strategy!r}); the 13F entry is {_m.NEW!r}")
-        if check_strategy and current and _m.is_thirteen_f_strategy(current.get("strategy")) \
-                and current.get("strategy"):
+        if check_strategy and current and _m.is_thirteen_f_row(current.get("strategy")):
             # R1205 probe D: the row being written over is still the 13F one (old code wrote it after this
             # store was opened) - merging the XBRL write into it would keep 13F's cadence and dates
             raise ValueError(f"{what}({_m.OLD!r}) still holds the 13F row: reopen the state store so the "
