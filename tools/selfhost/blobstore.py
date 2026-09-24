@@ -93,6 +93,28 @@ class BlobStore:
     def count(self) -> int:
         return self._r().execute("SELECT COUNT(*) FROM blobs").fetchone()[0]
 
+    def list(self, prefix: str = "") -> list[str]:
+        """Keys starting with `prefix`, in key order (an index range scan, not LIKE: no escaping)."""
+        rows = self._r().execute("SELECT key FROM blobs WHERE key >= ? AND key < ? ORDER BY key",
+                                 (prefix, prefix + chr(0x10FFFF))).fetchall()
+        return [r[0] for r in rows]
+
+    def delete(self, key: str) -> bool:
+        """Remove a key. Its file is retired, not removed: gc() removes it after the grace period, so an
+        in-flight read keeps working (the same rule as a replace). Returns whether the key existed."""
+        with self._wlock:
+            self._w.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._w.execute("SELECT sha256 FROM blobs WHERE key=?", (key,)).fetchone()
+                if row:
+                    self._w.execute("DELETE FROM blobs WHERE key=?", (key,))
+                    self._w.execute("INSERT INTO retired(sha256, retired_utc) VALUES (?,?)", (row[0], _now()))
+                self._w.execute("COMMIT")
+            except BaseException:
+                self._w.execute("ROLLBACK")
+                raise
+        return row is not None
+
     # -- writes ---------------------------------------------------------------------------------------
     def put(self, key: str, data: bytes, *, etag: str, content_encoding: str | None = None,
             content_type: str | None = None, custom_metadata: dict | None = None) -> str:

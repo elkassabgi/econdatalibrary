@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import sys
 import threading
 import time
 import shutil
@@ -669,20 +670,126 @@ class R2Blob:
         self.client.delete_object(Bucket=self.bucket, Key=key)
 
 
-def from_env(backend: str | None = None) -> LocalBlob | R2Blob:
+SELFHOST_BLOB_ROOT = r"E:\econ_live\blobs"
+
+
+def _blobstore_module():
+    """tools/selfhost/blobstore.py (tools/ is not a package, so it is loaded by path, once)."""
+    import importlib.util                                               # noqa: PLC0415
+    mod = sys.modules.get("_econ_selfhost_blobstore")
+    if mod is None:
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "tools", "selfhost", "blobstore.py")
+        spec = importlib.util.spec_from_file_location("_econ_selfhost_blobstore", path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["_econ_selfhost_blobstore"] = mod
+        spec.loader.exec_module(mod)
+    return mod
+
+
+class SelfhostBlob:
+    """The self-hosted twin of R2Blob (docs/ECON_SELF_HOSTING_PLAN.md, change 4): the same keys, and the
+    same bytes, etag, content encoding and metadata R2Blob would store - written to the local blob store
+    the origin serves (tools/selfhost/blobstore.py via the sidecar), not to R2.
+
+    Why "the same": the origin's worker code is unchanged and reads these objects exactly as it read R2's
+    (gzip at rest marked by content_encoding, the csvmd5 metadata, a quoted etag for conditional reads),
+    and the skip-identical rule keeps working on the same digests. The etag is the MD5 of the stored
+    bytes, which is what a single-part R2 PUT reports.
+
+    The store at SELFHOST_BLOB_ROOT must already exist (tools/selfhost/import_from_r2.py builds it); it is
+    never created here - a missing store is an error, not a new empty one.
+    """
+
+    def __init__(self, root: str | None = None):
+        self.root = root or SELFHOST_BLOB_ROOT
+        self._store = None
+
+    @property
+    def store(self):
+        if self._store is None:
+            self._store = _blobstore_module().BlobStore(self.root)
+        return self._store
+
+    def get(self, key: str) -> bytes | None:
+        meta = self.store.head(key)
+        if meta is None:
+            return None
+        with open(meta["path"], "rb") as f:
+            return f.read()
+
+    def put_atomic(self, key: str, data: bytes) -> None:
+        # Same rules as R2Blob.put_atomic: ContentType by extension; series CSVs gzip at rest through the
+        # ONE shared definition (core.r2_util.series_csv_put_args); bytes the store already holds are
+        # not written again.
+        ctype = _CONTENT_TYPES.get(os.path.splitext(key)[1].lower())
+        encoding, metadata, plain_digest = None, {}, None
+        if key.startswith("series/") and key.endswith(".csv"):
+            from core.r2_util import series_csv_put_args                  # noqa: PLC0415
+            data, kw, plain_digest = series_csv_put_args(data)
+            ctype = kw.get("ContentType", ctype)
+            encoding = kw.get("ContentEncoding")
+            metadata = dict(kw.get("Metadata") or {})
+            if self._already_holds(key, data, plain_digest):
+                _count_skip()
+                return
+        self.store.put(key, data, etag=hashlib.md5(data).hexdigest(),     # noqa: S324
+                       content_encoding=encoding, content_type=ctype, custom_metadata=metadata)
+
+    def _already_holds(self, key: str, data: bytes, plain_digest: str | None) -> bool:
+        """R2Blob's rule on local metadata: the csvmd5 digest when both sides have one, else the etag
+        against the MD5 of the bytes; anything uncertain writes."""
+        from core.r2_util import PLAIN_MD5_KEY                           # noqa: PLC0415
+        meta = self.store.head(key)
+        if meta is None:
+            return False
+        stored = (meta.get("custom_metadata") or {}).get(PLAIN_MD5_KEY)
+        if stored and plain_digest:
+            return stored == plain_digest
+        tag = meta.get("etag") or ""
+        return bool(tag) and "-" not in tag and tag == hashlib.md5(data).hexdigest()   # noqa: S324
+
+    def put_file(self, key: str, src_path: str) -> None:
+        with open(src_path, "rb") as f:
+            data = f.read()
+        self.store.put(key, data, etag=hashlib.md5(data).hexdigest(),     # noqa: S324
+                       content_type=_CONTENT_TYPES.get(os.path.splitext(key)[1].lower()))
+
+    def etag(self, key: str) -> str | None:
+        meta = self.store.head(key)
+        return meta["etag"] if meta else None
+
+    def size(self, key: str) -> int | None:
+        meta = self.store.head(key)
+        return meta["size"] if meta else None
+
+    def exists(self, key: str) -> bool:
+        return self.store.head(key) is not None
+
+    def list_keys(self, prefix: str) -> list[str]:
+        return self.store.list(prefix)
+
+    def delete(self, key: str) -> None:
+        self.store.delete(key)
+
+
+def from_env(backend: str | None = None) -> LocalBlob | R2Blob | SelfhostBlob:
     """Build the Blob selected by AQUEDUCT_BACKEND (explicit arg overrides env).
 
-    'local' (or unset) -> LocalBlob (keys are filesystem paths, today's behavior)
-    'r2'               -> R2Blob   (keys are econ-data object keys)
+    'local' (or unset) -> LocalBlob    (keys are filesystem paths, today's behavior)
+    'r2'               -> R2Blob       (keys are econ-data object keys)
+    'selfhost'         -> SelfhostBlob (the same keys, in the local blob store the origin serves)
     """
     b = (backend or os.environ.get("AQUEDUCT_BACKEND", "local")).strip().lower()
     if b in ("", "local"):
         return LocalBlob()
     if b == "r2":
         return R2Blob()
+    if b == "selfhost":
+        return SelfhostBlob()
     if b == "cloud":
         raise ValueError(
             "AQUEDUCT_BACKEND=cloud (the D1-native StateStore) is not implemented and "
             "is a v1 non-goal (UPDATER_BUILD_PLAN.md §7). Use AQUEDUCT_BACKEND=r2 for "
             "the R2 object backend, or 'local' for the filesystem.")
-    raise ValueError(f"unknown AQUEDUCT_BACKEND {b!r}; expected 'local' or 'r2'")
+    raise ValueError(f"unknown AQUEDUCT_BACKEND {b!r}; expected 'local', 'r2' or 'selfhost'")
