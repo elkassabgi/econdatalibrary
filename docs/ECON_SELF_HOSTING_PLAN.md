@@ -198,6 +198,42 @@ Build status (branch feat/econ-selfhost-origin):
   the served store with no lock and from any checkout, so a worktree's derive can publish CSVs built from
   the worktree's parquets. After catpath merges into origin: a SelfhostBlob write requires the writer lock
   (core.catalog_path) and the live checkout, as a catalogue write does.
+  BUILT 2026-09-24 on origin (55b754fdb, then the R1220/R1222 fixes, under review): after T0,
+  put_atomic / put_file / put_gzip_file / delete / copy refuse unless the code, config.ROOT, config.DATA_ROOT,
+  ECONDL_DATA and ECONDL_CATALOG are the live checkout's. The first write takes the writer lock for the rest
+  of the process, or is refused at once if another process holds it. A refusal is never retried as if it
+  were a network error. A licence removal checks the checkout before its first change, and logs itself
+  before that change. import_from_r2 never restores what a logged removal took. CONSEQUENCE: a derive and
+  the updater no longer run side by side after T0. The second one to write is refused (it is not queued),
+  so the daily schedule must run them in sequence.
+  THE PUBLIC /v1/stats FIGURE WILL STEP AT T0 (series_census): before T0 it counts only the parquet R2
+  holds, so statcan (175 GB local, 0 bytes on R2, served through its CSVs) is left out. After T0 a source
+  counts when the worker resolves it and the self-hosted store holds CSVs for it (R1221: "on local disk" is
+  not "downloadable"), read from the local parquet. The judgement is per source. The R420 gate (a >20%
+  move) will refuse the first publish. That refusal is correct: the jump is real and needs an explanation
+  and --force-publish, not a silent upload. WHAT COUNTS in the public number is Ahmed's metric decision;
+  this rule is my proposal until he confirms it.
+  THE CATALOGUE GUARD IS AN AUTHORIZER (R1214, catpath 92301cf4a): after T0 every sqlite3 connection in a
+  process that imports core.catalog_path may write only TEMP, and MAIN when MAIN is not the build.
+  Attached schemas are never written without the lock, because SQLite does not name a parameter-bound
+  ATTACH's file. R1215 (catpath 5b28501ef): the guard is the connection's class. Blob I/O, a caller's
+  authorizer, a connection factory and the statement cache no longer get around it. After T0 every execute
+  is prepared again (cached_statements=0). R1219 (catpath f999addbe) and R1223 (under review): the audit
+  hook admits a handle only inside its own guarded __init__, writable blobs re-check the lock on every
+  write, blobopen takes only plain types. Out of scope, stated in the code: a program that changes the
+  filesystem under a connection while it opens (a junction swap), and the interpreter's introspection.
+  Only an OS permission on the build stops those. AFTER T0 VACUUM NEEDS THE LOCK on every database
+  (SQLite authorizes it as an ATTACH plus writes): tools/prune_series_cursors.py must take it.
+  series_census MOVED (origin 5bf95264f, R1221 fixes under review): after T0 it measures the local parquet
+  store, sends nothing to R2 (no credentials to DuckDB), opens the publish store before counting, waits up
+  to 30 minutes for the writer lock at publish time, and publishes stats.json through csv_store(). A
+  --publish run from another checkout is refused before the counting starts. 17 direct R2 writers are left.
+  THE HOST RUNS THE TESTS TOO (R1218 finding 5): one run of the router load test left 7,453 sockets in
+  TIME_WAIT, and overlapping suites reached 12,289 of 16,384 ephemeral ports; tests then failed with
+  WinError 10048. After T0 the live router opens a new connection to the origin for every request on this
+  same machine, so a suite run could make it answer 502. Before T0: the load test reuses its client
+  connections and caps its requests (done). Open: pool the router's origin connections, and do not run
+  overlapping suites on the host after T0.
   delist_timeless_tables.py onto licence_targets (purge_unpermitted_r2.py stays defused
   until re-armed, then on licence_targets); a self-hosted path for tools/run_local_heavy.ps1 and
   make_servable.py (after T0 both fail closed today: the heavy run asks for --pull-state and the R2
