@@ -29,14 +29,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sqlite3
-import subprocess
 import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-WORKER = os.path.join(ROOT, "api", "worker")
+sys.path.insert(0, ROOT)
 # The plan phase reads ~13.5M rows; on the contended USB store drive (two first-pass
 # ingesters writing) that wedged past 15 minutes. AQUEDUCT_PLAN_CATALOG points it at a fast
 # local COPY -- safe because chunk boundaries only need to PARTITION each PK range, which any
@@ -49,27 +47,21 @@ NEW = "series_fts_new"
 CHUNK_ROWS = 100_000          # probed: 244 ms per 100k; far inside every limit
 
 
-def d1(sql: str, retries: int = 3) -> dict:
-    """One remote statement; returns the parsed result block. Raises on final failure."""
-    last = None
-    for attempt in range(1, retries + 1):
-        p = subprocess.run(
-            ["npx", "wrangler", "d1", "execute", DB, "--remote", "--json",
-             "--command", sql],
-            cwd=WORKER, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=600, shell=(os.name == "nt"))
-        m = re.search(r"\[\s*\{.*\}\s*\]", p.stdout or "", re.S)
-        if m:
-            block = json.loads(m.group(0))[0]
-            if block.get("success"):
-                return block
-            last = block
-        else:
-            last = (p.stdout or "")[-300:] + (p.stderr or "")[-300:]
-        # 7403/7500 transients: R363/R222 — re-probe before believing
-        time.sleep(10 * attempt)
-    raise SystemExit("D1 statement failed after %d attempts: %r\nSQL: %s"
-                     % (retries, last, sql[:200]))
+def d1(sql: str) -> dict:
+    """One remote statement; returns the parsed result block. Raises SystemExit on failure.
+
+    Through core.d1_remote (plan step 1): the pinned wrangler before T0, refused after it for anything but
+    one plain read. It retries ONLY wrangler's auth error 10000. The old loop here retried EVERY failure
+    three times, including a chunk INSERT the server may already have taken - fts5 has no key, so that
+    duplicated rows (R1185/R1191; the count check before the swap would have refused, after the cost)."""
+    from core import d1_remote                                          # noqa: PLC0415
+    try:
+        block = d1_remote.run_json(DB, sql, timeout=600)[0]
+    except (RuntimeError, ValueError) as e:                            # D1Unreachable is a RuntimeError
+        raise SystemExit("D1 statement failed: %s\nSQL: %s" % (e, sql[:200])) from None
+    if not block.get("success", True):
+        raise SystemExit("D1 statement failed: %r\nSQL: %s" % (block, sql[:200]))
+    return block
 
 
 def chunk_plan():
@@ -189,15 +181,16 @@ def main() -> int:
             fh.write("DROP TABLE series_fts;\nALTER TABLE %s RENAME TO series_fts;\n" % NEW)
         else:
             fh.write("ALTER TABLE %s RENAME TO series_fts;\n" % NEW)
-    p = subprocess.run(["npx", "wrangler", "d1", "execute", DB, "--remote", "--json",
-                        "--file", swap.replace("\\", "/")],
-                       cwd=WORKER, capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", timeout=600, shell=(os.name == "nt"))
-    ok = '"success": true' in (p.stdout or "") or '"success":true' in (p.stdout or "")
+    from core import d1_remote                                          # noqa: PLC0415
+    try:
+        d1_remote.execute_file(DB, swap, timeout=600)                   # once: never retried (tries=1)
+        ok = True
+    except RuntimeError as e:
+        ok, why = False, e
     print("SWAP:", "ok" if ok else "FAILED — old index likely still present; investigate "
           "before ANY retry")
     if not ok:
-        print((p.stdout or "")[-400:])
+        print(str(why)[-400:], (getattr(why, "stderr", "") or "")[-400:])
         return 1
 
     final = d1("SELECT COUNT(*) AS n FROM series_fts")["results"][0]["n"]

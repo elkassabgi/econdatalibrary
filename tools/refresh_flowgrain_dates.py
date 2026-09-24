@@ -87,8 +87,6 @@ from updater import blob, config  # noqa: E402
 API = os.environ.get("ECONDL_API", "https://econdl-api.elkassabgi.workers.dev")
 UA = {"User-Agent": "Mozilla/5.0 econdl-refresh-flowgrain-dates"}
 CATALOG = os.path.join(ROOT, "data", "catalog.db")
-WRANGLER = os.path.join(ROOT, "api", "worker", "node_modules", ".bin", "wrangler.cmd")
-WORKER_DIR = os.path.join(ROOT, "api", "worker")
 D1_DB = "econ-catalog"
 CHUNK = 40              # ids per --command IN-list: ~3 KB of SQL, well under cmd.exe's 8,191
 RECEIPT_DIR = "D:/temp/claude"
@@ -143,31 +141,19 @@ def local_rows(src: str) -> dict:
 
 
 def _wrangler_json(args: list[str], timeout: int = 600):
-    # Bounded retry on "Authentication error [code: 10000]". Seen twice on 2026-09-05 (09:30Z, 09:50Z),
-    # each time on the FIRST call of a run while another wrangler process (a reviewer agent) was
-    # also talking to D1, and `wrangler whoami` succeeded seconds later: the shape of two processes
-    # racing on the OAuth token refresh, not a revoked credential. A genuinely dead token fails
-    # all three times and still raises.
-    last = None
-    for attempt in range(3):
-        r = subprocess.run([WRANGLER, "d1", "execute", D1_DB, "--remote", "--json", *args],
-                           cwd=WORKER_DIR, capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=timeout)
-        if r.returncode == 0:
-            break
-        last = f"wrangler rc={r.returncode}: {r.stderr[-1500:]} {r.stdout[-800:]}"
-        if "code: 10000" in (r.stdout or "") + (r.stderr or "") and attempt < 2:
-            print(f"   wrangler auth error 10000 (attempt {attempt + 1}/3) — retrying in 10 s", flush=True)
-            time.sleep(10)
-            continue
-        raise RuntimeError(last)
-    else:
-        raise RuntimeError(last)
-    lines = r.stdout.splitlines()
-    start = next((i for i, ln in enumerate(lines) if ln.strip() == "["), None)
-    if start is None:
-        raise RuntimeError(f"no JSON array in wrangler output: {r.stdout[-800:]}")
-    return json.loads("\n".join(lines[start:]))
+    """["--command", sql] or ["--file", path] on econ-catalog; wrangler's --json statement results.
+
+    Through core.d1_remote (plan step 1): the pinned wrangler before T0 (it retries only the auth error
+    10000 - the OAuth refresh race seen twice on 2026-09-05 - which the old loop here also retried); after
+    T0 a --command read goes over REST and a --file write is refused. The --file batch runs ONCE: its
+    UPDATEs by key are safe twice, but the PK verify after it decides, as before."""
+    from core import d1_remote                                          # noqa: PLC0415
+    kind, arg = args
+    if kind == "--command":
+        return d1_remote.run_json(D1_DB, arg, timeout=timeout)
+    if kind == "--file":
+        return d1_remote.execute_file(D1_DB, arg, timeout=timeout, json_out=True)
+    raise ValueError(f"unknown wrangler argument {kind!r}")
 
 
 def _q(s: str) -> str:

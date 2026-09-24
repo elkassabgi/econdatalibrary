@@ -296,6 +296,18 @@ def test_the_retry_line_skips_wrangler_s_log_pointer(before_t0, monkeypatch):
     assert told == ["exit 1: \u2718 [ERROR] A request to the Cloudflare API failed. Authentication error [code: 10000]"]
 
 
+def test_the_retry_line_is_the_error_line_even_with_lines_after_it(before_t0, monkeypatch):
+    """mut10 F3 survived: in REAL_TAIL the [ERROR] line is also the last line before the log pointer, so
+    dropping the [ERROR] pick changed nothing. wrangler can print more after its error line."""
+    told = []
+    tail = ("\n✘ [ERROR] D1 import busy [code: 7500]\n\n"
+            "If you think this is a bug then please create an issue at https://github.com/cloudflare/workers-sdk\n"
+            "\U0001fab5  Logs were written to \"x.log\"\n")
+    _fake(monkeypatch, (1, "", "noise" + tail), (0, "done", ""))
+    assert d1_remote.execute_file("econ-catalog", "x.sql", tries=2, on_retry=lambda n, why: told.append(why)) == "done"
+    assert told == ["exit 1: ✘ [ERROR] D1 import busy [code: 7500]"], told
+
+
 def test_without_an_error_line_the_reason_is_the_last_line_but_never_the_log_pointer():
     assert d1_remote._last_line("first\nsecond\n\U0001fab5  Logs were written to \"x.log\"\n") == "second"
     assert d1_remote._last_line("") == ""

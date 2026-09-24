@@ -27,17 +27,14 @@ behind (R481).
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import shutil
 import sqlite3
-import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CATALOG = os.path.join(ROOT, "data", "catalog.db")
 OUTDIR = os.path.join(ROOT, "dist", "d1", "titlesync")
-WORKER = os.path.join(ROOT, "api", "worker")
 BATCH = 20
 
 
@@ -55,22 +52,14 @@ def db_for(source: str) -> str:
     return SHARDED.get(source, "econ-catalog")
 
 
-def d1(sql: str, as_json: bool = True, db: str = "econ-catalog"):
-    cmd = ["npx", "wrangler", "d1", "execute", db, "--remote", "--command", sql]
-    if as_json:
-        cmd.append("--json")
-    r = subprocess.run(cmd, cwd=WORKER, capture_output=True, text=True, shell=True,
-            encoding="utf-8", errors="replace")
-    if not as_json:
-        return r.returncode == 0
-    out = r.stdout
-    i = out.find("[")
-    if i < 0:
-        return None
+def d1(sql: str, db: str = "econ-catalog"):
+    """The result rows of ONE statement, or None when it failed (never an empty list for a failure). Through
+    core.d1_remote (plan step 1): the pinned wrangler before T0, one plain read over REST after it."""
+    sys.path.insert(0, ROOT)
+    from core import d1_remote                                          # noqa: PLC0415
     try:
-        obj, _ = json.JSONDecoder().raw_decode(out[i:])
-        return obj[0].get("results")
-    except Exception:                                        # noqa: BLE001
+        return d1_remote.run_json(db, sql)[0].get("results")
+    except (RuntimeError, ValueError):                                 # D1Unreachable is a RuntimeError
         return None
 
 
@@ -136,20 +125,22 @@ def main() -> int:
     if not a.push:
         print("  PLAN ONLY — re-run with --push")
         return 0
+    sys.path.insert(0, ROOT)
+    from core import d1_remote                                          # noqa: PLC0415
     failed: list[tuple[str, str]] = []
     for p in files:
         src_of = os.path.basename(p).rsplit("_", 1)[0].replace("_zz", "")
-        r = subprocess.run(
-            ["npx", "wrangler", "d1", "execute", db_for(src_of), "--remote", "--file", p],
-            cwd=WORKER, capture_output=True, text=True, shell=True,
-            encoding="utf-8", errors="replace")
-        if r.returncode != 0:
+        try:
+            d1_remote.execute_file(db_for(src_of), p, timeout=3600)     # once, as before (tries=1)
+        except d1_remote.CutoverRefused:
+            raise                                                       # after T0: D1 is frozen - stop, loudly
+        except RuntimeError as e:                                       # wrangler failed
             # DO NOT abort the run. One transient "Authentication error [code: 10000]" on file
             # 41 of 211 previously skipped every file after it - unhcr, bea, eia and noaa were
             # all reported as pushed and none of them were. Collect the failures, finish the
             # rest, and report; the whole operation is idempotent, so a re-run picks up only
             # what is still raw.
-            failed.append((os.path.basename(p), (r.stderr or r.stdout)[-180:].strip()[:160]))
+            failed.append((os.path.basename(p), str(e)[-180:].strip()[:160]))
             continue
     ok = len(files) - len(failed)
     print(f"  pushed {ok} of {len(files)} file(s)")

@@ -195,8 +195,10 @@ def _last_line(text: str) -> str:
 
 
 def execute_file(database: str, path: str, *, timeout: int = 3600, tries: int = 1, retry_timeouts: bool = False,
-                 on_retry=None) -> str:
+                 on_retry=None, json_out: bool = False):
     """`wrangler d1 execute <db> --remote --file <path> --yes` - the bulk loaders' road. Refuses after T0.
+    json_out=True adds --json and returns the statement results ([{results, meta, ...}], as run_json does)
+    instead of wrangler's stdout - for a caller that reads meta.changes.
 
     By default it runs ONCE, and a retry is the CALLER's decision (R1183). tries > 1 retries a failed EXIT
     (a failed import is rolled back - Cloudflare's D1 docs: it "will return to its original state and you
@@ -216,13 +218,13 @@ def execute_file(database: str, path: str, *, timeout: int = 3600, tries: int = 
     for attempt in range(max(1, tries)):
         timed_out = False
         try:
-            r = _wrangler(["d1", "execute", database, "--remote", "--yes", f"--file={os.path.abspath(path)}"],
-                          timeout=timeout, retries=0)
+            r = _wrangler(["d1", "execute", database, "--remote", "--yes", f"--file={os.path.abspath(path)}"]
+                          + (["--json"] if json_out else []), timeout=timeout, retries=0)
         except D1Unreachable as e:
             why, unreachable, timed_out = str(e), True, "timed out" in str(e)
         else:
             if r.returncode == 0:
-                return r.stdout or ""
+                return statement_results(r.stdout or "") if json_out else (r.stdout or "")
             out, err_text, unreachable = r.stdout or "", r.stderr or "", False
             why = f"exit {r.returncode}: {_last_line(err_text) or _last_line(out)}"
         if attempt < tries - 1 and not (timed_out and not retry_timeouts):

@@ -151,18 +151,22 @@ def emit() -> None:
         raise SystemExit(f"FATAL: emitted {emitted:,} != counted {total:,}")
 
 
+def _d1(database: str, sql: str, timeout: int = 600) -> dict:
+    """ONE statement through core.d1_remote (plan step 1): the pinned wrangler before T0, one plain read
+    over REST after it (writes refused). Returns wrangler's result block; SystemExit on any failure."""
+    from core import d1_remote                                          # noqa: PLC0415
+    try:
+        return d1_remote.run_json(database, sql, timeout=timeout)[0]
+    except d1_remote.CutoverRefused:
+        raise
+    except (RuntimeError, ValueError) as e:                            # D1Unreachable is a RuntimeError
+        raise SystemExit(f"FATAL: D1 {database}: {e}") from None
+
+
 def _shard_fts_count() -> int:
     """One remote COUNT over the shard's series_fts (~3.1M rows, ~$0.003, only when this
     retired tool is actually run)."""
-    import json
-    import subprocess
-    npx = __import__("shutil").which("npx")
-    res = subprocess.run(
-        [npx, "wrangler", "d1", "execute", SHARD, "--remote", "--yes",
-         "--command", "SELECT COUNT(*) AS n FROM series_fts;", "--json"],
-        cwd=st.WORKER_DIR, capture_output=True, text=True, encoding="utf-8",
-        errors="replace", timeout=600)
-    return int(json.loads(res.stdout)[0]["results"][0]["n"])
+    return int(_d1(SHARD, "SELECT COUNT(*) AS n FROM series_fts;")["results"][0]["n"])
 
 
 def push(force_wipe: bool = False) -> None:
@@ -207,13 +211,8 @@ def push(force_wipe: bool = False) -> None:
                 f"the full emission re-applies).")
         if existing > 0 and force_wipe:
             print(f"--force-wipe: deleting {existing:,} noaa FTS rows before re-applying ...")
-            import subprocess
-            npx = __import__("shutil").which("npx")
-            subprocess.run(
-                [npx, "wrangler", "d1", "execute", SHARD, "--remote", "--yes",
-                 "--command",
-                 "DELETE FROM series_fts WHERE series_id >= 'noaa:' AND series_id < 'noaa;';"],
-                cwd=st.WORKER_DIR, check=True, timeout=1800)
+            _d1(SHARD, "DELETE FROM series_fts WHERE series_id >= 'noaa:' AND series_id < 'noaa;';",
+                timeout=1800)
 
     for p in todo:
         try:
@@ -228,32 +227,17 @@ def push(force_wipe: bool = False) -> None:
 
 
 def verify() -> int:
-    import json
-    import subprocess
     conn = sqlite3.connect(CATALOG_DB)
     local = conn.execute("SELECT COUNT(*) FROM series WHERE source_id=?",
                          (SOURCE,)).fetchone()[0]
-    npx = __import__("shutil").which("npx")
-    res = subprocess.run(
-        [npx, "wrangler", "d1", "execute", SHARD, "--remote", "--yes",
-         "--command", f"SELECT COUNT(*) AS n FROM series WHERE source_id='{SOURCE}';",
-         "--json"],
-        cwd=st.WORKER_DIR, capture_output=True, text=True, encoding="utf-8",
-        errors="replace", timeout=600)
-    remote = json.loads(res.stdout)[0]["results"][0]["n"]
+    remote = _d1(SHARD, f"SELECT COUNT(*) AS n FROM series WHERE source_id='{SOURCE}';")["results"][0]["n"]
     print(f"verify: catalog.db={local:,}  shard={remote:,}  "
           f"{'MATCH' if local == remote else 'MISMATCH'}")
     # spot-compare 3 rows end-to-end
     for r in conn.execute("SELECT series_id,title FROM series WHERE source_id=? "
                           "ORDER BY series_id LIMIT 3", (SOURCE,)):
-        q = subprocess.run(
-            [npx, "wrangler", "d1", "execute", SHARD, "--remote", "--yes",
-             "--command",
-             "SELECT title FROM series WHERE series_id='" + r[0].replace("'", "''") + "';",
-             "--json"],
-            cwd=st.WORKER_DIR, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=600)
-        got = json.loads(q.stdout)[0]["results"]
+        got = _d1(SHARD, "SELECT title FROM series WHERE series_id='" + r[0].replace("'", "''") + "';"
+                  )["results"]
         ok = bool(got) and got[0]["title"] == r[1]
         print(f"  {r[0][:60]}: {'ok' if ok else 'DIFFERS'}")
         if not ok:
@@ -274,20 +258,8 @@ def prune_primary() -> int:
     timeout risk), loop-until-zero so the phase is re-runnable and its stopping
     condition is the DATABASE's own count, not our bookkeeping.
     """
-    import json
-    import shutil
-    import subprocess
-    npx = shutil.which("npx")
-
     def run_sql(sql: str) -> dict:
-        res = subprocess.run(
-            [npx, "wrangler", "d1", "execute", "econ-catalog", "--remote", "--yes",
-             "--command", sql, "--json"],
-            cwd=st.WORKER_DIR, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=600)
-        if res.returncode != 0:
-            raise SystemExit(f"FATAL: primary delete failed: {(res.stderr or res.stdout)[-300:]}")
-        return json.loads(res.stdout)[0]
+        return _d1("econ-catalog", sql)
 
     total = 0
     while True:
