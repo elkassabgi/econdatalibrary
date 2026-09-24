@@ -27,12 +27,14 @@ from core.cutover import CutoverRefused, is_cut_over
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHECKOUT_PATH = os.path.join(ROOT, "data", "catalog.db")
-BUILD_PATH = r"E:\econ_live\catalog\catalog.db"
-LOCK_PATH = r"E:\econ_live\state\writer.lock"
-# The other fixed machine-wide places a post-T0 writer must use (plan change 4; updater/run.py refuses a
-# run whose configuration points anywhere else, so a worktree can never become a second writer).
-LIVE_STATE_DIR = r"E:\econ_live\state"
+# THE post-T0 places (plan change 4). The production checkout's own files ARE the build (review R1176: a
+# separate E:\econ_live\catalog build left the updater - and ~150 modules that open <root>/data/catalog.db -
+# writing a different file from the one the resolver named). updater/run.py pins the updater to this root
+# and refuses every path override that would point elsewhere; only the lock lives outside the checkout.
 LIVE_STORE_ROOT = r"E:\research\econfindatalibrary"
+BUILD_PATH = os.path.join(LIVE_STORE_ROOT, "data", "catalog.db")
+LIVE_STATE_DIR = os.path.join(LIVE_STORE_ROOT, "data", "_aqueduct")
+LOCK_PATH = r"E:\econ_live\state\writer.lock"
 
 _held: object | None = None           # the open lock file while this process holds the writer lock
 
@@ -70,10 +72,7 @@ def writer_lock():
         raise CutoverRefused(f"refused: another process holds the catalogue writer lock {LOCK_PATH}") from None
     _held = fh
     try:
-        fh.seek(0)
-        fh.truncate()
-        fh.write(f"pid {os.getpid()}\n".encode())
-        fh.flush()
+        _recover_hot_journal()
         yield
     finally:
         _held = None
@@ -81,6 +80,25 @@ def writer_lock():
             _unlock(fh)
         finally:
             fh.close()
+
+
+def _recover_hot_journal() -> None:
+    """A writer killed mid-transaction leaves a HOT rollback journal (catalog.db is in rollback-journal
+    mode). Until a read-write open rolls it back, every mode=ro open fails, and a copy of the file is torn
+    (review R1176, measured). The new lock holder is the only writer, so it opens the catalogue read-write
+    once - SQLite rolls a hot journal back on the first read - and refuses if a journal is still there."""
+    path = catalog_path()
+    if not os.path.isfile(path):
+        return
+    con = sqlite3.connect(pathlib.Path(path).resolve().as_uri() + "?mode=rw", uri=True, timeout=60)
+    try:
+        con.execute("SELECT count(*) FROM sqlite_master").fetchone()
+    finally:
+        con.close()
+    journal = path + "-journal"
+    if os.path.exists(journal) and os.path.getsize(journal) > 0:
+        raise RuntimeError(f"the catalogue at {path} still has a rollback journal after recovery; "
+                           "do not copy or serve it - inspect it first")
 
 
 if os.name == "nt":

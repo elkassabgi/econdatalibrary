@@ -34,7 +34,8 @@ class _FakeS3:
 
 
 @pytest.mark.parametrize("key,data", [("series/x%3A1.csv", CSV), ("_aqueduct/stats.json", b'{"a": 1}'),
-                                      ("series/pre%3Agz.csv", gzip.compress(CSV, mtime=0))])
+                                      ("series/pre%3Agz.csv", gzip.compress(CSV, mtime=0)),
+                                      ("_aqueduct/listing.csv", CSV)])     # a CSV outside series/ stays plain
 def test_parity_with_r2blob(sb, key, data):
     r2 = blob.R2Blob()
     r2._client = _FakeS3()
@@ -65,6 +66,29 @@ def test_identical_bytes_are_not_written_again(sb):
     assert sb.store.head("series/x%3A1.csv") == stamp
     sb.put_atomic("series/x%3A1.csv", CSV + b"x:1,2020-03-01,3.5\n")      # a real change is written
     assert gzip.decompress(sb.get("series/x%3A1.csv")).endswith(b"3.5\n")
+
+
+def test_an_object_without_csvmd5_is_recognised_by_its_etag(sb):
+    """Objects imported from R2 before the csvmd5 metadata existed carry only an etag; identical bytes
+    must still be skipped (R1176 finding 7: 'the etag fallback always says no' survived)."""
+    from core.r2_util import series_csv_put_args
+    stored, _kw, _digest = series_csv_put_args(CSV)
+    sb.store.put("series/old.csv", stored, etag=hashlib.md5(stored).hexdigest(), content_encoding="gzip",
+                 content_type="text/csv", custom_metadata={})
+    before = blob.SKIPPED_IDENTICAL[0]
+    sb.put_atomic("series/old.csv", CSV)
+    assert blob.SKIPPED_IDENTICAL[0] == before + 1
+    assert sb.store.head("series/old.csv")["custom_metadata"] == {}, "not rewritten"
+
+
+def test_a_deleted_key_s_file_is_collected_by_gc(sb):
+    """delete() retires the file; gc removes it after the grace (finding 7: a delete with no retired row
+    left the file on disk for ever)."""
+    sb.put_atomic("series/gone.csv", CSV)
+    path = sb.store.head("series/gone.csv")["path"]
+    sb.delete("series/gone.csv")
+    assert os.path.exists(path), "kept for in-flight reads"
+    assert sb.store.gc(grace_hours=-1) == 1 and not os.path.exists(path)
 
 
 def test_listing_deleting_and_the_small_accessors(sb, tmp_path):

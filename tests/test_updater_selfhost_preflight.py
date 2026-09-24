@@ -1,5 +1,6 @@
 """updater/run.py after T0 (plan change 4): the updater runs self-hosted only, from the fixed machine-wide
 places, under the single-writer lock. Before T0 nothing changes. No real E: or ProgramData path is used."""
+import os
 import sys
 import types
 
@@ -9,19 +10,25 @@ from core import catalog_path, cutover
 from updater import config, run
 
 
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 @pytest.fixture
 def live(tmp_path, monkeypatch):
-    """A cut-over machine whose fixed places are temporary folders, and a correct configuration."""
+    """A cut-over machine whose production checkout is THIS checkout (the preflight also checks where the
+    code runs from), with a correct configuration and the lock in a temporary folder."""
     (tmp_path / "CUTOVER").write_text("")
     monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "CUTOVER"))
-    state, store = tmp_path / "live" / "state", tmp_path / "store"
-    state.mkdir(parents=True)
-    store.mkdir()
-    monkeypatch.setattr(catalog_path, "LIVE_STATE_DIR", str(state))
-    monkeypatch.setattr(catalog_path, "LIVE_STORE_ROOT", str(store))
-    monkeypatch.setattr(catalog_path, "LOCK_PATH", str(state / "writer.lock"))
-    monkeypatch.setattr(config, "STATE_DIR", str(state))
-    monkeypatch.setattr(config, "ROOT", str(store))
+    monkeypatch.setattr(catalog_path, "LIVE_STORE_ROOT", REPO)
+    monkeypatch.setattr(catalog_path, "LIVE_STATE_DIR", os.path.join(REPO, "data", "_aqueduct"))
+    monkeypatch.setattr(catalog_path, "BUILD_PATH", os.path.join(REPO, "data", "catalog.db"))
+    monkeypatch.setattr(catalog_path, "LOCK_PATH", str(tmp_path / "writer.lock"))
+    monkeypatch.setattr(config, "ROOT", REPO)
+    monkeypatch.setattr(config, "STATE_DIR", os.path.join(REPO, "data", "_aqueduct"))
+    monkeypatch.setattr(config, "DATA_ROOT", os.path.join(REPO, "data", "clean_full"))
+    monkeypatch.setattr(config, "REGISTRY", os.path.join(REPO, "updater", "registry.yaml"))
+    for v in ("ECONDL_CATALOG", "ECONDL_DATA"):
+        monkeypatch.delenv(v, raising=False)
     monkeypatch.setenv("AQUEDUCT_BACKEND", "selfhost")
     return tmp_path
 
@@ -46,8 +53,21 @@ def test_the_correct_configuration_passes(live):
     (lambda mp, t: mp.setenv("AQUEDUCT_BACKEND", "r2"), "AQUEDUCT_BACKEND"),
     (lambda mp, t: mp.setenv("AQUEDUCT_BACKEND", "local"), "AQUEDUCT_BACKEND"),
     (lambda mp, t: mp.delenv("AQUEDUCT_BACKEND"), "AQUEDUCT_BACKEND"),
-    (lambda mp, t: mp.setattr(config, "STATE_DIR", str(t / "worktree" / "data" / "_aqueduct")), "state dir"),
-    (lambda mp, t: mp.setattr(config, "ROOT", str(t / "worktree")), "store root"),
+    (lambda mp, t: mp.setattr(config, "STATE_DIR", str(t / "worktree" / "data" / "_aqueduct")), "STATE_DIR"),
+    (lambda mp, t: mp.setattr(config, "ROOT", str(t / "worktree")), "config.ROOT"),
+    # R1176: every other override the updater reads
+    (lambda mp, t: mp.setattr(config, "DATA_ROOT", str(t / "elsewhere" / "clean_full")), "DATA_ROOT"),
+    (lambda mp, t: mp.setattr(config, "REGISTRY", str(t / "registry.yaml")), "REGISTRY"),
+    (lambda mp, t: mp.setenv("ECONDL_CATALOG", str(t / "catalog.db")), "ECONDL_CATALOG"),
+    (lambda mp, t: mp.setenv("ECONDL_DATA", str(t / "clean_full")), "ECONDL_DATA"),
+    # the code runs from a worktree while every setting names production (econdl follows the code)
+    (lambda mp, t: (mp.setattr(catalog_path, "LIVE_STORE_ROOT", str(t / "prod")),
+                    mp.setattr(catalog_path, "LIVE_STATE_DIR", str(t / "prod" / "data" / "_aqueduct")),
+                    mp.setattr(catalog_path, "BUILD_PATH", str(t / "prod" / "data" / "catalog.db")),
+                    mp.setattr(config, "ROOT", str(t / "prod")),
+                    mp.setattr(config, "STATE_DIR", str(t / "prod" / "data" / "_aqueduct")),
+                    mp.setattr(config, "DATA_ROOT", str(t / "prod" / "data" / "clean_full")),
+                    mp.setattr(config, "REGISTRY", str(t / "prod" / "updater" / "registry.yaml"))), "code's own checkout"),
 ])
 def test_anything_else_is_refused(live, monkeypatch, capsys, change, needle):
     change(monkeypatch, live)

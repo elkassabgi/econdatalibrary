@@ -367,11 +367,25 @@ def _selfhost_preflight(a) -> bool:
     backend = os.environ.get("AQUEDUCT_BACKEND", "local").strip().lower()
     if backend != "selfhost":
         refuse(f"AQUEDUCT_BACKEND is {backend!r}; set AQUEDUCT_BACKEND=selfhost")
+    # EVERY place the updater reads or writes, against the one canonical value (review R1176: checking
+    # two of them let AQUEDUCT_DATA_ROOT / ECONDL_CATALOG / ECONDL_DATA / AQUEDUCT_REGISTRY point a run
+    # elsewhere, and econdl's defaults follow the CODE's location, not ECONDL_ROOT).
+    from core.catalog_path import BUILD_PATH                                  # noqa: PLC0415
+    code_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    data = os.path.join(LIVE_STORE_ROOT, "data", "clean_full")
+    places = [
+        ("the code's own checkout", code_root, LIVE_STORE_ROOT),
+        ("config.ROOT (ECONDL_ROOT)", config.ROOT, LIVE_STORE_ROOT),
+        ("config.STATE_DIR (AQUEDUCT_STATE_DIR)", config.STATE_DIR, LIVE_STATE_DIR),
+        ("config.DATA_ROOT (AQUEDUCT_DATA_ROOT)", config.DATA_ROOT, data),
+        ("config.REGISTRY (AQUEDUCT_REGISTRY)", config.REGISTRY, os.path.join(LIVE_STORE_ROOT, "updater", "registry.yaml")),
+        ("ECONDL_CATALOG", os.environ.get("ECONDL_CATALOG") or BUILD_PATH, BUILD_PATH),
+        ("ECONDL_DATA", os.environ.get("ECONDL_DATA") or data, data),
+    ]
     same = lambda x, y: os.path.normcase(os.path.abspath(x)) == os.path.normcase(os.path.abspath(y))  # noqa: E731
-    if not same(config.STATE_DIR, LIVE_STATE_DIR):
-        refuse(f"the state dir is {config.STATE_DIR}; set AQUEDUCT_STATE_DIR={LIVE_STATE_DIR}")
-    if not same(config.ROOT, LIVE_STORE_ROOT):
-        refuse(f"the store root is {config.ROOT}; run from {LIVE_STORE_ROOT} or set ECONDL_ROOT to it")
+    wrong = [f"{name} is {actual}, must be {want}" for name, actual, want in places if not same(actual, want)]
+    if wrong:
+        refuse("; ".join(wrong) + f" - run the updater from {LIVE_STORE_ROOT} with no path overrides")
     return True
 
 

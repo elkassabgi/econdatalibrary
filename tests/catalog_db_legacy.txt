@@ -1,9 +1,9 @@
-# Files that name catalog.db outside core/catalog_path.py on 2026-09-24 (plan change 4a).
-# This list may only SHRINK: move each file to core.catalog_path.connect and delete its line.
-api/devserver.py
+# Files whose CODE names the catalogue (catalog.db, ECONDL_CATALOG, or the name split in two) outside
+# core/catalog_path.py - re-derived 2026-09-24 with the R1176 detection (clients/ included, comments
+# ignored). This list may only SHRINK: move each file to core.catalog_path.connect and delete its line.
 api/test_conformance.py
 catalog/gen_site.py
-connectors/sec_edgar/build_pointers.py
+clients/python/econdl/_catalog.py
 core/apply_title_wave.py
 core/backfill_coverage.py
 core/broaden_catalog.py
@@ -21,16 +21,8 @@ core/measure_uncataloged.py
 core/sync_catalog_d1.py
 core/sync_state_d1.py
 core/title_insee_bdm.py
-jobs/ingest_ecb.py
-jobs/ingest_faostat.py
-jobs/ingest_oecd.py
-jobs/ingest_penn_world_table.py
 jobs/ingest_unctad_ds.py
-jobs/ingest_worldbank_esg.py
-jobs/process_eurostat.py
 jobs/process_sec_edgar.py
-jobs/process_worldbank_wdi.py
-jobs/run_connector.py
 jobs/verify_data.py
 pipeline/title_bea.py
 scripts/title_ei_statreview.py
@@ -105,7 +97,6 @@ tools/migrate_noaa_shard.py
 tools/pretest.py
 tools/probe_csv_freshness.py
 tools/prove_faostat_repair.py
-tools/purge_ilostat_dead_retries.py
 tools/rebuild_series_fts.py
 tools/reconcile_serving.py
 tools/refresh_flowgrain_dates.py
@@ -141,14 +132,9 @@ tools/title_vdem_from_codebook.py
 tools/verify_derive_parity.py
 tools/verify_site_build.py
 tools/verify_source_served.py
-updater/derive.py
-updater/health.py
 updater/orchestrate.py
 updater/strategies/fetchers/_faostat.py
 updater/strategies/fetchers/_imf_mapped.py
 updater/strategies/fetchers/_who_base.py
-updater/strategies/fetchers/defillama.py
-updater/strategies/fetchers/fed_board.py
-updater/strategies/fetchers/fhfa.py
 updater/strategies/fetchers/unesco_dem.py
 updater/strategies/fetchers/worldbank.py

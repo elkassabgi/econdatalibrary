@@ -53,6 +53,19 @@ def test_a_missing_catalogue_is_an_error_never_created(paths, monkeypatch):
     assert not (paths / "nowhere").exists()
 
 
+def test_the_uri_never_creates_the_file(paths, monkeypatch):
+    """Even past the isfile() check (a file removed in between), the mode=ro / mode=rw URI must not create a
+    database (finding 7: 'rw' changed to 'rwc' survived because isfile() answered first)."""
+    missing = paths / "gone" / "catalog.db"
+    missing.parent.mkdir()
+    monkeypatch.setattr(cp, "CHECKOUT_PATH", str(missing))
+    monkeypatch.setattr(cp.os.path, "isfile", lambda p: True)
+    for write in (False, True):
+        with pytest.raises(sqlite3.OperationalError):
+            cp.connect(write=write).execute("SELECT 1").fetchone()
+    assert not missing.exists()
+
+
 def test_before_t0_a_write_needs_no_lock(paths):
     c = cp.connect(write=True)
     c.execute("INSERT INTO which VALUES ('w')")
@@ -100,6 +113,37 @@ def test_a_second_process_is_refused_not_queued(paths):
         pass
 
 
+TORN = r"""
+import sqlite3, sys, time
+c = sqlite3.connect(sys.argv[1], isolation_level=None)
+c.execute("PRAGMA cache_size=10")                   # tiny cache: changed pages spill into the file
+c.execute("BEGIN IMMEDIATE")
+c.executemany("INSERT INTO which VALUES (?)", [("torn" + "x" * 900,) for _ in range(3000)])
+print("mid-transaction", flush=True)
+time.sleep(60)                                      # killed here: no COMMIT, no ROLLBACK
+"""
+
+
+def test_taking_the_lock_recovers_a_writer_killed_mid_transaction(paths):
+    """R1176 finding 4: a hot journal made every read-only open fail and any copy torn, while the lock was
+    free. The next lock holder must roll it back before anyone reads or copies the catalogue."""
+    (paths / "CUTOVER").write_text("")
+    build = cp.BUILD_PATH
+    p = subprocess.Popen([sys.executable, "-B", "-c", TORN, build], stdout=subprocess.PIPE, text=True)
+    try:
+        assert p.stdout.readline().strip() == "mid-transaction"
+    finally:
+        p.kill()
+        p.wait()
+    assert os.path.exists(build + "-journal"), "the crash left a hot journal (the test's own precondition)"
+    with pytest.raises(sqlite3.OperationalError):
+        cp.connect().execute("SELECT count(*) FROM which").fetchone()
+    with cp.writer_lock():
+        pass
+    assert not os.path.exists(build + "-journal")
+    assert cp.connect().execute("SELECT name FROM which").fetchall() == [("build",)], "the torn rows are gone"
+
+
 def test_the_lock_is_not_reentrant(paths):
     with cp.writer_lock():
         with pytest.raises(RuntimeError):
@@ -113,13 +157,26 @@ def test_the_resolver_has_no_override():
     code = "\n".join(l for l in code.splitlines() if not l.lstrip().startswith("#"))
     for banned in ("environ", "getenv", "argv"):
         assert banned not in code, f"core/catalog_path.py reads {banned!r}: the paths must not be overridable"
-    assert cp.BUILD_PATH == r"E:\econ_live\catalog\catalog.db" and cp.LOCK_PATH == r"E:\econ_live\state\writer.lock"
+    assert cp.LIVE_STORE_ROOT == r"E:\research\econfindatalibrary" and cp.LOCK_PATH == r"E:\econ_live\state\writer.lock"
+    assert cp.BUILD_PATH == os.path.join(cp.LIVE_STORE_ROOT, "data", "catalog.db"), "the production checkout IS the build"
+    assert cp.LIVE_STATE_DIR == os.path.join(cp.LIVE_STORE_ROOT, "data", "_aqueduct")
 
 
 # ---- the ratchet: files that name catalog.db outside the resolver may only become fewer ---------------
 LEGACY = os.path.join(ROOT, "tests", "catalog_db_legacy.txt")
+# clients/ IS scanned (R1176: the updater's own catalogue open lives in clients/python/econdl/_catalog.py).
 SKIP_DIRS = {".git", "node_modules", "data", "dist", "tests", "docs", "scratchpad", ".wrangler", "__pycache__",
-             ".claude", "logs", "state", "clients"}      # clients/ ships its own bundled registry to users
+             ".claude", "logs", "state"}
+# Code that names the catalogue: the literal, the variable that overrides it, or the name split in two.
+NAMES_CATALOGUE = re.compile(r"catalog\.db|ECONDL_CATALOG|[\"']catalog[\"']\s*[+,]\s*[\"']\.db[\"']")
+
+
+def _code_only(src: str, ext: str) -> str:
+    """The text with comments and docstrings removed, so a migrated file that still MENTIONS catalog.db
+    in a comment leaves the list (R1176) - only code that names it counts."""
+    if ext == ".py":
+        src = re.sub(r'"""[\s\S]*?"""|\'\'\'[\s\S]*?\'\'\'', "", src)
+    return "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
 
 
 def _naming_files():
@@ -127,13 +184,22 @@ def _naming_files():
     for dirpath, dirs, files in os.walk(ROOT):
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
         for f in files:
-            if f.endswith((".py", ".ps1", ".sh")):
+            ext = os.path.splitext(f)[1]
+            if ext in (".py", ".ps1", ".sh"):
                 p = os.path.join(dirpath, f)
                 with open(p, encoding="utf-8", errors="replace") as fh:
-                    if "catalog.db" in fh.read():
+                    if NAMES_CATALOGUE.search(_code_only(fh.read(), ext)):
                         found.add(os.path.relpath(p, ROOT).replace(os.sep, "/"))
     found.discard("core/catalog_path.py")
+    found.discard("updater/run.py")      # names ECONDL_CATALOG only to REFUSE an override (plan change 4)
     return found
+
+
+def test_the_catalogue_ratchet_can_fail():
+    for code in ('p = os.path.join(ROOT, "data", "catalog.db")', 'os.environ.get("ECONDL_CATALOG")',
+                 'name = "catalog" + ".db"', 'os.path.join(d, "catalog", ".db")'):
+        assert NAMES_CATALOGUE.search(_code_only(code, ".py")), code
+    assert not NAMES_CATALOGUE.search(_code_only('# the old catalog.db road\nx = 1\n"""uses catalog.db"""', ".py"))
 
 
 def test_no_new_file_names_catalog_db_outside_the_resolver():
