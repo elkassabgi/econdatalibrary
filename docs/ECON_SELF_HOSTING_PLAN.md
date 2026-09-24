@@ -1,5 +1,5 @@
-# Econ self-hosting plan (draft 13, 2026-09-24) - answers reviews R1158, R1160, R1161, R1163-R1167, R1169, R1171,
-# R1172, R1174, R1176-R1186, AR-151-AR-153
+# Econ self-hosting plan (draft 14, 2026-09-24) - answers reviews R1158, R1160, R1161, R1163-R1167, R1169, R1171,
+# R1172, R1174, R1176-R1192, AR-151-AR-153
 
 Build status (branch feat/econ-selfhost-origin):
 - Code change 2 (local mode + wrangler.origin.toml, effc6784f) and code change 3 (blob store, sidecar, R2
@@ -35,8 +35,8 @@ Build status (branch feat/econ-selfhost-origin):
   writes refused) and six D1 readers moved onto them; the ratchets now read Python through the parser
   (comments, docstrings and bare strings dropped, implicit concatenation joined).
 - COUNTS: the file lists in the tests are the numbers to use - tests/catalog_db_legacy.txt (137 on
-  2026-09-24; 110 on branch feat/econ-selfhost-catpath, not yet merged) and LEGACY_REMOTE_D1 in
-  tests/test_d1_remote.py (25, then 14 after ab04a41e0, then 13 after b7e768dd2). The other counts in this plan (144 and
+  2026-09-24; 62 at 2d49d8a40 on branch feat/econ-selfhost-catpath, not yet merged) and LEGACY_REMOTE_D1 in
+  tests/test_d1_remote.py (25, then 14 after ab04a41e0, then 13 after b7e768dd2, then 6 after 594410504). The other counts in this plan (144 and
   154 catalogue files, 24 remote-D1 files) were taken earlier with other rules and are superseded.
 - THE FRESHNESS PROJECTION (R1186, measured on the production file): E:\...\data\catalog.db holds only
   license, series, series_fts and source. unit_state, source_state and source_data_through - what
@@ -44,10 +44,24 @@ Build status (branch feat/econ-selfhost-origin):
   from state.db and the catalogue. So tools/selfhost/origin_copies.py builds them into the primary copy
   with that same emitter (the same licence gate), from the live state.db, inside the locked read; a copy
   without them fails its check, and t0_ready checks the live state.db has rows (282 unit_state and 256
-  source_state on 2026-09-24). OPEN: sec_edgar's data_through is stamped from D1 only
-  (tools/stamp_source_data_through.py, DATA_THROUGH_FROM_D1); after T0 it needs a local stamper, or the
-  source serves no data_through.
-- Still to do in step 1: move the remaining catalogue callers and remote-D1 callers onto the
+  source_state on 2026-09-24). Since 01938a010 only state.db is read inside the lock; data_through is
+  computed from the primary copy afterwards (the GROUP BY took 1,833 s cold on production - R1191).
+- sec_edgar IS A T0 PREREQUISITE (R1191, 01938a010). Its catalogue rows, its source_state row and its
+  data_through live only in D1: its CI refresher writes D1 alone (R726), and tools/stamp_source_data_through.py
+  stamps data_through from D1. A statistic over the catalogue copy is not a substitute - R737 measured
+  MAX(end_date <= today) over the copy giving a forward date that creeps with the calendar. So
+  tools/selfhost/t0_ready.py has a check, d1-only-sources: READY is refused while any source in
+  sync_state_d1.DATA_THROUGH_FROM_D1 has no entry in sync_state_d1.LOCAL_FRESHNESS_WRITERS (empty today).
+  The work: a local sec_edgar refresher that writes the catalogue, state.db and data_through (step 1).
+- Also built on 2026-09-24, each answering a parallel review: R1191 (01938a010) - a D1 file that a retry
+  re-applies is safe twice (sync_catalog_d1 keeps each id-list DELETE in one file with its INSERTs; a
+  file that is not safe twice runs once; migrate_noaa_shard never retries or resumes after a failure),
+  nothing escapes as a traceback after the router flip (exit 3), the retry reason is wrangler's [ERROR]
+  line. On the catalogue branch: R1189, R1190 and R1192 - the four fetchers that read the catalogue
+  refuse an unreadable one (TransientError, never an empty set that skips their id self-check), with
+  real hot-journal and run() tests; a ratchet that every resolver writer takes the writer lock, and one
+  against a plain sqlite3.connect of a resolver path.
+- Still to do in step 1: the local sec_edgar refresher (above); move the remaining catalogue callers and remote-D1 callers onto the
   chokepoints (the ratchets list them and may only shrink; the catalogue callers go through
   core.catalog_path.connect / connect_path, which keeps a tool's --db argument before T0); the direct put_series_csv writers onto
   SelfhostBlob; delist_timeless_tables.py onto licence_targets (purge_unpermitted_r2.py stays defused
@@ -295,7 +309,8 @@ client -> econdl-api.elkassabgi.workers.dev   EDGE worker (same name, forever)
       except the endpoint/account id billing-guard needs - Ahmed; stop EconGuard and the crawlers; create
       the machine-wide CUTOVER flag ONLY after `python tools/selfhost/t0_ready.py`, run from the
       production checkout, prints READY (legacy lists empty, ratchets pass, the launcher self-hosted, the
-      updater preflight passes, the three CI writers disabled, the edge on EDGE_STATE users); REVOKE the
+      updater preflight passes, the three CI writers disabled, the edge on EDGE_STATE users, the live
+      state.db has rows, every D1-only source has a local freshness writer); REVOKE the
       econ R2 write key (not rotate - a new key with no home is a
       live write path) - Ahmed. Prove the freeze with R2 and D1 GraphQL analytics by bucket/database and
       action type (deletes included): zero writes for one hour, and then checked daily until step 7 by the
