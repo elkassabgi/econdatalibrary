@@ -148,6 +148,12 @@ def _stale_count(s3, ids: list[str]) -> tuple[int, int, list[str]]:
 
 
 def main() -> int:
+    # AFTER T0 this tool reads the FROZEN cloud copy and writes the live local data: refused first, before
+    # its arguments (neither the R2 guard nor d1_remote stops a READ; tests/test_verifiers_6d.py lists why).
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import cutover                                          # noqa: PLC0415
+    cutover.refuse_if_cut_over('repair_stale_csvs - it judges served bytes by R2, which is frozen after T0 - use tools/make_servable.py')
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", action="append")
     ap.add_argument("--at-risk", action="store_true",

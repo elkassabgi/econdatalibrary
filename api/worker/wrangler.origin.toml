@@ -1,0 +1,42 @@
+# ---------------------------------------------------------------------------
+# wrangler.origin.toml  --  the SELF-HOSTED ORIGIN on the workstation (docs/ECON_SELF_HOSTING_PLAN.md).
+#
+# Run with:   wrangler dev -c wrangler.origin.toml --local --ip 127.0.0.1 --persist-to <dir>
+# NEVER deployed. Everything below is chosen so a `wrangler deploy -c wrangler.origin.toml` cannot
+# publish a worker that serves without the edge's checks (reviews R1164 (6), R1165 (7), R1166 (7)):
+#   * the name is not econdl-api, so it can never replace the edge worker;
+#   * TOP-LEVEL workers_dev = false and preview_urls = false (wrangler 3.114.17 defaults
+#     preview_urls to true whatever workers_dev says), and no routes or triggers;
+#   * the database ids are placeholders that exist in no account;
+#   * LOCAL = "1" makes the code refuse EVERY request unless ORIGIN_SECRET is set, and the secret
+#     lives only in the workstation's .dev.vars (not committed).
+# tests/test_wrangler_origin_config.py parses this file with tomllib and fails if any of it changes.
+# ---------------------------------------------------------------------------
+
+name = "econ-origin-local"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+preview_urls = false
+
+[limits]
+cpu_ms = 300000
+
+[vars]
+LOCAL = "1"
+BLOB_SIDECAR_URL = "http://127.0.0.1:8798"
+
+[[d1_databases]]
+binding = "CATALOG"
+database_name = "econ-origin-catalog"
+database_id = "00000000-0000-0000-0000-000000000001"
+
+[[d1_databases]]
+binding = "CATALOG_CLIMATE"
+database_name = "econ-origin-catalog-climate"
+database_id = "00000000-0000-0000-0000-000000000002"
+
+[[r2_buckets]]
+binding = "SERIES_BUCKET"
+bucket_name = "econ-origin-local-placeholder"

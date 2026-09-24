@@ -110,8 +110,9 @@ def test_the_sync_wires_the_diff_and_keeps_an_escape_hatch():
                             "core", "sync_catalog_d1.py"), encoding="utf-8").read()
     assert "manifest.split(cols, rows)" in src, "the sync no longer diffs"
     assert "--no-diff" in src and "--seed-manifest" in src
-    i_record = src.find("manifest.record(cols, rows)")
-    i_exec = src.find("execute_remote(files, database=db)")
+    main = src[src.index("def main("):]              # the send is execute_plans(plans) since R1191 finding 2
+    i_record = main.find("manifest.record(cols, rows)")
+    i_exec = main.find("execute_plans(plans)")
     assert i_exec != -1 and i_record > i_exec, (
         "hashes must be recorded AFTER the remote execute, or a failed run would mark "
         "unsent rows as sent")

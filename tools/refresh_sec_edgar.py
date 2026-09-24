@@ -179,7 +179,7 @@ def coverage_span(odate, vint):
     return lo, (max(ended) if ended else max(odate))
 
 
-def update_catalog(spans, apply_d1):
+def update_catalog(spans, apply_d1, last_updated=None):
     """Move series.start_date/end_date with the data.
 
     Refreshing the parquet and the CSV but not the catalog leaves the METADATA lying
@@ -199,7 +199,7 @@ def update_catalog(spans, apply_d1):
     db = os.path.join(ROOT, "data", "catalog.db")
     if os.path.exists(db):
         import sqlite3
-        con = sqlite3.connect(db, timeout=120)
+        con = sqlite3.connect(db, timeout=120)  # plain-open: the catalogue (tests/catalog_db_legacy.txt); after T0 only under the writer lock (runtime guard)
         con.execute("PRAGMA busy_timeout=120000")
         # BEGIN IMMEDIATE with retries: the crawlers hold this database for hours and a
         # deferred transaction only discovers the lock at COMMIT, after every statement has
@@ -235,19 +235,26 @@ def update_catalog(spans, apply_d1):
             sid = f"sec_edgar:{ident}"
             cur = con.execute("SELECT title FROM series WHERE series_id=?", (sid,))
             row = cur.fetchone()
-            if row:
+            if row and last_updated is not None:
+                # after T0 (the local refresher): /v1/series/<id>.metadata.json reads series.last_updated
+                # first, and sec_edgar has no '_all' unit to fall back on once the 13F rows moved
+                con.execute("UPDATE series SET start_date=?, end_date=?, title=?, last_updated=? "
+                            "WHERE series_id=?", (str(lo), str(hi), title, last_updated, sid))
+            elif row:
                 con.execute("UPDATE series SET start_date=?, end_date=?, title=? WHERE series_id=?",
                             (str(lo), str(hi), title, sid))
                 n_local += 1
             else:
                 con.execute(
                     "INSERT INTO series (series_id, source_id, title, frequency, unit, "
-                    "geography, category, license_id, start_date, end_date, metadata) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    "geography, category, license_id, start_date, end_date, metadata"
+                    + (", last_updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)" if last_updated is not None
+                       else ") VALUES (?,?,?,?,?,?,?,?,?,?,?)"),
                     (sid, "sec_edgar", title, "Q", None, "US", "fundamentals",
                      "us-public-domain", str(lo), str(hi),
                      json.dumps({"cik": cik, "ticker": ident if not
-                                 ident.startswith("CIK") else None})))
+                                 ident.startswith("CIK") else None}))
+                    + ((last_updated,) if last_updated is not None else ()))
                 # FTS is a standalone table and does not track `series`; skipping it
                 # would leave the new company unsearchable even once catalogued. INSERT
                 # only, no DELETE first: series_fts is fts5(series_id UNINDEXED, ...), so a
@@ -447,7 +454,7 @@ def audit(client):
     if not os.path.exists(db):
         print("no local catalog.db — audit needs it; skipping")
         return 0
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=120)
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=120)  # plain-open: the catalogue, read-only
     con.execute("PRAGMA busy_timeout=120000")
     # primary-key RANGE, never `WHERE source_id=` (R721/R723/R737): the local catalogue has only
     # the PK autoindex, so a source_id predicate scans 13.5M rows under the crawlers' locks
@@ -771,7 +778,7 @@ def respan(client, spec, apply=False, apply_d1=False, skip_local=False, local_ch
     db = os.path.join(ROOT, "data", "catalog.db")
     local = {}
     if os.path.exists(db):
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)  # plain-open: the catalogue, read-only
         con.execute("PRAGMA busy_timeout=120000")
         for i in range(0, len(sids), 400):
             chunk = sids[i:i + 400]
@@ -836,7 +843,7 @@ def respan(client, spec, apply=False, apply_d1=False, skip_local=False, local_ch
         for j in range(0, len(todo_l), chunk):
             part = todo_l[j:j + chunk]
             for attempt in range(12):
-                con = sqlite3.connect(db, timeout=120, isolation_level=None)
+                con = sqlite3.connect(db, timeout=120, isolation_level=None)  # plain-open: the catalogue (--respan; refused after T0)
                 con.execute("PRAGMA busy_timeout=120000")
                 try:
                     con.execute("BEGIN IMMEDIATE")
@@ -979,6 +986,11 @@ def main():
                          "in one batch; no facts, CSVs or FTS rows are touched. Dry run unless --apply.")
     a = ap.parse_args()
 
+    from core import cutover                                  # noqa: PLC0415
+    if cutover.is_cut_over() and (a.d1 or a.audit or a.respan):
+        # before anything else: these read or write D1 and R2, which are frozen after T0 (_refresh_local)
+        raise cutover.CutoverRefused("refused: after T0 there is no D1, and --audit / --respan are not ported to "
+                                     "the self-hosted store yet - run the daily refresh without them")
     os.makedirs(GROUPED, exist_ok=True)
     if a.audit:
         from core import r2_util
@@ -1012,6 +1024,8 @@ def main():
     if a.limit:
         todo = todo[:a.limit]
         print(f"  LIMITED to {len(todo)} companies (testing)", flush=True)
+    if cutover.is_cut_over():
+        return _refresh_local(a, todo, t2c)                   # the local store, under the lock; no R2, no D1
 
     # The client is needed for READS too, not only writes: merge_facts must see what the store
     # already holds, and on CI the local mirror does not exist.
@@ -1149,6 +1163,228 @@ def main():
     if not a.apply and changed:
         print("\nre-run with --apply to write parquet + CSV and upload to R2")
     return 0
+
+
+# ---- AFTER T0 (docs/ECON_SELF_HOSTING_PLAN.md: MOVE refresh_sec_edgar, design draft 2) ----------------------
+# ONE STORE: the local one. Prior facts and the parquet go through the local files (the store IS them), the CSV
+# into the self-hosted blob store, the catalogue into the build, the freshness into state.db (the origin copies
+# build /v1/sources and /v1/last-updates from it). NO D1 and NO R2. The SEC fetch - many minutes on a busy day -
+# runs WITHOUT the writer lock: each changed company is merged and STAGED beside the store; only the commit phase
+# (move the parquets into place, the CSVs, the catalogue, the freshness stamp) holds the lock, taken with a bounded
+# wait because the updater holds it for its whole run.
+
+def _thirteen_f_blocker() -> "str | None":
+    """Why the XBRL row may not be written yet, or None. Until the 13F product has its own key and its state
+    rows have moved (feat/econ-13f-own-key), source_state('sec_edgar') is the 13F row, and writing the XBRL
+    product's freshness there merges the two products (R1193, R1205)."""
+    try:
+        from updater import state_migrations as M                   # noqa: PLC0415
+    except ImportError:
+        return ("updater/state_migrations.py is missing - the 13F product's own key (feat/econ-13f-own-key) "
+                "must be merged before the XBRL refresher writes source_state('sec_edgar')")
+    import sqlite3                                                   # noqa: PLC0415
+    from updater import config                                       # noqa: PLC0415
+    con = sqlite3.connect(f"file:{config.STATE_DB}?mode=ro", uri=True)  # plain-open: the updater's state.db, read-only
+    try:
+        left = M.pending(con)
+    finally:
+        con.close()
+    return None if left == 0 else f"{left} 13F state row(s) are still under sec_edgar - open the state store once"
+
+
+def _waiting_writer_lock(max_wait_s: float = 1800.0, step_s: float = 30.0):
+    """core.catalog_path.writer_lock, waited for (bounded): the updater holds it for its whole run."""
+    import contextlib                                                # noqa: PLC0415
+    from core import catalog_path, cutover                           # noqa: PLC0415
+
+    @contextlib.contextmanager
+    def held():
+        end = time.monotonic() + max_wait_s
+        while True:
+            try:
+                cm = catalog_path.writer_lock()
+                cm.__enter__()
+                break
+            except cutover.CutoverRefused as e:
+                if "another process holds" not in str(e) or time.monotonic() >= end:
+                    raise
+                print(f"  the writer lock is held by another process; waiting {step_s:.0f}s", flush=True)
+                time.sleep(step_s)
+        try:
+            yield
+        finally:
+            cm.__exit__(None, None, None)
+    return held()
+
+
+def _refresh_local(a, todo, t2c) -> int:
+    """The daily refresh after T0 (--days / --ciks). Dry run unless --apply."""
+    import shutil                                                    # noqa: PLC0415
+    import tempfile                                                  # noqa: PLC0415
+    from core import cutover                                         # noqa: PLC0415
+    from updater import blob                                         # noqa: PLC0415
+    if a.d1 or a.audit or a.respan:
+        raise cutover.CutoverRefused("refused: after T0 there is no D1, and --audit / --respan are not ported to "
+                                     "the self-hosted store yet - run the daily refresh without them")
+    if a.apply:
+        blob.refuse_unless_live_checkout("refresh_sec_edgar --apply")          # before anything is fetched
+        why = _thirteen_f_blocker()
+        if why:
+            raise cutover.CutoverRefused(f"refused: {why}")
+    from core import catalog_path                                    # noqa: PLC0415
+    stage = tempfile.mkdtemp(prefix="sec_edgar_stage_", dir=os.path.dirname(os.path.dirname(GROUPED)))
+    # `failed` = SEC fetches that failed (transient; up to 5% still makes an ok day, as before T0); `refused` =
+    # companies the STORE refused (unreadable file, catalogued without a file, a merge that would shrink) -
+    # never transient, so any one of them makes the day partial (R1235: they were counted as fetch failures,
+    # and a company refused every day was stamped ok every day)
+    staged, failed, refused, errors, n_with_baseline = [], 0, 0, [], 0
+    empty = 0                       # answered, but the parser found no facts (R1236: an all-empty day was "ok")
+    cat = catalog_path.connect()                                     # read-only: spans, and "is it catalogued"
+    try:
+        for i, cik in enumerate(todo, 1):
+            time.sleep(SEC_MIN_INTERVAL)
+            url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
+            try:
+                data = json.loads(_get(url, timeout=180))
+            except Exception as e:                                   # noqa: BLE001
+                failed += 1
+                errors.append(f"CIK{cik:010d}:{type(e).__name__}")
+                continue
+            metric, odate, vals, vint = parse_companyfacts(data)
+            if not metric:
+                empty += 1
+                continue
+            ticks = t2c.get(cik) or []
+            ident = ticks[0] if ticks else f"CIK{cik:010d}"
+            safe = ident.replace("/", "_").replace(":", "_")
+            path = os.path.join(GROUPED, safe + ".parquet")
+            row = cat.execute("SELECT start_date, end_date FROM series WHERE series_id=?",
+                              (f"sec_edgar:{ident}",)).fetchone()
+            try:
+                digest = _file_digest(path)          # FIRST: a change after this is caught under the lock
+                prior = prior_facts(None, path)      # the local store IS the store
+            except Exception as e:                                   # noqa: BLE001
+                refused += 1                         # an unreadable file is REFUSED, never read as "new"
+                errors.append(f"{ident}:read:{type(e).__name__}")
+                continue
+            if prior is None and row is not None:
+                refused += 1                         # catalogued but no store file: REFUSED, never "new" (R386)
+                errors.append(f"{ident}:catalogued-but-no-store-file")
+                continue
+            before = len(prior["metric"]) if prior else 0
+            if before:
+                n_with_baseline += 1
+            try:
+                metric, odate, vals, vint = merge_facts(prior, (metric, odate, vals, vint))
+            except AssertionError as e:
+                refused += 1
+                errors.append(f"{ident}:merge:{e}")
+                continue
+            lo, hi = coverage_span(odate, vint)
+            # SKIP only when the facts AND the catalogue span are already right: a run that died after its store
+            # write left the span behind, and the next run must catch it up (plan; R730)
+            if len(metric) == before and not a.force and row is not None and \
+                    (str(row[0]), str(row[1])) == (str(lo), str(hi)):
+                continue
+            ent = data.get("entityName") or ident
+            title = f"{ent} ({', '.join(ticks)})" if ticks else str(ent)
+            tbl = pa.table({"metric": metric, "obs_date": pa.array(odate, type=pa.date32()), "value": vals,
+                            "vintage_date": pa.array(vint, type=pa.date32())})
+            sp = os.path.join(stage, safe + ".parquet")
+            if a.apply:
+                pq.write_table(tbl, sp)
+            staged.append({"ident": ident, "safe": safe, "path": path, "staged": sp, "before": before,
+                           "digest": digest,
+                           "after": len(metric), "span": (ident, lo, hi, title, cik),
+                           "csv": csv_bytes(metric, odate, vals) if a.apply else None})
+            if i % 50 == 0:
+                print(f"  {i}/{len(todo)} probed, {len(staged)} changed, {failed} failed, {refused} refused",
+                      flush=True)
+
+        print(f"\ncompanies probed : {len(todo):,}\ncompanies CHANGED: {len(staged):,}  "
+              f"({n_with_baseline:,} had a store baseline)" + ("" if a.apply else "  - dry run, nothing written"))
+        print(f"fetch failures   : {failed:,}\nstore refusals   : {refused:,}\nparsed no facts  : {empty:,}"
+              f"{('  e.g. ' + str(errors[:4])) if errors else ''}")
+        # more than 10 answers and EVERY one parsed to nothing is a schema break, not a quiet day (the econ-updater
+        # rule for an all-empty window; R1236 measured 20 of 20 empty stamped ok)
+        all_empty = (len(todo) - failed) > 10 and empty == len(todo) - failed
+        if all_empty:
+            print(f"STRUCTURAL: all {empty:,} answers parsed to no facts - the companyfacts shape changed?", flush=True)
+        if not a.apply:
+            return 0
+        when = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+        store = blob.SelfhostBlob()
+        with _waiting_writer_lock():
+            written, skipped, missing = [], 0, []
+            for s in staged:
+                if _file_digest(s["path"]) != s["digest"]:
+                    # the stored FILE changed since this company was merged (a row count can stay the same):
+                    # never write a union of a stale read
+                    print(f"  SKIPPED {s['ident']}: the store file changed after the merge read it")
+                    skipped += 1
+                    continue
+                # THE CSV FIRST, then the parquet. The other order lost the CSV for good on a crash between the
+                # two: the next run found the new facts already in the store and, when the span had not moved,
+                # skipped the company. With the parquet last, a crash leaves the store behind, so the next run
+                # merges again and writes both.
+                key = "series/" + urllib.parse.quote(f"sec_edgar:{s['ident']}", safe="") + ".csv"
+                store.put_atomic(key, s["csv"], plain=True)          # stored plain, as this tool always did (R1206)
+                from core.atomic import atomic_replace               # noqa: PLC0415
+                atomic_replace(s["staged"], s["path"])                # retries a reader's brief hold (WinError 5)
+                written.append(s)
+            spans = [s["span"] for s in written]
+            if spans:
+                update_catalog(spans, False, last_updated=when)
+                missing = _catalogue_misses(spans, when)
+                if missing:
+                    print(f"FAIL: parquet + CSV written but the catalogue does not carry {len(missing)} span(s) "
+                          f"(e.g. {missing[:3]}) - after T0 there is no D1 to fall back on", flush=True)
+            # OK only when the day is whole: <=5% transient fetch failures (as before T0), and nothing refused,
+            # skipped or missing from the catalogue. Anything else is partial, which NEVER sets last_success (the
+            # econ rule; R1235 found skipped and refused days stamped ok).
+            ok_day = failed * 20 <= len(todo) and not refused and not skipped and not missing and not all_empty
+            from updater.state import StateStore                     # noqa: PLC0415
+            st = StateStore()
+            try:
+                st.upsert_source("sec_edgar", strategy="edgar_delta", cadence="daily",
+                                 status="ok" if ok_day else "partial", last_attempt_utc=when,
+                                 **({"last_success_utc": when} if ok_day else {}))
+            finally:
+                st.close()
+        print(f"written: {len(written):,} company(ies) (parquet + CSV + catalogue); freshness stamped "
+              f"{'ok' if ok_day else 'partial'} at {when}")
+        return 0 if ok_day and len(written) == len(staged) else 1
+    finally:
+        cat.close()
+        shutil.rmtree(stage, ignore_errors=True)
+
+
+def _file_digest(path: str) -> str | None:
+    """sha256 of a stored file's bytes; None when it does not exist."""
+    import hashlib                                                   # noqa: PLC0415
+    try:
+        with open(path, "rb") as f:
+            return hashlib.file_digest(f, "sha256").hexdigest()
+    except FileNotFoundError:
+        return None
+
+
+def _catalogue_misses(spans, last_updated=None) -> list:
+    """The spans the catalogue does not carry as written (read back, read-only), and with last_updated
+    when one was written."""
+    from core import catalog_path                                    # noqa: PLC0415
+    con = catalog_path.connect()
+    try:
+        out = []
+        for ident, lo, hi, _title, _cik in spans:
+            row = con.execute("SELECT start_date, end_date, last_updated FROM series WHERE series_id=?",
+                              (f"sec_edgar:{ident}",)).fetchone()
+            if row is None or (str(row[0]), str(row[1])) != (str(lo), str(hi)) or \
+                    (last_updated is not None and row[2] != last_updated):
+                out.append(ident)
+        return out
+    finally:
+        con.close()
 
 
 if __name__ == "__main__":

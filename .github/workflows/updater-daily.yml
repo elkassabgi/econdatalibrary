@@ -311,7 +311,7 @@ jobs:
         run: python -m updater.run --push-state
 
       - name: Sync freshness to D1
-        # npm ci first so `npx wrangler` resolves the version PINNED in
+        # npm ci first so core.d1_remote runs the wrangler PINNED in
         # api/worker/package.json (^3.78.0) instead of floating to latest —
         # required by plan §1.3.
         #

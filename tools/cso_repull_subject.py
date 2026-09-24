@@ -141,6 +141,18 @@ def main() -> int:
         print("\n--dry run: nothing written, nothing deleted. Re-run with --apply.")
         return 0
 
+    # after T0 the cursor and the parquet are the local store the updater writes: the whole change holds the
+    # writer lock (refused at once while the updater runs); before T0 write_session changes nothing
+    from core import catalog_path                                       # noqa: PLC0415
+    # the checkout FIRST, before the lock and before the cursor is touched (R1228: the refusal came at the
+    # parquet backup, after the live cursor had been emptied from another checkout)
+    blob.refuse_unless_live_checkout("cso_repull_subject --apply")
+    with catalog_path.write_session():
+        return _apply(a, out_dir, cur_path, stored, matrices, parquet, runs_needed)
+
+
+def _apply(a, out_dir, cur_path, stored, matrices, parquet, runs_needed) -> int:
+    from core import cutover                                            # noqa: PLC0415
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
     # ---- 1) CURSOR FIRST. If this fails, the parquet is still intact. ----
@@ -160,18 +172,18 @@ def main() -> int:
     if not blob.exists(parquet):
         print("  parquet absent — cursor cleared, nothing to delete. Next runs will re-fetch.")
         return 0
-    r2 = blob.R2Blob()
-    key = blob._path_to_key(parquet)
     backup = f"_backup/cso_repull/{stamp}/{a.subject}.parquet"
-    r2.client.copy_object(Bucket=r2.bucket, Key=backup,
-                          CopySource={"Bucket": r2.bucket, "Key": key})
-    if not r2.exists(backup):
-        print("  ABORT: backup not readable after copy — refusing to delete the original.")
+    try:
+        where = blob.backup_store_object(parquet, backup)       # R2 before T0, local after (updater.blob)
+    except cutover.CutoverRefused:
+        raise                            # a refusal (another checkout, no lock) is not a failed backup
+    except (RuntimeError, OSError) as e:
+        print(f"  ABORT: backup not proved ({e}) — refusing to delete the original.")
         return 1
-    r2.client.delete_object(Bucket=r2.bucket, Key=key)
-    print(f"  backed up -> r2://{backup}, deleted {key}")
+    blob.delete_store_object(parquet)
+    print(f"  backed up -> {where}, deleted {parquet if cutover.is_cut_over() else 'r2://' + blob._path_to_key(parquet)}")
     print(f"\n  NEXT: let the daily run proceed (~{runs_needed} run(s)), then re-check with\n"
-          f"    python tools/audit_impossible_dates.py --r2 --source cso")
+          f"    python tools/audit_impossible_dates.py {'' if cutover.is_cut_over() else '--r2 '}--source cso")
     return 0
 
 

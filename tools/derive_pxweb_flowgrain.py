@@ -136,35 +136,31 @@ def main():
     a = ap.parse_args()
     srcs = a.source or SOURCES
 
-    s3 = None
+    store = None
     existing: set = set()
     if not a.dry_run and a.sample is None:
         if not a.bucket:
             ap.error("--bucket required for a real run")
         sys.path.insert(0, MAIN)
-        from core import r2_util
-        s3 = r2_util.client(write=True)
+        # THE CSV STORE (plan step 1): R2 before T0, the self-hosted blob store after it - never local files
+        from updater import blob as _blob                                  # noqa: PLC0415
+        store = _blob.csv_store(a.bucket)
         if a.skip_existing:
-            tok = None
-            while True:
-                kw = {"Bucket": a.bucket, "Prefix": "series/", "MaxKeys": 1000}
-                if tok:
-                    kw["ContinuationToken"] = tok
-                resp = s3.list_objects_v2(**kw)
-                for o in resp.get("Contents", []):
-                    existing.add(o["Key"])
-                if not resp.get("IsTruncated"):
-                    break
-                tok = resp.get("NextContinuationToken")
-            print(f"skip-existing: {len(existing):,} objects already in R2", flush=True)
+            existing.update(store.list_keys("series/"))
+            print(f"skip-existing: {len(existing):,} objects already in the store", flush=True)
 
     def put(series_id: str, body: bytes):
+        # PLAIN at rest, as this tool always stored it (R1206: gzip would change what the worker serves -
+        # blob._refuse_plain_gzip); bytes the store already holds are not written again
         key = r2_key(series_id)
+        from core.cutover import CutoverRefused                            # noqa: PLC0415
         for attempt in range(7):
             try:
-                s3.put_object(Bucket=a.bucket, Key=key, Body=body, ContentType="text/csv")
+                store.put_atomic(key, body, plain=True)
                 return
-            except Exception as e:
+            except (ValueError, CutoverRefused):
+                raise                        # a refusal answers the same on every try (R1222)
+            except Exception:                # noqa: BLE001
                 if attempt == 6:
                     raise
                 time.sleep(2 ** attempt)

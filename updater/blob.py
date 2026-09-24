@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import sys
 import threading
 import time
 import shutil
@@ -435,7 +436,7 @@ class LocalBlob:
         with open(p, "rb") as f:
             return f.read()
 
-    def put_atomic(self, key: str, data: bytes) -> None:
+    def put_atomic(self, key: str, data: bytes, *, plain: bool = False) -> None:   # local files: bytes as given
         p = self._path(key)
         d = os.path.dirname(p)
         if d:
@@ -507,6 +508,24 @@ _SKIPPED_LOCK = threading.Lock()
 # literal any more - `_already_holds` delegates the whole comparison.
 
 
+def _refuse_plain_gzip(key: str, data: bytes) -> None:
+    """put_atomic(plain=True) keeps a series CSV UNCOMPRESSED at rest, as the tools that always stored theirs
+    plain did before plan step 1 moved them onto the CSV store (R1206). Gzip is not a neutral change for
+    them: the worker refuses a date/geo filter on a gzipped object above its decompression-ratio limit
+    (4 large flow-grain CSVs measured at 45-66x) and serves a gzipped object without the citation in its
+    body. Changing that is a decision of its own, not a side effect of a move. A body that is already gzip
+    under plain=True would be served as garbage text/csv (the R560 class), so it is refused."""
+    if data[:2] == b"\x1f\x8b":
+        raise ValueError(f"{key}: plain=True with a gzip body - it would be stored as text/csv garbage")
+
+
+def _refuse_not_gzip_file(key: str, path: str) -> None:
+    with open(path, "rb") as fh:
+        if fh.read(2) != b"\x1f\x8b":
+            raise ValueError(f"{key}: put_gzip_file with a file that is not gzip ({path}) - it would be served "
+                             f"as compressed garbage or lose its encoding")
+
+
 def _count_skip() -> None:
     with _SKIPPED_LOCK:
         SKIPPED_IDENTICAL[0] += 1
@@ -521,15 +540,21 @@ class R2Blob:
     boto3 or credentials, only actually touching R2 does.
     """
 
-    def __init__(self, bucket: str = R2_BUCKET):
+    def __init__(self, bucket: str = R2_BUCKET, pool: int | None = None, write: bool = True):
         self.bucket = bucket
+        self.pool = pool            # botocore max_pool_connections for a many-threaded caller; None = default
+        self.write = write          # False: the read key (r2_util prefers R2_READ_*) - for a store only read
         self._client = None
+        self._client_lock = threading.Lock()
 
     @property
     def client(self):
         if self._client is None:
-            from core import r2_util  # lazy — only R2 runs need boto3 + creds
-            self._client = r2_util.client(write=True)
+            with self._client_lock:     # many threads may touch a new store at once: build ONE client
+                if self._client is None:
+                    from core import r2_util  # lazy — only R2 runs need boto3 + creds
+                    self._client = (r2_util.client(write=self.write, pool=self.pool) if self.pool
+                                    else r2_util.client(write=self.write))
         return self._client
 
     def get(self, key: str) -> bytes | None:
@@ -542,16 +567,24 @@ class R2Blob:
             raise
         return resp["Body"].read()
 
-    def put_atomic(self, key: str, data: bytes) -> None:
+    def put_atomic(self, key: str, data: bytes, *, plain: bool = False) -> None:
         # Single PUT — atomic per key on R2 (plan D-3); botocore already retries
         # transient failures (r2_util config: 5 attempts, standard mode).
         # ContentType by extension: the Worker serves series CSVs via plain R2 GET,
         # and core/derive_csv.py's backfill PUTs set text/csv — a re-derived CSV
         # must not silently downgrade to application/octet-stream (A3 handoff note).
+        # plain=True: store the bytes as they are (see _refuse_plain_gzip).
         kw = {}
         ct = _CONTENT_TYPES.get(os.path.splitext(key)[1].lower())
         if ct:
             kw["ContentType"] = ct
+        if plain:
+            _refuse_plain_gzip(key, data)
+            if key.startswith("series/") and key.endswith(".csv") and self._already_holds(key, data):
+                _count_skip()
+                return
+            self.client.put_object(Bucket=self.bucket, Key=key, Body=data, **kw)
+            return
         # GZIP AT REST, series CSVs ONLY (cost plan 2026-08-18, mirrors
         # core/derive_csv.py's writer): ContentEncoding='gzip' is the marker the
         # worker's reader decompresses on; mtime=0 keeps bytes deterministic for
@@ -623,6 +656,30 @@ class R2Blob:
         self.client.upload_file(src_path, self.bucket, key,
                                 ExtraArgs=kw or None)
 
+    def put_gzip_file(self, key: str, src_path: str, metadata: dict | None = None) -> None:
+        """Stream an ALREADY-GZIPPED series CSV file as one object marked ContentEncoding gzip - what
+        core.derive_csv's streaming derive writes (plan step 1 batch 4). put_file would store it with no
+        encoding marker, and the worker would serve the compressed bytes as text/csv (the R560 class), so
+        this refuses a file that is not gzip. The file is reopened by every caller's retry."""
+        _refuse_not_gzip_file(key, src_path)
+        with open(src_path, "rb") as fh:
+            self.client.put_object(Bucket=self.bucket, Key=key, Body=fh, Metadata=dict(metadata or {}),
+                                   ContentType="text/csv", ContentEncoding="gzip")
+
+    def head_meta(self, key: str) -> dict | None:
+        """{ContentLength, ETag, Metadata, ContentEncoding} of a stored object in R2's shape, or None when
+        it does not exist - for a caller that judges what it is about to replace (derive_one's shrink
+        check). Any error but not-found raises."""
+        from botocore.exceptions import ClientError
+        try:
+            resp = self.client.head_object(Bucket=self.bucket, Key=key)
+        except ClientError as e:
+            if _is_404(e):
+                return None
+            raise
+        return {"ContentLength": resp.get("ContentLength"), "ETag": resp.get("ETag"),
+                "Metadata": dict(resp.get("Metadata") or {}), "ContentEncoding": resp.get("ContentEncoding")}
+
     def etag(self, key: str) -> str | None:
         from botocore.exceptions import ClientError
         try:
@@ -663,26 +720,409 @@ class R2Blob:
             keys += [o["Key"] for o in page.get("Contents", [])]
         return keys
 
+    def list_modified(self, prefix: str) -> list[tuple]:
+        """(key, LastModified as a UTC datetime) under a prefix - what a resume that skips the objects its
+        own campaign already wrote compares against (tools/derive_csv_bulk.py --skip-newer-than)."""
+        out = []
+        for page in self.client.get_paginator("list_objects_v2").paginate(
+                Bucket=self.bucket, Prefix=prefix):
+            out += [(o["Key"], o["LastModified"]) for o in page.get("Contents", [])]
+        return out
+
     def delete(self, key: str) -> None:
         """Delete one object. Deletes are free on R2; a 404 is already-gone,
         which is the goal state, so no error mapping is needed."""
         self.client.delete_object(Bucket=self.bucket, Key=key)
 
 
-def from_env(backend: str | None = None) -> LocalBlob | R2Blob:
+SELFHOST_BLOB_ROOT = r"E:\econ_live\blobs"
+
+
+def _blobstore_module():
+    """tools/selfhost/blobstore.py (tools/ is not a package, so it is loaded by path, once)."""
+    import importlib.util                                               # noqa: PLC0415
+    mod = sys.modules.get("_econ_selfhost_blobstore")
+    if mod is None:
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "tools", "selfhost", "blobstore.py")
+        spec = importlib.util.spec_from_file_location("_econ_selfhost_blobstore", path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["_econ_selfhost_blobstore"] = mod
+        spec.loader.exec_module(mod)
+    return mod
+
+
+_own_store_guard = threading.Lock()
+_process_session = None          # the write session a store write entered for this process (see below)
+_live_checkout_ok: dict = {}     # input tuple -> monotonic time refuse_unless_live_checkout passed it
+_LIVE_CHECK_TTL = 60.0
+
+
+def _code_root() -> str:
+    """The checkout this code runs from (a function, so a test can stand a temporary store in for it)."""
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def refuse_unless_live_checkout(what: str) -> None:
+    """After T0 only the LIVE checkout changes what users are served (review R1203 finding 2: a worktree's
+    derive published CSVs built from the worktree's parquets). Refused unless this code and every root a
+    writer reads through - config.ROOT (ECONDL_ROOT, where derive_csv_bulk reads parquets: R1217 finding 5),
+    config.DATA_ROOT, ECONDL_DATA, ECONDL_CATALOG - are the live checkout's, as updater/run.py requires of a
+    run. A tool whose FIRST change is not a store write calls this up front (core.licence_targets.Targets),
+    so a refusal comes before anything changed (R1217 finding 2). Before T0 nothing."""
+    from core import catalog_path, cutover                                # noqa: PLC0415
+    if not cutover.is_cut_over():
+        return
+    from . import config                                                  # noqa: PLC0415
+    live = catalog_path.LIVE_STORE_ROOT
+    data = os.path.join(live, "data", "clean_full")
+    places = (("the code's own checkout", _code_root(), live),
+              ("config.ROOT (ECONDL_ROOT)", config.ROOT, live),
+              ("config.DATA_ROOT (AQUEDUCT_DATA_ROOT)", config.DATA_ROOT, data),
+              ("ECONDL_DATA", os.environ.get("ECONDL_DATA") or data, data),
+              ("ECONDL_CATALOG", os.environ.get("ECONDL_CATALOG") or catalog_path.BUILD_PATH,
+               catalog_path.BUILD_PATH))
+    # 10 realpath calls took ~10 ms per write (R1220 finding 3: a 16-thread derive fell from ~245 to ~150
+    # writes/s). A PASSED verdict is kept for exactly these inputs, for at most _LIVE_CHECK_TTL seconds - the
+    # strings can stay the same while a junction under them is retargeted (R1222) - and a refusal is never kept.
+    import time as _time                                                  # noqa: PLC0415
+    passed_at = _live_checkout_ok.get(places)
+    if passed_at is not None and _time.monotonic() - passed_at < _LIVE_CHECK_TTL:
+        return
+    same = lambda x, y: os.path.normcase(os.path.realpath(x)) == os.path.normcase(os.path.realpath(y))  # noqa: E731
+    wrong = [f"{name} is {actual}, must be {want}" for name, actual, want in places if not same(actual, want)]
+    if wrong:
+        raise cutover.CutoverRefused(f"refused: {what} changes what users are served, and after T0 only the "
+                                     f"live checkout may: " + "; ".join(wrong) + " (R1203)")
+    _live_checkout_ok[places] = _time.monotonic()
+
+
+# STATUS OBJECTS, NOT DATA: written from the live checkout without the single-writer lock, because the lock
+# is the updater's for its whole run and the watchdog beats every ~5 minutes (a beat refused for hours would
+# read as a dead watchdog). The live-checkout rule still applies; the blob store itself is safe for writers
+# in several processes (every write is one BEGIN IMMEDIATE transaction). Nothing a user downloads is here.
+_LOCK_FREE_KEYS = frozenset({"_aqueduct/guard_heartbeat.json"})
+
+
+def _refuse_or_own_store_write(what: str, key: str | None = None) -> None:
+    """THE SERVED STORE HAS THE CATALOGUE'S SINGLE-WRITER RULE (review R1203 finding 2). After T0 a write
+    is refused outside the live checkout (refuse_unless_live_checkout), and it needs the writer lock
+    (core.catalog_path): held already (the updater holds it for its whole run), or taken here for the rest
+    of this process - failing at once if another process holds it, so a derive never runs beside the
+    updater. Before T0 nothing changes (AQUEDUCT_BACKEND=selfhost is then a deliberate probe)."""
+    global _process_session
+    from core import catalog_path, cutover                                # noqa: PLC0415
+    if not cutover.is_cut_over():
+        return
+    refuse_unless_live_checkout(what)
+    if key in _LOCK_FREE_KEYS:
+        return
+    with _own_store_guard:                  # one acquisition however many threads write first
+        if catalog_path._held is None:
+            _process_session = catalog_path.write_session_for_process()
+            print(f"[csv-store] took the single-writer lock {catalog_path.LOCK_PATH} for this process", flush=True)
+
+
+class SelfhostBlob:
+    """The self-hosted twin of R2Blob (docs/ECON_SELF_HOSTING_PLAN.md, change 4): the same keys, and the
+    same bytes, etag, content encoding and metadata R2Blob would store - written to the local blob store
+    the origin serves (tools/selfhost/blobstore.py via the sidecar), not to R2.
+
+    Why "the same": the origin's worker code is unchanged and reads these objects exactly as it read R2's
+    (gzip at rest marked by content_encoding, the csvmd5 metadata, a quoted etag for conditional reads),
+    and the skip-identical rule keeps working on the same digests. The etag is the MD5 of the stored
+    bytes, which is what a single-part R2 PUT reports.
+
+    The store at SELFHOST_BLOB_ROOT must already exist (tools/selfhost/import_from_r2.py builds it); it is
+    never created here - a missing store is an error, not a new empty one.
+    """
+
+    # the LOGICAL bucket these keys belonged to on R2 - so a tool's --bucket check means the same after T0
+    bucket = R2_BUCKET
+
+    def __init__(self, root: str | None = None):
+        self.root = root or SELFHOST_BLOB_ROOT
+        self._store = None
+        self._store_lock = threading.Lock()
+
+    @property
+    def store(self):
+        if self._store is None:
+            with self._store_lock:          # one BlobStore however many threads touch a cold store (R1213)
+                if self._store is None:
+                    self._store = _blobstore_module().BlobStore(self.root)
+        return self._store
+
+    def get(self, key: str) -> bytes | None:
+        meta = self.store.head(key)
+        if meta is None:
+            return None
+        with open(meta["path"], "rb") as f:
+            return f.read()
+
+    def put_atomic(self, key: str, data: bytes, *, plain: bool = False) -> None:
+        _refuse_or_own_store_write(f"put {key}", key)
+        # Same rules as R2Blob.put_atomic: ContentType by extension; series CSVs gzip at rest through the
+        # ONE shared definition (core.r2_util.series_csv_put_args), unless plain=True (_refuse_plain_gzip);
+        # bytes the store already holds are not written again.
+        ctype = _CONTENT_TYPES.get(os.path.splitext(key)[1].lower())
+        encoding, metadata, plain_digest = None, {}, None
+        if plain:
+            _refuse_plain_gzip(key, data)
+            if key.startswith("series/") and key.endswith(".csv") and self._already_holds(key, data, None):
+                _count_skip()
+                return
+        elif key.startswith("series/") and key.endswith(".csv"):
+            from core.r2_util import series_csv_put_args                  # noqa: PLC0415
+            data, kw, plain_digest = series_csv_put_args(data)
+            ctype = kw.get("ContentType", ctype)
+            encoding = kw.get("ContentEncoding")
+            metadata = dict(kw.get("Metadata") or {})
+            if self._already_holds(key, data, plain_digest):
+                _count_skip()
+                return
+        self.store.put(key, data, etag=hashlib.md5(data).hexdigest(),     # noqa: S324
+                       content_encoding=encoding, content_type=ctype, custom_metadata=metadata)
+
+    def _already_holds(self, key: str, data: bytes, plain_digest: str | None) -> bool:
+        """R2Blob's rule on local metadata: the csvmd5 digest when both sides have one, else the etag
+        against the MD5 of the bytes; anything uncertain writes."""
+        from core.r2_util import PLAIN_MD5_KEY                           # noqa: PLC0415
+        meta = self.store.head(key)
+        if meta is None:
+            return False
+        stored = (meta.get("custom_metadata") or {}).get(PLAIN_MD5_KEY)
+        if stored and plain_digest:
+            return stored == plain_digest
+        tag = meta.get("etag") or ""
+        return bool(tag) and "-" not in tag and tag == hashlib.md5(data).hexdigest()   # noqa: S324
+
+    def put_file(self, key: str, src_path: str) -> None:
+        _refuse_or_own_store_write(f"put {key}")
+        with open(src_path, "rb") as f:
+            data = f.read()
+        self.store.put(key, data, etag=hashlib.md5(data).hexdigest(),     # noqa: S324
+                       content_type=_CONTENT_TYPES.get(os.path.splitext(key)[1].lower()))
+
+    def put_gzip_file(self, key: str, src_path: str, metadata: dict | None = None) -> None:
+        """R2Blob.put_gzip_file's twin: the gzip bytes as they are, marked gzip, text/csv, with metadata."""
+        _refuse_or_own_store_write(f"put {key}")
+        _refuse_not_gzip_file(key, src_path)
+        with open(src_path, "rb") as f:
+            data = f.read()
+        self.store.put(key, data, etag=hashlib.md5(data).hexdigest(),     # noqa: S324
+                       content_encoding="gzip", content_type="text/csv", custom_metadata=dict(metadata or {}))
+
+    def copy(self, key: str, dst: str) -> None:
+        """R2's copy_object: the same bytes, etag, encoding, type and metadata under `dst` (AR-153). Through the
+        write rule like every other write - `self.store.put` directly would skip it (R1217 finding 4)."""
+        _refuse_or_own_store_write(f"copy {key} -> {dst}")
+        meta = self.store.head(key)
+        if meta is None:
+            raise FileNotFoundError(f"{key} is not in the store {self.root}")
+        self.store.put(dst, self.get(key), etag=meta["etag"], content_encoding=meta["content_encoding"],
+                       content_type=meta["content_type"], custom_metadata=meta["custom_metadata"])
+
+    def head_meta(self, key: str) -> dict | None:
+        """R2Blob.head_meta's twin, from the store's index (a quoted ETag, as R2 returns it)."""
+        meta = self.store.head(key)
+        if meta is None:
+            return None
+        return {"ContentLength": meta["size"], "ETag": f'"{meta["etag"]}"',
+                "Metadata": dict(meta.get("custom_metadata") or {}), "ContentEncoding": meta.get("content_encoding")}
+
+    def etag(self, key: str) -> str | None:
+        meta = self.store.head(key)
+        return meta["etag"] if meta else None
+
+    def size(self, key: str) -> int | None:
+        meta = self.store.head(key)
+        return meta["size"] if meta else None
+
+    def exists(self, key: str) -> bool:
+        return self.store.head(key) is not None
+
+    def list_keys(self, prefix: str) -> list[str]:
+        return self.store.list(prefix)
+
+    def count_keys(self, prefix: str) -> int:
+        return self.store.count(prefix)
+
+    def list_modified(self, prefix: str) -> list[tuple]:
+        """R2Blob.list_modified's twin: the store's stored_utc (R2's LastModified for an imported object,
+        import_from_r2 keeps it) as a UTC datetime."""
+        from datetime import datetime                                     # noqa: PLC0415
+        return [(k, datetime.fromisoformat(t)) for k, t in self.store.list_stored(prefix)]
+
+    def delete(self, key: str) -> None:
+        _refuse_or_own_store_write(f"delete {key}")
+        self.store.delete(key)
+
+
+def csv_store(bucket: str | None = None, pool: int | None = None) -> R2Blob | SelfhostBlob:
+    """The object store the SERVED series CSVs live in - for the tools that write or list them.
+
+    Series CSVs are never local files: the worker serves them from the object store. So this is the
+    self-hosted blob store when AQUEDUCT_BACKEND=selfhost (after T0), and R2 otherwise - where these tools
+    have always written (after T0 an R2 client is refused, so a run that forgot the backend fails closed).
+    NOT from_env(): its default is LocalBlob, which would have turned a desktop run with no backend set into
+    CSVs written to local paths instead of R2. `bucket` (a tool's --bucket) must be the store's."""
+    from core import cutover                                              # noqa: PLC0415
+    b = os.environ.get("AQUEDUCT_BACKEND", "").strip().lower()
+    # THE CUTOVER FLAG decides, not only the environment (review R1200): after T0 the self-hosted store,
+    # whatever a shell forgot to set. AQUEDUCT_BACKEND=selfhost before T0 is a deliberate probe of that store.
+    selfhost = cutover.is_cut_over() or b == "selfhost"
+    store = SelfhostBlob() if selfhost else (R2Blob(pool=pool) if pool else R2Blob())
+    if bucket is not None and bucket != store.bucket:
+        raise SystemExit(f"--bucket {bucket} is not the CSV store's bucket {store.bucket}")
+    if selfhost:
+        store.store             # opens it now: a missing store fails here, not after 7 retries per object
+    print(f"[csv-store] {'the self-hosted blob store ' + store.root if selfhost else 'R2 ' + store.bucket}",
+          flush=True)
+    return store
+
+
+class LocalStoreReader:
+    """The parquet stores on this machine, read by their OBJECT KEY (clean_full/<src>/x.parquet) - so a tool
+    that listed and read them from R2 reads the same keys after T0. Read-only: it has no put."""
+    PREFIX = "clean_full/"
+
+    def __init__(self, data_root: str | None = None):
+        from . import config                                              # noqa: PLC0415
+        self.data_root = os.path.abspath(data_root or config.DATA_ROOT)   # the clean_full directory
+
+    def _path(self, key: str) -> str:
+        # R1206: split on '/' alone let '..\..' (a Windows separator) and 'C:' (a drive) out of the store
+        if (not key.startswith(self.PREFIX) or ".." in key.split("/") or "\\" in key or ":" in key
+                or "\x00" in key):
+            raise ValueError(f"{key!r} is not a parquet-store key ({self.PREFIX}<source>/...)")
+        p = os.path.join(self.data_root, *key[len(self.PREFIX):].split("/"))
+        root = os.path.normcase(os.path.realpath(self.data_root))
+        if os.path.commonpath([root, os.path.normcase(os.path.realpath(p))]) != root:
+            raise ValueError(f"{key!r} resolves outside the store {self.data_root}")
+        return p
+
+    def list_keys(self, prefix: str) -> list[str]:
+        """Every file key under the prefix, sorted. A missing source directory lists nothing - the caller
+        decides whether an empty store is an error (the tools here refuse it)."""
+        if not prefix.startswith(self.PREFIX) or ".." in prefix.split("/") or "\\" in prefix or ":" in prefix:
+            raise ValueError(f"{prefix!r} is not a parquet-store prefix ({self.PREFIX}<source>/...)")
+        # the directory is everything up to the prefix's last '/'; the rest filters names
+        top = os.path.join(self.data_root, *prefix[len(self.PREFIX):].split("/")[:-1])
+        if not os.path.isdir(top):
+            return []
+        out = []
+        for root, _dirs, files in os.walk(top):
+            for f in files:
+                rel = os.path.relpath(os.path.join(root, f), self.data_root).replace(os.sep, "/")
+                key = self.PREFIX + rel
+                if key.startswith(prefix):
+                    out.append(key)
+        return sorted(out)
+
+    def get(self, key: str) -> bytes | None:
+        p = self._path(key)
+        if not os.path.isfile(p):
+            return None
+        with open(p, "rb") as fh:
+            return fh.read()
+
+
+def store_reader() -> R2Blob | LocalStoreReader:
+    """Where a tool READS the published parquet stores (clean_full/<src>/...): R2 before T0 - the full set,
+    where these tools have always read - and the LOCAL store after it (plan: after T0 the parquet store is
+    local, and the self-hosted blob store holds only series/ CSVs, so csv_store() would list NOTHING here
+    and a publish would silently cover zero tables). AQUEDUCT_BACKEND=selfhost before T0 probes the local
+    side, as it does for csv_store."""
+    from core import cutover                                              # noqa: PLC0415
+    b = os.environ.get("AQUEDUCT_BACKEND", "").strip().lower()
+    # before T0 the READ key: a --dry-run or --catalog run needs no write credential (R1206)
+    reader = LocalStoreReader() if (cutover.is_cut_over() or b == "selfhost") else R2Blob(write=False)
+    where = f"the local store {reader.data_root}" if isinstance(reader, LocalStoreReader) else f"R2 {reader.bucket}"
+    print(f"[store-reader] {where}", flush=True)
+    return reader
+
+
+def from_env(backend: str | None = None) -> LocalBlob | R2Blob | SelfhostBlob:
     """Build the Blob selected by AQUEDUCT_BACKEND (explicit arg overrides env).
 
-    'local' (or unset) -> LocalBlob (keys are filesystem paths, today's behavior)
-    'r2'               -> R2Blob   (keys are econ-data object keys)
+    'local' (or unset) -> LocalBlob    (keys are filesystem paths, today's behavior)
+    'r2'               -> R2Blob       (keys are econ-data object keys)
+    'selfhost'         -> SelfhostBlob (the same keys, in the local blob store the origin serves)
     """
     b = (backend or os.environ.get("AQUEDUCT_BACKEND", "local")).strip().lower()
     if b in ("", "local"):
         return LocalBlob()
     if b == "r2":
         return R2Blob()
+    if b == "selfhost":
+        return SelfhostBlob()
     if b == "cloud":
         raise ValueError(
             "AQUEDUCT_BACKEND=cloud (the D1-native StateStore) is not implemented and "
             "is a v1 non-goal (UPDATER_BUILD_PLAN.md §7). Use AQUEDUCT_BACKEND=r2 for "
             "the R2 object backend, or 'local' for the filesystem.")
-    raise ValueError(f"unknown AQUEDUCT_BACKEND {b!r}; expected 'local' or 'r2'")
+    raise ValueError(f"unknown AQUEDUCT_BACKEND {b!r}; expected 'local', 'r2' or 'selfhost'")
+
+
+# ---- RETIRING A STORE FILE (tools/repull_file.py, cso_repull_matrix.py, cso_repull_subject.py) ------------------
+# The "back it up, then remove or rewrite it" operation those tools share (R22: a clean re-pull, never a merge,
+# made reversible). Before T0 the parquet store is R2 and the backup is a server-side copy there; after T0 the
+# store is the LOCAL one (plan: ONE STORE) - R2 is a frozen copy and its write key is revoked - so the backup is
+# a local copy under <data>/_backup/..., beside the store. Whoever calls these after T0 holds the writer lock
+# (core.catalog_path.write_session: the updater writes the same files) and runs from the live checkout.
+
+def _local_backup_path(backup_key: str) -> str:
+    """<data>/<backup_key>: the store's own root (the parent of clean_full), as the R2 key sits at the bucket's."""
+    from . import config                                                  # noqa: PLC0415
+    if ".." in backup_key.split("/") or "\\" in backup_key or ":" in backup_key or not backup_key.startswith("_backup/"):
+        raise ValueError(f"{backup_key!r} is not a _backup/ key")
+    return os.path.join(os.path.dirname(os.path.abspath(config.DATA_ROOT)), *backup_key.split("/"))
+
+
+def _refuse_store_change_without_the_lock(what: str) -> None:
+    """After T0 a change to the local store needs the live checkout and the writer lock held by this process."""
+    from core import catalog_path, cutover                                # noqa: PLC0415
+    if not cutover.is_cut_over():
+        return
+    refuse_unless_live_checkout(what)
+    if catalog_path._held is None:
+        raise cutover.CutoverRefused(f"refused: {what} changes the store the updater writes; after T0 hold the "
+                                     f"writer lock (core.catalog_path.write_session) around it")
+
+
+def backup_store_object(path: str, backup_key: str) -> str:
+    """Copy the store object at `path` to `backup_key` and PROVE the copy readable; returns where it went.
+    Raises if the copy cannot be proved - the caller must then leave the original untouched. Before T0 this is
+    exactly what the tools did (a server-side R2 copy, whatever AQUEDUCT_BACKEND says); after T0, local."""
+    from core import cutover                                              # noqa: PLC0415
+    if not cutover.is_cut_over():
+        r2 = R2Blob()
+        key = _path_to_key(path)
+        r2.client.copy_object(Bucket=r2.bucket, Key=backup_key, CopySource={"Bucket": r2.bucket, "Key": key})
+        if not r2.exists(backup_key):
+            raise RuntimeError(f"backup {backup_key} is not readable after the copy")
+        return f"r2://{backup_key}"
+    import filecmp                                                        # noqa: PLC0415
+    import shutil                                                         # noqa: PLC0415
+    _refuse_store_change_without_the_lock(f"a backup of {path}")
+    dst = _local_backup_path(backup_key)
+    if os.path.exists(dst):
+        raise FileExistsError(f"backup {dst} already exists - never overwritten")
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copy2(path, dst)
+    if not filecmp.cmp(path, dst, shallow=False):
+        raise RuntimeError(f"backup {dst} does not match {path} byte for byte")
+    return dst
+
+
+def delete_store_object(path: str) -> None:
+    """Remove the store object at `path` (after a proved backup_store_object). Before T0 the R2 object, as the
+    tools did; after T0 the local file."""
+    from core import cutover                                              # noqa: PLC0415
+    if not cutover.is_cut_over():
+        r2 = R2Blob()
+        r2.client.delete_object(Bucket=r2.bucket, Key=_path_to_key(path))
+        return
+    _refuse_store_change_without_the_lock(f"a delete of {path}")
+    os.remove(path)

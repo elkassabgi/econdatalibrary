@@ -33,6 +33,7 @@ import pyarrow.parquet as pq
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 from derive_ilostat_indicators import (SOURCE, STORE, MAX_ROWS_DEFAULT,   # noqa: E402
@@ -119,11 +120,10 @@ def published_whole(stems):
     absence; a range cannot make that mistake in either direction.
     """
     import sqlite3                                                    # noqa: PLC0415
-    _db = os.path.join(ROOT, "data", "catalog.db").replace(chr(92), "/")
     lo, hi = SOURCE + ":", SOURCE + ";"
     try:
-        con = sqlite3.connect(f"file:{_db}?mode=ro", uri=True)
-    except sqlite3.Error:
+        con = catalog_path.connect_path(catalog_path.under(ROOT), write=False)
+    except (sqlite3.Error, OSError):
         # FAIL LOUD, NOT SILENT: if the catalogue cannot be read we do not know whether the
         # remedy is safe, and "no warning" would read as "safe" (R503).
         print("  WARNING: could not open the catalogue to check whether these are already "
@@ -152,13 +152,9 @@ def dual_grain_stems(rows, smap):
     tested `series_id = '<whole id>'` for a flow that only ever had part ids and read the zero as
     absence. A range sees both shapes at once and cannot miss one.
     """
-    import sqlite3                                                    # noqa: PLC0415
     lo, hi = SOURCE + ":", SOURCE + ";"
-    # The same file main() writes, opened read-only. CATALOG is not a constant in this
-    # module - the path is built inline at the write site - so build it the same way here
-    # rather than inventing a name that would NameError at the end of a long run.
-    _db = os.path.join(ROOT, "data", "catalog.db").replace(chr(92), "/")
-    con = sqlite3.connect(f"file:{_db}?mode=ro", uri=True)
+    # The same file main() writes, opened read-only through the one resolver (plan step 1).
+    con = catalog_path.connect_path(catalog_path.under(ROOT), write=False)
     try:
         have = {r[0] for r in con.execute(
             "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?", (lo, hi))}
@@ -190,7 +186,7 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true")
     a = ap.parse_args()
 
-    con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=180.0)
+    con = catalog_path.connect_path(catalog_path.under(ROOT), write=True, timeout=180.0)
     con.execute("PRAGMA busy_timeout = 180000")
     lic = con.execute("select reservable from license where license_id=?",
                       (LICENSE_ID,)).fetchone()
@@ -375,4 +371,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    with catalog_path.write_session():   # after T0: the single-writer lock
+        sys.exit(main())

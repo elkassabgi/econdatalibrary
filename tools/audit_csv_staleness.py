@@ -64,7 +64,7 @@ BUCKET = "econ-data"
 
 def _never_ok_sources() -> set[str]:
     db = os.path.join(ROOT, "data", "_aqueduct", "state.db")
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)  # plain-open: the updater's state.db, read-only
     ok, seen = set(), set()
     for src, status in con.execute("SELECT source_id, status FROM runs"):
         seen.add(src)
@@ -74,8 +74,8 @@ def _never_ok_sources() -> set[str]:
 
 
 def _served_sources() -> dict[str, int]:
-    cat = os.path.join(ROOT, "data", "catalog.db")
-    con = sqlite3.connect(f"file:{cat}?mode=ro", uri=True)
+    from core import catalog_path                                     # noqa: PLC0415 - plan step 1
+    con = catalog_path.connect()
     return {r[0]: r[1] for r in con.execute(
         "SELECT source_id, count(*) FROM series GROUP BY source_id")}
 

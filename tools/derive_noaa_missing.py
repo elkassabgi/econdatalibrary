@@ -34,7 +34,6 @@ import csv
 import glob
 import io
 import os
-import sqlite3
 import sys
 import urllib.parse
 
@@ -44,13 +43,12 @@ sys.path.insert(0, ROOT)
 import duckdb                                                   # noqa: E402
 import pyarrow.parquet as pq                                    # noqa: E402
 
-from core import r2_util                                        # noqa: E402
+from updater import blob as _blob, derive as _derive           # noqa: E402
 
 SOURCE = "noaa"
 BUCKET = "econ-data"
 HEADER = ["series_id", "obs_date", "value"]
 STORE = os.path.join(ROOT, "data", "clean_full", SOURCE)
-CAT = os.path.join(ROOT, "data", "catalog.db")
 
 
 def _csv_bytes(short_id: str, rows) -> bytes:
@@ -76,7 +74,8 @@ def store_keys() -> set[str]:
 
 
 def catalogued() -> set[str]:
-    con = sqlite3.connect(f"file:{CAT}?mode=ro", uri=True, timeout=300)
+    from core import catalog_path                                     # noqa: PLC0415 - plan step 1
+    con = catalog_path.connect(timeout=300)
     try:
         return {r[0][len(SOURCE) + 1:] for r in
                 con.execute("SELECT series_id FROM series WHERE source_id=?", (SOURCE,))}
@@ -97,17 +96,15 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=16)
     a = ap.parse_args()
 
-    s3 = r2_util.client(write=True) if a.apply else r2_util.client()
+    # plan step 1: the CSV store - R2 before T0, the self-hosted blob store after it
+    store = _blob.csv_store(BUCKET)
 
     keys = store_keys()
     print(f"store series (sidecars): {len(keys):,}")
 
     def absent(k):
-        try:
-            s3.head_object(Bucket=BUCKET, Key=_r2_key(k))
-            return False
-        except Exception:                                        # noqa: BLE001
-            return True
+        # an error other than not-found now raises instead of reading as "absent" (which re-wrote the object)
+        return not store.exists(_r2_key(k))
 
     todo = sorted(keys - catalogued())
     print(f"uncatalogued: {len(todo):,}  — checking which of those also lack a CSV")
@@ -151,8 +148,9 @@ def main() -> int:
         for k, rr in grouped.items():
             body = _csv_bytes(k, rr)
             if a.apply:
-                s3.put_object(Bucket=BUCKET, Key=_r2_key(k), Body=body,
-                              ContentType="text/csv")
+                # PLAIN at rest, as this tool always stored it (R1206: gzip changes what the worker serves)
+                if not _derive._put_with_retry(store, _r2_key(k), body, plain=True):
+                    raise SystemExit(f"{_r2_key(k)}: PUT failed (refused at once, or {_derive.PUT_TRIES} tries used up - see the line above)")
             written += 1
         print(f"  {shard:<24} {len(grouped):>5} series {'written' if a.apply else 'ready'}",
               flush=True)

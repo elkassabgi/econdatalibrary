@@ -161,9 +161,8 @@ def _meta(path_or_file):
 
 
 def catalogued_sources():
-    import sqlite3
-    con = sqlite3.connect(
-        f"file:{os.path.join(ROOT, 'data', 'catalog.db')}?mode=ro", uri=True)
+    from core import catalog_path                                     # noqa: PLC0415 - plan step 1
+    con = catalog_path.connect()
     return [r[0] for r in con.execute(
         "select distinct source_id from series order by source_id")]
 
@@ -278,7 +277,7 @@ def main() -> int:
     a = ap.parse_args()
 
     from core import r2_util
-    s3 = r2_util.client()
+    s3 = r2_util.cloud_client()     # a named final-sync reader: keeps reading the cloud after T0
     if not a.all:
         if len(a.source) != 1:
             print("pass exactly one --source, or --all")

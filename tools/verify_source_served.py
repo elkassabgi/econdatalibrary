@@ -15,7 +15,6 @@ from __future__ import annotations
 import argparse
 import os
 import random
-import sqlite3
 import sys
 import urllib.parse
 
@@ -75,27 +74,14 @@ def _listed_live(source: str):
 def _d1_count(source: str):
     """(rows_in_D1, None) or (0, reason). D1 is what the worker reads to answer a request, so a
     source absent from it 404s no matter how coherent the local catalogue and R2 are."""
-    import json
-    import subprocess
-    exe = os.path.join(ROOT, "api", "worker", "node_modules", ".bin", "wrangler.cmd")
-    if not os.path.exists(exe):
-        exe = os.path.join(ROOT, "api", "worker", "node_modules", ".bin", "wrangler")
-    if not os.path.exists(exe):
-        return 0, "wrangler not found"
+    from core import d1_remote                                           # noqa: PLC0415 - plan step 1
     # Shard-routed sources (noaa) keep their catalog rows on a second D1 database;
     # counting them on the primary reports 0 and fails an actually-served source.
     from core.sync_state_d1 import CATALOG_SHARD_FOR
     db = CATALOG_SHARD_FOR.get(source, "econ-catalog")
     try:
-        p = subprocess.run(
-            [exe, "d1", "execute", db, "--remote", "--json", "--command",
-             f"select count(*) n from series where source_id='{source}'"],
-            cwd=os.path.join(ROOT, "api", "worker"), capture_output=True, text=True,
-            timeout=300)
-        if p.returncode != 0:
-            return 0, f"wrangler exit {p.returncode}"
-        txt = p.stdout[p.stdout.index("["):]
-        return int(json.loads(txt)[0]["results"][0]["n"]), None
+        found, _ = d1_remote.rows(db, f"select count(*) n from series where source_id='{source}'", timeout=300)
+        return int(found[0]["n"]), None
     except Exception as e:                                     # noqa: BLE001
         return 0, f"{type(e).__name__}: {str(e)[:50]}"
 
@@ -109,7 +95,8 @@ def main() -> int:
                     help="byte-compare this many RANDOM served objects against the resolver")
     a = ap.parse_args()
 
-    con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=180.0)
+    from core import catalog_path                                     # noqa: PLC0415 - plan step 1
+    con = catalog_path.connect(timeout=180.0)
     con.execute("PRAGMA busy_timeout = 180000")
     cat = {r[0] for r in con.execute(
         # PK RANGE, not WHERE source_id=?: series has only its primary-key index, so the
@@ -237,9 +224,11 @@ def main() -> int:
         print(f"D1             : {d1_n:,} row(s)"
               + (f"  — {gap:,} CATALOGUED BUT NOT IN D1: those ids 404 at the API"
                  if gap > 0 else "  — matches the catalogue"))
-    print(f"LIVE /v1/sources : {'listed — discoverable on the deployed API'
-                                if in_sup else 'NOT LISTED — invisible to anyone browsing'
-                                if in_sup is False else 'unchecked (probe failed)'}")
+    # one expression per f-string field, on one line: a field spanning lines is Python 3.12+ (PEP 701) and CI
+    # runs 3.11, where this file did not parse (R1232)
+    listed = ("listed — discoverable on the deployed API" if in_sup
+              else "NOT LISTED — invisible to anyone browsing" if in_sup is False else "unchecked (probe failed)")
+    print(f"LIVE /v1/sources : {listed}")
 
     coherent = not missing and not junk and not bad
     reachable = (d1_err is None and d1_n >= len(cat)) and in_sup is not False

@@ -301,22 +301,16 @@ def main() -> int:
     os.makedirs(spill, exist_ok=True)
 
     existing = set()
-    s3 = None
+    store = None
     if not a.dry_run:
-        s3 = r2_util.client(write=True)
+        # THE BLOB STORE, not a bare R2 client (plan step 1): R2 before T0, the self-hosted store after it
+        # (AQUEDUCT_BACKEND=selfhost), the same keys and bytes either way; after T0 an R2 client is refused.
+        from updater import blob as _blob, derive as _derive            # noqa: PLC0415
+        store = _blob.csv_store(a.bucket)             # R2, or the self-hosted store after T0 - never local files
         if a.skip_existing:
             pref = f"{a.prefix}/{urllib.parse.quote(SOURCE + ':', safe='')}"
-            tok = None
-            while True:
-                kw = {"Bucket": a.bucket, "Prefix": pref, "MaxKeys": 1000}
-                if tok:
-                    kw["ContinuationToken"] = tok
-                r = s3.list_objects_v2(**kw)
-                existing.update(o["Key"] for o in r.get("Contents", []))
-                if not r.get("IsTruncated"):
-                    break
-                tok = r["NextContinuationToken"]
-            print(f"skip-existing: {len(existing):,} already in R2", flush=True)
+            existing.update(store.list_keys(pref))
+            print(f"skip-existing: {len(existing):,} already in the store", flush=True)
 
     # maxsize 64, not 1000: bodies are whole unit CSVs (up to ~100 MB raw). A
     # 1000-slot queue is an unbounded-in-BYTES buffer — with the census giants
@@ -345,8 +339,10 @@ def main() -> int:
                 # keeps this path safe for both compressed and raw producers.
                 if body[:2] != b"\x1f\x8b":
                     body = r2_util.gzip_bytes(body)
-                s3.put_object(Bucket=a.bucket, Key=key, Body=body, ContentType="text/csv",
-                              ContentEncoding="gzip")
+                # put_atomic stores an already-gzipped body as-is with ContentEncoding gzip (R560), and
+                # _put_with_retry adds the updater's 7 app-level tries this uploader never had
+                if not _derive._put_with_retry(store, key, body):
+                    raise RuntimeError(f"PUT failed (refused at once, or {_derive.PUT_TRIES} tries used up - see the line above)")
                 with lock:
                     counts["put"] += 1
                     if counts["put"] % 500 == 0:
@@ -561,7 +557,8 @@ def main() -> int:
                "processed": len(_examined_stems),
                "dry_run": bool(a.dry_run)}, open(summary, "w"), indent=1)
     print(f"summary -> {summary}")
-    return 0
+    # a failed upload fails the run (R1204): the summary above records it, and the exit says it
+    return 1 if counts["err"] else 0
 
 
 if __name__ == "__main__":

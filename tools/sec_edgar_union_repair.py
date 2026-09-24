@@ -123,6 +123,13 @@ def main() -> int:
     ap.add_argument("--from-json", help="footer_diff.py output; repairs its `ahead` list")
     ap.add_argument("--apply", action="store_true")
     a = ap.parse_args()
+    from core import cutover                                        # noqa: PLC0415
+    if cutover.is_cut_over():
+        # RETIRE AT T0 (plan; tests/test_object_writers_ratchet.py): it reunites the LOCAL mirror with R2 when
+        # each lost rows the other kept. After T0 there is one store (the local one) and R2 is frozen: there
+        # is nothing to reunite. Its work belongs before T0 (plan step 6b: sec_edgar's AHEAD queue merged).
+        raise cutover.CutoverRefused("refused: after T0 there is one store and nothing to reunite - run this "
+                                     "before T0 (plan step 6b)")
 
     names = list(a.ticker)
     if a.from_json:

@@ -49,6 +49,13 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--upload", action="store_true")
     a = ap.parse_args()
+    from core import cutover                                        # noqa: PLC0415
+    if cutover.is_cut_over():
+        # RETIRE AT T0 (plan; tests/test_object_writers_ratchet.py): a completed 2026-08-07 one-shot. Its output,
+        # clean_full/cso/999_Retired_Upstream.parquet, is in the local store - which after T0 IS the served
+        # store - and R2, which it read from and uploaded to, is frozen.
+        raise cutover.CutoverRefused("refused: after T0 this one-shot does not run - its output is already in "
+                                     "the local store, and R2 is frozen")
 
     import pyarrow as pa
     import pyarrow.parquet as pq

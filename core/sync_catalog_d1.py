@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -254,17 +255,24 @@ def emit_sql(cols: list[str], rows: list[dict], out_dir: str,
         rows_for_fts: list[dict] = []
     else:
         rows_for_fts = rows
+    # ONE ELEMENT PER BLOCK: the DELETE and the INSERTs it covers are joined into one element of
+    # `stmts`, so the file splitter below can never put them in different files. Every file of this
+    # form therefore re-applies safely: its own DELETE runs again before its own INSERTs. That matters
+    # because a failed wrangler EXIT can come after the server already took the file (wrangler 3.114
+    # polls after the import; R1191 finding 2), and a retry of a file holding bare FTS INSERTs whose
+    # DELETE ran in an earlier file duplicates the index (R1185).
     for i in range(0, len(rows_for_fts), FTS_DELETE_PER_STMT):
         block = rows_for_fts[i:i + FTS_DELETE_PER_STMT]
         _ids = ",".join(_lit(r["series_id"]) for r in block)
-        stmts.append(f"DELETE FROM series_fts WHERE series_id IN ({_ids});")
+        unit = [f"DELETE FROM series_fts WHERE series_id IN ({_ids});"]
         for j in range(0, len(block), ROWS_PER_STMT):
             ch = block[j:j + ROWS_PER_STMT]
             vals = ",\n  ".join(
                 "(%s,%s,%s)" % (_lit(r["series_id"]), _lit(r.get("title")),
                                 _lit(r.get("geography"))) for r in ch)
-            stmts.append("INSERT INTO series_fts (series_id,title,geography) VALUES\n  "
-                         f"{vals};")
+            unit.append("INSERT INTO series_fts (series_id,title,geography) VALUES\n  "
+                        f"{vals};")
+        stmts.append("\n".join(unit))
 
     # source_counts maintenance (2026-08-15 cost incident): the worker's catalog
     # totals come from this one-row-per-source table instead of a live COUNT(*)
@@ -281,6 +289,9 @@ def emit_sql(cols: list[str], rows: list[dict], out_dir: str,
     os.makedirs(out_dir, exist_ok=True)
     files, buf, n = [], [], 0
     for s in stmts:
+        if len(s) > MAX_FILE_BYTES:
+            raise SystemExit(f"FATAL: one statement block is {len(s):,} B, over the {MAX_FILE_BYTES:,} B file cap; "
+                             "it cannot be sent whole, and splitting it would break its re-application")
         if buf and n + len(s) > MAX_FILE_BYTES:
             p = os.path.join(out_dir, f"catalog_{len(files):04d}.sql")
             with open(p, "w", encoding="utf-8") as fh:
@@ -293,6 +304,61 @@ def emit_sql(cols: list[str], rows: list[dict], out_dir: str,
             fh.write("\n".join(buf) + "\n")
         files.append(p)
     return files
+
+
+def reapplicable(path: str) -> bool:
+    """True when applying the file twice leaves D1 as applying it once: it holds no bare FTS INSERT, or a
+    series_fts DELETE precedes its first one. emit_sql keeps every id-list DELETE in one file with its
+    INSERTs, so each such file passes. In the whole-source (range) form ONE DELETE covers the source, and
+    only the file that carries it passes; the files after it hold bare INSERTs. Everything else
+    emit_sql writes is INSERT OR REPLACE, CREATE ... IF NOT EXISTS or a DELETE, which are safe twice."""
+    with open(path, encoding="utf-8") as fh:
+        kinds = [m.group(1) for m in _FTS_WRITE.finditer(fh.read())]
+    return "INSERT INTO" not in kinds or kinds[0] == "DELETE FROM"
+
+
+_FTS_WRITE = re.compile(r"(DELETE FROM|INSERT INTO) series_fts\b")
+
+
+def execute_plans(plans) -> None:
+    """Send each plan's files in order. A file that re-applies safely keeps the retries (a timeout
+    included); one that does not - bare FTS INSERTs after a whole-source range DELETE - runs ONCE (R1191
+    finding 2). If that one fails, re-run the whole command: its first FTS file repeats the range DELETE,
+    so the source comes out clean."""
+    for db, _, files in plans:
+        i, restarted = 0, False
+        while i < len(files):
+            p = files[i]
+            safe = reapplicable(p)
+            try:
+                execute_remote([p], database=db, idempotent=safe, tries=4 if safe else 1)
+            except SystemExit:
+                if safe:
+                    if restarted:            # the DELETE file itself failed during the restart (R1200)
+                        print(f"FATAL: {os.path.basename(p)} failed while restarting after a whole-source "
+                              "DELETE: the source's search index is PARTLY rebuilt. Re-run the same "
+                              "command - it starts again with the DELETE and leaves the index whole.",
+                              file=sys.stderr, flush=True)
+                    raise
+                # a bare-INSERT file after the range DELETE failed: the source's search index is PARTLY
+                # rebuilt. Go back ONCE to the file that holds the DELETE (re-deleting, then re-inserting)
+                # - the auth error the retries exist for fails before the server takes a file (R1195)
+                back = next((k for k in range(i - 1, -1, -1) if _has_fts_delete(files[k])), None)
+                if restarted or back is None:
+                    print(f"FATAL: {os.path.basename(p)} failed after the whole-source DELETE: the source's "
+                          "search index is PARTLY rebuilt. Re-run the same command - it starts again with "
+                          "the DELETE and leaves the index whole.", file=sys.stderr, flush=True)
+                    raise
+                print(f"  {os.path.basename(p)} failed after the whole-source DELETE - starting once more "
+                      f"from {os.path.basename(files[back])}", flush=True)
+                restarted, i = True, back
+                continue
+            i += 1
+
+
+def _has_fts_delete(path: str) -> bool:
+    with open(path, encoding="utf-8") as fh:
+        return any(m.group(1) == "DELETE FROM" for m in _FTS_WRITE.finditer(fh.read()))
 
 
 def verify_replay(cols: list[str], rows: list[dict], files: list[str]) -> None:
@@ -581,8 +647,7 @@ def main(argv: list[str] | None = None) -> None:
             for p in files:
                 print("  (dry-run)", p)
         return
-    for db, _, files in plans:
-        execute_remote(files, database=db)
+    execute_plans(plans)
     if not a.source and not a.keep_pending:
         path = a.ids_file or PENDING
         open(path, "w", encoding="utf-8").close()

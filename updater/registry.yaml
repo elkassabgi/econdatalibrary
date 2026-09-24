@@ -748,6 +748,16 @@ sources:
   # so the rename stays an open decision rather than a precondition. Note what is NOT done: the new dataset is not
   # catalogued, and with the D1 catalogue sync frozen nothing here reaches a user yet.
   #
+  # 2026-09-24 - THE FINAL RELEASE (publisher email): `timeseries/govs` is REMOVED from the live catalogue
+  # (api.census.gov/data.json fetched 17:09Z, 1,807 datasets; no `timeseries/govs`), and the seventh survey set
+  # is `timeseries/govsorg` - "Public Sector: Government Organization: 1942-2026". STAGED, NOT IN THE STORE:
+  # F:\econ_selfhost_probe\census_stage (a copy of this job and of ts_meta.json + one probed entry, 94 -> 95),
+  # run --only timeseries/govsorg: 30,160 rows, 52 series, 2 API calls, obs_date 1942-12-31..2026-12-31, the
+  # same 13 columns as govslocalfin. Its series_key omits AGG_DESC (936 duplicate (key, date) pairs), exactly
+  # as govslocalfin (1,681) and govsemp (5,013) already do - the family is served at TABLE grain with every
+  # column, so the key is internal (R280's class, not new). Still to do, together with govslocalfin: place both
+  # in the store, catalogue them, and Ahmed's decision on retiring `census:govs` (now frozen upstream for good).
+  #
   # SCHEDULED 2026-08-02 via run_location, NOT live. Fetcher built and PROVEN:
   # updater/strategies/fetchers/census.py covers the 20 EITS time-series flows only — the other
   # 60 datasets here are wide periodic snapshots served at table grain and need a reference-year

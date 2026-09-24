@@ -16,7 +16,7 @@ either direction (R525): bls has 9 rows and is series grain; wid has 2,465,197 r
 neither a frequency nor a geography attribute and each still names one series.
 """
 from __future__ import annotations
-import argparse, glob, json, os, sqlite3, sys, time
+import argparse, glob, json, os, sys, time
 import pyarrow.dataset as ds
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
@@ -43,8 +43,9 @@ def main():
                          "(R834: abs held 18 rows over 376,333,085 store keys).")
     a = ap.parse_args()
     os.makedirs(OUTDIR, exist_ok=True)
-    cat = sqlite3.connect("data/catalog.db") if os.path.exists("data/catalog.db") else \
-          sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"))
+    # the catalogue of this tool's ROOT (a test points ROOT elsewhere); after T0 only the build opens
+    from core import catalog_path                                     # noqa: PLC0415 - plan step 1
+    cat = catalog_path.connect_path(catalog_path.under(ROOT), write=False)
     # the row COUNT, not just membership: it is one group-by and it is what makes the
     # skip legible instead of a bare "already done".
     cat_rows = dict(cat.execute("SELECT source_id, count(*) FROM series GROUP BY 1"))

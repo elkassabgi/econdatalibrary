@@ -33,13 +33,14 @@ import argparse
 import json
 import os
 import re
-import sqlite3
 import sys
 
 import yaml
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CATALOG = os.path.join(ROOT, "data", "catalog.db")
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 UTIL_TS = os.path.join(ROOT, "api", "worker", "src", "util.ts")
 REGISTRY = os.path.join(ROOT, "updater", "registry.yaml")
 HEAVY = os.path.join(ROOT, ".github", "workflows", "updater-heavy.yml")
@@ -205,9 +206,10 @@ def scheduled_sources() -> tuple:
 
 
 def catalog_counts() -> dict:
-    if not os.path.exists(CATALOG):
-        raise SystemExit(f"no catalog at {CATALOG}")
-    con = sqlite3.connect(f"file:{CATALOG}?mode=ro", uri=True)
+    try:
+        con = catalog_path.connect()                                # read-only
+    except FileNotFoundError as e:
+        raise SystemExit(str(e)) from None
     # catalog.db has concurrent writers (the derive jobs hold it for minutes at a time), so even
     # a read-only connection fails with "database is locked" the moment one of them runs — which
     # is exactly when this audit gets run. Six sibling tools already open it this way

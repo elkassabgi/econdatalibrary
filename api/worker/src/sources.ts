@@ -8,10 +8,10 @@
 // dropped, and freshness fields are null (not fabricated) when absent.
 // ---------------------------------------------------------------------------
 
-import type { Env, SourceJoinedRow } from "./types";
-import { SELECT_SOURCES, SELECT_SOURCE_JOINED } from "./sql";
-import { json, SHARDED_SOURCES, dbFor } from "./util";
-import { NON_REDISTRIBUTABLE } from "./denylist";
+import type { Env, SourceJoinedRow } from "./types.ts";
+import { SELECT_SOURCES, SELECT_SOURCE_JOINED } from "./sql.ts";
+import { json, SHARDED_SOURCES, dbFor } from "./util.ts";
+import { NON_REDISTRIBUTABLE } from "./denylist.ts";
 
 export async function handleSources(env: Env): Promise<Response> {
   const res = await env.CATALOG.prepare(SELECT_SOURCES).all<SourceJoinedRow>();

@@ -13,6 +13,10 @@ grant does not even need a re-crawl. Derived CSVs are not archived (regenerable 
 
 Safety: every prefix is TERMINATED (`<source_id>/`, `<source_id>%3A`) so a sibling id sharing a name prefix can
 never be swept in; re-asserted on every batch immediately before the delete call.
+
+AFTER T0 (econ self-hosted, docs/ECON_SELF_HOSTING_PLAN.md change 5): this tool's R2 deletes are refused by
+core/r2_util's guard. Whoever re-arms it rebuilds its steps on core/licence_targets.Targets (list / archive /
+delete), which acts on the self-hosted blob store and store files after T0 - as tools/retire_source.py does.
 """
 import sys, os, hashlib, shutil, urllib.parse, collections
 

@@ -46,7 +46,7 @@ def r2_key(series_id: str) -> str:
     return f"{PREFIX}/{urllib.parse.quote(series_id, safe='')}.csv"
 
 
-def _put_with_retry(blob, key: str, body: bytes) -> bool:
+def _put_with_retry(blob, key: str, body: bytes, plain: bool = False) -> bool:
     """PUT one object, patiently. True on success, False after PUT_TRIES failures.
 
     R2 can throw transient ServiceUnavailable/SlowDown throttles that outlast
@@ -55,10 +55,16 @@ def _put_with_retry(blob, key: str, body: bytes) -> bool:
     2**attempt seconds between them, then report failure — the caller records
     the series id (csv_retry_queue), never crashes the data publish.
     """
+    from core.cutover import CutoverRefused                                # noqa: PLC0415
     for attempt in range(PUT_TRIES):
         try:
-            blob.put_atomic(key, body)
+            # plain=True keeps a CSV uncompressed at rest (blob._refuse_plain_gzip); passed only when set
+            blob.put_atomic(key, body, plain=True) if plain else blob.put_atomic(key, body)
             return True
+        except (ValueError, CutoverRefused) as e:
+            # a REFUSAL answers the same on every try: one try, reported as failed (R1222: 63 s per key)
+            print(f"  CSV PUT REFUSED {key}: {type(e).__name__}: {str(e)[:100]}", flush=True)
+            return False
         except Exception as e:
             if attempt == PUT_TRIES - 1:
                 print(f"  CSV PUT FAILED after {PUT_TRIES} tries {key}: {str(e)[:100]}",
@@ -137,20 +143,16 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
     if workers <= 1 or len(ids) < 2:
         workers = 1
 
-    _local = threading.local()
-
     def _blob():
-        if workers == 1:
-            return blob
-        b = getattr(_local, "b", None)
-        if b is None:
-            try:
-                from . import blob as blob_mod
-                b = blob_mod.from_env()
-            except Exception:                    # noqa: BLE001 — fall back, never fail
-                b = blob
-            _local.b = b
-        return b
+        # EVERY THREAD WRITES THE STORE IT WAS GIVEN. This used to build a per-thread store with
+        # blob.from_env(), whose default is LocalBlob: with more than one worker and AQUEDUCT_BACKEND
+        # unset, the CSVs went to RELATIVE local paths (series/<id>.csv under the current directory)
+        # instead of the store the caller chose - the R1200 class, found by a test that left
+        # series/zz%3A*.csv in the checkout (R1204). After T0 the caller's store comes from the cutover
+        # flag, the variable may be unset, and the served CSVs would have gone to local files. Sharing
+        # is safe: R2Blob builds its one boto3 client under a lock (botocore clients are thread-safe),
+        # and SelfhostBlob serialises its writes on one connection behind a lock.
+        return blob
 
     # WALL-CLOCK BOUND. Until now this ran to completion however long that took, and this
     # module's own docstring records the cost: the yale_epi re-derive was heading for ~253

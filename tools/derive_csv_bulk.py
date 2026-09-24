@@ -40,7 +40,6 @@ ROOT = os.environ.get("ECONDL_ROOT") or _REPO
 sys.path.insert(0, _REPO)
 sys.path.insert(0, os.path.join(_REPO, "clients", "python"))
 
-from core import r2_util  # noqa: E402
 
 HEADER = ["series_id", "obs_date", "value"]
 
@@ -68,10 +67,15 @@ def _retry(fn, what, tries=8):
     that dies on a throttle is worse than no resume: it forces a re-run that throttles harder.
     """
     import time as _t
+    from core.cutover import CutoverRefused                  # noqa: PLC0415
     last = None
     for attempt in range(tries):
         try:
             return fn()
+        except (ValueError, CutoverRefused):
+            # a REFUSAL (not gzip, a bad endpoint, the post-T0 single-writer rule) gives the same answer on
+            # every try: 7 sleeps (~2 min) per key were spent on it (R1220 finding 4)
+            raise
         except Exception as e:                               # noqa: BLE001
             last = e
             if attempt == tries - 1:
@@ -510,11 +514,14 @@ def main() -> int:
             return 1
 
     existing = set()
-    s3 = None
+    store = None
     if not a.dry_run:
         if not a.bucket:
             ap.error("--bucket is required unless --dry-run")
-        s3 = r2_util.client(write=True)
+        # THE BLOB STORE, not a bare R2 client (plan step 1): R2 before T0, the self-hosted store after it
+        # (AQUEDUCT_BACKEND=selfhost), the same keys and bytes either way; after T0 an R2 client is refused.
+        from updater import blob as _blob                                 # noqa: PLC0415
+        store = _blob.csv_store(a.bucket)             # R2, or the self-hosted store after T0 - never local files
         if a.skip_existing or a.skip_newer_than:
             lp = csv_key_prefix(a.prefix, a.source)
             import datetime as _dt
@@ -523,27 +530,18 @@ def main() -> int:
                 cutoff = _dt.datetime.fromisoformat(a.skip_newer_than.replace("Z", "+00:00"))
                 if cutoff.tzinfo is None:
                     cutoff = cutoff.replace(tzinfo=_dt.timezone.utc)
-            tok = None
-            while True:
-                kw = {"Bucket": a.bucket, "Prefix": lp, "MaxKeys": 1000}
-                if tok:
-                    kw["ContinuationToken"] = tok
-                r = _retry(lambda: s3.list_objects_v2(**kw), "LIST")
-                for o in r.get("Contents", []):
-                    if cutoff is not None:
-                        # RESUME semantics (ported from core/derive_csv.py's
-                        # --skip-newer-than, built after a noaa re-derive died in the
-                        # 2026-08-03 reboot): skip only what THIS campaign already wrote.
-                        # --skip-existing is wrong for a changed-everything run — it would
-                        # skip exactly the stale objects being replaced.
-                        if o["LastModified"] >= cutoff:
-                            existing.add(o["Key"])
-                    else:
-                        existing.add(o["Key"])
-                if not r.get("IsTruncated"):
-                    break
-                tok = r["NextContinuationToken"]
-            mode = ("newer than %s" % a.skip_newer_than) if cutoff else "already in R2"
+            for key, modified in _retry(lambda: store.list_modified(lp), "LIST"):
+                if cutoff is not None:
+                    # RESUME semantics (ported from core/derive_csv.py's
+                    # --skip-newer-than, built after a noaa re-derive died in the
+                    # 2026-08-03 reboot): skip only what THIS campaign already wrote.
+                    # --skip-existing is wrong for a changed-everything run — it would
+                    # skip exactly the stale objects being replaced.
+                    if modified >= cutoff:
+                        existing.add(key)
+                else:
+                    existing.add(key)
+            mode = ("newer than %s" % a.skip_newer_than) if cutoff else "already in the store"
             print(f"skip: {len(existing):,} {mode}", flush=True)
 
     # ---- producer (single sorted scan) -> bounded queue -> PUT workers --------------
@@ -573,10 +571,10 @@ def main() -> int:
                 # still PUT plain — a 3.1M-object rewrite is the one free chance to comply,
                 # and rewriting plain would re-entrench the exception. The --verify gate
                 # compares PRE-compression bytes, so it is unaffected.
-                gz = r2_util.gzip_bytes(body)
-                _retry(lambda: s3.put_object(Bucket=a.bucket, Key=key, Body=gz,
-                                             ContentType="text/csv",
-                                             ContentEncoding="gzip"), "PUT")
+                # Since plan step 1 through the blob store: put_atomic gzips the PLAIN body itself
+                # (series_csv_put_args - ContentEncoding gzip, mtime=0) and records the CSV's own md5,
+                # which this private put never did, so the skip-identical rule can recognise it later.
+                _retry(lambda: store.put_atomic(key, body), "PUT")
                 with lock:
                     counts["put"] += 1
                     if counts["put"] % 25_000 == 0:

@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import sqlite3
 import sys
 
 import pyarrow.compute as pc
@@ -39,8 +38,9 @@ import pyarrow.parquet as pq
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
+from core import cutover  # noqa: E402 - next_steps: the closing NEXT line after T0
 
-CAT = os.path.join(ROOT, "data", "catalog.db")
 STORE = os.path.join(ROOT, "data", "clean_full", "eia")
 
 # dataset file (basename, no .parquet) -> prefix depth. MEASURED — see module docstring.
@@ -83,7 +83,7 @@ def main() -> int:
               f"{sorted(unmapped)}. Measure their rows-per-table and extend DEPTH.")
         return 2
 
-    con = sqlite3.connect(CAT)
+    con = catalog_path.connect(write=True)
     existing = {r[0] for r in con.execute(
         "SELECT series_id FROM series WHERE source_id='eia'")}
     lic = None
@@ -132,12 +132,13 @@ def main() -> int:
     if a.apply:
         n = con.execute("SELECT COUNT(*) FROM series WHERE source_id='eia'").fetchone()[0]
         print(f"eia catalog rows now: {n:,}")
-        print("NEXT: derive table CSVs (one-sorted-pass), sync_catalog_d1 --source eia, "
-              "refresh_r2_catalog, verify_source_served --source eia")
+        print(cutover.next_steps("NEXT: derive table CSVs (one-sorted-pass), sync_catalog_d1 --source eia, "
+                                      "refresh_r2_catalog, verify_source_served --source eia"))
     else:
         print("--dry-run: nothing written.")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    with catalog_path.write_session():   # after T0: the single-writer lock
+        sys.exit(main())

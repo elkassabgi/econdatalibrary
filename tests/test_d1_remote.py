@@ -1,0 +1,208 @@
+"""core/d1_remote.py - the D1 chokepoint (plan 4c, 5). No network: urlopen is replaced."""
+import io
+import json
+import os
+import re
+
+import pytest
+
+from core import cutover, d1_remote
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+READS = [
+    "SELECT COUNT(*) FROM series",
+    "select series_id from series where series_id = ?",
+    "WITH s AS (SELECT source_id FROM source) SELECT * FROM s",
+    "SELECT title FROM series WHERE title LIKE '%delete%' OR title = 'x; drop table y'",
+    'SELECT "insert" FROM t',
+    "SELECT replace(title, 'a', 'b') FROM series",
+    "SELECT CASE WHEN n > 1 THEN 'many' ELSE 'one' END FROM counts",   # AR-151: END closes a CASE
+    "  SELECT 1  ",
+]
+NOT_READS = {
+    "INSERT INTO series VALUES (1)": "SELECT or WITH",
+    "SELECT 1; DELETE FROM series": "semicolon",
+    "SELECT 1;": "semicolon",
+    "SELECT 1 -- DELETE": "comment",
+    "SELECT /* x */ 1": "comment",
+    "WITH d AS (DELETE FROM series RETURNING *) SELECT * FROM d": "DELETE",
+    "SELECT * FROM series RETURNING *": "RETURNING",
+    "WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x": "INSERT",
+    "PRAGMA table_info(series)": "SELECT or WITH",
+    "SELECT 1 FROM pragma_table_info('series') WHERE 0 UNION SELECT 1": None,   # read; pragma_ fn allowed
+    "ATTACH DATABASE 'x' AS y": "SELECT or WITH",
+    "SELECT * FROM t WHERE a = 'unterminated": "quote",
+    "REPLACE INTO series VALUES (1)": "SELECT or WITH",
+    "SELECT 1 UNION SELECT 2 INTO t": "INTO",
+    "WITH x AS (VALUES (1))": "no SELECT",
+    "": "empty",
+}
+
+
+@pytest.mark.parametrize("sql", READS)
+def test_plain_reads_pass(sql):
+    assert d1_remote.read_statement_problem(sql) is None, sql
+
+
+@pytest.mark.parametrize("sql,why", NOT_READS.items())
+def test_everything_else_is_refused_with_a_reason(sql, why):
+    got = d1_remote.read_statement_problem(sql)
+    if why is None:
+        assert got is None, (sql, got)
+    else:
+        assert got is not None and why.lower() in got.lower(), (sql, got)
+
+
+class _Resp(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+@pytest.fixture
+def sent(monkeypatch):
+    calls = []
+
+    def urlopen(req, timeout=0):
+        calls.append({"url": req.full_url, "auth": req.headers.get("Authorization"),
+                      "body": json.loads(req.data)})
+        return _Resp(json.dumps({"success": True, "result": [{"results": [], "meta": {"rows_read": 1}}]}).encode())
+    monkeypatch.setattr(d1_remote.urllib.request, "urlopen", urlopen)
+    return calls
+
+
+@pytest.fixture
+def cut_over(tmp_path, monkeypatch):
+    (tmp_path / "CUTOVER").write_text("")
+    monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "CUTOVER"))
+
+
+@pytest.fixture
+def before_t0(tmp_path, monkeypatch):
+    monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "absent" / "CUTOVER"))
+
+
+def test_before_t0_anything_goes_with_the_normal_token(sent, before_t0, monkeypatch):
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "write-token")
+    d1_remote.query("econ-catalog", "DELETE FROM pageview WHERE day < ?", ["2026-01-01"])
+    assert sent[0]["auth"] == "Bearer write-token"
+    assert sent[0]["url"].endswith("/d1/database/1a6d0755-ecef-46d0-a478-46cad1cf064c/query")
+    assert sent[0]["body"] == {"sql": "DELETE FROM pageview WHERE day < ?", "params": ["2026-01-01"]}
+
+
+def test_after_t0_a_write_is_refused_before_any_request(sent, cut_over, monkeypatch):
+    monkeypatch.setenv("D1_READ_TOKEN", "read-token")
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "write-token")
+    with pytest.raises(d1_remote.NotAReadStatement):
+        d1_remote.query("econ-catalog", "DELETE FROM series")
+    with pytest.raises(cutover.CutoverRefused):
+        d1_remote.query("econ-catalog-climate", "SELECT 1; DROP TABLE series")
+    assert sent == []
+
+
+def test_after_t0_a_read_uses_only_the_read_token(sent, cut_over, monkeypatch):
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "write-token")
+    monkeypatch.delenv("D1_READ_TOKEN", raising=False)
+    with pytest.raises(cutover.CutoverRefused, match="D1_READ_TOKEN"):
+        d1_remote.query("econ-catalog", "SELECT 1")
+    assert sent == [], "the write-capable token is never used after T0"
+    monkeypatch.setenv("D1_READ_TOKEN", "read-token")
+    out = d1_remote.query("econ-catalog-climate", "SELECT COUNT(*) FROM series")
+    assert sent[0]["auth"] == "Bearer read-token" and out["meta"]["rows_read"] == 1
+
+
+def test_only_the_two_econ_databases(sent, before_t0, monkeypatch):
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "t")
+    with pytest.raises(ValueError):
+        d1_remote.query("hfdatalibrary-db", "SELECT 1")
+    assert d1_remote.DATABASES == {"econ-catalog": "1a6d0755-ecef-46d0-a478-46cad1cf064c",
+                                   "econ-catalog-climate": "e34114f2-c0be-43d9-bcb5-798a3952414c"}
+
+
+# The files that reach D1 remotely by another road TODAY (2026-09-24). They move into d1_remote in plan
+# step 1; this list may only SHRINK. A new file on it is a new unguarded write path after T0.
+LEGACY_REMOTE_D1 = {
+    "tools/refresh_sec_edgar.py",
+}
+# Left on 2026-09-24 (plan step 1): the six D1 readers moved onto d1_remote.rows / run_json; five files
+# named `--remote` only in a docstring, a comment or a tool's own --remote-truth option; then
+# core/sync_state_d1.py, whose execute_remote (the daily sync's and sync_catalog_d1's bulk writer) now runs
+# d1_remote.execute_file.
+# CI workflows that write econ D1 and are DISABLED at T0 (plan 6a: `gh workflow disable`, proven with
+# `gh workflow list --all`). They run on GitHub, never on the workstation, so no desktop guard applies to
+# them; tools/selfhost/t0_ready.py's ci-writers check refuses READY while any of them is enabled (pinned
+# below: every file here is in t0_ready.CI_WRITERS).
+CI_DISABLED_AT_T0 = {".github/workflows/sec-edgar-daily.yml"}
+# Files whose remote-D1 calls read ONLY hf's login database (hfdatalibrary-db), which stays in D1 after T0.
+# Not econ roads, so not d1_remote's (it takes the two econ databases only); checked, not trusted:
+# test_the_hf_only_files_really_are - every `--remote` line in them names hfdatalibrary-db and no econ db.
+HF_ONLY_REMOTE_D1 = {
+    "tools/audit_site.py": "counts users / active / can-download in hfdatalibrary-db",
+    "tools/billing_guard.py": "counts new users in hfdatalibrary-db (its econ use is `d1 insights`, plan 6a)",
+}
+# `--remote` as wrangler's flag, not a tool's own option that starts with it (--remote-truth).
+REMOTE = re.compile(r"--remote(?![\w-])|/d1/database/")
+
+
+CODE = (".py", ".ps1", ".sh", ".yml", ".yaml", ".mjs", ".js", ".cjs", ".bat", ".cmd")
+
+
+def _code_files():
+    """Every script and workflow in the repo (a fixed folder list missed files before - the plan itself
+    first named one that lives under tools/)."""
+    import _repo_walk                                  # the one shared walk (R1178)
+    yield from _repo_walk.code_files(CODE, ROOT)
+
+
+def test_no_new_file_calls_d1_remotely_outside_the_chokepoint():
+    found = set()
+    for rel, p in _code_files():
+        with open(p, encoding="utf-8", errors="replace") as fh:
+            src = fh.read()
+            if rel.endswith(".py"):
+                import _repo_walk
+                src = _repo_walk.code_text(src)          # code only: a docstring mention is not a caller
+            if REMOTE.search(src):
+                found.add(rel)
+    found.discard("core/d1_remote.py")
+    found -= set(HF_ONLY_REMOTE_D1) | CI_DISABLED_AT_T0
+    found.discard("tools/selfhost/cutover_hook.py")   # names the roads in order to REFUSE them (plan change 5)
+    assert found - LEGACY_REMOTE_D1 == set(), "new remote-D1 callers: route them through core/d1_remote.query"
+    gone = LEGACY_REMOTE_D1 - found
+    assert not gone, f"these no longer call D1 remotely - remove them from LEGACY_REMOTE_D1: {sorted(gone)}"
+
+
+def test_the_workflows_disabled_at_t0_are_the_ones_t0_ready_checks():
+    import sys
+    sys.path.insert(0, os.path.join(ROOT, "tools", "selfhost"))
+    import t0_ready
+    names = {os.path.splitext(os.path.basename(p))[0] for p in CI_DISABLED_AT_T0}
+    assert names <= set(t0_ready.CI_WRITERS), names - set(t0_ready.CI_WRITERS)
+    for p in CI_DISABLED_AT_T0:
+        assert os.path.isfile(os.path.join(ROOT, p)), f"{p} is gone - remove it from CI_DISABLED_AT_T0"
+
+
+def test_the_hf_only_files_really_are():
+    econ = re.compile("|".join(re.escape(n) for n in (*d1_remote.DATABASES, *d1_remote.DATABASES.values())))
+    for rel in HF_ONLY_REMOTE_D1:
+        src = open(os.path.join(ROOT, rel), encoding="utf-8").read().splitlines()
+        hits = [i for i, l in enumerate(src) if REMOTE.search(l)]
+        assert hits, f"{rel} no longer calls D1 remotely - remove it from HF_ONLY_REMOTE_D1"
+        for i in hits:
+            window = " ".join(src[max(0, i - 2):i + 3])            # the call's own lines
+            assert "hfdatalibrary-db" in window and not econ.search(window), (rel, i + 1, src[i])
+
+
+def test_the_ratchet_can_fail(tmp_path):
+    """Planted positive: the pattern really matches both roads."""
+    assert REMOTE.search('subprocess.run(["npx", "wrangler", "d1", "execute", "econ-catalog", "--remote"])')
+    assert REMOTE.search('url = f"{api}/accounts/{a}/d1/database/{db}/query"')
+    assert not REMOTE.search("wrangler d1 execute econ-catalog --local")
+    assert not REMOTE.search("python tools/audit_d1_source_counts.py --remote-truth")
+    assert REMOTE.search('["d1", "execute", db, "--remote"]') and REMOTE.search("--remote --json")
+    import _repo_walk
+    assert REMOTE.search(_repo_walk.code_text('CMD = """wrangler d1 execute x --remote"""\nrun(CMD)'))
+    assert not REMOTE.search(_repo_walk.code_text('"""Moving to production = wrangler d1 execute --remote."""'))

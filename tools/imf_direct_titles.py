@@ -41,6 +41,7 @@ import xml.etree.ElementTree as ET
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 
 UA = {"User-Agent": "Econ-Fin Data Library admin@econdatalibrary.com"}
 BASE = "https://api.imf.org/external/sdmx/2.1"
@@ -258,8 +259,7 @@ def main() -> int:
     from updater import config
     store = os.path.join(config.source_dir(a.source), f"{a.source}.parquet")
 
-    import sqlite3
-    con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"))
+    con = catalog_path.connect()
     keys = [r[0].split(":", 1)[1] for r in con.execute(
         "select series_id from series where source_id=? limit ?", (a.source, a.sample))]
     if not keys:

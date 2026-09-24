@@ -17,9 +17,51 @@
 // It is a floor-quality signal for "is this page getting traffic", not an audience
 // measurement, and the report endpoint says so in its own payload rather than
 // letting a caller assume otherwise.
-import type { Env } from "./types";
+//
+// WHERE IT LIVES (docs/ECON_SELF_HOSTING_PLAN.md): today, table `pageview` in econ D1 (CATALOG). With
+// FORWARD = "on" the econ catalogue lives on the workstation and econ D1 is retired, so the edge counts
+// into `econ_pageview` in the shared users db (USERS) instead - the same db that already holds
+// econ_download_log. Same columns, same allowlist; migrations/users_selfhost.sql creates it, and so does
+// the first hit if the flip came before the migration (a missing table must not drop every page view
+// silently, R1172). The one-time merge of the old rows is in that migration file's header.
+import type { Env } from "./types.ts";
+import { edgeStateInUsers } from "./edge.ts";
 
 const CORS = { "Access-Control-Allow-Origin": "*" };
+
+type Store = { db: D1Database; table: "econ_pageview" | "pageview" };
+
+/** The db and table page views are counted in: econ D1 until FORWARD is on, the users db after. */
+function store(env: Env): Store {
+  return edgeStateInUsers(env) ? { db: env.USERS, table: "econ_pageview" } : { db: env.CATALOG, table: "pageview" };
+}
+
+// Identical columns to econ D1's `pageview` and to migrations/users_selfhost.sql (pinned by a test).
+export function pageviewDdl(table: Store["table"]): string {
+  return `CREATE TABLE IF NOT EXISTS ${table} (path TEXT NOT NULL, day TEXT NOT NULL, ` +
+    "hits INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (path, day))";
+}
+
+/** Run `fn` on the store. If its table does not exist yet: the BEACON creates it and runs `fn` once more;
+ *  the REPORT (an unauthenticated GET) never creates anything and answers `empty` instead (R1174 B7). */
+async function onStore<T>(env: Env, fn: (s: Store) => Promise<T>, empty?: T): Promise<T> {
+  const s = store(env);
+  try {
+    return await fn(s);
+  } catch (e) {
+    if (!/no such table/i.test(String(e))) throw e;
+    if (empty !== undefined) return empty;
+    await s.db.prepare(pageviewDdl(s.table)).run();
+    return await fn(s);
+  }
+}
+
+/** The report's window in days: 1..3650, 90 when absent or not a number (NaN used to reach toISOString
+ *  and answer 500). Also the only part of the URL the report's edge-cache key keeps. */
+export function reportDays(url: URL): number {
+  const n = Math.floor(Number(url.searchParams.get("days") ?? 90));
+  return Number.isFinite(n) ? Math.min(Math.max(n, 1), 3650) : 90;
+}
 
 // Only paths we actually publish. An open counter keyed on caller-supplied text
 // would let anyone create unbounded rows in D1 — cheap vandalism that costs storage
@@ -67,31 +109,43 @@ function pixel(): Response {
 
 export async function handlePageview(url: URL, env: Env): Promise<Response> {
   const path = normalise(url.searchParams.get("p"));
+  // x-econ-pv says what happened, so a failure the pixel must hide is still visible to a test or an
+  // operator (R1175: a stray econ-D1 read after the insert was swallowed and nothing could see it).
+  let outcome = "ignored";
   if (path) {
     const day = new Date().toISOString().slice(0, 10);
     try {
-      await env.CATALOG.prepare(
-        "INSERT INTO pageview (path, day, hits) VALUES (?1, ?2, 1) " +
+      await onStore(env, ({ db, table }) => db.prepare(
+        `INSERT INTO ${table} (path, day, hits) VALUES (?1, ?2, 1) ` +
         "ON CONFLICT(path, day) DO UPDATE SET hits = hits + 1",
-      ).bind(path, day).run();
+      ).bind(path, day).run());
+      outcome = "counted";
     } catch {
       // A counter must never break a page. Swallow and still return the pixel.
+      outcome = "failed";
     }
   }
-  return pixel();
+  const out = pixel();
+  out.headers.set("x-econ-pv", outcome);
+  return out;
 }
 
 export async function handlePageviewReport(url: URL, env: Env): Promise<Response> {
-  const days = Math.min(Math.max(Number(url.searchParams.get("days") ?? 90), 1), 3650);
+  const days = reportDays(url);
   const since = new Date(Date.now() - days * 86400_000).toISOString().slice(0, 10);
-  const rows = await env.CATALOG.prepare(
-    "SELECT path, SUM(hits) AS hits, MIN(day) AS first_day, MAX(day) AS last_day " +
-    "FROM pageview WHERE day >= ?1 GROUP BY path ORDER BY hits DESC",
-  ).bind(since).all<{ path: string; hits: number; first_day: string; last_day: string }>();
-  const daily = await env.CATALOG.prepare(
-    "SELECT day, SUM(hits) AS hits FROM pageview WHERE day >= ?1 " +
-    "GROUP BY day ORDER BY day DESC LIMIT 90",
-  ).bind(since).all<{ day: string; hits: number }>();
+  type PathRow = { path: string; hits: number; first_day: string; last_day: string };
+  type DayRow = { day: string; hits: number };
+  const empty: { byPath: PathRow[]; byDay: DayRow[] } = { byPath: [], byDay: [] };
+  const { byPath, byDay } = await onStore(env, async ({ db, table }) => ({
+    byPath: (await db.prepare(
+      "SELECT path, SUM(hits) AS hits, MIN(day) AS first_day, MAX(day) AS last_day " +
+      `FROM ${table} WHERE day >= ?1 GROUP BY path ORDER BY hits DESC`,
+    ).bind(since).all<PathRow>()).results ?? [],
+    byDay: (await db.prepare(
+      `SELECT day, SUM(hits) AS hits FROM ${table} WHERE day >= ?1 ` +
+      "GROUP BY day ORDER BY day DESC LIMIT 90",
+    ).bind(since).all<DayRow>()).results ?? [],
+  }), empty);
 
   return new Response(JSON.stringify({
     window_days: days,
@@ -101,8 +155,8 @@ export async function handlePageviewReport(url: URL, env: Env): Promise<Response
     counts: "page loads that executed the beacon — NOT unique visitors; repeat " +
             "visits count each time, and clients that block scripts or images are " +
             "not counted at all",
-    by_path: rows.results ?? [],
-    by_day: daily.results ?? [],
+    by_path: byPath,
+    by_day: byDay,
   }, null, 1), {
     headers: { ...CORS, "Content-Type": "application/json; charset=utf-8" },
   });

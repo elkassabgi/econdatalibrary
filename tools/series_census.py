@@ -7,7 +7,8 @@ was produced by throwaway scripts that were not retained; five weeks of serves
 (noaa, bea, the UNCTAD giants) and 34 retirements later, this makes the census a
 TOOL, not an artifact.
 
-METHOD (mirrors the published method string exactly):
+METHOD (as first built; the published "method" string is the authority - it now says which sources were
+counted exactly and which by HyperLogLog, and after T0 which rule decided what is served):
   * observations       — exact parquet metadata row counts (pq.read_metadata,
                          no data read), every .parquet under data/clean_full and
                          data/clean_grouped, minus exclusions below.
@@ -50,6 +51,15 @@ R420 — TWO LESSONS THIS TOOL'S FIRST RUN PUBLISHED THE HARD WAY:
      tables carry ~32.85B one-observation coordinate cells (98100620.parquet:
      894M rows, ~1.3B distinct keys). Whether those count as "series" in the
      public number is the metric owner's call, not a scan default.
+AFTER T0 (docs/ECON_SELF_HOSTING_PLAN.md; core/cutover.py): R2 is a frozen copy of the past, and the parquet
+store is the LOCAL one under the live checkout. So served_keys() lists local files, nothing is read over
+s3:// (the R2 credentials are not handed to DuckDB at all), and stats.json is published through
+updater.blob.csv_store() - the self-hosted blob store /v1/stats reads, under its single-writer rule (the live
+checkout and the writer lock, taken at the publish). WHAT COUNTS CHANGES AT T0 (see _keep_served_after_t0),
+and the size of the change is not the point: R1226 estimated it at about +0.5% observations (statcan has
+been on R2 since its 2026-09-05 restore - an earlier version of this note said it never was), far under
+R420's 20% gate. So the RULE is marked in the object ("served_rule"), and a publish that would change the
+rule the live object was counted under is refused until someone decides it and passes --force-publish.
 PUBLISH GATE (mechanical, per R420): before uploading, fetch the CURRENTLY
 published object; if individual_series or observations moves >20%, REFUSE
 unless --force-publish. Running without --publish computes and writes history
@@ -61,7 +71,6 @@ import datetime as dt
 import glob
 import json
 import os
-import sqlite3
 import sys
 import tempfile
 
@@ -71,7 +80,6 @@ sys.path.insert(0, ROOT)
 import duckdb                      # noqa: E402
 import pyarrow.parquet as pq       # noqa: E402
 
-from core import r2_util           # noqa: E402
 
 ROOTS = [os.path.join(ROOT, "data", "clean_full"),
          os.path.join(ROOT, "data", "clean_grouped")]
@@ -114,7 +122,20 @@ def served_keys() -> dict[str, int]:
     "We computed it" and "a user can download it" are different claims, and only the
     second one belongs on a public page. The served surface is the bucket, so the bucket
     is what gets counted.
+
+    AFTER T0 the served parquet store IS the local one (the bucket is frozen), so it lists
+    the local files - with their sizes, which keep_served() then finds equal, so every
+    source is read locally and nothing goes over s3://.
     """
+    from core import cutover                                          # noqa: PLC0415
+    if cutover.is_cut_over():
+        out: dict[str, int] = {}
+        for files in source_files().values():
+            for f in files:
+                key = _r2_key(f)
+                if key:
+                    out[key] = os.path.getsize(f)
+        return out
     from updater.blob import R2Blob                                   # noqa: PLC0415
     r2 = R2Blob()
     out: dict[str, int] = {}
@@ -186,6 +207,9 @@ def keep_served(srcs: dict[str, list[str]]) -> tuple[dict[str, list[str]], dict[
 
     Identical size -> read the local copy; the bytes are the same and local is faster.
     """
+    from core import cutover                                          # noqa: PLC0415
+    if cutover.is_cut_over():
+        return _keep_served_after_t0(srcs)
     on_r2 = served_keys()
     resolvable = resolvable_sources()
     kept: dict[str, list[str]] = {}
@@ -236,6 +260,52 @@ def keep_served(srcs: dict[str, list[str]]) -> tuple[dict[str, list[str]], dict[
     return kept, dropped
 
 
+_CSV_COUNTS: dict[str, int] = {}                     # after T0: served CSVs per counted source
+# the name of the rule _keep_served_after_t0 applies, published in stats.json; a change of name is a decision
+SERVED_RULE_AFTER_T0 = "selfhost-csv-per-source-v1"
+
+
+def _keep_served_after_t0(srcs: dict[str, list[str]]) -> tuple[dict[str, list[str]], dict[str, int]]:
+    """keep_served() after T0. The worker serves no parquet: a user downloads a source's SERIES CSVs, which
+    live in the self-hosted blob store. So a source counts when the worker resolves it AND the served store
+    holds CSVs for it; one with none is not downloadable and is dropped.
+    WHAT THIS DOES NOT DO (R1225): the judgement is per SOURCE, because which parquet file a CSV came from is
+    not recorded (and a flow-grain CSV is a whole table, not one series). A source with even ONE served CSV
+    counts every local parquet file it has - so this does NOT keep out local-only files inside a served
+    source, which is where the 2026-08-26 census's 10,883 local-only files were (statcan, istat, cbs_nl and
+    others, all with CSVs). The CSV count per source goes to the console and the history file, and the
+    published method string says the rule. Whether this is the right public number is Ahmed's decision; the
+    R420 gate refuses the first post-T0 publish until someone decides and passes --force-publish.
+    Every file is read LOCALLY: nothing is sent to R2, whatever the sizes say (R1221 finding 2: a file
+    rewritten mid-run sent DuckDB to s3:// with the write key)."""
+    from updater import blob                                          # noqa: PLC0415
+    from core.licence_targets import csv_prefix                       # noqa: PLC0415
+    resolvable = resolvable_sources()
+    store = blob.SelfhostBlob()
+    kept: dict[str, list[str]] = {}
+    dropped: dict[str, int] = {}
+    unresolvable: dict[str, int] = {}
+    for src, files in srcs.items():
+        if src not in resolvable:
+            unresolvable[src] = len(files)
+            continue
+        n_csv = store.count_keys(csv_prefix(src))
+        if not n_csv:
+            dropped[src] = len(files)                     # no CSV in the served store: not downloadable
+            continue
+        kept[src] = list(files)
+        _CSV_COUNTS[src] = n_csv                          # into the history file: the evidence per source
+        print(f"  {src}: {len(files):,} local parquet file(s), {n_csv:,} served CSV(s)", flush=True)
+    if dropped:
+        print("  NOT counted - the worker resolves them, but the served store holds no CSV for them: "
+              + ", ".join(f"{k} ({v:,} files)" for k, v in sorted(dropped.items())), flush=True)
+    if unresolvable:
+        worst = sorted(unresolvable.items(), key=lambda kv: -kv[1])[:8]
+        print("  in the local store but NOT resolvable by the worker (gated, mid-backfill or retired), so not "
+              "counted: " + ", ".join(f"{k} {v:,}" for k, v in worst), flush=True)
+    return kept, dropped
+
+
 def source_files() -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     for root in ROOTS:
@@ -263,7 +333,13 @@ def source_files() -> dict[str, list[str]]:
 
 
 def _wire_r2(con) -> None:
-    """Point DuckDB at the bucket so read_parquet can take s3:// keys."""
+    """Point DuckDB at the bucket so read_parquet can take s3:// keys. Refused after T0: it hands the R2 key to
+    DuckDB, whose httpfs makes its own S3 calls outside r2_util's guard, and R2 is then a frozen copy that
+    must not be counted as current (R1221 finding 2)."""
+    from core import cutover                                          # noqa: PLC0415
+    if cutover.is_cut_over():
+        raise cutover.CutoverRefused("refused: after T0 the census reads the local store only - no R2 "
+                                     "credentials go to DuckDB (R1221)")
     from updater.blob import R2Blob                                   # noqa: PLC0415
     r2 = R2Blob()
     creds = r2.client._request_signer._credentials
@@ -481,7 +557,42 @@ def one_observation_sources(obs_by_src: dict, ser_by_src: dict, ratio: float = O
     return sorted(out, key=lambda t: -t[2])
 
 
+def _publish_store():
+    """Where stats.json is published: R2 before T0, the self-hosted blob store after (csv_store decides). Opened
+    BEFORE the counting, so a store that is missing fails in seconds, not after hours (R1221 finding 5)."""
+    from updater import blob                                         # noqa: PLC0415
+    return blob.csv_store(BUCKET)
+
+
+def _own_the_store_waiting(max_wait_s: float = 1800.0, step_s: float = 30.0) -> None:
+    """After T0 the publish needs the single-writer lock. The updater may hold it for a while; a refusal after
+    hours of counting would throw the count away (R1221 advisory), so wait for it - bounded - as the swap does."""
+    import time as _time                                             # noqa: PLC0415
+    from core import cutover                                         # noqa: PLC0415
+    from updater import blob                                         # noqa: PLC0415
+    end = _time.monotonic() + max_wait_s
+    while True:
+        try:
+            blob._refuse_or_own_store_write("series_census --publish")
+            return
+        except cutover.CutoverRefused as e:
+            if "another process holds" not in str(e) or _time.monotonic() >= end:
+                raise
+            print(f"  the writer lock is held by another process; waiting {step_s:.0f}s", flush=True)
+            _time.sleep(step_s)
+
+
 def main() -> int:
+    from core import cutover                                         # noqa: PLC0415
+    selfhosted = cutover.is_cut_over()
+    if selfhosted:
+        # after T0 the store measured is THIS checkout's (ROOTS), and only the live checkout may publish: say
+        # which, and refuse a publish before hours of counting rather than after (updater.blob's rule)
+        print(f"measuring the local store under {', '.join(ROOTS)}", flush=True)
+        if "--publish" in sys.argv:
+            from updater.blob import refuse_unless_live_checkout     # noqa: PLC0415
+            refuse_unless_live_checkout("series_census --publish")
+    store = _publish_store() if "--publish" in sys.argv else None
     srcs = source_files()
     _local_n = sum(len(v) for v in srcs.values())
     if "--include-unserved" in sys.argv:
@@ -490,9 +601,11 @@ def main() -> int:
     else:
         srcs, dropped = keep_served(srcs)
         n_drop = sum(dropped.values())
+        why = ("their source has no CSV in the served store" if selfhosted
+               else "absent from R2 or a different size")
         print(f"{sum(len(v) for v in srcs.values()):,} SERVED parquet files across "
               f"{len(srcs)} sources "
-              f"({n_drop:,} local file(s) skipped - absent from R2 or a different size)",
+              f"({n_drop:,} local file(s) skipped - {why})",
               flush=True)
         if dropped:
             worst = sorted(dropped.items(), key=lambda kv: -kv[1])[:8]
@@ -512,7 +625,10 @@ def main() -> int:
     # says so.
     con.execute("SET memory_limit='6GB'")
     con.execute(f"SET temp_directory='{tempfile.gettempdir()}'".replace("\\", "/"))
-    _wire_r2(con)
+    # only when a source is read over s3:// (before T0, where R2 and local differ): after T0 nothing is, and
+    # the R2 key is not handed to DuckDB at all (plan: httpfs makes its own S3 calls, outside r2_util's hook)
+    if any(str(f).startswith(_S3) for files in srcs.values() for f in files):
+        _wire_r2(con)
     obs_by_src: dict[str, int] = {}
     ser_by_src: dict[str, int] = {}
     method_by_src: dict[str, str] = {}
@@ -528,8 +644,8 @@ def main() -> int:
         print(f"  [{i}/{len(srcs)}] {src}: {obs:,} obs, "
               f"~{ser_by_src[src]:,} series", flush=True)
 
-    cat = sqlite3.connect(f"file:{os.path.join(ROOT, 'data', 'catalog.db')}?mode=ro",
-                          uri=True)
+    from core import catalog_path                                    # noqa: PLC0415 - plan step 1
+    cat = catalog_path.connect()                                     # read-only
     n_sources = cat.execute("SELECT COUNT(DISTINCT source_id) FROM series").fetchone()[0]
     cat.close()
 
@@ -553,9 +669,14 @@ def main() -> int:
                    f"HyperLogLog for {_n_approx} source(s) too large to count exactly "
                    "within the memory limit (per-source method in "
                    "per_source_series_method). observations = exact parquet row counts. "
+                   + ("The served store: sources the API resolves whose series CSVs the self-hosted "
+                      "store holds, each counted over all of its local parquet (a source with any "
+                      "served CSV counts whole). " if selfhosted else "") +
                    "Refresh by re-running the census (tools/series_census.py) and "
                    "re-uploading this object."),
     }
+    if selfhosted:
+        stats["served_rule"] = SERVED_RULE_AFTER_T0              # before T0 the object is as it always was
     print(f"\nTOTALS: {stats['individual_series']:,} series / "
           f"{stats['observations']:,} obs / {n_sources} catalogued sources "
           f"({no_key_files} files had no series_key column; "
@@ -564,7 +685,8 @@ def main() -> int:
     os.makedirs(os.path.join(ROOT, "logs"), exist_ok=True)
     hist = os.path.join(ROOT, "logs", f"stats-{today}.json")
     detail = {**stats, "per_source_obs": obs_by_src, "per_source_series": ser_by_src,
-              "per_source_series_method": method_by_src}
+              "per_source_series_method": method_by_src,
+              **({"per_source_served_csvs": dict(_CSV_COUNTS)} if selfhosted else {})}
     with open(hist, "w", encoding="utf-8") as fh:
         json.dump(detail, fh, indent=1)
     print(f"history written: {hist}")
@@ -591,8 +713,9 @@ def main() -> int:
 
     if "--publish" not in sys.argv:
         print("NOT PUBLISHED (measurement-only run; pass --publish to upload). "
-              "Totals cover the SERVED store: objects present on R2 that the worker "
-              "will resolve.")
+              + ("Totals cover the SERVED store: sources the worker resolves whose CSVs the self-hosted store "
+                 "holds, read from the local parquet store." if selfhosted else
+                 "Totals cover the SERVED store: objects present on R2 that the worker will resolve."))
         return 1 if impossible else 0
 
     # IMPOSSIBILITY GATE, and --force-publish does NOT lift it. R420 below asks whether the number moved;
@@ -604,12 +727,31 @@ def main() -> int:
               f"Fix the count, then re-run.")
         return 1
 
-    # R420 publish gate: refuse a silent step-change against the live object.
-    s3 = r2_util.client(write=True)
+    # R420 publish gate: refuse a silent step-change against the live object. The object lives where /v1/stats
+    # reads it: R2 before T0, the self-hosted blob store after (csv_store decides, from the cutover flag).
+    from updater import blob                                 # noqa: PLC0415
+    if selfhosted:
+        _own_the_store_waiting()                             # the lock, before reading the object it compares with
+    unreadable = None
     try:
-        cur = json.loads(s3.get_object(Bucket=BUCKET, Key=KEY)["Body"].read())
-    except Exception:                                        # noqa: BLE001
-        cur = None
+        raw = store.get(KEY)
+        cur = json.loads(raw) if raw else None
+    except Exception as e:                                   # noqa: BLE001
+        cur, unreadable = None, f"{type(e).__name__}: {str(e)[:120]}"
+    if selfhosted and cur is None and "--force-publish" not in sys.argv:
+        # AFTER T0 FAIL CLOSED (R1228): a live object that is absent or cannot be read skipped BOTH gates, and
+        # the new served rule went public with no decision. (Before T0 this stays as it always was.)
+        print(f"REFUSING to publish: the live {KEY} is "
+              + (f"unreadable ({unreadable})" if unreadable else "absent from the self-hosted store")
+              + " - the rule and step gates cannot compare with it. Decide, then re-run with --force-publish.")
+        return 1
+    # THE RULE GATE (R1226): the live object records which "served" rule it was counted under; a publish under
+    # another rule is a change to the public number's DEFINITION - whatever its size - and is Ahmed's decision.
+    if cur is not None and cur.get("served_rule") != stats.get("served_rule") and "--force-publish" not in sys.argv:
+        print(f"REFUSING to publish: the live figure was counted under served_rule "
+              f"{cur.get('served_rule')!r}, this run under {stats.get('served_rule')!r}. What counts in the "
+              f"public number is a decision, not a side effect: decide it, then re-run with --force-publish.")
+        return 1
     if cur and "--force-publish" not in sys.argv:
         for k in ("individual_series", "observations"):
             old_v, new_v = cur.get(k) or 0, stats[k]
@@ -618,9 +760,10 @@ def main() -> int:
                       f"({(new_v - old_v) / old_v:+.0%}). Explain the delta, then "
                       f"re-run with --force-publish if it is real.")
                 return 1
-    s3.put_object(Bucket=BUCKET, Key=KEY, Body=json.dumps(stats).encode("utf-8"),
-                  ContentType="application/json")
-    print(f"uploaded r2://{BUCKET}/{KEY}")
+    # put_atomic stores a .json key plain, as application/json - the same object put_object wrote; after T0 it
+    # is refused outside the live checkout and takes the writer lock (updater.blob, R1203)
+    store.put_atomic(KEY, json.dumps(stats).encode("utf-8"))
+    print(f"uploaded {KEY} to {'the self-hosted blob store' if isinstance(store, blob.SelfhostBlob) else 'r2://' + BUCKET}")
 
     import urllib.request
     req = urllib.request.Request(

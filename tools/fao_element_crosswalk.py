@@ -32,13 +32,13 @@ import io
 import json
 import math
 import os
-import sqlite3
 import sys
 import urllib.request
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 
 BULK_INDEX = "https://bulks-faostat.fao.org/production/datasets_E.json"
 UA = {"User-Agent": "Econ-Fin Data Library admin@econdatalibrary.com"}
@@ -72,7 +72,7 @@ def main() -> int:
     ap.add_argument("--emit")
     a = ap.parse_args()
 
-    con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"))
+    con = catalog_path.connect()
     ours = {r[0].split(":", 2)[2] for r in con.execute(
         "SELECT series_id FROM series WHERE source_id=?", (a.source,))
         if r[0].count(":") >= 2}

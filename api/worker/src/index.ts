@@ -15,19 +15,24 @@
 //     GET /v1/series/{id}.csv               (streams series/<id>.csv from R2)
 // ---------------------------------------------------------------------------
 
-import type { Env } from "./types";
-import { runCostGuard, type CostGuardEnv } from "./costGuard";
-import { handlePageview, handlePageviewReport } from "./pageview";
-import { handleCatalog } from "./catalog";
-import { handleSources } from "./sources";
-import { handleLastUpdates } from "./lastUpdates";
-import { handleMetadata } from "./metadata";
-import { handleSeriesCsv } from "./series";
-import { handleBundle } from "./bundle";
-import { requireDownloadAuth, logDownload } from "./auth";
-import { isGated } from "./denylist";
-import { handlePublicStats } from "./publicStats";
-import { json, reqLang } from "./util";
+import type { Env } from "./types.ts";
+import { runCostGuard, type CostGuardEnv } from "./costGuard.ts";
+import { handlePageview, handlePageviewReport, reportDays } from "./pageview.ts";
+import { handleCatalog } from "./catalog.ts";
+import { handleSources } from "./sources.ts";
+import { handleLastUpdates } from "./lastUpdates.ts";
+import { handleMetadata } from "./metadata.ts";
+import { handleSeriesCsv } from "./series.ts";
+import { handleBundle } from "./bundle.ts";
+import { cachedGuardHeartbeat } from "./guardHeartbeat.ts";
+import { requireDownloadAuth, logDownload } from "./auth.ts";
+import { isGated } from "./denylist.ts";
+import { handlePublicStats } from "./publicStats.ts";
+import { json, reqLang } from "./util.ts";
+import { isLocal, originGate, finalizeLocal, isDownloadPath, INSTANCE_HEADER } from "./localMode.ts";
+import { LocalBucket } from "./localBucket.ts";
+import { sourceNamesBackoffMs, sourceNamesMaxAgeMs, edgeStatus, isForward, isForwardable, cacheSeconds, cacheKey, originRequest, fetchOrigin, countingBody,
+  clientResponse, notConfigured, refusedPath } from "./edge.ts";
 
 const CORS_PREFLIGHT: Record<string, string> = {
   "access-control-allow-origin": "*",
@@ -49,6 +54,28 @@ export default {
   },
 
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    // SELF-HOSTED ORIGIN (src/localMode.ts): the secret gate comes before anything else, and every
+    // answer - errors included - leaves private, no-store. The production worker never sets LOCAL.
+    const local = isLocal(env);
+    if (local) {
+      // Every local answer names its instance (R1186: the gate's 403/404 and the 503 did not)
+      const tag = (r: Response): Response => { if (env.INSTANCE_ID) r.headers.set(INSTANCE_HEADER, env.INSTANCE_ID); return r; };
+      const refused = await originGate(request, env);
+      if (refused) return tag(finalizeLocal(refused));    // marked too: a wrong secret is an honest 403 at the edge
+      if (!env.BLOB_SIDECAR_URL) {
+        return tag(finalizeLocal(json({ error: "origin_not_configured",
+          detail: "BLOB_SIDECAR_URL is unset, so this origin has no store to serve from" }, 503)));
+      }
+      // SERIES_BUCKET becomes the blob sidecar (src/localBucket.ts); the route code is unchanged.
+      const lenv: Env = { ...env, SERIES_BUCKET: new LocalBucket(env.BLOB_SIDECAR_URL) as unknown as R2Bucket };
+      const download = isDownloadPath(new URL(request.url).pathname);
+      return tag(finalizeLocal(await route(request, lenv, ctx, true), { download }));
+    }
+    return route(request, env, ctx, false);
+  },
+} satisfies ExportedHandler<Env>;
+
+async function route(request: Request, env: Env, ctx: ExecutionContext, local: boolean): Promise<Response> {
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: CORS_PREFLIGHT });
     }
@@ -65,12 +92,28 @@ export default {
       // fired by a static site with no credentials — which is why the write surface
       // is an allowlist of known paths and the row holds no personal data at all.
       if (path === "/v1/pv") return await handlePageview(url, env);
-      if (path === "/v1/pv/report") return await handlePageviewReport(url, env);
+      // Cached 5 minutes, keyed ONLY on its clamped window (R1174 B7: any other parameter used to bypass the
+      // cache and reach the users db). The origin never answers it (edge-only, src/localMode.ts).
+      if (path === "/v1/pv/report") return await cachedPageviewReport(url, env, ctx);
+      if (path === "/v1/edge-status") return edgeStatus(env);
+
+      // THE FORWARDING EDGE (src/edge.ts, plan code change 1): every other route is answered by the
+      // workstation's origin; public-stats stays here (it reads USERS) with its source names taken from
+      // the origin, not econ D1. Off unless FORWARD = "on"; the origin itself never forwards.
+      if (!local && isForward(env)) {
+        if (path === "/v1/public-stats") {
+          return await handlePublicStats(env, () => originSourceNames(request, env, ctx));
+        }
+        return await forwardRoute(request, env, ctx, path);
+      }
 
       // /v1/catalog is edge-cached (2026-08-15 cost incident): a crawler paging
       // one source drove 130B D1 rows read in a day. The catalog changes only at
       // sync time, so a 6h same-URL cache makes re-crawls free without staleness
       // anyone can observe. Only 200s are cached; the cap-400s and errors are not.
+      // The origin never uses the Cache API: behind the edge it would hide a catalogue swap for up to
+      // 6 h (s-maxage 21600), and the edge does the caching (review R1164).
+      if (path === "/v1/catalog" && local) return await handleCatalog(url, env);
       if (path === "/v1/catalog") {
         const cache = caches.default;
         const cacheKey = new Request(url.toString(), { method: "GET" });
@@ -85,6 +128,7 @@ export default {
         }
         return fresh;
       }
+      if (path === "/v1/guard-heartbeat") return await cachedGuardHeartbeat(url, env, ctx, local);
       if (path === "/v1/sources") return await handleSources(env);
       if (path === "/v1/last-updates") return await handleLastUpdates(env);
       if (path === "/v1/bundle") return await handleBundle(url, env);
@@ -118,9 +162,9 @@ export default {
         // same billing class as the browse incident, just smaller. The count now
         // reads source_counts (1 row/source, sync-maintained) with the live
         // COUNT(*) kept as fallback, and 200s are cached 6h.
-        const statsCache = caches.default;
+        const statsCache = local ? null : caches.default;
         const statsKey = new Request(url.toString(), { method: "GET" });
-        const statsHit = await statsCache.match(statsKey);
+        const statsHit = statsCache ? await statsCache.match(statsKey) : undefined;
         if (statsHit) return statsHit;
         const SUM_COUNTS = "SELECT SUM(n) AS c FROM source_counts";
         let catTotal: number | null = null;
@@ -204,6 +248,7 @@ export default {
             "The figures shown are from the census dated in as_of and may change. " +
             "catalog_entries is maintained by the catalogue sync and is not affected.",
         });
+        if (!statsCache) return statsResp;
         const statsToCache = new Response(statsResp.clone().body, statsResp);
         statsToCache.headers.set("cache-control", "public, max-age=300, s-maxage=21600");
         ctx.waitUntil(statsCache.put(statsKey, statsToCache.clone()));
@@ -255,6 +300,9 @@ export default {
           if (isGated(id)) {
             return json({ error: "not_redistributable", series_id: id, detail: "This source's licence does not permit third-party redistribution of the data. Please obtain it directly from the original provider." }, 451);
           }
+          // The origin serves what the EDGE already authorised and will log: no auth and no
+          // download log here (the edge counts length-less answers via x-econ-count).
+          if (local) return await handleSeriesCsv(id, url, env, ctx, async () => {});
           // Shared-login gate (auth.ts): data downloads need the free family
           // key (hf keys work as-is); catalog/metadata/freshness stay open.
           const auth = await requireDownloadAuth(request, env);
@@ -304,5 +352,120 @@ export default {
       const detail = err instanceof Error ? err.message : "unknown error";
       return json({ error: "internal_error", detail }, 500);
     }
-  },
-} satisfies ExportedHandler<Env>;
+}
+
+// The gate's two messages, exactly as the non-forwarding routes above word them.
+const NOT_REDISTRIBUTABLE_DATA = "This source's licence does not permit third-party redistribution of the data. " +
+  "Please obtain it directly from the original provider.";
+const NOT_REDISTRIBUTABLE_META = "This source's licence does not permit third-party redistribution. " +
+  "Please obtain it directly from the original provider.";
+
+/** The forwarding edge's answer for every route the origin serves (src/edge.ts). Only known routes are
+ *  forwarded; the licence gate and download auth run HERE, before anything is forwarded; the download log
+ *  is written here - from content-length when the answer has one, otherwise from the bytes the client
+ *  actually takes (whatever the origin's own marker says: a hop can drop content-length, R1169 M2). */
+async function forwardRoute(request: Request, env: Env, ctx: ExecutionContext, path: string): Promise<Response> {
+  if (!isForwardable(path)) return json({ error: "not_found", detail: `no route for ${path}` }, 404);
+  if (!env.ORIGIN_URL || !env.ORIGIN_SECRET) return notConfigured();
+  const seriesPrefix = "/v1/series/";
+  if (path.startsWith(seriesPrefix) && (path.endsWith(".csv") || path.endsWith(".metadata.json"))) {
+    const csv = path.endsWith(".csv");
+    const enc = path.slice(seriesPrefix.length, -(csv ? ".csv" : ".metadata.json").length);
+    const id = decodeURIComponent(enc);
+    if (!id) return json({ error: "bad_request", detail: "empty series id" }, 400);
+    if (isGated(id)) {
+      return json({ error: "not_redistributable", series_id: id,
+                    detail: csv ? NOT_REDISTRIBUTABLE_DATA : NOT_REDISTRIBUTABLE_META }, 451);
+    }
+    if (csv) {
+      const auth = await requireDownloadAuth(request, env);
+      if (auth instanceof Response) return auth;
+      const oreq = originRequest(request, env);
+      if (!oreq) return refusedPath();
+      const oresp = await fetchOrigin(oreq, env);
+      if (oresp.status !== 200 || !oresp.body) return clientResponse(oresp, oresp.body);
+      const userId = auth.user.id;
+      if (oresp.headers.has("content-length")) {
+        await logDownload(env, userId, id, request, Number(oresp.headers.get("content-length")) || 0);
+        return clientResponse(oresp, oresp.body);               // body never read: gzip stays gzip
+      }
+      const body = countingBody(oresp.body, async (bytes) => {
+        if (bytes > 0) await logDownload(env, userId, id, request, bytes);
+      }, ctx);
+      return clientResponse(oresp, body);
+    }
+  }
+  const ttl = cacheSeconds(path);
+  const key = cacheKey(request);
+  if (ttl > 0) {
+    const hit = await caches.default.match(key);
+    if (hit) return hit;
+  }
+  const oreq = originRequest(request, env);
+  if (!oreq) return refusedPath();
+  const oresp = await fetchOrigin(oreq, env);
+  const out = clientResponse(oresp, oresp.body);
+  if (ttl > 0 && oresp.status === 200) {
+    const toCache = new Response(out.body, out);
+    toCache.headers.set("cache-control", `public, max-age=300, s-maxage=${ttl}`);
+    ctx.waitUntil(caches.default.put(key, toCache.clone()));
+    return toCache;
+  }
+  return out;
+}
+
+/** Source names for /v1/public-stats from the origin's /v1/sources, so the route needs no econ D1 once
+ *  the catalogue lives on the workstation. The names are KEPT at the edge (30 days, with their own time)
+ *  and re-read from the origin when the kept copy is older than SOURCE_NAMES_MAX_AGE_S (default 1 h) -
+ *  straight from the origin, not through the 5-minute route cache, so a failure really reaches the
+ *  fallback (R1175: the cache answered instead and the fallback was never exercised). When the origin
+ *  fails, the kept copy is used whatever its age; with none at all the route still answers, with no
+ *  top-sources list (the whitelist then admits nothing), never a 500 (R1169 M4). The Cache API is per
+ *  data centre, so a data centre that never kept a copy has none. */
+async function originSourceNames(request: Request, env: Env, ctx: ExecutionContext): Promise<Record<string, string>> {
+  const u = new URL(request.url);
+  const keptKey = new Request(new URL("/__edge/source-names", u).toString(), { method: "GET" });
+  const keptResp = await caches.default.match(keptKey);
+  const kept = keptResp ? await keptResp.json() as { at: number; names: Record<string, string> } : null;
+  const ageMs = sourceNamesMaxAgeMs(env);
+  if (kept && Date.now() - kept.at < ageMs) return kept.names;
+  try {
+    const oreq = originRequest(new Request(new URL("/v1/sources", u).toString(), { method: "GET" }), env);
+    if (!oreq) throw new Error("origin not configured");
+    const resp = await fetchOrigin(oreq, env);
+    if (resp.status !== 200) {
+      await resp.body?.cancel().catch(() => undefined);
+      throw new Error(`origin /v1/sources answered ${resp.status}`);
+    }
+    const body = await resp.json() as { sources?: { source?: string; name?: string | null }[] };
+    const names: Record<string, string> = {};
+    for (const s of body.sources ?? []) if (s.source) names[s.source] = s.name || s.source;
+    ctx.waitUntil(caches.default.put(keptKey, new Response(JSON.stringify({ at: Date.now(), names }), {
+      headers: { "content-type": "application/json", "cache-control": "public, s-maxage=2592000" },
+    })));
+    return names;
+  } catch (e) {
+    console.log("public-stats: origin source names unavailable, using the kept copy:", String(e));
+    // Back off (AR-151 finding 8; 60 s unless SOURCE_NAMES_BACKOFF_S says otherwise): without this, every
+    // request during an outage waited the full origin timeout. The kept names - or none - are re-stamped
+    // so they count as fresh for the back-off, and no longer.
+    const names = kept ? kept.names : {};
+    ctx.waitUntil(caches.default.put(keptKey, new Response(JSON.stringify({ at: Date.now() - ageMs + sourceNamesBackoffMs(env), names }), {
+      headers: { "content-type": "application/json", "cache-control": "public, s-maxage=2592000" },
+    })));
+    return names;
+  }
+}
+
+/** /v1/pv/report through the edge cache for 5 minutes. The key keeps only the clamped `days`. */
+async function cachedPageviewReport(url: URL, env: Env, ctx: ExecutionContext): Promise<Response> {
+  const key = new Request(`${url.origin}/v1/pv/report?days=${reportDays(url)}`, { method: "GET" });
+  const hit = await caches.default.match(key);
+  if (hit) return hit;
+  const fresh = await handlePageviewReport(url, env);
+  if (fresh.status !== 200) return fresh;
+  const out = new Response(fresh.body, fresh);
+  out.headers.set("cache-control", "public, max-age=300, s-maxage=300");
+  ctx.waitUntil(caches.default.put(key, out.clone()));
+  return out;
+}

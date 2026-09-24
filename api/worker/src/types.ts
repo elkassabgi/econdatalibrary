@@ -48,6 +48,31 @@ export interface Env {
   // page_views (this site's own traffic). Absent -> the map stays user-only.
   CF_API_TOKEN?: string;
   CF_ZONE_ID?: string;
+
+  // SELF-HOSTED ORIGIN (docs/ECON_SELF_HOSTING_PLAN.md, owner decision 2026-09-23). Set ONLY by
+  // wrangler.origin.toml, the config the workstation runs. LOCAL = "1" turns on local mode
+  // (src/localMode.ts): the edge worker has already done auth, the licence gate's twin, rate
+  // limiting and the download log, and forwards with ORIGIN_SECRET in a header. The origin
+  // refuses every request when ORIGIN_SECRET is unset. The production worker never sets either.
+  LOCAL?: string;
+  ORIGIN_SECRET?: string;
+  INSTANCE_ID?: string;          // local origin only: which swap generation this is (tools/selfhost/swap.py)
+  // Base URL of the blob sidecar (tools/selfhost/blob_sidecar.py) that stands in for R2 on the origin.
+  BLOB_SIDECAR_URL?: string;
+
+  // EDGE forwarding (src/edge.ts; plan code change 1). FORWARD = "on" sends data work to the origin at
+  // ORIGIN_URL with ORIGIN_SECRET (and an Access service token when set). Unset = today's behaviour.
+  FORWARD?: string;
+  ORIGIN_URL?: string;
+  ORIGIN_ACCESS_ID?: string;
+  ORIGIN_ACCESS_SECRET?: string;
+  ORIGIN_TIMEOUT_MS?: string;        // how long the edge waits for the origin's response headers (default 30000)
+  // EDGE_STATE = "users" moves the edge's own state (page views, cost-guard status) to USERS before T0
+  // (plan step 5); GIT_COMMIT is set by tools/selfhost/deploy_edge.sh and answered on /v1/edge-status.
+  EDGE_STATE?: string;
+  GIT_COMMIT?: string;
+  SOURCE_NAMES_MAX_AGE_S?: string;   // how long /v1/public-stats trusts its kept source names (default 3600)
+  SOURCE_NAMES_BACKOFF_S?: string;   // after an origin failure, how long the kept names are used before asking again (default 60)
 }
 
 // --- D1 row shapes (one per SELECT column list in sql.ts) ------------------

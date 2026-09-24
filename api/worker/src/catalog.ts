@@ -7,15 +7,15 @@
 // Response carries catalog_coverage so absence is never read as nonexistence.
 // ---------------------------------------------------------------------------
 
-import type { Env, CatalogResultRow, CountRow } from "./types";
+import type { Env, CatalogResultRow, CountRow } from "./types.ts";
 import {
   SEARCH_FTS, SEARCH_FTS_COUNT, SEARCH_LIKE, SEARCH_LIKE_COUNT,
   searchFtsSourceSql, searchFtsSourceCountSql, searchLikeSourceSql, searchLikeSourceCountSql,
   browseSourceSql, browseSourceVisibleCountSql, hasCarveouts,
   BROWSE_SOURCE_COUNT, BROWSE_SOURCE_COUNT_CACHED, BROWSE_ALL, BROWSE_ALL_COUNT,
-} from "./sql";
-import { json, clampInt, offsetInt, reqLang, localizedTitle, dbFor, supportedSources } from "./util";
-import { NON_REDISTRIBUTABLE, isSeriesCarvedOut, promotesToSourceBrowse } from "./denylist";
+} from "./sql.ts";
+import { json, clampInt, offsetInt, reqLang, localizedTitle, dbFor, supportedSources } from "./util.ts";
+import { NON_REDISTRIBUTABLE, isSeriesCarvedOut, promotesToSourceBrowse } from "./denylist.ts";
 
 // Carries no COUNT, and — the part that matters — it KEEPS THE CAVEAT. The old value,
 // "series-level for 33 sources; source-level for the rest", had rotted (33 was accurate when
