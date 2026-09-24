@@ -180,9 +180,16 @@ Build status (branch feat/econ-selfhost-origin):
   (core/upload_r2, _upload_biotrademerch_store, _upload_clean_full_parquet, upload_statcan_store,
   refresh_r2_catalog). Two one-shots that deleted or rewrote R2 AT IMPORT were DEFUSED on 2026-09-24:
   _delete_statcan_r2 (statcan is restored and served again) and trim_bfs_corrupt_tail.
-  AT T0, EXPECT: guard_heartbeat --publish (the guard loop, every ~5 min) throws on every tick and
-  updater-daily's --check reads it as stale; probe_csv_freshness's bookmark write fails silently
-  (continue-on-error) - both must move or be switched off at T0, not discovered after it.
+  AT T0, EXPECT: guard_heartbeat --publish (the guard loop, every ~5 min) throws on every tick, and its
+  only reader - updater-daily's --check - is itself disabled at T0: the move must name a NEW off-machine
+  reader, or the watchdog goes unwatched (R1210). probe_csv_freshness runs only in updater-daily too: after
+  T0 it has no scheduler at all, and its bookmark write already fails silently (continue-on-error). Both
+  must move (with a scheduler and a reader) or be switched off at T0, not discovered after it.
+  PRODUCTION STILL CARRIES THE ARMED ONE-SHOTS: E:\research\econfindatalibrary is on main, where
+  tools/_delete_statcan_r2.py (an older version, not even behind the T0 guard) and
+  tools/trim_bfs_corrupt_tail.py run their R2 deletes/rewrites when run, and its .env holds the write keys.
+  They are defused only on feat/econ-selfhost-origin; nothing runs them automatically, but until the merge
+  a manual run would delete the served statcan store. (R1210 finding 2; the merge is Ahmed's.)
   ENCODING IS KEPT (R1206): the 12 moved tools that always stored their CSVs plain keep doing so
   (put_atomic(plain=True)). Gzip is not neutral for them - the worker refuses a filter on a gzipped object
   above its decompression-ratio limit (4 flow-grain CSVs measured at 45-66x) and serves it without the
