@@ -28,9 +28,20 @@ SECRET = "swap-test-secret"
 
 
 def _port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    """A free port OUTSIDE the ephemeral range (Windows: 49152-65535). A port the OS hands out for bind(0) is an
+    ephemeral one, and a client that connects to a FREE ephemeral port on localhost can be given that same
+    port as its source - a TCP self-connect, which reads back its own request: the BadStatusLine
+    'GET /v1/sources HTTP/1.1' that failed swap tests under load three times (R1211 finding 5)."""
+    import random
+    for _ in range(200):
+        p = random.randint(20000, 39999)
+        with socket.socket() as s:
+            try:
+                s.bind(("127.0.0.1", p))
+            except OSError:
+                continue
+            return p
+    raise RuntimeError("no free port in 20000-39999")
 
 
 def _move_green(rig):
@@ -847,3 +858,23 @@ def test_the_slot_dir_is_the_one_wrangler_uses():
 def test_the_real_command_tags_the_instance():
     cmd = swap.wrangler_command(8801, "P", "abc")
     assert cmd[-2:] == ["--var", "INSTANCE_ID:abc"] and "--persist-to" in cmd and "127.0.0.1" in cmd
+@pytest.mark.parametrize("answers,listens,held", [(True, False, True), (False, True, True), (False, None, True),
+                                                  (False, False, False)])
+def test_a_port_is_held_if_it_answers_or_is_listed_or_cannot_be_read(monkeypatch, answers, listens, held):
+    """port_held backs the unrecorded-old-instance decision: a busy old instance that missed the 1 s connect
+    was reported as gone (a false clean swap). The OS listener table is asked too, and an unreadable table is
+    'held' - never a false 'gone'."""
+    monkeypatch.setattr(swap, "port_in_use", lambda p: answers)
+    monkeypatch.setattr(swap, "listening", lambda p: listens)
+    assert swap.port_held(12345) is held
+
+
+def test_an_unrecorded_old_instance_that_misses_the_connect_is_still_not_a_clean_swap(rig, monkeypatch):
+    """The loaded-suite case: the old instance still LISTENS but does not answer the 1 s connect."""
+    swap.save_instances(rig["work"], {})
+    real = swap.port_in_use
+    blue = rig["ports"]["blue"]
+    monkeypatch.setattr(swap, "port_in_use", lambda p: False if p == blue else real(p))
+    out = _swap(rig)
+    assert out["active"] == "green" and out["old_stopped"] is False
+    assert "no record" in out["stop_with"]

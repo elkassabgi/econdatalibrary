@@ -185,9 +185,32 @@ def port_holder(port: int) -> str:
 
 
 def port_in_use(port: int) -> bool:
+    """A connect to the port succeeded within 1 s. NOT proof that the port is free when False: a listener too
+    busy to accept in time also answers False. (Reading only a REFUSAL as free does not work on Windows,
+    where a closed localhost port is refused only after ~2 s of SYN retries - tried and reverted 2026-09-24.)"""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(1)
         return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def listening(port: int) -> bool | None:
+    """Whether the OS listener table has a listener on the port; None when the table cannot be read."""
+    import psutil
+    try:
+        return any(c.status == psutil.CONN_LISTEN and c.laddr and c.laddr.port == port
+                   for c in psutil.net_connections(kind="inet"))
+    except psutil.Error:
+        return None
+
+
+def port_held(port: int) -> bool:
+    """For a decision that must never read a held port as free: it answers, OR the OS lists a listener on it,
+    OR the table cannot be read. A busy old instance that missed the 1 s connect was reported as gone - a
+    false clean swap (R1191 finding 7; seen 2026-09-24 in a loaded suite)."""
+    if port_in_use(port):
+        return True
+    held = listening(port)
+    return held is None or held
 
 
 def discover_slots(worker_dir: str = WORKER_DIR, config: str = CONFIG) -> dict:
@@ -641,7 +664,7 @@ def _after_flip(result, instances, work, active, idle, st, router_url, drain_tim
         # no record: whatever answers on the retired port was not started by swap.py and is not stopped here
         # (R1191 finding 7: this used to exit 0 as if there were no old instance)
         old_port = port_of(st["targets"][active])
-        if port_in_use(old_port):
+        if port_held(old_port):              # answers OR listed as listening: never a false "gone"
             result["stop_with"] = (f"{active} has no record in instances.json, and port {old_port} still answers "
                                    f"({port_holder(old_port)}): stop that process by hand")
             log(f"{active} is unrecorded and still answers on {old_port}: LEFT RUNNING")
