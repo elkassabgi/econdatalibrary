@@ -45,20 +45,19 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sqlite3
 import sys
 import tempfile
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 
 from connectors.worldbank_esg.connector import INDICATORS  # noqa: E402  the curated set
 from core import r2_util  # noqa: E402
 
 SOURCE = "worldbank_esg"
 BUCKET = "econ-data"
-CATALOG = os.path.join(ROOT, "data", "catalog.db")
 LICENSE_ID = "cc-by-4.0"
 
 # Publisher-confirmed renames: each successor id is the publisher's CURRENT id for exactly the
@@ -135,7 +134,7 @@ def main() -> int:
     names = published_names()
     print(f"publisher: {len(econ)} economies, {len(names)} source-75 indicators")
 
-    con = sqlite3.connect(CATALOG)
+    con = catalog_path.connect(write=True)
     have = {r[0] for r in con.execute(
         "SELECT series_id FROM series WHERE source_id=?", (SOURCE,))}
     print(f"catalogue: {len(have):,} worldbank_esg rows\n")
@@ -210,4 +209,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    with catalog_path.write_session():   # after T0: the single-writer lock
+        sys.exit(main())
