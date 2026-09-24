@@ -47,11 +47,8 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import io
-import json
 import os
-import shutil
 import sqlite3
-import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -64,42 +61,12 @@ WORKER_DIR = os.path.join(ROOT, "api", "worker")
 DBS = ("econ-catalog", "econ-catalog-climate")
 
 
-def _wrangler() -> str:
-    """Prefer the repo-local binary. `npx wrangler` re-resolves the package and collides with
-    any concurrent wrangler in the shared npm cache (observed: EBUSY on miniflare during the
-    statcan push)."""
-    for c in (os.path.join(WORKER_DIR, "node_modules", ".bin", "wrangler.cmd"),
-              os.path.join(WORKER_DIR, "node_modules", ".bin", "wrangler"),
-              os.path.join(ROOT, "node_modules", ".bin", "wrangler.cmd"),
-              os.path.join(ROOT, "node_modules", ".bin", "wrangler")):
-        if os.path.exists(c):
-            return c
-    w = shutil.which("wrangler")
-    if w:
-        return w
-    # RuntimeError, NOT SystemExit. SystemExit derives from BaseException, so main()'s
-    # `except Exception` would not catch it and the process would exit 1 -- which this file
-    # defines as "at least one cached count disagrees". A missing binary would then report as a
-    # FINDING instead of as "could not look", inverting the very trichotomy the docstring
-    # promises. That path is live in CI: wrangler is installed by the `npm ci` inside the
-    # "Sync freshness to D1" step, which is skipped whenever the state push fails.
-    raise RuntimeError("no wrangler binary found; cannot reach D1")
-
-
 def d1(db: str, sql: str) -> tuple[list, int]:
-    res = subprocess.run(
-        [_wrangler(), "d1", "execute", db, "--remote", "--json", "--command", sql],
-        cwd=WORKER_DIR, capture_output=True, text=True,
-        encoding="utf-8", errors="replace", timeout=900)
-    out = res.stdout or ""
-    i = out.find("[")
-    if res.returncode != 0 or i < 0:
-        raise RuntimeError(f"{db}: wrangler rc={res.returncode}: {(res.stderr or out)[-300:]}")
-    rows, read = [], 0
-    for b in json.loads(out[i:]):
-        rows.extend(b.get("results") or [])
-        read += (b.get("meta") or {}).get("rows_read") or 0
-    return rows, read
+    """(rows, rows_read) through core.d1_remote (plan step 1); RuntimeError when D1 cannot be read."""
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import d1_remote                                           # noqa: PLC0415 - plan step 1
+    return d1_remote.rows(db, sql)
 
 
 def local_counts(sources) -> dict:

@@ -36,11 +36,9 @@ from __future__ import annotations
 
 import argparse
 import io
-import json
 import os
 import re
 import sqlite3
-import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -137,40 +135,15 @@ def served_from_d1():
            "COALESCE(l.reservable,-1) r "
            "FROM series se LEFT JOIN license l ON l.license_id=se.license_id "
            "GROUP BY se.source_id, se.license_id")
-    p = subprocess.run(
-        ["npx", "wrangler", "d1", "execute", "econ-catalog", "--remote",
-         "--command", sql, "--json"],
-        cwd=WORKER, capture_output=True, text=True,
-        encoding="utf-8", errors="replace", shell=(os.name == "nt"))
-    out = (p.stdout or "") + (p.stderr or "")
-    # wrangler prints more than one JSON array (bindings, then the query payload), and
-    # a greedy `\[.*\]` spans from the first '[' to the last ']', producing a valid but
-    # WRONG object. Scan every balanced top-level array and keep the one that actually
-    # carries `results` — the shape we asked for, rather than the first thing that
-    # parses.
-    rows = None
-    for m in re.finditer(r"\[", out):
-        depth, i = 0, m.start()
-        for j in range(m.start(), len(out)):
-            if out[j] == "[":
-                depth += 1
-            elif out[j] == "]":
-                depth -= 1
-                if depth == 0:
-                    try:
-                        cand = json.loads(out[i:j + 1])
-                    except Exception:                         # noqa: BLE001
-                        cand = None
-                    if (isinstance(cand, list) and cand
-                            and isinstance(cand[0], dict) and "results" in cand[0]):
-                        rows = cand[0]["results"]
-                    break
-        if rows is not None:
-            break
-    if rows is None:
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import d1_remote                                           # noqa: PLC0415 - plan step 1
+    try:
+        rows, _ = d1_remote.rows("econ-catalog", sql)
+    except RuntimeError as e:
         print("could not read D1 (is wrangler authenticated?). "
               "Re-run with --local, understanding it is NOT what users see.")
-        print((out or "")[-400:])
+        print(str(e)[-400:])
         return None
     return [(r["source_id"], r["license_id"], r["n"], r["c"], r["nm"], r["r"])
             for r in rows]

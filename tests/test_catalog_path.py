@@ -221,15 +221,20 @@ def test_the_resolver_has_no_override():
 # ---- the ratchet: files that name catalog.db outside the resolver may only become fewer ---------------
 LEGACY = os.path.join(ROOT, "tests", "catalog_db_legacy.txt")
 # clients/ IS scanned (R1176: the updater's own catalogue open lives in clients/python/econdl/_catalog.py).
-# Code that names the catalogue: the literal, the variable that overrides it, or the name split in two.
-NAMES_CATALOGUE = re.compile(r"catalog\.db|ECONDL_CATALOG|[\"']catalog[\"']\s*[+,]\s*[\"']\.db[\"']")
+# Code that names the catalogue: the literal, the variable that overrides it, the name split in two, or
+# the module constant several files import instead of naming the file (AR-153).
+NAMES_CATALOGUE = re.compile(r"catalog\.db|ECONDL_CATALOG|\bCATALOG_DB\b|[\"']catalog[\"']\s*[+,]\s*[\"']\.db[\"']")
+# A narrow exemption: only the named function of the named file is left out of the scan.
+EXEMPT_FUNCTIONS = {"updater/run.py": frozenset({"_selfhost_preflight"})}   # names ECONDL_CATALOG to REFUSE it
 
 
-def _code_only(src: str, ext: str) -> str:
-    """The text with comments and docstrings removed, so a migrated file that still MENTIONS catalog.db
-    in a comment leaves the list (R1176) - only code that names it counts."""
+def _code_only(src: str, ext: str, rel: str = "") -> str:
+    """Only CODE counts, so a migrated file that still MENTIONS catalog.db in a comment or docstring leaves
+    the list (R1176). Python goes through the parser (tests/_repo_walk.code_text, AR-153): other strings,
+    triple-quoted ones included, are kept and implicit concatenation is joined. Shell: '#' lines dropped."""
+    import _repo_walk
     if ext == ".py":
-        src = re.sub(r'"""[\s\S]*?"""|\'\'\'[\s\S]*?\'\'\'', "", src)
+        return _repo_walk.code_text(src, EXEMPT_FUNCTIONS.get(rel, frozenset()))
     return "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
 
 
@@ -238,10 +243,9 @@ def _naming_files():
     import _repo_walk                                  # the one shared walk (R1178)
     for rel, p in _repo_walk.code_files((".py", ".ps1", ".sh"), ROOT):
         with open(p, encoding="utf-8", errors="replace") as fh:
-            if NAMES_CATALOGUE.search(_code_only(fh.read(), os.path.splitext(p)[1])):
+            if NAMES_CATALOGUE.search(_code_only(fh.read(), os.path.splitext(p)[1], rel)):
                 found.add(rel)
     found.discard("core/catalog_path.py")
-    found.discard("updater/run.py")      # names ECONDL_CATALOG only to REFUSE an override (plan change 4)
     return found
 
 
@@ -250,6 +254,17 @@ def test_the_catalogue_ratchet_can_fail():
                  'name = "catalog" + ".db"', 'os.path.join(d, "catalog", ".db")'):
         assert NAMES_CATALOGUE.search(_code_only(code, ".py")), code
     assert not NAMES_CATALOGUE.search(_code_only('# the old catalog.db road\nx = 1\n"""uses catalog.db"""', ".py"))
+    # AR-153: what the regex-based reader missed or hid
+    for code in ('p = "catalog" ".db"',                                   # implicit concatenation
+                 "SQL = '''ATTACH \"data/catalog.db\" AS c'''\nx = 1",   # a triple-quoted string that is CODE
+                 'from core.paths import CATALOG_DB',                      # the module constant
+                 'def f():\n    """doc"""\n    return "catalog.db"'):    # code after a docstring
+        assert NAMES_CATALOGUE.search(_code_only(code, ".py")), code
+    assert not NAMES_CATALOGUE.search(_code_only('def f():\n    """uses catalog.db"""\n    return 1', ".py"))
+    run = 'def _selfhost_preflight(a):\n    os.environ.get("ECONDL_CATALOG")\n\ndef other():\n    return "catalog.db"'
+    assert NAMES_CATALOGUE.search(_code_only(run, ".py", "updater/run.py")), "the rest of run.py is scanned"
+    assert not NAMES_CATALOGUE.search(_code_only(run.split("\n\n")[0], ".py", "updater/run.py"))
+    assert NAMES_CATALOGUE.search(_code_only("x = (", ".py") + "catalog.db"), "unparsable: scanned raw"
 
 
 def test_no_new_file_names_catalog_db_outside_the_resolver():

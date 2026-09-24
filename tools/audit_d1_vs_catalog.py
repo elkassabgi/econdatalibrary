@@ -33,11 +33,9 @@ Read-only. It deletes nothing and changes nothing; it prints what is true and wh
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import sqlite3
-import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -51,26 +49,13 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126 Safari/537.36")
 
 
-def _wrangler() -> str | None:
-    for name in ("wrangler.cmd", "wrangler"):
-        p = os.path.join(ROOT, "api", "worker", "node_modules", ".bin", name)
-        if os.path.exists(p):
-            return p
-    return None
-
-
 def d1_counts() -> dict:
-    exe = _wrangler()
-    if not exe:
-        raise SystemExit("wrangler not found under api/worker/node_modules/.bin")
-    p = subprocess.run(
-        [exe, "d1", "execute", "econ-catalog", "--remote", "--json", "--command",
-         "select source_id, count(*) n from series group by 1"],
-        cwd=os.path.join(ROOT, "api", "worker"), capture_output=True, text=True, timeout=900)
-    if p.returncode != 0:
-        raise SystemExit(f"wrangler exit {p.returncode}: {p.stderr[-300:]}")
-    txt = p.stdout[p.stdout.index("["):]
-    return {r["source_id"]: r["n"] for r in json.loads(txt)[0]["results"]}
+    from core import d1_remote                                           # noqa: PLC0415 - plan step 1
+    try:
+        found, _ = d1_remote.rows("econ-catalog", "select source_id, count(*) n from series group by 1")
+    except RuntimeError as e:
+        raise SystemExit(str(e)[-400:]) from None
+    return {r["source_id"]: r["n"] for r in found}
 
 
 def supported() -> set:
@@ -106,15 +91,12 @@ def probe(series_id: str, key: str | None):
 
 
 def d1_ids(source: str) -> set:
-    exe = _wrangler()
-    p = subprocess.run(
-        [exe, "d1", "execute", "econ-catalog", "--remote", "--json", "--command",
-         f"select series_id from series where source_id='{source}'"],
-        cwd=os.path.join(ROOT, "api", "worker"), capture_output=True, text=True, timeout=900)
-    if p.returncode != 0:
+    from core import d1_remote                                           # noqa: PLC0415 - plan step 1
+    try:
+        found, _ = d1_remote.rows("econ-catalog", f"select series_id from series where source_id='{source}'")
+    except RuntimeError:
         return set()
-    txt = p.stdout[p.stdout.index("["):]
-    return {r["series_id"] for r in json.loads(txt)[0]["results"]}
+    return {r["series_id"] for r in found}
 
 
 def main() -> int:

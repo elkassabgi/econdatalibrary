@@ -125,17 +125,17 @@ def test_only_the_two_econ_databases(sent, before_t0, monkeypatch):
 # The files that reach D1 remotely by another road TODAY (2026-09-24). They move into d1_remote in plan
 # step 1; this list may only SHRINK. A new file on it is a new unguarded write path after T0.
 LEGACY_REMOTE_D1 = {
-    ".github/workflows/sec-edgar-daily.yml", ".github/workflows/updater-daily.yml",   # disabled at T0 (6a)
-    "core/catalog.py", "core/export_d1.py", "core/export_d1_i18n_delta.py", "core/export_d1_sources.py",
-    "core/load_d1_chunked.py", "core/load_d1_rest.py", "core/sync_catalog_d1.py", "core/sync_state_d1.py",
-    "tools/audit_d1_source_counts.py", "tools/audit_d1_vs_catalog.py", "tools/audit_licence_disclosure.py",
-    "tools/audit_site.py", "tools/billing_guard.py", "tools/delist_timeless_tables.py",
-    "tools/enrich_sec_edgar_tickers.py", "tools/migrate_noaa_shard.py", "tools/rebuild_series_fts.py",
-    "tools/refresh_flowgrain_dates.py", "tools/refresh_sec_edgar.py",
-    "tools/stamp_source_data_through.py", "tools/sync_source_rows_d1_to_local.py", "tools/sync_titles_to_d1.py",
-    "tools/verify_source_served.py",
+    ".github/workflows/sec-edgar-daily.yml", "core/export_d1.py", "core/load_d1_chunked.py",
+    "core/load_d1_rest.py", "core/sync_state_d1.py", "tools/audit_site.py", "tools/billing_guard.py",
+    "tools/delist_timeless_tables.py", "tools/enrich_sec_edgar_tickers.py", "tools/migrate_noaa_shard.py",
+    "tools/rebuild_series_fts.py", "tools/refresh_flowgrain_dates.py", "tools/refresh_sec_edgar.py",
+    "tools/sync_titles_to_d1.py",
 }
-REMOTE = re.compile(r"--remote\b|/d1/database/")
+# Left on 2026-09-24 (plan step 1): the six D1 readers moved onto d1_remote.rows / run_json; five files
+# named `--remote` only in a docstring, a comment or a tool's own --remote-truth option (sync_catalog_d1
+# reaches D1 through core/sync_state_d1.execute_remote, which is still listed here).
+# `--remote` as wrangler's flag, not a tool's own option that starts with it (--remote-truth).
+REMOTE = re.compile(r"--remote(?![\w-])|/d1/database/")
 
 
 CODE = (".py", ".ps1", ".sh", ".yml", ".yaml", ".mjs", ".js", ".cjs", ".bat", ".cmd")
@@ -152,7 +152,11 @@ def test_no_new_file_calls_d1_remotely_outside_the_chokepoint():
     found = set()
     for rel, p in _code_files():
         with open(p, encoding="utf-8", errors="replace") as fh:
-            if REMOTE.search(fh.read()):
+            src = fh.read()
+            if rel.endswith(".py"):
+                import _repo_walk
+                src = _repo_walk.code_text(src)          # code only: a docstring mention is not a caller
+            if REMOTE.search(src):
                 found.add(rel)
     found.discard("core/d1_remote.py")
     found.discard("tools/selfhost/cutover_hook.py")   # names the roads in order to REFUSE them (plan change 5)
@@ -166,3 +170,8 @@ def test_the_ratchet_can_fail(tmp_path):
     assert REMOTE.search('subprocess.run(["npx", "wrangler", "d1", "execute", "econ-catalog", "--remote"])')
     assert REMOTE.search('url = f"{api}/accounts/{a}/d1/database/{db}/query"')
     assert not REMOTE.search("wrangler d1 execute econ-catalog --local")
+    assert not REMOTE.search("python tools/audit_d1_source_counts.py --remote-truth")
+    assert REMOTE.search('["d1", "execute", db, "--remote"]') and REMOTE.search("--remote --json")
+    import _repo_walk
+    assert REMOTE.search(_repo_walk.code_text('CMD = """wrangler d1 execute x --remote"""\nrun(CMD)'))
+    assert not REMOTE.search(_repo_walk.code_text('"""Moving to production = wrangler d1 execute --remote."""'))

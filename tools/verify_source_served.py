@@ -75,27 +75,14 @@ def _listed_live(source: str):
 def _d1_count(source: str):
     """(rows_in_D1, None) or (0, reason). D1 is what the worker reads to answer a request, so a
     source absent from it 404s no matter how coherent the local catalogue and R2 are."""
-    import json
-    import subprocess
-    exe = os.path.join(ROOT, "api", "worker", "node_modules", ".bin", "wrangler.cmd")
-    if not os.path.exists(exe):
-        exe = os.path.join(ROOT, "api", "worker", "node_modules", ".bin", "wrangler")
-    if not os.path.exists(exe):
-        return 0, "wrangler not found"
+    from core import d1_remote                                           # noqa: PLC0415 - plan step 1
     # Shard-routed sources (noaa) keep their catalog rows on a second D1 database;
     # counting them on the primary reports 0 and fails an actually-served source.
     from core.sync_state_d1 import CATALOG_SHARD_FOR
     db = CATALOG_SHARD_FOR.get(source, "econ-catalog")
     try:
-        p = subprocess.run(
-            [exe, "d1", "execute", db, "--remote", "--json", "--command",
-             f"select count(*) n from series where source_id='{source}'"],
-            cwd=os.path.join(ROOT, "api", "worker"), capture_output=True, text=True,
-            timeout=300)
-        if p.returncode != 0:
-            return 0, f"wrangler exit {p.returncode}"
-        txt = p.stdout[p.stdout.index("["):]
-        return int(json.loads(txt)[0]["results"][0]["n"]), None
+        found, _ = d1_remote.rows(db, f"select count(*) n from series where source_id='{source}'", timeout=300)
+        return int(found[0]["n"]), None
     except Exception as e:                                     # noqa: BLE001
         return 0, f"{type(e).__name__}: {str(e)[:50]}"
 
