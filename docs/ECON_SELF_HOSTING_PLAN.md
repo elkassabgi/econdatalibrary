@@ -184,9 +184,10 @@ Build status (branch feat/econ-selfhost-origin):
   carries the groups): MOVE refresh_sec_edgar's CSVs, series_census's _aqueduct/stats.json (read by
   /v1/stats), guard_heartbeat's beat; LOCAL the repull/repair tools (cso_repull_matrix, cso_repull_subject,
   repull_file, rebuild_cso_retired_from_csv, sec_edgar_union_repair) and probe_csv_freshness's bookmark;
-  LICENCE delist_timeless_tables and purge_unpermitted_r2 (defused); RETIRE AT T0 the R2-copy tools
-  (core/upload_r2, _upload_biotrademerch_store, _upload_clean_full_parquet, upload_statcan_store,
-  refresh_r2_catalog). Two one-shots that deleted or rewrote R2 AT IMPORT were DEFUSED on 2026-09-24:
+  LICENCE purge_unpermitted_r2 (defused); RETIRE AT T0 the R2-copy tools (core/upload_r2,
+  _upload_biotrademerch_store, _upload_clean_full_parquet, upload_statcan_store, refresh_r2_catalog) and the
+  completed one-shot delist_timeless_tables - each refuses as its first statement after T0 (cd1572c48,
+  tests/test_retired_at_t0_tools.py). Two one-shots that deleted or rewrote R2 AT IMPORT were DEFUSED on 2026-09-24:
   _delete_statcan_r2 (statcan is restored and served again) and trim_bfs_corrupt_tail.
   AT T0, EXPECT: guard_heartbeat --publish (the guard loop, every ~5 min) throws on every tick, and its
   only reader - updater-daily's --check - is itself disabled at T0: the move must name a NEW off-machine
@@ -266,8 +267,12 @@ Build status (branch feat/econ-selfhost-origin):
   checkout, so tests/conftest.py gives every test its own non-existent flag, lock, build, checkout
   catalogue and blob root (econdl's own copies too); a test that forgets one runs before T0 against
   nothing, whatever the machine is.
-  delist_timeless_tables.py onto licence_targets (purge_unpermitted_r2.py stays defused
-  until re-armed, then on licence_targets); a self-hosted path for tools/run_local_heavy.ps1 and
+- Still to do in step 1 (this sentence lost its start in 996aede89; restored 2026-09-24): purge_unpermitted_r2.py
+  stays defused until re-armed, then on licence_targets (delist_timeless_tables is NOT a licence tool - a
+  completed one-shot on a fixed list, R1210 - and refuses after T0 since cd1572c48); seven tools still end
+  with "NEXT: refresh_r2_catalog", which refuses after T0 (catalog_complete, delist_source_rows,
+  retire_source, derive_unsdg_flows, catalog_eia_tables, catalog_imts_tables, catalog_cepii_baci - R1234):
+  after T0 their NEXT line must name the local step instead; a self-hosted path for tools/run_local_heavy.ps1 and
   make_servable.py (after T0 both fail closed today: the heavy run asks for --pull-state and the R2
   backend, make_servable forces R2); the verifier re-pointing (6d).
 - Changes 4 and 5 follow the rules in section 3.4a-c (R1167 A-C).
@@ -466,8 +471,9 @@ client -> econdl-api.elkassabgi.workers.dev   EDGE worker (same name, forever)
      enumerated by grep in step 1 and attached to the step-6d change) are re-pointed to the EDGE (the
      address users get), or refuse after the flag; CLAUDE.md, DESKTOP_FIRST.md, the econ-updater skill
      and the runbooks change in the same 6d commit.
-   - The licence tools (purge_unpermitted_r2, retire_source, delist_source_rows, delist_timeless_tables)
-     get their local backend FIRST, so licence enforcement never has a gap.
+   - The licence tools (purge_unpermitted_r2, retire_source, delist_source_rows) get their local backend
+     FIRST, so licence enforcement never has a gap. (delist_timeless_tables was listed here; it is a
+     completed one-shot, retired at T0 by a refusal.)
 6. Health gate and digest local; an off-machine scheduled GitHub Action checks freshness/uptime through the
    edge AND, from T0 until step 7, reads R2 and D1 write analytics (billing-guard's analytics token) for
    econ-data, econ-catalog and econ-catalog-climate every day and emails on any write. It also checks that
