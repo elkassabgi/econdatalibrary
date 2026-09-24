@@ -57,16 +57,26 @@ def _tables(db: sqlite3.Connection) -> set[str]:
 
 
 def is_thirteen_f_strategy(strategy) -> bool:
-    """The 13F strategy, or no strategy at all - neither may name a row the XBRL product owns."""
+    """The 13F strategy, or no strategy at all - neither may name a row the XBRL product owns. Anything but
+    text is refused too: bytes would be stored as a BLOB, which the migration's lower(trim()) matches (R1233)."""
+    if strategy is not None and not isinstance(strategy, str):
+        return True
     s = str(strategy or "").strip(WS).lower()
     return s == "" or s == THIRTEEN_F_STRATEGY
 
 
-def is_thirteen_f_row(strategy) -> bool:
-    """Whether an EXISTING row is the 13F product's: exactly the rows _SELECT_ALWAYS moves (the 13F strategy
-    after trimming WS, any case). An empty or whitespace-only strategy is NOT - the migration never moves such
-    a row, so a guard that called it 13F refused the XBRL write for ever (R1218 finding 2)."""
-    return str(strategy or "").strip(WS).lower() == THIRTEEN_F_STRATEGY
+def holds_thirteen_f_row(db: sqlite3.Connection, table: str, unit_id=None) -> bool:
+    """Whether the STORED row a write is about to merge into (source_state('sec_edgar'), or unit_state
+    ('sec_edgar', unit_id)) is one the migration moves. Asked of SQLite with _SELECT_ALWAYS's own clause, so
+    the guard and the migration cannot disagree: a Python copy of the rule did, for a BLOB strategy (SQLite's
+    lower(trim()) matches it, str() of bytes does not) and under a casefold() mutant (R1233); an empty or
+    whitespace-only strategy is not moved, so it is not 13F here either (R1218 finding 2)."""
+    if table not in _tables(db):
+        return False
+    w, a = _SELECT_ALWAYS[table]
+    if table == "unit_state":
+        w, a = f"{w} AND unit_id=?", (*a, unit_id)
+    return db.execute(f"SELECT 1 FROM {table} WHERE {w}", a).fetchone() is not None
 
 
 def xbrl_owns(db: sqlite3.Connection) -> bool:

@@ -505,7 +505,7 @@ def test_a_row_the_migration_does_not_move_does_not_block_the_xbrl_write(tmp_pat
                (existing,))])
     s = StateStore(p)
     try:
-        assert M.pending(s.db) == 0 and not M.is_thirteen_f_row(existing)
+        assert M.pending(s.db) == 0 and not M.holds_thirteen_f_row(s.db, "source_state")
         assert s.get_source("sec_edgar") is not None, "not moved"
         s.upsert_source("sec_edgar", strategy="edgar_delta", status="ok")
         assert s.get_source("sec_edgar")["strategy"] == "edgar_delta"
@@ -513,8 +513,38 @@ def test_a_row_the_migration_does_not_move_does_not_block_the_xbrl_write(tmp_pat
         s.close()
 
 
-def test_the_guard_and_the_migration_agree_on_what_a_13f_row_is():
-    for v in ("giant_changed_units", " GIANT_changed_units\t", "\x0bgiant_changed_units\x0c"):
-        assert M.is_thirteen_f_row(v)
-    for v in ("", " ", None, "edgar_delta", " giant_changed_units", "giant_changed_units x"):
-        assert not M.is_thirteen_f_row(v)
+AGREE = ["giant_changed_units", " GIANT_changed_units\t", "\x0bgiant_changed_units\x0c", "", " ", None,
+         "edgar_delta", "\u00a0giant_changed_units", "giant_changed_units x", "giant_changed_unit\u017f",
+         "giant_changed_units\x00", b"giant_changed_units", b"edgar_delta", 7]
+
+
+@pytest.mark.parametrize("table", ["source_state", "unit_state"])
+@pytest.mark.parametrize("stored", AGREE, ids=repr)
+def test_the_guard_calls_a_row_13f_exactly_when_the_migration_moves_it(tmp_path, table, stored):
+    """The guard's verdict on the stored row BEFORE an open, against what the next open actually does - for
+    text, BLOB and integer strategies (R1233: a BLOB matched the SQL and not the Python copy; a casefold()
+    copy disagreed on U+017F). One SQL clause answers both, so they cannot drift."""
+    p = str(tmp_path / "state.db")
+    StateStore(p).close()
+    db = sqlite3.connect(p)
+    if table == "source_state":
+        db.execute("INSERT INTO source_state(source_id, strategy, status) VALUES ('sec_edgar', ?, 'ok')", (stored,))
+    else:
+        db.execute("INSERT INTO unit_state(source_id, unit_id, strategy) VALUES ('sec_edgar', '_all', ?)", (stored,))
+    db.commit()
+    guard_says = M.holds_thirteen_f_row(db, table, "_all")
+    db.close()
+    StateStore(p).close()                                    # the migration runs on open
+    moved = _count(p, table, "sec_edgar") == 0
+    assert guard_says == moved, (stored, guard_says, moved)
+
+
+def test_a_bytes_strategy_is_refused_on_the_way_in(tmp_path):
+    s = StateStore(str(tmp_path / "state.db"))
+    try:
+        with pytest.raises(ValueError, match="XBRL product's own strategy"):
+            s.upsert_source("sec_edgar", strategy=b"giant_changed_units", status="ok")
+        with pytest.raises(ValueError, match="XBRL product's own strategy"):
+            s.upsert_source("sec_edgar", strategy=b"edgar_delta", status="ok")
+    finally:
+        s.close()
