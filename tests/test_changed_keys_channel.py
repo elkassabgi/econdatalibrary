@@ -114,7 +114,10 @@ def test_statcan_wires_the_channel_with_every_merge_reporting():
     assert src.count("merge.merge_and_write(") == 1, "a second merge call is a merge without the report"
     assert "report_changed_keys=True" in src
     assert "changed_keys_cap=max(merge.CHANGED_KEYS_CAP, tbl.num_rows)" in src
-    assert "res.changed_keys = changed_all" in src
+    # the WHOLE statement, unconditional - R1250 B9 (`... = changed_all if not capped else None`) started with
+    # the pinned text and passed a substring check
+    stmts = [ln.strip() for ln in src.splitlines() if ln.strip().startswith("res.changed_keys")]
+    assert stmts == ["res.changed_keys = changed_all"], stmts
 
 
 def test_statcan_vector_keys_bridge_via_punctuation(catalog, monkeypatch):

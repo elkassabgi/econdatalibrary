@@ -216,3 +216,62 @@ def test_run_once_runs_the_csv_phase_behind_that_gate():
     inside = [n for s in gates[0].body for n in ast.walk(s)
               if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_derive_changed_csvs"]
     assert len(calls) == 1 and len(inside) == 1, (len(calls), len(inside))
+
+
+P2, V2 = "10000002", 50000001
+
+
+class _OneCube:
+    """The pass's budget lets exactly one cube START (statcan's Deadline between cubes)."""
+    budget_min = 45.0
+
+    def __init__(self, *a, **k):
+        self.n = 0
+
+    def spent(self):
+        self.n += 1
+        return self.n > 1
+
+
+def test_a_capped_pass_still_carries_and_derives_its_revision(monkeypatch, tmp_path):
+    """R1250 B9: `changed_keys = changed_all if not capped else None` survived the whole suite - a capped pass
+    (statcan's most common: the budget ends mid-window) must still report the cube it revised; that cube is
+    already in `done`, so the next pass will not look at it again."""
+    _store(tmp_path, [(V_REV, D_OLD, 1.0)], pid=PID)
+    _store(tmp_path, [(V2, D_OLD, 7.0)], pid=P2)
+    _wire(monkeypatch, tmp_path, [(V_REV, D_OLD, 1.5), (V2, D_OLD, 8.0)], pids=(PID, P2))
+    monkeypatch.setattr(sc, "Deadline", _OneCube)
+    res = sc.update(None, None)
+    assert res.new_vintage is None, "a capped pass never stamps a full vintage"
+    assert res.changed_keys == {f"v{V_REV}": D_OLD.isoformat()}, res.changed_keys
+    assert orchestrate._should_derive_csvs(res.status), (res.status, res.error)
+    assert _derived(monkeypatch, tmp_path, res, backend="r2") == [f"statcan:V{V_REV}"]
+
+
+def test_a_transient_cube_first_does_not_hide_a_later_revision(monkeypatch, tmp_path):
+    """R1250 B14: `changed_all.update(_ch if all_ok else {})` survived - after a transient cube the pass is
+    partial, and the revised cube behind it must still be reported and derived."""
+    from updater.errors import TransientError
+    _store(tmp_path, [(V2, D_OLD, 7.0)], pid="10000000")                   # sorts FIRST, and fails
+    _store(tmp_path, [(V_REV, D_OLD, 1.0)], pid=PID)
+    _wire(monkeypatch, tmp_path, [(V_REV, D_OLD, 1.5)], pids=("10000000", PID))
+    real_post = sc._post
+
+    def _post(endpoint, payload, tries=5):
+        if str(V2) in payload["vectorIds"]:
+            raise TransientError("503 from WDS")
+        return real_post(endpoint, payload, tries)
+    monkeypatch.setattr(sc, "_post", _post)
+    res = sc.update(None, None)
+    assert res.status == "partial", (res.status, res.error)
+    assert res.changed_keys == {f"v{V_REV}": D_OLD.isoformat()}, res.changed_keys
+    assert _derived(monkeypatch, tmp_path, res, backend="r2") == [f"statcan:V{V_REV}"]
+
+
+def test_a_report_over_the_default_cap_is_complete(monkeypatch, tmp_path):
+    """R1250 B13: more CHANGED rows than the default cap must all be reported, not only the first cap-many."""
+    _store(tmp_path, [(V_REV, D_OLD, 1.0), (V_SAME, D_OLD, 2.0)])
+    _wire(monkeypatch, tmp_path, [(V_REV, D_OLD, 1.5), (V_SAME, D_OLD, 2.5)])
+    monkeypatch.setattr(sc.merge, "CHANGED_KEYS_CAP", 1)
+    res = sc.update(None, None)
+    assert res.changed_keys == {f"v{V_REV}": D_OLD.isoformat(), f"v{V_SAME}": D_OLD.isoformat()}, res.changed_keys
