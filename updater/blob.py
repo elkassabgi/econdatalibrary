@@ -664,6 +664,15 @@ class R2Blob:
             keys += [o["Key"] for o in page.get("Contents", [])]
         return keys
 
+    def list_modified(self, prefix: str) -> list[tuple]:
+        """(key, LastModified as a UTC datetime) under a prefix - what a resume that skips the objects its
+        own campaign already wrote compares against (tools/derive_csv_bulk.py --skip-newer-than)."""
+        out = []
+        for page in self.client.get_paginator("list_objects_v2").paginate(
+                Bucket=self.bucket, Prefix=prefix):
+            out += [(o["Key"], o["LastModified"]) for o in page.get("Contents", [])]
+        return out
+
     def delete(self, key: str) -> None:
         """Delete one object. Deletes are free on R2; a 404 is already-gone,
         which is the goal state, so no error mapping is needed."""
@@ -768,6 +777,12 @@ class SelfhostBlob:
 
     def list_keys(self, prefix: str) -> list[str]:
         return self.store.list(prefix)
+
+    def list_modified(self, prefix: str) -> list[tuple]:
+        """R2Blob.list_modified's twin: the store's stored_utc (R2's LastModified for an imported object,
+        import_from_r2 keeps it) as a UTC datetime."""
+        from datetime import datetime                                     # noqa: PLC0415
+        return [(k, datetime.fromisoformat(t)) for k, t in self.store.list_stored(prefix)]
 
     def delete(self, key: str) -> None:
         self.store.delete(key)

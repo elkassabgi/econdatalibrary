@@ -64,7 +64,31 @@ def test_statcan_keeps_its_own_guarded_uploader():
     check is therefore load-bearing and must not be 'simplified' away."""
     src = _src("derive_statcan_tables.py")
     assert 'body[:2] != b"\\x1f\\x8b"' in src, "statcan lost its double-gzip guard"
-    assert 'ContentEncoding="gzip"' in src
+    # since plan step 1 the upload is the blob store's put_atomic (R2 before T0, the self-hosted store
+    # after), which marks an already-gzipped body ContentEncoding gzip through series_csv_put_args -
+    # pinned behaviourally by test_an_already_gzipped_body_is_stored_as_is below
+    assert "_derive._put_with_retry(store, key, body)" in src and "put_object" not in src
+
+
+def test_an_already_gzipped_body_is_stored_as_is():
+    """What statcan's enqueue-time gzip relies on: put_atomic neither re-gzips nor strips the marker."""
+    import gzip
+    import sys
+    sys.path.insert(0, _ROOT)
+    from updater import blob
+    gz = gzip.compress(b"series_id,obs_date,value\nx,2020-01-01,1\n", mtime=0)
+    calls = []
+
+    class Client:
+        def put_object(self, **kw):
+            calls.append(kw)
+
+        def head_object(self, **kw):
+            raise Exception("404")
+    b = blob.R2Blob("econ-data")
+    b._client = Client()
+    b.put_atomic("series/statcan%3A1.csv", gz)
+    assert calls and calls[0]["Body"] == gz and calls[0]["ContentEncoding"] == "gzip", calls
 
 
 def test_the_shared_helper_still_refuses_to_double_gzip():

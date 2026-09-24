@@ -14,6 +14,7 @@ Content-Encoding, Content-Type and custom metadata are kept, so the worker serve
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import os
 import sys
@@ -63,8 +64,10 @@ def copy_one(s3, store: BlobStore, key: str) -> tuple[bool, str]:
     etag = r["ETag"].strip('"')
     if not etag_matches(data, etag):
         return False, f"etag mismatch for {key} ({len(data):,} bytes, etag {etag})"
+    lm = r.get("LastModified")                       # boto3: a tz-aware datetime
+    stored = lm.astimezone(dt.timezone.utc).isoformat(timespec="seconds") if lm is not None else None
     store.put(key, data, etag=etag, content_encoding=r.get("ContentEncoding"),
-              content_type=r.get("ContentType"), custom_metadata=r.get("Metadata") or {})
+              content_type=r.get("ContentType"), custom_metadata=r.get("Metadata") or {}, stored_utc=stored)
     return True, f"{key} {len(data):,} bytes etag ok"
 
 

@@ -33,6 +33,27 @@ def _port():
         return s.getsockname()[1]
 
 
+def _move_green(rig):
+    """Green to a fresh port, written to the rig's state file (another process on the machine took the old one)."""
+    rig["ports"]["green"] = _port()
+    st = json.load(open(rig["state"]))
+    st["targets"]["green"] = f"http://127.0.0.1:{rig['ports']['green']}"
+    with open(rig["state"], "w") as f:
+        json.dump(st, f)
+
+
+def _hold_green(rig, sock):
+    """Bind `sock` to green's port ON PURPOSE. When another process already has that port (WinError 10048 under
+    concurrent suites - 2026-09-24 full_main13), move green first: the test is about THIS process holding it."""
+    for _ in range(5):
+        try:
+            sock.bind(("127.0.0.1", rig["ports"]["green"]))
+            return rig["ports"]["green"]
+        except OSError:
+            _move_green(rig)
+    raise RuntimeError("could not hold any green port")
+
+
 def _alive(pid):
     import psutil
     try:
@@ -137,11 +158,7 @@ def _swap(rig, port_retry=True, **kw):
         except swap.SwapRefused as e:
             if not port_retry or attempt == 2 or not STOLEN_PORT.search(str(e)):
                 raise
-        rig["ports"]["green"] = _port()
-        st = json.load(open(rig["state"]))
-        st["targets"]["green"] = f"http://127.0.0.1:{rig['ports']['green']}"
-        with open(rig["state"], "w") as f:
-            json.dump(st, f)
+        _move_green(rig)
 
 
 def _no_green_gen(rig):
@@ -235,8 +252,13 @@ def test_the_metadata_sample_must_come_from_this_instance_too(rig):
 
 def test_an_answer_from_another_instance_is_refused(rig, monkeypatch):
     """R1180 finding 1: a process that took the idle port answers, and the swap's own instance does not."""
-    hijacker = swap.start(_fake_cmd()(rig["ports"]["green"], os.path.join(rig["gen"], "persist"), "someone-else"),
-                          rig["worker"], os.path.join(rig["work"], "hijack.log"))
+    for _attempt in range(3):             # a stand-in that exits could not bind: move green and start it again
+        hijacker = swap.start(_fake_cmd()(rig["ports"]["green"], os.path.join(rig["gen"], "persist"), "someone-else"),
+                              rig["worker"], os.path.join(rig["work"], "hijack.log"))
+        if _eventually(lambda: swap.port_in_use(rig["ports"]["green"]) or hijacker.poll() is not None, 60) \
+                and hijacker.poll() is None:
+            break
+        _move_green(rig)
     try:
         assert _eventually(lambda: swap.port_in_use(rig["ports"]["green"]))
         monkeypatch.setattr(swap, "port_in_use", lambda p: False)      # both port checks fooled
@@ -254,8 +276,11 @@ def test_a_port_taken_during_the_build_is_refused_before_the_start(rig, monkeypa
 
     def build_then_take(cat, out, **kw):
         r = real(cat, out, **kw)
-        holder.bind(("127.0.0.1", rig["ports"]["green"]))
-        holder.listen()
+        try:
+            holder.bind(("127.0.0.1", rig["ports"]["green"]))
+            holder.listen()
+        except OSError:
+            pass            # another process already holds it: the port is taken either way, same refusal
         return r
     monkeypatch.setattr(swap, "build_copies", build_then_take)
     try:
@@ -268,7 +293,7 @@ def test_a_port_taken_during_the_build_is_refused_before_the_start(rig, monkeypa
 
 def test_an_answering_idle_port_is_refused(rig):
     s = socket.socket()
-    s.bind(("127.0.0.1", rig["ports"]["green"]))
+    _hold_green(rig, s)
     s.listen()
     try:
         with pytest.raises(swap.SwapRefused, match="already answers"):
@@ -280,8 +305,7 @@ def test_an_answering_idle_port_is_refused(rig):
 def test_the_rig_moves_off_a_port_another_process_took(rig):
     """The test helper's own retry: swap.py refuses the stolen port, the helper moves green and succeeds."""
     s = socket.socket()
-    taken = rig["ports"]["green"]
-    s.bind(("127.0.0.1", taken))
+    taken = _hold_green(rig, s)
     s.listen()
     try:
         out = _swap(rig)

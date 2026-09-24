@@ -116,9 +116,19 @@ class BlobStore:
         return row is not None
 
     # -- writes ---------------------------------------------------------------------------------------
+    def list_stored(self, prefix: str = "") -> list[tuple[str, str]]:
+        """(key, stored_utc) for keys starting with `prefix`, in key order - what an R2 listing's
+        LastModified answered (a resume that skips what its own campaign already wrote needs it)."""
+        return [(r[0], r[1]) for r in self._r().execute(
+            "SELECT key, stored_utc FROM blobs WHERE key >= ? AND key < ? ORDER BY key",
+            (prefix, prefix + chr(0x10FFFF))).fetchall()]
+
     def put(self, key: str, data: bytes, *, etag: str, content_encoding: str | None = None,
-            content_type: str | None = None, custom_metadata: dict | None = None) -> str:
-        """Store bytes under key with the R2 etag they had. Returns the sha256."""
+            content_type: str | None = None, custom_metadata: dict | None = None,
+            stored_utc: str | None = None) -> str:
+        """Store bytes under key with the R2 etag they had. Returns the sha256. `stored_utc` (ISO, UTC) keeps
+        the time the object was written where it came from - import_from_r2 passes R2's LastModified, so an
+        imported object does not read as written at import time; by default it is now."""
         sha = hashlib.sha256(data).hexdigest()
         path = self._path(sha)
         with self._wlock:
@@ -145,7 +155,7 @@ class BlobStore:
                     " content_type=excluded.content_type, custom_metadata=excluded.custom_metadata,"
                     " stored_utc=excluded.stored_utc",
                     (key, sha, etag.strip('"'), len(data), content_encoding, content_type,
-                     json.dumps(custom_metadata or {}, sort_keys=True), _now()))
+                     json.dumps(custom_metadata or {}, sort_keys=True), stored_utc or _now()))
                 if old and old[0] != sha:
                     self._w.execute("INSERT INTO retired(sha256, retired_utc) VALUES (?,?)", (old[0], _now()))
                 self._w.execute("COMMIT")

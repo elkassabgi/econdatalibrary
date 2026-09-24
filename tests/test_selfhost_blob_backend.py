@@ -114,6 +114,33 @@ def test_a_missing_store_is_an_error_never_created(tmp_path):
     assert not (tmp_path / "none").exists()
 
 
+def test_the_store_keeps_a_given_stored_time_and_lists_it(sb):
+    """An imported object keeps R2's LastModified, so a resume that skips what its own campaign wrote
+    (derive_csv_bulk --skip-newer-than) does not mistake every imported object for a fresh write."""
+    import datetime as dt
+    sb.store.put("series/a%3A1.csv", b"x", etag="e1", stored_utc="2026-01-02T03:04:05+00:00")
+    sb.put_atomic("series/a%3A2.csv", CSV)                              # default: now
+    got = dict(sb.list_modified("series/a%3A"))
+    assert got["series/a%3A1.csv"] == dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=dt.timezone.utc)
+    assert got["series/a%3A2.csv"] > dt.datetime(2026, 9, 1, tzinfo=dt.timezone.utc)
+    assert list(got) == ["series/a%3A1.csv", "series/a%3A2.csv"]
+
+
+def test_the_importer_passes_r2s_last_modified(tmp_path):
+    import datetime as dt
+    import import_from_r2
+    store = BlobStore(str(tmp_path / "imp"), create=True)
+    lm = dt.datetime(2025, 5, 6, 7, 8, 9, tzinfo=dt.timezone(dt.timedelta(hours=-5)))
+
+    class S3:
+        def get_object(self, **kw):
+            import io
+            return {"Body": io.BytesIO(b"abc"), "ETag": '"%s"' % hashlib.md5(b"abc").hexdigest(),   # noqa: S324
+                    "LastModified": lm}
+    ok, _msg = import_from_r2.copy_one(S3(), store, "series/b%3A1.csv")
+    assert ok and store.list_stored("series/") == [("series/b%3A1.csv", "2025-05-06T12:08:09+00:00")]
+
+
 def test_the_backend_is_selected_by_name():
     assert isinstance(blob.from_env("selfhost"), blob.SelfhostBlob)
     assert blob.SelfhostBlob().root == r"E:\econ_live\blobs"
