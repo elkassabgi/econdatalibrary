@@ -362,7 +362,47 @@ def fetch_table_detailed(mtr_code: str) -> "tuple[list[tuple[str, dt.date, float
     if not data:
         return [], "no_body"
     rows = parse_jsonstat2(data, f"CSO:{mtr_code}")
-    return (rows, "ok") if rows else ([], "unparsed")
+    if rows:
+        return rows, "ok"
+    return [], _why_unparsed(data)
+
+
+_SPAN = re.compile(r"^(\d{4})-(\d{4})$")
+
+
+def _why_unparsed(data) -> str:
+    """Name a 200 that yielded no observations, so the caller can tell the publisher's empty
+    table from our parser gap (both used to read 'unparsed', retried every run - measured
+    2026-09-23 on 12 matrices):
+
+        all_null   every value is null: CSO publishes the cube empty (HRD51: 108 of 108,
+                   DOTA09: 450,846 of 450,846). Nothing to parse; not ours.
+        span_time  the AUTHORITATIVE time axis holds only multi-year windows ('2019-2023':
+                   ROA41..ROA52, rolling five-year road-injury tables). The grammar declines
+                   them ON PURPOSE - only a one-year span is an academic year (R288) - so which
+                   date a window stands for is a convention not yet decided, not a parse bug.
+        unparsed   anything else: a real gap in OUR parser.
+    """
+    try:
+        vals = data.get("value")
+        if isinstance(vals, dict):
+            vals = list(vals.values())
+        if isinstance(vals, list) and vals and all(v is None for v in vals):
+            return "all_null"
+        role_time = (data.get("role") or {}).get("time") or []
+        ids = data.get("id") or []
+        # the SAME authoritative rule parse_jsonstat2 applies before its heuristic fallback
+        tdim = next((d for d in ids if d in role_time or str(d).upper().startswith("TLIST")
+                     or str(d).upper() in ("TIME", "YEAR", "PERIOD", "TID")), None)
+        if tdim is not None:
+            idx = (data.get("dimension") or {}).get(tdim, {}).get("category", {}).get("index")
+            codes = list(idx.keys()) if isinstance(idx, dict) else list(idx or [])
+            spans = [_SPAN.match(str(c)) for c in codes]
+            if codes and all(m and int(m.group(2)) > int(m.group(1)) + 1 for m in spans):
+                return "span_time"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    return "unparsed"
 
 
 def fetch_table(mtr_code: str) -> list[tuple[str, dt.date, float]]:
