@@ -6,7 +6,8 @@ carries revisions to old periods, and a merge that only revises adds no row - so
 on: the served CSV kept the old value under a green unit. The same bug was fixed for ember (#76).
 
 The real update(), the real merge on a real parquet, the real finalize(), the real status gate and the
-real changed-key -> catalogue id mapping all run. Only StatCan's two network calls are faked.
+real changed-key -> catalogue id mapping all run. StatCan's two network calls are faked; some tests also replace
+the pass's Deadline (one cube's budget) or lower merge.CHANGED_KEYS_CAP, and the derive itself is a recorder.
 """
 from __future__ import annotations
 
@@ -79,6 +80,9 @@ def _catalog(tmp_path, monkeypatch, ids):
 
 def _derived(monkeypatch, tmp_path, res, backend=None):
     _catalog(tmp_path, monkeypatch, [f"statcan:V{V_REV}", f"statcan:V{V_SAME}"])
+    # the derive books its ids for the catalogue sync under config.STATE_DIR - keep that in tmp_path, not the
+    # checkout's data/_aqueduct (R1252: each run appended to <checkout>/data/_aqueduct/pending_catalog_sync.txt)
+    monkeypatch.setattr(orchestrate.config, "STATE_DIR", str(tmp_path / "_aqueduct"))
     if backend:
         monkeypatch.setattr(orchestrate.config, "BACKEND", backend)   # the local route runs statcan on r2
     orchestrate._REG_ENTRIES = None
@@ -209,9 +213,24 @@ def test_run_once_runs_the_csv_phase_behind_that_gate():
     import inspect
     fn = next(n for n in ast.parse(inspect.getsource(orchestrate)).body
               if isinstance(n, ast.FunctionDef) and n.name == "run_once")
-    gates = [n for n in ast.walk(fn) if isinstance(n, ast.If)
-             and ast.unparse(n.test) == "_should_derive_csvs(status) and (not dry)"]
+    # an `and` gate that CONTAINS both conditions - not the exact text, so a gate that adds its own conjunct
+    # (#65 appends `not _served_by_lane(unit.source_id)`) still passes; an `or`, or a gate without the
+    # predicate, does not (R1252: the exact-text pin failed on #65's tree)
+    gates = [n for n in ast.walk(fn) if isinstance(n, ast.If) and isinstance(n.test, ast.BoolOp)
+             and isinstance(n.test.op, ast.And)
+             and {"_should_derive_csvs(status)", "not dry"} <= {ast.unparse(v) for v in n.test.values}]
     assert len(gates) == 1, [ast.unparse(g.test) for g in gates]
+    # an extra conjunct must depend on something - `False and ...` (R1244 O1) or `not True` never fires
+    constant = [ast.unparse(v) for v in gates[0].test.values if not any(isinstance(t, ast.Name) for t in ast.walk(v))]
+    assert not constant, constant
+    # and run_once never rebinds the predicate (R1252 V2: a local shadow admitting only 'partial' survived)
+    rebinds = [ast.unparse(n)[:80] for n in ast.walk(fn)
+               if isinstance(n, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.FunctionDef, ast.Import, ast.ImportFrom))
+               and "_should_derive_csvs" in {getattr(t, "id", None) for t in ast.walk(n) if isinstance(t, ast.Name)
+                                             and isinstance(t.ctx, ast.Store)} | {getattr(n, "name", None)}
+               | {a.asname or a.name for a in getattr(n, "names", [])
+                  if isinstance(n, (ast.Import, ast.ImportFrom))}]
+    assert not rebinds, rebinds
     calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_derive_changed_csvs"]
     inside = [n for s in gates[0].body for n in ast.walk(s)
               if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_derive_changed_csvs"]
@@ -275,3 +294,25 @@ def test_a_report_over_the_default_cap_is_complete(monkeypatch, tmp_path):
     monkeypatch.setattr(sc.merge, "CHANGED_KEYS_CAP", 1)
     res = sc.update(None, None)
     assert res.changed_keys == {f"v{V_REV}": D_OLD.isoformat(), f"v{V_SAME}": D_OLD.isoformat()}, res.changed_keys
+
+
+def test_a_transient_cube_after_the_revision_does_not_clear_it(monkeypatch, tmp_path):
+    """R1252 N6/N11: a transient (or unreadable) cube AFTER the revised cube must not clear the reports gathered
+    so far - partial, the revision reported, derived under r2, and its sync booking kept in tmp_path."""
+    from updater.errors import TransientError
+    _store(tmp_path, [(V_REV, D_OLD, 1.0)], pid=PID)
+    _store(tmp_path, [(V2, D_OLD, 7.0)], pid="10000009")                   # sorts AFTER PID, and fails
+    _wire(monkeypatch, tmp_path, [(V_REV, D_OLD, 1.5)], pids=(PID, "10000009"))
+    real_post = sc._post
+
+    def _post(endpoint, payload, tries=5):
+        if str(V2) in payload["vectorIds"]:
+            raise TransientError("503 from WDS")
+        return real_post(endpoint, payload, tries)
+    monkeypatch.setattr(sc, "_post", _post)
+    res = sc.update(None, None)
+    assert res.status == "partial", (res.status, res.error)
+    assert res.changed_keys == {f"v{V_REV}": D_OLD.isoformat()}, res.changed_keys
+    assert _derived(monkeypatch, tmp_path, res, backend="r2") == [f"statcan:V{V_REV}"]
+    booked = (tmp_path / "_aqueduct" / "pending_catalog_sync.txt").read_text().split()
+    assert booked == [f"statcan:V{V_REV}"], booked
