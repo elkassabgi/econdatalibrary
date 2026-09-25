@@ -16,7 +16,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 @pytest.fixture
-def paths(tmp_path, monkeypatch):
+def paths(tmp_path, monkeypatch, live_checkout):
     checkout, build = tmp_path / "checkout" / "catalog.db", tmp_path / "live" / "catalog" / "catalog.db"
     for p, name in ((checkout, "checkout"), (build, "build")):
         p.parent.mkdir(parents=True)
@@ -266,6 +266,11 @@ import sys, time
 sys.path.insert(0, {root!r})
 from core import catalog_path as cp, cutover
 cp.LOCK_PATH, cp.BUILD_PATH, cutover.FLAG_PATH = {lock!r}, {build!r}, {flag!r}
+# after T0 the lock is the LIVE checkout's only (R1253): this script's own checkout plays it
+import os
+cp.LIVE_STORE_ROOT = {root!r}
+for _v in ("ECONDL_DATA", "ECONDL_CATALOG", "ECONDL_ROOT", "AQUEDUCT_DATA_ROOT"):
+    os.environ.pop(_v, None)
 cp.write_session_for_process()
 c = cp.connect(write=True)
 c.execute("INSERT INTO which VALUES ('script')")
@@ -494,3 +499,17 @@ def test_no_new_file_names_catalog_db_outside_the_resolver():
     assert found - legacy == set(), "new files name catalog.db: open it through core.catalog_path.connect"
     gone = legacy - found
     assert not gone, f"these no longer name catalog.db - remove them from {LEGACY}: {sorted(gone)}"
+
+
+def test_after_t0_the_writer_lock_refuses_a_non_live_checkout_before_opening_the_lock(paths, monkeypatch):
+    """R1253: one check in writer_lock() covers every catalogue writer (57 files) - and a refused run never
+    holds the machine-wide lock, not even for a moment (the lock file is not even created)."""
+    from updater import blob
+    (paths / "CUTOVER").write_text("")
+    monkeypatch.setattr(blob, "_code_root", lambda: str(paths / "a_worktree"))
+    blob._live_checkout_ok.clear()
+    for enter in (cp.writer_lock, cp.write_session):
+        with pytest.raises(cutover.CutoverRefused, match="R1203"):
+            with enter():
+                pass
+    assert not os.path.exists(cp.LOCK_PATH), "the lock file was opened before the refusal"

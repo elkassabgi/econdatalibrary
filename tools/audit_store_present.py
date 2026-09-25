@@ -26,6 +26,9 @@ def main() -> int:
     ap.add_argument("--backend", default="r2")
     ap.add_argument("--source", action="append", default=None)
     a = ap.parse_args()
+    # the backend is set BEFORE anything imports updater.config, which freezes config.BACKEND from the environment
+    # (R1253: the guard below imported it first, so --backend selfhost under AQUEDUCT_BACKEND=r2 printed "r2")
+    os.environ["AQUEDUCT_BACKEND"] = a.backend
     from core import cutover                                         # noqa: PLC0415
     if cutover.is_cut_over():
         # AFTER T0 (R1249): --backend r2 asks a frozen copy (bare, it printed ERR per source and then "ZERO parquets
@@ -35,7 +38,6 @@ def main() -> int:
                                        "with --backend selfhost from the live checkout")
         from updater import blob                                     # noqa: PLC0415
         blob.refuse_unless_live_checkout("audit_store_present (after T0 it reads the live store)")
-    os.environ["AQUEDUCT_BACKEND"] = a.backend
 
     from updater import config, registry, blob
     reg = registry.load()

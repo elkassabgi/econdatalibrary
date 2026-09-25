@@ -20,7 +20,7 @@ NOT_AUTHORIZED = (sqlite3.DatabaseError,)
 
 
 @pytest.fixture
-def build(tmp_path, monkeypatch):
+def build(tmp_path, monkeypatch, live_checkout):
     b = tmp_path / "live" / "catalog.db"
     b.parent.mkdir(parents=True)
     with sqlite3.connect(b) as c:                          # before T0: a plain open is as it always was

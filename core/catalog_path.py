@@ -418,6 +418,16 @@ def writer_lock():
     global _held
     if _held is not None:
         raise RuntimeError("writer_lock() is already held by this process")
+    if is_cut_over():
+        # ONLY THE LIVE CHECKOUT WRITES THE BUILD (review R1253). A catalogue writer reads THIS checkout's store to
+        # decide what to write, and outside the live checkout that store is scratch: a worktree run of
+        # tools/_cat_efw.py and of catalog_table_grain.py --apply wrote scratch titles and rows into the build.
+        # Checked HERE, before the lock file is even opened, because every writer - 57 files - takes this lock after
+        # T0, so one check covers the class instead of one tool at a time (R1249 guarded six), and a refused run
+        # never holds the machine-wide lock for a moment (R1253 finding 2). Lazy import: updater.blob imports this.
+        from updater import blob                                            # noqa: PLC0415
+        blob.refuse_unless_live_checkout("the catalogue writer lock (after T0 only the live checkout writes the "
+                                         "build)")
     os.makedirs(os.path.dirname(LOCK_PATH), exist_ok=True)
     fh = open(LOCK_PATH, "a+b")
     try:
