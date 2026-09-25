@@ -158,19 +158,45 @@ def test_the_csv_phase_arms_its_fence_from_the_helper():
 
 
 def test_every_alarm_site_in_run_once_takes_its_minutes_from_its_helper():
-    """R1248: the two unit-window sites had no pin - putting either back to main's inline formula (0.0 past the
-    ceiling, so no alarm), the raw timeout, or `max(0, window - 1)` passed every test. run_once arms exactly three
-    alarms: the probe and the update take _unit_window_min() DIRECTLY, the csv phase the pinned _csv_fence. It
-    also never reaches module state by name (R1248 N4/N5: a globals() write or setattr rebinding a helper)."""
+    """R1248/R1251: run_once arms exactly three alarms, IN THIS ORDER, each wrapping its phase's call:
+       the probe  - _unit_window_min() around strat.detect_change
+       the update - _unit_window_min() around strat.run
+       the csv    - _csv_fence (bound once from _csv_fence_min(), pinned above) around _derive_changed_csvs.
+    A LIST, not a dict keyed by label (R1251 B5/B6: a second site with the same label overwrote the first key);
+    every mention of _unit_deadline / _unit_window_min / _csv_fence_min in run_once must BE one of those sites (an
+    alias is a site - B3/B4); the phase call must sit inside its block (C1/C2). Limits of a parser pin, stated:
+    it refuses the roads that rebind module state it can name - globals()/vars()/setattr/exec/eval, any
+    `sys.modules` or `__dict__` access, any `global` other than _RUN_DEADLINE_TS (R1251 D1-D4) - and cannot see
+    a helper that does it for run_once from elsewhere."""
     import ast
     run_once = _run_once_ast()
-    sites = {ast.unparse(n.args[0]): ast.unparse(n.args[1]) for n in ast.walk(run_once)
-             if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_unit_deadline"}
-    assert sites == {"unit.key + ' (detect_change)'": "_unit_window_min()",
-                     "unit.key": "_unit_window_min()",
-                     "unit.key + ' (csv phase)'": "_csv_fence"}, sites
-    reach = [ast.unparse(n)[:80] for n in ast.walk(run_once) if isinstance(n, ast.Call)
-             and getattr(n.func, "id", None) in ("globals", "setattr", "vars", "exec", "eval")]
+
+    def calls_in(stmts):
+        return {ast.unparse(n.func) for s in stmts for n in ast.walk(s) if isinstance(n, ast.Call)}
+    sites = []
+    for w in ast.walk(run_once):
+        if isinstance(w, ast.With):
+            for i in w.items:
+                c = i.context_expr
+                if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "_unit_deadline":
+                    sites.append((w.lineno, ast.unparse(c.args[0]), ast.unparse(c.args[1]), calls_in(w.body)))
+    sites.sort()
+    expected = [("unit.key + ' (detect_change)'", "_unit_window_min()", "strat.detect_change"),
+                ("unit.key", "_unit_window_min()", "strat.run"),
+                ("unit.key + ' (csv phase)'", "_csv_fence", "_derive_changed_csvs")]
+    assert [(lab, mins) for _l, lab, mins, _b in sites] == [(lab, mins) for lab, mins, _c in expected], sites
+    for (_l, lab, _m, body), (_lab, _mins, call) in zip(sites, expected):
+        assert call in body, (lab, call, body)
+    # every mention of an alarm helper is one of the sites above (or the one _csv_fence binding) - an alias is a site
+    mentions = {}
+    for n in ast.walk(run_once):
+        if isinstance(n, ast.Name) and n.id in ("_unit_deadline", "_unit_window_min", "_csv_fence_min"):
+            mentions[n.id] = mentions.get(n.id, 0) + 1
+    assert mentions == {"_unit_deadline": 3, "_unit_window_min": 2, "_csv_fence_min": 1}, mentions
+    reach = [ast.unparse(n)[:80] for n in ast.walk(run_once)
+             if (isinstance(n, ast.Call) and getattr(n.func, "id", None) in ("globals", "setattr", "vars", "exec", "eval"))
+             or (isinstance(n, ast.Attribute) and n.attr in ("modules", "__dict__", "setattr"))
+             or (isinstance(n, ast.Global) and set(n.names) - {"_RUN_DEADLINE_TS"})]
     assert not reach, reach
 
 

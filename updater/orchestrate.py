@@ -269,7 +269,8 @@ def _unit_timeout_min() -> float:
 _RUN_DEADLINE_TS: float | None = None
 
 
-# PAST THE CEILING (_remaining_run_min() == 0.0) every hard alarm still ARMS, at this many minutes: 0 is what
+# PAST THE CEILING (_remaining_run_min() == 0.0) each of run_once's three alarms still ARMS (on POSIX, unless the
+# timeout is deliberately disabled), at this many minutes: 0 is what
 # _unit_deadline reads as "do not arm", which is how both R1144's CSV fence and R1245's unit windows went unbounded.
 _PAST_CEILING_MIN = 1.0
 
@@ -302,8 +303,12 @@ def _unit_window_min() -> float:
 
     WHAT AN ALARM CAN BOUND: SIGALRM interrupts the MAIN thread. Work a fetcher or derive_and_put hands to a thread
     pool is not cancelled - the pool's exit waits for its running workers, and derive's per-object retry catches
-    the UnitTimeout as an ordinary Exception (review R1246). So a wedged worker still holds the phase until its
-    own socket timeout; the alarm bounds main-thread work only. Making derive fence-aware is its own change.
+    the UnitTimeout as an ordinary Exception (review R1246). So a wedged worker holds the phase for a time with
+    NO known bound (a socket timeout is per operation - a slow-drip response resets it on every byte - a compute
+    wedge has no socket, and a failed PUT is retried); and on derive's serial path its `except` swallows the
+    one-shot alarm, so the rest of that phase runs with no alarm at all (R1248, R1251). The alarm bounds
+    main-thread work only, and only on POSIX (Windows has no setitimer). Making derive fence-aware is its own
+    change.
     """
     t = _unit_timeout_min()
     rem = _remaining_run_min()
@@ -2122,13 +2127,15 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 # (run 32054925848) until the 285-min step kill destroyed the
                 # run's state push, D1 syncs and digest. The soft budget inside
                 # derive_and_put only binds when ids complete. SIGALRM binds
-                # MAIN-THREAD work only - the id-mapping walk, and a resolve on the
-                # serial path until derive's own `except Exception` catches it
-                # (that path books the id failed and carries on). Work on derive's
-                # thread pool is NOT cut: the pool waits for its running workers,
-                # so a wedged resolve or PUT there holds the phase until its socket
-                # timeout (review R1246/R1248; making derive fence-aware is its own
-                # change). Sized to the run's remaining minutes (+2 grace) capped at
+                # MAIN-THREAD work only, on POSIX - the id-mapping walk, and a call on
+                # derive's serial path until derive's own `except Exception` catches
+                # the alarm (a resolve is then booked failed, a PUT retried) - after
+                # which that one-shot alarm is spent and the rest of the phase has
+                # none. Work on derive's thread pool is NOT cut: the pool waits for its
+                # running workers, for a time with no known bound (review R1246,
+                # R1248, R1251; making derive fence-aware is its own change). So this
+                # fence narrows the step-kill risk, it does not remove it. Sized to
+                # the run's remaining minutes (+2 grace) capped at
                 # 60 — on trip, the phase is abandoned as a budget note (the
                 # next run re-derives; cursors are already recorded) rather than
                 # the run being executed at the step ceiling. Past the ceiling
