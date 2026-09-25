@@ -68,7 +68,7 @@ WRITERS = _writers()
 
 
 @pytest.fixture
-def t0(tmp_path, monkeypatch):
+def t0(tmp_path, monkeypatch, live_checkout):
     # a writer's main() may os.environ.setdefault("AQUEDUCT_BACKEND", "r2") before its open (catalog_complete
     # does); monkeypatch restores the variable afterwards, or every later test in the run sees the R2 backend
     # (setenv first: delenv of an ABSENT variable records nothing, so nothing would be restored)
@@ -305,17 +305,8 @@ def test_main_opens_in_the_right_mode(t0, monkeypatch, rel, argv, want, prepare)
     assert _open_mode(rel, argv, monkeypatch, prepare) == [want]
 
 
-def test_catalog_complete_opens_read_write(t0, monkeypatch, tmp_path):
-    # after T0 catalog_complete writes the live build only from the LIVE checkout (R1249) - be that checkout here
-    from updater import blob
-    from updater import config as ucfg
-    live = str(tmp_path / "live")
-    monkeypatch.setattr(cp, "LIVE_STORE_ROOT", live)
-    monkeypatch.setattr(blob, "_code_root", lambda: live)
-    monkeypatch.setattr(ucfg, "ROOT", live)
-    monkeypatch.setattr(ucfg, "DATA_ROOT", os.path.join(live, "data", "clean_full"))
-    monkeypatch.delenv("ECONDL_DATA", raising=False)
-    monkeypatch.delenv("ECONDL_CATALOG", raising=False)
+def test_catalog_complete_opens_read_write(t0, monkeypatch):
+    # (t0 requests the live_checkout fixture: after T0 only the live checkout writes the build - R1249, R1253)
     assert _open_mode("tools/catalog_complete.py", [], monkeypatch, call=lambda m: m.main(["x"])) == [True]
 
 
