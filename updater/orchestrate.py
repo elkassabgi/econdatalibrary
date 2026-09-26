@@ -820,9 +820,13 @@ def _derive_changed_csvs(unit, res, blob, store=None):
             # vectors per changed cube) tripped the refusal on a factually false
             # "truncated evidence" note and demoted a healthy subset-scope run —
             # the WU-5 reviewer drove it end-to-end (CASE D).
+            # A fetcher that SAYS its changed-set evidence is truncated (Result.cursor_cap_hit) is
+            # saturated too, whatever the count: abs's over-cap fallback reports bare cursor keys
+            # that cannot map, and a sample of them would 'prove' nothing served changed (AR-132).
             note, demote = _classify_zero_mapped(
                 unit.source_id, scope, n_ids, sample_hits, sample_n, len(unmapped),
-                cap_saturated=(not migrated) and len(unmapped) >= _CCAP)
+                cap_saturated=((not migrated) and len(unmapped) >= _CCAP)
+                or bool(getattr(res, "cursor_cap_hit", None)))   # (not the pinned booking read)
             if not demote:
                 print(f"[orchestrator] {unit.source_id}: {note}", flush=True)
             return [], note, [], {}
@@ -1342,6 +1346,28 @@ def _ecb_store_key(key):
     return parts[1], parts[2], [p for p in parts[3:] if p]
 
 
+def _ember_index(con) -> dict:
+    """{'<file stem>:<native series_key>': [catalogue id]} for every CATALOGUED ember id - the exact
+    inverse of econdl._resolve._resolve_ember, built from ITS OWN tables (never retyped: R191/R192).
+    An id the resolver cannot parse is left out; it could not be derived anyway."""
+    import core.derive_csv  # noqa: F401,PLC0415 - puts clients/python on sys.path
+    from econdl import _resolve as _r                                   # noqa: PLC0415
+    out: dict = {}
+    for (cid,) in con.execute("SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
+                              ("ember:", "ember;")):
+        parts = cid.split(":")
+        if len(parts) != 4:
+            continue
+        _, freq, metric, geo = parts
+        try:
+            cat, sub, var, unit = _r._EMBER_METRICS[freq][metric]
+            key = f"{_r._EMBER_FILE[freq][:-len('.parquet')]}:{_r._EMBER_GEO[geo]}|{cat}|{sub}|{var}|{unit}"
+        except KeyError:
+            continue
+        out.setdefault(key, []).append(cid)
+    return out
+
+
 def _catalog_ids_for(source_id: str, changed_keys):
     """Map changed store series_keys to catalog series_ids (see hook comment).
     Returns (ids_to_derive, unmapped_keys). Reads the catalog read-only from
@@ -1386,7 +1412,22 @@ def _catalog_ids_for(source_id: str, changed_keys):
                 "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
                 ("wikidata:", "wikidata;"))]
             _exp = {"companies": _all} if _all else {}
+        _ember = _ember_index(con) if source_id == "ember" else None
         for k in changed_keys:
+            if _ember is not None:
+                # ember's changed keys are '<file stem>:<series_key>' (fetchers/ember.py) and its 60
+                # ids resolve to ONE native key in ONE of two files - an exact inverse of the
+                # resolver, so a key maps here or nowhere. No other tier is tried: they read
+                # '<source>:<key>' forms ember never catalogues, and the split-part tier full-scans.
+                _hit = _ember.get(k)
+                if _hit:
+                    for cid in _hit:
+                        if cid not in seen:
+                            seen.add(cid)
+                            exact.append(cid)
+                else:
+                    unmapped.append(k)
+                continue
             # dst consults its subject index BEFORE the exact tier (the WU-4 review's
             # REQUIRED change): 10 of the 2,264 subject-group names are THEMSELVES
             # catalogued table ids (REGN10-class: subject 'REGN10' groups REGN10A…,
