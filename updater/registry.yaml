@@ -4245,6 +4245,18 @@ sources:
       Each group written once via a single pq.write_table.
 - source_id: stat_estonia
   live: true
+  # catalog_scope — DECLARED 2026-09-23 (reviews R1129, R1133). The catalogue serves 3,447 of PxWeb's
+  # 4,978 tables. It is NOT "every table with stored rows": 3,447 of the 3,464 stored table prefixes
+  # are catalogued, and 17 (15,667 series) are a cataloguing GAP - the updater never catalogues a new
+  # table. Their record is the econ-updater work queue (.claude/skills/econ-updater/references/
+  # 50-queue.md, "stat_estonia - OPEN cataloguing gap"), because under subset the health gate no
+  # longer shows them. The fetcher reports the tables a pass MERGED ('EE:...:<TABLE>.PX',
+  # exact catalogue form), so a pass that lands rows only in an uncatalogued table maps to zero ids
+  # and reads a coverage note instead of "csv coherence unmet" and ATTENTION. Sound for serving: a
+  # changed catalogued table maps EXACTLY, so a zero-mapped pass has touched no served table. That
+  # rests on the exact mapper alone - the zero-mapped sample cannot see '.PX' prefixes (0 hits over
+  # 4,978 tables). No EXPECTED_SOURCE_COUNT change (R347).
+  catalog_scope: subset
   scripts:
   - jobs/ingest_stat_estonia.py
   strategy: sdmx_delta

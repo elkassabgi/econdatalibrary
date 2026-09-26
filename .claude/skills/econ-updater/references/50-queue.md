@@ -1837,3 +1837,47 @@ ALSO WORTH KNOWING, because two numbers here mislead:
 And the publisher IS ahead — confirmed at the datapoint level, not from metadata: 6 of 6 probed
 vectors across 3 cubes, with a negative control (vector 999999999 -> status FAILED, empty
 datapoints). The staleness is ours.
+
+## stat_estonia — OPEN cataloguing gap: 17 stored tables with no catalogue entry (measured 2026-09-23, review R1133)
+
+The registry declares `catalog_scope: subset` for stat_estonia (fix/stat-estonia-changed-tables). A pass
+that merges rows only into an UNCATALOGUED table then reads as a coverage note, not ATTENTION. That is
+sound for serving: a changed catalogued table maps exactly. But the health gate no longer shows a table
+that has rows and no catalogue entry, so THIS ENTRY IS THEIR RECORD. Do not delete it until the list
+below is re-measured as empty.
+
+Measured on R2 (the review's `scratchpad/AR_subset/e2_estonia_store.py` and `e5_estonia_17.py`):
+3,447 of the 3,464 table prefixes with stored rows are catalogued. These 17 hold 15,667 series and
+have no catalogue entry. All 17 are also in the desktop store.
+
+| Table (store prefix) | Stored rows | Stored obs dates |
+|---|---:|---|
+| `EE:keskkond:keskkonnakaitse-ja-jarelevalve:Investeeringud kliimamuutuste ohjamiseks:KK22.PX` | 345 | 2021-12-31..2023-12-31 |
+| `EE:keskkond:keskonna-arvepidamine:metsa-arvepidamine:KK54.PX` | 130 | 2022-12-31..2023-12-31 |
+| `EE:keskkond:keskonna-arvepidamine:metsa-arvepidamine:KK55.PX` | 54 | 2022-12-31..2023-12-31 |
+| `EE:majandus:majandusuksused:ettevetjad:ER022.px` | 23 | 2025-12-31 |
+| `EE:majandus:majandusuksused:ettevetjad:ER0250.px` | 138 | 2025-12-31 |
+| `EE:majandus:majandusuksused:ettevetjad:ER0260.px` | 115 | 2025-12-31 |
+| `EE:majandus:majandusuksused:ettevetjad:ER0271.px` | 414 | 2025-12-31 |
+| `EE:majandus:majandusuksused:ettevetjad:ER0280.px` | 108 | 2025-12-31 |
+| `EE:majandus:majandusuksused:ettevetjad:ER0290.px` | 207 | 2025-12-31 |
+| `EE:majandus:majandusuksused:ettevetjad:ER0308.px` | 3,036 | 2025-12-31 |
+| `EE:majandus:majandusuksused:ettevetjad:ER0320.px` | 792 | 2025-12-31 |
+| `EE:majandus:majandusuksused:ettevetjad:ER220.px` | 6 | 2025-12-31 |
+| `EE:majandus:majandusuksused:kasumitaotluseta-uksused:ER0421.px` | 414 | 2025-12-31 |
+| `EE:majandus:majandusuksused:kasumitaotluseta-uksused:ER0430.px` | 23 | 2025-12-31 |
+| `EE:majandus:majandusuksused:kasumitaotluseta-uksused:ER0440.px` | 23 | 2025-12-31 |
+| `EE:majandus:majandusuksused:uldandmed:ER005.PX` | 168 | 2025-12-31 |
+| `EE:rahvaloendus:rel_vordlus:rahvastiku-demograafilised-ja-etno-kultuurilised-naitajad:RLV445.px` | 18,055 | 2011-12-31..2021-12-31 |
+
+WHY IT IS A GAP AND NOT CURATION: the only cataloguer for this source is the manual desktop tool
+`tools/catalog_pxweb_flowgrain.py`. The updater never catalogues a table that lands rows for the first
+time, so every new table joins this list without a signal.
+
+TO CLOSE IT: run the cataloguer for these tables; then the D1 catalogue sync (frozen at the time of
+writing, so nothing catalogued reaches a user until it runs); then re-measure this list against R2 and
+the catalogue, and replace this table with the new measurement.
+
+SOUNDNESS RESTS ON THE EXACT MAPPING: the orchestrator's zero-mapped sample cannot see a `.PX` table
+prefix (0 dot-prefix hits over all 4,978 listed tables), so it cannot catch a catalogued table the
+exact mapper misses. Today the exact mapper has 0 case or prefix mismatches against the store.
