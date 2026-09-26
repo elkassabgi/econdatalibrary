@@ -683,6 +683,196 @@ def rotate_after(items: list, bookmark: str, key=None) -> list:
     return items
 
 
+class RotationCycle:
+    """`ok` must mean "every sub-unit was visited since the last ok" - never "the budget stopped
+    this pass somewhere" (R303; statfin R1096, 2026-09-23).
+
+    A rotating fetcher that stops on its budget and reports `ok` waits its whole cadence before the
+    next pass: statfin reached 28 of 134 subjects per 30-minute pass, so each subject was refreshed
+    only every ~5 passes x 25.2 days = ~125 days, against an 84-day monthly data clock. With this,
+    a pass that stops before the cycle is complete books every sub-unit NOT YET VISITED THIS CYCLE
+    as deferred (-> `partial`); the completing, CLEAN pass resets the cycle and reads ok.
+
+    SCHEDULING, as base.is_due does it (measured on real state rows, review R1103 - do not restate
+    this from memory): a `partial` never advances last_success, so
+      - a unit that HAS succeeded before is due on every run (twice daily) until the cycle closes;
+      - a unit that has NEVER succeeded takes the PARTIAL_RETRY_DAYS path: one pass per ~6.5 days
+        (hagstofa ran 09-11 and 09-18, stat_slovenia 09-12 and 09-19). Its FIRST cycle therefore
+        takes ~6.5 days per pass; after that first ok it is on the fast branch above.
+
+    A UNIT IS VISITED ONLY WHEN ITS WORK FINISHED WITHOUT FAILURE (review R1103, P2): marked at the
+    start, a group whose tables all failed transiently counted as done, the next pass closed the
+    cycle as `ok`, and the group was never fetched again. Callers pass failed=True for a unit whose
+    work raised or booked a transient/structural failure; it stays owed.
+
+    Persisted beside the rotation bookmark (blob-routed, written per unit - R273: a save only at the
+    end is what the orchestrator's kill destroys). An unreadable file starts a new cycle: every unit
+    is owed again, which costs passes and never skips one. A failed save is printed (R393).
+
+        cycle = RotationCycle(out_dir, units)
+        for u in rotate_after(units, load_rotation(out_dir)):
+            if cycle.done(u):
+                continue                         # visited this cycle: no work owed
+            if dl.spent():
+                cycle.defer_unvisited(tally, label=lambda u: f"{u} ({n[u]} tables)")
+                break
+            cycle.begin(u)                       # in flight: a raise or kill counts as a failure
+            before = cycle.failures(tally)
+            ...work on u...
+            cycle.visit(u, failed=cycle.failures(tally) > before)
+        cycle.close_if_complete(tally)
+    """
+    FILE = "_cycle.json"
+    # A unit that failed on this many CONSECUTIVE attempts is QUARANTINED: still attempted on every
+    # pass (so its failure is tallied, the source reads partial and names it), but it no longer holds
+    # the cycle open. Without this, one table that breaks for good was never visited, the cycle never
+    # closed, and done() skipped every other unit for ever - review R1111 P6 on stat_slovenia: passes
+    # 2 and 3 asked only the failing group while 145 others waited; the same shape as R1109 on bea.
+    # Not 1: a single transient failure must not reset a cycle one clean retry would close (AR-119).
+    QUARANTINE_AFTER = 2
+
+    def __init__(self, out_dir, units):
+        from ... import blob as _blob
+        self._blob, self.out_dir, self.units = _blob, out_dir, list(units)
+        self.path = os.path.join(out_dir, self.FILE)
+        prev = {}
+        try:
+            raw = _blob.read_bytes(self.path)
+            prev = json.loads(raw.decode("utf-8")) if raw is not None else {}
+        except Exception:                                    # noqa: BLE001
+            prev = {}
+        self._prev = prev if isinstance(prev, dict) else {}
+        got = self._prev.get("visited")
+        self.visited = (set(got) if isinstance(got, list) else set()) & set(self.units)
+        fl = self._prev.get("failing")
+        self.failing = ({u: int(n) for u, n in fl.items() if u in set(self.units) and isinstance(n, int)}
+                        if isinstance(fl, dict) else {})
+        self._failed_now: set = set()
+        self.in_flight = None
+        # A UNIT STILL IN FLIGHT from an earlier pass never reached visit(): its work raised out of
+        # update() or the orchestrator killed the source mid-unit. That is a failed attempt, and it
+        # must count - otherwise such a unit is never visited, never counted, never quarantined, and
+        # freezes the rest (review AR-127 P5: a merge DefinitiveError that stat_latvia, ssb and
+        # stat_slovenia do not catch). Counted once, here, and persisted at once.
+        died = self._prev.get("in_flight")
+        if died in set(self.units):
+            self.visited.discard(died)
+            self.failing[died] = self.failing.get(died, 0) + 1
+            print(f"[rotation-cycle] {died} was in flight when the last pass ended (raised or killed): "
+                  f"counted as a failed attempt ({self.failing[died]} in a row)", flush=True)
+            self._save(self.visited)
+        # A pass that DIES never reaches close_if_complete. If every unit but the quarantined ones is
+        # already visited, that pass would have closed the cycle - close it now, or a unit that raises
+        # on every pass keeps the rest skipped for ever even after quarantine.
+        q = self.quarantined()
+        if q and self.visited and not (set(self.unvisited()) - q):
+            print(f"[rotation-cycle] closing the cycle the last pass could not close: every unit but "
+                  f"{sorted(q)[:5]} (quarantined) was visited", flush=True)
+            self.visited = set()
+            self._save(set(), completed_utc=_dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                       closed_over_quarantined=sorted(q))
+
+    def begin(self, unit) -> None:
+        """Mark `unit` in flight before its work starts (see __init__ for why)."""
+        self.in_flight = unit
+        self._save(self.visited)
+
+    def release(self, unit) -> None:
+        """`unit`'s work STOPPED WITHOUT A VERDICT - a budget cut inside it (ssb stops mid-group):
+        neither visited nor failed. Without this the next load would count the cut as a failed
+        attempt, and two cuts in a row would quarantine a unit that never failed."""
+        if self.in_flight == unit:
+            self.in_flight = None
+            self._save(self.visited)
+
+    def _save(self, visited, **extra):
+        d = {k: v for k, v in self._prev.items() if k not in ("visited", "failing", "in_flight")}
+        d.update(extra)
+        if d.get("closed_over_quarantined") is None:
+            d.pop("closed_over_quarantined", None)       # a clean close clears it (AR-127 P4)
+        d["visited"] = sorted(visited)
+        d["failing"] = dict(sorted(self.failing.items()))
+        d["in_flight"] = self.in_flight
+        try:
+            self._blob.write_bytes_atomic(self.path, json.dumps(d, indent=1).encode("utf-8"))
+        except Exception as e:                               # noqa: BLE001
+            # The orchestrator's hard limit arrives as UnitTimeout (an Exception, raised by SIGALRM
+            # wherever the fetcher is) - swallowing it here let the fetcher run on past its window
+            # (review R1114, measured on begin()). Re-raise it; only a real save failure is printed.
+            import sys as _sys
+            orch = _sys.modules.get("updater.orchestrate")
+            if orch is not None and (getattr(orch, "UNIT_TIMEOUT_FIRED", False) or
+                                     isinstance(e, getattr(orch, "UnitTimeout", ()))):
+                raise
+            # Losing it re-owes the cycle (safe), but SAY so: a cycle file that never saves keeps
+            # the source partial on every pass with no other trace (review R1103, P3; R393).
+            print(f"[rotation-cycle] could not save {self.path} ({type(e).__name__}: {e}) - this "
+                  f"cycle's progress is not recorded", flush=True)
+
+    @staticmethod
+    def failures(tally) -> int:
+        """The tally's failure count, to compare before and after one unit's work."""
+        return int(tally.transient) + int(tally.structural)
+
+    def visit(self, unit, failed: bool = False) -> None:
+        """Record `unit` as done this cycle - unless its work failed, in which case it stays owed and
+        its run of consecutive failures grows (see QUARANTINE_AFTER)."""
+        if unit == self.in_flight:
+            self.in_flight = None
+        if failed:
+            self.visited.discard(unit)
+            if unit not in self._failed_now:                 # one count per pass
+                self._failed_now.add(unit)
+                self.failing[unit] = self.failing.get(unit, 0) + 1
+            self._save(self.visited)
+            return
+        self.failing.pop(unit, None)
+        self.visited.add(unit)
+        self._save(self.visited)
+
+    def quarantined(self) -> set:
+        return {u for u, n in self.failing.items() if n >= self.QUARANTINE_AFTER}
+
+    def unvisited(self) -> list:
+        return [u for u in self.units if u not in self.visited]
+
+    def done(self, unit) -> bool:
+        """Visited this cycle: the loop SKIPS it (review R1105, P1). Re-walking visited units spent
+        the budget on work already done, and a unit that can be stopped part-way (ssb stops inside a
+        group) then booked deferrals on the pass that completed the cycle, so it never read ok."""
+        return unit in self.visited
+
+    def defer_unvisited(self, tally, label=str) -> int:
+        owed = self.unvisited()
+        for u in owed:
+            tally.deferred_unit(label(u))
+        return len(owed)
+
+    def close_if_complete(self, tally) -> bool:
+        """Reset the cycle when every unit was visited AND this pass failed nothing: a pass with a
+        failed sub-unit is partial/red anyway, and resetting there would start a fresh cycle where
+        one clean pass would have closed this one (statfin review AR-119).
+
+        EXCEPT a QUARANTINED unit (failed on QUARANTINE_AFTER consecutive attempts): it neither holds
+        the cycle open nor blocks the reset with its own failure - otherwise it freezes every other
+        unit for good (R1111). The pass still tallies its failure, so the source stays partial (or
+        red, for a structural failure), and the reset says which units it closed over."""
+        q = self.quarantined()
+        if set(self.unvisited()) - q:
+            return False                     # includes every non-quarantined unit that failed now
+        if (tally.transient or tally.structural) and not self._failed_now:
+            return False                                     # a failure no unit owned: do not guess
+        extra = {"completed_utc": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                 "closed_over_quarantined": sorted(q) or None}
+        if q:
+            print(f"[rotation-cycle] cycle closed over {len(q)} unit(s) that failed "
+                  f"{self.QUARANTINE_AFTER}+ passes in a row: {sorted(q)[:5]} - they are still attempted "
+                  f"every pass and keep the source partial or red; every other unit is refreshed again",
+                  flush=True)
+        self._save(set(), **extra)
+        return True
+
+
 CONSECUTIVE_TRANSIENT_LIMIT = 25
 
 
