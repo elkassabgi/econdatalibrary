@@ -1888,7 +1888,27 @@ sources:
     No ETag is served, so the weakest files are SIZE-only and cannot see a same-length revision - MAX_AGE_DAYS=30 forces a
     rebuild in that case. The ingest is already safe to re-run (download() never skips, build() reparses), so both are reused
     verbatim. Two-run test - ok, 18 parquets, 3,227,580 obs published, then no_change in 3s.
-  cadence: monthly
+  # cadence WEEKLY (was monthly, 2026-09-23): polling is part of how old our newest observation can
+  # get. Monthly polling (cadence_due 0.9 x 28 = 25.2 days) put fhfa's worst age at fetch at 147.2
+  # days; weekly (0.9 x 7 = 6.3) puts it at 128.3. A no-change run takes ~3 s.
+  cadence: weekly
+  # data_cadence MEASURED 2026-09-23: 45 distinct obs_date in the trailing 3 years across the 9
+  # stored cubes (monthly month-START rows plus quarter-END rows) - monthly, not the weekly polling.
+  data_cadence: monthly
+  # publication_lag_days MEASURED 2026-09-23 from FHFA's HPI release calendar (fhfa.gov/data/hpi) and
+  # the store's REAL dating (read-only, E: store): monthly purchase-only rows are dated at the month's
+  # START (newest monthly 2026-06-01), quarterly at its END (2026-06-30 = 2026-Q2). Over the 16
+  # scheduled releases 2026-09-29..2027-12-28, the newest stored obs is 89-122 days old on release
+  # day (122 on 2027-08-31). On top of that: up to 1 day because FHFA publishes during the day
+  # (~13:00 UTC) and an earlier poll misses it, up to 7 days of run granularity once the weekly
+  # unit is due (it is picked up at the next 06:00/18:00 run), and 1 failed run. 122 + 1 + 7 + 1
+  # = 131, minus the 84-day monthly clock = 47 (review round 2 corrected 45, which left 0.2 days).
+  # Before this the daily run 35783253243 flagged fhfa RED-DATA at 85 days while it held FHFA's
+  # latest release exactly (hpi_master.csv: monthly 2026-06, quarterly 2026-Q2). Cost: a genuine
+  # freeze on the vintage-probe path turns red at 131 days, not 84 (a broken fetch is still caught
+  # at 14 days by RED-SLA). The served API will show fhfa's cadence as `weekly` - the POLL rate,
+  # as it already does for dst; data_cadence is not served.
+  publication_lag_days: 47
   refresh_cost: fast
   out_dir: fhfa
   review: true
