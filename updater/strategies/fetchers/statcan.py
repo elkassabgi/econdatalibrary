@@ -38,6 +38,8 @@ keeps the incremental run cheap and never invents geo/uom we cannot verify.
 
 Honest-status contract (Tally + finalize):
   - Each changed cube is one sub-unit. A successful merge -> added_unit(n_new); a
+    merge that adds no row but whose changed-keys report is non-empty (revised
+    values only) -> revised_unit() (status ok, so the CSV phase runs - R1125); a
     cube whose tail genuinely has 0 new datapoints -> empty_unit().
   - A timeout / 5xx / 429 / network drop -> transient_unit() (status 'partial'; the
     orchestrator does NOT advance last_success and the watermark is NOT advanced, so
@@ -519,12 +521,14 @@ def update(unit, since) -> Result:
     # grain no §5.7 tier can map (audit: 0/25) — while the merge's series_key grain is
     # VECTORS ('v65201210'), which the punctuation tier bridges to the 20 curated
     # 'statcan:V…' catalogue ids (measured: 0 _norm_id collisions). The union is
-    # honest ONLY if every merge reported: one skipped report would make the dict
-    # claim "nothing else changed" while that table's vectors went stale — so a
-    # single over-cap merge (a brand-new giant cube's first pull) drops the WHOLE
-    # run back to the legacy path (changed_keys=None) rather than lie.
+    # honest ONLY if every merge reported, so EVERY merge reports: each is asked for a
+    # report cap of its own size (R1244). The merge's default cap (2M new rows) guards a
+    # 16 GB runner; statcan runs only on the workstation (run_location: local), and the
+    # report is bounded by the tail this pass already fetched into memory. The old
+    # over-cap branch merged WITHOUT a report, booked a revision-only cube as empty
+    # (R1125 left open) and dropped the whole run to changed_keys=None, which under the
+    # r2 backend maps to no catalogue id at all.
     changed_all: dict = {}
-    changed_complete = True
     maxd = None
     # THE STORE-ABSENT GUARD. "Skip a changed cube we do not hold" is correct for a brand-new cube,
     # but it is silent — and if the WHOLE store is unreachable, every changed cube takes that branch,
@@ -613,22 +617,10 @@ def update(unit, since) -> Result:
 
         before = blob.row_count(path)
         try:
-            if tbl.num_rows <= 2_000_000:
-                n, md, _ch = merge.merge_and_write(
-                    path, tbl, mode="merge", dedup_keys=DEDUP,
-                    report_changed_keys=True)
-                changed_all.update(_ch)
-            else:
-                # over the report cap (merge.py refuses at entry): merge without the
-                # report and poison the union — honesty is binary per run. Say so
-                # (reviewer's note b): without this line the log cannot distinguish
-                # "poisoned to legacy" from "not migrated".
-                print(f"[statcan] {pid}: {tbl.num_rows:,} rows exceeds the "
-                      f"changed-keys report cap — this run falls back to the legacy "
-                      f"productId-cursor path (changed_keys=None)", flush=True)
-                n, md = merge.merge_and_write(path, tbl, mode="merge",
-                                              dedup_keys=DEDUP)
-                changed_complete = False
+            n, md, _ch = merge.merge_and_write(
+                path, tbl, mode="merge", dedup_keys=DEDUP, report_changed_keys=True,
+                changed_keys_cap=max(merge.CHANGED_KEYS_CAP, tbl.num_rows))
+            changed_all.update(_ch)
         except DefinitiveError:
             # never-shrink / column-drop guard tripped -> keep existing data, surface
             # as a sub-unit failure rather than crashing the whole run.
@@ -637,7 +629,15 @@ def update(unit, since) -> Result:
             all_ok = False
             continue
         delta = max(0, n - before)
-        tally.added_unit(delta)
+        if delta == 0 and _ch:
+            # REVISED, NOT EMPTY (review R1125): StatCan's tail carries revisions to old periods, and
+            # a merge that only revises adds no row. Booked as added_unit(0) the pass read `no_change`,
+            # orchestrate._should_derive_csvs skipped the CSV phase, and `done` / the watermark moved
+            # on - the served CSV kept the old value under a green unit. The merge's own report for
+            # THIS cube is the evidence (an identical re-fetch reports {}).
+            tally.revised_unit(pid)
+        else:
+            tally.added_unit(delta)
         if md:
             series_cursors[str(pid)] = md
             try:
@@ -710,9 +710,7 @@ def update(unit, since) -> Result:
         # More cubes in this window still owe work: never let the strategy stamp a vintage that
         # says "fully current" (ons_uk's rule), or the backlog is skipped at the next tick.
         res.new_vintage = None
-    if changed_complete:
-        # merge-measured vector-grain changed set; {} on a quiet pass is the honest
-        # "nothing changed" (coherence met). A run with any unreported merge returns
-        # None here and keeps the legacy productId-cursor behaviour exactly.
-        res.changed_keys = changed_all
+    # merge-measured vector-grain changed set - every merge reports (see changed_all); {} on a
+    # quiet pass is the honest "nothing changed" (coherence met)
+    res.changed_keys = changed_all
     return res

@@ -814,8 +814,10 @@ def _derive_changed_csvs(unit, res, blob, store=None):
             # cap_saturated exists for TRUNCATED cursor sets (>= CURSOR_CAP means the
             # changed-set was cut and proves nothing about the tail — R497). A MIGRATED
             # changed_keys set is NEVER truncated: the merge reports completely under
-            # its own 2M cap, and an over-cap merge poisons the whole run to None
-            # before this path can run. Without this predicate, a complete
+            # the cap it is given (statcan asks for max(default, tail size)), and a
+            # merge that cannot report is never silently left out - _giant.run_giant
+            # marks such a flow changed (over-reporting), and other fetchers return
+            # None, so this path does not run. Without this predicate, a complete
             # merge-measured set of >=50k uncatalogued keys (statcan unions 28-32k
             # vectors per changed cube) tripped the refusal on a factually false
             # "truncated evidence" note and demoted a healthy subset-scope run —

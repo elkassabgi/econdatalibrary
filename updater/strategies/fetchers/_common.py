@@ -224,6 +224,13 @@ class Tally:
         # it at ~1,152 characters with no ellipsis. This list exists so a caller that wants the
         # names can have them, cheaply and boundedly - not so every quiet tick grows a note.
         self.empty_ids: list = []
+        # SUB-UNITS WHOSE MERGE CHANGED SERVED VALUES WITHOUT ADDING A ROW (review R1125). Counted as
+        # new rows they would misstate the note; counted as empty they made a revision-only pass
+        # read `no_change`, and the orchestrator runs the CSV phase only for ok/partial - so the
+        # served CSV kept the old value, and the fetcher's sidecar had already moved on. Only a
+        # fetcher holding a merge-measured change report calls revised_unit(); 0 everywhere else.
+        self.revised = 0
+        self.revised_ids: list = []
 
     def added_unit(self, n: int, label=None):
         self.attempted += 1
@@ -242,6 +249,13 @@ class Tally:
         self.empty += 1
         if label:
             self.empty_ids.append(str(label))
+
+    def revised_unit(self, label=None):
+        """A sub-unit whose merge REVISED stored values and added no row (see `revised`)."""
+        self.attempted += 1
+        self.revised += 1
+        if label:
+            self.revised_ids.append(str(label))
 
     def transient_unit(self, label=None):
         self.attempted += 1
@@ -354,7 +368,8 @@ def finalize(tally: Tally, total_rows, last_obs, *, source, series_cursors=None,
             f"{source}: {tally.structural}/{tally.attempted} sub-unit(s) returned 200 but parsed 0 "
             f"rows from a non-trivial body (schema/structural break); existing data kept"
             + _named(tally.structural_ids))
-    if tally.added == 0 and tally.empty == tally.attempted and tally.attempted > empty_window_floor:
+    if (tally.added == 0 and tally.revised == 0 and tally.empty == tally.attempted
+            and tally.attempted > empty_window_floor):
         raise DefinitiveError(
             f"{source}: all {tally.attempted} attempted sub-units returned empty/404 over a large "
             f"window — likely a structural break, not a quiet period; existing data kept")
@@ -373,8 +388,10 @@ def finalize(tally: Tally, total_rows, last_obs, *, source, series_cursors=None,
                       error=(f"{tally.attempted} sub-unit(s) attempted, none failed; "
                              f"{tally.deferred} deferred by budget and taken next tick"
                              + _named(tally.deferred_ids)))
-    status = "ok" if tally.added > 0 else "no_change"
+    status = "ok" if (tally.added > 0 or tally.revised > 0) else "no_change"
     note = f"+{tally.added} new rows" if tally.added else "no new rows"
+    if tally.revised:
+        note += f"; {tally.revised} sub-unit(s) revised stored values without adding rows"
     if tally.no_time:
         # NON-DEMOTING by design (R359's precedent: a permanent, explained residue must not
         # redden every run). These sub-units' DSDs declare no SDMX TimeDimension — outside

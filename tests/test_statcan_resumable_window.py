@@ -69,10 +69,13 @@ class FakeBlob:
 
 
 class FakeMerge:
+    CHANGED_KEYS_CAP = 2_000_000             # the real module's constant: statcan sizes each report cap from it
+
     def __init__(self):
         self.merged = []
 
-    def merge_and_write(self, path, tbl, mode=None, dedup_keys=None, report_changed_keys=False):
+    def merge_and_write(self, path, tbl, mode=None, dedup_keys=None, report_changed_keys=False,
+                        changed_keys_cap=None):
         self.merged.append(os.path.basename(path).split(".")[0])
         return (30, "2026-09-15", {}) if report_changed_keys else (30, "2026-09-15")
 
