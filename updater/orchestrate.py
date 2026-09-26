@@ -574,6 +574,137 @@ _DESKTOP_OWED_BUDGET = ("budget-deferred flow-grain id; the store file is absent
                         "so a retry can never succeed there; desktop: core.derive_csv --only, read back, clear")
 
 
+_DESKTOP_OWED_MISSED = ("budget-deferred id of a csv_misses: desktop_owed source; its change signal has "
+                        "already advanced, so no later run names it again; desktop: core.derive_csv --only, "
+                        "read back, clear")
+_DESKTOP_OWED_FAILED = ("derive failed for an id of a csv_misses: desktop_owed source, whose change signal has "
+                        "already advanced")
+_DESKTOP_OWED_FENCE = ("csv fence tripped before this changed id was derived, on a csv_misses: desktop_owed "
+                       "source whose change signal has already advanced; desktop: core.derive_csv --only, "
+                       "read back, clear")
+
+
+_UNMAPPED_KEYS_MARK = " keys="
+
+
+def _note_unmapped_debt(store, source_id: str, keys, why: str) -> bool:
+    """The durable record for changed keys that could not be MAPPED to catalogue ids (R1148, R1149):
+    one full_rederive_owed row whose note carries EVERY key, MERGED with the keys an earlier crash left
+    (a second crash used to replace the first's keys; the note held only 20 of up to ~864 stems). The
+    keys are STORE keys (ilostat: indicator stems), not catalogue ids. True when recorded."""
+    import json as _json                                                # noqa: PLC0415
+    if store is None:
+        return False
+    try:
+        old = next((r for r in store.full_rederives_owed() if r["source_id"] == source_id), None)
+        have: set = set()
+        if old and _UNMAPPED_KEYS_MARK in str(old.get("note") or ""):
+            try:
+                have = set(_json.loads(str(old["note"]).split(_UNMAPPED_KEYS_MARK, 1)[1]))
+            except ValueError:
+                have = set()
+        allk = sorted(have | {str(k) for k in keys if k is not None})
+        store.note_full_rederive_owed(
+            source_id, note=(f"{why}; {len(allk)} changed STORE key(s) not mapped to catalogue ids "
+                             f"(re-derive them on the desktop){_UNMAPPED_KEYS_MARK}{_json.dumps(allk)}"))
+        return True
+    except Exception as e:                                           # noqa: BLE001 - loud, never fatal
+        print(f"[orchestrator] {source_id}: could not record the unmapped keys ({type(e).__name__}: "
+              f"{str(e)[:100]})", flush=True)
+        return False
+
+
+def _recorded(ok: bool) -> str:
+    """What a note says about the unmapped-keys record: only what was actually written (R1157 F5 - the
+    fence note said "recorded" when the write had failed and nothing was kept)."""
+    return ("recorded as unmapped keys" if ok
+            else "NOT recorded: the state write failed, so these keys have no home - re-run the pass")
+
+
+def _book_owed_items(store, source_id: str, items) -> bool:
+    """Book [(series_id, rows, reason)] in csv_desktop_owed in ONE statement batch - all or none
+    (R1144). False, loudly, when there is no store or the write fails; the caller then keeps its
+    fallback (the retry queue), so an id is never neither booked nor queued."""
+    if not items:
+        return True
+    if store is None:
+        print(f"[orchestrator] {source_id}: {len(items):,} id(s) could not be booked as desktop debts - "
+              f"no state store", flush=True)
+        return False
+    try:
+        store.note_csv_desktop_owed(source_id, items)
+    except Exception as e:                                   # noqa: BLE001 - loud, caller falls back
+        # ROLL BACK (R1148): executemany has no rollback of its own, so the rows before the failing
+        # one stayed pending and the fallback's next commit saved them - 4 ids booked AND queued.
+        try:
+            store.db.rollback()
+        except Exception:                                    # noqa: BLE001
+            pass
+        print(f"[orchestrator] {source_id}: booking {len(items):,} desktop debt(s) FAILED "
+              f"({type(e).__name__}: {str(e)[:100]}) - kept in the retry queue", flush=True)
+        return False
+    print(f"[orchestrator] {source_id}: {len(items):,} id(s) booked in csv_desktop_owed "
+          f"(e.g. {[i[0] for i in items[:3]]})", flush=True)
+    return True
+
+
+def _drain_residue_to_debts(store, source_id: str, out: dict, refailed: set) -> set:
+    """The csv retry drain, for a `csv_misses: desktop_owed` source (R1144): every id that did not
+    derive (refailed or budget-deferred) moves to csv_desktop_owed in ONE call - its rows can never
+    drain on r2 and health never reads the queue. Returns the ids that must STAY queued: none when
+    the booking succeeded, the refailed ones when it did not."""
+    dead = sorted(set(refailed) | set(str(s) for s in (out.get("deferred_ids") or [])))
+    if dead and _book_owed_items(store, source_id, [
+            (s, None, _DESKTOP_OWED_FAILED + " (csv retry queue residue)") for s in dead]):
+        return set()
+    return set(refailed)
+
+
+def _book_fence_trip(unit, res, store, fence_min: float):
+    """A csv-fence trip on a `csv_misses: desktop_owed` source: book each mapped changed id as a
+    desktop debt and return the note that replaces "re-derives next run" (false here: the change
+    signal has already advanced). None for any other source (the caller keeps its note).
+
+    PER ID, NOT full_rederive_owed (review R1137): health's remedy for a full re-derive is
+    tools/derive_csv_bulk.py, which for ilostat would PUT 'ilostat:ilostat:...' objects across
+    390,875,664 store rows and clear the debt without paying it (R882's class). A mapping or booking
+    failure is a FAILURE segment, never a quiet note.
+
+    RETURNS (note, ids_to_queue) - or None for another source. Every changed id ends in exactly one home
+    (R1149 F2/F3): booked; else, when the booking fails, QUEUED; else, when nothing could be mapped, the
+    durable unmapped-keys record (_note_unmapped_debt)."""
+    if _csv_misses(unit.source_id) != "desktop_owed":
+        return None
+    ck = getattr(res, "changed_keys", None)
+    changed = sorted(k for k in (ck if ck is not None else (res.series_cursors or {})) if k is not None)
+    try:
+        ids, _unm = _catalog_ids_for(unit.source_id, changed)
+    except Exception as e:                                   # noqa: BLE001 - the mapper itself failed
+        ok = _note_unmapped_debt(store, unit.source_id, changed,
+                                 f"csv fence tripped and the changed keys could not be mapped ({type(e).__name__})")
+        return (f"csv phase exceeded its {fence_min:.0f}-min fence and its {len(changed)} changed key(s) "
+                f"could NOT be mapped ({type(e).__name__}: {str(e)[:100]}) - {_recorded(ok)}"), []
+    if changed and not ids:
+        # A non-empty changed set that maps to NOTHING is a mapping failure (R1144 RV-C), not "nothing to
+        # book": it demotes, and the keys are recorded.
+        ok = _note_unmapped_debt(store, unit.source_id, changed, "csv fence tripped and 0 changed keys mapped")
+        return (f"csv phase exceeded its {fence_min:.0f}-min fence and its {len(changed)} changed key(s) "
+                f"mapped to 0 catalogue ids - {_recorded(ok)}"), []
+    if not _book_owed_items(store, unit.source_id, [(s, None, _DESKTOP_OWED_FENCE) for s in ids]):
+        return (f"csv phase exceeded its {fence_min:.0f}-min fence and its {len(ids)} changed id(s) "
+                f"could NOT be booked as desktop debts - queued for retry instead"), list(ids)
+    return (f"csv coverage note: csv phase exceeded its {fence_min:.0f}-min fence, {len(ids)} changed "
+            f"id(s) booked as desktop debts (csv_desktop_owed), none re-derive on their own"), []
+
+
+def _csv_misses(source_id: str) -> str:
+    """The registry's optional `csv_misses` for a source ('desktop_owed' or '' by default)."""
+    global _REG_ENTRIES
+    if _REG_ENTRIES is None:
+        _catalog_scope(source_id)                            # loads _REG_ENTRIES
+    return str(((_REG_ENTRIES or {}).get(source_id) or {}).get("csv_misses") or "")
+
+
 def _book_csv_desktop_owed(store, source_id: str, large: dict, reason: str = _DESKTOP_OWED_TOO_LARGE) -> None:
     """Persist flow-grain ids the cloud derive could not take (too large, or budget-deferred:
     on the r2 backend the merged parquet exists only on the runner that wrote it, so a later
@@ -804,9 +935,21 @@ def _derive_changed_csvs(unit, res, blob, store=None):
                             forms = [f"{unit.source_id}:{k}"] + [
                                 f"{unit.source_id}:" + ".".join(segs[:d])
                                 for d in range(len(segs) - 1, 0, -1)]
+                            # PART AND LEGACY IDS TOO (R1144): a sample that tests only exact and
+                            # dotted forms cannot see 'src:<k>#<part>' (1,470 ilostat ids) or
+                            # ilostat's legacy 'ilostat:<flow>:<c1>:<geo>', so a mapper that missed
+                            # them all read green under subset. PK ranges, never LIKE (R492).
+                            _legacy = []
+                            if unit.source_id == "ilostat" and str(k).endswith("_A"):
+                                _legacy = [r[0] for r in _c.execute(
+                                    "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ? "
+                                    "LIMIT 50", (f"ilostat:{str(k)[:-2]}:", f"ilostat:{str(k)[:-2]};"))]
                             if any(_c.execute(
                                     "SELECT 1 FROM series WHERE series_id=?",
-                                    (f,)).fetchone() for f in forms):
+                                    (f,)).fetchone() for f in forms) or _c.execute(
+                                    "SELECT 1 FROM series WHERE series_id >= ? AND series_id < ? LIMIT 1",
+                                    (f"{unit.source_id}:{k}#", f"{unit.source_id}:{k}$")).fetchone() \
+                                    or any(i.count(":") == 3 for i in _legacy):
                                 sample_hits += 1
             except Exception:                       # noqa: BLE001 — a note must never raise
                 n_ids = None
@@ -825,6 +968,13 @@ def _derive_changed_csvs(unit, res, blob, store=None):
                 cap_saturated=(not migrated) and len(unmapped) >= _CCAP)
             if not demote:
                 print(f"[orchestrator] {unit.source_id}: {note}", flush=True)
+            elif _csv_misses(unit.source_id) == "desktop_owed":
+                # A ZERO-MAPPED PASS MUST LEAVE A RECORD (R1157 Z1): its change signal has advanced, so the
+                # note alone vanished on the next quiet run - ilostat's passes of 09-01, 09-07 and 09-16
+                # carried exactly this note and nothing kept their changed keys.
+                ok = _note_unmapped_debt(store, unit.source_id, sorted(str(k) for k in unmapped),
+                                         "0 changed keys mapped to catalogue ids")
+                note = f"{note} - {_recorded(ok)}"
             return [], note, [], {}
         from . import derive  # lazy: lands with the derive work-package; missing => partial
         _flow = _csv_grain(unit.source_id) == "flow"
@@ -858,6 +1008,26 @@ def _derive_changed_csvs(unit, res, blob, store=None):
             _book_csv_desktop_owed(store, unit.source_id, {s: None for s in deferred_ids},
                                    reason=_DESKTOP_OWED_BUDGET)
             budget_owed, deferred_ids = list(deferred_ids), []
+        elif deferred_ids and _csv_misses(unit.source_id) == "desktop_owed":
+            # A SERIES-GRAIN source that opts in (registry `csv_misses: desktop_owed`, review R1131):
+            # its change signal is a fetcher sidecar that has already advanced, so a budget-deferred
+            # id would never be named again - and csv_retry_queue cannot drain on r2 (the file is not
+            # on a later runner) and health never reads it. Book it as a visible, payable debt.
+            _book_csv_desktop_owed(store, unit.source_id, {s: None for s in deferred_ids},
+                                   reason=_DESKTOP_OWED_MISSED)
+            budget_owed, deferred_ids = list(deferred_ids), []
+        # FAILED IDS OF A csv_misses SOURCE ARE DEBTS TOO (review R1137). Queued for retry, 180 part ids
+        # failed twice while their sidecar stamps had advanced: on the second run the unit read
+        # no_change and nothing named them, and the queue cannot drain on r2 nor does health read it.
+        # Booked with their OWN reason; they still demote this run (the note below names them).
+        failed_owed: set = set()
+        if failed and _csv_misses(unit.source_id) == "desktop_owed":
+            # ONE call (R1144): an error on the 5th write used to leave 4 booked AND queued, 32 queued
+            # only. Now all are booked, or none are and all stay queued.
+            _fr = out.get("failed_reasons") or {}
+            if _book_owed_items(store, unit.source_id, [
+                    (_s, None, f"{_DESKTOP_OWED_FAILED} ({str(_fr.get(_s, '?'))[:120]})") for _s in failed]):
+                failed_owed = set(failed)
         # A derived CSV is HOSTED but not yet DISCOVERABLE: nothing in the daily
         # pipeline pushed catalog rows to D1 (sync_state_d1 syncs freshness only,
         # by design), so a new series reached R2 and never appeared in /v1/catalog.
@@ -936,7 +1106,10 @@ def _derive_changed_csvs(unit, res, blob, store=None):
             note = (f"csv coverage note: {len(unmapped)} changed keys have no catalog "
                     f"row for {unit.source_id} ({why}) — served ids coherent")
             print(f"[orchestrator] {unit.source_id}: {note}", flush=True)
-        return failed, note, deferred_ids, dict(out.get("failed_reasons") or {})
+        # A csv_misses source's failures were booked as desktop debts above: NOT also queued (R1137).
+        # The note still names them, so the run demotes.
+        return ([s for s in failed if s not in failed_owed], note, deferred_ids,
+                dict(out.get("failed_reasons") or {}))
     except UnitTimeout:
         # THE FENCE'S OWN CONTROL SIGNAL — re-raise by name (R353). The csv fence at the
         # call site wraps this function in SIGALRM and carries a designed handler: abandon
@@ -963,6 +1136,41 @@ def _derive_changed_csvs(unit, res, blob, store=None):
         _crash = (f"csv_derive crashed: " + repr(e))[:200]
         _q = [s for s in ids
               if isinstance(s, str) and s.startswith(unit.source_id + ":")]
+        if _csv_misses(unit.source_id) == "desktop_owed":
+            # A csv_misses SOURCE'S CRASH IS A DEBT, NOT QUEUE ROWS (R1144): 182 mapped ids went to the
+            # queue, and on the next no_change run nothing named them. Its change signal has already
+            # advanced, so "the next run re-derives the same changed set" is false here too: a crash
+            # BEFORE mapping maps the changed set now. Booked in one call; the queue only if that fails.
+            _ids = list(_q)
+            if not _ids:
+                try:
+                    _ids = [s for s in _catalog_ids_for(unit.source_id, changed)[0]
+                            if isinstance(s, str) and s.startswith(unit.source_id + ":")]
+                except Exception as _me:                     # noqa: BLE001
+                    # NOTHING TO BOOK OR QUEUE BY ID (R1148 A3): the mapper failed twice. Leave the one
+                    # durable record health reads, carrying the changed keys, so a quiet next run
+                    # cannot erase it. Its remedy for a csv_misses source is the desktop, not the bulk
+                    # tool (health.py; R1137).
+                    _ok = _note_unmapped_debt(store, unit.source_id, changed,
+                                              f"csv_derive crashed and the changed keys could not be mapped "
+                                              f"({type(_me).__name__})")
+                    return [], (f"csv_derive crashed and its {len(changed)} changed key(s) could not be "
+                                f"mapped - {_recorded(_ok)}: " + repr(e))[:300], [], {}
+                if not _ids and changed:
+                    # THE RE-MAP RETURNED NOTHING (R1157 Z2): the same zero-mapped case as the normal path,
+                    # and the same record, or the keys are gone after the next quiet run.
+                    _ok = _note_unmapped_debt(store, unit.source_id, changed,
+                                              "csv_derive crashed and 0 changed keys mapped to catalogue ids")
+                    return [], (f"csv_derive crashed and its {len(changed)} changed key(s) mapped to 0 "
+                                f"catalogue ids - {_recorded(_ok)}: " + repr(e))[:300], [], {}
+            if _ids and _book_owed_items(store, unit.source_id,
+                                         [(s, None, f"{_DESKTOP_OWED_FAILED} ({_crash[:120]})") for s in _ids]):
+                return [], (f"csv_derive crashed ({len(_ids)} of {len(changed)} changed series booked "
+                            f"as desktop debts): " + repr(e))[:300], [], {}
+            if _ids and not _q:
+                # the booking failed: QUEUE the ids just mapped (R1148 A4 - the fallback returned the
+                # empty pre-crash list, so they were in neither home)
+                _q = _ids
         return _q, (f"csv_derive crashed ({len(_q)} of {len(changed)} changed series "
                     f"queued): " + repr(e))[:300], [], {s: _crash for s in _q}
 
@@ -1404,6 +1612,18 @@ def _catalog_ids_for(source_id: str, changed_keys):
             # those ranges). ADDITIVE, never a continue: replacing the flow claim
             # would starve the 20 exact-form flow ids. Indexed PK range per key,
             # colon-count filter as belt-and-braces.
+            # ilostat LEGACY OVERLAY (review R1131): 80 catalogued ids keep the older per-country form
+            # 'ilostat:<flow>:<classif1>:<geo>' and are served from the '<flow>_A' indicator file. The
+            # exact tier takes the stem first, so nothing claimed them and no note named them. ADDITIVE,
+            # like the census overlay below: a changed '<flow>_A' also claims its 3-colon ids.
+            if source_id == "ilostat" and k.endswith("_A"):
+                _f = k[:-2]
+                for (cid,) in con.execute(
+                        "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
+                        (f"ilostat:{_f}:", f"ilostat:{_f};")):
+                    if cid.count(":") == 3 and cid not in seen:
+                        seen.add(cid)
+                        exact.append(cid)
             if source_id == "census" and k.startswith("eits__"):
                 _f = k[6:]
                 for (cid,) in con.execute(
@@ -2091,6 +2311,12 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                                "source on its next CHANGE")
                     _csv_fence_tripped = True
                     print(f"[orchestrator] {unit.key}: {csv_err}", flush=True)
+                    _fence = _book_fence_trip(unit, res, store, _csv_fence)
+                    if _fence is not None:
+                        _fence_note, _fence_q = _fence
+                        csv_err = _fence_note
+                        csv_failed = list(_fence_q)      # booking failed: queued, never in no home (R1149)
+                        print(f"[orchestrator] {unit.key}: {csv_err}", flush=True)
                 else:
                     _csv_fence_tripped = False
                 # DRAIN THE RETRY QUEUE (2026-08-06). derive.py has promised since it
@@ -2143,7 +2369,9 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                     _large_q = {str(k): int(v) for k, v in
                                 (_out.get("deferred_large") or {}).items()}
                     _book_csv_desktop_owed(store, unit.source_id, _large_q)
-                    if _csv_grain(unit.source_id) == "flow":
+                    if _csv_misses(unit.source_id) == "desktop_owed":
+                        _refailed = _drain_residue_to_debts(store, unit.source_id, _out, _refailed)
+                    elif _csv_grain(unit.source_id) == "flow":
                         # FLOW-GRAIN IDS DO NOT BELONG IN THIS QUEUE AT ALL (condition 2): a
                         # legacy or refailed row can never succeed on a later runner. Move every
                         # one that did not derive to the desktop debt and drop it from the queue.

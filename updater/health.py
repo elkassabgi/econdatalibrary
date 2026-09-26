@@ -513,6 +513,21 @@ def assess(store=None) -> dict:
                            f"against R2's parquets, then `tools/derive_csv_bulk.py --source "
                            f"{sid} --clear-owed-only`; the bulk tool alone writes nothing at "
                            f"this grain")
+            elif e.get("csv_misses") == "desktop_owed":
+                # A csv_misses SOURCE (ilostat, R1148): the bulk tool cannot pay this debt - for ilostat
+                # it would PUT 'ilostat:ilostat:...' objects across ~391M store rows and clear the row
+                # without paying it (R1137). The note names the changed keys; derive their ids.
+                _note = str(owe.get("note") or "")
+                _n = _note.split(" keys=", 1)[0]
+                _remedy = (f"the note lists changed STORE keys (for ilostat: indicator stems), not catalogue "
+                           f"ids: re-derive them on the desktop with the source's own tool (ilostat: "
+                           f"`tools/derive_ilostat_indicators.py --only <stems>`; that tool builds only "
+                           f"'<src>:<stem>[#part]' ids, so for a changed '<flow>_A' stem also derive its "
+                           f"3-colon legacy ids: `python -m core.derive_csv --source {sid} --only <file of "
+                           f"those ids>`), read them back against "
+                           f"R2's parquets, then `tools/derive_csv_bulk.py --source {sid} --clear-owed-only "
+                           f"--after-desktop-derive`; a bulk campaign cannot pay it and is refused. "
+                           f"Note: {_n[:240]}; keys: {_note.split(' keys=', 1)[1][:300] if ' keys=' in _note else '?'}")
             else:
                 _remedy = (f"run tools/derive_csv_bulk.py --source {sid}; its zero-error "
                            f"campaign stamp clears this row")
@@ -526,9 +541,25 @@ def assess(store=None) -> dict:
         if _dl:
             # PREPENDED for the same reason as the owed note: it changes the verdict.
             _ex = ", ".join(str(r["series_id"]) for r in _dl[:3])
+            # THE STORED REASON, not a fixed one (review R1137): a debt is booked for several
+            # reasons now (too large, budget-deferred flow, a csv_misses source's missed or failed
+            # id, a csv-fence trip), and "too large for the cloud path" sent readers after the
+            # wrong cause. Each distinct reason's first clause is shown, with its count.
+            # GROUPED BY THE REASON'S FIXED PREFIX (R1144): a reason carries its own id's cause in
+            # brackets, so 30 debts made 30 distinct "reasons" and a 969-character line. The prefix
+            # (before ';' or ' (') groups them; one sample cause is shown per group.
+            _why: dict = {}
+            for r in _dl:
+                _full = str(r["reason"] or "reason not recorded")
+                _k = _full.split(";")[0].split(" (")[0].strip()
+                _c = _full[len(_full.split(" (")[0]):].strip() if " (" in _full.split(";")[0] else ""
+                _n, _sample = _why.get(_k, (0, _c))
+                _why[_k] = (_n + 1, _sample or _c)
+            _whys = "; ".join(f"{n} {k}" + (f" e.g. {s[:90]}" if s else "")
+                              for k, (n, s) in sorted(_why.items(), key=lambda x: -x[1][0])[:3])
             attention = [
-                f"{len(_dl)} CSV(s) OWED to the desktop derive (too large for the cloud "
-                f"path; e.g. {_ex}): derive them with `python -m core.derive_csv --bucket "
+                f"{len(_dl)} CSV(s) OWED to the desktop derive ({_whys}; e.g. {_ex}): "
+                f"derive them with `python -m core.derive_csv --bucket "
                 f"econ-data --source {sid} --only <ids>`, read each back against R2's "
                 f"parquet, then `tools/clear_csv_desktop_owed.py --source {sid} --apply`"
             ] + list(attention)
