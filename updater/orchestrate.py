@@ -525,7 +525,7 @@ def _classify_zero_mapped(source_id: str, scope: str, n_ids: "int | None",
             elif sample_hits == 0:
                 note = (f"csv coverage note: {n_unmapped} changed keys are outside "
                         f"{source_id}'s curated catalogue subset (catalog_scope: "
-                        f"subset; 0 of {sample_n} sampled keys catalogued at any "
+                        f"subset, 0 of {sample_n} sampled keys catalogued at any "
                         f"prefix) — nothing served changed, served ids coherent")
                 assert note.startswith("csv coverage note:")  # the caller's green gate
                 return note, False
@@ -2086,7 +2086,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                     csv_failed, csv_deferred, csv_reasons = [], [], {}
                     csv_err = ("csv coverage note: csv phase exceeded its "
                                f"{_csv_fence:.0f}-min fence and was abandoned for this "
-                               "run — cursors recorded; a chronically-partial source "
+                               "run — cursors recorded, a chronically-partial source "
                                "re-derives next run (vintage un-bumped), an ok-status "
                                "source on its next CHANGE")
                     _csv_fence_tripped = True
