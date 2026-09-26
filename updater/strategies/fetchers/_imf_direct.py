@@ -7,10 +7,14 @@ own state row, its own CSV-coherence mapping, and a failure in one that cannot s
 the other six. A single module looping all seven would have shared one out_dir and
 broken the catalog-id mapping outright.
 
-CHANGE SIGNAL: the dataflow's published version. IMF republishes whole datasets and
-ships dated vintages (BOP_2026_MAY_VINTAGE), so a date-tail probe would miss a
-back-revision that rewrites history without extending it. The version string moves
-whenever they republish, which is exactly the event we care about.
+CHANGE SIGNAL - CORRECTED 2026-09-23: there is none; every run pulls the whole flow. This said
+"the dataflow's published version moves whenever they republish". MEASURED FALSE: EER read
+6.0.0 on 2026-08-05 and on 2026-09-23 while 2026-M07 and M08 were appended in between. The
+version is still read (it keys the sliced-pull resume, and current_vintage() reports it), but
+nothing may SKIP a pull on it: run() never does (see there), and the strategy's
+detect_change() cannot either, because finalize() stamps new_vintage "date-tail", which never
+equals a flow version (tests/test_imf_direct_pulls_on_unchanged_version.py pins both). Whole
+flows are small enough for this: EER is 14.4 MB and ~10 s.
 
 WHY THESE ARE NEW SOURCE IDS: see jobs/ingest_imf_direct.py. IMF retired IFS and
 re-keyed these datasets, and our relay-era crosswalk is uneven (FDI 95.3%,
@@ -20,7 +24,6 @@ first-hand auto-updating data alongside them instead.
 """
 from __future__ import annotations
 
-import json
 import os
 import urllib.error
 import urllib.request
@@ -69,23 +72,23 @@ def run(flow: str, agency: str, source_id: str) -> Result:
     try:
         ver = _flow_version(flow)
     except Exception as e:                                   # noqa: BLE001
-        raise TransientError(f"{flow}: IMF dataflow catalogue unreachable: {e!r}") from e
+        # The version only keys the sliced-pull resume now (no change signal - see below), so an
+        # unreachable dataflow catalogue need not stop the pull: without a token the ingester
+        # starts the slices afresh instead of resuming (jobs/ingest_imf_direct.py `reusable`).
+        print(f"[imf_direct] {flow}: dataflow catalogue unreachable ({e!r}) - pulling without a "
+              f"resume token", flush=True)
+        ver = None
 
-    sidecar = os.path.join(out_dir, "_version.json")
-    seen = None
-    try:
-        if os.path.exists(sidecar):
-            seen = json.load(open(sidecar, encoding="utf-8")).get("version")
-    except Exception:                                        # noqa: BLE001
-        seen = None
-
-    if ver and seen == ver and before:
-        # Unchanged upstream. Report the rows we hold so `obs` describes the whole
-        # source rather than implying it emptied.
-        tally.empty_unit(flow)
-        return finalize(tally, before, _max_date(path), source=source_id,
-                        series_cursors={})
-
+    # NO "UNCHANGED VERSION -> SKIP THE PULL" GATE (removed 2026-09-23). IMF does NOT move a
+    # dataflow's version when it appends months: EER read 6.0.0 on 2026-08-05 and again on
+    # 2026-09-23, while 2026-M07 and M08 had been added (179,736 -> 179,956 obs, NUMBERS.md
+    # 2026-09-23). The gate compared against a _version.json written with a plain open() - on a
+    # CI runner that file is gone every run, so the 32 heavy-matrix and 15 daily IMF sources
+    # always pulled. On the DESKTOP it persists, and it FROZE imf_imts_direct (run_location:
+    # local): _version.json 1.0.0 was written 2026-08-18, the 2026-09-14 pass finished the unit
+    # in 13 s with no GET, and IMF had meanwhile published 2026-M05 (UPDATE_DATE 2026-08-31,
+    # version still 1.0.0) while we hold 2026-04-30 (ledger R1101).
+    # The version still keys the sliced-pull resume below; it is no longer a change signal.
     try:
         stage = os.path.join(out_dir, f"_staging_{source_id}.parquet")
         # Floor the pull at half of what is already published. IMF can return a
@@ -96,8 +99,12 @@ def run(flow: str, agency: str, source_id: str) -> Result:
         # survive legitimate revisions and withdrawals, tight enough that a
         # collapse becomes a loud structural failure instead of a quiet success.
         # resume_token = the flow version, so a sliced pull interrupted by the unit
-        # deadline resumes from the slices it already finished instead of restarting,
-        # and slices from a superseded release are discarded rather than mixed in.
+        # deadline resumes from the slices it already finished instead of restarting.
+        # It does NOT separate releases: the version stays put when months are appended
+        # (see above), so a resumed pull can mix slices fetched before and after an IMF
+        # append. That is harmless to the store - every slice is a full-history read and
+        # the merge dedups (series_key, obs_date) with the newer value winning - but an
+        # older slice may miss the newest month until the next pull.
         n = ing.pull(flow, agency, source_id, out_path=stage,
                      min_obs=before // 2, resume_token=ver)
     except urllib.error.HTTPError as e:
@@ -132,13 +139,6 @@ def run(flow: str, agency: str, source_id: str) -> Result:
             iso = d.isoformat()
             if k not in cursors or iso > cursors[k]:
                 cursors[k] = iso
-
-    try:
-        os.makedirs(out_dir, exist_ok=True)
-        with open(sidecar, "w", encoding="utf-8") as fh:
-            json.dump({"version": ver, "flow": flow, "agency": agency}, fh, indent=1)
-    except Exception:                                        # noqa: BLE001
-        pass
 
     _carry_dims_sidecar(stage, path)
 
