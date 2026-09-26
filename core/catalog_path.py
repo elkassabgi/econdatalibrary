@@ -333,6 +333,32 @@ def connect(*, write: bool = False, timeout: float = 60.0) -> sqlite3.Connection
     return sqlite3.connect(uri, uri=True, timeout=timeout)
 
 
+_SERIES_COLUMNS = {"series_id", "source_id", "license_id"}
+
+
+def iter_series(con: sqlite3.Connection, columns: tuple = ("series_id", "source_id"), chunk: int = 200_000):
+    """Every row of `series` exactly once, as tuples of `columns`, in SHORT primary-key chunks (plan step 6d,
+    R1243/R1249). The build keeps a rollback journal, so one statement over all ~14M rows holds a read lock for
+    its whole run and the writer waits behind it; a chunk's read ends (the SELECT is fully fetched) before the
+    next starts, so a writer gets in between. Rows whose series_id is NULL or '' - which `series_id > ?` from ''
+    can never reach - are read first, by the primary-key index."""
+    cols = tuple(columns)
+    if not cols or not set(cols) <= _SERIES_COLUMNS:
+        raise ValueError(f"iter_series reads only {sorted(_SERIES_COLUMNS)}, not {cols}")
+    sel = ", ".join(("series_id",) + cols)
+    for row in con.execute(f"SELECT {sel} FROM series WHERE series_id IS NULL OR series_id = ''").fetchall():
+        yield row[1:]
+    last = ""
+    while True:
+        rows = con.execute(f"SELECT {sel} FROM series WHERE series_id > ? ORDER BY series_id LIMIT ?",
+                           (last, chunk)).fetchall()
+        if not rows:
+            return
+        for row in rows:
+            yield row[1:]
+        last = rows[-1][0]
+
+
 def under(root: str | os.PathLike) -> str:
     """<root>/data/catalog.db: the catalogue of the checkout at `root`, for a tool that keeps its own ROOT (a
     test points it at a temporary folder). Open it with connect_path(), which after T0 accepts only the
@@ -392,6 +418,16 @@ def writer_lock():
     global _held
     if _held is not None:
         raise RuntimeError("writer_lock() is already held by this process")
+    if is_cut_over():
+        # ONLY THE LIVE CHECKOUT WRITES THE BUILD (review R1253). A catalogue writer reads THIS checkout's store to
+        # decide what to write, and outside the live checkout that store is scratch: a worktree run of
+        # tools/_cat_efw.py and of catalog_table_grain.py --apply wrote scratch titles and rows into the build.
+        # Checked HERE, before the lock file is even opened, because every writer - 57 files - takes this lock after
+        # T0, so one check covers the class instead of one tool at a time (R1249 guarded six), and a refused run
+        # never holds the machine-wide lock for a moment (R1253 finding 2). Lazy import: updater.blob imports this.
+        from updater import blob                                            # noqa: PLC0415
+        blob.refuse_unless_live_checkout("the catalogue writer lock (after T0 only the live checkout writes the "
+                                         "build)")
     os.makedirs(os.path.dirname(LOCK_PATH), exist_ok=True)
     fh = open(LOCK_PATH, "a+b")
     try:

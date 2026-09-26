@@ -19,7 +19,7 @@ SHORT = "ds1"                                      # a current key
 
 
 @pytest.fixture
-def world(tmp_path, monkeypatch):
+def world(tmp_path, monkeypatch, live_checkout):
     state = tmp_path / "state.db"
     st = StateStore(path=str(state))
     st.put_series_cursors("ons_uk", {SHORT: "2026-01-01", LONG: "2020-01-01"})

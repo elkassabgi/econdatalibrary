@@ -160,3 +160,23 @@ def _no_state_sync_from_a_test(request):
     if request.node.get_closest_marker("state_sync_refusal_expected"):
         return
     assert not started, f"this test started a state sync (refused, but the attempt is the bug): {started}"
+
+
+@pytest.fixture
+def live_checkout(tmp_path, monkeypatch):
+    """Make this process THE LIVE CHECKOUT for the test. After T0, catalog_path.writer_lock() (R1253) and the served
+    store refuse any other checkout - by comparing the code's own root, config.ROOT, config.DATA_ROOT, ECONDL_DATA
+    and ECONDL_CATALOG with core.catalog_path.LIVE_STORE_ROOT / BUILD_PATH - so a test that takes the lock after T0
+    requests this. It does not move BUILD_PATH or LOCK_PATH; the test's own fixture does that."""
+    from core import catalog_path
+    from updater import blob, config
+    root = tmp_path / "live_checkout"
+    (root / "data" / "clean_full").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(catalog_path, "LIVE_STORE_ROOT", str(root))
+    monkeypatch.setattr(blob, "_code_root", lambda: str(root))
+    monkeypatch.setattr(config, "ROOT", str(root))
+    monkeypatch.setattr(config, "DATA_ROOT", str(root / "data" / "clean_full"))
+    monkeypatch.delenv("ECONDL_DATA", raising=False)
+    monkeypatch.delenv("ECONDL_CATALOG", raising=False)
+    blob._live_checkout_ok.clear()
+    return root

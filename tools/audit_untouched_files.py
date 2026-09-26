@@ -49,8 +49,28 @@ def _prefix_for(source: str) -> str:
     return rel.lstrip("./") + "/"
 
 
+def scan_local(source: str):
+    """AFTER T0 (plan step 6d): [(relative path, write time as a UTC datetime)] for every parquet in the LIVE store
+    - the same shape scan() gives from R2, recursive like the R2 prefix. R2 is a frozen copy then."""
+    import datetime as dt                                              # noqa: PLC0415
+    base = config.source_dir(source)
+    out = []
+    for dirpath, _dirs, files in os.walk(base):
+        for f in files:
+            if f.endswith(".parquet"):
+                p = os.path.join(dirpath, f)
+                out.append((os.path.relpath(p, base).replace(os.sep, "/"),
+                            dt.datetime.fromtimestamp(os.path.getmtime(p), tz=dt.timezone.utc)))
+    return out
+
+
 def scan(source: str):
     """[(key, LastModified)] for every parquet under the source's prefix."""
+    from core import cutover                                           # noqa: PLC0415
+    if cutover.is_cut_over():
+        from updater import blob                                       # noqa: PLC0415
+        blob.refuse_unless_live_checkout("audit_untouched_files (after T0 it reads the live store)")
+        return scan_local(source)
     c = r2_util.client()
     out, tok = [], None
     prefix = f"clean_full/{source}/"
@@ -84,10 +104,16 @@ def main() -> int:
         print("name at least one source, or pass --live")
         return 2
 
+    from core import cutover                                      # noqa: PLC0415
+    if cutover.is_cut_over():                                     # refused ONCE, up front - never per source
+        from updater import blob                                  # noqa: PLC0415
+        blob.refuse_unless_live_checkout("audit_untouched_files (after T0 it reads the live store)")
     flagged = 0
     for s in srcs:
         try:
             files = scan(s)
+        except cutover.CutoverRefused:
+            raise                                                 # a refusal is not "cannot list" (R1228's class)
         except Exception as e:                                    # noqa: BLE001
             print(f"{s}: cannot list ({type(e).__name__})")
             continue

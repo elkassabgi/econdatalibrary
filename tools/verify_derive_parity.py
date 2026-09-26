@@ -34,8 +34,16 @@ from core import catalog_path, r2_util  # noqa: E402
 from tools.derive_csv_bulk import csv_key_prefix  # noqa: E402  THE writer's own layout
 
 
-def catalog_ids(db: str, source: str) -> set:
+def catalog_ids(db: str, source: str, pk_range: bool = False) -> set:
     con = catalog_path.connect_path(db, write=False)       # read-only (it opened read-write); after T0 the build only
+    if pk_range:
+        # AFTER T0 the catalogue is the LIVE build: PRIMARY-KEY RANGE, not `source_id = ?` (no index - a full scan
+        # holding the build's read lock while the writer waits, R1249). ";" is the byte after ":".
+        try:
+            return {r[0] for r in con.execute("SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
+                                              (source + ":", source + ";")) if r[0]}
+        finally:
+            con.close()
     try:
         rows = con.execute(
             "select series_id from series where source_id = ?", (source,)).fetchall()
@@ -74,6 +82,16 @@ def r2_keys(bucket: str, source: str, prefix: str) -> set:
     return out
 
 
+def selfhost_keys(source: str, prefix: str) -> set:
+    """AFTER T0 (plan step 6d): the derived CSVs live in the self-hosted store the origin serves - R2 is a frozen
+    copy. The same key layout as r2_keys (the writer's own csv_key_prefix), from the live checkout only."""
+    from updater import blob                                         # noqa: PLC0415
+    blob.refuse_unless_live_checkout("verify_derive_parity (after T0 it judges the live store)")
+    lp = csv_key_prefix(prefix, source)
+    return {urllib.parse.unquote(k[len(prefix) + 1:-len(".csv")])
+            for k in blob.SelfhostBlob().list_keys(lp) if k.endswith(".csv")}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", required=True)
@@ -83,15 +101,26 @@ def main() -> int:
     ap.add_argument("--show", type=int, default=10)
     args = ap.parse_args()
 
-    cat = catalog_ids(args.catalog, args.source)
+    from core import cutover                                         # noqa: PLC0415
+    selfhosted = cutover.is_cut_over()
+    if selfhosted:
+        # refuse outside the live checkout BEFORE the live build is read (R1249)
+        from updater import blob                                     # noqa: PLC0415
+        blob.refuse_unless_live_checkout("verify_derive_parity (after T0 it judges the live store)")
+    cat = catalog_ids(args.catalog, args.source, pk_range=selfhosted)
     print(f"catalog {args.source}: {len(cat):,} series  ({args.catalog})", flush=True)
     if not cat:
         print("catalog has no rows for this source — nothing to verify against")
         return 1
 
-    print(f"listing r2://{args.bucket}/{args.prefix}/{args.source}:* ...", flush=True)
-    got = r2_keys(args.bucket, args.source, args.prefix)
-    print(f"R2: {len(got):,} derived CSV(s)")
+    from core import cutover                                         # noqa: PLC0415
+    if cutover.is_cut_over():
+        got = selfhost_keys(args.source, args.prefix)
+        print(f"self-hosted store: {len(got):,} derived CSV(s)   (R2 is a frozen copy since T0)")
+    else:
+        print(f"listing r2://{args.bucket}/{args.prefix}/{args.source}:* ...", flush=True)
+        got = r2_keys(args.bucket, args.source, args.prefix)
+        print(f"R2: {len(got):,} derived CSV(s)")
 
     # The ids in R2 carry the "source:" prefix; catalog ids may or may not. Compare on
     # whichever form the catalog uses, rather than assuming (a wrong assumption here would

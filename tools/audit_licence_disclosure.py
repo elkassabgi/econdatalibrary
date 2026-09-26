@@ -160,6 +160,30 @@ def served_from_local():
         "GROUP BY se.source_id, se.license_id"))
 
 
+def served_from_build(chunk: int = 200_000):
+    """AFTER T0: served_from_local's rows, read from the LIVE build in primary-key chunks (R1243). One GROUP BY
+    over ~14M rows holds a read lock for its whole run, and the build keeps a rollback journal, so the updater's
+    writes wait behind it (R715/R721). Each chunk's read ends before the next starts, so a writer gets in between;
+    the aggregation is done here. Every row is read exactly once (series_id is the primary key)."""
+    import collections                                                   # noqa: PLC0415
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import catalog_path                                        # noqa: PLC0415
+    con = catalog_path.connect()
+    try:
+        lic = {r[0]: r[1:] for r in con.execute(
+            "SELECT license_id, commercial_ok, no_modify, reservable FROM license")}
+        counts: collections.Counter = collections.Counter(
+            catalog_path.iter_series(con, ("source_id", "license_id"), chunk=chunk))
+    finally:
+        con.close()
+    out = []
+    for (src, lid), n in counts.items():
+        vals = lic.get(lid, (None, None, None))
+        out.append((src, lid, n, *(-1 if v is None else v for v in vals)))   # COALESCE(l.x, -1), as the JOIN did
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--local", action="store_true",
@@ -170,10 +194,19 @@ def main():
     if not cls:
         print("no structured classifications found in DATABASE_LICENSES_VERBATIM.md")
         return 2
-    served = served_from_local() if a.local else served_from_d1()
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import cutover                                             # noqa: PLC0415
+    # AFTER T0 (plan step 6d) the origin serves copies of the catalogue BUILD made at each swap (D1 is frozen). The
+    # build is read here - in chunks, so the updater is not blocked - and between swaps it can be AHEAD of what is
+    # served; the label says so (R1243)
+    selfhosted = cutover.is_cut_over()
+    served = (served_from_build() if selfhosted else served_from_local() if a.local else served_from_d1())
     if served is None:
         return 2
-    where = "the LOCAL catalogue (NOT the serving store)" if a.local else "D1 (serving store)"
+    where = ("the catalogue BUILD (the origin serves the copy made at the last swap; a source changed since then "
+             "reaches users at the next swap)" if selfhosted
+             else "the LOCAL catalogue (NOT the serving store)" if a.local else "D1 (serving store)")
     print(f"audit classifications: {len(cls)}   |   read from: {where}")
     print()
 

@@ -42,7 +42,7 @@ INSERT INTO series_fts VALUES ('revsrc:A', 'old title', NULL);
 
 
 @pytest.fixture
-def t0(tmp_path, monkeypatch):
+def t0(tmp_path, monkeypatch, live_checkout):
     """A catalogue that is BOTH the checkout's and the build (so either resolution finds it), the flag SET,
     and every sqlite3.connect recorded as (mode, lock held)."""
     db = tmp_path / "catalog.db"
