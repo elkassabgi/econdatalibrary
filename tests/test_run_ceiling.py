@@ -264,14 +264,19 @@ def drain(tmp_path, monkeypatch):
         st.enqueue_csv_retry("zz", queued, "earlier failure")
         monkeypatch.setattr(orchestrate, "_csv_grain", lambda sid: grain)
 
+        given = object()                                         # the caller's blob
+
         def tripping(ids, blob, **kw):
+            # the caller's blob, never a fresh _resolve_blob() (review R1262 mutant X4)
+            assert blob is given, "the drain derived through a blob the caller did not pass"
             if partial is None:                                  # the control: no fence, everything PUT
                 return {"put": len(ids), "put_ids": list(ids), "failed": []}
             e = orchestrate.UnitTimeout("emulated fence (test)")
             e.derive_partial = partial
             raise e
         monkeypatch.setattr(derive, "derive_and_put", tripping)
-        orchestrate._drain_csv_retry_queue(unit, object(), st)
+        monkeypatch.setattr(orchestrate, "_resolve_blob", lambda: pytest.fail("the drain resolved its own blob"))
+        orchestrate._drain_csv_retry_queue(unit, given, st)
         synced_file = tmp_path / "_aqueduct" / "pending_catalog_sync.txt"
         synced = synced_file.read_text().split() if synced_file.exists() else []
         owed = {r["series_id"]: (r["rows"], r["reason"]) for r in st.csv_desktop_owed("zz")}
