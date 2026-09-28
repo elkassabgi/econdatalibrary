@@ -250,6 +250,27 @@ class UnitTimeout(Exception):
 # Reset whenever a unit's alarm is armed or disarmed.
 UNIT_TIMEOUT_FIRED = False
 
+# DEFERRED DELIVERY (review R1262). SIGALRM is process-wide: when the main thread blocks it, the kernel hands it to
+# another thread, CPython's C handler still trips the eval breaker, and the Python handler runs on the main thread at
+# its next check - INSIDE concurrent.futures.wait's lock-taking __enter__ as before; the process then hangs at exit
+# (measured in WSL). So derive does not mask the signal: while its main thread is inside one wait slice it sets
+# _DEFER_ALARM, the handler only RECORDS the trip in _ALARM_PENDING, and derive raises it the moment wait() returns
+# (within one 1 s slice). Both are reset whenever a unit's alarm is armed or disarmed.
+_DEFER_ALARM = False
+_ALARM_PENDING = None
+
+
+def _deliver_alarm(key: str, minutes: float) -> None:
+    """The SIGALRM handler's body: flag the timeout, then raise it - or, inside a deferred window, hold it."""
+    global UNIT_TIMEOUT_FIRED, _ALARM_PENDING
+    UNIT_TIMEOUT_FIRED = True                # before raising: see the flag's note above
+    exc = UnitTimeout(f"{key} exceeded its {minutes:.0f}-minute hard limit and was "
+                      f"interrupted; existing data untouched, re-queued for the next tick")
+    if _DEFER_ALARM:
+        _ALARM_PENDING = exc
+        return
+    raise exc
+
 
 def _unit_timeout_min() -> float:
     try:
@@ -374,8 +395,8 @@ class _unit_deadline:
         self.armed = False
 
     def __enter__(self):
-        global _TIMEOUT_WARNED, UNIT_TIMEOUT_FIRED
-        UNIT_TIMEOUT_FIRED = False
+        global _TIMEOUT_WARNED, UNIT_TIMEOUT_FIRED, _DEFER_ALARM, _ALARM_PENDING
+        UNIT_TIMEOUT_FIRED, _DEFER_ALARM, _ALARM_PENDING = False, False, None
         if self.minutes <= 0:
             return self
         try:
@@ -384,11 +405,7 @@ class _unit_deadline:
                 raise AttributeError("setitimer")
 
             def _fire(signum, frame):
-                global UNIT_TIMEOUT_FIRED
-                UNIT_TIMEOUT_FIRED = True        # before raising: see the flag's note above
-                raise UnitTimeout(
-                    f"{self.key} exceeded its {self.minutes:.0f}-minute hard limit and was "
-                    f"interrupted; existing data untouched, re-queued for the next tick")
+                _deliver_alarm(self.key, self.minutes)
 
             self._prev = signal.signal(signal.SIGALRM, _fire)
             signal.setitimer(signal.ITIMER_REAL, self.minutes * 60.0)
@@ -408,7 +425,7 @@ class _unit_deadline:
         return self
 
     def __exit__(self, *exc):
-        global UNIT_TIMEOUT_FIRED
+        global UNIT_TIMEOUT_FIRED, _DEFER_ALARM, _ALARM_PENDING
         if self.armed:
             try:
                 import signal
@@ -419,7 +436,7 @@ class _unit_deadline:
         # Cleared after the timer is disarmed and on every exit path, so the flag can never
         # outlive this unit (DeepSeek advisory review F5, 2026-09-15). An alarm delivered inside
         # the disarm window itself is swallowed by the except above and is not attributed.
-        UNIT_TIMEOUT_FIRED = False
+        UNIT_TIMEOUT_FIRED, _DEFER_ALARM, _ALARM_PENDING = False, False, None
         return False
 
 

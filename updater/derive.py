@@ -70,20 +70,28 @@ def _raise_if_fence_in_disguise(fence, e: BaseException) -> None:
 
 
 def _wait_slice(futs, timeout: float):
-    """concurrent.futures.wait for at most `timeout` s, with SIGALRM BLOCKED while inside it (review R1254 item 2).
+    """concurrent.futures.wait for at most `timeout` s, with the orchestrator's alarm DEFERRED while inside it.
     wait() takes every future's condition lock in _AcquireFutures.__enter__; an alarm raised there leaves some held,
-    the workers then block in set_result, and interpreter exit joins them - the process hung for ever (measured,
-    forced landing). Blocked, a pending alarm is delivered on unmask, between bytecodes outside wait(), within one
-    slice. Main thread on POSIX only - elsewhere there is no SIGALRM (the fence is POSIX-only too)."""
-    import signal                                                         # noqa: PLC0415
-    mask = getattr(signal, "pthread_sigmask", None)
-    if mask is None or not hasattr(signal, "SIGALRM") or threading.current_thread() is not threading.main_thread():
-        return concurrent.futures.wait(futs, timeout=timeout, return_when=concurrent.futures.FIRST_COMPLETED)
-    old = mask(signal.SIG_BLOCK, {signal.SIGALRM})
+    the workers then block in set_result, and interpreter exit joins them - the process hung for ever (review R1254
+    item 2, measured). Masking SIGALRM on the main thread did not help (review R1262): the kernel gives a
+    process-wide signal to another thread and CPython still runs the handler on the main thread, inside wait().
+    So the handler itself is told to wait: orchestrate._DEFER_ALARM makes it record the trip in _ALARM_PENDING
+    instead of raising, and this function raises it as soon as wait() has returned - within one slice."""
     try:
+        from . import orchestrate as _o                                   # noqa: PLC0415
+    except Exception:                                                     # noqa: BLE001 - standalone use: no fence
+        _o = None
+    if _o is None or threading.current_thread() is not threading.main_thread():
         return concurrent.futures.wait(futs, timeout=timeout, return_when=concurrent.futures.FIRST_COMPLETED)
+    _o._DEFER_ALARM = True
+    try:
+        result = concurrent.futures.wait(futs, timeout=timeout, return_when=concurrent.futures.FIRST_COMPLETED)
     finally:
-        mask(signal.SIG_SETMASK, old)
+        _o._DEFER_ALARM = False
+    pending, _o._ALARM_PENDING = _o._ALARM_PENDING, None
+    if pending is not None:
+        raise pending                                                     # the fence, just outside wait()
+    return result
 
 
 def _put_with_retry(blob, key: str, body: bytes, plain: bool = False) -> bool:

@@ -41,11 +41,15 @@ class _Blob:
 
 @pytest.fixture
 def alarm(monkeypatch):
-    """alarm(seconds): after `seconds`, raise orchestrate.UnitTimeout in the main thread."""
+    """alarm(seconds): after `seconds`, run the orchestrator's REAL handler body (_deliver_alarm) in the main thread -
+    so inside a wait slice it is deferred exactly as SIGALRM's would be (review R1262)."""
     prev = signal.getsignal(signal.SIGINT)
+    monkeypatch.setattr(orchestrate, "_DEFER_ALARM", False)
+    monkeypatch.setattr(orchestrate, "_ALARM_PENDING", None)
+    monkeypatch.setattr(orchestrate, "UNIT_TIMEOUT_FIRED", False)
 
     def _fire(signum, frame):
-        raise orchestrate.UnitTimeout("emulated SIGALRM (test)")
+        orchestrate._deliver_alarm("emulated SIGALRM (test)", 0)
     signal.signal(signal.SIGINT, _fire)
     timers = []
 
@@ -173,23 +177,99 @@ def test_the_heartbeat_stops_after_a_normal_run_too(monkeypatch):
 
 # ---- review R1254: the alarm inside wait(), and the alarm in DuckDB's clothes ----------------------------------------
 
-@pytest.mark.skipif(not hasattr(signal, "pthread_sigmask") or not hasattr(signal, "SIGALRM"),
-                    reason="POSIX only: no SIGALRM, no fence (CI runs it)")
-def test_every_wait_slice_runs_with_sigalrm_blocked(monkeypatch):
-    """R1254 item 2: an alarm raised inside wait()'s lock-taking __enter__ left condition locks held and the process
-    hung for ever at exit. Each slice must run with SIGALRM blocked, and the mask must be restored after."""
+def test_an_alarm_inside_a_wait_slice_is_raised_just_after_it(monkeypatch):
+    """R1254 item 2 / R1262: an alarm raised inside wait()'s lock-taking __enter__ left condition locks held and the
+    process hung at exit. The handler body lands INSIDE wait here (deterministically): it must NOT raise there, and
+    derive must raise the trip as soon as that wait returns - with its partial, and the protocol reset after."""
     import concurrent.futures as cf
     monkeypatch.setenv("AQUEDUCT_DERIVE_WORKERS", "4")
-    real, seen = cf.wait, []
+    monkeypatch.setattr(orchestrate, "_DEFER_ALARM", False)
+    monkeypatch.setattr(orchestrate, "_ALARM_PENDING", None)
+    monkeypatch.setattr(orchestrate, "UNIT_TIMEOUT_FIRED", False)
+    real, calls, raised_inside = cf.wait, [0], []
 
-    def spy(*a, **k):
-        if threading.current_thread() is threading.main_thread():
-            seen.append(signal.SIGALRM in signal.pthread_sigmask(signal.SIG_BLOCK, []))
+    def landing(*a, **k):
+        calls[0] += 1
+        if calls[0] == 3:
+            try:
+                orchestrate._deliver_alarm("landed inside wait (test)", 0)
+            except orchestrate.UnitTimeout:
+                raised_inside.append(True)
+                raise
         return real(*a, **k)
-    monkeypatch.setattr(cf, "wait", spy)
-    out = derive.derive_and_put([f"zz:w{i}" for i in range(20)], _Blob(), budget_min=0)
-    assert out["put"] == 20 and seen and all(seen), seen
-    assert signal.SIGALRM not in signal.pthread_sigmask(signal.SIG_BLOCK, []), "the mask was not restored"
+    monkeypatch.setattr(cf, "wait", landing)
+    with pytest.raises(orchestrate.UnitTimeout, match="landed inside wait") as trip:
+        derive.derive_and_put([f"zz:w{i}" for i in range(40)], _Blob(), budget_min=0)
+    assert not raised_inside, "the alarm raised INSIDE wait() - the lock-taking window"
+    assert calls[0] == 3, f"derive went on waiting after the trip ({calls[0]} waits)"
+    assert trip.value.derive_partial is not None
+    assert orchestrate._DEFER_ALARM is False and orchestrate._ALARM_PENDING is None
+
+
+def test_negative_control_outside_a_wait_slice_the_alarm_raises_at_once(monkeypatch):
+    monkeypatch.setattr(orchestrate, "_DEFER_ALARM", False)
+    monkeypatch.setattr(orchestrate, "_ALARM_PENDING", None)
+    monkeypatch.setattr(orchestrate, "UNIT_TIMEOUT_FIRED", False)
+    with pytest.raises(orchestrate.UnitTimeout):
+        orchestrate._deliver_alarm("outside (test)", 0)
+    assert orchestrate.UNIT_TIMEOUT_FIRED is True and orchestrate._ALARM_PENDING is None
+
+
+def test_the_unit_deadline_resets_the_deferral_state(monkeypatch):
+    """A trip held for one unit must never surface in the next one: reset on ENTRY and on EXIT."""
+    monkeypatch.setattr(orchestrate, "_DEFER_ALARM", True)
+    monkeypatch.setattr(orchestrate, "_ALARM_PENDING", orchestrate.UnitTimeout("stale (test)"))
+    with orchestrate._unit_deadline("next unit (test)", 0):
+        assert orchestrate._DEFER_ALARM is False and orchestrate._ALARM_PENDING is None      # entry
+        orchestrate._DEFER_ALARM = True                                   # held INSIDE this unit ...
+        orchestrate._ALARM_PENDING = orchestrate.UnitTimeout("held (test)")
+    assert orchestrate._DEFER_ALARM is False and orchestrate._ALARM_PENDING is None          # ... gone at exit
+
+
+_REAL_SIGNAL_PROBE = r'''
+import concurrent.futures._base as B, os, signal, sys, time
+sys.path.insert(0, sys.argv[1])
+from updater import derive, orchestrate as O
+derive._series_csv_bytes = lambda sid: b"series_id,obs_date,value\n"
+CALLS = [0]
+_orig = B._AcquireFutures.__enter__
+def _enter(self):
+    CALLS[0] += 1
+    futs = list(self.futures)
+    half = len(futs) // 2
+    for f in futs[:half]:
+        f._condition.acquire()
+    if CALLS[0] == 3 and len(futs) >= 2:
+        signal.setitimer(signal.ITIMER_REAL, 0.02)          # a REAL timer alarm, while half the locks are held
+        end = time.monotonic() + 0.3
+        while time.monotonic() < end:
+            pass
+    for f in futs[half:]:
+        f._condition.acquire()
+B._AcquireFutures.__enter__ = _enter
+class Blob:
+    def put_atomic(self, key, body, **kw):
+        time.sleep(0.05)
+os.environ["AQUEDUCT_DERIVE_WORKERS"] = "4"
+with O._unit_deadline("probe", 60):                         # installs the REAL handler
+    try:
+        derive.derive_and_put([f"zz:q{i}" for i in range(60)], Blob(), budget_min=0)
+        print("RETURNED")
+    except O.UnitTimeout:
+        print("TRIPPED")
+'''
+
+
+@pytest.mark.skipif(not hasattr(signal, "setitimer"), reason="POSIX only: no setitimer, no fence (CI runs it)")
+@pytest.mark.parametrize("run", range(5))
+def test_a_real_alarm_inside_wait_ends_the_process(tmp_path, run):
+    """R1262: the real handler, a real setitimer alarm landing inside wait()'s __enter__ with half the locks held
+    and a 300 ms window; five runs, each in its own process, each must END (the unmasked design hung at exit)."""
+    import subprocess
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    r = subprocess.run([sys.executable, "-B", "-c", _REAL_SIGNAL_PROBE, root], capture_output=True, text=True,
+                       timeout=60, stdin=subprocess.DEVNULL)
+    assert "TRIPPED" in r.stdout, (r.returncode, r.stdout[-500:], r.stderr[-1500:])
 
 
 def test_a_wait_slice_off_posix_or_off_the_main_thread_is_a_plain_wait(monkeypatch):
