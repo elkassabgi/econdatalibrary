@@ -275,9 +275,23 @@ TODAY = date.today().isoformat()
 #
 # At `year + 2` every one of those 636,021 series lost its real end date, and whole pages lost
 # their coverage row entirely (gapminder rendered none at all, despite holding 86,684 series
-# spanning year 730 to 2100). 2126 sits in the empty gap: a century of headroom for genuine
+# spanning year 730 to 2100). 2126 sat in what was then an empty gap: headroom for genuine
 # projections, still far below the lowest sentinel.
-MAX_SANE_YEAR = 2126
+#
+# RAISED 2126 -> 2200 on 2026-09-22, because that gap is no longer empty and the guard had
+# begun making the opposite error: dropping a TRUE date. bfs publishes `px-x-0102020300_102`,
+# a Swiss period life table whose own title reads "Periodensterbetafeln 2023 fuer die Schweiz
+# (1876-2150)" - 275 rows spanning 1876-12-31 to 2150-12-31, none outside 1000-2200. At 2126
+# sane_date() returned None for it and the page lost a real coverage bound.
+#
+# MEASURED over the whole catalogue before moving the bound, so this admits exactly what was
+# intended and nothing else:
+#     end_date in (2126-12-31, 2200-01-01] : 1 row  - that bfs projection
+#     end_date after 2200-01-01            : 2 rows - the eurostat 9999-12-31 sentinels
+# So 2200 admits the true value and still rejects every sentinel. It also ENDS A DISAGREEMENT:
+# tools/audit_impossible_dates.py and tools/audit_catalogue_impossible_dates.py already bound
+# at "before 1500, after 2200", so the site and the audits now judge by the same rule.
+MAX_SANE_YEAR = 2200
 
 
 # ---------------------------------------------------------------------------- #
