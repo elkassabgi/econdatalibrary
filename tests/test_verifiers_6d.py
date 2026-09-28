@@ -329,3 +329,34 @@ def test_the_repull_tools_print_an_audit_command_that_runs_after_t0():
     rep = open(os.path.join(ROOT, "tools", "repull_file.py"), encoding="utf-8").read()
     assert "{'--local' if cutover.is_cut_over() else '--r2'} --source cso" in cso
     assert "audit_impossible_dates.py --local --source {a.source} from the live checkout" in rep
+
+
+_ASP_DRIVER = (
+    "import os, runpy, sys\n"
+    "root, flag, argv = sys.argv[1], sys.argv[2], sys.argv[3:]\n"
+    "sys.path.insert(0, root)\n"
+    "from core import catalog_path, cutover\n"
+    "assert 'updater.config' not in sys.modules, 'the driver froze config itself'\n"
+    "cutover.FLAG_PATH = flag\n"
+    "catalog_path.LIVE_STORE_ROOT = root\n"
+    "catalog_path.BUILD_PATH = os.path.join(root, 'data', 'catalog.db')\n"
+    "sys.argv = ['audit_store_present.py', *argv]\n"
+    "runpy.run_path(os.path.join(root, 'tools', 'audit_store_present.py'), run_name='__main__')\n")
+
+
+@pytest.mark.parametrize("t0,backend", [(False, "local"), (True, "selfhost")])
+def test_audit_store_present_resolves_the_backend_it_was_given(tmp_path, t0, backend):
+    """R1253 #3 / review round 5 N7: --backend must reach updater.config, which freezes BACKEND from the environment
+    at its FIRST import - so the tool sets it before anything (the post-T0 guard included) imports updater. Only a
+    fresh process is an honest test: in this one updater.config was imported long ago."""
+    import subprocess
+    flag = tmp_path / "CUTOVER"
+    if t0:
+        flag.write_text("")
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("ECONDL_ROOT", "ECONDL_DATA", "ECONDL_CATALOG", "AQUEDUCT_DATA_ROOT")}
+    env.update(AQUEDUCT_BACKEND="r2", AQUEDUCT_STATE_DIR=str(tmp_path / "state"), PYTHONDONTWRITEBYTECODE="1")
+    r = subprocess.run([sys.executable, "-B", "-c", _ASP_DRIVER, ROOT, str(flag), "--backend", backend,
+                        "--source", "zz_no_such_source"], capture_output=True, text=True, env=env, timeout=120)
+    assert r.returncode == 0, r.stderr[-2000:]
+    assert f"backend resolved: {backend}" in r.stdout, r.stdout[-2000:]

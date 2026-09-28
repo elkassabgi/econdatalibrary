@@ -82,26 +82,10 @@ def test_after_t0_a_catalogue_row_with_no_object_names_the_swap_not_d1(live, mon
 
 
 def _trace_series_reads(monkeypatch):
-    """Every SQL statement the tool sends through the catalogue resolver (both roads)."""
-    import re as _re
-    sql = []
-    for name in ("connect", "connect_path"):
-        real = getattr(catalog_path, name)
-
-        def traced(*a, _real=real, **k):
-            con = _real(*a, **k)
-            con.set_trace_callback(sql.append)
-            return con
-        monkeypatch.setattr(catalog_path, name, traced)
-
-    def whole_table_reads():
-        reads = [q for q in sql if "FROM series" in q or "from series" in q]
-        def unbounded(q):
-            u = q.upper()
-            return not ("LIMIT" in u or "SERIES_ID >=" in u or "IS NULL" in u)
-        return reads, [q for q in reads if "GROUP BY" in q.upper() or _re.search(r"source_id\s*=\s*", q)
-                       or unbounded(q)]   # R1253: every read of the live build is BOUNDED
-    return whole_table_reads
+    """Every SQL statement the tool sends through the catalogue resolver, judged by the ONE shared predicate
+    (review round 5: four looser copies passed a 10**12 chunk and a whole-table `series_id >= ''`)."""
+    import _bounded_reads                                  # noqa: PLC0415
+    return _bounded_reads.trace_series_reads(monkeypatch)
 
 
 def test_after_t0_the_live_build_is_never_read_whole(live, monkeypatch, capsys):
