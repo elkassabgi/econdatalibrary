@@ -68,6 +68,49 @@ jobs:
       - name: pytest
         run: python -m pytest tests/ -q
 
+      # THE API CONTRACT SUITE, WHICH NOTHING RAN — the same artefact this file's header
+      # describes, one directory over. `pytest tests/` does not collect api/, so the 18 tests
+      # in api/test_conformance.py contributed zero signal: they pin the redistribution gate,
+      # the ?lang= fallback, the CSV identity column and local-vs-HTTP bundle equality, and
+      # none of it was checked on any commit. Worse than unrun, it was UNRUNNABLE — the
+      # devserver fell back to the bundled data/catalog.db, which exists only in the main
+      # checkout at 11.9 GB, so the suite scored 16 failures of 18 in a worktree and two of
+      # its tests tried to shutil.copy that 11.9 GB file to insert one row.
+      #
+      # It is runnable now because api/conformance_fixture.py builds a small store (5 series,
+      # 2 parquet files) whose every value is copied from the real catalogue rather than
+      # invented — a fixture with made-up values tests a system that does not exist. The
+      # fixture self-checks that it still exercises what the tests claim, because a fixture
+      # is the one input that can satisfy an assertion by construction.
+      #
+      # A SEPARATE STEP, not a widened `pytest tests/ api/`: this boots a real HTTP server on
+      # a free port for every module, so when it breaks it should be attributable on sight
+      # rather than mixed into the 2,667-test summary line.
+      - name: pytest (api contract)
+        run: python -m pytest api/test_conformance.py -q
+
+      # THE BILLING GUARD'S OWN FAULT-INJECTION PROOF, WHICH ALSO RAN NOWHERE. Sweeping for
+      # the api/ defect above turned up every test-shaped file in the repo: 224 under tests/
+      # and three under api/worker/test/ are collected, and exactly two were not. One
+      # (scripts/edgar_pointers_test.py) is a dry-run against the local store and does not
+      # belong on a runner. The other is this, and it is the one guarding the bill.
+      #
+      # It is NOT a pytest file — its cases are `case_*`, so `pytest` collects zero tests from
+      # it and reports success, which is how a file can sit in the repo looking covered. It is
+      # a script with a main() returning an exit code, so it gets a step.
+      #
+      # Every defect it exercises returns HTTP 200 with no error key: a truncated page that
+      # undercounted by 115,000x, a short day list, a stale daily rate, a one-day rate that
+      # would have projected $2,459 the morning after an incident where the median projects
+      # the truth. Its own header says reading the code twice failed to find them. Free to
+      # run: stdlib imports only, no network, no credentials, no D1 reads.
+      #
+      # Verified to FAIL before being wired up, because ALL PASS on first run is exactly when
+      # a test is least trustworthy: re-opening the truncation guard, replacing the median
+      # with yesterday's value, and dropping the round-UP each produce a non-zero exit.
+      - name: billing guard fail-closed proof
+        run: python tools/test_billing_guard_failclosed.py
+
       # THE WORKER'S OWN TESTS, WHICH NOTHING RAN. api/worker/test/csvStream.test.ts holds 12
       # node:test cases covering the streamed-CSV path — the code that decides whether a large
       # object is delivered or answers "Memory limit exceeded before EOF". package.json had no
