@@ -277,13 +277,55 @@ def dim_codes(ds_name: str, version, dim_table: str) -> list[str]:
     return [x["Code"] for x in vals if x.get("Code") is not None]
 
 
+CAPPED_FILE = "_capped.tsv"   # one "<cache key>\t<cap>\t<estimate>\t." line per size-capped probe
+
+
+def _spill_dir(ds_name: str) -> str:
+    return os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                                        "data", "_unctad_spill", source_id_for(ds_name)))
+
+
+def _load_capped(spill_dir: str, meta: dict) -> dict:
+    """{cache key: (cap, estimate)} from an earlier pass under the SAME release; {} otherwise. A torn
+    last line (a kill mid-append) is skipped: that probe is simply asked again."""
+    tp, cp = os.path.join(spill_dir, "_token.txt"), os.path.join(spill_dir, CAPPED_FILE)
+    try:
+        if open(tp, encoding="utf-8").read().strip() != f"{meta.get('version')}":
+            return {}
+        lines = open(cp, encoding="utf-8").read().splitlines()
+    except OSError:
+        return {}
+    out = {}
+    for ln in lines:
+        p = ln.split("\t")
+        # the end marker: a line torn inside the estimate digits would still parse, with a wrong
+        # estimate that changes the chunking and orphans every spill (review R1152)
+        if len(p) == 4 and p[1].isdigit() and p[2].isdigit() and p[3] == ".":
+            out[p[0]] = (int(p[1]), int(p[2]))
+    return out
+
+
+def _record_cap(spill_dir: str, capped: dict, ck: str, e: "FactsSizeCap") -> None:
+    if ck in capped:
+        return
+    capped[ck] = (e.cap, e.estimated)
+    with open(os.path.join(spill_dir, CAPPED_FILE), "a", encoding="utf-8") as fh:
+        fh.write(f"{ck}\t{e.cap}\t{e.estimated}\t.\n")
+
+
 def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
                       tdim: dict, progress=None) -> list[str]:
     """Full-dataset pull that respects the size cap: try one POST; on FactsSizeCap,
     partition the TIME dimension's codes into groups sized from the error's own
     numbers (cap/estimated, 15% headroom) and pull per group; a group that still
     caps is split in half recursively (down to single codes)."""
+    import hashlib
+    spill_dir = _spill_dir(ds_name)
+    capped = _load_capped(spill_dir, meta)
+    top = hashlib.sha1(repr((select, "ALL")).encode()).hexdigest()[:16]
     try:
+        if top in capped:
+            raise FactsSizeCap(*capped[top])                 # probed on an earlier pass
         return [facts_csv(ds_name, select, cid, key)]
     except FactsSizeCap as e:
         codes = dim_codes(ds_name, meta.get("version"), tdim["name"])
@@ -329,11 +371,7 @@ def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
         # deterministic split walk and reloads finished chunks instead of refetching.
         # Version-gated exactly like the IMF sliced resume (tests/test_imf_sliced_resume):
         # a new UNCTAD release wipes the spills — two vintages must never be assembled.
-        import hashlib
         import shutil as _sh
-        spill_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
-                                 "data", "_unctad_spill", source_id_for(ds_name))
-        spill_dir = os.path.abspath(spill_dir)
         token = f"{meta.get('version')}"
         token_path = os.path.join(spill_dir, "_token.txt")
         if os.path.isdir(spill_dir):
@@ -341,9 +379,18 @@ def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
                    if os.path.exists(token_path) else None)
             if old != token:
                 _sh.rmtree(spill_dir, ignore_errors=True)
+                capped = {}                                  # another vintage's probes, too
         os.makedirs(spill_dir, exist_ok=True)
         with open(token_path, "w", encoding="utf-8") as fh:
             fh.write(token)
+        # THE SIZE-CAP ANSWERS ARE CACHED WITH THE SPILLS (review R1151). Only leaves spilled, so a
+        # resume replayed the walk by re-POSTing every capped probe - and a binary split has about as
+        # many capped probes as leaves (US.TradeServCatByPartner: ~208 leaves a year), so a second pass
+        # spent most of its time re-learning what the first already knew (a sibling spent 172 min on
+        # the desktop and its spill timestamps show 1 new chunk, R1151). Same version gate as the spills:
+        # a cap is a property of the query and the release. A stale cap only replays the split pass 1
+        # made - never wrong rows. Only a SIZE CAP is cached: an unreachable request is asked again.
+        _record_cap(spill_dir, capped, top, e)
 
         reused = 0
         out: list[str] = []
@@ -369,6 +416,8 @@ def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
                 except OSError:
                     pass  # unreadable spill -> refetch it
             try:
+                if ck in capped:
+                    raise FactsSizeCap(*capped[ck])          # probed on an earlier pass
                 text = facts_csv(ds_name, select, cid, key,
                                  flt=flt_for_item(tgroup, restr))
                 with open(sp + ".tmp", "w", encoding="utf-8") as fh:
@@ -376,6 +425,8 @@ def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
                 os.replace(sp + ".tmp", sp)
                 out.append(text)
             except (FactsSizeCap, FactsUnreachable) as split_err:
+                if isinstance(split_err, FactsSizeCap):
+                    _record_cap(spill_dir, capped, ck, split_err)
                 atomic = (len(tgroup) == 1
                           and all(len(g) == 1 for g in restr)
                           and len(restr) >= len(kdims))
