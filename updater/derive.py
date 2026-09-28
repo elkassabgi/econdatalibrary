@@ -385,7 +385,7 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
 
             def _drain(until_below: int):
                 while len(futs) > until_below:
-                    done, _ = _wait_slice(futs, 1.0)       # SIGALRM masked inside wait (R1254 item 2)
+                    done, _ = _wait_slice(futs, 1.0)       # alarm deferred inside wait (R1262)
                     for f in done:
                         _record(*f.result())
                         futs.pop(f, None)
