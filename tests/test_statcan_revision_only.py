@@ -319,6 +319,45 @@ def test_a_transient_cube_after_the_revision_does_not_clear_it(monkeypatch, tmp_
     assert booked == [f"statcan:V{V_REV}"], booked
 
 
+def _refuse_merge_for(monkeypatch, pid):
+    """The merge guard (never-shrink / column-drop) refuses this cube: statcan books it structural."""
+    real = sc.merge.merge_and_write
+
+    def merge(path, tbl, **kw):
+        if os.path.basename(path).startswith(pid):
+            raise sc.DefinitiveError(f"refusing shrink at {path}")
+        return real(path, tbl, **kw)
+    monkeypatch.setattr(sc.merge, "merge_and_write", merge)
+
+
+def test_a_refused_cube_does_not_strand_the_cubes_that_merged(monkeypatch, tmp_path):
+    """R1252 item 5 (_giant's rule): finalize() raises on ANY structural sub-unit, the orchestrator then runs no
+    csv phase - but the merged cube is already in the window's `done`, so the next pass skips it and its revision
+    would never be served. The pass must return partial WITH the merged cube's changed set."""
+    import json
+    _store(tmp_path, [(V_REV, D_OLD, 1.0)], pid=PID)
+    _store(tmp_path, [(V2, D_OLD, 7.0)], pid="10000009")                   # sorts AFTER PID; its merge is refused
+    _wire(monkeypatch, tmp_path, [(V_REV, D_OLD, 1.5), (V2, D_OLD, 8.0)], pids=(PID, "10000009"))
+    _refuse_merge_for(monkeypatch, "10000009")
+    res = sc.update(None, None)
+    assert res.status == "partial" and "structural" in res.error and "merge guard refused" in res.error, \
+        (res.status, res.error)
+    assert res.changed_keys == {f"v{V_REV}": D_OLD.isoformat()}, res.changed_keys
+    assert res.new_vintage is None, "a partial pass must not stamp a vintage"
+    assert _derived(monkeypatch, tmp_path, res, backend="r2") == [f"statcan:V{V_REV}"]
+    st = json.loads((tmp_path / "_incr_state.json").read_text())
+    assert PID in st[sc.RESUME_WINDOW_KEY]["done"] and "10000009" not in st[sc.RESUME_WINDOW_KEY]["done"], st
+    assert st.get("last_release_date") is None, "the watermark advanced over a refused cube"
+
+
+def test_negative_control_a_refused_cube_with_nothing_merged_still_raises(monkeypatch, tmp_path):
+    _store(tmp_path, [(V2, D_OLD, 7.0)], pid="10000009")
+    _wire(monkeypatch, tmp_path, [(V2, D_OLD, 8.0)], pids=("10000009",))
+    _refuse_merge_for(monkeypatch, "10000009")
+    with pytest.raises(sc.DefinitiveError, match="structural"):
+        sc.update(None, None)
+
+
 def test_an_unreadable_cube_after_the_revision_does_not_clear_it(monkeypatch, tmp_path):
     """R1252/AR-159 N6: a cube whose stored parquet cannot be READ, after the revised cube, is a transient sub-unit
     too - and must not clear the revision already reported."""

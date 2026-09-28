@@ -704,8 +704,22 @@ def update(unit, since) -> Result:
     # cube's tail is empty, is LEGITIMATE for StatCan (it does not release every cube
     # every day) and must NOT raise a structural DefinitiveError. True structural /
     # transport breaks already surface in _get/_post and _changed_pids.
-    res = finalize(tally, tally.added, last, source=SOURCE,
-                   series_cursors=series_cursors, empty_window_floor=10 ** 9)
+    try:
+        res = finalize(tally, tally.added, last, source=SOURCE,
+                       series_cursors=series_cursors, empty_window_floor=10 ** 9)
+    except DefinitiveError as e:
+        if not changed_all:
+            raise
+        # THE CUBES THAT MERGED MUST STILL BE DERIVED (review R1252 item 5; _giant.run_giant's rule). finalize()
+        # raises on ANY structural sub-unit - one cube whose merge guard refused - and the orchestrator maps that
+        # to a failure with NO csv phase. But every cube that did merge is already in the window's `done` set, so
+        # the next pass skips it: its new or revised values would never reach the served CSVs. Same recorded
+        # outcome as the raise (partial, vintage not bumped, no last_success, the same error text) PLUS the
+        # changed set of what merged. Re-raised unchanged when nothing merged.
+        print(f"[statcan] finalize raised structural with {len(changed_all):,} changed vector(s) merged - "
+              f"returning partial WITH the changed set: {str(e)[:120]}", flush=True)
+        return Result(status="partial", obs=tally.added, last_obs_date=last, error=str(e),
+                      series_cursors=series_cursors, changed_keys=changed_all)
     if capped or not everything:
         # More cubes in this window still owe work: never let the strategy stamp a vintage that
         # says "fully current" (ons_uk's rule), or the backlog is skipped at the next tick.
