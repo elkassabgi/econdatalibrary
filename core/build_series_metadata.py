@@ -15,12 +15,15 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 
 import yaml
 
 _THIS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(_THIS, ".."))
-CATALOG = os.path.join(ROOT, "data", "catalog.db")
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 YAML = os.path.join(ROOT, "configs", "series_metadata.yaml")
 
 _MANAGED = ("description_key", "description_processing", "citation_short", "citation_long")
@@ -42,7 +45,7 @@ def main() -> None:
     src_meta = cfg.get("sources", {}) or {}
     default_proc = (cfg.get("_defaults", {}) or {}).get("description_processing")
 
-    conn = sqlite3.connect(CATALOG)
+    conn = catalog_path.connect(write=True)
     conn.row_factory = sqlite3.Row
     # registry facts for citation fallback (dict, not sqlite3.Row, so .get works)
     sources = {r["source_id"]: dict(r) for r in conn.execute("SELECT source_id, name, homepage FROM source")}
@@ -98,4 +101,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    with catalog_path.write_session():   # after T0: the single-writer lock
+        main()

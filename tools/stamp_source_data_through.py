@@ -19,42 +19,22 @@ single-row upsert, one PK read back. Never a scan, never series_fts.
 from __future__ import annotations
 import argparse
 import datetime as dt
-import json
 import os
-import subprocess
 import sys
-import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-WRANGLER = os.path.join(ROOT, "api", "worker", "node_modules", ".bin", "wrangler.cmd" if os.name == "nt" else "wrangler")
 
 
 def d1_json(sql: str, timeout: int = 600):
-    """`wrangler d1 execute econ-catalog --remote --json --command <sql>`, parsed; retries the 10000
-    auth transient twice; on failure raises with stderr FIRST and stdout after (R733)."""
-    last = None
-    for attempt in range(3):
-        r = subprocess.run([WRANGLER, "d1", "execute", "econ-catalog", "--remote", "--json", "--command", sql],
-                           cwd=os.path.join(ROOT, "api", "worker"), capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=timeout)
-        if r.returncode == 0:
-            lines = r.stdout.splitlines()
-            start = next((i for i, ln in enumerate(lines) if ln.strip() == "["), None)
-            if start is not None:
-                return json.loads("\n".join(lines[start:]))
-        notes = []
-        try:
-            j = json.loads(r.stdout[r.stdout.index("{"):]) if "{" in r.stdout else {}
-            notes = [n.get("text") for n in (j.get("error") or {}).get("notes", []) if n.get("text")]
-        except Exception:                                    # noqa: BLE001
-            pass
-        last = f"rc={r.returncode} stderr={(r.stderr or '')[-500:]!r} notes={notes} stdout_tail={(r.stdout or '')[-200:]!r}"
-        if "code: 10000" in (r.stdout or "") + (r.stderr or "") and attempt < 2:
-            print(f"   wrangler auth error 10000 (attempt {attempt + 1}/3) - retrying in 10 s", flush=True)
-            time.sleep(10)
-            continue
-        break
-    raise RuntimeError(f"D1 statement failed: {last}")
+    """One statement on econ-catalog, wrangler's parsed --json list. The road, the auth-transient retries
+    (R733) and the post-T0 refusal of writes are core.d1_remote's (plan step 1)."""
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import d1_remote                                           # noqa: PLC0415 - plan step 1
+    try:
+        return d1_remote.run_json("econ-catalog", sql, timeout=timeout)
+    except RuntimeError as e:
+        raise RuntimeError(f"D1 statement failed: {e}") from None
 
 
 def _refuse_if_gated(source: str) -> None:

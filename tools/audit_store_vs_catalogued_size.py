@@ -27,13 +27,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sqlite3
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", default="sec_edgar")
@@ -45,8 +45,7 @@ def main() -> int:
 
     import pyarrow.parquet as pq
     d = os.path.join(ROOT, "data", a.root, a.source)
-    con = sqlite3.connect(
-        f"file:{os.path.join(ROOT, 'data', 'catalog.db')}?mode=ro", uri=True)
+    con = catalog_path.connect()
     con.execute("PRAGMA busy_timeout = 180000")
     rows = con.execute("select series_id, metadata from series where source_id=?",
                        (a.source,)).fetchall()

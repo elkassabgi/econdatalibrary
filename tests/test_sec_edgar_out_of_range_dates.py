@@ -50,7 +50,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from updater.strategies.fetchers.sec_edgar import _coerce_insider   # noqa: E402
+from updater.strategies.fetchers.sec_edgar_13f import _coerce_insider   # noqa: E402
 
 CFG = {"insider_dtypes": {"nonderiv_trans": {"datetime": ["TRANS_DATE"], "float": ["TRANS_SHARES"]}}}
 

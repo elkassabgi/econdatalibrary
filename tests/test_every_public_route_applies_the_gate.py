@@ -81,6 +81,12 @@ def test_the_exemptions_are_still_true():
     pv = _code(os.path.join(SRC, "pageview.ts"))
     assert "source_id" not in pv and "FROM source" not in pv, (
         "pageview.ts now touches source data, so its exemption is false: gate it or re-justify")
+    # Its SQL names its table through a variable (`FROM ${table}`, self-hosting change), so the text check
+    # above cannot see the table any more (R1172 minor 6). Pin what the variable can hold instead.
+    tables = set(re.findall(r'table:\s*"(\w+)"', pv))
+    assert tables == {"pageview", "econ_pageview"}, (
+        f"pageview.ts counts into {sorted(tables)}; only the two page-view tables keep the exemption true")
+    assert pv.count("env.CATALOG") == 1, "pageview.ts reaches econ D1 somewhere other than its one store choice"
 
 
 def test_the_guard_can_fail():

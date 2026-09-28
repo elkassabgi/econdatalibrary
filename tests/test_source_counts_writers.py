@@ -40,7 +40,7 @@ _WRITES = re.compile(
 # runners, `--remote`, or a database name. Deliberately generous - a false positive here costs
 # one line in KNOWN_UNFIXED, a false negative costs a silently wrong browse total.
 _D1 = re.compile(
-    r"(wrangler[\"'\s,\]]+d1|_d1_json|_d1\(|execute_remote|--remote|econ-catalog)", re.I)
+    r"(wrangler[\"'\s,\]]+d1|_d1_json|_d1\(|execute_remote|--remote|econ-catalog|d1_remote\.)", re.I)
 
 # KNOWN UNFIXED, with what each one does. Removing an entry here is how a fix is recorded.
 KNOWN_UNFIXED = {

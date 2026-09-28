@@ -250,6 +250,27 @@ class UnitTimeout(Exception):
 # Reset whenever a unit's alarm is armed or disarmed.
 UNIT_TIMEOUT_FIRED = False
 
+# DEFERRED DELIVERY (review R1262). SIGALRM is process-wide: when the main thread blocks it, the kernel hands it to
+# another thread, CPython's C handler still trips the eval breaker, and the Python handler runs on the main thread at
+# its next check - INSIDE concurrent.futures.wait's lock-taking __enter__ as before; the process then hangs at exit
+# (measured in WSL). So derive does not mask the signal: while its main thread is inside one wait slice it sets
+# _DEFER_ALARM, the handler only RECORDS the trip in _ALARM_PENDING, and derive raises it the moment wait() returns
+# (within one 1 s slice). Both are reset whenever a unit's alarm is armed or disarmed.
+_DEFER_ALARM = False
+_ALARM_PENDING = None
+
+
+def _deliver_alarm(key: str, minutes: float) -> None:
+    """The SIGALRM handler's body: flag the timeout, then raise it - or, inside a deferred window, hold it."""
+    global UNIT_TIMEOUT_FIRED, _ALARM_PENDING
+    UNIT_TIMEOUT_FIRED = True                # before raising: see the flag's note above
+    exc = UnitTimeout(f"{key} exceeded its {minutes:.0f}-minute hard limit and was "
+                      f"interrupted; existing data untouched, re-queued for the next tick")
+    if _DEFER_ALARM:
+        _ALARM_PENDING = exc
+        return
+    raise exc
+
 
 def _unit_timeout_min() -> float:
     try:
@@ -267,6 +288,12 @@ def _unit_timeout_min() -> float:
 # days straight. The gate now REFUSES to start a unit whose worst case would
 # cross this ceiling, and every derive call is capped by the time remaining.
 _RUN_DEADLINE_TS: float | None = None
+
+
+# PAST THE CEILING (_remaining_run_min() == 0.0) each of run_once's three alarms still ARMS (on POSIX, unless the
+# timeout is deliberately disabled), at this many minutes: 0 is what
+# _unit_deadline reads as "do not arm", which is how both R1144's CSV fence and R1245's unit windows went unbounded.
+_PAST_CEILING_MIN = 1.0
 
 
 def _remaining_run_min() -> float | None:
@@ -288,12 +315,57 @@ def _unit_window_min() -> float:
     budget CANNOT outlive it however badly it overruns its estimate. That is strictly
     stronger than the old rule, under which a unit starting with exactly 90 min left could
     consume exactly 90.
+
+    PAST THE CEILING the remainder is 0.0, and a 0.0 window is what _unit_deadline reads as "do not arm" - so a
+    unit reaching its update phase after a probe that outlived its own alarm (UnitTimeout is an Exception, and a
+    fetcher's broad `except` can swallow it) ran with NO alarm at all (review R1245, the class of R1144's fence).
+    It gets the same 1-minute floor as the CSV fence (or the configured timeout, if shorter). A deliberately
+    disabled timeout (<= 0, or unparsable as nan) stays disabled.
+
+    WHAT AN ALARM CAN BOUND: SIGALRM interrupts the MAIN thread, only on POSIX (Windows has no setitimer).
+    derive_and_put is fence-aware (R1246): it lets the UnitTimeout through, waits in 1 s slices so the main thread
+    can take it, and on a trip cancels its queue and stops WITHOUT waiting for running workers - a worker already
+    inside a PUT finishes in the background and its id is not booked as derived. A FETCHER's own thread pool is
+    not covered: a fetcher that waits on its workers in one long blocking call still holds its phase.
     """
     t = _unit_timeout_min()
     rem = _remaining_run_min()
     if rem is None:
         return t
-    return max(0.0, min(t, rem / 2.0))
+    if not t > 0:
+        return 0.0                                   # disabled deliberately (<= 0, or nan) - as before
+    if rem <= 0.0:
+        return min(t, _PAST_CEILING_MIN)             # never longer than the configured timeout (R1246)
+    return min(t, rem / 2.0)
+
+
+def _csv_fence_min() -> float:
+    """The hard SIGALRM fence around one unit's whole CSV phase, in minutes.
+
+    None from _remaining_run_min means NO run ceiling is set (AQUEDUCT_RUN_BUDGET_MIN <= 0, or a
+    caller outside run_once): the remainder is unknown, so the fence is the 60-minute cap. A
+    remainder of 0.0 means the ceiling has already PASSED (_remaining_run_min clamps a negative
+    remainder to 0.0): there is no budget left, so the fence is the _PAST_CEILING_MIN floor and gets
+    no grace. Otherwise the remainder plus 2 minutes of grace (derive_and_put's soft budget, capped
+    by the same remainder in _capped_derive_budget, runs out first), capped at 60 - always above
+    the floor, since rem > 0 there. (So the fence steps from 1 to ~2 minutes as the remainder
+    leaves 0.0; both are bounded, and 0.0 only means the ceiling has already passed.)
+
+    `(_remaining_run_min() or 60.0)` read 0.0 as falsy, so a unit reaching its CSV phase past
+    the ceiling got the full 60-minute fence - more than the 15 minutes between updater-daily's
+    290-minute run budget and its 305-minute step timeout, and a kill there loses the state push
+    and the digest, which this fence exists to prevent (review R1144, "Outside this branch").
+
+    WHAT IT CAN BOUND - see _unit_window_min and the comment at the fence in run_once: the id-mapping
+    walk and derive_and_put (fence-aware since R1246's follow-up: a trip ends it within ~1 s); a PUT
+    already running on a worker thread is not killed and finishes in the background, unbooked.
+    """
+    rem = _remaining_run_min()
+    if rem is None:
+        return 60.0
+    if rem <= 0.0:
+        return _PAST_CEILING_MIN
+    return min(60.0, rem + 2.0)
 
 
 def _capped_derive_budget() -> dict:
@@ -323,8 +395,8 @@ class _unit_deadline:
         self.armed = False
 
     def __enter__(self):
-        global _TIMEOUT_WARNED, UNIT_TIMEOUT_FIRED
-        UNIT_TIMEOUT_FIRED = False
+        global _TIMEOUT_WARNED, UNIT_TIMEOUT_FIRED, _DEFER_ALARM, _ALARM_PENDING
+        UNIT_TIMEOUT_FIRED, _DEFER_ALARM, _ALARM_PENDING = False, False, None
         if self.minutes <= 0:
             return self
         try:
@@ -333,11 +405,7 @@ class _unit_deadline:
                 raise AttributeError("setitimer")
 
             def _fire(signum, frame):
-                global UNIT_TIMEOUT_FIRED
-                UNIT_TIMEOUT_FIRED = True        # before raising: see the flag's note above
-                raise UnitTimeout(
-                    f"{self.key} exceeded its {self.minutes:.0f}-minute hard limit and was "
-                    f"interrupted; existing data untouched, re-queued for the next tick")
+                _deliver_alarm(self.key, self.minutes)
 
             self._prev = signal.signal(signal.SIGALRM, _fire)
             signal.setitimer(signal.ITIMER_REAL, self.minutes * 60.0)
@@ -357,7 +425,7 @@ class _unit_deadline:
         return self
 
     def __exit__(self, *exc):
-        global UNIT_TIMEOUT_FIRED
+        global UNIT_TIMEOUT_FIRED, _DEFER_ALARM, _ALARM_PENDING
         if self.armed:
             try:
                 import signal
@@ -368,7 +436,7 @@ class _unit_deadline:
         # Cleared after the timer is disarmed and on every exit path, so the flag can never
         # outlive this unit (DeepSeek advisory review F5, 2026-09-15). An alarm delivered inside
         # the disarm window itself is swallowed by the except above and is not attributed.
-        UNIT_TIMEOUT_FIRED = False
+        UNIT_TIMEOUT_FIRED, _DEFER_ALARM, _ALARM_PENDING = False, False, None
         return False
 
 
@@ -525,7 +593,7 @@ def _classify_zero_mapped(source_id: str, scope: str, n_ids: "int | None",
             elif sample_hits == 0:
                 note = (f"csv coverage note: {n_unmapped} changed keys are outside "
                         f"{source_id}'s curated catalogue subset (catalog_scope: "
-                        f"subset; 0 of {sample_n} sampled keys catalogued at any "
+                        f"subset, 0 of {sample_n} sampled keys catalogued at any "
                         f"prefix) — nothing served changed, served ids coherent")
                 assert note.startswith("csv coverage note:")  # the caller's green gate
                 return note, False
@@ -814,18 +882,24 @@ def _derive_changed_csvs(unit, res, blob, store=None):
             # cap_saturated exists for TRUNCATED cursor sets (>= CURSOR_CAP means the
             # changed-set was cut and proves nothing about the tail — R497). A MIGRATED
             # changed_keys set is NEVER truncated: the merge reports completely under
-            # its own 2M cap, and an over-cap merge poisons the whole run to None
-            # before this path can run. Without this predicate, a complete
+            # the cap it is given (statcan asks for max(default, tail size)), and a
+            # merge that cannot report is never silently left out - _giant.run_giant
+            # marks such a flow changed (over-reporting), and other fetchers return
+            # None, so this path does not run. Without this predicate, a complete
             # merge-measured set of >=50k uncatalogued keys (statcan unions 28-32k
             # vectors per changed cube) tripped the refusal on a factually false
             # "truncated evidence" note and demoted a healthy subset-scope run —
             # the WU-5 reviewer drove it end-to-end (CASE D).
+            # A fetcher that SAYS its changed-set evidence is truncated (Result.cursor_cap_hit) is
+            # saturated too, whatever the count: abs's over-cap fallback reports bare cursor keys
+            # that cannot map, and a sample of them would 'prove' nothing served changed (AR-132).
             note, demote = _classify_zero_mapped(
                 unit.source_id, scope, n_ids, sample_hits, sample_n, len(unmapped),
-                cap_saturated=(not migrated) and len(unmapped) >= _CCAP)
+                cap_saturated=((not migrated) and len(unmapped) >= _CCAP)
+                or bool(getattr(res, "cursor_cap_hit", None)))   # (not the pinned booking read)
             if not demote:
                 print(f"[orchestrator] {unit.source_id}: {note}", flush=True)
-            return [], note, [], {}
+            return [], _with_ecb_unread(unit, note), [], {}
         from . import derive  # lazy: lands with the derive work-package; missing => partial
         _flow = _csv_grain(unit.source_id) == "flow"
         # The keyword is passed ONLY for a flow-grain source. Every series-grain call keeps the
@@ -936,7 +1010,16 @@ def _derive_changed_csvs(unit, res, blob, store=None):
             note = (f"csv coverage note: {len(unmapped)} changed keys have no catalog "
                     f"row for {unit.source_id} ({why}) — served ids coherent")
             print(f"[orchestrator] {unit.source_id}: {note}", flush=True)
-        return failed, note, deferred_ids, dict(out.get("failed_reasons") or {})
+        _kept = out.get("served_dates_kept") or {}
+        if _kept:
+            # registry csv_merge_served (ecb, R1136): the upload kept served dates this runner's
+            # store files do not hold. Disclosed, not a demotion, and JOINED to any other note - an
+            # ecb pass always has unmapped keys, so "only when there is no other note" never showed it
+            # (R1142). No "; " inside a note (health reads notes segment by segment).
+            _kn = (f"csv coverage note: {sum(_kept.values()):,} served date(s) in {len(_kept):,} "
+                   f"id(s) kept by the served-CSV merge, this machine's store files do not hold them")
+            note = f"{note}; {_kn}" if note else _kn
+        return failed, _with_ecb_unread(unit, note), deferred_ids, dict(out.get("failed_reasons") or {})
     except UnitTimeout:
         # THE FENCE'S OWN CONTROL SIGNAL — re-raise by name (R353). The csv fence at the
         # call site wraps this function in SIGALRM and carries a designed handler: abandon
@@ -978,6 +1061,74 @@ _DERIVE_ALL_CAP = 5000
 # Bounded so a large parked backlog (insee_bdm: 43,354) cannot monopolise the derive
 # budget that fresh changes need; the rest stays queued for later runs.
 _CSV_RETRY_CAP = 20_000
+
+
+def _drain_csv_retry_queue(unit, blob, store) -> None:
+    """Drain the csv retry queue for one unit, bounded per run (the rules are at the call site in run_once).
+    A function so its fence trip can be RUN against a StateStore in a test (review R1254 item 1)."""
+    _retry_rows = store.csv_retries(unit.source_id)
+    # Purge rows that are not catalog ids BEFORE spending budget on them —
+    # raw store keys (the old crash path's residue) fail every attempt by
+    # construction and would otherwise sit in the queue forever, eating the
+    # whole _CSV_RETRY_CAP each run (ember: 20,000 ValueErrors/run).
+    _retry_rows, _junk_ids = _split_retry_rows(unit.source_id, _retry_rows)
+    if _junk_ids:
+        store.clear_csv_retries(_junk_ids)
+        print(f"[orchestrator] {unit.source_id}: purged {len(_junk_ids):,} "
+              f"malformed csv-retry id(s) — raw store keys (no "
+              f"'{unit.source_id}:' prefix) queued by the old crash path; "
+              f"they can never resolve", flush=True)
+    if _retry_rows:
+        _retry_ids = [r["series_id"] for r in _retry_rows][:_CSV_RETRY_CAP]
+        from . import derive as _derive_mod
+        # ITS OWN HARD FENCE (R1246 finding 4). derive_and_put now lets the fence through and
+        # stops at once (1 s wait slices, queue cancelled, running PUTs left to finish unbooked),
+        # and hands back what it DID on the exception. On a trip: every id it PUT is cleared
+        # like any success; every other id counts as not derived - a plain id stays queued, a
+        # flow-grain id moves to the desktop debt (that path's rule below). An id a background
+        # worker finishes after the trip stays queued (or owed) and is derived again: never booked as
+        # derived here. The process cannot exit before that worker's PUT returns (review R1254 item 3).
+        try:
+            with _unit_deadline(unit.key + " (csv retry drain)", _csv_fence_min()):
+                _out = _derive_mod.derive_and_put(
+                    _retry_ids, blob if blob is not None else _resolve_blob(),
+                    **({"flow_grain": True} if _csv_grain(unit.source_id) == "flow" else {}),
+                    **_capped_derive_budget()) or {}
+        except UnitTimeout as _trip:
+            _part = getattr(_trip, "derive_partial", None) or {}
+            _done = set(str(s) for s in (_part.get("put_ids") or []))
+            _big = {str(k): v for k, v in (_part.get("deferred_large") or {}).items()}
+            # a too-large id keeps its own booking (reason and row count): listed as not derived too, the
+            # flow rule below re-booked it "budget-deferred" with rows None (review R1254 item 5)
+            _out = {"failed": [s for s in _retry_ids if str(s) not in _done and str(s) not in _big],
+                    "deferred_large": _big}
+            print(f"[orchestrator] {unit.key}: csv retry drain exceeded its fence - {len(_done):,} "
+                  f"id(s) derived and cleared, {len(_out['failed']):,} kept as not derived",
+                  flush=True)
+        _refailed = set(str(s) for s in (_out.get("failed") or []))
+        # A queued id that turns out too large for the runner leaves the retry
+        # queue (it can never succeed there) and moves to csv_desktop_owed.
+        _large_q = {str(k): int(v) for k, v in
+                    (_out.get("deferred_large") or {}).items()}
+        _book_csv_desktop_owed(store, unit.source_id, _large_q)
+        if _csv_grain(unit.source_id) == "flow":
+            # FLOW-GRAIN IDS DO NOT BELONG IN THIS QUEUE AT ALL (condition 2): a
+            # legacy or refailed row can never succeed on a later runner. Move every
+            # one that did not derive to the desktop debt and drop it from the queue.
+            _dead = sorted(set(_refailed) | set(str(s) for s in (_out.get("deferred_ids") or [])))
+            if _dead:
+                _book_csv_desktop_owed(store, unit.source_id, {s: None for s in _dead},
+                                       reason=_DESKTOP_OWED_BUDGET)
+                _refailed = set()
+        _cleared = [s for s in _retry_ids if s not in _refailed]
+        if _cleared:
+            store.clear_csv_retries(_cleared)
+            _record_for_catalog_sync([s for s in _cleared if s not in _large_q
+                                      and s not in set(str(x) for x in (_out.get("failed") or []))])
+        print(f"[orchestrator] {unit.source_id}: csv retry queue "
+              f"{len(_retry_rows):,} -> attempted {len(_retry_ids):,}, "
+              f"cleared {len(_cleared):,}, still queued {len(_refailed):,}",
+              flush=True)
 
 
 def _split_retry_rows(source_id: str, rows: list) -> "tuple[list, list[str]]":
@@ -1230,7 +1381,7 @@ def _store_dir_name(unit) -> "str | None":
 
     TWO LIMITS, both deliberate and both worth knowing before trusting it:
       * It covers only the DECLARED directory. `registry.py:123-125` puts one path in
-        `out_paths`, but `fetchers/sec_edgar.py:339,476` writes edgar_13f AND edgar_insider from
+        `out_paths`, but `fetchers/sec_edgar_13f.py:339,476` writes edgar_13f AND edgar_insider from
         its own PRODUCTS table, and the registry declares only the first. Both probe 0 today so
         the answer is unaffected, but a fetcher that writes an undeclared store is not fully
         measured here.
@@ -1342,16 +1493,90 @@ def _ecb_store_key(key):
     return parts[1], parts[2], [p for p in parts[3:] if p]
 
 
+def _with_ecb_unread(unit, note):
+    """Put a FAILURE segment for any ecb file the last `_catalog_ids_for` could not read FIRST in the
+    note (R1136, R1142). First, because health on main strips everything after '; csv coverage note:',
+    so a failure placed after a coverage note would be hidden. On EVERY return of the CSV phase: an
+    unreadable mirror alone maps zero ids (the name rule never claims a mirror), so the zero-mapped
+    return is exactly where it matters - and under catalog_scope subset it read ROTATING."""
+    unread = list(getattr(_catalog_ids_for, "ecb_unreadable", None) or []) \
+        if getattr(unit, "source_id", None) == "ecb" else []
+    if not unread:
+        return note
+    seg = (f"ecb containment read failed for {len(unread)} changed file(s) [{', '.join(unread[:3])}] "
+           f"- claimed by file name, mirrors not claimed")
+    print(f"[orchestrator] {unit.source_id}: {seg}", flush=True)
+    return f"{seg}; {note}" if note else seg
+
+
+def _ecb_catalogued(con) -> dict:
+    """{native series_key '<FLOW>.<KEY>': catalogue id} for every catalogued ecb id (35 on
+    2026-09-23). PK range, never LIKE (R492). The resolver's own join (econdl `_resolve_ecb`)."""
+    out = {}
+    for (sid,) in con.execute("SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
+                              ("ecb:", "ecb;")):
+        parts = str(sid).split(":", 2)
+        if len(parts) == 3 and parts[1] and parts[2]:
+            out[f"{parts[1]}.{parts[2]}"] = sid
+    return out
+
+
+def _ecb_held_ids(key, native):
+    """The catalogued ecb ids whose native key the LOCAL store file `<key>.parquet` holds.
+
+    [] when it holds none, None when it cannot be read (the caller falls back to the name rule).
+    Reads the local file only, never R2: under r2 that is exactly what the derive will open."""
+    if not native:
+        return []
+    try:
+        import pyarrow as _pa                                       # noqa: PLC0415
+        import pyarrow.compute as _pc                               # noqa: PLC0415
+        import pyarrow.parquet as _pq                               # noqa: PLC0415
+        col = _pq.read_table(os.path.join(config.source_dir("ecb"), f"{key}.parquet"),
+                             columns=["series_key"]).column("series_key")
+        hits = _pc.unique(col.filter(_pc.is_in(col, value_set=_pa.array(sorted(native))))).to_pylist()
+    except Exception:                                               # noqa: BLE001
+        return None
+    return sorted(native[h] for h in hits if h in native)
+
+
+
+def _ember_index(con) -> dict:
+    """{'<file stem>:<native series_key>': [catalogue id]} for every CATALOGUED ember id - the exact
+    inverse of econdl._resolve._resolve_ember, built from ITS OWN tables (never retyped: R191/R192).
+    An id the resolver cannot parse is left out; it could not be derived anyway."""
+    import core.derive_csv  # noqa: F401,PLC0415 - puts clients/python on sys.path
+    from econdl import _resolve as _r                                   # noqa: PLC0415
+    out: dict = {}
+    for (cid,) in con.execute("SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
+                              ("ember:", "ember;")):
+        parts = cid.split(":")
+        if len(parts) != 4:
+            continue
+        _, freq, metric, geo = parts
+        try:
+            cat, sub, var, unit = _r._EMBER_METRICS[freq][metric]
+            key = f"{_r._EMBER_FILE[freq][:-len('.parquet')]}:{_r._EMBER_GEO[geo]}|{cat}|{sub}|{var}|{unit}"
+        except KeyError:
+            continue
+        out.setdefault(key, []).append(cid)
+    return out
+
+
 def _catalog_ids_for(source_id: str, changed_keys):
     """Map changed store series_keys to catalog series_ids (see hook comment).
     Returns (ids_to_derive, unmapped_keys). Reads the catalog read-only from
     $ECONDL_CATALOG or <root>/data/catalog.db."""
     import sqlite3
+    # ecb store files this call could not read for containment (review R1136): they were claimed
+    # by the NAME rule, which never claims a mirror, so the caller must demote, not stay quiet.
+    _catalog_ids_for.ecb_unreadable = []
     cat = os.environ.get("ECONDL_CATALOG") or os.path.join(config.ROOT, "data", "catalog.db")
     con = sqlite3.connect(f"file:{cat}?mode=ro", uri=True)
     try:
         exact, unmapped = [], []
         seen = set()
+        _ecb_native = None                 # ecb: {native key: catalogue id}, loaded on first use
         # ONE-TO-MANY EXPANSIONS (WU-4 of the 2026-08-31 grain sweep): dst subject
         # groups, treasury endpoint tails, wikidata group containment. Each mirrors
         # its RESOLVER/fetcher predicate — dst via the fetcher's own _subj (imported,
@@ -1386,7 +1611,22 @@ def _catalog_ids_for(source_id: str, changed_keys):
                 "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
                 ("wikidata:", "wikidata;"))]
             _exp = {"companies": _all} if _all else {}
+        _ember = _ember_index(con) if source_id == "ember" else None
         for k in changed_keys:
+            if _ember is not None:
+                # ember's changed keys are '<file stem>:<series_key>' (fetchers/ember.py) and its 60
+                # ids resolve to ONE native key in ONE of two files - an exact inverse of the
+                # resolver, so a key maps here or nowhere. No other tier is tried: they read
+                # '<source>:<key>' forms ember never catalogues, and the split-part tier full-scans.
+                _hit = _ember.get(k)
+                if _hit:
+                    for cid in _hit:
+                        if cid not in seen:
+                            seen.add(cid)
+                            exact.append(cid)
+                else:
+                    unmapped.append(k)
+                continue
             # dst consults its subject index BEFORE the exact tier (the WU-4 review's
             # REQUIRED change): 10 of the 2,264 subject-group names are THEMSELVES
             # catalogued table ids (REGN10-class: subject 'REGN10' groups REGN10A…,
@@ -1491,20 +1731,13 @@ def _catalog_ids_for(source_id: str, changed_keys):
             # given frequency, so a changed file means each catalogued id inside it may be
             # stale. Same ONE-TO-MANY shape as the split-part block below.
             #
-            # VERIFIED BY CONTAINMENT, not by name — the check the first attempt lacked and
-            # the reason it shipped broken. Across every `ECB__*` store file: 35 ids claimed,
-            # 35 of them actually present in the file that claims them, and 35 of 35
-            # catalogued ids reachable. `ECB__YC__B__G_N_C` and `__G_N_W` claim ZERO, which is
-            # correct — they hold none of the catalogued series, and a flow-only rule would
-            # have handed each of them ten ids they do not contain.
-            #
-            # A HEURISTIC WITH A MEASURED COUNTEREXAMPLE, not a proven rule. The review
-            # generalised the containment check from our 35 catalogued ids to all 3,728,675
-            # distinct store series and found one: `ECB__BSI__M` claims 38,897, of which 4 are
-            # NOT in that file (they live in `ECB.DISS__JDF_PUB_BSI_CROSS_BORDER_POSITIONS`).
-            # None of the four is catalogued, so there is no live impact — but 35 of 3.7M is
-            # 0.0009% of the store, and "the rule the data supports" was too strong a claim
-            # for that sample. It is a heuristic that is exact on everything we serve.
+            # THE NAME RULE BELOW IS NOW ONLY THE FALLBACK (R1136). It was checked in one
+            # direction: every id a primary file claims is in that file (35 of 35, 0 over-claims).
+            # The reverse fails: 27 of the 35 served ids are ALSO held by ECB.DISS mirror files it
+            # never claims (R1132), so its "35 of 35 reachable" was true of the primaries only.
+            # Containment (first, below) claims by what a file actually holds - exact over all 540
+            # R2 files: 8 hold a served id (4 primaries, 4 mirrors). The name rule runs only when a
+            # file cannot be read, and that case is a DEMOTING note, because it misses mirrors.
             #
             # PK RANGE on `ecb:<FLOW>:<SEG1>.`, never LIKE ('_' is a wildcard, R492). '/' is
             # the byte after '.', so the range is exactly that dotted prefix.
@@ -1537,9 +1770,29 @@ def _catalog_ids_for(source_id: str, changed_keys):
             # v1 harmful. It is CONDITIONAL, not guaranteed (a 200 almost always yields rows
             # because `_start_period` is inclusive), which is why it was invisible. The guard
             # is one line: under r2, only claim ids whose file is actually present.
+            #
+            # CLAIM BY CONTAINMENT, NOT BY NAME (review R1132, 2026-09-23). The name rule above is
+            # exact for the PRIMARY files, but 27 of the 35 served ids are also held by ECB.DISS
+            # mirror files (MOBILE_EXR, MOBILE_KEY_6, FM_PUB__M, YC_PUB__B) that no name rule
+            # claims, and the resolver serves the union of the whole ecb/ directory. The run of
+            # 2026-09-23 11:38Z wrote only mirrors and added a day to 23 served series whose CSVs
+            # stayed a day behind. So a changed file claims every catalogued id whose native key
+            # ('<FLOW>.<KEY>') it actually HOLDS - one series_key column read of a file this run
+            # has on the machine. Unreadable -> the name rule, as before.
             if source_id == "ecb" and (config.BACKEND != "r2"
                                        or _ecb_file_present(source_id, k)):
-                parsed = _ecb_store_key(k)
+                if _ecb_native is None:
+                    _ecb_native = _ecb_catalogued(con)
+                held = _ecb_held_ids(k, _ecb_native)
+                if held is None:
+                    _catalog_ids_for.ecb_unreadable.append(k)
+                if held:
+                    for cid in held:
+                        if cid not in seen:
+                            seen.add(cid)
+                            exact.append(cid)
+                    continue
+                parsed = _ecb_store_key(k) if held is None else None
                 if parsed:
                     flow, seg1, extras = parsed
                     got = [r[0] for r in con.execute(
@@ -1645,9 +1898,12 @@ def _catalog_ids_for(source_id: str, changed_keys):
         # "zero rows matched in N files". Those are not coverage gaps; they are requests
         # for data that was never on the machine.
         #
-        # So under r2 we derive exactly the ids we could MAP (their files are, by
-        # construction, the ones this run wrote) and surface the rest as an honest
-        # unmapped list. Locally, where the full store is present, derive-all still runs
+        # So under r2 we derive exactly the ids we could MAP and surface the rest as an honest
+        # unmapped list. "Their files are the ones this run wrote" is true of the file that
+        # CLAIMED an id, NOT of every file that serves it: an ecb id is served from the union
+        # of up to 8 files and a runner holds only the ones its pass wrote (R1136). ecb's
+        # uploads are therefore merged with the served CSV (registry csv_merge_served,
+        # updater/derive.py). Locally, where the full store is present, derive-all still runs
         # and still guarantees coherence for small sources.
         if config.BACKEND == "r2":
             return exact, unmapped
@@ -2072,13 +2328,22 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 # post-merge phase ran 115 silent minutes past every soft budget
                 # (run 32054925848) until the 285-min step kill destroyed the
                 # run's state push, D1 syncs and digest. The soft budget inside
-                # derive_and_put only binds when ids complete; the id-mapping
-                # walk and a wedged resolve are outside it. SIGALRM binds them
-                # all. Sized to the run's remaining minutes (+2 grace) capped at
+                # derive_and_put only binds when ids complete. SIGALRM binds
+                # the MAIN thread, on POSIX: the id-mapping walk, and derive_and_put,
+                # which is fence-aware - it lets the alarm through, waits in 1 s slices
+                # and on a trip cancels its queue without waiting for running workers
+                # (review R1246 and its follow-up). A PUT already running on a worker
+                # finishes in the background, unbooked; the process cannot exit before it
+                # returns, so a truly wedged PUT moves the wait to the end of the run (review
+                # R1254 item 3). Nothing is queued on this trip - queueing the mapped set is how
+                # abs parked 100,000 rows (R353) - so, as the note below says, a chronically-
+                # partial source re-derives next run and an ok-status source on its next change. Sized to
+                # the run's remaining minutes (+2 grace) capped at
                 # 60 — on trip, the phase is abandoned as a budget note (the
                 # next run re-derives; cursors are already recorded) rather than
-                # the run being executed at the step ceiling.
-                _csv_fence = max(1.0, min(60.0, (_remaining_run_min() or 60.0) + 2.0))
+                # the run being executed at the step ceiling. Past the ceiling
+                # the fence is 1 minute, not 60 (see _csv_fence_min).
+                _csv_fence = _csv_fence_min()
                 try:
                     with _unit_deadline(unit.key + " (csv phase)", _csv_fence):
                         csv_failed, csv_err, csv_deferred, csv_reasons = _derive_changed_csvs(unit, res, blob, store)
@@ -2086,7 +2351,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                     csv_failed, csv_deferred, csv_reasons = [], [], {}
                     csv_err = ("csv coverage note: csv phase exceeded its "
                                f"{_csv_fence:.0f}-min fence and was abandoned for this "
-                               "run — cursors recorded; a chronically-partial source "
+                               "run — cursors recorded, a chronically-partial source "
                                "re-derives next run (vintage un-bumped), an ok-status "
                                "source on its next CHANGE")
                     _csv_fence_tripped = True
@@ -2118,49 +2383,8 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 # The drain shares the fence's verdict: if the fresh-path csv
                 # phase already blew its time fence, retrying OLD queued ids in
                 # the same exhausted window is exactly the overrun being fenced.
-                _retry_rows = [] if _csv_fence_tripped else store.csv_retries(unit.source_id)
-                # Purge rows that are not catalog ids BEFORE spending budget on them —
-                # raw store keys (the old crash path's residue) fail every attempt by
-                # construction and would otherwise sit in the queue forever, eating the
-                # whole _CSV_RETRY_CAP each run (ember: 20,000 ValueErrors/run).
-                _retry_rows, _junk_ids = _split_retry_rows(unit.source_id, _retry_rows)
-                if _junk_ids:
-                    store.clear_csv_retries(_junk_ids)
-                    print(f"[orchestrator] {unit.source_id}: purged {len(_junk_ids):,} "
-                          f"malformed csv-retry id(s) — raw store keys (no "
-                          f"'{unit.source_id}:' prefix) queued by the old crash path; "
-                          f"they can never resolve", flush=True)
-                if _retry_rows:
-                    _retry_ids = [r["series_id"] for r in _retry_rows][:_CSV_RETRY_CAP]
-                    from . import derive as _derive_mod
-                    _out = _derive_mod.derive_and_put(
-                        _retry_ids, blob if blob is not None else _resolve_blob(),
-                        **({"flow_grain": True} if _csv_grain(unit.source_id) == "flow" else {}),
-                        **_capped_derive_budget()) or {}
-                    _refailed = set(str(s) for s in (_out.get("failed") or []))
-                    # A queued id that turns out too large for the runner leaves the retry
-                    # queue (it can never succeed there) and moves to csv_desktop_owed.
-                    _large_q = {str(k): int(v) for k, v in
-                                (_out.get("deferred_large") or {}).items()}
-                    _book_csv_desktop_owed(store, unit.source_id, _large_q)
-                    if _csv_grain(unit.source_id) == "flow":
-                        # FLOW-GRAIN IDS DO NOT BELONG IN THIS QUEUE AT ALL (condition 2): a
-                        # legacy or refailed row can never succeed on a later runner. Move every
-                        # one that did not derive to the desktop debt and drop it from the queue.
-                        _dead = sorted(set(_refailed) | set(str(s) for s in (_out.get("deferred_ids") or [])))
-                        if _dead:
-                            _book_csv_desktop_owed(store, unit.source_id, {s: None for s in _dead},
-                                                   reason=_DESKTOP_OWED_BUDGET)
-                            _refailed = set()
-                    _cleared = [s for s in _retry_ids if s not in _refailed]
-                    if _cleared:
-                        store.clear_csv_retries(_cleared)
-                        _record_for_catalog_sync([s for s in _cleared if s not in _large_q
-                                                  and s not in set(str(x) for x in (_out.get("failed") or []))])
-                    print(f"[orchestrator] {unit.source_id}: csv retry queue "
-                          f"{len(_retry_rows):,} -> attempted {len(_retry_ids):,}, "
-                          f"cleared {len(_cleared):,}, still queued {len(_refailed):,}",
-                          flush=True)
+                if not _csv_fence_tripped:
+                    _drain_csv_retry_queue(unit, blob, store)
                 if csv_deferred:
                     store.enqueue_csv_retry(unit.source_id, csv_deferred,
                                             "derive budget spent — deferred, not failed")

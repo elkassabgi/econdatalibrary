@@ -12,15 +12,12 @@ match any source whose id starts with "idb" (R129, R462). The local store is rea
 Nothing is written.
 """
 import os
-import sqlite3
 import sys
 from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-sys.path.insert(0, r"E:\research\econfindatalibrary")
 
-from core import derive_csv as dc  # noqa: E402
-from core import r2_util  # noqa: E402
+from core import catalog_path, r2_util  # noqa: E402
 
 BUCKET = "econ-data"
 PREFIX = "series/idb%3A"
@@ -28,9 +25,9 @@ PREFIX = "series/idb%3A"
 
 def main():
     print("=== LOCAL CATALOGUE ===")
-    con = sqlite3.connect("file:%s?mode=ro" % dc.CATALOG, uri=True)
+    con = catalog_path.connect()                                    # read-only
     n_cat = con.execute("SELECT COUNT(*) FROM series WHERE source_id='idb'").fetchone()[0]
-    print(f"catalogued idb series (local catalog.db): {n_cat:,}")
+    print(f"catalogued idb series (local catalogue): {n_cat:,}")
     shapes = Counter()
     for (sid,) in con.execute("SELECT series_id FROM series WHERE source_id='idb'"):
         shapes[sid.count(":")] += 1

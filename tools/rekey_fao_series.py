@@ -32,7 +32,6 @@ import argparse
 import collections
 import json
 import os
-import sqlite3
 import sys
 
 import pyarrow as pa
@@ -41,6 +40,7 @@ import pyarrow.parquet as pq
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 
 
 def main() -> int:
@@ -79,7 +79,7 @@ def main() -> int:
     assert cw["source_id"] == a.source
     raw = cw["crosswalk"]
 
-    con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"))
+    con = catalog_path.connect(write=True)
     existing = {r[0] for r in con.execute(
         "SELECT series_id FROM series WHERE source_id=?", (a.source,))}
     prefix = None
@@ -178,4 +178,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    with catalog_path.write_session():   # after T0: the single-writer lock
+        sys.exit(main())
