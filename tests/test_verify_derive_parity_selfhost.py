@@ -89,7 +89,11 @@ def _trace_series_reads(monkeypatch):
 
     def whole_table_reads():
         reads = [q for q in sql if "FROM series" in q or "from series" in q]
-        return reads, [q for q in reads if "GROUP BY" in q.upper() or _re.search(r"source_id\s*=\s*", q)]
+        def unbounded(q):
+            u = q.upper()
+            return not ("LIMIT" in u or "SERIES_ID >=" in u or "IS NULL" in u)
+        return reads, [q for q in reads if "GROUP BY" in q.upper() or _re.search(r"source_id\s*=\s*", q)
+                       or unbounded(q)]   # R1253: every read of the live build is BOUNDED
     return whole_table_reads
 
 
@@ -100,3 +104,20 @@ def test_after_t0_the_catalogue_is_read_by_primary_key_range(live, monkeypatch, 
     _run(monkeypatch, build)
     reads, bad = check()
     assert reads and not bad and all("series_id >=" in q for q in reads), reads
+
+def _add_neighbour_source(monkeypatch):
+    """A source whose id sorts right after `zz:` keys under a WIDER upper bound: `zz_x:1`. The primary-key range is
+    [`zz:`, `zz;`) - `;` is the byte after `:` - and must exclude it; `~` as the bound would include it (R1253)."""
+    with catalog_path.writer_lock():
+        c = catalog_path.connect(write=True)
+        with c:
+            c.execute("INSERT INTO series (series_id, source_id) VALUES ('zz_x:1', 'zz_x')")
+        c.close()
+
+
+def test_after_t0_a_neighbouring_source_is_not_in_the_key_range(live, monkeypatch, capsys):
+    tmp, build, store = live
+    _add_neighbour_source(monkeypatch)
+    assert _run(monkeypatch, build) == 0
+    out = capsys.readouterr().out
+    assert "catalog zz: 2 series" in out and "zz_x" not in out, out
