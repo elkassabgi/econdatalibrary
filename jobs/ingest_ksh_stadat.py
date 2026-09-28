@@ -63,15 +63,39 @@ def _is_waf_page(content: bytes) -> bool:
             or head.startswith(b"<!doctype"))
 
 
+LAST_STATUS: dict = {}   # url -> the final HTTP status get_bytes saw (404 = no such file)
+# A wall-clock time (time.time()) past which get_bytes does not START a back-off sleep: it gives up
+# and records LAST_STATUS[url] = "deadline". None (the default, and this job's own main()) keeps the
+# full ladder. The updater sets it: one URL's WAF ladder alone is 60+120+300+600+900 s = 33 min, so a
+# wave started just inside its budget could otherwise run past the orchestrator's 45-minute kill
+# and lose the whole pass - the fetcher merges only after every wave (review R1121 follow-up).
+STOP_AT: list = [None]
+
+
+def _past_stop(url: str, s: float) -> bool:
+    if STOP_AT[0] is not None and time.time() + s > STOP_AT[0]:
+        LAST_STATUS[url] = "deadline"
+        log(f"  deadline: not sleeping {s:.0f}s more for {url[-50:]} - left for the next pass")
+        return True
+    return False
+
+
 def get_bytes(url: str) -> bytes | None:
     """Fetch with F5-WAF awareness: the WAF serves HTTP 200 'Request Rejected'
     HTML when throttling. Sleep on an escalating schedule and retry; if the
     block persists ~30+ min for this URL, give up (caller counts WAF losses
-    and aborts the run rather than mass-skipping tables)."""
+    and aborts the run rather than mass-skipping tables).
+
+    Returns None for BOTH a 404 and a failure; LAST_STATUS[url] tells them apart (the updater
+    needs to: a 404 is a table with no CSV, not the WAF - 2026-09-23, gdp0049)."""
     waf_i = 0
+    LAST_STATUS.pop(url, None)
     for attempt in range(12):
+        if _past_stop(url, 0):              # no new request past the stop time either (R1123)
+            return None
         try:
             r = requests.get(url, headers=HEADERS, timeout=60)
+            LAST_STATUS[url] = r.status_code
             if r.status_code == 200:
                 if _is_waf_page(r.content):
                     if waf_i >= len(WAF_SLEEPS):
@@ -80,6 +104,8 @@ def get_bytes(url: str) -> bytes | None:
                         return None
                     s = WAF_SLEEPS[waf_i]
                     waf_i += 1
+                    if _past_stop(url, s):
+                        return None
                     log(f"  WAF rejection — sleeping {s}s ({url[-40:]})")
                     time.sleep(s)
                     continue
@@ -90,11 +116,15 @@ def get_bytes(url: str) -> bytes | None:
                 return None
             if r.status_code in (403, 406, 429, 503):
                 log(f"  HTTP {r.status_code} (WAF/throttle), backing off: {url[-60:]}")
+                if _past_stop(url, 60 * min(attempt + 1, 5)):
+                    return None
                 time.sleep(60 * min(attempt + 1, 5))
                 continue
             log(f"  HTTP {r.status_code}: {url[-60:]}")
         except Exception as e:
             log(f"  ERR: {e}")
+        if _past_stop(url, 5 * (attempt + 1)):
+            return None
         time.sleep(5 * (attempt + 1))
         if attempt >= 4:
             return None
