@@ -333,18 +333,24 @@ def _refuse_merge_for(monkeypatch, pid):
 def test_a_refused_cube_does_not_strand_the_cubes_that_merged(monkeypatch, tmp_path):
     """R1252 item 5 (_giant's rule): finalize() raises on ANY structural sub-unit, the orchestrator then runs no
     csv phase - but the merged cube is already in the window's `done`, so the next pass skips it and its revision
-    would never be served. The pass must return partial WITH the merged cube's changed set."""
+    would never be served. The pass must return partial WITH the merged cube's changed set - and, unlike the
+    raise, the orchestrator books its last_obs_date, obs count and per-cube cursors (review R1256): the refused
+    cube must have no cursor, or the next pass would treat it as current."""
     import json
-    _store(tmp_path, [(V_REV, D_OLD, 1.0)], pid=PID)
+    _store(tmp_path, [(V_REV, D_OLD, 1.0), (V_SAME, D_OLD, 2.0)], pid=PID)   # TWO revised vectors: a subset fails
     _store(tmp_path, [(V2, D_OLD, 7.0)], pid="10000009")                   # sorts AFTER PID; its merge is refused
-    _wire(monkeypatch, tmp_path, [(V_REV, D_OLD, 1.5), (V2, D_OLD, 8.0)], pids=(PID, "10000009"))
+    d_new = dt.date(2024, 2, 1)                                            # one ADDED row: obs and last date move
+    _wire(monkeypatch, tmp_path, [(V_REV, D_OLD, 1.5), (V_SAME, D_OLD, 2.5), (V_SAME, d_new, 3.0),
+                                  (V2, D_OLD, 8.0)], pids=(PID, "10000009"))
     _refuse_merge_for(monkeypatch, "10000009")
     res = sc.update(None, None)
     assert res.status == "partial" and "structural" in res.error and "merge guard refused" in res.error, \
         (res.status, res.error)
-    assert res.changed_keys == {f"v{V_REV}": D_OLD.isoformat()}, res.changed_keys
+    assert res.changed_keys == {f"v{V_REV}": D_OLD.isoformat(), f"v{V_SAME}": d_new.isoformat()}, res.changed_keys
     assert res.new_vintage is None, "a partial pass must not stamp a vintage"
-    assert _derived(monkeypatch, tmp_path, res, backend="r2") == [f"statcan:V{V_REV}"]
+    assert res.series_cursors == {PID: d_new.isoformat()}, res.series_cursors   # no cursor for the refused cube
+    assert res.obs == 1 and res.last_obs_date == d_new.isoformat(), (res.obs, res.last_obs_date)
+    assert _derived(monkeypatch, tmp_path, res, backend="r2") == [f"statcan:V{V_REV}", f"statcan:V{V_SAME}"]
     st = json.loads((tmp_path / "_incr_state.json").read_text())
     assert PID in st[sc.RESUME_WINDOW_KEY]["done"] and "10000009" not in st[sc.RESUME_WINDOW_KEY]["done"], st
     assert st.get("last_release_date") is None, "the watermark advanced over a refused cube"
