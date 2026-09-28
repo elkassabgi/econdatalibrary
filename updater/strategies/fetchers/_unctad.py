@@ -42,13 +42,23 @@ def _job():
     return importlib.import_module("jobs.ingest_unctad_ds")
 
 
+def _token(meta: dict) -> "str | None":
+    """The release token: the publisher's own {version, lastUpdated}. ONE function for the probe and
+    for the token update() stamps, so the two can never be spelled differently. None when the
+    metadata carries neither: "None|None" on both sides would match for ever and seal the unit
+    (review R1154); None makes the strategy fetch and update() stamp nothing."""
+    v, lu = meta.get("version"), meta.get("lastUpdated")
+    if v is None and lu is None:
+        return None
+    return f"{v}|{lu}"
+
+
 def make(ds: str, source: str):
     """Return (current_vintage, update) bound to one UNCTADstat dataset."""
 
     def current_vintage(unit):
         j = _job()
-        meta = j.report_metadata(ds)
-        return f"{meta.get('version')}|{meta.get('lastUpdated')}"
+        return _token(j.report_metadata(ds))
 
     def update(unit, since) -> Result:
         j = _job()
@@ -96,7 +106,19 @@ def make(ds: str, source: str):
         # finalize's THIRD positional is last_obs (a date); cursors go in the KEYWORD —
         # the dict passed positionally bound into state.db's last_obs_date column
         # ("type 'dict' is not supported"), caught by the first real orchestrator run.
-        return finalize(tally, after, max(rows_d), source=source,
-                        series_cursors={k: v.isoformat() for k, v in cursors.items()})
+        res = finalize(tally, after, max(rows_d), source=source,
+                       series_cursors={k: v.isoformat() for k, v in cursors.items()})
+        # THE RELEASE TOKEN, NOT finalize's "date-tail" PLACEHOLDER. finalize() stamps new_vintage=
+        # "date-tail" on every Result (it is shared with the date-tail fetchers), and
+        # bulk_snapshot_if_changed only fills in the probed token when a fetcher returns None - so
+        # every unctad unit stored "date-tail", the probe never matched, and every tick re-pulled the
+        # whole dataset: unctad_oceantrade spent ~47 min a week to report no_change, and ~16 h of
+        # no_change runs in 30 days went to units with this placeholder (faostat already overrides it
+        # the same way). The token is the one read BEFORE the pull, so a release that lands during
+        # the pull reads as changed next tick - a re-pull, never a skipped release. Only on a clean
+        # ok/no_change; the orchestrator also keeps the old vintage for anything it demotes.
+        if res.status in ("ok", "no_change") and _token(meta) is not None:
+            res.new_vintage = _token(meta)
+        return res
 
     return current_vintage, update
