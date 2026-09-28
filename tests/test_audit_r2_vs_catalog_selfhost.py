@@ -96,7 +96,11 @@ def _trace_series_reads(monkeypatch):
 
     def whole_table_reads():
         reads = [q for q in sql if "FROM series" in q or "from series" in q]
-        return reads, [q for q in reads if "GROUP BY" in q.upper() or _re.search(r"source_id\s*=\s*", q)]
+        def unbounded(q):
+            u = q.upper()
+            return not ("LIMIT" in u or "SERIES_ID >=" in u or "IS NULL" in u)
+        return reads, [q for q in reads if "GROUP BY" in q.upper() or _re.search(r"source_id\s*=\s*", q)
+                       or unbounded(q)]   # R1253: every read of the live build is BOUNDED
     return whole_table_reads
 
 

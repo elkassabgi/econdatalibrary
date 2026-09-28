@@ -234,6 +234,13 @@ def test_after_t0_the_backend_routed_tools_refuse_outside_the_live_checkout(tmp_
         mod.main(["zz"]) if call == "sources" else mod.main()
 
 
+def _no_network(mod, monkeypatch):
+    """If a refusal ever stops firing, the tool must fail FAST here - not run for real. audit_current_vintage probes
+    every fetcher's publisher over the network (a mutant that bypassed its refusal took 3.5 min of live probes)."""
+    if hasattr(mod, "all_fetchers"):
+        monkeypatch.setattr(mod, "all_fetchers", lambda: [])
+
+
 @pytest.mark.parametrize("name,argv", [("audit_tree_frontier", ["--source", "zz"]), ("audit_current_vintage", []),
                                        ("audit_store_present", ["--backend", "r2"])])
 def test_after_t0_an_audit_on_r2_refuses_even_in_the_live_checkout(tmp_path, monkeypatch, name, argv):
@@ -242,6 +249,7 @@ def test_after_t0_an_audit_on_r2_refuses_even_in_the_live_checkout(tmp_path, mon
     from updater import blob
     sys.path.insert(0, os.path.join(ROOT, "tools"))
     mod = importlib.import_module(name)
+    _no_network(mod, monkeypatch)
     cutover = _t0_elsewhere(tmp_path, monkeypatch)
     monkeypatch.setattr(blob, "refuse_unless_live_checkout", lambda *a, **k: None)   # as if live
     monkeypatch.setenv("AQUEDUCT_BACKEND", "r2")
@@ -295,3 +303,29 @@ def test_after_t0_a_meaningless_verifier_script_refuses_at_import(tmp_path, monk
     spec = importlib.util.spec_from_file_location(f"_t0_{name}", os.path.join(ROOT, "tools", f"{name}.py"))
     with pytest.raises(cutover.CutoverRefused, match="self-hosted since T0"):
         spec.loader.exec_module(importlib.util.module_from_spec(spec))
+
+@pytest.mark.parametrize("name,argv,env", [("audit_store_present", ["--backend", " R2"], "local"),
+                                           ("audit_current_vintage", [], " R2 "),
+                                           ("audit_tree_frontier", ["--source", "zz"], "R2")])
+def test_after_t0_the_r2_refusal_ignores_case_and_spaces(tmp_path, monkeypatch, name, argv, env):
+    """R1253: ` R2` / `R2 ` are the r2 backend to updater.blob (it strips and lowercases) - the refusal must agree."""
+    import importlib
+    from updater import blob
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    mod = importlib.import_module(name)
+    _no_network(mod, monkeypatch)
+    cutover = _t0_elsewhere(tmp_path, monkeypatch)
+    monkeypatch.setattr(blob, "refuse_unless_live_checkout", lambda *a, **k: None)   # as if live
+    monkeypatch.setenv("AQUEDUCT_BACKEND", env)
+    monkeypatch.setattr(sys, "argv", [name, *argv])
+    with pytest.raises(cutover.CutoverRefused, match="frozen copy after T0"):
+        mod.main()
+
+
+def test_the_repull_tools_print_an_audit_command_that_runs_after_t0():
+    """R1249/R1253: after T0 they printed `audit_impossible_dates.py --source X`, which argparse rejects (--local
+    or --r2 is required, and --r2 refuses after T0)."""
+    cso = open(os.path.join(ROOT, "tools", "cso_repull_subject.py"), encoding="utf-8").read()
+    rep = open(os.path.join(ROOT, "tools", "repull_file.py"), encoding="utf-8").read()
+    assert "{'--local' if cutover.is_cut_over() else '--r2'} --source cso" in cso
+    assert "audit_impossible_dates.py --local --source {a.source} from the live checkout" in rep

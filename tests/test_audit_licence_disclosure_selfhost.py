@@ -101,3 +101,10 @@ def test_the_build_is_read_in_bounded_chunks_never_one_group_by(tmp_path, monkey
     nulls = [q for q in reads if "IS NULL" in q]
     assert len(chunks) == 4 and len(nulls) == 1 and len(reads) == 5, reads
     assert not any("GROUP BY" in q for q in reads), reads
+
+def test_iter_series_default_chunk_is_bounded():
+    """R1253: the default chunk IS the bound on how long one read holds the live build's lock - an unbounded
+    default (10**12) turned every chunked read back into one whole-table statement and passed."""
+    import inspect
+    d = inspect.signature(catalog_path.iter_series).parameters["chunk"].default
+    assert 0 < d <= 1_000_000, d
