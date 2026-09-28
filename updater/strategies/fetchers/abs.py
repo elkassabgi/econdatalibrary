@@ -54,7 +54,7 @@ import pyarrow.compute as pc
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import (CURSOR_CAP, Deadline, Tally, finalize, load_rotation,
+from ._common import (CURSOR_CAP, Deadline, RotationCycle, Tally, finalize, load_rotation,
                       rotate_after, save_rotation)
 
 # Reuse the ingester verbatim: enumeration, streaming+retry, parse helpers.
@@ -164,11 +164,23 @@ def update(unit, since) -> Result:
         pfiles = rotate_after(pfiles, resume)
         print(f"[abs] resuming after {resume} ({len(pfiles)} flows, rotated)", flush=True)
     last_attempted = None
+    # `ok` = EVERY flow attempted since the last ok (RotationCycle, 2026-09-23). A pass reaches
+    # ~118 of 1,222 flows (daily run 35783253243: "118 sub-unit(s) attempted, none failed; 1104
+    # deferred"), so every pass booked the rest deferred and abs read `partial` on every run - in
+    # the daily gate's failure list with nothing failing. Now only flows not yet attempted THIS
+    # CYCLE are booked, and the pass that completes the cycle reads ok.
+    cycle = RotationCycle(out_dir, pfiles)
+    owed_this_cycle = set(cycle.unvisited())
 
     for fn in pfiles:
         path = os.path.join(out_dir, fn)
         flow = fn[:-len(".parquet")]
         before = blob.row_count(path)
+        if cycle.done(fn):
+            # Visited this cycle: no work owed (review R1105 P1). Its rows still count: `obs` is
+            # the store total and is served as obs_count (review AR-123 P5).
+            total += before
+            continue
 
         # Stop STARTING new flows once the budget is spent. Deferred flows go through
         # tally.deferred_unit(), NOT transient_unit(): nothing failed and nothing was even
@@ -178,11 +190,17 @@ def update(unit, since) -> Result:
         # on the next tick, so nothing is silently skipped. Without this a single source can
         # consume the whole 300-minute job and every runner byte.
         if dl.spent():
-            deferred += 1
-            tally.deferred_unit(f"{flow} deferred (budget {BUDGET_MIN:.0f} min)")
+            if fn in owed_this_cycle:          # attempted earlier this cycle: not owed
+                deferred += 1
+                tally.deferred_unit(f"{flow} deferred (budget {BUDGET_MIN:.0f} min)")
             total += before
             continue
         last_attempted = fn
+        # Saved per flow, not only after the loop (R273): abs's fetch ran 43.9 min on 09-16 against
+        # the 45-minute unit cap, and an end-of-loop save is what the kill destroys (R1105).
+        save_rotation(out_dir, fn)
+        cycle.begin(fn)                     # a raise or kill inside it counts (AR-127 P5)
+        fails_before = cycle.failures(tally)
 
         max_obs = _flow_max_obs(path)
         start = _flow_start_param(max_obs)
@@ -205,6 +223,7 @@ def update(unit, since) -> Result:
             # flow-level frontier under a flow sentinel key for visibility.
             if mx:
                 cursors.setdefault(f"__flow__{flow}", mx)
+            cycle.visit(fn, failed=True)     # stays owed (R1105 P2)
             continue
 
         if not keys:
@@ -222,6 +241,7 @@ def update(unit, since) -> Result:
             mx = max_obs.isoformat() if max_obs else None
             if mx and (last_obs is None or mx > last_obs):
                 last_obs = mx
+            cycle.visit(fn)                  # a quiet flow was looked at and is current: done
             continue
 
         tbl = _build_table(keys, dates, vals)
@@ -236,6 +256,7 @@ def update(unit, since) -> Result:
             # and with what numbers; it used to be discarded.
             tally.transient_unit(f"{flow}: write refused — {str(e)[:160]}")
             total += before
+            cycle.visit(fn, failed=True)     # stays owed (R1105 P3)
             continue
 
         total += n
@@ -270,6 +291,9 @@ def update(unit, since) -> Result:
             elif v > prev:
                 cursors[k] = v
 
+        # VISITED only once the flow's fetch finished without a failure (stat_latvia review R1103,
+        # P2): a flow whose fetch failed stays owed, so the cycle cannot close without it.
+        cycle.visit(fn, failed=cycle.failures(tally) > fails_before)
         # Return this flow's buffers to the OS before opening the next one. Dropping the
         # references is not enough: Arrow keeps freed blocks in its pool, so across 1,222
         # flows RSS only ever climbs.
@@ -284,6 +308,7 @@ def update(unit, since) -> Result:
     # either way, and no branch that could silently stop rotating.
     if last_attempted:
         save_rotation(out_dir, last_attempted)
+    cycle.close_if_complete(tally)
 
     if deferred:
         where = (f"the next run RESUMES AFTER {last_attempted} so they actually drain"
@@ -291,7 +316,7 @@ def update(unit, since) -> Result:
                  "NO flow was attempted at all — the bookmark is unchanged, so the next "
                  "run retries this same point (check the budget, not the rotation)")
         print(f"[abs] BUDGET {BUDGET_MIN:.0f} min spent after {dl.elapsed_min():.1f} min — "
-              f"{deferred}/{len(pfiles)} flow(s) NOT attempted this run; {where} "
+              f"{deferred}/{len(pfiles)} flow(s) still owed this cycle; {where} "
               f"(run reports partial, vintage not advanced)", flush=True)
     if cursors_capped:
         print(f"[abs] cursor set hit the {CURSOR_CAP:,} cap — further changed series are "
