@@ -40,7 +40,9 @@ def test_drain_wired_into_run_loop_and_nondemoting():
     # is cheap and unfoolable: the merge line was deliberately removed).
     import inspect
     from updater import orchestrate as O
-    src = inspect.getsource(O.run_once)
+    # the drain body moved into _drain_csv_retry_queue (review R1254 item 1); run_once calls it
+    assert "_drain_csv_retry_queue(unit, blob, store)" in inspect.getsource(O.run_once)
+    src = inspect.getsource(O.run_once) + inspect.getsource(O._drain_csv_retry_queue)
     assert "store.csv_retries(unit.source_id)" in src
     assert "store.clear_csv_retries(_cleared)" in src
     assert "_CSV_RETRY_CAP" in src
