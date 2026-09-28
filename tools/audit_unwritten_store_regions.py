@@ -84,16 +84,26 @@ def main() -> int:
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
 
-    os.environ.setdefault("AQUEDUCT_BACKEND", "r2")
+    from core import cutover                                          # noqa: PLC0415
+    selfhosted = cutover.is_cut_over()
+    if not selfhosted:
+        os.environ.setdefault("AQUEDUCT_BACKEND", "r2")
     from updater import blob, config, registry                       # noqa: E402
 
-    print(f"read at {_stamp()}   backend {config.BACKEND}")
-    r2 = blob._r2_routed()
-    if r2 is None:
-        print("NOT ROUTED TO R2 - refusing. The local tree is a scratch mirror of the last run only "
-              "(R296/R36) and would give the opposite answer.")
-        return 2
-    print(f"bucket {r2.bucket}")
+    if selfhosted:
+        # AFTER T0 (plan step 6d): the live local store IS the store (R2 is a frozen copy) - read it, and only
+        # from the live checkout (anywhere else the local tree is a worktree's)
+        blob.refuse_unless_live_checkout("audit_unwritten_store_regions (after T0 it reads the live store)")
+        print(f"read at {_stamp()}   the live local store (self-hosted since T0; R2 is a frozen copy)")
+        r2 = None
+    else:
+        print(f"read at {_stamp()}   backend {config.BACKEND}")
+        r2 = blob._r2_routed()
+        if r2 is None:
+            print("NOT ROUTED TO R2 - refusing. The local tree is a scratch mirror of the last run only "
+                  "(R296/R36) and would give the opposite answer.")
+            return 2
+        print(f"bucket {r2.bucket}")
 
     reg = registry.load()
     entries = {e["source_id"]: e for e in reg.get("sources", []) if e.get("source_id")}
@@ -105,15 +115,24 @@ def main() -> int:
 
     zero, single, multi = [], [], []
     for sid in ids:
-        prefix = blob._path_to_key(config.source_dir(sid)).rstrip("/") + "/"
         items = []
         try:
-            for page in r2.client.get_paginator("list_objects_v2").paginate(
-                    Bucket=r2.bucket, Prefix=prefix):
-                for o in page.get("Contents", []):
-                    nm = o["Key"][len(prefix):]
-                    if nm.endswith(".parquet"):
-                        items.append((nm, (now - o["LastModified"]).days))
+            if selfhosted:
+                base = config.source_dir(sid)
+                for dirpath, _dirs, files in os.walk(base):
+                    for f in files:
+                        if f.endswith(".parquet"):
+                            p = os.path.join(dirpath, f)
+                            written = dt.datetime.fromtimestamp(os.path.getmtime(p), tz=dt.timezone.utc)
+                            items.append((os.path.relpath(p, base).replace(os.sep, "/"), (now - written).days))
+            else:
+                prefix = blob._path_to_key(config.source_dir(sid)).rstrip("/") + "/"
+                for page in r2.client.get_paginator("list_objects_v2").paginate(
+                        Bucket=r2.bucket, Prefix=prefix):
+                    for o in page.get("Contents", []):
+                        nm = o["Key"][len(prefix):]
+                        if nm.endswith(".parquet"):
+                            items.append((nm, (now - o["LastModified"]).days))
         except Exception as ex:                                      # noqa: BLE001
             print(f"  {sid:<30} LIST FAILED {type(ex).__name__}: {str(ex)[:60]}")
             continue
@@ -123,14 +142,15 @@ def main() -> int:
 
     bound = max((a2 for r in (single + multi) for _, a2 in r["items"]), default=0)
     print(f"\nregistered sources screened : {len(ids)}")
-    print(f"  ZERO parquets on R2       : {len(zero)}   (a different class - tools/audit_store_present.py)")
+    print((f"  ZERO parquets on R2       : {len(zero)}" if not selfhosted else f"  ZERO parquets in the store: {len(zero)}")
+          + "   (a different class - tools/audit_store_present.py)")
     print(f"  exactly ONE parquet       : {len(single)}   (cannot hold a frozen REGION; can be wholly frozen)")
     print(f"  TWO or more parquets      : {len(multi)}   <- the only population where this defect is possible")
     print(f"\nCENSORING BOUND: the oldest object seen anywhere is {bound}d. A fleet-wide write reset")
     print(f"every timestamp around then, so an object AT the bound has gone unwritten for AT LEAST")
     print(f"{bound} days and the freeze DATE cannot be recovered from this instrument.")
     if zero:
-        print("\nNO OBJECTS ON R2: " + ", ".join(r["sid"] for r in zero))
+        print("\nNO OBJECTS " + ("IN THE STORE" if selfhosted else "ON R2") + ": " + ", ".join(r["sid"] for r in zero))
 
     for r in multi:
         ages = [x for _, x in r["items"]]

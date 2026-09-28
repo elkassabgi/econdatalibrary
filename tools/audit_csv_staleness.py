@@ -109,6 +109,30 @@ def _csv_ages(s3, src: str, cutoff, max_objects: int):
     return older, total, False
 
 
+def _newest_parquet_local(src: str):
+    """AFTER T0: the newest parquet write time in the live store (a UTC datetime), recursive like the R2 prefix."""
+    import datetime as dt                                              # noqa: PLC0415
+    import glob                                                        # noqa: PLC0415
+    files = [f for f in glob.glob(os.path.join(ROOT, "data", "clean_full", src, "**", "*.parquet"), recursive=True)]
+    if not files:
+        return None
+    return max(dt.datetime.fromtimestamp(os.path.getmtime(f), tz=dt.timezone.utc) for f in files)
+
+
+def _csv_ages_selfhost(store, src: str, cutoff, max_objects: int):
+    """AFTER T0: _csv_ages over the self-hosted store's stored_utc (whole seconds - a CSV stored in the parquet's
+    own second counts as older, the cautious side, as make_servable rounds)."""
+    prefix = "series/" + urllib.parse.quote(src + ":", safe="")
+    older = total = 0
+    for _k, stored in store.list_modified(prefix):
+        total += 1
+        if stored < cutoff:
+            older += 1
+        if total >= max_objects:
+            return older, total, True
+    return older, total, False
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", action="append")
@@ -117,25 +141,57 @@ def main() -> int:
     ap.add_argument("--max-objects", type=int, default=200_000)
     a = ap.parse_args()
 
-    served = _served_sources()
+    from core import cutover                                          # noqa: PLC0415
+    if cutover.is_cut_over():
+        # AFTER T0 the catalogue is the LIVE build: refuse outside the live checkout BEFORE reading it, and count it
+        # in short primary-key chunks - one GROUP BY holds the build's read lock and the writer waits (R1249)
+        from updater import blob                                      # noqa: PLC0415
+        blob.refuse_unless_live_checkout("audit_csv_staleness (after T0 it judges the live store)")
+        import collections                                            # noqa: PLC0415
+        from core import catalog_path                                 # noqa: PLC0415
+        _con = catalog_path.connect()
+        try:
+            served = dict(collections.Counter(s for (s,) in catalog_path.iter_series(_con, ("source_id",))))
+        finally:
+            _con.close()
+    else:
+        served = _served_sources()
     targets = a.source or sorted(served)
     if a.never_ok_only:
         never = _never_ok_sources()
         targets = [t for t in targets if t in never]
     print(f"screening {len(targets)} source(s); cap {a.max_objects:,} objects each\n")
 
-    s3 = r2_util.client()
+    if cutover.is_cut_over():
+        # AFTER T0 (plan step 6d): the parquets are the live local store and the served CSVs the self-hosted
+        # store (R2 is a frozen copy) - the live-checkout refusal ran above, before the catalogue was read
+        from updater import blob                                      # noqa: PLC0415
+        _store = blob.SelfhostBlob()
+
+        def newest_of(src):
+            return _newest_parquet_local(src)
+
+        def ages_of(src, cutoff):
+            return _csv_ages_selfhost(_store, src, cutoff, a.max_objects)
+    else:
+        s3 = r2_util.client()
+
+        def newest_of(src):
+            return _newest_parquet(s3, src)
+
+        def ages_of(src, cutoff):
+            return _csv_ages(s3, src, cutoff, a.max_objects)
     stale, clean, partial_scan, nodata = [], [], [], []
     for src in targets:
         try:
-            newest = _newest_parquet(s3, src)
+            newest = newest_of(src)
         except Exception as e:                                        # noqa: BLE001
             print(f"  {src:24s} ERROR listing store: {e}")
             continue
         if newest is None:
             nodata.append(src)
             continue
-        older, total, trunc = _csv_ages(s3, src, newest, a.max_objects)
+        older, total, trunc = ages_of(src, newest)
         if total == 0:
             nodata.append(src)
             continue

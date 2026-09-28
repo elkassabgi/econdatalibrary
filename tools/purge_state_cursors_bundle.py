@@ -101,6 +101,8 @@ def load_receipts(path: str) -> list[dict]:
 
 
 def main() -> int:
+    from core import cutover                                         # noqa: PLC0415
+    cutover.refuse_if_cut_over("purge_state_cursors_bundle - it reads R2 (a frozen copy after T0) to rewrite the live state.db")
     ap = argparse.ArgumentParser()
     ap.add_argument("--receipts", required=True)
     ap.add_argument("--apply", action="store_true")

@@ -68,25 +68,52 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=12)
     a = ap.parse_args()
 
+    from core import cutover                                  # noqa: PLC0415
+    selfhosted = cutover.is_cut_over()
+    if selfhosted:
+        # AFTER T0 the catalogue is the LIVE build: refuse outside the live checkout BEFORE reading it (R1249)
+        from updater import blob                              # noqa: PLC0415
+        blob.refuse_unless_live_checkout("sample_source_coverage (after T0 it judges the live store)")
+
     con = catalog_path.connect(timeout=300)
-    total = con.execute("SELECT COUNT(*) FROM series WHERE source_id=?", (a.source,)).fetchone()[0]
+    if selfhosted:
+        # PRIMARY-KEY RANGE, not `source_id=?` (no index: a full scan holding the live build's read lock, R1249).
+        # ";" is the byte after ":".
+        rng = (a.source + ":", a.source + ";")
+        total = con.execute("SELECT COUNT(*) FROM series WHERE series_id >= ? AND series_id < ?", rng).fetchone()[0]
+    else:
+        total = con.execute("SELECT COUNT(*) FROM series WHERE source_id=?", (a.source,)).fetchone()[0]
     if total == 0:
         print(f"{a.source}: 0 catalogued series — nothing to sample.")
         return 0
     n = min(a.sample, total)
-    ids = [r[0] for r in con.execute(
-        "SELECT series_id FROM series WHERE source_id=? ORDER BY RANDOM() LIMIT ?",
-        (a.source, n))]
+    if selfhosted:
+        ids = [r[0] for r in con.execute(
+            "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ? ORDER BY RANDOM() LIMIT ?",
+            (*rng, n))]
+    else:
+        ids = [r[0] for r in con.execute(
+            "SELECT series_id FROM series WHERE source_id=? ORDER BY RANDOM() LIMIT ?",
+            (a.source, n))]
     con.close()
 
-    s3 = r2_util.client()
+    where = "R2"
+    if selfhosted:
+        # AFTER T0 (plan step 6d): the CSVs users get live in the self-hosted store; R2 is a frozen copy.
+        # exists() answers from the store's index - no exception is read as "absent".
+        store, where = blob.SelfhostBlob(), "the self-hosted store"
 
-    def present(sid: str) -> bool:
-        try:
-            s3.head_object(Bucket=a.bucket, Key=_key_for(sid, a.prefix))
-            return True
-        except Exception:                                     # noqa: BLE001
-            return False
+        def present(sid: str) -> bool:
+            return store.exists(_key_for(sid, a.prefix))
+    else:
+        s3 = r2_util.client()
+
+        def present(sid: str) -> bool:
+            try:
+                s3.head_object(Bucket=a.bucket, Key=_key_for(sid, a.prefix))
+                return True
+            except Exception:                                 # noqa: BLE001
+                return False
 
     with cf.ThreadPoolExecutor(max_workers=a.workers) as ex:
         hits = list(ex.map(present, ids))
@@ -96,7 +123,7 @@ def main() -> int:
     print(f"{a.source}")
     print(f"  catalogued        : {total:,}")
     print(f"  SAMPLED           : {len(ids):,}  (random over the whole key space, not a prefix)")
-    print(f"  present in R2     : {k:,}")
+    print((f"  present in R2     : {k:,}" if where == "R2" else f"  present in {where}: {k:,}"))
     print(f"  coverage          : {k/len(ids):.1%}   95% CI [{lo:.1%}, {hi:.1%}]")
     print(f"  implies missing   : ~{round(total*(1-hi)):,} to ~{round(total*(1-lo)):,} series")
     print()

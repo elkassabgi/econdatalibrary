@@ -51,16 +51,58 @@ def local_store_files(source: str) -> set[str]:
     return {f[: -len(".parquet")] for f in os.listdir(d) if f.endswith(".parquet")}
 
 
-def catalogue_ids(source: str) -> set[str]:
+def catalogue_ids(source: str, pk_range: bool = False) -> set[str]:
     try:
         con = catalog_path.connect()
     except FileNotFoundError:                 # no catalogue here: as before, no ids
         return set()
     try:
+        if pk_range:
+            # PRIMARY-KEY RANGE, not WHERE source_id=?: series has only its PK index, so the source_id form is a
+            # full scan that holds a shared lock while writers wait (R715/R721) - after T0 this tool reads the LIVE
+            # catalogue. ";" is the byte after ":".
+            return {r[0].split(":", 1)[1] for r in con.execute(
+                "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?", (source + ":", source + ";"))}
         return {r[0].split(":", 1)[1] for r in con.execute(
             "SELECT series_id FROM series WHERE source_id=?", (source,))}
     finally:
         con.close()
+
+
+def main_selfhosted(a) -> int:
+    """AFTER T0 (plan step 6d): the local store of the LIVE checkout is the store users are served from, and R2 is
+    a frozen copy - so the answer is the local tree, and only from the live checkout (anywhere else the local tree
+    is a worktree's scratch, the exact mistake this tool exists to prevent). R2 is not asked."""
+    from updater import blob                                         # noqa: PLC0415
+    blob.refuse_unless_live_checkout("store_inventory (after T0 it counts the live store)")
+    # EVERY FILE UNDER THE SOURCE (recursive). The top-level os.listdir counted bea as 1 file of 592 and edgar_13f
+    # as 0 of 371 (R1242). And the count is FILES, not distinct names: partitioned stores repeat one name per
+    # partition - edgar_pointers 256 files / 1 name, edgar_13f 371 / 7 (R1243). Names are kept apart, because
+    # catalogue ids are compared with file NAMES below.
+    loc, n_files = set(), 0
+    for _dirpath, _dirs, files in os.walk(os.path.join(ROOT, "data", "clean_full", a.source)):
+        for f in files:
+            if f.endswith(".parquet"):
+                n_files += 1
+                loc.add(f[: -len(".parquet")])
+    cat = catalogue_ids(a.source, pk_range=True)
+    print(f"{a.source}")
+    print(f"  local store files : {n_files:>7,}   <- THE STORE (self-hosted since T0; R2 is a frozen copy)")
+    if len(loc) != n_files:
+        print(f"  distinct file names: {len(loc):>6,}   (partitions repeat a name; ids are compared by name)")
+    print(f"  catalogue ids     : {len(cat):>7,}")
+    if cat:
+        if cat & loc:
+            missing = cat - loc
+            print(f"  catalogued ids with NO store file: {len(missing):,}"
+                  + (f"  {sorted(missing)[:8]}" if missing else ""))
+        else:
+            print(f"  (catalogue ids are not file stems for this source — {len(cat):,} ids "
+                  f"live INSIDE the files; use the source's own resolver to check coverage, "
+                  f"not a filename set difference)")
+    if a.names:
+        print(f"\n  store stems ({len(loc)}): {sorted(loc)}")
+    return 0
 
 
 def main() -> int:
@@ -68,6 +110,9 @@ def main() -> int:
     ap.add_argument("source")
     ap.add_argument("--names", action="store_true", help="list the stems, not just counts")
     a = ap.parse_args()
+    from core import cutover                                         # noqa: PLC0415
+    if cutover.is_cut_over():
+        return main_selfhosted(a)
 
     try:
         r2 = r2_store_files(a.source)

@@ -100,6 +100,11 @@ def d1_ids(source: str) -> set:
 
 
 def main() -> int:
+    # STEP 6d: this question has no meaning after T0 - refused first (tests/test_verifiers_6d.py)
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import cutover                                          # noqa: PLC0415
+    cutover.refuse_if_cut_over("audit_d1_vs_catalog - D1 is frozen after T0; the origin serves the local catalogue's copies")
     ap = argparse.ArgumentParser()
     ap.add_argument("--sample", type=int, default=3,
                     help="ids to FETCH per gap before calling it anything")

@@ -183,7 +183,7 @@ def _apply(a, out_dir, cur_path, stored, matrices, parquet, runs_needed) -> int:
     blob.delete_store_object(parquet)
     print(f"  backed up -> {where}, deleted {parquet if cutover.is_cut_over() else 'r2://' + blob._path_to_key(parquet)}")
     print(f"\n  NEXT: let the daily run proceed (~{runs_needed} run(s)), then re-check with\n"
-          f"    python tools/audit_impossible_dates.py {'' if cutover.is_cut_over() else '--r2 '}--source cso")
+          f"    python tools/audit_impossible_dates.py {'--local' if cutover.is_cut_over() else '--r2'} --source cso")
     return 0
 
 
