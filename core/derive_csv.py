@@ -103,6 +103,15 @@ def _series_csv_to_file_sorted(series_id: str, out_path: str) -> int:
     res = _resolve.resolve(series_id)
     if res.dedup_on or res.stamp_id or not res.tidy_ok:
         raise ValueError(f"{series_id}: not eligible for sorted streaming")
+    # ENFORCED, NOT ONLY SAID (review R1131). The SQL below keeps every non-null key and drops the
+    # resolver's predicate. For anything but the whole-file predicate that serves the WRONG rows
+    # and reports success: an ilostat part id came out 4,668,989 lines against 59,366, a legacy id
+    # 420,570 against 52, and null-value rows appeared - all "put=1 failed=0". Refuse instead.
+    import pyarrow.compute as _pc                                    # noqa: PLC0415
+    import pyarrow.dataset as _pds                                   # noqa: PLC0415
+    if res.predicate is not None and not res.predicate.equals(_pc.is_valid(_pds.field(res.key_col))):
+        raise ValueError(f"{series_id}: its resolver selects a SUBSET of the file "
+                         f"({res.predicate}); the file-grain stream would serve the whole file")
     src = _duck_source(res)          # one quoted path, or a DuckDB list of them
     key = res.key_col.replace('"', '""')
     fd, plain = _tf.mkstemp(suffix=".csv", prefix="ddb_")
