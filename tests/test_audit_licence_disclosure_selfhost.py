@@ -29,18 +29,14 @@ def test_after_t0_the_build_is_the_serving_catalogue(tmp_path, monkeypatch, caps
     monkeypatch.setattr(L, "classifications", lambda: {"zz": "redistributable_attribution"})
     monkeypatch.setattr(L, "granted", lambda: {})
     (tmp_path / "CUTOVER").write_text("")
-    real, sql = catalog_path.connect, []
-
-    def traced(*a, **k):
-        con = real(*a, **k)
-        con.set_trace_callback(sql.append)
-        return con
-    monkeypatch.setattr(catalog_path, "connect", traced)
+    import _bounded_reads                                  # the ONE predicate (review R1267: this test had its own)
+    check = _bounded_reads.trace_series_reads(monkeypatch)
     monkeypatch.setattr(sys, "argv", ["audit_licence_disclosure.py"])
     L.main()
-    # R1243 LD2: after T0 main() must take the CHUNKED read - one GROUP BY over the live build holds its lock
-    series_reads = [q for q in sql if "FROM series" in q]
-    assert series_reads and not any("GROUP BY" in q for q in series_reads), series_reads
+    # R1243 LD2: after T0 main() must take the CHUNKED read - one GROUP BY over the live build holds its lock; and
+    # every read bounded (R1267 M11: main() calling served_from_build(chunk=10**12) passed the GROUP BY check)
+    series_reads, bad = check()
+    assert series_reads and not bad, bad
     out = capsys.readouterr().out
     assert "read from: the catalogue BUILD (the origin serves the copy made at the last swap" in out, out
 
