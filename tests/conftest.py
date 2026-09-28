@@ -160,3 +160,16 @@ def _no_state_sync_from_a_test(request):
     if request.node.get_closest_marker("state_sync_refusal_expected"):
         return
     assert not started, f"this test started a state sync (refused, but the attempt is the bug): {started}"
+
+
+
+@pytest.fixture(autouse=True)
+def _fresh_merge_served_cache():
+    """AND NO TEST INHERITS ANOTHER TEST'S REGISTRY. derive._merge_served_sources() caches the registry's
+    csv_merge_served set on the function (#79). A test that read it while the registry was faked left a set
+    without ecb, and every later ecb merge test uploaded an unmerged CSV (found by the 2026-09-28 merge train,
+    order-dependent: the full suite's order hid it). Cleared before and after each test."""
+    from updater import derive
+    derive._merge_served_sources._cache = None
+    yield
+    derive._merge_served_sources._cache = None

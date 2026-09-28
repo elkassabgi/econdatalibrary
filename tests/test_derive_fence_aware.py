@@ -356,3 +356,31 @@ def test_the_served_csv_merge_lets_the_fence_through(monkeypatch, alarm, wedge):
     with pytest.raises(orchestrate.UnitTimeout):
         derive.derive_and_put(["zz:wedged", "zz:after"], blob, budget_min=0)
     assert time.monotonic() - t0 < 4.0 and blob.put == [], blob.put
+
+
+
+@pytest.mark.parametrize("how", ["direct", "disguised"])
+def test_the_fence_inside_the_registry_read_is_not_swallowed_or_cached(monkeypatch, how):
+    """The alarm landing inside _merge_served_sources' registry read was swallowed by its `except Exception` AND an
+    empty set was cached - ecb's served-CSV merge switched off for the rest of the process. It must propagate and
+    leave nothing cached (deterministic: registry.load raises what the alarm would)."""
+    from updater import registry
+    monkeypatch.setattr(derive._merge_served_sources, "_cache", None)
+    monkeypatch.setattr(orchestrate, "UNIT_TIMEOUT_FIRED", how == "disguised")
+
+    def load():
+        if how == "direct":
+            raise orchestrate.UnitTimeout("alarm inside the registry read (test)")
+        raise RuntimeError("Query interrupted")                   # the fence in another library's clothes
+    monkeypatch.setattr(registry, "load", load)
+    with pytest.raises(orchestrate.UnitTimeout):
+        derive._merge_served_sources()
+    assert derive._merge_served_sources._cache is None, "a fence trip must not cache an empty merge set"
+
+
+def test_negative_control_an_unreadable_registry_still_declares_nothing(monkeypatch):
+    from updater import registry
+    monkeypatch.setattr(derive._merge_served_sources, "_cache", None)
+    monkeypatch.setattr(orchestrate, "UNIT_TIMEOUT_FIRED", False)
+    monkeypatch.setattr(registry, "load", lambda: (_ for _ in ()).throw(ValueError("bad yaml (test)")))
+    assert derive._merge_served_sources() == set()

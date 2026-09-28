@@ -150,11 +150,18 @@ def _merge_served_sources() -> set:
     Cached; a registry that cannot be read declares nothing."""
     cache = _merge_served_sources.__dict__.setdefault("_cache", None)
     if cache is None:
+        fence = _fence_exc()
         try:
             from . import registry                                     # noqa: PLC0415
             cache = {e.get("source_id") for e in registry.load().get("sources", [])
                      if e.get("csv_merge_served") is True}
-        except Exception:                                              # noqa: BLE001
+        except fence:
+            # THE FENCE, landing inside the registry read (2026-09-28 merge train): it was swallowed here AND an
+            # empty set was cached, which switched ecb's served-CSV merge off for the rest of the process. The
+            # fence ends the phase and nothing is cached.
+            raise
+        except Exception as e:                                         # noqa: BLE001
+            _raise_if_fence_in_disguise(fence, e)
             cache = set()
         _merge_served_sources._cache = cache
     return cache
