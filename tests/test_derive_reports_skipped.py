@@ -63,9 +63,10 @@ def fake_bytes(monkeypatch):
     at line 38), not the one in core.derive_csv - patching the source module leaves the
     already-bound reference untouched and the test silently exercises the real deriver.
 
-    AQUEDUCT_DERIVE_WORKERS=1 is load-bearing, not tidiness: above one worker `_blob()` builds
-    its own handle per thread with `blob_mod.from_env()` and the FakeBlob passed in is never
-    used at all.
+    AQUEDUCT_DERIVE_WORKERS=1 keeps the order of puts fixed. (It was load-bearing until R1204: above one
+    worker `_blob()` built its own handle per thread with `blob_mod.from_env()`, so the FakeBlob passed in
+    was never used - and in production a LocalBlob wrote CSVs to relative local paths. Every thread now
+    writes the store it is given: tests/test_derive_threads_share_the_store.py.)
     """
     monkeypatch.setattr(derive_mod, "_series_csv_bytes",
                         lambda sid: b"date,value\n2020,1\n")

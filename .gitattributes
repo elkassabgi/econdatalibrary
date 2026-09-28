@@ -1,0 +1,3 @@
+# Shell scripts Ahmed runs from Git Bash on Windows must keep LF endings: with core.autocrlf=true a
+# checkout gives them CRLF and bash fails on the stray carriage returns.
+tools/selfhost/*.sh text eol=lf

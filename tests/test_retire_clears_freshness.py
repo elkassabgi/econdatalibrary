@@ -27,8 +27,35 @@ REQUIRED = ("series", "source", "source_counts",
 
 
 def _deleted_tables(name: str) -> set:
+    """The tables the tool clears. Since the licence tools moved onto core/licence_targets.py (plan 5,
+    commit 0d9bba3e0) the deletes live THERE: the tool must go through Targets for both roads - the D1
+    plan before T0 (d1_execute) and the build after T0 (remove_source_rows) - and the tables are what
+    Targets deletes on each road. Both roads must clear every table: before T0 D1 is what users see,
+    after T0 the build is."""
+    from core import licence_targets as LT
     src = open(os.path.join(ROOT, "tools", name), encoding="utf-8").read()
-    return set(re.findall(r"DELETE FROM (\w+) WHERE source_id=", src))
+    if "remove_source_rows(" not in src or "d1_execute(" not in src:
+        return set(re.findall(r"DELETE FROM (\w+) WHERE source_id=", src))    # a tool that left Targets
+    d1 = {re.match(r"DELETE FROM (\w+) WHERE source_id=", st).group(1)
+          for _db, stmts in LT.Targets.d1_plan("probe_source") for st in stmts}
+    return d1 & _built_after_t0()
+
+
+def _built_after_t0() -> set:
+    """The tables remove_source_rows clears after T0, measured on a scratch build that has all of them."""
+    import sqlite3
+    import tempfile
+
+    from core import licence_targets as LT
+    con = sqlite3.connect(":memory:")
+    for t in REQUIRED:
+        con.execute(f"CREATE TABLE {t} (source_id TEXT, series_id TEXT)")
+        con.execute(f"INSERT INTO {t} VALUES ('probe_source', 'probe_source:1')")
+    t = LT.Targets.__new__(LT.Targets)
+    t.selfhosted = True
+    with tempfile.TemporaryDirectory():
+        t.remove_source_rows(con, "probe_source")
+    return {x for x in REQUIRED if con.execute(f"SELECT COUNT(*) FROM {x}").fetchone()[0] == 0}
 
 
 def test_both_tools_clear_every_table_that_keeps_a_source_visible():
@@ -54,3 +81,10 @@ def test_the_freshness_tables_are_named_explicitly():
         got = _deleted_tables(name)
         for t in ("unit_state", "source_state", "source_data_through"):
             assert t in got, f"{name} stopped clearing {t}"
+
+
+def test_the_measurement_can_fail(monkeypatch):
+    """Planted: a Targets that forgets one table on either road is caught."""
+    from core import licence_targets as LT
+    monkeypatch.setattr(LT, "SOURCE_TABLES", tuple(t for t in LT.SOURCE_TABLES if t != "source_state"))
+    assert "source_state" not in _deleted_tables("retire_source.py")
