@@ -21,11 +21,11 @@ from __future__ import annotations
 
 import os
 import re
-import sqlite3
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 
 from updater import health, registry                        # noqa: E402
 
@@ -39,8 +39,7 @@ def supported_sources() -> set:
 
 def main() -> int:
     sup = supported_sources()
-    cat = {r[0]: r[1] for r in sqlite3.connect(
-        os.path.join(ROOT, "data", "catalog.db")).execute(
+    cat = {r[0]: r[1] for r in catalog_path.connect().execute(
         "SELECT source_id, COUNT(*) FROM series GROUP BY source_id")}
     reg = {e["source_id"]: e for e in registry.load().get("sources", [])}
     rep = health.assess()

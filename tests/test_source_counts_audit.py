@@ -111,18 +111,21 @@ class ExitCodeTrichotomy(unittest.TestCase):
     """
 
     def test_missing_wrangler_raises_a_catchable_exception(self):
+        """The road is core.d1_remote now (plan step 1); its missing-wrangler error must stay catchable."""
         import tools.audit_d1_source_counts as mod
-        real_exists, real_which = os.path.exists, mod.shutil.which
-        mod.os.path.exists = lambda p: False
-        mod.shutil.which = lambda p: None
+        from core import cutover, d1_remote
+        real_js, real_flag = d1_remote.WRANGLER_JS, cutover.FLAG_PATH
+        d1_remote.WRANGLER_JS = os.path.join(os.path.dirname(__file__), "no-such-wrangler.js")
+        cutover.FLAG_PATH = os.path.join(os.path.dirname(__file__), "no-such-dir", "CUTOVER")
         try:
             with self.assertRaises(Exception) as ctx:
-                mod._wrangler()
+                mod.d1("econ-catalog", "SELECT 1")
             self.assertNotIsInstance(ctx.exception, SystemExit,
                                      "SystemExit escapes `except Exception` and exits 1, which "
                                      "this tool defines as a FINDING rather than a failure")
+            self.assertIn("no wrangler", str(ctx.exception))
         finally:
-            mod.os.path.exists, mod.shutil.which = real_exists, real_which
+            d1_remote.WRANGLER_JS, cutover.FLAG_PATH = real_js, real_flag
 
 
 if __name__ == "__main__":

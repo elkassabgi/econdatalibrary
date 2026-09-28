@@ -23,6 +23,10 @@ BUCKET = "econ-data"
 
 
 def main() -> int:
+    # RETIRE AT T0 (docs/ECON_SELF_HOSTING_PLAN.md; tests/test_object_writers_ratchet.py): R2 and D1 are
+    # frozen then. Refused FIRST - before arguments, credentials or any read (tests/test_retired_at_t0_tools.py).
+    from core import cutover                                          # noqa: PLC0415
+    cutover.refuse_if_cut_over('_upload_biotrademerch_store (it only uploads to R2)')
     local = os.path.abspath(LOCAL)
     size = os.path.getsize(local)
     print(f"[{time.strftime('%H:%M:%SZ', time.gmtime())}] uploading {size:,} bytes -> r2://{BUCKET}/{KEY}", flush=True)

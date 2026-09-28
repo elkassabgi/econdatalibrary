@@ -40,14 +40,14 @@ import io
 import json
 import os
 import re
-import sqlite3
-import subprocess
 import sys
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB = os.path.join(ROOT, "data", "catalog.db")
-UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
+sys.path.insert(0, ROOT)
+from core import catalog_path, cutover, d1_remote  # noqa: E402 - the catalogue resolver and the D1 road (plan step 1)
+
+UA ={"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 CHUNK = 400          # statements per wrangler invocation
 
@@ -66,9 +66,10 @@ def sec_ticker_map():
 
 def plan():
     bycik, byticker = sec_ticker_map()
-    con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
+    con = catalog_path.connect()                                     # read-only: the checkout's, or the build after T0
     rows = con.execute(
         "SELECT series_id, title FROM series WHERE source_id='sec_edgar'").fetchall()
+    con.close()
     out = []
     for sid, title in rows:
         tick = sid.split(":", 1)[1]
@@ -95,11 +96,20 @@ def plan():
 
 
 def write_local(changes):
-    con = sqlite3.connect(DB)
-    con.executemany("UPDATE series SET title=? WHERE series_id=?",
-                    [(n, s) for s, n, _ in changes])
-    con.commit()
-    return con.total_changes
+    """The catalogue's titles. After T0 the catalogue is the live build: written only from the live checkout
+    (as every served-store writer), under the single-writer lock."""
+    if cutover.is_cut_over():
+        from updater import blob                                     # noqa: PLC0415
+        blob.refuse_unless_live_checkout("enrich_sec_edgar_tickers (it writes the catalogue build)")
+    with catalog_path.write_session():
+        con = catalog_path.connect(write=True)
+        try:
+            con.executemany("UPDATE series SET title=? WHERE series_id=?",
+                            [(n, s) for s, n, _ in changes])
+            con.commit()
+            return con.total_changes
+        finally:
+            con.close()
 
 
 def d1_sql(changes):
@@ -128,25 +138,17 @@ FTS_REBUILD = [
 
 
 def run_d1(stmts):
-    wdir = os.path.join(ROOT, "api", "worker")
+    """Through core.d1_remote.execute_file (plan step 1): the repo's pinned wrangler, `--remote --file`, the
+    output decoded as UTF-8 (cp1252 could not map wrangler's bytes and hid the real error - the reason the old
+    subprocess call carried encoding/errors), and a refusal after T0. One attempt per chunk, as before."""
     tmp = os.path.join(ROOT, "data", "_sec_ticker_titles.sql")
     done = 0
     for i in range(0, len(stmts), CHUNK):
         io.open(tmp, "w", encoding="utf-8").write("\n".join(stmts[i:i + CHUNK]))
-        # encoding/errors are REQUIRED here: text=True alone decodes with the
-        # Windows ANSI codepage, and wrangler's output contains bytes cp1252 cannot
-        # map — which raises UnicodeDecodeError from inside subprocess and kills the
-        # run for a reason that has nothing to do with the SQL. Then `r.stderr` is
-        # None, so a handler doing `(r.stderr or r.stdout)[-400:]` crashes on top of
-        # the real error and hides it.
-        r = subprocess.run(
-            ["npx", "wrangler", "d1", "execute", "econ-catalog", "--remote",
-             "--file", tmp, "-y"],
-            cwd=wdir, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", shell=(os.name == "nt"))
-        if r.returncode != 0:
-            msg = (r.stderr or "") + (r.stdout or "") or "(no output captured)"
-            print(f"  FAILED at statement {i}: {msg[-500:]}", flush=True)
+        try:
+            d1_remote.execute_file("econ-catalog", tmp, timeout=1800)
+        except RuntimeError as e:                                    # D1Unreachable is one too
+            print(f"  FAILED at statement {i}: {str(e)[-500:]}", flush=True)
             return done
         done += len(stmts[i:i + CHUNK])
         print(f"  applied {done:,}/{len(stmts):,} statements", flush=True)
@@ -156,6 +158,9 @@ def run_d1(stmts):
 
 
 def main():
+    if "--d1" in sys.argv:
+        # before anything is fetched or written: after T0 D1 is frozen (d1_remote refuses too - this says so first)
+        cutover.refuse_if_cut_over("enrich_sec_edgar_tickers --d1 (D1 is frozen; the local catalogue is served)")
     changes = plan()
     differing = [c for c in changes if c[1] != c[2]]
     print(f"sec_edgar ticker-keyed series: {len(changes):,}  "
@@ -165,7 +170,7 @@ def main():
     if not changes:
         return 0
     n = write_local(changes)
-    print(f"local catalog.db rows updated: {n:,}")
+    print(f"local catalogue rows updated: {n:,}")
     if "--d1" in sys.argv:
         stmts = d1_sql(changes)
         print(f"applying {len(stmts):,} D1 series UPDATEs ({CHUNK} per call) ...")
@@ -181,6 +186,9 @@ def main():
         else:
             print("SKIPPING series_fts rebuild — `series` is only partially applied, "
                   "and the rebuild copies FROM series, so it would index stale text.")
+    elif cutover.is_cut_over():
+        print("after T0 the catalogue build IS what users are served (D1 is frozen): the new titles reach "
+              "them with the next blue/green swap, tools/selfhost/swap.py.")
     else:
         print("D1 NOT written (pass --d1). The worker reads D1, so a local-only "
               "change is invisible to users.")
@@ -188,4 +196,6 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    with catalog_path.write_session():   # after T0: the single-writer lock, for the whole run
+        rc = main()
+    sys.exit(rc)

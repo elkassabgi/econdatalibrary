@@ -45,20 +45,19 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sqlite3
 import sys
 import tempfile
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 
 from connectors.worldbank_esg.connector import INDICATORS  # noqa: E402  the curated set
 from core import r2_util  # noqa: E402
 
 SOURCE = "worldbank_esg"
 BUCKET = "econ-data"
-CATALOG = os.path.join(ROOT, "data", "catalog.db")
 LICENSE_ID = "cc-by-4.0"
 
 # Publisher-confirmed renames: each successor id is the publisher's CURRENT id for exactly the
@@ -122,6 +121,12 @@ def published_names() -> dict[str, str]:
 
 
 def main() -> int:
+    # AFTER T0 this tool reads the FROZEN cloud copy and writes the live local data: refused first, before
+    # its arguments (neither the R2 guard nor d1_remote stops a READ; tests/test_verifiers_6d.py lists why).
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import cutover                                          # noqa: PLC0415
+    cutover.refuse_if_cut_over('catalog_worldbank_esg_gaps - it reads R2 to decide what to catalogue, and R2 is frozen after T0')
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true",
                     help="write the rows; without it this is a dry run")
@@ -135,7 +140,7 @@ def main() -> int:
     names = published_names()
     print(f"publisher: {len(econ)} economies, {len(names)} source-75 indicators")
 
-    con = sqlite3.connect(CATALOG)
+    con = catalog_path.connect(write=True)
     have = {r[0] for r in con.execute(
         "SELECT series_id FROM series WHERE source_id=?", (SOURCE,))}
     print(f"catalogue: {len(have):,} worldbank_esg rows\n")
@@ -210,4 +215,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    with catalog_path.write_session():   # after T0: the single-writer lock
+        sys.exit(main())

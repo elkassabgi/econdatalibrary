@@ -44,7 +44,6 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
-import sqlite3
 import time
 import urllib.error
 import urllib.parse
@@ -96,15 +95,21 @@ def _published_indicators(source_id: str, prefix: str) -> list[str]:
     `<source>:<PREFIX>:<INDICATOR>.<dims...>`, so the indicator is the first dot-segment of
     the part after the prefix.
     """
-    path = os.environ.get("ECONDL_CATALOG") or os.path.join(config.ROOT, "data", "catalog.db")
+    from core import catalog_path                                  # noqa: PLC0415 - plan step 1
+    path = catalog_path.under(config.ROOT)
     if not os.path.exists(path):
-        raise TransientError(f"{source_id}: catalog.db not present at {path}; cannot "
+        raise TransientError(f"{source_id}: no catalogue at {path}; cannot "
                              f"determine which indicators to fetch")
-    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
-        rows = con.execute("SELECT series_id FROM series WHERE source_id=?", (source_id,)).fetchall()
-    finally:
-        con.close()
+        con = catalog_path.connect_path(path, write=False)
+        try:
+            rows = con.execute("SELECT series_id FROM series WHERE source_id=?", (source_id,)).fetchall()
+        finally:
+            con.close()
+    except catalog_path.CutoverRefused:
+        raise                                                 # a wrong checkout after T0: not transient
+    except Exception as e:                                    # noqa: BLE001 - garbage, a hot journal
+        raise TransientError(f"{source_id}: catalogue unreadable: {e!r}") from e
     tag = f"{prefix}:"
     out = set()
     for (sid,) in rows:

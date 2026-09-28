@@ -207,9 +207,30 @@ if ($WhatIf) {
     exit 0
 }
 
+# --- AFTER T0 (econ self-hosted, docs/ECON_SELF_HOSTING_PLAN.md): no cloud state writer exists, state.db is
+# --- local (no pull, no push), the store is the self-hosted one (AQUEDUCT_BACKEND=selfhost), and the updater
+# --- holds the single-writer lock for its whole run. Asked of core.cutover - the ONE rule, which counts an
+# --- unreadable flag as cut over - never re-derived here. An answer that is not 0 or 1 stops the pass.
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    $cutOut = (& $pythonExe -c "import sys; sys.path.insert(0, r'$repo'); from core import cutover; print(int(cutover.is_cut_over()))" 2>&1 | Out-String).Trim()
+    $cutRc = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $prevEap
+}
+if ($cutRc -ne 0 -or ($cutOut -ne '0' -and $cutOut -ne '1')) {
+    Say ("ABORT: cannot tell whether econ is past T0 (exit " + $cutRc + ": " + ($cutOut -replace '\s+', ' ') + ")")
+    exit 2
+}
+$selfHosted = ($cutOut -eq '1')
+if ($selfHosted) { Say "after T0: self-hosted - no CI gate, no state pull/push, store = the self-hosted one" }
+
 # --- DO NOT RACE CI. Both writers compare-and-swap on the state ETag, so an overlap makes
 # --- one of them lose its entire run (push_state exits 2, "another writer won"). Ledger R5.
-if (-not $SkipCiCheck) {
+if ($selfHosted) {
+    Say "after T0: the CI writer gate is not asked (the cloud updater workflows are disabled at T0)"
+} elseif (-not $SkipCiCheck) {
     # EVERY CLOUD STATE WRITER, AND A CRON GITHUB HAS NOT STARTED YET (tools/ci_writer_gate.py).
     # This used to ask only whether an updater-daily run was in flight. GitHub now starts the
     # scheduled runs hours late (06:00Z daily at 10:07-12:06Z, measured 2026-09-03..15), so on
@@ -250,7 +271,7 @@ if (-not $SkipCiCheck) {
     Say "CI idle and no scheduled run pending - safe to proceed"
 }
 
-$env:AQUEDUCT_BACKEND = 'r2'
+if ($selfHosted) { $env:AQUEDUCT_BACKEND = 'selfhost' } else { $env:AQUEDUCT_BACKEND = 'r2' }
 # CI sets this; without it a multi-hour local run shows almost nothing until a buffer fills,
 # and "silent" is indistinguishable from "hung" on a job that legitimately takes hours.
 $env:PYTHONUNBUFFERED = '1'
@@ -304,7 +325,9 @@ if (-not $env:AQUEDUCT_RUN_BUDGET_MIN)      { $env:AQUEDUCT_RUN_BUDGET_MIN      
 # part-by-part (R190), so stopping on budget defers work rather than discarding it.
 $marginMin = 25
 if ($null -eq $script:SinceLastHours) { $script:SinceLastHours = 9999 }
-if ($SkipCiCheck) {
+if ($selfHosted) {
+    Say "after T0: the run budget is not clamped to a CI schedule (no cloud writer; the updater holds the lock)"
+} elseif ($SkipCiCheck) {
     Say ("-SkipCiCheck: the run budget is NOT clamped to the CI schedule either. You are asserting the " +
          "state store is yours for this whole pass (R5).")
 } else {
@@ -399,12 +422,16 @@ function Release-LocalHeavyLock {
     Remove-Item $script:lockFile -ErrorAction SilentlyContinue
 }
 
-Say "pull-state ..."
-& $pythonExe -m updater.run --pull-state
-if ($LASTEXITCODE -ne 0) {
-    Say ("pull-state FAILED (" + $LASTEXITCODE + ") - aborting before any write")
-    Release-LocalHeavyLock
-    exit 1
+if ($selfHosted) {
+    Say "after T0: no state pull - state.db is local (updater.run refuses a state pull after T0)"
+} else {
+    Say "pull-state ..."
+    & $pythonExe -m updater.run --pull-state
+    if ($LASTEXITCODE -ne 0) {
+        Say ("pull-state FAILED (" + $LASTEXITCODE + ") - aborting before any write")
+        Release-LocalHeavyLock
+        exit 1
+    }
 }
 
 # NOT $args - that is a reserved automatic variable and assigning to it breaks arg passing.
@@ -547,11 +574,17 @@ if ($hardStopped) {
 # honestly refreshed the others, and discarding that is the opposite of the honest-status
 # contract. push_state's compare-and-swap is what makes this safe - it cannot overwrite a
 # newer remote state, it refuses with exit 2.
-Say "push-state ..."
-& $pythonExe -m updater.run --push-state
-$pushRc = $LASTEXITCODE
-if ($pushRc -ne 0) {
-    Say ("push-state FAILED (" + $pushRc + ") - state NOT committed")
+if ($selfHosted) {
+    # the updater wrote the local state.db itself, under the writer lock: committed as it went
+    Say "after T0: no push-state - the run's state is already in the local state.db"
+    $pushRc = 0
+} else {
+    Say "push-state ..."
+    & $pythonExe -m updater.run --push-state
+    $pushRc = $LASTEXITCODE
+    if ($pushRc -ne 0) {
+        Say ("push-state FAILED (" + $pushRc + ") - state NOT committed")
+    }
 }
 
 # Stamp the cadence clock ONLY IF THE RUN'S WORK WAS RECORDED. "Genuinely ran" is not the

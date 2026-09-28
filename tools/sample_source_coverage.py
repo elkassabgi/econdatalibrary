@@ -29,12 +29,12 @@ import argparse
 import concurrent.futures as cf
 import math
 import os
-import sqlite3
 import sys
 import urllib.parse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 
 from core import r2_util                                      # noqa: E402
 
@@ -68,8 +68,7 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=12)
     a = ap.parse_args()
 
-    cat = os.path.join(ROOT, "data", "catalog.db")
-    con = sqlite3.connect(f"file:{cat}?mode=ro", uri=True, timeout=300)
+    con = catalog_path.connect(timeout=300)
     total = con.execute("SELECT COUNT(*) FROM series WHERE source_id=?", (a.source,)).fetchone()[0]
     if total == 0:
         print(f"{a.source}: 0 catalogued series — nothing to sample.")
