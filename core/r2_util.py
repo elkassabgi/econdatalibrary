@@ -103,7 +103,7 @@ def creds(write: bool = False) -> dict | None:
     return None
 
 
-def client(write: bool = False):
+def client(write: bool = False, pool: int | None = None):
     """Build a boto3 S3 client for R2, or raise a clear error if creds are missing."""
     c = creds(write=write)
     if c is None:
@@ -111,12 +111,79 @@ def client(write: bool = False):
             f"R2 {'write' if write else 'read'} credentials are not set in {ENV} "
             f"(need R2_{'WRITE' if write else 'READ'}_ENDPOINT/ACCESS_KEY_ID/SECRET_ACCESS_KEY). "
             "Add real values — current ones are absent or placeholders.")
+    # After T0 this client refuses EVERY operation, reads included (design review, 2026-09-24): a read of
+    # the frozen cloud copy is stale data presented as current, and a refusal is loud. Tools move to their
+    # self-hosted backend (SelfhostBlob, core.licence_targets) or to cloud_client() if they are one of the
+    # named final-sync readers.
+    return guard_client(_boto3_client(c, pool), reads_after_t0=False)
+
+
+def cloud_client():
+    """A READ-ONLY client of the cloud copy that keeps working after T0 - for the named final-sync readers
+    only (plan step 6b: tools/footer_diff.py, tools/mirror_sync.py, tools/selfhost/import_from_r2.py).
+    tests/test_r2_cutover_guard.py pins that list: a new caller is a new way to read stale data."""
+    c = creds(write=False)
+    if c is None:
+        raise RuntimeError(f"R2 read credentials are not set in {ENV}")
+    return guard_client(_boto3_client(c), reads_after_t0=True)
+
+
+def _boto3_client(c: dict, pool: int | None = None):
     import boto3
     from botocore.config import Config
+    # `pool`: botocore's max_pool_connections (default 10), which caps concurrent requests whatever the
+    # caller's thread count - bea's 64-thread upload measured ~22 PUTs/s on it, an 11-hour run (_derive_bea_bulk)
+    extra = {"max_pool_connections": pool} if pool else {}
     return boto3.client(
         "s3", endpoint_url=c["endpoint"], aws_access_key_id=c["key"],
         aws_secret_access_key=c["secret"], region_name="auto",
-        config=Config(signature_version="s3v4", retries={"max_attempts": 5, "mode": "standard"}))
+        config=Config(signature_version="s3v4", retries={"max_attempts": 5, "mode": "standard"}, **extra))
+
+
+# ---------------------------------------------------------------------------
+# THE R2 WRITE CHOKEPOINT OF THE SELF-HOSTING MOVE (docs/ECON_SELF_HOSTING_PLAN.md, section 3, change 5).
+#
+# After T0 the econ bucket is a frozen copy and nothing may write to it. The check is on the OPERATION,
+# not on a flag each caller must remember: every client this module builds refuses, once the machine-wide
+# CUTOVER flag exists (core/cutover.py), every S3 operation that is not in READ_OPERATIONS - PutObject,
+# CopyObject, DeleteObject(s), every multipart call (s3transfer's upload_file goes through the same
+# events, so a large upload is refused at CreateMultipartUpload), bucket configuration, anything new.
+# It is an ALLOW-list of reads, so an operation added to boto3 later is refused, not missed.
+#
+# The flag is read on EVERY call, not when the client is built: a long-running process that built its
+# client before T0 is stopped at T0 too. It is one os.stat per call.
+# ---------------------------------------------------------------------------
+READ_OPERATIONS = frozenset({"GetObject", "HeadObject", "ListObjects", "ListObjectsV2", "HeadBucket", "ListBuckets"})
+
+
+def _refuse_writes_after_cutover(model=None, **_kwargs):
+    from core.cutover import refuse_if_cut_over
+    name = getattr(model, "name", None)
+    if name not in READ_OPERATIONS:
+        refuse_if_cut_over(f"R2 {name or 'unknown operation'}")
+
+
+def _refuse_everything_after_cutover(model=None, **_kwargs):
+    from core.cutover import refuse_if_cut_over
+    refuse_if_cut_over(f"R2 {getattr(model, 'name', None) or 'unknown operation'} through r2_util.client() - "
+                       "econ is self-hosted: use its local backend, or r2_util.cloud_client() if this is a "
+                       "named final-sync reader")
+
+
+def guard_client(s3, *, reads_after_t0: bool = True):
+    """Install the cutover guard on an S3 client (idempotent; a stricter call adds the stricter guard).
+    reads_after_t0=True refuses every non-read after T0; False refuses every operation after T0.
+    Registered FIRST on before-call, so nothing that answers the call earlier (a stubber, a cache) can let
+    an operation through."""
+    if not getattr(s3, "_econ_cutover_guard", False):
+        s3.meta.events.register_first("before-call.s3", _refuse_writes_after_cutover,
+                                      unique_id="econ-cutover-guard")
+        s3._econ_cutover_guard = True
+    if not reads_after_t0 and not getattr(s3, "_econ_cutover_guard_all", False):
+        s3.meta.events.register_first("before-call.s3", _refuse_everything_after_cutover,
+                                      unique_id="econ-cutover-guard-all")
+        s3._econ_cutover_guard_all = True
+    return s3
 
 
 # ---------------------------------------------------------------------------

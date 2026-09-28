@@ -17,7 +17,8 @@ exempt", and that carve-out was resolved in DATABASE_LICENSES_VERBATIM.md — th
 are "photographs, illustrations and videos" under third-party image licences, which cannot
 reach a statistical series. Attribution is required and is carried on every download.
 
-Reads the parquets from R2 (the published store), so what is catalogued is what is served.
+Reads the parquets from R2 (the published store), so what is catalogued is what is served - and after
+T0 from the local store, which is then the published store (updater.blob.store_reader).
 
   python tools/flowgrain_ons_uk.py --dry-run
   python tools/flowgrain_ons_uk.py --catalog --upload
@@ -26,8 +27,12 @@ READ BEFORE RUNNING IT (measured 2026-09-03, adversarial review; ledger R696). T
 were 42 datasets when this was written and R2 now holds 49 — the 7 from the 2026-08-03 batch
 never got a CSV. Fixing that with a plain `--catalog --upload` costs far more than it looks:
 
-  * NO SKIP. put() below calls c.put_object directly and never core.r2_util.put_series_csv, so
-    there is no skip_identical and no gzip/csvmd5. A full run re-uploads ALL 49 CSVs —
+  * NO SKIP - FIXED 2026-09-24 (self-hosting plan step 1): the PUT now goes through the CSV store's
+    put_atomic(plain=True), which stores it plain as before (R1206) and skips an object the store
+    provably holds (its ETag is the MD5 of these plain bytes). What follows is what it was. The put
+    called c.put_object directly
+    and never core.r2_util.put_series_csv, so
+    there was no skip_identical and no gzip/csvmd5. A full run re-uploads ALL 49 CSVs —
     4,251,672,591 bytes to publish 51,613,652 new — with 0 of 42 parquets newer than the CSV
     they overwrite, and the largest single PUT (ashe-tables-9-and-10, 1.41 GB) re-sent up to 6
     times on a transient error.
@@ -107,23 +112,19 @@ def main():
     if not (a.dry_run or a.catalog or a.upload):
         ap.error("pick --dry-run, --catalog and/or --upload")
 
-    from core import r2_util
-    c = r2_util.client(write=bool(a.upload))
+    # plan step 1: the parquets are read from the published store (R2 before T0, the local store after it)
+    # and the CSVs written to the CSV store (R2 before T0, the self-hosted blob store after it - which
+    # holds no parquets). The CSV is stored plain, as before, and skipped when the store holds it.
+    from updater import blob as _blob, derive as _derive                  # noqa: PLC0415
+    reader = _blob.store_reader()
+    store = _blob.csv_store(BUCKET) if a.upload else None
     titles = ons_titles()
 
-    objs, tok = [], None
-    while True:
-        kw = {"Bucket": BUCKET, "Prefix": PREFIX, "MaxKeys": 1000}
-        if tok:
-            kw["ContinuationToken"] = tok
-        r = c.list_objects_v2(**kw)
-        objs += [(o["Key"].split("/")[-1][:-8], o["Key"]) for o in r.get("Contents", [])
-                 if o["Key"].endswith(".parquet")]
-        if not r.get("IsTruncated"):
-            break
-        tok = r["NextContinuationToken"]
-    objs.sort()
-    print(f"datasets in R2: {len(objs)}   ONS titles available: {len(titles)}", flush=True)
+    objs = sorted((k.split("/")[-1][:-8], k) for k in reader.list_keys(PREFIX) if k.endswith(".parquet"))
+    print(f"datasets in the published store: {len(objs)}   ONS titles available: {len(titles)}", flush=True)
+    if not objs:
+        # before, 0 datasets with --catalog deleted every row of the source and wrote none
+        raise SystemExit(f"no parquets under {PREFIX} - refusing to report an empty source")
 
     lic = sqlite3.connect(f"file:{CATALOG}?mode=ro", uri=True).execute(
         "SELECT license_id FROM source WHERE source_id=?", (SOURCE,)).fetchone()
@@ -135,7 +136,9 @@ def main():
     t0 = time.time()
 
     def one(ds, key):
-        body = c.get_object(Bucket=BUCKET, Key=key)["Body"].read()
+        body = reader.get(key)
+        if body is None:
+            raise SystemExit(f"{key} was listed but is gone - refusing to publish a partial source")
         tbl = pq.read_table(io.BytesIO(body), columns=["series_key", "obs_date", "value"])
         return (ds,) + build_csv(tbl)
 
@@ -149,15 +152,10 @@ def main():
                              mn, mx, None, "{}"))
             if a.upload:
                 k = "series/" + urllib.parse.quote(sid, safe="") + ".csv"
-                for att in range(6):
-                    try:
-                        c.put_object(Bucket=BUCKET, Key=k, Body=body, ContentType="text/csv")
-                        put_ok += 1
-                        break
-                    except Exception:                          # noqa: BLE001
-                        if att == 5:
-                            raise
-                        time.sleep(2 ** att)
+                # PLAIN at rest, as this tool always stored it (R1206: gzip changes what the worker serves)
+                if not _derive._put_with_retry(store, k, body, plain=True):
+                    raise SystemExit(f"{k}: PUT failed (refused at once, or {_derive.PUT_TRIES} tries used up - see the line above)")
+                put_ok += 1
 
     print(f"datasets={len(stats)}  rows={sum(s[1] for s in stats):,}  "
           f"series={sum(s[2] for s in stats):,}  csv={sum(s[3] for s in stats)/1e9:.2f} GB  "

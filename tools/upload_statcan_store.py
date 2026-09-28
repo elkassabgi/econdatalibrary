@@ -57,6 +57,10 @@ def preflight(files, n):
 
 
 def main() -> int:
+    # RETIRE AT T0 (docs/ECON_SELF_HOSTING_PLAN.md; tests/test_object_writers_ratchet.py): R2 and D1 are
+    # frozen then. Refused FIRST - before arguments, credentials or any read (tests/test_retired_at_t0_tools.py).
+    from core import cutover                                          # noqa: PLC0415
+    cutover.refuse_if_cut_over('upload_statcan_store (it only uploads to R2)')
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--workers", type=int, default=3, help="kept low: the crawlers share this link")

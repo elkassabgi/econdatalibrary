@@ -90,7 +90,7 @@ def _state_db_holders() -> list[str]:
     """
     lines: list[str] = []
     try:
-        con = sqlite3.connect(f"file:{config.STATE_DB}?mode=ro", uri=True, timeout=10)
+        con = sqlite3.connect(f"file:{config.STATE_DB}?mode=ro", uri=True, timeout=10)  # plain-open: the updater's state.db, read-only
         rows = list(con.execute("select key, owner, expires_utc from leases"))
         con.close()
     except Exception as e:                                   # noqa: BLE001
@@ -112,8 +112,20 @@ def _state_db_holders() -> list[str]:
     return lines
 
 
+def _cut_over(step: str) -> bool:
+    """After T0 the cloud state copy is frozen: pulling it would overwrite the live state, pushing it
+    would write the retired copy. Refused here too, for any caller that bypasses main()."""
+    from core.cutover import is_cut_over                                      # noqa: PLC0415
+    if is_cut_over():
+        print(f"[{step}] REFUSED after T0: econ is self-hosted and its state lives only locally", file=sys.stderr)
+        return True
+    return False
+
+
 def pull_state() -> int:
     """Download R2 state.db.zst -> data/_aqueduct/state.db; record the ETag."""
+    if _cut_over("pull-state"):
+        return 2
     zstandard = _zstd()
     r2 = blobmod.R2Blob()
     print(f"[pull-state] GET r2://{r2.bucket}/{STATE_KEY}")
@@ -205,6 +217,8 @@ def push_state() -> int:
     Exit codes: 0 = pushed (+ dated backup); 2 = CAS refusal (another writer
     won — state NOT overwritten); 1 = other error.
     """
+    if _cut_over("push-state"):
+        return 2
     zstandard = _zstd()
     if not os.path.exists(config.STATE_DB):
         print(f"[push-state] ERROR: {config.STATE_DB} does not exist; nothing to push.",
@@ -247,7 +261,7 @@ def push_state() -> int:
     if _remote_bytes >= _SUBSTANTIAL_REMOTE and not os.environ.get("AQUEDUCT_ALLOW_SHRINK"):
         local_bytes = os.path.getsize(config.STATE_DB) if os.path.exists(config.STATE_DB) else 0
         try:
-            _c = sqlite3.connect(f"file:{config.STATE_DB}?mode=ro", uri=True, timeout=30)
+            _c = sqlite3.connect(f"file:{config.STATE_DB}?mode=ro", uri=True, timeout=30)  # plain-open: the updater's state.db, read-only
             n_src = _c.execute("SELECT COUNT(*) FROM source_state").fetchone()[0]
             n_run = _c.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
             _c.close()
@@ -271,7 +285,7 @@ def push_state() -> int:
     tmp_db = os.path.join(config.STATE_DIR,
                           f"state.vacuum.{os.getpid()}.{uuid.uuid4().hex[:8]}.db")
     try:
-        con = sqlite3.connect(config.STATE_DB)
+        con = sqlite3.connect(config.STATE_DB)  # plain-open: the updater's state.db
         try:
             con.execute("VACUUM INTO ?", (tmp_db,))
         finally:
@@ -326,6 +340,69 @@ def push_state() -> int:
     return 0
 
 
+def _selfhost_preflight(a) -> bool:
+    """After T0 (the machine-wide CUTOVER flag, core/cutover.py) the updater runs self-hosted only
+    (docs/ECON_SELF_HOSTING_PLAN.md, change 4). Returns True when it does; before T0, False and nothing
+    changes. Refuses (SystemExit, exit 2) rather than guessing:
+      * --pull-state: it would overwrite the live local state.db with the frozen T0 copy in R2 - and it is
+        a READ, so the R2 write guard would not stop it;
+      * --push-state: there is no cloud state to push to any more;
+      * any backend but 'selfhost' (series CSVs must land in the blob store the origin serves);
+      * a state dir, or a store root, other than the fixed machine-wide ones - so a run from any of the
+        worktrees can never become a second writer next to the real one.
+    The run itself then holds the single-writer lock (core.catalog_path.writer_lock) throughout."""
+    from core.cutover import is_cut_over                                      # noqa: PLC0415
+    if not is_cut_over():
+        return False
+    from core.catalog_path import LIVE_STATE_DIR, LIVE_STORE_ROOT             # noqa: PLC0415
+
+    def refuse(why: str):
+        print(f"[run] REFUSED after T0 (econ is self-hosted): {why}", file=sys.stderr)
+        sys.exit(2)
+
+    if a.pull_state:
+        refuse("--pull-state would overwrite the live state.db with the frozen T0 copy in R2")
+    if a.push_state:
+        refuse("--push-state: the state lives only at " + LIVE_STATE_DIR + "; there is no cloud copy to push")
+    backend = os.environ.get("AQUEDUCT_BACKEND", "local").strip().lower()
+    if backend != "selfhost":
+        refuse(f"AQUEDUCT_BACKEND is {backend!r}; set AQUEDUCT_BACKEND=selfhost")
+    # EVERY place the updater reads or writes, against the one canonical value (review R1176: checking
+    # two of them let AQUEDUCT_DATA_ROOT / ECONDL_CATALOG / ECONDL_DATA / AQUEDUCT_REGISTRY point a run
+    # elsewhere, and econdl's defaults follow the CODE's location, not ECONDL_ROOT).
+    from core.catalog_path import BUILD_PATH                                  # noqa: PLC0415
+    code_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    data = os.path.join(LIVE_STORE_ROOT, "data", "clean_full")
+    places = [
+        ("the code's own checkout", code_root, LIVE_STORE_ROOT),
+        ("config.ROOT (ECONDL_ROOT)", config.ROOT, LIVE_STORE_ROOT),
+        ("config.STATE_DIR (AQUEDUCT_STATE_DIR)", config.STATE_DIR, LIVE_STATE_DIR),
+        ("config.DATA_ROOT (AQUEDUCT_DATA_ROOT)", config.DATA_ROOT, data),
+        ("config.REGISTRY (AQUEDUCT_REGISTRY)", config.REGISTRY, os.path.join(LIVE_STORE_ROOT, "updater", "registry.yaml")),
+        ("ECONDL_CATALOG", os.environ.get("ECONDL_CATALOG") or BUILD_PATH, BUILD_PATH),
+        ("ECONDL_DATA", os.environ.get("ECONDL_DATA") or data, data),
+    ]
+    # What econdl ITSELF resolves (AR-153): its defaults follow the location of the econdl that is imported,
+    # so a pip-installed copy ahead of the checkout's would name its own data folder. Imported the way the
+    # run imports it - core.derive_csv puts this checkout's clients/python first on sys.path.
+    import core.derive_csv  # noqa: F401, PLC0415
+    from econdl import _catalog as econdl_catalog, _resolve as econdl_resolve  # noqa: PLC0415
+    try:
+        econdl_db = econdl_catalog.default_db()
+    except RuntimeError as e:                 # econdl's own refusal (an $ECONDL_CATALOG override): listed, not raised
+        econdl_db = f"<refused by econdl: {e}>"
+    places += [
+        (f"econdl's catalogue ({econdl_catalog.__file__} default_db())", econdl_db, BUILD_PATH),
+        (f"econdl's data root ({econdl_resolve.__file__} default_data_root())", econdl_resolve.default_data_root(),
+         data),
+    ]
+    same = lambda x, y: os.path.normcase(os.path.abspath(x)) == os.path.normcase(os.path.abspath(y))  # noqa: E731
+    wrong = [f"{name} is {actual}, must be {want}" for name, actual, want in places if not same(actual, want)]
+    if wrong:
+        refuse("; ".join(wrong) + f" - run the updater from {LIVE_STORE_ROOT} with no path overrides")
+    return True
+
+
 def main():
     ap = argparse.ArgumentParser(description="Aqueduct continuous-update runner")
     ap.add_argument("--source", action="append", help="limit to source_id (repeatable)")
@@ -360,6 +437,8 @@ def main():
     except Exception:                                              # noqa: BLE001
         pass          # a version banner must never be the reason a run does not start
 
+    selfhosted = _selfhost_preflight(a)
+
     if a.pull_state and a.push_state:
         ap.error("--pull-state and --push-state are separate steps; pass one at a time")
     if a.pull_state:
@@ -371,8 +450,14 @@ def main():
     # loudly on their own terms) without loading the full strategy stack.
     from . import orchestrate
 
-    res = orchestrate.run_once(sources=a.source, strategies=a.strategy, cadences=a.cadence,
-                               force=a.force, dry=a.dry)
+    if selfhosted:
+        from core.catalog_path import writer_lock                           # noqa: PLC0415
+        with writer_lock():
+            res = orchestrate.run_once(sources=a.source, strategies=a.strategy, cadences=a.cadence,
+                                       force=a.force, dry=a.dry)
+    else:
+        res = orchestrate.run_once(sources=a.source, strategies=a.strategy, cadences=a.cadence,
+                                   force=a.force, dry=a.dry)
     print(f"\n=== {len(res)} unit(s) processed ===")
     for k, s in res:
         print(f"  {s:16} {k}")

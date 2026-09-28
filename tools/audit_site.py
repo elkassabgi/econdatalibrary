@@ -218,15 +218,19 @@ def check_source_pages() -> list[str]:
     import sqlite3 as _sq
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     site = os.path.join(root, "catalog", "site")
-    cat = os.environ.get("ECONDL_CATALOG") or os.path.join(root, "data", "catalog.db")
+    import sys as _sys
+    if root not in _sys.path:
+        _sys.path.insert(0, root)
+    from core import catalog_path                  # the one catalogue resolver (no ECONDL_CATALOG: plan 4a)
+    cat = catalog_path.catalog_path()
     util_p = os.path.join(root, "api", "worker", "src", "util.ts")
     if not (os.path.isdir(site) and os.path.exists(cat) and os.path.exists(util_p)):
-        return ["   SKIPPED: site dir, catalog.db or util.ts not found"]
+        return ["   SKIPPED: site dir, the catalogue or util.ts not found"]
 
     pages = {f[:-5] for f in os.listdir(site) if f.endswith(".html")}
     with open(util_p, encoding="utf-8") as fh:
         util = fh.read()
-    con = _sq.connect(f"file:{cat}?mode=ro", uri=True)
+    con = catalog_path.connect()                    # read-only
     served = {}
     for sid, n in con.execute("SELECT source_id,COUNT(*) FROM series GROUP BY source_id"):
         if n > 0 and _re.search(r'"%s"' % _re.escape(sid), util):

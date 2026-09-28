@@ -190,10 +190,10 @@ def test_a_brand_new_unit_with_no_state_at_all_is_not_progress(tmp_path):
 def test_a_format_change_in_a_date_field_is_not_progress(tmp_path):
     """R638: sec_edgar holds '01mar2026-31may2026'. If that ever becomes an ISO date, a plain
     string comparison says it advanced - '2' beats '0' - and stamps the clock on a reformat."""
-    db = _store(tmp_path / "s.db", [("sec_edgar", "_all", None, "v1", "01mar2026-31may2026")])
+    db = _store(tmp_path / "s.db", [("sec_edgar_13f", "_all", None, "v1", "01mar2026-31may2026")])
     snap = str(tmp_path / "snap.json")
     _run(db, "--snapshot", snap)
-    _set(db, "sec_edgar", "_all", last_obs="2026-05-01")
+    _set(db, "sec_edgar_13f", "_all", last_obs="2026-05-01")
     assert _run(db, "--diff", snap) == "0"
 
 
@@ -201,10 +201,10 @@ def test_a_move_within_that_same_format_does_count(tmp_path):
     """The other half: sec_edgar is `partial` with a NULL last_success_utc, so last_obs_date is
     the ONLY field that can ever make it count. Refusing every non-ISO value would silence it
     permanently."""
-    db = _store(tmp_path / "s.db", [("sec_edgar", "_all", None, "v1", "01mar2026-31may2026")])
+    db = _store(tmp_path / "s.db", [("sec_edgar_13f", "_all", None, "v1", "01mar2026-31may2026")])
     snap = str(tmp_path / "snap.json")
     _run(db, "--snapshot", snap)
-    _set(db, "sec_edgar", "_all", last_obs="01jun2026-31aug2026")
+    _set(db, "sec_edgar_13f", "_all", last_obs="01jun2026-31aug2026")
     assert _run(db, "--diff", snap) == "1"
 
 

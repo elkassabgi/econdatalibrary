@@ -17,12 +17,13 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import sys
 
 _THIS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(_THIS, ".."))
-CATALOG = os.path.join(ROOT, "data", "catalog.db")
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 TITLES_DIR = os.path.join(ROOT, "dist", "titles")
 OUT_DIR = os.path.join(ROOT, "dist", "d1", "titles")
 
@@ -56,7 +57,7 @@ def load_titles(sources: list[str]) -> dict[str, str]:
 
 def apply_local(titles: dict[str, str]) -> list[tuple[str, str]]:
     """UPDATE catalog.db; return the (series_id,title) pairs that actually landed."""
-    conn = sqlite3.connect(CATALOG)
+    conn = catalog_path.connect(write=True)
     landed: list[tuple[str, str]] = []
     try:
         have = {r[0] for r in conn.execute("SELECT series_id FROM series")}
@@ -68,7 +69,7 @@ def apply_local(titles: dict[str, str]) -> list[tuple[str, str]]:
             conn.execute("UPDATE series SET title=? WHERE series_id=?", (title, sid))
             landed.append((sid, title))
         conn.commit()
-        print(f"applied {len(landed):,} titles to catalog.db ({miss:,} ids not in catalog, skipped)")
+        print(f"applied {len(landed):,} titles to the catalogue ({miss:,} ids not in catalog, skipped)")
         # rebuild local FTS so search reflects new titles
         has_fts = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE name='series_fts'").fetchone()
@@ -168,7 +169,7 @@ def main(argv: list[str]) -> None:
     if not titles:
         print("nothing to apply")
         return
-    print("== applying to catalog.db ==")
+    print("== applying to the catalogue ==")
     landed = apply_local(titles)
     print("== emitting D1 delta ==")
     emit_delta(landed)
@@ -179,4 +180,5 @@ def main(argv: list[str]) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    with catalog_path.write_session():   # after T0: the single-writer lock
+        main(sys.argv[1:])
