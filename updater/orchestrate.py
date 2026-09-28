@@ -301,14 +301,11 @@ def _unit_window_min() -> float:
     It gets the same 1-minute floor as the CSV fence (or the configured timeout, if shorter). A deliberately
     disabled timeout (<= 0, or unparsable as nan) stays disabled.
 
-    WHAT AN ALARM CAN BOUND: SIGALRM interrupts the MAIN thread. Work a fetcher or derive_and_put hands to a thread
-    pool is not cancelled - the pool's exit waits for its running workers, and derive's per-object retry catches
-    the UnitTimeout as an ordinary Exception (review R1246). So a wedged worker holds the phase for a time with
-    NO known bound (a socket timeout is per operation - a slow-drip response resets it on every byte - a compute
-    wedge has no socket, and a failed PUT is retried); and on derive's serial path its `except` swallows the
-    one-shot alarm, so the rest of that phase runs with no alarm at all (R1248, R1251). The alarm bounds
-    main-thread work only, and only on POSIX (Windows has no setitimer). Making derive fence-aware is its own
-    change.
+    WHAT AN ALARM CAN BOUND: SIGALRM interrupts the MAIN thread, only on POSIX (Windows has no setitimer).
+    derive_and_put is fence-aware (R1246): it lets the UnitTimeout through, waits in 1 s slices so the main thread
+    can take it, and on a trip cancels its queue and stops WITHOUT waiting for running workers - a worker already
+    inside a PUT finishes in the background and its id is not booked as derived. A FETCHER's own thread pool is
+    not covered: a fetcher that waits on its workers in one long blocking call still holds its phase.
     """
     t = _unit_timeout_min()
     rem = _remaining_run_min()
@@ -338,9 +335,9 @@ def _csv_fence_min() -> float:
     290-minute run budget and its 305-minute step timeout, and a kill there loses the state push
     and the digest, which this fence exists to prevent (review R1144, "Outside this branch").
 
-    WHAT IT CAN BOUND is main-thread work only - see _unit_window_min and the comment at the fence
-    in run_once: derive_and_put's pooled work is not cut, so the fence narrows the step-kill risk,
-    it does not remove it (R1248).
+    WHAT IT CAN BOUND - see _unit_window_min and the comment at the fence in run_once: the id-mapping
+    walk and derive_and_put (fence-aware since R1246's follow-up: a trip ends it within ~1 s); a PUT
+    already running on a worker thread is not killed and finishes in the background, unbooked.
     """
     rem = _remaining_run_min()
     if rem is None:
@@ -2127,14 +2124,11 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 # (run 32054925848) until the 285-min step kill destroyed the
                 # run's state push, D1 syncs and digest. The soft budget inside
                 # derive_and_put only binds when ids complete. SIGALRM binds
-                # MAIN-THREAD work only, on POSIX - the id-mapping walk, and a call on
-                # derive's serial path until derive's own `except Exception` catches
-                # the alarm (a resolve is then booked failed, a PUT retried) - after
-                # which that one-shot alarm is spent and the rest of the phase has
-                # none. Work on derive's thread pool is NOT cut: the pool waits for its
-                # running workers, for a time with no known bound (review R1246,
-                # R1248, R1251; making derive fence-aware is its own change). So this
-                # fence narrows the step-kill risk, it does not remove it. Sized to
+                # the MAIN thread, on POSIX: the id-mapping walk, and derive_and_put,
+                # which is fence-aware - it lets the alarm through, waits in 1 s slices
+                # and on a trip cancels its queue without waiting for running workers
+                # (review R1246 and its follow-up). A PUT already running on a worker
+                # finishes in the background, unbooked, and is re-derived next run. Sized to
                 # the run's remaining minutes (+2 grace) capped at
                 # 60 — on trip, the phase is abandoned as a budget note (the
                 # next run re-derives; cursors are already recorded) rather than
@@ -2195,10 +2189,26 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 if _retry_rows:
                     _retry_ids = [r["series_id"] for r in _retry_rows][:_CSV_RETRY_CAP]
                     from . import derive as _derive_mod
-                    _out = _derive_mod.derive_and_put(
-                        _retry_ids, blob if blob is not None else _resolve_blob(),
-                        **({"flow_grain": True} if _csv_grain(unit.source_id) == "flow" else {}),
-                        **_capped_derive_budget()) or {}
+                    # ITS OWN HARD FENCE (R1246 finding 4). derive_and_put now lets the fence through and
+                    # stops at once (1 s wait slices, queue cancelled, running PUTs left to finish unbooked),
+                    # and hands back what it DID on the exception. On a trip: every id it PUT is cleared
+                    # like any success; every other id counts as not derived - a plain id stays queued, a
+                    # flow-grain id moves to the desktop debt (that path's rule below). An id a background
+                    # worker finishes after the trip is re-derived next run: never booked as derived here.
+                    try:
+                        with _unit_deadline(unit.key + " (csv retry drain)", _csv_fence_min()):
+                            _out = _derive_mod.derive_and_put(
+                                _retry_ids, blob if blob is not None else _resolve_blob(),
+                                **({"flow_grain": True} if _csv_grain(unit.source_id) == "flow" else {}),
+                                **_capped_derive_budget()) or {}
+                    except UnitTimeout as _trip:
+                        _part = getattr(_trip, "derive_partial", None) or {}
+                        _done = set(str(s) for s in (_part.get("put_ids") or []))
+                        _out = {"failed": [s for s in _retry_ids if str(s) not in _done],
+                                "deferred_large": dict(_part.get("deferred_large") or {})}
+                        print(f"[orchestrator] {unit.key}: csv retry drain exceeded its fence - {len(_done):,} "
+                              f"id(s) derived and cleared, {len(_out['failed']):,} kept as not derived",
+                              flush=True)
                     _refailed = set(str(s) for s in (_out.get("failed") or []))
                     # A queued id that turns out too large for the runner leaves the retry
                     # queue (it can never succeed there) and moves to csv_desktop_owed.

@@ -46,6 +46,19 @@ def r2_key(series_id: str) -> str:
     return f"{PREFIX}/{urllib.parse.quote(series_id, safe='')}.csv"
 
 
+def _fence_exc():
+    """The orchestrator's hard-fence exception (SIGALRM -> UnitTimeout). derive must let it through: its per-id
+    `except Exception` blocks caught it, booked the id failed and carried on, so a fence around a derive never
+    ended the phase (review R1246). Imported lazily - orchestrate imports this module lazily too."""
+    try:
+        from .orchestrate import UnitTimeout                              # noqa: PLC0415
+        return UnitTimeout
+    except Exception:                                                     # noqa: BLE001 - standalone use: no fence
+        class _NoFence(Exception):
+            pass
+        return _NoFence
+
+
 def _put_with_retry(blob, key: str, body: bytes, plain: bool = False) -> bool:
     """PUT one object, patiently. True on success, False after PUT_TRIES failures.
 
@@ -56,11 +69,14 @@ def _put_with_retry(blob, key: str, body: bytes, plain: bool = False) -> bool:
     the series id (csv_retry_queue), never crashes the data publish.
     """
     from core.cutover import CutoverRefused                                # noqa: PLC0415
+    fence = _fence_exc()
     for attempt in range(PUT_TRIES):
         try:
             # plain=True keeps a CSV uncompressed at rest (blob._refuse_plain_gzip); passed only when set
             blob.put_atomic(key, body, plain=True) if plain else blob.put_atomic(key, body)
             return True
+        except fence:
+            raise                                     # the orchestrator's fence ends the phase - never retried
         except (ValueError, CutoverRefused) as e:
             # a REFUSAL answers the same on every try: one try, reported as failed (R1222: 63 s per key)
             print(f"  CSV PUT REFUSED {key}: {type(e).__name__}: {str(e)[:100]}", flush=True)
@@ -205,6 +221,8 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
         return sum(_pq.read_metadata(p).num_rows
                    for p in resolved_paths(_resolve.resolve(sid)))
 
+    fence = _fence_exc()
+
     def _one_flow(sid):
         # FLOW PATH: ceiling first (a footer read), then the SORTED STREAMING derive —
         # DuckDB does the read/sort/write with a 3 GB memory limit and spills to disk, and
@@ -215,6 +233,8 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
         from core.derive_csv import _series_csv_to_file_sorted as _stream  # noqa: PLC0415
         try:
             n = _store_rows(sid)
+        except fence:
+            raise
         except Exception as e:                                         # noqa: BLE001
             return sid, "fail", f"{type(e).__name__}: {str(e)[:90]}", None
         if n > flow_cap:
@@ -233,6 +253,8 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
                     return (sid, "large", f"{n:,} store rows > in-memory ceiling "
                                           f"{FLOW_INMEM_MAX_ROWS:,} and not stream-eligible", n)
                 body = _series_csv_bytes(sid)
+        except fence:
+            raise
         except Exception as e:                                         # noqa: BLE001
             return sid, "fail", f"{type(e).__name__}: {str(e)[:90]}", n
         finally:
@@ -248,16 +270,21 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
             return _one_flow(sid)
         try:
             body = _series_csv_bytes(sid)
+        except fence:
+            raise
         except Exception as e:  # store-coverage gap or resolver error — loud, queued
             return sid, "fail", f"{type(e).__name__}: {str(e)[:90]}", None
         return ((sid, "ok", None, None) if _put_with_retry(_blob(), r2_key(sid), body)
                 else (sid, "fail", "PUT exhausted", None))
+
+    put_ids: list[str] = []          # WHICH ids were PUT: a fence trip must never book one of these as not derived
 
     def _record(sid, status, why, rows=None):
         nonlocal put
         with lock:
             if status == "ok":
                 put += 1
+                put_ids.append(sid)
                 if put % 500 == 0:
                     print(f"  derived+put {put:,} CSVs (failed {len(failed):,})...",
                           flush=True)
@@ -290,19 +317,40 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
     _hb = threading.Thread(target=_heartbeat, daemon=True)
     _hb.start()
 
-    if workers == 1:
-        for i, sid in enumerate(ids):
-            if _spent():
-                deferred_ids = list(ids[i:])
-                deferred = len(deferred_ids)
-                failed.extend(deferred_ids)
-                break
-            _record(*_one(sid))
-    else:
-        # submit/as_completed rather than ex.map: map has no way to stop feeding work, so a
-        # spent budget could not take effect until the whole iterable had been consumed.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+    # THE FENCE (review R1246). The orchestrator arms a SIGALRM that raises UnitTimeout in the MAIN thread. For it
+    # to end this phase, three things must hold, and each failed before:
+    #   * no `except Exception` here swallows it (see `fence` above and _put_with_retry);
+    #   * the main thread is never parked in one long wait - a blocking wait only returns when a worker finishes
+    #     (Windows cannot interrupt it at all: a 1 s alarm surfaced at 12 s behind one wedged PUT), so every wait
+    #     below is a 1-second slice the handler can run between;
+    #   * on a trip the pool is shut down WITHOUT waiting and with its queue cancelled - the `with` exit used to
+    #     wait for every running worker AND run the queued ids.
+    # A worker already inside a PUT is not killed (threads cannot be); it finishes in the background, and an id it
+    # completes after the trip is simply re-derived next run - never booked as derived here. What WAS done rides on
+    # the exception as `derive_partial`, so the caller keeps derived ids out of its retry queue.
+    ex = None
+    try:
+        if workers == 1:
+            for i, sid in enumerate(ids):
+                if _spent():
+                    deferred_ids = list(ids[i:])
+                    deferred = len(deferred_ids)
+                    failed.extend(deferred_ids)
+                    break
+                _record(*_one(sid))
+        else:
+            # submit/as_completed rather than ex.map: map has no way to stop feeding work, so a
+            # spent budget could not take effect until the whole iterable had been consumed.
+            ex = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
             futs = {}
+
+            def _drain(until_below: int):
+                while len(futs) > until_below:
+                    done, _ = concurrent.futures.wait(
+                        futs, timeout=1.0, return_when=concurrent.futures.FIRST_COMPLETED)
+                    for f in done:
+                        _record(*f.result())
+                        futs.pop(f, None)
             it = iter(ids)
             for sid in it:
                 if _spent():
@@ -314,14 +362,21 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
                 futs[ex.submit(_one, sid)] = sid
                 # Keep the queue shallow so the budget is checked often instead of after
                 # every id has already been handed to the pool.
-                while len(futs) >= workers * 4:
-                    done, _ = concurrent.futures.wait(
-                        futs, return_when=concurrent.futures.FIRST_COMPLETED)
-                    for f in done:
-                        _record(*f.result())
-                        futs.pop(f, None)
-            for f in concurrent.futures.as_completed(list(futs)):
-                _record(*f.result())
+                _drain(workers * 4 - 1)
+            _drain(0)
+            ex.shutdown(wait=True)
+            ex = None
+    except fence as trip:
+        if ex is not None:
+            ex.shutdown(wait=False, cancel_futures=True)
+        with lock:
+            trip.derive_partial = {"put_ids": list(put_ids), "failed": list(failed),
+                                   "failed_reasons": dict(failed_reasons), "deferred_large": dict(large)}
+        print(f"  derive stopped by the orchestrator's fence: {len(put_ids):,} of {len(ids):,} id(s) PUT before it; "
+              f"the rest are NOT derived (running PUTs finish in the background, unbooked)", flush=True)
+        raise
+    finally:
+        _hb_stop.set()                # the heartbeat must not outlive the phase (R1246 finding 4)
 
     if deferred:
         # Disclosed, never silent: a capped derive that said nothing would read as full
@@ -331,7 +386,6 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
               flush=True)
     for _d in deferred_ids:
         failed_reasons.setdefault(_d, "derive budget spent — deferred, not failed")
-    _hb_stop.set()
 
     # SAY WHAT THE GUARD SAVED, and say it even when it saved nothing — a line that appears
     # only on a non-zero count cannot distinguish "no redundant uploads" from "the guard is
@@ -346,7 +400,7 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
         print(f"  {len(large):,} flow-grain id(s) DEFERRED TO THE DESKTOP derive (over the "
               f"{flow_cap:,}-row ceiling) — booked as csv_desktop_owed by the caller, not "
               f"queued for retry", flush=True)
-    return {"put": put, "failed": failed, "deferred": deferred,
+    return {"put": put, "put_ids": put_ids, "failed": failed, "deferred": deferred,
             "deferred_ids": deferred_ids, "failed_reasons": failed_reasons,
             "skipped_identical": skipped, "deferred_large": large}
 

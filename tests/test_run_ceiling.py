@@ -183,7 +183,9 @@ def test_every_alarm_site_in_run_once_takes_its_minutes_from_its_helper():
     sites.sort()
     expected = [("unit.key + ' (detect_change)'", "_unit_window_min()", "strat.detect_change"),
                 ("unit.key", "_unit_window_min()", "strat.run"),
-                ("unit.key + ' (csv phase)'", "_csv_fence", "_derive_changed_csvs")]
+                ("unit.key + ' (csv phase)'", "_csv_fence", "_derive_changed_csvs"),
+                # the csv retry drain (R1246 finding 4) - possible now that derive_and_put is fence-aware
+                ("unit.key + ' (csv retry drain)'", "_csv_fence_min()", "_derive_mod.derive_and_put")]
     assert [(lab, mins) for _l, lab, mins, _b in sites] == [(lab, mins) for lab, mins, _c in expected], sites
     for (_l, lab, _m, body), (_lab, _mins, call) in zip(sites, expected):
         assert call in body, (lab, call, body)
@@ -192,12 +194,27 @@ def test_every_alarm_site_in_run_once_takes_its_minutes_from_its_helper():
     for n in ast.walk(run_once):
         if isinstance(n, ast.Name) and n.id in ("_unit_deadline", "_unit_window_min", "_csv_fence_min"):
             mentions[n.id] = mentions.get(n.id, 0) + 1
-    assert mentions == {"_unit_deadline": 3, "_unit_window_min": 2, "_csv_fence_min": 1}, mentions
+    assert mentions == {"_unit_deadline": 4, "_unit_window_min": 2, "_csv_fence_min": 2}, mentions
     reach = [ast.unparse(n)[:80] for n in ast.walk(run_once)
              if (isinstance(n, ast.Call) and getattr(n.func, "id", None) in ("globals", "setattr", "vars", "exec", "eval"))
              or (isinstance(n, ast.Attribute) and n.attr in ("modules", "__dict__", "setattr"))
              or (isinstance(n, ast.Global) and set(n.names) - {"_RUN_DEADLINE_TS"})]
     assert not reach, reach
+
+
+def test_the_drain_trip_clears_only_what_derive_reported_put():
+    """The drain's UnitTimeout handler: every id derive REPORTED PUT (the exception's derive_partial) is cleared like
+    a success; every other id stays not derived. An empty answer would read as "all derived" and clear them all
+    (R1246 finding 2); a handler that ignored derive_partial would re-queue ids that were derived."""
+    import ast
+    run_once = _run_once_ast()
+    handlers = [h for t in ast.walk(run_once) if isinstance(t, ast.Try)
+                for w in t.body if isinstance(w, ast.With) and "(csv retry drain)" in ast.unparse(w.items[0].context_expr)
+                for h in t.handlers if isinstance(h.type, ast.Name) and h.type.id == "UnitTimeout"]
+    assert len(handlers) == 1, len(handlers)
+    body = "\n".join(ast.unparse(s) for s in handlers[0].body)
+    assert "getattr(_trip, 'derive_partial', None)" in body and "put_ids" in body, body
+    assert "'failed': [s for s in _retry_ids if str(s) not in _done]" in body, body
 
 
 def test_the_binding_scan_can_fail():
