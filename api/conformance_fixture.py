@@ -427,7 +427,9 @@ def build(dest: str) -> dict:
     """Build everything under `dest`. Returns the paths the caller must wire up."""
     data_root = os.path.join(dest, "data", "clean_full")
     os.makedirs(data_root, exist_ok=True)
-    catalog = os.path.join(dest, "catalog.db")
+    # any name: the caller hands this path to the API as ECONDL_CATALOG. Not the live file's name, so the
+    # catalogue-resolver ratchet (tests/test_catalog_path.py) has nothing to flag in a fixture.
+    catalog = os.path.join(dest, "fixture_catalogue.sqlite")
     state = os.path.join(dest, "data", "_aqueduct", "state.db")
     for p in (catalog, state):
         if os.path.exists(p):
