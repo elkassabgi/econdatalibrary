@@ -23,12 +23,17 @@ _NULL_READ = re.compile(rf"SELECT {_COLS} FROM SERIES WHERE SERIES_ID IS NULL OR
 _PK_RANGE = re.compile(rf"SELECT {_COLS} FROM SERIES WHERE SERIES_ID >= {_STR} AND SERIES_ID < {_STR}"
                        r"(?: ORDER BY RANDOM\(\) LIMIT \d+)?")
 _CHUNK = re.compile(rf"SELECT {_COLS} FROM SERIES WHERE SERIES_ID > {_STR} ORDER BY SERIES_ID LIMIT (\d+)")
-# a read of `series` in ANY form: FROM/JOIN, schema prefix, "series" / [series] / `series`
-_READS_SERIES = re.compile(r"\b(?:FROM|JOIN)\s+(?:[\w\"\[\]`]+\.)?[\"\[`]?series[\"\]`]?(?![\w])", re.I)
+# a read of `series` in ANY form: FROM/JOIN or a comma join (R1268: `FROM license, series`), schema prefix,
+# "series" / [series] / `series`
+_READS_SERIES = re.compile(r"(?:\b(?:FROM|JOIN)|,)\s*(?:[\w\"\[\]`]+\.)?[\"\[`]?series[\"\]`]?(?![\w])", re.I)
 
 
 def _norm(q: str) -> str:
-    return " ".join(q.upper().split()).rstrip(";").rstrip()
+    """Upper-case and space-collapse the SQL OUTSIDE quoted values only (review R1268: upper-casing the values made
+    'ZZ:'..'zz;' - nearly the whole table - read as zz's range). Quoted values are compared exactly."""
+    parts = re.split(r"('(?:[^']|'')*')", q)
+    out = "".join(p if k % 2 else re.sub(r"\s+", " ", p.upper()) for k, p in enumerate(parts))
+    return out.strip().rstrip(";").rstrip()
 
 
 def unbounded(q: str, source: str | None = None) -> bool:
@@ -43,7 +48,7 @@ def unbounded(q: str, source: str | None = None) -> bool:
             return True                                  # not ONE source's range (R1267: ' '..U+10FFFF, '!'..X;)
         if ":" in lo[:-1] or ";" in lo[:-1]:
             return True
-        return source is not None and lo[:-1] != source.upper()
+        return source is not None and lo[:-1] != source
     m = _CHUNK.fullmatch(u)
     if m:
         return not (0 < int(m.group(2)) <= MAX_CHUNK)

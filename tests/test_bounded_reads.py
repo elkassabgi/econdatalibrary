@@ -29,6 +29,10 @@ import _bounded_reads as B
     "SELECT series_id FROM series WHERE series_id >= 'zz:' AND series_id < 'zzz;'",                      # two sources
     "SELECT series_id FROM series WHERE series_id >= 'a:b:' AND series_id < 'a:b;'",
     "SELECT series_id FROM (SELECT * FROM series) WHERE series_id IS NULL OR series_id = ''",
+    # review round 7 (R1268): a case-folded range reads nearly the whole table
+    "SELECT series_id FROM series WHERE series_id >= 'ZZ:' AND series_id < 'zz;'",
+    "SELECT series_id FROM series WHERE series_id >= 'A:' AND series_id < 'a;'",
+    "SELECT source_id FROM sqlite_master, series",
 ])
 def test_an_unbounded_read_is_caught(q):
     assert B.unbounded(q), q
@@ -37,11 +41,16 @@ def test_an_unbounded_read_is_caught(q):
 def test_a_range_for_another_source_is_caught_when_the_source_is_known():
     q = "SELECT series_id FROM series WHERE series_id >= 'zy:' AND series_id < 'zy;'"
     assert not B.unbounded(q) and B.unbounded(q, source="zz") and not B.unbounded(q, source="zy")
+    assert B.unbounded("SELECT series_id FROM series WHERE series_id >= 'ZZ:' AND series_id < 'ZZ;'", source="zz")
+    assert not B.unbounded("select series_id from series where series_id >= 'imf.cpi:' and series_id < 'imf.cpi;'",
+                           source="imf.cpi")                  # lowercase SQL and dotted ids stay bounded
 
 
 @pytest.mark.parametrize("q,reads", [
     ("SELECT 1 FROM series", True), ("select 1 from main.series", True), ('SELECT 1 FROM "series"', True),
     ("SELECT 1 FROM [series]", True), ("SELECT 1 FROM `series`", True), ("SELECT 1 FROM x JOIN series ON 1", True),
+    ("SELECT 1 FROM license, series", True), ("SELECT 1 FROM license l, main.series s", True),
+    ("SELECT a, series_id FROM license", False),
     ("SELECT 1 FROM series_fts", False), ("SELECT 1 FROM license", False), ("SELECT 1 FROM series2", False),
 ])
 def test_every_form_of_a_series_read_is_seen(q, reads):
