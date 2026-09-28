@@ -250,6 +250,27 @@ class UnitTimeout(Exception):
 # Reset whenever a unit's alarm is armed or disarmed.
 UNIT_TIMEOUT_FIRED = False
 
+# DEFERRED DELIVERY (review R1262). SIGALRM is process-wide: when the main thread blocks it, the kernel hands it to
+# another thread, CPython's C handler still trips the eval breaker, and the Python handler runs on the main thread at
+# its next check - INSIDE concurrent.futures.wait's lock-taking __enter__ as before; the process then hangs at exit
+# (measured in WSL). So derive does not mask the signal: while its main thread is inside one wait slice it sets
+# _DEFER_ALARM, the handler only RECORDS the trip in _ALARM_PENDING, and derive raises it the moment wait() returns
+# (within one 1 s slice). Both are reset whenever a unit's alarm is armed or disarmed.
+_DEFER_ALARM = False
+_ALARM_PENDING = None
+
+
+def _deliver_alarm(key: str, minutes: float) -> None:
+    """The SIGALRM handler's body: flag the timeout, then raise it - or, inside a deferred window, hold it."""
+    global UNIT_TIMEOUT_FIRED, _ALARM_PENDING
+    UNIT_TIMEOUT_FIRED = True                # before raising: see the flag's note above
+    exc = UnitTimeout(f"{key} exceeded its {minutes:.0f}-minute hard limit and was "
+                      f"interrupted; existing data untouched, re-queued for the next tick")
+    if _DEFER_ALARM:
+        _ALARM_PENDING = exc
+        return
+    raise exc
+
 
 def _unit_timeout_min() -> float:
     try:
@@ -267,6 +288,12 @@ def _unit_timeout_min() -> float:
 # days straight. The gate now REFUSES to start a unit whose worst case would
 # cross this ceiling, and every derive call is capped by the time remaining.
 _RUN_DEADLINE_TS: float | None = None
+
+
+# PAST THE CEILING (_remaining_run_min() == 0.0) each of run_once's three alarms still ARMS (on POSIX, unless the
+# timeout is deliberately disabled), at this many minutes: 0 is what
+# _unit_deadline reads as "do not arm", which is how both R1144's CSV fence and R1245's unit windows went unbounded.
+_PAST_CEILING_MIN = 1.0
 
 
 def _remaining_run_min() -> float | None:
@@ -288,12 +315,57 @@ def _unit_window_min() -> float:
     budget CANNOT outlive it however badly it overruns its estimate. That is strictly
     stronger than the old rule, under which a unit starting with exactly 90 min left could
     consume exactly 90.
+
+    PAST THE CEILING the remainder is 0.0, and a 0.0 window is what _unit_deadline reads as "do not arm" - so a
+    unit reaching its update phase after a probe that outlived its own alarm (UnitTimeout is an Exception, and a
+    fetcher's broad `except` can swallow it) ran with NO alarm at all (review R1245, the class of R1144's fence).
+    It gets the same 1-minute floor as the CSV fence (or the configured timeout, if shorter). A deliberately
+    disabled timeout (<= 0, or unparsable as nan) stays disabled.
+
+    WHAT AN ALARM CAN BOUND: SIGALRM interrupts the MAIN thread, only on POSIX (Windows has no setitimer).
+    derive_and_put is fence-aware (R1246): it lets the UnitTimeout through, waits in 1 s slices so the main thread
+    can take it, and on a trip cancels its queue and stops WITHOUT waiting for running workers - a worker already
+    inside a PUT finishes in the background and its id is not booked as derived. A FETCHER's own thread pool is
+    not covered: a fetcher that waits on its workers in one long blocking call still holds its phase.
     """
     t = _unit_timeout_min()
     rem = _remaining_run_min()
     if rem is None:
         return t
-    return max(0.0, min(t, rem / 2.0))
+    if not t > 0:
+        return 0.0                                   # disabled deliberately (<= 0, or nan) - as before
+    if rem <= 0.0:
+        return min(t, _PAST_CEILING_MIN)             # never longer than the configured timeout (R1246)
+    return min(t, rem / 2.0)
+
+
+def _csv_fence_min() -> float:
+    """The hard SIGALRM fence around one unit's whole CSV phase, in minutes.
+
+    None from _remaining_run_min means NO run ceiling is set (AQUEDUCT_RUN_BUDGET_MIN <= 0, or a
+    caller outside run_once): the remainder is unknown, so the fence is the 60-minute cap. A
+    remainder of 0.0 means the ceiling has already PASSED (_remaining_run_min clamps a negative
+    remainder to 0.0): there is no budget left, so the fence is the _PAST_CEILING_MIN floor and gets
+    no grace. Otherwise the remainder plus 2 minutes of grace (derive_and_put's soft budget, capped
+    by the same remainder in _capped_derive_budget, runs out first), capped at 60 - always above
+    the floor, since rem > 0 there. (So the fence steps from 1 to ~2 minutes as the remainder
+    leaves 0.0; both are bounded, and 0.0 only means the ceiling has already passed.)
+
+    `(_remaining_run_min() or 60.0)` read 0.0 as falsy, so a unit reaching its CSV phase past
+    the ceiling got the full 60-minute fence - more than the 15 minutes between updater-daily's
+    290-minute run budget and its 305-minute step timeout, and a kill there loses the state push
+    and the digest, which this fence exists to prevent (review R1144, "Outside this branch").
+
+    WHAT IT CAN BOUND - see _unit_window_min and the comment at the fence in run_once: the id-mapping
+    walk and derive_and_put (fence-aware since R1246's follow-up: a trip ends it within ~1 s); a PUT
+    already running on a worker thread is not killed and finishes in the background, unbooked.
+    """
+    rem = _remaining_run_min()
+    if rem is None:
+        return 60.0
+    if rem <= 0.0:
+        return _PAST_CEILING_MIN
+    return min(60.0, rem + 2.0)
 
 
 def _capped_derive_budget() -> dict:
@@ -323,8 +395,8 @@ class _unit_deadline:
         self.armed = False
 
     def __enter__(self):
-        global _TIMEOUT_WARNED, UNIT_TIMEOUT_FIRED
-        UNIT_TIMEOUT_FIRED = False
+        global _TIMEOUT_WARNED, UNIT_TIMEOUT_FIRED, _DEFER_ALARM, _ALARM_PENDING
+        UNIT_TIMEOUT_FIRED, _DEFER_ALARM, _ALARM_PENDING = False, False, None
         if self.minutes <= 0:
             return self
         try:
@@ -333,11 +405,7 @@ class _unit_deadline:
                 raise AttributeError("setitimer")
 
             def _fire(signum, frame):
-                global UNIT_TIMEOUT_FIRED
-                UNIT_TIMEOUT_FIRED = True        # before raising: see the flag's note above
-                raise UnitTimeout(
-                    f"{self.key} exceeded its {self.minutes:.0f}-minute hard limit and was "
-                    f"interrupted; existing data untouched, re-queued for the next tick")
+                _deliver_alarm(self.key, self.minutes)
 
             self._prev = signal.signal(signal.SIGALRM, _fire)
             signal.setitimer(signal.ITIMER_REAL, self.minutes * 60.0)
@@ -357,7 +425,7 @@ class _unit_deadline:
         return self
 
     def __exit__(self, *exc):
-        global UNIT_TIMEOUT_FIRED
+        global UNIT_TIMEOUT_FIRED, _DEFER_ALARM, _ALARM_PENDING
         if self.armed:
             try:
                 import signal
@@ -368,7 +436,7 @@ class _unit_deadline:
         # Cleared after the timer is disarmed and on every exit path, so the flag can never
         # outlive this unit (DeepSeek advisory review F5, 2026-09-15). An alarm delivered inside
         # the disarm window itself is swallowed by the except above and is not attributed.
-        UNIT_TIMEOUT_FIRED = False
+        UNIT_TIMEOUT_FIRED, _DEFER_ALARM, _ALARM_PENDING = False, False, None
         return False
 
 
@@ -980,6 +1048,74 @@ _DERIVE_ALL_CAP = 5000
 # Bounded so a large parked backlog (insee_bdm: 43,354) cannot monopolise the derive
 # budget that fresh changes need; the rest stays queued for later runs.
 _CSV_RETRY_CAP = 20_000
+
+
+def _drain_csv_retry_queue(unit, blob, store) -> None:
+    """Drain the csv retry queue for one unit, bounded per run (the rules are at the call site in run_once).
+    A function so its fence trip can be RUN against a StateStore in a test (review R1254 item 1)."""
+    _retry_rows = store.csv_retries(unit.source_id)
+    # Purge rows that are not catalog ids BEFORE spending budget on them —
+    # raw store keys (the old crash path's residue) fail every attempt by
+    # construction and would otherwise sit in the queue forever, eating the
+    # whole _CSV_RETRY_CAP each run (ember: 20,000 ValueErrors/run).
+    _retry_rows, _junk_ids = _split_retry_rows(unit.source_id, _retry_rows)
+    if _junk_ids:
+        store.clear_csv_retries(_junk_ids)
+        print(f"[orchestrator] {unit.source_id}: purged {len(_junk_ids):,} "
+              f"malformed csv-retry id(s) — raw store keys (no "
+              f"'{unit.source_id}:' prefix) queued by the old crash path; "
+              f"they can never resolve", flush=True)
+    if _retry_rows:
+        _retry_ids = [r["series_id"] for r in _retry_rows][:_CSV_RETRY_CAP]
+        from . import derive as _derive_mod
+        # ITS OWN HARD FENCE (R1246 finding 4). derive_and_put now lets the fence through and
+        # stops at once (1 s wait slices, queue cancelled, running PUTs left to finish unbooked),
+        # and hands back what it DID on the exception. On a trip: every id it PUT is cleared
+        # like any success; every other id counts as not derived - a plain id stays queued, a
+        # flow-grain id moves to the desktop debt (that path's rule below). An id a background
+        # worker finishes after the trip stays queued (or owed) and is derived again: never booked as
+        # derived here. The process cannot exit before that worker's PUT returns (review R1254 item 3).
+        try:
+            with _unit_deadline(unit.key + " (csv retry drain)", _csv_fence_min()):
+                _out = _derive_mod.derive_and_put(
+                    _retry_ids, blob if blob is not None else _resolve_blob(),
+                    **({"flow_grain": True} if _csv_grain(unit.source_id) == "flow" else {}),
+                    **_capped_derive_budget()) or {}
+        except UnitTimeout as _trip:
+            _part = getattr(_trip, "derive_partial", None) or {}
+            _done = set(str(s) for s in (_part.get("put_ids") or []))
+            _big = {str(k): v for k, v in (_part.get("deferred_large") or {}).items()}
+            # a too-large id keeps its own booking (reason and row count): listed as not derived too, the
+            # flow rule below re-booked it "budget-deferred" with rows None (review R1254 item 5)
+            _out = {"failed": [s for s in _retry_ids if str(s) not in _done and str(s) not in _big],
+                    "deferred_large": _big}
+            print(f"[orchestrator] {unit.key}: csv retry drain exceeded its fence - {len(_done):,} "
+                  f"id(s) derived and cleared, {len(_out['failed']):,} kept as not derived",
+                  flush=True)
+        _refailed = set(str(s) for s in (_out.get("failed") or []))
+        # A queued id that turns out too large for the runner leaves the retry
+        # queue (it can never succeed there) and moves to csv_desktop_owed.
+        _large_q = {str(k): int(v) for k, v in
+                    (_out.get("deferred_large") or {}).items()}
+        _book_csv_desktop_owed(store, unit.source_id, _large_q)
+        if _csv_grain(unit.source_id) == "flow":
+            # FLOW-GRAIN IDS DO NOT BELONG IN THIS QUEUE AT ALL (condition 2): a
+            # legacy or refailed row can never succeed on a later runner. Move every
+            # one that did not derive to the desktop debt and drop it from the queue.
+            _dead = sorted(set(_refailed) | set(str(s) for s in (_out.get("deferred_ids") or [])))
+            if _dead:
+                _book_csv_desktop_owed(store, unit.source_id, {s: None for s in _dead},
+                                       reason=_DESKTOP_OWED_BUDGET)
+                _refailed = set()
+        _cleared = [s for s in _retry_ids if s not in _refailed]
+        if _cleared:
+            store.clear_csv_retries(_cleared)
+            _record_for_catalog_sync([s for s in _cleared if s not in _large_q
+                                      and s not in set(str(x) for x in (_out.get("failed") or []))])
+        print(f"[orchestrator] {unit.source_id}: csv retry queue "
+              f"{len(_retry_rows):,} -> attempted {len(_retry_ids):,}, "
+              f"cleared {len(_cleared):,}, still queued {len(_refailed):,}",
+              flush=True)
 
 
 def _split_retry_rows(source_id: str, rows: list) -> "tuple[list, list[str]]":
@@ -2074,13 +2210,22 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 # post-merge phase ran 115 silent minutes past every soft budget
                 # (run 32054925848) until the 285-min step kill destroyed the
                 # run's state push, D1 syncs and digest. The soft budget inside
-                # derive_and_put only binds when ids complete; the id-mapping
-                # walk and a wedged resolve are outside it. SIGALRM binds them
-                # all. Sized to the run's remaining minutes (+2 grace) capped at
+                # derive_and_put only binds when ids complete. SIGALRM binds
+                # the MAIN thread, on POSIX: the id-mapping walk, and derive_and_put,
+                # which is fence-aware - it lets the alarm through, waits in 1 s slices
+                # and on a trip cancels its queue without waiting for running workers
+                # (review R1246 and its follow-up). A PUT already running on a worker
+                # finishes in the background, unbooked; the process cannot exit before it
+                # returns, so a truly wedged PUT moves the wait to the end of the run (review
+                # R1254 item 3). Nothing is queued on this trip - queueing the mapped set is how
+                # abs parked 100,000 rows (R353) - so, as the note below says, a chronically-
+                # partial source re-derives next run and an ok-status source on its next change. Sized to
+                # the run's remaining minutes (+2 grace) capped at
                 # 60 — on trip, the phase is abandoned as a budget note (the
                 # next run re-derives; cursors are already recorded) rather than
-                # the run being executed at the step ceiling.
-                _csv_fence = max(1.0, min(60.0, (_remaining_run_min() or 60.0) + 2.0))
+                # the run being executed at the step ceiling. Past the ceiling
+                # the fence is 1 minute, not 60 (see _csv_fence_min).
+                _csv_fence = _csv_fence_min()
                 try:
                     with _unit_deadline(unit.key + " (csv phase)", _csv_fence):
                         csv_failed, csv_err, csv_deferred, csv_reasons = _derive_changed_csvs(unit, res, blob, store)
@@ -2120,49 +2265,8 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 # The drain shares the fence's verdict: if the fresh-path csv
                 # phase already blew its time fence, retrying OLD queued ids in
                 # the same exhausted window is exactly the overrun being fenced.
-                _retry_rows = [] if _csv_fence_tripped else store.csv_retries(unit.source_id)
-                # Purge rows that are not catalog ids BEFORE spending budget on them —
-                # raw store keys (the old crash path's residue) fail every attempt by
-                # construction and would otherwise sit in the queue forever, eating the
-                # whole _CSV_RETRY_CAP each run (ember: 20,000 ValueErrors/run).
-                _retry_rows, _junk_ids = _split_retry_rows(unit.source_id, _retry_rows)
-                if _junk_ids:
-                    store.clear_csv_retries(_junk_ids)
-                    print(f"[orchestrator] {unit.source_id}: purged {len(_junk_ids):,} "
-                          f"malformed csv-retry id(s) — raw store keys (no "
-                          f"'{unit.source_id}:' prefix) queued by the old crash path; "
-                          f"they can never resolve", flush=True)
-                if _retry_rows:
-                    _retry_ids = [r["series_id"] for r in _retry_rows][:_CSV_RETRY_CAP]
-                    from . import derive as _derive_mod
-                    _out = _derive_mod.derive_and_put(
-                        _retry_ids, blob if blob is not None else _resolve_blob(),
-                        **({"flow_grain": True} if _csv_grain(unit.source_id) == "flow" else {}),
-                        **_capped_derive_budget()) or {}
-                    _refailed = set(str(s) for s in (_out.get("failed") or []))
-                    # A queued id that turns out too large for the runner leaves the retry
-                    # queue (it can never succeed there) and moves to csv_desktop_owed.
-                    _large_q = {str(k): int(v) for k, v in
-                                (_out.get("deferred_large") or {}).items()}
-                    _book_csv_desktop_owed(store, unit.source_id, _large_q)
-                    if _csv_grain(unit.source_id) == "flow":
-                        # FLOW-GRAIN IDS DO NOT BELONG IN THIS QUEUE AT ALL (condition 2): a
-                        # legacy or refailed row can never succeed on a later runner. Move every
-                        # one that did not derive to the desktop debt and drop it from the queue.
-                        _dead = sorted(set(_refailed) | set(str(s) for s in (_out.get("deferred_ids") or [])))
-                        if _dead:
-                            _book_csv_desktop_owed(store, unit.source_id, {s: None for s in _dead},
-                                                   reason=_DESKTOP_OWED_BUDGET)
-                            _refailed = set()
-                    _cleared = [s for s in _retry_ids if s not in _refailed]
-                    if _cleared:
-                        store.clear_csv_retries(_cleared)
-                        _record_for_catalog_sync([s for s in _cleared if s not in _large_q
-                                                  and s not in set(str(x) for x in (_out.get("failed") or []))])
-                    print(f"[orchestrator] {unit.source_id}: csv retry queue "
-                          f"{len(_retry_rows):,} -> attempted {len(_retry_ids):,}, "
-                          f"cleared {len(_cleared):,}, still queued {len(_refailed):,}",
-                          flush=True)
+                if not _csv_fence_tripped:
+                    _drain_csv_retry_queue(unit, blob, store)
                 if csv_deferred:
                     store.enqueue_csv_retry(unit.source_id, csv_deferred,
                                             "derive budget spent — deferred, not failed")
