@@ -513,3 +513,34 @@ def test_after_t0_the_writer_lock_refuses_a_non_live_checkout_before_opening_the
             with enter():
                 pass
     assert not os.path.exists(cp.LOCK_PATH), "the lock file was opened before the refusal"
+
+
+@pytest.mark.parametrize("root", ["config.ROOT", "config.DATA_ROOT", "ECONDL_DATA", "ECONDL_CATALOG"])
+def test_after_t0_the_writer_lock_refuses_a_live_checkout_that_reads_another_root(paths, monkeypatch, root):
+    """Round 5 N3: the code root alone is not the rule. A run from the LIVE checkout whose ECONDL_ROOT / data root /
+    ECONDL_DATA / ECONDL_CATALOG points at a worktree still publishes the worktree's data - refused, before the lock."""
+    from updater import blob, config
+    (paths / "CUTOVER").write_text("")
+    elsewhere = paths / "a_worktree"
+    (elsewhere / "data" / "clean_full").mkdir(parents=True)
+    if root == "config.ROOT":
+        monkeypatch.setattr(config, "ROOT", str(elsewhere))
+    elif root == "config.DATA_ROOT":
+        monkeypatch.setattr(config, "DATA_ROOT", str(elsewhere / "data" / "clean_full"))
+    elif root == "ECONDL_DATA":
+        monkeypatch.setenv("ECONDL_DATA", str(elsewhere / "data" / "clean_full"))
+    else:
+        monkeypatch.setenv("ECONDL_CATALOG", str(elsewhere / "catalog.db"))
+    blob._live_checkout_ok.clear()
+    with pytest.raises(cutover.CutoverRefused, match=re.escape(root)):
+        with cp.writer_lock():
+            pass
+    assert not os.path.exists(cp.LOCK_PATH), "the lock file was opened before the refusal"
+
+
+def test_negative_control_the_live_checkout_with_live_roots_takes_the_writer_lock(paths):
+    from updater import blob
+    (paths / "CUTOVER").write_text("")
+    blob._live_checkout_ok.clear()
+    with cp.writer_lock():
+        assert os.path.exists(cp.LOCK_PATH)
