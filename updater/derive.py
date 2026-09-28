@@ -150,11 +150,18 @@ def _merge_served_sources() -> set:
     Cached; a registry that cannot be read declares nothing."""
     cache = _merge_served_sources.__dict__.setdefault("_cache", None)
     if cache is None:
+        fence = _fence_exc()
         try:
             from . import registry                                     # noqa: PLC0415
             cache = {e.get("source_id") for e in registry.load().get("sources", [])
                      if e.get("csv_merge_served") is True}
-        except Exception:                                              # noqa: BLE001
+        except fence:
+            # THE FENCE, landing inside the registry read (2026-09-28 merge train): it was swallowed here AND an
+            # empty set was cached, which switched ecb's served-CSV merge off for the rest of the process. The
+            # fence ends the phase and nothing is cached.
+            raise
+        except Exception as e:                                         # noqa: BLE001
+            _raise_if_fence_in_disguise(fence, e)
             cache = set()
         _merge_served_sources._cache = cache
     return cache
@@ -391,14 +398,20 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
         if str(sid).split(":", 1)[0] in merge_sources:
             try:
                 served = _blob().get(r2_key(sid))
+            except fence:
+                raise                                  # the fence ends the phase (#90); a hung fetch is its case
             except Exception as e:                                     # noqa: BLE001
+                _raise_if_fence_in_disguise(fence, e)
                 return sid, "fail", f"served CSV unreadable for the merge ({type(e).__name__})", None
             if served is not None:
                 try:
                     merged = _merge_with_served(body, served)
+                except fence:
+                    raise
                 except Exception as e:                                 # noqa: BLE001
-                    # A truncated gzip (EOFError) or a non-UTF-8 byte fails THIS id, never the call:
-                    # derive_and_put must not raise (R1142).
+                    # A truncated gzip (EOFError) or a non-UTF-8 byte fails THIS id, never the call (R1142).
+                    # Only the orchestrator's fence ends the call (#90, review R1271).
+                    _raise_if_fence_in_disguise(fence, e)
                     return sid, "fail", f"served CSV unreadable for the merge ({type(e).__name__})", None
                 if merged is None:
                     return sid, "fail", "served CSV cannot be merged (header or dates differ)", None

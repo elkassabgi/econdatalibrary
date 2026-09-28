@@ -73,6 +73,12 @@ def validate(reg: dict, expected_count: int | None = None) -> list[str]:
             # csv_merge_served: true merges each CSV upload with the served object (R1136). A typo
             # like "yes" must not silently switch it off - the derive reads `is True`.
             problems.append(f"{sid}: csv_merge_served must be boolean, got {e.get('csv_merge_served')!r}")
+        if "csv_misses" in e and e.get("csv_misses") != "desktop_owed":
+            # csv_misses: desktop_owed books a series-grain source's missed CSV ids (budget-deferred,
+            # failed, crash, fence trip) PER ID in csv_desktop_owed; changed keys that cannot be mapped
+            # at all go to one full_rederive_owed row listing them (R1131, R1137, R1149). The only
+            # value; a typo must not silently fall back to the retry queue that cannot drain on r2.
+            problems.append(f"{sid}: csv_misses must be 'desktop_owed', got {e.get('csv_misses')!r}")
         if "csv_desktop_exclude" in e:
             # Catalogue ids unserved BY DECISION: never booked as a desktop debt (no derive will
             # ever pay it). Each must be a full catalogue id of THIS source.
