@@ -68,3 +68,199 @@ def test_derive_budget_floor_never_unbounds(monkeypatch):
 def test_no_ceiling_means_env_path(monkeypatch):
     orchestrate._RUN_DEADLINE_TS = None
     assert orchestrate._capped_derive_budget() == {}
+
+
+# ---- the CSV-phase fence (review R1144, "Outside this branch") -------------------------------------
+# `(_remaining_run_min() or 60.0)` read a remainder of 0.0 (the ceiling has PASSED) as falsy and armed
+# the full 60-minute fence - enough to carry the run into the step kill the fence exists to prevent.
+
+def test_csv_fence_past_the_ceiling_is_the_one_minute_floor():
+    orchestrate._RUN_DEADLINE_TS = time.time() - 60        # ceiling passed: _remaining_run_min() == 0.0
+    assert orchestrate._remaining_run_min() == 0.0
+    assert orchestrate._csv_fence_min() == 1.0
+
+
+def test_csv_fence_with_no_ceiling_is_sixty():
+    orchestrate._RUN_DEADLINE_TS = None                     # AQUEDUCT_RUN_BUDGET_MIN <= 0: unknown
+    assert orchestrate._remaining_run_min() is None
+    assert orchestrate._csv_fence_min() == 60.0
+
+
+def test_csv_fence_is_the_remainder_plus_grace_inside_the_cap():
+    orchestrate._RUN_DEADLINE_TS = time.time() + 10 * 60
+    assert 11.9 < orchestrate._csv_fence_min() <= 12.0      # 10 min left + 2 grace
+    orchestrate._RUN_DEADLINE_TS = time.time() + 200 * 60
+    assert orchestrate._csv_fence_min() == 60.0             # capped
+    orchestrate._RUN_DEADLINE_TS = time.time() + 3          # a few seconds left: still graced, not floored
+    assert 2.0 <= orchestrate._csv_fence_min() < 2.1
+
+
+def _bindings(fn, name):
+    """Every node inside `fn` that BINDS `name`: plain, augmented, annotated, tuple/list/starred unpacking, for
+    and comprehension targets, walrus, with ... as, except ... as, import as. (R1245: the first pin read only
+    `name = value` and four ordinary rebindings fooled it.)"""
+    import ast
+
+    def binds(target):
+        return any(isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Store) for n in ast.walk(target))
+    out = []
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assign) and any(binds(t) for t in node.targets):
+            out.append(node)
+        elif isinstance(node, (ast.AugAssign, ast.AnnAssign, ast.For, ast.AsyncFor, ast.comprehension)) \
+                and binds(node.target):
+            out.append(node)
+        elif isinstance(node, ast.NamedExpr) and node.target.id == name:
+            out.append(node)
+        elif isinstance(node, (ast.With, ast.AsyncWith)) and any(
+                i.optional_vars is not None and binds(i.optional_vars) for i in node.items):
+            out.append(node)
+        elif isinstance(node, ast.ExceptHandler) and node.name == name:
+            out.append(node)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)) and any(
+                (a.asname or a.name) == name for a in node.names):
+            out.append(node)
+    return out
+
+
+def _run_once_ast():
+    import ast
+    import inspect
+    tree = ast.parse(inspect.getsource(orchestrate))
+    fns = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_once"]
+    assert len(fns) == 1
+    return fns[0]
+
+
+def test_the_csv_phase_arms_its_fence_from_the_helper():
+    """The call site, not only the helper: run_once's `(csv phase)` fence must take its minutes from
+    _csv_fence_min(), bound ONCE, and the fenced block must be the one that runs the CSV phase. Read through the
+    parser, so a comment or string cannot satisfy it."""
+    import ast
+    run_once = _run_once_ast()
+    fenced = [w for w in ast.walk(run_once) if isinstance(w, ast.With) and any(
+        isinstance(i.context_expr, ast.Call) and getattr(i.context_expr.func, "id", None) == "_unit_deadline"
+        and "(csv phase)" in ast.unparse(i.context_expr.args[0]) for i in w.items)]
+    assert len(fenced) == 1, [ast.unparse(w)[:120] for w in fenced]
+    call = next(i.context_expr for i in fenced[0].items)
+    arg = call.args[1]
+    assert isinstance(arg, ast.Name), ast.unparse(arg)
+    binds = _bindings(run_once, arg.id)
+    assert len(binds) == 1 and isinstance(binds[0], ast.Assign) and len(binds[0].targets) == 1 \
+        and ast.unparse(binds[0].value) == "_csv_fence_min()", [ast.unparse(b)[:120] for b in binds]
+    # what the fence COVERS (R1245 RV5: the work moved out of the `with` passed every test)
+    inside = {getattr(n.func, "id", None) for s in fenced[0].body for n in ast.walk(s) if isinstance(n, ast.Call)}
+    assert "_derive_changed_csvs" in inside, inside
+    # and neither name the fence is built from is rebound inside run_once (R1246 N3-N6: a local shadow of
+    # _unit_deadline made every fence a no-op and passed)
+    for name in ("_unit_deadline", "_csv_fence_min", "_unit_window_min"):
+        assert not _bindings(run_once, name), (name, [ast.unparse(b)[:120] for b in _bindings(run_once, name)])
+
+
+def test_every_alarm_site_in_run_once_takes_its_minutes_from_its_helper():
+    """R1248/R1251: run_once arms exactly three alarms, IN THIS ORDER, each wrapping its phase's call:
+       the probe  - _unit_window_min() around strat.detect_change
+       the update - _unit_window_min() around strat.run
+       the csv    - _csv_fence (bound once from _csv_fence_min(), pinned above) around _derive_changed_csvs.
+    A LIST, not a dict keyed by label (R1251 B5/B6: a second site with the same label overwrote the first key);
+    every mention of _unit_deadline / _unit_window_min / _csv_fence_min in run_once must BE one of those sites (an
+    alias is a site - B3/B4); the phase call must sit inside its block (C1/C2). Limits of a parser pin, stated:
+    it refuses the roads that rebind module state it can name - globals()/vars()/setattr/exec/eval, any
+    `sys.modules` or `__dict__` access, any `global` other than _RUN_DEADLINE_TS (R1251 D1-D4) - and cannot see
+    a helper that does it for run_once from elsewhere."""
+    import ast
+    run_once = _run_once_ast()
+
+    def calls_in(stmts):
+        return {ast.unparse(n.func) for s in stmts for n in ast.walk(s) if isinstance(n, ast.Call)}
+    sites = []
+    for w in ast.walk(run_once):
+        if isinstance(w, ast.With):
+            for i in w.items:
+                c = i.context_expr
+                if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "_unit_deadline":
+                    sites.append((w.lineno, ast.unparse(c.args[0]), ast.unparse(c.args[1]), calls_in(w.body)))
+    sites.sort()
+    expected = [("unit.key + ' (detect_change)'", "_unit_window_min()", "strat.detect_change"),
+                ("unit.key", "_unit_window_min()", "strat.run"),
+                ("unit.key + ' (csv phase)'", "_csv_fence", "_derive_changed_csvs")]
+    assert [(lab, mins) for _l, lab, mins, _b in sites] == [(lab, mins) for lab, mins, _c in expected], sites
+    for (_l, lab, _m, body), (_lab, _mins, call) in zip(sites, expected):
+        assert call in body, (lab, call, body)
+    # every mention of an alarm helper is one of the sites above (or the one _csv_fence binding) - an alias is a site
+    mentions = {}
+    for n in ast.walk(run_once):
+        if isinstance(n, ast.Name) and n.id in ("_unit_deadline", "_unit_window_min", "_csv_fence_min"):
+            mentions[n.id] = mentions.get(n.id, 0) + 1
+    assert mentions == {"_unit_deadline": 3, "_unit_window_min": 2, "_csv_fence_min": 1}, mentions
+    reach = [ast.unparse(n)[:80] for n in ast.walk(run_once)
+             if (isinstance(n, ast.Call) and getattr(n.func, "id", None) in ("globals", "setattr", "vars", "exec", "eval"))
+             or (isinstance(n, ast.Attribute) and n.attr in ("modules", "__dict__", "setattr"))
+             or (isinstance(n, ast.Global) and set(n.names) - {"_RUN_DEADLINE_TS"})]
+    assert not reach, reach
+
+
+def test_the_binding_scan_can_fail():
+    """The four rebindings that fooled the first pin (R1245 RV1-RV4), plus the others, are each seen."""
+    import ast
+    for src in ("x = f()\nx += 59.0", "x = f()\nx: float = 60.0", "x = f()\nx, y = 60.0, None",
+                "x = f()\nfor x in (60.0,): pass", "x = f()\n(x := 60.0)", "x = f()\nwith g() as x: pass",
+                "x = f()\n[0 for x in ()]", "x = f()\nimport math as x"):
+        fn = ast.parse("def run_once():\n" + "\n".join("    " + ln for ln in src.splitlines()))
+        assert len(_bindings(fn.body[0], "x")) == 2, src
+
+
+# ---- the unit windows past the ceiling (R1245: the same class one function away) ---------------------------
+
+def test_unit_window_past_the_ceiling_arms_the_floor_not_zero(monkeypatch):
+    monkeypatch.delenv("AQUEDUCT_UNIT_TIMEOUT_MIN", raising=False)
+    orchestrate._RUN_DEADLINE_TS = time.time() - 60
+    assert orchestrate._unit_window_min() == orchestrate._PAST_CEILING_MIN == 1.0
+
+
+def test_unit_window_unchanged_inside_the_budget_and_with_no_ceiling(monkeypatch):
+    monkeypatch.delenv("AQUEDUCT_UNIT_TIMEOUT_MIN", raising=False)       # 45
+    orchestrate._RUN_DEADLINE_TS = time.time() + 10 * 60
+    assert 4.9 < orchestrate._unit_window_min() <= 5.0                   # half the remainder
+    orchestrate._RUN_DEADLINE_TS = time.time() + 200 * 60
+    assert orchestrate._unit_window_min() == 45.0
+    orchestrate._RUN_DEADLINE_TS = None
+    assert orchestrate._unit_window_min() == 45.0
+
+
+def test_unit_window_inside_the_budget_is_never_floored(monkeypatch):
+    """R1246 W2: the floor is for a PASSED ceiling only - 1 minute left gives a 30-second window, not 1 minute."""
+    monkeypatch.delenv("AQUEDUCT_UNIT_TIMEOUT_MIN", raising=False)
+    orchestrate._RUN_DEADLINE_TS = time.time() + 60
+    assert 0.49 < orchestrate._unit_window_min() <= 0.5
+
+
+def test_past_the_ceiling_a_shorter_configured_timeout_wins(monkeypatch):
+    monkeypatch.setenv("AQUEDUCT_UNIT_TIMEOUT_MIN", "0.5")
+    orchestrate._RUN_DEADLINE_TS = time.time() - 60
+    assert orchestrate._unit_window_min() == 0.5
+
+
+@pytest.mark.parametrize("t", ["0", "-5", "nan"])
+def test_a_disabled_unit_timeout_stays_disabled_past_the_ceiling(monkeypatch, t):
+    monkeypatch.setenv("AQUEDUCT_UNIT_TIMEOUT_MIN", t)
+    orchestrate._RUN_DEADLINE_TS = time.time() - 60
+    assert orchestrate._unit_window_min() == 0.0
+
+
+def test_past_the_ceiling_the_unit_alarm_really_arms(monkeypatch):
+    """The effect, not the number: with a POSIX signal module, the window past the ceiling ARMS a 60 s alarm
+    (0.0 armed nothing). Windows has no setitimer, so the module is faked."""
+    import sys
+    import types
+    calls = []
+    fake = types.SimpleNamespace(SIGALRM=14, ITIMER_REAL=0, signal=lambda *a: None,
+                                 setitimer=lambda which, secs: calls.append(secs))
+    monkeypatch.setitem(sys.modules, "signal", fake)
+    monkeypatch.delenv("AQUEDUCT_UNIT_TIMEOUT_MIN", raising=False)
+    orchestrate._RUN_DEADLINE_TS = time.time() - 60
+    with orchestrate._unit_deadline("zz/_all", orchestrate._unit_window_min()) as d:
+        assert d.armed
+    with orchestrate._unit_deadline("zz/_all (csv phase)", orchestrate._csv_fence_min()) as d:
+        assert d.armed
+    assert calls[0] == 60.0 and 60.0 in calls[1:], calls

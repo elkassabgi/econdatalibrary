@@ -269,6 +269,12 @@ def _unit_timeout_min() -> float:
 _RUN_DEADLINE_TS: float | None = None
 
 
+# PAST THE CEILING (_remaining_run_min() == 0.0) each of run_once's three alarms still ARMS (on POSIX, unless the
+# timeout is deliberately disabled), at this many minutes: 0 is what
+# _unit_deadline reads as "do not arm", which is how both R1144's CSV fence and R1245's unit windows went unbounded.
+_PAST_CEILING_MIN = 1.0
+
+
 def _remaining_run_min() -> float | None:
     if _RUN_DEADLINE_TS is None:
         return None
@@ -288,12 +294,60 @@ def _unit_window_min() -> float:
     budget CANNOT outlive it however badly it overruns its estimate. That is strictly
     stronger than the old rule, under which a unit starting with exactly 90 min left could
     consume exactly 90.
+
+    PAST THE CEILING the remainder is 0.0, and a 0.0 window is what _unit_deadline reads as "do not arm" - so a
+    unit reaching its update phase after a probe that outlived its own alarm (UnitTimeout is an Exception, and a
+    fetcher's broad `except` can swallow it) ran with NO alarm at all (review R1245, the class of R1144's fence).
+    It gets the same 1-minute floor as the CSV fence (or the configured timeout, if shorter). A deliberately
+    disabled timeout (<= 0, or unparsable as nan) stays disabled.
+
+    WHAT AN ALARM CAN BOUND: SIGALRM interrupts the MAIN thread. Work a fetcher or derive_and_put hands to a thread
+    pool is not cancelled - the pool's exit waits for its running workers, and derive's per-object retry catches
+    the UnitTimeout as an ordinary Exception (review R1246). So a wedged worker holds the phase for a time with
+    NO known bound (a socket timeout is per operation - a slow-drip response resets it on every byte - a compute
+    wedge has no socket, and a failed PUT is retried); and on derive's serial path its `except` swallows the
+    one-shot alarm, so the rest of that phase runs with no alarm at all (R1248, R1251). The alarm bounds
+    main-thread work only, and only on POSIX (Windows has no setitimer). Making derive fence-aware is its own
+    change.
     """
     t = _unit_timeout_min()
     rem = _remaining_run_min()
     if rem is None:
         return t
-    return max(0.0, min(t, rem / 2.0))
+    if not t > 0:
+        return 0.0                                   # disabled deliberately (<= 0, or nan) - as before
+    if rem <= 0.0:
+        return min(t, _PAST_CEILING_MIN)             # never longer than the configured timeout (R1246)
+    return min(t, rem / 2.0)
+
+
+def _csv_fence_min() -> float:
+    """The hard SIGALRM fence around one unit's whole CSV phase, in minutes.
+
+    None from _remaining_run_min means NO run ceiling is set (AQUEDUCT_RUN_BUDGET_MIN <= 0, or a
+    caller outside run_once): the remainder is unknown, so the fence is the 60-minute cap. A
+    remainder of 0.0 means the ceiling has already PASSED (_remaining_run_min clamps a negative
+    remainder to 0.0): there is no budget left, so the fence is the _PAST_CEILING_MIN floor and gets
+    no grace. Otherwise the remainder plus 2 minutes of grace (derive_and_put's soft budget, capped
+    by the same remainder in _capped_derive_budget, runs out first), capped at 60 - always above
+    the floor, since rem > 0 there. (So the fence steps from 1 to ~2 minutes as the remainder
+    leaves 0.0; both are bounded, and 0.0 only means the ceiling has already passed.)
+
+    `(_remaining_run_min() or 60.0)` read 0.0 as falsy, so a unit reaching its CSV phase past
+    the ceiling got the full 60-minute fence - more than the 15 minutes between updater-daily's
+    290-minute run budget and its 305-minute step timeout, and a kill there loses the state push
+    and the digest, which this fence exists to prevent (review R1144, "Outside this branch").
+
+    WHAT IT CAN BOUND is main-thread work only - see _unit_window_min and the comment at the fence
+    in run_once: derive_and_put's pooled work is not cut, so the fence narrows the step-kill risk,
+    it does not remove it (R1248).
+    """
+    rem = _remaining_run_min()
+    if rem is None:
+        return 60.0
+    if rem <= 0.0:
+        return _PAST_CEILING_MIN
+    return min(60.0, rem + 2.0)
 
 
 def _capped_derive_budget() -> dict:
@@ -2072,13 +2126,21 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 # post-merge phase ran 115 silent minutes past every soft budget
                 # (run 32054925848) until the 285-min step kill destroyed the
                 # run's state push, D1 syncs and digest. The soft budget inside
-                # derive_and_put only binds when ids complete; the id-mapping
-                # walk and a wedged resolve are outside it. SIGALRM binds them
-                # all. Sized to the run's remaining minutes (+2 grace) capped at
+                # derive_and_put only binds when ids complete. SIGALRM binds
+                # MAIN-THREAD work only, on POSIX - the id-mapping walk, and a call on
+                # derive's serial path until derive's own `except Exception` catches
+                # the alarm (a resolve is then booked failed, a PUT retried) - after
+                # which that one-shot alarm is spent and the rest of the phase has
+                # none. Work on derive's thread pool is NOT cut: the pool waits for its
+                # running workers, for a time with no known bound (review R1246,
+                # R1248, R1251; making derive fence-aware is its own change). So this
+                # fence narrows the step-kill risk, it does not remove it. Sized to
+                # the run's remaining minutes (+2 grace) capped at
                 # 60 — on trip, the phase is abandoned as a budget note (the
                 # next run re-derives; cursors are already recorded) rather than
-                # the run being executed at the step ceiling.
-                _csv_fence = max(1.0, min(60.0, (_remaining_run_min() or 60.0) + 2.0))
+                # the run being executed at the step ceiling. Past the ceiling
+                # the fence is 1 minute, not 60 (see _csv_fence_min).
+                _csv_fence = _csv_fence_min()
                 try:
                     with _unit_deadline(unit.key + " (csv phase)", _csv_fence):
                         csv_failed, csv_err, csv_deferred, csv_reasons = _derive_changed_csvs(unit, res, blob, store)
