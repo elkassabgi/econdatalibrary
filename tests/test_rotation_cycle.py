@@ -94,6 +94,20 @@ def test_the_orchestrators_timeout_is_not_swallowed_by_a_save(tmp_path, monkeypa
         cyc.begin("a")
 
 
+def test_after_the_alarm_fired_any_save_error_propagates(tmp_path, monkeypatch):
+    """Review AR-134: once UNIT_TIMEOUT_FIRED is set, the timeout may surface as another error from
+    inside the write; it must still propagate, not be printed and swallowed."""
+    from updater import orchestrate
+    cyc = C.RotationCycle(str(tmp_path), ["a"])
+
+    def _io(path, data):
+        raise OSError("interrupted write")
+    monkeypatch.setattr(cyc._blob, "write_bytes_atomic", _io)
+    monkeypatch.setattr(orchestrate, "UNIT_TIMEOUT_FIRED", True)
+    with pytest.raises(OSError):
+        cyc.begin("a")
+
+
 def test_an_unreadable_or_foreign_file_owes_everything(tmp_path):
     for body in ("{not json", '"a string"', "[1, 2]", json.dumps({"visited": ["gone", "a"]})):
         (tmp_path / C.RotationCycle.FILE).write_text(body)
