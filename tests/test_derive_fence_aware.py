@@ -326,3 +326,33 @@ def test_negative_control_the_same_error_without_the_alarm_is_one_failed_id(monk
                         broken if not flow else (lambda sid: b"series_id,obs_date,value\n"))
     out = derive.derive_and_put(["zz:x"], _Blob(), budget_min=0, flow_grain=flow)
     assert out["failed"] == ["zz:x"] and out["put"] == 0, out
+
+
+
+# ---- review R1271: #79's served-CSV merge must let #90's fence through too ------------------------------------------
+
+@pytest.mark.parametrize("wedge", ["get", "merge"])
+def test_the_served_csv_merge_lets_the_fence_through(monkeypatch, alarm, wedge):
+    """ecb merges each upload with the served CSV (csv_merge_served, #79). Its two `except Exception` blocks - the
+    served GET and the merge - swallowed the fence on the serial path: derive ran on past it (11.1 s, the next id
+    uploaded). Both now re-raise it."""
+    monkeypatch.setenv("AQUEDUCT_DERIVE_WORKERS", "1")
+    monkeypatch.setattr(derive, "_merge_served_sources", lambda: {"zz"})
+
+    def slow(*a, **k):
+        t = time.monotonic()
+        while time.monotonic() - t < 10:
+            time.sleep(0.05)
+        return b"series_id,obs_date,value\n"
+
+    class _MergeBlob(_Blob):
+        def get(self, key):
+            return slow() if wedge == "get" else b"series_id,obs_date,value\nzz:a,2023-01-01,1\n"
+    if wedge == "merge":
+        monkeypatch.setattr(derive, "_merge_with_served", lambda body, served: slow())
+    blob = _MergeBlob()
+    alarm(1.0)
+    t0 = time.monotonic()
+    with pytest.raises(orchestrate.UnitTimeout):
+        derive.derive_and_put(["zz:wedged", "zz:after"], blob, budget_min=0)
+    assert time.monotonic() - t0 < 4.0 and blob.put == [], blob.put

@@ -37,11 +37,15 @@ LOCAL = os.path.join(ROOT, "data", "clean_full", "ilostat", "_split_map.json")
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--local", default=LOCAL)
-    ap.add_argument("--catalog", default=os.environ.get("ECONDL_CATALOG")
-                    or os.path.join(ROOT, "data", "catalog.db"))
+    ap.add_argument("--catalog", default=None,
+                    help="a catalogue file to check coverage against (default: the one core.catalog_path resolves)")
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--replace", action="store_true")
     a = ap.parse_args(argv)
+    # AFTER T0 R2 is a frozen copy nobody is served from: publishing to it is meaningless (plan step 6d, like the
+    # other R2-copy tools). The map then lives in the self-hosted store the derive writes.
+    from core import cutover                                  # noqa: PLC0415
+    cutover.refuse_if_cut_over("publish_ilostat_split_map - it PUTs to R2, a frozen copy after T0")
     os.environ["AQUEDUCT_BACKEND"] = "r2"
     from updater import blob                                  # noqa: PLC0415 - backend set first
     r2 = blob._r2_routed()
@@ -69,15 +73,15 @@ def main(argv=None) -> int:
             print("REFUSED: R2's map cannot be parsed, so what it covers cannot be checked")
             return 2
     try:
-        import sqlite3                                            # noqa: PLC0415
-        con = sqlite3.connect(f"file:{a.catalog}?mode=ro", uri=True)
+        from core import catalog_path                             # noqa: PLC0415 - the one resolver (plan step 1)
+        con = (catalog_path.connect_path(a.catalog, write=False) if a.catalog else catalog_path.connect())
         need |= {sid.split(":", 1)[1].split("#", 1)[0] for (sid,) in con.execute(
             "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?", ("ilostat:", "ilostat;"))
             if "#" in sid}
         con.close()
     except Exception as e:                                         # noqa: BLE001
-        print(f"REFUSED: the catalogue ({a.catalog}) cannot be read to check the map's coverage "
-              f"({type(e).__name__})")
+        print(f"REFUSED: the catalogue ({a.catalog or 'resolved by core.catalog_path'}) cannot be read to "
+              f"check the map's coverage ({type(e).__name__})")
         return 2
     missing = sorted(need - set(smap))
     print(f"stems the map must cover (R2 map + catalogued '#part' ids): {len(need):,}; missing: {len(missing):,}")

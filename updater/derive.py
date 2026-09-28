@@ -391,14 +391,20 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
         if str(sid).split(":", 1)[0] in merge_sources:
             try:
                 served = _blob().get(r2_key(sid))
+            except fence:
+                raise                                  # the fence ends the phase (#90); a hung fetch is its case
             except Exception as e:                                     # noqa: BLE001
+                _raise_if_fence_in_disguise(fence, e)
                 return sid, "fail", f"served CSV unreadable for the merge ({type(e).__name__})", None
             if served is not None:
                 try:
                     merged = _merge_with_served(body, served)
+                except fence:
+                    raise
                 except Exception as e:                                 # noqa: BLE001
-                    # A truncated gzip (EOFError) or a non-UTF-8 byte fails THIS id, never the call:
-                    # derive_and_put must not raise (R1142).
+                    # A truncated gzip (EOFError) or a non-UTF-8 byte fails THIS id, never the call (R1142).
+                    # Only the orchestrator's fence ends the call (#90, review R1271).
+                    _raise_if_fence_in_disguise(fence, e)
                     return sid, "fail", f"served CSV unreadable for the merge ({type(e).__name__})", None
                 if merged is None:
                     return sid, "fail", "served CSV cannot be merged (header or dates differ)", None
