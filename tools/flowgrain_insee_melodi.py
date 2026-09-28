@@ -19,11 +19,13 @@ TITLES ARE INSEE'S OWN. Taken from /melodi/dataflow/all (code -> {en, fr}); Engl
 preferred, French next, and the bare flow code last. Nothing is invented.
 
 READS FROM R2, not the local store: only 84 of the 139 flows exist locally, and publishing
-from a partial store is how a source ends up half-hosted.
+from a partial store is how a source ends up half-hosted. AFTER T0 (self-hosting plan step 1) the
+local store IS the published store, so it reads that (updater.blob.store_reader), and an empty
+listing is refused - before, 0 flows with --catalog deleted every row of the source and wrote none.
 
   python tools/flowgrain_insee_melodi.py --dry-run          # scan + sizes, writes nothing
   python tools/flowgrain_insee_melodi.py --catalog          # write catalog.db rows
-  python tools/flowgrain_insee_melodi.py --upload           # PUT CSVs to R2
+  python tools/flowgrain_insee_melodi.py --upload           # PUT CSVs to the CSV store (R2 before T0)
 """
 from __future__ import annotations
 import argparse, csv, io, json, os, sqlite3, sys, time, urllib.parse
@@ -64,21 +66,10 @@ def flow_titles() -> dict:
     return out
 
 
-def list_flows(c) -> list:
-    """[(flow_code, key, size)] for every published parquet — R2 is the full set."""
-    out, tok = [], None
-    while True:
-        kw = {"Bucket": BUCKET, "Prefix": PREFIX, "MaxKeys": 1000}
-        if tok:
-            kw["ContinuationToken"] = tok
-        r = c.list_objects_v2(**kw)
-        for o in r.get("Contents", []):
-            if o["Key"].endswith(".parquet"):
-                out.append((o["Key"].split("/")[-1][:-8], o["Key"], o["Size"]))
-        if not r.get("IsTruncated"):
-            break
-        tok = r["NextContinuationToken"]
-    return sorted(out)
+def list_flows(reader) -> list:
+    """[(flow_code, key)] for every published parquet — the published store is the full set: R2 before T0,
+    the local store after it (updater.blob.store_reader). An empty listing is refused by the caller."""
+    return sorted((k.split("/")[-1][:-8], k) for k in reader.list_keys(PREFIX) if k.endswith(".parquet"))
 
 
 def build_csv(tbl):
@@ -108,11 +99,17 @@ def main():
     if not (a.dry_run or a.catalog or a.upload):
         ap.error("pick --dry-run, --catalog and/or --upload")
 
-    from core import r2_util
-    c = r2_util.client(write=bool(a.upload))
+    # plan step 1: the parquets are read from the published store (R2 before T0, the local store after it)
+    # and the CSVs written to the CSV store (R2 before T0, the self-hosted blob store after it - which
+    # holds no parquets). The CSV is stored plain, as before, and skipped when the store holds it.
+    from updater import blob as _blob, derive as _derive                  # noqa: PLC0415
+    reader = _blob.store_reader()
+    store = _blob.csv_store(BUCKET) if a.upload else None
     titles = flow_titles()
-    flows = list_flows(c)
-    print(f"flows in R2: {len(flows)}   INSEE titles available: {len(titles)}", flush=True)
+    flows = list_flows(reader)
+    print(f"flows in the published store: {len(flows)}   INSEE titles available: {len(titles)}", flush=True)
+    if not flows:
+        raise SystemExit(f"no parquets under {PREFIX} - refusing to report an empty source")
 
     lic = sqlite3.connect(f"file:{CATALOG}?mode=ro", uri=True).execute(
         "SELECT license_id FROM source WHERE source_id=?", (SOURCE,)).fetchone()
@@ -123,15 +120,17 @@ def main():
     rows_out, stats = [], []
     t0 = time.time()
 
-    def one(flow, key, _size):
-        body = c.get_object(Bucket=BUCKET, Key=key)["Body"].read()
+    def one(flow, key):
+        body = reader.get(key)
+        if body is None:
+            raise SystemExit(f"{key} was listed but is gone - refusing to publish a partial source")
         tbl = pq.read_table(io.BytesIO(body), columns=["series_key", "obs_date", "value"])
         csv_b, n, mn, mx = build_csv(tbl)
         return flow, csv_b, n, mn, mx
 
     put_ok = 0
     with ThreadPoolExecutor(max_workers=a.threads) as ex:
-        futs = [ex.submit(one, f, k, s) for f, k, s in flows]
+        futs = [ex.submit(one, f, k) for f, k in flows]
         for fu in as_completed(futs):
             flow, csv_b, n, mn, mx = fu.result()
             title = titles.get(flow) or flow          # honest fallback: the real flow code
@@ -141,15 +140,10 @@ def main():
                              None, "{}"))
             if a.upload:
                 k = "series/" + urllib.parse.quote(sid, safe="") + ".csv"
-                for attempt in range(6):
-                    try:
-                        c.put_object(Bucket=BUCKET, Key=k, Body=csv_b, ContentType="text/csv")
-                        put_ok += 1
-                        break
-                    except Exception:                 # noqa: BLE001
-                        if attempt == 5:
-                            raise
-                        time.sleep(2 ** attempt)
+                # PLAIN at rest, as this tool always stored it (R1206: gzip changes what the worker serves)
+                if not _derive._put_with_retry(store, k, csv_b, plain=True):
+                    raise SystemExit(f"{k}: PUT failed (refused at once, or {_derive.PUT_TRIES} tries used up - see the line above)")
+                put_ok += 1
 
     tot_rows = sum(s[1] for s in stats)
     tot_b = sum(s[2] for s in stats)

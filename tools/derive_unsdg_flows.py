@@ -28,7 +28,6 @@ import csv
 import io
 import os
 import sys
-import time
 import urllib.parse
 
 import pyarrow.parquet as pq
@@ -125,21 +124,18 @@ def main() -> int:
         ap.error("--bucket required for a real run")
     sys.path.insert(0, MAIN)
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    from core import r2_util
-    s3 = r2_util.client(write=True)
+    # plan step 1: the CSV store - R2 before T0, the self-hosted blob store after it. Stored plain, as before;
+    # _put_with_retry keeps the 7 tries with backoff this had
+    from updater import blob as _blob, derive as _derive                  # noqa: PLC0415
+    store = _blob.csv_store(a.bucket)
 
     def put(code: str) -> int:
         body = csv_bytes(groups[code])
         key = r2_key(f"unsdg:{code}")
-        for attempt in range(7):
-            try:
-                s3.put_object(Bucket=a.bucket, Key=key, Body=body, ContentType="text/csv")
-                return len(body)
-            except Exception:
-                if attempt == 6:
-                    raise
-                time.sleep(2 ** attempt)
-        return 0
+        # PLAIN at rest, as this tool always stored it (R1206: gzip changes what the worker serves)
+        if not _derive._put_with_retry(store, key, body, plain=True):
+            raise RuntimeError(f"{key}: PUT failed (refused at once, or {_derive.PUT_TRIES} tries used up - see the line above)")
+        return len(body)
 
     done = total_bytes = 0
     with ThreadPoolExecutor(max_workers=a.threads) as ex:
@@ -149,8 +145,9 @@ def main() -> int:
             done += 1
             if done % 50 == 0 or done == len(groups):
                 print(f"  {done}/{len(groups)} CSVs uploaded", flush=True)
-    print(f"DONE: {done} CSVs / {total_bytes:,} bytes to r2://{a.bucket}/series/")
-    print("NEXT: refresh_r2_catalog, sync_catalog_d1, un-gate, util.ts, deploy, verify.")
+    print(f"DONE: {done} CSVs / {total_bytes:,} plain bytes to the CSV store ({a.bucket}) series/")
+    from core import cutover                                           # noqa: PLC0415
+    print(cutover.next_steps("NEXT: refresh_r2_catalog, sync_catalog_d1, un-gate, util.ts, deploy, verify."))
     return 0
 
 

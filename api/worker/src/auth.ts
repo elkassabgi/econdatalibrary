@@ -22,8 +22,8 @@
 // download with the (free) family key.
 // ---------------------------------------------------------------------------
 
-import type { Env } from "./types";
-import { json } from "./util";
+import type { Env } from "./types.ts";
+import { json } from "./util.ts";
 
 const ACCOUNT_URL = "https://hfdatalibrary.com/pages/download";
 const LIMIT_MAX = 100;      // canonical family limit: 100 downloads/min per account

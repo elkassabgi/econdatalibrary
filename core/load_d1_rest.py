@@ -19,22 +19,19 @@ Run: python core/load_d1_rest.py   (CLOUDFLARE_API_TOKEN in env)
 """
 from __future__ import annotations
 
-import json
 import os
 import sqlite3
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+sys.path.insert(0, ROOT)          # `python core/<this>.py`: core.d1_remote needs the root
 DUMP = os.path.join(ROOT, "dist", "d1", "econ_catalog.sql")
 DB_ID = "1a6d0755-ecef-46d0-a478-46cad1cf064c"
 ACCT = "ce51d5c7fe3859098751b89bbebeab7a"
-URL = f"https://api.cloudflare.com/client/v4/accounts/{ACCT}/d1/database/{DB_ID}/query"
 WORKERS = 10
 RETRIES = 5
 
@@ -65,24 +62,19 @@ def statements():
 
 
 def execute(token: str, sql: str) -> None:
-    """POST one statement; raise on definitive failure after retries."""
+    """One statement through core.d1_remote.query (plan step 1; it reads CLOUDFLARE_API_TOKEN itself, and
+    after T0 refuses every write - that refusal is final, never retried). Raise after RETRIES."""
+    from core import d1_remote
+    from core.cutover import CutoverRefused
     delay = 2
     for attempt in range(1, RETRIES + 1):
         try:
-            req = urllib.request.Request(
-                URL, method="POST",
-                data=json.dumps({"sql": sql}).encode(),
-                headers={"Authorization": f"Bearer {token}",
-                         "Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=90) as resp:
-                d = json.load(resp)
-            if d.get("success"):
-                return
-            err = str(d.get("errors"))[:150]
-        except urllib.error.HTTPError as e:
-            err = f"HTTP {e.code}: {e.read()[:120]!r}"
+            d1_remote.query("econ-catalog", sql, timeout=90)
+            return
+        except CutoverRefused:
+            raise
         except Exception as e:  # noqa: BLE001
-            err = f"{type(e).__name__}: {str(e)[:120]}"
+            err = f"{type(e).__name__}: {str(e)[:150]}"
         if attempt == RETRIES:
             raise RuntimeError(err)
         time.sleep(delay)
@@ -147,13 +139,8 @@ def main() -> None:
     for t in tables:
         lcl = local.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
         try:
-            req = urllib.request.Request(
-                URL, method="POST",
-                data=json.dumps({"sql": f"SELECT COUNT(*) AS n FROM {t}"}).encode(),
-                headers={"Authorization": f"Bearer {token}",
-                         "Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                rmt = json.load(resp)["result"][0]["results"][0]["n"]
+            from core import d1_remote
+            rmt = d1_remote.query("econ-catalog", f"SELECT COUNT(*) AS n FROM {t}", timeout=60)["results"][0]["n"]
         except Exception as e:  # noqa: BLE001
             log(f"  {t}: remote count failed ({e})")
             ok = False

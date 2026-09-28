@@ -1,0 +1,48 @@
+# Off-machine daily check of the self-hosted econ API (docs/ECON_SELF_HOSTING_PLAN.md, code change 6;
+# tools/selfhost/watch_edge.py). It runs HERE, not on the workstation it watches.
+#
+# Always: the public edge is up and fresh, and the deployed edge's FORWARD / EDGE_STATE match what this
+# branch commits (a missing status route fails once the committed state is not the default).
+# From T0 until decommission, set the repository variable SELFHOST_NO_WRITES_SINCE to the T0 MOMENT
+# (e.g. 2026-10-05T14:00:00Z): every write to the retired cloud copy (econ R2 bucket, econ D1 catalogue
+# databases) then fails the run and sends an email.
+#
+# Scheduled runs fire only from the default branch and read ITS wrangler.toml. GitHub disables scheduled
+# workflows in a public repository after 60 days without a commit - see the plan's section 7.
+name: selfhost-watch
+
+on:
+  schedule:
+    - cron: '41 6 * * *'        # off-minute: Actions crons on :00 are delayed or dropped
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # the deployed commit is compared with HEAD (undeployed worker changes)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check the edge
+        env:
+          CF_ANALYTICS_TOKEN: ${{ secrets.CF_ANALYTICS_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          DIGEST_TO: ${{ secrets.DIGEST_TO }}
+          SELFHOST_NO_WRITES_SINCE: ${{ vars.SELFHOST_NO_WRITES_SINCE }}
+        run: python -B tools/selfhost/watch_edge.py
+      # THE WATCHDOG'S BEAT, read off the machine (review R1210): at T0 updater-daily's --check - the beat's
+      # only reader - is switched off, and the beat moves into the self-hosted store. This reads it through
+      # the public /v1/guard-heartbeat route (timestamp and counts only). Runs once the repository variable
+      # GUARD_HEARTBEAT_URL is set, which is after the worker with that route is deployed.
+      # always(): an edge check that failed must not hide a dead watchdog (R1226; updater-daily did the same)
+      - name: Check the workstation watchdog's heartbeat
+        if: ${{ always() && vars.GUARD_HEARTBEAT_URL != '' }}
+        run: python -B tools/guard_heartbeat.py --check --from-url "${{ vars.GUARD_HEARTBEAT_URL }}"

@@ -13,13 +13,13 @@ Run: python jobs/verify_data.py
 import json
 import os
 import random
-import sqlite3
 import sys
 import zipfile
 
 HERE = os.path.dirname(__file__)
 RAW = os.path.abspath(os.path.join(HERE, "..", "data", "raw", "sec_edgar"))
-CATALOG = os.path.abspath(os.path.join(HERE, "..", "data", "catalog.db"))
+sys.path.insert(0, os.path.abspath(os.path.join(HERE, "..")))
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 CLEAN = os.path.abspath(os.path.join(HERE, "..", "data", "clean"))
 
 EXPECTED_SIZE = {"companyfacts.zip": 1385082359, "submissions.zip": 1542907394}
@@ -104,7 +104,7 @@ if filed_dates:
     print(f"  most recent filing in sample: {max(d for d in filed_dates if d)}")
 
 hr("5. World Bank -- stored Parquet vs LIVE API (accuracy)")
-con = sqlite3.connect(CATALOG)
+con = catalog_path.connect()
 nwb = con.execute("select count(*) from series where source_id='worldbank'").fetchone()[0]
 print(f"  catalog WB series: {nwb:,}")
 import pyarrow.parquet as pq  # noqa: E402

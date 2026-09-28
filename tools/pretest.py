@@ -63,7 +63,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Deselected by default: data-bound, and skipped on CI because the data is not there.
 DATA_BOUND = [
     ("tests/test_eurostat_value_dimension.py", "globs 7,638 .tsv.gz / 10.0 GB"),
-    ("tests/test_series_carveout_coverage.py", "reads the 11.9 GB catalog.db"),
+    ("tests/test_series_carveout_coverage.py", "reads the 11.9 GB catalogue"),
 ]
 
 

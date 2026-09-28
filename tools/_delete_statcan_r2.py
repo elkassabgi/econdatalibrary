@@ -15,9 +15,17 @@ EVIDENCE, verified before this script existed:
 
 R2 DELETEs are free. Run:
   python tools/_delete_statcan_r2.py
+
+DEFUSED 2026-09-24 (self-hosting plan step 1). This ran its deletes AT IMPORT, with no dry run and no
+confirmation - and statcan has since been RESTORED to R2 (2026-09-05, 8,207 cubes, 175 GB) and is SERVED.
+Run today it would delete the served statcan CSVs and the restored store. The one-shot is done; the file
+stays as its record and refuses to run. Do not re-arm it by deleting the line below.
 """
-import os
-import sys
+raise SystemExit("tools/_delete_statcan_r2.py is DEFUSED: a completed 2026-08-18 one-shot whose targets are "
+                 "served again (statcan restored 2026-09-05). See its docstring.")
+
+import os  # noqa: E402 - unreachable by design (defused above)
+import sys  # noqa: E402
 
 import boto3
 
@@ -34,9 +42,12 @@ from core import config                                             # noqa: E402
 
 config.load_env(".env.local")
 config.load_env(".env")
-s3 = boto3.client("s3", endpoint_url=os.environ["R2_WRITE_ENDPOINT"],
-                  aws_access_key_id=os.environ["R2_WRITE_ACCESS_KEY_ID"],
-                  aws_secret_access_key=os.environ["R2_WRITE_SECRET_ACCESS_KEY"])
+from core.r2_util import guard_client                               # noqa: E402
+
+# The self-hosting cutover guard: after T0 this client may only read (its deletes are refused).
+s3 = guard_client(boto3.client("s3", endpoint_url=os.environ["R2_WRITE_ENDPOINT"],
+                               aws_access_key_id=os.environ["R2_WRITE_ACCESS_KEY_ID"],
+                               aws_secret_access_key=os.environ["R2_WRITE_SECRET_ACCESS_KEY"]))
 
 total = 0
 for prefix in ("series/statcan%3A", "clean_full/statcan/"):

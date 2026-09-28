@@ -20,7 +20,7 @@ import re
 
 import pytest
 
-from updater.strategies.fetchers import sec_edgar as S
+from updater.strategies.fetchers import sec_edgar_13f as S
 
 NEW = "/files/datastandardsinnovation/data"
 OLD = "/files/structureddata/data"
