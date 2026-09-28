@@ -20,7 +20,7 @@ from datetime import datetime, time as dtime, timedelta, timezone
 
 from . import config, registry
 from .state import StateStore
-from .strategies.base import CADENCE_DAYS
+from .strategies.base import CADENCE_DAYS, NON_FAILURE_NOTES
 
 # A source is RED once it is this many cadence-periods past its last success / newest obs.
 SLA_TOLERANCE = 2.0
@@ -37,6 +37,18 @@ UPSTREAM_RECHECK_DAYS = 180.0
 # source is not stale at >3 days). >2 years with no new obs is genuinely dead for
 # any frequency up to annual, so it flags real death without false-alarming slow series.
 STALE_SERIES_DAYS = 730
+
+
+# The lateness clock's period for a cadence where it differs from the scheduling one: an irregular
+# publisher is judged on a year, not on the 7-day check cadence (see assess()).
+LATENESS_PERIOD = {"irregular": 365}
+
+
+def publication_lag_cap(lat_cadence, fallback_period=7) -> float:
+    """The most a `publication_lag_days` declaration may add to the data clock: 2 data periods.
+    ONE predicate, used by assess() to clamp and by tests/test_health_publication_lag.py to bound
+    the registry, so the two cannot disagree (review round 2: they did for irregular sources)."""
+    return 2.0 * LATENESS_PERIOD.get(lat_cadence, CADENCE_DAYS.get(lat_cadence, fallback_period))
 
 
 def _adapter_ready(e):
@@ -214,9 +226,17 @@ def _deferral_only(units) -> bool:
         err = str(u.get("last_error") or "")
         # 'csv coverage note:' tails are NON-failures by design (R372: budget-deferred
         # derive ids, proven-uncatalogued residue, an abandoned csv fence — none demote)
-        # and may be joined onto the deferral note; strip them, then the remainder must
+        # and may be joined onto the deferral note; so may a fetcher's NOT_HOSTED_NOTE
+        # (ksh_stadat's link-only tables, R1121). Strip them, then the remainder must
         # match the anchored emitter grammar EXACTLY.
-        base = err.split("; csv coverage note:")[0].strip()
+        # SEGMENT BY SEGMENT, NOT "CUT AT THE FIRST NOTE" (review R1127). The orchestrator joins
+        # its csv verdict AFTER the fetcher's error with "; ", so cutting at the first non-failure
+        # tail threw away a "csv_derive failed ..." that followed a rotation note - and ksh carries
+        # a rotation note on every pass for months. Only segments that START with a known
+        # non-failure prefix are dropped; everything else must still read as the deferral note.
+        # (No non-failure note may contain "; " itself - tests/test_ksh_stub_tables.py pins that.)
+        base = "; ".join(seg for seg in err.split("; ")
+                         if not seg.startswith(NON_FAILURE_NOTES)).strip()
         if not _DEFERRAL_BASE.match(base):
             return False
     return True
@@ -315,11 +335,23 @@ def assess(store=None) -> dict:
         # This field CAN hide staleness, so declaring one without evidence is the abuse
         # case. It cuts both ways: a source polled annually that publishes monthly gets a
         # TIGHTER clock, not a looser one.
-        LATENESS_PERIOD = {"irregular": 365}
         lat_cadence = e.get("data_cadence") or cadence
         data_days = (LATENESS_PERIOD.get(lat_cadence,
                                          CADENCE_DAYS.get(lat_cadence, period))
                      * (SLA_TOLERANCE + DATA_SLACK_PERIODS))
+        # A PUBLISHER'S OWN LAG (2026-09-23). The clock counts from the stored obs_date and allows
+        # one period of lag (DATA_SLACK_PERIODS), which a monthly publisher releasing ~2 months late
+        # outruns: measured on fhfa (FHFA calendar + the store's month-START dating), the newest
+        # stored obs is 89-122 days old on release day, while the monthly clock is 84, so fhfa read
+        # RED-DATA at 85 days on 2026-09-23 holding FHFA's latest release exactly.
+        # `publication_lag_days` adds a MEASURED allowance: the worst age at fetch (release-day age
+        # plus the polling delay) minus the clock. It can hide staleness, so it is bounded HERE -
+        # a real int/float, clamped to 2 data periods (a string, a bool, inf or 1e9 cannot mute the
+        # gate) - and by tests/test_health_publication_lag.py (a MEASURED comment beside it). It never
+        # replaces the clock: a real freeze still turns red, only later by the allowance.
+        _lag = e.get("publication_lag_days")
+        if isinstance(_lag, (int, float)) and not isinstance(_lag, bool):
+            data_days += min(max(0.0, float(_lag)), publication_lag_cap(lat_cadence, period))
 
         src = store.get_source(sid)
         units = store.units_for_source(sid)

@@ -55,6 +55,10 @@ def _iter_parquet(store: str):
 
 
 def main() -> None:
+    # RETIRE AT T0 (docs/ECON_SELF_HOSTING_PLAN.md; tests/test_object_writers_ratchet.py): R2 and D1 are
+    # frozen then. Refused FIRST - before arguments, credentials or any read (tests/test_retired_at_t0_tools.py).
+    from . import cutover                                          # noqa: PLC0415
+    cutover.refuse_if_cut_over('core/upload_r2 (it only copies the parquet store to R2)')
     ap = argparse.ArgumentParser(description="Upload canonical parquet to R2")
     ap.add_argument("--bucket", required=True)
     ap.add_argument("--prefix", default=DEFAULT_PREFIX)

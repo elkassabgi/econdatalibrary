@@ -167,17 +167,25 @@ def main() -> int:
         print("\n--dry run: nothing written. Re-run with --apply.")
         return 0
 
-    con = store.db
-    con.executemany("DELETE FROM series_cursor WHERE source_id=? AND series_key=?",
-                    [(a.source, k) for k in doomed])
-    con.commit()
-    after = store.series_cursors(a.source)
-    print(f"\n  deleted; {a.source} now holds {len(after):,} cursor(s)")
-    if set(after) != set(kept):
-        print("  WARNING: post-state does not equal the intended keep-set — investigate.")
-        return 1
-    con.execute("VACUUM")
-    print(f"  VACUUM done. Push with: python -m updater.run --push-state")
+    # AFTER T0 the state store has ONE writer, the holder of core.catalog_path's lock (the updater holds it
+    # for its whole run): this write takes it, and is refused at once while another process holds it. The
+    # catalogue guard also refuses VACUUM without the lock after T0 (review R1219). Before T0: no change.
+    from core import catalog_path, cutover                              # noqa: PLC0415
+    with catalog_path.write_session():
+        con = store.db
+        con.executemany("DELETE FROM series_cursor WHERE source_id=? AND series_key=?",
+                        [(a.source, k) for k in doomed])
+        con.commit()
+        after = store.series_cursors(a.source)
+        print(f"\n  deleted; {a.source} now holds {len(after):,} cursor(s)")
+        if set(after) != set(kept):
+            print("  WARNING: post-state does not equal the intended keep-set — investigate.")
+            return 1
+        con.execute("VACUUM")
+    if cutover.is_cut_over():
+        print("  VACUUM done. After T0 the state lives only on this machine: nothing to push.")
+    else:
+        print("  VACUUM done. Push with: python -m updater.run --push-state")
     return 0
 
 

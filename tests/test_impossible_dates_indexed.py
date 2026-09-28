@@ -113,11 +113,16 @@ def test_indexed_reports_the_whole_table_total(db):
         assert int(m.group(1)) == len(ROWS), f"{extra}: said {m.group(1)}, fixture has {len(ROWS)}"
 
 
-def test_indexed_does_not_warn_about_the_live_catalogue(db, tmp_path):
-    """The live-file warning is for the scanning path; --indexed is the remedy it points at."""
-    live = tmp_path / "data"
-    live.mkdir()
-    target = str(live / "catalog.db")
+def test_indexed_does_not_warn_about_the_live_catalogue(db, tmp_path, monkeypatch, capsys):
+    """The live-file warning is for the scanning path; --indexed is the remedy it points at.
+
+    "Live" is what the RESOLVER says (core.catalog_path's checkout and build paths - main's rule, kept when #55 was
+    merged onto it), so the tool runs in-process with the resolver's checkout path pointed at this file. A path's
+    name alone no longer makes it live."""
+    import importlib.util
+    sys.path.insert(0, _REPO)
+    from core import catalog_path
+    target = str(tmp_path / "live_catalogue.sqlite")
     con = sqlite3.connect(target)
     con.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT, "
                 "start_date TEXT, end_date TEXT)")
@@ -126,10 +131,16 @@ def test_indexed_does_not_warn_about_the_live_catalogue(db, tmp_path):
                     "VALUES (?,?,?,?)", ROWS)
     con.commit()
     con.close()
+    monkeypatch.setattr(catalog_path, "CHECKOUT_PATH", target)
+    spec = importlib.util.spec_from_file_location("_impdates_tool", _TOOL)
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
 
-    scan = subprocess.run([sys.executable, _TOOL, target], capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", cwd=_REPO)
-    idx = subprocess.run([sys.executable, _TOOL, target, "--indexed"], capture_output=True,
-                         text=True, encoding="utf-8", errors="replace", cwd=_REPO)
-    assert "WARNING" in scan.stderr, "the scanning path stopped warning about the live file"
-    assert "WARNING" not in idx.stderr, idx.stderr
+    def run(*extra):
+        monkeypatch.setattr(sys, "argv", ["audit_catalogue_impossible_dates.py", target, *extra])
+        assert tool.main() == 0
+        return capsys.readouterr().err
+    assert "WARNING" in run(), "the scanning path stopped warning about the live file"
+    assert "WARNING" not in run("--indexed")
+    monkeypatch.setattr(catalog_path, "CHECKOUT_PATH", str(tmp_path / "elsewhere.sqlite"))
+    assert "WARNING" not in run(), "negative control: a file the resolver does not name is not live"

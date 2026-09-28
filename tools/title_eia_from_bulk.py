@@ -21,10 +21,12 @@ variants agree on, never a merged or invented phrase. A prefix under 12 characte
 refused rather than padded, and a single name is used verbatim. Measured: 140,271 of
 140,272 grouped bases yield a usable prefix.
 """
-import json, os, zipfile, collections, sqlite3
+import json, os, sys, zipfile, collections
 import requests
 
 ROOT = r"E:\research\econfindatalibrary"
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # THIS code's core/
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 CACHE = r"D:\temp\claude\eia"
 FAMS = ["INTL","PET","ELEC","PET_IMPORTS","NG","EMISS","STEO","TOTAL","SEDS","EBA","IEO","COAL"]
 MIN_PREFIX = 12
@@ -36,7 +38,7 @@ def lcp(strs):
     return s1[:i]
 
 os.makedirs(CACHE, exist_ok=True)
-con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=300)
+con = catalog_path.connect_path(catalog_path.BUILD_PATH, write=False, timeout=300)   # production's own file
 ours = {r[0].split(":",1)[1]: r[0] for r in
         con.execute("SELECT series_id FROM series WHERE source_id='eia'")}
 print("catalogue eia ids: %s" % format(len(ours), ","), flush=True)
