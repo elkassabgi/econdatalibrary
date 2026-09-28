@@ -84,7 +84,7 @@ from ...errors import TransientError, DefinitiveError
 from ..base import Result
 from ._common import CURSOR_CAP, Tally, cursors_from_table, finalize, merge_cursor_map
 
-SOURCE = "sec_edgar"
+SOURCE = "sec_edgar_13f"   # registry id since 2026-09-24 (was sec_edgar, R275)
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com",
       "Accept-Encoding": "gzip, deflate"}
 

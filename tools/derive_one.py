@@ -134,7 +134,7 @@ def main() -> int:
     allow_shrink = "--allow-shrink" in sys.argv
 
     from core import derive_csv as d
-    from updater.blob import R2Blob
+    from updater import blob as _blob
 
     # SIZE CEILING LIVES HERE, NOT IN THE QUEUE FILE (R469). Two cbs_nl tables are ~1.9B and
     # ~1.1B rows; at the measured ~190 bytes/row they are ~360 GB and ~200 GB as a single CSV -
@@ -149,12 +149,15 @@ def main() -> int:
         return 0
 
     key = "series/" + urllib.parse.quote(sid, safe="") + ".csv"
-    r2 = R2Blob()
-    head = None
+    # plan step 1: the CSV store - R2 before T0, the self-hosted blob store after it (it used R2Blob()
+    # directly, which after T0 is refused). head_meta is R2's head shape on both stores.
+    store = _blob.csv_store(bucket)
     try:
-        head = r2.client.head_object(Bucket=bucket, Key=key)
-    except Exception:                                        # noqa: BLE001
-        head = None
+        head = store.head_meta(key)                          # None only when the object does not exist
+    except Exception as e:                                   # noqa: BLE001
+        # FAIL CLOSED: an error used to read as "no existing object", which skipped the shrink guard
+        print(f"FAIL {sid} could not read the served object's head ({type(e).__name__}: {str(e)[:100]})")
+        return 1
     if head and not force:
         print(f"SKIP {sid} (already present; --force to refresh)")
         return 0
@@ -179,7 +182,7 @@ def main() -> int:
         meta = {"bytes": str(nbytes)}
         if n_rows:
             meta["rows"] = str(n_rows)
-        d._put_gzip_file_with_backoff(r2.client, bucket, key, tmp, metadata=meta)
+        d._put_gzip_file_with_backoff(store, key, tmp, metadata=meta)
         print(f"OK {sid} {nbytes} bytes"
               + (f" / {n_rows:,} rows" if n_rows else "") + f" ({why})")
         return 0

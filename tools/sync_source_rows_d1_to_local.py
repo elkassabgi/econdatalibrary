@@ -25,38 +25,24 @@ import datetime as dt
 import json
 import os
 import sqlite3
-import subprocess
 import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB = os.path.join(ROOT, "data", "catalog.db")
-WRANGLER = os.path.join(ROOT, "api", "worker", "node_modules", ".bin", "wrangler.cmd" if os.name == "nt" else "wrangler")
 
 
 def d1_rows(source: str):
-    """Every D1 `series` row of the source, by primary-key range. One statement."""
+    """Every D1 `series` row of the source, by primary-key range. One statement; (rows, rows_read).
+    The road, the auth-transient retries and the post-T0 rules are core.d1_remote's (plan step 1)."""
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import d1_remote                                           # noqa: PLC0415 - plan step 1
     sql = (f"SELECT * FROM series WHERE series_id >= '{source}:' AND series_id < '{source};'")
-    last = None
-    for attempt in range(3):
-        r = subprocess.run([WRANGLER, "d1", "execute", "econ-catalog", "--remote", "--json", "--command", sql],
-                           cwd=os.path.join(ROOT, "api", "worker"), capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=900)
-        if r.returncode == 0:
-            lines = r.stdout.splitlines()
-            start = next((i for i, ln in enumerate(lines) if ln.strip() == "["), None)
-            if start is not None:
-                res = json.loads("\n".join(lines[start:]))
-                rows = [row for e in res for row in (e.get("results") or [])]
-                rows_read = sum(int((e.get("meta") or {}).get("rows_read") or 0) for e in res)
-                return rows, rows_read
-        last = (r.stderr or "")[-600:] + " | " + (r.stdout or "")[-300:]
-        if "code: 10000" in last and attempt < 2:
-            print(f"   wrangler auth error 10000 (attempt {attempt + 1}/3) - retrying in 10 s", flush=True)
-            time.sleep(10)
-            continue
-        break
-    raise RuntimeError(f"D1 read failed: {last}")
+    try:
+        return d1_remote.rows("econ-catalog", sql)
+    except RuntimeError as e:
+        raise RuntimeError(f"D1 read failed: {e}") from None
 
 
 def local_rows(source: str) -> dict:
@@ -76,6 +62,12 @@ def local_ids(source: str) -> set:
 
 
 def main() -> int:
+    # AFTER T0 this tool reads the FROZEN cloud copy and writes the live local data: refused first, before
+    # its arguments (neither the R2 guard nor d1_remote stops a READ; tests/test_verifiers_6d.py lists why).
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import cutover                                          # noqa: PLC0415
+    cutover.refuse_if_cut_over('sync_source_rows_d1_to_local - it copies FROZEN D1 rows into the live catalogue (and would bring back rows removed after T0)')
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--source", required=True)
     ap.add_argument("--apply", action="store_true")

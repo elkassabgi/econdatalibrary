@@ -280,27 +280,53 @@ def test_bulk_derive_refuses_when_the_registry_names_a_DIFFERENT_store(tmp_path,
     from tools import derive_csv_bulk as dcb
     from updater import config as ucfg
 
-    root = _bulk_fixture(tmp_path, "sec_edgar")
+    # Neutral ids since 2026-09-24: sec_edgar's 13F entry is sec_edgar_13f now and `--source sec_edgar` has
+    # its own explicit refusal (next test); this pins the GENERIC out_dir guard, for any such pair.
+    root = _bulk_fixture(tmp_path, "pair_a")
     monkeypatch.setattr(dcb, "ROOT", str(root))
     monkeypatch.setattr(ucfg, "REGISTRY", _fixture_registry(tmp_path, [
-        {"source_id": "sec_edgar", "out_dir": "edgar_13f"},
-        {"source_id": "sec_edgar_xbrl", "out_dir": "sec_edgar"},
+        {"source_id": "pair_a", "out_dir": "pair_a_other_store"},
+        {"source_id": "pair_b", "out_dir": "pair_a"},
     ]))
     # If the guard were absent this would reach the mirror preflight; make that branch LOUD
     # so a regression cannot pass by refusing for the wrong reason.
     import core.derive_csv as cdc
     monkeypatch.setattr(cdc, "_mirror_behind_store",
-                        lambda sources, sample=0: [("sec_edgar", "zz.parquet: local 1 vs R2 2")])
+                        lambda sources, sample=0: [("pair_a", "zz.parquet: local 1 vs R2 2")])
     monkeypatch.setattr(sys, "argv",
-                        ["derive_csv_bulk.py", "--source", "sec_edgar", "--bucket", "econ-data"])
+                        ["derive_csv_bulk.py", "--source", "pair_a", "--bucket", "econ-data"])
 
     assert dcb.main() == 2
     out = capsys.readouterr().out
-    assert "REFUSING: --source sec_edgar resolved the store" in out, out
-    assert "edgar_13f" in out, "the refusal must NAME the store the registry entry owns"
+    assert "REFUSING: --source pair_a resolved the store" in out, out
+    assert "pair_a_other_store" in out, "the refusal must NAME the store the registry entry owns"
     assert "MIRROR BEHIND R2" not in out, (
         "the id/out_dir mismatch must be reported BEFORE the mirror preflight — a mirror "
         "message here sends the operator to --allow-stale-mirror instead")
+
+
+def test_bulk_derive_refuses_the_xbrl_source_by_name(tmp_path, monkeypatch, capsys):
+    """After the 13F entry became sec_edgar_13f (2026-09-24) no registry entry is named `sec_edgar`, so the
+    out_dir guard above finds nothing to compare; `--source sec_edgar` (the XBRL product, written by
+    tools/refresh_sec_edgar.py) is refused by name, before the mirror preflight."""
+    from tools import derive_csv_bulk as dcb
+    from updater import config as ucfg
+
+    root = _bulk_fixture(tmp_path, "sec_edgar")
+    monkeypatch.setattr(dcb, "ROOT", str(root))
+    monkeypatch.setattr(ucfg, "REGISTRY", _fixture_registry(tmp_path, [
+        {"source_id": "sec_edgar_13f", "out_dir": "edgar_13f"},
+        {"source_id": "sec_edgar_xbrl", "out_dir": "sec_edgar"},
+    ]))
+    import core.derive_csv as cdc
+    monkeypatch.setattr(cdc, "_mirror_behind_store",
+                        lambda sources, sample=0: [("sec_edgar", "zz.parquet: local 1 vs R2 2")])
+    monkeypatch.setattr(sys, "argv",
+                        ["derive_csv_bulk.py", "--source", "sec_edgar", "--bucket", "econ-data"])
+    assert dcb.main() == 2
+    out = capsys.readouterr().out
+    assert "REFUSING: --source sec_edgar is the XBRL company-facts product" in out, out
+    assert "MIRROR BEHIND R2" not in out
 
 
 def test_bulk_derive_does_not_refuse_the_ordinary_case(tmp_path, monkeypatch, capsys):

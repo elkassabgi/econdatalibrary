@@ -32,11 +32,11 @@ import argparse
 import collections
 import os
 import re
-import sqlite3
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CATALOG = os.path.join(ROOT, "data", "catalog.db")
+sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 MARGIN_URL = "https://pages.stern.nyu.edu/~adamodar/pc/datasets/margin.xls"
 
 
@@ -112,7 +112,7 @@ def main() -> int:
     print(f"  official labels: {len(col_by_slug)} columns, {len(ent_by_slug)} industries"
           + (f"; {len(collisions)} slug collision(s) LEFT ALONE" if collisions else ""))
 
-    con = sqlite3.connect(CATALOG, timeout=600)
+    con = catalog_path.connect(write=True, timeout=600)
     con.execute("PRAGMA busy_timeout=600000")
     cur = con.execute("SELECT series_id, title FROM series WHERE source_id='damodaran' "
                       "AND series_id LIKE 'damodaran:DAMODARAN:margins:%'")
@@ -150,4 +150,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    with catalog_path.write_session():   # after T0: the single-writer lock
+        sys.exit(main())

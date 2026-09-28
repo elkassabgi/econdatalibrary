@@ -33,7 +33,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sqlite3
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -41,6 +40,7 @@ sys.path.insert(0, ROOT)
 
 import pyarrow.compute as pc                                  # noqa: E402
 from updater import blob, config                              # noqa: E402
+from core import catalog_path                                 # noqa: E402 - the one catalogue resolver
 
 SOURCE = "penn_world_table"
 LICENSE = "cc-by-4.0"
@@ -87,7 +87,7 @@ def _store_series() -> dict:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(allow_abbrev=False)  # the lock choice in __main__ reads the exact flag
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--dry-run", action="store_true")
     g.add_argument("--apply", action="store_true")
@@ -102,8 +102,7 @@ def main() -> int:
     print(f"country names from the workbook: {len(names)}")
     print(f"series in the store: {len(series):,}\n")
 
-    con = sqlite3.connect(config.CATALOG_DB if hasattr(config, "CATALOG_DB")
-                          else os.path.join(ROOT, "data", "catalog.db"), timeout=300)
+    con = catalog_path.connect(write=a.apply, timeout=300)          # a dry run only reads
     have = {r[0] for r in con.execute(
         "SELECT series_id FROM series WHERE source_id=?", (SOURCE,))}
     print(f"already catalogued: {len(have):,}")
@@ -156,4 +155,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    if "--apply" in sys.argv[1:]:
+        with catalog_path.write_session():   # after T0: the single-writer lock
+            raise SystemExit(main())
+    raise SystemExit(main())                 # --dry-run reads only

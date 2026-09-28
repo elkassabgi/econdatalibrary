@@ -104,11 +104,11 @@ def source_id_for(ds_name: str) -> str:
 
 def assert_no_source_collision(src: str, ds_name: str) -> None:
     """Refuse to write under a source id that belongs to something else (R399)."""
-    import sqlite3
-    cat = os.path.join(ROOT, "data", "catalog.db")
+    from core import catalog_path                                     # noqa: PLC0415 - plan step 1
+    cat = catalog_path.under(ROOT)
     if not os.path.exists(cat):
         return
-    con = sqlite3.connect(f"file:{cat}?mode=ro", uri=True, timeout=60)
+    con = catalog_path.connect_path(cat, write=False, timeout=60)
     row = con.execute("SELECT homepage FROM source WHERE source_id=?", (src,)).fetchone()
     con.close()
     if row and (not row[0] or f"/dataviewer/{ds_name}" not in row[0]):
