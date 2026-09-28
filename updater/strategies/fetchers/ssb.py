@@ -66,7 +66,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import (Deadline, Tally, finalize, load_rotation, rotate_after,
+from ._common import (Deadline, RotationCycle, Tally, finalize, load_rotation, rotate_after,
                       save_rotation)
 
 import sys
@@ -526,21 +526,51 @@ def update(unit, since) -> Result:
     dl = Deadline(minutes=BUDGET_MIN)
     total = 0
     cursors: dict[str, str] = {}   # table_id -> frontier 'YYYY-MM-DD'
+    # THE MERGE-MEASURED CHANGED SET, at TABLE grain ('SSB:<tid>' -> newest changed obs_date).
+    # WHY (2026-09-23): the orchestrator derives CSVs for `series_cursors`' keys when a fetcher
+    # reports no changed_keys, and ssb's cursors are SEEDED for every table of every group it
+    # visits - groups with no new rows included. In CI the derive reads the runner's own copy of
+    # the store, which holds only the groups written THIS run, so each seeded-but-unwritten table
+    # failed "zero rows matched in 13 files": 246 of 947 on 2026-09-18, 2,088 ids queued, and ssb
+    # read `partial` on every run for a failure that was never about its data.
+    changed: dict[str, str] = {}
+    # `ok` = EVERY group fully worked since the last ok (RotationCycle, 2026-09-23). Before it,
+    # every pass the budget stopped booked the rest deferred, so ssb read `partial` on EVERY run
+    # and had never succeeded - in the daily gate's failure list permanently ("979 sub-unit(s)
+    # attempted, none failed; 168 deferred", 2026-09-19). Now only groups not yet worked THIS
+    # CYCLE are owed, and the pass that completes the cycle reads ok.
+    cycle = RotationCycle(out_dir, pfiles)
+    cut_group = None               # a group the budget stopped part-way: owed, and booked per table
 
     for fn in pfiles:
+        if cycle.done(fn):
+            # Visited this cycle: no work owed. Re-walking it spent the budget on done work, and a
+            # stop INSIDE such a group booked table deferrals on the pass that completed the cycle,
+            # so ssb almost never read ok (~15 tables per group; review R1105 P1). Its rows still
+            # count toward the reported total (served as obs_count - AR-123).
+            total += blob.row_count(os.path.join(out_dir, fn))
+            continue
         if dl.spent():
             # Announced, never silent — and recorded as DEFERRED, not transient (R303).
             # Nothing failed and nothing was attempted, so these must not enter the failure
             # count; ssb read "135/1515 transient-failed" on a run with 0 real failures.
-            # The vintage is still NOT advanced and the next tick takes them first.
-            tally.deferred_unit(f"{fn}: budget {BUDGET_MIN:.0f} min spent, group deferred")
-            continue
+            # The vintage is still NOT advanced; the rotation bookmark takes the next group.
+            for g in cycle.unvisited():
+                if g != cut_group:
+                    tally.deferred_unit(f"{g}: budget {BUDGET_MIN:.0f} min spent, group deferred")
+            # Every group this pass did not reach still holds its rows: count them, as abs does,
+            # or obs (served as obs_count) drops on every budget-stopped pass (AR-124 P7).
+            for rest in pfiles[pfiles.index(fn):]:
+                total += blob.row_count(os.path.join(out_dir, rest))
+            break
         # AFTER the deferral check, never before: the bookmark names the last group this run
         # actually WORKED ON. Stamped above the check it would record a deferred group and
         # the next run would skip exactly what the deferral promised to return to. Saved per
         # group rather than at the end, because the orchestrator's per-source cap KILLS a
         # source instead of breaking its loop and an end-of-function save is lost (R273).
         save_rotation(out_dir, fn)
+        cycle.begin(fn)                     # a raise or kill inside it counts (AR-127 P5)
+        fails_before = cycle.failures(tally)
         path = os.path.join(out_dir, fn)
         subj = fn[len("grp_"):-len(".parquet")]
         before = blob.row_count(path)
@@ -568,6 +598,7 @@ def update(unit, since) -> Result:
         for tid in attempt_ids:
             if dl.spent():
                 tally.deferred_unit(f"{tid}: budget spent, table deferred")
+                cut_group = fn     # not visited: its remaining tables return with the cycle
                 continue
             stored_max = per_max.get(tid)
             floor = _floor_for(stored_max, today)
@@ -691,7 +722,15 @@ def update(unit, since) -> Result:
                 "obs_date":   pa.array(g_dates, pa.date32()),
                 "value":      pa.array(g_vals, pa.float64()),
             })
-            n, _md = merge.merge_and_write(path, new_tbl, mode="merge", dedup_keys=DEDUP)
+            n, _md, ch = merge.merge_and_write(path, new_tbl, mode="merge", dedup_keys=DEDUP,
+                                               report_changed_keys=True,
+                                               changed_keys_cap=max(new_tbl.num_rows, 1))
+            for key, d in ch.items():
+                # store key 'SSB:<tid>:<dims...>' -> the served (catalogued) table id 'SSB:<tid>'
+                tkey = ":".join(str(key).split(":")[:2])
+                ds = str(d) if d is not None else None
+                if tkey not in changed or (ds is not None and ds > (changed[tkey] or "")):
+                    changed[tkey] = ds
             total += n
             net = max(0, n - before)   # NET new rows the group actually gained
         else:
@@ -706,7 +745,15 @@ def update(unit, since) -> Result:
         # one per-group merge, so the group is the finest honest granularity here.)
         for j, tid in enumerate(fetched_tables):
             tally.added_unit(net if j == 0 else 0)
+        if cut_group != fn:
+            # VISITED only once every table was attempted AND none failed: a group the budget cut
+            # part-way, or whose tables failed, stays owed (AR-119 (c); stat_latvia review R1103 P2).
+            cycle.visit(fn, failed=cycle.failures(tally) > fails_before)
+        else:
+            # cut by the budget part-way: no verdict - not visited, and NOT a failed attempt
+            cycle.release(fn)
 
+    cycle.close_if_complete(tally)
     # last_obs: derive ONLY from sane cursor values. The merge-returned max and the
     # on-disk frontier are unreliable here because legacy ingest left a handful of rows
     # with absurd parsed years (e.g. 9999-12-31, 5001-12-31 from malformed time codes);
@@ -737,5 +784,8 @@ def update(unit, since) -> Result:
     # unmapped key can't be rescued and would demote every run to partial). Transform ONLY at
     # this emission boundary; all internal logic stays tid-keyed. (verified: csv_coherence diag)
     series_cursors = {f"SSB:{k}": v for k, v in cursors.items()}
-    return finalize(tally, total, last_obs, source=SOURCE, series_cursors=series_cursors,
-                    empty_window_floor=floor)
+    res = finalize(tally, total, last_obs, source=SOURCE, series_cursors=series_cursors,
+                   empty_window_floor=floor)
+    # {} is a real statement ("no served value changed") and is honoured by the orchestrator.
+    res.changed_keys = changed
+    return res

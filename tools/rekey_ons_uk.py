@@ -35,7 +35,6 @@ import argparse, csv as _csv, io, json, os, re, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-os.environ.setdefault("AQUEDUCT_BACKEND", "r2")
 
 import pyarrow as pa                                           # noqa: E402
 import pyarrow.parquet as pq                                   # noqa: E402
@@ -79,6 +78,15 @@ def rekey(old: str, keep: list) -> str:
 
 
 def main():
+    # AFTER T0 this tool reads the FROZEN cloud copy and writes the live local data: refused first, before
+    # its arguments (neither the R2 guard nor d1_remote stops a READ; tests/test_verifiers_6d.py lists why).
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import cutover                                          # noqa: PLC0415
+    cutover.refuse_if_cut_over('rekey_ons_uk - a one-shot re-key that reads the store from R2, which is frozen after T0')
+    # when it RUNS, not when it is imported (an import-time setdefault put a whole test session on R2 - R1239's
+    # class; updater.blob reads the variable at call time, so this is the same for a command-line run)
+    os.environ.setdefault("AQUEDUCT_BACKEND", "r2")
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--stage", action="store_true")

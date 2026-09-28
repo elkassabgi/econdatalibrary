@@ -97,6 +97,10 @@ def stream_decompress(client, key: str, dest: str) -> None:
 
 
 def main() -> int:
+    # RETIRE AT T0 (docs/ECON_SELF_HOSTING_PLAN.md; tests/test_object_writers_ratchet.py): R2 and D1 are
+    # frozen then. Refused FIRST - before arguments, credentials or any read (tests/test_retired_at_t0_tools.py).
+    from core import cutover                                          # noqa: PLC0415
+    cutover.refuse_if_cut_over("refresh_r2_catalog (the R2 catalogue copy is read only by CI's updater workflows, disabled at T0)")
     ap = argparse.ArgumentParser()
     ap.add_argument("stamp", nargs="?", default="manual",
                     help="date stamp for the .bak key (no Date.now in scripts)")

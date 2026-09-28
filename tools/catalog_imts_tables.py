@@ -28,6 +28,8 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
+from core import cutover  # noqa: E402 - next_steps: the closing NEXT line after T0
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 SOURCE = "imf_imts_direct"
@@ -54,7 +56,7 @@ def main() -> int:
               f"(blob.read_bytes); this tool reads the SAME bytes the store serves")
         return 1
 
-    con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=120.0)
+    con = catalog_path.connect(write=True, timeout=120.0)
     con.execute("PRAGMA busy_timeout = 120000")
 
     # --- licence gate BEFORE anything -------------------------------------------------
@@ -149,12 +151,14 @@ def main() -> int:
         print("series_fts rebuilt")
     except sqlite3.Error as e:
         print(f"series_fts rebuild skipped: {e}")
-    print("\nNEXT (Checklist B): tools/derive_imts_tables.py --dry-run, then the standard "
-          "pipeline: refresh_r2_catalog, sync_catalog_d1 --source imf_imts_direct, resolver "
-          "entry + util.ts, typecheck, wrangler deploy, live /v1/sources, "
-          "verify_source_served exit 0.")
+    print("\n" + cutover.next_steps(
+        "NEXT (Checklist B): tools/derive_imts_tables.py --dry-run, then the standard "
+        "pipeline: refresh_r2_catalog, sync_catalog_d1 --source imf_imts_direct, resolver "
+        "entry + util.ts, typecheck, wrangler deploy, live /v1/sources, "
+        "verify_source_served exit 0."))
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    with catalog_path.write_session():   # after T0: the single-writer lock
+        sys.exit(main())

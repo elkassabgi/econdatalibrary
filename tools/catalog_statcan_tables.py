@@ -46,6 +46,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 from derive_statcan_tables import (SOURCE, STORE, MAX_ROWS_DEFAULT,   # noqa: E402
                                    csv_key, part_expr, unit_id)
 
@@ -342,8 +343,8 @@ def backup_sqlite(src_path: str, dst_path: str, pages: int = 4096, sleep: float 
                 _abort(remaining, total, f"no progress for {stall_steps} consecutive steps - a "
                                          f"writer restarts the copy before it can advance")
 
-    src = sqlite3.connect(src_path, timeout=180.0)
-    dst = sqlite3.connect(tmp_path)
+    src = catalog_path.connect_path(src_path, write=False, timeout=180.0)     # the catalogue, read-only
+    dst = sqlite3.connect(tmp_path)   # plain-open: the backup's NEW temporary file, never the catalogue
     try:
         src.backup(dst, pages=pages, sleep=sleep, progress=progress)
         qc = dst.execute("PRAGMA quick_check").fetchone()[0]
@@ -573,6 +574,12 @@ def sidecars() -> dict:
 
 
 def main() -> int:
+    # AFTER T0 this tool reads the FROZEN cloud copy and writes the live local data: refused first, before
+    # its arguments (neither the R2 guard nor d1_remote stops a READ; tests/test_verifiers_6d.py lists why).
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import cutover                                          # noqa: PLC0415
+    cutover.refuse_if_cut_over('catalog_statcan_tables - it catalogues from an R2 listing, and R2 is frozen after T0')
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--max-rows", type=int, default=None,
@@ -685,7 +692,7 @@ def main() -> int:
               f"(+ .meta.json)")
         return 0
     if a.reconcile_fts:
-        con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=180.0)
+        con = catalog_path.connect(write=True, timeout=180.0)
         try:
             return reconcile_fts_source(con)
         finally:
@@ -693,13 +700,13 @@ def main() -> int:
     if a.rebuild_fts:
         # Whole-catalogue destructive write: guarded by an explicit flag AND a file backup of the
         # db first (repo convention: data/catalog.db.pre_*), with the counts previewed (R576).
-        dbp = os.path.join(ROOT, "data", "catalog.db")
+        dbp = catalog_path.catalog_path()
         if not a.i_understand_full_rebuild:
             print("REFUSING --rebuild-fts: it deletes and re-inserts the WHOLE series_fts (~13.5M rows) "
                   "under an exclusive lock, and the consistent backup taken first READ-LOCKS the db "
                   "for minutes (writers with the usual 180 s patience fail - R579). Use --reconcile-fts "
                   "(source-scoped) unless the whole index is wrong; if it is, stop every other job that "
-                  "uses catalog.db, then pass --i-understand-full-rebuild.")
+                  "uses the catalogue, then pass --i-understand-full-rebuild.")
             return 1
         holders = db_holders(dbp)
         if holders:
@@ -714,7 +721,7 @@ def main() -> int:
             print(f"REFUSING: backup quick_check = {qc!r}")
             return 1
         print(f"backup verified: quick_check ok, {os.path.getsize(bak)/1e9:.2f} GB")
-        con = sqlite3.connect(dbp, timeout=180.0)
+        con = catalog_path.connect(write=True, timeout=180.0)
         try:
             return rebuild_fts(con)
         finally:
@@ -733,13 +740,13 @@ def main() -> int:
             for pr in problems:
                 print(f"   {pr}")
             return 1
-        con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=180.0)
+        con = catalog_path.connect(write=True, timeout=180.0)
         try:
             return audit_catalogue(con, keys, a.prefix, a.purge_unlisted, a.expect_unlisted)
         finally:
             con.close()
 
-    con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=180.0)
+    con = catalog_path.connect(write=True, timeout=180.0)
     con.execute("PRAGMA busy_timeout = 180000")
     lic = con.execute("select reservable from license where license_id=?",
                       (LICENSE_ID,)).fetchone()
@@ -973,4 +980,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    with catalog_path.write_session():   # after T0: the single-writer lock (most modes write)
+        sys.exit(main())

@@ -18,7 +18,7 @@
 
 import {
   NON_REDISTRIBUTABLE, SERIES_CARVEOUT_LIKE, SERIES_CARVEOUT_EXACT, SERIES_CARVEOUTS, likeEscape,
-} from "./denylist";
+} from "./denylist.ts";
 
 /** Compliance layer ON TOP of the shim-mirrored statements: series from
  *  non-redistributable sources must never surface in catalog search/browse

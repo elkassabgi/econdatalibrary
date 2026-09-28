@@ -40,7 +40,6 @@ import glob
 import os
 import random
 import re
-import sqlite3
 import sys
 
 import duckdb
@@ -49,6 +48,7 @@ import pyarrow.parquet as pq
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 SERIES_COLS = {"series_key", "obs_date", "value"}
 
 
@@ -78,8 +78,7 @@ def main() -> int:
     a = ap.parse_args()
 
     sup = supported()
-    con = sqlite3.connect(f"file:{os.path.join(ROOT, 'data', 'catalog.db')}?mode=ro",
-                          uri=True, timeout=180.0)
+    con = catalog_path.connect(timeout=180.0)
     cat = dict(con.execute("select source_id, count(*) from series group by 1").fetchall())
     served = {s for s in cat if s in sup and cat[s]}
     con.close()

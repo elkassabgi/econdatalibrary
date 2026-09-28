@@ -20,11 +20,11 @@ from __future__ import annotations
 import glob
 import os
 import re
-import sqlite3
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 
 AUDIT = os.path.join(ROOT, "DATABASE_LICENSES_VERBATIM.md")
 
@@ -74,7 +74,7 @@ def main() -> int:
     known = assessed()
     print(f"licence audit covers {len(known)} source id(s)")
 
-    con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=180.0)
+    con = catalog_path.connect(timeout=180.0)
     con.execute("PRAGMA busy_timeout = 180000")
     cat = dict(con.execute("select source_id, count(*) from series group by 1").fetchall())
     con.close()
@@ -97,7 +97,7 @@ def main() -> int:
     # It is NOT a clean bill either: the inheritance is asserted in scattered code comments
     # rather than recorded in the audit, so nothing checks it. Print the licence and whether it
     # is reservable, and let the two columns be read together.
-    con2 = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=180.0)
+    con2 = catalog_path.connect(timeout=180.0)
     con2.execute("PRAGMA busy_timeout = 180000")
     lic = dict(con2.execute(
         "select source_id, license_id from source").fetchall())

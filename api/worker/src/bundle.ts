@@ -14,10 +14,10 @@
 // stable URLs the client fans out to -- the Worker itself makes no R2 fan-out.
 // ---------------------------------------------------------------------------
 
-import type { Env, SourceRow, LicenseRow, SeriesRow, SeriesIdRow } from "./types";
-import { SELECT_SOURCE, SELECT_LICENSE, SELECT_SERIES, seriesIdsForSourceSql } from "./sql";
-import { json, badRequest, licenseBlock, supportedSources, sourceOf, dbFor, dbForSeries } from "./util";
-import { NON_REDISTRIBUTABLE, isSeriesCarvedOut } from "./denylist";
+import type { Env, SourceRow, LicenseRow, SeriesRow, SeriesIdRow } from "./types.ts";
+import { SELECT_SOURCE, SELECT_LICENSE, SELECT_SERIES, seriesIdsForSourceSql } from "./sql.ts";
+import { json, badRequest, licenseBlock, supportedSources, sourceOf, dbFor, dbForSeries } from "./util.ts";
+import { NON_REDISTRIBUTABLE, isSeriesCarvedOut } from "./denylist.ts";
 
 const PROFILE = "tabular-data-package";
 const SCHEMA_VERSION = "1.0";

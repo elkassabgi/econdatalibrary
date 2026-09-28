@@ -12,10 +12,10 @@
 // last_success_utc (no "unknown laundered into fresh").
 // ---------------------------------------------------------------------------
 
-import type { Env, LastUpdateRow } from "./types";
-import { LAST_UPDATES } from "./sql";
-import { NON_REDISTRIBUTABLE } from "./denylist";
-import { json, nextUpdateExpected } from "./util";
+import type { Env, LastUpdateRow } from "./types.ts";
+import { LAST_UPDATES } from "./sql.ts";
+import { NON_REDISTRIBUTABLE } from "./denylist.ts";
+import { json, nextUpdateExpected } from "./util.ts";
 
 export async function handleLastUpdates(env: Env): Promise<Response> {
   const res = await env.CATALOG.prepare(LAST_UPDATES).all<LastUpdateRow>();
