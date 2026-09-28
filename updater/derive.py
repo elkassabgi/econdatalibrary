@@ -59,6 +59,33 @@ def _fence_exc():
         return _NoFence
 
 
+def _raise_if_fence_in_disguise(fence, e: BaseException) -> None:
+    """Raise the fence when `e` is the orchestrator's alarm arriving in another form. DuckDB takes the signal and
+    raises RuntimeError('Query interrupted') (review R1254 item 6, measured: 0.50 s), which `except fence` misses -
+    the id was booked failed and the phase carried on. The orchestrator sets UNIT_TIMEOUT_FIRED before it raises;
+    merge._unit_timeout_fired reads that flag and is the one predicate for "the alarm has fired"."""
+    from . import merge                                                   # noqa: PLC0415
+    if merge._unit_timeout_fired():
+        raise fence(f"the orchestrator's fence, arriving as {type(e).__name__}: {str(e)[:80]}") from e
+
+
+def _wait_slice(futs, timeout: float):
+    """concurrent.futures.wait for at most `timeout` s, with SIGALRM BLOCKED while inside it (review R1254 item 2).
+    wait() takes every future's condition lock in _AcquireFutures.__enter__; an alarm raised there leaves some held,
+    the workers then block in set_result, and interpreter exit joins them - the process hung for ever (measured,
+    forced landing). Blocked, a pending alarm is delivered on unmask, between bytecodes outside wait(), within one
+    slice. Main thread on POSIX only - elsewhere there is no SIGALRM (the fence is POSIX-only too)."""
+    import signal                                                         # noqa: PLC0415
+    mask = getattr(signal, "pthread_sigmask", None)
+    if mask is None or not hasattr(signal, "SIGALRM") or threading.current_thread() is not threading.main_thread():
+        return concurrent.futures.wait(futs, timeout=timeout, return_when=concurrent.futures.FIRST_COMPLETED)
+    old = mask(signal.SIG_BLOCK, {signal.SIGALRM})
+    try:
+        return concurrent.futures.wait(futs, timeout=timeout, return_when=concurrent.futures.FIRST_COMPLETED)
+    finally:
+        mask(signal.SIG_SETMASK, old)
+
+
 def _put_with_retry(blob, key: str, body: bytes, plain: bool = False) -> bool:
     """PUT one object, patiently. True on success, False after PUT_TRIES failures.
 
@@ -236,6 +263,7 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
         except fence:
             raise
         except Exception as e:                                         # noqa: BLE001
+            _raise_if_fence_in_disguise(fence, e)
             return sid, "fail", f"{type(e).__name__}: {str(e)[:90]}", None
         if n > flow_cap:
             return sid, "large", f"{n:,} store rows > flow ceiling {flow_cap:,}", n
@@ -256,6 +284,7 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
         except fence:
             raise
         except Exception as e:                                         # noqa: BLE001
+            _raise_if_fence_in_disguise(fence, e)             # DuckDB: RuntimeError('Query interrupted')
             return sid, "fail", f"{type(e).__name__}: {str(e)[:90]}", n
         finally:
             try:
@@ -273,6 +302,7 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
         except fence:
             raise
         except Exception as e:  # store-coverage gap or resolver error — loud, queued
+            _raise_if_fence_in_disguise(fence, e)
             return sid, "fail", f"{type(e).__name__}: {str(e)[:90]}", None
         return ((sid, "ok", None, None) if _put_with_retry(_blob(), r2_key(sid), body)
                 else (sid, "fail", "PUT exhausted", None))
@@ -325,8 +355,9 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
     #     below is a 1-second slice the handler can run between;
     #   * on a trip the pool is shut down WITHOUT waiting and with its queue cancelled - the `with` exit used to
     #     wait for every running worker AND run the queued ids.
-    # A worker already inside a PUT is not killed (threads cannot be); it finishes in the background, and an id it
-    # completes after the trip is simply re-derived next run - never booked as derived here. What WAS done rides on
+    # A worker already inside a PUT is not killed (threads cannot be); it finishes in the background, never booked
+    # as derived here, and the PROCESS CANNOT EXIT before it returns (interpreter exit joins pool threads), so a
+    # truly wedged PUT moves the wait to the end of the run (review R1254 item 3). What WAS done rides on
     # the exception as `derive_partial`, so the caller keeps derived ids out of its retry queue.
     ex = None
     try:
@@ -346,8 +377,7 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
 
             def _drain(until_below: int):
                 while len(futs) > until_below:
-                    done, _ = concurrent.futures.wait(
-                        futs, timeout=1.0, return_when=concurrent.futures.FIRST_COMPLETED)
+                    done, _ = _wait_slice(futs, 1.0)       # SIGALRM masked inside wait (R1254 item 2)
                     for f in done:
                         _record(*f.result())
                         futs.pop(f, None)

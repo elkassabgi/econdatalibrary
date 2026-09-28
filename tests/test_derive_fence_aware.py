@@ -169,3 +169,80 @@ def test_the_heartbeat_stops_after_a_normal_run_too(monkeypatch):
     derive.derive_and_put(["zz:a", "zz:b"], _Blob(), budget_min=0)
     time.sleep(0.3)
     assert len(_heartbeats_alive()) == before
+
+
+# ---- review R1254: the alarm inside wait(), and the alarm in DuckDB's clothes ----------------------------------------
+
+@pytest.mark.skipif(not hasattr(signal, "pthread_sigmask") or not hasattr(signal, "SIGALRM"),
+                    reason="POSIX only: no SIGALRM, no fence (CI runs it)")
+def test_every_wait_slice_runs_with_sigalrm_blocked(monkeypatch):
+    """R1254 item 2: an alarm raised inside wait()'s lock-taking __enter__ left condition locks held and the process
+    hung for ever at exit. Each slice must run with SIGALRM blocked, and the mask must be restored after."""
+    import concurrent.futures as cf
+    monkeypatch.setenv("AQUEDUCT_DERIVE_WORKERS", "4")
+    real, seen = cf.wait, []
+
+    def spy(*a, **k):
+        if threading.current_thread() is threading.main_thread():
+            seen.append(signal.SIGALRM in signal.pthread_sigmask(signal.SIG_BLOCK, []))
+        return real(*a, **k)
+    monkeypatch.setattr(cf, "wait", spy)
+    out = derive.derive_and_put([f"zz:w{i}" for i in range(20)], _Blob(), budget_min=0)
+    assert out["put"] == 20 and seen and all(seen), seen
+    assert signal.SIGALRM not in signal.pthread_sigmask(signal.SIG_BLOCK, []), "the mask was not restored"
+
+
+def test_a_wait_slice_off_posix_or_off_the_main_thread_is_a_plain_wait(monkeypatch):
+    """Where there is no SIGALRM (Windows) the slice is a plain 1 s wait - and it still returns what finished."""
+    import concurrent.futures as cf
+    with cf.ThreadPoolExecutor(1) as ex:
+        f = ex.submit(lambda: 7)
+        done, _ = derive._wait_slice({f: "x"}, 5.0)
+    assert f in done and f.result() == 7
+
+
+def _fire(monkeypatch):
+    monkeypatch.setattr(orchestrate, "UNIT_TIMEOUT_FIRED", True)
+
+
+@pytest.mark.parametrize("where", ["series", "flow_rows", "flow_stream"])
+def test_an_error_after_the_alarm_fired_is_the_fence(monkeypatch, where):
+    """R1254 item 6: DuckDB takes the signal and raises RuntimeError('Query interrupted'); `except fence` missed it
+    and the id was booked failed while the phase carried on. Once UNIT_TIMEOUT_FIRED is set, it is the fence."""
+    import core.derive_csv as dc
+    import econdl._resolve as rs
+    monkeypatch.setenv("AQUEDUCT_DERIVE_WORKERS", "1")
+    monkeypatch.setattr(orchestrate, "UNIT_TIMEOUT_FIRED", False)
+
+    def interrupted(*a, **k):
+        _fire(monkeypatch)
+        raise RuntimeError("Query interrupted")
+    monkeypatch.setattr(rs, "resolve", lambda sid: sid)
+    monkeypatch.setattr(dc, "resolved_paths", interrupted if where == "flow_rows" else (lambda r: []))
+    monkeypatch.setattr(dc, "_series_csv_to_file_sorted", interrupted)
+    if where == "series":
+        monkeypatch.setattr(derive, "_series_csv_bytes", interrupted)
+    blob = _Blob()
+    with pytest.raises(orchestrate.UnitTimeout, match="RuntimeError") as trip:
+        derive.derive_and_put(["zz:x", "zz:after"], blob, budget_min=0, flow_grain=(where != "series"))
+    assert trip.value.derive_partial["put_ids"] == [] and trip.value.derive_partial["failed"] == [], \
+        trip.value.derive_partial
+    assert blob.put == [], "derive carried on after the fence"
+
+
+@pytest.mark.parametrize("flow", [False, True])
+def test_negative_control_the_same_error_without_the_alarm_is_one_failed_id(monkeypatch, flow):
+    import core.derive_csv as dc
+    import econdl._resolve as rs
+    monkeypatch.setenv("AQUEDUCT_DERIVE_WORKERS", "1")
+    monkeypatch.setattr(orchestrate, "UNIT_TIMEOUT_FIRED", False)
+
+    def broken(*a, **k):
+        raise RuntimeError("Query interrupted")
+    monkeypatch.setattr(rs, "resolve", lambda sid: sid)
+    monkeypatch.setattr(dc, "resolved_paths", lambda r: [])
+    monkeypatch.setattr(dc, "_series_csv_to_file_sorted", broken)
+    monkeypatch.setattr(derive, "_series_csv_bytes",
+                        broken if not flow else (lambda sid: b"series_id,obs_date,value\n"))
+    out = derive.derive_and_put(["zz:x"], _Blob(), budget_min=0, flow_grain=flow)
+    assert out["failed"] == ["zz:x"] and out["put"] == 0, out

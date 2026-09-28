@@ -110,6 +110,8 @@ def test_drain_purges_malformed_rows_from_queue(tmp_path):
 def test_run_loop_wires_the_purge():
     import inspect
     from updater import orchestrate as O
-    src = inspect.getsource(O.run_once)
+    # the drain body moved into _drain_csv_retry_queue (review R1254 item 1); run_once calls it
+    assert "_drain_csv_retry_queue(unit, blob, store)" in inspect.getsource(O.run_once)
+    src = inspect.getsource(O._drain_csv_retry_queue)
     assert "_split_retry_rows(unit.source_id, _retry_rows)" in src
     assert "store.clear_csv_retries(_junk_ids)" in src

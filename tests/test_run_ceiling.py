@@ -183,9 +183,7 @@ def test_every_alarm_site_in_run_once_takes_its_minutes_from_its_helper():
     sites.sort()
     expected = [("unit.key + ' (detect_change)'", "_unit_window_min()", "strat.detect_change"),
                 ("unit.key", "_unit_window_min()", "strat.run"),
-                ("unit.key + ' (csv phase)'", "_csv_fence", "_derive_changed_csvs"),
-                # the csv retry drain (R1246 finding 4) - possible now that derive_and_put is fence-aware
-                ("unit.key + ' (csv retry drain)'", "_csv_fence_min()", "_derive_mod.derive_and_put")]
+                ("unit.key + ' (csv phase)'", "_csv_fence", "_derive_changed_csvs")]
     assert [(lab, mins) for _l, lab, mins, _b in sites] == [(lab, mins) for lab, mins, _c in expected], sites
     for (_l, lab, _m, body), (_lab, _mins, call) in zip(sites, expected):
         assert call in body, (lab, call, body)
@@ -194,7 +192,7 @@ def test_every_alarm_site_in_run_once_takes_its_minutes_from_its_helper():
     for n in ast.walk(run_once):
         if isinstance(n, ast.Name) and n.id in ("_unit_deadline", "_unit_window_min", "_csv_fence_min"):
             mentions[n.id] = mentions.get(n.id, 0) + 1
-    assert mentions == {"_unit_deadline": 4, "_unit_window_min": 2, "_csv_fence_min": 2}, mentions
+    assert mentions == {"_unit_deadline": 3, "_unit_window_min": 2, "_csv_fence_min": 1}, mentions
     reach = [ast.unparse(n)[:80] for n in ast.walk(run_once)
              if (isinstance(n, ast.Call) and getattr(n.func, "id", None) in ("globals", "setattr", "vars", "exec", "eval"))
              or (isinstance(n, ast.Attribute) and n.attr in ("modules", "__dict__", "setattr"))
@@ -202,19 +200,109 @@ def test_every_alarm_site_in_run_once_takes_its_minutes_from_its_helper():
     assert not reach, reach
 
 
-def test_the_drain_trip_clears_only_what_derive_reported_put():
-    """The drain's UnitTimeout handler: every id derive REPORTED PUT (the exception's derive_partial) is cleared like
-    a success; every other id stays not derived. An empty answer would read as "all derived" and clear them all
-    (R1246 finding 2); a handler that ignored derive_partial would re-queue ids that were derived."""
+def _fn_ast(name):
     import ast
-    run_once = _run_once_ast()
-    handlers = [h for t in ast.walk(run_once) if isinstance(t, ast.Try)
-                for w in t.body if isinstance(w, ast.With) and "(csv retry drain)" in ast.unparse(w.items[0].context_expr)
-                for h in t.handlers if isinstance(h.type, ast.Name) and h.type.id == "UnitTimeout"]
-    assert len(handlers) == 1, len(handlers)
-    body = "\n".join(ast.unparse(s) for s in handlers[0].body)
-    assert "getattr(_trip, 'derive_partial', None)" in body and "put_ids" in body, body
-    assert "'failed': [s for s in _retry_ids if str(s) not in _done]" in body, body
+    import inspect
+    tree = ast.parse(inspect.getsource(orchestrate))
+    fns = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name]
+    assert len(fns) == 1, name
+    return fns[0]
+
+
+def test_run_once_hands_the_drain_over_only_when_the_csv_fence_held():
+    """The drain moved into _drain_csv_retry_queue (so it can be RUN in a test, review R1254 item 1). run_once must
+    call it exactly once, only under `if not _csv_fence_tripped` - retrying OLD ids in an exhausted window is the
+    overrun being fenced."""
+    import ast
+    run_once = _fn_ast("run_once")
+    calls = [n for n in ast.walk(run_once) if isinstance(n, ast.Call)
+             and getattr(n.func, "id", None) == "_drain_csv_retry_queue"]
+    assert len(calls) == 1 and [ast.unparse(a) for a in calls[0].args] == ["unit", "blob", "store"], \
+        [ast.unparse(c) for c in calls]
+    gates = [n for n in ast.walk(run_once) if isinstance(n, ast.If) and ast.unparse(n.test) == "not _csv_fence_tripped"
+             and any(c is calls[0] for s in n.body for c in ast.walk(s))]
+    assert len(gates) == 1
+
+
+def test_the_drain_arms_its_own_fence_around_derive():
+    """_drain_csv_retry_queue arms exactly one alarm, from _csv_fence_min(), around derive_and_put; it rebinds none
+    of the alarm helpers and reaches no module state by the roads a parser can name."""
+    import ast
+    fn = _fn_ast("_drain_csv_retry_queue")
+    sites = [(ast.unparse(i.context_expr.args[0]), ast.unparse(i.context_expr.args[1]),
+              {ast.unparse(n.func) for s in w.body for n in ast.walk(s) if isinstance(n, ast.Call)})
+             for w in ast.walk(fn) if isinstance(w, ast.With) for i in w.items
+             if isinstance(i.context_expr, ast.Call) and getattr(i.context_expr.func, "id", None) == "_unit_deadline"]
+    assert [(a, b) for a, b, _c in sites] == [("unit.key + ' (csv retry drain)'", "_csv_fence_min()")], sites
+    assert "_derive_mod.derive_and_put" in sites[0][2], sites
+    mentions = {}
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Name) and n.id in ("_unit_deadline", "_unit_window_min", "_csv_fence_min"):
+            mentions[n.id] = mentions.get(n.id, 0) + 1
+    assert mentions == {"_unit_deadline": 1, "_csv_fence_min": 1}, mentions
+    for name in ("_unit_deadline", "_csv_fence_min", "UnitTimeout"):
+        assert not _bindings(fn, name), name
+    reach = [ast.unparse(n)[:80] for n in ast.walk(fn)
+             if (isinstance(n, ast.Call) and getattr(n.func, "id", None) in ("globals", "setattr", "vars", "exec", "eval"))
+             or (isinstance(n, ast.Attribute) and n.attr in ("modules", "__dict__", "setattr")) or isinstance(n, ast.Global)]
+    assert not reach, reach
+
+
+@pytest.fixture
+def drain(tmp_path, monkeypatch):
+    """Run the REAL _drain_csv_retry_queue against a StateStore, with derive tripping the fence after it has PUT
+    some ids, failed one, left one unreached and (flow grain) found one too large."""
+    import types
+    from updater import derive
+    from updater.state import StateStore
+    st = StateStore(path=str(tmp_path / "state.db"))
+    monkeypatch.setattr(orchestrate.config, "STATE_DIR", str(tmp_path / "_aqueduct"))
+    monkeypatch.setattr(orchestrate, "_csv_desktop_excluded", lambda sid: set())
+    unit = types.SimpleNamespace(key="zz/_all", source_id="zz", unit_id="_all")
+
+    def run(grain, partial, queued):
+        st.enqueue_csv_retry("zz", queued, "earlier failure")
+        monkeypatch.setattr(orchestrate, "_csv_grain", lambda sid: grain)
+
+        def tripping(ids, blob, **kw):
+            if partial is None:                                  # the control: no fence, everything PUT
+                return {"put": len(ids), "put_ids": list(ids), "failed": []}
+            e = orchestrate.UnitTimeout("emulated fence (test)")
+            e.derive_partial = partial
+            raise e
+        monkeypatch.setattr(derive, "derive_and_put", tripping)
+        orchestrate._drain_csv_retry_queue(unit, object(), st)
+        synced_file = tmp_path / "_aqueduct" / "pending_catalog_sync.txt"
+        synced = synced_file.read_text().split() if synced_file.exists() else []
+        owed = {r["series_id"]: (r["rows"], r["reason"]) for r in st.csv_desktop_owed("zz")}
+        return sorted(r["series_id"] for r in st.csv_retries("zz")), synced, owed
+    return run
+
+
+def test_the_drain_trip_clears_and_syncs_only_what_derive_put(drain):
+    """R1254 item 1 (series grain): PUT -> cleared and synced; failed and never reached -> still queued, not synced."""
+    queue, synced, owed = drain("series", {"put_ids": ["zz:a"], "failed": ["zz:b"], "deferred_large": {}},
+                                ["zz:a", "zz:b", "zz:c"])
+    assert queue == ["zz:b", "zz:c"], queue
+    assert synced == ["zz:a"], synced
+    assert owed == {}, owed
+
+
+def test_the_flow_drain_trip_keeps_a_too_large_id_as_too_large(drain):
+    """R1254 item 5 (flow grain): nothing stays queued; the too-large id keeps its row count and reason; the failed
+    and unreached ids are owed as budget-deferred; only the PUT id is synced."""
+    queue, synced, owed = drain("flow", {"put_ids": ["zz:a"], "failed": ["zz:b"], "deferred_large": {"zz:d": 5_000_000}},
+                                ["zz:a", "zz:b", "zz:c", "zz:d"])
+    assert queue == [], queue
+    assert synced == ["zz:a"], synced
+    assert owed["zz:d"] == (5_000_000, orchestrate._DESKTOP_OWED_TOO_LARGE), owed
+    assert owed["zz:b"] == (None, orchestrate._DESKTOP_OWED_BUDGET) and owed["zz:c"] == owed["zz:b"], owed
+    assert "zz:a" not in owed, owed
+
+
+def test_negative_control_a_drain_that_does_not_trip_clears_and_syncs_everything(drain):
+    queue, synced, owed = drain("series", None, ["zz:e", "zz:f"])
+    assert queue == [] and sorted(synced) == ["zz:e", "zz:f"] and owed == {}, (queue, synced, owed)
 
 
 def test_the_binding_scan_can_fail():
