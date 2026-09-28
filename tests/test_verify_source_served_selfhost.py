@@ -71,6 +71,16 @@ def test_after_t0_a_coherent_source_is_served(live, monkeypatch, capsys):
     assert "SERVED — MISSING 0" in out and "the served catalogue in step" in out
 
 
+def test_after_t0_the_live_build_is_read_by_this_sources_key_range_only(live, monkeypatch, capsys):
+    """Review R1267 M12: this tool's selfhost tests traced no SQL, so a `WHERE source_id = ?` full scan of the live
+    build passed. Every read of `series` must be ONE bounded shape, and the range must be THIS source's."""
+    import _bounded_reads
+    check = _bounded_reads.trace_series_reads(monkeypatch, source="zz")
+    assert _run(monkeypatch) == 0
+    reads, bad = check()
+    assert reads and not bad, bad
+
+
 def test_after_t0_a_missing_object_is_not_clean(live, monkeypatch, capsys):
     tmp, store, served = live
     with catalog_path.writer_lock():

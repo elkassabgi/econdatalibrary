@@ -78,18 +78,12 @@ def test_after_t0_partitions_that_repeat_a_name_are_counted_as_files(live, monke
 
 def test_after_t0_the_catalogue_is_read_by_primary_key_range(live, monkeypatch, capsys):
     """R1243 F2: WHERE source_id=? is a full scan holding a shared lock on the LIVE build while writers wait."""
-    real = catalog_path.connect
-    sql = []
-
-    def traced(*a, **k):
-        con = real(*a, **k)
-        con.set_trace_callback(sql.append)
-        return con
-    monkeypatch.setattr(catalog_path, "connect", traced)
+    import _bounded_reads                                  # the ONE predicate (review R1267: this test had its own)
+    check = _bounded_reads.trace_series_reads(monkeypatch, source="zz")
     monkeypatch.setattr(sys, "argv", ["store_inventory.py", "zz"])
     assert S.main() == 0
-    reads = [s for s in sql if "FROM series" in s]
-    assert reads and all("series_id >=" in s and "source_id" not in s for s in reads), reads
+    reads, bad = check()
+    assert reads and not bad, bad
 
 
 def test_after_t0_another_checkout_is_refused(live, monkeypatch, tmp_path):
