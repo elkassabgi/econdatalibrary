@@ -30,6 +30,7 @@ from updater.strategies.fetchers import statcan as sc  # noqa: E402
 
 PID = "10000001"
 V_REV, V_SAME = 41690973, 41690974
+P_QUIET, V_QUIET = "10000005", 60000001          # a cube the feed lists whose vectors have no tail rows
 D_OLD = dt.date(2024, 1, 1)
 
 
@@ -339,16 +340,19 @@ def test_a_refused_cube_does_not_strand_the_cubes_that_merged(monkeypatch, tmp_p
     import json
     _store(tmp_path, [(V_REV, D_OLD, 1.0), (V_SAME, D_OLD, 2.0)], pid=PID)   # TWO revised vectors: a subset fails
     _store(tmp_path, [(V2, D_OLD, 7.0)], pid="10000009")                   # sorts AFTER PID; its merge is refused
+    _store(tmp_path, [(V_QUIET, D_OLD, 5.0)], pid=P_QUIET)                 # a QUIET cube: no tail rows
     d_new = dt.date(2024, 2, 1)                                            # one ADDED row: obs and last date move
     _wire(monkeypatch, tmp_path, [(V_REV, D_OLD, 1.5), (V_SAME, D_OLD, 2.5), (V_SAME, d_new, 3.0),
-                                  (V2, D_OLD, 8.0)], pids=(PID, "10000009"))
+                                  (V2, D_OLD, 8.0)], pids=(PID, P_QUIET, "10000009"))
     _refuse_merge_for(monkeypatch, "10000009")
     res = sc.update(None, None)
     assert res.status == "partial" and "structural" in res.error and "merge guard refused" in res.error, \
         (res.status, res.error)
+    assert "10000009" in res.error, res.error                              # finalize's own text names the cube
     assert res.changed_keys == {f"v{V_REV}": D_OLD.isoformat(), f"v{V_SAME}": d_new.isoformat()}, res.changed_keys
     assert res.new_vintage is None, "a partial pass must not stamp a vintage"
-    assert res.series_cursors == {PID: d_new.isoformat()}, res.series_cursors   # no cursor for the refused cube
+    # the merged AND the quiet cube's cursors (the comment claims both); never the refused cube's
+    assert res.series_cursors == {PID: d_new.isoformat(), P_QUIET: D_OLD.isoformat()}, res.series_cursors
     assert res.obs == 1 and res.last_obs_date == d_new.isoformat(), (res.obs, res.last_obs_date)
     assert _derived(monkeypatch, tmp_path, res, backend="r2") == [f"statcan:V{V_REV}", f"statcan:V{V_SAME}"]
     st = json.loads((tmp_path / "_incr_state.json").read_text())
@@ -362,6 +366,28 @@ def test_negative_control_a_refused_cube_with_nothing_merged_still_raises(monkey
     _refuse_merge_for(monkeypatch, "10000009")
     with pytest.raises(sc.DefinitiveError, match="structural"):
         sc.update(None, None)
+
+
+def test_a_quiet_cube_beside_a_refused_one_is_not_a_merge(monkeypatch, tmp_path):
+    """Round-2 review N3: a quiet cube records a cursor but merges nothing - it must not turn the raise into a
+    partial (the re-raise rule is keyed on what MERGED, not on cursors)."""
+    _store(tmp_path, [(V_QUIET, D_OLD, 5.0)], pid=P_QUIET)
+    _store(tmp_path, [(V2, D_OLD, 7.0)], pid="10000009")
+    _wire(monkeypatch, tmp_path, [(V2, D_OLD, 8.0)], pids=(P_QUIET, "10000009"))
+    _refuse_merge_for(monkeypatch, "10000009")
+    with pytest.raises(sc.DefinitiveError, match="structural"):
+        sc.update(None, None)
+
+
+def test_a_refused_cube_sorted_first_does_not_stop_the_cubes_after_it(monkeypatch, tmp_path):
+    """Round-2 review N1: every other test put the refused cube LAST, so `break` for `continue` passed."""
+    _store(tmp_path, [(V2, D_OLD, 7.0)], pid="10000000")                   # sorts BEFORE PID; refused
+    _store(tmp_path, [(V_REV, D_OLD, 1.0)], pid=PID)
+    _wire(monkeypatch, tmp_path, [(V2, D_OLD, 8.0), (V_REV, D_OLD, 1.5)], pids=("10000000", PID))
+    _refuse_merge_for(monkeypatch, "10000000")
+    res = sc.update(None, None)
+    assert res.status == "partial" and "10000000" in res.error, (res.status, res.error)
+    assert res.changed_keys == {f"v{V_REV}": D_OLD.isoformat()}, res.changed_keys
 
 
 def test_an_unreadable_cube_after_the_revision_does_not_clear_it(monkeypatch, tmp_path):
