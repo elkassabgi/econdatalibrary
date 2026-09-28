@@ -297,8 +297,9 @@ def test_a_report_over_the_default_cap_is_complete(monkeypatch, tmp_path):
 
 
 def test_a_transient_cube_after_the_revision_does_not_clear_it(monkeypatch, tmp_path):
-    """R1252 N6/N11: a transient (or unreadable) cube AFTER the revised cube must not clear the reports gathered
-    so far - partial, the revision reported, derived under r2, and its sync booking kept in tmp_path."""
+    """R1252 N11: a cube whose tail FETCH fails AFTER the revised cube must not clear the reports gathered so
+    far - partial, the revision reported, derived under r2, and its sync booking kept in tmp_path. (The
+    unreadable-on-disk case, N6, is the next test.)"""
     from updater.errors import TransientError
     _store(tmp_path, [(V_REV, D_OLD, 1.0)], pid=PID)
     _store(tmp_path, [(V2, D_OLD, 7.0)], pid="10000009")                   # sorts AFTER PID, and fails
@@ -316,3 +317,22 @@ def test_a_transient_cube_after_the_revision_does_not_clear_it(monkeypatch, tmp_
     assert _derived(monkeypatch, tmp_path, res, backend="r2") == [f"statcan:V{V_REV}"]
     booked = (tmp_path / "_aqueduct" / "pending_catalog_sync.txt").read_text().split()
     assert booked == [f"statcan:V{V_REV}"], booked
+
+
+def test_an_unreadable_cube_after_the_revision_does_not_clear_it(monkeypatch, tmp_path):
+    """R1252/AR-159 N6: a cube whose stored parquet cannot be READ, after the revised cube, is a transient sub-unit
+    too - and must not clear the revision already reported."""
+    _store(tmp_path, [(V_REV, D_OLD, 1.0)], pid=PID)
+    _store(tmp_path, [(V2, D_OLD, 7.0)], pid="10000009")                   # sorts AFTER PID
+    _wire(monkeypatch, tmp_path, [(V_REV, D_OLD, 1.5)], pids=(PID, "10000009"))
+    real_map = sc._disk_vector_map
+
+    def _map(path):
+        if os.path.basename(path).startswith("10000009"):
+            raise OSError("parquet footer unreadable")
+        return real_map(path)
+    monkeypatch.setattr(sc, "_disk_vector_map", _map)
+    res = sc.update(None, None)
+    assert res.status == "partial" and "unreadable on disk" in res.error, (res.status, res.error)
+    assert res.changed_keys == {f"v{V_REV}": D_OLD.isoformat()}, res.changed_keys
+    assert _derived(monkeypatch, tmp_path, res, backend="r2") == [f"statcan:V{V_REV}"]
