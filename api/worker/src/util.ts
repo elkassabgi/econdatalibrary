@@ -8,7 +8,7 @@
 // enforced uniformly across every handler.
 // ---------------------------------------------------------------------------
 
-import type { Env, LicenseRow, LicenseBlock } from "./types";
+import type { Env, LicenseRow, LicenseBlock } from "./types.ts";
 
 // The 321 sources with an at-rest resolver (econdl._resolve.supported_sources()) — see the
 // 2026-09-08 note below for why an older count of this list was higher.

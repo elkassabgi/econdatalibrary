@@ -120,6 +120,9 @@ ZERO_FILE = "_repull_zero.json"        # vintages whose re-pull produced ZERO ob
 REFUSED_FILE = "_repull_refused.json"  # vintages whose re-pull was refused by the replacement floor
 REPLACE_FLOOR = 0.5                     # a re-pull that keeps < 50% of the served rows is refused
 ACCEPT_FILE = "_accept_shrink.json"     # the operator's explicit yes to a shrink, IN THE STORE (R598):
+REPULL_REQUEST_FILE = "_repull_requests.json"   # --repull: re-pull a table CBS has NOT revised
+# The series-key tag for a row CBS publishes as the table's STANDARD ERROR (see resolve_period).
+SE_TAG = "statistic=standard_error"
 FORCE_SWEEP = False                     # --force-sweep: run the marker sweep on a < 90% catalogue listing
 PROBE_FAIL_FILE = "_probe_failures.json"
 TITLE_FAIL_FILE = "_title_failures.json"
@@ -216,6 +219,78 @@ def _write_accepts(out_dir: str, d: dict) -> None:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(d, f, indent=1, sort_keys=True)
     os.replace(tmp, p)
+
+
+def load_repull_requests(out_dir: str) -> dict:
+    """{tid: {"reason": ..., "requested": ...}} - tables the operator asked to re-pull although
+    CBS has not revised them. See record_repull_requests."""
+    try:
+        with open(os.path.join(out_dir, REPULL_REQUEST_FILE), encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_repull_requests(out_dir: str, d: dict) -> None:
+    p = os.path.join(out_dir, REPULL_REQUEST_FILE)
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(d, f, indent=1, sort_keys=True)
+    os.replace(tmp, p)
+
+
+def record_repull_requests(out_dir: str, tids, reason: str) -> None:
+    """Ask the ONE crawler to re-pull these tables on its next pass, although CBS has not
+    revised them.
+
+    WHY THIS EXISTS. A re-pull fires only when CBS's Modified stamp is newer than ours
+    (repull_verdict). A PARSER change therefore never reaches a table CBS stopped revising -
+    7042mc, 7068gi and 7069LS were last revised years ago - so the only way to apply one used to
+    be writing an older stamp into `_modified.json`. That is how 37471 was re-pulled on
+    2026-09-05, and because the running parser at the time discarded its standard errors, the
+    re-pull deleted all 22 of them from the store. It is also a second writer's game: the
+    guard's crawler owns that file.
+
+    So this records a REQUEST, in the store, for the crawler the guard runs - the same shape
+    as --accept-shrink (R598/R600), and never a second crawler. The request behaves exactly
+    like a real revision: it persists until the re-pull SUCCEEDS, so a transient failure is
+    retried next pass, and it is consumed by the explicit terminal verdicts (NOT_RETRIED,
+    TOO_BIG), so a deterministic failure cannot loop - the ZERO and REFUSED registries stop
+    it exactly as they stop a CBS-driven re-pull (R589).
+
+    KNOWN LIMIT, stated so nobody relies on the opposite: a request does NOT override a ZERO or
+    REFUSED record for CBS's CURRENT vintage - repull_verdict answers NOT_RETRIED and the request
+    is closed without a crawl. That is the usual state of a table an OLD parser failed on, so to
+    apply a parser fix there, that record has to be cleared first. The standard-error tables this
+    was built for carry no such record."""
+    tids = [t for t in tids if t]
+    if not tids:
+        raise SystemExit("--repull needs at least one explicit table id")
+    # Only a table we HOLD can be re-pulled - repull_verdict is reached only for a held parquet.
+    # A mistyped id (the match is case-sensitive: '7042MC' is not '7042mc') or a table never
+    # crawled would otherwise sit in the file for ever, pending and doing nothing.
+    held = set(load_modified(out_dir))
+    unknown = [t for t in tids
+               if not os.path.exists(os.path.join(out_dir, f"{t}.parquet")) and t not in held]
+    if unknown:
+        raise SystemExit(f"--repull: not held here, nothing recorded: {', '.join(unknown)} "
+                         f"(table ids are case-sensitive)")
+    cur = load_repull_requests(out_dir)
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    for tid in tids:
+        cur[tid] = {"reason": reason, "requested": now}
+        log(f"  --repull {tid}: recorded ({reason}) - the guard's crawler re-pulls it on its next pass")
+    _write_repull_requests(out_dir, cur)
+
+
+def close_repull_request(out_dir: str, table_id: str, why: str) -> None:
+    """Consume an operator re-pull request, saying why - never silently."""
+    cur = load_repull_requests(out_dir)
+    if table_id in cur:
+        cur.pop(table_id)
+        _write_repull_requests(out_dir, cur)
+        log(f"  {table_id}: operator re-pull request closed - {why}")
 
 
 def record_accepts(out_dir: str, tids) -> None:
@@ -416,6 +491,11 @@ def registry_summary(out_dir: str) -> None:
     acc = load_accepts(out_dir)
     if acc:
         log("  accepted shrinks pending: " + ", ".join(f"{t} (vintage {e.get('vintage')})" for t, e in sorted(acc.items())))
+    req = load_repull_requests(out_dir)
+    if req:
+        # Visible at every pass start and end, so a request that never fires is seen, not lost.
+        log("  operator re-pull requests pending: " + ", ".join(
+            f"{t} (since {e.get('requested')})" for t, e in sorted(req.items())))
 
 
 def _vintage_noted(out_dir: str, fname: str, table_id: str, modified: str) -> bool:
@@ -465,7 +545,9 @@ def repull_verdict(out_dir: str, table_id: str, modified: str, out_path: str, ro
     if hdt is None:
         hdt = dt.datetime.fromtimestamp(os.path.getmtime(out_path))
         held = hdt.isoformat(timespec="seconds") + " (mtime)"
-    if mdt <= hdt:
+    # An operator's --repull request stands in for a newer CBS stamp, and for NOTHING else: the
+    # ZERO / REFUSED / ceiling checks below still apply, so it cannot loop (R589).
+    if mdt <= hdt and table_id not in load_repull_requests(out_dir):
         return None
     for fname, why in ((ZERO_FILE, "ZERO observations"), (REFUSED_FILE, "refused by the replacement floor")):
         if fname == REFUSED_FILE and accept_applies(out_dir, table_id, modified):
@@ -678,6 +760,37 @@ def parse_cbs_period_ex(s: str) -> tuple[dt.date | None, str | None]:
                 # (R589). The LEGACY dating (the X0 branch: yr+2, 31 July) is KEPT so the
                 # served content is unchanged, and every occurrence is COUNTED so the
                 # title-driven rule (open) can be sized. Never silently.
+                #
+                # SIZED 2026-09-22, from CBS's own period codes rather than from our dates.
+                # 288 of 5,626 cbs_nl parquets carry ONLY 31-July dates (read from parquet
+                # footers: min == max == 31 July). That looks like 1.14 BILLION suspect rows
+                # and is not one: 31 July is also what SJ and X0 write, and those are CORRECT.
+                # 263 of the 288 are academic-year tables. Probing the 59-table residue against
+                # CBS - all 59, two requests each, 2 s apart - gives the real exposure. Pick the
+                # period axis by EXACT name: a first-substring match lands on
+                # `LeeftijdBeginPeriode` (AGE at the start of the period) on 71038ned and
+                # misses the English `Periods` on 60046eng/80066eng:
+                #
+                #   X000-ONLY, i.e. the WHOLE date axis is this fabricated date:
+                #     8 tables / 136,862 rows - 85071NED 55,728 - 37450 24,480 -
+                #     85011NED 23,424 - 82810NED 21,675 - 82811NED 6,000 -
+                #     81976NED 5,439 - 80066ned 58 - 80066eng 58
+                #   MIXED (X000 alongside other families):
+                #     4 tables / 70,014 rows - 60046ned - 60046eng - 37117 - 80004ned
+                #   SJ/X0-only, i.e. correctly dated: 41 tables / 177,717,490 rows
+                #   period axis not located by name: 6 tables / 1,086,674 rows
+                #   plus 70895ned / 70895ENG at 288 rows each, where the prefix is a REAL year:
+                #     '1971X000' is titled "1971 week 0 (3 dagen)" and is stored as 1973-07-31.
+                #     That is the dangerous shape - a real prefix lands INSIDE the sane band, so
+                #     no date audit can see it.
+                #
+                # That reproduces this comment's own "8 served tables (136,862 rows)"
+                # EXACTLY - same table count, same row count - from CBS's codes, without
+                # reading the figure into the method. The list above is the target set for the
+                # title-driven rule when it is written. The rule is still OPEN, and what to do
+                # with a period CBS does not treat as a period is the owner's call - see R1079,
+                # where 1,038 of these rows turned out to be published STANDARD ERRORS and a
+                # "repair" would have deleted them.
                 _discard("X000-legacy-dated", s)
                 return (dt.date(yr + 2, 7, 31), None)
             # Span of TWO academic years starting at yr, so it ends with the year
@@ -835,14 +948,129 @@ def span_tag(code: str) -> str | None:
     return None
 
 
+# The two keys CBS gives a standard-error period, and the two titles it gives them. Read live
+# 2026-09-23 from all SEVEN tables known to carry one:
+#   '0000X000' 'Standaardfout'   37471, 7042mc, 7068gi, 7069LS   (Dutch tables)
+#   'Stf '     'Standard error'  7042eng, 7068eng, 7069eng       (their English twins; the key
+#                                                                  carries a trailing space)
+# The Dutch set came from the R588 census, which grouped codes by YEAR-prefixed family and so
+# could never report a three-letter key - the English twins were found by the adversarial review
+# of this change, not by that census. A full census of non-year keys across all tables has NOT
+# been run. The key only nominates a candidate; CBS's Title decides, because 'X000' alone has
+# fifteen meanings (R588).
+SE_KEYS = ("0000X000", "STF")
+SE_TITLES = ("standaardfout", "standard error")
+# Discard reasons that mean a standard-error CANDIDATE was dropped rather than keyed - counted so
+# the DONE line names them. The refusal in ingest_table does not key on these (a counter misses a
+# retitled code and a drop made before a resume, R1089); it compares the rows the served copy and
+# the new copy actually hold (_se_row_count).
+SE_DROP_REASONS = ("no-title-for-code:standard-error-candidate", "standard-error-span-not-annual")
+SE_KEPT = "kept:standard-error-keyed"   # a COUNTED keep, not a loss - named so the DONE line says so
+
+
+def _se_row_count(path: str) -> int:
+    """How many rows of a stored table are a published standard error: keyed ones (SE_TAG in
+    the series key) plus the LEGACY ones the old parser dated to year 0000 + 2 (R1079). Streamed
+    two columns at a time, so a large table costs a scan, not its size in memory."""
+    import pyarrow.compute as pc
+    if not os.path.exists(path):
+        return 0
+    n = 0
+    for b in pq.ParquetFile(path).iter_batches(columns=["series_key", "obs_date"]):
+        keyed = pc.match_substring(b.column(0), SE_TAG)
+        legacy = pc.less_equal(pc.year(b.column(1)), 2)
+        n += int(pc.sum(pc.or_kleene(keyed, legacy).cast("int64")).as_py() or 0)
+    return n
+
+
+def _is_se_shape(c: str) -> bool:
+    """Is this period key one CBS uses for a table's standard error (SE_KEYS)? The caller has
+    already stripped it, so 'Stf ' arrives as 'Stf'."""
+    return c.upper() in SE_KEYS
+
+
+def _se_span_start(titles, se_code: str) -> dt.date | None:
+    """1 January of the first year the table covers, when every OTHER period code is a plain
+    year; None otherwise.
+
+    CBS's own description of these codes (fetched 2026-09-23): in 7042mc, 7068gi and 7069LS
+    "Omdat de standaardfout in alle jaren nagenoeg dezelfde waarde heeft, is op de eerste regel
+    een 'gemiddelde standaardfout' weergegeven", and in the English twins "As the value of the
+    standard error remains virtually unchanged over the years, an 'average standard error' is
+    given in the first line". 37471's code carries NO description at all - its title alone says
+    what it is. So ONE average standard error is shown for the whole table. It belongs to no
+    single year, so it is dated the way this file dates every value that summarises several
+    periods: the FIRST day of its span (see parse_cbs_period_ex). A table whose other codes are
+    not all plain years has no such simple span, and is refused rather than guessed."""
+    cached = getattr(titles, "_se_start", "unset")
+    if cached != "unset":
+        return cached
+    keys = titles.codes() if hasattr(titles, "codes") else list(titles or {})
+    years = []
+    for k in keys:
+        if k == se_code:
+            continue
+        annual = (len(k) == 4 and k.isdigit()) or (len(k) >= 6 and k[:4].isdigit() and k[4:6].upper() == "JJ")
+        d, tag = _PARSE_EX_RAW(k)       # a probe of the code list, not a row: nothing is counted
+        if not annual or d is None or tag:
+            years = []
+            break
+        years.append(d.year)
+    start = dt.date(min(years), 1, 1) if years else None
+    try:
+        titles._se_start = start        # once per table: the title map is per table
+    except AttributeError:
+        pass                            # a plain dict (tests) - recomputed, harmlessly
+    return start
+
+
+def _standard_error_period(c: str, titles) -> tuple[dt.date | None, str | None] | None:
+    """(date, SE_TAG) for the row CBS publishes as the table's standard error; (None, None) when
+    it is one but cannot be placed (dropped and COUNTED, never guessed); None when it is not a
+    standard error at all, so the caller carries on exactly as before.
+
+    WHY IT IS ITS OWN SERIES. Seven CBS tables are known to carry, beside the years, one period code that is
+    the table's standard error (SE_KEYS). It is a published figure - multiplied by 1.65 or 1.96
+    it gives the 90% and 95% confidence margins - not a period. The English twins' copy was
+    never ingested at all: the parser could not read 'Stf' and dropped it silently. The parser used to date it (year 0000 + 2, 31 July)
+    and serve it INSIDE each value series as that series' first observation, which is how three
+    catalogue rows came to advertise a start date of 0002-07-31 (R1079). A later parser refused
+    year 0000 and so DISCARDED it: 37471's re-pull on 2026-09-05 dropped all 22 of its standard
+    errors from the store, logged as discards={'unparsed:X0': 1} and let through by the 50%
+    replace floor. The owner's decision (2026-09-22, option a) is to keep the figure and move
+    the marker out of the time axis into the series key."""
+    if not _is_se_shape(c):
+        return None
+    t = (titles or {}).get(c)
+    if t is None:
+        # No title - either the fetch failed (the caller sees titles.failed and rewinds the page,
+        # R621/R623) or CBS lists no title for it. Either way nothing here can say what it is.
+        _discard("no-title-for-code:standard-error-candidate", c)
+        return (None, None)
+    if str(t).strip().rstrip("*").strip().lower() not in SE_TITLES:
+        return None
+    start = _se_span_start(titles, c)
+    if start is None:
+        _discard("standard-error-span-not-annual", c)
+        return (None, None)
+    _discard(SE_KEPT, c)                    # kept, and counted so the DONE line shows it
+    return (start, SE_TAG)
+
+
 def resolve_period(code: str, titles: dict | None) -> tuple[dt.date | None, str | None]:
     """The date of one period cell: by code where the code carries its meaning, by CBS's
     Title where it does not.
 
     A bare-digit code of 5 or 6 digits is the ambiguous case (see parse_cbs_period_ex), so it
     is resolved from the Title ONLY. With no title map - the dimension fetch failed - such a
-    code is dropped and counted, because dating it by shape fabricates data."""
+    code is dropped and counted, because dating it by shape fabricates data.
+
+    The second tag this can return is SE_TAG, for a table's standard error (see
+    _standard_error_period); the caller keys it as its own series."""
     c = (code or "").strip()
+    se = _standard_error_period(c, titles)
+    if se is not None:
+        return se
     tag = span_tag(c)
     if tag or (c.isdigit() and len(c) in (5, 6)):
         t = (titles or {}).get(c)
@@ -901,6 +1129,11 @@ class TitleMap:
         if self._map is None:
             return default
         return self._map.get(code, default)
+
+    def codes(self) -> list:
+        """Every period code CBS lists for this table (the same single fetch as get)."""
+        self.get("")
+        return list(self._map or {})
 
 
 def get_period_titles(table_id: str, period_col: str) -> dict | None:
@@ -1133,6 +1366,8 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
         n = pq.read_metadata(out_path).num_rows
         verdict = repull_verdict(out_dir, table_id, modified, out_path, n)
         if verdict == "NOT_RETRIED":
+            close_repull_request(out_dir, table_id, "this vintage already re-pulled to ZERO or was "
+                                 "refused by the floor; not retried (R589)")
             # The served copy is the OLD vintage; the manifest must keep saying so (R592: the
             # None branch below would stamp the NEW stamp and certify the freeze as current).
             # R596: an interrupt between recording and closing may have left a marker or a
@@ -1151,8 +1386,12 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
             record_modified(out_dir, table_id, modified)
             return n
         if verdict == "TOO_BIG":
+            forced = table_id in load_repull_requests(out_dir)
+            close_repull_request(out_dir, table_id, f"over the {REPULL_MAX_ROWS:,}-row ceiling; "
+                                 f"deferred for an explicit decision instead")
             note_deferred_repull(out_dir, table_id, modified, n)
-            log(f"  skip {table_id} ({n:,} rows) - CBS revised it {modified}, but it is "
+            why = "a re-pull was requested" if forced else f"CBS revised it {modified}"
+            log(f"  skip {table_id} ({n:,} rows) - {why}, but it is "
                 f"over the {REPULL_MAX_ROWS:,}-row automatic re-pull ceiling; recorded "
                 f"in {DEFERRED_FILE} for an explicit decision")
             return n
@@ -1164,8 +1403,14 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
             log(f"  RE-PULL {table_id}: resuming the in-flight re-pull to {modified} "
                 f"(keeping its checkpoint; the {n:,}-row copy is still serving)")
         else:
-            log(f"  RE-PULL {table_id}: CBS revised it {modified}; we hold {verdict}. "
-                f"The {n:,}-row copy stays in place until the new crawl completes.")
+            req = load_repull_requests(out_dir).get(table_id)
+            if req:
+                log(f"  RE-PULL {table_id}: FORCED by operator request ({req.get('reason')}); "
+                    f"CBS's stamp {modified} is unchanged. The {n:,}-row copy stays in place "
+                    f"until the new crawl completes.")
+            else:
+                log(f"  RE-PULL {table_id}: CBS revised it {modified}; we hold {verdict}. "
+                    f"The {n:,}-row copy stays in place until the new crawl completes.")
             clear_partials(out_dir, table_id)
             begin_repull(out_dir, table_id, modified)
 
@@ -1416,7 +1661,11 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
                 if isinstance(v, str) and v.strip():
                     dim_parts.append(f"{col}={v.strip()}")
             series_key = ":".join(dim_parts) or table_id
-            if span_tag:
+            if span_tag == SE_TAG:
+                # The table's standard error: its own series beside each value series, never an
+                # observation inside it (see _standard_error_period).
+                series_key = f"{series_key}:{SE_TAG}"
+            elif span_tag:
                 # A multi-period aggregate gets its own series: '2004G200' (a 2-year average)
                 # and '2004G500' both begin in 2004 and would otherwise collide on one
                 # (key, date) with different values — the R573 duplicate-pair bug.
@@ -1626,6 +1875,36 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
         new_n = pq.read_metadata(tmp_path).num_rows
         log(f"  {table_id}: replacing {old_n:,} served rows with {new_n:,} "
             f"({(new_n / old_n if old_n else 0):.1%}; discards={discards_since(discards_before)})")
+        # A DROPPED STANDARD ERROR REFUSES THE REPLACEMENT, whatever the row ratio. It is a few
+        # percent of a table - 22 of 352 rows in 37471 - so REPLACE_FLOOR never sees it, and a
+        # re-pull that drops it deletes a published figure from the served copy (R1079).
+        #
+        # Judged on the DATA, not on this run's discard counter (review round 3, R1089): the
+        # counter cannot see a code CBS retitles (it lands in 'unparsed:X0'), nor a drop made on
+        # a page flushed before a resume (the resuming pass counts from zero), and it refused
+        # every revision of a table that never held a standard error. So: count the standard
+        # errors the served copy holds (keyed rows, or the legacy year-0002 rows) and refuse only
+        # when the new copy holds FEWER. Recorded WITH a reason, so --accept-shrink cannot wave it
+        # through (R604) - and any pending accept is dropped here, or the refused record would be
+        # skipped by the accept and the table re-crawled every pass (R606).
+        held_se, new_se = _se_row_count(out_path), _se_row_count(tmp_path)
+        se_dropped = held_se - new_se if new_se < held_se else 0
+        if old_n and se_dropped:
+            if table_id in load_accepts(out_dir):
+                drop_accept(out_dir, table_id, "the re-pull would drop a published standard error")
+            log(f"  !! {table_id}: re-pull would DROP {se_dropped:,} of {held_se:,} published "
+                f"standard-error row(s) - REFUSED, served copy kept, vintage recorded in {REFUSED_FILE} "
+                f"(discards={discards_since(discards_before)})")
+            os.remove(tmp_path)
+            for i in range(parts):
+                os.remove(part_path(i))
+            if os.path.exists(ckpt_path):
+                os.remove(ckpt_path)
+            end_repull(out_dir, table_id)          # close first, then record (R596)
+            _note_vintage(out_dir, REFUSED_FILE, table_id, modified,
+                          {"served_rows": old_n, "repull_rows": new_n,
+                           "reason": f"standard error dropped: {se_dropped} of {held_se} row(s)"})
+            return 0
         if old_n and new_n < REPLACE_FLOOR * old_n and not accept_applies(out_dir, table_id, modified, new_n):
             acc = load_accepts(out_dir).get(table_id)
             if acc and acc.get("vintage") == modified:
@@ -1668,6 +1947,7 @@ def ingest_table(table_id: str, title: str, out_dir: str, modified: str = "") ->
     _clear_vintage(out_dir, REFUSED_FILE, table_id)
     if table_id in load_accepts(out_dir):
         drop_accept(out_dir, table_id, "the accepted re-pull replaced the served copy")
+    close_repull_request(out_dir, table_id, "the re-pull replaced the served copy")
     dd = discards_since(discards_before)
     log(f"  {table_id}: DONE {n:,} obs  [{title[:50]}]" + (f"  discards={dd}" if dd else ""))
     return n
@@ -1677,6 +1957,7 @@ def main():
     os.makedirs(OUT, exist_ok=True)
     only_ids: set[str] = set()
     accept_only = False
+    repull_only = False
     # THE DOCUMENTED FORM USED TO SELECT NOTHING. This file's own header (line 14) says
     #     python jobs/ingest_cbs_nl.py --only 83439NED,37230NED
     # but the parser only ever read the `--only=A,B` form: a bare `--only` produced
@@ -1701,6 +1982,16 @@ def main():
             ids = [x for x in a.split("=", 1)[1].split(",") if x]
             record_accepts(OUT, ids)   # R598/R600: the yes lives in the store, for the ONE crawler
             accept_only = True
+        elif a.startswith("--repull="):
+            # Same shape as --accept-shrink: a request IN THE STORE for the guard's crawler, never
+            # a second writer. The reason is required so the log says why a table CBS has not
+            # revised is being crawled again.
+            spec = a.split("=", 1)[1]
+            ids_part, _, reason = spec.partition(":")
+            if not reason.strip():
+                raise SystemExit("--repull=ID[,ID...]:REASON - a reason is required")
+            record_repull_requests(OUT, [x for x in ids_part.split(",") if x], reason.strip())
+            repull_only = True     # parse the REST first, so a following flag is not dropped
         elif a == "--force-sweep":
             global FORCE_SWEEP
             FORCE_SWEEP = True
@@ -1708,6 +1999,10 @@ def main():
             only_ids.add(a)
         i += 1
 
+    if repull_only:
+        # Never a second crawler, even with --only: the request is for the guard's ONE crawler.
+        log("re-pull request recorded; the guard's crawler will act on it - not starting a second crawler (R600)")
+        return
     if accept_only and not only_ids:
         log("accept recorded; the guard's crawler will act on it - not starting a second crawler (R600)")
         return

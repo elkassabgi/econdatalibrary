@@ -69,6 +69,10 @@ def validate(reg: dict, expected_count: int | None = None) -> list[str]:
             # remedy on a flow-grain source writes 0 objects and leaves the debt standing).
             problems.append(f"{sid}: csv_grain must be one of {sorted(CSV_GRAINS)}, "
                             f"got {e.get('csv_grain')!r}")
+        if "csv_merge_served" in e and not isinstance(e.get("csv_merge_served"), bool):
+            # csv_merge_served: true merges each CSV upload with the served object (R1136). A typo
+            # like "yes" must not silently switch it off - the derive reads `is True`.
+            problems.append(f"{sid}: csv_merge_served must be boolean, got {e.get('csv_merge_served')!r}")
         if "csv_desktop_exclude" in e:
             # Catalogue ids unserved BY DECISION: never booked as a desktop debt (no derive will
             # ever pay it). Each must be a full catalogue id of THIS source.

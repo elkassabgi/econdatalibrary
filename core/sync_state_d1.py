@@ -17,10 +17,11 @@ the wrangler payload limit (api/worker/README.md:86). Emitted SQL is verified by
 replay into in-memory SQLite (row-for-row equality with the source db) BEFORE any
 wrangler call — broken SQL never reaches remote D1.
 
-Execution: each chunk runs via `npx wrangler d1 execute econ-catalog --remote
+Execution: each chunk runs through core.d1_remote.execute_file - `node
+api/worker/node_modules/wrangler/bin/wrangler.js d1 execute econ-catalog --remote
 --file=<abs path>` with cwd=api/worker (wrangler.toml + the version-pinned local
-wrangler install live there; we refuse to run if node_modules/wrangler is absent so
-npx can never float to an unpinned version). Any nonzero wrangler exit aborts
+wrangler install live there; we refuse to run if that install is absent, so the
+version can never float). Any nonzero wrangler exit aborts
 loudly (honesty rule §5.3: failures are loud, never silent). Headless auth needs
 CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID in the environment (plan item A2);
 local runs may use the machine's wrangler OAuth instead.
@@ -35,8 +36,6 @@ import argparse
 import os
 import shutil
 import sqlite3
-import subprocess
-import time
 import sys
 import tempfile
 
@@ -72,6 +71,11 @@ ROWS_PER_STMT = 20        # matches core/export_d1.py (D1 statement-length cap)
 # stamped a forward row that crept with the calendar (R737). tools/stamp_source_data_through.py
 # stamps these sources from D1's own rows after every refresher run; this job leaves them alone.
 DATA_THROUGH_FROM_D1 = frozenset({"sec_edgar"})
+# ...and after T0 D1 is frozen, so each of them needs a LOCAL writer of its catalogue rows, its source_state
+# row and its data_through (from its own refresher, not from a statistic over the catalogue - R737). This
+# names the ones that have one. tools/selfhost/t0_ready.py refuses READY while any DATA_THROUGH_FROM_D1
+# source is missing here (R1191 finding 1: after the first swap sec_edgar's data_through would read null).
+LOCAL_FRESHNESS_WRITERS: dict[str, str] = {}      # source_id -> the module that writes it locally
 MAX_FILE_BYTES = 900_000  # per-file cap under wrangler's payload limit
 
 
@@ -153,13 +157,65 @@ def _servable(rows, cols, gated):
     return [r for r in rows if str(r[i]).lower() not in gated]
 
 
-def emit_sql(state_db: str, out_dir: str,
-             gated: set[str] | None = None) -> tuple[list[str], dict[str, int]]:
+def data_through_rows(cconn: sqlite3.Connection, gated: set[str]) -> list[tuple[str, str]]:
+    """(source_id, newest end_date) per catalogued source, from an open catalogue (or a copy of it)."""
+    # end_date < 2900: a handful of series carry the publisher's
+    # open-ended sentinel 9999-12-31 (task #91's class) — eurostat's MAX
+    # leaked it as data_through on the first live stamp. Genuine long
+    # projection horizons (boc publishes through 2095) stay in.
+    dt_rows = cconn.execute(
+        "SELECT source_id, MAX(end_date) FROM series "
+        "WHERE end_date IS NOT NULL AND end_date < '2900-01-01' "
+        "GROUP BY source_id").fetchall()
+    # SOURCES STAMPED FROM D1, NOT FROM THIS COPY (R730 -> R737, 2026-09-05). sec_edgar's
+    # rows in the copy are not its truth (its refresher writes D1 only), and any statistic
+    # over them - MAX(<2900) gave 2215-09-30; MAX(<= today) gave a forward row that would
+    # creep with the calendar - overwrote the correct stamp at every sync. Such sources are
+    # left out here entirely and stamped by tools/stamp_source_data_through.py from D1.
+    return [(sid, mx) for sid, mx in dt_rows
+            if sid not in DATA_THROUGH_FROM_D1 and str(sid).lower() not in gated]
+
+
+def local_writer_rows(cconn: sqlite3.Connection, gated: set[str]) -> list[tuple[str, str]]:
+    """(source_id, data_through) for the DATA_THROUGH_FROM_D1 sources that have a registered LOCAL writer:
+    the value comes from that writer's own module - `data_through(conn) -> str | None` - never from a
+    statistic over the catalogue (R737). A registered name that does not import, or has no such function,
+    fails here: a name alone must not make a source look covered (R1195). The self-hosted origin uses this;
+    the D1 sync does not (before T0, D1's own stamp is the truth)."""
+    import importlib                                                      # noqa: PLC0415
+    out = []
+    for sid in sorted(DATA_THROUGH_FROM_D1):
+        writer = LOCAL_FRESHNESS_WRITERS.get(sid)
+        if writer is None or str(sid).lower() in gated:
+            continue
+        value = importlib.import_module(writer).data_through(cconn)
+        if value is not None:
+            out.append((sid, value))
+    return out
+
+
+def data_through_stmts(dt_rows: list[tuple[str, str]]) -> list[str]:
+    stmts = ["CREATE TABLE IF NOT EXISTS source_data_through (source_id TEXT PRIMARY KEY, data_through TEXT);"]
+    for i in range(0, len(dt_rows), ROWS_PER_STMT):
+        chunk = dt_rows[i:i + ROWS_PER_STMT]
+        vals = ",\n".join(
+            "(" + ", ".join(_lit(v) for v in r) + ")" for r in chunk)
+        stmts.append(
+            f"INSERT INTO source_data_through (source_id, data_through) VALUES\n{vals}\n"
+            f'ON CONFLICT(source_id) DO UPDATE SET data_through=excluded.data_through;')
+    return stmts
+
+
+def emit_sql(state_db: str, out_dir: str, gated: set[str] | None = None, catalogue: str | None = None,
+             data_through: bool = True) -> tuple[list[str], dict[str, int]]:
     """Emit chunked upsert .sql files for every NON-GATED row of the freshness tables.
 
     Returns (ordered file paths, {table: row count}). Files must be executed in
     the returned order (DDL for a table always precedes its upserts). `gated`
-    defaults to the committed worker gate (_gated_ids); tests pass their own.
+    defaults to the committed worker gate (_gated_ids); tests pass their own. `catalogue` names the
+    catalogue data_through is computed from (default: ECONDL_CATALOG or the checkout's). data_through=False
+    leaves source_data_through out: the self-hosted origin reads only state.db inside the writer lock and
+    computes data_through from its own copy afterwards (tools/selfhost/origin_copies.py; R1191 finding 5).
     """
     gated = _gated_ids() if gated is None else {s.lower() for s in gated}
     # Strictly read-only: this script must never write (or WAL-touch) state.db.
@@ -196,37 +252,17 @@ def emit_sql(state_db: str, out_dir: str,
     # table (not an ALTER on source_state): CREATE IF NOT EXISTS is idempotent
     # where ADD COLUMN is fatal-on-rerun, and a fresh D1 stays workable.
     # verify_replay ignores it deliberately — it audits the state projection.
-    cat_path = os.environ.get("ECONDL_CATALOG") or os.path.join(
+    cat_path = catalogue or os.environ.get("ECONDL_CATALOG") or os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "catalog.db")
-    if os.path.exists(cat_path):
+    if not data_through:
+        pass                     # the caller computes it elsewhere (the self-hosted origin: from its copy)
+    elif os.path.exists(cat_path):
         cconn = sqlite3.connect(f"file:{cat_path}?mode=ro", uri=True)
         try:
-            # end_date < 2900: a handful of series carry the publisher's
-            # open-ended sentinel 9999-12-31 (task #91's class) — eurostat's MAX
-            # leaked it as data_through on the first live stamp. Genuine long
-            # projection horizons (boc publishes through 2095) stay in.
-            dt_rows = cconn.execute(
-                "SELECT source_id, MAX(end_date) FROM series "
-                "WHERE end_date IS NOT NULL AND end_date < '2900-01-01' "
-                "GROUP BY source_id").fetchall()
-            # SOURCES STAMPED FROM D1, NOT FROM THIS COPY (R730 -> R737, 2026-09-05). sec_edgar's
-            # rows in the copy are not its truth (its refresher writes D1 only), and any statistic
-            # over them - MAX(<2900) gave 2215-09-30; MAX(<= today) gave a forward row that would
-            # creep with the calendar - overwrote the correct stamp at every sync. Such sources are
-            # left out here entirely and stamped by tools/stamp_source_data_through.py from D1.
-            dt_rows = [(sid, mx) for sid, mx in dt_rows
-                       if sid not in DATA_THROUGH_FROM_D1 and str(sid).lower() not in gated]
+            dt_rows = data_through_rows(cconn, gated)
         finally:
             cconn.close()
-        stmts.append("CREATE TABLE IF NOT EXISTS source_data_through ("
-                     "source_id TEXT PRIMARY KEY, data_through TEXT);")
-        for i in range(0, len(dt_rows), ROWS_PER_STMT):
-            chunk = dt_rows[i:i + ROWS_PER_STMT]
-            vals = ",\n".join(
-                "(" + ", ".join(_lit(v) for v in r) + ")" for r in chunk)
-            stmts.append(
-                f"INSERT INTO source_data_through (source_id, data_through) VALUES\n{vals}\n"
-                f'ON CONFLICT(source_id) DO UPDATE SET data_through=excluded.data_through;')
+        stmts.extend(data_through_stmts(dt_rows))
         counts["source_data_through"] = len(dt_rows)
     else:
         print(f"  data_through SKIPPED: no catalog at {cat_path} (state tables still sync)")
@@ -313,17 +349,24 @@ def verify_replay(state_db: str, files: list[str], counts: dict[str, int],
         mem.close()
 
 
-def execute_remote(files: list[str], database: str | None = None) -> None:
+def execute_remote(files: list[str], database: str | None = None, *, idempotent: bool = False,
+                   tries: int = 4) -> None:
     """Run each chunk via wrangler from api/worker (wrangler.toml lives there).
 
-    `database` overrides the primary for shard-routed work (CATALOG_SHARD_FOR)."""
-    npx = shutil.which("npx")
-    if not npx:
-        raise SystemExit("FATAL: npx not on PATH — install Node.js")
-    if not os.path.isdir(os.path.join(WORKER_DIR, "node_modules", "wrangler")):
+    `database` overrides the primary for shard-routed work (CATALOG_SHARD_FOR). A failed EXIT is retried
+    `tries` - 1 times. That is NOT always safe: wrangler 3.114 can exit nonzero after the server took the
+    file (a failure in its poll step, R1191 finding 2). So a caller passes tries=1 for a file that holds
+    bare `INSERT INTO series_fts` rows: sync_catalog_d1 does this per file (see its reapplicable()), and
+    migrate_noaa_shard does it for every file. A TIMEOUT is retried only when the caller says the files are
+    safe to apply twice (idempotent=True: this module's own freshness sync, INSERT OR REPLACE / deletes by
+    key; sync_catalog_d1's self-cleaning files)."""
+    from core import d1_remote                                               # noqa: PLC0415
+    if not shutil.which("node"):
+        raise SystemExit("FATAL: node not on PATH — install Node.js")
+    if not os.path.isfile(d1_remote.WRANGLER_JS):     # the wrangler that actually runs (R1185 finding 6)
         raise SystemExit(
-            f"FATAL: no local wrangler install under {WORKER_DIR} — run `npm install` "
-            "there first (npx would otherwise float to an unpinned wrangler version)")
+            f"FATAL: no local wrangler install at {d1_remote.WRANGLER_JS} — run `npm ci` "
+            "in api/worker first (the pinned wrangler is the one core.d1_remote runs)")
     # RETRY, because one transient blip used to cost the whole sync. A usda run of 93 chunks
     # died on chunk 0 with Cloudflare "Authentication error [code: 10000]" from the /d1/import
     # endpoint -- while `d1 execute` against the same database, with the same credentials,
@@ -335,47 +378,24 @@ def execute_remote(files: list[str], database: str | None = None) -> None:
     # Retries are bounded and the FINAL failure still aborts loudly -- a half-written D1 is
     # worse than a failed sync, so this makes the transient case survivable without making the
     # real case quiet.
-    TRIES = 4
+    # The road is core.d1_remote.execute_file (plan step 1): the same wrangler call with the encoding pinned
+    # to utf-8/replace (cp1252 once turned a SUCCESSFUL write into a crash), refused after T0.
+    TRIES = max(1, tries)             # 1 for a file that is NOT safe to apply twice (R1191 finding 2)
     for p in files:
-        cmd = [npx, "wrangler", "d1", "execute", database or D1_DATABASE,
-               "--remote", "--yes", f"--file={os.path.abspath(p)}"]
         print(f"  executing {os.path.basename(p)} ...")
-        res = None
-        for attempt in range(TRIES):
-            try:
-                # encoding/errors pinned explicitly: text=True decodes with the LOCALE
-                # codec, and on Windows (cp1252) wrangler's box-drawing output raises
-                # UnicodeDecodeError. That turns a SUCCESSFUL deploy into a crash — and
-                # worse, a crash midway through a chunked sync leaves D1 half-updated.
-                # The bytes we care about (row counts, error text) are ASCII; replace the
-                # rest rather than letting cosmetics abort a write.
-                res = subprocess.run(cmd, cwd=WORKER_DIR, capture_output=True,
-                                     text=True, encoding="utf-8", errors="replace",
-                                     timeout=600)
-            except subprocess.TimeoutExpired:
-                if attempt == TRIES - 1:
-                    raise SystemExit(
-                        f"FATAL: wrangler timed out (600s) on {p} after {TRIES} attempts "
-                        f"— aborting sync")
-                print(f"    timed out, retry {attempt + 1}/{TRIES - 1} in "
-                      f"{5 * (attempt + 1)}s", flush=True)
-                time.sleep(5 * (attempt + 1))
-                continue
-            if res.returncode == 0:
-                break
-            if attempt < TRIES - 1:
-                first = ((res.stderr or res.stdout or "").strip().splitlines() or [""])[-1]
-                print(_echo(f"    exit {res.returncode}, retry {attempt + 1}/{TRIES - 1} in "
-                            f"{5 * (attempt + 1)}s — {first[:110]}"), flush=True)
-                time.sleep(5 * (attempt + 1))
-        if res is None or res.returncode != 0:
-            sys.stderr.write(_echo((res.stdout if res else "") or ""))
-            sys.stderr.write(_echo((res.stderr if res else "") or ""))
+        try:
+            out = d1_remote.execute_file(
+                database or D1_DATABASE, p, timeout=600, tries=TRIES, retry_timeouts=idempotent,
+                on_retry=lambda n, why: print(_echo(f"    {why[:160]} - retry {n}/{TRIES - 1} in {5 * n}s"),
+                                              flush=True))
+        except RuntimeError as e:
+            sys.stderr.write(_echo(getattr(e, "stdout", "") or ""))          # wrangler's output IN FULL, as before
+            sys.stderr.write(_echo(getattr(e, "stderr", "") or ""))
+            sys.stderr.write(_echo(str(e)) + "\n")
             raise SystemExit(
-                f"FATAL: wrangler exited {res.returncode if res else '?'} on {p} after "
-                f"{TRIES} attempts — D1 sync aborted; remaining chunks NOT executed; "
-                f"SQL kept for inspection")
-        tail = (res.stdout or "").strip().splitlines()
+                f"FATAL: {p}: {str(e)[:300]} — D1 sync aborted; remaining chunks NOT executed; SQL kept for "
+                f"inspection") from None
+        tail = (out or "").strip().splitlines()
         if tail:
             print(f"    {tail[-1]}")
 
@@ -406,7 +426,7 @@ def main(argv: list[str] | None = None) -> None:
             print(f"  {p}")
         return
 
-    execute_remote(files)
+    execute_remote(files, idempotent=True)     # INSERT OR REPLACE / deletes by key: safe to re-apply
     shutil.rmtree(out_dir, ignore_errors=True)
     print(f"D1 sync OK: {total} rows upserted across {len(files)} file(s)")
 

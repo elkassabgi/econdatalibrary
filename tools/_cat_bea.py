@@ -24,16 +24,18 @@ frequency is parsed from the ':A'/':Q'/':M' key suffix where present.
 import collections
 import glob
 import os
-import sqlite3
 import sys
 
 import pyarrow.parquet as pq
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 SRC = "bea"
 STORE = os.path.join(ROOT, "data", "clean_full", "bea")
 
-con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=7200)
+catalog_path.write_session_for_process()   # after T0: the single-writer lock until exit
+con = catalog_path.connect(write=True, timeout=7200)
 con.execute("PRAGMA busy_timeout=7200000")  # local heavy runs hold long write txns (R400)
 
 files = sorted(glob.glob(os.path.join(STORE, "**", "*.parquet"), recursive=True))

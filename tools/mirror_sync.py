@@ -682,6 +682,12 @@ def sync_source(s3, rec, apply: bool):
 
 
 def main() -> int:
+    # AFTER T0 this tool reads the FROZEN cloud copy and writes the live local data: refused first, before
+    # its arguments (neither the R2 guard nor d1_remote stops a READ; tests/test_verifiers_6d.py lists why).
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import cutover                                          # noqa: PLC0415
+    cutover.refuse_if_cut_over('mirror_sync - it copies R2 objects into the local store, which is the live one after T0')
     ap = argparse.ArgumentParser()
     ap.add_argument("--from-json", required=True, help="a footer_diff --all output")
     ap.add_argument("--apply", action="store_true")
@@ -741,5 +747,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     from core import r2_util
-    s3 = r2_util.client()
+    s3 = r2_util.cloud_client()     # a named final-sync reader: keeps reading the cloud after T0
     sys.exit(main())

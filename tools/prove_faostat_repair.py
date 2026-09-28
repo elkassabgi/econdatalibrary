@@ -31,13 +31,13 @@ import io
 import itertools
 import json
 import os
-import sqlite3
 import sys
 import urllib.request
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 
 BULK_INDEX = "https://bulks-faostat.fao.org/production/datasets_E.json"
 UA = {"User-Agent": "Econ-Fin Data Library admin@econdatalibrary.com"}
@@ -60,7 +60,7 @@ def entry(code):
 
 
 def published_ids(source_id):
-    con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"))
+    con = catalog_path.connect()
     return {r[0].split(":", 2)[2] for r in con.execute(
         "SELECT series_id FROM series WHERE source_id=?", (source_id,))
         if r[0].count(":") >= 2}
@@ -153,8 +153,7 @@ def main():
         # have scored 0% and refused a template measured at 99.2%. Read it off the
         # ids themselves, which is the only authority on what we publish.
         mids = {i.split(":", 1)[0] for i in
-                (r[0].split(":", 1)[1] for r in sqlite3.connect(
-                    os.path.join(ROOT, "data", "catalog.db")).execute(
+                (r[0].split(":", 1)[1] for r in catalog_path.connect().execute(
                     "SELECT series_id FROM series WHERE source_id=?", (a.source,))
                  if ":" in r[0])}
         if len(mids) != 1:

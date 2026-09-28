@@ -46,22 +46,22 @@
 //   6. >=1 row                      -> 200 text/csv
 // ---------------------------------------------------------------------------
 
-import type { Env, SeriesRow, SourceRow, LicenseRow } from "./types";
-import { headerRows, idbDatasetUrl, IDB_CAVEAT } from "./seriesHeader";
-import { SELECT_SERIES, SELECT_SOURCE, SELECT_LICENSE } from "./sql";
+import type { Env, SeriesRow, SourceRow, LicenseRow } from "./types.ts";
+import { headerRows, idbDatasetUrl, IDB_CAVEAT } from "./seriesHeader.ts";
+import { SELECT_SERIES, SELECT_SOURCE, SELECT_LICENSE } from "./sql.ts";
 import {
   csv, csvStream, csvPassthrough, json, notFound, notMigrated, dataUnavailable, resolverEmpty,
   unsupportedFilter, badRequest, supportedSources, sourceOf, licenseBlock, dbForSeries,
   isNativeOnly,
-} from "./util";
+} from "./util.ts";
 import {
   CSV_HEADER, FILTER_MAX_STORED_BYTES, FILTER_MAX_TEXT_BYTES, LineFilter, MAX_RATIO, STREAM_MIN_BYTES,
   VerifiedGunzip, completeLine, identityPipe, isGzipMagic, isizeFromTrailer,
   newStats, peekGzipHeader, peekPlainHeader, prefixBytes, primePump, slices,
-} from "./csvStream";
-import type { FilterOpts, Primed } from "./csvStream";
-import { isGated } from "./denylist";
-import { GEO_PROJECTION_SOURCES, geoAlias, normalizeGeoParam, filterGeoRows } from "./geoProjection";
+} from "./csvStream.ts";
+import type { FilterOpts, Primed } from "./csvStream.ts";
+import { isGated } from "./denylist.ts";
+import { GEO_PROJECTION_SOURCES, geoAlias, normalizeGeoParam, filterGeoRows } from "./geoProjection.ts";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
