@@ -424,6 +424,29 @@ def update(unit, since) -> Result:
     outage = ((len(vanished) > 10 and len(vanished) == len(stored_tried)) or
               (not stored_codes and tally.added == 0 and tally.revised == 0
                and tally.empty == tally.attempted and tally.attempted > 10))
+    if outage and vanished:
+        # A KNOWN-PRESENT CANARY before the verdict (review R1290; R316). Vanished codes are also what a
+        # block of codes UNSD has BLANKED looks like - adjacent families such as SG_DMK_PARL* can fill a
+        # closing pass - and calling that an outage un-visits them every pass: the cycle never closes and
+        # every other code is skipped for ever (R1111's freeze). One stored code outside this pass is
+        # asked: data back means the API is serving, so these codes were blanked (visited as empty, the
+        # cycle proceeds); nothing back means the outage is real.
+        seen_now = {c for c, _ in fetched}
+        canary = next((c for c in sorted(stored_codes) if c not in seen_now), None)
+        if canary is not None:
+            try:
+                ck, _cd, _cv, coutc = _fetch_series(canary)
+            except Exception as e:                                   # noqa: BLE001
+                orch = sys.modules.get("updater.orchestrate")
+                if orch is not None and (getattr(orch, "UNIT_TIMEOUT_FIRED", False) or
+                                         isinstance(e, getattr(orch, "UnitTimeout", ()))):
+                    raise
+                ck, coutc = [], "transient"
+            if ck and coutc not in ("transient", "missing"):
+                print(f"[unsdg] {len(vanished)} stored code(s) came back empty but the canary {canary} "
+                      f"returned data: they were blanked by UNSD, not an outage - visited as empty",
+                      flush=True)
+                outage = False
     if outage:
         cycle.forget([c for c, _failed in fetched])      # nothing was refreshed: they stay owed
         raise DefinitiveError(
