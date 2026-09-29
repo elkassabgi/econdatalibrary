@@ -23,6 +23,13 @@ LEAKS = {
     "module": ("import sys, types\nsys.modules['updater.orchestrate'] = types.SimpleNamespace()",
                "sys.modules['updater.orchestrate'] replaced"),
     "sigint": ("import signal\nsignal.signal(signal.SIGINT, lambda s, f: None)", "the SIGINT handler"),
+    # the 2026-09-28 class: a re-import rebinds sys.modules AND the package attribute derive._wait_slice reads
+    "reimport": ("import importlib, sys\nsys.modules.pop('updater.orchestrate')\n"
+                 "importlib.import_module('updater.orchestrate')", "the updater package's 'orchestrate' attribute"),
+    "package_attr": ("import types, updater\nupdater.orchestrate = types.SimpleNamespace()",
+                     "the updater package's 'orchestrate' attribute replaced"),
+    "reload": ("import importlib\nfrom updater import orchestrate\nimportlib.reload(orchestrate)",
+               "orchestrate.UnitTimeout is a different class"),
 }
 
 

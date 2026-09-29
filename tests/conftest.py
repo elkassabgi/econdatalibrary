@@ -189,13 +189,23 @@ def _alarm_state_isolation():
       - orchestrate.UNIT_TIMEOUT_FIRED (derive's _raise_if_fence_in_disguise turns a plain error into the fence),
       - a replaced sys.modules['updater.orchestrate' / 'updater.derive'] (two UnitTimeout classes: the trip is
         raised as one and caught as the other - "UnitTimeout has no attribute derive_partial", as on 2026-09-28),
+        AND the `updater` package's attribute for it (derive._wait_slice reads `from . import orchestrate`, which is
+        the package attribute, not sys.modules - a re-import rebinds both), AND orchestrate.UnitTimeout itself
+        (importlib.reload keeps the module object but makes a new class),
       - the SIGINT handler.
     Each test starts clean, and a test that LEAVES any of these changed fails at its own teardown, naming it -
-    instead of a fence test failing three files later with a message that points nowhere."""
+    instead of a fence test failing three files later with a message that points nowhere.
+
+    Minimal order, measured on 2026-09-29: one test that pops and re-imports updater.orchestrate, run before
+    tests/test_derive_fence_aware.py, gives 14 x "DID NOT RAISE UnitTimeout" on main; with this guard the
+    re-importing test fails by name and the fence file passes."""
     import signal
     import sys
+    import updater
     from updater import derive, orchestrate                     # noqa: F401 - both present BEFORE the snapshot,
     mods = {k: sys.modules.get(k) for k in _ALARM_MODULES}     # or a first import would read as a replacement
+    attrs = {k: getattr(updater, k.rpartition(".")[2], None) for k in _ALARM_MODULES}
+    fence_cls = orchestrate.UnitTimeout
     sigint = signal.getsignal(signal.SIGINT)
     orchestrate._DEFER_ALARM, orchestrate._ALARM_PENDING, orchestrate.UNIT_TIMEOUT_FIRED = False, None, False
     yield
@@ -204,7 +214,14 @@ def _alarm_state_isolation():
         if sys.modules.get(k) is not m:
             left.append(f"sys.modules[{k!r}] replaced")
             sys.modules[k] = m
+        name = k.rpartition(".")[2]
+        if getattr(updater, name, None) is not attrs[k]:
+            left.append(f"the updater package's {name!r} attribute replaced")
+            setattr(updater, name, attrs[k])
     orch = mods["updater.orchestrate"]
+    if orch.UnitTimeout is not fence_cls:
+        left.append("orchestrate.UnitTimeout is a different class (a reload?)")
+        orch.UnitTimeout = fence_cls
     if orch._DEFER_ALARM or orch._ALARM_PENDING is not None:
         left.append(f"orchestrate._DEFER_ALARM={orch._DEFER_ALARM!r} / _ALARM_PENDING={orch._ALARM_PENDING!r}")
     orch._DEFER_ALARM, orch._ALARM_PENDING = False, None
