@@ -402,7 +402,7 @@ jobs:
         # delivered nothing for three days; its docstring states plainly that it CANNOT catch a
         # short outage, because the sources on that route still carry yesterday's successes. On
         # 2026-08-02 the guard loop died at 15:16 and the local heavy pass — the only updater
-        # for the 17 cloud-infeasible sources, eia among them on a DAILY cadence — went ~7h
+        # for the cloud-infeasible sources (17 then, 30 on 2026-09-29), eia among them on a DAILY cadence — went ~7h
         # past due with nothing anywhere saying so.
         #
         # The watchdog stamps a beat to R2 every 5 minutes; this reads it. Stale (or never
