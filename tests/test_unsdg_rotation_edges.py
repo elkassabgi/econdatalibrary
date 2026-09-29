@@ -179,6 +179,40 @@ def test_transient_codes_are_not_counted_as_vanished(world):
     assert r.status == "partial" and "transient" in (r.error or ""), (r.status, r.error)
 
 
+def test_a_retired_or_blanked_code_sorting_first_does_not_become_a_permanent_canary(world):
+    """Review R1292's probe: the store never forgets a code. A_OLD (retired: gone from Series/List) must
+    not be the canary, and a blanked-but-listed B_OLD must not decide it alone - the next candidate does."""
+    world.st["codes"] = ["A_OLD", "B_OLD"] + [f"C{i:02d}" for i in range(30)]
+    world.st["release"] = "2026.Q2"
+    assert U.update(_unit(0), None).status == "ok"                  # all stored
+    world.st["codes"] = ["B_OLD"] + [f"C{i:02d}" for i in range(30)]  # A_OLD retired
+    world.st["missing"] = {"B_OLD"} | {f"C{i:02d}" for i in range(18, 30)}
+    assert U.update(_unit(19), None).status == "partial"            # B_OLD, C00..C17
+    r = U.update(_unit(19), None)                                   # only the blanked family is owed
+    assert r.status in ("ok", "no_change"), (r.status, r.error)
+    assert "A_OLD" not in world.fetched[-14:], world.fetched[-14:]
+
+
+def test_a_timeout_during_the_canary_fetch_still_ends_the_pass(world, monkeypatch):
+    import types as _t
+    class UnitTimeout(Exception):
+        pass
+    monkeypatch.setitem(sys.modules, "updater.orchestrate",
+                        _t.SimpleNamespace(UnitTimeout=UnitTimeout, UNIT_TIMEOUT_FIRED=False))
+    world.st["codes"] = [f"C{i:02d}" for i in range(20)]
+    assert U.update(_unit(0), None).status == "ok"
+    world.st["missing"] = {f"C{i:02d}" for i in range(12)}
+    real = U._fetch_series
+
+    def fetch(code):
+        if code not in world.st["missing"]:                           # a canary (outside the pass)
+            raise UnitTimeout("45-minute limit")
+        return real(code)
+    monkeypatch.setattr(U, "_fetch_series", fetch)
+    with pytest.raises(UnitTimeout):
+        U.update(_unit(12), None)
+
+
 def test_the_units_own_timeout_still_ends_the_pass(world, monkeypatch):
     """The broad except around one code's fetch must not swallow the orchestrator's unit timeout (R1114)."""
     import types as _t

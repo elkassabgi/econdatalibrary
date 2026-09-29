@@ -134,6 +134,7 @@ def _stored_codes(path, n_rows) -> set:
 
 CYCLE_TOKEN_FILE = "_cycle_token.json"
 MIXED = "mixed"
+CANARIES = 3                         # known-present codes tried before an outage verdict (see update)
 
 
 def _mark_mixed(out_dir) -> str:
@@ -277,6 +278,7 @@ def update(unit, since) -> Result:
         return finalize(tally, before, None, source=SOURCE)
 
     codes = [s.get("code") for s in series if s.get("code")]
+    listed = list(codes)                # the whole current Series/List (the canaries come from it)
     total = len(codes)
     # THE ROTATION CYCLE (R303; the shared RotationCycle of #66). `ok` means "every listed code was
     # visited since the last ok", never "this pass stopped somewhere" - and before this, never either:
@@ -428,12 +430,16 @@ def update(unit, since) -> Result:
         # A KNOWN-PRESENT CANARY before the verdict (review R1290; R316). Vanished codes are also what a
         # block of codes UNSD has BLANKED looks like - adjacent families such as SG_DMK_PARL* can fill a
         # closing pass - and calling that an outage un-visits them every pass: the cycle never closes and
-        # every other code is skipped for ever (R1111's freeze). One stored code outside this pass is
-        # asked: data back means the API is serving, so these codes were blanked (visited as empty, the
-        # cycle proceeds); nothing back means the outage is real.
+        # every other code is skipped for ever (R1111's freeze). Up to CANARIES stored codes outside this
+        # pass are asked: any data back means the API is serving, so these codes were blanked (visited as
+        # empty, the cycle proceeds); nothing back from all of them means the outage is real.
+        # CANDIDATES ARE STILL LISTED (review R1292): the store never forgets a code, so a code UNSD
+        # retired (dropped from Series/List) or a blanked code sorting first would be the canary for ever
+        # and bring the freeze back. Only codes in THIS Series/List are known-present candidates (R316),
+        # and several are tried so one blanked candidate cannot decide it.
         seen_now = {c for c, _ in fetched}
-        canary = next((c for c in sorted(stored_codes) if c not in seen_now), None)
-        if canary is not None:
+        candidates = [c for c in sorted(stored_codes & set(listed)) if c not in seen_now][:CANARIES]
+        for canary in candidates:
             try:
                 ck, _cd, _cv, coutc = _fetch_series(canary)
             except Exception as e:                                   # noqa: BLE001
@@ -447,6 +453,7 @@ def update(unit, since) -> Result:
                       f"returned data: they were blanked by UNSD, not an outage - visited as empty",
                       flush=True)
                 outage = False
+                break
     if outage:
         cycle.forget([c for c, _failed in fetched])      # nothing was refreshed: they stay owed
         raise DefinitiveError(
