@@ -124,9 +124,20 @@ def _with_catalog_token(res: Result, tables) -> Result:
     the START of update(), so a table republished during the pass reads as changed next tick - a re-pull,
     never a skipped release. Only on ok/no_change: a partial (budget spent, a transient table, a refused
     subject) leaves tables due, so it must not claim the catalogue it has not caught up with."""
-    if res.status in ("ok", "no_change"):
-        res.new_vintage = _catalog_token(tables)
+    tok = _gate_token(tables)
+    if res.status in ("ok", "no_change") and tok is not None:
+        res.new_vintage = tok
     return res
+
+
+def _gate_token(tables) -> "str | None":
+    """The catalogue token for the STRATEGY's gate (probe and stamp alike), or None when no table carries an
+    'updated' value: the token would then hash only the ids - a constant that matches for ever and seals
+    the unit (review R1283; unctad's R1154 guard). None makes the strategy fetch and the pass stamp nothing.
+    The manifest's own catalog_token is unchanged."""
+    if not any(str(t.get("updated") or "").strip() for t in tables):
+        return None
+    return _catalog_token(tables)
 
 
 def current_vintage(unit):
@@ -137,7 +148,7 @@ def current_vintage(unit):
         tables = _fetch_catalog()
     except (TransientError, DefinitiveError):
         return None
-    return _catalog_token(tables)
+    return _gate_token(tables)
 
 
 def _load_manifest() -> dict:

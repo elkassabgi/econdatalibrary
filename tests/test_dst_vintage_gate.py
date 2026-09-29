@@ -76,6 +76,56 @@ def test_a_table_republished_during_the_pass_reads_as_changed_next_tick(store, m
     assert D.current_vintage(None) != res.new_vintage
 
 
+def test_a_refused_subject_merge_does_not_claim_the_catalogue(store, monkeypatch):
+    """merge_and_write refuses FOLK1's subject (never-shrink): the table stays owed, so no token (review
+    R1283, mutant M1: the refusal no longer tallied transient)."""
+    from updater.errors import DefinitiveError
+    real = D.merge.merge_and_write
+
+    def refuse(path, tbl, **kw):
+        if os.path.basename(path).startswith("FOLK"):
+            raise DefinitiveError("never-shrink refusal")
+        return real(path, tbl, **kw)
+    monkeypatch.setattr(D.merge, "merge_and_write", refuse)
+    res = D.update(None, None)
+    assert res.status == "partial" and res.new_vintage != D._catalog_token(CAT), (res.status, res.new_vintage)
+
+
+def test_the_not_due_return_stamps_the_catalogue_it_compared(store, monkeypatch):
+    """A republish that lands while the not-due pass reads the store frontier (~15 min under r2) must not
+    be claimed (review R1283, mutant M2: a late catalogue read on the not-due return)."""
+    first = D.update(None, None)
+    assert first.status == "ok"
+    real_gmd = D._global_max_date
+
+    def moving():
+        store["tables"][1]["updated"] = "2026-09-29T08:00:00"
+        return real_gmd()
+    monkeypatch.setattr(D, "_global_max_date", moving)
+    again = D.update(None, None)
+    assert again.status == "no_change" and again.new_vintage == D._catalog_token(CAT), again.new_vintage
+
+
+def test_a_lost_subject_is_re_pulled_when_update_runs(store):
+    """The gate's safety rests on this clause of `due`: a subject missing on disk is re-pulled on any run
+    that is not skipped (review R1283, mutant M4)."""
+    first = D.update(None, None)
+    assert first.status == "ok"
+    os.remove(D._subj_path(D._subj("FOLK1A")))
+    D.update(None, None)
+    assert os.path.exists(D._subj_path(D._subj("FOLK1A"))), "a missing subject was not re-pulled"
+
+
+def test_a_catalogue_without_updated_stamps_never_seals_the_unit(store):
+    """If DST dropped or nulled 'updated', the token would hash only the ids - a constant that matches for
+    ever. The gate token is then None: the probe fetches and the pass stamps nothing (as unctad, R1154)."""
+    for t in store["tables"]:
+        t["updated"] = None
+    assert D.current_vintage(None) is None
+    res = D.update(None, None)
+    assert res.new_vintage == "date-tail", res.new_vintage
+
+
 def test_the_strategy_skips_an_unchanged_catalogue_and_fetches_the_placeholder(monkeypatch):
     token = D._catalog_token(CAT)
     fetcher = types.SimpleNamespace(current_vintage=lambda unit: token)
