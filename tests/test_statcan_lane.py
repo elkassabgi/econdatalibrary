@@ -221,11 +221,10 @@ def test_serving_is_byte_identical_to_the_derive_tool(world, monkeypatch, tmp_pa
     monkeypatch.setattr(t, "STORE", str(world))
     monkeypatch.setattr(t, "ROOT", str(tmp_path))
     monkeypatch.setattr(blob.R2Blob, "client", property(lambda self: tool_r2))
-    # --rekey exists once PR #63 (writing runs pin) is merged; this branch may run before it. At
-    # --max-rows 4 both versions choose the geo split the map records (5 rows, largest geo group 4).
-    extra = ["--rekey"] if "--rekey" in open(spec.origin, encoding="utf-8").read() else []
+    # PINNED, the production refresh path since #63 (writing runs keep the recorded split and the
+    # catalogued ids): no --rekey, the same catalogue the lane read (review AR-162's advice).
     monkeypatch.setattr(sys, "argv", ["x", "--bucket", blob.R2_BUCKET, "--only", str(PID),
-                                      "--max-rows", "4", *extra])
+                                      "--max-rows", "4", "--catalog-db", str(tmp_path / "catalog.db")])
     t.main()
     assert len(lane_r2.served()) == 2 and lane_r2.served() == tool_r2.served(), (
         sorted(lane_r2.served()), sorted(tool_r2.served()))
