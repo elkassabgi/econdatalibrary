@@ -5043,7 +5043,12 @@ sources:
     quarterly release; the honest change signal is the release tag stamped on every
     series in Series/List (content-hashed), and a re-pull merges never-shrink.
   cadence: weekly
-  data_cadence: quarterly
+  # data_cadence MEASURED 2026-09-29 on the SERVED store (R2 clean_full/unsdg/unsdg.parquet, LastModified
+  # 2026-09-23T14:23:48Z, 2,922,760 rows / 353,218 series): 4 distinct obs_date in the trailing 3 years
+  # (2023-12-31, 2024-12-31, 2025-12-31, 2026-12-31) and 0 rows dated anything but 31 December - the data
+  # is ANNUAL. "quarterly" was UNSD's RELEASE rhythm, not the data's period; on that clock the newest real
+  # year (2025, 272 days old) read RED-DATA while the store held the newest year UNSD publishes.
+  data_cadence: annual
   refresh_cost: medium
   out_dir: unsdg
   review: true

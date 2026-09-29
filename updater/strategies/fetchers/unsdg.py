@@ -31,7 +31,7 @@ import requests
 from ... import config, merge, blob
 from ...errors import DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize, load_rotation, save_rotation, rotate_after, Deadline
+from ._common import Tally, finalize, load_rotation, save_rotation, rotate_after, Deadline, RotationCycle
 from ._vintage import content_hash, UA as _UA
 
 SOURCE = "unsdg"
@@ -213,15 +213,24 @@ def update(unit, since) -> Result:
 
     codes = [s.get("code") for s in series if s.get("code")]
     total = len(codes)
+    # THE ROTATION CYCLE (R303; the shared RotationCycle of #66). `ok` means "every listed code was
+    # visited since the last ok", never "this pass stopped somewhere" - and before this, never either:
+    # every pass deferred ~550-670 of the 713 codes to its budget and read `partial`, so unsdg had
+    # NEVER succeeded (runbook, 2026-09-08) and a never-succeeded unit is due only once per ~6.5 days
+    # (base.is_due's PARTIAL_RETRY path): ~5 passes x ~6.5 days per sweep, reported partial for ever.
+    # Now a pass skips codes visited this cycle, books the unvisited rest as deferred, and the pass
+    # that completes the cycle cleanly reads ok. After that first ok the unit is on base.is_due's fast
+    # branch (due every run until the cycle closes). The closing pass keeps finalize's placeholder
+    # vintage on purpose: its probe token would claim codes fetched passes earlier under an older
+    # release, so the next due tick simply starts a fresh cycle.
+    cycle = RotationCycle(out_dir, codes)
     # ROTATION (R190): Series/List order is stable, so a budget over it re-walks the
     # same prefix forever and the tail never refreshes. Resume just after where the
     # last run stopped; the bookmark is saved after every merged CHUNK below, so a
     # kill costs at most one in-flight chunk of progress, never the rotation.
-    codes = rotate_after(codes, load_rotation(out_dir))
-    deferred = 0
+    codes = [c for c in rotate_after(codes, load_rotation(out_dir)) if not cycle.done(c)]
     if budget > 0 and len(codes) > budget:
-        deferred = len(codes) - budget
-        codes = codes[:budget]
+        codes = codes[:budget]          # the rest stay unvisited: booked as deferred at the end
 
     # CHUNKED PUBLISH (R249): the old accumulate-then-merge made any kill a total
     # discard — fatal for a ~713x8s full pull under the 45-min cap. Merging every
@@ -232,11 +241,23 @@ def update(unit, since) -> Result:
     n, md = before, None
     merged_any = False
     keys, dates, vals = [], [], []
+    # codes fetched since the last flush, with whether their fetch failed. A code is VISITED only once
+    # its rows are MERGED: marked at fetch time, a kill before the chunk's merge would record work as
+    # done that never reached the store.
+    pending: list = []
+    fetched: list = []                  # every code fetched this pass, with whether it failed
+
+    def _visit_pending():
+        nonlocal pending
+        for c, failed in pending:
+            cycle.visit(c, failed=failed)
+        pending = []
 
     def _flush(last_code):
         nonlocal n, md, merged_any, keys, dates, vals
         if not keys:
             save_rotation(out_dir, last_code)
+            _visit_pending()
             return True
         tbl = pa.table({"series_key": pa.array(keys, pa.string()),
                         "obs_date": pa.array(dates, pa.date32()),
@@ -249,6 +270,7 @@ def update(unit, since) -> Result:
         all_cursors.update(_series_maxes(keys, dates))
         keys, dates, vals = [], [], []
         save_rotation(out_dir, last_code)
+        _visit_pending()
         return True
 
     dl = Deadline(TIME_BUDGET_MIN)
@@ -258,6 +280,8 @@ def update(unit, since) -> Result:
             stopped_at = i
             break
         k, d, v, outc = _fetch_series(code)
+        pending.append((code, outc == "transient"))
+        fetched.append((code, outc == "transient"))
         if outc == "transient":
             tally.transient_unit(code)
         elif outc == "missing" or not k:
@@ -289,15 +313,16 @@ def update(unit, since) -> Result:
                           error=("merge refused (existing data kept, guard "
                                  f"intact): {e}"))
 
-    if stopped_at is not None:
-        deferred += len(codes) - stopped_at
-    for _ in range(deferred):
-        # DELIBERATELY UNLABELLED, like stat_estonia's. This loop counts deferrals without
-        # holding an identifier for any of them, and deferral is not a failure (R303) — it is
-        # the budget working. Naming every deferred code would bury the sub-units that actually
-        # broke, which is the exact failure the naming effort exists to prevent. Labelling this
-        # would mean restructuring the deferral accounting, not adding an argument.
-        tally.deferred_unit()          # budget/deadline slice, honest partial (R303)
+    # Every code not yet visited THIS CYCLE - the deadline's tail, the budget's tail, and any whose
+    # fetch failed - is deferred (-> partial); with none owed and no failure the cycle closes (-> ok).
+    # Unlabelled, as before: deferral is the budget working, not a failure (R303), and naming ~500
+    # codes would bury the sub-units that actually broke.
+    # A code whose fetch failed THIS pass is already tallied as transient; it is not deferred as well.
+    if not cycle.close_if_complete(tally):
+        failed_now = {c for c, failed in fetched if failed}
+        for c in cycle.unvisited():
+            if c not in failed_now:
+                tally.deferred_unit()
 
     if not merged_any:
         # Nothing parsed anywhere -> finalize raises the honest structural/empty-window
