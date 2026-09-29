@@ -1,7 +1,7 @@
 """Regression gate: a dead workstation watchdog must redden a run, and an ABSENT beat must
 never read as healthy.
 
-WHAT THIS PINS. The 17 run_location=local sources update only from the workstation. The cloud
+WHAT THIS PINS. The run_location=local sources (tools/_list_local_sources.py) update only from the workstation. The cloud
 health gate deliberately declines to judge them, so its silence says nothing — and
 health.route_silence, which does judge the route, states in its own docstring that it cannot
 catch a short outage (the sources still carry yesterday's successes, so no three-day threshold
