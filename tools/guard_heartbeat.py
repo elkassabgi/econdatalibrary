@@ -1,6 +1,7 @@
 """Publish the workstation watchdog's heartbeat to R2, and read it back from CI.
 
-WHY. The cloud-infeasible sources (30 on 2026-09-29; (noaa, bea, comtrade, ons_uk, wid, eia, ...; tools/_list_local_sources.py) update ONLY
+WHY. The cloud-infeasible sources (noaa, bea, comtrade, ons_uk, wid, eia, ... - 30 on 2026-09-29, listed by
+tools/_list_local_sources.py) update ONLY
 from the workstation, driven by RELAUNCH_GUARD_LOOP.ps1. When that loop dies, those sources
 stop and nothing says so: the cloud health gate deliberately declines to judge
 `run_location: local` sources, and its silence about them is by design.
