@@ -70,6 +70,18 @@ def _parse_period(s, _orig):
             yr, q = int(t[:4]), int(t[4])
             if 1 <= q <= 4:
                 return dt.date(yr, (q - 1) * 3 + 1, 1)
+        if len(t) == 8:                      # YYYYYYYY, a two-year code: '20112012' labelled '2011/12'
+            # The COMPACT form of the split/academic year the ingester already dates ('2011-2012' ->
+            # 2011-12-31, R288's one-year-span rule) - so it is handed over in that form and dated by the
+            # same rule, not a new one. Found 2026-09-29 (HSPAE136: 14 codes '20112012'..'20242025', a
+            # real body that parsed to 0 rows, booked transient every run). A wider window ('20182021',
+            # EIIA15) is NOT dated here: parse_date returns None for it and _why_unparsed names it
+            # span_time, the convention not yet chosen. As a date YYYYMMDD these codes are impossible
+            # (month '20'/'19'), and the first year must be plausible, so no daily code or classification
+            # value can be read this way.
+            y1, y2 = int(t[:4]), int(t[4:])
+            if 1900 <= y1 <= dt.date.today().year + 2 and y2 > y1:
+                return _orig(f"{y1}-{y2}")
     return _orig(s)
 
 

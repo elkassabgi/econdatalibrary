@@ -367,7 +367,9 @@ def fetch_table_detailed(mtr_code: str) -> "tuple[list[tuple[str, dt.date, float
     return [], _why_unparsed(data)
 
 
-_SPAN = re.compile(r"^(\d{4})-(\d{4})$")
+# '2019-2023' or its compact code '20192023' (EIIA15, 2026-09-29: the dash-only pattern missed the compact
+# form, so a window table read `unparsed` - OUR bug - instead of span_time, and was retried every run)
+_SPAN = re.compile(r"^(\d{4})-?(\d{4})$")
 
 
 def _why_unparsed(data) -> str:
