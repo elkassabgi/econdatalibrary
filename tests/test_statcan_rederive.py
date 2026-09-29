@@ -101,15 +101,16 @@ def test_catalogued_ids_reads_exactly_one_cube(tmp_path):
 # end to end: real store dir, real DuckDB, a fake bucket
 # --------------------------------------------------------------------------- #
 class _FakeS3:
-    def __init__(self, fail=()):
-        self.put = {}
-        self.fail = set(fail)
-
     """The bucket behind updater.blob.R2Blob, which the tool writes through (blob.csv_store +
     derive._put_with_retry since #85): put_object and the one head_object put_atomic asks first."""
 
+    def __init__(self, fail=()):
+        self.put = {}
+        self.fail = set(fail)
+        self.buckets = set()             # asserted by the caller: an assert HERE would be retried 7x
+
     def put_object(self, Bucket, Key, Body, **kw):
-        assert Bucket == d_blob.R2_BUCKET, Bucket
+        self.buckets.add(Bucket)
         if any(f in Key for f in self.fail):
             # a REFUSAL (ValueError): _put_with_retry answers it with one try, not 7 backed-off ones
             raise ValueError("pretend R2 refused this PUT")
@@ -159,9 +160,18 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(d, "ROOT", str(tmp_path))
     monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
     monkeypatch.setattr(d_blob.R2Blob, "client", property(lambda self: s3))
-    # a tripwire: nothing may build a real R2 client (the fake above is the only bucket)
-    monkeypatch.setattr(d.r2_util, "client", lambda *a, **k: pytest.fail("a real R2 client was built"))
-    return store, db, s3, smap
+    # a tripwire: nothing may build a real R2 client (the fake above is the only bucket). It RECORDS the
+    # call and the fixture fails at teardown, on the main thread: pytest.fail inside an upload worker is a
+    # BaseException that kills the thread and hangs q.join() (review of the port, mutation M6)
+    built = []
+
+    def _no_real_client(*a, **k):
+        built.append((a, k))
+        raise RuntimeError("tripwire: a real R2 client was requested")
+    monkeypatch.setattr(d.r2_util, "client", _no_real_client)
+    yield store, db, s3, smap
+    assert not built, f"a real R2 client was requested {len(built)} time(s)"
+    assert s3.buckets <= {d_blob.R2_BUCKET}, s3.buckets
 
 
 def _run(monkeypatch, *args):
@@ -339,6 +349,37 @@ def test_a_failed_put_fails_the_run_and_is_reported_unwritten(world, monkeypatch
     assert rc == 1, "every PUT failing used to exit 0 (probe P5)"
     rep = json.loads(report.read_text())["cubes"]["11111111"]
     assert "statcan:11111111#Windsor - other locations" in rep["unwritten"]
+
+
+def test_a_successful_put_is_reported_new_not_unwritten(world, monkeypatch, tmp_path):
+    """The other half of the failed-put test (review of the port, mutation M5): an id whose PUT SUCCEEDED
+    is counted written - "new" when the catalogue lacks it - and never listed as unwritten."""
+    store, db, s3, smap = world
+    monkeypatch.setattr(d, "choose_split", lambda con, f, n, m: ("geo", 2))
+    report = tmp_path / "parts.json"
+    rc = _run(monkeypatch, "--bucket", d_blob.R2_BUCKET, "--only", "11111111", "--max-rows", "1",
+              "--parts-report", str(report), "--catalog-db", str(db))
+    assert rc == 0
+    rep = json.loads(report.read_text())["cubes"]["11111111"]
+    assert rep["unwritten"] == [], rep
+    assert "statcan:11111111#Windsor - other locations" in rep["new"], rep
+    assert any("Windsor%20-%20other%20locations" in k for k in s3.put), sorted(s3.put)
+
+
+def test_after_t0_a_catalogue_other_than_the_build_is_refused_before_any_put(world, monkeypatch):
+    """catalogued_ids goes through core.catalog_path.connect_path, which after T0 accepts only the build
+    (review of the port, mutation M1: a raw sqlite3 open passed every test)."""
+    from core import catalog_path, cutover
+    store, db, s3, smap = world
+    monkeypatch.setattr(cutover, "is_cut_over", lambda: True)
+    monkeypatch.setattr(catalog_path, "is_cut_over", lambda: True, raising=False)
+    with pytest.raises(SystemExit, match="could not be read") as e:
+        _run(monkeypatch, "--bucket", d_blob.R2_BUCKET, "--only", "11111111", "--max-rows", "1",
+             "--catalog-db", str(db))
+    # connect_path's OWN refusal ("after T0 the catalogue is <build>, not <path>") - not the process-wide
+    # sqlite audit guard, which a raw sqlite3.connect would also trip and which proves nothing here
+    assert "after T0 the catalogue is" in str(e.value), str(e.value)
+    assert s3.put == {}, "refused before any PUT"
 
 
 def test_a_null_split_value_is_never_written_under_the_whole_cube_id(world, monkeypatch):

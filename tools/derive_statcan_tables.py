@@ -398,8 +398,9 @@ def main() -> int:
     # A WRITING RUN KEEPS SERVED IDS (round-4 review, probe P2). Pinning used to protect only the
     # report: a real `--only` run re-chose the split of a cube already served as parts, wrote a
     # whole-cube object, dropped its map entry and exited 0. Now every writing run pins, and only an
-    # explicit --rekey re-chooses (a full re-derive campaign; the retired RELAUNCH_GUARD argv needs
-    # it added if it is ever relaunched).
+    # explicit --rekey re-chooses. A relaunch of the retired RELAUNCH_GUARD argv runs PINNED, which is
+    # the safe refresh; --rekey is a deliberate RE-KEY decision (it can rename served ids while the
+    # catalogue is frozen), never something to add just to make a run start.
     pin_writes = not a.dry_run and not a.rekey
     _smap_path = os.path.join(STORE, "_split_map.json")
     # THE MAP AS IT WAS WHEN THIS RUN STARTED, kept whole by every map write (see there). A pinned
@@ -875,7 +876,8 @@ def main() -> int:
               f"{n_gone:,} vanished id(s) (catalogued, now STALE) -> {a.parts_report}")
     if counts.get("null_part_rows"):
         print(f"rows under a NULL split value, not written (no part id): {counts['null_part_rows']:,}")
-    # SAY FAILURE IN THE EXIT CODE (round-2 review, probe P5): every PUT failing used to exit 0.
+    # SAY FAILURE IN THE EXIT CODE (round-2 review, probe P5; R1204 on main): every PUT failing used to
+    # exit 0.
     # A pinned report also fails when any cube could not be judged, since that is its whole job.
     # WHAT FAILS THE RUN (round-4 review, probe P4). Exit 1 means something that should have been
     # written was not: a PUT error, a scan that failed, a cube whose SERVED ids could not be
