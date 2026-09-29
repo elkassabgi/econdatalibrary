@@ -268,6 +268,10 @@ def test_the_lane_refuses_after_t0(world, monkeypatch):
     monkeypatch.setattr(writer_lock, "acquire", lambda *a, **k: called.append("lock") or False)
     before = sorted(p.name for p in (world.parent.parent.parent / "logs").glob("*")) \
         if (world.parent.parent.parent / "logs").exists() else []
+
+    def _no_sleep(s):
+        raise AssertionError("--once must refuse at once; it slept (review round 3, mutant R5 hung the suite)")
+    monkeypatch.setattr(lane.time, "sleep", _no_sleep)
     with pytest.raises(cutover.CutoverRefused, match="statcan_lane"):
         lane.main(["--once"])                                    # a hand trial sees the refusal at once
     assert called == [], called
@@ -302,11 +306,18 @@ def test_after_t0_the_resident_lane_waits_writes_nothing_and_resumes_when_the_fl
         events.append("run")
         raise _Stop()
     monkeypatch.setattr(lane, "run", run)
+    # "writes nothing" is ASSERTED, not just named (review round 3, mutant R9: a save_state in the refusal
+    # branch passed every test - after T0 that write is refused, the lane exits, and the crash loop is back)
+    writes = []
+    monkeypatch.setattr(lane, "save_state", lambda *a, **k: writes.append("save_state"))
+    monkeypatch.setattr(lane.blob, "write_bytes_atomic", lambda *a, **k: writes.append("write_bytes_atomic"))
+    monkeypatch.setattr(lane.blob, "put_atomic", lambda *a, **k: writes.append("put_atomic"), raising=False)
     printed = []
     monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(str(x) for x in a)))
     with pytest.raises(_Stop):
         lane.main([])
     assert events == ["sleep", "sleep", "sleep", "pin", "run"], events
+    assert writes == [], writes
     refusals = [p for p in printed if "REFUSING after T0" in p]
     assert len(refusals) == 1, printed                           # 2,000 s of refusal: one line, not three
     assert any("flag cleared - resuming" in p for p in printed), printed
@@ -894,6 +905,10 @@ def test_the_lane_sets_r2_when_unset_and_refuses_any_other_backend(monkeypatch):
     with pytest.raises(SystemExit, match="must be r2"):
         lane.pin_backend({"AQUEDUCT_BACKEND": "local"}, _Cfg())
     monkeypatch.setenv("AQUEDUCT_BACKEND", "local")
+    from core import cutover
+    monkeypatch.setattr(cutover, "is_cut_over", lambda: False)
+    # a network tripwire: if pin ordering ever regressed, main would reach StatCan (review round 3, R7)
+    monkeypatch.setattr(sc, "_changed_releases", lambda *a, **k: pytest.fail("the lane reached the network"))
     with pytest.raises(SystemExit, match="must be r2"):
         lane.main([])                                   # before any lock, network or store
 
