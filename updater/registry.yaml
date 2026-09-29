@@ -8666,6 +8666,10 @@ sources:
   # data is ANNUAL (parse_period handles quarters, so none are served). Sets the LATENESS clock only; the
   # quarterly check cadence above is unchanged. Its siblings imf_gfsssuc/imf_gfssoef were measured the same
   # way on 2026-08-02; these four were missed and read RED-DATA at 272 days on the quarterly clock.
+  # AT THE PUBLISHER (review AR-164, 2026-09-29): IMF's availableconstraint lists FREQUENCY=A only for this flow,
+  # the fetch pins no FREQ, and startPeriod=2026 returns 0 observations - 2025 is IMF's newest year. COST, stated:
+  # health.py's annual clock is 365 x 3 = 1,095 days (the quarterly one is 90 x 3 = 270), so a frozen upstream
+  # reads RED-DATA no earlier than 2028-12-30; a dead fetcher is still caught sooner by the success clock.
   data_cadence: annual
   refresh_cost: large
   out_dir: imf_gfssoo_direct
@@ -8731,6 +8735,10 @@ sources:
   # data is ANNUAL (parse_period handles quarters, so none are served). Sets the LATENESS clock only; the
   # quarterly check cadence above is unchanged. Its siblings imf_gfsssuc/imf_gfssoef were measured the same
   # way on 2026-08-02; these four were missed and read RED-DATA at 272 days on the quarterly clock.
+  # AT THE PUBLISHER (review AR-164, 2026-09-29): IMF's availableconstraint lists FREQUENCY=A only for this flow,
+  # the fetch pins no FREQ, and startPeriod=2026 returns 0 observations - 2025 is IMF's newest year. COST, stated:
+  # health.py's annual clock is 365 x 3 = 1,095 days (the quarterly one is 90 x 3 = 270), so a frozen upstream
+  # reads RED-DATA no earlier than 2028-12-30; a dead fetcher is still caught sooner by the success clock.
   data_cadence: annual
   refresh_cost: fast
   out_dir: imf_gfscofog_direct
@@ -8862,6 +8870,10 @@ sources:
   # data is ANNUAL (parse_period handles quarters, so none are served). Sets the LATENESS clock only; the
   # quarterly check cadence above is unchanged. Its siblings imf_gfsssuc/imf_gfssoef were measured the same
   # way on 2026-08-02; these four were missed and read RED-DATA at 272 days on the quarterly clock.
+  # AT THE PUBLISHER (review AR-164, 2026-09-29): IMF's availableconstraint lists FREQUENCY=A only for this flow,
+  # the fetch pins no FREQ, and startPeriod=2026 returns 0 observations - 2025 is IMF's newest year. COST, stated:
+  # health.py's annual clock is 365 x 3 = 1,095 days (the quarterly one is 90 x 3 = 270), so a frozen upstream
+  # reads RED-DATA no earlier than 2028-12-30; a dead fetcher is still caught sooner by the success clock.
   data_cadence: annual
   refresh_cost: fast
   out_dir: imf_gfsbs_direct
@@ -8927,6 +8939,10 @@ sources:
   # data is ANNUAL (parse_period handles quarters, so none are served). Sets the LATENESS clock only; the
   # quarterly check cadence above is unchanged. Its siblings imf_gfsssuc/imf_gfssoef were measured the same
   # way on 2026-08-02; these four were missed and read RED-DATA at 272 days on the quarterly clock.
+  # AT THE PUBLISHER (review AR-164, 2026-09-29): IMF's availableconstraint lists FREQUENCY=A only for this flow,
+  # the fetch pins no FREQ, and startPeriod=2026 returns 0 observations - 2025 is IMF's newest year. COST, stated:
+  # health.py's annual clock is 365 x 3 = 1,095 days (the quarterly one is 90 x 3 = 270), so a frozen upstream
+  # reads RED-DATA no earlier than 2028-12-30; a dead fetcher is still caught sooner by the success clock.
   data_cadence: annual
   refresh_cost: fast
   out_dir: imf_gfssfcp_direct
