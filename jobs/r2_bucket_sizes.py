@@ -45,13 +45,16 @@ def main():
         endpoint = "https://" + endpoint
 
     import boto3
-    client = boto3.client(
+    # The self-hosting cutover guard (core/r2_util.guard_client): after T0 this client may only read.
+    sys.path.insert(0, ROOT)
+    from core.r2_util import guard_client                                      # noqa: PLC0415
+    client = guard_client(boto3.client(
         "s3",
         endpoint_url=endpoint,
         aws_access_key_id=key_id,
         aws_secret_access_key=secret,
         region_name="auto",
-    )
+    ))
 
     try:
         buckets = [b["Name"] for b in client.list_buckets().get("Buckets", [])]

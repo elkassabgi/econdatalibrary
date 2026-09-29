@@ -34,8 +34,8 @@ import pyarrow.parquet as pq
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 from tools.derive_one import MAX_ROWS          # noqa: E402  the ceiling has ONE home (R469)
-CATALOG = os.path.join(ROOT, "data", "catalog.db")
 STORE = os.path.join(ROOT, "data", "clean_full")
 
 _PART_RE = re.compile(r"\.part\d*\.parquet$", re.I)
@@ -108,7 +108,7 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true")
     a = ap.parse_args()
 
-    con = sqlite3.connect(CATALOG, timeout=180)
+    con = catalog_path.connect(write=True, timeout=180)
     con.execute("PRAGMA busy_timeout=180000")
     total_new = 0
 
@@ -198,4 +198,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    with catalog_path.write_session():   # after T0: the single-writer lock
+        sys.exit(main())

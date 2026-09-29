@@ -315,11 +315,12 @@ def catalogued_ids(catalog_db: str, pid: str) -> set:
     """Every catalogued id of one cube, by a PRIMARY-KEY RANGE read of the local catalogue (no scan;
     DECIDE LOCALLY). 'statcan:<pid>' and 'statcan:<pid>#...' both sort inside the range because the
     product id is a fixed 8 digits."""
-    import sqlite3                                              # noqa: PLC0415
+    from core import catalog_path                               # noqa: PLC0415
     lo = unit_id(pid)
     hi = lo + "$"          # '$' (0x24) sorts just after '#' (0x23): the cube and its parts only
     # timeout=180: the catalogue is rollback-journal, so a concurrent writer blocks readers (R715)
-    con = sqlite3.connect(f"file:{catalog_db}?mode=ro", uri=True, timeout=180)
+    # through the resolver (plan step 1): read-only, never creates it, and after T0 only the build
+    con = catalog_path.connect_path(catalog_db, write=False, timeout=180)
     try:
         return {r[0] for r in con.execute(
             "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?", (lo, hi))}
@@ -375,7 +376,8 @@ def main() -> int:
                          "adds and strands, under the split it is already served with")
     ap.add_argument("--parts-report", metavar="PATH",
                     help="write {pid: {new, vanished}} part ids against the local catalogue")
-    ap.add_argument("--catalog-db", default=os.path.join(ROOT, "data", "catalog.db"))
+    from core import catalog_path                               # noqa: PLC0415
+    ap.add_argument("--catalog-db", default=catalog_path.under(ROOT))
     ap.add_argument("--rekey", action="store_true",
                     help="RE-CHOOSE every split from the data, as the first derive did. This renames "
                          "served part ids, so it is a decision and not a refresh; without it a "
@@ -506,22 +508,16 @@ def main() -> int:
     os.makedirs(spill, exist_ok=True)
 
     existing = set()
-    s3 = None
+    store = None
     if not a.dry_run:
-        s3 = r2_util.client(write=True)
+        # THE BLOB STORE, not a bare R2 client (plan step 1): R2 before T0, the self-hosted store after it
+        # (AQUEDUCT_BACKEND=selfhost), the same keys and bytes either way; after T0 an R2 client is refused.
+        from updater import blob as _blob, derive as _derive            # noqa: PLC0415
+        store = _blob.csv_store(a.bucket)             # R2, or the self-hosted store after T0 - never local files
         if a.skip_existing:
             pref = f"{a.prefix}/{urllib.parse.quote(SOURCE + ':', safe='')}"
-            tok = None
-            while True:
-                kw = {"Bucket": a.bucket, "Prefix": pref, "MaxKeys": 1000}
-                if tok:
-                    kw["ContinuationToken"] = tok
-                r = s3.list_objects_v2(**kw)
-                existing.update(o["Key"] for o in r.get("Contents", []))
-                if not r.get("IsTruncated"):
-                    break
-                tok = r["NextContinuationToken"]
-            print(f"skip-existing: {len(existing):,} already in R2", flush=True)
+            existing.update(store.list_keys(pref))
+            print(f"skip-existing: {len(existing):,} already in the store", flush=True)
 
     # maxsize 64, not 1000: bodies are whole unit CSVs (up to ~100 MB raw). A
     # 1000-slot queue is an unbounded-in-BYTES buffer — with the census giants
@@ -554,8 +550,10 @@ def main() -> int:
                 # keeps this path safe for both compressed and raw producers.
                 if body[:2] != b"\x1f\x8b":
                     body = r2_util.gzip_bytes(body)
-                s3.put_object(Bucket=a.bucket, Key=key, Body=body, ContentType="text/csv",
-                              ContentEncoding="gzip")
+                # put_atomic stores an already-gzipped body as-is with ContentEncoding gzip (R560), and
+                # _put_with_retry adds the updater's 7 app-level tries this uploader never had
+                if not _derive._put_with_retry(store, key, body):
+                    raise RuntimeError(f"PUT failed (refused at once, or {_derive.PUT_TRIES} tries used up - see the line above)")
                 with lock:
                     written.add(key)
                     counts["put"] += 1

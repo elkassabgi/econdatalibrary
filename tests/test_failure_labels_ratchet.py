@@ -48,7 +48,8 @@ METHODS = {"transient_unit", "structural_unit"}
 # 152 -> 147: _giant's five. Highest leverage of the lot -- _giant drives the biggest sources
 # over hundreds of flows, so its unlabelled count was the least actionable row in the system.
 # 147 -> 142: ssb's five. ssb sweeps ~1,515 tables, so each label removes 1,515 candidates.
-BUDGET = 26  # 2026-09-09: fell when the gated set's fetchers and jobs were deleted
+# 26 -> 24: 2026-09-28 merge train (the PRs merged that day labelled two more in-loop calls).
+BUDGET = 24
 
 
 class _Counter(ast.NodeVisitor):

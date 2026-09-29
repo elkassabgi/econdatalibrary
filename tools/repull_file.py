@@ -137,32 +137,43 @@ def main() -> int:
 
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup = f"_backup/repull/{a.source}/{stamp}/{a.filename}"
-    print(f"\n  backup -> r2://{backup}")
+    from core import cutover as _cutover                                  # noqa: PLC0415
+    print(f"\n  backup -> {'<data>/' if _cutover.is_cut_over() else 'r2://'}{backup}")
     print(f"  then DELETE the live object, so the next run re-pulls it with the corrected parser")
 
     if not a.apply:
         print("\n--dry run: nothing copied, nothing deleted. Re-run with --apply.")
         return 0
 
-    r2 = blob.R2Blob()
-    key = blob._path_to_key(path)
-    # Server-side copy: the backup must not depend on this machine holding the bytes.
-    r2.client.copy_object(Bucket=r2.bucket, Key=backup,
-                          CopySource={"Bucket": r2.bucket, "Key": key})
-    if not r2.exists(backup):
-        print("  ABORT: backup not readable after copy — refusing to delete the original.")
-        return 1
-    print(f"  backup verified ({backup})")
-
-    r2.client.delete_object(Bucket=r2.bucket, Key=key)
-    if blob.exists(path):
-        print("  ABORT: object still present after delete — investigate before re-running.")
-        return 1
-    print(f"  deleted {key}")
-    print(f"\n  NEXT: dispatch the fetcher, e.g.\n"
-          f"    gh workflow run updater-daily.yml -f source={a.source} -f force=true\n"
-          f"  then re-run tools/audit_impossible_dates.py --r2 --source {a.source} "
-          f"and expect zero.")
+    # Before T0 a server-side R2 copy, as always (the backup must not depend on this machine holding the
+    # bytes); after T0 the store is local, the copy is local beside it, and the change holds the writer lock
+    # (the updater writes the same file) - updater.blob.backup_store_object / delete_store_object.
+    from core import catalog_path, cutover                              # noqa: PLC0415
+    blob.refuse_unless_live_checkout("repull_file --apply")           # before the lock and any change
+    with catalog_path.write_session():
+        try:
+            where = blob.backup_store_object(path, backup)
+        except cutover.CutoverRefused:
+            raise                        # a refusal (another checkout, no lock) is not a failed backup
+        except (RuntimeError, OSError) as e:
+            print(f"  ABORT: backup not proved ({e}) — refusing to delete the original.")
+            return 1
+        print(f"  backup verified ({where})")
+        blob.delete_store_object(path)
+        still = os.path.exists(path) if cutover.is_cut_over() else blob.exists(path)
+        if still:
+            print("  ABORT: object still present after delete — investigate before re-running.")
+            return 1
+    print(f"  deleted {path if cutover.is_cut_over() else 'r2://' + blob._path_to_key(path)}")
+    if cutover.is_cut_over():
+        print(f"\n  NEXT: run the updater for it on this machine, e.g.\n"
+              f"    python -m updater.run --source {a.source} --force\n"
+              f"  then re-run tools/audit_impossible_dates.py --source {a.source} and expect zero.")
+    else:
+        print(f"\n  NEXT: dispatch the fetcher, e.g.\n"
+              f"    gh workflow run updater-daily.yml -f source={a.source} -f force=true\n"
+              f"  then re-run tools/audit_impossible_dates.py --r2 --source {a.source} "
+              f"and expect zero.")
     return 0
 
 

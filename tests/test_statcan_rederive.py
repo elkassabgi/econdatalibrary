@@ -39,6 +39,7 @@ def _load():
 
 
 d = _load()
+from updater import blob as d_blob  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -104,10 +105,18 @@ class _FakeS3:
         self.put = {}
         self.fail = set(fail)
 
-    def put_object(self, Bucket, Key, Body, ContentType=None, ContentEncoding=None):
+    """The bucket behind updater.blob.R2Blob, which the tool writes through (blob.csv_store +
+    derive._put_with_retry since #85): put_object and the one head_object put_atomic asks first."""
+
+    def put_object(self, Bucket, Key, Body, **kw):
+        assert Bucket == d_blob.R2_BUCKET, Bucket
         if any(f in Key for f in self.fail):
-            raise RuntimeError("pretend R2 refused this PUT")
+            # a REFUSAL (ValueError): _put_with_retry answers it with one try, not 7 backed-off ones
+            raise ValueError("pretend R2 refused this PUT")
         self.put[Key] = gzip.decompress(Body).decode("utf-8") if Body[:2] == b"\x1f\x8b" else Body
+
+    def head_object(self, Bucket, Key):
+        raise KeyError(Key)                  # nothing held: every PUT is made (r2_holds_csv: error = not held)
 
 
 def _cube(path, rows):
@@ -148,7 +157,10 @@ def world(tmp_path, monkeypatch):
     (tmp_path / "logs").mkdir()
     monkeypatch.setattr(d, "STORE", str(store))
     monkeypatch.setattr(d, "ROOT", str(tmp_path))
-    monkeypatch.setattr(d.r2_util, "client", lambda write=False: s3)
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(d_blob.R2Blob, "client", property(lambda self: s3))
+    # a tripwire: nothing may build a real R2 client (the fake above is the only bucket)
+    monkeypatch.setattr(d.r2_util, "client", lambda *a, **k: pytest.fail("a real R2 client was built"))
     return store, db, s3, smap
 
 
@@ -191,7 +203,7 @@ def test_a_full_run_keeps_a_refused_cubes_map_entry(world, monkeypatch):
     real = d.choose_split
     monkeypatch.setattr(d, "choose_split",
                         lambda con, f, n, m: ("", 0) if "11111111" in f else real(con, f, n, m))
-    _run(monkeypatch, "--bucket", "b", "--max-rows", "1", "--rekey")
+    _run(monkeypatch, "--bucket", d_blob.R2_BUCKET, "--max-rows", "1", "--rekey")
     assert json.loads((store / "_split_map.json").read_text())["11111111"] == smap["11111111"]
 
 
@@ -199,7 +211,7 @@ def test_an_empty_string_split_value_is_never_written_under_the_whole_cube_id(wo
     store, db, s3, smap = world
     _cube(store / "11111111.parquet", [("v1", "Aden", "1.1"), ("v2", "", "2.1")])
     monkeypatch.setattr(d, "choose_split", lambda con, f, n, m: ("geo", 2))
-    _run(monkeypatch, "--bucket", "b", "--only", "11111111", "--max-rows", "1", "--rekey")
+    _run(monkeypatch, "--bucket", d_blob.R2_BUCKET, "--only", "11111111", "--max-rows", "1", "--rekey")
     assert "series/statcan%3A11111111.csv" not in s3.put, sorted(s3.put)
 
 
@@ -283,7 +295,7 @@ def test_pin_split_refuses_without_a_readable_or_non_empty_map(world, monkeypatc
 def test_a_limited_run_keeps_the_whole_map(world, monkeypatch):
     """The round-1 reviewer's probe: --limit (no --only) wrote back only its own entries."""
     store, db, s3, smap = world
-    _run(monkeypatch, "--bucket", "b", "--max-rows", "1", "--limit", "1", "--rekey")
+    _run(monkeypatch, "--bucket", d_blob.R2_BUCKET, "--max-rows", "1", "--limit", "1", "--rekey")
     after = json.loads((store / "_split_map.json").read_text())
     assert {"11111111", "33333333", "44444444", "55555555"} <= set(after), sorted(after)
 
@@ -303,7 +315,7 @@ def test_the_mid_run_map_write_keeps_the_other_cubes(world, monkeypatch):
             raise _Stop()
     monkeypatch.setattr(d.os, "replace", _replace)
     with pytest.raises(_Stop):
-        _run(monkeypatch, "--bucket", "b", "--only", "11111111", "--max-rows", "1", "--rekey")
+        _run(monkeypatch, "--bucket", d_blob.R2_BUCKET, "--only", "11111111", "--max-rows", "1", "--rekey")
     on_disk = json.loads((store / "_split_map.json").read_text())
     assert set(on_disk) == {"11111111", "33333333", "44444444", "55555555"}, sorted(on_disk)
 
@@ -313,7 +325,7 @@ def test_a_refused_cube_keeps_its_map_entry(world, monkeypatch):
     resolve through the old entry, which must survive both map writes."""
     store, db, s3, smap = world
     monkeypatch.setattr(d, "choose_split", lambda con, f, n, m: ("", 0))
-    _run(monkeypatch, "--bucket", "b", "--only", "11111111", "--max-rows", "1", "--rekey")
+    _run(monkeypatch, "--bucket", d_blob.R2_BUCKET, "--only", "11111111", "--max-rows", "1", "--rekey")
     assert json.loads((store / "_split_map.json").read_text())["11111111"] == smap["11111111"]
 
 
@@ -322,7 +334,7 @@ def test_a_failed_put_fails_the_run_and_is_reported_unwritten(world, monkeypatch
     monkeypatch.setattr(d, "choose_split", lambda con, f, n, m: ("geo", 2))
     s3.fail = {"Windsor"}
     report = tmp_path / "parts.json"
-    rc = _run(monkeypatch, "--bucket", "b", "--only", "11111111", "--max-rows", "1",
+    rc = _run(monkeypatch, "--bucket", d_blob.R2_BUCKET, "--only", "11111111", "--max-rows", "1",
               "--parts-report", str(report), "--catalog-db", str(db))
     assert rc == 1, "every PUT failing used to exit 0 (probe P5)"
     rep = json.loads(report.read_text())["cubes"]["11111111"]
@@ -335,14 +347,14 @@ def test_a_null_split_value_is_never_written_under_the_whole_cube_id(world, monk
     store, db, s3, smap = world
     _cube(store / "11111111.parquet", [("v1", "Aden", "1.1"), ("v2", None, "2.1")])
     monkeypatch.setattr(d, "choose_split", lambda con, f, n, m: ("geo", 2))
-    _run(monkeypatch, "--bucket", "b", "--only", "11111111", "--max-rows", "1", "--rekey")
+    _run(monkeypatch, "--bucket", d_blob.R2_BUCKET, "--only", "11111111", "--max-rows", "1", "--rekey")
     assert "series/statcan%3A11111111.csv" not in s3.put, sorted(s3.put)
     assert "series/statcan%3A11111111%23Aden.csv" in s3.put
 
 
 def test_negative_control_an_unpinned_scoped_run_writes_and_keeps_the_map(world, monkeypatch):
     store, db, s3, smap = world
-    _run(monkeypatch, "--bucket", "b", "--only", "11111111", "--max-rows", "1", "--rekey")
+    _run(monkeypatch, "--bucket", d_blob.R2_BUCKET, "--only", "11111111", "--max-rows", "1", "--rekey")
     assert s3.put, "an ordinary derive still writes"
     after = json.loads((store / "_split_map.json").read_text())
     assert "33333333" in after and "44444444" in after
@@ -367,7 +379,7 @@ def test_a_kill_inside_the_map_write_leaves_the_old_map_whole(world, monkeypatch
         return real_dump(obj, fh, *a, **k)
     monkeypatch.setattr(d.json, "dump", _half)
     with pytest.raises(_Kill):
-        _run(monkeypatch, "--bucket", "b", "--only", "11111111", "--max-rows", "1", "--rekey")
+        _run(monkeypatch, "--bucket", d_blob.R2_BUCKET, "--only", "11111111", "--max-rows", "1", "--rekey")
     assert json.loads((store / "_split_map.json").read_text()) == smap
     assert not [p for p in os.listdir(store) if p.endswith(".tmp")], "the temp file is cleaned up"
 
@@ -377,7 +389,7 @@ def test_a_writing_run_keeps_a_parts_cubes_recorded_split(world, monkeypatch):
     object, dropped the map entry and exited 0. Without --rekey it now keeps the recorded split."""
     store, db, s3, smap = world
     monkeypatch.setattr(d, "choose_split", lambda con, f, n, m: (None, 1))   # would serve it whole
-    rc = _run(monkeypatch, "--bucket", "b", "--only", "11111111", "--max-rows", "1",
+    rc = _run(monkeypatch, "--bucket", d_blob.R2_BUCKET, "--only", "11111111", "--max-rows", "1",
               "--catalog-db", str(db))
     assert rc == 0
     assert "series/statcan%3A11111111.csv" not in s3.put, sorted(s3.put)
@@ -389,7 +401,7 @@ def test_a_pinned_full_run_keeps_entries_for_cubes_it_did_not_see(world, monkeyp
     """Round-5 minor 1: 33333333 and 44444444 are in the map with no store file; a full run that
     pins must not rebuild the map from only the cubes it found."""
     store, db, s3, smap = world
-    assert _run(monkeypatch, "--bucket", "b", "--max-rows", "1", "--catalog-db", str(db)) == 0
+    assert _run(monkeypatch, "--bucket", d_blob.R2_BUCKET, "--max-rows", "1", "--catalog-db", str(db)) == 0
     after = json.loads((store / "_split_map.json").read_text())
     assert {"33333333", "44444444"} <= set(after), sorted(after)
 
@@ -399,7 +411,7 @@ def test_a_writing_run_refuses_a_parts_cube_with_no_recorded_split(world, monkey
     m = dict(smap)
     m.pop("11111111")
     (store / "_split_map.json").write_text(json.dumps(m))
-    rc = _run(monkeypatch, "--bucket", "b", "--only", "11111111", "--max-rows", "1",
+    rc = _run(monkeypatch, "--bucket", d_blob.R2_BUCKET, "--only", "11111111", "--max-rows", "1",
               "--catalog-db", str(db))
     assert rc == 1, "its served ids could not be reproduced: that is a failure, not a skip"
     assert not [k for k in s3.put if "11111111" in k], sorted(s3.put)
@@ -409,7 +421,7 @@ def test_a_writing_run_refuses_a_parts_cube_with_no_recorded_split(world, monkey
 def test_every_writing_run_needs_the_stores_cap(world, monkeypatch, tmp_path):
     """Probe P3: a writing run without --max-rows split at the 500,000 default."""
     store, db, s3, smap = world
-    base = ["--bucket", "b", "--only", "11111111", "--catalog-db", str(db)]
+    base = ["--bucket", d_blob.R2_BUCKET, "--only", "11111111", "--catalog-db", str(db)]
     with pytest.raises(SystemExit, match="without --max-rows"):
         _run(monkeypatch, *base)
     summary = tmp_path / "logs" / "statcan_tables_summary.json"
@@ -426,7 +438,7 @@ def test_a_known_structural_refusal_does_not_fail_a_rekey_run(world, monkeypatch
     real = d.choose_split
     monkeypatch.setattr(d, "choose_split",
                         lambda con, f, n, m: ("", 0) if "11111111" in f else real(con, f, n, m))
-    assert _run(monkeypatch, "--bucket", "b", "--max-rows", "1", "--rekey") == 0
+    assert _run(monkeypatch, "--bucket", d_blob.R2_BUCKET, "--max-rows", "1", "--rekey") == 0
 
 
 def test_a_writing_run_refuses_an_unreadable_map(world, monkeypatch):
@@ -435,6 +447,6 @@ def test_a_writing_run_refuses_an_unreadable_map(world, monkeypatch):
     (store / "_split_map.json").write_text("{not json")
     for extra in ([], ["--rekey"]):
         with pytest.raises(SystemExit, match="unreadable"):
-            _run(monkeypatch, "--bucket", "b", "--max-rows", "1", "--catalog-db", str(db), *extra)
+            _run(monkeypatch, "--bucket", d_blob.R2_BUCKET, "--max-rows", "1", "--catalog-db", str(db), *extra)
     assert (store / "_split_map.json").read_text() == "{not json", "and it is left for a human"
     assert s3.put == {}

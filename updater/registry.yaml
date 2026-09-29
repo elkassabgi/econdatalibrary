@@ -9,6 +9,13 @@ sources:
   # 16 GB runner (tools/measure_merge_peak.py). Cloud is the primary mechanism; the
   # workstation is only for what genuinely cannot run there.
   live: true
+  # catalog_scope — DECLARED 2026-09-23. The store holds every series of ~1,222 dataflows (376M
+  # distinct keys measured 2026-07-30); the catalogue serves a curated 18 (headline CPI, LF, WPI,
+  # AWE, RT, ANA_AGG). A pass that moves only uncatalogued flows maps to zero and is COVERAGE, not a
+  # coherence failure (R497 note). Paired with merge-measured changed keys in the catalogue's
+  # '<FLOW>:<key>' form, so the changed set is complete and the exception can be judged. Adding this
+  # key does NOT change the source count (R347: no EXPECTED_SOURCE_COUNT bump).
+  catalog_scope: subset
   scripts:
   - jobs/ingest_abs_full.py
   strategy: sdmx_delta
@@ -748,6 +755,16 @@ sources:
   # so the rename stays an open decision rather than a precondition. Note what is NOT done: the new dataset is not
   # catalogued, and with the D1 catalogue sync frozen nothing here reaches a user yet.
   #
+  # 2026-09-24 - THE FINAL RELEASE (publisher email): `timeseries/govs` is REMOVED from the live catalogue
+  # (api.census.gov/data.json fetched 17:09Z, 1,807 datasets; no `timeseries/govs`), and the seventh survey set
+  # is `timeseries/govsorg` - "Public Sector: Government Organization: 1942-2026". STAGED, NOT IN THE STORE:
+  # F:\econ_selfhost_probe\census_stage (a copy of this job and of ts_meta.json + one probed entry, 94 -> 95),
+  # run --only timeseries/govsorg: 30,160 rows, 52 series, 2 API calls, obs_date 1942-12-31..2026-12-31, the
+  # same 13 columns as govslocalfin. Its series_key omits AGG_DESC (936 duplicate (key, date) pairs), exactly
+  # as govslocalfin (1,681) and govsemp (5,013) already do - the family is served at TABLE grain with every
+  # column, so the key is internal (R280's class, not new). Still to do, together with govslocalfin: place both
+  # in the store, catalogue them, and Ahmed's decision on retiring `census:govs` (now frozen upstream for good).
+  #
   # SCHEDULED 2026-08-02 via run_location, NOT live. Fetcher built and PROVEN:
   # updater/strategies/fetchers/census.py covers the 20 EITS time-series flows only — the other
   # 60 datasets here are wide periodic snapshots served at table grain and need a reference-year
@@ -1300,6 +1317,21 @@ sources:
       first-of-period), value(float64). In-build (key,date) de-dup via ''seen'' set.'
 - source_id: ecb
   live: true
+  # csv_merge_served — DECLARED 2026-09-23 (reviews R1132, R1136). The resolver serves the UNION
+  # of the whole ecb/ directory: 8 of the 540 store files hold the 35 served ids (4 primaries, 4
+  # ECB.DISS mirrors), and 27 ids live in two. A runner holds only the files its pass wrote, so a
+  # derive there sees part of the union. Every ecb CSV upload is therefore merged with the served
+  # CSV (new rows win on a shared date, served-only dates are kept) - in updater/derive.py, so the
+  # retry drain gets it too. Store rows are never deleted, so the served CSV is a lower bound.
+  csv_merge_served: true
+  # catalog_scope — DECLARED 2026-09-23 (review R1136), now SOUND: served ids are claimed by what a
+  # changed file HOLDS, so a pass that maps zero ids wrote none of the 8 holder files and nothing
+  # served changed. Over the last 50 observed rotation windows, the mean chance that a window
+  # holds none of the 8 is 0.074 (R1136 m4_ring: 0.926 holds >= 1; a visit that finds nothing new
+  # writes no file, so the real share is higher); without this such a pass reads "csv coherence
+  # unmet" and ATTENTION.
+  # A containment read that fails is a separate, DEMOTING note. No EXPECTED_SOURCE_COUNT change.
+  catalog_scope: subset
   scripts:
   - jobs/ingest_ecb.py
   strategy: sdmx_delta
@@ -1556,6 +1588,13 @@ sources:
       streams and never sits in RAM whole.'
 - source_id: ember
   live: true
+  # catalog_scope — DECLARED 2026-09-23. The store holds every series of Ember's ~72 published files
+  # (18,810 distinct keys in the two long-format files alone); the catalogue serves a curated 60
+  # (ember:<A|M>:<metric>:<GEO>, resolved from yearly/monthly_full_release_long_format). A pass that
+  # moves only uncatalogued series maps to zero and is COVERAGE, not a coherence failure. Paired with
+  # merge-measured changed keys in '<file stem>:<series_key>' form, which _catalog_ids_for maps back
+  # exactly. Adding this key does NOT change the source count (R347: no EXPECTED_SOURCE_COUNT bump).
+  catalog_scope: subset
   scripts:
   - jobs/ingest_ember.py
   strategy: bulk_snapshot_if_changed
@@ -1878,7 +1917,27 @@ sources:
     No ETag is served, so the weakest files are SIZE-only and cannot see a same-length revision - MAX_AGE_DAYS=30 forces a
     rebuild in that case. The ingest is already safe to re-run (download() never skips, build() reparses), so both are reused
     verbatim. Two-run test - ok, 18 parquets, 3,227,580 obs published, then no_change in 3s.
-  cadence: monthly
+  # cadence WEEKLY (was monthly, 2026-09-23): polling is part of how old our newest observation can
+  # get. Monthly polling (cadence_due 0.9 x 28 = 25.2 days) put fhfa's worst age at fetch at 147.2
+  # days; weekly (0.9 x 7 = 6.3) puts it at 128.3. A no-change run takes ~3 s.
+  cadence: weekly
+  # data_cadence MEASURED 2026-09-23: 45 distinct obs_date in the trailing 3 years across the 9
+  # stored cubes (monthly month-START rows plus quarter-END rows) - monthly, not the weekly polling.
+  data_cadence: monthly
+  # publication_lag_days MEASURED 2026-09-23 from FHFA's HPI release calendar (fhfa.gov/data/hpi) and
+  # the store's REAL dating (read-only, E: store): monthly purchase-only rows are dated at the month's
+  # START (newest monthly 2026-06-01), quarterly at its END (2026-06-30 = 2026-Q2). Over the 16
+  # scheduled releases 2026-09-29..2027-12-28, the newest stored obs is 89-122 days old on release
+  # day (122 on 2027-08-31). On top of that: up to 1 day because FHFA publishes during the day
+  # (~13:00 UTC) and an earlier poll misses it, up to 7 days of run granularity once the weekly
+  # unit is due (it is picked up at the next 06:00/18:00 run), and 1 failed run. 122 + 1 + 7 + 1
+  # = 131, minus the 84-day monthly clock = 47 (review round 2 corrected 45, which left 0.2 days).
+  # Before this the daily run 35783253243 flagged fhfa RED-DATA at 85 days while it held FHFA's
+  # latest release exactly (hpi_master.csv: monthly 2026-06, quarterly 2026-Q2). Cost: a genuine
+  # freeze on the vintage-probe path turns red at 131 days, not 84 (a broken fetch is still caught
+  # at 14 days by RED-SLA). The served API will show fhfa's cadence as `weekly` - the POLL rate,
+  # as it already does for dst; data_cadence is not served.
+  publication_lag_days: 47
   refresh_cost: fast
   out_dir: fhfa
   review: true
@@ -2608,6 +2667,20 @@ sources:
       for wide resources).'
 - source_id: ilostat
   live: true
+  # csv_misses — DECLARED 2026-09-23 (review R1131). ilostat's change signal is its own
+  # _toc_vintages.json, advanced when an indicator is PUBLISHED, before the CSV phase runs. A
+  # budget-deferred OR FAILED CSV id (R1137) would never be named again (csv_retry_queue cannot drain on r2: the file
+  # is not on a later runner, and health never reads the queue), and a csv-fence trip's "re-derives
+  # next run" is false here. All three are booked PER ID in csv_desktop_owed (never full_rederive_owed:
+  # its remedy, tools/derive_csv_bulk.py, cannot pay an ilostat debt - R1137). Series grain stays: a
+  # csv_grain: flow declaration would stream WHOLE files for '#part' and legacy ids (R1131 finding 1).
+  csv_misses: desktop_owed
+  # catalog_scope — DECLARED 2026-09-23 (review R1137): 39 published stems have no catalogue id, and a
+  # pass that published only those read "csv coherence unmet" and ATTENTION with nothing served
+  # changed. Sound: stem -> id mapping is exact (3,305 of 3,305 claimed, 0 over-claims), so a
+  # zero-mapped pass touched no served stem. 24 catalogued ids sit on stems ILO no longer publishes;
+  # they are recorded in the econ-updater work queue (50-queue.md, "ilostat - OPEN: 24 catalogued ids").
+  catalog_scope: subset
   scripts:
   - jobs/ingest_ilostat.py
   strategy: bulk_snapshot_if_changed
@@ -4003,13 +4076,19 @@ sources:
       from PxWeb time codes; value float64. Per-subject in-run dedup via ''seen'' set on (key,date). Plus _catalog.json (crawl
       cache) and _scb_log.txt. MAX_CELLS=100000 caps each table query; oversized tables fall back to selecting only the first/aggregate
       value of non-time dims (partial coverage).'
-- source_id: sec_edgar
+- source_id: sec_edgar_13f
   # live: true 2026-08-01. Never run once. Gate PROVEN in both directions: current_vintage
   # returns cat:7282cd16224c0ba9, a matching stored vintage skips, a stale one re-fetches.
+  # RENAMED 2026-09-24 from `sec_edgar` to `sec_edgar_13f` (R275, R1193): under the shared id its
+  # state rows - source_state('sec_edgar') and unit_state('sec_edgar','_all') - were pushed to D1 as
+  # the freshness of the SERVED XBRL product, catalogue id `sec_edgar`. out_dir stays edgar_13f; the
+  # R2 done-markers file keeps its name (_sec_edgar_incr_state.json). A rename is not an add:
+  # EXPECTED_SOURCE_COUNT is unchanged (R347).
   live: true
   id_collision_warning: >-
-    2026-07-29 — THIS ENTRY IS NOT THE COMPANY FUNDAMENTALS. `sec_edgar` means two
-    different things depending on which store you read:
+    2026-07-29 — THIS ENTRY IS NOT THE COMPANY FUNDAMENTALS. It was registered as `sec_edgar`
+    until 2026-09-24, and `sec_edgar` meant two different things depending on which store
+    you read:
 
       REGISTRY (here)  -> the relational Form 13F + insider products under
                           clean_full/edgar_13f and clean_full/edgar_insider
@@ -4026,7 +4105,7 @@ sources:
     statements are current: they are, and they update nightly. Running this entry would
     fetch 13F/insider zips and touch none of the fundamentals.
   scripts:
-  - updater/strategies/fetchers/sec_edgar.py
+  - updater/strategies/fetchers/sec_edgar_13f.py
   - jobs/ingest_edgar_13f.py
   - _backfill_edgar_insider.py
   strategy: giant_changed_units
@@ -4035,7 +4114,7 @@ sources:
     to many per-table relational parquets). There is NO server-side row-level date filter (so S2 extend_by_date is out), and
     it is not one monolithic bulk file (so S5 bulk_snapshot is out) — it is the giant change-feed shape: scrape the data-sets
     PAGE (the catalogue), diff published dataset keys vs the on-disk partition inventory, and fetch ONLY the NEW keys. Per-period
-    partitioning makes a new quarter a pure addition; existing partitions are never rewritten. The fetcher (updater/strategies/fetchers/sec_edgar.py)
+    partitioning makes a new quarter a pure addition; existing partitions are never rewritten. The fetcher (updater/strategies/fetchers/sec_edgar_13f.py)
     implements the S4 current_vintage()+update() contract directly because the payload is RELATIONAL tables (composite/surrogate
     keys, no series_key/obs_date), not the long-format the generic _giant.run_giant driver assumes.'
   cadence: quarterly
@@ -4083,7 +4162,7 @@ sources:
       --from 2013q1` ; for insider: `python.exe _backfill_edgar_insider.py 2006q1 2026q1`. The incremental fetcher itself only
       ever ADDS new dataset keys (per-period partitions), never rewrites existing partitions.'
     incremental_path:
-    - 'Implemented in updater/strategies/fetchers/sec_edgar.py: scrape the data-sets page, diff published keys vs the on-disk
+    - 'Implemented in updater/strategies/fetchers/sec_edgar_13f.py: scrape the data-sets page, diff published keys vs the on-disk
       partition inventory, download only the NEW keys'' zips, parse each TSV table to its existing schema, and merge per-period
       under dedup+never-shrink. New quarter = new partition = pure addition.'
     keys_or_blockers:
@@ -4113,10 +4192,10 @@ sources:
     returns a company's COMPLETE facts in ~0.3s, so a day costs ~200 requests.
 
     NAME COLLISION, read carefully: the CATALOG's source_id `sec_edgar` is THIS product
-    (17,276 companies of XBRL fundamentals). The REGISTRY's `sec_edgar` entry is a
-    different thing entirely — the relational Form 13F + insider data under
-    clean_full/edgar_13f. Same id, two meanings, depending on which store you are
-    looking at.
+    (17,276 companies of XBRL fundamentals). The registry entry for the relational Form
+    13F + insider data under clean_full/edgar_13f was ALSO named `sec_edgar` until
+    2026-09-24; it is `sec_edgar_13f` now, so its state rows no longer share this
+    product's key.
   scripts:
   - .github/workflows/sec-edgar-daily.yml
   - tools/refresh_sec_edgar.py
@@ -4229,6 +4308,18 @@ sources:
       Each group written once via a single pq.write_table.
 - source_id: stat_estonia
   live: true
+  # catalog_scope — DECLARED 2026-09-23 (reviews R1129, R1133). The catalogue serves 3,447 of PxWeb's
+  # 4,978 tables. It is NOT "every table with stored rows": 3,447 of the 3,464 stored table prefixes
+  # are catalogued, and 17 (15,667 series) are a cataloguing GAP - the updater never catalogues a new
+  # table. Their record is the econ-updater work queue (.claude/skills/econ-updater/references/
+  # 50-queue.md, "stat_estonia - OPEN cataloguing gap"), because under subset the health gate no
+  # longer shows them. The fetcher reports the tables a pass MERGED ('EE:...:<TABLE>.PX',
+  # exact catalogue form), so a pass that lands rows only in an uncatalogued table maps to zero ids
+  # and reads a coverage note instead of "csv coherence unmet" and ATTENTION. Sound for serving: a
+  # changed catalogued table maps EXACTLY, so a zero-mapped pass has touched no served table. That
+  # rests on the exact mapper alone - the zero-mapped sample cannot see '.PX' prefixes (0 hits over
+  # 4,978 tables). No EXPECTED_SOURCE_COUNT change (R347).
+  catalog_scope: subset
   scripts:
   - jobs/ingest_stat_estonia.py
   strategy: sdmx_delta
@@ -6870,6 +6961,20 @@ sources:
   # with a 581,450-row max (unusable), depth-3 = 18,419 at p50 42 — double the ids for
   # HALF the median table — and depth-4 = 496,132, alone 62% of D1's remaining headroom.
   # Series grain would overrun the whole headroom by 64%; depth-2 costs 1.2% of it.
+  # run_location: local - ROUTED TO THE DESKTOP 2026-09-23 (review R1151). It has NEVER succeeded in the
+  # cloud: six weekly runs since 2026-08-10 (08-10, 08-23, 08-29, 09-05, 09-11, 09-18) each hit the
+  # 45-minute unit limit at 2,700 s with 0 rows, memory near 2 GB (about 1.7-2.2 GB across the runs) -
+  # it is the PULL that is too long, not memory. The pull is 4 measures x 21 years x ~208 leaf POSTs
+  # (208 a year measured on one measure, M5011), timed on the desktop at ~55 leaves/min: about 5.5 h.
+  # A runner discards its disk, so the chunk spills (jobs/ingest_unctad_ds.py, data/_unctad_spill/) die
+  # with each killed run and it restarts from nothing. On the desktop the spills survive between passes,
+  # and a resume reuses the cached size-cap answers (_capped.tsv), so every turn it gets adds leaves and
+  # re-walking known work costs only disk reads. It still needs SEVERAL desktop turns: a pass is clamped
+  # to the time before the next cloud writer (223 and 171 min on the last two passes) and hard-stopped
+  # (_unctad has no Deadline of its own), the pass is shared with the other local sources, and a killed
+  # run moves the source to the most expensive cost band, which starts only after the cheaper bands.
+  # The number of turns is NOT measured (review R1152).
+  run_location: local
   live: true
   scripts: [jobs/ingest_unctad_ds.py]
   strategy: bulk_snapshot_if_changed
@@ -7432,8 +7537,7 @@ sources:
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
     IMF republishes whole datasets and ships dated vintages
-    (BOP_2026_MAY_VINTAGE), so the honest change signal is the dataflow's own
-    published version, not a date-tail probe — a back-revision rewrites history
+    (BOP_2026_MAY_VINTAGE), so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead — a back-revision rewrites history
     without extending it and a date probe would miss it entirely.
   cadence: annual
   # upstream_verified — PROBED 2026-08-05. FDI here is IMF.MCM's FINANCIAL DEVELOPMENT
@@ -7452,7 +7556,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow FDI
-      (agency IMF.MCM); re-pull only when it moves. Agency ids are NOT uniform
+      (agency IMF.MCM); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Agency ids are NOT uniform
       across IMF datasets — read them from the catalogue, never assume IMF.STA.
     name: Financial Development Index (FDI)
 - source_id: imf_fas_direct
@@ -7462,8 +7566,7 @@ sources:
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
     IMF republishes whole datasets and ships dated vintages
-    (BOP_2026_MAY_VINTAGE), so the honest change signal is the dataflow's own
-    published version, not a date-tail probe — a back-revision rewrites history
+    (BOP_2026_MAY_VINTAGE), so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead — a back-revision rewrites history
     without extending it and a date probe would miss it entirely.
   cadence: annual
   refresh_cost: fast
@@ -7472,7 +7575,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow FAS
-      (agency IMF.STA); re-pull only when it moves. Agency ids are NOT uniform
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Agency ids are NOT uniform
       across IMF datasets — read them from the catalogue, never assume IMF.STA.
     name: Financial Access Survey (FAS)
 - source_id: imf_world_direct
@@ -7482,8 +7585,7 @@ sources:
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
     IMF republishes whole datasets and ships dated vintages
-    (BOP_2026_MAY_VINTAGE), so the honest change signal is the dataflow's own
-    published version, not a date-tail probe — a back-revision rewrites history
+    (BOP_2026_MAY_VINTAGE), so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead — a back-revision rewrites history
     without extending it and a date probe would miss it entirely.
   cadence: annual
   refresh_cost: fast
@@ -7492,7 +7594,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow WORLD
-      (agency IMF.FAD); re-pull only when it moves. Agency ids are NOT uniform
+      (agency IMF.FAD); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Agency ids are NOT uniform
       across IMF datasets — read them from the catalogue, never assume IMF.STA.
     name: World Revenue Longitudinal Database (WoRLD)
 - source_id: imf_afrreo_direct
@@ -7502,8 +7604,7 @@ sources:
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
     IMF republishes whole datasets and ships dated vintages
-    (BOP_2026_MAY_VINTAGE), so the honest change signal is the dataflow's own
-    published version, not a date-tail probe — a back-revision rewrites history
+    (BOP_2026_MAY_VINTAGE), so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead — a back-revision rewrites history
     without extending it and a date probe would miss it entirely.
   cadence: irregular
   refresh_cost: fast
@@ -7512,7 +7613,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow AFRREO
-      (agency IMF.AFR); re-pull only when it moves. Agency ids are NOT uniform
+      (agency IMF.AFR); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Agency ids are NOT uniform
       across IMF datasets — read them from the catalogue, never assume IMF.STA.
     name: Sub-Saharan Africa Regional Economic Outlook
 - source_id: imf_apdreo_direct
@@ -7522,8 +7623,7 @@ sources:
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
     IMF republishes whole datasets and ships dated vintages
-    (BOP_2026_MAY_VINTAGE), so the honest change signal is the dataflow's own
-    published version, not a date-tail probe — a back-revision rewrites history
+    (BOP_2026_MAY_VINTAGE), so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead — a back-revision rewrites history
     without extending it and a date probe would miss it entirely.
   cadence: irregular
   refresh_cost: fast
@@ -7532,7 +7632,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow APDREO
-      (agency IMF.APD); re-pull only when it moves. Agency ids are NOT uniform
+      (agency IMF.APD); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Agency ids are NOT uniform
       across IMF datasets — read them from the catalogue, never assume IMF.STA.
     name: Asia and Pacific Regional Economic Outlook
 - source_id: imf_mcdreo_direct
@@ -7546,8 +7646,7 @@ sources:
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
     IMF republishes whole datasets and ships dated vintages
-    (BOP_2026_MAY_VINTAGE), so the honest change signal is the dataflow's own
-    published version, not a date-tail probe — a back-revision rewrites history
+    (BOP_2026_MAY_VINTAGE), so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead — a back-revision rewrites history
     without extending it and a date probe would miss it entirely.
   cadence: irregular
   refresh_cost: fast
@@ -7556,8 +7655,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow MCDREO
-      (agency IMF.MCD; verified live 2026-08-06, version 8.0.0); re-pull only
-      when it moves. Agency ids are NOT uniform across IMF datasets — read them
+      (agency IMF.MCD; verified live 2026-08-06, version 8.0.0); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Agency ids are NOT uniform across IMF datasets — read them
       from the catalogue, never assume IMF.STA.
     name: Middle East and Central Asia Regional Economic Outlook
 - source_id: imf_fm_direct
@@ -7573,8 +7671,7 @@ sources:
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
     IMF republishes whole datasets and ships dated vintages
-    (BOP_2026_MAY_VINTAGE), so the honest change signal is the dataflow's own
-    published version, not a date-tail probe — a back-revision rewrites history
+    (BOP_2026_MAY_VINTAGE), so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead — a back-revision rewrites history
     without extending it and a date probe would miss it entirely.
   cadence: irregular
   refresh_cost: fast
@@ -7584,7 +7681,7 @@ sources:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow FM
       (agency IMF.FAD — NOT IMF.STA; verified live 2026-08-06, version 5.0.0);
-      re-pull only when it moves. Agency ids are NOT uniform across IMF datasets
+      REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Agency ids are NOT uniform across IMF datasets
       — read them from the catalogue, never assume IMF.STA. Ignore the dated
       FM_2025_OCT_VINTAGE snapshot flow; FM is the maintained dataset.
     name: Fiscal Monitor
@@ -7595,8 +7692,7 @@ sources:
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
     IMF republishes whole datasets and ships dated vintages
-    (BOP_2026_MAY_VINTAGE), so the honest change signal is the dataflow's own
-    published version, not a date-tail probe — a back-revision rewrites history
+    (BOP_2026_MAY_VINTAGE), so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead — a back-revision rewrites history
     without extending it and a date probe would miss it entirely.
   cadence: quarterly
   refresh_cost: fast
@@ -7605,7 +7701,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow COFER
-      (agency IMF.STA); re-pull only when it moves. Agency ids are NOT uniform
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Agency ids are NOT uniform
       across IMF datasets — read them from the catalogue, never assume IMF.STA.
     name: Currency Composition of Official Foreign Exchange Reserves (COFER)
 - source_id: imf_bop_direct
@@ -7624,8 +7720,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: quarterly
@@ -7635,7 +7730,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow BOP
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-04 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-04 by
       calling the module's own current_vintage(): BOP -> BOP:21.0.0.
     name: Balance of Payments (BOP)
 - source_id: imf_imts_direct
@@ -7667,8 +7762,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: monthly
@@ -7678,7 +7772,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow IMTS
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): IMTS -> IMTS:1.0.0.
     name: International Trade in Goods by partner country (IMTS, formerly DOTS)
 - source_id: imf_dip_direct
@@ -7703,8 +7797,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: quarterly
@@ -7714,7 +7807,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow DIP
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): DIP -> DIP:12.0.1.
     name: Direct Investment Positions by Counterpart Economy (DIP, formerly CDIS)
 - source_id: imf_mfsdc_direct
@@ -7729,8 +7822,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: monthly
@@ -7740,7 +7832,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow MFS_DC
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): MFS_DC -> MFS_DC:8.0.0.
     name: Monetary and Financial Statistics — Depository Corporations (MFS_DC)
 - source_id: imf_mfsir_direct
@@ -7755,8 +7847,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: monthly
@@ -7766,7 +7857,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow MFS_IR
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): MFS_IR -> MFS_IR:9.0.0.
     name: Monetary and Financial Statistics — Interest Rates (MFS_IR)
 - source_id: imf_mfsma_direct
@@ -7781,8 +7872,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: monthly
@@ -7792,7 +7882,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow MFS_MA
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): MFS_MA -> MFS_MA:10.0.1.
     name: Monetary and Financial Statistics — Monetary Aggregates (MFS_MA)
 - source_id: imf_mfsofc_direct
@@ -7807,8 +7897,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: monthly
@@ -7818,7 +7907,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow MFS_OFC
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): MFS_OFC -> MFS_OFC:7.0.0.
     name: Monetary and Financial Statistics — Other Financial Corporations (MFS_OFC)
 - source_id: imf_mfsfmp_direct
@@ -7833,8 +7922,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: monthly
@@ -7844,7 +7932,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow MFS_FMP
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): MFS_FMP -> MFS_FMP:3.0.0.
     name: Monetary and Financial Statistics — Financial Markets and Positions (MFS_FMP)
 - source_id: imf_bopagg_direct
@@ -7869,8 +7957,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: quarterly
@@ -7880,7 +7967,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow BOP_AGG
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): BOP_AGG -> BOP_AGG:9.0.1.
     name: BOP and IIP Statistics aggregates (BOP_AGG, formerly BOPAGG)
 - source_id: imf_psbs_direct
@@ -7905,8 +7992,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: annual
@@ -7916,7 +8002,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow PSBS
-      (agency IMF.FAD); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.FAD); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): PSBS -> PSBS:2.0.0.
     name: Public Sector Balance Sheet (PSBS, formerly PSBSFAD)
 - source_id: imf_ctot_direct
@@ -7931,8 +8017,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: annual
@@ -7942,7 +8027,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow CTOT
-      (agency IMF.RES); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.RES); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): CTOT -> CTOT:5.0.1.
     name: Commodity Terms of Trade (CTOT, formerly PCTOT)
 - source_id: imf_sdg_direct
@@ -7956,8 +8041,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: annual
@@ -7967,7 +8051,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow SDG
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): SDG -> SDG:2.0.1.
     name: IMF Reported SDG Data (SDG, formerly the UNSDG IMF-inputs dataset)
 - source_id: imf_namain_direct
@@ -7981,8 +8065,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: annual
@@ -7992,7 +8075,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow NA_MAIN
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): NA_MAIN -> NA_MAIN:1.0.0.
     name: National Accounts Main Aggregates (NA_MAIN, formerly NAMAIN_IDC_N)
 - source_id: imf_icsd_direct
@@ -8017,8 +8100,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: annual
@@ -8028,7 +8110,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow ICSD
-      (agency IMF.FAD); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.FAD); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): ICSD -> ICSD:1.0.0.
     name: Investment and Capital Stock Dataset (ICSD, successor to PGCS)
 - source_id: imf_fd_direct
@@ -8052,8 +8134,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: annual
@@ -8063,7 +8144,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow FD
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): FD -> FD:6.0.0.
     name: Fiscal Decentralization (FD, formerly FISCALDECENTRALIZATION)
 - source_id: imf_hpd_direct
@@ -8087,8 +8168,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: annual
@@ -8098,7 +8178,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow HPD
-      (agency IMF.FAD); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.FAD); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): HPD -> HPD:1.0.0.
     name: Historical Public Debt (HPD, formerly HPDD)
 - source_id: imf_gslgrghts_direct
@@ -8112,8 +8192,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: annual
@@ -8123,7 +8202,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow GS_LGRGHTS
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): GS_LGRGHTS -> GS_LGRGHTS:1.0.1.
     name: Gender Statistics — legal rights (GS_LGRGHTS)
 - source_id: imf_gslepm_direct
@@ -8137,8 +8216,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: annual
@@ -8148,7 +8226,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow GS_LEPM
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): GS_LEPM -> GS_LEPM:2.0.0.
     name: Gender Statistics — labor and employment (GS_LEPM)
 - source_id: imf_gssdo_direct
@@ -8162,8 +8240,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: annual
@@ -8173,7 +8250,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow GS_SDO
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): GS_SDO -> GS_SDO:1.0.0.
     name: Gender Statistics — seats and decision-making offices (GS_SDO)
 - source_id: imf_gsatf_direct
@@ -8187,8 +8264,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: annual
@@ -8198,7 +8274,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow GS_ATF
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): GS_ATF -> GS_ATF:1.0.0.
     name: Gender Statistics — access to finance (GS_ATF)
 - source_id: imf_gsli_direct
@@ -8212,8 +8288,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: annual
@@ -8223,7 +8298,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow GS_LI
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): GS_LI -> GS_LI:1.0.0.
     name: Gender Statistics — labor and income (GS_LI)
 - source_id: imf_er_direct
@@ -8237,8 +8312,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: monthly
@@ -8248,7 +8322,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow ER
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): ER -> ER:4.0.1.
     name: Exchange Rates (ER)
 - source_id: imf_eer_direct
@@ -8261,18 +8335,25 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
-  cadence: monthly
+  # cadence WEEKLY (was monthly, 2026-09-23): IMF published 2026-M07 and M08 AFTER our 2026-09-06
+  # pull (which returned exactly the stored 179,736 obs, newest 2026-06-30), and a monthly poll then
+  # waits 25.2 days - so the store read 85 days old against the 84-day monthly clock while IMF held
+  # two newer months. A pull is the whole flow, 14.4 MB in ~10 s (heavy run 34048421319).
+  cadence: weekly
+  # data_cadence MEASURED 2026-09-23: 34 distinct obs_date in the trailing 3 years of the stored
+  # parquet (month-end monthly rows; quarter- and year-ends fall on the same dates) - monthly.
+  # The served API will show this source's cadence as `weekly`, the POLL rate, as it does for dst.
+  data_cadence: monthly
   refresh_cost: fast
   out_dir: imf_eer_direct
   review: true
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow EER
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): EER -> EER:6.0.0.
     name: Effective Exchange Rate (EER)
 - source_id: imf_ls_direct
@@ -8286,8 +8367,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: quarterly
@@ -8297,7 +8377,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow LS
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): LS -> LS:9.0.0.
     name: Labor Statistics (LS)
 - source_id: imf_pi_direct
@@ -8321,8 +8401,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: monthly
@@ -8332,7 +8411,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow PI
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): PI -> PI:2.0.0.
     name: Production Indexes (PI)
 - source_id: imf_piwca_direct
@@ -8355,8 +8434,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: monthly
@@ -8366,7 +8444,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow PI_WCA
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): PI_WCA -> PI_WCA:1.0.0.
     name: Production Indexes, World and Country Group Aggregates (PI_WCA)
 - source_id: imf_qgfs_direct
@@ -8380,8 +8458,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: quarterly
@@ -8391,7 +8468,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow QGFS
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): QGFS -> QGFS:12.0.0.
     name: Quarterly Government Finance Statistics (QGFS)
 - source_id: imf_pip_direct
@@ -8422,8 +8499,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: quarterly
@@ -8433,7 +8509,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow PIP
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-05 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-05 by
       calling the module's own current_vintage(): PIP -> PIP:5.0.0.
     name: Portfolio Investment Positions by Counterpart Economy (PIP, formerly CPIS)
 - source_id: imf_irfcl_direct
@@ -8444,8 +8520,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: quarterly
@@ -8455,7 +8530,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow IRFCL
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-04 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-04 by
       calling the module's own current_vintage(): IRFCL -> IRFCL:12.0.0.
     name: International Reserves and Foreign Currency Liquidity (IRFCL)
 - source_id: imf_cpi_direct
@@ -8466,8 +8541,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: quarterly
@@ -8477,7 +8551,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow CPI
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-08-04 by
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-08-04 by
       calling the module's own current_vintage(): CPI -> CPI:5.0.0.
     name: Consumer Price Index (CPI)
 - source_id: imf_fsic_direct
@@ -8486,8 +8560,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: quarterly
@@ -8497,7 +8570,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow FSIC
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-07-29:
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-07-29:
       FSIC -> FSIC:13.0.1.
     name: Financial Soundness Indicators — Core and Additional Indicators
 - source_id: imf_fsibsis_direct
@@ -8506,8 +8579,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: quarterly
@@ -8517,7 +8589,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow FSIBSIS
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-07-29:
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-07-29:
       FSIBSIS -> FSIBSIS:18.0.0.
     name: Financial Soundness Indicators — Balance Sheet, Income Statement
 - source_id: imf_fsicdm_direct
@@ -8526,8 +8598,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: quarterly
@@ -8537,7 +8608,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow FSICDM
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-07-29:
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-07-29:
       FSICDM -> FSICDM:7.0.0.
     name: Financial Soundness Indicators — Concentration and Distribution Measures
 - source_id: imf_gfssoo_direct
@@ -8586,8 +8657,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: quarterly
@@ -8597,7 +8667,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow GFS_SOO
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-07-29:
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-07-29:
       GFS_SOO -> GFS_SOO:12.0.0. LARGEST of the family: 475,049 series over 220 indicators; a serieskeysonly listing alone is ~57 MB. Covers BOTH legacy imf_gfse (its G26* codes) and imf_gfsmab (its G11*/G12* codes).
     name: Government Finance Statistics — Statement of Operations
 - source_id: imf_gfscofog_direct
@@ -8646,8 +8716,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: quarterly
@@ -8657,7 +8726,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow GFS_COFOG
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-07-29:
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-07-29:
       GFS_COFOG -> GFS_COFOG:11.0.0. Corresponds to legacy imf_gfscofog.
     name: Government Finance Statistics — Expenditures by Function (COFOG)
 - source_id: imf_gfsssuc_direct
@@ -8709,8 +8778,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: quarterly
@@ -8724,7 +8792,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow GFS_SSUC
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-07-29:
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-07-29:
       GFS_SSUC -> GFS_SSUC:10.0.0. Corresponds to legacy imf_gfsssuc.
     name: Government Finance Statistics — Statement of Sources and Uses of Cash
 - source_id: imf_gfsbs_direct
@@ -8773,8 +8841,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: quarterly
@@ -8784,7 +8851,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow GFS_BS
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-07-29:
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-07-29:
       GFS_BS -> GFS_BS:12.0.0. Corresponds to legacy imf_gfsibs.
     name: Government Finance Statistics — Balance Sheet
 - source_id: imf_gfssfcp_direct
@@ -8833,8 +8900,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: quarterly
@@ -8844,7 +8910,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow GFS_SFCP
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-07-29:
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-07-29:
       GFS_SFCP -> GFS_SFCP:10.0.0. Corresponds to legacy imf_gfsfalcs.
     name: Government Finance Statistics — Stocks and Flows by Counterparty
 - source_id: imf_gfssoef_direct
@@ -8895,8 +8961,7 @@ sources:
   - jobs/ingest_imf_direct.py
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
-    IMF republishes whole datasets and ships versioned dataflows, so the honest
-    change signal is the dataflow's own published version, not a date-tail probe —
+    IMF republishes whole datasets and ships versioned dataflows, so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead —
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: quarterly
@@ -8910,7 +8975,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow GFS_SOEF
-      (agency IMF.STA); re-pull only when it moves. Verified live 2026-07-29:
+      (agency IMF.STA); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Verified live 2026-07-29:
       GFS_SOEF -> GFS_SOEF:11.0.0. NEW COVERAGE: no legacy source corresponds to this flow (12,720 series).
     name: Government Finance Statistics — Statement of Other Economic Flows
 - source_id: imf_whdreo_direct
@@ -8920,8 +8985,7 @@ sources:
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
     IMF republishes whole datasets and ships dated vintages
-    (BOP_2026_MAY_VINTAGE), so the honest change signal is the dataflow's own
-    published version, not a date-tail probe — a back-revision rewrites history
+    (BOP_2026_MAY_VINTAGE), so a date-tail probe would miss a back-revision; the dataflow's version was meant to be the change signal but does NOT move when months are appended (measured 2026-09-23), so every run re-pulls the whole flow instead — a back-revision rewrites history
     without extending it and a date probe would miss it entirely.
   cadence: irregular
   refresh_cost: fast
@@ -8930,7 +8994,7 @@ sources:
   adapter:
     vintage_signal: >-
       GET {BASE}/dataflow and read the version attribute of dataflow WHDREO
-      (agency IMF.WHD); re-pull only when it moves. Agency ids are NOT uniform
+      (agency IMF.WHD); REPORTED ONLY since 2026-09-23 - it does not move when IMF appends months (EER read 6.0.0 before and after M07/M08 were added), so every run pulls the whole flow. Agency ids are NOT uniform
       across IMF datasets — read them from the catalogue, never assume IMF.STA.
     name: Western Hemisphere Regional Economic Outlook
 - source_id: fao_qcl

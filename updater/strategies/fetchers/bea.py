@@ -1,79 +1,62 @@
-"""S2 fetcher - U.S. Bureau of Economic Analysis, date-tail over the NIPA-family datasets.
+"""S2 fetcher - U.S. Bureau of Economic Analysis: refresh the stored dataset tree in place (v1, 2026-09-23).
 
-240 series are published under `bea:<SeriesCode>:<freq>` and resolve today (verified live:
-bea:A191RC:Q returns 317 observations through 2026-01-01), but nothing refreshes them. The
-published rows sit in the OLD data/clean/ tier as 240 one-series-per-file parquets whose
-schema is (obs_date, value, version) - the series identity is in the FILENAME
-(bea__A191RC__Q.parquet), not in a column - while config.source_dir() points at clean_full/,
-which is empty.
+WHAT CHANGED AND WHY. Until 2026-09-23 this fetcher refreshed ONE file, bea.parquet (NIPA +
+NIUnderlyingDetail, 17,699 series), while 913,230 series are served from twelve dataset directories
+that jobs/ingest_bea_full.py wrote once and nothing revisited (ledger R762/R766). Worse, every one
+of bea.parquet's keys also sits in a subdirectory that sorts first, so the refreshed copy never
+served. The registry always described the intended mechanism - read each group file's newest year,
+re-pull recent years, merge back - and this is it.
 
-THE KEY SHAPE ALREADY MATCHES, which is what makes this safe. jobs/ingest_bea_full.py builds
-`sk.append(f"{code}:{fr}")` - SeriesCode:frequency - and that is byte-identical to the
-published ids. So this fetcher REUSES that ingest rather than reimplementing it, exactly as
-the comtrade fetcher reuses jobs/ingest_comtrade: same rate limiter (BEA caps 100 req/min and
-100 MB/min; the ingest holds itself to 85 and 70 across its workers), same parsing, same
-completeness handling. Reimplementing would fork the key shape sooner or later, and a forked
-key shape does not fail - it silently publishes a second copy of every series.
+ONLY THE SEVEN DATASETS WHOSE KEYS ARE SOUND (see SOUND). A design review (ledger R1104) measured
+566,894 of 913,230 keys COLLIDING across tables in Regional, InputOutput, MNE, ITA and GDPbyIndustry:
+the key omits the table, so one id holds different values in different files and users download a
+patchwork. Refreshing those would extend it; their fix is a re-key (pending-actions 0ad).
 
-WHY A YEAR WINDOW, NOT A FULL RE-PULL. BEA exposes Year=<from>..<to> on GetData, and the
-full enumeration is 12 datasets over 591 tables against a 100 req/min ceiling. Re-pulling
-everything every night would spend hours to collect revisions that only ever touch the last
-few years, so each run asks for a trailing window from the stored frontier and merges. The
-lookback absorbs the annual back-revisions BEA publishes against prior years.
+PER GROUP, under a RotationCycle (ok = every group refreshed since the last ok):
+  * the stored file's profile - rows, newest year, EXACT duplicate rows, CONFLICTING (key, date)
+    pairs. Conflicts refuse the merge (a sound dataset should hold none); exact duplicates collapse
+    in the merge, so the shrink guard is set to exactly (rows - exact duplicates) / rows;
+  * the year window: newest stored year - LOOKBACK_YEARS through next year (BEA's Year is a LIST,
+    not a range: "2023,2027" returns only 2023 - measured). A group whose newest year is more than
+    DISCONTINUED_YEARS old is skipped between yearly full re-pulls; every group is re-pulled with
+    Year=ALL once a year (FULL_REPULL_DAYS), and on its FIRST cycle, so old revisions are not
+    spliced under a newer vintage;
+  * the fetch goes through the ingester's OWN parse (fetch_* in jobs/ingest_bea_full.py) with
+    strict=True: a call that exhausts its retries raises instead of reading as an empty answer, and
+    an empty answer for a window that starts inside the stored data is a failure too;
+  * COVERAGE, AT CALL GRAIN (reviews R1106, R1109): a stored key with an observation inside the
+    window that did not come back keeps the group owed IF ITS CALL RETURNED NOTHING - one
+    silently-empty call cannot pass as "nothing new". A key missing from a call that DID answer
+    (other keys of the same frequency / IIP type / country came back) is a series BEA sent no
+    value for: measured 2026-09-23, IIP GoldReserveAssets:ChgPosXRate:A and
+    StDebtSecAssets:ChgPosPrice:A come back with DataValue '' for every year, and the parse drops
+    blanks. Owing those held the whole cycle open for ever. DECIDED: their STORED ROWS ARE KEPT
+    (never-shrink; for these two, one row each, 2025 = 0.0) and served as last published. Each
+    group's such series are named in the run log, with one summary line per pass - the log only:
+    the digest does not print an ok row's note, and a note appended to the result broke health's
+    deferral match (review R1116);
+  * merge.merge_and_write (keep-new, never-shrink) REPORTS THE CHANGED KEYS - revisions included -
+    and those, not the fetched keys, are returned as changed_keys: a revision-only pass is a change
+    and reaches the served CSVs; the group is visited only if nothing failed.
 
-MIGRATION IS PART OF THE FETCH, not a separate chore. On the first run the 240 legacy files
-are consolidated into the modern store first, with the series key recovered from each
-filename; the pull then EXTENDS them. Without that step the first successful pull would
-create a store containing only whatever the window returned, and 240 published series would
-lose their history - a migration that drops history is a deletion wearing a different name.
+bea.parquet is no longer written, and is kept (retiring it would be a deletion). _tree_frontier
+still reports the whole served tree's newest observation; the run prints each dataset's.
 
-HONEST-STATUS: one dataset is one sub-unit. A failure there is transient (existing data kept,
-retried next tick). Zero usable rows across the WHOLE run -> TransientError rather than a
-hollow success. BEA_API_KEY absent -> TransientError, never a silent no-op, because a source
-that quietly does nothing looks identical to one that is up to date.
-
-WHAT THIS FETCHER DOES *NOT* COVER - read this before believing any "bea is fresh" statement.
-Measured 2026-09-05 (ledger R762), from R2 row-group statistics and the local catalogue:
-
-    catalogued bea series                                        913,230
-      reachable by this fetcher (in bea.parquet)                  17,699   1.94 %
-      served ONLY from dataset subdirectories nothing refreshes  895,531  98.06 %
-
-The loop below iterates exactly two datasets, NIPA and NIUnderlyingDetail, and writes one file.
-The store has twelve dataset directories, built once by jobs/ingest_bea_full.py and never
-revisited: Regional (105 files, 58,537,714 rows, frozen at 2025-12-31), GDPbyIndustry / IIP /
-ITA (2025-12-31), MNE / FixedAssets / InputOutput / UnderlyingGDPbyIndustry / IntlServTrade
-(2024-12-31), IntlServSTA (2023-12-31). At least ITA and Regional-quarterly are BEHIND the
-publisher, not merely complete: BEA served 2026Q1 while the store held 2025-12-31.
-
-Two consequences worth stating plainly, because both are invisible from the outside:
-
-  * `_tree_frontier` takes the MAX over the whole tree, so `last_obs_date` is reported by the
-    freshest 1.94 % and is structurally blind to the frozen 98 %. A green freshness reading
-    here says nothing about most of what users can download.
-  * the client resolver `_resolve_bea` opens the whole tree as one dataset on the written
-    assumption that duplicate keys are "byte-identically" replicated. They are not: over 41
-    keys there are 153 (key, date) disagreements between this fetcher's fresh file and the
-    frozen subdirectory copy, and the FROZEN copy wins all 153. So the trailing-window
-    revisions this fetcher exists to collect do not reach users at all.
-
-Neither is fixed here. Extending the loop, or excluding the superseded copies from the
-resolver, changes what a user downloads and is the owner's decision.
+REQUIRES BEA_API_KEY (environment, then .env); absent -> TransientError, never a silent no-op.
 """
 from __future__ import annotations
 
 import datetime as dt
-import glob
+import json
 import os
-import re
 
 import pyarrow as pa
 
 from ... import blob, config, merge
 from ...errors import TransientError
 from ..base import Result
-from ._common import (CURSOR_CAP, Deadline, Tally, api_key, cursors_from_table, finalize,
-                      merge_cursor_map)
+from ._common import (CURSOR_CAP, Deadline, RotationCycle, Tally, api_key, cursors_from_table,
+                      finalize, load_rotation, merge_cursor_map, rotate_after, save_rotation)
 
 SOURCE = "bea"
 DEDUP = ("series_key", "obs_date")
@@ -81,8 +64,25 @@ BUDGET_MIN = float(os.environ.get("AQUEDUCT_BEA_BUDGET_MIN", "35"))
 # Years of overlap re-requested each run. BEA revises prior years on a normal schedule, so a
 # window that starts exactly at the stored frontier would never see those corrections.
 LOOKBACK_YEARS = 3
-# bea__<SeriesCode>__<freq>.parquet  ->  ("A191RC", "Q")
-_LEGACY = re.compile(r"^bea__(?P<code>.+)__(?P<freq>[AQM])\.parquet$")
+# THE DATASETS WHOSE KEYS ARE SOUND (bea design review R1104, 2026-09-23). The other five -
+# Regional (`LineCode:GeoFips`), InputOutput (`Row|Col`), MNE, ITA (no frequency) and GDPbyIndustry
+# (a dimension dropped) - hold 566,894 keys whose values COLLIDE across tables, so refreshing them
+# would extend a patchwork users already download. They are not touched here; their fix is a re-key
+# (pending-actions 0ad, the owner's to sequence behind the frozen D1 sync).
+SOUND = ("NIPA", "NIUnderlyingDetail", "FixedAssets", "UnderlyingGDPbyIndustry", "IIP",
+         "IntlServTrade", "IntlServSTA")
+# Per-group refresh record (blob-routed): {"<Dataset>/<stem>.parquet": {"last_full": "YYYY-MM-DD"}}.
+GROUP_STATE = "_group_refresh.json"
+# Once a year a group is re-pulled with Year=ALL, so revisions older than the lookback are not
+# spliced under a newer vintage for ever (review R1104, condition 4).
+FULL_REPULL_DAYS = 365
+# THE FIRST CYCLE IS Year=ALL (review R1106): the 2026-06-03 ingest is NOT a sound baseline -
+# revisions older than any window already exist (IntlServSTA 1999 stored 631,208, BEA now
+# 629,189), and a Year=ALL cycle costs about what a windowed one does (1,812 calls, ~21-24 min,
+# measured). A group with no `last_full` on record is therefore due a full pull.
+# A group whose newest stored year is this far behind is DISCONTINUED (NIPA holds tables ending in
+# 1966): between yearly full re-pulls it is skipped, and it does not drag any window back.
+DISCONTINUED_YEARS = 3
 
 
 def current_vintage(unit):
@@ -90,56 +90,6 @@ def current_vintage(unit):
     cadence gates the fetch and merge dedup makes a re-pull harmless. A fabricated token would
     either freeze the source or make it re-pull for ever."""
     return None
-
-
-def _migrate_legacy(path: str) -> int:
-    """Consolidate the 240 one-series-per-file legacy parquets. Returns rows seeded.
-
-    The legacy files carry (obs_date, value, version) and hold the series identity in their
-    NAME, so the key has to be reconstructed - reading them as-is would produce a table with
-    no series_key at all. Runs only when the modern store is absent.
-    """
-    if blob.exists(path):
-        return 0
-    legacy_dir = os.path.normpath(os.path.join(config.DATA_ROOT, "..", "clean", SOURCE))
-    if not os.path.isdir(legacy_dir):
-        return 0
-    import pyarrow.parquet as pq
-    keys: list[str] = []
-    dates: list[dt.date] = []
-    vals: list[float] = []
-    skipped = []
-    for f in sorted(glob.glob(os.path.join(legacy_dir, "*.parquet"))):
-        m = _LEGACY.match(os.path.basename(f))
-        if not m:
-            skipped.append(os.path.basename(f))
-            continue
-        key = f"{m.group('code')}:{m.group('freq')}"
-        try:
-            t = pq.read_table(f, columns=["obs_date", "value"])
-        except Exception as e:                               # noqa: BLE001
-            skipped.append(f"{os.path.basename(f)} ({type(e).__name__})")
-            continue
-        for d, v in zip(t.column("obs_date").to_pylist(), t.column("value").to_pylist()):
-            if d is None or v is None:
-                continue
-            keys.append(key)
-            dates.append(d)
-            vals.append(float(v))
-    if skipped:
-        # Named, never a silent drop: each one is a published series that would lose its
-        # history, and the filename is the only place its identity exists.
-        print(f"[{SOURCE}] MIGRATION: {len(skipped)} legacy file(s) not understood and NOT "
-              f"carried over: {skipped[:6]}{' ...' if len(skipped) > 6 else ''}", flush=True)
-    if not keys:
-        return 0
-    tbl = pa.table({"series_key": pa.array(keys, pa.string()),
-                    "obs_date": pa.array(dates, pa.date32()),
-                    "value": pa.array(vals, pa.float64())})
-    n, _ = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
-    print(f"[{SOURCE}] MIGRATED {len(set(keys)):,} legacy series ({len(keys):,} obs) out of "
-          f"the clean/ tier -> {n:,} rows; the pull now extends this", flush=True)
-    return n
 
 
 def _tree_frontier(out_dir: str) -> dt.date | None:
@@ -192,148 +142,310 @@ def _tree_frontier(out_dir: str) -> dt.date | None:
     return best
 
 
-def _stored_frontier(path: str) -> dt.date | None:
-    """Newest obs_date in the fetcher's own grouped file, as a DATE.
+def _group_units(out_dir) -> list:
+    """The refreshable units: every stored group file of a SOUND dataset, as
+    '<Dataset>/<stem>.parquet'. Only files that exist - a table the manifest lists but the ingest
+    never wrote has no served series to keep fresh."""
+    units = []
+    for rel in blob.list_parquets(out_dir, recursive=True):
+        rel = rel.replace("\\", "/")
+        parts = rel.split("/")
+        if len(parts) == 2 and parts[0] in SOUND:
+            units.append(rel)
+    return sorted(units)
 
-    merge._max_obs_date is annotated `-> str | None` and returns `str(m)`, so returning it
-    straight from a function typed `-> dt.date | None` was a lie the type hint did not catch.
-    The caller does `frontier.year`, which raised
-        AttributeError: 'str' object has no attribute 'year'
-    on the very first line of real work — which is why bea has NEVER completed a run. The
-    missing key (see update()) hid this: the fetcher refused before reaching here, so the
-    second bug could not be observed until the first was fixed. Both were needed.
-    """
-    if not blob.exists(path):
-        return None
+
+def _fetch(ig, M, rel, year) -> "pa.Table":
+    """One group, through the ingester's own parse (jobs/ingest_bea_full.fetch_*), strict: a call
+    that exhausts its retries raises instead of reading as an empty answer."""
+    dataset, fname = rel.split("/")
+    stem = fname[:-len(".parquet")]
+    extra = None
+    if dataset in ("NIPA", "NIUnderlyingDetail"):
+        sk, ds, vs = ig.fetch_table_freq(dataset, stem, year=year, strict=True)
+    elif dataset == "FixedAssets":
+        sk, ds, vs = ig.fetch_fixedassets(stem, year=year, strict=True)
+    elif dataset == "UnderlyingGDPbyIndustry":
+        sk, ds, vs = ig.fetch_under_gdpbyindustry(M, stem[1:], year=year, strict=True)
+    elif dataset == "IIP":
+        sk, ds, vs, extra = ig.fetch_iip(M, year=year, strict=True)
+    elif dataset == "IntlServTrade":
+        sk, ds, vs, extra = ig.fetch_intlservtrade(M, year=year, strict=True)
+    elif dataset == "IntlServSTA":
+        sk, ds, vs, extra = ig.fetch_intlservsta(M, year=year, strict=True)
+    else:
+        raise ValueError(f"not a sound dataset: {dataset}")
+    cols = {"series_key": pa.array(sk, pa.string()), "obs_date": pa.array(ds, pa.date32()),
+            "value": pa.array(vs, pa.float64())}
+    if extra is not None:
+        cols["time_series_id"] = pa.array(extra, pa.string())
+    return pa.table(cols)
+
+
+def _stored_profile(path) -> dict:
+    """rows, newest year, EXACT duplicate rows, CONFLICTING (key, date) pairs - by DuckDB over one
+    local copy (blob-routed). Measured by the review: 54 files of the sound datasets carry exact
+    duplicates (NIPA 32, NIUnderlyingDetail 11, FixedAssets 11; worst 16.6%), which the merge
+    collapses - past the default 97% shrink guard."""
+    import duckdb                                                    # noqa: PLC0415
+    copy = blob.local_copy(path)
+    if copy is None:
+        raise FileNotFoundError(path)
     try:
-        m = merge._max_obs_date(blob.read_table(path, columns=["obs_date"]))
-    except Exception:                                        # noqa: BLE001
-        return None
-    if not m:
-        return None
-    if isinstance(m, dt.date):
-        return m
+        con = duckdb.connect()
+        try:
+            f = copy[0].replace("\\", "/").replace("'", "''")
+            rows, mx, kdv, kd = con.execute(
+                f"SELECT count(*), max(obs_date), "
+                f"count(DISTINCT (series_key, obs_date, value)), "
+                f"count(DISTINCT (series_key, obs_date)) FROM read_parquet('{f}')").fetchone()
+        finally:
+            con.close()
+    finally:
+        if copy[1]:
+            try:
+                os.remove(copy[0])
+            except OSError:
+                pass
+    return {"rows": int(rows), "max_year": mx.year if mx else None,
+            "exact_dups": int(rows) - int(kdv), "conflicts": int(kdv) - int(kd)}
+
+
+def _stored_keys_since(path, year) -> set:
+    """Distinct stored series_keys with an observation in `year` or later - what a correct fetch of
+    that window must bring back (review R1106: a strict call cannot see an empty answer the API
+    phrased as an unknown error, but a missing key can be counted)."""
+    import duckdb                                                    # noqa: PLC0415
+    copy = blob.local_copy(path)
+    if copy is None:
+        raise FileNotFoundError(path)
     try:
-        return dt.date.fromisoformat(str(m)[:10])
-    except ValueError:
-        return None
+        con = duckdb.connect()
+        try:
+            f = copy[0].replace("\\", "/").replace("'", "''")
+            return {r[0] for r in con.execute(
+                f"SELECT DISTINCT series_key FROM read_parquet('{f}') "
+                f"WHERE year(obs_date) >= {int(year)}").fetchall()}
+        finally:
+            con.close()
+    finally:
+        if copy[1]:
+            try:
+                os.remove(copy[0])
+            except OSError:
+                pass
+
+
+def _call_unit(dataset: str, key: str) -> str:
+    """The ONE BEA call a stored key comes from, read off the key the ingester built
+    (jobs/ingest_bea_full.fetch_*): a frequency for NIPA / NIUnderlyingDetail /
+    UnderlyingGDPbyIndustry ('code:fr', 'Ttid:ind:fr'), a TypeOfInvestment for IIP
+    ('type:comp:fr'), a country for IntlServTrade / IntlServSTA ('...:country'), and the one
+    table call for FixedAssets."""
+    parts = key.split(":")
+    if dataset == "IIP":
+        return parts[0]
+    if dataset == "FixedAssets":
+        return ""
+    return parts[-1]
+
+
+def _uncovered(dataset: str, missing: set, fetched_keys) -> tuple[set, set]:
+    """Split the stored keys that did not come back into (owed, dropped).
+
+    The coverage check exists to catch a CALL that failed while reading as an empty answer
+    (R1106 P1). A call that returned other keys demonstrably succeeded, so a key missing from it
+    is a series BEA sent no value for - measured in the dry run of 2026-09-23: IIP
+    GoldReserveAssets:ChgPosXRate:A and StDebtSecAssets:ChgPosPrice:A, each one stored row (2025,
+    0.0), come back in calls that answered the rest of their type, with DataValue '' for every year,
+    which the parse drops. Owing those for ever kept IIP out of every cycle. never-shrink keeps their
+    stored rows either way."""
+    answered = {_call_unit(dataset, k) for k in fetched_keys}
+    owed = {k for k in missing if _call_unit(dataset, k) not in answered}
+    return owed, missing - owed
 
 
 def update(unit, since) -> Result:
-    # api_key() checks the environment FIRST, then the repo's .env — because NOTHING else
-    # loads .env, and BEA_API_KEY has been sitting in it the whole time. This source has
-    # refused on every run with "BEA_API_KEY is not set", and that was recorded as blocked
-    # on Ahmed creating a GitHub secret. The SECRET is genuinely missing; the KEY was not,
-    # and the workstation could have run this all along. bea is routed run_location: local
-    # for exactly that reason — see its registry entry.
+    """v1 (2026-09-23): refresh every stored group of the seven SOUND datasets in place, under a
+    RotationCycle. The bea.parquet loop that wrote a shadowed copy is retired (every one of its
+    17,699 keys is also in a subdirectory, and the subdirectory sorts first, so it never served)."""
     key = api_key("BEA_API_KEY")
     if not key:
-        # Loud, never a quiet no-op: a source that silently does nothing is indistinguishable
-        # from one that is up to date, which is how staleness hides.
         raise TransientError(
             f"{SOURCE}: BEA_API_KEY is not set (checked the environment and .env), so nothing "
             f"can be fetched. Existing data kept.")
-    # The ingester reads the key from the environment, so make the .env value visible to it.
     os.environ.setdefault("BEA_API_KEY", key)
-
     from jobs import ingest_bea_full as ig                   # rate limiter + parser + keys
 
     out_dir = config.source_dir(SOURCE)
     os.makedirs(out_dir, exist_ok=True)
-    path = os.path.join(out_dir, f"{SOURCE}.parquet")
-
-    _migrate_legacy(path)
-
-    tally = Tally()
-    dl = Deadline(minutes=BUDGET_MIN)
-    # The frontier comes from the WHOLE tree, not just our grouped file — see _tree_frontier.
-    # Fall back to the grouped file if the tree scan finds nothing (a cold store).
-    frontier = _tree_frontier(out_dir) or _stored_frontier(path)
-    start_year = (frontier.year - LOOKBACK_YEARS) if frontier else 1929
-    end_year = dt.date.today().year + 1
-    # BEA's `Year` is a LIST, NOT A RANGE. "2023,2027" does not mean 2023 through 2027 — it
-    # means exactly those two years. Measured live on NIPA/T20600 Frequency=M:
-    #     Year=2023,2027                 ->   516 rows, years returned: ['2023']
-    #     Year=2023,2024,2025,2026,2027  -> 1,806 rows, years returned: 2023..2026
-    # So this fetcher was asking for the start year and a year that does not exist yet, and
-    # could never see anything recent — while reporting `ok`. bea's store sat at 2026-04-01
-    # with BEA publishing monthly data through 2026M06.
-    years = ",".join(str(y) for y in range(start_year, end_year + 1))
-    print(f"[{SOURCE}] stored frontier {frontier or 'none'}; requesting years "
-          f"{start_year}-{end_year} ({end_year - start_year + 1} years, enumerated)",
-          flush=True)
-
-    keys: list[str] = []
-    dates: list[dt.date] = []
-    vals: list[float] = []
-
     try:
-        meta = ig.load_manifest()
+        M = ig.load_manifest()
     except Exception as e:                                   # noqa: BLE001
         raise TransientError(f"{SOURCE}: BEA parameter manifest unavailable: {e!r}") from e
 
-    for dataset, freqs in (("NIPA", ("A", "Q", "M")), ("NIUnderlyingDetail", ("A", "Q", "M"))):
-        try:
-            tables = ig._keys(meta["param_values"][dataset]["TableName"])
-        except Exception:                                    # noqa: BLE001
-            tally.transient_unit(f"{dataset}: no table list in the manifest")
-            continue
-        for table in tables:
-            if dl.spent():
-                tally.deferred_unit(f"{dataset}:{table} deferred (budget "
-                                     f"{BUDGET_MIN:.0f} min)")
-                continue
-            got = 0
-            for fr in freqs:
-                try:
-                    rows = ig.call(datasetname=dataset, TableName=table, Frequency=fr,
-                                   Year=years)
-                except Exception:                            # noqa: BLE001
-                    tally.transient_unit(f"{dataset}:{table}:{fr}")
-                    continue
-                for row in rows or ():
-                    code = row.get("SeriesCode")
-                    od = ig.pdate(row.get("TimePeriod"))
-                    val = ig.pval(row.get("DataValue"))
-                    if not code or od is None or val is None:
-                        continue
-                    keys.append(f"{code}:{fr}")              # SAME shape as the published ids
-                    dates.append(od)
-                    vals.append(val)
-                    got += 1
-            if got:
-                tally.added_unit(got, f"{dataset}:{table}")
-            else:
-                tally.empty_unit(f"{dataset}:{table}")
+    units = _group_units(out_dir)
+    if not units:
+        raise TransientError(f"{SOURCE}: no group file of a sound dataset is visible under "
+                             f"{out_dir} - the store is unreachable, not current")
+    raw = blob.read_bytes(os.path.join(out_dir, GROUP_STATE))
+    try:
+        gstate = json.loads(raw.decode("utf-8")) if raw else {}
+    except ValueError:
+        gstate = {}
 
-    if not keys:
-        raise TransientError(
-            f"{SOURCE}: no usable observations from any dataset this run; existing data kept")
+    def _save_gstate():
+        blob.write_bytes_atomic(os.path.join(out_dir, GROUP_STATE),
+                                json.dumps(gstate, indent=1, sort_keys=True)
+                                .encode("utf-8"))
 
-    tbl = pa.table({"series_key": pa.array(keys, pa.string()),
-                    "obs_date": pa.array(dates, pa.date32()),
-                    "value": pa.array(vals, pa.float64())})
-    before = blob.row_count(path) if blob.exists(path) else 0
-    total, maxd = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
-
+    tally = Tally()
+    dl = Deadline(minutes=BUDGET_MIN)
+    today = dt.date.today()
+    cycle = RotationCycle(out_dir, units)
     cursors: dict[str, str] = {}
-    merge_cursor_map(cursors, cursors_from_table(tbl, cap=CURSOR_CAP), cap=CURSOR_CAP)
-
-    print(f"[{SOURCE}] {len(keys):,} obs across {len(set(keys)):,} series; "
-          f"store {before:,} -> {total:,}", flush=True)
-
-    # REPORT THE FRONTIER OF THE STORE THAT SERVES, for the same reason the WINDOW is taken
-    # from it. merge_and_write returns the max of what WE just merged into bea.parquet, and
-    # that file holds under 2% of the source's series. Reporting it made the health gate read
-    # bea's newest observation as 2026-01-01 when the served tree is at 2026-04-01 — a
-    # 90-day under-report, and enough to fire a FALSE RED-DATA against a 84-day lateness
-    # clock on a source that is in fact current.
-    # Compared as ISO STRINGS on purpose: merge_and_write returns a str (see
-    # merge._max_obs_date) while _tree_frontier returns a date, and max() over the two raises
-    # TypeError. That is the identical str/date confusion that kept this source from ever
-    # completing a run — it does not get to happen twice in one file.
-    cands = [d.isoformat() if isinstance(d, dt.date) else str(d)
-             for d in (_tree_frontier(out_dir), maxd) if d]
-    last_obs = max(cands) if cands else None
-    return finalize(tally, total, last_obs or (since or None), source=SOURCE,
-                    series_cursors=cursors or None)
+    changed: dict[str, str | None] = {}      # merge-measured: {series_key: newest changed date}
+    no_value: list[str] = []                 # 'group:key' BEA sent no value for in an answered call
+    discontinued = 0
+    total = 0
+    frontier_by_ds: dict[str, str] = {}
+    order = rotate_after(units, load_rotation(out_dir))     # fixed now: save_rotation moves the bookmark
+    for rel in order:
+        if cycle.done(rel):
+            # refreshed this cycle: no work owed (R1105 P1); its rows still count (AR-123)
+            total += blob.row_count(os.path.join(out_dir, rel))
+            continue
+        if dl.spent():
+            n = cycle.defer_unvisited(tally, label=lambda u: f"{u} (budget {BUDGET_MIN:.0f} min)")
+            print(f"[{SOURCE}] budget of {BUDGET_MIN:.0f} min spent; {n} group(s) not yet "
+                  f"refreshed this cycle", flush=True)
+            # Every group this pass did not reach still holds its rows: count them, or obs (served
+            # as obs_count) drops on every budget-stopped pass (AR-124 P7, found here as R1109 P9).
+            for rest in order[order.index(rel):]:
+                total += blob.row_count(os.path.join(out_dir, rest))
+            break
+        save_rotation(out_dir, rel)
+        path = os.path.join(out_dir, rel)
+        cycle.begin(rel)                     # a raise or kill inside it counts (AR-127 P5)
+        fails_before = cycle.failures(tally)
+        try:
+            prof = _stored_profile(path)
+        except Exception as e:                               # noqa: BLE001
+            tally.transient_unit(f"{rel}: stored group unreadable - {type(e).__name__}: {e}")
+            cycle.visit(rel, failed=True)
+            continue
+        if prof["conflicts"]:
+            # A sound dataset should hold none; a merge would silently pick one value per pair.
+            tally.structural_unit(f"{rel}: {prof['conflicts']:,} (key, date) pair(s) with "
+                                  f"different values in the stored file - not merged")
+            total += prof["rows"]
+            cycle.visit(rel, failed=True)
+            continue
+        g = gstate.setdefault(rel, {"last_full": None})
+        full_due = (g.get("last_full") is None or
+                    (today - dt.date.fromisoformat(g["last_full"])).days >= FULL_REPULL_DAYS)
+        mx = prof["max_year"]
+        if not full_due and (mx is None or mx < today.year - DISCONTINUED_YEARS):
+            # NOT tallied: a skip is not an attempt, and counting it empty tripped finalize's
+            # all-empty guard on a clean pass (review R1106, P3)
+            discontinued += 1
+            total += prof["rows"]
+            cycle.visit(rel)
+            continue
+        if full_due or mx is None:
+            year = "ALL"
+            start = None
+        else:
+            start = mx - LOOKBACK_YEARS
+            # BEA's Year is a LIST, not a range (measured, see the old loop's note in git history)
+            year = ",".join(str(y) for y in range(start, today.year + 2))
+        try:
+            tbl = _fetch(ig, M, rel, year)
+        except Exception as e:                               # noqa: BLE001
+            tally.transient_unit(f"{rel}: fetch failed - {type(e).__name__}: {str(e)[:140]}")
+            total += prof["rows"]
+            cycle.visit(rel, failed=True)
+            continue
+        if tbl.num_rows == 0:
+            # The window starts inside the stored data, so a correct answer is never empty: an
+            # empty one is a failure the strict call did not see (an unknown API error reads as
+            # 'no data'), never a quiet group (review R1104, condition 3).
+            tally.transient_unit(f"{rel}: 0 rows for Year={year[:40]} although the store holds "
+                                 f"data through {mx}")
+            total += prof["rows"]
+            cycle.visit(rel, failed=True)
+            continue
+        since_year = start if start is not None else (mx - LOOKBACK_YEARS if mx else None)
+        try:
+            owed_keys = _stored_keys_since(path, since_year) if since_year is not None else set()
+        except Exception as e:                               # noqa: BLE001
+            tally.transient_unit(f"{rel}: coverage check could not read the store - {e!r}")
+            total += prof["rows"]
+            cycle.visit(rel, failed=True)
+            continue
+        fetched_keys = set(tbl.column("series_key").to_pylist())
+        missing, dropped = _uncovered(rel.split("/")[0], owed_keys - fetched_keys, fetched_keys)
+        if dropped:
+            # BEA SENT NO VALUE for these (a blank DataValue, or no row) in a call that answered -
+            # it has not necessarily stopped publishing them (review AR-130: the two IIP series
+            # still come back, blank). Stored rows kept; counted into the run's note below.
+            no_value.extend(f"{rel}:{k}" for k in sorted(dropped))
+            print(f"[{SOURCE}] {rel}: BEA sent no value for {len(dropped):,} stored series in calls "
+                  f"that answered (stored rows kept), e.g. {sorted(dropped)[:3]}", flush=True)
+        ratio = ((prof["rows"] - prof["exact_dups"]) / prof["rows"]) if prof["exact_dups"] else 0.97
+        try:
+            n, md, ch = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP,
+                                              min_ratio=min(0.97, ratio), report_changed_keys=True,
+                                              changed_keys_cap=max(tbl.num_rows, 1))
+        except Exception as e:                               # noqa: BLE001
+            tally.structural_unit(f"{rel}: merge refused - {str(e)[:160]}")
+            total += prof["rows"]
+            cycle.visit(rel, failed=True)
+            continue
+        total += n
+        for k, d in ch.items():
+            ds_ = str(d) if d is not None else None
+            if k not in changed or (ds_ is not None and ds_ > (changed[k] or "")):
+                changed[k] = ds_
+        # the COUNT OF CHANGED SERIES is this group's change, revisions included (R1106, P4)
+        tally.added_unit(len(ch), rel)
+        if missing:
+            # merged what came back (never-shrink keeps the rest), but the group stays OWED
+            tally.transient_unit(f"{rel}: coverage - {len(missing):,} stored key(s) with data since "
+                                 f"{since_year} did not come back (e.g. {sorted(missing)[:3]})")
+        merge_cursor_map(cursors, cursors_from_table(tbl, cap=CURSOR_CAP), cap=CURSOR_CAP)
+        if year == "ALL":
+            g["last_full"] = today.isoformat()
+        _save_gstate()
+        ds_name = rel.split("/")[0]
+        if md and str(md) > frontier_by_ds.get(ds_name, ""):
+            frontier_by_ds[ds_name] = str(md)
+        cycle.visit(rel, failed=cycle.failures(tally) > fails_before)
+    cycle.close_if_complete(tally)
+    if frontier_by_ds:
+        print(f"[{SOURCE}] newest merged per dataset this pass: "
+              + ", ".join(f"{k} {v}" for k, v in sorted(frontier_by_ds.items())), flush=True)
+    print(f"[{SOURCE}] NOT refreshed (keys collide across tables, R1104): Regional, InputOutput, "
+          f"MNE, ITA, GDPbyIndustry", flush=True)
+    # The frontier of the WHOLE served tree, for the reason _tree_frontier gives.
+    if discontinued:
+        print(f"[{SOURCE}] {discontinued} discontinued group(s) skipped until their yearly full "
+              f"re-pull", flush=True)
+    tf = _tree_frontier(out_dir)
+    # The all-empty heuristic is OFF (floor above the attempts, as ssb/treasury do): a group that
+    # re-fetched identical data is a healthy quiet group, and real breaks are caught per group
+    # exactly (strict calls, coverage, conflicts, the merge guards) - review R1106, P3.
+    res = finalize(tally, total, tf.isoformat() if tf else (since or None), source=SOURCE,
+                   series_cursors=cursors or None, empty_window_floor=tally.attempted + 1)
+    # COMPLETE by construction (every merge reports), so the orchestrator derives exactly these
+    # and never needs the cursor cap's full re-derive (the fetched-key cursors hit 50,000 on every
+    # full cycle - 63,238 keys - review R1106).
+    res.changed_keys = changed
+    if no_value:
+        # ONE summary line in the run log. NOT appended to res.error (review R1116): the digest never
+        # prints the error of an ok row, so the claim it would be seen there was false, and an
+        # appended note broke health's anchored deferral match (a budget-deferral pass read
+        # ATTENTION instead of ROTATING).
+        print(f"[{SOURCE}] BEA sent no value for {len(no_value):,} stored series in calls that "
+              f"answered this pass - stored rows kept (e.g. {no_value[:2]})", flush=True)
+    return res

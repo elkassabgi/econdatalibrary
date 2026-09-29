@@ -8,15 +8,15 @@ set of series-level sources rather than the six I touched.
 import json
 import os
 import re
-import sqlite3
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 
 os.chdir(r'E:\research\econfindatalibrary')
-sys.path.insert(0, r'E:\research\econfindatalibrary')
-from core import r2_util
+# this checkout's code (it named the production checkout, so a worktree ran production's modules)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core import catalog_path, r2_util
 
 API = 'https://econdl-api.elkassabgi.workers.dev/v1/catalog?source=%s&limit=1'
 
@@ -77,7 +77,9 @@ if not carved:
     sys.exit('PARSE FAILED: SERIES_CARVEOUTS parsed to ZERO sources - refusing to report drift, '
              'because every carve-out would then read as a defect.')
 
-con = sqlite3.connect('data/catalog.db')
+# read-only; the catalogue of the checkout this tool chdir'd into (production), as before - it opened the
+# cwd-relative data/catalog.db read-write. After T0 production's catalogue IS the build.
+con = catalog_path.connect_path(catalog_path.under(os.getcwd()), write=False)
 cat = {r[0]: r[1] for r in con.execute(
     'SELECT source_id, COUNT(*) FROM series GROUP BY source_id')}
 

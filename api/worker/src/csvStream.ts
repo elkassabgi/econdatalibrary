@@ -85,6 +85,10 @@ export interface FilterOpts {
   from: string | null;
   to: string | null;
   geo: string | null;
+  /** A WIDE source's object carries its own columns, not series_id,obs_date,value.
+   *  Set for the sources in NATIVE_ONLY_SOURCES so the header check accepts it.
+   *  The caller refuses from/to/geo for those, so no row filter runs here. */
+  allowAnyHeader?: boolean;
 }
 
 export interface StreamStats {
@@ -212,6 +216,11 @@ export class LineFilter {
     const line = this.dec.decode(buf.subarray(start, end));
     if (this.first) {
       this.first = false;
+      // The header is CONSUMED here; series.ts prepends CSV_HEADER in front of the rows. That
+      // is only right for the canonical header, which is why a WIDE object never reaches this
+      // filter: streamLarge serves it whole (see the passthrough branch there). `allowAnyHeader`
+      // is kept on FilterOpts so that path can say what it is, and streamLarge refuses a wide
+      // object that arrives here rather than consuming its header and mislabelling its rows.
       this.stats.headerOk = line === CSV_HEADER;
       return pos;
     }
@@ -404,8 +413,16 @@ export function prefixBytes(prefix: string): Uint8Array {
 }
 
 /** Peek the first CSV line of a gzipped object from its first stored chunk(s) without
- *  keeping the inflater: used to prime the passthrough (header validated, a data row seen). */
-export function peekGzipHeader(chunks: Uint8Array[]): { headerOk: boolean; hasRow: boolean } {
+ *  keeping the inflater: used to prime the passthrough (header validated, a data row seen).
+ *
+ *  `allowAnyHeader` is REQUIRED, with no default, on purpose. It arrived with a default of
+ *  `false` and the passthrough call site in series.ts was not updated, so every gzipped WIDE
+ *  object at or above STREAM_MIN_BYTES kept answering the same 502 the flag was added to end
+ *  - and the tests stayed green, because they call this function directly. A required
+ *  parameter makes `npm run typecheck` the guard: a call site that forgets it does not
+ *  compile, which is a check that cannot be green while the path is broken. */
+export function peekGzipHeader(chunks: Uint8Array[], allowAnyHeader: boolean):
+    { headerOk: boolean; hasRow: boolean; headerFinal: boolean } {
   let text = "";
   const dec = new TextDecoder();
   let done = false;
@@ -413,11 +430,40 @@ export function peekGzipHeader(chunks: Uint8Array[]): { headerOk: boolean; hasRo
   try {
     for (const c of chunks) { gz.push(c, false); if (done) break; }
   } catch {
-    return { headerOk: false, hasRow: false };
+    return { headerOk: false, hasRow: false, headerFinal: true };   // not gzip at all: final
   }
+  return judgeHead(text, allowAnyHeader);
+}
+
+/** The same peek for an object stored PLAIN. A wide source's large objects are served whole
+ *  whatever their encoding, and 2,255 of census's 2,700 large objects are stored without
+ *  gzip (measured 2026-09-23 by head_object over all of them), so the passthrough needs to
+ *  prime a plain body too. `allowAnyHeader` is required for the reason given above. */
+export function peekPlainHeader(chunks: Uint8Array[], allowAnyHeader: boolean):
+    { headerOk: boolean; hasRow: boolean; headerFinal: boolean } {
+  const dec = new TextDecoder();
+  let text = "";
+  for (const c of chunks) {
+    text += dec.decode(c, { stream: true });
+    if (text.length > 65536) break;
+  }
+  return judgeHead(text, allowAnyHeader);
+}
+
+/** The one verdict both peeks share, so the gzip and plain passthroughs cannot come to judge
+ *  a header differently: the first line is a usable header and at least one data row follows.
+ *
+ *  A wide object may carry ANY header, but not an empty one - its header is the only
+ *  description of the columns behind it, and an empty first line would serve the rows
+ *  labelled with nothing. */
+function judgeHead(text: string, allowAnyHeader: boolean):
+    { headerOk: boolean; hasRow: boolean; headerFinal: boolean } {
   const nl = text.indexOf("\n");
-  if (nl < 0) return { headerOk: text.replace(/\r$/, "") === CSV_HEADER && false, hasRow: false };
-  const headerOk = text.slice(0, nl).replace(/\r$/, "") === CSV_HEADER;
+  if (nl < 0) return { headerOk: false, hasRow: false, headerFinal: false };
+  const first = text.slice(0, nl).replace(/\r$/, "");
+  const headerOk = first === CSV_HEADER || (allowAnyHeader && first.trim() !== "");
   const hasRow = text.slice(nl + 1).split("\n").some((l) => l.trim() !== "");
-  return { headerOk, hasRow };
+  // Once the first line is complete the header verdict cannot change, so a caller priming a
+  // body can stop as soon as it is refused instead of reading on to its byte cap.
+  return { headerOk, hasRow, headerFinal: true };
 }

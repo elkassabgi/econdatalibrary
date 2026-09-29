@@ -24,8 +24,17 @@
 // serves an unauthenticated API.
 // ---------------------------------------------------------------------------
 
+import { edgeStateInUsers } from "./edge.ts";
+import { record } from "./costRecord.ts";
+
 export interface CostGuardEnv {
   SERIES_BUCKET: R2Bucket;
+  // Self-hosting (docs/ECON_SELF_HOSTING_PLAN.md): with FORWARD = "on" the econ bucket is on its way
+  // out, so the status record goes to the one-row table econ_ops_status in the shared users db
+  // (migrations/users_selfhost.sql) instead of R2. Unset = R2, exactly as before.
+  FORWARD?: string;
+  EDGE_STATE?: string;                 // "users" = the same move before T0 (plan step 5)
+  USERS: D1Database;
   // A read-only "Account Analytics: Read" token. Same value as CF_ANALYTICS_TOKEN in the
   // repo .env; set with: npx wrangler secret put CF_ANALYTICS_TOKEN
   CF_ANALYTICS_TOKEN?: string;
@@ -44,6 +53,29 @@ export const LIMITS = {
 
 const GQL = "https://api.cloudflare.com/client/v4/graphql";
 const STATUS_KEY = "_aqueduct/cost_status.json";
+// Identical to migrations/users_selfhost.sql (test/edge.test.ts pins the two equal).
+export const OPS_STATUS_DDL = "CREATE TABLE IF NOT EXISTS econ_ops_status (key TEXT PRIMARY KEY, " +
+  "body TEXT NOT NULL, updated_at TEXT NOT NULL)";
+
+/** The durable status record: R2 today; with FORWARD = "on", the econ_ops_status row keyed by STATUS_KEY
+ *  in the users db. A failed write throws either way - a record that silently was not written is a
+ *  blind meter. */
+async function writeStatus(env: CostGuardEnv, body: object): Promise<void> {
+  const text = JSON.stringify(body, null, 2);
+  if (edgeStateInUsers(env)) {
+    // The table is created in the same batch (one transaction), so a flip made before the migration was
+    // applied still records every tick instead of failing all of them (R1172).
+    await env.USERS.batch([
+      env.USERS.prepare(OPS_STATUS_DDL),
+      env.USERS.prepare(
+        "INSERT INTO econ_ops_status (key, body, updated_at) VALUES (?1, ?2, datetime('now')) " +
+        "ON CONFLICT(key) DO UPDATE SET body = excluded.body, updated_at = excluded.updated_at",
+      ).bind(STATUS_KEY, text),
+    ]);
+    return;
+  }
+  await env.SERIES_BUCKET.put(STATUS_KEY, text, { httpMetadata: { contentType: "application/json" } });
+}
 
 interface DayTotals { d1Reads: number; d1Writes: number; r2ClassA: number; }
 
@@ -119,9 +151,7 @@ export async function runCostGuard(env: CostGuardEnv): Promise<void> {
   if (!token || !acct) {
     const body = { at, ok: false, blind: true,
                    note: "CF_ANALYTICS_TOKEN / CF_ACCOUNT_ID not bound; nothing was measured" };
-    await env.SERIES_BUCKET.put(STATUS_KEY, JSON.stringify(body, null, 2),
-                                { httpMetadata: { contentType: "application/json" } });
-    throw new Error("cost guard is BLIND: CF_ANALYTICS_TOKEN / CF_ACCOUNT_ID not bound");
+    return record(() => writeStatus(env, body), new Error("cost guard is BLIND: CF_ANALYTICS_TOKEN / CF_ACCOUNT_ID not bound"));
   }
 
   let totals: DayTotals;
@@ -129,16 +159,11 @@ export async function runCostGuard(env: CostGuardEnv): Promise<void> {
     totals = await measureToday(token, acct);
   } catch (e) {
     const body = { at, ok: false, blind: true, note: `measurement failed: ${String(e).slice(0, 200)}` };
-    await env.SERIES_BUCKET.put(STATUS_KEY, JSON.stringify(body, null, 2),
-                                { httpMetadata: { contentType: "application/json" } });
-    throw e;
+    return record(() => writeStatus(env, body), e instanceof Error ? e : new Error(String(e)));
   }
 
   const breaches = breachesOf(totals);
   const body = { at, ok: breaches.length === 0, blind: false, totals, limits: LIMITS, breaches };
-  await env.SERIES_BUCKET.put(STATUS_KEY, JSON.stringify(body, null, 2),
-                              { httpMetadata: { contentType: "application/json" } });
-  if (breaches.length) {
-    throw new Error("COST BREACH: " + breaches.join(" | "));
-  }
+  return record(() => writeStatus(env, body), breaches.length ? new Error("COST BREACH: " + breaches.join(" | ")) : null);
 }
+
