@@ -120,11 +120,14 @@ CSV2024 = Y.KNOWN_URLS[0][0]
 
 
 def test_a_known_url_that_is_also_discovered_and_answers_html_is_a_break(store, monkeypatch):
-    routes = _routes()
+    # A floor URL of Yale's own shape (the 2024 floor is now a Dataverse URL, which no downloads page links).
+    yale_csv = "https://epi.yale.edu/downloads/epi2024results.csv"
+    monkeypatch.setattr(Y, "KNOWN_URLS", [(yale_csv, 2024)])
+    routes = _routes(**{yale_csv: _Resp(200, HTML, "text/html; charset=UTF-8")})
     routes["https://epi.yale.edu/2026/downloads"] = _Resp(
         200, (f'<a href="/sites/default/files/2026-09/epi2026results2026-07-07.xlsx">r</a>'
               f'<a href="/sites/default/files/2026-09/epi2026_indicators_na_2026-08-31.zip">z</a>'
-              f'<a href="{CSV2024}">old</a>').encode(), "text/html")
+              f'<a href="{yale_csv}">old</a>').encode(), "text/html")
     monkeypatch.setattr(Y.requests, "get", _site(routes))
     with pytest.raises(DefinitiveError, match="an HTML page"):
         Y.update(None, None)
@@ -132,6 +135,8 @@ def test_a_known_url_that_is_also_discovered_and_answers_html_is_a_break(store, 
 
 def test_a_floor_url_with_a_real_body_is_parsed(store, monkeypatch):
     body = b"code,iso,country,EPI.old\n4,AFG,Afghanistan,20.0\n"
+    import hashlib
+    monkeypatch.setitem(Y.PINNED_MD5, CSV2024, hashlib.md5(body + b"\n" * 600).hexdigest())
     monkeypatch.setattr(Y.requests, "get",
                         _site(_routes(**{CSV2024: _Resp(200, body + b"\n" * 600, "text/csv")})))
     res = Y.update(None, None)

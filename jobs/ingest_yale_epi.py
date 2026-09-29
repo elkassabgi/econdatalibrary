@@ -18,9 +18,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, 
 OUT  = os.path.join(ROOT, "data", "clean_full", "yale_epi")
 UA   = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
 
-# Confirmed working URLs from https://epi.yale.edu/downloads
+# The 2024 edition from the publisher's archive (Yale's own archive page links its Dataverse; epi.yale.edu no
+# longer serves epi2024results.csv). doi:10.7910/DVN/ZLAHG0 v2.0 - the 2025-03-16 revision; see the fetcher's
+# KNOWN_URLS for the full note (review R1299).
 RESULT_URLS = [
-    ("https://epi.yale.edu/downloads/epi2024results.csv", 2024),
+    ("https://dataverse.harvard.edu/api/access/datafile/14094607?format=original", 2024),
 ]
 # Abbreviation/variable name file (to decode column names)
 VARIABLES_URL = "https://epi.yale.edu/downloads/epi2024variables2024-12-11.csv"

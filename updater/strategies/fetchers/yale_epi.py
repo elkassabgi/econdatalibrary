@@ -8,7 +8,7 @@ by-nc-sa/4.0/. So re-use is NON-COMMERCIAL, attribution is REQUIRED, and derivat
 must be shared alike. Single grouped parquet
 clean_full/yale_epi/yale_epi.parquet, schema (series_key, obs_date, value),
 series_key 'EPI:{variable}:{iso}'. The EPI results CSV is re-estimated/re-published
-each release (currently epi2024results.csv, a wide format: code/iso/country columns
+each release (the 2024 edition is a CSV, now read from Yale's Dataverse archive - see KNOWN_URLS; wide format: code/iso/country columns
 plus ~146 indicator columns). We re-fetch the WHOLE table and MERGE (dedup
 series_key+obs_date, new wins on revision, never-shrink). One sub-unit (the CSV);
 a 200 that parses 0 rows from a real body is structural.
@@ -29,6 +29,7 @@ attempted, so a scrape failure costs a red run, never data.
 from __future__ import annotations
 import csv
 import datetime as dt
+import hashlib
 import io
 import os
 import re
@@ -54,11 +55,21 @@ DOWNLOADS = "https://epi.yale.edu/downloads"          # the pre-September-2026 p
 _YEAR_PAGE_RE = re.compile(r'href=["\']((?:(?:https?:)?//epi\.yale\.edu)?/(\d{4})/downloads/?(?:[?#][^"\']*)?)["\']',
                            re.I)
 # Floor, not the source of truth: these keep historical editions reachable even if
-# the downloads page stops listing them. The 2024 CSV is no longer served (see above); a floor URL that
-# answers with an HTML page is RETIRED, not broken - its data is already held (the merge never shrinks).
+# the downloads page stops listing them. A floor URL that answers with an HTML page is RETIRED, not broken -
+# its data is already held (the merge never shrinks).
+#
+# THE 2024 EDITION IS THE PUBLISHER'S ARCHIVE COPY (2026-09-29, review R1299). epi.yale.edu stopped serving
+# epi2024results.csv; its own archive page says "EPI Archives are hosted on Dataverse", and the 2024 dataset is
+# doi:10.7910/DVN/ZLAHG0 (version 2.0, CC BY-NC-SA 4.0). Its results file is the 2025-03-16 REVISION of the
+# June 2024 release we had served: 1,263 values differ (the wastewater indicators, recomputed up the tree), and
+# the 23 countries with a numeric code under 100 - dropped by the original ingest's len(code)==3 filter
+# (R1289) - are in it. A Dataverse file id names immutable bytes, so the id is pinned with the md5 the dataset
+# lists for it; a body with another md5 is not that file.
+DATAVERSE_2024 = "https://dataverse.harvard.edu/api/access/datafile/14094607?format=original"
 KNOWN_URLS = [
-    ("https://epi.yale.edu/downloads/epi2024results.csv", 2024),
+    (DATAVERSE_2024, 2024),
 ]
+PINNED_MD5 = {DATAVERSE_2024: "688e7ee38f02d7698e3f299a40ef3fc0"}
 _LINK_RE = re.compile(r'href=["\']([^"\']*epi(\d{4})results[^"\']*\.(?:csv|xlsx))',
                       re.I)
 # THE COUNTRY VOCABULARY, from the current edition. Our 21,300+ published ids use EPI's numeric `code`
@@ -362,12 +373,23 @@ def update(unit, since) -> Result:
             tally.structural_unit(f"{yr}: HTTP {r.status_code}, {len(r.content)} B"
                                   + (", an HTML page" if r.status_code == 200 and _is_html(r) else ""))
             continue
+        want = PINNED_MD5.get(url)
+        if want and hashlib.md5(r.content).hexdigest() != want:
+            tally.structural_unit(f"{yr}: the pinned archive file answered with other bytes (md5 "
+                                  f"{hashlib.md5(r.content).hexdigest()}, the publisher lists {want})")
+            continue
         bodies.append((url, yr, r.content))
 
-    iso_index = {}
+    # THE CURRENT EDITION'S VOCABULARY FIRST. A results CSV that carries both columns (the 2024 archive) only
+    # SUPPLEMENTS the indicator zip's map: the 2024 file knows 180 countries and the 2026 zip 220, so letting the
+    # older map key the newer workbook would drop every country it does not know (review R1287's rule, which
+    # held only while no CSV was fetched). Listed zip that failed = transient, as before - never the smaller map.
+    csv_index = {}
     for url, yr, body in bodies:
         if not url.lower().endswith(".xlsx"):
-            iso_index = _country_index(body) or iso_index
+            for k, v in _country_index(body).items():
+                csv_index.setdefault(k, v)
+    iso_index = {}
     # NEWEST EDITION FIRST (review R1287: oldest-first let an older edition's map key a newer workbook).
     vocab_transient = False
     for url, yr in sorted(vocab_zips, key=lambda kv: -kv[1]):
@@ -385,6 +407,11 @@ def update(unit, since) -> Result:
             iso_index = _vocab_from_zip(r.content)
             if iso_index:
                 print(f"[yale_epi] country vocabulary read from {url.rsplit('/', 1)[-1]}", flush=True)
+    if iso_index:
+        for k, v in csv_index.items():               # supplement: the zip's code wins where both know a country
+            iso_index.setdefault(k, v)
+    elif csv_index and not vocab_zips:
+        iso_index = dict(csv_index)                  # no current zip listed at all: the CSV map is the only one
     if iso_index:
         # Supplement, never override: a code the reference edition supplies wins.
         for k, v in EXTRA_COUNTRY_CODES.items():
