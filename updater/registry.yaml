@@ -5043,11 +5043,15 @@ sources:
     quarterly release; the honest change signal is the release tag stamped on every
     series in Series/List (content-hashed), and a re-pull merges never-shrink.
   cadence: weekly
-  # data_cadence MEASURED 2026-09-29 on the SERVED store (R2 clean_full/unsdg/unsdg.parquet, LastModified
-  # 2026-09-23T14:23:48Z, 2,922,760 rows / 353,218 series): 4 distinct obs_date in the trailing 3 years
-  # (2023-12-31, 2024-12-31, 2025-12-31, 2026-12-31) and 0 rows dated anything but 31 December - the data
-  # is ANNUAL. "quarterly" was UNSD's RELEASE rhythm, not the data's period; on that clock the newest real
-  # year (2025, 272 days old) read RED-DATA while the store held the newest year UNSD publishes.
+  # data_cadence MEASURED 2026-09-29 AT THE PUBLISHER (F:\claude_wt\unsdg_period_probe.py, read-only): 12
+  # series sampled across the goals from Series/List (713 codes, all release 2026.Q2.G.02), first page of
+  # each - 4,252 records, EVERY timePeriodStart a whole year (0 sub-annual), newest years 2022-2025. The
+  # store cannot answer this: the fetcher dates every value 31 December of its year, so "0 rows off Dec 31"
+  # proves nothing (review R1284). The served store (R2, LastModified 2026-09-23) has 4 distinct dates in
+  # 3 years; 33 codes (SG_GEN_PARL, SG_DMK_PARL*, ER_BDY_KMGBFT14) carry 9,807 REAL 2026 values that the
+  # gate reads as future-dated. "quarterly" was UNSD's RELEASE rhythm; on it the newest counted year (2025,
+  # 272 days) read RED-DATA. Cost, stated: an annual clock is health.py's period x 3 = 1,095 days, as for
+  # every annual source - a freeze turns red far later than a quarterly clock would.
   data_cadence: annual
   refresh_cost: medium
   out_dir: unsdg

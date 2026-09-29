@@ -109,4 +109,4 @@ def test_the_data_clock_is_annual_and_measured():
     assert e["data_cadence"] == "annual"
     src = open(os.path.join(ROOT, "updater", "registry.yaml"), encoding="utf-8").read()
     block = src[src.index("- source_id: unsdg"):]
-    assert "MEASURED 2026-09-29" in block[:block.index("data_cadence:")], "health.py requires the measurement"
+    assert "MEASURED 2026-09-29 AT THE PUBLISHER" in block[:block.index("data_cadence:")], "health.py requires the measurement"

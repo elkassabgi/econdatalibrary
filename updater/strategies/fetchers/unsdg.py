@@ -22,6 +22,7 @@ merge unions the re-fetched series with the untouched ones and never shrinks.
 """
 from __future__ import annotations
 import datetime as dt
+import json
 import os
 import time
 
@@ -101,9 +102,46 @@ def current_vintage(unit):
     series, outcome = _series_list()
     if outcome != "ok" or not series:
         return None
+    return current_token(series)
+
+
+def current_token(series) -> "str | None":
+    """The release token over one Series/List - ONE function for the probe and the cycle's stamp, so the
+    two can never be spelled differently. None when no series carries a release tag: a token over codes
+    alone would match for ever and seal the unit (the unctad R1154 guard)."""
+    if not any(str(s.get("release") or "").strip() for s in series):
+        return None
     pairs = sorted((str(s.get("code", "")), str(s.get("release", ""))) for s in series)
-    blob_bytes = "".join(f"{c}={r};" for c, r in pairs).encode("utf-8")
-    return content_hash(blob_bytes)
+    return content_hash("".join(f"{c}={r};" for c, r in pairs).encode("utf-8"))
+
+
+CYCLE_TOKEN_FILE = "_cycle_token.json"
+MIXED = "mixed"
+
+
+def _cycle_token(out_dir, token, first_pass_of_cycle) -> "str | None":
+    """The release token the current cycle was swept under: recorded at a cycle's first pass, MIXED once
+    the release moves mid-cycle (see update). Blob-routed like the cycle file. A read error re-records
+    nothing and returns MIXED: the close then stamps the placeholder - one extra sweep, never a skip."""
+    path = os.path.join(out_dir, CYCLE_TOKEN_FILE)
+    try:
+        raw = blob.read_bytes(path)
+        prev = json.loads(raw.decode("utf-8")).get("token") if raw else None
+    except Exception:                                                # noqa: BLE001
+        prev = MIXED
+    if first_pass_of_cycle:
+        new = token
+    elif prev == token:
+        return token
+    else:
+        new = MIXED
+    try:
+        blob.write_bytes_atomic(path, json.dumps({"token": new}).encode("utf-8"))
+    except Exception as e:                                           # noqa: BLE001
+        print(f"[unsdg] could not save {path} ({type(e).__name__}: {e}); this cycle stamps no token",
+              flush=True)
+        return MIXED
+    return new
 
 
 def _parse_records(records, code):
@@ -216,14 +254,23 @@ def update(unit, since) -> Result:
     # THE ROTATION CYCLE (R303; the shared RotationCycle of #66). `ok` means "every listed code was
     # visited since the last ok", never "this pass stopped somewhere" - and before this, never either:
     # every pass deferred ~550-670 of the 713 codes to its budget and read `partial`, so unsdg had
-    # NEVER succeeded (runbook, 2026-09-08) and a never-succeeded unit is due only once per ~6.5 days
-    # (base.is_due's PARTIAL_RETRY path): ~5 passes x ~6.5 days per sweep, reported partial for ever.
+    # NEVER succeeded (runbook, 2026-09-08) and a never-succeeded unit is due only once per ~6.3 days
+    # (base.is_due's PARTIAL_RETRY path). The 35-min deadline, not the 200-code budget, ends each pass
+    # (46-171 codes per ~2,130 s pass in state.db), so a sweep is ~11 passes: ~70 days to the FIRST ok.
     # Now a pass skips codes visited this cycle, books the unvisited rest as deferred, and the pass
     # that completes the cycle cleanly reads ok. After that first ok the unit is on base.is_due's fast
-    # branch (due every run until the cycle closes). The closing pass keeps finalize's placeholder
-    # vintage on purpose: its probe token would claim codes fetched passes earlier under an older
-    # release, so the next due tick simply starts a fresh cycle.
+    # branch (due every run until the cycle closes).
     cycle = RotationCycle(out_dir, codes)
+    # THE CYCLE'S RELEASE TOKEN (review R1284 defect 2). The closing pass must hand the orchestrator the
+    # Series/List release token, or it stores finalize's "date-tail", the probe never matches, and every
+    # due tick starts a fresh ~11-pass cycle against one UNSD release a quarter. But a token read only at
+    # the close would claim codes fetched passes earlier under an older release. So the token is recorded
+    # when a cycle STARTS (nothing visited yet) and marked MIXED if the release moves mid-cycle; the close
+    # stamps it only if it is still the current one. A mixed cycle closes with the placeholder, and the
+    # next due tick re-sweeps under one release.
+    token = current_token(series)
+    first_pass_of_cycle = not cycle.visited
+    cycle_token = _cycle_token(out_dir, token, first_pass_of_cycle)
     # ROTATION (R190): Series/List order is stable, so a budget over it re-walks the
     # same prefix forever and the tail never refreshes. Resume just after where the
     # last run stopped; the bookmark is saved after every merged CHUNK below, so a
@@ -279,7 +326,16 @@ def update(unit, since) -> Result:
         if dl.spent():
             stopped_at = i
             break
-        k, d, v, outc = _fetch_series(code)
+        try:
+            k, d, v, outc = _fetch_series(code)
+        except requests.exceptions.RequestException as e:
+            # A broken stream (ChunkedEncodingError, ContentDecodingError) is not a ConnectionError, so
+            # _get_json let it escape: update() left before any flush, the bookmark never moved, and
+            # every pass re-asked the same codes and stored nothing (review R1284, the R1114 class).
+            # It is a transient failure of THIS code; the orchestrator's own timeout is not a
+            # RequestException and still propagates.
+            print(f"[unsdg] {code}: {type(e).__name__}: {str(e)[:120]}", flush=True)
+            k, d, v, outc = [], [], [], "transient"
         pending.append((code, outc == "transient"))
         fetched.append((code, outc == "transient"))
         if outc == "transient":
@@ -318,18 +374,37 @@ def update(unit, since) -> Result:
     # Unlabelled, as before: deferral is the budget working, not a failure (R303), and naming ~500
     # codes would bury the sub-units that actually broke.
     # A code whose fetch failed THIS pass is already tallied as transient; it is not deferred as well.
-    if not cycle.close_if_complete(tally):
+    #
+    # THE ALL-EMPTY CHECK (finalize's empty-window floor) judges a WHOLESALE outage from the attempted
+    # set. Skipping visited codes shrinks that set, so a cycle's later pass that happens to hold only
+    # empty codes would read as an outage (review R1284 defect 3). It is judged on a cycle's FIRST pass
+    # only, where the attempted set is the head of the whole list - and there it is judged BEFORE the
+    # cycle may close, so an outage never resets the cycle it failed to refresh.
+    floor = 10 if first_pass_of_cycle else 10 ** 9
+    outage = (first_pass_of_cycle and tally.added == 0 and tally.revised == 0
+              and tally.empty == tally.attempted and tally.attempted > floor)
+    if outage:
+        cycle.forget([c for c, _failed in fetched])      # nothing was refreshed: they stay owed
+    closed = False if outage else cycle.close_if_complete(tally)
+    if not closed:
         failed_now = {c for c, failed in fetched if failed}
         for c in cycle.unvisited():
             if c not in failed_now:
                 tally.deferred_unit()
 
     if not merged_any:
-        # Nothing parsed anywhere -> finalize raises the honest structural/empty-window
-        # error over the attempted set (existing data kept).
-        return finalize(tally, before, None, source=SOURCE)
-
-    print(f"[unsdg] merged {len(all_cursors):,} refreshed keys across "
-          f"{min(len(codes), total):,}/{total} series codes; store now {n:,} rows",
-          flush=True)
-    return finalize(tally, n, md, source=SOURCE, series_cursors=all_cursors or None)
+        # Nothing parsed anywhere -> on a cycle's first pass finalize raises the honest structural/
+        # empty-window error over the attempted set (existing data kept).
+        res = finalize(tally, before, None, source=SOURCE, empty_window_floor=floor)
+    else:
+        print(f"[unsdg] merged {len(all_cursors):,} refreshed keys across "
+              f"{min(len(codes), total):,}/{total} series codes; store now {n:,} rows",
+              flush=True)
+        res = finalize(tally, n, md, source=SOURCE, series_cursors=all_cursors or None,
+                       empty_window_floor=floor)
+    # The closing pass hands the orchestrator the cycle's release token - only if the whole cycle was
+    # swept under the release that is still current (see _cycle_token); otherwise finalize's placeholder
+    # stands and the next due tick re-sweeps.
+    if closed and res.status in ("ok", "no_change") and token is not None and cycle_token == token:
+        res.new_vintage = token
+    return res
