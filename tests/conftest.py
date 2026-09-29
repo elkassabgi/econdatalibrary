@@ -180,7 +180,9 @@ _ALARM_MODULES = ("updater.orchestrate", "updater.derive")
 
 @pytest.fixture(autouse=True)
 def _alarm_state_isolation():
-    """NO TEST INHERITS ANOTHER TEST'S ALARM PLUMBING (2026-09-29, the Windows fence-test failures of 2026-09-28).
+    """NO TEST INHERITS ANOTHER TEST'S ALARM PLUMBING (2026-09-29). HARDENING: the 2026-09-28 fence-test failures
+    were TIMING, not a leak (fixed in the `alarm` fixture of tests/test_derive_fence_aware.py); no test in the suite
+    was found to leak this state. This guard makes one that ever does fail by name.
 
     tests/test_derive_fence_aware.py emulates SIGALRM with a SIGINT handler that runs orchestrate._deliver_alarm,
     and derive catches the trip as `except fence`, where fence is UnitTimeout imported LAZILY from
@@ -188,7 +190,7 @@ def _alarm_state_isolation():
       - orchestrate._DEFER_ALARM / _ALARM_PENDING (a deferred trip swallowed or delivered in the wrong test),
       - orchestrate.UNIT_TIMEOUT_FIRED (derive's _raise_if_fence_in_disguise turns a plain error into the fence),
       - a replaced sys.modules['updater.orchestrate' / 'updater.derive'] (two UnitTimeout classes: the trip is
-        raised as one and caught as the other - "UnitTimeout has no attribute derive_partial", as on 2026-09-28),
+        raised as one and caught as the other, and derive's `except Exception` swallows it - "DID NOT RAISE"),
         AND the `updater` package's attribute for it (derive._wait_slice reads `from . import orchestrate`, which is
         the package attribute, not sys.modules - a re-import rebinds both), AND orchestrate.UnitTimeout itself
         (importlib.reload keeps the module object but makes a new class),
@@ -224,7 +226,9 @@ def _alarm_state_isolation():
         orch.UnitTimeout = fence_cls
     if orch._DEFER_ALARM or orch._ALARM_PENDING is not None:
         left.append(f"orchestrate._DEFER_ALARM={orch._DEFER_ALARM!r} / _ALARM_PENDING={orch._ALARM_PENDING!r}")
-    orch._DEFER_ALARM, orch._ALARM_PENDING = False, None
+    if orch.UNIT_TIMEOUT_FIRED:
+        left.append("orchestrate.UNIT_TIMEOUT_FIRED=True")
+    orch._DEFER_ALARM, orch._ALARM_PENDING, orch.UNIT_TIMEOUT_FIRED = False, None, False
     if signal.getsignal(signal.SIGINT) is not sigint:
         left.append("the SIGINT handler")
         signal.signal(signal.SIGINT, sigint)

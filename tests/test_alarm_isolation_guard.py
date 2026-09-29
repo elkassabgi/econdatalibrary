@@ -22,6 +22,7 @@ LEAKS = {
     "pending": ("from updater import orchestrate\norchestrate._ALARM_PENDING = RuntimeError('x')", "_ALARM_PENDING"),
     "module": ("import sys, types\nsys.modules['updater.orchestrate'] = types.SimpleNamespace()",
                "sys.modules['updater.orchestrate'] replaced"),
+    "fired": ("from updater import orchestrate\norchestrate.UNIT_TIMEOUT_FIRED = True", "UNIT_TIMEOUT_FIRED=True"),
     "sigint": ("import signal\nsignal.signal(signal.SIGINT, lambda s, f: None)", "the SIGINT handler"),
     # the 2026-09-28 class: a re-import rebinds sys.modules AND the package attribute derive._wait_slice reads
     "reimport": ("import importlib, sys\nsys.modules.pop('updater.orchestrate')\n"

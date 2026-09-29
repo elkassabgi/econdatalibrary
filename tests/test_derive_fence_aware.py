@@ -39,10 +39,25 @@ class _Blob:
             self.put.append(key)
 
 
+@pytest.fixture(scope="module")
+def _served_merge_set():
+    """The registry's csv_merge_served set, read ONCE for this file."""
+    derive._merge_served_sources._cache = None
+    return frozenset(derive._merge_served_sources())
+
+
 @pytest.fixture
-def alarm(monkeypatch):
+def alarm(monkeypatch, _served_merge_set):
     """alarm(seconds): after `seconds`, run the orchestrator's REAL handler body (_deliver_alarm) in the main thread -
-    so inside a wait slice it is deferred exactly as SIGALRM's would be (review R1262)."""
+    so inside a wait slice it is deferred exactly as SIGALRM's would be (review R1262).
+
+    THE MERGE SET IS PRIMED FIRST (2026-09-29, the Windows full-run failures of 2026-09-28). conftest clears
+    derive._merge_served_sources' cache before every test, so derive_and_put re-parsed updater/registry.yaml
+    (650 KB, 0.67 s warm / 1.2 s cold) INSIDE the 1.0 s alarm window and BEFORE the `try` whose `except fence`
+    attaches derive_partial. On a loaded full run the fence tripped inside that read: "'UnitTimeout' object has no
+    attribute 'derive_partial'", or "DID NOT RAISE" when the trip landed in a weakref callback and was swallowed.
+    Reproduced 5 of 5 with a delay added to registry.load; with the set primed, 0 of 2 at +0.6 s and +1.5 s."""
+    monkeypatch.setattr(derive._merge_served_sources, "_cache", set(_served_merge_set))
     prev = signal.getsignal(signal.SIGINT)
     monkeypatch.setattr(orchestrate, "_DEFER_ALARM", False)
     monkeypatch.setattr(orchestrate, "_ALARM_PENDING", None)
