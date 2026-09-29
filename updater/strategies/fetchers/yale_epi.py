@@ -51,7 +51,8 @@ DOWNLOADS = "https://epi.yale.edu/downloads"          # the pre-September-2026 p
 # (/2026/downloads) whose files live under /sites/default/files/<yyyy-mm>/, and the old
 # downloads/epi2024results.csv URL now answers 200 with an HTML page. So the downloads pages are found from
 # the home page's /<year>/downloads links (plus the old page, harmlessly, in case it returns).
-_YEAR_PAGE_RE = re.compile(r'href=["\']((?:https://epi\.yale\.edu)?/(\d{4})/downloads)["\']', re.I)
+_YEAR_PAGE_RE = re.compile(r'href=["\']((?:(?:https?:)?//epi\.yale\.edu)?/(\d{4})/downloads/?(?:[?#][^"\']*)?)["\']',
+                           re.I)
 # Floor, not the source of truth: these keep historical editions reachable even if
 # the downloads page stops listing them. The 2024 CSV is no longer served (see above); a floor URL that
 # answers with an HTML page is RETIRED, not broken - its data is already held (the merge never shrinks).
@@ -69,7 +70,13 @@ _LINK_RE = re.compile(r'href=["\']([^"\']*epi(\d{4})results[^"\']*\.(?:csv|xlsx)
 _VOCAB_RE = re.compile(r'href=["\']([^"\']*epi(\d{4})_indicators_[^"\']*\.zip)', re.I)
 
 
+class NoVocabulary(Exception):
+    """A results file keyed on alpha-3 with no code<->iso map: parsing it would fork the published ids."""
+
+
 def _abs(href: str) -> str:
+    if href.startswith("//"):
+        return "https:" + href
     return href if href.startswith("http") else "https://epi.yale.edu" + (href if href.startswith("/") else "/" + href)
 
 
@@ -203,7 +210,11 @@ def _parse_epi_csv(data: bytes, default_year: int, iso_index=None):
     # (Switching the ids to alpha-3 would be an improvement and a RE-KEY of 21,300
     # live series — not a call to make inside a fetcher.)
     translate = {}
-    if iso_index and iso3_col.lower() in ("iso", "iso3", "iso_code", "country_iso3"):
+    if iso3_col.lower() in ("iso", "iso3", "iso_code", "country_iso3"):
+        if not iso_index:
+            # NO VOCABULARY, NO PARSE - for ANY file type (review R1287: the first guard checked only the
+            # .xlsx extension, so an alpha-3-only CSV was still merged as EPI:<var>:AFG).
+            raise NoVocabulary(f"the country column is alpha-3 `{iso3_col}` and no code<->iso map was read")
         translate = iso_index
 
     skip = {(iso3_col or "").lower(), (year_col or "").lower(),
@@ -224,6 +235,12 @@ def _parse_epi_csv(data: bytes, default_year: int, iso_index=None):
                 n_untranslated += 1
                 continue
             iso3 = mapped
+        elif iso3_col.lower() == "code":
+            # the published NUMERIC vocabulary (ISO 3166-1 numeric, unpadded: Afghanistan = 4). The 3-char
+            # test below is for alpha-3 only; applied here it silently dropped every code under 100
+            # (found by review R1287's floor test)
+            if not iso3.isdigit():
+                continue
         elif len(iso3) != 3:
             continue
 
@@ -351,12 +368,18 @@ def update(unit, since) -> Result:
     for url, yr, body in bodies:
         if not url.lower().endswith(".xlsx"):
             iso_index = _country_index(body) or iso_index
-    for url, yr in vocab_zips:
+    # NEWEST EDITION FIRST (review R1287: oldest-first let an older edition's map key a newer workbook).
+    vocab_transient = False
+    for url, yr in sorted(vocab_zips, key=lambda kv: -kv[1]):
         if iso_index:
             break
         try:
             r = requests.get(url, headers=UA, timeout=300, allow_redirects=True)
         except (requests.Timeout, requests.ConnectionError):
+            vocab_transient = True
+            continue
+        if r.status_code in (429, 500, 502, 503, 504):
+            vocab_transient = True
             continue
         if r.status_code == 200 and not _is_html(r):
             iso_index = _vocab_from_zip(r.content)
@@ -372,18 +395,22 @@ def update(unit, since) -> Result:
 
     all_keys, all_dates, all_vals = [], [], []
     for url, yr, body in bodies:
-        if url.lower().endswith(".xlsx") and not iso_index:
-            # NO VOCABULARY, NO PARSE. The workbook carries only alpha-3 `iso`; parsed without the map it
-            # yields EPI:<var>:AFG ids - a second id space beside the published numeric one, with the live
-            # series frozen and the gate reading green (see _parse_epi_csv). Refuse, loudly, instead.
-            tally.structural_unit(f"{yr}: no country vocabulary (code<->iso) could be read, so the "
-                                  f"workbook is not parsed - it would publish a forked alpha-3 id space")
-            continue
         try:
             if url.lower().endswith(".xlsx"):
                 k, d, v = _parse_epi_xlsx(body, default_year=yr, iso_index=iso_index)
             else:
-                k, d, v = _parse_epi_csv(body, default_year=yr)
+                k, d, v = _parse_epi_csv(body, default_year=yr, iso_index=iso_index)
+        except NoVocabulary as e:
+            # NO VOCABULARY, NO PARSE. Parsed without the map, an alpha-3 file yields EPI:<var>:AFG ids - a
+            # second id space beside the published numeric one, with the live series frozen and the gate
+            # reading green (see _parse_epi_csv). If the vocabulary zip only failed TRANSIENTLY that is
+            # the publisher's bad hour (retried next run), not a break (review R1287).
+            if vocab_transient:
+                tally.transient_unit(f"{yr}: the vocabulary zip was unavailable ({e})")
+            else:
+                tally.structural_unit(f"{yr}: no country vocabulary (code<->iso) could be read, so the file "
+                                      f"is not parsed - it would publish a forked alpha-3 id space ({e})")
+            continue
         except Exception as e:                               # noqa: BLE001
             # A workbook we cannot open is a structural break on THAT release, named
             # so the log says which one rather than "yale_epi failed".

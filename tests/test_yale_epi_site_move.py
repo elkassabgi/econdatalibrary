@@ -115,6 +115,54 @@ def test_a_current_file_answering_html_is_a_structural_break(store, monkeypatch)
         Y.update(None, None)
 
 
+# --- round 2 (review R1287) ---------------------------------------------------------------------------
+CSV2024 = Y.KNOWN_URLS[0][0]
+
+
+def test_a_known_url_that_is_also_discovered_and_answers_html_is_a_break(store, monkeypatch):
+    routes = _routes()
+    routes["https://epi.yale.edu/2026/downloads"] = _Resp(
+        200, (f'<a href="/sites/default/files/2026-09/epi2026results2026-07-07.xlsx">r</a>'
+              f'<a href="/sites/default/files/2026-09/epi2026_indicators_na_2026-08-31.zip">z</a>'
+              f'<a href="{CSV2024}">old</a>').encode(), "text/html")
+    monkeypatch.setattr(Y.requests, "get", _site(routes))
+    with pytest.raises(DefinitiveError, match="an HTML page"):
+        Y.update(None, None)
+
+
+def test_a_floor_url_with_a_real_body_is_parsed(store, monkeypatch):
+    body = b"code,iso,country,EPI.old\n4,AFG,Afghanistan,20.0\n"
+    monkeypatch.setattr(Y.requests, "get",
+                        _site(_routes(**{CSV2024: _Resp(200, body + b"\n" * 600, "text/csv")})))
+    res = Y.update(None, None)
+    assert res.status == "ok" and "EPI:EPI.old:4" in _keys(store), (res.status, sorted(_keys(store)))
+
+
+def test_an_absolute_year_page_link_with_a_trailing_slash_is_followed(store, monkeypatch):
+    routes = _routes(**{Y.HOME: _Resp(200, b'<a href="https://epi.yale.edu/2026/downloads/">D</a>', "text/html")})
+    routes["https://epi.yale.edu/2026/downloads/"] = routes["https://epi.yale.edu/2026/downloads"]
+    monkeypatch.setattr(Y.requests, "get", _site(routes))
+    assert Y._scan()[0] == [(XLSX, 2026)]
+
+
+def test_an_alpha3_only_csv_without_a_vocabulary_is_refused_not_forked(store, monkeypatch):
+    csv_url = FILES + "epi2026results.csv"
+    routes = _routes()
+    routes["https://epi.yale.edu/2026/downloads"] = _Resp(
+        200, b'<a href="/sites/default/files/2026-09/epi2026results.csv">r</a>', "text/html")
+    routes[csv_url] = _Resp(200, b"iso,country,EPI.new\nAFG,Afghanistan,30.5\n" + b"\n" * 600, "text/csv")
+    monkeypatch.setattr(Y.requests, "get", _site(routes))
+    with pytest.raises(DefinitiveError, match="forked alpha-3"):
+        Y.update(None, None)
+    assert not (store / "yale_epi" / "yale_epi.parquet").exists()
+
+
+def test_a_vocabulary_zip_blip_is_transient_not_a_break(store, monkeypatch):
+    monkeypatch.setattr(Y.requests, "get", _site(_routes(**{ZIP: _Resp(503, b"busy", "text/plain")})))
+    res = Y.update(None, None)
+    assert res.status == "partial" and "vocabulary zip was unavailable" in (res.error or ""), (res.status, res.error)
+
+
 def test_a_redesign_that_lists_nothing_is_still_loud(store, monkeypatch):
     monkeypatch.setattr(Y.requests, "get", _site(_routes(**{Y.HOME: _Resp(200, b"<html>no links</html>",
                                                                           "text/html")})))
