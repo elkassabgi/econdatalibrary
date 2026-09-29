@@ -50,7 +50,8 @@ METHODS = {"transient_unit", "structural_unit"}
 # 147 -> 142: ssb's five. ssb sweeps ~1,515 tables, so each label removes 1,515 candidates.
 # 26 -> 24: 2026-09-28 merge train (the PRs merged that day labelled two more in-loop calls).
 # 24 -> 23: dst names the table a transient failure belongs to (fix/dst-data-post-transient).
-BUDGET = 23
+# 23 -> 22: dst names the subject whose merge was refused (same branch, review R1297).
+BUDGET = 22
 
 
 class _Counter(ast.NodeVisitor):

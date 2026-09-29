@@ -233,6 +233,7 @@ def _fetch_table_rows(table_id: str):
     except Exception as e:                                           # noqa: BLE001
         _reraise_unit_timeout(e)
         return [], True
+    _fence_check("the tableinfo GET")
     time.sleep(RATE)
     if not meta:
         # get_json returns None on 400/404 (definitively gone) OR after exhausting
@@ -247,6 +248,7 @@ def _fetch_table_rows(table_id: str):
     except Exception as e:                                           # noqa: BLE001
         _reraise_unit_timeout(e)
         return [], True
+    _fence_check("the data POST")
     # A FAILED DATA POST IS NOT A QUIET TABLE (review R1283). query_table returned [] for a POST that failed
     # (5xx/timeout after retries, 403) exactly as for a table with no rows, so the table was booked empty and
     # its manifest entry ADVANCED: that release was never taken until DST republished it. Measured
@@ -261,10 +263,10 @@ def _fetch_table_rows(table_id: str):
               f"empty table; stays owed", flush=True)
         return [], True
     if outcome == "span_time":
-        # every period is a multi-year window: the dating convention is not chosen (cso's span_time) - nothing
-        # is stored, and the table counts as processed so it is not re-pulled every run
-        print(f"[{SOURCE}] {table_id}: every period is a multi-year window - not dated, nothing stored",
-              flush=True)
+        # every period is a window (multi-year, or part of a year): the dating convention is not chosen (cso's
+        # span_time) - nothing is stored, and the table counts as processed so it is not re-pulled every run
+        print(f"[{SOURCE}] {table_id}: every period is a multi-year or part-year window - not dated, nothing "
+              f"stored", flush=True)
     return rows, False
 
 
@@ -274,6 +276,15 @@ def _reraise_unit_timeout(e) -> None:
     if orch is not None and (getattr(orch, "UNIT_TIMEOUT_FIRED", False) or
                              isinstance(e, getattr(orch, "UnitTimeout", ()))):
         raise e
+
+
+def _fence_check(where: str) -> None:
+    """Raise the unit timeout if it fired DURING an ingester call that returned normally. The alarm usually lands
+    inside requests, and a library's own `except Exception` can absorb it before any of ours sees it: the call then
+    returns None and the table would read as one more transient failure while the pass ran on (review R1297)."""
+    orch = sys.modules.get("updater.orchestrate")
+    if orch is not None and getattr(orch, "UNIT_TIMEOUT_FIRED", False):
+        raise orch.UnitTimeout(f"{SOURCE}: unit timeout fired during {where}")
 
 
 def update(unit, since) -> Result:
@@ -391,7 +402,7 @@ def update(unit, since) -> Result:
                 # A never-shrink / column-drop refusal for ONE subject must not abort the
                 # whole run or fake success: count it transient so status is 'partial' and
                 # the affected tables are retried (their manifest entries are NOT advanced).
-                tally.transient_unit()
+                tally.transient_unit(f"{subj}: merge refused")
                 for tid in batch:
                     if _subj(tid) == subj:
                         processed_ok.pop(tid, None)
