@@ -182,8 +182,8 @@ def _country_index(data: bytes):
 
 def _parse_epi_csv(data: bytes, default_year: int, iso_index=None):
     """Parse EPI results CSV — wide: country column + many indicator columns.
-    Byte-for-byte the same logic as jobs/ingest_yale_epi.parse_epi_csv, plus the
-    country-vocabulary translation below."""
+    The same row rules as jobs/ingest_yale_epi.parse_epi_csv (both now accept the unpadded numeric
+    `code`, review R1289), plus the country-vocabulary translation and the no-vocabulary refusal below."""
     text = data.decode("utf-8-sig", errors="replace")
     reader = csv.DictReader(io.StringIO(text))
     headers = reader.fieldnames or []
