@@ -4,7 +4,8 @@ correctly refuses to judge the individual sources on it.
 THE GAP THIS CLOSES. `gate_failures` declines to judge sources whose `run_location` is not
 where the gate runs — right, because a gate must not pronounce on runs it cannot see. But
 "not judged here" plus "not judged anywhere else" is NOT JUDGED, and the workstation route is
-the ONLY update path for the 17 cloud-infeasible sources, `eia` among them on a DAILY cadence.
+the ONLY update path for the cloud-infeasible sources (tools/_list_local_sources.py), `eia` among them
+on a DAILY cadence.
 
 SCOPE, STATED HONESTLY. This does NOT catch the 2026-08-02 outage that prompted it. That day
 the guard loop died at 15:16 and the local pass went ~7h past due, but bis, bls, cepii_gravity
