@@ -38,7 +38,10 @@ def _mixed_store(root, source="mixsrc"):
 
 
 def _run(source, tmp_root):
-    env = dict(os.environ, ECONDL_ROOT=str(tmp_root), PYTHONIOENCODING="utf-8")
+    # the repo's registry: the tool refuses when it cannot read one (csv_misses check, R1149), and the
+    # tmp root has none; these fixture sources are in neither, so both registry checks pass through
+    env = dict(os.environ, ECONDL_ROOT=str(tmp_root), PYTHONIOENCODING="utf-8",
+               AQUEDUCT_REGISTRY=os.path.join(ROOT, "updater", "registry.yaml"))
     return subprocess.run(
         [sys.executable, TOOL, "--source", source, "--dry-run", "--verify", "0"],
         capture_output=True, text=True, cwd=ROOT, env=env, timeout=180)

@@ -32,12 +32,12 @@ import io
 import json
 import os
 import re
-import sqlite3
 import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CATALOG = os.path.join(ROOT, "data", "catalog.db")
+sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 CACHE = os.path.join(ROOT, "data", "_rba_series_titles.json")
 BASE = "https://www.rba.gov.au"
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com",
@@ -101,7 +101,7 @@ def main() -> int:
     a = ap.parse_args()
 
     names = harvest()
-    con = sqlite3.connect(CATALOG, timeout=600)
+    con = catalog_path.connect(write=True, timeout=600)
     con.execute("PRAGMA busy_timeout=600000")
     rows = con.execute("""SELECT series_id FROM series WHERE source_id='rba'
         AND (title IS NULL OR title='' OR title=series_id
@@ -134,4 +134,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    with catalog_path.write_session():   # after T0: the single-writer lock
+        sys.exit(main())

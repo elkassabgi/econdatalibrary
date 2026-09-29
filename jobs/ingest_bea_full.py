@@ -102,11 +102,20 @@ def _rate_limit_record_bytes(n):
 # error-code / message classification
 _RETRY_CODES = {"8"}  # 8 = Volume per minute quota exceeded
 _RETRY_MSG = ("exceeded", "quota", "throttl", "denied", "try again", "temporar")
-_NODATA_MSG = ("no data", "not found", "invalid year", "the requested")
+# "not currently available": BEA's answer for a table/frequency that does not exist (code 201,
+# ErrorDetail.Description; live 2026-09-23, NIPA T10101 M). 241 of 252 NIPA tables have no M, so
+# reading it as a failure owed nearly every NIPA group for ever (review R1107). A frequency a table
+# really has is still guarded by the updater's coverage check.
+_NODATA_MSG = ("no data", "not found", "invalid year", "the requested", "not currently available")
 
 
-def _classify_error(err):
-    """Return 'retry' (back off & retry), 'nodata' (accept empty), or 'fatal'."""
+def _classify_error(err, strict=False):
+    """Return 'retry' (back off & retry), 'nodata' (accept empty), or 'fatal'.
+
+    strict=True: an error that matches NEITHER the retry NOR the no-data wording is 'fatal', not
+    'nodata'. The bulk ingester reads unknown table-level errors as empty; the updater must not,
+    or one country whose call errored is merged as "no rows" and the cycle closes over it (bea v1
+    review R1106, P1)."""
     if isinstance(err, list):
         err = err[0] if err else {}
     if not isinstance(err, dict):
@@ -117,20 +126,30 @@ def _classify_error(err):
             return "retry"
         s = (str(err.get("APIErrorDescription", "")) + " " +
              str(err.get("error", "")) + " " +
-             str(err.get("AdditionalDetail", ""))).lower()
+             str(err.get("AdditionalDetail", "")) + " " +
+             str(err.get("ErrorDetail", ""))).lower()
     if any(k in s for k in _RETRY_MSG):
         return "retry"
     if any(k in s for k in _NODATA_MSG):
         return "nodata"
-    return "nodata"  # default: treat unknown table-level errors as empty
+    return "fatal" if strict else "nodata"  # default: unknown table-level errors read as empty
 
 
-def call(method="GetData", **params):
+class CallFailed(RuntimeError):
+    """A strict call() that exhausted its retries - NOT an empty answer."""
+
+
+def call(method="GetData", strict=False, **params):
     """One GetData call with rate-limit + retry/backoff.
 
     Returns the Data list (possibly []). Quota/throttle errors are retried with
     exponential backoff and DO NOT silently drop data; genuine 'no data found'
-    table errors return []."""
+    table errors return [].
+
+    strict=True (the updater, 2026-09-23): a call whose retries are EXHAUSTED raises CallFailed
+    instead of returning [] - otherwise a group whose every call failed on quota reads exactly like
+    a quiet one, and a refresh books it done (bea design review R1104). The bulk ingester keeps the
+    default: its resume set already re-runs a group that wrote nothing."""
     p = {"UserID": KEY, "method": method, "ResultFormat": "JSON"}
     p.update(params)
     s = _session()
@@ -162,7 +181,7 @@ def call(method="GetData", **params):
             elif isinstance(res, dict) and "Error" in res:
                 err = res.get("Error")
             if err is not None:
-                kind = _classify_error(err)
+                kind = _classify_error(err, strict=strict)
                 if kind == "retry":
                     with _stats_lock:
                         STATS["errors"] += 1
@@ -170,20 +189,30 @@ def call(method="GetData", **params):
                     time.sleep(min(75, 12 + backoff_extra))
                     backoff_extra += 10
                     continue
+                if kind == "fatal" and strict:
+                    raise CallFailed(f"{params}: BEA error not recognised as 'no data': {str(err)[:200]}")
                 return []  # nodata / fatal-table -> genuine empty
             if isinstance(res, dict):
                 data = res.get("Data", [])
                 return data if isinstance(data, list) else []
             return []
-        except Exception:  # noqa: BLE001
+        except CallFailed:
+            # A verdict, not a network blip: retrying an error BEA returned would re-ask the same
+            # question 11 more times with ~4.4 min of sleeps before failing the same way.
+            raise
+        except Exception as e:  # noqa: BLE001
             if attempt >= 11:
                 with _stats_lock:
                     STATS["errors"] += 1
+                if strict:
+                    raise CallFailed(f"{params}: {type(e).__name__}: {e}") from e
                 return []
             time.sleep(4 * (attempt + 1))
     # exhausted retries (likely persistent quota): record and return empty
     with _stats_lock:
         STATS["errors"] += 1
+    if strict:
+        raise CallFailed(f"{params}: retries exhausted (quota, throttle or HTTP errors)")
     return []
 
 
@@ -307,6 +336,24 @@ def _keys(vals):
 
 
 # ---- NIPA / NIUnderlyingDetail: per table, stack A+Q+M; key = SeriesCode:freq
+def fetch_table_freq(dataset, table, freqs=("A", "Q", "M"), year="ALL", strict=False):
+    """(series_keys, dates, values) for one NIPA-family table. THE parse the store was built with;
+    the updater calls it with a year window and strict=True (updater/strategies/fetchers/bea.py)."""
+    sk, ds, vs = [], [], []
+    for fr in freqs:
+        rows = call(datasetname=dataset, TableName=table, Frequency=fr, Year=year, strict=strict)
+        for row in rows:
+            code = row.get("SeriesCode")
+            od = pdate(row.get("TimePeriod"))
+            val = pval(row.get("DataValue"))
+            if not code or od is None or val is None:
+                continue
+            sk.append(f"{code}:{fr}")
+            ds.append(od)
+            vs.append(val)
+    return sk, ds, vs
+
+
 def _ingest_table_freq_dataset(M, dataset, freqs, done, resume):
     tables = _keys(M["param_values"][dataset]["TableName"])
 
@@ -314,18 +361,7 @@ def _ingest_table_freq_dataset(M, dataset, freqs, done, resume):
         gkey = f"{dataset}:{table}"
         if resume and gkey in done:
             return f"skip {gkey}"
-        sk, ds, vs = [], [], []
-        for fr in freqs:
-            rows = call(datasetname=dataset, TableName=table, Frequency=fr, Year="ALL")
-            for row in rows:
-                code = row.get("SeriesCode")
-                od = pdate(row.get("TimePeriod"))
-                val = pval(row.get("DataValue"))
-                if not code or od is None or val is None:
-                    continue
-                sk.append(f"{code}:{fr}")
-                ds.append(od)
-                vs.append(val)
+        sk, ds, vs = fetch_table_freq(dataset, table, freqs)
         n = write_group(dataset, table, sk, ds, vs)
         mark_done(done, gkey)
         return f"{gkey}: {n} rows"
@@ -334,6 +370,21 @@ def _ingest_table_freq_dataset(M, dataset, freqs, done, resume):
 
 
 # ---- FixedAssets: per table (annual only); key = SeriesCode
+def fetch_fixedassets(table, year="ALL", strict=False):
+    sk, ds, vs = [], [], []
+    rows = call(datasetname="FixedAssets", TableName=table, Year=year, strict=strict)
+    for row in rows:
+        code = row.get("SeriesCode")
+        od = pdate(row.get("TimePeriod"))
+        val = pval(row.get("DataValue"))
+        if not code or od is None or val is None:
+            continue
+        sk.append(str(code))
+        ds.append(od)
+        vs.append(val)
+    return sk, ds, vs
+
+
 def _ingest_fixedassets(M, done, resume):
     tables = _keys(M["param_values"]["FixedAssets"]["TableName"])
 
@@ -341,17 +392,7 @@ def _ingest_fixedassets(M, done, resume):
         gkey = f"FixedAssets:{table}"
         if resume and gkey in done:
             return f"skip {gkey}"
-        sk, ds, vs = [], [], []
-        rows = call(datasetname="FixedAssets", TableName=table, Year="ALL")
-        for row in rows:
-            code = row.get("SeriesCode")
-            od = pdate(row.get("TimePeriod"))
-            val = pval(row.get("DataValue"))
-            if not code or od is None or val is None:
-                continue
-            sk.append(str(code))
-            ds.append(od)
-            vs.append(val)
+        sk, ds, vs = fetch_fixedassets(table)
         n = write_group("FixedAssets", table, sk, ds, vs)
         mark_done(done, gkey)
         return f"{gkey}: {n} rows"
@@ -409,27 +450,32 @@ def _gdp_date(yr, qtr, fr):
 
 
 # ---- UnderlyingGDPbyIndustry: per TableID (Industry=ALL), annual; 1 file/table
+def fetch_under_gdpbyindustry(M, tid, year="ALL", strict=False):
+    freqs = _keys(M["param_values"]["UnderlyingGDPbyIndustry"]["Frequency"])
+    sk, ds, vs = [], [], []
+    for fr in freqs:
+        rows = call(datasetname="UnderlyingGDPbyIndustry", TableID=tid,
+                    Industry="ALL", Frequency=fr, Year=year, strict=strict)
+        for row in rows:
+            ind = row.get("Industry")
+            od = _gdp_date(row.get("Year"), row.get("Quarter"), fr)
+            val = pval(row.get("DataValue"))
+            if ind is None or od is None or val is None:
+                continue
+            sk.append(f"T{tid}:{ind}:{fr}")
+            ds.append(od)
+            vs.append(val)
+    return sk, ds, vs
+
+
 def _ingest_under_gdpbyindustry(M, done, resume):
     tids = _keys(M["param_values"]["UnderlyingGDPbyIndustry"]["TableID"])
-    freqs = _keys(M["param_values"]["UnderlyingGDPbyIndustry"]["Frequency"])
 
     def work(tid):
         gkey = f"UnderlyingGDPbyIndustry:{tid}"
         if resume and gkey in done:
             return f"skip {gkey}"
-        sk, ds, vs = [], [], []
-        for fr in freqs:
-            rows = call(datasetname="UnderlyingGDPbyIndustry", TableID=tid,
-                        Industry="ALL", Frequency=fr, Year="ALL")
-            for row in rows:
-                ind = row.get("Industry")
-                od = _gdp_date(row.get("Year"), row.get("Quarter"), fr)
-                val = pval(row.get("DataValue"))
-                if ind is None or od is None or val is None:
-                    continue
-                sk.append(f"T{tid}:{ind}:{fr}")
-                ds.append(od)
-                vs.append(val)
+        sk, ds, vs = fetch_under_gdpbyindustry(M, tid)
         n = write_group("UnderlyingGDPbyIndustry", f"T{tid}", sk, ds, vs)
         mark_done(done, gkey)
         return f"{gkey}: {n} rows"
@@ -506,20 +552,42 @@ def _ingest_ita(M, done, resume):
         mark_done(done, gkey)
 
 
+def _map_all(items, fn, label, strict):
+    """fn over items on the ingester's worker pool. strict: the FIRST failure raises (the updater
+    must not book a single-file dataset done when some of its countries failed - review R1104);
+    otherwise an item's error is counted and skipped, as the bulk ingester always did."""
+    out = []
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        futs = {ex.submit(fn, it): it for it in items}
+        for fut in as_completed(futs):
+            try:
+                out.append(fut.result())
+            except Exception as e:  # noqa: BLE001
+                if strict:
+                    for f in futs:
+                        f.cancel()
+                    raise
+                with _stats_lock:
+                    STATS["errors"] += 1
+                print(f"  [{label}] ERROR on {futs[fut]}: {e}", flush=True)
+    return out
+
+
+def _accumulate(parts):
+    sk, ds, vs, tsid = [], [], [], []
+    for p in parts:
+        sk.extend(p[0]); ds.extend(p[1]); vs.extend(p[2]); tsid.extend(p[3])
+    return sk, ds, vs, tsid
+
+
 # ---- IIP: per TypeOfInvestment (Component=ALL, Freq=ALL). Group into 1 file;
 #      series_key = TypeOfInvestment:Component:Frequency.
-def _ingest_iip(M, done, resume):
+def fetch_iip(M, year="ALL", strict=False):
     types = _keys(M["param_values"]["IIP"]["TypeOfInvestment"])
-    gkey = "IIP:all"
-    if resume and gkey in done:
-        print(f"  skip {gkey}", flush=True)
-        return
-    acc = {"sk": [], "ds": [], "vs": [], "tsid": []}
-    lock = threading.Lock()
 
-    def work(toi):
+    def one(toi):
         rows = call(datasetname="IIP", TypeOfInvestment=toi, Component="ALL",
-                    Frequency="ALL", Year="ALL")
+                    Frequency="ALL", Year=year, strict=strict)
         loc = ([], [], [], [])
         for row in rows:
             comp = row.get("Component")
@@ -532,31 +600,28 @@ def _ingest_iip(M, done, resume):
             loc[1].append(od)
             loc[2].append(val)
             loc[3].append(row.get("TimeSeriesId") or "")
-        with lock:
-            acc["sk"].extend(loc[0]); acc["ds"].extend(loc[1])
-            acc["vs"].extend(loc[2]); acc["tsid"].extend(loc[3])
-        return len(loc[0])
+        return loc
+    return _accumulate(_map_all(types, one, "IIP", strict))
 
-    _run(types, work, "IIP")
-    write_group("IIP", "all", acc["sk"], acc["ds"], acc["vs"],
-                extra_cols={"time_series_id": acc["tsid"]})
+
+def _ingest_iip(M, done, resume):
+    gkey = "IIP:all"
+    if resume and gkey in done:
+        print(f"  skip {gkey}", flush=True)
+        return
+    sk, ds, vs, tsid = fetch_iip(M)
+    write_group("IIP", "all", sk, ds, vs, extra_cols={"time_series_id": tsid})
     mark_done(done, gkey)
 
 
 # ---- IntlServTrade: TypeOfService=ALL per country. 1 file; key = Type:Dir:Affil:Country
-def _ingest_intlservtrade(M, done, resume):
+def fetch_intlservtrade(M, year="ALL", strict=False):
     countries = _keys(M["param_values"]["IntlServTrade"]["AreaOrCountry"])
-    gkey = "IntlServTrade:all"
-    if resume and gkey in done:
-        print(f"  skip {gkey}", flush=True)
-        return
-    acc = {"sk": [], "ds": [], "vs": [], "tsid": []}
-    lock = threading.Lock()
 
-    def work(ctry):
+    def one(ctry):
         rows = call(datasetname="IntlServTrade", TypeOfService="ALL",
                     TradeDirection="ALL", Affiliation="ALL",
-                    AreaOrCountry=ctry, Year="ALL")
+                    AreaOrCountry=ctry, Year=year, strict=strict)
         loc = ([], [], [], [])
         for row in rows:
             tos = row.get("TypeOfService")
@@ -570,30 +635,27 @@ def _ingest_intlservtrade(M, done, resume):
             loc[1].append(od)
             loc[2].append(val)
             loc[3].append(row.get("TimeSeriesId") or "")
-        with lock:
-            acc["sk"].extend(loc[0]); acc["ds"].extend(loc[1])
-            acc["vs"].extend(loc[2]); acc["tsid"].extend(loc[3])
-        return len(loc[0])
+        return loc
+    return _accumulate(_map_all(countries, one, "IntlServTrade", strict))
 
-    _run(countries, work, "IntlServTrade")
-    write_group("IntlServTrade", "all", acc["sk"], acc["ds"], acc["vs"],
-                extra_cols={"time_series_id": acc["tsid"]})
+
+def _ingest_intlservtrade(M, done, resume):
+    gkey = "IntlServTrade:all"
+    if resume and gkey in done:
+        print(f"  skip {gkey}", flush=True)
+        return
+    sk, ds, vs, tsid = fetch_intlservtrade(M)
+    write_group("IntlServTrade", "all", sk, ds, vs, extra_cols={"time_series_id": tsid})
     mark_done(done, gkey)
 
 
 # ---- IntlServSTA: Industry=ALL per country. 1 file; key = Channel:Dest:Industry:Country
-def _ingest_intlservsta(M, done, resume):
+def fetch_intlservsta(M, year="ALL", strict=False):
     countries = _keys(M["param_values"]["IntlServSTA"]["AreaOrCountry"])
-    gkey = "IntlServSTA:all"
-    if resume and gkey in done:
-        print(f"  skip {gkey}", flush=True)
-        return
-    acc = {"sk": [], "ds": [], "vs": [], "tsid": []}
-    lock = threading.Lock()
 
-    def work(ctry):
+    def one(ctry):
         rows = call(datasetname="IntlServSTA", Channel="ALL", Destination="ALL",
-                    Industry="ALL", AreaOrCountry=ctry, Year="ALL")
+                    Industry="ALL", AreaOrCountry=ctry, Year=year, strict=strict)
         loc = ([], [], [], [])
         for row in rows:
             ch = row.get("Channel")
@@ -607,14 +669,17 @@ def _ingest_intlservsta(M, done, resume):
             loc[1].append(od)
             loc[2].append(val)
             loc[3].append(row.get("TimeSeriesId") or "")
-        with lock:
-            acc["sk"].extend(loc[0]); acc["ds"].extend(loc[1])
-            acc["vs"].extend(loc[2]); acc["tsid"].extend(loc[3])
-        return len(loc[0])
+        return loc
+    return _accumulate(_map_all(countries, one, "IntlServSTA", strict))
 
-    _run(countries, work, "IntlServSTA")
-    write_group("IntlServSTA", "all", acc["sk"], acc["ds"], acc["vs"],
-                extra_cols={"time_series_id": acc["tsid"]})
+
+def _ingest_intlservsta(M, done, resume):
+    gkey = "IntlServSTA:all"
+    if resume and gkey in done:
+        print(f"  skip {gkey}", flush=True)
+        return
+    sk, ds, vs, tsid = fetch_intlservsta(M)
+    write_group("IntlServSTA", "all", sk, ds, vs, extra_cols={"time_series_id": tsid})
     mark_done(done, gkey)
 
 

@@ -68,16 +68,26 @@ def current_vintage(unit):
     return f"uis:{cur.get('version')}:{themes}" or None
 
 
+def _catalog_series(source_id: str) -> list[str]:
+    """This source's catalogue ids, read-only; an unreadable catalogue (missing, garbage, a crashed
+    writer's hot journal) is a TransientError, never a partial or empty answer."""
+    from core import catalog_path                                  # noqa: PLC0415 - plan step 1
+    try:
+        con = catalog_path.connect_path(catalog_path.under(config.ROOT), write=False)
+        try:
+            return [r[0] for r in con.execute("SELECT series_id FROM series WHERE source_id=?", (source_id,))]
+        finally:
+            con.close()
+    except catalog_path.CutoverRefused:
+        raise                                                 # a wrong checkout after T0: not transient
+    except Exception as e:                                    # noqa: BLE001
+        raise TransientError(f"{source_id}: catalogue unreadable: {e!r}") from e
+
+
 def _published_indicators(source_id: str):
     """Indicator codes THIS source publishes, read from our own catalog."""
-    import sqlite3
-    db = os.path.join(config.ROOT, "data", "catalog.db")
-    if not os.path.exists(db):
-        db = os.path.join("data", "catalog.db")
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     out = set()
-    for (sid,) in con.execute("SELECT series_id FROM series WHERE source_id=?",
-                              (source_id,)):
+    for sid in _catalog_series(source_id):
         parts = sid.split(":", 2)
         if len(parts) == 3:
             bits = parts[2].split(".")
@@ -87,13 +97,7 @@ def _published_indicators(source_id: str):
 
 
 def _catalog_ids(source_id: str) -> set:
-    import sqlite3
-    db = os.path.join(config.ROOT, "data", "catalog.db")
-    if not os.path.exists(db):
-        db = os.path.join("data", "catalog.db")
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-    return {r[0].split(":", 1)[1] for r in con.execute(
-        "SELECT series_id FROM series WHERE source_id=?", (source_id,)) if ":" in r[0]}
+    return {s.split(":", 1)[1] for s in _catalog_series(source_id) if ":" in s}
 
 
 def update(unit, since) -> Result:

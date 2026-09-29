@@ -47,15 +47,14 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import io
-import json
 import os
-import shutil
-import sqlite3
-import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LOCAL = os.path.join(ROOT, "data", "catalog.db")
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
+LOCAL = catalog_path.catalog_path()           # the checkout's before T0, the build after
 WORKER_DIR = os.path.join(ROOT, "api", "worker")
 
 # Both catalogue databases. types.ts:17 binds CATALOG_CLIMATE; util.ts:510 SHARDED_SOURCES and
@@ -64,42 +63,12 @@ WORKER_DIR = os.path.join(ROOT, "api", "worker")
 DBS = ("econ-catalog", "econ-catalog-climate")
 
 
-def _wrangler() -> str:
-    """Prefer the repo-local binary. `npx wrangler` re-resolves the package and collides with
-    any concurrent wrangler in the shared npm cache (observed: EBUSY on miniflare during the
-    statcan push)."""
-    for c in (os.path.join(WORKER_DIR, "node_modules", ".bin", "wrangler.cmd"),
-              os.path.join(WORKER_DIR, "node_modules", ".bin", "wrangler"),
-              os.path.join(ROOT, "node_modules", ".bin", "wrangler.cmd"),
-              os.path.join(ROOT, "node_modules", ".bin", "wrangler")):
-        if os.path.exists(c):
-            return c
-    w = shutil.which("wrangler")
-    if w:
-        return w
-    # RuntimeError, NOT SystemExit. SystemExit derives from BaseException, so main()'s
-    # `except Exception` would not catch it and the process would exit 1 -- which this file
-    # defines as "at least one cached count disagrees". A missing binary would then report as a
-    # FINDING instead of as "could not look", inverting the very trichotomy the docstring
-    # promises. That path is live in CI: wrangler is installed by the `npm ci` inside the
-    # "Sync freshness to D1" step, which is skipped whenever the state push fails.
-    raise RuntimeError("no wrangler binary found; cannot reach D1")
-
-
 def d1(db: str, sql: str) -> tuple[list, int]:
-    res = subprocess.run(
-        [_wrangler(), "d1", "execute", db, "--remote", "--json", "--command", sql],
-        cwd=WORKER_DIR, capture_output=True, text=True,
-        encoding="utf-8", errors="replace", timeout=900)
-    out = res.stdout or ""
-    i = out.find("[")
-    if res.returncode != 0 or i < 0:
-        raise RuntimeError(f"{db}: wrangler rc={res.returncode}: {(res.stderr or out)[-300:]}")
-    rows, read = [], 0
-    for b in json.loads(out[i:]):
-        rows.extend(b.get("results") or [])
-        read += (b.get("meta") or {}).get("rows_read") or 0
-    return rows, read
+    """(rows, rows_read) through core.d1_remote (plan step 1); RuntimeError when D1 cannot be read."""
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import d1_remote                                           # noqa: PLC0415 - plan step 1
+    return d1_remote.rows(db, sql)
 
 
 def local_counts(sources) -> dict:
@@ -131,7 +100,7 @@ def local_counts(sources) -> dict:
         raise RuntimeError(f"local catalogue not found at {LOCAL}")
     gb = os.path.getsize(LOCAL) / 1e9
     age_d = (dt.datetime.now() - dt.datetime.fromtimestamp(os.path.getmtime(LOCAL))).days
-    con = sqlite3.connect(f"file:{LOCAL.replace(os.sep, '/')}?mode=ro", uri=True, timeout=300.0)
+    con = catalog_path.connect_path(LOCAL, write=False, timeout=300.0)
     con.execute("PRAGMA busy_timeout = 300000")   # crawlers hold this file continuously
     try:
         # STALENESS IS THE FAILURE MODE OF THIS WHOLE MODE, so say the age out loud. In CI the
@@ -203,7 +172,7 @@ def main(argv=None) -> int:
                     help="print the repair SQL for each mismatch; writes NOTHING")
     a = ap.parse_args(argv)
 
-    truth_label = "D1 series" if a.remote_truth else "local catalog.db"
+    truth_label = "D1 series" if a.remote_truth else "the local catalogue"
     print(f"source_counts audit -- cache vs {truth_label}")
 
     cache, truth, read = {}, {}, 0

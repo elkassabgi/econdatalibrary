@@ -112,9 +112,8 @@ def _catalogued(source_id: str) -> set:
     so an unfiltered file is both useless weight and an out-of-memory risk. Titling what is
     not listed changes nothing a user can see.
     """
-    import sqlite3
-    db = os.path.join(ROOT, "data", "catalog.db").replace("\\", "/")
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=120)
+    from core import catalog_path                        # the one catalogue resolver (plan step 1)
+    con = catalog_path.connect(timeout=120)
     try:
         return {r[0] for r in con.execute(
             "SELECT series_id FROM series WHERE source_id=?", (source_id,))}

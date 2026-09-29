@@ -140,10 +140,88 @@ def test_durable_clear_refuses_lock_and_failed_pull(tmp_path, monkeypatch):
     assert dcb._durable_clear("noaa") is False
     assert calls == [], "a pull was attempted under a live heavy-pass lock"
 
-    # Lock gone, pull fails (rc=1) -> refuse after exactly the pull attempt.
+    # Lock gone, other writers quiet, pull fails (rc=1) -> refuse after exactly the pull attempt.
     (lockdir / "local_heavy.lock").unlink()
+    monkeypatch.setattr(dcb, "_writers_quiet", lambda manual, window_min=0: True)
     assert dcb._durable_clear("noaa") is False
-    assert len(calls) == 1, "expected one pull-state attempt and no push"
+    assert len(calls) == 1 and "--pull-state" in calls[0][0], "expected one pull-state attempt and no push"
+
+
+def _clear_rig(tmp_path, monkeypatch, gate_rc=0, gate_out="720", stamp_hours_ago=1.0, gate_seq=None):
+    """A fake subprocess: the CI writer gate answers `gate_out`/`gate_rc` (or the next item of
+    `gate_seq`), updater.run pull/push succeed; the state store holds an owed row for noaa."""
+    import datetime as _dt
+    import subprocess
+    import types
+    from tools import derive_csv_bulk as dcb
+    from updater import state as _state
+
+    monkeypatch.setattr(dcb, "ROOT", str(tmp_path))
+    (tmp_path / "logs").mkdir(exist_ok=True)
+    if stamp_hours_ago is not None:
+        t = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=stamp_hours_ago)
+        (tmp_path / "logs" / "local_heavy.last_success").write_text(
+            t.strftime("%Y-%m-%dT%H:%M:%S.%f") + "0Z", encoding="ascii")    # PowerShell 'o', 7 digits
+    calls = []
+    seq = list(gate_seq or [])
+
+    def _run(args, **k):
+        if any("ci_writer_gate" in str(x) for x in args):
+            calls.append("gate")
+            rc, out = seq.pop(0) if seq else (gate_rc, gate_out)
+            return types.SimpleNamespace(stdout=out, returncode=rc)
+        calls.append(args[-1])                                   # --pull-state / --push-state
+        return types.SimpleNamespace(stdout="", returncode=0)
+    monkeypatch.setattr(subprocess, "run", _run)
+
+    class _St:
+        def full_rederives_owed(self):
+            return [{"source_id": "noaa"}]
+
+        def clear_full_rederive_owed(self, source):
+            calls.append("clear")
+    monkeypatch.setattr(_state, "StateStore", _St)
+    return dcb, calls
+
+
+def test_durable_clear_refuses_while_a_cloud_writer_is_busy_or_unreadable(tmp_path, monkeypatch):
+    """R1102: the tool checked only the local lock, while a queued updater-heavy run read BLOCKED."""
+    for rc, out in ((3, "BLOCKED: updater-heavy.yml queued"), (2, "UNKNOWN: could not read CI runs"),
+                    (0, "12")):                                   # clear, but only 12 free minutes
+        dcb, calls = _clear_rig(tmp_path, monkeypatch, gate_rc=rc, gate_out=out)
+        assert dcb._durable_clear("noaa") is False
+        assert calls == ["gate"], f"gate rc={rc} out={out!r}: must refuse before any pull, got {calls}"
+
+
+def test_durable_clear_refuses_when_a_desktop_pass_comes_due_inside_the_envelope(tmp_path, monkeypatch):
+    """R1102 rule 2: the guard starts a pass the moment one is due and CI is clear."""
+    for hours_ago in (None, 19.8, 40.0):                          # no stamp, due in 12 min, overdue
+        if (tmp_path / "logs" / "local_heavy.last_success").exists():
+            (tmp_path / "logs" / "local_heavy.last_success").unlink()
+        dcb, calls = _clear_rig(tmp_path, monkeypatch, stamp_hours_ago=hours_ago)
+        assert dcb._durable_clear("noaa") is False
+        assert "--pull-state" not in calls, f"stamp {hours_ago} h ago: pulled anyway {calls}"
+
+
+def test_durable_clear_rechecks_the_writers_before_the_push(tmp_path, monkeypatch):
+    dcb, calls = _clear_rig(tmp_path, monkeypatch, gate_seq=[(0, "720"), (3, "BLOCKED: queued")])
+    assert dcb._durable_clear("noaa") is False
+    assert calls == ["gate", "--pull-state", "clear", "gate"], calls
+
+
+def test_negative_control_durable_clear_goes_through_when_every_writer_is_quiet(tmp_path, monkeypatch):
+    dcb, calls = _clear_rig(tmp_path, monkeypatch)
+    assert dcb._durable_clear("noaa") is True
+    assert calls == ["gate", "--pull-state", "clear", "gate", "--push-state"], calls
+
+
+def test_the_desktop_cadence_matches_the_runner(tmp_path):
+    import re
+    from tools import derive_csv_bulk as dcb
+    ps1 = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "tools", "run_local_heavy.ps1"), encoding="utf-8", errors="replace").read()
+    m = re.search(r"\[int\]\s*\$MinHours\s*=\s*(\d+)", ps1)
+    assert m and int(m.group(1)) == dcb.LOCAL_MIN_HOURS, "run_local_heavy.ps1's $MinHours default moved"
 
 
 def test_no_cursors_branch_returns_the_shared_note():
@@ -280,27 +358,53 @@ def test_bulk_derive_refuses_when_the_registry_names_a_DIFFERENT_store(tmp_path,
     from tools import derive_csv_bulk as dcb
     from updater import config as ucfg
 
-    root = _bulk_fixture(tmp_path, "sec_edgar")
+    # Neutral ids since 2026-09-24: sec_edgar's 13F entry is sec_edgar_13f now and `--source sec_edgar` has
+    # its own explicit refusal (next test); this pins the GENERIC out_dir guard, for any such pair.
+    root = _bulk_fixture(tmp_path, "pair_a")
     monkeypatch.setattr(dcb, "ROOT", str(root))
     monkeypatch.setattr(ucfg, "REGISTRY", _fixture_registry(tmp_path, [
-        {"source_id": "sec_edgar", "out_dir": "edgar_13f"},
-        {"source_id": "sec_edgar_xbrl", "out_dir": "sec_edgar"},
+        {"source_id": "pair_a", "out_dir": "pair_a_other_store"},
+        {"source_id": "pair_b", "out_dir": "pair_a"},
     ]))
     # If the guard were absent this would reach the mirror preflight; make that branch LOUD
     # so a regression cannot pass by refusing for the wrong reason.
     import core.derive_csv as cdc
     monkeypatch.setattr(cdc, "_mirror_behind_store",
-                        lambda sources, sample=0: [("sec_edgar", "zz.parquet: local 1 vs R2 2")])
+                        lambda sources, sample=0: [("pair_a", "zz.parquet: local 1 vs R2 2")])
     monkeypatch.setattr(sys, "argv",
-                        ["derive_csv_bulk.py", "--source", "sec_edgar", "--bucket", "econ-data"])
+                        ["derive_csv_bulk.py", "--source", "pair_a", "--bucket", "econ-data"])
 
     assert dcb.main() == 2
     out = capsys.readouterr().out
-    assert "REFUSING: --source sec_edgar resolved the store" in out, out
-    assert "edgar_13f" in out, "the refusal must NAME the store the registry entry owns"
+    assert "REFUSING: --source pair_a resolved the store" in out, out
+    assert "pair_a_other_store" in out, "the refusal must NAME the store the registry entry owns"
     assert "MIRROR BEHIND R2" not in out, (
         "the id/out_dir mismatch must be reported BEFORE the mirror preflight — a mirror "
         "message here sends the operator to --allow-stale-mirror instead")
+
+
+def test_bulk_derive_refuses_the_xbrl_source_by_name(tmp_path, monkeypatch, capsys):
+    """After the 13F entry became sec_edgar_13f (2026-09-24) no registry entry is named `sec_edgar`, so the
+    out_dir guard above finds nothing to compare; `--source sec_edgar` (the XBRL product, written by
+    tools/refresh_sec_edgar.py) is refused by name, before the mirror preflight."""
+    from tools import derive_csv_bulk as dcb
+    from updater import config as ucfg
+
+    root = _bulk_fixture(tmp_path, "sec_edgar")
+    monkeypatch.setattr(dcb, "ROOT", str(root))
+    monkeypatch.setattr(ucfg, "REGISTRY", _fixture_registry(tmp_path, [
+        {"source_id": "sec_edgar_13f", "out_dir": "edgar_13f"},
+        {"source_id": "sec_edgar_xbrl", "out_dir": "sec_edgar"},
+    ]))
+    import core.derive_csv as cdc
+    monkeypatch.setattr(cdc, "_mirror_behind_store",
+                        lambda sources, sample=0: [("sec_edgar", "zz.parquet: local 1 vs R2 2")])
+    monkeypatch.setattr(sys, "argv",
+                        ["derive_csv_bulk.py", "--source", "sec_edgar", "--bucket", "econ-data"])
+    assert dcb.main() == 2
+    out = capsys.readouterr().out
+    assert "REFUSING: --source sec_edgar is the XBRL company-facts product" in out, out
+    assert "MIRROR BEHIND R2" not in out
 
 
 def test_bulk_derive_does_not_refuse_the_ordinary_case(tmp_path, monkeypatch, capsys):

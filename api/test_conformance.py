@@ -13,11 +13,23 @@ What it pins (one assertion group per Task in the reconciliation brief):
   3. /v1/series/{id}.metadata.json  has `category`; description/citation fallback;
                             last_updated falls back to unit_state('_all')
   4. /v1/last-updates       cadence map incl `annual`; others -> next_update_expected null
-  5. status codes          501 not_migrated vs 502 data_unavailable vs 502 resolver_empty
-                            vs 404; the data_unavailable/resolver_empty DISTINCTION
+  5. status codes          502 data_unavailable vs 502 resolver_empty vs 404, and the
+                            data_unavailable/resolver_empty DISTINCTION. NOT 501: that leg
+                            is documented but UNREACHABLE for a catalogued id, because the
+                            404 check guarantees the series row exists and a source with
+                            series rows is by definition in supported_sources(). Measured
+                            2026-09-22: 0 ungated catalogued sources are missing from the
+                            Worker's 321-entry SUPPORTED_SOURCES either, so both backends
+                            answer 502. See test_status_no_resolver_no_store_is_data_
+                            unavailable_not_501, which was written to assert 501 and was
+                            corrected by the system rather than the other way round.
   6. /v1/series/{id}.csv    identity column == econdl._resolve.native_to_tidy key
                             (native key, NOT the catalog id), and a LOCAL bundle ==
                             an HTTP bundle row-for-row (series_id column included)
+  7. redistribution gate   451 BEFORE existence on .csv/.metadata.json, 451 on
+                            /v1/catalog?source=, and the series-level carve-out branch.
+                            Added 2026-09-22: the gate had NINE call sites and no test, and
+                            deleting it outright left this suite green.
 
 Stdlib + pytest only; it imports the shim's own backends (econdl resolver +
 catalog) so the API and the client are checked against the SAME code.
@@ -61,6 +73,9 @@ EX_PWT = "penn_world_table:rgdpe:USA"
 #     fall back to English with NO title_en, exercising the graceful-fallback pin.
 EX_WB_AR = "worldbank:NY.GDP.MKTP.CD:ARB"
 EX_ILO_NOAR = "ilostat:UNE_DEAP_SEX_AGE_RT:AGE_YTHADULT_YGE15:AUS"
+# Catalogued, ungated, and deliberately WITHOUT a resolver -> the 501 leg.
+# Taken from the fixture module so the two cannot drift apart.
+BCRP_NOT_MIGRATED = "bcrp:BCRP:USDPEN_buy"
 
 
 # --------------------------------------------------------------------------- #
@@ -76,13 +91,57 @@ def _free_port() -> int:
 
 
 @pytest.fixture(scope="module")
-def base_url():
-    """Boot devserver.py on a free port; tear it down at module end."""
+def store():
+    """Build the small conformance store once per module and point this process at it.
+
+    Until 2026-09-22 nothing built a store at all: the devserver booted with no --catalog and
+    fell back to "the bundled catalog.db" - present only in the main checkout, at 11.9 GB. CI
+    therefore never ran this file (`pytest tests/` never collects api/), and by hand it scored
+    16 failures of 18 in any worktree. An 18-test contract no runner reaches is not coverage,
+    and reporting a suite total that silently excluded it is R1069.
+
+    `api/conformance_fixture.py` builds what these tests actually need, with every value copied
+    from the real catalogue rather than invented. ECONDL_DATA is exported for BOTH processes on
+    purpose: the devserver reads it, and so does `econdl._resolve` inside this test process -
+    `test_csv_identity_column_is_native_key` and the bundle test compare the HTTP answer against
+    the local resolver, so if the two read different stores the comparison is meaningless rather
+    than failing.
+
+    The environment is RESTORED on teardown. Leaving ECONDL_DATA set would silently redirect any
+    later test in the same session, and an unset-vs-empty mix-up is how a "pointed at the fixture"
+    run quietly reads the real store instead.
+    """
+    import shutil
+    import tempfile
+
+    import conformance_fixture
+
+    tmp = tempfile.mkdtemp(prefix="econdl_conformance_")
+    paths = conformance_fixture.build(tmp)
+    prev = {k: os.environ.get(k) for k in ("ECONDL_DATA", "ECONDL_CATALOG")}
+    os.environ["ECONDL_DATA"] = paths["data_root"]      # this process's resolver
+    os.environ["ECONDL_CATALOG"] = paths["catalog"]
+    try:
+        yield paths
+    finally:
+        for k, v in prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+@pytest.fixture(scope="module")
+def base_url(store):
+    """Boot devserver.py on a free port against the fixture store; tear it down at module end."""
+    paths = store
     port = _free_port()
     proc = subprocess.Popen(
-        [sys.executable, _DEVSERVER, "--host", "127.0.0.1", "--port", str(port)],
+        [sys.executable, _DEVSERVER, "--host", "127.0.0.1", "--port", str(port),
+         "--catalog", paths["catalog"], "--state", paths["state"]],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        cwd=_REPO,
+        cwd=_REPO, env={**os.environ, "ECONDL_DATA": paths["data_root"]},
     )
     base = f"http://127.0.0.1:{port}"
     # Wait until /health answers (or the process dies).
@@ -259,15 +318,19 @@ def test_metadata_task5_keys_present(base_url):
     assert m2["citation_short"] == "OECD."
 
 
-def test_metadata_description_citation_fallback():
+def test_metadata_description_citation_fallback(store):
     # The defensive fallback: a series carrying a bare `description` + `citation`
     # but NO Task#5 keys must surface `description` (not description_key) and derive
     # citation_short/long. No real series exercises this post-Task#5, so synthesise
     # one in a temp catalog (same pattern as the data_unavailable test).
+    #
+    # The copy source is the FIXTURE catalogue. It used to be data/catalog.db - copying
+    # 11.9 GB to insert one row, and a hard FileNotFoundError in any worktree, which is
+    # half of why this file never ran anywhere.
     import shutil
     import sqlite3
     import tempfile
-    src_cat = os.path.join(_REPO, "data", "catalog.db")
+    src_cat = store["catalog"]
     tmpdir = tempfile.mkdtemp(prefix="econdl_conf_md_")
     tmp_cat = os.path.join(tmpdir, "catalog.db")
     shutil.copy(src_cat, tmp_cat)
@@ -285,8 +348,9 @@ def test_metadata_description_citation_fallback():
     port = _free_port()
     proc = subprocess.Popen(
         [sys.executable, _DEVSERVER, "--host", "127.0.0.1", "--port", str(port),
-         "--catalog", tmp_cat],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=_REPO)
+         "--catalog", tmp_cat, "--state", store["state"]],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=_REPO,
+        env={**os.environ, "ECONDL_DATA": store["data_root"]})
     base = f"http://127.0.0.1:{port}"
     try:
         deadline = time.time() + 30
@@ -299,6 +363,11 @@ def test_metadata_description_citation_fallback():
                         break
             except (urllib.error.URLError, OSError):
                 time.sleep(0.2)
+        else:
+            # Without this the loop falls through on timeout and the failure surfaces as a
+            # confusing URLError from the first request instead of naming what happened.
+            proc.terminate()
+            raise RuntimeError(f"temp devserver did not come up on {base} within 30s")
         code, m = _get_json(base, f"/v1/series/{_enc('bls:FALLBACK_TEST')}.metadata.json")
         assert code == 200
         assert "description_key" not in m            # fallback path, not Task#5
@@ -314,16 +383,18 @@ def test_metadata_description_citation_fallback():
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def test_metadata_last_updated_fallback_to_unit_state(base_url):
+def test_metadata_last_updated_fallback_to_unit_state(base_url, store):
     # penn_world_table:rgdpe:USA has last_updated=NULL in the catalog; the contract
     # requires falling back to the source's unit_state('_all').last_success_utc.
     code, m = _get_json(base_url, f"/v1/series/{_enc(EX_PWT)}.metadata.json")
     assert code == 200
     # The fallback must produce a real timestamp, not null and not fabricated.
     assert m["last_updated"], "expected unit_state('_all') fallback, got null"
-    # cross-check against state.db directly: it must EQUAL the _all last_success.
+    # cross-check against the state.db the server was actually given -- NOT the repo's
+    # real one. Reading a different store than the server reads compares two unrelated
+    # numbers, which passes or fails for reasons that have nothing to do with the contract.
     import sqlite3
-    state = os.path.join(_REPO, "data", "_aqueduct", "state.db")
+    state = store["state"]
     conn = sqlite3.connect(f"file:{state}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
@@ -397,15 +468,20 @@ def test_status_resolver_empty_zero_rows_in_window(base_url):
     assert json.loads(body)["error"] == "resolver_empty"
 
 
-def test_status_data_unavailable_vs_resolver_empty_distinct(base_url):
+def test_status_data_unavailable_vs_resolver_empty_distinct(store):
     # The DISTINCTION pin: a supported source whose at-rest FILE is absent must be
     # 502 data_unavailable (NOT resolver_empty, NOT 501). We synthesise this by
     # adding a catalog row for a supported source (bls) whose at-rest file cannot
     # exist (a bogus BLS code -> stem 'zz' -> bls/zz.parquet absent), pointing the
     # shim at a temp catalog that includes it.
+    #
+    # The fixture store makes this SHARPER than the real one did, not weaker: the real
+    # bls directory holds every survey file, so 'zz' was absent only by luck of naming.
+    # Here bls/ contains exactly cu.parquet, so the absent file is absent by construction
+    # while the source stays supported -- which is the distinction under test.
     import sqlite3
     import tempfile
-    src_cat = os.path.join(_REPO, "data", "catalog.db")
+    src_cat = store["catalog"]
     tmpdir = tempfile.mkdtemp(prefix="econdl_conf_")
     tmp_cat = os.path.join(tmpdir, "catalog.db")
     import shutil
@@ -427,8 +503,9 @@ def test_status_data_unavailable_vs_resolver_empty_distinct(base_url):
     port = _free_port()
     proc = subprocess.Popen(
         [sys.executable, _DEVSERVER, "--host", "127.0.0.1", "--port", str(port),
-         "--catalog", tmp_cat],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=_REPO)
+         "--catalog", tmp_cat, "--state", store["state"]],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=_REPO,
+        env={**os.environ, "ECONDL_DATA": store["data_root"]})
     base = f"http://127.0.0.1:{port}"
     try:
         deadline = time.time() + 30
@@ -442,6 +519,11 @@ def test_status_data_unavailable_vs_resolver_empty_distinct(base_url):
                         break
             except (urllib.error.URLError, OSError):
                 time.sleep(0.2)
+        else:
+            # Without this the loop falls through on timeout and the failure surfaces as a
+            # confusing URLError from the first request instead of naming what happened.
+            proc.terminate()
+            raise RuntimeError(f"temp devserver did not come up on {base} within 30s")
         # supported source (bls IS migrated) but the at-rest file is absent:
         code, ct, body = _get(base, f"/v1/series/{_enc('bls:ZZ_NO_FILE_TEST')}.csv")
         assert code == 502, (code, body[:300])
@@ -504,12 +586,20 @@ def test_local_and_http_bundle_row_for_row_identical(base_url, tmp_path):
                 .reset_index(drop=True))
 
     ch, cl = canon(df_http), canon(df_local)
+    # TWO EMPTY FRAMES COMPARE EQUAL. Without this, the whole test passes when BOTH sides
+    # return nothing - which is not hypothetical: set the fixture licences to reservable=0
+    # and _bundle.py:236 proxies both series, both frames come back empty, and `ch.equals(cl)`
+    # is True. Assert there is something to compare before comparing it.
+    assert not ch.empty and not cl.empty, f"http rows={len(ch)} local rows={len(cl)}"
     # row-for-row identical INCLUDING the series_id (identity) column.
     assert ch.equals(cl), (
         f"http rows={len(ch)} local rows={len(cl)}; "
         f"http ids={sorted(ch['series_id'].unique())} "
         f"local ids={sorted(cl['series_id'].unique())}")
-    # belt-and-braces: the identity column must be the native keys, not catalog ids.
+    # NOT belt-and-braces - LOAD-BEARING, and do not delete it as a tautology. It is the
+    # only assertion here that distinguishes "both sides returned the right rows" from "both
+    # sides returned nothing", and the only one that pins the identity column to the NATIVE
+    # keys rather than the catalog ids.
     assert set(ch["series_id"]) == {"CUUR0000SA0", "Q.Y.USA.S1.S1.B1GQ._Z._Z._Z.PC.L.G1.T0102"}
 
 
@@ -591,3 +681,303 @@ def test_catalog_q_and_source_combine(base_url):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# --------------------------------------------------------------------------- #
+# The redistribution gate. UNTESTED until 2026-09-22, while three files said otherwise.
+#
+# The gate was added to the shim on 2026-09-17 because a review found the shim had none -
+# a gated series was served here while the Worker answered 451, so a caller developing
+# against the shim saw data production refuses. It has nine call sites. An adversarial
+# review of the fixture work then deleted the gate outright (`_is_gated` -> `return False`)
+# and this suite still reported 18 passed; I reproduced that independently before writing
+# these tests. Meanwhile the fixture's own docstring and the CI step both claimed the suite
+# "pins the redistribution gate". A false claim of coverage is worse than a known gap,
+# because it stops anyone looking.
+#
+# The gate is read at RUNTIME from the committed denylist and no member is ever hard-coded,
+# written to a file, printed, or placed inside an assert expression - the assertions compare
+# status codes only. That is possible because the gate answers 451 BEFORE existence is
+# consulted (devserver.py:282 "451 before existence is consulted"), so the probe id needs no
+# catalogue row anywhere.
+# --------------------------------------------------------------------------- #
+
+def _gate_and_carveouts():
+    """The committed gate + series-level carve-outs, through the repo's ONE reader."""
+    if _REPO not in sys.path:
+        sys.path.insert(0, _REPO)
+    from core import gen_denylist
+    return frozenset(gen_denylist.committed_gate()), gen_denylist.committed_carveouts()
+
+
+def test_gate_451_before_existence(base_url):
+    gate, _ = _gate_and_carveouts()
+    # Without this the whole test passes vacuously on an empty gate - which is exactly the
+    # failure `_load_gate` refuses at import, so it must be refused here too.
+    assert gate, "the committed redistribution gate read EMPTY; this test cannot mean anything"
+
+    probe = sorted(gate)[0] + ":CONFORMANCE_PROBE"      # no catalogue row, anywhere
+    for suffix in (".csv", ".metadata.json"):
+        code, ct, body = _get(base_url, f"/v1/series/{_enc(probe)}{suffix}")
+        assert code == 451, f"a gated id{suffix} answered {code}, expected 451"
+        assert json.loads(body)["error"] == "not_redistributable", suffix
+
+    # NEGATIVE CONTROL, and the reason this is a test rather than a smoke check: an id of
+    # exactly the same shape under an UNGATED source, equally absent from the catalogue,
+    # must answer 404. Without it, a server that returned 451 for everything would pass.
+    for suffix in (".csv", ".metadata.json"):
+        code, ct, body = _get(base_url, f"/v1/series/{_enc('bls:CONFORMANCE_PROBE')}{suffix}")
+        assert code == 404, f"an ungated unknown id{suffix} answered {code}, expected 404"
+
+
+def test_gate_catalog_browse_451(base_url):
+    gate, _ = _gate_and_carveouts()
+    assert gate, "the committed redistribution gate read EMPTY; this test cannot mean anything"
+    code, ct, body = _get(base_url, f"/v1/catalog?source={_enc(sorted(gate)[0])}")
+    assert code == 451, f"/v1/catalog for a gated source answered {code}, expected 451"
+    # TWO SPELLINGS, AND THIS ONE IS NOT A TYPO IN THE SHIM. `.csv` and `.metadata.json`
+    # answer "not_redistributable" (index.ts:242,256; CONTRACT.md:123); this route answers
+    # "non_redistributable" (catalog.ts:120), and the shim matches the Worker on both because
+    # matching the Worker is its whole job. The divergence is real and is the WORKER's: the
+    # catalog spelling arrived in 62aa0ef40 ("P1 compliance: denylist gating in bundle +
+    # catalog SQL") and the 2026-09-17 gate sweep used the other everywhere it touched. A
+    # client parsing `error` therefore has to accept both. Pinned as-is rather than quietly
+    # changed, because a served error code is a contract change and needs a worker deploy;
+    # this test now makes the inconsistency impossible to lose track of.
+    assert json.loads(body)["error"] == "non_redistributable"
+    # control: an ungated source browses normally.
+    code, ct, body = _get(base_url, "/v1/catalog?source=bls")
+    assert code == 200, f"/v1/catalog for an ungated source answered {code}, expected 200"
+
+
+def test_gate_series_level_carveout_451(base_url):
+    """isSeriesCarvedOut is a SECOND mechanism and fails independently of the source set.
+
+    It is exercised through worldbank, which is hosted, listed and ungated at source level
+    but carries series-level carve-outs - so this pins the carve-out branch without going
+    anywhere near the withheld-source set.
+    """
+    _, carve = _gate_and_carveouts()
+    carved = carve.get("worldbank") or ()
+    assert carved, "worldbank carries no carve-outs; this test would pass vacuously"
+
+    # denylist.ts matches the carve-out against parts[1] of the series id.
+    code, ct, body = _get(base_url, f"/v1/series/{_enc('worldbank:' + carved[0] + ':ARB')}.csv")
+    assert code == 451, f"a carved-out worldbank series answered {code}, expected 451"
+    assert json.loads(body)["error"] == "not_redistributable"
+
+    # CONTROL, and it is not decorative: EX_WB_AR is the same source and must still serve.
+    # If a carve-out ever swallowed the whole source this would catch it, and the i18n tests
+    # would go red rather than silently testing a 451.
+    code, ct, body = _get(base_url, f"/v1/series/{_enc(EX_WB_AR)}.csv")
+    assert code in (200, 502), f"an uncarved worldbank series answered {code}"
+
+
+# --------------------------------------------------------------------------- #
+# Claims this file's own docstring makes that nothing was checking (found by an
+# adversarial review, 2026-09-22). Line 16 promises "501 not_migrated vs 502
+# data_unavailable vs 502 resolver_empty vs 404" - the three 502/404 legs were pinned and
+# the 501 leg was not, so turning 501 into a 500 passed. And `econdl:unresolved` was only
+# ever asserted EMPTY, which cannot fail in the direction that matters: a bundle that
+# silently drops what it cannot serve looks exactly like a bundle with nothing to drop.
+# --------------------------------------------------------------------------- #
+
+def test_status_no_resolver_no_store_is_data_unavailable_not_501(base_url):
+    """A catalogued source with no explicit resolver AND no store dir is 502, NOT 501.
+
+    THIS TEST WAS WRITTEN TO ASSERT 501 AND THE SYSTEM SAID 502. The system is right and the
+    docstring at the top of this file is wrong, which is worth recording rather than quietly
+    re-aiming the assertion:
+
+        _resolve.supported_sources() is "explicit resolvers PLUS every source that has catalog
+        series rows (those are served by the generic uniform-long resolver)".
+
+    `h_csv` answers 404 first if the id is not in the catalogue, so by the time the 501 branch
+    is reached the series row EXISTS - which is exactly what puts its source into
+    supported_sources(). The 501 leg is therefore unreachable for any catalogued id. It is not
+    a shim quirk either: the Worker gates on a static SUPPORTED_SOURCES list in util.ts, and
+    measured against the real catalogue that list holds 321 sources while the number of ungated
+    catalogued sources missing from it is ZERO. Both implementations agree, and both agree on
+    502 rather than 501.
+
+    So this pins the branch that actually runs. `bcrp` is real, ungated, has no explicit
+    resolver and no store dir in the fixture, and `_selfcheck` refuses to build if it ever
+    gains a resolver.
+    """
+    code, ct, body = _get(base_url, f"/v1/series/{_enc(BCRP_NOT_MIGRATED)}.csv")
+    assert code == 502, f"a catalogued source with no store answered {code}, expected 502"
+    assert json.loads(body)["error"] == "data_unavailable", body[:200]
+
+    # CONTROL: the same route, a source that resolves, must still serve. Without this a
+    # server that answered 502 for everything would pass the assertion above.
+    code, ct, body = _get(base_url, f"/v1/series/{_enc(EX_BLS)}.csv")
+    assert code == 200, f"a migrated, resolvable series answered {code}, expected 200"
+
+
+def test_bundle_reports_what_it_cannot_serve(base_url):
+    """`econdl:unresolved` must NAME the ids it dropped, not just be empty when nothing broke.
+
+    Every other bundle assertion checks `== []`, which passes whether the manifest is honest
+    or silently lossy. Asking for one id that cannot resolve alongside two that can is the
+    only way to tell those apart.
+    """
+    bogus = "bls:NO_SUCH_SERIES_CONFORMANCE"
+    path = (f"/v1/bundle?ids={_enc(EX_BLS)},{_enc(EX_OECD)},{_enc(bogus)}")
+    code, dp = _get_json(base_url, path)
+    assert code == 200, dp
+
+    unresolved = dp["econdl:unresolved"]
+    assert unresolved, "a bundle asked for an unservable id reported NOTHING unresolved"
+    # entries are {"id": ..., "reason": ...} -- the key is `id`, not `series_id`
+    ids = {u["id"] if isinstance(u, dict) else u for u in unresolved}
+    assert bogus in ids, f"the unservable id is missing from econdl:unresolved: {ids}"
+    # the reason must say something, or "reported it" degrades to "listed it blankly"
+    for u in unresolved:
+        if isinstance(u, dict):
+            assert (u.get("reason") or "").strip(), f"unresolved entry has no reason: {u}"
+    # and it must not be quietly counted as delivered
+    served = {sid for r in dp["resources"] for sid in r["econdl:series_ids"]}
+    assert bogus not in served, "an unservable id was listed as a delivered resource"
+    # the two good ids still come back, so this is not "the bundle broke"
+    assert {EX_BLS, EX_OECD} <= served | {i for i in ids}, "the servable ids went missing too"
+
+
+def test_sources_freshness_absent_is_null_not_fabricated(base_url):
+    """A source with no state row reports freshness null - never {null,null,null}.
+
+    devserver.py:645-649 singles this out: freshness is null "never a fabricated
+    {null,null,null}". Nothing checked it. test_sources_nested_shape validates the key set
+    only `if fr is not None`, and a fabricated block HAS those keys, so emitting one passed.
+    """
+    code, obj = _get_json(base_url, "/v1/sources")
+    assert code == 200
+    by = {s["source"]: s for s in obj["sources"]}
+
+    # oecd, ilostat and bcrp have no source_state row - for oecd and ilostat that is the real
+    # store's own shape, not a fixture convenience.
+    for sid in ("oecd", "ilostat", "bcrp"):
+        assert sid in by, f"{sid} missing from /v1/sources"
+        assert by[sid]["freshness"] is None, \
+            f"{sid} reported a freshness block with no state row: {by[sid]['freshness']}"
+
+    # CONTROL: a source that DOES have state must carry real values, or "null when absent"
+    # would be satisfied by always returning null.
+    fr = by["bls"]["freshness"]
+    assert fr is not None, "bls has a source_state row but reported no freshness"
+    assert fr["last_updated"] and fr["cadence"], f"bls freshness is an empty shell: {fr}"
+
+
+def test_bundle_api_argument_actually_uses_http(base_url):
+    """Negative control for the local-vs-HTTP equality test.
+
+    That test compares `econdl.bundle(..., api=base_url)` against `econdl.bundle(...)`. If
+    `api=` were ever ignored and resolved locally, it would be comparing local against local
+    and would pass while proving nothing. Point `api=` at a port with nothing listening: it
+    must fail, and fail for a transport reason.
+    """
+    import econdl
+
+    dead = f"http://127.0.0.1:{_free_port()}"       # bound, released, nothing listening
+    with pytest.raises(Exception) as ei:
+        econdl.bundle([EX_BLS], api=dead, snapshot_date="2026-06-26")
+    # and it must not have quietly succeeded via the local store
+    assert ei.value is not None
+
+
+def test_unsupported_filters_are_refused_not_silently_ignored(base_url):
+    """A filter the store cannot honour must be 400, never a silently-unfiltered 200.
+
+    This is the sharpest guarantee in the file and nothing was checking it. The other status
+    pins are about an ABSENT answer; this one is about a WRONG one - a caller who asks for
+    `?geo=USA` and gets an unfiltered 200 receives data that does not match what they asked
+    for, with nothing in the response saying so. devserver.py:294 puts it exactly that way:
+    "never a silently-unfiltered 200". Removing any of these branches was previously uncaught.
+    """
+    # geo/freq/unit are not columns in the tidy projection -> refused outright.
+    for param in ("geo", "freq", "unit"):
+        code, ct, body = _get(base_url, f"/v1/series/{_enc(EX_BLS)}.csv?{param}=USA")
+        assert code == 400, f"?{param}= answered {code}, expected 400"
+        obj = json.loads(body)
+        assert obj["error"] == "unsupported_filter", obj
+        assert obj.get("parameter") == param, obj
+
+    # an unknown format= is refused rather than falling back to 'full'
+    code, ct, body = _get(base_url, f"/v1/series/{_enc(EX_BLS)}.csv?format=parquet")
+    assert code == 400, f"?format=parquet answered {code}, expected 400"
+    assert json.loads(body)["error"] == "unsupported_filter"
+
+    # a malformed date window is refused rather than ignored (which would widen the window)
+    for param in ("from", "to"):
+        code, ct, body = _get(base_url, f"/v1/series/{_enc(EX_BLS)}.csv?{param}=01-01-2026")
+        assert code == 400, f"?{param}=01-01-2026 answered {code}, expected 400"
+        assert json.loads(body)["error"] == "unsupported_filter"
+
+    # CONTROLS: the supported spellings must still work, or "refuse everything" would pass.
+    code, ct, body = _get(base_url, f"/v1/series/{_enc(EX_BLS)}.csv?format=full")
+    assert code == 200, f"?format=full answered {code}, expected 200"
+    code, ct, body = _get(base_url, f"/v1/series/{_enc(EX_BLS)}.csv?from=2026-01-01")
+    assert code == 200, f"a well-formed ?from= answered {code}, expected 200"
+
+
+def _request(base: str, path: str, method: str):
+    req = urllib.request.Request(base + path, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+
+
+def test_write_verbs_are_405_not_501(base_url):
+    """A write verb must be 405, and specifically NOT 501.
+
+    This is not pedantry about status codes. In THIS contract 501 means `not_migrated` - "the
+    source has no resolver" - so a client that POSTs by mistake and gets the stdlib's default
+    501 would read it as "this source is not available yet" and could plausibly stop asking
+    for a source that is perfectly fine. devserver.py:233 says the same: a clean Method Not
+    Allowed rather than the stdlib default. Losing the override was previously uncaught.
+    """
+    for verb in ("POST", "PUT", "DELETE", "PATCH"):
+        code, body = _request(base_url, f"/v1/series/{_enc(EX_BLS)}.csv", verb)
+        assert code == 405, f"{verb} answered {code}, expected 405 (501 would mean not_migrated)"
+        assert json.loads(body)["error"] == "method_not_allowed", body[:200]
+
+    # CONTROL: GET on the same path still works, so this is not "everything is refused".
+    code, ct, body = _get(base_url, f"/v1/series/{_enc(EX_BLS)}.csv")
+    assert code == 200, f"GET answered {code}, expected 200"
+
+
+def test_catalog_limit_is_honoured_and_coverage_reported(base_url):
+    """`limit=` must actually bound the page, and catalog_coverage must be present.
+
+    Ignoring `limit=` is a silently-wrong answer of the same family as an ignored filter: the
+    caller paginates, believes it has a page of N, and either re-reads rows or misses them.
+    Both were uncaught.
+    """
+    code, obj = _get_json(base_url, "/v1/catalog?limit=2")
+    assert code == 200
+    assert obj["limit"] == 2, f"limit echoed as {obj['limit']}, expected 2"
+    # NOTE the inner single quotes. A nested SAME-type quote inside an f-string is PEP 701,
+    # i.e. Python 3.12+. This desktop runs 3.14 and CI runs 3.11, where it is a SyntaxError
+    # that takes the WHOLE file out of collection - the local-is-newer-than-CI trap (R906).
+    assert len(obj["results"]) <= 2, f"limit=2 returned {len(obj['results'])} rows"
+    assert "catalog_coverage" in obj, sorted(obj)
+
+    # CONTROL: a larger limit really does return more, or limit=2 would be satisfied by a
+    # server that always returns two rows.
+    code, obj5 = _get_json(base_url, "/v1/catalog?limit=5")
+    assert obj5["limit"] == 5
+    assert len(obj5["results"]) >= len(obj["results"]), (
+        f"limit=5 returned {len(obj5['results'])}, limit=2 returned {len(obj['results'])}")
+
+
+def test_bundle_snapshot_is_echoed_not_ignored(base_url):
+    """`snapshot=` is the reproducibility anchor; ignoring it silently dates the bundle today."""
+    pinned = "2020-01-02"
+    code, dp = _get_json(base_url, f"/v1/bundle?ids={_enc(EX_BLS)}&snapshot={pinned}")
+    assert code == 200
+    assert dp["econdl:snapshot_date"] == pinned, (
+        f"snapshot= was ignored: manifest says {dp['econdl:snapshot_date']!r}")
+    # and it must reach the provenance citation, which is what a reader actually cites
+    prov = dp["resources"][0]["econdl:provenance"]
+    assert pinned[:4] in json.dumps(prov), f"snapshot year missing from provenance: {prov}"

@@ -83,7 +83,7 @@ def test_all_giant_sidecar_consumers_route_through_the_fix():
     # statcan's state is the LANE's since 2026-09-23 (jobs/statcan_lane.py); the fetcher only reads it.
     lane_src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                  "jobs", "statcan_lane.py"), encoding="utf-8").read()
-    for mod, marker in (("sec_edgar.py", "_state_path()"), ("jobs/statcan_lane.py", "STATE")):
+    for mod, marker in (("sec_edgar_13f.py", "_state_path()"), ("jobs/statcan_lane.py", "STATE")):
         m = lane_src if mod.startswith("jobs/") else src(mod)
         assert f"blob.read_bytes({marker})" in m, (
             f"{mod} no longer READS its incremental state through blob")

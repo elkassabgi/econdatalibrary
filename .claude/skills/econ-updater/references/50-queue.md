@@ -1329,6 +1329,34 @@ ember 26, boe 25, statfin 23, ssb 22, dst 21, defillama 18, ksh_stadat 15,
 fed_board 13, cso 12 and more. Each needs the same treatment — sync from R2, re-derive,
 verify. ilostat was taken first because it was the worst (952).
 
+### ilostat — OPEN: 24 catalogued ids no fetch can ever refresh (measured 2026-09-23, review R1137)
+
+fix/ilostat-changed-indicators maps the fetcher's published indicator stems to the catalogue exactly
+(3,305 of 3,305 ids claimed over 1,986 stems, 0 over-claims). But 24 catalogued WHOLE ids sit on stems
+that are in neither the fresh ILO table of contents nor the 2026-08-03 one. No stem the fetcher
+publishes can ever name them, so their CSVs are frozen and nothing reports it. Measured by the review's
+`scratchpad/AR_ilostat/m1b_orphans.py` (store rows and max obs from the local store, 2026-08-07 files).
+
+- 18 look RENAMED by ILO, `X` -> `M` in the fourth letter; each has a candidate successor stem with
+  the `M` form (e.g. EMP_XFLB_SEX_ECO_NB_A -> EMP_MFLB_SEX_ECO_NB_A): EMP_XFLB_SEX_ECO_NB_A,
+  EMP_XFLB_SEX_OCU_NB_A, EMP_XFLC_SEX_ECO_NB_A, EMP_XFLC_SEX_OCU_NB_A, EMP_XFRB_SEX_CBR_NB_A,
+  EMP_XFRC_SEX_CCT_NB_A, EMP_XNAO_SEX_CDS_NB_A, EMP_XNAO_SEX_ECO_NB_A, EMP_XNAO_SEX_EDU_NB_A,
+  EMP_XNAO_SEX_OCU_NB_A, POP_XFLB_SEX_CBR_NB_A, POP_XFLB_SEX_EDU_NB_A, POP_XFLC_SEX_CCT_NB_A,
+  POP_XFLC_SEX_EDU_NB_A, POP_XFRB_SEX_CBR_NB_A, POP_XFRC_SEX_CCT_NB_A, POP_XNAO_SEX_CDS_NB_A,
+  POP_XNAS_SEX_CRS_NB_A.
+- 6 have no candidate successor: EMP_CARE_SEX_CAR_NB_A, POP_XNAI_SEX_CPR_NB_A, and the TUNE family
+  UNE_TUNE_SEX_ECO_EDU_NB_A, UNE_TUNE_SEX_ECO_NB_A, UNE_TUNE_SEX_OCU_EDU_NB_A, UNE_TUNE_SEX_OCU_NB_A.
+
+Stored max obs: 2024-01-01 for the 18 renamed ones and POP_XNAI_SEX_CPR_NB_A, 2025-01-01 for
+EMP_CARE_SEX_CAR_NB_A and the four UNE_TUNE ids. The catalogue ids are
+`ilostat:<stem>`. TO CLOSE: decide per stem - catalogue the successor and retire the old id (an id
+change on econ is ordinary, not reserved), or mark it discontinued. Cataloguing reaches users only after
+the D1 catalogue sync, which is frozen at the time of writing.
+
+ALSO RECORDED HERE: 39 stems the fetcher publishes have NO catalogue id. Before `catalog_scope: subset`
+was declared for ilostat (same branch), a pass that published only those read "csv coherence unmet" and
+ATTENTION although nothing served changed. The subset declaration is sound because the mapping is exact.
+
 ### Resync-first sweep, batch 1 — only 1 of 6 was genuinely stale
 
 Proof that "1,379 files behind R2" is NOT "1,379 stale served objects". After syncing each
@@ -1801,7 +1829,39 @@ released since 2026-07-29 and we hold 456 of them.** None could have reached us 
 It FAILS CLOSED: an empty or implausibly short list raises rather than reporting "no cubes
 changed", because that verdict advances the watermark.
 
-STILL OPEN, in this order — the first two are prerequisites for the third:
+> **CORRECTED 2026-09-23 (R1090) — the order below is WRONG; read this first.** Step 1's premise,
+> that the vector-map read is "the ~7.5 min/cube term", was never measured (the run log records
+> nothing per cube). Measured today: one `getBulkVectorDataByRange` of 250 vectors takes **~40 s**
+> (43.99 / 43.99 / 32.09 s, n=3, cube 24100058, latency not tracking volume). The backlog is **478
+> held cubes released since 07-29, 1,514,219,430 rows, 69,547,320 vectors** (97 cubes over 1M rows
+> hold 97.7% of the rows) - so ~278,000 requests, on the order of MONTHS sequentially, against a map
+> read of ~1.7 h for the whole backlog at the fetcher's own 250,644 rows/s. A map cache saves ~1%.
+> The lever is the path per cube: the 250-vector tail for small cubes, the bulk full-table download
+> the ingester already uses (one request per cube) for large ones. Design that FIRST; the budget-skip
+> item below still applies after it. Instruments: NUMBERS.md rows "statcan's release backlog is 478
+> held cubes" and "statcan's vector path costs ~40 s per 250-vector request".
+>
+> **UPDATE 2026-09-23 (R1091): DESIGNED AND BUILT on branch `fix/statcan-whole-table` — every cube,
+> not only the large ones.** The tail costs ~0.16 s PER VECTOR (1 vector 0.8 s, 10 vectors 1.7 s), so
+> the whole table wins on every cube measured (break-even ~21,000 observations per vector). The
+> fetcher now re-downloads each changed cube, parses it with `jobs/ingest_statcan.parse_zip_to_parquet`,
+> gates it on getCubeMetadata (exact for cubes with vectors; vectorless cubes need zero dropped rows
+> and at least the stored rows), requires 90% of the stored keys, and merges with
+> `merge_and_write_bounded(new_path=...)`. It also quarantines a cube after 3 deterministic failures
+> on one release, refetches re-released cubes, saves after every cube, goes smallest-first, and
+> checks the run's remaining time. 24100058 (53.3M rows) takes ~12 min in total. Once it merges,
+> the order below becomes:
+>   (a) the budget skip (item 2) - unchanged, still first;
+>   (b) rewind the watermark to 2026-07-29 (item 3) - now hours of work, not ~57 h, and item 1 is moot;
+>   (c) **SERVING**: users read statcan through table-grain CSVs from `tools/derive_statcan_tables.py`,
+>       which the updater never calls, so a refreshed cube reaches nobody until its tables are
+>       re-derived. Parts are named by dimension VALUE (`statcan:<pid>#<part>`), so a relabel
+>       (24100058: "Windsor" -> "Windsor - other locations", 590,276 rows) moves a public id and needs
+>       the catalogue. That runs into the frozen D1 sync (Ahmed's cost decision).
+>   (d) regenerate docs/runbook/statcan.md from a checkout that has `data/` (gen_runbook reads
+>       state.db and catalog.db).
+
+STILL OPEN, in this order — the first two are prerequisites for the third (SUPERSEDED, see above):
 
 1. **The per-cube vector map has no cache.** `_disk_vector_map` re-streams four string columns of
    every changed cube from R2 on every visit, which is the ~7.5 min/cube term behind the 09-11
@@ -1837,3 +1897,65 @@ ALSO WORTH KNOWING, because two numbers here mislead:
 And the publisher IS ahead — confirmed at the datapoint level, not from metadata: 6 of 6 probed
 vectors across 3 cubes, with a negative control (vector 999999999 -> status FAILED, empty
 datapoints). The staleness is ours.
+
+## stat_estonia — OPEN cataloguing gap: 17 stored tables with no catalogue entry (measured 2026-09-23, review R1133)
+
+The registry declares `catalog_scope: subset` for stat_estonia (fix/stat-estonia-changed-tables). A pass
+that merges rows only into an UNCATALOGUED table then reads as a coverage note, not ATTENTION. That is
+sound for serving: a changed catalogued table maps exactly. But the health gate no longer shows a table
+that has rows and no catalogue entry, so THIS ENTRY IS THEIR RECORD. Do not delete it until the list
+below is re-measured as empty.
+
+Measured on R2 (the review's `scratchpad/AR_subset/e2_estonia_store.py` and `e5_estonia_17.py`):
+3,447 of the 3,464 table prefixes with stored rows are catalogued. These 17 hold 15,667 series and
+have no catalogue entry. All 17 are also in the desktop store.
+
+| Table (store prefix) | Stored rows | Stored obs dates |
+|---|---:|---|
+| `EE:keskkond:keskkonnakaitse-ja-jarelevalve:Investeeringud kliimamuutuste ohjamiseks:KK22.PX` | 345 | 2021-12-31..2023-12-31 |
+| `EE:keskkond:keskonna-arvepidamine:metsa-arvepidamine:KK54.PX` | 130 | 2022-12-31..2023-12-31 |
+| `EE:keskkond:keskonna-arvepidamine:metsa-arvepidamine:KK55.PX` | 54 | 2022-12-31..2023-12-31 |
+| `EE:majandus:majandusuksused:ettevetjad:ER022.px` | 23 | 2025-12-31 |
+| `EE:majandus:majandusuksused:ettevetjad:ER0250.px` | 138 | 2025-12-31 |
+| `EE:majandus:majandusuksused:ettevetjad:ER0260.px` | 115 | 2025-12-31 |
+| `EE:majandus:majandusuksused:ettevetjad:ER0271.px` | 414 | 2025-12-31 |
+| `EE:majandus:majandusuksused:ettevetjad:ER0280.px` | 108 | 2025-12-31 |
+| `EE:majandus:majandusuksused:ettevetjad:ER0290.px` | 207 | 2025-12-31 |
+| `EE:majandus:majandusuksused:ettevetjad:ER0308.px` | 3,036 | 2025-12-31 |
+| `EE:majandus:majandusuksused:ettevetjad:ER0320.px` | 792 | 2025-12-31 |
+| `EE:majandus:majandusuksused:ettevetjad:ER220.px` | 6 | 2025-12-31 |
+| `EE:majandus:majandusuksused:kasumitaotluseta-uksused:ER0421.px` | 414 | 2025-12-31 |
+| `EE:majandus:majandusuksused:kasumitaotluseta-uksused:ER0430.px` | 23 | 2025-12-31 |
+| `EE:majandus:majandusuksused:kasumitaotluseta-uksused:ER0440.px` | 23 | 2025-12-31 |
+| `EE:majandus:majandusuksused:uldandmed:ER005.PX` | 168 | 2025-12-31 |
+| `EE:rahvaloendus:rel_vordlus:rahvastiku-demograafilised-ja-etno-kultuurilised-naitajad:RLV445.px` | 18,055 | 2011-12-31..2021-12-31 |
+
+WHY IT IS A GAP AND NOT CURATION: the only cataloguer for this source is the manual desktop tool
+`tools/catalog_pxweb_flowgrain.py`. The updater never catalogues a table that lands rows for the first
+time, so every new table joins this list without a signal.
+
+TO CLOSE IT: run the cataloguer for these tables; then the D1 catalogue sync (frozen at the time of
+writing, so nothing catalogued reaches a user until it runs); then re-measure this list against R2 and
+the catalogue, and replace this table with the new measurement.
+
+SOUNDNESS RESTS ON THE EXACT MAPPING: the orchestrator's zero-mapped sample cannot see a `.PX` table
+prefix (0 dot-prefix hits over all 4,978 listed tables), so it cannot catch a catalogued table the
+exact mapper misses. Today the exact mapper has 0 case or prefix mismatches against the store.
+
+### cso ROA41-ROA52: ten road-injury tables NOT HOSTED - a date-convention decision, not a bug (2026-09-23)
+
+CSO indexes these tables' time axis (TLIST(A1)) by ROLLING FIVE-YEAR WINDOWS: '2019-2023',
+'2020-2024', '2021-2025' (measured live 2026-09-23; ROA52 has 252 of 336 values non-null). The period
+grammar declines multi-year spans ON PURPOSE - only a one-year span is an academic year - because a
+loose range rule once promoted a classification axis to time (R288). None of the ten is stored or
+catalogued (local catalog.db: 0 ids each). Branch fix/cso-publisher-empty stops them re-failing as
+'unparsed' transient every run (outcome `span_time`, cursor advanced, nothing claimed held), so the gap
+now shows only as one log line per release - THIS entry is where it is recorded.
+
+To host them, choose which date a window stands for (period-END, 2023-12-31 for '2019-2023', matches
+the library's dominant convention in DATE_CONVENTIONS.md) and apply it ONLY to an authoritatively
+flagged time axis whose codes are all spans, with an injectivity check (two window lengths ending the
+same year would collide). The catalogue title must then say the value is a five-year window.
+
+HRD51 and DOTA09 (the other two of the twelve) are published with EVERY value null (DOTA09's note:
+"removed pending a review"); they come back when CSO moves their release stamp.

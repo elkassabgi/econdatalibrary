@@ -18,6 +18,10 @@ BUCKET = "econ-data"
 
 
 def main() -> int:
+    # RETIRE AT T0 (docs/ECON_SELF_HOSTING_PLAN.md; tests/test_object_writers_ratchet.py): R2 and D1 are
+    # frozen then. Refused FIRST - before arguments, credentials or any read (tests/test_retired_at_t0_tools.py).
+    from core import cutover                                          # noqa: PLC0415
+    cutover.refuse_if_cut_over('_upload_clean_full_parquet (it only uploads to R2)')
     if len(sys.argv) != 2:
         print("usage: _upload_clean_full_parquet.py <source_id>")
         return 2
