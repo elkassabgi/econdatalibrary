@@ -96,7 +96,7 @@ def test_an_over_cap_table_WITH_a_whole_object_but_NOT_catalogued_whole_still_re
 
 
 def test_a_whole_cube_that_grew_past_the_cap_stays_whole_and_catalogued():
-    """The ONE rule with the derive's pinned_split and the lane's serve_plan (2026-09-29, AR-166): a
+    """The ONE rule with the derive's pinned_split and the lane's serve_plan (2026-09-29, AR-173): a
     cube catalogued WHOLE whose whole object exists stays whole over the cap - it does not refuse the
     catalogue. 43100031 is the real candidate: 2,995,200 rows today, 4,800 under the cap."""
     keys = {key("statcan:43100031"), key("statcan:10100001")}

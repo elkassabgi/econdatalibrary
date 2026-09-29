@@ -211,7 +211,7 @@ def classify_absent(absent: dict, keys: set, refused: set, prefix: str = "series
       kept_whole    the table is ALREADY catalogued whole (`statcan:<pid>` in `catalogued_whole`),
                     its whole object exists and no part object does: a whole cube that grew past the
                     cap. It stays whole - the ONE rule tools/derive_statcan_tables.pinned_split and
-                    jobs/statcan_lane.serve_plan apply (2026-09-29, review AR-166): the cap aims a
+                    jobs/statcan_lane.serve_plan apply (2026-09-29; found by AR-166, approved by AR-173): the cap aims a
                     NEW split, it is not a limit on a served object; splitting would re-key a public
                     id and refusing would freeze it. Catalogued whole, as before;
 

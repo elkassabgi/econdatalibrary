@@ -89,7 +89,9 @@ FLOOR = "2026-07-29"
 ENUM_MIN_INTERVAL_MIN = 60.0
 # The production derive's row cap (RELAUNCH_GUARD.ps1's retired derive_statcan argv: --max-rows
 # 3000000). A cube served WHOLE that has grown past it is still served whole - it is catalogued,
-# and a stale object is worse than a large one - and booked as debt, never re-split here.
+# and a stale object is worse than a large one - and never re-split here. The over-cap note it
+# records is a NOTE, not catalogue debt: the derive and the cataloguer keep such a cube whole too
+# (the one rule, AR-173).
 MAX_ROWS = 3_000_000
 PUT_WORKERS = 16
 # Between iterations. Each iteration beats (so an idle lane beats every 5 min, well inside the
@@ -296,7 +298,7 @@ def serve_plan(pid: str, n_rows: int, schema_names, smap: dict, catalogued: set)
         return dim, None, notes
     if served_parts:
         return None, "served as parts but no split is recorded in _split_map.json", notes
-    # THE ONE RULE (review AR-166): a whole cube stays whole over the cap - the same verdict as
+    # THE ONE RULE (divergence found by AR-166, rule approved by AR-173): a whole cube stays whole over the cap - the same verdict as
     # tools/derive_statcan_tables.pinned_split and the cataloguer's kept_whole
     # (tests/test_statcan_lane.py::test_the_lane_and_the_derive_tool_apply_ONE_rule)
     if n_rows > MAX_ROWS:

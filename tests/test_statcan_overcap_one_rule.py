@@ -1,5 +1,5 @@
 """statcan's ONE rule for a whole cube that grew past the derive cap, pinned at the cataloguer's main() (review
-AR-166, 2026-09-29).
+AR-166, 2026-09-29; the rule approved by AR-173).
 
 jobs/statcan_lane.serve_plan served such a cube WHOLE; tools/derive_statcan_tables.pinned_split REFUSED it; and
 tools/catalog_statcan_tables.py refused the WHOLE catalogue when an over-cap cube had an object and no split. Now

@@ -55,7 +55,7 @@ def test_a_cube_served_whole_stays_whole_while_it_fits_the_cap():
 
 
 def test_a_whole_cube_that_outgrew_the_cap_stays_whole_never_rekeyed_never_refused():
-    """The ONE rule (2026-09-29, AR-166) with jobs/statcan_lane.serve_plan and the cataloguer's
+    """The ONE rule (2026-09-29, AR-173) with jobs/statcan_lane.serve_plan and the cataloguer's
     kept_whole: splitting would re-key its public id, refusing would freeze it. It stays whole."""
     assert d.pinned_split("10100001", 3_000_001, {}, 3_000_000, served_whole=True) == (None, 1)
     assert d.pinned_split("10100001", 300_000_000, {}, 3_000_000, served_whole=True) == (None, 1)
@@ -249,7 +249,7 @@ def test_a_cube_with_no_public_ids_is_split_as_a_first_derive_would(world, monke
 
 def test_a_whole_served_cube_over_the_cap_is_derived_whole_and_the_run_passes(world, monkeypatch,
                                                                              tmp_path, capsys):
-    """Was a refusal that failed the run; the one rule (AR-166) keeps it whole - the lane serves the
+    """Was a refusal that failed the run; the one rule (AR-173) keeps it whole - the lane serves the
     same cube whole, and the cataloguer keeps it catalogued whole."""
     store, db, s3, smap = world
     _cube(store / "22222222.parquet", [("v9", "x", "1.1"), ("v8", "y", "1.2")])   # 2 > cap 1

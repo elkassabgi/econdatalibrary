@@ -247,7 +247,7 @@ def pinned_split(pid: str, n_rows: int, pinned: dict, max_rows: int, served_whol
     (choosing one now would rename every served id - round-2 review); (CHOOSE, 0) only for a cube
     with no ids at all.
 
-    A WHOLE CUBE STAYS WHOLE, OVER THE CAP TOO (2026-09-29, review AR-166). This returned ("", 0)
+    A WHOLE CUBE STAYS WHOLE, OVER THE CAP TOO (2026-09-29; divergence found by AR-166, rule approved by AR-173). This returned ("", 0)
     for a whole cube that outgrew `max_rows`, while jobs/statcan_lane.py serves the same cube whole
     - two writers, two answers for one key. The cap is the size choose_split aims a NEW split at; it
     is not a limit on a served object. Refusing freezes the served id at its last derive (a stale
