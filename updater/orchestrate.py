@@ -268,7 +268,11 @@ def _deliver_alarm(key: str, minutes: float) -> None:
     if isinstance(sys.exc_info()[1], UnitTimeout):
         # A UnitTimeout is ALREADY propagating (raised by an earlier delivery, or by a flag poller such as
         # dst._fence_check): a second one would only cut its cleanup short - a _giant checkpoint, a rotation save,
-        # derive's derive_partial bookkeeping (review R1301, measured). The fence has done its job; hold this one.
+        # derive's derive_partial bookkeeping (review R1301, measured). Hold this one - and re-arm: one that is
+        # really propagating leaves the unit and __exit__ disarms the timer; one that an `except Exception` then
+        # swallows is delivered on the next fire (review AR-174 r2, the held-then-swallowed case).
+        if _ARMED_DEADLINE is not None:
+            _ARMED_DEADLINE._rearm()
         return
     exc = UnitTimeout(f"{key} exceeded its {minutes:.0f}-minute hard limit and was "
                       f"interrupted; existing data untouched, re-queued for the next tick")
@@ -407,6 +411,9 @@ def _capped_derive_budget() -> dict:
 # __del__ body, C code that clears the error. For those the flag stays set, flag pollers still react, and __exit__
 # says out loud that the limit fired when the unit ends without a UnitTimeout.
 _REFIRE_S = 0.05
+# The deadline whose timer and SIGALRM handler are live right now, or None. A re-arm is only ever made through it:
+# a timer armed with SIGALRM at its default action kills the process (rc 14, measured in review R1301).
+_ARMED_DEADLINE = None
 
 
 class _unit_deadline:
@@ -417,13 +424,19 @@ class _unit_deadline:
         self.armed = False
         self._prev_hook = None
 
+    def _rearm(self):
+        """Fire the handler again in _REFIRE_S - only while THIS deadline's timer and handler are live."""
+        if not self.armed or _ARMED_DEADLINE is not self:
+            return
+        try:
+            import signal
+            signal.setitimer(signal.ITIMER_REAL, _REFIRE_S)
+        except Exception:                                    # noqa: BLE001 - never raise out of a handler/hook
+            pass
+
     def _unraisable(self, u):
         if self.armed and isinstance(getattr(u, "exc_value", None), UnitTimeout):
-            try:                                             # RE-ARM FIRST: a failing print must not lose it again
-                import signal
-                signal.setitimer(signal.ITIMER_REAL, _REFIRE_S)
-            except Exception:                                # noqa: BLE001 - never raise out of the hook
-                pass
+            self._rearm()                                    # RE-ARM FIRST: a failing print must not lose it again
             try:
                 where = type(getattr(u, "object", None)).__name__
                 print(f"[orchestrator] {self.key}: the hard-limit UnitTimeout was swallowed in a {where} "
@@ -434,7 +447,7 @@ class _unit_deadline:
         (self._prev_hook or sys.__unraisablehook__)(u)
 
     def __enter__(self):
-        global _TIMEOUT_WARNED, UNIT_TIMEOUT_FIRED, _DEFER_ALARM, _ALARM_PENDING
+        global _TIMEOUT_WARNED, UNIT_TIMEOUT_FIRED, _DEFER_ALARM, _ALARM_PENDING, _ARMED_DEADLINE
         UNIT_TIMEOUT_FIRED, _DEFER_ALARM, _ALARM_PENDING = False, False, None
         if self.minutes <= 0:
             return self
@@ -451,6 +464,7 @@ class _unit_deadline:
             self._prev_hook = sys.unraisablehook              # installed only once the timer is armed (R1301)
             sys.unraisablehook = self._unraisable
             self.armed = True
+            _ARMED_DEADLINE = self
             if not _TIMEOUT_WARNED:
                 # Once per run, so the log PROVES the guard is active rather than asserting
                 # it. This path cannot be exercised on the Windows workstation (no setitimer),
@@ -466,7 +480,9 @@ class _unit_deadline:
         return self
 
     def __exit__(self, *exc):
-        global UNIT_TIMEOUT_FIRED, _DEFER_ALARM, _ALARM_PENDING
+        global UNIT_TIMEOUT_FIRED, _DEFER_ALARM, _ALARM_PENDING, _ARMED_DEADLINE
+        if _ARMED_DEADLINE is self:
+            _ARMED_DEADLINE = None                           # first: nothing may re-arm through a closing deadline
         if self.armed:
             try:
                 import signal

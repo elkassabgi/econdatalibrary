@@ -65,8 +65,8 @@ def _swallowed_alarm(key):
     """What the kernel did in the observed case: run the SIGALRM handler's body inside a weakref callback."""
     o = _Obj()
     keep = weakref.ref(o, lambda _r: orchestrate._deliver_alarm(key, 1))
-    del o                                               # the callback runs now; its raise cannot propagate
-    gc.collect()
+    del o                                               # the callback runs NOW (refcount); its raise cannot propagate
+    assert keep() is None                               # no gc.collect: on a full-suite heap it outlasted the re-arm
     return keep
 
 
@@ -189,6 +189,24 @@ def test_a_re_delivery_never_cuts_short_the_cleanup_of_a_UnitTimeout_already_in_
     assert any(0 < s < 1 for s in emulated_itimer[1:]), "the scenario did re-arm (else it proves nothing)"
 
 
+def test_a_held_re_delivery_whose_UnitTimeout_is_then_swallowed_is_delivered_later(emulated_itimer, monkeypatch):
+    """Review AR-174 r2: swallowed in a callback, then a poller's UnitTimeout is caught by an ordinary
+    `except Exception` whose body is still running when the re-arm fires - the delivery is HELD (a UnitTimeout is in
+    flight). Holding must re-arm, or once that except swallows the poller's exception the unit runs on unfenced."""
+    monkeypatch.setattr(orchestrate, "_REFIRE_S", 0.2)
+    reached_end = False
+    with pytest.raises(orchestrate.UnitTimeout):
+        with orchestrate._unit_deadline("zz/_all", 60.0):
+            _swallowed_alarm("zz/_all")
+            try:
+                raise orchestrate.UnitTimeout("poller")
+            except Exception:                                         # noqa: BLE001 - the swallow under test
+                _spin(0.5)                                            # the re-arm fires here: held
+            _spin(2.0)                                                # the unit carries on
+            reached_end = True
+    assert not reached_end, "held once, then lost: the unit ran on with no fence"
+
+
 def test_a_print_that_fails_does_not_lose_the_re_delivery(emulated_itimer, monkeypatch):
     """Review R1301: the hook printed BEFORE re-arming, so a failing write lost the timeout a second time."""
     class _Broken:
@@ -225,6 +243,7 @@ def test_a_hook_left_chained_after_the_unit_goes_inert(emulated_itimer, monkeypa
     """Review R1301: another hook chained over ours keeps ours reachable after __exit__, when SIGALRM is back to its
     default - a stale re-arm then killed the process (rc 14). After exit ours must pass everything through."""
     seen = []
+    monkeypatch.setattr(sys, "unraisablehook", lambda u: seen.append("prev"))     # the hook ours chains to
     with orchestrate._unit_deadline("zz/_all", 60.0):
         ours = sys.unraisablehook
         monkeypatch.setattr(sys, "unraisablehook", lambda u: (seen.append("outer"), ours(u)))
@@ -237,4 +256,5 @@ def test_a_hook_left_chained_after_the_unit_goes_inert(emulated_itimer, monkeypa
     del o
     gc.collect()
     assert keep() is None
-    assert seen == ["outer"] and len(emulated_itimer) == n_armed, emulated_itimer
+    assert seen == ["outer", "prev"], f"inert means FORWARDED, never taken over: {seen}"
+    assert len(emulated_itimer) == n_armed, emulated_itimer
