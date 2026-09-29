@@ -1,0 +1,263 @@
+"""unsdg rotation-cycle edge cases: the review's probes (R1284), kept as tests, plus the release-token,
+outage and broken-stream paths added in round 2."""
+import datetime as dt, json, os, sys, types  # noqa: E401
+import pytest
+import requests
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+from updater.strategies.fetchers import unsdg as U  # noqa: E402
+from updater.errors import DefinitiveError  # noqa: E402
+
+def _unit(b): return types.SimpleNamespace(config={"max_series": b})
+
+@pytest.fixture
+def world(tmp_path, monkeypatch):
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(U.config, "source_dir", lambda s: str(tmp_path / s))
+    monkeypatch.setattr(U, "RATE", 0)
+    st = {"codes": ["A1","B2","C3"], "missing": set(), "transient": set(), "release": None, "broken": set()}
+    monkeypatch.setattr(U, "_series_list", lambda: ([{"code": c, "release": st["release"]} for c in st["codes"]],
+                                                    "ok"))
+    fetched = []
+    def fetch(code):
+        fetched.append(code)
+        if code in st["broken"]: raise requests.exceptions.ChunkedEncodingError("stream broke")
+        if code in st["transient"]: return [], [], [], "transient"
+        if code in st["missing"]: return [], [], [], "missing"
+        return [f"{code}:4"], [dt.date(2025,12,31)], [1.0], "ok"
+    monkeypatch.setattr(U, "_fetch_series", fetch)
+    return types.SimpleNamespace(dir=tmp_path/"unsdg", st=st, fetched=fetched)
+
+def _cyc(w): return json.loads((w.dir/"_cycle.json").read_text())
+
+def test_closing_pass_of_many_empty_codes(world):
+    """3 data codes then 12 missing codes; pass1 takes the data, pass2 only the 12 empty ones."""
+    world.st["codes"] = ["A1","B2","C3"] + [f"M{i:02d}" for i in range(12)]
+    world.st["missing"] = {f"M{i:02d}" for i in range(12)}
+    r1 = U.update(_unit(3), None); assert r1.status == "partial"
+    try:
+        r2 = U.update(_unit(50), None)
+        print("R2", r2.status, r2.error)
+        outcome = r2.status
+    except DefinitiveError as e:
+        print("R2 RAISED", e); outcome = "raised"
+    print("cycle after", _cyc(world))
+    assert outcome != "raised", "closing pass of >10 empty codes raises all-empty structural error (red) and has already reset the cycle"
+
+def test_chunk_of_all_empty_codes_is_visited(world):
+    """55 codes: the first 50 all missing (chunk flush with no keys) then 5 data codes."""
+    world.st["codes"] = [f"M{i:02d}" for i in range(50)] + ["A1","B2","C3","D4","E5"]
+    world.st["missing"] = {f"M{i:02d}" for i in range(50)}
+    r = U.update(_unit(0), None)
+    assert r.status == "ok", (r.status, r.error)
+
+def test_code_dropped_mid_cycle(world):
+    world.st["codes"] = ["A1","B2","C3","D4"]
+    U.update(_unit(2), None)
+    world.st["codes"] = ["A1","B2","C3"]     # D4 retired, C3 owed
+    r = U.update(_unit(5), None)
+    assert r.status == "ok" and world.fetched == ["A1","B2","C3"], (r.status, world.fetched)
+
+def test_code_added_mid_cycle(world):
+    world.st["codes"] = ["A1","B2","C3"]
+    U.update(_unit(2), None)
+    world.st["codes"] = ["A1","B2","C3","Z9"]
+    r = U.update(_unit(5), None)
+    assert r.status == "ok" and sorted(world.fetched[2:]) == ["C3","Z9"], (r.status, world.fetched)
+
+def test_quarantine_two_transients_closes(world):
+    world.st["transient"] = {"B2"}
+    r1 = U.update(_unit(5), None); r2 = U.update(_unit(5), None)
+    print(r1.status, r2.status, _cyc(world))
+    assert r2.status == "partial"
+    assert _cyc(world)["visited"] == [], "second consecutive failure quarantines B2 and closes the cycle"
+
+def test_budget_zero_all_codes(world):
+    r = U.update(_unit(0), None)
+    assert r.status == "ok" and world.fetched == ["A1","B2","C3"]
+
+
+# --- round 2: the cycle's release token, a first-pass outage, a broken stream ---------------------------
+def test_a_cycle_swept_under_one_release_stamps_its_token_on_close(world):
+    world.st["release"] = "2026.Q2.G.02"
+    tok = U.current_token([{"code": c, "release": "2026.Q2.G.02"} for c in world.st["codes"]])
+    r1 = U.update(_unit(2), None)
+    assert r1.status == "partial" and r1.new_vintage != tok
+    r2 = U.update(_unit(2), None)
+    assert r2.status == "ok" and r2.new_vintage == tok, (r2.status, r2.new_vintage)
+    assert tok == U.current_vintage(None), "the stamp is the probe's own token"
+
+
+def test_a_release_that_moves_mid_cycle_is_not_claimed(world):
+    world.st["release"] = "2026.Q2.G.02"
+    U.update(_unit(2), None)
+    world.st["release"] = "2026.Q3.G.01"                 # UNSD releases while the cycle is half done
+    r2 = U.update(_unit(2), None)
+    assert r2.status == "ok" and r2.new_vintage == "date-tail", r2.new_vintage
+    r3 = U.update(_unit(5), None)                       # a fresh cycle, wholly under the new release
+    new = U.current_token([{"code": c, "release": "2026.Q3.G.01"} for c in world.st["codes"]])
+    assert r3.status == "ok" and r3.new_vintage == new, r3.new_vintage
+
+
+def test_codes_without_release_tags_never_seal_the_unit(world):
+    assert U.current_token([{"code": "A1"}, {"code": "B2", "release": ""}]) is None
+    r = U.update(_unit(5), None)
+    assert r.status == "ok" and r.new_vintage == "date-tail"
+
+
+def test_a_first_pass_outage_raises_and_leaves_every_code_owed(world):
+    world.st["codes"] = [f"M{i:02d}" for i in range(12)]
+    world.st["missing"] = set(world.st["codes"])
+    with pytest.raises(DefinitiveError, match="all 12 stored series code"):
+        U.update(_unit(50), None)
+    assert _cyc(world)["visited"] == [], "an outage refreshed nothing: no code may count as visited"
+
+
+def test_a_broken_stream_is_a_transient_failure_of_that_code_not_a_frozen_rotation(world):
+    world.st["broken"] = {"B2"}
+    r = U.update(_unit(5), None)
+    assert r.status == "partial" and "B2" in (r.error or ""), (r.status, r.error)
+    assert set(_cyc(world)["visited"]) == {"A1", "C3"}
+    world.st["broken"] = set()
+    assert U.update(_unit(5), None).status == "ok"
+
+
+# --- round 3 (review R1286): an outage that starts mid-cycle; a parser raise -----------------------------
+def test_an_outage_mid_cycle_over_stored_codes_raises_and_visits_nothing(world):
+    """Production shape: the store holds every code. A new cycle's first pass is healthy, then Series/Data
+    answers nothing while Series/List still works - the vanished codes make it an outage."""
+    world.st["codes"] = [f"C{i:02d}" for i in range(36)]
+    world.st["release"] = "2026.Q2.G.02"
+    assert U.update(_unit(0), None).status == "ok"                 # all 36 stored; the cycle closes
+    assert U.update(_unit(12), None).status == "partial"           # a new cycle: 12 visited
+    before = set(_cyc(world)["visited"])
+    world.st["missing"] = set(world.st["codes"])                   # the outage
+    with pytest.raises(DefinitiveError, match="wholesale outage"):
+        U.update(_unit(12), None)
+    assert set(_cyc(world)["visited"]) == before, "an outage pass visits nothing"
+
+
+def test_a_blanked_code_family_at_the_cycle_tail_does_not_freeze_the_cycle(world):
+    """Review R1290's probe: UNSD blanks 12 adjacent stored codes that stay listed. A closing pass holding
+    only them must not read as an outage every pass (the cycle would never close and every other code would
+    be skipped for ever) - the canary, a stored code outside the pass, still returns data."""
+    world.st["codes"] = [f"C{i:02d}" for i in range(30)]
+    world.st["release"] = "2026.Q2"
+    assert U.update(_unit(0), None).status == "ok"                  # cycle 1: all stored
+    world.st["missing"] = {f"C{i:02d}" for i in range(18, 30)}      # the family blanked
+    assert U.update(_unit(18), None).status == "partial"            # cycle 2, pass A: C00..C17
+    r = U.update(_unit(18), None)                                   # pass B: only the blanked family
+    assert r.status in ("ok", "no_change"), (r.status, r.error)     # the cycle closes
+    assert _cyc(world)["visited"] == []
+
+
+def test_vanished_codes_beside_a_stored_code_with_data_are_not_an_outage(world, monkeypatch):
+    world.st["codes"] = [f"C{i:02d}" for i in range(13)]
+    assert U.update(_unit(0), None).status == "ok"                  # all 13 stored
+    world.st["missing"] = {f"C{i:02d}" for i in range(12)}          # 12 vanish, C12 still has data
+    monkeypatch.setattr(U, "_fetch_series", lambda c: pytest.fail("no canary needed") if c == "__never__" else
+                        (([], [], [], "missing") if c in world.st["missing"] else
+                         ([f"{c}:4"], [dt.date(2025, 12, 31)], [1.0], "ok")))
+    r = U.update(_unit(0), None)
+    assert r.status in ("ok", "no_change"), (r.status, r.error)
+
+
+def test_a_few_vanished_codes_are_below_the_outage_threshold(world):
+    world.st["codes"] = [f"C{i:02d}" for i in range(5)]
+    assert U.update(_unit(0), None).status == "ok"
+    world.st["missing"] = set(world.st["codes"])                    # all 5 vanish: under the >10 bar
+    r = U.update(_unit(0), None)
+    assert r.status in ("ok", "no_change"), (r.status, r.error)
+
+
+def test_transient_codes_are_not_counted_as_vanished(world):
+    world.st["codes"] = [f"C{i:02d}" for i in range(14)]
+    assert U.update(_unit(0), None).status == "ok"
+    world.st["transient"] = set(world.st["codes"][:12])             # 12 fail transiently
+    world.st["missing"] = set(world.st["codes"][12:])               # 2 vanish
+    r = U.update(_unit(0), None)                                    # transient, not an outage verdict
+    assert r.status == "partial" and "transient" in (r.error or ""), (r.status, r.error)
+
+
+def test_a_retired_or_blanked_code_sorting_first_does_not_become_a_permanent_canary(world):
+    """Review R1292's probe: the store never forgets a code. A_OLD (retired: gone from Series/List) must
+    not be the canary, and a blanked-but-listed B_OLD must not decide it alone - the next candidate does."""
+    world.st["codes"] = ["A_OLD", "B_OLD"] + [f"C{i:02d}" for i in range(30)]
+    world.st["release"] = "2026.Q2"
+    assert U.update(_unit(0), None).status == "ok"                  # all stored
+    world.st["codes"] = ["B_OLD"] + [f"C{i:02d}" for i in range(30)]  # A_OLD retired
+    world.st["missing"] = {"B_OLD"} | {f"C{i:02d}" for i in range(18, 30)}
+    assert U.update(_unit(19), None).status == "partial"            # B_OLD, C00..C17
+    r = U.update(_unit(19), None)                                   # only the blanked family is owed
+    assert r.status in ("ok", "no_change"), (r.status, r.error)
+    assert "A_OLD" not in world.fetched[-14:], world.fetched[-14:]
+
+
+def test_a_timeout_during_the_canary_fetch_still_ends_the_pass(world, monkeypatch):
+    import types as _t
+    class UnitTimeout(Exception):
+        pass
+    monkeypatch.setitem(sys.modules, "updater.orchestrate",
+                        _t.SimpleNamespace(UnitTimeout=UnitTimeout, UNIT_TIMEOUT_FIRED=False))
+    world.st["codes"] = [f"C{i:02d}" for i in range(20)]
+    assert U.update(_unit(0), None).status == "ok"
+    world.st["missing"] = {f"C{i:02d}" for i in range(12)}
+    real = U._fetch_series
+
+    def fetch(code):
+        if code not in world.st["missing"]:                           # a canary (outside the pass)
+            raise UnitTimeout("45-minute limit")
+        return real(code)
+    monkeypatch.setattr(U, "_fetch_series", fetch)
+    with pytest.raises(UnitTimeout):
+        U.update(_unit(12), None)
+
+
+def test_the_units_own_timeout_still_ends_the_pass(world, monkeypatch):
+    """The broad except around one code's fetch must not swallow the orchestrator's unit timeout (R1114)."""
+    import types as _t
+    class UnitTimeout(Exception):
+        pass
+    fake_orch = _t.SimpleNamespace(UnitTimeout=UnitTimeout, UNIT_TIMEOUT_FIRED=False)
+    monkeypatch.setitem(sys.modules, "updater.orchestrate", fake_orch)
+    real = U._fetch_series
+
+    def fetch(code):
+        if code == "B2":
+            raise UnitTimeout("45-minute limit")
+        return real(code)
+    monkeypatch.setattr(U, "_fetch_series", fetch)
+    with pytest.raises(UnitTimeout):
+        U.update(_unit(0), None)
+
+
+def test_a_first_sweep_outage_cannot_seal_the_release(world):
+    """The reviewer's probe: the store holds only the first pass's codes, so the later ones cannot vanish.
+    The cycle may close, but a pass of >10 codes that added nothing marks the token MIXED - no seal."""
+    world.st["codes"] = [f"C{i:02d}" for i in range(36)]
+    world.st["release"] = "2026.Q2"
+    assert U.update(_unit(12), None).status == "partial"
+    world.st["missing"] = set(world.st["codes"])
+    out = []
+    for _ in range(2):
+        try:
+            r = U.update(_unit(12), None)
+            out.append((r.status, r.new_vintage))
+        except DefinitiveError as e:
+            out.append(("RAISED", str(e)[:60]))
+    token = U.current_token([{"code": c, "release": "2026.Q2"} for c in world.st["codes"]])
+    assert out[-1][1] != token, f"24 of 36 codes returned nothing, yet the release was claimed: {out}"
+
+
+def test_a_parser_raise_is_a_failure_of_that_code_not_a_frozen_rotation(world, monkeypatch):
+    real = U._fetch_series
+
+    def fetch(code):
+        if code == "B2":
+            raise AttributeError("'str' object has no attribute 'get'")
+        return real(code)
+    monkeypatch.setattr(U, "_fetch_series", fetch)
+    r = U.update(_unit(0), None)
+    assert r.status == "partial" and set(_cyc(world)["visited"]) == {"A1", "C3"}
+    r2 = U.update(_unit(0), None)
+    assert world.fetched.count("A1") == 1, "visited codes are not re-asked"

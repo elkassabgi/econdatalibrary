@@ -847,6 +847,13 @@ class RotationCycle:
         self.visited.add(unit)
         self._save(self.visited)
 
+    def forget(self, units) -> None:
+        """Un-visit `units` whose work turned out to be void - a wholesale outage judged only after the
+        pass (unsdg: a first pass whose every code came back empty). They stay owed this cycle; their
+        failure counts are untouched."""
+        self.visited -= set(units)
+        self._save(self.visited)
+
     def quarantined(self) -> set:
         return {u for u, n in self.failing.items() if n >= self.QUARANTINE_AFTER}
 

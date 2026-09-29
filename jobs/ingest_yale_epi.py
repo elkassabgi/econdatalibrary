@@ -62,7 +62,10 @@ def parse_epi_csv(data: bytes, default_year: int):
     keys, dates, vals = [], [], []
     for row in reader:
         iso3 = (row.get(iso3_col) or "").strip()
-        if not iso3 or len(iso3) != 3:
+        # The numeric `code` vocabulary is unpadded (Afghanistan = 4): the old len==3 test, meant for
+        # alpha-3, dropped every country coded under 100 - the served 2024 edition holds 157 countries, not
+        # EPI 2024's 180 (review R1289). Numeric codes pass on isdigit; alpha-3 still needs 3 letters.
+        if not iso3 or not (iso3.isdigit() if iso3_col.lower() == "code" else len(iso3) == 3):
             continue
 
         if year_col and row.get(year_col):
