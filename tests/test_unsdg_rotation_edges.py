@@ -108,7 +108,7 @@ def test_codes_without_release_tags_never_seal_the_unit(world):
 def test_a_first_pass_outage_raises_and_leaves_every_code_owed(world):
     world.st["codes"] = [f"M{i:02d}" for i in range(12)]
     world.st["missing"] = set(world.st["codes"])
-    with pytest.raises(DefinitiveError, match="all 12 attempted"):
+    with pytest.raises(DefinitiveError, match="all 12 stored series code"):
         U.update(_unit(50), None)
     assert _cyc(world)["visited"] == [], "an outage refreshed nothing: no code may count as visited"
 
@@ -120,3 +120,50 @@ def test_a_broken_stream_is_a_transient_failure_of_that_code_not_a_frozen_rotati
     assert set(_cyc(world)["visited"]) == {"A1", "C3"}
     world.st["broken"] = set()
     assert U.update(_unit(5), None).status == "ok"
+
+
+# --- round 3 (review R1286): an outage that starts mid-cycle; a parser raise -----------------------------
+def test_an_outage_mid_cycle_over_stored_codes_raises_and_visits_nothing(world):
+    """Production shape: the store holds every code. A new cycle's first pass is healthy, then Series/Data
+    answers nothing while Series/List still works - the vanished codes make it an outage."""
+    world.st["codes"] = [f"C{i:02d}" for i in range(36)]
+    world.st["release"] = "2026.Q2.G.02"
+    assert U.update(_unit(0), None).status == "ok"                 # all 36 stored; the cycle closes
+    assert U.update(_unit(12), None).status == "partial"           # a new cycle: 12 visited
+    before = set(_cyc(world)["visited"])
+    world.st["missing"] = set(world.st["codes"])                   # the outage
+    with pytest.raises(DefinitiveError, match="wholesale outage"):
+        U.update(_unit(12), None)
+    assert set(_cyc(world)["visited"]) == before, "an outage pass visits nothing"
+
+
+def test_a_first_sweep_outage_cannot_seal_the_release(world):
+    """The reviewer's probe: the store holds only the first pass's codes, so the later ones cannot vanish.
+    The cycle may close, but a pass of >10 codes that added nothing marks the token MIXED - no seal."""
+    world.st["codes"] = [f"C{i:02d}" for i in range(36)]
+    world.st["release"] = "2026.Q2"
+    assert U.update(_unit(12), None).status == "partial"
+    world.st["missing"] = set(world.st["codes"])
+    out = []
+    for _ in range(2):
+        try:
+            r = U.update(_unit(12), None)
+            out.append((r.status, r.new_vintage))
+        except DefinitiveError as e:
+            out.append(("RAISED", str(e)[:60]))
+    token = U.current_token([{"code": c, "release": "2026.Q2"} for c in world.st["codes"]])
+    assert out[-1][1] != token, f"24 of 36 codes returned nothing, yet the release was claimed: {out}"
+
+
+def test_a_parser_raise_is_a_failure_of_that_code_not_a_frozen_rotation(world, monkeypatch):
+    real = U._fetch_series
+
+    def fetch(code):
+        if code == "B2":
+            raise AttributeError("'str' object has no attribute 'get'")
+        return real(code)
+    monkeypatch.setattr(U, "_fetch_series", fetch)
+    r = U.update(_unit(0), None)
+    assert r.status == "partial" and set(_cyc(world)["visited"]) == {"A1", "C3"}
+    r2 = U.update(_unit(0), None)
+    assert world.fetched.count("A1") == 1, "visited codes are not re-asked"

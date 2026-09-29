@@ -24,6 +24,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import sys
 import time
 
 import pyarrow as pa
@@ -115,8 +116,34 @@ def current_token(series) -> "str | None":
     return content_hash("".join(f"{c}={r};" for c, r in pairs).encode("utf-8"))
 
 
+def _stored_codes(path, n_rows) -> set:
+    """The series codes the store holds rows for: the '<code>:' prefix of every series_key. Read once per
+    pass (one column of a ~14 MB file). An unreadable store gives an empty set, which falls back to the
+    all-attempted-empty rule - never to silence."""
+    if not n_rows:
+        return set()
+    try:
+        import pyarrow.compute as pc                                  # noqa: PLC0415
+        col = pc.unique(blob.read_table(path, columns=["series_key"]).column("series_key"))
+        return {str(k).split(":", 1)[0] for k in col.to_pylist() if k} - {""}
+    except Exception as e:                                           # noqa: BLE001
+        print(f"[unsdg] could not read the store's series codes ({type(e).__name__}: {e}); the outage "
+              f"check falls back to the all-attempted-empty rule", flush=True)
+        return set()
+
+
 CYCLE_TOKEN_FILE = "_cycle_token.json"
 MIXED = "mixed"
+
+
+def _mark_mixed(out_dir) -> str:
+    """Mark the current cycle's token MIXED: the cycle may close but can never claim a release."""
+    path = os.path.join(out_dir, CYCLE_TOKEN_FILE)
+    try:
+        blob.write_bytes_atomic(path, json.dumps({"token": MIXED}).encode("utf-8"))
+    except Exception as e:                                           # noqa: BLE001
+        print(f"[unsdg] could not save {path} ({type(e).__name__}: {e})", flush=True)
+    return MIXED
 
 
 def _cycle_token(out_dir, token, first_pass_of_cycle) -> "str | None":
@@ -293,6 +320,8 @@ def update(unit, since) -> Result:
     # done that never reached the store.
     pending: list = []
     fetched: list = []                  # every code fetched this pass, with whether it failed
+    empty_codes: set = set()            # codes that came back with no data this pass
+    stored_codes = _stored_codes(path, before)   # codes the store holds rows for (the outage baseline)
 
     def _visit_pending():
         nonlocal pending
@@ -328,12 +357,17 @@ def update(unit, since) -> Result:
             break
         try:
             k, d, v, outc = _fetch_series(code)
-        except requests.exceptions.RequestException as e:
-            # A broken stream (ChunkedEncodingError, ContentDecodingError) is not a ConnectionError, so
-            # _get_json let it escape: update() left before any flush, the bookmark never moved, and
-            # every pass re-asked the same codes and stored nothing (review R1284, the R1114 class).
-            # It is a transient failure of THIS code; the orchestrator's own timeout is not a
-            # RequestException and still propagates.
+        except Exception as e:                                       # noqa: BLE001
+            # A broken stream (ChunkedEncodingError, ContentDecodingError - not ConnectionErrors) or a
+            # record our parser cannot read escaped update() before any flush: the bookmark never moved
+            # and every pass re-asked the same codes and stored nothing (reviews R1284/R1286, the R1114
+            # class). It is a failure of THIS code - tallied, retried, quarantined after two - EXCEPT the
+            # orchestrator's own unit timeout, which must end the pass (R1114: swallowing it ran the
+            # fetcher past its window).
+            orch = sys.modules.get("updater.orchestrate")
+            if orch is not None and (getattr(orch, "UNIT_TIMEOUT_FIRED", False) or
+                                     isinstance(e, getattr(orch, "UnitTimeout", ()))):
+                raise
             print(f"[unsdg] {code}: {type(e).__name__}: {str(e)[:120]}", flush=True)
             k, d, v, outc = [], [], [], "transient"
         pending.append((code, outc == "transient"))
@@ -343,8 +377,9 @@ def update(unit, since) -> Result:
         elif outc == "missing" or not k:
             # A single listed code with no data is a SUB-UNIT gap, not a source break
             # (R44 — faostat's per-domain structural_unit vetoed whole sources).
-            # finalize's all-empty-window floor still catches a wholesale outage.
+            # A wholesale outage is judged after the loop, by vanished codes.
             tally.empty_unit(code)
+            empty_codes.add(code)
         else:
             keys.extend(k); dates.extend(d); vals.extend(v)
             tally.added_unit(len(k), code)
@@ -375,17 +410,35 @@ def update(unit, since) -> Result:
     # codes would bury the sub-units that actually broke.
     # A code whose fetch failed THIS pass is already tallied as transient; it is not deferred as well.
     #
-    # THE ALL-EMPTY CHECK (finalize's empty-window floor) judges a WHOLESALE outage from the attempted
-    # set. Skipping visited codes shrinks that set, so a cycle's later pass that happens to hold only
-    # empty codes would read as an outage (review R1284 defect 3). It is judged on a cycle's FIRST pass
-    # only, where the attempted set is the head of the whole list - and there it is judged BEFORE the
-    # cycle may close, so an outage never resets the cycle it failed to refresh.
-    floor = 10 if first_pass_of_cycle else 10 ** 9
-    outage = (first_pass_of_cycle and tally.added == 0 and tally.revised == 0
-              and tally.empty == tally.attempted and tally.attempted > floor)
+    # A WHOLESALE OUTAGE is judged on EVERY pass, by VANISHED codes: codes the store holds rows for that
+    # came back empty. finalize's all-empty floor judged the attempted set, which skipping visited codes
+    # shrinks - round 1 raised on a later pass that merely held empty codes (review R1284), and round 2's
+    # first-pass-only rule let an outage that began mid-cycle close the cycle and SEAL the release token
+    # while most codes were never refreshed (review R1286). A code the store holds that the publisher
+    # suddenly serves empty is the outage signal; a code that was always empty is not. More than 10 such
+    # codes, and every stored code this pass attempted among them, is an outage: nothing this pass did
+    # counts as a visit, the cycle cannot close, and the pass raises. A store with no rows at all (a
+    # first ingest) falls back to the old all-attempted-empty rule.
+    stored_tried = [c for c, failed in fetched if not failed and c in stored_codes]
+    vanished = [c for c in stored_tried if c in empty_codes]
+    outage = ((len(vanished) > 10 and len(vanished) == len(stored_tried)) or
+              (not stored_codes and tally.added == 0 and tally.revised == 0
+               and tally.empty == tally.attempted and tally.attempted > 10))
     if outage:
         cycle.forget([c for c, _failed in fetched])      # nothing was refreshed: they stay owed
-    closed = False if outage else cycle.close_if_complete(tally)
+        raise DefinitiveError(
+            f"unsdg: all {len(vanished) or tally.attempted} stored series code(s) attempted this pass came back "
+            f"empty ({', '.join((vanished or [c for c, _ in fetched])[:5])} ...) - a wholesale outage, not "
+            f"retired series; existing data kept, the codes stay owed and no release is claimed")
+    floor = 10 ** 9                  # the outage is judged above, by vanished codes - never by finalize
+    # A SUSPECT PASS CANNOT HELP SEAL A RELEASE (review R1286). A pass of more than 10 codes that added
+    # nothing is either legitimately empty codes or an outage over codes the store never held (a first
+    # sweep) - the two look the same from here. Either way the cycle may still close, but it may not
+    # claim the release: its token is marked MIXED, the close keeps the placeholder, and the next due
+    # tick re-sweeps.
+    if tally.attempted > 10 and tally.added == 0 and tally.revised == 0 and cycle_token != MIXED:
+        cycle_token = _mark_mixed(out_dir)
+    closed = cycle.close_if_complete(tally)
     if not closed:
         failed_now = {c for c, failed in fetched if failed}
         for c in cycle.unvisited():
@@ -393,8 +446,7 @@ def update(unit, since) -> Result:
                 tally.deferred_unit()
 
     if not merged_any:
-        # Nothing parsed anywhere -> on a cycle's first pass finalize raises the honest structural/
-        # empty-window error over the attempted set (existing data kept).
+        # Nothing merged this pass (every code attempted was empty or failed, and it was no outage).
         res = finalize(tally, before, None, source=SOURCE, empty_window_floor=floor)
     else:
         print(f"[unsdg] merged {len(all_cursors):,} refreshed keys across "
