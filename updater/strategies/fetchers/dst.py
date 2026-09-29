@@ -37,6 +37,7 @@ import datetime as dt
 import json
 import os
 import re
+import sys
 import time
 
 import pyarrow as pa
@@ -209,7 +210,8 @@ def _global_max_date() -> str | None:
         p = os.path.join(d, f)
         try:
             t = blob.read_table(p)
-        except Exception:
+        except Exception as e:                                       # noqa: BLE001
+            _reraise_unit_timeout(e)         # ~705 reads: a unit timeout here must end the pass (R1114)
             continue
         if t.num_rows == 0 or "obs_date" not in t.column_names:
             continue
@@ -228,8 +230,10 @@ def _fetch_table_rows(table_id: str):
     network/5xx fault prevented a clean fetch (so the table is NOT marked processed)."""
     try:
         meta = ing.get_json(f"{BASE}/tableinfo?id={table_id}&lang=en")
-    except Exception:
+    except Exception as e:                                           # noqa: BLE001
+        _reraise_unit_timeout(e)
         return [], True
+    _fence_check("the tableinfo GET")
     time.sleep(RATE)
     if not meta:
         # get_json returns None on 400/404 (definitively gone) OR after exhausting
@@ -240,10 +244,47 @@ def _fetch_table_rows(table_id: str):
     if not variables:
         return [], False  # genuinely no variables -> legitimately empty table
     try:
-        rows = ing.query_table(table_id, variables)
-    except Exception:
+        rows, outcome = ing.query_table_detailed(table_id, variables)
+    except Exception as e:                                           # noqa: BLE001
+        _reraise_unit_timeout(e)
         return [], True
+    _fence_check("the data POST")
+    # A FAILED DATA POST IS NOT A QUIET TABLE (review R1283). query_table returned [] for a POST that failed
+    # (5xx/timeout after retries, 403) exactly as for a table with no rows, so the table was booked empty and
+    # its manifest entry ADVANCED: that release was never taken until DST republished it. Measured
+    # 2026-09-29: DNVALD answered HTTP 500 three times (too many time values in one POST - the ingester now
+    # retries in time chunks), DNINDEX's 1,121 daily values parsed to 0 rows (the daily grammar was missing).
+    if outcome == "failed":
+        print(f"[{SOURCE}] {table_id}: the data POST failed (even in time chunks) - transient, stays owed",
+              flush=True)
+        return [], True
+    if outcome == "unparsed":
+        print(f"[{SOURCE}] {table_id}: HTTP 200 with values that parsed to 0 rows - OUR parser gap, not an "
+              f"empty table; stays owed", flush=True)
+        return [], True
+    if outcome == "span_time":
+        # every period is a window (multi-year, or part of a year): the dating convention is not chosen (cso's
+        # span_time) - nothing is stored, and the table counts as processed so it is not re-pulled every run
+        print(f"[{SOURCE}] {table_id}: every period is a multi-year or part-year window - not dated, nothing "
+              f"stored", flush=True)
     return rows, False
+
+
+def _reraise_unit_timeout(e) -> None:
+    """The orchestrator's unit timeout must end the pass, never read as one table's failure (R1114)."""
+    orch = sys.modules.get("updater.orchestrate")
+    if orch is not None and (getattr(orch, "UNIT_TIMEOUT_FIRED", False) or
+                             isinstance(e, getattr(orch, "UnitTimeout", ()))):
+        raise e
+
+
+def _fence_check(where: str) -> None:
+    """Raise the unit timeout if it fired DURING an ingester call that returned normally. The alarm usually lands
+    inside requests, and a library's own `except Exception` can absorb it before any of ours sees it: the call then
+    returns None and the table would read as one more transient failure while the pass ran on (review R1297)."""
+    orch = sys.modules.get("updater.orchestrate")
+    if orch is not None and getattr(orch, "UNIT_TIMEOUT_FIRED", False):
+        raise orch.UnitTimeout(f"{SOURCE}: unit timeout fired during {where}")
 
 
 def update(unit, since) -> Result:
@@ -326,7 +367,7 @@ def update(unit, since) -> Result:
         for tid in batch:
             rows, transient = _fetch_table_rows(tid)
             if transient:
-                tally.transient_unit()  # -> partial; table NOT marked processed; requeued
+                tally.transient_unit(tid)  # -> partial; table NOT marked processed; requeued (named)
                 continue
             if not rows:
                 tally.empty_unit()  # 200 parsed 0 rows (legitimately empty DST table)
@@ -361,7 +402,7 @@ def update(unit, since) -> Result:
                 # A never-shrink / column-drop refusal for ONE subject must not abort the
                 # whole run or fake success: count it transient so status is 'partial' and
                 # the affected tables are retried (their manifest entries are NOT advanced).
-                tally.transient_unit()
+                tally.transient_unit(f"{subj}: merge refused")
                 for tid in batch:
                     if _subj(tid) == subj:
                         processed_ok.pop(tid, None)
