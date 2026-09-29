@@ -310,6 +310,16 @@ def _lane_problem(beat, now) -> "str | None":
     owed release past its SLA) - one predicate, read here because statcan is run_location: local
     and the cloud health gate does not judge it (statcan lane design review, finding 8). A
     quarantine is `partial` there and is NOT a failure here: it needs a human, not a red run."""
+    from core import cutover                                 # noqa: PLC0415
+    if cutover.is_cut_over() and _lane_expected():
+        # STILL A FAULT, named for what it is, WHATEVER THE BEAT FILE SAYS: the lane is pre-T0 only and
+        # refuses after the cutover, so any beat on disk is a pre-T0 one going stale - judging it would
+        # say "dead or wedged, check the guard" about a lane that refuses by design (port review,
+        # defect 2). statcan has NO refresh path until its self-hosted backend and writer lock are
+        # designed - a T0 decision (t0_ready's statcan-lane check refuses T0 until then).
+        return ("jobs/statcan_lane.py refuses after T0 (it serves the R2 copy), so statcan is NOT "
+                "refreshed until its self-hosted lane is designed (backend and writer lock: a T0 "
+                "decision)")
     if beat is None:
         return ("no progress file on the workstation - jobs/statcan_lane.py has never run there, "
                 "while the registry says it serves statcan") if _lane_expected() else None

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import gzip
+import hashlib
 import importlib.util
 import io
 import json
@@ -30,7 +31,7 @@ sys.path.insert(0, ROOT)
 
 import jobs.ingest_statcan as ing  # noqa: E402
 import jobs.statcan_lane as lane  # noqa: E402
-from updater import orchestrate, registry, writer_lock  # noqa: E402
+from updater import blob, orchestrate, registry, writer_lock  # noqa: E402
 from updater.errors import DefinitiveError  # noqa: E402
 from updater.strategies.fetchers import statcan as sc  # noqa: E402
 
@@ -78,8 +79,10 @@ class _Bucket:
         self.put = {}
 
     def __call__(self, key, body):
-        assert body[:2] == b"\x1f\x8b", "served bodies are gzip at rest"
-        self.put[key] = gzip.decompress(body).decode("utf-8")
+        # the lane hands the store the PLAIN CSV; the store gzips it at rest and records its csvmd5
+        # (test_the_store_put_goes_through_the_shared_csv_store). A pre-gzipped body would lose the csvmd5.
+        assert body[:2] != b"\x1f\x8b", "the lane hands the store the plain CSV"
+        self.put[key] = body.decode("utf-8")
 
 
 @pytest.fixture
@@ -94,7 +97,7 @@ def world(tmp_path, monkeypatch):
         monkeypatch.setattr(lane, name, str(d / f"_lane_{name.lower()}.json"))
     monkeypatch.setattr(lane, "LOCAL_PROGRESS", str(tmp_path / "logs" / "statcan_lane.progress.json"))
     monkeypatch.setattr(lane, "SPLIT_MAP", str(d / "_split_map.json"))
-    monkeypatch.setattr(lane, "CATALOG_DB", str(tmp_path / "catalog.db"))
+    monkeypatch.setattr(lane, "CATALOGUE", str(tmp_path / "catalog.db"))
     monkeypatch.setattr(writer_lock, "LOCK_DIR", str(tmp_path / "logs"))
     _stored(d / f"{PID}.parquet", [("v1", "2026-01-01", 1.0, "Windsor", "1.1"),
                                    ("v1", "2026-02-01", 2.0, "Windsor", "1.1"),
@@ -172,38 +175,172 @@ def test_a_released_cube_is_merged_then_its_catalogued_parts_served(world, monke
     assert prog["counters"]["cubes_served"] == 1 and prog["owed"]["merge"] == 0
 
 
+class _R2:
+    """The bucket behind updater.blob.R2Blob - put_object and head_object only, what put_atomic uses."""
+
+    def __init__(self):
+        self.objects = {}                                      # key -> (body, put_object kwargs)
+        self.puts = 0
+
+    def put_object(self, Bucket, Key, Body, **kw):
+        assert Bucket == blob.R2_BUCKET, Bucket
+        self.objects[Key] = (Body, kw)
+        self.puts += 1
+
+    def head_object(self, Bucket, Key):
+        if Key not in self.objects:
+            raise KeyError(Key)                                # r2_holds_csv: any error = not held
+        body, kw = self.objects[Key]
+        return {"Metadata": dict(kw.get("Metadata") or {}), "ETag": '"%s"' % hashlib.md5(body).hexdigest()}
+
+    def served(self):
+        out = {}
+        for k, (body, kw) in self.objects.items():
+            assert kw.get("ContentEncoding") == "gzip" and kw.get("ContentType") == "text/csv", (k, kw)
+            out[k] = gzip.decompress(body).decode("utf-8")
+        return out
+
+
 def test_serving_is_byte_identical_to_the_derive_tool(world, monkeypatch, tmp_path):
-    """Parity with tools/derive_statcan_tables.py's own writing path on the same cube and split."""
+    """Parity with tools/derive_statcan_tables.py's own writing path on the same cube and split - both
+    through the REAL shared CSV store (blob.csv_store -> R2Blob.put_atomic), only the bucket faked."""
     _net(monkeypatch, NEW, (5, 3))
-    b = _Bucket()
     con = sqlite3.connect(tmp_path / "catalog.db")               # catalogue the relabelled part too
     con.execute("INSERT INTO series VALUES (?)", (f"statcan:{PID}#Windsor - other locations",))
     con.commit()
     con.close()
-    lane.run(enumerate_releases=_rel({PID: REL}), put=b)
+    lane_r2, tool_r2 = _R2(), _R2()
+    monkeypatch.setattr(blob.R2Blob, "client", property(lambda self: lane_r2))
+    lane.run(enumerate_releases=_rel({PID: REL}))                  # production put: _store_put()
 
     spec = importlib.util.spec_from_file_location("_dst_parity", os.path.join(ROOT, "tools",
                                                                               "derive_statcan_tables.py"))
     t = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(t)
-
-    class _S3:
-        put = {}
-
-        def put_object(self, Bucket, Key, Body, ContentType=None, ContentEncoding=None):
-            self.put[Key] = gzip.decompress(Body).decode("utf-8")
-    s3 = _S3()
     (tmp_path / "logs").mkdir(exist_ok=True)
     monkeypatch.setattr(t, "STORE", str(world))
     monkeypatch.setattr(t, "ROOT", str(tmp_path))
-    monkeypatch.setattr(t.r2_util, "client", lambda write=False: s3)
+    monkeypatch.setattr(blob.R2Blob, "client", property(lambda self: tool_r2))
     # --rekey exists once PR #63 (writing runs pin) is merged; this branch may run before it. At
     # --max-rows 4 both versions choose the geo split the map records (5 rows, largest geo group 4).
     extra = ["--rekey"] if "--rekey" in open(spec.origin, encoding="utf-8").read() else []
-    monkeypatch.setattr(sys, "argv", ["x", "--bucket", "b", "--only", str(PID), "--max-rows", "4",
-                                      *extra])
+    monkeypatch.setattr(sys, "argv", ["x", "--bucket", blob.R2_BUCKET, "--only", str(PID),
+                                      "--max-rows", "4", *extra])
     t.main()
-    assert b.put and b.put == s3.put, (sorted(b.put), sorted(s3.put))
+    assert len(lane_r2.served()) == 2 and lane_r2.served() == tool_r2.served(), (
+        sorted(lane_r2.served()), sorted(tool_r2.served()))
+
+
+def test_the_store_put_goes_through_the_shared_csv_store(world, monkeypatch):
+    """_store_put is blob.csv_store + derive._put_with_retry: the store gzips the plain CSV at rest with
+    its csvmd5, and an identical part is not uploaded twice (the ~71% PUT saving the lane's own client
+    lost). A refusal is one try and a raise, never 7 retries."""
+    r2 = _R2()
+    monkeypatch.setattr(blob.R2Blob, "client", property(lambda self: r2))
+    put = lane._store_put()
+    body = b"series_id,obs_date,value\nv3,2026-01-01,7.0\n"
+    put("series/statcan%3A1%23a.csv", body)
+    stored, kw = r2.objects["series/statcan%3A1%23a.csv"]
+    assert gzip.decompress(stored) == body and kw["ContentEncoding"] == "gzip"
+    assert kw["Metadata"] == {"csvmd5": hashlib.md5(body).hexdigest()}, kw
+    put("series/statcan%3A1%23a.csv", body)
+    assert r2.puts == 1, "the store already holds these bytes: no second PUT"
+    put("series/statcan%3A1%23a.csv", body + b"v3,2026-02-01,8.0\n")
+    assert r2.puts == 2, "changed bytes are uploaded"
+    tries = []
+
+    def _refuse(**kw):
+        tries.append(kw["Key"])
+        raise ValueError("refused")                                # a refusal answers the same every try
+    monkeypatch.setattr(r2, "put_object", _refuse)
+    with pytest.raises(RuntimeError, match="PUT failed"):
+        put("series/statcan%3A1%23b.csv", body)
+    assert tries == ["series/statcan%3A1%23b.csv"], tries
+
+
+def test_the_lane_refuses_after_t0(world, monkeypatch):
+    """BEFORE T0 ONLY: after the cutover the lane would merge into and serve the frozen R2 copy. It refuses
+    before it pins a backend or takes any lock."""
+    from core import cutover
+    monkeypatch.setattr(cutover, "is_cut_over", lambda: True)
+    called = []
+    monkeypatch.setattr(lane, "pin_backend", lambda *a, **k: called.append("pin"))
+    monkeypatch.setattr(writer_lock, "acquire", lambda *a, **k: called.append("lock") or False)
+    before = sorted(p.name for p in (world.parent.parent.parent / "logs").glob("*")) \
+        if (world.parent.parent.parent / "logs").exists() else []
+    with pytest.raises(cutover.CutoverRefused, match="statcan_lane"):
+        lane.main(["--once"])                                    # a hand trial sees the refusal at once
+    assert called == [], called
+    after = sorted(p.name for p in (world.parent.parent.parent / "logs").glob("*")) \
+        if (world.parent.parent.parent / "logs").exists() else []
+    assert after == before, "a refusal writes nothing (no .DONE: that would retire the lane for good)"
+    assert not os.path.exists(os.path.join(lane.ROOT, "logs", "statcan_lane.DONE"))
+
+
+class _Stop(BaseException):
+    pass
+
+
+def test_after_t0_the_resident_lane_waits_writes_nothing_and_resumes_when_the_flag_clears(world, monkeypatch):
+    """The guard's view (port review round 2): the lane stays alive and refuses - no crash loop - writes no
+    sentinel, logs about hourly, and resumes by itself when a fail-closed flag read clears."""
+    from core import cutover
+    flags = iter([True, True, True, False])
+    monkeypatch.setattr(cutover, "is_cut_over", lambda: next(flags))
+    events, clock = [], {"t": 0.0}
+    monkeypatch.setattr(lane.time, "monotonic", lambda: clock["t"])
+
+    def sleep(s):
+        events.append("sleep")
+        clock["t"] += 1000                                       # 3 refused iterations: 0, 1000, 2000 s
+    monkeypatch.setattr(lane.time, "sleep", sleep)
+    monkeypatch.setattr(lane, "pin_backend", lambda *a, **k: events.append("pin"))
+    monkeypatch.setattr(writer_lock, "acquire", lambda *a, **k: True)
+    monkeypatch.setattr(writer_lock, "release", lambda *a, **k: None)
+
+    def run(**k):
+        events.append("run")
+        raise _Stop()
+    monkeypatch.setattr(lane, "run", run)
+    printed = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(str(x) for x in a)))
+    with pytest.raises(_Stop):
+        lane.main([])
+    assert events == ["sleep", "sleep", "sleep", "pin", "run"], events
+    refusals = [p for p in printed if "REFUSING after T0" in p]
+    assert len(refusals) == 1, printed                           # 2,000 s of refusal: one line, not three
+    assert any("flag cleared - resuming" in p for p in printed), printed
+
+
+def test_the_refusal_is_logged_again_after_an_hour(world, monkeypatch):
+    from core import cutover
+    flags = iter([True, True, False])
+    monkeypatch.setattr(cutover, "is_cut_over", lambda: next(flags))
+    clock = {"t": 0.0}
+    monkeypatch.setattr(lane.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(lane.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + lane.REFUSED_LOG_EVERY_S))
+    monkeypatch.setattr(lane, "pin_backend", lambda *a, **k: None)
+    monkeypatch.setattr(writer_lock, "acquire", lambda *a, **k: (_ for _ in ()).throw(_Stop()))
+    printed = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(str(x) for x in a)))
+    with pytest.raises(_Stop):
+        lane.main([])
+    assert len([p for p in printed if "REFUSING after T0" in p]) == 2, printed
+
+
+def test_the_catalogue_is_read_through_the_resolver(world, monkeypatch):
+    """Behavioural, because the name ratchet cannot see a raw sqlite3 open once the constant is renamed
+    (port review, mutation M1 survived 161 tests)."""
+    from core import catalog_path
+    seen = []
+    real = catalog_path.connect_path
+
+    def spy(path, *, write, **kw):
+        seen.append((str(path), write))
+        return real(path, write=write, **kw)
+    monkeypatch.setattr(catalog_path, "connect_path", spy)
+    got = lane.catalogued_ids(str(PID))
+    assert got and seen == [(lane.CATALOGUE, False)], seen
 
 
 def test_a_kill_between_merge_and_serve_leaves_the_serve_owed_and_nothing_is_refetched(world, monkeypatch):
@@ -744,7 +881,8 @@ def test_the_lane_holding_the_lock_keeps_another_writer_out(tmp_path, monkeypatc
     finally:
         writer_lock.release("statcan_writer")
     src = open(os.path.join(ROOT, "tools", "_delete_statcan_r2.py"), encoding="utf-8").read()
-    assert src.index("raise SystemExit(\"RETIRED") < src.index("import boto3")
+    # main's DEFUSED refusal (tests/test_defused_one_shots) stands before any import that could delete
+    assert src.index("raise SystemExit(\"tools/_delete_statcan_r2.py is DEFUSED") < src.index("import boto3")
 
 
 def test_the_lane_sets_r2_when_unset_and_refuses_any_other_backend(monkeypatch):

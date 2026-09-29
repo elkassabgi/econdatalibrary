@@ -34,6 +34,12 @@ PER CUBE, OLDEST RELEASE FIRST (size breaks ties; smallest-first starved the old
 WHAT IT DOES NOT DO (v1). Brand-new cubes (released, not held) are NOT ingested: they are listed
 under `new_cubes` in the debt file and counted by the reporter. Ingesting them is the same fetch,
 but nothing could serve them until catalogued, and why each is absent has not been checked.
+
+BEFORE T0 ONLY (self-hosting plan, 2026-09-28). The lane merges into the R2 store and serves R2, so it
+REFUSES once econ is cut over (core.cutover): its post-T0 backend and writer lock are a T0 design
+decision, not a default. Until then it reads the catalogue through core.catalog_path and writes every
+CSV through the shared CSV store (updater.blob.csv_store + derive._put_with_retry), like the derive
+tool it mirrors.
 """
 from __future__ import annotations
 
@@ -51,6 +57,7 @@ import traceback
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+from core import catalog_path, cutover                           # noqa: E402
 from updater import blob, config, merge, writer_lock           # noqa: E402
 from updater.errors import DefinitiveError, TransientError      # noqa: E402
 from updater.strategies.fetchers import statcan as sc           # noqa: E402
@@ -63,8 +70,15 @@ DEBT = os.path.join(sc.OUT_DIR, "_catalogue_debt.json")         # blob-routed
 # mid-way can still truncate it on origin/main (design review finding 2), so this lane never opens
 # it for writing and re-reads it every launch.
 SPLIT_MAP = os.path.join(ROOT, "data", "clean_full", "statcan", "_split_map.json")
-CATALOG_DB = os.path.join(ROOT, "data", "catalog.db")
+CATALOGUE = catalog_path.under(ROOT)                           # opened via connect_path (read-only)
 LOCAL_PROGRESS = os.path.join(ROOT, "logs", "statcan_lane.progress.json")
+# Whether the lane may run after T0. False: it serves R2 and takes its own statcan_writer lock, and its
+# self-hosted backend and core.catalog_path writer lock are not designed (the owner's T0 decision).
+# tools/selfhost/t0_ready.py reads this by parsing (never importing) and refuses T0 while it is False.
+# WHOEVER FLIPS IT TO True must also make the post-T0 readers report the lane - guard_heartbeat.check_url
+# and the worker's /v1/guard-heartbeat carry no statcan_lane field today (port review, rule (c)) - and
+# replace the resident refusal in main() with the self-hosted path.
+POST_T0_READY = False
 PREFIX = "series"
 
 # THE BACKLOG'S START. 505 cubes were released between 2026-07-29 and 2026-09-17 while the fetcher
@@ -242,9 +256,8 @@ def catalogued_ids(pid: str, catalog_db: str | None = None) -> set:
     """Every catalogued id of one cube, by a PRIMARY-KEY RANGE read of the local catalogue. The
     product id is a fixed 8 digits, so 'statcan:<pid>' and 'statcan:<pid>#...' both sort inside
     [lo, lo + '$') ('$' 0x24 sorts just after '#' 0x23)."""
-    import sqlite3                                                   # noqa: PLC0415
     lo = _tool().unit_id(str(pid))
-    con = sqlite3.connect(f"file:{catalog_db or CATALOG_DB}?mode=ro", uri=True, timeout=180)
+    con = catalog_path.connect_path(catalog_db or CATALOGUE, write=False, timeout=180)
     try:
         return {r[0] for r in con.execute(
             "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?", (lo, lo + "$"))}
@@ -291,12 +304,11 @@ def serve_plan(pid: str, n_rows: int, schema_names, smap: dict, catalogued: set)
 def serve_cube(pid: str, local_parquet: str, smap: dict, catalogued: set, put, progress=None,
                memory_limit: str = "4GB") -> dict:
     """Re-derive cube `pid`'s CATALOGUED ids from `local_parquet` and hand each body to
-    `put(key, gzipped_body)`. The SELECT, ORDER BY, duplicate collapse and body bytes are
+    `put(key, csv_body)` - the PLAIN CSV; the store gzips it at rest (see _store_put). The SELECT, ORDER BY, duplicate collapse and body bytes are
     tools/derive_statcan_tables.py's own (19/19 parts byte-identical to core.derive_csv, NUMBERS.md
     2026-09-23). Returns {status, put, put_errors, new, vanished, null_part_rows, notes, refusal}."""
     import duckdb                                                    # noqa: PLC0415
     import pyarrow.parquet as pq                                     # noqa: PLC0415
-    from core import r2_util                                         # noqa: PLC0415
     t = _tool()
     md = pq.read_metadata(local_parquet)
     dim, refusal, notes = serve_plan(pid, md.num_rows, md.schema.to_arrow_schema().names, smap,
@@ -314,7 +326,9 @@ def serve_cube(pid: str, local_parquet: str, smap: dict, catalogued: set, put, p
         sel = "'' AS part, series_key, obs_date, value"
         order = "series_key, obs_date, value"
     emitted: set = set()
-    q: queue.Queue = queue.Queue(maxsize=64)
+    # PLAIN bodies now (the store gzips them and records their csvmd5), so the queue holds one per
+    # worker, not the 64 compressed bodies it held when the lane gzipped at enqueue
+    q: queue.Queue = queue.Queue(maxsize=PUT_WORKERS)
     lock = threading.Lock()
     STOP = object()
 
@@ -376,7 +390,7 @@ def serve_cube(pid: str, local_parquet: str, smap: dict, catalogued: set, put, p
             emitted.add(sid)
             if sid not in catalogued:
                 return                                 # a NEW id: debt, never written (see module)
-            q.put((t.csv_key(PREFIX, sid), r2_util.gzip_bytes(t._rows_csv(rows))))
+            q.put((t.csv_key(PREFIX, sid), t._rows_csv(rows)))
 
         while True:
             batch = cur.fetchmany(200_000)
@@ -408,24 +422,19 @@ def serve_cube(pid: str, local_parquet: str, smap: dict, catalogued: set, put, p
     return out
 
 
-def _r2_put():
-    """put(key, body) for the econ-data bucket, with core.derive_csv's backoff. The body is already
-    gzipped, and _put_with_backoff gzips again, so its raw put loop is reused on the gzipped bytes."""
-    from core import r2_util                                         # noqa: PLC0415
-    s3 = r2_util.client(write=True)
+def _store_put():
+    """put(key, csv_body) into the CSV store - updater.blob.csv_store, the one every series-CSV writer
+    uses (R2 before T0) - with the updater's 7 app-level tries (derive._put_with_retry). The body is the
+    PLAIN CSV: put_atomic gzips it at rest and records its pre-compression md5 (csvmd5), so a part whose
+    bytes the store already holds is not uploaded again (R2Blob._already_holds - the skip that saves
+    ~71% of paid PUTs). A failed or refused PUT raises, and serve_cube counts it as a put error."""
+    from updater import derive                                       # noqa: PLC0415
+    store = blob.csv_store(pool=PUT_WORKERS)
 
     def put(key, body):
-        for attempt in range(7):
-            try:
-                s3.put_object(Bucket=blob.R2_BUCKET, Key=key, Body=body, ContentType="text/csv",
-                              ContentEncoding="gzip")
-                return
-            except Exception as e:                                   # noqa: BLE001
-                if attempt == 6:
-                    raise
-                print(f"  [lane] PUT retry {attempt + 1}/7 in {2 ** attempt}s ({str(e)[:70]})",
-                      flush=True)
-                time.sleep(2 ** attempt)
+        if not derive._put_with_retry(store, key, body):
+            raise RuntimeError(f"PUT failed (refused at once, or {derive.PUT_TRIES} tries used up - "
+                               f"see the line above)")
     return put
 
 
@@ -673,7 +682,7 @@ def run(enumerate_releases=None, put=None, now_fn=_now, max_cubes=None) -> dict:
                          f"without it would re-key every split cube") from e
     if not isinstance(smap, dict) or not smap:
         raise SystemExit(f"REFUSING: the split map {SPLIT_MAP} holds no split decisions")
-    put = put or _r2_put()
+    put = put or _store_put()
     # SIZES BEFORE THE ORDER: the tiebreak (and the reporter's per-cube allowance) needs each owed
     # cube's stored size, read once per cube (one HEAD under r2) and kept in state. Read inside the
     # loop, as first written, every first-visit cube tied at 0 bytes (mutation M6 survived).
@@ -749,20 +758,50 @@ def pin_backend(environ=None, cfg=None) -> None:
         cfg.BACKEND = "r2"
 
 
+REFUSED_WHY = ("jobs/statcan_lane.py merges into and serves the R2 store; its self-hosted backend and writer "
+               "lock are a T0 decision not made yet (POST_T0_READY = False)")
+REFUSED_LOG_EVERY_S = 3600      # well inside the guard's 3 h stall check, which keys on this log's mtime
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     ap.add_argument("--max-cubes", type=int, default=None,
                     help="stop after this many cubes (a trial run; the rest stay owed)")
     ap.add_argument("--once", action="store_true", help="one iteration, then exit (a trial run)")
     a = ap.parse_args(argv)
-    pin_backend()
     # ONE PROCESS, LOOPING, THE LOCK HELD ONLY WHILE WORKING. A launch-per-guard-tick lane left a
     # log pair every 5 minutes (~288 a day) that nothing prunes; a lane holding the lock for its
     # whole life would refuse every other statcan writer - including every all-source
     # core.derive_csv run - for ever. So: iterate, take the lock for the iteration, release it,
     # sleep. An exception ends the process loudly and the guard relaunches it.
+    #
+    # BEFORE T0 ONLY (module docstring). After the cutover the lane would merge into and serve the frozen
+    # R2 copy, so it REFUSES - but it STAYS RESIDENT and re-checks the flag every iteration, touching
+    # nothing and writing no file (port review rounds 1-2). A raise-and-exit would crash-loop: the guard
+    # relaunches a dead job every 5 minutes. A self-written logs/statcan_lane.DONE would retire it for good
+    # (the R475 class): core.cutover.is_cut_over() FAILS CLOSED on any error reading the flag, so one
+    # unreadable ProgramData ACL would stop statcan permanently with no T0. Resident, a false positive
+    # clears itself. It says so about once an hour, which keeps the guard's stall check quiet and the log
+    # honest. --once (a hand trial) raises instead: a person running it should see the refusal at once.
     held_by_other_logged = False
+    pinned = False
+    refused_logged_at = None
     while True:
+        if cutover.is_cut_over():
+            if a.once:
+                cutover.refuse_if_cut_over(REFUSED_WHY)
+            if refused_logged_at is None or time.monotonic() - refused_logged_at >= REFUSED_LOG_EVERY_S:
+                print(f"[lane] {_iso(_now())} REFUSING after T0: {REFUSED_WHY}. Waiting - nothing is "
+                      f"written; the lane resumes by itself if the flag clears", flush=True)
+                refused_logged_at = time.monotonic()
+            time.sleep(IDLE_SLEEP_S)
+            continue
+        if refused_logged_at is not None:
+            print(f"[lane] {_iso(_now())} the cutover flag cleared - resuming", flush=True)
+            refused_logged_at = None
+        if not pinned:
+            pin_backend()               # only once the flag is clear: after T0 a launcher may set selfhost
+            pinned = True
         if writer_lock.acquire(LOCK_NAME, what="jobs/statcan_lane.py"):
             held_by_other_logged = False
             try:
