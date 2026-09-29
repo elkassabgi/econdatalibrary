@@ -178,6 +178,8 @@ def parse_date(s: str) -> dt.date | None:
         # fallback, so a loose ^\d{4}-\d{4}$ would let a range label ("1990-2000") read as a
         # date and could promote a classification axis to the time axis — the swapped-axis
         # defect that cost 290 matrices and 754,780 rows to repair (R288).
+        # (2026-09-29, review AR-167: is_time_dim no longer calls parse_date - its value fallback
+        # is its own regex - so the first+1 rule now guards the DATING convention, not axis choice.)
         m = re.match(r"^(\d{4})-(\d{4})$", s)
         if m:
             y1, y2 = int(m.group(1)), int(m.group(2))
@@ -367,7 +369,9 @@ def fetch_table_detailed(mtr_code: str) -> "tuple[list[tuple[str, dt.date, float
     return [], _why_unparsed(data)
 
 
-_SPAN = re.compile(r"^(\d{4})-(\d{4})$")
+# '2019-2023' or its compact code '20192023' (EIIA15, 2026-09-29: the dash-only pattern missed the compact
+# form, so a window table read `unparsed` - OUR bug - instead of span_time, and was retried every run)
+_SPAN = re.compile(r"^(\d{4})-?(\d{4})$")
 
 
 def _why_unparsed(data) -> str:
