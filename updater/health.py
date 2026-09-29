@@ -724,7 +724,7 @@ def route_silence(report: dict) -> "list[str]":
     WHY THIS EXISTS. gate_failures correctly refuses to judge sources that run elsewhere —
     a gate must not pronounce on runs it cannot see. But "not judged here" plus "not judged
     anywhere else" adds up to NOT JUDGED. The workstation route is the ONLY update path for
-    the 17 cloud-infeasible sources, `eia` among them on a DAILY cadence, and if that machine
+    the cloud-infeasible sources (tools/_list_local_sources.py), `eia` among them on a DAILY cadence, and if that machine
     stops nothing in CI says so.
 
     WHAT THIS DOES AND DOES NOT CATCH — stated plainly, because I first wrote it believing it

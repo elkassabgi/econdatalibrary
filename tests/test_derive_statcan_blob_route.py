@@ -44,8 +44,12 @@ def run(tmp_path, monkeypatch):
         from core import cutover
         monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "no_flag" / "CUTOVER"))
         monkeypatch.setattr(blob, "R2Blob", lambda *a, **k: store)          # what csv_store() builds before T0
+        # --rekey: choose the split afresh, as every writing run did before #63; since #63 a writing run
+        # otherwise PINS the recorded split and needs _split_map.json + the catalogue, which is not this
+        # file's subject (the store route is) - tests/test_statcan_rederive.py covers pinning. --max-rows:
+        # #63 refuses a writing run whose cap is neither given nor recorded; 3,000,000 is the production cap
         monkeypatch.setattr(sys, "argv", ["derive_statcan_tables.py", "--bucket", "econ-data", "--workers", "1",
-                                          *extra])
+                                          "--rekey", "--max-rows", "3000000", *extra])
         return D.main()
     return go
 
