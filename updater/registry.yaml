@@ -8661,6 +8661,12 @@ sources:
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: quarterly
+  # data_cadence MEASURED 2026-09-29 on the SERVED store (R2 clean_full/imf_gfssoo_direct/imf_gfssoo_direct.parquet, LastModified
+  # 2026-08-08T16:12:11Z): 3 distinct obs_date in the trailing 3 years and all 5,557,444 rows dated 31 December - the
+  # data is ANNUAL (parse_period handles quarters, so none are served). Sets the LATENESS clock only; the
+  # quarterly check cadence above is unchanged. Its siblings imf_gfsssuc/imf_gfssoef were measured the same
+  # way on 2026-08-02; these four were missed and read RED-DATA at 272 days on the quarterly clock.
+  data_cadence: annual
   refresh_cost: large
   out_dir: imf_gfssoo_direct
   review: true
@@ -8720,6 +8726,12 @@ sources:
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: quarterly
+  # data_cadence MEASURED 2026-09-29 on the SERVED store (R2 clean_full/imf_gfscofog_direct/imf_gfscofog_direct.parquet, LastModified
+  # 2026-08-08T15:48:18Z): 3 distinct obs_date in the trailing 3 years and all 1,839,470 rows dated 31 December - the
+  # data is ANNUAL (parse_period handles quarters, so none are served). Sets the LATENESS clock only; the
+  # quarterly check cadence above is unchanged. Its siblings imf_gfsssuc/imf_gfssoef were measured the same
+  # way on 2026-08-02; these four were missed and read RED-DATA at 272 days on the quarterly clock.
+  data_cadence: annual
   refresh_cost: fast
   out_dir: imf_gfscofog_direct
   review: true
@@ -8845,6 +8857,12 @@ sources:
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: quarterly
+  # data_cadence MEASURED 2026-09-29 on the SERVED store (R2 clean_full/imf_gfsbs_direct/imf_gfsbs_direct.parquet, LastModified
+  # 2026-08-08T15:39:23Z): 3 distinct obs_date in the trailing 3 years and all 954,482 rows dated 31 December - the
+  # data is ANNUAL (parse_period handles quarters, so none are served). Sets the LATENESS clock only; the
+  # quarterly check cadence above is unchanged. Its siblings imf_gfsssuc/imf_gfssoef were measured the same
+  # way on 2026-08-02; these four were missed and read RED-DATA at 272 days on the quarterly clock.
+  data_cadence: annual
   refresh_cost: fast
   out_dir: imf_gfsbs_direct
   review: true
@@ -8904,6 +8922,12 @@ sources:
     a back-revision rewrites history without extending it and a date probe would
     miss it entirely.
   cadence: quarterly
+  # data_cadence MEASURED 2026-09-29 on the SERVED store (R2 clean_full/imf_gfssfcp_direct/imf_gfssfcp_direct.parquet, LastModified
+  # 2026-08-08T15:55:04Z): 3 distinct obs_date in the trailing 3 years and all 502,484 rows dated 31 December - the
+  # data is ANNUAL (parse_period handles quarters, so none are served). Sets the LATENESS clock only; the
+  # quarterly check cadence above is unchanged. Its siblings imf_gfsssuc/imf_gfssoef were measured the same
+  # way on 2026-08-02; these four were missed and read RED-DATA at 272 days on the quarterly clock.
+  data_cadence: annual
   refresh_cost: fast
   out_dir: imf_gfssfcp_direct
   review: true
