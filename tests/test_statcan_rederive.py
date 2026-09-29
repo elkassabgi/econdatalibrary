@@ -54,10 +54,11 @@ def test_a_cube_served_whole_stays_whole_while_it_fits_the_cap():
     assert d.pinned_split("10100001", 400, {}, 3_000_000, served_whole=True) == (None, 1)
 
 
-def test_a_whole_cube_that_outgrew_the_cap_is_refused_not_silently_rekeyed():
-    """One rule with the cataloguer, which refuses the WHOLE catalogue when an over-cap cube has
-    no split: splitting it here would re-key its id, keeping it whole would block cataloguing."""
-    assert d.pinned_split("10100001", 3_000_001, {}, 3_000_000, served_whole=True) == ("", 0)
+def test_a_whole_cube_that_outgrew_the_cap_stays_whole_never_rekeyed_never_refused():
+    """The ONE rule (2026-09-29, AR-166) with jobs/statcan_lane.serve_plan and the cataloguer's
+    kept_whole: splitting would re-key its public id, refusing would freeze it. It stays whole."""
+    assert d.pinned_split("10100001", 3_000_001, {}, 3_000_000, served_whole=True) == (None, 1)
+    assert d.pinned_split("10100001", 300_000_000, {}, 3_000_000, served_whole=True) == (None, 1)
 
 
 def test_a_cube_served_as_parts_with_no_recorded_split_is_refused():
@@ -246,8 +247,21 @@ def test_a_cube_with_no_public_ids_is_split_as_a_first_derive_would(world, monke
     assert rep["status"] == "ok" and rep["new"] and all("#" in s for s in rep["new"]), rep
 
 
+def test_a_whole_served_cube_over_the_cap_is_derived_whole_and_the_run_passes(world, monkeypatch,
+                                                                             tmp_path, capsys):
+    """Was a refusal that failed the run; the one rule (AR-166) keeps it whole - the lane serves the
+    same cube whole, and the cataloguer keeps it catalogued whole."""
+    store, db, s3, smap = world
+    _cube(store / "22222222.parquet", [("v9", "x", "1.1"), ("v8", "y", "1.2")])   # 2 > cap 1
+    report = tmp_path / "parts.json"
+    rc = _pin(monkeypatch, db, report, "--only", "22222222")
+    rep = json.loads(report.read_text())["cubes"]["22222222"]
+    assert rc == 0 and rep["status"] == "ok", rep
+    assert rep["new"] == [] and rep["vanished"] == [], "the whole id is kept: no part id minted"
+    assert "served WHOLE at 2 rows, over the 1 cap - kept whole" in capsys.readouterr().out
+
+
 @pytest.mark.parametrize("setup, why", [
-    ("over_cap_whole", "a whole-served cube over the cap"),
     ("lost_column", "a recorded split on a column the cube lost"),
     ("parts_unmapped", "a cube served as parts with no recorded split"),
 ])
@@ -255,10 +269,7 @@ def test_cubes_that_cannot_be_judged_are_refused_and_fail_the_run(world, monkeyp
                                                                   setup, why):
     store, db, s3, smap = world
     pid = "11111111"
-    if setup == "over_cap_whole":
-        pid = "22222222"
-        _cube(store / "22222222.parquet", [("v9", "x", "1.1"), ("v8", "y", "1.2")])   # 2 > cap 1
-    elif setup == "lost_column":
+    if setup == "lost_column":
         m = dict(smap)
         m["11111111"] = {"dim": "region", "parts": 2, "rows": 3}
         (store / "_split_map.json").write_text(json.dumps(m))

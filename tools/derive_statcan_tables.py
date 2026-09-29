@@ -242,11 +242,20 @@ def pinned_split(pid: str, n_rows: int, pinned: dict, max_rows: int, served_whol
     35100172 records 13 and is catalogued with 12 (round-4 review measured 8 such cubes, each gap
     exactly its all-NULL groups). Never use it as a completeness count.
 
-    Returns choose_split's shape: (dim, n) for a recorded split; (None, 1) for a cube served whole
-    that still fits the cap; ("", 0) - refused by name - for a whole cube that has outgrown the cap
-    (catalog_statcan_tables.py refuses the WHOLE catalogue when an over-cap cube has no split: one
-    rule, both tools) and for a cube served as PARTS whose split is not recorded (choosing one now
-    would rename every served id - round-2 review); (CHOOSE, 0) only for a cube with no ids at all.
+    Returns choose_split's shape: (dim, n) for a recorded split; (None, 1) for a cube served WHOLE,
+    at ANY size; ("", 0) - refused by name - for a cube served as PARTS whose split is not recorded
+    (choosing one now would rename every served id - round-2 review); (CHOOSE, 0) only for a cube
+    with no ids at all.
+
+    A WHOLE CUBE STAYS WHOLE, OVER THE CAP TOO (2026-09-29, review AR-166). This returned ("", 0)
+    for a whole cube that outgrew `max_rows`, while jobs/statcan_lane.py serves the same cube whole
+    - two writers, two answers for one key. The cap is the size choose_split aims a NEW split at; it
+    is not a limit on a served object. Refusing freezes the served id at its last derive (a stale
+    object), and splitting re-keys it into part ids the catalogue does not hold (the D1 catalogue
+    sync is frozen, and a re-key is a decision, not a derive). Measured: 0 whole cubes are over the
+    3,000,000 cap today; the largest, 43100031 at 2,995,200 rows, is served by the live worker as
+    an 84 MB CSV in 1.3 s. catalog_statcan_tables.py accepts such a cube when its whole object
+    exists (classify_absent's `kept_whole`), so all three tools apply the one rule.
     """
     entry = pinned.get(pid)
     if entry and entry.get("dim"):
@@ -254,7 +263,7 @@ def pinned_split(pid: str, n_rows: int, pinned: dict, max_rows: int, served_whol
     if served_parts:
         return "", 0
     if served_whole:
-        return (None, 1) if n_rows <= max_rows else ("", 0)
+        return None, 1
     return CHOOSE, 0
 
 
@@ -603,12 +612,12 @@ def main() -> int:
             if dim == CHOOSE:
                 # no public ids yet: nothing to keep, so decide it as a first derive does
                 dim, n_parts = choose_split(con, f, n_rows, a.max_rows)
-            elif dim == "" and _parts:
+            elif dim == "":
                 pin_refusal = ("served as parts but no split is recorded in the map - choosing one "
                                "now would rename every served part (--rekey is that decision)")
-            elif dim == "":
-                pin_refusal = (f"served whole and now {n_rows:,} rows, over the {a.max_rows:,} cap - "
-                               f"splitting it re-keys its public id, a decision and not a derive")
+            elif dim is None and n_rows > a.max_rows:
+                print(f"  [{i}/{len(files)}] {pid}: served WHOLE at {n_rows:,} rows, over the "
+                      f"{a.max_rows:,} cap - kept whole (a split would re-key its public id)", flush=True)
             elif dim and not pinned_columns_present(dim, pq.read_schema(f).names):
                 pin_refusal = (f"its recorded split {dim!r} names a column the refreshed cube "
                                f"no longer has")

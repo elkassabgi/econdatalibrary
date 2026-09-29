@@ -296,6 +296,9 @@ def serve_plan(pid: str, n_rows: int, schema_names, smap: dict, catalogued: set)
         return dim, None, notes
     if served_parts:
         return None, "served as parts but no split is recorded in _split_map.json", notes
+    # THE ONE RULE (review AR-166): a whole cube stays whole over the cap - the same verdict as
+    # tools/derive_statcan_tables.pinned_split and the cataloguer's kept_whole
+    # (tests/test_statcan_lane.py::test_the_lane_and_the_derive_tool_apply_ONE_rule)
     if n_rows > MAX_ROWS:
         notes.append(f"served whole at {n_rows:,} rows, over the {MAX_ROWS:,} derive cap")
     return None, None, notes
