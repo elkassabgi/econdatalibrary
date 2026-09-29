@@ -114,6 +114,21 @@ def _catalog_token(tables) -> str:
     return content_hash(("\n".join(f"{i}\t{u}" for i, u in pairs)).encode("utf-8"))
 
 
+def _with_catalog_token(res: Result, tables) -> Result:
+    """Stamp the catalogue token on a CLEAN pass, not finalize's "date-tail" placeholder.
+
+    finalize() stamps new_vintage="date-tail" on every Result, and overwrite_if_changed fills in the probed
+    token only when a fetcher returns None - so dst's unit stored "date-tail", the probe never matched, and
+    every daily tick ran update(): 919-1,020 s to report no_change (runs of 2026-09-05/06), mostly reading the
+    ~705 subject files' max date. Same defect and fix as unctad (#83). The token is of the catalogue read at
+    the START of update(), so a table republished during the pass reads as changed next tick - a re-pull,
+    never a skipped release. Only on ok/no_change: a partial (budget spent, a transient table, a refused
+    subject) leaves tables due, so it must not claim the catalogue it has not caught up with."""
+    if res.status in ("ok", "no_change"):
+        res.new_vintage = _catalog_token(tables)
+    return res
+
+
 def current_vintage(unit):
     """Cheap probe: a content hash of the catalog's per-table 'updated' timestamps.
     Returns None (never raise) on a transient detection failure — the strategy then
@@ -262,8 +277,8 @@ def update(unit, since) -> Result:
         man["tables"] = seen
         man["catalog_token"] = _catalog_token(tables)
         _save_manifest(man)
-        return finalize(tally, before, _global_max_date(), source=SOURCE,
-                        series_cursors=cursors, empty_window_floor=10 ** 9)
+        return _with_catalog_token(finalize(tally, before, _global_max_date(), source=SOURCE,
+                                            series_cursors=cursors, empty_window_floor=10 ** 9), tables)
 
     # DRAIN IN CHECKPOINTED CHUNKS, bounded by wall clock rather than a table count.
     #
@@ -379,4 +394,4 @@ def update(unit, since) -> Result:
                      changed_keys=res.changed_keys,
                      error=f"budget spent with {remaining} of {len(due)} due table(s) "
                            f"still behind upstream; manifest checkpointed, drains next run")
-    return res
+    return _with_catalog_token(res, tables)
