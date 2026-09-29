@@ -77,10 +77,12 @@ def _parse_period(s, _orig):
             # real body that parsed to 0 rows, booked transient every run). A wider window ('20182021',
             # EIIA15) is NOT dated here: parse_date returns None for it and _why_unparsed names it
             # span_time, the convention not yet chosen. As a date YYYYMMDD these codes are impossible
-            # (month '20'/'19'), and the first year must be plausible, so no daily code or classification
-            # value can be read this way.
+            # (month '20'/'19'), and classification values never reach parse_date (is_time_dim uses its
+            # own regex; review AR-167: 0 of 13,077 live matrices lack an authoritative time axis). The
+            # bounds are is_time_dim's own plausible-year range, 1800..2100 - a projection axis
+            # ('20302031') must not be cut off after now+2, which a first draft did.
             y1, y2 = int(t[:4]), int(t[4:])
-            if 1900 <= y1 <= dt.date.today().year + 2 and y2 > y1:
+            if 1800 <= y1 <= 2100 and y2 > y1:
                 return _orig(f"{y1}-{y2}")
     return _orig(s)
 

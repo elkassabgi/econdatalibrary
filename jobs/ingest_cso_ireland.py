@@ -178,6 +178,8 @@ def parse_date(s: str) -> dt.date | None:
         # fallback, so a loose ^\d{4}-\d{4}$ would let a range label ("1990-2000") read as a
         # date and could promote a classification axis to the time axis — the swapped-axis
         # defect that cost 290 matrices and 754,780 rows to repair (R288).
+        # (2026-09-29, review AR-167: is_time_dim no longer calls parse_date - its value fallback
+        # is its own regex - so the first+1 rule now guards the DATING convention, not axis choice.)
         m = re.match(r"^(\d{4})-(\d{4})$", s)
         if m:
             y1, y2 = int(m.group(1)), int(m.group(2))

@@ -33,7 +33,9 @@ def test_a_compact_window_is_not_dated():
 
 def test_codes_that_are_not_two_plausible_years_are_untouched():
     assert ING.parse_date("20190101") is None                    # not a year pair; no daily compact grammar
-    assert ING.parse_date("18991900") is None                    # implausible first year
+    assert ING.parse_date("17991800") is None                    # outside is_time_dim's 1800..2100
+    assert ING.parse_date("20302031") == dt.date(2030, 12, 31)   # a projection axis is not cut off at now+2
+    assert ING.parse_date("18991900") == ING.parse_date("1899-1900") == dt.date(1899, 12, 31)  # = dashed rule
     assert ING.parse_date("197511") == dt.date(1975, 11, 1)      # the existing YYYYMM form still works
     assert ING.parse_date("2022") == dt.date(2022, 12, 31)
 
