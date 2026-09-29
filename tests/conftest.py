@@ -173,3 +173,43 @@ def _fresh_merge_served_cache():
     derive._merge_served_sources._cache = None
     yield
     derive._merge_served_sources._cache = None
+
+
+_ALARM_MODULES = ("updater.orchestrate", "updater.derive")
+
+
+@pytest.fixture(autouse=True)
+def _alarm_state_isolation():
+    """NO TEST INHERITS ANOTHER TEST'S ALARM PLUMBING (2026-09-29, the Windows fence-test failures of 2026-09-28).
+
+    tests/test_derive_fence_aware.py emulates SIGALRM with a SIGINT handler that runs orchestrate._deliver_alarm,
+    and derive catches the trip as `except fence`, where fence is UnitTimeout imported LAZILY from
+    sys.modules['updater.orchestrate']. So its results depend on process-wide state another test can leave behind:
+      - orchestrate._DEFER_ALARM / _ALARM_PENDING (a deferred trip swallowed or delivered in the wrong test),
+      - orchestrate.UNIT_TIMEOUT_FIRED (derive's _raise_if_fence_in_disguise turns a plain error into the fence),
+      - a replaced sys.modules['updater.orchestrate' / 'updater.derive'] (two UnitTimeout classes: the trip is
+        raised as one and caught as the other - "UnitTimeout has no attribute derive_partial", as on 2026-09-28),
+      - the SIGINT handler.
+    Each test starts clean, and a test that LEAVES any of these changed fails at its own teardown, naming it -
+    instead of a fence test failing three files later with a message that points nowhere."""
+    import signal
+    import sys
+    from updater import derive, orchestrate                     # noqa: F401 - both present BEFORE the snapshot,
+    mods = {k: sys.modules.get(k) for k in _ALARM_MODULES}     # or a first import would read as a replacement
+    sigint = signal.getsignal(signal.SIGINT)
+    orchestrate._DEFER_ALARM, orchestrate._ALARM_PENDING, orchestrate.UNIT_TIMEOUT_FIRED = False, None, False
+    yield
+    left = []
+    for k, m in mods.items():
+        if sys.modules.get(k) is not m:
+            left.append(f"sys.modules[{k!r}] replaced")
+            sys.modules[k] = m
+    orch = mods["updater.orchestrate"]
+    if orch._DEFER_ALARM or orch._ALARM_PENDING is not None:
+        left.append(f"orchestrate._DEFER_ALARM={orch._DEFER_ALARM!r} / _ALARM_PENDING={orch._ALARM_PENDING!r}")
+    orch._DEFER_ALARM, orch._ALARM_PENDING = False, None
+    if signal.getsignal(signal.SIGINT) is not sigint:
+        left.append("the SIGINT handler")
+        signal.signal(signal.SIGINT, sigint)
+    if left:
+        pytest.fail("this test left process-wide alarm state changed (restored now): " + "; ".join(left))
