@@ -44,14 +44,89 @@ from ._vintage import http_vintage, UA
 SOURCE = "yale_epi"
 DEDUP = ("series_key", "obs_date")
 
-DOWNLOADS = "https://epi.yale.edu/downloads"
+HOME = "https://epi.yale.edu/"
+DOWNLOADS = "https://epi.yale.edu/downloads"          # the pre-September-2026 page; 404 since
+# THE SITE MOVED (found 2026-09-29, daily gate run 36495274373: "2/2 sub-unit(s) returned 200 but parsed 0
+# rows"). Yale restructured epi.yale.edu: /downloads answers 404, the home page links a YEAR-SCOPED page
+# (/2026/downloads) whose files live under /sites/default/files/<yyyy-mm>/, and the old
+# downloads/epi2024results.csv URL now answers 200 with an HTML page. So the downloads pages are found from
+# the home page's /<year>/downloads links (plus the old page, harmlessly, in case it returns).
+_YEAR_PAGE_RE = re.compile(r'href=["\']((?:(?:https?:)?//epi\.yale\.edu)?/(\d{4})/downloads/?(?:[?#][^"\']*)?)["\']',
+                           re.I)
 # Floor, not the source of truth: these keep historical editions reachable even if
-# the downloads page stops listing them (Yale currently lists only the newest).
+# the downloads page stops listing them. The 2024 CSV is no longer served (see above); a floor URL that
+# answers with an HTML page is RETIRED, not broken - its data is already held (the merge never shrinks).
 KNOWN_URLS = [
     ("https://epi.yale.edu/downloads/epi2024results.csv", 2024),
 ]
 _LINK_RE = re.compile(r'href=["\']([^"\']*epi(\d{4})results[^"\']*\.(?:csv|xlsx))',
                       re.I)
+# THE COUNTRY VOCABULARY, from the current edition. Our 21,300+ published ids use EPI's numeric `code`
+# (ISO 3166-1 numeric); the 2026 results workbook ships only alpha-3 `iso`. The map used to be learned from
+# the 2024 CSV, which Yale no longer serves - and without a map the workbook would be parsed into a
+# DISJOINT alpha-3 id space (see _parse_epi_csv). Every CSV in the 2026 indicator zip carries both columns
+# (220 countries; checked 2026-09-29 to cover all 182 country codes in the served store, 0 disagreement
+# between its members, PLW 585 and KNA 659 as below).
+_VOCAB_RE = re.compile(r'href=["\']([^"\']*epi(\d{4})_indicators_[^"\']*\.zip)', re.I)
+
+
+class NoVocabulary(Exception):
+    """A results file keyed on alpha-3 with no code<->iso map: parsing it would fork the published ids."""
+
+
+def _abs(href: str) -> str:
+    if href.startswith("//"):
+        return "https:" + href
+    return href if href.startswith("http") else "https://epi.yale.edu" + (href if href.startswith("/") else "/" + href)
+
+
+def _download_pages():
+    """The downloads pages to scan: every /<year>/downloads page the home page links, then the old page."""
+    pages = []
+    try:
+        r = requests.get(HOME, headers=UA, timeout=120, allow_redirects=True)
+        if r.status_code == 200:
+            pages = sorted({_abs(h) for h, _yr in _YEAR_PAGE_RE.findall(r.text)})
+    except (requests.Timeout, requests.ConnectionError):
+        pass
+    return pages + [DOWNLOADS]
+
+
+def _scan():
+    """(results [(url, year)], vocabulary zips [(url, year)]) from every downloads page that answers 200."""
+    results, vocab = {}, {}
+    for page in _download_pages():
+        try:
+            r = requests.get(page, headers=UA, timeout=120, allow_redirects=True)
+        except (requests.Timeout, requests.ConnectionError):
+            continue
+        if r.status_code != 200:
+            continue
+        for href, yr in _LINK_RE.findall(r.text):
+            results[_abs(href)] = int(yr)
+        for href, yr in _VOCAB_RE.findall(r.text):
+            vocab[_abs(href)] = int(yr)
+    return (sorted(results.items(), key=lambda kv: kv[1]), sorted(vocab.items(), key=lambda kv: kv[1]))
+
+
+def _is_html(resp) -> bool:
+    ct = (resp.headers.get("content-type") or "").lower()
+    return "text/html" in ct or resp.content[:64].lstrip().lower().startswith((b"<!doctype", b"<html"))
+
+
+def _vocab_from_zip(data: bytes) -> dict:
+    """{ISO3 -> numeric code} from the first member CSV that carries both `code` and `iso`; {} if none."""
+    import zipfile                                           # noqa: PLC0415
+    try:
+        z = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile:
+        return {}
+    for m in z.namelist():
+        if m.lower().endswith(".csv"):
+            idx = _country_index(z.read(m))
+            if idx:
+                return idx
+    return {}
 
 # Countries EPI 2026 added that the 2024 edition never listed, so the vocabulary map
 # derived from 2024 cannot translate them and they would be dropped (~746 real
@@ -66,19 +141,8 @@ EXTRA_COUNTRY_CODES = {
 
 
 def _discover():
-    """[(url, year)] for every results file the downloads page currently lists."""
-    try:
-        r = requests.get(DOWNLOADS, headers=UA, timeout=120, allow_redirects=True)
-    except (requests.Timeout, requests.ConnectionError):
-        return []
-    if r.status_code != 200:
-        return []
-    out = {}
-    for href, yr in _LINK_RE.findall(r.text):
-        url = href if href.startswith("http") else (
-            "https://epi.yale.edu" + (href if href.startswith("/") else "/" + href))
-        out[url] = int(yr)
-    return sorted(out.items(), key=lambda kv: kv[1])
+    """[(url, year)] for every results file the downloads pages currently list."""
+    return _scan()[0]
 
 
 def current_vintage(unit):
@@ -118,8 +182,8 @@ def _country_index(data: bytes):
 
 def _parse_epi_csv(data: bytes, default_year: int, iso_index=None):
     """Parse EPI results CSV — wide: country column + many indicator columns.
-    Byte-for-byte the same logic as jobs/ingest_yale_epi.parse_epi_csv, plus the
-    country-vocabulary translation below."""
+    The same row rules as jobs/ingest_yale_epi.parse_epi_csv (both now accept the unpadded numeric
+    `code`, review R1289), plus the country-vocabulary translation and the no-vocabulary refusal below."""
     text = data.decode("utf-8-sig", errors="replace")
     reader = csv.DictReader(io.StringIO(text))
     headers = reader.fieldnames or []
@@ -146,7 +210,11 @@ def _parse_epi_csv(data: bytes, default_year: int, iso_index=None):
     # (Switching the ids to alpha-3 would be an improvement and a RE-KEY of 21,300
     # live series — not a call to make inside a fetcher.)
     translate = {}
-    if iso_index and iso3_col.lower() in ("iso", "iso3", "iso_code", "country_iso3"):
+    if iso3_col.lower() in ("iso", "iso3", "iso_code", "country_iso3"):
+        if not iso_index:
+            # NO VOCABULARY, NO PARSE - for ANY file type (review R1287: the first guard checked only the
+            # .xlsx extension, so an alpha-3-only CSV was still merged as EPI:<var>:AFG).
+            raise NoVocabulary(f"the country column is alpha-3 `{iso3_col}` and no code<->iso map was read")
         translate = iso_index
 
     skip = {(iso3_col or "").lower(), (year_col or "").lower(),
@@ -167,6 +235,12 @@ def _parse_epi_csv(data: bytes, default_year: int, iso_index=None):
                 n_untranslated += 1
                 continue
             iso3 = mapped
+        elif iso3_col.lower() == "code":
+            # the published NUMERIC vocabulary (ISO 3166-1 numeric, unpadded: Afghanistan = 4). The 3-char
+            # test below is for alpha-3 only; applied here it silently dropped every code under 100
+            # (found by review R1287's floor test)
+            if not iso3.isdigit():
+                continue
         elif len(iso3) != 3:
             continue
 
@@ -244,7 +318,7 @@ def update(unit, since) -> Result:
     before = blob.row_count(path)
     tally = Tally()
 
-    found = _discover()
+    found, vocab_zips = _scan()
     if not found:
         # Loud, not silent. A downloads page that lists no results file means the
         # scrape broke or Yale restructured — either way the next release would be
@@ -256,6 +330,7 @@ def update(unit, since) -> Result:
         if url not in seen:
             seen.add(url)
             urls.append((url, yr))
+    floor_only = {u for u, _ in KNOWN_URLS} - {u for u, _ in found}
 
     # TWO PASSES, because the country vocabulary is defined by one edition and
     # needed by another: fetch everything first, learn ISO3 -> published code from
@@ -272,10 +347,20 @@ def update(unit, since) -> Result:
         if r.status_code in (429, 500, 502, 503, 504):
             tally.transient_unit()
             continue
-        if r.status_code != 200 or len(r.content) <= 500:
-            # A wholesale 404 / tiny body is a structural break (Yale moved or
-            # renamed the file), not a quiet day.
-            tally.structural_unit(f"{yr}: HTTP {r.status_code}, {len(r.content)} B")
+        if url in floor_only and (r.status_code == 404 or (r.status_code == 200 and _is_html(r))):
+            # A historic edition the site no longer serves (the 2024 CSV answers with an HTML page since the
+            # 2026 redesign). RETIRED, not broken: its data is already in the store and the merge never
+            # shrinks, so there is nothing to fetch - and failing the source over it would hide the edition
+            # that IS current. Said once per run; a current (discovered) URL answering HTML is still a break.
+            print(f"[yale_epi] {yr}: {url.rsplit('/', 1)[-1]} is no longer served (HTTP {r.status_code}, "
+                  f"{'HTML page' if r.status_code == 200 else 'not found'}); its data is already held",
+                  flush=True)
+            continue
+        if r.status_code != 200 or len(r.content) <= 500 or _is_html(r):
+            # A wholesale 404 / tiny body / an HTML page where a data file was linked is a structural
+            # break (Yale moved or renamed the file), not a quiet day.
+            tally.structural_unit(f"{yr}: HTTP {r.status_code}, {len(r.content)} B"
+                                  + (", an HTML page" if r.status_code == 200 and _is_html(r) else ""))
             continue
         bodies.append((url, yr, r.content))
 
@@ -283,6 +368,23 @@ def update(unit, since) -> Result:
     for url, yr, body in bodies:
         if not url.lower().endswith(".xlsx"):
             iso_index = _country_index(body) or iso_index
+    # NEWEST EDITION FIRST (review R1287: oldest-first let an older edition's map key a newer workbook).
+    vocab_transient = False
+    for url, yr in sorted(vocab_zips, key=lambda kv: -kv[1]):
+        if iso_index:
+            break
+        try:
+            r = requests.get(url, headers=UA, timeout=300, allow_redirects=True)
+        except (requests.Timeout, requests.ConnectionError):
+            vocab_transient = True
+            continue
+        if r.status_code in (429, 500, 502, 503, 504):
+            vocab_transient = True
+            continue
+        if r.status_code == 200 and not _is_html(r):
+            iso_index = _vocab_from_zip(r.content)
+            if iso_index:
+                print(f"[yale_epi] country vocabulary read from {url.rsplit('/', 1)[-1]}", flush=True)
     if iso_index:
         # Supplement, never override: a code the reference edition supplies wins.
         for k, v in EXTRA_COUNTRY_CODES.items():
@@ -297,7 +399,18 @@ def update(unit, since) -> Result:
             if url.lower().endswith(".xlsx"):
                 k, d, v = _parse_epi_xlsx(body, default_year=yr, iso_index=iso_index)
             else:
-                k, d, v = _parse_epi_csv(body, default_year=yr)
+                k, d, v = _parse_epi_csv(body, default_year=yr, iso_index=iso_index)
+        except NoVocabulary as e:
+            # NO VOCABULARY, NO PARSE. Parsed without the map, an alpha-3 file yields EPI:<var>:AFG ids - a
+            # second id space beside the published numeric one, with the live series frozen and the gate
+            # reading green (see _parse_epi_csv). If the vocabulary zip only failed TRANSIENTLY that is
+            # the publisher's bad hour (retried next run), not a break (review R1287).
+            if vocab_transient:
+                tally.transient_unit(f"{yr}: the vocabulary zip was unavailable ({e})")
+            else:
+                tally.structural_unit(f"{yr}: no country vocabulary (code<->iso) could be read, so the file "
+                                      f"is not parsed - it would publish a forked alpha-3 id space ({e})")
+            continue
         except Exception as e:                               # noqa: BLE001
             # A workbook we cannot open is a structural break on THAT release, named
             # so the log says which one rather than "yale_epi failed".
