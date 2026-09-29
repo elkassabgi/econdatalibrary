@@ -265,6 +265,11 @@ def _deliver_alarm(key: str, minutes: float) -> None:
     """The SIGALRM handler's body: flag the timeout, then raise it - or, inside a deferred window, hold it."""
     global UNIT_TIMEOUT_FIRED, _ALARM_PENDING
     UNIT_TIMEOUT_FIRED = True                # before raising: see the flag's note above
+    if isinstance(sys.exc_info()[1], UnitTimeout):
+        # A UnitTimeout is ALREADY propagating (raised by an earlier delivery, or by a flag poller such as
+        # dst._fence_check): a second one would only cut its cleanup short - a _giant checkpoint, a rotation save,
+        # derive's derive_partial bookkeeping (review R1301, measured). The fence has done its job; hold this one.
+        return
     exc = UnitTimeout(f"{key} exceeded its {minutes:.0f}-minute hard limit and was "
                       f"interrupted; existing data untouched, re-queued for the next tick")
     if _DEFER_ALARM:
@@ -394,7 +399,13 @@ def _capped_derive_budget() -> dict:
 # and the unit ran on with no fence. So while a unit is armed, a hook takes exactly that case - an unraisable
 # UnitTimeout - and re-arms the timer for _REFIRE_S, so the handler runs again in ordinary code (or, inside derive's
 # wait slice, is held in _ALARM_PENDING as before). Every other unraisable goes to the previous hook unchanged. A
-# periodic re-fire was not used: it would also fire inside the cleanup of a raise that DID propagate.
+# periodic re-fire was not used: it fires on every interval whatever happened. The one-shot re-arm CAN still land in
+# the cleanup of a UnitTimeout raised meanwhile by a flag poller (dst._fence_check) - so _deliver_alarm holds any
+# delivery while a UnitTimeout is already in flight (review R1301).
+#
+# WHAT THIS DOES NOT COVER: a swallow that never reaches sys.unraisablehook - `except Exception` in a library or in a
+# __del__ body, C code that clears the error. For those the flag stays set, flag pollers still react, and __exit__
+# says out loud that the limit fired when the unit ends without a UnitTimeout.
 _REFIRE_S = 0.05
 
 
@@ -408,13 +419,16 @@ class _unit_deadline:
 
     def _unraisable(self, u):
         if self.armed and isinstance(getattr(u, "exc_value", None), UnitTimeout):
-            print(f"[orchestrator] {self.key}: the hard-limit UnitTimeout was swallowed in "
-                  f"{getattr(u, 'object', None)!r} (a callback CPython cannot raise out of) - delivering it again",
-                  flush=True)
-            try:
+            try:                                             # RE-ARM FIRST: a failing print must not lose it again
                 import signal
                 signal.setitimer(signal.ITIMER_REAL, _REFIRE_S)
             except Exception:                                # noqa: BLE001 - never raise out of the hook
+                pass
+            try:
+                where = type(getattr(u, "object", None)).__name__
+                print(f"[orchestrator] {self.key}: the hard-limit UnitTimeout was swallowed in a {where} "
+                      f"(a callback CPython cannot raise out of) - delivering it again", flush=True)
+            except Exception:                                # noqa: BLE001
                 pass
             return
         (self._prev_hook or sys.__unraisablehook__)(u)
@@ -433,9 +447,9 @@ class _unit_deadline:
                 _deliver_alarm(self.key, self.minutes)
 
             self._prev = signal.signal(signal.SIGALRM, _fire)
-            self._prev_hook = sys.unraisablehook
-            sys.unraisablehook = self._unraisable
             signal.setitimer(signal.ITIMER_REAL, self.minutes * 60.0)
+            self._prev_hook = sys.unraisablehook              # installed only once the timer is armed (R1301)
+            sys.unraisablehook = self._unraisable
             self.armed = True
             if not _TIMEOUT_WARNED:
                 # Once per run, so the log PROVES the guard is active rather than asserting
@@ -462,10 +476,13 @@ class _unit_deadline:
                 pass
             if sys.unraisablehook == self._unraisable:        # never clobber a hook someone else installed since
                 sys.unraisablehook = self._prev_hook
-        if UNIT_TIMEOUT_FIRED and exc[0] is None:
-            # the limit fired and the unit still ended normally: its raise was lost and not re-delivered in time
-            print(f"[orchestrator] {self.key}: hard limit FIRED but the unit ended without its UnitTimeout "
-                  f"(the raise was swallowed); it finished past its {self.minutes:.0f}-minute limit", flush=True)
+            self.armed = False                               # a hook left chained under another one goes inert
+        if UNIT_TIMEOUT_FIRED and not (exc[0] is not None and issubclass(exc[0], UnitTimeout)):
+            # the limit fired and the unit ended some OTHER way - normally, or with another exception: its UnitTimeout
+            # was swallowed and never delivered (R1301: a __del__'s own `except Exception`, then a RuntimeError)
+            how = "normally" if exc[0] is None else f"with {exc[0].__name__}"
+            print(f"[orchestrator] {self.key}: hard limit FIRED but the unit ended {how}, without its UnitTimeout "
+                  f"(the raise was swallowed); it ran past its {self.minutes:.0f}-minute limit", flush=True)
         # Cleared after the timer is disarmed and on every exit path, so the flag can never
         # outlive this unit (DeepSeek advisory review F5, 2026-09-15). An alarm delivered inside
         # the disarm window itself is swallowed by the except above and is not attributed.

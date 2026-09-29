@@ -156,4 +156,85 @@ def test_a_fence_that_fired_but_ended_without_an_exception_is_said_out_loud(emul
     """If a raise is lost and the unit still finishes before any re-delivery, the log must say the limit fired."""
     with orchestrate._unit_deadline("zz/_all", 60.0):
         orchestrate.UNIT_TIMEOUT_FIRED = True                         # fired; its raise went nowhere
-    assert "hard limit FIRED" in capsys.readouterr().out
+    assert "hard limit FIRED but the unit ended normally" in capsys.readouterr().out
+
+
+def test_a_fence_that_fired_but_ended_with_ANOTHER_exception_is_said_out_loud(emulated_itimer, capsys):
+    """Review R1301: a __del__'s own `except Exception` ate the UnitTimeout, then a RuntimeError ended the unit -
+    booked UNEXPECTED, the flag cleared, and nothing said the limit had fired."""
+    with pytest.raises(RuntimeError):
+        with orchestrate._unit_deadline("zz/_all", 60.0):
+            orchestrate.UNIT_TIMEOUT_FIRED = True
+            raise RuntimeError("something else")
+    assert "hard limit FIRED but the unit ended with RuntimeError" in capsys.readouterr().out
+
+
+def test_a_re_delivery_never_cuts_short_the_cleanup_of_a_UnitTimeout_already_in_flight(emulated_itimer,
+                                                                                        monkeypatch):
+    """Review R1301 (d): the swallow re-arms the timer, a flag poller (dst._fence_check's shape) raises UnitTimeout at
+    once, and the unit's cleanup runs - the re-armed alarm lands INSIDE that cleanup. It must be held, not raised:
+    a second UnitTimeout would cut a _giant checkpoint or a rotation save short. The re-arm is stretched to 0.3 s so
+    it lands in the 1.0 s cleanup and never before the poller's raise (a slow gc.collect on a big heap took >50 ms)."""
+    monkeypatch.setattr(orchestrate, "_REFIRE_S", 0.3)
+    saved = []
+    with pytest.raises(orchestrate.UnitTimeout, match="poller"):
+        with orchestrate._unit_deadline("zz/_all", 60.0):
+            _swallowed_alarm("zz/_all")
+            try:
+                raise orchestrate.UnitTimeout("poller: the flag says the fence fired")
+            finally:
+                _spin(1.0)                                            # the re-armed alarm fires in here
+                saved.append("checkpoint")
+    assert saved == ["checkpoint"], "the cleanup was interrupted by a second UnitTimeout"
+    assert any(0 < s < 1 for s in emulated_itimer[1:]), "the scenario did re-arm (else it proves nothing)"
+
+
+def test_a_print_that_fails_does_not_lose_the_re_delivery(emulated_itimer, monkeypatch):
+    """Review R1301: the hook printed BEFORE re-arming, so a failing write lost the timeout a second time."""
+    class _Broken:
+        def write(self, s):
+            raise OSError("stdout is gone")
+
+        def flush(self):
+            raise OSError("stdout is gone")
+    monkeypatch.setattr(orchestrate, "_TIMEOUT_WARNED", True)
+    reached_end = False
+    with pytest.raises(orchestrate.UnitTimeout):
+        with orchestrate._unit_deadline("zz/_all", 60.0):
+            monkeypatch.setattr(sys, "stdout", _Broken())
+            _swallowed_alarm("zz/_all")
+            _spin(2.0)
+            reached_end = True
+    assert not reached_end
+
+
+def test_a_timer_that_cannot_be_armed_leaves_no_hook_behind(emulated_itimer, monkeypatch):
+    """Review R1301: the hook was installed BEFORE setitimer; when setitimer raised, the unit was never armed and its
+    __exit__ never removed the hook."""
+    def refuse(which, seconds, interval=0.0):
+        raise ValueError("timer refused")
+    monkeypatch.setattr(signal, "setitimer", refuse)
+    monkeypatch.setattr(orchestrate, "_TIMEOUT_WARNED", True)
+    before = sys.unraisablehook
+    with orchestrate._unit_deadline("zz/_all", 60.0) as d:
+        assert not d.armed
+    assert sys.unraisablehook is before
+
+
+def test_a_hook_left_chained_after_the_unit_goes_inert(emulated_itimer, monkeypatch):
+    """Review R1301: another hook chained over ours keeps ours reachable after __exit__, when SIGALRM is back to its
+    default - a stale re-arm then killed the process (rc 14). After exit ours must pass everything through."""
+    seen = []
+    with orchestrate._unit_deadline("zz/_all", 60.0):
+        ours = sys.unraisablehook
+        monkeypatch.setattr(sys, "unraisablehook", lambda u: (seen.append("outer"), ours(u)))
+    n_armed = len(emulated_itimer)
+
+    def late(_r):
+        raise orchestrate.UnitTimeout("swallowed AFTER the unit ended")
+    o = _Obj()
+    keep = weakref.ref(o, late)
+    del o
+    gc.collect()
+    assert keep() is None
+    assert seen == ["outer"] and len(emulated_itimer) == n_armed, emulated_itimer
