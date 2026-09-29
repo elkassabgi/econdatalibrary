@@ -1,6 +1,6 @@
 """Publish the workstation watchdog's heartbeat to R2, and read it back from CI.
 
-WHY. The 17 cloud-infeasible sources (noaa, bea, comtrade, ons_uk, wid, eia, ...) update ONLY
+WHY. The cloud-infeasible sources (30 on 2026-09-29; (noaa, bea, comtrade, ons_uk, wid, eia, ...; tools/_list_local_sources.py) update ONLY
 from the workstation, driven by RELAUNCH_GUARD_LOOP.ps1. When that loop dies, those sources
 stop and nothing says so: the cloud health gate deliberately declines to judge
 `run_location: local` sources, and its silence about them is by design.
@@ -349,8 +349,10 @@ def check(max_age_min: float, local: bool = False) -> int:
     if age > max_age_min:
         print(f"GUARD HEARTBEAT STALE: last tick {beat.isoformat()} "
               f"({age:.1f} min ago > {max_age_min:.0f}) — {where}")
-        print("  The workstation watchdog is not ticking. The 17 run_location=local sources "
-              "have NO other update path; nothing else in CI will notice this.")
+        # no count here: it went stale at 17 while the registry grew to 30 (2026-09-29)
+        print("  The workstation watchdog is not ticking. The run_location=local sources "
+              "(tools/_list_local_sources.py lists them) have NO other update path; "
+              "nothing else in CI will notice this.")
         return 1
 
     emp = body.get("emptiness") or {}
