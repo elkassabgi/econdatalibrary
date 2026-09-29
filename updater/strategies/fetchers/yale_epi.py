@@ -341,7 +341,11 @@ def update(unit, since) -> Result:
         if url not in seen:
             seen.add(url)
             urls.append((url, yr))
-    floor_only = {u for u, _ in KNOWN_URLS} - {u for u, _ in found}
+    # A PINNED ARCHIVE IS NEVER "RETIRED" (review R1300). The retired-floor branch below says "its data is
+    # already held" without measuring it; for Yale's dead URL that was true, but a DOI-backed, md5-pinned file
+    # answering 404 or an HTML page (maintenance, a guestbook, a deaccession) is a BREAK - on a rebuild, or on a
+    # store without the edition, that branch would report ok and silently serve 2026 alone (the R1289 class).
+    floor_only = {u for u, _ in KNOWN_URLS} - {u for u, _ in found} - set(PINNED_MD5)
 
     # TWO PASSES, because the country vocabulary is defined by one edition and
     # needed by another: fetch everything first, learn ISO3 -> published code from

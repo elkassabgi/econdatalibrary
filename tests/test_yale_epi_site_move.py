@@ -92,8 +92,18 @@ def test_the_year_scoped_downloads_page_is_found_from_the_home_page(store, monke
     assert results == [(XLSX, 2026)] and vocab == [(ZIP, 2026)]
 
 
+RETIRED = "https://epi.yale.edu/downloads/epi2024results.csv"     # Yale's dead URL: an UNPINNED floor, retired
+
+
+def _retired_floor(monkeypatch):
+    """The scenario these tests were written for: an unpinned floor URL answering an HTML page (a pinned archive
+    answering HTML is a break instead - tests/test_yale_epi_dataverse_2024.py)."""
+    monkeypatch.setattr(Y, "KNOWN_URLS", [(RETIRED, 2024)])
+    return {RETIRED: _Resp(200, HTML, "text/html; charset=UTF-8")}
+
+
 def test_the_edition_parses_into_the_published_numeric_ids_and_the_retired_csv_is_skipped(store, monkeypatch):
-    monkeypatch.setattr(Y.requests, "get", _site(_routes()))
+    monkeypatch.setattr(Y.requests, "get", _site(_routes(**_retired_floor(monkeypatch))))
     res = Y.update(None, None)
     assert res.status == "ok", (res.status, res.error)
     assert _keys(store) == {"EPI:EPI.new:4", "EPI:AGR.new:4", "EPI:EPI.new:585"}
@@ -163,7 +173,8 @@ def test_an_alpha3_only_csv_without_a_vocabulary_is_refused_not_forked(store, mo
 
 
 def test_a_vocabulary_zip_blip_is_transient_not_a_break(store, monkeypatch):
-    monkeypatch.setattr(Y.requests, "get", _site(_routes(**{ZIP: _Resp(503, b"busy", "text/plain")})))
+    monkeypatch.setattr(Y.requests, "get", _site(_routes(**{ZIP: _Resp(503, b"busy", "text/plain"),
+                                                            **_retired_floor(monkeypatch)})))
     res = Y.update(None, None)
     assert res.status == "partial" and "vocabulary zip was unavailable" in (res.error or ""), (res.status, res.error)
 

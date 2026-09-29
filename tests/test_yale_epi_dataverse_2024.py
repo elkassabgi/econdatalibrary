@@ -69,6 +69,36 @@ def test_the_archive_map_supplements_the_zip_map_never_replaces_it(store, monkey
     assert not any(k.startswith("EPI:EPI.new:999") or k.endswith(":AFG") for k in keys), sorted(keys)
 
 
+@pytest.mark.parametrize("answer", [_Resp(404, HTML, "text/html"), _Resp(200, HTML, "text/html; charset=UTF-8")],
+                         ids=["404", "200-html"])
+def test_the_pinned_archive_answering_404_or_html_is_a_break_not_retired(store, monkeypatch, answer):
+    """Review R1300: the retired-floor branch ("its data is already held") is for Yale's dead URL. A DOI-backed,
+    md5-pinned file answering 404 or an HTML page would otherwise read ok and, on an empty store, serve 2026 only."""
+    monkeypatch.setattr(Y.requests, "get", _site(_routes(**{ARCH: answer})))
+    with pytest.raises(DefinitiveError, match="2024"):
+        Y.update(None, None)
+
+
+def test_a_country_only_the_archive_knows_is_added_to_the_zip_map(store, monkeypatch):
+    """The supplement: the zip knows AFG and PLW; the archive also knows ALB (8). The workbook's ALB row is keyed 8."""
+    import io
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["iso", "country", "EPI.new"])
+    ws.append(["AFG", "Afghanistan", 30.5])
+    ws.append(["ALB", "Albania", 44.0])
+    buf = io.BytesIO()
+    wb.save(buf)
+    from tests.test_yale_epi_site_move import XLSX
+    body = b"code,iso,country,EPI.old\n8,ALB,Albania,40.0\n" + PAD
+    monkeypatch.setattr(Y.requests, "get", _site(_routes(**{ARCH: _archive(monkeypatch, body),
+                                                            XLSX: _Resp(200, buf.getvalue(), "application/xlsx")})))
+    res = Y.update(None, None)
+    assert res.status == "ok", (res.status, res.error)
+    assert {"EPI:EPI.new:4", "EPI:EPI.new:8", "EPI:EPI.old:8"} <= _keys(store), sorted(_keys(store))
+
+
 def test_a_listed_zip_that_fails_does_not_fall_back_to_the_archive_map(store, monkeypatch):
     body = b"code,iso,country,EPI.old\n4,AFG,Afghanistan,20.0\n" + PAD
     monkeypatch.setattr(Y.requests, "get", _site(_routes(**{ARCH: _archive(monkeypatch, body),
