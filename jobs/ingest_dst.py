@@ -109,6 +109,12 @@ def parse_date(s: str) -> dt.date | None:
             return dt.date.fromisocalendar(yr, wk, 1)
         if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
             return dt.date.fromisoformat(s)
+        # DAILY: "2022M04D01" (DNINDEX, DNVALD - 2026-09-29). Real bodies of 1,121 non-null values parsed to 0
+        # rows and were booked as legitimately EMPTY tables, advancing the manifest. Dated to the day itself,
+        # the convention cso's identical grammar uses (R299); an impossible day ("M02D30") stays None.
+        m = re.match(r"^(\d{4})M(\d{2})D(\d{2})$", s, re.IGNORECASE)
+        if m:
+            return dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
     except (ValueError, TypeError):
         pass
     return None
@@ -262,7 +268,88 @@ def parse_jsonstat(data: dict, table_id: str) -> list[tuple[str, dt.date, float]
 
 
 def query_table(table_id: str, variables: list[dict]) -> list[tuple[str, dt.date, float]]:
-    """Fetch data for one DST table."""
+    """Fetch data for one DST table (rows only - the bulk path's contract, unchanged)."""
+    return query_table_detailed(table_id, variables)[0]
+
+
+# DST answers HTTP 500 to a data POST with too many TIME values even when MAX_CELLS holds (DNVALD, 2026-09-29:
+# 12,551 daily values -> 500 every time; the last 50 or 500 -> 200). A POST that fails is retried in time
+# chunks of this size before the table is called failed.
+TIME_CHUNK = 1000
+_SPAN_PERIOD = re.compile(r"^(\d{4})\s*[:\-/]\s*(\d{4})$")
+
+
+def query_table_detailed(table_id: str, variables: list[dict]) -> "tuple[list[tuple[str, dt.date, float]], str]":
+    """(rows, outcome). outcome is one of
+        ok            rows parsed
+        no_selection  the table offers nothing to select - legitimately empty
+        failed        the data POST failed (5xx/timeout after retries, 400/403/404) even in time chunks - the
+                      PUBLISHER's bad hour, retried next run; NEVER a quiet table (review R1283: it was booked
+                      empty and the manifest advanced, so the release was skipped until DST republished)
+        all_null      a real body whose every value is missing ('..') - legitimately empty
+        span_time     every time code is a multi-year window ('2007:2009') - a convention not yet chosen, like
+                      cso's span_time; nothing is stored
+        unparsed      a real body with values that parsed to 0 rows - OUR gap, never self-heals"""
+    selection = _query_selection(variables)
+    if not selection:
+        return [], "no_selection"
+    resp = _post_data(table_id, selection)
+    if resp is None:
+        tvar = next((s for s in selection if s.get("_time")), None)
+        if tvar is None or len(tvar["values"]) <= TIME_CHUNK:
+            return [], "failed"
+        rows = []
+        for i in range(0, len(tvar["values"]), TIME_CHUNK):
+            part = [dict(s, values=tvar["values"][i:i + TIME_CHUNK]) if s is tvar else s for s in selection]
+            chunk = _post_data(table_id, part)
+            if chunk is None:
+                return [], "failed"
+            got = parse_jsonstat(chunk, table_id)
+            if not got:
+                why = _why_empty(chunk)
+                if why == "all_null":
+                    continue                 # an all-missing stretch (holidays, a gap) - the other chunks stand
+                return [], why
+            rows.extend(got)
+        return (rows, "ok") if rows else ([], "all_null")
+    rows = parse_jsonstat(resp, table_id)
+    if rows:
+        return rows, "ok"
+    return [], _why_empty(resp)
+
+
+def _post_data(table_id, selection):
+    body = {"table": table_id, "format": "JSONSTAT", "lang": "en",
+            "variables": [{"code": s["code"], "values": s["values"]} for s in selection]}
+    resp = post_json(f"{BASE}/data", body)
+    time.sleep(RATE)
+    return resp or None
+
+
+def _why_empty(resp) -> str:
+    """Name a real body that yielded no rows: the publisher's empty table, an undated window, or our gap."""
+    try:
+        ds = resp.get("dataset", resp)
+        vals = ds.get("value")
+        vlist = list(vals.values()) if isinstance(vals, dict) else list(vals or [])
+        if not vlist or all(v is None for v in vlist):
+            return "all_null"
+        dims = ds.get("dimension") or {}
+        role = (dims.get("role") or ds.get("role") or {}).get("time") or []
+        tdim = next(iter(role), None)
+        if tdim is not None:
+            idx = (dims.get(tdim) or {}).get("category", {}).get("index")
+            codes = list(idx) if isinstance(idx, (dict, list)) else []
+            spans = [_SPAN_PERIOD.match(str(c)) for c in codes]
+            if codes and all(m and int(m.group(2)) > int(m.group(1)) + 1 for m in spans):
+                return "span_time"
+    except (AttributeError, TypeError, ValueError):
+        pass
+    return "unparsed"
+
+
+def _query_selection(variables: list[dict]) -> list[dict]:
+    """The select-all query (the old query_table's body logic, unchanged) as [{code, values, _time}]."""
     # Build select-all query
     total_cells = 1
     var_selection = []
@@ -287,35 +374,20 @@ def query_table(table_id: str, variables: list[dict]) -> list[tuple[str, dt.date
             if not vals:
                 continue
             if is_time:
-                var_selection.append({"code": vid, "values": vals})
+                var_selection.append({"code": vid, "values": vals, "_time": True})
             else:
                 # Prefer aggregate/total codes
                 agg = [v for v in vals if v.upper() in ("TOT", "0", "000", "TOTAL", "T", "ALL")]
                 selected = agg[:1] if agg else vals[:1]
-                var_selection.append({"code": vid, "values": selected})
+                var_selection.append({"code": vid, "values": selected, "_time": False})
     else:
         for var in variables:
             vid = var["id"]
             vals = [v["id"] for v in var.get("values", [])]
             if vals:
-                var_selection.append({"code": vid, "values": vals})
+                var_selection.append({"code": vid, "values": vals, "_time": bool(var.get("time", False))})
 
-    if not var_selection:
-        return []
-
-    body = {
-        "table": table_id,
-        "format": "JSONSTAT",
-        "lang": "en",
-        "variables": var_selection,
-    }
-
-    resp = post_json(f"{BASE}/data", body)
-    time.sleep(RATE)
-    if not resp:
-        return []
-
-    return parse_jsonstat(resp, table_id)
+    return var_selection
 
 
 def main():
