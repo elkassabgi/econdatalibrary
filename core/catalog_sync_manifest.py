@@ -69,6 +69,10 @@ def row_hash(cols: list[str], row: dict) -> str:
     return h.hexdigest()
 
 
+class ManifestBusy(RuntimeError):
+    """A read-only (dry-run) open found the manifest being written."""
+
+
 class Manifest:
     def __init__(self, path: str, read_only: bool = False):
         self.path = path
@@ -77,21 +81,19 @@ class Manifest:
             # An absent manifest reads as empty - the same answer a fresh one would give.
             # `mode=ro` is NOT enough: opening a WAL database read-only still creates and leaves its -wal and
             # -shm files (measured by tests/test_sync_dryrun_keeps_queue.py). With no -wal present every
-            # committed row is in the main file, so `immutable=1` reads it with no side files at all. With a
-            # -wal present (a writer is live, or one died) its rows matter, so read a private copy instead.
+            # committed row is in the main file, so `immutable=1` reads it with no side files at all.
+            # A -wal present means a writer is live (or died mid-write): its rows matter and an unlocked copy
+            # of db + -wal is not a snapshot (review round 2 measured torn, malformed and silently wrong reads,
+            # R1306), so REFUSE rather than guess. stable() re-checks after the read for a writer that
+            # started while it ran; the caller refuses the numbers when it did.
             if os.path.isfile(path):
-                src = path
                 if os.path.exists(path + "-wal"):
-                    import shutil                                        # noqa: PLC0415
-                    import tempfile                                      # noqa: PLC0415
-                    self._tmp = tempfile.mkdtemp(prefix="manifest_ro_")
-                    src = os.path.join(self._tmp, "sent.db")
-                    shutil.copyfile(path, src)
-                    shutil.copyfile(path + "-wal", src + "-wal")
-                    self.db = sqlite3.connect(src, timeout=300.0)
-                else:
-                    uri = "file:" + os.path.abspath(src).replace("\\", "/") + "?mode=ro&immutable=1"
-                    self.db = sqlite3.connect(uri, uri=True, timeout=300.0)
+                    raise ManifestBusy(f"the sync manifest {path} has a -wal: a sync is writing it (or one "
+                                       f"died mid-write). A dry run cannot read it without writing; re-run "
+                                       f"the dry run when no sync is running.")
+                self._stat = self._fingerprint()
+                uri = "file:" + os.path.abspath(path).replace("\\", "/") + "?mode=ro&immutable=1"
+                self.db = sqlite3.connect(uri, uri=True, timeout=300.0)
             else:
                 self.db = sqlite3.connect(":memory:")
                 self.db.executescript(_DDL)
@@ -103,12 +105,20 @@ class Manifest:
         self.db.executescript(_DDL)
         self.db.commit()
 
+    def _fingerprint(self):
+        s = os.stat(self.path)
+        return s.st_size, s.st_mtime_ns
+
+    def stable(self) -> bool:
+        """Read-only opens only: True when no writer touched the manifest since it was opened (no -wal
+        appeared, and the main file's size and mtime are unchanged), so what was read is one consistent state."""
+        if not hasattr(self, "_stat"):
+            return True                                      # the in-memory empty manifest cannot change
+        return not os.path.exists(self.path + "-wal") and os.path.isfile(self.path) \
+            and self._fingerprint() == self._stat
+
     def close(self) -> None:
         self.db.close()
-        if getattr(self, "_tmp", None):
-            import shutil                                                # noqa: PLC0415
-            shutil.rmtree(self._tmp, ignore_errors=True)
-            self._tmp = None
 
     def count(self) -> int:
         """Total rows recorded. A FULL SCAN — do not call it to ask whether the manifest is empty.

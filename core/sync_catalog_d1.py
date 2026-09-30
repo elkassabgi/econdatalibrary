@@ -106,6 +106,7 @@ PENDING = os.path.join(
 
 
 from core.catalog_sync_manifest import Manifest as _Manifest      # noqa: E402
+from core.catalog_sync_manifest import ManifestBusy as _ManifestBusy  # noqa: E402
 from core.catalog_sync_manifest import default_path as _manifest_path  # noqa: E402
 
 
@@ -572,26 +573,41 @@ def main(argv: list[str] | None = None) -> None:
     # THE DIFF (ledger R542). Everything below sends only rows whose CONTENT changed since
     # the last successful sync, compared against a LOCAL manifest — never against D1, which
     # would re-introduce the full scans this exists to remove.
-    # read-only under --dry-run: no WAL switch, no DDL, no file created (R1305)
-    manifest = _Manifest(_manifest_path(ROOT), read_only=a.dry_run)
-    if a.no_diff:
-        print("  [diff] DISABLED by --no-diff: sending every queued row")
-        skipped = 0
-    else:
-        before = len(rows)
-        rows, skipped = manifest.split(cols, rows)
-        print(f"  [diff] {skipped:,} of {before:,} row(s) unchanged since the last successful "
-              f"sync -> not sent; {len(rows):,} to send "
-              f"({-(-len(rows) // FTS_DELETE_PER_STMT):,} FTS delete statement(s), each a "
-              f"full scan of series_fts)")
-        # is_empty(), NOT count() == 0, and the cheap operands FIRST. count() is a full scan of a
-        # 2.17 GB file; asked left-to-right on a full-source push (where skipped == 0 and
-        # before > 1000 are both true) it ran before either cheap test and stalled the statcan
-        # push for fifteen minutes at 0.1 s of CPU, before a single statement was emitted.
-        if skipped == 0 and before > 1000 and manifest.is_empty():
-            print("  [diff] WARNING: the manifest is EMPTY, so nothing can be skipped and "
-                  "this run would push the whole queue. Run --seed-manifest first "
-                  "(see its help).")
+    # read-only under --dry-run: no WAL switch, no DDL, no file created (R1305); a manifest being
+    # written is refused, not copied (R1306)
+    try:
+        manifest = _Manifest(_manifest_path(ROOT), read_only=a.dry_run)
+    except _ManifestBusy as e:
+        conn.close()
+        raise SystemExit(f"refused: {e}") from None
+    try:
+        if a.no_diff:
+            print("  [diff] DISABLED by --no-diff: sending every queued row")
+            skipped = 0
+        else:
+            before = len(rows)
+            rows, skipped = manifest.split(cols, rows)
+            print(f"  [diff] {skipped:,} of {before:,} row(s) unchanged since the last successful "
+                  f"sync -> not sent; {len(rows):,} to send "
+                  f"({-(-len(rows) // FTS_DELETE_PER_STMT):,} FTS delete statement(s), each a "
+                  f"full scan of series_fts)")
+            # is_empty(), NOT count() == 0, and the cheap operands FIRST. count() is a full scan of a
+            # 2.17 GB file; asked left-to-right on a full-source push (where skipped == 0 and
+            # before > 1000 are both true) it ran before either cheap test and stalled the statcan
+            # push for fifteen minutes at 0.1 s of CPU, before a single statement was emitted.
+            if skipped == 0 and before > 1000 and manifest.is_empty():
+                print("  [diff] WARNING: the manifest is EMPTY, so nothing can be skipped and "
+                      "this run would push the whole queue. Run --seed-manifest first "
+                      "(see its help).")
+        if a.dry_run and not manifest.stable():
+            # the immutable read holds no lock: a sync that started meanwhile can make the numbers
+            # above wrong, so they are withdrawn rather than trusted (R1306)
+            conn.close()
+            raise SystemExit("refused: the sync manifest changed while the dry run read it - the "
+                             "numbers above are not reliable; re-run the dry run when no sync is running.")
+    finally:
+        if a.dry_run:
+            manifest.close()                  # a dry run never records; nothing may stay open
     if not rows:
         conn.close()
         try:

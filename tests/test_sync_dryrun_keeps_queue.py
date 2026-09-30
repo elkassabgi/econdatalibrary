@@ -134,25 +134,55 @@ def test_dry_run_creates_no_manifest_when_none_exists(changed_row, tmp_path, mon
     assert not os.path.exists(os.path.dirname(absent))
 
 
-def test_dry_run_reads_rows_still_in_a_live_writers_wal(changed_row, tmp_path, capsys):
-    """A writer holds the manifest open with the changed row recorded only in its -wal: the dry run must SEE that
-    row (nothing to send) and must still leave every file, the -wal and -shm included, byte-identical."""
+def _changed_b(tmp_path):
     con = sqlite3.connect(str(tmp_path / "catalog.db"))
     cur = con.execute("SELECT * FROM series WHERE series_id='src:b'")
     cols = [d[0] for d in cur.description]
     row = dict(zip(cols, cur.fetchone()))
     con.close()
+    return cols, row
+
+
+def test_dry_run_refuses_a_manifest_a_live_writer_holds(changed_row, tmp_path):
+    """A writer holds the manifest open with a row only in its -wal. An unlocked copy of db + -wal is not a snapshot
+    (R1306 measured torn and silently wrong reads), so the dry run refuses - and still leaves every file identical,
+    the -wal and -shm included, and nothing in the system temp dir."""
+    import tempfile
+    cols, row = _changed_b(tmp_path)
     writer = Manifest(str(tmp_path / "sent.db"))
     writer.db.execute("PRAGMA wal_autocheckpoint = 0")
     writer.record(cols, [row])
     try:
         assert os.path.exists(str(tmp_path / "sent.db-wal")), "fixture must leave the row in the -wal"
-        before = _snapshot(tmp_path)
-        cat.main(["--dry-run"])
-        assert "0 to send" in capsys.readouterr().out
+        before, tmp_before = _snapshot(tmp_path), set(os.listdir(tempfile.gettempdir()))
+        with pytest.raises(SystemExit, match="being written|writing it"):
+            cat.main(["--dry-run"])
         assert _snapshot(tmp_path) == before
+        assert not {d for d in set(os.listdir(tempfile.gettempdir())) - tmp_before if "manifest" in d}
     finally:
         writer.close()
+
+
+def test_a_write_during_the_dry_run_read_withdraws_its_numbers(changed_row, tmp_path, monkeypatch):
+    """The immutable read holds no lock. A sync that records while the dry run reads must make it refuse, not report
+    numbers from a state that no longer exists."""
+    cols, row = _changed_b(tmp_path)
+    real_split = Manifest.split
+
+    def split_then_a_sync_records(self, c, rows):
+        out = real_split(self, c, rows)
+        w = Manifest(str(tmp_path / "sent.db"))
+        w.record(cols, [row])
+        w.close()
+        return out
+    monkeypatch.setattr(Manifest, "split", split_then_a_sync_records)
+    with pytest.raises(SystemExit, match="changed while the dry run read it"):
+        cat.main(["--dry-run"])
+
+
+def test_control_an_untouched_manifest_is_stable(changed_row, capsys):
+    cat.main(["--dry-run"])
+    assert "1 to send" in capsys.readouterr().out
 
 
 def test_control_a_real_seed_does_write_the_manifest(changed_row, tmp_path):
