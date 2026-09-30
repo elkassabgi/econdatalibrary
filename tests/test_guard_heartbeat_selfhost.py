@@ -125,10 +125,37 @@ def test_main_routes_from_url_and_local(monkeypatch):
     assert seen == [("url", "https://x/v1/guard-heartbeat"), ("check", True), ("check", False)]
 
 
-def test_the_local_check_reads_the_full_beat_from_the_self_hosted_store(t0, capsys):
+def test_the_local_check_reads_the_full_beat_from_the_self_hosted_store(t0, capsys, monkeypatch):
+    # the statcan lane's own judgement is not this test's subject (see the test below and
+    # tests/test_statcan_lane.py); a checkout where the lane never ran has no beat to judge
+    monkeypatch.setattr(gh, "_lane_problem", lambda beat, now: None)
     assert gh.publish() == 0
     assert gh.check(45, local=True) == 0
     assert "guard heartbeat OK" in capsys.readouterr().out
+
+
+def test_after_t0_a_missing_lane_beat_fails_and_names_the_t0_decision(t0, capsys, monkeypatch):
+    """The lane refuses after T0 (pre-T0 only), so statcan has no refresh path until its self-hosted
+    design lands. The local check must say that - not pass, and not call it a lane that never ran."""
+    monkeypatch.setattr(gh, "LANE_PROGRESS_LOCAL", str(t0 / "no_lane.progress.json"))
+    monkeypatch.setattr(gh, "_lane_expected", lambda: True)
+    assert gh.publish() == 0
+    assert gh.check(45, local=True) == 1
+    out = capsys.readouterr().out
+    assert "refuses after T0" in out and "a T0 decision" in out, out
+
+
+def test_after_t0_a_stale_pre_t0_lane_beat_still_names_the_t0_decision(t0, capsys, monkeypatch):
+    """The real case (port review, defect 2): the lane wrote its progress file before T0, so the file EXISTS.
+    Judging it would say "dead or wedged, check the guard" about a lane that refuses by design."""
+    beat = t0 / "lane.progress.json"
+    beat.write_text(json.dumps({"state": "idle", "utc": "2026-09-01T00:00:00+00:00", "counters": {}}))
+    monkeypatch.setattr(gh, "LANE_PROGRESS_LOCAL", str(beat))
+    monkeypatch.setattr(gh, "_lane_expected", lambda: True)
+    assert gh.publish() == 0
+    assert gh.check(45, local=True) == 1
+    out = capsys.readouterr().out
+    assert "refuses after T0" in out and "DEAD" not in out.upper().split("STATCAN LANE:")[-1][:40], out
 
 
 @pytest.mark.parametrize("case", ["stale", "unreachable", "unreadable", "emptiness"])

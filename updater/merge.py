@@ -649,30 +649,36 @@ def _bounded_temp_cap(spill: str, stored_bytes) -> int:
     return cap
 
 
-def _mirror_large_string(schema, ex_types, new_table, local_src):
+def _parquet_column_bytes(path) -> dict:
+    """{column: total uncompressed bytes over every row group}, from the parquet footer alone."""
+    out = {}
+    md = pq.read_metadata(path)
+    for g in range(md.num_row_groups):
+        rg = md.row_group(g)
+        for c in range(rg.num_columns):
+            col = rg.column(c)
+            out[col.path_in_schema] = out.get(col.path_in_schema, 0) + col.total_uncompressed_size
+    return out
+
+
+def _mirror_large_string(schema, ex_types, new_bytes, local_src):
     """String column types exactly as merge_and_write would write them (DeepSeek advisory re-review
     N1, 2026-09-15). merge_and_write keeps a published large_string column large_string (its
     permissive concat), and when any 32-bit string column of the merged table reaches
     _LARGE_STRING_TRIGGER bytes it promotes EVERY string column (_needs_large_string and
     _promote_large_string). pyarrow stores that type in the file, so readers get it back; writing
     plain string instead would change what they read. The bounded path never holds the merged column,
-    so the size test uses the stored file's uncompressed column bytes plus the new rows' bytes."""
-    stored_bytes = {}
-    if local_src is not None:
-        md = pq.read_metadata(local_src)
-        for g in range(md.num_row_groups):
-            rg = md.row_group(g)
-            for c in range(rg.num_columns):
-                col = rg.column(c)
-                stored_bytes[col.path_in_schema] = (stored_bytes.get(col.path_in_schema, 0)
-                                                    + col.total_uncompressed_size)
+    so the size test uses the stored file's uncompressed column bytes plus the new rows' bytes
+    (`new_bytes`, {column: bytes}: the Arrow nbytes of an in-memory new table, or the footer's
+    uncompressed bytes of a new parquet FILE - the same measure already used for the stored side)."""
+    stored_bytes = _parquet_column_bytes(local_src) if local_src is not None else {}
 
     def published_large(name):
         return ex_types is not None and ex_types.get(name) == pa.large_string()
 
     promote_all = any(
         f.type == pa.string() and not published_large(f.name)
-        and stored_bytes.get(f.name, 0) + new_table.column(f.name).nbytes >= _LARGE_STRING_TRIGGER
+        and stored_bytes.get(f.name, 0) + new_bytes.get(f.name, 0) >= _LARGE_STRING_TRIGGER
         for f in schema)
     return pa.schema([pa.field(f.name, pa.large_string())
                       if f.type == pa.string() and (promote_all or published_large(f.name)) else f
@@ -719,10 +725,11 @@ def _bounded_spill_dir() -> str:
     return d
 
 
-def merge_and_write_bounded(out_path, new_table, *, dedup_keys=DEDUP_KEYS, min_ratio=0.97,
-                            allow_empty=False, report_changed_keys=False,
+def merge_and_write_bounded(out_path, new_table=None, *, new_path=None, dedup_keys=DEDUP_KEYS,
+                            min_ratio=0.97, allow_empty=False, report_changed_keys=False,
                             changed_keys_cap=CHANGED_KEYS_CAP, in_memory_max_bytes=None,
-                            in_memory_max_new_rows=None, memory_limit=None, batch_rows=None):
+                            in_memory_max_new_rows=None, memory_limit=None, batch_rows=None,
+                            stored_copy=None):
     """merge_and_write(out_path, new_table, mode="merge", ...) with memory independent of the
     stored file's size. Same contract: returns (rows_written, last_obs_date), plus the
     changed-key dict when report_changed_keys=True; raises ValueError from the report's entry
@@ -733,52 +740,77 @@ def merge_and_write_bounded(out_path, new_table, *, dedup_keys=DEDUP_KEYS, min_r
     BOUNDED_IN_MEMORY_MAX_NEW_ROWS new rows go to merge_and_write itself. Everything larger is
     merged by the external sort described above. Supports the flat column shapes a giant flow
     stores (_BOUNDED_TYPES); any other shape is refused rather than guessed at.
+
+    NEW ROWS FROM A FILE (2026-09-22). Pass `new_path` - a local parquet file - instead of
+    `new_table` when the new side is itself too large to hold: a whole-table re-download of a
+    statcan cube is as big as the stored cube (24100055: 201,474,607 rows). DuckDB then reads the
+    new rows with read_parquet exactly as it reads the stored ones, positioned after them
+    (__i = stored rows + file row number), so keep-last, the report and every refusal are the
+    same code; tests/test_bounded_merge.py holds the two forms byte-identical. The file is only
+    read, never moved or removed - it is the caller's.
     """
     import os                                                        # noqa: PLC0415
     import shutil                                                    # noqa: PLC0415
     import uuid                                                      # noqa: PLC0415
 
+    if (new_table is None) == (new_path is None):
+        raise ValueError("merge_and_write_bounded takes exactly one of new_table or new_path")
+    if new_path is not None:
+        _new_md = pq.read_metadata(new_path)
+        new_schema, n_new = _new_md.schema.to_arrow_schema(), _new_md.num_rows
+    else:
+        new_schema, n_new = new_table.schema, new_table.num_rows
+    new_cols = list(new_schema.names)
+
     keys = list(dedup_keys)
     if report_changed_keys:
         # The same entry guards, with the same messages, as merge_and_write.
-        if new_table.num_rows > changed_keys_cap:
+        if n_new > changed_keys_cap:
             raise ValueError(
-                f"report_changed_keys refused: new_table has {new_table.num_rows:,} rows "
+                f"report_changed_keys refused: new_table has {n_new:,} rows "
                 f"(> cap {changed_keys_cap:,}); raise changed_keys_cap deliberately or "
                 f"do not opt in for this source")
-        _absent = [k for k in keys if k not in new_table.column_names]
+        _absent = [k for k in keys if k not in new_cols]
         if _absent:
             raise ValueError(
                 f"report_changed_keys refused: dedup key(s) {_absent} absent from "
-                f"new_table columns {new_table.column_names} — the report would be "
+                f"new_table columns {new_cols} — the report would be "
                 f"empty or keyed by the wrong column")
 
     max_bytes = BOUNDED_IN_MEMORY_MAX_BYTES if in_memory_max_bytes is None else in_memory_max_bytes
     max_new = (BOUNDED_IN_MEMORY_MAX_NEW_ROWS if in_memory_max_new_rows is None
                else in_memory_max_new_rows)
     stored = fsblob.stored_size(out_path)
-    if (stored is None or stored <= max_bytes) and new_table.num_rows <= max_new:
+    if (stored is None or stored <= max_bytes) and n_new <= max_new:
+        if new_table is None:
+            new_table = pq.read_table(new_path)      # at most max_new rows: the small path
         return merge_and_write(out_path, new_table, mode="merge", dedup_keys=dedup_keys,
                                min_ratio=min_ratio, allow_empty=allow_empty,
                                report_changed_keys=report_changed_keys,
                                changed_keys_cap=changed_keys_cap)
 
-    absent = [k for k in keys if k not in new_table.column_names]
+    absent = [k for k in keys if k not in new_cols]
     if absent:
         raise DefinitiveError(
-            f"dedup key(s) {absent} absent from columns {new_table.column_names} at "
+            f"dedup key(s) {absent} absent from columns {new_cols} at "
             f"{out_path}; refusing to merge (dedup would silently break)")
 
     import duckdb                                                    # noqa: PLC0415
 
-    copy = fsblob.local_copy(out_path) if stored is not None else None
+    # A local copy of the stored object the CALLER already fetched (statcan reads it first for its
+    # key gate): used as-is and never deleted here - the caller owns it. Saves a second full GET of
+    # a cube under r2 (round-3 review: up to 880 MB twice per cube).
+    if stored_copy is not None and stored is not None:
+        copy = (stored_copy, False)
+    else:
+        copy = fsblob.local_copy(out_path) if stored is not None else None
     local_src, src_is_tmp = copy if copy is not None else (None, False)
     spill = None
     tmp = f"{out_path}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
     writer = None
     published = False
     try:
-        cols = list(new_table.column_names)
+        cols = new_cols
         if local_src is not None:
             old_rows = pq.read_metadata(local_src).num_rows
             ex_schema = pq.read_schema(local_src)
@@ -800,7 +832,7 @@ def merge_and_write_bounded(out_path, new_table, *, dedup_keys=DEDUP_KEYS, min_r
             old_rows, order, ex_types = 0, cols, None
         fields = []
         for name in order:
-            nt = new_table.schema.field(name).type
+            nt = new_schema.field(name).type
             et = ex_types[name] if ex_types is not None else nt
             if (name in ("__i", "file_row_number") or nt not in _BOUNDED_TYPES
                     or et not in _BOUNDED_TYPES or _bounded_type(nt) != _bounded_type(et)):
@@ -808,7 +840,9 @@ def merge_and_write_bounded(out_path, new_table, *, dedup_keys=DEDUP_KEYS, min_r
                     f"bounded merge at {out_path}: column {name!r} (new {nt}, published {et}) "
                     f"is outside what this path round-trips; refusing. Existing data kept.")
             fields.append(pa.field(name, _bounded_type(nt)))
-        out_schema = _mirror_large_string(pa.schema(fields), ex_types, new_table, local_src)
+        new_bytes = (_parquet_column_bytes(new_path) if new_path is not None
+                     else {c: new_table.column(c).nbytes for c in new_cols})
+        out_schema = _mirror_large_string(pa.schema(fields), ex_types, new_bytes, local_src)
 
         spill = _bounded_spill_dir()
         con = duckdb.connect()
@@ -823,16 +857,22 @@ def merge_and_write_bounded(out_path, new_table, *, dedup_keys=DEDUP_KEYS, min_r
             con.execute("SET temp_directory='%s'"
                         % spill.replace("\\", "/").replace("'", "''"))
             con.execute(f"SET max_temp_directory_size='{_bounded_temp_cap(spill, stored) // 1_000_000}MB'")
-            new_i = new_table.select(order).append_column(
-                "__i", pa.array(range(old_rows, old_rows + new_table.num_rows), type=pa.int64()))
-            con.register("__bounded_new_rows", new_i)
             sel = ", ".join(_qi(c) for c in order)
             parts = []
             if local_src is not None:
                 src_q = local_src.replace("\\", "/").replace("'", "''")
                 parts.append(f"SELECT {sel}, CAST(file_row_number AS BIGINT) AS __i "
                              f"FROM read_parquet('{src_q}', file_row_number=true)")
-            parts.append(f"SELECT {sel}, __i FROM __bounded_new_rows")
+            if new_path is not None:
+                # After every stored row, in file order: the same __i the table form assigns.
+                new_q = str(new_path).replace("\\", "/").replace("'", "''")
+                parts.append(f"SELECT {sel}, CAST(file_row_number AS BIGINT) + {int(old_rows)} "
+                             f"AS __i FROM read_parquet('{new_q}', file_row_number=true)")
+            else:
+                new_i = new_table.select(order).append_column(
+                    "__i", pa.array(range(old_rows, old_rows + n_new), type=pa.int64()))
+                con.register("__bounded_new_rows", new_i)
+                parts.append(f"SELECT {sel}, __i FROM __bounded_new_rows")
             order_by = ", ".join(f"{_qi(k)} ASC NULLS LAST" for k in keys) + ", __i ASC"
             reader = con.execute(
                 f"SELECT * FROM ({' UNION ALL '.join(parts)}) AS u ORDER BY {order_by}"
