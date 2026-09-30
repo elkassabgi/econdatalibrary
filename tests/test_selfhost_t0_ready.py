@@ -431,3 +431,22 @@ def test_the_stats_object_must_be_in_the_served_store():
     ok, detail = T.served_stats(S(b'{"as_of": "2026-09-24"}'))
     assert ok and "2026-09-24" in detail
     assert ("served-stats", T.served_stats) in T.CHECKS
+
+
+def test_statcan_lane_blocks_t0_until_the_lane_is_post_t0_ready(tmp_path):
+    """statcan's only update path is the lane when the registry says served_by: lane, and the lane refuses
+    after T0 until its self-hosted design lands - so T0 must wait for it (#65 port review, defect 2)."""
+    lane = tmp_path / "statcan_lane.py"
+    by_lane = [{"source_id": "statcan", "served_by": "lane"}]
+    lane.write_text("X = 1\nPOST_T0_READY = False\n", encoding="utf-8")
+    ok, detail = T.statcan_lane(str(lane), by_lane)
+    assert not ok and "pre-T0 only" in detail
+    lane.write_text("POST_T0_READY = True\n", encoding="utf-8")
+    assert T.statcan_lane(str(lane), by_lane)[0] is True
+    for bad in ("", "POST_T0_READY = flag()\n", "POST_T0_READY = False\nPOST_T0_READY = True\n"):
+        lane.write_text(bad, encoding="utf-8")
+        assert T.statcan_lane(str(lane), by_lane)[0] is False, bad          # cannot tell -> not ready
+    assert T.statcan_lane(str(lane), [{"source_id": "statcan"}])[0] is True  # not served by the lane
+    # the real lane on this branch is pre-T0 only, and the check is wired in
+    assert T.statcan_lane(os.path.join(ROOT, "jobs", "statcan_lane.py"), by_lane)[0] is False
+    assert ("statcan-lane", T.statcan_lane) in T.CHECKS

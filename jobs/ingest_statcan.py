@@ -269,22 +269,95 @@ def process_cube(c, dry=False):
 VALCOL_RE = re.compile(r"\[(\d+)\]\s*$")   # trailing "[k]" marks a Census value column
 
 
-def _iter_standard(rdr, idx, hdr):
-    """Standard WDS long format: one row per (series, period). series_key = VECTOR."""
+def _count(skipped, reason):
+    if skipped is not None:
+        skipped[reason] = skipped.get(reason, 0) + 1
+
+
+# `skipped` reasons that are NOT a lost datapoint: a blank line, and a long row that was repaired and
+# emitted. Every other reason is a row the parse dropped.
+NOT_DROPS = frozenset({"blank_line", "repaired_long_row"})
+
+_DGUID_RE = re.compile(r"^\d{4}[A-Z]\d+$")        # StatCan's geography code, e.g. 2016A000011124
+_VECTOR_RE = re.compile(r"^v\d+$")
+
+
+def _repair_long_row(row, idx, ncol):
+    """A standard-layout row with MORE fields than the header, rebuilt to the header's length - or
+    None when it cannot be rebuilt unambiguously.
+
+    StatCan's own CSVs escape an embedded quote badly, so one text field reaches csv.reader as two.
+    Measured 2026-09-23 on the three cubes that have it, every long row is exactly one field long:
+        13100442  "Persons who rated their health as good"" | " ""very good"" or ..."  (a dimension)
+        46100078  "Peigan Timber Limit B""  | " Alberta""                               (GEO)
+        46100079  the same GEO
+    Reading such a row by header position put a vector id in `coordinate`, a number in `status`
+    and '0' in series_key - 13100442 stores 25,344 rows that way.
+
+    Every column from UOM to the end (UOM, UOM_ID, SCALAR_*, VECTOR, COORDINATE, VALUE, STATUS,
+    SYMBOL, TERMINATED, DECIMALS) comes AFTER every free-text field, so it is intact when counted
+    from the RIGHT. The only question is where the split fell, and DGUID answers it: a geography
+    code at its own position means GEO is intact and the split is in a dimension this parser does
+    not store; a code k places further right means the split is in GEO, which is rejoined with
+    the delimiter the reader consumed. Anything else - no DGUID column, a code in neither place,
+    or no vector id where VECTOR should be - is refused (None)."""
+    k = len(row) - ncol
+    i_uom, i_geo, i_dg, i_vec = idx.get("UOM"), idx.get("GEO"), idx.get("DGUID"), idx.get("VECTOR")
+    if k < 1 or None in (i_uom, i_geo, i_dg, i_vec) or not (i_geo < i_dg < i_uom):
+        return None
+    if _DGUID_RE.match(row[i_dg] or ""):
+        left = list(row[:i_uom])                                    # GEO intact; split after it
+    elif _DGUID_RE.match(row[i_dg + k] or ""):
+        left = (list(row[:i_geo]) + [",".join(row[i_geo:i_geo + k + 1])]
+                + list(row[i_geo + k + 1:i_uom + k]))               # split inside GEO: rejoin it
+    else:
+        return None
+    fixed = left + list(row[i_uom + k:])
+    if len(fixed) != ncol or not _VECTOR_RE.match(fixed[i_vec].strip()):
+        return None
+    # KNOWN LIMIT, stated rather than guarded (round-3 review): a split INSIDE UOM itself leaves DGUID
+    # intact and every right-counted column (UOM_ID included) intact too, so it cannot be told from a
+    # split in a dimension - the row is repaired with only UOM's second fragment as `uom`. Key,
+    # date, value and status are still right. Measured 2026-09-23: 0 such rows; every long row in the
+    # three affected cubes splits GEO or a dimension.
+    return fixed
+
+
+def _iter_standard(rdr, idx, hdr, skipped=None):
+    """Standard WDS long format: one row per (series, period). series_key = VECTOR.
+
+    `skipped` (a dict, optional) counts every row NOT emitted, by reason, so a caller can tell a
+    complete parse from one that dropped rows - plus `repaired_long_row`, rows that WERE emitted
+    after _repair_long_row rebuilt them. A SHORTER row is skipped. A LONGER row (since 2026-09-22)
+    is repaired when that is unambiguous and skipped as `long_row` when it is not; it is never
+    read by header position again."""
     i_ref = idx["REF_DATE"]; i_vec = idx["VECTOR"]; i_val = idx["VALUE"]
     i_geo = idx.get("GEO"); i_uom = idx.get("UOM")
     i_coord = idx.get("COORDINATE"); i_stat = idx.get("STATUS")
     ncol = len(hdr)
     for row in rdr:
-        if not row or len(row) < ncol:
+        if not row:
+            _count(skipped, "blank_line")
+            continue
+        if len(row) > ncol:
+            fixed = _repair_long_row(row, idx, ncol)
+            if fixed is None:
+                _count(skipped, "long_row")
+                continue
+            _count(skipped, "repaired_long_row")
+            row = fixed
+        if len(row) < ncol:
+            _count(skipped, "short_row")
             continue
         od = parse_refdate(row[i_ref])
         if od is None:
+            _count(skipped, "bad_ref_date")
             continue
         vec = row[i_vec].strip()
         if not vec:
             vec = row[i_coord].strip() if i_coord is not None else ""
             if not vec:
+                _count(skipped, "no_key")
                 continue
         val = parse_value(row[i_val])
         yield (vec, od,
@@ -295,10 +368,11 @@ def _iter_standard(rdr, idx, hdr):
                row[i_stat] if i_stat is not None else None)
 
 
-def _iter_census(rdr, idx, hdr):
+def _iter_census(rdr, idx, hdr, skipped=None):
     """Census Program wide/pivoted layout. Each measure-member is its own column
     (header '...[k]') followed by a Symbol column. Emit one obs per value cell;
-    series_key = '<Coordinate>.<k>' (stable, mirrors WDS coordinates)."""
+    series_key = '<Coordinate>.<k>' (stable, mirrors WDS coordinates). `skipped` as in
+    _iter_standard; a skipped CSV row is counted once, whatever its number of value cells."""
     i_ref = idx["REF_DATE"]; i_geo = idx.get("GEO"); i_coord = idx["Coordinate"]
     ncol = len(hdr)
     # value columns: (col_index, member_k, label_without_suffix, symbol_col_index)
@@ -312,10 +386,18 @@ def _iter_census(rdr, idx, hdr):
         sym = ci + 1 if (ci + 1 < ncol and hdr[ci + 1] in ("Symbol", "Symbols")) else None
         valcols.append((ci, k, label, sym))
     for row in rdr:
-        if not row or len(row) < ncol:
+        if not row:
+            _count(skipped, "blank_line")
+            continue
+        if len(row) != ncol:
+            # LONGER too (2026-09-22): a wide row read by position would put every later value cell
+            # in the wrong member. Census rows are not repaired - which member a stray field split
+            # cannot be told from the row - so they are counted, and the vectorless gate refuses.
+            _count(skipped, "short_row" if len(row) < ncol else "long_row")
             continue
         od = parse_refdate(row[i_ref])
         if od is None:
+            _count(skipped, "bad_ref_date")
             continue
         coord = row[i_coord].strip()
         geo = row[i_geo] if i_geo is not None else None
@@ -326,7 +408,19 @@ def _iter_census(rdr, idx, hdr):
                    row[sym] if (sym is not None and sym < len(row)) else None)
 
 
-def _parse_and_write(c, pid, zpath, out_path, done_path):
+def parse_zip_to_parquet(zpath, out_path):
+    """Parse one StatCan full-table zip into ONE parquet at out_path, streamed (bounded memory).
+
+    THE parser of this source: the bulk run below and the incremental whole-table refresh
+    (updater/strategies/fetchers/statcan.py) both call it, so a refreshed cube is produced by the
+    same code as the stored one it is merged into. Writes out_path + '.part' and renames it into
+    place; touches nothing else (it neither removes the zip nor writes a .done marker - that is
+    _parse_and_write's job for the bulk run). On any exception the '.part' is left for the caller.
+
+    Returns {"n_obs", "n_null", "n_series", "series_capped", "start", "end", "layout", "skipped"}
+    where skipped is {reason: rows not emitted}. RuntimeError: no data CSV in the zip, or an
+    unrecognised layout.
+    """
     n_obs = 0
     n_null = 0
     vectors = set()
@@ -334,6 +428,8 @@ def _parse_and_write(c, pid, zpath, out_path, done_path):
     max_d = None
     writer = None
     tmp_out = out_path + ".part"
+    skipped = {}
+    layout = None
 
     # batch buffers
     bk, bd, bv, bg, bu, bc, bs = [], [], [], [], [], [], []
@@ -368,11 +464,13 @@ def _parse_and_write(c, pid, zpath, out_path, done_path):
                 hdr = next(rdr)
                 idx = {col: i for i, col in enumerate(hdr)}
                 if "VECTOR" in idx and "VALUE" in idx:
-                    rowgen = _iter_standard(rdr, idx, hdr)
+                    layout = "standard"
+                    rowgen = _iter_standard(rdr, idx, hdr, skipped)
                 elif "Coordinate" in idx and any(VALCOL_RE.search(h) for h in hdr):
                     # Census Program wide/pivoted layout (no VECTOR): one column per
                     # measure-member, series_key = Coordinate + member index.
-                    rowgen = _iter_census(rdr, idx, hdr)
+                    layout = "census"
+                    rowgen = _iter_census(rdr, idx, hdr, skipped)
                 else:
                     raise RuntimeError(f"unrecognized layout in {data_name}; hdr={hdr[:12]}")
                 for key, od, val, geo, uom, coord, stat in rowgen:
@@ -396,11 +494,6 @@ def _parse_and_write(c, pid, zpath, out_path, done_path):
     finally:
         if writer is not None:
             writer.close()
-        # clean up temp zip immediately to bound disk
-        try:
-            os.remove(zpath)
-        except OSError:
-            pass
 
     if n_obs == 0:
         # empty cube -> still write an empty parquet so we have a record, mark done
@@ -413,6 +506,35 @@ def _parse_and_write(c, pid, zpath, out_path, done_path):
     if os.path.exists(out_path):
         os.remove(out_path)
     os.replace(tmp_out, out_path)
+    return {
+        "n_obs": n_obs,
+        "n_null": n_null,
+        "n_series": len(vectors),
+        "series_capped": len(vectors) >= SERIES_CAP,
+        "start": min_d.isoformat() if min_d else None,
+        "end": max_d.isoformat() if max_d else None,
+        "layout": layout,
+        "skipped": skipped,
+    }
+
+
+def _parse_and_write(c, pid, zpath, out_path, done_path):
+    try:
+        st = parse_zip_to_parquet(zpath, out_path)
+    finally:
+        # clean up temp zip immediately to bound disk
+        try:
+            os.remove(zpath)
+        except OSError:
+            pass
+
+    # SAY SO when the parse dropped rows. The .done record keeps the counts, but nobody reads it:
+    # before 2026-09-22 a column-shifted row was silently mis-read (13100442: 25,344 rows keyed '0').
+    dropped = {k: v for k, v in st["skipped"].items() if k not in NOT_DROPS}
+    if dropped:
+        msg = f"  [{pid}] parse DROPPED rows {dropped}: this cube is stored INCOMPLETE"
+        log(msg)
+        errlog(msg)
 
     stats = {
         "productId": pid,
@@ -421,12 +543,13 @@ def _parse_and_write(c, pid, zpath, out_path, done_path):
         "frequencyCode": c.get("frequencyCode"),
         "archived": c.get("archived"),
         "subjectCode": c.get("subjectCode"),
-        "n_series": len(vectors),
-        "series_capped": len(vectors) >= SERIES_CAP,
-        "n_obs": n_obs,
-        "n_null": n_null,
-        "start": min_d.isoformat() if min_d else None,
-        "end": max_d.isoformat() if max_d else None,
+        "n_series": st["n_series"],
+        "series_capped": st["series_capped"],
+        "n_obs": st["n_obs"],
+        "n_null": st["n_null"],
+        "n_skipped": st["skipped"],
+        "start": st["start"],
+        "end": st["end"],
         "license_id": LICENSE_ID,
         "file": os.path.basename(out_path),
         "file_bytes": os.path.getsize(out_path),
@@ -489,6 +612,13 @@ def fetch_sizes(todo, workers=6):
 
 def main():
     argv = sys.argv[1:]
+    # ONE WRITER FOR statcan (2026-09-23): jobs/statcan_lane.py owns the cubes and the served CSVs
+    # while it runs and holds logs/statcan_writer.lock; a second writer raced it (lane design
+    # review, finding 3).
+    if "--dry" not in argv:
+        sys.path.insert(0, ROOT)
+        from updater import writer_lock                            # noqa: PLC0415
+        writer_lock.hold_or_refuse("statcan_writer", "jobs/ingest_statcan.py")
     dry = "--dry" in argv
     limit = int(argv[argv.index("--dry") + 1]) if dry else None
     workers = int(argv[argv.index("--workers") + 1]) if "--workers" in argv else 6

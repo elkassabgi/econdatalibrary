@@ -687,6 +687,24 @@ def _csv_grain(source_id: str) -> str:
     return cache.get(source_id, "series")
 
 
+def _served_by_lane(source_id: str) -> bool:
+    """True when the registry says a continuous job of the source's own serves its CSVs
+    (`served_by: lane` - statcan, jobs/statcan_lane.py). The CSV phase and the retry drain then
+    leave it alone: they were a second writer on the same objects (statcan lane design review,
+    finding 3). Cached like _csv_grain. On an unreadable registry this answers False - and the
+    lane's reporter returns changed_keys {} and queues no retries, so the phase has nothing to do
+    for it either way."""
+    cache = _served_by_lane.__dict__.setdefault("_cache", {})
+    if not cache:
+        try:
+            for e in registry.load().get("sources", []):
+                cache[e.get("source_id")] = e.get("served_by") == "lane"
+        except Exception:                                   # noqa: BLE001
+            return False
+        cache.setdefault("__loaded__", False)
+    return bool(cache.get(source_id, False))
+
+
 def _csv_desktop_excluded(source_id: str) -> set:
     """Catalogue ids the registry declares UNSERVED BY DECISION (`csv_desktop_exclude`): they
     must never become a desktop debt, because no derive will ever pay it (the clear tool would
@@ -1091,7 +1109,7 @@ def _derive_changed_csvs(unit, res, blob, store=None):
             # cap_saturated exists for TRUNCATED cursor sets (>= CURSOR_CAP means the
             # changed-set was cut and proves nothing about the tail — R497). A MIGRATED
             # changed_keys set is NEVER truncated: the merge reports completely under
-            # the cap it is given (statcan asks for max(default, tail size)), and a
+            # the cap it is given, and a
             # merge that cannot report is never silently left out - _giant.run_giant
             # marks such a flow changed (over-reporting), and other fetchers return
             # None, so this path does not run. Without this predicate, a complete
@@ -2613,7 +2631,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             # chronically partial, so the R361 drain could never fire for it).
             #
             # transient_fail is deliberately NOT included: nothing merged, nothing to derive.
-            if _should_derive_csvs(status) and not dry:
+            if _should_derive_csvs(status) and not dry and not _served_by_lane(unit.source_id):
                 # HARD FENCE around the WHOLE csv phase (2026-08-18): abs's
                 # post-merge phase ran 115 silent minutes past every soft budget
                 # (run 32054925848) until the 285-min step kill destroyed the

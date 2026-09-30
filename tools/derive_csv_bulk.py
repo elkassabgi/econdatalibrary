@@ -328,6 +328,11 @@ def main() -> int:
                     help="with --clear-owed-only, for a registry `csv_misses: desktop_owed` source: "
                          "confirm its unmapped keys were re-derived with the source's own desktop tool")
     a = ap.parse_args()
+    # ONE WRITER FOR statcan (2026-09-23): jobs/statcan_lane.py serves its CSVs while it works and
+    # holds logs/statcan_writer.lock (lane review item 7: this tool wrote them unasked).
+    if a.source == "statcan" and not a.dry_run:
+        from updater import writer_lock                             # noqa: PLC0415
+        writer_lock.hold_or_refuse("statcan_writer", "tools/derive_csv_bulk.py --source statcan")
 
     # THIS TOOL CANNOT PAY A csv_misses SOURCE'S DEBT (R1137, R1149). For ilostat it would PUT
     # 'ilostat:ilostat:...' objects (0 of 400 sampled store keys are catalogue ids) and a zero-error run

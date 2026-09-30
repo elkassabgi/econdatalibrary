@@ -36,7 +36,13 @@ $jobs = @(
   # flaky esploradati.istat.it host left partial (only ~389 landed). Resumable via
   # _sliced_done.json; keeps being relaunched until complete, then write
   # logs/istat_sliced.DONE to retire it (CC BY 3.0 IT â€” redistributable).
-  @{ n = 'istat_sliced';   match = 'ingest_istat_sliced.py'; args = @('jobs/ingest_istat_sliced.py') }
+  @{ n = 'istat_sliced';   match = 'ingest_istat_sliced.py'; args = @('jobs/ingest_istat_sliced.py') },
+  # statcan LANE (2026-09-23): refreshes every released statcan cube whole and serves its catalogued
+  # parts - statcan's ONLY update path (updater/strategies/fetchers/statcan.py is its reporter). One
+  # process that iterates every 5 min, holding logs/statcan_writer.lock only while it works. It pins
+  # AQUEDUCT_BACKEND=r2 itself (this launch passes no environment). -u so its lines reach the log
+  # as they happen: the stall check below keys on the log's mtime.
+  @{ n = 'statcan_lane';   match = 'statcan_lane.py';    args = @('-u', 'jobs/statcan_lane.py') }
 )
 
 # --- LONG ONE-OFF JOBS (added 2026-08-03, after a reboot killed all three) -------------------
