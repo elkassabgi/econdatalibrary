@@ -206,6 +206,34 @@ def receipt_key(path: str) -> str | None:
     return m[-1] if m else None
 
 
+def _attempt_copy(path: str) -> str:
+    """A copy of `path` whose receipt key carries a fresh per-SEND nonce (review R1314). A key fixed per FILE lets
+    the receipt of an EARLIER commit of the same file vouch for a later send that rolled back - measured offline:
+    a whole-source restart re-sent the DELETE file, it rolled back with the ambiguous text, the stale receipt said
+    done, and the bare-INSERT file after it duplicated 80 index rows. A file without a receipt is sent as is."""
+    import uuid                                                                 # noqa: PLC0415
+    key = receipt_key(path)
+    if key is None:
+        return path
+    with open(path, encoding="utf-8") as fh:
+        body = fh.read()
+    nonce = uuid.uuid4().hex[:12]
+    old = f"VALUES('{key}',"
+    assert body.count(old) == 1, f"{path}: receipt key {key!r} appears {body.count(old)} times"
+    send = f"{path}.a{nonce}.sql"
+    with open(send, "w", encoding="utf-8", newline="") as fh:
+        fh.write(body.replace(old, f"VALUES('{key}.a{nonce}',"))
+    return send
+
+
+def _drop_copy(send: str, path: str) -> None:
+    if send != path:
+        try:
+            os.remove(send)
+        except OSError:
+            pass
+
+
 def committed_by_receipt(database: str, path: str, output: str) -> bool:
     """wrangler 3.114 can end a poll loop with "Not currently importing anything" and exit 1 (measured
     2026-09-30 21:02Z: a 105-statement file that HAD applied - its 1,000 index rows came back with fresh rowids).
@@ -247,8 +275,9 @@ def execute_file(database: str, path: str, *, timeout: int = 3600, tries: int = 
     why, unreachable, out, err_text = "", False, "", ""
     for attempt in range(max(1, tries)):
         timed_out = False
+        send = _attempt_copy(path)          # a per-SEND receipt key (R1314); `path` itself when it has none
         try:
-            r = _wrangler(["d1", "execute", database, "--remote", "--yes", f"--file={os.path.abspath(path)}"]
+            r = _wrangler(["d1", "execute", database, "--remote", "--yes", f"--file={os.path.abspath(send)}"]
                           + (["--json"] if json_out else []), timeout=timeout, retries=0)
         except D1Unreachable as e:
             why, unreachable, timed_out = str(e), True, "timed out" in str(e)
@@ -256,10 +285,11 @@ def execute_file(database: str, path: str, *, timeout: int = 3600, tries: int = 
             if r.returncode == 0:
                 return statement_results(r.stdout or "") if json_out else (r.stdout or "")
             out, err_text, unreachable = r.stdout or "", r.stderr or "", False
-            if not json_out and committed_by_receipt(database, path, out + "\n" + err_text):
+            if not json_out and committed_by_receipt(database, send, out + "\n" + err_text):
                 return out
-
             why = f"exit {r.returncode}: {_last_line(err_text) or _last_line(out)}"
+        finally:
+            _drop_copy(send, path)
         if attempt < tries - 1 and not (timed_out and not retry_timeouts):
             if on_retry:
                 on_retry(attempt + 1, why)

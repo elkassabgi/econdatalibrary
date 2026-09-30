@@ -339,6 +339,10 @@ def emit_sql(cols: list[str], rows: list[dict], out_dir: str,
 # so the row exists in D1 exactly when the whole file committed, and core.d1_remote.committed_by_receipt reads it
 # back by primary key (1 row) before calling such an exit a success. Rows older than 30 days are pruned by the same
 # statement group, so the table stays a few thousand rows.
+# The key is per FILE here; core.d1_remote.execute_file sends each ATTEMPT as a copy whose key carries a fresh
+# nonce, so a row committed by an earlier send of the same file can never vouch for a later one (review R1314).
+# sync_receipt is a D1-ONLY bookkeeping table (created 2026-09-30): it is not in the local catalogue, the worker
+# never reads it, and a table audit should expect it on econ-catalog and on any shard the sync writes.
 RECEIPT_RESERVE = 400
 
 

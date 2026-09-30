@@ -273,7 +273,9 @@ def _fake_d1(monkeypatch, stdout, receipt_rows, rc=1):
 
     def read(database, sql, timeout=900):
         reads.append(sql)
-        return [{"results": receipt_rows, "success": True, "meta": {}}]
+        asked = re.search(r"k = '([^']+)'", sql).group(1)
+        rows = [{"k": asked}] if receipt_rows == "echo" else receipt_rows    # "echo": THIS send's receipt exists
+        return [{"results": rows, "success": True, "meta": {}}]
     monkeypatch.setattr(d1_remote, "_wrangler", run)
     monkeypatch.setattr(d1_remote, "run_json", read)
     monkeypatch.setattr(d1_remote, "is_cut_over", lambda: False)
@@ -288,9 +290,24 @@ def test_a_complete_import_reported_as_failed_counts_as_done_when_its_receipt_re
     """Measured 2026-09-30 21:02Z: 'Not currently importing anything', exit 1, and the file HAD committed. Its
     receipt row reads back, so it counts as done - with no re-application."""
     p = _file_of(tmp_path)
-    d1_remote, calls, reads = _fake_d1(monkeypatch, POLL_GONE, [{"k": "cat-abc-0000"}])
+    d1_remote, calls, reads = _fake_d1(monkeypatch, POLL_GONE, "echo")
     d1_remote.execute_file("econ-catalog", p, tries=4, retry_timeouts=True)
-    assert len(calls) == 1 and len(reads) == 1 and "cat-abc-0000" in reads[0]
+    assert len(calls) == 1 and len(reads) == 1 and "cat-abc-0000.a" in reads[0]
+    assert os.listdir(tmp_path) == ["f.sql"], "the per-send copy is removed"
+
+
+def test_a_receipt_from_an_earlier_send_of_the_same_file_does_not_vouch(tmp_path, monkeypatch):
+    """R1314: the FILE's key committed by an earlier send (a whole-source restart re-sends the DELETE file) must not
+    make a LATER send that rolled back count as done. Each send carries its own nonce, so only that send's row
+    counts."""
+    p = _file_of(tmp_path)
+    d1_remote, calls, reads = _fake_d1(monkeypatch, POLL_GONE, [{"k": "cat-abc-0000"}])   # the stale, per-file row
+    with pytest.raises(RuntimeError):
+        d1_remote.execute_file("econ-catalog", p, tries=2)
+    assert len(calls) == 2
+    sent_keys = {re.search(r"k = '([^']+)'", s).group(1) for s in reads}
+    assert len(sent_keys) == 2 and all(k.startswith("cat-abc-0000.a") for k in sent_keys), sent_keys
+    assert os.listdir(tmp_path) == ["f.sql"]
 
 
 def test_without_its_receipt_row_the_same_output_is_a_failure(tmp_path, monkeypatch):
@@ -313,16 +330,79 @@ def test_a_file_without_a_receipt_cannot_be_called_done(tmp_path, monkeypatch):
 def test_any_other_failure_is_still_a_failure(tmp_path, monkeypatch):
     p = _file_of(tmp_path)
     d1_remote, _, reads = _fake_d1(monkeypatch, "Processed 10 queries.\nX [ERROR] Cancelled due to no poll() received "
-                                                "in 15000ms.\n", [{"k": "cat-abc-0000"}])
+                                                "in 15000ms.\n", "echo")
     with pytest.raises(RuntimeError):
         d1_remote.execute_file("econ-catalog", p, tries=1)
     assert reads == []
 
 
+def _run_restart_scenario(tmp_path, monkeypatch, plan):
+    """Review R1314's scenario, end to end and offline: the REAL range-form emit_sql, execute_plans and
+    execute_file against an in-memory SQLite standing in for D1. `plan` maps (file index, nth send) to an outcome."""
+    import json as _json
+    from core import d1_remote, sync_state_d1
+    rows = [{"series_id": f"src:K{i:04d}", "source_id": "src", "title": f"title {i}", "geography": None,
+             "end_date": None} for i in range(120)]
+    monkeypatch.setattr(sc, "MAX_FILE_BYTES", 3_000 + sc.RECEIPT_RESERVE)
+    files = [os.path.abspath(p) for p in _emit(tmp_path, rows, fts_range_source="src")]
+    d1 = sqlite3.connect(":memory:")
+    d1.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT, title TEXT, geography TEXT, "
+               "end_date TEXT)")
+    d1.execute("CREATE VIRTUAL TABLE series_fts USING fts5(series_id UNINDEXED, title, geography)")
+    d1.executemany("INSERT INTO series_fts VALUES (?,?,?)", [(r["series_id"], r["title"], None) for r in rows])
+    sends = {}
+
+    def wrangler(args, timeout, retries=2):
+        if "--command" in args:
+            cur = d1.execute(args[args.index("--command") + 1])
+            names = [c[0] for c in cur.description]
+            return type("R", (), {"returncode": 0, "stderr": "", "stdout": _json.dumps(
+                [{"results": [dict(zip(names, r)) for r in cur], "success": True}])})()
+        path = [a for a in args if a.startswith("--file=")][0][7:]
+        i = files.index(re.sub(r"\.a[0-9a-f]{12}\.sql$", "", path))
+        sends[i] = sends.get(i, 0) + 1
+        what = plan.get((i, sends[i]), "ok")
+        if what in ("ok", "commit_other_error"):
+            d1.executescript(open(path, encoding="utf-8").read())
+        if what == "ok":
+            return type("R", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+        if what == "commit_other_error":
+            return type("R", (), {"returncode": 1, "stdout": "",
+                                  "stderr": "X [ERROR] Cancelled due to no poll() received in 15000ms."})()
+        return type("R", (), {"returncode": 1, "stdout": POLL_GONE, "stderr": ""})()      # rolled back
+    monkeypatch.setattr(d1_remote, "_wrangler", wrangler)
+    monkeypatch.setattr(d1_remote, "is_cut_over", lambda: False)
+    monkeypatch.setattr(d1_remote, "WRANGLER_JS", os.path.abspath(__file__))
+    monkeypatch.setattr(sync_state_d1.shutil, "which", lambda n: "node")
+    import time as _time
+    monkeypatch.setattr(_time, "sleep", lambda s: None)
+    try:
+        sc.execute_plans([(None, rows, files)])
+        outcome = "success"
+    except SystemExit:
+        outcome = "failed"
+    n, d = d1.execute("SELECT count(*), count(DISTINCT series_id) FROM series_fts").fetchone()
+    return outcome, n, d
+
+
+def test_a_restart_whose_resend_rolls_back_never_reports_success_over_duplicates(tmp_path, monkeypatch):
+    """R1314: file 2 (bare INSERTs) commits but reports another error -> restart at the DELETE file 1, whose re-send
+    ROLLS BACK with the ambiguous text. The first send's receipt must not vouch for it."""
+    outcome, n, d = _run_restart_scenario(tmp_path, monkeypatch,
+                                          {(2, 1): "commit_other_error", (1, 2): "rollback_not_importing"})
+    assert (n, d) == (120, 120) or outcome == "failed", (outcome, n, d)
+    assert not (outcome == "success" and n != d), f"success reported over {n - d} duplicate index rows"
+
+
+def test_control_the_restart_scenario_without_a_rollback_is_clean(tmp_path, monkeypatch):
+    outcome, n, d = _run_restart_scenario(tmp_path, monkeypatch, {(2, 1): "commit_other_error"})
+    assert (outcome, n, d) == ("success", 120, 120)
+
+
 def test_json_mode_never_takes_the_receipt_path(tmp_path, monkeypatch):
     """R1313 (LOW): the json road returns statement results the receipt path cannot supply - it stays a failure."""
     p = _file_of(tmp_path)
-    d1_remote, _, reads = _fake_d1(monkeypatch, POLL_GONE, [{"k": "cat-abc-0000"}])
+    d1_remote, _, reads = _fake_d1(monkeypatch, POLL_GONE, "echo")
     with pytest.raises(RuntimeError):
         d1_remote.execute_file("econ-catalog", p, tries=1, json_out=True)
     assert reads == []
