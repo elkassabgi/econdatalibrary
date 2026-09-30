@@ -453,6 +453,18 @@ def test_a_missing_file_is_passed_through_for_wrangler_to_report(tmp_path, monke
     assert len(calls) == 1 and reads == []
 
 
+def test_without_a_per_send_copy_no_receipt_can_confirm_the_send(tmp_path, monkeypatch):
+    """Round 5 residual: if the copy step is skipped (the file could not be read here) the send carries the FILE's
+    key, which an earlier send may have committed - so the ambiguous exit stays a failure, with no receipt read."""
+    from core import d1_remote
+    p = _file_of(tmp_path)
+    d1_remote_mod, calls, reads = _fake_d1(monkeypatch, POLL_GONE, [{"k": "cat-abc-0000"}])
+    monkeypatch.setattr(d1_remote, "_attempt_copy", lambda path: path)
+    with pytest.raises(RuntimeError):
+        d1_remote_mod.execute_file("econ-catalog", p, tries=1)
+    assert reads == []
+
+
 def test_json_mode_never_takes_the_receipt_path(tmp_path, monkeypatch):
     """R1313 (LOW): the json road returns statement results the receipt path cannot supply - it stays a failure."""
     p = _file_of(tmp_path)

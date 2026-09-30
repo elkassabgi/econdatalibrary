@@ -296,7 +296,9 @@ def execute_file(database: str, path: str, *, timeout: int = 3600, tries: int = 
             if r.returncode == 0:
                 return statement_results(r.stdout or "") if json_out else (r.stdout or "")
             out, err_text, unreachable = r.stdout or "", r.stderr or "", False
-            if not json_out and committed_by_receipt(database, send, out + "\n" + err_text):
+            # only a per-SEND (nonced) key may confirm a send: when the copy was skipped (the file could not be
+            # read here) the file's own key could be an earlier send's (review round 5 residual)
+            if not json_out and send != path and committed_by_receipt(database, send, out + "\n" + err_text):
                 return out
             why = f"exit {r.returncode}: {_last_line(err_text) or _last_line(out)}"
         finally:
