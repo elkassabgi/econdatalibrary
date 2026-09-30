@@ -173,3 +173,64 @@ def _fresh_merge_served_cache():
     derive._merge_served_sources._cache = None
     yield
     derive._merge_served_sources._cache = None
+
+
+_ALARM_MODULES = ("updater.orchestrate", "updater.derive")
+
+
+@pytest.fixture(autouse=True)
+def _alarm_state_isolation():
+    """NO TEST INHERITS ANOTHER TEST'S ALARM PLUMBING (2026-09-29). HARDENING: the 2026-09-28 fence-test failures
+    were TIMING, not a leak (fixed in the `alarm` fixture of tests/test_derive_fence_aware.py); no test in the suite
+    was found to leak this state. This guard makes one that ever does fail by name.
+
+    tests/test_derive_fence_aware.py emulates SIGALRM with a SIGINT handler that runs orchestrate._deliver_alarm,
+    and derive catches the trip as `except fence`, where fence is UnitTimeout imported LAZILY from
+    sys.modules['updater.orchestrate']. So its results depend on process-wide state another test can leave behind:
+      - orchestrate._DEFER_ALARM / _ALARM_PENDING (a deferred trip swallowed or delivered in the wrong test),
+      - orchestrate.UNIT_TIMEOUT_FIRED (derive's _raise_if_fence_in_disguise turns a plain error into the fence),
+      - a replaced sys.modules['updater.orchestrate' / 'updater.derive'] (two UnitTimeout classes: the trip is
+        raised as one and caught as the other, and derive's `except Exception` swallows it - "DID NOT RAISE"),
+        AND the `updater` package's attribute for it (derive._wait_slice reads `from . import orchestrate`, which is
+        the package attribute, not sys.modules - a re-import rebinds both), AND orchestrate.UnitTimeout itself
+        (importlib.reload keeps the module object but makes a new class),
+      - the SIGINT handler.
+    Each test starts clean, and a test that LEAVES any of these changed fails at its own teardown, naming it -
+    instead of a fence test failing three files later with a message that points nowhere.
+
+    Minimal order, measured on 2026-09-29: one test that pops and re-imports updater.orchestrate, run before
+    tests/test_derive_fence_aware.py, gives 14 x "DID NOT RAISE UnitTimeout" on main; with this guard the
+    re-importing test fails by name and the fence file passes."""
+    import signal
+    import sys
+    import updater
+    from updater import derive, orchestrate                     # noqa: F401 - both present BEFORE the snapshot,
+    mods = {k: sys.modules.get(k) for k in _ALARM_MODULES}     # or a first import would read as a replacement
+    attrs = {k: getattr(updater, k.rpartition(".")[2], None) for k in _ALARM_MODULES}
+    fence_cls = orchestrate.UnitTimeout
+    sigint = signal.getsignal(signal.SIGINT)
+    orchestrate._DEFER_ALARM, orchestrate._ALARM_PENDING, orchestrate.UNIT_TIMEOUT_FIRED = False, None, False
+    yield
+    left = []
+    for k, m in mods.items():
+        if sys.modules.get(k) is not m:
+            left.append(f"sys.modules[{k!r}] replaced")
+            sys.modules[k] = m
+        name = k.rpartition(".")[2]
+        if getattr(updater, name, None) is not attrs[k]:
+            left.append(f"the updater package's {name!r} attribute replaced")
+            setattr(updater, name, attrs[k])
+    orch = mods["updater.orchestrate"]
+    if orch.UnitTimeout is not fence_cls:
+        left.append("orchestrate.UnitTimeout is a different class (a reload?)")
+        orch.UnitTimeout = fence_cls
+    if orch._DEFER_ALARM or orch._ALARM_PENDING is not None:
+        left.append(f"orchestrate._DEFER_ALARM={orch._DEFER_ALARM!r} / _ALARM_PENDING={orch._ALARM_PENDING!r}")
+    if orch.UNIT_TIMEOUT_FIRED:
+        left.append("orchestrate.UNIT_TIMEOUT_FIRED=True")
+    orch._DEFER_ALARM, orch._ALARM_PENDING, orch.UNIT_TIMEOUT_FIRED = False, None, False
+    if signal.getsignal(signal.SIGINT) is not sigint:
+        left.append("the SIGINT handler")
+        signal.signal(signal.SIGINT, sigint)
+    if left:
+        pytest.fail("this test left process-wide alarm state changed (restored now): " + "; ".join(left))
