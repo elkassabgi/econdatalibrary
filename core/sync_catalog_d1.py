@@ -593,10 +593,16 @@ def main(argv: list[str] | None = None) -> None:
         if skipped:
             print(f"  nothing to send: all {skipped:,} queued row(s) are already in D1 "
                   f"unchanged. Zero statements, zero FTS scans.")
+            # --dry-run writes NOTHING, the queue included. This clear ran before the dry-run
+            # return below, so a dry run over an all-unchanged queue emptied the production
+            # pending file (54,619 lines, no copy, 2026-09-30 - R1304).
             if not a.source and not a.keep_pending:
                 path = a.ids_file or PENDING
-                open(path, "w", encoding="utf-8").close()
-                print(f"  cleared {path}")
+                if a.dry_run:
+                    print(f"  (dry-run) would clear {path}")
+                else:
+                    open(path, "w", encoding="utf-8").close()
+                    print(f"  cleared {path}")
         else:
             print("  none of those ids exist in the local catalog — nothing to advertise")
         return
