@@ -582,6 +582,43 @@ def test_serve_plan_rules():
         "a whole cube past the cap is still served whole - a stale object is worse than a large one"
 
 
+@pytest.mark.parametrize("n_rows", [10, 3_000_000, 3_000_001, 300_000_000])
+@pytest.mark.parametrize("shape", ["whole", "parts_mapped", "parts_unmapped", "whole_and_parts",
+                                   "whole_and_parts_unmapped"])
+def test_the_lane_and_the_derive_tool_apply_ONE_rule(shape, n_rows):
+    """Two writers of one key (found by AR-166, rule approved by AR-173, 2026-09-29): for every CATALOGUED
+    shape, on both sides of the cap, jobs/statcan_lane.serve_plan and tools/derive_statcan_tables.pinned_split
+    reach the SAME verdict - whole, parts under the same dim, or refuse. The lane served an over-cap whole
+    cube whole while the tool refused it; a drift in either now fails here. The one shape where they differ
+    by design - a cube with NO catalogued id - is pinned separately below."""
+    pid = str(PID)
+    cat = {"whole": {f"statcan:{pid}"}, "parts_mapped": {f"statcan:{pid}#Aden"},
+           "parts_unmapped": {f"statcan:{pid}#Aden"},
+           "whole_and_parts": {f"statcan:{pid}", f"statcan:{pid}#Aden"},
+           "whole_and_parts_unmapped": {f"statcan:{pid}", f"statcan:{pid}#Aden"}}[shape]
+    smap = ({} if shape in ("whole", "parts_unmapped", "whole_and_parts_unmapped")
+            else {pid: {"dim": "geo", "parts": 2, "rows": 9}})
+    dim, refusal, _notes = lane.serve_plan(pid, n_rows, ["geo"], smap, cat)
+    lane_says = "refuse" if refusal else ("whole" if dim is None else f"parts:{dim}")
+    t = lane._tool()
+    tdim, _n = t.pinned_split(pid, n_rows, smap, lane.MAX_ROWS,
+                              served_whole=f"statcan:{pid}" in cat,
+                              served_parts=any("#" in s for s in cat))
+    tool_says = "refuse" if tdim == "" else ("whole" if tdim is None else f"parts:{tdim}")
+    assert lane_says == tool_says, (shape, n_rows, lane_says, tool_says)
+
+
+def test_the_one_documented_divergence_a_cube_with_no_catalogued_id():
+    """Not a conflict over a served key, because no key is served: the lane writes NOTHING for an uncatalogued cube
+    (every id it would emit is catalogue debt, review P2), while the derive tool decides a split as a first derive
+    does (CHOOSE). Pinned so a change to either is a deliberate edit here, never silent."""
+    pid = str(PID)
+    dim, refusal, notes = lane.serve_plan(pid, 3_000_001, ["geo"], {}, set())
+    assert refusal is None and notes and notes[0].startswith("not catalogued")
+    t = lane._tool()
+    assert t.pinned_split(pid, 3_000_001, {}, lane.MAX_ROWS, served_whole=False, served_parts=False) == (t.CHOOSE, 0)
+
+
 def test_a_parts_cube_with_no_recorded_split_stays_serve_owed(world, monkeypatch):
     smap = {"33333333": {"dim": "uom", "parts": 4, "rows": 900}}            # PID's entry is gone
     (world / "_split_map.json").write_text(json.dumps(smap))

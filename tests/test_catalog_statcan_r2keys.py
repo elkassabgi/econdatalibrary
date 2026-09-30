@@ -76,30 +76,56 @@ def test_pids_with_parts_returns_the_RAW_pid():
 def test_a_refused_table_with_NO_object_is_acceptable():
     """The 5 refused giants: nothing written, nothing to advertise, must not block the run."""
     keys = {key("statcan:10100001")}
-    acc, unref, unacc = classify_absent({"98100174": 314_800_860}, keys, REFUSED)
-    assert acc == {"98100174": 314_800_860} and unref == {} and unacc == {}
+    acc, unref, unacc, whole = classify_absent({"98100174": 314_800_860}, keys, REFUSED)
+    assert acc == {"98100174": 314_800_860} and unref == {} and unacc == {} and whole == {}
 
 
 def test_an_absent_table_the_derive_never_refused_is_NOT_accepted():
     """No object, but not in the derive's refused list: ingested or grown past the cap after the
     derive ran - real data never derived. Must go to the refuse path, never be waved through."""
     keys = {key("statcan:10100001")}
-    acc, unref, unacc = classify_absent({"99999999": 5_000_000}, keys, REFUSED)
-    assert acc == {} and unref == {"99999999": 5_000_000} and unacc == {}
+    acc, unref, unacc, whole = classify_absent({"99999999": 5_000_000}, keys, REFUSED)
+    assert acc == {} and unref == {"99999999": 5_000_000} and unacc == {} and whole == {}
 
 
-def test_an_over_cap_table_WITH_a_whole_object_still_refuses():
-    """Emitted whole above the cap: an id that may point at an undeliverable object."""
+def test_an_over_cap_table_WITH_a_whole_object_but_NOT_catalogued_whole_still_refuses():
+    """A whole object above the cap that nothing chose to serve whole (no `statcan:<pid>` row)."""
     keys = {key("statcan:37100277")}
-    acc, unref, unacc = classify_absent({"37100277": 75_731_377}, keys, REFUSED)
-    assert acc == {} and unref == {} and unacc == {"37100277": 75_731_377}
+    acc, unref, unacc, whole = classify_absent({"37100277": 75_731_377}, keys, REFUSED)
+    assert acc == {} and unref == {} and unacc == {"37100277": 75_731_377} and whole == {}
+
+
+def test_a_whole_cube_that_grew_past_the_cap_stays_whole_and_catalogued():
+    """The ONE rule with the derive's pinned_split and the lane's serve_plan (2026-09-29, AR-173): a
+    cube catalogued WHOLE whose whole object exists stays whole over the cap - it does not refuse the
+    catalogue. 43100031 is the real candidate: 2,995,200 rows today, 4,800 under the cap."""
+    keys = {key("statcan:43100031"), key("statcan:10100001")}
+    acc, unref, unacc, whole = classify_absent({"43100031": 3_000_123}, keys, REFUSED,
+                                               catalogued_whole=frozenset({"statcan:43100031"}))
+    assert whole == {"43100031": 3_000_123} and acc == {} and unref == {} and unacc == {}
+
+
+def test_catalogued_whole_WITHOUT_its_object_is_not_kept_whole():
+    """The catalogue says whole but R2 has no object: nothing to keep - the refuse path decides."""
+    keys = {key("statcan:10100001")}
+    acc, unref, unacc, whole = classify_absent({"43100031": 3_000_123}, keys, REFUSED,
+                                               catalogued_whole=frozenset({"statcan:43100031"}))
+    assert whole == {} and unref == {"43100031": 3_000_123}
+
+
+def test_catalogued_whole_WITH_part_objects_too_is_not_kept_whole():
+    """Parts exist beside the whole object and the map names no dim for them: a stale map."""
+    keys = {key("statcan:43100031"), key("statcan:43100031#geo 1")}
+    acc, unref, unacc, whole = classify_absent({"43100031": 3_000_123}, keys, REFUSED,
+                                               catalogued_whole=frozenset({"statcan:43100031"}))
+    assert whole == {} and unacc == {"43100031": 3_000_123}
 
 
 def test_an_over_cap_table_with_PARTS_but_no_map_entry_still_refuses():
     """Parts exist but the map has no dim for them: a lost or stale map, not a clean absence."""
     keys = {key("statcan:37100234#geo 1"), key("statcan:37100234#geo 2")}
-    acc, unref, unacc = classify_absent({"37100234": 63_821_210}, keys, REFUSED)
-    assert acc == {} and unref == {} and unacc == {"37100234": 63_821_210}
+    acc, unref, unacc, whole = classify_absent({"37100234": 63_821_210}, keys, REFUSED)
+    assert acc == {} and unref == {} and unacc == {"37100234": 63_821_210} and whole == {}
 
 
 def test_filter_drops_ids_with_no_object_and_names_them():
