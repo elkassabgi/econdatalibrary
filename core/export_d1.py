@@ -100,7 +100,7 @@ def main() -> None:
             st.close()
 
     sql = "\n".join(lines) + "\n"
-    with open(OUT, "w", encoding="utf-8") as f:
+    with open(OUT, "w", encoding="utf-8", newline="\n") as f:
         f.write(sql)
 
     size_mb = os.path.getsize(OUT) / 1e6

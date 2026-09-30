@@ -47,13 +47,13 @@ def split_dump() -> list[str]:
         if not buf:
             return
         p = os.path.join(CHUNK_DIR, f"chunk_{n:03d}.sql")
-        with open(p, "w", encoding="utf-8") as f:
+        with open(p, "w", encoding="utf-8", newline="\n") as f:
             f.writelines(buf)
         chunks.append(p)
         n += 1
         buf, size = [], 0
 
-    with open(DUMP, encoding="utf-8") as f:
+    with open(DUMP, encoding="utf-8", newline="") as f:
         for line in f:
             # IDEMPOTENCY: the execute channel times out client-side while the
             # statements complete server-side (observed: 'no poll() in 15000ms'
