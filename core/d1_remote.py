@@ -212,17 +212,27 @@ def _attempt_copy(path: str) -> str:
     a whole-source restart re-sent the DELETE file, it rolled back with the ambiguous text, the stale receipt said
     done, and the bare-INSERT file after it duplicated 80 index rows. A file without a receipt is sent as is."""
     import uuid                                                                 # noqa: PLC0415
-    key = receipt_key(path)
-    if key is None:
+    try:
+        # newline="" on BOTH sides: the copy is byte-identical to what the emitter wrote except for the key
+        # (review R1315 finding 2 - a universal-newline read turned CRLF files into LF copies)
+        with open(path, encoding="utf-8", newline="") as fh:
+            body = fh.read()
+    except (OSError, UnicodeDecodeError):
+        return path        # unreadable here: sent as is, wrangler reports its own error (R1315: many callers' files)
+    keys = _RECEIPT.findall(body)
+    if not keys:
         return path
-    with open(path, encoding="utf-8") as fh:
-        body = fh.read()
+    key = keys[-1]
     nonce = uuid.uuid4().hex[:12]
     old = f"VALUES('{key}',"
     assert body.count(old) == 1, f"{path}: receipt key {key!r} appears {body.count(old)} times"
     send = f"{path}.a{nonce}.sql"
-    with open(send, "w", encoding="utf-8", newline="") as fh:
-        fh.write(body.replace(old, f"VALUES('{key}.a{nonce}',"))
+    try:
+        with open(send, "w", encoding="utf-8", newline="") as fh:
+            fh.write(body.replace(old, f"VALUES('{key}.a{nonce}',"))
+    except OSError as e:                     # disk full, permission: no partial copy left behind (R1315 finding 1)
+        _drop_copy(send, path)
+        raise RuntimeError(f"could not write the per-send copy {send}: {e}") from None
     return send
 
 
@@ -275,8 +285,9 @@ def execute_file(database: str, path: str, *, timeout: int = 3600, tries: int = 
     why, unreachable, out, err_text = "", False, "", ""
     for attempt in range(max(1, tries)):
         timed_out = False
-        send = _attempt_copy(path)          # a per-SEND receipt key (R1314); `path` itself when it has none
+        send = path
         try:
+            send = _attempt_copy(path)      # a per-SEND receipt key (R1314); `path` itself when it has none
             r = _wrangler(["d1", "execute", database, "--remote", "--yes", f"--file={os.path.abspath(send)}"]
                           + (["--json"] if json_out else []), timeout=timeout, retries=0)
         except D1Unreachable as e:

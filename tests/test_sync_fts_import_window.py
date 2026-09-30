@@ -399,6 +399,60 @@ def test_control_the_restart_scenario_without_a_rollback_is_clean(tmp_path, monk
     assert (outcome, n, d) == ("success", 120, 120)
 
 
+def test_the_per_send_copy_is_byte_identical_but_for_the_key(tmp_path):
+    """R1315 finding 2: a CRLF file (what emit_sql writes on Windows) stays CRLF in the copy; only the key changes."""
+    from core import d1_remote
+    p = tmp_path / "crlf.sql"
+    p.write_bytes(b"INSERT OR REPLACE INTO t(a) VALUES\r\n  ('x\ry');\r\n" + sc.receipt_sql("cat-k-0000").encode() + b"\r\n")
+    send = d1_remote._attempt_copy(str(p))
+    try:
+        got = open(send, "rb").read()
+        assert got.replace(re.search(rb"cat-k-0000\.a[0-9a-f]{12}", got).group(0), b"cat-k-0000") == p.read_bytes()
+    finally:
+        d1_remote._drop_copy(send, str(p))
+    assert os.listdir(tmp_path) == ["crlf.sql"]
+
+
+def test_a_failed_copy_write_leaves_no_partial_file_and_fails_clearly(tmp_path, monkeypatch):
+    """R1315 finding 1: disk full / permission while writing the copy - nothing sent, nothing left, a RuntimeError."""
+    from core import d1_remote
+    p = _file_of(tmp_path)
+    real_open = open
+
+    class Full:
+        def __init__(self, fh):
+            self.fh = fh
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            self.fh.close()
+
+        def write(self, s):
+            self.fh.write(s[:10])
+            raise OSError(28, "No space left on device")
+
+    def fake_open(f, mode="r", *a, **k):
+        fh = real_open(f, mode, *a, **k)
+        return Full(fh) if "w" in mode and str(f).endswith(".sql") and ".a" in os.path.basename(str(f)) else fh
+    monkeypatch.setattr("builtins.open", fake_open)
+    d1_remote_mod, calls, _ = _fake_d1(monkeypatch, POLL_GONE, "echo")
+    with pytest.raises(RuntimeError, match="per-send copy"):
+        d1_remote_mod.execute_file("econ-catalog", p, tries=3)
+    monkeypatch.setattr("builtins.open", real_open)
+    assert calls == [] and os.listdir(tmp_path) == ["f.sql"]
+
+
+def test_a_missing_file_is_passed_through_for_wrangler_to_report(tmp_path, monkeypatch):
+    """R1315 blocking finding: callers (and their tests) pass paths the helper may not read; that is wrangler's
+    error to report, not a FileNotFoundError from the copy step."""
+    d1_remote, calls, reads = _fake_d1(monkeypatch, "X [ERROR] no such file", [], rc=1)
+    with pytest.raises(RuntimeError):
+        d1_remote.execute_file("econ-catalog", str(tmp_path / "absent.sql"), tries=1)
+    assert len(calls) == 1 and reads == []
+
+
 def test_json_mode_never_takes_the_receipt_path(tmp_path, monkeypatch):
     """R1313 (LOW): the json road returns statement results the receipt path cannot supply - it stays a failure."""
     p = _file_of(tmp_path)
