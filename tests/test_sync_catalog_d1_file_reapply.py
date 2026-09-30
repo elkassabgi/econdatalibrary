@@ -92,9 +92,21 @@ def test_the_range_form_only_the_file_with_the_delete_reapplies(tmp_path, monkey
     assert d == 1300 and n > 1300, "a bare-INSERT file re-applied must duplicate - else the test sees nothing"
 
 
-def test_a_block_over_the_file_cap_is_refused_not_split(tmp_path, monkeypatch):
+def test_blocks_shrink_to_fit_a_small_file_cap(tmp_path, monkeypatch):
+    """R1308: an FTS block now closes at half the file cap, so 600 rows under a 5,000 B cap are no longer
+    refused - they become many small units, each whole in its own file, each file one DELETE, re-applicable."""
+    files = _emit(tmp_path, _rows("boc", 600), 5_000, monkeypatch)
+    for p in files:
+        body = open(p, encoding="utf-8").read()
+        assert len(body) <= 5_000 + 1, (os.path.basename(p), len(body))
+        assert body.count("DELETE FROM series_fts") <= 1
+        assert sc.reapplicable(p)
+
+
+def test_a_single_row_over_the_file_cap_is_refused_not_split(tmp_path, monkeypatch):
+    rows = [{"series_id": "boc:HUGE", "source_id": "boc", "title": "x" * 6_000, "geography": None}]
     with pytest.raises(SystemExit, match="over the"):
-        _emit(tmp_path, _rows("boc", 600), 5_000, monkeypatch)
+        _emit(tmp_path, rows, 5_000, monkeypatch)
 
 
 def test_a_file_that_does_not_reapply_is_sent_once(tmp_path, monkeypatch):
