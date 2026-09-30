@@ -103,21 +103,26 @@ def test_norgesbank_wires_the_channel():
     assert src.count("res.changed_keys = ") >= 2   # merge path + quiet path ({})
 
 
-def test_statcan_wires_the_channel_with_every_merge_reporting():
-    """WU-5 call-site pin, revised by R1244: an incomplete dict would claim 'nothing else changed' while a
-    giant table's vectors went stale, so EVERY merge reports - one merge call, report on, its cap the tail's
-    own size. (The old rule merged an over-cap tail WITHOUT a report and poisoned the run to None; that left
-    a revision-only giant cube booked empty and, under r2, mapped to no id at all.)"""
-    src = open(os.path.join(os.path.dirname(orchestrate.__file__),
-                            "strategies", "fetchers", "statcan.py"),
-               encoding="utf-8").read()
-    assert src.count("merge.merge_and_write(") == 1, "a second merge call is a merge without the report"
-    assert "report_changed_keys=True" in src
-    assert "changed_keys_cap=max(merge.CHANGED_KEYS_CAP, tbl.num_rows)" in src
-    # the WHOLE statement, unconditional - R1250 B9 (`... = changed_all if not capped else None`) started with
-    # the pinned text and passed a substring check
-    stmts = [ln.strip() for ln in src.splitlines() if ln.strip().startswith("res.changed_keys")]
-    assert stmts == ["res.changed_keys = changed_all"], stmts
+# statcan's changed-keys pin was removed 2026-09-23: its refresh runs in jobs/statcan_lane.py,
+# which serves what it merges, and the reporter returns changed_keys {} (tests/test_statcan_lane.py
+# ::test_the_reporter_writes_nothing_and_changes_no_keys). The mapping below still stands for
+# any table-grain source.
+
+
+def test_statcan_product_id_keys_reach_the_served_table_ids(catalog, monkeypatch):
+    """The premise of the table-grain channel, driven through the SHIPPED mapper: a cube served
+    whole maps by its bare id, a split cube maps to EVERY part, a cube we do not serve maps nowhere."""
+    import sqlite3 as _sq
+    p = os.environ["ECONDL_CATALOG"]
+    con = _sq.connect(p)
+    for sid in ("statcan:10100001", "statcan:24100058#Aden", "statcan:24100058#Windsor"):
+        con.execute("INSERT INTO series VALUES (?,?)", (sid, "statcan"))
+    con.commit(); con.close()
+    from updater import config
+    monkeypatch.setattr(config, "BACKEND", "r2")
+    ids, unmapped = orchestrate._catalog_ids_for("statcan", ["10100001", "24100058", "99999999"])
+    assert sorted(ids) == ["statcan:10100001", "statcan:24100058#Aden", "statcan:24100058#Windsor"]
+    assert unmapped == ["99999999"]
 
 
 def test_statcan_vector_keys_bridge_via_punctuation(catalog, monkeypatch):
