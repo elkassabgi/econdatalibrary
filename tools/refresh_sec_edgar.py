@@ -301,7 +301,7 @@ def update_catalog(spans, apply_d1, last_updated=None):
                    "statements": len(stmts), "new_on_d1": n_new_d1, "title_changed": n_title,
                    "batches": [], "failed": False}
         for j in range(0, len(stmts), 400):
-            io.open(tmp, "w", encoding="utf-8").write("\n".join(stmts[j:j + 400]))
+            io.open(tmp, "w", encoding="utf-8", newline="\n").write("\n".join(stmts[j:j + 400]))
             try:
                 res = _d1_json(["--file", tmp])
             except Exception as e:                            # noqa: BLE001
@@ -884,7 +884,7 @@ def respan(client, spec, apply=False, apply_d1=False, skip_local=False, local_ch
     rc = 0
     if apply_d1 and todo_d:
         sqlp = os.path.join(os.path.dirname(rpath), f"sec_edgar_respan_{stamp}.sql")
-        with open(sqlp, "w", encoding="utf-8") as fh:
+        with open(sqlp, "w", encoding="utf-8", newline="\n") as fh:
             for p in todo_d:
                 fh.write(f"UPDATE series SET start_date='{p['lo']}', end_date='{p['hi']}' WHERE series_id='{p['sid']}';\n")
         receipt["d1_sql"] = sqlp

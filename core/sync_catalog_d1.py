@@ -315,7 +315,7 @@ def emit_sql(cols: list[str], rows: list[dict], out_dir: str,
 
     def _write():
         p = os.path.join(out_dir, f"catalog_{len(files):04d}.sql")
-        with open(p, "w", encoding="utf-8") as fh:
+        with open(p, "w", encoding="utf-8", newline="\n") as fh:
             fh.write("\n".join(buf + [receipt_sql(f"cat-{run}-{len(files):04d}")]) + "\n")
         files.append(p)
 
@@ -443,7 +443,7 @@ def verify_replay(cols: list[str], rows: list[dict], files: list[str], fts_ids: 
     mem.execute("CREATE TABLE license (license_id TEXT PRIMARY KEY, name TEXT, url TEXT, "
                 "reservable INT, commercial_ok INT, attribution_required INT, no_modify INT)")
     for p in files:
-        with open(p, encoding="utf-8") as fh:
+        with open(p, encoding="utf-8", newline="") as fh:
             mem.executescript(fh.read())
     got = mem.execute("SELECT COUNT(*) FROM series").fetchone()[0]
     if got != len(rows):
@@ -588,7 +588,7 @@ def main(argv: list[str] | None = None) -> None:
         for src in srcs:
             db = CATALOG_SHARD_FOR.get(src)
             path = os.path.join(tmp, f"counts_{src}.sql")
-            with open(path, "w", encoding="utf-8") as fh:
+            with open(path, "w", encoding="utf-8", newline="\n") as fh:
                 fh.write("CREATE TABLE IF NOT EXISTS source_counts("
                          "source_id TEXT PRIMARY KEY, n INTEGER NOT NULL);\n")
                 fh.write("INSERT OR REPLACE INTO source_counts(source_id, n)\n"

@@ -108,7 +108,7 @@ def emit_delta(landed: list[tuple[str, str]]) -> list[str]:
         if not buf:
             return
         p = os.path.join(OUT_DIR, f"part_{part:03d}.sql")
-        with open(p, "w", encoding="utf-8") as fh:
+        with open(p, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(header + "\n".join(buf) + "\n")
         files.append(p)
         part, buf, bb = part + 1, [], 0
@@ -137,7 +137,7 @@ def emit_delta(landed: list[tuple[str, str]]) -> list[str]:
         if not fbuf:
             return
         fp = os.path.join(OUT_DIR, "fts_%03d.sql" % fpart)
-        with open(fp, "w", encoding="utf-8") as fh:
+        with open(fp, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(FTS_HEADER + "\n".join(fbuf) + "\n")
         fts_files.append(fp)
         fpart, fbuf, fbb = fpart + 1, [], 0

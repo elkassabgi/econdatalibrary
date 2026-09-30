@@ -77,16 +77,16 @@ def main(argv):
         sb = len(s.encode()) + 1
         if buf and bb + sb > MAX_BYTES:
             p = os.path.join(OUT_DIR, f"part_{part:03d}.sql")
-            open(p, "w", encoding="utf-8").write(hdr + "\n".join(buf) + "\n")
+            open(p, "w", encoding="utf-8", newline="\n").write(hdr + "\n".join(buf) + "\n")
             files.append(p); part, buf, bb = part + 1, [], 0
         buf.append(s); bb += sb
     if buf:
         p = os.path.join(OUT_DIR, f"part_{part:03d}.sql")
-        open(p, "w", encoding="utf-8").write(hdr + "\n".join(buf) + "\n")
+        open(p, "w", encoding="utf-8", newline="\n").write(hdr + "\n".join(buf) + "\n")
         files.append(p)
 
     fts = os.path.join(OUT_DIR, "_fts.sql")
-    with open(fts, "w", encoding="utf-8") as f:
+    with open(fts, "w", encoding="utf-8", newline="\n") as f:
         f.write("-- FTS refresh per source. Run AFTER the part_*.sql. DELETE-then-INSERT so a\n"
                 "-- re-run cannot double the rows.\n")
         for s in argv:
@@ -102,7 +102,7 @@ def main(argv):
     mem.execute(f"CREATE TABLE source ({', '.join(c + ' TEXT' for c in src_cols)}, PRIMARY KEY(source_id))")
     mem.execute(f"CREATE TABLE license ({', '.join(c + ' TEXT' for c in lic_cols)}, PRIMARY KEY(license_id))")
     for p in files:
-        mem.executescript(open(p, encoding="utf-8").read())
+        mem.executescript(open(p, encoding="utf-8", newline="").read())
     n = mem.execute("SELECT COUNT(*) FROM series").fetchone()[0]
     ns = mem.execute("SELECT COUNT(*) FROM source").fetchone()[0]
     mem.close()

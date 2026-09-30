@@ -346,7 +346,7 @@ def main() -> int:
     # ---- D1: one --file batch, every statement a PK seek ----
     todo_d1 = [p for p in plan if p["need_d1"]]
     sqlp = os.path.join(RECEIPT_DIR, f"refresh_flowgrain_dates_{src}_{stamp}.sql")
-    with open(sqlp, "w", encoding="utf-8") as fh:
+    with open(sqlp, "w", encoding="utf-8", newline="\n") as fh:
         for p in todo_d1:
             mn, mx, _ = p["truth"]
             fh.write(f"UPDATE series SET start_date={_q(mn)}, end_date={_q(mx)} WHERE series_id={_q(p['series_id'])};\n")

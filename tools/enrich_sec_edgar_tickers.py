@@ -144,7 +144,7 @@ def run_d1(stmts):
     tmp = os.path.join(ROOT, "data", "_sec_ticker_titles.sql")
     done = 0
     for i in range(0, len(stmts), CHUNK):
-        io.open(tmp, "w", encoding="utf-8").write("\n".join(stmts[i:i + CHUNK]))
+        io.open(tmp, "w", encoding="utf-8", newline="\n").write("\n".join(stmts[i:i + CHUNK]))
         try:
             d1_remote.execute_file("econ-catalog", tmp, timeout=1800)
         except RuntimeError as e:                                    # D1Unreachable is one too
