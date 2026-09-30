@@ -89,8 +89,9 @@ class Manifest:
             if os.path.isfile(path):
                 if os.path.exists(path + "-wal"):
                     raise ManifestBusy(f"the sync manifest {path} has a -wal: a sync is writing it (or one "
-                                       f"died mid-write). A dry run cannot read it without writing; re-run "
-                                       f"the dry run when no sync is running.")
+                                       f"died mid-write). A dry run cannot read it without writing. If a sync "
+                                       f"is running, re-run the dry run after it ends; if none is, the -wal is "
+                                       f"left by a dead one and the next REAL sync folds it back in.")
                 self._stat = self._fingerprint()
                 uri = "file:" + os.path.abspath(path).replace("\\", "/") + "?mode=ro&immutable=1"
                 self.db = sqlite3.connect(uri, uri=True, timeout=300.0)
@@ -110,8 +111,10 @@ class Manifest:
         return s.st_size, s.st_mtime_ns
 
     def stable(self) -> bool:
-        """Read-only opens only: True when no writer touched the manifest since it was opened (no -wal
-        appeared, and the main file's size and mtime are unchanged), so what was read is one consistent state."""
+        """Read-only opens only: False when a writer visibly touched the manifest since it was opened (a -wal
+        appeared, or the main file's size or mtime changed). BEST EFFORT: NTFS mtimes step in ~ms ticks
+        (review AR-175 measured 694 distinct mtimes over 3,000 writes), so two complete writer cycles inside
+        one tick can go unseen. The only writer is this sync, which never cycles that fast."""
         if not hasattr(self, "_stat"):
             return True                                      # the in-memory empty manifest cannot change
         return not os.path.exists(self.path + "-wal") and os.path.isfile(self.path) \
