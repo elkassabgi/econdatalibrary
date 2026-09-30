@@ -135,7 +135,7 @@ def build(catalogue: str, out_dir: str, lock=None, state_db: str | None = None) 
             for t in FRESHNESS:
                 dst.execute(f"DROP TABLE IF EXISTS {t}")
             for f in fresh_sql:
-                dst.executescript(open(f, encoding="utf-8").read())
+                dst.executescript(open(f, encoding="utf-8", newline="").read())
                 os.remove(f)
             os.rmdir(os.path.dirname(fresh_sql[0]))
             dst.executescript("\n".join(sync_state_d1.data_through_stmts(dt_rows)))
