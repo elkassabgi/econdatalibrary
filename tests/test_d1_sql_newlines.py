@@ -196,3 +196,75 @@ def test_the_ratchet_can_fail(tmp_path):
                   'with open(X, encoding="utf-8", newline="") as fh:\n    m.executescript(fh.read())\n'
                   'open(X, "w", encoding="utf-8", newline="\\n").write("x")\n', encoding="utf-8")
     assert not _sql_text_writers_without_newline(str(ok)), "the fixed forms must pass"
+
+
+# ---- review R1317: each replay check, and each loader read, killed ALONE -------------------------------------------
+
+COLS_U = ["series_id", "source_id", "title", "unit", "geography"]
+
+
+def _rows_u(n=60):
+    return [{"series_id": f"src:K{i:03d}", "source_id": "src", "title": f"t{i}", "unit": f"u{i}\nx", "geography": None}
+            for i in range(n)]
+
+
+def test_a_damaged_non_indexed_column_at_row_55_is_refused(tmp_path):
+    """Only the series compare can see this: `unit` is not in the index, so the index check cannot cover for it."""
+    import pytest
+    rows = _rows_u()
+    files = sc.emit_sql(COLS_U, rows, str(tmp_path / "out"))
+    for p in files:
+        body = open(p, encoding="utf-8", newline="").read()
+        if "'u55\nx'" in body:
+            open(p, "w", encoding="utf-8", newline="").write(body.replace("'u55\nx'", "'u55\r\nx'"))
+    with pytest.raises(SystemExit, match=r"altered src:K055 \(columns \['unit'\]\)"):
+        sc.verify_replay(COLS_U, rows, files, fts_ids={r["series_id"] for r in rows})
+
+
+def test_a_damaged_index_row_alone_is_refused(tmp_path):
+    """Only the index check can see this: the series row is intact, only its index INSERT literal is damaged."""
+    import pytest
+    rows = [dict(r, title=f"t{i}\nline") for i, r in enumerate(_rows_u())]
+    files = sc.emit_sql(COLS_U, rows, str(tmp_path / "out"))
+    done = False
+    for p in files:
+        body = open(p, encoding="utf-8", newline="").read()
+        at = body.find("INSERT INTO series_fts")
+        lit = "'t55\nline'"
+        if at >= 0 and body.find(lit, at) >= 0:
+            j = body.find(lit, at)
+            body = body[:j] + "'t55\r\nline'" + body[j + len(lit):]
+            open(p, "w", encoding="utf-8", newline="").write(body)
+            done = True
+    assert done, "fixture: the index literal of row 55 must exist"
+    with pytest.raises(SystemExit, match="index row for src:K055"):
+        sc.verify_replay(COLS_U, rows, files, fts_ids={r["series_id"] for r in rows})
+
+
+DUMP_BYTES = (b"-- a comment line\r\n"
+              b"INSERT INTO t VALUES('lone\rcr');\n"
+              b"INSERT INTO t VALUES('crlf\r\nin a literal');\n"
+              b"INSERT INTO t VALUES('lf\nin a literal');\n")
+
+
+def test_load_d1_rest_statements_keep_the_dump_bytes(tmp_path, monkeypatch):
+    from core import load_d1_rest
+    p = tmp_path / "dump.sql"
+    p.write_bytes(DUMP_BYTES)
+    monkeypatch.setattr(load_d1_rest, "DUMP", str(p))
+    got = list(load_d1_rest.statements())
+    assert got == ["INSERT OR REPLACE INTO t VALUES('lone\rcr');\n",
+                   "INSERT OR REPLACE INTO t VALUES('crlf\r\nin a literal');\n",
+                   "INSERT OR REPLACE INTO t VALUES('lf\nin a literal');\n"], got
+
+
+def test_load_d1_chunked_split_dump_keeps_the_dump_bytes(tmp_path, monkeypatch):
+    from core import load_d1_chunked
+    p = tmp_path / "dump.sql"
+    p.write_bytes(DUMP_BYTES)
+    monkeypatch.setattr(load_d1_chunked, "DUMP", str(p))
+    monkeypatch.setattr(load_d1_chunked, "CHUNK_DIR", str(tmp_path / "chunks"))
+    monkeypatch.setattr(load_d1_chunked, "CHUNK_BYTES", 10)
+    chunks = load_d1_chunked.split_dump()
+    got = b"".join(open(c, "rb").read() for c in chunks)
+    assert got == DUMP_BYTES.replace(b"INSERT INTO t", b"INSERT OR REPLACE INTO t"), got
