@@ -13,16 +13,23 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools import proc_match  # noqa: E402
 
 
-def _spawn(marker, seconds=30):
+def _spawn(marker, seconds=600):
+    """Every caller kills its children in `finally`, so the lifetime is only a ceiling. It was 30 s, and
+    test_cli_kill_requires_expect_and_exact_count takes 17 s at idle (three CLI launches): on a loaded full run
+    (2.3x slower, 2026-09-28) the children exited on their own before the third scan - "REFUSING: 0 worker
+    process(es) match now, --expect 2" (review of fix/fence-test-isolation, reproduced with a 17 s lifetime)."""
     return subprocess.Popen([sys.executable, "-c", f"import time; x='{marker}'; time.sleep({seconds})"])
 
 
-def _wait_for(marker, deadline_s=10):
+def _wait_for(marker, n=1, deadline_s=30):
+    """-> the hits once at least `n` match; ASSERTS they did, so a slow start fails here, by name, not at a later
+    step with a count that points elsewhere."""
     deadline = time.time() + deadline_s
     hits = []
-    while time.time() < deadline and not hits:
+    while time.time() < deadline and len(hits) < n:
         hits = proc_match.find(marker)
         time.sleep(0.2)
+    assert len(hits) >= n, f"{len(hits)} of {n} child process(es) carrying {marker!r} seen in {deadline_s} s"
     return hits
 
 
@@ -106,12 +113,12 @@ def test_cli_kill_requires_expect_and_exact_count():
     marker = f"PROCMATCH_CLI_{os.getpid()}"
     a, b = _spawn(marker), _spawn(marker)
     try:
-        _wait_for(marker)
+        _wait_for(marker, n=2)
         tool = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "proc_match.py")
         r = subprocess.run([sys.executable, tool, marker, "--kill"], capture_output=True, text=True)
         assert r.returncode == 2 and "REFUSING --kill without --expect" in r.stdout
         r = subprocess.run([sys.executable, tool, marker, "--kill", "--expect", "1"], capture_output=True, text=True)
-        assert r.returncode == 2 and "match now, --expect 1" in r.stdout
+        assert r.returncode == 2 and "2 worker process(es) match now, --expect 1" in r.stdout, r.stdout
         assert a.poll() is None and b.poll() is None
         r = subprocess.run([sys.executable, tool, marker, "--kill", "--expect", "2"], capture_output=True, text=True)
         assert r.returncode == 0, r.stdout + r.stderr
