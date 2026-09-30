@@ -69,15 +69,56 @@ def row_hash(cols: list[str], row: dict) -> str:
     return h.hexdigest()
 
 
+class ManifestBusy(RuntimeError):
+    """A read-only (dry-run) open found the manifest being written."""
+
+
 class Manifest:
-    def __init__(self, path: str):
+    def __init__(self, path: str, read_only: bool = False):
         self.path = path
+        if read_only:
+            # --dry-run (R1304/R1305): nothing on disk may change, so no makedirs, no WAL switch, no DDL.
+            # An absent manifest reads as empty - the same answer a fresh one would give.
+            # `mode=ro` is NOT enough: opening a WAL database read-only still creates and leaves its -wal and
+            # -shm files (measured by tests/test_sync_dryrun_keeps_queue.py). With no -wal present every
+            # committed row is in the main file, so `immutable=1` reads it with no side files at all.
+            # A -wal present means a writer is live (or died mid-write): its rows matter and an unlocked copy
+            # of db + -wal is not a snapshot (review round 2 measured torn, malformed and silently wrong reads,
+            # R1306), so REFUSE rather than guess. stable() re-checks after the read for a writer that
+            # started while it ran; the caller refuses the numbers when it did.
+            if os.path.isfile(path):
+                if os.path.exists(path + "-wal"):
+                    raise ManifestBusy(f"the sync manifest {path} has a -wal: a sync is writing it (or one "
+                                       f"died mid-write). A dry run cannot read it without writing. If a sync "
+                                       f"is running, re-run the dry run after it ends; if none is, the -wal is "
+                                       f"left by a dead one and the next REAL sync folds it back in.")
+                self._stat = self._fingerprint()
+                uri = "file:" + os.path.abspath(path).replace("\\", "/") + "?mode=ro&immutable=1"
+                self.db = sqlite3.connect(uri, uri=True, timeout=300.0)
+            else:
+                self.db = sqlite3.connect(":memory:")
+                self.db.executescript(_DDL)
+            return
         os.makedirs(os.path.dirname(path), exist_ok=True)
         self.db = sqlite3.connect(path, timeout=300.0)
         self.db.execute("PRAGMA busy_timeout = 300000")
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(_DDL)
         self.db.commit()
+
+    def _fingerprint(self):
+        s = os.stat(self.path)
+        return s.st_size, s.st_mtime_ns
+
+    def stable(self) -> bool:
+        """Read-only opens only: False when a writer visibly touched the manifest since it was opened (a -wal
+        appeared, or the main file's size or mtime changed). BEST EFFORT: NTFS mtimes step in ~ms ticks
+        (review AR-175 measured 694 distinct mtimes over 3,000 writes), so two complete writer cycles inside
+        one tick can go unseen. The only writer is this sync, which never cycles that fast."""
+        if not hasattr(self, "_stat"):
+            return True                                      # the in-memory empty manifest cannot change
+        return not os.path.exists(self.path + "-wal") and os.path.isfile(self.path) \
+            and self._fingerprint() == self._stat
 
     def close(self) -> None:
         self.db.close()

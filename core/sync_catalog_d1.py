@@ -106,6 +106,7 @@ PENDING = os.path.join(
 
 
 from core.catalog_sync_manifest import Manifest as _Manifest      # noqa: E402
+from core.catalog_sync_manifest import ManifestBusy as _ManifestBusy  # noqa: E402
 from core.catalog_sync_manifest import default_path as _manifest_path  # noqa: E402
 
 
@@ -443,6 +444,13 @@ def main(argv: list[str] | None = None) -> None:
     # SEED FIRST: it reads the CATALOGUE, not the pending queue, so it must not be gated
     # behind "nothing to sync" — an empty queue is the normal state to bootstrap in.
     if a.seed_manifest:
+        if a.dry_run:
+            # --dry-run writes NOTHING (R1305): seeding under it recorded changed, queued rows as
+            # already sent, so the next real sync skipped them and cleared the queue.
+            conn.close()
+            print(f"  (dry-run) would seed the sync manifest {_manifest_path(ROOT)} from every local "
+                  f"catalogue row; nothing was written.")
+            return
         _m = _Manifest(_manifest_path(ROOT))
         n = _m.seed_from_catalog(conn)
         _m.close(); conn.close()
@@ -565,25 +573,41 @@ def main(argv: list[str] | None = None) -> None:
     # THE DIFF (ledger R542). Everything below sends only rows whose CONTENT changed since
     # the last successful sync, compared against a LOCAL manifest — never against D1, which
     # would re-introduce the full scans this exists to remove.
-    manifest = _Manifest(_manifest_path(ROOT))
-    if a.no_diff:
-        print("  [diff] DISABLED by --no-diff: sending every queued row")
-        skipped = 0
-    else:
-        before = len(rows)
-        rows, skipped = manifest.split(cols, rows)
-        print(f"  [diff] {skipped:,} of {before:,} row(s) unchanged since the last successful "
-              f"sync -> not sent; {len(rows):,} to send "
-              f"({-(-len(rows) // FTS_DELETE_PER_STMT):,} FTS delete statement(s), each a "
-              f"full scan of series_fts)")
-        # is_empty(), NOT count() == 0, and the cheap operands FIRST. count() is a full scan of a
-        # 2.17 GB file; asked left-to-right on a full-source push (where skipped == 0 and
-        # before > 1000 are both true) it ran before either cheap test and stalled the statcan
-        # push for fifteen minutes at 0.1 s of CPU, before a single statement was emitted.
-        if skipped == 0 and before > 1000 and manifest.is_empty():
-            print("  [diff] WARNING: the manifest is EMPTY, so nothing can be skipped and "
-                  "this run would push the whole queue. Run --seed-manifest first "
-                  "(see its help).")
+    # read-only under --dry-run: no WAL switch, no DDL, no file created (R1305); a manifest being
+    # written is refused, not copied (R1306)
+    try:
+        manifest = _Manifest(_manifest_path(ROOT), read_only=a.dry_run)
+    except _ManifestBusy as e:
+        conn.close()
+        raise SystemExit(f"refused: {e}") from None
+    try:
+        if a.no_diff:
+            print("  [diff] DISABLED by --no-diff: sending every queued row")
+            skipped = 0
+        else:
+            before = len(rows)
+            rows, skipped = manifest.split(cols, rows)
+            print(f"  [diff] {skipped:,} of {before:,} row(s) unchanged since the last successful "
+                  f"sync -> not sent; {len(rows):,} to send "
+                  f"({-(-len(rows) // FTS_DELETE_PER_STMT):,} FTS delete statement(s), each a "
+                  f"full scan of series_fts)")
+            # is_empty(), NOT count() == 0, and the cheap operands FIRST. count() is a full scan of a
+            # 2.17 GB file; asked left-to-right on a full-source push (where skipped == 0 and
+            # before > 1000 are both true) it ran before either cheap test and stalled the statcan
+            # push for fifteen minutes at 0.1 s of CPU, before a single statement was emitted.
+            if skipped == 0 and before > 1000 and manifest.is_empty():
+                print("  [diff] WARNING: the manifest is EMPTY, so nothing can be skipped and "
+                      "this run would push the whole queue. Run --seed-manifest first "
+                      "(see its help).")
+        if a.dry_run and not manifest.stable():
+            # the immutable read holds no lock: a sync that started meanwhile can make the numbers
+            # above wrong, so they are withdrawn rather than trusted (R1306)
+            conn.close()
+            raise SystemExit("refused: the sync manifest changed while the dry run read it - the "
+                             "numbers above are not reliable; re-run the dry run when no sync is running.")
+    finally:
+        if a.dry_run:
+            manifest.close()                  # a dry run never records; nothing may stay open
     if not rows:
         conn.close()
         try:
@@ -593,10 +617,16 @@ def main(argv: list[str] | None = None) -> None:
         if skipped:
             print(f"  nothing to send: all {skipped:,} queued row(s) are already in D1 "
                   f"unchanged. Zero statements, zero FTS scans.")
+            # --dry-run writes NOTHING, the queue included. This clear ran before the dry-run
+            # return below, so a dry run over an all-unchanged queue emptied the production
+            # pending file (54,619 lines, no copy, 2026-09-30 - R1304).
             if not a.source and not a.keep_pending:
                 path = a.ids_file or PENDING
-                open(path, "w", encoding="utf-8").close()
-                print(f"  cleared {path}")
+                if a.dry_run:
+                    print(f"  (dry-run) would clear {path}")
+                else:
+                    open(path, "w", encoding="utf-8").close()
+                    print(f"  cleared {path}")
         else:
             print("  none of those ids exist in the local catalog — nothing to advertise")
         return
@@ -643,6 +673,7 @@ def main(argv: list[str] | None = None) -> None:
             print(f"  [shard] {len(grp)} row(s) route to {db}")
         verify_replay(cols, grp, files)
     if a.dry_run:
+        manifest.close()
         for _, _, files in plans:
             for p in files:
                 print("  (dry-run)", p)
