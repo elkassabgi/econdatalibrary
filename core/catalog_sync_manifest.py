@@ -70,8 +70,32 @@ def row_hash(cols: list[str], row: dict) -> str:
 
 
 class Manifest:
-    def __init__(self, path: str):
+    def __init__(self, path: str, read_only: bool = False):
         self.path = path
+        if read_only:
+            # --dry-run (R1304/R1305): nothing on disk may change, so no makedirs, no WAL switch, no DDL.
+            # An absent manifest reads as empty - the same answer a fresh one would give.
+            # `mode=ro` is NOT enough: opening a WAL database read-only still creates and leaves its -wal and
+            # -shm files (measured by tests/test_sync_dryrun_keeps_queue.py). With no -wal present every
+            # committed row is in the main file, so `immutable=1` reads it with no side files at all. With a
+            # -wal present (a writer is live, or one died) its rows matter, so read a private copy instead.
+            if os.path.isfile(path):
+                src = path
+                if os.path.exists(path + "-wal"):
+                    import shutil                                        # noqa: PLC0415
+                    import tempfile                                      # noqa: PLC0415
+                    self._tmp = tempfile.mkdtemp(prefix="manifest_ro_")
+                    src = os.path.join(self._tmp, "sent.db")
+                    shutil.copyfile(path, src)
+                    shutil.copyfile(path + "-wal", src + "-wal")
+                    self.db = sqlite3.connect(src, timeout=300.0)
+                else:
+                    uri = "file:" + os.path.abspath(src).replace("\\", "/") + "?mode=ro&immutable=1"
+                    self.db = sqlite3.connect(uri, uri=True, timeout=300.0)
+            else:
+                self.db = sqlite3.connect(":memory:")
+                self.db.executescript(_DDL)
+            return
         os.makedirs(os.path.dirname(path), exist_ok=True)
         self.db = sqlite3.connect(path, timeout=300.0)
         self.db.execute("PRAGMA busy_timeout = 300000")
@@ -81,6 +105,10 @@ class Manifest:
 
     def close(self) -> None:
         self.db.close()
+        if getattr(self, "_tmp", None):
+            import shutil                                                # noqa: PLC0415
+            shutil.rmtree(self._tmp, ignore_errors=True)
+            self._tmp = None
 
     def count(self) -> int:
         """Total rows recorded. A FULL SCAN — do not call it to ask whether the manifest is empty.

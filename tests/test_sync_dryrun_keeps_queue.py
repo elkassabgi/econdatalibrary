@@ -71,3 +71,92 @@ def test_control_a_real_run_does_clear_it(unchanged_queue, capsys):
     cat.main([])
     assert "cleared" in capsys.readouterr().out
     assert unchanged_queue.read_text(encoding="utf-8") == ""
+
+
+# R1305: the queue was not the only thing a dry run wrote. `--seed-manifest --dry-run` seeded the manifest (a changed,
+# queued row then read as already sent), and every dry run opened the manifest read-write (WAL switch, DDL, a new
+# file when absent). The sweep below snapshots the WHOLE state directory - catalogue, manifest, its -wal/-shm, the
+# queue, an ids file - and requires it byte-identical after every dry-run flag combination, with a row that
+# genuinely changed since the last sync so the send path is reached too.
+
+def _snapshot(d):
+    return {os.path.relpath(os.path.join(r, f), d): open(os.path.join(r, f), "rb").read()
+            for r, _, fs in os.walk(d) for f in fs}
+
+
+@pytest.fixture
+def changed_row(unchanged_queue, tmp_path, monkeypatch):
+    con = sqlite3.connect(str(tmp_path / "catalog.db"))
+    con.execute("UPDATE series SET title='changed' WHERE series_id='src:b'")
+    con.commit()
+    con.close()
+    (tmp_path / "ids.txt").write_text("src:a\nsrc:b\n", encoding="utf-8")
+    sent = []
+
+    def record(cols, grp, out_dir, conn=None, **kw):
+        sent.extend(grp)
+        return []
+    monkeypatch.setattr(cat, "emit_sql", record)
+    monkeypatch.setattr(cat, "verify_replay", lambda *a, **k: None)
+    return sent
+
+
+DRY_RUNS = [
+    [], ["--no-diff"], ["--keep-pending"], ["--source", "src"], ["--source", "src", "--no-diff"],
+    ["--ids-file", "IDS"], ["--seed-manifest"], ["--refresh-counts", "src"],
+    ["--seed-manifest", "--refresh-counts", "src"], ["--seed-manifest", "--source", "src"],
+]
+
+
+@pytest.mark.parametrize("extra", DRY_RUNS, ids=lambda e: " ".join(e) or "plain")
+def test_every_dry_run_leaves_the_state_dir_byte_identical(changed_row, tmp_path, extra):
+    args = ["--dry-run"] + [str(tmp_path / "ids.txt") if x == "IDS" else x for x in extra]
+    before = _snapshot(tmp_path)
+    cat.main(args)
+    assert _snapshot(tmp_path) == before, args
+
+
+def test_seed_under_dry_run_does_not_hide_a_changed_row(changed_row, capsys):
+    """The damage R1305 found: after a seeding dry run, the changed row must still be reported as to send."""
+    cat.main(["--seed-manifest", "--dry-run"])
+    capsys.readouterr()
+    cat.main(["--dry-run"])
+    assert "1 to send" in capsys.readouterr().out
+    assert [r["series_id"] for r in changed_row] == ["src:b"]
+
+
+def test_dry_run_creates_no_manifest_when_none_exists(changed_row, tmp_path, monkeypatch):
+    absent = str(tmp_path / "nested" / "absent.db")
+    monkeypatch.setattr(cat, "_manifest_path", lambda root: absent)
+    before = _snapshot(tmp_path)
+    cat.main(["--dry-run"])
+    assert _snapshot(tmp_path) == before
+    assert not os.path.exists(os.path.dirname(absent))
+
+
+def test_dry_run_reads_rows_still_in_a_live_writers_wal(changed_row, tmp_path, capsys):
+    """A writer holds the manifest open with the changed row recorded only in its -wal: the dry run must SEE that
+    row (nothing to send) and must still leave every file, the -wal and -shm included, byte-identical."""
+    con = sqlite3.connect(str(tmp_path / "catalog.db"))
+    cur = con.execute("SELECT * FROM series WHERE series_id='src:b'")
+    cols = [d[0] for d in cur.description]
+    row = dict(zip(cols, cur.fetchone()))
+    con.close()
+    writer = Manifest(str(tmp_path / "sent.db"))
+    writer.db.execute("PRAGMA wal_autocheckpoint = 0")
+    writer.record(cols, [row])
+    try:
+        assert os.path.exists(str(tmp_path / "sent.db-wal")), "fixture must leave the row in the -wal"
+        before = _snapshot(tmp_path)
+        cat.main(["--dry-run"])
+        assert "0 to send" in capsys.readouterr().out
+        assert _snapshot(tmp_path) == before
+    finally:
+        writer.close()
+
+
+def test_control_a_real_seed_does_write_the_manifest(changed_row, tmp_path):
+    """The sweep's negative control: without --dry-run the seed changes the state dir."""
+    before = _snapshot(tmp_path)
+    cat.main(["--seed-manifest"])
+    assert _snapshot(tmp_path) != before

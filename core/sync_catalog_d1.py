@@ -443,6 +443,13 @@ def main(argv: list[str] | None = None) -> None:
     # SEED FIRST: it reads the CATALOGUE, not the pending queue, so it must not be gated
     # behind "nothing to sync" — an empty queue is the normal state to bootstrap in.
     if a.seed_manifest:
+        if a.dry_run:
+            # --dry-run writes NOTHING (R1305): seeding under it recorded changed, queued rows as
+            # already sent, so the next real sync skipped them and cleared the queue.
+            conn.close()
+            print(f"  (dry-run) would seed the sync manifest {_manifest_path(ROOT)} from every local "
+                  f"catalogue row; nothing was written.")
+            return
         _m = _Manifest(_manifest_path(ROOT))
         n = _m.seed_from_catalog(conn)
         _m.close(); conn.close()
@@ -565,7 +572,8 @@ def main(argv: list[str] | None = None) -> None:
     # THE DIFF (ledger R542). Everything below sends only rows whose CONTENT changed since
     # the last successful sync, compared against a LOCAL manifest — never against D1, which
     # would re-introduce the full scans this exists to remove.
-    manifest = _Manifest(_manifest_path(ROOT))
+    # read-only under --dry-run: no WAL switch, no DDL, no file created (R1305)
+    manifest = _Manifest(_manifest_path(ROOT), read_only=a.dry_run)
     if a.no_diff:
         print("  [diff] DISABLED by --no-diff: sending every queued row")
         skipped = 0
@@ -649,6 +657,7 @@ def main(argv: list[str] | None = None) -> None:
             print(f"  [shard] {len(grp)} row(s) route to {db}")
         verify_replay(cols, grp, files)
     if a.dry_run:
+        manifest.close()
         for _, _, files in plans:
             for p in files:
                 print("  (dry-run)", p)
