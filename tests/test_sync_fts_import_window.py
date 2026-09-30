@@ -255,58 +255,95 @@ def test_a_row_hash_rewritten_by_pre_column_code_voids_the_index_hash(tmp_path):
 
 # ---- a complete import that wrangler reports as failed -----------------------------------------------------------
 
-def _file_of(tmp_path, n):
+def _file_of(tmp_path, key="cat-abc-0000"):
     p = tmp_path / "f.sql"
-    p.write_text("".join(f"INSERT OR REPLACE INTO t(a) VALUES\n  ({i});\n" for i in range(n)), encoding="utf-8")
+    body = "".join(f"INSERT OR REPLACE INTO t(a) VALUES\n  ({i});\n" for i in range(7))
+    p.write_text(body + (sc.receipt_sql(key) + "\n" if key else ""), encoding="utf-8")
     return str(p)
 
 
-def _fake_wrangler(monkeypatch, stdout, rc=1):
+def _fake_d1(monkeypatch, stdout, receipt_rows, rc=1):
+    """wrangler --file returns `stdout` with exit `rc`; the receipt read returns `receipt_rows`."""
     from core import d1_remote
-    calls = []
+    calls, reads = [], []
 
     def run(args, **kw):
         calls.append(args)
         return type("R", (), {"returncode": rc, "stdout": stdout, "stderr": ""})()
+
+    def read(database, sql, timeout=900):
+        reads.append(sql)
+        return [{"results": receipt_rows, "success": True, "meta": {}}]
     monkeypatch.setattr(d1_remote, "_wrangler", run)
+    monkeypatch.setattr(d1_remote, "run_json", read)
     monkeypatch.setattr(d1_remote, "is_cut_over", lambda: False)
-    return d1_remote, calls
+    return d1_remote, calls, reads
 
 
-POLL_GONE = ("\U0001f300 Starting import...\n\U0001f300 Processed {n} queries.\n"
-             '{{"error": {{"text": "Not currently importing anything."}}}}\n')
+POLL_GONE = ('\U0001f300 Starting import...\n\U0001f300 Processed 10 queries.\n'
+             '{"error": {"text": "Not currently importing anything."}}\n')
 
 
-def test_a_complete_import_reported_as_failed_counts_as_done_and_is_not_retried(tmp_path, monkeypatch):
-    """Measured 2026-09-30 21:02Z: 105/105 statements processed, then 'Not currently importing anything', exit 1 -
-    and the file HAD applied (fresh rowids). It must count as done, with no re-application."""
-    p = _file_of(tmp_path, 7)
-    d1_remote, calls = _fake_wrangler(monkeypatch, POLL_GONE.format(n=7))
+def test_a_complete_import_reported_as_failed_counts_as_done_when_its_receipt_reads_back(tmp_path, monkeypatch):
+    """Measured 2026-09-30 21:02Z: 'Not currently importing anything', exit 1, and the file HAD committed. Its
+    receipt row reads back, so it counts as done - with no re-application."""
+    p = _file_of(tmp_path)
+    d1_remote, calls, reads = _fake_d1(monkeypatch, POLL_GONE, [{"k": "cat-abc-0000"}])
     d1_remote.execute_file("econ-catalog", p, tries=4, retry_timeouts=True)
-    assert len(calls) == 1
+    assert len(calls) == 1 and len(reads) == 1 and "cat-abc-0000" in reads[0]
 
 
-def test_a_partial_count_is_still_a_failure(tmp_path, monkeypatch):
-    p = _file_of(tmp_path, 7)
-    d1_remote, calls = _fake_wrangler(monkeypatch, POLL_GONE.format(n=6))
+def test_without_its_receipt_row_the_same_output_is_a_failure(tmp_path, monkeypatch):
+    """R1313: the same text follows a rollback. No receipt row = not committed = a failure, retried as before."""
+    p = _file_of(tmp_path)
+    d1_remote, calls, _ = _fake_d1(monkeypatch, POLL_GONE, [])
     with pytest.raises(RuntimeError):
         d1_remote.execute_file("econ-catalog", p, tries=2)
     assert len(calls) == 2
 
 
-def test_any_other_failure_is_still_a_failure(tmp_path, monkeypatch):
-    p = _file_of(tmp_path, 7)
-    d1_remote, _ = _fake_wrangler(monkeypatch, "Processed 7 queries.\nX [ERROR] Cancelled due to no poll() received in "
-                                               "15000ms.\n")
+def test_a_file_without_a_receipt_cannot_be_called_done(tmp_path, monkeypatch):
+    p = _file_of(tmp_path, key=None)
+    d1_remote, _, reads = _fake_d1(monkeypatch, POLL_GONE, [{"k": "anything"}])
     with pytest.raises(RuntimeError):
         d1_remote.execute_file("econ-catalog", p, tries=1)
+    assert reads == []
 
 
-def test_statement_count_follows_sqlite_not_semicolons(tmp_path):
+def test_any_other_failure_is_still_a_failure(tmp_path, monkeypatch):
+    p = _file_of(tmp_path)
+    d1_remote, _, reads = _fake_d1(monkeypatch, "Processed 10 queries.\nX [ERROR] Cancelled due to no poll() received "
+                                                "in 15000ms.\n", [{"k": "cat-abc-0000"}])
+    with pytest.raises(RuntimeError):
+        d1_remote.execute_file("econ-catalog", p, tries=1)
+    assert reads == []
+
+
+def test_json_mode_never_takes_the_receipt_path(tmp_path, monkeypatch):
+    """R1313 (LOW): the json road returns statement results the receipt path cannot supply - it stays a failure."""
+    p = _file_of(tmp_path)
+    d1_remote, _, reads = _fake_d1(monkeypatch, POLL_GONE, [{"k": "cat-abc-0000"}])
+    with pytest.raises(RuntimeError):
+        d1_remote.execute_file("econ-catalog", p, tries=1, json_out=True)
+    assert reads == []
+
+
+def test_every_emitted_file_ends_with_its_own_receipt(tmp_path):
     from core import d1_remote
-    p = tmp_path / "s.sql"
-    p.write_text("INSERT INTO t VALUES('a;b');\nINSERT INTO t VALUES\n  (1),\n  (2);\n", encoding="utf-8")
-    assert d1_remote.statement_count(str(p)) == 2
+    files = _emit(tmp_path, _rows("boc", 2_300))
+    keys = [d1_remote.receipt_key(p) for p in files]
+    assert all(keys) and len(set(keys)) == len(files)
+    for p in files:
+        assert open(p, encoding="utf-8").read().rstrip().endswith(f"VALUES('{d1_remote.receipt_key(p)}', datetime('now'));")
+
+
+def test_replay_refuses_a_file_without_its_receipt(tmp_path):
+    rows = _rows("boc", 30)
+    files = _emit(tmp_path, rows)
+    body = open(files[0], encoding="utf-8").read()
+    open(files[0], "w", encoding="utf-8").write(body[:body.index("CREATE TABLE IF NOT EXISTS sync_receipt")])
+    with pytest.raises(SystemExit, match="receipt"):
+        sc.verify_replay(COLS, rows, files)
 
 
 def test_a_second_writer_migrating_first_is_not_an_error(tmp_path, monkeypatch):

@@ -40,6 +40,7 @@ import re
 import sqlite3
 import sys
 import tempfile
+import uuid
 
 # Run as a script (`python core/sync_catalog_d1.py`, which is how the workflow calls
 # it) the repo root is not on sys.path, so `import core.*` fails. Bootstrap before
@@ -308,24 +309,44 @@ def emit_sql(cols: list[str], rows: list[dict], out_dir: str,
             f"SELECT {_lit(src)}, COUNT(*) FROM series WHERE source_id = {_lit(src)};")
 
     os.makedirs(out_dir, exist_ok=True)
+    run = uuid.uuid4().hex[:16]
+    cap = MAX_FILE_BYTES - RECEIPT_RESERVE              # every file ends with its receipt (receipt_sql)
     files, buf, n, scans = [], [], 0, 0
-    for s in stmts:
-        if len(s) > MAX_FILE_BYTES:
-            raise SystemExit(f"FATAL: one statement block is {len(s):,} B, over the {MAX_FILE_BYTES:,} B file cap; "
-                             "it cannot be sent whole, and splitting it would break its re-application")
-        s_scans = sum(1 for m in _FTS_WRITE.finditer(s) if m.group(1) == "DELETE FROM")
-        if buf and (n + len(s) > MAX_FILE_BYTES or scans + s_scans > FTS_DELETES_PER_FILE):
-            p = os.path.join(out_dir, f"catalog_{len(files):04d}.sql")
-            with open(p, "w", encoding="utf-8") as fh:
-                fh.write("\n".join(buf) + "\n")
-            files.append(p); buf, n, scans = [], 0, 0
-        buf.append(s); n += len(s) + 1; scans += s_scans
-    if buf:
+
+    def _write():
         p = os.path.join(out_dir, f"catalog_{len(files):04d}.sql")
         with open(p, "w", encoding="utf-8") as fh:
-            fh.write("\n".join(buf) + "\n")
+            fh.write("\n".join(buf + [receipt_sql(f"cat-{run}-{len(files):04d}")]) + "\n")
         files.append(p)
+
+    for s in stmts:
+        if len(s) > cap:
+            raise SystemExit(f"FATAL: one statement block is {len(s):,} B, over the {cap:,} B file cap; "
+                             "it cannot be sent whole, and splitting it would break its re-application")
+        s_scans = sum(1 for m in _FTS_WRITE.finditer(s) if m.group(1) == "DELETE FROM")
+        if buf and (n + len(s) > cap or scans + s_scans > FTS_DELETES_PER_FILE):
+            _write()
+            buf, n, scans = [], 0, 0
+        buf.append(s); n += len(s) + 1; scans += s_scans
+    if buf:
+        _write()
     return files
+
+
+# THE FILE'S OWN RECEIPT (review R1313). wrangler 3.114 can exit 1 with "Not currently importing anything" after a
+# file that DID commit (measured 2026-09-30 21:02Z), and that text is also what a rollback leaves - so the output
+# cannot say which. Every emitted file therefore ENDS with a row keyed to that file; the import is one transaction,
+# so the row exists in D1 exactly when the whole file committed, and core.d1_remote.committed_by_receipt reads it
+# back by primary key (1 row) before calling such an exit a success. Rows older than 30 days are pruned by the same
+# statement group, so the table stays a few thousand rows.
+RECEIPT_RESERVE = 400
+
+
+def receipt_sql(key: str) -> str:
+    assert re.fullmatch(r"[A-Za-z0-9_.:-]+", key), key
+    return ("CREATE TABLE IF NOT EXISTS sync_receipt(k TEXT PRIMARY KEY, at TEXT);\n"
+            "DELETE FROM sync_receipt WHERE at < datetime('now', '-30 days');\n"
+            f"INSERT OR REPLACE INTO sync_receipt(k, at) VALUES('{key}', datetime('now'));")
 
 
 def _fts_blocks(rows: list[dict]):
@@ -430,6 +451,11 @@ def verify_replay(cols: list[str], rows: list[dict], files: list[str], fts_ids: 
         if hit is None or hit[0] != (r.get("title") if r.get("title") is not None
                                      else None):
             raise SystemExit(f"FATAL: replay lost/altered {r['series_id']}")
+    n_receipts = mem.execute("SELECT count(*) FROM sync_receipt").fetchone()[0] if mem.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='sync_receipt'").fetchone() else 0
+    if n_receipts != len(files):
+        raise SystemExit(f"FATAL: replay found {n_receipts} receipt row(s) for {len(files)} file(s) - every file "
+                         "must end with its own (R1313) - refusing to send")
     if fts_ids is not None:
         # the index rows the files write: exactly one per id meant to be rewritten, none for a skipped id
         got_fts = {}

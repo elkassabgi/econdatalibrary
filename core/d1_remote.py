@@ -195,33 +195,33 @@ def _last_line(text: str) -> str:
 
 
 _NOT_IMPORTING = "Not currently importing anything"
-_PROCESSED = re.compile(r"Processed ([\d,]+) quer")
+# A file may END with a receipt row (core/sync_catalog_d1.receipt_sql): the import is one transaction, so the row
+# exists in D1 exactly when the whole file committed.
+_RECEIPT = re.compile(r"INSERT OR REPLACE INTO sync_receipt\(k, at\) VALUES\('([A-Za-z0-9_.:-]+)'")
 
 
-def statement_count(path: str) -> int:
-    """Complete SQL statements in a file, as SQLite itself delimits them (sqlite3.complete_statement)."""
-    import sqlite3                                                              # noqa: PLC0415
-    n, buf = 0, ""
+def receipt_key(path: str) -> str | None:
     with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            buf += line
-            if sqlite3.complete_statement(buf):
-                n, buf = n + 1, ""
-    return n
+        m = _RECEIPT.findall(fh.read())
+    return m[-1] if m else None
 
 
-def completed_despite_poll_error(path: str, output: str) -> bool:
-    """wrangler 3.114 can report a COMPLETE import as a failure: the server answers one poll with
-    "Processed N queries" and the NEXT poll with "Not currently importing anything" (the import already ended),
-    and wrangler exits 1. MEASURED 2026-09-30 21:02Z (R1312 follow-up): a 105-statement file failed that way,
-    and its 1,000 FTS rows came back with fresh rowids 10,883,682-10,884,681 above every older row - it had
-    applied in full. A retry re-applies such a file (a full scan each time for an FTS file) and may fail the
-    same way again. So the file counts as done ONLY when that exact error AND wrangler's own last "Processed N"
-    equals the file's real statement count; any other failure stays a failure."""
+def committed_by_receipt(database: str, path: str, output: str) -> bool:
+    """wrangler 3.114 can end a poll loop with "Not currently importing anything" and exit 1 (measured
+    2026-09-30 21:02Z: a 105-statement file that HAD applied - its 1,000 index rows came back with fresh rowids).
+    That text follows a commit AND a rollback alike, and wrangler's "Processed N queries" is printed BEFORE the
+    commit (review R1313), so neither proves anything. The file's own receipt row does: one primary-key read.
+    True only for that exact error, a file that carries a receipt, and a receipt row that reads back."""
     if _NOT_IMPORTING not in (output or ""):
         return False
-    m = _PROCESSED.findall(output)
-    return bool(m) and int(m[-1].replace(",", "")) == statement_count(path)
+    key = receipt_key(path)
+    if key is None:
+        return False
+    try:
+        got = run_json(database, f"SELECT k FROM sync_receipt WHERE k = '{key}'", timeout=300)
+    except Exception:                                                    # noqa: BLE001 - cannot confirm = not done
+        return False
+    return any(r.get("k") == key for part in got for r in (part.get("results") or []))
 
 
 def execute_file(database: str, path: str, *, timeout: int = 3600, tries: int = 1, retry_timeouts: bool = False,
@@ -256,7 +256,7 @@ def execute_file(database: str, path: str, *, timeout: int = 3600, tries: int = 
             if r.returncode == 0:
                 return statement_results(r.stdout or "") if json_out else (r.stdout or "")
             out, err_text, unreachable = r.stdout or "", r.stderr or "", False
-            if not json_out and completed_despite_poll_error(path, out + "\n" + err_text):
+            if not json_out and committed_by_receipt(database, path, out + "\n" + err_text):
                 return out
 
             why = f"exit {r.returncode}: {_last_line(err_text) or _last_line(out)}"
