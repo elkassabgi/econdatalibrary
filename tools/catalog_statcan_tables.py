@@ -202,9 +202,18 @@ def summary_coverage(sum_obj, n_store_now):
     bits.append("store holds %s now" % f"{n_store_now:,}")
     return "summary: " + ", ".join(bits)
 
-def classify_absent(absent: dict, keys: set, refused: set, prefix: str = "series") -> tuple:
-    """Split the over-cap tables that have NO split-map entry into three sets, by what R2 holds
-    AND what the derive recorded (never assert a cause that was not checked - R219):
+def classify_absent(absent: dict, keys: set, refused: set, prefix: str = "series",
+                    catalogued_whole: frozenset = frozenset()) -> tuple:
+    """Split the over-cap tables that have NO split-map entry into four sets, by what R2 holds,
+    what the catalogue holds AND what the derive recorded (never assert a cause that was not
+    checked - R219):
+
+      kept_whole    the table is ALREADY catalogued whole (`statcan:<pid>` in `catalogued_whole`),
+                    its whole object exists and no part object does: a whole cube that grew past the
+                    cap. It stays whole - the ONE rule tools/derive_statcan_tables.pinned_split and
+                    jobs/statcan_lane.serve_plan apply (2026-09-29; found by AR-166, approved by AR-173): the cap aims a
+                    NEW split, it is not a limit on a served object; splitting would re-key a public
+                    id and refusing would freeze it. Catalogued whole, as before;
 
       acceptable    no object of the table exists (no whole-table key, no part key) AND the
                     derive RECORDED refusing it (logs/statcan_tables_summary.json 'refused'):
@@ -213,25 +222,27 @@ def classify_absent(absent: dict, keys: set, refused: set, prefix: str = "series
       unrefused     no object exists but the derive did NOT refuse it - a table ingested or grown
                     past the cap after the derive ran. Real data, never derived: refuse, never
                     silently omit;
-      unacceptable  an object exists - a whole-table object written above the cap (an id that
-                    may point at an undeliverable object) or parts with no dim to name them (a
-                    lost or stale map). Those refuse, as before.
+      unacceptable  an object exists but the table is not kept_whole - a whole-table object above
+                    the cap for a table NOT catalogued whole (nothing chose to serve it whole) or
+                    parts with no dim to name them (a lost or stale map). Those refuse, as before.
 
     Without a listing the guard below refuses on any absent table, and it did: at the cap the
     derive really ran with (3,000,000) the absent set is exactly the 5 tables the derive REFUSED
     for having no usable splitter.
     """
     with_parts = pids_with_parts(keys, prefix)
-    acceptable, unrefused, unacceptable = {}, {}, {}
+    acceptable, unrefused, unacceptable, kept_whole = {}, {}, {}, {}
     for pid, n in absent.items():
-        exists = object_key(unit_id(pid), prefix) in keys or pid in with_parts
-        if exists:
+        whole_obj = object_key(unit_id(pid), prefix) in keys
+        if whole_obj and pid not in with_parts and unit_id(pid) in catalogued_whole:
+            kept_whole[pid] = n
+        elif whole_obj or pid in with_parts:
             unacceptable[pid] = n
         elif pid in refused:
             acceptable[pid] = n
         else:
             unrefused[pid] = n
-    return acceptable, unrefused, unacceptable
+    return acceptable, unrefused, unacceptable, kept_whole
 
 
 def filter_rows_by_listing(rows: list, keys: set, prefix: str = "series") -> tuple:
@@ -799,8 +810,17 @@ def main() -> int:
         print(f"listing: {len(keys):,} key(s) under {key_prefix(a.prefix)} ({a.r2_keys})")
     has_object = set()
     if keys is not None and absent:
-        acceptable, unrefused, absent = classify_absent(absent, keys, ref, a.prefix)
+        # which absent tables the catalogue ALREADY serves whole: a primary-key lookup per table
+        cat_whole = frozenset(u for u in (unit_id(p) for p in absent)
+                              if con.execute("SELECT 1 FROM series WHERE series_id=?", (u,)).fetchone())
+        acceptable, unrefused, absent, kept_whole = classify_absent(absent, keys, ref, a.prefix,
+                                                                    catalogued_whole=cat_whole)
         has_object = set(absent)  # every survivor of classify_absent has an object in R2
+        if kept_whole:
+            print(f"{len(kept_whole):,} over-cap table(s) are catalogued WHOLE with their whole object "
+                  f"in R2 - kept whole, catalogued whole (the one rule: a split would re-key the id):")
+            for k, v in sorted(kept_whole.items(), key=lambda kv: -kv[1]):
+                print(f"   {k:16s} {v:>14,} rows")
         if acceptable:
             print(f"{len(acceptable):,} over-cap table(s) have no split entry, no object in R2, "
                   f"AND are in the derive's refused list (logs/statcan_tables_summary.json) - "
