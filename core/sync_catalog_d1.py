@@ -40,6 +40,7 @@ import re
 import sqlite3
 import sys
 import tempfile
+import uuid
 
 # Run as a script (`python core/sync_catalog_d1.py`, which is how the workflow calls
 # it) the repo root is not on sys.path, so `import core.*` fails. Bootstrap before
@@ -60,7 +61,21 @@ from core.sync_state_d1 import (CATALOG_SHARD_FOR, MAX_FILE_BYTES,  # noqa: E402
 # figure. MEASURED AGAIN 2026-09-04 against live D1: one id-scoped statement reads 10,348,511.
 # Anyone pricing a batch off the stale number over-estimates by 2.30x -- safe, but it is how a
 # cheap path gets refused as expensive. Re-measure after any FTS rebuild; do not trust this line.
-FTS_DELETE_PER_STMT = 500
+#
+# RAISED 500 -> 1,000, WITH A BYTE CAP (2026-09-30, R1308/R1312). Measured through the import road
+# (core.d1_remote.execute_file, one DELETE of ids that cannot exist): 500 ids / 21 KB, 1,000 / 42 KB,
+# 1,047 / 44 KB and 1,999 / 84 KB each read 10,816,861 rows in 16.8-19.4 s - the SAME one scan, so the
+# id count does not change the cost. Two earlier 2,000-id attempts failed with APIError 7009 at import
+# start, but the 1,999-id retry passed: that 7009 was TRANSIENT, not a size limit. The 45 KB cap is a
+# precaution inside the measured-ok range, not a measured limit.
+FTS_DELETE_PER_STMT = 1000
+FTS_DELETE_MAX_BYTES = 45_000
+# ONE FTS id-list DELETE PER IMPORT FILE (R1308). The yale_epi sync's catalog_0002.sql held 8 of them
+# and wrangler 3.114's import was cancelled 4 times with "no poll() received in 15000ms". A single
+# statement of 16.8-19.4 s passes, so 15 s is NOT a per-statement limit and the real mechanism is not
+# known; files of 2-7 scans were never measured. One per file is the shape measured to pass - see the
+# real-shape measurement recorded with this change - so the splitter starts a new file before a second.
+FTS_DELETES_PER_FILE = 1
 
 
 def whole_source_reconcile(source, rows, skipped_by_diff, n_groups=1):
@@ -169,11 +184,18 @@ def _parent_rows(conn: sqlite3.Connection, rows: list[dict]) -> list[str]:
 
 def emit_sql(cols: list[str], rows: list[dict], out_dir: str,
              conn: sqlite3.Connection | None = None,
-             fts_range_source: str | None = None) -> list[str]:
+             fts_range_source: str | None = None,
+             fts_skip: set | frozenset = frozenset()) -> list[str]:
     """Chunked INSERT OR REPLACE for `series`, plus matching `series_fts` rows.
 
     Given `conn`, the parent `source`/`license` rows are emitted FIRST — see _parent_rows for
     why omitting them produces a fetchable-but-unlistable source.
+
+    `fts_skip`: series_ids whose index row (series_id, title, geography) D1 already holds exactly as
+    now - the manifest recorded that FTS content after a real send (Manifest.fts_current). Their
+    series row still goes; their FTS delete+insert does not, so a date-only refresh costs no scan.
+    Ignored by the whole-source range form, which deletes the source's whole index and must
+    re-insert every row.
     """
     collist = ", ".join(cols)
     stmts: list[str] = []
@@ -255,15 +277,14 @@ def emit_sql(cols: list[str], rows: list[dict], out_dir: str,
                          f"{vals};")
         rows_for_fts: list[dict] = []
     else:
-        rows_for_fts = rows
+        rows_for_fts = [r for r in rows if r["series_id"] not in fts_skip]
     # ONE ELEMENT PER BLOCK: the DELETE and the INSERTs it covers are joined into one element of
     # `stmts`, so the file splitter below can never put them in different files. Every file of this
     # form therefore re-applies safely: its own DELETE runs again before its own INSERTs. That matters
     # because a failed wrangler EXIT can come after the server already took the file (wrangler 3.114
     # polls after the import; R1191 finding 2), and a retry of a file holding bare FTS INSERTs whose
     # DELETE ran in an earlier file duplicates the index (R1185).
-    for i in range(0, len(rows_for_fts), FTS_DELETE_PER_STMT):
-        block = rows_for_fts[i:i + FTS_DELETE_PER_STMT]
+    for block in _fts_blocks(rows_for_fts):
         _ids = ",".join(_lit(r["series_id"]) for r in block)
         unit = [f"DELETE FROM series_fts WHERE series_id IN ({_ids});"]
         for j in range(0, len(block), ROWS_PER_STMT):
@@ -288,23 +309,67 @@ def emit_sql(cols: list[str], rows: list[dict], out_dir: str,
             f"SELECT {_lit(src)}, COUNT(*) FROM series WHERE source_id = {_lit(src)};")
 
     os.makedirs(out_dir, exist_ok=True)
-    files, buf, n = [], [], 0
-    for s in stmts:
-        if len(s) > MAX_FILE_BYTES:
-            raise SystemExit(f"FATAL: one statement block is {len(s):,} B, over the {MAX_FILE_BYTES:,} B file cap; "
-                             "it cannot be sent whole, and splitting it would break its re-application")
-        if buf and n + len(s) > MAX_FILE_BYTES:
-            p = os.path.join(out_dir, f"catalog_{len(files):04d}.sql")
-            with open(p, "w", encoding="utf-8") as fh:
-                fh.write("\n".join(buf) + "\n")
-            files.append(p); buf, n = [], 0
-        buf.append(s); n += len(s) + 1
-    if buf:
+    run = uuid.uuid4().hex[:16]
+    cap = MAX_FILE_BYTES - RECEIPT_RESERVE              # every file ends with its receipt (receipt_sql)
+    files, buf, n, scans = [], [], 0, 0
+
+    def _write():
         p = os.path.join(out_dir, f"catalog_{len(files):04d}.sql")
         with open(p, "w", encoding="utf-8") as fh:
-            fh.write("\n".join(buf) + "\n")
+            fh.write("\n".join(buf + [receipt_sql(f"cat-{run}-{len(files):04d}")]) + "\n")
         files.append(p)
+
+    for s in stmts:
+        if len(s) > cap:
+            raise SystemExit(f"FATAL: one statement block is {len(s):,} B, over the {cap:,} B file cap; "
+                             "it cannot be sent whole, and splitting it would break its re-application")
+        s_scans = sum(1 for m in _FTS_WRITE.finditer(s) if m.group(1) == "DELETE FROM")
+        if buf and (n + len(s) > cap or scans + s_scans > FTS_DELETES_PER_FILE):
+            _write()
+            buf, n, scans = [], 0, 0
+        buf.append(s); n += len(s) + 1; scans += s_scans
+    if buf:
+        _write()
     return files
+
+
+# THE FILE'S OWN RECEIPT (review R1313). wrangler 3.114 can exit 1 with "Not currently importing anything" after a
+# file that DID commit (measured 2026-09-30 21:02Z), and that text is also what a rollback leaves - so the output
+# cannot say which. Every emitted file therefore ENDS with a row keyed to that file; the import is one transaction,
+# so the row exists in D1 exactly when the whole file committed, and core.d1_remote.committed_by_receipt reads it
+# back by primary key (1 row) before calling such an exit a success. Rows older than 30 days are pruned by the same
+# statement group, so the table stays a few thousand rows.
+# The key is per FILE here; core.d1_remote.execute_file sends each ATTEMPT as a copy whose key carries a fresh
+# nonce, so a row committed by an earlier send of the same file can never vouch for a later one (review R1314).
+# sync_receipt is a D1-ONLY bookkeeping table (created 2026-09-30): it is not in the local catalogue, the worker
+# never reads it, and a table audit should expect it on econ-catalog and on any shard the sync writes.
+RECEIPT_RESERVE = 400
+
+
+def receipt_sql(key: str) -> str:
+    assert re.fullmatch(r"[A-Za-z0-9_.:-]+", key), key
+    return ("CREATE TABLE IF NOT EXISTS sync_receipt(k TEXT PRIMARY KEY, at TEXT);\n"
+            "DELETE FROM sync_receipt WHERE at < datetime('now', '-30 days');\n"
+            f"INSERT OR REPLACE INTO sync_receipt(k, at) VALUES('{key}', datetime('now'));")
+
+
+def _fts_blocks(rows: list[dict]):
+    """Blocks for the id-list FTS DELETE: up to FTS_DELETE_PER_STMT ids, closed early when the DELETE
+    statement would pass FTS_DELETE_MAX_BYTES, or when the block's whole unit (the DELETE plus its
+    INSERTs) would pass half the file cap - a unit is never split across files (R1185)."""
+    block, del_bytes, unit_bytes = [], 0, 0
+    for r in rows:
+        idb = len(_lit(r["series_id"])) + 1
+        rowb = idb + len(_lit(r.get("title"))) + len(_lit(r.get("geography"))) + 8
+        if block and (len(block) >= FTS_DELETE_PER_STMT or del_bytes + idb > FTS_DELETE_MAX_BYTES
+                      or unit_bytes + rowb > MAX_FILE_BYTES // 2):
+            yield block
+            block, del_bytes, unit_bytes = [], 0, 0
+        block.append(r)
+        del_bytes += idb
+        unit_bytes += rowb
+    if block:
+        yield block
 
 
 def reapplicable(path: str) -> bool:
@@ -362,7 +427,7 @@ def _has_fts_delete(path: str) -> bool:
         return any(m.group(1) == "DELETE FROM" for m in _FTS_WRITE.finditer(fh.read()))
 
 
-def verify_replay(cols: list[str], rows: list[dict], files: list[str]) -> None:
+def verify_replay(cols: list[str], rows: list[dict], files: list[str], fts_ids: set | None = None) -> None:
     """Replay the emitted SQL into a fresh in-memory SQLite and assert row-for-row
     equality with what we intended to send. Broken SQL never reaches remote D1."""
     mem = sqlite3.connect(":memory:")
@@ -390,6 +455,20 @@ def verify_replay(cols: list[str], rows: list[dict], files: list[str]) -> None:
         if hit is None or hit[0] != (r.get("title") if r.get("title") is not None
                                      else None):
             raise SystemExit(f"FATAL: replay lost/altered {r['series_id']}")
+    n_receipts = mem.execute("SELECT count(*) FROM sync_receipt").fetchone()[0] if mem.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='sync_receipt'").fetchone() else 0
+    if n_receipts != len(files):
+        raise SystemExit(f"FATAL: replay found {n_receipts} receipt row(s) for {len(files)} file(s) - every file "
+                         "must end with its own (R1313) - refusing to send")
+    if fts_ids is not None:
+        # the index rows the files write: exactly one per id meant to be rewritten, none for a skipped id
+        got_fts = {}
+        for (sid,) in mem.execute("SELECT series_id FROM series_fts"):
+            got_fts[sid] = got_fts.get(sid, 0) + 1
+        if set(got_fts) != set(fts_ids) or any(v != 1 for v in got_fts.values()):
+            raise SystemExit(f"FATAL: replay wrote index rows for {len(got_fts)} id(s) "
+                             f"(max {max(got_fts.values(), default=0)} each), expected exactly one for each of "
+                             f"{len(fts_ids)} - refusing to send")
     mem.close()
     print(f"  verified: {len(rows)} series rows replay cleanly ({len(files)} file(s))")
 
@@ -580,17 +659,22 @@ def main(argv: list[str] | None = None) -> None:
     except _ManifestBusy as e:
         conn.close()
         raise SystemExit(f"refused: {e}") from None
+    fts_skip: set = set()
     try:
         if a.no_diff:
-            print("  [diff] DISABLED by --no-diff: sending every queued row")
+            print("  [diff] DISABLED by --no-diff: sending every queued row (and every index row)")
             skipped = 0
         else:
             before = len(rows)
             rows, skipped = manifest.split(cols, rows)
+            # index rows D1 already holds exactly (R1308): their FTS delete+insert is left out
+            fts_skip = manifest.fts_current(rows)
+            n_fts = len(rows) - len(fts_skip)
             print(f"  [diff] {skipped:,} of {before:,} row(s) unchanged since the last successful "
-                  f"sync -> not sent; {len(rows):,} to send "
-                  f"({-(-len(rows) // FTS_DELETE_PER_STMT):,} FTS delete statement(s), each a "
-                  f"full scan of series_fts)")
+                  f"sync -> not sent; {len(rows):,} to send, of which {len(fts_skip):,} keep their "
+                  f"index row -> {n_fts:,} index row(s) rewritten in "
+                  f"~{-(-n_fts // FTS_DELETE_PER_STMT):,} FTS delete statement(s), each a full scan of "
+                  f"series_fts and each in its own import file")
             # is_empty(), NOT count() == 0, and the cheap operands FIRST. count() is a full scan of a
             # 2.17 GB file; asked left-to-right on a full-source push (where skipped == 0 and
             # before > 1000 are both true) it ran before either cheap test and stalled the statcan
@@ -643,7 +727,7 @@ def main(argv: list[str] | None = None) -> None:
         groups.setdefault(CATALOG_SHARD_FOR.get(r.get("source_id")), []).append(r)
 
     out_dir = tempfile.mkdtemp(prefix="d1catalog_")
-    plans = []
+    plans, fts_expect = [], {}
     for db, grp in sorted(groups.items(), key=lambda kv: kv[0] or ""):
         sub = os.path.join(out_dir, db or "primary")
         # `conn` so the parent source/license rows ship with the series — without them the
@@ -666,18 +750,23 @@ def main(argv: list[str] | None = None) -> None:
             print(f"  [fts] whole-source reconcile for {a.source}: ONE range DELETE "
                   f"instead of {-(-len(grp) // FTS_DELETE_PER_STMT):,} id-list statements "
                   f"(each is a full scan of series_fts)")
-        plans.append((db, grp, emit_sql(cols, grp, sub, conn, fts_range_source=whole)))
+        grp_skip = frozenset() if whole else frozenset(r["series_id"] for r in grp) & frozenset(fts_skip)
+        fts_expect[db] = {r["series_id"] for r in grp} - grp_skip
+        plans.append((db, grp, emit_sql(cols, grp, sub, conn, fts_range_source=whole, fts_skip=grp_skip)))
     conn.close()
     for db, grp, files in plans:
         if db:
             print(f"  [shard] {len(grp)} row(s) route to {db}")
-        verify_replay(cols, grp, files)
+        verify_replay(cols, grp, files, fts_ids=fts_expect[db])
     if a.dry_run:
         manifest.close()
         for _, _, files in plans:
             for p in files:
                 print("  (dry-run)", p)
         return
+    # Index rows this run rewrites are UNKNOWN until it succeeds (R1312 finding 7): a run that dies after
+    # some files may already have replaced them in D1, and the old record must not vouch for them.
+    manifest.forget_fts(sorted(set().union(*fts_expect.values())) if fts_expect else [])
     execute_plans(plans)
     if not a.source and not a.keep_pending:
         path = a.ids_file or PENDING

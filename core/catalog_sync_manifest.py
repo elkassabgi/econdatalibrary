@@ -31,6 +31,16 @@ ambiguity — but if a source's shard assignment is ever CHANGED, its rows are u
 content and would be skipped, leaving them in the old database and absent from the new one.
 Any edit to CATALOG_SHARD_FOR must therefore be followed by a `--no-diff` reconcile of the
 moved source (`--source <id> --no-diff`), which re-sends it to its new home.
+
+SECOND KNOWN HAZARD, since fts_hash (2026-09-30, review R1312 finding 3). The sync now leaves a row's
+index row alone when its recorded fts_hash says D1 already holds it. Before, any changed row rewrote its
+index row, so an index row lost some other way came back at the row's next change; now a date-only change
+does not bring it back. Every writer of D1's series_fts OUTSIDE this sync can make the record wrong:
+tools/delist_timeless_tables.py (deletes index rows, no manifest reference), a gate purge, a shard move, and
+any FTS rebuild or restore. After any of them, clear the record for the range it touched -
+`UPDATE sent SET fts_hash = NULL WHERE series_id >= '<src>:' AND series_id < '<src>;'` - or run a
+`--source <id> --no-diff` reconcile. Unknown is always safe: it costs one index rewrite per row, never a
+missing one.
 """
 from __future__ import annotations
 
@@ -41,9 +51,19 @@ import sqlite3
 _DDL = """
 CREATE TABLE IF NOT EXISTS sent(
   series_id TEXT PRIMARY KEY,
-  row_hash  TEXT NOT NULL
+  row_hash  TEXT NOT NULL,
+  fts_hash  TEXT
 );
 """
+
+# THE INDEX ROW'S OWN HASH (2026-09-30, R1308). row_hash changes whenever ANY column changes - a new
+# end_date on every refresh - and each changed row used to cost an FTS delete+insert, i.e. a share of a
+# full scan of series_fts. The index row is only (series_id, title, geography), so its own hash tells the
+# sync when it may leave the index alone. NULL = unknown: every entry written before this column existed,
+# and every entry --seed-manifest writes (seeding asserts D1 holds the SERIES rows; nobody measured the
+# index rows, and D1's index has carried duplicates before - R482). Unknown is treated as changed, so the
+# first real send of such a row still rewrites its index row, and records the hash only then.
+FTS_COLS = ("series_id", "title", "geography")
 
 
 def default_path(root: str) -> str:
@@ -67,6 +87,15 @@ def row_hash(cols: list[str], row: dict) -> str:
         h.update(b"\xff" if v is None else str(v).encode("utf-8"))
         h.update(b"\x01")
     return h.hexdigest()
+
+
+def fts_hash(row: dict, bound_to: str) -> str:
+    """Hash of the index row the sync writes for this series - (series_id, title, geography) - BOUND to the
+    row_hash recorded beside it. The binding is what makes a stale value detectable (review R1312 finding 4):
+    code from before this column (a rollback, an un-pulled checkout) rewrites row_hash and leaves fts_hash
+    alone, and a bare content hash would then vouch for an index row that code may have replaced. Bound to the
+    old row_hash, it no longer matches, so the entry reads as unknown."""
+    return row_hash(list(FTS_COLS) + ["\x00row_hash"], {**row, "\x00row_hash": bound_to})
 
 
 class ManifestBusy(RuntimeError):
@@ -98,13 +127,26 @@ class Manifest:
             else:
                 self.db = sqlite3.connect(":memory:")
                 self.db.executescript(_DDL)
+            self._has_fts = self._fts_column()      # a pre-column manifest is read as "all unknown"
             return
         os.makedirs(os.path.dirname(path), exist_ok=True)
         self.db = sqlite3.connect(path, timeout=300.0)
         self.db.execute("PRAGMA busy_timeout = 300000")
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(_DDL)
+        if not self._fts_column():
+            # ADD COLUMN with no default rewrites nothing: SQLite only edits the schema, so this is O(1)
+            # on the 2.2 GB file, and every existing entry reads NULL (= unknown, see FTS_COLS).
+            try:
+                self.db.execute("ALTER TABLE sent ADD COLUMN fts_hash TEXT")
+            except sqlite3.OperationalError as e:        # a second writer migrated it first (R1312 finding 7)
+                if "duplicate column" not in str(e).lower():
+                    raise
         self.db.commit()
+        self._has_fts = True
+
+    def _fts_column(self) -> bool:
+        return any(r[1] == "fts_hash" for r in self.db.execute("PRAGMA table_info(sent)"))
 
     def _fingerprint(self):
         s = os.stat(self.path)
@@ -165,11 +207,49 @@ class Manifest:
                 send.append(r)
         return send, skipped
 
-    def record(self, cols: list[str], rows: list[dict]) -> int:
-        self.db.executemany(
-            "INSERT INTO sent(series_id,row_hash) VALUES(?,?) "
-            "ON CONFLICT(series_id) DO UPDATE SET row_hash=excluded.row_hash",
-            [(r["series_id"], row_hash(cols, r)) for r in rows])
+    def fts_current(self, rows: list[dict]) -> set:
+        """series_ids whose RECORDED index-row hash equals the row's current one: D1's index row for them is
+        already exactly what the sync would write, so it may skip their FTS delete+insert. NULL (unknown)
+        never matches. Empty for a manifest from before the column existed."""
+        if not rows or not self._has_fts:
+            return set()
+        known = {}
+        CH = 900
+        ids = [r["series_id"] for r in rows]
+        for i in range(0, len(ids), CH):
+            part = ids[i:i + CH]
+            q = ",".join("?" * len(part))
+            for sid, rh, fh in self.db.execute(
+                    f"SELECT series_id, row_hash, fts_hash FROM sent WHERE series_id IN ({q}) "
+                    f"AND fts_hash IS NOT NULL", part):
+                known[sid] = (rh, fh)
+        return {r["series_id"] for r in rows
+                if r["series_id"] in known
+                and known[r["series_id"]][1] == fts_hash(r, known[r["series_id"]][0])}
+
+    def forget_fts(self, ids: list[str]) -> None:
+        """Mark these ids' index rows UNKNOWN before a real send rewrites them (review R1312 finding 7): a run
+        that dies partway may already have changed D1's index row while the manifest still vouches for the old
+        one. record() sets them again only after success."""
+        for i in range(0, len(ids), 900):
+            part = ids[i:i + 900]
+            self.db.execute(f"UPDATE sent SET fts_hash=NULL WHERE series_id IN ({','.join('?' * len(part))})", part)
+        self.db.commit()
+
+    def record(self, cols: list[str], rows: list[dict], fts_sent: bool = True) -> int:
+        """Record rows as sent. fts_sent=True (a real sync that wrote their index rows, or knew them current):
+        the index-row hash is recorded too. False (--seed-manifest): the index-row hash is left UNKNOWN,
+        and an existing one is cleared, because nothing checked D1's index for these rows."""
+        if fts_sent:
+            self.db.executemany(
+                "INSERT INTO sent(series_id,row_hash,fts_hash) VALUES(?,?,?) "
+                "ON CONFLICT(series_id) DO UPDATE SET row_hash=excluded.row_hash, fts_hash=excluded.fts_hash",
+                [(r["series_id"], rh, fts_hash(r, rh)) for r in rows for rh in (row_hash(cols, r),)])
+        else:
+            self.db.executemany(
+                "INSERT INTO sent(series_id,row_hash,fts_hash) VALUES(?,?,NULL) "
+                "ON CONFLICT(series_id) DO UPDATE SET row_hash=excluded.row_hash, fts_hash=NULL",
+                [(r["series_id"], row_hash(cols, r)) for r in rows])
         self.db.commit()
         return len(rows)
 
@@ -183,5 +263,5 @@ class Manifest:
             if not chunk:
                 break
             rows = [dict(zip(cols, r)) for r in chunk]
-            n += self.record(cols, rows)
+            n += self.record(cols, rows, fts_sent=False)
         return n

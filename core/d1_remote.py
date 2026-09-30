@@ -194,6 +194,74 @@ def _last_line(text: str) -> str:
     return (rest or lines or [""])[-1]
 
 
+_NOT_IMPORTING = "Not currently importing anything"
+# A file may END with a receipt row (core/sync_catalog_d1.receipt_sql): the import is one transaction, so the row
+# exists in D1 exactly when the whole file committed.
+_RECEIPT = re.compile(r"INSERT OR REPLACE INTO sync_receipt\(k, at\) VALUES\('([A-Za-z0-9_.:-]+)'")
+
+
+def receipt_key(path: str) -> str | None:
+    with open(path, encoding="utf-8") as fh:
+        m = _RECEIPT.findall(fh.read())
+    return m[-1] if m else None
+
+
+def _attempt_copy(path: str) -> str:
+    """A copy of `path` whose receipt key carries a fresh per-SEND nonce (review R1314). A key fixed per FILE lets
+    the receipt of an EARLIER commit of the same file vouch for a later send that rolled back - measured offline:
+    a whole-source restart re-sent the DELETE file, it rolled back with the ambiguous text, the stale receipt said
+    done, and the bare-INSERT file after it duplicated 80 index rows. A file without a receipt is sent as is."""
+    import uuid                                                                 # noqa: PLC0415
+    try:
+        # newline="" on BOTH sides: the copy is byte-identical to what the emitter wrote except for the key
+        # (review R1315 finding 2 - a universal-newline read turned CRLF files into LF copies)
+        with open(path, encoding="utf-8", newline="") as fh:
+            body = fh.read()
+    except (OSError, UnicodeDecodeError):
+        return path        # unreadable here: sent as is, wrangler reports its own error (R1315: many callers' files)
+    keys = _RECEIPT.findall(body)
+    if not keys:
+        return path
+    key = keys[-1]
+    nonce = uuid.uuid4().hex[:12]
+    old = f"VALUES('{key}',"
+    assert body.count(old) == 1, f"{path}: receipt key {key!r} appears {body.count(old)} times"
+    send = f"{path}.a{nonce}.sql"
+    try:
+        with open(send, "w", encoding="utf-8", newline="") as fh:
+            fh.write(body.replace(old, f"VALUES('{key}.a{nonce}',"))
+    except OSError as e:                     # disk full, permission: no partial copy left behind (R1315 finding 1)
+        _drop_copy(send, path)
+        raise RuntimeError(f"could not write the per-send copy {send}: {e}") from None
+    return send
+
+
+def _drop_copy(send: str, path: str) -> None:
+    if send != path:
+        try:
+            os.remove(send)
+        except OSError:
+            pass
+
+
+def committed_by_receipt(database: str, path: str, output: str) -> bool:
+    """wrangler 3.114 can end a poll loop with "Not currently importing anything" and exit 1 (measured
+    2026-09-30 21:02Z: a 105-statement file that HAD applied - its 1,000 index rows came back with fresh rowids).
+    That text follows a commit AND a rollback alike, and wrangler's "Processed N queries" is printed BEFORE the
+    commit (review R1313), so neither proves anything. The file's own receipt row does: one primary-key read.
+    True only for that exact error, a file that carries a receipt, and a receipt row that reads back."""
+    if _NOT_IMPORTING not in (output or ""):
+        return False
+    key = receipt_key(path)
+    if key is None:
+        return False
+    try:
+        got = run_json(database, f"SELECT k FROM sync_receipt WHERE k = '{key}'", timeout=300)
+    except Exception:                                                    # noqa: BLE001 - cannot confirm = not done
+        return False
+    return any(r.get("k") == key for part in got for r in (part.get("results") or []))
+
+
 def execute_file(database: str, path: str, *, timeout: int = 3600, tries: int = 1, retry_timeouts: bool = False,
                  on_retry=None, json_out: bool = False):
     """`wrangler d1 execute <db> --remote --file <path> --yes` - the bulk loaders' road. Refuses after T0.
@@ -217,8 +285,10 @@ def execute_file(database: str, path: str, *, timeout: int = 3600, tries: int = 
     why, unreachable, out, err_text = "", False, "", ""
     for attempt in range(max(1, tries)):
         timed_out = False
+        send = path
         try:
-            r = _wrangler(["d1", "execute", database, "--remote", "--yes", f"--file={os.path.abspath(path)}"]
+            send = _attempt_copy(path)      # a per-SEND receipt key (R1314); `path` itself when it has none
+            r = _wrangler(["d1", "execute", database, "--remote", "--yes", f"--file={os.path.abspath(send)}"]
                           + (["--json"] if json_out else []), timeout=timeout, retries=0)
         except D1Unreachable as e:
             why, unreachable, timed_out = str(e), True, "timed out" in str(e)
@@ -226,7 +296,13 @@ def execute_file(database: str, path: str, *, timeout: int = 3600, tries: int = 
             if r.returncode == 0:
                 return statement_results(r.stdout or "") if json_out else (r.stdout or "")
             out, err_text, unreachable = r.stdout or "", r.stderr or "", False
+            # only a per-SEND (nonced) key may confirm a send: when the copy was skipped (the file could not be
+            # read here) the file's own key could be an earlier send's (review round 5 residual)
+            if not json_out and send != path and committed_by_receipt(database, send, out + "\n" + err_text):
+                return out
             why = f"exit {r.returncode}: {_last_line(err_text) or _last_line(out)}"
+        finally:
+            _drop_copy(send, path)
         if attempt < tries - 1 and not (timed_out and not retry_timeouts):
             if on_retry:
                 on_retry(attempt + 1, why)
