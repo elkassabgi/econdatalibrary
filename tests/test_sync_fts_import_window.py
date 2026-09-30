@@ -182,8 +182,12 @@ def world(tmp_path, monkeypatch):
         sent["skip"] = set(kw.get("fts_skip") or ())
         return []
     monkeypatch.setattr(sc, "emit_sql", record)
-    monkeypatch.setattr(sc, "verify_replay", lambda *a, **k: None)
+
+    def replay(cols, grp, files, **kw):
+        sent["fts_ids"] = kw.get("fts_ids")
+    monkeypatch.setattr(sc, "verify_replay", replay)
     monkeypatch.setattr(sc, "execute_remote", lambda *a, **k: None)
+    sent["db"], sent["manifest"] = db, manifest
     return str(ids), sent
 
 
@@ -199,3 +203,120 @@ def test_control_no_diff_rewrites_every_index_row(world):
     ids, sent = world
     sc.main(["--ids-file", ids, "--dry-run", "--no-diff"])
     assert sent["skip"] == set()
+
+
+def test_main_checks_the_replay_against_the_index_rows_it_means_to_write(world):
+    """R1312 mutant M2: main must hand verify_replay the ids whose index rows it rewrites."""
+    ids, sent = world
+    sc.main(["--ids-file", ids, "--dry-run"])
+    assert sent["fts_ids"] == {"src:K00001"}
+
+
+def test_the_whole_source_range_path_rewrites_every_index_row_even_when_some_are_current(world):
+    """R1312 mutant M1: with --source, every row changed (skipped == 0) takes the range form, which deletes the
+    source's whole index - so no row may be skipped, although two of them are index-current."""
+    ids, sent = world
+    con = sqlite3.connect(sent["db"])
+    con.execute("UPDATE series SET end_date='2026-12-31' WHERE series_id='src:K00002'")
+    con.commit()
+    con.close()
+    sc.main(["--source", "src", "--dry-run"])
+    assert sorted(sent["rows"]) == ["src:K00000", "src:K00001", "src:K00002"]
+    assert sent["skip"] == set()
+    assert sent["fts_ids"] == {"src:K00000", "src:K00001", "src:K00002"}
+
+
+def test_a_real_run_forgets_the_index_rows_it_rewrites_before_sending(world, monkeypatch):
+    """R1312 finding 7: if the send dies partway, the rewritten rows' index hashes must read UNKNOWN (NULL), not the
+    old vouched value; the index-current row keeps its hash."""
+    ids, sent = world
+
+    def die(*a, **k):
+        raise SystemExit("simulated import failure")
+    monkeypatch.setattr(sc, "execute_plans", die)
+    with pytest.raises(SystemExit, match="simulated"):
+        sc.main(["--ids-file", ids])
+    got = dict(sqlite3.connect(sent["manifest"]).execute("SELECT series_id, fts_hash IS NULL FROM sent"))
+    assert got == {"src:K00000": 0, "src:K00001": 1, "src:K00002": 0}
+
+
+def test_a_row_hash_rewritten_by_pre_column_code_voids_the_index_hash(tmp_path):
+    """R1312 finding 4: code from before the column (a rollback) rewrites row_hash only. The index hash is bound to
+    the row_hash it was recorded with, so it stops vouching instead of approving an index row that code replaced."""
+    m = Manifest(str(tmp_path / "sent.db"))
+    rows = _rows("boc", 1)
+    m.record(COLS, rows)
+    assert m.fts_current(rows) == {rows[0]["series_id"]}           # control: a fresh record vouches
+    m.db.execute("UPDATE sent SET row_hash='written-by-old-code'")  # what the old record() does
+    m.db.commit()
+    assert m.fts_current(rows) == set()
+    m.close()
+
+
+# ---- a complete import that wrangler reports as failed -----------------------------------------------------------
+
+def _file_of(tmp_path, n):
+    p = tmp_path / "f.sql"
+    p.write_text("".join(f"INSERT OR REPLACE INTO t(a) VALUES\n  ({i});\n" for i in range(n)), encoding="utf-8")
+    return str(p)
+
+
+def _fake_wrangler(monkeypatch, stdout, rc=1):
+    from core import d1_remote
+    calls = []
+
+    def run(args, **kw):
+        calls.append(args)
+        return type("R", (), {"returncode": rc, "stdout": stdout, "stderr": ""})()
+    monkeypatch.setattr(d1_remote, "_wrangler", run)
+    monkeypatch.setattr(d1_remote, "is_cut_over", lambda: False)
+    return d1_remote, calls
+
+
+POLL_GONE = ("\U0001f300 Starting import...\n\U0001f300 Processed {n} queries.\n"
+             '{{"error": {{"text": "Not currently importing anything."}}}}\n')
+
+
+def test_a_complete_import_reported_as_failed_counts_as_done_and_is_not_retried(tmp_path, monkeypatch):
+    """Measured 2026-09-30 21:02Z: 105/105 statements processed, then 'Not currently importing anything', exit 1 -
+    and the file HAD applied (fresh rowids). It must count as done, with no re-application."""
+    p = _file_of(tmp_path, 7)
+    d1_remote, calls = _fake_wrangler(monkeypatch, POLL_GONE.format(n=7))
+    d1_remote.execute_file("econ-catalog", p, tries=4, retry_timeouts=True)
+    assert len(calls) == 1
+
+
+def test_a_partial_count_is_still_a_failure(tmp_path, monkeypatch):
+    p = _file_of(tmp_path, 7)
+    d1_remote, calls = _fake_wrangler(monkeypatch, POLL_GONE.format(n=6))
+    with pytest.raises(RuntimeError):
+        d1_remote.execute_file("econ-catalog", p, tries=2)
+    assert len(calls) == 2
+
+
+def test_any_other_failure_is_still_a_failure(tmp_path, monkeypatch):
+    p = _file_of(tmp_path, 7)
+    d1_remote, _ = _fake_wrangler(monkeypatch, "Processed 7 queries.\nX [ERROR] Cancelled due to no poll() received in "
+                                               "15000ms.\n")
+    with pytest.raises(RuntimeError):
+        d1_remote.execute_file("econ-catalog", p, tries=1)
+
+
+def test_statement_count_follows_sqlite_not_semicolons(tmp_path):
+    from core import d1_remote
+    p = tmp_path / "s.sql"
+    p.write_text("INSERT INTO t VALUES('a;b');\nINSERT INTO t VALUES\n  (1),\n  (2);\n", encoding="utf-8")
+    assert d1_remote.statement_count(str(p)) == 2
+
+
+def test_a_second_writer_migrating_first_is_not_an_error(tmp_path, monkeypatch):
+    """R1312 finding 7: two new-code writers opening a pre-column manifest together - the loser's ALTER sees a
+    duplicate column and carries on."""
+    p = str(tmp_path / "old.db")
+    con = sqlite3.connect(p)
+    con.execute("CREATE TABLE sent(series_id TEXT PRIMARY KEY, row_hash TEXT NOT NULL)")
+    con.commit()
+    con.close()
+    monkeypatch.setattr(Manifest, "_fts_column", lambda self: False)   # it looked before the other writer
+    Manifest(p).close()
+    Manifest(p).close()                                                 # its ALTER now hits the column

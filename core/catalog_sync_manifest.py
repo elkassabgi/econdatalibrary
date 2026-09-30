@@ -31,6 +31,16 @@ ambiguity — but if a source's shard assignment is ever CHANGED, its rows are u
 content and would be skipped, leaving them in the old database and absent from the new one.
 Any edit to CATALOG_SHARD_FOR must therefore be followed by a `--no-diff` reconcile of the
 moved source (`--source <id> --no-diff`), which re-sends it to its new home.
+
+SECOND KNOWN HAZARD, since fts_hash (2026-09-30, review R1312 finding 3). The sync now leaves a row's
+index row alone when its recorded fts_hash says D1 already holds it. Before, any changed row rewrote its
+index row, so an index row lost some other way came back at the row's next change; now a date-only change
+does not bring it back. Every writer of D1's series_fts OUTSIDE this sync can make the record wrong:
+tools/delist_timeless_tables.py (deletes index rows, no manifest reference), a gate purge, a shard move, and
+any FTS rebuild or restore. After any of them, clear the record for the range it touched -
+`UPDATE sent SET fts_hash = NULL WHERE series_id >= '<src>:' AND series_id < '<src>;'` - or run a
+`--source <id> --no-diff` reconcile. Unknown is always safe: it costs one index rewrite per row, never a
+missing one.
 """
 from __future__ import annotations
 
@@ -79,9 +89,13 @@ def row_hash(cols: list[str], row: dict) -> str:
     return h.hexdigest()
 
 
-def fts_hash(row: dict) -> str:
-    """Hash of the index row the sync writes for this series: (series_id, title, geography)."""
-    return row_hash(list(FTS_COLS), row)
+def fts_hash(row: dict, bound_to: str) -> str:
+    """Hash of the index row the sync writes for this series - (series_id, title, geography) - BOUND to the
+    row_hash recorded beside it. The binding is what makes a stale value detectable (review R1312 finding 4):
+    code from before this column (a rollback, an un-pulled checkout) rewrites row_hash and leaves fts_hash
+    alone, and a bare content hash would then vouch for an index row that code may have replaced. Bound to the
+    old row_hash, it no longer matches, so the entry reads as unknown."""
+    return row_hash(list(FTS_COLS) + ["\x00row_hash"], {**row, "\x00row_hash": bound_to})
 
 
 class ManifestBusy(RuntimeError):
@@ -123,7 +137,11 @@ class Manifest:
         if not self._fts_column():
             # ADD COLUMN with no default rewrites nothing: SQLite only edits the schema, so this is O(1)
             # on the 2.2 GB file, and every existing entry reads NULL (= unknown, see FTS_COLS).
-            self.db.execute("ALTER TABLE sent ADD COLUMN fts_hash TEXT")
+            try:
+                self.db.execute("ALTER TABLE sent ADD COLUMN fts_hash TEXT")
+            except sqlite3.OperationalError as e:        # a second writer migrated it first (R1312 finding 7)
+                if "duplicate column" not in str(e).lower():
+                    raise
         self.db.commit()
         self._has_fts = True
 
@@ -201,10 +219,22 @@ class Manifest:
         for i in range(0, len(ids), CH):
             part = ids[i:i + CH]
             q = ",".join("?" * len(part))
-            for sid, h in self.db.execute(
-                    f"SELECT series_id, fts_hash FROM sent WHERE series_id IN ({q}) AND fts_hash IS NOT NULL", part):
-                known[sid] = h
-        return {r["series_id"] for r in rows if known.get(r["series_id"]) == fts_hash(r)}
+            for sid, rh, fh in self.db.execute(
+                    f"SELECT series_id, row_hash, fts_hash FROM sent WHERE series_id IN ({q}) "
+                    f"AND fts_hash IS NOT NULL", part):
+                known[sid] = (rh, fh)
+        return {r["series_id"] for r in rows
+                if r["series_id"] in known
+                and known[r["series_id"]][1] == fts_hash(r, known[r["series_id"]][0])}
+
+    def forget_fts(self, ids: list[str]) -> None:
+        """Mark these ids' index rows UNKNOWN before a real send rewrites them (review R1312 finding 7): a run
+        that dies partway may already have changed D1's index row while the manifest still vouches for the old
+        one. record() sets them again only after success."""
+        for i in range(0, len(ids), 900):
+            part = ids[i:i + 900]
+            self.db.execute(f"UPDATE sent SET fts_hash=NULL WHERE series_id IN ({','.join('?' * len(part))})", part)
+        self.db.commit()
 
     def record(self, cols: list[str], rows: list[dict], fts_sent: bool = True) -> int:
         """Record rows as sent. fts_sent=True (a real sync that wrote their index rows, or knew them current):
@@ -214,7 +244,7 @@ class Manifest:
             self.db.executemany(
                 "INSERT INTO sent(series_id,row_hash,fts_hash) VALUES(?,?,?) "
                 "ON CONFLICT(series_id) DO UPDATE SET row_hash=excluded.row_hash, fts_hash=excluded.fts_hash",
-                [(r["series_id"], row_hash(cols, r), fts_hash(r)) for r in rows])
+                [(r["series_id"], rh, fts_hash(r, rh)) for r in rows for rh in (row_hash(cols, r),)])
         else:
             self.db.executemany(
                 "INSERT INTO sent(series_id,row_hash,fts_hash) VALUES(?,?,NULL) "

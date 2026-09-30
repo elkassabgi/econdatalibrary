@@ -194,6 +194,36 @@ def _last_line(text: str) -> str:
     return (rest or lines or [""])[-1]
 
 
+_NOT_IMPORTING = "Not currently importing anything"
+_PROCESSED = re.compile(r"Processed ([\d,]+) quer")
+
+
+def statement_count(path: str) -> int:
+    """Complete SQL statements in a file, as SQLite itself delimits them (sqlite3.complete_statement)."""
+    import sqlite3                                                              # noqa: PLC0415
+    n, buf = 0, ""
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            buf += line
+            if sqlite3.complete_statement(buf):
+                n, buf = n + 1, ""
+    return n
+
+
+def completed_despite_poll_error(path: str, output: str) -> bool:
+    """wrangler 3.114 can report a COMPLETE import as a failure: the server answers one poll with
+    "Processed N queries" and the NEXT poll with "Not currently importing anything" (the import already ended),
+    and wrangler exits 1. MEASURED 2026-09-30 21:02Z (R1312 follow-up): a 105-statement file failed that way,
+    and its 1,000 FTS rows came back with fresh rowids 10,883,682-10,884,681 above every older row - it had
+    applied in full. A retry re-applies such a file (a full scan each time for an FTS file) and may fail the
+    same way again. So the file counts as done ONLY when that exact error AND wrangler's own last "Processed N"
+    equals the file's real statement count; any other failure stays a failure."""
+    if _NOT_IMPORTING not in (output or ""):
+        return False
+    m = _PROCESSED.findall(output)
+    return bool(m) and int(m[-1].replace(",", "")) == statement_count(path)
+
+
 def execute_file(database: str, path: str, *, timeout: int = 3600, tries: int = 1, retry_timeouts: bool = False,
                  on_retry=None, json_out: bool = False):
     """`wrangler d1 execute <db> --remote --file <path> --yes` - the bulk loaders' road. Refuses after T0.
@@ -226,6 +256,9 @@ def execute_file(database: str, path: str, *, timeout: int = 3600, tries: int = 
             if r.returncode == 0:
                 return statement_results(r.stdout or "") if json_out else (r.stdout or "")
             out, err_text, unreachable = r.stdout or "", r.stderr or "", False
+            if not json_out and completed_despite_poll_error(path, out + "\n" + err_text):
+                return out
+
             why = f"exit {r.returncode}: {_last_line(err_text) or _last_line(out)}"
         if attempt < tries - 1 and not (timed_out and not retry_timeouts):
             if on_retry:

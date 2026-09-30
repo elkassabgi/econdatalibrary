@@ -61,17 +61,19 @@ from core.sync_state_d1 import (CATALOG_SHARD_FOR, MAX_FILE_BYTES,  # noqa: E402
 # Anyone pricing a batch off the stale number over-estimates by 2.30x -- safe, but it is how a
 # cheap path gets refused as expensive. Re-measure after any FTS rebuild; do not trust this line.
 #
-# RAISED 500 -> 1,000, WITH A BYTE CAP (2026-09-30, R1308). Measured that night through the import
-# road (core.d1_remote.execute_file, ids that cannot exist): 500 ids / 21 KB and 1,000 ids / 42 KB
-# each read 10,816,861 rows in ~16.8 s - the same one scan - while 2,000 ids / 84 KB failed twice
-# with APIError 7009 at import start. So a block closes at 1,000 ids OR FTS_DELETE_MAX_BYTES of
-# statement, whichever comes first (long ids reach the byte cap sooner).
+# RAISED 500 -> 1,000, WITH A BYTE CAP (2026-09-30, R1308/R1312). Measured through the import road
+# (core.d1_remote.execute_file, one DELETE of ids that cannot exist): 500 ids / 21 KB, 1,000 / 42 KB,
+# 1,047 / 44 KB and 1,999 / 84 KB each read 10,816,861 rows in 16.8-19.4 s - the SAME one scan, so the
+# id count does not change the cost. Two earlier 2,000-id attempts failed with APIError 7009 at import
+# start, but the 1,999-id retry passed: that 7009 was TRANSIENT, not a size limit. The 45 KB cap is a
+# precaution inside the measured-ok range, not a measured limit.
 FTS_DELETE_PER_STMT = 1000
 FTS_DELETE_MAX_BYTES = 45_000
 # ONE FTS id-list DELETE PER IMPORT FILE (R1308). The yale_epi sync's catalog_0002.sql held 8 of them
-# (~8 x 12.7-16.8 s of full scans in one import) and wrangler 3.114's import was cancelled 4 times
-# with "no poll() received in 15000ms"; a file with ONE such scan (16.8 s) imported fine. The file
-# splitter in emit_sql therefore starts a new file before a second FTS DELETE.
+# and wrangler 3.114's import was cancelled 4 times with "no poll() received in 15000ms". A single
+# statement of 16.8-19.4 s passes, so 15 s is NOT a per-statement limit and the real mechanism is not
+# known; files of 2-7 scans were never measured. One per file is the shape measured to pass - see the
+# real-shape measurement recorded with this change - so the splitter starts a new file before a second.
 FTS_DELETES_PER_FILE = 1
 
 
@@ -732,6 +734,9 @@ def main(argv: list[str] | None = None) -> None:
             for p in files:
                 print("  (dry-run)", p)
         return
+    # Index rows this run rewrites are UNKNOWN until it succeeds (R1312 finding 7): a run that dies after
+    # some files may already have replaced them in D1, and the old record must not vouch for them.
+    manifest.forget_fts(sorted(set().union(*fts_expect.values())) if fts_expect else [])
     execute_plans(plans)
     if not a.source and not a.keep_pending:
         path = a.ids_file or PENDING
