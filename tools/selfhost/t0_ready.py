@@ -28,6 +28,10 @@ Each check is mechanical and names what fails:
                      sec_edgar) has a local writer (LOCAL_FRESHNESS_WRITERS). D1 is frozen after T0, and the
                      catalogue copy is not their truth (R737), so without one their data_through reads null
                      and their state stops moving (R1191)
+  statcan-lane      when the registry serves statcan by jobs/statcan_lane.py, that lane declares POST_T0_READY =
+                    True: until its self-hosted backend and writer lock exist it refuses after T0, and statcan
+                    would have no update path at all. Flipping it also requires the post-T0 readers
+                    (guard_heartbeat.check_url, /v1/guard-heartbeat) to report the lane
   flag              the flag does not exist yet (information: a READY with the flag present is a late check)
 Nothing here writes anything.
 """
@@ -352,6 +356,29 @@ def served_stats(store=None) -> tuple[bool, str]:
     return True, f"present (as_of {body.get('as_of')})"
 
 
+def statcan_lane(lane_path=None, registry_sources=None) -> tuple[bool, str]:
+    """statcan's ONLY update path is jobs/statcan_lane.py when the registry says served_by: lane, and that lane
+    refuses after T0 until its self-hosted backend and writer lock are designed (its POST_T0_READY). Read by
+    PARSING the lane, never importing it (its import pins nothing, but a check must not run job code)."""
+    if registry_sources is None:
+        sys.path.insert(0, ROOT)
+        from updater import registry
+        registry_sources = registry.load().get("sources", [])
+    if not any(e.get("source_id") == "statcan" and e.get("served_by") == "lane" for e in registry_sources):
+        return True, "statcan is not served by the lane"
+    lane_path = lane_path or os.path.join(ROOT, "jobs", "statcan_lane.py")
+    with open(lane_path, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    vals = [n.value for n in tree.body if isinstance(n, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "POST_T0_READY" for t in n.targets)]
+    if len(vals) != 1 or not isinstance(vals[0], ast.Constant) or not isinstance(vals[0].value, bool):
+        return False, "jobs/statcan_lane.py has no single literal POST_T0_READY = True/False - cannot tell"
+    if not vals[0].value:
+        return False, ("jobs/statcan_lane.py is pre-T0 only (POST_T0_READY = False): after T0 it refuses and "
+                       "statcan has no update path - design its self-hosted backend and writer lock first")
+    return True, "the statcan lane declares itself post-T0 ready"
+
+
 def flag() -> tuple[bool, str]:
     from core import cutover
     return (not cutover.is_cut_over()), ("not set yet" if not cutover.is_cut_over() else "ALREADY SET")
@@ -361,7 +388,8 @@ CHECKS = [("legacy-catalogue", legacy_catalogue), ("legacy-remote-d1", legacy_re
           ("launcher", launcher), ("preflight", preflight), ("ci-writers", ci_writers),
           ("ci-drained", ci_drained), ("thirteen-f", thirteen_f),
           ("edge-state", edge_state), ("state-db", state_db), ("d1-only-sources", d1_only_sources),
-          ("heartbeat-reader", heartbeat_reader), ("served-stats", served_stats), ("flag", flag)]
+          ("heartbeat-reader", heartbeat_reader), ("served-stats", served_stats), ("statcan-lane", statcan_lane),
+          ("flag", flag)]
 
 
 def main() -> int:
