@@ -289,7 +289,7 @@ def emit_sql(state_db: str, out_dir: str, gated: set[str] | None = None, catalog
         if not buf:
             return
         p = os.path.join(out_dir, f"state_delta_{part:03d}.sql")
-        with open(p, "w", encoding="utf-8") as fh:
+        with open(p, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(header + "\n".join(buf) + "\n")
         files.append(p)
         part, buf, bb = part + 1, [], 0
@@ -319,7 +319,7 @@ def verify_replay(state_db: str, files: list[str], counts: dict[str, int],
     try:
         for _pass in (1, 2):
             for p in files:
-                with open(p, encoding="utf-8") as fh:
+                with open(p, encoding="utf-8", newline="") as fh:
                     mem.executescript(fh.read())
         for table in TABLES:
             cols, pk, _ = _table_shape(src, table)

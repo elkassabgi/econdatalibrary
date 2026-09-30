@@ -96,7 +96,7 @@ def main(argv: list[str]) -> None:
         if not buf:
             return
         p = os.path.join(OUT_DIR, f"part_{part:03d}.sql")
-        with open(p, "w", encoding="utf-8") as fh:
+        with open(p, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(header + "\n".join(buf) + "\n")
         files.append(p)
         part, buf, bb = part + 1, [], 0
@@ -119,7 +119,7 @@ def main(argv: list[str]) -> None:
     # no prior series_fts rows -> a plain INSERT cannot create duplicates. (To
     # RE-apply an already-indexed source, first DELETE its series_fts rows.)
     fts = os.path.join(OUT_DIR, "_fts_rebuild.sql")
-    with open(fts, "w", encoding="utf-8") as fh:
+    with open(fts, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("-- INCREMENTAL series_fts refresh, per source. Run AFTER part_*.sql.\n")
         fh.write("-- Full DELETE+rebuild times out on D1 past ~1.1M rows. We DELETE-then-INSERT\n")
         fh.write("-- per source (idempotent) because a source may ALREADY be in D1/FTS with raw\n")
@@ -137,7 +137,7 @@ def main(argv: list[str]) -> None:
     mem = sqlite3.connect(":memory:")
     mem.execute(f"CREATE TABLE series ({', '.join(c+' TEXT' for c in COLS)}, PRIMARY KEY(series_id))")
     for p in files:
-        mem.executescript(open(p, encoding="utf-8").read())
+        mem.executescript(open(p, encoding="utf-8", newline="").read())
     n = mem.execute("SELECT COUNT(*) FROM series").fetchone()[0]
     mem.close()
     flag = "PASS" if n == len(rows) else f"FAIL ({n} != {len(rows)})"

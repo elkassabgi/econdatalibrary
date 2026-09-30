@@ -70,7 +70,7 @@ def emit() -> None:
         if not buf:
             return
         p = os.path.join(OUT_DIR, f"noaa_{len(files):05d}.sql")
-        with open(p, "w", encoding="utf-8") as fh:
+        with open(p, "w", encoding="utf-8", newline="\n") as fh:
             fh.write("\n".join(buf))
         files.append(p)
         buf, n = [], 0

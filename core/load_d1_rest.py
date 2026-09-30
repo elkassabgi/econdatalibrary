@@ -47,7 +47,7 @@ def statements():
     """Yield complete SQL statements from the dump (a statement ends at a line
     ending in ';'). Comments are dropped; INSERT becomes INSERT OR REPLACE."""
     buf: list[str] = []
-    with open(DUMP, encoding="utf-8") as f:
+    with open(DUMP, encoding="utf-8", newline="") as f:
         for line in f:
             if not buf and line.startswith("--"):
                 continue

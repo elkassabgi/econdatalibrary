@@ -81,7 +81,7 @@ def main() -> None:
         if not buf:
             return
         path = os.path.join(OUT_DIR, f"part_{part:03d}.sql")
-        with open(path, "w", encoding="utf-8") as fh:
+        with open(path, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(header)
             fh.write("\n".join(buf) + "\n")
         files.append((path, len(buf)))
@@ -113,7 +113,7 @@ def main() -> None:
         mem.execute("INSERT INTO series(series_id, metadata) VALUES (?, '{}')", (probe,))
     applied = 0
     for path, _ in files:
-        with open(path, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8", newline="") as fh:
             sql = fh.read()
         mem.executescript(sql)
         applied += 1

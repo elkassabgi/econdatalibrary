@@ -176,7 +176,7 @@ def main() -> int:
     # the atomic file would roll the RENAME back with it.
     old_exists = d1("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'series_fts'"
                     )["results"][0]["n"] > 0
-    with open(swap, "w", encoding="utf-8") as fh:
+    with open(swap, "w", encoding="utf-8", newline="\n") as fh:
         if old_exists:
             fh.write("DROP TABLE series_fts;\nALTER TABLE %s RENAME TO series_fts;\n" % NEW)
         else:

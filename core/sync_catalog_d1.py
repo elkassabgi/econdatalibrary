@@ -315,7 +315,7 @@ def emit_sql(cols: list[str], rows: list[dict], out_dir: str,
 
     def _write():
         p = os.path.join(out_dir, f"catalog_{len(files):04d}.sql")
-        with open(p, "w", encoding="utf-8") as fh:
+        with open(p, "w", encoding="utf-8", newline="\n") as fh:
             fh.write("\n".join(buf + [receipt_sql(f"cat-{run}-{len(files):04d}")]) + "\n")
         files.append(p)
 
@@ -431,8 +431,9 @@ def verify_replay(cols: list[str], rows: list[dict], files: list[str], fts_ids: 
     """Replay the emitted SQL into a fresh in-memory SQLite and assert row-for-row
     equality with what we intended to send. Broken SQL never reaches remote D1."""
     mem = sqlite3.connect(":memory:")
-    mem.execute(f"CREATE TABLE series ({', '.join(c + ' TEXT' for c in cols)}, "
-                "PRIMARY KEY (series_id))")
+    # NO declared column types: SQLite then stores each literal as it was written (int, float, text, NULL) with no
+    # affinity conversion, so the replay can be compared with the rows EXACTLY, every column (review R1316).
+    mem.execute(f"CREATE TABLE series ({', '.join(cols)}, PRIMARY KEY (series_id))")
     mem.execute("CREATE VIRTUAL TABLE series_fts USING fts5"
                 "(series_id UNINDEXED, title, geography)")
     # The replay schema must carry EVERY table the emitted SQL writes, or the guard that exists
@@ -443,18 +444,23 @@ def verify_replay(cols: list[str], rows: list[dict], files: list[str], fts_ids: 
     mem.execute("CREATE TABLE license (license_id TEXT PRIMARY KEY, name TEXT, url TEXT, "
                 "reservable INT, commercial_ok INT, attribution_required INT, no_modify INT)")
     for p in files:
-        with open(p, encoding="utf-8") as fh:
+        with open(p, encoding="utf-8", newline="") as fh:
             mem.executescript(fh.read())
     got = mem.execute("SELECT COUNT(*) FROM series").fetchone()[0]
     if got != len(rows):
         raise SystemExit(f"FATAL: replay has {got} series rows, expected {len(rows)} "
                          "— refusing to send SQL that does not round-trip")
-    for r in rows[:50]:
-        hit = mem.execute("SELECT title FROM series WHERE series_id=?",
-                          (r["series_id"],)).fetchone()
-        if hit is None or hit[0] != (r.get("title") if r.get("title") is not None
-                                     else None):
-            raise SystemExit(f"FATAL: replay lost/altered {r['series_id']}")
+    # EVERY row, EVERY column, byte for byte (review R1316: this checked the title of rows[:50] only, so a
+    # damaged title at row 55 passed as "verified"). The replay is in memory; this costs milliseconds.
+    got_rows = {r[0]: r for r in mem.execute(f"SELECT {', '.join(cols)} FROM series")}
+    sid_at = cols.index("series_id")
+    assert all(r[sid_at] == k for k, r in got_rows.items())
+    for r in rows:
+        want = tuple(r.get(c) for c in cols)
+        hit = got_rows.get(r["series_id"])
+        if hit != want:
+            bad = [c for c, a, b in zip(cols, hit or (), want) if a != b] if hit else ["<missing>"]
+            raise SystemExit(f"FATAL: replay lost/altered {r['series_id']} (columns {bad}) - refusing to send")
     n_receipts = mem.execute("SELECT count(*) FROM sync_receipt").fetchone()[0] if mem.execute(
         "SELECT 1 FROM sqlite_master WHERE name='sync_receipt'").fetchone() else 0
     if n_receipts != len(files):
@@ -469,6 +475,12 @@ def verify_replay(cols: list[str], rows: list[dict], files: list[str], fts_ids: 
             raise SystemExit(f"FATAL: replay wrote index rows for {len(got_fts)} id(s) "
                              f"(max {max(got_fts.values(), default=0)} each), expected exactly one for each of "
                              f"{len(fts_ids)} - refusing to send")
+        # and each index row carries the row's own title and geography, exactly (R1316)
+        by_id = {r["series_id"]: r for r in rows}
+        for sid, title, geo in mem.execute("SELECT series_id, title, geography FROM series_fts"):
+            want = (by_id[sid].get("title"), by_id[sid].get("geography"))
+            if (title, geo) != want:
+                raise SystemExit(f"FATAL: replay index row for {sid} carries altered title/geography - refusing to send")
     mem.close()
     print(f"  verified: {len(rows)} series rows replay cleanly ({len(files)} file(s))")
 
@@ -588,7 +600,7 @@ def main(argv: list[str] | None = None) -> None:
         for src in srcs:
             db = CATALOG_SHARD_FOR.get(src)
             path = os.path.join(tmp, f"counts_{src}.sql")
-            with open(path, "w", encoding="utf-8") as fh:
+            with open(path, "w", encoding="utf-8", newline="\n") as fh:
                 fh.write("CREATE TABLE IF NOT EXISTS source_counts("
                          "source_id TEXT PRIMARY KEY, n INTEGER NOT NULL);\n")
                 fh.write("INSERT OR REPLACE INTO source_counts(source_id, n)\n"
