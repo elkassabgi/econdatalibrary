@@ -278,8 +278,9 @@ def test_the_SUMMARY_never_claims_a_replacement_os_replace_refused(tmp_path):
     assert after == 2, f"the local file changed despite a refused replace (rows now {after})"
     assert "WEAK COMPARISON" not in out.upper(), \
         "the summary counts a weak replacement that was refused:\n" + out
-    assert "followed the publisher" not in out, \
-        "the summary reports a withdrawal that never reached disk:\n" + out
+    # the summary's loss line (renamed by AR-184: it used to say "followed the publisher")
+    assert "were replaced with R2's copy" not in out and "file(s) lost" not in out, \
+        "the summary reports a loss that never reached disk:\n" + out
     assert "have been replaced" not in out, out
     assert _run.pulled == 0, f"a refused replace was counted as pulled ({_run.pulled})"
 
