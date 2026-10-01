@@ -745,7 +745,11 @@ class R2Blob:
         self.client.delete_object(Bucket=self.bucket, Key=key)
 
 
-SELFHOST_BLOB_ROOT = r"E:\econ_live\blobs"
+# ON F:, NOT E: (2026-10-01). Measured during the first bulk import: with the live checkout, the crawlers, the statcan
+# lane and the updater's own reads all on E:, E: ran at 1,218% disk time with a queue of 12 and the import fell to
+# 5.8-17 objects/s, while F: sat at 5% and a trial there ran 62.6/s. Serving reads from F: also keeps the users' reads
+# off the disk the updater writes.
+SELFHOST_BLOB_ROOT = r"F:\econ_live\blobs"
 
 
 def _blobstore_module():

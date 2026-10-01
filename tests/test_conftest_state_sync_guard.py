@@ -58,7 +58,7 @@ def test_no_test_reaches_the_machine_s_self_hosting_paths():
     live = {"FLAG_PATH": cutover.FLAG_PATH, "SELFHOST_BLOB_ROOT": blob.SELFHOST_BLOB_ROOT,
             "BUILD_PATH": catalog_path.BUILD_PATH, "CHECKOUT_PATH": catalog_path.CHECKOUT_PATH,
             "LOCK_PATH": catalog_path.LOCK_PATH}
-    assert defaults == {"FLAG_PATH": r"C:\ProgramData\econ\CUTOVER", "SELFHOST_BLOB_ROOT": r"E:\econ_live\blobs"}
+    assert defaults == {"FLAG_PATH": r"C:\ProgramData\econ\CUTOVER", "SELFHOST_BLOB_ROOT": r"F:\econ_live\blobs"}
     same = lambda x, y: os.path.normcase(os.path.abspath(x)) == os.path.normcase(os.path.abspath(y))  # noqa: E731
     for name, default in defaults.items():
         assert not same(live[name], default), f"{name} is the machine's own"
