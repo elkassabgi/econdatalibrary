@@ -56,9 +56,11 @@ class FakeBucket:
         keys = [x for k in keys for x in ([k, k] if k in self.dup else [k])]
         i = int(ContinuationToken or 0)
         chunk = keys[i:i + self.page]
+        short = getattr(self, "short_first_listing", False) and i == 0
+        self.short_first_listing = False                                   # only the FIRST listing ends early
         out = {"Contents": [{"Key": k, "ETag": '"%s"' % _etag(self.objects[k]),
                              "Size": len(self.objects[k]) + (k in self.size_lie), "LastModified": self.lm(k)}
-                            for k in chunk], "IsTruncated": i + self.page < len(keys)}
+                            for k in chunk], "IsTruncated": i + self.page < len(keys) and not short}
         if out["IsTruncated"]:
             out["NextContinuationToken"] = str(i + self.page)
         return out
@@ -139,9 +141,10 @@ def test_an_object_deleted_on_r2_is_reported_and_fails_the_run(monkeypatch, tmp_
     assert BlobStore(str(tmp_path / "blobs")).head("series/k3.csv") is not None, "reported, not deleted"
 
 
-def _receipt(tmp_path):
+def _receipt(tmp_path, marks=False):
     p = tmp_path / "absent.txt"
-    return p.read_text(encoding="utf-8").splitlines() if p.exists() else []
+    lines = p.read_text(encoding="utf-8").splitlines() if p.exists() else []
+    return lines if marks else [ln for ln in lines if not ln.startswith("# ")]
 
 
 PRUNE = ("--resume", "--prune-absent", "--absent-out")
@@ -271,6 +274,7 @@ def test_control_nothing_deleted_nothing_absent(monkeypatch, tmp_path):
     _run(monkeypatch, FakeBucket(OBJ), tmp_path)
     rc, p = _run(monkeypatch, FakeBucket(OBJ), tmp_path, "--resume", "--absent-out", str(tmp_path / "absent.txt"))
     assert rc == 0 and p["absent"] == 0 and p["skipped_held"] == 7 and _absent(tmp_path) == []
+    assert p["phase"] == "done" and p["absent_listed"] == 7 and p["absent_judged"] == 7 and p["r2_not_held"] == 0
 
 
 def test_the_absent_check_stays_inside_its_prefix_and_its_byte_order(monkeypatch, tmp_path):
@@ -351,3 +355,159 @@ def test_after_t0_prune_is_refused(monkeypatch, tmp_path, capsys):
         _run(monkeypatch, FakeBucket({}), tmp_path, *PRUNE, str(tmp_path / "absent.txt"))
     assert "refused after T0" in capsys.readouterr().err
     assert sorted(BlobStore(str(tmp_path / "blobs")).list("series/")) == sorted(OBJ)
+
+
+# ---- AR-182 round 3 ------------------------------------------------------------------------------------------
+
+def _ns(tmp_path, **kw):
+    import argparse
+    d = dict(prefix=["series/"], absent_out=str(tmp_path / "absent.txt"), prune_absent=True, prune_max=1000)
+    d.update(kw)
+    return argparse.Namespace(**d)
+
+
+def test_t0_during_the_prune_stops_the_deletes(monkeypatch, tmp_path):
+    """Finding 1: T0 was checked once, before an hours-long merge; the deletes then ran after T0."""
+    from core import cutover
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    left = {k: v for k, v in OBJ.items() if k not in ("series/k1.csv", "series/k2.csv", "series/k3.csv")}
+    calls = []
+    monkeypatch.setattr(cutover, "is_cut_over", lambda: calls.append(1) or len(calls) >= 3)   # set after 1 delete
+    c = {}
+    unresolved = imp._absent_pass(FakeBucket(left), BlobStore(str(tmp_path / "blobs")), _ns(tmp_path), c)
+    store = BlobStore(str(tmp_path / "blobs"))
+    assert c["pruned"] == 1 and unresolved == 2 and "T0 began during the prune" in c["absent_note"]
+    assert store.head("series/k2.csv") is not None and store.head("series/k3.csv") is not None
+    assert _receipt(tmp_path, marks=True)[-1].startswith("# END") and "T0 began" in _receipt(tmp_path, True)[-1]
+
+
+def test_progress_is_reported_while_the_listing_is_read_with_no_candidates(monkeypatch, tmp_path):
+    """Finding 2: report() ran only per candidate, so the normal (zero-candidate) merge looked hung."""
+    import time
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    clock = [1000.0]
+    monkeypatch.setattr(time, "time", lambda: clock.__setitem__(0, clock[0] + 31) or clock[0])
+    reports = []
+    c = {}
+    assert imp._absent_pass(FakeBucket(OBJ), BlobStore(str(tmp_path / "blobs")),
+                            _ns(tmp_path, prune_absent=False), c, lambda: reports.append(dict(c))) == 0
+    assert c["absent"] == 0 and len(reports) >= 6 and reports[-1]["absent_listed"] >= 6
+    assert reports[-1]["absent_judged"] >= 6
+
+
+def test_a_finished_receipt_ends_with_end_and_an_aborted_one_says_so(monkeypatch, tmp_path):
+    """Finding 3: an aborted pass left ABSENT lines - one for a key R2 holds - shaped like a finished receipt."""
+    import pytest
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    gone = {k: v for k, v in OBJ.items() if k != "series/k1.csv"}
+    imp._absent_pass(FakeBucket(gone), BlobStore(str(tmp_path / "blobs")), _ns(tmp_path, prune_absent=False), {})
+    lines = _receipt(tmp_path, marks=True)
+    assert lines[0].startswith("# BEGIN") and lines[-1].startswith("# END absent 1 missing 0")
+    late = FakeBucket(gone, order=lambda k: (k == "series/k5.csv", k.encode("utf-8")))     # k5 listed LAST
+    with pytest.raises(imp.ListingOutOfOrder):
+        imp._absent_pass(late, BlobStore(str(tmp_path / "blobs")), _ns(tmp_path), {})
+    lines = _receipt(tmp_path, marks=True)
+    assert lines[-1].startswith("# ABORTED ListingOutOfOrder") and not any(ln.startswith("# END") for ln in lines)
+    assert BlobStore(str(tmp_path / "blobs")).head("series/k1.csv") is not None
+
+
+def test_a_copy_listing_that_ends_early_fails_the_run(monkeypatch, tmp_path):
+    """Finding 4: the first listing stopped after one page (IsTruncated false); 2 of 7 were copied, rc was 0."""
+    b = FakeBucket(OBJ)
+    b.short_first_listing = True
+    rc, p = _run(monkeypatch, b, tmp_path, "--absent-out", str(tmp_path / "absent.txt"))
+    assert p["copied"] == 2 and p["r2_not_held"] == 5 and rc == 1
+    assert sorted(ln.split(" ", 1)[1] for ln in _receipt(tmp_path) if ln.startswith("MISSING ")) == \
+        sorted(OBJ)[2:]
+
+
+def test_a_key_r2_has_between_held_keys_is_missing(monkeypatch, tmp_path):
+    """Both places a missing key can sit: before the store's first key, between two held keys (mutant T6 of
+    round 4), and after its last."""
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    more = dict(OBJ, **{"series/a.csv": b"a", "series/k3a.csv": b"m", "series/z.csv": b"z"})
+    c = {}
+    assert imp._absent_pass(FakeBucket(more), BlobStore(str(tmp_path / "blobs")), _ns(tmp_path, prune_absent=False),
+                            c) == 3
+    assert [ln for ln in _receipt(tmp_path) if ln.startswith("MISSING ")] == [
+        "MISSING series/a.csv", "MISSING series/k3a.csv", "MISSING series/z.csv"]
+
+
+def test_each_delete_line_is_on_disk_before_its_delete(monkeypatch, tmp_path):
+    """Finding 5: writing DELETE after the delete, or not flushing it, survived every test."""
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    real = BlobStore.delete
+    seen = []
+
+    def delete(self, key):
+        seen.append(f"DELETE {key}" in (tmp_path / "absent.txt").read_text(encoding="utf-8").splitlines())
+        return real(self, key)
+    monkeypatch.setattr(BlobStore, "delete", delete)
+    left = {k: v for k, v in OBJ.items() if k not in ("series/k0.csv", "series/k6.csv")}
+    rc, p = _run(monkeypatch, FakeBucket(left), tmp_path, *PRUNE, str(tmp_path / "absent.txt"))
+    assert rc == 0 and p["pruned"] == 2 and seen == [True, True]
+
+
+def test_without_a_receipt_the_first_20_are_printed(monkeypatch, tmp_path, capsys):
+    many = {f"series/m{i:02d}.csv": b"%d" % i for i in range(25)}
+    _run(monkeypatch, FakeBucket(many), tmp_path)
+    capsys.readouterr()
+    rc, p = _run(monkeypatch, FakeBucket({}), tmp_path, "--resume")
+    printed = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("ABSENT ")]
+    assert rc == 1 and p["absent"] == 25 and len(printed) == 20
+
+
+def test_two_prefixes_an_empty_listing_under_the_second_refuses(monkeypatch, tmp_path):
+    """Finding 6: the per-prefix refusal arithmetic had no test with two prefixes."""
+    two = dict(OBJ, **{"other/x.csv": b"x", "other/y.csv": b"y"})
+    _run(monkeypatch, FakeBucket(two), tmp_path, "--prefix", "other/")
+    c = {}
+    imp._absent_pass(FakeBucket(OBJ), BlobStore(str(tmp_path / "blobs")),
+                     _ns(tmp_path, prefix=["series/", "other/"]), c)
+    assert c["pruned"] == 0 and "R2 listed nothing under 'other/'" in c["absent_note"]
+    assert BlobStore(str(tmp_path / "blobs")).head("other/x.csv") is not None
+
+
+def test_two_prefixes_an_empty_second_prefix_with_nothing_held_still_prunes_the_first(monkeypatch, tmp_path):
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    c = {}
+    left = {k: v for k, v in OBJ.items() if k != "series/k4.csv"}
+    assert imp._absent_pass(FakeBucket(left), BlobStore(str(tmp_path / "blobs")),
+                            _ns(tmp_path, prefix=["series/", "nothing/"]), c) == 0
+    assert c["pruned"] == 1
+
+
+def test_contradictory_flags_are_argument_errors(monkeypatch, tmp_path, capsys):
+    """Findings 7 and 8: nested prefixes judged keys twice; a prune with --limit or only --key returned rc 0."""
+    import pytest
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    for extra, msg in ((("--prefix", "series/k"), "lies inside"),
+                       ((*PRUNE, str(tmp_path / "a.txt"), "--limit", "2"), "needs a whole --prefix")):
+        with pytest.raises(SystemExit):
+            _run(monkeypatch, FakeBucket(OBJ), tmp_path, *extra)
+        assert msg in capsys.readouterr().err
+    import core.r2_util as r2u
+    monkeypatch.setattr(r2u, "cloud_client", lambda: FakeBucket(OBJ))
+    monkeypatch.setattr(sys, "argv", ["import_from_r2.py", "--root", str(tmp_path / "blobs"), "--key", "series/k1.csv",
+                                      "--prune-absent", "--absent-out", str(tmp_path / "a.txt")])
+    with pytest.raises(SystemExit):
+        imp.main()
+    assert "needs a whole --prefix" in capsys.readouterr().err
+
+
+def test_a_progress_file_held_open_never_ends_the_copy(monkeypatch, tmp_path, capsys):
+    """Finding 9: os.replace onto a file another process holds open raises on Windows."""
+    real = os.replace
+
+    def replace(src, dst):
+        if str(dst).endswith("p.json") and not str(src).endswith("final"):
+            raise PermissionError(5, "Access is denied", str(dst))
+        return real(src, dst)
+    monkeypatch.setattr(imp.os, "replace", replace)
+    import core.r2_util as r2u
+    monkeypatch.setattr(r2u, "cloud_client", lambda: FakeBucket(OBJ))
+    monkeypatch.setattr(sys, "argv", ["import_from_r2.py", "--root", str(tmp_path / "blobs"), "--create",
+                                      "--prefix", "series/", "--workers", "2", "--progress", str(tmp_path / "p.json")])
+    assert imp.main() == 0
+    assert "held open by another process" in capsys.readouterr().out
+    assert len(BlobStore(str(tmp_path / "blobs")).list("series/")) == 7
