@@ -131,6 +131,27 @@ def _lost_identities_gated(local_path: str, new_path: str):
         shutil.rmtree(spill, ignore_errors=True)
 
 
+# A FOURTH LIST OF KEY-COLUMN NAMES. `core/broaden_catalog.py::KEY_COL_CANDIDATES` is the shared
+# one - ("series_key", "series_id", "idbank") - and three tools import it. This one asks a
+# DIFFERENT question: not "which column identifies a series in our store" but "which column can
+# key a row-by-row comparison against a mirrored file", so it also accepts a publisher's bare
+# `key`. It must include `idbank`: the 2026-09-07 note here said this question "does not need
+# idbank", and that was never checked against insee_bdm, whose columns are exactly
+# dataflow/idbank/obs_date/value. Without it the WHOLE ROW was insee_bdm's identity, so every
+# value INSEE revised counted as a lost row - 27,305 of them reported as withdrawals on
+# 2026-10-01 with 0 observations actually gone (AR-184, ledger R1340). A file with none of these
+# falls to the whole-row path, which is correct and not a silent exclusion.
+KEY_CANDIDATES = ("series_key", "series_id", "idbank", "key")
+DATE_CANDIDATES = ("obs_date", "date", "time_period")
+
+
+def _identity_cols(cols):
+    """(key column or None, date column or None) - the identity this file is compared on."""
+    kc = next((c for c in cols if c.lower() in KEY_CANDIDATES), None)
+    dc = next((c for c in cols if c.lower() in DATE_CANDIDATES), None)
+    return kc, dc
+
+
 def _lost_identities(q, local_path: str, new_path: str):
     lp = str(local_path).replace(os.sep, "/")
     rp = str(new_path).replace(os.sep, "/")
@@ -139,15 +160,7 @@ def _lost_identities(q, local_path: str, new_path: str):
     cols = [r[0] for r in desc]
     types = {r[0]: str(r[1]).upper() for r in desc}
     types_r = {r[0]: str(r[1]).upper() for r in desc_r}
-    # A FOURTH LIST OF KEY-COLUMN NAMES, and its divergence is deliberate (noted 2026-09-07).
-    # `core/broaden_catalog.py::KEY_COL_CANDIDATES` is the shared one - ("series_key",
-    # "series_id", "idbank") - and three tools now import it. This one asks a DIFFERENT question:
-    # not "which column identifies a series in our store" but "which column can key a row-by-row
-    # comparison against a mirrored file", so it accepts a publisher's bare `key` and does not
-    # need `idbank`. A file with none of these falls to the whole-row path, which is correct and
-    # not a silent exclusion. Do not merge the two lists without re-reading both questions.
-    kc = next((c for c in cols if c.lower() in ("series_key", "series_id", "key")), None)
-    dc = next((c for c in cols if c.lower() in ("obs_date", "date", "time_period")), None)
+    kc, dc = _identity_cols(cols)
     # ONLY THE COLUMNS THE IDENTITY USES MUST EXIST ON BOTH SIDES. Requiring every column was
     # right for the whole-row path, where every column IS the identity, and wrong for a keyed
     # file: retiring or renaming an unrelated column - a routine publisher change that loses no
@@ -293,6 +306,105 @@ def _lost_rows_whole_locked(q, lp: str, rp: str, cols, types, types_r):
     n = q.execute(f"select coalesce(sum(greatest(l.c - coalesce(r.c, 0), 0)), 0) "
                   f"from ({left}) l left join ({right}) r on {on}").fetchone()[0]
     return int(n), mode
+
+
+def loss_breakdown(local_path: str, new_path: str, lost: int) -> dict:
+    """What `lost` (from lost_identities) is made of - asked only when it is non-zero.
+
+    The bare count was reported as "followed the publisher", i.e. withdrawals, and on 2026-10-01
+    most of it was not (AR-184, R1340): 198,630 of ilostat's 300,399 were the same observation
+    under a NEW series_key (a changed survey-source code inside the key). This separates what can
+    be PROVEN, and guesses nothing about which columns are measures (R551/R649 forbid inventing
+    that hint):
+
+      keyed file   re-keyed = lost local rows for which the incoming file holds a row IDENTICAL on
+                   every other column the two files share (normalised exactly as the whole-row
+                   path normalises them) - necessarily under another key, since the lost row's
+                   own identity is absent. A re-key that also revised the value lands in
+                   `absent`: conservative, it never claims a re-key it cannot show.
+                   absent = lost - re-keyed (copies lost under a surviving identity included).
+                   A value revised under an UNCHANGED identity is never in `lost` at all here.
+      whole-row    no key, so nothing can be split: a revised value, a rename and a removal all
+                   count. The row totals are given so "lost 392 rows" next to "472 -> 475 rows"
+                   reads as churn, not as a withdrawal.
+
+    Runs under the same gate as the comparison (R628: a connection reserves its buffer pool)."""
+    with _compare_gate:
+        import duckdb
+        import shutil
+        q = duckdb.connect()
+        q.execute("SET TimeZone='UTC'")
+        q.execute(f"SET memory_limit='{DUCK_MEM_GB}GB'")
+        q.execute(f"SET threads={DUCK_THREADS}")
+        spill = os.path.join(ROOT, "logs", "_duckspill", f"mirror_sync_{os.getpid()}_{uuid.uuid4().hex[:8]}")
+        os.makedirs(spill, exist_ok=True)
+        q.execute(f"SET temp_directory='{spill.replace(os.sep, '/')}'")
+        try:
+            return _loss_breakdown(q, local_path, new_path, lost)
+        finally:
+            q.close()
+            shutil.rmtree(spill, ignore_errors=True)
+
+
+def _loss_breakdown(q, local_path: str, new_path: str, lost: int) -> dict:
+    lp = str(local_path).replace(os.sep, "/")
+    rp = str(new_path).replace(os.sep, "/")
+    desc = q.execute(f"describe select * from read_parquet('{lp}')").fetchall()
+    desc_r = q.execute(f"describe select * from read_parquet('{rp}')").fetchall()
+    cols = [r[0] for r in desc]
+    types = {r[0]: str(r[1]).upper() for r in desc}
+    types_r = {r[0]: str(r[1]).upper() for r in desc_r}
+    n_l = q.execute(f"select count(*) from read_parquet('{lp}')").fetchone()[0]
+    n_r = q.execute(f"select count(*) from read_parquet('{rp}')").fetchone()[0]
+    kc, dc = _identity_cols(cols)
+    if kc is None:
+        return {"basis": "whole-row", "local_rows": int(n_l), "incoming_rows": int(n_r)}
+    other = [c for c in cols if c != kc and c in types_r]
+    if not other:
+        # nothing besides the key to recognise a re-keyed row by
+        return {"basis": "keyed", "rekeyed": 0, "absent": int(lost),
+                "local_rows": int(n_l), "incoming_rows": int(n_r)}
+
+    def nrm(c):
+        return _norm(c, types.get(c) or types_r.get(c, ""), types_r.get(c) or types.get(c, ""))
+    kq = kc.replace('"', '""')
+    if dc is None:
+        ident = f'"{kq}"::VARCHAR k'
+        on_id = "l.k IS NOT DISTINCT FROM r.k"
+    else:
+        dq = dc.replace('"', '""')
+        temporal = any(t in (types.get(dc, "") + " " + types_r.get(dc, "")) for t in ("DATE", "TIMESTAMP"))
+        dexpr = f'"{dq}"::DATE::VARCHAR' if temporal else f'"{dq}"::VARCHAR'
+        ident = f'"{kq}"::VARCHAR k, {dexpr} d'
+        on_id = "l.k IS NOT DISTINCT FROM r.k AND l.d IS NOT DISTINCT FROM r.d"
+    vals = ", ".join(f"{nrm(c)} v{i}" for i, c in enumerate(other))
+    on_vals = " AND ".join(f"l.v{i} IS NOT DISTINCT FROM r.v{i}" for i in range(len(other)))
+    # the local rows whose identity the incoming file does not have at all ...
+    gone = (f"select l.* from (select {ident}, {vals} from read_parquet('{lp}')) l "
+            f"anti join (select distinct {ident} from read_parquet('{rp}')) r on {on_id}")
+    # ... of which: an identical row sits in the incoming file under an identity that is NEW there
+    # (absent locally). Matching against ANY incoming row was wrong: two series with identical
+    # values, one of them removed, made the survivor's row look like the removed one's re-key.
+    new_rows = (f"select r.* from (select {ident}, {vals} from read_parquet('{rp}')) r "
+                f"anti join (select distinct {ident} from read_parquet('{lp}')) l on {on_id}")
+    rekeyed = q.execute(f"select count(*) from ({gone}) l semi join ({new_rows}) r "
+                        f"on {on_vals}").fetchone()[0]
+    rekeyed = min(int(rekeyed), int(lost))
+    return {"basis": "keyed", "rekeyed": rekeyed, "absent": int(lost) - rekeyed,
+            "local_rows": int(n_l), "incoming_rows": int(n_r)}
+
+
+def describe_loss(lost: int, bd) -> str:
+    """One line for the ledger: what the lost rows are, in words that are true for the mode."""
+    if bd is None:
+        return f"{lost:,} rows lost; breakdown NOT computed (see the line before)"
+    if bd["basis"] == "whole-row":
+        return (f"{lost:,} whole rows not found unchanged - no key column, so a revised value, a "
+                f"rename and a removal ALL count here and cannot be told apart; rows "
+                f"{bd['local_rows']:,} -> {bd['incoming_rows']:,}")
+    return (f"{lost:,} identities lost: {bd['absent']:,} absent from the incoming copy, "
+            f"{bd['rekeyed']:,} re-keyed (an identical row is there under another key); rows "
+            f"{bd['local_rows']:,} -> {bd['incoming_rows']:,}")
 
 
 def reap_dead_spill() -> int:
@@ -475,7 +587,7 @@ def sync_source(s3, rec, apply: bool):
                                           f"hand this file is '{verdict}', not 'behind' - the "
                                           f"sweep no longer describes it")
                         return
-                lost, mode, weak = 0, "", ""
+                lost, mode, weak, bd = 0, "", "", None
                 # A LOCAL FILE THAT COULD NOT BE READ CANNOT BE COMPARED EITHER. Skipping the
                 # classify step and then running the identity check on the same corrupt bytes
                 # is what made the previous version announce a replacement and perform none:
@@ -555,13 +667,25 @@ def sync_source(s3, rec, apply: bool):
                         if len(caveats) > 1:
                             weak = "; ".join(caveats)
                     if lost:
-                        # footer_diff already established R2 is ahead here, so identities that
-                        # vanish are the publisher withdrawing them, not breakage. Follow it —
-                        # refusing would keep users on an older vintage to preserve superseded
-                        # rows — but never silently: the INTENT is recorded before the replace
-                        # and the OUTCOME after it (R612: 'replaced' written first lied when the
-                        # replace then failed).
-                        record(n, lost, mode, "replacing (publisher ahead) - intent")
+                        # footer_diff already established R2 is ahead here, so R2's copy is
+                        # taken - refusing would keep users on an older vintage. But a lost row is
+                        # NOT necessarily a withdrawal: on 2026-10-01 most were values revised in
+                        # place (whole-row identity) or rows re-keyed under a new series_key, and
+                        # the bare count was reported as "followed the publisher" (AR-184, R1340).
+                        # So what the loss is made of is measured and written down with it. A
+                        # failed breakdown never blocks the replace - it only describes it - but
+                        # it is recorded, never swallowed.
+                        try:
+                            bd = loss_breakdown(dest, tmp, lost)
+                        except Exception as e:                       # noqa: BLE001 - recorded
+                            bd = None
+                            record(n, lost, mode, "LOSS BREAKDOWN FAILED (the replace goes ahead; "
+                                                  f"the loss is unexplained): "
+                                                  f"{' '.join(str(e).split())[:100]}")
+                        # the INTENT is recorded before the replace and the OUTCOME after it
+                        # (R612: 'replaced' written first lied when the replace then failed)
+                        record(n, lost, mode, "replacing with R2's copy - intent; "
+                                              + describe_loss(lost, bd))
                 if weak:
                     # INTENT, BEFORE THE REPLACE. Written afterwards it is a lie whenever
                     # os.replace raises - and a held handle does exactly that, which is why the
@@ -594,13 +718,13 @@ def sync_source(s3, rec, apply: bool):
                 # 50 ROWS ... followed the publisher" over 0 (R612's fourth recurrence, R652).
                 with lock:
                     if lost:
-                        withdrawals.append((n, lost, mode))
+                        withdrawals.append((n, lost, mode, bd))
                     if weak:
                         weak_identity.append((n, lost, weak, weak_pct))
                     if junk_note is not None:
                         unreadable_local.append(junk_note)
                 if lost:
-                    record(n, lost, mode, "replaced (publisher ahead)")
+                    record(n, lost, mode, "replaced with R2's copy; " + describe_loss(lost, bd))
                 if weak:
                     record(n, lost, mode, "WEAK COMPARISON - replaced: " + weak)
             finally:
@@ -659,14 +783,34 @@ def sync_source(s3, rec, apply: bool):
     if whole_row:
         print(f"   {src}: {len(whole_row)} file(s) have no key column and were compared on "
               f"EVERY column (whole-row, copy-aware) - the only identity that cannot miss a "
-              f"replaced row; e.g. {whole_row[:3]}")
+              f"replaced row, and for the same reason one that counts a revised value as a lost "
+              f"row; e.g. {whole_row[:3]}")
     if check_failed:
         print(f"   {src}: {len(check_failed)} file(s) CHECK FAILED - local copies kept, recorded in {ledger}: {check_failed[:3]}")
     if withdrawals:
+        # WHAT THE LOST ROWS ARE, not one number called a withdrawal (AR-184, R1340). The parts
+        # come from loss_breakdown() and are summed per kind; they add up to the total.
         tot = sum(w[1] for w in withdrawals)
-        print(f"   {src}: {len(withdrawals)} file(s) lost {tot:,} ROWS (copy-aware; a replaced value "
-              f"is not counted) that the incoming copy lacks — followed the publisher, every "
-              f"tuple in {ledger} (written before each replace); e.g. {[(w[0], w[1], w[2]) for w in withdrawals[:3]]}")
+        keyed = [w for w in withdrawals if w[3] is not None and w[3]["basis"] == "keyed"]
+        whole = [w for w in withdrawals if w[3] is not None and w[3]["basis"] == "whole-row"]
+        unknown = [w for w in withdrawals if w[3] is None]
+        parts = []
+        if keyed:
+            parts.append(f"{sum(w[3]['absent'] for w in keyed):,} absent from the incoming copy and "
+                         f"{sum(w[3]['rekeyed'] for w in keyed):,} re-keyed (an identical row is "
+                         f"there under another key), in {len(keyed)} keyed file(s)")
+        if whole:
+            parts.append(f"{sum(w[1] for w in whole):,} in {len(whole)} WHOLE-ROW file(s), where a "
+                         f"revised value, a rename and a removal all count and cannot be told "
+                         f"apart (rows {sum(w[3]['local_rows'] for w in whole):,} -> "
+                         f"{sum(w[3]['incoming_rows'] for w in whole):,})")
+        if unknown:
+            parts.append(f"{sum(w[1] for w in unknown):,} in {len(unknown)} file(s) whose "
+                         f"breakdown FAILED - unexplained")
+        print(f"   {src}: {len(withdrawals)} file(s) lost {tot:,} ROWS that the incoming copy lacks "
+              f"and were replaced with R2's copy - NOT all withdrawals: {'; '.join(parts)}. Every "
+              f"file in {ledger} (written before each replace); e.g. "
+              f"{[(w[0], w[1], w[2]) for w in withdrawals[:3]]}")
     if not (withdrawals or check_failed or fail or stale_files or weak_identity
             or unreadable_local or junk_kept):
         try:
