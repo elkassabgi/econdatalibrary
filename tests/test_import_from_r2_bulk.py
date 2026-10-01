@@ -556,8 +556,10 @@ def test_the_receipt_cannot_share_a_path_with_another_output(monkeypatch, tmp_pa
     """AR-182 round 5 finding 1: --absent-out == --progress lost the prune receipt and passed rc 0."""
     import pytest
     _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    # case-folded only where the file system folds case (Windows, this machine); on Linux CI P.JSON is another file
+    tmp_name = "P.JSON.tmp" if os.name == "nt" else "p.json.tmp"
     for extra, msg in ((("--absent-out", str(tmp_path / "p.json")), "name the same file"),
-                       (("--absent-out", str(tmp_path / "P.JSON.tmp")), "name the same file"),
+                       (("--absent-out", str(tmp_path / tmp_name)), "name the same file"),
                        (("--absent-out", str(tmp_path / "blobs" / "r.txt")), "inside the blob store")):
         with pytest.raises(SystemExit):
             _run(monkeypatch, FakeBucket(OBJ), tmp_path, *extra)
