@@ -47,6 +47,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
+from core.titles import clean_title  # noqa: E402 - one rule for title line breaks (2026-10-01)
 from derive_statcan_tables import (SOURCE, STORE, MAX_ROWS_DEFAULT,   # noqa: E402
                                    csv_key, part_expr, unit_id)
 
@@ -571,6 +572,13 @@ def audit_catalogue(con, keys: set, prefix: str, purge: bool, expect_unlisted=No
     return 0 if not left and not left_fts else 1
 
 
+def cube_title(sc: dict, pid: str) -> tuple[str, bool]:
+    """(title, untitled): the cube's published title, stripped and with any line break as one space
+    (core/titles.py); a missing or blank title falls back to the Product ID itself - never invented."""
+    title = clean_title((sc.get("title") or "").strip())
+    return (title, False) if title else (pid, True)
+
+
 def sidecars() -> dict:
     """{productId: sidecar dict} — StatCan's own cube metadata, written at ingest time."""
     out = {}
@@ -863,10 +871,9 @@ def main() -> int:
     for i, f in enumerate(files, 1):
         pid = os.path.splitext(os.path.basename(f))[0]
         sc = meta_cubes.get(pid) or {}
-        title = (sc.get("title") or "").strip()
-        if not title:
+        title, no_title = cube_title(sc, pid)
+        if no_title:
             untitled += 1
-            title = pid                                        # never invented
         freq = FREQ.get(sc.get("frequencyCode"))
         meta = dict(base_meta)
         for k, src in (("cansim_id", "cansimId"), ("archived", "archived"),
@@ -915,7 +922,7 @@ def main() -> int:
                 for p, d0, d1 in got:
                     if p is None or p == "":
                         continue
-                    rows.append((unit_id(pid, p), SOURCE, f"{title} — {dim} {p}", freq, None,
+                    rows.append((unit_id(pid, p), SOURCE, clean_title(f"{title} — {dim} {p}"), freq, None,
                                  "Canada", None, LICENSE_ID, d0, d1, meta_json))
             except Exception as e:                              # noqa: BLE001
                 print(f"  {pid}: SPLIT SCAN FAILED {type(e).__name__} {str(e)[:60]}")

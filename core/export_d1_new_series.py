@@ -22,6 +22,12 @@ from __future__ import annotations
 
 import json
 import os
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+try:                                   # as core.<m> or as a plain module from core/
+    from core.titles import clean_title
+except ImportError:
+    from titles import clean_title
 import sqlite3
 import sys
 
@@ -82,7 +88,7 @@ def main(argv: list[str]) -> None:
             f"({','.join('?'*len(argv))})", argv):
         sid = r[0]
         if sid in want and r[2] and r[2] != sid and r[2] != sid.split(':', 1)[-1]:
-            rows.append(r)
+            rows.append(r[:2] + (clean_title(r[2]),) + tuple(r[3:]))   # D1 gets no title line break
     conn.close()
     print(f"rows to INSERT (titled, existing): {len(rows):,}")
 

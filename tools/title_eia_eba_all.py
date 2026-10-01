@@ -34,6 +34,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
+from core.titles import clean_title  # noqa: E402 - one rule for title line breaks (2026-10-01)
 CACHE = os.path.join(ROOT, "data", "_eia_eba_respondents.json")
 API = "https://api.eia.gov/v2/electricity/rto/region-data/facet/respondent/"
 
@@ -86,8 +87,8 @@ def main() -> int:
         if not nm:
             unnamed.append(ba)
             continue
-        updates.append((f"Actual Net Interchange for {nm} ({ba}) to all balancing "
-                        f"authorities, hourly", sid))
+        updates.append((clean_title(f"Actual Net Interchange for {nm} ({ba}) to all balancing "
+                                    f"authorities, hourly"), sid))
 
     print(f"  titles to write : {len(updates):,}")
     if unnamed:

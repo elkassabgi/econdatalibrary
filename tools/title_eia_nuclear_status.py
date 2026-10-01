@@ -33,6 +33,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
+from core.titles import clean_title  # noqa: E402 - one rule for title line breaks (2026-10-01)
 CACHE = os.path.join(ROOT, "data", "_eia_nuclear_facilities.json")
 API = "https://api.eia.gov/v2/nuclear-outages/generator-nuclear-outages/facet/facility/"
 
@@ -100,7 +101,7 @@ def main() -> int:
             no_met.add(metric)
             continue
         who = f"{plant}, generator {gen}" if gen else plant
-        updates.append((f"{who} — {label}", sid))
+        updates.append((clean_title(f"{who} — {label}"), sid))
 
     print(f"  titles to write : {len(updates):,}")
     if no_fac:
