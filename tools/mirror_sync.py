@@ -308,47 +308,57 @@ def _lost_rows_whole_locked(q, lp: str, rp: str, cols, types, types_r):
     return int(n), mode
 
 
-def loss_breakdown(local_path: str, new_path: str, lost: int) -> dict:
-    """What `lost` (from lost_identities) is made of - asked only when it is non-zero.
+def loss_breakdown(local_path: str, new_path: str, lost: int, mode: str) -> dict:
+    """What `lost` (from lost_identities) can mean - asked only when it is non-zero.
 
     The bare count was reported as "followed the publisher", i.e. withdrawals, and on 2026-10-01
-    most of it was not (AR-184, R1340). What this says is only what is TRUE for the mode:
+    most of it was not (AR-184, R1340). What this says is only what is TRUE for the comparison
+    that produced the count, and that comparison is named by `mode` - lost_identities' own words.
+    ONE FACT, ONE PREDICATE (AR-185 F1): an earlier version re-derived "keyed or whole-row" from
+    the footer's LEAF names, where a MAP column contributes a `key` leaf and a struct field named
+    `series_id` counts too, so a whole-row file could be described as keyed and a revised value
+    printed as an absent identity - the AR-184 misreport again.
 
-      keyed file   the lost identities are ABSENT from the incoming copy - withdrawn OR re-keyed
-                   under a new key; this check cannot tell those two apart. A value revised under
-                   an unchanged identity is never in `lost` here.
-      whole-row    no key: a revised value, a rename and a removal all count, and cannot be told
-                   apart.
-    Both carry the row totals, so "lost 392 rows" beside "472 -> 475 rows" reads as churn.
+      keyed, set path      unique identities on both sides: the count is identities ABSENT from
+                           the incoming copy - for example withdrawn, re-keyed or re-dated; this
+                           check cannot tell which. A value revised under an unchanged identity is
+                           not counted.
+      keyed, copy-aware    duplicate identities exist (cbs_nl, R573): the count is ROWS - an
+                           identity absent, or present with FEWER COPIES (AR-185 F2).
+      whole-row            no key: a revised value, a rename and a removal all count, and cannot be
+                           told apart.
+    All carry the row totals, so "lost 392 rows" beside "472 -> 475 rows" reads as churn.
 
-    NO RE-KEY COUNT, ON PURPOSE (measured 2026-10-01 on the real replaced files). The first version
+    NO RE-KEY COUNT, ON PURPOSE (measured 2026-10-01 on the real replaced files). A first version
     called a lost row "re-keyed" when an identical row (every other column) sat under an identity
-    new in the incoming file. On ilostat it found 0 of the review's 198,630 re-keys (the re-keyed
-    rows differ in more than the key), and on fed_board it claimed 7,984 where only 637 belonged to
-    series with a same-description successor - equal values under other new series, which a row
-    test cannot tell from a coincidence. A count wrong in both directions is worse than none
-    (R1340: never relay an interpretation as a finding).
+    new in the incoming file. On ilostat it found 0 rows (the rows AR-184 matched by dimensions
+    and date under another survey source differ in other columns - `source` at least); on
+    fed_board it claimed 7,984, of which 6,747 were value 0 and only 637 belonged to series with a
+    same-description successor. Wrong in both directions (R1341).
 
-    Reads only the two parquet FOOTERS (schema and row count): no DuckDB connection, so nothing to
-    gate and nothing to spill."""
+    Reads only the two parquet footers for the row totals: no DuckDB connection, nothing to spill."""
     import pyarrow.parquet as pq
     ml, mr = pq.read_metadata(local_path), pq.read_metadata(new_path)
-    kc, _dc = _identity_cols(ml.schema.names)
-    return {"basis": "whole-row" if kc is None else "keyed",
+    return {"basis": "whole-row" if mode.startswith("WHOLE ROW") else "keyed",
+            "copies": "set path" not in mode,
             "local_rows": int(ml.num_rows), "incoming_rows": int(mr.num_rows)}
 
 
 def describe_loss(lost: int, bd) -> str:
-    """One line for the ledger: what the lost rows are, in words that are true for the mode."""
+    """One line for the ledger: what the lost rows can mean, in words true for the comparison."""
     if bd is None:
         return f"{lost:,} rows lost; breakdown NOT computed (see the line before)"
+    totals = f"rows {bd['local_rows']:,} -> {bd['incoming_rows']:,}"
     if bd["basis"] == "whole-row":
         return (f"{lost:,} whole rows not found unchanged - no key column, so a revised value, a "
-                f"rename and a removal ALL count here and cannot be told apart; rows "
-                f"{bd['local_rows']:,} -> {bd['incoming_rows']:,}")
-    return (f"{lost:,} identities absent from the incoming copy - withdrawn OR re-keyed under a new "
-            f"key, which this check cannot tell apart (a value revised under an unchanged identity "
-            f"is not counted); rows {bd['local_rows']:,} -> {bd['incoming_rows']:,}")
+                f"rename and a removal ALL count here and cannot be told apart; {totals}")
+    if bd["copies"]:
+        return (f"{lost:,} rows lost, copies counted - an identity absent from the incoming copy, or "
+                f"present with fewer copies (duplicate identities exist here); a value revised under "
+                f"an unchanged identity is not counted; {totals}")
+    return (f"{lost:,} identities absent from the incoming copy - for example withdrawn, re-keyed or "
+            f"re-dated, which this check cannot tell apart (a value revised under an unchanged "
+            f"identity is not counted); {totals}")
 
 def reap_dead_spill() -> int:
     """Remove logs/_duckspill/* directories whose owning pid is gone (R612: 71.8 GB of orphaned
@@ -619,7 +629,7 @@ def sync_source(s3, rec, apply: bool):
                         # written down with it. A failed breakdown never blocks the replace - it
                         # only describes it - but it is recorded, never swallowed.
                         try:
-                            bd = loss_breakdown(dest, tmp, lost)
+                            bd = loss_breakdown(dest, tmp, lost, mode)
                         except Exception as e:                       # noqa: BLE001 - recorded
                             bd = None
                             record(n, lost, mode, "LOSS BREAKDOWN FAILED (the replace goes ahead; "
@@ -738,10 +748,16 @@ def sync_source(s3, rec, apply: bool):
         whole = [w for w in withdrawals if w[3] is not None and w[3]["basis"] == "whole-row"]
         unknown = [w for w in withdrawals if w[3] is None]
         parts = []
-        if keyed:
-            parts.append(f"{sum(w[1] for w in keyed):,} identities absent from the incoming copy in "
-                         f"{len(keyed)} keyed file(s) - withdrawn OR re-keyed under a new key, which "
-                         f"this check cannot tell apart (revised values are not counted there)")
+        uniq = [w for w in keyed if not w[3]["copies"]]
+        dup = [w for w in keyed if w[3]["copies"]]
+        if uniq:
+            parts.append(f"{sum(w[1] for w in uniq):,} identities absent from the incoming copy in "
+                         f"{len(uniq)} keyed file(s) - for example withdrawn, re-keyed or re-dated, "
+                         f"which this check cannot tell apart (revised values are not counted there)")
+        if dup:
+            parts.append(f"{sum(w[1] for w in dup):,} rows in {len(dup)} keyed file(s) with duplicate "
+                         f"identities, copies counted - an identity absent, or present with fewer "
+                         f"copies")
         if whole:
             parts.append(f"{sum(w[1] for w in whole):,} in {len(whole)} WHOLE-ROW file(s), where a "
                          f"revised value, a rename and a removal all count and cannot be told "
