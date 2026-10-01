@@ -12,12 +12,16 @@ Content-Encoding, Content-Type and custom metadata are kept, so the worker serve
     python tools/selfhost/import_from_r2.py --root <blob store> --prefix _aqueduct/stats.json
 
 BULK (plan step 2: ~14M objects, 798 GB): --workers N copies N objects at a time; --resume skips an object the
-store already holds with the same etag AND size as the listing (so an interrupted run continues where it
-stopped, and a re-run copies only what changed on R2 since); the listing is streamed page by page, never held
-whole in memory; --quiet prints only FAIL lines; --progress FILE is rewritten every 30 s with the counts, bytes,
-rate and the last listed key; --limit N stops after N objects are listed (a trial).
+store already holds with the same etag, size AND LastModified (whole seconds) as the listing (so an interrupted
+run continues where it stopped, and a re-run copies only what changed on R2 since); the listing is streamed page
+by page, never held whole in memory; --quiet prints only FAIL lines; --progress FILE is rewritten every 30 s with
+the counts, bytes, rate and the last listed key; --limit N stops after N objects are listed (a trial).
 
-    python tools/selfhost/import_from_r2.py --root E:/econ_live/blobs --create --prefix series/ \\
+After the copy, each --prefix is listed again and merge-compared with the store: an object the store holds that
+R2 no longer has (deleted or re-keyed on R2) is counted, written to --absent-out, and fails the run (rc 1);
+--prune-absent deletes it from the store instead. Before T0 only - after T0 the store is newer than R2.
+
+    python tools/selfhost/import_from_r2.py --root F:/econ_live/blobs --create --prefix series/ \\
         --workers 16 --resume --quiet --progress F:/econ_selfhost_probe/import/series.progress.json
 """
 from __future__ import annotations
@@ -118,11 +122,19 @@ def main() -> int:
     ap.add_argument("--quiet", action="store_true", help="print only FAIL lines and the summary")
     ap.add_argument("--progress", help="rewrite this JSON file every 30 s with the run's counts")
     ap.add_argument("--limit", type=int, default=0, help="stop after this many listed objects (a trial)")
+    ap.add_argument("--absent-out", help="write the keys the store holds under --prefix that R2 no longer has")
+    ap.add_argument("--prune-absent", action="store_true",
+                    help="before T0, delete from the store what R2 no longer has under --prefix (else rc 1)")
     a = ap.parse_args()
+    if a.prune_absent:
+        from core import cutover                                                 # noqa: PLC0415
+        if cutover.is_cut_over():
+            ap.error("--prune-absent is refused after T0: the store is then newer than R2")
     from core import r2_util  # noqa: PLC0415
     s3 = r2_util.cloud_client()     # a named final-sync reader: keeps reading the cloud after T0
     store = BlobStore(a.root, create=a.create)
-    if a.workers <= 1 and not a.resume and not a.progress and not a.limit:
+    # a --prefix always takes the bulk path: it alone checks for objects R2 no longer has
+    if not a.prefix and a.workers <= 1 and not (a.resume or a.progress or a.limit):
         return _serial(s3, store, a)
     return _bulk(r2_util, s3, store, a)
 
@@ -155,23 +167,46 @@ def _serial(s3, store, a) -> int:
     return 1 if bad else 0
 
 
+def _utc_s(lm) -> str | None:
+    """A boto3 LastModified as the store keeps it (ISO, UTC, whole seconds) - see copy_one."""
+    return lm.astimezone(dt.timezone.utc).isoformat(timespec="seconds") if lm is not None else None
+
+
+def _prefix_listing(s3, prefix):
+    """(key, etag, size, last_modified) under one prefix, streamed page by page, in R2's (UTF-8 byte) key order."""
+    tok = None
+    while True:
+        kw = {"Bucket": BUCKET, "Prefix": prefix}
+        if tok:
+            kw["ContinuationToken"] = tok
+        resp = s3.list_objects_v2(**kw)
+        for o in resp.get("Contents") or []:
+            yield o["Key"], o["ETag"].strip('"'), o["Size"], _utc_s(o.get("LastModified"))
+        if not resp.get("IsTruncated"):
+            break
+        tok = resp["NextContinuationToken"]
+
+
 def _listed(s3, a):
-    """(key, etag, size) for every --key and every object under every --prefix, streamed page by page."""
+    """(key, etag, size, last_modified) for every --key and every object under every --prefix, streamed."""
     for k in a.key:
         h = s3.head_object(Bucket=BUCKET, Key=k)
-        yield k, h["ETag"].strip('"'), h["ContentLength"]
+        yield k, h["ETag"].strip('"'), h["ContentLength"], _utc_s(h.get("LastModified"))
     for p in a.prefix:
-        tok = None
-        while True:
-            kw = {"Bucket": BUCKET, "Prefix": p}
-            if tok:
-                kw["ContinuationToken"] = tok
-            resp = s3.list_objects_v2(**kw)
-            for o in resp.get("Contents") or []:
-                yield o["Key"], o["ETag"].strip('"'), o["Size"]
-            if not resp.get("IsTruncated"):
-                break
-            tok = resp["NextContinuationToken"]
+        yield from _prefix_listing(s3, p)
+
+
+def absent_on_r2(s3, store, prefix):
+    """Keys the STORE holds under `prefix` that R2 no longer lists (review AR-182 finding 1: a delete on R2 - a
+    backup prune, a retire, a licence removal, a re-key - otherwise never reaches the store, and a resume reports
+    success over it). A merge of two streams in the same byte order: neither side is held in memory."""
+    theirs = (k for k, _e, _s, _m in _prefix_listing(s3, prefix))
+    nxt = next(theirs, None)
+    for mine in store.iter_keys(prefix):
+        while nxt is not None and nxt.encode("utf-8") < mine.encode("utf-8"):
+            nxt = next(theirs, None)
+        if nxt != mine:
+            yield mine
 
 
 def _bulk(r2_util, s3, store, a) -> int:
@@ -223,14 +258,19 @@ def _bulk(r2_util, s3, store, a) -> int:
     last = time.time()
     pending = set()
     with ThreadPoolExecutor(max(1, a.workers)) as ex:
-        for key, etag, size in _listed(s3, a):
+        for key, etag, size, modified in _listed(s3, a):
             if a.limit and c["listed"] >= a.limit:
+                c["limited"] = True
                 break
             c["listed"] += 1
             c["last_key"] = key
             if a.resume:
                 h = store.head(key)
-                if h is not None and h["etag"] == etag and h["size"] == size:
+                # the SAME object: bytes (etag, size) and R2's LastModified (whole seconds, as copy_one keeps it).
+                # A re-PUT of identical bytes moves LastModified, and a resume that skips it leaves the store
+                # holding an older stored time than R2 (review AR-182 finding 2)
+                if (h is not None and h["etag"] == etag and h["size"] == size
+                        and (modified is None or h["stored_utc"] == modified)):
                     c["skipped_held"] += 1
                     continue
             pending.add(ex.submit(one, key, size))
@@ -240,10 +280,48 @@ def _bulk(r2_util, s3, store, a) -> int:
                 report()
                 last = time.time()
         wait(pending)
+    absent = _absent_pass(s3, store, a, c)
     report(final=True)
     print(f"listed {c['listed']:,}; held already {c['skipped_held']:,}; copied {c['copied']:,} "
-          f"({c['bytes'] / 1e9:.2f} GB); failures {c['failed']:,}")
-    return 1 if c["failed"] else 0
+          f"({c['bytes'] / 1e9:.2f} GB); failures {c['failed']:,}; {c['absent_note']}")
+    return 1 if c["failed"] or (absent and not a.prune_absent) else 0
+
+
+def _absent_pass(s3, store, a, c) -> int:
+    """After the copy: what the store holds under each --prefix that R2 no longer has. A fresh listing, so keys
+    the copy itself wrote are never mistaken for deletions. Reported (count, and the keys to --absent-out) and
+    rc 1; --prune-absent deletes them from the store instead. Not run on a --limit trial (it saw part of the
+    prefix only) nor after T0 (the store is then newer than R2, and absence on R2 says nothing)."""
+    from core import cutover                                                   # noqa: PLC0415
+    c["absent"] = 0
+    if not a.prefix:
+        c["absent_note"] = "absent check: no --prefix"
+        return 0
+    if c.get("limited"):
+        c["absent_note"] = "absent check NOT RUN: --limit saw part of the prefix only"
+        return 0
+    if cutover.is_cut_over():
+        c["absent_note"] = "absent check NOT RUN: after T0 the store is newer than R2"
+        return 0
+    out = open(a.absent_out, "w", encoding="utf-8", newline="\n") if a.absent_out else None
+    pruned = 0
+    try:
+        for p in a.prefix:
+            for k in absent_on_r2(s3, store, p):
+                c["absent"] += 1
+                if out:
+                    out.write(k + "\n")
+                elif c["absent"] <= 20:
+                    print(f"ABSENT {k}", flush=True)
+                if a.prune_absent:
+                    pruned += store.delete(k)
+    finally:
+        if out:
+            out.close()
+    c["pruned"] = pruned
+    c["absent_note"] = (f"held but not on R2 {c['absent']:,}" + (f" (pruned {pruned:,})" if a.prune_absent else "")
+                        + (f" -> {a.absent_out}" if a.absent_out and c["absent"] else ""))
+    return c["absent"]
 
 
 if __name__ == "__main__":
