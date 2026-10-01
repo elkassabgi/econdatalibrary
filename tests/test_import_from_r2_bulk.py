@@ -402,7 +402,8 @@ def test_a_finished_receipt_ends_with_end_and_an_aborted_one_says_so(monkeypatch
     gone = {k: v for k, v in OBJ.items() if k != "series/k1.csv"}
     imp._absent_pass(FakeBucket(gone), BlobStore(str(tmp_path / "blobs")), _ns(tmp_path, prune_absent=False), {})
     lines = _receipt(tmp_path, marks=True)
-    assert lines[0].startswith("# BEGIN") and lines[-1].startswith("# END absent 1 missing 0")
+    assert lines[0].startswith("# ABSENT CHECK BEGIN") and lines[-1].startswith("# END absent 1 missing 0")
+    (tmp_path / "absent.txt").unlink()               # a direct call appends; main() starts each run's receipt
     late = FakeBucket(gone, order=lambda k: (k == "series/k5.csv", k.encode("utf-8")))     # k5 listed LAST
     with pytest.raises(imp.ListingOutOfOrder):
         imp._absent_pass(late, BlobStore(str(tmp_path / "blobs")), _ns(tmp_path), {})
@@ -417,7 +418,7 @@ def test_a_copy_listing_that_ends_early_fails_the_run(monkeypatch, tmp_path):
     b.short_first_listing = True
     rc, p = _run(monkeypatch, b, tmp_path, "--absent-out", str(tmp_path / "absent.txt"))
     assert p["copied"] == 2 and p["r2_not_held"] == 5 and rc == 1
-    assert sorted(ln.split(" ", 1)[1] for ln in _receipt(tmp_path) if ln.startswith("MISSING ")) == \
+    assert sorted(ln.split(" ")[1] for ln in _receipt(tmp_path) if ln.startswith("MISSING ")) == \
         sorted(OBJ)[2:]
 
 
@@ -430,7 +431,7 @@ def test_a_key_r2_has_between_held_keys_is_missing(monkeypatch, tmp_path):
     assert imp._absent_pass(FakeBucket(more), BlobStore(str(tmp_path / "blobs")), _ns(tmp_path, prune_absent=False),
                             c) == 3
     assert [ln for ln in _receipt(tmp_path) if ln.startswith("MISSING ")] == [
-        "MISSING series/a.csv", "MISSING series/k3a.csv", "MISSING series/z.csv"]
+        f"MISSING series/{k} 2026-09-01T12:00:00+00:00" for k in ("a.csv", "k3a.csv", "z.csv")]
 
 
 def test_each_delete_line_is_on_disk_before_its_delete(monkeypatch, tmp_path):
@@ -511,3 +512,145 @@ def test_a_progress_file_held_open_never_ends_the_copy(monkeypatch, tmp_path, ca
     assert imp.main() == 0
     assert "held open by another process" in capsys.readouterr().out
     assert len(BlobStore(str(tmp_path / "blobs")).list("series/")) == 7
+
+
+# ---- AR-182 round 4 ------------------------------------------------------------------------------------------
+
+def test_an_unheld_r2_key_is_a_gap_if_older_than_the_run_and_new_if_not(monkeypatch, tmp_path):
+    """Finding 1: keys CI wrote during a multi-day run looked like copy gaps, so rc 1 became permanent."""
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    start = "2026-10-01T00:00:00+00:00"
+    more = dict(OBJ, **{"series/g.csv": b"g", "series/n.csv": b"n", "series/s.csv": b"s"})
+    b = FakeBucket(more, modified={"series/n.csv": dt.datetime(2026, 10, 2, 8, 0, tzinfo=dt.timezone.utc),
+                                   "series/s.csv": dt.datetime(2026, 10, 1, 0, 0, 0, 400000,
+                                                               tzinfo=dt.timezone.utc)})   # the start's own second
+    c = {"run_start_utc": start}
+    assert imp._absent_pass(b, BlobStore(str(tmp_path / "blobs")), _ns(tmp_path, prune_absent=False), c) == 1
+    assert c["r2_not_held"] == 1 and c["r2_new"] == 2
+    tagged = [ln for ln in _receipt(tmp_path) if ln.split(" ")[0] in ("NEW", "MISSING")]
+    assert tagged == ["MISSING series/g.csv 2026-09-01T12:00:00+00:00", "NEW series/n.csv 2026-10-02T08:00:00+00:00",
+                      "NEW series/s.csv 2026-10-01T00:00:00+00:00"]
+
+
+def test_a_run_records_its_own_start(monkeypatch, tmp_path):
+    _rc, p = _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    assert p["run_start_utc"] <= dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    assert p["run_start_utc"] > "2026-01-01"
+
+
+def _old_receipt(tmp_path):
+    (tmp_path / "absent.txt").write_text("# BEGIN run 2026-09-01\nABSENT series/old.csv\n# END absent 1\n",
+                                         encoding="utf-8")
+
+
+def test_a_run_that_dies_in_the_copy_never_leaves_an_old_end(monkeypatch, tmp_path):
+    """Finding 2: Ctrl+C in the copy listing left the previous run's finished receipt byte for byte."""
+    import pytest
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    _old_receipt(tmp_path)
+    b = FakeBucket(OBJ)
+    b.list_objects_v2 = lambda **kw: (_ for _ in ()).throw(KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        _run(monkeypatch, b, tmp_path, "--resume", "--absent-out", str(tmp_path / "absent.txt"))
+    lines = _receipt(tmp_path, marks=True)
+    assert lines[0].startswith("# BEGIN run 2026-") and "old.csv" not in "".join(lines)
+    assert lines[-1].startswith("# ABORTED KeyboardInterrupt") and not any(ln.startswith("# END") for ln in lines)
+
+
+def test_skipped_absent_checks_say_not_run(monkeypatch, tmp_path):
+    from core import cutover
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    _old_receipt(tmp_path)
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path, "--resume", "--limit", "2", "--absent-out", str(tmp_path / "absent.txt"))
+    lines = _receipt(tmp_path, marks=True)
+    assert lines[0].startswith("# BEGIN run") and lines[-1].startswith("# NOT RUN absent check NOT RUN: --limit")
+    _old_receipt(tmp_path)
+    monkeypatch.setattr(cutover, "is_cut_over", lambda: True)
+    monkeypatch.setattr(imp, "copy_one", lambda *x, **k: (True, "kept"))
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path, "--absent-out", str(tmp_path / "absent.txt"))
+    assert _receipt(tmp_path, marks=True)[-1].startswith("# NOT RUN absent check NOT RUN: after T0")
+    import core.r2_util as r2u
+    monkeypatch.setattr(r2u, "cloud_client", lambda: FakeBucket(OBJ))
+    monkeypatch.setattr(sys, "argv", ["import_from_r2.py", "--root", str(tmp_path / "blobs"), "--key", "series/k1.csv",
+                                      "--absent-out", str(tmp_path / "absent.txt")])
+    imp.main()
+    lines = _receipt(tmp_path, marks=True)
+    assert lines[0].startswith("# BEGIN run") and lines[-1] == "# NOT RUN absent check NOT RUN: no --prefix"
+
+
+def test_ctrl_c_in_the_absent_pass_is_marked_aborted_once(monkeypatch, tmp_path):
+    """Finding 3 (U1): ABORTED on Ctrl+C needs `except BaseException`; nothing pinned it."""
+    import pytest
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    b = FakeBucket(OBJ)
+    real = b.list_objects_v2
+    calls = []
+
+    def listing(**kw):
+        calls.append(1)
+        if len(calls) > 4:                       # the copy listing is 4 pages; the absent listing then dies
+            raise KeyboardInterrupt()
+        return real(**kw)
+    b.list_objects_v2 = listing
+    with pytest.raises(KeyboardInterrupt):
+        _run(monkeypatch, b, tmp_path, "--resume", "--absent-out", str(tmp_path / "absent.txt"))
+    lines = _receipt(tmp_path, marks=True)
+    assert lines[-1].startswith("# ABORTED KeyboardInterrupt")
+    assert sum(ln.startswith("# ABORTED") for ln in lines) == 1 and any("ABSENT CHECK BEGIN" in ln for ln in lines)
+
+
+def test_ctrl_c_marks_the_receipt_even_when_the_absent_pass_is_called_alone(monkeypatch, tmp_path):
+    """Round-5 mutant V1: through main() the outer handler hides a pass that catches only Exception."""
+    import pytest
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    b = FakeBucket(OBJ)
+    b.list_objects_v2 = lambda **kw: (_ for _ in ()).throw(KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        imp._absent_pass(b, BlobStore(str(tmp_path / "blobs")), _ns(tmp_path, prune_absent=False), {})
+    assert _receipt(tmp_path, marks=True)[-1].startswith("# ABORTED KeyboardInterrupt")
+
+
+def test_progress_is_reported_during_the_prune(monkeypatch, tmp_path):
+    """Round-5 mutant V12: up to --prune-max HEADs and deletes ran with no progress."""
+    import time
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    left = {k: v for k, v in OBJ.items() if k not in ("series/k1.csv", "series/k2.csv", "series/k3.csv")}
+    b = FakeBucket(left)
+    clock = [1000.0]
+    monkeypatch.setattr(time, "time", lambda: clock.__setitem__(0, clock[0] + 31) or clock[0])
+    heads_at_report = []
+    c = {}
+    imp._absent_pass(b, BlobStore(str(tmp_path / "blobs")), _ns(tmp_path), c,
+                     lambda: heads_at_report.append(len(b.heads)))
+    assert c["pruned"] == 3 and any(h >= 1 for h in heads_at_report)
+
+
+def test_a_progress_write_retries_with_back_off_and_succeeds(monkeypatch, tmp_path, capsys):
+    """Finding 3 (U3/U4): the only retry test failed every attempt, so neither the retry nor its back-off was
+    shown to work."""
+    import time
+    real = os.replace
+    fails = []
+    sleeps = []
+
+    def replace(src, dst):
+        if str(dst).endswith("p.json") and len(fails) < 2:
+            fails.append(1)
+            raise PermissionError(5, "Access is denied", str(dst))
+        return real(src, dst)
+    monkeypatch.setattr(imp.os, "replace", replace)
+    monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
+    rc, p = _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    assert rc == 0 and p["done"] and sleeps[:2] == [0.2, 0.4] and len(fails) == 2
+    assert "held open" not in capsys.readouterr().out
+
+
+def test_without_a_receipt_the_first_20_missing_are_printed(monkeypatch, tmp_path, capsys):
+    """Finding 3 (U7): the 20-line print cap was tested for ABSENT only."""
+    BlobStore(str(tmp_path / "blobs"), create=True)
+    many = {f"series/m{i:02d}.csv": b"%d" % i for i in range(25)}
+    c = {}
+    assert imp._absent_pass(FakeBucket(many), BlobStore(str(tmp_path / "blobs")),
+                            _ns(tmp_path, absent_out=None, prune_absent=False), c) == 25
+    printed = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("MISSING ")]
+    assert c["r2_not_held"] == 25 and len(printed) == 20

@@ -142,13 +142,29 @@ def main() -> int:
         from core import cutover                                                 # noqa: PLC0415
         if cutover.is_cut_over():
             ap.error("--prune-absent is refused after T0: the store is then newer than R2")
-    from core import r2_util  # noqa: PLC0415
-    s3 = r2_util.cloud_client()     # a named final-sync reader: keeps reading the cloud after T0
-    store = BlobStore(a.root, create=a.create)
-    # a --prefix always takes the bulk path: it alone checks for objects R2 no longer has
-    if not a.prefix and a.workers <= 1 and not (a.resume or a.progress or a.limit):
-        return _serial(s3, store, a)
-    return _bulk(r2_util, s3, store, a)
+    if a.absent_out:
+        # the receipt belongs to THIS run from its first moment: an earlier run's "# END" never survives a run
+        # that dies, is skipped or never reaches the absent check (AR-182 round 4 finding 2)
+        with open(a.absent_out, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(f"# BEGIN run {_utc_s(dt.datetime.now(dt.timezone.utc))} prefixes {a.prefix} "
+                     f"keys {len(a.key)} prune {bool(a.prune_absent)}\n")
+    try:
+        from core import r2_util  # noqa: PLC0415
+        s3 = r2_util.cloud_client()     # a named final-sync reader: keeps reading the cloud after T0
+        store = BlobStore(a.root, create=a.create)
+        # a --prefix always takes the bulk path: it alone checks for objects R2 no longer has
+        if not a.prefix and a.workers <= 1 and not (a.resume or a.progress or a.limit):
+            rc = _serial(s3, store, a)
+            if a.absent_out:
+                with open(a.absent_out, "a", encoding="utf-8", newline="\n") as fh:
+                    fh.write("# NOT RUN absent check NOT RUN: no --prefix\n")
+            return rc
+        return _bulk(r2_util, s3, store, a)
+    except BaseException as e:
+        if a.absent_out and not getattr(e, "receipt_marked", False):
+            with open(a.absent_out, "a", encoding="utf-8", newline="\n") as fh:
+                fh.write(f"# ABORTED {type(e).__name__}: {e} - this receipt is NOT a complete list\n")
+        raise
 
 
 def _serial(s3, store, a) -> int:
@@ -219,15 +235,18 @@ def absent_on_r2(s3, store, prefix, seen=None, on_missing=None, tick=None):
     The listing is checked to strictly ascend as it is read (ListingOutOfOrder otherwise - AR-182 round 2 P2);
     a candidate is only a candidate: nothing is deleted on it before the whole merge finished and R2 confirmed
     the key gone with its own HEAD. The other direction is counted too (AR-182 round 3 finding 4): a key R2
-    lists that the store does NOT hold goes to on_missing(key) and seen["r2_not_held"]. `seen` (a dict) also
+    lists that the store does NOT hold goes to on_missing(key, its LastModified) and seen["listed_not_held"].
+    `seen` (a dict) also
     counts listed and judged keys; tick() runs once per listed key (the caller's progress clock)."""
     seen = seen if seen is not None else {}
-    for f in ("absent_listed", "absent_judged", "r2_not_held"):
+    for f in ("absent_listed", "absent_judged", "listed_not_held"):
         seen.setdefault(f, 0)
+
+    modified = {}
 
     def theirs():
         prev = None
-        for k, _e, _s, _m in _prefix_listing(s3, prefix):
+        for k, _e, _s, m in _prefix_listing(s3, prefix):
             b = k.encode("utf-8")
             if prev is not None and b <= prev:
                 raise ListingOutOfOrder(f"R2 listed {k!r} after {prev.decode('utf-8')!r} under {prefix!r}")
@@ -235,12 +254,14 @@ def absent_on_r2(s3, store, prefix, seen=None, on_missing=None, tick=None):
             seen["absent_listed"] += 1
             if tick:
                 tick()
+            modified.clear()
+            modified[k] = m                # only the current key's time is ever needed
             yield k
 
     def missing(k):
-        seen["r2_not_held"] += 1
+        seen["listed_not_held"] += 1
         if on_missing:
-            on_missing(k)
+            on_missing(k, modified.get(k))
     it = theirs()
     nxt = next(it, None)
     for mine in store.iter_keys(prefix):
@@ -279,8 +300,12 @@ def _bulk(r2_util, s3, store, a) -> int:
     from core.cutover import CutoverRefused                                    # noqa: PLC0415
     local = threading.local()
     lock = threading.Lock()
-    c = {"listed": 0, "skipped_held": 0, "copied": 0, "failed": 0, "bytes": 0, "last_key": None}
     t0 = time.time()
+    # R2 keys the absent check finds unheld are split on this: LastModified before it = a copy gap, at or after
+    # it = new on R2 since the run began (AR-182 round 4 finding 1). Whole seconds, as _utc_s writes them.
+    start = _utc_s(dt.datetime.fromtimestamp(int(t0), dt.timezone.utc))
+    c = {"listed": 0, "skipped_held": 0, "copied": 0, "failed": 0, "bytes": 0, "last_key": None,
+         "run_start_utc": start}
 
     def client():
         if not hasattr(local, "s3"):
@@ -373,29 +398,37 @@ def _absent_pass(s3, store, a, c, report=lambda: None) -> int:
       * its key is in the receipt (flushed) BEFORE the delete;
       * T0 has not begun: the flag is re-read before EVERY delete, and the rest are refused once it is set
         (AR-182 round 3 finding 1 - a merge of 14M keys takes hours).
-    The other direction is a FAIL too: a key R2 lists that the store does not hold (a copy listing that ended
-    early, or an object new on R2 since) - MISSING lines, counted unresolved (round 3 finding 4).
-    The receipt starts with a BEGIN line and ends with END (the pass finished) or ABORTED (it did not): a
-    receipt without END is never a complete list (round 3 finding 3). Progress is reported every 30 s while the
-    listing is read, candidates or not (round 3 finding 2).
+    The other direction is a FAIL too: a key R2 lists that the store does not hold. Split by its LastModified
+    against the run's start (round 4 finding 1): written BEFORE the run began = a copy gap (MISSING, counted
+    unresolved, rc 1); at or after it = new on R2 since the run began (NEW, counted, not a failure - the next
+    --resume copies it). Without a run start (a direct call) every one is a gap.
+    The receipt is opened by main() at the start of the run ("# BEGIN run"); this pass appends its own lines
+    and ends with END (it finished), NOT RUN (it was skipped, and why) or ABORTED (it did not finish). A receipt
+    without END is never a complete list (rounds 3 and 4, finding 3 / 2). Progress is reported every 30 s
+    while the listing is read and while the prune runs, candidates or not.
     Not run on a --limit trial (it saw part of the prefix only) nor after T0 (the store is then newer than R2,
     and absence on R2 says nothing)."""
     import time                                                                # noqa: PLC0415
     from core import cutover                                                   # noqa: PLC0415
-    c["absent"] = c["pruned"] = c["kept_on_r2"] = c["r2_not_held"] = 0
+    c["absent"] = c["pruned"] = c["kept_on_r2"] = c["r2_not_held"] = c["r2_new"] = 0
+    start = c.get("run_start_utc")
+    skip = None
     if not a.prefix:
-        c["absent_note"] = "absent check: no --prefix"
+        skip = "absent check NOT RUN: no --prefix"
+    elif c.get("limited"):
+        skip = "absent check NOT RUN: --limit saw part of the prefix only"
+    elif cutover.is_cut_over():
+        skip = "absent check NOT RUN: after T0 the store is newer than R2"
+    if skip:
+        c["absent_note"] = skip
+        if a.absent_out:
+            with open(a.absent_out, "a", encoding="utf-8", newline="\n") as fh:
+                fh.write(f"# NOT RUN {skip}\n")
         return 0
-    if c.get("limited"):
-        c["absent_note"] = "absent check NOT RUN: --limit saw part of the prefix only"
-        return 0
-    if cutover.is_cut_over():
-        c["absent_note"] = "absent check NOT RUN: after T0 the store is newer than R2"
-        return 0
-    out = open(a.absent_out, "w", encoding="utf-8", newline="\n") if a.absent_out else None
+    out = open(a.absent_out, "a", encoding="utf-8", newline="\n") if a.absent_out else None
     if out:
-        out.write(f"# BEGIN absent check {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
-                  f"prefixes {a.prefix} prune {bool(a.prune_absent)}\n")
+        out.write(f"# ABSENT CHECK BEGIN {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
+                  f"prefixes {a.prefix} prune {bool(a.prune_absent)} run start {start}\n")
     keep = []                                       # candidates held for a prune: at most --prune-max + 1
     refused = None
     clock = {"last": time.time()}
@@ -405,11 +438,14 @@ def _absent_pass(s3, store, a, c, report=lambda: None) -> int:
             report()
             clock["last"] = time.time()
 
-    def on_missing(k):
+    def on_missing(k, modified):
+        new = start is not None and modified is not None and modified >= start
+        c["r2_new" if new else "r2_not_held"] += 1
+        tag = "NEW" if new else "MISSING"
         if out:
-            out.write(f"MISSING {k}\n")
-        elif c["r2_not_held"] <= 20:
-            print(f"MISSING {k}", flush=True)
+            out.write(f"{tag} {k} {modified}\n")
+        elif c[("r2_new" if new else "r2_not_held")] <= 20:
+            print(f"{tag} {k} {modified}", flush=True)
     try:
         for p in a.prefix:
             before = c.get("absent_listed", 0)
@@ -430,6 +466,7 @@ def _absent_pass(s3, store, a, c, report=lambda: None) -> int:
                 refused = f"{c['absent']:,} candidates exceed --prune-max {a.prune_max:,}"
             if refused is None:
                 for k in keep:
+                    tick()
                     if cutover.is_cut_over():
                         refused = (f"T0 began during the prune: {len(keep) - c['pruned'] - c['kept_on_r2']:,} "
                                    f"deletes not done - after T0 the store is the served copy")
@@ -442,20 +479,24 @@ def _absent_pass(s3, store, a, c, report=lambda: None) -> int:
                     out.flush()
                     c["pruned"] += store.delete(k)
         if out:
-            out.write(f"# END absent {c['absent']} missing {c['r2_not_held']} pruned {c['pruned']} "
-                      f"kept {c['kept_on_r2']}" + (f" REFUSED: {refused}" if refused else "") + "\n")
+            out.write(f"# END absent {c['absent']} missing {c['r2_not_held']} new {c['r2_new']} "
+                      f"pruned {c['pruned']} kept {c['kept_on_r2']}"
+                      + (f" REFUSED: {refused}" if refused else "") + "\n")
     except BaseException as e:
         if out:
             out.write(f"# ABORTED {type(e).__name__}: {e} - this receipt is NOT a complete list\n")
+            e.receipt_marked = True                                           # main() does not write it twice
         raise
     finally:
         if out:
             out.close()
-    note = f"held but not on R2 {c['absent']:,}; on R2 but not held {c['r2_not_held']:,}"
+    note = (f"held but not on R2 {c['absent']:,}; on R2 but not held {c['r2_not_held']:,} "
+            f"(+ {c['r2_new']:,} new on R2 since the run began)")
     if a.prune_absent:
         note += (f" (prune REFUSED: {refused})" if refused else
                  f" (pruned {c['pruned']:,}; kept, R2 has them {c['kept_on_r2']:,})")
-    c["absent_note"] = note + (f" -> {a.absent_out}" if a.absent_out and (c["absent"] or c["r2_not_held"]) else "")
+    c["absent_note"] = note + (f" -> {a.absent_out}" if a.absent_out and
+                               (c["absent"] or c["r2_not_held"] or c["r2_new"]) else "")
     return c["absent"] - c["pruned"] + c["r2_not_held"]
 
 
