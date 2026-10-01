@@ -28,6 +28,12 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+try:                                   # as core.<m> or as a plain module from core/
+    from core.titles import clean_title
+except ImportError:
+    from titles import clean_title
 import shutil
 import sqlite3
 import sys
@@ -110,7 +116,7 @@ def main() -> int:
             p = os.path.join(OUTDIR, f"{src}_{i // BATCH:05d}.sql")
             with open(p, "w", encoding="utf-8", newline="\n") as fh:
                 for sid, t in pairs[i:i + BATCH]:
-                    fh.write(f"UPDATE series SET title={q(t)} WHERE series_id={q(sid)};\n")
+                    fh.write(f"UPDATE series SET title={q(clean_title(t))} WHERE series_id={q(sid)};\n")
             files.append(p)
         p = os.path.join(OUTDIR, f"{src}_zz_fts.sql")
         with open(p, "w", encoding="utf-8", newline="\n") as fh:

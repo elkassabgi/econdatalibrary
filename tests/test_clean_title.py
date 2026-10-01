@@ -33,7 +33,9 @@ from core.titles import clean_title  # noqa: E402
     ("a \t\n\t b", "a b"),                                                        # whitespace around the break
     ("a\n\n\nb", "a b"),                                                          # several breaks in a row
     ("no  break here", "no  break here"),                                         # untouched: double space stays
-    ("  padded  ", "padded"),
+    ("  padded  ", "  padded  "),                                                 # no break -> unchanged (R1324)
+    (" nbsp ", " nbsp "),                                     # no break -> unchanged
+    ("  a\nb  ", "a b"),                                                          # a break -> cleaned AND stripped
     ("", ""),
 ])
 def test_clean_title(raw, want):
@@ -57,7 +59,8 @@ WRITERS = [
     "tools/catalog_eia_tables.py", "tools/title_eia_eba_all.py", "tools/title_eia_nuclear_status.py",
     "tools/title_eia_outlook_scenarios.py", "tools/apply_series_names.py", "core/apply_title_wave.py",
     "core/catalog.py", "tools/refresh_sec_edgar.py", "core/sync_catalog_d1.py",
-]
+    "tools/enrich_sec_edgar_tickers.py", "tools/sync_titles_to_d1.py", "core/export_d1_new_series.py",
+]   # tools/selfhost/origin_copies.py hands clean_title to SQLite (create_function) - its behaviour test covers it
 
 
 def _calls_clean_title(path):

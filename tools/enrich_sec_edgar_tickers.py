@@ -45,6 +45,7 @@ import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from core.titles import clean_title  # noqa: E402
 from core import catalog_path, cutover, d1_remote  # noqa: E402 - the catalogue resolver and the D1 road (plan step 1)
 
 UA ={"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
@@ -82,7 +83,7 @@ def plan():
         base = re.sub(r"\s*\([A-Z0-9\.\-,\s]+\)\s*$", "", str(title or "")).strip()
         if not base:
             base = tick
-        new = f"{base} ({', '.join(alls)})"
+        new = clean_title(f"{base} ({', '.join(alls)})")
         # EVERY ticker-keyed series is emitted, not just the ones whose LOCAL title
         # differs. The first version diffed against catalog.db and wrote it first, so
         # a follow-up `--d1` run recomputed the plan against its own completed work,

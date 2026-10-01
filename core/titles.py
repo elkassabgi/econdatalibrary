@@ -5,9 +5,10 @@ A publisher's table title sometimes carries a line break from its own layout - D
 site, in search results and in a CSV header such a title shows on two lines or with an empty first line, and it
 was the reason D1 held 25 titles altered by the SQL emitters' newline translation (R1315, fixed in #105).
 
-clean_title() turns every run of whitespace that CONTAINS a CR or LF into one space, and strips the ends. Nothing
-else changes: a double space elsewhere, punctuation and case stay exactly as the publisher wrote them. Every
-writer of `series.title` that can produce such a title calls it (tests/test_clean_title.py names them).
+ONE PREDICATE (review R1324): a title is changed if and only if it holds a CR or LF - has_line_break(). Then every
+run of whitespace that contains a CR or LF becomes one space and the ends are stripped. A title with NO line break
+is returned unchanged, byte for byte (leading/trailing spaces, NBSP and all), so the D1 sync, the local cleaner, its
+--check detector and the self-host copy all act on exactly the same set of rows.
 """
 from __future__ import annotations
 
@@ -16,8 +17,13 @@ import re
 _BREAK = re.compile(r"[^\S\r\n]*[\r\n][\s]*")
 
 
+def has_line_break(title) -> bool:
+    return isinstance(title, str) and ("\n" in title or "\r" in title)
+
+
 def clean_title(title):
-    """The title with each line break (and the whitespace around it) as one space, stripped. None stays None."""
-    if title is None:
-        return None
-    return _BREAK.sub(" ", str(title)).strip()
+    """A title WITH a line break: each break (and the whitespace around it) as one space, ends stripped. Any other
+    value - None, or a title without a CR/LF - is returned unchanged."""
+    if not has_line_break(title):
+        return title
+    return _BREAK.sub(" ", title).strip()

@@ -41,6 +41,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 from core.sync_state_d1 import CATALOG_SHARD_FOR  # noqa: E402
+from core.titles import clean_title  # noqa: E402
 
 SHARD_SOURCES = tuple(sorted(s for s, db in CATALOG_SHARD_FOR.items() if db == "econ-catalog-climate"))
 COUNTS_DDL = "CREATE TABLE source_counts(source_id TEXT PRIMARY KEY, n INTEGER NOT NULL)"
@@ -54,6 +55,15 @@ def _recount(con: sqlite3.Connection) -> None:
     con.execute("DROP TABLE IF EXISTS source_counts")
     con.execute(COUNTS_DDL)
     con.execute("INSERT INTO source_counts(source_id, n) SELECT source_id, COUNT(*) FROM series GROUP BY source_id")
+
+
+def _clean_titles(con: sqlite3.Connection) -> int:
+    """Titles in the copy carry no line break (Ahmed 2026-10-01, core/titles.py): the copy is what the self-hosted
+    origin serves, and ~45 writers of the catalogue do not all clean their titles (review R1324). Runs BEFORE
+    _rebuild_fts, so the index is built from the cleaned titles; returns how many it changed."""
+    con.create_function("clean_title", 1, clean_title, deterministic=True)
+    return con.execute("UPDATE series SET title = clean_title(title) "
+                       "WHERE instr(title, char(10)) > 0 OR instr(title, char(13)) > 0").rowcount
 
 
 def _rebuild_fts(con: sqlite3.Connection, ddl: str) -> None:
@@ -128,6 +138,7 @@ def build(catalogue: str, out_dir: str, lock=None, state_db: str | None = None) 
         for s in SHARD_SOURCES:
             dst.execute("DELETE FROM series WHERE source_id=?", (s,))
         _recount(dst)
+        _clean_titles(dst)
         _rebuild_fts(dst, schema["series_fts"])
         if fresh_sql:
             # the emitted projection is the ONLY source: a table the catalogue happened to carry (a copy
@@ -141,6 +152,7 @@ def build(catalogue: str, out_dir: str, lock=None, state_db: str | None = None) 
             dst.executescript("\n".join(sync_state_d1.data_through_stmts(dt_rows)))
         dst.commit()
         _recount(c)
+        _clean_titles(c)
         _rebuild_fts(c, schema["series_fts"])
         c.commit()
         for con in opened:
@@ -216,6 +228,10 @@ def check(primary: str, climate: str, total: int, freshness: bool = False) -> di
         qc = con.execute("PRAGMA quick_check").fetchone()[0]
         n = con.execute("SELECT COUNT(*) FROM series").fetchone()[0]
         fts = con.execute("SELECT COUNT(*) FROM series_fts").fetchone()[0]
+        broken = con.execute("SELECT COUNT(*) FROM series WHERE instr(title, char(10)) > 0 "
+                             "OR instr(title, char(13)) > 0").fetchone()[0]
+        if broken:
+            raise RuntimeError(f"{label}: {broken:,} title(s) hold a line break (core/titles.py)")
         shard = con.execute(f"SELECT COUNT(*) FROM series WHERE source_id IN ({','.join('?' * len(SHARD_SOURCES))})",
                             SHARD_SOURCES).fetchone()[0] if SHARD_SOURCES else 0
         counted = con.execute("SELECT COALESCE(SUM(n), 0) FROM source_counts").fetchone()[0]

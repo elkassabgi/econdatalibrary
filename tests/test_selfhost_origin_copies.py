@@ -420,3 +420,26 @@ def test_the_shard_list_is_the_worker_s():
     m = re.search(r"SHARDED_SOURCES: ReadonlySet<string> = new Set\(\[([^\]]*)\]\)", util)
     assert m, "util.ts SHARDED_SOURCES not found"
     assert tuple(sorted(re.findall(r'"([^"]+)"', m.group(1)))) == oc.SHARD_SOURCES == ("noaa",)
+
+
+def test_the_copies_carry_no_title_line_break(tmp_path):
+    """Ahmed 2026-10-01 (core/titles.py): what the self-hosted origin serves holds no title line break, in either
+    copy, and the rebuilt index carries the cleaned title - the catalogue itself is never written."""
+    cat = tmp_path / "catalog.db"
+    _catalogue(cat)
+    c = sqlite3.connect(cat)
+    c.execute("UPDATE series SET title=? WHERE series_id='ecb:x'", ("Production" + chr(10) + "and income",))
+    c.execute("UPDATE series SET title=? WHERE series_id='noaa:a'", (chr(13) + chr(10) + "walrus climate",))
+    c.execute("UPDATE series SET title='  padded  ' WHERE series_id='ecb:y'")              # no break: unchanged
+    c.commit()
+    c.close()
+    before = _digest(cat)
+    oc.build(str(cat), str(tmp_path / "out"))
+    assert _digest(cat) == before
+    p = sqlite3.connect(tmp_path / "out" / "primary.sqlite")
+    assert dict(p.execute("SELECT series_id, title FROM series")) == {
+        "ecb:x": "Production and income", "ecb:y": "  padded  ", "noaa_direct:c": "t noaa_direct:c"}
+    assert p.execute("SELECT title FROM series_fts WHERE series_id='ecb:x'").fetchall() == [("Production and income",)]
+    k = sqlite3.connect(tmp_path / "out" / "climate.sqlite")
+    assert k.execute("SELECT title FROM series WHERE series_id='noaa:a'").fetchone() == ("walrus climate",)
+    assert k.execute("SELECT title FROM series_fts WHERE series_id='noaa:a'").fetchall() == [("walrus climate",)]
