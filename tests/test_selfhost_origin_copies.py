@@ -76,6 +76,7 @@ def test_a_failed_build_leaves_no_copy(tmp_path):
     ("DELETE FROM series_fts WHERE series_id='ecb:x'", "series_fts has"),
     ("INSERT INTO series VALUES ('noaa:z', 'noaa', 't', 'g', 'pd')", "series_fts has"),
     ("UPDATE source_counts SET n = n + 1", "source_counts sums"),
+    ("UPDATE series SET title = 'a' || char(10) || 'b' WHERE series_id='ecb:x'", "hold a line break"),   # R1325
 ])
 def test_the_checks_catch_a_damaged_primary(tmp_path, damage, needle):
     cat = tmp_path / "catalog.db"

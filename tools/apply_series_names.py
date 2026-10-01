@@ -76,7 +76,8 @@ def process(con, src, apply):
             continue
         matched += 1
         cur_title, cur_geo, cur_unit, cur_meta = cur
-        new_title = clean_title(row.get("title") or "")
+        new_title = clean_title((row.get("title") or "").strip())     # strip first (R1325): an edge-space or
+                                                                       # blank CSV title is not a new title
         new_desc = (row.get("description") or "").strip()
         new_geo = (row.get("geography") or "").strip()
         new_unit = (row.get("unit") or "").strip()

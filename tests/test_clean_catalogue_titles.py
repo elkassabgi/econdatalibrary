@@ -119,6 +119,34 @@ def test_check_is_a_detector_that_can_fail(tmp_path, monkeypatch):
     assert cct.main(["--check", "--i18n"]) == 0
 
 
+@pytest.mark.parametrize("raw, want", [("  T  ", ("T", False)), ("   ", ("14100360", True)), (None, ("14100360", True)),
+                                       ("A\nB", ("A B", False))])
+def test_statcan_cube_title_strips_and_falls_back(raw, want):
+    """R1325: the statcan re-cataloguer kept its strip - edge spaces go, a blank title falls back to the Product ID."""
+    import catalog_statcan_tables as cst
+    assert cst.cube_title({"title": raw} if raw is not None else {}, "14100360") == want
+
+
+def test_apply_series_names_strips_and_skips_a_blank_title(tmp_path, monkeypatch):
+    """R1325: an edge-space CSV title is stored stripped (and is no change against the same stripped title); a blank
+    one is not a new title."""
+    import apply_series_names as asn
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT, title TEXT, geography TEXT, "
+                "unit TEXT, metadata TEXT)")
+    con.executemany("INSERT INTO series VALUES (?, 's', ?, NULL, NULL, '{}')",
+                    [("s:1", "Same"), ("s:2", "Old"), ("s:3", "Keep"), ("s:4", "Was")])
+    con.commit()
+    csv_rows = [{"series_id": "s:1", "title": "  Same  "}, {"series_id": "s:2", "title": "  New  "},
+                {"series_id": "s:3", "title": "   "}, {"series_id": "s:4", "title": "Line\nbreak"}]
+    monkeypatch.setattr(asn, "stream_rows", lambda src: iter(csv_rows))
+    monkeypatch.setattr(asn, "PENDING", str(tmp_path / "pending.txt"))
+    out = asn.process(con, "s", apply=True)
+    assert dict(con.execute("SELECT series_id, title FROM series")) == {
+        "s:1": "Same", "s:2": "New", "s:3": "Keep", "s:4": "Line break"}
+    assert out["title_diff"] == 2
+
+
 def test_refresh_sec_edgar_writes_d1_titles_cleaned():
     """refresh_sec_edgar writes D1 directly (it bypasses the sync's guard), so its own statements must carry the
     cleaned title - for a new id (INSERT + index row) and for a changed title (UPDATE)."""
