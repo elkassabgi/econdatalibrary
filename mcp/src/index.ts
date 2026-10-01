@@ -107,9 +107,16 @@ async function readCapped(r: Response, cap: number): Promise<{ text: string; cap
   return { text: out, capped: false };
 }
 const UPSTREAM_TIMEOUT_MS = 25_000;
+// A whole-source bundle manifest does one catalogue read per series (api bundle.ts), ~13-16 ms each:
+// 1,035 series took 13.0 s and 3,822 took 59.8 s (AR-186). Above this the tool refuses before
+// asking, instead of timing out after the server has done the work.
+const BUNDLE_SOURCE_MAX = 1000;
 
 // ── upstream fetch with timeout + one retry on transient failure ────────────
-async function upstream(url: string, apiKey?: string | null): Promise<Response> {
+// `retry` is false for a request whose cost grows with its input (a bundle manifest): a timeout
+// there is deterministic, so a retry doubles the server's work and the wait and changes nothing
+// (AR-186: a 3,822-series manifest timed out twice, 50 s, then "The operation was aborted").
+async function upstream(url: string, apiKey?: string | null, retry: boolean = true): Promise<Response> {
   const headers: Record<string, string> = { "User-Agent": "elkassabgidata-mcp", "X-Elkassabgi-Client": "mcp" };
   if (apiKey) headers["X-API-Key"] = apiKey;
   for (let attempt = 0; ; attempt++) {
@@ -118,11 +125,11 @@ async function upstream(url: string, apiKey?: string | null): Promise<Response> 
     try {
       const r = await fetch(url, { headers, signal: ctl.signal });
       clearTimeout(t);
-      if (r.status >= 500 && attempt === 0) continue;   // one retry on 5xx
+      if (r.status >= 500 && attempt === 0 && retry) continue;   // one retry on 5xx
       return r;
     } catch (e) {
       clearTimeout(t);
-      if (attempt === 0) continue;                       // one retry on abort/network
+      if (attempt === 0 && retry) continue;                       // one retry on abort/network
       throw e;
     }
   }
@@ -146,13 +153,16 @@ async function relayError(r: Response, what: string) {
   return text(`${what}: upstream returned HTTP ${r.status}${detail ? ` (${detail})` : ""}`);
 }
 
-const NO_KEY_MSG =
-  "This tool downloads data, which requires the free ElkassabgiData API key — " +
-  "ONE account for every Elkassabgi data library (hfdatalibrary.com, " +
-  "econdatalibrary.com, and future databases). If you registered on either " +
-  `site, that key works here. Get one free at ${ACCOUNT_URL} , then add it to ` +
-  "this MCP server's configuration (Authorization: Bearer <key>, X-API-Key " +
-  "header, or ?api_key=<key> appended to the server URL).";
+// How to get and configure the key - true wherever it is shown.
+const KEY_HOWTO =
+  "the free ElkassabgiData API key - ONE account for every Elkassabgi data library " +
+  "(hfdatalibrary.com, econdatalibrary.com, ipdatalibrary.com, and future ones). If you " +
+  `registered on any of them, that key works here. Get one free at ${ACCOUNT_URL} , then add it ` +
+  "to this MCP server's configuration (Authorization: Bearer <key>, X-API-Key header, or " +
+  "?api_key=<key> appended to the server URL).";
+const NO_KEY_MSG = "This tool downloads data, which requires " + KEY_HOWTO;
+// for a tool that is free itself but hands out URLs that need the key (AR-186 #6)
+const KEY_FOR_URLS_MSG = "Downloading these URLs requires " + KEY_HOWTO;
 
 // ── the 25 academic variables, VERBATIM from the published dictionary ───────
 const VARIABLES_25 = `The 25 pre-computed academic variables (per ticker, per trading day, raw & clean; source: hfdatalibrary.com/pages/dictionary):
@@ -186,7 +196,7 @@ const HONESTY_CHARTER = `ElkassabgiData honesty charter (relay these caveats wit
 • HF universe (US stocks/ETFs) is a recent snapshot — SURVIVOR-BIASED before ~2022. Cross-sectional results on earlier years must disclose this.
 • HF source break: post-2022-03-01 bars come from IEX Exchange HIST (~2-3% of consolidated volume); earlier data from a consolidated-history vendor. Volume levels are not comparable across the break.
 • 1-minute bars are NOT tick data: no quotes, no trade-level timestamps, no order book.
-• Econ licensing is PER SOURCE: most are CC-BY-class (attribution required); some are non-commercial (commercial_ok=false in the metadata). Data whose licence does not allow redistribution is not hosted at all. The license ships in every series' metadata — honor it.
+• Econ licensing is PER SOURCE: most are CC-BY-class (attribution required); a substantial share are non-commercial (commercial_ok=false in the metadata), and some forbid modification (no_modify). Data whose licence does not allow redistribution is not served or offered for download. The license ships in every series' metadata — honor it.
 • IP measures are computed from USPTO data (public domain, via PatentsView bulk tables); they are not the official USPTO record. Forward-citation counts are right-censored for recent patents.
 • Freshness is never fabricated: a series' date advances only when observations were actually fetched; failures surface as stale flags, not silent gaps (see get_data_freshness).
 • Missing values stay missing: nothing is interpolated, forward-filled, or invented anywhere in the pipeline.`;
@@ -237,7 +247,9 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
         `${x.series_id}\n   ${x.title ?? "(untitled)"} [${x.frequency ?? "?"}, ${x.geography ?? "?"}${x.unit ? ", " + x.unit : ""}] ${x.start_date ?? "?"}→${x.end_date ?? "?"} · license:${x.license_id ?? "?"}`);
       return text(
         `${d.total?.toLocaleString?.() ?? "?"} series match "${query}"${source ? ` in ${source}` : ""}. ` +
-        `Showing ${lines.length}${offset ? ` from result ${offset + 1}` : ""}:\n\n` +
+        (lines.length === 0 && offset
+          ? `No results from result ${offset + 1}: that is past the end of the matches.\n\n`
+          : `Showing ${lines.length}${offset ? ` from result ${offset + 1}` : ""}:\n\n`) +
         lines.join("\n") +
         `\n\nFetch data with get_econ_series(series_id). Metadata + citation with get_econ_series_metadata.`);
     });
@@ -293,7 +305,7 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
           // filtered request is refused 400 unsupported_filter, so this tool would send the
           // user round a loop. Name the client that can actually read it (R620).
           const beyondFilter = stored > FILTER_MAX_STORED_BYTES;
-          return { content: [{ type: "text", text: `${series_id}: this series is served whole as ${(stored / (1024 * 1024)).toFixed(1)} MB of compressed CSV - more than this tool can hold in memory, and far more than max_rows=${max_rows} would show. ` + (beyondFilter ? `It is also past the server's server-side filtering limit, so a date window will be refused too: this series cannot be read through this tool at all. Use the Python client (pip install econdl; econdl.series("${series_id}")), which streams it.` : `Ask again with date_from/date_to for the window you need.`) }], isError: true };
+          return { content: [{ type: "text", text: `${series_id}: this series is served whole as ${(stored / (1024 * 1024)).toFixed(1)} MB of compressed CSV - more than this tool can hold in memory, and far more than max_rows=${max_rows} would show. ` + (beyondFilter ? `It is also past the server's server-side filtering limit, so a date window will be refused too: this series cannot be read through this tool at all. Download the whole CSV directly instead (the server streams it): curl --compressed -H "X-API-Key: $ELKASSABGIDATA_KEY" -o series.csv "${ECON}/v1/series/${enc}.csv".` : `Ask again with date_from/date_to for the window you need.`) }], isError: true };
         }
       }
       // EVERY shape is capped, not just the one that declares its size. A windowed request
@@ -303,7 +315,7 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
       // tool's own line pipeline adds on top (R620). The read stops at the cap instead.
       const { text: csv, capped } = await readCapped(r, MCP_MAX_TEXT_BYTES);
       if (capped) {
-        return { content: [{ type: "text", text: `${series_id}: the response passed ${(MCP_MAX_TEXT_BYTES / (1024 * 1024)).toFixed(0)} MB of CSV and was stopped - reading it whole would exceed this tool's memory limit and end the session. Ask again for a narrower date_from/date_to window, or use the Python client (pip install econdl) for the full series.` }], isError: true };
+        return { content: [{ type: "text", text: `${series_id}: the response passed ${(MCP_MAX_TEXT_BYTES / (1024 * 1024)).toFixed(0)} MB of CSV and was stopped - reading it whole would exceed this tool's memory limit and end the session. Ask again for a narrower date_from/date_to window, or download the whole CSV directly: curl --compressed -H "X-API-Key: $ELKASSABGIDATA_KEY" -o series.csv "${ECON}/v1/series/${enc}.csv".` }], isError: true };
       }
       // Comment lines start with '#': the citation preamble (never on raw=1) and, on a response
       // with no content-length that is not a gzip passthrough, the mandatory completeness line
@@ -418,42 +430,68 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
     s.registerTool("get_econ_bundle_manifest", {
       title: "Economic Data Bundle Manifest",
       description:
-        "A citable, snapshot-pinned bundle manifest (Frictionless data package) for several econ " +
-        "series - explicit ids, or every series of one source: the per-series download URLs " +
-        "grouped by source, each source's licence and provenance, and any id that could not be " +
-        "resolved (reported, never dropped). Free, no key needed for the manifest; downloading " +
-        "the URLs needs the key. For a whole source, the Python client builds the bundle file " +
-        "itself: pip install econdl; econdl.bundle(source=...).",
+        "A citable bundle manifest (Frictionless data package) for several econ series - up to 50 " +
+        "explicit ids, or every series of one small source (up to " + `${BUNDLE_SOURCE_MAX.toLocaleString()}` +
+        " series): the per-series download URLs grouped by source, each source's attribution and " +
+        "licence, and any id that could not be resolved (reported, never dropped). The URLs serve " +
+        "the CURRENT data - this is not a frozen vintage. Free, no key needed for the manifest; " +
+        "downloading the URLs needs the key.",
       inputSchema: {
         ids: z.array(z.string().min(3)).min(1).max(50).optional()
           .describe("Up to 50 exact catalog ids from search_econ_series"),
-        source: z.string().optional().describe("One source id - every series of that source"),
-        snapshot: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
-          .describe("Pin the manifest to this date (default: today)"),
+        source: z.string().optional()
+          .describe(`One source id - every series of that source, if it has at most ${BUNDLE_SOURCE_MAX.toLocaleString()}`),
       },
       annotations: { readOnlyHint: true },
-    }, async ({ ids, source, snapshot }) => {
+    }, async ({ ids, source }) => {
+      const fail = (msg: string) => ({ content: [{ type: "text" as const, text: msg }], isError: true });
       if ((ids?.length ? 1 : 0) + (source ? 1 : 0) !== 1) {
-        return { content: [{ type: "text", text: "Give exactly one of ids (a list of series ids) or source (one source id)." }], isError: true };
+        return fail("Give exactly one of ids (a list of series ids) or source (one source id).");
+      }
+      // The endpoint splits every ids= value on commas, so an id that CONTAINS a comma would come
+      // back as invented not_found fragments (AR-186 #4: 150,362 catalogue ids contain one).
+      const commaIds = (ids ?? []).filter((x) => x.includes(","));
+      if (commaIds.length) {
+        return fail(`These ids contain a comma, which the manifest endpoint cannot carry (it would split them ` +
+          `into ids that do not exist): ${commaIds.slice(0, 5).join(" | ")}. Leave them out of the manifest and ` +
+          `get each one with get_econ_series / get_econ_series_metadata instead.`);
+      }
+      if (source) {
+        // SIZE IT FIRST. The manifest does one catalogue read per series, so a large source takes
+        // longer than this tool waits (AR-186 #2: 3,822 series took 59.8 s; 170 of 321 sources are
+        // past what fits). The catalogue's total for a source is cheap and edge-cached.
+        const c = new URL(`${ECON}/v1/catalog`);
+        c.searchParams.set("source", source);
+        c.searchParams.set("limit", "1");
+        const cr = await upstream(c.toString());
+        if (!cr.ok) return relayError(cr, "get_econ_bundle_manifest (sizing the source)");
+        const cd = await jsonCapped<{ total?: number }>(cr);
+        const total = Number(cd?.total);
+        if (!cd || !Number.isFinite(total)) return fail(`Could not read how many series '${source}' has; nothing was requested.`);
+        if (total === 0) return fail(`The catalogue lists no series for source '${source}' - check the id with list_econ_sources.`);
+        if (total > BUNDLE_SOURCE_MAX) {
+          return fail(`Source '${source}' has ${total.toLocaleString()} catalogued series - more than one manifest ` +
+            `can be built for within this tool's time limit (${BUNDLE_SOURCE_MAX.toLocaleString()}). Narrow it: ` +
+            `search_econ_series(query, source="${source}") and pass up to 50 ids, or fetch series one by one ` +
+            `with get_econ_series.`);
+        }
       }
       const u = new URL(`${ECON}/v1/bundle`);
       if (ids?.length) u.searchParams.set("ids", ids.join(","));
       if (source) u.searchParams.set("source", source);
-      if (snapshot) u.searchParams.set("snapshot", snapshot);
-      const r = await upstream(u.toString());
+      const r = await upstream(u.toString(), null, false);
       if (!r.ok) return relayError(r, "get_econ_bundle_manifest");
-      // A whole-source manifest lists one URL per series and grows with the source, so it is
-      // read through the same ceiling as every fleet-sized JSON body (R622).
+      // read through the same ceiling as every fleet-sized JSON body (R622)
       const d = await jsonCapped<{
-        "econdl:snapshot_date"?: string;
         "econdl:resource_url_count"?: number;
-        licenses?: Array<{ name: string; title: string | null; path: string | null }>;
-        resources?: Array<{ name: string; path: string[] }>;
+        resources?: Array<{
+          name: string; path: string[];
+          "econdl:provenance"?: { name?: string | null; attribution?: string | null; terms_url?: string | null;
+            license?: { id?: string | null; name?: string | null; commercial_ok?: boolean | null } | null };
+        }>;
         "econdl:unresolved"?: Array<{ id: string; reason: string }>;
       }>(r);
-      if (!d) {
-        return { content: [{ type: "text", text: `The manifest${source ? ` for source '${source}'` : ""} is larger than this tool can hold (over ${(MCP_MAX_JSON_BYTES / (1024 * 1024)).toFixed(0)} MB), or did not parse. For a whole large source use the Python client, which builds the bundle locally: pip install econdl; econdl.bundle(source="${source ?? ""}").` }], isError: true };
-      }
+      if (!d) return fail("The manifest came back larger than this tool can hold, or did not parse. Ask for fewer series.");
       const res = d.resources ?? [];
       const unresolved = d["econdl:unresolved"] ?? [];
       const SHOW = 40;
@@ -461,24 +499,28 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
       const blocks = res.map((x) => {
         const take = Math.max(0, Math.min(x.path.length, SHOW - shown));
         shown += take;
-        const urls = x.path.slice(0, take).map((p) => `   ${ECON}${p}`);
+        const p = x["econdl:provenance"] ?? {};
+        const lic = p.license ?? {};
+        const head = `${x.name}${p.name ? ` (${p.name})` : ""}: ${x.path.length.toLocaleString()} series\n` +
+          `   licence: ${lic.name ?? lic.id ?? "see the source's metadata"}${lic.commercial_ok === false ? " - NON-COMMERCIAL" : ""}` +
+          `${p.terms_url ? ` · terms ${p.terms_url}` : ""}\n` +
+          (p.attribution ? `   attribution: ${p.attribution}\n` : "");
+        const urls = x.path.slice(0, take).map((u2) => `   ${ECON}${u2}`);
         const more = x.path.length - take;
-        return `${x.name}: ${x.path.length.toLocaleString()} series\n` + urls.join("\n") +
-          (more > 0 ? `\n   … ${more.toLocaleString()} more URL(s) in this resource` : "");
+        return head + urls.join("\n") + (more > 0 ? `\n   … ${more.toLocaleString()} more URL(s) for this source` : "");
       });
-      const lic = (d.licenses ?? []).map((l) => `- ${l.title ?? l.name}${l.path ? ` (${l.path})` : ""}`);
       const keyNote = this.key()
         ? "A key is configured on this MCP server - the SAME key authorizes these URLs (send it as the X-API-Key header; never paste it into chat)."
-        : `No key is configured on this MCP server. ${NO_KEY_MSG}`;
+        : `No key is configured on this MCP server. ${KEY_FOR_URLS_MSG}`;
       return text(
-        `Bundle manifest, snapshot ${d["econdl:snapshot_date"] ?? "?"}: ` +
-        `${(d["econdl:resource_url_count"] ?? 0).toLocaleString()} series URL(s) in ${res.length} source resource(s)` +
-        `${unresolved.length ? `; ${unresolved.length} id(s) NOT resolved` : ""}.\n\n` +
+        `Bundle manifest generated ${new Date().toISOString().slice(0, 10)}: ` +
+        `${(d["econdl:resource_url_count"] ?? 0).toLocaleString()} series URL(s) in ${res.length} source(s)` +
+        `${unresolved.length ? `; ${unresolved.length} id(s) NOT resolved` : ""}. The URLs serve the current data, ` +
+        `not a frozen vintage - record the date you download.\n\n` +
         blocks.join("\n\n") +
         (unresolved.length ? `\n\nNot resolved (reported, never dropped):\n` +
           unresolved.slice(0, 50).map((x) => `- ${x.id}: ${x.reason}`).join("\n") : "") +
-        (lic.length ? `\n\nLicences (honor each):\n${lic.join("\n")}` : "") +
-        `\n\n${keyNote}\nTo build the bundle file itself: pip install econdl; econdl.bundle(${source ? `source="${source}"` : "[...ids]"}).`);
+        `\n\n${keyNote}\nFetch each URL with the key, e.g. curl --compressed -H "X-API-Key: $ELKASSABGIDATA_KEY" -o <file>.csv "<url>".`);
     });
 
     // ═════════════════ HF DATA LIBRARY ═════════════════
@@ -505,7 +547,7 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
           : `${HF_API}/v1/${dataset}/${t}?version=${version}&via=mcp`;
       const keyNote = this.key()
         ? "A key is configured on this MCP server — the SAME key authorizes these URLs."
-        : `No key is configured on this MCP server. ${NO_KEY_MSG}`;
+        : `No key is configured on this MCP server. ${KEY_FOR_URLS_MSG}`;
       return text(
         `${t} · ${dataset} · ${version}${dataset === "bars" ? " · " + format : " · parquet"}\n\n` +
         `URL: ${url}\n` +
@@ -533,7 +575,7 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
       title: "IP Data Library Bundles",
       description:
         "List the IP Data Library's snapshot-pinned patent/innovation bundles " +
-        "(patent-level measures on 9.4M+ US patents; assignee-year panels) with " +
+        "(patent-level measures on US patents; assignee-year panels) with " +
         "sizes, vintages and download paths. Free, no key needed.",
       inputSchema: {},
       annotations: { readOnlyHint: true },
@@ -575,7 +617,7 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
       const url = `${IP_API}/v1/bundles/${v}/${file}`;
       const keyNote = this.key()
         ? "A key is configured on this MCP server — the SAME key authorizes this URL."
-        : `No key is configured on this MCP server. ${NO_KEY_MSG}`;
+        : `No key is configured on this MCP server. ${KEY_FOR_URLS_MSG}`;
       return text(
         `${file} · vintage ${v}\n\n` +
         `URL: ${url}\n` +
@@ -616,7 +658,8 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
           out.push(
             `Econ Data Library (econdatalibrary.com): ${Number(sst.individual_series).toLocaleString()} individual series, ` +
             `${Number(sst.observations).toLocaleString()} observations, ${sst.sources_catalogued} sources ` +
-            `(measured ${sst.as_of}; method: ${sst.method}).`);
+            `(measured ${sst.as_of}; method: ${sst.method}).` +
+            (sst.recalculating ? ` NOTE: ${sst.recalculating_note ?? "these totals are being recalculated and may change."}` : ""));
         } else out.push("Econ Data Library: stats endpoint unreachable right now.");
       } catch { out.push("Econ Data Library: stats endpoint unreachable right now."); }
       try {
