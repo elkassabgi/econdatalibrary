@@ -532,10 +532,38 @@ def test_an_unheld_r2_key_is_a_gap_if_older_than_the_run_and_new_if_not(monkeypa
                       "NEW series/s.csv 2026-10-01T00:00:00+00:00"]
 
 
-def test_a_run_records_its_own_start(monkeypatch, tmp_path):
+def test_a_run_records_its_own_start_taken_early_by_the_clock_margin(monkeypatch, tmp_path):
+    """AR-182 round 5: this machine's clock is not synchronised; a clock behind R2 would turn a lost key into
+    NEW. The start is taken CLOCK_MARGIN_S LATE (fails closed)."""
+    before = dt.datetime.now(dt.timezone.utc)
     _rc, p = _run(monkeypatch, FakeBucket(OBJ), tmp_path)
-    assert p["run_start_utc"] <= dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
-    assert p["run_start_utc"] > "2026-01-01"
+    after = dt.datetime.now(dt.timezone.utc)
+    start = dt.datetime.fromisoformat(p["run_start_utc"])
+    assert imp.CLOCK_MARGIN_S >= 600
+    m = dt.timedelta(seconds=imp.CLOCK_MARGIN_S)
+    assert before + m - dt.timedelta(seconds=1) <= start <= after + m
+
+
+def test_a_key_written_just_before_the_run_and_lost_is_missing_not_new(monkeypatch, tmp_path):
+    """A key the copy listing lost, written 60 s before the run (a clock up to the margin behind R2)."""
+    b = FakeBucket(OBJ, modified={"series/k6.csv": dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=60)})
+    b.short_first_listing = True
+    rc, p = _run(monkeypatch, b, tmp_path, "--absent-out", str(tmp_path / "absent.txt"))
+    assert rc == 1 and p["r2_new"] == 0 and p["r2_not_held"] == 5
+
+
+def test_the_receipt_cannot_share_a_path_with_another_output(monkeypatch, tmp_path, capsys):
+    """AR-182 round 5 finding 1: --absent-out == --progress lost the prune receipt and passed rc 0."""
+    import pytest
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    for extra, msg in ((("--absent-out", str(tmp_path / "p.json")), "name the same file"),
+                       (("--absent-out", str(tmp_path / "P.JSON.tmp")), "name the same file"),
+                       (("--absent-out", str(tmp_path / "blobs" / "r.txt")), "inside the blob store")):
+        with pytest.raises(SystemExit):
+            _run(monkeypatch, FakeBucket(OBJ), tmp_path, *extra)
+        assert msg in capsys.readouterr().err
+    rc, _p = _run(monkeypatch, FakeBucket(OBJ), tmp_path, "--absent-out", str(tmp_path / "absent.txt"))   # control
+    assert rc == 0
 
 
 def _old_receipt(tmp_path):

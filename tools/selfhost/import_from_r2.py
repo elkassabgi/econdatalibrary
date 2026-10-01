@@ -42,6 +42,13 @@ from blobstore import BlobStore  # noqa: E402
 
 BUCKET = "econ-data"
 MIB = 1 << 20
+# The run start that splits NEW from MISSING is taken this much LATER than this machine's clock says: the clock
+# is compared with R2's LastModified, and nothing keeps it right (w32tm: the Windows Time service is not running;
+# ~1 s off on 2026-10-01). A clock BEHIND R2 makes a key written just before the run look NEW, which would hide
+# it if the copy listing lost it (AR-182 round 5). Later only turns a key written in the run's first minutes into
+# a reported MISSING (fails closed; the next run copies it). An EARLIER start is the wrong way round - it makes
+# more keys NEW (the first draft of this fix did that; its test caught it).
+CLOCK_MARGIN_S = 600
 
 
 def multipart_etag(data: bytes, part_size: int) -> str:
@@ -142,6 +149,17 @@ def main() -> int:
         from core import cutover                                                 # noqa: PLC0415
         if cutover.is_cut_over():
             ap.error("--prune-absent is refused after T0: the store is then newer than R2")
+    if a.absent_out:
+        # the receipt must not be a file another output of this run rewrites: the progress writer's os.replace
+        # replaced a prune receipt, DELETE lines and all, and the run passed (AR-182 round 5 finding 1)
+        def same(x):
+            return os.path.normcase(os.path.realpath(x))
+        rec = same(a.absent_out)
+        root = same(a.root)
+        if a.progress and rec in (same(a.progress), same(a.progress + ".tmp")):
+            ap.error("--absent-out and --progress name the same file: the progress writer would replace the receipt")
+        if rec == root or rec.startswith(root.rstrip(os.sep) + os.sep):
+            ap.error("--absent-out lies inside the blob store --root")
     if a.absent_out:
         # the receipt belongs to THIS run from its first moment: an earlier run's "# END" never survives a run
         # that dies, is skipped or never reaches the absent check (AR-182 round 4 finding 2)
@@ -303,7 +321,7 @@ def _bulk(r2_util, s3, store, a) -> int:
     t0 = time.time()
     # R2 keys the absent check finds unheld are split on this: LastModified before it = a copy gap, at or after
     # it = new on R2 since the run began (AR-182 round 4 finding 1). Whole seconds, as _utc_s writes them.
-    start = _utc_s(dt.datetime.fromtimestamp(int(t0), dt.timezone.utc))
+    start = _utc_s(dt.datetime.fromtimestamp(int(t0) + CLOCK_MARGIN_S, dt.timezone.utc))
     c = {"listed": 0, "skipped_held": 0, "copied": 0, "failed": 0, "bytes": 0, "last_key": None,
          "run_start_utc": start}
 
@@ -401,7 +419,9 @@ def _absent_pass(s3, store, a, c, report=lambda: None) -> int:
     The other direction is a FAIL too: a key R2 lists that the store does not hold. Split by its LastModified
     against the run's start (round 4 finding 1): written BEFORE the run began = a copy gap (MISSING, counted
     unresolved, rc 1); at or after it = new on R2 since the run began (NEW, counted, not a failure - the next
-    --resume copies it). Without a run start (a direct call) every one is a gap.
+    --resume copies it). Without a run start (a direct call) every one is a gap. NEW means DEFERRED to the next
+    run, not verified: a key the copy lost and CI re-PUT during the run also reads NEW. So the last run before T0
+    is followed by one whose NEW count is 0 (AR-182 round 5 note 2).
     The receipt is opened by main() at the start of the run ("# BEGIN run"); this pass appends its own lines
     and ends with END (it finished), NOT RUN (it was skipped, and why) or ABORTED (it did not finish). A receipt
     without END is never a complete list (rounds 3 and 4, finding 3 / 2). Progress is reported every 30 s
