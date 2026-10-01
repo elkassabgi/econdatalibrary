@@ -10,6 +10,15 @@ Content-Encoding, Content-Type and custom metadata are kept, so the worker serve
 
     python tools/selfhost/import_from_r2.py --root <blob store> --key series/<...>.csv [--key ...]
     python tools/selfhost/import_from_r2.py --root <blob store> --prefix _aqueduct/stats.json
+
+BULK (plan step 2: ~14M objects, 798 GB): --workers N copies N objects at a time; --resume skips an object the
+store already holds with the same etag AND size as the listing (so an interrupted run continues where it
+stopped, and a re-run copies only what changed on R2 since); the listing is streamed page by page, never held
+whole in memory; --quiet prints only FAIL lines; --progress FILE is rewritten every 30 s with the counts, bytes,
+rate and the last listed key; --limit N stops after N objects are listed (a trial).
+
+    python tools/selfhost/import_from_r2.py --root E:/econ_live/blobs --create --prefix series/ \\
+        --workers 16 --resume --quiet --progress F:/econ_selfhost_probe/import/series.progress.json
 """
 from __future__ import annotations
 
@@ -103,10 +112,22 @@ def main() -> int:
                     help="after T0, replace an object the store already holds (a repair; before T0 always)")
     ap.add_argument("--restore-missing", action="store_true",
                     help="after T0, import an object the store does not hold (never one a licence removal took)")
+    ap.add_argument("--workers", type=int, default=1, help="objects copied at once (bulk)")
+    ap.add_argument("--resume", action="store_true",
+                    help="skip an object the store already holds with the listing's etag and size")
+    ap.add_argument("--quiet", action="store_true", help="print only FAIL lines and the summary")
+    ap.add_argument("--progress", help="rewrite this JSON file every 30 s with the run's counts")
+    ap.add_argument("--limit", type=int, default=0, help="stop after this many listed objects (a trial)")
     a = ap.parse_args()
     from core import r2_util  # noqa: PLC0415
     s3 = r2_util.cloud_client()     # a named final-sync reader: keeps reading the cloud after T0
     store = BlobStore(a.root, create=a.create)
+    if a.workers <= 1 and not a.resume and not a.progress and not a.limit:
+        return _serial(s3, store, a)
+    return _bulk(r2_util, s3, store, a)
+
+
+def _serial(s3, store, a) -> int:
     keys = list(a.key)
     for p in a.prefix:
         tok = None
@@ -132,6 +153,97 @@ def main() -> int:
         print(("OK   " if ok else "FAIL ") + msg, flush=True)
     print(f"copied {len(keys) - bad} of {len(keys)}; failures {bad}")
     return 1 if bad else 0
+
+
+def _listed(s3, a):
+    """(key, etag, size) for every --key and every object under every --prefix, streamed page by page."""
+    for k in a.key:
+        h = s3.head_object(Bucket=BUCKET, Key=k)
+        yield k, h["ETag"].strip('"'), h["ContentLength"]
+    for p in a.prefix:
+        tok = None
+        while True:
+            kw = {"Bucket": BUCKET, "Prefix": p}
+            if tok:
+                kw["ContinuationToken"] = tok
+            resp = s3.list_objects_v2(**kw)
+            for o in resp.get("Contents") or []:
+                yield o["Key"], o["ETag"].strip('"'), o["Size"]
+            if not resp.get("IsTruncated"):
+                break
+            tok = resp["NextContinuationToken"]
+
+
+def _bulk(r2_util, s3, store, a) -> int:
+    """Parallel, resumable copy. One R2 client per thread; BlobStore.put is serialised by its own lock."""
+    import json as _json                                                       # noqa: PLC0415
+    import threading                                                           # noqa: PLC0415
+    import time                                                                # noqa: PLC0415
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait   # noqa: PLC0415
+    from core.cutover import CutoverRefused                                    # noqa: PLC0415
+    local = threading.local()
+    lock = threading.Lock()
+    c = {"listed": 0, "skipped_held": 0, "copied": 0, "failed": 0, "bytes": 0, "last_key": None}
+    t0 = time.time()
+
+    def client():
+        if not hasattr(local, "s3"):
+            local.s3 = r2_util.cloud_client()
+        return local.s3
+
+    def one(key, size):
+        try:
+            ok, msg = copy_one(client(), store, key, overwrite=a.overwrite, restore_missing=a.restore_missing)
+        except CutoverRefused as e:
+            ok, msg = False, f"{key} REFUSED: {e}"
+        except Exception as e:                                                 # noqa: BLE001 - counted, never lost
+            ok, msg = False, f"{key} ERROR {type(e).__name__}: {str(e)[:200]}"
+        with lock:
+            if ok:
+                c["copied"] += 1
+                c["bytes"] += size
+            else:
+                c["failed"] += 1
+        if not ok or not a.quiet:
+            print(("OK   " if ok else "FAIL ") + msg, flush=True)
+
+    def report(final=False):
+        if not a.progress:
+            return
+        el = max(time.time() - t0, 1e-9)
+        with lock:
+            snap = dict(c, seconds=round(el), objects_per_s=round(c["copied"] / el, 1),
+                        mb_per_s=round(c["bytes"] / el / 1e6, 2), done=final,
+                        utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+        tmp = a.progress + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            _json.dump(snap, fh, indent=1)
+        os.replace(tmp, a.progress)
+
+    last = time.time()
+    pending = set()
+    with ThreadPoolExecutor(max(1, a.workers)) as ex:
+        for key, etag, size in _listed(s3, a):
+            if a.limit and c["listed"] >= a.limit:
+                break
+            c["listed"] += 1
+            c["last_key"] = key
+            if a.resume:
+                h = store.head(key)
+                if h is not None and h["etag"] == etag and h["size"] == size:
+                    c["skipped_held"] += 1
+                    continue
+            pending.add(ex.submit(one, key, size))
+            if len(pending) >= a.workers * 4:                  # bounded: the listing never runs far ahead
+                _done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            if time.time() - last >= 30:
+                report()
+                last = time.time()
+        wait(pending)
+    report(final=True)
+    print(f"listed {c['listed']:,}; held already {c['skipped_held']:,}; copied {c['copied']:,} "
+          f"({c['bytes'] / 1e9:.2f} GB); failures {c['failed']:,}")
+    return 1 if c["failed"] else 0
 
 
 if __name__ == "__main__":
