@@ -58,6 +58,7 @@ import pyarrow.parquet as pq
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from core.titles import clean_title  # noqa: E402 - one rule for title line breaks
 
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
 GROUPED = os.path.join(ROOT, "data", "clean_grouped", "sec_edgar")
@@ -232,6 +233,7 @@ def update_catalog(spans, apply_d1, last_updated=None):
         # series invisible, undownloadable. That is the "merged but not served" failure
         # this repo keeps rediscovering, reintroduced here by me.
         for ident, lo, hi, title, cik in spans_local:
+            title = clean_title(title)
             sid = f"sec_edgar:{ident}"
             cur = con.execute("SELECT title FROM series WHERE series_id=?", (sid,))
             row = cur.fetchone()
@@ -413,6 +415,7 @@ def d1_catalog_statements(spans, existing):
         return str(s).replace("'", "''")
     stmts, n_new, n_title = [], 0, 0
     for ident, lo, hi, title, _cik in spans:
+        title = clean_title(title)
         sid = f"sec_edgar:{esc(ident)}"
         if sid.replace("''", "'") in existing:
             old = existing[sid.replace("''", "'")]
@@ -1080,7 +1083,7 @@ def main():
         # applied across the source — searching GOOG must find Alphabet even though
         # the series is keyed GOOGL.
         ent = data.get("entityName") or ident
-        title = f"{ent} ({', '.join(ticks)})" if ticks else str(ent)
+        title = clean_title(f"{ent} ({', '.join(ticks)})" if ticks else str(ent))
         spans.append((ident, lo, hi, title, cik))
         if a.apply:
             tbl = pa.table({
@@ -1287,7 +1290,7 @@ def _refresh_local(a, todo, t2c) -> int:
                     (str(row[0]), str(row[1])) == (str(lo), str(hi)):
                 continue
             ent = data.get("entityName") or ident
-            title = f"{ent} ({', '.join(ticks)})" if ticks else str(ent)
+            title = clean_title(f"{ent} ({', '.join(ticks)})" if ticks else str(ent))
             tbl = pa.table({"metric": metric, "obs_date": pa.array(odate, type=pa.date32()), "value": vals,
                             "vintage_date": pa.array(vint, type=pa.date32())})
             sp = os.path.join(stage, safe + ".parquet")

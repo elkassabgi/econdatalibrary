@@ -26,6 +26,7 @@ STORE = os.path.join(ROOT, "data", "clean_full")
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
+from core.titles import clean_title  # noqa: E402 - one rule for title line breaks (2026-10-01)
 OUTDIR = os.path.join(ROOT, "dist", "broaden")
 PROTECTED = {"cbs_nl", "gus_dbw"}
 
@@ -232,7 +233,7 @@ def main():
             if not a.dry_run:
                 lic = src_license.get(d)
                 conn.execute("DELETE FROM series WHERE source_id=?", (d,))  # idempotent per source
-                rows = [(f"{d}:{k}", d, k, (v[2] or None), None, None, None, lic, v[0], v[1], None, "{}")
+                rows = [(f"{d}:{k}", d, clean_title(k), (v[2] or None), None, None, None, lic, v[0], v[1], None, "{}")
                         for k, v in agg.items()]
                 conn.executemany(
                     "INSERT OR REPLACE INTO series (series_id,source_id,title,frequency,unit,geography,"

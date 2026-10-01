@@ -8,6 +8,11 @@ import json
 import os
 import sqlite3
 
+try:                                   # imported as core.catalog (jobs/) or as plain `catalog` from core/ (apply_stage0b,
+    from core.titles import clean_title  # build_registry) - one rule for title line breaks either way
+except ImportError:
+    from titles import clean_title
+
 DB = os.path.join(os.path.dirname(__file__), "..", "data", "catalog.db")
 
 SCHEMA = """
@@ -76,7 +81,7 @@ def upsert_series(conn, m, start=None, end=None):
         """INSERT OR REPLACE INTO series
            (series_id,source_id,title,frequency,unit,geography,category,license_id,start_date,end_date,metadata)
            VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-        (m.series_id, m.series_id.split(":")[0], m.title, m.frequency, m.unit,
+        (m.series_id, m.series_id.split(":")[0], clean_title(m.title), m.frequency, m.unit,
          m.geography, m.category, m.license_id, start, end, json.dumps(m.metadata)))
 
 
