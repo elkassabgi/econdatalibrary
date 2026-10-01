@@ -203,13 +203,14 @@ def test_the_summary_and_the_ledger_say_what_a_keyed_loss_can_mean(tmp_path):
 
 
 def test_the_summary_counts_copies_as_rows_when_identities_repeat(tmp_path):
-    """AR-185 F2 end to end: cbs_nl-shaped duplicate identities (R573)."""
-    local = _ilo([("K|S", "NLD", "T", D1, 1.0), ("K|S", "NLD", "T", D1, 1.0), ("K|S", "NLD", "T", D2, 2.0)])
+    """AR-185 F2 end to end: cbs_nl-shaped duplicate identities (R573). THREE copies lost in ONE
+    file, so a summary that printed the file count instead of the row sum fails (AR-185 F7)."""
+    local = _ilo([("K|S", "NLD", "T", D1, 1.0)] * 4 + [("K|S", "NLD", "T", D2, 2.0)])
     incoming = _ilo([("K|S", "NLD", "T", D1, 1.0), ("K|S", "NLD", "T", D2, 2.0), ("K|S", "NLD", "T", D3, 3.0),
-                     ("K2|S", "NLD", "T", D3, 4.0)])
-    out, after, _p, ledger = _sync(tmp_path, local, incoming, ["f", 3, 4])
-    assert after == 4
-    assert "1 rows in 1 keyed file(s) with duplicate identities, copies counted" in out, out
+                     ("K2|S", "NLD", "T", D3, 4.0), ("K3|S", "NLD", "T", D3, 5.0), ("K4|S", "NLD", "T", D3, 6.0)])
+    out, after, _p, ledger = _sync(tmp_path, local, incoming, ["f", 5, 6])
+    assert after == 6
+    assert "3 rows in 1 keyed file(s) with duplicate identities, copies counted" in out, out
     assert "identities absent" not in out and "copies counted" in ledger, (out, ledger)
 
 
