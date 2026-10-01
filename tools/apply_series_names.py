@@ -35,6 +35,8 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+from core.titles import clean_title  # noqa: E402 - one rule for title line breaks (2026-10-01)
 SWEEP = os.path.join(ROOT, "data", "_series_names_staging", "econdl_sweep")
 PENDING = os.path.join(ROOT, "data", "_aqueduct", "pending_catalog_sync.txt")
 
@@ -74,7 +76,7 @@ def process(con, src, apply):
             continue
         matched += 1
         cur_title, cur_geo, cur_unit, cur_meta = cur
-        new_title = (row.get("title") or "").strip()
+        new_title = clean_title(row.get("title") or "")
         new_desc = (row.get("description") or "").strip()
         new_geo = (row.get("geography") or "").strip()
         new_unit = (row.get("unit") or "").strip()

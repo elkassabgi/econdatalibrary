@@ -27,6 +27,7 @@ import requests
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
+from core.titles import clean_title  # noqa: E402 - one rule for title line breaks (2026-10-01)
 CODED = re.compile(r"^[0-9A-Z_.\-]+$")
 OUTLOOK = {"AEO": "aeo", "IEO": "ieo"}
 
@@ -73,7 +74,7 @@ def main() -> int:
         name = cache[ck].get(scen.lower())
         if name and len(str(name).strip()) > 2:
             label = "Annual Energy Outlook" if fam == "AEO" else "International Energy Outlook"
-            titles[sid] = "%s %s - %s" % (label, year, str(name).strip())
+            titles[sid] = clean_title("%s %s - %s" % (label, year, str(name).strip()))
         else:
             unnamed += 1
     print("titled %s of %s (%s scenarios EIA does not name)"

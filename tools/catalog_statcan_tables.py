@@ -47,6 +47,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
+from core.titles import clean_title  # noqa: E402 - one rule for title line breaks (2026-10-01)
 from derive_statcan_tables import (SOURCE, STORE, MAX_ROWS_DEFAULT,   # noqa: E402
                                    csv_key, part_expr, unit_id)
 
@@ -863,7 +864,7 @@ def main() -> int:
     for i, f in enumerate(files, 1):
         pid = os.path.splitext(os.path.basename(f))[0]
         sc = meta_cubes.get(pid) or {}
-        title = (sc.get("title") or "").strip()
+        title = clean_title(sc.get("title") or "")
         if not title:
             untitled += 1
             title = pid                                        # never invented

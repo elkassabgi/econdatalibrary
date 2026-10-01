@@ -31,6 +31,7 @@ DATA = os.path.join(ROOT, "data", "clean_full")
 import sys  # noqa: E402
 sys.path.insert(0, ROOT)
 from core import catalog_path  # noqa: E402 - the one catalogue resolver (no ECONDL_CATALOG override: plan 4a)
+from core.titles import clean_title  # noqa: E402 - one rule for title line breaks (2026-10-01)
 def _require_store():
     """Fail loudly rather than catalogue nothing. Called from main(), NOT at import: an
     import-time SystemExit makes the module untestable wherever the store is absent (CI ignores
@@ -204,7 +205,7 @@ def main():
                     # re-list the "timeless table" class that was delisted on 2026-09-05.
                     refused.append((sid, mn, mx))
                     continue
-            rows.append((sid, src, title[:500], None, None, None, None, lic, mn, mx, None, "{}"))
+            rows.append((sid, src, clean_title(title)[:500], None, None, None, None, lic, mn, mx, None, "{}"))
         if preserved:
             print(f"  [R722] kept the corrected catalogue range for {len(preserved)} known store "
                   f"defect(s): {preserved}", flush=True)

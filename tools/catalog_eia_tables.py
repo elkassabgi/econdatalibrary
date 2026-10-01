@@ -39,6 +39,7 @@ import pyarrow.parquet as pq
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
+from core.titles import clean_title  # noqa: E402 - one rule for title line breaks (2026-10-01)
 from core import cutover  # noqa: E402 - next_steps: the closing NEXT line after T0
 
 STORE = os.path.join(ROOT, "data", "clean_full", "eia")
@@ -120,7 +121,7 @@ def main() -> int:
         if a.apply and new:
             # Same 12-column shape catalog_complete.py inserts (title = the native key;
             # a later broaden_catalog pass backfills real titles).
-            rows = [(f"eia:{p}", "eia", p, None, None, None, None, lic,
+            rows = [(f"eia:{p}", "eia", clean_title(p), None, None, None, None, lic,
                      None, None, None, "{}") for p in new]
             con.executemany(
                 "INSERT OR IGNORE INTO series (series_id, source_id, title, frequency, "

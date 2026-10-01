@@ -24,6 +24,7 @@ ROOT = os.path.abspath(os.path.join(_THIS, ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
+from core.titles import clean_title  # noqa: E402 - one rule for title line breaks (2026-10-01)
 TITLES_DIR = os.path.join(ROOT, "dist", "titles")
 OUT_DIR = os.path.join(ROOT, "dist", "d1", "titles")
 
@@ -63,6 +64,7 @@ def apply_local(titles: dict[str, str]) -> list[tuple[str, str]]:
         have = {r[0] for r in conn.execute("SELECT series_id FROM series")}
         miss = 0
         for sid, title in titles.items():
+            title = clean_title(title)
             if sid not in have:
                 miss += 1
                 continue
