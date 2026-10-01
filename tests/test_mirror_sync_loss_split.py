@@ -1,12 +1,15 @@
-"""What mirror_sync's lost rows ARE (AR-184, ledger R1340).
+"""What mirror_sync's lost rows CAN mean (AR-184, ledger R1340).
 
-On 2026-10-01 a sync reported 365,459 rows "lost ... followed the publisher". Measured afterwards:
-insee_bdm's 27,305 were values revised in place (idbank was not a key candidate, so the whole row
-was the identity), defillama's 23,246 were attribute refreshes, and 198,630 of ilostat's 300,399
-were the same observation under a new series_key. These pin: idbank keys the comparison; a keyed
-loss is split into re-keyed (an identical row under an identity NEW in the incoming file) and
-absent; a whole-row loss says it cannot be split; the ledger and the summary say all of it; a
-failed breakdown never blocks the replace and is never silent.
+On 2026-10-01 a sync reported 365,459 rows "lost ... followed the publisher". Measured afterwards,
+most were not withdrawals: insee_bdm's 27,305 were values revised in place (idbank was not a key
+candidate, so the whole row was the identity), defillama's 23,246 were attribute refreshes, and
+many of ilostat's were the same observation under a new series_key.
+
+These pin: idbank keys the comparison (so a revised insee value is not a loss); a keyed loss is
+reported as absent identities that may be withdrawn OR re-keyed, never as withdrawals; a whole-row
+loss says a revision, a rename and a removal all count; the ledger and the summary say it; a failed
+breakdown never blocks the replace and is never silent. There is deliberately NO re-key count: a
+row-level test found 0 of ilostat's re-keys and over-claimed 7,984 on fed_board (see loss_breakdown).
 """
 import contextlib
 import datetime as dt
@@ -17,7 +20,6 @@ import sys
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -67,67 +69,19 @@ def test_the_key_list_includes_idbank_and_the_bare_key():
     assert set(ms.KEY_CANDIDATES) == {"series_key", "series_id", "idbank", "key"}
 
 
-# ---- the keyed split ------------------------------------------------------------------------------
+# ---- the breakdown --------------------------------------------------------------------------------
 
-def test_a_rekeyed_observation_is_counted_as_rekeyed_not_absent(tmp_path):
-    """ilostat: GBR BA:2247 -> BA:666, same ref_area/sex/date/value under a new series_key."""
+def test_a_keyed_loss_is_absent_identities_with_the_row_totals(tmp_path):
     local = _ilo([("EMP|GBR|BA:2247", "GBR", "T", D1, 10.0), ("EMP|GBR|BA:2247", "GBR", "T", D2, 11.0),
                   ("EMP|KEN|BX:3465", "KEN", "T", D1, 7.0)])
     incoming = _ilo([("EMP|GBR|BA:666", "GBR", "T", D1, 10.0), ("EMP|GBR|BA:666", "GBR", "T", D2, 11.0)])
     a, b = _w(tmp_path, "a", local), _w(tmp_path, "b", incoming)
     lost = ms.lost_identities(a, b)[0]
     bd = ms.loss_breakdown(a, b, lost)
-    assert lost == 3 and bd == {"basis": "keyed", "rekeyed": 2, "absent": 1,
-                                "local_rows": 3, "incoming_rows": 2}, (lost, bd)
-
-
-def test_a_rekey_that_also_revised_the_value_is_not_claimed(tmp_path):
-    """Conservative: only an IDENTICAL row under a new key is a re-key."""
-    a = _w(tmp_path, "a", _ilo([("K|old", "PRT", "T", D1, 1.0)]))
-    b = _w(tmp_path, "b", _ilo([("K|new", "PRT", "T", D1, 1.5)]))
-    bd = ms.loss_breakdown(a, b, 1)
-    assert (bd["rekeyed"], bd["absent"]) == (0, 1), bd
-
-
-def test_two_identical_series_one_removed_is_absent_not_rekeyed(tmp_path):
-    """The survivor's identical row is NOT the removed series' re-key: a re-key target must be an
-    identity that is new in the incoming file."""
-    local = _ilo([("A", "FRA", "T", D1, 1.0), ("B", "FRA", "T", D1, 1.0)])
-    incoming = _ilo([("B", "FRA", "T", D1, 1.0)])
-    a, b = _w(tmp_path, "a", local), _w(tmp_path, "b", incoming)
-    assert ms.lost_identities(a, b)[0] == 1
-    bd = ms.loss_breakdown(a, b, 1)
-    assert (bd["rekeyed"], bd["absent"]) == (0, 1), bd
-
-
-def test_nulls_match_null_safely_in_the_rekey_test(tmp_path):
-    a = _w(tmp_path, "a", _ilo([("old", None, "T", D1, None)]))
-    b = _w(tmp_path, "b", _ilo([("new", None, "T", D1, None)]))
-    assert ms.loss_breakdown(a, b, 1)["rekeyed"] == 1
-
-
-def test_the_rekey_test_compares_the_date_too(tmp_path):
-    a = _w(tmp_path, "a", _ilo([("old", "GBR", "T", D1, 1.0)]))
-    b = _w(tmp_path, "b", _ilo([("new", "GBR", "T", D3, 1.0)]))
-    assert ms.loss_breakdown(a, b, 1)["rekeyed"] == 0
-
-
-def test_lost_copies_under_a_surviving_identity_are_absent(tmp_path):
-    """Copy-aware counts: two copies locally, one incoming - 1 lost, and it is not a re-key."""
-    a = _w(tmp_path, "a", _ilo([("K", "GBR", "T", D1, 1.0), ("K", "GBR", "T", D1, 1.0)]))
-    b = _w(tmp_path, "b", _ilo([("K", "GBR", "T", D1, 1.0)]))
-    lost = ms.lost_identities(a, b)[0]
-    bd = ms.loss_breakdown(a, b, lost)
-    assert lost == 1 and (bd["rekeyed"], bd["absent"]) == (0, 1), (lost, bd)
-
-
-def test_the_parts_never_exceed_the_loss_they_describe(tmp_path):
-    """`lost` comes from a separate read; if the local file changed in between, the breakdown could
-    find more re-keys than the loss it is describing. The parts must still add up, never negative."""
-    a = _w(tmp_path, "a", _ilo([("old", "GBR", "T", D1, 1.0), ("old", "GBR", "T", D2, 2.0)]))
-    b = _w(tmp_path, "b", _ilo([("new", "GBR", "T", D1, 1.0), ("new", "GBR", "T", D2, 2.0)]))
-    bd = ms.loss_breakdown(a, b, 1)
-    assert (bd["rekeyed"], bd["absent"]) == (1, 0), bd
+    assert lost == 3 and bd == {"basis": "keyed", "local_rows": 3, "incoming_rows": 2}, (lost, bd)
+    text = ms.describe_loss(lost, bd)
+    assert "3 identities absent from the incoming copy" in text and "withdrawn OR re-keyed" in text, text
+    assert "cannot tell apart" in text and "rows 3 -> 2" in text, text
 
 
 def test_whole_row_files_say_they_cannot_be_split(tmp_path):
@@ -141,9 +95,15 @@ def test_whole_row_files_say_they_cannot_be_split(tmp_path):
     assert "revised value" in text and "cannot be told apart" in text and "3 -> 4" in text
 
 
-def test_describe_loss_keyed_and_failed():
-    t = ms.describe_loss(5, {"basis": "keyed", "rekeyed": 3, "absent": 2, "local_rows": 9, "incoming_rows": 8})
-    assert "2 absent" in t and "3 re-keyed" in t and "9 -> 8" in t
+def test_the_basis_follows_the_identity_the_comparison_used(tmp_path):
+    """insee_bdm is KEYED now (idbank); a file with no candidate column is whole-row."""
+    a = _w(tmp_path, "a", _insee([("CNA", "001", D1, 1.0)]))
+    assert ms.loss_breakdown(a, a, 0)["basis"] == "keyed"
+    c = _w(tmp_path, "c", pa.table({"chain": ["eth"], "tvl": [1.0]}))
+    assert ms.loss_breakdown(c, c, 0)["basis"] == "whole-row"
+
+
+def test_describe_loss_when_the_breakdown_failed():
     assert "NOT computed" in ms.describe_loss(5, None)
 
 
@@ -194,15 +154,15 @@ def _ilo_behind():
     return local, incoming
 
 
-def test_the_summary_and_the_ledger_carry_the_split(tmp_path):
+def test_the_summary_and_the_ledger_say_what_a_keyed_loss_can_mean(tmp_path):
     local, incoming = _ilo_behind()
     out, after, pulled, ledger = _sync(tmp_path, local, incoming, ["f", 3, 4])
     assert after == 4 and pulled == 1, (after, pulled)
-    assert "1 file(s) lost 3 ROWS" in out and "NOT all withdrawals" in out, out
-    assert "1 absent from the incoming copy and 2 re-keyed" in out, out
+    assert "1 file(s) lost 3 ROWS" in out and "NOT necessarily withdrawals" in out, out
+    assert "3 identities absent from the incoming copy in 1 keyed file(s) - withdrawn OR re-keyed" in out, out
     assert "followed the publisher" not in out and "a replaced value is not counted" not in out, out
-    assert "intent; 3 identities lost: 1 absent from the incoming copy, 2 re-keyed" in ledger, ledger
-    assert "replaced with R2's copy; 3 identities lost" in ledger, ledger
+    assert "intent; 3 identities absent from the incoming copy - withdrawn OR re-keyed" in ledger, ledger
+    assert "replaced with R2's copy; 3 identities absent" in ledger, ledger
 
 
 def test_a_whole_row_loss_in_the_summary_says_it_cannot_be_split(tmp_path):
@@ -216,11 +176,11 @@ def test_a_whole_row_loss_in_the_summary_says_it_cannot_be_split(tmp_path):
 
 def test_a_failed_breakdown_never_blocks_the_replace_and_is_not_silent(tmp_path, monkeypatch):
     def boom(*a, **k):
-        raise RuntimeError("duckdb out of memory")
+        raise RuntimeError("footer unreadable")
     monkeypatch.setattr(ms, "loss_breakdown", boom)
     local, incoming = _ilo_behind()
     out, after, pulled, ledger = _sync(tmp_path, local, incoming, ["f", 3, 4])
     assert after == 4 and pulled == 1, "a failed description blocked the replace"
-    assert "LOSS BREAKDOWN FAILED" in ledger and "duckdb out of memory" in ledger, ledger
+    assert "LOSS BREAKDOWN FAILED" in ledger and "footer unreadable" in ledger, ledger
     assert "3 in 1 file(s) whose breakdown FAILED - unexplained" in out, out
     assert "breakdown NOT computed" in ledger, ledger
