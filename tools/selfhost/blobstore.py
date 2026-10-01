@@ -82,16 +82,31 @@ class BlobStore:
 
     def head(self, key: str) -> dict | None:
         row = self._r().execute(
-            "SELECT sha256, etag, size, content_encoding, content_type, custom_metadata FROM blobs WHERE key=?",
-            (key,)).fetchone()
+            "SELECT sha256, etag, size, content_encoding, content_type, custom_metadata, stored_utc FROM blobs "
+            "WHERE key=?", (key,)).fetchone()
         if row is None:
             return None
-        sha, etag, size, enc, ctype, meta = row
+        sha, etag, size, enc, ctype, meta, stored = row
         return {"key": key, "sha256": sha, "etag": etag, "size": size, "content_encoding": enc,
-                "content_type": ctype, "custom_metadata": json.loads(meta or "{}"), "path": self._path(sha)}
+                "content_type": ctype, "custom_metadata": json.loads(meta or "{}"), "path": self._path(sha),
+                "stored_utc": stored}
 
-    def count(self) -> int:
-        return self._r().execute("SELECT COUNT(*) FROM blobs").fetchone()[0]
+    def iter_keys(self, prefix: str = "", page: int = 10_000):
+        """Keys starting with `prefix`, in key order, STREAMED - the same byte order (SQLite BINARY = UTF-8 bytes)
+        as an R2 listing, so the two can be merge-compared over 14M keys without holding either in memory. Read in
+        pages of `page` keys, each its own short statement: one cursor held open for an hour would pin the WAL and
+        stop every checkpoint while the importer writes."""
+        hi = prefix + chr(0x10FFFF)
+        last, first = prefix, True
+        while True:
+            rows = self._r().execute(
+                f"SELECT key FROM blobs WHERE key {'>=' if first else '>'} ? AND key < ? ORDER BY key LIMIT ?",
+                (last, hi, page)).fetchall()
+            for (k,) in rows:
+                yield k
+            if len(rows) < page:
+                return
+            last, first = rows[-1][0], False
 
     def list(self, prefix: str = "") -> list[str]:
         """Keys starting with `prefix`, in key order (an index range scan, not LIKE: no escaping)."""
