@@ -532,7 +532,7 @@ def test_an_unheld_r2_key_is_a_gap_if_older_than_the_run_and_new_if_not(monkeypa
                       "NEW series/s.csv 2026-10-01T00:00:00+00:00"]
 
 
-def test_a_run_records_its_own_start_taken_early_by_the_clock_margin(monkeypatch, tmp_path):
+def test_a_run_records_its_own_start_taken_late_by_the_clock_margin(monkeypatch, tmp_path):
     """AR-182 round 5: this machine's clock is not synchronised; a clock behind R2 would turn a lost key into
     NEW. The start is taken CLOCK_MARGIN_S LATE (fails closed)."""
     before = dt.datetime.now(dt.timezone.utc)
