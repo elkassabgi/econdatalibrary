@@ -453,7 +453,7 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
       const commaIds = (ids ?? []).filter((x) => x.includes(","));
       if (commaIds.length) {
         return fail(`These ids contain a comma, which the manifest endpoint cannot carry (it would split them ` +
-          `into ids that do not exist): ${commaIds.slice(0, 5).join(" | ")}. Leave them out of the manifest and ` +
+          `into ids that do not exist): [${commaIds.slice(0, 5).join("] [")}]. Leave them out of the manifest and ` +
           `get each one with get_econ_series / get_econ_series_metadata instead.`);
       }
       if (source) {
@@ -479,7 +479,16 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
       const u = new URL(`${ECON}/v1/bundle`);
       if (ids?.length) u.searchParams.set("ids", ids.join(","));
       if (source) u.searchParams.set("source", source);
-      const r = await upstream(u.toString(), null, false);
+      let r: Response;
+      try {
+        r = await upstream(u.toString(), null, false);
+      } catch (e) {
+        // the sizing total comes from a cached count that has drifted before (R709), so a
+        // manifest under the limit can still take longer than the wait (AR-186 L1)
+        return fail(`The manifest did not arrive within ${UPSTREAM_TIMEOUT_MS / 1000} s ` +
+          `(${e instanceof Error ? e.message : String(e)}) - the server builds it one series at a time. ` +
+          `Ask for fewer series: pass up to 50 ids from search_econ_series.`);
+      }
       if (!r.ok) return relayError(r, "get_econ_bundle_manifest");
       // read through the same ceiling as every fleet-sized JSON body (R622)
       const d = await jsonCapped<{
@@ -487,7 +496,8 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
         resources?: Array<{
           name: string; path: string[];
           "econdl:provenance"?: { name?: string | null; attribution?: string | null; terms_url?: string | null;
-            license?: { id?: string | null; name?: string | null; commercial_ok?: boolean | null } | null };
+            license?: { id?: string | null; name?: string | null; commercial_ok?: boolean | null;
+              no_modify?: boolean | null } | null };
         }>;
         "econdl:unresolved"?: Array<{ id: string; reason: string }>;
       }>(r);
@@ -502,7 +512,7 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
         const p = x["econdl:provenance"] ?? {};
         const lic = p.license ?? {};
         const head = `${x.name}${p.name ? ` (${p.name})` : ""}: ${x.path.length.toLocaleString()} series\n` +
-          `   licence: ${lic.name ?? lic.id ?? "see the source's metadata"}${lic.commercial_ok === false ? " - NON-COMMERCIAL" : ""}` +
+          `   licence: ${lic.name ?? lic.id ?? "see the source's metadata"}${lic.commercial_ok === false ? " - NON-COMMERCIAL" : ""}${lic.no_modify ? " - NO MODIFICATION" : ""}` +
           `${p.terms_url ? ` · terms ${p.terms_url}` : ""}\n` +
           (p.attribution ? `   attribution: ${p.attribution}\n` : "");
         const urls = x.path.slice(0, take).map((u2) => `   ${ECON}${u2}`);
@@ -687,7 +697,8 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
       const k = this.key();
       return text(k
         ? `A key is configured (${k.slice(0, 4)}…, ${k.length} chars). Data tools are unlocked; the same key works on every ElkassabgiData library. It is used server-side only and never echoed into the conversation.`
-        : `No key configured. Browse tools (search, metadata, freshness, status) work without one. ${NO_KEY_MSG}`);
+        : `No key configured. Browse tools (search, metadata, freshness, status) work without one. ` +
+          `Data downloads need ${KEY_HOWTO}`);
     });
 
     // ═════════════════ RESOURCES ═════════════════
