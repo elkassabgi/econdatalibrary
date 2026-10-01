@@ -1,8 +1,9 @@
 // ---------------------------------------------------------------------------
 // ElkassabgiData MCP server — AI-native access to the family of free
-// research-grade data libraries:
+// research-grade data libraries, ONE server for all of them:
 //   * Econ Data Library  (econdatalibrary.com)  — billions of economic series
 //   * HF Data Library    (hfdatalibrary.com)    — 1-minute US equity bars
+//   * IP Data Library    (ipdatalibrary.com)    — patent & innovation measures
 //
 // Design rules (mirroring the sites exactly):
 //   * BROWSE IS FREE, DOWNLOADS ARE KEYED: search/metadata/freshness/status
@@ -182,10 +183,11 @@ const VARIABLES_25 = `The 25 pre-computed academic variables (per ticker, per tr
 25. Intraday return std — standard deviation of 1-minute log returns`;
 
 const HONESTY_CHARTER = `ElkassabgiData honesty charter (relay these caveats with any analysis):
-• HF universe (1,391 US stocks/ETFs) is a recent snapshot — SURVIVOR-BIASED before ~2022. Cross-sectional results on earlier years must disclose this.
+• HF universe (US stocks/ETFs) is a recent snapshot — SURVIVOR-BIASED before ~2022. Cross-sectional results on earlier years must disclose this.
 • HF source break: post-2022-03-01 bars come from IEX Exchange HIST (~2-3% of consolidated volume); earlier data from a consolidated-history vendor. Volume levels are not comparable across the break.
 • 1-minute bars are NOT tick data: no quotes, no trade-level timestamps, no order book.
-• Econ licensing is PER SOURCE: most are CC-BY-class (attribution required); some are academic-use-only (e.g. EPU) or non-redistributable (served as metadata/pointers only). The license ships in every series' metadata — honor it.
+• Econ licensing is PER SOURCE: most are CC-BY-class (attribution required); some are non-commercial (commercial_ok=false in the metadata). Data whose licence does not allow redistribution is not hosted at all. The license ships in every series' metadata — honor it.
+• IP measures are computed from USPTO data (public domain, via PatentsView bulk tables); they are not the official USPTO record. Forward-citation counts are right-censored for recent patents.
 • Freshness is never fabricated: a series' date advances only when observations were actually fetched; failures surface as stale flags, not silent gaps (see get_data_freshness).
 • Missing values stay missing: nothing is interpolated, forward-filled, or invented anywhere in the pipeline.`;
 
@@ -193,7 +195,7 @@ const HONESTY_CHARTER = `ElkassabgiData honesty charter (relay these caveats wit
 export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Props> {
   server = new McpServer({
     name: "elkassabgidata",
-    version: "1.0.0",
+    version: "1.1.0",
   });
 
   private key(): string | null {
@@ -207,19 +209,26 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
     s.registerTool("search_econ_series", {
       title: "Search Economic Series",
       description:
-        "Search the Econ Data Library catalog (billions of series from 300+ sources: " +
+        "Search the Econ Data Library catalog (billions of series from hundreds of sources: " +
         "national accounts, prices, trade, labor, energy, markets…). Free, no " +
-        "key needed. Returns series ids usable with get_econ_series.",
+        "key needed. Returns series ids usable with get_econ_series. Page with offset; " +
+        "lang returns source-official translated titles where the publisher provides them.",
       inputSchema: {
         query: z.string().min(2).describe("Free-text search, e.g. 'germany inflation' or 'GDP per capita'"),
         source: z.string().optional().describe("Restrict to one source id, e.g. 'worldbank', 'ecb', 'imf_weo'"),
         limit: z.number().int().min(1).max(50).default(15),
+        offset: z.number().int().min(0).default(0)
+          .describe("Skip this many results (paging). The API caps how deep it pages and says so if exceeded."),
+        lang: z.enum(["en", "ar", "es", "fr", "ru", "zh"]).default("en")
+          .describe("Title language. Only official translations are shown; a title without one stays in English."),
       },
       annotations: { readOnlyHint: true },
-    }, async ({ query, source, limit }) => {
+    }, async ({ query, source, limit, offset, lang }) => {
       const u = new URL(`${ECON}/v1/catalog`);
       u.searchParams.set("q", query);
       u.searchParams.set("limit", String(limit));
+      if (offset) u.searchParams.set("offset", String(offset));
+      if (lang && lang !== "en") u.searchParams.set("lang", lang);
       if (source) u.searchParams.set("source", source);
       const r = await upstream(u.toString());
       if (!r.ok) return relayError(r, "search_econ_series");
@@ -227,7 +236,8 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
       const lines = (d.results ?? []).map((x) =>
         `${x.series_id}\n   ${x.title ?? "(untitled)"} [${x.frequency ?? "?"}, ${x.geography ?? "?"}${x.unit ? ", " + x.unit : ""}] ${x.start_date ?? "?"}→${x.end_date ?? "?"} · license:${x.license_id ?? "?"}`);
       return text(
-        `${d.total?.toLocaleString?.() ?? "?"} series match "${query}"${source ? ` in ${source}` : ""}. Showing ${lines.length}:\n\n` +
+        `${d.total?.toLocaleString?.() ?? "?"} series match "${query}"${source ? ` in ${source}` : ""}. ` +
+        `Showing ${lines.length}${offset ? ` from result ${offset + 1}` : ""}:\n\n` +
         lines.join("\n") +
         `\n\nFetch data with get_econ_series(series_id). Metadata + citation with get_econ_series_metadata.`);
     });
@@ -351,8 +361,8 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
     s.registerTool("list_econ_sources", {
       title: "List Economic Data Sources",
       description:
-        "List the Econ Data Library's sources (309: statistical offices, " +
-        "central banks, IGOs, research datasets) with their licenses. Free.",
+        "List the Econ Data Library's sources (statistical offices, central banks, " +
+        "IGOs, research datasets) with their licenses, counted live. Free.",
       inputSchema: {
         contains: z.string().optional().describe("Case-insensitive filter on source id/name, e.g. 'bank' or 'imf'"),
       },
@@ -405,12 +415,78 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
           `${x.source}/${x.unit ?? "_all"} · ${x.status} · data through ${x.last_obs_date ?? "—"} · checked ${String(x.source_date_accessed ?? x.last_updated ?? "—").slice(0, 16)}`).join("\n"));
     });
 
+    s.registerTool("get_econ_bundle_manifest", {
+      title: "Economic Data Bundle Manifest",
+      description:
+        "A citable, snapshot-pinned bundle manifest (Frictionless data package) for several econ " +
+        "series - explicit ids, or every series of one source: the per-series download URLs " +
+        "grouped by source, each source's licence and provenance, and any id that could not be " +
+        "resolved (reported, never dropped). Free, no key needed for the manifest; downloading " +
+        "the URLs needs the key. For a whole source, the Python client builds the bundle file " +
+        "itself: pip install econdl; econdl.bundle(source=...).",
+      inputSchema: {
+        ids: z.array(z.string().min(3)).min(1).max(50).optional()
+          .describe("Up to 50 exact catalog ids from search_econ_series"),
+        source: z.string().optional().describe("One source id - every series of that source"),
+        snapshot: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+          .describe("Pin the manifest to this date (default: today)"),
+      },
+      annotations: { readOnlyHint: true },
+    }, async ({ ids, source, snapshot }) => {
+      if ((ids?.length ? 1 : 0) + (source ? 1 : 0) !== 1) {
+        return { content: [{ type: "text", text: "Give exactly one of ids (a list of series ids) or source (one source id)." }], isError: true };
+      }
+      const u = new URL(`${ECON}/v1/bundle`);
+      if (ids?.length) u.searchParams.set("ids", ids.join(","));
+      if (source) u.searchParams.set("source", source);
+      if (snapshot) u.searchParams.set("snapshot", snapshot);
+      const r = await upstream(u.toString());
+      if (!r.ok) return relayError(r, "get_econ_bundle_manifest");
+      // A whole-source manifest lists one URL per series and grows with the source, so it is
+      // read through the same ceiling as every fleet-sized JSON body (R622).
+      const d = await jsonCapped<{
+        "econdl:snapshot_date"?: string;
+        "econdl:resource_url_count"?: number;
+        licenses?: Array<{ name: string; title: string | null; path: string | null }>;
+        resources?: Array<{ name: string; path: string[] }>;
+        "econdl:unresolved"?: Array<{ id: string; reason: string }>;
+      }>(r);
+      if (!d) {
+        return { content: [{ type: "text", text: `The manifest${source ? ` for source '${source}'` : ""} is larger than this tool can hold (over ${(MCP_MAX_JSON_BYTES / (1024 * 1024)).toFixed(0)} MB), or did not parse. For a whole large source use the Python client, which builds the bundle locally: pip install econdl; econdl.bundle(source="${source ?? ""}").` }], isError: true };
+      }
+      const res = d.resources ?? [];
+      const unresolved = d["econdl:unresolved"] ?? [];
+      const SHOW = 40;
+      let shown = 0;
+      const blocks = res.map((x) => {
+        const take = Math.max(0, Math.min(x.path.length, SHOW - shown));
+        shown += take;
+        const urls = x.path.slice(0, take).map((p) => `   ${ECON}${p}`);
+        const more = x.path.length - take;
+        return `${x.name}: ${x.path.length.toLocaleString()} series\n` + urls.join("\n") +
+          (more > 0 ? `\n   … ${more.toLocaleString()} more URL(s) in this resource` : "");
+      });
+      const lic = (d.licenses ?? []).map((l) => `- ${l.title ?? l.name}${l.path ? ` (${l.path})` : ""}`);
+      const keyNote = this.key()
+        ? "A key is configured on this MCP server - the SAME key authorizes these URLs (send it as the X-API-Key header; never paste it into chat)."
+        : `No key is configured on this MCP server. ${NO_KEY_MSG}`;
+      return text(
+        `Bundle manifest, snapshot ${d["econdl:snapshot_date"] ?? "?"}: ` +
+        `${(d["econdl:resource_url_count"] ?? 0).toLocaleString()} series URL(s) in ${res.length} source resource(s)` +
+        `${unresolved.length ? `; ${unresolved.length} id(s) NOT resolved` : ""}.\n\n` +
+        blocks.join("\n\n") +
+        (unresolved.length ? `\n\nNot resolved (reported, never dropped):\n` +
+          unresolved.slice(0, 50).map((x) => `- ${x.id}: ${x.reason}`).join("\n") : "") +
+        (lic.length ? `\n\nLicences (honor each):\n${lic.join("\n")}` : "") +
+        `\n\n${keyNote}\nTo build the bundle file itself: pip install econdl; econdl.bundle(${source ? `source="${source}"` : "[...ids]"}).`);
+    });
+
     // ═════════════════ HF DATA LIBRARY ═════════════════
     s.registerTool("get_hf_download_link", {
       title: "HF Equity Data Download Link",
       description:
         "Authenticated download instructions for HF Data Library's 1-minute " +
-        "OHLCV bars (full per-ticker history, 1,391 US stocks/ETFs, 2002→" +
+        "OHLCV bars (full per-ticker history of US stocks/ETFs, 2002→" +
         "yesterday; parquet or csv) or the 25 pre-computed academic variables. " +
         "Files are full-history (up to millions of rows) so they are fetched " +
         "by YOUR code, not returned inline. Works with the same ElkassabgiData key.",
@@ -517,8 +593,8 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
     s.registerTool("get_family_status", {
       title: "ElkassabgiData Family Status",
       description:
-        "Live status of the whole ElkassabgiData family: both libraries' " +
-        "headline stats and data currency. Free.",
+        "Live status of the whole ElkassabgiData family - HF, Econ and IP: each library's " +
+        "headline stats and data currency, read live. Free.",
       inputSchema: {},
       annotations: { readOnlyHint: true },
     }, async () => {
@@ -592,9 +668,10 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
     }, async (uri) => ({
       contents: [{ uri: uri.href, mimeType: "text/plain", text:
         "ElkassabgiData (elkassabgidata.com) is a family of free, research-grade data libraries " +
-        "by Ahmed Elkassabgi: HF Data Library (1-minute US equity OHLCV, 1,391 tickers, 2002→present, " +
-        "raw+clean, 25 academic variables) and Econ Data Library (billions of economic/financial series from " +
-        "300+ sources with per-series licensing and citations). ONE free account works across every " +
+        "by Ahmed Elkassabgi: HF Data Library (1-minute US equity OHLCV, 2002→present, raw+clean, " +
+        "25 academic variables), Econ Data Library (billions of economic/financial series from hundreds of " +
+        "sources with per-series licensing and citations) and IP Data Library (patent & innovation measures " +
+        "from USPTO data). Live figures: get_family_status. ONE free account works across every " +
         `library, current and future: ${ACCOUNT_URL}. Cite series using the attribution shipped in their metadata.` }],
     }));
 
@@ -654,16 +731,17 @@ h1{font-family:Georgia,serif}code{background:#f3f4f6;padding:.15rem .4rem;border
 .gold{color:#977f3f}</style></head><body>
 <h1>Elkassabgi<span class="gold">Data</span> MCP server</h1>
 <p>AI-native access to the family of free research data libraries —
-<a href="https://econdatalibrary.com">Econ Data Library</a> (billions of economic series) and
-<a href="https://hfdatalibrary.com">HF Data Library</a> (1-minute US equity data).</p>
+<a href="https://econdatalibrary.com">Econ Data Library</a> (billions of economic series),
+<a href="https://hfdatalibrary.com">HF Data Library</a> (1-minute US equity data) and
+<a href="https://ipdatalibrary.com">IP Data Library</a> (patent &amp; innovation measures) - one server for all of them.</p>
 <p><b>Connect:</b> add this server to Claude, Cursor, or any MCP client:</p>
 <p><code>https://elkassabgidata-mcp.elkassabgi.workers.dev/mcp</code></p>
 <p><b>Downloads</b> need the free ElkassabgiData key (browse/search is open). Configure it as an
 <code>X-API-Key</code> header, <code>Authorization: Bearer</code>, or append
 <code>?api_key=YOUR_KEY</code> to the URL above.
 <a href="https://hfdatalibrary.com/pages/download">Get a free key</a> — one account for every library.</p>
-<p>Tools: search &amp; fetch econ series with citations · per-source freshness board ·
-HF bars/variables download links · honesty charter · analysis prompts.</p>
+<p>Tools: search &amp; fetch econ series with citations · bundle manifests · per-source freshness board ·
+HF bars/variables download links · IP bundle download links · family status · honesty charter · analysis prompts.</p>
 </body></html>`;
 
 // ── entry: extract the per-request key into props, serve /mcp ────────────────
