@@ -205,7 +205,7 @@ def main():
                     # re-list the "timeless table" class that was delisted on 2026-09-05.
                     refused.append((sid, mn, mx))
                     continue
-            rows.append((sid, src, clean_title(title)[:500], None, None, None, None, lic, mn, mx, None, "{}"))
+            rows.append((sid, src, clean_title(clean_title(title)[:500]), None, None, None, None, lic, mn, mx, None, "{}"))
         if preserved:
             print(f"  [R722] kept the corrected catalogue range for {len(preserved)} known store "
                   f"defect(s): {preserved}", flush=True)

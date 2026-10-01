@@ -98,7 +98,7 @@ def process(con, src, apply):
             u = new_unit
             filled_unit += 1
             changed = True
-        if new_desc and new_desc != new_title:
+        if new_desc and clean_title(new_desc) != new_title:
             try:
                 meta = json.loads(cur_meta) if cur_meta else {}
             except Exception:  # noqa: BLE001 — malformed metadata must not kill the run

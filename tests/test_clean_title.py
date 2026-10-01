@@ -1,9 +1,13 @@
 """Catalogue titles carry no line breaks (Ahmed, 2026-10-01: "do whats best for us").
 
 clean_title() turns each run of whitespace containing a CR or LF into one space and strips the ends; everything else
-stays as published. The examples are real titles from the catalogue on 2026-09-30 (dst, eia, scb). The ratchet
-names every writer of series.title that produced or can re-produce such a title and requires it to call clean_title,
-so a writer edited later cannot drop the rule silently.
+stays as published. The examples are real titles from the catalogue on 2026-09-30 (dst, eia, scb).
+
+WHAT ENFORCES THE RULE (review R1323): ~45 modules write series.title, so no list of writers can be the guarantee.
+The guarantee is (1) core/sync_catalog_d1.py cleaning every title on its way to D1 and (2)
+tools/clean_catalogue_titles.py, which cleans the local copy and whose --check fails while any title holds a break
+(tests/test_clean_catalogue_titles.py). The list below is defence in depth: the writers that produced such titles,
+the INSERT OR REPLACE re-cataloguers, and the two tools that write D1 directly - each must keep calling clean_title.
 """
 from __future__ import annotations
 
@@ -52,6 +56,7 @@ WRITERS = [
     "tools/catalog_pxweb_flowgrain.py", "tools/catalog_statcan_tables.py", "core/broaden_catalog.py",
     "tools/catalog_eia_tables.py", "tools/title_eia_eba_all.py", "tools/title_eia_nuclear_status.py",
     "tools/title_eia_outlook_scenarios.py", "tools/apply_series_names.py", "core/apply_title_wave.py",
+    "core/catalog.py", "tools/refresh_sec_edgar.py", "core/sync_catalog_d1.py",
 ]
 
 

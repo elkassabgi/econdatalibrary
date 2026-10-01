@@ -41,6 +41,7 @@ ARGS = {
     "core/broaden_catalog.py": {"write": [], "dry": ["--dry-run"]},
     "tools/catalog_pxweb_flowgrain.py": {"write": [], "dry": ["--dry-run"]},
     "tools/catalog_who_api.py": {"write": ["who_sdg"], "dry": ["who_sdg", "--dry-run"]},
+    "tools/clean_catalogue_titles.py": {"write": ["--apply"], "dry": []},
 }
 
 
@@ -122,6 +123,7 @@ EXPECTED_WRITERS = {
     "tools/_cat_nonplastic.py", "tools/_cat_tradefoodcatbyproc.py", "tools/_cat_tradefoodprocbycat.py",
     "tools/_cat_tradeservcatbypartner.py", "tools/apply_license_class.py", "tools/catalog_census_tables.py",
     "tools/catalog_cepii_baci.py", "tools/catalog_complete.py", "tools/catalog_dip_tables.py",
+    "tools/clean_catalogue_titles.py",
     "tools/catalog_eia_tables.py", "tools/catalog_fdic.py", "tools/catalog_fed_board.py", "tools/catalog_fhfa.py",
     "tools/catalog_ilostat_indicators.py", "tools/catalog_imf_direct.py", "tools/catalog_imts_tables.py",
     "tools/catalog_istat_flows.py", "tools/catalog_mfs_tables.py", "tools/catalog_noaa.py",

@@ -916,7 +916,7 @@ def main() -> int:
                 for p, d0, d1 in got:
                     if p is None or p == "":
                         continue
-                    rows.append((unit_id(pid, p), SOURCE, f"{title} — {dim} {p}", freq, None,
+                    rows.append((unit_id(pid, p), SOURCE, clean_title(f"{title} — {dim} {p}"), freq, None,
                                  "Canada", None, LICENSE_ID, d0, d1, meta_json))
             except Exception as e:                              # noqa: BLE001
                 print(f"  {pid}: SPLIT SCAN FAILED {type(e).__name__} {str(e)[:60]}")

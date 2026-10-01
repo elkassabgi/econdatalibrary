@@ -122,6 +122,7 @@ PENDING = os.path.join(
 
 from core.catalog_sync_manifest import Manifest as _Manifest      # noqa: E402
 from core.catalog_sync_manifest import ManifestBusy as _ManifestBusy  # noqa: E402
+from core.titles import clean_title  # noqa: E402
 from core.catalog_sync_manifest import default_path as _manifest_path  # noqa: E402
 
 
@@ -660,6 +661,21 @@ def main(argv: list[str] | None = None) -> None:
         # the rows are withheld; which sources they belong to is not printed
         print(f"  [gate] withheld {len(rows) - len(kept):,} row(s) of gated sources - not sent")
     rows = kept
+
+    # NO LINE BREAK IN A TITLE REACHES D1 (Ahmed 2026-10-01; core/titles.py). ~45 modules write series.title and
+    # only some call clean_title; this is the chokepoint every one of their rows passes on its way to D1 (the two
+    # tools that write D1 directly - refresh_sec_edgar, apply_title_wave - clean their own). Cleaning HERE, before
+    # the diff, means the manifest hashes the cleaned row, so a raw local title cannot re-send forever. The local
+    # copy is cleaned by tools/clean_catalogue_titles.py; the count below says when it is needed.
+    n_broken = 0
+    for r in rows:
+        c = clean_title(r.get("title"))
+        if c != r.get("title"):
+            r["title"] = c
+            n_broken += 1
+    if n_broken:
+        print(f"  [titles] {n_broken:,} title(s) held a line break - sent cleaned; clean the local copy with "
+              f"tools/clean_catalogue_titles.py")
 
     # THE DIFF (ledger R542). Everything below sends only rows whose CONTENT changed since
     # the last successful sync, compared against a LOCAL manifest — never against D1, which
