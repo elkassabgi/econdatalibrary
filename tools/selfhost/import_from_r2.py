@@ -43,10 +43,12 @@ from blobstore import BlobStore  # noqa: E402
 BUCKET = "econ-data"
 MIB = 1 << 20
 # The run start that splits NEW from MISSING is taken this much LATER than this machine's clock says: the clock
-# is compared with R2's LastModified, and nothing keeps it right (w32tm: the Windows Time service is not running;
-# ~1 s off on 2026-10-01). A clock BEHIND R2 makes a key written just before the run look NEW, which would hide
-# it if the copy listing lost it (AR-182 round 5). Later only turns a key written in the run's first minutes into
-# a reported MISSING (fails closed; the next run copies it). An EARLIER start is the wrong way round - it makes
+# is compared with R2's LastModified. Windows does sync it - the scheduled task "SynchronizeTime" ran 2026-09-30
+# with result 0; the w32time service starts for the sync and stops, so "service not running" is its normal state
+# (an earlier version of this comment said nothing kept the clock right: wrong, ledger R1339) - but a weekly sync
+# still drifts between runs (~1 s on 2026-10-01). A clock BEHIND R2 makes a key written just before the run
+# look NEW, which would hide it if the copy listing lost it (AR-182 round 5). Later only turns a key written in
+# the run's first minutes into a reported MISSING (fails closed; the next run copies it). An EARLIER start is the wrong way round - it makes
 # more keys NEW (the first draft of this fix did that; its test caught it).
 CLOCK_MARGIN_S = 600
 
