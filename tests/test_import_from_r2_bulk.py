@@ -28,17 +28,32 @@ def _etag(b: bytes) -> str:
 T1 = dt.datetime(2026, 9, 1, 12, 0, 0, 250000, tzinfo=dt.timezone.utc)     # a listing carries milliseconds
 
 
+class _NotFound(Exception):
+    response = {"Error": {"Code": "404"}}
+
+
 class FakeBucket:
-    def __init__(self, objects: dict, page=2, corrupt=(), modified=None, raises=(), size_lie=()):
+    """unlisted: keys R2 HOLDS (HEAD finds them) that its listing leaves out - a listing gap. order: a sort key
+    for the listing other than UTF-8 bytes (a listing out of order)."""
+    def __init__(self, objects: dict, page=2, corrupt=(), modified=None, raises=(), size_lie=(), unlisted=(),
+                 order=None):
         self.objects, self.page, self.corrupt, self.gets = dict(objects), page, set(corrupt), []
         self.modified = dict(modified or {})
-        self.raises, self.size_lie = set(raises), set(size_lie)
+        self.raises, self.size_lie, self.unlisted = set(raises), set(size_lie), set(unlisted)
+        self.order, self.heads, self.dup = order or (lambda k: k.encode("utf-8")), [], set()
 
     def lm(self, k):
         return self.modified.get(k, T1)
 
+    def head_object(self, Bucket, Key):
+        self.heads.append(Key)
+        if Key in self.objects or Key in self.unlisted:
+            return {"ETag": '"x"', "ContentLength": 1, "LastModified": T1}
+        raise _NotFound(Key)
+
     def list_objects_v2(self, Bucket, Prefix, ContinuationToken=None):
-        keys = sorted((k for k in self.objects if k.startswith(Prefix)), key=lambda k: k.encode("utf-8"))
+        keys = sorted((k for k in self.objects if k.startswith(Prefix)), key=self.order)
+        keys = [x for k in keys for x in ([k, k] if k in self.dup else [k])]
         i = int(ContinuationToken or 0)
         chunk = keys[i:i + self.page]
         out = {"Contents": [{"Key": k, "ETag": '"%s"' % _etag(self.objects[k]),
@@ -110,7 +125,8 @@ def test_a_bad_object_fails_the_run_but_not_the_others(monkeypatch, tmp_path, ca
 
 def _absent(tmp_path):
     p = tmp_path / "absent.txt"
-    return p.read_text(encoding="utf-8").split() if p.exists() else []
+    lines = p.read_text(encoding="utf-8").splitlines() if p.exists() else []
+    return [ln.split(" ", 1)[1] for ln in lines if ln.startswith("ABSENT ")]
 
 
 def test_an_object_deleted_on_r2_is_reported_and_fails_the_run(monkeypatch, tmp_path):
@@ -123,13 +139,132 @@ def test_an_object_deleted_on_r2_is_reported_and_fails_the_run(monkeypatch, tmp_
     assert BlobStore(str(tmp_path / "blobs")).head("series/k3.csv") is not None, "reported, not deleted"
 
 
+def _receipt(tmp_path):
+    p = tmp_path / "absent.txt"
+    return p.read_text(encoding="utf-8").splitlines() if p.exists() else []
+
+
+PRUNE = ("--resume", "--prune-absent", "--absent-out")
+
+
 def test_prune_absent_deletes_them_and_passes(monkeypatch, tmp_path):
     _run(monkeypatch, FakeBucket(OBJ), tmp_path)
     gone = {k: v for k, v in OBJ.items() if k != "series/k4.csv"}
-    rc, p = _run(monkeypatch, FakeBucket(gone), tmp_path, "--resume", "--prune-absent")
+    b = FakeBucket(gone)
+    rc, p = _run(monkeypatch, b, tmp_path, *PRUNE, str(tmp_path / "absent.txt"))
     store = BlobStore(str(tmp_path / "blobs"))
-    assert rc == 0 and p["absent"] == 1 and p["pruned"] == 1
+    assert rc == 0 and p["absent"] == 1 and p["pruned"] == 1 and b.heads == ["series/k4.csv"]
     assert store.head("series/k4.csv") is None and sorted(store.list("series/")) == sorted(gone)
+    assert _receipt(tmp_path) == ["ABSENT series/k4.csv", "DELETE series/k4.csv"]
+
+
+def test_prune_needs_a_receipt(monkeypatch, tmp_path):
+    import pytest
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    with pytest.raises(SystemExit):
+        _run(monkeypatch, FakeBucket({}), tmp_path, "--resume", "--prune-absent")
+    assert sorted(BlobStore(str(tmp_path / "blobs")).list("series/")) == sorted(OBJ)
+
+
+def test_every_pruned_key_is_in_the_receipt_before_it_goes(monkeypatch, tmp_path):
+    """AR-182 round 2 finding 2: 29 pruned, 20 named."""
+    many = {f"series/m{i:02d}.csv": b"%d" % i for i in range(30)}
+    _run(monkeypatch, FakeBucket(many), tmp_path)
+    rc, p = _run(monkeypatch, FakeBucket({"series/m07.csv": b"7"}), tmp_path, *PRUNE, str(tmp_path / "absent.txt"))
+    deleted = [ln.split(" ", 1)[1] for ln in _receipt(tmp_path) if ln.startswith("DELETE ")]
+    assert rc == 0 and p["pruned"] == 29 and sorted(deleted) == sorted(set(many) - {"series/m07.csv"})
+
+
+def test_an_empty_listing_never_prunes(monkeypatch, tmp_path):
+    """AR-182 round 2 P1: an empty, untruncated, error-free listing pruned the whole prefix with rc 0."""
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    rc, p = _run(monkeypatch, FakeBucket({}), tmp_path, *PRUNE, str(tmp_path / "absent.txt"), "--prune-max", "100")
+    assert rc == 1 and p["pruned"] == 0 and "REFUSED: R2 listed nothing" in p["absent_note"]
+    assert sorted(BlobStore(str(tmp_path / "blobs")).list("series/")) == sorted(OBJ)
+
+
+def test_more_candidates_than_the_cap_never_prunes(monkeypatch, tmp_path):
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    left = {"series/k0.csv": OBJ["series/k0.csv"]}
+    rc, p = _run(monkeypatch, FakeBucket(left), tmp_path, *PRUNE, str(tmp_path / "absent.txt"), "--prune-max", "5")
+    assert rc == 1 and p["absent"] == 6 and p["pruned"] == 0 and "exceed --prune-max 5" in p["absent_note"]
+    assert len(BlobStore(str(tmp_path / "blobs")).list("series/")) == 7
+    rc, p = _run(monkeypatch, FakeBucket(left), tmp_path, *PRUNE, str(tmp_path / "absent.txt"), "--prune-max", "6")
+    assert rc == 0 and p["pruned"] == 6                                   # control: at the cap it prunes
+
+
+def test_a_listing_out_of_order_aborts_with_no_delete(monkeypatch, tmp_path):
+    """AR-182 round 2 P2: one inversion deleted an object R2 still held, rc 0, for ever."""
+    import pytest
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    gone = {k: v for k, v in OBJ.items() if k != "series/k0.csv"}
+    backwards = FakeBucket(gone, order=lambda k: [-x for x in k.encode("utf-8")])
+    with pytest.raises(imp.ListingOutOfOrder):
+        _run(monkeypatch, backwards, tmp_path, *PRUNE, str(tmp_path / "absent.txt"))
+    assert sorted(BlobStore(str(tmp_path / "blobs")).list("series/")) == sorted(OBJ)
+    assert not any(ln.startswith("DELETE") for ln in _receipt(tmp_path))
+
+
+def test_a_listing_that_repeats_a_key_aborts_too(monkeypatch, tmp_path):
+    """Strictly ascending: a repeated key is a listing fault as well (mutant M12 of round 3)."""
+    import argparse
+    import pytest
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    b = FakeBucket({k: v for k, v in OBJ.items() if k != "series/k0.csv"})
+    b.dup = {"series/k4.csv"}
+    a = argparse.Namespace(prefix=["series/"], absent_out=str(tmp_path / "absent.txt"), prune_absent=True,
+                           prune_max=1000)
+    with pytest.raises(imp.ListingOutOfOrder, match="k4"):
+        imp._absent_pass(b, BlobStore(str(tmp_path / "blobs")), a, {})
+    assert BlobStore(str(tmp_path / "blobs")).head("series/k0.csv") is not None
+
+
+def test_a_key_r2_still_has_is_kept_and_fails_the_run(monkeypatch, tmp_path):
+    """AR-182 round 2 P3: a key missing from the listing (a gap, or copied meanwhile by another importer) but
+    found by its own HEAD is never deleted."""
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    gone = {k: v for k, v in OBJ.items() if k not in ("series/k2.csv", "series/k5.csv")}
+    rc, p = _run(monkeypatch, FakeBucket(gone, unlisted={"series/k2.csv"}), tmp_path,
+                 *PRUNE, str(tmp_path / "absent.txt"))
+    store = BlobStore(str(tmp_path / "blobs"))
+    assert rc == 1 and p["pruned"] == 1 and p["kept_on_r2"] == 1
+    assert store.head("series/k2.csv") is not None and store.head("series/k5.csv") is None
+    assert "KEPT series/k2.csv (R2 HEAD found it)" in _receipt(tmp_path)
+
+
+def test_a_head_error_other_than_404_deletes_nothing(monkeypatch, tmp_path):
+    import pytest
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    b = FakeBucket({k: v for k, v in OBJ.items() if k != "series/k1.csv"})
+    b.head_object = lambda **kw: (_ for _ in ()).throw(ConnectionError("HEAD timed out"))
+    with pytest.raises(ConnectionError):
+        _run(monkeypatch, b, tmp_path, *PRUNE, str(tmp_path / "absent.txt"))
+    assert BlobStore(str(tmp_path / "blobs")).head("series/k1.csv") is not None
+
+
+def test_the_plain_prefix_command_checks_for_deletions(monkeypatch, tmp_path, capsys):
+    """AR-182 round 2 finding 3: '--prefix always takes the bulk path' had no test - the helper always passed
+    --workers 4 --progress. This is the bare command line."""
+    import core.r2_util as r2u
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    monkeypatch.setattr(r2u, "cloud_client", lambda: FakeBucket({k: v for k, v in OBJ.items() if k != "series/k3.csv"}))
+    monkeypatch.setattr(sys, "argv", ["import_from_r2.py", "--root", str(tmp_path / "blobs"), "--prefix", "series/"])
+    assert imp.main() == 1
+    assert "held but not on R2 1" in capsys.readouterr().out
+
+
+def test_after_t0_the_absent_check_does_not_run(monkeypatch, tmp_path):
+    """AR-182 round 2 mutant M6: the T0 skip itself, without --prune-absent."""
+    import argparse
+    from core import cutover
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    monkeypatch.setattr(cutover, "is_cut_over", lambda: True)
+    a = argparse.Namespace(prefix=["series/"], absent_out=None, prune_absent=False, prune_max=1000)
+    c = {}
+    assert imp._absent_pass(FakeBucket({}), BlobStore(str(tmp_path / "blobs")), a, c) == 0
+    assert c["absent"] == 0 and "after T0" in c["absent_note"]
+    monkeypatch.setattr(cutover, "is_cut_over", lambda: False)             # control: before T0 it finds all 7
+    assert imp._absent_pass(FakeBucket({}), BlobStore(str(tmp_path / "blobs")), a, c) == 7
 
 
 def test_control_nothing_deleted_nothing_absent(monkeypatch, tmp_path):
@@ -148,9 +283,12 @@ def test_the_absent_check_stays_inside_its_prefix_and_its_byte_order(monkeypatch
     store.put("series/0.csv", b"7", etag=_etag(b"7"))                      # before R2's first key
     store.put("series/b.csv", b"6", etag=_etag(b"6"))                      # between two R2 keys
     store.put("series/zz.csv", b"5", etag=_etag(b"5"))                     # past R2's last key
+    store.put("series/\U0001f601.csv", b"8", etag=_etag(b"8"))             # a 4-byte key past all (mutant M3)
+    store.put("series/", b"9", etag=_etag(b"9"))                           # the prefix itself (mutant M2)
     rc, _p = _run(monkeypatch, FakeBucket(objs, page=1), tmp_path, "--resume",
                   "--absent-out", str(tmp_path / "absent.txt"))
-    assert rc == 1 and _absent(tmp_path) == ["series/0.csv", "series/b.csv", "series/zz.csv"]
+    assert rc == 1 and [ln.split(" ", 1)[1] for ln in _receipt(tmp_path)] == [
+        "series/", "series/0.csv", "series/b.csv", "series/zz.csv", "series/\U0001f601.csv"]
 
 
 def test_iter_keys_pages_without_losing_or_repeating_a_key(tmp_path):
@@ -204,11 +342,12 @@ def test_a_limit_trial_does_not_judge_absence(monkeypatch, tmp_path):
     assert rc == 0 and p["absent"] == 0 and "NOT RUN" in p["absent_note"]
 
 
-def test_after_t0_the_absent_check_is_not_run_and_prune_is_refused(monkeypatch, tmp_path):
+def test_after_t0_prune_is_refused(monkeypatch, tmp_path, capsys):
     import pytest
     from core import cutover
     _run(monkeypatch, FakeBucket(OBJ), tmp_path)
     monkeypatch.setattr(cutover, "is_cut_over", lambda: True)
     with pytest.raises(SystemExit):
-        _run(monkeypatch, FakeBucket({}), tmp_path, "--resume", "--prune-absent")
+        _run(monkeypatch, FakeBucket({}), tmp_path, *PRUNE, str(tmp_path / "absent.txt"))
+    assert "refused after T0" in capsys.readouterr().err
     assert sorted(BlobStore(str(tmp_path / "blobs")).list("series/")) == sorted(OBJ)

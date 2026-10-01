@@ -108,9 +108,6 @@ class BlobStore:
                 return
             last, first = rows[-1][0], False
 
-    def count(self) -> int:
-        return self._r().execute("SELECT COUNT(*) FROM blobs").fetchone()[0]
-
     def list(self, prefix: str = "") -> list[str]:
         """Keys starting with `prefix`, in key order (an index range scan, not LIKE: no escaping)."""
         rows = self._r().execute("SELECT key FROM blobs WHERE key >= ? AND key < ? ORDER BY key",

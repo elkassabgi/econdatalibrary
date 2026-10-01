@@ -19,7 +19,9 @@ the counts, bytes, rate and the last listed key; --limit N stops after N objects
 
 After the copy, each --prefix is listed again and merge-compared with the store: an object the store holds that
 R2 no longer has (deleted or re-keyed on R2) is counted, written to --absent-out, and fails the run (rc 1);
---prune-absent deletes it from the store instead. Before T0 only - after T0 the store is newer than R2.
+--prune-absent (with --absent-out as its receipt) deletes it from the store instead, only after the whole merge
+finished on a strictly ascending listing, within --prune-max, and with R2's own HEAD answering 404 for that key.
+Before T0 only - after T0 the store is newer than R2.
 
     python tools/selfhost/import_from_r2.py --root F:/econ_live/blobs --create --prefix series/ \\
         --workers 16 --resume --quiet --progress F:/econ_selfhost_probe/import/series.progress.json
@@ -124,8 +126,13 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0, help="stop after this many listed objects (a trial)")
     ap.add_argument("--absent-out", help="write the keys the store holds under --prefix that R2 no longer has")
     ap.add_argument("--prune-absent", action="store_true",
-                    help="before T0, delete from the store what R2 no longer has under --prefix (else rc 1)")
+                    help="before T0, delete from the store what R2 no longer has under --prefix (else rc 1); "
+                         "needs --absent-out (the receipt); each key is confirmed gone by its own R2 HEAD")
+    ap.add_argument("--prune-max", type=int, default=1000,
+                    help="refuse a prune of more than this many keys (a listing fault looks like mass deletion)")
     a = ap.parse_args()
+    if a.prune_absent and not a.absent_out:
+        ap.error("--prune-absent needs --absent-out: a prune writes every key it deletes before deleting it")
     if a.prune_absent:
         from core import cutover                                                 # noqa: PLC0415
         if cutover.is_cut_over():
@@ -196,17 +203,52 @@ def _listed(s3, a):
         yield from _prefix_listing(s3, p)
 
 
-def absent_on_r2(s3, store, prefix):
-    """Keys the STORE holds under `prefix` that R2 no longer lists (review AR-182 finding 1: a delete on R2 - a
-    backup prune, a retire, a licence removal, a re-key - otherwise never reaches the store, and a resume reports
-    success over it). A merge of two streams in the same byte order: neither side is held in memory."""
-    theirs = (k for k, _e, _s, _m in _prefix_listing(s3, prefix))
-    nxt = next(theirs, None)
+class ListingOutOfOrder(RuntimeError):
+    """R2's listing did not strictly ascend by UTF-8 bytes: the merge against the store is then meaningless."""
+
+
+def absent_on_r2(s3, store, prefix, seen=None):
+    """CANDIDATE keys the STORE holds under `prefix` that R2 no longer lists (review AR-182 finding 1: a delete on
+    R2 - a backup prune, a retire, a licence removal, a re-key - otherwise never reaches the store, and a resume
+    reports success over it). A merge of two streams in the same byte order: neither side is held in memory.
+    The listing is checked to strictly ascend as it is read (ListingOutOfOrder otherwise - AR-182 round 2 P2);
+    a candidate is only a candidate: nothing is deleted on it before the whole merge finished and R2 confirmed
+    the key gone with its own HEAD. `seen` (a dict) counts listed and judged keys for the progress file."""
+    seen = seen if seen is not None else {}
+    seen.setdefault("absent_listed", 0)
+    seen.setdefault("absent_judged", 0)
+
+    def theirs():
+        prev = None
+        for k, _e, _s, _m in _prefix_listing(s3, prefix):
+            b = k.encode("utf-8")
+            if prev is not None and b <= prev:
+                raise ListingOutOfOrder(f"R2 listed {k!r} after {prev.decode('utf-8')!r} under {prefix!r}")
+            prev = b
+            seen["absent_listed"] += 1
+            yield k
+    it = theirs()
+    nxt = next(it, None)
     for mine in store.iter_keys(prefix):
+        seen["absent_judged"] += 1
         while nxt is not None and nxt.encode("utf-8") < mine.encode("utf-8"):
-            nxt = next(theirs, None)
+            nxt = next(it, None)
         if nxt != mine:
             yield mine
+    for _rest in it:                       # read the listing to its end, so an order fault late in it still counts
+        pass
+
+
+def _gone_on_r2(s3, key) -> bool:
+    """True only when R2 answers HEAD for `key` with 404. Present -> False; any other error propagates."""
+    try:
+        s3.head_object(Bucket=BUCKET, Key=key)
+        return False
+    except Exception as e:                                                     # noqa: BLE001 - re-raised below
+        code = str(getattr(e, "response", {}).get("Error", {}).get("Code", ""))
+        if code in ("404", "NoSuchKey", "NotFound"):
+            return True
+        raise
 
 
 def _bulk(r2_util, s3, store, a) -> int:
@@ -280,20 +322,32 @@ def _bulk(r2_util, s3, store, a) -> int:
                 report()
                 last = time.time()
         wait(pending)
-    absent = _absent_pass(s3, store, a, c)
+    c["phase"] = "absent check"
+    unresolved = _absent_pass(s3, store, a, c, report)
+    c["phase"] = "done"
     report(final=True)
     print(f"listed {c['listed']:,}; held already {c['skipped_held']:,}; copied {c['copied']:,} "
           f"({c['bytes'] / 1e9:.2f} GB); failures {c['failed']:,}; {c['absent_note']}")
-    return 1 if c["failed"] or (absent and not a.prune_absent) else 0
+    return 1 if c["failed"] or unresolved else 0
 
 
-def _absent_pass(s3, store, a, c) -> int:
+def _absent_pass(s3, store, a, c, report=lambda: None) -> int:
     """After the copy: what the store holds under each --prefix that R2 no longer has. A fresh listing, so keys
-    the copy itself wrote are never mistaken for deletions. Reported (count, and the keys to --absent-out) and
-    rc 1; --prune-absent deletes them from the store instead. Not run on a --limit trial (it saw part of the
-    prefix only) nor after T0 (the store is then newer than R2, and absence on R2 says nothing)."""
+    the copy itself wrote are never mistaken for deletions. Returns how many stay UNRESOLVED (rc 1 when > 0).
+
+    Report only (default): every candidate is a FAIL of the run, its key in --absent-out (else the first 20
+    printed). --prune-absent (before T0, --absent-out required) deletes them, and only when (AR-182 round 2):
+      * the whole merge finished with R2's listing strictly ascending (ListingOutOfOrder aborts, no delete);
+      * the count is plausible: never when R2 listed nothing under a prefix the store holds keys under, never
+        more than --prune-max candidates;
+      * R2 answers HEAD for that key with 404 right before its delete (a key R2 still has - a listing gap, or
+        an object another importer copied meanwhile - is kept and stays unresolved);
+      * its key is in the receipt (flushed) BEFORE the delete.
+    Not run on a --limit trial (it saw part of the prefix only) nor after T0 (the store is then newer than R2,
+    and absence on R2 says nothing)."""
+    import time                                                                # noqa: PLC0415
     from core import cutover                                                   # noqa: PLC0415
-    c["absent"] = 0
+    c["absent"] = c["pruned"] = c["kept_on_r2"] = 0
     if not a.prefix:
         c["absent_note"] = "absent check: no --prefix"
         return 0
@@ -304,24 +358,48 @@ def _absent_pass(s3, store, a, c) -> int:
         c["absent_note"] = "absent check NOT RUN: after T0 the store is newer than R2"
         return 0
     out = open(a.absent_out, "w", encoding="utf-8", newline="\n") if a.absent_out else None
-    pruned = 0
+    keep = []                                       # candidates held for a prune: at most --prune-max + 1
+    refused = None
+    last = time.time()
     try:
         for p in a.prefix:
-            for k in absent_on_r2(s3, store, p):
+            before = c.get("absent_listed", 0)
+            held_before = c["absent"]
+            for k in absent_on_r2(s3, store, p, seen=c):
                 c["absent"] += 1
                 if out:
-                    out.write(k + "\n")
+                    out.write(f"ABSENT {k}\n")
                 elif c["absent"] <= 20:
                     print(f"ABSENT {k}", flush=True)
-                if a.prune_absent:
-                    pruned += store.delete(k)
+                if a.prune_absent and len(keep) <= a.prune_max:
+                    keep.append(k)
+                if time.time() - last >= 30:
+                    report()
+                    last = time.time()
+            if c["absent_listed"] == before and c["absent"] > held_before:
+                refused = (f"R2 listed nothing under {p!r} while the store holds {c['absent'] - held_before:,} "
+                           f"keys there")
+        if a.prune_absent:
+            if refused is None and c["absent"] > a.prune_max:
+                refused = f"{c['absent']:,} candidates exceed --prune-max {a.prune_max:,}"
+            if refused is None:
+                for k in keep:
+                    if not _gone_on_r2(s3, k):
+                        c["kept_on_r2"] += 1
+                        out.write(f"KEPT {k} (R2 HEAD found it)\n")
+                        continue
+                    out.write(f"DELETE {k}\n")
+                    out.flush()
+                    c["pruned"] += store.delete(k)
     finally:
         if out:
             out.close()
-    c["pruned"] = pruned
-    c["absent_note"] = (f"held but not on R2 {c['absent']:,}" + (f" (pruned {pruned:,})" if a.prune_absent else "")
-                        + (f" -> {a.absent_out}" if a.absent_out and c["absent"] else ""))
-    return c["absent"]
+    note = f"held but not on R2 {c['absent']:,}"
+    if a.prune_absent:
+        note += (f" (prune REFUSED: {refused})" if refused else
+                 f" (pruned {c['pruned']:,}; kept, R2 has them {c['kept_on_r2']:,})")
+    c["absent_note"] = note + (f" -> {a.absent_out}" if a.absent_out and c["absent"] else "")
+    return c["absent"] - c["pruned"]
 
 
 if __name__ == "__main__":
