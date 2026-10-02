@@ -30,11 +30,21 @@ sys.path.insert(0, ROOT)
 from updater import orchestrate  # noqa: E402
 
 
+class _Armed(list):
+    """Every arming, in order. With `manual = True` a RE-ARM (0 < seconds < 1) starts no timer: the test fires it
+    with fire() at the exact point it wants the alarm to land - no wall clock decides (2026-10-02)."""
+    manual = False
+
+    @staticmethod
+    def fire():
+        _thread.interrupt_main()
+
+
 @pytest.fixture
 def emulated_itimer(monkeypatch):
     """signal.setitimer(ITIMER_REAL, s) -> after s seconds interrupt the main thread with SIGINT, which the test
     maps to SIGALRM. setitimer(ITIMER_REAL, 0) cancels. Records every arming so a test can see a re-arm."""
-    armed = []
+    armed = _Armed()
     state = {"t": None}
 
     def setitimer(which, seconds, interval=0.0):
@@ -42,7 +52,7 @@ def emulated_itimer(monkeypatch):
             state["t"].cancel()
             state["t"] = None
         armed.append(seconds)
-        if seconds > 0:
+        if seconds > 0 and not (armed.manual and seconds < 1):
             t = threading.Timer(seconds, _thread.interrupt_main)
             t.daemon = True
             t.start()
@@ -76,6 +86,30 @@ def _spin(seconds):
         time.sleep(0.01)
 
 
+def _wait_until(cond, seconds):
+    """Ordinary code that runs until cond() is true. The limit is only so that a defect ends the test."""
+    t = time.monotonic()
+    while not cond():
+        if time.monotonic() - t > seconds:
+            return False
+        time.sleep(0.01)
+    return True
+
+
+class _SlowOut:
+    """A stdout whose write takes `seconds` of ordinary Python code - what a captured stdout on a busy disk did."""
+    def __init__(self, seconds):
+        self.seconds, self.text = seconds, []
+
+    def write(self, s):
+        _spin(self.seconds)
+        self.text.append(s)
+        return len(s)
+
+    def flush(self):
+        pass
+
+
 def test_a_timeout_swallowed_in_a_weakref_callback_is_delivered_again(emulated_itimer, capsys):
     """The unit must NOT carry on: the lost raise is re-delivered in ordinary code within a moment."""
     reached_end = False
@@ -92,16 +126,74 @@ def test_a_timeout_swallowed_in_a_weakref_callback_is_delivered_again(emulated_i
 
 def test_a_re_delivery_inside_a_deferred_window_is_held_not_raised(emulated_itimer):
     """_DEFER_ALARM (derive's wait slice) still wins: swallowed OUTSIDE the window, the alarm's re-delivery lands
-    inside it and is recorded in _ALARM_PENDING for derive to raise just after wait() - never raised inside."""
+    inside it and is recorded in _ALARM_PENDING for derive to raise just after wait() - never raised inside.
+
+    The re-delivery is fired BY THE TEST, after the window is open. It was left to the 0.05 s timer and a 1.0 s
+    spin; on 2026-10-02, on a busy machine, the alarm landed before the window (inside the hook's slow print) and
+    the test failed for a reason that was not its subject."""
+    emulated_itimer.manual = True
     with orchestrate._unit_deadline("zz/_all", 60.0):
         _swallowed_alarm("zz/_all")
+        assert [s for s in emulated_itimer[1:] if 0 < s < 1], f"the swallow did not re-arm: {emulated_itimer}"
         orchestrate._DEFER_ALARM = True
         try:
-            _spin(1.0)
+            emulated_itimer.fire()                                    # a UnitTimeout raised here fails the test
+            assert _wait_until(lambda: orchestrate._ALARM_PENDING is not None, 30.0), "the alarm never ran"
             assert isinstance(orchestrate._ALARM_PENDING, orchestrate.UnitTimeout)
         finally:
             orchestrate._DEFER_ALARM = False
             orchestrate._ALARM_PENDING = None
+
+
+def test_control_the_same_fire_outside_a_deferred_window_raises(emulated_itimer):
+    """The control of the test above: the same manual fire with NO window open is raised, not recorded."""
+    emulated_itimer.manual = True
+    with pytest.raises(orchestrate.UnitTimeout):
+        with orchestrate._unit_deadline("zz/_all", 60.0):
+            _swallowed_alarm("zz/_all")
+            emulated_itimer.fire()
+            _wait_until(lambda: False, 30.0)
+    assert orchestrate._ALARM_PENDING is None
+
+
+def test_a_re_delivery_that_lands_inside_the_hooks_own_print_is_not_lost(emulated_itimer, monkeypatch):
+    """2026-10-02. The hook re-arms the timer (R1301: before it prints) and then prints. A print slower than
+    _REFIRE_S lets the re-armed alarm fire INSIDE the print. Its raise was caught by the hook's own
+    `except Exception: pass`: no unraisable hook, no second re-arm - the unit ran on with no fence. Seen as a
+    one-off failure of the deferred-window test while pytest's captured stdout sat on a busy disk; reproduced on
+    the unchanged code with this slow stdout (armed [3600.0, 0.05, 0], nothing pending, the unit reached its end)."""
+    monkeypatch.setattr(orchestrate, "_TIMEOUT_WARNED", True)         # __enter__ prints nothing through the slow stdout
+    slow = _SlowOut(0.3)                                              # six times _REFIRE_S
+    reached_end = False
+    with pytest.raises(orchestrate.UnitTimeout):
+        with orchestrate._unit_deadline("zz/_all", 60.0):
+            monkeypatch.setattr(sys, "stdout", slow)
+            _swallowed_alarm("zz/_all")
+            _spin(3.0)                                                # the unit's work, carrying on
+            reached_end = True
+    assert not reached_end, "the re-delivery landed in the hook's print and was lost: no fence"
+    rearms = [s for s in emulated_itimer[1:] if 0 < s < 1]
+    assert len(rearms) >= 2, f"no delivery landed inside the hook, so this run proved nothing: {emulated_itimer}"
+    assert "was swallowed" in "".join(slow.text), "the hook's print was cut short by the alarm"
+
+
+def test_the_hold_inside_the_hook_ends_with_the_hook(emulated_itimer, monkeypatch):
+    """_HOOK_BUSY must be False again after the hook - also when its print raises - or every later alarm is held."""
+    class _Broken:
+        def write(self, s):
+            raise OSError("stdout is gone")
+
+        def flush(self):
+            raise OSError("stdout is gone")
+    monkeypatch.setattr(orchestrate, "_TIMEOUT_WARNED", True)
+    emulated_itimer.manual = True
+    for out in (_SlowOut(0.0), _Broken()):
+        with orchestrate._unit_deadline("zz/_all", 60.0):
+            monkeypatch.setattr(sys, "stdout", out)
+            _swallowed_alarm("zz/_all")
+            monkeypatch.setattr(sys, "stdout", sys.__stdout__)
+            assert orchestrate._HOOK_BUSY is False, type(out).__name__
+            orchestrate.UNIT_TIMEOUT_FIRED = False                    # this test is not about the exit message
 
 
 def test_negative_control_another_unraisable_is_passed_to_the_previous_hook(emulated_itimer, monkeypatch):

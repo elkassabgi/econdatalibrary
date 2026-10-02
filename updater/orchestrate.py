@@ -265,12 +265,18 @@ def _deliver_alarm(key: str, minutes: float) -> None:
     """The SIGALRM handler's body: flag the timeout, then raise it - or, inside a deferred window, hold it."""
     global UNIT_TIMEOUT_FIRED, _ALARM_PENDING
     UNIT_TIMEOUT_FIRED = True                # before raising: see the flag's note above
-    if isinstance(sys.exc_info()[1], UnitTimeout):
+    if _HOOK_BUSY or isinstance(sys.exc_info()[1], UnitTimeout):
         # A UnitTimeout is ALREADY propagating (raised by an earlier delivery, or by a flag poller such as
         # dst._fence_check): a second one would only cut its cleanup short - a _giant checkpoint, a rotation save,
         # derive's derive_partial bookkeeping (review R1301, measured). Hold this one - and re-arm: one that is
         # really propagating leaves the unit and __exit__ disarms the timer; one that an `except Exception` then
         # swallows is delivered on the next fire (review AR-174 r2, the held-then-swallowed case).
+        #
+        # _HOOK_BUSY (2026-10-02): this delivery landed INSIDE the unraisable hook that re-armed it. A raise there
+        # has nowhere to go: inside the hook's print it was caught by the hook's own `except Exception` and lost
+        # with no second re-arm; anywhere else in the hook CPython drops it ("Exception ignored in
+        # sys.unraisablehook"). It happens when the print is slower than _REFIRE_S - a captured stdout on a busy
+        # disk took longer in a test run that day. So it is held, and re-armed, until the hook has returned.
         if _ARMED_DEADLINE is not None:
             _ARMED_DEADLINE._rearm()
         return
@@ -414,6 +420,10 @@ _REFIRE_S = 0.05
 # The deadline whose timer and SIGALRM handler are live right now, or None. A re-arm is only ever made through it:
 # a timer armed with SIGALRM at its default action kills the process (rc 14, measured in review R1301).
 _ARMED_DEADLINE = None
+# True while the unraisable hook below is taking over a swallowed UnitTimeout. _deliver_alarm holds (and re-arms)
+# any delivery that lands in that time: see its note. Only the main thread sets and reads it - the handler runs
+# on the main thread, and the hook takes over only an exception that the handler raised.
+_HOOK_BUSY = False
 
 
 class _unit_deadline:
@@ -435,14 +445,19 @@ class _unit_deadline:
             pass
 
     def _unraisable(self, u):
+        global _HOOK_BUSY
         if self.armed and isinstance(getattr(u, "exc_value", None), UnitTimeout):
-            self._rearm()                                    # RE-ARM FIRST: a failing print must not lose it again
+            _HOOK_BUSY = True                                # a delivery that lands in here is held, not raised
             try:
-                where = type(getattr(u, "object", None)).__name__
-                print(f"[orchestrator] {self.key}: the hard-limit UnitTimeout was swallowed in a {where} "
-                      f"(a callback CPython cannot raise out of) - delivering it again", flush=True)
-            except Exception:                                # noqa: BLE001
-                pass
+                self._rearm()                                # RE-ARM FIRST: a failing print must not lose it again
+                try:
+                    where = type(getattr(u, "object", None)).__name__
+                    print(f"[orchestrator] {self.key}: the hard-limit UnitTimeout was swallowed in a {where} "
+                          f"(a callback CPython cannot raise out of) - delivering it again", flush=True)
+                except Exception:                            # noqa: BLE001
+                    pass
+            finally:
+                _HOOK_BUSY = False
             return
         (self._prev_hook or sys.__unraisablehook__)(u)
 
