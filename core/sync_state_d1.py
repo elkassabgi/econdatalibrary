@@ -75,7 +75,12 @@ DATA_THROUGH_FROM_D1 = frozenset({"sec_edgar"})
 # row and its data_through (from its own refresher, not from a statistic over the catalogue - R737). This
 # names the ones that have one. tools/selfhost/t0_ready.py refuses READY while any DATA_THROUGH_FROM_D1
 # source is missing here (R1191 finding 1: after the first swap sec_edgar's data_through would read null).
-LOCAL_FRESHNESS_WRITERS: dict[str, str] = {}      # source_id -> the module that writes it locally
+# A NAME HERE IS NOT READINESS (R1195): it only lets an origin copy be built from the local rows. Whether those
+# rows are the refresher's truth is a separate gate with a receipt - t0_ready's `sec-edgar-local` check, which
+# stays closed until tools/selfhost/sec_edgar_local_check.py is clean AND the D1-to-local proof exists.
+LOCAL_FRESHNESS_WRITERS: dict[str, str] = {       # source_id -> the module whose data_through(conn) stamps it
+    "sec_edgar": "core.sec_edgar_local",
+}
 MAX_FILE_BYTES = 900_000  # per-file cap under wrangler's payload limit
 
 

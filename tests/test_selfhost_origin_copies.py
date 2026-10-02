@@ -204,9 +204,11 @@ def _with_sec_edgar(path):
     c.close()
 
 
-def test_a_d1_only_source_without_its_local_writer_fails_the_copy(tmp_path):
+def test_a_d1_only_source_without_its_local_writer_fails_the_copy(tmp_path, monkeypatch):
     """R1195: the gate read a dict; the copy then served no data_through for sec_edgar. Now the RESULT is
     checked: a served source with a dated series and no data_through row fails the build."""
+    from core import sync_state_d1
+    monkeypatch.setattr(sync_state_d1, "LOCAL_FRESHNESS_WRITERS", {})     # as it was before sec_edgar had one
     cat, st = tmp_path / "catalog.db", tmp_path / "state.db"
     _dated_catalogue(cat)
     _with_sec_edgar(cat)

@@ -144,8 +144,11 @@ def test_the_state_db_check(tmp_path):
 def test_a_d1_only_source_without_a_local_writer_is_not_ready(monkeypatch):
     """R1191 finding 1: sec_edgar's freshness lives only in D1 (R737: the catalogue copy is not its truth)."""
     from core import sync_state_d1
+    assert sync_state_d1.LOCAL_FRESHNESS_WRITERS == {"sec_edgar": "core.sec_edgar_local"}, "the real registry"
+    assert T.d1_only_sources()[0] is True, "the real writer imports and has data_through"
+    monkeypatch.setattr(sync_state_d1, "LOCAL_FRESHNESS_WRITERS", {})
     ok, detail = T.d1_only_sources()
-    assert ok is False and "sec_edgar" in detail, "the real state today: no local sec_edgar writer yet"
+    assert ok is False and "sec_edgar" in detail, "without a writer the source is named"
     monkeypatch.setattr(sync_state_d1, "LOCAL_FRESHNESS_WRITERS", {"sec_edgar": "no.such.module"})
     ok, detail = T.d1_only_sources()
     assert ok is False and "ModuleNotFoundError" in detail, "R1195: a name alone passed"
