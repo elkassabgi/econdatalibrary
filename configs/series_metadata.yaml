@@ -22,6 +22,13 @@ _defaults:
 sources:
 
   # ---- US equity intraday (the hfdatalibrary product) ----
+  # NOT SERVED BY THIS LIBRARY. hf_equities was delisted on 2026-08-06 (its 1,391 rows were removed
+  # from the catalogue; api/worker/src/util.ts records it), so this block is merged into no series
+  # today: the live /v1/sources does not list the source (bls is listed) and
+  # /v1/series/hf_equities:AAPL.metadata.json answers 404 "unknown series id" (checked 2026-10-02).
+  # The text is kept true in case the source comes back. The change of feed is stated in TRADING
+  # DAYS: monthly hf bars are labelled with the month start (docs/contracts/ekd-time-1.md, section 4),
+  # so the bar dated 2022-03-01 would hold days of both feeds.
   hf_equities:
     description_key:
       - >-
@@ -30,9 +37,10 @@ sources:
         snapshot are absent, so historical cross-sections are biased toward survivors.
         Do NOT treat the panel as a point-in-time-complete record of the market.
       - >-
-        Spliced series: bars before 2022 and from 2022 onward (IEX Exchange HIST)
-        come from different feeds; the splice point is a known seam. Per-segment
-        provenance is carried so each observation's true origin is recoverable.
+        Spliced series: trading days through 2022-03-04 and trading days from 2022-03-07
+        onward (IEX Exchange HIST) come from different feeds; the splice point is a known
+        seam. Per-segment provenance is carried so each observation's true origin is
+        recoverable.
       - >-
         Intraday microstructure: 1-minute OHLCV bars carry cleaning flags
         (volume spikes, stale quotes, auction prints, splice artifacts); a single
@@ -43,8 +51,9 @@ sources:
       Exchange HIST cutover, and stored per ticker. Compiled by the Elkassabgi Data Library.
     citation_short: "Elkassabgi High-Frequency Equity Data Library."
     citation_long: >-
-      Elkassabgi High-Frequency Equity Data Library (1-minute U.S. equity bars; post-2022
-      data from IEX Exchange HIST). Compiled by Ahmed Elkassabgi, University of Central Arkansas.
+      Elkassabgi High-Frequency Equity Data Library (1-minute U.S. equity bars; trading days
+      from 2022-03-07 onward are IEX Exchange HIST data). Compiled by Ahmed Elkassabgi, University
+      of Central Arkansas.
 
   # ---- US macro / official statistics ----
   bls:
