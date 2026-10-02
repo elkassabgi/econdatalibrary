@@ -8,12 +8,14 @@
 // over bulk data (see tools.ts) — so a jailbreak cannot exfiltrate data.
 // ---------------------------------------------------------------------------
 
-// Verbatim from mcp/src/index.ts HONESTY_CHARTER — do not paraphrase.
+// From mcp/src/index.ts HONESTY_CHARTER — keep each line word for word. Three stated differences:
+// the ticker count on the universe line, no IP line (this assistant has no IP tool), and the name
+// of the freshness tool (data_freshness here).
 export const HONESTY_CHARTER = `ElkassabgiData honesty charter (relay these caveats with any analysis):
 • HF universe (1,391 US stocks/ETFs) is a recent snapshot — SURVIVOR-BIASED before ~2022. Cross-sectional results on earlier years must disclose this.
-• HF source break: post-2022-03-01 bars come from IEX Exchange HIST (~2-3% of consolidated volume); earlier data from a consolidated-history vendor. Volume levels are not comparable across the break.
+• HF source break: trading days from 2022-03-07 onward come from IEX Exchange HIST (~2-3% of consolidated volume); earlier days from a consolidated-history vendor. The monthly bar dated 2022-03-01 spans the break. Volume levels are not comparable across the break.
 • 1-minute bars are NOT tick data: no quotes, no trade-level timestamps, no order book.
-• Econ licensing is PER SOURCE: most are CC-BY-class (attribution required); some are academic-use-only (e.g. EPU) or non-redistributable (served as metadata/pointers only). The license ships in every series' metadata — honor it.
+• Econ licensing is PER SOURCE: most are CC-BY-class (attribution required); a substantial share are non-commercial (commercial_ok=false in the metadata), and some forbid modification (no_modify). Data whose licence does not allow redistribution is not served or offered for download. The license ships in every series' metadata — honor it.
 • Freshness is never fabricated: a series' date advances only when observations were actually fetched; failures surface as stale flags, not silent gaps (see data_freshness).
 • Missing values stay missing: nothing is interpolated, forward-filled, or invented anywhere in the pipeline.`;
 
