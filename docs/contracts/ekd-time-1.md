@@ -1,6 +1,7 @@
 # Family Time Stamp — contract `ekd-time/1`
 
-Draft 5, 2026-10-02. Status: working contract; the owner's confirmation of "declaration only" (rule 1) is open.
+Draft 6, 2026-10-02. Status: working contract; the owner's confirmation of "declaration only" (rule 1) is open.
+No change of meaning is planned; a "no" on decision 4 would be one. Version 1 is not bound yet (see Versioning).
 Home of this file: `docs/contracts/ekd-time-1.md` in the repository `elkassabgi/econdatalibrary`, branch `main`.
 That copy is the authority. A change is a pull request on this path; each draft carries its number in its
 status line, its changes in section 6, and is announced to the bundle builder by a message that gives the
@@ -19,8 +20,8 @@ This contract is a DECLARATION about data as it is stored. It changes no stored 
    label for that span. Section 2 says how to compute the span from the label.
 3. **What is not known is said to be unknown.** A dataset without a declaration is "undeclared". A join across
    datasets with an undeclared side is REFUSED (section 3, rule 7). A visible warning in place of a refusal is
-   allowed for one case only: an export of ONE dataset that shows its labels as published and joins nothing.
-   No field is guessed.
+   allowed for one case only: an export that shows its labels as published and joins nothing - one dataset,
+   or several kept apart (section 3, "What joins nothing"). No field is guessed.
 
 ## 2. The declaration
 
@@ -44,6 +45,20 @@ qualified URL of the library object when it is an input that is not delivered (a
 **Versioning.** A reader ignores `ekd:` fields it does not know. A new optional field keeps `ekd-time/1`. A
 changed meaning is `ekd-time/2`. This rule binds from the first release of a tool that writes `ekd-time/1`
 manifests. Until then the contract is a draft: a draft may change a meaning and says so in section 6.
+That first release needs the owner's yes on decision 4 (section 5). Only the owner gives it. While decision 4
+is open, no tool that writes `ekd-time/1` manifests is released. A tool is released when users can find it or
+get it: a page links to it, it is announced, or it is published to a package index. Building and testing such
+a tool, also on a page that nothing links to, is not a release. When the owner says yes, the status line
+records the date and the words "decision 4: yes". Version 1 is bound on the date of the first release; the
+status line then records that date and the word "bound". Between the two dates the contract is still a draft.
+
+**Absent = null.** A field of an `ekd:time` or `ekd:edition` object that is absent is read as null; an absent
+`not_recorded` is read as the empty list. A writer may leave out a field that is null. `contract` and
+`declared` are never left out: an `ekd:time` object without them is not a declaration, and the resource is
+undeclared. For `grain` and `stamp`, null is read as `unknown`. An object with `declared: true` in which
+`column`, `kind`, `grain`, `stamp`, `stored_as` or `availability` is null is read as `declared: false`. The
+econ object of section 4 may be written with the eight keys shown there, or with all fourteen. For a resource
+with `declared: false` the `time.` fields need not be listed in `not_recorded`.
 
 ### `ekd:time` - how to read the time column
 
@@ -90,8 +105,10 @@ date of `end` when it is not (a sub-daily span that ends inside a day).
 **Completeness.** `last_period_complete` looks at the last row whose span starts on or before
 `observed_through` (per ticker, in a file that holds several). It is true when the last calendar day of that
 row's span is on or before `observed_through`, false when it is after, and null when `observed_through` is
-null or the span cannot be computed. When it is null the engine flags the last row of every weekly or coarser
-file as "completeness not known"; it never assumes complete. (A finished week whose Friday is a holiday reads
+null or the span cannot be computed. A file that holds several tickers has ONE value: false when it is false
+for at least one ticker; otherwise null when it is null for at least one; otherwise true. A ticker with no
+such row does not count. When it is null the engine flags the last row of each ticker in every weekly or
+coarser file as "completeness not known"; it never assumes complete. (A finished week whose Friday is a holiday reads
 false until the next row appears. That is the safe side.)
 
 Dates are text or date values in the manifest, never nanosecond timestamps (those cannot hold year 0001 or
@@ -105,16 +122,29 @@ Dates are text or date values in the manifest, never nanosecond timestamps (thos
 | `bytes`, `row_count` | integer or null | size and rows of that object |
 | `published_utc` | `YYYY-MM-DDTHH:MM:SSZ` or null | when the library last wrote this object to its store (ip: the `uploaded` value of `/v1/bundles`, cut to the second) |
 | `source_version` | string or null | the PUBLISHER's own release name, when it has one (ip: the vintage tag in the object path, verbatim). A library's own counter is not a source version; null here need not be listed in `not_recorded` |
-| `not_recorded` | list of names | fields that are null because nobody records them yet, written `time.<field>` or `edition.<field>`. Never filled with a guess |
+| `not_recorded` | list of names | fields that are null because no record of them was available to the builder, or because the builder did not take them from one, written `time.<field>` or `edition.<field>`. Never filled with a guess |
 
-- When the resource also carries the Frictionless `hash` and `bytes`, they must agree with `ekd:edition`.
+- When the resource also carries the Frictionless `hash` and `bytes`, they must agree with `ekd:edition`
+  (`hash` may carry the prefix `sha256:`; the two agree when they are equal after the prefix is removed).
+- `bytes` is the length of the whole library object as the builder received it, in every library. Where the
+  record of those bytes (next item) gives a size, the two must be equal; when they are not, `bytes`, `sha256`
+  and `row_count` are null and listed. A file rebuilt from parts has `bytes` null and listed.
 - `sha256` and `row_count` say which library object this is. Where a library publishes its own record of an
-  object, they come from that record only. hf will publish one (the per-ticker manifest): until it is live a
-  builder does not fill hf `sha256` or `row_count` from bytes it downloaded; both stay null and are listed in
-  `not_recorded`. Econ and ip publish no such record in version 1: for them the builder may write the SHA-256
-  and the row count of the whole object as it received it, as econ's Python client does in its lock file. In
-  every library, a file rebuilt from parts and verified by value does not carry the library object's `sha256`:
-  `sha256` and `row_count` stay null and are listed in `not_recorded`.
+  object, they come from that record only. A library's own record is a statement of the object's SHA-256 and
+  row count that the LIBRARY wrote and serves from its own host: a manifest entry for the object, or values
+  that the library's pipeline stored with the object and that the library returns in the SAME response as the
+  whole object's bytes. An ETag, a size or a time is not such a record. When both forms exist and name
+  different hashes (for example, the object is newer than the manifest), the values of the response that
+  delivered the bytes are the record of those bytes. In both cases the builder hashes the whole object it
+  received and compares; when the hashes differ, `sha256` and `row_count` are null and listed. The same
+  record gives hf `observed_through`, under the same check. A builder may always leave `sha256` and
+  `row_count` null and list them. hf serves no such record today. Until it serves one - the per-ticker
+  manifest, or the response values above - a builder does not fill hf `sha256` or `row_count` from bytes it
+  downloaded; both stay null and are listed in `not_recorded`. Econ and ip publish no such record in version
+  1: for them the builder may write the SHA-256 and the row count of the whole object as it received it. In
+  every library, a file rebuilt from parts (units or slices of rows, not byte ranges of one object) and
+  verified by value does not carry the library object's `sha256`: `sha256` and `row_count` stay null and are
+  listed in `not_recorded`.
 - Reserved names, not delivered in version 1: `library_sequence`, `history_revision`, `value_digest` (in
   `ekd:edition`); `value_state`, `released_utc` (in `ekd:time`). Until they are delivered a builder keeps such
   values in its own state file, outside the `ekd:` objects.
@@ -139,7 +169,7 @@ Dates are text or date values in the manifest, never nanosecond timestamps (thos
    dataset under ONE declaration is allowed only when that declaration has `declared: true` and a computable
    span; otherwise it is a join and rule 7 applies.
 2. **Different calendars join only by a stated rule** (a fiscal year against a calendar year; a Saturday-Friday
-   week against a Monday-Sunday week). The engine names the rule in its output. Never silently. In a
+   week against a Monday-Sunday week). The engine states the rule in its output. Never silently. In a
    same-period join the values that are attached (the right side) are never of a finer grain than the rows
    they are attached to (the left side).
 3. **Two alignments, and the output says which one was used.**
@@ -169,13 +199,34 @@ Dates are text or date values in the manifest, never nanosecond timestamps (thos
    ambiguous or missing.)
 6. **One shown date = the span's last calendar day** - for NEW display fields only (rule 1 of section 1).
 7. **Refuse** a join across datasets when a side has `declared: false`, when a grain is `unknown` or `mixed`, or
-   when as-known alignment is asked for and no availability instant exists (rule 3). An export of one dataset with no join
-   needs no declaration and can ship first. hf bars with hf variables is a join across datasets.
+   when as-known alignment is asked for and no availability instant exists (rule 3). An export that joins
+   nothing (below) needs no `declared: true` and can ship before the declarations exist; the release rule of
+   section 2 (decision 4) still holds. hf bars with hf variables is a join across datasets.
+
+**What joins nothing.** An output joins nothing when no row of it holds values of two series under one time
+label, and nothing in it is computed from two series: no key match, no computed column, no formula, and no
+chart that uses more than one series. A "series" here is one entity of one dataset: one hf ticker of one file
+kind, one econ series id, one ip entity. These outputs join nothing:
+- one long table that stacks series: a series id column, one date column and the value columns, where each
+  row belongs to one series only; also across several econ sources;
+- one package that holds several unjoined exports, one sheet or file each;
+- a sheet that puts series side by side, when every series has its OWN date column directly beside its values,
+  no column of the sheet is shared between two series, and the rows of each series run from the first data row
+  with no gap: no row is moved, padded or sorted to line up with a row of another series.
+When a resource of such an output has `declared: false`, the output shows the sentence "Dates as published.
+Not aligned by period." - on each sheet of a workbook, and in the README or About file of a package of files.
+The sentence is never written into a library file. For declared resources it is allowed, not required.
+A table in which TWO OR MORE series share ONE date column is a grid, whatever its title says. A grid is the
+pivot of rule 1 when all its series are of one dataset under one declaration with `declared: true` and a
+computable span. Every other grid is a join, and rule 7 applies.
+An output that re-writes rows is a derived bundle (`ekd:derived`); its resources are the inputs.
 
 Not covered by version 1, so the engine needs its own rule and prints it: a table with no time axis or with
 null dates; years below 1500 and sentinel years; inputs from different editions; an hf weekly or monthly label
 that is not a trading day; a date window on an undeclared resource (a window widened by twelve months loses no
 period of one year or less; a longer period that began earlier can be left out, and the output says so).
+Version 1 also defines no NAMES for the rules of rule 2 (calendars that do not nest): the engine prints its
+rule in words that say which period of the right side is attached to which row.
 
 ## 4. The declarations, library by library
 
@@ -198,8 +249,12 @@ one minute, not as an instant.) The 1-minute CSV is a separate resource with `st
 format was not read from a served file. A half day ends early and no column marks it. The last weekly and
 monthly row is usually not complete, and the weekly label can be a future date.
 
-A file whose rows are taken unchanged from per-ticker files of ONE kind (all of them, or a date slice), for
-several tickers, with an added `ticker` column (an all-ticker unit, a panel) is declared as that base kind.
+A file whose rows are taken unchanged from per-ticker files of ONE kind (all of them, or a date slice, which
+may end at a different date for each ticker), for several tickers, with an added `ticker` column (an
+all-ticker unit, a panel) is declared as that base kind. "Unchanged" is about the rows and the time column:
+every row of the slice is present, and the time label and every value that is kept are as stored. Columns may
+be left out (the stored `source` column, for one). No value is computed or altered, except the `ticker`
+column.
 
 The first IEX-built bar is dated 2022-03-07; the last trading day of the earlier segment is 2022-03-04. A
 registry that needs one date for the change uses 2022-03-07. (Pages and tools that state another date are defects of
@@ -212,9 +267,15 @@ served file per timeframe for one active and one inactive ticker and compares th
 holiday-week label with this table.
 
 What hf does not expose today: `sha256`, `row_count` and `observed_through` PER TICKER (the API gives only
-`size_bytes` and `last_modified`). The site's `end_date` is one date for the whole library and is only an upper
-bound for a ticker; a builder may show it under its own name, not as an `ekd:` field. Until a per-ticker
-manifest written by the daily pipeline is live, these fields are null and listed in `not_recorded`.
+`size_bytes` and `last_modified`, and only for the 1-minute Parquet file). The site's `end_date` is one date
+for the whole library and is only an upper bound for a ticker; a builder may show it under its own name, not as
+an `ekd:` field. Until hf serves its own record of an object (section 2), these fields are null and listed in
+`not_recorded`.
+`bytes` is filled as section 2 says. hf `published_utc` may be filled from the ticker information route
+(`/v1/symbols/{ticker}`: `last_modified`, cut to the second) only for the object that route describes - today
+the 1-minute Parquet file, `raw` or `clean`, and no other hf object - and only when the builder read the route
+before and after the download, both reads gave the same `last_modified`, and `size_bytes` equals the length it
+received. In every other case `published_utc` is null and listed.
 
 **ip**: `patent_measures.parquet` - `column: grant_date`, `kind: date`, `grain: daily`, `stamp: date`,
 `zone: null`, `stored_as: date`. `assignee_year.parquet` - `column: grant_year`, `kind: period`,
@@ -234,8 +295,47 @@ rule 1 forbids. It is outside this contract, and a family engine does not call i
 
 - Decision 4. Is version 1 a declaration only, with no stored date changed? Working answer: yes.
 - Decision 5. Who writes the per-ticker hf manifest? Working answer: the daily pipeline.
+- Decision 6 (not a part of this contract; listed so that it has a home; wording as in draft 4). Start the
+  econ dates project (Part B) after the workstation switch, source by source? Working answer: yes. The
+  measurement can run now; everything that changes the store, the catalogue or the worker runs after the
+  switch and after its 14-day fallback window. Until an econ source is declared, period-aligned econ output is
+  refused.
 
 ## 6. Changes
+
+- **Draft 6 (2026-10-02)**, from the bundle builder's notes N20-N25 and the second half of N8. Each item
+  states what draft 5 left open. WIDENS = allows more than draft 5. NEW DUTY = adds a duty that draft 5 did
+  not state. No field changed its name or type. One meaning was widened: `not_recorded` (see N21).
+  - N20 (NEW DUTY: draft 5 let the first release bind version 1 by itself): the first release of a tool that
+    writes `ekd-time/1` manifests needs the owner's yes on decision 4. "Released" is defined. The yes and the
+    binding are two dates. No change of meaning is planned.
+  - N21 (WIDENS; NEW DUTY): what "a library's own record" is. It includes values the library's pipeline
+    stored with the object and returns with the whole object's bytes; it also gives hf `observed_through`.
+    A builder may always leave `sha256` and `row_count` null. "Parts" of a rebuilt file are units or slices
+    of rows, not byte ranges. WIDENS: `not_recorded` also lists a field the builder did not take from a
+    record. New duties: the builder hashes what it received and compares, also for a manifest entry, and
+    writes null on a mismatch; `bytes` is the length received, must equal the size in the record of those
+    bytes, and is null for a file rebuilt from parts.
+  - N22 (WIDENS; NEW DUTY): "What joins nothing" (section 3): the long table, the package of unjoined exports
+    and the side-by-side sheet with one date column per series join nothing; a table in which two or more
+    series share one date column is a grid. Rule 3 of section 1 said "an export of ONE dataset"; it now says
+    "one dataset, or several kept apart". New duties: the fixed sentence when a resource is undeclared, and
+    the no-padding rule for the side-by-side sheet.
+    Rule 7 of section 3 now says "an export that joins nothing" where it said "an export of one dataset".
+  - N23: "unchanged" for an all-ticker file allows columns to be left out; a slice may end at a different date
+    for each ticker.
+  - N24: one `last_period_complete` value for a file of several tickers.
+  - N25 (WIDENS): absent = null; which fields are never left out; the econ object with eight or fourteen
+    keys; `time.` fields of an undeclared resource need not be listed. Reader rules: a null `grain` or
+    `stamp` is read as `unknown`; a `declared: true` object with a null `column`, `kind`, `grain`, `stamp`,
+    `stored_as` or `availability` is read as `declared: false`.
+  - N8, second half: version 1 defines no rule names for calendars that do not nest.
+  - WIDENS: `hash` with the prefix `sha256:` agrees with `ekd:edition.sha256`; hf `published_utc` may come
+    from the ticker information route under the two-read check. Decision 6 is listed again, in draft 4's words.
+    Removed: the clause that named econ's Python client as an example (its lock file hashes a file it
+    wrote itself).
+    Rule 2 of section 3: "names the rule" is now "states the rule". Section 4: the hf API gives a size and a
+    time for the 1-minute Parquet file only.
 
 - **Draft 5 (2026-10-02)**, from the bundle builder's notes N0-N19 on draft 4:
   - CHANGED MEANING (allowed while the contract is a draft - see Versioning), to remove a contradiction:
