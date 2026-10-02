@@ -278,8 +278,9 @@ def _deliver_alarm(key: str, minutes: float) -> None:
         # in the hook CPython drops it ("Exception ignored in sys.unraisablehook"). It needs only a stall longer
         # than _REFIRE_S at one of those points - a slow print, a slow thread start - and a whole-suite run on a
         # busy machine showed the loss once (review AR-205 reproduced both routes on the old code). So it is
-        # held, and re-armed, until the hook has returned. The flag covers the hook from its first statement;
-        # the frame check also covers the hook's first instructions and a hook running on another stack.
+        # held, and re-armed, until the hook has returned. The frame check covers the hook's first instructions
+        # and any frame below the hook on THIS stack (its print, _rearm, a forwarded previous hook); only the
+        # flag reaches across threads.
         if _ARMED_DEADLINE is not None:
             _ARMED_DEADLINE._rearm()
         return

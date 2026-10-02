@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import _thread
 import gc
+import operator
 import os
 import signal
 import sys
 import threading
 import time
+import types
 import weakref
 
 import pytest
@@ -199,6 +201,28 @@ def test_a_re_delivery_that_lands_inside_the_re_arm_itself_is_not_lost(emulated_
             reached_end = True
     assert not reached_end
     assert len([s for s in emulated_itimer[1:] if 0 < s < 1]) >= 2, emulated_itimer
+
+
+class _Trip:
+    """x.trip calls _thread.interrupt_main() entirely in C (property -> methodcaller -> staticmethod). LOAD_ATTR has
+    no eval-breaker check, so the trip is still pending at the RESUME of the next Python function called."""
+    interrupt_main = staticmethod(_thread.interrupt_main)
+    trip = property(operator.methodcaller("interrupt_main"))
+
+
+def test_a_delivery_at_the_hooks_first_instruction_is_held(emulated_itimer, monkeypatch):
+    """AR-205 W1: a delivery handled at the hook's RESUME, before `_HOOK_BUSY = True`, must be held and re-armed -
+    raised there, CPython drops it ("Exception ignored in sys.unraisablehook") with no re-arm. Only the frame check
+    (_in_fence_hook) covers this point; this test fails without it, and without its walk up the stack."""
+    monkeypatch.setattr(orchestrate, "_TIMEOUT_WARNED", True)
+    emulated_itimer.manual = True
+    u = types.SimpleNamespace(exc_value=orchestrate.UnitTimeout("poller in a callback"), object=None)
+    x = _Trip()
+    with orchestrate._unit_deadline("zz/_all", 60.0) as d:
+        hook, n0 = d._unraisable, len(emulated_itimer)
+        x.trip; hook(u)                                   # noqa: E702 - no CALL between the trip and the hook
+        assert len([s for s in emulated_itimer[n0:] if 0 < s < 1]) >= 2, emulated_itimer
+        orchestrate.UNIT_TIMEOUT_FIRED = False
 
 
 def test_the_hold_inside_the_hook_ends_with_the_hook(emulated_itimer, monkeypatch):
