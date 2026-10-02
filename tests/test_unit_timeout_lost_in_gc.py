@@ -129,7 +129,8 @@ def test_a_re_delivery_inside_a_deferred_window_is_held_not_raised(emulated_itim
     inside it and is recorded in _ALARM_PENDING for derive to raise just after wait() - never raised inside.
 
     The re-delivery is fired BY THE TEST, after the window is open. It was left to the 0.05 s timer and a 1.0 s
-    spin; on 2026-10-02, on a busy machine, the alarm landed before the window (inside the hook's slow print) and
+    spin; on 2026-10-02, on a busy machine, the alarm landed before the window - inside the hook, in its print or
+    in _rearm's own `except Exception` after a stall (a Timer starved for 1 s fits the same evidence; AR-205) - and
     the test failed for a reason that was not its subject."""
     emulated_itimer.manual = True
     with orchestrate._unit_deadline("zz/_all", 60.0):
@@ -163,7 +164,7 @@ def test_a_re_delivery_that_lands_inside_the_hooks_own_print_is_not_lost(emulate
     one-off failure of the deferred-window test while pytest's captured stdout sat on a busy disk; reproduced on
     the unchanged code with this slow stdout (armed [3600.0, 0.05, 0], nothing pending, the unit reached its end)."""
     monkeypatch.setattr(orchestrate, "_TIMEOUT_WARNED", True)         # __enter__ prints nothing through the slow stdout
-    slow = _SlowOut(0.3)                                              # six times _REFIRE_S
+    slow = _SlowOut(0.3)                                              # two writes: 0.6 s, twelve times _REFIRE_S
     reached_end = False
     with pytest.raises(orchestrate.UnitTimeout):
         with orchestrate._unit_deadline("zz/_all", 60.0):
@@ -177,6 +178,29 @@ def test_a_re_delivery_that_lands_inside_the_hooks_own_print_is_not_lost(emulate
     assert "was swallowed" in "".join(slow.text), "the hook's print was cut short by the alarm"
 
 
+def test_a_re_delivery_that_lands_inside_the_re_arm_itself_is_not_lost(emulated_itimer, monkeypatch):
+    """AR-205: the main thread stalls right after setitimer returns, still inside _rearm's own
+    `try: ... except Exception: pass` - the same loss and armed list [3600.0, 0.05, 0], no slow print."""
+    monkeypatch.setattr(orchestrate, "_TIMEOUT_WARNED", True)
+    emulated = signal.setitimer
+    stalled = []
+
+    def stalling(which, seconds, interval=0.0):
+        emulated(which, seconds, interval)
+        if 0 < seconds < 1 and not stalled:
+            stalled.append(seconds)
+            _spin(0.3)                                    # the re-armed alarm lands here
+    monkeypatch.setattr(signal, "setitimer", stalling)
+    reached_end = False
+    with pytest.raises(orchestrate.UnitTimeout):
+        with orchestrate._unit_deadline("zz/_all", 60.0):
+            _swallowed_alarm("zz/_all")
+            _spin(3.0)
+            reached_end = True
+    assert not reached_end
+    assert len([s for s in emulated_itimer[1:] if 0 < s < 1]) >= 2, emulated_itimer
+
+
 def test_the_hold_inside_the_hook_ends_with_the_hook(emulated_itimer, monkeypatch):
     """_HOOK_BUSY must be False again after the hook - also when its print raises - or every later alarm is held."""
     class _Broken:
@@ -185,9 +209,15 @@ def test_the_hold_inside_the_hook_ends_with_the_hook(emulated_itimer, monkeypatc
 
         def flush(self):
             raise OSError("stdout is gone")
+    class _Interrupted:
+        def write(self, s):
+            raise KeyboardInterrupt          # leaves the hook; CPython drops it ("Exception ignored in sys.unraisablehook")
+
+        def flush(self):
+            pass
     monkeypatch.setattr(orchestrate, "_TIMEOUT_WARNED", True)
     emulated_itimer.manual = True
-    for out in (_SlowOut(0.0), _Broken()):
+    for out in (_SlowOut(0.0), _Broken(), _Interrupted()):
         with orchestrate._unit_deadline("zz/_all", 60.0):
             monkeypatch.setattr(sys, "stdout", out)
             _swallowed_alarm("zz/_all")
