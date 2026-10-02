@@ -295,7 +295,7 @@ rule 1 forbids. It is outside this contract, and a family engine does not call i
 ## 5. Open decisions (the owner's; numbered as in draft 4)
 
 - Decision 4. Is version 1 a declaration only, with no stored date changed? DECIDED: yes (the owner,
-  2026-10-02). The release rule of section 2 no longer holds a release back.
+  2026-10-02). The condition of the release rule of section 2 is met.
 - Decision 5. Who writes the per-ticker hf manifest? Working answer: the daily pipeline.
 - Decision 6 (not a part of this contract; listed so that it has a home; wording as in draft 4). Start the
   econ dates project (Part B) after the workstation switch, source by source? Working answer: yes. The
