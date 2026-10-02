@@ -373,7 +373,7 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
     s.registerTool("list_econ_sources", {
       title: "List Economic Data Sources",
       description:
-        "List the Econ Data Library's sources (statistical offices, central banks, " +
+        "List the Econ Data Library's sources (statistical offices, monetary authorities, " +
         "IGOs, research datasets) with their licenses, counted live. Free.",
       inputSchema: {
         contains: z.string().optional().describe("Case-insensitive filter on source id/name, e.g. 'bank' or 'imf'"),
