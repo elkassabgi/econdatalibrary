@@ -1,7 +1,8 @@
 # Family Time Stamp — contract `ekd-time/1`
 
-Draft 6, 2026-10-02. Status: working contract; the owner's confirmation of "declaration only" (rule 1) is open.
-No change of meaning is planned; a "no" on decision 4 would be one. Version 1 is not bound yet (see Versioning).
+Draft 6, 2026-10-02. Status: working contract; decision 4: yes (the owner, 2026-10-02) - version 1 is a
+declaration only. No change of meaning is planned. Version 1 is not bound yet: it is bound on the date of the
+first release of a tool that writes these manifests (see Versioning), and until then it is still a draft.
 Home of this file: `docs/contracts/ekd-time-1.md` in the repository `elkassabgi/econdatalibrary`, branch `main`.
 That copy is the authority. A change is a pull request on this path; each draft carries its number in its
 status line, its changes in section 6, and is announced to the bundle builder by a message that gives the
@@ -293,7 +294,8 @@ rule 1 forbids. It is outside this contract, and a family engine does not call i
 
 ## 5. Open decisions (the owner's; numbered as in draft 4)
 
-- Decision 4. Is version 1 a declaration only, with no stored date changed? Working answer: yes.
+- Decision 4. Is version 1 a declaration only, with no stored date changed? DECIDED: yes (the owner,
+  2026-10-02). The release rule of section 2 no longer holds a release back.
 - Decision 5. Who writes the per-ticker hf manifest? Working answer: the daily pipeline.
 - Decision 6 (not a part of this contract; listed so that it has a home; wording as in draft 4). Start the
   econ dates project (Part B) after the workstation switch, source by source? Working answer: yes. The
@@ -302,6 +304,9 @@ rule 1 forbids. It is outside this contract, and a family engine does not call i
   refused.
 
 ## 6. Changes
+
+- **2026-10-02, status only (still draft 6):** the owner said yes on decision 4. The status line and the
+  decision 4 line of section 5 record it. No other text changed.
 
 - **Draft 6 (2026-10-02)**, from the bundle builder's notes N20-N25 and the second half of N8. Each item
   states what draft 5 left open. WIDENS = allows more than draft 5. NEW DUTY = adds a duty that draft 5 did
