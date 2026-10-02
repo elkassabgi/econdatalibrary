@@ -328,10 +328,12 @@ function ekdEsc(s) {
 function ekdToggleInstitutions() {
   var more = document.getElementById('inst-more');
   var sign = document.getElementById('inst-sign');
+  var toggle = document.getElementById('inst-toggle');
   if (!more || !sign) return;
   var open = more.style.display !== 'none';
   more.style.display = open ? 'none' : 'block';
   sign.textContent = open ? '+' : String.fromCharCode(8722);
+  if (toggle) toggle.setAttribute('aria-expanded', open ? 'false' : 'true');
 }
 
 // Returns '' when the feed has no usable row (also for a feed older than this block, whose rows carry no
@@ -360,7 +362,8 @@ function ekdInstitutionsHtml(list) {
   var rest = rows.filter(function (i) { return !i.featured; });
   var html = '<div class="inst-list">' + top.map(row).join('');
   if (rest.length) {
-    html += '<div class="inst-more" role="button" tabindex="0" style="cursor:pointer" ' +
+    html += '<div id="inst-toggle" class="inst-more" role="button" tabindex="0" style="cursor:pointer" ' +
+      'aria-expanded="false" aria-controls="inst-more" ' +
       'onclick="ekdToggleInstitutions()" ' +
       'onkeydown="if(event.key===&quot;Enter&quot;||event.key===&quot; &quot;){event.preventDefault();ekdToggleInstitutions();}">' +
       '<span id="inst-sign" class="inst-sign">+</span> ' +

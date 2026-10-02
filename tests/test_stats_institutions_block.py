@@ -28,7 +28,7 @@ PAGE = os.path.join(CATALOG, "site", "stats.html")
 GEN = os.path.join(CATALOG, "gen_site.py")
 
 # The SAME constant stands in the hf and ip repositories. Change the block in all three together.
-BLOCK_SHA256 = "acc6735a148c56823e7bdcd2655fd65f509faf8b5f6bb216e67a62c6558b61bf"
+BLOCK_SHA256 = "9bc3f37c05122ec1af59585e5ebbc08e0857c019f13e15ff976e59b2de07f404"
 
 PRIVATE_LISTS = ("INST_PRESTIGE", "INST_DOMAINS", "INST_ALIASES", "INST_JUNK", "instIcon(", "toggleInst(")
 
