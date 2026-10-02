@@ -24,10 +24,11 @@ sources:
   # ---- US equity intraday (the hfdatalibrary product) ----
   # NOT SERVED BY THIS LIBRARY. hf_equities was delisted on 2026-08-06 (its 1,391 rows were removed
   # from the catalogue; api/worker/src/util.ts records it), so this block is merged into no series
-  # today: the live /v1/sources does not list the source and /v1/series/hf_equities:AAPL is a 404
-  # (checked 2026-10-02). The text is kept true in case the source comes back. The change of feed
-  # is stated in TRADING DAYS: monthly hf bars are labelled with the month start, so the bar dated
-  # 2022-03-01 holds days of both feeds (docs/contracts/ekd-time-1.md, section 4).
+  # today: the live /v1/sources does not list the source (bls is listed) and
+  # /v1/series/hf_equities:AAPL.metadata.json answers 404 "unknown series id" (checked 2026-10-02).
+  # The text is kept true in case the source comes back. The change of feed is stated in TRADING
+  # DAYS: monthly hf bars are labelled with the month start (docs/contracts/ekd-time-1.md, section 4),
+  # so the bar dated 2022-03-01 would hold days of both feeds.
   hf_equities:
     description_key:
       - >-
@@ -51,8 +52,8 @@ sources:
     citation_short: "Elkassabgi High-Frequency Equity Data Library."
     citation_long: >-
       Elkassabgi High-Frequency Equity Data Library (1-minute U.S. equity bars; trading days
-      from 2022-03-07 onward from IEX Exchange HIST). Compiled by Ahmed Elkassabgi, University of
-      Central Arkansas.
+      from 2022-03-07 onward are IEX Exchange HIST data). Compiled by Ahmed Elkassabgi, University
+      of Central Arkansas.
 
   # ---- US macro / official statistics ----
   bls:
