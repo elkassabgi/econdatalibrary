@@ -34,7 +34,7 @@ _NAMED = 10          # how many offending ids an error names
 # not a real ISO date: the wrong shape, or a shape that is no calendar day (SQLite's date() turns
 # '2026-09-31' into '2026-10-01' and anything it cannot read into NULL)
 _NOT_ISO = ("(end_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' "
-            "OR date(end_date) IS NOT end_date)")
+            "OR date(end_date) IS NOT end_date OR end_date < '0001-01-01')")
 
 
 class NotPublishable(RuntimeError):
@@ -83,8 +83,9 @@ def data_through(conn, today: str | None = None) -> str | None:
             f"{[tuple(r) for r in forward]}. A reported period cannot end after it was filed, so this is a "
             f"filer typo taken by the span rule's fallback, or a filing dated the next business day. The copy is "
             f"NOT published (the running generation keeps serving). A next-day date heals by itself when that "
-            f"day comes. A typo does not: the id names the company (its ticker, or CIK<number>); the refresher "
-            f"REFUSES to write a span that still ends after today, so the row is corrected only when the rule no "
-            f"longer picks that date (python tools/refresh_sec_edgar.py --ciks <cik> --apply after the filer's "
-            f"correction), or by a reviewed repair of that one row")
+            f"day comes. A typo does not: the id names the company (its ticker, or CIK<number>). AFTER T0 the "
+            f"local refresher refuses to write a span that still ends after today, so the row is corrected only "
+            f"when the rule no longer picks that date (python tools/refresh_sec_edgar.py --ciks <cik> --apply "
+            f"after the filer's correction), or by a reviewed repair of that one row. BEFORE T0 the row came "
+            f"from D1, written by the CI refresher, which has no such refusal: repair it there")
     return mx

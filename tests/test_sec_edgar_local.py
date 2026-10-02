@@ -89,6 +89,7 @@ def test_the_default_clock_is_utc(monkeypatch):
 @pytest.mark.parametrize("bad", [None, "", "2026-9-4", "20260904", "soon",
                                  # ten characters, not a date (AR-195 N2: a length test returned these)
                                  "09/04/2026", " " * 10, "2026-09-31", "2026-13-01", "2026-00-10",
+                                 "2025-13-01", "-0001-01-01", "0000-01-01", "0000-02-29",
                                  "2026-09-04T00:00:00", 20260904, 2026.5])
 def test_a_missing_or_malformed_end_date_fails_too(bad):
     con = _series([("sec_edgar:A", "sec_edgar", "2026-09-04"), ("sec_edgar:B", "sec_edgar", bad)])
@@ -402,8 +403,19 @@ def test_two_ids_that_share_one_store_file_are_never_clean(tmp_path, monkeypatch
     c.close()
     out = C.run(cat, store, receipt, today=TODAY)
     assert out["clean"] is False and out["counts"]["unreadable"] == 1
+    assert out["rows"]["unreadable"][0][0] == "sec_edgar:BRK_B", "the LATER id is the one not compared"
     assert "shares the store file BRK_B.parquet" in out["rows"]["unreadable"][0][1]
+    assert out["rows"]["differing"] == [], "the first id (BRK/B, a right span) was compared and agrees"
     assert T.sec_edgar_local(receipt, cat, store, owed=())[0] is False
+    # the other way round: the FIRST id is wrong - it is compared, and named as differing
+    c = sqlite3.connect(cat)
+    c.execute("UPDATE series SET end_date='1999-12-31' WHERE series_id='sec_edgar:BRK/B'")
+    c.execute("UPDATE series SET start_date='2021-12-31', end_date='2021-12-31' WHERE series_id='sec_edgar:BRK_B'")
+    c.commit()
+    c.close()
+    out = C.run(cat, store, receipt, today=TODAY)
+    assert [d[0] for d in out["rows"]["differing"]] == ["sec_edgar:BRK/B"]
+    assert [u[0] for u in out["rows"]["unreadable"]] == ["sec_edgar:BRK_B"]
 
 
 def test_the_boundaries_of_forward_and_of_differing(tmp_path, monkeypatch):

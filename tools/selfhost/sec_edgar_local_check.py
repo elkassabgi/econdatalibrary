@@ -13,10 +13,12 @@ Five counts, each must be 0 for exit 0:
   store_only       a store file no catalogue row names (hosted, not listed: the worker answers 404 for it)
   catalogue_only   a catalogue row whose store file is missing
   forward          a store span that ends after today UTC (core.sec_edgar_local would refuse the copy)
-  unreadable       a store file that could not be read, or holds a NULL obs_date
+  unreadable       a store file that could not be read or holds a NULL obs_date; or a catalogue row that
+                   shares its store file with an earlier row (two ids, one file: the later one cannot be
+                   compared)
 
-It writes a RECEIPT (JSON): the counts, a sha256 over the sorted (series_id, start_date, end_date) rows it
-compared, and a fingerprint of the store listing (name, size, mtime). tools/selfhost/t0_ready.py recomputes
+It writes a RECEIPT (JSON): the counts, every row of every count (the repair list), a sha256 over the sorted
+(series_id, start_date, end_date) rows it compared, and a fingerprint of the store listing (name, size, mtime). tools/selfhost/t0_ready.py recomputes
 both and refuses READY when either moved, so a receipt cannot outlive the state it certified. The receipt goes
 OUTSIDE data/_aqueduct, which the 6b delta sync mirrors.
 
@@ -143,7 +145,7 @@ COUNTS = ("differing", "store_only", "catalogue_only", "forward", "unreadable")
 
 def run(catalogue: str | None, store: str, receipt: str, today: str | None = None, workers: int = 8) -> dict:
     from core import catalog_path                                      # noqa: PLC0415
-    today = today or dt.datetime.now(dt.timezone.utc).date().isoformat()
+    today = today or sec_edgar_local.today_utc()
     path = catalogue or catalog_path.catalog_path()
     con = catalog_path.connect_path(path, write=False)                 # mode=ro; after T0 only the build opens
     try:
