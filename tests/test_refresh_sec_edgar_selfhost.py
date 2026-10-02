@@ -168,6 +168,34 @@ def test_a_failed_fetch_on_a_small_run_is_partial(world, monkeypatch):
     assert row["status"] == "partial" and row["last_success_utc"] is None
 
 
+@pytest.mark.parametrize("days_ahead, refused", [(1, True), (400, True), (0, False)])
+def test_a_span_that_ends_after_today_is_refused_not_written(world, monkeypatch, capsys, days_ahead, refused):
+    """AR-194: coverage_span's fallback (no fact has ended) and a filing EDGAR dates on the next business day
+    can both end after today. Written, that one row makes core.sec_edgar_local refuse the WHOLE origin copy."""
+    import datetime as dt
+    from core import sec_edgar_local
+    tmp, live, grouped, build, _p = world
+    # ONE clock, and it is UTC (core.sec_edgar_local.today_utc; its own test pins the zone). Fixed here, so the
+    # boundary does not depend on when or where the test runs: with the machine's date instead, a span ending
+    # on the UTC day is refused west of Greenwich in the evening.
+    monkeypatch.setattr(sec_edgar_local, "today_utc", lambda: "2031-03-10")
+    end = dt.date(2031, 3, 10) + dt.timedelta(days=days_ahead)
+    monkeypatch.setattr(R, "coverage_span", lambda odate, vint: (dt.date(2019, 12, 31), end))
+    before = (grouped / "XOM.parquet").read_bytes()
+    rc = _run(monkeypatch, "--apply")
+    out = capsys.readouterr().out
+    if refused:
+        assert rc == 1 and f"XOM:forward-span:{end}" in out and "store refusals   : 1" in out
+        assert (grouped / "XOM.parquet").read_bytes() == before, "nothing of the company is written"
+        assert _span(build) == ("2019-12-31", "2020-12-31"), "the catalogue keeps the last good span"
+        assert blob.SelfhostBlob().get("series/sec_edgar%3AXOM.csv") is None
+        row = _freshness(tmp)
+        assert row["status"] == "partial" and row["last_success_utc"] is None
+    else:
+        assert rc == 0 and "forward-span" not in out
+        assert _span(build) == ("2019-12-31", str(end)), "a span that ends TODAY is written"
+
+
 def test_the_13f_blocker_opens_state_db_read_only(tmp_path, monkeypatch):
     """R1235 mutant S13 (mode=rwc) survived: the blocker's open must not be able to write, and must not create
     a missing state.db."""
