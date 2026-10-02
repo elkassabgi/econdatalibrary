@@ -31,6 +31,10 @@ SOURCE = "sec_edgar"
 # key, "sec_edgar_13f:", sorts after "sec_edgar;" and is outside it.
 _RANGE = "series_id >= 'sec_edgar:' AND series_id < 'sec_edgar;'"
 _NAMED = 10          # how many offending ids an error names
+# not a real ISO date: the wrong shape, or a shape that is no calendar day (SQLite's date() turns
+# '2026-09-31' into '2026-10-01' and anything it cannot read into NULL)
+_NOT_ISO = ("(end_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' "
+            "OR date(end_date) IS NOT end_date)")
 
 
 class NotPublishable(RuntimeError):
@@ -44,7 +48,8 @@ def store_name(ident: str) -> str:
     return ident.replace("/", "_").replace(":", "_")
 
 
-def _today_utc() -> str:
+def today_utc() -> str:
+    """Today's date in UTC, ISO. THE clock for 'ends after today' - the refresher's writer uses it too."""
     return dt.datetime.now(dt.timezone.utc).date().isoformat()
 
 
@@ -53,7 +58,7 @@ def data_through(conn, today: str | None = None) -> str | None:
 
     Raises NotPublishable when a row ends after `today` (UTC; injected by tests) or has no end date. The
     message names the rows and the repair, because the reader is whoever finds a failed swap."""
-    today = today or _today_utc()
+    today = today or today_utc()
     n, mx, nulls = conn.execute(
         f"SELECT COUNT(*), MAX(end_date), SUM(end_date IS NULL) FROM series WHERE {_RANGE}").fetchone()
     if not n:
@@ -64,18 +69,22 @@ def data_through(conn, today: str | None = None) -> str | None:
         raise NotPublishable(
             f"{SOURCE}: {nulls:,} row(s) have no end_date (e.g. {ids}) - the refresher writes a span for every "
             f"company; re-run it for these: python tools/refresh_sec_edgar.py --ciks <cik> --apply")
-    # ISO dates compare as text; a value that is not an ISO date would sort unpredictably, so it is caught too
+    # ISO dates compare as text; a value of any other shape ('09/04/2026', ten spaces, a time part) would sort
+    # unpredictably and could be returned as the newest date, so the shape is checked, not only the length
     forward = conn.execute(
-        f"SELECT series_id, end_date FROM series WHERE {_RANGE} AND (end_date > ? OR length(end_date) != 10) "
+        f"SELECT series_id, end_date FROM series WHERE {_RANGE} AND (end_date > ? OR " + _NOT_ISO + ") "
         f"ORDER BY end_date DESC, series_id LIMIT {_NAMED}", (today,)).fetchall()
     if forward:
         count = conn.execute(
-            f"SELECT COUNT(*) FROM series WHERE {_RANGE} AND (end_date > ? OR length(end_date) != 10)",
+            f"SELECT COUNT(*) FROM series WHERE {_RANGE} AND (end_date > ? OR " + _NOT_ISO + ")",
             (today,)).fetchone()[0]
         raise NotPublishable(
             f"{SOURCE}: {count:,} row(s) end after today ({today} UTC) or carry a malformed date: "
             f"{[tuple(r) for r in forward]}. A reported period cannot end after it was filed, so this is a "
             f"filer typo taken by the span rule's fallback, or a filing dated the next business day. The copy is "
-            f"NOT published (the running generation keeps serving). A next-day date heals by itself tomorrow; "
-            f"otherwise re-run the refresher for the company: python tools/refresh_sec_edgar.py --ciks <cik> --apply")
+            f"NOT published (the running generation keeps serving). A next-day date heals by itself when that "
+            f"day comes. A typo does not: the id names the company (its ticker, or CIK<number>); the refresher "
+            f"REFUSES to write a span that still ends after today, so the row is corrected only when the rule no "
+            f"longer picks that date (python tools/refresh_sec_edgar.py --ciks <cik> --apply after the filer's "
+            f"correction), or by a reviewed repair of that one row")
     return mx

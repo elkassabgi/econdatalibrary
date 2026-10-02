@@ -1285,7 +1285,7 @@ def _refresh_local(a, todo, t2c) -> int:
                 errors.append(f"{ident}:merge:{e}")
                 continue
             lo, hi = coverage_span(odate, vint)
-            if hi is None or str(hi) > dt.datetime.now(dt.timezone.utc).date().isoformat():
+            if hi is None or str(hi) > sec_edgar_local.today_utc():
                 # A span that ends after today UTC is a filer typo taken by coverage_span's fallback (no fact
                 # has ended), or a filing EDGAR dated on the next business day. Written, it would make
                 # core.sec_edgar_local refuse the WHOLE origin copy; refused here it costs one company one

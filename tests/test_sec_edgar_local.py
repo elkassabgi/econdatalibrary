@@ -86,7 +86,10 @@ def test_the_default_clock_is_utc(monkeypatch):
     assert seen == [dt.timezone.utc], "today is read in UTC, never the machine's zone"
 
 
-@pytest.mark.parametrize("bad", [None, "", "2026-9-4", "20260904", "soon"])
+@pytest.mark.parametrize("bad", [None, "", "2026-9-4", "20260904", "soon",
+                                 # ten characters, not a date (AR-195 N2: a length test returned these)
+                                 "09/04/2026", " " * 10, "2026-09-31", "2026-13-01", "2026-00-10",
+                                 "2026-09-04T00:00:00", 20260904, 2026.5])
 def test_a_missing_or_malformed_end_date_fails_too(bad):
     con = _series([("sec_edgar:A", "sec_edgar", "2026-09-04"), ("sec_edgar:B", "sec_edgar", bad)])
     with pytest.raises(sec_edgar_local.NotPublishable, match="sec_edgar:B"):
@@ -235,6 +238,20 @@ def test_after_t0_the_row_must_be_the_refreshers_own_with_a_success(tmp_path, af
         oc._d1_only_state(p, set())
 
 
+def test_after_t0_a_build_without_the_row_leaves_no_copy(tmp_path, after_t0, monkeypatch):
+    """Through build(), not the helper alone: the mutant that drops the call from check() survived (AR-195)."""
+    monkeypatch.delenv("ECONDL_CATALOG", raising=False)
+    cat, st = tmp_path / "catalog.db", tmp_path / "state.db"
+    _catalogue(cat, [("sec_edgar:AAPL", "2026-09-04")])
+    _state_db(st, [r for r in OK_STATE if r[0] != "sec_edgar"])
+    with pytest.raises(RuntimeError, match="no source_state row for sec_edgar"):
+        oc.build(str(cat), str(tmp_path / "out"), state_db=str(st))
+    assert not os.path.exists(tmp_path / "out" / "primary.sqlite")
+    _state_db(tmp_path / "state2.db", OK_STATE)
+    report = oc.build(str(cat), str(tmp_path / "out2"), state_db=str(tmp_path / "state2.db"))
+    assert report["d1_only_state"] == "checked"
+
+
 def test_after_t0_the_refreshers_own_row_passes_and_a_gated_or_unserved_source_is_skipped(tmp_path, after_t0):
     good = ("sec_edgar", "edgar_delta", "daily", "2026-10-02T08:00:00+00:00")
     assert oc._d1_only_state(_primary(tmp_path / "a.sqlite", [good]), set()) == "checked"
@@ -366,10 +383,82 @@ def test_the_receipt_fingerprints_move_with_what_they_certify(tmp_path, monkeypa
 
 def test_a_receipt_under_the_mirrored_prefix_is_refused(tmp_path, monkeypatch):
     cat, store, _receipt = _check_world(tmp_path, monkeypatch)
-    inside = os.path.join(C.ROOT, "data", "_aqueduct", "sec_edgar_local_check.json")
+    # a temporary ROOT: when this refusal regresses the tool WRITES the file, and in the real checkout that
+    # file then failed every later run (AR-195 N8)
+    monkeypatch.setattr(C, "ROOT", str(tmp_path / "root"))
+    inside = os.path.join(str(tmp_path / "root"), "data", "_aqueduct", "sec_edgar_local_check.json")
     with pytest.raises(SystemExit) as e:
         C.main(["--catalogue", cat, "--store", store, "--receipt", inside])
     assert e.value.code == 2 and not os.path.exists(inside)
+
+
+def test_two_ids_that_share_one_store_file_are_never_clean(tmp_path, monkeypatch):
+    """AR-195 N1: "A/B" and "A_B" both map to A_B.parquet; the second row replaced the first in the lookup, the
+    first was never compared, and every count was 0."""
+    cat, store, receipt = _check_world(tmp_path, monkeypatch)
+    c = sqlite3.connect(cat)
+    c.execute("INSERT INTO series VALUES ('sec_edgar:BRK_B', 'sec_edgar', '1999-01-01', '1999-12-31')")   # wrong span
+    c.commit()
+    c.close()
+    out = C.run(cat, store, receipt, today=TODAY)
+    assert out["clean"] is False and out["counts"]["unreadable"] == 1
+    assert "shares the store file BRK_B.parquet" in out["rows"]["unreadable"][0][1]
+    assert T.sec_edgar_local(receipt, cat, store, owed=())[0] is False
+
+
+def test_the_boundaries_of_forward_and_of_differing(tmp_path, monkeypatch):
+    cat, store, receipt = _check_world(tmp_path, monkeypatch)
+    _file(store, "EDGE", [("2026-10-02", "2026-10-02")])           # ends exactly today: NOT forward
+    _file(store, "NEXT", [("2026-10-03", "2026-10-03")])           # one day later: forward
+    c = sqlite3.connect(cat)
+    c.execute("INSERT INTO series VALUES ('sec_edgar:EDGE', 'sec_edgar', '2026-10-02', '2026-10-02')")
+    c.execute("INSERT INTO series VALUES ('sec_edgar:NEXT', 'sec_edgar', '2026-10-03', '2026-10-03')")
+    # only the START differs (the end is right): still a differing row
+    c.execute("UPDATE series SET start_date='2018-01-01' WHERE series_id='sec_edgar:AAPL'")
+    c.commit()
+    c.close()
+    out = C.run(cat, store, receipt, today=TODAY)
+    assert [f[0] for f in out["rows"]["forward"]] == ["sec_edgar:NEXT"]
+    assert [d[0] for d in out["rows"]["differing"]] == ["sec_edgar:AAPL"]
+
+
+def test_the_receipt_keeps_every_row_of_every_count(tmp_path, monkeypatch):
+    """The first real run kept 20 examples of 280 differing rows, so the direction of 260 was unknown."""
+    cat, store, receipt = _check_world(tmp_path, monkeypatch)
+    monkeypatch.setattr(C, "EXAMPLES", 1)
+    c = sqlite3.connect(cat)
+    c.execute("UPDATE series SET end_date='2001-01-01' WHERE source_id='sec_edgar'")
+    c.commit()
+    c.close()
+    C.run(cat, store, receipt, today=TODAY)
+    out = json.load(open(receipt))
+    assert len(out["examples"]["differing"]) == 1 and len(out["rows"]["differing"]) == 3
+    assert set(out["rows"]) == set(C.COUNTS)
+
+
+def test_the_catalogue_is_opened_read_only(tmp_path, monkeypatch):
+    cat, store, receipt = _check_world(tmp_path, monkeypatch)
+    opened = []
+    real = catalog_path.connect_path
+
+    def spy(path, *, write, **kw):
+        con = real(path, write=write, **kw)
+        opened.append((write, con))
+        return con
+
+    monkeypatch.setattr(catalog_path, "connect_path", spy)
+    seen = {}
+    real_rows = C.catalogue_rows
+
+    def rows_and_try_to_write(con):
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            con.execute("UPDATE series SET end_date='1900-01-01'")
+        seen["tried"] = True
+        return real_rows(con)
+
+    monkeypatch.setattr(C, "catalogue_rows", rows_and_try_to_write)
+    C.run(cat, store, receipt, today=TODAY)
+    assert seen == {"tried": True} and [w for w, _c in opened] == [False]
 
 
 def test_the_tool_has_no_write_mode():

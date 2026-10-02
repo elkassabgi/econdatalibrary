@@ -249,10 +249,15 @@ def d1_only_sources() -> tuple[bool, str]:
 # makes d1-only-sources pass on a name, and a name is not readiness (R1195). Each entry is replaced by a real
 # check in the change that builds the thing; removing one without building it is what a review must catch.
 SEC_EDGAR_OWED = (
+    "the local sec_edgar store is WHOLE first: footer_diff + mirror_sync for clean_grouped/sec_edgar show 0 "
+    "behind and 0 R2-only (R1193: one store, whole first; the local check cannot see a store that is behind "
+    "R2 when the span did not move)",
     "the D1-to-local proof on ALL columns and its receipt, taken after sec-edgar-daily is disabled and drained "
     "(plan: THE PROOF, AND WHEN; tools/sync_source_rows_d1_to_local.py compares start/end/title only)",
     "the local value equals D1's source_data_through at the switch (one primary-key read)",
     "the scheduled local refresh task exists (and a watermark scan window instead of a fixed --days)",
+    "this gate RE-RUNS the comparison, or pins the check tool's commit, instead of trusting the receipt's "
+    "counts: today only the two fingerprints are recomputed, so a hand-written receipt would pass (AR-195 N6)",
 )
 
 
@@ -281,13 +286,13 @@ def sec_edgar_local(receipt_path: str | None = None, catalogue: str | None = Non
         return False, f"the receipt is not clean: {bad or 'store moved during the read'}"
     if not r.get("catalogue_rows"):
         return False, "the receipt compared zero catalogue rows"
-    path = catalogue or catalog_path.catalog_path()
+    cat_file = catalogue or catalog_path.catalog_path()
     store = store or C.STORE
-    if r.get("catalogue_path") != os.path.normcase(os.path.realpath(path)):
-        return False, f"the receipt was taken on another catalogue ({r.get('catalogue_path')}), not {path}"
+    if r.get("catalogue_path") != os.path.normcase(os.path.realpath(cat_file)):
+        return False, f"the receipt was taken on another catalogue ({r.get('catalogue_path')}), not {cat_file}"
     if r.get("store_path") != os.path.normcase(os.path.realpath(store)):
         return False, f"the receipt was taken on another store ({r.get('store_path')}), not {store}"
-    con = catalog_path.connect_path(path, write=False)
+    con = catalog_path.connect_path(cat_file, write=False)
     try:
         now_rows = C.rows_sha256(C.catalogue_rows(con))
     finally:

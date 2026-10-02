@@ -103,10 +103,14 @@ def compare(rows, store: str, coverage_span, today: str, workers: int = 8) -> di
     """The five lists. `rows` are catalogue rows; `store` is read through file_span."""
     listing = store_listing(store)
     named = {}
-    catalogue_only = []
+    catalogue_only, unreadable = [], []
     for sid, lo, hi in rows:
         name = sec_edgar_local.store_name(sid[len(PREFIX):]) + ".parquet"
-        if name in listing:
+        if name in named:
+            # two ids, one file ("A/B" and "A_B"): the second would replace the first and that row would
+            # never be compared, while every count stayed 0 (AR-195 N1)
+            unreadable.append((sid, f"shares the store file {name} with {named[name][0]}"))
+        elif name in listing:
             named[name] = (sid, lo, hi)
         else:
             catalogue_only.append(sid)
@@ -118,7 +122,7 @@ def compare(rows, store: str, coverage_span, today: str, workers: int = 8) -> di
         except Exception as e:                                         # noqa: BLE001 - counted, never skipped
             return name, None, f"{type(e).__name__}: {e}"
 
-    differing, forward, unreadable = [], [], []
+    differing, forward = [], []
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
         for name, span, err in ex.map(one, sorted(named)):
             sid, lo, hi = named[name]
@@ -165,6 +169,7 @@ def run(catalogue: str | None, store: str, receipt: str, today: str | None = Non
         "store_stable_during_read": stable,
         "counts": {k: len(res[k]) for k in COUNTS},
         "examples": {k: res[k][:EXAMPLES] for k in COUNTS},
+        "rows": {k: res[k] for k in COUNTS},              # every row of every count, for the repair list
     }
     out["clean"] = stable and len(rows) > 0 and not any(out["counts"].values())
     os.makedirs(os.path.dirname(os.path.abspath(receipt)), exist_ok=True)

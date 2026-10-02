@@ -173,8 +173,13 @@ def test_a_span_that_ends_after_today_is_refused_not_written(world, monkeypatch,
     """AR-194: coverage_span's fallback (no fact has ended) and a filing EDGAR dates on the next business day
     can both end after today. Written, that one row makes core.sec_edgar_local refuse the WHOLE origin copy."""
     import datetime as dt
+    from core import sec_edgar_local
     tmp, live, grouped, build, _p = world
-    end = dt.datetime.now(dt.timezone.utc).date() + dt.timedelta(days=days_ahead)
+    # ONE clock, and it is UTC (core.sec_edgar_local.today_utc; its own test pins the zone). Fixed here, so the
+    # boundary does not depend on when or where the test runs: with the machine's date instead, a span ending
+    # on the UTC day is refused west of Greenwich in the evening.
+    monkeypatch.setattr(sec_edgar_local, "today_utc", lambda: "2031-03-10")
+    end = dt.date(2031, 3, 10) + dt.timedelta(days=days_ahead)
     monkeypatch.setattr(R, "coverage_span", lambda odate, vint: (dt.date(2019, 12, 31), end))
     before = (grouped / "XOM.parquet").read_bytes()
     rc = _run(monkeypatch, "--apply")
