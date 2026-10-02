@@ -184,6 +184,47 @@ def _emit_freshness(state_db: str, out_dir: str) -> list[str]:
 
 FRESHNESS = ("unit_state", "source_state", "source_data_through")
 
+# The freshness row each D1-only source's LOCAL refresher writes: (strategy it must carry). Before T0 that row
+# lives on D1 (the CI refresher's stamp); after T0 the local refresher's first --apply run writes it.
+D1_ONLY_STATE = {"sec_edgar": "edgar_delta"}
+
+
+def _d1_only_state(primary: str, gated: set[str]) -> str:
+    """AFTER T0: every D1-only source the copy serves has its own source_state row, with a success on it.
+
+    /v1/sources LEFT JOINs source_state: without the row the source's status, cadence and last_updated read
+    null, where D1 served ok/daily the day before (review AR-194 B4; R1195 asked for the outcome to be checked
+    on the copy). After the 13F rows moved to their own key, state.db has NO sec_edgar row until the local
+    refresher's first run, so a first production build made before that run must fail here.
+    BEFORE T0 the row is D1's and the local state.db is not its truth: nothing is checked, and the result says so
+    (a copy built before T0 is a rig or a rehearsal, never what users are served)."""
+    from core import cutover                                              # noqa: PLC0415
+    if not cutover.is_cut_over():
+        return "not checked before T0 (the row is D1's)"
+    con = _ro(primary)
+    try:
+        if "strategy" not in {r[1] for r in con.execute("PRAGMA table_info(source_state)")}:
+            raise RuntimeError("primary: source_state has no strategy column - cannot tell whose row it is")
+        served = {r[0] for r in con.execute(
+            "SELECT DISTINCT source_id FROM series WHERE source_id IN (%s)" % ",".join("?" * len(D1_ONLY_STATE)),
+            tuple(D1_ONLY_STATE))}
+        rows = {r[0]: (r[1], r[2]) for r in con.execute(
+            "SELECT source_id, strategy, last_success_utc FROM source_state WHERE source_id IN (%s)"
+            % ",".join("?" * len(D1_ONLY_STATE)), tuple(D1_ONLY_STATE))}
+    finally:
+        con.close()
+    for sid, strategy in sorted(D1_ONLY_STATE.items()):
+        if sid not in served or sid.lower() in gated:
+            continue
+        got = rows.get(sid)
+        if got is None:
+            raise RuntimeError(f"primary: no source_state row for {sid} - /v1/sources would serve its status and "
+                               f"last_updated as null; run its local refresher once (--apply, exit 0) first")
+        if got[0] != strategy or not got[1]:
+            raise RuntimeError(f"primary: source_state('{sid}') is {got} - expected strategy {strategy!r} with a "
+                               f"last_success_utc (the local refresher's own row, written by a whole day)")
+    return "checked"
+
 
 def check(primary: str, climate: str, total: int, freshness: bool = False) -> dict:
     """The checks that must pass before a copy is served. Raises RuntimeError naming the first failure."""
@@ -223,6 +264,7 @@ def check(primary: str, climate: str, total: int, freshness: bool = False) -> di
             raise RuntimeError(f"primary: no data_through for {unstamped} - /v1/sources would serve null "
                                "(a D1-only source needs its local writer: sync_state_d1.LOCAL_FRESHNESS_WRITERS)")
         out["freshness"] = have
+        out["d1_only_state"] = _d1_only_state(primary, gated)
     for label, path in (("primary", primary), ("climate", climate)):
         con = _ro(path)
         qc = con.execute("PRAGMA quick_check").fetchone()[0]

@@ -59,6 +59,7 @@ import pyarrow.parquet as pq
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from core.titles import clean_title  # noqa: E402 - one rule for title line breaks
+from core import sec_edgar_local  # noqa: E402 - the store-name rule, shared with the local check
 
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
 GROUPED = os.path.join(ROOT, "data", "clean_grouped", "sec_edgar")
@@ -766,7 +767,7 @@ def respan(client, spec, apply=False, apply_d1=False, skip_local=False, local_ch
     # store truth
     truth, missing = {}, []
     for ident in idents:
-        safe = ident.replace("/", "_").replace(":", "_")
+        safe = sec_edgar_local.store_name(ident)
         path = os.path.join(GROUPED, safe + ".parquet")
         prior = prior_facts(client, path, prefer_r2=True)
         if not prior or not prior.get("obs_date"):
@@ -1060,7 +1061,7 @@ def main():
             continue
         ticks = t2c.get(cik) or []
         ident = ticks[0] if ticks else f"CIK{cik:010d}"
-        safe = ident.replace("/", "_").replace(":", "_")
+        safe = sec_edgar_local.store_name(ident)
         path = os.path.join(GROUPED, safe + ".parquet")
         prior = prior_facts(client, path)
         before = len(prior["metric"]) if prior else 0
@@ -1259,7 +1260,7 @@ def _refresh_local(a, todo, t2c) -> int:
                 continue
             ticks = t2c.get(cik) or []
             ident = ticks[0] if ticks else f"CIK{cik:010d}"
-            safe = ident.replace("/", "_").replace(":", "_")
+            safe = sec_edgar_local.store_name(ident)
             path = os.path.join(GROUPED, safe + ".parquet")
             row = cat.execute("SELECT start_date, end_date FROM series WHERE series_id=?",
                               (f"sec_edgar:{ident}",)).fetchone()
@@ -1284,6 +1285,14 @@ def _refresh_local(a, todo, t2c) -> int:
                 errors.append(f"{ident}:merge:{e}")
                 continue
             lo, hi = coverage_span(odate, vint)
+            if hi is None or str(hi) > dt.datetime.now(dt.timezone.utc).date().isoformat():
+                # A span that ends after today UTC is a filer typo taken by coverage_span's fallback (no fact
+                # has ended), or a filing EDGAR dated on the next business day. Written, it would make
+                # core.sec_edgar_local refuse the WHOLE origin copy; refused here it costs one company one
+                # day, and the day is partial so nobody reads it as whole (review AR-194).
+                refused += 1
+                errors.append(f"{ident}:forward-span:{hi}")
+                continue
             # SKIP only when the facts AND the catalogue span are already right: a run that died after its store
             # write left the span behind, and the next run must catch it up (plan; R730)
             if len(metric) == before and not a.force and row is not None and \

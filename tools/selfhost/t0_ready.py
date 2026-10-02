@@ -28,6 +28,11 @@ Each check is mechanical and names what fails:
                      sec_edgar) has a local writer (LOCAL_FRESHNESS_WRITERS). D1 is frozen after T0, and the
                      catalogue copy is not their truth (R737), so without one their data_through reads null
                      and their state stops moving (R1191)
+  sec-edgar-local    the local catalogue's sec_edgar rows ARE the local store's own spans: the receipt of
+                     tools/selfhost/sec_edgar_local_check.py is clean (0 differing, 0 store-only, 0
+                     catalogue-only, 0 forward, 0 unreadable) and still current (the rows and the store listing
+                     are fingerprinted again here). A writer NAMED in LOCAL_FRESHNESS_WRITERS proves nothing
+                     about the rows it reads (R1195, AR-194). Fails while SEC_EDGAR_OWED lists unbuilt proofs
   statcan-lane      when the registry serves statcan by jobs/statcan_lane.py, that lane declares POST_T0_READY =
                     True: until its self-hosted backend and writer lock exist it refuses after T0, and statcan
                     would have no update path at all. Flipping it also requires the post-T0 readers
@@ -239,6 +244,63 @@ def d1_only_sources() -> tuple[bool, str]:
         "every D1-stamped source has a local writer that imports"
 
 
+# What the `sec-edgar-local` check still cannot verify because it is NOT BUILT. While this tuple has an entry
+# the check FAILS, whatever the receipt says: registering core.sec_edgar_local in LOCAL_FRESHNESS_WRITERS
+# makes d1-only-sources pass on a name, and a name is not readiness (R1195). Each entry is replaced by a real
+# check in the change that builds the thing; removing one without building it is what a review must catch.
+SEC_EDGAR_OWED = (
+    "the D1-to-local proof on ALL columns and its receipt, taken after sec-edgar-daily is disabled and drained "
+    "(plan: THE PROOF, AND WHEN; tools/sync_source_rows_d1_to_local.py compares start/end/title only)",
+    "the local value equals D1's source_data_through at the switch (one primary-key read)",
+    "the scheduled local refresh task exists (and a watermark scan window instead of a fixed --days)",
+)
+
+
+def sec_edgar_local(receipt_path: str | None = None, catalogue: str | None = None, store: str | None = None,
+                    owed: tuple = SEC_EDGAR_OWED) -> tuple[bool, str]:
+    """The local catalogue's sec_edgar rows are the local store's own spans, proven by a receipt that is
+    RECOMPUTED here (review AR-194: a proof of truth is a gate with a receipt that recomputes what it certifies,
+    never a marker a writer once left). The receipt is tools/selfhost/sec_edgar_local_check.py's; this check
+    reads the catalogue rows (one primary-key range, mode=ro) and lists the store (no file opened) and requires
+    both fingerprints to equal the receipt's, so a receipt cannot outlive the state it was taken on."""
+    import sec_edgar_local_check as C                              # noqa: PLC0415 - tools/selfhost sibling
+    from core import catalog_path                                   # noqa: PLC0415
+    receipt_path = receipt_path or C.RECEIPT
+    try:
+        with open(receipt_path, encoding="utf-8") as f:
+            r = json.load(f)
+    except FileNotFoundError:
+        return False, f"no receipt at {receipt_path}: run python tools/selfhost/sec_edgar_local_check.py"
+    except (OSError, ValueError) as e:
+        return False, f"unreadable receipt {receipt_path}: {type(e).__name__}"
+    counts = r.get("counts")
+    if not isinstance(counts, dict) or set(counts) != set(C.COUNTS):
+        return False, "the receipt does not carry the five counts"
+    bad = {k: v for k, v in counts.items() if v != 0}
+    if bad or r.get("clean") is not True or r.get("store_stable_during_read") is not True:
+        return False, f"the receipt is not clean: {bad or 'store moved during the read'}"
+    if not r.get("catalogue_rows"):
+        return False, "the receipt compared zero catalogue rows"
+    path = catalogue or catalog_path.catalog_path()
+    store = store or C.STORE
+    if r.get("catalogue_path") != os.path.normcase(os.path.realpath(path)):
+        return False, f"the receipt was taken on another catalogue ({r.get('catalogue_path')}), not {path}"
+    if r.get("store_path") != os.path.normcase(os.path.realpath(store)):
+        return False, f"the receipt was taken on another store ({r.get('store_path')}), not {store}"
+    con = catalog_path.connect_path(path, write=False)
+    try:
+        now_rows = C.rows_sha256(C.catalogue_rows(con))
+    finally:
+        con.close()
+    if now_rows != r.get("catalogue_sha256"):
+        return False, "the catalogue's sec_edgar rows changed after the receipt: run the check again"
+    if C.listing_sha256(C.store_listing(store)) != r.get("store_fingerprint"):
+        return False, "the sec_edgar store changed after the receipt: run the check again"
+    if owed:
+        return False, f"receipt clean ({r['catalogue_rows']:,} rows), but NOT BUILT YET: " + "; ".join(owed)
+    return True, f"receipt clean and current: {r['catalogue_rows']:,} rows, taken {r.get('finished_utc')}"
+
+
 # THE ONE SHAPE ACCEPTED (an allowlist, R1235): listing bad shapes let nine more through - no schedule,
 # continue-on-error, `|| true`, an `if` without always(), an `if` true only when the URL is unset, `${{false}}`
 # without spaces, a job `if` on an event that never fires, `needs` on a disabled job, the command only in a
@@ -388,6 +450,7 @@ CHECKS = [("legacy-catalogue", legacy_catalogue), ("legacy-remote-d1", legacy_re
           ("launcher", launcher), ("preflight", preflight), ("ci-writers", ci_writers),
           ("ci-drained", ci_drained), ("thirteen-f", thirteen_f),
           ("edge-state", edge_state), ("state-db", state_db), ("d1-only-sources", d1_only_sources),
+          ("sec-edgar-local", sec_edgar_local),
           ("heartbeat-reader", heartbeat_reader), ("served-stats", served_stats), ("statcan-lane", statcan_lane),
           ("flag", flag)]
 
