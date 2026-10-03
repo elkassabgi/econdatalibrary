@@ -1209,6 +1209,12 @@ def main():
     a = ap.parse_args()
 
     from core import cutover                                  # noqa: PLC0415
+
+    def cut_now() -> bool:
+        # A --local-only run reads the flag ONCE (the gate below) and carries that answer: a second read could say
+        # "not cut over" (the flag removed mid-run, or a passing stat error that the gate's fail-closed read took as
+        # cut over) and send the scheduled run down the pre-T0 branch, which writes R2 beside the CI job (AR-210).
+        return True if a.local_only else cutover.is_cut_over()
     if a.local_only:
         named = [f for f, v in (("--ciks", a.ciks), ("--limit", a.limit), ("--days", a.days is not None),
                                 ("--d1", a.d1), ("--audit", a.audit), ("--respan", a.respan), ("--force", a.force))
@@ -1223,7 +1229,7 @@ def main():
             print(f"sec_edgar --local-only: not cut over ({cutover.FLAG_PATH} absent) - nothing to do; the CI "
                   f"job sec-edgar-daily refreshes sec_edgar until T0", flush=True)
             return 0
-    if cutover.is_cut_over() and (a.d1 or a.audit or a.respan):
+    if cut_now() and (a.d1 or a.audit or a.respan):
         # before anything else: these read or write D1 and R2, which are frozen after T0 (_refresh_local)
         raise cutover.CutoverRefused("refused: after T0 there is no D1, and --audit / --respan are not ported to "
                                      "the self-hosted store yet - run the daily refresh without them")
@@ -1247,7 +1253,7 @@ def main():
         scanned, missing = [f"explicit:{len(ciks)}"], []
         print(f"targeted refresh of {len(ciks):,} explicitly named CIK(s)", flush=True)
     else:
-        cut = cutover.is_cut_over()
+        cut = cut_now()
         last = _last_success_utc() if cut else None           # before T0 no state is read
         days, why = scan_days(a.days, cut, last if a.days is None else None, scan_started.date())
         print(f"scanning EDGAR daily-index, last {days} day(s) ({why}) ...", flush=True)
@@ -1275,7 +1281,7 @@ def main():
             print(f"  this run {'MAY' if advance else 'may NOT'} move the scan mark (now {last})", flush=True)
     # After T0 an unread index is a failed run, not a quiet one: the mark cannot move, and a scheduled task that
     # stayed green would only find out at the WATERMARK_MAX_DAYS refusal (review AR-209 round 2). Before T0: as before.
-    unread_after_t0 = cutover.is_cut_over() and any(":ERR" in str(m) for m in missing)
+    unread_after_t0 = cut_now() and any(":ERR" in str(m) for m in missing)
     if not ciks:
         print("nothing to do")
         return 1 if unread_after_t0 else 0
@@ -1285,10 +1291,13 @@ def main():
     if a.limit:
         todo = todo[:a.limit]
         print(f"  LIMITED to {len(todo)} companies (testing)", flush=True)
-    if cutover.is_cut_over():
+    if cut_now():
         # the local store, under the lock; no R2, no D1
         rc = _refresh_local(a, todo, t2c, advance=advance, stamp_at=scan_started)
         return rc or (1 if unread_after_t0 else 0)
+    if a.local_only:
+        # unreachable (cut_now() is True for --local-only); kept so no later edit can open the R2 road for it
+        raise cutover.CutoverRefused("refused: a --local-only run never takes the pre-T0 R2 path")
 
     # The client is needed for READS too, not only writes: merge_facts must see what the store
     # already holds, and on CI the local mirror does not exist.

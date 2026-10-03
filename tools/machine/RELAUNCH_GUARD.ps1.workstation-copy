@@ -302,3 +302,18 @@ if (Test-Path $heavy) {
       -RedirectStandardError  (Join-Path $logsDir ("guard_localheavy_{0}.err.log" -f $ts))
   }
 }
+
+# --- SEC_EDGAR DAILY REFRESH, AFTER T0 (added 2026-10-03) --------------------------------------------
+# Before T0 the CI job sec-edgar-daily refreshes sec_edgar; after T0 this machine is the only place that does.
+# Scheduled Tasks are blocked by policy here, so it rides this loop like the local heavy pass. The cadence
+# lives in the script: -IfDue exits at once unless a run is due (08:00 UTC or later, no ok run started today,
+# no attempt in the last 2 h, no other run holding its lock). It writes its own log and status file
+# (logs\sec_edgar_local_*.log, logs\sec_edgar_local.last.json), which tools/guard_heartbeat.py publishes and
+# judges, so nothing is redirected here (a redirect would leave two empty files on every tick).
+# The flag test here only saves starting a shell every 5 minutes before T0; the script tests it again.
+$secEdgar = Join-Path (Join-Path (Join-Path $root 'tools') 'selfhost') 'run_sec_edgar_local.ps1'
+if ((Test-Path 'C:\ProgramData\econ\CUTOVER') -and (Test-Path $secEdgar)) {
+  Start-Process 'powershell.exe' `
+    -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$secEdgar,'-IfDue') `
+    -WorkingDirectory $root -WindowStyle Hidden
+}
