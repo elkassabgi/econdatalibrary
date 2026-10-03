@@ -73,10 +73,46 @@ def delivered():
 
 
 def test_no_cloudflare_token_uses_resend_as_before(net):
+    """The path production uses until the token exists: the request must be exactly the old one."""
     calls, _ = net
-    assert send() == "resend"
+    assert send(html="<p>h</p>") == "resend"
     assert hosts(calls) == [RESEND], "with no token the mail must still go out through Resend"
-    assert calls[0][1]["from"] == "Econ Data Library <noreply@hfdatalibrary.com>"
+    url, payload, headers, timeout = calls[0]
+    assert payload == {"from": "Econ Data Library <noreply@hfdatalibrary.com>", "to": [TO], "subject": "subj",
+                       "text": "text body", "html": "<p>h</p>"}, payload
+    assert headers["Authorization"] == "Bearer re_test", "the Resend key was not sent"
+    assert headers["User-agent"] == "ua-test/1.0", "urllib's default UA is 1010-blocked by Cloudflare"
+    assert headers["Content-type"] == "application/json"
+    assert timeout and timeout <= 60
+
+
+def test_stray_whitespace_in_a_secret_is_not_sent(net, monkeypatch):
+    """A pasted secret often carries a newline; sent as is, the header is malformed or refused."""
+    calls, replies = net
+    monkeypatch.setenv("CLOUDFLARE_EMAIL_TOKEN", " cf_test\n")
+    replies[CF] = delivered()
+    send()
+    assert calls[0][2]["Authorization"] == "Bearer cf_test"
+    calls.clear()
+    monkeypatch.setenv("CLOUDFLARE_EMAIL_TOKEN", "")
+    monkeypatch.setenv("RESEND_API_KEY", "re_test\r\n")
+    send()
+    assert calls[0][2]["Authorization"] == "Bearer re_test"
+
+
+def test_a_resend_redirect_is_not_a_sent_mail(net):
+    """Only a 2xx means Resend took the mail; a 3xx answer must read as failed."""
+    calls, replies = net
+    replies[RESEND] = Resp(302, {"location": "elsewhere"})
+    assert send() == "failed"
+
+
+def test_the_recipient_match_ignores_case_and_spaces(net, monkeypatch):
+    """Control: an exact match sent every mail twice when Cloudflare echoed the address in another case."""
+    calls, replies = net
+    monkeypatch.setenv("CLOUDFLARE_EMAIL_TOKEN", "cf_test")
+    replies[CF] = Resp(200, {"success": True, "result": {"delivered": [" Admin@HFDataLibrary.com "], "queued": []}})
+    assert send() == "cloudflare" and hosts(calls) == [CF]
 
 
 def test_nothing_configured_is_skipped_not_failed(net, monkeypatch):
@@ -95,6 +131,7 @@ def test_an_accepted_cloudflare_mail_is_sent_once(net, monkeypatch):
     assert url.endswith("/accounts/acct/email/sending/send")
     assert headers["Authorization"] == "Bearer cf_test" and headers["User-agent"] == "ua-test/1.0"
     assert payload["from"] == "noreply@mail.hfdatalibrary.com" and payload["to"] == [TO]
+    assert payload["subject"] == "subj" and headers["Content-type"] == "application/json"
     assert payload["reply_to"] == "noreply@hfdatalibrary.com"
     assert payload["text"] == "text body" and payload["html"] == "<p>h</p>"
     assert timeout and timeout <= 60, "a hung call would hold the job"
@@ -165,23 +202,54 @@ def test_the_tokens_are_never_logged(net, monkeypatch):
     assert "cf_secret_value" not in text and "re_secret_value" not in text
 
 
-@pytest.mark.parametrize("module,call", [
-    ("tools.billing_guard", lambda m: m.send_alert("s", "b")),
-    ("tools.selfhost.watch_edge", lambda m: m.send_alert("s", "b")),
-])
-def test_both_alert_senders_go_through_the_shared_path(net, monkeypatch, module, call):
-    """A sender that kept its own Resend call would never reach Cloudflare."""
+ALERTS = [("tools.billing_guard", "econdatalibrary-billing-guard/1.0"),
+          ("tools.selfhost.watch_edge", "econdatalibrary-selfhost-watch/1.0")]
+
+
+@pytest.mark.parametrize("module,ua", ALERTS, ids=[a[0] for a in ALERTS])
+@pytest.mark.parametrize("token", ["cf_test", ""], ids=["cloudflare", "resend"])
+def test_both_alert_senders_go_through_the_shared_path(net, monkeypatch, module, ua, token):
+    """A sender that kept its own Resend call would never reach Cloudflare; both paths keep the
+    sender's recipient, its User-Agent, and a text-only body."""
     import importlib
     calls, replies = net
-    monkeypatch.setenv("CLOUDFLARE_EMAIL_TOKEN", "cf_test")
+    monkeypatch.setenv("DIGEST_TO", "")
+    monkeypatch.setenv("CLOUDFLARE_EMAIL_TOKEN", token)
     replies[CF] = delivered()
-    call(importlib.import_module(module))
-    assert hosts(calls) == [CF]
+    importlib.import_module(module).send_alert("alert-subj", "alert-body")
+    assert hosts(calls) == ([CF] if token else [RESEND])
+    url, payload, headers, _ = calls[0]
+    assert payload["to"] == [TO] and payload["subject"] == "alert-subj" and payload["text"] == "alert-body"
+    assert "html" not in payload, "an alert is text only"
+    assert headers["User-agent"] == ua
+    if not token:
+        assert payload["from"] == "Econ Data Library <noreply@hfdatalibrary.com>"
 
 
 def test_no_job_calls_resend_directly_any_more():
-    """Source-shape guard: the three jobs send only through core/status_mail.py."""
+    """Source-shape guard: the three jobs send only through core/status_mail.py, and the digest
+    passes its HTML (the body that is actually read), its sender and its recipient."""
     for rel in ("updater/send_digest.py", "tools/billing_guard.py", "tools/selfhost/watch_edge.py"):
         src = open(os.path.join(ROOT, rel), encoding="utf-8").read()
         assert "api.resend.com" not in src, f"{rel} still calls Resend itself"
         assert "send_status_mail" in src, f"{rel} does not use the shared mail path"
+    digest = open(os.path.join(ROOT, "updater", "send_digest.py"), encoding="utf-8").read()
+    assert "send_status_mail(subject, body, html_doc, sender=FROM, to=TO," in digest
+    assert 'user_agent="econdatalibrary-digest/1.0"' in digest
+
+
+def test_a_missing_mail_module_does_not_raise_from_an_alert(monkeypatch):
+    """Control: an ImportError inside send_alert would turn a green guard run red."""
+    import builtins
+    import importlib
+    real = builtins.__import__
+
+    def refuse(name, *a, **k):
+        if name == "core.status_mail":
+            raise ImportError("planted")
+        return real(name, *a, **k)
+    for module, _ua in ALERTS:
+        m = importlib.import_module(module)
+        monkeypatch.setattr(builtins, "__import__", refuse)
+        m.send_alert("s", "b")                       # must return, not raise
+        monkeypatch.setattr(builtins, "__import__", real)

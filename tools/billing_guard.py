@@ -176,7 +176,11 @@ def send_alert(subject: str, body: str) -> None:
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if root not in sys.path:
         sys.path.insert(0, root)
-    from core.status_mail import send_status_mail
+    try:
+        from core.status_mail import send_status_mail
+    except Exception as e:  # noqa: BLE001 - an alert path must not flip a green run red
+        print(f"  alert email failed: cannot load the mail module ({type(e).__name__})")
+        return
     path = send_status_mail(subject, body, sender=FROM, to=TO,
                             user_agent="econdatalibrary-billing-guard/1.0",
                             log=lambda m: print(f"  {m}"))

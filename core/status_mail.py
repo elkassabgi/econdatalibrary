@@ -8,8 +8,11 @@ One path for all three, so they cannot drift apart:
   2. Resend, exactly as before, when Cloudflare is not configured or does not report the mail
      delivered or queued for the recipient.
 
-Settings come from the environment only. A test or a desktop shell that does not export the token
-can therefore never send through Cloudflare by accident.
+Settings are read from os.environ only; this module never reads a .env file itself. Note that a
+process which first calls core.config.load_env() (or a connector's require()) has copied the
+checkout's .env into os.environ, and the desktop .env holds both mail settings - so such a
+process WILL send. None of the three jobs' entry points does that today, and tests/conftest.py
+sets both mail settings to "" for every test.
 
 `send_status_mail` never raises: in all three jobs the red workflow is the second delivery path,
 and a mail fault must not change a run's result. It returns which path carried the mail -
@@ -70,8 +73,9 @@ def _cloudflare(subject: str, text: str, html: str | None, to: str, user_agent: 
         return False
     body = body if isinstance(body, dict) else {}
     result = body.get("result") if isinstance(body.get("result"), dict) else {}
-    accepted = [a for k in ("delivered", "queued") if isinstance(result.get(k), list) for a in result[k]]
-    if 200 <= status < 300 and body.get("success") is True and to in accepted:
+    accepted = [str(a).strip().lower() for k in ("delivered", "queued")
+                if isinstance(result.get(k), list) for a in result[k]]
+    if 200 <= status < 300 and body.get("success") is True and to.strip().lower() in accepted:
         log(f"mail sent through Cloudflare: HTTP {status}")
         return True
     errs = body.get("errors")

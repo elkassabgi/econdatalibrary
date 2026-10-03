@@ -225,7 +225,11 @@ def send_alert(subject: str, body: str) -> None:
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     if root not in sys.path:
         sys.path.insert(0, root)
-    from core.status_mail import send_status_mail
+    try:
+        from core.status_mail import send_status_mail
+    except Exception as e:  # noqa: BLE001 - the red workflow is the second delivery path
+        print(f"alert email failed: cannot load the mail module ({type(e).__name__})")
+        return
     path = send_status_mail(subject, body, sender="Econ Data Library <noreply@hfdatalibrary.com>",
                             to=os.environ.get("DIGEST_TO") or "admin@hfdatalibrary.com",
                             user_agent=UA, log=print)

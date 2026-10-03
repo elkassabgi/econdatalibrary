@@ -320,7 +320,9 @@ HEARTBEAT_STEP_RUN = 'python -B tools/guard_heartbeat.py --check --from-url "${{
 # `on:` spelled `yes:`, a duplicate `run:`, a `<<` merge key). So: the sha256 of the reviewed file's text (line
 # ends as LF). Changing the workflow now needs a visible edit HERE, in the gate, which the review of that change
 # sees; tests/test_selfhost_t0_ready.py fails when the committed file and this constant disagree.
-REVIEWED_WORKFLOW_SHA256 = "11452c92b7c8fffd066e5e6247d949e91cb64ab3f172d25ea682442c37581f2c"
+# 2026-10-03: the watch step gained CLOUDFLARE_EMAIL_TOKEN (status mail through Cloudflare first,
+# core/status_mail.py); env only, the step's `if`, `run` and job are unchanged. Reviewed with that change.
+REVIEWED_WORKFLOW_SHA256 = "155698f8671d83a97eef9008036b8b5d671d840ffc82bd63b25d4d0b6b11ca56"
 
 
 def _is_reviewed_workflow(text: str) -> bool:

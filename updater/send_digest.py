@@ -498,7 +498,11 @@ def main() -> None:
     _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if _root not in sys.path:
         sys.path.insert(0, _root)        # this module also runs as a script, not only as a package
-    from core.status_mail import send_status_mail
+    try:
+        from core.status_mail import send_status_mail
+    except Exception as e:  # noqa: BLE001 - a mail fault must not flip the run
+        print(f"[digest] email FAILED: cannot load the mail module ({type(e).__name__})", flush=True)
+        return
     path = send_status_mail(subject, body, html_doc, sender=FROM, to=TO,
                             user_agent="econdatalibrary-digest/1.0",
                             log=lambda m: print(f"[digest] {m}", flush=True))
