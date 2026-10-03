@@ -251,25 +251,29 @@ def d1_only_sources() -> tuple[bool, str]:
 SEC_EDGAR_OWED = (
     "the local sec_edgar store is WHOLE first: footer_diff + mirror_sync for clean_grouped/sec_edgar show 0 "
     "behind and 0 R2-only (R1193: one store, whole first; the local check cannot see a store that is behind "
-    "R2 when the span did not move)",
+    "R2 when the span did not move). Taken AFTER sec-edgar-daily is disabled: until then that job advances R2 "
+    "every day and nothing advances the local store (2026-10-03: 17,480 same, 25 behind, 1 R2-only, 0 ahead)",
     "the D1-to-local proof on ALL columns and its receipt, taken after sec-edgar-daily is disabled and drained "
     "(plan: THE PROOF, AND WHEN; tools/sync_source_rows_d1_to_local.py compares start/end/title only)",
     "the local value equals D1's source_data_through at the switch (one primary-key read)",
     "the scheduled local refresh task exists (and a watermark scan window instead of a fixed --days)",
-    "this gate RE-RUNS the comparison, or pins the check tool's commit, instead of trusting the receipt's "
-    "counts: today only the two fingerprints are recomputed, so a hand-written receipt would pass (AR-195 N6)",
 )
 
 
 def sec_edgar_local(receipt_path: str | None = None, catalogue: str | None = None, store: str | None = None,
-                    owed: tuple = SEC_EDGAR_OWED) -> tuple[bool, str]:
+                    owed: tuple = SEC_EDGAR_OWED, today: str | None = None) -> tuple[bool, str]:
     """The local catalogue's sec_edgar rows are the local store's own spans, proven by a receipt that is
     RECOMPUTED here (review AR-194: a proof of truth is a gate with a receipt that recomputes what it certifies,
     never a marker a writer once left). The receipt is tools/selfhost/sec_edgar_local_check.py's; this check
-    reads the catalogue rows (one primary-key range, mode=ro) and lists the store (no file opened) and requires
-    both fingerprints to equal the receipt's, so a receipt cannot outlive the state it was taken on."""
+    reads the catalogue rows (one primary-key range, mode=ro) and lists the store, and requires both
+    fingerprints to equal the receipt's, so a receipt cannot outlive the state it was taken on.
+
+    It then RE-RUNS the comparison itself - the check tool's own compare(), reading every store file - and
+    requires its five counts to be zero (2026-10-03, AR-195 N6). Before, only the two fingerprints were
+    recomputed, so a receipt whose counts were edited to zero passed. The gate still writes nothing. It reads
+    every file of the store, so it takes minutes; it is run at the switch, not on a schedule."""
     import sec_edgar_local_check as C                              # noqa: PLC0415 - tools/selfhost sibling
-    from core import catalog_path                                   # noqa: PLC0415
+    from core import catalog_path, sec_edgar_local as L             # noqa: PLC0415
     receipt_path = receipt_path or C.RECEIPT
     try:
         with open(receipt_path, encoding="utf-8") as f:
@@ -294,16 +298,28 @@ def sec_edgar_local(receipt_path: str | None = None, catalogue: str | None = Non
         return False, f"the receipt was taken on another store ({r.get('store_path')}), not {store}"
     con = catalog_path.connect_path(cat_file, write=False)
     try:
-        now_rows = C.rows_sha256(C.catalogue_rows(con))
+        rows = C.catalogue_rows(con)
     finally:
         con.close()
-    if now_rows != r.get("catalogue_sha256"):
+    if C.rows_sha256(rows) != r.get("catalogue_sha256"):
         return False, "the catalogue's sec_edgar rows changed after the receipt: run the check again"
     if C.listing_sha256(C.store_listing(store)) != r.get("store_fingerprint"):
         return False, "the sec_edgar store changed after the receipt: run the check again"
+    # THE RE-RUN: the receipt's counts are not trusted, they are recomputed on the same rows and files
+    try:
+        res = C.compare(rows, store, C._refresher().coverage_span, today or L.today_utc())
+    except Exception as e:                                          # noqa: BLE001 - cannot tell = not ready
+        return False, f"the comparison could not be re-run: {type(e).__name__}: {e}"
+    if C.listing_sha256(C.store_listing(store)) != C.listing_sha256(res["listing"]):
+        return False, "the sec_edgar store moved while the gate re-read it: run the gate again"
+    rerun = {k: len(res[k]) for k in C.COUNTS}
+    if any(rerun.values()):
+        return False, ("the receipt says clean, but the gate's own re-run of the comparison finds "
+                       + ", ".join(f"{k} {v}" for k, v in rerun.items() if v) + ": run the check again")
     if owed:
         return False, f"receipt clean ({r['catalogue_rows']:,} rows), but NOT BUILT YET: " + "; ".join(owed)
-    return True, f"receipt clean and current: {r['catalogue_rows']:,} rows, taken {r.get('finished_utc')}"
+    return True, (f"receipt clean and current, and the gate's own re-run agrees: {r['catalogue_rows']:,} rows, "
+                  f"receipt taken {r.get('finished_utc')}")
 
 
 # THE ONE SHAPE ACCEPTED (an allowlist, R1235): listing bad shapes let nine more through - no schedule,

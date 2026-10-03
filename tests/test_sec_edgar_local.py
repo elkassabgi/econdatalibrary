@@ -542,6 +542,34 @@ def test_the_gate_fails_on_a_receipt_that_does_not_certify_this_state(tmp_path, 
     assert T.sec_edgar_local(receipt, cat, store, owed=())[0] is False
 
 
+def test_a_receipt_whose_counts_were_edited_to_zero_is_caught_by_the_re_run(tmp_path, monkeypatch):
+    """AR-195 N6: the gate recomputed only the two fingerprints, so a receipt taken on a DIFFERING state and then
+    edited to say clean passed. The gate now re-runs the comparison on the same rows and files."""
+    cat, store, receipt = _check_world(tmp_path, monkeypatch)
+    c = sqlite3.connect(cat)
+    c.execute("UPDATE series SET end_date='2001-01-01' WHERE series_id='sec_edgar:AAPL'")   # really differs
+    c.commit()
+    c.close()
+    out = C.run(cat, store, receipt, today=TODAY)
+    assert out["clean"] is False and out["counts"]["differing"] == 1, "the world really differs (control)"
+    r = json.load(open(receipt))
+    r["counts"] = {k: 0 for k in C.COUNTS}                           # the forgery: every count edited to zero
+    r["clean"] = True
+    json.dump(r, open(receipt, "w"))
+    ok, detail = T.sec_edgar_local(receipt, cat, store, owed=(), today=TODAY)
+    assert ok is False and "re-run of the comparison finds differing 1" in detail, detail
+
+
+def test_a_failure_of_the_re_run_itself_is_not_ready(tmp_path, monkeypatch):
+    cat, store, receipt = _gate(tmp_path, monkeypatch)
+
+    def broken(*a, **k):
+        raise OSError("disk went away")
+    monkeypatch.setattr(C, "compare", broken)
+    ok, detail = T.sec_edgar_local(receipt, cat, store, owed=(), today=TODAY)
+    assert ok is False and "could not be re-run" in detail
+
+
 def test_the_gate_fails_when_the_catalogue_or_the_store_moved_after_the_receipt(tmp_path, monkeypatch):
     cat, store, receipt = _gate(tmp_path, monkeypatch)
     c = sqlite3.connect(cat)
