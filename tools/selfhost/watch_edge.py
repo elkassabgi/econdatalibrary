@@ -220,22 +220,21 @@ def parse_t0(s: str) -> dt.datetime:
 
 
 def send_alert(subject: str, body: str) -> None:
-    key = os.environ.get("RESEND_API_KEY", "").strip()
-    if not key:
-        print("RESEND_API_KEY not set - email skipped; the red workflow is the delivery path")
-        return
-    req = urllib.request.Request(
-        "https://api.resend.com/emails",
-        data=json.dumps({"from": "Econ Data Library <noreply@hfdatalibrary.com>",
-                         "to": [os.environ.get("DIGEST_TO") or "admin@hfdatalibrary.com"],
-                         "subject": subject, "text": body}).encode(),
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json", "User-Agent": UA},
-        method="POST")
+    """Cloudflare Email Service first, Resend as before (core/status_mail.py). Never raises: the
+    red workflow is the second delivery path."""
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    if root not in sys.path:
+        sys.path.insert(0, root)
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            print(f"alert email sent: HTTP {r.status}")
+        from core.status_mail import send_status_mail
     except Exception as e:  # noqa: BLE001 - the red workflow is the second delivery path
-        print(f"alert email failed ({type(e).__name__}) - relying on the red workflow")
+        print(f"alert email failed: cannot load the mail module ({type(e).__name__})")
+        return
+    path = send_status_mail(subject, body, sender="Econ Data Library <noreply@hfdatalibrary.com>",
+                            to=os.environ.get("DIGEST_TO") or "admin@hfdatalibrary.com",
+                            user_agent=UA, log=print)
+    if path in ("skipped", "failed"):
+        print(f"alert email {path} - relying on the red workflow")
 
 
 def main(argv: list[str] | None = None, now: dt.datetime | None = None) -> int:

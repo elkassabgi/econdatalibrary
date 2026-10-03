@@ -39,7 +39,8 @@ STATE = os.path.join(ROOT, "data", "_aqueduct", "state.db")
 def _run_as_the_workflow_does() -> str:
     """Exactly `.github/workflows/updater-daily.yml` line 451, minus the API key."""
     env = dict(os.environ)
-    env.pop("RESEND_API_KEY", None)          # no key -> prints and skips sending
+    env["RESEND_API_KEY"] = ""               # no mail service -> prints and skips sending
+    env["CLOUDFLARE_EMAIL_TOKEN"] = ""       # (empty, not absent: load_env setdefaults from .env)
     env["RUN_STATUS"] = "failure"
     p = subprocess.run([sys.executable, SCRIPT], cwd=ROOT, env=env,
                        capture_output=True, text=True, timeout=300)

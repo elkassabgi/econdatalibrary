@@ -43,6 +43,10 @@ def _no_cloud_credentials_in_a_test(tmp_path_factory):
             for part in ("ENDPOINT", "ACCESS_KEY_ID", "SECRET_ACCESS_KEY"):
                 mp.setenv(f"R2_{side}_{part}", "")
         mp.setenv("CLOUDFLARE_API_TOKEN", "")
+        # NO TEST SENDS MAIL: core/status_mail.py sends through Cloudflare or Resend whenever these are
+        # set, and the production checkout's .env carries both. Empty, for the same reason as above.
+        mp.setenv("CLOUDFLARE_EMAIL_TOKEN", "")
+        mp.setenv("RESEND_API_KEY", "")
         try:
             from core import r2_util
         except Exception:                                # noqa: BLE001 - a test tree without core/

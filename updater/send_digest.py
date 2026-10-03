@@ -15,14 +15,12 @@ gate — the health gate step is what turns runs red).
 from __future__ import annotations
 
 import datetime as dt
-import json
 import datetime as _dt
 import re as _re
 import os
 import sqlite3
 import time as _time
 import sys
-import urllib.request
 
 FROM = "Econ Data Library <noreply@hfdatalibrary.com>"
 # Recipient comes from the environment (DIGEST_TO secret in CI) — never hardcode a
@@ -177,7 +175,6 @@ def is_late(cadence: str, ts, now) -> bool:
     return (now - t).total_seconds() / 86400.0 > lim
 
 def main() -> None:
-    key = os.environ.get("RESEND_API_KEY", "").strip()
     run_status = os.environ.get("RUN_STATUS", "unknown")   # ${{ job.status }} from the yml
     run_id = os.environ.get("GITHUB_RUN_ID", "local")
 
@@ -495,37 +492,23 @@ def main() -> None:
 
 
     print(f"[digest] {subject}\n{body}\n", flush=True)
-    if not key:
-        print("[digest] RESEND_API_KEY not set — email SKIPPED (add the GitHub secret "
-              "to enable the morning email; the run's red/green state still notifies "
-              "via GitHub Actions).", flush=True)
-        return
-
-    req = urllib.request.Request(
-        "https://api.resend.com/emails",
-        data=json.dumps({"from": FROM, "to": [TO], "subject": subject,
-                         "text": body, "html": html_doc}).encode(),
-        headers={"Authorization": f"Bearer {key}",
-                 "Content-Type": "application/json",
-                 # api.resend.com sits behind Cloudflare bot protection, which
-                 # 1010-blocks urllib's default signature — identify honestly.
-                 "User-Agent": "econdatalibrary-digest/1.0"},
-        method="POST")
+    # Cloudflare Email Service first, Resend as before when it is not configured or refuses
+    # (core/status_mail.py). An email failure must not flip a green run red: the run's status is
+    # governed by the health gate, and GitHub's red-run notice needs no secret.
+    _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if _root not in sys.path:
+        sys.path.insert(0, _root)        # this module also runs as a script, not only as a package
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            print(f"[digest] sent: HTTP {resp.status}", flush=True)
-    except urllib.error.HTTPError as e:
-        # Print Resend's exact error body (safe: their error JSON carries no
-        # secrets) so a misconfigured key/domain is diagnosable from the log.
-        try:
-            detail = e.read().decode()[:300]
-        except Exception:
-            detail = "(no body)"
-        print(f"[digest] SEND FAILED: HTTP {e.code} — {detail} (run status is "
-              f"still governed by the health gate, not the email)", flush=True)
-    except Exception as e:  # noqa: BLE001 — email failure must not flip a green run red
-        print(f"[digest] SEND FAILED: {e!r} (run status is still governed by the "
-              f"health gate, not the email)", flush=True)
+        from core.status_mail import send_status_mail
+    except Exception as e:  # noqa: BLE001 - a mail fault must not flip the run
+        print(f"[digest] email FAILED: cannot load the mail module ({type(e).__name__})", flush=True)
+        return
+    path = send_status_mail(subject, body, html_doc, sender=FROM, to=TO,
+                            user_agent="econdatalibrary-digest/1.0",
+                            log=lambda m: print(f"[digest] {m}", flush=True))
+    if path in ("skipped", "failed"):
+        print(f"[digest] email {path.upper()} (run status is still governed by the health gate, "
+              f"not the email)", flush=True)
 
 
 if __name__ == "__main__":

@@ -493,6 +493,9 @@ jobs:
         if: ${{ always() && inputs.dry_run != true }}
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          # Cloudflare Email Service first, Resend otherwise (core/status_mail.py).
+          CLOUDFLARE_EMAIL_TOKEN: ${{ secrets.CLOUDFLARE_EMAIL_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           RUN_STATUS: ${{ job.status }}
           # Recipient is a secret so no personal address sits in a public repo.
           # NOTE: until the DIGEST_TO repo secret is created this resolves to "",
