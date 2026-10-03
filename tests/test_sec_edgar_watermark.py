@@ -168,7 +168,8 @@ def test_the_writer_stamps_the_mark_when_allowed_and_saves_the_failed_companies_
     assert rule in src
     assert "not failed and stamp_at" not in src, "the freezing no-failure rule is back"
     body = src.split(rule, 1)[1]
-    assert body.index("_save_retry(keep)") < body.index('st.upsert_source("sec_edgar"'), "save the list first"
+    assert body.index("carry_retry(failed_ciks, absent_ciks, why, mark)") < body.index('st.upsert_source("sec_edgar"'), \
+        "save the list first"
     assert '**({"last_success_utc": mark} if mark else {})' in src
     assert '**({"last_success_utc": when} if ok_day else {})' not in src, "the old every-ok-day stamp is back"
     assert src.count("failed_ciks.append(cik)") == 1
@@ -368,3 +369,87 @@ def test_each_quarter_is_judged_by_its_own_listing_and_a_new_quarter_does_not_fr
     assert missing == ["2028-01-04", "2028-01-02", "2028-01-01", "2027-12-31"], missing
     assert sum(1 for c in calls if c.endswith("index.json")) == 2
     assert not [c for c in calls if "form.20271231" in c], "an unlisted day is not fetched"
+
+
+# ---- the writer itself, against fakes (AR-209 round 4: the rules were pinned only by source text) ------------------
+def _writer(monkeypatch, tmp_path, fetch):
+    """Run the real _refresh_local with --apply on 400 companies; `fetch(cik)` answers or raises. The store,
+    catalogue, lock and state are fakes; there is no network."""
+    import argparse                                            # noqa: PLC0415
+    import contextlib                                          # noqa: PLC0415
+    import types                                               # noqa: PLC0415
+    import core.catalog_path as cp                             # noqa: PLC0415
+    import updater.blob as blob                                # noqa: PLC0415
+    import updater.state as state                              # noqa: PLC0415
+    grouped = tmp_path / "grouped"
+    grouped.mkdir()
+    monkeypatch.setattr(R, "GROUPED", str(grouped))
+    monkeypatch.setattr(R.time, "sleep", lambda s: None)
+    monkeypatch.setattr(R, "_get", lambda url, timeout=180, binary=False: fetch(int(url.rsplit("CIK", 1)[1][:10])))
+    monkeypatch.setattr(R, "_thirteen_f_blocker", lambda: None)
+    monkeypatch.setattr(R, "_waiting_writer_lock", lambda *a, **k: contextlib.nullcontext())
+    monkeypatch.setattr(R, "_retry_path", lambda: str(tmp_path / "retry.json"))
+    monkeypatch.setattr(R, "_dropped_path", lambda: str(tmp_path / "dropped.jsonl"))
+    monkeypatch.setattr(blob, "refuse_unless_live_checkout", lambda *a, **k: None)
+    monkeypatch.setattr(blob, "SelfhostBlob", lambda *a, **k: object())
+
+    class FakeCat:
+        def execute(self, *a):
+            return types.SimpleNamespace(fetchone=lambda: None)
+
+        def close(self):
+            pass
+    monkeypatch.setattr(cp, "connect", lambda *a, **k: FakeCat())
+    stamped = {}
+
+    class FakeStore:
+        def upsert_source(self, sid, **kw):
+            stamped.update(kw)
+
+        def close(self):
+            pass
+    monkeypatch.setattr(state, "StateStore", FakeStore)
+    a = argparse.Namespace(d1=False, audit=False, respan=None, apply=True, force=False)
+    rc = R._refresh_local(a, list(range(1000, 1400)), {}, advance=True,
+                          stamp_at=dt.datetime(2026, 10, 3, 6, 0, tzinfo=dt.timezone.utc))
+    return rc, stamped
+
+
+def _http(code):
+    def raise_it(cik):
+        raise urllib.error.HTTPError("u", code, "x", None, None)
+    return raise_it
+
+
+def test_a_day_of_404s_for_everyone_with_a_broken_canary_is_partial_and_keeps_the_mark(monkeypatch, tmp_path):
+    rc, stamped = _writer(monkeypatch, tmp_path, _http(404))         # the canary answers 404 too
+    assert rc != 0 and stamped["status"] == "partial" and "last_success_utc" not in stamped
+    assert not (tmp_path / "retry.json").exists(), "no mark move, so the list is not touched"
+
+
+def test_a_day_of_404s_with_a_working_canary_is_ok_and_moves_the_mark(monkeypatch, tmp_path):
+    def fetch(cik):
+        if cik == R.CANARY_CIK:
+            return json.dumps({"facts": {}})
+        raise urllib.error.HTTPError("u", 404, "x", None, None)
+    rc, stamped = _writer(monkeypatch, tmp_path, fetch)
+    assert rc == 0 and stamped["status"] == "ok" and stamped["last_success_utc"] == "2026-10-03T06:00:00+00:00"
+    assert len(json.loads((tmp_path / "retry.json").read_text(encoding="utf-8"))["ciks"]) == 400
+
+
+def test_a_day_of_503s_is_partial(monkeypatch, tmp_path):
+    rc, stamped = _writer(monkeypatch, tmp_path, _http(503))
+    assert rc != 0 and stamped["status"] == "partial" and "last_success_utc" not in stamped
+
+
+def test_carry_retry_counts_across_runs_and_appends_every_drop(monkeypatch, tmp_path):
+    monkeypatch.setattr(R, "_retry_path", lambda: str(tmp_path / "retry.json"))
+    monkeypatch.setattr(R, "_dropped_path", lambda: str(tmp_path / "dropped.jsonl"))
+    R.carry_retry([7], [8], {7: "HTTPError503", 8: "HTTPError404"}, "2026-10-03T06:00:00+00:00")
+    R.carry_retry([7], [8], {7: "HTTPError503", 8: "HTTPError404"}, "2026-10-04T06:00:00+00:00")
+    assert R._load_retry() == {7: 2, 8: 2}, "the second run counts on the first run's file"
+    for day in range(5, 5 + R.RETRY_MAX_RUNS - 1):
+        R.carry_retry([7], [], {7: "HTTPError503"}, f"2026-10-{day:02d}T06:00:00+00:00")
+    assert R._load_retry() == {}, "7 dropped after the cap; 8 answered, so it is not carried"
+    rows = [json.loads(ln) for ln in (tmp_path / "dropped.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [(r["cik"], r["last_error"]) for r in rows] == [(7, "HTTPError503")]
