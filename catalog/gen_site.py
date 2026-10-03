@@ -3535,11 +3535,11 @@ def render_stats():
     # INSTITUTIONS are NOT taken from that response: the worker's own copy of the
     # institution cleaning drifted from hf's (2026-10-02). The list is rendered by
     # the family block (_institutions_block) straight from the family feed.
-    # DATA volume comes from /v1/stats; DOWNLOADS are this library's own
-    # (econ_download_log). Every number is fetched live — nothing hardcoded.
+    # DATA volume comes from /v1/stats. Download counts and volumes are not published
+    # (owner's decision, 2026-10-03); the top-sources list is ranked names only.
     body = """
 <style>
-.statgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin:1.4rem 0 .5rem}
+.statgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin:1.4rem 0 .5rem}
 .bigstat{background:var(--g50);border:1px solid var(--g200);border-radius:12px;padding:1.3rem .7rem;text-align:center}
 .bnum{font-family:var(--mono);font-size:1.85rem;font-weight:700;color:var(--navy);line-height:1.1}
 .blabel{font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:var(--g500);margin-top:.45rem}
@@ -3633,7 +3633,7 @@ async function load(){
       document.getElementById('dl-chart').innerHTML='<ol style="margin:0;padding-left:1.4rem">'+d.top_sources.slice(0,3).map(function(t){
         return '<li style="padding:.25rem 0">'+t.name+'</li>';
       }).join('')+'</ol>';
-    } else { document.getElementById('dl-chart').innerHTML='<p style="color:var(--g500)">No downloads yet.</p>'; }
+    } else { document.getElementById('dl-chart').innerHTML='<p style="color:var(--g500)">Not available right now.</p>'; }
   }}catch(e){}
 }
 load();

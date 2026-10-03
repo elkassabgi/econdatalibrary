@@ -249,7 +249,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="wrap">
 
 <style>
-.statgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin:1.4rem 0 .5rem}
+.statgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin:1.4rem 0 .5rem}
 .bigstat{background:var(--g50);border:1px solid var(--g200);border-radius:12px;padding:1.3rem .7rem;text-align:center}
 .bnum{font-family:var(--mono);font-size:1.85rem;font-weight:700;color:var(--navy);line-height:1.1}
 .blabel{font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:var(--g500);margin-top:.45rem}
@@ -420,7 +420,7 @@ async function load(){
       document.getElementById('dl-chart').innerHTML='<ol style="margin:0;padding-left:1.4rem">'+d.top_sources.slice(0,3).map(function(t){
         return '<li style="padding:.25rem 0">'+t.name+'</li>';
       }).join('')+'</ol>';
-    } else { document.getElementById('dl-chart').innerHTML='<p style="color:var(--g500)">No downloads yet.</p>'; }
+    } else { document.getElementById('dl-chart').innerHTML='<p style="color:var(--g500)">Not available right now.</p>'; }
   }}catch(e){}
 }
 load();

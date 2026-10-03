@@ -135,8 +135,8 @@ async function route(request: Request, env: Env, ctx: ExecutionContext, local: b
 
       // Family usage stats for the stats page. USER figures come from the SHARED
       // identity DB (env.USERS) with hf's exact aggregation, so users/map/
-      // institutions are identical across libraries; DOWNLOAD figures are this
-      // library's own (econ_download_log). Read-only, no auth, no PII.
+      // institutions are identical across libraries; no download counts are
+      // published, only ranked source names. Read-only, no auth, no PII.
       if (path === "/v1/public-stats") return await handlePublicStats(env);
 
       // Headline stats. individual_series/observations are MEASURED on the full

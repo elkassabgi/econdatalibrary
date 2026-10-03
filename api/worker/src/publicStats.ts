@@ -9,10 +9,9 @@
 // country list are identical across libraries by construction — one login,
 // one user base.
 //
-// The DOWNLOAD figures are this library's OWN: counted from econ_download_log
-// (a separate table in the shared DB, so hf's download counters are never
-// inflated by econ traffic and vice-versa). No bytes column exists there, so
-// only counts are reported.
+// No download count or volume is published (owner's decision, 2026-10-03). This
+// library's own econ_download_log is read only to RANK the top sources, and the
+// response carries their names, not their counts.
 //
 // Read-only. No auth. Aggregated only — no PII leaves this endpoint. CORS "*".
 // ---------------------------------------------------------------------------
