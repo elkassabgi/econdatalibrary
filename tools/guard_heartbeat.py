@@ -335,6 +335,54 @@ def _lane_problem(beat, now) -> "str | None":
     return None
 
 
+SEC_EDGAR_STATUS_LOCAL = os.path.join(ROOT, "logs", "sec_edgar_local.last.json")
+SEC_EDGAR_OK_MAX_H = 26.0          # one day plus the 2 h retry spacing: a day whose run never succeeded is late
+SEC_EDGAR_RUN_MAX_H = 4.0          # CI's runs take 1-3 min; a run "started" 4 h ago with no end was killed or hung
+
+
+def _sec_edgar_beat():
+    """tools/selfhost/run_sec_edgar_local.ps1's status file on THIS machine: {started, ended, rc, pid,
+    last_ok_started}. None when it does not exist; an unreadable file is reported as such, never as absent."""
+    try:
+        with open(SEC_EDGAR_STATUS_LOCAL, encoding="utf-8") as fh:
+            rec = json.load(fh)
+    except FileNotFoundError:
+        return None
+    except Exception as e:                                   # noqa: BLE001
+        return {"unreadable": f"{type(e).__name__}: {e}"[:200]}
+    return rec if isinstance(rec, dict) else {"unreadable": f"not a JSON object: {type(rec).__name__}"}
+
+
+def _sec_edgar_problem(rec, now) -> "str | None":
+    """Why the self-hosted daily refresh of sec_edgar is NOT healthy, or None. Before T0 it is CI's job
+    (sec-edgar-daily) and the local run does nothing, so there is nothing to judge here. After T0 this is its only
+    reader (review AR-210: a status file nothing reads is not monitoring)."""
+    from core import cutover                                 # noqa: PLC0415
+    if not cutover.is_cut_over():
+        return None
+    if rec is None:
+        return ("no status file - tools/selfhost/run_sec_edgar_local.ps1 has never run on the workstation (is it in "
+                "the guard loop? the first run after T0 is manual, with --days)")
+    if "unreadable" in rec:
+        return f"its status file is unreadable ({rec['unreadable']})"
+
+    def _t(v):
+        try:
+            d = dt.datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+            return d if d.tzinfo else d.replace(tzinfo=dt.timezone.utc)
+        except Exception:                                    # noqa: BLE001
+            return None
+    started, ok = _t(rec.get("started")), _t(rec.get("last_ok_started"))
+    if rec.get("ended") is None and started and (now - started).total_seconds() > SEC_EDGAR_RUN_MAX_H * 3600:
+        return (f"the run started {rec.get('started')} never ended (killed or hung; pid {rec.get('pid')}) - if that "
+                f"pid is gone, logs/sec_edgar_local.lock is stale and the next due tick takes it over")
+    if rec.get("ended") is not None and rec.get("rc") != 0:
+        return f"the last run (started {rec.get('started')}) exited {rec.get('rc')} - read logs/sec_edgar_local_*.log"
+    if ok is None or (now - ok).total_seconds() > SEC_EDGAR_OK_MAX_H * 3600:
+        return f"no successful daily run in {SEC_EDGAR_OK_MAX_H:.0f} h (last ok start: {rec.get('last_ok_started')})"
+    return None
+
+
 def publish() -> int:
     # `jobs_alive` keeps its meaning - the tracked ingesters PRESENT - so every existing reader
     # is unchanged. What was missing is why `3/3` could be published while istat_sliced was
@@ -354,6 +402,10 @@ def publish() -> int:
         "emptiness": _emptiness_verdict(),
         "statcan_lane": _lane_beat(),
     }
+    sec = _sec_edgar_beat()
+    body["sec_edgar_local"] = sec
+    # judged here as well as in check(): the public route carries only this verdict, never the record
+    body["sec_edgar_local_problem"] = _sec_edgar_problem(sec, dt.datetime.now(dt.timezone.utc))
     data = json.dumps(body, indent=2).encode("utf-8")
     from core import cutover                                 # noqa: PLC0415
     if cutover.is_cut_over():
@@ -433,10 +485,23 @@ def check(max_age_min: float, local: bool = False) -> int:
         print("  NOTE: this beat predates the statcan lane (no `statcan_lane` field) - the "
               "workstation's checkout of tools/guard_heartbeat.py is older than the lane, so the "
               "lane is UNMONITORED from CI until it is updated.")
+    sec_bad = (_sec_edgar_problem(body["sec_edgar_local"], dt.datetime.now(dt.timezone.utc))
+               if "sec_edgar_local" in body else None)
+    if "sec_edgar_local" not in body:
+        print("  NOTE: this beat predates the sec_edgar local run (no `sec_edgar_local` field) - the "
+              "workstation's checkout of tools/guard_heartbeat.py is older, so that run is UNMONITORED until it is "
+              "updated.")
+    if sec_bad:
+        # printed now, failed below: the lane's verdict is still read and printed (two faults, two lines)
+        print(f"SEC_EDGAR LOCAL RUN: {sec_bad}")
+        print("  After T0 sec_edgar is refreshed ONLY by tools/selfhost/run_sec_edgar_local.ps1 (the guard loop); "
+              "every day it misses widens the next scan window, up to the 120-day refusal.")
     if lane_bad:
         print(f"STATCAN LANE: {lane_bad}")
         print("  statcan is refreshed and served ONLY by jobs/statcan_lane.py (a guard job); nothing "
               "else in CI judges a run_location=local source.")
+        return 1
+    if sec_bad:
         return 1
 
     print(f"guard heartbeat OK: {age:.1f} min old ({beat.isoformat()}) — {where}"
@@ -480,7 +545,7 @@ def check(max_age_min: float, local: bool = False) -> int:
     return 0
 
 
-def check_url(url: str, max_age_min: float) -> int:
+def check_url(url: str, max_age_min: float, require_sec_edgar: bool = False) -> int:
     """The OFF-MACHINE check after T0: read the beat through the public /v1/guard-heartbeat route (the edge,
     then the workstation's origin), which serves only its timestamp and counts. Every failure to get a fresh
     beat is a failure - a workstation that is down answers "unavailable", and that is exactly the outage this
@@ -511,6 +576,18 @@ def check_url(url: str, max_age_min: float) -> int:
         print(f"CRAWL EMPTINESS DEFECT: {body['fetch_without_write']} unit(s) are fetching and writing nothing "
               f"(the names are on the workstation: python tools/guard_heartbeat.py --check --local)")
         return 1
+    if body.get("sec_edgar_local_ok") is False:
+        print("SEC_EDGAR LOCAL RUN NOT HEALTHY: the self-hosted daily refresh of sec_edgar failed, is late or was "
+              "killed (the reason is on the workstation: python tools/guard_heartbeat.py --check --local)")
+        return 1
+    if "sec_edgar_local_ok" not in body or body.get("sec_edgar_local_ok") is None:
+        if require_sec_edgar:
+            # t0_ready's gate: after T0 this route is the sec_edgar run's only off-machine reader (AR-210 round 2)
+            print("SEC_EDGAR LOCAL RUN UNREPORTED: the route or the workstation's publisher is older than the "
+                  "sec_edgar local run - deploy the worker route and pull the live checkout before T0")
+            return 1
+        print("  NOTE: the route or the workstation's publisher is older than the sec_edgar local run - that run is "
+              "UNMONITORED from here until both are updated.")
     print(f"guard heartbeat OK: {age:.1f} min old ({beat.isoformat()}) - {jobs}")
     return 0
 

@@ -33,7 +33,7 @@ test("the beat is served as a timestamp and counts only", async () => {
   assert.equal(r.headers.get("cache-control"), "no-store");
   const body = await r.json() as Record<string, unknown>;
   assert.deepEqual(body, { utc: BEAT.utc, table_ok: true, jobs_alive: 2, jobs_tracked: 3,
-                           emptiness_ran: true, fetch_without_write: 0 });
+                           emptiness_ran: true, fetch_without_write: 0, sec_edgar_local_ok: null });
   const text = JSON.stringify(body);
   for (const secret of ["WORKSTATION-NAME", "ingest_a", "ingest_c", "some_source"]) {
     assert.equal(text.includes(secret), false, secret);
@@ -44,7 +44,18 @@ test("every field is the beat's own, not a constant (R1226: fixed true/0 mutants
   const r = await handleGuardHeartbeat(envWith({ ...BEAT, table_ok: false,
     emptiness: { ran: false, fetch_without_write: 3 } }));
   assert.deepEqual(await r.json(), { utc: BEAT.utc, table_ok: false, jobs_alive: 2, jobs_tracked: 3,
-                                     emptiness_ran: false, fetch_without_write: 3 });
+                                     emptiness_ran: false, fetch_without_write: 3, sec_edgar_local_ok: null });
+});
+
+test("the sec_edgar local run crosses as a verdict only: ok, not ok, or an older publisher", async () => {
+  const problem = "the last run (started 2026-10-04T08:00:00Z) exited 1 - read logs/sec_edgar_local_x.log";
+  const bad = await (await handleGuardHeartbeat(envWith({ ...BEAT, sec_edgar_local: { pid: 4242 },
+    sec_edgar_local_problem: problem }))).json() as Record<string, unknown>;
+  assert.equal(bad.sec_edgar_local_ok, false);
+  assert.equal(JSON.stringify(bad).includes("sec_edgar_local_x"), false, "the problem text stays on the machine");
+  assert.equal(JSON.stringify(bad).includes("4242"), false, "and so does the record");
+  const good = await (await handleGuardHeartbeat(envWith({ ...BEAT, sec_edgar_local_problem: null }))).json() as Record<string, unknown>;
+  assert.equal(good.sec_edgar_local_ok, true);
 });
 
 test("the router sends /v1/guard-heartbeat to this handler (R1226: deleting the line passed)", () => {
