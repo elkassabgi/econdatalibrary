@@ -37,6 +37,8 @@ Each check is mechanical and names what fails:
                     True: until its self-hosted backend and writer lock exist it refuses after T0, and statcan
                     would have no update path at all. Flipping it also requires the post-T0 readers
                     (guard_heartbeat.check_url, /v1/guard-heartbeat) to report the lane
+  sec-edgar-runner  the live guard (RELAUNCH_GUARD.ps1) starts tools/selfhost/run_sec_edgar_local.ps1 -IfDue in
+                    its code, and the runner exists: after T0 that is sec_edgar's only refresh (AR-210)
   flag              the flag does not exist yet (information: a READY with the flag present is a late check)
 Nothing here writes anything.
 """
@@ -258,7 +260,6 @@ SEC_EDGAR_OWED = (
     "the D1-to-local proof on ALL columns and its receipt, taken after sec-edgar-daily is disabled and drained "
     "(plan: THE PROOF, AND WHEN; tools/sync_source_rows_d1_to_local.py compares start/end/title only)",
     "the local value equals D1's source_data_through at the switch (one primary-key read)",
-    "the scheduled local refresh task exists (and a watermark scan window instead of a fixed --days)",
 )
 
 
@@ -425,8 +426,10 @@ def heartbeat_reader(run=subprocess.run, check=None) -> tuple[bool, str]:
                        "update the pin with it")
     if check is None:
         sys.path.insert(0, os.path.join(ROOT, "tools"))
+        import functools
         import guard_heartbeat
-        check = guard_heartbeat.check_url
+        # strict: a route that cannot report the sec_edgar local run is not a reader of it (AR-210 round 2)
+        check = functools.partial(guard_heartbeat.check_url, require_sec_edgar=True)
     return (check(url, 45.0) == 0), f"{url} checked (see the line above)"
 
 
@@ -471,6 +474,27 @@ def statcan_lane(lane_path=None, registry_sources=None) -> tuple[bool, str]:
     return True, "the statcan lane declares itself post-T0 ready"
 
 
+GUARD = os.path.join(ROOT, "RELAUNCH_GUARD.ps1")              # the LIVE guard (untracked; tools/machine holds its copy)
+
+
+def sec_edgar_runner(guard_path: str = GUARD, root: str = ROOT) -> tuple[bool, str]:
+    """After T0 sec_edgar is refreshed only by tools/selfhost/run_sec_edgar_local.ps1, started by the guard loop
+    with -IfDue (Scheduled Tasks are blocked by policy here: tools/machine/README.md). The live guard must carry
+    that call in its CODE, not in a comment, and the runner must exist (review AR-210)."""
+    problems = []
+    if not os.path.exists(os.path.join(root, "tools", "selfhost", "run_sec_edgar_local.ps1")):
+        problems.append("tools/selfhost/run_sec_edgar_local.ps1 is missing")
+    try:
+        src = open(guard_path, encoding="utf-8-sig").read()
+    except OSError as e:
+        return False, f"cannot read the live guard {guard_path} ({type(e).__name__})"
+    code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
+    if "run_sec_edgar_local.ps1" not in code or "'-IfDue'" not in code.split("run_sec_edgar_local.ps1", 1)[-1]:
+        problems.append(f"{guard_path} does not start run_sec_edgar_local.ps1 -IfDue - copy "
+                        f"tools/machine/RELAUNCH_GUARD.ps1.workstation-copy into place")
+    return not problems, "; ".join(problems) or "the guard loop starts the daily sec_edgar run"
+
+
 def flag() -> tuple[bool, str]:
     from core import cutover
     return (not cutover.is_cut_over()), ("not set yet" if not cutover.is_cut_over() else "ALREADY SET")
@@ -480,7 +504,7 @@ CHECKS = [("legacy-catalogue", legacy_catalogue), ("legacy-remote-d1", legacy_re
           ("launcher", launcher), ("preflight", preflight), ("ci-writers", ci_writers),
           ("ci-drained", ci_drained), ("thirteen-f", thirteen_f),
           ("edge-state", edge_state), ("state-db", state_db), ("d1-only-sources", d1_only_sources),
-          ("sec-edgar-local", sec_edgar_local),
+          ("sec-edgar-local", sec_edgar_local), ("sec-edgar-runner", sec_edgar_runner),
           ("heartbeat-reader", heartbeat_reader), ("served-stats", served_stats), ("statcan-lane", statcan_lane),
           ("flag", flag)]
 

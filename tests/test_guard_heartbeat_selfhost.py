@@ -129,9 +129,23 @@ def test_the_local_check_reads_the_full_beat_from_the_self_hosted_store(t0, caps
     # the statcan lane's own judgement is not this test's subject (see the test below and
     # tests/test_statcan_lane.py); a checkout where the lane never ran has no beat to judge
     monkeypatch.setattr(gh, "_lane_problem", lambda beat, now: None)
+    # nor is the sec_edgar local run's (tests/test_sec_edgar_local_task.py): this checkout never ran it
+    monkeypatch.setattr(gh, "_sec_edgar_problem", lambda rec, now: None)
     assert gh.publish() == 0
     assert gh.check(45, local=True) == 0
     assert "guard heartbeat OK" in capsys.readouterr().out
+
+
+def test_after_t0_a_failed_sec_edgar_local_run_fails_the_local_check(t0, capsys, monkeypatch):
+    """AR-210: the runner's status file had no reader. A run that exited 1 is a red check, through publish()."""
+    st = t0 / "sec_edgar_local.last.json"
+    now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    st.write_text(json.dumps({"started": now, "ended": now, "rc": 1, "pid": 1, "last_ok_started": now}))
+    monkeypatch.setattr(gh, "SEC_EDGAR_STATUS_LOCAL", str(st))
+    monkeypatch.setattr(gh, "_lane_problem", lambda beat, now: None)
+    assert gh.publish() == 0
+    assert gh.check(45, local=True) == 1
+    assert "SEC_EDGAR LOCAL RUN: the last run" in capsys.readouterr().out
 
 
 def test_after_t0_a_missing_lane_beat_fails_and_names_the_t0_decision(t0, capsys, monkeypatch):

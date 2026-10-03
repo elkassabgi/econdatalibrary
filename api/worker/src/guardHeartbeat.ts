@@ -56,5 +56,8 @@ export async function handleGuardHeartbeat(env: Env): Promise<Response> {
     jobs_tracked: tracked,
     emptiness_ran: emp.ran === true,
     fetch_without_write: typeof emp.fetch_without_write === "number" ? emp.fetch_without_write : null,
+    // the verdict only, never the record: true = the self-hosted sec_edgar daily run is healthy (or it is
+    // before T0), false = it is not, null = the publisher is older than that run (tools/guard_heartbeat.py)
+    sec_edgar_local_ok: "sec_edgar_local_problem" in beat ? beat.sec_edgar_local_problem === null : null,
   }, 200, noStore);
 }
