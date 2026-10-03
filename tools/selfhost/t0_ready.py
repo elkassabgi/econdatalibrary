@@ -426,8 +426,10 @@ def heartbeat_reader(run=subprocess.run, check=None) -> tuple[bool, str]:
                        "update the pin with it")
     if check is None:
         sys.path.insert(0, os.path.join(ROOT, "tools"))
+        import functools
         import guard_heartbeat
-        check = guard_heartbeat.check_url
+        # strict: a route that cannot report the sec_edgar local run is not a reader of it (AR-210 round 2)
+        check = functools.partial(guard_heartbeat.check_url, require_sec_edgar=True)
     return (check(url, 45.0) == 0), f"{url} checked (see the line above)"
 
 

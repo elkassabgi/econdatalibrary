@@ -104,8 +104,10 @@ def test_a_repair_or_test_flag_is_refused_before_and_after_t0(monkeypatch, capsy
 PS = shutil.which("powershell.exe")
 needs_ps = pytest.mark.skipif(PS is None, reason="Windows PowerShell runs the runner on the workstation only")
 FAKE = '''import json, os, sys
-open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "calls.jsonl"), "a").write(
-    json.dumps(sys.argv[1:]) + "\\n")
+root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+open(os.path.join(root, "calls.jsonl"), "a").write(json.dumps(sys.argv[1:]) + "\\n")
+st = os.path.join(root, "logs", "sec_edgar_local.last.json")
+open(os.path.join(root, "during.jsonl"), "a").write((open(st).read().strip() if os.path.exists(st) else "null") + "\\n")
 print("fake refresher", sys.argv[1:]); print("to stderr: \\u00c1", file=sys.stderr)
 sys.exit(int(os.environ.get("FAKE_RC", "0")))
 '''
@@ -155,6 +157,9 @@ def test_a_due_run_calls_the_daily_run_once_and_records_it(box):
                   "pid": st["pid"], "last_ok_started": "2026-10-05T09:00:00Z"}
     logs = sorted((box / "logs").glob("sec_edgar_local_*.log"))
     assert len(logs) == 1 and "fake refresher" in logs[0].read_text(encoding="utf-8")
+    during = json.loads((box / "during.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert (during["started"], during["ended"], during["rc"]) == ("2026-10-05T09:00:00Z", None, None), \
+        "while the run goes the status says started and not ended, so a killed run is visible"
     assert "\u00c1" in logs[0].read_text(encoding="utf-8"), "stderr is kept, as UTF-8"
     assert not list((box / "logs").glob("*.stderr")) and not (box / "logs" / "sec_edgar_local.lock").exists()
     assert _runner(box, "2026-10-05T15:00:00Z")[:2] == (0, 1), "not due again the same UTC day"
@@ -177,13 +182,32 @@ def test_a_failed_run_returns_its_code_keeps_the_last_ok_and_retries_after_2h(bo
 
 
 @needs_ps
-def test_a_lock_held_by_a_live_process_stops_a_second_run(box):
+def test_a_lock_held_by_a_live_run_stops_a_second_run_and_a_reused_pid_does_not(box):
     (box / "logs").mkdir()
-    (box / "logs" / "sec_edgar_local.lock").write_text(str(os.getpid()), encoding="ascii")
-    assert _runner(box, "2026-10-05T09:00:00Z")[:2] == (0, 0)
-    assert _runner(box, "2026-10-05T09:00:00Z", if_due=False)[:2] == (3, 0), "a manual run is refused loudly"
-    (box / "logs" / "sec_edgar_local.lock").write_text("999999", encoding="ascii")          # a dead pid: stale
-    assert _runner(box, "2026-10-05T09:00:00Z")[:2] == (0, 1)
+    lock = box / "logs" / "sec_edgar_local.lock"
+    holder = subprocess.Popen([PS, "-NoProfile", "-Command",
+                               "$p = Get-Process -Id $PID; [Console]::Out.WriteLine(('{0},{1}' -f $PID, "
+                               "$p.StartTime.ToUniversalTime().Ticks)); [Console]::Out.Flush(); Start-Sleep 120"],
+                              stdout=subprocess.PIPE, text=True)
+    try:
+        lock.write_text(holder.stdout.readline().strip(), encoding="ascii")
+        assert _runner(box, "2026-10-05T09:00:00Z")[:2] == (0, 0)
+        assert _runner(box, "2026-10-05T09:00:00Z", if_due=False)[:2] == (3, 0), "a manual run is refused loudly"
+        pid, ticks = lock.read_text(encoding="ascii").split(",")
+        lock.write_text(f"{pid},{int(ticks) + 1}", encoding="ascii")                 # same pid, other start time
+        assert _runner(box, "2026-10-05T09:00:00Z")[:2] == (0, 1), "a reused pid is a stale lock (AR-210 round 2)"
+    finally:
+        holder.kill()
+    lock.write_text(f"{os.getpid()},1", encoding="ascii")                            # live, but not a run of ours
+    assert _runner(box, "2026-10-06T09:00:00Z")[:2] == (0, 2)
+    lock.write_text("999999", encoding="ascii")                                       # a dead pid, old form
+    assert _runner(box, "2026-10-07T09:00:00Z")[:2] == (0, 3)
+
+
+@needs_ps
+def test_a_manual_run_before_t0_is_refused_and_records_nothing(box):
+    rc, n, st = _runner(box, "2026-10-05T09:00:00Z", flag=False, if_due=False)
+    assert (rc, n, st) == (4, 0, None), "an ok record before T0 would skip the first real day (AR-210 round 2)"
 
 
 @needs_ps
@@ -255,6 +279,14 @@ def test_after_t0_the_heartbeat_names_what_is_wrong(monkeypatch, rec, bad):
     assert (got is None) if bad is None else (got is not None and bad in got), got
 
 
+def test_a_status_file_that_is_not_an_object_is_unreadable(monkeypatch, tmp_path):
+    st = tmp_path / "s.json"
+    st.write_text("[1, 2]", encoding="ascii")
+    monkeypatch.setattr(GH, "SEC_EDGAR_STATUS_LOCAL", str(st))
+    monkeypatch.setattr(cutover, "is_cut_over", lambda: True)
+    assert "unreadable" in GH._sec_edgar_problem(GH._sec_edgar_beat(), NOW)
+
+
 def test_before_t0_the_heartbeat_judges_nothing(monkeypatch):
     monkeypatch.setattr(cutover, "is_cut_over", lambda: False)
     assert GH._sec_edgar_problem(None, NOW) is None
@@ -290,3 +322,12 @@ def test_the_off_machine_check_fails_on_a_false_verdict(monkeypatch, capsys):
     assert "SEC_EDGAR LOCAL RUN NOT HEALTHY" in capsys.readouterr().out
     answer({"utc": fresh, "table_ok": True, "jobs_alive": 1, "jobs_tracked": 1, "sec_edgar_local_ok": True})
     assert GH.check_url("https://e.example/v1/guard-heartbeat", 45) == 0
+    for old in ({"sec_edgar_local_ok": None}, {}):                     # an older route or publisher
+        answer({"utc": fresh, "table_ok": True, "jobs_alive": 1, "jobs_tracked": 1, **old})
+        assert GH.check_url("https://e.example/v1/guard-heartbeat", 45) == 0, "selfhost-watch: a note"
+        assert GH.check_url("https://e.example/v1/guard-heartbeat", 45, require_sec_edgar=True) == 1, "t0_ready: red"
+
+
+def test_t0_ready_reads_the_route_strictly():
+    src = open(os.path.join(ROOT, "tools", "selfhost", "t0_ready.py"), encoding="utf-8").read()
+    assert "check = functools.partial(guard_heartbeat.check_url, require_sec_edgar=True)" in src

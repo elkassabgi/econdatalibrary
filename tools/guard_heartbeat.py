@@ -345,11 +345,12 @@ def _sec_edgar_beat():
     last_ok_started}. None when it does not exist; an unreadable file is reported as such, never as absent."""
     try:
         with open(SEC_EDGAR_STATUS_LOCAL, encoding="utf-8") as fh:
-            return json.load(fh)
+            rec = json.load(fh)
     except FileNotFoundError:
         return None
     except Exception as e:                                   # noqa: BLE001
         return {"unreadable": f"{type(e).__name__}: {e}"[:200]}
+    return rec if isinstance(rec, dict) else {"unreadable": f"not a JSON object: {type(rec).__name__}"}
 
 
 def _sec_edgar_problem(rec, now) -> "str | None":
@@ -373,7 +374,8 @@ def _sec_edgar_problem(rec, now) -> "str | None":
             return None
     started, ok = _t(rec.get("started")), _t(rec.get("last_ok_started"))
     if rec.get("ended") is None and started and (now - started).total_seconds() > SEC_EDGAR_RUN_MAX_H * 3600:
-        return f"the run started {rec.get('started')} never ended (killed or hung; pid {rec.get('pid')})"
+        return (f"the run started {rec.get('started')} never ended (killed or hung; pid {rec.get('pid')}) - if that "
+                f"pid is gone, logs/sec_edgar_local.lock is stale and the next due tick takes it over")
     if rec.get("ended") is not None and rec.get("rc") != 0:
         return f"the last run (started {rec.get('started')}) exited {rec.get('rc')} - read logs/sec_edgar_local_*.log"
     if ok is None or (now - ok).total_seconds() > SEC_EDGAR_OK_MAX_H * 3600:
@@ -543,7 +545,7 @@ def check(max_age_min: float, local: bool = False) -> int:
     return 0
 
 
-def check_url(url: str, max_age_min: float) -> int:
+def check_url(url: str, max_age_min: float, require_sec_edgar: bool = False) -> int:
     """The OFF-MACHINE check after T0: read the beat through the public /v1/guard-heartbeat route (the edge,
     then the workstation's origin), which serves only its timestamp and counts. Every failure to get a fresh
     beat is a failure - a workstation that is down answers "unavailable", and that is exactly the outage this
@@ -579,6 +581,11 @@ def check_url(url: str, max_age_min: float) -> int:
               "killed (the reason is on the workstation: python tools/guard_heartbeat.py --check --local)")
         return 1
     if "sec_edgar_local_ok" not in body or body.get("sec_edgar_local_ok") is None:
+        if require_sec_edgar:
+            # t0_ready's gate: after T0 this route is the sec_edgar run's only off-machine reader (AR-210 round 2)
+            print("SEC_EDGAR LOCAL RUN UNREPORTED: the route or the workstation's publisher is older than the "
+                  "sec_edgar local run - deploy the worker route and pull the live checkout before T0")
+            return 1
         print("  NOTE: the route or the workstation's publisher is older than the sec_edgar local run - that run is "
               "UNMONITORED from here until both are updated.")
     print(f"guard heartbeat OK: {age:.1f} min old ({beat.isoformat()}) - {jobs}")
