@@ -1138,10 +1138,15 @@ def carry_retry(failed_ciks, absent_ciks, why: dict, when: str) -> int:
 CANARY_CIK = 320193
 
 
+def companyfacts_url(cik: int) -> str:
+    """ONE place for the companyfacts URL: the canary and the companies must break together (AR-209 round 5)."""
+    return f"https://data.sec.gov/api/xbrl/companyfacts/CIK{int(cik):010d}.json"
+
+
 def endpoint_answers() -> tuple[bool, str]:
     """(True, "") when companyfacts answers for CANARY_CIK with JSON; else (False, the error)."""
     try:
-        json.loads(_get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{CANARY_CIK:010d}.json", timeout=180))
+        json.loads(_get(companyfacts_url(CANARY_CIK), timeout=180))
         return True, ""
     except Exception as e:                                    # noqa: BLE001
         return False, f"{type(e).__name__}{getattr(e, 'code', '')}"
@@ -1285,7 +1290,7 @@ def main():
     changed, errors = [], []
     for i, cik in enumerate(todo, 1):
         time.sleep(SEC_MIN_INTERVAL)
-        url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
+        url = companyfacts_url(cik)
         try:
             data = json.loads(_get(url, timeout=180))
         except Exception as e:                                # noqa: BLE001
@@ -1489,7 +1494,7 @@ def _refresh_local(a, todo, t2c, advance: bool = False, stamp_at=None) -> int:
     try:
         for i, cik in enumerate(todo, 1):
             time.sleep(SEC_MIN_INTERVAL)
-            url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
+            url = companyfacts_url(cik)
             try:
                 data = json.loads(_get(url, timeout=180))
             except Exception as e:                                   # noqa: BLE001
@@ -1570,11 +1575,12 @@ def _refresh_local(a, todo, t2c, advance: bool = False, stamp_at=None) -> int:
         all_empty = answered > 10 and empty == answered
         if all_empty:
             print(f"STRUCTURAL: all {empty:,} answers parsed to no facts - the companyfacts shape changed?", flush=True)
-        # Many 404s, or no company answered with facts: is it the companies, or is companyfacts broken (moved, a URL
-        # form change, a CDN fault)? Without this a day of 404s for everyone was stamped ok and moved the mark
-        # (AR-209 round 4). One fetch of a filer it has always answered for tells the two apart.
+        # Any 404: is it the companies, or is companyfacts broken (moved, a URL form change, a CDN fault)? Without
+        # this a day of 404s for everyone was stamped ok and moved the mark (AR-209 round 4). One fetch of a filer it
+        # has always answered for tells the two apart; on every day with a 404, so no threshold can miss a break
+        # that leaves a few cached answers (AR-209 round 5).
         endpoint_broken = False
-        if absent_ciks and (answered - empty <= 0 or len(absent_ciks) * 2 > len(todo)):
+        if absent_ciks:
             time.sleep(SEC_MIN_INTERVAL)
             up, err = endpoint_answers()
             if not up:

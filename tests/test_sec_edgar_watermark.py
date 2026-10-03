@@ -393,9 +393,20 @@ def _writer(monkeypatch, tmp_path, fetch):
     monkeypatch.setattr(blob, "refuse_unless_live_checkout", lambda *a, **k: None)
     monkeypatch.setattr(blob, "SelfhostBlob", lambda *a, **k: object())
 
+    # An answer whose "facts" is non-empty parses to one fact that the store already holds, with the catalogue span
+    # already right: the writer's SKIP path (answered with facts, nothing to write).
+    lo, hi = dt.date(2020, 1, 1), dt.date(2020, 12, 31)
+    one = (["m"], [hi], [1.0], [hi])
+    real_parse = R.parse_companyfacts
+    monkeypatch.setattr(R, "parse_companyfacts", lambda data: one if data.get("facts") == {"held": 1} else real_parse(data))
+    monkeypatch.setattr(R, "_file_digest", lambda path: "d")
+    monkeypatch.setattr(R, "prior_facts", lambda client, path: {"metric": ["m"]})
+    monkeypatch.setattr(R, "merge_facts", lambda prior, new: one)
+    monkeypatch.setattr(R, "coverage_span", lambda odate, vint: (lo, hi))
+
     class FakeCat:
         def execute(self, *a):
-            return types.SimpleNamespace(fetchone=lambda: None)
+            return types.SimpleNamespace(fetchone=lambda: (str(lo), str(hi)))
 
         def close(self):
             pass
@@ -436,6 +447,58 @@ def test_a_day_of_404s_with_a_working_canary_is_ok_and_moves_the_mark(monkeypatc
     assert rc == 0 and stamped["status"] == "ok" and stamped["last_success_utc"] == "2026-10-03T06:00:00+00:00"
     assert len(json.loads((tmp_path / "retry.json").read_text(encoding="utf-8"))["ciks"]) == 400
 
+
+def test_a_break_that_leaves_one_cached_answer_is_still_caught(monkeypatch, tmp_path):
+    """AR-209 round 5: 399 companies 404 and one still answers (a CDN cache); the canary decides, not a share."""
+    def fetch(cik):
+        if cik == 1000:
+            return json.dumps({"facts": {}})
+        raise urllib.error.HTTPError("u", 404, "x", None, None)       # the canary 404s too
+    rc, stamped = _writer(monkeypatch, tmp_path, fetch)
+    assert rc != 0 and stamped["status"] == "partial" and "last_success_utc" not in stamped
+
+
+def test_a_single_404_with_a_broken_canary_is_partial(monkeypatch, tmp_path):
+    """One 404 among 399 companies that answered with facts: no share or no-facts threshold fires, so only a
+    canary fetched on every 404 day sees that companyfacts is broken (AR-209 round 5, C1)."""
+    def fetch(cik):
+        if cik == 1000 or cik == R.CANARY_CIK:
+            raise urllib.error.HTTPError("u", 404, "x", None, None)
+        return json.dumps({"facts": {"held": 1}})
+    rc, stamped = _writer(monkeypatch, tmp_path, fetch)
+    assert rc != 0 and stamped["status"] == "partial" and "last_success_utc" not in stamped
+
+
+def test_a_single_404_with_a_working_canary_is_ok(monkeypatch, tmp_path):
+    """The control: the same day with the canary answering is ok, so the test above fails for the canary alone."""
+    def fetch(cik):
+        if cik == 1000:
+            raise urllib.error.HTTPError("u", 404, "x", None, None)
+        return json.dumps({"facts": {"held": 1}})
+    rc, stamped = _writer(monkeypatch, tmp_path, fetch)
+    assert rc == 0 and stamped["status"] == "ok" and stamped["last_success_utc"] == "2026-10-03T06:00:00+00:00"
+    assert json.loads((tmp_path / "retry.json").read_text(encoding="utf-8"))["ciks"] == {"1000": 1}
+
+
+def test_the_writer_records_each_error_for_the_dropped_file(monkeypatch, tmp_path):
+    (tmp_path / "retry.json").write_text(json.dumps({"ciks": {str(c): R.RETRY_MAX_RUNS for c in range(1000, 1400)}}),
+                                         encoding="utf-8")
+
+    def fetch(cik):
+        if cik == R.CANARY_CIK:
+            return json.dumps({"facts": {}})
+        raise urllib.error.HTTPError("u", 404, "x", None, None)
+    rc, stamped = _writer(monkeypatch, tmp_path, fetch)
+    assert rc == 0 and stamped["status"] == "ok"
+    rows = [json.loads(ln) for ln in (tmp_path / "dropped.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 400 and {r["last_error"] for r in rows} == {"HTTPError404"}
+    assert json.loads((tmp_path / "retry.json").read_text(encoding="utf-8"))["ciks"] == {}
+
+
+def test_one_place_builds_the_companyfacts_url():
+    src = open(os.path.join(ROOT, "tools", "refresh_sec_edgar.py"), encoding="utf-8").read()
+    assert src.count("api/xbrl/companyfacts/CIK") == 1
+    assert R.companyfacts_url(320193) == "https://data.sec.gov/api/xbrl/companyfacts/CIK0000320193.json"
 
 def test_a_day_of_503s_is_partial(monkeypatch, tmp_path):
     rc, stamped = _writer(monkeypatch, tmp_path, _http(503))
