@@ -219,10 +219,12 @@ def _d1_only_state(primary: str, gated: set[str]) -> str:
         got = rows.get(sid)
         if got is None:
             raise RuntimeError(f"primary: no source_state row for {sid} - /v1/sources would serve its status and "
-                               f"last_updated as null; run its local refresher once (--apply, exit 0) first")
+                               f"last_updated as null; run its local daily refresh once first (--apply, no --ciks "
+                               f"or --limit, a --days wide enough to reach the last CI scan; exit 0)")
         if got[0] != strategy or not got[1]:
             raise RuntimeError(f"primary: source_state('{sid}') is {got} - expected strategy {strategy!r} with a "
-                               f"last_success_utc (the local refresher's own row, written by a whole day)")
+                               f"last_success_utc (the local daily refresh's own row, written by a whole day "
+                               f"that may move the mark: no --ciks or --limit)")
     return "checked"
 
 

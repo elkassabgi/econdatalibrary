@@ -168,10 +168,13 @@ def test_the_writer_stamps_the_mark_when_allowed_and_saves_the_failed_companies_
     assert rule in src
     assert "not failed and stamp_at" not in src, "the freezing no-failure rule is back"
     body = src.split(rule, 1)[1]
-    assert body.index("_save_retry(failed_ciks)") < body.index('st.upsert_source("sec_edgar"'), "save the list first"
+    assert body.index("_save_retry(keep)") < body.index('st.upsert_source("sec_edgar"'), "save the list first"
     assert '**({"last_success_utc": mark} if mark else {})' in src
     assert '**({"last_success_utc": when} if ok_day else {})' not in src, "the old every-ok-day stamp is back"
     assert src.count("failed_ciks.append(cik)") == 1
+    assert "if is_absent(e):\n                    absent_ciks.append(cik)" in src
+    assert "failed * 20 <= len(todo) - len(absent_ciks)" in src, "a 404 is neither a failure nor in the 5% base"
+    assert "answered = len(todo) - failed - len(absent_ciks)" in src
 
 
 def test_the_failed_companies_of_the_last_moved_mark_are_fetched_by_the_next_run(monkeypatch):
@@ -183,11 +186,13 @@ def test_the_failed_companies_of_the_last_moved_mark_are_fetched_by_the_next_run
 def test_the_retry_list_round_trips_and_a_broken_file_is_never_read_as_empty(monkeypatch, tmp_path):
     p = tmp_path / "sec_edgar_retry_ciks.json"
     monkeypatch.setattr(R, "_retry_path", lambda: str(p))
-    assert R._load_retry() == set(), "no file yet = nothing to retry"
-    R._save_retry([5, 3, 3])
-    assert R._load_retry() == {3, 5}
-    R._save_retry([])
-    assert R._load_retry() == set()
+    assert R._load_retry() == {}, "no file yet = nothing to retry"
+    R._save_retry({5: 2, 3: 1})
+    assert R._load_retry() == {3: 1, 5: 2}
+    R._save_retry({})
+    assert R._load_retry() == {}
+    p.write_text('{"ciks": [7, 9]}', encoding="utf-8")         # the first form of the file
+    assert R._load_retry() == {7: 0, 9: 0}
     p.write_text("{ broken", encoding="utf-8")
     with pytest.raises(ValueError):
         R._load_retry()
@@ -249,19 +254,20 @@ def _fake_sec(monkeypatch, listed_days, failing_days=(), listing_ok=True):
 
 
 def test_a_day_sec_does_not_list_is_no_index_and_a_listed_day_that_fails_is_an_error(monkeypatch):
-    sat, fri, thu = dt.date(2026, 10, 3), dt.date(2026, 10, 2), dt.date(2026, 10, 1)
-    _fake_sec(monkeypatch, listed_days={fri, thu}, failing_days={thu})
-    ciks, scanned, missing = R.filers_since(3, today=sat)
+    sat, fri, thu, wed = dt.date(2026, 10, 3), dt.date(2026, 10, 2), dt.date(2026, 10, 1), dt.date(2026, 9, 30)
+    _fake_sec(monkeypatch, listed_days={fri, thu, wed}, failing_days={wed})       # wed: older than the overlap
+    ciks, scanned, missing = R.filers_since(4, today=sat)
     assert ciks == {320193}
-    assert missing == ["2026-10-03", "2026-10-01:ERRHTTPError"]
-    assert R.may_advance(3, sat, None, False, missing) is False
+    assert missing == ["2026-10-03", "2026-09-30:ERRHTTPError"]
+    assert R.may_advance(4, sat, None, False, missing) is False
 
 
-def test_when_the_listing_cannot_be_read_every_failed_fetch_is_an_error(monkeypatch):
+def test_when_the_listing_cannot_be_read_a_failed_fetch_past_the_overlap_is_an_error(monkeypatch):
     sat, fri = dt.date(2026, 10, 3), dt.date(2026, 10, 2)
     _fake_sec(monkeypatch, listed_days={fri}, listing_ok=False)
-    _ciks, _scanned, missing = R.filers_since(2, today=sat)
-    assert missing == ["2026-10-03:ERRHTTPError"], "a weekend cannot be told from a refusal without the listing"
+    _ciks, _scanned, missing = R.filers_since(4, today=sat)
+    assert missing == ["2026-10-03:unread-in-overlap-HTTPError", "2026-10-01:unread-in-overlap-HTTPError",
+                       "2026-09-30:ERRHTTPError"], "a weekend cannot be told from a refusal without the listing"
 
 
 def test_an_old_day_after_which_no_listing_names_anything_is_an_error(monkeypatch):
@@ -291,3 +297,74 @@ def test_the_listing_is_read_once_per_quarter(monkeypatch):
     calls = _fake_sec(monkeypatch, listed_days=days)
     R.filers_since(5, today=dt.date(2026, 10, 2))                    # spans Q3 and Q4
     assert sum(1 for c in calls if c.endswith("index.json")) == 2
+
+
+# ---- the retry list: a 404 is "absent", and nothing is carried for ever (AR-209 round 3) ----------------------------
+def test_a_company_is_carried_while_it_fails_and_dropped_after_the_cap():
+    keep, drop = R.next_retry({}, failed_ciks=[1], absent_ciks=[2])
+    assert keep == {1: 1, 2: 1} and drop == []
+    keep, drop = R.next_retry({1: R.RETRY_MAX_RUNS - 1, 2: R.RETRY_MAX_RUNS, 3: 4}, failed_ciks=[1], absent_ciks=[2])
+    assert keep == {1: R.RETRY_MAX_RUNS}, "3 answered this run, so it is not carried; 2 passed the cap"
+    assert drop == [2]
+
+
+def test_only_a_404_is_absent():
+    err = lambda code: urllib.error.HTTPError("u", code, "x", None, None)            # noqa: E731
+    assert R.is_absent(err(404)) is True
+    assert not [c for c in (403, 429, 500, 503) if R.is_absent(err(c))]
+    assert R.is_absent(TimeoutError()) is False and R.is_absent(ValueError("bad json")) is False
+
+
+def test_a_company_from_the_first_file_form_starts_its_count_again():
+    keep, _drop = R.next_retry({7: 0}, failed_ciks=[7], absent_ciks=[])
+    assert keep == {7: 1}
+
+
+# ---- the overlap: a day the next window scans again does not block the mark -----------------------------------------
+def test_a_listed_day_inside_the_overlap_that_fails_does_not_block_the_mark(monkeypatch):
+    today = dt.date(2026, 10, 2)                                      # Friday
+    listed = {today - dt.timedelta(days=i) for i in range(4)}         # 09-29 .. 10-02, all weekdays
+    _fake_sec(monkeypatch, listed_days=listed, failing_days={today})
+    _ciks, _s, missing = R.filers_since(4, today=today)
+    assert missing == ["2026-10-02:unread-in-overlap-HTTPError"]
+    assert R.may_advance(4, today, None, False, missing) is True
+
+
+def test_a_listed_day_older_than_the_overlap_that_fails_blocks_the_mark(monkeypatch):
+    today = dt.date(2026, 10, 2)
+    listed = {today - dt.timedelta(days=i) for i in range(4)}
+    _fake_sec(monkeypatch, listed_days=listed, failing_days={dt.date(2026, 9, 29)})
+    _ciks, _s, missing = R.filers_since(4, today=today)
+    assert missing == ["2026-09-29:ERRHTTPError"]
+    assert R.may_advance(4, today, None, False, missing) is False
+
+
+def test_an_unread_listing_blocks_only_beyond_the_overlap(monkeypatch):
+    today = dt.date(2026, 10, 3)                                      # Saturday; the listing cannot be read
+    _fake_sec(monkeypatch, listed_days={dt.date(2026, 10, 2)}, listing_ok=False)
+    _ciks, _s, missing = R.filers_since(5, today=today)
+    assert missing == ["2026-10-03:unread-in-overlap-HTTPError", "2026-10-01:unread-in-overlap-HTTPError",
+                       "2026-09-30:ERRHTTPError", "2026-09-29:ERRHTTPError"]
+
+
+# ---- a different listing per quarter (the shared fake hid a mix-up) ------------------------------------------------
+def test_each_quarter_is_judged_by_its_own_listing_and_a_new_quarter_does_not_freeze_the_old(monkeypatch):
+    q4 = {dt.date(2027, 12, 28), dt.date(2027, 12, 29), dt.date(2027, 12, 30)}
+    q1 = {dt.date(2028, 1, 3)}
+    calls = []
+
+    def fake_get(url, timeout=180, binary=False):
+        calls.append(url)
+        if url.endswith("/index.json"):
+            days = q4 if "/2027/QTR4/" in url else q1 if "/2028/QTR1/" in url else set()
+            return json.dumps({"directory": {"item": [{"name": f"form.{d:%Y%m%d}.idx"} for d in days]}})
+        day = dt.datetime.strptime(url.rsplit("form.", 1)[1][:8], "%Y%m%d").date()
+        if day not in q4 | q1:
+            raise urllib.error.HTTPError(url, 403, "Forbidden", None, None)
+        return "header\n" + "-" * 10 + "\n" + "10-K".ljust(74) + "0000320193".ljust(20) + "x" * 10 + "\n"
+    monkeypatch.setattr(R, "_get", fake_get)
+    monkeypatch.setattr(R.time, "sleep", lambda s: None)
+    _ciks, _s, missing = R.filers_since(8, today=dt.date(2028, 1, 4))
+    assert missing == ["2028-01-04", "2028-01-02", "2028-01-01", "2027-12-31"], missing
+    assert sum(1 for c in calls if c.endswith("index.json")) == 2
+    assert not [c for c in calls if "form.20271231" in c], "an unlisted day is not fetched"

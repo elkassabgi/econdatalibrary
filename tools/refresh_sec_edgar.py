@@ -50,6 +50,7 @@ import os
 import re
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -113,7 +114,9 @@ def filers_since(days, today=None):
 
     `missing` holds a day either as "YYYY-MM-DD" (SEC lists no index for it: a weekend, a holiday, not yet posted)
     or as "YYYY-MM-DD:ERR<type>" (SEC lists it, or the listing could not be read, and the fetch failed). Only the
-    second kind is an error; a run with one may not move the scan mark (may_advance)."""
+    second kind is an error; a run with one may not move the scan mark (may_advance). A fetch that failed on a day
+    inside the overlap (the last WATERMARK_OVERLAP_DAYS days) is "YYYY-MM-DD:unread-in-overlap-<type>": the next
+    window scans that day again, so it is shown but does not block the mark."""
     # UTC, like source_state.last_success_utc and the window computed from it: the workstation's local date is a
     # day behind UTC every evening (CI runs in UTC, so nothing changes there)
     today = today or dt.datetime.now(dt.timezone.utc).date()
@@ -142,7 +145,12 @@ def filers_since(days, today=None):
         try:
             body = _get(url)
         except Exception as e:                                # noqa: BLE001
-            missing.append(f"{day:%Y-%m-%d}:ERR{type(e).__name__}")
+            if day >= today - dt.timedelta(days=WATERMARK_OVERLAP_DAYS - 1):
+                # inside the overlap the next window scans this day again, so it does not block the mark: tagged so it
+                # shows, without ":ERR" (a quarter's first days, a passing listing failure - AR-209 round 3)
+                missing.append(f"{day:%Y-%m-%d}:unread-in-overlap-{type(e).__name__}")
+            else:
+                missing.append(f"{day:%Y-%m-%d}:ERR{type(e).__name__}")
             continue
         finally:
             time.sleep(SEC_MIN_INTERVAL)
@@ -1056,25 +1064,49 @@ def _retry_path() -> str:
     return os.path.join(config.STATE_DIR, "sec_edgar_retry_ciks.json")
 
 
-def _load_retry() -> set:
-    """The companies whose fetch failed in the run that last moved the mark. A missing file is an empty list;
-    anything else (unreadable, malformed) raises - never read as empty."""
+# A company that fails (or is absent) in this many mark-moving runs IN A ROW is not transient: it leaves the retry
+# list, with a printed line. Seven also covers a new filer whose facts reach companyfacts late (AR-209 round 3).
+RETRY_MAX_RUNS = 7
+
+
+def _load_retry() -> dict:
+    """{cik: mark-moving runs it has failed in a row} for the companies whose fetch failed (or which were absent) in the
+    run that last moved the mark. A missing file is empty; anything else (unreadable, malformed) raises - never read
+    as empty. The first form of the file (a plain list) reads as count 0."""
     try:
         with open(_retry_path(), encoding="utf-8") as f:
-            return {int(c) for c in json.load(f)["ciks"]}
+            raw = json.load(f)["ciks"]
     except FileNotFoundError:
-        return set()
+        return {}
+    if isinstance(raw, list):
+        return {int(c): 0 for c in raw}
+    return {int(c): int(n) for c, n in raw.items()}
 
 
-def _save_retry(ciks) -> None:
+def _save_retry(counts: dict) -> None:
     import tempfile                                           # noqa: PLC0415
     from core.atomic import atomic_replace                    # noqa: PLC0415
     p = _retry_path()
     os.makedirs(os.path.dirname(p), exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p), suffix=".tmp")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump({"ciks": sorted(int(c) for c in ciks)}, f)
+        json.dump({"ciks": {str(int(c)): int(n) for c, n in sorted(counts.items())}}, f)
     atomic_replace(tmp, p)
+
+
+def is_absent(e: BaseException) -> bool:
+    """A companyfacts 404: SEC holds no XBRL facts for the company (asset-backed 10-Ks are exempt) or has not posted
+    them yet. Retried like a failure, but not a failed fetch for the 5% rule (AR-209 round 3)."""
+    return isinstance(e, urllib.error.HTTPError) and e.code == 404
+
+
+def next_retry(old: dict, failed_ciks, absent_ciks) -> tuple[dict, list]:
+    """(the list to save, the companies dropped) when a run moves the mark: every company that failed or was absent
+    this run, with its count of mark-moving runs in a row; past RETRY_MAX_RUNS it is dropped. A company that answered
+    this run is not carried."""
+    new = {int(c): old.get(int(c), 0) + 1 for c in list(failed_ciks) + list(absent_ciks)}
+    drop = sorted(c for c, n in new.items() if n > RETRY_MAX_RUNS)
+    return {c: n for c, n in new.items() if n <= RETRY_MAX_RUNS}, drop
 
 
 def may_advance(days: int, scan_day: dt.date, last_success_utc, limited: bool, missing) -> bool:
@@ -1160,17 +1192,21 @@ def main():
         print(f"scanning EDGAR daily-index, last {days} day(s) ({why}) ...", flush=True)
         ciks, scanned, missing = filers_since(days, today=scan_started.date())
         print(f"  statement filings per day: {', '.join(scanned) or 'none'}")
-        none_listed = [m for m in missing if ":ERR" not in m]
+        none_listed = [m for m in missing if ":" not in m]
+        overlap = [m for m in missing if ":unread-in-overlap" in m]
         unread = [m for m in missing if ":ERR" in m]
         if none_listed:
             print(f"  no index listed by SEC (weekend/holiday/not yet posted): {', '.join(none_listed)}")
+        if overlap:
+            print(f"  index not read, scanned again next run (inside the overlap): {', '.join(overlap)}", flush=True)
         if unread:
             print(f"  INDEX NOT READ (listed by SEC, the fetch failed): {', '.join(unread)}", flush=True)
-        retry = _load_retry() if cut else set()
+        retry = set(_load_retry()) if cut else set()
         if retry:
             # companies whose fetch failed in the run that last moved the mark: fetched again until they succeed,
             # so moving the mark never drops them (review AR-209 round 2)
-            print(f"  + {len(retry):,} company(ies) whose fetch failed when the mark last moved", flush=True)
+            print(f"  + {len(retry):,} company(ies) whose fetch failed (or which were not found) when the mark last "
+                  f"moved", flush=True)
             ciks |= retry
         print(f"  distinct CIKs to refresh: {len(ciks):,}", flush=True)
         advance = may_advance(days, scan_started.date(), last, bool(a.limit), missing)
@@ -1406,6 +1442,9 @@ def _refresh_local(a, todo, t2c, advance: bool = False, stamp_at=None) -> int:
     # and a company refused every day was stamped ok every day)
     staged, failed, refused, errors, n_with_baseline = [], 0, 0, [], 0
     failed_ciks = []                # carried into the next run when this one moves the mark (_save_retry)
+    absent_ciks = []                # companyfacts answered 404: no XBRL facts (asset-backed 10-Ks are exempt) or not
+                                    # posted yet. Retried like a failure, but NOT counted in the 5% rule: a filer that
+                                    # never has facts would otherwise count as failed every day (AR-209 round 3)
     empty = 0                       # answered, but the parser found no facts (R1236: an all-empty day was "ok")
     cat = catalog_path.connect()                                     # read-only: spans, and "is it catalogued"
     try:
@@ -1415,6 +1454,9 @@ def _refresh_local(a, todo, t2c, advance: bool = False, stamp_at=None) -> int:
             try:
                 data = json.loads(_get(url, timeout=180))
             except Exception as e:                                   # noqa: BLE001
+                if is_absent(e):
+                    absent_ciks.append(cik)
+                    continue
                 failed += 1
                 failed_ciks.append(cik)
                 errors.append(f"CIK{cik:010d}:{type(e).__name__}")
@@ -1480,11 +1522,12 @@ def _refresh_local(a, todo, t2c, advance: bool = False, stamp_at=None) -> int:
 
         print(f"\ncompanies probed : {len(todo):,}\ncompanies CHANGED: {len(staged):,}  "
               f"({n_with_baseline:,} had a store baseline)" + ("" if a.apply else "  - dry run, nothing written"))
-        print(f"fetch failures   : {failed:,}\nstore refusals   : {refused:,}\nparsed no facts  : {empty:,}"
-              f"{('  e.g. ' + str(errors[:4])) if errors else ''}")
+        print(f"fetch failures   : {failed:,}\nnot found (404)  : {len(absent_ciks):,}\nstore refusals   : "
+              f"{refused:,}\nparsed no facts  : {empty:,}{('  e.g. ' + str(errors[:4])) if errors else ''}")
         # more than 10 answers and EVERY one parsed to nothing is a schema break, not a quiet day (the econ-updater
-        # rule for an all-empty window; R1236 measured 20 of 20 empty stamped ok)
-        all_empty = (len(todo) - failed) > 10 and empty == len(todo) - failed
+        # rule for an all-empty window; R1236 measured 20 of 20 empty stamped ok). A 404 is not an answer with facts.
+        answered = len(todo) - failed - len(absent_ciks)
+        all_empty = answered > 10 and empty == answered
         if all_empty:
             print(f"STRUCTURAL: all {empty:,} answers parsed to no facts - the companyfacts shape changed?", flush=True)
         if not a.apply:
@@ -1519,14 +1562,22 @@ def _refresh_local(a, todo, t2c, advance: bool = False, stamp_at=None) -> int:
             # OK only when the day is whole: <=5% transient fetch failures (as before T0), and nothing refused,
             # skipped or missing from the catalogue. Anything else is partial, which NEVER sets last_success (the
             # econ rule; R1235 found skipped and refused days stamped ok).
-            ok_day = failed * 20 <= len(todo) and not refused and not skipped and not missing and not all_empty
+            # The 5% is of the companies SEC has facts for: a 404 is neither a failure nor in the base.
+            ok_day = (failed * 20 <= len(todo) - len(absent_ciks) and not refused and not skipped and not missing
+                      and not all_empty)
             # THE MARK (see WATERMARK_OVERLAP_DAYS): moved only by a run main() allowed to move it, on an ok day. The
             # companies whose fetch failed (a few every day) are written to the retry list FIRST and fetched by the
             # next run, so a failed company never falls out of the window when the mark moves past its filing day.
             # (Requiring zero failures instead would almost never move the mark: review AR-209 round 2, R1381.)
             mark = stamp_at.isoformat(timespec="seconds") if (ok_day and advance and stamp_at) else None
             if mark:
-                _save_retry(failed_ciks)     # FIRST: a crash before the stamp leaves the old mark and the old list
+                # FIRST: a crash before the stamp leaves the old mark and the old list
+                keep, drop = next_retry(_load_retry(), failed_ciks, absent_ciks)
+                _save_retry(keep)
+                if drop:
+                    print(f"  retry list: dropped {len(drop)} company(ies) after {RETRY_MAX_RUNS} runs in a row "
+                          f"without facts: {', '.join(f'CIK{c:010d}' for c in drop[:10])}", flush=True)
+                print(f"  retry list: {len(keep):,} company(ies) carried to the next run", flush=True)
             from updater.state import StateStore                     # noqa: PLC0415
             st = StateStore()
             try:
