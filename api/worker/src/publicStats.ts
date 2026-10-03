@@ -200,19 +200,8 @@ export async function handlePublicStats(
   // Shared identity: total registered accounts (all rows) — matches admin count.
   const totalUsers = await U.prepare("SELECT COUNT(*) AS c FROM users").first<{ c: number }>();
 
-  // This library's OWN downloads (econ_download_log; separate from hf's counters).
-  const totalDl = await U.prepare("SELECT COUNT(*) AS c FROM econ_download_log").first<{ c: number }>();
-  const todayDl = await U.prepare(
-    "SELECT COUNT(*) AS c FROM econ_download_log WHERE ts > datetime('now','-1 day')",
-  ).first<{ c: number }>();
-  const weekDl = await U.prepare(
-    "SELECT COUNT(*) AS c FROM econ_download_log WHERE ts > datetime('now','-7 days')",
-  ).first<{ c: number }>();
-  // Data served (bytes). Recorded per-download since byte tracking was added; the
-  // column is 0/NULL for downloads logged before then, so this is a rising floor.
-  const totalBytes = await U.prepare(
-    "SELECT COALESCE(SUM(bytes),0) AS b FROM econ_download_log",
-  ).first<{ b: number }>();
+  // Download counts and volumes are not published (owner's decision, 2026-10-03): no total,
+  // today, week or bytes figure, and the top-sources ranking below carries names only.
 
   // Per-country DISTINCT active users: self-declared profile country UNION any
   // country they've logged in from. UNION dedupes so a user counts once/country.
@@ -290,8 +279,8 @@ export async function handlePublicStats(
   const topSources = (dlBySource.results ?? [])
     .filter((r) => r.source && catName[r.source] !== undefined // whitelist: still catalogued
                 && !NON_REDISTRIBUTABLE.has(r.source))         // and not gated
-    .slice(0, 5)
-    .map((r) => ({ source_id: r.source, name: catName[r.source], downloads: r.downloads }));
+    .slice(0, 3)
+    .map((r) => ({ source_id: r.source, name: catName[r.source] }));   // ranked names only, no counts
 
   // Visitor layer for the map — THIS site's own Cloudflare traffic (light-blue in
   // the two-tone map, distinct from the shared dark-blue user layer). Runs only
@@ -334,10 +323,6 @@ export async function handlePublicStats(
 
   return json({
     total_users: totalUsers?.c ?? 0,
-    total_downloads: totalDl?.c ?? 0,
-    downloads_today: todayDl?.c ?? 0,
-    downloads_this_week: weekDl?.c ?? 0,
-    total_bytes_served: totalBytes?.b ?? 0,
     countries: userCountryMap,
     country_count: Object.keys(userCountryMap).length,
     visitor_countries: visitorCountryMap,

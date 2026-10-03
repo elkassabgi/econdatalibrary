@@ -3574,8 +3574,7 @@ def render_stats():
 <div class="statgrid">
   <div class="bigstat"><div class="bnum" id="s-visitors">&mdash;</div><div class="blabel">Total Visitors</div></div>
   <div class="bigstat"><div class="bnum" id="s-users">&mdash;</div><div class="blabel">Registered Users</div></div>
-  <div class="bigstat"><div class="bnum" id="s-downloads">&mdash;</div><div class="blabel">Total Downloads</div></div>
-  <div class="bigstat"><div class="bnum" id="s-bytes">&mdash;</div><div class="blabel">Data Served</div></div>
+  <div class="bigstat"><div class="bnum" id="s-pageviews">&mdash;</div><div class="blabel">Page Views</div></div>
 </div>
 <h2>Global Reach</h2>
 <p class="reach-key"><span style="color:#1e3a8a;font-weight:700">Dark</span> = registered users (<span id="s-usercountries">&mdash;</span> countries) &middot; <span style="color:#60a5fa;font-weight:700">Light</span> = site visitors (<span id="s-visitorcountries">&mdash;</span>)</p>
@@ -3583,15 +3582,8 @@ def render_stats():
 <div id="country-badges"></div>
 
 <div class="twocol">
-  <div><h2>Most Downloaded Sources</h2><div id="dl-chart"><p style="color:var(--g500)">Loading&hellip;</p></div></div>
+  <div><h2>Top 3 Most Downloaded Sources</h2><div id="dl-chart"><p style="color:var(--g500)">Loading&hellip;</p></div></div>
   <div><h2>Institutions Represented</h2><div id="institution-list"><p style="color:var(--g500)">Loading&hellip;</p></div></div>
-</div>
-
-<h2>At a Glance</h2>
-<div class="actgrid">
-  <div class="actcard"><div class="anum" id="s-today">&mdash;</div><div class="alabel">Downloads Today</div></div>
-  <div class="actcard"><div class="anum" id="s-week">&mdash;</div><div class="alabel">Downloads This Week</div></div>
-  <div class="actcard"><div class="anum" id="s-pageviews">&mdash;</div><div class="alabel">Page Views</div></div>
 </div>
 
 <script src="https://www.gstatic.com/charts/loader.js"></script>
@@ -3603,7 +3595,6 @@ var mapData=null, chartsReady=false;
 google.charts.setOnLoadCallback(function(){chartsReady=true; if(mapData) drawMap();});
 function set(id,v){var e=document.getElementById(id); if(e&&v!=null)e.textContent=v;}
 function fmtB(n){ if(n>=1e9){var s=(Math.floor(n/1e8)/10).toFixed(1); if(s.slice(-2)==='.0')s=s.slice(0,-2); return s+'B+';} return Number(n).toLocaleString();}
-function fmtBytes(n){ n=Number(n)||0; if(n>=1e9)return (n/1e9).toFixed(1)+' GB'; if(n>=1e6)return (n/1e6).toFixed(1)+' MB'; if(n>=1e3)return (n/1e3).toFixed(1)+' KB'; return n+' B'; }
 function flag(c){ if(!c||c.length!==2)return ''; return '<img src="https://flagcdn.com/16x12/'+c.toLowerCase()+'.png" width="16" height="12" alt="'+c+'" style="vertical-align:middle;margin-right:4px">';}
 var COUNTRY_NAMES={AF:'Afghanistan',AL:'Albania',DZ:'Algeria',AO:'Angola',AR:'Argentina',AM:'Armenia',AU:'Australia',AT:'Austria',AZ:'Azerbaijan',BH:'Bahrain',BD:'Bangladesh',BY:'Belarus',BE:'Belgium',BO:'Bolivia',BA:'Bosnia and Herzegovina',BR:'Brazil',BN:'Brunei',BG:'Bulgaria',KH:'Cambodia',CM:'Cameroon',CA:'Canada',CL:'Chile',CN:'China',CO:'Colombia',CR:'Costa Rica',HR:'Croatia',CU:'Cuba',CY:'Cyprus',CZ:'Czechia',DK:'Denmark',DO:'Dominican Republic',EC:'Ecuador',EG:'Egypt',SV:'El Salvador',EE:'Estonia',ET:'Ethiopia',FI:'Finland',FR:'France',GE:'Georgia',DE:'Germany',GH:'Ghana',GR:'Greece',GT:'Guatemala',HT:'Haiti',HN:'Honduras',HK:'Hong Kong',HU:'Hungary',IS:'Iceland',IN:'India',ID:'Indonesia',IR:'Iran',IQ:'Iraq',IE:'Ireland',IL:'Israel',IT:'Italy',JM:'Jamaica',JP:'Japan',JO:'Jordan',KZ:'Kazakhstan',KE:'Kenya',KP:'North Korea',KR:'South Korea',KW:'Kuwait',LA:'Laos',LV:'Latvia',LB:'Lebanon',LT:'Lithuania',LU:'Luxembourg',MY:'Malaysia',MX:'Mexico',MN:'Mongolia',MA:'Morocco',MM:'Myanmar',NP:'Nepal',NL:'Netherlands',NZ:'New Zealand',NI:'Nicaragua',NG:'Nigeria',NO:'Norway',OM:'Oman',PK:'Pakistan',PS:'Palestine',PA:'Panama',PY:'Paraguay',PE:'Peru',PH:'Philippines',PL:'Poland',PT:'Portugal',PR:'Puerto Rico',QA:'Qatar',RO:'Romania',RU:'Russia',SA:'Saudi Arabia',SN:'Senegal',RS:'Serbia',SG:'Singapore',SK:'Slovakia',SI:'Slovenia',ZA:'South Africa',ES:'Spain',LK:'Sri Lanka',SY:'Syria',TW:'Taiwan',TZ:'Tanzania',TH:'Thailand',TT:'Trinidad and Tobago',TN:'Tunisia',TR:'Turkey',UG:'Uganda',UA:'Ukraine',AE:'United Arab Emirates',GB:'United Kingdom',US:'United States',UY:'Uruguay',UZ:'Uzbekistan',VE:'Venezuela',VN:'Vietnam',YE:'Yemen',ZW:'Zimbabwe'};
 function countryName(c){return COUNTRY_NAMES[c]||c;}
@@ -3628,10 +3619,6 @@ async function load(){
   try{ var r=await fetch(ECON+'/v1/public-stats'); if(r.ok){var d=await r.json();
     set('s-users',(d.total_users||0).toLocaleString());
     if(d.total_visitors!=null)set('s-visitors',Number(d.total_visitors).toLocaleString());
-    if(d.total_downloads!=null)set('s-downloads',Number(d.total_downloads).toLocaleString());
-    if(d.total_bytes_served!=null)set('s-bytes',fmtBytes(d.total_bytes_served));
-    if(d.downloads_today!=null)set('s-today',Number(d.downloads_today).toLocaleString());
-    if(d.downloads_this_week!=null)set('s-week',Number(d.downloads_this_week).toLocaleString());
     if(d.total_page_views!=null)set('s-pageviews',Number(d.total_page_views).toLocaleString());
     var cc=d.country_count||Object.keys(d.countries||{}).length;
     set('s-usercountries',cc); set('s-usercountries2',cc);
@@ -3641,11 +3628,11 @@ async function load(){
     if(chartsReady)drawMap();
     // Most downloaded sources — endpoint already whitelists against the catalog
     // (purged sources can never appear); names are the catalog's own.
+    // ranked names only: download counts and volumes are not published (owner's decision, 2026-10-03)
     if(d.top_sources&&d.top_sources.length){
-      var maxDl=d.top_sources[0].downloads||1;
-      document.getElementById('dl-chart').innerHTML=d.top_sources.map(function(t){
-        return '<div class="dlbar"><span class="dlname">'+t.name+'</span><div class="dlrow"><div class="dlfill" style="width:'+Math.max(3,(t.downloads/maxDl)*100)+'%"></div><span class="dlcount">'+Number(t.downloads).toLocaleString()+'</span></div></div>';
-      }).join('');
+      document.getElementById('dl-chart').innerHTML='<ol style="margin:0;padding-left:1.4rem">'+d.top_sources.slice(0,3).map(function(t){
+        return '<li style="padding:.25rem 0">'+t.name+'</li>';
+      }).join('')+'</ol>';
     } else { document.getElementById('dl-chart').innerHTML='<p style="color:var(--g500)">No downloads yet.</p>'; }
   }}catch(e){}
 }
@@ -3655,7 +3642,7 @@ ekdLoadInstitutions('institution-list');
 """
     body = body.replace("__INSTITUTIONS_BLOCK__", _institutions_block())
     return _info_page("Live Statistics",
-                      "Live usage for the Econ Data Library: registered users and global reach (shared across the ElkassabgiData family), plus this library's data volume and downloads.",
+                      "Live usage for the Econ Data Library: registered users and global reach (shared across the ElkassabgiData family), plus this library's most-downloaded sources.",
                       "stats.html", body)
 
 
