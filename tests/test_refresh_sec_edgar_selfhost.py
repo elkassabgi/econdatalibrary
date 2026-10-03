@@ -84,6 +84,14 @@ def _run(monkeypatch, *argv):
     return R.main()
 
 
+def _daily(monkeypatch, ciks, *argv):
+    """A daily run over `ciks` (the EDGAR index is faked). With no mark yet, its explicit --days is the first run's
+    window, so it may move the mark - unlike a --ciks repair, which never does (review AR-209)."""
+    monkeypatch.setattr(R, "filers_since", lambda days, today=None: (set(ciks), ["faked index"], []))
+    monkeypatch.setattr(sys, "argv", ["refresh_sec_edgar.py", "--days", "3", *argv])
+    return R.main()
+
+
 def _span(build):
     c = sqlite3.connect(f"file:{build}?mode=ro", uri=True)
     try:
@@ -97,7 +105,7 @@ def test_after_t0_a_refresh_commits_everything_under_the_lock(world, monkeypatch
     held = []
     real_replace = os.replace
     monkeypatch.setattr(R.os, "replace", lambda a, b: held.append(catalog_path._held is not None) or real_replace(a, b))
-    assert _run(monkeypatch, "--apply") == 0
+    assert _daily(monkeypatch, [CIK], "--apply") == 0
     assert pq.read_table(grouped / "XOM.parquet").num_rows == 3, "the merged facts are in the store"
     assert held and all(held), "the parquet (and the blob store's own file) moved under the writer lock"
     assert catalog_path._held is None, "and the lock is let go"
@@ -111,7 +119,8 @@ def test_after_t0_a_refresh_commits_everything_under_the_lock(world, monkeypatch
     finally:
         st.close()
     assert (row["strategy"], row["cadence"], row["status"]) == ("edgar_delta", "daily", "ok")
-    assert row["last_success_utc"] and row["last_success_utc"] == row["last_attempt_utc"]
+    assert row["last_success_utc"] and row["last_success_utc"] <= row["last_attempt_utc"], \
+        "the mark is the scan's start, the attempt its end"
     assert not [p for p in os.listdir(live / "data") if p.startswith("sec_edgar_stage_")], "no staging left"
 
 
@@ -339,10 +348,12 @@ def test_written_rows_carry_last_updated_and_others_do_not(world, monkeypatch):
     from updater.state import StateStore
     st = StateStore(path=str(tmp / "state" / "state.db"))
     try:
-        stamp = st.get_source("sec_edgar")["last_success_utc"]
+        row = st.get_source("sec_edgar")
     finally:
         st.close()
+    stamp = row["last_attempt_utc"]
     assert stamp and got == {"sec_edgar:XOM": stamp, "sec_edgar:OTHER": None}
+    assert row["status"] == "ok" and row["last_success_utc"] is None, "a --ciks repair never moves the mark"
 
 
 def test_a_catalogue_write_without_last_updated_is_a_failure(world, monkeypatch, capsys):
@@ -372,7 +383,7 @@ def test_a_change_just_after_the_merge_read_is_caught(world, monkeypatch, capsys
     assert "SKIPPED XOM" in capsys.readouterr().out
 
 
-def _twenty(monkeypatch, fail=(), answer=None, n=20):
+def _twenty(monkeypatch, fail=(), answer=None, n=20, daily=False):
     """A day of `n` filers: XOM (catalogued, stored) and n-1 new ones. `fail` = CIKs whose fetch raises; `answer`
     = a payload for every CIK instead of the world's (e.g. one the parser reads as no facts)."""
     ciks = [CIK] + [900000 + i for i in range(n - 1)]
@@ -384,7 +395,11 @@ def _twenty(monkeypatch, fail=(), answer=None, n=20):
             raise OSError("SEC down for this one")
         return answer if answer is not None else _facts(NEW)
     monkeypatch.setattr(R, "_get", get)
-    monkeypatch.setattr(sys, "argv", ["refresh_sec_edgar.py", "--ciks", ",".join(map(str, ciks)), "--apply"])
+    if daily:
+        monkeypatch.setattr(R, "filers_since", lambda days, today=None: (set(ciks), ["faked index"], []))
+        monkeypatch.setattr(sys, "argv", ["refresh_sec_edgar.py", "--days", "3", "--apply"])
+    else:
+        monkeypatch.setattr(sys, "argv", ["refresh_sec_edgar.py", "--ciks", ",".join(map(str, ciks)), "--apply"])
     return ciks
 
 
@@ -424,8 +439,8 @@ def test_the_all_empty_boundary(world, monkeypatch, n, n_fail, ok):
 def test_the_five_percent_fetch_tolerance_boundary(world, monkeypatch, n_fail, ok):
     """1 transient fetch failure in 20 is still an ok day (the pre-T0 rule, 95% fetched); 2 are not (R1236 S19)."""
     tmp, *_ = world
-    ciks = _twenty(monkeypatch, fail=set())
-    _twenty(monkeypatch, fail=set(ciks[1:1 + n_fail]))
+    ciks = _twenty(monkeypatch, fail=set(), daily=True)
+    _twenty(monkeypatch, fail=set(ciks[1:1 + n_fail]), daily=True)
     assert R.main() == (0 if ok else 1)
     row = _freshness(tmp)
     assert (row["status"], row["last_success_utc"] is not None) == (("ok", True) if ok else ("partial", False))
