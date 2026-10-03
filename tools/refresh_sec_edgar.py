@@ -97,7 +97,9 @@ def ticker_map():
 
 def filers_since(days):
     """CIKs that filed a financial statement in the last `days` days, per EDGAR."""
-    today = dt.date.today()
+    # UTC, like source_state.last_success_utc and the window computed from it: the workstation's local date is a
+    # day behind UTC every evening (CI runs in UTC, so nothing changes there)
+    today = dt.datetime.now(dt.timezone.utc).date()
     ciks, scanned, missing = set(), [], []
     for back in range(days):
         day = today - dt.timedelta(days=back)
@@ -955,9 +957,62 @@ def respan(client, spec, apply=False, apply_d1=False, skip_local=False, local_ch
     return rc
 
 
+# THE SCAN WINDOW AFTER T0 (2026-10-03; one of the proofs tools/selfhost/t0_ready.py SEC_EDGAR_OWED lists). Before
+# T0 the window is a fixed --days (the CI workflow always passes it). After T0 a fixed window loses filings whenever
+# the scheduled task does not run for longer than the window - a machine that was off for a week skips a week of
+# filers for good. So, after T0 and without an explicit --days, the window reaches back to the day of the last OK
+# local run (source_state.last_success_utc, which a partial day never sets) minus WATERMARK_OVERLAP_DAYS. A failed
+# or partial day therefore stays inside the next window, and its companies are fetched again.
+WATERMARK_OVERLAP_DAYS = 3
+# Beyond this the daily index is the wrong tool (one index fetch per day, then every filer of the whole gap): the run
+# refuses and says to pass --days explicitly or to name the companies with --ciks.
+WATERMARK_MAX_DAYS = 120
+PRE_T0_DEFAULT_DAYS = 3
+
+
+def scan_days(explicit, cut_over: bool, last_success_utc, today: dt.date) -> tuple[int, str]:
+    """(days, why) for the daily-index scan. An explicit --days always wins; before T0 the old default."""
+    if explicit is not None:
+        return explicit, "--days given"
+    if not cut_over:
+        return PRE_T0_DEFAULT_DAYS, "before T0: the fixed default"
+    from core import cutover                                  # noqa: PLC0415
+    if not last_success_utc:
+        raise cutover.CutoverRefused("refused: no successful local refresh is recorded yet (source_state.last_success_"
+                                     "utc for sec_edgar) - the first local run takes --days wide enough to reach "
+                                     "the last CI scan (T0 step 6)")
+    try:
+        last = dt.date.fromisoformat(str(last_success_utc)[:10])
+    except ValueError:
+        raise cutover.CutoverRefused(f"refused: source_state.last_success_utc for sec_edgar is not a date: "
+                                     f"{last_success_utc!r}") from None
+    gap = (today - last).days
+    if gap < 0:
+        raise cutover.CutoverRefused(f"refused: the last successful local refresh ({last}) is after today UTC "
+                                     f"({today}) - the clock or the state is wrong")
+    days = gap + WATERMARK_OVERLAP_DAYS
+    if days > WATERMARK_MAX_DAYS:
+        raise cutover.CutoverRefused(f"refused: the last successful local refresh was {gap} days ago ({last}); a "
+                                     f"scan of {days} days is past WATERMARK_MAX_DAYS ({WATERMARK_MAX_DAYS}) - pass "
+                                     f"--days explicitly, or name the companies with --ciks")
+    return days, f"since the last OK local run {last} ({gap} day(s)) plus {WATERMARK_OVERLAP_DAYS} days of overlap"
+
+
+def _last_success_utc():
+    from updater.state import StateStore                     # noqa: PLC0415
+    st = StateStore()
+    try:
+        row = st.get_source("sec_edgar")
+    finally:
+        st.close()
+    return (row or {}).get("last_success_utc")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--days", type=int, default=3)
+    ap.add_argument("--days", type=int, default=None,
+                    help=f"scan the EDGAR daily index this many days back. Default: {PRE_T0_DEFAULT_DAYS} before T0; "
+                         "after T0, from the last OK local run minus 3 days (see WATERMARK_OVERLAP_DAYS)")
     ap.add_argument("--apply", action="store_true",
                     help="write parquet + CSV + upload to R2 (default is a dry run)")
     ap.add_argument("--limit", type=int, default=0, help="cap companies (testing only)")
@@ -1013,8 +1068,11 @@ def main():
         scanned, missing = [f"explicit:{len(ciks)}"], []
         print(f"targeted refresh of {len(ciks):,} explicitly named CIK(s)", flush=True)
     else:
-        print(f"scanning EDGAR daily-index, last {a.days} day(s) ...", flush=True)
-        ciks, scanned, missing = filers_since(a.days)
+        cut = cutover.is_cut_over()
+        days, why = scan_days(a.days, cut, _last_success_utc() if (cut and a.days is None) else None,
+                              dt.datetime.now(dt.timezone.utc).date())
+        print(f"scanning EDGAR daily-index, last {days} day(s) ({why}) ...", flush=True)
+        ciks, scanned, missing = filers_since(days)
         print(f"  statement filings per day: {', '.join(scanned) or 'none'}")
         if missing:
             print(f"  no index published (weekend/holiday): {', '.join(missing)}")
