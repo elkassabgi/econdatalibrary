@@ -95,24 +95,51 @@ def ticker_map():
     return {c: t for c, t in out.items()}
 
 
-def filers_since(days):
-    """CIKs that filed a financial statement in the last `days` days, per EDGAR."""
+def _quarter_listing(year: int, q: int):
+    """The names of the daily form.*.idx files SEC lists for one quarter, or None when the listing cannot be read.
+    SEC answers a day with no index (a weekend, a holiday) with 403, the same code as a refused request, so a failed
+    fetch cannot say which it was; the quarter's own listing can (checked 2026-10-03: 2026-09-27, a Sunday, and
+    2026-09-07, Labor Day, are absent from QTR3's listing; 2026-09-28 is present)."""
+    try:
+        d = json.loads(_get(f"https://www.sec.gov/Archives/edgar/daily-index/{year}/QTR{q}/index.json"))
+        return {str(i.get("name", "")) for i in d.get("directory", {}).get("item", [])
+                if str(i.get("name", "")).startswith("form.")}
+    except Exception:                                         # noqa: BLE001 - None = cannot tell
+        return None
+
+
+def filers_since(days, today=None):
+    """CIKs that filed a financial statement in the last `days` days, per EDGAR.
+
+    `missing` holds a day either as "YYYY-MM-DD" (SEC lists no index for it: a weekend, a holiday, not yet posted)
+    or as "YYYY-MM-DD:ERR<type>" (SEC lists it, or the listing could not be read, and the fetch failed). Only the
+    second kind is an error; a run with one may not move the scan mark (may_advance)."""
     # UTC, like source_state.last_success_utc and the window computed from it: the workstation's local date is a
     # day behind UTC every evening (CI runs in UTC, so nothing changes there)
-    today = dt.datetime.now(dt.timezone.utc).date()
+    today = today or dt.datetime.now(dt.timezone.utc).date()
     ciks, scanned, missing = set(), [], []
+    listings = {}
     for back in range(days):
         day = today - dt.timedelta(days=back)
         q = (day.month - 1) // 3 + 1
+        if (day.year, q) not in listings:
+            listings[(day.year, q)] = _quarter_listing(day.year, q)
+            time.sleep(SEC_MIN_INTERVAL)
+        listed = listings[(day.year, q)]
+        if listed is not None and f"form.{day:%Y%m%d}.idx" not in listed:
+            # no index: NOT an error, but it IS recorded - a silently skipped day is indistinguishable from a day
+            # with no filings
+            missing.append(f"{day:%Y-%m-%d}")
+            continue
         url = (f"https://www.sec.gov/Archives/edgar/daily-index/{day.year}/"
                f"QTR{q}/form.{day:%Y%m%d}.idx")
         try:
             body = _get(url)
-        except Exception:                                     # noqa: BLE001
-            # Weekends and holidays have no index. NOT an error, but it IS recorded —
-            # a silently skipped day is indistinguishable from a day with no filings.
-            missing.append(f"{day:%Y-%m-%d}")
+        except Exception as e:                                # noqa: BLE001
+            missing.append(f"{day:%Y-%m-%d}:ERR{type(e).__name__}")
             continue
+        finally:
+            time.sleep(SEC_MIN_INTERVAL)
         lines = body.splitlines()
         start = next((i for i, l in enumerate(lines) if l.startswith("---")), 10) + 1
         n = 0
@@ -960,12 +987,18 @@ def respan(client, spec, apply=False, apply_d1=False, skip_local=False, local_ch
 # THE SCAN WINDOW AFTER T0 (2026-10-03; one of the proofs tools/selfhost/t0_ready.py SEC_EDGAR_OWED lists). Before
 # T0 the window is a fixed --days (the CI workflow always passes it). After T0 a fixed window loses filings whenever
 # the scheduled task does not run for longer than the window - a machine that was off for a week skips a week of
-# filers for good. So, after T0 and without an explicit --days, the window reaches back to the day of the last OK
-# local run (source_state.last_success_utc, which a partial day never sets) minus WATERMARK_OVERLAP_DAYS. A failed
-# or partial day therefore stays inside the next window, and its companies are fetched again.
+# filers for good. So, after T0 and without an explicit --days, the window reaches back to the day of the mark
+# (source_state.last_success_utc) and the two days before it: L-2..today, WATERMARK_OVERLAP_DAYS days up to and
+# including L.
+#
+# THE MARK MOVES ONLY FOR A SCAN THAT REACHED IT (review AR-209). It is set by _refresh_local on an ok day, and only
+# when main() says the run may advance it: a daily-index scan whose window started on or before the old mark, with no
+# --limit, and with no day whose index SEC lists but which could not be read. A --ciks repair, a --limit run and a
+# --days window that stops short of the mark leave it alone - each would otherwise move it past days nobody
+# scanned. The stamp is the time the window was computed from, not the end of the fetch.
 WATERMARK_OVERLAP_DAYS = 3
 # Beyond this the daily index is the wrong tool (one index fetch per day, then every filer of the whole gap): the run
-# refuses and says to pass --days explicitly or to name the companies with --ciks.
+# refuses and says to pass --days explicitly.
 WATERMARK_MAX_DAYS = 120
 PRE_T0_DEFAULT_DAYS = 3
 
@@ -994,25 +1027,44 @@ def scan_days(explicit, cut_over: bool, last_success_utc, today: dt.date) -> tup
     if days > WATERMARK_MAX_DAYS:
         raise cutover.CutoverRefused(f"refused: the last successful local refresh was {gap} days ago ({last}); a "
                                      f"scan of {days} days is past WATERMARK_MAX_DAYS ({WATERMARK_MAX_DAYS}) - pass "
-                                     f"--days explicitly, or name the companies with --ciks")
-    return days, f"since the last OK local run {last} ({gap} day(s)) plus {WATERMARK_OVERLAP_DAYS} days of overlap"
+                                     f"--days explicitly")
+    return days, f"from {last - dt.timedelta(days=WATERMARK_OVERLAP_DAYS - 1)}: the mark {last} and the two days before it"
 
 
 def _last_success_utc():
+    """The mark: source_state.last_success_utc of the XBRL product. A row under the id with another strategy (a
+    leftover 13F row, R1218) is not the mark."""
     from updater.state import StateStore                     # noqa: PLC0415
     st = StateStore()
     try:
         row = st.get_source("sec_edgar")
     finally:
         st.close()
-    return (row or {}).get("last_success_utc")
+    if not row or row.get("strategy") != "edgar_delta":
+        return None
+    return row.get("last_success_utc")
+
+
+def may_advance(days: int, scan_day: dt.date, last_success_utc, limited: bool, missing) -> bool:
+    """May this daily-index run move the mark? Only when its window started on or before the old mark (or there is
+    no mark yet: the first run's explicit --days is the operator's statement), no --limit, and no day whose index
+    SEC lists but which could not be read."""
+    if limited or any(":ERR" in str(m) for m in missing):
+        return False
+    if not last_success_utc:
+        return True
+    try:
+        last = dt.date.fromisoformat(str(last_success_utc)[:10])
+    except ValueError:
+        return False
+    return scan_day - dt.timedelta(days=days - 1) <= last
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--days", type=int, default=None,
                     help=f"scan the EDGAR daily index this many days back. Default: {PRE_T0_DEFAULT_DAYS} before T0; "
-                         "after T0, from the last OK local run minus 3 days (see WATERMARK_OVERLAP_DAYS)")
+                         "after T0, from the mark (the last OK daily scan) and the two days before it")
     ap.add_argument("--apply", action="store_true",
                     help="write parquet + CSV + upload to R2 (default is a dry run)")
     ap.add_argument("--limit", type=int, default=0, help="cap companies (testing only)")
@@ -1058,6 +1110,8 @@ def main():
         from core import r2_util
         return respan(r2_util.client(), a.respan, apply=a.apply, apply_d1=a.d1, skip_local=a.skip_local,
                       local_chunk=a.local_chunk)
+    scan_started = dt.datetime.now(dt.timezone.utc)          # ONE clock reading: the window and the stamp
+    advance = False                                           # only a daily scan that reached the mark moves it
     if a.ciks:
         # Targeted repair. The daily-index path answers "who filed recently"; it
         # cannot reach a company whose data fell behind for some OTHER reason. An
@@ -1069,14 +1123,21 @@ def main():
         print(f"targeted refresh of {len(ciks):,} explicitly named CIK(s)", flush=True)
     else:
         cut = cutover.is_cut_over()
-        days, why = scan_days(a.days, cut, _last_success_utc() if (cut and a.days is None) else None,
-                              dt.datetime.now(dt.timezone.utc).date())
+        last = _last_success_utc() if cut else None           # before T0 no state is read
+        days, why = scan_days(a.days, cut, last if a.days is None else None, scan_started.date())
         print(f"scanning EDGAR daily-index, last {days} day(s) ({why}) ...", flush=True)
-        ciks, scanned, missing = filers_since(days)
+        ciks, scanned, missing = filers_since(days, today=scan_started.date())
         print(f"  statement filings per day: {', '.join(scanned) or 'none'}")
-        if missing:
-            print(f"  no index published (weekend/holiday): {', '.join(missing)}")
+        none_listed = [m for m in missing if ":ERR" not in m]
+        unread = [m for m in missing if ":ERR" in m]
+        if none_listed:
+            print(f"  no index listed by SEC (weekend/holiday/not yet posted): {', '.join(none_listed)}")
+        if unread:
+            print(f"  INDEX NOT READ (listed by SEC, the fetch failed): {', '.join(unread)}", flush=True)
         print(f"  distinct CIKs to refresh: {len(ciks):,}", flush=True)
+        advance = may_advance(days, scan_started.date(), last, bool(a.limit), missing)
+        if cut:
+            print(f"  this run {'MAY' if advance else 'may NOT'} move the scan mark (now {last})", flush=True)
     if not ciks:
         print("nothing to do")
         return 0
@@ -1087,7 +1148,8 @@ def main():
         todo = todo[:a.limit]
         print(f"  LIMITED to {len(todo)} companies (testing)", flush=True)
     if cutover.is_cut_over():
-        return _refresh_local(a, todo, t2c)                   # the local store, under the lock; no R2, no D1
+        # the local store, under the lock; no R2, no D1
+        return _refresh_local(a, todo, t2c, advance=advance, stamp_at=scan_started)
 
     # The client is needed for READS too, not only writes: merge_facts must see what the store
     # already holds, and on CI the local mirror does not exist.
@@ -1279,8 +1341,9 @@ def _waiting_writer_lock(max_wait_s: float = 1800.0, step_s: float = 30.0):
     return held()
 
 
-def _refresh_local(a, todo, t2c) -> int:
-    """The daily refresh after T0 (--days / --ciks). Dry run unless --apply."""
+def _refresh_local(a, todo, t2c, advance: bool = False, stamp_at=None) -> int:
+    """The daily refresh after T0 (--days / --ciks). Dry run unless --apply. `advance`: main() decided that this run's
+    scan reached the mark, so an ok day may move it (to `stamp_at`, the time the window was computed from)."""
     import shutil                                                    # noqa: PLC0415
     import tempfile                                                  # noqa: PLC0415
     from core import cutover                                         # noqa: PLC0415
@@ -1413,16 +1476,20 @@ def _refresh_local(a, todo, t2c) -> int:
             # skipped or missing from the catalogue. Anything else is partial, which NEVER sets last_success (the
             # econ rule; R1235 found skipped and refused days stamped ok).
             ok_day = failed * 20 <= len(todo) and not refused and not skipped and not missing and not all_empty
+            # THE MARK (see WATERMARK_OVERLAP_DAYS): moved only by a run main() allowed to move it, on an ok day with
+            # NO fetch failure - a company whose fetch failed would otherwise fall out of the next window when its
+            # filing day is older than the overlap (after an outage). The day can still be "ok" for freshness.
+            mark = stamp_at.isoformat(timespec="seconds") if (ok_day and advance and not failed and stamp_at) else None
             from updater.state import StateStore                     # noqa: PLC0415
             st = StateStore()
             try:
                 st.upsert_source("sec_edgar", strategy="edgar_delta", cadence="daily",
                                  status="ok" if ok_day else "partial", last_attempt_utc=when,
-                                 **({"last_success_utc": when} if ok_day else {}))
+                                 **({"last_success_utc": mark} if mark else {}))
             finally:
                 st.close()
         print(f"written: {len(written):,} company(ies) (parquet + CSV + catalogue); freshness stamped "
-              f"{'ok' if ok_day else 'partial'} at {when}")
+              f"{'ok' if ok_day else 'partial'} at {when}; scan mark {'moved to ' + mark if mark else 'NOT moved'}")
         return 0 if ok_day and len(written) == len(staged) else 1
     finally:
         cat.close()
