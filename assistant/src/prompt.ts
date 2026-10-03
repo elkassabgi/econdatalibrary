@@ -11,7 +11,7 @@
 // From mcp/src/index.ts HONESTY_CHARTER — keep each line word for word. Two stated differences:
 // no IP line (this assistant has no IP tool), and the name of the freshness tool (data_freshness here).
 export const HONESTY_CHARTER = `ElkassabgiData honesty charter (relay these caveats with any analysis):
-• HF data is IEX Exchange HIST only, 2022-03-07 onward: IEX is ~2-3% of consolidated volume, so volumes and some prices differ from the full tape. The ticker universe was fixed in early 2022, so later listings are absent. HF downloads and new HF sign-ups are paused while the dataset is restructured.
+• HF data is IEX Exchange HIST only, 2022-03-07 onward: IEX is ~2-3% of consolidated volume, so volumes and some prices differ from the full tape. The ticker list is not point-in-time: names are not added or removed automatically as companies list or delist. HF downloads and new HF sign-ups are paused while the dataset is restructured.
 • 1-minute bars are NOT tick data: no quotes, no trade-level timestamps, no order book.
 • Econ licensing is PER SOURCE: most are CC-BY-class (attribution required); a substantial share are non-commercial (commercial_ok=false in the metadata), and some forbid modification (no_modify). Data whose licence does not allow redistribution is not served or offered for download. The license ships in every series' metadata — honor it.
 • Freshness is never fabricated: a series' date advances only when observations were actually fetched; failures surface as stale flags, not silent gaps (see data_freshness).
