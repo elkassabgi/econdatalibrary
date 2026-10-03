@@ -30,6 +30,27 @@ import os
 import sqlite3
 import tempfile
 import threading
+import time
+
+# core.atomic.atomic_replace's waits (~3.1 s in all), kept here because this module is loaded on its own - by the
+# sidecar and import_from_r2 from tools/selfhost, by updater/blob.py from its file path - where `core` may not be
+# importable. tests/test_selfhost_blob_backend.py keeps the two equal.
+REPLACE_BACKOFF_S = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6)
+
+
+def _replace(tmp: str, path: str) -> None:
+    """os.replace, retried while another process holds the new file or the target open (Windows answers
+    PermissionError, WinError 5 or 32: an antivirus scan of a just-written file is one). The series copy into this
+    store lost 8 of 7.47M puts to WinError 32 on 2026-10-03; after T0 a put is a live refresh's write. A handle
+    that never closes still raises, so a put that did not happen is never reported as done."""
+    for wait in (*REPLACE_BACKOFF_S, None):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if wait is None:
+                raise
+            time.sleep(wait)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS blobs (
@@ -166,7 +187,14 @@ class BlobStore:
                         fh.write(data)
                         fh.flush()
                         os.fsync(fh.fileno())            # durable before it becomes visible
-                    os.replace(tmp, path)
+                    try:
+                        _replace(tmp, path)
+                    except BaseException:
+                        try:
+                            os.remove(tmp)               # never leave a .tmp- file behind a failed put
+                        except OSError:
+                            pass
+                        raise
                 old = self._w.execute("SELECT sha256 FROM blobs WHERE key=?", (key,)).fetchone()
                 self._w.execute(
                     "INSERT INTO blobs(key, sha256, etag, size, content_encoding, content_type, custom_metadata,"

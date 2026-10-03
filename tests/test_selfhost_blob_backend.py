@@ -188,3 +188,46 @@ def test_the_backend_is_selected_by_name():
     assert blob.SelfhostBlob().root == blob.SELFHOST_BLOB_ROOT != r"F:\econ_live\blobs"
     with pytest.raises(ValueError, match="selfhost"):
         blob.from_env("nope")
+
+
+# ---- the rename that makes a put visible is retried (WinError 32: 8 of 7.47M puts in the 2026-10-03 copy) ----------
+def _flaky_replace(monkeypatch, fails):
+    import blobstore as BS                                     # noqa: PLC0415
+    real = os.replace
+    calls = []
+
+    def replace(src, dst):
+        calls.append(os.path.basename(dst))
+        if len(calls) <= fails:
+            raise PermissionError(32, "The process cannot access the file because it is being used by another process")
+        return real(src, dst)
+    monkeypatch.setattr(BS.os, "replace", replace)
+    monkeypatch.setattr(BS.time, "sleep", lambda s: None)
+    return calls
+
+
+def test_a_put_retries_a_rename_another_process_briefly_holds(tmp_path, monkeypatch):
+    st = BlobStore(str(tmp_path / "b"), create=True)
+    calls = _flaky_replace(monkeypatch, fails=2)
+    sha = st.put("series/x.csv", b"date,value\n2026-01-01,1\n", etag="e1")
+    h = st.head("series/x.csv")
+    assert h["sha256"] == sha and open(h["path"], "rb").read() == b"date,value\n2026-01-01,1\n"
+    assert len(calls) == 3, "two refusals, then the rename"
+
+
+def test_a_rename_that_never_clears_fails_the_put_and_leaves_nothing(tmp_path, monkeypatch):
+    import blobstore as BS                                     # noqa: PLC0415
+    st = BlobStore(str(tmp_path / "b"), create=True)
+    calls = _flaky_replace(monkeypatch, fails=99)
+    with pytest.raises(PermissionError):
+        st.put("series/y.csv", b"never stored", etag="e2")
+    assert len(calls) == len(BS.REPLACE_BACKOFF_S) + 1, "bounded: every wait, then the error"
+    assert st.head("series/y.csv") is None, "no index row for a put that did not happen"
+    left = [f for _d, _s, fs in os.walk(tmp_path / "b" / "objects") for f in fs]
+    assert left == [], f"no temp file and no object left behind: {left}"
+
+
+def test_the_waits_are_core_atomics(monkeypatch):
+    import blobstore as BS                                     # noqa: PLC0415
+    from core import atomic                                    # noqa: PLC0415
+    assert BS.REPLACE_BACKOFF_S == atomic.BACKOFF_S, "one retry rule for every replace in the repository"
