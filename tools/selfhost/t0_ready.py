@@ -251,8 +251,10 @@ def d1_only_sources() -> tuple[bool, str]:
 SEC_EDGAR_OWED = (
     "the local sec_edgar store is WHOLE first: footer_diff + mirror_sync for clean_grouped/sec_edgar show 0 "
     "behind and 0 R2-only (R1193: one store, whole first; the local check cannot see a store that is behind "
-    "R2 when the span did not move). Taken AFTER sec-edgar-daily is disabled: until then that job advances R2 "
-    "every day and nothing advances the local store (2026-10-03: 17,480 same, 25 behind, 1 R2-only, 0 ahead)",
+    "R2 when the span did not move). Taken AFTER sec-edgar-daily is disabled and drained and BEFORE the "
+    "CUTOVER flag (mirror_sync refuses after it): until then that job advances R2 every day, and no scheduled "
+    "job advances the local store - only a manual mirror_sync does (last: about 328 files, 2026-10-01). "
+    "2026-10-03: 17,480 same, 25 behind, 1 R2-only, 0 ahead",
     "the D1-to-local proof on ALL columns and its receipt, taken after sec-edgar-daily is disabled and drained "
     "(plan: THE PROOF, AND WHEN; tools/sync_source_rows_d1_to_local.py compares start/end/title only)",
     "the local value equals D1's source_data_through at the switch (one primary-key read)",
@@ -301,6 +303,8 @@ def sec_edgar_local(receipt_path: str | None = None, catalogue: str | None = Non
         rows = C.catalogue_rows(con)
     finally:
         con.close()
+    if not rows:                                                    # rows_sha256([]) is a constant anyone can write
+        return False, "the catalogue has no sec_edgar rows: nothing was compared"
     if C.rows_sha256(rows) != r.get("catalogue_sha256"):
         return False, "the catalogue's sec_edgar rows changed after the receipt: run the check again"
     if C.listing_sha256(C.store_listing(store)) != r.get("store_fingerprint"):
@@ -310,6 +314,9 @@ def sec_edgar_local(receipt_path: str | None = None, catalogue: str | None = Non
         res = C.compare(rows, store, C._refresher().coverage_span, today or L.today_utc())
     except Exception as e:                                          # noqa: BLE001 - cannot tell = not ready
         return False, f"the comparison could not be re-run: {type(e).__name__}: {e}"
+    if C.listing_sha256(res["listing"]) != r.get("store_fingerprint"):
+        # compare() listed the store again: a change between the check above and that listing (AR-208)
+        return False, "the sec_edgar store changed after the receipt: run the check again"
     if C.listing_sha256(C.store_listing(store)) != C.listing_sha256(res["listing"]):
         return False, "the sec_edgar store moved while the gate re-read it: run the gate again"
     rerun = {k: len(res[k]) for k in C.COUNTS}
@@ -317,8 +324,8 @@ def sec_edgar_local(receipt_path: str | None = None, catalogue: str | None = Non
         return False, ("the receipt says clean, but the gate's own re-run of the comparison finds "
                        + ", ".join(f"{k} {v}" for k, v in rerun.items() if v) + ": run the check again")
     if owed:
-        return False, f"receipt clean ({r['catalogue_rows']:,} rows), but NOT BUILT YET: " + "; ".join(owed)
-    return True, (f"receipt clean and current, and the gate's own re-run agrees: {r['catalogue_rows']:,} rows, "
+        return False, f"receipt clean ({len(rows):,} rows), but NOT BUILT YET: " + "; ".join(owed)
+    return True, (f"receipt clean and current, and the gate's own re-run agrees: {len(rows):,} rows, "
                   f"receipt taken {r.get('finished_utc')}")
 
 

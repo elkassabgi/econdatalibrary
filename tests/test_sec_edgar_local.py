@@ -570,6 +570,72 @@ def test_a_failure_of_the_re_run_itself_is_not_ready(tmp_path, monkeypatch):
     assert ok is False and "could not be re-run" in detail
 
 
+# ---- AR-208: the re-run must check EVERY count, use the gate's own clock, and catch a store that moves -------------
+def _forge_clean(receipt, **extra):
+    r = json.load(open(receipt))
+    r["counts"] = {k: 0 for k in C.COUNTS}
+    r["clean"] = True
+    r.update(extra)
+    json.dump(r, open(receipt, "w"))
+
+
+@pytest.mark.parametrize("count", ["store_only", "catalogue_only", "forward", "unreadable"])
+def test_a_forged_clean_receipt_is_refused_whichever_count_the_world_really_has(tmp_path, monkeypatch, count):
+    """AR-208: only `differing` was forged before, so a re-run that ignored the other four counts passed."""
+    cat, store, receipt = _check_world(tmp_path, monkeypatch)
+    c = sqlite3.connect(cat)
+    if count == "store_only":
+        _file(store, "NEWCO", [("2026-06-30", "2026-08-01")])
+    elif count == "catalogue_only":
+        c.execute("INSERT INTO series VALUES ('sec_edgar:GONE', 'sec_edgar', '2020-01-01', '2020-12-31')")
+    elif count == "forward":
+        # no fact filed at or after its end and nothing ended: the rule's fallback keeps the forward date
+        _file(store, "FWD", [("2999-01-01", None)])
+        c.execute("INSERT INTO series VALUES ('sec_edgar:FWD', 'sec_edgar', '2999-01-01', '2999-01-01')")
+    else:
+        open(os.path.join(store, "BAD.parquet"), "wb").write(b"not a parquet file")
+        c.execute("INSERT INTO series VALUES ('sec_edgar:BAD', 'sec_edgar', '2020-01-01', '2020-12-31')")
+    c.commit()
+    c.close()
+    out = C.run(cat, store, receipt, today=TODAY)
+    assert out["counts"][count] >= 1 and out["clean"] is False, "the world really has it (control)"
+    # the forgery: counts zeroed, and the receipt's own clock moved past every forward date
+    _forge_clean(receipt, today_utc="9999-12-31")
+    ok, detail = T.sec_edgar_local(receipt, cat, store, owed=(), today=TODAY)
+    assert ok is False and "re-run of the comparison finds" in detail, detail
+    assert f"{count} " in detail.split("finds", 1)[1], detail
+
+
+def test_a_store_that_moves_during_the_gates_re_read_is_not_ready(tmp_path, monkeypatch):
+    cat, store, receipt = _gate(tmp_path, monkeypatch)
+    real = C.compare
+
+    def compare_then_a_writer_lands(*a, **k):
+        res = real(*a, **k)
+        _file(store, "LATE", [("2026-06-30", "2026-08-01")])          # written while the gate was reading
+        return res
+    monkeypatch.setattr(C, "compare", compare_then_a_writer_lands)
+    ok, detail = T.sec_edgar_local(receipt, cat, store, owed=(), today=TODAY)
+    assert ok is False and "moved while the gate re-read it" in detail, detail
+
+
+def test_an_empty_catalogue_range_with_an_empty_store_is_never_ready(tmp_path, monkeypatch):
+    """AR-208: rows_sha256([]) is a constant anyone can write, and the receipt's catalogue_rows field was trusted."""
+    cat, store, receipt = _gate(tmp_path, monkeypatch)
+    c = sqlite3.connect(cat)
+    c.execute("DELETE FROM series WHERE source_id='sec_edgar'")
+    c.commit()
+    c.close()
+    for f in os.listdir(store):
+        os.remove(os.path.join(store, f))
+    r = json.load(open(receipt))
+    r["catalogue_sha256"] = C.rows_sha256([])
+    r["store_fingerprint"] = C.listing_sha256(C.store_listing(store))
+    json.dump(r, open(receipt, "w"))
+    ok, detail = T.sec_edgar_local(receipt, cat, store, owed=(), today=TODAY)
+    assert ok is False and "no sec_edgar rows" in detail, detail
+
+
 def test_the_gate_fails_when_the_catalogue_or_the_store_moved_after_the_receipt(tmp_path, monkeypatch):
     cat, store, receipt = _gate(tmp_path, monkeypatch)
     c = sqlite3.connect(cat)
