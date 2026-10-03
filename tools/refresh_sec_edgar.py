@@ -1202,9 +1202,27 @@ def main():
                          "(comma/space separated, or @file with one per line) and write ONLY the "
                          "catalogue dates — local by primary key and, with --d1, D1 by primary key "
                          "in one batch; no facts, CSVs or FTS rows are touched. Dry run unless --apply.")
+    ap.add_argument("--local-only", action="store_true",
+                    help="the scheduled workstation run: before T0 it does nothing and exits 0 (the CI job "
+                         "sec-edgar-daily refreshes sec_edgar then); after T0 it is the daily run, so --ciks, "
+                         "--limit, --days, --d1, --audit, --respan and --force are refused")
     a = ap.parse_args()
 
     from core import cutover                                  # noqa: PLC0415
+    if a.local_only:
+        named = [f for f, v in (("--ciks", a.ciks), ("--limit", a.limit), ("--days", a.days is not None),
+                                ("--d1", a.d1), ("--audit", a.audit), ("--respan", a.respan), ("--force", a.force))
+                 if v]
+        if named:
+            # the scheduled run must be the one that may move the mark: a repair or a test run never is (may_advance)
+            print(f"refused: --local-only is the daily run; it takes no {', '.join(named)}", flush=True)
+            return 2
+        if not cutover.is_cut_over():
+            # before T0 the CI job writes R2 and D1; a second writer here would race it (the scheduled task may be
+            # registered before T0 and start working at the flag, with nothing else to switch on)
+            print(f"sec_edgar --local-only: not cut over ({cutover.FLAG_PATH} absent) - nothing to do; the CI "
+                  f"job sec-edgar-daily refreshes sec_edgar until T0", flush=True)
+            return 0
     if cutover.is_cut_over() and (a.d1 or a.audit or a.respan):
         # before anything else: these read or write D1 and R2, which are frozen after T0 (_refresh_local)
         raise cutover.CutoverRefused("refused: after T0 there is no D1, and --audit / --respan are not ported to "
