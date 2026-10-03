@@ -35,6 +35,8 @@ jobs:
           CF_ANALYTICS_TOKEN: ${{ secrets.CF_ANALYTICS_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          # Cloudflare Email Service first, Resend otherwise (core/status_mail.py).
+          CLOUDFLARE_EMAIL_TOKEN: ${{ secrets.CLOUDFLARE_EMAIL_TOKEN }}
           DIGEST_TO: ${{ secrets.DIGEST_TO }}
           SELFHOST_NO_WRITES_SINCE: ${{ vars.SELFHOST_NO_WRITES_SINCE }}
         run: python -B tools/selfhost/watch_edge.py

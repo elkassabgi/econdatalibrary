@@ -171,25 +171,17 @@ def bucket_sizes() -> tuple:
 
 
 def send_alert(subject: str, body: str) -> None:
-    key = os.environ.get("RESEND_API_KEY", "").strip()
-    if not key:
-        print("  RESEND_API_KEY not set — email skipped; the red workflow is the delivery path")
-        return
-    req = urllib.request.Request(
-        "https://api.resend.com/emails",
-        data=json.dumps({"from": FROM, "to": [TO], "subject": subject,
-                         "text": body}).encode(),
-        headers={"Authorization": f"Bearer {key}",
-                 "Content-Type": "application/json",
-                 # api.resend.com sits behind Cloudflare bot protection, which
-                 # 1010-blocks urllib's default signature — identify honestly.
-                 "User-Agent": "econdatalibrary-billing-guard/1.0"},
-        method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            print(f"  alert email sent: HTTP {resp.status}")
-    except Exception as e:  # noqa: BLE001 — the red workflow is the second delivery path
-        print(f"  alert email failed ({e}) — relying on the red-workflow notification")
+    """Cloudflare Email Service first, Resend as before (core/status_mail.py). Never raises: the
+    red workflow is the second delivery path."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from core.status_mail import send_status_mail
+    path = send_status_mail(subject, body, sender=FROM, to=TO,
+                            user_agent="econdatalibrary-billing-guard/1.0",
+                            log=lambda m: print(f"  {m}"))
+    if path in ("skipped", "failed"):
+        print(f"  alert email {path} - relying on the red-workflow notification")
 
 
 def _load_env_token() -> str:
