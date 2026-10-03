@@ -256,6 +256,18 @@ class BlobStore:
         they count in the number returned."""
         cutoff =(dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=grace_hours)).isoformat(timespec="seconds")
         gone = 0
+        # temp-file candidates, listed OUTSIDE the write transaction (see below for why and how they are removed)
+        old_temps, walk_cutoff = [], time.time() - grace_hours * 3600
+        objects = os.path.join(self.root, "objects")
+        for sub in (os.scandir(objects) if os.path.isdir(objects) else ()):
+            if sub.is_dir():
+                for e in os.scandir(sub.path):
+                    if e.name.startswith(".tmp-"):
+                        try:
+                            if e.stat().st_mtime < walk_cutoff:
+                                old_temps.append(e.path)
+                        except OSError:
+                            continue
         with self._wlock:
             self._w.execute("BEGIN IMMEDIATE")
             try:
@@ -271,21 +283,18 @@ class BlobStore:
                         gone += 1
                     self._w.execute("DELETE FROM retired WHERE sha256=?", (sha,))
                 # TEMP FILES OF FAILED PUTS (review AR-211): a put whose rename was refused may not be able to
-                # remove its temp file either (the same handle denies both). Swept here, inside the write
-                # transaction - no put anywhere is between its temp write and its index row - and only when older
-                # than the grace period. A file still held is kept for the next run.
+                # remove its temp file either (the same handle denies both). The candidates were found BEFORE this
+                # transaction (walking ~14M entries inside it would hold every writer off for minutes); each is
+                # checked again and removed here, inside it - so no put anywhere is between its temp write and
+                # its index row - and only when older than the grace period. A file still held is kept.
                 tmp_cutoff = time.time() - grace_hours * 3600
-                objects = os.path.join(self.root, "objects")
-                for sub in (os.scandir(objects) if os.path.isdir(objects) else ()):
-                    if not sub.is_dir():
+                for path in old_temps:
+                    try:
+                        if os.stat(path).st_mtime < tmp_cutoff:
+                            os.remove(path)
+                            gone += 1
+                    except OSError:
                         continue
-                    for e in os.scandir(sub.path):
-                        if e.name.startswith(".tmp-") and e.stat().st_mtime < tmp_cutoff:
-                            try:
-                                os.remove(e.path)
-                                gone += 1
-                            except OSError:
-                                continue
                 self._w.execute("COMMIT")
             except BaseException:
                 self._w.execute("ROLLBACK")
