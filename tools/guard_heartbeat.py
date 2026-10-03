@@ -490,14 +490,16 @@ def check(max_age_min: float, local: bool = False) -> int:
               "workstation's checkout of tools/guard_heartbeat.py is older, so that run is UNMONITORED until it is "
               "updated.")
     if sec_bad:
+        # printed now, failed below: the lane's verdict is still read and printed (two faults, two lines)
         print(f"SEC_EDGAR LOCAL RUN: {sec_bad}")
         print("  After T0 sec_edgar is refreshed ONLY by tools/selfhost/run_sec_edgar_local.ps1 (the guard loop); "
               "every day it misses widens the next scan window, up to the 120-day refusal.")
-        return 1
     if lane_bad:
         print(f"STATCAN LANE: {lane_bad}")
         print("  statcan is refreshed and served ONLY by jobs/statcan_lane.py (a guard job); nothing "
               "else in CI judges a run_location=local source.")
+        return 1
+    if sec_bad:
         return 1
 
     print(f"guard heartbeat OK: {age:.1f} min old ({beat.isoformat()}) — {where}"
