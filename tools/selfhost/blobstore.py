@@ -254,20 +254,28 @@ class BlobStore:
         that re-uses a retired file cannot lose it. A file Windows holds open is kept for the next run.
         It also removes .tmp- files older than grace_hours (a failed put that could not remove its own, AR-211);
         they count in the number returned."""
-        cutoff =(dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=grace_hours)).isoformat(timespec="seconds")
+        cutoff = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=grace_hours)).isoformat(timespec="seconds")
         gone = 0
-        # temp-file candidates, listed OUTSIDE the write transaction (see below for why and how they are removed)
+        # temp-file candidates, listed OUTSIDE the write transaction (see below for why and how they are removed).
+        # An unreadable directory is skipped, never fatal: the retired-file sweep below still runs (AR-211 M2).
         old_temps, walk_cutoff = [], time.time() - grace_hours * 3600
         objects = os.path.join(self.root, "objects")
-        for sub in (os.scandir(objects) if os.path.isdir(objects) else ()):
-            if sub.is_dir():
-                for e in os.scandir(sub.path):
-                    if e.name.startswith(".tmp-"):
-                        try:
-                            if e.stat().st_mtime < walk_cutoff:
-                                old_temps.append(e.path)
-                        except OSError:
-                            continue
+        try:
+            subs = [s for s in os.scandir(objects) if s.is_dir()] if os.path.isdir(objects) else []
+        except OSError:
+            subs = []
+        for sub in subs:
+            try:
+                entries = list(os.scandir(sub.path))
+            except OSError:
+                continue
+            for e in entries:
+                if e.name.startswith(".tmp-"):
+                    try:
+                        if e.stat().st_mtime < walk_cutoff:
+                            old_temps.append(e.path)
+                    except OSError:
+                        continue
         with self._wlock:
             self._w.execute("BEGIN IMMEDIATE")
             try:
@@ -284,7 +292,7 @@ class BlobStore:
                     self._w.execute("DELETE FROM retired WHERE sha256=?", (sha,))
                 # TEMP FILES OF FAILED PUTS (review AR-211): a put whose rename was refused may not be able to
                 # remove its temp file either (the same handle denies both). The candidates were found BEFORE this
-                # transaction (walking ~14M entries inside it would hold every writer off for minutes); each is
+                # transaction (a walk of ~14M entries took ~16 s warm on this disk, cold unmeasured - AR-211); each is
                 # checked again and removed here, inside it - so no put anywhere is between its temp write and
                 # its index row - and only when older than the grace period. A file still held is kept.
                 tmp_cutoff = time.time() - grace_hours * 3600
