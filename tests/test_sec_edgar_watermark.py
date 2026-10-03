@@ -89,14 +89,15 @@ def test_the_first_run_with_an_explicit_window_may_move_the_mark():
 
 
 # ---- main() hands the decision to the writer -----------------------------------------------------------------------
-def _wire(monkeypatch, cut, last, missing=(), argv=()):
+def _wire(monkeypatch, cut, last, missing=(), argv=(), retry=(), filers=(320193,)):
     seen = {}
     monkeypatch.setattr(cutover, "is_cut_over", lambda: cut)
     monkeypatch.setattr(R, "_last_success_utc", lambda: (seen.setdefault("read", True), last)[1])
+    monkeypatch.setattr(R, "_load_retry", lambda: set(retry))
 
     def fake_filers(days, today=None):
         seen["days"], seen["today"] = days, today
-        return {320193}, ["x:1"], list(missing)
+        return set(filers), ["x:1"], list(missing)
     monkeypatch.setattr(R, "filers_since", fake_filers)
     monkeypatch.setattr(R, "ticker_map", lambda: {320193: ["AAPL"]})
 
@@ -141,7 +142,7 @@ def test_a_short_explicit_window_after_a_gap_never_moves_the_mark(monkeypatch):
 
 def test_an_unread_index_never_moves_the_mark(monkeypatch):
     seen = _wire(monkeypatch, True, _days_ago(1), missing=[_days_ago(1) + ":ERRHTTPError"])
-    assert R.main() == 0
+    assert R.main() == 1, "after T0 an unread index fails the run"
     assert seen["advance"] is False
 
 
@@ -158,13 +159,54 @@ def test_main_before_t0_reads_no_state(monkeypatch):
     assert "read" not in seen and seen["days"] == 3
 
 
-def test_the_writer_stamps_the_mark_only_when_allowed_and_with_no_fetch_failure():
-    """_refresh_local moves the mark only on an ok day that main() allowed, with no failed company fetch. Pinned on
-    the source (the writer needs a whole store to run)."""
+def test_the_writer_stamps_the_mark_when_allowed_and_saves_the_failed_companies_first():
+    """_refresh_local moves the mark on an ok day that main() allowed - fetch failures do not block it (R1381: a few
+    fail every day, so "no failure" froze the mark) - and writes the failed companies to the retry list BEFORE the
+    stamp. Pinned on the source (the writer needs a whole store to run); the retry list's use is tested below."""
     src = open(os.path.join(ROOT, "tools", "refresh_sec_edgar.py"), encoding="utf-8").read()
-    assert 'mark = stamp_at.isoformat(timespec="seconds") if (ok_day and advance and not failed and stamp_at) else None' in src
+    rule = 'mark = stamp_at.isoformat(timespec="seconds") if (ok_day and advance and stamp_at) else None'
+    assert rule in src
+    assert "not failed and stamp_at" not in src, "the freezing no-failure rule is back"
+    body = src.split(rule, 1)[1]
+    assert body.index("_save_retry(failed_ciks)") < body.index('st.upsert_source("sec_edgar"'), "save the list first"
     assert '**({"last_success_utc": mark} if mark else {})' in src
     assert '**({"last_success_utc": when} if ok_day else {})' not in src, "the old every-ok-day stamp is back"
+    assert src.count("failed_ciks.append(cik)") == 1
+
+
+def test_the_failed_companies_of_the_last_moved_mark_are_fetched_by_the_next_run(monkeypatch):
+    seen = _wire(monkeypatch, True, _days_ago(1), retry={111, 222}, filers=(320193,))
+    assert R.main() == 0
+    assert seen["todo"] == [111, 222, 320193]
+
+
+def test_the_retry_list_round_trips_and_a_broken_file_is_never_read_as_empty(monkeypatch, tmp_path):
+    p = tmp_path / "sec_edgar_retry_ciks.json"
+    monkeypatch.setattr(R, "_retry_path", lambda: str(p))
+    assert R._load_retry() == set(), "no file yet = nothing to retry"
+    R._save_retry([5, 3, 3])
+    assert R._load_retry() == {3, 5}
+    R._save_retry([])
+    assert R._load_retry() == set()
+    p.write_text("{ broken", encoding="utf-8")
+    with pytest.raises(ValueError):
+        R._load_retry()
+
+
+def test_after_t0_an_unread_index_fails_the_run_even_with_nothing_to_do(monkeypatch):
+    seen = _wire(monkeypatch, True, _days_ago(1), missing=[_days_ago(1) + ":ERRHTTPError"], filers=())
+    assert R.main() == 1
+    assert "todo" not in seen
+
+
+def test_after_t0_an_unread_index_fails_the_run_even_when_the_writer_is_happy(monkeypatch):
+    seen = _wire(monkeypatch, True, _days_ago(1), missing=[_days_ago(1) + ":ERRHTTPError"])
+    assert R.main() == 1 and seen["advance"] is False
+
+
+def test_before_t0_an_unread_index_does_not_change_the_exit_code(monkeypatch):
+    _wire(monkeypatch, False, None, missing=["2026-10-01:ERRHTTPError"], filers=())
+    assert R.main() == 0
 
 
 def test_the_mark_is_read_only_from_the_xbrl_products_own_row(monkeypatch):
@@ -220,6 +262,28 @@ def test_when_the_listing_cannot_be_read_every_failed_fetch_is_an_error(monkeypa
     _fake_sec(monkeypatch, listed_days={fri}, listing_ok=False)
     _ciks, _scanned, missing = R.filers_since(2, today=sat)
     assert missing == ["2026-10-03:ERRHTTPError"], "a weekend cannot be told from a refusal without the listing"
+
+
+def test_an_old_day_after_which_no_listing_names_anything_is_an_error(monkeypatch):
+    """AR-209 round 2: a stale or cached listing stops before real days. A day older than the overlap with no
+    listed day after it is not read as "no index"."""
+    today = dt.date(2026, 10, 9)
+    listed = {dt.date(2026, 10, 1), dt.date(2026, 10, 2)}            # the listing stops on 10-02
+    _fake_sec(monkeypatch, listed_days=listed)
+    _ciks, _s, missing = R.filers_since(9, today=today)
+    assert "2026-10-09" in missing and "2026-10-08" in missing, "today and yesterday: not yet posted, plain"
+    assert "2026-10-06:ERRunlisted" in missing and "2026-10-05:ERRunlisted" in missing
+    assert R.may_advance(9, today, None, False, missing) is False
+
+
+def test_a_weekend_before_a_listed_weekday_is_plain_missing_also_across_a_quarter(monkeypatch):
+    # 2026-09-26/27 is a weekend at the end of QTR3; 2026-10-01 (QTR4) is listed and read first
+    listed = {dt.date(2026, 10, 1), dt.date(2026, 9, 30), dt.date(2026, 9, 29), dt.date(2026, 9, 28),
+              dt.date(2026, 9, 25)}
+    _fake_sec(monkeypatch, listed_days=listed)
+    _ciks, _s, missing = R.filers_since(7, today=dt.date(2026, 10, 1))
+    assert "2026-09-27" in missing and "2026-09-26" in missing
+    assert not [m for m in missing if ":ERR" in m], missing
 
 
 def test_the_listing_is_read_once_per_quarter(monkeypatch):

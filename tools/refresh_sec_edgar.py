@@ -128,8 +128,14 @@ def filers_since(days, today=None):
         listed = listings[(day.year, q)]
         if listed is not None and f"form.{day:%Y%m%d}.idx" not in listed:
             # no index: NOT an error, but it IS recorded - a silently skipped day is indistinguishable from a day
-            # with no filings
-            missing.append(f"{day:%Y-%m-%d}")
+            # with no filings. EXCEPT when no listing read so far names any later day and the day is older than the
+            # overlap: then the listing may stop before it (stale or cached), and skipping it could lose it for good
+            # (review AR-209 round 2). The later-day test spans quarters (the newest quarter is read first).
+            later = any(n[5:13] > f"{day:%Y%m%d}" for L in listings.values() if L for n in L)
+            if not later and day < today - dt.timedelta(days=WATERMARK_OVERLAP_DAYS - 1):
+                missing.append(f"{day:%Y-%m-%d}:ERRunlisted")
+            else:
+                missing.append(f"{day:%Y-%m-%d}")
             continue
         url = (f"https://www.sec.gov/Archives/edgar/daily-index/{day.year}/"
                f"QTR{q}/form.{day:%Y%m%d}.idx")
@@ -1045,6 +1051,32 @@ def _last_success_utc():
     return row.get("last_success_utc")
 
 
+def _retry_path() -> str:
+    from updater import config                                # noqa: PLC0415
+    return os.path.join(config.STATE_DIR, "sec_edgar_retry_ciks.json")
+
+
+def _load_retry() -> set:
+    """The companies whose fetch failed in the run that last moved the mark. A missing file is an empty list;
+    anything else (unreadable, malformed) raises - never read as empty."""
+    try:
+        with open(_retry_path(), encoding="utf-8") as f:
+            return {int(c) for c in json.load(f)["ciks"]}
+    except FileNotFoundError:
+        return set()
+
+
+def _save_retry(ciks) -> None:
+    import tempfile                                           # noqa: PLC0415
+    from core.atomic import atomic_replace                    # noqa: PLC0415
+    p = _retry_path()
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p), suffix=".tmp")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump({"ciks": sorted(int(c) for c in ciks)}, f)
+    atomic_replace(tmp, p)
+
+
 def may_advance(days: int, scan_day: dt.date, last_success_utc, limited: bool, missing) -> bool:
     """May this daily-index run move the mark? Only when its window started on or before the old mark (or there is
     no mark yet: the first run's explicit --days is the operator's statement), no --limit, and no day whose index
@@ -1134,13 +1166,22 @@ def main():
             print(f"  no index listed by SEC (weekend/holiday/not yet posted): {', '.join(none_listed)}")
         if unread:
             print(f"  INDEX NOT READ (listed by SEC, the fetch failed): {', '.join(unread)}", flush=True)
+        retry = _load_retry() if cut else set()
+        if retry:
+            # companies whose fetch failed in the run that last moved the mark: fetched again until they succeed,
+            # so moving the mark never drops them (review AR-209 round 2)
+            print(f"  + {len(retry):,} company(ies) whose fetch failed when the mark last moved", flush=True)
+            ciks |= retry
         print(f"  distinct CIKs to refresh: {len(ciks):,}", flush=True)
         advance = may_advance(days, scan_started.date(), last, bool(a.limit), missing)
         if cut:
             print(f"  this run {'MAY' if advance else 'may NOT'} move the scan mark (now {last})", flush=True)
+    # After T0 an unread index is a failed run, not a quiet one: the mark cannot move, and a scheduled task that
+    # stayed green would only find out at the WATERMARK_MAX_DAYS refusal (review AR-209 round 2). Before T0: as before.
+    unread_after_t0 = cutover.is_cut_over() and any(":ERR" in str(m) for m in missing)
     if not ciks:
         print("nothing to do")
-        return 0
+        return 1 if unread_after_t0 else 0
 
     t2c = ticker_map()
     todo = sorted(ciks)
@@ -1149,7 +1190,8 @@ def main():
         print(f"  LIMITED to {len(todo)} companies (testing)", flush=True)
     if cutover.is_cut_over():
         # the local store, under the lock; no R2, no D1
-        return _refresh_local(a, todo, t2c, advance=advance, stamp_at=scan_started)
+        rc = _refresh_local(a, todo, t2c, advance=advance, stamp_at=scan_started)
+        return rc or (1 if unread_after_t0 else 0)
 
     # The client is needed for READS too, not only writes: merge_facts must see what the store
     # already holds, and on CI the local mirror does not exist.
@@ -1363,6 +1405,7 @@ def _refresh_local(a, todo, t2c, advance: bool = False, stamp_at=None) -> int:
     # never transient, so any one of them makes the day partial (R1235: they were counted as fetch failures,
     # and a company refused every day was stamped ok every day)
     staged, failed, refused, errors, n_with_baseline = [], 0, 0, [], 0
+    failed_ciks = []                # carried into the next run when this one moves the mark (_save_retry)
     empty = 0                       # answered, but the parser found no facts (R1236: an all-empty day was "ok")
     cat = catalog_path.connect()                                     # read-only: spans, and "is it catalogued"
     try:
@@ -1373,6 +1416,7 @@ def _refresh_local(a, todo, t2c, advance: bool = False, stamp_at=None) -> int:
                 data = json.loads(_get(url, timeout=180))
             except Exception as e:                                   # noqa: BLE001
                 failed += 1
+                failed_ciks.append(cik)
                 errors.append(f"CIK{cik:010d}:{type(e).__name__}")
                 continue
             metric, odate, vals, vint = parse_companyfacts(data)
@@ -1476,10 +1520,13 @@ def _refresh_local(a, todo, t2c, advance: bool = False, stamp_at=None) -> int:
             # skipped or missing from the catalogue. Anything else is partial, which NEVER sets last_success (the
             # econ rule; R1235 found skipped and refused days stamped ok).
             ok_day = failed * 20 <= len(todo) and not refused and not skipped and not missing and not all_empty
-            # THE MARK (see WATERMARK_OVERLAP_DAYS): moved only by a run main() allowed to move it, on an ok day with
-            # NO fetch failure - a company whose fetch failed would otherwise fall out of the next window when its
-            # filing day is older than the overlap (after an outage). The day can still be "ok" for freshness.
-            mark = stamp_at.isoformat(timespec="seconds") if (ok_day and advance and not failed and stamp_at) else None
+            # THE MARK (see WATERMARK_OVERLAP_DAYS): moved only by a run main() allowed to move it, on an ok day. The
+            # companies whose fetch failed (a few every day) are written to the retry list FIRST and fetched by the
+            # next run, so a failed company never falls out of the window when the mark moves past its filing day.
+            # (Requiring zero failures instead would almost never move the mark: review AR-209 round 2, R1381.)
+            mark = stamp_at.isoformat(timespec="seconds") if (ok_day and advance and stamp_at) else None
+            if mark:
+                _save_retry(failed_ciks)     # FIRST: a crash before the stamp leaves the old mark and the old list
             from updater.state import StateStore                     # noqa: PLC0415
             st = StateStore()
             try:
