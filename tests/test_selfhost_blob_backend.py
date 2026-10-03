@@ -190,7 +190,7 @@ def test_the_backend_is_selected_by_name():
         blob.from_env("nope")
 
 
-# ---- the rename that makes a put visible is retried (WinError 32: 8 of 7.47M puts in the 2026-10-03 copy) ----------
+# ---- the rename that makes a put visible is retried (WinError 32: 7 of ~7.5M puts in the 2026-10-03 copy) ----------
 def _flaky_replace(monkeypatch, fails):
     import blobstore as BS                                     # noqa: PLC0415
     real = os.replace
@@ -202,8 +202,12 @@ def _flaky_replace(monkeypatch, fails):
             raise PermissionError(32, "The process cannot access the file because it is being used by another process")
         return real(src, dst)
     monkeypatch.setattr(BS.os, "replace", replace)
-    monkeypatch.setattr(BS.time, "sleep", lambda s: None)
+    monkeypatch.setattr(BS.time, "sleep", lambda s: SLEPT.append(s))
+    SLEPT.clear()
     return calls
+
+
+SLEPT = []
 
 
 def test_a_put_retries_a_rename_another_process_briefly_holds(tmp_path, monkeypatch):
@@ -213,6 +217,8 @@ def test_a_put_retries_a_rename_another_process_briefly_holds(tmp_path, monkeypa
     h = st.head("series/x.csv")
     assert h["sha256"] == sha and open(h["path"], "rb").read() == b"date,value\n2026-01-01,1\n"
     assert len(calls) == 3, "two refusals, then the rename"
+    import blobstore as BS                                     # noqa: PLC0415
+    assert SLEPT == list(BS.REPLACE_BACKOFF_S[:2]), "it waits between tries, the backoff's own waits"
 
 
 def test_a_rename_that_never_clears_fails_the_put_and_leaves_nothing(tmp_path, monkeypatch):
@@ -222,6 +228,7 @@ def test_a_rename_that_never_clears_fails_the_put_and_leaves_nothing(tmp_path, m
     with pytest.raises(PermissionError):
         st.put("series/y.csv", b"never stored", etag="e2")
     assert len(calls) == len(BS.REPLACE_BACKOFF_S) + 1, "bounded: every wait, then the error"
+    assert SLEPT == list(BS.REPLACE_BACKOFF_S), "every wait taken, in order (a retry with no wait is useless)"
     assert st.head("series/y.csv") is None, "no index row for a put that did not happen"
     left = [f for _d, _s, fs in os.walk(tmp_path / "b" / "objects") for f in fs]
     assert left == [], f"no temp file and no object left behind: {left}"
@@ -231,3 +238,48 @@ def test_the_waits_are_core_atomics(monkeypatch):
     import blobstore as BS                                     # noqa: PLC0415
     from core import atomic                                    # noqa: PLC0415
     assert BS.REPLACE_BACKOFF_S == atomic.BACKOFF_S, "one retry rule for every replace in the repository"
+
+
+
+def test_a_temp_file_the_holder_also_refuses_to_delete_is_left_and_gc_sweeps_it(tmp_path, monkeypatch):
+    """AR-211 finding 3: the handle that refuses the rename denies deletion too, so the put's own cleanup can fail.
+    The temp file then stays; gc() removes it once it is older than the grace period."""
+    import blobstore as BS                                     # noqa: PLC0415
+    st = BlobStore(str(tmp_path / "b"), create=True)
+    _flaky_replace(monkeypatch, fails=99)
+    real_remove = os.remove
+
+    def remove(path):
+        if os.path.basename(path).startswith(".tmp-"):
+            raise PermissionError(32, "held")
+        return real_remove(path)
+    monkeypatch.setattr(BS.os, "remove", remove)
+    with pytest.raises(PermissionError):
+        st.put("series/z.csv", b"held temp", etag="e3")
+    temps = [os.path.join(d, f) for d, _s, fs in os.walk(tmp_path / "b" / "objects") for f in fs]
+    assert len(temps) == 1 and os.path.basename(temps[0]).startswith(".tmp-"), temps
+    assert SLEPT == list(BS.REPLACE_BACKOFF_S) * 2, "the rename's waits, then the removal's own waits"
+    monkeypatch.setattr(BS.os, "remove", real_remove)
+    assert st.gc(grace_hours=1) == 0 and os.path.exists(temps[0]), "younger than the grace period: kept"
+    old = os.path.getmtime(temps[0]) - 7200
+    os.utime(temps[0], (old, old))
+    assert st.gc(grace_hours=1) == 1 and not os.path.exists(temps[0]), "older: swept"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing violations only")
+def test_a_real_held_handle_refuses_rename_and_removal_until_it_closes(tmp_path, monkeypatch):
+    """No fakes (AR-211 C4): an open Python handle denies delete sharing on Windows, so both the rename and the
+    removal are refused with PermissionError while it is open; both go through after it closes."""
+    import blobstore as BS                                     # noqa: PLC0415
+    monkeypatch.setattr(BS.time, "sleep", lambda s: None)
+    src, dst = tmp_path / ".tmp-held", tmp_path / "target"
+    src.write_bytes(b"x")
+    with open(src, "rb"):
+        with pytest.raises(PermissionError):
+            BS._replace(str(src), str(dst))
+        assert BS._remove_temp(str(src)) is False and src.exists()
+    BS._replace(str(src), str(dst))
+    assert dst.read_bytes() == b"x"
+    other = tmp_path / ".tmp-other"
+    other.write_bytes(b"y")
+    assert BS._remove_temp(str(other)) is True and not other.exists()
