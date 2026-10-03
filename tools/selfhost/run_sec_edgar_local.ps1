@@ -86,7 +86,14 @@ function Write-Status($r) {
     # temp file, then a move over the old one: a reader (the heartbeat publisher) never sees a half-written file
     $tmp = $status + '.tmp'
     Set-Content -LiteralPath $tmp -Encoding ascii -Value ($r | ConvertTo-Json -Compress)
-    Move-Item -LiteralPath $tmp -Destination $status -Force
+    # RETRIED, as core.atomic.atomic_replace is: a reader that holds the file open (the publisher's open() allows
+    # no delete sharing) makes the move fail for that moment (AR-210 post-check).
+    for ($i = 1; $i -le 10; $i++) {
+        try { Move-Item -LiteralPath $tmp -Destination $status -Force -ErrorAction Stop; return }
+        catch { Start-Sleep -Milliseconds (100 * $i) }
+    }
+    Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    if ($log) { Add-Content -LiteralPath $log -Value "runner: the status file could not be replaced (held open); it is stale" }
 }
 
 New-Item -ItemType Directory -Force -Path $logsDir | Out-Null

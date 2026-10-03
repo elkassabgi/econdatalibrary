@@ -205,6 +205,21 @@ def test_a_lock_held_by_a_live_run_stops_a_second_run_and_a_reused_pid_does_not(
 
 
 @needs_ps
+def test_a_status_file_held_open_is_left_whole_and_the_log_says_so(box):
+    """AR-210 post-check: Move-Item cannot replace a file another process holds open (Python's open() allows no
+    delete sharing). The runner retries, then leaves the old file whole, removes its temp file and logs it."""
+    (box / "logs").mkdir()
+    st = box / "logs" / "sec_edgar_local.last.json"
+    old = '{"started":"2026-10-04T09:00:00Z","ended":"2026-10-04T09:01:00Z","rc":0,"pid":1,"last_ok_started":"2026-10-04T09:00:00Z"}'
+    st.write_text(old, encoding="ascii")
+    with open(st, encoding="ascii"):
+        rc, n, _ = _runner(box, "2026-10-05T09:00:00Z")
+    assert (rc, n) == (0, 1), "the run itself is not stopped by its bookkeeping"
+    assert st.read_text(encoding="ascii").strip() == old and not (box / "logs" / "sec_edgar_local.last.json.tmp").exists()
+    assert "could not be replaced" in next((box / "logs").glob("sec_edgar_local_*.log")).read_text(encoding="utf-8")
+
+
+@needs_ps
 def test_a_manual_run_before_t0_is_refused_and_records_nothing(box):
     rc, n, st = _runner(box, "2026-10-05T09:00:00Z", flag=False, if_due=False)
     assert (rc, n, st) == (4, 0, None), "an ok record before T0 would skip the first real day (AR-210 round 2)"
