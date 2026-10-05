@@ -225,7 +225,7 @@ white-space:nowrap;margin-left:.65rem}
       <li><a href="https://econdatalibrary.com">Econ Data</a></li>
       <li><a href="https://ipdatalibrary.com">IP Data</a></li>
       <li><a href="ask.html">Ask the Data</a></li>
-      <li><a class="js-ekd-register" href="https://hfdatalibrary.com/pages/download?from=elkassabgidata#register">Sign in</a></li>
+      <li><a class="js-ekd-register" href="https://econdatalibrary.com/account">Sign in</a></li>
     </ul>
   </div>
 </nav>
@@ -406,7 +406,7 @@ white-space:nowrap;margin-left:.65rem}
       b.onclick = () => downloadOffer(o, b); acts.appendChild(b);
     });
     if (data.registerNeeded && !signedIn) {
-      const a = document.createElement('a'); a.className = 'btn gold'; a.href = data.registerUrl || 'https://hfdatalibrary.com/pages/download#register';
+      const a = document.createElement('a'); a.className = 'btn gold'; a.href = data.registerUrl || 'https://econdatalibrary.com/account';
       a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'Create a free account to download →'; wireRegister(a); acts.appendChild(a);
     }
     if (acts.children.length) host.appendChild(acts);
@@ -444,7 +444,7 @@ white-space:nowrap;margin-left:.65rem}
     const host = addMsg('ai'); host.parentElement.querySelector('.bubble').innerHTML = fmt(text);
     if (gold && !signedIn) {
       const acts = document.createElement('div'); acts.className = 'acts';
-      const a = document.createElement('a'); a.className = 'btn ghost'; a.href = 'https://hfdatalibrary.com/pages/download#register';
+      const a = document.createElement('a'); a.className = 'btn ghost'; a.href = 'https://econdatalibrary.com/account';
       a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'Sign in / create free account'; wireRegister(a); acts.appendChild(a);
       host.parentElement.querySelector('.bubble').appendChild(acts);
     }
@@ -526,7 +526,7 @@ addEventListener("load", function () {
       <div>
         <h4>Account</h4>
         <ul>
-          <li><a class="js-ekd-register" href="https://hfdatalibrary.com/pages/download?from=elkassabgidata#register">Create Free Account</a></li>
+          <li><a class="js-ekd-register" href="https://econdatalibrary.com/account">Create Free Account</a></li>
           <li><a href="ask.html">Ask the Data</a></li>
           <li><a href="https://hfdatalibrary.com/pages/mcp">MCP Server (AI)</a></li>
         </ul>
