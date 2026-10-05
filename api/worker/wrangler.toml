@@ -33,6 +33,14 @@ compatibility_flags = ["nodejs_compat"]
 # outright in a non-interactive shell.
 account_id = "ce51d5c7fe3859098751b89bbebeab7a"
 workers_dev = true
+# NO VERSION PREVIEW ADDRESSES (2026-10-05). wrangler 3.114.17 turns preview_urls ON unless told otherwise,
+# and then EVERY uploaded version of this worker stays reachable at its own address
+# (<first 8 hex of the version id>-econdl-api.<subdomain>.workers.dev), reading the same live databases.
+# So an old build keeps answering with whatever it published then: measured on 2026-10-05, the build of
+# 2026-09-29 still returned the figures that a later change had removed from /v1/public-stats. The worker
+# has one public address, the workers.dev name above. tests/test_wrangler_toml_top_level_keys.py fails if
+# this line goes.
+preview_urls = false
 
 # CPU budget per request (Workers Paid: default 30 s, max 300 s). Measured 2026-09-01
 # (R582): inflating a served object costs ~25-40 CPU-s per GB of text, so the filtered
