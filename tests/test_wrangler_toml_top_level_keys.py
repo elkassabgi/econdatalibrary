@@ -68,6 +68,30 @@ def test_workers_dev_is_top_level_and_not_swallowed_by_a_table():
     assert d["workers_dev"] is True
 
 
+def test_version_preview_addresses_are_off_at_top_level():
+    """wrangler 3.114.17 defaults preview_urls to true: every uploaded version then keeps its own public address
+    and answers from the live databases with the code of its day (2026-10-05: the build of 2026-09-29 still
+    returned figures a later change had removed). The key must be false, and at the top level - under a table
+    header wrangler never reads it, which is the trap this file exists for."""
+    d = _parsed()
+    assert "preview_urls" in d, (
+        "preview_urls is not a top-level key - found instead under: "
+        f"{[k for k, v in d.items() if isinstance(v, dict) and 'preview_urls' in v]}")
+    assert d["preview_urls"] is False
+
+
+def test_control_the_parse_can_tell_a_misplaced_or_missing_preview_key(tmp_path):
+    """The check above on three wrong files: the key under [limits], the key true, the key absent."""
+    with open(TOML, encoding="utf-8") as fh:
+        text = fh.read()
+    assert text.count("\npreview_urls = false\n") == 1
+    for name, bad in (("under a table", text.replace("\npreview_urls = false\n", "\n") + "\n[extra]\npreview_urls = false\n"),
+                      ("true", text.replace("\npreview_urls = false\n", "\npreview_urls = true\n")),
+                      ("absent", text.replace("\npreview_urls = false\n", "\n"))):
+        d = tomllib.loads(bad)
+        assert d.get("preview_urls") is not False, name
+
+
 def test_limits_still_holds_only_what_belongs_to_it():
     """The other half of the move: the CPU ceiling must not have been carried out with them."""
     d = _parsed()
