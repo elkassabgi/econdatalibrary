@@ -186,7 +186,7 @@ SITEMAP_EXTRA = [
 HF_ORG = "https://huggingface.co/datasets/econdatalibrary"
 ZENODO_COMMUNITY = "https://zenodo.org/communities/econdatalibrary"
 
-# Permanent dataset DOI (Zenodo, mirrors hfdatalibrary's 10.5281/zenodo.19501605
+# Permanent dataset DOI (Zenodo, mirrors hfdatalibrary's 10.5281/zenodo.19501604
 # pattern). EMPTY until the deposit is published under Ahmed's Zenodo account —
 # while empty, the cite page renders URL-only citations (no placeholder text).
 # The moment the DOI is minted: set it here, regenerate, redeploy.
