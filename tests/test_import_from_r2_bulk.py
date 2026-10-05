@@ -684,3 +684,81 @@ def test_without_a_receipt_the_first_20_missing_are_printed(monkeypatch, tmp_pat
                             _ns(tmp_path, absent_out=None, prune_absent=False), c) == 25
     printed = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("MISSING ")]
     assert c["r2_not_held"] == 25 and len(printed) == 20
+
+
+def _progress_writes(monkeypatch):
+    """Every snapshot the run writes to p.json, in order (the file itself keeps only the last one)."""
+    real = os.replace
+    snaps = []
+
+    def replace(src, dst):
+        out = real(src, dst)                 # first: a replace the tool has to retry is then recorded once
+        if str(dst).endswith("p.json"):
+            with open(dst, encoding="utf-8") as fh:
+                snaps.append(json.load(fh))
+        return out
+    monkeypatch.setattr(imp.os, "replace", replace)
+    return snaps
+
+
+def _clock(monkeypatch, step):
+    """time.time() moves `step` seconds on every call."""
+    import time
+    clock = [time.time()]
+    monkeypatch.setattr(time, "time", lambda: clock.__setitem__(0, clock[0] + step) or clock[0])
+
+
+def test_resume_reports_progress_while_every_object_is_skipped(monkeypatch, tmp_path):
+    """The 30 s check sat after the skip of a held object, so a --resume over a store that holds nearly everything
+    wrote no progress until the listing reached an object to copy, or ended: a healthy run looked stalled for as
+    long as the skipping took.
+    Every listed key now reaches the check. `phase` is set only after the copy loop, so a snapshot without it was
+    written inside the loop."""
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)                           # the store now holds all 7
+    snaps = _progress_writes(monkeypatch)
+    _clock(monkeypatch, 31)
+    b = FakeBucket(OBJ)
+    rc, p = _run(monkeypatch, b, tmp_path, "--resume")
+    assert rc == 0 and b.gets == [] and p["skipped_held"] == 7 and p["copied"] == 0 and p["done"]
+    copying = [s for s in snaps if "phase" not in s]
+    assert [s["skipped_held"] for s in copying] == [1, 2, 3, 4, 5, 6, 7]
+    assert all(s["listed"] == s["skipped_held"] and s["copied"] == 0 and not s["done"] for s in copying)
+    assert copying[-1]["last_key"] == "series/k6.csv"
+
+
+def test_control_progress_waits_30_s_between_writes_while_skipping(monkeypatch, tmp_path):
+    """The other side: the check runs on every key, the WRITE does not. With a clock that moves 1 s per call the
+    7 skips take under 30 s and the copy loop writes nothing."""
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    snaps = _progress_writes(monkeypatch)
+    _clock(monkeypatch, 1)
+    rc, p = _run(monkeypatch, FakeBucket(OBJ), tmp_path, "--resume")
+    assert rc == 0 and p["skipped_held"] == 7 and p["done"]
+    assert snaps and [s for s in snaps if "phase" not in s] == []
+
+
+def test_control_the_30_s_wait_starts_again_after_each_write(monkeypatch, tmp_path):
+    """Review AR-236: with the check on every key, the reset of the 30 s clock after a write is all that stops one
+    file write per skipped key once the first 30 s have passed (millions of keys must not mean millions of
+    writes). A clock that moves 16 s per call makes every second key due: writes at keys 2, 4 and 6 only."""
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    snaps = _progress_writes(monkeypatch)
+    _clock(monkeypatch, 16)
+    rc, p = _run(monkeypatch, FakeBucket(OBJ), tmp_path, "--resume")
+    assert rc == 0 and p["skipped_held"] == 7 and p["done"]
+    assert [s["skipped_held"] for s in snaps if "phase" not in s] == [2, 4, 6]
+
+
+def test_progress_counts_agree_when_a_resume_copies_some_and_skips_others(monkeypatch, tmp_path):
+    """The check also still runs on a key that is copied: one snapshot per listed key, and the skip count stops
+    at the three held ones (both counts belong to the listing thread, so they do not depend on the workers)."""
+    held = {k: v for k, v in OBJ.items() if k in ("series/k0.csv", "series/k1.csv", "series/k2.csv")}
+    _run(monkeypatch, FakeBucket(held), tmp_path)
+    snaps = _progress_writes(monkeypatch)
+    _clock(monkeypatch, 31)
+    b = FakeBucket(OBJ)
+    rc, p = _run(monkeypatch, b, tmp_path, "--resume")
+    assert rc == 0 and p["skipped_held"] == 3 and p["copied"] == 4 and sorted(b.gets) == sorted(set(OBJ) - set(held))
+    copying = [s for s in snaps if "phase" not in s]
+    assert [s["listed"] for s in copying] == [1, 2, 3, 4, 5, 6, 7]
+    assert [s["skipped_held"] for s in copying] == [1, 2, 3, 3, 3, 3, 3]

@@ -379,18 +379,24 @@ def _bulk(r2_util, s3, store, a) -> int:
                 break
             c["listed"] += 1
             c["last_key"] = key
+            held = False
             if a.resume:
                 h = store.head(key)
                 # the SAME object: bytes (etag, size) and R2's LastModified (whole seconds, as copy_one keeps it).
                 # A re-PUT of identical bytes moves LastModified, and a resume that skips it leaves the store
                 # holding an older stored time than R2 (review AR-182 finding 2)
-                if (h is not None and h["etag"] == etag and h["size"] == size
-                        and (modified is None or h["stored_utc"] == modified)):
-                    c["skipped_held"] += 1
-                    continue
-            pending.add(ex.submit(one, key, size))
-            if len(pending) >= a.workers * 4:                  # bounded: the listing never runs far ahead
-                _done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                held = (h is not None and h["etag"] == etag and h["size"] == size
+                        and (modified is None or h["stored_utc"] == modified))
+            if held:
+                c["skipped_held"] += 1
+            else:
+                pending.add(ex.submit(one, key, size))
+                if len(pending) >= a.workers * 4:              # bounded: the listing never runs far ahead
+                    _done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            # every listed key reaches this check, a skipped one too: no `continue` above it. A resume over a store
+            # that holds nearly everything does little but skip, and with the check after the skip it wrote no
+            # progress for as long as that took - a healthy run looked stalled. `last` is set again after each
+            # write: that alone keeps a long skip from writing the file once per key
             if time.time() - last >= 30:
                 report()
                 last = time.time()
