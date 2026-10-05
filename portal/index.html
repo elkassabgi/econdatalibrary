@@ -374,7 +374,7 @@ white-space:nowrap;margin-left:.65rem}
 
     <div class="panel">
       <h3>One account. Every library.</h3>
-      <p>Register once &mdash; here, on hfdatalibrary.com, econdatalibrary.com, or ipdatalibrary.com &mdash; and you're an
+      <p>Register once &mdash; here, on econdatalibrary.com, or on ipdatalibrary.com &mdash; and you're an
       <strong>ElkassabgiData registered user</strong>: the same free API key downloads data from every
       current and future library. No re-registration, ever.</p>
       <a class="btn btn-primary js-ekd-register" href="https://econdatalibrary.com/account">Create your free account</a>
@@ -479,7 +479,7 @@ white-space:nowrap;margin-left:.65rem}
   // [Phase 2.2] Family-SSO popup register. The "Create your free account" CTAs open
   // the EKD popup IN PLACE — the user never leaves elkassabgidata.com, and on success
   // the one family session is live across every library. The existing href stays as
-  // the no-JS / SDK-blocked / popup-blocked fallback (full-page register on hf).
+  // the no-JS / SDK-blocked / popup-blocked fallback (the econ account page; hf sign-ups are paused).
   if (!window.EKD) return;                 // SDK blocked → CTAs keep their href, unchanged
   EKD.init();                              // clientId=https://elkassabgidata.com, callback=/auth/callback
   document.querySelectorAll('.js-ekd-register').forEach(function (a) {

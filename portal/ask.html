@@ -418,8 +418,8 @@ white-space:nowrap;margin-left:.65rem}
       // download here still needs it. Be honest about where to get it — do NOT promise
       // family-token downloads (the assistant-worker validator is parked in §8).
       alert(ekdSignedIn
-        ? 'You\'re signed in, but downloads here need your API key, which this page isn\'t given. Download directly on hfdatalibrary.com or econdatalibrary.com — you\'re already signed in there — or copy your key from accounts.elkassabgidata.com/account.'
-        : 'A free account is needed to download. Use "Create a free account" above, then download on hfdatalibrary.com / econdatalibrary.com — one account works across every library.');
+        ? 'You\'re signed in, but downloads here need your API key, which this page isn\'t given. Download directly on econdatalibrary.com — you\'re already signed in there — or copy your key from accounts.elkassabgidata.com/account.'
+        : 'A free account is needed to download. Use "Create a free account" above, then download on econdatalibrary.com — one account works across every library.');
       return;
     }
     const orig = btn.textContent; btn.textContent = 'Downloading…'; btn.setAttribute('disabled', '');
@@ -454,7 +454,7 @@ white-space:nowrap;margin-left:.65rem}
 
   // [2.3] Turn a register anchor into an in-place popup register (G-12a: EKD.login is
   // called synchronously in the click handler). The href stays as the no-JS / SDK-
-  // blocked / popup-blocked fallback (full register on hfdatalibrary.com).
+  // blocked / popup-blocked fallback (the econ account page; hf sign-ups are paused).
   function wireRegister(a) {
     a.addEventListener('click', function (e) {
       if (!window.EKD) return;               // SDK blocked → the anchor's href/target does the work
