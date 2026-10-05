@@ -225,7 +225,7 @@ white-space:nowrap;margin-left:.65rem}
       <li><a href="https://econdatalibrary.com">Econ Data</a></li>
       <li><a href="https://ipdatalibrary.com">IP Data</a></li>
       <li><a href="ask.html">Ask the Data</a></li>
-      <li><a class="js-ekd-register" href="https://hfdatalibrary.com/pages/download?from=elkassabgidata#register">Sign in</a></li>
+      <li><a class="js-ekd-register" href="https://econdatalibrary.com/account">Sign in</a></li>
     </ul>
   </div>
 </nav>
@@ -406,7 +406,7 @@ white-space:nowrap;margin-left:.65rem}
       b.onclick = () => downloadOffer(o, b); acts.appendChild(b);
     });
     if (data.registerNeeded && !signedIn) {
-      const a = document.createElement('a'); a.className = 'btn gold'; a.href = data.registerUrl || 'https://hfdatalibrary.com/pages/download#register';
+      const a = document.createElement('a'); a.className = 'btn gold'; a.href = data.registerUrl || 'https://econdatalibrary.com/account';
       a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'Create a free account to download →'; wireRegister(a); acts.appendChild(a);
     }
     if (acts.children.length) host.appendChild(acts);
@@ -418,8 +418,8 @@ white-space:nowrap;margin-left:.65rem}
       // download here still needs it. Be honest about where to get it — do NOT promise
       // family-token downloads (the assistant-worker validator is parked in §8).
       alert(ekdSignedIn
-        ? 'You\'re signed in, but downloads here need your API key, which this page isn\'t given. Download directly on hfdatalibrary.com or econdatalibrary.com — you\'re already signed in there — or copy your key from accounts.elkassabgidata.com/account.'
-        : 'A free account is needed to download. Use "Create a free account" above, then download on hfdatalibrary.com / econdatalibrary.com — one account works across every library.');
+        ? 'You\'re signed in, but downloads here need your API key, which this page isn\'t given. Download directly on econdatalibrary.com — you\'re already signed in there — or copy your key from accounts.elkassabgidata.com/account.'
+        : 'A free account is needed to download. Use "Create a free account" above, then download on econdatalibrary.com — one account works across every library.');
       return;
     }
     const orig = btn.textContent; btn.textContent = 'Downloading…'; btn.setAttribute('disabled', '');
@@ -444,7 +444,7 @@ white-space:nowrap;margin-left:.65rem}
     const host = addMsg('ai'); host.parentElement.querySelector('.bubble').innerHTML = fmt(text);
     if (gold && !signedIn) {
       const acts = document.createElement('div'); acts.className = 'acts';
-      const a = document.createElement('a'); a.className = 'btn ghost'; a.href = 'https://hfdatalibrary.com/pages/download#register';
+      const a = document.createElement('a'); a.className = 'btn ghost'; a.href = 'https://econdatalibrary.com/account';
       a.target = '_blank'; a.rel = 'noopener'; a.textContent = 'Sign in / create free account'; wireRegister(a); acts.appendChild(a);
       host.parentElement.querySelector('.bubble').appendChild(acts);
     }
@@ -454,7 +454,7 @@ white-space:nowrap;margin-left:.65rem}
 
   // [2.3] Turn a register anchor into an in-place popup register (G-12a: EKD.login is
   // called synchronously in the click handler). The href stays as the no-JS / SDK-
-  // blocked / popup-blocked fallback (full register on hfdatalibrary.com).
+  // blocked / popup-blocked fallback (the econ account page; hf sign-ups are paused).
   function wireRegister(a) {
     a.addEventListener('click', function (e) {
       if (!window.EKD) return;               // SDK blocked → the anchor's href/target does the work
@@ -526,7 +526,7 @@ addEventListener("load", function () {
       <div>
         <h4>Account</h4>
         <ul>
-          <li><a class="js-ekd-register" href="https://hfdatalibrary.com/pages/download?from=elkassabgidata#register">Create Free Account</a></li>
+          <li><a class="js-ekd-register" href="https://econdatalibrary.com/account">Create Free Account</a></li>
           <li><a href="ask.html">Ask the Data</a></li>
           <li><a href="https://hfdatalibrary.com/pages/mcp">MCP Server (AI)</a></li>
         </ul>

@@ -218,7 +218,7 @@ code{font-family:var(--font-mono);font-size:.875em;background:var(--gray-100);pa
       <li><a href="https://econdatalibrary.com">Econ Data</a></li>
       <li><a href="https://ipdatalibrary.com">IP Data</a></li>
       <li><a href="ask.html">Ask the Data</a></li>
-      <li><a class="js-ekd-register" href="https://hfdatalibrary.com/pages/download?from=elkassabgidata#register">Create free account</a></li>
+      <li><a class="js-ekd-register" href="https://econdatalibrary.com/account">Create free account</a></li>
     </ul>
   </div>
 </nav>
@@ -255,7 +255,7 @@ code{font-family:var(--font-mono);font-size:.875em;background:var(--gray-100);pa
       <div>
         <h4>Account</h4>
         <ul>
-          <li><a class="js-ekd-register" href="https://hfdatalibrary.com/pages/download?from=elkassabgidata#register">Create Free Account</a></li>
+          <li><a class="js-ekd-register" href="https://econdatalibrary.com/account">Create Free Account</a></li>
           <li><a href="ask.html">Ask the Data</a></li>
           <li><a href="https://hfdatalibrary.com/pages/mcp">MCP Server (AI)</a></li>
         </ul>
@@ -332,7 +332,7 @@ code{font-family:var(--font-mono);font-size:.875em;background:var(--gray-100);pa
   // [Phase 2.2] Family-SSO popup register. The "Create your free account" CTAs open
   // the EKD popup IN PLACE — the user never leaves elkassabgidata.com, and on success
   // the one family session is live across every library. The existing href stays as
-  // the no-JS / SDK-blocked / popup-blocked fallback (full-page register on hf).
+  // the no-JS / SDK-blocked / popup-blocked fallback (the econ account page; hf sign-ups are paused).
   if (!window.EKD) return;                 // SDK blocked → CTAs keep their href, unchanged
   EKD.init();                              // clientId=https://elkassabgidata.com, callback=/auth/callback
   document.querySelectorAll('.js-ekd-register').forEach(function (a) {
