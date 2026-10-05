@@ -692,10 +692,11 @@ def _progress_writes(monkeypatch):
     snaps = []
 
     def replace(src, dst):
+        out = real(src, dst)                 # first: a replace the tool has to retry is then recorded once
         if str(dst).endswith("p.json"):
-            with open(src, encoding="utf-8") as fh:
+            with open(dst, encoding="utf-8") as fh:
                 snaps.append(json.load(fh))
-        return real(src, dst)
+        return out
     monkeypatch.setattr(imp.os, "replace", replace)
     return snaps
 
@@ -709,7 +710,8 @@ def _clock(monkeypatch, step):
 
 def test_resume_reports_progress_while_every_object_is_skipped(monkeypatch, tmp_path):
     """The 30 s check sat after the skip of a held object, so a --resume over a store that holds nearly everything
-    wrote no progress until the listing ended: a healthy run looked stalled for as long as the skipping took.
+    wrote no progress until the listing reached an object to copy, or ended: a healthy run looked stalled for as
+    long as the skipping took.
     Every listed key now reaches the check. `phase` is set only after the copy loop, so a snapshot without it was
     written inside the loop."""
     _run(monkeypatch, FakeBucket(OBJ), tmp_path)                           # the store now holds all 7
@@ -726,13 +728,25 @@ def test_resume_reports_progress_while_every_object_is_skipped(monkeypatch, tmp_
 
 def test_control_progress_waits_30_s_between_writes_while_skipping(monkeypatch, tmp_path):
     """The other side: the check runs on every key, the WRITE does not. With a clock that moves 1 s per call the
-    7 skips take under 30 s and the copy loop writes nothing (14M keys must not mean 14M file writes)."""
+    7 skips take under 30 s and the copy loop writes nothing."""
     _run(monkeypatch, FakeBucket(OBJ), tmp_path)
     snaps = _progress_writes(monkeypatch)
     _clock(monkeypatch, 1)
     rc, p = _run(monkeypatch, FakeBucket(OBJ), tmp_path, "--resume")
     assert rc == 0 and p["skipped_held"] == 7 and p["done"]
     assert snaps and [s for s in snaps if "phase" not in s] == []
+
+
+def test_control_the_30_s_wait_starts_again_after_each_write(monkeypatch, tmp_path):
+    """Review AR-236: with the check on every key, the reset of the 30 s clock after a write is all that stops one
+    file write per skipped key once the first 30 s have passed (millions of keys must not mean millions of
+    writes). A clock that moves 16 s per call makes every second key due: writes at keys 2, 4 and 6 only."""
+    _run(monkeypatch, FakeBucket(OBJ), tmp_path)
+    snaps = _progress_writes(monkeypatch)
+    _clock(monkeypatch, 16)
+    rc, p = _run(monkeypatch, FakeBucket(OBJ), tmp_path, "--resume")
+    assert rc == 0 and p["skipped_held"] == 7 and p["done"]
+    assert [s["skipped_held"] for s in snaps if "phase" not in s] == [2, 4, 6]
 
 
 def test_progress_counts_agree_when_a_resume_copies_some_and_skips_others(monkeypatch, tmp_path):

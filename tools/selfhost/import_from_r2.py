@@ -394,8 +394,9 @@ def _bulk(r2_util, s3, store, a) -> int:
                 if len(pending) >= a.workers * 4:              # bounded: the listing never runs far ahead
                     _done, pending = wait(pending, return_when=FIRST_COMPLETED)
             # every listed key reaches this check, a skipped one too: no `continue` above it. A resume over a store
-            # that holds nearly everything skips for hours, and with the check after the skip it wrote no progress
-            # in that time - a healthy run looked stalled
+            # that holds nearly everything does little but skip, and with the check after the skip it wrote no
+            # progress for as long as that took - a healthy run looked stalled. `last` is set again after each
+            # write: that alone keeps a long skip from writing the file once per key
             if time.time() - last >= 30:
                 report()
                 last = time.time()
