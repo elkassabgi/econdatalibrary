@@ -188,3 +188,275 @@ def test_the_backend_is_selected_by_name():
     assert blob.SelfhostBlob().root == blob.SELFHOST_BLOB_ROOT != r"F:\econ_live\blobs"
     with pytest.raises(ValueError, match="selfhost"):
         blob.from_env("nope")
+
+
+# ---- the rename that makes a put visible is retried (WinError 32: 7 puts of the series copy, 2026-10-02/03) --------
+def _flaky_replace(monkeypatch, fails):
+    import blobstore as BS                                     # noqa: PLC0415
+    real = os.replace
+    calls = []
+
+    def replace(src, dst):
+        calls.append(os.path.basename(dst))
+        if len(calls) <= fails:
+            # the real error's shape (AR-263b): errno 13 and, on Windows, winerror 32 - not errno 32
+            raise PermissionError(13, "The process cannot access the file because it is being used by another process",
+                                  None, 32)
+        return real(src, dst)
+    monkeypatch.setattr(BS.os, "replace", replace)
+    monkeypatch.setattr(BS.time, "sleep", lambda s: SLEPT.append(s))
+    SLEPT.clear()
+    return calls
+
+
+SLEPT = []
+
+
+def test_a_put_retries_a_rename_another_process_briefly_holds(tmp_path, monkeypatch):
+    st = BlobStore(str(tmp_path / "b"), create=True)
+    calls = _flaky_replace(monkeypatch, fails=2)
+    sha = st.put("series/x.csv", b"date,value\n2026-01-01,1\n", etag="e1")
+    h = st.head("series/x.csv")
+    assert h["sha256"] == sha and open(h["path"], "rb").read() == b"date,value\n2026-01-01,1\n"
+    assert len(calls) == 3, "two refusals, then the rename"
+    import blobstore as BS                                     # noqa: PLC0415
+    assert SLEPT == list(BS.REPLACE_BACKOFF_S[:2]), "it waits between tries, the backoff's own waits"
+
+
+def test_a_rename_that_never_clears_fails_the_put_and_leaves_nothing(tmp_path, monkeypatch):
+    import blobstore as BS                                     # noqa: PLC0415
+    st = BlobStore(str(tmp_path / "b"), create=True)
+    calls = _flaky_replace(monkeypatch, fails=99)
+    with pytest.raises(PermissionError):
+        st.put("series/y.csv", b"never stored", etag="e2")
+    assert len(calls) == len(BS.REPLACE_BACKOFF_S) + 1, "bounded: every wait, then the error"
+    assert SLEPT == list(BS.REPLACE_BACKOFF_S), "every wait taken, in order (a retry with no wait is useless)"
+    assert st.head("series/y.csv") is None, "no index row for a put that did not happen"
+    left = [f for _d, _s, fs in os.walk(tmp_path / "b" / "objects") for f in fs]
+    assert left == [], f"no temp file and no object left behind: {left}"
+
+
+def test_the_waits_are_core_atomics(monkeypatch):
+    import blobstore as BS                                     # noqa: PLC0415
+    from core import atomic                                    # noqa: PLC0415
+    assert BS.REPLACE_BACKOFF_S == atomic.BACKOFF_S, "the blob store's waits are core.atomic's"
+
+
+
+def test_a_temp_file_the_holder_also_refuses_to_delete_is_left_and_gc_sweeps_it(tmp_path, monkeypatch):
+    """AR-211 finding 3: the handle that refuses the rename denies deletion too, so the put's own cleanup can fail.
+    The temp file then stays; gc() removes it once it is older than the grace period."""
+    import blobstore as BS                                     # noqa: PLC0415
+    st = BlobStore(str(tmp_path / "b"), create=True)
+    _flaky_replace(monkeypatch, fails=99)
+    real_remove = os.remove
+
+    def remove(path):
+        if os.path.basename(path).startswith(".tmp-"):
+            raise PermissionError(32, "held")
+        return real_remove(path)
+    monkeypatch.setattr(BS.os, "remove", remove)
+    with pytest.raises(PermissionError):
+        st.put("series/z.csv", b"held temp", etag="e3")
+    temps = [os.path.join(d, f) for d, _s, fs in os.walk(tmp_path / "b" / "objects") for f in fs]
+    assert len(temps) == 1 and os.path.basename(temps[0]).startswith(".tmp-"), temps
+    assert SLEPT == list(BS.REPLACE_BACKOFF_S) * 2, "the rename's waits, then the removal's own waits"
+    monkeypatch.setattr(BS.os, "remove", real_remove)
+    assert st.gc(grace_hours=1) == 0 and os.path.exists(temps[0]), "younger than the grace period: kept"
+    old = os.path.getmtime(temps[0]) - 7200
+    os.utime(temps[0], (old, old))
+    assert st.gc(grace_hours=1) == 1 and not os.path.exists(temps[0]), "older: swept"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing violations only")
+def test_a_real_held_handle_refuses_rename_and_removal_until_it_closes(tmp_path, monkeypatch):
+    """No fakes (AR-211 C4): an open Python handle denies delete sharing on Windows, so both the rename and the
+    removal are refused with PermissionError while it is open; both go through after it closes."""
+    import blobstore as BS                                     # noqa: PLC0415
+    monkeypatch.setattr(BS.time, "sleep", lambda s: None)
+    src, dst = tmp_path / ".tmp-held", tmp_path / "target"
+    src.write_bytes(b"x")
+    with open(src, "rb"):
+        with pytest.raises(PermissionError):
+            BS._replace(str(src), str(dst))
+        assert BS._remove_temp(str(src)) is False and src.exists()
+    BS._replace(str(src), str(dst))
+    assert dst.read_bytes() == b"x"
+    other = tmp_path / ".tmp-other"
+    other.write_bytes(b"y")
+    assert BS._remove_temp(str(other)) is True and not other.exists()
+
+
+# ---- AR-263: behaviours no test held (each was a surviving mutant) --------------------------------------------------
+def _files(root):
+    return [f for _d, _s, fs in os.walk(root) for f in fs]
+
+
+@pytest.mark.parametrize("error", [OSError(28, "No space left on device"), FileNotFoundError(2, "No such file")])
+def test_an_error_that_is_not_a_sharing_violation_is_raised_at_once(tmp_path, monkeypatch, error):
+    """Only PermissionError is retried (core.atomic's rule): a full disk or a missing folder does not clear in 3 s."""
+    import blobstore as BS                                     # noqa: PLC0415
+    st = BlobStore(str(tmp_path / "b"), create=True)
+    calls = []
+
+    def replace(src, dst):
+        calls.append(dst)
+        raise error
+    monkeypatch.setattr(BS.os, "replace", replace)
+    monkeypatch.setattr(BS.time, "sleep", lambda s: SLEPT.append(s))
+    SLEPT.clear()
+    with pytest.raises(OSError) as ei:
+        st.put("series/n.csv", b"not stored", etag="e4")
+    assert ei.value is error
+    assert len(calls) == 1 and SLEPT == [], "one try, no wait"
+    assert st.head("series/n.csv") is None and _files(tmp_path / "b" / "objects") == []
+
+
+def test_gc_never_sweeps_an_object_however_old_its_file_is(tmp_path):
+    """The temp sweep takes .tmp- files only: a live object's file is older than any grace period most of its life."""
+    st = BlobStore(str(tmp_path / "b"), create=True)
+    st.put("series/old.csv", b"old and live", etag="e")
+    path = st.head("series/old.csv")["path"]
+    old = os.path.getmtime(path) - 7200
+    os.utime(path, (old, old))
+    assert st.gc(grace_hours=1) == 0 and os.path.exists(path)
+    assert st.gc(grace_hours=-1) == 0 and os.path.exists(path)
+
+
+def test_an_interrupt_in_the_wait_is_raised_and_the_temp_file_is_removed(tmp_path, monkeypatch):
+    import blobstore as BS                                     # noqa: PLC0415
+    st = BlobStore(str(tmp_path / "b"), create=True)
+    _flaky_replace(monkeypatch, fails=99)
+
+    def interrupt(_s):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(BS.time, "sleep", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        st.put("series/i.csv", b"interrupted", etag="e5")
+    assert st.head("series/i.csv") is None and _files(tmp_path / "b" / "objects") == []
+    monkeypatch.undo()
+    assert st.put("series/i2.csv", b"the next put", etag="e6"), "the write transaction was ended"
+
+
+def test_a_cleanup_error_never_replaces_the_renames_error(tmp_path, monkeypatch):
+    import errno                                               # noqa: PLC0415
+    import blobstore as BS                                     # noqa: PLC0415
+    st = BlobStore(str(tmp_path / "b"), create=True)
+    _flaky_replace(monkeypatch, fails=99)
+    real_remove = os.remove
+
+    def remove(path):
+        if os.path.basename(path).startswith(".tmp-"):
+            raise OSError(errno.EIO, "Input/output error")
+        return real_remove(path)
+    monkeypatch.setattr(BS.os, "remove", remove)
+    with pytest.raises(PermissionError):
+        st.put("series/io.csv", b"io error", etag="e7")
+    assert SLEPT == list(BS.REPLACE_BACKOFF_S), "the rename's waits only: this removal error is not retried"
+
+
+def _another_connection_begins_a_write(st):
+    """What ANOTHER process gets when it tries to begin a write on this store's index right now: 'database is
+    locked' while a write transaction is open. Asked of SQLite from a second connection, because
+    `Connection.in_transaction` is true in a READ transaction too: a gc that began with a plain BEGIN passed
+    the first form of this test and removed the temp file of a put in flight on another connection (AR-263b)."""
+    import sqlite3                                             # noqa: PLC0415
+    other = sqlite3.connect(st.index, timeout=0, isolation_level=None)
+    try:
+        other.execute("BEGIN IMMEDIATE")
+        other.execute("ROLLBACK")
+        return "it began a write"
+    except sqlite3.OperationalError as e:
+        return str(e)
+    finally:
+        other.close()
+
+
+def test_gc_removes_a_temp_file_only_inside_its_write_transaction(tmp_path, monkeypatch):
+    """A put holds the write transaction from its temp write to its index row, so a temp file that gc removes INSIDE
+    its own transaction is no put's in flight - also with no grace period at all (AR-211's race, AR-263)."""
+    import blobstore as BS                                     # noqa: PLC0415
+    st = BlobStore(str(tmp_path / "b"), create=True)
+    d = tmp_path / "b" / "objects" / "ab"
+    d.mkdir()
+    (d / ".tmp-orphan").write_bytes(b"x")
+    seen, real_remove = [], os.remove
+
+    def remove(path):
+        if os.path.basename(path).startswith(".tmp-"):
+            seen.append((_another_connection_begins_a_write(st), st._wlock.locked()))
+        return real_remove(path)
+    monkeypatch.setattr(BS.os, "remove", remove)
+    assert st.gc(grace_hours=-1) == 1 and seen == [("database is locked", True)]
+
+
+def test_a_put_holds_the_write_lock_from_its_temp_write_to_its_rename(tmp_path, monkeypatch):
+    """The other half of gc's rule (AR-263b): while a put is between its temp write and its rename, no other
+    connection can begin a write - so a gc in another process waits and cannot remove that temp file."""
+    import blobstore as BS                                     # noqa: PLC0415
+    st = BlobStore(str(tmp_path / "b"), create=True)
+    seen, real_replace = [], os.replace
+
+    def replace(src, dst):
+        seen.append((os.path.basename(src).startswith(".tmp-"), _another_connection_begins_a_write(st)))
+        return real_replace(src, dst)
+    monkeypatch.setattr(BS.os, "replace", replace)
+    assert st.put("series/w.csv", b"the write lock", etag="e8") and seen == [(True, "database is locked")]
+
+
+def test_remove_temp_reports_a_file_it_cannot_remove_and_never_raises(tmp_path, monkeypatch):
+    """On every platform: the real-handle test above runs on Windows only and CI is Linux. With that test left
+    out, a removal that RAISED its PermissionError in place of the rename's passed every test (AR-263b, mutants
+    13 and 42)."""
+    import blobstore as BS                                     # noqa: PLC0415
+    held = tmp_path / ".tmp-held"
+    held.write_bytes(b"x")
+
+    def remove(_path):
+        raise PermissionError(13, "held", None, 32)
+    monkeypatch.setattr(BS.os, "remove", remove)
+    monkeypatch.setattr(BS.time, "sleep", lambda s: SLEPT.append(s))
+    SLEPT.clear()
+    assert BS._remove_temp(str(held)) is False and SLEPT == list(BS.REPLACE_BACKOFF_S)
+
+
+def _retire_one(st, key):
+    st.put(key, key.encode(), etag="e")
+    path = st.head(key)["path"]
+    st.delete(key)
+    st._w.execute("UPDATE retired SET retired_utc='2000-01-01T00:00:00+00:00'")
+    return path
+
+
+@pytest.mark.parametrize("deny", ["objects", "sub"])
+def test_gc_skips_a_directory_it_cannot_list_and_still_collects_retired_files(tmp_path, monkeypatch, deny):
+    import blobstore as BS                                     # noqa: PLC0415
+    st = BlobStore(str(tmp_path / "b"), create=True)
+    path = _retire_one(st, "series/g.csv")
+    real = os.scandir
+
+    def scandir(p="."):
+        if (os.path.basename(str(p)) == "objects") == (deny == "objects"):
+            raise PermissionError(13, "Access is denied")
+        return real(p)
+    monkeypatch.setattr(BS.os, "scandir", scandir)
+    assert st.gc(grace_hours=1) == 1 and not os.path.exists(path)
+
+
+def test_gc_keeps_a_temp_file_that_is_still_held_and_goes_on(tmp_path, monkeypatch):
+    import blobstore as BS                                     # noqa: PLC0415
+    st = BlobStore(str(tmp_path / "b"), create=True)
+    path = _retire_one(st, "series/h.csv")
+    held = os.path.join(os.path.dirname(path), ".tmp-held")
+    with open(held, "wb") as fh:
+        fh.write(b"x")
+    old = os.path.getmtime(held) - 7200
+    os.utime(held, (old, old))
+    real_remove = os.remove
+
+    def remove(p):
+        if os.path.basename(p).startswith(".tmp-"):
+            raise PermissionError(32, "held")
+        return real_remove(p)
+    monkeypatch.setattr(BS.os, "remove", remove)
+    assert st.gc(grace_hours=1) == 1 and os.path.exists(held) and not os.path.exists(path)

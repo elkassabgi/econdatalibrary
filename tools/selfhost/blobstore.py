@@ -30,6 +30,54 @@ import os
 import sqlite3
 import tempfile
 import threading
+import time
+
+# core.atomic.atomic_replace's waits (3.15 s in all), kept here because this module is loaded on its own - by the
+# sidecar and import_from_r2 from tools/selfhost, by updater/blob.py from its file path - where `core` may not be
+# importable. tests/test_selfhost_blob_backend.py keeps the two equal.
+# THE WAITS RUN INSIDE put's WRITE LOCK (the thread lock and BEGIN IMMEDIATE): while a put waits, every other
+# writer of the store waits too. The WAITS ALONE are up to 3.15 s when the rename clears and 6.3 s when it never
+# does (the rename's waits, then the removal's); the time of the 7 rename tries and the 7 removal tries comes on
+# top. Readers are not held: they use their own read-only connections.
+REPLACE_BACKOFF_S = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6)
+
+
+def _replace(tmp: str, path: str) -> None:
+    """os.replace, retried while another process holds the new file or the target open (Windows answers
+    PermissionError, WinError 5 or 32: an antivirus scan of a just-written file is one). The series copy into this
+    store (13,982,626 objects, 2026-10-01 to 2026-10-08) lost 7 puts to WinError 32, all on 2026-10-02 and
+    2026-10-03 (counted by error type in its log; an eighth failure was a read timeout); after T0 a put is a live
+    refresh's write. A handle that never closes still raises, so a put that did not happen is never reported as
+    done."""
+    for wait in (*REPLACE_BACKOFF_S, None):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if wait is None:
+                raise
+            time.sleep(wait)
+
+
+def _remove_temp(tmp: str) -> bool:
+    """Remove a temp file after a failed put, retried like the rename: the handle that refused the rename (it
+    denies delete sharing) refuses the removal too, at the same moment (review AR-211). True when it is gone. A
+    temp file still held after the retries stays, and gc() removes it once it is older than the grace period - when
+    gc() is run: on 2026-10-08 nothing in the repository outside tests/ calls it, so until then the file stays
+    (AR-263)."""
+    for wait in (*REPLACE_BACKOFF_S, None):
+        try:
+            os.remove(tmp)
+            return True
+        except FileNotFoundError:
+            return True
+        except PermissionError:
+            if wait is None:
+                return False
+            time.sleep(wait)
+        except OSError:
+            return False
+    return False
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS blobs (
@@ -166,7 +214,11 @@ class BlobStore:
                         fh.write(data)
                         fh.flush()
                         os.fsync(fh.fileno())            # durable before it becomes visible
-                    os.replace(tmp, path)
+                    try:
+                        _replace(tmp, path)
+                    except BaseException:
+                        _remove_temp(tmp)                # retried; a temp still held is gc()'s (AR-211)
+                        raise
                 old = self._w.execute("SELECT sha256 FROM blobs WHERE key=?", (key,)).fetchone()
                 self._w.execute(
                     "INSERT INTO blobs(key, sha256, etag, size, content_encoding, content_type, custom_metadata,"
@@ -206,9 +258,31 @@ class BlobStore:
         """Delete files retired more than grace_hours ago that no key references. Returns files removed.
         The grace counts from the NEWEST retirement of a file (a file re-used and retired again restarts
         its grace, R1171 minor 4). The live set is read INSIDE the write transaction, so a concurrent put
-        that re-uses a retired file cannot lose it. A file Windows holds open is kept for the next run."""
+        that re-uses a retired file cannot lose it. A file Windows holds open is kept for the next run.
+        It also removes .tmp- files older than grace_hours (a failed put that could not remove its own, AR-211);
+        they count in the number returned."""
         cutoff = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=grace_hours)).isoformat(timespec="seconds")
         gone = 0
+        # temp-file candidates, listed OUTSIDE the write transaction (see below for why and how they are removed).
+        # An unreadable directory is skipped, never fatal: the retired-file sweep below still runs (AR-211 M2).
+        old_temps, walk_cutoff = [], time.time() - grace_hours * 3600
+        objects = os.path.join(self.root, "objects")
+        try:
+            subs = [s for s in os.scandir(objects) if s.is_dir()] if os.path.isdir(objects) else []
+        except OSError:
+            subs = []
+        for sub in subs:
+            try:
+                entries = list(os.scandir(sub.path))
+            except OSError:
+                continue
+            for e in entries:
+                if e.name.startswith(".tmp-"):
+                    try:
+                        if e.stat().st_mtime < walk_cutoff:
+                            old_temps.append(e.path)
+                    except OSError:
+                        continue
         with self._wlock:
             self._w.execute("BEGIN IMMEDIATE")
             try:
@@ -223,6 +297,21 @@ class BlobStore:
                             continue                     # open elsewhere (Windows): keep the rows, retry later
                         gone += 1
                     self._w.execute("DELETE FROM retired WHERE sha256=?", (sha,))
+                # TEMP FILES OF FAILED PUTS (review AR-211): a put whose rename was refused may not be able to
+                # remove its temp file either (the same handle denies both). The candidates were found BEFORE this
+                # transaction (three passes of that listing over the real store on 2026-10-08, one after the other,
+                # while an import and test runs used the disk: stopped at 902.5 s with 212 of 256 directories
+                # listed; 384.3 s for 13,987,055 entries; 20.6 s for 13,988,031 entries - review AR-263); each is
+                # checked again and removed here, inside it - so no put anywhere is between its temp write and
+                # its index row - and only when older than the grace period. A file still held is kept.
+                tmp_cutoff = time.time() - grace_hours * 3600
+                for path in old_temps:
+                    try:
+                        if os.stat(path).st_mtime < tmp_cutoff:
+                            os.remove(path)
+                            gone += 1
+                    except OSError:
+                        continue
                 self._w.execute("COMMIT")
             except BaseException:
                 self._w.execute("ROLLBACK")
