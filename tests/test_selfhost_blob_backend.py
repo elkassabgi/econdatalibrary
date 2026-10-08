@@ -199,7 +199,9 @@ def _flaky_replace(monkeypatch, fails):
     def replace(src, dst):
         calls.append(os.path.basename(dst))
         if len(calls) <= fails:
-            raise PermissionError(32, "The process cannot access the file because it is being used by another process")
+            # the real error's shape (AR-263b): errno 13 and, on Windows, winerror 32 - not errno 32
+            raise PermissionError(13, "The process cannot access the file because it is being used by another process",
+                                  None, 32)
         return real(src, dst)
     monkeypatch.setattr(BS.os, "replace", replace)
     monkeypatch.setattr(BS.time, "sleep", lambda s: SLEPT.append(s))
@@ -353,6 +355,23 @@ def test_a_cleanup_error_never_replaces_the_renames_error(tmp_path, monkeypatch)
     assert SLEPT == list(BS.REPLACE_BACKOFF_S), "the rename's waits only: this removal error is not retried"
 
 
+def _another_connection_begins_a_write(st):
+    """What ANOTHER process gets when it tries to begin a write on this store's index right now: 'database is
+    locked' while a write transaction is open. Asked of SQLite from a second connection, because
+    `Connection.in_transaction` is true in a READ transaction too: a gc that began with a plain BEGIN passed
+    the first form of this test and removed the temp file of a put in flight on another connection (AR-263b)."""
+    import sqlite3                                             # noqa: PLC0415
+    other = sqlite3.connect(st.index, timeout=0, isolation_level=None)
+    try:
+        other.execute("BEGIN IMMEDIATE")
+        other.execute("ROLLBACK")
+        return "it began a write"
+    except sqlite3.OperationalError as e:
+        return str(e)
+    finally:
+        other.close()
+
+
 def test_gc_removes_a_temp_file_only_inside_its_write_transaction(tmp_path, monkeypatch):
     """A put holds the write transaction from its temp write to its index row, so a temp file that gc removes INSIDE
     its own transaction is no put's in flight - also with no grace period at all (AR-211's race, AR-263)."""
@@ -365,10 +384,40 @@ def test_gc_removes_a_temp_file_only_inside_its_write_transaction(tmp_path, monk
 
     def remove(path):
         if os.path.basename(path).startswith(".tmp-"):
-            seen.append((st._w.in_transaction, st._wlock.locked()))
+            seen.append((_another_connection_begins_a_write(st), st._wlock.locked()))
         return real_remove(path)
     monkeypatch.setattr(BS.os, "remove", remove)
-    assert st.gc(grace_hours=-1) == 1 and seen == [(True, True)]
+    assert st.gc(grace_hours=-1) == 1 and seen == [("database is locked", True)]
+
+
+def test_a_put_holds_the_write_lock_from_its_temp_write_to_its_rename(tmp_path, monkeypatch):
+    """The other half of gc's rule (AR-263b): while a put is between its temp write and its rename, no other
+    connection can begin a write - so a gc in another process waits and cannot remove that temp file."""
+    import blobstore as BS                                     # noqa: PLC0415
+    st = BlobStore(str(tmp_path / "b"), create=True)
+    seen, real_replace = [], os.replace
+
+    def replace(src, dst):
+        seen.append((os.path.basename(src).startswith(".tmp-"), _another_connection_begins_a_write(st)))
+        return real_replace(src, dst)
+    monkeypatch.setattr(BS.os, "replace", replace)
+    assert st.put("series/w.csv", b"the write lock", etag="e8") and seen == [(True, "database is locked")]
+
+
+def test_remove_temp_reports_a_file_it_cannot_remove_and_never_raises(tmp_path, monkeypatch):
+    """On every platform: the real-handle test above runs on Windows only and CI is Linux. With that test left
+    out, a removal that RAISED its PermissionError in place of the rename's passed every test (AR-263b, mutants
+    13 and 42)."""
+    import blobstore as BS                                     # noqa: PLC0415
+    held = tmp_path / ".tmp-held"
+    held.write_bytes(b"x")
+
+    def remove(_path):
+        raise PermissionError(13, "held", None, 32)
+    monkeypatch.setattr(BS.os, "remove", remove)
+    monkeypatch.setattr(BS.time, "sleep", lambda s: SLEPT.append(s))
+    SLEPT.clear()
+    assert BS._remove_temp(str(held)) is False and SLEPT == list(BS.REPLACE_BACKOFF_S)
 
 
 def _retire_one(st, key):
