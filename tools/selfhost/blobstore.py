@@ -41,9 +41,10 @@ REPLACE_BACKOFF_S = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6)
 def _replace(tmp: str, path: str) -> None:
     """os.replace, retried while another process holds the new file or the target open (Windows answers
     PermissionError, WinError 5 or 32: an antivirus scan of a just-written file is one). The series copy into this
-    store lost 7 of about 7.5M puts to WinError 32 on 2026-10-03 (counted by error type in its log; an eighth
-    failure was a read timeout); after T0 a put is a live refresh's write. A handle that never closes still
-    raises, so a put that did not happen is never reported as done."""
+    store (13,982,626 objects, 2026-10-01 to 2026-10-08) lost 7 puts to WinError 32, all on 2026-10-02 and
+    2026-10-03 (counted by error type in its log; an eighth failure was a read timeout); after T0 a put is a live
+    refresh's write. A handle that never closes still raises, so a put that did not happen is never reported as
+    done."""
     for wait in (*REPLACE_BACKOFF_S, None):
         try:
             os.replace(tmp, path)

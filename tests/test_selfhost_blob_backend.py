@@ -190,7 +190,7 @@ def test_the_backend_is_selected_by_name():
         blob.from_env("nope")
 
 
-# ---- the rename that makes a put visible is retried (WinError 32: 7 of ~7.5M puts in the 2026-10-03 copy) ----------
+# ---- the rename that makes a put visible is retried (WinError 32: 7 puts of the series copy, 2026-10-02/03) --------
 def _flaky_replace(monkeypatch, fails):
     import blobstore as BS                                     # noqa: PLC0415
     real = os.replace
