@@ -237,7 +237,7 @@ def test_a_rename_that_never_clears_fails_the_put_and_leaves_nothing(tmp_path, m
 def test_the_waits_are_core_atomics(monkeypatch):
     import blobstore as BS                                     # noqa: PLC0415
     from core import atomic                                    # noqa: PLC0415
-    assert BS.REPLACE_BACKOFF_S == atomic.BACKOFF_S, "one retry rule for every replace in the repository"
+    assert BS.REPLACE_BACKOFF_S == atomic.BACKOFF_S, "the blob store's waits are core.atomic's"
 
 
 
@@ -283,3 +283,131 @@ def test_a_real_held_handle_refuses_rename_and_removal_until_it_closes(tmp_path,
     other = tmp_path / ".tmp-other"
     other.write_bytes(b"y")
     assert BS._remove_temp(str(other)) is True and not other.exists()
+
+
+# ---- AR-263: behaviours no test held (each was a surviving mutant) --------------------------------------------------
+def _files(root):
+    return [f for _d, _s, fs in os.walk(root) for f in fs]
+
+
+@pytest.mark.parametrize("error", [OSError(28, "No space left on device"), FileNotFoundError(2, "No such file")])
+def test_an_error_that_is_not_a_sharing_violation_is_raised_at_once(tmp_path, monkeypatch, error):
+    """Only PermissionError is retried (core.atomic's rule): a full disk or a missing folder does not clear in 3 s."""
+    import blobstore as BS                                     # noqa: PLC0415
+    st = BlobStore(str(tmp_path / "b"), create=True)
+    calls = []
+
+    def replace(src, dst):
+        calls.append(dst)
+        raise error
+    monkeypatch.setattr(BS.os, "replace", replace)
+    monkeypatch.setattr(BS.time, "sleep", lambda s: SLEPT.append(s))
+    SLEPT.clear()
+    with pytest.raises(OSError) as ei:
+        st.put("series/n.csv", b"not stored", etag="e4")
+    assert ei.value is error
+    assert len(calls) == 1 and SLEPT == [], "one try, no wait"
+    assert st.head("series/n.csv") is None and _files(tmp_path / "b" / "objects") == []
+
+
+def test_gc_never_sweeps_an_object_however_old_its_file_is(tmp_path):
+    """The temp sweep takes .tmp- files only: a live object's file is older than any grace period most of its life."""
+    st = BlobStore(str(tmp_path / "b"), create=True)
+    st.put("series/old.csv", b"old and live", etag="e")
+    path = st.head("series/old.csv")["path"]
+    old = os.path.getmtime(path) - 7200
+    os.utime(path, (old, old))
+    assert st.gc(grace_hours=1) == 0 and os.path.exists(path)
+    assert st.gc(grace_hours=-1) == 0 and os.path.exists(path)
+
+
+def test_an_interrupt_in_the_wait_is_raised_and_the_temp_file_is_removed(tmp_path, monkeypatch):
+    import blobstore as BS                                     # noqa: PLC0415
+    st = BlobStore(str(tmp_path / "b"), create=True)
+    _flaky_replace(monkeypatch, fails=99)
+
+    def interrupt(_s):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(BS.time, "sleep", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        st.put("series/i.csv", b"interrupted", etag="e5")
+    assert st.head("series/i.csv") is None and _files(tmp_path / "b" / "objects") == []
+    monkeypatch.undo()
+    assert st.put("series/i2.csv", b"the next put", etag="e6"), "the write transaction was ended"
+
+
+def test_a_cleanup_error_never_replaces_the_renames_error(tmp_path, monkeypatch):
+    import errno                                               # noqa: PLC0415
+    import blobstore as BS                                     # noqa: PLC0415
+    st = BlobStore(str(tmp_path / "b"), create=True)
+    _flaky_replace(monkeypatch, fails=99)
+    real_remove = os.remove
+
+    def remove(path):
+        if os.path.basename(path).startswith(".tmp-"):
+            raise OSError(errno.EIO, "Input/output error")
+        return real_remove(path)
+    monkeypatch.setattr(BS.os, "remove", remove)
+    with pytest.raises(PermissionError):
+        st.put("series/io.csv", b"io error", etag="e7")
+    assert SLEPT == list(BS.REPLACE_BACKOFF_S), "the rename's waits only: this removal error is not retried"
+
+
+def test_gc_removes_a_temp_file_only_inside_its_write_transaction(tmp_path, monkeypatch):
+    """A put holds the write transaction from its temp write to its index row, so a temp file that gc removes INSIDE
+    its own transaction is no put's in flight - also with no grace period at all (AR-211's race, AR-263)."""
+    import blobstore as BS                                     # noqa: PLC0415
+    st = BlobStore(str(tmp_path / "b"), create=True)
+    d = tmp_path / "b" / "objects" / "ab"
+    d.mkdir()
+    (d / ".tmp-orphan").write_bytes(b"x")
+    seen, real_remove = [], os.remove
+
+    def remove(path):
+        if os.path.basename(path).startswith(".tmp-"):
+            seen.append((st._w.in_transaction, st._wlock.locked()))
+        return real_remove(path)
+    monkeypatch.setattr(BS.os, "remove", remove)
+    assert st.gc(grace_hours=-1) == 1 and seen == [(True, True)]
+
+
+def _retire_one(st, key):
+    st.put(key, key.encode(), etag="e")
+    path = st.head(key)["path"]
+    st.delete(key)
+    st._w.execute("UPDATE retired SET retired_utc='2000-01-01T00:00:00+00:00'")
+    return path
+
+
+@pytest.mark.parametrize("deny", ["objects", "sub"])
+def test_gc_skips_a_directory_it_cannot_list_and_still_collects_retired_files(tmp_path, monkeypatch, deny):
+    import blobstore as BS                                     # noqa: PLC0415
+    st = BlobStore(str(tmp_path / "b"), create=True)
+    path = _retire_one(st, "series/g.csv")
+    real = os.scandir
+
+    def scandir(p="."):
+        if (os.path.basename(str(p)) == "objects") == (deny == "objects"):
+            raise PermissionError(13, "Access is denied")
+        return real(p)
+    monkeypatch.setattr(BS.os, "scandir", scandir)
+    assert st.gc(grace_hours=1) == 1 and not os.path.exists(path)
+
+
+def test_gc_keeps_a_temp_file_that_is_still_held_and_goes_on(tmp_path, monkeypatch):
+    import blobstore as BS                                     # noqa: PLC0415
+    st = BlobStore(str(tmp_path / "b"), create=True)
+    path = _retire_one(st, "series/h.csv")
+    held = os.path.join(os.path.dirname(path), ".tmp-held")
+    with open(held, "wb") as fh:
+        fh.write(b"x")
+    old = os.path.getmtime(held) - 7200
+    os.utime(held, (old, old))
+    real_remove = os.remove
+
+    def remove(p):
+        if os.path.basename(p).startswith(".tmp-"):
+            raise PermissionError(32, "held")
+        return real_remove(p)
+    monkeypatch.setattr(BS.os, "remove", remove)
+    assert st.gc(grace_hours=1) == 1 and os.path.exists(held) and not os.path.exists(path)

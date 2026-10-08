@@ -32,9 +32,12 @@ import tempfile
 import threading
 import time
 
-# core.atomic.atomic_replace's waits (~3.1 s in all), kept here because this module is loaded on its own - by the
+# core.atomic.atomic_replace's waits (3.15 s in all), kept here because this module is loaded on its own - by the
 # sidecar and import_from_r2 from tools/selfhost, by updater/blob.py from its file path - where `core` may not be
 # importable. tests/test_selfhost_blob_backend.py keeps the two equal.
+# THE WAITS RUN INSIDE put's WRITE LOCK (the thread lock and BEGIN IMMEDIATE): while a put waits, every other
+# writer of the store waits too - up to 3.15 s when the rename clears, 6.3 s when it never does (the rename's
+# waits, then the removal's). Readers are not held (AR-263: other writers waited 7.5 s and 7.8 s, a head() 0.001 s).
 REPLACE_BACKOFF_S = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6)
 
 
@@ -58,7 +61,8 @@ def _replace(tmp: str, path: str) -> None:
 def _remove_temp(tmp: str) -> bool:
     """Remove a temp file after a failed put, retried like the rename: the handle that refused the rename (it
     denies delete sharing) refuses the removal too, at the same moment (review AR-211). True when it is gone. A
-    temp file still held after the retries stays, and gc() removes it once it is older than the grace period."""
+    temp file still held after the retries stays, and gc() removes it once it is older than the grace period - when
+    gc() is run: on 2026-10-08 nothing in the repository calls it, so until then the file stays (AR-263)."""
     for wait in (*REPLACE_BACKOFF_S, None):
         try:
             os.remove(tmp)
@@ -293,7 +297,9 @@ class BlobStore:
                     self._w.execute("DELETE FROM retired WHERE sha256=?", (sha,))
                 # TEMP FILES OF FAILED PUTS (review AR-211): a put whose rename was refused may not be able to
                 # remove its temp file either (the same handle denies both). The candidates were found BEFORE this
-                # transaction (a walk of ~14M entries took ~16 s warm on this disk, cold unmeasured - AR-211); each is
+                # transaction (listing the real store's 13,988,031 entries took 20.6 s with the directories cached,
+                # 384 s on the pass before that, and the first pass was stopped at 902 s with 212 of 256 directories
+                # listed - 2026-10-08, the machine under test load, AR-263); each is
                 # checked again and removed here, inside it - so no put anywhere is between its temp write and
                 # its index row - and only when older than the grace period. A file still held is kept.
                 tmp_cutoff = time.time() - grace_hours * 3600
