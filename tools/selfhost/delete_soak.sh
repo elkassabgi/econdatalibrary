@@ -52,7 +52,7 @@ fi
 
 echo "soak address: $SOAK   production address: $EDGE"
 prod_before="$(status_line "$EDGE")"
-if ! printf '%s' "$prod_before" | grep -Eq '^[0-9a-f]{40} (no|none) (yes|no) [a-z]+$'; then
+if ! printf '%s' "$prod_before" | LC_ALL=C grep -Eq '^[0-9a-f]{40} (no|none) (yes|no) [a-z]+$'; then
   echo "refused: the production worker's status cannot be read as a deployed commit: $EDGE/v1/edge-status reads '$prod_before' (expected: <40 hex> no|none yes|no <state>), so this script could not tell afterwards that production is untouched" >&2; exit 1
 fi
 # The soak address BEFORE the delete. Only a change can be shown: an address that answers with something that is
@@ -60,7 +60,7 @@ fi
 # the same after a delete that deleted nothing (review AR-278, case K04: the script said "done").
 soak_before="$(status_line "$SOAK")"
 soak_seen=""
-if printf '%s' "$soak_before" | grep -Eq '^[0-9a-f]{40} yes (yes|no) [a-z]+$'; then
+if printf '%s' "$soak_before" | LC_ALL=C grep -Eq '^[0-9a-f]{40} yes (yes|no) [a-z]+$'; then
   soak_seen=1
 else
   echo "note: $SOAK/v1/edge-status does not answer as a soak worker now (it reads '$soak_before'; expected: <40 hex> yes yes|no <state>). The delete can still run, but this script will not be able to show that it worked."

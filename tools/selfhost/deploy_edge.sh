@@ -38,7 +38,7 @@ commit="$(git rev-parse HEAD)"
 # LC_ALL=C: in a Turkish locale `grep -i` does not pair i with I, and node on Windows still does (review AR-278).
 refuse_a_name_override() {
   local names
-  names="$(compgen -e)"
+  names="$(compgen -e || true)"      # under `set -e` a failing compgen would end the script with no message
   # PATH is always exported. A list without it was not read (no compgen, no here-string): refuse, do not pass.
   if ! LC_ALL=C grep -qx 'PATH' <<<"$names"; then
     echo "refused: the list of exported variable names could not be read, so a WRANGLER_CI_OVERRIDE_NAME cannot be ruled out" >&2; exit 1

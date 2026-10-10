@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools", "selfhost"))
 import put_soak_origin as P  # noqa: E402
 
 SECRET = "0123456789abcdef" * 4
-URL = "https://econ-origin-test.econdatalibrary.com"
+URL = "https://tunnel-example.econdatalibrary.com"
 
 
 class Recorder:
@@ -90,11 +90,11 @@ def test_output_of_wrangler_that_holds_a_value_is_not_shown(rig, capsys):
 
 
 @pytest.mark.parametrize("url", [
-    "https://econ-origin.econdatalibrary.org", "https://econdatalibrary.com.evil.example",
-    "https://a.b.econdatalibrary.com", "http://econ-origin.econdatalibrary.com",
-    "https://econ-origin.econdatalibrary.com/", "https://econ-origin.econdatalibrary.com:8443",
-    "https://econ-origin.econdatalibrary.com/x", "https://evil.example/#.econdatalibrary.com",
-    "https://econ-origin.econdatalibrary.com@evil.example", "https://ECON-ORIGIN.econdatalibrary.com",
+    "https://tunnel-example.econdatalibrary.org", "https://econdatalibrary.com.evil.example",
+    "https://a.b.econdatalibrary.com", "http://tunnel-example.econdatalibrary.com",
+    "https://tunnel-example.econdatalibrary.com/", "https://tunnel-example.econdatalibrary.com:8443",
+    "https://tunnel-example.econdatalibrary.com/x", "https://evil.example/#.econdatalibrary.com",
+    "https://tunnel-example.econdatalibrary.com@evil.example", "https://TUNNEL-EXAMPLE.econdatalibrary.com",
     "https://-x.econdatalibrary.com", "https://econdatalibrary.com", "", URL + "\n" + URL,
     "https://xecondatalibrary.com", "https://evil-econdatalibrary.com", "https://a.notecondatalibrary.com",
     "https://a.econdatalibraryxcom", "https://axecondatalibrary.com", "https://a.econdatalibrary.com.",
@@ -255,7 +255,7 @@ def test_check_reads_the_files_and_the_address_and_sends_nothing(rig, capsys):
     assert SECRET not in out + err and URL not in out + err
     rec, soak = Recorder(), Soak("notjson")                                  # --check before the deploy: not a pass
     assert P.main(rig.args + ["--check"], run=rec, fetch=soak) == 1 and rec.calls == []
-    rig.url.write_text("https://econ-origin-test.econdatalibrary.org\n", encoding="utf-8")     # --check with a bad file
+    rig.url.write_text("https://tunnel-example.econdatalibrary.org\n", encoding="utf-8")     # --check with a bad file
     rec, soak = Recorder(), Soak()
     assert P.main(rig.args + ["--check"], run=rec, fetch=soak) == 1 and rec.calls == [] and soak.reads == []
 

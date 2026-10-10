@@ -91,7 +91,7 @@ def fetch_status(soak: str, timeout: int = 30) -> object:
     req = urllib.request.Request(soak + "/v1/edge-status", headers={"User-Agent": UA, "Accept": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            body = r.read()
+            body = r.read(65536)            # the status answer is a few hundred bytes; never read a body without a bound
     except urllib.error.HTTPError as e:
         return f"http-{e.code}"
     except Exception as e:  # noqa: BLE001 - reported with its type; no answer is never a pass
