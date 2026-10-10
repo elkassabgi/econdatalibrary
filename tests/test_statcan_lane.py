@@ -964,3 +964,56 @@ def test_a_mistyped_served_by_is_a_registry_error():
     bad = {"sources": [{"source_id": "x", "strategy": "extend_by_date", "cadence": "weekly",
                         "served_by": "lanes"}]}
     assert any("served_by" in p for p in registry.validate(bad))
+
+
+# --------------------------------------------------------------------------- #
+# the store merge's memory limit (2026-10-10: 23 cubes failed every merge under the cloud runner's 2 GB)
+# --------------------------------------------------------------------------- #
+def _gb(limit: str) -> float:
+    assert limit.endswith("GB"), limit
+    return float(limit[:-2])
+
+
+def _record_merge_kwargs(monkeypatch):
+    seen = []
+    real = lane.merge.merge_and_write_bounded
+
+    def _recorded(*a, **k):
+        seen.append(dict(k))
+        return real(*a, **k)
+    monkeypatch.setattr(lane.merge, "merge_and_write_bounded", _recorded)
+    return seen
+
+
+def test_the_lane_merges_under_its_own_memory_limit(world, monkeypatch):
+    """merge.BOUNDED_MEMORY_LIMIT is sized for the 16 GB cloud runner. The lane runs on the workstation only
+    and must hand the merge its own, larger limit - with the default every merge of a cube of some millions
+    of rows ended in DuckDB's OutOfMemoryException and the lane stood still (measured 2026-10-10)."""
+    monkeypatch.delenv("AQUEDUCT_BOUNDED_MERGE_MEMORY", raising=False)
+    seen = _record_merge_kwargs(monkeypatch)
+    _net(monkeypatch, NEW, (5, 3))
+    lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket())
+    assert len(seen) == 1, "the cube was merged once"
+    assert seen[0]["memory_limit"] == lane.MERGE_MEMORY_LIMIT
+    assert _gb(lane.MERGE_MEMORY_LIMIT) >= 8 * _gb(lane.merge.BOUNDED_MEMORY_LIMIT), \
+        "the lane's limit is the workstation's, not the cloud runner's"
+    assert _state(world)["cubes"][str(PID)]["merged"] == REL, "and the merge went through"
+
+
+def test_the_environment_still_sets_the_lanes_merge_memory(world, monkeypatch):
+    monkeypatch.setenv("AQUEDUCT_BOUNDED_MERGE_MEMORY", "5GB")
+    seen = _record_merge_kwargs(monkeypatch)
+    _net(monkeypatch, NEW, (5, 3))
+    lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket())
+    assert [k["memory_limit"] for k in seen] == ["5GB"]
+    monkeypatch.setenv("AQUEDUCT_BOUNDED_MERGE_MEMORY", "")
+    assert lane._merge_memory() == lane.MERGE_MEMORY_LIMIT, "an empty value is no value"
+
+
+def test_every_store_merge_of_the_lane_passes_the_limit():
+    """The world above reaches ONE of the lane's two merge calls (the one that reports changed keys). The
+    other - a cube with more series than the report's cap - is the call the 427-million-row cube takes, and
+    is pinned here by the source: both calls pass the lane's limit."""
+    src = open(lane.__file__, encoding="utf-8").read()
+    assert src.count("merge.merge_and_write_bounded(") == 2
+    assert src.count("memory_limit=_merge_memory())") == 2

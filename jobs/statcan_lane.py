@@ -94,6 +94,16 @@ ENUM_MIN_INTERVAL_MIN = 60.0
 # (the one rule, AR-173).
 MAX_ROWS = 3_000_000
 PUT_WORKERS = 16
+# THE STORE MERGE'S MEMORY. merge.BOUNDED_MEMORY_LIMIT (2 GB) is sized for the 16 GB cloud runner, and the
+# lane - which runs on the workstation only (statcan is run_location: local) - merged under it. Measured
+# 2026-10-10: 23 cubes of 6.5 to 427 million stored rows failed EVERY merge with DuckDB's
+# OutOfMemoryException at "1.8 GiB/1.8 GiB used" (256 such lines in the lane's log from 2026-10-04), each
+# was retried 21 or 22 times, and nothing newer than the release of 2026-09-08 was merged behind them.
+# Offline, on copies, the lane's own call for cube 14100034 (8,840,560 stored rows merged with a table of the
+# same size): the 2 GB default fails in 3.8 s with that error; 4 GB and 16 GB merge it (about 3.0 GiB of
+# process memory at the peak). The largest of them, cube 12100152 (427,009,412 stored rows, a 4.07 GB object, merged with a copy of itself): 16 GB merges it in 6,456 s on a busy machine, with 15.95 GiB of process memory at the peak and about 81 GB of spill on disk; smaller limits were not tried for it.
+# AQUEDUCT_BOUNDED_MERGE_MEMORY still overrides, as it does for every other caller of the bounded merge.
+MERGE_MEMORY_LIMIT = "16GB"
 # Between iterations. Each iteration beats (so an idle lane beats every 5 min, well inside the
 # reporter's 3-hour idle allowance) and calls StatCan only past ENUM_MIN_INTERVAL_MIN.
 IDLE_SLEEP_S = 300
@@ -304,6 +314,11 @@ def serve_plan(pid: str, n_rows: int, schema_names, smap: dict, catalogued: set)
     if n_rows > MAX_ROWS:
         notes.append(f"served whole at {n_rows:,} rows, over the {MAX_ROWS:,} derive cap")
     return None, None, notes
+
+
+def _merge_memory() -> str:
+    """The DuckDB memory limit for a store merge: the environment's, else MERGE_MEMORY_LIMIT."""
+    return os.environ.get("AQUEDUCT_BOUNDED_MERGE_MEMORY") or MERGE_MEMORY_LIMIT
 
 
 def serve_cube(pid: str, local_parquet: str, smap: dict, catalogued: set, put, progress=None,
@@ -533,10 +548,10 @@ def merge_cube(pid: str, c: dict, st: dict, progress: Progress, now: dt.datetime
             if reported:
                 n, md, ch = merge.merge_and_write_bounded(
                     path, new_path=new_path, dedup_keys=sc.DEDUP, report_changed_keys=True,
-                    changed_keys_cap=max(n_new, 1), stored_copy=copy[0])
+                    changed_keys_cap=max(n_new, 1), stored_copy=copy[0], memory_limit=_merge_memory())
             else:
                 n, md = merge.merge_and_write_bounded(path, new_path=new_path, dedup_keys=sc.DEDUP,
-                                                      stored_copy=copy[0])
+                                                      stored_copy=copy[0], memory_limit=_merge_memory())
                 ch = None
         except (OSError, MemoryError) as e:
             _backoff(c, f"merge failed on this machine: {type(e).__name__}: {e}", now)
