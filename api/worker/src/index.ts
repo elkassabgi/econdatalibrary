@@ -50,9 +50,10 @@ export default {
   // independent of any workstation. See src/costGuard.ts for what it measures and why a
   // blind run is treated as a failure.
   async scheduled(_c: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    // NOT ON THE SELF-HOSTED ORIGIN (review AR-268). The origin has no cron, and `wrangler dev` answers
-    // /cdn-cgi/mf/scheduled BEFORE fetch() and its secret gate - so there a caller, not a schedule, would
-    // start this handler. The router refuses that path (tools/selfhost/router.py); this is the second barrier.
+    // NOT ON THE SELF-HOSTED ORIGIN (review AR-268). The origin has no cron, and miniflare's entry worker
+    // answers /cdn-cgi/mf/scheduled BEFORE fetch() and its secret gate - so there a caller, not a schedule,
+    // could start this handler (read in miniflare's code; not run on the real `wrangler dev` chain). The
+    // router refuses that path (tools/selfhost/router.py); this is the second barrier.
     if (isLocal(env)) return;
     // NOT ON A SOAK WORKER either (src/edge.ts isSoak): its config has no cron, and a cron added by hand
     // must still not write the cost-guard status into the users database from a test address.

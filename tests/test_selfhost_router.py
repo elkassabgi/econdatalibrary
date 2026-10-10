@@ -5,6 +5,7 @@ import http.client
 import http.server
 import json
 import os
+import re
 import socket
 import sys
 import threading
@@ -170,8 +171,9 @@ def test_the_router_forwards_the_edges_routes_and_headers_and_no_others():
     fn = ts.split("export function isForwardable(", 1)[1].split("\n}", 1)[0]
     assert fn.count("startsWith(") == 1 and fn.count("FORWARDED_PATHS.has(path)") == 1
     fn = ts.split("export function originRequest(", 1)[1].split("\n}", 1)[0]
-    assert sorted(re.findall(r"headers\.set\(([^,]+),", fn)) == sorted(
+    assert sorted(re.findall(r"headers\.(?:set|append)\(([^,]+),", fn)) == sorted(
         ["h", "ORIGIN_SECRET_HEADER", '"cf-access-client-id"', '"cf-access-client-secret"'])
+    assert fn.count("headers.") == 4 + fn.count("request.headers."), "no other way to add a header"
     assert 'method: "GET"' in fn
 
 
@@ -181,7 +183,14 @@ def test_the_path_rule_was_measured_on_the_workerd_that_is_pinned():
     When this fails: run tools/selfhost/path_fuzz/fuzz_paths.py against the new binary, read its result,
     and only then change MEASURED_WORKERD."""
     lock = json.load(open(os.path.join(ROOT, "api", "worker", "package-lock.json"), encoding="utf-8"))
-    assert lock["packages"]["node_modules/workerd"]["version"] == router.MEASURED_WORKERD
+    packages = lock["packages"]
+    assert packages["node_modules/workerd"]["version"] == router.MEASURED_WORKERD
+    # the binary itself is a platform package, and miniflare names the workerd it wants: all must agree
+    platform = {k: v["version"] for k, v in packages.items() if k.startswith("node_modules/@cloudflare/workerd-")}
+    assert len(platform) >= 3 and set(platform.values()) == {router.MEASURED_WORKERD}, platform
+    assert packages["node_modules/miniflare"]["dependencies"]["workerd"] == router.MEASURED_WORKERD
+    wants = packages["node_modules/workerd"]["optionalDependencies"]
+    assert set(wants.values()) == {router.MEASURED_WORKERD} and set(wants) == {k.split("node_modules/", 1)[1] for k in platform}
 
 
 @pytest.mark.parametrize("path", [
@@ -309,21 +318,20 @@ def test_a_head_on_the_status_route_has_no_body(pair):
     assert head.startswith(b"HTTP/1.1 200") and body == b""
 
 
-def test_a_folded_header_value_is_refused_and_a_bare_cr_makes_no_forwarded_header(pair):
+def test_a_folded_value_a_bare_cr_and_a_bare_lf_are_refused(pair):
     """What the router sends on must hold no line the origin could read as a header of its own. A value folded
-    over lines (CRLF, LF or CR, then a space) is one value for this parser and for workerd (review AR-268,
-    measured on the real binary): the request is refused. A bare CR is a line end for this parser: the second
-    header exists, and the allowlist drops it."""
+    over lines, a bare CR (a line end for Python's header parser AND for workerd: review AR-273 sent
+    `Accept: a<CR>X-Two: b` to the real binary and it read two headers) and a line that ends in LF
+    alone are not lines the edge's chain sends: the request is refused whole."""
     port, _s, (_b, blue_seen), _g = pair
     for raw_header in (b"Accept: a\r\n MF-Original-URL: http://x/1", b"Accept: a\r MF-Original-URL: http://x/1",
-                       b"Accept: a\n MF-Original-URL: http://x/1", b"Accept: a\r\n\tb"):
+                       b"Accept: a\n MF-Original-URL: http://x/1", b"Accept: a\r\n\tb",
+                       b"Accept: a\rMF-Original-URL: http://x/1", b"Accept: a\nAccept-Language: en",
+                       b"Accept: a\x0bb", b"Accept: a\x00b", b"Accept: a\x7f"):
         out = _raw(port, b"GET /v1/series/x HTTP/1.1\r\nHost: x\r\n" + raw_header + b"\r\nConnection: close\r\n\r\n")
         assert out.startswith(b"HTTP/1.1 400") and out.count(b"HTTP/1.1 ") == 1, raw_header
+        assert json.loads(out.partition(b"\r\n\r\n")[2]) == {"error": "request_headers_not_allowed"}, raw_header
     assert blue_seen == [], "nothing was forwarded"
-    out = _raw(port, b"GET /v1/series/x HTTP/1.1\r\nHost: x\r\nAccept: a\rMF-Original-URL: http://x/1\r\n"
-                     b"Connection: close\r\n\r\n")
-    assert out.startswith(b"HTTP/1.1 200")
-    assert [(k.lower(), v) for k, v in blue_seen[-1][1] if k.lower() != "host"] == [("accept", "a")]
 
 
 _INNER = b"GET /v1/series/smuggled HTTP/1.1\r\nHost: x\r\n\r\n"
@@ -340,10 +348,20 @@ _N = str(len(_INNER)).encode()
     b"Content-Length: +" + _N + b"\r\n",
     b"Accept: a\r\n Content-Length: " + _N + b"\r\n",              # folded into another header's value
     b"Transfer-Encoding:\r\n",                                     # present, with no value
+    # review AR-269: each of these was answered 200 and the bytes after the block went on as a second request -
+    # Python's header parser ends a line at a bare CR, so CR CR was its end of the block
+    b"Accept: a\r\rContent-Length: " + _N + b"\r\n",
+    b"Accept: a\r\n\rContent-Length: " + _N + b"\r\n",
+    b"Accept: a\r\r\nContent-Length: " + _N + b"\r\n",
+    b"Accept: a\r\rTransfer-Encoding: chunked\r\n",
+    b"From Content-Length: " + _N + b"\r\n",                       # a `From ` line is set aside by that parser
+    b"Content-Length: 0, " + _N + b"\r\n", b"Content-Length: 00\r\n", b"Content-Length: 0x0\r\n",
+    b"content-LENGTH: " + _N + b"\r\n", b"Content-Length:\t" + _N + b" \r\n",
 ])
 def test_a_body_that_the_first_content_length_does_not_show_is_refused(pair, header_lines):
-    """AR-268 N4: each of these let the bytes after the header block through as a SECOND request (the old
-    check read the first Content-Length the parser showed it). One answer, a 400, and the connection closes."""
+    """AR-268 N4 and AR-269 B2: these let, or could let, the bytes after the header block through as a SECOND
+    request, because the check asked Python's header parser what the block held. One answer, a 400, and the
+    connection closes."""
     port, _s, (_b, blue_seen), _g = pair
     raw = _raw(port, b"GET /v1/sources HTTP/1.1\r\nHost: x\r\n" + header_lines + b"\r\n" + _INNER)
     assert raw.startswith(b"HTTP/1.1 400") and raw.count(b"HTTP/1.1 ") == 1, "one answer, then the connection closes"
@@ -351,18 +369,154 @@ def test_a_body_that_the_first_content_length_does_not_show_is_refused(pair, hea
 
 
 def test_an_honest_header_block_is_not_taken_for_a_body(pair):
-    """The control of the test above: what a browser's request looks like after Cloudflare and cloudflared,
-    with a byte outside ASCII in a value, an empty value and `Content-Length: 0`."""
+    """The control of the tests above: a request with the header names a proxied request carries (cf-ray,
+    cdn-loop, x-forwarded-for - written by hand here, NOT a captured request), a byte outside ASCII in a
+    value, an empty value, a TAB inside a value and `Content-Length: 0` twice."""
     port, _s, (_b, blue_seen), _g = pair
     out = _raw(port, b"GET /v1/series/x.csv?from=2020-01-01 HTTP/1.1\r\nHost: econ-origin.example.com\r\n"
                      b"Accept: text/csv, */*;q=0.8\r\nAccept-Encoding: gzip, br\r\nAccept-Language:\r\n"
                      b"User-Agent: caf\xe9/1 (Windows NT 10.0; Win64; x64)\r\nCf-Ray: 8f1-DFW\r\n"
-                     b"Cdn-Loop: cloudflare; loops=1\r\nX-Forwarded-For: 203.0.113.9\r\nContent-Length: 0\r\n"
+                     b"Cdn-Loop: cloudflare; loops=1\r\nX-Forwarded-For: 203.0.113.9,\t198.51.100.7\r\nContent-Length: 0\r\n"
                      b"Content-Length: 0\r\nX-Econ-Origin-Secret: s\r\nConnection: close\r\n\r\n")
     assert out.startswith(b"HTTP/1.1 200")
     got = {k.lower(): v for k, v in blue_seen[-1][1]}
     assert got["user-agent"] == "caf\xe9/1 (Windows NT 10.0; Win64; x64)" and got["x-econ-origin-secret"] == "s"
     assert sorted(got) == ["accept", "accept-encoding", "accept-language", "host", "user-agent", "x-econ-origin-secret"]
+
+
+def test_a_request_line_without_a_version_is_refused_and_nothing_is_forwarded(pair):
+    """AR-269 B1: for `GET /path` with no HTTP version Python 3.13+ reads NO header block (headers = {}), and
+    the body rule raised on it: no answer, a traceback in the log. HTTP/0.9 has no status line, so the
+    refusal is the JSON body alone, and the connection closes."""
+    port, _s, (_b, blue_seen), _g = pair
+    out = _raw(port, b"GET /v1/sources\r\n\r\n")
+    assert json.loads(out) == {"error": "request_headers_not_allowed"} and blue_seen == []
+    out = _raw(port, b"GET /v1/sources\r\nHost: x\r\n\r\nGET /v1/series/smuggled HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert b"200" not in out and blue_seen == [], "the bytes after it are not read as a request"
+    assert _get(port, "/v1/sources")[0] == 200, "the router still answers"
+
+
+@pytest.mark.parametrize("target", [b"/v1/series/a\x01b", b"/v1/series/a\x7f", b"/v1/series/a\x0bb.csv",
+                                    b"/v1/sources?x=\x1fy", b"/v1/series/\x00"])
+def test_a_control_character_in_a_target_is_refused_and_is_never_a_502(pair, target):
+    """AR-269 N1: http.client cannot send such a target on, and the answer was 502 origin_instance_unreachable.
+    Now it is the router's 404 - or http.server's own 400 when the byte is one it takes for a blank INSIDE the
+    target (0x0b, 0x1f: the request line then has four words)."""
+    port, _s, (_b, blue_seen), _g = pair
+    out = _raw(port, b"GET " + target + b" HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+    assert out[:12] in (b"HTTP/1.1 404", b"HTTP/1.1 400") and blue_seen == []
+    assert out.startswith(b"HTTP/1.1 404") or target in (b"/v1/series/a\x0bb.csv", b"/v1/sources?x=\x1fy")
+
+
+def test_what_goes_on_is_the_target_the_router_judged_never_the_bytes_beside_it(pair):
+    """http.server splits the request line as str.split() does, so 0x1f, 0x0b or 0x85 next to the target's
+    blanks are blanks too: `GET /v1/sources?x=<0x1f> HTTP/1.1` is the target `/v1/sources?x=`. The router
+    judges THAT string and sends THAT string on; the byte beside it reaches no instance."""
+    port, _s, (_b, blue_seen), _g = pair
+    for line, seen in ((b"GET /v1/sources?x=\x1f HTTP/1.1", "/v1/sources?x="),
+                       (b"GET \x0b/v1/series/a.csv\x1c HTTP/1.1", "/v1/series/a.csv")):
+        out = _raw(port, line + b"\r\nHost: x\r\nConnection: close\r\n\r\n")
+        assert out.startswith(b"HTTP/1.1 200")
+        assert blue_seen[-1][0] == seen
+
+
+def test_a_value_with_the_byte_0x85_goes_on_as_one_value(pair):
+    """str.splitlines() ends a line at 0x85 (NEL); a header reader built on it would see a second header here.
+    The router's reader and the stand-in (Python's http.server) both read ONE Accept value, and the sweep in
+    test_whatever_read_fields_accepts_pythons_parser_reads_the_same_way holds such values too. 0x85 is also a
+    byte of ordinary UTF-8 text (the second byte of an A with a ring), so it is not refused."""
+    port, _s, (_b, blue_seen), _g = pair
+    out = _raw(port, b"GET /v1/series/x HTTP/1.1\r\nHost: x\r\nAccept: a\x85\x85Content-Length: 45\r\n"
+                     b"Connection: close\r\n\r\n")
+    assert out.startswith(b"HTTP/1.1 200") and out.count(b"HTTP/1.1 ") == 1
+    assert [(k.lower(), v) for k, v in blue_seen[-1][1] if k.lower() != "host"] == [("accept", "a\x85\x85Content-Length: 45")]
+
+
+def test_the_body_check_comes_before_the_status_route_and_a_refusal_has_no_body_on_head(pair):
+    port = pair[0]
+    out = _raw(port, b"GET /__router/status HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 5\r\n\r\nhello")
+    assert out.startswith(b"HTTP/1.1 400") and b"inflight" not in out
+    out = _raw(port, b"HEAD /nowhere HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+    head, _, body = out.partition(b"\r\n\r\n")
+    assert head.startswith(b"HTTP/1.1 404") and body == b"", "read from the socket: http.client would hide a body"
+
+
+def test_the_status_route_needs_exactly_one_host(pair):
+    port = pair[0]
+    out = _raw(port, b"GET /__router/status HTTP/1.1\r\nHost: 127.0.0.1\r\nHost: econ-origin.example.com\r\n"
+                     b"Connection: close\r\n\r\n")
+    assert out.startswith(b"HTTP/1.1 404")
+    out = _raw(port, b"GET /__router/status HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+    assert out.startswith(b"HTTP/1.1 200")
+
+
+@pytest.mark.parametrize("method", ["POST", "PUT", "DELETE", "PATCH"])
+def test_a_method_that_writes_is_a_405_and_is_never_forwarded(pair, method):
+    port, _s, (_b, blue_seen), _g = pair
+    assert _get(port, "/v1/series/x", method=method)[0] == 405 and blue_seen == []
+
+
+# ---- read_fields: the router's own reading of a header block (no sockets) -------------------------------
+
+def _lines(block: bytes) -> list:
+    """The lines as http.server reads them off the wire: split after every LF, up to the first empty line."""
+    out = []
+    for line in re.findall(rb"[^\n]*\n|[^\n]+$", block):
+        out.append(line)
+        if line in (b"\r\n", b"\n"):
+            break
+    return out
+
+
+def test_read_fields_takes_clean_lines_and_keeps_order_case_and_duplicates():
+    f = router.read_fields(_lines(b"Host: a\r\nACCEPT:text/csv\r\nX-Y:  v  w \t\r\nAccept: b\r\nEmpty:\r\n"
+                                  b"User-Agent: caf\xe9 \x85 x\r\n\r\n"))
+    assert f.items() == [("Host", "a"), ("ACCEPT", "text/csv"), ("X-Y", "v  w"), ("Accept", "b"), ("Empty", ""),
+                         ("User-Agent", "caf\xe9 \x85 x")]
+    assert f.get_all("accept") == ["text/csv", "b"] and f.get_all("nothing") is None and f.get_all("nothing", []) == []
+    assert router.read_fields([b"\r\n"]).items() == []
+
+
+@pytest.mark.parametrize("block", [
+    b"", b"Host: a\r\n", b"Host: a\r\n\n", b"Host: a\n\r\n", b"Host a\r\n\r\n", b"Host : a\r\n\r\n",
+    b"Host\t: a\r\n\r\n", b": a\r\n\r\n", b" Host: a\r\n\r\n", b"Host: a\r\n b\r\n\r\n", b"From x\r\n\r\n",
+    b"Host: a\rb\r\n\r\n", b"Host: a\r\r\n\r\n", b"H\xf6st: a\r\n\r\n", b"Host: a\x00\r\n\r\n", b"Host: a\x1c\r\n\r\n",
+    b"Ho(st: a\r\n\r\n", b"Host: a\r\n\r\r\n",
+])
+def test_read_fields_refuses_a_block_that_is_not_made_of_clean_lines(block):
+    assert router.read_fields(_lines(block)) is None
+
+
+def test_whatever_read_fields_accepts_pythons_parser_reads_the_same_way():
+    """A seeded sweep over header blocks built from the bytes the tricks are made of. For every block the
+    router's reader ACCEPTS, Python's own header parser (which http.server still uses for its keep-alive
+    decision) must see the same names in the same order with the same values, no defect (for THIS alphabet:
+    a `Content-Type: multipart/...` line gives that parser a defect in a block both read alike) and nothing left
+    over - so no accepted block is one the two readers split differently. And the sweep must accept some
+    blocks and refuse some, or it shows nothing."""
+    import io
+    import random
+    rnd = random.Random(20261010)
+    names = [b"Host", b"Accept", b"Content-Length", b"Transfer-Encoding", b"X-A", b"From", b"", b"a b", b"Cf-Ray"]
+    seps = [b": ", b":", b" : ", b":\t", b" ", b"\t: "]
+    values = [b"a", b"0", b"45", b"chunked", b"", b"a b", b"caf\xe9", b"x\x85y", b"a\tb", b"a\rb", b"a\x0bb",
+              b"a\x1cb", b"a\x00b", b" lead", b"x\xe2\x80\xa8y", b"a\x7fb"]
+    ends = [b"\r\n"] * 12 + [b"\n", b"\r", b"\r\r", b"\r\n ", b"\r\n\t", b"\x85", b""]
+    accepted = refused = 0
+    for _ in range(20000):
+        block = b"".join(rnd.choice(names) + rnd.choice(seps) + rnd.choice(values) + rnd.choice(ends)
+                         for _ in range(rnd.randint(0, 5))) + b"\r\n"
+        mine = router.read_fields(_lines(block))
+        if mine is None:
+            refused += 1
+            continue
+        accepted += 1
+        fp = io.BytesIO(block + b"REST")
+        theirs = http.client.parse_headers(fp)
+        assert fp.read() == b"REST", block
+        assert not theirs.defects and not theirs.get_payload() and not theirs.get_unixfrom(), block
+        assert [(k, v.strip(" \t")) for k, v in theirs.items()] == mine.items(), block
+    assert accepted > 500 and refused > 5000, (accepted, refused)
 
 
 def test_a_refused_path_keeps_the_connection(pair):

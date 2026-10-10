@@ -1,7 +1,8 @@
 // The self-hosted origin never runs the scheduled handler's work (review AR-268).
 //
-// `wrangler dev` answers /cdn-cgi/mf/scheduled before the worker's fetch() and its secret gate, so on the
-// origin a caller that reaches an instance on that path starts scheduled(). The router refuses the path
+// miniflare's entry worker answers /cdn-cgi/mf/scheduled before the worker's fetch() and its secret gate, so
+// on the origin a caller that reaches an instance on that path could start scheduled() (read in miniflare's
+// code; not run on the real `wrangler dev` chain). The router refuses the path
 // (tests/test_selfhost_router.py); this pins the second barrier: with LOCAL = "1" the handler returns
 // before it reads another binding, starts a task or opens a connection.
 // The control beside it makes the same call without LOCAL and DOES see the cost guard run, so a rig that
