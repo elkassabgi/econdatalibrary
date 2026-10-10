@@ -305,9 +305,12 @@ jobs:
           #
           # `error` IS in the list (review AR-265). It is the label run_once gives an UNEXPECTED exception,
           # in the fetch and - since the probe got its catch-all - in the change probe. Without it a
-          # dedicated run whose probe raised printed "  error  <source>/_all", exited 0 and went GREEN;
+          # dedicated run whose probe raised would have printed "  error            <source>/_all", exited 0
+          # and gone GREEN (measured in the review with the real CLI on a private copy; no such job ran);
           # before the probe's catch-all the same error ended the process with exit 1 and the job was red.
-          # tests/test_probe_error_does_not_end_the_run.py pins this list against run_once's labels.
+          # tests/test_probe_error_does_not_end_the_run.py pins this list: transient_fail, broken_adapter,
+          # timeout and error must be in it, partial must not. tests/test_probe_error_more.py reads the
+          # labels out of run_once, so a NEW label fails there until someone decides which side it is on.
           if [ "$rc" = "0" ]; then
             bad=$(grep -E "^\s+(transient_fail|broken_adapter|timeout|error)\s+${{ matrix.source }}/" /tmp/updater_out.txt | head -1 || true)
             if [ -n "$bad" ]; then
