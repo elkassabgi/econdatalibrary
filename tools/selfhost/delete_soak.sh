@@ -3,7 +3,8 @@
 # cloud worker is his.
 #
 # Why a wrapper: `wrangler delete` without --name deletes the worker named in the config it reads - in
-# api/worker that is the PRODUCTION worker econdl-api, after one question. Here the name and the config are
+# api/worker that is the PRODUCTION worker econdl-api, after one question in a terminal and after none
+# anywhere else (wrangler answers its own question with yes there). Here the name and the config are
 # fixed, no argument is accepted, the script asks for the worker's name (wrangler asks its own question only
 # in a terminal), a dry run comes before the delete, and afterwards the production worker's
 # /v1/edge-status must be what it was before.
