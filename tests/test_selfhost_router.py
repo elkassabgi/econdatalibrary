@@ -30,7 +30,7 @@ def _instance(name):
 
         def do_GET(self):
             seen.append((self.path, self.headers.items()))
-            if self.path.startswith("/big"):
+            if self.path.startswith("/v1/series/big"):
                 self.send_response(200)
                 self.send_header("content-type", "text/csv")
                 self.send_header("x-econ-count", "1")
@@ -41,7 +41,7 @@ def _instance(name):
                     self.wfile.write(f"{len(part):x}\r\n".encode() + part + b"\r\n")
                 self.wfile.write(b"0\r\n\r\n")
                 return
-            if self.path.startswith("/slow"):                          # 10 bytes every 0.2 s, 8 times
+            if self.path.startswith("/v1/series/slow"):                          # 10 bytes every 0.2 s, 8 times
                 self.send_response(200)
                 self.send_header("transfer-encoding", "chunked")
                 self.end_headers()
@@ -51,11 +51,11 @@ def _instance(name):
                     time.sleep(0.2)
                 self.wfile.write(b"0\r\n\r\n")
                 return
-            if self.path == "/notmodified":
+            if self.path == "/v1/series/notmodified":
                 self.send_response(304)
                 self.end_headers()
                 return
-            if self.path == "/hop":
+            if self.path == "/v1/series/hop":
                 self.send_response(200)
                 self.send_header("connection", "x-hop")
                 self.send_header("x-hop", "private")
@@ -64,7 +64,7 @@ def _instance(name):
                 self.wfile.write(b"ok")
                 return
             body = json.dumps({"instance": name, "path": self.path}).encode()
-            self.send_response(403 if self.path == "/secret" else 200)
+            self.send_response(403 if self.path == "/v1/series/secret" else 200)
             self.send_header("content-type", "application/json")
             self.send_header("content-length", str(len(body)))
             self.send_header("x-econ-origin", "1")
@@ -137,36 +137,147 @@ def test_forwards_to_the_active_instance_with_the_host_rewritten(pair):
     got = dict((k.lower(), v) for k, v in blue_seen[-1][1])
     assert got["x-econ-origin-secret"] == "s", "headers reach the origin (its gate checks them)"
     assert got["host"] == f"127.0.0.1:{blue.server_address[1]}", "Host names the target"
-    assert _get(port, "/secret")[0] == 403, "the origin's status passes through"
+    assert _get(port, "/v1/series/secret")[0] == 403, "the origin's status passes through"
 
 
 def test_duplicate_request_headers_are_kept(pair):
     port, _s, (_b, blue_seen), _g = pair
-    _get(port, "/x", headers=[("cookie", "a=1"), ("cookie", "b=2")])
-    assert [v for k, v in blue_seen[-1][1] if k.lower() == "cookie"] == ["a=1", "b=2"]
+    _get(port, "/v1/series/x", headers=[("accept-language", "en"), ("accept-language", "fr")])
+    assert [v for k, v in blue_seen[-1][1] if k.lower() == "accept-language"] == ["en", "fr"]
+
+
+# ---- only what the edge can send reaches an instance (review AR-267) ---------------------------------------
+
+def _edge_ts():
+    return open(os.path.join(ROOT, "api", "worker", "src", "edge.ts"), encoding="utf-8").read()
+
+
+def test_the_router_forwards_the_edges_routes_and_headers_and_no_others():
+    """The two lists are copies of api/worker/src/edge.ts. A route or header added there and not here would be
+    refused at the workstation (a 404 without the origin mark = the edge's 502); one added here only is a
+    hole the edge never uses."""
+    import re
+    ts = _edge_ts()
+    block = ts.split("const FORWARDED_PATHS: ReadonlySet<string> = new Set([", 1)[1].split("]);", 1)[0]
+    assert set(re.findall(r'"([^"]*)"', block)) == set(router.EDGE_PATHS)
+    assert f'path.startsWith("{router.EDGE_PREFIX}")' in ts
+    block = ts.split("const FORWARDED_REQUEST_HEADERS = [", 1)[1].split("];", 1)[0]
+    edge_headers = set(re.findall(r'"([^"]*)"', block))
+    assert edge_headers and edge_headers | {"x-econ-origin-secret"} == set(router.FORWARDED_HEADERS)
+    assert 'ORIGIN_SECRET_HEADER = "x-econ-origin-secret"' in ts
+
+
+@pytest.mark.parametrize("path", [
+    "/cdn-cgi/mf/scheduled", "/cdn-cgi/handler/scheduled", "/__scheduled", "/v1/pv", "/v1/public-stats",
+    "/v1/edge-status", "/favicon.ico", "/v1/series", "/v1/catalogue", "/V1/sources", "/v1/sources/",
+    "/v1/series/../../cdn-cgi/mf/scheduled", "/v1/series/%2e%2e/%2E%2E/cdn-cgi/mf/scheduled",
+    "/v1/series/.%2E/x", "/v1/series/..", "/v1/series/..\\..\\cdn-cgi\\mf\\scheduled",
+    "/v1/series/a/./b", "/v1/series/x\\y", "/__router/statusx",
+])
+def test_a_path_the_edge_does_not_forward_never_reaches_an_instance(pair, path):
+    port, _s, (_b, blue_seen), (_g, green_seen) = pair
+    status, headers, body = _get(port, path)
+    assert status == 404 and json.loads(body) == {"error": "not_found"}
+    assert not _h(headers, "x-econ-origin"), "the router's own answer never carries the origin's mark"
+    assert blue_seen == [] and green_seen == [], "nothing was forwarded"
+
+
+def test_an_absolute_form_target_is_not_forwarded(pair):
+    port, _s, (_b, blue_seen), _g = pair
+    out = _raw(port, b"GET http://127.0.0.1/v1/sources HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n")
+    assert out.startswith(b"HTTP/1.1 404") and blue_seen == []
+
+
+@pytest.mark.parametrize("path", ["/", "/v1", "/v1/", "/v1/catalog?q=gdp&limit=5", "/v1/sources",
+                                  "/v1/last-updates", "/v1/stats", "/v1/bundle?ids=a,b", "/v1/guard-heartbeat",
+                                  "/v1/series/abs%3ACPI%3A1.10001.10.50.Q.csv?from=2020-01-01",
+                                  "/v1/series/ksh%3AKSH%3Ayear%20..%3AMinimum.metadata.json",
+                                  "/v1/series/a%2Fb.csv", "/v1/series/"])
+def test_every_route_of_the_edge_is_forwarded_with_its_query(pair, path):
+    port, _s, (_b, blue_seen), _g = pair
+    status, _hd, body = _get(port, path)
+    assert status == 200 and json.loads(body)["path"] == path and blue_seen[-1][0] == path
+
+
+def test_only_the_edges_headers_and_the_secret_reach_an_instance(pair):
+    """miniflare reads MF-Original-URL (it REPLACES the request URL), MF-CF-Blob and friends before the worker
+    and its secret gate run; a client's credentials and cookies are never the origin's business either."""
+    port, _s, (_b, blue_seen), _g = pair
+    sent = [("accept", "text/csv"), ("accept-encoding", "gzip"), ("accept-language", "en"), ("user-agent", "t/1"),
+            ("x-econ-origin-secret", "s"), ("MF-Original-URL", "http://x/cdn-cgi/mf/scheduled"),
+            ("mf-cf-blob", "{"), ("mf-op", "GET"), ("x-api-key", "k"), ("authorization", "Bearer k"),
+            ("cookie", "a=1"), ("cf-connecting-ip", "203.0.113.9"), ("x-forwarded-for", "203.0.113.9"),
+            ("cf-access-client-secret", "z"), ("range", "bytes=0-9"), ("x-elkassabgi-client", "mcp")]
+    assert _get(port, "/v1/series/x", headers=sent)[0] == 200
+    got = sorted(k.lower() for k, _v in blue_seen[-1][1])
+    assert got == sorted(["accept", "accept-encoding", "accept-language", "user-agent", "x-econ-origin-secret",
+                          "host"])
+
+
+def _status_with(port, headers):
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+    c.putrequest("GET", router.STATUS_PATH, skip_host=True, skip_accept_encoding=True)
+    for k, v in headers:
+        c.putheader(k, v)
+    c.endheaders()
+    r = c.getresponse()
+    body = r.read()
+    c.close()
+    return r.status, body
+
+
+def test_the_status_route_answers_this_machine_only(pair):
+    port = pair[0]
+    for host in (f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}", "127.0.0.1"):
+        status, body = _status_with(port, [("Host", host)])
+        assert status == 200 and "inflight" in json.loads(body), host
+    outside = [[("Host", "econ-origin.example.com")],                     # the tunnel keeps the public Host
+               [("Host", f"127.0.0.1:{port}"), ("Cf-Ray", "8f1-DFW")],
+               [("Host", f"127.0.0.1:{port}"), ("CF-Connecting-IP", "203.0.113.9")],
+               [("Host", f"127.0.0.1:{port}"), ("X-Forwarded-For", "203.0.113.9")],
+               [("Host", f"127.0.0.1:{port}"), ("X-Forwarded-Proto", "https")],
+               [("Host", f"127.0.0.1:{port}"), ("Cdn-Loop", "cloudflare")],
+               [("Host", f"127.0.0.1:{port}"), ("Via", "1.1 x")],
+               [("Host", f"127.0.0.1.example.com:{port}")],
+               [("Host", "localhost.example.com")],
+               []]                                                        # no Host at all
+    for headers in outside:
+        status, body = _status_with(port, headers)
+        assert status == 404 and json.loads(body) == {"error": "not_found"}, headers
+        assert b"inflight" not in body and b"target" not in body
+
+
+def test_a_request_body_on_an_unknown_path_is_still_a_400_that_closes(pair):
+    """The body check comes before the path check: a 404 that left the body unread would have it parsed as
+    the next request on the connection."""
+    port, _s, (_b, blue_seen), _g = pair
+    inner = b"GET /v1/series/smuggled HTTP/1.1\r\nhost: x\r\n\r\n"
+    out = _raw(port, b"GET /nowhere HTTP/1.1\r\nhost: x\r\ncontent-length: " + str(len(inner)).encode()
+               + b"\r\n\r\n" + inner)
+    assert out.startswith(b"HTTP/1.1 400") and out.count(b"HTTP/1.1 ") == 1 and blue_seen == []
 
 
 def test_connection_listed_headers_are_dropped_both_ways(pair):
     port, _s, (_b, blue_seen), _g = pair
-    status, headers, body = _get(port, "/hop", headers=[("connection", "keep-alive, x-priv"), ("x-priv", "1")])
+    status, headers, body = _get(port, "/v1/series/hop", headers=[("connection", "keep-alive, x-priv"), ("x-priv", "1")])
     assert "x-priv" not in [k.lower() for k, _ in blue_seen[-1][1]]
     assert status == 200 and body == b"ok" and not _h(headers, "x-hop")
 
 
 def test_one_date_and_server_pair(pair):
-    headers = _get(pair[0], "/x")[1]
+    headers = _get(pair[0], "/v1/series/x")[1]
     assert len(_h(headers, "date")) == 1 and len(_h(headers, "server")) == 1
 
 
 def test_a_large_length_less_body_is_streamed_whole(pair):
-    status, headers, body = _get(pair[0], "/big.csv")
+    status, headers, body = _get(pair[0], "/v1/series/big.csv")
     assert status == 200 and body == BIG and _h(headers, "x-econ-count") == ["1"]
 
 
 def test_bytes_are_passed_on_as_they_arrive(pair):
     """AR-152: resp.read(1 MiB) held a slow answer back for 30 s. The first bytes must arrive at once."""
     s = socket.create_connection(("127.0.0.1", pair[0]), timeout=10)
-    s.sendall(b"GET /slow HTTP/1.1\r\nHost: x\r\n\r\n")
+    s.sendall(b"GET /v1/series/slow HTTP/1.1\r\nHost: x\r\n\r\n")
     t0 = time.monotonic()
     got = b""
     while b"0123456789" not in got:
@@ -177,20 +288,20 @@ def test_bytes_are_passed_on_as_they_arrive(pair):
 
 
 def test_a_304_gets_no_body_framing(pair):
-    raw = _raw(pair[0], b"GET /notmodified HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+    raw = _raw(pair[0], b"GET /v1/series/notmodified HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
     head = raw.split(b"\r\n\r\n", 1)[0].lower()
     assert raw.startswith(b"HTTP/1.1 304") and b"transfer-encoding" not in head
 
 
 def test_an_http_1_0_client_gets_no_chunked_body(pair):
-    raw = _raw(pair[0], b"GET /big.csv HTTP/1.0\r\n\r\n", wait=3.0)
+    raw = _raw(pair[0], b"GET /v1/series/big.csv HTTP/1.0\r\n\r\n", wait=3.0)
     head, body = raw.split(b"\r\n\r\n", 1)
     assert b"transfer-encoding" not in head.lower() and body == BIG
 
 
 @pytest.mark.parametrize("request_bytes", [
-    b"GET /x HTTP/1.1\r\nHost: x\r\nContent-Length: 38\r\n\r\nGET /smuggled HTTP/1.1\r\nHost: x\r\n\r\n",
-    b"GET /x HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+    b"GET /v1/series/x HTTP/1.1\r\nHost: x\r\nContent-Length: 38\r\n\r\nGET /v1/series/smuggled HTTP/1.1\r\nHost: x\r\n\r\n",
+    b"GET /v1/series/x HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
 ])
 def test_a_request_body_is_refused_and_never_forwarded(pair, request_bytes):
     port, _s, (_b, blue_seen), _g = pair
@@ -215,7 +326,7 @@ def test_flips_under_load_never_fail_a_request(pair):
             try:
                 if c is None:
                     c = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
-                c.request("GET", "/v1/x")
+                c.request("GET", "/v1/series/vx")
                 r = c.getresponse()
                 r.read()
                 if r.status != 200:
@@ -251,7 +362,7 @@ def test_flips_under_load_never_fail_a_request(pair):
 
 def test_the_status_route_reports_in_flight_requests(pair):
     port = pair[0]
-    t = threading.Thread(target=lambda: _get(port, "/slow"))
+    t = threading.Thread(target=lambda: _get(port, "/v1/series/slow"))
     t.start()
     time.sleep(0.4)
     during = json.loads(_get(port, router.STATUS_PATH)[2])
@@ -263,9 +374,9 @@ def test_the_status_route_reports_in_flight_requests(pair):
 
 def test_a_flip_takes_effect_on_the_next_request_and_is_atomic(pair):
     port, state = pair[0], pair[1]
-    assert json.loads(_get(port, "/a")[2])["instance"] == "blue"
+    assert json.loads(_get(port, "/v1/series/a")[2])["instance"] == "blue"
     router.flip(str(state), "green")
-    assert json.loads(_get(port, "/b")[2])["instance"] == "green"
+    assert json.loads(_get(port, "/v1/series/b")[2])["instance"] == "green"
     assert not [p for p in os.listdir(state.parent) if p.endswith(".tmp")], "no temporary file left"
     with pytest.raises(ValueError):
         router.flip(str(state), "purple")
@@ -294,16 +405,16 @@ def test_a_dead_instance_is_a_502_never_a_silent_fallback(pair):
 def test_a_broken_state_file_is_an_answered_503_with_no_body_on_head(pair):
     port, state = pair[0], pair[1]
     state.write_text("{not json")
-    status, _h2, body = _get(port, "/x")
+    status, _h2, body = _get(port, "/v1/series/x")
     assert status == 503 and json.loads(body)["error"] == "router_state_unreadable"
-    status, _h2, body = _get(port, "/x", method="HEAD")
+    status, _h2, body = _get(port, "/v1/series/x", method="HEAD")
     assert status == 503 and body == b""
 
 
 def test_only_read_methods_and_head(pair):
     port = pair[0]
-    assert _get(port, "/x", method="POST")[0] == 405
-    status, headers, body = _get(port, "/x", method="HEAD")
+    assert _get(port, "/v1/series/x", method="POST")[0] == 405
+    status, headers, body = _get(port, "/v1/series/x", method="HEAD")
     assert status == 200 and body == b"" and _h(headers, "content-length") == ["123"]
 
 
@@ -339,7 +450,7 @@ def _counting_instance():
             conns.append(self.client_address)
 
         def do_GET(self):
-            if self.path == "/drop-after":
+            if self.path == "/v1/series/drop-after":
                 self.send_response(200)
                 self.send_header("content-length", "2")
                 self.end_headers()
@@ -347,7 +458,7 @@ def _counting_instance():
                 self.wfile.flush()
                 self.close_connection = True                   # the origin drops the kept-alive connection
                 return
-            if self.path == "/slow":
+            if self.path == "/v1/series/slow":
                 self.send_response(200)
                 self.send_header("transfer-encoding", "chunked")
                 self.end_headers()
@@ -357,7 +468,7 @@ def _counting_instance():
                     time.sleep(0.2)
                 self.wfile.write(b"0" + CRLF + CRLF)
                 return
-            if self.path == "/close":
+            if self.path == "/v1/series/close":
                 self.send_response(200)
                 self.send_header("content-length", "2")
                 self.send_header("connection", "close")
@@ -399,21 +510,21 @@ def pooled(tmp_path):
 def test_sequential_requests_reuse_one_origin_connection(pooled):
     port, conns, _o, _srv = pooled
     for _ in range(20):
-        assert _get(port, "/v1/x")[0] == 200            # a NEW client connection each time
+        assert _get(port, "/v1/series/vx")[0] == 200            # a NEW client connection each time
     assert len(conns) == 1, f"{len(conns)} origin connections for 20 requests: the pool is not reused"
 
 
 def test_head_responses_go_back_to_the_pool(pooled):
     port, conns, _o, _srv = pooled
     for _ in range(5):
-        assert _get(port, "/v1/x", method="HEAD")[0] == 200
+        assert _get(port, "/v1/series/vx", method="HEAD")[0] == 200
     assert len(conns) == 1
 
 
 def test_a_connection_the_origin_asked_to_close_is_not_reused(pooled):
     port, conns, origin, srv = pooled
     for _ in range(3):
-        assert _get(port, "/close")[0] == 200
+        assert _get(port, "/v1/series/close")[0] == 200
     assert len(conns) == 3
     assert srv.pool.idle_count("127.0.0.1", origin.server_address[1]) == 0, "a closed connection is not kept"
 
@@ -440,18 +551,18 @@ def test_the_idle_limit_is_below_the_origins_own_idle_close():
 
 def test_an_idle_connection_past_its_age_is_not_reused(pooled):
     port, conns, origin, srv = pooled
-    assert _get(port, "/v1/x")[0] == 200
+    assert _get(port, "/v1/series/vx")[0] == 200
     srv.pool.IDLE_S = 0.0                                     # every idle connection is now too old
     time.sleep(0.05)
-    assert _get(port, "/v1/x")[0] == 200
+    assert _get(port, "/v1/series/vx")[0] == 200
     assert len(conns) == 2, "the aged connection was closed, a fresh one made"
 
 
 def test_a_pooled_connection_the_origin_dropped_is_retried_once_fresh(pooled):
     port, conns, _o, _srv = pooled
-    assert _get(port, "/drop-after")[0] == 200          # the origin closes after answering, without saying so
+    assert _get(port, "/v1/series/drop-after")[0] == 200          # the origin closes after answering, without saying so
     time.sleep(0.2)
-    assert _get(port, "/v1/x")[0] == 200, "the dead pooled connection was retried, not answered 502"
+    assert _get(port, "/v1/series/vx")[0] == 200, "the dead pooled connection was retried, not answered 502"
     assert len(conns) == 2
 
 
@@ -460,12 +571,12 @@ def test_a_client_that_leaves_mid_body_does_not_return_the_connection(pooled):
     pooled."""
     port, conns, origin, srv = pooled
     s = socket.create_connection(("127.0.0.1", port))
-    s.sendall(b"GET /slow HTTP/1.1" + CRLF + b"Host: x" + CRLF + CRLF)
+    s.sendall(b"GET /v1/series/slow HTTP/1.1" + CRLF + b"Host: x" + CRLF + CRLF)
     s.recv(64)
     s.close()
     time.sleep(2.5)
     assert srv.pool.idle_count("127.0.0.1", origin.server_address[1]) == 0
-    assert _get(port, "/v1/x")[0] == 200
+    assert _get(port, "/v1/series/vx")[0] == 200
     assert len(conns) == 2, "the abandoned connection was not reused"
 
 
@@ -511,7 +622,7 @@ def test_after_the_origin_closes_idle_connections_every_request_still_succeeds(t
     try:
         for burst in range(2):
             out = []
-            threads = [threading.Thread(target=lambda: out.append(_get(srv.server_address[1], "/v1/x")[0]))
+            threads = [threading.Thread(target=lambda: out.append(_get(srv.server_address[1], "/v1/series/vx")[0]))
                        for _ in range(8)]
             for th in threads:
                 th.start()
@@ -538,7 +649,7 @@ def test_a_timeout_is_not_retried(tmp_path):
 
         def do_GET(self):
             ran.append(self.path)
-            if self.path == "/slow-answer":
+            if self.path == "/v1/series/slow-answer":
                 time.sleep(2.0)
             self.send_response(200)
             self.send_header("content-length", "2")
@@ -548,10 +659,10 @@ def test_a_timeout_is_not_retried(tmp_path):
     srv = _router_for(tmp_path, origin.server_address[1])
     try:
         srv.pool.TIMEOUT_S = 1
-        assert _get(srv.server_address[1], "/v1/x")[0] == 200                # pools a connection (1 s timeout)
-        assert _get(srv.server_address[1], "/slow-answer")[0] == 502
+        assert _get(srv.server_address[1], "/v1/series/vx")[0] == 200                # pools a connection (1 s timeout)
+        assert _get(srv.server_address[1], "/v1/series/slow-answer")[0] == 502
         time.sleep(2.5)
-        assert ran.count("/slow-answer") == 1, f"the origin ran it {ran.count('/slow-answer')} times"
+        assert ran.count("/v1/series/slow-answer") == 1, f"the origin ran it {ran.count('/v1/series/slow-answer')} times"
     finally:
         srv.shutdown()
         origin.shutdown()
@@ -580,10 +691,10 @@ def test_a_1xx_answer_never_leaves_its_connection_in_the_pool(tmp_path):
     threading.Thread(target=origin.serve_forever, daemon=True).start()
     srv = _router_for(tmp_path, origin.server_address[1])
     try:
-        _get(srv.server_address[1], "/a")
+        _get(srv.server_address[1], "/v1/series/a")
         assert srv.pool.idle_count("127.0.0.1", origin.server_address[1]) == 0
-        body = _get(srv.server_address[1], "/b")[2]
-        assert b"SECRET-FOR /a" not in body, "client B got client A's response"
+        body = _get(srv.server_address[1], "/v1/series/b")[2]
+        assert b"SECRET-FOR /v1/series/a" not in body, "client B got client A's response"
     finally:
         srv.shutdown()
         origin.shutdown()
@@ -626,7 +737,7 @@ def test_a_failure_on_a_fresh_connection_is_not_retried(tmp_path):
     origin, seen = _scripted_origin([None])
     srv = _router_for(tmp_path, origin.server_address[1])
     try:
-        assert _get(srv.server_address[1], "/a")[0] == 502
+        assert _get(srv.server_address[1], "/v1/series/a")[0] == 502
         assert seen == {"connections": 1, "requests": 1}
     finally:
         srv.shutdown()
@@ -640,9 +751,9 @@ def test_a_malformed_answer_on_a_reused_connection_is_not_retried(tmp_path):
     origin, seen = _scripted_origin([OK_ANSWER, b"NOT HTTP AT ALL\r\n\r\n"])
     srv = _router_for(tmp_path, origin.server_address[1])
     try:
-        assert _get(srv.server_address[1], "/a")[0] == 200
+        assert _get(srv.server_address[1], "/v1/series/a")[0] == 200
         assert srv.pool.idle_count("127.0.0.1", origin.server_address[1]) == 1, "precondition: pooled"
-        assert _get(srv.server_address[1], "/b")[0] == 502
+        assert _get(srv.server_address[1], "/v1/series/b")[0] == 502
         assert seen["requests"] == 2, f"the malformed answer's request was sent again: {seen}"
     finally:
         srv.shutdown()

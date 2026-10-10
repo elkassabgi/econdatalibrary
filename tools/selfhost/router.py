@@ -11,10 +11,19 @@ is 0 - not after a guessed wait that would cut a long download off.
 
 State file (JSON):  {"active": "blue", "targets": {"blue": "http://127.0.0.1:8801", "green": "http://127.0.0.1:8802"}}
 
-What it does to a request: forward it. Method, path, query and every header go through (duplicates kept;
-hop-by-hop headers and the ones the Connection header names are dropped, both ways); status, headers and
-the body come back unchanged, the body STREAMED as it arrives (read1: a slow filtered answer is not held
-back until a buffer fills). This API has no request bodies: a request that carries one (Content-Length > 0
+What it does to a request: forward it - when it is one the EDGE can send. Only the paths the edge forwards
+(EDGE_PATHS, EDGE_PREFIX: the same list as api/worker/src/edge.ts) reach an instance; any other path is the
+router's own 404 and is never forwarded. Of the request headers only FORWARDED_HEADERS go through (the
+edge's allowlist plus the origin secret; duplicates kept); status, headers and the body come back unchanged
+(hop-by-hop headers dropped), the body STREAMED as it arrives (read1: a slow filtered answer is not held
+back until a buffer fills). WHY BOTH LISTS (review AR-267): the origin's secret gate is in the WORKER, and
+`wrangler dev` answers some requests before the worker runs - /cdn-cgi/mf/scheduled, and any path when the
+request carries an MF-Original-URL header. Behind a tunnel hostname those would be open to whoever passes
+Cloudflare's lock, and to everyone in the minutes before a lock exists. So the router lets through only
+what the edge sends, and none of miniflare's control headers.
+GET /__router/status is answered only for a caller on this machine: a loopback Host and none of the headers
+a proxy or the tunnel adds (OUTSIDE_MARKS). For anyone else it is the same 404 as an unknown path.
+This API has no request bodies: a request that carries one (Content-Length > 0
 or any Transfer-Encoding) is refused with 400 and the connection closed, so it can never desynchronise the
 connection to the origin (review AR-152). Only GET, HEAD and OPTIONS exist; anything else is 405 here.
 When the active instance does not answer, the router says so with a 502 - it never falls back to the other
@@ -38,6 +47,48 @@ CHUNK = 1 << 20
 HOP_BY_HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer",
               "transfer-encoding", "upgrade", "proxy-connection"}
 STATUS_PATH = "/__router/status"
+
+# The routes the edge forwards (api/worker/src/edge.ts FORWARDED_PATHS and its "/v1/series/" prefix).
+# tests/test_selfhost_router.py reads edge.ts and keeps the two lists equal.
+EDGE_PATHS = frozenset({"/", "/v1", "/v1/", "/v1/catalog", "/v1/sources", "/v1/last-updates", "/v1/stats",
+                        "/v1/bundle", "/v1/guard-heartbeat"})
+EDGE_PREFIX = "/v1/series/"
+# The request headers the origin may see: the edge's FORWARDED_REQUEST_HEADERS plus the origin secret.
+FORWARDED_HEADERS = frozenset({"accept", "accept-encoding", "accept-language", "user-agent",
+                               "x-econ-origin-secret"})
+# Headers a reverse proxy or the tunnel adds. A request that carries one did not start on this machine.
+OUTSIDE_MARKS = ("cdn-loop", "forwarded", "via", "x-real-ip")
+OUTSIDE_PREFIXES = ("cf-", "x-forwarded-")
+
+
+def forwardable(target: str) -> bool:
+    """True when the request target is one the edge forwards. The path is taken as the origin's URL parser
+    will read it: a backslash is a slash there and %2e is a dot, so a segment that is `.` or `..` in either
+    spelling is refused - `/v1/series/../../cdn-cgi/mf/scheduled` must not pass as a series path."""
+    if not target.startswith("/"):
+        return False                                     # an absolute-form or authority-form target
+    path = target.split("?", 1)[0].split("#", 1)[0]
+    for seg in path.replace("\\", "/").split("/"):
+        if seg.lower().replace("%2e", ".") in (".", ".."):
+            return False
+    if "\\" in path:
+        return False
+    return path in EDGE_PATHS or path.startswith(EDGE_PREFIX)
+
+
+def from_this_machine(headers) -> bool:
+    """True for a request made on this machine to the router itself: its Host is a loopback name and it
+    carries none of the headers a proxy or the tunnel adds. The tunnel's requests come from 127.0.0.1 too
+    (cloudflared runs here), so the peer address says nothing."""
+    host = (headers.get("host") or "").strip().lower()
+    name = host.rsplit(":", 1)[0] if not host.startswith("[") else host.split("]", 1)[0] + "]"
+    if name not in ("127.0.0.1", "localhost", "[::1]"):
+        return False
+    for k in headers.keys():
+        low = k.lower()
+        if low in OUTSIDE_MARKS or low.startswith(OUTSIDE_PREFIXES):
+            return False
+    return True
 
 
 def _dropped(headers) -> set[str]:
@@ -220,11 +271,16 @@ def make_handler(state: State, inflight: Inflight, pool: "OriginPool | None" = N
             self.wfile.write(body)
 
         def _forward(self):
-            if self.path == STATUS_PATH:
-                return self._status()
+            # the body check comes first, for every path: an unread body would be parsed as the next request
             length = self.headers.get("content-length")
             if self.headers.get("transfer-encoding") or (length and length.strip() not in ("", "0")):
                 return self._refuse(400, "request_body_not_allowed", close=True)
+            if self.path == STATUS_PATH and from_this_machine(self.headers):
+                return self._status()
+            if not forwardable(self.path):
+                # never forwarded. The answer has no origin mark, so an edge that did get it reports a bad
+                # answer from the origin (502), never data
+                return self._refuse(404, "not_found")
             try:
                 name, t = state.target()
             except Exception:                                   # noqa: BLE001 - the state file broke after start
@@ -243,7 +299,7 @@ def make_handler(state: State, inflight: Inflight, pool: "OriginPool | None" = N
                     conn.putrequest(self.command, self.path, skip_host=True, skip_accept_encoding=True)
                     conn.putheader("host", t.netloc)
                     for k, v in self.headers.items():           # duplicates kept (AR-152)
-                        if k.lower() not in drop:
+                        if k.lower() in FORWARDED_HEADERS and k.lower() not in drop:
                             conn.putheader(k, v)
                     conn.endheaders()
                     resp = conn.getresponse()
