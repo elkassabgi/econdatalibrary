@@ -1,6 +1,6 @@
 # The SOAK worker of the self-hosting move: a SECOND workers.dev name that forwards to the workstation for
 # some days before the cutover. It is NOT the production worker (wrangler.toml, `econdl-api`) and is deleted
-# when the soak ends. tests/test_wrangler_soak_config.py pins every line below.
+# when the soak ends. tests/test_wrangler_soak_config.py pins the parsed content below, key by key.
 #
 # What differs from wrangler.toml, and why:
 #   name        another worker. EVERY wrangler command for it carries `--config wrangler.soak.toml` AND
@@ -10,9 +10,10 @@
 #               empty list removes it.
 #   FORWARD     "on": every data route is answered by the workstation's origin.
 #   SOAK        "1": no page-view routes and no scheduled handler (src/edge.ts isSoak), so this public test
-#               address cannot create or fill the edge's own tables in the users database.
-#   bindings    USERS only. With FORWARD on no route reads the catalogue databases or the bucket, and
-#               leaving them out proves it.
+#               address cannot create or fill econ_pageview or econ_ops_status in the users database. It
+#               still writes rate_limits and econ_download_log for a download with a valid key.
+#   bindings    USERS only. With FORWARD on no route reads the catalogue databases or the bucket (read and
+#               measured in review AR-272); without the bindings a route that did would answer 500, not data.
 # ORIGIN_URL, ORIGIN_SECRET, ORIGIN_ACCESS_ID and ORIGIN_ACCESS_SECRET are secrets of THIS worker and are
 # never written here.
 name = "econdl-api-soak"

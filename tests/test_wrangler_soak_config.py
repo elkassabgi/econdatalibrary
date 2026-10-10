@@ -29,8 +29,9 @@ def test_the_soak_worker_is_another_worker_with_the_production_runtime():
         assert soak[key] == prod[key], f"{key} must equal the production worker's"
     assert soak["workers_dev"] is True, "its only address is the workers.dev name"
     assert soak["preview_urls"] is False
-    for key in ("route", "routes", "env", "services", "kv_namespaces", "durable_objects", "queues"):
-        assert key not in soak, f"{key} must not appear in the soak config"
+    assert set(soak) == {"name", "main", "compatibility_date", "compatibility_flags", "account_id", "workers_dev",
+                         "preview_urls", "limits", "d1_databases", "triggers", "vars", "observability"}, \
+        "a key this test does not know: every line of the soak config is pinned, so pin the new one here"
     assert "workers_dev" not in soak["limits"] and "account_id" not in soak["limits"]
 
 
@@ -59,13 +60,28 @@ def test_no_secret_and_no_origin_address_is_committed():
 
 def test_the_soak_switch_is_in_no_other_config():
     """Every wrangler config under api/worker but the soak one: no SOAK variable, in any table."""
-    others = sorted(n for n in os.listdir(WORKER) if n.startswith("wrangler") and n.endswith(".toml")
-                    and n != "wrangler.soak.toml")
+    def keys(node):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                yield k
+                yield from keys(v)
+        elif isinstance(node, list):
+            for v in node:
+                yield from keys(v)
+
+    names = sorted(n for n in os.listdir(WORKER) if n.startswith("wrangler"))
+    assert [n for n in names if not n.endswith(".toml")] == [], "a wrangler.json(c) here is read BEFORE wrangler.toml"
+    others = [n for n in names if n != "wrangler.soak.toml"]
     assert "wrangler.toml" in others and "wrangler.origin.toml" in others
     for name in others:
         text = open(os.path.join(WORKER, name), encoding="utf-8").read()
         data = "\n".join(ln.split("#", 1)[0] for ln in text.splitlines())
         assert "SOAK" not in data, f"{name}: SOAK belongs to wrangler.soak.toml only"
+        assert "SOAK" not in set(keys(_load(name))), f"{name}: a SOAK key (parsed, any table)"
+    assert "SOAK" in set(keys(_load("wrangler.soak.toml"))), "control: the parsed search finds the key where it is"
+    deploy = "\n".join(ln for ln in open(os.path.join(ROOT, "tools", "selfhost", "deploy_edge.sh"), encoding="utf-8")
+                       .read().splitlines() if not ln.lstrip().startswith("#"))
+    assert deploy.count("--var ") == 1 and '--var "GIT_COMMIT:$commit")' in deploy, "the production deploy sets one variable"
     assert "FORWARD" not in (_load("wrangler.toml").get("vars") or {}), \
         "the production worker does not forward before the cutover (this pin ends at plan step 6)"
 

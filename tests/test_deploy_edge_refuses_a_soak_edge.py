@@ -1,7 +1,7 @@
 """tools/selfhost/deploy_edge.sh ends in an error when the PRODUCTION edge calls itself a soak worker.
 
 SOAK = "1" belongs to the soak worker only (api/worker/wrangler.soak.toml). A variable of that name set by
-hand on `econdl-api` survives a deploy and turns the page-view routes into 404s with no error anywhere. The
+hand as a SECRET on `econdl-api` survives a deploy and turns the page-view routes into 404s with no error anywhere. The
 wrapper reads /v1/edge-status after the deploy; this test runs the REAL script with `git`, `npx`, `curl` and
 `sleep` replaced by small stand-ins on PATH, so nothing is deployed and nothing goes to the network.
 
@@ -68,6 +68,11 @@ def _run(tmp_path, status_body):
                FAKE_STATUS=str(status).replace(os.sep, "/"), FAKE_LOG=str(log).replace(os.sep, "/"),
                SELFHOST_EDGE="https://edge.example")
     env["PATH"] = str(bindir) + os.pathsep + env["PATH"]
+    # THE REAL SCRIPT DEPLOYS. It may run only when every command it calls resolves to a stand-in.
+    seen = subprocess.run([bash, "-c", "for c in git npx curl sleep python; do command -v $c; done"],
+                          capture_output=True, text=True, env=env, timeout=60).stdout.split()
+    assert len(seen) == 5 and all(os.path.basename(os.path.dirname(s)) == "bin" and tmp_path.name in s for s in seen), \
+        f"the stand-ins are not first on PATH for {bash}: {seen} - the script was NOT run"
     r = subprocess.run([bash, SCRIPT], capture_output=True, text=True, env=env, timeout=120)
     return r, log.read_text(encoding="utf-8")
 
@@ -83,21 +88,34 @@ def test_control_a_plain_edge_ends_the_deploy_with_success(tmp_path, body):
     r, calls = _run(tmp_path, body)
     assert r.returncode == 0, r.stderr
     assert f"verified: https://edge.example/v1/edge-status answers {COMMIT}" in r.stdout
-    assert f"npx wrangler deploy --config wrangler.toml --var GIT_COMMIT:{COMMIT}" in calls, "the stand-in deploy ran"
+    assert f"npx wrangler deploy --config wrangler.toml --var GIT_COMMIT:{COMMIT}\n" in calls, "the stand-in deploy ran, with one variable"
 
 
 def test_an_edge_that_says_soak_true_fails_the_deploy(tmp_path):
     r, calls = _run(tmp_path, _body(soak=True))
     assert r.returncode == 1
-    assert "soak=yes" in r.stderr and "Remove the SOAK variable" in r.stderr
+    assert "soak=true" in r.stderr and "Remove the SOAK secret or variable" in r.stderr
     assert "npx wrangler deploy" in calls
 
 
-def test_a_status_that_cannot_be_read_for_the_soak_check_is_not_a_pass(tmp_path):
-    """The commit is read by the first request and `soak` by the third (the second prints the status). When
-    that third answer is not JSON the script cannot tell, and must not end with success."""
-    (tmp_path / "status.json.3").write_text("<html>error 1033</html>", encoding="utf-8")
-    r, calls = _run(tmp_path, _body(soak=False))
-    assert calls.count("curl ") == 3
-    assert r.returncode == 1
-    assert "soak=unknown" in r.stderr
+def test_a_soak_value_that_is_not_a_boolean_is_not_a_pass(tmp_path):
+    r, calls = _run(tmp_path, _body(soak="true"))
+    assert r.returncode == 1 and "soak=unknown" in r.stderr and "could not be read" in r.stderr
+
+
+def test_one_answer_gives_the_commit_and_the_soak_flag(tmp_path):
+    """While a deploy spreads, two requests can be answered by two versions. The flag must come from the body
+    that carried the commit: a later answer from the previous version (no `soak` key) changes nothing."""
+    import json
+    (tmp_path / "status.json.2").write_text(json.dumps({"commit": "0ld"}), encoding="utf-8")
+    (tmp_path / "status.json.3").write_text(json.dumps({"commit": "0ld"}), encoding="utf-8")
+    r, calls = _run(tmp_path, _body(soak=True))
+    assert calls.count("curl ") == 1 and r.returncode == 1 and "soak=true" in r.stderr
+
+
+def test_the_check_also_runs_when_the_commit_shows_on_a_later_try(tmp_path):
+    import json
+    (tmp_path / "status.json.1").write_text(json.dumps({"commit": "0ld"}), encoding="utf-8")
+    (tmp_path / "status.json.2").write_text("<html>error 1033</html>", encoding="utf-8")
+    r, calls = _run(tmp_path, _body(soak=True))
+    assert calls.count("curl ") == 3 and r.returncode == 1 and "soak=true" in r.stderr

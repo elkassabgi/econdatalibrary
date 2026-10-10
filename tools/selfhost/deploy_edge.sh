@@ -33,15 +33,24 @@ echo "deploying econdl-api at $commit"
 (cd api/worker && npx wrangler deploy --config wrangler.toml --var "GIT_COMMIT:$commit")   # --config: wrangler 3 obeys a stray .wrangler/deploy/config.json otherwise (AR-151)
 
 for i in 1 2 3 4 5 6; do
-  got="$(curl -s "$EDGE/v1/edge-status" | python -c 'import sys,json; print(json.load(sys.stdin).get("commit") or "")' 2>/dev/null || true)"
+  # ONE answer per try: the commit and the soak flag are read from the SAME body, so they describe the same
+  # version of the worker (while a deploy spreads, two requests can be answered by two versions).
+  body="$(curl -s --max-time 30 "$EDGE/v1/edge-status" || true)"
+  got="$(printf '%s' "$body" | python -c 'import sys,json; print(json.load(sys.stdin).get("commit") or "")' 2>/dev/null || true)"
   if [ "$got" = "$commit" ]; then
     echo "verified: $EDGE/v1/edge-status answers $commit"
-    curl -s "$EDGE/v1/edge-status"; echo
+    printf '%s\n' "$body"
     # SOAK = "1" is for the soak worker only (wrangler.soak.toml). On this worker it would turn the page-view
-    # routes into 404s with no error anywhere - a variable set by hand in the dashboard survives a deploy.
-    soak="$(curl -s "$EDGE/v1/edge-status" | python -c 'import sys,json; print("yes" if json.load(sys.stdin).get("soak") is True else "no")' 2>/dev/null || echo unknown)"
+    # routes into 404s with no error anywhere. `wrangler deploy` replaces plain variables with the ones in
+    # wrangler.toml, but a SECRET named SOAK (dashboard or `wrangler secret put`) survives every deploy, and
+    # so would a `--var SOAK:1` on the command above.
+    soak="$(printf '%s' "$body" | python -c 'import sys,json; v=json.load(sys.stdin).get("soak"); print("yes" if v is True else "no" if v in (False, None) else "unknown")' 2>/dev/null || echo unknown)"
+    if [ "$soak" = "yes" ]; then
+      echo "FAILED: the deploy is LIVE, and $EDGE/v1/edge-status says soak=true. Its page-view routes answer 404 now. Remove the SOAK secret or variable from econdl-api (wrangler secret delete SOAK --name econdl-api --config wrangler.toml) and deploy again." >&2
+      exit 1
+    fi
     if [ "$soak" != "no" ]; then
-      echo "FAILED: $EDGE/v1/edge-status says soak=$soak (expected: not a soak worker). Remove the SOAK variable from econdl-api and deploy again." >&2
+      echo "FAILED: the deploy is LIVE at $commit, but the soak field of $EDGE/v1/edge-status could not be read (soak=$soak). Read the status by hand before anything else; nothing says the worker is a soak worker." >&2
       exit 1
     fi
     exit 0
