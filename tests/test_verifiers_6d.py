@@ -59,9 +59,13 @@ DEFUSED = {"tools/_delete_statcan_r2.py", "tools/trim_bfs_corrupt_tail.py", "too
 CI_ONLY = {"updater/send_digest.py"}
 # Names the cloud roads in order to REFUSE them (plan change 5).
 BY_DESIGN = {"tools/selfhost/cutover_hook.py"}
+# Reads ONE public status answer of the SOAK worker (/v1/edge-status: no data, no R2, no D1) before it sets that
+# worker's two origin values. The soak ends before T0 and its worker is deleted then; nothing here judges the
+# cloud copy or writes local data.
+SOAK_TOOLS = {"tools/selfhost/put_soak_origin.py"}
 
 CLASSES = {"VERIFIERS_6D": VERIFIERS_6D, "CLOUD_COST": CLOUD_COST, "CLOUD_WRITE_REFUSED": CLOUD_WRITE_REFUSED,
-           "OFFLINE": OFFLINE, "DEFUSED": DEFUSED, "CI_ONLY": CI_ONLY, "BY_DESIGN": BY_DESIGN}
+           "OFFLINE": OFFLINE, "DEFUSED": DEFUSED, "CI_ONLY": CI_ONLY, "BY_DESIGN": BY_DESIGN, "SOAK_TOOLS": SOAK_TOOLS}
 
 
 def _code_only(src):
