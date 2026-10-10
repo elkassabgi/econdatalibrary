@@ -3,7 +3,8 @@
 tests/test_probe_error_does_not_end_the_run.py let these forms of the handler through (the review's mutants
 b07, b13, b16, b17 and b30 survived it): a branch that catches only some exception families, no guard round
 the log line, a guard that also swallows a failed state write, and a result label that the heavy workflow's
-list does not know. The last two tests are for an exception whose own __repr__ raises (the review's note N3).
+list does not know. The last two tests are for an exception whose own __repr__ raises (the review's note N3)
+in the CHANGE PROBE; the fetch's branch has the same call and is pinned by a count of the source text only.
 The tests use that file's helper: the REAL run_once over two registry sources with a fake strategy.
 """
 from __future__ import annotations
@@ -32,8 +33,9 @@ def test_an_exception_of_any_class_is_one_units_failure(tmp_path, monkeypatch, c
 
 
 def test_a_log_that_refuses_the_line_does_not_end_the_run(tmp_path, monkeypatch):
-    """The guard round the handler's print: with ascii() the text can always be encoded, so only a stream
-    that fails (a full disk, a closed pipe) reaches the guard. Without the guard the run ended here."""
+    """The guard round the handler's print. With ascii() the text can always be encoded; what still raises
+    inside the print is a stream that fails (a full disk, a closed pipe) - this test - and ascii() of an
+    exception whose repr raises (the test further down). Without the guard the run ended here."""
 
     class _Refuses(io.TextIOBase):
         def write(self, s):
@@ -86,7 +88,8 @@ class _ReprRaises(Exception):
 
 def test_an_exception_whose_repr_raises_is_still_one_units_failure(tmp_path, monkeypatch):
     """Before: `repr(e)` in the handler's own record raised, the error left run_once and no row was written
-    (measured in review AR-265b: 'run_once RAISED ... probed=[cnb]; unit row=None')."""
+    (measured in review AR-265b: "run_once RAISED ... probed=['cnb']; unit row=None"). For such an exception
+    no PROBE ERROR line is printed - ascii(e) raises inside the print's guard; the row and the label exist."""
     strat, store, run = _run(tmp_path, monkeypatch, _ReprRaises())
     results = run()
     first = strat.probed[0]

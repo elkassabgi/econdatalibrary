@@ -44,8 +44,8 @@ def _run(tmp_path, monkeypatch, error, dry=False):
     monkeypatch.delenv("AQUEDUCT_LIVE_ONLY", raising=False)
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     # the run budget and the unit timeout decide whether a unit is admitted at all: with a budget of
-    # 90 minutes or less in the environment (0 means no budget) both units are BUDGET-SKIPPED and every
-    # test here fails (reviews AR-265, AR-265b: 60, 89 and 90 fail; 91, 120 and 0 pass)
+    # 90 minutes or less in the environment (0 means no budget) both units are BUDGET-SKIPPED and 7 of this
+    # file's 8 tests fail (reviews AR-265, AR-265b, AR-271: 60, 89 and 90 fail; 91, 120 and 0 pass)
     monkeypatch.delenv("AQUEDUCT_RUN_BUDGET_MIN", raising=False)
     monkeypatch.delenv("AQUEDUCT_UNIT_TIMEOUT_MIN", raising=False)
     # run_once sets this module global; put it back when the test ends
