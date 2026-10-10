@@ -2553,6 +2553,22 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 _record(store, unit, "transient_fail", err=f"detect:{e}")
             results.append((unit.key, "transient_fail"))
             continue
+        except Exception as e:  # noqa: BLE001 - an unexpected probe error is THIS unit's, never the run's
+            # ONE PROBE ERROR MUST NOT END THE RUN. The fetch below has had this branch from the start
+            # ("unexpected: treat as transient, surface, retry"); the probe had only the two above, so any other
+            # exception left run_once. Measured: from 2026-10-08 UNCTAD answered HTTP 400 "report instance not
+            # found" for one report's metadata, requests raised HTTPError inside current_vintage, and four
+            # daily runs in a row ended there with exit 1 - the last three on their FIRST unit, so no cloud
+            # source was attempted (runs 37780844667, 37856392728, 37932152673, 37998288087).
+            # Same record as the fetch's branch: transient_fail, the error text kept, the unit tried again at
+            # the next run. KeyboardInterrupt and SystemExit are not Exceptions and still end the run.
+            print(f"[orchestrator] PROBE ERROR {unit.key} - {e!r}; recorded transient_fail, the run goes on",
+                  flush=True)
+            if not dry:
+                _record(store, unit, "transient_fail", err=_clip_err("detect:UNEXPECTED:" + repr(e)),
+                        dur=time.time() - t_unit)
+            results.append((unit.key, "error"))
+            continue
         if not force and vintage is None:
             # Upstream unchanged. An EARNED no_change — the probe produced a
             # vintage token equal to the stored one (§5.2) — is RECORDED, so
