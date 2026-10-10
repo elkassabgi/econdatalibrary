@@ -64,7 +64,7 @@ export function isSoak(env: { SOAK?: string }): boolean {
 }
 
 /** /v1/edge-status: what the off-machine check (tools/selfhost/watch_edge.py) compares with the committed
- *  wrangler.toml. Public and harmless: four booleans, two raw config values and a public commit id. It
+ *  wrangler.toml. Public and harmless: three booleans, a two-valued state, two raw config values and a public commit id. It
  *  touches no storage, so it can never become a cost path, and never names the origin's address. */
 export function edgeStatus(env: EdgeEnv & { EDGE_STATE?: string; GIT_COMMIT?: string; SOAK?: string }): Response {
   return new Response(JSON.stringify({

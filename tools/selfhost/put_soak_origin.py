@@ -36,9 +36,19 @@ class Refused(Exception):
     pass
 
 
+def _text(path: str) -> str:
+    """The file as text. A byte-order mark is dropped (Notepad and PowerShell 5 write one); a file that is not
+    UTF-8 (PowerShell 5's `>` writes UTF-16) is a refusal that says so, not a traceback."""
+    try:
+        with open(path, encoding="utf-8-sig") as fh:
+            return fh.read()
+    except UnicodeDecodeError:
+        raise Refused(f"{os.path.basename(path)} is not UTF-8 text (PowerShell's `>` writes UTF-16: write the "
+                      "file again as UTF-8)") from None
+
+
 def read_url(path: str) -> str:
-    with open(path, encoding="utf-8") as fh:
-        lines = [ln.strip() for ln in fh.read().splitlines() if ln.strip()]
+    lines = [ln.strip() for ln in _text(path).splitlines() if ln.strip()]
     if len(lines) != 1:
         raise Refused(f"the URL file must hold exactly one line; it holds {len(lines)}")
     if not URL_RE.fullmatch(lines[0]):
@@ -48,9 +58,8 @@ def read_url(path: str) -> str:
 
 
 def read_secret(path: str) -> str:
-    with open(path, encoding="utf-8") as fh:
-        found = [ln.split("=", 1)[1].strip() for ln in fh.read().splitlines()
-                 if ln.split("=", 1)[0].strip() == "ORIGIN_SECRET" and "=" in ln]
+    found = [ln.split("=", 1)[1].strip() for ln in _text(path).splitlines()
+             if ln.split("=", 1)[0].strip() == "ORIGIN_SECRET" and "=" in ln]
     if len(found) != 1:
         raise Refused(f"the .dev.vars file must hold exactly one ORIGIN_SECRET line; it holds {len(found)}")
     value = found[0].strip('"')
@@ -70,14 +79,18 @@ def put(name: str, value: str, worker_dir: str, run=subprocess.run) -> int:
     """One `wrangler secret put`, the value on stdin. Returns wrangler's exit code."""
     argv = command(name)
     assert value not in " ".join(argv), "a value never goes on a command line"
-    r = run(argv, input=value + "\n", cwd=worker_dir, capture_output=True, text=True)
-    shown = (r.stdout or "") + (r.stderr or "")
+    # BYTES both ways. wrangler writes UTF-8 (its banner holds U+26C5 U+FE0F); in text mode Python on Windows
+    # decodes with the ANSI code page, the byte 0x8F has no character there, the reader thread dies with a
+    # traceback and ALL of wrangler's output is lost (review AR-274, measured on Python 3.11, 3.12 and 3.14).
+    r = run(argv, input=(value + "\n").encode("ascii"), cwd=worker_dir, capture_output=True)
+    shown = b"".join(x if isinstance(x, bytes) else str(x or "").encode("utf-8") for x in (r.stdout, r.stderr))
+    shown = shown.decode("utf-8", "replace")
     if value in shown:
         print(f"{name}: wrangler's output held the value and is not shown")
     else:
         for line in shown.splitlines():
-            if line.strip():
-                print(f"  wrangler: {line.strip()[:200]}")
+            if line.strip():                              # ASCII only: a console code page cannot stop the receipt
+                print("  wrangler: " + line.strip()[:200].encode("ascii", "replace").decode("ascii"))
     print(f"{name}: wrangler exit code {r.returncode}")
     return r.returncode
 

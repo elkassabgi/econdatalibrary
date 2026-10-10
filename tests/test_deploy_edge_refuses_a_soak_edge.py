@@ -77,6 +77,20 @@ def _run(tmp_path, status_body):
     return r, log.read_text(encoding="utf-8")
 
 
+def test_a_name_override_for_wrangler_stops_the_production_deploy(tmp_path, monkeypatch):
+    """wrangler 3.114.17 lets WRANGLER_CI_OVERRIDE_NAME replace the worker's name on deploy: the production
+    config would go to another worker. The control is every other test of this file (the variable unset)."""
+    monkeypatch.setenv("WRANGLER_CI_OVERRIDE_NAME", "econdl-api-soak")
+    r, calls = _run(tmp_path, _body(soak=False))
+    assert r.returncode == 1 and "npx" not in calls and "WRANGLER_CI_OVERRIDE_NAME" in r.stderr
+
+
+def test_an_edge_that_never_answers_the_commit_fails_the_deploy(tmp_path):
+    import json
+    r, calls = _run(tmp_path, json.dumps({"commit": "0ld", "soak": False}))
+    assert r.returncode == 1 and calls.count("curl ") == 6 and "does not answer" in r.stderr
+
+
 def _body(**extra):
     import json
     return json.dumps({"commit": COMMIT, "forward": False, "edge_state": "econ", "forward_raw": "",

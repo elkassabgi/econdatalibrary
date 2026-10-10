@@ -46,8 +46,10 @@ case "$*" in
   *prod.example*) who=prod ;;
   *) echo "unexpected curl call: $*" >&2; exit 96 ;;
 esac
+n=$(grep -c "^curl .*$who.example" "$FAKE_LOG")
+if [ -f "$FAKE_DIR/$who.fail.$n" ]; then exit 7; fi
 if [ -f "$FAKE_DIR/$who.fail" ]; then exit 7; fi
-cat "$FAKE_DIR/$who"
+if [ -f "$FAKE_DIR/$who.$n" ]; then cat "$FAKE_DIR/$who.$n"; else cat "$FAKE_DIR/$who"; fi
 """
 SLEEP = "#!/usr/bin/env bash\nexit 0\n"
 
@@ -65,7 +67,7 @@ SOAK_OK = _status(COMMIT, soak=True, forward=True)
 GONE = "<html>There is nothing here yet</html>"
 
 
-def _run(tmp_path, script, files, args=(), env_extra=None):
+def _run(tmp_path, script, files, args=(), env_extra=None, typed="econdl-api-soak\n"):
     bash = shutil.which("bash")
     if bash is None:
         assert os.name == "nt", "bash must exist where CI runs this test"
@@ -81,7 +83,7 @@ def _run(tmp_path, script, files, args=(), env_extra=None):
     for name, body in files.items():
         (fake / name).write_text(body, encoding="utf-8")
     top = tmp_path / "top"
-    (top / "api" / "worker").mkdir(parents=True)
+    (top / "api" / "worker").mkdir(parents=True, exist_ok=True)
     if not (env_extra or {}).pop("NO_SOAK_CONFIG", None):
         (top / "api" / "worker" / "wrangler.soak.toml").write_text('name = "econdl-api-soak"\n', encoding="utf-8")
     log = tmp_path / "calls.log"
@@ -95,7 +97,10 @@ def _run(tmp_path, script, files, args=(), env_extra=None):
                           capture_output=True, text=True, env=env, timeout=60).stdout.split()
     assert len(seen) == 5 and all(os.path.basename(os.path.dirname(s)) == "bin" and tmp_path.name in s for s in seen), \
         f"the stand-ins are not first on PATH for {bash}: {seen} - the script was NOT run"
-    r = subprocess.run([bash, script, *args], capture_output=True, text=True, env=env, timeout=180)
+    for name in ("WRANGLER_CI_OVERRIDE_NAME",):
+        if name not in (env_extra or {}):
+            env.pop(name, None)
+    r = subprocess.run([bash, script, *args], capture_output=True, text=True, env=env, timeout=180, input=typed)
     calls = log.read_text(encoding="utf-8")
     return r, [ln for ln in calls.splitlines() if ln.startswith("npx ")]
 
@@ -132,9 +137,10 @@ def test_deploy_refuses_another_branch_and_an_unreadable_production(tmp_path):
 @pytest.mark.parametrize("after, words", [
     (GONE, "does not answer"),                                               # the address never answers the commit
     (_status("f" * 40, soak=True, forward=True), "does not answer"),          # an older deploy answers
-    (_status(COMMIT, soak=False, forward=True), "soak=no"),                   # not the soak config
-    (_status(COMMIT, forward=True), "soak=none"),
-    (_status(COMMIT, soak=True, forward=False), "forward=no"),
+    (_status(COMMIT, soak=False, forward=True), f"reads '{COMMIT} no yes users'"),      # not the soak config
+    (_status(COMMIT, forward=True), f"reads '{COMMIT} none yes users'"),
+    (_status(COMMIT, soak=True, forward=False), f"reads '{COMMIT} yes no econ'"),
+    (json.dumps({"commit": COMMIT, "soak": True, "forward": True, "edge_state": "econ"}), f"reads '{COMMIT} yes yes econ'"),
 ])
 def test_deploy_fails_when_the_soak_address_is_not_this_commit_as_a_soak_worker(tmp_path, after, words):
     r, npx = _run(tmp_path, DEPLOY, {"prod": PROD, "soak": GONE, "soak.after": after})
@@ -143,9 +149,10 @@ def test_deploy_fails_when_the_soak_address_is_not_this_commit_as_a_soak_worker(
 
 
 @pytest.mark.parametrize("prod_after, words", [
-    (_status(COMMIT, soak=False), "after '" + COMMIT),                        # the deploy landed on production
-    (_status(PROD_COMMIT, soak=True), "soak=yes"),
-    (GONE, "after 'unknown'"),
+    (_status(COMMIT, soak=False), "now '" + COMMIT),                          # the deploy landed on production
+    (_status(PROD_COMMIT, soak=True), f"now '{PROD_COMMIT} yes no econ'"),
+    (_status(PROD_COMMIT, soak=False, forward=True), f"now '{PROD_COMMIT} no yes users'"),   # same commit, another config
+    (GONE, "now 'notjson'"),
 ])
 def test_deploy_fails_when_production_changed(tmp_path, prod_after, words):
     r, _npx = _run(tmp_path, DEPLOY, {"prod": PROD, "prod.after": prod_after, "soak": GONE, "soak.after": SOAK_OK})
@@ -156,6 +163,59 @@ def test_deploy_fails_when_production_changed(tmp_path, prod_after, words):
 def test_a_failed_wrangler_deploy_ends_the_script(tmp_path):
     r, npx = _run(tmp_path, DEPLOY, {"prod": PROD, "soak": GONE, "soak.after": SOAK_OK}, env_extra={"FAKE_NPX_EXIT": "3"})
     assert r.returncode == 3 and npx == [DEPLOY_CMD] and "verified" not in r.stdout
+
+
+
+def test_one_answer_gives_all_four_words_while_a_deploy_spreads(tmp_path):
+    """AR-274: three requests for three fields let a GOOD first deploy end with 'this is not the soak worker's
+    config' when the second request was answered by a place the new worker had not reached. Now the answer
+    that carries the commit is the only one read; the older answers before it are waited out."""
+    r, npx = _run(tmp_path, DEPLOY, {"prod": PROD, "soak": GONE, "soak.after": SOAK_OK, "soak.1": GONE,
+                                     "soak.2": _status("f" * 40, soak=True, forward=True)})
+    assert r.returncode == 0, r.stderr
+    calls = (tmp_path / "calls.log").read_text(encoding="utf-8")
+    assert calls.count("soak.example") == 3 and calls.count("--max-time 30") == calls.count("curl ")
+
+
+def test_a_production_answer_that_differs_in_any_word_or_at_any_of_three_reads_fails(tmp_path):
+    """The read right after a deploy can come from the older version: the second and third still count."""
+    changed = _status(PROD_COMMIT, soak=True, forward=True)
+    for n in (2, 3, 4):                                        # call 1 is the read before the deploy
+        sub = tmp_path / f"at{n}"
+        sub.mkdir()
+        r, _npx = _run(sub, DEPLOY, {"prod": PROD, f"prod.{n}": changed, "soak": GONE, "soak.after": SOAK_OK})
+        assert r.returncode == 1 and "PRODUCTION worker changed" in r.stderr, n
+    sub = tmp_path / "control"
+    sub.mkdir()
+    r, _npx = _run(sub, DEPLOY, {"prod": PROD, "prod.5": changed, "soak": GONE, "soak.after": SOAK_OK})
+    assert r.returncode == 0, "control: there is no fifth read"
+
+
+@pytest.mark.parametrize("prod", [_status(None, soak=False), '{"success": false}', _status("abc", soak=False),
+                                  _status(PROD_COMMIT, soak=True)])
+def test_no_deploy_and_no_delete_when_production_shows_no_commit_id_or_is_a_soak_worker(tmp_path, prod):
+    """Without a commit id before, 'unchanged' after would compare nothing with nothing."""
+    for script in (DEPLOY, DELETE):
+        sub = tmp_path / os.path.basename(script)
+        sub.mkdir()
+        r, npx = _run(sub, script, {"prod": prod, "soak": SOAK_OK})
+        assert r.returncode == 1 and npx == [] and "refused" in r.stderr
+
+
+def test_a_name_override_for_wrangler_stops_the_deploy(tmp_path):
+    """wrangler 3.114.17: WRANGLER_CI_OVERRIDE_NAME replaces --name on deploy, and api/worker/.env is loaded."""
+    files = {"prod": PROD, "soak": GONE, "soak.after": SOAK_OK}
+    r, npx = _run(tmp_path, DEPLOY, files, env_extra={"WRANGLER_CI_OVERRIDE_NAME": "econdl-api"})
+    assert r.returncode == 1 and npx == [] and "WRANGLER_CI_OVERRIDE_NAME" in r.stderr
+    sub = tmp_path / "empty"
+    sub.mkdir()
+    r, npx = _run(sub, DEPLOY, files, env_extra={"WRANGLER_CI_OVERRIDE_NAME": ""})
+    assert r.returncode == 1 and npx == [], "set and empty is still set (wrangler then refuses for another reason)"
+    sub = tmp_path / "dotenv"
+    (sub / "top" / "api" / "worker").mkdir(parents=True)
+    (sub / "top" / "api" / "worker" / ".env").write_text("WRANGLER_CI_OVERRIDE_NAME=econdl-api\n", encoding="utf-8")
+    r, npx = _run(sub, DEPLOY, files)
+    assert r.returncode == 1 and npx == [] and ".env" in r.stderr
 
 # ---------------------------------------------------------------- delete_soak.sh
 
@@ -192,6 +252,26 @@ def test_delete_fails_when_production_changed_or_the_soak_worker_still_answers(t
     sub.mkdir()
     r, npx = _run(sub, DELETE, {"prod": PROD, "soak": SOAK_OK})                 # nothing changed: the worker is still there
     assert r.returncode == 1 and "is not gone" in r.stderr
+
+
+def test_delete_asks_for_the_name_itself(tmp_path):
+    """wrangler asks only in a terminal; anywhere else it answers yes by itself. The script's own question
+    does not depend on that."""
+    for i, typed in enumerate(("", "y\n", "econdl-api\n", "yes\n")):
+        sub = tmp_path / f"t{i}"
+        sub.mkdir()
+        r, npx = _run(sub, DELETE, {"prod": PROD, "soak": SOAK_OK, "soak.after": GONE}, typed=typed)
+        assert r.returncode == 1 and npx == [] and "nothing was deleted" in r.stderr, typed
+
+
+def test_an_address_that_cannot_be_reached_is_not_a_deleted_worker(tmp_path):
+    """AR-274: a failed request read as 'no longer answers' and the script said done with the worker there."""
+    r, npx = _run(tmp_path, DELETE, {"prod": PROD, "soak": SOAK_OK, "soak.fail": ""})
+    assert r.returncode == 1 and "could not be reached" in r.stderr and "done:" not in r.stdout
+    sub = tmp_path / "slow"                                    # the delete spreads: JSON once more, then gone
+    sub.mkdir()
+    r, npx = _run(sub, DELETE, {"prod": PROD, "soak": SOAK_OK, "soak.after": GONE, "soak.1": SOAK_OK})
+    assert r.returncode == 0 and "done:" in r.stdout
 
 
 def test_a_failed_dry_run_stops_before_the_delete(tmp_path):

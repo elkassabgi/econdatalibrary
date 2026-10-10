@@ -29,6 +29,19 @@ if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
 fi
 commit="$(git rev-parse HEAD)"
 
+# wrangler 3.114.17 lets the variable WRANGLER_CI_OVERRIDE_NAME replace --name on `wrangler deploy`
+# (cli.js 121023), and it loads api/worker/.env into its environment (cli.js 153152); .env is git-ignored,
+# so the clean-checkout test cannot see it. Either would send this deploy to another worker.
+refuse_a_name_override() {
+  if [ -n "${WRANGLER_CI_OVERRIDE_NAME+x}" ]; then
+    echo "refused: WRANGLER_CI_OVERRIDE_NAME is set in the environment; wrangler would deploy to that name, not to the one fixed here" >&2; exit 1
+  fi
+  if grep -qs 'WRANGLER_CI_' "$1"/.env "$1"/.env.* 2>/dev/null; then
+    echo "refused: a .env file in $1 sets a WRANGLER_CI_ variable; wrangler would read it" >&2; exit 1
+  fi
+}
+refuse_a_name_override api/worker
+
 echo "deploying econdl-api at $commit"
 (cd api/worker && npx wrangler deploy --config wrangler.toml --var "GIT_COMMIT:$commit")   # --config: wrangler 3 obeys a stray .wrangler/deploy/config.json otherwise (AR-151)
 
