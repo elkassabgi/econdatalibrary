@@ -22,8 +22,9 @@ with EDGE_PREFIX.
 
 Exit code 0 only when there are 0 violations AND workerd answered every forwardable target that http.client
 could send AND it RESOLVED at least one refused target to a path under /cdn-cgi/ (the planted positive: a run
-that reached no oracle, or an oracle that does not resolve dot segments as workerd does, proves nothing and
-fails). The
+that reached no oracle, or an oracle that echoes the target, proves nothing and fails) AND the oracle shows
+the two readings in MARKS (a server that resolves dot segments the WHATWG way alone passed the first check
+with no workerd running - review AR-273). The
 result file names the router file and the oracle's address; it cannot name the oracle's binary - the person
 who starts workerd checks its version against router.MEASURED_WORKERD. What this does NOT cover: miniflare's own
 entry worker (the toy stands in for it), and what Cloudflare's edge or cloudflared do to a target before the
@@ -50,6 +51,11 @@ TOK = ["/", "//", ".", "..", "%2e", "%2E", ".%2e", "%2E.", "%2e%2E", "\\", "%5c"
 PREFIXES = ["/v1/series/", "/v1/", "/", "/v1/series", "/v1/catalog", "/v1"]
 TAILS = ["", "/cdn-cgi/mf/scheduled", "cdn-cgi/mf/scheduled"]
 RANDOM_TARGETS = 150000
+# THE PLANTED POSITIVES: the two readings forwardable() is written against (review AR-268). The oracle must
+# show BOTH, or it is not the runtime this check is for and its "0 violations" proves nothing.
+MARKS = {"hash_then_dot_segments (workerd's HTTP layer)": "/v1/series/a#/../../../cdn-cgi/mf/scheduled",
+         "percent_2e_as_a_dot (the WHATWG parser)": "/v1/series/%2e%2e/%2E%2e/%2e%2E/cdn-cgi/mf/scheduled"}
+MARK_READS_AS = "/cdn-cgi/mf/scheduled"
 
 
 def allowed(p):
@@ -88,6 +94,17 @@ def main() -> int:
     n = fwd = refused = client_refused = answered = non200 = refused_dangerous = resolved = 0
     violations, not_answered, examples_refused_dangerous = [], {}, []
     t0 = time.monotonic()
+    marks = {}
+    for label, target in MARKS.items():
+        assert not router.forwardable(target), target      # the router refuses both
+        try:
+            c = http.client.HTTPConnection(*ORACLE, timeout=30)
+            c.putrequest("GET", target, skip_accept_encoding=True)
+            c.endheaders()
+            marks[label] = json.loads(c.getresponse().read())["first"]["pathname"]
+            c.close()
+        except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as e:
+            marks[label] = f"no reading: {type(e).__name__}"
     for target in targets(tokens, seed):
         n += 1
         seen = as_router_sees(target)
@@ -157,6 +174,7 @@ def main() -> int:
            "not_200_examples": not_answered, "VIOLATIONS": len(violations), "violation_examples": violations[:50],
            "refused_sampled_that_workerd_reads_under_cdn_cgi": refused_dangerous,
            "of_those_resolved_there_by_the_oracle": resolved,
+           "planted_positives_read_by_the_oracle_as": marks,
            "refused_dangerous_examples": examples_refused_dangerous, "seconds": round(time.monotonic() - t0, 1)}
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(res, fh, indent=1)
@@ -166,6 +184,11 @@ def main() -> int:
     # /cdn-cgi/ that their text does not start with (workerd resolves their dot segments). An oracle that
     # never does - a stand-in that echoes the target, another runtime - cannot show a violation either, so
     # its "0 violations" proves nothing (review AR-269).
+    wrong_marks = sorted(k for k, v in marks.items() if v != MARK_READS_AS)
+    if wrong_marks:
+        print("FAIL: the oracle does not show the reading(s)", wrong_marks, "- it is not the runtime this check "
+              "is for (or a new workerd reads a target in a new way: measure again before the pin changes)")
+        return 1
     if violations or not whole or resolved == 0:
         print("FAIL:", "violations" if violations else "the oracle did not answer every forwardable target"
               if not whole else "the oracle resolved NO refused target to a /cdn-cgi/ path: it is not the "

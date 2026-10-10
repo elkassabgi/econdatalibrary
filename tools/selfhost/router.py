@@ -29,8 +29,9 @@ other request it is the same 404 as an unknown path. This is NOT "a caller on th
 that reaches the router with a loopback Host and no such header - from a Worker of the account bound to
 the tunnel, or over a private-network route - looks the same. Both are made by an administrator of the
 account (review AR-268).
-THE HEADER BLOCK IS READ HERE, FROM THE RAW LINES (read_fields), and Python's own header parser is asked
-nothing. Two readers of one block disagreed three times (reviews AR-152, AR-268, AR-269): that parser also
+THE HEADER BLOCK IS READ HERE, FROM THE RAW LINES (read_fields): the router's own rules ask Python's header
+parser nothing. (http.server itself still reads `Connection` and `Expect` from that parser, for its
+keep-alive decision and its `100 Continue`.) Two readers of one block disagreed three times (reviews AR-152, AR-268, AR-269): that parser also
 ends a line at a bare CR, sets a `From ` line aside, joins a folded line to the one before it, and stops at
 a line it cannot read - and each difference hid a Content-Length, so the bytes after the block were read as
 a second request. So a request is answered 400, and its connection closed, unless EVERY line of its header
@@ -113,7 +114,7 @@ def unproxied(headers) -> bool:
     hosts = headers.get_all("host") or []
     if len(hosts) != 1:
         return False                                     # none, or two that could be read differently
-    host = hosts[0].strip().lower()
+    host = hosts[0].lower()                              # read_fields took the blanks off; nothing else is removed
     name = host.rsplit(":", 1)[0] if not host.startswith("[") else host.split("]", 1)[0] + "]"
     if name not in ("127.0.0.1", "localhost", "[::1]"):
         return False

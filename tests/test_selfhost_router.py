@@ -320,7 +320,8 @@ def test_a_head_on_the_status_route_has_no_body(pair):
 
 def test_a_folded_value_a_bare_cr_and_a_bare_lf_are_refused(pair):
     """What the router sends on must hold no line the origin could read as a header of its own. A value folded
-    over lines, a bare CR (a line end for Python's header parser, not for workerd) and a line that ends in LF
+    over lines, a bare CR (a line end for Python's header parser AND for workerd: review AR-273 sent
+    `Accept: a<CR>X-Two: b` to the real binary and it read two headers) and a line that ends in LF
     alone are not lines the edge's chain sends: the request is refused whole."""
     port, _s, (_b, blue_seen), _g = pair
     for raw_header in (b"Accept: a\r\n MF-Original-URL: http://x/1", b"Accept: a\r MF-Original-URL: http://x/1",
@@ -489,7 +490,8 @@ def test_read_fields_refuses_a_block_that_is_not_made_of_clean_lines(block):
 def test_whatever_read_fields_accepts_pythons_parser_reads_the_same_way():
     """A seeded sweep over header blocks built from the bytes the tricks are made of. For every block the
     router's reader ACCEPTS, Python's own header parser (which http.server still uses for its keep-alive
-    decision) must see the same names in the same order with the same values, no defect and nothing left
+    decision) must see the same names in the same order with the same values, no defect (for THIS alphabet:
+    a `Content-Type: multipart/...` line gives that parser a defect in a block both read alike) and nothing left
     over - so no accepted block is one the two readers split differently. And the sweep must accept some
     blocks and refuse some, or it shows nothing."""
     import io
