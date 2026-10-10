@@ -43,7 +43,7 @@ exit 0
 """
 
 
-def _run(tmp_path, status_body):
+def _run(tmp_path, status_body, env_extra=None):
     bash = shutil.which("bash")
     if bash is None:
         assert os.name == "nt", "bash must exist where CI runs this test"
@@ -59,14 +59,14 @@ def _run(tmp_path, status_body):
     py.write_text(f'#!/usr/bin/env bash\nexec "{sys.executable.replace(os.sep, "/")}" "$@"\n', encoding="utf-8", newline="\n")
     py.chmod(py.stat().st_mode | stat.S_IEXEC)
     top = tmp_path / "top"
-    (top / "api" / "worker").mkdir(parents=True)
+    (top / "api" / "worker").mkdir(parents=True, exist_ok=True)
     status = tmp_path / "status.json"
     status.write_text(status_body, encoding="utf-8")
     log = tmp_path / "calls.log"
     log.write_text("", encoding="utf-8")
     env = dict(os.environ, FAKE_TOP=str(top).replace(os.sep, "/"), FAKE_COMMIT=COMMIT,
                FAKE_STATUS=str(status).replace(os.sep, "/"), FAKE_LOG=str(log).replace(os.sep, "/"),
-               SELFHOST_EDGE="https://edge.example")
+               SELFHOST_EDGE="https://edge.example", **(env_extra or {}))
     env["PATH"] = str(bindir) + os.pathsep + env["PATH"]
     # THE REAL SCRIPT DEPLOYS. It may run only when every command it calls resolves to a stand-in.
     seen = subprocess.run([bash, "-c", "for c in git npx curl sleep python; do command -v $c; done"],
@@ -85,10 +85,37 @@ def test_a_name_override_for_wrangler_stops_the_production_deploy(tmp_path, monk
     assert r.returncode == 1 and "npx" not in calls and "WRANGLER_CI_OVERRIDE_NAME" in r.stderr
 
 
+@pytest.mark.parametrize("name", ["wrangler_ci_override_name", "Wrangler_CI_Override_Name"])
+def test_the_name_override_in_another_letter_case_stops_the_production_deploy(tmp_path, monkeypatch, name):
+    """AR-275: on Windows node reads environment names without regard to case; the guard must too."""
+    monkeypatch.delenv("WRANGLER_CI_OVERRIDE_NAME", raising=False)
+    r, calls = _run(tmp_path, _body(soak=False), env_extra={name: "econdl-api-soak"})
+    assert r.returncode == 1 and "npx" not in calls and "WRANGLER_CI_OVERRIDE_NAME" in r.stderr
+
+
+@pytest.mark.parametrize("line, refused", [("WRANGLER_CI_OVERRIDE_NAME=econdl-api-soak", True),
+                                            ("wrangler_ci_override_name=econdl-api-soak", True),
+                                            ("CLOUDFLARE_API_TOKEN=test-value", False)])
+def test_a_dotenv_file_beside_the_config_with_the_override_stops_the_production_deploy(tmp_path, line, refused):
+    """wrangler loads api/worker/.env; the file is git-ignored, so 'clean' cannot see it. The third case is the
+    control: a .env with another name is no reason to refuse, and its value is never printed."""
+    worker = tmp_path / "top" / "api" / "worker"
+    worker.mkdir(parents=True)
+    (worker / ".env").write_text(line + "\n", encoding="utf-8")
+    r, calls = _run(tmp_path, _body(soak=False))
+    assert (r.returncode == 1 and "npx" not in calls and ".env" in r.stderr) if refused else (r.returncode == 0 and "npx wrangler deploy" in calls)
+    assert "test-value" not in r.stdout + r.stderr and "econdl-api-soak" not in r.stdout + r.stderr
+
+
 def test_an_edge_that_never_answers_the_commit_fails_the_deploy(tmp_path):
     import json
     r, calls = _run(tmp_path, json.dumps({"commit": "0ld", "soak": False}))
     assert r.returncode == 1 and calls.count("curl ") == 6 and "does not answer" in r.stderr
+
+
+def test_the_name_override_set_but_empty_stops_the_production_deploy(tmp_path):
+    r, calls = _run(tmp_path, _body(soak=False), env_extra={"WRANGLER_CI_OVERRIDE_NAME": ""})
+    assert r.returncode == 1 and "npx" not in calls and "WRANGLER_CI_OVERRIDE_NAME" in r.stderr
 
 
 def _body(**extra):

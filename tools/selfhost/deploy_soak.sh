@@ -5,10 +5,14 @@
 #
 # What it refuses, and why:
 #   * a checkout that is not main, not clean under api/worker, or not equal to origin/main (as deploy_edge.sh);
-#   * any argument: the worker's name and its config are fixed here, never typed;
-#   * afterwards the soak address must answer this commit with soak = true and forward = true, AND the
-#     production worker's /v1/edge-status must be what it was before (same commit, not a soak worker) -
-#     a deploy that landed on the wrong worker fails here, loudly.
+#   * any argument, and a wrangler name override in the environment or in api/worker/.env*: the worker's
+#     name and its config are fixed here, never typed;
+#   * a production worker whose /v1/edge-status does not show a 40-hex commit id before the deploy (deploy
+#     production once with deploy_edge.sh first), or that is a soak worker;
+#   * afterwards ONE answer of the soak address must carry this commit with soak = true, forward = true and
+#     edge_state = users, AND three answers of the production worker, 5 s apart, must equal the one before
+#     the deploy in commit, soak, forward and edge_state. A deploy that landed on the wrong worker fails
+#     here unless all three production answers still came from the older version.
 set -euo pipefail
 
 SOAK_NAME="econdl-api-soak"
@@ -43,12 +47,15 @@ print(w(d.get("commit")), w(d.get("soak")), w(d.get("forward")), w(d.get("edge_s
 # wrangler 3.114.17 lets the variable WRANGLER_CI_OVERRIDE_NAME replace --name on `wrangler deploy`
 # (cli.js 121023), and it loads api/worker/.env into its environment (cli.js 153152); .env is git-ignored,
 # so the clean-checkout test cannot see it. Either would send this deploy to another worker.
+# ANY LETTER CASE: on Windows node reads environment names without regard to case, so
+# `wrangler_ci_override_name` is the same variable to wrangler (measured in review AR-275). The names are read
+# from a here-string, not through a pipe: with `pipefail`, `env | grep -q` can end non-zero ON a match.
 refuse_a_name_override() {
-  if [ -n "${WRANGLER_CI_OVERRIDE_NAME+x}" ]; then
-    echo "refused: WRANGLER_CI_OVERRIDE_NAME is set in the environment; wrangler would deploy to that name, not to the one fixed here" >&2; exit 1
+  if grep -qix 'WRANGLER_CI_OVERRIDE_NAME' <<<"$(compgen -e)"; then
+    echo "refused: WRANGLER_CI_OVERRIDE_NAME is set in the environment (in some letter case); wrangler would deploy to that name, not to the one fixed here" >&2; exit 1
   fi
-  if grep -qs 'WRANGLER_CI_' "$1"/.env "$1"/.env.* 2>/dev/null; then
-    echo "refused: a .env file in $1 sets a WRANGLER_CI_ variable; wrangler would read it" >&2; exit 1
+  if grep -qsi 'WRANGLER_CI_' "$1"/.env "$1"/.env.* 2>/dev/null; then
+    echo "refused: a .env file in $1 holds the text WRANGLER_CI_ (wrangler reads $1/.env; every .env* file is searched, comments too). Take that name out of the file" >&2; exit 1
   fi
 }
 

@@ -77,7 +77,23 @@ def test_an_address_outside_the_zone_or_with_anything_after_the_host_is_refused(
     rec = Recorder()
     assert P.main(rig.args, run=rec) == 1
     assert rec.calls == [], "nothing was sent"
-    assert "refused" in capsys.readouterr().err
+    shown = "".join(capsys.readouterr())
+    assert "refused" in shown
+    assert all(part not in shown for part in url.split() if part), "a refused address is not printed either"
+
+
+def test_wranglers_error_lines_are_shown_and_a_value_on_its_error_stream_is_not(rig, capsys):
+    """wrangler writes its errors on the error stream: they must reach the owner, and a value there must not."""
+    def failing(argv, input=None, cwd=None, capture_output=None):   # noqa: A002
+        return types.SimpleNamespace(returncode=1, stdout=b"", stderr="\u2718 [ERROR] request failed [code: 10000]\n".encode())
+    assert P.main(rig.args, run=failing) == 1
+    assert "[ERROR] request failed [code: 10000]" in capsys.readouterr().out
+
+    def echoing(argv, input=None, cwd=None, capture_output=None):   # noqa: A002
+        return types.SimpleNamespace(returncode=0, stdout=b"ok\n", stderr=b"debug: " + input)
+    assert P.main(rig.args, run=echoing) == 0
+    shown = "".join(capsys.readouterr())
+    assert SECRET not in shown and URL not in shown and shown.count("is not shown") == 2
 
 
 @pytest.mark.parametrize("body", [

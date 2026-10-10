@@ -32,12 +32,15 @@ commit="$(git rev-parse HEAD)"
 # wrangler 3.114.17 lets the variable WRANGLER_CI_OVERRIDE_NAME replace --name on `wrangler deploy`
 # (cli.js 121023), and it loads api/worker/.env into its environment (cli.js 153152); .env is git-ignored,
 # so the clean-checkout test cannot see it. Either would send this deploy to another worker.
+# ANY LETTER CASE: on Windows node reads environment names without regard to case, so
+# `wrangler_ci_override_name` is the same variable to wrangler (measured in review AR-275). The names are read
+# from a here-string, not through a pipe: with `pipefail`, `env | grep -q` can end non-zero ON a match.
 refuse_a_name_override() {
-  if [ -n "${WRANGLER_CI_OVERRIDE_NAME+x}" ]; then
-    echo "refused: WRANGLER_CI_OVERRIDE_NAME is set in the environment; wrangler would deploy to that name, not to the one fixed here" >&2; exit 1
+  if grep -qix 'WRANGLER_CI_OVERRIDE_NAME' <<<"$(compgen -e)"; then
+    echo "refused: WRANGLER_CI_OVERRIDE_NAME is set in the environment (in some letter case); wrangler would deploy to that name, not to the one fixed here" >&2; exit 1
   fi
-  if grep -qs 'WRANGLER_CI_' "$1"/.env "$1"/.env.* 2>/dev/null; then
-    echo "refused: a .env file in $1 sets a WRANGLER_CI_ variable; wrangler would read it" >&2; exit 1
+  if grep -qsi 'WRANGLER_CI_' "$1"/.env "$1"/.env.* 2>/dev/null; then
+    echo "refused: a .env file in $1 holds the text WRANGLER_CI_ (wrangler reads $1/.env; every .env* file is searched, comments too). Take that name out of the file" >&2; exit 1
   fi
 }
 refuse_a_name_override api/worker
@@ -56,7 +59,7 @@ for i in 1 2 3 4 5 6; do
     # SOAK = "1" is for the soak worker only (wrangler.soak.toml). On this worker it would turn the page-view
     # routes into 404s with no error anywhere. `wrangler deploy` replaces plain variables with the ones in
     # wrangler.toml, but a SECRET named SOAK (dashboard or `wrangler secret put`) survives every deploy, and
-    # so would a `--var SOAK:1` on the command above.
+    # a `--var SOAK:1` on the command above would set it again at every deploy.
     soak="$(printf '%s' "$body" | python -c 'import sys,json; v=json.load(sys.stdin).get("soak"); print("yes" if v is True else "no" if v in (False, None) else "unknown")' 2>/dev/null || echo unknown)"
     if [ "$soak" = "yes" ]; then
       echo "FAILED: the deploy is LIVE, and $EDGE/v1/edge-status says soak=true. Its page-view routes answer 404 now. Remove the SOAK secret or variable from econdl-api (wrangler secret delete SOAK --name econdl-api --config wrangler.toml) and deploy again." >&2

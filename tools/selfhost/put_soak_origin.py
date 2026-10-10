@@ -10,9 +10,11 @@ to a stranger); ORIGIN_SECRET is read from the `ORIGIN_SECRET=` line of the orig
 command line, where a process list would show it. The worker's name and config are fixed here:
 without `--name`, `wrangler secret put` writes on the worker named in the config it reads.
 
-It prints the two NAMES it set and wrangler's exit codes. It never prints a value; if wrangler's own output
-holds one, that output is not shown. The two Access values (ORIGIN_ACCESS_ID, ORIGIN_ACCESS_SECRET) are NOT
-handled here: the owner types them at wrangler's masked prompt.
+It prints the two NAMES it set, wrangler's exit codes and wrangler's own lines (in ASCII). It never prints a
+value; if wrangler's output holds a whole value, that output is not shown. Run it AFTER deploy_soak.sh: when
+the worker does not exist, wrangler creates it by itself (it is not asked: standard input is a pipe).
+The two Access values (ORIGIN_ACCESS_ID, ORIGIN_ACCESS_SECRET) are NOT handled here: the owner types them at
+wrangler's prompt, which is masked only when wrangler's standard input is a terminal.
 
 Exit code 0 only when both values were set.
 """

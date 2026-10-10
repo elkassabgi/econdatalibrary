@@ -4,8 +4,9 @@
 #
 # Why a wrapper: `wrangler delete` without --name deletes the worker named in the config it reads - in
 # api/worker that is the PRODUCTION worker econdl-api, after one question. Here the name and the config are
-# fixed, no argument is accepted, a dry run comes first, wrangler still asks its own question, and
-# afterwards the production worker's /v1/edge-status must be what it was before.
+# fixed, no argument is accepted, the script asks for the worker's name (wrangler asks its own question only
+# in a terminal), a dry run comes before the delete, and afterwards the production worker's
+# /v1/edge-status must be what it was before.
 # It deletes the worker only. Rows in the users database, the tunnel, the Access application and the DNS
 # record are not touched.
 set -euo pipefail
@@ -76,11 +77,17 @@ for i in 1 2 3; do
   fi
   sleep 5
 done
-# gone = the address ANSWERS, and not with JSON. No answer at all (curl failed) proves nothing.
+# gone = the address ANSWERS, and not with JSON, TWICE IN A ROW. No answer at all (curl failed) proves nothing,
+# and ONE answer that is not JSON can come from a worker that is still there (an error page of the network or
+# of Cloudflare; measured with stand-ins in review AR-275: the script said "done" with the worker in place).
 soak_after=""
 for i in 1 2 3 4 5 6; do
   soak_after="$(status_line "$SOAK")"
-  if [ "$soak_after" = "notjson" ]; then break; fi
+  if [ "$soak_after" = "notjson" ]; then
+    sleep 5
+    soak_after="$(status_line "$SOAK")"
+    if [ "$soak_after" = "notjson" ]; then break; fi
+  fi
   sleep 10
 done
 if [ "$soak_after" = "unreachable" ]; then
@@ -89,4 +96,4 @@ fi
 if [ "$soak_after" != "notjson" ]; then
   echo "FAILED: $SOAK/v1/edge-status still answers JSON ('$soak_after'): the soak worker is not gone (wrangler deleted nothing, or the answer to its question was no)" >&2; exit 1
 fi
-echo "done: $SOAK_NAME no longer answers; production is unchanged ($prod_after)"
+echo "done: $SOAK_NAME no longer answers; production is unchanged ($prod_after). Seen: $SOAK/v1/edge-status answered twice in a row with something that is not JSON."

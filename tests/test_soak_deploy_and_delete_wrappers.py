@@ -33,7 +33,7 @@ esac
 # after npx ran, the "after" files (when present) replace the answers of the two addresses
 NPX = """#!/usr/bin/env bash
 echo "npx $*" >> "$FAKE_LOG"
-case "$*" in *--dry-run*) exit 0 ;; esac
+case "$*" in *--dry-run*) exit "${FAKE_DRY_EXIT:-0}" ;; esac
 for who in soak prod; do
   if [ -f "$FAKE_DIR/$who.after" ]; then cp "$FAKE_DIR/$who.after" "$FAKE_DIR/$who"; fi
 done
@@ -216,6 +216,23 @@ def test_a_name_override_for_wrangler_stops_the_deploy(tmp_path):
     (sub / "top" / "api" / "worker" / ".env").write_text("WRANGLER_CI_OVERRIDE_NAME=econdl-api\n", encoding="utf-8")
     r, npx = _run(sub, DEPLOY, files)
     assert r.returncode == 1 and npx == [] and ".env" in r.stderr
+    # ANOTHER LETTER CASE (AR-275): on Windows node reads `wrangler_ci_override_name` as the same variable
+    for i, name in enumerate(("wrangler_ci_override_name", "Wrangler_Ci_Override_Name")):
+        sub = tmp_path / f"case{i}"
+        sub.mkdir()
+        r, npx = _run(sub, DEPLOY, files, env_extra={name: "econdl-api"})
+        assert r.returncode == 1 and npx == [] and "WRANGLER_CI_OVERRIDE_NAME" in r.stderr, name
+    sub = tmp_path / "dotenv_lower"
+    (sub / "top" / "api" / "worker").mkdir(parents=True)
+    (sub / "top" / "api" / "worker" / ".env").write_text("wrangler_ci_override_name=econdl-api\n", encoding="utf-8")
+    r, npx = _run(sub, DEPLOY, files)
+    assert r.returncode == 1 and npx == [] and ".env" in r.stderr
+    sub = tmp_path / "control"                                 # a .env with other names is no reason to refuse
+    (sub / "top" / "api" / "worker").mkdir(parents=True)
+    (sub / "top" / "api" / "worker" / ".env").write_text("CLOUDFLARE_API_TOKEN=test-value\nWRANGLER_LOG=debug\n", encoding="utf-8")
+    r, npx = _run(sub, DEPLOY, files, env_extra={"WRANGLER_CI_OTHER": "1", "MY_WRANGLER_CI_OVERRIDE_NAME": "x"})
+    assert r.returncode == 0 and npx == [DEPLOY_CMD], r.stderr
+    assert "test-value" not in r.stdout + r.stderr
 
 # ---------------------------------------------------------------- delete_soak.sh
 
@@ -274,11 +291,34 @@ def test_an_address_that_cannot_be_reached_is_not_a_deleted_worker(tmp_path):
     assert r.returncode == 0 and "done:" in r.stdout
 
 
+@pytest.mark.parametrize("n", [1, 3, 6])
+def test_one_answer_that_is_not_json_from_a_worker_that_is_still_there_is_not_gone(tmp_path, n):
+    """AR-275: nothing was deleted (wrangler ended with 0: the answer to its question was no); ONE answer of the
+    soak address is an error page, every other one is the worker's JSON. The script must not say done."""
+    r, npx = _run(tmp_path, DELETE, {"prod": PROD, "soak": SOAK_OK, f"soak.{n}": "<html>error code: 1101</html>"})
+    assert len(npx) == 2 and r.returncode == 1 and "done:" not in r.stdout and "is not gone" in r.stderr
+
+
 def test_a_failed_dry_run_stops_before_the_delete(tmp_path):
     """The stand-in exits non-zero only for the real call; here a wrangler that fails at once is shown by the
     script ending with its code and no 'done' line."""
     r, npx = _run(tmp_path, DELETE, {"prod": PROD, "soak": SOAK_OK, "soak.after": GONE}, env_extra={"FAKE_NPX_EXIT": "5"})
     assert r.returncode == 5 and "done:" not in r.stdout
+
+
+def test_a_dry_run_that_fails_ends_the_script_before_the_delete(tmp_path):
+    """The test above cannot fail a dry run (its stand-in ends 0 for --dry-run). This one does."""
+    r, npx = _run(tmp_path, DELETE, {"prod": PROD, "soak": SOAK_OK, "soak.after": GONE}, env_extra={"FAKE_DRY_EXIT": "5"})
+    assert r.returncode == 5 and len(npx) == 1 and npx[0].endswith("--dry-run") and "done:" not in r.stdout
+
+
+def test_a_longer_commit_string_is_not_this_commit_and_the_sixth_try_still_counts(tmp_path):
+    r, npx = _run(tmp_path, DEPLOY, {"prod": PROD, "soak": GONE, "soak.after": _status(COMMIT + "0", soak=True, forward=True)})
+    assert r.returncode == 1 and "does not answer" in r.stderr
+    sub = tmp_path / "sixth"
+    sub.mkdir()
+    r, npx = _run(sub, DEPLOY, {"prod": PROD, "soak": GONE, "soak.after": SOAK_OK, **{f"soak.{i}": GONE for i in range(1, 6)}})
+    assert r.returncode == 0, r.stderr
 
 
 def test_both_scripts_keep_lf_line_ends_and_name_only_the_soak_worker():
