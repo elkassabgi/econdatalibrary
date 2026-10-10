@@ -29,11 +29,18 @@ other request it is the same 404 as an unknown path. This is NOT "a caller on th
 that reaches the router with a loopback Host and no such header - from a Worker of the account bound to
 the tunnel, or over a private-network route - looks the same. Both are made by an administrator of the
 account (review AR-268).
-This API has no request bodies: a request that carries one, or whose header block could hide one
-(_carries_a_body), is refused with 400 and the connection closed, so it can never desynchronise the
-connection to the origin (reviews AR-152, AR-268). GET, HEAD and OPTIONS are forwarded: the edge sends GET
-only, and the worker's secret gate runs first on all three. POST, PUT, DELETE and PATCH are 405 here; any
-other method is http.server's own 501.
+THE HEADER BLOCK IS READ HERE, FROM THE RAW LINES (read_fields), and Python's own header parser is asked
+nothing. Two readers of one block disagreed three times (reviews AR-152, AR-268, AR-269): that parser also
+ends a line at a bare CR, sets a `From ` line aside, joins a folded line to the one before it, and stops at
+a line it cannot read - and each difference hid a Content-Length, so the bytes after the block were read as
+a second request. So a request is answered 400, and its connection closed, unless EVERY line of its header
+block is `name: value` in the form the edge's chain sends: a token, a colon, a value with no control
+character but TAB, and CRLF. This API has no request bodies: a request with any Transfer-Encoding, or a
+Content-Length that is not 0, is the same 400. A request line without an HTTP version (HTTP/0.9) is refused
+too. What this does not cover: a front proxy that reads a block differently from this grammar; the proxies
+in front here (Cloudflare, cloudflared) write their own header lines.
+GET, HEAD and OPTIONS are forwarded: the edge sends GET only, and the worker's secret gate runs first on
+all three. POST, PUT, DELETE and PATCH are 405 here; any other method is http.server's own 501.
 When the active instance does not answer, the router says so with a 502 - it never falls back to the other
 instance by itself, because that one may be serving an older catalogue.
 
@@ -47,6 +54,7 @@ import http.client
 import http.server
 import json
 import os
+import re
 import threading
 import time
 import urllib.parse
@@ -81,11 +89,12 @@ def forwardable(target: str) -> bool:
     arrived as `/cdn-cgi/mf/scheduled`); the WHATWG parser (`new URL(request.url)`) then reads %2e as a dot
     and a backslash as a slash, and ends the path at a `#`. So the path is everything before the first `?`,
     and a target is refused when it holds a `#` anywhere (the edge never sends one: fetch drops a fragment),
-    a character outside ASCII (http.client cannot send it on), a backslash in its path, or a path segment
-    that is `.` or `..` in either spelling."""
+    a character outside ASCII or a control character (http.client cannot send either on: the first was a
+    dropped connection, the second a 502 that named the origin - reviews AR-268, AR-269), a backslash in its
+    path, or a path segment that is `.` or `..` in either spelling."""
     if not target.startswith("/"):
         return False                                     # an absolute-form or authority-form target
-    if "#" in target or not target.isascii():
+    if "#" in target or not target.isascii() or any(c <= " " or c == "\x7f" for c in target):
         return False
     path = target.split("?", 1)[0]
     if "\\" in path:
@@ -101,7 +110,10 @@ def unproxied(headers) -> bool:
     the headers a proxy or Cloudflare adds. The tunnel's requests come from 127.0.0.1 too (cloudflared runs
     here), so the peer address says nothing. It cannot tell a caller on this machine from a request that
     arrives with a loopback Host and no such header (see the module text)."""
-    host = (headers.get("host") or "").strip().lower()
+    hosts = headers.get_all("host") or []
+    if len(hosts) != 1:
+        return False                                     # none, or two that could be read differently
+    host = hosts[0].strip().lower()
     name = host.rsplit(":", 1)[0] if not host.startswith("[") else host.split("]", 1)[0] + "]"
     if name not in ("127.0.0.1", "localhost", "[::1]"):
         return False
@@ -121,18 +133,72 @@ def _dropped(headers) -> set[str]:
     return names
 
 
-def _carries_a_body(headers) -> bool:
-    """True when a request has a body, or a header block that could hide one (review AR-268: the old check
-    read the first Content-Length only). That is: any Transfer-Encoding; any Content-Length that is not 0 -
-    every one of them (`Content-Length: 0` then `Content-Length: 44` let 44 bytes through as a second
-    request); a header block the parser did not read cleanly (a line without a colon, or with a space or a
-    tab before its colon, ends the block early and hides the lines after it); a header value that holds a
-    CR or LF (a folded line, in which another reader may see a header of its own)."""
-    if headers.defects or headers.get_all("transfer-encoding"):
+# One header line as the edge's chain sends it (RFC 9110 field syntax, the strict form): a token, a colon,
+# optional blanks, a value with no control character but TAB. Bytes of 0x80 and above are allowed in a value
+# (a User-Agent may hold them). The line's CRLF is taken off before the match.
+_FIELD_LINE = re.compile(rb"([!#$%&'*+\-.^_`|~0-9A-Za-z]+):[ \t]*([^\x00-\x08\x0a-\x1f\x7f]*)")
+
+
+class Fields:
+    """The header fields of one request as THIS module read them (read_fields): names as sent, values
+    decoded as ISO-8859-1 with the blanks at their ends removed, in the order sent, duplicates kept."""
+
+    def __init__(self, pairs):
+        self._pairs = list(pairs)
+
+    def get_all(self, name: str, default=None):
+        found = [v for k, v in self._pairs if k.lower() == name]
+        return found or default
+
+    def keys(self) -> list:
+        return [k for k, _ in self._pairs]
+
+    def items(self) -> list:
+        return list(self._pairs)
+
+
+def read_fields(raw_lines) -> "Fields | None":
+    """The header block from the lines http.server read off the wire (the last one is the empty line that
+    ends the block), or None when the block is not made only of clean lines. Not clean: a line that does not
+    end in CRLF; a line that is not `token: value` (so: no colon, a space or a tab before the colon, an empty
+    name, a line that starts with a blank = a folded line, a `From ` line); a control character in a value -
+    a bare CR among them, which Python's parser takes for a line end; a block that did not end with an empty
+    line (the connection ended, or the block was cut)."""
+    if not raw_lines or raw_lines[-1] != b"\r\n":
+        return None
+    pairs = []
+    for line in raw_lines[:-1]:
+        if not line.endswith(b"\r\n"):
+            return None
+        m = _FIELD_LINE.fullmatch(line[:-2])
+        if m is None:
+            return None
+        pairs.append((m.group(1).decode("ascii"), m.group(2).decode("iso-8859-1").strip(" \t")))
+    return Fields(pairs)
+
+
+class _Tap:
+    """Records the lines http.server reads while it parses the header block."""
+
+    def __init__(self, fp):
+        self._fp, self.lines = fp, []
+
+    def readline(self, *a):
+        line = self._fp.readline(*a)
+        self.lines.append(line)
+        return line
+
+    def __getattr__(self, name):
+        return getattr(self._fp, name)
+
+
+def _carries_a_body(fields: Fields) -> bool:
+    """True when the request names a body: any Transfer-Encoding, or a Content-Length that is not 0 - every
+    one of them (review AR-268: `Content-Length: 0` then `Content-Length: 44` let 44 bytes through as a
+    second request when only the first was read)."""
+    if fields.get_all("transfer-encoding"):
         return True
-    if any(str(v).strip() not in ("", "0") for v in headers.get_all("content-length", [])):
-        return True
-    return any("\r" in str(v) or "\n" in str(v) for v in headers.values())
+    return any(v not in ("", "0") for v in fields.get_all("content-length") or [])
 
 
 class State:
@@ -278,6 +344,20 @@ def make_handler(state: State, inflight: Inflight, pool: "OriginPool | None" = N
         def log_message(self, *a):
             pass
 
+        def parse_request(self):
+            """http.server's own parse, with the header lines recorded as they are read off the wire.
+            self.fields is the router's reading of them (None = not clean, or no block was read)."""
+            self.fields = None
+            real = self.rfile
+            self.rfile = tap = _Tap(real)
+            try:
+                ok = super().parse_request()
+            finally:
+                self.rfile = real
+            if ok and self.request_version != "HTTP/0.9":
+                self.fields = read_fields(tap.lines)
+            return ok
+
         def _refuse(self, status: int, error: str, close: bool = False):
             body = json.dumps({"error": error}).encode()
             self.send_response(status)
@@ -307,10 +387,13 @@ def make_handler(state: State, inflight: Inflight, pool: "OriginPool | None" = N
                 self.wfile.write(body)
 
         def _forward(self):
-            # the body check comes first, for every path: an unread body would be parsed as the next request
-            if _carries_a_body(self.headers):
+            # the header block and the body check come first, for every path: bytes left unread on the
+            # connection would be parsed as the next request
+            if self.fields is None:                             # HTTP/0.9, or a block read_fields refuses
+                return self._refuse(400, "request_headers_not_allowed", close=True)
+            if _carries_a_body(self.fields):
                 return self._refuse(400, "request_body_not_allowed", close=True)
-            if self.path == STATUS_PATH and unproxied(self.headers):
+            if self.path == STATUS_PATH and unproxied(self.fields):
                 return self._status()
             if not forwardable(self.path):
                 # never forwarded. The answer has no origin mark, so an edge that did get it reports a bad
@@ -327,13 +410,13 @@ def make_handler(state: State, inflight: Inflight, pool: "OriginPool | None" = N
                 inflight.add(name, -1)
 
         def _proxy(self, t):
-            drop = _dropped(self.headers) | {"host", "content-length"}
+            drop = _dropped(self.fields) | {"host", "content-length"}
             conn, reused = pool.get(t.hostname, t.port)
             for attempt in (0, 1):
                 try:
                     conn.putrequest(self.command, self.path, skip_host=True, skip_accept_encoding=True)
                     conn.putheader("host", t.netloc)
-                    for k, v in self.headers.items():           # duplicates kept (AR-152)
+                    for k, v in self.fields.items():            # duplicates kept (AR-152)
                         if k.lower() in FORWARDED_HEADERS and k.lower() not in drop:
                             conn.putheader(k, v)
                     conn.endheaders()

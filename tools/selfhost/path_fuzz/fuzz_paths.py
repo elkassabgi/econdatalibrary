@@ -21,7 +21,11 @@ INVARIANT: forwardable(target) and workerd answered  =>  the pathname at BOTH ho
 with EDGE_PREFIX.
 
 Exit code 0 only when there are 0 violations AND workerd answered every forwardable target that http.client
-could send (a run that reached no oracle proves nothing and fails). What this does NOT cover: miniflare's own
+could send AND it RESOLVED at least one refused target to a path under /cdn-cgi/ (the planted positive: a run
+that reached no oracle, or an oracle that does not resolve dot segments as workerd does, proves nothing and
+fails). The
+result file names the router file and the oracle's address; it cannot name the oracle's binary - the person
+who starts workerd checks its version against router.MEASURED_WORKERD. What this does NOT cover: miniflare's own
 entry worker (the toy stands in for it), and what Cloudflare's edge or cloudflared do to a target before the
 router sees it.
 """
@@ -81,7 +85,7 @@ def main() -> int:
     tokens = TOK_HASH if os.environ.get("TOKENS") == "hash" else TOK
     out_path, seed = sys.argv[1], int(sys.argv[2]) if len(sys.argv) > 2 else 20261010
     conn = None
-    n = fwd = refused = client_refused = answered = non200 = refused_dangerous = 0
+    n = fwd = refused = client_refused = answered = non200 = refused_dangerous = resolved = 0
     violations, not_answered, examples_refused_dangerous = [], {}, []
     t0 = time.monotonic()
     for target in targets(tokens, seed):
@@ -141,24 +145,34 @@ def main() -> int:
                                    "err": j["first"]["err"] or (j["second"] or {}).get("err")})
         elif p1 is not None and p1.startswith("/cdn-cgi/"):
             refused_dangerous += 1
+            resolved += not seen.startswith("/cdn-cgi/")       # the oracle RESOLVED it there; an echo could not
             if len(examples_refused_dangerous) < 25:
                 examples_refused_dangerous.append({"target": seen, "path1": p1})
         if n % 20000 == 0:
             print(n, fwd, answered, len(violations), f"{time.monotonic() - t0:.0f}s", flush=True)
-    res = {"seed": seed, "tokens": "hash" if tokens is TOK_HASH else "general", "targets": n, "forwardable": fwd,
+    res = {"router_file": os.path.abspath(router.__file__), "oracle": "%s:%d" % ORACLE,
+           "seed": seed, "tokens": "hash" if tokens is TOK_HASH else "general", "targets": n, "forwardable": fwd,
            "refused_by_router": refused, "forwardable_refused_by_http_client": client_refused,
            "forwardable_answered_200_by_workerd": answered, "forwardable_not_200_at_workerd": non200,
            "not_200_examples": not_answered, "VIOLATIONS": len(violations), "violation_examples": violations[:50],
            "refused_sampled_that_workerd_reads_under_cdn_cgi": refused_dangerous,
+           "of_those_resolved_there_by_the_oracle": resolved,
            "refused_dangerous_examples": examples_refused_dangerous, "seconds": round(time.monotonic() - t0, 1)}
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(res, fh, indent=1)
     print(json.dumps({k: v for k, v in res.items() if not k.endswith("examples")}, indent=1))
     whole = fwd > 0 and answered + client_refused == fwd and non200 == 0
-    if violations or not whole:
-        print("FAIL:", "violations" if violations else "the oracle did not answer every forwardable target")
+    # THE PLANTED POSITIVE: among the targets the router refuses, the oracle must RESOLVE some to a path under
+    # /cdn-cgi/ that their text does not start with (workerd resolves their dot segments). An oracle that
+    # never does - a stand-in that echoes the target, another runtime - cannot show a violation either, so
+    # its "0 violations" proves nothing (review AR-269).
+    if violations or not whole or resolved == 0:
+        print("FAIL:", "violations" if violations else "the oracle did not answer every forwardable target"
+              if not whole else "the oracle resolved NO refused target to a /cdn-cgi/ path: it is not the "
+              "runtime this check is for")
         return 1
-    print("OK: 0 violations, every forwardable target was answered by the oracle")
+    print("OK: 0 violations, every forwardable target was answered by the oracle, and the oracle resolved "
+          f"{resolved} refused targets to /cdn-cgi/ paths")
     return 0
 
 
