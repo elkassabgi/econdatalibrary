@@ -11,21 +11,29 @@ is 0 - not after a guessed wait that would cut a long download off.
 
 State file (JSON):  {"active": "blue", "targets": {"blue": "http://127.0.0.1:8801", "green": "http://127.0.0.1:8802"}}
 
-What it does to a request: forward it - when it is one the EDGE can send. Only the paths the edge forwards
-(EDGE_PATHS, EDGE_PREFIX: the same list as api/worker/src/edge.ts) reach an instance; any other path is the
-router's own 404 and is never forwarded. Of the request headers only FORWARDED_HEADERS go through (the
-edge's allowlist plus the origin secret; duplicates kept); status, headers and the body come back unchanged
-(hop-by-hop headers dropped), the body STREAMED as it arrives (read1: a slow filtered answer is not held
-back until a buffer fills). WHY BOTH LISTS (review AR-267): the origin's secret gate is in the WORKER, and
-`wrangler dev` answers some requests before the worker runs - /cdn-cgi/mf/scheduled, and any path when the
-request carries an MF-Original-URL header. Behind a tunnel hostname those would be open to whoever passes
-Cloudflare's lock, and to everyone in the minutes before a lock exists. So the router lets through only
-what the edge sends, and none of miniflare's control headers.
-GET /__router/status is answered only for a caller on this machine: a loopback Host and none of the headers
-a proxy or the tunnel adds (OUTSIDE_MARKS). For anyone else it is the same 404 as an unknown path.
-This API has no request bodies: a request that carries one (Content-Length > 0
-or any Transfer-Encoding) is refused with 400 and the connection closed, so it can never desynchronise the
-connection to the origin (review AR-152). Only GET, HEAD and OPTIONS exist; anything else is 405 here.
+What it does to a request: forward it - when it is one the EDGE can send. A request target reaches an
+instance only when forwardable() accepts it: its path (everything before the first `?`) is one the edge
+forwards (EDGE_PATHS, EDGE_PREFIX: the same list as api/worker/src/edge.ts), and the target holds nothing
+that one of the origin's two URL readers resolves to another path. Any other target is the router's own
+404. Of the request headers only FORWARDED_HEADERS go through (the edge's allowlist plus the origin secret;
+duplicates kept; one that a Connection header names is dropped); status, headers and the body come back
+unchanged (hop-by-hop headers dropped), the body STREAMED as it arrives (read1: a slow filtered answer is
+not held back until a buffer fills). WHY BOTH LISTS (review AR-267): the origin's secret gate is in the
+WORKER, and `wrangler dev` answers some requests before the worker runs - /cdn-cgi/mf/scheduled, and any
+path when the request carries an MF-Original-URL header. Behind a tunnel hostname those would be open to
+whoever passes Cloudflare's lock, and to everyone in the minutes before a lock exists. So the router lets
+through only the edge's paths and headers, and none of miniflare's control headers.
+/__router/status is answered only for a request with no HTTP proxy in front (unproxied): a loopback Host,
+no query, and none of the headers a proxy or Cloudflare adds (OUTSIDE_MARKS, OUTSIDE_PREFIXES). For any
+other request it is the same 404 as an unknown path. This is NOT "a caller on this machine": a request
+that reaches the router with a loopback Host and no such header - from a Worker of the account bound to
+the tunnel, or over a private-network route - looks the same. Both are made by an administrator of the
+account (review AR-268).
+This API has no request bodies: a request that carries one, or whose header block could hide one
+(_carries_a_body), is refused with 400 and the connection closed, so it can never desynchronise the
+connection to the origin (reviews AR-152, AR-268). GET, HEAD and OPTIONS are forwarded: the edge sends GET
+only, and the worker's secret gate runs first on all three. POST, PUT, DELETE and PATCH are 405 here; any
+other method is http.server's own 501.
 When the active instance does not answer, the router says so with a 502 - it never falls back to the other
 instance by itself, because that one may be serving an older catalogue.
 
@@ -49,37 +57,50 @@ HOP_BY_HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authoriza
 STATUS_PATH = "/__router/status"
 
 # The routes the edge forwards (api/worker/src/edge.ts FORWARDED_PATHS and its "/v1/series/" prefix).
-# tests/test_selfhost_router.py reads edge.ts and keeps the two lists equal.
+# tests/test_selfhost_router.py reads edge.ts and fails when a path, the prefix or a header there differs
+# from these lists.
 EDGE_PATHS = frozenset({"/", "/v1", "/v1/", "/v1/catalog", "/v1/sources", "/v1/last-updates", "/v1/stats",
                         "/v1/bundle", "/v1/guard-heartbeat"})
 EDGE_PREFIX = "/v1/series/"
 # The request headers the origin may see: the edge's FORWARDED_REQUEST_HEADERS plus the origin secret.
 FORWARDED_HEADERS = frozenset({"accept", "accept-encoding", "accept-language", "user-agent",
                                "x-econ-origin-secret"})
-# Headers a reverse proxy or the tunnel adds. A request that carries one did not start on this machine.
+# Headers a reverse proxy or Cloudflare adds. A request that carries one came through an HTTP proxy.
 OUTSIDE_MARKS = ("cdn-loop", "forwarded", "via", "x-real-ip")
 OUTSIDE_PREFIXES = ("cf-", "x-forwarded-")
+# forwardable() models how THIS workerd reads a request target (the version the pinned miniflare runs). A test
+# compares it with api/worker/package-lock.json: after a change of version run tools/selfhost/path_fuzz first.
+MEASURED_WORKERD = "1.20250718.0"
 
 
 def forwardable(target: str) -> bool:
-    """True when the request target is one the edge forwards. The path is taken as the origin's URL parser
-    will read it: a backslash is a slash there and %2e is a dot, so a segment that is `.` or `..` in either
-    spelling is refused - `/v1/series/../../cdn-cgi/mf/scheduled` must not pass as a series path."""
+    """True when the request target is one the edge forwards - `/v1/series/../../cdn-cgi/mf/scheduled` must
+    not pass as a series path. The origin reads a target TWICE and the two readers differ (measured in review
+    AR-268 on workerd MEASURED_WORKERD): workerd's HTTP layer takes `#` as an ordinary path character and
+    resolves literal `.` and `..` segments, also AFTER a `#` (`/v1/series/a#/../../../cdn-cgi/mf/scheduled`
+    arrived as `/cdn-cgi/mf/scheduled`); the WHATWG parser (`new URL(request.url)`) then reads %2e as a dot
+    and a backslash as a slash, and ends the path at a `#`. So the path is everything before the first `?`,
+    and a target is refused when it holds a `#` anywhere (the edge never sends one: fetch drops a fragment),
+    a character outside ASCII (http.client cannot send it on), a backslash in its path, or a path segment
+    that is `.` or `..` in either spelling."""
     if not target.startswith("/"):
         return False                                     # an absolute-form or authority-form target
-    path = target.split("?", 1)[0].split("#", 1)[0]
-    for seg in path.replace("\\", "/").split("/"):
-        if seg.lower().replace("%2e", ".") in (".", ".."):
-            return False
+    if "#" in target or not target.isascii():
+        return False
+    path = target.split("?", 1)[0]
     if "\\" in path:
         return False
+    for seg in path.split("/"):
+        if seg.lower().replace("%2e", ".") in (".", ".."):
+            return False
     return path in EDGE_PATHS or path.startswith(EDGE_PREFIX)
 
 
-def from_this_machine(headers) -> bool:
-    """True for a request made on this machine to the router itself: its Host is a loopback name and it
-    carries none of the headers a proxy or the tunnel adds. The tunnel's requests come from 127.0.0.1 too
-    (cloudflared runs here), so the peer address says nothing."""
+def unproxied(headers) -> bool:
+    """True for a request with no HTTP proxy in front: its Host is a loopback name and it carries none of
+    the headers a proxy or Cloudflare adds. The tunnel's requests come from 127.0.0.1 too (cloudflared runs
+    here), so the peer address says nothing. It cannot tell a caller on this machine from a request that
+    arrives with a loopback Host and no such header (see the module text)."""
     host = (headers.get("host") or "").strip().lower()
     name = host.rsplit(":", 1)[0] if not host.startswith("[") else host.split("]", 1)[0] + "]"
     if name not in ("127.0.0.1", "localhost", "[::1]"):
@@ -98,6 +119,20 @@ def _dropped(headers) -> set[str]:
             [v for k, v in headers if k.lower() == "connection"]:
         names.update(t.strip().lower() for t in value.split(",") if t.strip())
     return names
+
+
+def _carries_a_body(headers) -> bool:
+    """True when a request has a body, or a header block that could hide one (review AR-268: the old check
+    read the first Content-Length only). That is: any Transfer-Encoding; any Content-Length that is not 0 -
+    every one of them (`Content-Length: 0` then `Content-Length: 44` let 44 bytes through as a second
+    request); a header block the parser did not read cleanly (a line without a colon, or with a space or a
+    tab before its colon, ends the block early and hides the lines after it); a header value that holds a
+    CR or LF (a folded line, in which another reader may see a header of its own)."""
+    if headers.defects or headers.get_all("transfer-encoding"):
+        return True
+    if any(str(v).strip() not in ("", "0") for v in headers.get_all("content-length", [])):
+        return True
+    return any("\r" in str(v) or "\n" in str(v) for v in headers.values())
 
 
 class State:
@@ -268,14 +303,14 @@ def make_handler(state: State, inflight: Inflight, pool: "OriginPool | None" = N
             self.send_header("content-length", str(len(body)))
             self.send_header("cache-control", "no-store")
             self.end_headers()
-            self.wfile.write(body)
+            if self.command != "HEAD":                          # a body after a HEAD answer is read as the next answer
+                self.wfile.write(body)
 
         def _forward(self):
             # the body check comes first, for every path: an unread body would be parsed as the next request
-            length = self.headers.get("content-length")
-            if self.headers.get("transfer-encoding") or (length and length.strip() not in ("", "0")):
+            if _carries_a_body(self.headers):
                 return self._refuse(400, "request_body_not_allowed", close=True)
-            if self.path == STATUS_PATH and from_this_machine(self.headers):
+            if self.path == STATUS_PATH and unproxied(self.headers):
                 return self._status()
             if not forwardable(self.path):
                 # never forwarded. The answer has no origin mark, so an edge that did get it reports a bad

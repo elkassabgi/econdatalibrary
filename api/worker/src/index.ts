@@ -50,6 +50,10 @@ export default {
   // independent of any workstation. See src/costGuard.ts for what it measures and why a
   // blind run is treated as a failure.
   async scheduled(_c: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    // NOT ON THE SELF-HOSTED ORIGIN (review AR-268). The origin has no cron, and `wrangler dev` answers
+    // /cdn-cgi/mf/scheduled BEFORE fetch() and its secret gate - so there a caller, not a schedule, would
+    // start this handler. The router refuses that path (tools/selfhost/router.py); this is the second barrier.
+    if (isLocal(env)) return;
     ctx.waitUntil(runCostGuard(env satisfies CostGuardEnv));
   },
 

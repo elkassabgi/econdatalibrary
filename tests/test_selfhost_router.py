@@ -155,7 +155,9 @@ def _edge_ts():
 def test_the_router_forwards_the_edges_routes_and_headers_and_no_others():
     """The two lists are copies of api/worker/src/edge.ts. A route or header added there and not here would be
     refused at the workstation (a 404 without the origin mark = the edge's 502); one added here only is a
-    hole the edge never uses."""
+    hole the edge never uses. Also pinned (review AR-268: both passed unseen): edge.ts has ONE prefix test,
+    and originRequest sets no header by hand beyond the allowlist loop, the secret and the two Access
+    headers (which the router drops)."""
     import re
     ts = _edge_ts()
     block = ts.split("const FORWARDED_PATHS: ReadonlySet<string> = new Set([", 1)[1].split("]);", 1)[0]
@@ -165,6 +167,21 @@ def test_the_router_forwards_the_edges_routes_and_headers_and_no_others():
     edge_headers = set(re.findall(r'"([^"]*)"', block))
     assert edge_headers and edge_headers | {"x-econ-origin-secret"} == set(router.FORWARDED_HEADERS)
     assert 'ORIGIN_SECRET_HEADER = "x-econ-origin-secret"' in ts
+    fn = ts.split("export function isForwardable(", 1)[1].split("\n}", 1)[0]
+    assert fn.count("startsWith(") == 1 and fn.count("FORWARDED_PATHS.has(path)") == 1
+    fn = ts.split("export function originRequest(", 1)[1].split("\n}", 1)[0]
+    assert sorted(re.findall(r"headers\.set\(([^,]+),", fn)) == sorted(
+        ["h", "ORIGIN_SECRET_HEADER", '"cf-access-client-id"', '"cf-access-client-secret"'])
+    assert 'method: "GET"' in fn
+
+
+def test_the_path_rule_was_measured_on_the_workerd_that_is_pinned():
+    """forwardable() models how one workerd version reads a request target (review AR-268 asked the real
+    binary about every generated target the rule accepts). Another version may read a target differently.
+    When this fails: run tools/selfhost/path_fuzz/fuzz_paths.py against the new binary, read its result,
+    and only then change MEASURED_WORKERD."""
+    lock = json.load(open(os.path.join(ROOT, "api", "worker", "package-lock.json"), encoding="utf-8"))
+    assert lock["packages"]["node_modules/workerd"]["version"] == router.MEASURED_WORKERD
 
 
 @pytest.mark.parametrize("path", [
@@ -173,6 +190,11 @@ def test_the_router_forwards_the_edges_routes_and_headers_and_no_others():
     "/v1/series/../../cdn-cgi/mf/scheduled", "/v1/series/%2e%2e/%2E%2E/cdn-cgi/mf/scheduled",
     "/v1/series/.%2E/x", "/v1/series/..", "/v1/series/..\\..\\cdn-cgi\\mf\\scheduled",
     "/v1/series/a/./b", "/v1/series/x\\y", "/__router/statusx",
+    # AR-268: workerd's HTTP layer reads '#' as a path character and resolves the dot segments after it
+    # (measured on workerd 1.20250718.0: the first four arrived as /cdn-cgi/mf/scheduled or /v1/pv)
+    "/v1/series/a#/../../../cdn-cgi/mf/scheduled", "/v1/catalog#/../../cdn-cgi/mf/scheduled",
+    "/#/../cdn-cgi/mf/scheduled", "/v1/series/a#/../../pv?p=/", "/v1/sources#x", "/v1/series/a?x#y",
+    "/__router/status?x=1",
 ])
 def test_a_path_the_edge_does_not_forward_never_reaches_an_instance(pair, path):
     port, _s, (_b, blue_seen), (_g, green_seen) = pair
@@ -226,9 +248,9 @@ def _status_with(port, headers):
     return r.status, body
 
 
-def test_the_status_route_answers_this_machine_only(pair):
+def test_the_status_route_is_not_answered_through_a_proxy(pair):
     port = pair[0]
-    for host in (f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}", "127.0.0.1"):
+    for host in (f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}", "127.0.0.1", f"LOCALHOST:{port}"):
         status, body = _status_with(port, [("Host", host)])
         assert status == 200 and "inflight" in json.loads(body), host
     outside = [[("Host", "econ-origin.example.com")],                     # the tunnel keeps the public Host
@@ -238,6 +260,8 @@ def test_the_status_route_answers_this_machine_only(pair):
                [("Host", f"127.0.0.1:{port}"), ("X-Forwarded-Proto", "https")],
                [("Host", f"127.0.0.1:{port}"), ("Cdn-Loop", "cloudflare")],
                [("Host", f"127.0.0.1:{port}"), ("Via", "1.1 x")],
+               [("Host", f"127.0.0.1:{port}"), ("Forwarded", "for=203.0.113.9")],
+               [("Host", f"127.0.0.1:{port}"), ("X-Real-IP", "203.0.113.9")],
                [("Host", f"127.0.0.1.example.com:{port}")],
                [("Host", "localhost.example.com")],
                []]                                                        # no Host at all
@@ -245,6 +269,109 @@ def test_the_status_route_answers_this_machine_only(pair):
         status, body = _status_with(port, headers)
         assert status == 404 and json.loads(body) == {"error": "not_found"}, headers
         assert b"inflight" not in body and b"target" not in body
+
+
+def test_a_target_http_client_cannot_send_is_a_404_not_a_dropped_connection(pair):
+    """AR-268 N1: a raw non-ASCII byte in an allowed path made putrequest raise UnicodeEncodeError, which no
+    handler caught: the connection was dropped without an answer and a traceback went to the log."""
+    port, _s, (_b, blue_seen), _g = pair
+    out = _raw(port, b"GET /v1/series/caf\xe9.csv HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+    assert out.startswith(b"HTTP/1.1 404") and blue_seen == []
+    assert _get(port, "/v1/sources")[0] == 200, "the router still answers"
+
+
+def test_header_names_are_matched_whatever_their_case(pair):
+    """cloudflared sends Canonical-Case names over HTTP/1.1; the allowlist is lower case (AR-268: a
+    case-sensitive match would have dropped the secret on every tunnel request with all tests green)."""
+    port, _s, (_b, blue_seen), _g = pair
+    sent = [("X-Econ-Origin-Secret", "s"), ("Accept-Encoding", "br, gzip"), ("User-Agent", "t/1"),
+            ("ACCEPT", "text/csv"), ("Accept-Language", "en"), ("Mf-Original-Url", "http://x/cdn-cgi/mf/scheduled")]
+    assert _get(port, "/v1/series/x", headers=sent)[0] == 200
+    got = {k.lower(): v for k, v in blue_seen[-1][1]}
+    assert got["x-econ-origin-secret"] == "s" and got["accept-encoding"] == "br, gzip" and got["user-agent"] == "t/1"
+    assert got["accept"] == "text/csv" and got["accept-language"] == "en" and "mf-original-url" not in got
+
+
+def test_an_allowed_header_that_connection_names_is_still_dropped(pair):
+    """The older test of this rule sends x-priv, which the allowlist now drops by itself (AR-268: the
+    Connection rule on the request side was no longer tested)."""
+    port, _s, (_b, blue_seen), _g = pair
+    _get(port, "/v1/series/x", headers=[("connection", "keep-alive, accept-language"), ("accept-language", "en"),
+                                        ("accept", "a")])
+    got = [k.lower() for k, _ in blue_seen[-1][1]]
+    assert "accept-language" not in got and "accept" in got
+
+
+def test_a_head_on_the_status_route_has_no_body(pair):
+    port = pair[0]
+    raw = _raw(port, b"HEAD /__router/status HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+    head, _, body = raw.partition(b"\r\n\r\n")
+    assert head.startswith(b"HTTP/1.1 200") and body == b""
+
+
+def test_a_folded_header_value_is_refused_and_a_bare_cr_makes_no_forwarded_header(pair):
+    """What the router sends on must hold no line the origin could read as a header of its own. A value folded
+    over lines (CRLF, LF or CR, then a space) is one value for this parser and for workerd (review AR-268,
+    measured on the real binary): the request is refused. A bare CR is a line end for this parser: the second
+    header exists, and the allowlist drops it."""
+    port, _s, (_b, blue_seen), _g = pair
+    for raw_header in (b"Accept: a\r\n MF-Original-URL: http://x/1", b"Accept: a\r MF-Original-URL: http://x/1",
+                       b"Accept: a\n MF-Original-URL: http://x/1", b"Accept: a\r\n\tb"):
+        out = _raw(port, b"GET /v1/series/x HTTP/1.1\r\nHost: x\r\n" + raw_header + b"\r\nConnection: close\r\n\r\n")
+        assert out.startswith(b"HTTP/1.1 400") and out.count(b"HTTP/1.1 ") == 1, raw_header
+    assert blue_seen == [], "nothing was forwarded"
+    out = _raw(port, b"GET /v1/series/x HTTP/1.1\r\nHost: x\r\nAccept: a\rMF-Original-URL: http://x/1\r\n"
+                     b"Connection: close\r\n\r\n")
+    assert out.startswith(b"HTTP/1.1 200")
+    assert [(k.lower(), v) for k, v in blue_seen[-1][1] if k.lower() != "host"] == [("accept", "a")]
+
+
+_INNER = b"GET /v1/series/smuggled HTTP/1.1\r\nHost: x\r\n\r\n"
+_N = str(len(_INNER)).encode()
+
+
+@pytest.mark.parametrize("header_lines", [
+    b"Content-Length: 0\r\nContent-Length: " + _N + b"\r\n",       # two lengths, the harmless one first
+    b"Content-Length: " + _N + b"\r\nContent-Length: 0\r\n",
+    b"foo bar\r\nContent-Length: " + _N + b"\r\n",                 # a line without a colon ends the header block
+    b"Content-Length : " + _N + b"\r\n",                           # a space before the colon
+    b"Transfer-Encoding\t: chunked\r\n",                           # a tab before the colon
+    b": x\r\nContent-Length: " + _N + b"\r\n",                     # an empty header name
+    b"Content-Length: +" + _N + b"\r\n",
+    b"Accept: a\r\n Content-Length: " + _N + b"\r\n",              # folded into another header's value
+    b"Transfer-Encoding:\r\n",                                     # present, with no value
+])
+def test_a_body_that_the_first_content_length_does_not_show_is_refused(pair, header_lines):
+    """AR-268 N4: each of these let the bytes after the header block through as a SECOND request (the old
+    check read the first Content-Length the parser showed it). One answer, a 400, and the connection closes."""
+    port, _s, (_b, blue_seen), _g = pair
+    raw = _raw(port, b"GET /v1/sources HTTP/1.1\r\nHost: x\r\n" + header_lines + b"\r\n" + _INNER)
+    assert raw.startswith(b"HTTP/1.1 400") and raw.count(b"HTTP/1.1 ") == 1, "one answer, then the connection closes"
+    assert blue_seen == [], "nothing reached the origin"
+
+
+def test_an_honest_header_block_is_not_taken_for_a_body(pair):
+    """The control of the test above: what a browser's request looks like after Cloudflare and cloudflared,
+    with a byte outside ASCII in a value, an empty value and `Content-Length: 0`."""
+    port, _s, (_b, blue_seen), _g = pair
+    out = _raw(port, b"GET /v1/series/x.csv?from=2020-01-01 HTTP/1.1\r\nHost: econ-origin.example.com\r\n"
+                     b"Accept: text/csv, */*;q=0.8\r\nAccept-Encoding: gzip, br\r\nAccept-Language:\r\n"
+                     b"User-Agent: caf\xe9/1 (Windows NT 10.0; Win64; x64)\r\nCf-Ray: 8f1-DFW\r\n"
+                     b"Cdn-Loop: cloudflare; loops=1\r\nX-Forwarded-For: 203.0.113.9\r\nContent-Length: 0\r\n"
+                     b"Content-Length: 0\r\nX-Econ-Origin-Secret: s\r\nConnection: close\r\n\r\n")
+    assert out.startswith(b"HTTP/1.1 200")
+    got = {k.lower(): v for k, v in blue_seen[-1][1]}
+    assert got["user-agent"] == "caf\xe9/1 (Windows NT 10.0; Win64; x64)" and got["x-econ-origin-secret"] == "s"
+    assert sorted(got) == ["accept", "accept-encoding", "accept-language", "host", "user-agent", "x-econ-origin-secret"]
+
+
+def test_a_refused_path_keeps_the_connection(pair):
+    """The tunnel reuses its connections: a 404 for one caller must not close the connection under the next."""
+    port, _s, (_b, blue_seen), _g = pair
+    out = _raw(port, b"GET /cdn-cgi/mf/scheduled HTTP/1.1\r\nHost: x\r\n\r\n"
+                     b"GET /v1/sources HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+    assert out.startswith(b"HTTP/1.1 404") and out.count(b"HTTP/1.1 200") == 1
+    assert [p for p, _h2 in blue_seen] == ["/v1/sources"]
 
 
 def test_a_request_body_on_an_unknown_path_is_still_a_400_that_closes(pair):
