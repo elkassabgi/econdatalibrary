@@ -95,13 +95,16 @@ ENUM_MIN_INTERVAL_MIN = 60.0
 MAX_ROWS = 3_000_000
 PUT_WORKERS = 16
 # THE STORE MERGE'S MEMORY. merge.BOUNDED_MEMORY_LIMIT (2 GB) is sized for the 16 GB cloud runner, and the
-# lane - which runs on the workstation only (statcan is run_location: local) - merged under it. Measured
-# 2026-10-10: 23 cubes of 6.5 to 427 million stored rows failed EVERY merge with DuckDB's
-# OutOfMemoryException at "1.8 GiB/1.8 GiB used" (256 such lines in the lane's log from 2026-10-04), each
-# was retried 21 or 22 times, and nothing newer than the release of 2026-09-08 was merged behind them.
-# Offline, on copies, the lane's own call for cube 14100034 (8,840,560 stored rows merged with a table of the
-# same size): the 2 GB default fails in 3.8 s with that error; 4 GB and 16 GB merge it (about 3.0 GiB of
-# process memory at the peak). The largest of them, cube 12100152 (427,009,412 stored rows, a 4.07 GB object, merged with a copy of itself): 16 GB merges it in 6,456 s on a busy machine, with 15.95 GiB of process memory at the peak and about 81 GB of spill on disk; smaller limits were not tried for it.
+# lane - which runs on the workstation only (statcan is run_location: local) - merged under it. Read on
+# 2026-10-10: 23 cubes of 5.6 to 427 million stored rows have failed EVERY merge since the lane began, with
+# DuckDB's OutOfMemoryException at "1.8 GiB/1.8 GiB used" (270 such lines in the lane's current log, 220 in
+# the two before it, and no other merge error). A failing cube backs off and the lane goes on - the same log
+# holds 130 merges of 122 other cubes - so these 23 alone never caught up; the oldest of them is owed since
+# the release of 2026-09-08.
+# Offline, on copies, cube 14100034 (8,840,560 stored rows) merged with a table of the same size: the 2 GB
+# default fails in about 4 s with that error; 4 GB and 16 GB merge it, with 3.0 to 3.3 GiB of process memory
+# at the peak (both call forms of the lane, and also with a new table that revises 10 % of the values:
+# review AR-276). The largest of them, cube 12100152 (427,009,412 stored rows, a 4.07 GB object, merged with a copy of itself): 16 GB merges it in 6,456 s on a busy machine, with 15.95 GiB of process memory at the peak and about 81 GB of spill on disk; smaller limits were not tried for it.
 # AQUEDUCT_BOUNDED_MERGE_MEMORY still overrides, as it does for every other caller of the bounded merge.
 MERGE_MEMORY_LIMIT = "16GB"
 # Between iterations. Each iteration beats (so an idle lane beats every 5 min, well inside the
