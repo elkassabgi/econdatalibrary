@@ -452,13 +452,13 @@ test("FORWARD on without an origin configured answers 503 and forwards nothing",
 const MODES = [
   { name: "FORWARD on -> users db only", forward: true,
     vars: { FORWARD: "on", EDGE_STATE: "", ORIGIN_URL: "http://127.0.0.1:9", ORIGIN_SECRET: "s", GIT_COMMIT: "c0ffee" },
-    status: { commit: "c0ffee", forward: true, edge_state: "users", forward_raw: "on", edge_state_raw: "", origin_configured: true } },
+    status: { commit: "c0ffee", soak: false, forward: true, edge_state: "users", forward_raw: "on", edge_state_raw: "", origin_configured: true } },
   { name: "EDGE_STATE users, FORWARD off (plan step 5) -> users db only", forward: true,
     vars: { FORWARD: "", EDGE_STATE: "users", ORIGIN_URL: "", ORIGIN_SECRET: "" },
-    status: { commit: null, forward: false, edge_state: "users", forward_raw: "", edge_state_raw: "users", origin_configured: false } },
+    status: { commit: null, soak: false, forward: false, edge_state: "users", forward_raw: "", edge_state_raw: "users", origin_configured: false } },
   { name: "neither -> econ D1 / R2 only (as before)", forward: false,
     vars: { FORWARD: "", EDGE_STATE: "", ORIGIN_URL: "", ORIGIN_SECRET: "" },
-    status: { commit: null, forward: false, edge_state: "econ", forward_raw: "", edge_state_raw: "", origin_configured: false } },
+    status: { commit: null, soak: false, forward: false, edge_state: "econ", forward_raw: "", edge_state_raw: "", origin_configured: false } },
 ];
 
 for (const mode of MODES) {

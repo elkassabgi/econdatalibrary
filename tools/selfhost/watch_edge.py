@@ -62,7 +62,7 @@ def committed_config(path: str = WRANGLER) -> dict:
     forward_raw, state_raw = v.get("FORWARD", ""), v.get("EDGE_STATE", "")
     return {"forward": forward_raw == "on",
             "edge_state": "users" if (forward_raw == "on" or state_raw == "users") else "econ",
-            "forward_raw": forward_raw, "edge_state_raw": state_raw,
+            "forward_raw": forward_raw, "edge_state_raw": state_raw, "soak": "SOAK" in v,
             "econ_d1_ids": [ids["CATALOG"], ids["CATALOG_CLIMATE"]], "users_d1_id": ids["USERS"],
             "account_id": cfg.get("account_id") or cfg.get("limits", {}).get("account_id", "")}
 
@@ -112,6 +112,14 @@ def check_status(edge: str, want: dict) -> list[str]:
                        f" (deployed commit {body.get('commit')!r})")
     if required and not body.get("commit"):
         bad.append("the deployed edge carries no commit id (deploy through tools/selfhost/deploy_edge.sh)")
+    # SOAK = "1" belongs to the soak worker only (api/worker/wrangler.soak.toml). On the edge it turns the
+    # page-view routes into 404s with no error anywhere. An edge deployed before the field existed has no
+    # `soak` key; that reads as "not a soak worker".
+    if body.get("soak") not in (None, False):
+        bad.append(f"deployed edge has soak={body.get('soak')!r}: the page-view routes of the edge answer 404 "
+                   f"(deployed commit {body.get('commit')!r})")
+    if want.get("soak"):
+        bad.append("api/worker/wrangler.toml commits SOAK: that variable belongs to wrangler.soak.toml only")
     return bad
 
 

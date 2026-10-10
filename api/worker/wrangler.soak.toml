@@ -1,0 +1,43 @@
+# The SOAK worker of the self-hosting move: a SECOND workers.dev name that forwards to the workstation for
+# some days before the cutover. It is NOT the production worker (wrangler.toml, `econdl-api`) and is deleted
+# when the soak ends. tests/test_wrangler_soak_config.py pins the parsed content below, key by key.
+#
+# What differs from wrangler.toml, and why:
+#   name        another worker. EVERY wrangler command for it carries `--config wrangler.soak.toml` AND
+#               `--name econdl-api-soak`: without --name, `wrangler secret put` and `wrangler delete` act on
+#               the name in whichever config they read.
+#   crons = []  no scheduled work. An ABSENT [triggers] block would leave a deployed cron in place; the
+#               empty list removes it.
+#   FORWARD     "on": every data route is answered by the workstation's origin.
+#   SOAK        "1": no page-view routes and no scheduled handler (src/edge.ts isSoak), so this public test
+#               address cannot create or fill econ_pageview or econ_ops_status in the users database. It
+#               still writes rate_limits and econ_download_log for a download with a valid key.
+#   bindings    USERS only. With FORWARD on no route reads the catalogue databases or the bucket (read and
+#               measured in review AR-272); without the bindings a route that did would answer 500, not data.
+# ORIGIN_URL, ORIGIN_SECRET, ORIGIN_ACCESS_ID and ORIGIN_ACCESS_SECRET are secrets of THIS worker and are
+# never written here.
+name = "econdl-api-soak"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+account_id = "ce51d5c7fe3859098751b89bbebeab7a"
+workers_dev = true
+preview_urls = false
+
+[limits]
+cpu_ms = 300000
+
+[[d1_databases]]
+binding = "USERS"
+database_name = "hfdatalibrary-db"
+database_id = "a396506e-e78a-4978-bc38-883056f98810"
+
+[triggers]
+crons = []
+
+[vars]
+FORWARD = "on"
+SOAK = "1"
+
+[observability]
+enabled = true
