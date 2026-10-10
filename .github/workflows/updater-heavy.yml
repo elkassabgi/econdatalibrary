@@ -302,8 +302,14 @@ jobs:
           # make this workflow permanently red, and a permanently red workflow is one nobody
           # reads: the same cry-wolf trap as the irregular-cadence lateness clock. The health
           # board and the daily digest already carry partials.
+          #
+          # `error` IS in the list (review AR-265). It is the label run_once gives an UNEXPECTED exception,
+          # in the fetch and - since the probe got its catch-all - in the change probe. Without it a
+          # dedicated run whose probe raised printed "  error  <source>/_all", exited 0 and went GREEN;
+          # before the probe's catch-all the same error ended the process with exit 1 and the job was red.
+          # tests/test_probe_error_does_not_end_the_run.py pins this list against run_once's labels.
           if [ "$rc" = "0" ]; then
-            bad=$(grep -E "^\s+(transient_fail|broken_adapter|timeout)\s+${{ matrix.source }}/" /tmp/updater_out.txt | head -1 || true)
+            bad=$(grep -E "^\s+(transient_fail|broken_adapter|timeout|error)\s+${{ matrix.source }}/" /tmp/updater_out.txt | head -1 || true)
             if [ -n "$bad" ]; then
               echo "::error::${{ matrix.source }} did not succeed: ${bad}. This job exists to run that one source, so its failure is the job's failure - the shared daily run tolerates it, a dedicated runner must not."
               rc=1
