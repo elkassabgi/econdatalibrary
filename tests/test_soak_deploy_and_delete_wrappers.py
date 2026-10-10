@@ -234,6 +234,47 @@ def test_a_name_override_for_wrangler_stops_the_deploy(tmp_path):
     assert r.returncode == 0 and npx == [DEPLOY_CMD], r.stderr
     assert "test-value" not in r.stdout + r.stderr
 
+
+def _has_locale(name):
+    bash = shutil.which("bash")
+    if bash is None:
+        return False
+    out = subprocess.run([bash, "-c", "locale -a"], capture_output=True, text=True, timeout=60).stdout
+    return name.lower().replace("-", "") in out.lower().replace("-", "").split()
+
+
+def test_the_name_override_in_lower_case_stops_the_deploy_in_a_turkish_locale(tmp_path):
+    """AR-278: with LC_ALL=tr_TR.UTF-8 `grep -i` does not pair i with I, so the lower-case name passed the guard
+    (Git Bash, bash 5.3.15), and node on Windows still reads it as the override. The guard's greps run in the C
+    locale. Where the locale does not exist the case cannot be made: the test is skipped, not passed."""
+    if not _has_locale("tr_TR.UTF-8"):
+        pytest.skip("no tr_TR.UTF-8 locale on this machine: the case cannot be made here")
+    files = {"prod": PROD, "soak": GONE, "soak.after": SOAK_OK}
+    r, npx = _run(tmp_path, DEPLOY, files, env_extra={"LC_ALL": "tr_TR.UTF-8", "wrangler_ci_override_name": "econdl-api"})
+    assert r.returncode == 1 and npx == [] and "WRANGLER_CI_OVERRIDE_NAME" in r.stderr
+    sub = tmp_path / "dotenv"
+    (sub / "top" / "api" / "worker").mkdir(parents=True)
+    (sub / "top" / "api" / "worker" / ".env").write_text("wrangler_ci_override_name=econdl-api\n", encoding="utf-8")
+    r, npx = _run(sub, DEPLOY, files, env_extra={"LC_ALL": "tr_TR.UTF-8"})
+    assert r.returncode == 1 and npx == [] and ".env" in r.stderr
+    sub = tmp_path / "control"                                              # the locale alone is no reason to refuse
+    sub.mkdir()
+    r, npx = _run(sub, DEPLOY, files, env_extra={"LC_ALL": "tr_TR.UTF-8"})
+    assert r.returncode == 0 and npx == [DEPLOY_CMD], r.stderr
+
+
+def test_a_list_of_names_that_cannot_be_read_stops_the_deploy(tmp_path):
+    """AR-278, case 13: an exported shell function named `compgen` gave the guard an empty list, and an empty
+    list passed with the override set. PATH is always exported: a list without it was not read."""
+    files = {"prod": PROD, "soak": GONE, "soak.after": SOAK_OK}
+    fn = {"BASH_FUNC_compgen%%": "() {  :\n}"}
+    r, npx = _run(tmp_path, DEPLOY, files, env_extra={**fn, "WRANGLER_CI_OVERRIDE_NAME": "econdl-api"})
+    assert r.returncode == 1 and npx == [] and "could not be read" in r.stderr
+    sub = tmp_path / "unset"                                    # also without the override: nothing was ruled out
+    sub.mkdir()
+    r, npx = _run(sub, DEPLOY, files, env_extra=fn)
+    assert r.returncode == 1 and npx == [] and "could not be read" in r.stderr
+
 # ---------------------------------------------------------------- delete_soak.sh
 
 
@@ -245,7 +286,8 @@ def test_delete_runs_a_dry_run_then_deletes_the_soak_worker_by_name(tmp_path):
     r, npx = _run(tmp_path, DELETE, {"prod": PROD, "soak": SOAK_OK, "soak.after": GONE})
     assert r.returncode == 0, r.stderr
     assert npx == DELETE_CMDS
-    assert "done: econdl-api-soak no longer answers; production is unchanged" in r.stdout
+    assert "done: production is unchanged" in r.stdout and "note:" not in r.stdout
+    assert "answered as a soak worker before the delete" in r.stdout and "twice in a row" in r.stdout
 
 
 def test_delete_takes_no_argument_and_needs_the_soak_config(tmp_path):
@@ -268,7 +310,7 @@ def test_delete_fails_when_production_changed_or_the_soak_worker_still_answers(t
     sub = tmp_path / "still"
     sub.mkdir()
     r, npx = _run(sub, DELETE, {"prod": PROD, "soak": SOAK_OK})                 # nothing changed: the worker is still there
-    assert r.returncode == 1 and "is not gone" in r.stderr
+    assert r.returncode == 1 and "still answers JSON" in r.stderr and "done:" not in r.stdout
 
 
 def test_delete_asks_for_the_name_itself(tmp_path):
@@ -283,20 +325,82 @@ def test_delete_asks_for_the_name_itself(tmp_path):
 
 def test_an_address_that_cannot_be_reached_is_not_a_deleted_worker(tmp_path):
     """AR-274: a failed request read as 'no longer answers' and the script said done with the worker there."""
-    r, npx = _run(tmp_path, DELETE, {"prod": PROD, "soak": SOAK_OK, "soak.fail": ""})
+    # answer 1 of the soak address is the one BEFORE the delete; no answer at all from the second on
+    files = {"prod": PROD, "soak": SOAK_OK, **{f"soak.fail.{i}": "" for i in range(2, 20)}}
+    r, npx = _run(tmp_path, DELETE, files)
     assert r.returncode == 1 and "could not be reached" in r.stderr and "done:" not in r.stdout
     sub = tmp_path / "slow"                                    # the delete spreads: JSON once more, then gone
     sub.mkdir()
-    r, npx = _run(sub, DELETE, {"prod": PROD, "soak": SOAK_OK, "soak.after": GONE, "soak.1": SOAK_OK})
+    r, npx = _run(sub, DELETE, {"prod": PROD, "soak": SOAK_OK, "soak.after": GONE, "soak.2": SOAK_OK})
     assert r.returncode == 0 and "done:" in r.stdout
 
 
-@pytest.mark.parametrize("n", [1, 3, 6])
+@pytest.mark.parametrize("n", [2, 4, 7])
 def test_one_answer_that_is_not_json_from_a_worker_that_is_still_there_is_not_gone(tmp_path, n):
     """AR-275: nothing was deleted (wrangler ended with 0: the answer to its question was no); ONE answer of the
-    soak address is an error page, every other one is the worker's JSON. The script must not say done."""
+    soak address AFTER the delete is an error page, every other one is the worker's JSON (answer 1 is the one
+    before the delete). The script must not say done."""
     r, npx = _run(tmp_path, DELETE, {"prod": PROD, "soak": SOAK_OK, f"soak.{n}": "<html>error code: 1101</html>"})
-    assert len(npx) == 2 and r.returncode == 1 and "done:" not in r.stdout and "is not gone" in r.stderr
+    assert len(npx) == 2 and r.returncode == 1 and "done:" not in r.stdout and "still answers JSON" in r.stderr
+
+
+NOT_A_SOAK_WORKER = {"a page": GONE, "an error page": "<html>error code: 1101</html>", "an empty body": "",
+                     "a JSON list": "[1, 2]", "another JSON object": '{"ok": true}',
+                     "a worker that is not a soak worker": _status(COMMIT, soak=False),
+                     "a worker without a commit": _status("", soak=True, forward=True)}
+
+
+@pytest.mark.parametrize("what", sorted(NOT_A_SOAK_WORKER))
+def test_an_address_that_was_no_soak_worker_before_the_delete_shows_nothing_after_it(tmp_path, what):
+    """AR-278, case K04: wrangler ended with 0 and deleted nothing, and the soak address answered a page all the
+    time - also before the delete. The script said "done: ... no longer answers". A change needs a reading from
+    before: without one the script deletes all the same (the name is fixed and was typed) and ends NOT SHOWN."""
+    before = NOT_A_SOAK_WORKER[what]
+    r, npx = _run(tmp_path, DELETE, {"prod": PROD, "soak": before})                       # nothing changes
+    assert npx == DELETE_CMDS and r.returncode == 1 and "NOT SHOWN" in r.stderr and "done:" not in r.stdout
+    assert "does not answer as a soak worker now" in r.stdout, "the owner reads the note BEFORE the question"
+    assert r.stdout.index("note:") < r.stdout.index("Type its name")
+    sub = tmp_path / "gone"                                                              # ... and when it is deleted
+    sub.mkdir()
+    r, npx = _run(sub, DELETE, {"prod": PROD, "soak": before, "soak.after": GONE})
+    assert npx == DELETE_CMDS and r.returncode == 1 and "NOT SHOWN" in r.stderr and "done:" not in r.stdout
+    sub = tmp_path / "prod"                                           # production is still compared in this case
+    sub.mkdir()
+    r, npx = _run(sub, DELETE, {"prod": PROD, "prod.after": GONE, "soak": before})
+    assert r.returncode == 1 and "PRODUCTION worker's status changed" in r.stderr and "NOT SHOWN" not in r.stderr
+
+
+def test_no_answer_before_the_delete_shows_nothing_after_it(tmp_path):
+    r, npx = _run(tmp_path, DELETE, {"prod": PROD, "soak": SOAK_OK, "soak.after": GONE, "soak.fail.1": ""})
+    assert npx == DELETE_CMDS and r.returncode == 1 and "NOT SHOWN" in r.stderr and "'unreachable'" in r.stderr
+    assert "done:" not in r.stdout
+
+
+def test_a_delete_whose_old_answer_stays_is_not_called_a_delete_that_did_nothing(tmp_path):
+    """AR-278, case K06: the worker IS deleted and the address answers the old JSON for all six tries. The script
+    ended with "wrangler deleted nothing, or the answer to its question was no" - false in this case."""
+    files = {"prod": PROD, "soak": SOAK_OK, "soak.after": GONE, **{f"soak.{i}": SOAK_OK for i in range(2, 8)}}
+    r, npx = _run(tmp_path, DELETE, files)
+    assert npx == DELETE_CMDS and r.returncode == 1 and "done:" not in r.stdout
+    assert "still answers JSON" in r.stderr and "has not reached this address yet" in r.stderr
+    assert "after 60 s of waits" in r.stderr and "is not gone" not in r.stderr
+    sub = tmp_path / "five"                                             # one answer fewer: the sixth try sees it
+    sub.mkdir()
+    files = {"prod": PROD, "soak": SOAK_OK, "soak.after": GONE, **{f"soak.{i}": SOAK_OK for i in range(2, 7)}}
+    r, npx = _run(sub, DELETE, files)
+    assert r.returncode == 0 and "done:" in r.stdout, r.stderr
+
+
+def test_one_stray_page_and_then_gone_is_done_and_a_page_and_then_no_answer_is_not(tmp_path):
+    stray = {"prod": PROD, "soak": SOAK_OK, "soak.after": GONE, "soak.2": "<html>error code: 1101</html>",
+             "soak.3": SOAK_OK}
+    r, npx = _run(tmp_path, DELETE, stray)
+    assert r.returncode == 0 and "done:" in r.stdout, r.stderr
+    sub = tmp_path / "silent"                     # answer 2 is Cloudflare's page; from answer 3 on: no answer at all
+    sub.mkdir()
+    silent = {"prod": PROD, "soak": SOAK_OK, "soak.after": GONE, **{f"soak.fail.{i}": "" for i in range(3, 20)}}
+    r, npx = _run(sub, DELETE, silent)
+    assert r.returncode == 1 and "could not be reached" in r.stderr and "done:" not in r.stdout
 
 
 def test_a_failed_dry_run_stops_before_the_delete(tmp_path):

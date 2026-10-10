@@ -55,6 +55,16 @@ prod_before="$(status_line "$EDGE")"
 if ! printf '%s' "$prod_before" | grep -Eq '^[0-9a-f]{40} (no|none) (yes|no) [a-z]+$'; then
   echo "refused: the production worker's status cannot be read as a deployed commit: $EDGE/v1/edge-status reads '$prod_before' (expected: <40 hex> no|none yes|no <state>), so this script could not tell afterwards that production is untouched" >&2; exit 1
 fi
+# The soak address BEFORE the delete. Only a change can be shown: an address that answers with something that is
+# not the soak worker's JSON now (a filter's page for a new host name, an error page, another worker) answers
+# the same after a delete that deleted nothing (review AR-278, case K04: the script said "done").
+soak_before="$(status_line "$SOAK")"
+soak_seen=""
+if printf '%s' "$soak_before" | grep -Eq '^[0-9a-f]{40} yes (yes|no) [a-z]+$'; then
+  soak_seen=1
+else
+  echo "note: $SOAK/v1/edge-status does not answer as a soak worker now (it reads '$soak_before'; expected: <40 hex> yes yes|no <state>). The delete can still run, but this script will not be able to show that it worked."
+fi
 
 # THE QUESTION IS ASKED HERE. wrangler asks its own only when it sees a terminal on both sides; in any other
 # context (a pipe, a tool, CI) it answers "yes" by itself (wrangler 3.114.17, cli.js 91931).
@@ -78,23 +88,30 @@ for i in 1 2 3; do
   fi
   sleep 5
 done
-# gone = the address ANSWERS, and not with JSON, TWICE IN A ROW. No answer at all (curl failed) proves nothing,
-# and ONE answer that is not JSON can come from a worker that is still there (an error page of the network or
-# of Cloudflare; measured with stand-ins in review AR-275: the script said "done" with the worker in place).
+if [ -z "$soak_seen" ]; then
+  soak_after="$(status_line "$SOAK")"
+  echo "NOT SHOWN: wrangler's delete ended without an error and production is unchanged ($prod_after), but $SOAK/v1/edge-status did not answer as a soak worker before the delete either (before '$soak_before', now '$soak_after'), so its answers show nothing about the delete. Look for $SOAK_NAME in the account's list of workers." >&2; exit 1
+fi
+# What counts as the change: the address answered as the soak worker before, and now it ANSWERS, and not with
+# JSON, TWICE IN A ROW. No answer at all (curl failed) proves nothing, and ONE answer that is not JSON can come
+# from a worker that is still there (an error page of the network or of Cloudflare; measured with stand-ins in
+# review AR-275: the script said "done" with the worker in place). Two such pages in a row from a worker that
+# is still there end "done" all the same (AR-278, case K03): the line below says what was seen, no more.
 soak_after=""
+waited=0
 for i in 1 2 3 4 5 6; do
   soak_after="$(status_line "$SOAK")"
   if [ "$soak_after" = "notjson" ]; then
-    sleep 5
+    sleep 5; waited=$((waited + 5))
     soak_after="$(status_line "$SOAK")"
     if [ "$soak_after" = "notjson" ]; then break; fi
   fi
-  sleep 10
+  sleep 10; waited=$((waited + 10))
 done
 if [ "$soak_after" = "unreachable" ]; then
   echo "FAILED: $SOAK could not be reached, so nothing shows that the soak worker is gone. Production is unchanged ($prod_after). Read $SOAK/v1/edge-status by hand." >&2; exit 1
 fi
 if [ "$soak_after" != "notjson" ]; then
-  echo "FAILED: $SOAK/v1/edge-status still answers JSON ('$soak_after'): the soak worker is not gone (wrangler deleted nothing, or the answer to its question was no)" >&2; exit 1
+  echo "FAILED: $SOAK/v1/edge-status still answers JSON ('$soak_after') after ${waited} s of waits: nothing shows that the soak worker is gone. Either nothing was deleted (the answer to wrangler's own question was no), or the delete has not reached this address yet: read it again in a minute. Production is unchanged ($prod_after)." >&2; exit 1
 fi
-echo "done: $SOAK_NAME no longer answers; production is unchanged ($prod_after). Seen: $SOAK/v1/edge-status answered twice in a row with something that is not JSON."
+echo "done: production is unchanged ($prod_after). Seen: $SOAK/v1/edge-status answered as a soak worker before the delete ('$soak_before') and twice in a row with something that is not JSON after it."

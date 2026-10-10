@@ -35,11 +35,18 @@ commit="$(git rev-parse HEAD)"
 # ANY LETTER CASE: on Windows node reads environment names without regard to case, so
 # `wrangler_ci_override_name` is the same variable to wrangler (measured in review AR-275). The names are read
 # from a here-string, not through a pipe: with `pipefail`, `env | grep -q` can end non-zero ON a match.
+# LC_ALL=C: in a Turkish locale `grep -i` does not pair i with I, and node on Windows still does (review AR-278).
 refuse_a_name_override() {
-  if grep -qix 'WRANGLER_CI_OVERRIDE_NAME' <<<"$(compgen -e)"; then
+  local names
+  names="$(compgen -e)"
+  # PATH is always exported. A list without it was not read (no compgen, no here-string): refuse, do not pass.
+  if ! LC_ALL=C grep -qx 'PATH' <<<"$names"; then
+    echo "refused: the list of exported variable names could not be read, so a WRANGLER_CI_OVERRIDE_NAME cannot be ruled out" >&2; exit 1
+  fi
+  if LC_ALL=C grep -qix 'WRANGLER_CI_OVERRIDE_NAME' <<<"$names"; then
     echo "refused: WRANGLER_CI_OVERRIDE_NAME is set in the environment (in some letter case); wrangler would deploy to that name, not to the one fixed here" >&2; exit 1
   fi
-  if grep -qsi 'WRANGLER_CI_' "$1"/.env "$1"/.env.* 2>/dev/null; then
+  if LC_ALL=C grep -qsi 'WRANGLER_CI_' "$1"/.env "$1"/.env.* 2>/dev/null; then
     echo "refused: a .env file in $1 holds the text WRANGLER_CI_ (wrangler reads $1/.env; every .env* file is searched, comments too). Take that name out of the file" >&2; exit 1
   fi
 }

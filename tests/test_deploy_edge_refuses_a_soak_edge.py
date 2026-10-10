@@ -93,6 +93,35 @@ def test_the_name_override_in_another_letter_case_stops_the_production_deploy(tm
     assert r.returncode == 1 and "npx" not in calls and "WRANGLER_CI_OVERRIDE_NAME" in r.stderr
 
 
+def test_the_lower_case_name_stops_the_production_deploy_in_a_turkish_locale(tmp_path, monkeypatch):
+    """AR-278: in tr_TR.UTF-8 `grep -i` does not pair i with I; the guard's greps run in the C locale. Skipped,
+    not passed, where the locale does not exist."""
+    bash = shutil.which("bash")
+    have = bash and "tr_tr.utf8" in subprocess.run([bash, "-c", "locale -a"], capture_output=True, text=True,
+                                                   timeout=60).stdout.lower().replace("-", "").split()
+    if not have:
+        pytest.skip("no tr_TR.UTF-8 locale on this machine: the case cannot be made here")
+    monkeypatch.delenv("WRANGLER_CI_OVERRIDE_NAME", raising=False)
+    r, calls = _run(tmp_path, _body(soak=False), env_extra={"LC_ALL": "tr_TR.UTF-8", "wrangler_ci_override_name": "x"})
+    assert r.returncode == 1 and "npx" not in calls and "WRANGLER_CI_OVERRIDE_NAME" in r.stderr
+    sub = tmp_path / "control"
+    sub.mkdir()
+    r, calls = _run(sub, _body(soak=False), env_extra={"LC_ALL": "tr_TR.UTF-8"})
+    assert r.returncode == 0 and "npx wrangler deploy" in calls, r.stderr
+
+
+def test_a_list_of_names_that_cannot_be_read_stops_the_production_deploy(tmp_path, monkeypatch):
+    """AR-278, case 13: an exported shell function named `compgen` gave the guard an empty list, which passed."""
+    monkeypatch.delenv("WRANGLER_CI_OVERRIDE_NAME", raising=False)
+    fn = {"BASH_FUNC_compgen%%": "() {  :\n}"}
+    r, calls = _run(tmp_path, _body(soak=False), env_extra={**fn, "WRANGLER_CI_OVERRIDE_NAME": "econdl-api-soak"})
+    assert r.returncode == 1 and "npx" not in calls and "could not be read" in r.stderr
+    sub = tmp_path / "unset"
+    sub.mkdir()
+    r, calls = _run(sub, _body(soak=False), env_extra=fn)
+    assert r.returncode == 1 and "npx" not in calls and "could not be read" in r.stderr
+
+
 @pytest.mark.parametrize("line, refused", [("WRANGLER_CI_OVERRIDE_NAME=econdl-api-soak", True),
                                             ("wrangler_ci_override_name=econdl-api-soak", True),
                                             ("CLOUDFLARE_API_TOKEN=test-value", False)])
