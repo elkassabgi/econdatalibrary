@@ -183,6 +183,16 @@ OWNER = f"orch-{os.getpid()}"
 _TTL_BY_COST = {"fast": 7200, "medium": 7200, "large": 43200, "giant": 172800}
 
 
+def _repr_of(e) -> str:
+    """repr(e) for an error record - or the class name when the exception's own __repr__ raises. Review
+    AR-265b: `repr(e)` stood unguarded in the two catch-all branches of run_once, so such an exception
+    left the loop from inside the handler whose job is that the loop goes on."""
+    try:
+        return repr(e)
+    except Exception:  # noqa: BLE001 - whatever the repr raised, the record is still written
+        return f"<{type(e).__name__}: its repr raised>"
+
+
 def _clip_err(msg, limit: int = 1400) -> str:
     """Bound an error string WITHOUT silently defeating the offender list inside it.
 
@@ -2567,7 +2577,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             # repr with a character outside it made this very print raise UnicodeEncodeError inside the
             # handler - the error left run_once after all, and the unit was not recorded.
             if not dry:
-                _record(store, unit, "transient_fail", err=_clip_err("detect:UNEXPECTED:" + repr(e)),
+                _record(store, unit, "transient_fail", err=_clip_err("detect:UNEXPECTED:" + _repr_of(e)),
                         dur=time.time() - t_unit)
             results.append((unit.key, "error"))
             try:
@@ -2841,7 +2851,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             _record(store, unit, "partial", err=_clip_err(e), dur=time.time() - t0)
             results.append((unit.key, "partial"))
         except Exception as e:  # noqa: BLE001 — unexpected: treat as transient, surface, retry
-            _record(store, unit, "transient_fail", err=_clip_err("UNEXPECTED:" + repr(e)), dur=time.time() - t0)
+            _record(store, unit, "transient_fail", err=_clip_err("UNEXPECTED:" + _repr_of(e)), dur=time.time() - t0)
             results.append((unit.key, "error"))
         finally:
             store.release_lease(unit.key, owner=OWNER)
