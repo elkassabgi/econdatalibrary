@@ -62,7 +62,7 @@ def main():
                 rows = [r[0] for r in c.execute("SELECT source_id FROM source") if r[0] not in gated]
                 c.close()
                 return self._send(200, {"sources": [{"source": r} for r in rows], "port": port})
-            if self.path.startswith("/slow"):
+            if self.path.startswith("/v1/series/slow?"):      # under the edge's prefix: the router forwards no other
                 time.sleep(float(self.path.split("=")[1]))
                 return self._send(200, {"slow": True, "port": port})
             if self.path.startswith("/v1/series/") and self.path.endswith(".metadata.json"):

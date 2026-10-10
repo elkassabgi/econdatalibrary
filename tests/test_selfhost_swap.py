@@ -379,7 +379,7 @@ def test_a_wholly_gated_primary_is_refused(rig):
 
 # ---- after the flip ------------------------------------------------------------------------------------------
 def test_a_drain_that_does_not_finish_leaves_the_old_instance_running(rig):
-    t = threading.Thread(target=lambda: _get(rig["router_port"], "/slow?s=8"), daemon=True)
+    t = threading.Thread(target=lambda: _get(rig["router_port"], "/v1/series/slow?s=8"), daemon=True)
     t.start()
     assert _eventually(lambda: router_inflight(rig).get("blue") == 1, 10)
     out = _swap(rig, drain_timeout=1)
@@ -713,7 +713,7 @@ def test_the_stop_command(rig, capsys):
 def test_stop_waits_for_the_drain_unless_forced(rig, capsys):
     """R1180 finding 5: --stop used to kill at once, cutting off the downloads the drain protects."""
     base = ["--work", rig["work"], "--state", rig["state"], "--router", rig["router_url"]]
-    t = threading.Thread(target=lambda: _get(rig["router_port"], "/slow?s=6"), daemon=True)
+    t = threading.Thread(target=lambda: _get(rig["router_port"], "/v1/series/slow?s=6"), daemon=True)
     t.start()
     assert _eventually(lambda: router_inflight(rig).get("blue") == 1, 10)
     _swap(rig, drain_timeout=0.5)                                     # blue retired, still serving
