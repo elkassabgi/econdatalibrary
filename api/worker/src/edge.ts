@@ -51,12 +51,24 @@ export function edgeStateInUsers(env: { FORWARD?: string; EDGE_STATE?: string })
   return isForward(env) || env.EDGE_STATE === "users";
 }
 
+/** A SOAK worker (api/worker/wrangler.soak.toml sets SOAK = "1"; plan step 4): a second, public workers.dev
+ *  name that forwards to the workstation for some days BEFORE the cutover, bound to the production users
+ *  database. It never answers the page-view routes and never runs the scheduled handler, so it cannot
+ *  create or fill econ_pageview or econ_ops_status there before the plan's own step for them. Exactly "1",
+ *  nothing looser. NEVER on the production worker: its page-view pixel would answer 404 and page views
+ *  would stop being counted with no error anywhere (tests/test_wrangler_soak_config.py,
+ *  tools/selfhost/deploy_edge.sh and watch_edge.py each guard that). */
+export function isSoak(env: { SOAK?: string }): boolean {
+  return env.SOAK === "1";
+}
+
 /** /v1/edge-status: what the off-machine check (tools/selfhost/watch_edge.py) compares with the committed
- *  wrangler.toml. Public and harmless: two booleans, two raw config values and a public commit id. It
+ *  wrangler.toml. Public and harmless: three booleans, two raw config values and a public commit id. It
  *  touches no storage, so it can never become a cost path, and never names the origin's address. */
-export function edgeStatus(env: EdgeEnv & { EDGE_STATE?: string; GIT_COMMIT?: string }): Response {
+export function edgeStatus(env: EdgeEnv & { EDGE_STATE?: string; GIT_COMMIT?: string; SOAK?: string }): Response {
   return new Response(JSON.stringify({
     commit: env.GIT_COMMIT || null,
+    soak: isSoak(env),
     forward: isForward(env),
     edge_state: edgeStateInUsers(env) ? "users" : "econ",
     forward_raw: env.FORWARD ?? "",

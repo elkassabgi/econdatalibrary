@@ -71,6 +71,8 @@ export interface Env {
   // (plan step 5); GIT_COMMIT is set by tools/selfhost/deploy_edge.sh and answered on /v1/edge-status.
   EDGE_STATE?: string;
   GIT_COMMIT?: string;
+  // SOAK = "1" only in wrangler.soak.toml (src/edge.ts isSoak): no page-view routes, no scheduled work.
+  SOAK?: string;
   SOURCE_NAMES_MAX_AGE_S?: string;   // how long /v1/public-stats trusts its kept source names (default 3600)
   SOURCE_NAMES_BACKOFF_S?: string;   // after an origin failure, how long the kept names are used before asking again (default 60)
 }

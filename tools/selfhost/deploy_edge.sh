@@ -37,6 +37,13 @@ for i in 1 2 3 4 5 6; do
   if [ "$got" = "$commit" ]; then
     echo "verified: $EDGE/v1/edge-status answers $commit"
     curl -s "$EDGE/v1/edge-status"; echo
+    # SOAK = "1" is for the soak worker only (wrangler.soak.toml). On this worker it would turn the page-view
+    # routes into 404s with no error anywhere - a variable set by hand in the dashboard survives a deploy.
+    soak="$(curl -s "$EDGE/v1/edge-status" | python -c 'import sys,json; print("yes" if json.load(sys.stdin).get("soak") is True else "no")' 2>/dev/null || echo unknown)"
+    if [ "$soak" != "no" ]; then
+      echo "FAILED: $EDGE/v1/edge-status says soak=$soak (expected: not a soak worker). Remove the SOAK variable from econdl-api and deploy again." >&2
+      exit 1
+    fi
     exit 0
   fi
   sleep 10

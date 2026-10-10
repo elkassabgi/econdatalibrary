@@ -31,7 +31,7 @@ import { handlePublicStats } from "./publicStats.ts";
 import { json, reqLang } from "./util.ts";
 import { isLocal, originGate, finalizeLocal, isDownloadPath, INSTANCE_HEADER } from "./localMode.ts";
 import { LocalBucket } from "./localBucket.ts";
-import { sourceNamesBackoffMs, sourceNamesMaxAgeMs, edgeStatus, isForward, isForwardable, cacheSeconds, cacheKey, originRequest, fetchOrigin, countingBody,
+import { sourceNamesBackoffMs, sourceNamesMaxAgeMs, edgeStatus, isForward, isForwardable, isSoak, cacheSeconds, cacheKey, originRequest, fetchOrigin, countingBody,
   clientResponse, notConfigured, refusedPath } from "./edge.ts";
 
 const CORS_PREFLIGHT: Record<string, string> = {
@@ -54,6 +54,9 @@ export default {
     // /cdn-cgi/mf/scheduled BEFORE fetch() and its secret gate - so there a caller, not a schedule, would
     // start this handler. The router refuses that path (tools/selfhost/router.py); this is the second barrier.
     if (isLocal(env)) return;
+    // NOT ON A SOAK WORKER either (src/edge.ts isSoak): its config has no cron, and a cron added by hand
+    // must still not write the cost-guard status into the users database from a test address.
+    if (isSoak(env)) return;
     ctx.waitUntil(runCostGuard(env satisfies CostGuardEnv));
   },
 
@@ -95,6 +98,12 @@ async function route(request: Request, env: Env, ctx: ExecutionContext, local: b
       // Hidden page-view beacon. Public and unauthenticated BY NECESSITY — it is
       // fired by a static site with no credentials — which is why the write surface
       // is an allowlist of known paths and the row holds no personal data at all.
+      // A SOAK worker (src/edge.ts isSoak) answers neither page-view route: its address is public, and a
+      // hit would create and fill econ_pageview in the production users database. The 404 of an unknown
+      // route, before any statement runs.
+      if (isSoak(env) && (path === "/v1/pv" || path === "/v1/pv/report")) {
+        return json({ error: "not_found", detail: `no route for ${path}` }, 404);
+      }
       if (path === "/v1/pv") return await handlePageview(url, env);
       // Cached 5 minutes, keyed ONLY on its clamped window (R1174 B7: any other parameter used to bypass the
       // cache and reach the users db). The origin never answers it (edge-only, src/localMode.ts).

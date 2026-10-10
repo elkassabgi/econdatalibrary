@@ -72,6 +72,26 @@ def test_every_status_field_is_compared_and_a_commit_is_required(monkeypatch):
     assert any("commit" in m for m in W.check_status("https://e", want))
 
 
+def test_a_deployed_edge_that_calls_itself_a_soak_worker_is_a_failure(monkeypatch, tmp_path):
+    """SOAK = "1" belongs to the soak worker only; on the edge the page-view routes would answer 404 with no
+    error anywhere. An edge deployed before the field existed has no `soak` key: not a failure."""
+    good = {"forward": False, "edge_state": "econ", "forward_raw": "", "edge_state_raw": "", "commit": "abc"}
+    for body in (good, {**good, "soak": False}):
+        _status(monkeypatch, 200, body)
+        assert W.check_status("https://e", WANT) == [], body
+    for value in (True,):
+        _status(monkeypatch, 200, {**good, "soak": value})
+        bad = W.check_status("https://e", WANT)
+        assert len(bad) == 1 and "soak=True" in bad[0] and "abc" in bad[0]
+    # the other direction (a checkout that commits SOAK = "1" watched against a plain edge) fails too
+    _status(monkeypatch, 200, good)
+    assert len(W.check_status("https://e", {**WANT, "soak": True})) == 1
+    # the committed config: the real wrangler.toml is not a soak config; the field follows [vars] SOAK exactly
+    assert W.committed_config()["soak"] is False
+    assert _config(tmp_path, D1 + '[vars]\nSOAK = "1"\n')["soak"] is True
+    assert _config(tmp_path, D1 + '[vars]\nSOAK = "true"\n')["soak"] is False
+
+
 def _updates(stamps):
     return {"datasets": [{"source": "s", "last_updated": s} for s in stamps] + [{"source": "t", "last_updated": None}]}
 
