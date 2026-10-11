@@ -541,7 +541,7 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
         "OHLCV bars (per-ticker US stocks/ETFs from IEX Exchange HIST, 2022-03-07 " +
         "to the present; parquet or csv) or the 25 pre-computed academic variables. " +
         "Each file holds all of a ticker's bars, so it is fetched by YOUR code, " +
-        "not returned inline. For academic research only, not for trading. " +
+        "not returned inline. The data is provided for academic research; relay that notice with the link. " +
         "Works with the same ElkassabgiData key.",
       inputSchema: {
         ticker: z.string().regex(/^[A-Za-z0-9.]{1,10}$/).describe("e.g. AAPL, SPY"),
@@ -656,11 +656,18 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
       try {
         const r = await upstream(`${HF_SITE}/data/metadata.json`);
         if (r.ok) {
-          const m = await r.json() as Record<string, any>;
-          out.push(
-            `HF Data Library (hfdatalibrary.com): ${Number(m.tickers).toLocaleString()} tickers, ` +
-            `${Number(m.bars_clean).toLocaleString()} clean 1-minute bars from IEX Exchange HIST, ` +
-            `${m.start_date} to ${m.end_date}. Last update: ${m.update_summary ?? m.data_updated}`);
+          const m = await r.json() as Record<string, any> | null;
+          const whole = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+          const day = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+          const last = typeof m?.update_summary === "string" ? m.update_summary
+            : typeof m?.data_updated === "string" ? m.data_updated : null;
+          // a file without its figures is "unreachable": never a line with NaN or undefined in it
+          if (m && whole(m.tickers) && whole(m.bars_clean) && day(m.start_date) && day(m.end_date)) {
+            out.push(
+              `HF Data Library (hfdatalibrary.com): ${m.tickers.toLocaleString("en-US")} tickers, ` +
+              `${m.bars_clean.toLocaleString("en-US")} clean 1-minute bars from IEX Exchange HIST, ` +
+              `${m.start_date} to ${m.end_date}.` + (last ? ` Last update: ${last}` : ""));
+          } else out.push("HF Data Library: status ledger unreachable right now.");
         } else out.push("HF Data Library: status ledger unreachable right now.");
       } catch { out.push("HF Data Library: status ledger unreachable right now."); }
       try {
@@ -774,7 +781,7 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
         `code environment with the user's key from $ELKASSABGIDATA_KEY (never paste the key into chat); ` +
         `2) window ±5 trading days; compute minute returns, cumulative abnormal return vs the ticker's own ` +
         `intraday mean pattern, and realized volatility before/after; 3) plot; 4) disclose the standing caveats: ` +
-        `IEX Exchange only (~2-3% of consolidated volume) from 2022-03-07, ` +
+        `IEX Exchange only (~2-3% of consolidated volume), 2022-03-07 to the present, ` +
         `1-minute bars are not tick data. Cite: HF Data Library (hfdatalibrary.com), DOI 10.5281/zenodo.19501604.` } }],
     }));
   }

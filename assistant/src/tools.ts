@@ -13,7 +13,7 @@ import type { Visitor } from "./types";
 
 const ECON = "https://econdl-api.elkassabgi.workers.dev";
 const HF_API = "https://api.hfdatalibrary.com";
-// hf sign-ups are paused (2026-10-03); econ's account page creates the same family account.
+// econ's account page creates the family account (one account for every library).
 const REGISTER_URL = "https://econdatalibrary.com/account";
 const UPSTREAM_TIMEOUT_MS = 20_000;
 const MAX_TOOL_CHARS = 6_000; // cap any single tool result fed back to the LLM
@@ -116,7 +116,7 @@ export const TOOL_SCHEMAS = [
     function: {
       name: "hf_download_link",
       description:
-        "Prepare a download of HF Data Library 1-minute equity data (per ticker, IEX Exchange HIST from 2022-03-07) or the 25 academic variables. HF downloads are paused while the dataset is restructured (the link answers 503 data_paused until they return). Returns a link/instructions only. Signed-in users get a ready download; others are prompted to register free.",
+        "Prepare a download of HF Data Library 1-minute equity data (per ticker, IEX Exchange HIST, 2022-03-07 to the present) or the 25 academic variables. The data is provided for academic research; relay that notice with the link. Returns a link/instructions only. Signed-in users get a ready download; others are prompted to register free.",
       parameters: {
         type: "object",
         properties: {
@@ -242,8 +242,8 @@ function toolHfDownload(args: Record<string, unknown>, ctx: ToolCtx): string {
     : `${HF_API}/v1/${dataset}/${T}?version=${version}`;
   if (!ctx.visitor.registered) {
     ctx.register.needed = true;
-    return `gate: HF ${dataset} for ${T} is available, but downloading requires a free ElkassabgiData account: ${REGISTER_URL}. Each file holds the ticker's whole IEX history (many rows) — never inline it in chat; the user downloads it with their own key. HF downloads are paused while the dataset is restructured (the link answers 503 data_paused until they return).`;
+    return `gate: HF ${dataset} for ${T} is available, but downloading requires a free ElkassabgiData account: ${REGISTER_URL}. Each file holds all of the ticker's bars (many rows) — never inline it in chat; the user downloads it with their own key. HF data is provided for academic research only - not for trading, not investment advice, no warranty (Terms of Use: https://hfdatalibrary.com/pages/terms).`;
   }
   ctx.offers.push({ kind: "hf", label: `Download ${T} ${dataset} (${format})`, url, ticker: T });
-  return `ready: prepared an HF ${dataset} download for ${T} (${version}/${format}) for the signed-in user. Each file holds the ticker's whole IEX history — never inline the rows in chat. HF downloads are paused while the dataset is restructured (the link answers 503 data_paused until they return).`;
+  return `ready: prepared an HF ${dataset} download for ${T} (${version}/${format}) for the signed-in user. Each file holds all of the ticker's bars — never inline the rows in chat. HF data is provided for academic research only - not for trading, not investment advice, no warranty (Terms of Use: https://hfdatalibrary.com/pages/terms).`;
 }
