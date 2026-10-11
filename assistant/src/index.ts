@@ -129,7 +129,7 @@ async function handleChat(request: Request, env: Env, ctx: ExecutionContext, cor
           registered: visitor.registered,
           registerNeeded: result.registerNeeded,
           offers: result.offers,
-          registerUrl: "https://econdatalibrary.com/account",   // hf sign-ups are paused (2026-10-03)
+          registerUrl: "https://econdatalibrary.com/account",
         });
         settle(result.costUsd - ESTIMATE_USD);
       } catch (e) {

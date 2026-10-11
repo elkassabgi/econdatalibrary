@@ -454,7 +454,7 @@ white-space:nowrap;margin-left:.65rem}
 
   // [2.3] Turn a register anchor into an in-place popup register (G-12a: EKD.login is
   // called synchronously in the click handler). The href stays as the no-JS / SDK-
-  // blocked / popup-blocked fallback (the econ account page; hf sign-ups are paused).
+  // blocked / popup-blocked fallback (the econ account page).
   function wireRegister(a) {
     a.addEventListener('click', function (e) {
       if (!window.EKD) return;               // SDK blocked → the anchor's href/target does the work

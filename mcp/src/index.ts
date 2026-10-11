@@ -30,7 +30,8 @@ type Props = { apiKey: string | null };
 const ECON = "https://econdl-api.elkassabgi.workers.dev";
 const IP_API = "https://api.ipdatalibrary.com";
 const HF_API = "https://api.hfdatalibrary.com";
-// hf sign-ups are paused (2026-10-03); econ's account page creates the same family account.
+const HF_SITE = "https://hfdatalibrary.com";
+// econ's account page creates the family account (one account for every library).
 const ACCOUNT_URL = "https://econdatalibrary.com/account";
 const MAX_CHARS = 45_000;          // per-tool-response ceiling (context-friendly)
 // R615: an unfiltered large object is served as the STORED gzip bytes (a passthrough). Reading
@@ -192,10 +193,8 @@ const VARIABLES_25 = `The 25 pre-computed academic variables (per ticker, per tr
 24. Daily high-low range — ln(High_max / Low_min)
 25. Intraday return std — standard deviation of 1-minute log returns`;
 
-// The HF pause sentence is time-bound: when hf lifts DATA_PAUSED / HF_SIGNUPS_PAUSED, edit it (and the
-// get_hf_download_link note and the family-status HF line) and redeploy this worker.
 const HONESTY_CHARTER = `ElkassabgiData honesty charter (relay these caveats with any analysis):
-• HF data is IEX Exchange HIST only, 2022-03-07 onward: IEX is ~2-3% of consolidated volume, so volumes and some prices differ from the full tape. The ticker list is not point-in-time: names are not added or removed automatically as companies list or delist. HF downloads and new HF sign-ups are paused while the dataset is restructured.
+• HF data is IEX Exchange HIST only, 2022-03-07 to the present: IEX is ~2-3% of consolidated volume, so volumes and some prices differ from the full tape. The ticker list is not point-in-time: names are not added or removed automatically as companies list or delist. HF data is provided for academic research only - not for trading, not investment advice, no warranty (Terms of Use: https://hfdatalibrary.com/pages/terms).
 • 1-minute bars are NOT tick data: no quotes, no trade-level timestamps, no order book.
 • Econ licensing is PER SOURCE: most are CC-BY-class (attribution required); a substantial share are non-commercial (commercial_ok=false in the metadata), and some forbid modification (no_modify). Data whose licence does not allow redistribution is not served or offered for download. The license ships in every series' metadata — honor it.
 • IP measures are computed from USPTO data (public domain, via PatentsView bulk tables); they are not the official USPTO record. Forward-citation counts are right-censored for recent patents.
@@ -540,10 +539,10 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
       description:
         "Authenticated download instructions for HF Data Library's 1-minute " +
         "OHLCV bars (per-ticker US stocks/ETFs from IEX Exchange HIST, 2022-03-07 " +
-        "onward; parquet or csv) or the 25 pre-computed academic variables. " +
-        "Each file holds a ticker's whole history, so it is fetched by YOUR code, " +
-        "not returned inline. HF downloads are paused while the dataset is " +
-        "restructured (the URL answers 503 data_paused). Works with the same ElkassabgiData key.",
+        "to the present; parquet or csv) or the 25 pre-computed academic variables. " +
+        "Each file holds all of a ticker's bars, so it is fetched by YOUR code, " +
+        "not returned inline. The data is provided for academic research; relay that notice with the link. " +
+        "Works with the same ElkassabgiData key.",
       inputSchema: {
         ticker: z.string().regex(/^[A-Za-z0-9.]{1,10}$/).describe("e.g. AAPL, SPY"),
         dataset: z.enum(["bars", "variables", "quality"]).default("bars"),
@@ -562,7 +561,7 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
         : `No key is configured on this MCP server. ${KEY_FOR_URLS_MSG}`;
       return text(
         `${t} · ${dataset} · ${version}${dataset === "bars" ? " · " + format : " · parquet"}\n\n` +
-        `NOTE: HF downloads are paused while the dataset is restructured; the URL answers 503 (data_paused) until they return.\n\n` +
+        `NOTE: HF data is provided for academic research only - not for trading, not investment advice, no warranty (Terms of Use: https://hfdatalibrary.com/pages/terms).\n\n` +
         `URL: ${url}\n` +
         `Auth: send your ElkassabgiData key as the X-API-Key header (do NOT paste keys into chat):\n` +
         `  curl -H "X-API-Key: $ELKASSABGIDATA_KEY" -o ${t}_${dataset}.${dataset === "bars" ? format : "parquet"} "${url}"\n` +
@@ -570,7 +569,7 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
         (dataset === "bars"
           ? `Schema: datetime, Open, High, Low, Close, Volume (1-minute, regular session). One row per minute with an IEX trade.\n`
           : `Schema: trade_date + the 25 academic variables (see the variables dictionary resource/tool). One row per trading day.\n`) +
-        `${keyNote}\n\nCaveats that MUST accompany analysis: IEX Exchange only (~2-3% of consolidated volume), from 2022-03-07; 1-minute bars ≠ tick data.`);
+        `${keyNote}\n\nCaveats that MUST accompany analysis: IEX Exchange only (~2-3% of consolidated volume), 2022-03-07 to the present; 1-minute bars ≠ tick data; for academic research only, not for trading.`);
     });
 
     s.registerTool("get_hf_variables_dictionary", {
@@ -654,10 +653,23 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
       annotations: { readOnlyHint: true },
     }, async () => {
       const out: string[] = ["ElkassabgiData family status\n"];
-      // hf's published figures still count the withdrawn pre-2022 history; they return after the rebuild.
-      out.push(
-        "HF Data Library (hfdatalibrary.com): downloads are paused while the dataset is restructured to " +
-        "IEX Exchange HIST data from 2022-03-07; its figures will be published again after the rebuild.");
+      try {
+        const r = await upstream(`${HF_SITE}/data/metadata.json`);
+        if (r.ok) {
+          const m = await r.json() as Record<string, any> | null;
+          const whole = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+          const day = (v: unknown): v is string => typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v);
+          const last = typeof m?.update_summary === "string" ? m.update_summary
+            : typeof m?.data_updated === "string" ? m.data_updated : null;
+          // a file without its figures is "unreachable": never a line with NaN or undefined in it
+          if (m && whole(m.tickers) && whole(m.bars_clean) && day(m.start_date) && day(m.end_date)) {
+            out.push(
+              `HF Data Library (hfdatalibrary.com): ${m.tickers.toLocaleString("en-US")} tickers, ` +
+              `${m.bars_clean.toLocaleString("en-US")} clean 1-minute bars from IEX Exchange HIST, ` +
+              `${m.start_date} to ${m.end_date}.` + (last ? ` Last update: ${last}` : ""));
+          } else out.push("HF Data Library: status ledger unreachable right now.");
+        } else out.push("HF Data Library: status ledger unreachable right now.");
+      } catch { out.push("HF Data Library: status ledger unreachable right now."); }
       try {
         const r = await upstream(`${ECON}/v1/stats`);
         if (r.ok) {
@@ -720,7 +732,7 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
       contents: [{ uri: uri.href, mimeType: "text/plain", text:
         "ElkassabgiData (elkassabgidata.com) is a family of free, research-grade data libraries " +
         "by Ahmed Elkassabgi: HF Data Library (1-minute US equity OHLCV from IEX Exchange HIST, 2022-03-07→present, " +
-        "downloads paused while it is restructured; raw+clean, " +
+        "raw+clean, " +
         "25 academic variables), Econ Data Library (billions of economic/financial series from hundreds of " +
         "sources with per-series licensing and citations) and IP Data Library (patent & innovation measures " +
         "from USPTO data). Live figures: get_family_status. ONE free account works across every " +
@@ -769,7 +781,7 @@ export class ElkassabgiDataMCP extends McpAgent<Env, Record<string, never>, Prop
         `code environment with the user's key from $ELKASSABGIDATA_KEY (never paste the key into chat); ` +
         `2) window ±5 trading days; compute minute returns, cumulative abnormal return vs the ticker's own ` +
         `intraday mean pattern, and realized volatility before/after; 3) plot; 4) disclose the standing caveats: ` +
-        `IEX Exchange only (~2-3% of consolidated volume) from 2022-03-07, ` +
+        `IEX Exchange only (~2-3% of consolidated volume), 2022-03-07 to the present, ` +
         `1-minute bars are not tick data. Cite: HF Data Library (hfdatalibrary.com), DOI 10.5281/zenodo.19501604.` } }],
     }));
   }
