@@ -18,12 +18,14 @@ without its query, and the status). Two instruments, and not every row has one:
   (a) the path probe - a nonce in a PATH, so exactly one log line names it (start and end of the suite, and
       every probe run);
   (b) the line count - for a fixed path, the number of `GET <path> ` lines rises by the number of requests sent
-      (the cache row, the User-Agent rows; and, with ZERO expected, the refusals).
+      (the cache row, the User-Agent rows; with ZERO expected, the refused CSV requests; with ONE expected -
+      the control's own line - the lock mode and phase 1).
   The content-floor rows of the suite use neither: their proof is the content itself, compared with the
   origin's own loopback answer where the row says so, between the two path probes. They show the hop, not that
   the origin's own answer is right. A count of ZERO proves something only beside a positive control: every
   loopback control checks that its own request added exactly one line to the log that is then counted.
-Both instruments need a quiet origin: run a suite with the probe stopped.
+Both instruments need a quiet origin: run the suite, the lock mode and phase 1 with the probe stopped. A
+second request for the same path in a count's window reads as one line too many (a FAIL, never a false PASS).
 
 A row is PASS, FAIL, SEEN (an observation that proves nothing by itself) or NOTRUN (the check could not be
 made; it is never a pass). Exit code: 0 = no FAIL and no NOTRUN; 1 = a FAIL; 2 = no FAIL, something NOTRUN.
@@ -31,8 +33,9 @@ Result file: <root>/logs/soak_<mode>_<UTC>.json. `probe` adds ONE line to <root>
 
 Modes, in the order of the design's section G:
   lock    step 9: the public origin name WITHOUT a token. PASS needs a refusal that carries a mark of Access
-          (a redirect to *.cloudflareaccess.com, or an answer that names Access) and nothing reaching the
-          instance. A bare 401/403 is SEEN: it is not told apart from another Cloudflare refusal, and the mode
+          (a redirect to *.cloudflareaccess.com, or a 401/403 whose body holds the words "Cloudflare
+          Access") and nothing reaching the instance. The 401/403 mark is a GUESS until one real run was
+          compared with Access's own log by a person: each row keeps the cf-ray value for that. A bare 401/403 is SEEN: it is not told apart from another Cloudflare refusal, and the mode
           then ends NOTRUN (read the Access log by hand). The mode never shows that the name leads to THIS
           origin: phase 2 does.
   phase0  step 10: the soak worker is deployed and holds no origin value: forwarded routes answer 503.
@@ -88,7 +91,7 @@ class Run:
         return s
 
     def row(self, check, sent, got, verdict, note=""):
-        r = {"check": self.clean(check), "sent": self.clean(sent), "got": self.clean(got)[:500], "verdict": verdict,
+        r = {"check": self.clean(check), "sent": self.clean(sent), "got": self.clean(got)[:900], "verdict": verdict,
              "note": self.clean(note)}
         self.rows.append(r)
         print(f"{verdict:6s} {r['check']}: {r['sent'][:100]} -> {r['got'][:200]}" + (f"   [{r['note']}]" if note else ""), flush=True)
@@ -216,6 +219,7 @@ def control(run: Run, label: str):
         run.row(f"{label} loopback: the instance log", "the active instance's instance.log", "not found", "FAIL",
                 "without the log nothing can be counted")
         return False, {}, at, None
+    time.sleep(2.0 * SETTLE_SCALE)          # a line of a request BEFORE this control lands now, not inside its count
     c0 = log_count(log_path, get_line(SRC))
     st, _h, body = run.loop(SRC, with_secret=True)
     s = js(body) or {}
@@ -227,7 +231,9 @@ def control(run: Run, label: str):
     n = settle(log_path, get_line(SRC), c0 + 1)
     ok3 = n - c0 == 1
     run.row(f"{label} loopback: this request is in the instance log", "the count of `GET /v1/sources` lines over the request",
-            f"new lines={n - c0}", "PASS" if ok3 else "FAIL", "exactly one: the log that is counted is the live one, and it is settled")
+            f"new lines={n - c0}", "PASS" if ok3 else "FAIL",
+            "exactly one. 0 = the log is not the live one, or the line is late; 2 or more = another request for this path "
+            "landed in the window (the probe, a second run, the edge's own read of the source list)")
     return ok1 and ok2 and ok3, (s if ok2 else {}), at, log_path
 
 
@@ -265,10 +271,13 @@ def refusal(st: int, h: dict, body: bytes):
     """What kind of answer the public origin name gave to a request without a valid token: (kind, facts).
     access = a refusal that carries a mark of Access; unknown = a bare 401/403; every other kind is a failure."""
     mark = MARK_HEADER in h
-    loc_host = (urllib.parse.urlsplit(h.get("location", "")).hostname or "").lower()
+    try:
+        loc_host = (urllib.parse.urlsplit(h.get("location", "")).hostname or "").lower()
+    except ValueError:
+        loc_host = ""
     on_access = loc_host.endswith(".cloudflareaccess.com")
     mitigated = "cf-mitigated" in h
-    names_access = b"cloudflare access" in body.lower() or "access" in h.get("www-authenticate", "").lower()
+    names_access = b"cloudflare access" in body.lower()      # the two words together, in the BODY only (AR-294 K1)
     if mark:
         kind = "the origin answered"
     elif mitigated:
@@ -283,9 +292,14 @@ def refusal(st: int, h: dict, body: bytes):
         kind = "not a refusal of Access"
     server = re.sub(r"[^a-z0-9.-]", "", h.get("server", "").lower())[:20]
     ctype = re.sub(r"[^a-z0-9/+.-]", "", h.get("content-type", "").split(";")[0].lower())[:30]
+    ray = re.sub(r"[^A-Za-z0-9-]", "", h.get("cf-ray", ""))[:40]
+    scheme = re.sub(r"[^A-Za-z0-9-]", "", (h.get("www-authenticate", "").split() or [""])[0])[:20]
+    m = re.search(rb"<title[^>]*>(.*?)</title>", body[:20000], re.I | re.S)
+    title = re.sub(r"[^A-Za-z0-9 .,:|-]", "", m.group(1).decode("ascii", "replace"))[:60].strip() if m else ""
     facts = (f"{st} kind={kind} origin mark={mark} location on cloudflareaccess.com={on_access} cf-mitigated={mitigated} "
-             f"server={server or None} cf-ray present={'cf-ray' in h} www-authenticate present={'www-authenticate' in h} "
-             f"type={ctype or None} names Access={names_access} bytes={len(body)}")
+             f"names Access={names_access} server={server or None} cf-ray={ray or None} www-authenticate scheme={scheme or None} "
+             f"type={ctype or None} title={title or None} bytes={len(body)} client error={err_of(body) if st == 0 else None} "
+             f"header names={sorted(h)}")
     return kind, facts
 
 
@@ -477,7 +491,10 @@ def mode_suite(run: Run, gated_id: str | None) -> None:
                 "PASS" if st == 200 and total == want_total and want_total is not None and after - before == 1 else "FAIL",
                 "expected 200 with the loopback's count and exactly one new line")
     path_probe(run, log_path, "end:")
-    control(run, "after")
+    _ok, _s, _at, log2 = control(run, "after")
+    if log2 != log_path:
+        run.row("the same instance from start to end", "the active instance's log at the start and at the end", "it changed, or the end control failed",
+                "NOTRUN", "a swap during the suite: its counts mix two logs")
     print("by hand at the workstation, NOT part of this script and not in its counts: the workstation down (502/504, a "
           "cached URL still 200); a swap while a large download streams; an instance after its starter is gone and "
           "`swap.py --stop`; an instance without the secret answers 503.", flush=True)
@@ -488,7 +505,8 @@ def _word(v) -> str:
 
 
 def _probe_fields(run: Run):
-    """(ok, the fields of the probe's line). Only fixed words and whole numbers go into the line."""
+    """(ok, the fields of the probe's line). Only fixed words, whole numbers and two durations (one decimal)
+    go into the line."""
     st, _h, body, s1 = run.edge("/v1/edge-status")
     d = js(body) if st == 200 else None
     d = d if isinstance(d, dict) else {}

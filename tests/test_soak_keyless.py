@@ -5,7 +5,9 @@ added, a cache for cacheable 200s, the origin's marks removed), and the origin's
 
 Nothing goes to the network. The stand-ins are kinder than the real system in known ways: the edge's cache is
 written at once (real: after the answer, per data centre), /v1/public-stats never asks the origin (real: once
-an hour), no client header is forwarded, and the public name knows only the answers listed in `PublicOrigin`.
+an hour), no client header is forwarded, the stand-in router answers /__router/status to anyone (real: only to
+a loopback Host), the log line is written BEFORE the answer unless `late` is set (real: always after), and the
+public name knows only the answers listed in `PublicOrigin`.
 
 What is pinned: BROKEN lists one switch per behaviour and the row that must then FAIL; LOCK_CASES lists what
 each answer of the public name must read as. A behaviour that is not in those lists is not claimed.
@@ -14,6 +16,7 @@ import http.client
 import http.server
 import json
 import os
+import socket
 import sys
 import threading
 import urllib.parse
@@ -125,8 +128,9 @@ class Edge(Quiet):
         if p == "/v1/pv/report":
             return self.send(200 if "pv_report_on" in b else 404, {"error": "not_found"})
         if p == "/v1/public-stats":
-            if "public_stats_silent" in b:
-                self.connection.close()
+            if "public_stats_silent" in b:                              # the connection ends with no answer at all
+                self.close_connection = True
+                self.connection.shutdown(socket.SHUT_RDWR)
                 return None
             return self.send(500 if "public_stats_500" in b else 200, {"visitors": 1})
         if not (p in FORWARDED or p.startswith("/v1/series/")):
@@ -204,6 +208,14 @@ class PublicOrigin(Quiet):
             return self.send(403, b"<html>Just a moment...</html>", headers=[("cf-mitigated", "challenge")])
         if m == "bare403":
             return self.send(403, b"error code: 1010")
+        if m == "basic401":                                 # another product's login: the word "access" in a header is no mark
+            return self.send(401, b"", headers=[("WWW-Authenticate", 'Basic realm="Restricted access"')])
+        if m == "denied403":                                # a firewall page that holds both words, not together
+            return self.send(403, b"<html><title>Access denied</title>Cloudflare Ray ID: 1</html>", headers=[("Server", "cloudflare")])
+        if m == "three_marked":                             # Access's page for three requests, a bare 403 for the fourth
+            if self.headers.get("cf-access-client-id"):
+                return self.send(403, b"")
+            return self.send(403, b"<html><title>Forbidden</title>Cloudflare Access</html>")
         if m == "bare401":
             return self.send(401, b"")
         if m == "parked200":
@@ -454,6 +466,8 @@ LOCK_CASES = [
     ("access302", "PASS", "PASS", "PASS", 0),
     ("bare403", "SEEN", "NOTRUN", "PASS", 2),             # a firewall or bot page reads the same: not told apart
     ("bare401", "SEEN", "NOTRUN", "PASS", 2),
+    ("basic401", "SEEN", "NOTRUN", "PASS", 2),            # AR-294 K1: "access" in WWW-Authenticate read as Access
+    ("denied403", "SEEN", "NOTRUN", "PASS", 2),           # the two words apart in a page are not the mark
     ("challenge", "FAIL", "FAIL", "PASS", 1),             # cf-mitigated: a challenge is not Access
     ("redirect_elsewhere", "FAIL", "FAIL", "PASS", 1),    # a 302 that does not go to Access
     ("lookalike", "FAIL", "FAIL", "PASS", 1),             # a host that only CONTAINS the Access domain
@@ -478,6 +492,44 @@ def test_the_lock_mode_reads_each_answer_of_the_public_name(rig, capsys, mode, r
     host = f"127.0.0.1:{rig.public.server_address[1]}"
     assert rig.public_url not in shown and host not in shown, "the origin's name is never shown"
     assert run.clean("redirect to " + host + "/login") == "redirect to <origin host>/login"
+
+
+def test_one_bare_refusal_among_marked_ones_is_not_a_pass(rig):
+    """The summary needs ALL four refusals to carry the mark."""
+    rig.public.mode = "three_marked"
+    run = _lock(rig)
+    asked = [r["verdict"] for r in run.rows if r["check"].startswith(("lock: no token", "lock: a token"))]
+    assert asked == ["PASS", "PASS", "PASS", "SEEN"]
+    assert _verdicts(run)["lock: the refusals are Access's own"] == "NOTRUN" and K.finish(run, "lock") == 2
+
+
+def test_a_lock_row_keeps_what_a_person_needs_to_find_the_request_in_the_access_log(rig):
+    """AR-294 K3: the cf-ray value, the header names, the scheme of WWW-Authenticate and a cleaned page title."""
+    run = _lock(rig)                                                 # the default public answer: Access's 403 page
+    got = next(r["got"] for r in run.rows if r["check"] == "lock: no token")
+    assert "cf-ray=abc-XYZ" in got and "title=Forbidden" in got and "header names=[" in got and "'cf-ray'" in got
+    rig.public.mode = "basic401"
+    got = next(r["got"] for r in _lock(rig).rows if r["check"] == "lock: no token")
+    assert "www-authenticate scheme=Basic" in got and "Restricted" not in got
+
+
+def test_an_open_lock_is_named_in_its_own_row_when_the_log_line_is_late(rig):
+    """AR-294 K2: with the line written AFTER the answer, the requests that reached the instance must be counted in
+    the row that is about them, not in the control that comes after."""
+    rig.origin.late = 0.1
+    K.SETTLE_SCALE = 0.1
+    rig.public.mode = "open"
+    run = _lock(rig)
+    row = next(r for r in run.rows if r["check"] == "lock: nothing reached the instance")
+    assert row["verdict"] == "FAIL" and "new lines=4" in row["got"], row
+    assert "after loopback: this request is in the instance log" not in _failed(run)
+    rig.edge.access = False
+    rig.edge.broken.add("access_open")
+    run = rig.new()
+    K.mode_phase1(run)
+    row = next(r for r in run.rows if r["check"] == "phase 1: the request did not reach the instance")
+    assert row["verdict"] == "FAIL" and "new lines=2" in row["got"], row
+    assert "after loopback: this request is in the instance log" not in _failed(run)
 
 
 def test_the_lock_count_has_its_own_positive_control(rig):
