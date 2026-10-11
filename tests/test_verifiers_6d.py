@@ -59,10 +59,15 @@ DEFUSED = {"tools/_delete_statcan_r2.py", "tools/trim_bfs_corrupt_tail.py", "too
 CI_ONLY = {"updater/send_digest.py"}
 # Names the cloud roads in order to REFUSE them (plan change 5).
 BY_DESIGN = {"tools/selfhost/cutover_hook.py"}
-# Reads ONE public status answer of the SOAK worker (/v1/edge-status: no data, no R2, no D1) before it sets that
-# worker's two origin values. The soak ends before T0 and its worker is deleted then; nothing here judges the
-# cloud copy or writes local data.
-SOAK_TOOLS = {"tools/selfhost/put_soak_origin.py"}
+# Tools of the SOAK (the test worker econdl-api-soak in front of the self-hosted origin). No R2 call, no D1 call,
+# no local data written; nothing here judges the cloud copy.
+#   put_soak_origin.py: reads the soak worker's public /v1/edge-status (once before it sets the two origin
+#     values, up to six times after) and runs `wrangler secret put` for that worker.
+#   soak_keyless.py: the soak tests - public routes of the soak worker as any client would ask them, and, in its
+#     `lock` mode, the origin's own public name (read from a file) without a token.
+# The plan deletes the soak worker before T0 (delete_soak.sh). The test below sees only the cloud WORDS of the
+# scan: a wrangler call without `d1`, or a host that is read from a file, is not seen by it.
+SOAK_TOOLS = {"tools/selfhost/put_soak_origin.py", "tools/selfhost/soak_keyless.py"}
 
 CLASSES = {"VERIFIERS_6D": VERIFIERS_6D, "CLOUD_COST": CLOUD_COST, "CLOUD_WRITE_REFUSED": CLOUD_WRITE_REFUSED,
            "OFFLINE": OFFLINE, "DEFUSED": DEFUSED, "CI_ONLY": CI_ONLY, "BY_DESIGN": BY_DESIGN, "SOAK_TOOLS": SOAK_TOOLS}
@@ -105,6 +110,15 @@ def test_every_cloud_reader_without_t0_handling_is_classified_exactly_once():
     assert not unclassified, (f"these read the cloud copy and do nothing at T0 - classify them here, or make them "
                               f"refuse after T0 if they write local data: {unclassified}")
     assert not stale, f"no longer a cloud reader without T0 handling - remove from its class: {stale}"
+
+
+def test_a_soak_tool_reaches_the_cloud_by_the_soak_address_only():
+    """SOAK_TOOLS is for a file whose ONLY cloud word is the soak worker's address. A later tool that reads R2 or
+    D1 does not belong there (review AR-290, N3)."""
+    for f in sorted(SOAK_TOOLS):
+        code = _code_only(open(os.path.join(ROOT, f), encoding="utf-8-sig").read())
+        words = {m.group(0) for m in CLOUD.finditer(code)}
+        assert words == {"workers.dev"}, (f, sorted(words))
 
 
 def test_the_scan_can_fail(tmp_path):
