@@ -69,19 +69,27 @@ def _verdict(tmp_path, made, sources):
 
 
 def test_the_verdict_of_this_run_gives_the_rotating_sources(tmp_path):
-    p = _verdict(tmp_path, _ago(0.1), [{"source": "a", "health": "ROTATING"}, {"source": "b", "health": "RED-DATA"},
-                                       {"source": "c", "health": "ATTENTION"}, {"source": "d", "health": "OK"}])
-    assert sd.gate_rotating(p, NOW) == ({"a"}, None)
+    made = _ago(0.1)
+    p = _verdict(tmp_path, made, [{"source": "a", "health": "ROTATING"}, {"source": "b", "health": "RED-DATA"},
+                                  {"source": "c", "health": "ATTENTION"}, {"source": "d", "health": "OK"},
+                                  {"source": "a2", "health": "ROTATING", "run_location": "cloud"},
+                                  {"source": "e", "health": "ROTATING", "run_location": "local"},
+                                  {"source": "f", "health": "ROTATING", "run_location": "desktop"}])
+    rot, when, why = sd.gate_rotating(p, NOW)
+    assert rot == {"a", "a2"}, "a source the cloud gate does not judge is never calm (review AR-298, third pass)"
+    assert when == dt.datetime.fromisoformat(made) and why is None
 
 
 @pytest.mark.parametrize("made", [_ago(6.1), _ago(30), _ago(-0.5), "", None, "not a time"])
 def test_a_verdict_that_is_not_of_this_run_is_not_used(tmp_path, made):
-    rot, why = sd.gate_rotating(_verdict(tmp_path, made, [{"source": "a", "health": "ROTATING"}]), NOW)
-    assert rot is None and why
+    rot, when, why = sd.gate_rotating(_verdict(tmp_path, made, [{"source": "a", "health": "ROTATING"}]), NOW)
+    assert rot is None and when is None and why
 
 
 def test_a_verdict_that_cannot_be_read_is_not_used(tmp_path):
-    assert sd.gate_rotating(str(tmp_path / "absent.json"), NOW)[0] is None
+    rot, when, why = sd.gate_rotating(str(tmp_path / "absent.json"), NOW)
+    assert rot is None and when is None
+    assert why == "the health check wrote no verdict in this run (it does not run when an earlier step fails)"
     bad = tmp_path / "health.json"
     bad.write_text("{not json", encoding="utf-8")
     assert sd.gate_rotating(str(bad), NOW)[0] is None
@@ -108,13 +116,13 @@ def test_a_healthy_rotation_is_calm_every_morning(cadence):
         if base._due_after(min(base.CADENCE_DAYS.get(cadence, 7), base.PARTIAL_RETRY_DAYS), last, run):
             last = (run + dt.timedelta(minutes=40)).isoformat()            # the attempt of this run
         report_time = run + dt.timedelta(hours=2, minutes=20)
-        calm += sd.is_in_progress("s", "partial", "", last, cadence, {"s"}, CLOCK, report_time)
+        calm += sd.is_in_progress("s", "partial", "", last, cadence, {"s"}, report_time, CLOCK, report_time)
     assert calm == 30
 
 
 def _calm(**kw):
     a = dict(source_id="s", status="partial", late="", last_attempt=_ago(2), cadence="daily", rotating={"s"},
-             clock=CLOCK, now=NOW)
+             verdict_time=NOW - dt.timedelta(minutes=1), clock=CLOCK, now=NOW)
     a.update(kw)
     return sd.is_in_progress(**a)
 
@@ -124,6 +132,9 @@ def test_each_condition_alone_keeps_a_row_under_needs_attention():
     assert _calm(rotating=set()) is False                 # the gate does not call the source ROTATING
     assert _calm(rotating={"other"}) is False
     assert _calm(rotating=None) is False                  # no verdict of this run
+    assert _calm(verdict_time=None) is False
+    assert _calm(verdict_time=NOW - dt.timedelta(hours=3)) is False      # the row changed after the gate looked
+    assert _calm(last_attempt=_ago(2), verdict_time=NOW - dt.timedelta(hours=2)) is True     # the same second
     assert _calm(clock=None) is False                     # no retry clock
     for status in ("transient_fail", "error", "ok", "running"):
         assert _calm(status=status) is False, status
@@ -162,13 +173,20 @@ def test_the_report_reads_the_file_the_gate_writes():
     src = inspect.getsource(health.main)
     assert 'os.path.join(config.STATE_DIR, "health.json")' in src and "json.dump(report, f" in src
     src = inspect.getsource(sd.main)
-    assert 'gate_rotating(os.path.join(os.path.dirname(STATE), "health.json"), _now)' in src
+    assert '= gate_rotating(os.path.join(os.path.dirname(STATE), "health.json"), _now)' in src
     if not os.environ.get("AQUEDUCT_STATE_DIR"):
         assert os.path.normcase(os.path.dirname(sd.STATE)) == os.path.normcase(config.STATE_DIR)
 
 
 # ---------------------------------------------------------------- the whole report on a real state and a real verdict
 REG = {e["source_id"]: e for e in registry.load().get("sources", [])}
+
+# a live source that runs on the workstation: the cloud gate prints it under NOT JUDGED HERE
+LOCAL = next(sid for sid, e in sorted(REG.items())
+             if e.get("live") and (e.get("run_location") or "cloud") != "cloud" and e.get("cadence") == "monthly")
+# the rows whose list depends on the gate's word must be sources the cloud gate judges
+for _sid in ("abs", "unsdg", "ilostat", "ipea", "stat_slovenia", "stat_estonia", "ksh_stadat", "insee_melodi"):
+    assert (REG[_sid].get("run_location") or "cloud") == "cloud", _sid + " left the cloud route: pick another id"
 
 # (source, status, age of the newest observation in days, text, last attempt hours ago, what else the state holds)
 CASES = [
@@ -181,12 +199,14 @@ CASES = [
     ("stat_estonia", "partial", 10, NOTE, 1, "desktop"),                                # owed, the plain note
     ("ksh_stadat", "partial", 10, NOTE + "; " + CRASH_TAIL, 1, None),                   # the csv phase crashed
     ("insee_melodi", "partial", 10, NOTE, 24 * 9, None),                                # overdue for its retry clock
+    (LOCAL, "partial", 10, NOTE, 1, None),                                              # the cloud gate does not judge it
     ("cso", "partial", 10, "3/9 sub-unit(s) transient-failed; will retry", 1, None),
     ("dst", "transient_fail", 10, "detect:UNEXPECTED:HTTPError('400')", 1, None),
     ("noaa", "error", 10, "Traceback", 1, None),
 ]
 CALM = ("abs", "unsdg")
-TROUBLE = ("ilostat", "ipea", "stat_slovenia", "stat_estonia", "ksh_stadat", "insee_melodi", "cso", "dst", "noaa")
+TROUBLE = ("ilostat", "ipea", "stat_slovenia", "stat_estonia", "ksh_stadat", "insee_melodi", LOCAL, "cso", "dst",
+           "noaa")
 GATE_SAYS_NO = ("ilostat", "ipea", "stat_slovenia", "stat_estonia", "ksh_stadat")       # review AR-298, both passes
 
 
@@ -271,13 +291,14 @@ def test_no_source_is_calm_that_the_gate_does_not_call_rotating(run):
     calm = _calm_ids(sent["html"])
     assert calm <= rotating, calm - rotating
     assert calm == set(CALM)
-    assert rotating - calm == {"insee_melodi"}, "ROTATING by the gate, overdue for its retry clock: attention"
+    assert rotating - calm == {"insee_melodi", LOCAL}, (
+        "ROTATING by the gate and under attention: one is overdue for its retry clock, one is not judged in the cloud")
 
 
 def test_the_subject_counts_the_two_lists(run):
     _, sent = run
     assert sent["subject"] == ("econdatalibrary daily: ATTENTION — run=failure, 1 failed, "
-                               "8 need attention, 2 in progress")
+                               "9 need attention, 2 in progress")
 
 
 def test_the_html_body_has_both_lists_and_no_row_twice_or_missing(run):
@@ -316,7 +337,7 @@ def test_the_calm_list_says_only_what_the_gate_proves(run):
 
 def test_the_text_body_has_both_lists(run):
     body = run[1]["body"]
-    assert "1 ok/no_change · 8 need attention · 2 in progress · 1 failed" in body
+    assert "1 ok/no_change · 9 need attention · 2 in progress · 1 failed" in body
     head, _, calm = body.partition("in progress (normal)")
     assert calm, "the calm list is missing from the text body"
     calm = calm.split("bls")[0]
@@ -373,9 +394,10 @@ def test_both_bodies_say_so_when_the_verdict_cannot_be_used(tmp_path, monkeypatc
         monkeypatch.setattr(sd, "retry_clock", lambda: None)
     sent = _send(tmp_path, monkeypatch, capsys)
     assert "1 need attention, 0 in progress" in sent["subject"]
-    said = "The in-progress list is off: the health check's verdict of this run could not be used"
+    said = {"absent": "The in-progress list is off: the health check wrote no verdict in this run (it does not run "
+                      "when an earlier step fails). Every such row stands under Needs attention.",
+            "old": "The in-progress list is off: the health check's verdict is 30.0 hours old, so it is not of this run.",
+            "no clock": "The in-progress list is off: the scheduler's retry clock could not be loaded."}[how]
     assert said in sent["body"] and H.escape(said) in sent["html"]
     assert "<b>abs</b>" in sent["html"] and "In progress (normal)" not in sent["html"]
-    if how == "absent":
-        assert "FileNotFoundError(" in sent["body"]
-        assert "No such file or directory'" not in sent["html"], "the reason is escaped in the html body"
+    assert "FileNotFoundError" not in sent["body"] + sent["html"], "plain words for the owner, not a Python name"

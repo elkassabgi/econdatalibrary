@@ -59,6 +59,10 @@ CADENCE_LIMIT_DAYS = {"daily": 3, "weekly": 14, "monthly": 45, "quarterly": 120,
 # A row is in progress only when ALL of these hold; in every other case it needs attention:
 #   - the gate's verdict of this run is there, is at most GATE_VERDICT_MAX_AGE_HOURS old, and says ROTATING
 #     for the row's source;
+#   - the gate JUDGED that source: its run_location is the cloud. For a source that runs on the workstation
+#     the gate's word is not a verdict (health.gate_failures leaves it out and main() prints it under NOT
+#     JUDGED HERE), so the report must not say "the health check found nothing else wrong" of it;
+#   - its last attempt is not later than the verdict (a row that changed after the gate looked);
 #   - its status is `partial`;
 #   - its last attempt is not older than the unit's own retry clock (strategies/base.py: a partial unit is
 #     tried again after min(cadence, PARTIAL_RETRY_DAYS) x 0.9 days) plus IN_PROGRESS_MARGIN_HOURS. Past that
@@ -86,19 +90,33 @@ def _utc(ts):
 
 
 def gate_rotating(health_path, now):
-    """(the sources the gate's verdict of this run calls ROTATING, None), or (None, why it cannot be used)."""
+    """(the sources the cloud gate judged and calls ROTATING, the verdict's time, None), or
+    (None, None, why the verdict cannot be used).
+
+    WHY 6 HOURS IS ENOUGH: the workflow job has a limit of 355 minutes on a fresh machine, nothing pulls or
+    pushes health.json, and its only writer is health.main(). So a file that is there was written by the
+    gate step of this job, and is younger than the job. On a machine that keeps the folder, a verdict of
+    another process up to 6 hours old would be read as "of this run"; this report runs in the workflow only."""
     try:
         with open(health_path, encoding="utf-8") as f:
             rep = _json.load(f)
+    except FileNotFoundError:
+        return None, None, ("the health check wrote no verdict in this run (it does not run when an earlier "
+                            "step fails)")
+    except Exception as e:                                            # noqa: BLE001
+        return None, None, f"the health check's verdict could not be read ({repr(e)[:120]})"
+    try:
         made = _utc(rep.get("generated_utc"))
         if made is None:
-            return None, "the verdict has no readable time"
+            return None, None, "the health check's verdict has no readable time"
         age_h = (now - made).total_seconds() / 3600.0
         if not 0 <= age_h <= GATE_VERDICT_MAX_AGE_HOURS:
-            return None, f"the verdict is {age_h:.1f} hours old, so it is not of this run"
-        return {str(r["source"]) for r in rep["sources"] if r.get("health") == "ROTATING"}, None
+            return None, None, f"the health check's verdict is {age_h:.1f} hours old, so it is not of this run"
+        return ({str(r["source"]) for r in rep["sources"]
+                 if r.get("health") == "ROTATING" and (r.get("run_location") or "cloud") == "cloud"},
+                made, None)
     except Exception as e:                                            # noqa: BLE001
-        return None, repr(e)[:160]
+        return None, None, f"the health check's verdict could not be read ({repr(e)[:120]})"
 
 
 def retry_clock():
@@ -133,11 +151,15 @@ def attempted_within(ts, hours, now) -> bool:
     return 0 <= (now - t).total_seconds() / 3600.0 <= hours
 
 
-def is_in_progress(source_id, status, late, last_attempt, cadence, rotating, clock, now) -> bool:
-    """True only for a row of a source the gate calls ROTATING, whose own last attempt is inside its window."""
-    if rotating is None or clock is None or source_id not in rotating:
+def is_in_progress(source_id, status, late, last_attempt, cadence, rotating, verdict_time, clock, now) -> bool:
+    """True only for a row of a source the gate judged and calls ROTATING, whose own last attempt is inside its
+    window and not later than the verdict."""
+    if rotating is None or verdict_time is None or clock is None or source_id not in rotating:
         return False
     if status != "partial" or late:
+        return False
+    tried = _utc(last_attempt)
+    if tried is None or tried > verdict_time:
         return False
     return attempted_within(last_attempt, attempt_window_hours(cadence, clock), now)
 
@@ -400,17 +422,17 @@ def main() -> None:
 
     # TWO LISTS, NO ROW DROPPED (is_in_progress above holds the rule). `warn` stays the whole set.
     _now = _dt.datetime.now(_dt.timezone.utc)
-    rotating, calm_off = gate_rotating(os.path.join(os.path.dirname(STATE), "health.json"), _now)
+    rotating, verdict_time, calm_off = gate_rotating(os.path.join(os.path.dirname(STATE), "health.json"), _now)
     clock = retry_clock()
     if clock is None and not calm_off:
         calm_off = "the scheduler's retry clock could not be loaded"
     _not_calm = {r[0] for r in warn
                  if not is_in_progress(r[0], r[1], late_mark(r[0], r[5]), r[5], cadence.get(r[0], ""),
-                                       rotating, clock, _now)}
+                                       rotating, verdict_time, clock, _now)}
     progress = [r for r in warn if r[0] not in _not_calm]
     # COMPUTED ONCE, rendered in BOTH bodies: the calm list is off when the gate's verdict cannot be used.
-    gate_note = (f"The in-progress list is off: the health check's verdict of this run could not be used "
-                 f"({calm_off}). Every such row stands under Needs attention.") if calm_off else ""
+    gate_note = (f"The in-progress list is off: {calm_off}. Every such row stands under Needs attention."
+                 ) if calm_off else ""
     attention = [r for r in warn if r not in progress]
     subject = (f"econdatalibrary daily: OK — {len(ok)} sources current"
                if healthy else
