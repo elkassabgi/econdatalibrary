@@ -67,7 +67,8 @@ BY_DESIGN = {"tools/selfhost/cutover_hook.py"}
 #     `lock` mode, the origin's own public name (read from a file) without a token.
 # The plan deletes the soak worker before T0 (delete_soak.sh). The test below sees only the cloud WORDS of the
 # scan: a wrangler call without `d1`, or a host that is read from a file, is not seen by it.
-SOAK_TOOLS = {"tools/selfhost/put_soak_origin.py", "tools/selfhost/soak_keyless.py"}
+SOAK_TOOLS = {"tools/selfhost/put_soak_origin.py", "tools/selfhost/soak_keyless.py",
+              "tools/selfhost/soak_keyed.py"}      # its second address is production's, also a workers.dev name
 
 CLASSES = {"VERIFIERS_6D": VERIFIERS_6D, "CLOUD_COST": CLOUD_COST, "CLOUD_WRITE_REFUSED": CLOUD_WRITE_REFUSED,
            "OFFLINE": OFFLINE, "DEFUSED": DEFUSED, "CI_ONLY": CI_ONLY, "BY_DESIGN": BY_DESIGN, "SOAK_TOOLS": SOAK_TOOLS}
