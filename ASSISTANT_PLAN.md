@@ -38,7 +38,7 @@ The assistant must **never answer a data question from the model's memory.** It 
 tool calls (`search_econ_series` → `get_econ_series`), and:
 
 - cites the source + license on every figure it returns;
-- surfaces the honesty-charter caveats (survivorship, the 2022 HF source break, per-source licensing,
+- surfaces the honesty-charter caveats (the HF coverage, per-source licensing,
   staleness) the same way the MCP prompts do;
 - says "I couldn't find that" instead of inventing a series or a number — a wrong id returns an honest
   404, never fabricated data.

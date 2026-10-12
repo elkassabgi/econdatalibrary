@@ -5,7 +5,6 @@
 #
 # Fields per source:
 #   description_key:        list of bulleted caveats a researcher MUST know.
-#                           For hf_equities the survivorship-bias disclosure is FIRST.
 #   description_processing: what the Elkassabgi Data Library did to the raw source.
 #   citation_short / citation_long: PRODUCER FIRST, library "compiled by" second.
 #
@@ -20,40 +19,6 @@ _defaults:
     Compiled and redistributed by the Elkassabgi Data Library.
 
 sources:
-
-  # ---- US equity intraday (the hfdatalibrary product) ----
-  # NOT SERVED BY THIS LIBRARY. hf_equities was delisted on 2026-08-06 (its 1,391 rows were removed
-  # from the catalogue; api/worker/src/util.ts records it), so this block is merged into no series
-  # today: the live /v1/sources does not list the source (bls is listed) and
-  # /v1/series/hf_equities:AAPL.metadata.json answers 404 "unknown series id" (checked 2026-10-02).
-  # The text is kept true in case the source comes back. The change of feed is stated in TRADING
-  # DAYS: monthly hf bars are labelled with the month start (docs/contracts/ekd-time-1.md, section 4),
-  # so the bar dated 2022-03-01 would hold days of both feeds.
-  hf_equities:
-    description_key:
-      - >-
-        SURVIVORSHIP BIAS: the ticker universe is a ~2023 snapshot of then-active
-        U.S. symbols. Securities that delisted, merged, or were renamed BEFORE that
-        snapshot are absent, so historical cross-sections are biased toward survivors.
-        Do NOT treat the panel as a point-in-time-complete record of the market.
-      - >-
-        Spliced series: trading days through 2022-03-04 and trading days from 2022-03-07
-        onward (IEX Exchange HIST) come from different feeds; the splice point is a known
-        seam. Per-segment provenance is carried so each observation's true origin is
-        recoverable.
-      - >-
-        Intraday microstructure: 1-minute OHLCV bars carry cleaning flags
-        (volume spikes, stale quotes, auction prints, splice artifacts); a single
-        venue's tape is not the full consolidated NBBO.
-    description_processing: >-
-      1-minute OHLCV bars assembled per symbol, cleaned (volume-spike / stale-quote /
-      auction / splice-artifact flags), spliced across feeds with the 2022 IEX
-      Exchange HIST cutover, and stored per ticker. Compiled by the Elkassabgi Data Library.
-    citation_short: "Elkassabgi High-Frequency Equity Data Library."
-    citation_long: >-
-      Elkassabgi High-Frequency Equity Data Library (1-minute U.S. equity bars; trading days
-      from 2022-03-07 onward are IEX Exchange HIST data). Compiled by Ahmed Elkassabgi, University
-      of Central Arkansas.
 
   # ---- US macro / official statistics ----
   bls:

@@ -233,7 +233,7 @@ healthy, in-progress), 12 coherence, 19 assorted. Root causes fixed this cycle:
 | unesco_film | 8,527 | Same |
 | unesco_cltt | 6,226 | Same |
 | fao_* (18 ids: ql 20,179; ga 15,018; ge 11,813; gt 10,506; gb 6,980; rp 5,440; gn 4,761; gl 3,057; gf 2,591; gy 2,491; ic 2,468; gr 617; es 595; ep 519; ew 169; ae 164; af 162; ec 49) | 87,579 total | FAOSTAT restructure question — Ahmed's. Precedent to reuse when he decides: fao_qcl went direct 2026-07-28 and relay-era ids turned out to BE FAOSTAT's own codes, 98.2% reproducing exactly (registry.yaml:6061-6075) |
-| hf_equities | 1,391 | HF equities family — not in registry, no fetcher, no state ever (docs/runbook/hf_equities.md); belongs to Ahmed's hfdatalibrary pipeline decision |
+| hf_equities | — | HF equities family — not in registry, no fetcher, no state ever (docs/runbook/hf_equities.md); belongs to Ahmed's hfdatalibrary pipeline decision |
 | insee_sdmx | — (not in queue; not served) | Needs full re-crawl: store unusable — 10.8M rows under 817 keys, all built from observation attributes (tools/derive_statcan_tables.py:53-55) |
 | unsdg | — (not in queue; denylisted) | Licence CLEARED 2026-07-21 (DATABASE_LICENSES_VERBATIM.md:3106) but sits on the denylist safety floor (api/worker/src/denylist.ts:72); un-gating a denylist entry is Ahmed's |
 | norgesbank | — (not in queue; denylisted) | Same: CLEARED NLOD 2.0 (DATABASE_LICENSES_VERBATIM.md:3105) but on denylist floor (api/worker/src/denylist.ts:64) |
@@ -310,7 +310,7 @@ same barro_lee precedent, Ahmed's authorization), deploy, verify.
 
 **AUTHORIZED + EXECUTED 2026-08-06 (Ahmed: "yes, remove hf, owids, and trim whr" / "yes match
 publisher for unctad unesco"):**
-- hf_equities DELISTED: 1,391 metadata-only rows deleted from catalog.db + D1
+- hf_equities DELISTED: its metadata-only rows deleted from catalog.db + D1
   (tools/delist_source_rows.py — deletes rows, NEVER touches R2; distinct from retire_source.py),
   removed from util.ts, deployed 21a17009, live /v1/sources absence verified with present
   control. 0 R2 objects ever existed for it.

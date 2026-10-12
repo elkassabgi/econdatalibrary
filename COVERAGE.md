@@ -10,7 +10,6 @@ Legend: ✅FULL · 🟡PARTIAL/growing · 🔗REFERENCED · ⛔BLOCKED(keys)
 | statcan | ✅ | 56,845,453,642 | ALL 8,207/8,207 cubes done (5 with no data = fail markers). 56.8 billion observations. |
 | eurostat | ✅ | 6,145,322,377 | all 7,637 datasets |
 | oecd | 🟡 | 6,004,142,903 | 1,406/1,509 files. Fresh pass running (102 remain, mostly 404 empties). |
-| hf_equities | 🔗 | 1,498,837,188 | 1-min clean referenced in R2 (other tiers not bridged) |
 | abs | ✅ | 975,186,637 | all SDMX dataflows |
 | noaa | ✅ | 549,412,914 | GSOM 127,905 stations + GSOY 86,018 stations (100% both). Re-measured 2026-08-01: 549,412,914 OBSERVATIONS over 3,135,873 series. The old 552,553,147 counted the __series.parquet sidecars alongside the observation shards — obs + 3,135,873 sidecar rows = 552,548,787, which is what a whole-directory row count returns. |
 | bls | ✅ | 482,052,185 | 63/69 surveys (6 legitimate empties: compressed, sdmx, yy, esbr, nc, pb) |
@@ -45,8 +44,6 @@ Legend: ✅FULL · 🟡PARTIAL/growing · 🔗REFERENCED · ⛔BLOCKED(keys)
 
 ## Measured totals (2026-06-08 post-outage update)
 - **Local Parquet: 37,367,792,282 obs** (measured; OECD 6.0B + Melodi +2.3M since last count)
-- **HF referenced (R2): 1,498,837,188 obs**
-- **GRAND TOTAL: ~38.9 billion obs** (OECD final 103 flows + Melodi 70 flows + WB extra 7 dbs + DeFiLlama yields pending)
 
 ## Still running (2026-06-08)
 - **OECD_Crawl** schtask: 1,406/1,509 files; fresh pass launched 17:03 after stuck crawler killed; 102 remaining flows mostly 404 empties

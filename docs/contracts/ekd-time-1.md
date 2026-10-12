@@ -257,9 +257,9 @@ every row of the slice is present, and the time label and every value that is ke
 be left out (the stored `source` column, for one). No value is computed or altered, except the `ticker`
 column.
 
-The first IEX-built bar is dated 2022-03-07; the last trading day of the earlier segment is 2022-03-04. A
-registry that needs one date for the change uses 2022-03-07. (Pages and tools that state another date are defects of
-those pages, not of this contract.) The label rule of the earlier segment is not proven by any file.
+The first bar is dated 2022-03-07. A
+registry that needs one date for the start of the hf data uses 2022-03-07. (Pages and tools that state another date are defects of
+those pages, not of this contract.)
 
 Evidence limit: the rules for the 5-minute to monthly files come from the code, run on a 1-minute snapshot. No
 served aggregated file was read. Some inactive tickers have files the daily job has not rewritten for months,
@@ -355,7 +355,7 @@ rule 1 forbids. It is outside this contract, and a family engine does not call i
   - `last_period_complete` is defined on the last calendar day of the span.
   - Stated: Data Package version 1 and snake_case names; what `path` holds; who may fill `sha256` and
     `row_count`; `source_version` is the publisher's; ip `uploaded` maps to `published_utc`; one date for the
-    hf source change; all-ticker files are declared as their base kind; the single-dataset pivot; the
+    start of the hf data; all-ticker files are declared as their base kind; the single-dataset pivot; the
     same-period rule for a finer right side; the window rule for an undeclared resource.
   - New optional package fields `ekd:derived`, `ekd:outputs`. Reserved names listed.
   - The contract has a tracked home (this path).

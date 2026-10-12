@@ -7,7 +7,7 @@ tools/retire_source.py, which purges objects — a gated source's gated store mu
 delisting, so the two operations must never share a code path.
 
 Targets this was built for:
-  * hf_equities — 1,391 metadata-only listings econ cannot serve (R29: no metadata-only, ever);
+  * hf_equities — metadata-only listings econ cannot serve (R29: no metadata-only, ever);
     0 series CSVs and 0 store objects exist, so row deletion IS the whole cleanup.
 
 After running: remove the id from util.ts SUPPORTED_SOURCES, deploy, verify live absence
