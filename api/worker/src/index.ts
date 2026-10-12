@@ -148,9 +148,10 @@ async function route(request: Request, env: Env, ctx: ExecutionContext, local: b
       if (path === "/v1/bundle") return await handleBundle(url, env);
 
       // Family usage stats for the stats page. USER figures come from the SHARED
-      // identity DB (env.USERS) with hf's exact aggregation, so users/map/
-      // institutions are identical across libraries; no download counts are
-      // published, only ranked source names. Read-only, no auth, no PII.
+      // identity DB (env.USERS) with hf's exact aggregation, so users and map are
+      // identical across libraries; no download counts are published, only ranked
+      // source names, and no institutions list (the family has one: the hf API's
+      // feed). Read-only, no auth, no PII.
       if (path === "/v1/public-stats") return await handlePublicStats(env);
 
       // Headline stats. individual_series/observations are MEASURED on the full
