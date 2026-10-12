@@ -103,7 +103,7 @@ def serve_object(sid, q, b):
         return 200, [("x-econdl-citation-omitted", "large-object")], STORED[sid], False
     lines, n = _window(TEXT[sid], lo or "0000", hi or "9999")               # PUMP
     tail = b"" if "pump_no_complete_line" in b else f"# econdl-complete rows={0 if 'pump_zero_rows' in b else n}\n".encode()
-    body = cite + ("series_id,obs_date,value\n" + "\n".join(lines) + "\n").encode() + tail
+    body = (b"" if "pump_citation_missing" in b else cite) + ("series_id,obs_date,value\n" + "\n".join(lines) + "\n").encode() + tail
     heads = [] if "pump_no_at_rest" in b else [("x-econdl-bytes-at-rest", str(len(STORED[sid])))]
     if "pump_marked_omitted" in b:
         heads.append(("x-econdl-citation-omitted", "large-object"))
@@ -379,7 +379,7 @@ def test_the_closed_download_is_closed_before_the_end(rig):
     assert row["verdict"] == "PASS" and "stopped=True" in row["got"]
     last = run.rows[-1]
     assert last["verdict"] == "SEEN" and "closed after bytes>=60000" in last["got"] and "completed bytes=" in last["got"]
-    assert "above the row id that was noted before the run" in last["note"]
+    assert "ROW-ID ORDER, not by time" in last["note"] and "the NEXT row of that user above it" in last["note"]
 
 
 def test_a_download_that_ends_before_the_client_closes_it_is_not_a_closed_download(rig):
@@ -416,6 +416,7 @@ BROKEN = [
     ("pump_zero_rows", W, "FAIL"),
     ("pump_no_at_rest", W, "FAIL"),
     ("pump_marked_omitted", W, "FAIL"),
+    ("pump_citation_missing", W, "FAIL"),
     ("pump_window_has_etag", WF, "FAIL"),
     ("two_log_lines", W, "FAIL"),
     ("slow_first_byte", W, "FAIL"),
@@ -514,7 +515,7 @@ def test_a_keyed_request_before_the_key_is_refused(rig):
         run.fetch(rig.soak_url, "/v1/series/x.csv")
 
 
-@pytest.mark.parametrize("bad", ["", "short", "has a space in the key 123", "k" * 15, "é" * 20])
+@pytest.mark.parametrize("bad", ["", "short", "has a space in the key 123", "k" * 15, "é" * 20, "k" * 20 + "\x16"])
 def test_a_key_that_cannot_be_right_is_refused(rig, bad):
     run = D.KeyedRun(rig.soak_url, rig.prod_url, str(rig.root), router=rig.router)
     with pytest.raises(SystemExit):
@@ -565,6 +566,9 @@ def test_the_key_is_asked_once_at_a_terminal(monkeypatch):
     {"small": SMALL, "large_gzip": SMALL, "large_plain": LPL, "from": "1995-01-01", "to": "1999-01-01"},    # one id twice
     {"small": SMALL, "large_gzip": LGZ, "large_plain": LPL, "from": "1995-01-01", "to": "1999-01-01", "key": "x" * 20},
     {"small": "", "large_gzip": LGZ, "large_plain": LPL, "from": "1995-01-01", "to": "1999-01-01"},
+    {"small": "fhfa:SMALL.1", "large_gzip": LGZ, "large_plain": LPL, "from": "1995-01-01", "to": "1999-01-01"},   # wide
+    {"small": SMALL, "large_gzip": LGZ, "large_plain": "census:LARGE.1", "from": "1995-01-01", "to": "1999-01-01"},
+    {"small": "wikidata", "large_gzip": LGZ, "large_plain": LPL, "from": "1995-01-01", "to": "1999-01-01"},        # no colon
     [SMALL, LGZ, LPL],
 ])
 def test_an_ids_file_of_another_shape_is_refused(tmp_path, ids):
@@ -572,6 +576,20 @@ def test_an_ids_file_of_another_shape_is_refused(tmp_path, ids):
     p.write_text(json.dumps(ids), encoding="utf-8")
     with pytest.raises(SystemExit):
         D.read_ids(str(p))
+
+
+def test_a_wide_layout_gzip_id_is_accepted_and_the_list_is_the_workers(tmp_path):
+    """Review AR-303 K1. Only `small` and `large_plain` are refused: a stored-gzip object of a wide-layout source
+    is a passthrough like any other. The Python list is the worker's NATIVE_ONLY_SOURCES."""
+    p = tmp_path / "ok.json"
+    p.write_text(json.dumps({"small": SMALL, "large_gzip": "fhfa:LARGE.GZ", "large_plain": LPL,
+                             "from": "1995-01-01", "to": "1999-01-01"}), encoding="utf-8")
+    assert D.read_ids(str(p))["large_gzip"] == "fhfa:LARGE.GZ"
+    import re
+    src = open(os.path.join(os.path.dirname(HERE), "api", "worker", "src", "util.ts"), encoding="utf-8").read()
+    m = re.search(r"export const NATIVE_ONLY_SOURCES: readonly string\[\] = \[(.*?)\];", src, re.S)
+    assert m, "NATIVE_ONLY_SOURCES is no longer where this test reads it"
+    assert tuple(sorted(re.findall(r'"([a-z_0-9]+)"', m.group(1)))) == tuple(sorted(D.WIDE_SOURCES))
 
 
 def test_main_runs_the_whole_thing_and_takes_no_address_from_the_command_line(rig, capsys):

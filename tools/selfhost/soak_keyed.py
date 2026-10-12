@@ -21,11 +21,13 @@ the pump - review AR-303, ledger R1545.)
                reads and writes lines; the answer has NO content-length, carries `x-econdl-bytes-at-rest`, and
                its last line is `# econdl-complete rows=N`. This is the length-less download; the edge counts
                its bytes.
-  NOT TESTED HERE: the five wide-layout sources (census, fhfa, hf_equities, treasury, wikidata). Their large
-  objects go out plain with a content-length and refuse a date window. `large_plain` must NOT be one of them.
+  NOT TESTED HERE: the five wide-layout sources (census, fhfa, hf_equities, treasury, wikidata). Their objects
+  go out as stored, with their own header, and refuse a date window. `small` and `large_plain` must NOT be of
+  one of them: the ids file is refused when they are.
 
 THE IDS come from a file (JSON): {"small": id, "large_gzip": id, "large_plain": id, "from": "YYYY-MM-DD",
-"to": "YYYY-MM-DD"}. The author makes it from the store's own index. `large_plain` must be MANY times larger
+"to": "YYYY-MM-DD"}. The author makes it from the store's own index. The window from..to must hold at least
+one row of the small series (a window with no row is a 502 by design). `large_plain` must be MANY times larger
 than --abort-after-bytes, or the edge has sent the whole answer before the client closes. No row and no file
 shows an id: they read `<the small id>` and so on. Each id is first asked for its metadata WITHOUT a key: an id
 that is refused (the licence gate, or any other answer than 200) ends the run before any keyed request.
@@ -71,6 +73,8 @@ GZIP_MAGIC = b"\x1f\x8b"
 COMPLETE_RE = re.compile(rb"(?:^|\n)# econdl-complete rows=(\d+)\n\Z")
 CSV_LINE = ".csv "                       # in the instance log: `GET /v1/series/<id>.csv <status> ...`
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+# api/worker/src/util.ts NATIVE_ONLY_SOURCES (tests/test_soak_keyed.py compares the two lists)
+WIDE_SOURCES = ("census", "fhfa", "hf_equities", "treasury", "wikidata")
 ALLOW_PLAIN_HTTP = False                 # the tests set it: their stand-ins are on loopback http
 
 
@@ -88,8 +92,9 @@ class KeyedRun(K.Run):
 
     def set_key(self, key: str) -> None:
         key = (key or "").strip()
-        if len(key) < 16 or any(c.isspace() for c in key) or not key.isascii():
-            raise SystemExit("the key is empty, shorter than 16 characters, not ASCII, or holds a space")
+        if len(key) < 16 or any(c.isspace() for c in key) or not key.isascii() or not key.isprintable():
+            raise SystemExit("the key is empty, shorter than 16 characters, not ASCII, or holds a space or a control "
+                             "character (in a console, Ctrl+V types a character instead of pasting)")
         self._key = key
         self.hidden.append((key, "<key>"))
 
@@ -183,6 +188,9 @@ def read_ids(path: str) -> dict:
         raise SystemExit("from and to must be YYYY-MM-DD, from not after to")
     if len({d["small"], d["large_gzip"], d["large_plain"]}) != 3:
         raise SystemExit("the three ids must be three different series")
+    for name in ("small", "large_plain"):          # the worker's sourceOf(): the text before the first colon
+        if d[name].split(":", 1)[0] in WIDE_SOURCES:
+            raise SystemExit(f"the {name} id is of a wide-layout source: its answers have another shape (choose another series)")
     return d
 
 
@@ -353,10 +361,11 @@ def run_keyed(run: KeyedRun, ids: dict, abort_after: int) -> None:
             f"the run: {started.strftime('%Y-%m-%dT%H:%M:%SZ')} to {ended.strftime('%Y-%m-%dT%H:%M:%SZ')}; the length-less pair began "
             f"{pair_started.strftime('%Y-%m-%dT%H:%M:%SZ')}: completed bytes={w['bytes']}, closed after bytes>={abort_after} and <{w['bytes']}",
             "SEEN",
-            "the read-back must find, from the pair's start to the run's end, exactly two rows of the soak user: one with the "
-            "completed byte count, one with at least the closed count and less than the completed count. It selects id, bytes "
-            "and the time only, above the row id that was noted before the run. (The earlier downloads of this run, and the two "
-            "asked of production, have rows of their own.)")
+            "the read-back goes by ROW-ID ORDER, not by time (the two clocks can differ, and the windowed download before the "
+            "pair is length-less too, so its row is written late and its byte count can look like a closed one): above the row "
+            "id noted before the run, find the row of the soak user with exactly the completed byte count; the closed download "
+            "is the NEXT row of that user above it, with at least the closed count and less than the completed count; no other "
+            "row of that user stands above that one. It selects id, bytes and the time only.")
 
 
 def main(argv=None, key: str | None = None, soak: str = K.SOAK, prod: str = PROD, router=None) -> int:
