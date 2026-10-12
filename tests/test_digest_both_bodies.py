@@ -37,6 +37,7 @@ SECTIONS = [
     ("orphans", "unmanaged leftover state rows with no registry entry"),
     ("dormant", "sources outside the live tier that the daily run never executes"),
     ("fp", "first-pass crawlers, which have no unit_state row"),
+    ("progress", "sources that are in progress (too large for one run, nothing failed)"),
 ]
 
 

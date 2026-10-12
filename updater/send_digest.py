@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime as dt
 import datetime as _dt
+import json as _json
 import re as _re
 import os
 import sqlite3
@@ -41,6 +42,126 @@ STATE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Limits are deliberately generous: a source is late only after missing several of its own cycles,
 # so a LATE marker is unarguable rather than borderline.
 CADENCE_LIMIT_DAYS = {"daily": 3, "weekly": 14, "monthly": 45, "quarterly": 120, "annual": 400}
+
+# IN PROGRESS (NORMAL), owner's order 2026-10-11. A source that is too large for one run takes a part of its
+# sub-units each run and says so: "N sub-unit(s) attempted, none failed; M deferred by budget and taken next
+# tick". Such rows stood under "Needs attention" every day (2026-10-10, run 38086608492), beside the rows that
+# are real trouble, and the report read as a failure every morning.
+#
+# THE CALM LIST IS THE HEALTH GATE'S `ROTATING` CLASS, read from the gate's own verdict of this run
+# (health.json, which `python -m updater.health` writes beside state.db a few seconds before this step; in
+# the three runs of 2026-10-10/11 the gate step took 2.3 to 3.2 minutes, so the report does not run it again).
+# Two earlier cuts were refused by review AR-298:
+#   - a list of trouble words (R1538) called "csv_derive crashed (...)" and a zero-attempt note calm;
+#   - the gate's TEXT rule alone (R1540) called a source calm that the gate holds RED-DATA or ATTENTION: the
+#     gate also asks the data clock (a rotation that runs every day and brings no new data), a re-derive that
+#     is owed and CSVs owed to the desktop. The report now asks none of these itself. It reads the answer.
+# A row is in progress only when ALL of these hold; in every other case it needs attention:
+#   - the gate's verdict of this run is there, is at most GATE_VERDICT_MAX_AGE_HOURS old, and says ROTATING
+#     for the row's source;
+#   - the gate JUDGED that source: its run_location is the cloud. For a source that runs on the workstation
+#     the gate's word is not a verdict (health.gate_failures leaves it out and main() prints it under NOT
+#     JUDGED HERE), so the report must not say "the health check found nothing else wrong" of it;
+#   - its last attempt is not later than the verdict (a row that changed after the gate looked);
+#   - its status is `partial`;
+#   - its last attempt is not older than the unit's own retry clock (strategies/base.py: a partial unit is
+#     tried again after min(cadence, PARTIAL_RETRY_DAYS) x 0.9 days) plus IN_PROGRESS_MARGIN_HOURS. Past that
+#     the unit is overdue, which is a real row for the other list. A fixed 36 hours was wrong: a weekly or
+#     monthly rotator is retried every 6.3 days, so it would stand under attention two mornings in three;
+#   - it is not LATE for its own cadence.
+# A source with one row that fails a condition has all its rows under attention (never one source in two lists).
+# If the verdict or the retry clock cannot be read, NO row is in progress and both bodies say so.
+# WHAT THE LIST DOES NOT SAY: that a source moves forward from run to run. health.py says the same of its
+# ROTATING class; the instrument for that is a run-over-run position check, which this report does not hold.
+# No row is dropped: the two lists together are the old list.
+IN_PROGRESS_MARGIN_HOURS = 36
+GATE_VERDICT_MAX_AGE_HOURS = 6
+
+
+def _utc(ts):
+    """A readable time as an aware datetime, else None."""
+    if not ts:
+        return None
+    try:
+        t = _dt.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    return t if t.tzinfo is not None else t.replace(tzinfo=_dt.timezone.utc)
+
+
+def gate_rotating(health_path, now):
+    """(the sources the cloud gate judged and calls ROTATING, the verdict's time, None), or
+    (None, None, why the verdict cannot be used).
+
+    WHY 6 HOURS IS ENOUGH: the workflow job has a limit of 355 minutes on a fresh machine, nothing pulls or
+    pushes health.json, and its only writer is health.main(). So a file that is there was written by the
+    gate step of this job, and is younger than the job. On a machine that keeps the folder, a verdict of
+    another process up to 6 hours old would be read as "of this run"; this report runs in the workflow only."""
+    try:
+        with open(health_path, encoding="utf-8") as f:
+            rep = _json.load(f)
+    except FileNotFoundError:
+        return None, None, ("the health check wrote no verdict in this run (it does not run when an earlier "
+                            "step fails)")
+    except Exception as e:                                            # noqa: BLE001
+        return None, None, f"the health check's verdict could not be read ({repr(e)[:120]})"
+    try:
+        made = _utc(rep.get("generated_utc"))
+        if made is None:
+            return None, None, "the health check's verdict has no readable time"
+        age_h = (now - made).total_seconds() / 3600.0
+        if not 0 <= age_h <= GATE_VERDICT_MAX_AGE_HOURS:
+            return None, None, f"the health check's verdict is {age_h:.1f} hours old, so it is not of this run"
+        return ({str(r["source"]) for r in rep["sources"]
+                 if r.get("health") == "ROTATING" and (r.get("run_location") or "cloud") == "cloud"},
+                made, None)
+    except Exception as e:                                            # noqa: BLE001
+        return None, None, f"the health check's verdict could not be read ({repr(e)[:120]})"
+
+
+def retry_clock():
+    """(CADENCE_DAYS, PARTIAL_RETRY_DAYS) of the scheduler, or None when they cannot be imported.
+
+    ABSOLUTE FIRST, RELATIVE SECOND, as for the registry in main(): the workflow runs this file as a script,
+    where a relative import raises."""
+    try:
+        _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if _root not in sys.path:
+            sys.path.insert(0, _root)
+        from updater.strategies import base as _base                  # noqa: PLC0415
+    except Exception:                                                 # noqa: BLE001
+        try:
+            from .strategies import base as _base                     # noqa: PLC0415
+        except Exception:                                             # noqa: BLE001
+            return None
+    return _base.CADENCE_DAYS, _base.PARTIAL_RETRY_DAYS
+
+
+def attempt_window_hours(cadence, clock) -> float:
+    """How old the last attempt of a `partial` unit may be: its retry clock plus the margin."""
+    cadence_days, partial_retry_days = clock
+    return min(cadence_days.get(cadence, 7), partial_retry_days) * 0.9 * 24.0 + IN_PROGRESS_MARGIN_HOURS
+
+
+def attempted_within(ts, hours, now) -> bool:
+    """True only when `ts` is a readable time that is at most `hours` old and not in the future."""
+    t = _utc(ts)
+    if t is None:
+        return False
+    return 0 <= (now - t).total_seconds() / 3600.0 <= hours
+
+
+def is_in_progress(source_id, status, late, last_attempt, cadence, rotating, verdict_time, clock, now) -> bool:
+    """True only for a row of a source the gate judged and calls ROTATING, whose own last attempt is inside its
+    window and not later than the verdict."""
+    if rotating is None or verdict_time is None or clock is None or source_id not in rotating:
+        return False
+    if status != "partial" or late:
+        return False
+    tried = _utc(last_attempt)
+    if tried is None or tried > verdict_time:
+        return False
+    return attempted_within(last_attempt, attempt_window_hours(cadence, clock), now)
 
 
 
@@ -262,10 +383,6 @@ def main() -> None:
         bad = [r for r in bad if r[0] in _live_ids]
 
     healthy = run_status.lower() == "success" and not bad
-    subject = (f"econdatalibrary daily: OK — {len(ok)} sources current"
-               if healthy else
-               f"econdatalibrary daily: ATTENTION — run={run_status}, "
-               f"{len(bad)} failed, {len(warn)} retrying")
 
     feed = "https://econdl-api.elkassabgi.workers.dev/v1/last-updates"
     runlog = f"https://github.com/elkassabgi/econdatalibrary/actions/runs/{run_id}"
@@ -303,6 +420,25 @@ def main() -> None:
             return f"{h:.0f}h ago"
         return f"{h / 24:.0f}d ago"
 
+    # TWO LISTS, NO ROW DROPPED (is_in_progress above holds the rule). `warn` stays the whole set.
+    _now = _dt.datetime.now(_dt.timezone.utc)
+    rotating, verdict_time, calm_off = gate_rotating(os.path.join(os.path.dirname(STATE), "health.json"), _now)
+    clock = retry_clock()
+    if clock is None and not calm_off:
+        calm_off = "the scheduler's retry clock could not be loaded"
+    _not_calm = {r[0] for r in warn
+                 if not is_in_progress(r[0], r[1], late_mark(r[0], r[5]), r[5], cadence.get(r[0], ""),
+                                       rotating, verdict_time, clock, _now)}
+    progress = [r for r in warn if r[0] not in _not_calm]
+    # COMPUTED ONCE, rendered in BOTH bodies: the calm list is off when the gate's verdict cannot be used.
+    gate_note = (f"The in-progress list is off: {calm_off}. Every such row stands under Needs attention."
+                 ) if calm_off else ""
+    attention = [r for r in warn if r not in progress]
+    subject = (f"econdatalibrary daily: OK — {len(ok)} sources current"
+               if healthy else
+               f"econdatalibrary daily: ATTENTION — run={run_status}, {len(bad)} failed, "
+               f"{len(attention)} need attention, {len(progress)} in progress")
+
     # Ordering, not filtering. Measured 2026-09-03: 20 of 37 attention rows were permanent by
     # construction — a subset declaration or a budget window away from clearable — and a list
     # that is always that long cannot distinguish a new problem from the standing one. Rows are
@@ -327,10 +463,20 @@ def main() -> None:
 
     # ---- plain-text fallback (some clients / previews) ----
     lines = [f"Run {run_id}: {run_status}",
-             f"{len(ok)} ok/no_change · {len(warn)} partial/transient · {len(bad)} failed", ""]
-    for r in sorted(warn + bad, key=lambda x: (kind_of(x[4])[0], x[0])):
+             f"{len(ok)} ok/no_change · {len(attention)} need attention · {len(progress)} in progress · "
+             f"{len(bad)} failed", ""]
+    for r in sorted(attention + bad, key=lambda x: (kind_of(x[4])[0], x[0])):
         lines.append(f"  !! {r[0]:20} {kind_of(r[4])[1]:8} {r[1]:15} tried={tried_age(r[5]):>8}{late_mark(r[0], r[5]):<13}  err={str(r[4] or '')[:72]}")
-    if warn or bad:
+    if attention or bad:
+        lines.append("")
+    if progress:
+        lines.append("  in progress (normal) - too large for one run; in its last run each attempted a part "
+                     "of its work, nothing failed, and the health check found nothing else wrong:")
+        for r in sorted(progress, key=lambda x: x[0]):
+            lines.append(f"  .. {r[0]:20} tried={tried_age(r[5]):>8}  {str(r[4] or '')[:90]}")
+        lines.append("")
+    if gate_note:
+        lines.append("  " + gate_note)
         lines.append("")
     if orphans:
         lines.append(f"  ({len(orphans)} unmanaged leftover state row(s), excluded from the "
@@ -419,8 +565,37 @@ def main() -> None:
             f"gate:<table role='presentation' style='margin-top:5px;font-size:12px;'>{_rows}"
             "</table>")
 
+    progress_html = ""
+    if progress:
+        _prows = ""
+        for r in sorted(progress, key=lambda x: x[0]):
+            _prows += (
+                f'<tr><td style="padding:6px 10px;border-top:1px solid #e5e7eb;'
+                f'font-family:Consolas,monospace;font-size:13px;"><b>{esc(r[0])}</b></td>'
+                f'<td style="padding:6px 10px;border-top:1px solid #e5e7eb;'
+                f'font-family:Consolas,monospace;font-size:13px;">{esc(r[2])}</td>'
+                f'<td style="padding:6px 10px;border-top:1px solid #e5e7eb;color:{grey};'
+                f'font-family:Consolas,monospace;font-size:13px;">{esc(tried_age(r[5]))}</td>'
+                f'<td style="padding:6px 10px;border-top:1px solid #e5e7eb;color:{grey};'
+                f'font-size:12px;">{esc(str(r[4] or "")[:110])}</td></tr>')
+        _th = (f"<th align='left' style='padding:6px 10px;font-size:11px;color:{grey};"
+               "text-transform:uppercase;'>")
+        progress_html = (
+            f"<h3 style='font-family:Georgia,serif;font-size:15px;margin:18px 0 2px;color:{ink};'>"
+            f"In progress (normal) ({len(progress)})</h3>"
+            f"<div style='font-size:12px;color:{grey};margin:0 0 6px;'>Too large for one run. In its last "
+            "run (see Last tried) each attempted a part of its work, nothing failed, and the health check "
+            "found nothing else wrong. The rest waits for later runs.</div>"
+            "<table role='presentation' width='100%' style='border-collapse:collapse;background:#f9fafb;"
+            "border:1px solid #e5e7eb;border-radius:8px;'><tr>"
+            f"{_th}Source</th>{_th}Data through</th>{_th}Last tried</th>{_th}Detail</th></tr>"
+            f"{_prows}</table>")
+
+    if gate_note:
+        progress_html = (f"<div style='font-size:12px;color:{red};margin:14px 0 6px;'>"
+                         f"{esc(gate_note)}</div>")
     attention_rows = ""
-    for r in sorted(warn + bad, key=lambda x: (kind_of(x[4])[0], x[0])):
+    for r in sorted(attention + bad, key=lambda x: (kind_of(x[4])[0], x[0])):
         color = red if r in bad else amber
         attention_rows += (
             f'<tr><td style="padding:7px 10px;border-top:1px solid #e5e7eb;'
@@ -458,9 +633,10 @@ def main() -> None:
   </div>
   <div style="background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;padding:20px 22px;">
     <table role="presentation" cellspacing="8" style="border-collapse:separate;margin:0 auto 14px;"><tr>
-      {chip(len(ok), "current", green)}{chip(len(warn), "retrying", amber)}{chip(len(bad), "failed", red)}
+      {chip(len(ok), "current", green)}{chip(len(progress), "in progress", grey)}{chip(len(attention), "need attention", amber)}{chip(len(bad), "failed", red)}
     </tr></table>
-    {"<h3 style='font-family:Georgia,serif;font-size:15px;margin:14px 0 6px;color:" + red + ";'>Needs attention</h3><table role='presentation' width='100%' style='border-collapse:collapse;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;'><tr><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Source</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Status</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Data through</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Last tried</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Detail</th></tr>" + attention_rows + "</table>" if (warn or bad) else ""}
+    {"<h3 style='font-family:Georgia,serif;font-size:15px;margin:14px 0 6px;color:" + red + ";'>Needs attention</h3><table role='presentation' width='100%' style='border-collapse:collapse;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;'><tr><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Source</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Status</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Data through</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Last tried</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Detail</th></tr>" + attention_rows + "</table>" if (attention or bad) else ""}
+    {progress_html}
     {notes_html}
     <h3 style="font-family:Georgia,serif;font-size:15px;margin:18px 0 6px;">Current sources ({len(ok)})</h3>
     <table role="presentation" width="100%" style="border-collapse:collapse;">
