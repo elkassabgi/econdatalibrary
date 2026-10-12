@@ -121,7 +121,7 @@ the ratio). All three are 400 `unsupported_filter`. The full object remains avai
   "license": {"id":"...","name":"...","url":"...","reservable":true,
               "commercial_ok":true,"attribution_required":true,"no_modify":false},
   "attribution": "...", "homepage": "...", "terms_url": "...",
-  "description_key": ["<caveats; HF equities survivorship-bias bullet is FIRST>"],
+  "description_key": ["<caveats a researcher must know>"],
   "description_processing": "what we did to the raw source",
   "citation_short": "BLS (2026).",            // producer FIRST, library second
   "citation_long": "U.S. Bureau of Labor Statistics ... Compiled by Elkassabgi Data Library.",

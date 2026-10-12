@@ -196,7 +196,7 @@ Dates are text or date values in the manifest, never nanosecond timestamps (thos
      user types in and the output records. IP measures are known only as of an edition (`as_of_edition`).
 4. **Drop or flag** a last period that is not complete, and rows after `observed_through`.
 5. **Compute hf times in New York wall-clock time.** Convert to UTC only on request, with the tz-database rules,
-   never a fixed offset. (Checked for every calendar day 1991-2026 at 09:30 and 15:59: no session time is
+   never a fixed offset. (Checked at 09:30 and 15:59 on every calendar day of the hf data: no session time is
    ambiguous or missing.)
 6. **One shown date = the span's last calendar day** - for NEW display fields only (rule 1 of section 1).
 7. **Refuse** a join across datasets when a side has `declared: false`, when a grain is `unknown` or `mixed`, or
@@ -257,9 +257,8 @@ every row of the slice is present, and the time label and every value that is ke
 be left out (the stored `source` column, for one). No value is computed or altered, except the `ticker`
 column.
 
-The first IEX-built bar is dated 2022-03-07; the last trading day of the earlier segment is 2022-03-04. A
-registry that needs one date for the change uses 2022-03-07. (Pages and tools that state another date are defects of
-those pages, not of this contract.) The label rule of the earlier segment is not proven by any file.
+The first trading day of the hf data is 2022-03-07. A registry that needs one date for the start of the hf
+data uses 2022-03-07.
 
 Evidence limit: the rules for the 5-minute to monthly files come from the code, run on a 1-minute snapshot. No
 served aggregated file was read. Some inactive tickers have files the daily job has not rewritten for months,
@@ -304,6 +303,10 @@ rule 1 forbids. It is outside this contract, and a family engine does not call i
   refused.
 
 ## 6. Changes
+
+- **2026-10-11, wording only (still draft 6):** the paragraph on the hf start date in section 4 is shorter;
+  its line in the draft 5 list uses the same words; the note in rule 5 of section 3 is reworded. No rule, field
+  or date changed.
 
 - **2026-10-02, status only (still draft 6):** the owner said yes on decision 4. The status line and the
   decision 4 line of section 5 record it. No other text changed.
@@ -355,7 +358,7 @@ rule 1 forbids. It is outside this contract, and a family engine does not call i
   - `last_period_complete` is defined on the last calendar day of the span.
   - Stated: Data Package version 1 and snake_case names; what `path` holds; who may fill `sha256` and
     `row_count`; `source_version` is the publisher's; ip `uploaded` maps to `published_utc`; one date for the
-    hf source change; all-ticker files are declared as their base kind; the single-dataset pivot; the
+    start of the hf data; all-ticker files are declared as their base kind; the single-dataset pivot; the
     same-period rule for a finer right side; the window rule for an undeclared resource.
   - New optional package fields `ekd:derived`, `ekd:outputs`. Reserved names listed.
   - The contract has a tracked home (this path).

@@ -107,8 +107,7 @@ Summary (lines 13-21): the tier and verdict figures there predate the owner-orde
 
 ## Coverage headline (re-measured 2026-08-05 after loop cycles 1-2)
 
-**127 sources / 10,021,703 of 11,388,693 series scheduled (88.0% of
-series).** cepii_baci SERVED + scheduled 2026-08-05 (90,582 pair-grain series, verify exit 0).
+**127 sources scheduled, 88.0% of 11,388,693 series.** cepii_baci SERVED + scheduled 2026-08-05 (90,582 pair-grain series, verify exit 0).
 
 **D1 CAPACITY (measured 2026-08-05, supersedes every older figure): 9.31 GB of the ~10 GB hard
 ceiling, 11,378,473 series rows, ~818 B/row effective. Practical budget for ALL remaining
@@ -119,7 +118,7 @@ DEAD.**
 Tool's own caveat: "'scheduled' is a registry fact — live, adapter built, offered a turn. It is
 NOT sub-unit coverage"; for sub-unit coverage run `tools/audit_untouched_files.py --live`.
 
-## Work queue (97 served, licence-cleared-enough, not auto-updating sources / 1,366,990 series)
+## Work queue (97 served, licence-cleared-enough, not auto-updating sources)
 
 Key structural fact for ALL imf_* rows (updater/registry.yaml:5527-5543): the relay-era ids are relay-shaped and IMF re-keyed its datasets, so no first-hand refresh preserves the old ids. The supported path is **parallel `imf_<flow>_direct` ids from api.imf.org** (pre-authorised: new ids alongside), never overwriting — "Overwriting imf_<flow> would re-key thousands of live series to buy freshness" (registry.yaml:5538-5540). 19 `imf_*_direct` registry entries already exist (registry.yaml:5544-5998).
 
@@ -213,7 +212,7 @@ healthy, in-progress), 12 coherence, 19 assorted. Root causes fixed this cycle:
 | eurostat "UNSTABLE 'LAST UPDATE=' series_key — run the one-time re-key" | #71/#80: the re-key is a SERVED-id change = RESERVED (#46 class) |
 | Transient cohort (worldbank_esg 8/9, ipea 298/1491, idb 10/40, ember 4/48, ksh 1/60, sec_edgar 1/8) | ALL upstreams probed ALIVE 2026-08-06 (idb via its REAL CKAN endpoint data.iadb.org — a guessed URL 404'd first, the R61 trap): passed outages/throttles; rotation clears them under the R359-fixed green path. No work |
 
-### RESERVED (71 sources / 370,003 series) — decision belongs to Ahmed; do not work
+### RESERVED (71 sources) — decision belongs to Ahmed; do not work
 
 | Source | Series | Why reserved |
 |---|---|---|
@@ -233,12 +232,12 @@ healthy, in-progress), 12 coherence, 19 assorted. Root causes fixed this cycle:
 | unesco_film | 8,527 | Same |
 | unesco_cltt | 6,226 | Same |
 | fao_* (18 ids: ql 20,179; ga 15,018; ge 11,813; gt 10,506; gb 6,980; rp 5,440; gn 4,761; gl 3,057; gf 2,591; gy 2,491; ic 2,468; gr 617; es 595; ep 519; ew 169; ae 164; af 162; ec 49) | 87,579 total | FAOSTAT restructure question — Ahmed's. Precedent to reuse when he decides: fao_qcl went direct 2026-07-28 and relay-era ids turned out to BE FAOSTAT's own codes, 98.2% reproducing exactly (registry.yaml:6061-6075) |
-| hf_equities | 1,391 | HF equities family — not in registry, no fetcher, no state ever (docs/runbook/hf_equities.md); belongs to Ahmed's hfdatalibrary pipeline decision |
+| hf_equities | — | HF equities family — not in registry, no fetcher, no state ever (docs/runbook/hf_equities.md); belongs to Ahmed's hfdatalibrary pipeline decision |
 | insee_sdmx | — (not in queue; not served) | Needs full re-crawl: store unusable — 10.8M rows under 817 keys, all built from observation attributes (tools/derive_statcan_tables.py:53-55) |
 | unsdg | — (not in queue; denylisted) | Licence CLEARED 2026-07-21 (DATABASE_LICENSES_VERBATIM.md:3106) but sits on the denylist safety floor (api/worker/src/denylist.ts:72); un-gating a denylist entry is Ahmed's |
 | norgesbank | — (not in queue; denylisted) | Same: CLEARED NLOD 2.0 (DATABASE_LICENSES_VERBATIM.md:3105) but on denylist floor (api/worker/src/denylist.ts:64) |
 
-Cross-check: 26 actionable + 71 reserved = 97 queue sources; 996,987 + 370,003 = 1,366,990 series ✓ (matches audit total).
+Cross-check: 26 actionable + 71 reserved = 97 queue sources.
 
 COVERAGE: read lines 1-137 (complete file, 137 lines) of E:/research/econfindatalibrary/CLAUDE.md, last line read: `- **A budget bounds only the failure mode it measures** (time ≠ memory). R72.`
 COVERAGE: read lines 9-63 and 3087-3566 (end of file) of E:/research/econfindatalibrary/DATABASE_LICENSES_VERBATIM.md in full, plus grep-targeted excerpts of lines 1541-1565 (etalab/cepii), 799-823, 1107-1125, 1282-1294, 1580-1609, 1991-2008, 2769-2788, 2994-3016 (the DISPUTED details) and all `^##`/`^###` headers; the middle (lines 64-3086) was NOT read line-by-line — per task instructions only headers/GATE/DISPUTED/etalab were extracted from it. Last line read: `needed under a different arrangement.` (line 3566, end of file).
@@ -310,7 +309,7 @@ same barro_lee precedent, Ahmed's authorization), deploy, verify.
 
 **AUTHORIZED + EXECUTED 2026-08-06 (Ahmed: "yes, remove hf, owids, and trim whr" / "yes match
 publisher for unctad unesco"):**
-- hf_equities DELISTED: 1,391 metadata-only rows deleted from catalog.db + D1
+- hf_equities DELISTED: its metadata-only rows deleted from catalog.db + D1
   (tools/delist_source_rows.py — deletes rows, NEVER touches R2; distinct from retire_source.py),
   removed from util.ts, deployed 21a17009, live /v1/sources absence verified with present
   control. 0 R2 objects ever existed for it.
