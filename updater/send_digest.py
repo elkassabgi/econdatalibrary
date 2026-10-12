@@ -42,6 +42,37 @@ STATE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # so a LATE marker is unarguable rather than borderline.
 CADENCE_LIMIT_DAYS = {"daily": 3, "weekly": 14, "monthly": 45, "quarterly": 120, "annual": 400}
 
+# IN PROGRESS (NORMAL), owner's order 2026-10-11. A source that is too large for one run takes a part of its
+# sub-units each run and says so: "N sub-unit(s) attempted, none failed; M deferred by budget and taken next
+# tick". Ten such rows stood under "Needs attention" every day (2026-10-10, run 38086608492), beside the rows
+# that are real trouble, and the report read as a failure every morning.
+# The rule is NARROW ON PURPOSE - it is a pattern over error text, not an oracle, and a wrong "normal" would
+# hide a problem. A row is in progress only when ALL of these hold; in every other case it needs attention:
+#   - its status is `partial` (never transient_fail, never a failure);
+#   - it is not LATE for its own cadence;
+#   - its text holds the budget sentence WITH "none failed";
+#   - what is left of the text, after that sentence and its bracketed list, holds none of the words of
+#     another kind of trouble.
+# No row is dropped: the two lists together are the old list.
+_PROGRESS_SENTENCE = _re.compile(
+    r"\d[\d,]* sub-unit\(s\) attempted, none failed; \d[\d,]* deferred by budget and taken next tick(?: \[[^\]]*\]?)?",
+    _re.I)
+_TROUBLE_WORDS = _re.compile(
+    r"fail|error|unexpected|timeout|hard limit|refus|shrink|migrat|coherence|coverage note|unmet|parsed 0|"
+    r"http \d{3}|\b[45]\d\d\b|exceed|interrupt|unparsed|no catalog mapping|cap\b", _re.I)
+
+
+def is_in_progress(status, err, late) -> bool:
+    """True only for a row that says nothing but "too large for one run, the rest comes next tick"."""
+    if status != "partial" or late:
+        return False
+    text = str(err or "")
+    m = _PROGRESS_SENTENCE.search(text)
+    if not m:
+        return False
+    rest = text[:m.start()] + " " + text[m.end():]
+    return not _TROUBLE_WORDS.search(rest)
+
 
 
 
@@ -262,10 +293,6 @@ def main() -> None:
         bad = [r for r in bad if r[0] in _live_ids]
 
     healthy = run_status.lower() == "success" and not bad
-    subject = (f"econdatalibrary daily: OK — {len(ok)} sources current"
-               if healthy else
-               f"econdatalibrary daily: ATTENTION — run={run_status}, "
-               f"{len(bad)} failed, {len(warn)} retrying")
 
     feed = "https://econdl-api.elkassabgi.workers.dev/v1/last-updates"
     runlog = f"https://github.com/elkassabgi/econdatalibrary/actions/runs/{run_id}"
@@ -303,6 +330,14 @@ def main() -> None:
             return f"{h:.0f}h ago"
         return f"{h / 24:.0f}d ago"
 
+    # TWO LISTS, NO ROW DROPPED (is_in_progress above holds the rule). `warn` stays the whole set.
+    progress = [r for r in warn if is_in_progress(r[1], r[4], late_mark(r[0], r[5]))]
+    attention = [r for r in warn if r not in progress]
+    subject = (f"econdatalibrary daily: OK — {len(ok)} sources current"
+               if healthy else
+               f"econdatalibrary daily: ATTENTION — run={run_status}, {len(bad)} failed, "
+               f"{len(attention)} need attention, {len(progress)} in progress")
+
     # Ordering, not filtering. Measured 2026-09-03: 20 of 37 attention rows were permanent by
     # construction — a subset declaration or a budget window away from clearable — and a list
     # that is always that long cannot distinguish a new problem from the standing one. Rows are
@@ -327,10 +362,16 @@ def main() -> None:
 
     # ---- plain-text fallback (some clients / previews) ----
     lines = [f"Run {run_id}: {run_status}",
-             f"{len(ok)} ok/no_change · {len(warn)} partial/transient · {len(bad)} failed", ""]
-    for r in sorted(warn + bad, key=lambda x: (kind_of(x[4])[0], x[0])):
+             f"{len(ok)} ok/no_change · {len(attention)} need attention · {len(progress)} in progress · "
+             f"{len(bad)} failed", ""]
+    for r in sorted(attention + bad, key=lambda x: (kind_of(x[4])[0], x[0])):
         lines.append(f"  !! {r[0]:20} {kind_of(r[4])[1]:8} {r[1]:15} tried={tried_age(r[5]):>8}{late_mark(r[0], r[5]):<13}  err={str(r[4] or '')[:72]}")
-    if warn or bad:
+    if attention or bad:
+        lines.append("")
+    if progress:
+        lines.append("  in progress (normal) - too large for one run; nothing failed, the rest comes next run:")
+        for r in sorted(progress, key=lambda x: x[0]):
+            lines.append(f"  .. {r[0]:20} tried={tried_age(r[5]):>8}  {str(r[4] or '')[:90]}")
         lines.append("")
     if orphans:
         lines.append(f"  ({len(orphans)} unmanaged leftover state row(s), excluded from the "
@@ -419,8 +460,33 @@ def main() -> None:
             f"gate:<table role='presentation' style='margin-top:5px;font-size:12px;'>{_rows}"
             "</table>")
 
+    progress_html = ""
+    if progress:
+        _prows = ""
+        for r in sorted(progress, key=lambda x: x[0]):
+            _prows += (
+                f'<tr><td style="padding:6px 10px;border-top:1px solid #e5e7eb;'
+                f'font-family:Consolas,monospace;font-size:13px;"><b>{esc(r[0])}</b></td>'
+                f'<td style="padding:6px 10px;border-top:1px solid #e5e7eb;'
+                f'font-family:Consolas,monospace;font-size:13px;">{esc(r[2])}</td>'
+                f'<td style="padding:6px 10px;border-top:1px solid #e5e7eb;color:{grey};'
+                f'font-family:Consolas,monospace;font-size:13px;">{esc(tried_age(r[5]))}</td>'
+                f'<td style="padding:6px 10px;border-top:1px solid #e5e7eb;color:{grey};'
+                f'font-size:12px;">{esc(str(r[4] or "")[:110])}</td></tr>')
+        _th = (f"<th align='left' style='padding:6px 10px;font-size:11px;color:{grey};"
+               "text-transform:uppercase;'>")
+        progress_html = (
+            f"<h3 style='font-family:Georgia,serif;font-size:15px;margin:18px 0 2px;color:{ink};'>"
+            f"In progress (normal) ({len(progress)})</h3>"
+            f"<div style='font-size:12px;color:{grey};margin:0 0 6px;'>Too large for one run. Nothing "
+            "failed: each took a part of its work in this run and takes the rest in the next one.</div>"
+            "<table role='presentation' width='100%' style='border-collapse:collapse;background:#f9fafb;"
+            "border:1px solid #e5e7eb;border-radius:8px;'><tr>"
+            f"{_th}Source</th>{_th}Data through</th>{_th}Last tried</th>{_th}Detail</th></tr>"
+            f"{_prows}</table>")
+
     attention_rows = ""
-    for r in sorted(warn + bad, key=lambda x: (kind_of(x[4])[0], x[0])):
+    for r in sorted(attention + bad, key=lambda x: (kind_of(x[4])[0], x[0])):
         color = red if r in bad else amber
         attention_rows += (
             f'<tr><td style="padding:7px 10px;border-top:1px solid #e5e7eb;'
@@ -458,9 +524,10 @@ def main() -> None:
   </div>
   <div style="background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;padding:20px 22px;">
     <table role="presentation" cellspacing="8" style="border-collapse:separate;margin:0 auto 14px;"><tr>
-      {chip(len(ok), "current", green)}{chip(len(warn), "retrying", amber)}{chip(len(bad), "failed", red)}
+      {chip(len(ok), "current", green)}{chip(len(progress), "in progress", grey)}{chip(len(attention), "need attention", amber)}{chip(len(bad), "failed", red)}
     </tr></table>
-    {"<h3 style='font-family:Georgia,serif;font-size:15px;margin:14px 0 6px;color:" + red + ";'>Needs attention</h3><table role='presentation' width='100%' style='border-collapse:collapse;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;'><tr><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Source</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Status</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Data through</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Last tried</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Detail</th></tr>" + attention_rows + "</table>" if (warn or bad) else ""}
+    {"<h3 style='font-family:Georgia,serif;font-size:15px;margin:14px 0 6px;color:" + red + ";'>Needs attention</h3><table role='presentation' width='100%' style='border-collapse:collapse;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;'><tr><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Source</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Status</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Data through</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Last tried</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Detail</th></tr>" + attention_rows + "</table>" if (attention or bad) else ""}
+    {progress_html}
     {notes_html}
     <h3 style="font-family:Georgia,serif;font-size:15px;margin:18px 0 6px;">Current sources ({len(ok)})</h3>
     <table role="presentation" width="100%" style="border-collapse:collapse;">
