@@ -60,14 +60,21 @@ CI_ONLY = {"updater/send_digest.py"}
 # Names the cloud roads in order to REFUSE them (plan change 5).
 BY_DESIGN = {"tools/selfhost/cutover_hook.py"}
 # Tools of the SOAK (the test worker econdl-api-soak in front of the self-hosted origin). No R2 call, no D1 call,
-# no local data written; nothing here judges the cloud copy.
+# no local data written. The first two judge nothing of the cloud copy; the third uses production's bytes as its
+# reference.
 #   put_soak_origin.py: reads the soak worker's public /v1/edge-status (once before it sets the two origin
 #     values, up to six times after) and runs `wrangler secret put` for that worker.
 #   soak_keyless.py: the soak tests - public routes of the soak worker as any client would ask them, and, in its
 #     `lock` mode, the origin's own public name (read from a file) without a token.
+#   soak_keyed.py: KEYED downloads through the soak worker AND, for two byte comparisons, from PRODUCTION
+#     (econdl-api, also a workers.dev name). It reads no store itself, but every one of its downloads makes the
+#     worker write rows of the soak user in production's users database (rate_limits, econ_download_log). After
+#     T0 production forwards to the same origin, so its comparison would compare the origin with itself: it is
+#     a tool of the soak days only.
 # The plan deletes the soak worker before T0 (delete_soak.sh). The test below sees only the cloud WORDS of the
 # scan: a wrangler call without `d1`, or a host that is read from a file, is not seen by it.
-SOAK_TOOLS = {"tools/selfhost/put_soak_origin.py", "tools/selfhost/soak_keyless.py"}
+SOAK_TOOLS = {"tools/selfhost/put_soak_origin.py", "tools/selfhost/soak_keyless.py",
+              "tools/selfhost/soak_keyed.py"}
 
 CLASSES = {"VERIFIERS_6D": VERIFIERS_6D, "CLOUD_COST": CLOUD_COST, "CLOUD_WRITE_REFUSED": CLOUD_WRITE_REFUSED,
            "OFFLINE": OFFLINE, "DEFUSED": DEFUSED, "CI_ONLY": CI_ONLY, "BY_DESIGN": BY_DESIGN, "SOAK_TOOLS": SOAK_TOOLS}
@@ -112,9 +119,10 @@ def test_every_cloud_reader_without_t0_handling_is_classified_exactly_once():
     assert not stale, f"no longer a cloud reader without T0 handling - remove from its class: {stale}"
 
 
-def test_a_soak_tool_reaches_the_cloud_by_the_soak_address_only():
-    """SOAK_TOOLS is for a file whose ONLY cloud word is the soak worker's address. A later tool that reads R2 or
-    D1 does not belong there (review AR-290, N3)."""
+def test_a_soak_tool_reaches_the_cloud_by_a_worker_address_only():
+    """SOAK_TOOLS is for a file whose ONLY cloud word is a worker's public address: the soak worker's, and for
+    soak_keyed.py production's too. A later tool that reads R2 or D1 does not belong there (review AR-290, N3;
+    AR-303 C7)."""
     for f in sorted(SOAK_TOOLS):
         code = _code_only(open(os.path.join(ROOT, f), encoding="utf-8-sig").read())
         words = {m.group(0) for m in CLOUD.finditer(code)}
