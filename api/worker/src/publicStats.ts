@@ -3,7 +3,7 @@
 //
 // Family usage stats for the Econ Data Library "Live Statistics" page.
 //
-// The USER-side figures (total_users, per-country map, institutions) are read
+// The USER-side figures (total_users, per-country map) are read
 // from the SHARED ElkassabgiData identity DB (env.USERS = hfdatalibrary-db)
 // using the SAME aggregation hf's worker uses, so the user count / world map /
 // country list are identical across libraries by construction — one login,
@@ -156,41 +156,12 @@ function normalizeCountry(input: string | null | undefined): string | null {
   return COUNTRY_TO_ISO[s.toLowerCase()] || null;
 }
 
-// Non-institution placeholders users type instead of a real school ("none",
-// "self", "student", ...). Dropped BEFORE ranking so junk doesn't consume top
-// slots. Mirrors hf's list. Real companies are intentionally NOT blocked.
-const INSTITUTION_BLOCKLIST: string[] = [
-  'none', 'n/a', 'na', 'n.a.', 'n.a', 'no', 'nil', 'null', 'nan',
-  'self', 'myself', 'me', 'private', 'personal', 'home', 'individual',
-  'individuals', 'independent', 'independent trader', 'unaffiliated',
-  'unknown', 'student', 'retired', 'retail', 'retail trader',
-  'retail investor', 'freelance', 'freelancer', 'trader', 'aleppo',
-  '-', '--', '.', '..', '...', 'x', 'xx', 'test', 'asdf',
-  'non applicable', 'independent researcher', 'private trader', 'private use',
-  'privat', 'perso', 'persoonlijk', 'full-time employee', 'company', 'exploring',
-  'university', 'labs', 'new in fin', 'test university', 'rebel', 'myass',
-  '1qaz2wsx', 'gz', 'berln',
-];
-
-// Canonical names so the same school typed different ways merges into one row.
-// Keyed by LOWER(TRIM(value)). Mirrors hf's INSTITUTION_ALIASES.
-const INSTITUTION_ALIASES: Record<string, string> = {
-  'stanford': 'Stanford University',
-  'havard': 'Harvard University',
-  'hongkong university': 'University of Hong Kong',
-  '中国人民大学': 'Renmin University of China',
-  'erasmus universiteit rotterdam': 'Erasmus University Rotterdam',
-  'michigan': 'University of Michigan',
-  'illinois': 'University of Illinois',
-  'cambridge': 'University of Cambridge',
-  'oxford university': 'University of Oxford',
-  'old dominion university': 'Old Dominion University',
-  'fordham': 'Fordham University',
-};
-
 // `sourceNames`, when given, replaces the CATALOG `source` read below: the forwarding edge
 // (src/edge.ts) supplies the names from the origin's /v1/sources, so this route needs no econ D1 once
 // the catalogue lives on the workstation (plan code change 1, review R1161 finding 2).
+// NO INSTITUTIONS LIST HERE (2026-10-11). This route used to return the top 50 raw answers of the institution
+// field, filtered by a block-list only. The family has ONE allow-list (the hf API's feed, which the stats page
+// reads); a second list with other rules showed names the first one does not show.
 export async function handlePublicStats(
   env: Env, sourceNames?: () => Promise<Record<string, string>>,
 ): Promise<Response> {
@@ -223,29 +194,6 @@ export async function handlePublicStats(
     const code = normalizeCountry(row.country);
     if (code) userCountryMap[code] = (userCountryMap[code] ?? 0) + row.users;
   }
-
-  // Distinct institutions: drop hidden + placeholder junk, then alias-merge and
-  // take the top 50 by user count.
-  const ph = INSTITUTION_BLOCKLIST.map(() => "?").join(",");
-  const instRaw = await U.prepare(
-    `SELECT institution, COUNT(*) AS users FROM users
-       WHERE is_active = 1 AND TRIM(institution) != ''
-         AND COALESCE(hide_institution, 0) = 0
-         AND LOWER(TRIM(institution)) NOT IN (${ph})
-       GROUP BY institution`,
-  ).bind(...INSTITUTION_BLOCKLIST).all<{ institution: string; users: number }>();
-
-  const instMerged: Record<string, number> = {};
-  for (const row of instRaw.results ?? []) {
-    const name = (row.institution ?? "").trim();
-    if (!name) continue;
-    const canon = INSTITUTION_ALIASES[name.toLowerCase()] ?? name;
-    instMerged[canon] = (instMerged[canon] ?? 0) + row.users;
-  }
-  const institutions = Object.keys(instMerged)
-    .map((institution) => ({ institution, users: instMerged[institution] }))
-    .sort((a, b) => b.users - a.users)
-    .slice(0, 50);
 
   // Most-downloaded sources. The log's source is the series_id prefix before
   // the first ':'. CRITICAL: the log contains HISTORICAL downloads of sources
@@ -328,8 +276,6 @@ export async function handlePublicStats(
     visitor_country_count: Object.keys(visitorCountryMap).length,
     total_visitors: totalVisitors,
     total_page_views: totalPageViews,
-    institutions,
-    institution_count: institutions.length,
     top_sources: topSources,
   });
 }
