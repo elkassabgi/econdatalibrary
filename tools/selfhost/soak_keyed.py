@@ -3,24 +3,35 @@
     python -B -u tools/selfhost/soak_keyed.py --ids-file <file>
 
 THE OWNER RUNS IT, once or twice, with the key of the SOAK ACCOUNT (an account he registered for the soak, not
-his own). The script asks for the key without showing it. The key lives in memory only: it is sent as the
+his own), AT A CONSOLE: the script asks for the key without showing it and refuses when its input is not a
+terminal (Python's prompt would then show what is typed). The key lives in memory only: it is sent as the
 `X-API-Key` header and to TWO addresses only - the soak worker and, for the byte comparison, production. It is
 never printed, never written to the result file, never put in a URL. The origin secret is used for the loopback
 control only (soak_keyless.Run).
 
-WHAT THE THREE SHAPES ARE (read in api/worker/src/series.ts and csvStream.ts, not in the design's older words):
-  string       a stored object below 256 KiB: the worker holds the text; the answer has a content-length.
-  passthrough  an object of 256 KiB or more with no date window: the STORED bytes go out untouched, with their
-               exact content-length and `x-econdl-citation-omitted: large-object`; a stored-gzip object keeps
-               `content-encoding: gzip`, a plain one goes out plain.
-  pump         an object of 256 KiB or more WITH a date window: the worker reads, filters and writes lines; the
-               answer has NO content-length, carries `x-econdl-bytes-at-rest`, and its last line is
-               `# econdl-complete rows=N`. This is the length-less download; the edge counts its bytes.
+WHAT THE THREE SHAPES ARE. They are MEASURED on the worker's route handler in
+api/worker/test/downloadShapes.test.ts; that test is the source of this list and of the stand-in in
+tests/test_soak_keyed.py. (The first version of this script took a large plain object for a passthrough. It is
+the pump - review AR-303, ledger R1545.)
+  string       a stored object below 256 KiB: the answer has a content-length; citation lines first, or the
+               contract header with raw=1; the ETag only for the bare, whole answer.
+  passthrough  a stored-GZIP object of 256 KiB or more with no date window: the STORED bytes go out untouched,
+               with `content-encoding: gzip`, their exact content-length and `x-econdl-citation-omitted`.
+  pump         a PLAIN object of 256 KiB or more of the contract layout, WITH OR WITHOUT a date window: the worker
+               reads and writes lines; the answer has NO content-length, carries `x-econdl-bytes-at-rest`, and
+               its last line is `# econdl-complete rows=N`. This is the length-less download; the edge counts
+               its bytes.
+  NOT TESTED HERE: the five wide-layout sources (census, fhfa, hf_equities, treasury, wikidata). Their large
+  objects go out plain with a content-length and refuse a date window. `large_plain` must NOT be one of them.
 
 THE IDS come from a file (JSON): {"small": id, "large_gzip": id, "large_plain": id, "from": "YYYY-MM-DD",
-"to": "YYYY-MM-DD"}. The author makes it from the store's own index. Each id is first asked for its metadata
-WITHOUT a key: an id that the licence gate refuses ends the run before any keyed request, and its name is not
-shown.
+"to": "YYYY-MM-DD"}. The author makes it from the store's own index. `large_plain` must be MANY times larger
+than --abort-after-bytes, or the edge has sent the whole answer before the client closes. No row and no file
+shows an id: they read `<the small id>` and so on. Each id is first asked for its metadata WITHOUT a key: an id
+that is refused (the licence gate, or any other answer than 200) ends the run before any keyed request.
+
+BEFORE THE RUN, a person notes the highest row id of `econ_download_log` for the soak user (design line 243).
+The read-back after the run starts above that id.
 
 WHAT SHOWS THAT THE ORIGIN ANSWERED: for every download through the soak address the number of
 `GET ....csv ` lines in the active instance's log rises by exactly one (run with the probe stopped). The run
@@ -46,6 +57,7 @@ import re
 import sys
 import time
 import urllib.parse
+import warnings
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import soak_keyless as K  # noqa: E402
@@ -174,18 +186,29 @@ def read_ids(path: str) -> dict:
     return d
 
 
+ID_NAMES = ("small", "large_gzip", "large_plain")
+
+
+def hide_ids(run: KeyedRun, ids: dict) -> None:
+    """No row and no file shows an id (review AR-303 C5: only a 451 hid one before, so a refused id of another
+    kind was written down). The longest spelling first, so that one id inside another is not cut."""
+    spellings = []
+    for name in ID_NAMES:
+        for form in {ids[name], urllib.parse.quote(ids[name], safe="")}:
+            spellings.append((form, f"<the {name} id>"))
+    run.hidden.extend(sorted(spellings, key=lambda p: -len(p[0])))
+
+
 def precheck(run: KeyedRun, ids: dict) -> bool:
-    """Each id, WITHOUT a key: its metadata through the soak address. A gated id is never named and stops the run."""
+    """Each id, WITHOUT a key: its metadata through the soak address. Any answer but a 200 that names the id
+    stops the run."""
     ok = True
-    for name in ("small", "large_gzip", "large_plain"):
+    for name in ID_NAMES:
         sid = ids[name]
         target = K.with_nonce(f"/v1/series/{urllib.parse.quote(sid, safe='')}.metadata.json")
         st, _h, body, _s = run.edge(target)
         d = K.js(body) if st == 200 else None
         good = st == 200 and isinstance(d, dict) and d.get("series_id") == sid
-        if st == 451:
-            run.hidden.append((sid, f"<the {name} id>"))
-            run.hidden.append((urllib.parse.quote(sid, safe=""), f"<the {name} id>"))
         run.row(f"the {name} id is served (no key)", f"GET <soak>{target}", f"{st} error={K.err_of(body)!r} names its id={good}",
                 "PASS" if good else "FAIL",
                 "expected 200 and the id in the answer. 451 = the licence gate refuses this id: choose another one")
@@ -193,8 +216,22 @@ def precheck(run: KeyedRun, ids: dict) -> bool:
     return ok
 
 
+def ask_key() -> str:
+    """The key, typed at a console. getpass falls back to a prompt that SHOWS the input when it cannot switch
+    the echo off (stdin is a pipe or a file, or the console is not a real one): both cases are refused."""
+    if not sys.stdin.isatty():
+        raise SystemExit("refused: the key is typed at a console only (the input is not a terminal, so the prompt could show it)")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", getpass.GetPassWarning)
+        try:
+            return getpass.getpass("The soak account's key (it is not shown): ")
+        except getpass.GetPassWarning:
+            raise SystemExit("refused: this console cannot hide what is typed") from None
+
+
 def run_keyed(run: KeyedRun, ids: dict, abort_after: int) -> None:
     started = dt.datetime.now(dt.timezone.utc)
+    hide_ids(run, ids)
     ok, _src, _at, log_path = K.control(run, "before:")
     if not ok:
         run.row("the keyed checks", "-", "not run: the loopback control failed", "NOTRUN")
@@ -272,36 +309,41 @@ def run_keyed(run: KeyedRun, ids: dict, abort_after: int) -> None:
             "PASS = the exact length reached the client. SEEN = the hop dropped it: the edge then counts the bytes itself, "
             "and this answer is one of the three whose edge CPU time is read in the dashboard")
 
-    # ---- the passthrough of a plain object
-    t = csv_target(ids["large_plain"])
-    pl, lines = through_soak(run, log_path, t, timeout=900)
-    ok_pl = (pl["status"] == 200 and not pl["headers"].get("content-encoding") and pl["head"].startswith(CSV_HEADER)
-             and pl["headers"].get("x-econdl-citation-omitted") == "large-object" and pl["bytes"] >= STREAM_MIN_BYTES
-             and (length_ok(pl) or pl["headers"].get("content-length") is None)
-             and not pl["body_error"] and pl["ttfb"] < EDGE_WAIT_S and lines == 1)
-    run.row("large plain object (passthrough)", f"GET <soak>{t} +key", shown(pl) + f" log lines={lines}", "PASS" if ok_pl else "FAIL",
-            f"expected 200, no content-encoding, the contract header first, the citation-omitted mark, 256 KiB or more, "
-            f"first byte under 30 s, {one}; a content-length, when there is one, equal to the bytes read")
+    # ---- a large PLAIN object is the pump, with or without a window (api/worker/test/downloadShapes.test.ts)
+    pump = (f"expected 200, NO content-length, the at-rest size header, no citation-omitted mark, no content-encoding, the last "
+            f"line `# econdl-complete rows=N` with N above 0, first byte under 30 s, {one}")
 
-    # ---- the length-less download (the pump): read to the end, then closed early
+    def pump_ok(ans, first, new_lines):
+        done = COMPLETE_RE.search(ans["tail"])
+        h = ans["headers"]
+        return (ans["status"] == 200 and h.get("content-length") is None and (h.get("x-econdl-bytes-at-rest") or "").isdigit()
+                and h.get("x-econdl-citation-omitted") is None and not h.get("content-encoding") and ans["head"].startswith(first)
+                and ans["bytes"] >= STREAM_MIN_BYTES and done is not None and int(done.group(1)) > 0 and not ans["body_error"]
+                and ans["ttfb"] < EDGE_WAIT_S and new_lines == 1), (done.group(1).decode() if done else None)
+
+    # with a date window, bare: the filter runs on every row (one of the answers whose edge CPU time is read)
+    t = csv_target(ids["large_plain"], raw="1", **{"from": "1000-01-01", "to": "2999-12-31"})
+    wf, lines = through_soak(run, log_path, t, timeout=1800)
+    ok_wf, rows_wf = pump_ok(wf, CSV_HEADER, lines)
+    run.row("large plain object with a date window (the pump, bare)", f"GET <soak>{t} +key",
+            shown(wf) + f" last line rows={rows_wf} log lines={lines}", "PASS" if ok_wf and not wf["headers"].get("etag") else "FAIL",
+            pump + "; the contract header first; NO ETag (it describes the whole object)")
+
+    # ---- the length-less pair: the whole object read to the end, then once more closed by the client
     pair_started = dt.datetime.now(dt.timezone.utc)
-    t = csv_target(ids["large_plain"], raw="1", **{"from": "1000-01-01", "to": "2999-12-31"})
+    t = csv_target(ids["large_plain"])
     w, lines = through_soak(run, log_path, t, timeout=1800)
-    m = COMPLETE_RE.search(w["tail"])
-    ok_w = (w["status"] == 200 and w["headers"].get("content-length") is None and w["head"].startswith(CSV_HEADER)
-            and (w["headers"].get("x-econdl-bytes-at-rest") or "").isdigit()
-            and m is not None and int(m.group(1)) > 0 and not w["body_error"] and w["ttfb"] < EDGE_WAIT_S and lines == 1)
-    run.row("length-less download, read to the end (the pump)", f"GET <soak>{t} +key", shown(w) + f" last line rows={m.group(1).decode() if m else None} log lines={lines}",
-            "PASS" if ok_w else "FAIL",
-            f"expected 200, NO content-length, the at-rest size header, the contract header first, the last line "
-            f"`# econdl-complete rows=N` with N above 0, first byte under 30 s, {one}")
-    t = csv_target(ids["large_plain"], raw="1", **{"from": "1000-01-01", "to": "2999-12-31"})
+    ok_w, rows_w = pump_ok(w, b"#", lines)
+    run.row("large plain object, whole: a length-less download read to the end (the pump)", f"GET <soak>{t} +key",
+            shown(w) + f" last line rows={rows_w} log lines={lines}", "PASS" if ok_w else "FAIL", pump + "; citation lines first")
+    t = csv_target(ids["large_plain"])
     x, lines = through_soak(run, log_path, t, stop_after=abort_after, timeout=1800)
-    ok_x = (x["status"] == 200 and x["stopped"] and abort_after <= x["bytes"] < w["bytes"] and COMPLETE_RE.search(x["tail"]) is None
-            and lines == 1)
+    ok_x = (x["status"] == 200 and x["headers"].get("content-length") is None and x["stopped"]
+            and abort_after <= x["bytes"] < w["bytes"] and COMPLETE_RE.search(x["tail"]) is None and lines == 1)
     run.row("length-less download, closed by the client", f"GET <soak>{t} +key, closed after {abort_after} bytes",
             shown(x) + f" stopped={x['stopped']} log lines={lines}", "PASS" if ok_x else "FAIL",
-            f"expected 200, the client closed it after at least {abort_after} bytes and before the end (no completeness line), {one}")
+            f"expected 200, NO content-length, the client closed it after at least {abort_after} bytes and before the end "
+            f"(no completeness line), {one}")
 
     K.path_probe(run, log_path, "after:")
     K.control(run, "after:")
@@ -313,7 +355,8 @@ def run_keyed(run: KeyedRun, ids: dict, abort_after: int) -> None:
             "SEEN",
             "the read-back must find, from the pair's start to the run's end, exactly two rows of the soak user: one with the "
             "completed byte count, one with at least the closed count and less than the completed count. It selects id, bytes "
-            "and the time only. (The earlier downloads of this run, and the two asked of production, have rows of their own.)")
+            "and the time only, above the row id that was noted before the run. (The earlier downloads of this run, and the two "
+            "asked of production, have rows of their own.)")
 
 
 def main(argv=None, key: str | None = None, soak: str = K.SOAK, prod: str = PROD, router=None) -> int:
@@ -329,7 +372,7 @@ def main(argv=None, key: str | None = None, soak: str = K.SOAK, prod: str = PROD
         raise SystemExit("--abort-after-bytes must be 1 or more")
     ids = read_ids(a.ids_file)
     run = KeyedRun(soak, prod, a.root, router=router or K.ROUTER)
-    run.set_key(key if key is not None else getpass.getpass("The soak account's key (it is not shown): "))
+    run.set_key(key if key is not None else ask_key())
     run_keyed(run, ids, a.abort_after_bytes)
     return K.finish(run, "keyed")
 
