@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime as dt
 import datetime as _dt
+import json as _json
 import re as _re
 import os
 import sqlite3
@@ -46,70 +47,99 @@ CADENCE_LIMIT_DAYS = {"daily": 3, "weekly": 14, "monthly": 45, "quarterly": 120,
 # sub-units each run and says so: "N sub-unit(s) attempted, none failed; M deferred by budget and taken next
 # tick". Such rows stood under "Needs attention" every day (2026-10-10, run 38086608492), beside the rows that
 # are real trouble, and the report read as a failure every morning.
-# ONE RULE, THE GATE'S. The text rule is health._deferral_only: the anchored whitelist the health gate uses for
-# its ROTATING class. The first cut here was a list of trouble words. Review AR-298 (R1538) showed that it
-# called "csv_derive crashed (...)" and a zero-attempt note "in progress" - the same first cut the gate had and
-# dropped on 2026-08-26 (R382: a filter picked from the examples, not from the mechanism).
+#
+# THE CALM LIST IS THE HEALTH GATE'S `ROTATING` CLASS, read from the gate's own verdict of this run
+# (health.json, which `python -m updater.health` writes beside state.db a few seconds before this step; in
+# the three runs of 2026-10-10/11 the gate step took 2.3 to 3.2 minutes, so the report does not run it again).
+# Two earlier cuts were refused by review AR-298:
+#   - a list of trouble words (R1538) called "csv_derive crashed (...)" and a zero-attempt note calm;
+#   - the gate's TEXT rule alone (R1540) called a source calm that the gate holds RED-DATA or ATTENTION: the
+#     gate also asks the data clock (a rotation that runs every day and brings no new data), a re-derive that
+#     is owed and CSVs owed to the desktop. The report now asks none of these itself. It reads the answer.
 # A row is in progress only when ALL of these hold; in every other case it needs attention:
+#   - the gate's verdict of this run is there, is at most GATE_VERDICT_MAX_AGE_HOURS old, and says ROTATING
+#     for the row's source;
 #   - its status is `partial`;
-#   - the gate's rule says that its text is the budget note and nothing else that is a failure;
-#   - it was attempted in the last IN_PROGRESS_ATTEMPT_HOURS hours. The note of a run of five days ago says
-#     nothing about the last run, and "not LATE" alone does not help: a monthly source is LATE after 45 days
-#     and an irregular one never;
+#   - its last attempt is not older than the unit's own retry clock (strategies/base.py: a partial unit is
+#     tried again after min(cadence, PARTIAL_RETRY_DAYS) x 0.9 days) plus IN_PROGRESS_MARGIN_HOURS. Past that
+#     the unit is overdue, which is a real row for the other list. A fixed 36 hours was wrong: a weekly or
+#     monthly rotator is retried every 6.3 days, so it would stand under attention two mornings in three;
 #   - it is not LATE for its own cadence.
-# If the gate's rule cannot be imported, NO row is in progress and both bodies say so.
+# A source with one row that fails a condition has all its rows under attention (never one source in two lists).
+# If the verdict or the retry clock cannot be read, NO row is in progress and both bodies say so.
 # WHAT THE LIST DOES NOT SAY: that a source moves forward from run to run. health.py says the same of its
 # ROTATING class; the instrument for that is a run-over-run position check, which this report does not hold.
 # No row is dropped: the two lists together are the old list.
-IN_PROGRESS_ATTEMPT_HOURS = 36
-GATE_RULE_ERROR = None
+IN_PROGRESS_MARGIN_HOURS = 36
+GATE_VERDICT_MAX_AGE_HOURS = 6
 
 
-def _gate_rule():
-    """health._deferral_only, or None when it cannot be imported (then no row is in progress).
+def _utc(ts):
+    """A readable time as an aware datetime, else None."""
+    if not ts:
+        return None
+    try:
+        t = _dt.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    return t if t.tzinfo is not None else t.replace(tzinfo=_dt.timezone.utc)
+
+
+def gate_rotating(health_path, now):
+    """(the sources the gate's verdict of this run calls ROTATING, None), or (None, why it cannot be used)."""
+    try:
+        with open(health_path, encoding="utf-8") as f:
+            rep = _json.load(f)
+        made = _utc(rep.get("generated_utc"))
+        if made is None:
+            return None, "the verdict has no readable time"
+        age_h = (now - made).total_seconds() / 3600.0
+        if not 0 <= age_h <= GATE_VERDICT_MAX_AGE_HOURS:
+            return None, f"the verdict is {age_h:.1f} hours old, so it is not of this run"
+        return {str(r["source"]) for r in rep["sources"] if r.get("health") == "ROTATING"}, None
+    except Exception as e:                                            # noqa: BLE001
+        return None, repr(e)[:160]
+
+
+def retry_clock():
+    """(CADENCE_DAYS, PARTIAL_RETRY_DAYS) of the scheduler, or None when they cannot be imported.
 
     ABSOLUTE FIRST, RELATIVE SECOND, as for the registry in main(): the workflow runs this file as a script,
-    where `from . import health` raises."""
-    global GATE_RULE_ERROR
+    where a relative import raises."""
     try:
         _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         if _root not in sys.path:
             sys.path.insert(0, _root)
-        from updater import health as _health                         # noqa: PLC0415
-    except Exception as e:                                            # noqa: BLE001
+        from updater.strategies import base as _base                  # noqa: PLC0415
+    except Exception:                                                 # noqa: BLE001
         try:
-            from . import health as _health                           # noqa: PLC0415
+            from .strategies import base as _base                     # noqa: PLC0415
         except Exception:                                             # noqa: BLE001
-            GATE_RULE_ERROR = repr(e)[:160]
             return None
-    GATE_RULE_ERROR = None
-    return _health._deferral_only
+    return _base.CADENCE_DAYS, _base.PARTIAL_RETRY_DAYS
+
+
+def attempt_window_hours(cadence, clock) -> float:
+    """How old the last attempt of a `partial` unit may be: its retry clock plus the margin."""
+    cadence_days, partial_retry_days = clock
+    return min(cadence_days.get(cadence, 7), partial_retry_days) * 0.9 * 24.0 + IN_PROGRESS_MARGIN_HOURS
 
 
 def attempted_within(ts, hours, now) -> bool:
     """True only when `ts` is a readable time that is at most `hours` old and not in the future."""
-    if not ts:
+    t = _utc(ts)
+    if t is None:
         return False
-    try:
-        t = _dt.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-    except (ValueError, TypeError):
-        return False
-    if t.tzinfo is None:
-        t = t.replace(tzinfo=_dt.timezone.utc)
-    age_h = (now - t).total_seconds() / 3600.0
-    return 0 <= age_h <= hours
+    return 0 <= (now - t).total_seconds() / 3600.0 <= hours
 
 
-def is_in_progress(status, err, late, last_attempt=None, now=None) -> bool:
-    """True only for a row whose last run (in the last 36 hours) says nothing but "too large for one run"."""
+def is_in_progress(source_id, status, late, last_attempt, cadence, rotating, clock, now) -> bool:
+    """True only for a row of a source the gate calls ROTATING, whose own last attempt is inside its window."""
+    if rotating is None or clock is None or source_id not in rotating:
+        return False
     if status != "partial" or late:
         return False
-    if not attempted_within(last_attempt, IN_PROGRESS_ATTEMPT_HOURS, now or _dt.datetime.now(_dt.timezone.utc)):
-        return False
-    rule = _gate_rule()
-    if rule is None:
-        return False
-    return bool(rule([{"status": status, "last_error": str(err or "")}]))
+    return attempted_within(last_attempt, attempt_window_hours(cadence, clock), now)
 
 
 
@@ -369,10 +399,18 @@ def main() -> None:
         return f"{h / 24:.0f}d ago"
 
     # TWO LISTS, NO ROW DROPPED (is_in_progress above holds the rule). `warn` stays the whole set.
-    progress = [r for r in warn if is_in_progress(r[1], r[4], late_mark(r[0], r[5]), r[5])]
-    # COMPUTED ONCE, rendered in BOTH bodies: the calm list is off when the gate's rule did not load.
-    gate_note = (f"The in-progress list is off: the health gate's rule could not be loaded ({GATE_RULE_ERROR}). "
-                 "Every such row stands under Needs attention.") if GATE_RULE_ERROR else ""
+    _now = _dt.datetime.now(_dt.timezone.utc)
+    rotating, calm_off = gate_rotating(os.path.join(os.path.dirname(STATE), "health.json"), _now)
+    clock = retry_clock()
+    if clock is None and not calm_off:
+        calm_off = "the scheduler's retry clock could not be loaded"
+    _not_calm = {r[0] for r in warn
+                 if not is_in_progress(r[0], r[1], late_mark(r[0], r[5]), r[5], cadence.get(r[0], ""),
+                                       rotating, clock, _now)}
+    progress = [r for r in warn if r[0] not in _not_calm]
+    # COMPUTED ONCE, rendered in BOTH bodies: the calm list is off when the gate's verdict cannot be used.
+    gate_note = (f"The in-progress list is off: the health check's verdict of this run could not be used "
+                 f"({calm_off}). Every such row stands under Needs attention.") if calm_off else ""
     attention = [r for r in warn if r not in progress]
     subject = (f"econdatalibrary daily: OK — {len(ok)} sources current"
                if healthy else
@@ -410,8 +448,8 @@ def main() -> None:
     if attention or bad:
         lines.append("")
     if progress:
-        lines.append(f"  in progress (normal) - too large for one run; each ran in the last "
-                     f"{IN_PROGRESS_ATTEMPT_HOURS} hours, attempted a part of its work, and nothing failed:")
+        lines.append("  in progress (normal) - too large for one run; in its last run each attempted a part "
+                     "of its work, nothing failed, and the health check found nothing else wrong:")
         for r in sorted(progress, key=lambda x: x[0]):
             lines.append(f"  .. {r[0]:20} tried={tried_age(r[5]):>8}  {str(r[4] or '')[:90]}")
         lines.append("")
@@ -523,9 +561,9 @@ def main() -> None:
         progress_html = (
             f"<h3 style='font-family:Georgia,serif;font-size:15px;margin:18px 0 2px;color:{ink};'>"
             f"In progress (normal) ({len(progress)})</h3>"
-            f"<div style='font-size:12px;color:{grey};margin:0 0 6px;'>Too large for one run. Each ran in "
-            f"the last {IN_PROGRESS_ATTEMPT_HOURS} hours, attempted a part of its work, and nothing failed. "
-            "The rest waits for later runs.</div>"
+            f"<div style='font-size:12px;color:{grey};margin:0 0 6px;'>Too large for one run. In its last "
+            "run (see Last tried) each attempted a part of its work, nothing failed, and the health check "
+            "found nothing else wrong. The rest waits for later runs.</div>"
             "<table role='presentation' width='100%' style='border-collapse:collapse;background:#f9fafb;"
             "border:1px solid #e5e7eb;border-radius:8px;'><tr>"
             f"{_th}Source</th>{_th}Data through</th>{_th}Last tried</th>{_th}Detail</th></tr>"
