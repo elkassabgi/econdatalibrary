@@ -6,8 +6,7 @@ equities) to a unified, citable home for the world's **free, re-serveable**
 economic & financial data.
 
 **Built on the same serverless stack as HF Data Library** (GitHub Actions cron →
-R2 Parquet + D1 catalog → Cloudflare Worker API + Pages), so it runs itself and
-costs single-digit dollars/month. See `PLAN.md` for the full build plan and
+R2 Parquet + D1 catalog → Cloudflare Worker API + Pages), so it runs itself. See `PLAN.md` for the full build plan and
 `configs/sources.yaml` for the licensed source set.
 
 ## Licensing

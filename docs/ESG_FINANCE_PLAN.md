@@ -8,8 +8,7 @@ update it here, not in chat.
 - **Three-way split**: econdatalibrary keeps official economic statistics; a new **ESG Data
   Library** (his name choice — not "Climate": ClimateBERT-derived sustainability measures are
   coming, so ESG is the umbrella and NOAA is its physical-risk pillar); a new **Finance Data
-  Library** built on public filings. **HF stays its own library** — it is derived from purchased
-  data with a survivorship caveat; mixing provenances muddies both licensing stories.
+  Library** built on public filings. **HF stays its own library.**
 - **EDGAR moves out of econ into Finance** (sec_edgar + the 13F/insider backfills).
 - Tadawul's terms **permit redistribution** per Ahmed's reading — the verbatim clause + URL
   still needs to land in DATABASE_LICENSES_VERBATIM.md (owed; ledger R416 records why no

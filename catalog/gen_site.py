@@ -2400,8 +2400,7 @@ def render_dataset_page(rec):
         body.append(f'<div class="callout open" style="margin-bottom:1rem">{emb["note"]}</div>')
         body.append(emb["html"])
 
-    # Important notes (Task#5 caveats) — for hf_equities the survivorship-bias
-    # disclosure is the first bullet; never fabricated, shown only when present.
+    # Important notes (Task#5 caveats) — never fabricated, shown only when present.
     if rec["description_key"]:
         notes = "".join(f"<li>{esc(b)}</li>" for b in rec["description_key"])
         body.append("<h2>Important notes</h2>")

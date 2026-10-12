@@ -43,8 +43,7 @@ df_http = econdl.bundle(["bls:CUUR0000SA0"], out="h.zip", api="http://127.0.0.1:
 
 ## 3. Browse the catalog / landing pages
 Open `catalog/site/index.html` in a browser — 309 dataset pages with license,
-provenance, "How to cite" (producer-first), "Important notes" (e.g. the HF
-survivorship-bias disclosure), and inline schema.org/Croissant JSON-LD + `sitemap.xml`.
+provenance, "How to cite" (producer-first), "Important notes" (the source's caveats), and inline schema.org/Croissant JSON-LD + `sitemap.xml`.
 
 ## 4. Run the tests
 ```

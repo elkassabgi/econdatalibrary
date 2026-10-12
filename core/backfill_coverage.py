@@ -1,7 +1,7 @@
 """Backfill start_date/end_date for catalogued series that have neither.
 
 Run 2026-08-02: took the catalog from 4,625,655 dateless series (42.6% of 10.9M) down to
-1,694 (0.016%). The remaining two sources have no local parquet to read from -- hf_equities
+the series of two sources that have no local parquet to read from -- hf_equities
 and unhcr (303, whose local file holds population:refugees:* while the catalogue
 holds population:asylum_seekers:*).
 

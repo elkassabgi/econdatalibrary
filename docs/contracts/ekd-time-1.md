@@ -257,9 +257,8 @@ every row of the slice is present, and the time label and every value that is ke
 be left out (the stored `source` column, for one). No value is computed or altered, except the `ticker`
 column.
 
-The first bar is dated 2022-03-07. A
-registry that needs one date for the start of the hf data uses 2022-03-07. (Pages and tools that state another date are defects of
-those pages, not of this contract.)
+The first trading day of the hf data is 2022-03-07. A registry that needs one date for the start of the hf
+data uses 2022-03-07.
 
 Evidence limit: the rules for the 5-minute to monthly files come from the code, run on a 1-minute snapshot. No
 served aggregated file was read. Some inactive tickers have files the daily job has not rewritten for months,
@@ -304,6 +303,9 @@ rule 1 forbids. It is outside this contract, and a family engine does not call i
   refused.
 
 ## 6. Changes
+
+- **2026-10-11, wording only (still draft 6):** the paragraph on the hf start date in section 4 is shorter;
+  its line in the draft 5 list uses the same words. No rule, field or date changed.
 
 - **2026-10-02, status only (still draft 6):** the owner said yes on decision 4. The status line and the
   decision 4 line of section 5 record it. No other text changed.

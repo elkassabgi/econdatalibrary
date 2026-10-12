@@ -3,7 +3,7 @@
 **Directive:** FULL coverage of EVERY source. No trimming, no skipping, however long it takes.
 **Numbers measured from Parquet footers (not agent claims).** Last count: 2026-06-04 (session-2 final).
 
-Legend: ✅FULL · 🟡PARTIAL/growing · 🔗REFERENCED · ⛔BLOCKED(keys)
+Legend: ✅FULL · 🟡PARTIAL/growing · ⛔BLOCKED(keys)
 
 | Source | Status | Measured obs | Note |
 |---|---|---|---|

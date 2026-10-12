@@ -63,7 +63,7 @@ whose license class isn't `reservable: true`. That single gate keeps "one locati
 | Layer | Service | Mirrors HF Data Library? |
 |---|---|---|
 | Scheduler | GitHub Actions cron + matrix | ✅ same model, generalized to N sources |
-| Observation store | **R2** Parquet, partitioned `source/series_id/version` | ✅ how you serve 1.5B bars today |
+| Observation store | **R2** Parquet, partitioned `source/series_id/version` | ✅ how you serve the bars today |
 | Catalog + license registry | **D1** (SQLite) + **FTS5** full-text search | ✅ D1 already in use |
 | API | **Cloudflare Worker** (`/v1`) | ✅ extend your existing Worker conventions |
 | Frontend | **Cloudflare Pages** | ✅ same |
