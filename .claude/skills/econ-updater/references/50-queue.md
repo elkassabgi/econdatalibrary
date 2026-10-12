@@ -107,8 +107,7 @@ Summary (lines 13-21): the tier and verdict figures there predate the owner-orde
 
 ## Coverage headline (re-measured 2026-08-05 after loop cycles 1-2)
 
-**127 sources / 10,021,703 of 11,388,693 series scheduled (88.0% of
-series).** cepii_baci SERVED + scheduled 2026-08-05 (90,582 pair-grain series, verify exit 0).
+**127 sources scheduled, 88.0% of 11,388,693 series.** cepii_baci SERVED + scheduled 2026-08-05 (90,582 pair-grain series, verify exit 0).
 
 **D1 CAPACITY (measured 2026-08-05, supersedes every older figure): 9.31 GB of the ~10 GB hard
 ceiling, 11,378,473 series rows, ~818 B/row effective. Practical budget for ALL remaining

@@ -196,7 +196,7 @@ Dates are text or date values in the manifest, never nanosecond timestamps (thos
      user types in and the output records. IP measures are known only as of an edition (`as_of_edition`).
 4. **Drop or flag** a last period that is not complete, and rows after `observed_through`.
 5. **Compute hf times in New York wall-clock time.** Convert to UTC only on request, with the tz-database rules,
-   never a fixed offset. (Checked for every calendar day 1991-2026 at 09:30 and 15:59: no session time is
+   never a fixed offset. (Checked at 09:30 and 15:59 on every calendar day of the hf data: no session time is
    ambiguous or missing.)
 6. **One shown date = the span's last calendar day** - for NEW display fields only (rule 1 of section 1).
 7. **Refuse** a join across datasets when a side has `declared: false`, when a grain is `unknown` or `mixed`, or
@@ -305,7 +305,8 @@ rule 1 forbids. It is outside this contract, and a family engine does not call i
 ## 6. Changes
 
 - **2026-10-11, wording only (still draft 6):** the paragraph on the hf start date in section 4 is shorter;
-  its line in the draft 5 list uses the same words. No rule, field or date changed.
+  its line in the draft 5 list uses the same words; the note in rule 5 of section 3 is reworded. No rule, field
+  or date changed.
 
 - **2026-10-02, status only (still draft 6):** the owner said yes on decision 4. The status line and the
   decision 4 line of section 5 record it. No other text changed.
