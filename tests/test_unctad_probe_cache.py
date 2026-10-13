@@ -28,6 +28,7 @@ class _Api:
 
     def __init__(self, die_after=None):
         self.asked, self.die_after = [], die_after
+        self.caps = 0                                       # size-cap answers this stand-in gave
 
     def __call__(self, ds, select, cid, key, flt=None):
         if self.die_after is not None and len(self.asked) >= self.die_after:
@@ -38,6 +39,7 @@ class _Api:
         ny = len(ys.group(1).split(",")) if ys else len(YEARS)
         np_ = len(ps.group(1).split(",")) if ps else len(PARTNERS)
         if ny * np_ > CAP:
+            self.caps += 1
             raise j.FactsSizeCap(CAP, ny * np_)
         return f"rows for {flt}\n"
 
@@ -66,18 +68,30 @@ def test_a_resume_asks_nothing_it_already_knows(spill, monkeypatch):
 
 
 def test_a_completed_walk_says_what_it_reused_and_what_it_asked(spill, monkeypatch, capsys):
-    """A resumed walk and a restarted one leave the same files; this line is what tells them apart."""
-    _pull(monkeypatch, _Api())
+    """A resumed walk and a restarted one leave the same files; this line is what tells them apart.
+
+    The number in the line is compared with the stand-in's OWN tally of the size-cap answers it gave,
+    not with a literal: the first version of this test pinned 4 where the API had given 5 (the
+    whole-measure probe is a size-cap answer too)."""
+    a1 = _Api()
+    _pull(monkeypatch, a1)
     first = capsys.readouterr().out
-    assert "8 chunks = 0 reused from the spill + 8 fetched; size-cap answers asked this pass: 4" in first
-    _pull(monkeypatch, _Api())
+    assert a1.caps == 5                                     # top + 4 years
+    assert (f"[M1]: 8 chunks = 0 reused from the spill + 8 fetched; "
+            f"size-cap answers asked this pass: {a1.caps}") in first
+    a2 = _Api()
+    _pull(monkeypatch, a2)
     second = capsys.readouterr().out
-    assert "8 chunks = 8 reused from the spill + 0 fetched; size-cap answers asked this pass: 0" in second
-    # the cap cache lost, the chunks kept: every chunk is reused and the 4 year probes are asked again
+    assert a2.caps == 0
+    assert "[M1]: 8 chunks = 8 reused from the spill + 0 fetched; size-cap answers asked this pass: 0" in second
+    # the cap cache lost, the chunks kept: every chunk is reused and all 5 probes are asked again
     os.remove(spill / j.CAPPED_FILE)
-    _pull(monkeypatch, _Api())
+    a3 = _Api()
+    _pull(monkeypatch, a3)
     third = capsys.readouterr().out
-    assert "8 chunks = 8 reused from the spill + 0 fetched; size-cap answers asked this pass: 4" in third
+    assert a3.caps == 5
+    assert (f"[M1]: 8 chunks = 8 reused from the spill + 0 fetched; "
+            f"size-cap answers asked this pass: {a3.caps}") in third
 
 
 def test_a_killed_pass_resumes_where_it_stopped(spill, monkeypatch):

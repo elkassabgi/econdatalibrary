@@ -276,8 +276,7 @@ def dim_codes(ds_name: str, version, dim_table: str) -> list[str]:
     Read from the CREDENTIALED user API, the host the Facts pull itself uses. Until 2026-10-13
     this read the keyless `unctadstat-api.unctad.org/datamart-api/{DS}/{version}/{DimTable}`.
     That address now answers 403 with the body "Blocked" (measured 2026-10-13: two datasets, two
-    User-Agents, with and without credentials, from two networks; reportMetadata on the same
-    host answers 200). Every chunked pull asks for a dimension before its first chunk, so the
+    User-Agents, with and without credentials; reportMetadata on the same host answers 200). Every chunked pull asks for a dimension before its first chunk, so the
     block stops every over-cap dataset. `{FACTS}/{DS}/{version}/{DimTable}` answers 200 with the
     same list: measured on US.TradeServCatByPartner, Years is equal through the pinned and the
     current path (21 codes, numbers, same order), and Economies is equal to the list the
@@ -293,7 +292,9 @@ def dim_codes(ds_name: str, version, dim_table: str) -> list[str]:
     the URL: the caller renders a failed request's text into the run note.
 
     The transient statuses facts_csv retries are retried here too: one gateway blip on a
-    dimension call would otherwise end the unit's whole turn. A 403 or 404 is final at once.
+    dimension call would otherwise end the unit's whole turn. Any other status (400, 403, 404)
+    is final at once. A failed CONNECTION is not retried here and leaves this function as it
+    is raised (facts_csv does retry those); the keyless address is not tried for it either.
     """
     cid, key = creds()
     url = f"{FACTS}/{ds_name}/{version}/{dim_table}?$orderby=Order&culture=en"
@@ -356,6 +357,7 @@ def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
     spill_dir = _spill_dir(ds_name)
     capped = _load_capped(spill_dir, meta)
     top = hashlib.sha1(repr((select, "ALL")).encode()).hexdigest()[:16]
+    top_was_cached = top in capped       # the whole-measure probe is a size-cap answer too
     try:
         if top in capped:
             raise FactsSizeCap(*capped[top])                 # probed on an earlier pass
@@ -426,7 +428,9 @@ def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
         _record_cap(spill_dir, capped, top, e)
 
         reused = 0
-        caps_asked = 0       # size-cap answers this pass had to ask the API for (not in the cache)
+        # size-cap answers this pass had to ask the API for (not in the cache). The whole-measure
+        # probe that brought the walk here is the first of them.
+        caps_asked = 0 if top_was_cached else 1
         out: list[str] = []
         stack = [(codes[i:i + per], []) for i in range(0, len(codes), per)]
         while stack:
