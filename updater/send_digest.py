@@ -101,8 +101,9 @@ def gate_rotating(health_path, now):
         with open(health_path, encoding="utf-8") as f:
             rep = _json.load(f)
     except FileNotFoundError:
-        return None, None, ("the health check wrote no verdict in this run (it does not run when an earlier "
-                            "step fails)")
+        # No cause is named: the report knows only that the file is not there. (Until 2026-10-13 this line
+        # said the gate "does not run when an earlier step fails". The gate now runs after a failed step.)
+        return None, None, "the health check wrote no verdict in this run"
     except Exception as e:                                            # noqa: BLE001
         return None, None, f"the health check's verdict could not be read ({repr(e)[:120]})"
     try:
