@@ -7,8 +7,8 @@ shows beside its totals. So: the card sources hold NO figure, and this test fail
 What a test of a picture can and cannot do: it reads the SVG sources (the words) and the PNG headers (the
 size), and it PINS the bytes of each PNG beside the text of its SVG. It does not read the pixels. So a changed
 SVG without a new render fails, and a changed PNG without a new pin fails; that the pinned PNG is the true
-rendering of the pinned SVG was checked by people who looked (review AR-307). Whoever changes a pin renders,
-looks at the picture, and then pins.
+rendering of the pinned SVG was checked by looking at both pictures (review AR-307). Whoever changes a pin
+renders, looks at the picture, and then pins.
 """
 import hashlib
 import os
@@ -113,6 +113,8 @@ def test_the_portal_card_names_exactly_the_libraries_the_portal_lists():
     page = open(os.path.join(ROOT, "portal", "index.html"), encoding="utf-8").read()
     listed = re.findall(r'<div class="lib">.*?<h3>(.*?)</h3>', page, re.S)
     assert listed == ["HF Data Library", "Econ Data Library", "IP Data Library"], listed
+    # a card with a second class, with single quotes or without a heading is still a card
+    assert len(re.findall(r"""class=["']lib\b""", page)) == 3
     tiles = _words(make_cards.CARDS["portal.svg"])[2:5]
     assert tiles == [n.split(" ")[0].upper() for n in listed]
 
