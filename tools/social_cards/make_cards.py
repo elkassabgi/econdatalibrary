@@ -3,7 +3,7 @@
     python -B tools/social_cards/make_cards.py            writes econ.svg and portal.svg beside this file
 
 THE CARDS CARRY NO HEADLINE FIGURE. A card is a still picture: it cannot show the "being recalculated" notice
-that /v1/stats and the home pages show beside the totals, and a figure on it is wrong the day the census
+that /v1/stats and the econ home page show beside the totals, and a figure on it is wrong the day the census
 changes. The cards of 2026-08-21 showed totals and a source count that the sites no longer state. So the tiles
 are words the pages themselves use:
   econ    "Every series carries its license, provenance, and producer-first citation." (catalog/site/index.html)
@@ -11,9 +11,15 @@ are words the pages themselves use:
 The design is the family's (the hf card): the same ground, title, tagline, tile row and byline.
 
 RENDERING (by hand, then the PNGs are committed): a 1200x630 screenshot of each SVG with a local browser, e.g.
-    chrome --headless=new --hide-scrollbars --window-size=1200,630 --screenshot=<out.png> file:///<path>/econ.svg
+    chrome --headless=new --disable-lcd-text --hide-scrollbars --window-size=1200,630 \
+           --screenshot=<out.png> file:///<path>/econ.svg
+--disable-lcd-text gives grey smoothing on the letters, as on the hf card; without it the small text gets
+colour fringes. The picture depends on the fonts of the machine that renders: the SVGs name Inter and
+JetBrains Mono first, and the committed pictures were made where neither is installed, with Arial, Consolas
+and Georgia. Another machine can give another picture, so LOOK at each render before it is committed.
 The PNGs live at catalog/site/assets/og-image.png and portal/assets/og-image.png (served; the SVGs are not).
-tests/test_share_cards.py pins the texts of the two SVGs and the size of the two PNGs.
+tests/test_share_cards.py pins the texts of the two SVGs and the bytes of the two PNGs: after a new render,
+look at the picture, then put the two new sha256 values in its PINS.
 """
 from __future__ import annotations
 
