@@ -192,8 +192,8 @@ def is_in_progress(source_id, status, late, last_attempt, cadence, rotating, ver
 # enqueue_csv_retry, note_full_rederive_owed, note_csv_desktop_owed). A refused save loses what this run
 # wrote there too.
 # The sentence also does not say "a later run checks these sources again". A dispatch that names a source
-# runs it also when it is outside the live tier (orchestrate.py, the live-only rule), and no scheduled run
-# takes such a source. So the words are "when they next run": true with or without a schedule.
+# runs it also when it is outside the live tier (orchestrate.py, the live-only rule), and such a source may
+# have no later scheduled run. So the words are "when they next run": true with or without a schedule.
 PUSH_REFUSED_ANOTHER_WRITER = "another_writer"
 _STEP_OUTCOMES = ("success", "failure", "cancelled", "skipped")
 _SAVE_STEP_ENDED = {"failure": "failed", "cancelled": "was stopped before its end", "skipped": "did not run"}

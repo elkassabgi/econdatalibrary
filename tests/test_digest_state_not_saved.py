@@ -269,8 +269,8 @@ def test_the_refused_save_is_three_plain_sentences():
 # The first form of sentence 3 was "The next run does the work of this run again." It promised what the
 # code does not do: a source that works in parts keeps its place in the store and goes on after this run's
 # part, and the next run has its own order and budget. A second form said "A later run checks these sources
-# again." That is not true of a source that a named dispatch ran outside the live tier: no scheduled run
-# takes it. So the words are "when they next run". A change of any word must be made here by hand, against
+# again." That is not true of every source that a named dispatch ran outside the live tier: such a source
+# may have no later scheduled run. So the words are "when they next run". A change of any word must be made here by hand, against
 # the code, and not by a search-and-replace over one shared name.
 WORD_FOR_WORD = {
     ("failure", "another_writer"): (
