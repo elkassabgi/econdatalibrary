@@ -395,6 +395,25 @@ jobs:
       - name: Health gate (fail past 2x SLA)
         # Exit 1 -> red run -> GH notification. D1 keeps serving the true stale
         # date — the public endpoint never lies to hide our failure (§5.3).
+        #
+        # RUNS ALSO AFTER A FAILED STEP (2026-10-13). This step had no `if:`, so GitHub skipped it
+        # whenever an earlier step failed. The two usual cases: the updater ended non-zero, or the
+        # state push was refused because another writer saved the state first. On such a morning
+        # there was no verdict at all, and the daily mail could not tell a source that is in
+        # progress from one that needs attention.
+        #
+        # Why it is safe to run then. The gate reads the state file of THIS runner (the one the
+        # pull step downloaded and the updater then changed) and the registry. It writes one file,
+        # health.json, on the runner, for the mail step below. It does not write to R2 or D1, and
+        # no later step pushes the state. After a refused push its verdict is about what this run
+        # did, which is also what the mail reports.
+        #
+        # The two parts of the condition:
+        #   success()  as before: every earlier step succeeded (a dry run included);
+        #   or         a step failed or the job was cancelled, the state WAS pulled, and it is not
+        #              a dry run. Without a pulled state there is nothing of this run to judge.
+        # "Sync freshness to D1" stays gated on the push: it publishes, this step does not.
+        if: ${{ success() || (always() && steps.pull_state.outcome == 'success' && inputs.dry_run != true) }}
         run: python -m updater.health --fail-past-2x-sla
 
       - name: Workstation watchdog heartbeat
@@ -497,6 +516,14 @@ jobs:
           CLOUDFLARE_EMAIL_TOKEN: ${{ secrets.CLOUDFLARE_EMAIL_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           RUN_STATUS: ${{ job.status }}
+          # What became of the run's record (state.db), so the mail can say it in plain words when
+          # the record was not saved (updater/send_digest.py, state_not_saved_note). The two
+          # outcomes are GitHub's own words for the steps. `refused` is written by --push-state
+          # only when the compare-and-swap refused because another writer saved after this run's
+          # pull; it is empty in every other case, and the mail then names no cause.
+          PULL_STATE_OUTCOME: ${{ steps.pull_state.outcome }}
+          PUSH_STATE_OUTCOME: ${{ steps.push_state.outcome }}
+          PUSH_STATE_REFUSED: ${{ steps.push_state.outputs.refused }}
           # Recipient is a secret so no personal address sits in a public repo.
           # NOTE: until the DIGEST_TO repo secret is created this resolves to "",
           # and send_digest.py falls back to admin@hfdatalibrary.com.

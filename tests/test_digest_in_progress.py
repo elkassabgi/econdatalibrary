@@ -89,7 +89,7 @@ def test_a_verdict_that_is_not_of_this_run_is_not_used(tmp_path, made):
 def test_a_verdict_that_cannot_be_read_is_not_used(tmp_path):
     rot, when, why = sd.gate_rotating(str(tmp_path / "absent.json"), NOW)
     assert rot is None and when is None
-    assert why == "the health check wrote no verdict in this run (it does not run when an earlier step fails)"
+    assert why == "the health check wrote no verdict in this run", "the reason names no cause: none is known"
     bad = tmp_path / "health.json"
     bad.write_text("{not json", encoding="utf-8")
     assert sd.gate_rotating(str(bad), NOW)[0] is None
@@ -394,8 +394,8 @@ def test_both_bodies_say_so_when_the_verdict_cannot_be_used(tmp_path, monkeypatc
         monkeypatch.setattr(sd, "retry_clock", lambda: None)
     sent = _send(tmp_path, monkeypatch, capsys)
     assert "1 need attention, 0 in progress" in sent["subject"]
-    said = {"absent": "The in-progress list is off: the health check wrote no verdict in this run (it does not run "
-                      "when an earlier step fails). Every such row stands under Needs attention.",
+    said = {"absent": "The in-progress list is off: the health check wrote no verdict in this run. Every such row "
+                      "stands under Needs attention.",
             "old": "The in-progress list is off: the health check's verdict is 30.0 hours old, so it is not of this run.",
             "no clock": "The in-progress list is off: the scheduler's retry clock could not be loaded."}[how]
     assert said in sent["body"] and H.escape(said) in sent["html"]

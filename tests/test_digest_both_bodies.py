@@ -38,6 +38,7 @@ SECTIONS = [
     ("dormant", "sources outside the live tier that the daily run never executes"),
     ("fp", "first-pass crawlers, which have no unit_state row"),
     ("progress", "sources that are in progress (too large for one run, nothing failed)"),
+    ("not_saved", "that the record of the run was not saved (the state push did not succeed)"),
 ]
 
 

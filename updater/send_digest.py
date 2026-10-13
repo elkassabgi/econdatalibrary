@@ -101,8 +101,9 @@ def gate_rotating(health_path, now):
         with open(health_path, encoding="utf-8") as f:
             rep = _json.load(f)
     except FileNotFoundError:
-        return None, None, ("the health check wrote no verdict in this run (it does not run when an earlier "
-                            "step fails)")
+        # No cause is named: the report knows only that the file is not there. (Until 2026-10-13 this line
+        # said the gate "does not run when an earlier step fails". The gate now runs after a failed step.)
+        return None, None, "the health check wrote no verdict in this run"
     except Exception as e:                                            # noqa: BLE001
         return None, None, f"the health check's verdict could not be read ({repr(e)[:120]})"
     try:
@@ -163,6 +164,59 @@ def is_in_progress(source_id, status, late, last_attempt, cadence, rotating, ver
         return False
     return attempted_within(last_attempt, attempt_window_hours(cadence, clock), now)
 
+
+# THE RECORD OF THE RUN WAS NOT SAVED (2026-10-13). The run keeps its record (state.db) in one stored
+# file. It pulls the file at the start and saves it at the end, and the save is refused when another
+# writer saved the file in between (updater/run.py, push_state: never a blind overwrite). The run was
+# then red and the report did not say why, or what it means for the data.
+#
+# The report says ONLY what the workflow hands it (updater-daily.yml, the env of this step):
+#   PULL_STATE_OUTCOME, PUSH_STATE_OUTCOME   GitHub's result of the two steps (success, failure,
+#                                            cancelled, skipped)
+#   PUSH_STATE_REFUSED                       'another_writer' when the save was refused because another
+#                                            writer saved after this run's pull (updater.run writes it;
+#                                            tests/test_digest_state_not_saved.py ties the two)
+# Nothing is said when the pull did not succeed (there is no record of this run to lose), when the save
+# succeeded, and when a result is absent or is not one of GitHub's four words (a local run, an older
+# workflow file): not knowing is not a failure.
+# Two wordings, because the report must not name a cause it was not given. A save step that failed for
+# any other reason may have saved the record before it failed, so that wording does not say "not saved".
+#
+# THE THIRD SENTENCE PROMISES NO REPEAT OF THE WORK (review AR-310). Its first form said "The next run does
+# the work of this run again", and that was not true: a source that works in parts keeps its place in the
+# STORE (strategies/fetchers/_common.py, load_rotation / save_rotation; the manifest files of some sources),
+# so a later run goes on after this run's part; and the next run has its own order and budget. What is lost
+# is what the state file alone holds: the times and the results of this run.
+# NOT SAID IN THE MAIL, AND AN OPEN ITEM OLDER THAN THIS NOTE: the state file alone also holds three records
+# of work that is owed (csv_retry_queue, full_rederive_owed, csv_desktop_owed; updater/state.py,
+# enqueue_csv_retry, note_full_rederive_owed, note_csv_desktop_owed). A refused save loses what this run
+# wrote there too.
+# The sentence also does not say "a later run checks these sources again". A dispatch that names a source
+# runs it also when it is outside the live tier (orchestrate.py, the live-only rule), and such a source may
+# have no later scheduled run. So the words are "when they next run": true with or without a schedule.
+PUSH_REFUSED_ANOTHER_WRITER = "another_writer"
+_STEP_OUTCOMES = ("success", "failure", "cancelled", "skipped")
+_SAVE_STEP_ENDED = {"failure": "failed", "cancelled": "was stopped before its end", "skipped": "did not run"}
+DATA_STAYS = "The data that this run published stays published."
+
+
+def state_not_saved_note(pull_outcome, push_outcome, refused) -> list:
+    """The sentences for the top of the report when the run's record was not saved; [] when there is
+    nothing to say or nothing is known."""
+    pull = str(pull_outcome or "").strip().lower()
+    push = str(push_outcome or "").strip().lower()
+    if pull != "success" or push not in _STEP_OUTCOMES or push == "success":
+        return []
+    if push == "failure" and str(refused or "").strip() == PUSH_REFUSED_ANOTHER_WRITER:
+        return ["The record of this run was not saved, because another updater or tool saved its record first.",
+                DATA_STAYS,
+                "The times and results that this run recorded are lost. These sources are checked again when "
+                "they next run. A source that works in parts goes on from its saved place."]
+    return [f"The step that saves the record of this run {_SAVE_STEP_ENDED[push]}, and this report does not "
+            "know the cause.",
+            DATA_STAYS,
+            "If the record was not saved, the times and results that this run recorded are lost, and these "
+            "sources are checked again when they next run."]
 
 
 
@@ -434,6 +488,9 @@ def main() -> None:
     gate_note = (f"The in-progress list is off: {calm_off}. Every such row stands under Needs attention."
                  ) if calm_off else ""
     attention = [r for r in warn if r not in progress]
+    # COMPUTED ONCE, rendered in BOTH bodies (state_not_saved_note above holds the rule).
+    not_saved = state_not_saved_note(os.environ.get("PULL_STATE_OUTCOME"), os.environ.get("PUSH_STATE_OUTCOME"),
+                                     os.environ.get("PUSH_STATE_REFUSED"))
     subject = (f"econdatalibrary daily: OK — {len(ok)} sources current"
                if healthy else
                f"econdatalibrary daily: ATTENTION — run={run_status}, {len(bad)} failed, "
@@ -465,6 +522,9 @@ def main() -> None:
     lines = [f"Run {run_id}: {run_status}",
              f"{len(ok)} ok/no_change · {len(attention)} need attention · {len(progress)} in progress · "
              f"{len(bad)} failed", ""]
+    if not_saved:
+        lines += ["  " + s for s in not_saved]
+        lines.append("")
     for r in sorted(attention + bad, key=lambda x: (kind_of(x[4])[0], x[0])):
         lines.append(f"  !! {r[0]:20} {kind_of(r[4])[1]:8} {r[1]:15} tried={tried_age(r[5]):>8}{late_mark(r[0], r[5]):<13}  err={str(r[4] or '')[:72]}")
     if attention or bad:
@@ -539,6 +599,14 @@ def main() -> None:
         return (f'<div style="margin:8px 0;padding:8px 11px;background:#f9fafb;'
                 f'border-left:3px solid {grey};border-radius:4px;font-size:12px;'
                 f'color:{grey};line-height:1.5;">{text}</div>')
+
+    # The same sentences as the text body, at the top of the report: above the counts.
+    not_saved_html = ""
+    if not_saved:
+        not_saved_html = (f'<div style="margin:0 0 14px;padding:10px 12px;background:#fffbeb;'
+                          f'border:1px solid #fde68a;border-left:4px solid {amber};border-radius:6px;'
+                          f'font-size:13.5px;color:#111827;line-height:1.55;">'
+                          + "<br>".join(esc(s) for s in not_saved) + "</div>")
 
     notes_html = ""
     if orphans:
@@ -632,6 +700,7 @@ def main() -> None:
     {banner_word} · run {esc(run_id)} · {esc(run_status)}
   </div>
   <div style="background:#fff;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;padding:20px 22px;">
+    {not_saved_html}
     <table role="presentation" cellspacing="8" style="border-collapse:separate;margin:0 auto 14px;"><tr>
       {chip(len(ok), "current", green)}{chip(len(progress), "in progress", grey)}{chip(len(attention), "need attention", amber)}{chip(len(bad), "failed", red)}
     </tr></table>
