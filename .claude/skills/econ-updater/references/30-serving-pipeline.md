@@ -139,7 +139,7 @@ store file — eurostat (`eurostat:aact_ali01` → `AACT_ALI01.parquet`, `_resol
 typo is refused) and a ratchet test (`tests/test_csv_grain_field.py`) proves every declared source
 resolves WHOLE-FILE through the real resolver. **Checklist B's bulk tool does not apply here:**
 `tools/derive_csv_bulk.py` streams per `series_key`; with `--only-catalogued` it writes 0 objects and
-exits 0, without it it would mint ~772.7M wrong-grain objects (~$3,477). The health gate's remedy
+exits 0, without it it would mint ~772.7M wrong-grain objects. The health gate's remedy
 line knows the grain since `3fb38d78d`; before that it printed the bulk command for every owed row.
 
 1. **How the debt arises, and how it stops arising.** `_giant.run_giant(report_changed_flows=True)`

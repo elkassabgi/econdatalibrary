@@ -14,7 +14,7 @@ Design rules (from ARCHITECTURE §9 + STRATEGY honest-status):
   says so. We never launder "unknown" into "fresh".
 - **Reproducible by default:** bundle manifests pin `snapshot_date` + per-resource
   `sha256`; refreshing is an explicit opt-in (mirrors `econdl` lockfile semantics).
-- **Free-tier safe:** bundles are a **manifest the client fans out** (presigned/stable
+- **Within the platform's subrequest limit:** bundles are a **manifest the client fans out** (presigned/stable
   resource URLs), never a server-assembled zip — so a >50-object bundle never trips the
   Worker 50-subrequest cap ([w10]).
 

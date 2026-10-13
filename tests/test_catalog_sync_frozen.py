@@ -4,8 +4,8 @@ WHY THIS IS A TEST AND NOT A NOTE. The sync was frozen in `updater-daily.yml` on
 (R542) and the leak was recorded as closed. `updater-heavy.yml` runs the SAME
 `core/sync_catalog_d1.py` and was never gated, so half the class kept running. The bill is the
 evidence: two successful updater-heavy runs on 2026-08-31 (15:38 and 20:25) against **D1
-11,412,906 writes (~$11.41) and 2,805,188,474 reads (~$2.81)** that day, versus 678,127 writes
-and 373,588,605 reads the day before. Roughly $14 of D1 in one day, and Ahmed found it on his
+11,412,906 writes and 2,805,188,474 reads** that day, versus 678,127 writes
+and 373,588,605 reads the day before. About 17 times the writes in one day, and Ahmed found it on his
 invoice rather than from anything we built (R557).
 
 `series_fts` is `fts5(series_id UNINDEXED)`, so every id-scoped statement is a full scan of
@@ -63,7 +63,7 @@ def test_every_catalog_sync_call_site_is_gated(wf, job, name, cond):
     assert GATE in cond, (
         f"{wf} job {job!r} step {name!r} runs {SYNC} with `if: {cond or '(none)'}` — it is "
         f"NOT gated on {GATE}. An ungated catalogue sync re-sends the whole catalogue to D1; "
-        f"on 2026-08-31 that cost ~$14 of D1 in one day (R557).")
+        f"on 2026-08-31 that was 11,412,906 D1 writes in one day (R557).")
 
 
 def test_the_gate_is_off_by_default_in_every_call_site():

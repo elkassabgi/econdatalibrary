@@ -69,8 +69,7 @@ whose license class isn't `reservable: true`. That single gate keeps "one locati
 | Frontend | **Cloudflare Pages** | ✅ same |
 | Email/monitor | Worker cron + Resend | ✅ reuse digest machinery |
 
-**Cost:** dominated by R2 storage of ~130–240 GB → single-to-low-double-digit $/month
-at research traffic. No VPS, no managed DB.
+**Footprint:** R2 storage of ~130–240 GB at research traffic. No VPS, no managed DB.
 
 ---
 

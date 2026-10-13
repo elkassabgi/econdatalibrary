@@ -101,7 +101,7 @@ jobs:
       #
       # Every defect it exercises returns HTTP 200 with no error key: a truncated page that
       # undercounted by 115,000x, a short day list, a stale daily rate, a one-day rate that
-      # would have projected $2,459 the morning after an incident where the median projects
+      # would have projected a month many times too high the morning after an incident where the median projects
       # the truth. Its own header says reading the code twice failed to find them. Free to
       # run: stdlib imports only, no network, no credentials, no D1 reads.
       #

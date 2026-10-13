@@ -238,9 +238,9 @@ def emit_sql(cols: list[str], rows: list[dict], out_dir: str,
     #
     # The cost is per STATEMENT, not per id — a 500-id list reads the same 23.8M rows — so
     # the remedy is ARITY, never more statements (hfdatalibrary/CLAUDE.md; R492, where a
-    # 164,705-statement plan priced at ~$2,500). At 20 ids/stmt a 20,783-id sync is 1,040
-    # statements = 2.48e10 rows ~ $25 PER RUN and recurring; at 500 it is 42 statements
-    # = 1.0e9 rows ~ $1. These are literals via _lit, not bound parameters, so D1's 100
+    # 164,705-statement plan would have read 3.93 trillion rows). At 20 ids/stmt a 20,783-id sync is 1,040
+    # statements = 2.48e10 rows PER RUN and recurring; at 500 it is 42 statements
+    # = 1.0e9 rows. These are literals via _lit, not bound parameters, so D1's 100
     # bound-variable cap (R224) does not apply; 500 ids is ~20 KB against MAX_FILE_BYTES.
     #
     # The DELETE stays ADJACENT to the inserts it covers rather than being hoisted into one
@@ -253,7 +253,7 @@ def emit_sql(cols: list[str], rows: list[dict], out_dir: str,
     # by the id prefix — series_id >= 'src:' AND series_id < 'src;' (';' is the codepoint
     # after ':'), the same range form used elsewhere in the repo. MEASURED alternative:
     # cataloguing idb Option B's 957,011 ids at 500/stmt is 1,915 statements x 23,843,482
-    # rows = 4.56e10 rows ~ $45.60, against ONE statement ~ $0.024 here — a ~1,900x
+    # rows = 4.56e10 rows, against ONE statement (2.38e7 rows) here — a ~1,900x
     # reduction with an identical end state for the index.
     #
     # WHY IT IS OPT-IN, and the R487 tension it does NOT escape: a range delete removes the
@@ -299,7 +299,7 @@ def emit_sql(cols: list[str], rows: list[dict], out_dir: str,
 
     # source_counts maintenance (2026-08-15 cost incident): the worker's catalog
     # totals come from this one-row-per-source table instead of a live COUNT(*)
-    # that read 2.47M rows PER PAGE VIEW (42.2B rows / ~$34 in one day on wid
+    # that read 2.47M rows PER PAGE VIEW (42.2B rows in one day on wid
     # alone). Refresh the row for every source this sync touched; the recount
     # runs ONCE per sync, not once per visitor.
     for src in sorted({r["source_id"] for r in rows}):
@@ -498,7 +498,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--no-diff", action="store_true",
                     help="send every queued row even if the local manifest says D1 already "
                          "has it. Escape hatch for a suspected divergence; it restores the "
-                         "~$86/month behaviour, so say why in the log when you use it.")
+                         "undiffed full-push behaviour, so say why in the log when you use it.")
     ap.add_argument("--seed-manifest", action="store_true",
                     help="record every LOCAL catalogue row as already-sent and exit, "
                          "sending nothing. Bootstrap only — correct exactly when D1 already "

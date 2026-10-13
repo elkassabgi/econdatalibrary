@@ -12,10 +12,9 @@ calling the *same* data tools the MCP server exposes — no install, no AI subsc
 
 | | MCP server (shipped) | Hosted assistant (proposed) |
 |---|---|---|
-| Who pays for the AI | the **user** (their Claude/Cursor/ChatGPT sub) | **Ahmed** (per-token API cost) |
+| Who runs the AI | the **user** (their own Claude/Cursor/ChatGPT) | **the library** (a model API) |
 | Setup friction | must install/connect an MCP client | **zero** — works in any browser on the site |
 | Audience | developers, power users | **everyone** — students, professors, journalists |
-| Our marginal cost | ~$0 | cents per conversation, capped |
 
 Most of the target audience (finance/econ faculty and students) will never set up an MCP client. The
 hosted assistant is the **last mile**: it removes *all* friction and doubles as a live demo that funnels
@@ -25,10 +24,10 @@ to" — and good for SEO/marketing.
 **The build is cheap because the hard part already exists.** The catalog search API, series-fetch API, HF
 download links, freshness ledger, shared auth, rate limiting, logging, *and* the exact tool schemas +
 honesty charter are all live (they power the MCP server). The assistant is just: **chat UI → agent-loop
-Worker → cheap LLM with tool-calling → existing tools.** A few hundred lines plus a widget.
+Worker → a small LLM with tool-calling → existing tools.** A few hundred lines plus a widget.
 
-**The one real change vs MCP: cost and abuse move onto us.** That is entirely manageable with (a)
-login-required, (b) a hard monthly budget kill-switch, (c) per-user daily caps. See §4.
+**The one real change vs MCP: usage and abuse move onto us.** That is entirely manageable with (a)
+login-required, (b) a hard monthly usage kill-switch, (c) per-user daily caps. See §4.
 
 ---
 
@@ -73,25 +72,18 @@ is an adapter so we can swap models without touching the agent loop.
 
 ---
 
-## 4. Cost & controls (grounded in current published pricing)
+## 4. Usage & controls
 
-Per-conversation estimate assumes a realistic grounded turn: ~15K input tokens (system prompt + tool
-results, much of it cacheable) and ~1.5K output tokens across a short multi-turn chat. **Token counts are
-assumptions; per-token rates are current published prices (sourced below).**
-
-| Model | Input $/M | Output $/M | ~ per conversation | per 1,000 convos |
-|---|---|---|---|---|
-| **DeepSeek** (v4-flash / `deepseek-chat`) | $0.14 (cache-miss), $0.0028 (cache-hit) | $0.28 | **~$0.0025** (¼ cent) | **~$2.50** |
-| **Claude Haiku 4.5** | $1 (‑90% w/ cache) | $5 | **~$0.02** (2 cents) | **~$22.50** |
-
-Sources: DeepSeek API pricing docs (api-docs.deepseek.com/quick_start/pricing); Claude pricing
-(platform.claude.com/docs/en/about-claude/pricing). *Verify both again immediately before launch — rates
+A realistic grounded turn is assumed to be ~15K input tokens (system prompt + tool results, much of it
+cacheable) and ~1.5K output tokens across a short multi-turn chat. **Token counts are assumptions.** The
+providers publish their per-token rates (DeepSeek: api-docs.deepseek.com/quick_start/pricing; Claude:
+platform.claude.com/docs/en/about-claude/pricing). *Read both again immediately before launch — rates
 move, and DeepSeek is deprecating the `deepseek-chat`/`deepseek-reasoner` aliases on 2026-07-24 in favor of
 explicit `deepseek-v4-flash`.*
 
-Both are cheap in absolute terms. Cost controls are detailed in §7 alongside abuse defense.
+Usage controls are detailed in §7 alongside abuse defense.
 
-**Model — DECIDED: DeepSeek** (`deepseek-v4-flash`), validated cheaply, behind a model-agnostic adapter so
+**Model — DECIDED: DeepSeek** (`deepseek-v4-flash`), validated, behind a model-agnostic adapter so
 we can flip to Claude Haiku if grounding/tool-use quality needs it. Two caveats we accept: (a) tool-calling
 is less reliable than Claude's, so the §2 grounding guard matters more; (b) it's a non-US API — queries are
 public-data questions (nothing sensitive), flagged for institutional data-governance awareness.
@@ -169,8 +161,8 @@ achieves is… searching public data they could already search for free.
 
 - **Model:** DeepSeek `deepseek-v4-flash` — DECIDED (2026-07-05).
 - **Access:** anonymous chat, download gated behind free registration (bait) — DECIDED (2026-07-05).
-- **Budget:** proposed starter `ASSISTANT_MONTHLY_USD_CAP` = $30/mo kill-switch (revisit up once traffic is
-  known; the math says this covers ~12k DeepSeek conversations). Confirm value.
+- **Usage cap:** a monthly kill-switch (`ASSISTANT_MONTHLY_USD_CAP`); the owner sets its value before
+  launch and revisits it once traffic is known.
 - **Blocker to deploy:** a **DeepSeek API key** (Ahmed creates it at platform.deepseek.com → stored in the
   Worker env, never in chat). Code can be built before the key exists; only deployment needs it.
 

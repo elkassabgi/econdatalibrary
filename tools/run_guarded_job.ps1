@@ -94,7 +94,7 @@ $proc = Start-Process $Exe -ArgumentList $JobArgs -WorkingDirectory $Root -Windo
 # `to derive: 0`. That is ~150,700 LIST/day. STATE THE DENOMINATOR (R502/R505): 99.5% of the
 # account's LIST operations, but 59.3% of ALL Class A (264,454 on 2026-08-28) — an earlier
 # "95-96%" figure named no denominator at all. Relaunch rate measured 43-61/day, not a flat 48.
-# ~$20/month for zero work, and R2 had begun answering ServiceUnavailable ("Reduce your
+# All of it for zero work, and R2 had begun answering ServiceUnavailable ("Reduce your
 # concurrent request rate"). `derive_statcan` is ~9 hours from finishing and would have joined
 # it. run_guarded_job.ps1's own header predicted this failure in words — the mechanism to
 # prevent it was written, and then disabled by a null.

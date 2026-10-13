@@ -1,8 +1,8 @@
 """Restore statcan's per-cube parquet store to R2, resumable and byte-verified.
 
-WHY. statcan's ~8,207 cubes were deleted from R2 on 2026-08-18 in the cost cleanup (1,548.7 GB, 65 % of
+WHY. statcan's ~8,207 cubes were deleted from R2 on 2026-08-18 in the storage cleanup (1,548.7 GB, 65 % of
 the econ bucket, uncompressed). Ahmed's instruction the same day, superseding "later", was "bring back
-statcan compressed and follow month to month", quoted then at ~257 GB / ~$3.85 a month. That restore
+statcan compressed and follow month to month", quoted then at ~257 GB. That restore
 never completed, and because the fetcher only refreshes cubes it can already see — skipping the rest
 silently — statcan has reported `no_change` over every publisher release since (measured: 337
 cube-changes in the 15 days to 2026-09-05, none merged). The store-absent guard added the same day makes

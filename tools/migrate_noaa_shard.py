@@ -164,7 +164,7 @@ def _d1(database: str, sql: str, timeout: int = 600) -> dict:
 
 
 def _shard_fts_count() -> int:
-    """One remote COUNT over the shard's series_fts (~3.1M rows, ~$0.003, only when this
+    """One remote COUNT over the shard's series_fts (~3.1M rows, only when this
     retired tool is actually run)."""
     return int(_d1(SHARD, "SELECT COUNT(*) AS n FROM series_fts;")["results"][0]["n"])
 

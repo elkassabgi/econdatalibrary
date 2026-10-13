@@ -36,7 +36,7 @@ a stale premise (C17: never build on an inherited claim without re-measuring).
 | Plan says | Measured 2026-08-30 (later) | Instrument |
 |---|---|---|
 | W7: `statcan` derive ~8,200/8,207, "parquet re-upload queued behind it" | **Derive COMPLETE**: `[8207/8207] units 466,341 · put 252,425 · skipped 213,916 · errors 0 · 677,658 s`, 5 oversized tables named as refused | the derive's own log tail (R431: the writer's evidence, never a sidecar marker) |
-| Phase 5 task 3: "Then the parquet re-upload" | **CANCELLED — this would reverse Ahmed's own order.** He ordered statcan's parquet deleted from R2 on 2026-08-18 (1,548.7 GB, 65% of the bucket, $23.23/mo) to be re-derived compressed. That is now done and verified `ContentEncoding: gzip`. Arithmetic closes: 213,916 objects at order time + 252,425 put = **466,341** live | R2 LIST of `series/statcan%3A`; ledger **R520** |
+| Phase 5 task 3: "Then the parquet re-upload" | **CANCELLED — this would reverse Ahmed's own order.** He ordered statcan's parquet deleted from R2 on 2026-08-18 (1,548.7 GB, 65% of the bucket) to be re-derived compressed. That is now done and verified `ContentEncoding: gzip`. Arithmetic closes: 213,916 objects at order time + 252,425 put = **466,341** live | R2 LIST of `series/statcan%3A`; ledger **R520** |
 | W3: the 26 untouched-file sources are "Not yet attributed — real open work" | **Attributed.** 13 ROTATING (healthy by design, R285's scattered-write-block test), 3 wrote today, 1 already attributed (`bea`, R282 ingester-owned tree), **3 that looked stuck all refuted by cadence** (`fdic`/`stats_nz` quarterly, `scb` monthly), **1 genuine fault: `idb`** | `attribute_stale.py` (R2 LastModified per object) + registry `cadence` + latest `runs` row |
 | W1: fleet sweep at 416/430 | **421/430**, 5,470,525,630 rows; four giants outstanding (`statcan`, `eurostat`, `cbs_nl`, `oecd`) — `ilostat` now measured | `dupsweep.py` v3 results file |
 
@@ -569,7 +569,7 @@ The search index now means what it says: no duplicates (was 2.30× on the primar
 
 * **Task 3 — title consistency: PASSED AT FULL POPULATION, not the plan's 120-id sample.**
   One statement joins every FTS row to `series`: **0 mismatches** on title OR geography across
-  all **10,348,426** joined rows (`rows_read` 41,393,704, ~$0.04). `series == series_fts ==
+  all **10,348,426** joined rows (`rows_read` 41,393,704). `series == series_fts ==
   10,348,426` exactly.
 * **Task 2 — source_counts reconciliation: ZERO DRIFT, ZERO UNCACHED.** One statement, whole
   cache vs per-source truth: 321 == 321, drifted 0, uncached 0. (The cache stores RAW counts

@@ -361,8 +361,8 @@ jobs:
         # FROZEN 2026-09-01, the same freeze updater-daily.yml took on 2026-08-31 (R542).
         # That freeze was applied to the daily ALONE and this copy kept running, which is
         # what the 08-31 bill records: two successful updater-heavy runs that day (15:38 and
-        # 20:25) against D1 writes of 11,412,906 (~$11.41) and reads of 2,805,188,474
-        # (~$2.81), where 08-30 saw 678,127 writes and 373,588,605 reads. Roughly $14 of D1
+        # 20:25) against D1 writes of 11,412,906 and reads of 2,805,188,474,
+        # where 08-30 saw 678,127 writes and 373,588,605 reads. About 17 times the writes
         # in one day from the half of the class that was never frozen.
         #
         # `series_fts` is fts5(series_id UNINDEXED), so every id-scoped statement is a full

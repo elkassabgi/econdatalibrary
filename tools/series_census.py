@@ -202,8 +202,7 @@ def keep_served(srcs: dict[str, list[str]]) -> tuple[dict[str, list[str]], dict[
     mismatches and local newer in none (ilostat 08-19 vs 08-07, ecb 08-23 vs 08-07,
     treasury 19:09 vs 08-03). Counting local would report stale data; dropping the file
     would discard 4,417 files that are served perfectly well and are FRESHER than the copy
-    on this disk. Egress from R2 is free and DuckDB reads the objects directly, so
-    correctness here costs nothing.
+    on this disk. DuckDB reads the objects directly from R2.
 
     Identical size -> read the local copy; the bytes are the same and local is faster.
     """

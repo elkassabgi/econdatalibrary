@@ -1,8 +1,8 @@
 # billing-guard.yml — daily D1 rows-read meter check (Ahmed 2026-08-17: "i already
 # had one but its ineffective").
 #
-# WHY. The 2026-08-13..15 D1 incident billed ~$175 before the INVOICE was the first
-# alarm — Cloudflare's dashboard notification never fired usefully on rows-read.
+# WHY. In the 2026-08-13..15 D1 incident the first alarm was the INVOICE —
+# Cloudflare's dashboard notification never fired usefully on rows-read.
 # This workflow is the durable replacement: it measures the actual meter daily via
 # `wrangler d1 insights --timePeriod 1d` across all three databases (econ-catalog,
 # econ-catalog-climate, hfdatalibrary-db) and alerts through TWO independent paths:
@@ -11,7 +11,7 @@
 #   - over WARN (2B rows/day): green run, Resend warning email.
 # Thresholds are measured, not guessed: healthy steady state is ~1B/day total
 # (econ ~200-400M + hf download_log aggregates ~600M, task #134); the incident
-# peaked at 130B/day. $1 per billion rows read.
+# peaked at 130B/day. Rows read are metered.
 #
 # Runs at an off-minute (Actions crons on :00 are heavily delayed/dropped) after
 # 12:00Z so the "1d" window covers a full UTC day of the daily updater's traffic.
@@ -56,8 +56,8 @@ jobs:
       # scheduled run fell back to `wrangler d1 insights` (which this file's own docstring
       # records as ~10x low) and priced R2 operations, Workers and the storage MEAN at zero.
       # Measured 2026-09-01, the same minute, same code: locally with the token it reported
-      # $328/mo and exited 1 on three breaches; here it reported "PARTIAL MONTH FLOOR ~= $13/mo"
-      # and exited 0. A monitor that says $13 when the bill is $328 is worse than none.
+      # the real monthly figure and exited 1 on three breaches; here it reported a "PARTIAL MONTH FLOOR"
+      # about 25 times lower and exited 0. A monitor that reads 25 times low is worse than none.
       CF_ANALYTICS_TOKEN: ${{ secrets.CF_ANALYTICS_TOKEN }}
       # AND THE ACCOUNT ID, which is the OTHER half of the same gate. account_analytics()
       # refuses on `not tok or not acct`, and _account_id() used to read only

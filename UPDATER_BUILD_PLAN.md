@@ -177,7 +177,7 @@ This is also where registry `units:[]` lists get real (G7): Phase 4 populates un
 | A5 | Answer the hard-blocker questions in `updater/ADAPTER_NOTES.md` | gpi 404s, whr 403/404s |
 | A6 | (Optional) `RESEND_API_KEY` GH secret | Enables hf-style failure email; without it, failures are GH-Actions-red + health.json only |
 | A7 | (Later, Tier 2) `BEA_API_KEY`, `CENSUS_API_KEY`, `INSEE_SIRENE_KEY`, EIA/others as their sources onboard | From `blocked_on_keys` in the matrix |
-| A8 | Confirm the Cloudflare plan tier (Workers Paid) covers daily D1 writes + the D1 catalog size | Project notes record the custom-domain cutover as already pending Workers Paid activation; the catalog SQL dump is ~1.6 GB and daily `wrangler d1 execute` upserts add ongoing writes — verify plan limits BEFORE Phase 1's first `sync_state_d1.py` run, or the D1 sync fails on quota mid-rollout |
+| A8 | Confirm the Cloudflare account's limits cover daily D1 writes + the D1 catalog size | Project notes record the custom-domain cutover as pending an account step of the owner; the catalog SQL dump is ~1.6 GB and daily `wrangler d1 execute` upserts add ongoing writes — verify plan limits BEFORE Phase 1's first `sync_state_d1.py` run, or the D1 sync fails on quota mid-rollout |
 
 ### 4.2 Assistant (all code and repo work)
 

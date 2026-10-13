@@ -257,7 +257,7 @@ D1 9.42 GB → 8.71 GB (10,535,584 rows) — the #45 split DEFERRED; coverage 70
 
 Inventory measured 2026-08-06: 40 legacy (non-direct) imf sources, 1,122,144 catalog rows.
 Retiring frees ~1M D1 rows — likely DEFERS the #45 split entirely (D1 hard cap is 10 GB/db;
-storage past 5 GB bills $0.75/GB-mo ≈ $3.20/mo today; shrinks after cleanup).
+the size shrinks after cleanup).
 
 **Class A — RETIRE NOW (full/superset successor live and proven):** dot→imts, cpis→pip,
 cdis→dip, mfs→MFS×5, irfcl→irfcl_direct, bop→bop_direct, cpi→cpi_direct,
@@ -928,8 +928,7 @@ wid is 2,465,197 series, the largest source we serve, and roughly five in six of
 objects disagree with the store. Re-derive launched (413/413 store files confirmed present
 locally first, so it will be a complete repair, not the partial one insee_melodi got). It is
 a long job — measured throughput elsewhere today was ~2,000 objects/min, so order 20 hours —
-and ~2.4M billed Class A PUTs, which at R2's rate is single-digit dollars, not a reason to
-hesitate. Progress is visible in data/_rederive_wid.log and by counting objects rewritten
+and ~2.4M Class A PUTs. Progress is visible in data/_rederive_wid.log and by counting objects rewritten
 today under `series/wid%3A`.
 
 VERIFY WHEN IT LANDS: `python tools/verify_source_served.py --source wid --sample 40` must
@@ -1541,8 +1540,8 @@ TWO THINGS THE NEXT SESSION SHOULD KNOW:
    `fts5(series_id UNINDEXED, ...)`, so one statement full-scans it: MEASURED on live D1
    2026-08-26, `SELECT COUNT(*) FROM series_fts WHERE series_id IN (<20 ids>)` reads
    **23,843,482 rows in 16.4 s**. Newly mapping 20,783 ids at 20/stmt = 1,040 statements =
-   2.48e10 rows ~ **$25 PER RUN, recurring**. `FTS_DELETE_PER_STMT = 500` makes it 42
-   statements ~ $1. Anything that increases the number of ids the sync touches must re-do that
+   2.48e10 rows **PER RUN, recurring**. `FTS_DELETE_PER_STMT = 500` makes it 42
+   statements = 1.0e9 rows. Anything that increases the number of ids the sync touches must re-do that
    arithmetic FIRST (R492).
 
 ### 4 uncatalogued MFS tables — a cataloguer defect, not a data property (2026-08-26)

@@ -1,7 +1,7 @@
 """The catalogue sync must send a DIFF, and the diff must be conservative in the safe direction.
 
 R542: an undiffed sync pushes a mean of 42,046 ids per run against a D1 catalogue that is 0
-sources short, at ~85 series_fts FULL SCANS per run (~$0.88), which is both the bill and the
+sources short, at ~85 series_fts FULL SCANS per run, which is both the bill and the
 failure. These tests pin the behaviour that removes it — and, just as important, pin that an
 EMPTY manifest never silently reads as "everything is already sent".
 """

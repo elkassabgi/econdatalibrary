@@ -1,7 +1,7 @@
 """An object whose bytes are already in R2 is not uploaded again.
 
 MEASURED 2026-09-02: 7,686,397 of 10.8 million class-A operations over 24 days are PutObject on
-econ-data - 71% of the only variable line left on a median day ($30.52 of a $51.44 month), and
+econ-data - 71% of them, and
 about 320,000 uploads a day. The publish path never compared anything, so a source using
 `bulk_snapshot_if_changed` republishes identical bytes daily.
 
@@ -11,7 +11,7 @@ the same MD5, and R2 reports that MD5 as a single-part object's ETag.
 
 EVERY UNCERTAIN CASE UPLOADS. A multipart ETag is a digest of digests, not of the content. A
 head that errors, an absent ETag, a size disagreement - all upload. A wasted class-A operation
-costs $0.0000045; a stale served object costs a user the wrong answer. The tests below pin the
+is small beside a stale served object, which costs a user the wrong answer. The tests below pin the
 refusals as hard as the skip, because a check that gets adventurous here is worse than none.
 
 PLAN STEP 1 (batch 4): the helpers take the CSV STORE (updater.blob.csv_store - R2 before T0, the

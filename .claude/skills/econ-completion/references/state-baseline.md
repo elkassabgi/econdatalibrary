@@ -28,7 +28,7 @@ Deleting from four leaves a 404 or an advertising-catalogue (R481, R489). Drift 
 
 ## Cost model (one paragraph)
 
-D1 reads are ~free ($1/B row, 25B included); **D1 writes are $1/M**; **R2 Class A (PUT/LIST/DELETE) is $4.50/M — the dominant line**; Class B $0.36/M; egress $0. Forward run-rate ~$30/mo pre-tax after the noaa fix (7 post-fix hours of evidence — thin). The billing guard (`tools/billing_guard.py`) reconciles to invoice IN-74622130 at −0.11%. Period runs the 9th–8th; Texas tax ×1.066. The lesson (R430): a bad query shape is a **billing defect**, and the detector used to be Ahmed reading the bill.
+D1 reads are metered per row read above an included allowance; D1 writes are metered per row; **R2 Class A operations (PUT/LIST/DELETE) are the dominant line**, Class B (reads) far below it. The billing guard (`tools/billing_guard.py`) holds the arithmetic and reconciles to the real invoice at −0.11%. The lesson (R430): a bad query shape is a **billing defect**, and the detector used to be Ahmed reading the bill.
 
 ## Serving/operational facts that keep causing "it's live" lies
 

@@ -6,7 +6,7 @@ of how many ids the list holds. Cost is therefore per STATEMENT, and R492's rule
 raise ARITY, never add statements. A whole-source reconcile can take that to its limit:
 one range predicate `series_id >= 'src:' AND series_id < 'src;'` covers every id of the
 source in a single statement. Measured stake: idb Option B catalogues 957,011 ids, which
-at 500/stmt is 1,915 statements x 23.8M rows = 4.56e10 rows ~ $45.60, against ~$0.024 for
+at 500/stmt is 1,915 statements x 23.8M rows = 4.56e10 rows, against one scan (2.38e7 rows) for
 the range form.
 
 The danger is the mirror image, and it is why this is opt-in: a range delete removes the

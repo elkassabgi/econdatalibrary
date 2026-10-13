@@ -4,8 +4,8 @@ EVIDENCE, verified before this script existed:
   - R2 measured 2026-08-18 (48-thread prefix scan): series/statcan%3A* holds
     1,373.6 GB / 421,531 objects of UNCOMPRESSED derived table CSVs (the derive
     was killed by Ahmed mid-run), clean_full/statcan/ holds 175.1 GB / 8,207+
-    objects of parquet store — 1,548.7 GB total = 65% of the econ bucket =
-    $23.23/month, and the source is NOT SERVED (no util.ts entry, no live
+    objects of parquet store — 1,548.7 GB total = 65% of the econ bucket,
+    and the source is NOT SERVED (no util.ts entry, no live
     listing), so nothing user-facing changes.
   - LOCAL store verified complete the same hour: 8,207 parquets / 164 GB at
     E:\research\econfindatalibrary\data\clean_full\statcan — the derive read
@@ -13,7 +13,7 @@ EVIDENCE, verified before this script existed:
   - The future compressed serve re-derives from the local store through the
     gzip writers (core/derive_csv.py, 2026-08-18) at ~1/7th the footprint.
 
-R2 DELETEs are free. Run:
+Run:
   python tools/_delete_statcan_r2.py
 
 DEFUSED 2026-09-24 (self-hosting plan step 1). This ran its deletes AT IMPORT, with no dry run and no
@@ -64,4 +64,4 @@ for prefix in ("series/statcan%3A", "clean_full/statcan/"):
             print("ERRORS:", r["Errors"][:3], flush=True)
     left = s3.list_objects_v2(Bucket="econ-data", Prefix=prefix, MaxKeys=3)
     print(f"  remaining: {left.get('KeyCount', 0)}", flush=True)
-print(f"TOTAL DELETED: {total:,} (expected ~429,738; ~1,548.7 GB ~= $23.23/mo freed)")
+print(f"TOTAL DELETED: {total:,} (expected ~429,738; ~1,548.7 GB freed)")

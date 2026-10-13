@@ -21,8 +21,8 @@ PRECONDITIONS the operator asserts before running (the driver checks what it can
   * after the swap: run `python -m core.sync_catalog_d1` (or the daily run) once, then the
     live acceptance table in the design doc decides pass/fail.
 
-Cost, probed: ~1.0 rows_written per row (13.5M total, ≈$13.50 ceiling), reads ~13.5M PK-range
-(≈$0.014), 100k-row chunk = 244 ms SQL. Wall time is wrangler round-trips, ~4 s × ~170 calls.
+Cost, probed: ~1.0 rows_written per row (13.5M total), reads ~13.5M PK-range,
+100k-row chunk = 244 ms SQL. Wall time is wrangler round-trips, ~4 s × ~170 calls.
 """
 from __future__ import annotations
 

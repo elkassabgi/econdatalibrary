@@ -4,8 +4,7 @@
 `derive_noaa` was resurrected roughly 48 times a day by the relaunch guard, because
 PowerShell 5.1 returned a null `ExitCode` and the runner never recorded success. Each pass
 paged 3,139 `ListObjects` over the `series/noaa%3A` prefix and printed "to derive: 0 (already
-present: 3,138,159)" - about 150,672 operations a day, for nothing, at a marginal cost of
-$22.50 a month.
+present: 3,138,159)" - about 150,672 operations a day, for nothing.
 
 The peak TOTAL class-A on any day of that leak was 264,454 (2026-08-28), of which the leak was
 59.3%. Every single day sat under the 400,000 threshold. This guard measured the operations,
