@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the built site locally, before any deploy. It reads no database.
+"""Verify the built site locally, before any deploy.
 
 AR-007 stopped a Pages deploy and asked for checks I had not run. This runs them against the
 files on disk rather than the running system, so it makes no D1 read.

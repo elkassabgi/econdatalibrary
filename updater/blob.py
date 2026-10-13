@@ -740,8 +740,8 @@ class R2Blob:
         return out
 
     def delete(self, key: str) -> None:
-        """Delete one object. Deletes are free on R2; a 404 is already-gone,
-        which is the goal state, so no error mapping is needed."""
+        """Delete one object. A 404 is already-gone, which is the goal state,
+        so no error mapping is needed."""
         self.client.delete_object(Bucket=self.bucket, Key=key)
 
 
