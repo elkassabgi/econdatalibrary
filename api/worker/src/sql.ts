@@ -195,7 +195,7 @@ WHERE (title LIKE ? OR series_id LIKE ?) AND source_id = ?${carveoutExcl(source)
  * The old form (WHERE source_id = ? ORDER BY series_id LIMIT ? OFFSET ?) forced
  * SQLite to read and sort the source's ENTIRE row set on every page: 4.93M rows
  * read PER PAGE on wid, and a crawler paging through wid drove 87.3 BILLION rows
- * read in one day (~$82 of D1 reads, measured with `wrangler d1 insights`).
+ * read in one day (measured with `wrangler d1 insights`).
  * A composite index cannot be built — CREATE INDEX on the 9.2M-row table dies
  * with SQLITE_NOMEM on D1 — so the fix rides the PK: every series_id begins with
  * `source_id + ':'` (invariant VERIFIED on both DBs 2026-08-15: 0 violations in

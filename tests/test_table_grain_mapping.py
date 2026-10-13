@@ -303,8 +303,8 @@ def test_without_the_rule_the_keys_would_all_miss(monkeypatch, tmp_path):
 def test_fts_delete_arity_is_far_above_the_row_chunk():
     """`series_fts` is fts5(series_id UNINDEXED, ...), so `WHERE series_id IN (...)` full-scans
     the table: MEASURED 23,843,482 rows_read for a 20-id list on live D1 (2026-08-26). The
-    cost is per STATEMENT, so arity is the only lever (R492 — a 164,705-statement plan priced
-    at ~$2,500). At 20 ids/stmt this fix's own 20,783 newly-mapped ids would read 2.48e10
+    cost is per STATEMENT, so arity is the only lever (R492 — a 164,705-statement plan that would have read
+    3.93 trillion rows). At 20 ids/stmt this fix's own 20,783 newly-mapped ids would read 2.48e10
     rows per run, recurring; at 500 it is 1.0e9.
 
     Pinned as a PROPERTY (a large multiple of the row chunk), not as the constant copied back

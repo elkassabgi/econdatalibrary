@@ -9,7 +9,7 @@ restored a guard with no stall detector, reintroducing R457, where `istat_sliced
 hours as a dead orphan the guard read as alive.
 
 It also still carried three finished `$longJobs` entries with no sentinels beside them, which
-is how a resurrected `derive_noaa` spent $22.50/month paging 3,139 ListObjects per pass for
+is how a resurrected `derive_noaa` went on paging 3,139 ListObjects per pass for
 three weeks. `logs/` is gitignored, so the `.DONE` files that stop those jobs do not survive a
 rebuild; the versioned copy is where that hazard actually lives.
 

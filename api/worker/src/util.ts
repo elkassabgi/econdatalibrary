@@ -341,7 +341,7 @@ export const SUPPORTED_SOURCES: readonly string[] = [
   // RESIDUE, MEASURED 2026-08-23: the withdrawn 2026-08-02 re-add left 25,057 CSVs on R2
   // under series/ksh%3A (35 MB, all written 2026-08-02). They are ORPHANS, not a serving
   // bug: ksh has no catalogue rows, /v1/sources omits it, and a ksh series request 404s —
-  // all verified. Cost is ~$0.0005/mo, so this is tidiness, not urgency. Deleting them is
+  // all verified. They are small, so this is tidiness, not urgency. Deleting them is
   // safe and reversible (clean_full/ksh/ parquets are kept, and the 903 unique series were
   // migrated into ksh_stadat before removal) but the bulk R2 delete needs an approved
   // operator run. Recorded here so the next session does not re-investigate from scratch:

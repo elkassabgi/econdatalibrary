@@ -320,7 +320,7 @@ def push_state() -> int:
           f"+ backup {backup_key}")
 
     # RETENTION (cost plan 2026-08-18): every push writes a ~540 MB backup and
-    # nothing ever deleted them — 275 had accumulated (55.8 GB, ~$0.84/mo and
+    # nothing ever deleted them — 275 had accumulated (55.8 GB and
     # growing ~1.6 GB/day at 2-3 pushes). Newest 7 ≈ three days of pushes, which
     # has covered every restore this store has ever needed. Prune failures never
     # fail the push — the push itself already succeeded.

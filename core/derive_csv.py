@@ -406,7 +406,7 @@ def object_is_identical(store, key: str, path: str) -> bool:
     WHY IT REFUSES TO GUESS. A multipart ETag looks like `<hex>-<n>` and is a digest of part
     digests, not of the content, so it cannot be compared and those objects upload. So does any
     head that errors, lacks an ETag, or disagrees on size. Every uncertain case falls toward
-    UPLOADING: a wasted class-A operation costs $0.0000045, and a stale served object costs a
+    UPLOADING: a wasted class-A operation costs next to nothing, and a stale served object costs a
     user the wrong answer.
 
     MEASURED REASON TO EXIST: 7,686,397 of 10.8 M class-A operations in 24 days are PutObject on

@@ -11,7 +11,7 @@ the same MD5, and R2 reports that MD5 as a single-part object's ETag.
 
 EVERY UNCERTAIN CASE UPLOADS. A multipart ETag is a digest of digests, not of the content. A
 head that errors, an absent ETag, a size disagreement - all upload. A wasted class-A operation
-costs $0.0000045; a stale served object costs a user the wrong answer. The tests below pin the
+costs next to nothing; a stale served object costs a user the wrong answer. The tests below pin the
 refusals as hard as the skip, because a check that gets adventurous here is worse than none.
 
 PLAN STEP 1 (batch 4): the helpers take the CSV STORE (updater.blob.csv_store - R2 before T0, the

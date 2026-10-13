@@ -47,8 +47,8 @@ MEASURED 2026-09-06, the run that prompted this tool:
 
 R2 and the catalogue agreed EXACTLY in every row, which is what settled the question.
 
-COST. `list_objects_v2` at 1,000 keys per page, so roughly one Class A call per 1,000 objects -
-about $4.50 per million calls. Listing statcan's 466,341 keys is ~470 calls, well under a cent.
+COST. `list_objects_v2` at 1,000 keys per page, so roughly one Class A call per 1,000 objects.
+Listing statcan's 466,341 keys is ~470 calls.
 It touches D1 not at all. `--max` bounds a runaway prefix and SAYS it stopped rather than
 reporting a truncated count as a total.
 

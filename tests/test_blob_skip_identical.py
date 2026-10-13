@@ -1,7 +1,7 @@
 """The DAILY publish path does not re-upload bytes R2 already holds.
 
 I shipped this guard in `core/derive_csv._put_gzip_file_with_backoff` first and told Ahmed it
-would take the storage-operations line from $30.52 toward $4. Then I read the daily path:
+would cut the storage-operations line to about an eighth. Then I read the daily path:
 `updater/derive.py` calls `blob.put_atomic(key, body)` and never touches that function. The
 guard covered the manual publish only, and the ~320,000 uploads a day went straight past it.
 

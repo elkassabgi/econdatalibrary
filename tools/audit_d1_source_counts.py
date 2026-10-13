@@ -27,10 +27,10 @@ nothing would catch the next one. Hence this file.
 
 COST. The default mode is free: it reads `source_counts` (one row per source, an indexed lookup
 the d1_cost_guard does not count) and compares against the LOCAL catalog.db, per the
-decide-locally policy in CLAUDE.md. That answers "has anything drifted?" for $0.
+decide-locally policy in CLAUDE.md. That answers "has anything drifted?" with no remote scan.
 
 `--remote-truth` answers the authoritative question — cache vs D1's own `series` — with ONE
-`GROUP BY source_id` per database. That is a full scan each (~10.3M + ~3.1M rows, ~$0.013 total)
+`GROUP BY source_id` per database. That is a full scan each (~10.3M + ~3.1M rows)
 and it WILL count against the scan budget, so it is opt-in. Prefer it before writing a
 correction; the local mode is for routine drift detection.
 
@@ -92,7 +92,7 @@ def local_counts(sources) -> dict:
       * local rows, NOT cached -> the worker falls through to a live COUNT(*) on EVERY page view.
         That second class is the expensive one and it is on record: ECONLIB_COMPLETION_PLAN.md:77
         has `vdem` with no cache row costing a live COUNT(*) of 783,100 rows per page view -- the
-        rebuilt $82/day shape. Taking sources from the cache alone made that class structurally
+        rebuilt per-page-view scan shape. Taking sources from the cache alone made that class structurally
         unreportable, which would have been a coverage REGRESSION against the reconciliation this
         check replaces (whose superseded WORKLOG line reads "drifted 0, uncached 0").
     """
@@ -167,7 +167,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--remote-truth", action="store_true",
-                    help="compare against D1's own series (2 full scans, ~$0.013) instead of local")
+                    help="compare against D1's own series (2 full scans) instead of local")
     ap.add_argument("--fix", action="store_true",
                     help="print the repair SQL for each mismatch; writes NOTHING")
     a = ap.parse_args(argv)

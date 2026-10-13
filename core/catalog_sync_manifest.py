@@ -6,7 +6,7 @@ WHY THIS EXISTS (ledger R542). `orchestrate.py` appends every re-derived series 
 and 285 rows AHEAD of local. Over 99% of that work re-writes rows D1 already holds correctly.
 It is not free: every 500 ids costs one `DELETE FROM series_fts WHERE series_id IN (...)`, and
 `series_fts` is `fts5(series_id UNINDEXED, ...)`, so each of those is a FULL TABLE SCAN
-(10,348,426 rows post-rebuild). That is ~85 scans per run, ~$0.88 per run, ~$86/month — and it
+(10,348,426 rows post-rebuild). That is ~85 scans per run, on every run — and it
 is also the failure: the scans push chunk execution from 1.8-2.1 s to 15.9-51.5 s until the
 import dies.
 

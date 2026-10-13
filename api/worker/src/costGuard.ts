@@ -7,7 +7,7 @@
 // 0.7 h late, worst 9.7 h, and the five most recent were 3.8, 4.2, 6.1, 9.6 and 9.7 hours
 // late. A `*/30` cron there produces mostly DROPPED events, not 48 runs a day. Ahmed asked
 // for a permanent 30-minute check after the 2026-08-31 spike reached him through his invoice
-// (~$27 in a day: D1 11,412,906 writes and 2,805,188,474 reads, R2 class-A 2,880,378 ops);
+// (in one day: D1 11,412,906 writes and 2,805,188,474 reads, R2 class-A 2,880,378 ops);
 // GitHub cannot promise that cadence, Cloudflare Cron Triggers can, and this account already
 // runs on Cloudflare.
 //
@@ -79,7 +79,7 @@ async function writeStatus(env: CostGuardEnv, body: object): Promise<void> {
 
 interface DayTotals { d1Reads: number; d1Writes: number; r2ClassA: number; }
 
-// R2 prices class-B (reads) at $0.36/M and class-A (writes, lists) at $4.50/M. Everything
+// R2 prices class-A (writes, lists) at 12.5 times class-B (reads). Everything
 // else here is counted, not priced -- the Python guard does the full invoice arithmetic.
 const CLASS_B = new Set([
   "ListBuckets", "GetBucket", "HeadBucket", "GetObject", "HeadObject", "UsageSummary",
@@ -146,7 +146,7 @@ export async function runCostGuard(env: CostGuardEnv): Promise<void> {
   const acct = env.CF_ACCOUNT_ID;
 
   // BLIND IS A FAILURE, NOT A QUIET PASS. The Python guard spent months green in CI purely
-  // because its token was never passed, reporting "$13/mo" against a real $328. A guard that
+  // because its token was never passed, reporting a figure about 25 times too low. A guard that
   // cannot measure has to be louder than one that can, not quieter.
   if (!token || !acct) {
     const body = { at, ok: false, blind: true,

@@ -45,7 +45,7 @@ export default {
   // COST GUARD, on a schedule Cloudflare honours. GitHub's scheduled workflows are
   // best-effort: measured on billing-guard.yml, 15 runs against a daily cron came in a
   // median 0.7 h late and as much as 9.7 h, so a */30 cron there is mostly dropped events.
-  // Ahmed asked for a permanent 30-minute check after 2026-08-31 cost ~$27 in a day and
+  // Ahmed asked for a permanent 30-minute check after the 2026-08-31 spike went unseen and
   // reached him through his invoice. Cron Triggers run on Cloudflare's own infrastructure,
   // independent of any workstation. See src/costGuard.ts for what it measures and why a
   // blind run is treated as a failure.
