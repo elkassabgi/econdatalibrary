@@ -38,6 +38,11 @@ from . import config
 STATE_KEY = "_aqueduct/state.db.zst"
 BACKUP_KEY_FMT = "_aqueduct/backups/state-{stamp}-{runid}.db.zst"
 ETAG_PATH = os.path.join(config.STATE_DIR, ".state_etag")
+# What --push-state tells a later workflow step when the compare-and-swap refuses because another
+# writer saved after this machine's pull: `steps.push_state.outputs.refused == 'another_writer'`.
+# updater-daily.yml hands it to the daily mail as PUSH_STATE_REFUSED.
+REFUSED_OUTPUT = "refused"
+REFUSED_ANOTHER_WRITER = "another_writer"
 
 
 def _zstd():
@@ -62,6 +67,23 @@ def _record_etag(etag: str) -> None:
     os.makedirs(config.STATE_DIR, exist_ok=True)
     with open(ETAG_PATH, "w", encoding="utf-8") as f:
         f.write(etag)
+
+
+def _step_output(name: str, value: str) -> None:
+    """Give a later step of the same workflow job one value of this step.
+
+    GitHub Actions names a file in GITHUB_OUTPUT; a line `name=value` in it becomes
+    `steps.<id>.outputs.<name>`, also when the step then exits non-zero. Outside a workflow
+    the variable is not set and this does nothing. It never raises: a note for the daily
+    mail must not change what a state step does or how it exits."""
+    path = os.environ.get("GITHUB_OUTPUT")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"{name}={value}\n")
+    except OSError as e:
+        print(f"[state] could not write the step output {name} ({type(e).__name__})", file=sys.stderr)
 
 
 def _live_pids() -> set[int]:
@@ -241,6 +263,13 @@ def push_state() -> int:
               "on this machine). NOT overwriting — that would silently destroy the "
               "other writer's state. Re-run the whole job starting from --pull-state.",
               file=sys.stderr)
+        # THE REFUSAL ITSELF IS UNCHANGED. This only names it for the daily mail (updater/send_digest.py),
+        # which otherwise knows no more than "the push step failed". Named only in the plain case: this
+        # machine pulled an object, and a different object is there now, so another writer saved after
+        # the pull. A missing remote object, or a machine that never pulled, is refused the same way and
+        # is not named.
+        if stored and remote:
+            _step_output(REFUSED_OUTPUT, REFUSED_ANOTHER_WRITER)
         return 2
     if remote is None:
         print(f"[push-state] seeding: r2://{r2.bucket}/{STATE_KEY} does not exist yet; "

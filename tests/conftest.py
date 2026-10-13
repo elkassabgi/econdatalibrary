@@ -47,6 +47,10 @@ def _no_cloud_credentials_in_a_test(tmp_path_factory):
         # set, and the production checkout's .env carries both. Empty, for the same reason as above.
         mp.setenv("CLOUDFLARE_EMAIL_TOKEN", "")
         mp.setenv("RESEND_API_KEY", "")
+        # NO TEST WRITES A STEP OUTPUT OF THE JOB THAT RUNS THE SUITE: on a GitHub runner GITHUB_OUTPUT
+        # names the real file of the pytest step, and updater.run appends to it when a state push is
+        # refused. A test that wants the output sets its own file.
+        mp.delenv("GITHUB_OUTPUT", raising=False)
         try:
             from core import r2_util
         except Exception:                                # noqa: BLE001 - a test tree without core/
