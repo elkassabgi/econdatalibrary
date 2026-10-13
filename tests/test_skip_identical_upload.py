@@ -1,7 +1,7 @@
 """An object whose bytes are already in R2 is not uploaded again.
 
 MEASURED 2026-09-02: 7,686,397 of 10.8 million class-A operations over 24 days are PutObject on
-econ-data - 71% of the only variable line left on a median day ($30.52 of a $51.44 month), and
+econ-data - 71% of them, and
 about 320,000 uploads a day. The publish path never compared anything, so a source using
 `bulk_snapshot_if_changed` republishes identical bytes daily.
 

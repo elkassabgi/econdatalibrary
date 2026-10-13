@@ -13,7 +13,7 @@ EVIDENCE, verified before this script existed:
   - The future compressed serve re-derives from the local store through the
     gzip writers (core/derive_csv.py, 2026-08-18) at ~1/7th the footprint.
 
-R2 DELETEs are free. Run:
+Run:
   python tools/_delete_statcan_r2.py
 
 DEFUSED 2026-09-24 (self-hosting plan step 1). This ran its deletes AT IMPORT, with no dry run and no

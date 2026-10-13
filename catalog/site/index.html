@@ -652,8 +652,8 @@ function animateCounter(el, target) {
 // Live headline counts from /v1/stats - never hardcoded in the page.
 // Bucketed by the HOUR, not by the millisecond. /v1/stats is edge-cached for six hours
 // (s-maxage=21600) because an uncached version of this endpoint once read 267M rows/day
-// from D1 - so a per-load cache-buster would reopen a closed cost incident. An hourly
-// bucket bounds staleness to one hour at a cost of at most 24 cache entries per day,
+// from D1 - so a per-load cache-buster would bring that read load back. An hourly
+// bucket bounds staleness to one hour with at most 24 cache entries per day,
 // which matters when the payload carries a "being recalculated" notice that should not
 // take most of a day to appear or to disappear.
 var STATS_URL = API + "/v1/stats?h=" + Math.floor(Date.now() / 3600000);

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Verify the built site locally, before any deploy. Costs nothing.
+"""Verify the built site locally, before any deploy. It reads no database.
 
 AR-007 stopped a Pages deploy and asked for checks I had not run. This runs them against the
-files on disk rather than the running system, so it is free -- which matters, because Ahmed is
-paying for D1 reads and I have already spent enough of his money today.
+files on disk rather than the running system, so it makes no D1 read.
 
 Checks, each because something actually went wrong:
 

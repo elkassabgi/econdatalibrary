@@ -1,8 +1,8 @@
 # billing-guard.yml — daily D1 rows-read meter check (Ahmed 2026-08-17: "i already
 # had one but its ineffective").
 #
-# WHY. The 2026-08-13..15 D1 incident was billed before the INVOICE was the first
-# alarm — Cloudflare's dashboard notification never fired usefully on rows-read.
+# WHY. In the 2026-08-13..15 D1 incident the first alarm was the INVOICE —
+# Cloudflare's dashboard notification never fired usefully on rows-read.
 # This workflow is the durable replacement: it measures the actual meter daily via
 # `wrangler d1 insights --timePeriod 1d` across all three databases (econ-catalog,
 # econ-catalog-climate, hfdatalibrary-db) and alerts through TWO independent paths:

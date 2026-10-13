@@ -79,7 +79,7 @@ async function writeStatus(env: CostGuardEnv, body: object): Promise<void> {
 
 interface DayTotals { d1Reads: number; d1Writes: number; r2ClassA: number; }
 
-// R2 prices class-A (writes, lists) at 12.5 times class-B (reads). Everything
+// R2 prices class-A (writes, lists) far above class-B (reads). Everything
 // else here is counted, not priced -- the Python guard does the full invoice arithmetic.
 const CLASS_B = new Set([
   "ListBuckets", "GetBucket", "HeadBucket", "GetObject", "HeadObject", "UsageSummary",
@@ -136,7 +136,7 @@ export function breachesOf(t: DayTotals): string[] {
     out.push(`D1 writes ${t.d1Writes.toLocaleString()} today > ${LIMITS.d1WritesDay.toLocaleString()}`);
   if (t.r2ClassA > LIMITS.r2ClassADay)
     out.push(`R2 class-A ${t.r2ClassA.toLocaleString()} today > ${LIMITS.r2ClassADay.toLocaleString()} `
-             + `(~$${(t.r2ClassA / 1e6 * 4.5).toFixed(2)}, and the monthly included allowance is 1M)`);
+             + `(the monthly included allowance is 1M)`);
   return out;
 }
 

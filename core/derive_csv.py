@@ -1091,7 +1091,7 @@ def main() -> None:
           f"{miss:,} unresolvable (store-coverage gaps), {put_failed:,} PUT FAILED")
     if ident:
         print(f"      {ident:,} upload(s) avoided - R2 already held those exact bytes "
-              f"(~${ident / 1e6 * 4.50:.2f} of class-A operations not spent)")
+              "(class-A operations that were not made)")
     if put_failed:
         # an upload failure fails the run: the store did not take what was derived (R1211)
         raise SystemExit(f"{put_failed:,} derived CSV(s) could not be written to the store - re-run them")

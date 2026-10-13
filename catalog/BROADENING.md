@@ -39,5 +39,5 @@ they need bespoke resolvers like the existing relational set (wikidata/fhfa/cens
 At 1.27M series, do NOT pre-derive 1.27M per-series CSV objects to R2. The Worker
 `.csv` endpoint should read the source parquet from R2 and filter at request time
 (or derive lazily + cache) for the broadened sources; pre-derived objects remain fine
-for the original 33. D1 at ~510 MB is above the smallest database size limit (see api/DEPLOY.md).
+for the original 33. D1 at ~510 MB is above the provider's smallest database size limit.
 The D1 export + per-series metadata are regenerated at cutover with final scope.
