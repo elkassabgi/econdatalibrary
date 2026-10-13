@@ -65,6 +65,21 @@ def test_a_resume_asks_nothing_it_already_knows(spill, monkeypatch):
     assert out2 == out1
 
 
+def test_a_completed_walk_says_what_it_reused_and_what_it_asked(spill, monkeypatch, capsys):
+    """A resumed walk and a restarted one leave the same files; this line is what tells them apart."""
+    _pull(monkeypatch, _Api())
+    first = capsys.readouterr().out
+    assert "8 chunks = 0 reused from the spill + 8 fetched; size-cap answers asked this pass: 4" in first
+    _pull(monkeypatch, _Api())
+    second = capsys.readouterr().out
+    assert "8 chunks = 8 reused from the spill + 0 fetched; size-cap answers asked this pass: 0" in second
+    # the cap cache lost, the chunks kept: every chunk is reused and the 4 year probes are asked again
+    os.remove(spill / j.CAPPED_FILE)
+    _pull(monkeypatch, _Api())
+    third = capsys.readouterr().out
+    assert "8 chunks = 8 reused from the spill + 0 fetched; size-cap answers asked this pass: 4" in third
+
+
 def test_a_killed_pass_resumes_where_it_stopped(spill, monkeypatch):
     first = _Api(die_after=6)
     with pytest.raises(RuntimeError, match="killed"):

@@ -267,10 +267,43 @@ def facts_csv(ds_name: str, select: str, cid: str, key: str, flt: str | None = N
     raise FactsUnreachable(f"Facts unreachable for {ds_name} after retries")
 
 
+DIM_RETRY = (401, 429, 500, 502, 503, 504)   # the statuses facts_csv retries on this gateway
+
+
 def dim_codes(ds_name: str, version, dim_table: str) -> list[str]:
-    """Keyless dimension table -> ordered code list (for chunked Facts pulls)."""
-    r = requests.get(f"{META.replace('/api', '')}/datamart-api/{ds_name}/{version}/"
-                     f"{dim_table}?$orderby=Order&culture=en", headers=UA, timeout=120)
+    """One dimension table -> its codes in the publisher's order (for chunked Facts pulls).
+
+    Read from the CREDENTIALED user API, the host the Facts pull itself uses. Until 2026-10-13
+    this read the keyless `unctadstat-api.unctad.org/datamart-api/{DS}/{version}/{DimTable}`.
+    That address now answers 403 with the body "Blocked" (measured 2026-10-13: two datasets, two
+    User-Agents, with and without credentials, from two networks; reportMetadata on the same
+    host answers 200). Every chunked pull asks for a dimension before its first chunk, so the
+    block stops every over-cap dataset. `{FACTS}/{DS}/{version}/{DimTable}` answers 200 with the
+    same list: measured on US.TradeServCatByPartner, Years is equal through the pinned and the
+    current path (21 codes, numbers, same order), and Economies is equal to the list the
+    2026-10-01 walk used (its 10,217 cached size-cap answers all hit in a replay). Other
+    datasets and dimensions are NOT measured.
+
+    What a different list would lose: not the cached chunks (a chunk is one leaf, and a leaf
+    does not depend on the order of the list it was cut from) but the cached size-cap answers,
+    which would be asked again over the network.
+
+    One path, no keyless fallback: a fallback would hide which address answered, and the
+    keyless one is the address that is blocked. The credentials go in headers only, never in
+    the URL: the caller renders a failed request's text into the run note.
+
+    The transient statuses facts_csv retries are retried here too: one gateway blip on a
+    dimension call would otherwise end the unit's whole turn. A 403 or 404 is final at once.
+    """
+    cid, key = creds()
+    url = f"{FACTS}/{ds_name}/{version}/{dim_table}?$orderby=Order&culture=en"
+    for attempt in range(4):
+        r = requests.get(url, headers={"ClientId": cid, "ClientSecret": key, **UA}, timeout=120)
+        if r.status_code in DIM_RETRY and attempt < 3:
+            log(f"  dimension {dim_table}: HTTP {r.status_code}; retry {attempt + 1}")
+            time.sleep(20 * (attempt + 1))
+            continue
+        break
     r.raise_for_status()
     body = r.json()
     vals = body.get("value", body) if isinstance(body, dict) else body
@@ -393,6 +426,7 @@ def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
         _record_cap(spill_dir, capped, top, e)
 
         reused = 0
+        caps_asked = 0       # size-cap answers this pass had to ask the API for (not in the cache)
         out: list[str] = []
         stack = [(codes[i:i + per], []) for i in range(0, len(codes), per)]
         while stack:
@@ -426,6 +460,8 @@ def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
                 out.append(text)
             except (FactsSizeCap, FactsUnreachable) as split_err:
                 if isinstance(split_err, FactsSizeCap):
+                    if ck not in capped:
+                        caps_asked += 1
                     _record_cap(spill_dir, capped, ck, split_err)
                 atomic = (len(tgroup) == 1
                           and all(len(g) == 1 for g in restr)
@@ -461,6 +497,14 @@ def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
                     mid = max(1, len(full) // 2)
                     stack[:0] = [(tgroup, restr + [full[:mid]]),
                                  (tgroup, restr + [full[mid:]])]
+        # ONE LINE THAT TELLS A RESUMED WALK FROM A RESTARTED ONE (review of 2026-10-13). A killed
+        # pass and a finished pass leave the same run note, and a rising file count looks the same
+        # whether this pass reused its cache or learned everything again. It is printed only when a
+        # measure's walk COMPLETES; a pass that is stopped before that prints nothing, and its
+        # receipt is the files it wrote.
+        log(f"  {ds_name} chunk walk complete for [{select.rsplit(', ', 1)[-1]}]: {len(out):,} "
+            f"chunks = {reused:,} reused from the spill + {len(out) - reused:,} fetched; "
+            f"size-cap answers asked this pass: {caps_asked:,}")
         return out
 
 
