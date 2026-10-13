@@ -270,22 +270,25 @@ def facts_csv(ds_name: str, select: str, cid: str, key: str, flt: str | None = N
 DIM_RETRY = (401, 429, 500, 502, 503, 504)   # the statuses facts_csv retries on this gateway
 
 
-def dim_codes(ds_name: str, version, dim_table: str) -> list[str]:
-    """One dimension table -> its codes in the publisher's order (for chunked Facts pulls).
+def dim_rows(ds_name: str, version, dim_table: str) -> list[dict]:
+    """One dimension table -> its rows ({Code, Label, ...}) in the publisher's order.
+
+    THE one request path for a dimension table. dim_codes (the chunked pull) and
+    tools/title_unctad_from_api.py (the labels) both read through it, so the address, the
+    credentials, the retries and what counts as a refusal cannot differ between the two.
 
     Read from the CREDENTIALED user API, the host the Facts pull itself uses. Until 2026-10-13
     this read the keyless `unctadstat-api.unctad.org/datamart-api/{DS}/{version}/{DimTable}`.
     That address now answers 403 with the body "Blocked" (measured 2026-10-13: two datasets, two
-    User-Agents, with and without credentials; reportMetadata on the same host answers 200). Every chunked pull asks for a dimension before its first chunk, so the
-    block stops every over-cap dataset. `{FACTS}/{DS}/{version}/{DimTable}` answers 200 with the
-    same list: measured on US.TradeServCatByPartner, Years is equal through the pinned and the
-    current path (21 codes, numbers, same order), and Economies is equal to the list the
-    2026-10-01 walk used (its 10,217 cached size-cap answers all hit in a replay). Other
-    datasets and dimensions are NOT measured.
-
-    What a different list would lose: not the cached chunks (a chunk is one leaf, and a leaf
-    does not depend on the order of the list it was cut from) but the cached size-cap answers,
-    which would be asked again over the network.
+    User-Agents, with and without credentials; reportMetadata on the same host answers 200).
+    Every chunked pull asks for a dimension before its first chunk, so the block stops every
+    over-cap dataset. `{FACTS}/{DS}/{version}/{DimTable}` answers 200 with the same list:
+    measured on US.TradeServCatByPartner, Years is equal through the pinned and the current
+    path (21 codes, numbers, same order), and Economies is equal to the list the 2026-10-01
+    walk used (its 10,217 cached size-cap answers all hit in a replay). Labels, measured on
+    US.TradeMerchTotal: with the labels of release 10003 the title tool composes the label part
+    of all 1,220 catalogued titles as the catalogue has them. Other datasets and dimensions are
+    NOT measured.
 
     One path, no keyless fallback: a fallback would hide which address answered, and the
     keyless one is the address that is blocked. The credentials go in headers only, never in
@@ -295,6 +298,11 @@ def dim_codes(ds_name: str, version, dim_table: str) -> list[str]:
     dimension call would otherwise end the unit's whole turn. Any other status (400, 403, 404)
     is final at once. A failed CONNECTION is not retried here and leaves this function as it
     is raised (facts_csv does retry those); the keyless address is not tried for it either.
+
+    A table the service CUT SHORT is refused, not returned: an OData answer that carries
+    `@odata.nextLink` holds only the first page. For the chunked pull a short list would mean
+    chunks that are never asked for, and nothing later would show it. Measured 2026-10-13: a
+    2,222-row table came back whole with no next link; larger tables are not measured.
     """
     cid, key = creds()
     url = f"{FACTS}/{ds_name}/{version}/{dim_table}?$orderby=Order&culture=en"
@@ -307,8 +315,24 @@ def dim_codes(ds_name: str, version, dim_table: str) -> list[str]:
         break
     r.raise_for_status()
     body = r.json()
+    if isinstance(body, dict) and body.get("@odata.nextLink"):
+        raise RuntimeError(f"{ds_name} dimension {dim_table}: the answer is only a first page "
+                           f"(@odata.nextLink present, {len(body.get('value') or [])} rows); "
+                           f"a cut list is refused")
     vals = body.get("value", body) if isinstance(body, dict) else body
-    return [x["Code"] for x in vals if x.get("Code") is not None]
+    return list(vals)
+
+
+def dim_codes(ds_name: str, version, dim_table: str) -> list[str]:
+    """One dimension table -> its codes in the publisher's order (for chunked Facts pulls).
+
+    The request, its address and its rules are dim_rows, above. This keeps the codes only.
+
+    What a different list would lose: not the cached chunks (a chunk is one leaf, and a leaf
+    does not depend on the order of the list it was cut from) but the cached size-cap answers,
+    which would be asked again over the network.
+    """
+    return [x["Code"] for x in dim_rows(ds_name, version, dim_table) if x.get("Code") is not None]
 
 
 CAPPED_FILE = "_capped.tsv"   # one "<cache key>\t<cap>\t<estimate>\t." line per size-capped probe

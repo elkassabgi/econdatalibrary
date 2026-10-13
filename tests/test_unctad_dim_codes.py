@@ -155,3 +155,39 @@ def test_the_publisher_order_is_kept_and_only_codeless_rows_are_dropped(api):
 def test_a_bare_list_body_is_read_the_same_way(api):
     api(_Resp(200, [{"Code": "B"}, {"Code": "A"}]))
     assert j.dim_codes("US.X", 1, "Economies") == ["B", "A"]
+
+
+def test_dim_rows_gives_every_row_whole_in_the_publisher_order_by_the_same_one_request(api):
+    # The title tool reads labels from these rows; dim_codes keeps their codes. One request path.
+    a = api(OK)
+    rows = j.dim_rows("US.X", 3, "Economies")
+    assert rows == [{"Code": 2005}, {"Code": None}, {"Code": 0},
+                    {"Label": "a row with no code"}, {"Code": 1990}]
+    (url, headers), = a.seen
+    assert url.startswith(j.FACTS + "/US.X/3/Economies?")
+    assert headers["ClientId"] == ID and headers["ClientSecret"] == SECRET
+
+
+def test_dim_codes_is_dim_rows_and_nothing_else(api, monkeypatch):
+    # dim_codes must not have a request of its own: a second path could differ from the first.
+    a = api(OK)
+    monkeypatch.setattr(j, "dim_rows", lambda ds, v, t: [{"Code": "K"}, {"Code": None}, {"Code": 7}])
+    assert j.dim_codes("US.X", 1, "Years") == ["K", 7]
+    assert a.seen == []
+
+
+def test_a_table_the_service_cut_short_is_refused(api):
+    # An answer with @odata.nextLink is only a first page. A short code list would mean chunks that
+    # are never asked for, and a short label table would leave series untitled, both in silence.
+    api(_Resp(200, {"value": [{"Code": 1}, {"Code": 2}],
+                    "@odata.nextLink": "https://example.invalid/next"}))
+    with pytest.raises(RuntimeError, match="only a first page"):
+        j.dim_rows("US.X", 1, "Products")
+    with pytest.raises(RuntimeError, match="only a first page"):
+        j.dim_codes("US.X", 1, "Products")
+
+
+def test_a_whole_table_with_other_odata_fields_is_returned(api):
+    api(_Resp(200, {"@odata.context": "https://example.invalid/$metadata#Years", "@odata.count": 2,
+                    "value": [{"Code": 1}, {"Code": 2}]}))
+    assert j.dim_codes("US.X", 1, "Years") == [1, 2]

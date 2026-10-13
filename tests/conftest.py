@@ -51,6 +51,14 @@ def _no_cloud_credentials_in_a_test(tmp_path_factory):
         # names the real file of the pytest step, and updater.run appends to it when a state push is
         # refused. A test that wants the output sets its own file.
         mp.delenv("GITHUB_OUTPUT", raising=False)
+        # NO TEST READS THE REAL UNCTAD CREDENTIALS. jobs/ingest_unctad_ds.creds() reads the environment
+        # first and the checkout's .env second, and the production checkout has that .env. The dimension
+        # request sends them as headers, and the title tool loads its OWN module object of the ingest, so
+        # a test that patches `jobs.ingest_unctad_ds.creds` does not cover the tool's copy. Test values in
+        # the environment cover every copy: a request that escaped a stand-in would carry these, not the
+        # real ones.
+        mp.setenv("UNCTAD_CLIENT_ID", "test-client-id-not-real")
+        mp.setenv("UNCTAD_API_KEY", "test-api-key-not-real")
         try:
             from core import r2_util
         except Exception:                                # noqa: BLE001 - a test tree without core/
