@@ -6,8 +6,8 @@ never a blind overwrite). On such a morning (run 38407606463, 2026-10-13) two th
 
   * the step "Health gate (fail past 2x SLA)" had no `if:`, so GitHub skipped it after the failed step:
     no verdict, and the mail's in-progress list was off;
-  * the mail did not say that the record was not saved, that the published data stays, and that the
-    next run does the work again.
+  * the mail did not say that the record was not saved, that the published data stays, and what is
+    lost.
 
 WHAT THIS FILE HOLDS.
   1. The workflow: when each step runs, read from the workflow file and worked out for each kind of
@@ -41,13 +41,15 @@ from test_updater_phase1 import fake_r2  # noqa: E402, F401  (a fixture: the sta
 
 REFUSED = ["The record of this run was not saved, because another updater or tool saved its record first.",
            "The data that this run published stays published.",
-           "The next run does the work of this run again."]
+           "The times and results that this run recorded are lost. These sources are checked again when they "
+           "next run. A source that works in parts goes on from its saved place."]
 
 
 def _other(ended):
     return [f"The step that saves the record of this run {ended}, and this report does not know the cause.",
             "The data that this run published stays published.",
-            "If the record was not saved, the next run does the work of this run again."]
+            "If the record was not saved, the times and results that this run recorded are lost, and these "
+            "sources are checked again when they next run."]
 
 
 # ---------------------------------------------------------------- 1. the workflow
@@ -154,6 +156,14 @@ def test_the_gate_stands_after_the_push_and_before_the_mail_and_is_the_same_comm
     assert "--push-state" not in later, "a state push after the gate would save what the gate's run changed"
 
 
+def test_the_health_gate_can_make_the_run_red():
+    """A gate that cannot fail the run is no gate (review AR-310, note N2): the step must not carry
+    `continue-on-error`, and it must be the command that exits non-zero past the limit."""
+    step = _step(GATE)
+    assert "continue-on-error" not in step, "with continue-on-error a red verdict leaves the run green"
+    assert "--fail-past-2x-sla" in step["run"]
+
+
 def test_the_steps_that_publish_the_record_still_wait_for_a_saved_record():
     """They publish freshness from the state file. After a refused push that state was not saved."""
     for name in (FRESHNESS, CATALOGUE):
@@ -253,6 +263,45 @@ def test_nothing_is_said_when_nothing_is_known_or_nothing_is_wrong(pull, push, r
 def test_the_refused_save_is_three_plain_sentences():
     assert sd.state_not_saved_note("success", "failure", "another_writer") == REFUSED
     assert sd.state_not_saved_note(" Success ", "FAILURE", " another_writer ") == REFUSED
+
+
+# THE WHOLE NOTE, WORD FOR WORD, WRITTEN OUT HERE AND NOT BUILT FROM THE NAMES ABOVE (review AR-310, F1).
+# The first form of sentence 3 was "The next run does the work of this run again." It promised what the
+# code does not do: a source that works in parts keeps its place in the store and goes on after this run's
+# part, and the next run has its own order and budget. A second form said "A later run checks these sources
+# again." That is not true of a source that a named dispatch ran outside the live tier: no scheduled run
+# takes it. So the words are "when they next run". A change of any word must be made here by hand, against
+# the code, and not by a search-and-replace over one shared name.
+WORD_FOR_WORD = {
+    ("failure", "another_writer"): (
+        "The record of this run was not saved, because another updater or tool saved its record first.",
+        "The data that this run published stays published.",
+        "The times and results that this run recorded are lost. These sources are checked again when they "
+        "next run. A source that works in parts goes on from its saved place."),
+    ("failure", ""): (
+        "The step that saves the record of this run failed, and this report does not know the cause.",
+        "The data that this run published stays published.",
+        "If the record was not saved, the times and results that this run recorded are lost, and these "
+        "sources are checked again when they next run."),
+    ("cancelled", ""): (
+        "The step that saves the record of this run was stopped before its end, and this report does not "
+        "know the cause.",
+        "The data that this run published stays published.",
+        "If the record was not saved, the times and results that this run recorded are lost, and these "
+        "sources are checked again when they next run."),
+    ("skipped", ""): (
+        "The step that saves the record of this run did not run, and this report does not know the cause.",
+        "The data that this run published stays published.",
+        "If the record was not saved, the times and results that this run recorded are lost, and these "
+        "sources are checked again when they next run."),
+}
+
+
+@pytest.mark.parametrize("push,refused", sorted(WORD_FOR_WORD), ids=["cancelled", "failed", "refused", "skipped"])
+def test_the_note_is_these_three_sentences_and_promises_no_repeat_of_the_work(push, refused):
+    note = sd.state_not_saved_note("success", push, refused)
+    assert tuple(note) == WORD_FOR_WORD[(push, refused)]
+    assert len(note) == 3
 
 
 @pytest.mark.parametrize("push,refused,ended", [

@@ -181,6 +181,19 @@ def is_in_progress(source_id, status, late, last_attempt, cadence, rotating, ver
 # workflow file): not knowing is not a failure.
 # Two wordings, because the report must not name a cause it was not given. A save step that failed for
 # any other reason may have saved the record before it failed, so that wording does not say "not saved".
+#
+# THE THIRD SENTENCE PROMISES NO REPEAT OF THE WORK (review AR-310). Its first form said "The next run does
+# the work of this run again", and that was not true: a source that works in parts keeps its place in the
+# STORE (strategies/fetchers/_common.py, load_rotation / save_rotation; the manifest files of some sources),
+# so a later run goes on after this run's part; and the next run has its own order and budget. What is lost
+# is what the state file alone holds: the times and the results of this run.
+# NOT SAID IN THE MAIL, AND AN OPEN ITEM OLDER THAN THIS NOTE: the state file alone also holds three records
+# of work that is owed (csv_retry_queue, full_rederive_owed, csv_desktop_owed; updater/state.py,
+# enqueue_csv_retry, note_full_rederive_owed, note_csv_desktop_owed). A refused save loses what this run
+# wrote there too.
+# The sentence also does not say "a later run checks these sources again". A dispatch that names a source
+# runs it also when it is outside the live tier (orchestrate.py, the live-only rule), and no scheduled run
+# takes such a source. So the words are "when they next run": true with or without a schedule.
 PUSH_REFUSED_ANOTHER_WRITER = "another_writer"
 _STEP_OUTCOMES = ("success", "failure", "cancelled", "skipped")
 _SAVE_STEP_ENDED = {"failure": "failed", "cancelled": "was stopped before its end", "skipped": "did not run"}
@@ -197,11 +210,13 @@ def state_not_saved_note(pull_outcome, push_outcome, refused) -> list:
     if push == "failure" and str(refused or "").strip() == PUSH_REFUSED_ANOTHER_WRITER:
         return ["The record of this run was not saved, because another updater or tool saved its record first.",
                 DATA_STAYS,
-                "The next run does the work of this run again."]
+                "The times and results that this run recorded are lost. These sources are checked again when "
+                "they next run. A source that works in parts goes on from its saved place."]
     return [f"The step that saves the record of this run {_SAVE_STEP_ENDED[push]}, and this report does not "
             "know the cause.",
             DATA_STAYS,
-            "If the record was not saved, the next run does the work of this run again."]
+            "If the record was not saved, the times and results that this run recorded are lost, and these "
+            "sources are checked again when they next run."]
 
 
 
