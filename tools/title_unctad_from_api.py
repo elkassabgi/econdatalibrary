@@ -7,15 +7,18 @@ titles that DO read well live in the legacy relay-era unctad stores, and that mi
 BANNED as a source here (econ CLAUDE.md section 0, ledger R251), so it is not a lawful
 label source.
 
-It is also not needed. Everything required is on UNCTAD's own KEYLESS endpoints:
+It is also not needed. Everything required is on UNCTAD's own endpoints:
 
-  report title    GET /api/reportMetadata/{DS}/en   -> `title`
+  report title    GET /api/reportMetadata/{DS}/en   -> `title`                  (keyless)
   measure label   same document                     -> defaults.observations[].measures[] {code,label}
-  dimension label GET /datamart-api/{DS}/{version}/{DimTable}?$orderby=Order&culture=en
-                                                    -> [{Code, Label, ...}]
+  dimension label the dimension table, [{Code, Label, ...}], read through
+                  jobs/ingest_unctad_ds.dim_rows                                (credentialed)
 
-That last one is the same endpoint jobs/ingest_unctad_ds.py already calls for chunked pulls
-(`dim_codes`), which reads only `Code` and discards `Label`.
+The dimension table is read by the SAME function the chunked pull uses (`dim_rows`; `dim_codes`
+keeps only `Code`). Until 2026-10-13 this tool asked the keyless dimension address itself, and
+read any refusal as an EMPTY label table: when the publisher blocked that address (403), every
+source "titled 0" with no reason printed. A refused request now leaves `_dim_labels` as an
+error, and main() prints FAILED with the status for that source and writes nothing for it.
 
 KEY LAYOUT IS TAKEN FROM THE INGEST, NOT RE-DERIVED. A series_key is `<dim>...<dim>.M<measure>`
 ("076.M1900"; "001.364.M6700" when a dataset has two key dims). Which dims, and in what order,
@@ -45,20 +48,23 @@ _spec = importlib.util.spec_from_file_location("iu", os.path.join(ROOT, "jobs", 
 iu = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(iu)
 
-DATAMART = "https://unctadstat-api.unctad.org/datamart-api"
-
-
 _DATACENTER = "https://unctadstat-api.unctad.org/api/datacenter/en"
 _REPORTS: list = []
 
 
 def _advertised_reports() -> list:
-    """Every reportName UNCTAD's own datacenter advertises (cached for the process)."""
+    """Every reportName UNCTAD's own datacenter advertises (cached for the process).
+
+    A refused or failed request is an ERROR here, not an empty list. It used to be swallowed, and
+    main() then printed "no UNCTAD dataset in its registry vintage_signal - skipped" for a source
+    whose dataset simply could not be looked up, with exit status 0. This is the same keyless host
+    that began to block its dimension address on 2026-10-13.
+    """
     if not _REPORTS:
-        try:
-            j = requests.get(_DATACENTER, headers=iu.UA, timeout=180).json()
-        except Exception:                                        # noqa: BLE001
-            return _REPORTS
+        r = requests.get(_DATACENTER, headers=iu.UA, timeout=180)
+        r.raise_for_status()
+        j = r.json()
+
         def walk(o):
             if isinstance(o, dict):
                 if o.get("reportName"):
@@ -93,14 +99,9 @@ def _ds_for(source_id: str, reg: dict):
 
 
 def _dim_labels(ds: str, version, table: str) -> dict:
-    r = requests.get(f"{DATAMART}/{ds}/{version}/{table}",
-                     params={"$orderby": "Order", "culture": "en"},
-                     headers=iu.UA, timeout=180)
-    if r.status_code != 200:
-        return {}
-    body = r.json()
-    vals = body.get("value", body) if isinstance(body, dict) else body
-    return {str(x["Code"]): x.get("Label") for x in vals
+    """{code: label} of one dimension table. A row with no label is left out, so its series stay
+    untitled. A REFUSED or failed request is NOT an empty table: the error leaves this function."""
+    return {str(x["Code"]): x.get("Label") for x in iu.dim_rows(ds, version, table)
             if x.get("Code") is not None and x.get("Label")}
 
 
@@ -218,16 +219,25 @@ def main() -> int:
     import yaml
     reg = {x["source_id"]: x for x in yaml.safe_load(
         open(os.path.join(ROOT, "updater", "registry.yaml"), encoding="utf-8"))["sources"]}
-    total = 0
+    total = failed = 0
     for sid in a.sources:
-        ds = _ds_for(sid, reg)
-        if not ds:
-            print(f"  {sid:34} no UNCTAD dataset in its registry vintage_signal - skipped")
-            continue
+        # The dataset lookup is inside the try as well: when the registry names no dataset it asks
+        # UNCTAD's datacenter, and a refused lookup is a failure of this source, not "no dataset".
         try:
+            ds = _ds_for(sid, reg)
+            if not ds:
+                print(f"  {sid:34} no UNCTAD dataset in its registry vintage_signal - skipped")
+                continue
             t, info = titles_for(sid, ds)
         except Exception as e:                                   # noqa: BLE001
+            failed += 1
             print(f"  {sid:34} FAILED {type(e).__name__}: {str(e)[:70]}")
+            continue
+        if info.get("reason"):
+            # titles_for could not read what it needs (today: no store file). Say why, and count it:
+            # "titled=0 skipped=0" with exit status 0 reads as a source with nothing to title.
+            failed += 1
+            print(f"  {sid:34} FAILED {info['reason']}")
             continue
         print(f"  {sid:34} ds={ds:28} titled={len(t):>7,} skipped={info.get('skipped',0):>6,}")
         if t:
@@ -237,8 +247,10 @@ def main() -> int:
             p = os.path.join(ROOT, "dist", "titles", f"{sid}.json")
             json.dump(t, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=0, sort_keys=True)
         total += len(t)
-    print(f"  total titles composed: {total:,}")
-    return 0
+    print(f"  total titles composed: {total:,}; sources that FAILED: {failed}")
+    # A source that failed is not a source with nothing to title. The exit status says so, so a
+    # title wave that calls this tool cannot go on as if every source had been read.
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
