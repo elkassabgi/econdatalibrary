@@ -685,8 +685,8 @@ def update(unit, since) -> Result:
     if capped:
         return Result(status="partial", obs=total_added, last_obs_date=last_key_overall,
                       new_vintage=None,
-                      error=f"selected>cap: fetched {selected_total} keys; remainder re-runs "
-                            f"next tick (+{total_added} rows)")
+                      error=f"selected>cap: fetched {selected_total} keys; the remainder is "
+                            f"fetched in a later pass (+{total_added} rows)")
 
     # finalize(): structural -> DefinitiveError(partial); transient -> partial; else
     # ok (added>0) / no_change. empty_window_floor is high because most ticks add 0

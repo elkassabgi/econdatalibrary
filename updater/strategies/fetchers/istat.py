@@ -561,7 +561,9 @@ def update(unit, since) -> Result:
         # because the estimate is built from durations and an abort is genuinely short.
         if all(b in _DEAD_HOSTS for _l, b in HOSTS):
             # BREAK, NEVER RAISE. A TransientError here would book `transient_fail`, and
-            # _should_derive_csvs admits only {ok, partial} — so a host dying at flow 801
+            # _should_derive_csvs admits {ok, partial}, and transient_fail only for a RESULT that
+            # carries a non-empty changed set (_giant's hand-over) - a raised error carries none,
+            # and istat reports no changed set - so a host dying at flow 801
             # would strand 800 flows' already-merged parquet rows with no CSV re-derive
             # and no series_cursors, the exact regression R380 closed (review 2026-08-28).
             # Breaking with this flow tallied transient makes finalize() return `partial`:

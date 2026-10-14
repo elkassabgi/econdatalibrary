@@ -62,8 +62,9 @@ _REDO_STATUSES = {"partial", "transient_fail", "definitive_fail", "empty", "erro
 # Selecting / fetching MORE than this many flows in a single tick is almost
 # certainly a corrupt catalogue diff (e.g. the stored snapshot was wiped so every
 # flow looks "changed"); a full sweep is the giant's force-refresh path, not an
-# update tick. We cap, fetch the cap, and report `partial` so the rest re-run next
-# tick instead of hammering the API for hours and looking falsely "fresh".
+# update tick. We cap, fetch the cap, and never report the source fresh: the rest is selected
+# again by a later pass instead of hammering the API for hours. Which status the capped pass
+# reports, and so when the unit is due again, is decided at the capped return in run_giant.
 DEFAULT_MAX_FLOWS_PER_TICK = 400
 
 
@@ -298,6 +299,41 @@ def select_flows(catalog: dict, state: dict, *, max_flows=DEFAULT_MAX_FLOWS_PER_
     return ordered[:max_flows], capped
 
 
+# A flow whose LAST attempt ended in one of these finished it: its vintage was recorded. Any other
+# status (transient_fail, definitive_fail, partial) means the last attempt failed.
+_LAST_ATTEMPT_DONE = {"ok", "empty", "no_time_dimension"}
+
+
+def _beyond_the_cap(catalog: dict, state: dict, selected) -> tuple:
+    """(fresh, retry): the catalogue flows a capped pass does NOT reach, split in two.
+
+    fresh - flows upstream changed since we last FINISHED them: absent from the state (never
+            attempted), or with a moved vintage after a last attempt that finished.
+    retry - everything else the selection would have taken: a moved vintage after a last
+            attempt that FAILED (it stays "changed" until it succeeds, so it is a retry, not a
+            change), and the redo statuses of select_flows.
+
+    Read from the state as loaded BEFORE the pass. The split decides whether a capped pass asks
+    for the next run (fresh changes are waiting) or keeps the partial clock (only retries wait):
+    a flow that fails every time must not keep a source on the every-run schedule."""
+    sel = set(selected)
+    fresh = retry = 0
+    for fid, meta in catalog.items():
+        if fid in sel:
+            continue
+        st = state.get(fid)
+        if st is None:
+            fresh += 1
+        elif str(meta.get("vintage")) != str(st.get("vintage")):
+            if st.get("status") in _LAST_ATTEMPT_DONE:
+                fresh += 1
+            else:
+                retry += 1
+        elif st.get("status") in _REDO_STATUSES:
+            retry += 1
+    return fresh, retry
+
+
 def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, timeout,
               max_flows=DEFAULT_MAX_FLOWS_PER_TICK, min_ratio=0.97,
               report_changed_flows: bool = False, bounded_merge: bool = False,
@@ -343,6 +379,13 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
     the sweep stops at the start of the next flow and is handled the same way. A caller
     without the opt-in is not affected.
 
+    A CAPPED pass (more flows selected than max_flows) returns `partial`, so a unit with no
+    recorded success would wait min(cadence, PARTIAL_RETRY_DAYS) days. With the opt-in it returns
+    `transient_fail` with its changed set instead - due at the next run - when flows that upstream
+    changed since we last finished them remain beyond the cap AND the pass merged at least one
+    changed flow itself (_beyond_the_cap). Flows that failed last time count as retries, not as
+    changes. Every capped pass prints both counts.
+
     bounded_merge=True (opt-in; default False keeps every other caller byte-identical) merges
     each flow through merge.merge_and_write_bounded, whose peak memory does not grow with the
     stored file. Without it one merge materialises the whole published parquet: eurostat's
@@ -366,6 +409,7 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
 
     state = load_state(source_dir)
     selected, capped = select_flows(catalog, state, max_flows=max_flows)
+    beyond_fresh, beyond_retry = _beyond_the_cap(catalog, state, selected) if capped else (0, 0)
 
     # ANNOUNCE THE SCOPE, then report progress through it. A giant is the longest-running
     # thing in any pass - oecd ran for over three hours on 2026-08-01 - and the orchestrator
@@ -374,7 +418,8 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
     # tell them apart was to go and stat the output directory. That is the same defect as the
     # orchestrator's silent no-adapter skip (R211), one level down.
     print(f"[{source}] catalogue {len(catalog):,} flow(s); selected {len(selected):,} "
-          f"changed/new/redo{' (CAPPED — remainder next tick)' if capped else ''}", flush=True)
+          f"changed/new/redo{' (CAPPED - the rest is selected again by a later pass)' if capped else ''}",
+          flush=True)
     t_start = time.time()
 
     tally = Tally()
@@ -695,18 +740,42 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
                       error=" - ".join(x for x in (limit_note, save_note) if x))
 
     if capped:
-        # We deliberately fetched only a slice of a very large changed set. That is a
-        # legitimate-partial: report it so the source is NOT stamped fully fresh and the
-        # remainder runs next tick. (Never launder a known-incomplete sweep into ok.)
-        # The fetched slice's changes are real and derivable now; the remainder is
-        # reselected next tick and reports itself then. A dict here (even empty) is honest
-        # for the flows this run merged — it says nothing about the flows it never reached,
-        # and the `partial` status is what keeps the source from being stamped fresh.
+        # We deliberately fetched only a slice of a very large changed set. Never laundered into
+        # ok: the source is not stamped fresh. The fetched slice's changes are real and derivable
+        # now; the remainder is selected again by a later pass. A dict here (even empty) is honest
+        # for the flows this run merged - it says nothing about the flows it never reached.
+        #
+        # WHICH LATER PASS. A `partial` unit with no recorded success is due again only after
+        # min(cadence, PARTIAL_RETRY_DAYS) days (base.Strategy.is_due) - eurostat waited 6.3 days
+        # after the capped pass of 2026-10-06. So, for a caller that reports its changed flows,
+        # a capped pass that (1) left FRESH changes beyond the cap and (2) itself merged at least
+        # one flow that changed served data returns `transient_fail` with its changed set: the
+        # CSV step runs (orchestrate._should_derive_csvs), no success is set, no vintage advances,
+        # and the unit is due at the next run. (1) keeps a pass whose remainder is only retries -
+        # flows that failed last time - on the partial clock. (2) is a NO-PROGRESS guard: a pass
+        # whose selected flows all failed (a head of permanently failing flows, or a publisher
+        # outage) must not be due at every run while it advances nothing; such a pass keeps the
+        # partial clock, as before this change. "Due at the next run" says when the unit runs
+        # again; it does not promise that the next run reaches the flows beyond the cap.
+        # changed_flows is filled only with report_changed_flows=True, so a caller without the opt-in
+        # (oecd) always takes the partial return below.
+        unfinished = bool(beyond_fresh and changed_flows)
+        print(f"[{source}] capped at {len(selected):,} flows: beyond the cap {beyond_fresh:,} "
+              f"changed or new flow(s) and {beyond_retry:,} retry flow(s); this pass merged "
+              f"{len(changed_flows):,} changed flow(s) -> "
+              f"{'due at the next run' if unfinished else 'partial'}", flush=True)
+        if unfinished:
+            return Result(status="transient_fail", obs=total_rows, last_obs_date=max_last,
+                          new_vintage=_catalog_token(catalog), changed_keys=changed_flows,
+                          error=f"selected>cap: fetched {len(selected):,} flows; {beyond_fresh:,} "
+                                f"changed or new and {beyond_retry:,} retry flow(s) wait beyond the "
+                                f"cap; the unit is due again at the next run (+{tally.added} rows)")
         return Result(status="partial", obs=total_rows, last_obs_date=max_last,
                       new_vintage=_catalog_token(catalog),
                       changed_keys=(changed_flows if report_changed_flows else None),
-                      error=f"selected>cap: fetched {len(selected)} of a larger changed set; "
-                            f"remainder re-runs next tick (+{tally.added} rows)")
+                      error=f"selected>cap: fetched {len(selected):,} flows; {beyond_fresh:,} "
+                            f"changed or new and {beyond_retry:,} retry flow(s) wait beyond the "
+                            f"cap (+{tally.added} rows)")
 
     # finalize() raises structural DefinitiveError if every sub-unit broke; returns
     # partial if any transient; else ok/no_change. empty_window_floor guards a giant
