@@ -156,8 +156,13 @@ class Strategy(ABC):
         is measured from that attempt. A partial means the pass RAN and some sub-units
         failed; repeating it tomorrow cannot help if those failures are permanent.
 
-        `transient_fail` is deliberately NOT included: that means the pass could not run at
-        all (timeout, 5xx, network), so it must stay immediately retryable.
+        `transient_fail` is deliberately NOT included: it means the pass did not finish - it
+        could not run at all (5xx, network), or the hard per-unit limit ended it - so it must
+        stay immediately retryable. Since PR #151 a transient_fail can also have merged rows and
+        derived their CSVs: _giant.run_giant returns transient_fail WITH its changed set when
+        the limit ends a sweep that had merged changed flows (orchestrate._should_derive_csvs).
+        That pass is still unfinished, and it must stay due at the next run like any other
+        transient_fail. Do not move it to the partial clock.
 
         Nothing here changes what is REPORTED. last_success stays unset, the source still
         reads as stale to the health gate and to /v1/last-updates, and `--force` still

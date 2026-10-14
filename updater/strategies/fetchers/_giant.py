@@ -331,10 +331,14 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
     With report_changed_flows=True the changed set is also handed over when the sweep cannot
     finish. If the orchestrator's hard per-unit limit fires in the flow loop and at least one
     changed flow is in hand, the loop ends, the final save runs, and the function RETURNS
-    `partial` with the set and an error that names the limit and "k of n flows" - it does not
-    raise the limit. If the final save fails with a changed set in hand, it returns `partial`
-    with the set and says so. Both were raised before, the unit was recorded as transient_fail,
-    and no CSV step ran for the flows that pass had merged. A limit that fires before any
+    `transient_fail` with the set and an error that names the limit and "k of n flows" - it does
+    not raise the limit. If the final save fails with a changed set in hand, it returns
+    `transient_fail` with the set and says so. Both were raised before: the unit was recorded as
+    transient_fail and no CSV step ran for the flows that pass had merged. The status stays
+    transient_fail, so the unit is due again at the next run exactly as before (a `partial` unit
+    with no recorded success waits min(cadence, PARTIAL_RETRY_DAYS) days, base.Strategy.is_due);
+    the orchestrator derives the CSVs of a transient_fail result only when it carries a non-empty
+    changed set (orchestrate._should_derive_csvs). A limit that fires before any
     changed flow is raised as before. If the alarm fired and its raise was swallowed somewhere,
     the sweep stops at the start of the next flow and is handled the same way. A caller
     without the opt-in is not affected.
@@ -424,6 +428,7 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
 
     limit_note = None      # set below when the hard limit ended the sweep and the changed set goes on
     save_note = None       # set below when the final save failed and the changed set goes on
+    not_started = None     # the flow the check below stopped BEFORE, when it ends the sweep
     try:
         for n_done, fid in enumerate(selected, 1):
             # A LIMIT THAT FIRED AND WAS NOT DELIVERED ENDS THE SWEEP AT THE NEXT FLOW (report_changed_flows
@@ -434,6 +439,7 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
             if report_changed_flows and n_done > 1 and _flag_fired():
                 if checkpoint_every:
                     _checkpoint(n_done - 1, "unit timeout")
+                not_started = n_done
                 raise _undelivered_limit(n_done - 1, len(selected))
             # CHECKPOINT (opt-in): n_done - 1 flows are complete at this point. Without it the only
             # save_state is the one after the loop, which a killed or SIGALRM-interrupted sweep never
@@ -630,19 +636,22 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
         # as transient_fail and runs no CSV step, so the flows this pass had merged with a change
         # were never derived: their saved vintage keeps them out of the next selection, and a
         # re-fetch merges equal rows and reports no change. So when the limit fires and at least one
-        # changed flow is in hand, the loop ends here and the function returns `partial` with that
-        # set: the CSV step runs in this pass, while the merged files are on this machine.
-        # Everything else is raised as before: a caller without the opt-in, a limit with nothing
-        # changed yet (the unit stays transient_fail and is tried again at the next run), and any
-        # error that is not the limit. NOTE THE SCHEDULE: a `partial` unit with no recorded success
-        # is tried again after min(cadence, PARTIAL_RETRY_DAYS) days (base.Strategy.is_due), a
-        # transient_fail unit at the next run.
+        # changed flow is in hand, the loop ends here and the function returns `transient_fail` with
+        # that set: the CSV step runs in this pass, while the merged files are on this machine.
+        # The status is the one a raised limit gets, so the schedule does not change: the unit is
+        # due again at the next run. Everything else is raised as before: a caller without the
+        # opt-in, a limit with nothing changed yet, and any error that is not the limit.
         if not (report_changed_flows and changed_flows and _hard_limit_fired(e)):
             raise
-        limit_note = (f"hard limit reached at {n_done:,} of {len(selected):,} flows: the sweep "
-                      f"stopped there, {len(changed_flows):,} changed flow(s) go to the CSV step "
-                      f"and the rest is fetched in a later pass (+{tally.added} rows)")
-        print(f"[{source}] {limit_note} ({type(e).__name__})", flush=True)
+        if not_started == n_done:
+            where = (f"after {n_done - 1:,} of {len(selected):,} flows (flow {n_done:,} was not "
+                     f"started)")
+        else:
+            where = f"in flow {n_done:,} of {len(selected):,}"
+        limit_note = (f"hard limit reached {where} ({type(e).__name__}): the sweep stopped there, "
+                      f"{len(changed_flows):,} changed flow(s) go to the CSV step and the rest is "
+                      f"fetched in a later pass (+{tally.added} rows)")
+        print(f"[{source}] {limit_note}", flush=True)
 
     # Mark flows present in the catalogue but never touched (not selected) so first-ever
     # runs don't perpetually re-select everything: only flows we DIDN'T select keep their
@@ -652,15 +661,15 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
     except Exception as e:                              # noqa: BLE001
         # A FAILED FINAL SAVE MUST NOT DROP THE CHANGED SET (report_changed_flows only). Raising
         # here books the unit transient_fail with no CSV step, and the set is gone with the
-        # process. With a changed set in hand the function returns `partial` with it and says the
-        # save failed. The flows whose state was not saved are selected again next tick and merge
+        # process. With a changed set in hand the function returns `transient_fail` with it and says
+        # the save failed. The flows whose state was not saved are selected again next tick and merge
         # equal rows. Without the opt-in, or with nothing changed, the error is raised as before.
         if not (report_changed_flows and changed_flows):
             raise
         if limit_note is None and _hard_limit_fired(e):
             limit_note = (f"hard limit reached during the final save, after {len(selected):,} of "
-                          f"{len(selected):,} flows: {len(changed_flows):,} changed flow(s) go to "
-                          f"the CSV step (+{tally.added} rows)")
+                          f"{len(selected):,} flows ({type(e).__name__}): {len(changed_flows):,} "
+                          f"changed flow(s) go to the CSV step (+{tally.added} rows)")
         save_note = (f"the state file was NOT saved ({type(e).__name__}: {str(e)[:120]}), flows "
                      f"since the last saved checkpoint are fetched again in a later pass")
         print(f"[{source}] {save_note}; {len(changed_flows):,} changed flow(s) still go to the "
@@ -675,11 +684,13 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
               flush=True)
 
     if limit_note or save_note:
-        # Only reached with the opt-in and a changed set (see the two handlers above). `partial`:
-        # the sweep is not complete, so no success is recorded and the vintage does not advance.
+        # Only reached with the opt-in and a changed set (see the two handlers above).
+        # `transient_fail`, the status these ends were recorded with before: no success, no vintage
+        # advance, and due again at the next run. The changed set is what is new: the orchestrator
+        # derives its CSVs in this pass (orchestrate._should_derive_csvs).
         if limit_note:
             _answer_hard_limit()
-        return Result(status="partial", obs=total_rows, last_obs_date=max_last,
+        return Result(status="transient_fail", obs=total_rows, last_obs_date=max_last,
                       new_vintage=_catalog_token(catalog), changed_keys=changed_flows,
                       error=" - ".join(x for x in (limit_note, save_note) if x))
 

@@ -399,11 +399,11 @@ def _eurostat_sweep(tmp_path, monkeypatch, fetch_flow, n=25):
 
 def _stopped_at_the_limit(res, changed, at):
     """The sweep ended AT the hard limit and handed its changed flows over. With a changed set in
-    hand run_giant returns `partial` with it (tests/test_giant_hard_limit_hands_over.py); these
+    hand run_giant returns transient_fail with it (tests/test_giant_hard_limit_hands_over.py); these
     tests held a raised limit before that change. What they are about - the sweep ends, and what
     is done is saved - is asserted by each test as before."""
-    assert res.status == "partial", (res.status, res.error)
-    assert f"hard limit reached at {at}" in (res.error or ""), res.error
+    assert res.status == "transient_fail", (res.status, res.error)
+    assert f"hard limit reached in flow {at}" in (res.error or ""), res.error
     assert sorted(res.changed_keys) == sorted(changed)
 
 
@@ -414,7 +414,7 @@ def test_a_unit_timeout_ends_the_sweep_after_saving_what_is_done(tmp_path, monke
         return _tbl([("k", 19000, 1.0)]), "ok"
 
     flows = _eurostat_sweep(tmp_path, monkeypatch, fetch_flow)
-    _stopped_at_the_limit(eurostat.update(_Unit(str(tmp_path)), None), flows[:13], "14 of 25 flows")
+    _stopped_at_the_limit(eurostat.update(_Unit(str(tmp_path)), None), flows[:13], "14 of 25 (UnitTimeout)")
     state = json.loads((tmp_path / "_giant_state.json").read_text(encoding="utf-8"))
     done = {f for f, s in state.items() if s.get("status") == "ok"}
     assert done == set(flows[:13]), sorted(done)       # every finished flow, none after
@@ -515,7 +515,7 @@ def test_a_timeout_in_the_footer_read_ends_the_sweep_after_saving(tmp_path, monk
         return real(path)
 
     monkeypatch.setattr(blob, "read_metadata", read_metadata)
-    _stopped_at_the_limit(eurostat.update(_Unit(str(tmp_path)), None), flows[:7], "8 of 12 flows")
+    _stopped_at_the_limit(eurostat.update(_Unit(str(tmp_path)), None), flows[:7], "8 of 12 (UnitTimeout)")
     state = json.loads((tmp_path / "_giant_state.json").read_text(encoding="utf-8"))
     assert {f for f, s in state.items() if s.get("status") == "ok"} == set(flows[:7])
 
@@ -531,7 +531,7 @@ def test_a_timeout_during_the_rate_sleep_ends_the_sweep_after_saving(tmp_path, m
             raise UnitTimeout("alarm during the per-flow pause")
 
     monkeypatch.setattr(_giant.time, "sleep", sleep)
-    _stopped_at_the_limit(eurostat.update(_Unit(str(tmp_path)), None), flows[:15], "15 of 25 flows")
+    _stopped_at_the_limit(eurostat.update(_Unit(str(tmp_path)), None), flows[:15], "15 of 25 (UnitTimeout)")
     state = json.loads((tmp_path / "_giant_state.json").read_text(encoding="utf-8"))
     assert {f for f, s in state.items() if s.get("status") == "ok"} == set(flows[:15])
 
@@ -588,7 +588,7 @@ def test_an_error_raised_after_the_unit_alarm_fired_ends_the_sweep(tmp_path, mon
             return real(out_path, table, **kw)
 
         monkeypatch.setattr(merge, "merge_and_write_bounded", merge_after_alarm)
-    _stopped_at_the_limit(eurostat.update(_Unit(str(tmp_path)), None), flows[:3], "4 of 8 flows")
+    _stopped_at_the_limit(eurostat.update(_Unit(str(tmp_path)), None), flows[:3], "4 of 8 (")
     assert fetched == flows[:4], fetched
     state = json.loads((tmp_path / "_giant_state.json").read_text(encoding="utf-8"))
     assert {f for f, s in state.items() if s.get("status") == "ok"} == set(flows[:3])

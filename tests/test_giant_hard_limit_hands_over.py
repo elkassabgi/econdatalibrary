@@ -10,7 +10,8 @@ changed set the same way.
 
 WHAT THESE TESTS HOLD.
   (a) the limit fires in flow 3 of 5 after flows 1-2 merged a change: the CSVs of flows 1-2 are
-      PUT in the same run, and the unit is recorded `partial`, with no success time;
+      PUT in the same run; the unit stays transient_fail, with no success time, and is due
+      again at the next run;
   (b) the same when every save of the state file fails; and a failed final save alone;
   (c) a caller without the opt-in gets the limit and the save error raised, as before (the oecd
       path too), and select_flows answers as before;
@@ -191,14 +192,14 @@ def test_the_limit_in_flow_3_of_5_derives_the_two_merged_flows_in_the_same_run(r
     out = capsys.readouterr().out
     assert rig.strategy.fetched == ["f1", "f2", "f3"], "the sweep ended at the limit"
     assert rig.put_ids() == ["f1", "f2"], "the CSVs of the two merged flows were PUT in this run"
-    assert results == [(UNIT_KEY, "partial")]
+    assert results == [(UNIT_KEY, "transient_fail")]
     row = rig.unit()
-    assert row["status"] == "partial"
+    assert row["status"] == "transient_fail"
     assert row["last_success_utc"] is None, "a pass that did not finish is never a success"
     assert row["last_attempt_utc"]
-    assert row["upstream_vintage"] is None, "the vintage does not advance on a partial"
-    assert "hard limit reached at 3 of 5 flows" in row["last_error"], row["last_error"]
-    assert rig.runs() and [r[0] for r in rig.runs()] == ["partial"]
+    assert row["upstream_vintage"] is None, "the vintage does not advance"
+    assert "hard limit reached in flow 3 of 5 (UnitTimeout)" in row["last_error"], row["last_error"]
+    assert rig.runs() and [r[0] for r in rig.runs()] == ["transient_fail"]
     assert rig.state.get_source("eurostat") is None, "no source-level success either"
     # the saved state holds the two finished flows, with their new vintage, and not the third
     side = rig.sidecar()
@@ -207,7 +208,7 @@ def test_the_limit_in_flow_3_of_5_derives_the_two_merged_flows_in_the_same_run(r
     # nothing was queued or booked as a debt: both ids derived
     assert rig.state.csv_retries("eurostat") == [] and rig.state.csv_desktop_owed("eurostat") == []
     # the log says what happened, and does not say the alarm was swallowed or the unit timed out
-    assert "[eurostat] hard limit reached at 3 of 5 flows" in out
+    assert "[eurostat] hard limit reached in flow 3 of 5 (UnitTimeout)" in out
     assert "[eurostat] changed flows (merge-measured): 2 of 2 merged" in out
     assert "hard limit FIRED at" in out and "returned the work it had done" in out
     assert "the raise was swallowed" not in out and f"TIMEOUT {UNIT_KEY}" not in out
@@ -236,8 +237,8 @@ def test_an_error_of_another_type_raised_after_the_alarm_fired_hands_over_too(ri
         return _tbl(_rows(fid)), "ok"
 
     results = rig.run(fetch)
-    assert results == [(UNIT_KEY, "partial")] and rig.put_ids() == ["f1", "f2"]
-    assert "hard limit reached at 3 of 5 flows" in rig.unit()["last_error"]
+    assert results == [(UNIT_KEY, "transient_fail")] and rig.put_ids() == ["f1", "f2"]
+    assert "hard limit reached in flow 3 of 5 (TooBigForRunner)" in rig.unit()["last_error"]
 
 
 def test_an_alarm_whose_raise_was_swallowed_ends_the_sweep_at_the_next_flow(rig, capsys):
@@ -251,10 +252,10 @@ def test_an_alarm_whose_raise_was_swallowed_ends_the_sweep_at_the_next_flow(rig,
     results = rig.run(fetch)
     out = capsys.readouterr().out
     assert rig.strategy.fetched == ["f1", "f2"], "no flow is started after the alarm fired"
-    assert results == [(UNIT_KEY, "partial")] and rig.put_ids() == ["f1", "f2"]
+    assert results == [(UNIT_KEY, "transient_fail")] and rig.put_ids() == ["f1", "f2"]
     row = rig.unit()
-    assert row["status"] == "partial" and row["last_success_utc"] is None
-    assert "hard limit reached at 3 of 5 flows" in row["last_error"]
+    assert row["status"] == "transient_fail" and row["last_success_utc"] is None
+    assert "hard limit reached after 2 of 5 flows (flow 3 was not started) (UnitTimeout)" in row["last_error"]
     side = rig.sidecar()
     assert {f for f, s in side.items() if s.get("status") == "ok"} == {"f1", "f2"}
     assert "the unit then stopped its sweep and returned the work it had done" in out
@@ -276,6 +277,94 @@ def test_without_the_opt_in_a_swallowed_alarm_does_not_stop_the_sweep_as_before(
     assert fetched == FLOWS and res.status == "ok"
 
 
+def test_after_a_hard_limit_pass_the_unit_is_due_at_the_next_run(rig):
+    """The schedule does not change: a pass the limit ended is due again at once, as a raised limit was.
+    A `partial` unit with no recorded success would wait min(cadence, PARTIAL_RETRY_DAYS) days."""
+    from datetime import datetime, timedelta
+    from updater import registry
+    from updater.strategies import get as get_strategy
+    rig.run(_limit_in_flow_3)
+    row = rig.unit()
+    assert row["status"] == "transient_fail" and row["last_success_utc"] is None
+    assert row["upstream_vintage"] is None
+    unit = next(u for u in registry.all_units() if u.source_id == "eurostat")
+    real = get_strategy(unit.strategy)                 # the strategy the registry names
+    one_hour_later = datetime.fromisoformat(row["last_attempt_utc"]) + timedelta(hours=1)
+    assert real.is_due(unit, row, now=one_hour_later) is True, row
+    assert real.is_due(unit, dict(row, status="partial"), now=one_hour_later) is False, \
+        "the control: a partial unit with no success waits min(cadence, PARTIAL_RETRY_DAYS) days"
+
+
+def test_a_csv_failure_after_a_hard_limit_does_not_demote_the_unit(rig, monkeypatch, capsys):
+    """One of the two ids fails to derive. The id queues for retry as for any status, the note says so,
+    and the unit stays transient_fail - `partial` would change its schedule."""
+    import core.derive_csv as dc
+    real = dc._series_csv_to_file_sorted
+
+    def stream(sid, out_path):
+        if sid == "eurostat:f2":
+            raise OSError("disk full while writing the CSV")
+        return real(sid, out_path)
+
+    monkeypatch.setattr(dc, "_series_csv_to_file_sorted", stream)
+    results = rig.run(_limit_in_flow_3)
+    assert rig.put_ids() == ["f1"]
+    assert results == [(UNIT_KEY, "transient_fail")]
+    row = rig.unit()
+    assert row["status"] == "transient_fail" and row["last_success_utc"] is None
+    assert row["upstream_vintage"] is None
+    assert "hard limit reached in flow 3 of 5 (UnitTimeout)" in row["last_error"]
+    assert "csv_derive failed 1/2 series [eurostat:f2]" in row["last_error"]
+    assert [r["series_id"] for r in rig.state.csv_retries("eurostat")] == ["eurostat:f2"]
+
+
+class _PlainStrategy:
+    """A unit whose fetch returns a plain transient_fail result, with or without a changed set."""
+
+    def __init__(self, changed_keys, cursors=None):
+        self.changed_keys, self.cursors = changed_keys, cursors
+
+    def is_due(self, unit, us):
+        return True
+
+    def detect_change(self, unit, us):
+        return "cat:test"
+
+    def run(self, unit, since=None):
+        from updater.strategies.base import Result
+        return Result(status="transient_fail", obs=0, error="publisher answered 503 for every request",
+                      changed_keys=self.changed_keys, series_cursors=self.cursors)
+
+
+@pytest.mark.parametrize("changed,cursors", [(None, None), ({}, None), (None, {"f1": "2025-12-31"})],
+                         ids=["no_changed_set", "empty_changed_set", "series_cursors_only"])
+def test_a_plain_transient_fail_runs_no_csv_step(rig, monkeypatch, changed, cursors):
+    called = []
+    real = orchestrate._derive_changed_csvs
+    monkeypatch.setattr(orchestrate, "_derive_changed_csvs",
+                        lambda *a, **k: called.append(1) or real(*a, **k))
+    strat = _PlainStrategy(changed, cursors)
+    monkeypatch.setattr(orchestrate, "get_strategy", lambda name: strat)
+    results = orchestrate.run_once(sources=["eurostat"], store=rig.state, blob=rig.blob)
+    assert results == [(UNIT_KEY, "transient_fail")]
+    assert called == [], "a transient_fail with no changed set has nothing to derive"
+    assert rig.blob.keys == []
+    row = rig.unit()
+    assert row["status"] == "transient_fail" and row["last_error"] == "publisher answered 503 for every request"
+
+
+def test_the_derive_predicate():
+    sd = orchestrate._should_derive_csvs
+    assert sd("ok") is True and sd("partial") is True
+    assert sd("ok", {}) is True and sd("partial", None) is True
+    assert sd("no_change") is False and sd("no_change", {"f": None}) is False
+    assert sd("transient_fail") is False
+    assert sd("transient_fail", None) is False and sd("transient_fail", {}) is False
+    assert sd("transient_fail", ["f1"]) is False, "only the merge-measured dict counts"
+    assert sd("transient_fail", {"f1": "2025-12-31"}) is True
+    assert sd("timeout", {"f1": None}) is False and sd("definitive_fail", {"f1": None}) is False
+
+
 # ---- (b) the state file cannot be saved ------------------------------------------------------
 
 def test_the_limit_with_every_state_save_failing_still_derives_the_merged_flows(rig, monkeypatch, capsys):
@@ -286,16 +375,18 @@ def test_the_limit_with_every_state_save_failing_still_derives_the_merged_flows(
     results = rig.run(_limit_in_flow_3)
     out = capsys.readouterr().out
     assert rig.put_ids() == ["f1", "f2"]
-    assert results == [(UNIT_KEY, "partial")]
+    assert results == [(UNIT_KEY, "transient_fail")]
     row = rig.unit()
-    assert row["status"] == "partial" and row["last_success_utc"] is None
-    assert "hard limit reached at 3 of 5 flows" in row["last_error"]
+    assert row["status"] == "transient_fail" and row["last_success_utc"] is None
+    # the handler's own checkpoint fails after the alarm; with the alarm flag set, that OSError is what
+    # leaves the loop, and the text names it
+    assert "hard limit reached in flow 3 of 5 (OSError)" in row["last_error"]
     assert "the state file was NOT saved (OSError: PUT of the state file failed)" in row["last_error"]
     assert rig.sidecar() is None, "no save succeeded"
     assert "the state file was NOT saved" in out and "2 changed flow(s) still go to the CSV step" in out
 
 
-def test_a_failed_final_save_alone_returns_partial_with_the_changed_set(tmp_path, monkeypatch):
+def test_a_failed_final_save_alone_returns_the_changed_set(tmp_path, monkeypatch):
     """No limit: all five flows merge, then the final save fails."""
     monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
     saves = []
@@ -306,7 +397,7 @@ def test_a_failed_final_save_alone_returns_partial_with_the_changed_set(tmp_path
 
     monkeypatch.setattr(_giant, "save_state", no_save)
     res = _run_giant(tmp_path, lambda fid: (_tbl(_rows(fid)), "ok"))
-    assert res.status == "partial"
+    assert res.status == "transient_fail"
     assert sorted(res.changed_keys) == FLOWS
     assert res.changed_keys["f1"] == "2025-12-31"
     assert "the state file was NOT saved (OSError: PUT of the state file failed)" in res.error

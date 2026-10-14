@@ -644,7 +644,7 @@ def _record_for_catalog_sync(ids) -> None:
               f"the next `sync_catalog_d1.py --source <id>` reconcile", flush=True)
 
 
-def _should_derive_csvs(status: str) -> bool:
+def _should_derive_csvs(status: str, changed_keys=None) -> bool:
     """Does a run of this status have merged rows whose CSVs must be re-derived?
 
     A named predicate rather than an inline comparison so the rule is testable directly —
@@ -656,9 +656,16 @@ def _should_derive_csvs(status: str) -> bool:
                 Excluding it assumed a source eventually returns ok; sources that never do
                 (worldbank_esg: 4 partials out of 4 runs ever) never re-derived at all.
     `no_change` — nothing merged, nothing to derive.
-    `transient_fail` — nothing merged, nothing to derive.
+    `transient_fail` — nothing to derive, EXCEPT when the result carries a non-empty changed
+                set (`changed_keys`). _giant.run_giant returns exactly that when the hard limit
+                ends a sweep that had already merged changed flows: the status stays the one a
+                raised limit gets (so the unit is due again at the next run, base.Strategy.is_due),
+                and the CSVs of those flows are derived in this pass, while their files are on
+                this machine. A plain transient_fail, with no changed set, derives nothing.
     """
-    return status in ("ok", "partial")
+    if status in ("ok", "partial"):
+        return True
+    return status == "transient_fail" and isinstance(changed_keys, dict) and bool(changed_keys)
 
 
 _REG_ENTRIES: "dict | None" = None
@@ -2714,8 +2721,12 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             # actually queue retries (insee_bdm parked 43,354 ids in one run and is
             # chronically partial, so the R361 drain could never fire for it).
             #
-            # transient_fail is deliberately NOT included: nothing merged, nothing to derive.
-            if _should_derive_csvs(status) and not dry and not _served_by_lane(unit.source_id):
+            # A plain transient_fail is deliberately NOT included: nothing merged, nothing to derive.
+            # The one exception is a transient_fail RESULT that carries a non-empty changed set: a
+            # giant sweep the hard limit ended after it had merged changed flows (_giant.run_giant).
+            # Its status stays transient_fail below - a CSV failure does not demote it, the vintage
+            # does not advance and no success is set - so the unit is due again at the next run.
+            if _should_derive_csvs(status, getattr(res, "changed_keys", None)) and not dry and not _served_by_lane(unit.source_id):
                 # HARD FENCE around the WHOLE csv phase (2026-08-18): abs's
                 # post-merge phase ran 115 silent minutes past every soft budget
                 # (run 32054925848) until the 285-min step kill destroyed the
@@ -2825,7 +2836,13 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                         # note only as fallback (it names the batch, not the cause).
                         store.enqueue_csv_retry(unit.source_id, csv_failed,
                                                 csv_reasons or csv_err)
-                    status, ok = "partial", False
+                    # NOT for a transient_fail result (a sweep the hard limit ended, see the gate):
+                    # it stays transient_fail, so the unit is due again at the next run. `partial`
+                    # would make a unit with no recorded success wait min(cadence,
+                    # PARTIAL_RETRY_DAYS) days. The ids queue and the note is kept, as for any status.
+                    if status != "transient_fail":
+                        status = "partial"
+                    ok = False
                     err_note = "; ".join(x for x in (err_note, csv_err) if x)
             # last_obs_date must never regress (a run that wrote only some units can
             # report a lower max than what's already stored).
