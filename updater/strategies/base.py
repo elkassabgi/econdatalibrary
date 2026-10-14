@@ -160,9 +160,12 @@ class Strategy(ABC):
         could not run at all (5xx, network), or the hard per-unit limit ended it - so it must
         stay immediately retryable. Since PR #151 a transient_fail can also have merged rows and
         derived their CSVs: _giant.run_giant returns transient_fail WITH its changed set when
-        the limit ends a sweep that had merged changed flows (orchestrate._should_derive_csvs).
-        That pass is still unfinished, and it must stay due at the next run like any other
-        transient_fail. Do not move it to the partial clock.
+        the limit ends a sweep that had merged changed flows (orchestrate._should_derive_csvs),
+        and for a capped pass (more flows selected than its cap) when BOTH changed or new flows
+        remain beyond the cap AND the pass merged at least one changed flow itself; a capped
+        pass that merged nothing (all its flows failed) stays partial. That pass is still
+        unfinished, and it must stay due at the next run like any other transient_fail. Do not
+        move it to the partial clock.
 
         Nothing here changes what is REPORTED. last_success stays unset, the source still
         reads as stale to the health gate and to /v1/last-updates, and `--force` still

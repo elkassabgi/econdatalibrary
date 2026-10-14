@@ -22,7 +22,9 @@ How the fetcher decides what to fetch (see fetchers/_giant.run_giant):
     incrementally via server-side startPeriod, merging per-flow under
     dedup-on-(series_key,obs_date) + never-shrink,
   * returns an HONEST status (429/timeout -> partial & reselect; 200-with-0-rows
-    from a real body -> structural; cap overflow -> partial).
+    from a real body -> structural; cap overflow -> partial, or, for a fetcher that
+    reports its changed flows, transient_fail when changed or new flows remain beyond the
+    cap and the pass merged at least one changed flow - see _giant.run_giant).
 
 DUPLICATION GUARD — the emitted series_key MUST be STABLE:
   oecd: already stable (dim columns between DATAFLOW and TIME_PERIOD joined '.';

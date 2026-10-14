@@ -661,7 +661,9 @@ def _should_derive_csvs(status: str, changed_keys=None) -> bool:
                 ends a sweep that had already merged changed flows: the status stays the one a
                 raised limit gets (so the unit is due again at the next run, base.Strategy.is_due),
                 and the CSVs of those flows are derived in this pass, while their files are on
-                this machine. A plain transient_fail, with no changed set, derives nothing.
+                this machine. It returns the same for a CAPPED pass that left fresh changes
+                beyond its flow cap and merged at least one changed flow itself. A plain
+                transient_fail, with no changed set, derives nothing.
     """
     if status in ("ok", "partial"):
         return True

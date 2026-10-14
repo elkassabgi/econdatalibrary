@@ -209,7 +209,10 @@ def test_capped_partial_carries_the_fetched_slices_changes(tmp_path, monkeypatch
     res = _run(tmp_path, monkeypatch, _bump(CAT),
                {"aact_ali01": _tbl(BASE_A + [("k1", "2024-03-01", 3.0)]),
                 "tec00115": _tbl(BASE_B)}, max_flows=1)
-    assert res.status == "partial" and "selected>cap" in (res.error or "")
+    # tec00115 changed upstream and lies beyond the cap, and this pass merged a change: the pass
+    # asks for the next run (transient_fail with the set) instead of the partial clock
+    # (tests/test_giant_capped_due.py holds the rule and its controls)
+    assert res.status == "transient_fail" and "selected>cap" in (res.error or "")
     assert res.changed_keys == {"aact_ali01": "2024-03-01"}
 
 
