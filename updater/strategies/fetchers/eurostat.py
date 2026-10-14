@@ -133,7 +133,18 @@ def _build_key(row: dict, dim_cols: list[str]) -> str:
 
 
 class TooBigForRunner(Exception):
-    """This flow's decompressed body is past what a 16 GB runner can hold (R473)."""
+    """This flow's decompressed body is past what a 16 GB runner can hold (R473). `rows` is the
+    row count the body holds, so the flow can be booked with its size (run_giant's `too_big`)."""
+
+    def __init__(self, message: str, rows: "int | None" = None):
+        super().__init__(message)
+        self.rows = rows
+
+
+# THE PARSER VERSION a `too_big` booking is made under. A flow booked too big is not fetched again
+# until the row ceiling covers its size or this number changes (_giant._too_big_rearmed): raise it
+# when the parser stops holding the whole body in memory, so the booked flows are tried again.
+PARSE_VERSION = 1
 
 
 def _gz_line_count(content: bytes) -> int:
@@ -189,7 +200,7 @@ def _parse_csv(content: bytes):
         if rows > MAX_FLOW_ROWS:
             raise TooBigForRunner(
                 f"gzip body holds ~{rows:,} rows, over the {MAX_FLOW_ROWS:,} ceiling for a "
-                f"16 GB runner; deferred rather than parsed (R473)")
+                f"16 GB runner; deferred rather than parsed (R473)", rows=rows)
         reader = csv.DictReader(io.TextIOWrapper(
             gzip.GzipFile(fileobj=io.BytesIO(content)),
             encoding="utf-8-sig", errors="replace", newline=""))
@@ -212,7 +223,7 @@ def _parse_csv(content: bytes):
         if rows > MAX_FLOW_ROWS:
             raise TooBigForRunner(
                 f"plain CSV body holds ~{rows:,} rows, over the {MAX_FLOW_ROWS:,} ceiling for a "
-                f"16 GB runner; deferred rather than parsed (R473)")
+                f"16 GB runner; deferred rather than parsed (R473)", rows=rows)
         # DECODE AS A STREAM, like the gzip branch. This was io.StringIO(content.decode(...)):
         # a second, decoded copy of the whole body held for the entire parse. Measured by the
         # 2026-09-14 review on synthetic eurostat-shaped bodies, that copy is most of the plain
@@ -341,7 +352,9 @@ def _since_param(since: str | None) -> str:
 
 
 def fetch_flow(flow_id, meta, since, session):
-    """Fetch one changed Eurostat dataset incrementally. Returns (table, status)."""
+    """Fetch one changed Eurostat dataset incrementally. Returns (table, status), or
+    ({"rows": n}, "too_big") for a body over MAX_FLOW_ROWS (run_giant books it and does not fetch
+    it again until the ceiling or PARSE_VERSION changes)."""
     url = DATA_URL.format(code=flow_id) + _since_param(since)
     content = http_get(url, CSV_ACCEPT, TIMEOUT, rate=RATE, session=session)
     if content is None:
@@ -351,7 +364,13 @@ def fetch_flow(flow_id, meta, since, session):
     if head.startswith(b"<"):
         # Eurostat returned an XML error doc instead of CSV -> structural for this flow.
         return None, "structural"
-    keys, dates, vals = _parse_csv(content)
+    try:
+        keys, dates, vals = _parse_csv(content)
+    except TooBigForRunner as e:
+        # NAMED, because the error text does not carry the flow (2026-10-13 ended on a 20,141,824-row
+        # body and the log could not say which flow it was).
+        print(f"[eurostat] {flow_id}: too big for the runner - {e}", flush=True)
+        return {"rows": e.rows}, "too_big"
     if keys is None:
         # CSV header missing required columns from a non-trivial body
         return (None, "structural") if len(content) > 200 else (None, "empty")
@@ -540,7 +559,10 @@ def _run(unit) -> Result:
         # in memory and killed updater-daily 34780466566 / 34841580535 at flow ~41 of 400.
         # checkpoint_every: persist per-flow progress during the sweep, so a run that is killed
         # anyway does not re-select the same flows in the same order next tick.
-        bounded_merge=True, checkpoint_every=10)
+        bounded_merge=True, checkpoint_every=10,
+        # retry_slice: failed flows only through a bounded, backed-off slice at the head of each pass,
+        # and a body over MAX_FLOW_ROWS booked `too_big` with the ceiling and parser of this code.
+        retry_slice={"ceiling": MAX_FLOW_ROWS, "parser": PARSE_VERSION})
 
 
 # S4 strategy also calls current_vintage() (cheap catalogue probe) for detect_change.
