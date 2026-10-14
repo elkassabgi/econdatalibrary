@@ -263,6 +263,13 @@ class UnitTimeout(Exception):
 # Reset whenever a unit's alarm is armed or disarmed.
 UNIT_TIMEOUT_FIRED = False
 
+# SET BY A FETCHER THAT STOPS AT THE LIMIT AND RETURNS ITS WORK. _giant.run_giant catches the limit
+# for a caller that reports its changed flows, ends its sweep and returns `partial` with the flows it
+# had merged, so their CSVs are derived in the same pass. The unit then ends without a UnitTimeout,
+# and __exit__ below would say the raise was swallowed. With this flag it says what happened.
+# Reset whenever a unit's alarm is armed or disarmed.
+UNIT_TIMEOUT_ANSWERED = False
+
 # DEFERRED DELIVERY (review R1262). SIGALRM is process-wide: when the main thread blocks it, the kernel hands it to
 # another thread, CPython's C handler still trips the eval breaker, and the Python handler runs on the main thread at
 # its next check - INSIDE concurrent.futures.wait's lock-taking __enter__ as before; the process then hangs at exit
@@ -492,7 +499,9 @@ class _unit_deadline:
 
     def __enter__(self):
         global _TIMEOUT_WARNED, UNIT_TIMEOUT_FIRED, _DEFER_ALARM, _ALARM_PENDING, _ARMED_DEADLINE, _HOOK_BUSY
+        global UNIT_TIMEOUT_ANSWERED
         UNIT_TIMEOUT_FIRED, _DEFER_ALARM, _ALARM_PENDING, _HOOK_BUSY = False, False, None, False
+        UNIT_TIMEOUT_ANSWERED = False
         if self.minutes <= 0:
             return self
         try:
@@ -525,6 +534,7 @@ class _unit_deadline:
 
     def __exit__(self, *exc):
         global UNIT_TIMEOUT_FIRED, _DEFER_ALARM, _ALARM_PENDING, _ARMED_DEADLINE, _HOOK_BUSY
+        global UNIT_TIMEOUT_ANSWERED
         if _ARMED_DEADLINE is self:
             _ARMED_DEADLINE = None                           # first: nothing may re-arm through a closing deadline
         if self.armed:
@@ -537,7 +547,12 @@ class _unit_deadline:
             if sys.unraisablehook == self._unraisable:        # never clobber a hook someone else installed since
                 sys.unraisablehook = self._prev_hook
             self.armed = False                               # a hook left chained under another one goes inert
-        if UNIT_TIMEOUT_FIRED and not (exc[0] is not None and issubclass(exc[0], UnitTimeout)):
+        if UNIT_TIMEOUT_FIRED and exc[0] is None and UNIT_TIMEOUT_ANSWERED:
+            # the limit fired, the fetcher caught it, ended its sweep and returned what it had done (_giant.run_giant
+            # for a caller that reports its changed flows): nothing was swallowed, and the unit did not run on
+            print(f"[orchestrator] {self.key}: hard limit FIRED at {self.minutes:.0f} minutes; the unit then stopped "
+                  f"its sweep and returned the work it had done", flush=True)
+        elif UNIT_TIMEOUT_FIRED and not (exc[0] is not None and issubclass(exc[0], UnitTimeout)):
             # the limit fired and the unit ended some OTHER way - normally, or with another exception: its UnitTimeout
             # was swallowed and never delivered (R1301: a __del__'s own `except Exception`, then a RuntimeError)
             how = "normally" if exc[0] is None else f"with {exc[0].__name__}"
@@ -547,6 +562,7 @@ class _unit_deadline:
         # outlive this unit (DeepSeek advisory review F5, 2026-09-15). An alarm delivered inside
         # the disarm window itself is swallowed by the except above and is not attributed.
         UNIT_TIMEOUT_FIRED, _DEFER_ALARM, _ALARM_PENDING, _HOOK_BUSY = False, False, None, False
+        UNIT_TIMEOUT_ANSWERED = False
         return False
 
 
