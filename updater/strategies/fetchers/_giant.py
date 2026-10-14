@@ -304,14 +304,41 @@ def select_flows(catalog: dict, state: dict, *, max_flows=DEFAULT_MAX_FLOWS_PER_
 _LAST_ATTEMPT_DONE = {"ok", "empty", "no_time_dimension"}
 
 
+def _flow_class(meta: dict, st) -> str:
+    """The ONE classification of a catalogue flow against its state row, shared by the capped
+    count (_beyond_the_cap) and the retry-slice selection (_plan):
+
+      fresh    - never attempted (no row), or the vintage moved after a last attempt that FINISHED
+      too_big  - booked too big for the runner (status `too_big`)
+      failed   - the last attempt failed (any status not in _LAST_ATTEMPT_DONE) and its vintage
+                 moved or its status is a redo status. No failure path records a vintage, so such
+                 a flow reads "moved" until it succeeds: it is a retry, not a change.
+      redo     - finished, vintage equal, status still a redo status (`empty`)
+      settled  - finished and current: nothing to do
+    """
+    if st is None:
+        return "fresh"
+    status = st.get("status")
+    if status == "too_big":
+        return "too_big"
+    moved = str(meta.get("vintage")) != str(st.get("vintage"))
+    if status in _LAST_ATTEMPT_DONE:
+        if moved:
+            return "fresh"
+        return "redo" if status in _REDO_STATUSES else "settled"
+    if moved or status in _REDO_STATUSES:
+        return "failed"
+    return "settled"
+
+
 def _beyond_the_cap(catalog: dict, state: dict, selected) -> tuple:
     """(fresh, retry): the catalogue flows a capped pass does NOT reach, split in two.
 
     fresh - flows upstream changed since we last FINISHED them: absent from the state (never
             attempted), or with a moved vintage after a last attempt that finished.
-    retry - everything else the selection would have taken: a moved vintage after a last
-            attempt that FAILED (it stays "changed" until it succeeds, so it is a retry, not a
-            change), and the redo statuses of select_flows.
+    retry - everything else the selection would have taken: flows whose last attempt FAILED (they
+            stay "changed" until they succeed, so they are retries, not changes), and the redo
+            statuses of select_flows. A `too_big` flow is neither.
 
     Read from the state as loaded BEFORE the pass. The split decides whether a capped pass asks
     for the next run (fresh changes are waiting) or keeps the partial clock (only retries wait):
@@ -321,23 +348,183 @@ def _beyond_the_cap(catalog: dict, state: dict, selected) -> tuple:
     for fid, meta in catalog.items():
         if fid in sel:
             continue
-        st = state.get(fid)
-        if st is None:
+        c = _flow_class(meta, state.get(fid))
+        if c == "fresh":
             fresh += 1
-        elif str(meta.get("vintage")) != str(st.get("vintage")):
-            if st.get("status") in _LAST_ATTEMPT_DONE:
-                fresh += 1
-            else:
-                retry += 1
-        elif st.get("status") in _REDO_STATUSES:
+        elif c in ("failed", "redo"):
             retry += 1
     return fresh, retry
+
+
+# THE RETRY SLICE (opt-in, eurostat). select_flows puts every flow that failed last time at the
+# head of the selection, in catalogue order, so each pass started by fetching the same failures:
+# on 2026-10-14 the first 83 of 400 selected flows were exactly the 83 flows that failed last time,
+# and five of them (each over the runner's row ceiling) cost 200-260 s apiece. With the slice, failed
+# flows enter a pass ONLY through it: at most RETRY_SLICE_FLOWS flows and RETRY_SLICE_SECONDS of
+# fetching (checked between flows), oldest failure first, each flow waiting
+# min(RETRY_BASE_HOURS * 2**(fails-1) h, RETRY_CAP_DAYS d) after its last failure. Fresh flows follow,
+# in catalogue order. A flow whose body is over the runner's row ceiling is booked `too_big` and is
+# not fetched again until the ceiling or the parser changes (see _too_big_rearmed).
+RETRY_SLICE_FLOWS = 20
+RETRY_SLICE_SECONDS = 300
+RETRY_BASE_HOURS = 12
+RETRY_CAP_DAYS = 16
+_FAILURE_KEYS = ("fails", "failed_at", "failed_vintage", "fail_kind")
+_TOO_BIG_KEYS = ("too_big_rows", "too_big_ceiling", "too_big_parser", "too_big_vintage", "too_big_at")
+
+
+# The clock the retry slice measures its seconds with (a name tests can replace).
+_clock = time.time
+
+
+def _utcnow() -> _dt.datetime:
+    return _dt.datetime.now(_dt.timezone.utc)
+
+
+def _parse_utc(s):
+    try:
+        t = _dt.datetime.fromisoformat(str(s))
+    except (TypeError, ValueError):
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=_dt.timezone.utc)
+
+
+def _fails(st) -> int:
+    try:
+        return max(1, int(st.get("fails") or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _backoff(st) -> _dt.timedelta:
+    """The wait after the row's last failure: 12 h, 24 h, 2 d, ... capped at 16 days."""
+    hours = RETRY_BASE_HOURS * 2 ** min(_fails(st) - 1, 10)
+    return min(_dt.timedelta(hours=hours), _dt.timedelta(days=RETRY_CAP_DAYS))
+
+
+def _retry_due(st, now) -> bool:
+    """A failed row is due when its last failure time is unknown or its back-off has passed."""
+    t = _parse_utc(st.get("failed_at")) if st.get("failed_at") else None
+    return t is None or now >= t + _backoff(st)
+
+
+def _too_big_rearmed(st, cfg) -> bool:
+    """A `too_big` row becomes a due retry again when the code could now fetch it: the parser
+    version changed, or the runner's row ceiling now covers the size it was refused at (when that
+    size is unknown: the ceiling has risen above the one it was refused under)."""
+    parser = cfg.get("parser")
+    if parser is not None and st.get("too_big_parser") != parser:
+        return True
+    ceiling = cfg.get("ceiling")
+    if ceiling is None:
+        return False
+    rows = st.get("too_big_rows")
+    if rows:
+        return ceiling >= rows
+    old = st.get("too_big_ceiling")
+    return old is not None and ceiling > old
+
+
+def _plan(catalog: dict, state: dict, *, max_flows: int, now, cfg: dict) -> dict:
+    """The retry-slice selection: (1) due failed flows, oldest failure first (rows with no failure
+    time first, in catalogue order), at most RETRY_SLICE_FLOWS; (2) fresh flows in catalogue order;
+    (3) redo flows in catalogue order. Failed flows not due, due ones past the slice, and parked
+    `too_big` flows are NOT in the ordered list, so they never make a pass `capped`."""
+    due, backed_off, too_big, fresh, redo = [], [], [], [], []
+    for i, (fid, meta) in enumerate(catalog.items()):
+        st = state.get(fid)
+        c = _flow_class(meta, st)
+        if c == "fresh":
+            fresh.append(fid)
+        elif c == "redo":
+            redo.append(fid)
+        elif c == "too_big":
+            if _too_big_rearmed(st, cfg):
+                due.append(((0, "", i) if not st.get("failed_at") else (1, str(st.get("failed_at")), i), fid))
+            else:
+                too_big.append(fid)
+        elif c == "failed":
+            if _retry_due(st, now):
+                due.append(((0, "", i) if not st.get("failed_at") else (1, str(st.get("failed_at")), i), fid))
+            else:
+                backed_off.append(fid)
+    due.sort()
+    slice_ids = [fid for _k, fid in due[:RETRY_SLICE_FLOWS]]
+    waiting = [fid for _k, fid in due[RETRY_SLICE_FLOWS:]]
+    ordered = slice_ids + fresh + redo
+    selected = ordered[:max_flows]
+    return {"selected": selected, "capped": len(ordered) > max_flows,
+            "slice": set(slice_ids) & set(selected), "backed_off": backed_off,
+            "waiting": waiting, "too_big": too_big}
+
+
+def _record_attempt(state: dict, fid: str, meta: dict) -> None:
+    """Write the attempt into the row BEFORE the fetch: a failure until the outcome says otherwise.
+
+    The limit handlers save the whole state and raise without recording the flow in flight, so a
+    flow that always ran into the limit stayed unrecorded and first in line for ever. Recorded
+    first, it is saved as one more failure (`interrupted`) by any checkpoint and backs off.
+    `fails` counts on from the previous value only when the previous status was a failure."""
+    prior = state.get(fid)
+    st = dict(prior or {})
+    prev_failed = prior is not None and prior.get("status") not in _LAST_ATTEMPT_DONE
+    st.update(status="transient_fail", fail_kind="interrupted",
+              fails=(_fails(prior) if prev_failed else 0) + 1,
+              failed_at=_utcnow().isoformat(timespec="seconds"),
+              failed_vintage=meta.get("vintage"))
+    state[fid] = st
+
+
+def _settle_attempt(state: dict, fid: str, tally) -> tuple:
+    """After the outcome: on a success drop the failure keys; on a failure set its kind.
+    Returns (status, kind) for the log line."""
+    st = dict(state.get(fid) or {})
+    status = st.get("status")
+    if status in _LAST_ATTEMPT_DONE:
+        for k in _FAILURE_KEYS + _TOO_BIG_KEYS:
+            st.pop(k, None)
+        kind = "-"
+    elif status == "too_big":
+        kind = st["fail_kind"] = "too_big"
+    elif status == "definitive_fail":
+        kind = st["fail_kind"] = "structural"
+    elif status == "partial":
+        kind = st["fail_kind"] = "merge_guard"
+    else:
+        last = tally.transient_ids[-1] if tally.transient_ids else ""
+        kind = st["fail_kind"] = ("unexpected" if (str(last).startswith(f"{fid}:")
+                                                  and "UNEXPECTED" in str(last)) else "transient")
+    state[fid] = st
+    return status, kind
+
+
+def _retry_note(plan: dict, state: dict, catalog: dict, skipped: list) -> "tuple":
+    """(note, unresolved). `unresolved` is True when failed or too_big flows were not attempted in
+    this pass: such a pass must never read `ok`. The note is None when there is nothing to say.
+    The wording is its own - never finalize's "deferred by budget" grammar, which health would
+    read as a healthy rotation."""
+    def _ids(xs):
+        xs = sorted(xs)
+        return "[" + ", ".join(xs[:10]) + (f", +{len(xs) - 10} more" if len(xs) > 10 else "") + "]"
+    outlasts = sorted(f for f, s in state.items()
+                      if f in catalog and s.get("status") not in _LAST_ATTEMPT_DONE
+                      and s.get("status") != "too_big" and s.get("fail_kind") == "interrupted"
+                      and _fails(s) >= 3)
+    too_big = sorted(f for f, s in state.items() if f in catalog and s.get("status") == "too_big")
+    b, w, k = len(plan["backed_off"]), len(plan["waiting"]), len(skipped)
+    if not (b or w or k or too_big or outlasts):
+        return None, False
+    note = (f"retry note: {b:,} failed flow(s) wait out their back-off, {w + k:,} due failed flow(s) "
+            f"wait for a later retry slice ({k:,} stopped by its {RETRY_SLICE_SECONDS} s limit), "
+            f"outlasts the limit: {len(outlasts):,} {_ids(outlasts)}, too big for the runner (not "
+            f"fetched, not served): {len(too_big):,} {_ids(too_big)}")
+    return note, bool(b or w or k or too_big)
 
 
 def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, timeout,
               max_flows=DEFAULT_MAX_FLOWS_PER_TICK, min_ratio=0.97,
               report_changed_flows: bool = False, bounded_merge: bool = False,
-              checkpoint_every: int | None = None):
+              checkpoint_every: int | None = None, retry_slice: "dict | None" = None):
     """Generic S4 driver. Sources supply two callables:
 
       fetch_catalog() -> {flow_id: {"vintage", "filename", **meta}}   (raises Transient on net fail)
@@ -397,7 +584,20 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
     runner OOM kill, the orchestrator's SIGALRM UnitTimeout, a job timeout - discards every
     flow's recorded progress and the next tick re-selects the identical flows in the identical
     order, meeting the identical failure. A failed checkpoint PUT is reported and the sweep goes
-    on; the final save still raises loudly."""
+    on; the final save still raises loudly.
+
+    retry_slice={"ceiling": <rows>, "parser": <version>} (opt-in; requires report_changed_flows
+    and checkpoint_every) selects through _plan instead of select_flows: failed flows only through
+    a bounded, backed-off retry slice at the head of the pass, then fresh flows (see the note over
+    RETRY_SLICE_FLOWS). Each selected flow's attempt is written into its row before the fetch
+    (_record_attempt); a retry-slice flow's row is also saved before the fetch, and each retry-slice
+    flow prints one line with its outcome and seconds. fetch_flow may return ({"rows": n},
+    "too_big"): the row is booked `too_big` with the ceiling and parser it was refused under, and
+    its `vintage` is left as it was (the stored data does not match the new upstream version). A
+    pass that left failed or too_big flows unattempted never returns ok: it returns partial with a
+    "retry note" naming them. Without the opt-in nothing here changes."""
+    if retry_slice is not None and not (report_changed_flows and checkpoint_every):
+        raise ValueError("run_giant: retry_slice requires report_changed_flows and checkpoint_every")
     source_dir = (unit.out_paths or [None])[0]
     if source_dir is None:
         raise DefinitiveError(f"{source}: unit has no out_paths (source dir unknown)")
@@ -408,8 +608,16 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
         raise TransientError(f"{source}: catalogue download returned no flows (treat as transient)")
 
     state = load_state(source_dir)
-    selected, capped = select_flows(catalog, state, max_flows=max_flows)
+    if retry_slice is not None:
+        plan = _plan(catalog, state, max_flows=max_flows, now=_utcnow(), cfg=retry_slice)
+        selected, capped = plan["selected"], plan["capped"]
+    else:
+        plan = None
+        selected, capped = select_flows(catalog, state, max_flows=max_flows)
     beyond_fresh, beyond_retry = _beyond_the_cap(catalog, state, selected) if capped else (0, 0)
+    if plan is not None and capped:
+        # flows waiting out their back-off are counted apart: they are not "beyond the cap"
+        beyond_retry = max(0, beyond_retry - len(plan["backed_off"]))
 
     # ANNOUNCE THE SCOPE, then report progress through it. A giant is the longest-running
     # thing in any pass - oecd ran for over three hours on 2026-08-01 - and the orchestrator
@@ -420,6 +628,12 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
     print(f"[{source}] catalogue {len(catalog):,} flow(s); selected {len(selected):,} "
           f"changed/new/redo{' (CAPPED - the rest is selected again by a later pass)' if capped else ''}",
           flush=True)
+    if plan is not None:
+        _tb = sorted(plan["too_big"])
+        print(f"[{source}] retry slice: {len(plan['slice']):,} failed flow(s) due now (at most "
+              f"{RETRY_SLICE_FLOWS}, {RETRY_SLICE_SECONDS} s); {len(plan['backed_off']):,} wait out their "
+              f"back-off; {len(plan['waiting']):,} due wait for a later slice; too big for the runner "
+              f"(not fetched, not served): {len(_tb):,} {_tb[:20]}", flush=True)
     t_start = time.time()
 
     tally = Tally()
@@ -451,17 +665,48 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
                   f"({type(e).__name__}: {str(e)[:120]}); the sweep continues and the "
                   f"end-of-run save still runs", flush=True)
 
+    # The flow whose attempt _record_attempt wrote (retry_slice only), settled when its outcome is
+    # in: every outcome branch below ends with _pause(), the raising paths do not.
+    cur: dict = {"fid": None}
+    slice_spent = [0.0]
+    slice_skipped: list = []
+
+    def _settle():
+        fid_ = cur["fid"]
+        cur["fid"] = None
+        status_, kind_ = _settle_attempt(state, fid_, tally)
+        if cur.get("slice"):
+            dur = _clock() - cur["t0"]
+            slice_spent[0] += dur
+            print(f"[{source}] retry {fid_}: {status_} ({kind_}), {dur:.1f}s including the state "
+                  f"save of {cur['save']:.1f}s", flush=True)
+
     # The two places in the loop that spend real time OUTSIDE every per-flow handler: the
     # rate pause and the stored-footer read (a whole-object GET under r2). A timeout landing
     # in either used to end the sweep without the timeout checkpoint (2026-09-14 review).
     # Behaviour is otherwise unchanged: everything still propagates.
     def _pause():
+        if cur["fid"] is not None:
+            _settle()
         try:
             time.sleep(rate)
         except Exception as e:                          # noqa: BLE001
             if checkpoint_every and _is_unit_timeout(e):
                 _checkpoint(n_done, "unit timeout")
             raise
+
+    def _presave():
+        # The whole state file is PUT before a retry-slice flow's fetch, so even a hard kill during
+        # a known-risky flow leaves its attempt recorded. Timed into the flow's log line.
+        t = _clock()
+        try:
+            _checkpoint(n_done - 1, "retry slice")
+        except Exception as e:                          # noqa: BLE001
+            if _is_unit_timeout(e):
+                _checkpoint(n_done - 1, "unit timeout")
+            raise
+        finally:
+            cur["save"] = _clock() - t
 
     def _stored_max(out_path):
         try:
@@ -486,10 +731,21 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
                     _checkpoint(n_done - 1, "unit timeout")
                 not_started = n_done
                 raise _undelivered_limit(n_done - 1, len(selected))
+            in_slice = plan is not None and fid in plan["slice"]
+            if in_slice and slice_spent[0] >= RETRY_SLICE_SECONDS:
+                # the slice's time is spent: this flow stays due, untouched, for a later pass
+                slice_skipped.append(fid)
+                continue
+            if plan is not None:
+                # BEFORE the periodic checkpoint, so that checkpoint carries this attempt too
+                _record_attempt(state, fid, catalog[fid])
+                cur.update(fid=fid, t0=_clock(), save=0.0, slice=in_slice)
             # CHECKPOINT (opt-in): n_done - 1 flows are complete at this point. Without it the only
             # save_state is the one after the loop, which a killed or SIGALRM-interrupted sweep never
             # reaches (see the checkpoint_every note in the docstring).
-            if checkpoint_every and n_done > 1 and (n_done - 1) % checkpoint_every == 0:
+            if in_slice:
+                _presave()                  # a whole-state save, so it also stands for the periodic one
+            elif checkpoint_every and n_done > 1 and (n_done - 1) % checkpoint_every == 0:
                 _checkpoint(n_done - 1, "periodic")
             # Every 25 flows, and always on the last one. Bounded on purpose: one line per flow
             # would bury a 1,400-flow sweep's real events in noise.
@@ -553,6 +809,27 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
                 _pause()
                 continue
 
+            if status == "too_big":
+                if plan is None:
+                    # without the retry slice, as before: one failed flow, fetched again next pass
+                    tally.transient_unit(f"{fid}: too big for the runner")
+                    flow_st.update(status="transient_fail")
+                    state[fid] = flow_st
+                    _pause()
+                    continue
+                # TOO BIG FOR THE RUNNER: booked with the ceiling and parser it was refused under,
+                # never fetched again until one of them changes (_too_big_rearmed). `vintage` is NOT
+                # written: it means the stored data matches that upstream version, and here it does
+                # not - and code without this booking re-fetches a moved vintage and fails loudly.
+                info = table if isinstance(table, dict) else {}
+                flow_st.update(status="too_big", too_big_rows=info.get("rows"),
+                               too_big_ceiling=retry_slice.get("ceiling"),
+                               too_big_parser=retry_slice.get("parser"),
+                               too_big_vintage=meta.get("vintage"),
+                               too_big_at=_utcnow().isoformat(timespec="seconds"))
+                state[fid] = flow_st
+                _pause()
+                continue
             if status == "transient":
                 tally.transient_unit(f"{fid}: fetch_flow reported transient")
                 flow_st.update(status="transient_fail")
@@ -728,6 +1005,16 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
               f"{merged_n:,} merged ({over_cap_n:,} over the report cap, reported as changed)",
               flush=True)
 
+    # retry_slice: what this pass left unattempted among the failed and too_big flows. A pass that
+    # left any never returns ok (below): "Nothing is ever laundered into ok" holds with back-off too.
+    retry_note, unresolved = (_retry_note(plan, state, catalog, slice_skipped) if plan is not None
+                              else (None, False))
+    if retry_note:
+        print(f"[{source}] {retry_note}", flush=True)
+
+    def _with_note(text):
+        return " - ".join(x for x in (text, retry_note) if x)
+
     if limit_note or save_note:
         # Only reached with the opt-in and a changed set (see the two handlers above).
         # `transient_fail`, the status these ends were recorded with before: no success, no vintage
@@ -737,7 +1024,7 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
             _answer_hard_limit()
         return Result(status="transient_fail", obs=total_rows, last_obs_date=max_last,
                       new_vintage=_catalog_token(catalog), changed_keys=changed_flows,
-                      error=" - ".join(x for x in (limit_note, save_note) if x))
+                      error=_with_note(" - ".join(x for x in (limit_note, save_note) if x)))
 
     if capped:
         # We deliberately fetched only a slice of a very large changed set. Never laundered into
@@ -767,15 +1054,17 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
         if unfinished:
             return Result(status="transient_fail", obs=total_rows, last_obs_date=max_last,
                           new_vintage=_catalog_token(catalog), changed_keys=changed_flows,
-                          error=f"selected>cap: fetched {len(selected):,} flows; {beyond_fresh:,} "
-                                f"changed or new and {beyond_retry:,} retry flow(s) wait beyond the "
-                                f"cap; the unit is due again at the next run (+{tally.added} rows)")
+                          error=_with_note(
+                              f"selected>cap: fetched {len(selected):,} flows; {beyond_fresh:,} "
+                              f"changed or new and {beyond_retry:,} retry flow(s) wait beyond the "
+                              f"cap; the unit is due again at the next run (+{tally.added} rows)"))
         return Result(status="partial", obs=total_rows, last_obs_date=max_last,
                       new_vintage=_catalog_token(catalog),
                       changed_keys=(changed_flows if report_changed_flows else None),
-                      error=f"selected>cap: fetched {len(selected):,} flows; {beyond_fresh:,} "
-                            f"changed or new and {beyond_retry:,} retry flow(s) wait beyond the "
-                            f"cap (+{tally.added} rows)")
+                      error=_with_note(
+                          f"selected>cap: fetched {len(selected):,} flows; {beyond_fresh:,} "
+                          f"changed or new and {beyond_retry:,} retry flow(s) wait beyond the "
+                          f"cap (+{tally.added} rows)"))
 
     # finalize() raises structural DefinitiveError if every sub-unit broke; returns
     # partial if any transient; else ok/no_change. empty_window_floor guards a giant
@@ -800,13 +1089,20 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
               f"flow(s) to derive — returning partial WITH the changed set: {str(e)[:120]}",
               flush=True)
         return Result(status="partial", obs=total_rows, last_obs_date=max_last,
-                      new_vintage=_catalog_token(catalog), error=str(e),
+                      new_vintage=_catalog_token(catalog), error=_with_note(str(e)),
                       changed_keys=changed_flows)
     # carry a catalogue-level vintage token so detect_change can cheaply short-circuit
     # next tick when the whole catalogue is unmoved.
     res.new_vintage = _catalog_token(catalog)
     if report_changed_flows:
         res.changed_keys = changed_flows      # {} when every merge was idempotent — honoured
+    if retry_note:
+        # NEVER ok WHILE FAILED OR too_big FLOWS WAIT. With the retry slice a backed-off failure is
+        # not attempted, so it is not in the tally, and finalize would return ok: last_success set,
+        # the monthly clock (28 days) instead of the partial one, and health OK while flows fail.
+        if unresolved and res.status in ("ok", "no_change"):
+            res.status = "partial"
+        res.error = _with_note(res.error)
     return res
 
 
