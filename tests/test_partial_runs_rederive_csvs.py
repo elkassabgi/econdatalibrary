@@ -67,7 +67,7 @@ def test_the_run_loop_actually_uses_the_predicate():
     `status == "ok"` alongside a correct helper is exactly the drift this catches."""
     from updater import orchestrate as O
     src = inspect.getsource(O.run_once)
-    assert "_should_derive_csvs(status)" in src, \
+    assert "_should_derive_csvs(status, getattr(res, \"changed_keys\", None))" in src, \
         "run_once must gate the CSV derive on _should_derive_csvs, not an inline comparison"
     assert 'if status == "ok" and not dry:' not in src, \
         "the old ok-only gate is back; chronically-partial sources will freeze again"

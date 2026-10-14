@@ -236,6 +236,43 @@ def _is_unit_timeout(exc) -> bool:
     return merge._interrupted(exc)
 
 
+def _hard_limit_fired(exc) -> bool:
+    """True when the orchestrator's hard per-unit limit is what `exc` reports: its UnitTimeout by
+    class name, or any error raised after its alarm set UNIT_TIMEOUT_FIRED.
+
+    Narrower than _is_unit_timeout on purpose. That one also answers True for an interruption a
+    native library reports with no orchestrator alarm behind it (Ctrl-C on a desktop run). Such a
+    stop must keep ending the run, so run_giant returns its changed set only for this test."""
+    if any(c.__name__ == "UnitTimeout" for c in type(exc).__mro__):
+        return True
+    return _flag_fired()
+
+
+def _flag_fired() -> bool:
+    """True when the orchestrator's alarm for this unit has fired (its UNIT_TIMEOUT_FIRED flag)."""
+    orch = sys.modules.get("updater.orchestrate")
+    return bool(orch is not None and getattr(orch, "UNIT_TIMEOUT_FIRED", False))
+
+
+def _undelivered_limit(done: int, total: int) -> Exception:
+    """The orchestrator's UnitTimeout for an alarm that fired and was not delivered. Called only when
+    _flag_fired() is True, so the orchestrator module is loaded."""
+    orch = sys.modules["updater.orchestrate"]
+    return orch.UnitTimeout(f"the hard limit fired and was not delivered; the sweep stops after "
+                            f"{done:,} of {total:,} flows")
+
+
+def _answer_hard_limit() -> None:
+    """Tell the orchestrator that this unit stopped AT its hard limit and returns its work.
+
+    The orchestrator prints a line when a unit's alarm fired and the unit still ended without the
+    UnitTimeout. With this flag that line says the unit stopped at the limit, instead of calling
+    the alarm swallowed. Set only when the alarm really fired; the orchestrator clears it."""
+    orch = sys.modules.get("updater.orchestrate")
+    if orch is not None and getattr(orch, "UNIT_TIMEOUT_FIRED", False):
+        orch.UNIT_TIMEOUT_ANSWERED = True
+
+
 def select_flows(catalog: dict, state: dict, *, max_flows=DEFAULT_MAX_FLOWS_PER_TICK):
     """catalog: {flow_id: {"vintage": <token>, "filename": <str>, **meta}}.
     state:   {flow_id: {"vintage": <token>, "status": <str>, "last_obs_date": <str>}}.
@@ -290,6 +327,21 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
     catalogue id suffix (`eurostat:aact_ali01`), which `_catalog_ids_for`'s exact tier
     resolves by primary key. Never `series_cursors` (base.py: three contradictory
     contracts), never derived from LastModified or from `selected`.
+
+    With report_changed_flows=True the changed set is also handed over when the sweep cannot
+    finish. If the orchestrator's hard per-unit limit fires in the flow loop and at least one
+    changed flow is in hand, the loop ends, the final save runs, and the function RETURNS
+    `transient_fail` with the set and an error that names the limit and "k of n flows" - it does
+    not raise the limit. If the final save fails with a changed set in hand, it returns
+    `transient_fail` with the set and says so. Both were raised before: the unit was recorded as
+    transient_fail and no CSV step ran for the flows that pass had merged. The status stays
+    transient_fail, so the unit is due again at the next run exactly as before (a `partial` unit
+    with no recorded success waits min(cadence, PARTIAL_RETRY_DAYS) days, base.Strategy.is_due);
+    the orchestrator derives the CSVs of a transient_fail result only when it carries a non-empty
+    changed set (orchestrate._should_derive_csvs). A limit that fires before any
+    changed flow is raised as before. If the alarm fired and its raise was swallowed somewhere,
+    the sweep stops at the start of the next flow and is handled the same way. A caller
+    without the opt-in is not affected.
 
     bounded_merge=True (opt-in; default False keeps every other caller byte-identical) merges
     each flow through merge.merge_and_write_bounded, whose peak memory does not grow with the
@@ -374,201 +426,254 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
                 _checkpoint(n_done - 1, "unit timeout")
             raise
 
-    for n_done, fid in enumerate(selected, 1):
-        # CHECKPOINT (opt-in): n_done - 1 flows are complete at this point. Without it the only
-        # save_state is the one after the loop, which a killed or SIGALRM-interrupted sweep never
-        # reaches (see the checkpoint_every note in the docstring).
-        if checkpoint_every and n_done > 1 and (n_done - 1) % checkpoint_every == 0:
-            _checkpoint(n_done - 1, "periodic")
-        # Every 25 flows, and always on the last one. Bounded on purpose: one line per flow
-        # would bury a 1,400-flow sweep's real events in noise.
-        if n_done % 25 == 0 or n_done == len(selected):
-            print(f"[{source}] {n_done:,}/{len(selected):,} flows — "
-                  f"+{tally.added:,} rows, {tally.empty:,} quiet, "
-                  f"{tally.transient:,} transient, {tally.structural:,} structural, "
-                  f"{time.time() - t_start:,.0f}s", flush=True)
-        meta = catalog[fid]
-        out_path = os.path.join(source_dir, meta["filename"])
-        since = sane_since(_stored_max(out_path))
-        flow_st = dict(state.get(fid, {}))
-        try:
-            table, status = fetch_flow(fid, meta, since, sess)
-        except TransientError as e:
-            if checkpoint_every and _is_unit_timeout(e):
-                # Raised after the unit's alarm fired: the timeout in another form, not this flow's
-                # failure (DeepSeek advisory review F2, 2026-09-15).
-                _checkpoint(n_done - 1, "unit timeout")
-                raise
-            # NAME THE FLOW. _giant drives the biggest sources (oecd et al) over `selected`
-            # flows, so an unlabelled count is the least actionable row in the system: hundreds
-            # of flows, one number, five different causes below.
-            tally.transient_unit(f"{fid}: {str(e)[-60:]}")
-            flow_st.update(status="transient_fail")  # vintage NOT advanced -> reselected next tick
-            state[fid] = flow_st
-            _pause()
-            continue
-        except DefinitiveError as e:
-            if checkpoint_every and _is_unit_timeout(e):
-                _checkpoint(n_done - 1, "unit timeout")   # see the TransientError handler
-                raise
-            # A structural/hard error on ONE flow must not abort the whole giant.
-            tally.structural_unit(f"{fid}: {str(e)[-60:]}")
-            flow_st.update(status="definitive_fail", error=str(e)[:200])
-            state[fid] = flow_st
-            _pause()
-            continue
-        except Exception as e:                      # noqa: BLE001
-            # NEITHER OF THE TWO HANDLERS ABOVE CATCHES AN UNEXPECTED ERROR, AND ONE FLOW
-            # THEN KILLS THE SWEEP. On 2026-08-24 a single Eurostat flow raised _csv.Error
-            # - not a TransientError, not a DefinitiveError - so it escaped run_giant,
-            # skipped save_state below, and surfaced in orchestrate.py's blanket handler as
-            # "UNEXPECTED:..." with NO flow id. 50 of 400 flows had been merged; the other
-            # ~350 were abandoned, and the log never named the culprit.
-            #
-            # Transient, not structural, deliberately: the vintage is NOT advanced, so the
-            # flow is reselected next tick, and _common.finalize does not downgrade the
-            # whole source on a transient count the way it can on a structural one. This
-            # recovers no rows by itself - it converts a run-killing crash into one named,
-            # retryable flow.
-            if checkpoint_every and _is_unit_timeout(e):
-                # The orchestrator's hard per-unit limit is NOT one more transient flow: booking
-                # it here let the sweep run on past the cap (2026-09-14 review). Save what is
-                # done, then let it end the unit as the orchestrator intends.
-                _checkpoint(n_done - 1, "unit timeout")
-                raise
-            tally.transient_unit(f"{fid}: UNEXPECTED {type(e).__name__}: {str(e)[-60:]}")
-            flow_st.update(status="transient_fail")
-            state[fid] = flow_st
-            _pause()
-            continue
+    limit_note = None      # set below when the hard limit ended the sweep and the changed set goes on
+    save_note = None       # set below when the final save failed and the changed set goes on
+    not_started = None     # the flow the check below stopped BEFORE, when it ends the sweep
+    try:
+        for n_done, fid in enumerate(selected, 1):
+            # A LIMIT THAT FIRED AND WAS NOT DELIVERED ENDS THE SWEEP AT THE NEXT FLOW (report_changed_flows
+            # only). The alarm sets the orchestrator's flag before it raises, and a library can swallow the
+            # raise (an alarm inside an R2 request can be retried away). The sweep then ran on until some
+            # later error ended the unit with nothing derived. Here it ends between two flows instead: the
+            # flows done are saved and the UnitTimeout goes to the handler below, as if delivered now.
+            if report_changed_flows and n_done > 1 and _flag_fired():
+                if checkpoint_every:
+                    _checkpoint(n_done - 1, "unit timeout")
+                not_started = n_done
+                raise _undelivered_limit(n_done - 1, len(selected))
+            # CHECKPOINT (opt-in): n_done - 1 flows are complete at this point. Without it the only
+            # save_state is the one after the loop, which a killed or SIGALRM-interrupted sweep never
+            # reaches (see the checkpoint_every note in the docstring).
+            if checkpoint_every and n_done > 1 and (n_done - 1) % checkpoint_every == 0:
+                _checkpoint(n_done - 1, "periodic")
+            # Every 25 flows, and always on the last one. Bounded on purpose: one line per flow
+            # would bury a 1,400-flow sweep's real events in noise.
+            if n_done % 25 == 0 or n_done == len(selected):
+                print(f"[{source}] {n_done:,}/{len(selected):,} flows — "
+                      f"+{tally.added:,} rows, {tally.empty:,} quiet, "
+                      f"{tally.transient:,} transient, {tally.structural:,} structural, "
+                      f"{time.time() - t_start:,.0f}s", flush=True)
+            meta = catalog[fid]
+            out_path = os.path.join(source_dir, meta["filename"])
+            since = sane_since(_stored_max(out_path))
+            flow_st = dict(state.get(fid, {}))
+            try:
+                table, status = fetch_flow(fid, meta, since, sess)
+            except TransientError as e:
+                if checkpoint_every and _is_unit_timeout(e):
+                    # Raised after the unit's alarm fired: the timeout in another form, not this flow's
+                    # failure (DeepSeek advisory review F2, 2026-09-15).
+                    _checkpoint(n_done - 1, "unit timeout")
+                    raise
+                # NAME THE FLOW. _giant drives the biggest sources (oecd et al) over `selected`
+                # flows, so an unlabelled count is the least actionable row in the system: hundreds
+                # of flows, one number, five different causes below.
+                tally.transient_unit(f"{fid}: {str(e)[-60:]}")
+                flow_st.update(status="transient_fail")  # vintage NOT advanced -> reselected next tick
+                state[fid] = flow_st
+                _pause()
+                continue
+            except DefinitiveError as e:
+                if checkpoint_every and _is_unit_timeout(e):
+                    _checkpoint(n_done - 1, "unit timeout")   # see the TransientError handler
+                    raise
+                # A structural/hard error on ONE flow must not abort the whole giant.
+                tally.structural_unit(f"{fid}: {str(e)[-60:]}")
+                flow_st.update(status="definitive_fail", error=str(e)[:200])
+                state[fid] = flow_st
+                _pause()
+                continue
+            except Exception as e:                      # noqa: BLE001
+                # NEITHER OF THE TWO HANDLERS ABOVE CATCHES AN UNEXPECTED ERROR, AND ONE FLOW
+                # THEN KILLS THE SWEEP. On 2026-08-24 a single Eurostat flow raised _csv.Error
+                # - not a TransientError, not a DefinitiveError - so it escaped run_giant,
+                # skipped save_state below, and surfaced in orchestrate.py's blanket handler as
+                # "UNEXPECTED:..." with NO flow id. 50 of 400 flows had been merged; the other
+                # ~350 were abandoned, and the log never named the culprit.
+                #
+                # Transient, not structural, deliberately: the vintage is NOT advanced, so the
+                # flow is reselected next tick, and _common.finalize does not downgrade the
+                # whole source on a transient count the way it can on a structural one. This
+                # recovers no rows by itself - it converts a run-killing crash into one named,
+                # retryable flow.
+                if checkpoint_every and _is_unit_timeout(e):
+                    # The orchestrator's hard per-unit limit is NOT one more transient flow: booking
+                    # it here let the sweep run on past the cap (2026-09-14 review). Save what is
+                    # done, then let it end the unit as the orchestrator intends.
+                    _checkpoint(n_done - 1, "unit timeout")
+                    raise
+                tally.transient_unit(f"{fid}: UNEXPECTED {type(e).__name__}: {str(e)[-60:]}")
+                flow_st.update(status="transient_fail")
+                state[fid] = flow_st
+                _pause()
+                continue
 
-        if status == "transient":
-            tally.transient_unit(f"{fid}: fetch_flow reported transient")
-            flow_st.update(status="transient_fail")
-            state[fid] = flow_st
-            _pause()
-            continue
-        if status == "structural":
-            tally.structural_unit(f"{fid}: fetch_flow reported structural")
-            flow_st.update(status="definitive_fail")
-            state[fid] = flow_st
-            _pause()
-            continue
-        if status == "no_time_dimension":
-            # The flow's export has no TIME_PERIOD column — its DSD declares no SDMX
-            # TimeDimension. abs.py's predicate decides what that MEANS (R523): on a flow
-            # that PREVIOUSLY had rows it is a genuine break (the column vanished from under
-            # data we hold); on a flow that never had rows it is a dataset outside the
-            # series model, and calling it a break made finalize() raise on every oecd run —
-            # 60 permanent flows reddening a 1,545-flow giant for weeks.
-            #
-            # The predicate reads the store directly (a cheap parquet-footer read through
-            # blob). NOT `since`: sane_since() ALSO returns None when a has-rows store's max
-            # date is corrupt far-future, which would misfile a genuine break as
-            # outside-the-model — the exact conflation this branch exists to avoid.
-            if _stored_max(out_path) is not None:
-                tally.structural_unit(
-                    f"{fid}: TIME_PERIOD column GONE from a flow that has rows (break)")
+            if status == "transient":
+                tally.transient_unit(f"{fid}: fetch_flow reported transient")
+                flow_st.update(status="transient_fail")
+                state[fid] = flow_st
+                _pause()
+                continue
+            if status == "structural":
+                tally.structural_unit(f"{fid}: fetch_flow reported structural")
                 flow_st.update(status="definitive_fail")
-            else:
-                tally.no_time_unit(fid)
-                # Advance the vintage: re-probe only when the publisher republishes the
-                # dataset, instead of re-fetching a permanent condition every tick.
-                flow_st.update(status="no_time_dimension", vintage=meta.get("vintage"))
-            state[fid] = flow_st
-            _pause()
-            continue
-        if status in ("empty", "no_change") or table is None or table.num_rows == 0:
-            # 200 with no NEW rows in the tail = genuine quiet flow; SAFE to advance the
-            # change-feed vintage (we proved upstream's catalogue token == fetched data).
-            tally.empty_unit()
-            flow_st.update(status="empty", vintage=meta.get("vintage"))
-            state[fid] = flow_st
-            _pause()
-            continue
-
-        # status == "ok": merge the tail into the per-flow parquet (never-shrink/dedup).
-        try:
-            if report_changed_flows:
-                # MERGE-MEASURED CHANGE, ONE BIT PER FLOW. The report names the keys whose
-                # served value this write changed (merge.py `_same_vals`: bitwise, so a
-                # same-period revision counts and an idempotent re-fetch reports {}). The
-                # flow is the derive unit for a grouped source, so any non-empty report
-                # marks the flow.
-                # PRE-CHECK, NOT A FALLBACK (design review change 2). The report refuses
-                # BEFORE any I/O above merge.CHANGED_KEYS_CAP new rows; asking and catching
-                # would have to tell that ValueError from any other, and a ValueError that
-                # escapes this block skips save_state and books the whole source
-                # transient_fail — the 2026-08-24 class handled above. One call per flow, no
-                # exception path. The dedup-key refusal is unreachable here: every giant
-                # fetch_flow builds (series_key, obs_date, value) itself.
-                if table.num_rows <= merge.CHANGED_KEYS_CAP:
-                    n, last, _rep = _merge(out_path, table, min_ratio=min_ratio,
-                                           report_changed_keys=True,
-                                           changed_keys_cap=merge.CHANGED_KEYS_CAP)
-                    _flow_changed = bool(_rep)
-                    _when = (max((str(v) for v in _rep.values() if v), default=None)
-                             or (str(last) if last else None))
-                    merged_n += 1
+                state[fid] = flow_st
+                _pause()
+                continue
+            if status == "no_time_dimension":
+                # The flow's export has no TIME_PERIOD column — its DSD declares no SDMX
+                # TimeDimension. abs.py's predicate decides what that MEANS (R523): on a flow
+                # that PREVIOUSLY had rows it is a genuine break (the column vanished from under
+                # data we hold); on a flow that never had rows it is a dataset outside the
+                # series model, and calling it a break made finalize() raise on every oecd run —
+                # 60 permanent flows reddening a 1,545-flow giant for weeks.
+                #
+                # The predicate reads the store directly (a cheap parquet-footer read through
+                # blob). NOT `since`: sane_since() ALSO returns None when a has-rows store's max
+                # date is corrupt far-future, which would misfile a genuine break as
+                # outside-the-model — the exact conflation this branch exists to avoid.
+                if _stored_max(out_path) is not None:
+                    tally.structural_unit(
+                        f"{fid}: TIME_PERIOD column GONE from a flow that has rows (break)")
+                    flow_st.update(status="definitive_fail")
                 else:
-                    over_cap_n += 1
-                    merged_n += 1
-                    # OVER-report above the cap: the cost is one identical re-derive of
-                    # this flow; a silent under-report is the disease this channel cures.
-                    print(f"[{source}] {fid}: {table.num_rows:,} new rows exceed the "
-                          f"changed-flow report cap ({merge.CHANGED_KEYS_CAP:,}) — merged "
-                          f"without the report; flow treated as CHANGED", flush=True)
-                    n, last = _merge(out_path, table, min_ratio=min_ratio)
-                    _flow_changed, _when = True, (str(last) if last else None)
-                if _flow_changed:
-                    changed_flows[fid] = _when
-            else:
-                n, last = _merge(out_path, table, min_ratio=min_ratio)
-        except DefinitiveError as e:
-            if checkpoint_every and _is_unit_timeout(e):
-                # A merge refusal raised after the unit's alarm fired (a spill or download error
-                # DuckDB reports instead of the interruption) ends the unit, not one flow.
-                _checkpoint(n_done - 1, "unit timeout")
-                raise
-            # A would-shrink / column-drop / 0-row merge: keep old data, surface partial,
-            # do NOT advance vintage so it is reattempted (could be a truncated upstream).
-            # WHICH guard tripped is the difference between "upstream truncated" and "we broke
-            # the schema", so carry the merge's own message.
-            tally.transient_unit(f"{fid}: merge guard — {str(e)[-60:]}")
-            flow_st.update(status="partial", error=str(e)[:200])
-            state[fid] = flow_st
-            _pause()
-            continue
-        except Exception as e:                      # noqa: BLE001
-            if checkpoint_every and _is_unit_timeout(e):
-                _checkpoint(n_done - 1, "unit timeout")
-                raise
-            if not bounded_merge:
-                raise                               # other callers: unchanged
-            # The bounded merge has more ways to fail than the in-memory one: an R2 download,
-            # a DuckDB spill that runs out of disk, the Windows replace race. None of them
-            # publishes anything, so one flow is retried next tick instead of the sweep ending
-            # here and the same flow ending the next sweep too (2026-09-14 review).
-            tally.transient_unit(f"{fid}: merge UNEXPECTED {type(e).__name__}: {str(e)[-60:]}")
-            flow_st.update(status="transient_fail")
-            state[fid] = flow_st
-            _pause()
-            continue
+                    tally.no_time_unit(fid)
+                    # Advance the vintage: re-probe only when the publisher republishes the
+                    # dataset, instead of re-fetching a permanent condition every tick.
+                    flow_st.update(status="no_time_dimension", vintage=meta.get("vintage"))
+                state[fid] = flow_st
+                _pause()
+                continue
+            if status in ("empty", "no_change") or table is None or table.num_rows == 0:
+                # 200 with no NEW rows in the tail = genuine quiet flow; SAFE to advance the
+                # change-feed vintage (we proved upstream's catalogue token == fetched data).
+                tally.empty_unit()
+                flow_st.update(status="empty", vintage=meta.get("vintage"))
+                state[fid] = flow_st
+                _pause()
+                continue
 
-        added = table.num_rows
-        tally.added_unit(added)
-        total_rows += n
-        if last and (max_last is None or str(last) > str(max_last)):
-            max_last = str(last)
-        flow_st.update(status="ok", vintage=meta.get("vintage"), last_obs_date=last,
-                       obs_count=n)
-        state[fid] = flow_st
-        _pause()
+            # status == "ok": merge the tail into the per-flow parquet (never-shrink/dedup).
+            try:
+                if report_changed_flows:
+                    # MERGE-MEASURED CHANGE, ONE BIT PER FLOW. The report names the keys whose
+                    # served value this write changed (merge.py `_same_vals`: bitwise, so a
+                    # same-period revision counts and an idempotent re-fetch reports {}). The
+                    # flow is the derive unit for a grouped source, so any non-empty report
+                    # marks the flow.
+                    # PRE-CHECK, NOT A FALLBACK (design review change 2). The report refuses
+                    # BEFORE any I/O above merge.CHANGED_KEYS_CAP new rows; asking and catching
+                    # would have to tell that ValueError from any other, and a ValueError that
+                    # escapes this block skips save_state and books the whole source
+                    # transient_fail — the 2026-08-24 class handled above. One call per flow, no
+                    # exception path. The dedup-key refusal is unreachable here: every giant
+                    # fetch_flow builds (series_key, obs_date, value) itself.
+                    if table.num_rows <= merge.CHANGED_KEYS_CAP:
+                        n, last, _rep = _merge(out_path, table, min_ratio=min_ratio,
+                                               report_changed_keys=True,
+                                               changed_keys_cap=merge.CHANGED_KEYS_CAP)
+                        _flow_changed = bool(_rep)
+                        _when = (max((str(v) for v in _rep.values() if v), default=None)
+                                 or (str(last) if last else None))
+                        merged_n += 1
+                    else:
+                        over_cap_n += 1
+                        merged_n += 1
+                        # OVER-report above the cap: the cost is one identical re-derive of
+                        # this flow; a silent under-report is the disease this channel cures.
+                        print(f"[{source}] {fid}: {table.num_rows:,} new rows exceed the "
+                              f"changed-flow report cap ({merge.CHANGED_KEYS_CAP:,}) — merged "
+                              f"without the report; flow treated as CHANGED", flush=True)
+                        n, last = _merge(out_path, table, min_ratio=min_ratio)
+                        _flow_changed, _when = True, (str(last) if last else None)
+                    if _flow_changed:
+                        changed_flows[fid] = _when
+                else:
+                    n, last = _merge(out_path, table, min_ratio=min_ratio)
+            except DefinitiveError as e:
+                if checkpoint_every and _is_unit_timeout(e):
+                    # A merge refusal raised after the unit's alarm fired (a spill or download error
+                    # DuckDB reports instead of the interruption) ends the unit, not one flow.
+                    _checkpoint(n_done - 1, "unit timeout")
+                    raise
+                # A would-shrink / column-drop / 0-row merge: keep old data, surface partial,
+                # do NOT advance vintage so it is reattempted (could be a truncated upstream).
+                # WHICH guard tripped is the difference between "upstream truncated" and "we broke
+                # the schema", so carry the merge's own message.
+                tally.transient_unit(f"{fid}: merge guard — {str(e)[-60:]}")
+                flow_st.update(status="partial", error=str(e)[:200])
+                state[fid] = flow_st
+                _pause()
+                continue
+            except Exception as e:                      # noqa: BLE001
+                if checkpoint_every and _is_unit_timeout(e):
+                    _checkpoint(n_done - 1, "unit timeout")
+                    raise
+                if not bounded_merge:
+                    raise                               # other callers: unchanged
+                # The bounded merge has more ways to fail than the in-memory one: an R2 download,
+                # a DuckDB spill that runs out of disk, the Windows replace race. None of them
+                # publishes anything, so one flow is retried next tick instead of the sweep ending
+                # here and the same flow ending the next sweep too (2026-09-14 review).
+                tally.transient_unit(f"{fid}: merge UNEXPECTED {type(e).__name__}: {str(e)[-60:]}")
+                flow_st.update(status="transient_fail")
+                state[fid] = flow_st
+                _pause()
+                continue
+
+            added = table.num_rows
+            tally.added_unit(added)
+            total_rows += n
+            if last and (max_last is None or str(last) > str(max_last)):
+                max_last = str(last)
+            flow_st.update(status="ok", vintage=meta.get("vintage"), last_obs_date=last,
+                           obs_count=n)
+            state[fid] = flow_st
+            _pause()
+    except Exception as e:                              # noqa: BLE001
+        # THE HARD LIMIT ENDS THE SWEEP, NOT THE HAND-OVER (report_changed_flows only). The handlers
+        # above save a checkpoint and raise the limit again. The orchestrator then records the unit
+        # as transient_fail and runs no CSV step, so the flows this pass had merged with a change
+        # were never derived: their saved vintage keeps them out of the next selection, and a
+        # re-fetch merges equal rows and reports no change. So when the limit fires and at least one
+        # changed flow is in hand, the loop ends here and the function returns `transient_fail` with
+        # that set: the CSV step runs in this pass, while the merged files are on this machine.
+        # The status is the one a raised limit gets, so the schedule does not change: the unit is
+        # due again at the next run. Everything else is raised as before: a caller without the
+        # opt-in, a limit with nothing changed yet, and any error that is not the limit.
+        if not (report_changed_flows and changed_flows and _hard_limit_fired(e)):
+            raise
+        if not_started == n_done:
+            where = (f"after {n_done - 1:,} of {len(selected):,} flows (flow {n_done:,} was not "
+                     f"started)")
+        else:
+            where = f"in flow {n_done:,} of {len(selected):,}"
+        limit_note = (f"hard limit reached {where} ({type(e).__name__}): the sweep stopped there, "
+                      f"{len(changed_flows):,} changed flow(s) go to the CSV step and the rest is "
+                      f"fetched in a later pass (+{tally.added} rows)")
+        print(f"[{source}] {limit_note}", flush=True)
 
     # Mark flows present in the catalogue but never touched (not selected) so first-ever
     # runs don't perpetually re-select everything: only flows we DIDN'T select keep their
     # prior state; brand-new-but-unselected (cap overflow) stay absent -> reselected.
-    save_state(source_dir, state)
+    try:
+        save_state(source_dir, state)
+    except Exception as e:                              # noqa: BLE001
+        # A FAILED FINAL SAVE MUST NOT DROP THE CHANGED SET (report_changed_flows only). Raising
+        # here books the unit transient_fail with no CSV step, and the set is gone with the
+        # process. With a changed set in hand the function returns `transient_fail` with it and says
+        # the save failed. The flows whose state was not saved are selected again next tick and merge
+        # equal rows. Without the opt-in, or with nothing changed, the error is raised as before.
+        if not (report_changed_flows and changed_flows):
+            raise
+        if limit_note is None and _hard_limit_fired(e):
+            limit_note = (f"hard limit reached during the final save, after {len(selected):,} of "
+                          f"{len(selected):,} flows ({type(e).__name__}): {len(changed_flows):,} "
+                          f"changed flow(s) go to the CSV step (+{tally.added} rows)")
+        save_note = (f"the state file was NOT saved ({type(e).__name__}: {str(e)[:120]}), flows "
+                     f"since the last saved checkpoint are fetched again in a later pass")
+        print(f"[{source}] {save_note}; {len(changed_flows):,} changed flow(s) still go to the "
+              f"CSV step", flush=True)
 
     if report_changed_flows:
         # THE LINE THE ROLLOUT EVIDENCE IS READ FROM (final-diff review, condition 3): the
@@ -577,6 +682,17 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
         print(f"[{source}] changed flows (merge-measured): {len(changed_flows):,} of "
               f"{merged_n:,} merged ({over_cap_n:,} over the report cap, reported as changed)",
               flush=True)
+
+    if limit_note or save_note:
+        # Only reached with the opt-in and a changed set (see the two handlers above).
+        # `transient_fail`, the status these ends were recorded with before: no success, no vintage
+        # advance, and due again at the next run. The changed set is what is new: the orchestrator
+        # derives its CSVs in this pass (orchestrate._should_derive_csvs).
+        if limit_note:
+            _answer_hard_limit()
+        return Result(status="transient_fail", obs=total_rows, last_obs_date=max_last,
+                      new_vintage=_catalog_token(catalog), changed_keys=changed_flows,
+                      error=" - ".join(x for x in (limit_note, save_note) if x))
 
     if capped:
         # We deliberately fetched only a slice of a very large changed set. That is a

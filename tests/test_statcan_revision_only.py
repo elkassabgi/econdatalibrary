@@ -69,7 +69,7 @@ def test_run_once_runs_the_csv_phase_behind_that_gate():
     # predicate, does not (R1252: the exact-text pin failed on #65's tree)
     gates = [n for n in ast.walk(fn) if isinstance(n, ast.If) and isinstance(n.test, ast.BoolOp)
              and isinstance(n.test.op, ast.And)
-             and {"_should_derive_csvs(status)", "not dry"} <= {ast.unparse(v) for v in n.test.values}]
+             and {"_should_derive_csvs(status, getattr(res, 'changed_keys', None))", "not dry"} <= {ast.unparse(v) for v in n.test.values}]
     assert len(gates) == 1, [ast.unparse(g.test) for g in gates]
     # an extra conjunct must depend on something - `False and ...` (R1244 O1) or `not True` never fires
     constant = [ast.unparse(v) for v in gates[0].test.values if not any(isinstance(t, ast.Name) for t in ast.walk(v))]

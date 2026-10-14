@@ -957,7 +957,8 @@ def test_statcan_is_served_by_its_lane_and_the_csv_phase_skips_it():
     assert orchestrate._served_by_lane("statcan") is True
     assert orchestrate._served_by_lane("fhfa") is False
     src = open(orchestrate.__file__, encoding="utf-8").read()
-    assert "_should_derive_csvs(status) and not dry and not _served_by_lane(unit.source_id)" in src
+    assert ('_should_derive_csvs(status, getattr(res, "changed_keys", None)) and not dry and not '
+            '_served_by_lane(unit.source_id)') in src
 
 
 def test_a_mistyped_served_by_is_a_registry_error():
