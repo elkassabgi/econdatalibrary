@@ -52,7 +52,12 @@ def test_real_registry_validates_and_eurostat_declares_flow():
 # its resolver builds for it. Adding a flow-grain declaration without a row here fails.
 FLOW_EXAMPLES = {
     "eurostat": ("eurostat:aact_ali01", os.path.join("eurostat", "AACT_ALI01.parquet")),
+    "insee_melodi": ("insee_melodi:DD_CNA_AGREGATS", os.path.join("insee_melodi", "DD_CNA_AGREGATS.parquet")),
 }
+# Sources whose store files carry a `flow` column that the resolver ASSERTS (`flow == <native id>`,
+# _resolve_file_grain). The fixture must carry the column too: without it the resolver falls back to
+# is_valid(key) and this ratchet would prove a shape the real store does not have.
+FLOW_COLUMN_SOURCES = {"insee_melodi"}
 
 
 def test_ratchet_every_flow_grain_source_resolves_whole_file(tmp_path):
@@ -62,17 +67,56 @@ def test_ratchet_every_flow_grain_source_resolves_whole_file(tmp_path):
     flow_sources = sorted(e["source_id"] for e in reg["sources"] if e.get("csv_grain") == "flow")
     missing = [s for s in flow_sources if s not in FLOW_EXAMPLES]
     assert not missing, f"csv_grain: flow declared without a whole-file proof here: {missing}"
+    import pyarrow.compute as pc
+    import pyarrow.dataset as ds
     for src in flow_sources:
         sid, rel = FLOW_EXAMPLES[src]
+        native = sid.split(":", 1)[1]
         p = tmp_path / rel
         p.parent.mkdir(parents=True, exist_ok=True)
-        pq.write_table(pa.table({"series_key": ["k"], "obs_date": ["2024-01-01"],
-                                 "value": [1.0]}), str(p))
+        cols = {"series_key": ["k"], "obs_date": ["2024-01-01"], "value": [1.0]}
+        if src in FLOW_COLUMN_SOURCES:
+            cols = {"flow": [native], **cols}
+        pq.write_table(pa.table(cols), str(p))
         res = _resolve.resolve(sid, str(tmp_path))
-        shape = _predicate_shape(str(getattr(res, "predicate", "")),
-                                 str(getattr(res, "key_col", "")))
-        assert shape == "WHOLE-FILE", (src, sid, shape, getattr(res, "predicate", None))
+        if src in FLOW_COLUMN_SOURCES:
+            # the whole file is ONE flow; the predicate asserts it and the stream carries it
+            # (tests/test_stream_flow_predicate.py proves the bytes)
+            assert res.predicate.equals(pc.equal(ds.field("flow"), native)), (src, sid, res.predicate)
+        else:
+            shape = _predicate_shape(str(getattr(res, "predicate", "")),
+                                     str(getattr(res, "key_col", "")))
+            assert shape == "WHOLE-FILE", (src, sid, shape, getattr(res, "predicate", None))
         assert os.path.normcase(str(res.parquet_path)) == os.path.normcase(str(p))
+
+
+def test_flow_column_sources_is_pinned_to_what_writes_the_store():
+    """FLOW_COLUMN_SOURCES is self-declared, so pin it to the code that WRITES the store: insee_melodi's
+    fetcher dedups on a `flow` column, so its files carry one and the resolver asserts it. Emptying the
+    set (review mutant MF) must fail here, without needing the store on this machine."""
+    from updater.strategies.fetchers import insee_melodi
+    assert "flow" in insee_melodi.DEDUP
+    assert "insee_melodi" in FLOW_COLUMN_SOURCES
+
+
+def test_flow_column_sources_matches_the_real_store_when_present():
+    """Where the store is on this machine (the desktop), every declared flow-grain source's files carry a
+    `flow` column exactly when the source is in FLOW_COLUMN_SOURCES. Skips, and says so, elsewhere."""
+    import pytest
+    from econdl import _resolve
+    reg = registry.load()
+    root = _resolve.default_data_root()
+    seen = 0
+    for src in sorted(e["source_id"] for e in reg["sources"] if e.get("csv_grain") == "flow"):
+        d = os.path.join(root, src)
+        files = sorted(f for f in (os.listdir(d) if os.path.isdir(d) else []) if f.endswith(".parquet"))[:20]
+        if not files:
+            continue
+        has = {("flow" in pq.read_schema(os.path.join(d, f)).names) for f in files}
+        assert has == {src in FLOW_COLUMN_SOURCES}, (src, has)
+        seen += 1
+    if not seen:
+        pytest.skip(f"no flow-grain store under {root} - run with ECONDL_DATA at the real clean_full root")
 
 
 def test_ratchet_flow_grain_stores_hold_no_null_values():
@@ -93,21 +137,31 @@ def test_ratchet_flow_grain_stores_hold_no_null_values():
         if not files:
             pytest.skip(f"store for {src} absent at {d} — run with ECONDL_DATA pointing at the real "
                         f"clean_full root (the desktop) to execute the null ratchet")
-        nulls, nostats = 0, 0
+        nulls, nostats, nullkeys = 0, 0, 0
         for f in files:
             md = pq.read_metadata(os.path.join(d, f))
             names = [md.schema.column(i).name for i in range(md.num_columns)]
             if "value" not in names:
                 continue
             j = names.index("value")
+            # A NULL series_key diverges too: the in-memory path writes a 'None' row, the stream's
+            # WHERE key IS NOT NULL drops it (review of the insee_melodi csv_grain change, F4).
+            kj = next((names.index(c) for c in ("series_key", "series_id") if c in names), None)
             for g in range(md.num_row_groups):
-                stt = md.row_group(g).column(j).statistics
-                if stt is None:
-                    nostats += 1
-                elif stt.null_count:
-                    nulls += stt.null_count
+                for col, kind in ((j, "value"), (kj, "key")):
+                    if col is None:
+                        continue
+                    stt = md.row_group(g).column(col).statistics
+                    if stt is None:
+                        nostats += 1
+                    elif stt.null_count:
+                        if kind == "value":
+                            nulls += stt.null_count
+                        else:
+                            nullkeys += stt.null_count
             checked += 1
         assert nulls == 0, f"{src}: {nulls} null value(s) in a flow-grain store — the two derive paths diverge on them"
+        assert nullkeys == 0, f"{src}: {nullkeys} null series key(s) in a flow-grain store — the two derive paths diverge on them"
         assert nostats == 0, f"{src}: {nostats} row group(s) without statistics — the ratchet cannot see them"
     assert checked > 0
 

@@ -2871,6 +2871,14 @@ sources:
   cadence: monthly
   refresh_cost: medium
   out_dir: insee_melodi
+  # csv_grain: one catalogue id (`insee_melodi:<FLOW>`) serves the WHOLE <FLOW>.parquet
+  # (`_resolve_file_grain`, which asserts `flow == <FLOW>`). Declared so a large flow derives
+  # through the streaming DuckDB path (3 GB limit, spills) instead of building the whole CSV in
+  # memory: the full re-pull of the one-page-truncated census flows will put flows well past
+  # today's largest (DS_FLORES_A5, 9,532,850 rows) on the runner. The stream carries the flow
+  # predicate into its SQL (core/derive_csv.py); evidence that the stream writes the same bytes
+  # as the in-memory path for every catalogued flow is in the PR.
+  csv_grain: flow
   review: true
   adapter:
     vintage_signal: Catalog lastUpdate field per dataflow (dataflow/all catalog) compared against a stored per-flow marker;
