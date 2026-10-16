@@ -109,11 +109,40 @@ def _series_csv_to_file_sorted(series_id: str, out_path: str) -> int:
     # 420,570 against 52, and null-value rows appeared - all "put=1 failed=0". Refuse instead.
     import pyarrow.compute as _pc                                    # noqa: PLC0415
     import pyarrow.dataset as _pds                                   # noqa: PLC0415
+    # ONE OTHER PREDICATE IS CARRIED, NOT REFUSED: the file-grain flow assertion. For a store
+    # whose files carry a `flow` column (insee_melodi), _resolve_file_grain returns
+    # `flow == <native id>` instead of is_valid(key), so a mis-named file fails loudly rather
+    # than serving another dataset's rows. That predicate is translated into the SQL below,
+    # never dropped: only the exact Expression the resolver builds for THIS id qualifies, and
+    # only for a plain dataflow code, so nothing reaches the SQL but [A-Za-z0-9_] characters.
+    flow_eq = None
     if res.predicate is not None and not res.predicate.equals(_pc.is_valid(_pds.field(res.key_col))):
-        raise ValueError(f"{series_id}: its resolver selects a SUBSET of the file "
-                         f"({res.predicate}); the file-grain stream would serve the whole file")
+        import re as _re                                             # noqa: PLC0415
+        _native = series_id.split(":", 1)[1] if ":" in series_id else ""
+        if (_native and _re.fullmatch(r"[A-Za-z0-9_]+", _native)
+                and res.predicate.equals(_pc.equal(_pds.field("flow"), _native))):
+            flow_eq = _native
+        else:
+            raise ValueError(f"{series_id}: its resolver selects a SUBSET of the file "
+                             f"({res.predicate}); the file-grain stream would serve the whole file")
     src = _duck_source(res)          # one quoted path, or a DuckDB list of them
     key = res.key_col.replace('"', '""')
+    where = f'"{key}" IS NOT NULL' + (f" AND \"flow\" = '{flow_eq}'" if flow_eq else "")
+    # AN EMPTY KEY MUST BE WRITTEN AS AN EMPTY FIELD. Python's csv writer (the in-memory path, which
+    # verify_source_served compares against) writes '' as nothing between the commas; DuckDB's COPY
+    # quotes an empty string ("") to tell it from NULL. Measured on the 139 insee_melodi flows: 3
+    # (DD_CNA_AGREGATS, DD_CNA_PATRIMOINE, DD_CNA_PATRIMOINE_BRANCHES) carry a series whose
+    # series_key is '' and differed on exactly that line. NULLIF writes it as NULL, which COPY
+    # renders as an empty field; WHERE has already kept the row. Applied to BOTH branches: the
+    # whole-file branch had the same latent divergence, and a local footer check found no empty key
+    # in any other flow-grain-shaped store (eurostat 0 of 7,661 files, ons_uk 0/49, cbs_nl 0/5,634,
+    # gus_dbw 0/872), so this moves no bytes there - it only changes output where the stream
+    # already disagreed with the verifier's oracle (the local mirror can lag R2; stated, not hidden).
+    key_expr = f'NULLIF(CAST("{key}" AS VARCHAR), \'\')'
+    # ...and it must still SORT as '' (first), where the in-memory path puts it. Ordering by the
+    # NULLed alias would move it last (DuckDB sorts NULLs last), so the ORDER BY uses the raw key -
+    # identical to the old `ORDER BY series_id` for every non-empty key.
+    order_expr = f'CAST("{key}" AS VARCHAR)'
     fd, plain = _tf.mkstemp(suffix=".csv", prefix="ddb_")
     os.close(fd)
     plain_q = plain.replace("\\", "/").replace("'", "''")
@@ -133,13 +162,19 @@ def _series_csv_to_file_sorted(series_id: str, out_path: str) -> int:
         # traceback. That crash is what cost hours of wrong guesses at memory limits, the
         # S3 client and the table itself - none of which were ever the cause.
         con.execute("SET temp_directory='%s'" % _duck_spill_dir())
-        con.execute(
-            f'COPY (SELECT CAST("{key}" AS VARCHAR) AS series_id, obs_date, value '
-            f"FROM read_parquet({src}) WHERE \"{key}\" IS NOT NULL "
-            f"ORDER BY series_id, obs_date) "
-            f"TO '{plain_q}' (FORMAT CSV, HEADER, DELIMITER ',')")
+        copied = con.execute(
+            f'COPY (SELECT {key_expr} AS series_id, obs_date, value '
+            f"FROM read_parquet({src}) WHERE {where} "
+            f"ORDER BY {order_expr}, obs_date) "
+            f"TO '{plain_q}' (FORMAT CSV, HEADER, DELIMITER ',')").fetchone()
         con.close()
-        if os.path.getsize(plain) == 0:
+        # ZERO ROWS IS A REFUSAL, MEASURED FROM THE COPY ITSELF. COPY ... HEADER writes the header
+        # even when nothing matched, so the file is never empty and the old `getsize == 0` test
+        # could not fire: a mis-named file (flow column naming another flow) or a mis-cased id on a
+        # case-insensitive filesystem came out as a header-only CSV that the caller PUT and counted
+        # ok, where the in-memory path raises "zero rows matched" (review of the csv_grain change,
+        # F1). COPY returns the number of rows written.
+        if not copied or int(copied[0] or 0) == 0 or os.path.getsize(plain) == 0:
             raise _ResolveZero(f"{series_id}: zero rows")
         with open(plain, "rb") as fin, open(out_path, "wb") as raw,                 _gzip.GzipFile(fileobj=raw, mode="wb", mtime=0, filename="") as gz:
             _shutil.copyfileobj(fin, gz, length=8 * 1024 * 1024)
