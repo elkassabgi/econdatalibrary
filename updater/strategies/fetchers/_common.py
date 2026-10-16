@@ -8,7 +8,8 @@ Tally + finalize make the returned status truthful:
   - STRUCTURAL break (a 200 that parsed 0 rows from a non-trivial body)  -> DefinitiveError
   - a large all-empty/404 window (likely a structural break, not a quiet period) -> DefinitiveError
   - any TRANSIENT sub-failure                                            -> status='partial'
-        (the orchestrator does NOT stamp last_success on 'partial'; the unit re-runs next tick)
+        (the orchestrator does NOT stamp last_success on 'partial'; a later pass selects the
+        unit again, when base.Strategy.is_due says so - not always at the next run)
   - otherwise                                                            -> 'ok' (added>0) / 'no_change'
 In every failure case the caller has already left existing data untouched (merge_and_write
 only publishes good data), so this is about correct STATUS, never data loss.
@@ -190,7 +191,7 @@ class Tally:
         self.attempted = 0
         self.added = 0          # total NEW rows merged in
         self.empty = 0          # sub-units that succeeded but had no new data
-        self.transient = 0      # sub-units that transient-failed (retry next run)
+        self.transient = 0      # sub-units that transient-failed (retried by a later pass)
         self.structural = 0     # sub-units that returned 200 but were unparseable/empty-from-real-body
         # WHICH sub-units failed, not just how many. A message that says "1/20 sub-unit(s)
         # returned 200 but parsed 0 rows" names a defect you cannot act on: it takes a
@@ -296,7 +297,7 @@ class Tally:
 
         Deliberately does not touch `attempted` — that word has to keep meaning attempted, or the
         denominator lies too. "Transient" says something went wrong and retrying may help;
-        "deferred" says nothing went wrong and rotation takes it next tick. Both mean come back;
+        "deferred" says nothing went wrong and rotation takes it in a later pass. Both mean come back;
         only one means investigate.
         """
         self.deferred += 1
@@ -383,6 +384,11 @@ def finalize(tally: Tally, total_rows, last_obs, *, source, series_cursors=None,
         # did not cover everything and must not stamp a full-coverage vintage; the change is that
         # the message no longer calls a deliberate deferral a failure, and the denominator is what
         # was actually attempted (R303).
+        # KNOWN FALSE WORDS, KEPT ON PURPOSE: "taken next tick" is untrue for a unit that has never
+        # succeeded (base.Strategy.is_due waits min(cadence, 7) x 0.9 days after a partial). The
+        # sentence is a contract: health._DEFERRAL_BASE matches it exactly to tell ROTATING from
+        # ATTENTION, and stored state rows carry it. Changing it needs the matcher to accept both
+        # forms first - a logic change, outside the text-only fix that reworded the other texts.
         return Result(status="partial", obs=total_rows, last_obs_date=last_obs,
                       new_vintage="date-tail", series_cursors=series_cursors, merged_rows=merged_rows,
                       error=(f"{tally.attempted} sub-unit(s) attempted, none failed; "
@@ -648,7 +654,7 @@ def load_rotation(out_dir, fname: str = ROTATION_FILE) -> str:
     """The sub-unit key the LAST run stopped after, or ''.
 
     WHY EVERY BUDGETED FETCHER NEEDS THIS (R190). A Deadline or MAX_PER_RUN stops work
-    partway; the log then says the remainder "drains next tick". That is only true if the
+    partway; the log then says the remainder drains later. That is only true if the
     next run starts somewhere NEW. Sub-unit lists here are overwhelmingly stable in order —
     blob.list_parquets sorts, module-level CUBES tuples are literals, catalog pulls come
     back in the publisher's order — so a bound over a fixed order re-walks the same PREFIX
@@ -704,8 +710,8 @@ class RotationCycle:
     """`ok` must mean "every sub-unit was visited since the last ok" - never "the budget stopped
     this pass somewhere" (R303; statfin R1096, 2026-09-23).
 
-    A rotating fetcher that stops on its budget and reports `ok` waits its whole cadence before the
-    next pass: statfin reached 28 of 134 subjects per 30-minute pass, so each subject was refreshed
+    A rotating fetcher that stops on its budget and reports `ok` waits its whole cadence before
+    its next pass: statfin reached 28 of 134 subjects per 30-minute pass, so each subject was refreshed
     only every ~5 passes x 25.2 days = ~125 days, against an 84-day monthly data clock. With this,
     a pass that stops before the cycle is complete books every sub-unit NOT YET VISITED THIS CYCLE
     as deferred (-> `partial`); the completing, CLEAN pass resets the cycle and reads ok.
@@ -718,7 +724,7 @@ class RotationCycle:
         takes ~6.5 days per pass; after that first ok it is on the fast branch above.
 
     A UNIT IS VISITED ONLY WHEN ITS WORK FINISHED WITHOUT FAILURE (review R1103, P2): marked at the
-    start, a group whose tables all failed transiently counted as done, the next pass closed the
+    start, a group whose tables all failed transiently counted as done, the source's next pass closed the
     cycle as `ok`, and the group was never fetched again. Callers pass failed=True for a unit whose
     work raised or booked a transient/structural failure; it stays owed.
 

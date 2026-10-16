@@ -249,7 +249,7 @@ def update(unit, since) -> Result:
             stopped_early = True
             print(f"[{SOURCE}] budget of {budget_min:.0f} min spent after "
                   f"{dl.elapsed_min():.1f} min — {done_pf}/{len(ordered)} prefixes done, "
-                  f"{len(ordered) - done_pf} deferred to the next tick "
+                  f"{len(ordered) - done_pf} deferred to a later pass "
                   f"(resuming after {last_pf!r})", flush=True)
             break
         wave = ordered[wave_start:wave_start + PREFIX_WAVE]

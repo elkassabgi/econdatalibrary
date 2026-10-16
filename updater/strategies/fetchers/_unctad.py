@@ -14,7 +14,7 @@ insee_bdm/eurostat parity lesson (R-ledger 2026-08-08): a fetcher that re-types 
 ingester's logic drifts silently.
 
 HONEST-STATUS: metadata endpoint unreachable -> transient (no vintage claim). Facts
-unreachable/HTTP-4xx -> transient_unit, data kept, retried next tick. A 200 that parses
+unreachable/HTTP-4xx -> transient_unit, data kept, retried by a later pass. A 200 that parses
 ZERO rows, or a layout the generic job refuses -> structural_unit and the vintage is NOT
 recorded, so a contract break resurfaces every run instead of being sealed in.
 

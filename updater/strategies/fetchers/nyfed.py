@@ -9,7 +9,7 @@ obs_date (FRED observation_start=), so same-day revisions and a lagging publish 
 merge.merge_and_write dedups the overlap and never shrinks. Only series ALREADY on disk are
 refreshed (new rates are a re-ingest concern). Store reads/writes go through blob (CI-safe, R36).
 
-HONEST-STATUS: timeout/5xx/429 -> TransientError -> transient_unit (retried next tick, data kept).
+HONEST-STATUS: timeout/5xx/429 -> TransientError -> transient_unit (retried by a later pass, data kept).
 A 200 whose body is not the documented JSON on a non-empty response -> transient (never a silent
 no_change). A 4xx on one series (e.g. a retired FRED id) -> that series is empty for this run.
 """

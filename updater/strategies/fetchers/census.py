@@ -1037,7 +1037,7 @@ def update(unit, since) -> Result:
 
     if deferred:
         print(f"[{SOURCE}] budget of {BUDGET_MIN} min spent after {dl.elapsed_min():.1f} min; "
-              f"{deferred} of {len(flows)} flow(s) deferred to the next tick", flush=True)
+              f"{deferred} of {len(flows)} flow(s) deferred to a later pass", flush=True)
 
     # R190. "Deferred to the next tick" is only true if the next tick STARTS SOMEWHERE ELSE.
     # _flows() sorts, so the order is fixed and every "eits/..." precedes every "intltrade/...";

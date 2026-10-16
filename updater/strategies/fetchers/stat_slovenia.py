@@ -648,7 +648,7 @@ def update(unit, since) -> Result:
                 total_rows += blob.row_count(_group_path(out_dir, rest))
             print(f"[{SOURCE}] budget of {budget_min:.0f} min spent after "
                   f"{_dl.elapsed_min():.1f} min — {n_owed} group(s) not yet worked this cycle "
-                  f"booked deferred; the sweep offset is saved, so the next tick resumes here",
+                  f"booked deferred; the sweep offset is saved, so a later pass resumes here",
                   flush=True)
             break
         # Advance the sweep offset PAST this group BEFORE working it, as the other adopters' save_rotation

@@ -440,7 +440,7 @@ def _existing_surveys(out_dir: str) -> list[str]:
 def _download(sess: requests.Session, survey: str, fname: str, dest: str) -> None:
     """Stream one tail file to dest. Raises TransientError on timeout/5xx/network,
     DefinitiveError on a hard non-200/non-404 (404 -> TransientError: the listing
-    promised this file, a 404 now is a flaky/racey fetch, retry next tick)."""
+    promised this file, a 404 now is a flaky/racey fetch, retried by a later pass)."""
     url = f"{BASE}/{survey}/{fname}"
     try:
         with sess.get(url, stream=True, timeout=300) as r:
@@ -692,7 +692,7 @@ def update(unit, since) -> Result:
                 under.append(f"{sv}={ratio:.1%}")
                 print(f"[{SOURCE}] {sv}: tail reaches only {ratio:.1%} of stored series"
                       + (" even after escalating to the spanning set"
-                         if escalated else " — escalating on the next tick"), flush=True)
+                         if escalated else " — escalating on its next pass"), flush=True)
             elif escalated:
                 print(f"[{SOURCE}] {sv}: spanning set reaches {ratio:.1%} of stored "
                       f"series (Current cut was "

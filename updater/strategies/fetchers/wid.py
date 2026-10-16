@@ -285,7 +285,7 @@ def update(unit, since) -> Result:
         print(f"[wid] {skipped} country file(s) already at the published vintage — "
               f"not re-fetched", flush=True)
     if deferred:
-        print(f"[wid] {deferred} country file(s) DEFERRED to the next run "
+        print(f"[wid] {deferred} country file(s) DEFERRED to a later pass "
               f"(budget {BUDGET_S / 60:.0f} min reached) — untouched, not failed",
               flush=True)
         tally.deferred_unit(f"{deferred} countries deferred")

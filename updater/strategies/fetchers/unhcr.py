@@ -10,7 +10,7 @@ read the stored max year and refetch only [max_year - LOOKBACK .. this_year] for
 never shrinks. Store I/O via blob (CI-safe, R36).
 
 HONEST-STATUS: a page failing after retries (timeout/5xx/429) -> that endpoint+year is a transient_unit
-(kept, retried next tick); a real-but-empty year -> empty_unit; parsed rows -> added_unit. Nothing is
+(kept, retried by a later pass); a real-but-empty year -> empty_unit; parsed rows -> added_unit. Nothing is
 ever silently reported no_change on a transport failure.
 """
 from __future__ import annotations
@@ -171,7 +171,7 @@ def update(unit, since) -> Result:
             stopped_early = True
             print(f"[{SOURCE}] budget of {budget_min:.0f} min spent after "
                   f"{dl.elapsed_min():.1f} min — {done_tasks}/{len(order)} endpoint-years "
-                  f"done, {len(order) - done_tasks} deferred to the next tick "
+                  f"done, {len(order) - done_tasks} deferred to a later pass "
                   f"(resuming after {last_task!r})", flush=True)
             break
         done_tasks += 1

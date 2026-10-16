@@ -43,7 +43,7 @@ a comment that disagrees with its code is worse than no comment.
 
 HONEST-STATUS: a cube that fails to download or parse -> transient_unit for that cube only. A
 cube that downloads but yields ZERO rows -> structural_unit with its PublishingDate NOT recorded,
-so it resurfaces next run instead of being sealed in behind a green status.
+so it resurfaces on a later pass instead of being sealed in behind a green status.
 """
 from __future__ import annotations
 import hashlib

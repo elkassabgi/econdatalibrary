@@ -33,7 +33,7 @@ the first-pass ingest emit byte-identical series_keys — the duplication invari
 HONEST-STATUS: a discovery/listing outage -> TransientError (partial, retried, data kept). A
 per-dataset download or parse failure -> transient_unit for that dataset only. A dataset that
 parses to ZERO rows -> empty_unit and its vintage is NOT advanced, so a parser break resurfaces
-next run instead of being sealed in.
+on a later pass instead of being sealed in.
 """
 from __future__ import annotations
 import datetime as dt

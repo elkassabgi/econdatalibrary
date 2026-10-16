@@ -32,7 +32,7 @@ R2 — R36).
 HONEST-STATUS: TOC unreachable -> TransientError (partial, retried, data kept). A per-indicator
 failure -> transient_unit for that indicator only, so one bad download cannot stop the other
 1,946. An indicator that returns ZERO rows while the TOC says it has records -> structural_unit
-with its last.update NOT recorded, so it resurfaces next run; an indicator the TOC itself
+with its last.update NOT recorded, so it resurfaces on a later pass; an indicator the TOC itself
 declares empty (n.records = 0) is NOT an error and is counted as unchanged.
 """
 from __future__ import annotations
@@ -197,7 +197,7 @@ def update(unit, since) -> Result:
               f"CSV phase reads the {len(changed):,} changed indicator(s)", flush=True)
     if deferred:
         print(f"[ilostat] budget {BUDGET_MIN} min spent — {deferred} indicator(s) deferred "
-              f"to the next run", flush=True)
+              f"to a later pass", flush=True)
     _save(out_dir, sidecar)
     if published == 0:
         published = sum(blob.row_count(os.path.join(out_dir, f))

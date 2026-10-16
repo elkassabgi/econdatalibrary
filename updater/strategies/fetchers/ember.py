@@ -35,7 +35,7 @@ from jobs import ingest_ember as ig   # reuse the production enumerate/parse/rou
 
 # Wall-clock cap for one ember run: it walks every CSV in the published dataset list,
 # and sources run strictly serially, so a slow upstream here delays the whole fleet.
-# Datasets not reached keep their existing rows and are re-tried on the next tick.
+# Datasets not reached keep their existing rows and are re-tried by a later pass.
 BUDGET_MIN = 20
 
 SOURCE = "ember"
@@ -155,7 +155,7 @@ def update(unit, since) -> Result:
         # upstream call, so it must not consume the budget or count as deferred work.
         if dl.spent():
             print(f"[ember] budget {BUDGET_MIN} min spent — {ds_id} not pulled this run; "
-                  f"retries next tick", flush=True)
+                  f"a later pass retries it", flush=True)
             tally.deferred_unit(ds_id)
             continue
 

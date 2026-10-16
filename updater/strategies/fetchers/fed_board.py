@@ -48,7 +48,7 @@ the parser's overwrite semantics are what we want. Merging would preserve supers
 HONEST-STATUS: discovery failure -> TransientError (partial, retried, data kept). A per-release
 download/parse failure -> transient_unit for that release only, so one bad ZIP cannot stop the
 others publishing. A release that parses to ZERO observations -> structural_unit with its hash
-NOT recorded, so a parser break resurfaces next run instead of being sealed in.
+NOT recorded, so a parser break resurfaces on a later pass instead of being sealed in.
 """
 from __future__ import annotations
 import hashlib

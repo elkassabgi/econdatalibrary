@@ -4145,7 +4145,7 @@ sources:
       and _raw_insider_zips/. The XBRL companyfacts product (clean_grouped/sec_edgar) and edgar_pointers are NOT owned here.'
     rate_note: 'No API key. SEC REQUIRES a descriptive User-Agent or returns 403 (set to ''Econ-Fin Data Library admin@hfdatalibrary.com'').
       SEC fair-access ~10 req/s; the fetcher sleeps 0.5s between key downloads, 4-attempt backoff, 600s zip timeout. A 404/429/5xx/timeout/bad-zip
-      is TRANSIENT (key stays not-done, source result partial, re-runs next tick). MAX_KEYS_PER_TICK=8 caps a wiped-inventory
+      is TRANSIENT (key stays not-done, source result partial, a later pass selects it again). MAX_KEYS_PER_TICK=8 caps a wiped-inventory
       runaway -> partial.'
     key_env: none (descriptive User-Agent header required; no API key/env var)
     confidence: high

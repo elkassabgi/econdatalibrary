@@ -24,8 +24,8 @@ BATCH-sized chunks and merged incrementally rather than materialised whole.
 HONEST-STATUS: a HEAD/validator failure -> the zip is treated as changed (fetch anyway, which
 merge dedups) rather than silently skipped. A download or parse failure -> transient_unit for
 that zip only, so CBS failing cannot stop LBS publishing. A zip that parses to ZERO rows ->
-structural_unit and its vintage is NOT advanced, so a parser break resurfaces next run instead
-of being sealed in.
+structural_unit and its vintage is NOT advanced, so a parser break resurfaces on a later pass
+instead of being sealed in.
 """
 from __future__ import annotations
 import datetime as dt
@@ -180,7 +180,7 @@ def update(unit, since) -> Result:
             print(f"[bis] {name}: size unchanged {MAX_AGE_DAYS}d — forced re-pull", flush=True)
 
         if dl.spent():
-            print(f"[bis] budget {BUDGET_MIN} min spent — {name} deferred to next run",
+            print(f"[bis] budget {BUDGET_MIN} min spent — {name} deferred to a later pass",
                   flush=True)
             tally.deferred_unit(name)
             continue

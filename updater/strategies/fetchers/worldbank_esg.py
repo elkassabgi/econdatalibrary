@@ -38,7 +38,7 @@ from ._common import (Deadline, Tally, finalize, load_rotation, rotate_after, sa
                       save_rotation)
 from jobs import ingest_worldbank_esg as ig   # reuse code map + json client + year parsing
 
-# Minutes this source may spend before deferring the rest to the next tick.
+# Minutes this source may spend before deferring the rest to a later pass.
 # 20 leaves plenty of room inside the 300-minute job ceiling for other sources.
 BUDGET_MIN = 20
 SOURCE = "worldbank_esg"
@@ -264,7 +264,7 @@ def update(unit, since) -> Result:
             total += sum(blob.row_count(os.path.join(out_dir, f)) for f in deferred)
             print(f"[worldbank_esg] budget of {BUDGET_MIN} min spent after "
                   f"{deadline.elapsed_min():.1f} min; deferring {len(deferred)} "
-                  f"of {len(files)} indicators to the next tick (resuming after "
+                  f"of {len(files)} indicators to a later pass (resuming after "
                   f"{files[i - 1] if i else '(none)'})", flush=True)
             break
         # AFTER the deferral check, never before: the bookmark means "the last indicator this run

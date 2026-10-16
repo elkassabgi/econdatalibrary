@@ -16,7 +16,7 @@ HONEST-STATUS CONTRACT (Tally + finalize): each workbook URL is a sub-unit.
   empty_unit()     a 403/404 workbook (a country file can legitimately move/retire —
                    the ingester already treats these as fatal-skip-per-URL)
   structural_unit()a 200 with a real body that parsed 0 rows (schema/format break)
-  transient_unit() timeout/5xx/429/network on the workbook (retry next run)
+  transient_unit() timeout/5xx/429/network on the workbook (retried by a later pass)
 finalize() returns 'ok'/'no_change' only when nothing transient/structural-failed;
 'partial' on any transient; and raises DefinitiveError if the WHOLE set came back
 empty/404 (a wholesale outage, not a quiet month).

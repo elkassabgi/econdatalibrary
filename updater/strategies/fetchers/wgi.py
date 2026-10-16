@@ -42,7 +42,7 @@ def current_vintage(unit):
 
 def _fetch(url, retries=3):
     """GET bytes; returns (data, kind) where kind is 'ok'|'transient'|'structural'|None.
-    'transient' = timeout/429/5xx/network (retry next tick); 'structural' = 403/404 or
+    'transient' = timeout/429/5xx/network (retried by a later pass); 'structural' = 403/404 or
     a 200 with a tiny body; None = exhausted retries with only transient errors."""
     last = None
     for attempt in range(retries):

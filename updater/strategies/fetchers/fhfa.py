@@ -26,7 +26,7 @@ second parser — exactly what the duplication invariant forbids.
 
 HONEST-STATUS: a download or build failure -> TransientError (partial, retried, existing
 parquets kept untouched). A build that produces NO parquet -> structural, with the vintage NOT
-recorded so it resurfaces next run.
+recorded so it resurfaces on a later pass.
 """
 from __future__ import annotations
 import datetime as dt

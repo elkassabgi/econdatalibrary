@@ -38,7 +38,7 @@ so SDGAIRBOD looks superseded; that is a lead to confirm with WHO, not a fact to
 
 HONEST STATUS: an indicator that fails after retries -> transient_unit (kept, retried); one
 that legitimately returns no rows -> empty_unit; parsed rows -> added_unit. A budget stop is
-reported and rotates, so the remainder actually arrives next tick (R190/R243).
+reported and rotates, so the remainder actually arrives in a later pass (R190/R243).
 """
 from __future__ import annotations
 import datetime as dt
@@ -170,7 +170,7 @@ def run(source_id: str, prefix: str, budget_env: str = "WHO_BASE_BUDGET_MIN") ->
         if dl.spent():
             print(f"[{source_id}] budget of {budget_min:.0f} min spent after "
                   f"{dl.elapsed_min():.1f} min — {done}/{len(order)} indicators done, "
-                  f"{len(order) - done} deferred to the next tick (resuming after "
+                  f"{len(order) - done} deferred to a later pass (resuming after "
                   f"{last_code!r})", flush=True)
             break
         done += 1

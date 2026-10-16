@@ -165,7 +165,7 @@ def update(unit, since) -> Result:
             # so the run reports `partial` and retries — never `ok`, which would claim
             # a completeness this run did not achieve.
             print(f"[wikidata] budget {BUDGET_MIN} min spent — {name} not pulled this "
-                  f"run (keeping {before:,} existing rows); the next run RESUMES AFTER "
+                  f"run (keeping {before:,} existing rows); the source's next pass RESUMES AFTER "
                   f"{last_started} so it is reached", flush=True)
             tally.deferred_unit(name)
             total_rows += before

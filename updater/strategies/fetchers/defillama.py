@@ -444,7 +444,7 @@ TWO THINGS THIS BOUND DOES NOT COVER, said here rather than discovered in round 
 
 No state, no bookmark, no deferral: every chain is attempted every run, so there is no fixed-order
 prefix to re-walk and nothing for a rotation to resume. A chain that times out is named transient
-and retried next run, which is what transient has always promised. Measured against the live
+and retried when the source next runs, which is what transient has always promised. Measured against the live
 publisher: 2.6 s.
 
 The bound holds only while THREE things are true, so all three are pinned by behaviour rather than
@@ -523,7 +523,8 @@ def _chain_session():
     and this publisher's registry note says it sends Retry-After. One 429 was therefore up to SIX
     HOURS on one chain and 84 hours across fourteen — unbounded by anything, since the Deadline I
     deleted had been the only clip. A bound that a single response header can lift is not a bound.
-    A 429 now surfaces as a named transient and is retried next run, which is what transient means.
+    A 429 now surfaces as a named transient and is retried when the source next runs, which is what
+    transient means.
 
     The BULK call uses this session too (R792 #2). It used to run on the module session at
     timeout=120 with total=5, i.e. 6 x 120 + 45 = 765 s — larger than everything else combined and

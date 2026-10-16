@@ -36,7 +36,7 @@ precisely why the gate keys on the publisher's own validator rather than on a cl
 
 HONEST-STATUS: no reachable url or a download failure -> TransientError (partial, retried,
 existing data kept). A zip that downloads but streams ZERO rows -> structural, with the vintage
-NOT recorded, so a parser break resurfaces next run instead of being sealed in.
+NOT recorded, so a parser break resurfaces on a later pass instead of being sealed in.
 """
 from __future__ import annotations
 import hashlib

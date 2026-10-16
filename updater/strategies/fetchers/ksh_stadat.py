@@ -371,7 +371,7 @@ def _update(dl, budget_min, since) -> Result:
                 if dl.spent():
                     print(f"[{SOURCE}] budget of {budget_min:.0f} min spent after "
                           f"{dl.elapsed_min():.1f} min — {fetched}/{len(batch)} tables "
-                          f"fetched, {len(batch) - fetched} left for the next tick (their "
+                          f"fetched, {len(batch) - fetched} left for a later pass (their "
                           f"vintages stay unbumped, so they are retried)", flush=True)
                     for tid, _v in batch[wave_start:]:
                         tally.deferred_unit(f"{tid} (budget {budget_min:.0f} min)")   # R1118

@@ -25,7 +25,7 @@ HONEST-STATUS CONTRACT (Tally + finalize):
                      genuinely-empty/non-JSON 200) — record and KEEP GOING
   finalize() then returns 'ok'/'no_change' only when no series transient/structural-
   failed; 'partial' on any transient (so the orchestrator does NOT stamp success and
-  re-runs the unit next tick); and raises DefinitiveError on a large all-empty window
+  a later pass selects the unit again, per base.Strategy.is_due); and raises DefinitiveError on a large all-empty window
   (a wholesale outage masquerading as "every series is quiet").
 """
 from __future__ import annotations
@@ -364,7 +364,7 @@ def update(unit, since) -> Result:
             stopped_early = True
             print(f"[{SOURCE}] budget of {budget_min:.0f} min spent after "
                   f"{dl.elapsed_min():.1f} min — {done_series}/{len(order)} series done, "
-                  f"{len(order) - done_series} deferred to the next tick "
+                  f"{len(order) - done_series} deferred to a later pass "
                   f"(resuming after {last_sid!r})", flush=True)
             break
         done_series += 1
@@ -483,7 +483,7 @@ def update(unit, since) -> Result:
     })
 
     print(f"[{SOURCE}] merging {len(vals):,} obs from {done_series}/{len(order)} series "
-          f"({'PARTIAL sweep, rest next tick' if stopped_early else 'full sweep'})", flush=True)
+          f"({'PARTIAL sweep, rest in a later pass' if stopped_early else 'full sweep'})", flush=True)
     n, maxd = merge.merge_and_write(path, new_tbl, mode="merge", dedup_keys=DEDUP)
     # finalize() honors transient -> 'partial' even though rows were merged.
     return finalize(tally, n, maxd or last_obs, source=SOURCE,

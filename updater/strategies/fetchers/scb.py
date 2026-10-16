@@ -36,7 +36,8 @@ HONEST STATUS (Tally + finalize): each TABLE is a sub-unit.
   empty_unit()      table already current (no time code newer than stored max) OR a
                     legitimately-empty incremental tail (200, real metadata, 0 new)
   transient_unit()  timeout / 5xx / 429 / network / non-JSON-200 on metadata or data
-                    -> the WHOLE run returns 'partial' (orchestrator re-runs next tick)
+                    -> the WHOLE run returns 'partial' (a later pass selects the unit
+                    again, per base.Strategy.is_due)
   structural_unit() a previously-populated table whose metadata GET 200s but no
                     longer exposes a time dimension, OR whose incremental POST 200s
                     with a real envelope yet yields 0 parseable rows for time codes

@@ -33,7 +33,8 @@ HONEST STATUS (Tally + finalize): each table is a sub-unit. We do our OWN HTTP (
 than the ingester's error-swallowing get_json/post_json) so we can tell apart:
   - transient  : timeout / 5xx / 429 / connection drop / non-JSON-200-under-load
                  -> transient_unit()  => the WHOLE run is 'partial' (orchestrator does
-                    NOT stamp last_success; the unit re-runs next tick). Existing data
+                    NOT stamp last_success; a later pass selects the unit again, per
+                    base.Strategy.is_due). Existing data
                     is left untouched.
   - structural : a 200 with a real time-series envelope (a parseable JSON-stat2 body
                  that DOES contain a time dimension) that nonetheless parsed 0 usable
@@ -589,7 +590,7 @@ def update(unit, since) -> Result:
             print(f"[{SOURCE}] budget of {budget_min:.0f} min spent after "
                   f"{dl.elapsed_min():.1f} min — stopped after subject {last_subj!r}, "
                   f"{n_left} of {len(subjects)} subject(s) "
-                  f"deferred to the next tick", flush=True)
+                  f"deferred to a later pass", flush=True)
             break
         prev_subj = last_subj
         last_subj = subj
@@ -663,7 +664,7 @@ def update(unit, since) -> Result:
             # Rows accumulated so far are NOT discarded — the merge below still runs, so a capped
             # pass publishes what it fetched. The table bookmark records the last table COMPLETED
             # (not the one about to start, which would skip it), and the SUBJECT bookmark is wound
-            # back to the previous subject so the next tick re-enters this one and continues from
+            # back to the previous subject so the next pass re-enters this one and continues from
             # the bookmark instead of stepping over its unfinished tail.
             if dl.spent():
                 hit_cap_inside = True
@@ -682,7 +683,7 @@ def update(unit, since) -> Result:
                 print(f"[{SOURCE}] budget of {budget_min:.0f} min spent after "
                       f"{dl.elapsed_min():.1f} min INSIDE subject {subj!r} — completed "
                       f"{subj_tables.index(t)} of {len(subj_tables)} table(s); resuming after "
-                      f"{last_tbl!r} next tick (subject bookmark held at {prev_subj!r})",
+                      f"{last_tbl!r} in a later pass (subject bookmark held at {prev_subj!r})",
                       flush=True)
                 break
             tpath = t["path"]
@@ -865,7 +866,7 @@ def update(unit, since) -> Result:
     # the rotation.
     # NOT when the budget expired INSIDE a subject. This line silently UNDID the whole
     # table-grain fix: the inner deadline winds the subject bookmark back to prev_subj so the
-    # next tick re-enters the unfinished subject, and then this save overwrote it with
+    # next pass re-enters the unfinished subject, and then this save overwrote it with
     # last_subj — the interrupted one — so the next run resumed AFTER it and its tail was
     # skipped exactly as before. Caught by running the fetcher with a 3-second budget, not by
     # reading it: both writes look correct in isolation and only the order reveals the bug.

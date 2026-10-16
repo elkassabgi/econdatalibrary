@@ -508,13 +508,13 @@ def update(unit, since) -> Result:
     for fn in files:
         if dl.spent():
             print(f"[istat] budget of {BUDGET_MIN:g} min spent after {dl.elapsed_min():.1f} "
-                  f"min — {flows_done} flow(s) attempted, {n_sub - flows_done} left for the "
-                  f"next run, which RESUMES after {last_attempted!r} rather than restarting "
+                  f"min — {flows_done} flow(s) attempted, {n_sub - flows_done} left for a "
+                  f"later pass, which RESUMES after {last_attempted!r} rather than restarting "
                   f"(deferred, not failed; merged rows keep their derive)", flush=True)
             # deferred_unit, NOT transient_unit (R303, and tests/test_tally_deferred_is_not_
             # _a_failure.py enforces it — my first cut used transient and turned the suite red).
             # "Transient" says something went wrong and retrying may help; "deferred" says
-            # nothing went wrong and rotation takes it next tick. Both still return `partial`,
+            # nothing went wrong and rotation takes it in a later pass. Both still return `partial`,
             # so the vintage does not stamp full coverage either way; only one of them tells
             # the operator to investigate.
             tally.deferred_unit(f"budget spent after {flows_done} flow(s)")
@@ -622,7 +622,8 @@ def update(unit, since) -> Result:
             n, md = merge.merge_and_write(path, new_tbl, mode="merge", dedup_keys=DEDUP)
         except Exception:
             # merge guard tripped (would shrink / drop a column): keep old data, surface
-            # as transient so the flow re-runs next tick with a fresh pull.
+            # as transient so a later pass re-runs the flow with a fresh pull (the run is
+            # `partial`; base.Strategy.is_due decides when that pass comes).
             tally.transient_unit(f"{flow_id}: merge guard tripped over {before:,} stored")
             total += before
             continue

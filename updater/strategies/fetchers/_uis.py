@@ -152,8 +152,8 @@ def update(source_id: str, unit, since) -> Result:
                 stopped_early = True
                 print(f"[{source_id}] budget of {budget_min:.0f} min spent after "
                       f"{dl.elapsed_min():.1f} min — {done_inds:,}/{len(order):,} "
-                      f"indicators done, {len(order) - done_inds:,} deferred to the next "
-                      f"tick (resuming after {last_ind!r})", flush=True)
+                      f"indicators done, {len(order) - done_inds:,} deferred to a later "
+                      f"pass (resuming after {last_ind!r})", flush=True)
                 break
             chunk = order[start:start + _UIS_CHUNK]
             for ind, recs, err in ex.map(fetch, chunk):
@@ -248,7 +248,7 @@ def update(source_id: str, unit, since) -> Result:
     # full sweep merging cleanly produce identical row counts when upstream is quiet, so
     # without this line there is nothing in the log that distinguishes them.
     print(f"[{source_id}] merging {len(keys):,} obs from {done_inds:,}/{len(order):,} "
-          f"indicators ({'PARTIAL sweep, rest next tick' if stopped_early else 'full sweep'})",
+          f"indicators ({'PARTIAL sweep, rest in a later pass' if stopped_early else 'full sweep'})",
           flush=True)
     n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP)
     tally.added_unit(max(0, n - before), source_id)

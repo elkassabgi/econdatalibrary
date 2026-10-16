@@ -122,7 +122,7 @@ def _with_catalog_token(res: Result, tables) -> Result:
     token only when a fetcher returns None - so dst's unit stored "date-tail", the probe never matched, and
     every daily tick ran update(): 919-1,020 s to report no_change (runs of 2026-09-05/06), mostly reading the
     ~705 subject files' max date. Same defect and fix as unctad (#83). The token is of the catalogue read at
-    the START of update(), so a table republished during the pass reads as changed next tick - a re-pull,
+    the START of update(), so a table republished during the pass reads as changed on a later pass - a re-pull,
     never a skipped release. Only on ok/no_change: a partial (budget spent, a transient table, a refused
     subject) leaves tables due, so it must not claim the catalogue it has not caught up with."""
     tok = _gate_token(tables)
@@ -422,7 +422,7 @@ def update(unit, since) -> Result:
     remaining = max(0, len(due) - drained)
     print(f"[{SOURCE}] {drained}/{len(due)} due table(s) drained in "
           f"{dl.elapsed_min():.1f} min"
-          + (f"; BUDGET SPENT with {remaining} still due — they drain next run "
+          + (f"; BUDGET SPENT with {remaining} still due — a later pass drains them "
              f"(manifest checkpointed)" if capped else "; backlog clear"), flush=True)
 
     total = _total_rows()
@@ -445,5 +445,5 @@ def update(unit, since) -> Result:
                      merged_rows=res.merged_rows, cursor_cap_hit=res.cursor_cap_hit,
                      changed_keys=res.changed_keys,
                      error=f"budget spent with {remaining} of {len(due)} due table(s) "
-                           f"still behind upstream; manifest checkpointed, drains next run")
+                           f"still behind upstream; manifest checkpointed, a later pass drains them")
     return _with_catalog_token(res, tables)
