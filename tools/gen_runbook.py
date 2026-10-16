@@ -481,8 +481,10 @@ def render(sid, reg, st, runs, cat, served, with_store=False, findings=None):
       "or a dead endpoint, although that is the usual first guess.")
     A("")
     A("If the error names sub-units as `deferred (budget N min)` or `budget spent`, **nothing has "
-      "failed** — the source ran out of its slice and the rest is taken next tick (R303). Do not "
-      "'fix' it.")
+      "failed** — the source ran out of its slice and the rest was not reached in this pass (R303). "
+      "That is not proof the rest is ever reached: check that the deferred list MOVES from run to "
+      "run (the first deferred id, or the deferred set, in consecutive runs). A list that repeats is "
+      "a fetcher re-walking the same prefix, a real defect that still reads ROTATING (R190/R377).")
     A("")
 
     # ---- 4b. AUDIT FINDING

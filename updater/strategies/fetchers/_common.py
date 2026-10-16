@@ -384,15 +384,18 @@ def finalize(tally: Tally, total_rows, last_obs, *, source, series_cursors=None,
         # did not cover everything and must not stamp a full-coverage vintage; the change is that
         # the message no longer calls a deliberate deferral a failure, and the denominator is what
         # was actually attempted (R303).
-        # KNOWN FALSE WORDS, KEPT ON PURPOSE: "taken next tick" is untrue for a unit that has never
-        # succeeded (base.Strategy.is_due waits min(cadence, 7) x 0.9 days after a partial). The
-        # sentence is a contract: health._DEFERRAL_BASE matches it exactly to tell ROTATING from
-        # ATTENTION, and stored state rows carry it. Changing it needs the matcher to accept both
-        # forms first - a logic change, outside the text-only fix that reworded the other texts.
+        # THE SENTENCE IS A CONTRACT: health._DEFERRAL_BASE matches it exactly (anchored) to tell
+        # ROTATING from ATTENTION, and tests/test_rotating_class.py pins emitter to matcher. It says
+        # only what this pass knows: the deferred units were NOT REACHED. It promises no run (a unit
+        # that has never succeeded waits min(cadence, 7) x 0.9 days after a partial, base.Strategy
+        # .is_due) and no completion either: whether a later pass reaches them depends on the
+        # fetcher resuming past what it covered, and one that re-walks the same sorted prefix never
+        # does (R190/R377; AR-328 measured ilostat, R1586). Rows stored before this wording carry
+        # "... and taken next tick"; the matcher accepts both.
         return Result(status="partial", obs=total_rows, last_obs_date=last_obs,
                       new_vintage="date-tail", series_cursors=series_cursors, merged_rows=merged_rows,
                       error=(f"{tally.attempted} sub-unit(s) attempted, none failed; "
-                             f"{tally.deferred} deferred by budget and taken next tick"
+                             f"{tally.deferred} deferred by budget, not reached in this pass"
                              + _named(tally.deferred_ids)))
     status = "ok" if (tally.added > 0 or tally.revised > 0) else "no_change"
     note = f"+{tally.added} new rows" if tally.added else "no new rows"
