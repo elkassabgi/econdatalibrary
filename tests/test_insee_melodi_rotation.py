@@ -43,24 +43,27 @@ class TestRotationSemantics:
 
 
 class TestBookmarkIsWiredCorrectly:
+    """Since the resumable re-pull (AR-330) the rotated sweep is the WALK slot, `_Pass.walk_slot`. The
+    bookmark rules are unchanged; tests/test_insee_melodi_repull.py proves the walk resumes by behaviour."""
+
     def test_update_rotates_its_flow_list(self):
-        src = inspect.getsource(M.update)
-        assert "rotate_after(flows, load_rotation(out_dir)" in src, \
+        src = inspect.getsource(M._Pass.walk_slot)
+        assert "rotate_after(eligible, load_rotation(self.out_dir))" in src, \
             "the flow list must be rotated, or the sweep restarts at the head every run"
 
     def test_bookmark_is_saved_AFTER_the_deferral_check(self):
         """Stamped before the check it would record a flow that was DEFERRED, and the next
         run — starting just past it — would skip the very flow the deferral promised to
         return to."""
-        src = inspect.getsource(M.update)
-        defer = src.index("tally.deferred_unit(code)")
-        save = src.index("save_rotation(out_dir, code)")
+        src = inspect.getsource(M._Pass.walk_slot)
+        defer = src.index("self.tally.deferred_unit(c)")
+        save = src.index("save_rotation(self.out_dir, code)")
         assert save > defer, "save_rotation must come after the deferral branch"
 
     def test_bookmark_is_saved_per_flow_not_once_at_the_end(self):
         """The orchestrator's per-source cap KILLS a source rather than breaking its loop, so
         an end-of-function save is lost entirely on a kill (R273)."""
-        src = inspect.getsource(M.update)
-        after_save = src[src.index("save_rotation(out_dir, code)"):]
-        assert "for " not in after_save.split("save_rotation", 1)[0], \
+        src = inspect.getsource(M._Pass.walk_slot)
+        before = src[:src.index("save_rotation(self.out_dir, code)")]
+        assert "for i, code in enumerate(order):" in before, \
             "save_rotation must sit INSIDE the per-flow loop"
