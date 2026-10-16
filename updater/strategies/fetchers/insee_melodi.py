@@ -98,8 +98,9 @@ LEASE_STALE_MIN = 60
 MAX_RESTARTS = 3
 STALL_PASSES = 4
 
-# C1(c): flows whose CI-logged per-run delta was an exact multiple of 10,000 (F:\work\insee_melodi_stall
-# s5_deltas.log, windows 2026-08-23..09-05: the 08-30 run). Provenance, not a guess.
+# C1(c): flows whose CI-logged per-run delta was an exact multiple of 10,000 - read from this fetcher's own
+# "keeping N existing rows" lines in the updater-daily logs, window 2026-08-23..09-05 (the 2026-08-30 run,
+# 33307479002, which cut DS_TOUR_CAP and DS_SIDE_*_COM to one page). Provenance, not a guess.
 CI_PAGE_MULTIPLE_DELTAS = frozenset({
     "DS_RP_TD_MENAGES_NOC_COMP", "DS_SIDE_CREA_COM", "DS_SIDE_CREA_DEP_REG_NAT",
     "DS_SIDE_CREA_ENT_DEP_REG_NAT_CJ", "DS_SIDE_STOCKS_COM", "DS_TOUR_CAP"})
@@ -723,10 +724,10 @@ class _Pass:
             at["heartbeat_utc"] = S.utcnow()
             self.save()
 
-        def bail(kind, label=None):
+        def bail(kind, why=None):
             flush()
-            if label:
-                self.tally.transient_unit(label)
+            if why:
+                self._book_transient(why)
             self._progress(code, at, added_pages)
             return kind
 
@@ -811,6 +812,11 @@ class _Pass:
                     os.remove(part)                                     # never uploaded = never counted
                 except OSError:
                     pass
+
+    def _book_transient(self, label):
+        """A per-flow transient with its label (a method, so tests/test_label_names_are_bound.py sees the
+        name bound - a nested helper's parameter is invisible to that conservative checker)."""
+        self.tally.transient_unit(label)
 
     def _progress(self, code, at, added):
         self.repair_pages = added
