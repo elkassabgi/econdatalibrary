@@ -284,6 +284,8 @@ def _derive_and_put(store, key: str, series_id: str) -> None:
         os.close(fd)
         try:
             _series_csv_to_file_sorted(series_id, tmp)
+            if _BEFORE_PUT is not None:
+                _BEFORE_PUT(series_id)           # an --only run: what this id read is still R2's
             _put_gzip_file_with_backoff(store, key, tmp)
         finally:
             try:
@@ -291,6 +293,8 @@ def _derive_and_put(store, key: str, series_id: str) -> None:
             except OSError:
                 pass
         return
+    if _BEFORE_PUT is not None:
+        _BEFORE_PUT(series_id)                   # an --only run: what this id read is still R2's
     _put_with_backoff(store, key, body)
 
 
@@ -788,6 +792,391 @@ def _apply_only(rows, path):
     return kept
 
 
+# boto3's upload_file (updater.blob.R2Blob.put_file, which publishes the parquet stores) switches to a
+# multipart upload at 8 MiB and cuts 8 MiB parts, so a store parquet above that carries an ETag of the
+# form <md5 of the concatenated part md5s>-<number of parts>, not the md5 of the file. Three upload tools
+# cut 64 MiB parts instead (tools/upload_statcan_store.py, _upload_clean_full_parquet.py,
+# _upload_biotrademerch_store.py). Both layouts are tried; 64 is a multiple of 8, so one read serves both.
+_MULTIPART_PARTS = (8 * 1024 * 1024, 64 * 1024 * 1024)
+
+ONLY_PIN_FLAG = "--pinned-data-root-proven"
+
+SAFE_ONLY_PROCEDURE = (
+    "copy each id's parquet from R2 into a NEW empty folder (clean_full/<src>/<file> -> <folder>/<src>/<file>; "
+    "md5 of the copy == R2's ETag), set ECONDL_DATA to that folder, then run the same --only derive again")
+
+# Set by main() for a gated --only run: called with the series id just before its CSV is PUT, and raises
+# _PutFailed when what the id reads changed since the check (see _OnlyProof.recheck). None otherwise.
+_BEFORE_PUT = None
+
+
+def _local_digests(path: str) -> tuple:
+    """(size, md5 hex, {part size: S3-style multipart ETag}) of a local file, in one read."""
+    import hashlib                                                   # noqa: PLC0415
+    small = _MULTIPART_PARTS[0]
+    whole = hashlib.md5()                                            # noqa: S324
+    parts = {p: [] for p in _MULTIPART_PARTS}
+    running = {p: hashlib.md5() for p in _MULTIPART_PARTS}          # noqa: S324
+    filled = {p: 0 for p in _MULTIPART_PARTS}
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(small), b""):
+            whole.update(chunk)
+            for p in _MULTIPART_PARTS:
+                running[p].update(chunk)
+                filled[p] += len(chunk)
+                if filled[p] == p:
+                    parts[p].append(running[p].digest())
+                    running[p], filled[p] = hashlib.md5(), 0        # noqa: S324
+    for p in _MULTIPART_PARTS:
+        if filled[p]:
+            parts[p].append(running[p].digest())
+    multi = {p: hashlib.md5(b"".join(d)).hexdigest() + f"-{len(d)}"  # noqa: S324
+             for p, d in parts.items()}
+    return os.path.getsize(path), whole.hexdigest(), multi
+
+
+def _store_key_for(path: str, data_root: str) -> str | None:
+    """The R2 key of the store object a resolved local file stands for, or None when it lies outside the
+    store roots - which the caller must treat as UNPROVEN, never as equal.
+
+    The resolver's root (ECONDL_DATA, default data/clean_full) maps to `clean_full/`; sec_edgar's served
+    files fall back to the sibling `clean_grouped/` (econdl._resolve), which maps to `clean_grouped/`.
+    The `_live` half (with_live_half) and the `_split_map.json` sidecars sit under the same root and map
+    the same way. The key keeps the case of the path AS THE RESOLVER GAVE IT (abspath, not realpath, which
+    on Windows would substitute the on-disk case)."""
+    ap = os.path.abspath(path)
+    for root, prefix in ((data_root, "clean_full"),
+                         (os.path.join(os.path.dirname(data_root), "clean_grouped"), "clean_grouped")):
+        r = os.path.abspath(root)
+        try:
+            if os.path.commonpath([os.path.normcase(r), os.path.normcase(ap)]) != os.path.normcase(r):
+                continue
+        except ValueError:                                           # another drive
+            continue
+        rel = os.path.relpath(ap, r).replace(os.sep, "/")
+        if rel in (".", "..") or rel.startswith("../"):
+            continue
+        return f"{prefix}/{rel}"
+    return None
+
+
+def _read_set(sid: str, res, data_root: str) -> list:
+    """Every local file the derive of `sid` reads - a SUPERSET of resolved_paths.
+
+    resolved_paths globs `*.parquet` under a directory, but read_native hands the directory to
+    pyarrow.dataset, which also reads files with other names (a crashed atomic write leaves
+    `T1.parquet.<pid>.<uuid>.tmp`), so a directory adds what pyarrow would read. A '#part' id's rows are
+    chosen by `<src>/_split_map.json` in the same root (econdl._resolve), so that sidecar is read too."""
+    out = list(resolved_paths(res))
+    raw = res.parquet_path
+    for p in (raw if isinstance(raw, (list, tuple)) else [raw]):
+        p = str(p)
+        if os.path.isdir(p):
+            import pyarrow.dataset as _ds                            # noqa: PLC0415
+            out += [str(f) for f in _ds.dataset(p).files]
+    if "#" in sid:
+        smap = os.path.join(data_root, sid.split(":", 1)[0], "_split_map.json")
+        if os.path.exists(smap):
+            out.append(smap)
+    seen, uniq = set(), []
+    for f in out:
+        k = os.path.normcase(os.path.abspath(f))
+        if k not in seen:
+            seen.add(k)
+            uniq.append(os.path.abspath(f))
+    return uniq
+
+
+def _compare_one(s3, bucket: str, path: str, data_root: str) -> dict:
+    """One file against R2's object of the same key.
+
+    verdict  "equal"    same size and the ETag is the local md5 (single-part) or one of the multipart
+                        reconstructions, part count included;
+             "differs"  R2 has no such object, the sizes differ, the single-part md5 differs, a
+                        multipart ETag whose part count fits a known layout does not reconstruct, the
+                        object's own md5 (read for an unknown multipart layout) differs, or the file
+                        changed while it was read;
+             "unproven" nothing could be compared: unreadable locally, outside the store roots, a HEAD
+                        error, no ETag, or an unknown multipart layout whose object could not be read.
+    A reconstruction can only fail safe: if the store ever computed multipart ETags some other way, the
+    file would read "unproven" or "differs", never "equal". Content-identical files with different bytes
+    (a pyarrow re-encode, R549 (a)) read "differs": the safe procedure makes them byte-equal.
+    `rec` = (key, size, st_mtime_ns, etag, md5) for the re-check before the PUT."""
+    key = _store_key_for(path, data_root)
+    try:
+        st0 = os.stat(path)
+        size, md5, multi = _local_digests(path)
+        st1 = os.stat(path)
+        mtime = dt.datetime.fromtimestamp(st1.st_mtime, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        local = f"local {path} ({size:,} B, md5 {md5}, modified {mtime})"
+    except OSError as e:
+        return {"verdict": "unproven", "local": f"local {path} UNREADABLE ({type(e).__name__}: "
+                f"{str(e)[:80]})", "r2": "not compared", "rec": None}
+    rec = (key, st1.st_size, st1.st_mtime_ns, None, md5)
+    if (st0.st_size, st0.st_mtime_ns) != (st1.st_size, st1.st_mtime_ns) or st1.st_size != size:
+        # "differs", not "unproven": a file being rewritten is not one the operator can vouch for
+        return {"verdict": "differs", "local": local + " CHANGED WHILE BEING READ", "r2": "not compared",
+                "rec": rec}
+    if key is None:
+        return {"verdict": "unproven", "local": local, "rec": rec,
+                "r2": f"NO R2 KEY: the file is outside the store roots under {data_root}"}
+    try:
+        h = s3.head_object(Bucket=bucket, Key=key)
+    except Exception as e:                                           # noqa: BLE001
+        from updater import blob as _blob                            # noqa: PLC0415
+        if _blob._is_404(e):
+            return {"verdict": "differs", "local": local, "r2": f"{key}: NO SUCH OBJECT", "rec": rec}
+        return {"verdict": "unproven", "local": local, "rec": rec,
+                "r2": f"{key}: HEAD FAILED ({type(e).__name__}: {str(e)[:80]})"}
+    etag = str(h.get("ETag") or "").strip('"')
+    r_size = h.get("ContentLength")
+    lm = h.get("LastModified")
+    lm = lm.strftime("%Y-%m-%dT%H:%M:%SZ") if hasattr(lm, "strftime") else str(lm)
+    r2 = (f"{key} ({r_size:,} B, ETag {etag}, modified {lm})" if isinstance(r_size, int)
+          else f"{key} (size {r_size!r}, ETag {etag}, modified {lm})")
+    rec = (key, st1.st_size, st1.st_mtime_ns, etag or None, md5)
+    if not etag:
+        verdict = "unproven"
+    elif r_size != size:
+        verdict = "differs"
+    elif "-" not in etag:
+        verdict = "equal" if etag == md5 else "differs"
+    elif etag in multi.values():
+        verdict = "equal"
+    elif etag.rsplit("-", 1)[1] in {m.rsplit("-", 1)[1] for m in multi.values()}:
+        verdict = "differs"
+    else:
+        # R2 ANSWERED, in a multipart layout this code cannot rebuild: read the object itself (pinned to
+        # the ETag just seen) and compare md5s, so the answer is "equal" or "differs" - never left for the
+        # pin flag to override (review round 2, finding 5).
+        got = _r2_object_md5(s3, bucket, key, h.get("ETag"))
+        if got is None:
+            verdict = "unproven"
+            r2 += " - multipart layout unknown and the object could not be read"
+        else:
+            verdict = "equal" if got == md5 else "differs"
+            r2 += f" - multipart layout unknown, object md5 {got}"
+    return {"verdict": verdict, "local": local, "r2": r2, "rec": rec}
+
+
+def _r2_object_md5(s3, bucket: str, key: str, etag) -> str | None:
+    """md5 of R2's object, streamed, read only while it still carries `etag`; None if it cannot be read."""
+    import hashlib                                                   # noqa: PLC0415
+    try:
+        body = s3.get_object(Bucket=bucket, Key=key, IfMatch=etag)["Body"]
+        h = hashlib.md5()                                            # noqa: S324
+        for chunk in iter(lambda: body.read(8 * 1024 * 1024), b""):
+            h.update(chunk)
+        return h.hexdigest()
+    except Exception:                                                # noqa: BLE001 - "cannot read" only
+        return None
+
+
+class _OnlyProof:
+    """What the --only check established, kept for the re-check before each PUT."""
+
+    def __init__(self, bucket: str, s3, files_by_id: dict, recs: dict):
+        self.bucket, self.s3 = bucket, s3
+        self.files_by_id = files_by_id                               # sid -> [path]
+        self.recs = recs                                   # path -> (key, size, mtime_ns, etag, md5)
+        self.rehashed: set = set()                         # files whose bytes were re-hashed at a re-check
+
+    def recheck(self, sid: str) -> None:
+        """THE CHECK RUNS ONCE, THE DERIVE CAN RUN FOR HOURS (review finding 2). Just before an id's PUT,
+        require that it still reads the same files, unchanged on disk, and that R2's objects still carry
+        the ETags the check saw - a cloud run that replaced the parquet meanwhile may also have written a
+        fresher CSV, which this PUT would regress. Any change: the id is not PUT (a PUT FAILED)."""
+        from econdl import _resolve                                  # noqa: PLC0415
+        data_root = os.path.abspath(_resolve.default_data_root())
+        try:
+            now = _read_set(sid, _resolve.resolve(sid), data_root)
+        except Exception as e:                                       # noqa: BLE001
+            raise _PutFailed(f"{sid}: no longer resolves ({type(e).__name__}) - not written") from e
+        if [os.path.normcase(f) for f in now] != [os.path.normcase(f) for f in self.files_by_id.get(sid, [])]:
+            raise _PutFailed(f"{sid}: reads a different set of files than the --only check compared - not written")
+        for f in now:
+            rec = self.recs.get(f)
+            if rec is None:
+                raise _PutFailed(f"{sid}: never compared by the --only check - not written: {f}")
+            key, size, mtime_ns, etag, md5 = rec
+            try:
+                st = os.stat(f)
+            except OSError as e:
+                raise _PutFailed(f"{sid}: unreadable since the check - not written: {f}") from e
+            if (st.st_size, st.st_mtime_ns) != (size, mtime_ns):
+                raise _PutFailed(f"{sid}: CHANGED since the --only check - not written: {f}")
+            # A copy that keeps size and mtime (copy2, robocopy /COPY:DAT) passes the stat: re-hash each
+            # file once, at its first re-check (review round 2, finding 7).
+            if md5 is not None and os.path.normcase(f) not in self.rehashed:
+                try:
+                    now_md5 = _file_md5(f)
+                except OSError as e:
+                    raise _PutFailed(f"{sid}: unreadable since the check - not written: {f}") from e
+                if now_md5 != md5:
+                    raise _PutFailed(f"{sid}: CHANGED since the --only check (same size and time, "
+                                     f"other bytes) - not written: {f}")
+                self.rehashed.add(os.path.normcase(f))
+            if etag is not None and self.s3 is not None:
+                try:
+                    h = self.s3.head_object(Bucket=self.bucket, Key=key)
+                    got = str(h.get("ETag") or "").strip('"')
+                except Exception as e:                               # noqa: BLE001
+                    raise _PutFailed(f"{sid}: cannot re-check R2 {key} ({type(e).__name__}) - not written") from e
+                if got != etag:
+                    raise _PutFailed(f"{sid}: R2 CHANGED since the --only check, a newer store vintage "
+                                     f"exists - not written ({key}: ETag {etag} -> {got})")
+
+
+def _only_files_differ_from_r2(rows, bucket: str, s3=None) -> tuple:
+    """Compare EVERY file a selected id reads (see _read_set) with R2's object of the same key.
+
+    WHY (ledger R383/R385/R548/R549, review AR-327): this tool READS through the econdl resolver - the
+    local mirror, or ECONDL_DATA - and WRITES to R2. The whole-source preflight `_mirror_behind_store`
+    samples at most 64 files of data/clean_full with a fixed seed and never reads ECONDL_DATA, so for an
+    --only run it almost never looks at the file it is about to publish. Measured 2026-10-16: the mirror's
+    eurostat MIGR_ASYUMWITM.parquet held 26,472,276 rows (2026-10-01) while R2's held 26,590,932
+    (2026-10-06), and the health gate's printed remedy would have published the older vintage.
+
+    FAILS CLOSED: no client, a HEAD error, a missing object, a file outside the store roots - each is a
+    problem, named with both sides (see _compare_one for the verdicts).
+
+    Returns (problems, kept rows, proof). problems = [(sid, verdict, local side, R2 side)]. An id that
+    does not resolve here is DROPPED from the kept rows (named), so a file that appears later cannot be
+    published unchecked."""
+    from econdl import _resolve                                      # noqa: PLC0415
+    data_root = os.path.abspath(_resolve.default_data_root())
+    problems, kept, per_id = [], [], []
+    for sid, src in rows:
+        try:
+            res = _resolve.resolve(sid)
+        except Exception as e:                                       # noqa: BLE001
+            print(f"[only-check] {sid}: does not resolve here ({type(e).__name__}: {str(e)[:80]}) - "
+                  f"dropped from this run, nothing will be published for it", flush=True)
+            continue
+        kept.append((sid, src))
+        files = _read_set(sid, res, data_root)
+        if not files:
+            problems.append((sid, "differs", f"resolves to NO file ({res.parquet_path})", "not compared"))
+            continue
+        per_id.append((sid, files))
+    proof = _OnlyProof(bucket, s3, {sid: files for sid, files in per_id}, {})
+    if not per_id:
+        return problems, kept, proof
+    if s3 is None:
+        try:
+            s3 = r2_util.client()
+        except Exception as e:                                       # noqa: BLE001
+            s3 = None
+            why = f"NOT ASKED: no R2 client ({type(e).__name__}: {str(e)[:80]})"
+    proof.s3 = s3
+    seen: dict = {}                                                  # path -> _compare_one result
+    for sid, files in per_id:
+        for f in files:
+            if f not in seen:
+                if s3 is None:
+                    try:
+                        st = os.stat(f)
+                        rec = (_store_key_for(f, data_root), st.st_size, st.st_mtime_ns, None, _file_md5(f))
+                    except OSError:
+                        rec = None
+                    seen[f] = {"verdict": "unproven", "local": f"local {f}", "r2": why, "rec": rec}
+                else:
+                    seen[f] = _compare_one(s3, bucket, f, data_root)
+            c = seen[f]
+            if c["rec"] is not None:
+                proof.recs[f] = c["rec"]
+            if c["verdict"] == "equal":
+                print(f"[only-check] {sid}: {c['local']} == R2 {c['r2']}", flush=True)
+            else:
+                problems.append((sid, c["verdict"], c["local"], c["r2"]))
+    return problems, kept, proof
+
+
+def _only_r2_gate(a, rows, store) -> tuple:
+    """Refuse an --only run that would publish from a file that is not R2's object (exit 2, nothing PUT).
+
+    Runs before any listing or PUT and returns (rows to derive, proof) - the proof re-checks each id just
+    before its PUT. After T0 there is no R2 copy to differ from (the self-hosted store is the published
+    store), and the check says so.
+
+    --pinned-data-root-proven (the operator vouches for ECONDL_DATA) overrides ONLY what could not be
+    compared - a HEAD error, no client, no ETag, an unreadable object - and never a DIFFERENCE: a copy that
+    is R2's object passes without it, so a flag that also let differences through would be a bypass
+    (review finding 1). It is refused unless ECONDL_DATA is set, is not (and does not overlap) this
+    checkout's mirror, is not a folder named clean_full/clean_grouped, and holds every selected file."""
+    from core import cutover                                         # noqa: PLC0415
+    if cutover.is_cut_over():
+        print("[only-check] after T0 the self-hosted store is the published store: nothing to compare "
+              "with R2", flush=True)
+        return rows, None
+    pinned = None
+    if a.pinned_data_root_proven:
+        from econdl import _resolve                                  # noqa: PLC0415
+        env = (os.environ.get("ECONDL_DATA") or "").strip()
+        mirror = os.path.normcase(os.path.abspath(_resolve._DEFAULT_DATA))
+        if not env:
+            print(f"REFUSING: {ONLY_PIN_FLAG} vouches for a PINNED copy, but ECONDL_DATA is not set - the "
+                  f"run would read this checkout's own mirror (the R548 run). {SAFE_ONLY_PROCEDURE}.")
+            raise SystemExit(2)
+        pinned = os.path.normcase(os.path.abspath(env))
+        try:
+            overlaps = os.path.commonpath([pinned, mirror]) in (pinned, mirror)
+        except ValueError:                                           # another drive
+            overlaps = False
+        # A folder NAMED clean_full is a checkout's mirror by this repo's layout (any checkout's - a
+        # worktree's _DEFAULT_DATA is not the production one), never the fresh folder the procedure names.
+        if overlaps or os.path.basename(pinned) in ("clean_full", "clean_grouped"):
+            print(f"REFUSING: {ONLY_PIN_FLAG}: ECONDL_DATA={env} is (or overlaps) a checkout's parquet "
+                  f"mirror, not a pinned copy. {SAFE_ONLY_PROCEDURE}.")
+            raise SystemExit(2)
+    problems, kept, proof = _only_files_differ_from_r2(rows, a.bucket)
+    if not kept:
+        print("REFUSING: no selected id resolves here - a run that would exit 0 having derived nothing.")
+        raise SystemExit(2)
+    if pinned is not None:
+        outside = [(sid, f) for sid, files in proof.files_by_id.items() for f in files
+                   if not _inside(pinned, f)]
+        if outside:
+            print(f"REFUSING: {ONLY_PIN_FLAG}: {len(outside):,} selected file(s) lie OUTSIDE ECONDL_DATA, "
+                  f"so the flag cannot vouch for them:")
+            for sid, f in outside[:20]:
+                print(f"    {sid}: {f}")
+            raise SystemExit(2)
+    n_files = len(proof.recs)
+    if not problems:
+        print(f"[only-check] {len(kept):,} selected id(s), {n_files:,} file(s): every file is R2's object, "
+              f"byte for byte", flush=True)
+        return kept, proof
+    differs = [p for p in problems if p[1] == "differs"]
+    unproven = [p for p in problems if p[1] != "differs"]
+    if differs:
+        print(f"\nREFUSING TO DERIVE - {len(differs):,} selected id(s) would be published from a file that "
+              f"DIFFERS from R2's object:")
+        for sid, _v, local_side, r2_side in differs:
+            print(f"    {sid}:\n        {local_side}\n        R2 {r2_side}")
+    if unproven:
+        head = "WARNING" if pinned is not None and not differs else "REFUSING TO DERIVE"
+        print(f"\n{head} - {len(unproven):,} selected id(s) could not be compared with R2:")
+        for sid, _v, local_side, r2_side in unproven:
+            print(f"    {sid}:\n        {local_side}\n        R2 {r2_side}")
+    if pinned is not None and not differs:
+        print(f"\n{ONLY_PIN_FLAG}: publishing the uncompared file(s) from the pinned ECONDL_DATA, as you "
+              f"vouched.", flush=True)
+        return kept, proof
+    print(f"\nDeriving now could publish a vintage R2 does not hold (R383/R548). {SAFE_ONLY_PROCEDURE}."
+          + ("" if differs else f" If R2 cannot be asked from here and you proved the pinned copy by other "
+                                f"means, add {ONLY_PIN_FLAG}."))
+    raise SystemExit(2)
+
+
+def _inside(root_normcased: str, path: str) -> bool:
+    fp = os.path.normcase(os.path.abspath(path))
+    try:
+        return os.path.commonpath([root_normcased, fp]) == root_normcased
+    except ValueError:
+        return False
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Derive per-series CSV objects to R2")
     ap.add_argument("--bucket")
@@ -832,7 +1221,14 @@ def main() -> None:
                          "release the GIL (pyarrow read, then the HTTPS PUT), so threads help.")
     ap.add_argument("--allow-stale-mirror", action="store_true",
                     help="derive even if the local parquet mirror is BEHIND R2. Only for a "
-                         "deliberate rebuild from an older vintage — see the guard below.")
+                         "deliberate rebuild from an older vintage — see the guard below. Skips the "
+                         "whole-source SAMPLE only; it does not skip the exact --only check.")
+    ap.add_argument(ONLY_PIN_FLAG, dest="pinned_data_root_proven", action="store_true",
+                    help="with --only: you have pinned ECONDL_DATA to a folder whose files you proved equal "
+                         "to R2's objects by other means, and accept publishing a file the exact check COULD "
+                         "NOT COMPARE (R2 not reachable, no ETag, an unreadable object; printed as a WARNING). "
+                         "It never overrides a DIFFERENCE. Refused unless ECONDL_DATA is set, is not a "
+                         "checkout's data/clean_full mirror, and holds every selected file.")
     ap.add_argument("--only", metavar="PATH",
                     help="file of catalog series ids, one per line (lines starting with # are comments); derive "
                          "ONLY these. For a targeted REBUILD, where --skip-existing would skip "
@@ -840,9 +1236,12 @@ def main() -> None:
                          "handful. Written 2026-09-01 for the 68 eurostat flows whose served CSV "
                          "was built from a local mirror that had fallen behind R2, so the CSV "
                          "served an older vintage than the store held (tec00108 served 5,328 "
-                         "rows against R2's 5,415).")
+                         "rows against R2's 5,415). A real --only run first compares every selected "
+                         "file with R2's object of the same key and refuses (exit 2) on any "
+                         "difference: derive from a fresh copy of R2's parquet pinned with ECONDL_DATA.")
     a = ap.parse_args()
-    global _MAX_ROWS, _ALLOW_STREAM
+    global _MAX_ROWS, _ALLOW_STREAM, _BEFORE_PUT
+    _BEFORE_PUT = None
     _MAX_ROWS = a.max_rows
     _ALLOW_STREAM = a.allow_stream
     global _STREAM_MAX
@@ -865,7 +1264,15 @@ def main() -> None:
     # Judged by CONTENT — row count and max observation date — never LastModified (upload time,
     # not change time) and never md5 (a re-encoded parquet differs with identical data). Both
     # of those proxies produced false verdicts the same day.
-    if not a.dry_run and not a.allow_stale_mirror:
+    #
+    # AN --only RUN IS CHECKED EXACTLY INSTEAD (below, `_only_files_differ_from_r2`): every file the
+    # selected ids resolve to is compared byte-for-byte with R2's object of the same key. This sample
+    # reads data/clean_full whatever ECONDL_DATA says and picks its files by a fixed seed, so it could
+    # neither clear nor condemn the handful of files an --only run publishes (AR-327).
+    if a.only and not a.dry_run:
+        print("[preflight] --only: the whole-source sample is not run; every selected id's file is "
+              "compared with R2's object before anything is written", flush=True)
+    elif not a.dry_run and not a.allow_stale_mirror:
         behind = _mirror_behind_store(a.source)
         if behind:
             print("\nREFUSING TO DERIVE — the local parquet mirror is BEHIND R2 for:")
@@ -943,6 +1350,8 @@ def main() -> None:
 
     if not a.bucket:
         ap.error("--bucket is required for a real run")
+    if a.pinned_data_root_proven and not a.only:
+        ap.error(f"{ONLY_PIN_FLAG} applies to an --only run")
     if a.prefix != DEFAULT_PREFIX:
         # _put_with_backoff stores series CSVs only (series/<id>.csv, gzip through the shared helper); any other
         # prefix made every series read "unresolvable" (R1211) - refused here, before any work
@@ -966,6 +1375,11 @@ def main() -> None:
         import zlib                                                  # noqa: PLC0415
         rows = [r for r in rows if zlib.crc32(r[0].encode()) % _n == _i]
         print(f"shard {_i}/{_n}: {len(rows):,} of {before:,} series", flush=True)
+
+    if a.only:
+        rows, proof = _only_r2_gate(a, rows, store)
+        if proof is not None:
+            _BEFORE_PUT = proof.recheck
 
     if a.smallest_first:
         by_src: dict = {}
