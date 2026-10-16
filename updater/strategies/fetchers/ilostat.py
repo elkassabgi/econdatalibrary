@@ -34,8 +34,20 @@ failure -> transient_unit for that indicator only, so one bad download cannot st
 1,946. An indicator that returns ZERO rows while the TOC says it has records -> structural_unit
 with its last.update NOT recorded, so it resurfaces on a later pass; an indicator the TOC itself
 declares empty (n.records = 0) is NOT an error and is counted as unchanged.
+
+ROTATION (AR-328). The walk resumes just after the bookmark (`_rotation.json`, saved per indicator
+before its work), so a budget-capped pass extends coverage instead of re-walking the alphabetical
+head. See _resume_order.
+
+THE KILL PATH, stated so nobody assumes otherwise. The sidecar is still saved ONCE, at the end of
+update(), on purpose (one write per pass, not per indicator). An exception that escapes update() - a
+process kill, a unit timeout landing outside the per-indicator try, publish_file raising - loses that pass's sidecar stamps
+AND its changed set: the indicators it published are on the store, but nothing books their CSVs in
+csv_desktop_owed, and with rotation the bookmark has already moved past them, so they are re-fetched
+(and their CSVs re-derived) only when the rotation comes round again - one cycle later.
 """
 from __future__ import annotations
+import bisect
 import hashlib
 import json
 import os
@@ -43,12 +55,38 @@ import os
 from ... import config, blob
 from ...errors import DefinitiveError, TransientError
 from ..base import Result
-from ._common import CURSOR_CAP, Deadline, Tally, finalize, merge_cursors
+from ._common import (CURSOR_CAP, Deadline, Tally, finalize, load_rotation, merge_cursors,
+                      rotate_after, save_rotation)
 from jobs import ingest_ilostat as ig     # TOC + the production downloader/parser
 
 SOURCE = "ilostat"
 SIDECAR = "_toc_vintages.json"
 BUDGET_MIN = 25
+
+
+def _rid(ds) -> str:
+    return ds.get("id") or ""
+
+
+def _resume_order(rows, after: str) -> list:
+    """The TOC rows in id order, starting just after `after` (the last indicator the previous pass
+    STARTED) and wrapping round.
+
+    WHY (AR-328, R190/R313). The sidecar skips an indicator only while its last.update stamp is
+    unchanged, and ILO re-stamps most of the list between weekly passes. A walk that always began
+    at the alphabetical top therefore re-fetched the same head every pass: across all 11 passes
+    from 2026-07-30 to 2026-10-14 the first deferred id sat at positions 675-1298 of ~1,960, and
+    every indicator after that point was never fetched by any pass. The sidecar persisted fine; the
+    head simply never stopped changing.
+
+    A bookmark that is no longer in the TOC (ILO renames indicators, R1137) resumes at the next id
+    in order. rotate_after's own fallback, "start at the top", is exactly the defect here.
+    """
+    order = sorted(rows, key=_rid)
+    if after and not any(_rid(r) == after for r in order):
+        i = bisect.bisect_right([_rid(r) for r in order], after)
+        return order[i:] + order[:i]
+    return rotate_after(order, after, key=_rid)
 
 
 def _toc(fresh: bool):
@@ -147,7 +185,7 @@ def update(unit, since) -> Result:
     changed: dict = {}
     dl = Deadline(minutes=BUDGET_MIN)
 
-    for ds in sorted(rows, key=lambda r: r.get("id") or ""):
+    for ds in _resume_order(rows, load_rotation(out_dir)):
         iid = ds.get("id")
         if not iid:
             continue
@@ -162,6 +200,13 @@ def update(unit, since) -> Result:
             tally.deferred_unit(iid)                         # deferral, not a verdict (R303)
             continue
 
+        # BOOKMARK, once per indicator, AFTER the deferral branch (a deferred id is never the bookmark)
+        # and BEFORE the work (R273, the ecb / insee_melodi / abs placement). Saved after the work, an
+        # indicator that never completes - the process dies in it, or publish_file raises out of
+        # update() - would leave the bookmark just before it, and every later pass would start on it
+        # and die there (review AR-329). Saved before, the next pass starts after it; the indicator
+        # keeps no sidecar stamp and is worked again when the rotation comes round.
+        save_rotation(out_dir, iid)
         try:
             _id, n_rows, _nser, _exp, status, _mn, _mx, _b, _s = ig.process_one(ds)
         except Exception:                                    # noqa: BLE001

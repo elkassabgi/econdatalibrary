@@ -43,8 +43,12 @@ FETCHER_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 # ADDING one requires reading the loop and recording why it is safe.
 NO_ROTATION_REVIEWED = {
     "bea", "bis", "boc", "comtrade", "cso", "dst", "eia", "ember",
-    "fed_board", "idb", "ilostat", "ksh_stadat", "snb", "stats_nz", "zillow",
+    "fed_board", "idb", "ksh_stadat", "snb", "stats_nz", "zillow",
 }
+# ilostat was REMOVED 2026-10-16 (AR-328). It sat here on the strength of its per-indicator sidecar,
+# but ILO re-stamps most of its list between weekly passes, so the sidecar never emptied the head
+# and 11 of 11 passes stopped at positions 675-1298 of ~1,960 - the tail was never fetched (R313).
+# It now rotates (rotate_after, with a bisect resume for a vanished bookmark).
 # stat_slovenia is deliberately ABSENT. It rolls its OWN rotation — a `_sweep_offset.json`
 # beside the data, advanced after every group so the offset survives a mid-sweep kill (task
 # #41) — and is recognised by _OWN_ROTATION below. It passes on its own merit rather than by
@@ -89,7 +93,7 @@ def test_no_new_budgeted_sweep_without_resumption():
 
 def test_the_three_repaired_fetchers_still_rotate():
     """Guards the actual 2026-08-07 fixes against a silent revert."""
-    missing = {f for f in ("ecb", "ssb", "insee_melodi")
+    missing = {f for f in ("ecb", "ssb", "insee_melodi", "ilostat")
                if f in _budgeted_without_rotation()}
     assert not missing, f"{sorted(missing)} lost its rotation bookmark — see ledger R190/R377"
 
@@ -97,7 +101,7 @@ def test_the_three_repaired_fetchers_still_rotate():
 def test_rotation_is_saved_after_the_deferral_branch():
     """A bookmark stamped BEFORE the deferral check names a sub-unit that was deferred, so
     the next run skips exactly what the deferral promised to return to."""
-    for name in ("ecb", "ssb", "insee_melodi"):
+    for name in ("ecb", "ssb", "insee_melodi", "ilostat"):
         src = open(os.path.join(FETCHER_DIR, f"{name}.py"), encoding="utf-8").read()
         i_save = src.index("save_rotation(")
         i_defer = src.index("deferred_unit(")
