@@ -589,11 +589,17 @@ def assess(store=None) -> dict:
                 _why[_k] = (_n + 1, _sample or _c)
             _whys = "; ".join(f"{n} {k}" + (f" e.g. {s[:90]}" if s else "")
                               for k, (n, s) in sorted(_why.items(), key=lambda x: -x[1][0])[:3])
+            # THE SAFE PROCEDURE, not the bare derive (review AR-327): run as printed before, the derive
+            # read this checkout's parquet mirror, which can be BEHIND R2 (eurostat MIGR_ASYUMWITM: mirror
+            # 26,472,276 rows vs R2 26,590,932, 2026-10-16), and published that older vintage. So: a fresh
+            # copy of R2's parquet, pinned with ECONDL_DATA. core.derive_csv --only now also refuses any id
+            # whose file is not R2's object, byte for byte.
             attention = [
                 f"{len(_dl)} CSV(s) OWED to the desktop derive ({_whys}; e.g. {_ex}): "
-                f"derive them with `python -m core.derive_csv --bucket "
-                f"econ-data --source {sid} --only <ids>`, read each back against R2's "
-                f"parquet, then `tools/clear_csv_desktop_owed.py --source {sid} --apply`"
+                f"copy each id's parquet from R2 into a NEW folder, set ECONDL_DATA to it, derive with "
+                f"`python -m core.derive_csv --bucket econ-data --source {sid} --only <ids>` (it refuses "
+                f"a file that is not R2's), read each back against R2's parquet, then "
+                f"`tools/clear_csv_desktop_owed.py --source {sid} --apply`"
             ] + list(attention)
             if health in ("OK", "ROTATING"):
                 health = "ATTENTION"

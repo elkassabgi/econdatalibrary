@@ -6,11 +6,14 @@ rewritten SINCE the debt was noted, then push the state store.
 
 WHAT THE ROW MEANS. The cloud derive could not take the id (its whole-file CSV is over the
 runner's row ceiling — see updater/derive.py FLOW_DERIVE_MAX_ROWS), so its served CSV sits at
-the previous vintage until the desktop derives it:
+the previous vintage until the desktop derives it - from a FRESH copy of R2's parquet, never this
+checkout's mirror, which can be behind R2 (review AR-327): copy each id's parquet from R2 into a new
+folder (<folder>/<src>/<file>, md5 == R2's ETag), set ECONDL_DATA to that folder, then
 
     python -m core.derive_csv --bucket econ-data --source <src> --only <ids file>
 
-and reads every served object back against R2's parquet (never the local mirror — R385).
+(which refuses any id whose file is not R2's object, byte for byte), and read every served object
+back against R2's parquet (never the local mirror — R385).
 
 WHAT THIS TOOL CHECKS BEFORE CLEARING, per id, from the SERVED side (R345: the running system
 is the evidence): the object `series/<id>.csv` exists on R2 and its LastModified is LATER than
