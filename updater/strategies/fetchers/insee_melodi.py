@@ -62,6 +62,7 @@ License: Licence Ouverte / Open Licence 2.0. Source: INSEE Melodi www.insee.fr
 from __future__ import annotations
 import datetime as dt
 import hashlib
+import http.client
 import os
 import random
 import re
@@ -180,7 +181,11 @@ def _request(sess, url, clock):
             raise _Stop(f"no room for a {TIMEOUT}s request")
         try:
             r = sess.get(url, headers=UA, timeout=TIMEOUT)
-        except (requests.Timeout, requests.ConnectionError) as e:
+            if r.status_code == 200:
+                payload = r.json()            # a truncated multi-MB body fails HERE, inside the retry
+        except (requests.RequestException, http.client.HTTPException, ValueError) as e:
+            # every transport fault is a retry: Timeout, ConnectionError, ChunkedEncodingError and
+            # ContentDecodingError (an IncompleteRead on a large page), bad JSON (review F1)
             last = str(e)[:120]
             wait = min(2 ** attempt, 30) + random.uniform(0, 1.0)
             if attempt == MAX_ATTEMPTS - 1:
@@ -190,10 +195,7 @@ def _request(sess, url, clock):
             time.sleep(wait)
             continue
         if r.status_code == 200:
-            try:
-                return "ok", r.json()
-            except ValueError as e:
-                last = f"bad json: {e}"
+            return "ok", payload
         elif r.status_code in (400, 404):
             return "nodata", r.status_code
         elif r.status_code == 429:
@@ -301,13 +303,10 @@ def _find_key(obj, key, depth=0):
 # --------------------------------------------------------------------------------------------- #
 # classification (C1, R2-1, R2-2)
 # --------------------------------------------------------------------------------------------- #
-_GEO_V = re.compile(r"GEO=(\d{4})-")
-
-
 def _partition_profile(path) -> dict | None:
-    """Rows, max obs_date, per-partition counts (dimension-name set + GEO vintage) and the DISTINCT
-    normalised (key without FREQ and GEO vintage, date) count of the stored file. None when absent.
-    Reads two columns of the served object once (classification only - never to decide a walk)."""
+    """Rows, max obs_date, rows in the max year, per-partition counts (dimension-name set + GEO vintage) and
+    the DISTINCT normalised (key without FREQ and GEO vintage, date) count of the stored file. None when
+    absent. Reads two columns of the served object once (classification only - never to decide a walk)."""
     lc = blob.local_copy(path)
     if lc is None:
         return None
@@ -331,14 +330,22 @@ def _partition_profile(path) -> dict | None:
     norm = pc.replace_substring_regex(norm, r"GEO=\d{4}-", "GEO=")
     s_norm = pa.table({"k": norm, "d": t.column("obs_date")}).group_by(["k", "d"]).aggregate([]).num_rows
     mx = pc.max(t.column("obs_date")).as_py() if t.num_rows else None
+    maxyear = int(pc.sum(pc.equal(pc.year(t.column("obs_date")), mx.year)).as_py() or 0) if mx else 0
     return {"rows": t.num_rows, "partitions": vc, "s_norm": s_norm,
-            "max_obs": mx.isoformat() if mx else None}
+            "max_obs": mx.isoformat() if mx else None, "maxyear_rows": maxyear}
 
 
-def _rule_hits(code, prof, force) -> str | None:
-    """The bootstrap rule that sends a flow to needs_origin, or None."""
+def _rule_hits(code, prof, force, fe=None) -> str | None:
+    """The BOOTSTRAP rule that sends a flow to needs_origin, or None.
+
+    It detects truncation by the OLD fetcher, so it does not apply to a flow this fetcher has already pulled
+    from origin (`last_full_utc`): that pull ended on isLast, and its residue (old-spelling rows INSEE no
+    longer serves, often exactly one page) would otherwise send it back to a full re-pull on every
+    re-classification, for ever (review F3). Operator force still applies."""
     if code in force:
         return "operator force_origin"
+    if (fe or {}).get("last_full_utc"):
+        return None
     if code in CI_PAGE_MULTIPLE_DELTAS:
         return "a CI-logged delta was an exact multiple of 10,000"
     if prof is None or prof["rows"] == 0:
@@ -355,6 +362,27 @@ def probe_page(s_norm: int) -> int:
     """R2-1: the page past what we hold, from the DISTINCT normalised count (old spellings and duplicates
     inflate the stored total: DS_FLORES_A5 holds 9,532,850 rows over 4,766,824 normalised pairs)."""
     return s_norm // PAGE_SIZE + 2
+
+
+MAX_FLOW_FAILURES = 3
+
+
+def _maxyear_rows(path, max_obs) -> int:
+    """Rows of the merged file in its max year, read from the LOCAL file the merge just wrote (the store
+    itself after T0, the runner's scratch mirror before). 0 when there is no local copy: an unknown size
+    only means a large tail is discovered in the walk and parked there (never a second in-progress)."""
+    if not max_obs or not os.path.exists(path):
+        return 0
+    try:
+        od = pq.read_table(path, columns=["obs_date"]).column("obs_date")
+        return int(pc.sum(pc.equal(pc.year(od), int(str(max_obs)[:4]))).as_py() or 0)
+    except Exception:                                                # noqa: BLE001 - an estimate only
+        return 0
+
+
+def _fatal(e) -> bool:
+    """Never swallow the orchestrator's hard limit (UnitTimeout is an Exception) or an interrupt."""
+    return isinstance(e, (KeyboardInterrupt, SystemExit)) or type(e).__name__ == "UnitTimeout"
 
 
 # --------------------------------------------------------------------------------------------- #
@@ -374,6 +402,7 @@ class _Pass:
         self.repair_pages = 0
         self.conflict = False
         self.me = S.owner_id()
+        self.force_raw = {}
 
     # ---------------------------------------------------------------- persistence
     def save(self):
@@ -387,6 +416,22 @@ class _Pass:
     def path(self, code):
         return os.path.join(self.out_dir, f"{code}.parquet")
 
+    def flow_failed(self, code, where, e):
+        """F1: a per-flow fault stays per-flow. Counted; after MAX_FLOW_FAILURES the flow is BROKEN - loud
+        every pass and worked by nobody until a person looks - so it can never block the queue head."""
+        fe = self.st.flow(code)
+        n = int(fe.get("failures", 0)) + 1
+        fe["failures"] = n
+        msg = f"{code}: {where} failed ({n}/{MAX_FLOW_FAILURES}) - {type(e).__name__}: {str(e)[:120]}"
+        self.labels.append(f"FLOW FAILURE {msg}")
+        self._book_transient(msg)
+        if n >= MAX_FLOW_FAILURES:
+            fe.update(status=S.BROKEN, why=f"{where} failed {n} times: {type(e).__name__}: {str(e)[:120]}")
+        try:
+            self.save()
+        except S.StateConflict:
+            pass
+
     # ---------------------------------------------------------------- 1. identity
     def sweep_done(self):
         """k4: a kill after a flow was marked complete but before its chunks were deleted leaves the
@@ -398,21 +443,40 @@ class _Pass:
                 self._sweep(code, keep=None)
                 fe.pop("attempt", None)
                 swept = True
+            elif fe.get("status") == S.IN_PROGRESS and at.get("walk"):
+                # a walk tail a kill left in progress is PARKED, so only the repair slot's flow is in progress
+                fe["status"] = S.NEEDS_REFRESH
+                swept = True
         if swept:
             self.save()
 
     def check_identity(self, codes):
+        """C8 + R2-4b: one HEAD per flow. A mismatch whose footer row count still equals the recorded rows
+        (an outside rewrite of the same rows, or T0 changing the identity KIND from etag to size/mtime_ns) is
+        RE-BASED, not re-classified (review F3); a real change re-classifies the flow."""
+        rebased = 0
         for code in codes:
             fe = self.st.flow(code)
-            cur = S.identity(self.path(code))
-            if fe.get("status") == S.UNCLASSIFIED:
+            if fe.get("status") in (S.UNCLASSIFIED, S.IN_PROGRESS, S.MERGE_PENDING):
                 continue
             served = fe.get("served") or {}
-            if cur is None and served.get("rows"):
-                fe["status"], fe["why"] = S.UNCLASSIFIED, "served object disappeared"
-            elif cur is not None and not S.same_identity(cur, served.get("identity")) \
-                    and fe.get("status") not in (S.IN_PROGRESS, S.MERGE_PENDING):
-                fe["status"], fe["why"] = S.UNCLASSIFIED, "served object changed outside this fetcher"
+            cur = S.identity(self.path(code))
+            if cur is None:
+                if served.get("rows"):
+                    fe["status"], fe["why"] = S.UNCLASSIFIED, "served object disappeared"
+                continue
+            if S.same_identity(cur, served.get("identity")):
+                continue
+            rows = S.footer_rows(self.path(code))
+            if rows is not None and rows == served.get("rows"):
+                served["identity"] = cur
+                fe["served"] = served
+                rebased += 1
+            else:
+                fe["status"], fe["why"] = S.UNCLASSIFIED, (f"served object changed outside this fetcher "
+                                                          f"({served.get('rows')} -> {rows} rows)")
+        if rebased:
+            print(f"[insee_melodi] {rebased} served identity(ies) re-based (rows unchanged)", flush=True)
 
     # ---------------------------------------------------------------- 2. classify
     def classify(self, codes):
@@ -424,17 +488,25 @@ class _Pass:
             if self.clock.now() >= end:
                 break
             fe = self.st.flow(code)
-            prof = _partition_profile(self.path(code))
-            ident = S.identity(self.path(code))
+            try:
+                prof = _partition_profile(self.path(code))
+                ident = S.identity(self.path(code))
+            except Exception as e:                                        # noqa: BLE001 - F1, per flow
+                if _fatal(e):
+                    raise
+                self.flow_failed(code, "classification read", e)
+                continue
             fe["served"] = {"identity": ident, "rows": (prof or {}).get("rows", 0),
-                            "max_obs": (prof or {}).get("max_obs")}
+                            "max_obs": (prof or {}).get("max_obs"),
+                            "maxyear_rows": (prof or {}).get("maxyear_rows", 0)}
             if prof:
                 fe["partitions"], fe["s_norm"] = prof["partitions"], prof["s_norm"]
-            why = _rule_hits(code, prof, self.force)
+            why = _rule_hits(code, prof, self.force, fe)
             if why:
                 fe.update(status=S.NEEDS_ORIGIN, why=why, repair=True)
             else:
                 fe.update(status=S.LEGACY, why="no exact-multiple partition; probe pending")
+                fe.pop("probe", None)
                 legacy.append(code)
             self.classified += 1
         # A legacy flow whose probe was voided (or never ran) is probed again: unprobed is not a resting state.
@@ -452,47 +524,64 @@ class _Pass:
 
     def _unblocked(self):
         blk = self.st.data.get("repair_blocked")
-        after = (getattr(self, "force_raw", None) or {}).get("unblock_repair_after_utc")
+        after = (self.force_raw or {}).get("unblock_repair_after_utc")
         return bool(blk and after and str(after) > str(blk.get("utc")))
 
-    def _seed_control(self):
-        for code, fe in sorted(self.st.flows.items()):
-            if code.startswith("DS_RP_TD_") and (fe.get("served") or {}).get("rows") == PAGE_SIZE \
-                    and fe.get("status") == S.NEEDS_ORIGIN:
-                return code
-        return None
+    def _control_flow(self):
+        """F7: the positive control is the LARGEST classified flow holding at least two pages - its page 2
+        must answer non-empty, and its page 1 twice is the page-determinism control. It does not depend on any
+        flow still being truncated, so the controls stay runnable after the repair is done."""
+        best = None
+        for code, fe in self.st.flows.items():
+            rows = int((fe.get("served") or {}).get("rows") or 0)
+            if rows >= 2 * PAGE_SIZE and fe.get("status") not in (S.BROKEN, S.WITHDRAWN, S.UNSTABLE) \
+                    and (best is None or rows > best[0]):
+                best = (rows, code)
+        return best[1] if best else None
 
     def controls_and_probes(self, legacy, end):
-        """C1 probe controls, R2-6 page-determinism control, then the page-beyond probes. Charged to the
-        classification slot (R2-7)."""
-        seed = self._seed_control()
-        if self._determinism_needed() and seed and self.clock.now() < end:
-            try:
-                a = _fetch_page(self.sess, seed, None, 1, self.clock)
-                time.sleep(PAGE_DELAY)
-                b = _fetch_page(self.sess, seed, None, 1, self.clock)
-            except (_Stop, TransientError) as e:
-                self.labels.append(f"page-determinism control not run ({type(e).__name__}): {str(e)[:80]}")
-            else:
-                same = (a.fp == b.fp and a.raw_n == b.raw_n)
-                self.st.data["determinism"] = {"utc": S.utcnow(), "flow": seed, "same": same,
-                                               "raw": [a.raw_n, b.raw_n]}
-                print(f"[insee_melodi] page-determinism control {seed} page 1 twice: "
-                      f"{'IDENTICAL' if same else 'DIFFERENT'} ({a.raw_n}/{b.raw_n} obs)", flush=True)
-                if same:
+        """C1 probe controls, R2-6 page-determinism control, then the page-beyond probes - all charged to the
+        classification slot (R2-7). Every path that cannot probe says so in the note (review F7)."""
+        ctl = self._control_flow()
+        if self._determinism_needed():
+            if not ctl:
+                if self._unblocked():
                     self.st.data.pop("repair_blocked", None)
+                    self.labels.append("repair unblocked by the owner; the determinism control has no flow to run on")
                 else:
-                    self.st.data["repair_blocked"] = {"utc": S.utcnow(),
-                                                      "why": "Melodi paging not deterministic",
-                                                      "evidence": [a.fp[:16], b.fp[:16]]}
+                    self.labels.append("page-determinism control not run: no classified flow of 2+ pages yet")
+            elif self.clock.now() < end:
+                try:
+                    a = _fetch_page(self.sess, ctl, None, 1, self.clock)
+                    time.sleep(PAGE_DELAY)
+                    b = _fetch_page(self.sess, ctl, None, 1, self.clock)
+                except (_Stop, TransientError) as e:
+                    self.labels.append(f"page-determinism control not run ({type(e).__name__}): {str(e)[:80]}")
+                else:
+                    same = (a.fp == b.fp and a.raw_n == b.raw_n)
+                    self.st.data["determinism"] = {"utc": S.utcnow(), "flow": ctl, "same": same,
+                                                   "raw": [a.raw_n, b.raw_n]}
+                    print(f"[insee_melodi] page-determinism control {ctl} page 1 twice: "
+                          f"{'IDENTICAL' if same else 'DIFFERENT'} ({a.raw_n}/{b.raw_n} obs)", flush=True)
+                    if same:
+                        self.st.data.pop("repair_blocked", None)
+                    else:
+                        self.st.data["repair_blocked"] = {"utc": S.utcnow(),
+                                                          "why": "Melodi paging not deterministic",
+                                                          "evidence": [a.fp[:16], b.fp[:16]]}
         if not legacy:
             return
-        if not seed:
-            for code in legacy:
-                self.st.flow(code)["probe"] = {"void": "no one-page seed left to control the probe",
-                                               "utc": S.utcnow()}
+        if self.clock.now() + 60 >= end:
+            self.labels.append(f"probes not run this pass: classification slot spent - {len(legacy)} legacy "
+                               f"flow(s) stay unprobed")
             return
-        ctl_ok, why = self._probe_controls(seed)
+        if not ctl:
+            why = "no classified flow of 2+ pages to serve as the positive control"
+            self.labels.append(f"PROBE VOID: {why} - {len(legacy)} flow(s) stay legacy-unprobed")
+            for code in legacy:
+                self.st.flow(code)["probe"] = {"void": why, "utc": S.utcnow()}
+            return
+        ctl_ok, why = self._probe_controls(ctl)
         if not ctl_ok:
             self.labels.append(f"PROBE VOID: {why} - {len(legacy)} flow(s) stay legacy-unprobed")
             for code in legacy:
@@ -514,9 +603,9 @@ class _Pass:
                 fe["why"] = f"legacy - probe page {pg} empty (NOT proof of completeness)"
             time.sleep(RATE)
 
-    def _probe_controls(self, seed):
+    def _probe_controls(self, ctl):
         try:
-            pos = _fetch_page(self.sess, seed, None, probe_page(PAGE_SIZE), self.clock)
+            pos = _fetch_page(self.sess, ctl, None, 2, self.clock)
             time.sleep(RATE)
             fe = self.st.flows.get(PROBE_EMPTY_CONTROL) or {}
             s = int(fe.get("s_norm") or (fe.get("served") or {}).get("rows") or 0)
@@ -527,12 +616,21 @@ class _Pass:
         except (_Stop, TransientError) as e:
             return False, f"control request failed ({type(e).__name__})"
         if pos.raw_n == 0:
-            return False, f"positive control {seed} page 3 came back empty"
+            return False, f"positive control {ctl} page 2 came back empty"
         if neg.raw_n > 0:
             return False, f"negative control {PROBE_EMPTY_CONTROL} page past its rows returned {neg.raw_n} obs"
         return True, ""
 
     # ---------------------------------------------------------------- 3. walk
+    def _tail_pages_estimate(self, fe) -> int:
+        """Pages a tail will cost, from state only (C8): the whole flow when INSEE ignores startPeriod or
+        every stored row sits in the max year (a single-year flow's tail IS the flow); else the max year."""
+        served = fe.get("served") or {}
+        rows = int(served.get("rows") or 0)
+        my = int(served.get("maxyear_rows") or 0)
+        whole = fe.get("start_ignored") or (rows and my >= rows)
+        return -(-(rows if whole else my) // PAGE_SIZE)
+
     def walk_slot(self, codes):
         # The walk's slot ends at minute 15 while repair work exists (C7: freshness keeps a reserved
         # slot); with nothing to repair it may use the pass up to the soft stop.
@@ -548,7 +646,10 @@ class _Pass:
                 break
             fe = self.st.flow(code)
             save_rotation(self.out_dir, code)
-            mod = _catalog_modified(self.sess, code, self.clock)
+            try:
+                mod = _catalog_modified(self.sess, code, self.clock)
+            except _Stop:
+                break
             time.sleep(RATE)
             last = fe.get("last_tail_utc") or fe.get("last_full_utc")
             stale = (not last) or (dt.datetime.now(dt.timezone.utc)
@@ -557,11 +658,19 @@ class _Pass:
                 self.walk["unchanged"] += 1
                 continue
             self.walk["visited"] += 1
-            if fe.get("start_ignored") and (fe.get("pages") or 0) > CHUNK_PAGES:
-                fe.update(status=S.NEEDS_REFRESH, why="due; a full pull larger than one chunk")
+            if self._tail_pages_estimate(fe) > CHUNK_PAGES:
+                # F4/C5: a pull larger than one chunk never starts in the walk; it queues behind the repair
+                fe.update(status=S.NEEDS_REFRESH, why="due; its tail is larger than one chunk",
+                          refresh_modified=mod)
                 self.save()
                 continue
-            res = self.work(code, end, in_walk=True, modified=mod)
+            try:
+                res = self.work(code, end, in_walk=True, modified=mod)
+            except Exception as e:                                        # noqa: BLE001 - F1, per flow
+                if _fatal(e):
+                    raise
+                self.flow_failed(code, "walk tail", e)
+                continue
             if res == "complete" and code in self.changed:
                 self.walk["merged"] += 1
             if res in ("stop", "conflict"):
@@ -575,31 +684,45 @@ class _Pass:
                                f"(control {self.st.data.get('determinism', {}).get('flow')} at {blk.get('utc')}) "
                                "- the decision is the owner's")
             return
+        tried = set()
         while self.clock.now() < self.clock.soft_end and not self.conflict:
-            code = self._next_repair()
+            code = self._next_repair(tried)
             if code is None:
                 return
+            tried.add(code)
             self.repair_flow = code
-            res = self.work(code, self.clock.soft_end, in_walk=False, modified=None)
-            if res != "complete":
+            try:
+                res = self.work(code, self.clock.soft_end, in_walk=False, modified=None)
+            except Exception as e:                                        # noqa: BLE001 - F1, per flow
+                if _fatal(e):
+                    raise
+                self.flow_failed(code, "repair pull", e)
+                continue                                                  # never blocks the queue head
+            if res in ("progress", "stop", "conflict"):
                 return
 
-    def _next_repair(self):
+    def _next_repair(self, tried=()):
+        """MERGE_PENDING first, then the ONE in-progress flow (resumed), and only when nothing is in
+        progress a new attempt: needs_origin before needs_refresh (F4: one flow in progress at a time)."""
         fl = self.st.flows
-        for status in (S.MERGE_PENDING, S.IN_PROGRESS):
-            cands = sorted((fe.get("attempt", {}).get("started_utc") or "", c)
-                           for c, fe in fl.items() if fe.get("status") == status)
-            for _, c in cands:
-                if self._lease_ok(c):
-                    return c
+        for c, fe in sorted(fl.items(), key=lambda kv: (kv[1].get("attempt") or {}).get("started_utc") or ""):
+            if c not in tried and fe.get("status") == S.MERGE_PENDING and self._lease_ok(c):
+                return c
+        inprog = [c for c, fe in fl.items() if fe.get("status") == S.IN_PROGRESS]
+        for c in sorted(inprog):
+            if c not in tried and self._lease_ok(c):
+                return c
+        if inprog:
+            return None
         for status in (S.NEEDS_ORIGIN, S.NEEDS_REFRESH):
             for c in sorted(c for c, fe in fl.items() if fe.get("status") == status):
-                return c
+                if c not in tried and self._lease_ok(c):
+                    return c
         return None
 
     def _lease_ok(self, code):
         at = self.st.flow(code).get("attempt") or {}
-        if not at or at.get("owner") == self.me:
+        if not at.get("owner") or at.get("owner") == self.me:
             return True
         try:
             age = (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(at.get("heartbeat_utc"))).total_seconds()
@@ -615,71 +738,89 @@ class _Pass:
         fe = self.st.flow(code)
         served = fe.get("served") or {}
         start = None
-        if mode == "tail" and not fe.get("start_ignored") and served.get("max_obs"):
+        single_year = served.get("rows") and int(served.get("maxyear_rows") or 0) >= int(served.get("rows") or 0)
+        if mode == "tail" and not fe.get("start_ignored") and served.get("max_obs") and not single_year:
             start = int(served["max_obs"][:4])
         at = {"id": S.new_attempt_id(), "owner": self.me, "heartbeat_utc": S.utcnow(),
               "started_utc": S.utcnow(), "mode": "origin" if start is None else "tail", "start": start,
-              "next_page": 1, "chunks": 0, "rows_staged": 0, "pages": 0, "page_fp": None,
+              "next_page": 1, "chunks": 0, "rows_staged": 0, "raw_obs": 0, "pages": 0, "page_fp": None,
               "modified_at_start": modified, "passes": 0, "passes_without_progress": 0,
               "within_dups": 0, "restarts": (fe.get("attempt") or {}).get("restarts", 0)}
         fe["attempt"] = at
         return at
 
     def _restart(self, code, why):
+        """Save FIRST, sweep second (review F5): a restart that loses the CAS race must not have deleted the
+        winning state's chunks."""
         fe = self.st.flow(code)
         old = fe.get("attempt") or {}
         restarts = int(old.get("restarts", 0)) + 1
-        self._sweep(code, keep=None)
-        fe.pop("attempt", None)
         self.tally.transient_unit(f"{code}: attempt restarted - {why}")
         self.labels.append(f"{code}: attempt restarted ({restarts}/{MAX_RESTARTS}) - {why}")
         if restarts >= MAX_RESTARTS:
             fe.update(status=S.UNSTABLE, why=f"{MAX_RESTARTS} restarts: {why}")
+            fe.pop("attempt", None)
             self.labels.append(f"{code}: UNSTABLE PAGING after {MAX_RESTARTS} restarts - left for the owner")
         else:
             fe["status"] = S.NEEDS_ORIGIN if fe.get("repair") else S.NEEDS_REFRESH
             fe["attempt"] = {"restarts": restarts}
         self.save()
+        self._sweep(code, keep=None)
         return "restart"
 
     def work(self, code, slot_end, *, in_walk, modified):
         """Advance one flow's pull until it completes, the slot ends, or a per-flow failure.
-        Returns complete | progress | queued | transient | restart | stop | conflict | withdrawn | empty."""
+        Returns complete | progress | queued | transient | restart | stop | conflict | withdrawn | empty | broken."""
         fe = self.st.flow(code)
         at = fe.get("attempt") or {}
         try:
             if fe.get("status") == S.MERGE_PENDING:
                 return self._finalize(code)
             if not at.get("id"):
+                if modified is None:
+                    modified = fe.pop("refresh_modified", None) if not in_walk else None
                 if modified is None and not in_walk:
                     modified = _catalog_modified(self.sess, code, self.clock)
+                    if modified is None:
+                        # C4/F6: an attempt whose `modified` is unknown can never prove its earlier pages
+                        # are still current - do not start one.
+                        self._book_transient(f"{code}: catalog `modified` unreadable - attempt not started")
+                        return "stop"
                 mode = "origin" if fe.get("status") == S.NEEDS_ORIGIN else "tail"
                 prior = fe.get("status")
                 at = self._new_attempt(code, mode, modified)
-                # EVERY started attempt is in_progress, walk tails included: a killed walk tail must be
-                # resumed by the repair slot, never re-skipped by a quiet catalog gate (leaking its chunks).
-                at["prior_status"] = prior
+                at["prior_status"] = S.LEGACY if prior == S.NEEDS_REFRESH and not fe.get("last_full_utc") \
+                    else (S.COMPLETE if prior == S.NEEDS_REFRESH else prior)
+                at["walk"] = bool(in_walk)
                 fe["status"] = S.IN_PROGRESS
+                self.save()                                    # F5: the lease is on the store before any work
             else:
+                at["owner"], at["heartbeat_utc"] = self.me, S.utcnow()
+                at["walk"] = False
+                fe["status"] = S.IN_PROGRESS
+                self.save()                                    # F5: persist the lease BEFORE the resume check
                 try:
                     ok = self._resume_check(code, at)
                 except _ResumeDeferred as e:
                     # Could not read the page to compare: no progress this pass, counted (stall label at 4).
-                    self.tally.transient_unit(f"{code}: resume check not read ({str(e)[:80]})")
+                    self._book_transient(f"{code}: resume check not read ({str(e)[:80]})")
                     self._progress(code, at, 0)
                     return "stop"
                 if ok is not True:
                     return self._restart(code, ok)
-            at["owner"], at["heartbeat_utc"] = self.me, S.utcnow()
             at["passes"] = int(at.get("passes", 0)) + 1
             return self._pages(code, fe, at, slot_end, in_walk)
         except S.StateConflict:
             return "conflict"
 
     def _resume_check(self, code, at):
-        """C4: the whole last committed page must re-fetch identically, and `modified` must not have moved."""
+        """C4: the whole last committed page must re-fetch identically, and `modified` must not have moved.
+        An unreadable catalog defers (no progress, counted); an attempt started without a known `modified`
+        restarts - nothing can show its earlier pages are still INSEE's (review F6)."""
         if int(at.get("next_page", 1)) <= 1:
             return True
+        if at.get("modified_at_start") is None:
+            return "the attempt began without a readable `modified`, so its staged pages cannot be shown current"
         try:
             p = _fetch_page(self.sess, code, at.get("start"), int(at["next_page"]) - 1, self.clock)
         except (_Stop, TransientError) as e:
@@ -687,8 +828,13 @@ class _Pass:
         time.sleep(PAGE_DELAY)
         if p.fp != at.get("page_fp"):
             return f"page {int(at['next_page']) - 1} changed since it was staged (paging not stable)"
-        mod = _catalog_modified(self.sess, code, self.clock)
-        if mod is not None and at.get("modified_at_start") is not None and mod != at["modified_at_start"]:
+        try:
+            mod = _catalog_modified(self.sess, code, self.clock)
+        except _Stop as e:
+            raise _ResumeDeferred("no room for the catalog read") from e
+        if mod is None:
+            raise _ResumeDeferred("catalog `modified` unreadable")
+        if mod != at["modified_at_start"]:
             return f"INSEE `modified` moved {at['modified_at_start']} -> {mod} during the attempt"
         return True
 
@@ -700,7 +846,7 @@ class _Pass:
         sdir = S.staging_dir()
         part = os.path.join(sdir, f"{code}.{at['id']}.open.chunkpart")
         writer = None
-        pend = {"pages": 0, "rows": 0, "dups": 0, "fp": None, "next": int(at["next_page"])}
+        pend = {"pages": 0, "rows": 0, "raw": 0, "dups": 0, "fp": None, "next": int(at["next_page"])}
         added_pages = 0
 
         def flush():
@@ -716,11 +862,12 @@ class _Pass:
             at["chunks"] = int(at["chunks"]) + 1
             at["next_page"] = pend["next"]
             at["rows_staged"] = int(at["rows_staged"]) + pend["rows"]
+            at["raw_obs"] = int(at.get("raw_obs", 0)) + pend["raw"]
             at["pages"] = int(at["pages"]) + pend["pages"]
             at["within_dups"] = int(at["within_dups"]) + pend["dups"]
             at["page_fp"] = pend["fp"]
             added_pages += pend["pages"]
-            pend.update(pages=0, rows=0, dups=0)
+            pend.update(pages=0, rows=0, raw=0, dups=0)
             at["heartbeat_utc"] = S.utcnow()
             self.save()
 
@@ -775,8 +922,12 @@ class _Pass:
                     writer.write_table(p.table)
                     pend["pages"] += 1
                     pend["rows"] += p.table.num_rows
+                    pend["raw"] += p.raw_n
                     pend["dups"] += p.within_dups
                     pend["fp"] = p.fp
+                    if p.table.num_rows == 0:
+                        self.labels.append(f"{code}: PARSE LOSS - page {page} carried {p.raw_n} observations "
+                                           f"and none parsed (TIME_PERIOD or measures shape?)")
                     if p.within_dups:
                         self.labels.append(f"{code}: PARSE COLLISION - {p.within_dups} duplicate (key, date) "
                                            f"within page {page}; the parse key collapses distinct INSEE "
@@ -801,7 +952,11 @@ class _Pass:
                 if pend["pages"] >= CHUNK_PAGES:
                     flush()
                     if in_walk:
-                        self.labels.append(f"{code}: tail outgrew one chunk - continues in the repair slot")
+                        # F4: PARKED, not in progress - the repair slot's flow stays the only one in progress;
+                        # this attempt (chunk and cursor kept) resumes when needs_refresh comes up
+                        fe["status"] = S.NEEDS_REFRESH
+                        self.save()
+                        self.labels.append(f"{code}: tail outgrew one chunk - parked as needs_refresh")
                         return "queued"
                 time.sleep(PAGE_DELAY)
         finally:
@@ -826,26 +981,27 @@ class _Pass:
         self.save()
 
     def _empty_first_page(self, code, fe, at, p):
+        """Page 1 empty or 400. State first, sweep second (F5)."""
         rows = (fe.get("served") or {}).get("rows") or 0
-        self._sweep(code, keep=None)
         fe.pop("attempt", None)
         if at.get("mode") == "tail" and rows:
             # nothing at or after startPeriod: a quiet tail. The flow keeps the status it had.
             fe.update(status=at.get("prior_status") or S.LEGACY, last_tail_utc=S.utcnow(),
                       modified=at.get("modified_at_start") or fe.get("modified"))
-            self.save()
-            return "complete"
-        if rows:
+            out = "complete"
+        elif rows:
             fe.update(status=S.WITHDRAWN, why=f"origin page 1 {'HTTP ' + str(p.http) if p.nodata else 'empty'} "
                                               f"over {rows:,} stored rows - withdrawn by INSEE?")
             self.labels.append(f"{code}: WITHDRAWN? origin page 1 empty over {rows:,} stored rows")
-            self.tally.transient_unit(f"{code}: origin page 1 empty over {rows:,} stored rows")
-            self.save()
-            return "withdrawn"
-        fe.update(status=S.EMPTY, why="INSEE serves no observations", last_full_utc=S.utcnow(),
-                  modified=at.get("modified_at_start"))
+            self._book_transient(f"{code}: origin page 1 empty over {rows:,} stored rows")
+            out = "withdrawn"
+        else:
+            fe.update(status=S.EMPTY, why="INSEE serves no observations", last_full_utc=S.utcnow(),
+                      modified=at.get("modified_at_start"))
+            out = "empty"
         self.save()
-        return "empty"
+        self._sweep(code, keep=None)
+        return out
 
     # ---------------------------------------------------------------- finalize (C2, C3, C6, C12)
     def _finalize(self, code):
@@ -856,6 +1012,7 @@ class _Pass:
                                f"is under the margin for {at.get('rows_staged', 0):,} rows")
             return "progress"
         import duckdb                                                        # noqa: PLC0415
+        t_fin = time.monotonic()
         sdir = S.staging_dir()
         staged = os.path.join(sdir, f"{code}.{at['id']}.staged.chunkpart")
         total = 0
@@ -865,16 +1022,32 @@ class _Pass:
                 body = blob.read_bytes(S.chunk_path(code, at["id"], n))
                 if body is None:
                     return self._restart(code, f"chunk {n} missing")
-                t = pq.read_table(pa.BufferReader(body))
+                try:
+                    t = pq.read_table(pa.BufferReader(body)).cast(_SCHEMA)
+                except Exception as e:                                    # noqa: BLE001 - a corrupt chunk
+                    if _fatal(e):
+                        raise
+                    return self._restart(code, f"chunk {n} unreadable ({type(e).__name__})")
                 total += t.num_rows
                 if w is None:
                     w = pq.ParquetWriter(staged, _SCHEMA, compression="zstd")
-                w.write_table(t.cast(_SCHEMA))
+                w.write_table(t)
             if w is not None:
                 w.close()
                 w = None
             if total != int(at.get("rows_staged", 0)):
                 return self._restart(code, f"chunk footers sum to {total:,}, cursor says {at.get('rows_staged', 0):,}")
+            raw = int(at.get("raw_obs", 0))
+            if total == 0 and (raw > 0 or (at.get("mode") == "origin" and (fe.get("served") or {}).get("rows"))):
+                # F2: a pull that PARSED nothing is never complete - the old fetcher's structural break, per flow
+                fe.pop("attempt", None)
+                fe.update(status=S.BROKEN, why=f"{raw:,} observations fetched, none parsed - parser or "
+                                               f"publisher shape changed; nothing merged")
+                self.labels.append(f"{code}: PARSE LOSS - {raw:,} observations fetched, none parsed - BROKEN")
+                self._book_transient(f"{code}: {raw:,} observations fetched, none parsed")
+                self.save()
+                self._sweep(code, keep=None)
+                return "broken"
             stored = blob.local_copy(self.path(code))
             stored_local, stored_tmp = (stored if stored else (None, False))
             try:
@@ -913,8 +1086,10 @@ class _Pass:
                 ident_now = S.identity(self.path(code))
                 landed_earlier = bool(pre) and not S.same_identity(pre, ident_now)
                 if not changed and landed_earlier and stored_stats:
-                    fe["served"] = {"identity": ident_now, "rows": stored_stats[0], "max_obs": stored_stats[1]}
+                    fe["served"] = {"identity": ident_now, "rows": stored_stats[0], "max_obs": stored_stats[1],
+                                    "maxyear_rows": (fe.get("served") or {}).get("maxyear_rows", 0)}
                     self.changed[code] = stored_stats[1] or ""
+                    fe["csv_owed"] = stored_stats[1] or ""
                     print(f"[insee_melodi] {code}: an earlier pass published this merge before its state "
                           f"write - its CSV is derived now", flush=True)
                 if changed:
@@ -927,15 +1102,19 @@ class _Pass:
                             stored_copy=stored_local if stored_local else None)
                     except DefinitiveError as e:
                         fe["status"] = S.MERGE_PENDING
-                        self.tally.transient_unit(f"{code}: merge refused, kept merge_pending - {str(e)[:120]}")
+                        self._book_transient(f"{code}: merge refused, kept merge_pending - {str(e)[:120]}")
                         self.labels.append(f"{code}: MERGE REFUSED (kept merge_pending): {str(e)[:120]}")
-                        self.save()
+                        self.flow_failed(code, "merge", e)
                         return "transient"
                     print(f"[insee_melodi] {code}: merge took {time.monotonic() - t0:.1f}s for "
                           f"{total:,} staged rows ({changed:,} new or changed)", flush=True)
                     self.changed[code] = md
+                    # F1: the published merge's CSV is OWED until a returned Result hands it to the orchestrator
+                    fe["csv_owed"] = md
                     self.merged_rows += int(changed)
-                    fe["served"] = {"identity": S.identity(self.path(code)), "rows": int(n_rows), "max_obs": md}
+                    my = _maxyear_rows(self.path(code), md)
+                    fe["served"] = {"identity": S.identity(self.path(code)), "rows": int(n_rows), "max_obs": md,
+                                    "maxyear_rows": my}
                 else:
                     if not fe.get("served"):
                         fe["served"] = {"identity": S.identity(self.path(code)), "rows": 0, "max_obs": None}
@@ -958,10 +1137,15 @@ class _Pass:
                        + (f"; {residue['rows']:,} stored rows no longer served by INSEE kept under the merge "
                           f"decision" if residue["rows"] else "")))
         fe["last_full_utc" if mode == "origin" else "last_tail_utc"] = S.utcnow()
+        fe.pop("failures", None)
         if mode == "origin":
             fe["residue"] = residue
         if at.get("within_dups"):
             fe["parse_collisions"] = int(at["within_dups"])
+        unparsed = int(at.get("raw_obs", 0)) - int(at.get("rows_staged", 0))
+        fe["unparsed_obs"] = max(unparsed, 0)
+        print(f"[insee_melodi] {code}: finalize took {time.monotonic() - t_fin:.1f}s in all "
+              f"({total:,} staged rows)", flush=True)
         keep_id = at.get("id")
         fe["attempt"] = {"id": keep_id, "done": True}
         self.save()                                         # k3/k4: state after the publish, before deletes
@@ -974,20 +1158,8 @@ class _Pass:
     def _sweep(self, code, keep):
         """Delete this flow's staging objects (C10): every attempt dir except `keep`."""
         base = os.path.join(self.out_dir, S.REPULL_DIR, code)
-        names = []
-        r2 = blob._r2_routed()
-        if r2 is not None:
-            prefix = blob._path_to_key(base).replace("\\", "/") + "/"
-            pag = r2.client.get_paginator("list_objects_v2")
-            for pg in pag.paginate(Bucket=r2.bucket, Prefix=prefix):
-                for o in pg.get("Contents", []) or []:
-                    names.append(o["Key"][len(prefix):])
-        elif os.path.isdir(base):
-            for dp, _, fns in os.walk(base):
-                for f in fns:
-                    names.append(os.path.relpath(os.path.join(dp, f), base).replace("\\", "/"))
         n = 0
-        for rel in names:
+        for rel in S.list_staging(base):
             parts = rel.split("/")
             if len(parts) != 2 or parts[0] == keep:
                 continue
@@ -1011,8 +1183,16 @@ class _Pass:
         bits.append(f"classified this pass: {self.classified}")
         res = sum(int((fe.get("residue") or {}).get("rows", 0)) for fe in fl.values())
         if res:
-            bits.append(f"residue kept: {res:,} stored rows no longer served by INSEE")
-        for status, word in ((S.UNSTABLE, "UNSTABLE PAGING"), (S.WITHDRAWN, "WITHDRAWN?")):
+            parts = {}
+            for fe in fl.values():
+                for p, n in ((fe.get("residue") or {}).get("by_partition") or {}).items():
+                    parts[p] = parts.get(p, 0) + int(n)
+            top = ", ".join(f"{p} {n:,}" for p, n in sorted(parts.items(), key=lambda kv: -kv[1])[:3])
+            bits.append(f"residue kept: {res:,} stored rows no longer served by INSEE (largest: {top})")
+        unp = sum(int(fe.get("unparsed_obs") or 0) for fe in fl.values())
+        if unp:
+            bits.append(f"unparsed observations (no value or date): {unp:,}")
+        for status, word in ((S.UNSTABLE, "UNSTABLE PAGING"), (S.WITHDRAWN, "WITHDRAWN?"), (S.BROKEN, "BROKEN")):
             names = sorted(c for c, fe in fl.items() if fe.get("status") == status)
             if names:
                 bits.append(f"{word}: {', '.join(names[:8])}{' +' + str(len(names) - 8) if len(names) > 8 else ''}")
@@ -1046,38 +1226,64 @@ def update(unit, since, *, _session=None, _clock=None) -> Result:
         pa_.labels.append(f"{S.FORCE_FILE} unreadable - ignored this pass")
     flows = _get_flows(sess, clock)
     time.sleep(RATE)
-    codes = sorted({f.get("code", "") for f in flows if S.FLOW_RE.match(f.get("code", "") or "")})
+    all_codes = [f.get("code", "") or "" for f in flows]
+    codes = sorted({c for c in all_codes if S.FLOW_RE.fullmatch(c)})
+    dropped = sorted({c for c in all_codes if c and not S.FLOW_RE.fullmatch(c)})
+    if dropped:
+        pa_.labels.append(f"{len(dropped)} catalogue code(s) not of the [A-Z0-9_] form - not pulled: {', '.join(dropped[:5])}")
     try:
         pa_.sweep_done()
         pa_.check_identity(codes)
         pa_.classify(codes)
         pa_.walk_slot(codes)
         pa_.repair_slot()
-    except S.StateConflict:
+    except (S.StateConflict, _Stop):
         pass
     except _ResumeDeferred as e:
         pa_.labels.append(f"resume check not read this pass ({str(e)[:80]})")
-    except _Stop:
-        pass
+    except Exception as e:                                        # noqa: BLE001 - F1: a Result ALWAYS returns
+        if _fatal(e):
+            raise
+        pa_.labels.append(f"PASS ERROR: {type(e).__name__}: {str(e)[:160]} - the pass stopped here")
+    return _result(pa_, state, codes)
+
+
+def _result(pa_, state, codes) -> Result:
     fl = state.flows
+    live = set(codes)                      # a flow INSEE no longer lists cannot keep the source pending
     cursors = {c: (fe.get("served") or {}).get("max_obs") for c, fe in fl.items()
                if (fe.get("served") or {}).get("max_obs")}
-    total = sum(int((fe.get("served") or {}).get("rows") or 0) for fe in fl.values())
+    # F10: obs is the store total only once every live flow carries its served rows; until then 0, never a
+    # fraction that reads as a collapse in obs_count
+    classified = all((fl.get(c) or {}).get("status") != S.UNCLASSIFIED and "served" in (fl.get(c) or {})
+                     for c in live)
+    total = sum(int((fe.get("served") or {}).get("rows") or 0) for fe in fl.values()) if classified else 0
     maxd = max(cursors.values()) if cursors else None
-    live = set(codes)                      # a flow INSEE no longer lists cannot keep the source pending
+    # F1: every merge whose CSV has not been handed over yet - this pass's and any earlier pass's that ended
+    # before its Result was returned - goes into changed_keys; returning the Result hands the debt over.
+    changed = dict(pa_.changed)
+    for c, fe in fl.items():
+        if fe.get("csv_owed") is not None:
+            changed.setdefault(c, fe["csv_owed"])
+            fe.pop("csv_owed", None)
+    if changed:
+        try:
+            state.save()
+        except S.StateConflict:
+            pa_.labels.append("csv_owed not cleared (state conflict) - re-emitted by a later pass")
     pending = any(fl[c].get("status") in S.REPAIR_PENDING for c in live if c in fl) \
         or bool(state.data.get("repair_blocked")) or pa_.conflict
     if pending:
         return Result(status="transient_fail", obs=total, last_obs_date=maxd, series_cursors=cursors,
-                      changed_keys=dict(pa_.changed), merged_rows=pa_.merged_rows, error=pa_.note())
+                      changed_keys=changed, merged_rows=pa_.merged_rows, error=pa_.note())
     res = finalize(pa_.tally, total, maxd, source=SOURCE, series_cursors=cursors,
                    empty_window_floor=len(codes) + 1, merged_rows=pa_.merged_rows)
-    res.changed_keys = dict(pa_.changed)
-    # LOUD FINDINGS (probe void, corrupt state, parse collision, unstable or withdrawn flows) must not
-    # hide under "ok": they are appended, which also takes a pure-deferral note out of health's ROTATING
-    # whitelist (health._DEFERRAL_BASE is anchored), and an ok/no_change becomes partial.
+    res.changed_keys = changed
+    # LOUD FINDINGS (probe void, corrupt state, parse collision/loss, unstable, withdrawn or broken flows)
+    # must not hide under "ok": they are appended, which also takes a pure-deferral note out of health's
+    # ROTATING whitelist (health._DEFERRAL_BASE is anchored), and an ok/no_change becomes partial.
     loud = [x for x in dict.fromkeys(pa_.labels)]
-    for status, word in ((S.UNSTABLE, "UNSTABLE PAGING"), (S.WITHDRAWN, "WITHDRAWN?")):
+    for status, word in ((S.UNSTABLE, "UNSTABLE PAGING"), (S.WITHDRAWN, "WITHDRAWN?"), (S.BROKEN, "BROKEN")):
         names = sorted(c for c in live if (fl.get(c) or {}).get("status") == status)
         if names:
             loud.append(f"{word}: {', '.join(names[:8])}")

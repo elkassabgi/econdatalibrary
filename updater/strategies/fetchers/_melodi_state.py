@@ -48,8 +48,10 @@ COMPLETE = "complete_per_paging"
 EMPTY = "empty_per_paging"
 WITHDRAWN = "withdrawn_suspect"
 UNSTABLE = "unstable_paging"
+BROKEN = "broken"                        # a per-flow fault repeated MAX_FLOW_FAILURES times, or a pull that
+                                         # parsed nothing: loud every pass, worked by nobody until a person looks
 STATUSES = frozenset({UNCLASSIFIED, LEGACY, NEEDS_ORIGIN, NEEDS_REFRESH, IN_PROGRESS, MERGE_PENDING,
-                      COMPLETE, EMPTY, WITHDRAWN, UNSTABLE})
+                      COMPLETE, EMPTY, WITHDRAWN, UNSTABLE, BROKEN})
 # Work that keeps the unit due at the next run (transient_fail with changed_keys, the PR #151 precedent).
 REPAIR_PENDING = frozenset({UNCLASSIFIED, NEEDS_ORIGIN, NEEDS_REFRESH, IN_PROGRESS, MERGE_PENDING})
 WALKABLE = frozenset({LEGACY, COMPLETE, EMPTY})
@@ -221,6 +223,21 @@ def identity(path: str) -> dict | None:
     return {"size": st.st_size, "mtime_ns": st.st_mtime_ns}
 
 
+def footer_rows(path: str) -> int | None:
+    """Row count from the parquet footer, or None when absent or unreadable. Used only when an identity
+    does not match (an outside write, or T0 changing the identity KIND): under r2 it is one full GET."""
+    try:
+        return int(blob.read_metadata(path).num_rows)
+    except Exception:                                                # noqa: BLE001 - unreadable = unknown
+        return None
+
+
+def identity_kind(ident: dict | None) -> str | None:
+    if not ident:
+        return None
+    return "etag" if "etag" in ident else "mtime_ns"
+
+
 def same_identity(a: dict | None, b: dict | None) -> bool:
     if not a or not b:
         return False
@@ -232,16 +249,35 @@ def same_identity(a: dict | None, b: dict | None) -> bool:
 # chunks (C10)
 # --------------------------------------------------------------------------------------------- #
 def chunk_path(flow: str, attempt: str, n: int) -> str:
-    if not FLOW_RE.match(flow) or not ATTEMPT_RE.match(attempt):
+    if not FLOW_RE.fullmatch(flow or "") or not ATTEMPT_RE.fullmatch(attempt or ""):
         raise ValueError(f"refusing a chunk path for flow={flow!r} attempt={attempt!r}")
     return os.path.join(source_dir(), REPULL_DIR, flow, attempt, f"{n:05d}.chunk")
+
+
+def list_staging(base: str) -> list[str]:
+    """Names ("<attempt>/<file>") of the staging objects under one flow's `_repull/<FLOW>` directory. Before
+    T0 the R2 listing (this module refuses a pre-T0 local run, see refuse_wrong_backend); after T0
+    blob._r2_routed() is None and the local store is walked."""
+    names = []
+    r2 = blob._r2_routed()
+    if r2 is not None:
+        prefix = blob._path_to_key(base).replace("\\", "/") + "/"
+        pag = r2.client.get_paginator("list_objects_v2")
+        for pg in pag.paginate(Bucket=r2.bucket, Prefix=prefix):
+            for o in pg.get("Contents", []) or []:
+                names.append(o["Key"][len(prefix):])
+    elif os.path.isdir(base):
+        for dp, _, fns in os.walk(base):
+            for f in fns:
+                names.append(os.path.relpath(os.path.join(dp, f), base).replace("\\", "/"))
+    return names
 
 
 def delete_chunk(path: str, *, flow: str, current_attempt: str | None) -> bool:
     """Delete ONE staging object, only if its key fully matches CHUNK_KEY_RE, names `flow`, and is not
     the current attempt's. Also removes the local scratch-mirror copy. Returns True when deleted."""
     key = blob._path_to_key(path).replace("\\", "/")
-    m = CHUNK_KEY_RE.match(key)
+    m = CHUNK_KEY_RE.fullmatch(key)
     if not m or m.group(1) != flow or (current_attempt is not None and m.group(2) == current_attempt):
         return False
     kind = backend_kind()

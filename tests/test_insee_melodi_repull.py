@@ -155,13 +155,27 @@ def env(tmp_path, monkeypatch):
 
 
 def _control_flows():
-    """Every fixture carries the two probe controls: a one-page TD seed and the empty control."""
-    return {"DS_RP_TD_SEED": series(25), M.PROBE_EMPTY_CONTROL: series(3)}
+    """Every fixture carries a one-page TD seed, the empty control and DS_CTRL: a complete flow of 3 pages,
+    the positive control (its page 2 answers) and the page-determinism control (its page 1 twice)."""
+    return {"DS_RP_TD_SEED": series(25), M.PROBE_EMPTY_CONTROL: series(3),
+            "DS_CTRL": series(30, extra={"AGE": "Z"})}
 
 
 def _seed_store(env, fake):
     env.put("DS_RP_TD_SEED", fake.flows["DS_RP_TD_SEED"][:P])          # truncated at one page
     env.put(M.PROBE_EMPTY_CONTROL, fake.flows[M.PROBE_EMPTY_CONTROL])
+    if "DS_CTRL" in fake.flows:
+        env.put("DS_CTRL", fake.flows["DS_CTRL"])
+
+
+def run_until_chunk(env, fake, flow, passes=6):
+    """Run passes until `flow` has an attempt with at least one committed chunk; returns that attempt."""
+    for _ in range(passes):
+        env.run(fake)
+        at = (env.state()["flows"].get(flow) or {}).get("attempt") or {}
+        if at.get("chunks", 0) >= 1:
+            return at
+    return at
 
 
 def run_until_quiet(env, fake, passes=12):
@@ -347,8 +361,7 @@ def test_a_changed_page_on_resume_restarts_the_attempt_and_deletes_its_chunks(en
     flows["DS_RP_TD_SEED"] = series(95)
     fake = FakeMelodi(env.clock, flows, step=200.0)
     _seed_store(env, fake)
-    env.run(fake)
-    at = env.state()["flows"]["DS_RP_TD_SEED"]["attempt"]
+    at = run_until_chunk(env, fake, "DS_RP_TD_SEED")
     assert at.get("chunks", 0) >= 1
     fake.flows["DS_RP_TD_SEED"] = list(reversed(series(95)))             # paging order changed upstream
     r = env.run(fake)
@@ -363,7 +376,7 @@ def test_a_missing_chunk_means_restart_never_a_merge(env):
     flows["DS_RP_TD_SEED"] = series(95)
     fake = FakeMelodi(env.clock, flows, step=200.0)
     _seed_store(env, fake)
-    env.run(fake)
+    run_until_chunk(env, fake, "DS_RP_TD_SEED")
     first = sorted(env.store.rglob("00000.chunk"))[0]
     first.unlink()
     st = env.state()
@@ -509,7 +522,7 @@ def test_a_non_deterministic_page_1_blocks_the_repair_source_wide(env):
     fake = FakeMelodi(env.clock, flows)
     _seed_store(env, fake)
     env.put("DS_WALK", flows["DS_WALK"][:4])
-    fake.flip_page1.add("DS_RP_TD_SEED")
+    fake.flip_page1.add("DS_CTRL")                                       # the determinism control's flow
     r = env.run(fake)
     assert "REPAIR BLOCKED: Melodi paging not deterministic" in r.error
     assert env.rows("DS_RP_TD_SEED") == P                                # no repair pull
@@ -657,7 +670,7 @@ def test_a_tail_the_server_answers_whole_is_detected_and_measured_as_a_full_pull
     flows["DS_RP_ACT"] = series(4, year=2012) + series(3, year=2017) + series(3, year=2023)
     fake = FakeMelodi(env.clock, flows)
     _seed_store(env, fake)
-    env.put("DS_RP_ACT", series(3, year=2023) + series(1, geo="2025", year=2023))
+    env.put("DS_RP_ACT", series(3, year=2023) + series(1, geo="2025", year=2017))   # two years: a real tail
     fake.ignore_start.add("DS_RP_ACT")                                   # Melodi ignores startPeriod for RP flows
     run_until_quiet(env, fake)
     st = env.state()["flows"]["DS_RP_ACT"]
