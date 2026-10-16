@@ -30,7 +30,7 @@ its vintage withheld — it would republish forever with stale CSVs (R174).
 HONEST-STATUS: manifest unreachable -> TransientError (partial, retried, data kept). A
 per-dataset download or parse failure -> transient_unit for that dataset only, so one bad zip
 cannot stop the other 28. A dataset that downloads but writes ZERO rows -> structural_unit with
-its last_updated NOT recorded, so a parser break resurfaces next run instead of being sealed in.
+its last_updated NOT recorded, so a parser break resurfaces on a later pass instead of being sealed in.
 """
 from __future__ import annotations
 import hashlib

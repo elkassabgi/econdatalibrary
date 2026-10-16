@@ -628,7 +628,7 @@ def _missing_verdict(sess, db, path, since_date, dl=None):
         if getattr(sess, "_hagstofa_tree_cut", False):
             # the run's budget ran out inside the search: nothing is known, nothing failed (R1124)
             print(f"[hagstofa] {path}: HTTP 400/404; the table-tree search stopped at the budget - "
-                  f"moved or withdrawn is decided next run", flush=True)
+                  f"moved or withdrawn is decided by a later pass", flush=True)
             return [], "deferred"
         print(f"[hagstofa] {path}: HTTP 400/404, and a table tree could not be read in full - "
               f"moved or withdrawn is unknown", flush=True)
@@ -807,8 +807,8 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
         if dl.spent():
             print(f"[{SOURCE}] budget of {budget_min:.0f} min spent after "
                   f"{dl.elapsed_min():.1f} min — stopped after db {last_db!r}, "
-                  f"{len(dbs) - dbs.index(db)} of {len(dbs)} db(s) deferred to the next "
-                  f"tick", flush=True)
+                  f"{len(dbs) - dbs.index(db)} of {len(dbs)} db(s) deferred to a later "
+                  f"pass", flush=True)
             break
         last_db = db
         path = os.path.join(out_dir, f"{db}.parquet")

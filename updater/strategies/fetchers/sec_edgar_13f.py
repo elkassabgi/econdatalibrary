@@ -59,7 +59,10 @@ HONEST STATUS (the dominant correctness rule)
 Each (product, dataset-key) pair is one sub-unit. A 429 / 5xx / timeout / network
 drop / truncated-or-bad ZIP -> TransientError -> the key stays unselected-as-done
 (its vintage is NOT advanced) and the SOURCE result is `partial`; the orchestrator
-does NOT stamp last_success and the key re-runs next tick. A 200 page that yields
+does NOT stamp last_success, and a later pass selects the source again and re-selects the
+key, whose state reads transient_fail (base.Strategy.is_due decides when: with a success on
+record, once the cadence has elapsed since it; with none, min(cadence, 7) x 0.9 days after
+this attempt). A 200 page that yields
 ZERO catalogue keys is a structural break (TransientError -> retry, never laundered
 into no_change). Empty individual tables inside a real quarter are legitimate (SEC
 emits empty OTHERMANAGER2 etc.) and are written as 0-row partitions, not failures.
@@ -215,7 +218,7 @@ _RANGE = re.compile(r"^\d{2}([a-z]{3})(\d{4})-\d{2}([a-z]{3})(\d{4})$")
 
 # Refuse to fetch an absurd number of "new" keys in a single tick — that almost
 # always means the on-disk inventory was wiped (so every key looks new). We fetch
-# the cap and report partial so the rest run next tick, rather than re-pull the
+# the cap and report partial so a later pass fetches the rest, rather than re-pull the
 # whole multi-year history and look falsely "fresh".
 MAX_KEYS_PER_TICK = 8
 
@@ -500,7 +503,8 @@ def _fetch_key(prod_cfg: dict, key: str, session, tally: Tally,
                cursors: dict | None = None, *, url: str) -> int:
     """Download + parse one dataset key's zip and merge every table into its own
     per-period parquet (never-shrink/dedup). Returns rows added across tables.
-    Raises TransientError on download/zip failure (the key re-runs next tick)."""
+    Raises TransientError on download/zip failure (the caller books the key transient_fail,
+    so a later pass selects it again)."""
     # `url` is the href the page carried for this key (see _zip_urls_on_page). There is
     # deliberately NO composed-path fallback: SEC serves new releases from a directory
     # zip_url does not know, so a guessed path 404s and the failure reads as "transient"
@@ -510,7 +514,7 @@ def _fetch_key(prod_cfg: dict, key: str, session, tally: Tally,
         zf = zipfile.ZipFile(io.BytesIO(raw))
         names = zf.namelist()
     except zipfile.BadZipFile:
-        # A truncated/rotated body is a transient fault, not data — retry next tick.
+        # A truncated/rotated body is a transient fault, not data — a later pass retries it.
         raise TransientError(f"{SOURCE}/{prod_cfg['out_dir']} {key}: bad/truncated zip")
     if not names:
         raise TransientError(f"{SOURCE}/{prod_cfg['out_dir']} {key}: empty zip")

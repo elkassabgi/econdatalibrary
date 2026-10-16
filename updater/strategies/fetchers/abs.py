@@ -337,10 +337,10 @@ def update(unit, since) -> Result:
     cycle.close_if_complete(tally)
 
     if deferred:
-        where = (f"the next run RESUMES AFTER {last_attempted} so they actually drain"
+        where = (f"the source's next pass RESUMES AFTER {last_attempted} so they actually drain"
                  if last_attempted else
-                 "NO flow was attempted at all — the bookmark is unchanged, so the next "
-                 "run retries this same point (check the budget, not the rotation)")
+                 "NO flow was attempted at all — the bookmark is unchanged, so the source's next "
+                 "pass retries this same point (check the budget, not the rotation)")
         print(f"[abs] BUDGET {BUDGET_MIN:.0f} min spent after {dl.elapsed_min():.1f} min — "
               f"{deferred}/{len(pfiles)} flow(s) still owed this cycle; {where} "
               f"(run reports partial, vintage not advanced)", flush=True)

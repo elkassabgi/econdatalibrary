@@ -304,7 +304,8 @@ def _deliver_alarm(key: str, minutes: float) -> None:
             _ARMED_DEADLINE._rearm()
         return
     exc = UnitTimeout(f"{key} exceeded its {minutes:.0f}-minute hard limit and was "
-                      f"interrupted; existing data untouched, re-queued for the next tick")
+                      f"interrupted; existing data untouched, recorded as transient_fail (due again "
+                      f"at the next run unless its last success is younger than its cadence)")
     if _DEFER_ALARM:
         _ALARM_PENDING = exc
         return
@@ -883,8 +884,9 @@ def _drain_residue_to_debts(store, source_id: str, out: dict, refailed: set) -> 
 
 def _book_fence_trip(unit, res, store, fence_min: float):
     """A csv-fence trip on a `csv_misses: desktop_owed` source: book each mapped changed id as a
-    desktop debt and return the note that replaces "re-derives next run" (false here: the change
-    signal has already advanced). None for any other source (the caller keeps its note).
+    desktop debt and return the note that replaces the default fence note ("re-derived only by a
+    later pass that reports it changed" - here no later pass need report it: the change signal has
+    already advanced). None for any other source (the caller keeps its note).
 
     PER ID, NOT full_rederive_owed (review R1137): health's remedy for a full re-derive is
     tools/derive_csv_bulk.py, which for ilostat would PUT 'ilostat:ilostat:...' objects across
@@ -2742,12 +2744,13 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 # returns, so a truly wedged PUT moves the wait to the end of the run (review
                 # R1254 item 3). For most sources nothing is queued on this trip - queueing the
                 # mapped set is how abs parked 100,000 rows (R353) - so, as the note below says, a
-                # chronically-partial source re-derives next run and an ok-status source on its next
-                # change. A `csv_misses: desktop_owed` source (ilostat) instead books each mapped id as
+                # series' CSV is re-derived only by a later pass that reports it changed (a
+                # `partial` unit is due again per base.Strategy.is_due, not always at the next run).
+                # A `csv_misses: desktop_owed` source (ilostat) instead books each mapped id as
                 # a desktop debt (_book_fence_trip, R1137), queued only if that booking fails. Sized to
                 # the run's remaining minutes (+2 grace) capped at
-                # 60 — on trip, the phase is abandoned as a budget note (the
-                # next run re-derives; cursors are already recorded) rather than
+                # 60 — on trip, the phase is abandoned as a budget note (a
+                # later pass re-derives what it reports changed; cursors are already recorded) rather than
                 # the run being executed at the step ceiling. Past the ceiling
                 # the fence is 1 minute, not 60 (see _csv_fence_min).
                 _csv_fence = _csv_fence_min()
@@ -2758,9 +2761,8 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                     csv_failed, csv_deferred, csv_reasons = [], [], {}
                     csv_err = ("csv coverage note: csv phase exceeded its "
                                f"{_csv_fence:.0f}-min fence and was abandoned for this "
-                               "run — cursors recorded, a chronically-partial source "
-                               "re-derives next run (vintage un-bumped), an ok-status "
-                               "source on its next CHANGE")
+                               "run — cursors recorded, nothing queued, and a series' CSV "
+                               "is re-derived only by a later pass that reports it changed")
                     _csv_fence_tripped = True
                     print(f"[orchestrator] {unit.key}: {csv_err}", flush=True)
                     _fence = _book_fence_trip(unit, res, store, _csv_fence)

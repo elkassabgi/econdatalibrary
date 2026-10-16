@@ -486,7 +486,7 @@ def _grow_marker(before) -> None:
 
     So after a run the guard admitted, each file that was not there at the guard is checked - ALL its
     keys, not a sample - and only when every one is stable is the marker's count raised, with the
-    names recorded under `grown`. One unstable new file -> no raise, and the next run's guard refuses,
+    names recorded under `grown`. One unstable new file -> no raise, and the guard refuses the source's next pass,
     loudly, as it should. A marker that moved during the run (the migration tool re-ran) is left alone.
     Never raises: a failure here is printed and costs one refused run, never the run's own result."""
     if not before:
@@ -506,7 +506,7 @@ def _grow_marker(before) -> None:
         bad = [n for n in new if not _stable_file(out_dir, n)]
         if bad:
             print(f"[eurostat] re-key marker NOT grown: new file(s) with UNSTABLE keys {bad[:5]} - the "
-                  f"next run's guard will refuse", flush=True)
+                  f"guard will refuse the source's next pass", flush=True)
             return
         m = json.loads(blob.read_bytes(path).decode("utf-8"))
         if m.get("files_seen") != len(before):
@@ -527,12 +527,12 @@ def _grow_marker(before) -> None:
         # alarm and raise its own error - R1147). The names are printed: nothing else records them.
         _orch = sys.modules.get("updater.orchestrate")
         if type(e).__name__ == "UnitTimeout" or bool(getattr(_orch, "UNIT_TIMEOUT_FIRED", False)):
-            print(f"[eurostat] re-key marker growth INTERRUPTED by the unit alarm - the next run's guard "
-                  f"will refuse; run tools/grow_eurostat_rekey_marker.py --files {','.join(new) or '?'} "
+            print(f"[eurostat] re-key marker growth INTERRUPTED by the unit alarm - the guard will refuse "
+                  f"the source's next pass; run tools/grow_eurostat_rekey_marker.py --files {','.join(new) or '?'} "
                   f"--apply", flush=True)
             return
-        print(f"[eurostat] re-key marker NOT grown ({type(e).__name__}: {str(e)[:120]}) - the next "
-              f"run's guard may refuse", flush=True)
+        print(f"[eurostat] re-key marker NOT grown ({type(e).__name__}: {str(e)[:120]}) - the guard may "
+              f"refuse the source's next pass", flush=True)
 
 
 def update(unit, since) -> Result:

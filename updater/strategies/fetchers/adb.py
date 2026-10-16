@@ -45,7 +45,8 @@ HONEST STATUS (Tally + finalize):
                     200 with an empty/whitespace body)
   transient_unit()  timeout / 5xx / 429 / network / unparseable-after-retries -> the
                     WHOLE run returns 'partial' (orchestrator does NOT stamp success;
-                    re-runs next tick); existing data left untouched.
+                    a later pass selects the unit again, per base.Strategy.is_due);
+                    existing data left untouched.
   structural_unit() a 200 with a real SDMX-CSV header but 0 data rows from a BOUNDARY
                     re-fetch of an indicator that exists on disk (a boundary re-fetch
                     must re-return at least the boundary period; 0 rows => the
@@ -71,7 +72,7 @@ from ..base import Result
 from ._common import (CURSOR_CAP, Deadline, Tally, cursors_from_table, finalize,
                       load_rotation, merge_cursor_map, rotate_after, save_rotation)
 
-# Minutes adb may spend before deferring the remaining flows to the next tick.
+# Minutes adb may spend before deferring the remaining flows to a later pass.
 BUDGET_MIN = 25
 SOURCE = "adb"
 BASE = "https://kidb.adb.org/api"
@@ -175,7 +176,7 @@ def _get(sess: requests.Session, url: str):
     "You have been temporarily banned." This is a RATE-LIMIT cooldown, not a
     permanent authorization failure, so it is treated as TransientError (with a
     long backoff) — never a DefinitiveError — so the run surfaces 'partial' and
-    re-runs next tick instead of laundering a throttle into a quiet no_change.
+    is selected again by a later pass instead of laundering a throttle into a quiet no_change.
     """
     last = None
     for attempt in range(MAX_ATTEMPTS):
@@ -362,7 +363,7 @@ def update(unit, since) -> Result:
             total += sum(blob.row_count(os.path.join(out_dir, f)) for f in deferred)
             print(f"[adb] budget of {BUDGET_MIN} min spent after "
                   f"{deadline.elapsed_min():.1f} min; deferring {len(deferred)} "
-                  f"of {len(pfiles)} flows to the next tick (resuming after "
+                  f"of {len(pfiles)} flows to a later pass (resuming after "
                   f"{pfiles[i - 1] if i else '(none)'})", flush=True)
             break
         # AFTER the deferral check: the bookmark records what was WORKED ON, never something
@@ -379,7 +380,7 @@ def update(unit, since) -> Result:
             inds, economies, freq, mx = _flow_layout(path)
         except Exception as e:  # noqa: BLE001
             # Unreadable existing file: leave it untouched, keep its rows in total,
-            # and surface honestly as a transient sub-failure (re-run next tick).
+            # and surface honestly as a transient sub-failure (retried by a later pass).
             tally.transient_unit(
                 f"{os.path.basename(path)}: existing file unreadable — {type(e).__name__}")
             total += before
@@ -514,5 +515,5 @@ def update(unit, since) -> Result:
     res = finalize(tally, total, last_obs, source=SOURCE, series_cursors=cursors,
                    empty_window_floor=max(0, len(pfiles) - 1))
     if capped:
-        res.new_vintage = None      # flows still owe work; resume next tick
+        res.new_vintage = None      # flows still owe work; a later pass resumes
     return res

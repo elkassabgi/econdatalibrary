@@ -16,8 +16,8 @@ many hours, so the refresh is a CHANGE-FEED diff:
 
 Honest status (the dominant correctness rule): a 429 / timeout / 5xx is a
 TRANSIENT sub-failure -> the flow stays selected (not bumped), the SOURCE result
-is `partial`, the orchestrator does NOT stamp last_success, the flow re-runs next
-tick. A 200 that parsed 0 rows from a non-trivial body is STRUCTURAL. Nothing is
+is `partial`, the orchestrator does NOT stamp last_success, a later pass re-runs
+the flow. A 200 that parsed 0 rows from a non-trivial body is STRUCTURAL. Nothing is
 ever laundered into ok/no_change, and merge_and_write means a bad fetch can never
 shrink or duplicate good data.
 
@@ -154,7 +154,7 @@ def _max_obs_date(out_path: str) -> str | None:
     cost memory: it ALWAYS threw, and the bare `except: return None` below turned that
     into `since=None`, which `_since_param` renders as an empty string — i.e. a silent
     FULL-HISTORY re-pull of that flow, reported as success. Self-perpetuating, too: the
-    re-pull keeps the file huge, so the next tick fails the same way forever.
+    re-pull keeps the file huge, so every later pass fails the same way, forever.
 
     Two bounded paths, in order:
       1. Row-group statistics from the FOOTER — parquet already stores each row group's
@@ -582,7 +582,7 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
     checkpoint_every=N (opt-in) also saves the per-flow sidecar after every N flows. save_state
     otherwise runs once, after the loop, so anything that ENDS the process inside the loop - a
     runner OOM kill, the orchestrator's SIGALRM UnitTimeout, a job timeout - discards every
-    flow's recorded progress and the next tick re-selects the identical flows in the identical
+    flow's recorded progress and the source's next pass re-selects the identical flows in the identical
     order, meeting the identical failure. A failed checkpoint PUT is reported and the sweep goes
     on; the final save still raises loudly.
 

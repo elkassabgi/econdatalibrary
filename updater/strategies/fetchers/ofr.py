@@ -43,7 +43,7 @@ DROP_RATIO_STRUCTURAL = 0.5
 
 def _get(ds, tries=5):
     """Fetch one dataset. Returns parsed JSON on 200. Raises TransientError on
-    timeout/5xx/429/network (retry next run), DefinitiveError on a hard non-200,
+    timeout/5xx/429/network (retried by a later pass), DefinitiveError on a hard non-200,
     and TransientError on a 200 whose body will not parse as JSON (truncated/
     flaky body is a transient fault, not data)."""
     for a in range(tries):

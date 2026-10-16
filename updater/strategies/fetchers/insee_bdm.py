@@ -31,12 +31,13 @@ HONEST-STATUS CONTRACT (Tally + finalize):
     empty_unit()     200 with a valid SDMX envelope but no new Obs in the tail window
                      (a legitimately-quiet flow), or no on-disk obs to anchor from
     transient_unit() timeout/5xx/429/network drop, OR a 200 whose body is not valid XML
-                     (retry next run) -> the WHOLE run returns 'partial'
+                     (retried by a later pass) -> the WHOLE run returns 'partial'
     structural_unit()200 whose body parses as XML but is NOT an SDMX data message (the
                      expected StructureSpecificData/GenericData root is gone), i.e. a
                      real structural break -> DefinitiveError in finalize()
   finalize() => 'ok'/'no_change' only when no sub-unit transient/structural-failed;
-  'partial' on any transient (orchestrator does NOT stamp success, re-runs next tick);
+  'partial' on any transient (orchestrator does NOT stamp success; a later pass selects the
+  unit again, per base.Strategy.is_due);
   DefinitiveError on a structural break or a large all-empty/error window. merge always
   preserves existing data (never shrinks).
 """
@@ -133,7 +134,7 @@ def _get_xml(sess, url):
                                     source at 'partial' forever (transient-retried each run).
     Raises:
       TransientError  -> timeout/5xx/429/network drop after the retry budget, OR a 200
-                         whose body is not valid XML (retry next run)
+                         whose body is not valid XML (retried by a later pass)
       DefinitiveError -> hard 4xx other than 404/429
     """
     last = None

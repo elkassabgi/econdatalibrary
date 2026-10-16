@@ -65,7 +65,7 @@ from ._common import (Deadline, Tally, finalize, load_rotation, rotate_after,
 
 # Wall-clock cap for one insee_melodi run: it walks every published flow, and INSEE's
 # Melodi endpoint is slow enough per flow that this source can outlast the whole daily
-# job on its own. Flows not reached keep their rows and are re-tried on the next tick.
+# job on its own. Flows not reached keep their rows and are re-tried by a later pass.
 BUDGET_MIN = 25
 
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com",
@@ -313,7 +313,7 @@ def update(unit, since) -> Result:
             # still describes the whole source, and tally transient so the run reports
             # `partial` — an `ok` here would claim a completeness it did not achieve.
             print(f"[insee_melodi] budget {BUDGET_MIN} min spent — {code} not pulled "
-                  f"this run (keeping {before:,} existing rows); retries next tick",
+                  f"this run (keeping {before:,} existing rows); a later pass retries it",
                   flush=True)
             tally.deferred_unit(code)
             total += before

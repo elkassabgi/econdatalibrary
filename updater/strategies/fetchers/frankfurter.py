@@ -10,8 +10,8 @@ window, so the unit-level max obs_date is the natural cursor. The stored
 boundary day is re-fetched (captures same-day revisions; dedup keep-last).
 First run (empty store) backfills from 1999-01-04 in year chunks.
 
-HONEST-STATUS: timeouts/5xx/429 -> TransientError (run partial, retried next
-tick). A 200 whose JSON lacks the documented {rates: {...}} envelope on a
+HONEST-STATUS: timeouts/5xx/429 -> TransientError (run partial, retried by a later
+pass). A 200 whose JSON lacks the documented {rates: {...}} envelope on a
 non-trivial body -> structural (DefinitiveError via finalize). A quiet window
 (no new dates) -> earned no_change.
 """

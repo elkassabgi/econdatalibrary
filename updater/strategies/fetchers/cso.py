@@ -21,7 +21,7 @@ that: re-pull + overwrite only matrices whose `updated` moved vs. the stored cur
       MAX_TABLES per run so a run stays finite and converges across ticks); route each into
       its owning subject parquet (from the cached _catalog.json) and merge.merge_and_write
       (mode='merge', dedup (series_key,obs_date)). Persist the release-date cursor only for
-      matrices actually pulled, so a transient mid-run failure re-pulls next tick.
+      matrices actually pulled, so a transient mid-run failure re-pulls on a later pass.
 """
 from __future__ import annotations
 import datetime as dt
@@ -583,9 +583,9 @@ def update(unit, since) -> Result:
         if dl.spent():
             # MAX_TABLES bounds the COUNT per run; this bounds the TIME. A matrix not
             # reached is simply left out of pulled_ok, which drives the cursor write, so
-            # it stays "changed" and is picked up first on the next tick.
+            # it stays "changed" and is picked up first by a later pass.
             print(f"[cso] budget {BUDGET_MIN} min spent — {mtr} not pulled this run; "
-                  f"retries next tick", flush=True)
+                  f"a later pass retries it", flush=True)
             tally.deferred_unit(mtr)
             continue
         sbj = m2s.get(mtr)
@@ -624,7 +624,7 @@ def update(unit, since) -> Result:
             # recorded itself in the error string and printed NOTHING — which is why 27 of 36
             # failures were invisible in CI while the other 9 were diagnosable at a glance.
             print(f"[cso] {mtr}: no subject mapping in catalog — cannot route to a subject "
-                  f"parquet; retries next tick", flush=True)
+                  f"parquet; a later pass retries it", flush=True)
             tally.transient_unit(f"{mtr}: no subject mapping in catalog")
             continue
         # EVERY FAILURE BELOW NAMES ITSELF. These four branches used to call transient_unit()
@@ -689,7 +689,7 @@ def update(unit, since) -> Result:
                       f"(unhandled period grammar or dimension shape)", flush=True)
             else:
                 print(f"[cso] {mtr}: no body after retries (network/5xx) — publisher-side, "
-                      f"retried next tick", flush=True)
+                      f"a later pass retries it", flush=True)
             # Classification stays TRANSIENT for both: the cursor must not advance over a matrix
             # we failed to read, and a structural break recurs and is re-pulled every tick rather
             # than frozen. What changed is that the two are now distinguishable in the log, which

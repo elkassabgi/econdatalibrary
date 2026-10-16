@@ -61,7 +61,7 @@ TIME_BUDGET_MIN = 35
 def _get_json(url, params=None, retries=PAGE_RETRIES):
     """Return (json, outcome) where outcome is 'ok' (200 parsed), 'missing'
     (400/404/other 4xx -> structural for the sub-unit), or 'transient'
-    (timeout/5xx/429/network -> retry next tick)."""
+    (timeout/5xx/429/network -> retried by a later pass)."""
     for attempt in range(retries):
         try:
             r = requests.get(url, params=params, headers=UA, timeout=120)
@@ -215,7 +215,7 @@ def _fetch_series(code):
     """Fetch all observations for one series across all pages. Returns
     (keys, dates, vals, outcome) where outcome is 'ok' (>=1 page parsed),
     'missing' (200/4xx but no records from a real query -> structural), or
-    'transient' (timeout/5xx/429/network on any page -> retry next tick)."""
+    'transient' (timeout/5xx/429/network on any page -> retried by a later pass)."""
     keys, dates, vals = [], [], []
     page = 1
     got_any = False

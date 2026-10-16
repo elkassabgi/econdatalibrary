@@ -37,7 +37,7 @@ returning one that only sees additions: the strategy falls back to the cadence, 
 monthly here, and each series is a single small call.
 
 BUDGET. One HTTP call per due series, so a full sweep is ~1,200 calls at RATE. A wall-clock
-budget stops cleanly and defers the rest to the next tick rather than being killed at the job
+budget stops cleanly and defers the rest to a later pass rather than being killed at the job
 ceiling; deferred series are untouched, not failed.
 
 HONEST-STATUS: catalogue unreachable -> TransientError (partial, retried, data kept). A

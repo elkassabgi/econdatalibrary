@@ -18,7 +18,7 @@ probe. HEAD on the access URL 403s, so we use this JSON record instead.
 
 A 200 that parses 0 numeric observations from a real workbook body is a structural
 break (the `Data` sheet shape changed) -> finalize raises DefinitiveError, leaving
-existing data untouched. A download/parse transient -> partial (re-run next tick).
+existing data untouched. A download/parse transient -> partial (retried by a later pass).
 """
 from __future__ import annotations
 import datetime as dt

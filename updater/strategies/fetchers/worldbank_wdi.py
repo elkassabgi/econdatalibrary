@@ -22,7 +22,7 @@ emitted key is byte-identical to the on-disk 3-char code. Verified: 0 unresolved
 
 Honest-status contract (Tally + finalize):
   - The indicator list is a wholesale gate; if it can't be fetched, nothing else can be
-    attempted -> transient_unit (status partial, retry next tick), existing data kept.
+    attempted -> transient_unit (status partial, retried by a later pass), existing data kept.
   - Each indicator is one sub-unit. A network/non-200 after retries -> transient_unit.
     A 200 with a real envelope but an empty data window (no obs in the trailing years)
     -> empty_unit (a quiet sub-unit, not a failure). Parsed rows -> added_unit.
@@ -347,8 +347,8 @@ def update(unit, since) -> Result:
     el = (time.monotonic() - t0) / 60
     if capped:
         print(f"[{SOURCE}] budget of {BUDGET_MIN} min spent after {el:.1f} min — "
-              f"{done:,}/{len(order):,} indicators done, {len(order)-done:,} deferred to the "
-              f"NEXT run (rotation bookmark saved); merging what was collected", flush=True)
+              f"{done:,}/{len(order):,} indicators done, {len(order)-done:,} deferred to a "
+              f"later pass (rotation bookmark saved); merging what was collected", flush=True)
     else:
         print(f"[{SOURCE}] pass COMPLETE: {len(order):,} indicators in {el:.1f} min",
               flush=True)

@@ -131,9 +131,9 @@ def update(unit, since) -> Result:
         rname = (res.get("name") or res.get("description") or slug)[:40]
         if dl.spent():
             # Time budget gone even though the COUNT cap had room. Mark the run capped
-            # so it reports partial and the remainder drains next tick.
+            # so it reports partial and the remainder drains in a later pass.
             print(f"[idb] budget {BUDGET_MIN} min spent — {slug} not pulled this run; "
-                  f"retries next tick", flush=True)
+                  f"a later pass retries it", flush=True)
             tally.deferred_unit(slug)
             capped = True
             continue

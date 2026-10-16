@@ -5,7 +5,7 @@ parquet clean_full/barro_lee/barro_lee.parquet, schema (series_key, obs_date, va
 A 'delta' is meaningless: Barro-Lee re-publish a whole new vintage at once, so we
 re-fetch every CSV and MERGE (dedup series_key+obs_date, new wins on revision,
 never-shrink). Each CSV is one sub-unit — a 200 that parses 0 rows from a real body
-is a structural break; timeouts/5xx/429 are transient (re-run next tick).
+is a structural break; timeouts/5xx/429 are transient (retried by a later pass).
 
 Vintage signal (registry adapter.vintage_signal): the GitHub commit SHA of the
 barrolee.github.io Pages repo (barrolee/BarroLeeDataSet) — one cheap GET that moves

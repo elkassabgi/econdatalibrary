@@ -11,7 +11,7 @@ merge.merge_and_write dedups the overlap and never shrinks. Store I/O goes throu
 
 HONEST-STATUS: the catalog request failing after retries -> TransientError (whole run partial, retried;
 nothing silently reported no_change). A per-series 429/5xx/timeout after retries -> that series is a
-transient_unit (kept, retried next tick), the rest of the run proceeds. A 4xx on one series -> empty.
+transient_unit (kept, retried by a later pass), the rest of the run proceeds. A 4xx on one series -> empty.
 """
 from __future__ import annotations
 import datetime as dt

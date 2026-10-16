@@ -182,7 +182,7 @@ def _table_cursors(out: str) -> dict:
         window = rotate_after(keys, load_rotation(out))[:CURSOR_CAP]
         print(f"[{SOURCE}] {len(keys):,} tables > {CURSOR_CAP:,} cursor cap — reporting a "
               f"ROTATING window of {len(window):,}; the remaining {len(keys) - len(window):,} "
-              f"are covered by the next run, not skipped", flush=True)
+              f"are covered by later passes, a window at a time, not skipped", flush=True)
     else:
         window = keys
     if window:

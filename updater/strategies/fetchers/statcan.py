@@ -136,7 +136,7 @@ def _ingester():
 
 def _get(endpoint, tries=5, timeout=120):
     """GET a WDS endpoint. Returns parsed JSON on 200. TransientError on
-    timeout/5xx/429/network/truncated-body (retry next run); DefinitiveError on a
+    timeout/5xx/429/network/truncated-body (retried by a later pass); DefinitiveError on a
     hard non-200 (!=429)."""
     return _call("GET", endpoint, None, tries, timeout)
 
@@ -357,7 +357,7 @@ def _fetch_cube_whole(pid):
     everything else this writes is removed here, success or not.
 
     TransientError: a WDS call or the download failed, or the zip is corrupt (bad CRC, truncated
-    deflate stream) - retry next run. DefinitiveError: StatCan answered but gave no zip URL, the
+    deflate stream) - retried by a later pass. DefinitiveError: StatCan answered but gave no zip URL, the
     CSV is in a layout the ingester does not recognise, or the parse does not reproduce StatCan's
     own counts - the cube needs a human."""
     want_rows, want_series = _cube_counts(pid)
