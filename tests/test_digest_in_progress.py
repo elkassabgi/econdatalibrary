@@ -51,7 +51,7 @@ def emitted(attempted=15, deferred=130, names=("DS_TOUR_CAP",)):
         t.deferred_unit(names[i % len(names)] if names else None)
     res = finalize(t, total_rows=1000, last_obs="2026-08-01", source="x", series_cursors={"k": "2026-08-01"})
     assert res.status == "partial", res.status
-    assert "deferred by budget and taken next tick" in res.error, res.error
+    assert "deferred by budget, not reached in this pass" in res.error, res.error
     return res.error
 
 

@@ -508,7 +508,8 @@ def update(unit, since) -> Result:
 
     # RESUME PAST THE LAST FILE WORKED ON. blob.list_parquets returns sorted names, so
     # without this the 35-minute budget re-walks the same alphabetical PREFIX every run and
-    # the rest is deferred forever while the note reassuringly says "taken next tick".
+    # the rest is deferred forever while the note reassuringly said "taken next tick" (the
+    # finalize wording then; it now says "not reached in this pass", which promises nothing).
     #
     # MEASURED 2026-08-07 across four consecutive runs — the deferred set was always a
     # SUFFIX (280, 349, 338, 307 of 540) and the best prefix ever reached was 260 of 540, so

@@ -176,27 +176,43 @@ def _recency_signal(obs_vals, now, has_uv_claim=False) -> "tuple[str | None, str
 
 
 # The EXACT note finalize() emits for a zero-failure budgeted sweep, anchored end to end:
-# 'N sub-unit(s) attempted, none failed; M deferred by budget and taken next tick[ ids...]'.
+# 'N sub-unit(s) attempted, none failed; M deferred by budget, not reached in this pass[ ids...]'.
+# TWO TAILS ARE ACCEPTED, AND ONLY TWO. finalize wrote "... and taken next tick" until this tail
+# changed; that promise is false for a unit that has never succeeded (base.Strategy.is_due makes
+# it wait min(cadence, 7) x 0.9 days after a partial, R1558/R1096). The new tail promises nothing
+# about later passes either: ROTATING says the source took a slice with zero failures, NOT that its
+# deferred units are ever reached - a fetcher that re-walks one sorted prefix reads ROTATING for
+# ever (R190/R377; ilostat, AR-328/R1586). Check that the deferred list moves run over run.
+# Stored rows - unit_state.last_error and runs.note, pulled from R2 on every run - still carry
+# the old tail, and a unit
+# keeps its last note until it next runs, so the matcher reads both: dropping the old one would
+# turn every rotator that has not re-run since into ATTENTION. _DEFERRAL_OLD is the only place
+# in updater/ where the old tail may appear, and _DEFERRAL_BASE below is the only expression that
+# may read that name (tests/test_no_false_next_tick.py pins both).
 # attempted must be >= 1 ([1-9]) — a ZERO-attempt deferral note is a wedged rotator wearing
 # the deferral costume (class-D breakage), never healthy rotation. Anything appended beyond
 # the optional _named() id suffix — 'csv_derive crashed', a transient tail, a clipped note
 # (orchestrate._clip_err announces truncation mid-string) — fails the anchor and the source
 # stays ATTENTION: the WHITELIST direction, demanded by adversarial review 2026-08-26 after
 # the first cut's substring BLACKLIST accepted unsdg's live note '46 sub-unit(s) attempted,
-# none failed; 667 deferred by budget and taken next tick; csv_derive crashed (50564 series
+# none failed; 667 deferred by budget and <old tail>; csv_derive crashed (50564 series
 # queued): UnitTimeout(...)' — a demoting tail the blacklist simply had no entry for (R382:
 # a filter picked from the examples, not the mechanism).
+_DEFERRAL_NOW = "deferred by budget, not reached in this pass"
+_DEFERRAL_OLD = "deferred by budget and taken next tick"   # the stored form (old rows)
 _DEFERRAL_BASE = _re.compile(
     r"^[1-9]\d* sub-unit\(s\) attempted, none failed; "
-    r"\d+ deferred by budget and taken next tick(?: \[[^\]]*\])?$")
+    r"\d+ (?:" + _re.escape(_DEFERRAL_NOW) + "|" + _re.escape(_DEFERRAL_OLD) + r")"
+    r"(?: \[[^\]]*\])?$")
 
 
 def _deferral_only(units) -> bool:
     """True when EVERY attention-status unit is a pure budget-deferral partial —
     the note finalize() emits when a bounded sweep ran out of slice with ZERO
-    failures ('N sub-unit(s) attempted, none failed; M deferred by budget and
-    taken next tick', _common.py finalize; the drift test pins matcher to
-    emitter, R349).
+    failures ('N sub-unit(s) attempted, none failed; M deferred by budget, not
+    reached in this pass', _common.py finalize; the drift test pins matcher to
+    emitter, R349). Rows stored before that wording carry the older tail, which
+    _DEFERRAL_BASE also accepts (see _DEFERRAL_OLD).
 
     WHY A CLASS OF ITS OWN. finalize books `partial` on any deferral because the
     tick did not cover everything — honest for the VINTAGE, but the gate turned

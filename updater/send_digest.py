@@ -44,8 +44,9 @@ STATE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CADENCE_LIMIT_DAYS = {"daily": 3, "weekly": 14, "monthly": 45, "quarterly": 120, "annual": 400}
 
 # IN PROGRESS (NORMAL), owner's order 2026-10-11. A source that is too large for one run takes a part of its
-# sub-units each run and says so: "N sub-unit(s) attempted, none failed; M deferred by budget and taken next
-# tick". Such rows stood under "Needs attention" every day (2026-10-10, run 38086608492), beside the rows that
+# sub-units each run and says so: "N sub-unit(s) attempted, none failed; M deferred by budget, not reached in
+# this pass" (rows stored before that wording end "... and taken next tick"; the gate reads both). Such rows
+# stood under "Needs attention" every day (2026-10-10, run 38086608492), beside the rows that
 # are real trouble, and the report read as a failure every morning.
 #
 # THE CALM LIST IS THE HEALTH GATE'S `ROTATING` CLASS, read from the gate's own verdict of this run
