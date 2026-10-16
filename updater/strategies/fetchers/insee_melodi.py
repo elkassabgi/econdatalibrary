@@ -19,7 +19,11 @@ WHY THIS FETCHER WAS REBUILT (2026-10-16, design reviewed as AR-330, ledger R158
     (startPeriod = its only year) is the whole flow; Melodi also ignores startPeriod for RP flows.
 
 HOW A PASS RUNS NOW (slots in precedence order, all inside the 35-minute soft stop - R2-7):
-  1. identity: one HEAD per served file, compared with _flows.json; a changed object is re-classified.
+  0. operator force: every flow listed in _force_origin.json (once per listing) is sent to needs_origin,
+     whatever its status (see STATUSES AND THE OPERATOR below).
+  1. identity: one HEAD per served file, compared with _flows.json; a changed object is re-classified and
+     any attempt it carries is dropped (a tail never finishes a flow sent to origin - AR-331 X4); a
+     missing served object is named in the note.
   2. CLASSIFY (<= 5 min, charged with the probes, their two controls and the page-determinism control):
      an unclassified flow is NEVER written by the walk (R2-2). needs_origin when ANY key-spelling
      partition (dimension-name set + GEO vintage) or the total is an exact positive multiple of 10,000,
@@ -49,13 +53,41 @@ state; conditional writes - see _melodi_state.py), `_force_origin.json` (OPERATO
 {"flows": [...], "unblock_repair_after_utc": "<iso>"}), `_repull/<FLOW>/<attempt>/<nnnnn>.chunk`. Local
 staging lives beside the bounded-merge spill dir (ECONDL_DUCKDB_TMP), never D:.
 
-T0 STEP (before the R2 write key is revoked): let every in-progress attempt finish, or abandon it, and delete
-its `_repull/` chunks on R2 - after T0 they cannot be deleted. mirror_sync and upload_r2 carry only .parquet,
-so `_flows.json` and `_force_origin.json` must be copied to the local store explicitly.
+STATUSES AND THE OPERATOR (each flow's `status` in `_flows.json`; the note names the stuck ones every pass):
+  `unclassified`        not profiled yet (or its served object changed); never written by the walk.
+  `legacy`              no exact-multiple partition; probed once with the page-beyond probe; walked.
+  `needs_origin`        a full origin pull is queued (a bootstrap rule, a non-empty probe, or the operator).
+  `needs_refresh`       a due tail too large for the walk, queued for the repair slot (it may carry a
+                        parked attempt).
+  `in_progress`         the ONE flow being pulled; its attempt and cursor are in `attempt`.
+  `merge_pending`       every page staged, waiting for the merge (it needs its time margin).
+  `complete_per_paging` an origin pull ended on isLast with every check met; walked.
+  `empty_per_paging`    INSEE serves no observations for it; walked.
+  `withdrawn_suspect`   origin page 1 empty over stored rows: withdrawn by INSEE? Stored rows kept.
+  `unstable_paging`     3 restarts (pages changed under the attempt); its chunks are deleted.
+  `broken`              3 failures with no committed chunk between them, or a pull that parsed nothing;
+                        its chunks are deleted.
+  The last three are worked by nobody until the operator acts. THE OPERATOR'S FILE is `_force_origin.json`
+  (the fetcher never writes it): {"flows": ["DS_X", ...], "utc": "<iso>", "unblock_repair_after_utc": "<iso>"}.
+  - A listed flow, in ANY status, drops its attempt (unless that attempt is already an origin pull) and goes
+    to `needs_origin`: this is the exit from broken, unstable_paging and withdrawn_suspect. Each listing is
+    used ONCE per flow (recorded as `forced_key` = the file's `utc`, or its digest when it has none); to
+    force a flow again, write a new `utc`.
+  - `unblock_repair_after_utc` later than the REPAIR BLOCKED time lifts a failed page-determinism control.
+  - Never hand-edit `_flows.json`: it is compare-and-swap protected and a hand edit races a later pass.
+
+T0 STEP (before the R2 write key is revoked): let every in-progress attempt finish, or abandon it (list the
+flow in `_force_origin.json` is NOT enough - it starts a new attempt), and delete every `_repull/` chunk on
+R2 - after T0 they cannot be deleted. Broken and unstable flows hold none (they delete theirs); a parked
+`needs_refresh` attempt does. mirror_sync and upload_r2 carry only .parquet, so `_flows.json` and
+`_force_origin.json` must be copied to the local store explicitly.
 
 LIMITS, stated: completeness is "per INSEE paging" (no INSEE total exists); the served-parquet publish is not
 conditional (two writers of one flow: last writer wins - the attempt lease protects only the repair); the
-stored rows INSEE no longer serves are kept (residue, reported) until the owner decides otherwise.
+stored rows INSEE no longer serves are kept (residue, reported) until the owner decides otherwise. Memory:
+classification and finalize run DuckDB under PROFILE_MEMORY_LIMIT and spill to a private directory (AR-331
+F6: the earlier arrow profile peaked at 7.3 GB on DS_FLORES_A5 and 16.5 GB at 25.9M rows); the bounded
+merge has its own limit. Python 3.11 (CI) runs pyarrow and duckdb here for the first time on its first run.
 
 License: Licence Ouverte / Open Licence 2.0. Source: INSEE Melodi www.insee.fr
 """
@@ -66,6 +98,7 @@ import http.client
 import os
 import random
 import re
+import shutil
 import time
 
 import pyarrow as pa
@@ -303,60 +336,100 @@ def _find_key(obj, key, depth=0):
 # --------------------------------------------------------------------------------------------- #
 # classification (C1, R2-1, R2-2)
 # --------------------------------------------------------------------------------------------- #
+PROFILE_MEMORY_LIMIT = "2GB"     # DuckDB limit for the classification profile and finalize's queries (F6)
+
+
+def _sq(path: str) -> str:
+    return str(path).replace("\\", "/").replace("'", "''")
+
+
+def _duck():
+    """A DuckDB connection with a memory limit and a spill directory private to this call (the bounded
+    merge's rules, merge.py: R228 private temp_directory, a spill cap). Returns (con, spill_dir). The
+    caller closes the connection and removes the spill dir. AR-331 F6: the arrow profile peaked at 7.3 GB
+    on DS_FLORES_A5 and 16.5 GB at 25.9M rows; this one spills to disk instead."""
+    import duckdb                                                        # noqa: PLC0415
+    lim = os.environ.get("AQUEDUCT_INSEE_DUCKDB_MEMORY") or PROFILE_MEMORY_LIMIT
+    if not all(ch.isalnum() or ch == "." for ch in str(lim)):
+        raise ValueError(f"bad DuckDB memory_limit {lim!r}")
+    spill = merge._bounded_spill_dir()
+    con = duckdb.connect()
+    try:
+        con.execute(f"SET memory_limit='{lim}'")
+        con.execute(f"PRAGMA threads={merge.BOUNDED_THREADS}")
+        con.execute("SET preserve_insertion_order=false")
+        con.execute(f"SET temp_directory='{_sq(spill)}'")
+        con.execute(f"SET max_temp_directory_size='{merge._bounded_temp_cap(spill, None) // 1_000_000}MB'")
+    except Exception:
+        con.close()
+        shutil.rmtree(spill, ignore_errors=True)
+        raise
+    return con, spill
+
+
+# The normalised key (R2-1): FREQ removed (it sorts first, so no leading ':' is left) and the GEO vintage
+# dropped. The partition: the dimension-name set plus the GEO vintage.
+_SQL_PART = ("regexp_replace(series_key, '=[^:]*', '', 'g') || '|' || "
+             "coalesce(regexp_extract(series_key, 'GEO=(\\d{4})-', 1), '')")
+_SQL_NORM = ("regexp_replace(regexp_replace(regexp_replace(series_key, '(^|:)FREQ=[^:]*', '', 'g'), "
+             "'^:', ''), 'GEO=\\d{4}-', 'GEO=', 'g')")
+
+
 def _partition_profile(path) -> dict | None:
     """Rows, max obs_date, rows in the max year, per-partition counts (dimension-name set + GEO vintage) and
     the DISTINCT normalised (key without FREQ and GEO vintage, date) count of the stored file. None when
-    absent. Reads two columns of the served object once (classification only - never to decide a walk)."""
+    absent. Classification only - never to decide a walk. DuckDB under PROFILE_MEMORY_LIMIT, spilling to a
+    private directory: memory no longer grows with the flow (AR-331 F6)."""
     lc = blob.local_copy(path)
     if lc is None:
         return None
     local, temp = lc
+    con = spill = None
     try:
-        t = pq.read_table(local, columns=["series_key", "obs_date"])
+        con, spill = _duck()
+        src = f"read_parquet('{_sq(local)}')"
+        rows, mx = con.execute(f"SELECT count(*), max(obs_date) FROM {src}").fetchone()
+        maxyear = 0
+        if mx is not None:
+            maxyear = con.execute(f"SELECT count(*) FROM {src} WHERE year(obs_date) = {int(mx.year)}").fetchone()[0]
+        vc = {str(p): int(n) for p, n in con.execute(f"SELECT {_SQL_PART} AS p, count(*) FROM {src} GROUP BY 1").fetchall()}
+        s_norm = con.execute(f"SELECT count(*) FROM (SELECT DISTINCT {_SQL_NORM} AS k, obs_date FROM {src})").fetchone()[0]
     finally:
+        if con is not None:
+            con.close()
+        if spill:
+            shutil.rmtree(spill, ignore_errors=True)
         if temp:
             try:
                 os.remove(local)
             except OSError:
                 pass
-    keys = t.column("series_key")
-    dims = pc.replace_substring_regex(keys, r"=[^:]*", "")              # "A:B:C" - the dimension names
-    vint = pc.coalesce(pc.struct_field(pc.extract_regex(keys, r"GEO=(?P<v>\d{4})-"), [0]),
-                       pa.scalar("", pa.string()))
-    part = pc.binary_join_element_wise(dims, vint, "|")
-    vc = {str(d["values"]): int(d["counts"]) for d in pc.value_counts(part).to_pylist()}
-    norm = pc.replace_substring_regex(keys, r"(^|:)FREQ=[^:]*", "")
-    norm = pc.replace_substring_regex(norm, r"^:", "")                  # FREQ sorts first: no leading ':'
-    norm = pc.replace_substring_regex(norm, r"GEO=\d{4}-", "GEO=")
-    s_norm = pa.table({"k": norm, "d": t.column("obs_date")}).group_by(["k", "d"]).aggregate([]).num_rows
-    mx = pc.max(t.column("obs_date")).as_py() if t.num_rows else None
-    maxyear = int(pc.sum(pc.equal(pc.year(t.column("obs_date")), mx.year)).as_py() or 0) if mx else 0
-    return {"rows": t.num_rows, "partitions": vc, "s_norm": s_norm,
-            "max_obs": mx.isoformat() if mx else None, "maxyear_rows": maxyear}
+    return {"rows": int(rows), "partitions": vc, "s_norm": int(s_norm),
+            "max_obs": mx.isoformat() if mx else None, "maxyear_rows": int(maxyear)}
 
 
 def _rule_hits(code, prof, force, fe=None) -> str | None:
-    """The BOOTSTRAP rule that sends a flow to needs_origin, or None.
+    """The rule that sends a flow to needs_origin at classification, or None.
 
-    It detects truncation by the OLD fetcher, so it does not apply to a flow this fetcher has already pulled
-    from origin (`last_full_utc`): that pull ended on isLast, and its residue (old-spelling rows INSEE no
-    longer serves, often exactly one page) would otherwise send it back to a full re-pull on every
-    re-classification, for ever (review F3). Operator force still applies."""
+    Operator force and "zero rows or no stored object" (C1(b)) apply to EVERY flow. The exact-multiple rules
+    detect truncation by the OLD fetcher, so they do not apply to a flow this fetcher has already pulled from
+    origin (`last_full_utc`): that pull ended on isLast, and its residue (old-spelling rows INSEE no longer
+    serves, often exactly one page) would otherwise send it back to a full re-pull on every re-classification
+    (review F3). AR-331 X3: the exemption sits BELOW the zero-row/absent rule."""
     if code in force:
         return "operator force_origin"
+    if prof is None or prof["rows"] == 0:
+        return "zero rows or no stored object"
     if (fe or {}).get("last_full_utc"):
         return None
     if code in CI_PAGE_MULTIPLE_DELTAS:
         return "a CI-logged delta was an exact multiple of 10,000"
-    if prof is None or prof["rows"] == 0:
-        return "zero rows or no stored object"
     if prof["rows"] % PAGE_SIZE == 0:
         return f"total {prof['rows']:,} is an exact multiple of {PAGE_SIZE:,}"
     hits = [f"{p} = {n:,}" for p, n in prof["partitions"].items() if n > 0 and n % PAGE_SIZE == 0]
     if hits:
         return "a key-spelling partition is an exact multiple of 10,000: " + "; ".join(hits[:3])
     return None
-
 
 def probe_page(s_norm: int) -> int:
     """R2-1: the page past what we hold, from the DISTINCT normalised count (old spellings and duplicates
@@ -418,19 +491,80 @@ class _Pass:
 
     def flow_failed(self, code, where, e):
         """F1: a per-flow fault stays per-flow. Counted; after MAX_FLOW_FAILURES the flow is BROKEN - loud
-        every pass and worked by nobody until a person looks - so it can never block the queue head."""
+        every pass and worked by nobody until the operator forces it (runbook). The counter resets on every
+        committed chunk (AR-331 F5), so only failures without progress between them add up. A flow that goes
+        BROKEN drops its attempt, state first and chunks second (AR-331 condition 5)."""
         fe = self.st.flow(code)
         n = int(fe.get("failures", 0)) + 1
         fe["failures"] = n
         msg = f"{code}: {where} failed ({n}/{MAX_FLOW_FAILURES}) - {type(e).__name__}: {str(e)[:120]}"
         self.labels.append(f"FLOW FAILURE {msg}")
         self._book_transient(msg)
-        if n >= MAX_FLOW_FAILURES:
-            fe.update(status=S.BROKEN, why=f"{where} failed {n} times: {type(e).__name__}: {str(e)[:120]}")
         try:
-            self.save()
+            if n >= MAX_FLOW_FAILURES:
+                fe.update(status=S.BROKEN, why=f"{where} failed {n} times: {type(e).__name__}: {str(e)[:120]}")
+                if not self._drop_attempt(code, "the flow is broken"):
+                    self.save()
+            else:
+                self.save()
         except S.StateConflict:
             pass
+
+    def _drop_attempt(self, code, why) -> bool:
+        """Abandon the flow's attempt: the state without it is saved FIRST, its chunks are deleted second (a
+        kill between the two leaves only chunks no state names, swept by the next _sweep). False when there
+        was no attempt."""
+        fe = self.st.flow(code)
+        at = fe.pop("attempt", None)
+        if not at:
+            return False
+        self.save()
+        if at.get("id"):
+            self._sweep(code, keep=None)
+            self.labels.append(f"{code}: attempt {at['id']} ({at.get('mode')}, {int(at.get('pages', 0))} pages "
+                               f"staged) dropped - {why}")
+        return True
+
+    # ---------------------------------------------------------------- 0. operator force (C9)
+    def apply_force(self, codes):
+        """_force_origin.json acts on a flow in ANY status (AR-331 X1, X2): one origin pull per listing. A
+        listing is used once, recorded per flow as `forced_key` = the file's `utc` field (or, without one, the
+        digest of the file); to force a flow again, change `utc`. A forced flow drops its attempt unless that
+        attempt already IS an origin pull, and leaves broken / unstable / withdrawn. An unclassified flow is
+        forced by classification (it still needs its profile) and records the key there."""
+        raw = self.force_raw or {}
+        listed = raw.get("flows") if isinstance(raw.get("flows"), list) else []
+        self.force_key = S.force_key(raw)
+        live = set(codes)
+        active, changed = set(), False
+        for code in sorted({str(c) for c in listed}):
+            if not S.FLOW_RE.fullmatch(code) or code not in live:
+                self.labels.append(f"{S.FORCE_FILE}: {code[:40]!r} is not a catalogued flow - ignored")
+                continue
+            fe = self.st.flow(code)
+            if fe.get("forced_key") == self.force_key:
+                continue                                              # this listing was used already
+            at = fe.get("attempt") or {}
+            status = fe.get("status")
+            if status in (S.IN_PROGRESS, S.MERGE_PENDING) and at.get("mode") == "origin":
+                fe["forced_key"] = self.force_key                     # already an origin pull
+                changed = True
+                continue
+            if at.get("id") and not self._lease_ok(code):
+                continue                                              # another writer's live attempt: later
+            active.add(code)
+            if status == S.UNCLASSIFIED:
+                continue
+            fe["forced_key"] = self.force_key
+            self._drop_attempt(code, "operator force_origin")
+            for k in ("failures", "probe"):
+                fe.pop(k, None)
+            fe.update(status=S.NEEDS_ORIGIN, why="operator force_origin", repair=True)
+            self.labels.append(f"{code}: operator force_origin (was {status}) - an origin pull is queued")
+            changed = True
+        self.force = active
+        if changed:
+            self.save()
 
     # ---------------------------------------------------------------- 1. identity
     def sweep_done(self):
@@ -453,7 +587,9 @@ class _Pass:
     def check_identity(self, codes):
         """C8 + R2-4b: one HEAD per flow. A mismatch whose footer row count still equals the recorded rows
         (an outside rewrite of the same rows, or T0 changing the identity KIND from etag to size/mtime_ns) is
-        RE-BASED, not re-classified (review F3); a real change re-classifies the flow."""
+        RE-BASED, not re-classified (review F3); a real change re-classifies the flow and DROPS any attempt it
+        carries (AR-331 X4: a parked tail must never finish a flow that classification sends to origin). A
+        served object that disappeared is loud."""
         rebased = 0
         for code in codes:
             fe = self.st.flow(code)
@@ -464,6 +600,9 @@ class _Pass:
             if cur is None:
                 if served.get("rows"):
                     fe["status"], fe["why"] = S.UNCLASSIFIED, "served object disappeared"
+                    self.labels.append(f"SERVED OBJECT MISSING: {code} ({int(served['rows']):,} rows recorded) "
+                                       f"- re-classified")
+                    self._drop_attempt(code, "the served object disappeared")
                 continue
             if S.same_identity(cur, served.get("identity")):
                 continue
@@ -475,6 +614,9 @@ class _Pass:
             else:
                 fe["status"], fe["why"] = S.UNCLASSIFIED, (f"served object changed outside this fetcher "
                                                           f"({served.get('rows')} -> {rows} rows)")
+                self.labels.append(f"{code}: served object changed outside this fetcher "
+                                   f"({served.get('rows')} -> {rows} rows) - re-classified")
+                self._drop_attempt(code, "the served object changed outside this fetcher")
         if rebased:
             print(f"[insee_melodi] {rebased} served identity(ies) re-based (rows unchanged)", flush=True)
 
@@ -496,14 +638,22 @@ class _Pass:
                     raise
                 self.flow_failed(code, "classification read", e)
                 continue
+            if fe.get("attempt"):
+                self._drop_attempt(code, "re-classified")                 # X4: no attempt outlives a verdict
             fe["served"] = {"identity": ident, "rows": (prof or {}).get("rows", 0),
                             "max_obs": (prof or {}).get("max_obs"),
                             "maxyear_rows": (prof or {}).get("maxyear_rows", 0)}
             if prof:
                 fe["partitions"], fe["s_norm"] = prof["partitions"], prof["s_norm"]
+            else:
+                fe.pop("partitions", None)                                # X3: never probe from a stale count
+                fe.pop("s_norm", None)
             why = _rule_hits(code, prof, self.force, fe)
             if why:
                 fe.update(status=S.NEEDS_ORIGIN, why=why, repair=True)
+                if code in self.force:
+                    fe["forced_key"] = getattr(self, "force_key", None)
+                    fe.pop("failures", None)
             else:
                 fe.update(status=S.LEGACY, why="no exact-multiple partition; probe pending")
                 fe.pop("probe", None)
@@ -776,6 +926,13 @@ class _Pass:
         try:
             if fe.get("status") == S.MERGE_PENDING:
                 return self._finalize(code)
+            if at.get("id") and at.get("mode") != "origin" and \
+                    S.NEEDS_ORIGIN in (fe.get("status"), at.get("prior_status")):
+                # AR-331 X4: a TAIL attempt never satisfies a needs_origin verdict. Dropped (not a restart:
+                # it does not count toward unstable paging), and an origin attempt starts in its place.
+                self._drop_attempt(code, "a tail attempt cannot satisfy needs_origin")
+                fe["status"] = S.NEEDS_ORIGIN
+                at = {}
             if not at.get("id"):
                 if modified is None:
                     modified = fe.pop("refresh_modified", None) if not in_walk else None
@@ -869,6 +1026,7 @@ class _Pass:
             added_pages += pend["pages"]
             pend.update(pages=0, rows=0, raw=0, dups=0)
             at["heartbeat_utc"] = S.utcnow()
+            fe.pop("failures", None)                    # AR-331 F5: committed progress resets the counter
             self.save()
 
         def bail(kind, why=None):
@@ -953,10 +1111,17 @@ class _Pass:
                     flush()
                     if in_walk:
                         # F4: PARKED, not in progress - the repair slot's flow stays the only one in progress;
-                        # this attempt (chunk and cursor kept) resumes when needs_refresh comes up
+                        # this attempt (chunk and cursor kept) resumes when needs_refresh comes up. A walk
+                        # tail started without a readable `modified` could never pass the resume check
+                        # (AR-331 F8): it is dropped instead, and the repair slot starts it afresh (reading
+                        # `modified` first).
                         fe["status"] = S.NEEDS_REFRESH
-                        self.save()
-                        self.labels.append(f"{code}: tail outgrew one chunk - parked as needs_refresh")
+                        if at.get("modified_at_start") is None:
+                            self._drop_attempt(code, "a walk tail with no known `modified` cannot be resumed")
+                            self.labels.append(f"{code}: tail outgrew one chunk - queued as needs_refresh")
+                        else:
+                            self.save()
+                            self.labels.append(f"{code}: tail outgrew one chunk - parked as needs_refresh")
                         return "queued"
                 time.sleep(PAGE_DELAY)
         finally:
@@ -1011,7 +1176,6 @@ class _Pass:
             self.labels.append(f"{code}: merge deferred - {int(self.clock.hard_end - self.clock.now())}s left "
                                f"is under the margin for {at.get('rows_staged', 0):,} rows")
             return "progress"
-        import duckdb                                                        # noqa: PLC0415
         t_fin = time.monotonic()
         sdir = S.staging_dir()
         staged = os.path.join(sdir, f"{code}.{at['id']}.staged.chunkpart")
@@ -1050,8 +1214,9 @@ class _Pass:
                 return "broken"
             stored = blob.local_copy(self.path(code))
             stored_local, stored_tmp = (stored if stored else (None, False))
+            con = fspill = None
             try:
-                con = duckdb.connect()
+                con, fspill = _duck()            # AR-331 F6: memory-limited, private spill
                 q = staged.replace("\\", "/").replace("'", "''")
                 if total:
                     dup = con.execute(f"SELECT count(*) - count(DISTINCT (series_key, obs_date)) FROM read_parquet('{q}')").fetchone()[0]
@@ -1119,6 +1284,10 @@ class _Pass:
                     if not fe.get("served"):
                         fe["served"] = {"identity": S.identity(self.path(code)), "rows": 0, "max_obs": None}
             finally:
+                if con is not None:
+                    con.close()
+                if fspill:
+                    shutil.rmtree(fspill, ignore_errors=True)
                 if stored_tmp and stored_local and os.path.exists(stored_local):
                     os.remove(stored_local)
         finally:
@@ -1128,7 +1297,9 @@ class _Pass:
                 os.remove(staged)
         mode = at.get("mode")
         # Only an ORIGIN pull (or a flow already complete) earns "complete per INSEE paging": a finished
-        # tail of a legacy flow proves its recent years, not its history.
+        # tail of a legacy flow proves its recent years, not its history. A tail whose attempt a needs_origin
+        # verdict started keeps that verdict (final = prior), so a needs_origin flow comes to rest only
+        # through an ORIGIN finalize (AR-331 X4; pinned by test_X4_layer_finalize_...).
         prior = at.get("prior_status")
         final = S.COMPLETE if (mode == "origin" or prior == S.COMPLETE) else (prior or S.LEGACY)
         fe.update(status=final, basis=mode, modified=at.get("modified_at_start"),
@@ -1217,15 +1388,35 @@ def update(unit, since, *, _session=None, _clock=None) -> Result:
     clock = _clock or S.Clock()
     print(f"[insee_melodi] pass clock: window {clock.window_s / 60:.1f} min from {clock.source}; "
           f"staging {S.staging_dir()}", flush=True)
-    state = S.FlowState.load()
-    force = S.read_force()
-    force_flows = set(force.get("flows") or []) if isinstance(force.get("flows"), list) else set()
-    pa_ = _Pass(sess, clock, state, force_flows)
+    try:
+        state = S.FlowState.load()
+    except DefinitiveError:
+        raise                                            # the intended refusal of an unknown state schema
+    except Exception as e:                               # noqa: BLE001 - AR-331 F7: a Result ALWAYS returns
+        if _fatal(e):
+            raise
+        return Result(status="transient_fail", obs=0,
+                      error=f"STATE NOT READ: {S.STATE_FILE} - {type(e).__name__}: {str(e)[:160]}; nothing done")
+    try:
+        force = S.read_force()
+    except Exception as e:                               # noqa: BLE001
+        if _fatal(e):
+            raise
+        force = {"_unreadable": True}
+    pa_ = _Pass(sess, clock, state, set())
     pa_.force_raw = force
     if force.get("_unreadable"):
         pa_.labels.append(f"{S.FORCE_FILE} unreadable - ignored this pass")
-    flows = _get_flows(sess, clock)
-    time.sleep(RATE)
+    try:
+        flows = _get_flows(sess, clock)
+        time.sleep(RATE)
+    except _Stop:
+        return _no_catalogue(pa_, f"the window ({clock.window_s / 60:.1f} min) leaves no room for the "
+                                  f"catalogue request")
+    except Exception as e:                               # noqa: BLE001 - AR-331 F7
+        if _fatal(e):
+            raise
+        return _no_catalogue(pa_, f"{type(e).__name__}: {str(e)[:160]}")
     all_codes = [f.get("code", "") or "" for f in flows]
     codes = sorted({c for c in all_codes if S.FLOW_RE.fullmatch(c)})
     dropped = sorted({c for c in all_codes if c and not S.FLOW_RE.fullmatch(c)})
@@ -1233,6 +1424,7 @@ def update(unit, since, *, _session=None, _clock=None) -> Result:
         pa_.labels.append(f"{len(dropped)} catalogue code(s) not of the [A-Z0-9_] form - not pulled: {', '.join(dropped[:5])}")
     try:
         pa_.sweep_done()
+        pa_.apply_force(codes)
         pa_.check_identity(codes)
         pa_.classify(codes)
         pa_.walk_slot(codes)
@@ -1247,6 +1439,12 @@ def update(unit, since, *, _session=None, _clock=None) -> Result:
         pa_.labels.append(f"PASS ERROR: {type(e).__name__}: {str(e)[:160]} - the pass stopped here")
     return _result(pa_, state, codes)
 
+
+def _no_catalogue(pa_, why) -> Result:
+    """The flow list could not be read: nothing was worked, and the pass says so (never ok or no_change)."""
+    labels = " | ".join(dict.fromkeys(pa_.labels))
+    return Result(status="transient_fail", obs=0,
+                  error=f"CATALOGUE NOT READ: {why} - nothing done this pass" + (f" | {labels}" if labels else ""))
 
 def _result(pa_, state, codes) -> Result:
     fl = state.flows

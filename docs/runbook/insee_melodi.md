@@ -77,41 +77,86 @@ clean_full/insee_melodi/<FLOW_CODE>.parquet with schema
   obs_date    : date32  (parsed from TIME_PERIOD: YYYY->Dec-31, YYYY-Qn->quarter-start,
                          YYYY-MM->month-start, YYYY-MM-DD->that day)
   value       : float64 (first non-null measure's .value)
+The dedup identity is (flow, series_key, obs_date).
 
-The dedup identity is (flow, series_key, obs_date): a TIME_PERIOD plus the full
-dimension tuple uniquely identifies one observation, so a re-fetched (revised) value
-overwrites the prior vintage (merge keeps the last row per key) instead of duplicating.
+WHY THIS FETCHER WAS REBUILT (2026-10-16, design reviewed as AR-330, ledger R1588/R1589).
+  * 46+ flows were served at EXACTLY one Melodi page (10,000 rows) - all 39 DS_RP_TD_* census tables
+    among them - because pagination could end early (a 4xx or an empty page treated as "no more data")
+    and nothing checked. INSEE publishes no total, so the store looked complete.
+  * Every pass since 2026-10-06 was killed at the 45-minute unit limit: _fetch_flow_obs held every page's
+    raw JSON in one list (~1.6 KB per observation, 16 GB runner) and a census flow's "tail"
+    (startPeriod = its only year) is the whole flow; Melodi also ignores startPeriod for RP flows.
 
-INCREMENTAL (date-tail per flow):
-  Each dataflow is a sub-unit. We read the existing parquet's max(obs_date), take its
-  YEAR, and request only that year forward via the SDMX 2.1 native filter
-      GET /data/{FLOW}?startPeriod=<year>&page=N
-  Re-fetching the boundary YEAR (not year+1) is deliberate: it catches in-place
-  revisions to the latest annual/quarterly/monthly/daily periods (merge dedups the
-  overlap) — the same revision-capture stance as the treasury/bcb fetchers. For a
-  daily flow this is at most one year of daily rows, still tiny next to the full
-  history. `updatedAfter` is NOT requested: Melodi's DSDs reject it (HTTP 400
-  "La DSD ne possède pas le composant updatedAfter"), so startPeriod is the only
-  supported server-side window — verified live 2026-06.
+HOW A PASS RUNS NOW (slots in precedence order, all inside the 35-minute soft stop - R2-7):
+  0. operator force: every flow listed in _force_origin.json (once per listing) is sent to needs_origin,
+     whatever its status (see STATUSES AND THE OPERATOR below).
+  1. identity: one HEAD per served file, compared with _flows.json; a changed object is re-classified and
+     any attempt it carries is dropped (a tail never finishes a flow sent to origin - AR-331 X4); a
+     missing served object is named in the note.
+  2. CLASSIFY (<= 5 min, charged with the probes, their two controls and the page-determinism control):
+     an unclassified flow is NEVER written by the walk (R2-2). needs_origin when ANY key-spelling
+     partition (dimension-name set + GEO vintage) or the total is an exact positive multiple of 10,000,
+     the flow is zero-row/absent, it is in CI_PAGE_MULTIPLE_DELTAS, or the operator forces it. Otherwise a
+     one-time page-beyond probe (page floor(S/10,000)+2 of an origin query, S = the DISTINCT normalised
+     (key without FREQ and GEO vintage, date) count - R2-1) decides: non-empty means INSEE serves more than
+     we hold. An empty probe is NOT proof of completeness.
+  3. WALK (until minute 15): the healthy flows, rotated; each is tailed only when INSEE's catalog
+     `modified` changed, the catalog read failed, or 30 days passed. Every tail is STAGED like a re-pull;
+     one that outgrows one chunk (100 pages) joins the repair queue.
+  4. REPAIR (until the soft stop): ONE flow at a time - an in-progress or merge-pending attempt first,
+     then needs_origin, then needs_refresh. Pages are parsed at once into Arrow, staged locally and
+     uploaded every 100 pages as _repull/<FLOW>/<attempt>/<n>.chunk; the cursor lives in _flows.json.
+  A flow is COMPLETE PER INSEE PAGING only when: paging.isLast is True (a full last page is confirmed by an
+  empty/400 page+1); there are no duplicates ACROSS pages (within-page duplicates are a parse collision,
+  labelled, never a restart - R2-5); the chunk footers sum to the staged rows. Then a measured merge:
+  rows new or changed against the stored file decide changed_keys (an idempotent tail derives nothing);
+  for an origin pull the stored rows INSEE no longer serves are counted as RESIDUE and KEPT (merge, never
+  replace - Q1). Only then is the served file published, then the state, then the chunks deleted.
 
-ENUMERATION / PARSE reused verbatim from jobs/ingest_insee_melodi.py:
-  - flow catalog: GET /dataflow/all  (list of {code,label})
-  - obs parse: dimensions{TIME_PERIOD,...} -> series_key + obs_date; first measure -> value
-  - parse_date: the same YYYY / YYYY-Qn / YYYY-MM / YYYY-MM-DD handling.
-Pagination is corrected vs the ingester: Melodi pages signal end via paging.isLast
-(and a SHORT page), NOT a "next" key, so we follow until isLast / a < PAGE_SIZE page.
+  While any repair work remains the pass returns `transient_fail` WITH changed_keys (the _giant / PR #151
+  precedent): due at the next run, and the merged flows' CSVs are derived this pass. Its note carries the
+  counters health and the digest show.
 
-HONEST-STATUS CONTRACT (Tally + finalize):
-  Per flow we record on a Tally:
-    added_unit(n)     rows merged for the flow (n>0 new, n==0 nothing newer than boundary)
-    empty_unit()      flow legitimately had no observations in the window
-    transient_unit()  flow hit a TransientError (timeout/5xx/429/network/bad-json) — record
-                      & KEEP GOING so one flaky flow can't strand the other ~107
-    structural_unit() flow returned a 200 with a real envelope but, on a FULL (origin)
-                      fetch of a previously-populated file, 0 parseable rows -> schema break
-  finalize() -> 'partial' on any transient (orchestrator does NOT stamp success; re-runs);
-  DefinitiveError on a structural break or a large all-empty window; else ok/no_change.
-  merge_and_write preserves existing data in every failure path (never shrink).
+STATE AND STAGING (all through blob - R2 before T0, the local store after): `_flows.json` (this fetcher's
+state; conditional writes - see _melodi_state.py), `_force_origin.json` (OPERATOR-owned, read only:
+{"flows": [...], "unblock_repair_after_utc": "<iso>"}), `_repull/<FLOW>/<attempt>/<nnnnn>.chunk`. Local
+staging lives beside the bounded-merge spill dir (ECONDL_DUCKDB_TMP), never D:.
+
+STATUSES AND THE OPERATOR (each flow's `status` in `_flows.json`; the note names the stuck ones every pass):
+  `unclassified`        not profiled yet (or its served object changed); never written by the walk.
+  `legacy`              no exact-multiple partition; probed once with the page-beyond probe; walked.
+  `needs_origin`        a full origin pull is queued (a bootstrap rule, a non-empty probe, or the operator).
+  `needs_refresh`       a due tail too large for the walk, queued for the repair slot (it may carry a
+                        parked attempt).
+  `in_progress`         the ONE flow being pulled; its attempt and cursor are in `attempt`.
+  `merge_pending`       every page staged, waiting for the merge (it needs its time margin).
+  `complete_per_paging` an origin pull ended on isLast with every check met; walked.
+  `empty_per_paging`    INSEE serves no observations for it; walked.
+  `withdrawn_suspect`   origin page 1 empty over stored rows: withdrawn by INSEE? Stored rows kept.
+  `unstable_paging`     3 restarts (pages changed under the attempt); its chunks are deleted.
+  `broken`              3 failures with no committed chunk between them, or a pull that parsed nothing;
+                        its chunks are deleted.
+  The last three are worked by nobody until the operator acts. THE OPERATOR'S FILE is `_force_origin.json`
+  (the fetcher never writes it): {"flows": ["DS_X", ...], "utc": "<iso>", "unblock_repair_after_utc": "<iso>"}.
+  - A listed flow, in ANY status, drops its attempt (unless that attempt is already an origin pull) and goes
+    to `needs_origin`: this is the exit from broken, unstable_paging and withdrawn_suspect. Each listing is
+    used ONCE per flow (recorded as `forced_key` = the file's `utc`, or its digest when it has none); to
+    force a flow again, write a new `utc`.
+  - `unblock_repair_after_utc` later than the REPAIR BLOCKED time lifts a failed page-determinism control.
+  - Never hand-edit `_flows.json`: it is compare-and-swap protected and a hand edit races a later pass.
+
+T0 STEP (before the R2 write key is revoked): let every in-progress attempt finish, or abandon it (list the
+flow in `_force_origin.json` is NOT enough - it starts a new attempt), and delete every `_repull/` chunk on
+R2 - after T0 they cannot be deleted. Broken and unstable flows hold none (they delete theirs); a parked
+`needs_refresh` attempt does. mirror_sync and upload_r2 carry only .parquet, so `_flows.json` and
+`_force_origin.json` must be copied to the local store explicitly.
+
+LIMITS, stated: completeness is "per INSEE paging" (no INSEE total exists); the served-parquet publish is not
+conditional (two writers of one flow: last writer wins - the attempt lease protects only the repair); the
+stored rows INSEE no longer serves are kept (residue, reported) until the owner decides otherwise. Memory:
+classification and finalize run DuckDB under PROFILE_MEMORY_LIMIT and spill to a private directory (AR-331
+F6: the earlier arrow profile peaked at 7.3 GB on DS_FLORES_A5 and 16.5 GB at 25.9M rows); the bounded
+merge has its own limit. Python 3.11 (CI) runs pyarrow and duckdb here for the first time on its first run.
 
 License: Licence Ouverte / Open Licence 2.0. Source: INSEE Melodi www.insee.fr
 ```
