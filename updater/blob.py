@@ -500,6 +500,20 @@ def _is_404(exc) -> bool:
     return code in ("404", "NoSuchKey", "NotFound") or status == 404
 
 
+def _is_precondition_failed(exc) -> bool:
+    """True when a botocore ClientError means 'the condition of a conditional PUT did not hold'.
+
+    R2 documents one answer for a failed If-Match / If-None-Match on PutObject: HTTP 412 with the S3
+    code PreconditionFailed (developers.cloudflare.com/r2/api/error-codes/, R2 code 10031, and
+    /r2/api/s3/extensions/ "Conditional operations in PutObject"). ConditionalRequestConflict (409) is
+    the code AWS S3 gives a conditional write that raced another one; R2 does not document it, and it
+    is treated the same way here because it means the same thing - the write did not happen."""
+    resp = getattr(exc, "response", None) or {}
+    code = str(resp.get("Error", {}).get("Code", ""))
+    status = resp.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    return code in ("412", "PreconditionFailed", "ConditionalRequestConflict") or status == 412
+
+
 # Uploads this process avoided because R2 already held the exact bytes. Read by callers that
 # report a total, so the saving is OBSERVED rather than predicted - the counter in
 # core/derive_csv.py existed for hours before anything printed it.
@@ -626,6 +640,43 @@ class R2Blob:
             _count_skip()
             return
         self.client.put_object(Bucket=self.bucket, Key=key, Body=data, **kw)
+
+    def put_if(self, key: str, data: bytes, *, if_match: str | None = None,
+               if_none_match: bool = False) -> str | None:
+        """ONE conditional PUT of the bytes as given: the write happens only if the condition holds AT THE
+        MOMENT R2 COMMITS IT (R2 evaluates If-Match / If-None-Match atomically with the write).
+
+        if_match=<etag>     replace the object only while its ETag is still <etag>;
+        if_none_match=True  create the object only if the key does not exist (If-None-Match: *).
+        Exactly one of the two must be given.
+
+        Returns the new object's ETag (quotes stripped; "" if the response carries none), or None when R2
+        refused the condition - nothing was written. Every other error raises.
+
+        Built for the state store's compare-and-swap (updater/run.py push_state, ledger R1197): a HEAD
+        compare followed by a plain PUT leaves the whole VACUUM + zstd time open to another writer, whose
+        save the plain PUT then overwrites. Same ContentType rule as put_atomic; no gzip and no
+        skip-identical, so a series CSV does not belong here."""
+        if (if_match is not None) == bool(if_none_match):
+            raise ValueError(f"{key}: put_if needs exactly one of if_match / if_none_match")
+        from botocore.exceptions import ClientError
+        kw = {}
+        ct = _CONTENT_TYPES.get(os.path.splitext(key)[1].lower())
+        if ct:
+            kw["ContentType"] = ct
+        if if_match is not None:
+            if not if_match.strip('"'):
+                raise ValueError(f"{key}: put_if with an empty if_match")
+            kw["IfMatch"] = '"' + if_match.strip('"') + '"'      # an HTTP entity tag is quoted
+        else:
+            kw["IfNoneMatch"] = "*"
+        try:
+            resp = self.client.put_object(Bucket=self.bucket, Key=key, Body=data, **kw)
+        except ClientError as e:
+            if _is_precondition_failed(e):
+                return None
+            raise
+        return ((resp or {}).get("ETag") or "").strip('"')
 
     def _already_holds(self, key: str, data: bytes, plain_digest: str | None = None) -> bool:
         """True only when R2 provably holds this same CSV. Does exactly ONE head_object.

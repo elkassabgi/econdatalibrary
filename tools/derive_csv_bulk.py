@@ -159,8 +159,9 @@ def _stream(con, paths, qualify=False):
 
 # The window a clear holds the state store: pull, clear, push. Measured on the desktop over six passes on
 # 2026-09-20..21 (logs/local_heavy_*.log): pull-state 1 min 36 s to 2 min 01 s, push-state 5 min 37 s to
-# 6 min 51 s - and push_state's CAS is a HEAD compare followed by an unconditional PUT after VACUUM INTO +
-# zstd, so the whole push is race window (R1102 rule 3). Asked for with a 3x margin.
+# 6 min 51 s. push_state's PUT is now conditional on the ETag it compared (R1197), so a writer that saves
+# inside the push is no longer overwritten - but the push is then refused and the clear lost, so the whole
+# envelope still has to be quiet (R1102 rule 3). Asked for with a 3x margin.
 CLEAR_WINDOW_MIN = 30
 LOCAL_MIN_HOURS = 20          # tools/run_local_heavy.ps1 `$MinHours` default; pinned by a test
 

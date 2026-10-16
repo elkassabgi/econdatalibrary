@@ -14,7 +14,10 @@ data/_aqueduct/state.db is R2 at ``_aqueduct/state.db.zst``. ``--pull-state``
 records the downloaded object's ETag in ``data/_aqueduct/.state_etag``;
 ``--push-state`` HEADs the remote object first and ABORTS with exit 2 if that
 ETag changed — another writer won, and a blind PUT would silently destroy its
-state. This compare-and-swap is the actual cross-writer guard: the ``leases``
+state. The upload itself is conditional on that same ETag (If-Match, or
+If-None-Match '*' for the first seed), so a writer that saves while this push
+is compressing is refused by R2 at the write, the same way (R1197). This
+compare-and-swap is the actual cross-writer guard: the ``leases``
 table lives INSIDE state.db, so two writers each holding their own downloaded
 copy can never arbitrate through it. The GitHub Actions concurrency group is
 the serializer; the CAS here is the backstop that turns a lost race into a
@@ -24,6 +27,7 @@ writes a dated backup under ``_aqueduct/backups/``.
 from __future__ import annotations
 import argparse
 import datetime
+import hashlib
 import os
 import sqlite3
 import sys
@@ -233,6 +237,30 @@ def pull_state() -> int:
 _SUBSTANTIAL_REMOTE = 200_000
 
 
+def _refuse_another_writer(remote: str | None, stored: str | None) -> int:
+    """The compare-and-swap refusal: nothing is written, the recorded ETag stays, exit 2.
+
+    One text for both places that refuse - the compare before the VACUUM and the conditional PUT after
+    it (R1197) - so the log and the daily mail read the same whichever of the two caught the race."""
+    print("[push-state] ABORT: compare-and-swap failed — another writer won.",
+          file=sys.stderr)
+    print(f"  remote ETag now : {remote or '<object absent>'}", file=sys.stderr)
+    print(f"  ETag we pulled  : {stored or '<never pulled>'}  ({ETAG_PATH})",
+          file=sys.stderr)
+    print("  The remote state.db changed since --pull-state (or was never pulled "
+          "on this machine). NOT overwriting — that would silently destroy the "
+          "other writer's state. Re-run the whole job starting from --pull-state.",
+          file=sys.stderr)
+    # THE REFUSAL ITSELF IS UNCHANGED. This only names it for the daily mail (updater/send_digest.py),
+    # which otherwise knows no more than "the push step failed". Named only in the plain case: this
+    # machine pulled an object, and a different object is there now, so another writer saved after
+    # the pull. A missing remote object, or a machine that never pulled, is refused the same way and
+    # is not named.
+    if stored and remote:
+        _step_output(REFUSED_OUTPUT, REFUSED_ANOTHER_WRITER)
+    return 2
+
+
 def push_state() -> int:
     """VACUUM INTO + zstd-compress state.db, compare-and-swap upload to R2.
 
@@ -249,28 +277,15 @@ def push_state() -> int:
     r2 = blobmod.R2Blob()
 
     # --- Compare-and-swap gate (plan §1.2): never blind last-writer-wins. ---
+    # This early compare only saves the VACUUM + zstd when the race is already lost. The SWAP itself is
+    # the conditional PUT further down (R1197): a writer that saves between here and that PUT is caught
+    # there, by R2, at the moment of the write.
     stored = _stored_etag()
     remote = r2.etag(STATE_KEY)
     if remote != stored:
         # Both-absent (no remote object, no recorded etag) is the ONE allowed
         # mismatch-free seed case and compares equal above. Everything else stops here.
-        print("[push-state] ABORT: compare-and-swap failed — another writer won.",
-              file=sys.stderr)
-        print(f"  remote ETag now : {remote or '<object absent>'}", file=sys.stderr)
-        print(f"  ETag we pulled  : {stored or '<never pulled>'}  ({ETAG_PATH})",
-              file=sys.stderr)
-        print("  The remote state.db changed since --pull-state (or was never pulled "
-              "on this machine). NOT overwriting — that would silently destroy the "
-              "other writer's state. Re-run the whole job starting from --pull-state.",
-              file=sys.stderr)
-        # THE REFUSAL ITSELF IS UNCHANGED. This only names it for the daily mail (updater/send_digest.py),
-        # which otherwise knows no more than "the push step failed". Named only in the plain case: this
-        # machine pulled an object, and a different object is there now, so another writer saved after
-        # the pull. A missing remote object, or a machine that never pulled, is refused the same way and
-        # is not named.
-        if stored and remote:
-            _step_output(REFUSED_OUTPUT, REFUSED_ANOTHER_WRITER)
-        return 2
+        return _refuse_another_writer(remote, stored)
     if remote is None:
         print(f"[push-state] seeding: r2://{r2.bucket}/{STATE_KEY} does not exist yet; "
               f"this push creates it.")
@@ -333,8 +348,45 @@ def push_state() -> int:
     comp = zstandard.ZstdCompressor(level=9).compress(raw)
     print(f"[push-state] {len(raw):,} B vacuumed -> {len(comp):,} B zstd")
 
-    r2.put_atomic(STATE_KEY, comp)
-    new_etag = r2.etag(STATE_KEY)
+    # THE SWAP (R1197). Conditional on the ETag compared above: If-Match it while an object existed,
+    # If-None-Match '*' for the seed. The compare above ran minutes ago (VACUUM INTO + zstd-9 take ~5 min
+    # on CI and ~7.5 min on the workstation); a plain PUT here silently overwrote any writer that saved in
+    # between. R2 evaluates the condition atomically with the write, so a lost race is refused here
+    # exactly like the compare above: nothing written, no backup, the recorded ETag left as it was.
+    #
+    # `ours` is the ETag R2 gives these exact bytes: the MD5 of the body, for a single-part PUT (the same
+    # fact r2_util.r2_holds_csv relies on). It tells OUR object from another writer's in the two places a
+    # HEAD has to be read after the PUT.
+    ours = hashlib.md5(comp).hexdigest()
+    if remote is None:
+        new_etag = r2.put_if(STATE_KEY, comp, if_none_match=True)
+    else:
+        new_etag = r2.put_if(STATE_KEY, comp, if_match=remote)
+    if new_etag is None:
+        try:
+            now = r2.etag(STATE_KEY)
+        except Exception as e:                                   # noqa: BLE001 - the refusal must stand
+            print(f"[push-state] (could not re-read the remote ETag: {type(e).__name__})", file=sys.stderr)
+            now = None
+        if now != ours:
+            print("[push-state] the conditional PUT was refused (412): the remote state changed while "
+                  "this push was compressing.", file=sys.stderr)
+            return _refuse_another_writer(now, stored)
+        # botocore re-sends a PUT after a read timeout or a reset connection, also when the first attempt
+        # had committed; the re-send then carries the old condition and R2 answers 412 over OUR object.
+        # The remote holds exactly these bytes, so this push succeeded - say so, and finish it.
+        print("[push-state] the conditional PUT answered 412, but the remote holds exactly the bytes this "
+              "push sent (an earlier attempt of the same PUT landed): pushed.", file=sys.stderr)
+        new_etag = now
+    if not new_etag:  # a PUT response without an ETag: fall back to asking, as before
+        new_etag = r2.etag(STATE_KEY)
+        if new_etag is not None and new_etag != ours:
+            # Someone saved between our PUT and this HEAD; recording THEIR ETag as ours would let the
+            # next push in this job pass the compare and overwrite them.
+            print(f"[push-state] ERROR: the PUT response had no ETag and the remote now holds another "
+                  f"object (etag {new_etag}, ours {ours}); not recording it. Re-run from --pull-state.",
+                  file=sys.stderr)
+            return 1
     if new_etag is None:  # cannot happen after a successful PUT; stay loud anyway
         print("[push-state] ERROR: uploaded object has no ETag on re-HEAD.",
               file=sys.stderr)

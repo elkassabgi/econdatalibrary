@@ -245,7 +245,8 @@ class FakeS3:
 
     def put_object(self, Bucket, Key, Body, **kw):
         self.objs[Key] = bytes(Body)
-        return {}
+        # R2 answers a PUT with the new object's ETag; push_state records that one (R1197).
+        return {"ETag": '"' + hashlib.md5(self.objs[Key]).hexdigest() + '"'}
 
     def get_object(self, Bucket, Key):
         if Key not in self.objs:
