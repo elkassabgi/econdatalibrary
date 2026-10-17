@@ -13,7 +13,7 @@ Rules:
     most 500, until complete|operator); a list the worker would reject is never written;
   - `withhold` / `release` replace the object only while its ETag is the one read (If-Match); a change in between
     refuses (exit 4) and nothing is written;
-  - `withhold` warns for an id the LOCAL catalogue (data/catalog.db, read-only) does not hold: such an id is
+  - `withhold` warns for an id the LOCAL catalogue (core.catalog_path, read-only) does not hold: such an id is
     hidden from nothing today, and only guards a later catalogue sync;
   - the object is never deleted: `release` of every id leaves `"ids": {}`, which the worker reads as "withhold
     nothing" (an absent or unreadable object means the compiled-in floor);
@@ -26,7 +26,6 @@ import datetime as dt
 import hashlib
 import json
 import os
-import sqlite3
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -43,10 +42,12 @@ def encode(obj: dict) -> bytes:
 
 
 def catalogued(ids: list[str]) -> set[str]:
-    path = os.path.join(ROOT, "data", "catalog.db")
-    if not os.path.exists(path):
+    """The ids the LOCAL catalogue holds (read-only, through core.catalog_path - after T0 the build itself)."""
+    from core import catalog_path                                         # noqa: PLC0415
+    try:
+        con = catalog_path.connect(write=False)
+    except FileNotFoundError:
         return set(ids)                     # no local catalogue to check against: say nothing
-    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
         q = ",".join("?" * len(ids))
         return {r[0] for r in con.execute(f"SELECT series_id FROM series WHERE series_id IN ({q})", ids)}
