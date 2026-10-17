@@ -130,9 +130,20 @@ class FakeStore(R.WriteStore):
         self.puts.append(key)
         return R.md5(data)
 
+    def put_new(self, key, data, meta=None):
+        if key in self.objs:
+            return None
+        self.objs[key] = (data, meta or {})
+        self.puts.append(key)
+        return R.md5(data)
+
+
+def csv_plain(n):
+    return ("h\n" + "x\n" * n).encode()
+
 
 def csv_body(n):
-    return gzip.compress(("h\n" + "x\n" * n).encode(), mtime=0)
+    return gzip.compress(csv_plain(n), mtime=0)
 
 
 @pytest.fixture
@@ -150,8 +161,10 @@ def world(tmp_path, monkeypatch):
     mirror.mkdir()
     pq.write_table(tbl(OLD, flow), str(mirror / f"{flow}.parquet"))
     monkeypatch.setattr(R, "_registry_live", lambda repo: False)
-    monkeypatch.setattr(R, "planned_csv", lambda repo, root, f: {
-        "data_lines": pq.read_metadata(os.path.join(root, "insee_melodi", f"{f}.parquet")).num_rows, "md5": "m"})
+    def fake_planned(repo, root, f):
+        n = pq.read_metadata(os.path.join(root, "insee_melodi", f"{f}.parquet")).num_rows
+        return {"data_lines": n, "md5": R.md5(csv_plain(n))}
+    monkeypatch.setattr(R, "planned_csv", fake_planned)
 
     def derive(repo, root, ids, *, dry):
         if dry:
@@ -229,6 +242,7 @@ def test_apply_refuses_an_object_that_is_neither_before_nor_after(world):
 
 
 def test_apply_refuses_unless_the_source_is_paused(tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "_check_work", lambda w: None)              # R2-5: wherever pytest's temp is
     monkeypatch.setattr(R, "_registry_live", lambda repo: True)
     monkeypatch.setattr(R, "_r2", lambda write: pytest.fail("no client may be built"))
     import core.cutover as cut
@@ -237,7 +251,63 @@ def test_apply_refuses_unless_the_source_is_paused(tmp_path, monkeypatch):
         R.main(["apply", "--work", str(tmp_path / "w"), "--catalog-repo", str(tmp_path)])
 
 
-def test_the_tool_refuses_flows_outside_the_eight(tmp_path):
+def test_apply_refuses_a_foreign_state_writer_before_the_parquet_step(world):
+    _plan(world)
+    f = world["flow"]
+    raw = json.loads(world["st"].objs[R.STATE_KEY][0])
+    raw["writer"] = "gh:40000000000"                                    # someone un-paused the source
+    world["st"].set(R.STATE_KEY, json.dumps(raw).encode())
+    with pytest.raises(R.Refused, match="last written by 'gh:40000000000' - nothing written"):
+        R.apply(world["st"], world["work"], "repo", [f], derive=world["derive"])
+    assert world["st"].objs[R.pkey(f)][0] == world["served"] and world["st"].puts == []
+
+
+def test_apply_refuses_a_csv_whose_content_is_not_the_planned_one(world):
+    _plan(world)
+    f = world["flow"]
+
+    def wrong_values(repo, root, ids, *, dry):
+        n = pq.read_metadata(os.path.join(root, "insee_melodi", f"{f}.parquet")).num_rows
+        world["st"].objs[R.csv_key(f)] = (gzip.compress(("h\n" + "y\n" * n).encode(), mtime=0), {})
+        return "ok"
+    with pytest.raises(R.Refused, match="content md5"):
+        R.apply(world["st"], world["work"], "repo", [f], derive=wrong_values)
+
+
+def test_rollback_recreates_a_missing_csv_and_names_an_unexpected_one(world, capsys):
+    _plan(world)
+    f = world["flow"]
+    R.apply(world["st"], world["work"], "repo", [f], derive=world["derive"])
+    world["st"].set(R.csv_key(f), b"a third writer's csv")
+    R.rollback(world["st"], world["work"], [f])
+    assert "neither the repair's nor the original" in capsys.readouterr().out
+    del world["st"].objs[R.csv_key(f)]
+    world["st"].set(R.pkey(f), world["served"])
+    R.rollback(world["st"], world["work"], [f])                         # the CSV object is missing now
+    assert world["st"].objs[R.csv_key(f)][1].get("Metadata") == {"csvmd5": "a"}
+
+
+def test_check_main_refuses_a_checkout_behind_origin_and_a_live_registry(monkeypatch):
+    import subprocess as sp
+    reg = {"live": "sources:\n- source_id: insee_melodi\n  live: false\n"}
+
+    def fake_run(cmd, **kw):
+        out = {"ls-remote": "abc123\trefs/heads/main\n", "rev-parse": reg.get("head", "abc123") + "\n",
+               "show": reg["live"]}[next(c for c in ("ls-remote", "rev-parse", "show") if c in cmd)]
+        return sp.CompletedProcess(cmd, 0, stdout=out, stderr="")
+    monkeypatch.setattr(R.subprocess, "run", fake_run)
+    assert R._check_main("repo") == "abc123"
+    reg["head"] = "def456"
+    with pytest.raises(R.Refused, match="is not origin/main"):
+        R._check_main("repo")
+    reg.pop("head")
+    reg["live"] = "sources:\n- source_id: insee_melodi\n  live: true\n"
+    with pytest.raises(R.Refused, match="live: true"):
+        R._check_main("repo")
+
+
+def test_the_tool_refuses_flows_outside_the_eight(tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "_check_work", lambda w: None)
     with pytest.raises(R.Refused, match="DS_ANTIPOL is untouched"):
         R.main(["plan", "--work", str(tmp_path), "--mirror", str(tmp_path), "--catalog-repo", str(tmp_path),
                 "--flows", "DS_ANTIPOL"])

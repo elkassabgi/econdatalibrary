@@ -255,6 +255,49 @@ class WriteStore(ReadOnlyStore):
             raise
         return (r.get("ETag") or "").strip('"')
 
+    def put_new(self, key, data, meta=None):
+        """Create the object only if it does not exist (If-None-Match: *). The new ETag, or None if it exists."""
+        from botocore.exceptions import ClientError
+        kw = {"IfNoneMatch": "*"}
+        for k in ("ContentType", "ContentEncoding"):
+            if meta and meta.get(k):
+                kw[k] = meta[k]
+        if meta and meta.get("Metadata"):
+            kw["Metadata"] = meta["Metadata"]
+        try:
+            r = self._c.put_object(Bucket=BUCKET, Key=key, Body=data, **kw)
+        except ClientError as e:
+            if (e.response or {}).get("ResponseMetadata", {}).get("HTTPStatusCode") == 412:
+                return None
+            raise
+        return (r.get("ETag") or "").strip('"')
+
+
+def _check_main(catalog_repo) -> str:
+    """AR-333 R2-4: the registry GitHub's scheduled run reads is origin/main's. The catalogue checkout's HEAD must
+    BE origin/main (read with `git ls-remote`, which writes nothing; no fetch), and that commit's registry must
+    hold insee_melodi live: false. Returns the commit."""
+    import yaml
+    remote = subprocess.run(["git", "-C", catalog_repo, "ls-remote", "origin", "refs/heads/main"],
+                            capture_output=True, text=True, check=True).stdout.split()[0]
+    head = subprocess.run(["git", "-C", catalog_repo, "rev-parse", "HEAD"], capture_output=True, text=True,
+                          check=True).stdout.strip()
+    if head != remote:
+        raise Refused(f"{catalog_repo} HEAD {head[:12]} is not origin/main {remote[:12]} - pull it first")
+    reg = subprocess.run(["git", "-C", catalog_repo, "show", f"{remote}:updater/registry.yaml"], capture_output=True,
+                         text=True, check=True, encoding="utf-8").stdout
+    data = yaml.safe_load(reg)
+    entries = data.get("sources", data) if isinstance(data, dict) else data
+    if next(x for x in entries if x.get("source_id") == "insee_melodi").get("live"):
+        raise Refused(f"origin/main {remote[:12]} has insee_melodi live: true - pause it before writing")
+    print(f"origin/main {remote[:12]} == {catalog_repo} HEAD, and its registry has insee_melodi live: false", flush=True)
+    return remote
+
+
+def _check_work(work: str) -> None:
+    if os.path.splitdrive(work)[0].upper() == "D:" or work.startswith(ROOT):
+        raise Refused(f"--work {work} must not be on D: or inside the checkout")
+
 
 def _r2(write: bool):
     from core import r2_util
@@ -427,6 +470,16 @@ def apply(store, work, catalog_repo, flows, *, derive=run_derive, hook=_hook) ->
                 raise Refused(f"{flow}: the rollback copy is not the object the plan read")
         if md5(new_bytes) != rep["planned_md5"]:
             raise Refused(f"{flow}: the plan file changed since the plan")
+        # AR-333 R2-2: read the state BEFORE the parquet step - a foreign writer (an un-paused source) or an
+        # entry that names neither the plan's before nor its after object stops the flow with nothing written
+        raw0, _, _ = store.get(STATE_KEY)
+        st0 = json.loads(raw0)
+        if st0.get("writer") not in (RUN_WRITER, TOOL_WRITER):
+            raise Refused(f"{flow}: _flows.json was last written by {st0.get('writer')!r} - nothing written")
+        cur0 = (((st0["flows"].get(flow) or {}).get("served") or {}).get("identity") or {}).get("etag")
+        if cur0 not in (rep["r2_etag_before"], rep["planned_md5"]):
+            raise Refused(f"{flow}: _flows.json records served ETag {cur0}, neither the plan's before nor its "
+                          f"after - nothing written")
         steps = []
         # 1. parquet
         e = store.etag(pkey(flow))
@@ -470,9 +523,13 @@ def apply(store, work, catalog_repo, flows, *, derive=run_derive, hook=_hook) ->
         prow = pq.read_metadata(pa_buffer(pbody)).num_rows
         cbody, cetag, _ = store.get(csv_key(flow))
         clines = csv_lines(cbody)
+        cplain = gzip.decompress(cbody) if cbody[:2] == b"\x1f\x8b" else cbody
         if petag != rep["planned_md5"] or prow != rep["rows_after"] or clines != rep["rows_after"]:
             raise Refused(f"{flow}: read-back differs - parquet {petag}/{prow:,} rows, CSV {clines:,} lines, "
                           f"plan {rep['planned_md5']}/{rep['rows_after']:,}")
+        if md5(cplain) != rep["planned_csv"]["md5"]:                     # AR-333 R2-1: the values, not only the count
+            raise Refused(f"{flow}: the served CSV's content md5 {md5(cplain)} is not the planned "
+                          f"{rep['planned_csv']['md5']} - stop and look")
 
         def clear_owed(st, flow=flow):
             fe = st["flows"].get(flow) or {}
@@ -515,7 +572,14 @@ def rollback(store, work, flows) -> None:
         with open(os.path.join(work, "rollback", "csv", f"{flow}.meta.json"), encoding="utf-8") as fh:
             cmeta = json.load(fh)
         ce = store.etag(csv_key(flow))
-        if ce != cmeta["etag"]:
+        known = {cmeta["etag"], ((report.get("receipts") or {}).get(flow) or {}).get("csv_etag")}
+        if ce not in known:                                              # AR-333 R2-3(b): an unexpected writer is seen
+            print(f"{flow}: NOTE the served CSV's ETag {ce} is neither the repair's nor the original - it is "
+                  f"replaced by the original anyway", flush=True)
+        if ce is None:                                                   # R2-3(a): the object is missing
+            if store.put_new(csv_key(flow), cold, cmeta) is None:
+                raise Refused(f"{flow}: the CSV appeared during the rollback")
+        elif ce != cmeta["etag"]:
             if store.put_if(csv_key(flow), cold, ce, cmeta) is None:
                 raise Refused(f"{flow}: the CSV changed during the rollback")
         print(f"{flow}: ROLLED BACK (parquet, state entry, CSV)", flush=True)
@@ -531,8 +595,7 @@ def main(argv=None) -> int:
     ap.add_argument("--r2-env", help="a .env to take the R2 keys from (into this process only, never printed)")
     a = ap.parse_args(argv)
     work = os.path.abspath(a.work)
-    if os.path.splitdrive(work)[0].upper() == "D:" or work.startswith(ROOT):
-        raise Refused(f"--work {work} must not be on D: or inside the checkout")
+    _check_work(work)
     for f in a.flows:
         if f not in ALL:
             raise Refused(f"{f} is not one of the 8 flows this repair covers (DS_ANTIPOL is untouched)")
@@ -554,6 +617,7 @@ def main(argv=None) -> int:
     cutover.refuse_if_cut_over(f"the insee_melodi spelling repair ({a.phase} writes the cloud copy)")
     if _registry_live(a.catalog_repo):
         raise Refused("insee_melodi is live in the registry: pause it (live: false) before writing")
+    _check_main(a.catalog_repo)
     if a.phase == "apply":
         apply(_r2(write=True), work, a.catalog_repo, a.flows)
     else:
