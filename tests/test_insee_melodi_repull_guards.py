@@ -459,11 +459,36 @@ def test_the_merge_margin_counts_the_split_over_staged_and_stored_rows():
 
 
 def test_a_finalize_deferred_by_the_margin_names_staged_and_stored_rows(env, monkeypatch):
+    """The ORDINARY deferral (AR-334 R3-1 left it unchanged): a margin this pass could give from the slot's
+    start, but not from now. (A margin above the whole window is BLOCKED instead - test_R3_1_* in
+    test_insee_melodi_supersede.py.)"""
     flows = _control_flows()
     fake = FakeMelodi(env.clock, flows)
     _seed_store(env, fake)
-    monkeypatch.setattr(S, "SPLIT_S_PER_ROW", 10.0 ** 6)              # no finalize fits
+    clocks = []
+    real_clock = S.Clock
+
+    class Rec(real_clock):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            clocks.append(self)
+    monkeypatch.setattr(S, "Clock", Rec)
+    real = S.merge_margin_s
+
+    def margin(rows, stored_rows=0):
+        if rows == 3 and stored_rows == 3:              # DS_COEFF_EURO_FRANC: exactly what a slot from minute 15 has
+            return clocks[-1].hard_end - clocks[-1].at(M.WALK_UNTIL_MIN)
+        return real(rows, stored_rows)
+    monkeypatch.setattr(S, "merge_margin_s", margin)
+    real_fin = M._Pass._finalize
+
+    def late(self, code):
+        if code == "DS_COEFF_EURO_FRANC":               # ... but this finalize starts a minute after it
+            env.clock.t = max(env.clock.t, self.clock.at(M.WALK_UNTIL_MIN + 1))
+        return real_fin(self, code)
+    monkeypatch.setattr(M._Pass, "_finalize", late)
     r = env.run(fake)
     assert re.search(r"DS_COEFF_EURO_FRANC: merge deferred - .* margin for 3 staged \+ 3 stored rows \(split, "
                      r"diagnosis and merge\); the next repair slot starts with it", r.error)
     assert env.state()["flows"]["DS_COEFF_EURO_FRANC"]["status"] == S.MERGE_PENDING   # kept, merged by a later slot
+    assert "NEEDS THE OWNER" not in r.error

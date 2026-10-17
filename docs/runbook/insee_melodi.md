@@ -137,7 +137,8 @@ HOW A PASS RUNS NOW (slots in precedence order, all inside the 35-minute soft st
   EXITS from a hold: the owner supersedes the served file (the identity check sees the object change,
   releases the hold and the next finalize re-measures the staged pull), or lists the flow under
   "release_holds" in _force_origin.json (same forms as "flows"; once per entry) to merge it as it is, both
-  spellings kept. A force does not release a hold (it says so): a re-pull returns the same spelling.
+  spellings kept, or lists it under "supersede" (F1b, below) to replace the old spelling by a fresh origin
+  pull. A force does not release a hold (it says so): a re-pull returns the same spelling.
 
   While any repair work remains the pass returns `transient_fail` WITH changed_keys (the _giant / PR #151
   precedent): due at the next run, and the merged flows' CSVs are derived this pass. Its note carries the
@@ -194,7 +195,39 @@ STATUSES AND THE OPERATOR (each flow's `status` in `_flows.json`; the note names
     a file holding only unblock_repair_after_utc.
   - "release_holds" (the same two forms as "flows", e.g. {"release_holds": ["DS_X"]}) merges a flow whose merge
     is HELD for a respelling as it is, keeping both spellings - the owner's "keep both". Once per entry.
+  - "supersede" (F1b, AR-335; the same two forms, e.g. {"supersede": ["DD_CNA_REBS"]}) - the owner's
+    "replace the old spelling": the flow gets ONE origin pull (a kept origin attempt, held or not, is reused;
+    any other attempt is dropped, state first and chunks second) and its finalize SUPERSEDES the stored
+    spelling instead of holding it. Once per entry (`supersede_key`); the counts are kept as `superseded`.
+    Taking the flow off the list CANCELS a pending supersede: the normal rules, the F1 hold among them, apply
+    again. A flow listed under "flows" or "release_holds" too is superseded, and the other entry is not used
+    (said in the note). THE RULE (the repair tool's, tools/repair_insee_spelling.py, kept here - D1):
+    (a) the union of the staged keys' dimension names is the stored union plus exactly ONE dimension, on the
+    staged side only (a key with no dimension adds nothing - G1); (b) it takes ONE value; (c) only that
+    DIM=value component is removed to pair a staged row with a stored one - never a GEO vintage, never FREQ;
+    (d) one-to-one, COUNTED per row in both directions and per key. Published = every staged row (the new
+    value wins, counted as `revised`) + every stored row with no counterpart (RESIDUE, kept). REFUSED - loud,
+    merge_pending, every chunk kept, still listed, nothing written - when (a)-(d) fail ("nothing to
+    supersede (no single constant added dimension)", e.g. a GEO re-vintage), when more than 20% of the
+    counterparts carry a different value, when the published table would be smaller than the stored object
+    read for this finalize, or above SUPERSEDE_MAX_ROWS (15M). Before it supersedes, the finalize re-reads the
+    catalog `modified`: MOVED -> the staged pull is dropped and re-pulled; UNREADABLE -> deferred, pull kept.
+    The published table is written by DuckDB (memory bounded, sorted with spill) into a streamed parquet and
+    published with blob.commit_local_file; its plan is saved in the attempt before the publish, so a kill
+    between publish and state write keeps the first plan's counts and owes the CSV.
+  - "only": "supersede" - a pass that works the listed supersede flows and NOTHING else (no sweep, identity
+    check, classification, probe or walk for any other flow; "flows" and "release_holds" wait for a full
+    pass; an unlisted in-progress flow does not block them). It is honoured only while a listed flow still
+    has a supersede pending - a REFUSED or BLOCKED one does not count, it waits for the owner - and ignored,
+    said in the note, otherwise. Such a pass is never ok / no_change.
+    While insee_melodi is `live: false` the scheduled run skips it: the passes run only by a manual
+    `updater-daily` dispatch with source=insee_melodi and force=true.
   - Never hand-edit `_flows.json`: it is compare-and-swap protected and a hand edit races a later pass.
+  BLOCKED (AR-334 R3-1): a finalize whose margin is more than this pass's repair slot can give from its
+  earliest start (minute 15, or earlier in an "only" pass) is not deferred for ever at the head of the queue:
+  it is labelled "NEEDS THE OWNER - ... more than this pass can give", recorded as `finalize_blocked`, its
+  staged pages kept, and the slot moves on. It counts like a held flow (not due for ever, never cuts the
+  walk). It is re-judged every pass, so a wider window clears it.
 
 T0 STEP (before the R2 write key is revoked): let every in-progress attempt finish, or abandon it (list the
 flow in `_force_origin.json` is NOT enough - it starts a new attempt), and delete every `_repull/` chunk on

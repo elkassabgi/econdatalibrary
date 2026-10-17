@@ -137,7 +137,9 @@ def test_V10_the_merge_waits_for_its_margin(env, monkeypatch):
     monkeypatch.setattr(M.merge, "merge_and_write_bounded", lambda *a, **k: merged.append(a) or real(*a, **k))
     r = env.run(fake)
     assert merged == []                                                 # no merge starts without its margin
-    assert "merge deferred" in r.error
+    # AR-334 R3-1: a margin above the whole window is BLOCKED (loud, the slot moves on), not deferred - the
+    # ordinary deferral is pinned by test_a_finalize_deferred_by_the_margin_names_staged_and_stored_rows
+    assert "more than this pass can give" in r.error
     assert any(fe.get("status") == S.MERGE_PENDING for fe in env.state()["flows"].values())
 
 

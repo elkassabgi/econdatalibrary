@@ -68,7 +68,8 @@ HOW A PASS RUNS NOW (slots in precedence order, all inside the 35-minute soft st
   EXITS from a hold: the owner supersedes the served file (the identity check sees the object change,
   releases the hold and the next finalize re-measures the staged pull), or lists the flow under
   "release_holds" in _force_origin.json (same forms as "flows"; once per entry) to merge it as it is, both
-  spellings kept. A force does not release a hold (it says so): a re-pull returns the same spelling.
+  spellings kept, or lists it under "supersede" (F1b, below) to replace the old spelling by a fresh origin
+  pull. A force does not release a hold (it says so): a re-pull returns the same spelling.
 
   While any repair work remains the pass returns `transient_fail` WITH changed_keys (the _giant / PR #151
   precedent): due at the next run, and the merged flows' CSVs are derived this pass. Its note carries the
@@ -125,7 +126,39 @@ STATUSES AND THE OPERATOR (each flow's `status` in `_flows.json`; the note names
     a file holding only unblock_repair_after_utc.
   - "release_holds" (the same two forms as "flows", e.g. {"release_holds": ["DS_X"]}) merges a flow whose merge
     is HELD for a respelling as it is, keeping both spellings - the owner's "keep both". Once per entry.
+  - "supersede" (F1b, AR-335; the same two forms, e.g. {"supersede": ["DD_CNA_REBS"]}) - the owner's
+    "replace the old spelling": the flow gets ONE origin pull (a kept origin attempt, held or not, is reused;
+    any other attempt is dropped, state first and chunks second) and its finalize SUPERSEDES the stored
+    spelling instead of holding it. Once per entry (`supersede_key`); the counts are kept as `superseded`.
+    Taking the flow off the list CANCELS a pending supersede: the normal rules, the F1 hold among them, apply
+    again. A flow listed under "flows" or "release_holds" too is superseded, and the other entry is not used
+    (said in the note). THE RULE (the repair tool's, tools/repair_insee_spelling.py, kept here - D1):
+    (a) the union of the staged keys' dimension names is the stored union plus exactly ONE dimension, on the
+    staged side only (a key with no dimension adds nothing - G1); (b) it takes ONE value; (c) only that
+    DIM=value component is removed to pair a staged row with a stored one - never a GEO vintage, never FREQ;
+    (d) one-to-one, COUNTED per row in both directions and per key. Published = every staged row (the new
+    value wins, counted as `revised`) + every stored row with no counterpart (RESIDUE, kept). REFUSED - loud,
+    merge_pending, every chunk kept, still listed, nothing written - when (a)-(d) fail ("nothing to
+    supersede (no single constant added dimension)", e.g. a GEO re-vintage), when more than 20% of the
+    counterparts carry a different value, when the published table would be smaller than the stored object
+    read for this finalize, or above SUPERSEDE_MAX_ROWS (15M). Before it supersedes, the finalize re-reads the
+    catalog `modified`: MOVED -> the staged pull is dropped and re-pulled; UNREADABLE -> deferred, pull kept.
+    The published table is written by DuckDB (memory bounded, sorted with spill) into a streamed parquet and
+    published with blob.commit_local_file; its plan is saved in the attempt before the publish, so a kill
+    between publish and state write keeps the first plan's counts and owes the CSV.
+  - "only": "supersede" - a pass that works the listed supersede flows and NOTHING else (no sweep, identity
+    check, classification, probe or walk for any other flow; "flows" and "release_holds" wait for a full
+    pass; an unlisted in-progress flow does not block them). It is honoured only while a listed flow still
+    has a supersede pending - a REFUSED or BLOCKED one does not count, it waits for the owner - and ignored,
+    said in the note, otherwise. Such a pass is never ok / no_change.
+    While insee_melodi is `live: false` the scheduled run skips it: the passes run only by a manual
+    `updater-daily` dispatch with source=insee_melodi and force=true.
   - Never hand-edit `_flows.json`: it is compare-and-swap protected and a hand edit races a later pass.
+  BLOCKED (AR-334 R3-1): a finalize whose margin is more than this pass's repair slot can give from its
+  earliest start (minute 15, or earlier in an "only" pass) is not deferred for ever at the head of the queue:
+  it is labelled "NEEDS THE OWNER - ... more than this pass can give", recorded as `finalize_blocked`, its
+  staged pages kept, and the slot moves on. It counts like a held flow (not due for ever, never cuts the
+  walk). It is re-judged every pass, so a wider window clears it.
 
 T0 STEP (before the R2 write key is revoked): let every in-progress attempt finish, or abandon it (list the
 flow in `_force_origin.json` is NOT enough - it starts a new attempt), and delete every `_repull/` chunk on
@@ -631,6 +664,103 @@ def _drift_diagnosis(con, staged_q, stored_q, split=None) -> str:
     return "; ".join(out)
 
 
+SUPERSEDE_MAX_ROWS = 15_000_000   # F1b sanity bound on published rows (the write streams; DS_FLORES_A5 is 9.53M)
+SUPERSEDE_MAX_REVISED = 0.20      # AR-335 D2: more revised counterparts than this means the pairing is wrong
+SUPERSEDE_BATCH_ROWS = 1 << 18    # rows per Arrow batch on the supersede's streamed write (D8)
+
+
+def _plan_supersede(con, staged_q, stored_q) -> dict:
+    """F1b: the operator-authorised SUPERSEDE of a stored spelling by a complete origin pull - the repair tool's
+    rule (tools/repair_insee_spelling.py, PR #163), kept here so the fetcher does not depend on it (AR-335 D1):
+      (a) the UNION of the staged keys' dimension names = the union of the stored keys' + exactly ONE (staged
+          side only); a key with no dimension at all adds nothing to either union (AR-335 G1);
+      (b) that dimension has ONE value across the staged keys that carry any dimension;
+      (c) the only normalisation is removing that one DIM=value component (no GEO vintage, no FREQ);
+      (d) one-to-one per row, COUNTED, never assumed (G3): each staged (stripped key, date) is unique, and
+          each stored (key, date) is unique - so a staged row pairs with at most one stored row and back.
+    published = every staged row + every stored row with no counterpart (RESIDUE - series INSEE no longer serves
+    in any spelling, not re-crawlable, never dropped). The new value wins (D2). Leaves the published rows in the
+    temp view `_sup_pub` for the COPY. Returns the counts, with `refused` set when a precondition fails."""
+    n, o = f"read_parquet('{staged_q}')", f"read_parquet('{stored_q}')"
+    con.execute(f"CREATE OR REPLACE TEMP TABLE _sup_nk AS SELECT DISTINCT series_key FROM {n}")
+    con.execute(f"CREATE OR REPLACE TEMP TABLE _sup_ok AS SELECT DISTINCT series_key FROM {o}")
+    sd, nd = _dims_of(con, "_sup_ok"), _dims_of(con, "_sup_nk")
+    staged, stored = (con.execute(f"SELECT count(*) FROM {r}").fetchone()[0] for r in (n, o))
+    out = {"staged": int(staged), "stored": int(stored), "refused": None, "dimension": None}
+    gained, lost = sorted(nd - sd), sorted(sd - nd)
+    if len(gained) != 1 or lost:
+        out["refused"] = (f"nothing to supersede (no single constant added dimension): staged keys gain "
+                          f"{gained or '-'} and lose {lost or '-'} against the stored ones")
+        return out
+    dim = gained[0]
+    # AR-335 G1: a key with NO dimension (DD_CNA_AGREGATS and _PATRIMOINE each store one, '' on 2025-12-31) has
+    # no spelling to change: it adds no name to either side's union, is exempt from (b), and pairs only with an
+    # identical key - otherwise it is new-only or residue
+    has = f"regexp_matches(series_key, '(^|:){dim}=')"
+    vals = [r[0] for r in con.execute(f"SELECT DISTINCT regexp_extract(series_key, '(?:^|:){dim}=([^:]*)', 1) "
+                                      f"FROM _sup_nk WHERE {has} LIMIT 3").fetchall()]
+    lacking, keyed = con.execute(f"SELECT count(*) FILTER (WHERE NOT {has}), count(*) FROM _sup_nk "
+                                 f"WHERE contains(series_key, '=')").fetchone()
+    if lacking or len(vals) != 1:
+        # AR-335 F-3: the owner acts on this text - say which of the two it is
+        why = (f"{lacking:,} of {keyed:,} staged keys lack {dim}" + (f"={vals[0]}" if len(vals) == 1 else "")
+               + " (a partly respelled pull)") if lacking else \
+            f"{dim} takes several values ({', '.join(map(str, vals))}{', ...' if len(vals) > 2 else ''})"
+        out["refused"] = f"nothing to supersede (no single constant added dimension): {why}"
+        return out
+    comp = f"{dim}={vals[0]}".replace("'", "''")
+    out["dimension"] = f"{dim}={vals[0]}"
+    strip = (f"CASE WHEN starts_with(series_key, '{comp}:') THEN substr(series_key, {len(comp) + 2}) "
+             f"WHEN series_key = '{comp}' THEN '' ELSE replace(series_key, ':{comp}', '') END")
+    con.execute(f"CREATE OR REPLACE TEMP TABLE _sup_n AS SELECT *, {strip} AS k FROM {n}")
+    con.execute(f"CREATE OR REPLACE TEMP TABLE _sup_o AS SELECT *, series_key AS k FROM {o}")
+    many_n = con.execute("SELECT count(*) - count(DISTINCT (k, obs_date)) FROM _sup_n").fetchone()[0]
+    many_o = con.execute("SELECT count(*) - count(DISTINCT (k, obs_date)) FROM _sup_o").fetchone()[0]
+    # and per KEY, as the tool checks it: two staged keys may never strip to one key
+    many_k = con.execute("SELECT count(*) FROM (SELECT k FROM (SELECT DISTINCT series_key, k FROM _sup_n) "
+                         "GROUP BY k HAVING count(*) > 1)").fetchone()[0]
+    if many_n or many_o or many_k:
+        out["refused"] = (f"not one-to-one: {many_n:,} staged and {many_o:,} stored rows share a (key, date), and "
+                          f"{many_k:,} stripped keys are shared by two staged keys, once {dim}={vals[0]} is removed")
+        return out
+    con.execute("CREATE OR REPLACE TEMP TABLE _sup_kept AS SELECT o.* FROM _sup_o o ANTI JOIN _sup_n n "
+                "ON n.k = o.k AND n.obs_date = o.obs_date")
+    kept = con.execute("SELECT count(*) FROM _sup_kept").fetchone()[0]
+    matched, revised = con.execute("SELECT count(*), count(*) FILTER (WHERE n.value IS DISTINCT FROM o.value) "
+                                   "FROM _sup_n n JOIN _sup_o o ON n.k = o.k AND n.obs_date = o.obs_date").fetchone()
+    con.execute("CREATE OR REPLACE TEMP VIEW _sup_pub AS SELECT flow, series_key, obs_date, value FROM _sup_n "
+                "UNION ALL SELECT flow, series_key, obs_date, value FROM _sup_kept")
+    published = con.execute("SELECT count(*) FROM _sup_pub").fetchone()[0]
+    dup = con.execute("SELECT count(*) - count(DISTINCT (series_key, obs_date)) FROM _sup_pub").fetchone()[0]
+    residue = {"rows": int(kept), "by_partition": {str(p): int(c) for p, c in con.execute(
+        f"SELECT {_PART_EXPR} AS p, count(*) FROM _sup_kept GROUP BY 1").fetchall()}}
+    out.update({"superseded": int(stored - kept), "kept_old_only": int(kept), "new_with_counterpart": int(matched),
+                "new_only": int(staged - matched), "revised": int(revised), "published": int(published),
+                "duplicates": int(dup), "residue": residue})
+    out["refused"] = _supersede_refusal(out)
+    return out
+
+
+def _supersede_refusal(sup) -> str | None:
+    """The coordinator's and AR-335's refusals (D2, D7, D8): a supersede may never shrink the served file (under
+    one-to-one, published = stored - superseded + staged with superseded <= staged), may not pair mostly
+    DIFFERENT values, and stays under the sanity bound. The publish (blob.commit_local_file) has no shrink
+    guard of its own, so this is THE guard (AR-335 G4): `stored` is the row count of the stored object read
+    for THIS finalize (the same file the plan read), never the state's served.rows, which can be stale."""
+    if sup["duplicates"]:
+        return f"the published table would hold {sup['duplicates']:,} duplicate (key, date)"
+    if sup["published"] > SUPERSEDE_MAX_ROWS:
+        return f"{sup['published']:,} published rows exceed SUPERSEDE_MAX_ROWS {SUPERSEDE_MAX_ROWS:,}"
+    if sup["published"] < sup["stored"]:
+        return f"the published table ({sup['published']:,} rows) would be smaller than the stored one ({sup['stored']:,})"
+    if sup["superseded"] > sup["staged"]:
+        return f"{sup['superseded']:,} stored rows would be superseded by only {sup['staged']:,} new rows"
+    if sup["new_with_counterpart"] and sup["revised"] / sup["new_with_counterpart"] > SUPERSEDE_MAX_REVISED:
+        return (f"{sup['revised']:,} of {sup['new_with_counterpart']:,} counterparts carry a different value (more "
+                f"than {SUPERSEDE_MAX_REVISED:.0%}): the pairing looks wrong")
+    return None
+
+
 def _origin_priority(why: str) -> int:
     """AR-330 first-run F3: the repair queue works the PROVEN truncations first. Lower is earlier."""
     w = str(why or "")
@@ -688,6 +818,8 @@ class _Pass:
         self.conflict = False
         self.me = S.owner_id()
         self.force_raw = {}
+        self.only = None              # F1b: the listed supersede flows when "only": "supersede" is honoured
+        self.repair_start = None      # AR-334 R3-1: when this pass's repair slot really started
 
     # ---------------------------------------------------------------- persistence
     def save(self):
@@ -762,7 +894,8 @@ class _Pass:
         n = int(fe.get("merge_refusals", 0)) + 1
         fe["merge_refusals"] = n
         at = fe.get("attempt") or {}
-        msg = (f"{code}: MERGE REFUSED {n} pass(es) - {where}: {type(e).__name__}: {str(e)[:120]}; kept "
+        # 240: a supersede refusal's reason is the owner's instruction (AR-335 F-3) - never cut mid-cause
+        msg = (f"{code}: MERGE REFUSED {n} pass(es) - {where}: {type(e).__name__}: {str(e)[:240]}; kept "
                f"merge_pending with {int(at.get('chunks', 0))} staged chunk(s), {int(at.get('rows_staged', 0)):,} rows")
         if n >= MAX_FLOW_FAILURES:
             msg += " - NEEDS THE OWNER (the cause repeats every pass)"
@@ -803,17 +936,66 @@ class _Pass:
         raw = self.force_raw or {}
         problem = S.force_problem(raw)          # R3-2: unreadable or shapeless = ignored, nothing cleared
         entries = {} if problem else S.force_entries(raw)
+        sups = {} if problem else S.supersede_entries(raw)
         self.force_keys = entries
         live = set(codes)
         active, changed = set(), False
         if problem is None:
             for code, fe in self.st.flows.items():
-                if fe.get("forced_key") and code not in entries:
+                if fe.get("forced_key") and code not in entries and not self.only:
                     fe.pop("forced_key", None)                        # off the list: a later listing forces
                     changed = True
-        for code, key in sorted(entries.items()):
+                if (fe.get("supersede_key") or fe.get("supersede")) and code not in sups:
+                    # AR-335 D3: unlisting CANCELS - the pending supersede goes with the key, and the flow is back
+                    # on the normal path, where the F1 spelling hold applies again
+                    if fe.pop("supersede", None):
+                        self.labels.append(f"{code}: no longer listed under supersede - the pending supersede is "
+                                           f"cancelled; the normal merge rules (the F1 hold) apply again")
+                    fe.pop("supersede_key", None)
+                    changed = True
+        # F1b: the operator-authorised SUPERSEDE re-pull. Before "flows" and "release_holds": a flow listed in
+        # either of those too is superseded, and the other entry is not used (AR-335 D10).
+        for code, key in sorted(sups.items()):
+            if not S.FLOW_RE.fullmatch(code) or code not in live:
+                self.labels.append(f"{S.FORCE_FILE}: supersede {code[:40]!r} is not a catalogued flow - ignored")
+                continue
+            fe = self.st.flow(code)
+            if fe.get("supersede_key") == key:
+                continue                                              # this entry was used already
+            at = fe.get("attempt") or {}
+            if at.get("id") and not self._lease_ok(code):
+                continue                                              # another writer's live attempt: later
+            fe["supersede_key"] = key
+            fe["supersede"] = {"key": key, "utc": S.utcnow()}
+            status = fe.get("status")
+            if at.get("id") and at.get("mode") == "origin" and status in (S.IN_PROGRESS, S.MERGE_PENDING):
+                # an origin pull (held or not) is what a supersede needs: kept, its hold cleared - the hold is
+                # the very question the operator has answered (finalize re-checks `modified` first, D6)
+                for k in ("hold", "hold_detail", "hold_accepted", "hold_released"):
+                    fe.pop(k, None)
+                self.labels.append(f"{code}: operator supersede - the staged origin pull is kept and supersedes "
+                                   f"the stored spelling at its finalize")
+            else:
+                # anything else (a walk TAIL, held or not) cannot carry a supersede: dropped, state first and
+                # chunks second, and an origin pull is queued (D10)
+                self._drop_attempt(code, "operator supersede needs an origin pull")
+                for k in ("failures", "probe", "merge_refusals", "hold", "hold_detail", "hold_accepted",
+                          "hold_released"):
+                    fe.pop(k, None)
+                fe.update(status=S.NEEDS_ORIGIN, why="operator supersede", repair=True, prio=0)
+                self.labels.append(f"{code}: operator supersede (was {status}) - an origin pull is queued; at its "
+                                   f"finalize it supersedes the stored spelling")
+            changed = True
+        if self.only and (entries or raw.get("release_holds")):
+            # D5: an "only" pass acts on the supersede list alone; flows / release_holds wait for a full pass
+            self.labels.append(f'{S.FORCE_FILE}: "flows" / "release_holds" not applied this pass (only: supersede)')
+        for code, key in sorted(entries.items() if not self.only else ()):
             if not S.FLOW_RE.fullmatch(code) or code not in live:
                 self.labels.append(f"{S.FORCE_FILE}: {code[:40]!r} is not a catalogued flow - ignored")
+                continue
+            if code in sups:
+                self.labels.append(f"{code}: listed under both flows and supersede - supersede wins; the "
+                                   f"force_origin entry is not used")
                 continue
             fe = self.st.flow(code)
             if fe.get("forced_key") == key:
@@ -850,13 +1032,17 @@ class _Pass:
             changed = True
         # AR-334 condition 1: the owner's "keep both" exit. A listed HELD flow's staged pull is merged as it is
         # (both spellings kept), ONCE per entry (the same per-flow keys as "flows").
-        if problem is None:
+        if problem is None and not self.only:
             releases = S.force_entries({"flows": raw.get("release_holds")})
             for code, fe in self.st.flows.items():                       # AR-334 R2-3: as forced_key is
                 if fe.get("hold_release_key") and code not in releases:
                     fe.pop("hold_release_key", None)                      # off the list: a later listing releases
                     changed = True
             for code, key in sorted(releases.items()):
+                if code in sups:
+                    self.labels.append(f"{code}: listed under both supersede and release_holds - supersede wins; "
+                                       f"the release is not used")
+                    continue
                 fe = self.st.flows.get(code) or {}
                 if not fe.get("hold") or fe.get("hold_release_key") == key:
                     continue
@@ -870,12 +1056,48 @@ class _Pass:
         if changed:
             self.save()
 
+    def decide_only(self, codes):
+        """F1b "only": "supersede" (AR-335 D5): this pass works the listed supersede flows and NOTHING else - no
+        sweep, identity check, classification, probe or walk for any other flow, and the repair slot considers
+        only listed flows. Honoured only while at least one listed flow still has a supersede PENDING (set, or
+        about to be set by this pass's apply_force; a refused or blocked one is NOT pending - AR-335 F-2);
+        otherwise it is ignored and said, so a stale "only" left in the file can never silence the source.
+        Read before anything writes."""
+        raw = self.force_raw or {}
+        self.only = None
+        if S.force_problem(raw) or "only" not in raw:
+            return
+        want = raw.get("only")
+        if want != "supersede":
+            self.labels.append(f'{S.FORCE_FILE}: "only": {str(want)[:40]!r} is not "supersede" - ignored')
+            return
+        live = set(codes)
+        pending, stuck = set(), set()
+        for code, key in S.supersede_entries(raw).items():
+            fe = self.st.flows.get(code) or {}
+            if code not in live:
+                continue
+            if fe.get("supersede_key") != key:
+                pending.add(code)                         # about to be applied by this pass
+            elif fe.get("supersede"):
+                # AR-335 F-2: a REFUSED or BLOCKED supersede waits for the owner, not for a pass - it must not
+                # keep "only" honoured for ever (it stays loud: the full pass retries and names it)
+                (stuck if fe.get("merge_refusals") or fe.get("finalize_blocked") else pending).add(code)
+        if not pending:
+            self.labels.append(f'{S.FORCE_FILE}: "only": "supersede" ignored - no listed flow has a supersede '
+                               f'pending' + (f' (refused or blocked, waiting for the owner: '
+                                             f'{", ".join(sorted(stuck)[:8])})' if stuck else '')
+                               + '; the pass runs in full')
+            return
+        self.only = pending
+
     # ---------------------------------------------------------------- 1. identity
     def sweep_done(self):
         """k4: a kill after a flow was marked complete but before its chunks were deleted leaves the
         attempt flagged done. Delete those chunks first thing (strict keys only, C10)."""
         swept = False
-        for code, fe in self.st.flows.items():
+        scope = [(c, fe) for c, fe in self.st.flows.items() if not self.only or c in self.only]   # D5
+        for code, fe in scope:
             at = fe.get("attempt") or {}
             if at.get("done"):
                 self._sweep(code, keep=None)
@@ -888,7 +1110,7 @@ class _Pass:
         # AR-334 condition 11: probe "hits" judged on raw observations (before the F3 confirmation) are probed
         # again under the confirmed rule: back to legacy, the probe record cleared, any attempt they started
         # dropped (state first, chunks second - re-crawlable pages).
-        for code, fe in self.st.flows.items():
+        for code, fe in scope:
             pr = fe.get("probe") or {}
             if fe.get("status") in (S.NEEDS_ORIGIN, S.IN_PROGRESS) and str(fe.get("why") or "").startswith("probe page") \
                     and pr and "new_pairs" not in pr and not pr.get("void"):
@@ -941,6 +1163,16 @@ class _Pass:
                 served["identity"] = cur
                 fe["served"] = served
                 rebased += 1
+            elif fe.get("supersede") and rows is not None:
+                # F1b: a flow queued for its supersede is NOT re-classified (classification would send it back to
+                # legacy and the supersede would never run): the new object is recorded, loud, and the
+                # supersede measures against it - its plan reads the stored file itself, never served.rows
+                fe["served"] = {"identity": cur, "rows": int(rows), "max_obs": served.get("max_obs"),
+                                "maxyear_rows": served.get("maxyear_rows", 0)}
+                self.labels.append(f"{code}: served object changed outside this fetcher ({served.get('rows')} -> "
+                                   f"{rows} rows) while queued for its supersede - recorded; the supersede "
+                                   f"measures against it")
+                self.save()
             else:
                 fe["status"], fe["why"] = S.UNCLASSIFIED, (f"served object changed outside this fetcher "
                                                           f"({served.get('rows')} -> {rows} rows)")
@@ -1172,7 +1404,9 @@ class _Pass:
         # The walk's slot ends at minute 15 while repair work exists (C7: freshness keeps a reserved
         # slot); with nothing to repair it may use the pass up to the soft stop.
         # A HELD flow is not repair work (it waits for the owner): it never cuts the walk (AR-334 condition 8).
-        repairing = any(fe.get("status") in S.REPAIR_PENDING and not fe.get("hold") for fe in self.st.flows.values())
+        # AR-335 D12: a BLOCKED finalize (R3-1) waits for the owner like a held one, so it does not cut the walk either
+        repairing = any(fe.get("status") in S.REPAIR_PENDING and not fe.get("hold") and not fe.get("finalize_blocked")
+                        for fe in self.st.flows.values())
         end = self.clock.at(WALK_UNTIL_MIN) if repairing else self.clock.soft_end
         eligible = [c for c in codes if self.st.flow(c).get("status") in S.WALKABLE]
         # AR-334 ADV5: walk tails the previous slot end parked are resumed FIRST, in the walk
@@ -1239,6 +1473,7 @@ class _Pass:
                                "- the decision is the owner's")
             return
         tried = set()
+        self.repair_start = self.clock.now()         # R3-1: the cap a finalize is judged against starts here
         while self.clock.now() < self.clock.soft_end and not self.conflict:
             code = self._next_repair(tried)
             if code is None:
@@ -1254,11 +1489,17 @@ class _Pass:
                 continue                                                  # never blocks the queue head
             if res in ("progress", "stop", "conflict"):
                 return
+            # "blocked" (R3-1: a merge no pass can fit) and "held" fall through: the flow is `tried`, and the
+            # slot moves on to the next flow
 
     def _next_repair(self, tried=()):
         """MERGE_PENDING first, then the ONE in-progress flow (resumed), and only when nothing is in
-        progress a new attempt: needs_origin before needs_refresh (F4: one flow in progress at a time)."""
+        progress a new attempt: needs_origin before needs_refresh (F4: one flow in progress at a time).
+        In an "only" pass (D5) only the listed supersede flows are considered, and the one-in-progress rule is
+        bypassed for them: an unlisted in-progress flow does not block them (it is left as it is)."""
         fl = self.st.flows
+        if self.only:
+            fl = {c: fe for c, fe in fl.items() if c in self.only}
         for c, fe in sorted(fl.items(), key=lambda kv: (kv[1].get("attempt") or {}).get("started_utc") or ""):
             if c not in tried and fe.get("status") == S.MERGE_PENDING and not fe.get("hold") \
                     and self._lease_ok(c):
@@ -1617,6 +1858,27 @@ class _Pass:
         at = fe.get("attempt") or {}
         stored_rows = int((fe.get("served") or {}).get("rows") or 0)
         margin = S.merge_margin_s(int(at.get("rows_staged", 0)), stored_rows)
+        # AR-335 D12: the most THIS pass can give a merge is a repair slot from its earliest start - minute 15
+        # (WALK_UNTIL_MIN) normally, earlier when the slot really started earlier (an "only" pass, ~minute 5)
+        head = self.clock.at(WALK_UNTIL_MIN)
+        if self.repair_start is not None:
+            head = min(head, self.repair_start)
+        cap = self.clock.hard_end - head
+        if margin > cap:
+            # AR-334 R3-1: this pass can never give the merge its margin. Deferring would wedge the queue
+            # (merge_pending is picked first every pass) - so it is BLOCKED, loud every pass, and the repair slot
+            # moves on. Its staged pages are kept; it is re-judged every pass, so a wider window clears it.
+            fe["finalize_blocked"] = {"utc": S.utcnow(), "margin_s": int(margin), "cap_s": int(cap),
+                                      "staged": int(at.get("rows_staged", 0)), "stored": stored_rows}
+            self.labels.append(f"{code}: NEEDS THE OWNER - this merge needs {int(margin)}s ({at.get('rows_staged', 0):,} "
+                               f"staged + {stored_rows:,} stored rows), more than this pass can give ({int(cap)}s); "
+                               f"staged pages kept")
+            self.save()
+            return "blocked"
+        if fe.pop("finalize_blocked", None) is not None:
+            # a block a narrower window set is lifted, so the flow counts as repair work again (it cuts the walk
+            # and keeps the source due) and the next repair slot starts with it
+            self.save()
         if not self.clock.fits(margin):
             self.labels.append(f"{code}: merge deferred - {int(self.clock.hard_end - self.clock.now())}s left "
                                f"is under the {int(margin)}s margin for {at.get('rows_staged', 0):,} staged + "
@@ -1661,7 +1923,7 @@ class _Pass:
                 return "broken"
             stored = blob.local_copy(self.path(code))
             stored_local, stored_tmp = (stored if stored else (None, False))
-            con = fspill = None
+            con = fspill = sup_tmp = None
             try:
                 con, fspill = _duck()            # AR-331 F6: memory-limited, private spill
                 q = staged.replace("\\", "/").replace("'", "''")
@@ -1671,7 +1933,79 @@ class _Pass:
                         return self._restart(code, f"{dup - int(at.get('within_dups', 0)):,} duplicate (key, date) "
                                                    f"ACROSS pages - unstable paging means missing rows too")
                 changed, residue = total, {"rows": 0, "by_partition": {}}
-                if stored_local and total:
+                supersede = bool(fe.get("supersede")) and at.get("mode") == "origin"
+                sup = None
+                if stored_local and total and supersede:
+                    # F1b: the operator listed this flow under "supersede" - the F1 hold does not apply; the stored
+                    # spelling is superseded row by exact counterpart (the repair tool's rule), never replaced
+                    s = stored_local.replace("\\", "/").replace("'", "''")
+                    pre0 = at.get("pre_merge_identity")
+                    plan0 = at.get("supersede_plan") or {}
+                    if plan0 and pre0 and not S.same_identity(pre0, S.identity(self.path(code))) and \
+                            con.execute(f"SELECT count(*) FROM read_parquet('{s}')").fetchone()[0] == plan0.get("published"):
+                        # AR-335 D4: an earlier pass published THIS supersede and was killed before its state
+                        # write; the store is already the published table (its identity moved AND its rows are
+                        # the plan's published rows) - keep the first plan's counts, owe the CSV (the
+                        # landed-earlier path below), never re-plan against the superseded store
+                        sup = plan0
+                        residue, changed = sup["residue"], 0
+                        print(f"[insee_melodi] {code}: an earlier pass published this supersede before its state "
+                              f"write - its counts are kept and its CSV is derived now", flush=True)
+                    else:
+                        try:
+                            mod_now = _catalog_modified(self.sess, code, self.clock)
+                        except _Stop:
+                            mod_now = None
+                        if mod_now is None:
+                            # AR-335 G2: unreadable is not "moved" - one catalogue failure must not throw away a
+                            # complete pull. DEFER: merge_pending and every chunk kept, retried on a later pass
+                            # (stall counted)
+                            self.labels.append(f"{code}: supersede deferred - INSEE `modified` could not be read; "
+                                               f"the staged pull is kept and the check is retried on a later pass")
+                            self._book_transient(f"{code}: catalog `modified` unreadable before the supersede")
+                            fe["status"] = S.MERGE_PENDING
+                            self._progress(code, at, 0)
+                            return "stop"
+                        if mod_now != at.get("modified_at_start"):
+                            # AR-335 D6: a held or old pull may be weeks old - re-pull rather than supersede with it
+                            self.labels.append(f"{code}: supersede - INSEE `modified` {mod_now} is not the pull's "
+                                               f"{at.get('modified_at_start')}: the staged pull is dropped and re-pulled")
+                            self._drop_attempt(code, "the supersede needs a pull of INSEE's current content")
+                            fe.update(status=S.NEEDS_ORIGIN, why="operator supersede (re-pull)", repair=True, prio=0)
+                            self.save()
+                            return "restart"
+                        sup = _plan_supersede(con, q, s)
+                        print(f"[insee_melodi] {code}: supersede plan"
+                              + (f" ({sup['dimension']} removed)" if sup.get("dimension") else "")
+                              + (f" - stored {sup['stored']:,} rows: superseded {sup['superseded']:,}, kept old-only "
+                                 f"{sup['kept_old_only']:,}; staged {sup['staged']:,}: with a counterpart "
+                                 f"{sup['new_with_counterpart']:,} (revised {sup['revised']:,}), new-only "
+                                 f"{sup['new_only']:,}; published {sup['published']:,}" if "published" in sup else "")
+                              + (f" - REFUSED: {sup['refused']}" if sup["refused"] else ""), flush=True)
+                        if sup["refused"]:
+                            self._merge_refused(code, "supersede refused", DefinitiveError(sup["refused"]))
+                            return "transient"
+                        # AR-335 D8: streamed - DuckDB sorts under its memory limit (spilling), Arrow batches go
+                        # to a ParquetWriter in the store's schema; no table is ever whole in memory
+                        sup_tmp = f"{self.path(code)}.{os.getpid()}.supersede.tmp"
+                        rdr = con.execute("SELECT flow, series_key, obs_date, value FROM _sup_pub "
+                                          "ORDER BY flow, series_key, obs_date").to_arrow_reader(SUPERSEDE_BATCH_ROWS)
+                        sw = pq.ParquetWriter(sup_tmp, _SCHEMA, compression="zstd")
+                        try:
+                            for rb in rdr:
+                                if rb.num_rows:
+                                    sw.write_table(pa.Table.from_batches([rb]).cast(_SCHEMA))
+                        finally:
+                            sw.close()
+                        if pq.read_metadata(sup_tmp).num_rows != sup["published"]:
+                            self._merge_refused(code, "supersede refused", DefinitiveError(
+                                "the written table's footer does not hold the planned rows"))
+                            return "transient"
+                        mx_sup = con.execute("SELECT max(obs_date) FROM _sup_pub").fetchone()[0]
+                        sup["max_obs"] = mx_sup.isoformat() if mx_sup else None
+                        at["supersede_plan"] = {k: v for k, v in sup.items()}
+                        residue, changed = sup["residue"], sup["published"]
+                elif stored_local and total:
                     s = stored_local.replace("\\", "/").replace("'", "''")
                     t_split = time.monotonic()
                     split = _merge_split(con, q, s, at)
@@ -1717,9 +2051,16 @@ class _Pass:
                     self.save()
                     t0 = time.monotonic()
                     try:
-                        n_rows, md = merge.merge_and_write_bounded(
-                            self.path(code), new_path=staged, dedup_keys=DEDUP,
-                            stored_copy=stored_local if stored_local else None)
+                        if sup_tmp is not None:
+                            # AR-335 D8: the table DuckDB wrote (memory bounded), published as a file - locally
+                            # and, when routed, to R2 (blob.commit_local_file, the bounded merge's publish)
+                            blob.commit_local_file(sup_tmp, self.path(code))
+                            sup_tmp = None
+                            n_rows, md = sup["published"], sup["max_obs"]
+                        else:
+                            n_rows, md = merge.merge_and_write_bounded(
+                                self.path(code), new_path=staged, dedup_keys=DEDUP,
+                                stored_copy=stored_local if stored_local else None)
                     except DefinitiveError as e:
                         # AR-330 C11 / AR-331 R2-A: a refused merge is a condition of the MERGE (spill disk,
                         # spill cap, memory, a shrink or column refusal), never of the paging. The flow stays
@@ -1751,6 +2092,8 @@ class _Pass:
                     con.close()
                 if fspill:
                     shutil.rmtree(fspill, ignore_errors=True)
+                if sup_tmp and os.path.exists(sup_tmp):
+                    os.remove(sup_tmp)               # a refused or failed supersede publishes nothing
                 if stored_tmp and stored_local and os.path.exists(stored_local):
                     os.remove(stored_local)
         finally:
@@ -1780,8 +2123,20 @@ class _Pass:
         unparsed = int(at.get("raw_obs", 0)) - int(at.get("rows_staged", 0))
         fe["unparsed_obs"] = max(unparsed, 0)
         fe["dropped"] = dict(at.get("dropped") or {})
-        for k in ("hold", "hold_detail", "hold_accepted", "hold_released"):
+        for k in ("hold", "hold_detail", "hold_accepted", "hold_released", "finalize_blocked"):
             fe.pop(k, None)
+        if sup is not None:
+            # F1b: the supersede is done - its counts are kept and the operator's entry is spent (its key stays
+            # while the flow stays listed, so the same entry never supersedes it again)
+            fe["superseded"] = {"utc": S.utcnow(), "key": (fe.get("supersede") or {}).get("key"),
+                                **{k: sup.get(k) for k in ("dimension", "stored", "staged", "superseded",
+                                                         "kept_old_only", "new_with_counterpart", "new_only",
+                                                         "revised", "published")}}
+            fe.pop("supersede", None)
+        elif supersede:
+            # listed, but nothing was stored to supersede: an ordinary origin finalize, and the entry is spent
+            self.labels.append(f"{code}: supersede - nothing was stored, so this was an ordinary origin pull")
+            fe.pop("supersede", None)
         print(f"[insee_melodi] {code}: finalize took {time.monotonic() - t_fin:.1f}s in all "
               f"({total:,} staged rows)", flush=True)
         # F8 + F3: what the store keeps that INSEE no longer serves, whether INSEE ignored startPeriod, and
@@ -1821,7 +2176,7 @@ class _Pass:
         # AR-330 first-run F6 / AR-334 ADV7: ONE denominator (the flows sent to repair), each in exactly one
         # bucket - complete, held, stuck (broken / unstable / withdrawn) or open - and the digest-width facts
         # first: "repair n/N complete, +p pages, <current flow>@p<next page>"
-        held_t = [c for c in tracked if c not in done and fl[c].get("hold")]
+        held_t = [c for c in tracked if c not in done and (fl[c].get("hold") or fl[c].get("finalize_blocked"))]
         stuck_t = [c for c in tracked if c not in done and c not in held_t
                    and fl[c].get("status") in (S.BROKEN, S.UNSTABLE, S.WITHDRAWN)]
         open_t = [c for c in tracked if c not in done and c not in held_t and c not in stuck_t]
@@ -1831,9 +2186,14 @@ class _Pass:
         if self.repair_flow:
             at = fl.get(self.repair_flow, {}).get("attempt") or {}
             head += f", {self.repair_flow}@p{at.get('next_page', '-')}"
+        blocked = sorted(c for c, fe in fl.items() if fe.get("finalize_blocked") and not fe.get("hold"))
+        other_held = len([c for c in set(held) | set(blocked) if c not in held_t])
         bits = [head, f"of the {len(tracked)}: {len(open_t)} open, {len(held_t)} held, {len(stuck_t)} stuck; also "
-                      f"{len(refresh)} refresh due, {len(unclassified)} unclassified, {len(held) - len(held_t)} "
+                      f"{len(refresh)} refresh due, {len(unclassified)} unclassified, {other_held} "
                       f"other held"]
+        if self.only:
+            bits.append(f"walk and other repairs SKIPPED by operator order (only: supersede) - this pass worked "
+                        f"{', '.join(sorted(self.only)[:8])}{' +' + str(len(self.only) - 8) if len(self.only) > 8 else ''}")
         if self.repair_flow:
             at = fl.get(self.repair_flow, {}).get("attempt") or {}
             bits.append(f"current {self.repair_flow} page {at.get('next_page', '-')} "
@@ -1841,9 +2201,13 @@ class _Pass:
         if held:
             bits.append(f"HELD (spelling drift?, the owner decides): {', '.join(held[:8])}"
                         f"{' +' + str(len(held) - 8) if len(held) > 8 else ''}")
-        bits.append(f"walk: {self.walk['visited']} visited, {self.walk['merged']} merged, "
-                    f"{self.walk['unchanged']} unchanged, {len(self.walk['deferred'])} not reached")
-        bits.append(f"classified this pass: {self.classified}")
+        if blocked:
+            bits.append(f"BLOCKED (a merge larger than a pass, NEEDS THE OWNER): {', '.join(blocked[:8])}"
+                        f"{' +' + str(len(blocked) - 8) if len(blocked) > 8 else ''}")
+        if not self.only:                     # D5: an "only" pass reports no walk counts (it walked nothing)
+            bits.append(f"walk: {self.walk['visited']} visited, {self.walk['merged']} merged, "
+                        f"{self.walk['unchanged']} unchanged, {len(self.walk['deferred'])} not reached")
+            bits.append(f"classified this pass: {self.classified}")
         res = sum(int((fe.get("residue") or {}).get("rows", 0)) for fe in fl.values())
         if res:
             parts = {}
@@ -1917,11 +2281,16 @@ def update(unit, since, *, _session=None, _clock=None) -> Result:
     if dropped:
         pa_.labels.append(f"{len(dropped)} catalogue code(s) not of the [A-Z0-9_] form - not pulled: {', '.join(dropped[:5])}")
     try:
+        pa_.decide_only(codes)                           # F1b D5: read before anything writes
         pa_.sweep_done()
         pa_.apply_force(codes)
-        pa_.check_identity(codes)
-        pa_.classify(codes)
-        pa_.walk_slot(codes)
+        if pa_.only:
+            # "only": "supersede" - the listed flows alone: no classification, probe or walk this pass
+            pa_.check_identity(sorted(c for c in codes if c in pa_.only))
+        else:
+            pa_.check_identity(codes)
+            pa_.classify(codes)
+            pa_.walk_slot(codes)
         pa_.repair_slot()
     except (S.StateConflict, _Stop):
         pass
@@ -1965,7 +2334,9 @@ def _result(pa_, state, codes) -> Result:
             pa_.labels.append("csv_owed not cleared (state conflict) - re-emitted by a later pass")
     # A HELD flow (F1 spelling hold) waits for the owner, not for the fetcher: it does not keep the source due
     # at the next run (nothing a pass can do moves it), and it is named LOUD below so the source is never ok.
-    pending = any(fl[c].get("status") in S.REPAIR_PENDING and not fl[c].get("hold") for c in live if c in fl) \
+    # AR-335 D12: a BLOCKED finalize (R3-1) is treated as a held one - loud below, never due for ever
+    pending = any(fl[c].get("status") in S.REPAIR_PENDING and not fl[c].get("hold")
+                  and not fl[c].get("finalize_blocked") for c in live if c in fl) \
         or bool(state.data.get("repair_blocked")) or pa_.conflict
     if pending:
         return Result(status="transient_fail", obs=total, last_obs_date=maxd, series_cursors=cursors,
@@ -1977,6 +2348,13 @@ def _result(pa_, state, codes) -> Result:
     # must not hide under "ok": they are appended, which also takes a pure-deferral note out of health's
     # ROTATING whitelist (health._DEFERRAL_BASE is anchored), and an ok/no_change becomes partial.
     loud = [x for x in dict.fromkeys(pa_.labels)]
+    if pa_.only:
+        # D5: an "only" pass never reads as fresh - it walked nothing, so it is never ok / no_change
+        loud.insert(0, "only: supersede - the walk and every other flow were SKIPPED this pass; freshness was "
+                       "not checked")
+    blocked = sorted(c for c in live if (fl.get(c) or {}).get("finalize_blocked"))
+    if blocked:
+        loud.append(f"BLOCKED (a merge larger than a pass, NEEDS THE OWNER): {', '.join(blocked[:8])}")
     for status, word in ((S.UNSTABLE, "UNSTABLE PAGING"), (S.WITHDRAWN, "WITHDRAWN?"), (S.BROKEN, "BROKEN")):
         names = sorted(c for c in live if (fl.get(c) or {}).get("status") == status)
         if names:

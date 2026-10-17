@@ -217,11 +217,14 @@ def force_problem(force: dict) -> str | None:
         return force.get("_why") or "unreadable"
     if not force:
         return None
+    if "supersede" in force and not isinstance(force["supersede"], (list, dict)):
+        # F1b: a supersede deletes old-spelling rows - a shapeless list is never guessed at
+        return f'"supersede" is a {type(force["supersede"]).__name__}, not a list or an object'
     if "flows" in force:
         if not isinstance(force["flows"], (list, dict)):
             return f'"flows" is a {type(force["flows"]).__name__}, not a list or an object'
         return None
-    if "unblock_repair_after_utc" in force or "release_holds" in force:
+    if any(k in force for k in ("unblock_repair_after_utc", "release_holds", "supersede", "only")):
         return None
     keys = ", ".join(sorted(str(k) for k in force)[:5])
     return f'no "flows" key (keys: {keys})'
@@ -239,6 +242,12 @@ def force_entries(force: dict) -> dict:
     if isinstance(fl, list):
         return {str(c): "listed" for c in fl}
     return {}
+
+
+def supersede_entries(force: dict) -> dict:
+    """{flow: key} for the operator's "supersede" list (F1b): the same two forms and the same per-flow keys as
+    "flows" (force_entries), so each entry supersedes a flow ONCE while it stays listed."""
+    return force_entries({"flows": force.get("supersede")})
 
 
 # --------------------------------------------------------------------------------------------- #
