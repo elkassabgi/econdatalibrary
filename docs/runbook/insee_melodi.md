@@ -102,7 +102,8 @@ HOW A PASS RUNS NOW (slots in precedence order, all inside the 35-minute soft st
      we hold. An empty probe is NOT proof of completeness.
   3. WALK (until minute 15): the healthy flows, rotated; each is tailed only when INSEE's catalog
      `modified` changed, the catalog read failed, or 30 days passed. Every tail is STAGED like a re-pull;
-     one that outgrows one chunk (100 pages) joins the repair queue.
+     one that outgrows one chunk (100 pages), or is still running when the walk slot ends, is PARKED as
+     needs_refresh and joins the repair queue behind needs_origin (AR-330 first-run F4).
   4. REPAIR (until the soft stop): ONE flow at a time - an in-progress or merge-pending attempt first,
      then needs_origin, then needs_refresh. Pages are parsed at once into Arrow, staged locally and
      uploaded every 100 pages as _repull/<FLOW>/<attempt>/<n>.chunk; the cursor lives in _flows.json.
@@ -112,6 +113,14 @@ HOW A PASS RUNS NOW (slots in precedence order, all inside the 35-minute soft st
   rows new or changed against the stored file decide changed_keys (an idempotent tail derives nothing);
   for an origin pull the stored rows INSEE no longer serves are counted as RESIDUE and KEPT (merge, never
   replace - Q1). Only then is the served file published, then the state, then the chunks deleted.
+  SPELLING HOLD (AR-330 first-run F1, after run 39024352275 doubled 8 DD_CNA flows): before any merge the
+  staged rows are split against the stored file - new keys NK + new dates on known keys ND + revised values
+  RV + unchanged U - and logged with the served rows before and after. A merge is HELD (kept merge_pending,
+  `hold: "spelling"`, nothing merged, staged pages kept, the repair slot skips it) when the store holds data,
+  NK is over half the staged rows, AND the pull carries under half of the stored keys it should carry again
+  (an origin pull: every stored key; a tail: the stored keys with data from its start year on). The
+  coverage condition is what separates a respelling (INSEE adds a dimension or moves the GEO vintage: the
+  stored keys vanish) from a truncation repair (many new keys, but the stored ones come back).
 
   While any repair work remains the pass returns `transient_fail` WITH changed_keys (the _giant / PR #151
   precedent): due at the next run, and the merged flows' CSVs are derived this pass. Its note carries the
@@ -145,6 +154,10 @@ STATUSES AND THE OPERATOR (each flow's `status` in `_flows.json`; the note names
   AQUEDUCT_BOUNDED_DISK_RESERVE_BYTES), or a shrink or column refusal (the merged file would lose rows or columns: look at the flow first). The
   merge then retries by itself on a later pass and the count clears. A force does NOT help: it keeps a
   refused ORIGIN pull as it is (a re-pull cannot cure a merge refusal).
+  A merge HELD for a respelling (`hold: "spelling"`, the note's HELD line and its SPELLING DRIFT? line with
+  the diagnosis) is not retried and does not keep the source due: it waits for the OWNER, who decides how
+  the two spellings are kept (supersede the old one, or keep both). A force does not release it (a re-pull
+  returns the same spelling).
   THE OPERATOR'S FILE is `_force_origin.json` (the fetcher never writes it). Two forms of "flows":
       {"flows": ["DS_X", "DS_Y"], "unblock_repair_after_utc": "<iso>"}
       {"flows": {"DS_X": "<iso>", "DS_Y": "<iso>"}, "unblock_repair_after_utc": "<iso>"}
@@ -168,6 +181,10 @@ flow in `_force_origin.json` is NOT enough - it starts a new attempt), and delet
 R2 - after T0 they cannot be deleted. Broken and unstable flows hold none (they delete theirs); a parked
 `needs_refresh` attempt does. mirror_sync and upload_r2 carry only .parquet, so `_flows.json` and
 `_force_origin.json` must be copied to the local store explicitly.
+
+TIME (AR-330 first-run F5, measured on run 39024352275): origin paging costs 4.6-5.5 s a page (tails
+2.6-4.6 s), so a ~16.5-minute repair slot moves about 190 pages; the backlog of at least 37,000 pages needs
+at least 195 passes - about 97 days at 2 passes a day.
 
 LIMITS, stated: completeness is "per INSEE paging" (no INSEE total exists); the served-parquet publish is not
 conditional (two writers of one flow: last writer wins - the attempt lease protects only the repair); the
