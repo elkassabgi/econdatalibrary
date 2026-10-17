@@ -129,6 +129,11 @@ HOW A PASS RUNS NOW (slots in precedence order, all inside the 35-minute soft st
   the old vintage. It is now HELD when the store does not yet carry the new vintage's partition, and whenever
   it would duplicate an observation already stored. 119 stored flows carry a GEO vintage (24 hold two;
   AR-334's geo_flows.log): each future re-vintage of a flow stored in one vintage only waits for the owner.
+  A multi-vintage TRUNCATION repair is merged only when its vintages cover DIFFERENT years; where the
+  stored vintages share years, the current-vintage rows duplicate stored observations and the repair is
+  HELD. The known cases on the 2026-10-17 mirror: DS_SIDE_CREA_DEP_REG_NAT (2012-2025 under both vintages;
+  CI-proven truncated) and DS_RP_MENAGES_PRINC (2011-2022 vs 2012-2023) - both wait for the owner's
+  spelling decision.
   EXITS from a hold: the owner supersedes the served file (the identity check sees the object change,
   releases the hold and the next finalize re-measures the staged pull), or lists the flow under
   "release_holds" in _force_origin.json (same forms as "flows"; once per entry) to merge it as it is, both

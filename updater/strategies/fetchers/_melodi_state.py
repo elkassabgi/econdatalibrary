@@ -392,8 +392,14 @@ class Clock:
         return min(self.t0 + minutes_from_start * 60.0, self.soft_end)
 
 
-def merge_margin_s(rows: int) -> float:
-    """Seconds to reserve before starting the (uninterruptible) DuckDB merge of `rows` staged rows.
-    a3 measured 10.8 s for 8.6M rows on the workstation; a runner is slower, so this is generous and the
-    first CI run logs the real duration (the 'merge took' line) to calibrate it."""
-    return 120.0 + rows / 100_000.0
+SPLIT_S_PER_ROW = 35e-6     # the F1 split + drift diagnosis, per staged + stored row, on a runner
+
+
+def merge_margin_s(rows: int, stored_rows: int = 0) -> float:
+    """Seconds to reserve before starting finalize for `rows` staged rows over `stored_rows` stored ones: the
+    (uninterruptible) DuckDB merge (a3 measured 10.8 s for 8.6M rows on the workstation; the first CI run
+    logs 'merge took') PLUS the F1 split and drift diagnosis, which read both files (AR-334 R2-1: 156.0 s +
+    63.9 s on the workstation for DS_FLORES_A5, 9.53M staged + 9.53M stored rows, so ~11.6 s per million;
+    x3 for a runner = 35 us a row). A finalize that does not fit is deferred, and merge_pending is the first
+    thing the next repair slot works - its head has about 25 minutes before the hard end."""
+    return 120.0 + rows / 100_000.0 + (rows + stored_rows) * SPLIT_S_PER_ROW

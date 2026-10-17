@@ -60,6 +60,11 @@ HOW A PASS RUNS NOW (slots in precedence order, all inside the 35-minute soft st
   the old vintage. It is now HELD when the store does not yet carry the new vintage's partition, and whenever
   it would duplicate an observation already stored. 119 stored flows carry a GEO vintage (24 hold two;
   AR-334's geo_flows.log): each future re-vintage of a flow stored in one vintage only waits for the owner.
+  A multi-vintage TRUNCATION repair is merged only when its vintages cover DIFFERENT years; where the
+  stored vintages share years, the current-vintage rows duplicate stored observations and the repair is
+  HELD. The known cases on the 2026-10-17 mirror: DS_SIDE_CREA_DEP_REG_NAT (2012-2025 under both vintages;
+  CI-proven truncated) and DS_RP_MENAGES_PRINC (2011-2022 vs 2012-2023) - both wait for the owner's
+  spelling decision.
   EXITS from a hold: the owner supersedes the served file (the identity check sees the object change,
   releases the hold and the next finalize re-measures the staged pull), or lists the flow under
   "release_holds" in _force_origin.json (same forms as "flows"; once per entry) to merge it as it is, both
@@ -846,7 +851,12 @@ class _Pass:
         # AR-334 condition 1: the owner's "keep both" exit. A listed HELD flow's staged pull is merged as it is
         # (both spellings kept), ONCE per entry (the same per-flow keys as "flows").
         if problem is None:
-            for code, key in sorted(S.force_entries({"flows": raw.get("release_holds")}).items()):
+            releases = S.force_entries({"flows": raw.get("release_holds")})
+            for code, fe in self.st.flows.items():                       # AR-334 R2-3: as forced_key is
+                if fe.get("hold_release_key") and code not in releases:
+                    fe.pop("hold_release_key", None)                      # off the list: a later listing releases
+                    changed = True
+            for code, key in sorted(releases.items()):
                 fe = self.st.flows.get(code) or {}
                 if not fe.get("hold") or fe.get("hold_release_key") == key:
                     continue
@@ -1605,9 +1615,13 @@ class _Pass:
     def _finalize(self, code):
         fe = self.st.flow(code)
         at = fe.get("attempt") or {}
-        if not self.clock.fits(S.merge_margin_s(int(at.get("rows_staged", 0)))):
+        stored_rows = int((fe.get("served") or {}).get("rows") or 0)
+        margin = S.merge_margin_s(int(at.get("rows_staged", 0)), stored_rows)
+        if not self.clock.fits(margin):
             self.labels.append(f"{code}: merge deferred - {int(self.clock.hard_end - self.clock.now())}s left "
-                               f"is under the margin for {at.get('rows_staged', 0):,} rows")
+                               f"is under the {int(margin)}s margin for {at.get('rows_staged', 0):,} staged + "
+                               f"{stored_rows:,} stored rows (split, diagnosis and merge); the next repair "
+                               f"slot starts with it")
             return "progress"
         t_fin = time.monotonic()
         sdir = S.staging_dir()

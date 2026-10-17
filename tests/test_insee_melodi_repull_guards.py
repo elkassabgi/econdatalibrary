@@ -7,6 +7,7 @@ import json
 import re
 
 import duckdb
+import pytest
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -446,3 +447,23 @@ def test_a_held_flow_does_not_cut_the_walk_at_minute_15(env):
         p.st.flows[c]["last_tail_utc"] = "2000-01-01T00:00:00+00:00"   # due by the backstop
     p.walk_slot(sorted(p.st.flows))
     assert ends and all(e == p.clock.soft_end for e in ends)
+
+
+# ------------------------------------------------------------------ AR-334 R2-1: the margin covers the split
+def test_the_merge_margin_counts_the_split_over_staged_and_stored_rows():
+    assert S.merge_margin_s(0) == 120.0
+    small, big = S.merge_margin_s(1_000_000), S.merge_margin_s(1_000_000, stored_rows=9_000_000)
+    assert big - small == pytest.approx(9_000_000 * S.SPLIT_S_PER_ROW)
+    flores = S.merge_margin_s(9_532_850, stored_rows=9_532_850)         # AR-334: 220 s measured on the workstation
+    assert flores > 3 * (156.0 + 63.9) * 0.9 and flores < 25 * 60      # x~3 for a runner; fits a repair slot's head
+
+
+def test_a_finalize_deferred_by_the_margin_names_staged_and_stored_rows(env, monkeypatch):
+    flows = _control_flows()
+    fake = FakeMelodi(env.clock, flows)
+    _seed_store(env, fake)
+    monkeypatch.setattr(S, "SPLIT_S_PER_ROW", 10.0 ** 6)              # no finalize fits
+    r = env.run(fake)
+    assert re.search(r"DS_COEFF_EURO_FRANC: merge deferred - .* margin for 3 staged \+ 3 stored rows \(split, "
+                     r"diagnosis and merge\); the next repair slot starts with it", r.error)
+    assert env.state()["flows"]["DS_COEFF_EURO_FRANC"]["status"] == S.MERGE_PENDING   # kept, merged by a later slot
