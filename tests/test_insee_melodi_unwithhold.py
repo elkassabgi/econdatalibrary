@@ -99,16 +99,35 @@ def test_an_operator_entry_is_never_removed(env, monkeypatch):
 
 
 def test_a_list_changed_meanwhile_is_not_overwritten(env, monkeypatch):
+    """The operator writes the list AFTER this pass read it (here: while the pass reads the CSV object). The write
+    must be conditional on the ETag READ WITH THE LIST - an ETag re-read at write time would overwrite the
+    operator's change."""
     fake, st = _complete(env, monkeypatch, {SID: ENT})
-    real = st.put_if
+    real_get = st.get
 
-    def racing(key, data, *, if_match=None, if_none_match=False):
-        st.objs[key] = _list({SID: ENT, "insee_melodi:NEW": ENT})            # the operator wrote in between
-        return real(key, data, if_match=if_match, if_none_match=if_none_match)
-    st.put_if = racing
+    def racing_get(key):
+        if key == M._csv_object_key(SEED):
+            st.objs[M.WITHHELD_KEY] = _list({SID: ENT, "insee_melodi:NEW": ENT})   # the operator, in between
+        return real_get(key)
+    st.get = racing_get
     r = env.run(fake)
     assert set(_ids(st)) == {SID, "insee_melodi:NEW"}, "the operator's newer list was overwritten"
     assert f"{M.WITHHELD_KEY} changed meanwhile - un-hide retried on a later pass" in r.error
+
+
+def test_a_flow_that_is_not_complete_stays_withheld(env, monkeypatch):
+    fake, st = _complete(env, monkeypatch, {SID: ENT})
+    p = env.store / S.STATE_FILE
+    d = json.loads(p.read_text(encoding="utf-8"))
+    d["flows"][SEED]["status"] = S.NEEDS_ORIGIN                              # e.g. queued for a re-pull
+    p.write_text(json.dumps(d), encoding="utf-8")
+    M._Pass(fake, S.Clock(now=env.clock, window_s=2700, source="t"), S.FlowState.load(), set()).unwithhold()
+    assert SID in _ids(st) and st.puts == []
+    d["flows"][SEED]["status"] = S.COMPLETE
+    d["flows"][SEED]["basis"] = "tail"                                       # complete, but only per a tail
+    p.write_text(json.dumps(d), encoding="utf-8")
+    M._Pass(fake, S.Clock(now=env.clock, window_s=2700, source="t"), S.FlowState.load(), set()).unwithhold()
+    assert SID in _ids(st) and st.puts == []
 
 
 def test_a_large_flow_waits_for_the_owner(env, monkeypatch):
