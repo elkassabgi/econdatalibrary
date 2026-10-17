@@ -44,13 +44,16 @@ scratch dir and removes the file). Refused after T0, like the lane (core.cutover
 writer is the owner's T0 decision). --apply runs only when every path it writes is the live checkout's
 (the store dir, split map, catalogue, writer-lock dir, receipts). --apply holds logs/statcan_writer.lock
 for the run (never waits: held by the lane -> refused, exit 1) and stops starting cubes after
---max-minutes (default 120): the waiting lane cannot beat while the lock is held, and RELAUNCH_GUARD.ps1
-kills a lane whose log is silent for 3 h. No D1 module is imported, and no object outside
+--max-minutes (default 90, counted from the lock, the series_fts read included): the waiting lane cannot
+beat while the lock is held, and RELAUNCH_GUARD.ps1 kills a lane whose log is silent for 3 h; a started
+cube runs to its end, so run the three giants (34100299, 34100298, 15100050) as their own batch first.
+The one series_fts read holds a READ lock on the local catalogue for its ~18 minutes: no other catalogue
+writer may run then (none has written it since 2026-10-01; the run step must check). No D1 module is imported, and no object outside
 clean_full/statcan/ and series/statcan%3A<pid> is written.
 
     python tools/statcan_new_cubes.py                      # DRY: what would be ingested
     python tools/statcan_new_cubes.py --fetch --pids 33101174
-    python tools/statcan_new_cubes.py --apply [--pids a,b] [--max-minutes 120]
+    python tools/statcan_new_cubes.py --apply [--pids a,b] [--max-minutes 90]
 """
 from __future__ import annotations
 
@@ -82,7 +85,7 @@ CATALOGUE = catalog_path.under(ROOT)
 RECEIPTS = os.path.join(ROOT, "logs", "statcan_new_cubes")
 STAGES = ("committing", "committed", "served", "catalogued", "done")
 # Under RELAUNCH_GUARD.ps1's 3-hour stall limit for the lane, which cannot beat while this run holds the lock.
-MAX_MINUTES_DEFAULT = 120.0
+MAX_MINUTES_DEFAULT = 90.0
 # what a receipt keeps of the parse: what jobs/ingest_statcan.done_record and the lane record need
 PARSE_KEYS = ("n_obs", "n_null", "n_series", "series_capped", "start", "end", "layout", "skipped",
               "needs_stored_floor")
@@ -111,6 +114,10 @@ def _now() -> str:
 
 class Refused(Exception):
     """A cube this run must not touch (the reason is the message)."""
+
+
+class AlreadyRefused(Refused):
+    """Refused before for the same release; its receipt already holds the reason, and is left as it is."""
 
 
 # --------------------------------------------------------------------------- #
@@ -366,8 +373,15 @@ def finish_commit(pid: str, lite: dict, rec: dict) -> None:
     parquet, done = _paths(pid)
     in_store, in_mirror = blob.exists(parquet), os.path.exists(parquet)
     if in_mirror and pq.read_metadata(parquet).num_rows != rec["rows"]:
-        raise RuntimeError(f"the mirror's {pid}.parquet holds {pq.read_metadata(parquet).num_rows:,} rows, "
-                           f"not the {rec['rows']:,} this run published - another writer; a human's")
+        now_rows = pq.read_metadata(parquet).num_rows
+        c = lane.load_state()["cubes"].get(str(pid)) or {}
+        if c.get("not_held") or not c.get("merged"):
+            raise RuntimeError(f"the mirror's {pid}.parquet holds {now_rows:,} rows, not the {rec['rows']:,} "
+                               f"this run published, and the lane has not merged it - another writer; a human's")
+        # THE LANE MERGED IT between two runs (a new release, the take-over case of stage_record): the store
+        # now holds the lane's keep-old merge of this run's table. Go on with what is stored; the .done
+        # record keeps this run's parse, as every held cube's .done keeps its first ingest.
+        rec.update(rows=now_rows, lane_merged_before_done=c.get("merged"))
     if in_mirror and not in_store:
         # the local replace happened and the store PUT did not (commit_local_file's two steps): publish
         # the same file again by the same path, never a second fetch
@@ -533,7 +547,7 @@ def ingest(pid: str, lite: dict | None, put, release=None, retry_refused=False) 
         return {**rec, "this_run": "already done"}
     if rec.get("stage") == "refused" and rec.get("release") == release and not retry_refused:
         # the same release was refused before: not downloaded again (a refused giant is ~0.6 GB)
-        raise Refused(f"refused before for this release ({rec.get('reason')}); --retry-refused to try again")
+        raise AlreadyRefused(f"refused before for this release ({rec.get('reason')}); --retry-refused to try again")
     if rec.get("stage") == "committing":
         parquet, _done = _paths(pid)
         if not blob.exists(parquet) and not os.path.exists(parquet):
@@ -600,7 +614,7 @@ def live_problems() -> list:
     return [f"{name} is {got}, not {exp}" for name, got, exp in want if not same(got, exp)]
 
 
-def run(a, put=None, clock=time.monotonic) -> int:
+def run(a, put=None, clock=time.monotonic, started=None) -> int:
     cutover.refuse_if_cut_over("statcan_new_cubes - the statcan store is R2 before T0, and its post-T0 "
                                "writer is the owner's T0 decision (jobs/statcan_lane.POST_T0_READY)")
     cubes = new_cubes(a.pids)
@@ -636,9 +650,11 @@ def run(a, put=None, clock=time.monotonic) -> int:
     bad = live_problems()
     if bad:
         raise SystemExit("REFUSING --apply: only the live checkout's files may be written - " + "; ".join(bad))
+    # THE BUDGET COUNTS FROM THE LOCK (review C1): main() passes the moment it took it, so the series_fts
+    # read below (measured ~18 min cold) is inside the budget, not added to it
+    started = clock() if started is None else started
     load_fts(cubes)                                # ONE series_fts scan for the whole run (load_fts)
     put = put or lane._store_put()
-    started = clock()
     budget_s = 60.0 * float(getattr(a, "max_minutes", MAX_MINUTES_DEFAULT))
     deferred = []
     for pid in sorted(cubes):
@@ -655,7 +671,8 @@ def run(a, put=None, clock=time.monotonic) -> int:
             if r.get("stage") in (None, "refused"):
                 # NOTHING WRITTEN for it: a refusal, named, not a failure of this run
                 results[pid] = {"stage": "refused", "reason": str(e)}
-                save_receipt({"pid": pid, "stage": "refused", "reason": str(e), "release": cubes[pid]})
+                if not isinstance(e, AlreadyRefused):    # keep the first reason; never nest it (review C4)
+                    save_receipt({"pid": pid, "stage": "refused", "reason": str(e), "release": cubes[pid]})
             else:
                 # refused PART-WAY (objects exist, the rest cannot follow): a human's, so it fails the run
                 failed += 1
@@ -700,6 +717,7 @@ def main(argv=None) -> int:
         if bad:
             raise SystemExit("REFUSING --apply: only the live checkout's files may be written - " + "; ".join(bad))
         writer_lock.hold_or_refuse(LOCK_NAME, WHAT)
+        return run(a, started=time.monotonic())        # the budget counts from the lock (review C1)
     return run(a)
 
 

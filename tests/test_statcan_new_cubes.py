@@ -166,7 +166,7 @@ def world(tmp_path, monkeypatch):
 
 def _args(**kw):
     import argparse
-    return argparse.Namespace(**{"apply": False, "fetch": False, "pids": None, "max_minutes": 120.0,
+    return argparse.Namespace(**{"apply": False, "fetch": False, "pids": None, "max_minutes": 90.0,
                                  "retry_refused": False, **kw})
 
 
@@ -646,3 +646,59 @@ def test_a_row_appearing_inside_the_transaction_rolls_it_back(world):
     assert tool.run(_args(apply=True)) == 1
     rows, fts = _cat_rows(world)
     assert rows == [] and fts == []
+
+
+# --------------------------------------------------------------------------- #
+# second review (VERDICT2, 2026-10-17) conditions C1, C3, C4
+# --------------------------------------------------------------------------- #
+def test_the_budget_counts_the_series_fts_read(world, monkeypatch):
+    """C1: the clock starts at the lock, so a slow series_fts read uses up the budget instead of adding to it."""
+    t = {"now": 0.0}
+    real = tool.load_fts
+
+    def slow_read(pids):
+        real(pids)
+        t["now"] += 91 * 60.0                      # the read took longer than the whole default budget
+    monkeypatch.setattr(tool, "load_fts", slow_read)
+    before = _snapshot(world)
+    assert tool.run(_args(apply=True, max_minutes=90), clock=lambda: t["now"], started=0.0) == 0
+    _nothing_written(world, before)
+    assert world["net"]["downloads"] == 0
+
+
+def test_main_starts_the_budget_when_it_takes_the_lock(world, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(lane, "pin_backend", lambda *a, **k: None)
+    monkeypatch.setattr(writer_lock, "hold_or_refuse", lambda *a, **k: seen.setdefault("lock", tool.time.monotonic()))
+    monkeypatch.setattr(tool, "run", lambda a, started=None, **k: seen.setdefault("started", started) and 0)
+    tool.main(["--apply"])
+    assert seen["started"] is not None and seen["started"] >= seen["lock"]
+
+
+def test_a_lane_merge_after_the_publish_and_before_the_done_record_is_carried_on(world, monkeypatch):
+    """C3: killed between the publish and .done, then the lane merges a new release over the published
+    parquet; the next run goes on with what is stored instead of refusing for ever."""
+    real = tool.finish_commit
+    monkeypatch.setattr(tool, "finish_commit", lambda *a: (_ for _ in ()).throw(OSError("killed")))
+    assert tool.run(_args(apply=True)) == 1
+    monkeypatch.setattr(tool, "finish_commit", real)
+    world["net"]["rows"] = ROWS + [_row("2026-04", "Windsor - other locations", "v1", "1.1", "4")]
+    world["net"]["counts"] = (6, 3)
+    lane.run(enumerate_releases=lambda since: {int(NEW_PID): "2026-11-30T12:30"})
+    assert pq.read_metadata(world["d"] / f"{NEW_PID}.parquet").num_rows == 6
+    assert tool.run(_args(apply=True)) == 0
+    rows, fts = _cat_rows(world)
+    assert len(rows) == len(fts) == 2
+    st = json.loads((world["d"] / "_lane_state.json").read_text())
+    assert NEW_PID not in st["new_cubes"]
+
+
+def test_a_repeated_refusal_keeps_its_first_reason(world, monkeypatch):
+    """C4: the reason is not wrapped inside itself on every run."""
+    monkeypatch.setattr(tool, "choose", lambda path, n: ("", 0))
+    p = world["tmp"] / "logs" / "statcan_new_cubes" / f"{NEW_PID}.json"
+    assert tool.run(_args(apply=True)) == 0
+    first = json.loads(p.read_text())["reason"]
+    for _ in range(3):
+        assert tool.run(_args(apply=True)) == 0
+    assert json.loads(p.read_text())["reason"] == first and "refused before" not in first
