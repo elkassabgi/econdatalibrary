@@ -42,6 +42,7 @@ ARGS = {
     "tools/catalog_pxweb_flowgrain.py": {"write": [], "dry": ["--dry-run"]},
     "tools/catalog_who_api.py": {"write": ["who_sdg"], "dry": ["who_sdg", "--dry-run"]},
     "tools/clean_catalogue_titles.py": {"write": ["--apply"], "dry": []},
+    "tools/statcan_new_cubes.py": {"write": ["--apply"], "dry": []},
 }
 
 
@@ -131,6 +132,7 @@ EXPECTED_WRITERS = {
     "tools/catalog_statcan_tables.py", "tools/catalog_table_grain.py", "tools/catalog_unsdg_flows.py",
     "tools/catalog_usda_tables.py", "tools/catalog_whr.py", "tools/catalog_who_api.py",
     "tools/catalog_worldbank_esg_gaps.py", "tools/enrich_sec_edgar_tickers.py",   # joined 2026-09-24 (plan step 1)
+    "tools/statcan_new_cubes.py",                                                  # joined 2026-10-17
     "tools/rekey_fao_series.py", "tools/title_bea_from_api.py",
     "tools/title_damodaran_margins.py", "tools/title_eia_eba_all.py", "tools/title_eia_nuclear_status.py",
     "tools/title_idb_from_ckan.py", "tools/title_noaa_from_siblings.py", "tools/title_rba_from_csv.py",

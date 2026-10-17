@@ -120,26 +120,27 @@ def world(tmp_path, monkeypatch):
     d.mkdir(parents=True)
     monkeypatch.setattr(sc, "OUT_DIR", str(d))
     monkeypatch.setattr(sc, "TMP_DIR", str(d / "_incr_tmp"))
-    for name in ("STATE", "PROGRESS", "DEBT"):
-        monkeypatch.setattr(lane, name, str(d / f"_lane_{name.lower()}.json"))
+    for name, base in (("STATE", "_lane_state.json"), ("PROGRESS", "_lane_progress.json"),
+                       ("DEBT", "_catalogue_debt.json")):
+        monkeypatch.setattr(lane, name, str(d / base))
     monkeypatch.setattr(lane, "LOCAL_PROGRESS", str(tmp_path / "logs" / "statcan_lane.progress.json"))
     monkeypatch.setattr(lane, "SPLIT_MAP", str(d / "_split_map.json"))
-    monkeypatch.setattr(lane, "CATALOGUE", str(tmp_path / "catalog.db"))
+    monkeypatch.setattr(lane, "CATALOGUE", str(tmp_path / "data" / "catalog.db"))
     monkeypatch.setattr(lane, "MAX_ROWS", 4)                    # 5 rows: the new cube must split
     monkeypatch.setattr(writer_lock, "LOCK_DIR", str(tmp_path / "logs"))
-    monkeypatch.setattr(tool, "CATALOGUE", str(tmp_path / "catalog.db"))
+    monkeypatch.setattr(tool, "CATALOGUE", str(tmp_path / "data" / "catalog.db"))
     monkeypatch.setattr(tool, "RECEIPTS", str(tmp_path / "logs" / "statcan_new_cubes"))
-    monkeypatch.setattr(tool, "LIVE_ROOT", tool.ROOT)            # this checkout plays the live one
+    monkeypatch.setattr(tool, "LIVE_ROOT", str(tmp_path))          # tmp_path plays the live checkout
     monkeypatch.setattr(sc, "_LITE_FLOOR", 1)
     (d / "_split_map.json").write_text(json.dumps({HELD_PID: {"dim": "geo", "parts": 2, "rows": 9}}))
     (d / f"{HELD_PID}.parquet").write_bytes(b"held")
-    _catalogue(tmp_path / "catalog.db")
+    _catalogue(tmp_path / "data" / "catalog.db")
     (d / "_lane_state.json").write_text(json.dumps({
         "version": 1, "floor": "2026-07-29", "parsed_rows": {}, "last_enum_utc": "2026-10-17T20:00:00Z",
         "cubes": {NEW_PID: {"release": REL, "merged": REL, "served": REL, "not_held": True,
                             "bytes": None, "est_min": None}},
         "new_cubes": {NEW_PID: REL}}))
-    (d / "_lane_debt.json").write_text(json.dumps({"cubes": {}, "new_cubes": {NEW_PID: REL}}))
+    (d / "_catalogue_debt.json").write_text(json.dumps({"cubes": {}, "new_cubes": {NEW_PID: REL}}))
     r2 = _R2()
     monkeypatch.setattr(blob.R2Blob, "client", property(lambda self: r2))
     net = {"counts": (5, 3), "rows": ROWS, "lite": True, "downloads": 0}
@@ -165,12 +166,13 @@ def world(tmp_path, monkeypatch):
 
 def _args(**kw):
     import argparse
-    return argparse.Namespace(**{"apply": False, "fetch": False, "pids": None, **kw})
+    return argparse.Namespace(**{"apply": False, "fetch": False, "pids": None, "max_minutes": 120.0,
+                                 "retry_refused": False, **kw})
 
 
 def _snapshot(w):
     files = sorted(p.name for p in w["d"].rglob("*") if p.is_file())
-    con = sqlite3.connect(w["tmp"] / "catalog.db")
+    con = sqlite3.connect(w["tmp"] / "data" / "catalog.db")
     n = con.execute("SELECT count(*) FROM series").fetchone()[0]
     f = con.execute("SELECT count(*) FROM series_fts").fetchone()[0]
     con.close()
@@ -180,7 +182,7 @@ def _snapshot(w):
 
 
 def _cat_rows(w, pid=NEW_PID):
-    con = sqlite3.connect(w["tmp"] / "catalog.db")
+    con = sqlite3.connect(w["tmp"] / "data" / "catalog.db")
     lo = f"statcan:{pid}"
     rows = con.execute("SELECT series_id, title, license_id, start_date, end_date FROM series "
                        "WHERE series_id >= ? AND series_id < ? ORDER BY 1", (lo, lo + "$")).fetchall()
@@ -231,7 +233,7 @@ def test_a_new_cube_is_stored_served_catalogued_and_handed_to_the_lane(world):
     c = st["cubes"][NEW_PID]
     assert NEW_PID not in st["new_cubes"] and "not_held" not in c
     assert c["merged"] == c["served"] == REL and c["rows"] == 5
-    assert NEW_PID not in json.loads((d / "_lane_debt.json").read_text())["new_cubes"]
+    assert NEW_PID not in json.loads((d / "_catalogue_debt.json").read_text())["new_cubes"]
     rec = json.loads((world["tmp"] / "logs" / "statcan_new_cubes" / f"{NEW_PID}.json").read_text())
     assert rec["stage"] == "done" and rec["ids"] == 2 and len(rec["csv_keys"]) == 2
     # a second run does nothing
@@ -336,7 +338,7 @@ def test_a_cube_held_anywhere_is_refused(world, held, monkeypatch):
         m[NEW_PID] = {"dim": "uom", "parts": 2, "rows": 5}
         (d / "_split_map.json").write_text(json.dumps(m))
     else:
-        con = sqlite3.connect(world["tmp"] / "catalog.db")
+        con = sqlite3.connect(world["tmp"] / "data" / "catalog.db")
         con.execute("INSERT INTO series (series_id) VALUES ('statcan:33101178#x')")
         con.commit()
         con.close()
@@ -366,9 +368,9 @@ def test_apply_runs_only_from_the_live_checkout(world, monkeypatch, tmp_path):
     monkeypatch.setattr(tool, "LIVE_ROOT", str(tmp_path / "elsewhere"))
     monkeypatch.setattr(lane, "pin_backend", lambda *a, **k: None)   # it sets os.environ itself
     before = _snapshot(world)
-    with pytest.raises(SystemExit, match="only the live checkout"):
+    with pytest.raises(SystemExit, match="only the live checkout's files"):
         tool.run(_args(apply=True))
-    with pytest.raises(SystemExit, match="only the live checkout"):
+    with pytest.raises(SystemExit, match="only the live checkout's files"):
         tool.main(["--apply"])
     _nothing_written(world, before)
     assert tool.run(_args()) == 0                          # a DRY run is fine anywhere
@@ -430,7 +432,7 @@ def test_a_run_stopped_after_the_lane_record_finishes_without_recording_twice(wo
 def test_an_fts_id_present_after_commit_rolls_the_catalogue_back(world, monkeypatch):
     world["r2"].fail = True
     assert tool.run(_args(apply=True)) == 1                        # committed, not served
-    con = sqlite3.connect(world["tmp"] / "catalog.db")
+    con = sqlite3.connect(world["tmp"] / "data" / "catalog.db")
     con.execute("INSERT INTO series_fts VALUES ('statcan:33101178#Aden', 'stray', 'Canada')")
     con.commit()
     con.close()
@@ -476,7 +478,7 @@ def test_the_tool_names_no_d1_and_no_aqueduct_key():
 def test_a_stray_row_in_the_cubes_range_rolls_the_whole_insert_back(world):
     world["r2"].fail = True
     assert tool.run(_args(apply=True)) == 1                        # committed, not served
-    con = sqlite3.connect(world["tmp"] / "catalog.db")
+    con = sqlite3.connect(world["tmp"] / "data" / "catalog.db")
     con.execute("INSERT INTO series (series_id) VALUES ('statcan:33101178#zzz')")
     con.commit()
     con.close()
@@ -484,3 +486,163 @@ def test_a_stray_row_in_the_cubes_range_rolls_the_whole_insert_back(world):
     assert tool.run(_args(apply=True)) == 1                        # 3 rows in the range, 2 wanted
     rows, fts = _cat_rows(world)
     assert [r[0] for r in rows] == ["statcan:33101178#zzz"] and fts == []
+
+
+def test_a_run_killed_after_the_publish_resumes_without_a_second_fetch(world, monkeypatch):
+    real = tool.finish_commit
+    monkeypatch.setattr(tool, "finish_commit", lambda *a: (_ for _ in ()).throw(OSError("killed")))
+    assert tool.run(_args(apply=True)) == 1
+    rec = json.loads((world["tmp"] / "logs" / "statcan_new_cubes" / f"{NEW_PID}.json").read_text())
+    assert rec["stage"] == "committing" and (world["d"] / f"{NEW_PID}.parquet").exists()
+    assert not (world["d"] / f"{NEW_PID}.done").exists()
+    monkeypatch.setattr(tool, "finish_commit", real)
+    assert tool.run(_args(apply=True)) == 0
+    assert world["net"]["downloads"] == 1
+    assert json.loads((world["d"] / f"{NEW_PID}.done").read_text())["title"] == TITLE
+    assert len(_cat_rows(world)[0]) == 2
+
+
+def test_a_publish_that_reached_the_mirror_only_is_published_again(world, monkeypatch):
+    calls = {"n": 0}
+    real_commit, real_exists = blob.commit_local_file, blob.exists
+
+    def commit(src, dst):
+        calls["n"] += 1
+        real_commit(src, dst)
+
+    def exists(p):                                     # the store PUT of the first publish was lost
+        if p.endswith(f"{NEW_PID}.parquet"):
+            return calls["n"] >= 2
+        return real_exists(p)
+    monkeypatch.setattr(blob, "commit_local_file", commit)
+    monkeypatch.setattr(blob, "exists", exists)
+    assert tool.run(_args(apply=True)) == 0
+    assert calls["n"] == 2 and world["net"]["downloads"] == 1
+    assert pq.read_metadata(world["d"] / f"{NEW_PID}.parquet").num_rows == 5
+
+
+def test_a_run_killed_after_the_catalogue_commit_finishes_without_inserting_twice(world, monkeypatch):
+    real = tool.save_receipt
+
+    def stop(rec):
+        if rec.get("stage") == "catalogued":
+            raise OSError("killed")
+        real(rec)
+    monkeypatch.setattr(tool, "save_receipt", stop)
+    assert tool.run(_args(apply=True)) == 1
+    monkeypatch.setattr(tool, "save_receipt", real)
+    assert tool.run(_args(apply=True)) == 0
+    rows, fts = _cat_rows(world)
+    assert len(rows) == len(fts) == 2
+    rec = json.loads((world["tmp"] / "logs" / "statcan_new_cubes" / f"{NEW_PID}.json").read_text())
+    assert rec["stage"] == "done" and rec["catalogued_by"] == "an earlier run"
+
+
+# --------------------------------------------------------------------------- #
+# review findings F4-F9 (2026-10-17)
+# --------------------------------------------------------------------------- #
+def test_the_lane_taking_the_cube_over_between_two_runs_is_finished_not_refused(world):
+    """F4: a new release reaches the lane while the cube is committed but not yet catalogued. The lane merges
+    the parquet this tool published and serves nothing (no catalogued id yet). The next tool run must
+    catalogue it, close the new-cube debt and owe the lane a serve, and the lane must then serve it."""
+    world["r2"].fail = True
+    assert tool.run(_args(apply=True)) == 1                        # committed, not served
+    world["r2"].fail = False
+    rel2 = "2026-11-30T12:30"
+    world["net"]["rows"] = ROWS[:-1] + [_row("2026-01", "Aden", "v3", "2.1", "8")]
+    lane.run(enumerate_releases=lambda since: {int(NEW_PID): rel2})
+    st = json.loads((world["d"] / "_lane_state.json").read_text())
+    assert "not_held" not in st["cubes"][NEW_PID] and NEW_PID in st["new_cubes"]
+    world["r2"].objects.clear()
+    assert tool.run(_args(apply=True)) == 0
+    st = json.loads((world["d"] / "_lane_state.json").read_text())
+    assert NEW_PID not in st["new_cubes"] and st["cubes"][NEW_PID]["served"] is None
+    assert NEW_PID not in json.loads((world["d"] / "_catalogue_debt.json").read_text())["new_cubes"]
+    world["r2"].objects.clear()
+    lane.run(enumerate_releases=lambda since: {int(NEW_PID): rel2})
+    st = json.loads((world["d"] / "_lane_state.json").read_text())
+    assert st["cubes"][NEW_PID]["served"] == rel2
+    want = "series_id,obs_date,value" + chr(10) + "v3,2026-01-01,8.0" + chr(10)
+    assert world["r2"].served()["series/statcan%3A33101178%23Aden.csv"] == want
+    assert NEW_PID not in json.loads((world["d"] / "_catalogue_debt.json").read_text()).get("cubes", {})
+
+
+def test_the_run_starts_no_cube_past_its_time_budget(world):
+    """F5: the lane cannot beat while this run holds the lock; past --max-minutes no new cube starts."""
+    before = _snapshot(world)
+    assert tool.run(_args(apply=True, max_minutes=0)) == 0
+    _nothing_written(world, before)
+    assert world["net"]["downloads"] == 0
+    logs = world["tmp"] / "logs" / "statcan_new_cubes"
+    runs = [p for p in os.listdir(logs) if p.startswith("_run_")]
+    assert json.loads((logs / runs[0]).read_text())["deferred_by_budget"] == [NEW_PID]
+
+
+def test_a_whole_cube_with_no_value_is_refused_before_anything_is_written(world, monkeypatch):
+    """F6: the sidecar's dates would give it a catalogue id, but the serving scan writes nothing for it."""
+    monkeypatch.setattr(lane, "MAX_ROWS", 3_000_000)
+    world["net"]["rows"] = [_row("2026-01", "Aden", "v3", "2.1", "..")]
+    world["net"]["counts"] = (1, 1)
+    before = _snapshot(world)
+    assert tool.run(_args(apply=True)) == 0
+    _nothing_written(world, before)
+    rec = json.loads((world["tmp"] / "logs" / "statcan_new_cubes" / f"{NEW_PID}.json").read_text())
+    assert rec["stage"] == "refused" and "catalogue 1 id(s) and serve 0" in rec["reason"]
+
+
+@pytest.mark.parametrize("break_it", ["licence", "source", "fts"])
+def test_a_catalogue_that_cannot_take_the_cube_refuses_before_the_publish(world, break_it):
+    """F7: the licence, source and series_fts checks run in `prepare`, before any object is written."""
+    con = sqlite3.connect(world["tmp"] / "data" / "catalog.db")
+    if break_it == "licence":
+        con.execute("UPDATE license SET reservable=0")
+    elif break_it == "source":
+        con.execute("DELETE FROM source")
+    else:
+        con.execute("INSERT INTO series_fts VALUES ('statcan:33101178#Aden', 'stray', 'Canada')")
+    con.commit()
+    con.close()
+    before = _snapshot(world)
+    assert tool.run(_args(apply=True)) == 0
+    after = _snapshot(world)
+    assert after[0] == before[0] and after[4:] == before[4:], "an object or the map was written"
+    rec = json.loads((world["tmp"] / "logs" / "statcan_new_cubes" / f"{NEW_PID}.json").read_text())
+    assert rec["stage"] == "refused"
+
+
+@pytest.mark.parametrize("which", ["store dir", "lock dir", "catalogue"])
+def test_apply_refuses_when_any_written_path_is_not_the_live_checkouts(world, monkeypatch, tmp_path, which):
+    """F8: the guard checks the PATHS it writes, not only the code's location."""
+    other = str(tmp_path / "elsewhere")
+    if which == "store dir":
+        monkeypatch.setattr(sc, "OUT_DIR", other)
+    elif which == "lock dir":
+        monkeypatch.setattr(writer_lock, "LOCK_DIR", other)
+    else:
+        monkeypatch.setattr(tool, "CATALOGUE", os.path.join(other, "catalog.db"))
+    with pytest.raises(SystemExit, match="only the live checkout's files"):
+        tool.run(_args(apply=True))
+    assert world["net"]["downloads"] == 0
+
+
+def test_a_refused_release_is_not_downloaded_again(world, monkeypatch):
+    """F9: a giant the splitter refuses is ~0.6 GB; the same release is not fetched on every run."""
+    monkeypatch.setattr(tool, "choose", lambda path, n: ("", 0))
+    assert tool.run(_args(apply=True)) == 0
+    assert tool.run(_args(apply=True)) == 0
+    assert world["net"]["downloads"] == 1
+    assert tool.run(_args(apply=True, retry_refused=True)) == 0
+    assert world["net"]["downloads"] == 2
+
+
+def test_a_row_appearing_inside_the_transaction_rolls_it_back(world):
+    """The in-transaction check: a trigger adds a row in the cube's range during the INSERT; the count no
+    longer matches and nothing of the cube is committed."""
+    con = sqlite3.connect(world["tmp"] / "data" / "catalog.db")
+    con.execute("CREATE TRIGGER ghost AFTER INSERT ON series WHEN NEW.series_id = 'statcan:33101178#Aden' "
+                "BEGIN INSERT INTO series (series_id) VALUES ('statcan:33101178#ghost'); END")
+    con.commit()
+    con.close()
+    assert tool.run(_args(apply=True)) == 1
+    rows, fts = _cat_rows(world)
+    assert rows == [] and fts == []
