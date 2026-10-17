@@ -339,17 +339,73 @@ def test_G4_the_shrink_guard_reads_the_stored_object_never_a_stale_served_rows(e
     assert sup["stored"] == 53 and sup["published"] == 78 and env.rows(F) == 78
 
 
+def test_D4_a_plan_whose_publish_never_landed_is_re_planned_against_an_outside_rewrite(env, monkeypatch):
+    """The plan and pre_merge_identity are saved, the pass dies BEFORE the publish, and someone rewrites the
+    served file: its identity moved but it is not the planned table (rows differ) - so the finalize re-plans
+    against what is stored now, never trusts the old plan."""
+    fake = _settled(env)
+    _force(env, {"supersede": [F], "only": "supersede"})
+    real = M.blob.commit_local_file
+
+    def die_before(tmp, path):
+        if path.endswith(f"{F}.parquet"):
+            raise KeyboardInterrupt("killed before the publish")
+        return real(tmp, path)
+    monkeypatch.setattr(M.blob, "commit_local_file", die_before)
+    with pytest.raises(KeyboardInterrupt):
+        run_until_quiet(env, fake)
+    assert env.state()["flows"][F]["attempt"]["supersede_plan"]["published"] == 78 and env.rows(F) == 53
+    env.put(F, OLD + [obs({"NA": "LATE", "SEX": "_T"}, 2020, 1.0)])     # 54 rows, a new identity
+    monkeypatch.setattr(M.blob, "commit_local_file", real)
+    run_until_quiet(env, fake)
+    sup = env.state()["flows"][F]["superseded"]
+    assert sup["stored"] == 54 and sup["published"] == 79 and env.rows(F) == 79, sup
+
+
+def test_D8_a_written_table_whose_footer_is_not_the_plan_is_refused_and_removed(env, monkeypatch):
+    fake = _settled(env)
+    real = M._plan_supersede
+
+    def off_by_one(con, staged_q, stored_q):
+        sup = real(con, staged_q, stored_q)
+        if sup["refused"] is None:
+            sup["published"] += 1
+        return sup
+    monkeypatch.setattr(M, "_plan_supersede", off_by_one)
+    _force(env, {"supersede": [F], "only": "supersede"})
+    res = run_until_quiet(env, fake, passes=2)
+    fe = env.state()["flows"][F]
+    assert "footer does not hold the planned rows" in _errs(res)
+    assert fe["status"] == S.MERGE_PENDING and env.rows(F) == 53 and env.chunks()
+    assert not list(env.store.rglob("*.supersede.tmp")), "a refused supersede left its table behind"
+
+
+def test_a_served_object_changed_while_queued_for_supersede_is_recorded_not_re_classified(env):
+    fake = _settled(env)
+
+    def outside(d):
+        d["flows"][F]["served"].update(rows=5, identity={"size": 1, "mtime_ns": 1})
+    _edit_state(env, outside)
+    _force(env, {"supersede": [F], "only": "supersede"})
+    res = run_until_quiet(env, fake)
+    assert "while queued for its supersede - recorded" in _errs(res)
+    fe = env.state()["flows"][F]
+    assert fe["superseded"]["published"] == 78 and fe["status"] == S.COMPLETE
+
+
 # ------------------------------------------------------------------------------------------ D5 "only"
 def test_D5_only_writes_nothing_for_an_unlisted_flow_and_an_unlisted_in_progress_flow_does_not_block(env):
     fake = _settled(env)
 
     def park(d):
+        # a WALK tail a kill left in progress: a full pass's sweep would park it (a write)
         d["flows"]["DS_CTRL"].update(status=S.IN_PROGRESS, attempt={
-            "id": "a20261017000000-abcdef", "mode": "origin", "next_page": 2, "chunks": 0, "rows_staged": 0,
-            "pages": 1, "started_utc": "2026-10-17T00:00:00+00:00"})
+            "id": "a20261017000000-abcdef", "mode": "tail", "walk": True, "next_page": 2, "chunks": 0,
+            "rows_staged": 0, "pages": 1, "started_utc": "2026-10-17T00:00:00+00:00"})
     _edit_state(env, park)
+    env.put("DS_RP_TD_SEED", series(7))           # an outside rewrite: a full pass's identity check re-classifies
     before = {c: fe for c, fe in env.state()["flows"].items() if c != F}
-    _force(env, {"supersede": [F], "only": "supersede"})
+    _force(env, {"supersede": [F], "only": "supersede", "flows": ["DS_RP_TD_SEED"]})
     n0 = len(fake.calls)
     r = env.run(fake)
     after = {c: fe for c, fe in env.state()["flows"].items() if c != F}
@@ -358,6 +414,7 @@ def test_D5_only_writes_nothing_for_an_unlisted_flow_and_an_unlisted_in_progress
     assert other == [], other[:5]
     assert env.state()["flows"][F]["superseded"]["published"] == 78
     assert "SKIPPED" in (r.error or "") and r.status not in ("ok", "no_change")
+    assert '"flows" / "release_holds" not applied this pass (only: supersede)' in (r.error or "")
 
 
 def test_D5_a_stale_only_is_ignored_and_the_pass_runs_in_full(env):
@@ -375,6 +432,13 @@ def test_D5_only_with_an_empty_list_is_ignored(env):
     _force(env, {"supersede": [], "only": "supersede"})
     r = env.run(fake)
     assert 'ignored - no listed flow has a supersede pending' in (r.error or "")
+
+
+def test_D5_only_with_another_value_is_ignored(env):
+    fake = _settled(env)
+    _force(env, {"supersede": [F], "only": "walk"})
+    r = env.run(fake)
+    assert '"only": \'walk\' is not "supersede" - ignored' in (r.error or "") and "SKIPPED" not in (r.error or "")
 
 
 # ------------------------------------------------------------------------------------------ D6 / G2
@@ -410,6 +474,7 @@ def test_G2_an_unreadable_modified_DEFERS_and_keeps_the_pull(env):
     r = env.run(fake)
     fe = env.state()["flows"][F]
     assert "supersede deferred" in (r.error or "")
+    assert "walk and other repairs SKIPPED by operator order (only: supersede)" in (r.error or "")
     assert fe["status"] == S.MERGE_PENDING and fe["attempt"]["mode"] == "origin" and env.chunks()
     assert env.rows(F) == 53
     fake.modified[F] = keep
@@ -555,3 +620,56 @@ def test_R3_1_a_block_set_by_a_narrow_window_is_lifted_by_a_wide_one(env, monkey
     run_until_quiet(env, fake)
     fe = env.state()["flows"]["DS_RP_TD_SEED"]
     assert fe["status"] == S.COMPLETE and "finalize_blocked" not in fe and env.rows("DS_RP_TD_SEED") == 25
+
+
+def _record_clocks(monkeypatch):
+    clocks = []
+    real_clock = S.Clock
+
+    class Rec(real_clock):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            clocks.append(self)
+    monkeypatch.setattr(S, "Clock", Rec)
+    return clocks
+
+
+def test_R3_1_in_an_only_pass_the_cap_starts_at_the_slots_real_start(env, monkeypatch):
+    """D12: an "only" pass starts its repair slot near minute 0-5, so it can give MORE than hard end -
+    minute 15. A merge needing a minute more than that is worked, not blocked."""
+    fake = _settled(env)
+    clocks = _record_clocks(monkeypatch)
+    real = S.merge_margin_s
+
+    def margin(rows, stored_rows=0):
+        if rows == 75 and stored_rows == 53:
+            c = clocks[-1]
+            return c.hard_end - c.at(M.WALK_UNTIL_MIN) + 60.0
+        return real(rows, stored_rows)
+    monkeypatch.setattr(S, "merge_margin_s", margin)
+    _force(env, {"supersede": [F], "only": "supersede"})
+    res = run_until_quiet(env, fake, passes=2)
+    fe = env.state()["flows"][F]
+    assert "NEEDS THE OWNER" not in _errs(res) and fe["superseded"]["published"] == 78
+
+
+def test_R3_1_a_block_is_lifted_when_the_margin_fits_this_pass_even_if_deferred(env, monkeypatch):
+    flows = _control_flows()
+    fake = FakeMelodi(env.clock, flows)
+    _seed_store(env, fake)
+    real = S.merge_margin_s
+    monkeypatch.setattr(S, "merge_margin_s", lambda rows, stored: 1450.0 if rows == 25 else real(rows, stored))
+    for _ in range(4):
+        env.run(fake, window_s=25 * 60)                                   # a 20-min slot at most: blocked
+    assert env.state()["flows"]["DS_RP_TD_SEED"].get("finalize_blocked")
+    real_fin = M._Pass._finalize
+
+    def late(self, code):
+        if code == "DS_RP_TD_SEED":                                      # 24 min left: fits a pass, not now
+            env.clock.t = max(env.clock.t, self.clock.at(M.WALK_UNTIL_MIN + 1))
+        return real_fin(self, code)
+    monkeypatch.setattr(M._Pass, "_finalize", late)
+    r = env.run(fake)
+    fe = env.state()["flows"]["DS_RP_TD_SEED"]
+    assert "DS_RP_TD_SEED: merge deferred" in (r.error or "")
+    assert "finalize_blocked" not in fe and fe["status"] == S.MERGE_PENDING
