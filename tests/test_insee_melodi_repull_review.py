@@ -284,7 +284,10 @@ def test_ADV12_a_complete_flow_whose_RESIDUE_is_one_page_is_not_re_pulled_on_rec
     flows["DS_RP_TD_OLD"] = series(25, geo="2026")
     fake = FakeMelodi(env.clock, flows)
     _seed_store(env, fake)
-    env.put("DS_RP_TD_OLD", series(P, geo="2025", year=2018))   # one page of the OLD spelling
+    # one page of the OLD spelling, beside 15 rows INSEE still serves. Re-based for AR-330 first-run F1: a
+    # store holding ONLY the old spelling is a spelling drift and is HELD (pinned in
+    # test_insee_melodi_repull_guards.py); this test is about the residue never re-triggering a re-pull.
+    env.put("DS_RP_TD_OLD", series(P, geo="2025", year=2018) + series(25, geo="2026")[:15])
     run_until_quiet(env, fake)
     st = env.state()["flows"]["DS_RP_TD_OLD"]
     assert st["status"] == S.COMPLETE and st["residue"]["rows"] == P

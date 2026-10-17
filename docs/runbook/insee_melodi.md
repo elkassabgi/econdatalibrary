@@ -102,7 +102,9 @@ HOW A PASS RUNS NOW (slots in precedence order, all inside the 35-minute soft st
      we hold. An empty probe is NOT proof of completeness.
   3. WALK (until minute 15): the healthy flows, rotated; each is tailed only when INSEE's catalog
      `modified` changed, the catalog read failed, or 30 days passed. Every tail is STAGED like a re-pull;
-     one that outgrows one chunk (100 pages) joins the repair queue.
+     one that outgrows one chunk (100 pages) is PARKED as needs_refresh in the repair queue (C5); one still
+     running when the walk slot ends is parked too, and the NEXT walk slot resumes it first (AR-330 first-run
+     F4, AR-334 ADV5) - it never waits behind the origin backlog.
   4. REPAIR (until the soft stop): ONE flow at a time - an in-progress or merge-pending attempt first,
      then needs_origin, then needs_refresh. Pages are parsed at once into Arrow, staged locally and
      uploaded every 100 pages as _repull/<FLOW>/<attempt>/<n>.chunk; the cursor lives in _flows.json.
@@ -112,6 +114,30 @@ HOW A PASS RUNS NOW (slots in precedence order, all inside the 35-minute soft st
   rows new or changed against the stored file decide changed_keys (an idempotent tail derives nothing);
   for an origin pull the stored rows INSEE no longer serves are counted as RESIDUE and KEPT (merge, never
   replace - Q1). Only then is the served file published, then the state, then the chunks deleted.
+  SPELLING HOLD (AR-330 first-run F1, after run 39024352275 doubled 8 DD_CNA flows): before any merge the
+  staged rows are split against the stored file - new keys NK + new dates on known keys ND + revised values
+  RV + unchanged U - and logged with the served rows before and after. A merge is HELD (kept merge_pending,
+  `hold: "spelling"`, nothing merged, staged pages kept, the repair slot skips it) when the store holds data
+  and more than 5% of the staged rows RE-SPELL it (AR-334). Keys are compared NORMALISED: FREQ removed, the
+  GEO vintage dropped, and only the dimension names both sides have kept. A staged row on a new key
+  re-spells stored data when (a) the store already holds the same observation (normalised key, date) - a
+  duplicate - or (b) its key-spelling partition (dimension names + GEO vintage) is new to the store and its
+  normalised key is a stored series - the series would continue under a second spelling. A truncation
+  repair adds keys whose normalised form the store lacks (nothing re-spelled); a second GEO vintage the
+  store ALREADY carries is not a new partition under (b).
+  BEHAVIOUR CHANGE, disclosed: before #160 a GEO re-vintage (2025-COM-x -> 2026-COM-x) was appended beside
+  the old vintage. It is now HELD when the store does not yet carry the new vintage's partition, and whenever
+  it would duplicate an observation already stored. 119 stored flows carry a GEO vintage (24 hold two;
+  AR-334's geo_flows.log): each future re-vintage of a flow stored in one vintage only waits for the owner.
+  A multi-vintage TRUNCATION repair is merged only when its vintages cover DIFFERENT years; where the
+  stored vintages share years, the current-vintage rows duplicate stored observations and the repair is
+  HELD. The known cases on the 2026-10-17 mirror: DS_SIDE_CREA_DEP_REG_NAT (2012-2025 under both vintages;
+  CI-proven truncated) and DS_RP_MENAGES_PRINC (2011-2022 vs 2012-2023) - both wait for the owner's
+  spelling decision.
+  EXITS from a hold: the owner supersedes the served file (the identity check sees the object change,
+  releases the hold and the next finalize re-measures the staged pull), or lists the flow under
+  "release_holds" in _force_origin.json (same forms as "flows"; once per entry) to merge it as it is, both
+  spellings kept. A force does not release a hold (it says so): a re-pull returns the same spelling.
 
   While any repair work remains the pass returns `transient_fail` WITH changed_keys (the _giant / PR #151
   precedent): due at the next run, and the merged flows' CSVs are derived this pass. Its note carries the
@@ -145,6 +171,11 @@ STATUSES AND THE OPERATOR (each flow's `status` in `_flows.json`; the note names
   AQUEDUCT_BOUNDED_DISK_RESERVE_BYTES), or a shrink or column refusal (the merged file would lose rows or columns: look at the flow first). The
   merge then retries by itself on a later pass and the count clears. A force does NOT help: it keeps a
   refused ORIGIN pull as it is (a re-pull cannot cure a merge refusal).
+  A merge HELD for a respelling (`hold: "spelling"`, the note's HELD line and its SPELLING DRIFT? line with
+  the diagnosis) is not retried and does not keep the source due: it waits for the OWNER, who decides how
+  the two spellings are kept: supersede the old one in the served file (the hold is then released and the
+  staged pull re-measured), or keep both by listing the flow under "release_holds" (below). A force does not
+  release it, and says so (a re-pull returns the same spelling).
   THE OPERATOR'S FILE is `_force_origin.json` (the fetcher never writes it). Two forms of "flows":
       {"flows": ["DS_X", "DS_Y"], "unblock_repair_after_utc": "<iso>"}
       {"flows": {"DS_X": "<iso>", "DS_Y": "<iso>"}, "unblock_repair_after_utc": "<iso>"}
@@ -161,13 +192,20 @@ STATUSES AND THE OPERATOR (each flow's `status` in `_flows.json`; the note names
     type, or no "flows" at all - a typo such as "flow") is IGNORED and named in the note: it forces nothing
     and clears no recorded force, so fixing it re-forces nothing. {"flows": []} lists no flow, and so does
     a file holding only unblock_repair_after_utc.
+  - "release_holds" (the same two forms as "flows", e.g. {"release_holds": ["DS_X"]}) merges a flow whose merge
+    is HELD for a respelling as it is, keeping both spellings - the owner's "keep both". Once per entry.
   - Never hand-edit `_flows.json`: it is compare-and-swap protected and a hand edit races a later pass.
 
 T0 STEP (before the R2 write key is revoked): let every in-progress attempt finish, or abandon it (list the
 flow in `_force_origin.json` is NOT enough - it starts a new attempt), and delete every `_repull/` chunk on
 R2 - after T0 they cannot be deleted. Broken and unstable flows hold none (they delete theirs); a parked
-`needs_refresh` attempt does. mirror_sync and upload_r2 carry only .parquet, so `_flows.json` and
+`needs_refresh` attempt does, and so does every merge HELD for a respelling (the note's HELD line names
+them: resolve or drop each). mirror_sync and upload_r2 carry only .parquet, so `_flows.json` and
 `_force_origin.json` must be copied to the local store explicitly.
+
+TIME (AR-330 first-run F5, measured on run 39024352275): origin paging costs 4.6-5.5 s a page (tails
+2.6-4.6 s), so a ~16.5-minute repair slot moves about 190 pages; the backlog of at least 37,000 pages needs
+at least 195 passes - about 97 days at 2 passes a day.
 
 LIMITS, stated: completeness is "per INSEE paging" (no INSEE total exists); the served-parquet publish is not
 conditional (two writers of one flow: last writer wins - the attempt lease protects only the repair); the

@@ -33,7 +33,9 @@ HOW A PASS RUNS NOW (slots in precedence order, all inside the 35-minute soft st
      we hold. An empty probe is NOT proof of completeness.
   3. WALK (until minute 15): the healthy flows, rotated; each is tailed only when INSEE's catalog
      `modified` changed, the catalog read failed, or 30 days passed. Every tail is STAGED like a re-pull;
-     one that outgrows one chunk (100 pages) joins the repair queue.
+     one that outgrows one chunk (100 pages) is PARKED as needs_refresh in the repair queue (C5); one still
+     running when the walk slot ends is parked too, and the NEXT walk slot resumes it first (AR-330 first-run
+     F4, AR-334 ADV5) - it never waits behind the origin backlog.
   4. REPAIR (until the soft stop): ONE flow at a time - an in-progress or merge-pending attempt first,
      then needs_origin, then needs_refresh. Pages are parsed at once into Arrow, staged locally and
      uploaded every 100 pages as _repull/<FLOW>/<attempt>/<n>.chunk; the cursor lives in _flows.json.
@@ -43,6 +45,30 @@ HOW A PASS RUNS NOW (slots in precedence order, all inside the 35-minute soft st
   rows new or changed against the stored file decide changed_keys (an idempotent tail derives nothing);
   for an origin pull the stored rows INSEE no longer serves are counted as RESIDUE and KEPT (merge, never
   replace - Q1). Only then is the served file published, then the state, then the chunks deleted.
+  SPELLING HOLD (AR-330 first-run F1, after run 39024352275 doubled 8 DD_CNA flows): before any merge the
+  staged rows are split against the stored file - new keys NK + new dates on known keys ND + revised values
+  RV + unchanged U - and logged with the served rows before and after. A merge is HELD (kept merge_pending,
+  `hold: "spelling"`, nothing merged, staged pages kept, the repair slot skips it) when the store holds data
+  and more than 5% of the staged rows RE-SPELL it (AR-334). Keys are compared NORMALISED: FREQ removed, the
+  GEO vintage dropped, and only the dimension names both sides have kept. A staged row on a new key
+  re-spells stored data when (a) the store already holds the same observation (normalised key, date) - a
+  duplicate - or (b) its key-spelling partition (dimension names + GEO vintage) is new to the store and its
+  normalised key is a stored series - the series would continue under a second spelling. A truncation
+  repair adds keys whose normalised form the store lacks (nothing re-spelled); a second GEO vintage the
+  store ALREADY carries is not a new partition under (b).
+  BEHAVIOUR CHANGE, disclosed: before #160 a GEO re-vintage (2025-COM-x -> 2026-COM-x) was appended beside
+  the old vintage. It is now HELD when the store does not yet carry the new vintage's partition, and whenever
+  it would duplicate an observation already stored. 119 stored flows carry a GEO vintage (24 hold two;
+  AR-334's geo_flows.log): each future re-vintage of a flow stored in one vintage only waits for the owner.
+  A multi-vintage TRUNCATION repair is merged only when its vintages cover DIFFERENT years; where the
+  stored vintages share years, the current-vintage rows duplicate stored observations and the repair is
+  HELD. The known cases on the 2026-10-17 mirror: DS_SIDE_CREA_DEP_REG_NAT (2012-2025 under both vintages;
+  CI-proven truncated) and DS_RP_MENAGES_PRINC (2011-2022 vs 2012-2023) - both wait for the owner's
+  spelling decision.
+  EXITS from a hold: the owner supersedes the served file (the identity check sees the object change,
+  releases the hold and the next finalize re-measures the staged pull), or lists the flow under
+  "release_holds" in _force_origin.json (same forms as "flows"; once per entry) to merge it as it is, both
+  spellings kept. A force does not release a hold (it says so): a re-pull returns the same spelling.
 
   While any repair work remains the pass returns `transient_fail` WITH changed_keys (the _giant / PR #151
   precedent): due at the next run, and the merged flows' CSVs are derived this pass. Its note carries the
@@ -76,6 +102,11 @@ STATUSES AND THE OPERATOR (each flow's `status` in `_flows.json`; the note names
   AQUEDUCT_BOUNDED_DISK_RESERVE_BYTES), or a shrink or column refusal (the merged file would lose rows or columns: look at the flow first). The
   merge then retries by itself on a later pass and the count clears. A force does NOT help: it keeps a
   refused ORIGIN pull as it is (a re-pull cannot cure a merge refusal).
+  A merge HELD for a respelling (`hold: "spelling"`, the note's HELD line and its SPELLING DRIFT? line with
+  the diagnosis) is not retried and does not keep the source due: it waits for the OWNER, who decides how
+  the two spellings are kept: supersede the old one in the served file (the hold is then released and the
+  staged pull re-measured), or keep both by listing the flow under "release_holds" (below). A force does not
+  release it, and says so (a re-pull returns the same spelling).
   THE OPERATOR'S FILE is `_force_origin.json` (the fetcher never writes it). Two forms of "flows":
       {"flows": ["DS_X", "DS_Y"], "unblock_repair_after_utc": "<iso>"}
       {"flows": {"DS_X": "<iso>", "DS_Y": "<iso>"}, "unblock_repair_after_utc": "<iso>"}
@@ -92,13 +123,20 @@ STATUSES AND THE OPERATOR (each flow's `status` in `_flows.json`; the note names
     type, or no "flows" at all - a typo such as "flow") is IGNORED and named in the note: it forces nothing
     and clears no recorded force, so fixing it re-forces nothing. {"flows": []} lists no flow, and so does
     a file holding only unblock_repair_after_utc.
+  - "release_holds" (the same two forms as "flows", e.g. {"release_holds": ["DS_X"]}) merges a flow whose merge
+    is HELD for a respelling as it is, keeping both spellings - the owner's "keep both". Once per entry.
   - Never hand-edit `_flows.json`: it is compare-and-swap protected and a hand edit races a later pass.
 
 T0 STEP (before the R2 write key is revoked): let every in-progress attempt finish, or abandon it (list the
 flow in `_force_origin.json` is NOT enough - it starts a new attempt), and delete every `_repull/` chunk on
 R2 - after T0 they cannot be deleted. Broken and unstable flows hold none (they delete theirs); a parked
-`needs_refresh` attempt does. mirror_sync and upload_r2 carry only .parquet, so `_flows.json` and
+`needs_refresh` attempt does, and so does every merge HELD for a respelling (the note's HELD line names
+them: resolve or drop each). mirror_sync and upload_r2 carry only .parquet, so `_flows.json` and
 `_force_origin.json` must be copied to the local store explicitly.
+
+TIME (AR-330 first-run F5, measured on run 39024352275): origin paging costs 4.6-5.5 s a page (tails
+2.6-4.6 s), so a ~16.5-minute repair slot moves about 190 pages; the backlog of at least 37,000 pages needs
+at least 195 passes - about 97 days at 2 passes a day.
 
 LIMITS, stated: completeness is "per INSEE paging" (no INSEE total exists); the served-parquet publish is not
 conditional (two writers of one flow: last writer wins - the attempt lease protects only the repair); the
@@ -185,27 +223,34 @@ def parse_date(s):
     return None
 
 
-def _obs_to_row(obs):
-    """One Melodi observation -> (series_key, obs_date, value) or None. Mirrors the
-    ingester: series_key over all dims except TIME_PERIOD (sorted), first measure value."""
-    dims = obs.get("dimensions", {})
+def _obs_parse(obs):
+    """One Melodi observation -> ((series_key, obs_date, value), None) or (None, why it is not a row). Mirrors
+    the ingester: series_key over all dims except TIME_PERIOD (sorted), first numeric measure value. The
+    reasons (AR-334 condition 12, one parser for rows and drop counts): no_date (TIME_PERIOD not parseable),
+    no_value (no measure carries a value: an empty cell), non_numeric (a value that is not a number)."""
+    dims = obs.get("dimensions", {}) if isinstance(obs, dict) else {}
     tp = dims.get("TIME_PERIOD", "")
     d = parse_date(tp)
     if d is None:
-        return None
-    measures = obs.get("measures", {})
-    fv = None
+        return None, "no_date"
+    measures = obs.get("measures", {}) or {}
+    fv, seen = None, False
     for mv in measures.values():
         if isinstance(mv, dict) and mv.get("value") is not None:
+            seen = True
             try:
                 fv = float(mv["value"])
                 break
             except (ValueError, TypeError):
                 pass
     if fv is None:
-        return None
+        return None, ("non_numeric" if seen else "no_value")
     key = ":".join(f"{k}={v}" for k, v in sorted(dims.items()) if k != "TIME_PERIOD")
-    return key, d, fv
+    return (key, d, fv), None
+
+
+def _obs_to_row(obs):
+    return _obs_parse(obs)[0]
 
 
 # --------------------------------------------------------------------------------------------- #
@@ -274,12 +319,14 @@ def _request(sess, url, clock):
 
 
 class _Page:
-    __slots__ = ("raw_n", "table", "is_last", "nodata", "http", "within_dups", "fp", "paging", "min_year")
+    __slots__ = ("raw_n", "table", "is_last", "nodata", "http", "within_dups", "fp", "paging", "min_year",
+                 "dropped")
 
     def __init__(self, raw_n=0, table=None, is_last=False, nodata=False, http=None, within_dups=0,
-                 fp=None, paging=None, min_year=None):
+                 fp=None, paging=None, min_year=None, dropped=None):
         self.raw_n, self.table, self.is_last, self.nodata, self.http = raw_n, table, is_last, nodata, http
         self.within_dups, self.fp, self.paging, self.min_year = within_dups, fp, paging, min_year
+        self.dropped = dropped or {}
 
 
 def _page_url(flow, start_year, page):
@@ -318,7 +365,19 @@ def _fetch_page(sess, flow, start_year, page, clock) -> _Page:
     paging = payload.get("paging") if isinstance(payload.get("paging"), dict) else {}
     tbl, dups, fp, my = _parse_page(flow, obs)
     return _Page(raw_n=len(obs), table=tbl, is_last=paging.get("isLast") is True, within_dups=dups,
-                 fp=fp, paging={k: paging.get(k) for k in sorted(paging) if k != "next"}, min_year=my)
+                 fp=fp, paging={k: paging.get(k) for k in sorted(paging) if k != "next"}, min_year=my,
+                 dropped=_drop_counts(obs))
+
+
+def _drop_counts(observations) -> dict:
+    """AR-330 first-run F3: why observations did not become rows - no parseable TIME_PERIOD, or no numeric
+    measure value (an empty cell). Counted per page; the parser itself is unchanged."""
+    out = {}
+    for o in observations:
+        why = _obs_parse(o)[1]
+        if why:
+            out[why] = out.get(why, 0) + 1
+    return out
 
 
 def _catalog_modified(sess, flow, clock) -> str | None:
@@ -450,6 +509,138 @@ def _rule_hits(code, prof, force, fe=None) -> str | None:
         return "a key-spelling partition is an exact multiple of 10,000: " + "; ".join(hits[:3])
     return None
 
+RESPELL_MAX_SHARE = 0.05    # F1: more than this share of the staged rows RESPELL stored data -> the merge is held
+_DIM_RE = re.compile(r"[A-Za-z0-9_]+")
+
+
+def _dims_of(con, rel: str) -> set:
+    return {r[0] for r in con.execute(
+        f"SELECT DISTINCT unnest(regexp_extract_all(series_key, '(?:^|:)([^=:]+)=', 1)) FROM {rel}").fetchall()
+        if r[0] and _DIM_RE.fullmatch(r[0])}
+
+
+def _norm_sql(col: str, strip_dims) -> str:
+    """The key compared ACROSS spellings: FREQ removed, every dimension the other side lacks removed, and the
+    GEO vintage dropped (GEO=2025-COM-x and GEO=2026-COM-x are one place)."""
+    e = col
+    for d in sorted(set(strip_dims) | {"FREQ"}):
+        e = f"regexp_replace({e}, '(^|:){d}=[^:]*', '', 'g')"
+    e = f"regexp_replace({e}, '^:', '')"
+    return f"regexp_replace({e}, 'GEO=\\d{{4}}-', 'GEO=', 'g')"
+
+
+def _merge_split(con, staged_q, stored_q, at) -> dict:
+    """AR-330 first-run F1, AR-334: what a merge would do, measured against the stored file BEFORE it runs.
+    S = NK (rows on keys the store lacks) + ND (new dates on known keys) + RV (revised values) + U (unchanged).
+    RESPELLED = the NK rows that re-spell stored data, compared on the normalised key (_norm_sql):
+      (a) a DUPLICATE: the store already holds the same observation (normalised key, date), or
+      (b) a SPLIT SERIES: the row's key-spelling partition (dimension names + GEO vintage) is new to the store
+          and its normalised key is a stored series - the series would continue under a second spelling.
+    A truncation repair adds keys whose normalised form the store does not hold: RESPELLED 0. A partition the
+    store already holds (a second GEO vintage it already carries) is not a new spelling under (b)."""
+    n, o = f"read_parquet('{staged_q}')", f"read_parquet('{stored_q}')"
+    con.execute(f"CREATE OR REPLACE TEMP TABLE _sk AS SELECT DISTINCT series_key FROM {o}")
+    con.execute(f"CREATE OR REPLACE TEMP TABLE _nkr AS SELECT x.* FROM {n} x ANTI JOIN _sk s ON x.series_key = s.series_key")
+    S = con.execute(f"SELECT count(*) FROM {n}").fetchone()[0]
+    NK, NK_keys = con.execute("SELECT count(*), count(DISTINCT series_key) FROM _nkr").fetchone()
+    matched, RV = con.execute(f"SELECT count(*), count(*) FILTER (WHERE x.value IS DISTINCT FROM y.value) FROM {n} x "
+                              f"JOIN {o} y ON x.series_key = y.series_key AND x.obs_date = y.obs_date").fetchone()
+    stored_rows, stored_keys = con.execute(f"SELECT count(*), count(DISTINCT series_key) FROM {o}").fetchone()
+    respelled = dup = split = 0
+    if NK:
+        sd, nd = _dims_of(con, "_sk"), _dims_of(con, "_nkr")
+        con.execute(f"CREATE OR REPLACE TEMP TABLE _sn AS SELECT DISTINCT {_norm_sql('series_key', sd - nd)} k, "
+                    f"obs_date FROM {o}")
+        con.execute("CREATE OR REPLACE TEMP TABLE _snk AS SELECT DISTINCT k FROM _sn")
+        con.execute(f"CREATE OR REPLACE TEMP TABLE _sp AS SELECT DISTINCT {_PART_EXPR} p FROM _sk")
+        con.execute(f"CREATE OR REPLACE TEMP TABLE _nn AS SELECT {_norm_sql('series_key', nd - sd)} k, obs_date, "
+                    f"{_PART_EXPR} p FROM _nkr")
+        dup, split, respelled = con.execute(
+            "SELECT count(*) FILTER (WHERE d), count(*) FILTER (WHERE NOT d AND s), count(*) FILTER (WHERE d OR s) "
+            "FROM (SELECT (q.k, q.obs_date) IN (SELECT (k, obs_date) FROM _sn) AS d, "
+            "q.p NOT IN (SELECT p FROM _sp) AND q.k IN (SELECT k FROM _snk) AS s FROM _nn q)").fetchone()
+    start = at.get("start") if at.get("mode") == "tail" else None
+    exp_where = f"WHERE year(obs_date) >= {int(start)}" if start else ""
+    expected = con.execute(f"SELECT count(DISTINCT series_key) FROM {o} {exp_where}").fetchone()[0]
+    covered = con.execute(f"SELECT count(*) FROM (SELECT DISTINCT series_key FROM {o} {exp_where}) e "
+                          f"SEMI JOIN (SELECT DISTINCT series_key FROM {n}) z ON e.series_key = z.series_key").fetchone()[0]
+    return {"S": int(S), "NK": int(NK), "NK_keys": int(NK_keys), "ND": int(S - NK - matched), "RV": int(RV),
+            "U": int(matched - RV), "stored_rows": int(stored_rows), "stored_keys": int(stored_keys),
+            "expected": int(expected), "covered": int(covered), "respelled": int(respelled or 0),
+            "respelled_duplicates": int(dup or 0), "respelled_split": int(split or 0)}
+
+
+_PART_EXPR = ("regexp_replace(series_key, '=[^:]*', '', 'g') || '|' || "
+              "coalesce(regexp_extract(series_key, 'GEO=(\\d{4})-', 1), '')")
+
+
+def _spelling_hold(split: dict) -> bool:
+    """F1: hold the merge when the store holds data and more than RESPELL_MAX_SHARE of the staged rows re-spell
+    it (duplicates or split series). The share is measured on every staged row, so a small or empty set of
+    'expected' keys cannot let a respelling through (AR-334 ADV2, ADV3), nor can a partial one (ADV3b)."""
+    if not split["stored_rows"] or not split["S"]:
+        return False
+    return split["respelled"] > 0 and split["respelled"] / split["S"] > RESPELL_MAX_SHARE
+
+
+def _geo_vintage(key: str) -> str | None:
+    for p in key.split(":"):
+        if p.startswith("GEO=") and len(p) > 9 and p[4:8].isdigit() and p[8] == "-":
+            return p[4:8]
+    return None
+
+
+def _dimset(key: str) -> tuple:
+    return tuple(p.split("=", 1)[0] for p in key.split(":"))
+
+
+def _drift_diagnosis(con, staged_q, stored_q, split=None) -> str:
+    """Name the drift class: dimensions gained / lost, a constant-valued added dimension (and whether removing it
+    gives an exact respelling), the GEO vintages new to the store, and the duplicate / split-series counts."""
+    from collections import Counter
+    new_keys = [r[0] for r in con.execute("SELECT DISTINCT series_key FROM _nkr LIMIT 5000").fetchall()]
+    old_keys = [r[0] for r in con.execute("SELECT series_key FROM _sk LIMIT 5000").fetchall()]
+    if not new_keys or not old_keys:
+        return "no key sample"
+    sd, nd = _dims_of(con, "_sk"), _dims_of(con, "_nkr")
+    gained, lost = sorted(nd - sd), sorted(sd - nd)
+    out = [f"dimensions gained {gained or '-'}, lost {lost or '-'}"]
+    for dim in gained:
+        vals = Counter(p.split("=", 1)[1] for k in new_keys for p in k.split(":") if p.startswith(dim + "="))
+        if len(vals) == 1:
+            v = next(iter(vals))
+            comp = f"{dim}={v}".replace("'", "''")
+            stripped = (f"CASE WHEN starts_with(series_key, '{comp}:') THEN substr(series_key, {len(comp) + 2}) "
+                        f"ELSE replace(series_key, ':{comp}', '') END")
+            tot, hit = con.execute(f"SELECT count(*), count(*) FILTER (WHERE {stripped} IN (SELECT series_key FROM _sk)) "
+                                   f"FROM (SELECT DISTINCT series_key FROM _nkr)").fetchone()
+            out.append(f"{dim} is constant ({dim}={v}); without it {hit:,} of {tot:,} new keys equal a stored key"
+                       + (" - an exact respelling" if hit == tot else ""))
+        else:
+            out.append(f"{dim} takes {len(vals)} values (e.g. {', '.join(list(vals)[:3])})")
+    sv = {r[0] for r in con.execute("SELECT DISTINCT regexp_extract(series_key, 'GEO=(\\d{4})-', 1) FROM _sk").fetchall() if r[0]}
+    nv = {r[0] for r in con.execute("SELECT DISTINCT regexp_extract(series_key, 'GEO=(\\d{4})-', 1) FROM _nkr").fetchall() if r[0]}
+    if nv - sv:
+        out.append(f"GEO vintage(s) {sorted(nv - sv)} new to the store (it holds {sorted(sv) or '-'})")
+    elif nv:
+        out.append(f"GEO vintage(s) {sorted(nv)} already stored")
+    if split:
+        out.append(f"{split['respelled_duplicates']:,} rows duplicate a stored observation, "
+                   f"{split['respelled_split']:,} continue a stored series under a new spelling")
+    out.append(f"example new key {new_keys[0][:120]}")
+    return "; ".join(out)
+
+
+def _origin_priority(why: str) -> int:
+    """AR-330 first-run F3: the repair queue works the PROVEN truncations first. Lower is earlier."""
+    w = str(why or "")
+    for n, start in enumerate(("operator force_origin", "a CI-logged delta", "total ", "a key-spelling partition",
+                               "zero rows")):
+        if w.startswith(start):
+            return n
+    return 5                                                         # a probe hit, or anything else
+
+
 def probe_page(s_norm: int) -> int:
     """R2-1: the page past what we hold, from the DISTINCT normalised count (old spellings and duplicates
     inflate the stored total: DS_FLORES_A5 holds 9,532,850 rows over 4,766,824 normalised pairs)."""
@@ -505,7 +696,10 @@ class _Pass:
         except S.StateConflict as e:
             self.conflict = True
             self.labels.append(f"STATE CONFLICT: {e} - repair work stopped this pass")
+            print(f"[insee_melodi] state write REFUSED (another writer): {str(e)[:120]}", flush=True)
             raise
+        self.saves = getattr(self, "saves", 0) + 1
+        print(f"[insee_melodi] state written #{self.saves} (token {str(self.st.token or '')[:12]})", flush=True)
 
     def path(self, code):
         return os.path.join(self.out_dir, f"{code}.parquet")
@@ -536,6 +730,27 @@ class _Pass:
         except S.StateConflict:
             pass
 
+    def _hold_spelling(self, code, at, split, diagnosis):
+        """AR-330 first-run F1: the merge would append a second spelling of the flow. NOTHING is merged: the
+        flow stays merge_pending with every staged chunk and a `hold`, which the repair slot skips, so it never
+        blocks the queue and never re-runs this finalize. The note names it every pass. The decision is the
+        owner's (a supersede of the old spelling is a separate, operator-authorised change)."""
+        fe = self.st.flow(code)
+        fe["status"] = S.MERGE_PENDING
+        fe["hold"] = "spelling"
+        fe["hold_detail"] = {"utc": S.utcnow(), "attempt": at.get("id"), "mode": at.get("mode"), **split,
+                             "diagnosis": diagnosis}
+        msg = (f"{code}: SPELLING DRIFT? merge HELD - {split['respelled']:,} of {split['S']:,} staged rows re-spell "
+               f"stored data ({split['respelled_duplicates']:,} duplicate a stored observation, "
+               f"{split['respelled_split']:,} continue a stored series under a new spelling); {diagnosis}. Nothing "
+               f"merged; staged pages kept; the decision is the owner's (exits: supersede the served file, or "
+               f"release_holds in {S.FORCE_FILE} to keep both)")
+        print(f"[insee_melodi] {msg}", flush=True)
+        self.labels.append(msg[:400])
+        self._book_transient(f"{code}: merge held (spelling drift?)")
+        self.save()
+        return "held"
+
     def _merge_refused(self, code, where, e):
         """A merge_pending flow whose merge (or finalize) failed: it KEEPS merge_pending and its chunks, and the
         note escalates with the count of passes refused. Only a merge that later succeeds ends it - after the
@@ -564,6 +779,8 @@ class _Pass:
         was no attempt."""
         fe = self.st.flow(code)
         at = fe.pop("attempt", None)
+        for k in ("hold", "hold_detail", "hold_accepted"):               # a hold belongs to its attempt (AR-334 1)
+            fe.pop(k, None)
         if not at:
             return False
         self.save()
@@ -603,6 +820,14 @@ class _Pass:
                 continue                                              # this entry was used already
             at = fe.get("attempt") or {}
             status = fe.get("status")
+            if fe.get("hold"):
+                # AR-334 ADV4b: never a silent no-op - a re-pull returns the same spelling, so a force cannot help
+                fe["forced_key"] = key
+                changed = True
+                self.labels.append(f"{code}: force_origin does not release a merge HELD for a respelling (a "
+                                   f"re-pull returns the same spelling); the exits are a supersede of the served "
+                                   f"file, or release_holds in {S.FORCE_FILE} to keep both spellings")
+                continue
             if status in (S.IN_PROGRESS, S.MERGE_PENDING) and at.get("mode") == "origin":
                 fe["forced_key"] = key                                # already an origin pull
                 changed = True
@@ -620,9 +845,27 @@ class _Pass:
             self._drop_attempt(code, "operator force_origin")
             for k in ("failures", "probe", "merge_refusals"):
                 fe.pop(k, None)
-            fe.update(status=S.NEEDS_ORIGIN, why="operator force_origin", repair=True)
+            fe.update(status=S.NEEDS_ORIGIN, why="operator force_origin", repair=True, prio=0)
             self.labels.append(f"{code}: operator force_origin (was {status}) - an origin pull is queued")
             changed = True
+        # AR-334 condition 1: the owner's "keep both" exit. A listed HELD flow's staged pull is merged as it is
+        # (both spellings kept), ONCE per entry (the same per-flow keys as "flows").
+        if problem is None:
+            releases = S.force_entries({"flows": raw.get("release_holds")})
+            for code, fe in self.st.flows.items():                       # AR-334 R2-3: as forced_key is
+                if fe.get("hold_release_key") and code not in releases:
+                    fe.pop("hold_release_key", None)                      # off the list: a later listing releases
+                    changed = True
+            for code, key in sorted(releases.items()):
+                fe = self.st.flows.get(code) or {}
+                if not fe.get("hold") or fe.get("hold_release_key") == key:
+                    continue
+                fe["hold_release_key"] = key
+                fe["hold_accepted"] = (fe.get("attempt") or {}).get("id")
+                fe.pop("hold", None)
+                self.labels.append(f"{code}: release_holds - the held merge is accepted as it is (both spellings "
+                                   f"kept); it merges in the repair slot")
+                changed = True
         self.force = active
         if changed:
             self.save()
@@ -642,6 +885,20 @@ class _Pass:
                 # a walk tail a kill left in progress is PARKED, so only the repair slot's flow is in progress
                 fe["status"] = S.NEEDS_REFRESH
                 swept = True
+        # AR-334 condition 11: probe "hits" judged on raw observations (before the F3 confirmation) are probed
+        # again under the confirmed rule: back to legacy, the probe record cleared, any attempt they started
+        # dropped (state first, chunks second - re-crawlable pages).
+        for code, fe in self.st.flows.items():
+            pr = fe.get("probe") or {}
+            if fe.get("status") in (S.NEEDS_ORIGIN, S.IN_PROGRESS) and str(fe.get("why") or "").startswith("probe page") \
+                    and pr and "new_pairs" not in pr and not pr.get("void"):
+                fe.update(status=S.LEGACY, why="re-probe: the probe hit was judged on raw observations")
+                for k in ("probe", "prio", "repair"):
+                    fe.pop(k, None)
+                self.labels.append(f"{code}: probe hit of {pr.get('raw')} raw obs on page {pr.get('page')} is probed "
+                                   f"again under the confirmed rule (parsed rows the store lacks)")
+                self._drop_attempt(code, "its origin pull rested on an unconfirmed probe hit")
+                swept = True
         if swept:
             self.save()
 
@@ -654,6 +911,18 @@ class _Pass:
         rebased = 0
         for code in codes:
             fe = self.st.flow(code)
+            if fe.get("hold"):
+                # AR-334 condition 1: a HELD flow is re-measured when its served object changes (the owner
+                # superseded the old spelling): the hold is released, the staged attempt kept, and the repair
+                # slot's next finalize measures it against the new store.
+                cur = S.identity(self.path(code))
+                if cur is not None and not S.same_identity(cur, (fe.get("served") or {}).get("identity")):
+                    fe.pop("hold", None)
+                    fe["hold_released"] = {"utc": S.utcnow(), "why": "the served object changed while held"}
+                    self.labels.append(f"{code}: served object changed while its merge was held - hold released, "
+                                       f"the staged pull is re-measured against it")
+                    self.save()
+                continue
             if fe.get("status") in (S.UNCLASSIFIED, S.IN_PROGRESS, S.MERGE_PENDING):
                 continue
             served = fe.get("served") or {}
@@ -719,6 +988,12 @@ class _Pass:
                 fe.update(status=S.LEGACY, why="no exact-multiple partition; probe pending")
                 fe.pop("probe", None)
                 legacy.append(code)
+            if why:
+                fe["prio"] = _origin_priority(why)
+            parts = sorted(((prof or {}).get("partitions") or {}).items(), key=lambda kv: -kv[1])
+            print(f"[insee_melodi] classify {code}: {int((prof or {}).get('rows') or 0):,} rows, s_norm "
+                  f"{int((prof or {}).get('s_norm') or 0):,}, {len(parts)} partition(s) (largest "
+                  f"{parts[0][1] if parts else 0:,}) -> {fe['status']}: {fe['why']}", flush=True)
             self.classified += 1
         # A legacy flow whose probe was voided (or never ran) is probed again: unprobed is not a resting state.
         for code in codes:
@@ -807,12 +1082,58 @@ class _Pass:
                 p = _fetch_page(self.sess, code, None, pg, self.clock)
             except (_Stop, TransientError):
                 break
-            fe["probe"] = {"page": pg, "raw": p.raw_n, "http": p.http, "utc": S.utcnow()}
-            if p.raw_n > 0:
-                fe.update(status=S.NEEDS_ORIGIN, why=f"probe page {pg} returned {p.raw_n} obs", repair=True)
+            parsed = p.table.num_rows if p.table is not None else 0
+            # AR-330 first-run F3: a hit is a page with (key, date) pairs the store LACKS. Raw observations
+            # alone are not: INSEE's pages carry empty cells that never parse (DD_CNA_APU: 627,596 raw
+            # observations, 273,536 parsed), so a page past the parsed count can hold nothing new.
+            new_pairs = self._new_pairs(code, p.table) if parsed else 0
+            fe["probe"] = {"page": pg, "raw": p.raw_n, "parsed": parsed, "new_pairs": new_pairs, "http": p.http,
+                           "dropped": p.dropped, "utc": S.utcnow()}
+            if new_pairs > 0:
+                fe.update(status=S.NEEDS_ORIGIN, why=f"probe page {pg} returned {new_pairs} new (key, date) "
+                                                     f"of {parsed} parsed / {p.raw_n} obs", repair=True, prio=5)
+                verdict = "HIT"
+            elif p.raw_n > 0:
+                fe["why"] = (f"legacy - probe page {pg}: {p.raw_n} obs, {parsed} parsed, none new "
+                             f"(NOT proof of completeness)")
+                verdict = "nothing new"
             else:
                 fe["why"] = f"legacy - probe page {pg} empty (NOT proof of completeness)"
+                verdict = "empty"
+            print(f"[insee_melodi] probe {code} page {pg}: {p.raw_n} obs, {parsed} parsed, {new_pairs} new, "
+                  f"http {p.http} -> {verdict}", flush=True)
             time.sleep(RATE)
+
+    def _new_pairs(self, code, table) -> int:
+        """(key, date) pairs of `table` the stored file lacks, by DuckDB under the profile's memory limit."""
+        lc = blob.local_copy(self.path(code))
+        if lc is None:
+            return table.num_rows
+        local, temp = lc
+        con = spill = None
+        try:
+            con, spill = _duck()
+            con.register("page_t", table)
+            con.execute("CREATE TEMP TABLE _pk AS SELECT DISTINCT series_key, obs_date FROM page_t")
+            con.execute(f"CREATE TEMP TABLE _st AS SELECT series_key, obs_date FROM read_parquet('{_sq(local)}')")
+            con.execute("CREATE TEMP TABLE _pn AS SELECT p.* FROM _pk p ANTI JOIN _st s "
+                        "ON p.series_key = s.series_key AND p.obs_date = s.obs_date")
+            sd, pd_ = _dims_of(con, "_st"), _dims_of(con, "_pn")
+            # AR-334: a pair the store holds under ANOTHER spelling (the normalised key) is not new either
+            con.execute(f"CREATE TEMP TABLE _sn AS SELECT DISTINCT {_norm_sql('series_key', sd - pd_)} k, obs_date FROM _st")
+            return int(con.execute(f"SELECT count(*) FROM (SELECT {_norm_sql('series_key', pd_ - sd)} k, obs_date "
+                                   f"FROM _pn) q ANTI JOIN _sn ON q.k = _sn.k AND q.obs_date = _sn.obs_date"
+                                   ).fetchone()[0])
+        finally:
+            if con is not None:
+                con.close()
+            if spill:
+                shutil.rmtree(spill, ignore_errors=True)
+            if temp:
+                try:
+                    os.remove(local)
+                except OSError:
+                    pass
 
     def _probe_controls(self, ctl):
         try:
@@ -825,7 +1146,12 @@ class _Pass:
             neg = _fetch_page(self.sess, PROBE_EMPTY_CONTROL, None, probe_page(s), self.clock)
             time.sleep(RATE)
         except (_Stop, TransientError) as e:
+            print(f"[insee_melodi] probe controls NOT RUN: {type(e).__name__}: {str(e)[:80]}", flush=True)
             return False, f"control request failed ({type(e).__name__})"
+        ok = pos.raw_n > 0 and neg.raw_n == 0
+        print(f"[insee_melodi] probe controls {'PASS' if ok else 'FAIL'}: positive {ctl} page 2 {pos.raw_n} obs "
+              f"(needs > 0); negative {PROBE_EMPTY_CONTROL} page {probe_page(s)} {neg.raw_n} obs (needs 0)",
+              flush=True)
         if pos.raw_n == 0:
             return False, f"positive control {ctl} page 2 came back empty"
         if neg.raw_n > 0:
@@ -845,10 +1171,15 @@ class _Pass:
     def walk_slot(self, codes):
         # The walk's slot ends at minute 15 while repair work exists (C7: freshness keeps a reserved
         # slot); with nothing to repair it may use the pass up to the soft stop.
-        repairing = any(fe.get("status") in S.REPAIR_PENDING for fe in self.st.flows.values())
+        # A HELD flow is not repair work (it waits for the owner): it never cuts the walk (AR-334 condition 8).
+        repairing = any(fe.get("status") in S.REPAIR_PENDING and not fe.get("hold") for fe in self.st.flows.values())
         end = self.clock.at(WALK_UNTIL_MIN) if repairing else self.clock.soft_end
         eligible = [c for c in codes if self.st.flow(c).get("status") in S.WALKABLE]
-        order = rotate_after(eligible, load_rotation(self.out_dir))
+        # AR-334 ADV5: walk tails the previous slot end parked are resumed FIRST, in the walk
+        parked = sorted(c for c in codes if self.st.flow(c).get("status") == S.NEEDS_REFRESH
+                        and (self.st.flow(c).get("attempt") or {}).get("park") == "slot"
+                        and (self.st.flow(c).get("attempt") or {}).get("id"))
+        order = parked + rotate_after(eligible, load_rotation(self.out_dir))
         for i, code in enumerate(order):
             if self.clock.now() >= end:
                 self.walk["deferred"] = order[i:]
@@ -856,6 +1187,18 @@ class _Pass:
                     self.tally.deferred_unit(c)
                 break
             fe = self.st.flow(code)
+            if code in parked:
+                self.walk["visited"] += 1
+                try:
+                    res = self.work(code, end, in_walk=True, modified=None)
+                except Exception as e:                                    # noqa: BLE001 - F1, per flow
+                    if _fatal(e):
+                        raise
+                    self.flow_failed(code, "walk tail", e)
+                    continue
+                if res in ("stop", "conflict"):
+                    break
+                continue
             save_rotation(self.out_dir, code)
             try:
                 mod = _catalog_modified(self.sess, code, self.clock)
@@ -917,8 +1260,9 @@ class _Pass:
         progress a new attempt: needs_origin before needs_refresh (F4: one flow in progress at a time)."""
         fl = self.st.flows
         for c, fe in sorted(fl.items(), key=lambda kv: (kv[1].get("attempt") or {}).get("started_utc") or ""):
-            if c not in tried and fe.get("status") == S.MERGE_PENDING and self._lease_ok(c):
-                return c
+            if c not in tried and fe.get("status") == S.MERGE_PENDING and not fe.get("hold") \
+                    and self._lease_ok(c):
+                return c                                 # a HELD merge (F1 spelling hold) is skipped, kept
         inprog = [c for c, fe in fl.items() if fe.get("status") == S.IN_PROGRESS]
         for c in sorted(inprog):
             if c not in tried and self._lease_ok(c):
@@ -926,7 +1270,9 @@ class _Pass:
         if inprog:
             return None
         for status in (S.NEEDS_ORIGIN, S.NEEDS_REFRESH):
-            for c in sorted(c for c, fe in fl.items() if fe.get("status") == status):
+            # F3: proven truncations first (operator, CI delta, exact multiples, zero rows), probe hits last
+            for c in sorted((c for c, fe in fl.items() if fe.get("status") == status),
+                            key=lambda c: (int(fl[c]["prio"]) if "prio" in fl[c] else _origin_priority(fl[c].get("why")), c)):
                 if c not in tried and self._lease_ok(c):
                     return c
         return None
@@ -1014,7 +1360,8 @@ class _Pass:
                 self.save()                                    # F5: the lease is on the store before any work
             else:
                 at["owner"], at["heartbeat_utc"] = self.me, S.utcnow()
-                at["walk"] = False
+                at["walk"] = bool(in_walk)                    # a parked walk tail resumes IN the walk (ADV5)
+                at.pop("park", None)
                 fe["status"] = S.IN_PROGRESS
                 self.save()                                    # F5: persist the lease BEFORE the resume check
                 try:
@@ -1026,7 +1373,15 @@ class _Pass:
                     return "stop"
                 if ok is not True:
                     return self._restart(code, ok)
+                if int(at.get("next_page", 1)) > 1:
+                    print(f"[insee_melodi] {code}: resume check ok - page {int(at['next_page']) - 1} fingerprint "
+                          f"{str(at.get('page_fp') or '')[:12]} unchanged, `modified` unchanged", flush=True)
             at["passes"] = int(at.get("passes", 0)) + 1
+            # F7: every attempt start and resume names its page, mode and lease
+            print(f"[insee_melodi] {code}: attempt {at.get('id')} {at.get('mode')} - "
+                  f"{'resumed' if int(at.get('next_page', 1)) > 1 else 'started'} at page {int(at.get('next_page', 1))}"
+                  f" (startPeriod {at.get('start')}, {int(at.get('chunks', 0))} chunk(s) staged, lease {at.get('owner')}, "
+                  f"{'walk' if in_walk else 'repair'} slot)", flush=True)
             return self._pages(code, fe, at, slot_end, in_walk)
         except S.StateConflict:
             return "conflict"
@@ -1064,7 +1419,8 @@ class _Pass:
         sdir = S.staging_dir()
         part = os.path.join(sdir, f"{code}.{at['id']}.open.chunkpart")
         writer = None
-        pend = {"pages": 0, "rows": 0, "raw": 0, "dups": 0, "fp": None, "next": int(at["next_page"])}
+        pend = {"pages": 0, "rows": 0, "raw": 0, "dups": 0, "fp": None, "next": int(at["next_page"]),
+                "dropped": {}, "first": int(at["next_page"])}
         added_pages = 0
 
         def flush():
@@ -1077,6 +1433,9 @@ class _Pass:
                 body = fh.read()
             blob.write_bytes_atomic(S.chunk_path(code, at["id"], int(at["chunks"])), body)
             os.remove(part)
+            print(f"[insee_melodi] {code}: chunk {int(at['chunks'])} uploaded - pages {pend['first']}-"
+                  f"{pend['next'] - 1}, {pend['rows']:,} rows of {pend['raw']:,} obs, {len(body):,} bytes",
+                  flush=True)
             at["chunks"] = int(at["chunks"]) + 1
             at["next_page"] = pend["next"]
             at["rows_staged"] = int(at["rows_staged"]) + pend["rows"]
@@ -1084,8 +1443,14 @@ class _Pass:
             at["pages"] = int(at["pages"]) + pend["pages"]
             at["within_dups"] = int(at["within_dups"]) + pend["dups"]
             at["page_fp"] = pend["fp"]
+            dr = dict(at.get("dropped") or {})
+            for why_, n_ in pend["dropped"].items():
+                dr[why_] = dr.get(why_, 0) + n_
+            at["dropped"] = dr
             added_pages += pend["pages"]
-            pend.update(pages=0, rows=0, raw=0, dups=0)
+            if not in_walk:                                  # F6 / AR-334 ADV8: every repair page of the pass
+                self.pass_repair_pages = getattr(self, "pass_repair_pages", 0) + pend["pages"]
+            pend.update(pages=0, rows=0, raw=0, dups=0, dropped={}, first=pend["next"])
             at["heartbeat_utc"] = S.utcnow()
             fe.pop("failures", None)                    # AR-331 F5: committed progress resets the counter
             self.save()
@@ -1094,6 +1459,20 @@ class _Pass:
             flush()
             if why:
                 self._book_transient(why)
+            if in_walk and kind in ("progress", "stop", "transient") and fe.get("status") == S.IN_PROGRESS:
+                # AR-330 first-run F4: a walk tail stopped by the slot end (or the pass clock) is PARKED, never
+                # left in progress - otherwise the repair slot resumes it first, ahead of every needs_origin
+                # flow (DS_BTS 2026-10-17: pages 73-151 in the repair slot). Its committed chunks stay; one with
+                # no known `modified` cannot be resumed and is dropped instead (AR-331 F8). It is marked
+                # park="slot": the NEXT walk slot resumes it first (AR-334 ADV5), so a healthy flow's short tail
+                # never waits behind the origin backlog.
+                fe["status"] = S.NEEDS_REFRESH
+                at["park"] = "slot"
+                if at.get("modified_at_start") is None:
+                    self._drop_attempt(code, "a walk tail with no known `modified` cannot be resumed")
+                    return kind
+                self.labels.append(f"{code}: walk slot ended mid-tail at page {at.get('next_page')} - parked "
+                                   f"as needs_refresh")
             self._progress(code, at, added_pages)
             return kind
 
@@ -1111,7 +1490,8 @@ class _Pass:
                 except TransientError as e:
                     return bail("transient", f"{code}: page {page} - {str(e)[:120]}")
                 print(f"[insee_melodi] {code} page {page}: {p.raw_n} obs, paging {p.paging}"
-                      + (f", HTTP {p.http}" if p.nodata else ""), flush=True)
+                      + (f", HTTP {p.http}" if p.nodata else "")
+                      + (f", dropped {p.dropped}" if p.dropped else ""), flush=True)
                 # ---- what this page means (D): nothing but isLast ends a flow ----
                 if at.get("confirm_page") == page:
                     if p.nodata or p.raw_n == 0:
@@ -1143,6 +1523,8 @@ class _Pass:
                     pend["rows"] += p.table.num_rows
                     pend["raw"] += p.raw_n
                     pend["dups"] += p.within_dups
+                    for why_, n_ in (p.dropped or {}).items():
+                        pend["dropped"][why_] = pend["dropped"].get(why_, 0) + n_
                     pend["fp"] = p.fp
                     if p.table.num_rows == 0:
                         self.labels.append(f"{code}: PARSE LOSS - page {page} carried {p.raw_n} observations "
@@ -1233,9 +1615,13 @@ class _Pass:
     def _finalize(self, code):
         fe = self.st.flow(code)
         at = fe.get("attempt") or {}
-        if not self.clock.fits(S.merge_margin_s(int(at.get("rows_staged", 0)))):
+        stored_rows = int((fe.get("served") or {}).get("rows") or 0)
+        margin = S.merge_margin_s(int(at.get("rows_staged", 0)), stored_rows)
+        if not self.clock.fits(margin):
             self.labels.append(f"{code}: merge deferred - {int(self.clock.hard_end - self.clock.now())}s left "
-                               f"is under the margin for {at.get('rows_staged', 0):,} rows")
+                               f"is under the {int(margin)}s margin for {at.get('rows_staged', 0):,} staged + "
+                               f"{stored_rows:,} stored rows (split, diagnosis and merge); the next repair "
+                               f"slot starts with it")
             return "progress"
         t_fin = time.monotonic()
         sdir = S.staging_dir()
@@ -1287,10 +1673,18 @@ class _Pass:
                 changed, residue = total, {"rows": 0, "by_partition": {}}
                 if stored_local and total:
                     s = stored_local.replace("\\", "/").replace("'", "''")
-                    changed = con.execute(
-                        f"SELECT count(*) FROM read_parquet('{q}') n LEFT JOIN read_parquet('{s}') o "
-                        f"ON n.series_key = o.series_key AND n.obs_date = o.obs_date "
-                        f"WHERE o.series_key IS NULL OR n.value IS DISTINCT FROM o.value").fetchone()[0]
+                    t_split = time.monotonic()
+                    split = _merge_split(con, q, s, at)
+                    changed = split["NK"] + split["ND"] + split["RV"]          # rows new or changed
+                    print(f"[insee_melodi] {code}: merge plan - staged {split['S']:,} = new keys {split['NK']:,} "
+                          f"({split['NK_keys']:,} keys) + new dates {split['ND']:,} + revised {split['RV']:,} + "
+                          f"unchanged {split['U']:,}; respelled {split['respelled']:,} "
+                          f"({split['respelled_duplicates']:,} duplicates, {split['respelled_split']:,} split series); "
+                          f"stored {split['stored_rows']:,} rows / {split['stored_keys']:,} keys; the pull covers "
+                          f"{split['covered']:,} of {split['expected']:,} stored keys; split took "
+                          f"{time.monotonic() - t_split:.1f}s", flush=True)
+                    if _spelling_hold(split) and fe.get("hold_accepted") != at.get("id"):
+                        return self._hold_spelling(code, at, split, _drift_diagnosis(con, q, s, split))
                     if at.get("mode") == "origin":
                         rows = con.execute(
                             f"SELECT regexp_replace(o.series_key, '=[^:]*', '', 'g') || '|' || "
@@ -1334,7 +1728,8 @@ class _Pass:
                         self._merge_refused(code, "merge refused", e)
                         return "transient"
                     print(f"[insee_melodi] {code}: merge took {time.monotonic() - t0:.1f}s for "
-                          f"{total:,} staged rows ({changed:,} new or changed)", flush=True)
+                          f"{total:,} staged rows ({changed:,} new or changed); served "
+                          f"{(stored_stats or (0, None))[0]:,} -> {int(n_rows):,} rows", flush=True)
                     self.changed[code] = md
                     # F1: the published merge's CSV is OWED until a returned Result hands it to the orchestrator
                     fe["csv_owed"] = md
@@ -1345,6 +1740,12 @@ class _Pass:
                 else:
                     if not fe.get("served"):
                         fe["served"] = {"identity": S.identity(self.path(code)), "rows": 0, "max_obs": None}
+                    elif stored_stats and fe.get("hold_released"):
+                        # nothing to merge after a released hold: record the object as it now is, so the next
+                        # identity check does not re-classify the flow the owner just superseded
+                        fe["served"] = {"identity": S.identity(self.path(code)), "rows": stored_stats[0],
+                                        "max_obs": stored_stats[1],
+                                        "maxyear_rows": (fe.get("served") or {}).get("maxyear_rows", 0)}
             finally:
                 if con is not None:
                     con.close()
@@ -1378,8 +1779,18 @@ class _Pass:
             fe["parse_collisions"] = int(at["within_dups"])
         unparsed = int(at.get("raw_obs", 0)) - int(at.get("rows_staged", 0))
         fe["unparsed_obs"] = max(unparsed, 0)
+        fe["dropped"] = dict(at.get("dropped") or {})
+        for k in ("hold", "hold_detail", "hold_accepted", "hold_released"):
+            fe.pop(k, None)
         print(f"[insee_melodi] {code}: finalize took {time.monotonic() - t_fin:.1f}s in all "
               f"({total:,} staged rows)", flush=True)
+        # F8 + F3: what the store keeps that INSEE no longer serves, whether INSEE ignored startPeriod, and
+        # why observations were not rows - printed whenever non-zero
+        if residue["rows"] or fe.get("start_ignored") or fe["dropped"]:
+            top = ", ".join(f"{p} {n:,}" for p, n in sorted(residue["by_partition"].items(), key=lambda kv: -kv[1])[:3])
+            print(f"[insee_melodi] {code}: residue {residue['rows']:,} stored rows no longer served"
+                  + (f" ({top})" if top else "") + f"; start_ignored {bool(fe.get('start_ignored'))}; dropped "
+                  f"observations {fe['dropped'] or 0}", flush=True)
         keep_id = at.get("id")
         fe["attempt"] = {"id": keep_id, "done": True}
         self.save()                                         # k3/k4: state after the publish, before deletes
@@ -1406,12 +1817,30 @@ class _Pass:
         fl = self.st.flows
         tracked = [c for c, fe in fl.items() if fe.get("repair")]
         done = [c for c in tracked if fl[c].get("status") in (S.COMPLETE, S.EMPTY)]
-        pending = [c for c, fe in fl.items() if fe.get("status") in S.REPAIR_PENDING]
-        bits = [f"repair: {len(done)} of {len(tracked)} complete per INSEE paging, {len(pending)} flow(s) pending"]
+        held = sorted(c for c, fe in fl.items() if fe.get("hold"))
+        # AR-330 first-run F6 / AR-334 ADV7: ONE denominator (the flows sent to repair), each in exactly one
+        # bucket - complete, held, stuck (broken / unstable / withdrawn) or open - and the digest-width facts
+        # first: "repair n/N complete, +p pages, <current flow>@p<next page>"
+        held_t = [c for c in tracked if c not in done and fl[c].get("hold")]
+        stuck_t = [c for c in tracked if c not in done and c not in held_t
+                   and fl[c].get("status") in (S.BROKEN, S.UNSTABLE, S.WITHDRAWN)]
+        open_t = [c for c in tracked if c not in done and c not in held_t and c not in stuck_t]
+        refresh = [c for c, fe in fl.items() if fe.get("status") == S.NEEDS_REFRESH and not fe.get("repair")]
+        unclassified = [c for c, fe in fl.items() if fe.get("status") == S.UNCLASSIFIED]
+        head = f"repair {len(done)}/{len(tracked)} complete, +{getattr(self, 'pass_repair_pages', 0)}p"
+        if self.repair_flow:
+            at = fl.get(self.repair_flow, {}).get("attempt") or {}
+            head += f", {self.repair_flow}@p{at.get('next_page', '-')}"
+        bits = [head, f"of the {len(tracked)}: {len(open_t)} open, {len(held_t)} held, {len(stuck_t)} stuck; also "
+                      f"{len(refresh)} refresh due, {len(unclassified)} unclassified, {len(held) - len(held_t)} "
+                      f"other held"]
         if self.repair_flow:
             at = fl.get(self.repair_flow, {}).get("attempt") or {}
             bits.append(f"current {self.repair_flow} page {at.get('next_page', '-')} "
                         f"({int(at.get('rows_staged', 0)):,} rows staged, +{self.repair_pages} pages this pass)")
+        if held:
+            bits.append(f"HELD (spelling drift?, the owner decides): {', '.join(held[:8])}"
+                        f"{' +' + str(len(held) - 8) if len(held) > 8 else ''}")
         bits.append(f"walk: {self.walk['visited']} visited, {self.walk['merged']} merged, "
                     f"{self.walk['unchanged']} unchanged, {len(self.walk['deferred'])} not reached")
         bits.append(f"classified this pass: {self.classified}")
@@ -1534,7 +1963,9 @@ def _result(pa_, state, codes) -> Result:
             state.save()
         except S.StateConflict:
             pa_.labels.append("csv_owed not cleared (state conflict) - re-emitted by a later pass")
-    pending = any(fl[c].get("status") in S.REPAIR_PENDING for c in live if c in fl) \
+    # A HELD flow (F1 spelling hold) waits for the owner, not for the fetcher: it does not keep the source due
+    # at the next run (nothing a pass can do moves it), and it is named LOUD below so the source is never ok.
+    pending = any(fl[c].get("status") in S.REPAIR_PENDING and not fl[c].get("hold") for c in live if c in fl) \
         or bool(state.data.get("repair_blocked")) or pa_.conflict
     if pending:
         return Result(status="transient_fail", obs=total, last_obs_date=maxd, series_cursors=cursors,
@@ -1550,6 +1981,9 @@ def _result(pa_, state, codes) -> Result:
         names = sorted(c for c in live if (fl.get(c) or {}).get("status") == status)
         if names:
             loud.append(f"{word}: {', '.join(names[:8])}")
+    held = sorted(c for c in live if (fl.get(c) or {}).get("hold"))
+    if held:
+        loud.append(f"HELD (spelling drift?): {', '.join(held[:8])}")
     if loud:
         res.error = f"{res.error} | " + " | ".join(loud)
         if res.status in ("ok", "no_change"):

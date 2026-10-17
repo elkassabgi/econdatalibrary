@@ -131,7 +131,7 @@ def test_V10_the_merge_waits_for_its_margin(env, monkeypatch):
     flows = _control_flows()
     fake = FakeMelodi(env.clock, flows)
     _seed_store(env, fake)
-    monkeypatch.setattr(S, "merge_margin_s", lambda rows: 10.0 ** 9)
+    monkeypatch.setattr(S, "merge_margin_s", lambda rows, stored_rows=0: 10.0 ** 9)
     merged = []
     real = M.merge.merge_and_write_bounded
     monkeypatch.setattr(M.merge, "merge_and_write_bounded", lambda *a, **k: merged.append(a) or real(*a, **k))
