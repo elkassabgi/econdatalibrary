@@ -592,6 +592,8 @@ def test_a_pass_ends_by_the_soft_stop_with_all_three_slots_busy(env):
     assert env.clock.t <= c.soft_end + M.TIMEOUT + 2 * fake.step
 
 
+@pytest.mark.skipif(os.name != "nt", reason="drive letters exist only on Windows: on Linux CI 'D:\\temp' is a "
+                                         "relative directory name, and the D: ban is a Windows-workstation rule")
 def test_staging_on_D_is_refused(monkeypatch):
     monkeypatch.setenv("ECONDL_DUCKDB_TMP", "D:\\temp\\spill")
     with pytest.raises(DefinitiveError, match="D:"):
