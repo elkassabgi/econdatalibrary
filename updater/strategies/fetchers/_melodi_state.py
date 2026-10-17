@@ -221,7 +221,7 @@ def force_problem(force: dict) -> str | None:
         if not isinstance(force["flows"], (list, dict)):
             return f'"flows" is a {type(force["flows"]).__name__}, not a list or an object'
         return None
-    if "unblock_repair_after_utc" in force:
+    if "unblock_repair_after_utc" in force or "release_holds" in force:
         return None
     keys = ", ".join(sorted(str(k) for k in force)[:5])
     return f'no "flows" key (keys: {keys})'

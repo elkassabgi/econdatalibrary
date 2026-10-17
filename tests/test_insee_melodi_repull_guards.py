@@ -88,7 +88,7 @@ def test_F1_a_geo_vintage_drift_is_held_and_named(env):
     rs = run_until_quiet(env, fake)
     fe = env.state()["flows"]["DS_RP_TD_V"]
     assert fe["hold"] == "spelling" and env.rows("DS_RP_TD_V") == P
-    assert "GEO vintage moved 2025 -> 2026" in fe["hold_detail"]["diagnosis"]
+    assert "GEO vintage(s) ['2026'] new to the store (it holds ['2025'])" in fe["hold_detail"]["diagnosis"]
     assert any("DS_RP_TD_V" in (r.error or "") and "HELD" in (r.error or "") for r in rs)
 
 
@@ -171,13 +171,28 @@ def test_F1_the_split_counts_each_row_once_and_the_tail_coverage_uses_the_start_
     assert (sp_o["expected"], sp_o["covered"]) == (3, 2)                 # an origin pull should carry C too
 
 
-def test_F1_the_hold_thresholds_are_strict():
-    base = {"stored_rows": 10, "S": 10, "expected": 10}
-    assert not M._spelling_hold(dict(base, NK=5, covered=0))             # NK/S == 0.5: not above
-    assert M._spelling_hold(dict(base, NK=6, covered=4))
-    assert not M._spelling_hold(dict(base, NK=6, covered=5))             # coverage == 0.5: not below
-    assert not M._spelling_hold(dict(base, NK=10, covered=0, stored_rows=0))
-    assert not M._spelling_hold(dict(base, NK=10, covered=0, expected=0))
+def test_F1_respelled_rows_are_duplicates_or_split_series_and_a_known_partition_is_not_new(tmp_path):
+    import datetime as dt
+    d = dt.date
+    stored = _parquet(tmp_path, "s", [("G=2026-C-1:S=_T", d(2023, 12, 31), 1.0),
+                                      ("G=2026-C-2:S=_T", d(2022, 12, 31), 2.0),
+                                      ("GEO=2025-C-7:S=_T", d(2020, 12, 31), 7.0),
+                                      ("GEO=2026-C-8:S=_T", d(2021, 12, 31), 8.0)])
+    staged = _parquet(tmp_path, "n", [("G=2026-C-1:REF=X:S=_T", d(2023, 12, 31), 1.0),  # duplicate (a)
+                                      ("G=2026-C-2:REF=X:S=_T", d(2023, 12, 31), 2.5),  # split series (b)
+                                      ("G=2026-C-9:REF=X:S=_T", d(2023, 12, 31), 9.0),  # a new series
+                                      ("GEO=2026-C-7:S=_T", d(2021, 12, 31), 7.5)])     # vintage 2026 is stored
+    con = duckdb.connect()
+    sp = M._merge_split(con, staged, stored, {"mode": "origin", "start": None})
+    assert (sp["NK"], sp["respelled_duplicates"], sp["respelled_split"], sp["respelled"]) == (4, 1, 1, 2)
+
+
+def test_F1_the_hold_threshold_is_strict_and_needs_a_store():
+    base = {"stored_rows": 10, "S": 100, "respelled_duplicates": 0, "respelled_split": 0}
+    assert not M._spelling_hold(dict(base, respelled=5))                 # 5% exactly: not above
+    assert M._spelling_hold(dict(base, respelled=6))
+    assert not M._spelling_hold(dict(base, respelled=0))
+    assert not M._spelling_hold(dict(base, respelled=50, stored_rows=0))  # nothing stored: nothing to re-spell
 
 
 # ------------------------------------------------------------------ F2: classification, probe, control lines
@@ -341,3 +356,93 @@ def test_F3_a_probe_page_of_rows_already_stored_is_not_a_hit(env):
     fe = env.state()["flows"]["DS_D"]
     assert fe["probe"]["page"] == 3 and fe["probe"]["parsed"] > 0 and fe["probe"]["new_pairs"] == 0
     assert "prio" not in fe and not fe.get("repair")
+
+
+# ------------------------------------------------------------------ AR-334: the exits from a hold
+def _held_tail(env):
+    flows = _control_flows()
+    old = series(8, year=2023) + series(8, year=2024)
+    flows["DS_T"] = list(old)
+    fake = FakeMelodi(env.clock, flows)
+    _seed_store(env, fake)
+    env.put("DS_T", old)
+    run_until_quiet(env, fake)
+    fake.flows["DS_T"] = respelled(old)
+    fake.modified["DS_T"] = "2026-10-17T00:00:00"
+    env.run(fake)
+    assert env.state()["flows"]["DS_T"]["hold"] == "spelling"
+    return fake, old
+
+
+def test_release_holds_merges_a_held_flow_once_keeping_both_spellings(env):
+    fake, old = _held_tail(env)
+    (env.store / S.FORCE_FILE).write_text(json.dumps({"release_holds": ["DS_T"]}), encoding="utf-8")
+    r = env.run(fake)
+    fe = env.state()["flows"]["DS_T"]
+    assert "release_holds - the held merge is accepted" in r.error
+    assert not fe.get("hold") and env.rows("DS_T") == len(old) + 8 and not _chunks(env, "DS_T")
+    assert fe.get("hold_release_key") == "listed"
+
+
+def test_dropping_a_held_attempt_clears_its_hold(env):
+    fake, _ = _held_tail(env)
+    p = _pass(env, fake)
+    p._drop_attempt("DS_T", "test")
+    fe = p.st.flows["DS_T"]
+    assert not fe.get("hold") and not fe.get("hold_detail") and not _chunks(env, "DS_T")
+
+
+def test_an_unconfirmed_probe_hit_from_before_this_change_is_probed_again(env):
+    flows = _control_flows()
+    flows["DS_OLDHIT"] = series(13)
+    fake = FakeMelodi(env.clock, flows)
+    _seed_store(env, fake)
+    env.put("DS_OLDHIT", flows["DS_OLDHIT"])
+    run_until_quiet(env, fake)
+    st = env.state()
+    st["flows"]["DS_OLDHIT"].update(status=S.NEEDS_ORIGIN, why="probe page 3 returned 10000 obs", repair=True,
+                                    probe={"page": 3, "raw": 10000, "http": None, "utc": "2026-10-17T11:14:00+00:00"})
+    _write_state(env, st)
+    r = env.run(fake)
+    fe = env.state()["flows"]["DS_OLDHIT"]
+    assert "is probed again under the confirmed rule" in r.error
+    assert fe["status"] != S.NEEDS_ORIGIN and not fe.get("repair") and "new_pairs" in fe.get("probe", {})
+
+
+def test_the_parser_names_three_drop_reasons():
+    base = {"dimensions": {"GEO": "X", "TIME_PERIOD": "2023"}}
+    assert M._obs_parse(dict(base, measures={"OBS_VALUE_NIVEAU": {"value": None}}))[1] == "no_value"
+    assert M._obs_parse(dict(base, measures={"OBS_VALUE_NIVEAU": {"value": "n/a"}}))[1] == "non_numeric"
+    assert M._obs_parse({"dimensions": {"TIME_PERIOD": "2023-A1"}, "measures": {}})[1] == "no_date"
+    assert M._obs_parse(dict(base, measures={"OBS_VALUE_NIVEAU": {"value": "1.5"}}))[0][2] == 1.5
+
+
+def test_F3_a_probe_page_that_only_respells_stored_rows_is_not_a_hit(env):
+    """INSEE serves the stored 2025-vintage rows again under the 2026 vintage: the probe page past the parsed
+    count holds pairs the store lacks EXACTLY, but holds under another spelling - not new."""
+    flows = _control_flows()
+    flows["DS_RV"] = series(13, geo="2025") + series(13, geo="2026")
+    fake = FakeMelodi(env.clock, flows)
+    _seed_store(env, fake)
+    env.put("DS_RV", series(13, geo="2025"))
+    env.run(fake)
+    fe = env.state()["flows"]["DS_RV"]
+    assert fe["probe"]["page"] == 3 and fe["probe"]["parsed"] > 0 and fe["probe"]["new_pairs"] == 0
+    assert "prio" not in fe and not fe.get("repair")
+
+
+def test_a_held_flow_does_not_cut_the_walk_at_minute_15(env):
+    fake, _ = _held_tail(env)
+    p = _pass(env, fake)
+    assert not any(fe.get("status") in S.REPAIR_PENDING and not fe.get("hold") for fe in p.st.flows.values())
+    ends = []
+    real_work = M._Pass.work
+
+    def spy(self, code, slot_end, **kw):
+        ends.append(slot_end)
+        return real_work(self, code, slot_end, **kw)
+    p.work = spy.__get__(p)
+    for c in ("DS_CTRL", M.PROBE_EMPTY_CONTROL):
+        p.st.flows[c]["last_tail_utc"] = "2000-01-01T00:00:00+00:00"   # due by the backstop
+    p.walk_slot(sorted(p.st.flows))
+    assert ends and all(e == p.clock.soft_end for e in ends)
