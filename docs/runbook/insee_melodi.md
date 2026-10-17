@@ -138,7 +138,13 @@ STATUSES AND THE OPERATOR (each flow's `status` in `_flows.json`; the note names
                         its chunks are deleted.
   The last three are worked by nobody until the operator acts. A flow whose merge is refused is NOT one of
   them: it stays `merge_pending` with every staged chunk, retried each pass, and the note escalates
-  (MERGE REFUSED n pass(es)) - a refusal is a condition of the merge, never of the paging (AR-330 C11).
+  (MERGE REFUSED n pass(es), then NEEDS THE OWNER from 3) - a refusal is a condition of the merge, never of
+  the paging (AR-330 C11). THE OWNER'S ACTION for NEEDS THE OWNER: read the cause in that note line and fix
+  it - a full spill disk (free space where ECONDL_DUCKDB_TMP points, else <repo>/data/_duckdb_spill), the
+  bounded merge's memory (AQUEDUCT_BOUNDED_MERGE_MEMORY), the spill cap (the free disk less
+  AQUEDUCT_BOUNDED_DISK_RESERVE_BYTES), or a shrink or column refusal (the merged file would lose rows or columns: look at the flow first). The
+  merge then retries by itself on a later pass and the count clears. A force does NOT help: it keeps a
+  refused ORIGIN pull as it is (a re-pull cannot cure a merge refusal).
   THE OPERATOR'S FILE is `_force_origin.json` (the fetcher never writes it). Two forms of "flows":
       {"flows": ["DS_X", "DS_Y"], "unblock_repair_after_utc": "<iso>"}
       {"flows": {"DS_X": "<iso>", "DS_Y": "<iso>"}, "unblock_repair_after_utc": "<iso>"}
@@ -151,6 +157,10 @@ STATUSES AND THE OPERATOR (each flow's `status` in `_flows.json`; the note names
     top-level `utc` field has no effect.
   - `unblock_repair_after_utc` later than the REPAIR BLOCKED time lifts a failed page-determinism control;
     it never forces a flow.
+  - A file that is present but unusable (empty, not valid JSON, not a JSON object, "flows" of the wrong
+    type, or no "flows" at all - a typo such as "flow") is IGNORED and named in the note: it forces nothing
+    and clears no recorded force, so fixing it re-forces nothing. {"flows": []} lists no flow, and so does
+    a file holding only unblock_repair_after_utc.
   - Never hand-edit `_flows.json`: it is compare-and-swap protected and a hand edit races a later pass.
 
 T0 STEP (before the R2 write key is revoked): let every in-progress attempt finish, or abandon it (list the

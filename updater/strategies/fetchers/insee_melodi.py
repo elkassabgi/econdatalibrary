@@ -69,7 +69,13 @@ STATUSES AND THE OPERATOR (each flow's `status` in `_flows.json`; the note names
                         its chunks are deleted.
   The last three are worked by nobody until the operator acts. A flow whose merge is refused is NOT one of
   them: it stays `merge_pending` with every staged chunk, retried each pass, and the note escalates
-  (MERGE REFUSED n pass(es)) - a refusal is a condition of the merge, never of the paging (AR-330 C11).
+  (MERGE REFUSED n pass(es), then NEEDS THE OWNER from 3) - a refusal is a condition of the merge, never of
+  the paging (AR-330 C11). THE OWNER'S ACTION for NEEDS THE OWNER: read the cause in that note line and fix
+  it - a full spill disk (free space where ECONDL_DUCKDB_TMP points, else <repo>/data/_duckdb_spill), the
+  bounded merge's memory (AQUEDUCT_BOUNDED_MERGE_MEMORY), the spill cap (the free disk less
+  AQUEDUCT_BOUNDED_DISK_RESERVE_BYTES), or a shrink or column refusal (the merged file would lose rows or columns: look at the flow first). The
+  merge then retries by itself on a later pass and the count clears. A force does NOT help: it keeps a
+  refused ORIGIN pull as it is (a re-pull cannot cure a merge refusal).
   THE OPERATOR'S FILE is `_force_origin.json` (the fetcher never writes it). Two forms of "flows":
       {"flows": ["DS_X", "DS_Y"], "unblock_repair_after_utc": "<iso>"}
       {"flows": {"DS_X": "<iso>", "DS_Y": "<iso>"}, "unblock_repair_after_utc": "<iso>"}
@@ -82,6 +88,10 @@ STATUSES AND THE OPERATOR (each flow's `status` in `_flows.json`; the note names
     top-level `utc` field has no effect.
   - `unblock_repair_after_utc` later than the REPAIR BLOCKED time lifts a failed page-determinism control;
     it never forces a flow.
+  - A file that is present but unusable (empty, not valid JSON, not a JSON object, "flows" of the wrong
+    type, or no "flows" at all - a typo such as "flow") is IGNORED and named in the note: it forces nothing
+    and clears no recorded force, so fixing it re-forces nothing. {"flows": []} lists no flow, and so does
+    a file holding only unblock_repair_after_utc.
   - Never hand-edit `_flows.json`: it is compare-and-swap protected and a hand edit races a later pass.
 
 T0 STEP (before the R2 write key is revoked): let every in-progress attempt finish, or abandon it (list the
@@ -528,8 +538,10 @@ class _Pass:
 
     def _merge_refused(self, code, where, e):
         """A merge_pending flow whose merge (or finalize) failed: it KEEPS merge_pending and its chunks, and the
-        note escalates with the count of passes refused. Only the operator's force (or a merge that later
-        succeeds) ends it."""
+        note escalates with the count of passes refused. Only a merge that later succeeds ends it - after the
+        owner fixes the cause the note names (AR-331 R3-1). The operator's force does NOT end a refused ORIGIN
+        merge: a re-pull cannot cure a merge refusal, so the staged pull is kept (a refused TAIL merge, which
+        proves no history, is dropped by a force and re-pulled from origin)."""
         fe = self.st.flow(code)
         fe["status"] = S.MERGE_PENDING
         n = int(fe.get("merge_refusals", 0)) + 1
@@ -572,11 +584,12 @@ class _Pass:
         An unclassified flow is forced by classification (it still needs its profile) and records the key
         there."""
         raw = self.force_raw or {}
-        entries = S.force_entries(raw)
+        problem = S.force_problem(raw)          # R3-2: unreadable or shapeless = ignored, nothing cleared
+        entries = {} if problem else S.force_entries(raw)
         self.force_keys = entries
         live = set(codes)
         active, changed = set(), False
-        if not raw.get("_unreadable"):
+        if problem is None:
             for code, fe in self.st.flows.items():
                 if fe.get("forced_key") and code not in entries:
                     fe.pop("forced_key", None)                        # off the list: a later listing forces
@@ -593,6 +606,10 @@ class _Pass:
             if status in (S.IN_PROGRESS, S.MERGE_PENDING) and at.get("mode") == "origin":
                 fe["forced_key"] = key                                # already an origin pull
                 changed = True
+                if fe.get("merge_refusals"):
+                    # AR-331 R3-1: a re-pull cannot cure a merge refusal, so the staged pull is KEPT
+                    self.labels.append(f"{code}: force_origin does not end a refused merge - the staged origin "
+                                       f"pull is kept; fix the cause named in MERGE REFUSED and the merge retries")
                 continue
             if at.get("id") and not self._lease_ok(code):
                 continue                                              # another writer's live attempt: later
@@ -1451,8 +1468,10 @@ def update(unit, since, *, _session=None, _clock=None) -> Result:
         force = {"_unreadable": True}
     pa_ = _Pass(sess, clock, state, set())
     pa_.force_raw = force
-    if force.get("_unreadable"):
-        pa_.labels.append(f"{S.FORCE_FILE} unreadable - ignored this pass")
+    problem = S.force_problem(force)
+    if problem:
+        pa_.labels.append(f"{S.FORCE_FILE} IGNORED this pass ({problem}) - it forces nothing and clears no "
+                          f"recorded force")
     try:
         flows = _get_flows(sess, clock)
         time.sleep(RATE)

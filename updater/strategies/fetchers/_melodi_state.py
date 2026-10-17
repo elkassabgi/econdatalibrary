@@ -197,13 +197,34 @@ class FlowState:
 def read_force() -> dict:
     """The operator-owned file. Read only. {"flows": [...], "unblock_repair_after_utc": "<iso>"}."""
     raw = blob.read_bytes(os.path.join(source_dir(), FORCE_FILE))
-    if not raw:
-        return {}
+    if raw is None:
+        return {}                                                    # absent: nothing is listed
+    if not raw.strip():
+        return {"_unreadable": True, "_why": "the file is empty"}
     try:
         d = json.loads(raw.decode("utf-8"))
-        return d if isinstance(d, dict) else {}
     except (ValueError, UnicodeDecodeError):
-        return {"_unreadable": True}
+        return {"_unreadable": True, "_why": "not valid JSON"}
+    return d if isinstance(d, dict) else {"_unreadable": True, "_why": "not a JSON object"}
+
+
+def force_problem(force: dict) -> str | None:
+    """Why the operator file cannot be used, or None (AR-331 R3-2). A present file that is unreadable or has
+    no usable "flows" (a typo such as "flow", or the wrong type) is IGNORED: it forces nothing and clears no
+    recorded force, so fixing the typo re-forces nothing. {"flows": []} and a file holding only
+    unblock_repair_after_utc are usable: they list no flow."""
+    if force.get("_unreadable"):
+        return force.get("_why") or "unreadable"
+    if not force:
+        return None
+    if "flows" in force:
+        if not isinstance(force["flows"], (list, dict)):
+            return f'"flows" is a {type(force["flows"]).__name__}, not a list or an object'
+        return None
+    if "unblock_repair_after_utc" in force:
+        return None
+    keys = ", ".join(sorted(str(k) for k in force)[:5])
+    return f'no "flows" key (keys: {keys})'
 
 
 def force_entries(force: dict) -> dict:
