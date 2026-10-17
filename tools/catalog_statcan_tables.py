@@ -579,6 +579,85 @@ def cube_title(sc: dict, pid: str) -> tuple[str, bool]:
     return (title, False) if title else (pid, True)
 
 
+# The metadata every statcan catalogue row carries (cube fields are added per cube in cube_rows).
+BASE_META = {
+    "citation_short": "Statistics Canada.",
+    "citation_long": ("Statistics Canada. Reproduced and distributed on an 'as is' basis "
+                      "with the permission of Statistics Canada. Compiled and redistributed "
+                      "by the Elkassabgi Data Library."),
+    "description_processing": (
+        "Retrieved from Statistics Canada's Web Data Service and stored as zstd Parquet, one "
+        "file per Product ID. Served at TABLE grain because the source averages 10.8 "
+        "observations per series across 5.26 billion series; large tables are split on one "
+        "of their own dimension columns or on the coordinate hierarchy."),
+}
+
+
+def cube_rows(pid: str, f: str, sc: dict, entry, spill: str) -> tuple:
+    """(rows, untitled): the catalogue rows of ONE cube - its whole-cube row, or one row per part of a
+    split cube - as tuples in the INSERT's column order. `sc` is the cube's `.done` sidecar ({} when
+    none), `entry` its split-map entry (None when it is served whole), `spill` a DuckDB temp dir. ONE
+    definition: main() below and tools/statcan_new_cubes.py both build rows here, so a cube catalogued
+    by either reads the same. A failed scan prints and yields no row, as main() always did.
+    """
+    rows = []
+    title, no_title = cube_title(sc, pid)
+    freq = FREQ.get(sc.get("frequencyCode"))
+    meta = dict(BASE_META)
+    for k, src in (("cansim_id", "cansimId"), ("archived", "archived"),
+                   ("subject_code", "subjectCode")):
+        if sc.get(src) not in (None, "", []):
+            meta[k] = sc[src]
+    meta_json = json.dumps(meta, ensure_ascii=False)
+
+    if not entry:
+        # Unsplit: the sidecar's own start/end describe the whole cube, so no scan needed.
+        d0, d1 = sc.get("start"), sc.get("end")
+        if d0 and d1:
+            rows.append((unit_id(pid), SOURCE, title, freq, None, "Canada", None,
+                         LICENSE_ID, d0, d1, meta_json))
+        else:
+            q = duckdb.connect()
+            q.execute(f"SET temp_directory='{spill}'")
+            q.execute("SET enable_progress_bar=false")
+            try:
+                d0, d1, n = q.execute(
+                    f"select min(obs_date)::VARCHAR, max(obs_date)::VARCHAR, count(*) "
+                    f"from read_parquet('{f}') "
+                    f"where value is not null and obs_date is not null").fetchone()
+                if n:
+                    rows.append((unit_id(pid), SOURCE, title, freq, None, "Canada", None,
+                                 LICENSE_ID, d0, d1, meta_json))
+            except Exception as e:                          # noqa: BLE001
+                print(f"  {pid}: FAILED {type(e).__name__} {str(e)[:60]}")
+            finally:
+                q.close()
+    else:
+        # Split: each part covers a slice, so the sidecar's whole-cube range would be wrong
+        # for every one of them. Compute each part's own range from its rows.
+        dim = entry["dim"]
+        q = duckdb.connect()
+        q.execute("SET memory_limit='6GB'")
+        q.execute(f"SET temp_directory='{spill}'")
+        q.execute("SET preserve_insertion_order=false")
+        q.execute("SET enable_progress_bar=false")
+        try:
+            got = q.execute(f"""
+                select {part_expr(dim)} p, min(obs_date)::VARCHAR, max(obs_date)::VARCHAR
+                from read_parquet('{f}') where value is not null and obs_date is not null
+                group by 1 order by 1""").fetchall()
+            for p, d0, d1 in got:
+                if p is None or p == "":
+                    continue
+                rows.append((unit_id(pid, p), SOURCE, clean_title(f"{title} — {dim} {p}"), freq, None,
+                             "Canada", None, LICENSE_ID, d0, d1, meta_json))
+        except Exception as e:                              # noqa: BLE001
+            print(f"  {pid}: SPLIT SCAN FAILED {type(e).__name__} {str(e)[:60]}")
+        finally:
+            q.close()
+    return rows, no_title
+
+
 def sidecars() -> dict:
     """{productId: sidecar dict} — StatCan's own cube metadata, written at ingest time."""
     out = {}
@@ -855,79 +934,14 @@ def main() -> int:
 
     spill = os.path.join(ROOT, "logs", "_duckspill", f"pid{os.getpid()}")
     os.makedirs(spill, exist_ok=True)
-    base_meta = {
-        "citation_short": "Statistics Canada.",
-        "citation_long": ("Statistics Canada. Reproduced and distributed on an 'as is' basis "
-                          "with the permission of Statistics Canada. Compiled and redistributed "
-                          "by the Elkassabgi Data Library."),
-        "description_processing": (
-            "Retrieved from Statistics Canada's Web Data Service and stored as zstd Parquet, one "
-            "file per Product ID. Served at TABLE grain because the source averages 10.8 "
-            "observations per series across 5.26 billion series; large tables are split on one "
-            "of their own dimension columns or on the coordinate hierarchy."),
-    }
 
     rows, untitled = [], 0
     for i, f in enumerate(files, 1):
         pid = os.path.splitext(os.path.basename(f))[0]
-        sc = meta_cubes.get(pid) or {}
-        title, no_title = cube_title(sc, pid)
+        got, no_title = cube_rows(pid, f, meta_cubes.get(pid) or {}, smap.get(pid), spill)
+        rows.extend(got)
         if no_title:
             untitled += 1
-        freq = FREQ.get(sc.get("frequencyCode"))
-        meta = dict(base_meta)
-        for k, src in (("cansim_id", "cansimId"), ("archived", "archived"),
-                       ("subject_code", "subjectCode")):
-            if sc.get(src) not in (None, "", []):
-                meta[k] = sc[src]
-        meta_json = json.dumps(meta, ensure_ascii=False)
-
-        entry = smap.get(pid)
-        if not entry:
-            # Unsplit: the sidecar's own start/end describe the whole cube, so no scan needed.
-            d0, d1 = sc.get("start"), sc.get("end")
-            if d0 and d1:
-                rows.append((unit_id(pid), SOURCE, title, freq, None, "Canada", None,
-                             LICENSE_ID, d0, d1, meta_json))
-            else:
-                q = duckdb.connect()
-                q.execute(f"SET temp_directory='{spill}'")
-                q.execute("SET enable_progress_bar=false")
-                try:
-                    d0, d1, n = q.execute(
-                        f"select min(obs_date)::VARCHAR, max(obs_date)::VARCHAR, count(*) "
-                        f"from read_parquet('{f}') "
-                        f"where value is not null and obs_date is not null").fetchone()
-                    if n:
-                        rows.append((unit_id(pid), SOURCE, title, freq, None, "Canada", None,
-                                     LICENSE_ID, d0, d1, meta_json))
-                except Exception as e:                          # noqa: BLE001
-                    print(f"  {pid}: FAILED {type(e).__name__} {str(e)[:60]}")
-                finally:
-                    q.close()
-        else:
-            # Split: each part covers a slice, so the sidecar's whole-cube range would be wrong
-            # for every one of them. Compute each part's own range from its rows.
-            dim = entry["dim"]
-            q = duckdb.connect()
-            q.execute("SET memory_limit='6GB'")
-            q.execute(f"SET temp_directory='{spill}'")
-            q.execute("SET preserve_insertion_order=false")
-            q.execute("SET enable_progress_bar=false")
-            try:
-                got = q.execute(f"""
-                    select {part_expr(dim)} p, min(obs_date)::VARCHAR, max(obs_date)::VARCHAR
-                    from read_parquet('{f}') where value is not null and obs_date is not null
-                    group by 1 order by 1""").fetchall()
-                for p, d0, d1 in got:
-                    if p is None or p == "":
-                        continue
-                    rows.append((unit_id(pid, p), SOURCE, clean_title(f"{title} — {dim} {p}"), freq, None,
-                                 "Canada", None, LICENSE_ID, d0, d1, meta_json))
-            except Exception as e:                              # noqa: BLE001
-                print(f"  {pid}: SPLIT SCAN FAILED {type(e).__name__} {str(e)[:60]}")
-            finally:
-                q.close()
         if i % 500 == 0 or i == len(files):
             print(f"  [{i}/{len(files)}] {len(rows):,} unit(s)", flush=True)
 
