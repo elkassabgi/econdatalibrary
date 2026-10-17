@@ -146,7 +146,7 @@ def test_a_non_partial_status_is_never_rotating_whatever_the_tail(note):
 
 # ---------------------------------------------------------------- the gate, end to end on a real state file
 REG = {e["source_id"]: e for e in registry.load().get("sources", [])}
-CASES = {"abs": OLD_ROWS[1], "unsdg": NEW, "insee_melodi": NEAR_MISSES[0]}
+CASES = {"abs": OLD_ROWS[1], "unsdg": NEW, "bcb": NEAR_MISSES[0]}
 for _sid in CASES:
     assert REG[_sid].get("live") and (REG[_sid].get("run_location") or "cloud") == "cloud", \
         _sid + " left the cloud route: pick another id"
@@ -181,10 +181,10 @@ def test_the_gate_reads_old_and_new_rows_as_rotating_and_a_near_miss_as_attentio
     verdict = {r["source"]: r["health"] for r in rep["sources"]}
     assert verdict["abs"] == "ROTATING", ("old stored row", verdict["abs"])
     assert verdict["unsdg"] == "ROTATING", ("new row", verdict["unsdg"])
-    assert verdict["insee_melodi"] == "ATTENTION", ("near miss", verdict["insee_melodi"])
+    assert verdict["bcb"] == "ATTENTION", ("near miss", verdict["bcb"])
     fails = " | ".join(gate_failures(rep))
     assert "abs" not in fails and "unsdg" not in fails, fails
-    assert "insee_melodi" in fails, "the near miss must still fail the gate"
+    assert "bcb" in fails, "the near miss must still fail the gate"
 
 
 # ---------------------------------------------------------------- the digest label and the cost classifier

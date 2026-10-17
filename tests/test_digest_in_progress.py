@@ -185,7 +185,7 @@ REG = {e["source_id"]: e for e in registry.load().get("sources", [])}
 LOCAL = next(sid for sid, e in sorted(REG.items())
              if e.get("live") and (e.get("run_location") or "cloud") != "cloud" and e.get("cadence") == "monthly")
 # the rows whose list depends on the gate's word must be sources the cloud gate judges
-for _sid in ("abs", "unsdg", "ilostat", "ipea", "stat_slovenia", "stat_estonia", "ksh_stadat", "insee_melodi"):
+for _sid in ("abs", "unsdg", "ilostat", "ipea", "stat_slovenia", "stat_estonia", "ksh_stadat", "hagstofa"):
     assert (REG[_sid].get("run_location") or "cloud") == "cloud", _sid + " left the cloud route: pick another id"
 
 # (source, status, age of the newest observation in days, text, last attempt hours ago, what else the state holds)
@@ -198,14 +198,14 @@ CASES = [
     ("stat_slovenia", "partial", 10, NOTE, 1, "rederive"),                              # a full re-derive is owed
     ("stat_estonia", "partial", 10, NOTE, 1, "desktop"),                                # owed, the plain note
     ("ksh_stadat", "partial", 10, NOTE + "; " + CRASH_TAIL, 1, None),                   # the csv phase crashed
-    ("insee_melodi", "partial", 10, NOTE, 24 * 9, None),                                # overdue for its retry clock
+    ("hagstofa", "partial", 10, NOTE, 24 * 9, None),                                # overdue for its retry clock
     (LOCAL, "partial", 10, NOTE, 1, None),                                              # the cloud gate does not judge it
     ("cso", "partial", 10, "3/9 sub-unit(s) transient-failed; will retry", 1, None),
     ("dst", "transient_fail", 10, "detect:UNEXPECTED:HTTPError('400')", 1, None),
     ("noaa", "error", 10, "Traceback", 1, None),
 ]
 CALM = ("abs", "unsdg")
-TROUBLE = ("ilostat", "ipea", "stat_slovenia", "stat_estonia", "ksh_stadat", "insee_melodi", LOCAL, "cso", "dst",
+TROUBLE = ("ilostat", "ipea", "stat_slovenia", "stat_estonia", "ksh_stadat", "hagstofa", LOCAL, "cso", "dst",
            "noaa")
 GATE_SAYS_NO = ("ilostat", "ipea", "stat_slovenia", "stat_estonia", "ksh_stadat")       # review AR-298, both passes
 
@@ -280,7 +280,7 @@ def test_the_gate_judges_the_cases_as_the_review_measured(run):
     for sid in GATE_SAYS_NO:
         assert gate[sid] != "ROTATING", (sid, gate[sid])
     assert gate["ilostat"] == "RED-DATA"
-    for sid in CALM + ("insee_melodi",):
+    for sid in CALM + ("hagstofa",):
         assert gate[sid] == "ROTATING", (sid, gate[sid])
 
 
@@ -291,7 +291,7 @@ def test_no_source_is_calm_that_the_gate_does_not_call_rotating(run):
     calm = _calm_ids(sent["html"])
     assert calm <= rotating, calm - rotating
     assert calm == set(CALM)
-    assert rotating - calm == {"insee_melodi", LOCAL}, (
+    assert rotating - calm == {"hagstofa", LOCAL}, (
         "ROTATING by the gate and under attention: one is overdue for its retry clock, one is not judged in the cloud")
 
 
