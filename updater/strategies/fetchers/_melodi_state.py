@@ -206,13 +206,18 @@ def read_force() -> dict:
         return {"_unreadable": True}
 
 
-def force_key(force: dict) -> str:
-    """Which listing of _force_origin.json this is: its `utc` field, or the digest of its content. A flow
-    records the key once forced, so one listing makes one origin pull (AR-331 X1); a new `utc` forces again."""
-    if force.get("utc"):
-        return f"utc:{force['utc']}"
-    body = json.dumps({k: v for k, v in force.items() if not k.startswith("_")}, sort_keys=True)
-    return "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+def force_entries(force: dict) -> dict:
+    """{flow: key} for _force_origin.json, PER FLOW (AR-331 R2-C). A flow records its key once forced, so each
+    entry makes one origin pull. List form: the key is "listed" - forced once while the flow stays listed,
+    whatever else the file gains or loses. Object form {flow: "<iso>"}: the key is that flow's own value, so a
+    new value forces that flow, and only that flow, again. No other field (`utc`, `unblock_repair_after_utc`)
+    is ever part of a key."""
+    fl = force.get("flows")
+    if isinstance(fl, dict):
+        return {str(k): f"utc:{v}" for k, v in fl.items()}
+    if isinstance(fl, list):
+        return {str(c): "listed" for c in fl}
+    return {}
 
 
 # --------------------------------------------------------------------------------------------- #

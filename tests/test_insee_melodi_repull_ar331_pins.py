@@ -32,25 +32,51 @@ def _origin_pulls(fake, code):
 
 
 # ------------------------------------------------------------------ condition 3 (X1): one pull per listing
-def test_a_force_listing_makes_one_origin_pull_and_a_new_utc_makes_another(env):
+def test_a_force_entry_makes_one_origin_pull_and_a_new_per_flow_value_makes_another(env):
+    flows = _control_flows()
+    flows["DS_W"] = series(13)
+    flows["DS_V"] = series(14, extra={"AGE": "Y"})
+    fake = FakeMelodi(env.clock, flows)
+    _seed_store(env, fake)
+    env.put("DS_W", flows["DS_W"])
+    env.put("DS_V", flows["DS_V"])
+    run_until_quiet(env, fake)
+    (env.store / S.FORCE_FILE).write_text(json.dumps({"flows": {"DS_W": "2026-10-16T22:00:00Z",
+                                                                "DS_V": "2026-10-16T22:00:00Z"}}))
+    w0, v0 = _origin_pulls(fake, "DS_W"), _origin_pulls(fake, "DS_V")
+    run_until_quiet(env, fake)
+    fe = env.state()["flows"]["DS_W"]
+    assert fe["status"] == S.COMPLETE and fe.get("basis") == "origin"
+    assert (_origin_pulls(fake, "DS_W"), _origin_pulls(fake, "DS_V")) == (w0 + 1, v0 + 1)   # one pull each
+    for _ in range(2):
+        env.run(fake)
+    assert (_origin_pulls(fake, "DS_W"), _origin_pulls(fake, "DS_V")) == (w0 + 1, v0 + 1)   # not re-used
+    (env.store / S.FORCE_FILE).write_text(json.dumps({"flows": {"DS_W": "2026-10-17T08:00:00Z",
+                                                                "DS_V": "2026-10-16T22:00:00Z"}}))
+    run_until_quiet(env, fake)
+    assert (_origin_pulls(fake, "DS_W"), _origin_pulls(fake, "DS_V")) == (w0 + 2, v0 + 1)   # only DS_W again
+
+
+def test_list_form_forces_again_only_after_the_flow_left_the_list_and_an_unreadable_file_clears_nothing(env):
     flows = _control_flows()
     flows["DS_W"] = series(13)
     fake = FakeMelodi(env.clock, flows)
     _seed_store(env, fake)
     env.put("DS_W", flows["DS_W"])
+    _force(env, ["DS_W"])
     run_until_quiet(env, fake)
-    _force(env, ["DS_W"], utc="2026-10-16T22:00:00Z")
     n0 = _origin_pulls(fake, "DS_W")
+    (env.store / S.FORCE_FILE).write_text("{not json")                  # unreadable: keys are kept
+    env.run(fake)
+    _force(env, ["DS_W"])
+    env.run(fake)
+    assert _origin_pulls(fake, "DS_W") == n0 and env.state()["flows"]["DS_W"].get("forced_key") == "listed"
+    _force(env, [])                                                     # off the list for one pass
+    env.run(fake)
+    assert "forced_key" not in env.state()["flows"]["DS_W"]
+    _force(env, ["DS_W"])                                               # listed again: forced again
     run_until_quiet(env, fake)
-    fe = env.state()["flows"]["DS_W"]
-    assert fe["status"] == S.COMPLETE and fe.get("basis") == "origin"
-    assert _origin_pulls(fake, "DS_W") == n0 + 1                       # exactly one origin pull
-    for _ in range(2):
-        env.run(fake)
-    assert _origin_pulls(fake, "DS_W") == n0 + 1                       # the listing is not re-used
-    _force(env, ["DS_W"], utc="2026-10-17T08:00:00Z")
-    run_until_quiet(env, fake)
-    assert _origin_pulls(fake, "DS_W") == n0 + 2
+    assert _origin_pulls(fake, "DS_W") == n0 + 1
 
 
 def test_force_does_not_disturb_an_origin_pull_already_in_progress(env):
@@ -394,3 +420,72 @@ def test_finalize_queries_run_on_the_limited_connection(env, monkeypatch):
     run_until_quiet(env, fake)
     assert env.state()["flows"]["DS_RP_TD_SEED"]["status"] == S.COMPLETE
     assert "_finalize" in callers and "_partition_profile" in callers
+
+
+# ------------------------------------------------------------------ R2-A: merge_pending never ends in deletion
+def test_any_fault_while_merge_pending_keeps_the_staged_pull(env, monkeypatch):
+    """A fault that is not a merge refusal (here: the chunk reads fail) reaches flow_failed; a merge_pending
+    flow must still never become broken, and its chunks stay."""
+    from updater.errors import DefinitiveError
+    fake = FakeMelodi(env.clock, _control_flows())
+    _seed_store(env, fake)
+    real_merge = M.merge.merge_and_write_bounded
+    monkeypatch.setattr(M.merge, "merge_and_write_bounded",
+                        lambda *a, **k: (_ for _ in ()).throw(DefinitiveError("refused (test)")))
+    env.run(fake)
+    assert env.state()["flows"]["DS_RP_TD_SEED"]["status"] == S.MERGE_PENDING
+    monkeypatch.setattr(M.merge, "merge_and_write_bounded", real_merge)
+    real_read = M.blob.read_bytes
+
+    def flaky(path):
+        if str(path).endswith(".chunk"):
+            raise OSError("R2 503 on a chunk GET (test)")
+        return real_read(path)
+    monkeypatch.setattr(M.blob, "read_bytes", flaky)
+    rs = [env.run(fake) for _ in range(M.MAX_FLOW_FAILURES + 1)]
+    fe = env.state()["flows"]["DS_RP_TD_SEED"]
+    assert fe["status"] == S.MERGE_PENDING and not fe.get("failures")
+    assert [c for c in env.chunks() if "/DS_RP_TD_SEED/" in c]
+    assert "NEEDS THE OWNER" in rs[-1].error and "MERGE REFUSED" in rs[-1].error
+    monkeypatch.setattr(M.blob, "read_bytes", real_read)
+    run_until_quiet(env, fake)
+    fe = env.state()["flows"]["DS_RP_TD_SEED"]
+    assert fe["status"] == S.COMPLETE and "merge_refusals" not in fe and env.rows("DS_RP_TD_SEED") == 25
+
+
+def test_repeated_merge_refusals_escalate_in_the_note(env, monkeypatch):
+    from updater.errors import DefinitiveError
+    fake = FakeMelodi(env.clock, _control_flows())
+    _seed_store(env, fake)
+    monkeypatch.setattr(M.merge, "merge_and_write_bounded",
+                        lambda *a, **k: (_ for _ in ()).throw(DefinitiveError("spill cap (test)")))
+    rs = [env.run(fake) for _ in range(M.MAX_FLOW_FAILURES)]
+    assert "MERGE REFUSED 1 pass(es)" in rs[0].error and "NEEDS THE OWNER" not in rs[0].error
+    assert f"MERGE REFUSED {M.MAX_FLOW_FAILURES} pass(es)" in rs[-1].error and "NEEDS THE OWNER" in rs[-1].error
+    assert env.state()["flows"]["DS_RP_TD_SEED"]["merge_refusals"] == M.MAX_FLOW_FAILURES
+
+
+# ------------------------------------------------------------------ R2-B: the alarm outside merge_pending
+def test_the_hard_limit_during_classification_stops_the_unit_and_is_not_a_flow_failure(env, monkeypatch):
+    """The alarm arriving through DuckDB ('Query interrupted') in the CLASSIFICATION profile - where no
+    merge_pending guard applies - must end the unit, not count as one more failure of that flow."""
+    import pytest
+    from updater import orchestrate
+    flows = _control_flows()
+    flows["DS_W"] = series(13)
+    fake = FakeMelodi(env.clock, flows)
+    _seed_store(env, fake)
+    env.put("DS_W", flows["DS_W"])
+    monkeypatch.setattr(orchestrate, "UNIT_TIMEOUT_FIRED", False)
+    real = M._partition_profile
+
+    def alarm(path):
+        if path.endswith("DS_W.parquet"):
+            orchestrate.UNIT_TIMEOUT_FIRED = True
+            raise RuntimeError("Query interrupted")
+        return real(path)
+    monkeypatch.setattr(M, "_partition_profile", alarm)
+    with pytest.raises(RuntimeError, match="Query interrupted"):
+        env.run(fake)
+    fe = (env.state()["flows"].get("DS_W") or {}) if (env.store / S.STATE_FILE).exists() else {}
+    assert not fe.get("failures")

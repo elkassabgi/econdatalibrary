@@ -49,8 +49,8 @@ HOW A PASS RUNS NOW (slots in precedence order, all inside the 35-minute soft st
   counters health and the digest show.
 
 STATE AND STAGING (all through blob - R2 before T0, the local store after): `_flows.json` (this fetcher's
-state; conditional writes - see _melodi_state.py), `_force_origin.json` (OPERATOR-owned, read only:
-{"flows": [...], "unblock_repair_after_utc": "<iso>"}), `_repull/<FLOW>/<attempt>/<nnnnn>.chunk`. Local
+state; conditional writes - see _melodi_state.py), `_force_origin.json` (OPERATOR-owned, read only; its
+format is under STATUSES AND THE OPERATOR below), `_repull/<FLOW>/<attempt>/<nnnnn>.chunk`. Local
 staging lives beside the bounded-merge spill dir (ECONDL_DUCKDB_TMP), never D:.
 
 STATUSES AND THE OPERATOR (each flow's `status` in `_flows.json`; the note names the stuck ones every pass):
@@ -67,13 +67,21 @@ STATUSES AND THE OPERATOR (each flow's `status` in `_flows.json`; the note names
   `unstable_paging`     3 restarts (pages changed under the attempt); its chunks are deleted.
   `broken`              3 failures with no committed chunk between them, or a pull that parsed nothing;
                         its chunks are deleted.
-  The last three are worked by nobody until the operator acts. THE OPERATOR'S FILE is `_force_origin.json`
-  (the fetcher never writes it): {"flows": ["DS_X", ...], "utc": "<iso>", "unblock_repair_after_utc": "<iso>"}.
+  The last three are worked by nobody until the operator acts. A flow whose merge is refused is NOT one of
+  them: it stays `merge_pending` with every staged chunk, retried each pass, and the note escalates
+  (MERGE REFUSED n pass(es)) - a refusal is a condition of the merge, never of the paging (AR-330 C11).
+  THE OPERATOR'S FILE is `_force_origin.json` (the fetcher never writes it). Two forms of "flows":
+      {"flows": ["DS_X", "DS_Y"], "unblock_repair_after_utc": "<iso>"}
+      {"flows": {"DS_X": "<iso>", "DS_Y": "<iso>"}, "unblock_repair_after_utc": "<iso>"}
   - A listed flow, in ANY status, drops its attempt (unless that attempt is already an origin pull) and goes
-    to `needs_origin`: this is the exit from broken, unstable_paging and withdrawn_suspect. Each listing is
-    used ONCE per flow (recorded as `forced_key` = the file's `utc`, or its digest when it has none); to
-    force a flow again, write a new `utc`.
-  - `unblock_repair_after_utc` later than the REPAIR BLOCKED time lifts a failed page-determinism control.
+    to `needs_origin`: this is the exit from broken, unstable_paging and withdrawn_suspect.
+  - The force is PER FLOW and happens ONCE (recorded as the flow's `forced_key`). In the list form a flow is
+    forced once while it stays listed: adding or removing another flow forces nothing again, and neither
+    does any other field. To force a flow AGAIN, either use the object form and give that flow a new value
+    (only that flow is forced again), or take it off the list for one pass and list it again. A
+    top-level `utc` field has no effect.
+  - `unblock_repair_after_utc` later than the REPAIR BLOCKED time lifts a failed page-determinism control;
+    it never forces a flow.
   - Never hand-edit `_flows.json`: it is compare-and-swap protected and a hand edit races a later pass.
 
 T0 STEP (before the R2 write key is revoked): let every in-progress attempt finish, or abandon it (list the
@@ -110,6 +118,7 @@ from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
 from ._common import Tally, finalize, load_rotation, rotate_after, save_rotation
+from . import _giant
 from . import _melodi_state as S
 
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com",
@@ -454,8 +463,10 @@ def _maxyear_rows(path, max_obs) -> int:
 
 
 def _fatal(e) -> bool:
-    """Never swallow the orchestrator's hard limit (UnitTimeout is an Exception) or an interrupt."""
-    return isinstance(e, (KeyboardInterrupt, SystemExit)) or type(e).__name__ == "UnitTimeout"
+    """Never swallow the orchestrator's hard limit or an interrupt. _giant's test (AR-331 R2-B): the
+    UnitTimeout class, the orchestrator's UNIT_TIMEOUT_FIRED flag (DuckDB hands the alarm back as
+    RuntimeError('Query interrupted') and merge.py re-raises it as such), or a native interruption."""
+    return isinstance(e, (KeyboardInterrupt, SystemExit)) or _giant._is_unit_timeout(e)
 
 
 # --------------------------------------------------------------------------------------------- #
@@ -495,6 +506,11 @@ class _Pass:
         committed chunk (AR-331 F5), so only failures without progress between them add up. A flow that goes
         BROKEN drops its attempt, state first and chunks second (AR-331 condition 5)."""
         fe = self.st.flow(code)
+        if fe.get("status") == S.MERGE_PENDING:
+            # AR-331 R2-A: every page of this flow is staged and checked. No fault after that point may
+            # make it broken (broken deletes the chunks): it stays merge_pending, loud and escalating.
+            self._merge_refused(code, where, e)
+            return
         n = int(fe.get("failures", 0)) + 1
         fe["failures"] = n
         msg = f"{code}: {where} failed ({n}/{MAX_FLOW_FAILURES}) - {type(e).__name__}: {str(e)[:120]}"
@@ -507,6 +523,26 @@ class _Pass:
                     self.save()
             else:
                 self.save()
+        except S.StateConflict:
+            pass
+
+    def _merge_refused(self, code, where, e):
+        """A merge_pending flow whose merge (or finalize) failed: it KEEPS merge_pending and its chunks, and the
+        note escalates with the count of passes refused. Only the operator's force (or a merge that later
+        succeeds) ends it."""
+        fe = self.st.flow(code)
+        fe["status"] = S.MERGE_PENDING
+        n = int(fe.get("merge_refusals", 0)) + 1
+        fe["merge_refusals"] = n
+        at = fe.get("attempt") or {}
+        msg = (f"{code}: MERGE REFUSED {n} pass(es) - {where}: {type(e).__name__}: {str(e)[:120]}; kept "
+               f"merge_pending with {int(at.get('chunks', 0))} staged chunk(s), {int(at.get('rows_staged', 0)):,} rows")
+        if n >= MAX_FLOW_FAILURES:
+            msg += " - NEEDS THE OWNER (the cause repeats every pass)"
+        self.labels.append(msg)
+        self._book_transient(msg)
+        try:
+            self.save()
         except S.StateConflict:
             pass
 
@@ -527,27 +563,35 @@ class _Pass:
 
     # ---------------------------------------------------------------- 0. operator force (C9)
     def apply_force(self, codes):
-        """_force_origin.json acts on a flow in ANY status (AR-331 X1, X2): one origin pull per listing. A
-        listing is used once, recorded per flow as `forced_key` = the file's `utc` field (or, without one, the
-        digest of the file); to force a flow again, change `utc`. A forced flow drops its attempt unless that
-        attempt already IS an origin pull, and leaves broken / unstable / withdrawn. An unclassified flow is
-        forced by classification (it still needs its profile) and records the key there."""
+        """_force_origin.json acts on a flow in ANY status (AR-331 X1, X2), PER FLOW and ONCE (R2-C): the
+        flow records the key S.force_entries gives it as `forced_key`, and the same key never forces it
+        again. List form: forced once while it stays listed; the key is cleared when the flow leaves the list
+        (only after a successful read of the file - an unreadable file clears nothing), so listing it again
+        later forces it again. Object form: a new value for a flow forces that flow again. A forced flow drops
+        its attempt unless that attempt already IS an origin pull, and leaves broken / unstable / withdrawn.
+        An unclassified flow is forced by classification (it still needs its profile) and records the key
+        there."""
         raw = self.force_raw or {}
-        listed = raw.get("flows") if isinstance(raw.get("flows"), list) else []
-        self.force_key = S.force_key(raw)
+        entries = S.force_entries(raw)
+        self.force_keys = entries
         live = set(codes)
         active, changed = set(), False
-        for code in sorted({str(c) for c in listed}):
+        if not raw.get("_unreadable"):
+            for code, fe in self.st.flows.items():
+                if fe.get("forced_key") and code not in entries:
+                    fe.pop("forced_key", None)                        # off the list: a later listing forces
+                    changed = True
+        for code, key in sorted(entries.items()):
             if not S.FLOW_RE.fullmatch(code) or code not in live:
                 self.labels.append(f"{S.FORCE_FILE}: {code[:40]!r} is not a catalogued flow - ignored")
                 continue
             fe = self.st.flow(code)
-            if fe.get("forced_key") == self.force_key:
-                continue                                              # this listing was used already
+            if fe.get("forced_key") == key:
+                continue                                              # this entry was used already
             at = fe.get("attempt") or {}
             status = fe.get("status")
             if status in (S.IN_PROGRESS, S.MERGE_PENDING) and at.get("mode") == "origin":
-                fe["forced_key"] = self.force_key                     # already an origin pull
+                fe["forced_key"] = key                                # already an origin pull
                 changed = True
                 continue
             if at.get("id") and not self._lease_ok(code):
@@ -555,9 +599,9 @@ class _Pass:
             active.add(code)
             if status == S.UNCLASSIFIED:
                 continue
-            fe["forced_key"] = self.force_key
+            fe["forced_key"] = key
             self._drop_attempt(code, "operator force_origin")
-            for k in ("failures", "probe"):
+            for k in ("failures", "probe", "merge_refusals"):
                 fe.pop(k, None)
             fe.update(status=S.NEEDS_ORIGIN, why="operator force_origin", repair=True)
             self.labels.append(f"{code}: operator force_origin (was {status}) - an origin pull is queued")
@@ -652,7 +696,7 @@ class _Pass:
             if why:
                 fe.update(status=S.NEEDS_ORIGIN, why=why, repair=True)
                 if code in self.force:
-                    fe["forced_key"] = getattr(self, "force_key", None)
+                    fe["forced_key"] = (getattr(self, "force_keys", None) or {}).get(code)
                     fe.pop("failures", None)
             else:
                 fe.update(status=S.LEGACY, why="no exact-multiple partition; probe pending")
@@ -1266,10 +1310,11 @@ class _Pass:
                             self.path(code), new_path=staged, dedup_keys=DEDUP,
                             stored_copy=stored_local if stored_local else None)
                     except DefinitiveError as e:
-                        fe["status"] = S.MERGE_PENDING
-                        self._book_transient(f"{code}: merge refused, kept merge_pending - {str(e)[:120]}")
-                        self.labels.append(f"{code}: MERGE REFUSED (kept merge_pending): {str(e)[:120]}")
-                        self.flow_failed(code, "merge", e)
+                        # AR-330 C11 / AR-331 R2-A: a refused merge is a condition of the MERGE (spill disk,
+                        # spill cap, memory, a shrink or column refusal), never of the paging. The flow stays
+                        # merge_pending with every staged chunk, however often it is refused; it is NOT a
+                        # flow failure (that would end in broken, and broken deletes chunks).
+                        self._merge_refused(code, "merge refused", e)
                         return "transient"
                     print(f"[insee_melodi] {code}: merge took {time.monotonic() - t0:.1f}s for "
                           f"{total:,} staged rows ({changed:,} new or changed)", flush=True)
@@ -1309,6 +1354,7 @@ class _Pass:
                           f"decision" if residue["rows"] else "")))
         fe["last_full_utc" if mode == "origin" else "last_tail_utc"] = S.utcnow()
         fe.pop("failures", None)
+        fe.pop("merge_refusals", None)
         if mode == "origin":
             fe["residue"] = residue
         if at.get("within_dups"):

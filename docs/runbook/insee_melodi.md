@@ -118,8 +118,8 @@ HOW A PASS RUNS NOW (slots in precedence order, all inside the 35-minute soft st
   counters health and the digest show.
 
 STATE AND STAGING (all through blob - R2 before T0, the local store after): `_flows.json` (this fetcher's
-state; conditional writes - see _melodi_state.py), `_force_origin.json` (OPERATOR-owned, read only:
-{"flows": [...], "unblock_repair_after_utc": "<iso>"}), `_repull/<FLOW>/<attempt>/<nnnnn>.chunk`. Local
+state; conditional writes - see _melodi_state.py), `_force_origin.json` (OPERATOR-owned, read only; its
+format is under STATUSES AND THE OPERATOR below), `_repull/<FLOW>/<attempt>/<nnnnn>.chunk`. Local
 staging lives beside the bounded-merge spill dir (ECONDL_DUCKDB_TMP), never D:.
 
 STATUSES AND THE OPERATOR (each flow's `status` in `_flows.json`; the note names the stuck ones every pass):
@@ -136,13 +136,21 @@ STATUSES AND THE OPERATOR (each flow's `status` in `_flows.json`; the note names
   `unstable_paging`     3 restarts (pages changed under the attempt); its chunks are deleted.
   `broken`              3 failures with no committed chunk between them, or a pull that parsed nothing;
                         its chunks are deleted.
-  The last three are worked by nobody until the operator acts. THE OPERATOR'S FILE is `_force_origin.json`
-  (the fetcher never writes it): {"flows": ["DS_X", ...], "utc": "<iso>", "unblock_repair_after_utc": "<iso>"}.
+  The last three are worked by nobody until the operator acts. A flow whose merge is refused is NOT one of
+  them: it stays `merge_pending` with every staged chunk, retried each pass, and the note escalates
+  (MERGE REFUSED n pass(es)) - a refusal is a condition of the merge, never of the paging (AR-330 C11).
+  THE OPERATOR'S FILE is `_force_origin.json` (the fetcher never writes it). Two forms of "flows":
+      {"flows": ["DS_X", "DS_Y"], "unblock_repair_after_utc": "<iso>"}
+      {"flows": {"DS_X": "<iso>", "DS_Y": "<iso>"}, "unblock_repair_after_utc": "<iso>"}
   - A listed flow, in ANY status, drops its attempt (unless that attempt is already an origin pull) and goes
-    to `needs_origin`: this is the exit from broken, unstable_paging and withdrawn_suspect. Each listing is
-    used ONCE per flow (recorded as `forced_key` = the file's `utc`, or its digest when it has none); to
-    force a flow again, write a new `utc`.
-  - `unblock_repair_after_utc` later than the REPAIR BLOCKED time lifts a failed page-determinism control.
+    to `needs_origin`: this is the exit from broken, unstable_paging and withdrawn_suspect.
+  - The force is PER FLOW and happens ONCE (recorded as the flow's `forced_key`). In the list form a flow is
+    forced once while it stays listed: adding or removing another flow forces nothing again, and neither
+    does any other field. To force a flow AGAIN, either use the object form and give that flow a new value
+    (only that flow is forced again), or take it off the list for one pass and list it again. A
+    top-level `utc` field has no effect.
+  - `unblock_repair_after_utc` later than the REPAIR BLOCKED time lifts a failed page-determinism control;
+    it never forces a flow.
   - Never hand-edit `_flows.json`: it is compare-and-swap protected and a hand edit races a later pass.
 
 T0 STEP (before the R2 write key is revoked): let every in-progress attempt finish, or abandon it (list the
