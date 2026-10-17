@@ -653,12 +653,12 @@ def test_a_row_appearing_inside_the_transaction_rolls_it_back(world):
 # --------------------------------------------------------------------------- #
 def test_the_budget_counts_the_series_fts_read(world, monkeypatch):
     """C1: the clock starts at the lock, so a slow series_fts read uses up the budget instead of adding to it."""
-    t = {"now": 0.0}
+    t = {"now": 60 * 60.0}                         # an hour passed between taking the lock and run()
     real = tool.load_fts
 
     def slow_read(pids):
         real(pids)
-        t["now"] += 91 * 60.0                      # the read took longer than the whole default budget
+        t["now"] += 31 * 60.0                      # 91 min since the lock; only 31 since run() began
     monkeypatch.setattr(tool, "load_fts", slow_read)
     before = _snapshot(world)
     assert tool.run(_args(apply=True, max_minutes=90), clock=lambda: t["now"], started=0.0) == 0
