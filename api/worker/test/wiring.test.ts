@@ -130,7 +130,7 @@ test("origin: the gate, the skipped auth, the edge-only routes, no-store, and th
 
 test("the /v1/catalog branch skips the Cache API in local mode before it is touched", () => {
   const src = readFileSync(at("src", "index.ts"), "utf8");
-  const local = src.indexOf('if (path === "/v1/catalog" && local) return await handleCatalog(url, env);');
+  const local = src.indexOf('if (path === "/v1/catalog" && local) return await handleCatalog(url, env, await wh());');
   const cache = src.indexOf("const cache = caches.default;");
   assert.ok(local > 0 && cache > 0 && local < cache, "the local short-circuit must come before caches.default");
   assert.match(src, /const statsCache = local \? null : caches\.default;/);

@@ -57,7 +57,7 @@ def test_the_enumeration_query_excludes_carveouts():
 def test_the_bundle_route_calls_the_filtered_builder():
     """Fixing the builder achieves nothing if the route still binds the unfiltered const."""
     code = _code(BUNDLE_TS)
-    assert "seriesIdsForSourceSql(source)" in code, (
+    assert "seriesIdsForSourceSql(source," in code, (
         "bundle.ts no longer uses the carve-out-excluding builder for its source enumeration")
     assert "prepare(SERIES_IDS_FOR_SOURCE)" not in code, (
         "bundle.ts still prepares the UNFILTERED query; the exclusion is bypassed")

@@ -9,11 +9,12 @@
 
 import type { Env, CatalogResultRow, CountRow } from "./types.ts";
 import {
-  SEARCH_FTS, SEARCH_FTS_COUNT, SEARCH_LIKE, SEARCH_LIKE_COUNT,
+  searchFtsSql, searchFtsCountSql, searchLikeSql, searchLikeCountSql,
   searchFtsSourceSql, searchFtsSourceCountSql, searchLikeSourceSql, searchLikeSourceCountSql,
-  browseSourceSql, browseSourceVisibleCountSql, hasCarveouts,
-  BROWSE_SOURCE_COUNT, BROWSE_SOURCE_COUNT_CACHED, BROWSE_ALL, BROWSE_ALL_COUNT,
+  browseSourceSql, browseSourceVisibleCountSql, hasCarveouts, withheldPresentCountSql,
+  BROWSE_SOURCE_COUNT, BROWSE_SOURCE_COUNT_CACHED, browseAllSql, BROWSE_ALL_COUNT,
 } from "./sql.ts";
+import { type Withheld, forSource, isWithheld } from "./withheld.ts";
 import { json, clampInt, offsetInt, reqLang, localizedTitle, dbFor, supportedSources } from "./util.ts";
 import { NON_REDISTRIBUTABLE, isSeriesCarvedOut, promotesToSourceBrowse } from "./denylist.ts";
 
@@ -65,7 +66,14 @@ const COVERAGE =
   "mixed grain: some sources are catalogued per series, others per table or flow — " +
   "absence from this catalogue does not mean a series is unavailable";
 
-export async function handleCatalog(url: URL, env: Env): Promise<Response> {
+/** How many of `ids` the database holds (0 for none): what a cached or whole-table count must lose. */
+export async function presentCount(db: D1Database, ids: readonly string[]): Promise<number> {
+  if (ids.length === 0) return 0;
+  const c = await db.prepare(withheldPresentCountSql(ids)).first<CountRow>();
+  return c?.n ?? 0;
+}
+
+export async function handleCatalog(url: URL, env: Env, withheld: Withheld): Promise<Response> {
   const { lang, error } = reqLang(url);
   if (error) return error; // unsupported ?lang= -> honest 400, never silent English
   const qRaw = url.searchParams.get("q");
@@ -135,6 +143,9 @@ export async function handleCatalog(url: URL, env: Env): Promise<Response> {
   // at 500 and real offsets are shallow, so this stays bounded.
   const scopedDb = dbFor(env, src);
   const window = limit + offset;
+  // WITHHELD series (src/withheld.ts): the source's own ids for a scoped statement, every id for a global one
+  const whAll = [...withheld.ids].sort();
+  const whSrc = src ? forSource(withheld, src) : [];
 
   if (q && q.trim()) {
     // FTS5 primary path. D1 raises on a malformed MATCH expression, so we catch
@@ -152,9 +163,9 @@ export async function handleCatalog(url: URL, env: Env): Promise<Response> {
         // The COUNT is index-backed and was already being run whenever results existed; the
         // only new cost is running it on an empty page, which is far cheaper than the scan it
         // replaces.
-        const c = await scopedDb.prepare(searchFtsSourceCountSql(src)).bind(q, src).first<CountRow>();
+        const c = await scopedDb.prepare(searchFtsSourceCountSql(src, whSrc)).bind(q, src).first<CountRow>();
         const n = c?.n ?? 0;
-        const res = await scopedDb.prepare(searchFtsSourceSql(src)).bind(q, src, limit, offset).all<CatalogResultRow>();
+        const res = await scopedDb.prepare(searchFtsSourceSql(src, whSrc)).bind(q, src, limit, offset).all<CatalogResultRow>();
         results = res.results ?? [];
         if (n > 0) {
           total = n;
@@ -162,8 +173,8 @@ export async function handleCatalog(url: URL, env: Env): Promise<Response> {
         }
       } else {
         const [p, sh] = await Promise.all([
-          env.CATALOG.prepare(SEARCH_FTS).bind(q, window, 0).all<CatalogResultRow>(),
-          env.CATALOG_CLIMATE.prepare(SEARCH_FTS).bind(q, window, 0).all<CatalogResultRow>(),
+          env.CATALOG.prepare(searchFtsSql(whAll)).bind(q, window, 0).all<CatalogResultRow>(),
+          env.CATALOG_CLIMATE.prepare(searchFtsSql(whAll)).bind(q, window, 0).all<CatalogResultRow>(),
         ]);
         const merged = [...(p.results ?? []), ...(sh.results ?? [])];
         results = merged.slice(offset, offset + limit);
@@ -181,8 +192,8 @@ export async function handleCatalog(url: URL, env: Env): Promise<Response> {
         // `merged` is the FTS result set; if it is non-empty, FTS worked.
         if (merged.length > 0) {
           const [cp, cs] = await Promise.all([
-            env.CATALOG.prepare(SEARCH_FTS_COUNT).bind(q).first<CountRow>(),
-            env.CATALOG_CLIMATE.prepare(SEARCH_FTS_COUNT).bind(q).first<CountRow>(),
+            env.CATALOG.prepare(searchFtsCountSql(whAll)).bind(q).first<CountRow>(),
+            env.CATALOG_CLIMATE.prepare(searchFtsCountSql(whAll)).bind(q).first<CountRow>(),
           ]);
           total = (cp?.n ?? 0) + (cs?.n ?? 0);
           ftsOk = true;
@@ -194,19 +205,19 @@ export async function handleCatalog(url: URL, env: Env): Promise<Response> {
     if (!ftsOk) {
       const like = `%${q}%`;
       if (src) {
-        const res = await scopedDb.prepare(searchLikeSourceSql(src)).bind(like, like, src, limit, offset).all<CatalogResultRow>();
+        const res = await scopedDb.prepare(searchLikeSourceSql(src, whSrc)).bind(like, like, src, limit, offset).all<CatalogResultRow>();
         results = res.results ?? [];
-        const c = await scopedDb.prepare(searchLikeSourceCountSql(src)).bind(like, like, src).first<CountRow>();
+        const c = await scopedDb.prepare(searchLikeSourceCountSql(src, whSrc)).bind(like, like, src).first<CountRow>();
         total = c?.n ?? results.length;
       } else {
         const [p, sh] = await Promise.all([
-          env.CATALOG.prepare(SEARCH_LIKE).bind(like, like, window, 0).all<CatalogResultRow>(),
-          env.CATALOG_CLIMATE.prepare(SEARCH_LIKE).bind(like, like, window, 0).all<CatalogResultRow>(),
+          env.CATALOG.prepare(searchLikeSql(whAll)).bind(like, like, window, 0).all<CatalogResultRow>(),
+          env.CATALOG_CLIMATE.prepare(searchLikeSql(whAll)).bind(like, like, window, 0).all<CatalogResultRow>(),
         ]);
         results = [...(p.results ?? []), ...(sh.results ?? [])].slice(offset, offset + limit);
         const [cp, cs] = await Promise.all([
-          env.CATALOG.prepare(SEARCH_LIKE_COUNT).bind(like, like).first<CountRow>(),
-          env.CATALOG_CLIMATE.prepare(SEARCH_LIKE_COUNT).bind(like, like).first<CountRow>(),
+          env.CATALOG.prepare(searchLikeCountSql(whAll)).bind(like, like).first<CountRow>(),
+          env.CATALOG_CLIMATE.prepare(searchLikeCountSql(whAll)).bind(like, like).first<CountRow>(),
         ]);
         total = (cp?.n ?? 0) + (cs?.n ?? 0);
       }
@@ -215,20 +226,21 @@ export async function handleCatalog(url: URL, env: Env): Promise<Response> {
     // PK-range browse: [src+':', src+';') — ';' is ':'+1, closing the prefix
     // range. Reads offset+limit PK entries instead of sort-scanning the whole
     // source (the 87.3B-rows-read/day incident; rationale in sql.ts).
-    const res = await scopedDb.prepare(browseSourceSql(src))
+    const res = await scopedDb.prepare(browseSourceSql(src, whSrc))
       .bind(src + ":", src + ";", limit, offset).all<CatalogResultRow>();
     results = res.results ?? [];
     if (hasCarveouts(src)) {
       // source_counts counts carved rows, so it advertised 692 for worldbank where 262 are
       // reachable. Only the 3 carve-out sources take this bounded PK-range count; every other
       // source keeps the free cached read (this path is why that cache exists).
-      const c = await scopedDb.prepare(browseSourceVisibleCountSql(src))
+      const c = await scopedDb.prepare(browseSourceVisibleCountSql(src, whSrc))
         .bind(src + ":", src + ";").first<CountRow>();
       total = c?.n ?? results.length;
     } else {
       const cached = await scopedDb.prepare(BROWSE_SOURCE_COUNT_CACHED).bind(src).first<CountRow>();
       if (cached && typeof cached.n === "number" && !(cached.n === 0 && results.length > 0)) {
-        total = cached.n;
+        // source_counts counts withheld rows too: lose the ones the catalogue holds (a PK count, ~1 row each)
+        total = Math.max(0, cached.n - await presentCount(scopedDb, whSrc));
       } else if (cached && cached.n === 0 && results.length > 0) {
         // THE CACHE IS PROVABLY WRONG, so do not serve it. `total: 0` beside a non-empty page is
         // self-contradictory: this very request just read rows for the source. statcan entered
@@ -250,7 +262,7 @@ export async function handleCatalog(url: URL, env: Env): Promise<Response> {
         // Deeper pages take a floor instead, which costs nothing and still cannot contradict
         // itself: total is never below the rows this page actually returned.
         if (offset === 0) {
-          const c = await scopedDb.prepare(browseSourceVisibleCountSql(src))
+          const c = await scopedDb.prepare(browseSourceVisibleCountSql(src, whSrc))
             .bind(src + ":", src + ";").first<CountRow>();
           total = c?.n ?? results.length;
         } else {
@@ -260,13 +272,13 @@ export async function handleCatalog(url: URL, env: Env): Promise<Response> {
         // Fallback: a source synced before its source_counts row exists. Live
         // COUNT once — the sync backfills the row and this path goes cold.
         const c = await scopedDb.prepare(BROWSE_SOURCE_COUNT).bind(src).first<CountRow>();
-        total = c?.n ?? results.length;
+        total = c ? Math.max(0, c.n - await presentCount(scopedDb, whSrc)) : results.length;
       }
     }
   } else {
     const [p, sh] = await Promise.all([
-      env.CATALOG.prepare(BROWSE_ALL).bind(window, 0).all<CatalogResultRow>(),
-      env.CATALOG_CLIMATE.prepare(BROWSE_ALL).bind(window, 0).all<CatalogResultRow>(),
+      env.CATALOG.prepare(browseAllSql(whAll)).bind(window, 0).all<CatalogResultRow>(),
+      env.CATALOG_CLIMATE.prepare(browseAllSql(whAll)).bind(window, 0).all<CatalogResultRow>(),
     ]);
     // BROWSE_ALL orders by series_id; restore that order across the two windows.
     const merged = [...(p.results ?? []), ...(sh.results ?? [])]
@@ -276,7 +288,9 @@ export async function handleCatalog(url: URL, env: Env): Promise<Response> {
       env.CATALOG.prepare(BROWSE_ALL_COUNT).first<CountRow>(),
       env.CATALOG_CLIMATE.prepare(BROWSE_ALL_COUNT).first<CountRow>(),
     ]);
-    total = (cp?.n ?? 0) + (cs?.n ?? 0);
+    // the whole-table COUNT keeps its measured form; the withheld rows each database holds are subtracted
+    const [wp, ws] = await Promise.all([presentCount(env.CATALOG, whAll), presentCount(env.CATALOG_CLIMATE, whAll)]);
+    total = Math.max(0, (cp?.n ?? 0) - wp) + Math.max(0, (cs?.n ?? 0) - ws);
   }
 
   const mapped = results.map((r) => {
@@ -311,7 +325,8 @@ export async function handleCatalog(url: URL, env: Env): Promise<Response> {
   // individual third-party carve-out series within an otherwise-served source
   // (denylist.ts). Belt-and-suspenders over the SQL exclusion (covers the browse path).
   const visible = mapped.filter(
-    (m) => !NON_REDISTRIBUTABLE.has(m.source as string) && !isSeriesCarvedOut(m.series_id as string),
+    (m) => !NON_REDISTRIBUTABLE.has(m.source as string) && !isSeriesCarvedOut(m.series_id as string)
+      && !isWithheld(withheld, m.series_id as string),
   );
 
   // For lang=en this body is byte-identical to the pre-i18n contract (no `lang`).

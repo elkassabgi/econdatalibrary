@@ -154,6 +154,13 @@ STATUSES AND THE OPERATOR (each flow's `status` in `_flows.json`; the note names
     While insee_melodi is `live: false` the scheduled run skips it: the passes run only by a manual
     `updater-daily` dispatch with source=insee_melodi and force=true.
   - Never hand-edit `_flows.json`: it is compare-and-swap protected and a hand edit races a later pass.
+  WITHHELD (owner decision 2026-10-17; api/worker/src/withheld.ts): the 43 truncated census tables and the other
+  proven-truncated flows are hidden from users by the list `_aqueduct/withheld.json`, written by
+  tools/withheld_list.py. At the START of each pass (unwithhold) this fetcher removes an `until: "complete"` entry
+  of its own once that flow is complete_per_paging from an origin pull, its CSV was handed over by an earlier pass
+  (no csv_owed) and the served CSV's data lines equal served.rows - one conditional write, a lost race retried
+  later; above UNWITHHOLD_MAX_ROWS the owner un-hides it. Log line: `<FLOW>: UN-WITHHELD - complete per INSEE
+  paging, CSV N lines == N rows`.
   BLOCKED (AR-334 R3-1): a finalize whose margin is more than this pass's repair slot can give from its
   earliest start (minute 15, or earlier in an "only" pass) is not deferred for ever at the head of the queue:
   it is labelled "NEEDS THE OWNER - ... more than this pass can give", recorded as `finalize_blocked`, its
@@ -448,6 +455,26 @@ def _find_key(obj, key, depth=0):
 # classification (C1, R2-1, R2-2)
 # --------------------------------------------------------------------------------------------- #
 PROFILE_MEMORY_LIMIT = "2GB"     # DuckDB limit for the classification profile and finalize's queries (F6)
+
+
+# --------------------------------------------------------------------------------------------- #
+# the WITHHELD list (api/worker/src/withheld.ts): un-hide a table once it is complete
+# --------------------------------------------------------------------------------------------- #
+WITHHELD_KEY = "_aqueduct/withheld.json"
+UNWITHHOLD_MAX_ROWS = 5_000_000     # above this a flow CSV may go to csv_desktop_owed: the owner un-hides it
+
+
+def _withheld_store():
+    """The store the worker reads the list from: R2 before T0, the self-hosted blob store after (the CSV store).
+    None on a local-backend run before T0 (a test, a probe): such a run serves nobody, so it un-hides nothing."""
+    if S.backend_kind() == "local-pre-t0":
+        return None
+    return blob.csv_store()
+
+
+def _csv_object_key(code: str) -> str:
+    import urllib.parse                                                  # noqa: PLC0415
+    return "series/" + urllib.parse.quote(f"{SOURCE}:{code}", safe="") + ".csv"
 
 
 def _sq(path: str) -> str:
@@ -1055,6 +1082,87 @@ class _Pass:
         self.force = active
         if changed:
             self.save()
+
+    def unwithhold(self):
+        """Owner decision 2026-10-17: an incomplete table is WITHHELD from users (api/worker/src/withheld.ts) and
+        listed again when complete. This removes an insee_melodi entry with `until: "complete"` once, at the START
+        of a pass - never in the pass that finalized it - ALL of these hold:
+          - the flow is complete_per_paging with basis origin, no attempt, hold, block, refusal or pending supersede;
+          - no csv_owed: the CSV was handed to the orchestrator by an earlier pass's Result;
+          - the served CSV holds every row: its data lines == served.rows (one GET of the CSV object);
+          - served.rows <= UNWITHHOLD_MAX_ROWS (above it the CSV may be a desktop debt; the owner un-hides it).
+        One conditional write (If-Match the list's ETag); a lost race is retried on a later pass. The fetcher never
+        ADDS an entry and never touches an `until: "operator"` one. Any failure to read leaves the list as it is."""
+        import gzip                                                          # noqa: PLC0415
+        import json                                                          # noqa: PLC0415
+        try:
+            store = _withheld_store()
+            if store is None:
+                return
+            raw = store.get(WITHHELD_KEY)
+            etag = store.etag(WITHHELD_KEY) if raw is not None else None
+        except Exception as e:                                               # noqa: BLE001 - the list is advisory here
+            if _fatal(e):
+                raise
+            print(f"[insee_melodi] withheld list not read ({type(e).__name__}) - left as it is", flush=True)
+            return
+        if raw is None:
+            return
+        try:
+            obj = json.loads(raw)
+            ids = obj["ids"]
+            if obj.get("version") != 1 or not isinstance(ids, dict):
+                raise ValueError("shape")
+        except (ValueError, KeyError, TypeError):
+            self.labels.append(f"{WITHHELD_KEY} is not a valid list - nothing un-withheld")
+            return
+        ready = []
+        for sid, ent in sorted(ids.items()):
+            if not sid.startswith(f"{SOURCE}:") or not isinstance(ent, dict) or ent.get("until") != "complete":
+                continue
+            code = sid.split(":", 1)[1]
+            fe = self.st.flows.get(code) or {}
+            served = fe.get("served") or {}
+            rows = int(served.get("rows") or 0)
+            if (fe.get("status") != S.COMPLETE or fe.get("basis") != "origin" or fe.get("attempt") or fe.get("hold")
+                    or fe.get("finalize_blocked") or fe.get("merge_refusals") or fe.get("supersede")
+                    or fe.get("csv_owed") is not None or rows <= 0):
+                continue
+            if rows > UNWITHHOLD_MAX_ROWS:
+                self.labels.append(f"{code}: complete but stays WITHHELD - {rows:,} rows is above "
+                                   f"{UNWITHHOLD_MAX_ROWS:,}; the owner un-hides it after its CSV is read back")
+                continue
+            try:
+                body = store.get(_csv_object_key(code))
+            except Exception as e:                                           # noqa: BLE001
+                if _fatal(e):
+                    raise
+                body = None
+            plain = (gzip.decompress(body) if body and body[:2] == b"\x1f\x8b" else body) or b""
+            lines = plain.count(b"\n") - 1 if body else -1
+            if lines != rows:
+                self.labels.append(f"{code}: complete but stays WITHHELD - its served CSV has {lines:,} data lines, "
+                                   f"the parquet {rows:,} rows")
+                continue
+            ready.append((sid, code, rows))
+        if not ready:
+            return
+        keep = {k: v for k, v in ids.items() if k not in {r[0] for r in ready}}
+        new = (json.dumps({**obj, "ids": keep}, indent=1, sort_keys=True) + "\n").encode("utf-8")
+        try:
+            got = store.put_if(WITHHELD_KEY, new, if_match=etag)
+        except Exception as e:                                               # noqa: BLE001
+            if _fatal(e):
+                raise
+            got = None
+            self.labels.append(f"{WITHHELD_KEY} not written ({type(e).__name__}) - un-hide retried on a later pass")
+            return
+        if got is None:
+            self.labels.append(f"{WITHHELD_KEY} changed meanwhile - un-hide retried on a later pass")
+            return
+        for _sid, code, rows in ready:              # a log line, not a loud finding: this is the designed outcome
+            print(f"[insee_melodi] {code}: UN-WITHHELD - complete per INSEE paging, CSV {rows:,} lines == "
+                  f"{rows:,} rows", flush=True)
 
     def decide_only(self, codes):
         """F1b "only": "supersede" (AR-335 D5): this pass works the listed supersede flows and NOTHING else - no
@@ -2282,6 +2390,7 @@ def update(unit, since, *, _session=None, _clock=None) -> Result:
         pa_.labels.append(f"{len(dropped)} catalogue code(s) not of the [A-Z0-9_] form - not pulled: {', '.join(dropped[:5])}")
     try:
         pa_.decide_only(codes)                           # F1b D5: read before anything writes
+        pa_.unwithhold()                                 # un-hide tables completed in an EARLIER pass
         pa_.sweep_done()
         pa_.apply_force(codes)
         if pa_.only:

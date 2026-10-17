@@ -101,6 +101,10 @@ def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
+class PreconditionFailed(Exception):
+    """A conditional put whose condition did not hold when the write lock was taken: nothing was written."""
+
+
 class BlobStore:
     def __init__(self, root: str, *, create: bool = False):
         self.root = os.path.abspath(root)
@@ -193,10 +197,17 @@ class BlobStore:
 
     def put(self, key: str, data: bytes, *, etag: str, content_encoding: str | None = None,
             content_type: str | None = None, custom_metadata: dict | None = None,
-            stored_utc: str | None = None) -> str:
+            stored_utc: str | None = None, if_match: str | None = None, if_none_match: bool = False) -> str:
         """Store bytes under key with the R2 etag they had. Returns the sha256. `stored_utc` (ISO, UTC) keeps
         the time the object was written where it came from - import_from_r2 passes R2's LastModified, so an
-        imported object does not read as written at import time; by default it is now."""
+        imported object does not read as written at import time; by default it is now.
+
+        CONDITIONAL (R2's If-Match / If-None-Match, for SelfhostBlob.put_if; AR-339 Part 2 finding 2): with
+        `if_match` the key must currently hold that etag, with `if_none_match` it must not exist. The check
+        runs INSIDE BEGIN IMMEDIATE, before anything is written, so it is atomic with the write against every
+        other writer, thread or process. A failed condition raises PreconditionFailed and writes nothing."""
+        if if_match is not None and if_none_match:
+            raise ValueError("put: at most one of if_match / if_none_match")
         sha = hashlib.sha256(data).hexdigest()
         path = self._path(sha)
         with self._wlock:
@@ -206,6 +217,12 @@ class BlobStore:
                 # inside the try (AR-151 finding 9): if it ever failed, the except below still ends the
                 # transaction instead of leaving BEGIN IMMEDIATE open on the shared write connection
                 self._w.execute("SAVEPOINT put_start")
+                if if_match is not None or if_none_match:
+                    cur = self._w.execute("SELECT etag FROM blobs WHERE key=?", (key,)).fetchone()
+                    if if_none_match and cur is not None:
+                        raise PreconditionFailed(f"{key} exists (If-None-Match: *)")
+                    if if_match is not None and (cur is None or cur[0] != if_match.strip('"')):
+                        raise PreconditionFailed(f"{key} does not hold etag {if_match.strip(chr(34))}")
                 if not os.path.exists(path):
                     created = True
                     os.makedirs(os.path.dirname(path), exist_ok=True)

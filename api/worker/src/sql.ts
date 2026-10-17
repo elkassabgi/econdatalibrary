@@ -16,6 +16,7 @@
 
 // catalog.db (D1 binding `CATALOG`) ----------------------------------------
 
+import { WITHHELD_ID_RE } from "./withheld.ts";
 import {
   NON_REDISTRIBUTABLE, SERIES_CARVEOUT_LIKE, SERIES_CARVEOUT_EXACT, SERIES_CARVEOUTS, likeEscape,
 } from "./denylist.ts";
@@ -93,31 +94,64 @@ LEFT JOIN source_state ss ON ss.source_id = s.source_id
 LEFT JOIN source_data_through dt ON dt.source_id = s.source_id
 WHERE s.source_id = ?`;
 
+/** WITHHELD series (src/withheld.ts): ` AND <col> NOT IN ('id', ...)`, or "" for none.
+ *
+ * Literals, never bound parameters: D1 caps a statement at 100 bound variables (R224) and these statements
+ * already bind theirs. Every id is checked against WITHHELD_ID_RE here - [a-z0-9_]:[A-Za-z0-9_.-] admits no
+ * quote, space or wildcard - and a bad one THROWS (src/withheld.ts never lets one through; this is the second
+ * barrier). Cost, the carveoutExcl precedent (2026-08-30): a NOT IN over literal series_ids is evaluated on the
+ * PK autoindex entry, so EXPLAIN QUERY PLAN and D1's billed rows_read do not move; the source-scoped forms
+ * inline only that source's ids, so a source with none gets byte-identical SQL. */
+export function withheldExcl(ids: readonly string[], col: string = "series_id"): string {
+  if (!ids || ids.length === 0) return "";
+  for (const id of ids) {
+    if (!WITHHELD_ID_RE.test(id)) throw new Error(`withheldExcl: invalid series id ${JSON.stringify(id)}`);
+  }
+  return ` AND ${col} NOT IN (${[...ids].sort().map((id) => `'${id}'`).join(",")})`;
+}
+
+/** How many of these ids the catalogue holds - what a cached or whole-table COUNT must lose, so a total
+ *  never counts a withheld row. Primary-key lookups: about one row read per id. Never called with no ids. */
+export function withheldPresentCountSql(ids: readonly string[]): string {
+  const excl = withheldExcl(ids);
+  if (!excl) throw new Error("withheldPresentCountSql: no ids");
+  return `SELECT COUNT(*) AS n FROM series WHERE series_id IN (${excl.slice(excl.indexOf("(") + 1, -1)})`;
+}
+
 /** FTS5 search. Identical to core/catalog.py + _catalog.py::search (primary path).
- *  `?` is the MATCH query, `?` is the limit. */
-export const SEARCH_FTS = `
+ *  `?` is the MATCH query, `?` is the limit. A function since 2026-10-17: the withheld ids (ALL sources, it is
+ *  a global search) are excluded in the SQL, so a page and its total agree. */
+export function searchFtsSql(withheld: readonly string[] = []): string {
+  return `
 SELECT s.series_id, s.source_id, s.title, s.frequency, s.unit, s.geography,
        s.license_id, s.start_date, s.end_date, s.metadata
 FROM series_fts f JOIN series s ON s.series_id = f.series_id
-WHERE series_fts MATCH ? ${EXCL_ALIASED} LIMIT ? OFFSET ?`;
+WHERE series_fts MATCH ? ${EXCL_ALIASED}${withheldExcl(withheld, "s.series_id")} LIMIT ? OFFSET ?`;
+}
 
 /** LIKE fallback when FTS errors / matches nothing. Mirrors the Python fallback,
  *  extended with series_id LIKE (as _catalog.py does) so an id substring also hits. */
-export const SEARCH_LIKE = `
+export function searchLikeSql(withheld: readonly string[] = []): string {
+  return `
 SELECT series_id, source_id, title, frequency, unit, geography,
        license_id, start_date, end_date, metadata
 FROM series
-WHERE (title LIKE ? OR series_id LIKE ?) ${EXCL_BARE}
+WHERE (title LIKE ? OR series_id LIKE ?) ${EXCL_BARE}${withheldExcl(withheld)}
 LIMIT ? OFFSET ?`;
+}
 
 /** Total count for a LIKE search (for the `total` field). */
-export const SEARCH_LIKE_COUNT = `
-SELECT COUNT(*) AS n FROM series WHERE (title LIKE ? OR series_id LIKE ?) ${EXCL_BARE}`;
+export function searchLikeCountSql(withheld: readonly string[] = []): string {
+  return `
+SELECT COUNT(*) AS n FROM series WHERE (title LIKE ? OR series_id LIKE ?) ${EXCL_BARE}${withheldExcl(withheld)}`;
+}
 
 /** Total count for an FTS search. */
-export const SEARCH_FTS_COUNT = `
+export function searchFtsCountSql(withheld: readonly string[] = []): string {
+  return `
 SELECT COUNT(*) AS n FROM series_fts f JOIN series s ON s.series_id = f.series_id
-WHERE series_fts MATCH ? ${EXCL_ALIASED}`;
+WHERE series_fts MATCH ? ${EXCL_ALIASED}${withheldExcl(withheld, "s.series_id")}`;
+}
 
 /** Carve-out exclusion for ONE source, or "" when that source has none.
  *
@@ -159,35 +193,35 @@ export function carveoutExcl(source: string, col: string = "series_id"): string 
  *  `?q=unemployment&source=worldbank` answered `total=235` with an EMPTY results array on
  *  EVERY page — the JS gate in catalog.ts filtered each page after LIMIT, and for this query
  *  every matching row is carved. Verified live 2026-08-30 before the fix. */
-export function searchFtsSourceSql(source: string): string {
+export function searchFtsSourceSql(source: string, withheld: readonly string[] = []): string {
   return `
 SELECT s.series_id, s.source_id, s.title, s.frequency, s.unit, s.geography,
        s.license_id, s.start_date, s.end_date, s.metadata
 FROM series_fts f JOIN series s ON s.series_id = f.series_id
-WHERE series_fts MATCH ? AND s.source_id = ?${carveoutExcl(source, "s.series_id")}
+WHERE series_fts MATCH ? AND s.source_id = ?${carveoutExcl(source, "s.series_id")}${withheldExcl(withheld, "s.series_id")}
 LIMIT ? OFFSET ?`;
 }
 
-export function searchFtsSourceCountSql(source: string): string {
+export function searchFtsSourceCountSql(source: string, withheld: readonly string[] = []): string {
   return `
 SELECT COUNT(*) AS n FROM series_fts f JOIN series s ON s.series_id = f.series_id
-WHERE series_fts MATCH ? AND s.source_id = ?${carveoutExcl(source, "s.series_id")}`;
+WHERE series_fts MATCH ? AND s.source_id = ?${carveoutExcl(source, "s.series_id")}${withheldExcl(withheld, "s.series_id")}`;
 }
 
 /** LIKE fallback constrained to ONE source. Binds: like, like, source, limit, offset. */
-export function searchLikeSourceSql(source: string): string {
+export function searchLikeSourceSql(source: string, withheld: readonly string[] = []): string {
   return `
 SELECT series_id, source_id, title, frequency, unit, geography,
        license_id, start_date, end_date, metadata
 FROM series
-WHERE (title LIKE ? OR series_id LIKE ?) AND source_id = ?${carveoutExcl(source)}
+WHERE (title LIKE ? OR series_id LIKE ?) AND source_id = ?${carveoutExcl(source)}${withheldExcl(withheld)}
 LIMIT ? OFFSET ?`;
 }
 
-export function searchLikeSourceCountSql(source: string): string {
+export function searchLikeSourceCountSql(source: string, withheld: readonly string[] = []): string {
   return `
 SELECT COUNT(*) AS n FROM series
-WHERE (title LIKE ? OR series_id LIKE ?) AND source_id = ?${carveoutExcl(source)}`;
+WHERE (title LIKE ? OR series_id LIKE ?) AND source_id = ?${carveoutExcl(source)}${withheldExcl(withheld)}`;
 }
 
 /** Browse one source (q absent) — PK-range form, COST-CRITICAL (2026-08-15).
@@ -202,11 +236,11 @@ WHERE (title LIKE ? OR series_id LIKE ?) AND source_id = ?${carveoutExcl(source)
  * 9,214,639 + 3,137,871 rows), so the [src+':', src+';') range walks the PK
  * autoindex already in series_id order and reads only offset+limit entries.
  * Binds: lo (src+':'), hi (src+';'), limit, offset. */
-export function browseSourceSql(source: string): string {
+export function browseSourceSql(source: string, withheld: readonly string[] = []): string {
   return `
 SELECT series_id, source_id, title, frequency, unit, geography,
        license_id, start_date, end_date, metadata
-FROM series WHERE series_id >= ? AND series_id < ?${carveoutExcl(source)}
+FROM series WHERE series_id >= ? AND series_id < ?${carveoutExcl(source)}${withheldExcl(withheld)}
 ORDER BY series_id LIMIT ? OFFSET ?`;
 }
 
@@ -234,10 +268,10 @@ FROM series WHERE series_id >= ? AND series_id < ? ORDER BY series_id LIMIT ? OF
  * (worldbank 692 rows / 1.1 ms, worldbank_wdi 1,486 / 2.8 ms). Call it ONLY when
  * `hasCarveouts(source)` — on a giant like wid (2.47M rows) or bea (913k) a full-range count
  * per page view is exactly what source_counts exists to avoid. */
-export function browseSourceVisibleCountSql(source: string): string {
+export function browseSourceVisibleCountSql(source: string, withheld: readonly string[] = []): string {
   return `
 SELECT COUNT(*) AS n FROM series
-WHERE series_id >= ? AND series_id < ?${carveoutExcl(source)}`;
+WHERE series_id >= ? AND series_id < ?${carveoutExcl(source)}${withheldExcl(withheld)}`;
 }
 
 /** Does this source carry any series-level carve-out? Gate the live count on THIS, never on
@@ -254,12 +288,18 @@ export function hasCarveouts(source: string): boolean {
 export const BROWSE_SOURCE_COUNT_CACHED = `SELECT n FROM source_counts WHERE source_id = ?`;
 export const BROWSE_SOURCE_COUNT = `SELECT COUNT(*) AS n FROM series WHERE source_id = ?`;
 
-/** Browse all series (no q, no source). */
-export const BROWSE_ALL = `
+/** Browse all series (no q, no source). Withheld ids excluded in the SQL. */
+export function browseAllSql(withheld: readonly string[] = []): string {
+  const w = withheldExcl(withheld);
+  const where = EXCL_BARE_WHERE ? `${EXCL_BARE_WHERE}${w}` : (w ? `WHERE 1=1${w}` : "");
+  return `
 SELECT series_id, source_id, title, frequency, unit, geography,
        license_id, start_date, end_date, metadata
-FROM series ${EXCL_BARE_WHERE} ORDER BY series_id LIMIT ? OFFSET ?`;
+FROM series ${where} ORDER BY series_id LIMIT ? OFFSET ?`;
+}
 
+/** Whole-table COUNT. It is NOT given the withheld exclusion (AR-339 Part 2 finding 3): the handler subtracts
+ *  withheldPresentCountSql's count instead, so this statement stays the one the cost incidents measured. */
 export const BROWSE_ALL_COUNT = `SELECT COUNT(*) AS n FROM series ${EXCL_BARE_WHERE}`;
 
 /** Every series id of one source (for /v1/bundle?source=). Mirrors _bundle.bundle. */
@@ -285,9 +325,9 @@ export const BROWSE_ALL_COUNT = `SELECT COUNT(*) AS n FROM series ${EXCL_BARE_WH
  * NOTE this narrows only the ENUMERATION. A client that names a carved id explicitly still gets
  * it back in `unresolved` with an honest reason, which matches the 451 the direct route returns
  * and discloses nothing the caller did not already hold. */
-export function seriesIdsForSourceSql(source: string): string {
+export function seriesIdsForSourceSql(source: string, withheld: readonly string[] = []): string {
   return `
-SELECT series_id FROM series WHERE source_id = ?${carveoutExcl(source)} ORDER BY series_id`;
+SELECT series_id FROM series WHERE source_id = ?${carveoutExcl(source)}${withheldExcl(withheld)} ORDER BY series_id`;
 }
 
 /** Kept for callers/tests that want the un-scoped shape. Prefer seriesIdsForSourceSql. */

@@ -98,9 +98,9 @@ def test_the_resolution_happens_before_the_search_paths():
     """Order is the whole point — after the MATCH it would be dead code."""
     s = _src()
     i_resolve = s.index(_RESOLVE)
-    i_fts = s.index("SEARCH_FTS")
-    # the import line also mentions SEARCH_FTS, so measure against its USE
-    i_fts_use = s.index("prepare(SEARCH_FTS")
+    i_fts = s.index("searchFtsSql")
+    # the import line also mentions searchFtsSql, so measure against its USE
+    i_fts_use = s.index("prepare(searchFtsSql(")
     assert i_resolve < i_fts_use, (
         "the source-id resolution must run BEFORE the FTS path, or the ftsOk gate wins first")
     assert i_fts > 0

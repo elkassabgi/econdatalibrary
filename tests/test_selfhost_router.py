@@ -163,6 +163,10 @@ def test_the_router_forwards_the_edges_routes_and_headers_and_no_others():
     ts = _edge_ts()
     block = ts.split("const FORWARDED_PATHS: ReadonlySet<string> = new Set([", 1)[1].split("]);", 1)[0]
     assert set(re.findall(r'"([^"]*)"', block)) == set(router.EDGE_PATHS)
+    # the edge's OWN reads of the origin (the withheld list): the same list on both sides, and never a client route
+    block = ts.split("export const EDGE_INTERNAL_PATHS: ReadonlySet<string> = new Set([", 1)[1].split("]);", 1)[0]
+    assert set(re.findall(r'"([^"]*)"', block)) == set(router.EDGE_INTERNAL_PATHS) == {"/v1/withheld"}
+    assert not set(router.EDGE_INTERNAL_PATHS) & set(router.EDGE_PATHS)
     assert f'path.startsWith("{router.EDGE_PREFIX}")' in ts
     block = ts.split("const FORWARDED_REQUEST_HEADERS = [", 1)[1].split("];", 1)[0]
     edge_headers = set(re.findall(r'"([^"]*)"', block))
