@@ -149,7 +149,8 @@ STATUSES AND THE OPERATOR (each flow's `status` in `_flows.json`; the note names
   - "only": "supersede" - a pass that works the listed supersede flows and NOTHING else (no sweep, identity
     check, classification, probe or walk for any other flow; "flows" and "release_holds" wait for a full
     pass; an unlisted in-progress flow does not block them). It is honoured only while a listed flow still
-    has a supersede pending, and ignored, said in the note, otherwise. Such a pass is never ok / no_change.
+    has a supersede pending - a REFUSED or BLOCKED one does not count, it waits for the owner - and ignored,
+    said in the note, otherwise. Such a pass is never ok / no_change.
     While insee_melodi is `live: false` the scheduled run skips it: the passes run only by a manual
     `updater-daily` dispatch with source=insee_melodi and force=true.
   - Never hand-edit `_flows.json`: it is compare-and-swap protected and a hand edit races a later pass.
@@ -695,11 +696,17 @@ def _plan_supersede(con, staged_q, stored_q) -> dict:
     # AR-335 G1: a key with NO dimension (DD_CNA_AGREGATS and _PATRIMOINE each store one, '' on 2025-12-31) has
     # no spelling to change: it adds no name to either side's union, is exempt from (b), and pairs only with an
     # identical key - otherwise it is new-only or residue
+    has = f"regexp_matches(series_key, '(^|:){dim}=')"
     vals = [r[0] for r in con.execute(f"SELECT DISTINCT regexp_extract(series_key, '(?:^|:){dim}=([^:]*)', 1) "
-                                      f"FROM _sup_nk WHERE contains(series_key, '=') LIMIT 3").fetchall()]
-    if len(vals) != 1:
-        out["refused"] = (f"nothing to supersede (no single constant added dimension): {dim} takes "
-                          f"{'several values' if len(vals) > 1 else 'no value'} ({', '.join(map(str, vals))})")
+                                      f"FROM _sup_nk WHERE {has} LIMIT 3").fetchall()]
+    lacking, keyed = con.execute(f"SELECT count(*) FILTER (WHERE NOT {has}), count(*) FROM _sup_nk "
+                                 f"WHERE contains(series_key, '=')").fetchone()
+    if lacking or len(vals) != 1:
+        # AR-335 F-3: the owner acts on this text - say which of the two it is
+        why = (f"{lacking:,} of {keyed:,} staged keys lack {dim}" + (f"={vals[0]}" if len(vals) == 1 else "")
+               + " (a partly respelled pull)") if lacking else \
+            f"{dim} takes several values ({', '.join(map(str, vals))}{', ...' if len(vals) > 2 else ''})"
+        out["refused"] = f"nothing to supersede (no single constant added dimension): {why}"
         return out
     comp = f"{dim}={vals[0]}".replace("'", "''")
     out["dimension"] = f"{dim}={vals[0]}"
@@ -887,7 +894,8 @@ class _Pass:
         n = int(fe.get("merge_refusals", 0)) + 1
         fe["merge_refusals"] = n
         at = fe.get("attempt") or {}
-        msg = (f"{code}: MERGE REFUSED {n} pass(es) - {where}: {type(e).__name__}: {str(e)[:120]}; kept "
+        # 240: a supersede refusal's reason is the owner's instruction (AR-335 F-3) - never cut mid-cause
+        msg = (f"{code}: MERGE REFUSED {n} pass(es) - {where}: {type(e).__name__}: {str(e)[:240]}; kept "
                f"merge_pending with {int(at.get('chunks', 0))} staged chunk(s), {int(at.get('rows_staged', 0)):,} rows")
         if n >= MAX_FLOW_FAILURES:
             msg += " - NEEDS THE OWNER (the cause repeats every pass)"
@@ -1052,8 +1060,9 @@ class _Pass:
         """F1b "only": "supersede" (AR-335 D5): this pass works the listed supersede flows and NOTHING else - no
         sweep, identity check, classification, probe or walk for any other flow, and the repair slot considers
         only listed flows. Honoured only while at least one listed flow still has a supersede PENDING (set, or
-        about to be set by this pass's apply_force); otherwise it is ignored and said, so a stale "only" left
-        in the file can never silence the source. Read before anything writes."""
+        about to be set by this pass's apply_force; a refused or blocked one is NOT pending - AR-335 F-2);
+        otherwise it is ignored and said, so a stale "only" left in the file can never silence the source.
+        Read before anything writes."""
         raw = self.force_raw or {}
         self.only = None
         if S.force_problem(raw) or "only" not in raw:
@@ -1063,14 +1072,22 @@ class _Pass:
             self.labels.append(f'{S.FORCE_FILE}: "only": {str(want)[:40]!r} is not "supersede" - ignored')
             return
         live = set(codes)
-        pending = set()
+        pending, stuck = set(), set()
         for code, key in S.supersede_entries(raw).items():
             fe = self.st.flows.get(code) or {}
-            if code in live and (fe.get("supersede") or fe.get("supersede_key") != key):
-                pending.add(code)
+            if code not in live:
+                continue
+            if fe.get("supersede_key") != key:
+                pending.add(code)                         # about to be applied by this pass
+            elif fe.get("supersede"):
+                # AR-335 F-2: a REFUSED or BLOCKED supersede waits for the owner, not for a pass - it must not
+                # keep "only" honoured for ever (it stays loud: the full pass retries and names it)
+                (stuck if fe.get("merge_refusals") or fe.get("finalize_blocked") else pending).add(code)
         if not pending:
             self.labels.append(f'{S.FORCE_FILE}: "only": "supersede" ignored - no listed flow has a supersede '
-                               f'pending; the pass runs in full')
+                               f'pending' + (f' (refused or blocked, waiting for the owner: '
+                                             f'{", ".join(sorted(stuck)[:8])})' if stuck else '')
+                               + '; the pass runs in full')
             return
         self.only = pending
 
@@ -1941,10 +1958,10 @@ class _Pass:
                             mod_now = None
                         if mod_now is None:
                             # AR-335 G2: unreadable is not "moved" - one catalogue failure must not throw away a
-                            # complete pull. DEFER: merge_pending and every chunk kept, retried next pass (stall
-                            # counted)
+                            # complete pull. DEFER: merge_pending and every chunk kept, retried on a later pass
+                            # (stall counted)
                             self.labels.append(f"{code}: supersede deferred - INSEE `modified` could not be read; "
-                                               f"the staged pull is kept and the check retries next pass")
+                                               f"the staged pull is kept and the check is retried on a later pass")
                             self._book_transient(f"{code}: catalog `modified` unreadable before the supersede")
                             fe["status"] = S.MERGE_PENDING
                             self._progress(code, at, 0)

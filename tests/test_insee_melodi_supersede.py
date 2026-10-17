@@ -184,7 +184,7 @@ def test_unit_the_plain_supersede_is_accepted(tmp_path):
     ([(f"{GF}:NA=1:SEX=T", D(2023, 12, 31), 1.0), ("GEO=2025-FRANCE-M:NA=2:SEX=T", D(2023, 12, 31), 2.0)],
      OLD_U[:2], "several values"),
     # an added key WITHOUT the dimension (b)
-    (NEW_U + [("NA=9:SEX=T", D(2023, 12, 31), 9.0)], OLD_U, "several values"),
+    (NEW_U + [("NA=9:SEX=T", D(2023, 12, 31), 9.0)], OLD_U, "1 of 6 staged keys lack GEO=2025-FRANCE-F"),
     # many-to-one per row: two staged rows on one (stripped key, date)
     (NEW_U + [NEW_U[0]], OLD_U, "not one-to-one"),
     # G3: a stored (key, date) twice - counted, never assumed
@@ -673,3 +673,35 @@ def test_R3_1_a_block_is_lifted_when_the_margin_fits_this_pass_even_if_deferred(
     fe = env.state()["flows"]["DS_RP_TD_SEED"]
     assert "DS_RP_TD_SEED: merge deferred" in (r.error or "")
     assert "finalize_blocked" not in fe and fe["status"] == S.MERGE_PENDING
+
+
+# ------------------------------------------------------------------------------------------ AR-335 code review
+def test_A1_a_REFUSED_supersede_does_not_keep_only_honoured(env):
+    """AR-335 F-2 (the reviewer's A1, ported): a refused supersede keeps fe["supersede"] set; it must not keep
+    "only" honoured for ever - the next pass runs in full, and the refusal is still named."""
+    fake = _refused_supersede(env)
+    _force(env, {"supersede": [F], "only": "supersede"})
+    errs = [env.run(fake).error or "" for _ in range(4)]
+    still_only = sum("SKIPPED" in e for e in errs)
+    assert still_only < 4 or any('"only"' in e and "ignored" in e for e in errs), errs[-1][:400]
+    # builder's pins on top: EVERY such pass is full, says why, and the refusal stays loud
+    assert still_only == 0, errs
+    assert all(f"refused or blocked, waiting for the owner: {F}" in e for e in errs), errs[0][:400]
+    assert all("MERGE REFUSED" in e for e in errs)
+
+
+def test_A2_a_partly_respelled_pull_is_refused_with_a_true_reason(env):
+    """AR-335 F-3 (the reviewer's A2, ported): INSEE respells only part of the flow. Refusing is right; the
+    reason must not claim the added dimension 'takes several values' when it takes ONE value and some keys
+    simply lack it - the owner acts on this text."""
+    fake = _settled(env)
+    mixed = cna(25, [2023, 2024, 2025], geo=True)[:50] + cna(25, [2025])
+    fake.flows[F] = mixed
+    _force(env, {"supersede": [F]})
+    for _ in range(3):
+        r = env.run(fake)
+    e = _errs([r])
+    fe = env.state()["flows"][F]
+    assert env.rows(F) == len(OLD) and fe["status"] == S.MERGE_PENDING
+    assert "several values" not in e, e[:400]
+    assert "25 of 50 staged keys lack GEO=2025-FRANCE-F (a partly respelled pull)" in e, e[:600]

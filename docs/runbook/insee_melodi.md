@@ -218,7 +218,8 @@ STATUSES AND THE OPERATOR (each flow's `status` in `_flows.json`; the note names
   - "only": "supersede" - a pass that works the listed supersede flows and NOTHING else (no sweep, identity
     check, classification, probe or walk for any other flow; "flows" and "release_holds" wait for a full
     pass; an unlisted in-progress flow does not block them). It is honoured only while a listed flow still
-    has a supersede pending, and ignored, said in the note, otherwise. Such a pass is never ok / no_change.
+    has a supersede pending - a REFUSED or BLOCKED one does not count, it waits for the owner - and ignored,
+    said in the note, otherwise. Such a pass is never ok / no_change.
     While insee_melodi is `live: false` the scheduled run skips it: the passes run only by a manual
     `updater-daily` dispatch with source=insee_melodi and force=true.
   - Never hand-edit `_flows.json`: it is compare-and-swap protected and a hand edit races a later pass.
