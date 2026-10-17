@@ -226,6 +226,11 @@ async function standInOrigin(collectorHost: string) {
     if (u.pathname === "/v1/series/zz%3Aerr.csv") {
       res.writeHead(500, { ...mark, "content-type": "application/json" }); res.end('{"error":"x"}'); return;
     }
+    if (u.pathname === "/v1/withheld") {                          // the origin's withheld list (src/withheld.ts)
+      res.writeHead(200, { ...mark, "content-type": "application/json", "x-withheld-etag": "w1" });
+      res.end(JSON.stringify({ version: 1, ids: { "zz:held": { since: "2026-10-17", why: "t", until: "complete" } } }));
+      return;
+    }
     if (u.pathname === "/v1/sources" && sourcesDown) {
       res.writeHead(500, { ...mark, "content-type": "application/json" }); res.end('{"error":"down"}'); return;
     }
@@ -292,7 +297,9 @@ test("FORWARD on: the real edge, with no econ D1 or R2 binding, against a stand-
     FORWARD: "on", ORIGIN_URL: `http://${origin.host}`, ORIGIN_SECRET: "edge-test-secret", ORIGIN_TIMEOUT_MS: "1000", SOURCE_NAMES_MAX_AGE_S: "0", SOURCE_NAMES_BACKOFF_S: "3",
   }, persist);
   t.after(() => w.stop());
-  const calls = () => origin.seen.length;
+  // client requests that reached the origin; the edge's OWN read of the withheld list is counted separately
+  const calls = () => origin.seen.filter((s) => !s.url.startsWith("/v1/withheld")).length;
+  const listReads = () => origin.seen.filter((s) => s.url.startsWith("/v1/withheld")).length;
   const downloads = () => withBindings(EDGE_CONFIG, persist, (env) =>
     all(env.USERS, "SELECT series_id, bytes FROM econ_download_log ORDER BY series_id"));
 
@@ -315,6 +322,24 @@ test("FORWARD on: the real edge, with no econ D1 or R2 binding, against a stand-
     const id = encodeURIComponent(`${src}:x`);
     assert.equal((await get(w, `/v1/series/${id}.csv`)).status, 451);
     assert.equal((await get(w, `/v1/series/${id}.metadata.json`)).status, 451);
+    assert.equal(calls(), 0);
+  });
+
+  await t.test("a WITHHELD table answers 404 at the edge, before auth, from the ORIGIN's list (AR-339 P2 f1)",
+               async () => {
+    const csv = await get(w, "/v1/series/zz%3Aheld.csv");                      // no key at all
+    assert.equal(csv.status, 404, csv.text);
+    assert.equal(JSON.parse(csv.text).error, "withheld");
+    const meta = await get(w, "/v1/series/zz%3Aheld.metadata.json");
+    assert.equal(meta.status, 404);
+    assert.equal(JSON.parse(meta.text).error, "withheld");
+    assert.equal((await get(w, "/v1/series/zz%3Aheld.csv?api_key=GOODKEY")).status, 404, "a key changes nothing");
+    assert.equal(calls(), 0, "nothing about a withheld table was forwarded");
+    assert.ok(listReads() >= 1, "the edge read the list from the origin");
+    const n = listReads();
+    await get(w, "/v1/series/zz%3Aheld.metadata.json");
+    assert.equal(listReads(), n, "the list is cached in the isolate, not read per request");
+    assert.equal((await get(w, "/v1/withheld")).status, 404, "a client never reaches the list route");
     assert.equal(calls(), 0);
   });
 

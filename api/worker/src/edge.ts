@@ -88,6 +88,13 @@ export function isForwardable(path: string): boolean {
   return FORWARDED_PATHS.has(path) || path.startsWith("/v1/series/");
 }
 
+/** Origin routes the EDGE ITSELF reads and NEVER forwards for a client (a client gets the edge's 404): the
+ *  withheld list (src/withheld.ts). tools/selfhost/router.py lets these through too (EDGE_INTERNAL_PATHS), so the
+ *  edge's own request reaches the origin; tests/test_selfhost_router.py pins the two lists equal. */
+export const EDGE_INTERNAL_PATHS: ReadonlySet<string> = new Set([
+  "/v1/withheld",
+]);
+
 /** Seconds a 200 may be served from the edge cache, per route; 0 = never cached. catalog and stats keep
  *  the 6 h they had before forwarding; the freshness and listing routes get 5 minutes so a licence-gate
  *  change or a new last-update shows within minutes; metadata 1 hour. */

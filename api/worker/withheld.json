@@ -1,0 +1,240 @@
+{
+ "ids": {
+  "insee_melodi:DS_RP_EDUCATION_PRINC": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_EMPLOI_LR_PRINC": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_LOGEMENT_PRINC": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_POPULATION_COMP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_ACTIVITE_ACTIVITYEMPFORM_COMP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_ACTIVITE_AGED_PRINC": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_ACTIVITE_AGEEMPFORMD_COMP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_ACTIVITE_AGEQEMPFORMR_COMP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_ACTIVITE_PCSACTIVITY_COMP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_DIPLOMES_PRINC": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_EDUCATION_PRINC": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_EMPLOI_LT_AGEEMPFORM_COMP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_EMPLOI_LT_EMPFORMACTIVITY_COMP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_EMPLOI_LT_EMPFORMWKTIME_COMP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_EMPLOI_LT_PCSACTIVITY_COMP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_FAMILLE_AGEENF_COMP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_FAMILLE_NBENF_COMP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_IMMI_AGESEXEMPSTA_PRINC": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_IMMI_AGESEXPCS_COMP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_IMMI_AGESEX_PAYSNAISS_D_PRINC": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_IMMI_AGESEX_PAYSNAISS_R_PRINC": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_IMMI_EMPSTASEX_PAYSNAISS_R_PRINC": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_IMMI_PCSSEX_PAYSNAISS_R_COMP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_LOGEMENT_AGE_PRINC": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_LOGEMENT_CARACT_PRINC": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_LOGEMENT_PCS_COMP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_MENAGES_EMPSTA_COMP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_MENAGES_FST_COMP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_MENAGES_NOC_COMP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 20,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_MENAGES_PCS_COMP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_MENAGES_TPH_COMP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_MIGRES_COMP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_MIGRES_PRINC": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_NAT_AGESEXEMPSTA_PRINC": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_NAT_AGESEXPCS_COMP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_NAT_AGESEX_PRINC": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_NAVETTES_PCSACTIVITY_COMP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_NAVETTES_SEXAGE_COMP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_NAVETTES_SEXTRANSPORT_COMP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_POPULATION_AGECOUPLECIVILSEX_PRINC": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_POPULATION_AGEHARSEX_PRINC": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_POPULATION_AGESEX_PRINC": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_RP_TD_POPULATION_PCSAGESEX_COMP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows, an exact multiple of the 10,000-row Melodi page (EVIDENCE.json)"
+  },
+  "insee_melodi:DS_SIDE_CREA_COM": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows = one page; INSEE pages 1 and 2 both full (AR-339 pages_probe.json); not catalogued today - withheld so a later catalogue sync cannot list it before it is complete"
+  },
+  "insee_melodi:DS_SIDE_CREA_ENT_DEP_REG_NAT_CJ": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: the 2026 partition holds 10,000 rows = one page; INSEE's page 2 has 80 parsed pairs the store lacks, same spelling (PROVE_CJ.json)"
+  },
+  "insee_melodi:DS_SIDE_STOCKS_COM": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows = one page; INSEE pages 1 and 2 both full (AR-339 pages_probe.json); not catalogued today - withheld so a later catalogue sync cannot list it before it is complete"
+  },
+  "insee_melodi:DS_TOUR_CAP": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: 10,000 stored rows = one page; INSEE pages 1 and 2 both full (AR-339 pages_probe.json); not catalogued today - withheld so a later catalogue sync cannot list it before it is complete"
+  }
+ },
+ "version": 1
+}

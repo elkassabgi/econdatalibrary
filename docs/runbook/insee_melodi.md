@@ -223,6 +223,13 @@ STATUSES AND THE OPERATOR (each flow's `status` in `_flows.json`; the note names
     While insee_melodi is `live: false` the scheduled run skips it: the passes run only by a manual
     `updater-daily` dispatch with source=insee_melodi and force=true.
   - Never hand-edit `_flows.json`: it is compare-and-swap protected and a hand edit races a later pass.
+  WITHHELD (owner decision 2026-10-17; api/worker/src/withheld.ts): the 43 truncated census tables and the other
+  proven-truncated flows are hidden from users by the list `_aqueduct/withheld.json`, written by
+  tools/withheld_list.py. At the START of each pass (unwithhold) this fetcher removes an `until: "complete"` entry
+  of its own once that flow is complete_per_paging from an origin pull, its CSV was handed over by an earlier pass
+  (no csv_owed) and the served CSV's data lines equal served.rows - one conditional write, a lost race retried
+  later; above UNWITHHOLD_MAX_ROWS the owner un-hides it. Log line: `<FLOW>: UN-WITHHELD - complete per INSEE
+  paging, CSV N lines == N rows`.
   BLOCKED (AR-334 R3-1): a finalize whose margin is more than this pass's repair slot can give from its
   earliest start (minute 15, or earlier in an "only" pass) is not deferred for ever at the head of the queue:
   it is labelled "NEEDS THE OWNER - ... more than this pass can give", recorded as `finalize_blocked`, its

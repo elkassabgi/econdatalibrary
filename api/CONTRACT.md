@@ -139,6 +139,15 @@ answer is which; additive, no field removed), and it returns it
 documented "unsupported `?lang=` → 400" below does not apply, and neither does 404 for an
 unknown id under a gated prefix; 451 wins.
 
+**WITHHELD tables (added 2026-10-17, owner decision).** A series on the withheld list (`_aqueduct/withheld.json`,
+api/worker/src/withheld.ts) - a table whose copy is incomplete and is being re-downloaded - answers **404** with
+`{"error":"withheld","series_id":<the id requested>,"detail":"Temporarily withheld: our copy is incomplete and is
+being re-downloaded from INSEE; it is listed again when the download is complete."}` on `.metadata.json` AND
+`.csv`, before auth (after the 451 gate). It is in no `/v1/catalog` browse, search or total, no `/v1/stats`
+`catalog_entries`, and no `/v1/bundle` enumeration; a bundle that names it lists it under `econdl:unresolved`
+with a reason starting `withheld:`. The error code is distinct from `not_found` (an unknown id) and from 451. It
+is listed again, with no client change, when the table is complete.
+
 Until that date this route had no gate at all: title, geography, dates, licence block and
 citation were served unauthenticated for any row present in the catalogue, while every sibling
 route — `/v1/sources`, `/v1/catalog?source=`, `.csv` — refused. The same sweep closed

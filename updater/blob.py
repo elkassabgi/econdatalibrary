@@ -949,6 +949,27 @@ class SelfhostBlob:
         self.store.put(key, data, etag=hashlib.md5(data).hexdigest(),     # noqa: S324
                        content_encoding=encoding, content_type=ctype, custom_metadata=metadata)
 
+    def put_if(self, key: str, data: bytes, *, if_match: str | None = None,
+               if_none_match: bool = False) -> str | None:
+        """R2Blob.put_if's twin (AR-339 Part 2 finding 2): ONE conditional write of the bytes as given -
+        if_match=<etag> replaces the object only while its etag is still <etag>; if_none_match=True creates it
+        only if the key does not exist. Exactly one of the two. The condition is checked inside the blob
+        store's write transaction (tools/selfhost/blobstore.py BlobStore.put), so it is atomic with the write.
+        Returns the new etag (the MD5 of the bytes, as a single-part R2 PUT reports), or None when the
+        condition failed - nothing was written. Same ContentType rule as put_atomic; no gzip, no skip."""
+        if (if_match is not None) == bool(if_none_match):
+            raise ValueError(f"{key}: put_if needs exactly one of if_match / if_none_match")
+        if if_match is not None and not if_match.strip('"'):
+            raise ValueError(f"{key}: put_if with an empty if_match")
+        _refuse_or_own_store_write(f"put {key}", key)
+        etag = hashlib.md5(data).hexdigest()                              # noqa: S324
+        try:
+            self.store.put(key, data, etag=etag, content_type=_CONTENT_TYPES.get(os.path.splitext(key)[1].lower()),
+                           if_match=if_match, if_none_match=bool(if_none_match))
+        except _blobstore_module().PreconditionFailed:
+            return None
+        return etag
+
     def _already_holds(self, key: str, data: bytes, plain_digest: str | None) -> bool:
         """R2Blob's rule on local metadata: the csvmd5 digest when both sides have one, else the etag
         against the MD5 of the bytes; anything uncertain writes."""
