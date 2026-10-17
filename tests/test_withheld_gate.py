@@ -136,3 +136,12 @@ def test_the_list_validates_with_the_workers_own_rule():
         except SystemExit:
             continue
         raise AssertionError(f"accepted {bad}")
+
+
+def test_the_router_lets_the_edges_own_list_read_through():
+    """The edge fetches /v1/withheld from the origin through the workstation's router; a router that refused it
+    would leave the edge on its floor for ever after T0 (finding 1)."""
+    sys.path.insert(0, os.path.join(ROOT, "tools", "selfhost"))
+    import router
+    assert router.forwardable("/v1/withheld")
+    assert not router.forwardable("/v1/withheld/x") and not router.forwardable("/v1/withheldx")
