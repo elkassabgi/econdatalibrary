@@ -2862,7 +2862,14 @@ sources:
     - overwrite-multi-file — one parquet per dataflow, data/clean_full/insee_bdm/{FLOW_ID}.parquet (verified 201 files; schema
       idbank, obs_date, value, dataflow). Whole BDM corpus is ~150k series across the flows.
 - source_id: insee_melodi
-  live: true
+  # PAUSED 2026-10-17 (live: false keeps it out of the scheduled daily run, which is live-only; it is
+  # run_location: any, so the local heavy updater does not pick it up either). The first production pass
+  # of the resumable re-pull (run 39024352275) merged 9 flows, and every merge added 100% of its staged
+  # rows: INSEE now spells these keys with a GEO dimension (and new product codes), so no new row
+  # matched a stored one and each served file holds both spellings (DD_CNA_APU 267,230 -> 540,766 rows,
+  # DD_CNA_BRANCHES 433,922 -> 849,217). Re-enable only after the owner decides how the two spellings
+  # are kept, and the fetcher refuses a merge whose new rows are mostly new keys.
+  live: false
   scripts:
   - jobs/ingest_insee_melodi.py
   strategy: sdmx_delta
