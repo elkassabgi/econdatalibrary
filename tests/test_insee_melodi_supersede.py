@@ -705,3 +705,31 @@ def test_A2_a_partly_respelled_pull_is_refused_with_a_true_reason(env):
     assert env.rows(F) == len(OLD) and fe["status"] == S.MERGE_PENDING
     assert "several values" not in e, e[:400]
     assert "25 of 50 staged keys lack GEO=2025-FRANCE-F (a partly respelled pull)" in e, e[:600]
+
+
+def test_D5_an_only_pass_that_finishes_its_work_still_says_the_walk_was_skipped(env):
+    """The pass that completes the last listed supersede is not pending, so the note is not its error: the
+    Result itself must say the walk was skipped and freshness not checked (never read as a fresh pass)."""
+    fake = _settled(env)
+    _force(env, {"supersede": [F], "only": "supersede"})
+    r = env.run(fake)
+    assert env.state()["flows"][F]["superseded"]["published"] == 78 and r.status != "transient_fail", r.status
+    assert "the walk and every other flow were SKIPPED this pass; freshness was not checked" in (r.error or "")
+    assert r.status not in ("ok", "no_change")
+
+
+def test_R3_1_the_slot_moves_on_past_a_blocked_finalize(env, monkeypatch):
+    """A blocked finalize is `tried`, and the slot works the NEXT flow in the same pass - it must not return as
+    a deferral does (that is the wedge R3-1 removes)."""
+    flows = _control_flows()
+    flows["DS_ZNEXT"] = series(15)
+    fake = FakeMelodi(env.clock, flows)
+    _seed_store(env, fake)
+    env.put("DS_ZNEXT", flows["DS_ZNEXT"][:P])
+    real = S.merge_margin_s
+    monkeypatch.setattr(S, "merge_margin_s", lambda rows, stored: 10 ** 6 if rows == 25 else real(rows, stored))
+    for _ in range(4):
+        env.run(fake)
+    st = env.state()["flows"]
+    assert st["DS_RP_TD_SEED"].get("finalize_blocked")
+    assert st["DS_ZNEXT"]["status"] == S.COMPLETE and env.rows("DS_ZNEXT") == 15, st["DS_ZNEXT"]
