@@ -16,20 +16,28 @@
 //   * forwarding edge (FORWARD on): from the ORIGIN's /v1/withheld, because after T0 the store is local and the
 //     edge's R2 copy goes stale (AR-339 Part 2 finding 1). The edge gates /v1/series/* with it BEFORE auth.
 //
-// FAIL CLOSED (AR-339 finding 5): a read that fails, an absent object, or an object that does not validate is
-// UNREADABLE: the last good copy is used, else the compiled-in FLOOR (withheldFloor.ts, generated from
-// api/worker/withheld.json by tools/gen_withheld_floor.py). Never "nothing withheld" by accident. A failure is
-// cached 30 s (an outage must not GET on every request); a good read 300 s. To withhold nothing the operator
-// writes `"ids": {}`; the object is never deleted. Disclosed cost of the floor: if the object turns unreadable
-// after a table was un-hidden, the floor (as of the last deploy) hides it again until the object is readable -
-// the safe direction.
+// FAIL CLOSED (AR-339 finding 5, AR-341 finding 2): a read that fails, an absent object, or an object that does
+// not validate is UNREADABLE. Then:
+//   * this isolate's LAST GOOD copy is used, if it has one (a table withheld while the isolate cannot read the
+//     list is hidden once it reads it again: the same staleness as the 300 s cache, for as long as the outage);
+//   * else the compiled-in FLOOR (withheldFloor.ts, generated from api/worker/withheld.json by
+//     tools/gen_withheld_floor.py), AND every source the floor names is withheld WHOLE (`closed`). The floor alone
+//     would not be fail-safe: an id withheld in the store after the floor was committed is not in it. Whole-source
+//     closure is: tools/withheld_list.py refuses to withhold an id of a source the committed floor does not name,
+//     so every id the store can hold belongs to a closed source while the floor applies.
+//   While a source is closed its series routes answer 404 "withheld", a browse or search scoped to it is empty,
+//   and a bundle of it is refused; on the GLOBAL browse and search its rows are dropped by the handler's filter,
+//   so a page may be short of `limit` and the totals still count them (a fault state, retried every 30 s).
+// Never "nothing withheld" by accident. A failure is cached 30 s (an outage must not GET on every request); a
+// good read 300 s. To withhold nothing the operator writes `"ids": {}`; the object is never deleted.
 //
 // WHAT A WITHHELD ID GETS: 404 {"error":"withheld", ...} on .metadata.json and .csv (before auth, like the
 // licence gate), no row in /v1/catalog search or browse (inline literal NOT IN, src/sql.ts), no entry in a
 // bundle (enumeration excludes it; a named id is `unresolved` with reason "withheld"), and it is not counted in
 // browse totals or /v1/stats catalog_entries (subtracted in the handler, by a primary-key count of the ids
-// present). The list's ETag is part of the edge-cache key of /v1/catalog and /v1/stats, so a change shows
-// within the 300 s reload instead of the 6 h cache life (finding 6).
+// present, run once per database and id set per list load - catalog.ts presentCount). The list's ETag is part
+// of the edge-cache key of /v1/catalog and /v1/stats, so a change shows within the 300 s reload instead of the
+// 6 h cache life (finding 6).
 // ---------------------------------------------------------------------------
 
 import { WITHHELD_FLOOR, WITHHELD_FLOOR_ETAG } from "./withheldFloor.ts";
@@ -63,11 +71,20 @@ export interface Withheld {
   etag: string;
   /** where this copy came from: "store" | "origin" | "last-good" | "floor" */
   from: string;
+  /** sources withheld WHOLE: the floor's sources while the floor applies, else none */
+  closed: ReadonlySet<string>;
 }
+
+const NONE: ReadonlySet<string> = new Set<string>();
 
 export function sourceOfId(id: string): string {
   const i = id.indexOf(":");
   return i < 0 ? id : id.slice(0, i);
+}
+
+/** True when the WHOLE source is withheld (the floor applies: the list is unreadable, no last good copy). */
+export function isSourceClosed(w: Withheld, source: string): boolean {
+  return w.closed.has(source);
 }
 
 /** The withheld ids of ONE source, sorted (what a source-scoped statement inlines). */
@@ -76,7 +93,7 @@ export function forSource(w: Withheld, source: string): string[] {
 }
 
 export function isWithheld(w: Withheld, id: string): boolean {
-  return w.ids.has(id);
+  return w.ids.has(id) || w.closed.has(sourceOfId(id));
 }
 
 /** The answer for a withheld series route: 404 with its own error code, so a client can tell it from an
@@ -117,7 +134,8 @@ export function parseWithheld(text: string): Set<string> | null {
 }
 
 export function floorWithheld(): Withheld {
-  return { ids: new Set(WITHHELD_FLOOR), etag: WITHHELD_FLOOR_ETAG, from: "floor" };
+  return { ids: new Set(WITHHELD_FLOOR), etag: WITHHELD_FLOOR_ETAG, from: "floor",
+           closed: new Set(WITHHELD_FLOOR.map(sourceOfId)) };
 }
 
 // Per-isolate cache. `lastGood` survives a failed reload; `cached` decides when to reload.
@@ -145,7 +163,7 @@ export async function loadWithheld(read: Reader, from: string, now: () => number
   }
   const ids = got ? parseWithheld(got.text) : null;
   if (got && ids) {
-    const w: Withheld = { ids, etag: `${from}-${got.etag}`, from };
+    const w: Withheld = { ids, etag: `${from}-${got.etag}`, from, closed: NONE };
     lastGood = w;
     cached = { at: t, ttl: TTL_OK_MS, w };
     return w;

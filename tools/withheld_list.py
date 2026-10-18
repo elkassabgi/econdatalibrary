@@ -17,7 +17,12 @@ Rules:
     hidden from nothing today, and only guards a later catalogue sync;
   - the object is never deleted: `release` of every id leaves `"ids": {}`, which the worker reads as "withhold
     nothing" (an absent or unreadable object means the compiled-in floor);
-  - after a change, run tools/gen_withheld_floor.py --from-store before the next worker deploy.
+  - `withhold` REFUSES an id of a source the committed floor (api/worker/withheld.json) names no id of: while
+    the list is unreadable the worker withholds the floor's sources WHOLE, and that is what keeps an id withheld
+    after the floor was committed hidden (AR-341 finding 2). A new source goes into withheld.json first, then
+    tools/gen_withheld_floor.py, commit, worker deploy - then `withhold`;
+  - after a change, tools/gen_withheld_floor.py --from-store refreshes the committed floor (a stale floor no
+    longer opens anything: it decides only which sources close whole, and which ids are named in it).
 Exit: 0 ok or dry run, 2 refused (validation, exists), 4 the condition failed, 5 read-back mismatch."""
 from __future__ import annotations
 
@@ -74,7 +79,7 @@ def _write(store, body: bytes, *, if_match: str | None) -> int:
         print(f"READ-BACK MISMATCH: {len(back or b'')} bytes - inspect {KEY}")
         return 5
     print(f"written and read back identical: {len(body)} bytes, md5 {hashlib.md5(body).hexdigest()}, etag {got}")
-    print("next: python tools/gen_withheld_floor.py --from-store, before the next worker deploy")
+    print("next: python tools/gen_withheld_floor.py --from-store, then commit, so the floor follows the list")
     return 0
 
 
@@ -89,6 +94,15 @@ def main(argv=None) -> int:
     store = _store()
     raw = store.get(KEY)
     etag = store.etag(KEY) if raw is not None else None
+    if raw is not None:
+        # The GET and the HEAD are two requests: go on only when the ETag is the MD5 of the bytes read (R2
+        # single-part and the self-hosted store both report that), so an If-Match built on `raw` cannot overwrite
+        # a write that landed in between (AR-341 finding 1).
+        if (etag or "").strip('"') != hashlib.md5(raw).hexdigest():
+            print(f"REFUSED: {KEY} changed between its read and its ETag (etag {etag}, md5 of the bytes read "
+                  f"{hashlib.md5(raw).hexdigest()}) - nothing written; run again")
+            return 4
+        etag = etag.strip('"')
     if a.action == "show":
         if raw is None:
             print(f"{KEY}: ABSENT - the worker applies its compiled-in floor")
@@ -124,6 +138,13 @@ def main(argv=None) -> int:
     if a.action == "withhold":
         if not a.why.strip():
             ap.error("--why is required: the reason is part of the record")
+        floor_sources = {k.split(":", 1)[0] for k in json.load(open(G.JSON_PATH, encoding="utf-8"))["ids"]}
+        uncovered = sorted(i for i in a.ids if i.split(":", 1)[0] not in floor_sources)
+        if uncovered:
+            print(f"REFUSED: {uncovered}: their source has no id in the committed floor (api/worker/withheld.json), "
+                  f"so a worker that cannot read the list would SHOW them. Add one to withheld.json, run "
+                  f"tools/gen_withheld_floor.py, commit and deploy the worker first")
+            return 2
         for i in a.ids:
             ids[i] = {"since": today, "why": a.why.strip(), "until": a.until}
         missing = sorted(set(a.ids) - catalogued(list(a.ids)))

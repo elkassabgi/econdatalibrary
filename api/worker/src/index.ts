@@ -241,10 +241,12 @@ async function route(request: Request, env: Env, ctx: ExecutionContext, local: b
           if (okP === null || okS === null) catPartial = true;
         }
         // WITHHELD rows are not catalogue entries a user can reach: subtract the ones each database holds (a
-        // primary-key count, ~1 row read per id; the totals above keep their measured form).
+        // primary-key count, ~1 row read per id, memoised with the list load - catalog.ts presentCount; the totals
+        // above keep their measured form).
         if (catTotal !== null && statsW.ids.size > 0) {
           const ids = [...statsW.ids].sort();
-          const [wp, ws] = await Promise.allSettled([presentCount(env.CATALOG, ids), presentCount(env.CATALOG_CLIMATE, ids)]);
+          const [wp, ws] = await Promise.allSettled([presentCount(env.CATALOG, ids, statsW, "CATALOG"),
+                                                     presentCount(env.CATALOG_CLIMATE, ids, statsW, "CATALOG_CLIMATE")]);
           catTotal = Math.max(0, catTotal - (wp.status === "fulfilled" ? wp.value : 0)
                                            - (ws.status === "fulfilled" ? ws.value : 0));
         }

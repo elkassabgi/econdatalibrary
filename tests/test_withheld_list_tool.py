@@ -91,3 +91,32 @@ def test_withhold_needs_a_reason(st):
     T.main(["create", "--apply"])
     with pytest.raises(SystemExit):
         T.main(["withhold", "insee_melodi:DS_NEW", "--apply"])
+
+
+@pytest.mark.parametrize("action", [["withhold", "insee_melodi:DS_NEW", "--why", "x"], ["release", "insee_melodi:B"]])
+def test_a_write_between_the_get_and_the_head_refuses(st, monkeypatch, action):
+    """AR-341 finding 1: another writer changes the list inside the HEAD, after this run read the body. The edit
+    built on the old body must not be written with the new object's ETag."""
+    st.objs[T.KEY] = T.encode({"version": 1, "ids": {"insee_melodi:A": {"until": "complete"},
+                                                    "insee_melodi:B": {"until": "complete"}}})
+    other = T.encode({"version": 1, "ids": {"insee_melodi:A": {"until": "complete"},
+                                           "insee_melodi:B": {"until": "complete"},
+                                           "insee_melodi:OTHER": {"until": "operator"}}})
+    real = st.etag
+
+    def racing(key):
+        st.objs[key] = other                                     # the other writer, inside the HEAD
+        return real(key)
+    monkeypatch.setattr(st, "etag", racing)
+    assert T.main([*action, "--apply"]) == 4
+    assert st.objs[T.KEY] == other and st.puts == 0, "the other writer's change was overwritten"
+
+
+def test_withhold_refuses_a_source_the_committed_floor_does_not_name(st):
+    """AR-341 finding 2: the worker's fail-safe is to withhold the FLOOR's sources whole while the list is
+    unreadable; an id of any other source would be shown then, so it is refused here."""
+    T.main(["create", "--apply"])
+    before = st.puts
+    assert T.main(["withhold", "ecb:EXR.D.NEW", "--why", "x", "--apply"]) == 2
+    assert st.puts == before and "ecb:EXR.D.NEW" not in _ids(st)
+    assert T.main(["withhold", "insee_melodi:DS_NEW", "--why", "x", "--apply"]) == 0, "a floor source: allowed"

@@ -116,7 +116,64 @@ test("production: no list in R2 -> the compiled-in FLOOR applies (fail closed)",
   t.after(() => w.stop());
   // HELD is in the committed list (api/worker/withheld.json), so the floor withholds it
   assert.equal((await getJson(w, `/v1/series/${enc(HELD)}.metadata.json`)).body.error, "withheld");
-  assert.equal((await getJson(w, `/v1/series/${enc(KEPT)}.metadata.json`)).status, 200);
+  // AR-341 finding 2: the floor alone fails OPEN for an id withheld after it was committed, so while it applies
+  // the floor's sources are withheld WHOLE. KEPT is not in the floor; it is withheld too, and the other source is not.
+  const km = await getJson(w, `/v1/series/${enc(KEPT)}.metadata.json`);
+  assert.equal(km.status, 404, km.text);
+  assert.equal(km.body.error, "withheld");
+  assert.equal((await getJson(w, `/v1/series/${enc(KEPT)}.csv`)).body.error, "withheld", "before auth");
+  assert.equal((await getJson(w, `/v1/series/${enc(OTHER)}.metadata.json`)).status, 200, "another source is open");
+  const browse = await getJson(w, "/v1/catalog?source=insee_melodi");
+  assert.equal(browse.status, 200, browse.text);
+  assert.deepEqual(browse.body.results, []);
+  assert.equal(browse.body.total, 0);
+  const all = await getJson(w, "/v1/catalog");
+  assert.deepEqual((all.body.results as { series_id: string }[]).map((r) => r.series_id), [OTHER]);
+  const b = await getJson(w, "/v1/bundle?source=insee_melodi");
+  assert.equal(b.status, 404, b.text);
+  assert.equal(b.body.error, "withheld");
+  const bn = await getJson(w, `/v1/bundle?ids=${enc(KEPT)}`);
+  assert.match((bn.body["econdl:unresolved"] as { reason: string }[])[0].reason, /^withheld:/);
+});
+
+const FIRST = "insee_melodi:AAA_HELD_FIRST";               // sorts before every other id of the seed but ecb's
+const LIST2 = JSON.stringify({ version: 1, ids: { [HELD]: { since: "2026-10-17", why: "t", until: "complete" },
+                                                  [FIRST]: { since: "2026-10-17", why: "t", until: "complete" } } });
+const FTS = `
+  CREATE VIRTUAL TABLE series_fts USING fts5(series_id UNINDEXED, title)`;
+
+test("limit=1: the SQL excludes withheld rows, so the first page is the control row (AR-341 finding 6)",
+     { timeout: 300_000 }, async (t) => {
+  // Without the in-SQL exclusion the handler's filter still drops the row, but the page comes back EMPTY next to
+  // a non-zero total. A withheld id sorts first in each window here, so an argument of [] shows.
+  const persist = newPersist("econ-withheld-limit1-");
+  await withBindings(EDGE_CONFIG, persist, async (env) => {
+    await execSql(env.CATALOG, SEED + `;
+      INSERT INTO series (series_id, source_id, title, license_id) VALUES ('${FIRST}', 'insee_melodi', 'Zebrafish held first', 'etalab-2.0');
+      UPDATE series SET title = 'Public administrations APU zebrafish' WHERE series_id = '${KEPT}';
+      UPDATE source_counts SET n = 3 WHERE source_id = 'insee_melodi';` + FTS + `;
+      INSERT INTO series_fts (series_id, title) VALUES ('${FIRST}', 'Zebrafish held first');
+      INSERT INTO series_fts (series_id, title) VALUES ('${KEPT}', 'Public administrations APU zebrafish')`);
+    await execSql(env.CATALOG_CLIMATE, SHARD + ";" + FTS);
+    await env.SERIES_BUCKET.put("_aqueduct/withheld.json", LIST2);
+  });
+  const w = await start(EDGE_CONFIG, {}, persist);
+  t.after(() => w.stop());
+  const ids = (r: { body: Record<string, unknown> }) => (r.body.results as { series_id: string }[]).map((x) => x.series_id);
+
+  const src = await getJson(w, "/v1/catalog?source=insee_melodi&limit=1");
+  assert.equal(src.status, 200, src.text);
+  assert.deepEqual(ids(src), [KEPT], "browseSourceSql must carry the source's withheld ids");
+  assert.equal(src.body.total, 1);
+  const all = await getJson(w, "/v1/catalog?limit=1&offset=1");     // ecb first, then FIRST, then KEPT
+  assert.equal(all.status, 200, all.text);
+  assert.deepEqual(ids(all), [KEPT], "browseAllSql must carry every withheld id");
+  const q = await getJson(w, "/v1/catalog?q=zebrafish&limit=1");
+  assert.equal(q.status, 200, q.text);
+  assert.deepEqual(ids(q), [KEPT], "the global searchFtsSql must carry every withheld id: ");
+  assert.equal(q.body.total, 1);
+  const qs = await getJson(w, "/v1/catalog?q=zebrafish&source=insee_melodi&limit=1");
+  assert.deepEqual(ids(qs), [KEPT], "the scoped FTS search too");
 });
 
 test("origin: GET /v1/withheld serves the local store's object behind the secret", { timeout: 300_000 }, async (t) => {

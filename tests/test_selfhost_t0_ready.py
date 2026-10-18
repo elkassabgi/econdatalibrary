@@ -453,3 +453,25 @@ def test_statcan_lane_blocks_t0_until_the_lane_is_post_t0_ready(tmp_path):
     # the real lane on this branch is pre-T0 only, and the check is wired in
     assert T.statcan_lane(os.path.join(ROOT, "jobs", "statcan_lane.py"), by_lane)[0] is False
     assert ("statcan-lane", T.statcan_lane) in T.CHECKS
+
+
+def test_the_withheld_list_must_be_in_the_served_store_and_match_r2():
+    """AR-341 finding 3: after T0 every reader of the WITHHELD list reads the self-hosted store. Absent, invalid or
+    older than R2's copy fails; the control (identical, valid) passes."""
+    class S:
+        def __init__(self, raw):
+            self.raw = raw
+
+        def get(self, key):
+            assert key == "_aqueduct/withheld.json"
+            return self.raw
+    good = b'{"version": 1, "ids": {"insee_melodi:DS_A": {"until": "complete"}}}'
+    newer = b'{"version": 1, "ids": {"insee_melodi:DS_A": {"until": "complete"}, "insee_melodi:DS_B": {"until": "complete"}}}'
+    assert T.served_withheld(S(None), S(good))[0] is False, "absent from the store"
+    assert T.served_withheld(S(b'{"version": 1, "ids": {"bad id": {}}}'), S(good))[0] is False, "invalid"
+    assert T.served_withheld(S(good), S(None))[0] is False, "absent from R2: cannot tell"
+    ok, detail = T.served_withheld(S(good), S(newer))
+    assert ok is False and "differs from R2" in detail, "withheld on R2 after the import"
+    ok, detail = T.served_withheld(S(good), S(good))
+    assert ok and "1 ids" in detail
+    assert ("served-withheld", T.served_withheld) in T.CHECKS

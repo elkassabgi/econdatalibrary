@@ -220,6 +220,11 @@
    "until": "complete",
    "why": "truncated: 10,000 stored rows = one page; INSEE pages 1 and 2 both full (AR-339 pages_probe.json); not catalogued today - withheld so a later catalogue sync cannot list it before it is complete"
   },
+  "insee_melodi:DS_SIDE_CREA_DEP_REG_NAT": {
+   "since": "2026-10-17",
+   "until": "complete",
+   "why": "truncated: the 2026 partition holds 10,000 rows = one Melodi page (AR-339 Part 1 #9); listed again once the F1b release_holds merge completes it and its served CSV holds every row"
+  },
   "insee_melodi:DS_SIDE_CREA_ENT_DEP_REG_NAT_CJ": {
    "since": "2026-10-17",
    "until": "complete",

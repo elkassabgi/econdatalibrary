@@ -69,17 +69,34 @@ def test_every_sql_export_is_classified():
         assert "withheldExcl(" in body, f"{name} is listed as aware but does not apply withheldExcl"
 
 
+GLOBAL = ("searchFtsSql", "searchFtsCountSql", "searchLikeSql", "searchLikeCountSql", "browseAllSql")
+# What a call site must pass (AR-341 finding 6: "non-empty" let `[]` through - mutants M16, M17, M30 survived)
+GLOBAL_ARG = re.compile(r"^whAll$")
+SCOPED_ARG = re.compile(r"^(src|source)\s*,\s*(whSrc|forSource\(withheld,\s*(src|source)\))$")
+
+
 def test_handlers_pass_the_withheld_ids_to_every_aware_builder():
+    calls = 0
     for f in ("catalog.ts", "bundle.ts"):
         code = _code(os.path.join(SRC, f))
         for name in AWARE:
             for m in re.finditer(rf"\b{name}\(([^()]*(?:\([^()]*\)[^()]*)*)\)", code):
-                args = m.group(1)
-                if name in ("searchFtsSql", "searchFtsCountSql", "searchLikeSql", "searchLikeCountSql", "browseAllSql"):
-                    assert args.strip(), f"{f}: {name}() called with NO withheld ids"
-                else:
-                    assert "," in args, f"{f}: {name}({args}) called without the withheld ids"
+                args = " ".join(m.group(1).split())
+                calls += 1
+                rule = GLOBAL_ARG if name in GLOBAL else SCOPED_ARG
+                assert rule.fullmatch(args), (f"{f}: {name}({args}) - a call site must pass the withheld ids it was "
+                                              f"given (whAll globally; whSrc or forSource(withheld, src) scoped)")
+    assert calls >= 17, f"only {calls} aware call sites found - the pattern no longer sees them"
     cat = _code(os.path.join(SRC, "catalog.ts"))
+    # ...and the names mean what they say
+    assert "const whAll = [...withheld.ids].sort();" in cat, "whAll must be every withheld id"
+    assert "const whSrc = src ? forSource(withheld, src) : [];" in cat, "whSrc must be the source's withheld ids"
+    sites = 0
+    for m in re.finditer(r"(?<!function )\bpresentCount\(([^()]*(?:\([^()]*\)[^()]*)*)\)", cat):
+        sites += 1
+        a = [x.strip() for x in m.group(1).split(",")]
+        assert len(a) == 4 and a[1] in ("whAll", "whSrc") and a[2] == "withheld", f"presentCount({m.group(1)})"
+    assert sites == 4, f"{sites} presentCount call sites in catalog.ts (expected 4: cached, live fallback, 2 global)"
     assert "isWithheld(withheld" in cat, "catalog.ts dropped its belt-and-suspenders filter"
     for const in ("SEARCH_FTS", "SEARCH_LIKE", "BROWSE_ALL)"):
         assert f"prepare({const}" not in cat, f"catalog.ts prepares the removed unaware constant {const}"
@@ -145,3 +162,18 @@ def test_the_router_lets_the_edges_own_list_read_through():
     import router
     assert router.forwardable("/v1/withheld")
     assert not router.forwardable("/v1/withheld/x") and not router.forwardable("/v1/withheldx")
+
+
+def test_a_closed_source_is_closed_on_every_scoped_surface():
+    """AR-341 finding 2: while the floor applies, its sources are withheld WHOLE (src/withheld.ts isWithheld checks
+    `closed`); the scoped catalogue branch and the bundle enumeration must consult it before any SQL."""
+    wh = _code(os.path.join(SRC, "withheld.ts"))
+    assert "w.ids.has(id) || w.closed.has(sourceOfId(id))" in wh, "isWithheld must honour a closed source"
+    assert "closed: new Set(WITHHELD_FLOOR.map(sourceOfId))" in wh, "the floor must close its sources"
+    cat = _code(os.path.join(SRC, "catalog.ts"))
+    assert cat.index("if (src && isSourceClosed(withheld, src))") < cat.index("searchFtsSourceCountSql("), "catalog"
+    bun = _code(os.path.join(SRC, "bundle.ts"))
+    assert bun.index("isSourceClosed(withheld, source)") < bun.index("seriesIdsForSourceSql("), "bundle"
+    idx = _code(os.path.join(SRC, "index.ts"))
+    assert idx.count("presentCount(env.CATALOG, ids, statsW,") == 1 and \
+        idx.count("presentCount(env.CATALOG_CLIMATE, ids, statsW,") == 1, "stats: memoised on the list it loaded"

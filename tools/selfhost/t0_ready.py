@@ -451,6 +451,40 @@ def served_stats(store=None) -> tuple[bool, str]:
     return True, f"present (as_of {body.get('as_of')})"
 
 
+WITHHELD_KEY = "_aqueduct/withheld.json"
+
+
+def served_withheld(store=None, r2=None) -> tuple[bool, str]:
+    """After T0 the worker, the origin and the fetcher's un-hide read the WITHHELD list (api/worker/src/withheld.ts)
+    from the self-hosted store (AR-341 finding 3). It must be there, valid by the worker's own rule, and the SAME
+    bytes as R2's copy: a copy imported before a later `withhold` on R2 would show that table after T0. Absent on
+    both sides is a failure too: the worker would run on its floor for good. R2 is read once (GET, read-only)."""
+    sys.path.insert(0, ROOT)
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import hashlib
+    import gen_withheld_floor
+    if store is None:
+        from updater.blob import SelfhostBlob
+        store = SelfhostBlob()
+    if r2 is None:
+        from updater.blob import R2Blob
+        r2 = R2Blob(write=False)
+    raw = store.get(WITHHELD_KEY)
+    if raw is None:
+        return False, (f"{WITHHELD_KEY} is not in the self-hosted store - import it with the stats object "
+                       f"(import_from_r2.py --prefix {WITHHELD_KEY})")
+    try:
+        n = len(gen_withheld_floor.validate(json.loads(raw)))
+    except (ValueError, SystemExit) as e:
+        return False, f"{WITHHELD_KEY} in the self-hosted store does not validate ({e})"
+    theirs = r2.get(WITHHELD_KEY)
+    if theirs is None:
+        return False, f"{WITHHELD_KEY} is absent from R2 - cannot tell whether the imported copy is current"
+    if hashlib.md5(theirs).hexdigest() != hashlib.md5(raw).hexdigest():  # noqa: S324
+        return False, (f"{WITHHELD_KEY} differs from R2's copy (changed on R2 after the import) - import it again")
+    return True, f"present, {n} ids, identical to R2's copy"
+
+
 def statcan_lane(lane_path=None, registry_sources=None) -> tuple[bool, str]:
     """statcan's ONLY update path is jobs/statcan_lane.py when the registry says served_by: lane, and that lane
     refuses after T0 until its self-hosted backend and writer lock are designed (its POST_T0_READY). Read by
@@ -505,7 +539,8 @@ CHECKS = [("legacy-catalogue", legacy_catalogue), ("legacy-remote-d1", legacy_re
           ("ci-drained", ci_drained), ("thirteen-f", thirteen_f),
           ("edge-state", edge_state), ("state-db", state_db), ("d1-only-sources", d1_only_sources),
           ("sec-edgar-local", sec_edgar_local), ("sec-edgar-runner", sec_edgar_runner),
-          ("heartbeat-reader", heartbeat_reader), ("served-stats", served_stats), ("statcan-lane", statcan_lane),
+          ("heartbeat-reader", heartbeat_reader), ("served-stats", served_stats),
+          ("served-withheld", served_withheld), ("statcan-lane", statcan_lane),
           ("flag", flag)]
 
 

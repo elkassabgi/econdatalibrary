@@ -5,7 +5,8 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
-  TTL_FAIL_MS, TTL_OK_MS, WITHHELD_MAX, floorWithheld, forSource, isWithheld, keyWithWithheld, loadWithheld,
+  TTL_FAIL_MS, TTL_OK_MS, WITHHELD_MAX, floorWithheld, forSource, isSourceClosed, isWithheld, keyWithWithheld,
+  loadWithheld,
   parseWithheld, resetWithheldCache, withheldResponse,
 } from "../src/withheld.ts";
 import { WITHHELD_FLOOR } from "../src/withheldFloor.ts";
@@ -14,6 +15,7 @@ import {
   searchFtsSourceSql, searchFtsSql, searchLikeCountSql, searchLikeSourceCountSql, searchLikeSourceSql, searchLikeSql,
   seriesIdsForSourceSql, withheldExcl, withheldPresentCountSql,
 } from "../src/sql.ts";
+import { presentCount } from "../src/catalog.ts";
 
 const A = "insee_melodi:DS_RP_TD_MIGRES_COMP";
 const B = "insee_melodi:DS_TOUR_CAP";
@@ -134,13 +136,13 @@ test("every catalogue statement builder applies the exclusion it is given", () =
 
 test("a source with no withheld id gets byte-identical SQL", () => {
   assert.equal(browseSourceSql("wid", []), browseSourceSql("wid"));
-  assert.equal(seriesIdsForSourceSql("wid", forSource({ ids: new Set([A]), etag: "x", from: "t" }, "wid")),
+  assert.equal(seriesIdsForSourceSql("wid", forSource({ ids: new Set([A]), etag: "x", from: "t", closed: new Set<string>() }, "wid")),
                seriesIdsForSourceSql("wid"));
   assert.equal(searchFtsSql([]), searchFtsSql());
 });
 
 test("forSource scopes the ids by source", () => {
-  const w = { ids: new Set([A, B, OTHER]), etag: "x", from: "t" };
+  const w = { ids: new Set([A, B, OTHER]), etag: "x", from: "t", closed: new Set<string>() };
   assert.deepEqual(forSource(w, "insee_melodi"), [A, B]);
   assert.deepEqual(forSource(w, "wid"), [OTHER]);
   assert.deepEqual(forSource(w, "ecb"), []);
@@ -159,9 +161,50 @@ test("the 404 is its own error, names the id, carries the owner's sentence, and 
 
 test("the cache key carries the list's tag and drops api_key", () => {
   const k = keyWithWithheld(new Request("https://x.test/v1/catalog?source=insee_melodi&api_key=SECRET"),
-                            { ids: new Set(), etag: "store-abc", from: "store" });
+                            { ids: new Set<string>(), etag: "store-abc", from: "store", closed: new Set<string>() });
   const u = new URL(k.url);
   assert.equal(u.searchParams.get("__withheld"), "store-abc");
   assert.equal(u.searchParams.get("api_key"), null);
   assert.equal(u.searchParams.get("source"), "insee_melodi");
+});
+
+test("the FLOOR withholds every source it names WHOLE; a good read and the last good copy close nothing (AR-341 #2)",
+     async () => {
+  resetWithheldCache();
+  const f = await loadWithheld(async () => { throw new Error("down"); }, "store", () => 1);
+  assert.equal(f.from, "floor");
+  assert.ok(isSourceClosed(f, "insee_melodi"), "the floor's source is closed");
+  assert.ok(isWithheld(f, "insee_melodi:DS_WITHHELD_AFTER_THE_FLOOR"),
+            "an id withheld in the store after the floor was committed is still not shown");
+  assert.ok(!isWithheld(f, "ecb:EXR:D.AUD.EUR.SP00.A") && !isSourceClosed(f, "ecb"), "other sources stay open");
+  resetWithheldCache();
+  const g = await loadWithheld(async () => ({ text: obj({ [A]: ent }), etag: "e" }), "store", () => 1);
+  assert.equal(g.closed.size, 0);
+  assert.ok(isWithheld(g, A) && !isWithheld(g, "insee_melodi:DD_CNA_APU"), "a good read withholds its ids only");
+  const lg = await loadWithheld(async () => { throw new Error("down"); }, "store", () => 1 + TTL_OK_MS + 1);
+  assert.equal(lg.from, "last-good");
+  assert.equal(lg.closed.size, 0);
+});
+
+test("presentCount runs once per database and id set per list load, not per request (AR-341 #5)", async () => {
+  let n = 0;
+  let fail = false;
+  const db = { prepare: (_sql: string) => ({ first: async () => { n++; if (fail) throw new Error("d1"); return { n: 7 }; } }) };
+  const d = db as unknown as D1Database;
+  const w1 = { ids: new Set([A]), etag: "a", from: "store", closed: new Set<string>() };
+  const w2 = { ids: new Set([A]), etag: "b", from: "store", closed: new Set<string>() };
+  assert.equal(await presentCount(d, [A], w1, "CATALOG"), 7);
+  assert.equal(await presentCount(d, [A], w1, "CATALOG"), 7);
+  assert.equal(n, 1, "the second request of the same list load reads nothing");
+  await presentCount(d, [A], w1, "CATALOG_CLIMATE");
+  assert.equal(n, 2, "the other database is its own count");
+  await presentCount(d, [A], w2, "CATALOG");
+  assert.equal(n, 3, "a new list load counts again");
+  assert.equal(await presentCount(d, [], w2, "CATALOG"), 0);
+  assert.equal(n, 3, "no ids, no statement");
+  fail = true;
+  await assert.rejects(presentCount(d, [B], w2, "CATALOG"));
+  fail = false;
+  assert.equal(await presentCount(d, [B], w2, "CATALOG"), 7, "a failed count is not memoised");
+  assert.equal(n, 5);
 });

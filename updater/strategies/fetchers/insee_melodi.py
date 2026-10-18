@@ -1091,9 +1091,14 @@ class _Pass:
           - no csv_owed: the CSV was handed to the orchestrator by an earlier pass's Result;
           - the served CSV holds every row: its data lines == served.rows (one GET of the CSV object);
           - served.rows <= UNWITHHOLD_MAX_ROWS (above it the CSV may be a desktop debt; the owner un-hides it).
-        One conditional write (If-Match the list's ETag); a lost race is retried on a later pass. The fetcher never
-        ADDS an entry and never touches an `until: "operator"` one. Any failure to read leaves the list as it is."""
+        One conditional write, If-Match the ETag OF THE BYTES READ: the GET and the HEAD are two requests, so the
+        pass goes on only when the HEAD's ETag is the MD5 of the body it got (R2 single-part and the self-hosted
+        store both report that). A list changed between the two, or a lost race at the write, is retried on a later
+        pass (AR-341 finding 1). The fetcher never ADDS an entry and never touches an `until: "operator"` one. Any
+        failure to read leaves the list as it is; an ABSENT list is a loud label (after T0 it means the import
+        forgot it, AR-341 finding 3), not a silent return."""
         import gzip                                                          # noqa: PLC0415
+        import hashlib                                                       # noqa: PLC0415
         import json                                                          # noqa: PLC0415
         try:
             store = _withheld_store()
@@ -1107,7 +1112,15 @@ class _Pass:
             print(f"[insee_melodi] withheld list not read ({type(e).__name__}) - left as it is", flush=True)
             return
         if raw is None:
+            self.labels.append(f"{WITHHELD_KEY} is ABSENT from the store - nothing un-withheld; the worker serves "
+                               f"its committed floor. Restore the list (tools/withheld_list.py create, or the T0 "
+                               f"import) - completed tables stay hidden until then")
             return
+        if (etag or "").strip('"') != hashlib.md5(raw).hexdigest():         # noqa: S324 - an ETag, not security
+            self.labels.append(f"{WITHHELD_KEY} changed between its read and its ETag (or the ETag is not the MD5 "
+                               f"of the bytes) - nothing un-withheld; retried on a later pass")
+            return
+        etag = etag.strip('"')
         try:
             obj = json.loads(raw)
             ids = obj["ids"]

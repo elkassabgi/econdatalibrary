@@ -18,7 +18,7 @@ import type { Env, SourceRow, LicenseRow, SeriesRow, SeriesIdRow } from "./types
 import { SELECT_SOURCE, SELECT_LICENSE, SELECT_SERIES, seriesIdsForSourceSql } from "./sql.ts";
 import { json, badRequest, licenseBlock, supportedSources, sourceOf, dbFor, dbForSeries } from "./util.ts";
 import { NON_REDISTRIBUTABLE, isSeriesCarvedOut } from "./denylist.ts";
-import { type Withheld, forSource, isWithheld } from "./withheld.ts";
+import { type Withheld, forSource, isSourceClosed, isWithheld, withheldDetail } from "./withheld.ts";
 
 const PROFILE = "tabular-data-package";
 const SCHEMA_VERSION = "1.0";
@@ -85,6 +85,11 @@ export async function handleBundle(url: URL, env: Env, withheld: Withheld): Prom
     // result set and still reaches the manifest — echoed in `econdl:series_requested` and named
     // in `econdl:unresolved`. That made this endpoint an enumeration oracle for exactly the ids
     // the gate exists to withhold, which the comment twenty lines below forbids in terms.
+    // A source withheld WHOLE (src/withheld.ts: list unreadable, no good copy, the floor applies) is not
+    // enumerated at all (AR-341 finding 2).
+    if (isSourceClosed(withheld, source)) {
+      return json({ error: "withheld", source, detail: withheldDetail(`${source}:`) }, 404);
+    }
     // WITHHELD ids (src/withheld.ts) are excluded the same way, in the SQL: an enumeration that read them
     // would make the manifest list tables withheld from every other surface (AR-339 Part 2 finding 3).
     const res = await dbFor(env, source).prepare(seriesIdsForSourceSql(source, forSource(withheld, source)))

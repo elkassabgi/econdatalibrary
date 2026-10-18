@@ -5,13 +5,16 @@ api/worker/withheld.json (the committed copy of the list), or refresh that copy 
     python tools/gen_withheld_floor.py --check      # exit 1 if withheldFloor.ts is not what withheld.json gives
     python tools/gen_withheld_floor.py --from-store # read _aqueduct/withheld.json from the store the worker
                                                     # reads (updater.blob.csv_store()), write withheld.json,
-                                                    # then regenerate - run BEFORE every worker deploy, so the
-                                                    # floor is the list as it stands (AR-339 Part 2 finding 5)
+                                                    # then regenerate, so the committed floor follows the list
     python tools/gen_withheld_floor.py --from-store --check   # exit 1 if the committed copy is stale
 
-The floor is used only when the live list cannot be read (src/withheld.ts). A stale floor fails CLOSED: it can
-re-hide a table that has been un-hidden since, never show one that is withheld. tests/test_withheld_floor.py pins
-that the generated file matches the committed JSON."""
+The floor is used only when the live list cannot be read and the isolate holds no good copy (src/withheld.ts).
+Its ids alone would NOT be fail-safe: an id withheld in the store after the floor was committed is not in it
+(AR-341 finding 2). So while the floor applies, every source it names is withheld WHOLE, and
+tools/withheld_list.py refuses to withhold an id of a source the committed floor does not name. A stale floor
+therefore errs only CLOSED: it can re-hide a table un-hidden since (or a whole source), never show a withheld
+one. tests/test_withheld_gate.py pins that the generated file matches the committed JSON (and that the check
+can fail)."""
 from __future__ import annotations
 
 import argparse

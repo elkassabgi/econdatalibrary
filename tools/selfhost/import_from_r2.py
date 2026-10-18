@@ -10,6 +10,9 @@ Content-Encoding, Content-Type and custom metadata are kept, so the worker serve
 
     python tools/selfhost/import_from_r2.py --root <blob store> --key series/<...>.csv [--key ...]
     python tools/selfhost/import_from_r2.py --root <blob store> --prefix _aqueduct/stats.json
+    python tools/selfhost/import_from_r2.py --root <blob store> --key _aqueduct/withheld.json   # the WITHHELD list
+        # (api/worker/src/withheld.ts): import it LAST, after every R2 write to it has stopped; t0_ready's
+        # served-withheld check refuses T0 unless the store's copy is byte-identical to R2's (AR-341 finding 3)
 
 BULK (plan step 2: ~14M objects, 798 GB): --workers N copies N objects at a time; --resume skips an object the
 store already holds with the same etag, size AND LastModified (whole seconds) as the listing (so an interrupted

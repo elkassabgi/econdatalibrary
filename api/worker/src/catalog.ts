@@ -14,7 +14,7 @@ import {
   browseSourceSql, browseSourceVisibleCountSql, hasCarveouts, withheldPresentCountSql,
   BROWSE_SOURCE_COUNT, BROWSE_SOURCE_COUNT_CACHED, browseAllSql, BROWSE_ALL_COUNT,
 } from "./sql.ts";
-import { type Withheld, forSource, isWithheld } from "./withheld.ts";
+import { type Withheld, forSource, isSourceClosed, isWithheld } from "./withheld.ts";
 import { json, clampInt, offsetInt, reqLang, localizedTitle, dbFor, supportedSources } from "./util.ts";
 import { NON_REDISTRIBUTABLE, isSeriesCarvedOut, promotesToSourceBrowse } from "./denylist.ts";
 
@@ -66,11 +66,27 @@ const COVERAGE =
   "mixed grain: some sources are catalogued per series, others per table or flow — " +
   "absence from this catalogue does not mean a series is unavailable";
 
-/** How many of `ids` the database holds (0 for none): what a cached or whole-table count must lose. */
-export async function presentCount(db: D1Database, ids: readonly string[]): Promise<number> {
-  if (ids.length === 0) return 0;
-  const c = await db.prepare(withheldPresentCountSql(ids)).first<CountRow>();
-  return c?.n ?? 0;
+/** Per list load (AR-341 finding 5): the present counts are memoised on the loaded list object, which the
+ *  per-isolate cache of src/withheld.ts keeps for its 300 s (30 s after a failed read). So the PK count runs at
+ *  most once per database and id set per isolate per list reload - not once per uncached request. A failed
+ *  count is not memoised. */
+const presentMemo = new WeakMap<Withheld, Map<string, Promise<number>>>();
+
+/** How many of `ids` the database holds (0 for none): what a cached or whole-table count must lose. `dbKey`
+ *  names the database (`ids` alone does not: the same ids are counted in both). */
+export function presentCount(db: D1Database, ids: readonly string[], w: Withheld, dbKey: string): Promise<number> {
+  if (ids.length === 0) return Promise.resolve(0);
+  let m = presentMemo.get(w);
+  if (!m) presentMemo.set(w, (m = new Map()));
+  const k = `${dbKey}|${ids.join(",")}`;
+  let p = m.get(k);
+  if (!p) {
+    const memo = m;
+    p = db.prepare(withheldPresentCountSql(ids)).first<CountRow>().then((c) => c?.n ?? 0);
+    p.catch(() => memo.delete(k));
+    m.set(k, p);
+  }
+  return p;
 }
 
 export async function handleCatalog(url: URL, env: Env, withheld: Withheld): Promise<Response> {
@@ -147,7 +163,10 @@ export async function handleCatalog(url: URL, env: Env, withheld: Withheld): Pro
   const whAll = [...withheld.ids].sort();
   const whSrc = src ? forSource(withheld, src) : [];
 
-  if (q && q.trim()) {
+  if (src && isSourceClosed(withheld, src)) {
+    // The whole source is withheld (src/withheld.ts: the list is unreadable and this isolate has no good copy, so
+    // the floor applies): a scoped browse or search lists nothing and counts nothing; no statement runs.
+  } else if (q && q.trim()) {
     // FTS5 primary path. D1 raises on a malformed MATCH expression, so we catch
     // and fall back to LIKE -- mirroring the Python try/except OperationalError.
     // When a source= is ALSO given, AND the source filter onto the search so the
@@ -240,7 +259,7 @@ export async function handleCatalog(url: URL, env: Env, withheld: Withheld): Pro
       const cached = await scopedDb.prepare(BROWSE_SOURCE_COUNT_CACHED).bind(src).first<CountRow>();
       if (cached && typeof cached.n === "number" && !(cached.n === 0 && results.length > 0)) {
         // source_counts counts withheld rows too: lose the ones the catalogue holds (a PK count, ~1 row each)
-        total = Math.max(0, cached.n - await presentCount(scopedDb, whSrc));
+        total = Math.max(0, cached.n - await presentCount(scopedDb, whSrc, withheld, `src:${src}`));
       } else if (cached && cached.n === 0 && results.length > 0) {
         // THE CACHE IS PROVABLY WRONG, so do not serve it. `total: 0` beside a non-empty page is
         // self-contradictory: this very request just read rows for the source. statcan entered
@@ -272,7 +291,7 @@ export async function handleCatalog(url: URL, env: Env, withheld: Withheld): Pro
         // Fallback: a source synced before its source_counts row exists. Live
         // COUNT once — the sync backfills the row and this path goes cold.
         const c = await scopedDb.prepare(BROWSE_SOURCE_COUNT).bind(src).first<CountRow>();
-        total = c ? Math.max(0, c.n - await presentCount(scopedDb, whSrc)) : results.length;
+        total = c ? Math.max(0, c.n - await presentCount(scopedDb, whSrc, withheld, `src:${src}`)) : results.length;
       }
     }
   } else {
@@ -289,7 +308,8 @@ export async function handleCatalog(url: URL, env: Env, withheld: Withheld): Pro
       env.CATALOG_CLIMATE.prepare(BROWSE_ALL_COUNT).first<CountRow>(),
     ]);
     // the whole-table COUNT keeps its measured form; the withheld rows each database holds are subtracted
-    const [wp, ws] = await Promise.all([presentCount(env.CATALOG, whAll), presentCount(env.CATALOG_CLIMATE, whAll)]);
+    const [wp, ws] = await Promise.all([presentCount(env.CATALOG, whAll, withheld, "CATALOG"),
+                                        presentCount(env.CATALOG_CLIMATE, whAll, withheld, "CATALOG_CLIMATE")]);
     total = Math.max(0, (cp?.n ?? 0) - wp) + Math.max(0, (cs?.n ?? 0) - ws);
   }
 
