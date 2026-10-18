@@ -1,0 +1,146 @@
+{
+ "class": "dataset",
+ "dimension": {
+  "STATISTIC": {
+   "category": {
+    "index": [
+     "EAACC22C01",
+     "EAACC22C02",
+     "EAACC22C03"
+    ],
+    "label": {
+     "EAACC22C01": "Primary school enrolments",
+     "EAACC22C02": "Children who entered a mainstream primary school from another primary school",
+     "EAACC22C03": "Percentage of children who entered a mainstream primary school from another primary school"
+    },
+    "unit": {
+     "EAACC22C01": {
+      "decimals": 0,
+      "label": "Number",
+      "position": "end"
+     },
+     "EAACC22C02": {
+      "decimals": 0,
+      "label": "Number",
+      "position": "end"
+     },
+     "EAACC22C03": {
+      "decimals": 0,
+      "label": "%",
+      "position": "end"
+     }
+    }
+   },
+   "label": "Statistic"
+  },
+  "TLIST(A1)": {
+   "category": {
+    "index": [
+     "2023/2024"
+    ],
+    "label": {
+     "2023/2024": "2023/2024"
+    }
+   },
+   "label": "Academic Year"
+  },
+  "C04323V05102": {
+   "category": {
+    "index": [
+     "10",
+     "-"
+    ],
+    "label": {
+     "10": "Children in Care",
+     "-": "All children"
+    }
+   },
+   "label": "Children in Care"
+  }
+ },
+ "extension": {
+  "matrix": "EAACC22",
+  "reasons": [
+   "Planned release"
+  ],
+  "language": {
+   "code": "en",
+   "name": "English"
+  },
+  "elimination": {
+   "C04323V05102": null
+  },
+  "subject": {
+   "code": 2,
+   "value": "Education"
+  },
+  "product": {
+   "code": "EAACC",
+   "value": "Education Attendance and Attainment of Children in Care (2018-2024)"
+  },
+  "official": true,
+  "copyright": {
+   "name": "Central Statistics Office, Ireland",
+   "code": "CSO",
+   "href": "https://www.cso.ie/"
+  },
+  "exceptional": false,
+  "reservation": false,
+  "archive": false,
+  "experimental": false,
+  "analytical": false
+ },
+ "href": "https://ws.cso.ie/public/api.restful/PxStat.Data.Cube_API.ReadDataset/EAACC22/PX/2013/en",
+ "id": [
+  "STATISTIC",
+  "TLIST(A1)",
+  "C04323V05102"
+ ],
+ "label": "Children in care and all children who entered a mainstream primary school from another primary school",
+ "link": {
+  "alternate": [
+   {
+    "type": "text/csv",
+    "href": "https://ws.cso.ie/public/api.restful/PxStat.Data.Cube_API.ReadDataset/EAACC22/CSV/1.0/en"
+   },
+   {
+    "type": "application/json",
+    "href": "https://ws.cso.ie/public/api.restful/PxStat.Data.Cube_API.ReadDataset/EAACC22/JSON-stat/2.0/en"
+   },
+   {
+    "type": "application/json",
+    "href": "https://ws.cso.ie/public/api.restful/PxStat.Data.Cube_API.ReadDataset/EAACC22/JSON-stat/1.0/en"
+   },
+   {
+    "type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "href": "https://ws.cso.ie/public/api.restful/PxStat.Data.Cube_API.ReadDataset/EAACC22/XLSX/2007/en"
+   }
+  ]
+ },
+ "note": [
+  "The cohort 'Children in care' comprises children in care in January 2025 and children who left care since April 2018. The figures do not include non-stated funded private schools.\r\nFor more information, please go to the [url=https://www.cso.ie/en/statistics/education/educationalattendanceandattainmentofchildrenincare/]statistical release page[/url] on our website."
+ ],
+ "role": {
+  "metric": [
+   "STATISTIC"
+  ],
+  "time": [
+   "TLIST(A1)"
+  ]
+ },
+ "size": [
+  3,
+  1,
+  2
+ ],
+ "updated": "2025-12-02T11:00:00.000Z",
+ "value": [
+  3174.0,
+  551073.0,
+  296.0,
+  21689.0,
+  9.0,
+  4.0
+ ],
+ "version": "2.0"
+}

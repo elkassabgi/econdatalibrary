@@ -385,7 +385,15 @@ def _why_unparsed(data) -> str:
                    ROA41..ROA52, rolling five-year road-injury tables). The grammar declines
                    them ON PURPOSE - only a one-year span is an academic year (R288) - so which
                    date a window stands for is a convention not yet decided, not a parse bug.
-        unparsed   anything else: a real gap in OUR parser.
+        undated_time  the AUTHORITATIVE time axis has codes, and NOT ONE of them (nor its label)
+                   is dated by parse_date. Measured 2026-10-18 on 59 matrices that led cso's
+                   queue every run: CPNI09..53 '2021/2022' (the joint IE 2022 + NI 2021 census),
+                   EOSA01..14 '2012/17' / '2017/21', EAACC05 '2013/16', EAACC21/22 '2023/2024'.
+                   These are NOT dated here on purpose: '2021/2022' through the split-year rule
+                   would put Census 2022 at 2021-12-31. Which date such a code stands for is a
+                   convention for the owner, so the body is named, not guessed at.
+        unparsed   anything else: a real gap in OUR parser (no authoritative time axis, or some
+                   time codes date and still no observation came out).
     """
     try:
         vals = data.get("value")
@@ -404,6 +412,14 @@ def _why_unparsed(data) -> str:
             spans = [_SPAN.match(str(c)) for c in codes]
             if codes and all(m and int(m.group(2)) > int(m.group(1)) + 1 for m in spans):
                 return "span_time"
+            # parse_jsonstat2 tries the code, then the label; so does this. parse_date is looked
+            # up as a module global, so under the fetcher it is the SAME wrapped parser the rows
+            # went through (_parse_period), never a second grammar that could disagree.
+            lab = (data.get("dimension") or {}).get(tdim, {}).get("category", {}).get("label")
+            lab = lab if isinstance(lab, dict) else {}
+            if codes and not any(parse_date(str(c)) is not None
+                                 or parse_date(str(lab.get(c, ""))) is not None for c in codes):
+                return "undated_time"
     except (AttributeError, TypeError, ValueError):
         pass
     return "unparsed"

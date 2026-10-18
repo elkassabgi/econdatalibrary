@@ -1957,3 +1957,27 @@ same year would collide). The catalogue title must then say the value is a five-
 
 HRD51 and DOTA09 (the other two of the twelve) are published with EVERY value null (DOTA09's note:
 "removed pending a review"); they come back when CSO moves their release stamp.
+
+### cso CPNI / EOSA / EAACC: 59 tables NOT HOSTED - slash-form time codes, a date-convention decision (2026-10-18)
+
+Probed live 2026-10-18 (all HTTP 200, real values, authoritative TLIST(A1) axis). Every time code is
+a slash form the grammar does not date:
+
+| time code(s) | tables | axis label |
+|---|---|---|
+| `2021/2022` | CPNI09-10, 12-21, 23-40, 42-46, 48-53 (41) | Census Year |
+| `2001/2002`, `2021/2022` | CPNI11 | Census Year |
+| `2012/17` | EOSA01-12 | Academic Years |
+| `2017/21` | EOSA13-14 | Year |
+| `2023/2024` | EAACC21 (Year), EAACC22 (Academic Year) | |
+| `2013/16` | EAACC05 | Year |
+
+They are never stored. Before branch fix/cso-undated-never-stored they were booked 'unparsed'
+transient, sorted first (unheld), and filled 59 of 60 slots of every run. Now the outcome is
+`undated_time`: skipped, cursor advanced, named once in the note, fetched again when CSO moves the
+release stamp.
+
+DO NOT date `2021/2022` with the split-year rule: it is the joint census of Ireland (2022) and
+Northern Ireland (2021), and the rule would put Census 2022 at 2021-12-31. To host them, choose a
+date per form (e.g. 2022-12-31 for the joint census, period-END for `2012/17`-style windows) and
+apply it only on an authoritative time axis, with an injectivity check. That is the owner's call.

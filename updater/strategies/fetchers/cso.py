@@ -247,21 +247,48 @@ def search_vintages(timeout: int = 300, tries: int = 3):
     return {}
 
 
-def _stored_in_subject(out_dir, sbj, mtr):
+_UNREADABLE = object()   # memo value: the subject file could not be read this run
+
+
+def _stored_in_subject(out_dir, sbj, mtr, cache=None):
     """Does the subject parquet hold any row of matrix `mtr`? True / False when READ, None when it
     could not be (never read as False: 'I could not look' must not become 'nothing is there', R261).
-    A missing subject file is a real False - nothing of that subject is stored."""
+    A missing subject file is a real False - nothing of that subject is stored.
+
+    `cache` (a dict the caller keeps for ONE run) holds, per subject, the set of matrix codes that
+    have at least one `CSO:<m>:` key. Under r2, blob.read_table GETs the WHOLE object, and the 59
+    never-stored matrices of 2026-10-18 sit in two subject files (42 in 76_Census_2022, 17 in
+    2_Education): without the memo the first run after a release downloads each file once per
+    matrix. The set keeps the exact `CSO:<m>:` semantics (a key needs a third ':'-part), so HRD511's
+    rows still do not make HRD51 look stored."""
     path = os.path.join(out_dir, f"{sbj}.parquet")
+    if cache is not None and sbj in cache:
+        got = cache[sbj]
+        if got is _UNREADABLE:
+            print(f"[cso] {mtr}: {path} could not be read earlier this run - treated as stored",
+                  flush=True)
+            return None
+        return mtr in got
     try:
         if not blob.exists(path):
-            return False
-        keys = blob.read_table(path, columns=["series_key"]).column("series_key")
-        import pyarrow.compute as _pc
-        return bool(_pc.any(_pc.starts_with(keys, f"CSO:{mtr}:")).as_py())
+            present = frozenset()
+        else:
+            keys = blob.read_table(path, columns=["series_key"]).column("series_key")
+            import pyarrow.compute as _pc
+            keys = _pc.filter(keys, _pc.starts_with(keys, "CSO:"))
+            parts = _pc.split_pattern(keys, pattern=":", max_splits=2)
+            three = _pc.greater_equal(_pc.list_value_length(parts), 3)
+            mids = _pc.list_element(_pc.filter(parts, three), 1)
+            present = frozenset(m for m in _pc.unique(mids).to_pylist() if m is not None)
     except Exception as e:                                   # noqa: BLE001
         print(f"[cso] {mtr}: could not read {path} to tell whether it is stored "
               f"({type(e).__name__}: {str(e)[:120]}) - treated as stored", flush=True)
+        if cache is not None:
+            cache[sbj] = _UNREADABLE
         return None
+    if cache is not None:
+        cache[sbj] = present
+    return mtr in present
 
 
 def _held_path():
@@ -567,6 +594,21 @@ def update(unit, since) -> Result:
                         series_cursors={})
 
     batch = take_batch(changed, MAX_TABLES, unlisted)
+    # THE CAP REMAINDER IS A DEFERRAL, NOT NOTHING (2026-10-18). Matrices beyond the batch used to
+    # be dropped without a tally, so a capped pass over 10,844 changed matrices could report `ok`
+    # as if it had covered them (the R311 shape). `ok` stamps last_success_utc, and is_due then
+    # holds an `irregular` source for 7 days: 60 matrices a week against a publisher inflow of
+    # ~84 a week (361 release stamps in the 30 days to 2026-10-18), a queue that never drains.
+    # Tallied as deferred (not attempted, not failed, R303), the pass is `partial` while a
+    # backlog exists, stays due on both daily crons, and returns `ok` once the backlog is gone.
+    _in_batch = set(batch)
+    beyond_cap = [m for m in changed if m not in _in_batch]
+    for m in beyond_cap:
+        tally.deferred_unit(m)
+    if beyond_cap:
+        print(f"[cso] {len(beyond_cap):,} changed matrices are beyond this run's "
+              f"{MAX_TABLES}-matrix cap - deferred, not failed; a later pass takes them",
+              flush=True)
     m2s = _matrix_subject_map()
     refreshed_map = False   # the subject-catalog rebuild below is allowed ONCE per run
     ing = _ingester()
@@ -575,6 +617,8 @@ def update(unit, since) -> Result:
     by_subject: dict[str, dict] = {}   # subject_key -> {"keys":[],"dates":[],"vals":[],"matrices":[]}
     pulled_ok = []                      # matrices we successfully pulled (advance cursor for these)
     confirmed_nothing = []              # never-stored, nothing to store at this release (cursor only)
+    skip_reason: dict[str, str] = {}    # confirmed_nothing matrix -> its outcome, for the note
+    stored_cache: dict = {}             # subject -> matrix codes present, read once per run
     series_cursors: dict[str, str] = {}
     cursors_capped = False
 
@@ -663,8 +707,13 @@ def update(unit, since) -> Result:
             # NO LONGER ONE SENTENCE FOR TWO OPPOSITE CAUSES. Saying "network failure after
             # retries, or a 200 that parsed 0 obs" made a permanent parser gap read as the
             # publisher's bad hour, and nine matrices sat that way holding ~6M rows (R299).
-            if outcome in ("all_null", "span_time") and mtr not in held and \
-                    _stored_in_subject(out_dir, sbj, mtr) is False:
+            # undated_time (2026-10-18): the same reasoning, for an authoritative time axis
+            # carrying no code the grammar dates ('2021/2022', '2012/17', '2023/2024'). 59 such
+            # never-stored matrices sat at the HEAD of the queue (unheld sorts first) and failed
+            # 59 of 60 slots on every run, so about one useful matrix per run moved. Not dated
+            # here: which date '2021/2022' (IE 2022 + NI 2021) stands for is the owner's call.
+            if outcome in ("all_null", "span_time", "undated_time") and mtr not in held and \
+                    _stored_in_subject(out_dir, sbj, mtr, stored_cache) is False:
                 # A NEVER-STORED matrix whose body the publisher left empty (all_null) or whose
                 # time axis is a multi-year window we do not date (span_time) has nothing to
                 # store, and re-pulling it every run changes nothing: 12 such matrices were
@@ -676,12 +725,11 @@ def update(unit, since) -> Result:
                 # 67 matrices with stored rows missing from it (the repull tools never add to it),
                 # 40 of them still listed - a blanked one of those must stay loud. A matrix we DO
                 # serve that comes back like this stays transient: the publisher removed data.
-                why = ("CSO publishes it with every value null" if outcome == "all_null" else
-                       "its time axis holds only multi-year windows (e.g. '2019-2023'), which "
-                       "are not dated until a convention is chosen")
+                why = _SKIP_WHY[outcome]
                 print(f"[cso] {mtr}: no CSO:{mtr}: key in {sbj}.parquet and nothing to store - "
                       f"{why}; skipped until CSO updates it", flush=True)
                 confirmed_nothing.append(mtr)
+                skip_reason[mtr] = outcome
                 continue
             if outcome == "unparsed":
                 print(f"[cso] {mtr}: HTTP 200 with a real body that parsed 0 observations — "
@@ -751,8 +799,51 @@ def update(unit, since) -> Result:
     if cursors_capped:
         print(f"[cso] cursor set hit the {CURSOR_CAP:,} cap — further changed series are "
               f"not individually reported", flush=True)
-    return finalize(tally, _total_rows(out_dir), last_obs, source=SOURCE,
-                    series_cursors=series_cursors)
+    res = finalize(tally, _total_rows(out_dir), last_obs, source=SOURCE,
+                   series_cursors=series_cursors)
+    clause = skipped_note(skip_reason)
+    if clause:
+        res.error = (res.error or "") + clause
+    return res
+
+
+# What each skip outcome means, in the log line and the note. One table so the two cannot drift.
+_SKIP_WHY = {
+    "all_null": "CSO publishes it with every value null",
+    "span_time": ("its time axis holds only multi-year windows (e.g. '2019-2023'), which are "
+                  "not dated until a convention is chosen"),
+    "undated_time": ("its time axis holds no code our grammar dates (e.g. '2021/2022', "
+                     "'2012/17'), and none is dated until a convention is chosen"),
+}
+_SKIP_SHORT = {"undated_time": "time axis not dated", "all_null": "all values null",
+               "span_time": "multi-year windows"}
+
+
+def skipped_note(skip_reason: dict) -> str:
+    """The note clause for never-stored matrices skipped this run - NEVER A SILENT DROP.
+
+    Before 2026-10-18 these were printed in the log only, so a skipped matrix existed nowhere in
+    state. Each one is reported here once per CSO release: its cursor then matches the stamp and it
+    is not asked again until CSO moves it. Names are bare (no 'X: outcome'), so they can never be
+    read as a transient label; the count is authoritative and an elision is stated, like _named.
+    """
+    if not skip_reason:
+        return ""
+    n = len(skip_reason)
+    by = {}
+    for m, o in skip_reason.items():
+        by[o] = by.get(o, 0) + 1
+    parts = ", ".join(f"{_SKIP_SHORT.get(o, o)}: {c}" for o, c in sorted(by.items()))
+    names = sorted(skip_reason)
+    kept, used = [], 0
+    for m in names:
+        if kept and used + len(m) + 2 > 700:
+            break
+        kept.append(m)
+        used += len(m) + 2
+    more = f", +{n - len(kept)} more" if n > len(kept) else ""
+    return (f"; {n} never-stored matrix/matrices held back until CSO re-releases them "
+            f"({parts}) [{', '.join(kept)}{more}]")
 
 
 def _write_cursor(path, mapping):
