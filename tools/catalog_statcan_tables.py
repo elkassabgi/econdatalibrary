@@ -53,11 +53,16 @@ from derive_statcan_tables import (SOURCE, STORE, MAX_ROWS_DEFAULT,   # noqa: E4
 
 LICENSE_ID = "statcan-open"
 BATCH = 10_000
-# StatCan frequencyCode -> the catalogue's single-letter frequency. Codes seen in the store:
-# 18 (2,919), 12 (2,673), 6 (859), 9 (621), 13 (406), 16 (319), 15 (132), 11 (81). Anything not
-# listed stays NULL rather than being guessed — a wrong frequency is worse than an absent one.
-FREQ = {1: "A", 2: "A", 4: "Q", 6: "M", 7: "M", 9: "A", 11: "A", 12: "A", 13: "A",
-        14: "D", 15: "W", 16: "D", 17: "Q", 18: "M", 19: "M", 20: "Q", 21: "A"}
+# StatCan frequencyCode -> the catalogue's frequency (the connector contract's D/W/M/Q/A/irregular).
+# BUILT FROM StatCan's OWN CODE LIST, getCodeSets `object.frequency` (read 2026-10-18; copied verbatim in
+# tests/fixtures/statcan_getCodeSets_frequency.json, which tests/test_statcan_freq_codeset.py pins this map
+# against). The map it replaces disagreed with that list on 15 of 17 codes - 9 Quarterly -> A, 18 Occasional
+# -> M, 1 Daily -> A, 16 every 5 years -> D - and labelled 415,015 of 467,611 statcan rows wrongly (R1615).
+# Rule: a code whose text names one of daily/weekly/monthly/quarterly/annual gets that letter; "Occasional X"
+# gets X's letter (the observations are at X, only the release is occasional); plain "Occasional" is
+# `irregular`. Codes with no equivalent in the contract - 4 Biweekly, 7 Bimonthly, 11 Semi-annual, 13-17
+# every 2/3/4/5/10 years - are left out and stay NULL: a wrong frequency is worse than an absent one.
+FREQ = {1: "D", 2: "W", 6: "M", 9: "Q", 12: "A", 18: "irregular", 19: "Q", 20: "M", 21: "D"}
 
 
 def key_prefix(prefix: str = "series") -> str:
