@@ -1217,6 +1217,98 @@ def load_wiring():
 
 WIRING = load_wiring()
 
+
+def load_paused():
+    """{source_id: reason} - sources PAUSED on purpose (registry `paused: "<reason>"`, next to `live: false`).
+
+    A paused source was wired and updated many times; it is off the run for a stated reason (insee_melodi,
+    2026-10-17: its incomplete tables are being re-downloaded). "not yet wired - the data here is the verified
+    initial load" would be untrue for it, and so would "live". Validated in updater/registry.py."""
+    reg_path = os.path.join(os.path.dirname(HERE), "updater", "registry.yaml")
+    try:
+        import yaml
+        reg = yaml.safe_load(open(reg_path, encoding="utf-8"))
+    except Exception:                                        # noqa: BLE001
+        return {}
+    return {e["source_id"]: str(e["paused"]).strip() for e in (reg.get("sources") or [])
+            if e.get("source_id") and isinstance(e.get("paused"), str) and e["paused"].strip()}
+
+
+def load_last_success():
+    """{source_id: last_success_utc} from the updater's state (data/_aqueduct/state.db, READ-ONLY), or None when
+    it cannot be read. A source that has succeeded before is never called "not yet wired" (2026-10-18: the
+    generator said that of insee_melodi, which was paused, and it would say it of every source taken off the run).
+    None means UNKNOWN: the page then says only that the source is not on the automated run."""
+    sd = os.environ.get("AQUEDUCT_STATE_DIR") or os.path.join(os.path.dirname(HERE), "data", "_aqueduct")
+    path = os.path.join(sd, "state.db")
+    if not os.path.isfile(path) or os.path.getsize(path) == 0:
+        print(f"  WARNING: no updater state at {path} - an unwired source is called 'not on the automated "
+              f"run', never 'not yet wired'")
+        return None
+    try:
+        uri = "file:" + path.replace("\\", "/") + "?mode=ro"
+        con = sqlite3.connect(uri, uri=True, timeout=60)
+        try:
+            rows = con.execute("SELECT source_id, last_success_utc FROM source_state "
+                               "WHERE last_success_utc IS NOT NULL AND last_success_utc != ''").fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error as e:
+        print(f"  WARNING: updater state unreadable ({e}) - an unwired source is called 'not on the automated run'")
+        return None
+    return {sid: str(ts) for sid, ts in rows}
+
+
+PAUSED = load_paused()
+LAST_SUCCESS = load_last_success()
+
+
+_DEFAULT = object()
+
+
+def refresh_rows(sid, cadence, wiring=_DEFAULT, paused=_DEFAULT, last_success=_DEFAULT):
+    """The "Update cadence" and "Automated refresh" rows of a source page: [(label, html), ...].
+
+      paused (registry `paused`)        -> cadence "(paused)"; "paused - <reason>"
+      wired                             -> the cadence; "live - this database is on the daily update run"
+      not wired, has succeeded before   -> "(not automated at the moment)"; "not on the automated run at the
+                                           moment - last automated update <date>"
+      not wired, state unreadable       -> the same, without a date (never a claim it was never wired)
+      not wired, never succeeded        -> "(target - not yet automated)"; "not yet wired - the initial load"
+    No WIRING at all (the registry could not be read) says nothing, as before."""
+    wiring = WIRING if wiring is _DEFAULT else wiring
+    paused = PAUSED if paused is _DEFAULT else paused
+    last_success = LAST_SUCCESS if last_success is _DEFAULT else last_success
+    board = " See the <a href=\"status.html\">Source Status board</a>."
+    rows = []
+    if sid in paused:
+        if cadence:
+            rows.append(("Update cadence", esc(cadence) + " <em>(paused)</em>"))
+        rows.append(("Automated refresh", "<strong>paused</strong> &mdash; " + esc(paused[sid]) + "." + board))
+        return rows
+    wired = bool(wiring.get(sid, False)) if wiring else None
+    if wired is None:
+        if cadence:
+            rows.append(("Update cadence", esc(cadence)))
+        return rows
+    if wired:
+        if cadence:
+            rows.append(("Update cadence", esc(cadence)))
+        rows.append(("Automated refresh", "<strong>live</strong> &mdash; this database is on the daily update run"))
+        return rows
+    ran = (last_success or {}).get(sid)
+    known_never = isinstance(last_success, dict) and sid not in last_success
+    if known_never:
+        if cadence:
+            rows.append(("Update cadence", esc(cadence) + " <em>(target &mdash; not yet automated)</em>"))
+        rows.append(("Automated refresh", "not yet wired &mdash; the data here is the verified initial load." + board))
+        return rows
+    if cadence:
+        rows.append(("Update cadence", esc(cadence) + " <em>(not automated at the moment)</em>"))
+    when = f" &mdash; last automated update {esc(str(ran)[:10])}" if ran else ""
+    rows.append(("Automated refresh", "not on the automated run at the moment" + when + "." + board))
+    return rows
+
 def load_resolvable():
     """Source ids the WORKER can actually serve — SUPPORTED_SOURCES in api/worker/src/util.ts.
 
@@ -2406,23 +2498,10 @@ def render_dataset_page(rec):
     # so an unregistered source is invisible to it. 88 of the 203 served databases are in that
     # state (unctad_*, fao_*, unesco_*, most imf_*), and they are exactly the ones a visitor
     # most needs told. Treating None as "say nothing" left them silently implying currency.
-    _wired = bool(WIRING.get(rec["id"], False)) if WIRING else None
-    if rec["cadence"]:
-        # Say plainly whether that cadence is running or still a target. A bare
-        # "Update cadence: monthly" on a database that has no updater yet reads as a promise.
-        if _wired is False:
-            acc_rows.append(("Update cadence",
-                             esc(rec["cadence"]) + " <em>(target &mdash; not yet automated)</em>"))
-        else:
-            acc_rows.append(("Update cadence", esc(rec["cadence"])))
-    if _wired is True:
-        acc_rows.append(("Automated refresh",
-                         "<strong>live</strong> &mdash; this database is on the daily "
-                         "update run"))
-    elif _wired is False:
-        acc_rows.append(("Automated refresh",
-                         "not yet wired &mdash; the data here is the verified initial load. "
-                         "See the <a href=\"status.html\">Source Status board</a>."))
+    # Say plainly whether that cadence is running, paused, or still a target (refresh_rows: a bare
+    # "Update cadence: monthly" on a database that has no updater yet reads as a promise, and "not yet
+    # wired" on one that has run before, or is paused on purpose, is untrue).
+    acc_rows.extend(refresh_rows(rec["id"], rec["cadence"]))
     if rec["strategy"]:
         acc_rows.append(("Update strategy", esc(rec["strategy"]).replace("_", " ")))
     if rec["storage_layout"]:

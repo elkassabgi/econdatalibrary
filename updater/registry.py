@@ -91,6 +91,16 @@ def validate(reg: dict, expected_count: int | None = None) -> list[str]:
                                                    for x in ex):
                 problems.append(f"{sid}: csv_desktop_exclude must be a list of '{sid}:<id>' "
                                 f"strings, got {ex!r}")
+        if "paused" in e:
+            # `paused: "<reason>"` marks a source taken OFF the run on purpose (it was wired and has run): the
+            # site says "paused - <reason>" instead of "live" or "not yet wired" (catalog/gen_site.py
+            # refresh_rows). The reason is shown to users, so it must be a sentence, and a paused source must
+            # not also be live.
+            pz = e.get("paused")
+            if not isinstance(pz, str) or not pz.strip():
+                problems.append(f"{sid}: paused must be a non-empty reason string, got {pz!r}")
+            elif e.get("live"):
+                problems.append(f"{sid}: paused and live: true together - a paused source is live: false")
         if "served_by" in e and e.get("served_by") not in SERVED_BY:
             # `served_by: lane` takes the orchestrator's CSV phase and retry drain OFF a source whose
             # own continuous job serves it (statcan, 2026-09-23). A typo must not silently put a

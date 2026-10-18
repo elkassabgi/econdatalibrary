@@ -2870,6 +2870,9 @@ sources:
   # DD_CNA_BRANCHES 433,922 -> 849,217). Re-enable only after the owner decides how the two spellings
   # are kept, and the fetcher refuses a merge whose new rows are mostly new keys.
   live: false
+  # Shown on the site as "Automated refresh: paused - <this>" (catalog/gen_site.py refresh_rows; validated in
+  # updater/registry.py). Remove it together with the switch back to live: true.
+  paused: incomplete tables are being re-downloaded from INSEE; updates resume after the repair
   scripts:
   - jobs/ingest_insee_melodi.py
   strategy: sdmx_delta
