@@ -145,6 +145,7 @@ def test_every_refusal_writes_nothing(world, monkeypatch, case):
         monkeypatch.setattr(m, "LIVE_ROOT", str(world["tmp"] / "elsewhere"))
     elif case == "missing_sidecar":
         os.remove(os.path.join(world["store"], "50.done"))
+        args = ["--expect-rows", str(N_CHANGE - 1)]                 # the count agrees: only the problem refuses
     elif case == "fts_frequency":
         con = sqlite3.connect(world["db"])
         con.executescript("DROP TABLE series_fts; CREATE VIRTUAL TABLE series_fts USING fts5(series_id, frequency);")
@@ -152,8 +153,38 @@ def test_every_refusal_writes_nothing(world, monkeypatch, case):
     before = _md5(world["db"])
     with pytest.raises((SystemExit, cutover.CutoverRefused)) as e:
         _apply(world, *args)
-    assert e.value.args and str(e.value.args[0]).startswith(("REFUSING", "refused")), e.value.args
+    msg = str(e.value.args[0]) if e.value.args else ""
+    assert msg.startswith(("REFUSING", "refused")), e.value.args
+    if case == "t0":                         # the tool's own refusal, not connect_path's later one
+        assert "fix_statcan_frequency" in msg, msg
+    if case == "missing_sidecar":
+        assert "cannot judge" in msg, msg
     assert _md5(world["db"]) == before and not world["receipts"].exists()
+
+
+def test_a_dry_run_is_refused_after_t0_too(world, monkeypatch):
+    flag = world["tmp"] / "CUTOVER"
+    flag.write_text("")
+    monkeypatch.setattr(cutover, "FLAG_PATH", str(flag))
+    with pytest.raises(cutover.CutoverRefused, match="fix_statcan_frequency"):
+        world["m"].main(["--db", world["db"], "--store", world["store"]])
+
+
+def test_a_range_that_differs_from_the_plan_after_the_write_fails(world, monkeypatch, capsys):
+    m = world["m"]
+    real = m.apply_changes
+
+    def and_one_more(con, changes, batch):
+        n = real(con, changes, batch)
+        con.execute("UPDATE series SET frequency='X' WHERE series_id='statcan:30'")    # not in the plan
+        con.commit()
+        return n
+    monkeypatch.setattr(m, "apply_changes", and_one_more)
+    assert _apply(world, "--expect-rows", str(N_CHANGE)) == 1
+    assert "FAILED: 1 row(s)" in capsys.readouterr().out
+    (run,) = list(world["receipts"].iterdir())
+    rec = json.load(open(run / "receipt.json", encoding="utf-8"))
+    assert rec["rows_not_as_planned"] == 1 and rec["rows_not_as_planned_first"] == ["statcan:30"]
 
 
 def test_a_row_changed_since_the_plan_stops_its_batch(world):
