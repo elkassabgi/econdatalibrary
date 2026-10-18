@@ -35,6 +35,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 import unicodedata
 from datetime import date, datetime
 
@@ -1216,6 +1217,147 @@ def load_wiring():
 
 
 WIRING = load_wiring()
+
+
+def load_registry_meta():
+    """{source_id: {"paused", "run_location", "served_by"}} from updater/registry.yaml - what decides which run, if
+    any, refreshes a source that is NOT on the cloud daily run (WIRING says which ones are).
+
+    `paused: "<reason>"` (next to `live: false`) marks a source taken off every run on purpose; updater/registry.py
+    refuses it on a source that any run still picks up (run_location: local, the heavy matrix, sec-edgar-daily).
+    `run_location: local` sources are run by the workstation update pass (tools/_list_local_sources.py), which is
+    not live-only. `served_by: lane` sources are refreshed by their own continuous lane (statcan)."""
+    reg_path = os.path.join(os.path.dirname(HERE), "updater", "registry.yaml")
+    try:
+        import yaml
+        reg = yaml.safe_load(open(reg_path, encoding="utf-8"))
+    except Exception:                                        # noqa: BLE001
+        return {}
+    out = {}
+    for e in reg.get("sources") or []:
+        sid = e.get("source_id")
+        if not sid:
+            continue
+        pz = e.get("paused")
+        out[sid] = {"paused": pz.strip() if isinstance(pz, str) and pz.strip() else None,
+                    "run_location": e.get("run_location") or "any", "served_by": e.get("served_by")}
+    return out
+
+
+REG_META = load_registry_meta()
+PAUSED = {sid: m["paused"] for sid, m in REG_META.items() if m["paused"]}
+
+
+def _state_db_path():
+    """THE updater's state database (updater.config.STATE_DB: AQUEDUCT_STATE_DIR, else <root>/data/_aqueduct)."""
+    root = os.path.dirname(HERE)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from updater import config                                  # noqa: PLC0415
+    return config.STATE_DB
+
+
+def read_state_facts(path=None):
+    """{"last_success": {sid: utc}, "attempted": {sid, ...}} from the updater state, READ-ONLY; None when it cannot
+    be read (then no page claims a source never ran, and none names a date).
+
+      last_success  source_state.last_success_utc: the last run that ENDED ok or no_change - a fully completed run,
+                    not "the last update" (a partial that merged rows never sets it, R231);
+      attempted     sources with a unit_state.last_attempt_utc: the orchestrator HAS run them (census and oecd merged
+                    rows on partial runs and have no last_success - they must never read as never wired)."""
+    path = path or _state_db_path()
+    if not os.path.isfile(path) or os.path.getsize(path) == 0:
+        print(f"  WARNING: no updater state at {path} - no page names a run date or calls a source never wired")
+        return None
+    try:
+        uri = "file:" + path.replace("\\", "/") + "?mode=ro"
+        con = sqlite3.connect(uri, uri=True, timeout=60)
+        try:
+            ls = con.execute("SELECT source_id, last_success_utc FROM source_state "
+                             "WHERE last_success_utc IS NOT NULL AND last_success_utc != ''").fetchall()
+            at = con.execute("SELECT DISTINCT source_id FROM unit_state "
+                             "WHERE last_attempt_utc IS NOT NULL AND last_attempt_utc != ''").fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error as e:
+        print(f"  WARNING: updater state unreadable ({e}) - no page names a run date or calls a source never wired")
+        return None
+    return {"last_success": {sid: str(ts) for sid, ts in ls}, "attempted": {r[0] for r in at}}
+
+
+_STATE_CACHE = []
+
+
+def state_facts():
+    """read_state_facts() once per process, on first use (never at import)."""
+    if not _STATE_CACHE:
+        _STATE_CACHE.append(read_state_facts())
+    return _STATE_CACHE[0]
+
+
+_DEFAULT = object()
+BOARD = " See the <a href=\"status.html\">Source Status board</a>."
+
+
+def refresh_rows(sid, cadence, wiring=_DEFAULT, meta=_DEFAULT, state=_DEFAULT):
+    """The "Update cadence" and "Automated refresh" rows of a source page: [(label, html), ...]. Every sentence is
+    one the registry or the updater state proves (AR-345):
+
+      paused (registry)                 "(paused)"; "paused - <reason>."
+      wired (WIRING: the cloud daily, the heavy matrix, sec-edgar-daily)
+                                        the cadence; "live - this database is on the daily update run"
+      served_by: lane                   "(its own update lane)"; "refreshed by its own update lane, not the cloud
+                                        daily run." - no date: the lane does not report through source_state
+      run_location: local               "(workstation update pass)"; "on the workstation update pass, not the cloud
+                                        daily run - last fully completed automated run <date>" | "- no automated
+                                        run has completed without errors yet" | (state unreadable) no clause
+      anything else that has run        "(not automated at the moment)"; "not on the cloud daily run or the
+                                        workstation update pass - last fully completed automated run <date>" | ...
+      never attempted (state readable)  "(target - not yet automated)"; "not yet wired - the verified initial load"
+    No WIRING at all (the registry could not be read) says nothing, as before. Every refresh row links the board."""
+    wiring = WIRING if wiring is _DEFAULT else wiring
+    meta = REG_META if meta is _DEFAULT else meta
+    m = (meta or {}).get(sid) or {}
+    rows = []
+
+    def cad(note=""):
+        if cadence:
+            rows.append(("Update cadence", esc(cadence) + (f" <em>({note})</em>" if note else "")))
+
+    if m.get("paused"):
+        cad("paused")
+        rows.append(("Automated refresh", "<strong>paused</strong> &mdash; " + esc(m["paused"]) + "." + BOARD))
+        return rows
+    wired = bool(wiring.get(sid, False)) if wiring else None
+    if wired is None:
+        cad()
+        return rows
+    if wired:
+        cad()
+        rows.append(("Automated refresh", "<strong>live</strong> &mdash; this database is on the daily update run"))
+        return rows
+    if m.get("served_by") == "lane":
+        cad("its own update lane")
+        rows.append(("Automated refresh", "refreshed by its own update lane, not the cloud daily run." + BOARD))
+        return rows
+    st = state_facts() if state is _DEFAULT else state
+    ran = st is not None and sid in st["attempted"]
+    done = (st or {}).get("last_success", {}).get(sid) if st is not None else None
+    when = (f" &mdash; last fully completed automated run {esc(str(done)[:10])}" if done else
+            " &mdash; no automated run has completed without errors yet" if ran else "")
+    if st is not None and not ran and not done:
+        cad("target &mdash; not yet automated")
+        rows.append(("Automated refresh", "not yet wired &mdash; the data here is the verified initial load." + BOARD))
+        return rows
+    if m.get("run_location") == "local":
+        cad("workstation update pass")
+        rows.append(("Automated refresh", "on the workstation update pass, not the cloud daily run" + when + "." +
+                     BOARD))
+        return rows
+    cad("not automated at the moment")
+    rows.append(("Automated refresh", "not on the cloud daily run or the workstation update pass" + when + "." + BOARD))
+    return rows
+
 
 def load_resolvable():
     """Source ids the WORKER can actually serve — SUPPORTED_SOURCES in api/worker/src/util.ts.
@@ -2406,23 +2548,10 @@ def render_dataset_page(rec):
     # so an unregistered source is invisible to it. 88 of the 203 served databases are in that
     # state (unctad_*, fao_*, unesco_*, most imf_*), and they are exactly the ones a visitor
     # most needs told. Treating None as "say nothing" left them silently implying currency.
-    _wired = bool(WIRING.get(rec["id"], False)) if WIRING else None
-    if rec["cadence"]:
-        # Say plainly whether that cadence is running or still a target. A bare
-        # "Update cadence: monthly" on a database that has no updater yet reads as a promise.
-        if _wired is False:
-            acc_rows.append(("Update cadence",
-                             esc(rec["cadence"]) + " <em>(target &mdash; not yet automated)</em>"))
-        else:
-            acc_rows.append(("Update cadence", esc(rec["cadence"])))
-    if _wired is True:
-        acc_rows.append(("Automated refresh",
-                         "<strong>live</strong> &mdash; this database is on the daily "
-                         "update run"))
-    elif _wired is False:
-        acc_rows.append(("Automated refresh",
-                         "not yet wired &mdash; the data here is the verified initial load. "
-                         "See the <a href=\"status.html\">Source Status board</a>."))
+    # Say plainly whether that cadence is running, paused, or still a target (refresh_rows: a bare
+    # "Update cadence: monthly" on a database that has no updater yet reads as a promise, and "not yet
+    # wired" on one that has run before, or is paused on purpose, is untrue).
+    acc_rows.extend(refresh_rows(rec["id"], rec["cadence"]))
     if rec["strategy"]:
         acc_rows.append(("Update strategy", esc(rec["strategy"]).replace("_", " ")))
     if rec["storage_layout"]:
@@ -3841,6 +3970,21 @@ def main(argv=None):
         if n_pages != 1:
             raise SystemExit(f"--only {only}: not a published source page (not reservable, or no series)")
         written = [f"{only}.html"]
+        # sources_meta.json: ONLY this source's "paused" key is set or removed in the file as it stands (every other
+        # entry is left byte for byte), so the status board agrees with the page (AR-345 finding 4).
+        mp = os.path.join(OUT_DIR, "sources_meta.json")
+        if os.path.isfile(mp):
+            raw = open(mp, encoding="utf-8").read()
+            sm = json.loads(raw)
+            ent = sm.get(only)
+            if ent is not None and ent.get("paused") != PAUSED.get(only):
+                if PAUSED.get(only):
+                    ent["paused"] = PAUSED[only]
+                else:
+                    ent.pop("paused", None)
+                with open(mp, "w", encoding="utf-8") as f:
+                    json.dump(sm, f, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+                written.append("sources_meta.json")
         if with_catalog:
             # --with-catalog: also the catalogue hub (catalog.html), rendered from ALL records as a full build does,
             # so its row for this source agrees with the page. Every other source's row is re-rendered from the
@@ -3865,6 +4009,11 @@ def main(argv=None):
     # with no entry here simply keeps showing its id, exactly as it does today.
     meta_path = os.path.join(OUT_DIR, "sources_meta.json")
     meta = {r["id"]: {"name": r["name"], "desc": r["subtitle"] or ""} for r in records}
+    # A PAUSED source carries its reason, so status.html shows "paused" instead of the run's own
+    # partial/transient_fail ("retries automatically next run" would be untrue) - AR-345 finding 4.
+    for sid, why in PAUSED.items():
+        if sid in meta:
+            meta[sid]["paused"] = why
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     _no_desc = [k for k, v in meta.items() if not v["desc"]]
