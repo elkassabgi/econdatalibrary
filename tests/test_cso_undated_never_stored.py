@@ -231,6 +231,13 @@ def test_the_memo_keeps_exact_prefix_semantics(tmp_path):
     assert cso._stored_in_subject(str(tmp_path), "S", "HRD511", cache) is True
     assert cso._stored_in_subject(str(tmp_path), "S", "VSA11", cache) is False
     assert cso._stored_in_subject(str(tmp_path), "S", "VSA113", None) is True, "uncached path"
+    # the old predicate was starts_with('CSO:<m>:'): a key with no third part, or another
+    # prefix, never made a matrix look stored, and the memo must agree
+    pq.write_table(pa.table({"series_key": ["CSO:HRD52", "OTH:HRD53:STATISTIC=S1"],
+                             "obs_date": pa.array([dt.date(2023, 12, 31)] * 2, pa.date32()),
+                             "value": [1.0, 2.0]}), str(tmp_path / "T.parquet"))
+    assert cso._stored_in_subject(str(tmp_path), "T", "HRD52", cache) is False
+    assert cso._stored_in_subject(str(tmp_path), "T", "HRD53", cache) is False
     (tmp_path / "B.parquet").write_bytes(b"not a parquet")
     assert cso._stored_in_subject(str(tmp_path), "B", "X", cache) is None
     assert cso._stored_in_subject(str(tmp_path), "B", "Y", cache) is None, "unreadable stays unreadable"
