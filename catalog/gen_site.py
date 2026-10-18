@@ -1347,15 +1347,24 @@ WITHHELD = load_withheld()
 
 def subtract_withheld(con, series_roll, withheld=None):
     """Lose, per source, the withheld series the catalogue holds: one primary-key IN count per affected source
-    (like the carve-out subtraction, never a predicate in the GROUP BY)."""
+    (like the carve-out subtraction, never a predicate in the GROUP BY). When any is held, the source's coverage
+    facets (first start, last end, geographies, last update) are re-measured over the rows a user can reach -
+    a primary-key RANGE read of that source only (AR-341 re-review N4). Its "Measured observations" figure is NOT
+    changed here: it comes from catalog/catalog.json (gen_catalog.py), which this generator cannot re-measure."""
     for src, sids in sorted((WITHHELD if withheld is None else withheld).items()):
         if src not in series_roll or not sids:
             continue
-        n = con.execute("SELECT COUNT(*) FROM series WHERE series_id IN (%s)" % ",".join("?" * len(sids)),
-                        sids).fetchone()[0]
+        q = ",".join("?" * len(sids))
+        n = con.execute("SELECT COUNT(*) FROM series WHERE series_id IN (%s)" % q, sids).fetchone()[0]
         if n:
             series_roll[src]["n_series"] = max(0, series_roll[src]["n_series"] - n)
-            print("  withheld: %s n_series -%d (incomplete tables the worker withholds until complete)" % (src, n))
+            r = con.execute(
+                "SELECT MIN(start_date), MAX(end_date), COUNT(DISTINCT geography), MAX(last_updated) FROM series "
+                "WHERE series_id >= ? AND series_id < ? AND series_id NOT IN (%s)" % q,
+                [src + ":", src + ";", *sids]).fetchone()
+            series_roll[src].update(min_start=r[0], max_end=r[1], n_geo=r[2], last_updated=r[3])
+            print("  withheld: %s n_series -%d (incomplete tables the worker withholds until complete); coverage "
+                  "re-measured without them: %s .. %s" % (src, n, r[0], r[1]))
 
 # `<src>:<indicator>:` prefixes, matching denylist.ts::SERIES_CARVEOUT_LIKE exactly.
 SERIES_CARVEOUT_PREFIXES = [
@@ -3738,7 +3747,11 @@ def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description="Generate the econdatalibrary static site (catalog/site/).")
     ap.add_argument("--only", metavar="SOURCE", help="write only catalog/site/SOURCE.html (see the note in main)")
-    only = ap.parse_args(argv).only
+    ap.add_argument("--with-catalog", action="store_true", help="with --only: also write catalog/site/catalog.html")
+    _a = ap.parse_args(argv)
+    only, with_catalog = _a.only, _a.with_catalog
+    if with_catalog and not only:
+        ap.error("--with-catalog goes with --only (a full build writes catalog.html anyway)")
     licenses, sources, series_roll, source_meta = load_registry()
     sidecar, generated = load_sidecar()
 
@@ -3827,7 +3840,14 @@ def main(argv=None):
         # nothing else (no hub page, sitemap, state file or orphan sweep). A full build later agrees with it.
         if n_pages != 1:
             raise SystemExit(f"--only {only}: not a published source page (not reservable, or no series)")
-        print(f"Wrote ONLY {only}.html to {OUT_DIR} (--only); every other file is untouched")
+        written = [f"{only}.html"]
+        if with_catalog:
+            # --with-catalog: also the catalogue hub (catalog.html), rendered from ALL records as a full build does,
+            # so its row for this source agrees with the page. Every other source's row is re-rendered from the
+            # current catalogue too: the operator reads the diff before committing it.
+            _write(os.path.join(OUT_DIR, "catalog.html"), render_catalog(records, generated))
+            written.append("catalog.html")
+        print(f"Wrote ONLY {', '.join(written)} to {OUT_DIR} (--only); every other file is untouched")
         return
 
     # sources_meta.json -- the Status board's title + description lookup.

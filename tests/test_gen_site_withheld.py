@@ -27,8 +27,14 @@ def G():
 
 def _db(ids):
     con = sqlite3.connect(":memory:")
-    con.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT)")
-    con.executemany("INSERT INTO series VALUES (?, ?)", [(i, i.split(":")[0]) for i in ids])
+    con.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT, start_date TEXT, end_date TEXT, "
+                "geography TEXT, last_updated TEXT)")
+    rows = []
+    for i in ids:
+        held = i.endswith(":A")                                      # the held one has the widest coverage
+        rows.append((i, i.split(":")[0], "1901-12-31" if held else "2000-12-31", "2026-12-31" if held else "2024-12-31",
+                     "G-held" if held else "FR", "2026-10-18" if held else "2026-09-01"))
+    con.executemany("INSERT INTO series VALUES (?, ?, ?, ?, ?, ?)", rows)
     return con
 
 
@@ -37,7 +43,10 @@ def test_the_withheld_series_the_catalogue_holds_are_subtracted(G, capsys):
     roll = {"insee_melodi": {"n_series": 3}, "ecb": {"n_series": 1}}
     G.subtract_withheld(con, roll, {"insee_melodi": ["insee_melodi:A", "insee_melodi:NOT_CATALOGUED"],
                                     "wid": ["wid:Z"]})
-    assert roll == {"insee_melodi": {"n_series": 2}, "ecb": {"n_series": 1}}, "only a held id the catalogue holds"
+    assert roll["insee_melodi"]["n_series"] == 2 and roll["ecb"] == {"n_series": 1}, "only a held id the catalogue holds"
+    # AR-341 re-review N4: the coverage facets are re-measured without the held series
+    assert {k: roll["insee_melodi"][k] for k in ("min_start", "max_end", "n_geo", "last_updated")} == \
+        {"min_start": "2000-12-31", "max_end": "2024-12-31", "n_geo": 1, "last_updated": "2026-09-01"}
     assert "withheld: insee_melodi n_series -1" in capsys.readouterr().out
     control = {"insee_melodi": {"n_series": 3}}
     G.subtract_withheld(con, control, {})
@@ -73,6 +82,13 @@ def test_only_writes_that_one_page_and_nothing_else(G, tmp_path, monkeypatch):
     monkeypatch.setattr(G, "_load_lastmod_state", lambda: {"x": {}})
     G.main(["--only", "insee_melodi"])
     assert sorted(p.name for p in out.iterdir()) == ["insee_melodi.html", "keep.html"]
+    monkeypatch.setattr(G, "render_catalog", lambda records, generated: "<html><body>hub " +
+                        ",".join(r["id"] for r in records) + "</body></html>")
+    G.main(["--only", "insee_melodi", "--with-catalog"])
+    assert sorted(p.name for p in out.iterdir()) == ["catalog.html", "insee_melodi.html", "keep.html"]
+    assert "hub aaa,insee_melodi" in (out / "catalog.html").read_text(encoding="utf-8"), "rendered from ALL records"
+    with pytest.raises(SystemExit):
+        G.main(["--with-catalog"])
     assert (out / "keep.html").read_text(encoding="utf-8") == "untouched"
     with pytest.raises(SystemExit):
         G.main(["--only", "not_a_source"])

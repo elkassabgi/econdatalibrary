@@ -472,7 +472,7 @@ def served_withheld(store=None, r2=None) -> tuple[bool, str]:
     raw = store.get(WITHHELD_KEY)
     if raw is None:
         return False, (f"{WITHHELD_KEY} is not in the self-hosted store - import it with the stats object "
-                       f"(import_from_r2.py --prefix {WITHHELD_KEY})")
+                       f"(import_from_r2.py --key {WITHHELD_KEY})")
     try:
         n = len(gen_withheld_floor.validate(json.loads(raw)))
     except (ValueError, SystemExit) as e:

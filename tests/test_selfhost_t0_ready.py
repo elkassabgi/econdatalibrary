@@ -467,7 +467,8 @@ def test_the_withheld_list_must_be_in_the_served_store_and_match_r2():
             return self.raw
     good = b'{"version": 1, "ids": {"insee_melodi:DS_A": {"until": "complete"}}}'
     newer = b'{"version": 1, "ids": {"insee_melodi:DS_A": {"until": "complete"}, "insee_melodi:DS_B": {"until": "complete"}}}'
-    assert T.served_withheld(S(None), S(good))[0] is False, "absent from the store"
+    ok, detail = T.served_withheld(S(None), S(good))
+    assert ok is False and "import_from_r2.py --key _aqueduct/withheld.json" in detail, "absent from the store"
     assert T.served_withheld(S(b'{"version": 1, "ids": {"bad id": {}}}'), S(good))[0] is False, "invalid"
     assert T.served_withheld(S(good), S(None))[0] is False, "absent from R2: cannot tell"
     ok, detail = T.served_withheld(S(good), S(newer))

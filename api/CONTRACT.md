@@ -146,7 +146,10 @@ being re-downloaded from INSEE; it is listed again when the download is complete
 `.csv`, before auth (after the 451 gate). It is in no `/v1/catalog` browse, search or total, no `/v1/stats`
 `catalog_entries`, and no `/v1/bundle` enumeration; a bundle that names it lists it under `econdl:unresolved`
 with a reason starting `withheld:`. The error code is distinct from `not_found` (an unknown id) and from 451. It
-is listed again, with no client change, when the table is complete.
+is listed again, with no client change, when the table is complete. If the worker cannot read the list and holds
+no good copy, it fails closed: every series of a source with withheld tables answers the same 404 `withheld`, and
+for a series that is NOT itself on the list the `detail` says `"Temporarily unavailable: the withheld-tables list
+could not be read; try again in a minute."` (a bundle of such a source answers 404 `withheld` with that detail).
 
 Until that date this route had no gate at all: title, geography, dates, licence block and
 citation were served unauthenticated for any row present in the catalogue, while every sibling

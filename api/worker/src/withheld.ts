@@ -64,6 +64,18 @@ export function withheldDetail(id: string): string {
   return DETAIL_BY_SOURCE[i < 0 ? id : id.slice(0, i)] ?? DETAIL_DEFAULT;
 }
 
+/** AR-341 re-review N2: the words for a series withheld ONLY because its whole source is closed (the list could not
+ *  be read and the floor applies). "Our copy is incomplete" would be untrue for the complete tables of that source,
+ *  so they get this sentence instead; the fail-closed answer itself (404 "withheld") does not change. */
+export const LIST_UNREADABLE_DETAIL =
+  "Temporarily unavailable: the withheld-tables list could not be read; try again in a minute.";
+
+/** The detail for `id` under the list `w`: the owner's sentence for an id ON the list (or the floor), the
+ *  unreadable-list sentence for an id withheld only because its source is closed. */
+export function withheldDetailFor(w: Withheld, id: string): string {
+  return w.ids.has(id) ? withheldDetail(id) : LIST_UNREADABLE_DETAIL;
+}
+
 export interface Withheld {
   /** every withheld id */
   ids: ReadonlySet<string>;
@@ -98,8 +110,9 @@ export function isWithheld(w: Withheld, id: string): boolean {
 
 /** The answer for a withheld series route: 404 with its own error code, so a client can tell it from an
  *  unknown id ("not_found") and from a licence refusal (451). */
-export function withheldResponse(id: string): Response {
-  return new Response(JSON.stringify({ error: "withheld", series_id: id, detail: withheldDetail(id) }), {
+export function withheldResponse(id: string, w?: Withheld): Response {
+  const detail = w ? withheldDetailFor(w, id) : withheldDetail(id);
+  return new Response(JSON.stringify({ error: "withheld", series_id: id, detail }), {
     status: 404,
     headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store",
                "access-control-allow-origin": "*" },

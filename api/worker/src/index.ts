@@ -328,7 +328,7 @@ async function route(request: Request, env: Env, ctx: ExecutionContext, local: b
             return json({ error: "not_redistributable", series_id: id, detail: "This source's licence does not permit third-party redistribution. Please obtain it directly from the original provider." }, 451);
           }
           // WITHHELD (src/withheld.ts): an incomplete table is not described to anyone until it is complete.
-          if (isWithheld(await wh(), id)) return withheldResponse(id);
+          if (isWithheld(await wh(), id)) return withheldResponse(id, await wh());
           const { lang, error } = reqLang(url);
           if (error) return error; // unsupported ?lang= -> honest 400
           return await handleMetadata(id, env, lang);
@@ -344,7 +344,7 @@ async function route(request: Request, env: Env, ctx: ExecutionContext, local: b
             return json({ error: "not_redistributable", series_id: id, detail: "This source's licence does not permit third-party redistribution of the data. Please obtain it directly from the original provider." }, 451);
           }
           // WITHHELD, BEFORE auth like the licence gate: an anonymous caller is told the same as a keyed one.
-          if (isWithheld(await wh(), id)) return withheldResponse(id);
+          if (isWithheld(await wh(), id)) return withheldResponse(id, await wh());
           // The origin serves what the EDGE already authorised and will log: no auth and no
           // download log here (the edge counts length-less answers via x-econ-count).
           if (local) return await handleSeriesCsv(id, url, env, ctx, async () => {});
@@ -444,7 +444,7 @@ async function forwardRoute(request: Request, env: Env, ctx: ExecutionContext, p
     }
     // WITHHELD, at the EDGE and BEFORE auth (AR-339 Part 2 finding 1): a gate only on the origin would let the
     // edge answer a withheld .csv 401 to an anonymous caller, and serve its metadata from the edge cache.
-    if (isWithheld(await originWithheld(request, env), id)) return withheldResponse(id);
+    if (isWithheld(await originWithheld(request, env), id)) return withheldResponse(id, await originWithheld(request, env));
     if (csv) {
       const auth = await requireDownloadAuth(request, env);
       if (auth instanceof Response) return auth;

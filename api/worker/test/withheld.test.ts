@@ -7,7 +7,7 @@ import { test } from "node:test";
 import {
   TTL_FAIL_MS, TTL_OK_MS, WITHHELD_MAX, floorWithheld, forSource, isSourceClosed, isWithheld, keyWithWithheld,
   loadWithheld,
-  parseWithheld, resetWithheldCache, withheldResponse,
+  parseWithheld, resetWithheldCache, withheldResponse, LIST_UNREADABLE_DETAIL,
 } from "../src/withheld.ts";
 import { WITHHELD_FLOOR } from "../src/withheldFloor.ts";
 import {
@@ -207,4 +207,20 @@ test("presentCount runs once per database and id set per list load, not per requ
   fail = false;
   assert.equal(await presentCount(d, [B], w2, "CATALOG"), 7, "a failed count is not memoised");
   assert.equal(n, 5);
+});
+
+test("a series withheld only because its source is closed gets the unreadable-list sentence (AR-341 re-review N2)",
+     async () => {
+  resetWithheldCache();
+  const f = await loadWithheld(async () => { throw new Error("down"); }, "store", () => 1);
+  const floorId = WITHHELD_FLOOR[0];
+  const r1 = await withheldResponse(floorId, f).json() as { error: string; detail: string };
+  assert.equal(r1.error, "withheld");
+  assert.match(r1.detail, /our copy is incomplete and is being re-downloaded from INSEE/, "a floor id IS incomplete");
+  const r2 = await withheldResponse("insee_melodi:DD_CNA_APU", f).json() as { error: string; detail: string };
+  assert.equal(r2.error, "withheld", "still the fail-closed 404 'withheld'");
+  assert.equal(r2.detail, LIST_UNREADABLE_DETAIL);
+  assert.equal(LIST_UNREADABLE_DETAIL,
+               "Temporarily unavailable: the withheld-tables list could not be read; try again in a minute.");
+  assert.doesNotMatch(r2.detail, /incomplete/, "never 'our copy is incomplete' for a table not on the list");
 });

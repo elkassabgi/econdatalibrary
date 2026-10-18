@@ -115,13 +115,20 @@ test("production: no list in R2 -> the compiled-in FLOOR applies (fail closed)",
   const w = await start(EDGE_CONFIG, {}, persist);
   t.after(() => w.stop());
   // HELD is in the committed list (api/worker/withheld.json), so the floor withholds it
-  assert.equal((await getJson(w, `/v1/series/${enc(HELD)}.metadata.json`)).body.error, "withheld");
+  const hm = await getJson(w, `/v1/series/${enc(HELD)}.metadata.json`);
+  assert.equal(hm.body.error, "withheld");
+  assert.match(String(hm.body.detail), /our copy is incomplete/, "a floor id: the owner's sentence");
   // AR-341 finding 2: the floor alone fails OPEN for an id withheld after it was committed, so while it applies
   // the floor's sources are withheld WHOLE. KEPT is not in the floor; it is withheld too, and the other source is not.
   const km = await getJson(w, `/v1/series/${enc(KEPT)}.metadata.json`);
   assert.equal(km.status, 404, km.text);
   assert.equal(km.body.error, "withheld");
-  assert.equal((await getJson(w, `/v1/series/${enc(KEPT)}.csv`)).body.error, "withheld", "before auth");
+  // AR-341 re-review N2: KEPT is complete - it is closed only because the list could not be read
+  const UNREADABLE = "Temporarily unavailable: the withheld-tables list could not be read; try again in a minute.";
+  assert.equal(km.body.detail, UNREADABLE);
+  const kc = await getJson(w, `/v1/series/${enc(KEPT)}.csv`);
+  assert.equal(kc.body.error, "withheld", "before auth");
+  assert.equal(kc.body.detail, UNREADABLE);
   assert.equal((await getJson(w, `/v1/series/${enc(OTHER)}.metadata.json`)).status, 200, "another source is open");
   const browse = await getJson(w, "/v1/catalog?source=insee_melodi");
   assert.equal(browse.status, 200, browse.text);
@@ -132,8 +139,11 @@ test("production: no list in R2 -> the compiled-in FLOOR applies (fail closed)",
   const b = await getJson(w, "/v1/bundle?source=insee_melodi");
   assert.equal(b.status, 404, b.text);
   assert.equal(b.body.error, "withheld");
-  const bn = await getJson(w, `/v1/bundle?ids=${enc(KEPT)}`);
-  assert.match((bn.body["econdl:unresolved"] as { reason: string }[])[0].reason, /^withheld:/);
+  assert.equal(b.body.detail, UNREADABLE);
+  const bn = await getJson(w, `/v1/bundle?ids=${enc(KEPT)},${enc(HELD)}`);
+  const ur = bn.body["econdl:unresolved"] as { id: string; reason: string }[];
+  assert.match(ur.find((u) => u.id === KEPT)!.reason, /^withheld: the withheld-tables list could not be read/);
+  assert.match(ur.find((u) => u.id === HELD)!.reason, /^withheld: our copy is incomplete/);
 });
 
 const FIRST = "insee_melodi:AAA_HELD_FIRST";               // sorts before every other id of the seed but ecb's
