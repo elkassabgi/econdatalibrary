@@ -490,7 +490,7 @@ def test_cube_rows_is_the_cataloguers_row_builder(world, tmp_path):
     whole, untitled = cat.cube_rows(NEW_PID, str(p).replace("\\", "/"), side, None, str(tmp_path))
     assert not untitled and len(whole) == 1
     sid, src, title, freq, unit, geo, catg, lic, d0, d1, meta = whole[0]
-    assert (sid, src, title, freq, geo, lic, d0, d1) == (f"statcan:{NEW_PID}", "statcan", TITLE, "M",
+    assert (sid, src, title, freq, geo, lic, d0, d1) == (f"statcan:{NEW_PID}", "statcan", TITLE, "irregular",
                                                          "Canada", "statcan-open", "2026-01-01",
                                                          "2026-03-01")
     assert json.loads(meta) == {**cat.BASE_META, "archived": "2", "subject_code": ["33"]}
