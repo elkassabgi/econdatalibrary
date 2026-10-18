@@ -71,6 +71,9 @@ STATUS_PATH = "/__router/status"
 EDGE_PATHS = frozenset({"/", "/v1", "/v1/", "/v1/catalog", "/v1/sources", "/v1/last-updates", "/v1/stats",
                         "/v1/bundle", "/v1/guard-heartbeat"})
 EDGE_PREFIX = "/v1/series/"
+# Origin routes the EDGE itself reads (never forwarded for a client; edge.ts EDGE_INTERNAL_PATHS): the withheld
+# list, which after T0 lives in the local store (api/worker/src/withheld.ts).
+EDGE_INTERNAL_PATHS = frozenset({"/v1/withheld"})
 # The request headers the origin may see: the edge's FORWARDED_REQUEST_HEADERS plus the origin secret.
 FORWARDED_HEADERS = frozenset({"accept", "accept-encoding", "accept-language", "user-agent",
                                "x-econ-origin-secret"})
@@ -103,7 +106,7 @@ def forwardable(target: str) -> bool:
     for seg in path.split("/"):
         if seg.lower().replace("%2e", ".") in (".", ".."):
             return False
-    return path in EDGE_PATHS or path.startswith(EDGE_PREFIX)
+    return path in EDGE_PATHS or path in EDGE_INTERNAL_PATHS or path.startswith(EDGE_PREFIX)
 
 
 def unproxied(headers) -> bool:

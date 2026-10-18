@@ -18,7 +18,9 @@
 import type { Env } from "./types.ts";
 import { runCostGuard, type CostGuardEnv } from "./costGuard.ts";
 import { handlePageview, handlePageviewReport, reportDays } from "./pageview.ts";
-import { handleCatalog } from "./catalog.ts";
+import { handleCatalog, presentCount } from "./catalog.ts";
+import { type Withheld, WITHHELD_ROUTE, bucketReader, isWithheld, keyWithWithheld, loadWithheld,
+  originWithheldRoute, withheldResponse } from "./withheld.ts";
 import { handleSources } from "./sources.ts";
 import { handleLastUpdates } from "./lastUpdates.ts";
 import { handleMetadata } from "./metadata.ts";
@@ -93,6 +95,10 @@ async function route(request: Request, env: Env, ctx: ExecutionContext, local: b
 
     const url = new URL(request.url);
     const path = url.pathname;
+    // WITHHELD series (src/withheld.ts): read from the store this worker serves - R2, or the local store on the
+    // origin - through the per-isolate cache. Lazily: routes that never consult it never read it.
+    let whMemo: Promise<Withheld> | null = null;
+    const wh = (): Promise<Withheld> => (whMemo ??= loadWithheld(bucketReader(env.SERIES_BUCKET), local ? "local" : "store"));
 
     try {
       // Fixed routes first.
@@ -110,6 +116,12 @@ async function route(request: Request, env: Env, ctx: ExecutionContext, local: b
       // cache and reach the users db). The origin never answers it (edge-only, src/localMode.ts).
       if (path === "/v1/pv/report") return await cachedPageviewReport(url, env, ctx);
       if (path === "/v1/edge-status") return edgeStatus(env);
+      // The withheld list for the EDGE (src/withheld.ts): answered by the self-hosted origin only, behind its
+      // secret gate like every origin route. The cloud worker and the forwarding edge answer a client 404.
+      if (path === WITHHELD_ROUTE) {
+        if (!local) return json({ error: "not_found", detail: `no route for ${path}` }, 404);
+        return await originWithheldRoute(env.SERIES_BUCKET);
+      }
 
       // THE FORWARDING EDGE (src/edge.ts, plan code change 1): every other route is answered by the
       // workstation's origin; public-stats stays here (it reads USERS) with its source names taken from
@@ -127,13 +139,16 @@ async function route(request: Request, env: Env, ctx: ExecutionContext, local: b
       // anyone can observe. Only 200s are cached; the cap-400s and errors are not.
       // The origin never uses the Cache API: behind the edge it would hide a catalogue swap for up to
       // 6 h (s-maxage 21600), and the edge does the caching (review R1164).
-      if (path === "/v1/catalog" && local) return await handleCatalog(url, env);
+      if (path === "/v1/catalog" && local) return await handleCatalog(url, env, await wh());
       if (path === "/v1/catalog") {
         const cache = caches.default;
-        const cacheKey = new Request(url.toString(), { method: "GET" });
+        // The withheld list's tag is part of the KEY (AR-339 Part 2 finding 6): a new list misses the 6 h cache
+        // at once, so a hidden table leaves the listing within the list's 300 s reload, not 6 h later.
+        const w = await wh();
+        const cacheKey = keyWithWithheld(new Request(url.toString(), { method: "GET" }), w);
         const hit = await cache.match(cacheKey);
         if (hit) return hit;
-        const fresh = await handleCatalog(url, env);
+        const fresh = await handleCatalog(url, env, w);
         if (fresh.status === 200) {
           const toCache = new Response(fresh.clone().body, fresh);
           toCache.headers.set("cache-control", "public, max-age=300, s-maxage=21600");
@@ -145,7 +160,7 @@ async function route(request: Request, env: Env, ctx: ExecutionContext, local: b
       if (path === "/v1/guard-heartbeat") return await cachedGuardHeartbeat(url, env, ctx, local);
       if (path === "/v1/sources") return await handleSources(env);
       if (path === "/v1/last-updates") return await handleLastUpdates(env);
-      if (path === "/v1/bundle") return await handleBundle(url, env);
+      if (path === "/v1/bundle") return await handleBundle(url, env, await wh());
 
       // Family usage stats for the stats page. USER figures come from the SHARED
       // identity DB (env.USERS) with hf's exact aggregation, so users and map are
@@ -178,7 +193,8 @@ async function route(request: Request, env: Env, ctx: ExecutionContext, local: b
         // reads source_counts (1 row/source, sync-maintained) with the live
         // COUNT(*) kept as fallback, and 200s are cached 6h.
         const statsCache = local ? null : caches.default;
-        const statsKey = new Request(url.toString(), { method: "GET" });
+        const statsW = await wh();
+        const statsKey = keyWithWithheld(new Request(url.toString(), { method: "GET" }), statsW);
         const statsHit = statsCache ? await statsCache.match(statsKey) : undefined;
         if (statsHit) return statsHit;
         const SUM_COUNTS = "SELECT SUM(n) AS c FROM source_counts";
@@ -223,6 +239,16 @@ async function route(request: Request, env: Env, ctx: ExecutionContext, local: b
           }
           catTotal = (okP ?? 0) + (okS ?? 0);
           if (okP === null || okS === null) catPartial = true;
+        }
+        // WITHHELD rows are not catalogue entries a user can reach: subtract the ones each database holds (a
+        // primary-key count, ~1 row read per id, memoised with the list load - catalog.ts presentCount; the totals
+        // above keep their measured form).
+        if (catTotal !== null && statsW.ids.size > 0) {
+          const ids = [...statsW.ids].sort();
+          const [wp, ws] = await Promise.allSettled([presentCount(env.CATALOG, ids, statsW, "CATALOG"),
+                                                     presentCount(env.CATALOG_CLIMATE, ids, statsW, "CATALOG_CLIMATE")]);
+          catTotal = Math.max(0, catTotal - (wp.status === "fulfilled" ? wp.value : 0)
+                                           - (ws.status === "fulfilled" ? ws.value : 0));
         }
         const cat = { c: catTotal };
         const obj = await env.SERIES_BUCKET.get("_aqueduct/stats.json");
@@ -301,6 +327,8 @@ async function route(request: Request, env: Env, ctx: ExecutionContext, local: b
             // several ids at once can tell which one this answer is about (DeepSeek review, 2026-09-17).
             return json({ error: "not_redistributable", series_id: id, detail: "This source's licence does not permit third-party redistribution. Please obtain it directly from the original provider." }, 451);
           }
+          // WITHHELD (src/withheld.ts): an incomplete table is not described to anyone until it is complete.
+          if (isWithheld(await wh(), id)) return withheldResponse(id, await wh());
           const { lang, error } = reqLang(url);
           if (error) return error; // unsupported ?lang= -> honest 400
           return await handleMetadata(id, env, lang);
@@ -315,6 +343,8 @@ async function route(request: Request, env: Env, ctx: ExecutionContext, local: b
           if (isGated(id)) {
             return json({ error: "not_redistributable", series_id: id, detail: "This source's licence does not permit third-party redistribution of the data. Please obtain it directly from the original provider." }, 451);
           }
+          // WITHHELD, BEFORE auth like the licence gate: an anonymous caller is told the same as a keyed one.
+          if (isWithheld(await wh(), id)) return withheldResponse(id, await wh());
           // The origin serves what the EDGE already authorised and will log: no auth and no
           // download log here (the edge counts length-less answers via x-econ-count).
           if (local) return await handleSeriesCsv(id, url, env, ctx, async () => {});
@@ -379,6 +409,26 @@ const NOT_REDISTRIBUTABLE_META = "This source's licence does not permit third-pa
  *  forwarded; the licence gate and download auth run HERE, before anything is forwarded; the download log
  *  is written here - from content-length when the answer has one, otherwise from the bytes the client
  *  actually takes (whatever the origin's own marker says: a hop can drop content-length, R1169 M2). */
+/** The withheld list as the FORWARDING edge sees it: the origin's GET /v1/withheld (secret-gated), because after
+ *  T0 the list lives in the local store and the edge's R2 copy goes stale (AR-339 Part 2 finding 1). Through the
+ *  same per-isolate cache and fail-closed rules as every other reader (src/withheld.ts). */
+function originWithheld(request: Request, env: Env): Promise<Withheld> {
+  return loadWithheld(async () => {
+    const oreq = originRequest(new Request(new URL(WITHHELD_ROUTE, request.url).toString(), { method: "GET" }), env);
+    if (!oreq) throw new Error("origin not configured");
+    const r = await fetchOrigin(oreq, env);
+    if (r.status === 404) {
+      await r.body?.cancel().catch(() => undefined);
+      return null;
+    }
+    if (r.status !== 200) {
+      await r.body?.cancel().catch(() => undefined);
+      throw new Error(`origin ${WITHHELD_ROUTE} answered ${r.status}`);
+    }
+    return { text: await r.text(), etag: r.headers.get("x-withheld-etag") || "" };
+  }, "origin");
+}
+
 async function forwardRoute(request: Request, env: Env, ctx: ExecutionContext, path: string): Promise<Response> {
   if (!isForwardable(path)) return json({ error: "not_found", detail: `no route for ${path}` }, 404);
   if (!env.ORIGIN_URL || !env.ORIGIN_SECRET) return notConfigured();
@@ -392,6 +442,9 @@ async function forwardRoute(request: Request, env: Env, ctx: ExecutionContext, p
       return json({ error: "not_redistributable", series_id: id,
                     detail: csv ? NOT_REDISTRIBUTABLE_DATA : NOT_REDISTRIBUTABLE_META }, 451);
     }
+    // WITHHELD, at the EDGE and BEFORE auth (AR-339 Part 2 finding 1): a gate only on the origin would let the
+    // edge answer a withheld .csv 401 to an anonymous caller, and serve its metadata from the edge cache.
+    if (isWithheld(await originWithheld(request, env), id)) return withheldResponse(id, await originWithheld(request, env));
     if (csv) {
       const auth = await requireDownloadAuth(request, env);
       if (auth instanceof Response) return auth;
@@ -411,7 +464,10 @@ async function forwardRoute(request: Request, env: Env, ctx: ExecutionContext, p
     }
   }
   const ttl = cacheSeconds(path);
-  const key = cacheKey(request);
+  // /v1/catalog and /v1/stats: the withheld list's tag is part of the key (AR-339 Part 2 finding 6)
+  const key = path === "/v1/catalog" || path === "/v1/stats"
+    ? keyWithWithheld(cacheKey(request), await originWithheld(request, env))
+    : cacheKey(request);
   if (ttl > 0) {
     const hit = await caches.default.match(key);
     if (hit) return hit;

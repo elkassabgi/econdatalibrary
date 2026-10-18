@@ -18,6 +18,7 @@ import type { Env, SourceRow, LicenseRow, SeriesRow, SeriesIdRow } from "./types
 import { SELECT_SOURCE, SELECT_LICENSE, SELECT_SERIES, seriesIdsForSourceSql } from "./sql.ts";
 import { json, badRequest, licenseBlock, supportedSources, sourceOf, dbFor, dbForSeries } from "./util.ts";
 import { NON_REDISTRIBUTABLE, isSeriesCarvedOut } from "./denylist.ts";
+import { type Withheld, LIST_UNREADABLE_DETAIL, forSource, isSourceClosed, isWithheld } from "./withheld.ts";
 
 const PROFILE = "tabular-data-package";
 const SCHEMA_VERSION = "1.0";
@@ -70,7 +71,7 @@ async function provenance(
   };
 }
 
-export async function handleBundle(url: URL, env: Env): Promise<Response> {
+export async function handleBundle(url: URL, env: Env, withheld: Withheld): Promise<Response> {
   const snapshot = url.searchParams.get("snapshot") ?? today();
   const source = url.searchParams.get("source");
   let ids = collectIds(url);
@@ -84,7 +85,14 @@ export async function handleBundle(url: URL, env: Env): Promise<Response> {
     // result set and still reaches the manifest — echoed in `econdl:series_requested` and named
     // in `econdl:unresolved`. That made this endpoint an enumeration oracle for exactly the ids
     // the gate exists to withhold, which the comment twenty lines below forbids in terms.
-    const res = await dbFor(env, source).prepare(seriesIdsForSourceSql(source))
+    // A source withheld WHOLE (src/withheld.ts: list unreadable, no good copy, the floor applies) is not
+    // enumerated at all (AR-341 finding 2).
+    if (isSourceClosed(withheld, source)) {
+      return json({ error: "withheld", source, detail: LIST_UNREADABLE_DETAIL }, 404);
+    }
+    // WITHHELD ids (src/withheld.ts) are excluded the same way, in the SQL: an enumeration that read them
+    // would make the manifest list tables withheld from every other surface (AR-339 Part 2 finding 3).
+    const res = await dbFor(env, source).prepare(seriesIdsForSourceSql(source, forSource(withheld, source)))
       .bind(source).all<SeriesIdRow>();
     ids = (res.results ?? []).map((r) => r.series_id);
     if (ids.length === 0) return badRequest(`no catalog series found for source '${source}'`);
@@ -110,6 +118,16 @@ export async function handleBundle(url: URL, env: Env): Promise<Response> {
         ? `not_redistributable: source '${src}' licence forbids re-hosting (HTTP 451 on direct fetch)`
         : `not_redistributable: this series embeds third-party data and is gated (HTTP 451 on direct fetch)`;
       unresolved.push({ id, reason });
+      continue;
+    }
+    // A WITHHELD id the caller named: unresolved with its own reason (the 404 the series routes answer).
+    if (isWithheld(withheld, id)) {
+      unresolved.push({ id, reason: withheld.ids.has(id)
+        ? "withheld: our copy is incomplete and is being re-downloaded; it is listed " +
+          "again when the download is complete (HTTP 404 'withheld' on direct fetch)"
+        // its source is closed only because the list could not be read (AR-341 re-review N2)
+        : "withheld: the withheld-tables list could not be read; try again in a minute (HTTP 404 'withheld' on " +
+          "direct fetch)" });
       continue;
     }
     // Canonical order (CONTRACT.md v1.1, matches the dev shim): catalog membership

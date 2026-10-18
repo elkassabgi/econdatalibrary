@@ -1047,6 +1047,8 @@ def load_registry():
             series_roll[_src]["n_series"] = max(0, series_roll[_src]["n_series"] - _carved)
             print("  carve-out: %s n_series -%d (third-party series the worker gates)"
                   % (_src, _carved))
+    # WITHHELD tables (api/worker/withheld.json) are not downloadable either: subtract them too (AR-341 #4)
+    subtract_withheld(con, series_roll)
 
     # Recover a true start year that sane_date() would otherwise throw away wholesale.
     #
@@ -1315,6 +1317,54 @@ def load_series_carveouts():
 
 
 SERIES_CARVEOUTS = load_series_carveouts()
+
+
+def load_withheld():
+    """The WITHHELD series - api/worker/withheld.json, the committed copy of the list the worker applies
+    (api/worker/src/withheld.ts; owner decision 2026-10-17: an incomplete table is hidden until complete).
+
+    A withheld table answers 404 "withheld" and is in no listing, so a page that counted it would advertise
+    tables nobody can download (AR-341 finding 4: insee_melodi.html said "139 series ... Free download" while 44
+    of them were withheld). Same direction rule as the carve-outs: a missing or unreadable file subtracts
+    NOTHING, loudly. Refresh the copy from the store first (tools/gen_withheld_floor.py --from-store) when the
+    list has changed. Returns {source_id: [series_id, ...]}."""
+    path = os.path.join(os.path.dirname(HERE), "api", "worker", "withheld.json")
+    try:
+        ids = json.load(open(path, encoding="utf-8"))["ids"]
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        print(f"  WARNING: api/worker/withheld.json unreadable ({type(e).__name__}) - withheld series NOT "
+              f"subtracted from counts")
+        return {}
+    out = {}
+    for sid in sorted(ids):
+        if re.fullmatch(r"[a-z0-9_]+:[A-Za-z0-9_.-]+", sid):
+            out.setdefault(sid.split(":", 1)[0], []).append(sid)
+    return out
+
+
+WITHHELD = load_withheld()
+
+
+def subtract_withheld(con, series_roll, withheld=None):
+    """Lose, per source, the withheld series the catalogue holds: one primary-key IN count per affected source
+    (like the carve-out subtraction, never a predicate in the GROUP BY). When any is held, the source's coverage
+    facets (first start, last end, geographies, last update) are re-measured over the rows a user can reach -
+    a primary-key RANGE read of that source only (AR-341 re-review N4). Its "Measured observations" figure is NOT
+    changed here: it comes from catalog/catalog.json (gen_catalog.py), which this generator cannot re-measure."""
+    for src, sids in sorted((WITHHELD if withheld is None else withheld).items()):
+        if src not in series_roll or not sids:
+            continue
+        q = ",".join("?" * len(sids))
+        n = con.execute("SELECT COUNT(*) FROM series WHERE series_id IN (%s)" % q, sids).fetchone()[0]
+        if n:
+            series_roll[src]["n_series"] = max(0, series_roll[src]["n_series"] - n)
+            r = con.execute(
+                "SELECT MIN(start_date), MAX(end_date), COUNT(DISTINCT geography), MAX(last_updated) FROM series "
+                "WHERE series_id >= ? AND series_id < ? AND series_id NOT IN (%s)" % q,
+                [src + ":", src + ";", *sids]).fetchone()
+            series_roll[src].update(min_start=r[0], max_end=r[1], n_geo=r[2], last_updated=r[3])
+            print("  withheld: %s n_series -%d (incomplete tables the worker withholds until complete); coverage "
+                  "re-measured without them: %s .. %s" % (src, n, r[0], r[1]))
 
 # `<src>:<indicator>:` prefixes, matching denylist.ts::SERIES_CARVEOUT_LIKE exactly.
 SERIES_CARVEOUT_PREFIXES = [
@@ -3693,7 +3743,15 @@ def render_sitemap(entries):
 # ---------------------------------------------------------------------------- #
 #  Main
 # ---------------------------------------------------------------------------- #
-def main():
+def main(argv=None):
+    import argparse
+    ap = argparse.ArgumentParser(description="Generate the econdatalibrary static site (catalog/site/).")
+    ap.add_argument("--only", metavar="SOURCE", help="write only catalog/site/SOURCE.html (see the note in main)")
+    ap.add_argument("--with-catalog", action="store_true", help="with --only: also write catalog/site/catalog.html")
+    _a = ap.parse_args(argv)
+    only, with_catalog = _a.only, _a.with_catalog
+    if with_catalog and not only:
+        ap.error("--with-catalog goes with --only (a full build writes catalog.html anyway)")
     licenses, sources, series_roll, source_meta = load_registry()
     sidecar, generated = load_sidecar()
 
@@ -3773,8 +3831,24 @@ def main():
     # Per-dataset pages
     n_pages = 0
     for rec in records:
+        if only and rec["id"] != only:
+            continue
         _write(os.path.join(OUT_DIR, f"{rec['id']}.html"), render_dataset_page(rec))
         n_pages += 1
+    if only:
+        # --only SOURCE: that ONE page, through the same records, SEO pass and _write as a full build - and
+        # nothing else (no hub page, sitemap, state file or orphan sweep). A full build later agrees with it.
+        if n_pages != 1:
+            raise SystemExit(f"--only {only}: not a published source page (not reservable, or no series)")
+        written = [f"{only}.html"]
+        if with_catalog:
+            # --with-catalog: also the catalogue hub (catalog.html), rendered from ALL records as a full build does,
+            # so its row for this source agrees with the page. Every other source's row is re-rendered from the
+            # current catalogue too: the operator reads the diff before committing it.
+            _write(os.path.join(OUT_DIR, "catalog.html"), render_catalog(records, generated))
+            written.append("catalog.html")
+        print(f"Wrote ONLY {', '.join(written)} to {OUT_DIR} (--only); every other file is untouched")
+        return
 
     # sources_meta.json -- the Status board's title + description lookup.
     #
