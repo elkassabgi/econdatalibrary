@@ -160,6 +160,12 @@ def world(tmp_path, monkeypatch):
         return os.path.getsize(dest)
     monkeypatch.setattr(sc, "_get", _get)
     monkeypatch.setattr(sc, "_cube_counts", lambda pid: net["counts"])
+    net["meta_status"] = "SUCCESS"
+
+    def _post(ep, payload, **k):                       # getCubeMetadata - the withdrawn evidence
+        status = "FAILED" if not net["lite"] and net["meta_status"] == "SUCCESS" else net["meta_status"]
+        return [{"status": status, "object": "The cube product ID does not exist." if status == "FAILED" else {}}]
+    monkeypatch.setattr(sc, "_post", _post)
     monkeypatch.setattr(sc, "_download", _download)
     return {"d": d, "tmp": tmp_path, "r2": r2, "net": net}
 
@@ -299,20 +305,48 @@ def _nothing_written(w, before):
 
 
 def test_a_failed_completeness_gate_writes_nothing(world):
+    """AR-340 finding 7: named as a refusal (incomplete against StatCan), never ingested, not fetched again."""
     before = _snapshot(world)
     world["net"]["counts"] = (6, 3)                        # StatCan says 6 datapoints; the parse has 5
-    assert tool.run(_args(apply=True)) == 1
-    _nothing_written(world, before)
-
-
-def test_a_withdrawn_cube_is_refused_by_name(world):
-    before = _snapshot(world)
-    world["net"]["lite"] = False
     assert tool.run(_args(apply=True)) == 0
     _nothing_written(world, before)
     rec = json.loads((world["tmp"] / "logs" / "statcan_new_cubes" / f"{NEW_PID}.json").read_text())
+    assert rec["stage"] == "refused" and rec["reason"].startswith("incomplete against StatCan")
+    assert tool.run(_args(apply=True)) == 0 and world["net"]["downloads"] == 1
+
+
+def test_a_vectorless_new_cube_is_refused(world):
+    """AR-340 finding 7: StatCan's counts cannot prove it whole and there is no stored floor."""
+    before = _snapshot(world)
+    world["net"]["counts"] = (5, 1)                        # nbSeriesCube 1 for a table of 3 series
+    assert tool.run(_args(apply=True)) == 0
+    _nothing_written(world, before)
+    rec = json.loads((world["tmp"] / "logs" / "statcan_new_cubes" / f"{NEW_PID}.json").read_text())
+    assert rec["stage"] == "refused" and rec["reason"].startswith("vectorless")
+
+
+def test_a_withdrawn_cube_is_refused_by_name_and_leaves_new_cubes(world):
+    """AR-340 finding 5: with both pieces of evidence it moves to withdrawn_upstream (state and debt)."""
+    before = _snapshot(world)
+    world["net"]["lite"] = False
+    assert tool.run(_args(apply=True)) == 0
+    after = _snapshot(world)
+    assert (after[0], after[1], after[2], after[4], after[5]) == (before[0], before[1], before[2], before[4],
+                                                                  before[5])
+    rec = json.loads((world["tmp"] / "logs" / "statcan_new_cubes" / f"{NEW_PID}.json").read_text())
     assert rec["stage"] == "refused" and "withdrawn" in rec["reason"]
     assert world["net"]["downloads"] == 0
+    st = json.loads((world["d"] / "_lane_state.json").read_text())
+    assert NEW_PID not in st["new_cubes"] and "getCubeMetadata FAILED" in st["withdrawn_upstream"][NEW_PID]["evidence"]
+    assert NEW_PID not in json.loads((world["d"] / "_catalogue_debt.json").read_text())["new_cubes"]
+
+
+def test_absent_from_the_list_but_known_to_the_metadata_is_not_called_withdrawn(world):
+    world["net"]["lite"] = False
+    world["net"]["meta_status"] = "SUCCESS-KEEP"
+    assert tool.run(_args(apply=True)) == 0
+    st = json.loads((world["d"] / "_lane_state.json").read_text())
+    assert NEW_PID in st["new_cubes"] and NEW_PID not in st.get("withdrawn_upstream", {})
 
 
 def test_a_splitter_refusal_writes_nothing(world, monkeypatch):
@@ -702,3 +736,83 @@ def test_a_repeated_refusal_keeps_its_first_reason(world, monkeypatch):
     for _ in range(3):
         assert tool.run(_args(apply=True)) == 0
     assert json.loads(p.read_text())["reason"] == first and "refused before" not in first
+
+
+# --------------------------------------------------------------------------- #
+# AR-340 (R1606) - the committing reset, the R2-routed lane files, and the required findings
+# --------------------------------------------------------------------------- #
+def test_ar340_a_committing_receipt_whose_publish_never_happened_is_reset_on_disk(world, monkeypatch):
+    """R1606: the reset of a `committing` receipt with no parquet was in memory only, so a later refusal
+    reloaded `committing` from disk and booked a part-way failure (rc 1) on every run."""
+    monkeypatch.setattr(blob, "commit_local_file", lambda *a, **k: (_ for _ in ()).throw(OSError("put died")))
+    assert tool.run(_args(apply=True)) == 1
+    p = world["tmp"] / "logs" / "statcan_new_cubes" / f"{NEW_PID}.json"
+    rec = json.loads(p.read_text())
+    assert rec["stage"] == "committing" and not (world["d"] / f"{NEW_PID}.parquet").exists()
+    world["net"]["lite"] = False                           # withdrawn upstream before the re-run
+    assert tool.run(_args(apply=True)) == 0
+    rec2 = json.loads(p.read_text())
+    assert rec2["stage"] == "refused" and "withdrawn" in rec2["reason"], rec2
+    assert tool.run(_args(apply=True)) == 0                # and it stays a refusal, never a failure
+
+
+def test_a_quarantined_held_cube_is_refused_even_when_named(world):
+    """AR-340 finding 9: the 4 quarantined held cubes are not in new_cubes, so --pids cannot reach them."""
+    p = world["d"] / "_lane_state.json"
+    st = json.loads(p.read_text())
+    st["cubes"]["18100212"] = {"release": REL, "merged": "2026-09-01T12:30", "quarantined": True}
+    p.write_text(json.dumps(st))
+    with pytest.raises(SystemExit, match="not in the lane's new_cubes"):
+        tool.run(_args(apply=True, pids="18100212"))
+
+
+def test_the_tool_never_names_the_d1_sync_queue_or_its_manifest():
+    """AR-340 finding 8: the rows are LOCAL ONLY; nothing may queue them for the frozen D1 sync."""
+    src = open(os.path.join(ROOT, "tools", "statcan_new_cubes.py"), encoding="utf-8").read()
+    for name in ("pending_catalog_sync", "catalog_sync_sent", "sync_catalog_d1"):
+        assert name not in src, name
+
+
+class _R2Store(_R2):
+    """A fuller bucket for AQUEDUCT_BACKEND=r2: get_object / head_object answer a real 404 ClientError."""
+
+    def _missing(self, op, key):
+        from botocore.exceptions import ClientError
+        return ClientError({"Error": {"Code": "404", "Message": key},
+                            "ResponseMetadata": {"HTTPStatusCode": 404}}, op)
+
+    def get_object(self, Bucket, Key):
+        if Key not in self.objects:
+            raise self._missing("GetObject", Key)
+        return {"Body": io.BytesIO(self.objects[Key][0])}
+
+    def head_object(self, Bucket, Key):
+        if Key not in self.objects:
+            raise self._missing("HeadObject", Key)
+        body, kw = self.objects[Key]
+        return {"Metadata": dict(kw.get("Metadata") or {}), "ETag": '"%s"' % hashlib.md5(body).hexdigest(),
+                "ContentLength": len(body)}
+
+    def plain(self, key):
+        return self.objects[key][0]
+
+
+def test_under_the_r2_backend_the_lane_files_and_the_parquet_are_written_to_the_store(world, monkeypatch):
+    """AR-340 finding 3 / M11: the lane state, the debt and the parquet live in the R2 store before T0, so they
+    are read and written THROUGH blob. A local-only write leaves R2's debt still listing the cube."""
+    pytest.importorskip("botocore")
+    r2 = _R2Store()
+    d = world["d"]
+    for name in ("_lane_state.json", "_catalogue_debt.json"):
+        r2.objects[f"clean_full/statcan/{name}"] = ((d / name).read_bytes(), {})
+    monkeypatch.setattr(blob.R2Blob, "client", property(lambda self: r2))
+    monkeypatch.setenv("AQUEDUCT_BACKEND", "r2")
+    assert tool.run(_args(apply=True)) == 0
+    st = json.loads(r2.plain("clean_full/statcan/_lane_state.json"))
+    assert NEW_PID not in st["new_cubes"] and "not_held" not in st["cubes"][NEW_PID]
+    debt = json.loads(r2.plain("clean_full/statcan/_catalogue_debt.json"))
+    assert NEW_PID not in debt["new_cubes"]
+    held = r2.plain(f"clean_full/statcan/{NEW_PID}.parquet")
+    assert pq.read_metadata(io.BytesIO(held)).num_rows == 5
+    assert sorted(k for k in r2.objects if k.startswith("series/")) == [
+        "series/statcan%3A33101178%23Aden.csv", "series/statcan%3A33101178%23Windsor%20-%20other%20locations.csv"]

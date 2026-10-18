@@ -71,7 +71,7 @@ sys.path.insert(0, ROOT)
 
 from core import catalog_path, cutover                            # noqa: E402
 from updater import blob, merge, writer_lock                       # noqa: E402
-from updater.errors import TransientError                          # noqa: E402
+from updater.errors import DefinitiveError, TransientError         # noqa: E402
 from updater.strategies.fetchers import statcan as sc              # noqa: E402
 
 import jobs.ingest_statcan as ing                                   # noqa: E402
@@ -253,6 +253,9 @@ def catalogue_refusals(ids, check_fts: bool = True) -> list:
 # --------------------------------------------------------------------------- #
 # prepare: everything that can refuse a cube, before anything is written
 # --------------------------------------------------------------------------- #
+LITE_COUNT = [0]          # how many cubes the run's getAllCubesListLite listed (the withdrawn evidence)
+
+
 def lite_rows() -> dict:
     """{pid: getAllCubesListLite entry}. Fails closed on a short list, as the fetcher's enumeration does."""
     j = sc._get("getAllCubesListLite", timeout=300)
@@ -261,6 +264,7 @@ def lite_rows() -> dict:
         raise TransientError(f"statcan getAllCubesListLite returned "
                              f"{len(cubes) if isinstance(cubes, list) else 'no list'} cube(s), below the "
                              f"{sc._LITE_FLOOR} floor - refusing to read that as 'withdrawn'")
+    LITE_COUNT[0] = len(cubes)
     return {str(o["productId"]): o for o in cubes if isinstance(o, dict) and o.get("productId") is not None}
 
 
@@ -320,8 +324,20 @@ def prepare(pid: str, lite: dict) -> dict:
     why = held_anywhere(pid, read_split_map())
     if why:
         raise Refused("already held: " + "; ".join(why))
-    scratch, st = sc._fetch_cube_whole(int(pid))
     try:
+        scratch, st = sc._fetch_cube_whole(int(pid))
+    except DefinitiveError as e:
+        # StatCan answered and the table is not provably whole (its own nbDatapointsCube / nbSeriesCube, or a
+        # layout the parser refuses) - the gate that keeps the 4 quarantined held cubes out. Nothing was
+        # written; named as a refusal, and the same release is not fetched again (AR-340 finding 7).
+        raise Refused(f"incomplete against StatCan: {str(e)[:300]}") from e
+    try:
+        if st.get("needs_stored_floor"):
+            # A VECTORLESS cube (Census wide layout, or coordinate-keyed): StatCan's counts do not describe it,
+            # and a held cube's second gate (at least the stored rows) has no stored cube to compare with. Its
+            # only check would be "no row skipped" - too weak to admit a new cube unseen (AR-340 finding 7).
+            raise Refused(f"vectorless ({st.get('layout')} layout, {st.get('n_series'):,} series): StatCan's "
+                          f"counts cannot prove the parse whole and there is no stored floor - a human's")
         st["rows"] = pq.read_metadata(scratch).num_rows
         dim, parts = choose(scratch, st["rows"])
         if dim == "":
@@ -493,8 +509,9 @@ def stage_catalogue(pid: str, rec: dict) -> None:
 
 def stage_record(pid: str, rec: dict) -> None:
     """The lane's record: the cube is held now, so it leaves new_cubes and its next release is the lane's
-    to merge and serve. The release recorded is the lane's own (a newer StatCan release since then makes
-    the lane refresh it once - a keep-old merge of the same table)."""
+    to merge and serve. The release recorded is the lane's own string - getAllCubesListLite's releaseTime,
+    the one the lane keys on (getCubeMetadata's releaseTime can differ: 13100986 reads 2026-09-03 in lite
+    and 2026-09-23 in the metadata, AR-340 finding 6; the receipt keeps lite's as `lite_release`)."""
     st = lane.load_state()
     c = st["cubes"].get(str(pid))
     if not c:
@@ -540,6 +557,33 @@ def stage_record(pid: str, rec: dict) -> None:
     rec.update(stage="done", lane_release=rel)
 
 
+def record_withdrawn(pid: str, release) -> str:
+    """A cube StatCan no longer has: absent from getAllCubesListLite AND getCubeMetadata answers FAILED.
+    With both, it leaves new_cubes (state and debt) for `withdrawn_upstream` in the lane state, with its
+    evidence - left in new_cubes, nobody CAN ingest it and the reporter's new-cube amber would never clear
+    (AR-340 finding 5). It heals itself: if StatCan lists it again, the lane enumerates a new release,
+    finds no parquet and books it under new_cubes again. Returns the refusal reason."""
+    j = sc._post(sc.CUBE_META, [{"productId": int(pid)}])
+    item = j[0] if isinstance(j, list) and j else j
+    status = item.get("status") if isinstance(item, dict) else None
+    said = str(item.get("object") if isinstance(item, dict) else item)[:160]
+    if status != "FAILED":
+        return (f"absent from getAllCubesListLite, but getCubeMetadata answers {status!r} - not recorded as "
+                f"withdrawn; left in new_cubes")
+    evidence = (f"absent from getAllCubesListLite ({LITE_COUNT[0]:,} cubes listed); getCubeMetadata FAILED: "
+                f"{said}")
+    st = lane.load_state()
+    st.setdefault("withdrawn_upstream", {})[str(pid)] = {"release": release, "evidence": evidence,
+                                                         "checked_utc": _now()}
+    st.get("new_cubes", {}).pop(str(pid), None)
+    lane.save_state(st)
+    debt = lane._read_json(lane.DEBT, {"cubes": {}, "new_cubes": {}})
+    if str(pid) in debt.get("new_cubes", {}):
+        debt["new_cubes"].pop(str(pid), None)
+        blob.write_bytes_atomic(lane.DEBT, json.dumps(debt, sort_keys=True).encode("utf-8"))
+    return f"withdrawn upstream - {evidence}; moved from new_cubes to withdrawn_upstream"
+
+
 def ingest(pid: str, lite: dict | None, put, release=None, retry_refused=False) -> dict:
     """Carry one cube from its recorded stage to `done`. Returns its receipt."""
     rec = load_receipt(pid)
@@ -551,7 +595,11 @@ def ingest(pid: str, lite: dict | None, put, release=None, retry_refused=False) 
     if rec.get("stage") == "committing":
         parquet, _done = _paths(pid)
         if not blob.exists(parquet) and not os.path.exists(parquet):
-            rec = {"pid": pid, "stage": None}            # the publish never happened: start again
+            # THE PUBLISH NEVER HAPPENED: start again - and SAY SO ON DISK at once (AR-340, R1606). Reset in
+            # memory only, a later Refused reloaded `committing` from the receipt and booked a part-way
+            # failure (rc 1) on every run, for a cube of which nothing was written.
+            rec = {"pid": pid, "stage": None}
+            save_receipt(rec)
         else:
             if lite is None:
                 raise RuntimeError("StatCan no longer lists it, and its parquet is half-published - a human's")
@@ -559,8 +607,10 @@ def ingest(pid: str, lite: dict | None, put, release=None, retry_refused=False) 
             save_receipt(rec)
     if rec.get("stage") in (None, "refused"):
         if lite is None:
-            raise Refused("StatCan no longer lists it (getAllCubesListLite) - withdrawn upstream")
-        rec = {"pid": pid, "stage": None, "started_utc": _now(), "release": release}
+            raise Refused(record_withdrawn(pid, release))
+        rec = {"pid": pid, "stage": None, "started_utc": _now(), "release": release,
+               "lite_release": lite.get("releaseTime"), "max_rows": lane.MAX_ROWS,
+               "catalogue": "LOCAL ONLY - no D1 row, no sync queue entry (the D1 catalogue sync is frozen)"}
         stage_commit(pid, lite, rec)
         save_receipt(rec)
     if rec["stage"] == "committed":
@@ -618,6 +668,12 @@ def run(a, put=None, clock=time.monotonic, started=None) -> int:
     cutover.refuse_if_cut_over("statcan_new_cubes - the statcan store is R2 before T0, and its post-T0 "
                                "writer is the owner's T0 decision (jobs/statcan_lane.POST_T0_READY)")
     cubes = new_cubes(a.pids)
+    try:
+        free_gb = shutil.disk_usage(os.path.dirname(sc.TMP_DIR) or ".").free / 1e9
+    except OSError:
+        free_gb = float("nan")
+    print(f"[new-cubes] cap {lane.MAX_ROWS:,} rows (jobs/statcan_lane.MAX_ROWS); scratch {sc.TMP_DIR} "
+          f"({free_gb:,.1f} GB free)", flush=True)
     print(f"[new-cubes] {len(cubes)} cube(s) in scope; backend {os.environ.get('AQUEDUCT_BACKEND')}; "
           f"{'APPLY' if a.apply else 'DRY'}{' + fetch' if a.fetch and not a.apply else ''}", flush=True)
     lite = lite_rows()
@@ -661,6 +717,7 @@ def run(a, put=None, clock=time.monotonic, started=None) -> int:
         if clock() - started >= budget_s:
             deferred.append(pid)                 # not started: the lane must get its lock back (docstring)
             continue
+        t_cube = clock()
         try:
             rec = ingest(pid, lite.get(pid), put, release=cubes[pid],
                          retry_refused=bool(getattr(a, "retry_refused", False)))
@@ -682,11 +739,15 @@ def run(a, put=None, clock=time.monotonic, started=None) -> int:
             # SystemExit (an unreadable split map) still stops the whole run.
             failed += 1
             results[pid] = {"stage": load_receipt(pid).get("stage"), "error": f"{type(e).__name__}: {str(e)[:300]}"}
+        results[pid]["elapsed_s"] = round(clock() - t_cube, 1)
+        results[pid]["since_lock_s"] = round(clock() - started, 1)
         print(f"  {pid}: {json.dumps(results[pid], sort_keys=True)}", flush=True)
     os.makedirs(RECEIPTS, exist_ok=True)
     summary = os.path.join(RECEIPTS, f"_run_{_now().replace(':', '')}.json")
     with open(summary, "w", encoding="utf-8") as fh:
-        json.dump({"utc": _now(), "cubes": results, "deferred_by_budget": deferred}, fh, indent=1, sort_keys=True)
+        json.dump({"utc": _now(), "cubes": results, "deferred_by_budget": deferred, "max_rows": lane.MAX_ROWS,
+                   "budget_min": budget_s / 60.0, "catalogue": "LOCAL ONLY - nothing queued for, or sent to, D1"},
+                  fh, indent=1, sort_keys=True)
     done = sum(1 for r in results.values() if r.get("stage") == "done")
     refused = sum(1 for r in results.values() if r.get("stage") == "refused")
     print(f"[new-cubes] {done} done, {refused} refused, {failed} failed of {len(results)} started; "
