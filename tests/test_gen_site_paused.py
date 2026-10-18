@@ -50,15 +50,15 @@ def test_paused_wins_over_wired(G):
 
 def test_a_source_that_has_run_before_is_never_called_not_yet_wired(G):
     r = _rows(G, "bis", wiring={"bis": False}, paused={}, last_success={"bis": "2026-09-25T01:12:33+00:00"})
-    assert r["Update cadence"] == "monthly <em>(not automated at the moment)</em>"
-    assert r["Automated refresh"].startswith("not on the automated run at the moment &mdash; last automated "
+    assert r["Update cadence"] == "monthly <em>(not on the daily update run)</em>"
+    assert r["Automated refresh"].startswith("not on the daily update run &mdash; last automated "
                                              "update 2026-09-25.")
     assert "not yet wired" not in r["Automated refresh"] and "initial load" not in r["Automated refresh"]
 
 
 def test_unknown_state_never_claims_never_wired(G):
     r = _rows(G, "bis", wiring={"bis": False}, paused={}, last_success=None)
-    assert r["Automated refresh"].startswith("not on the automated run at the moment.")
+    assert r["Automated refresh"].startswith("not on the daily update run.")
     assert "not yet wired" not in "".join(r.values())
 
 

@@ -1238,11 +1238,11 @@ def load_last_success():
     """{source_id: last_success_utc} from the updater's state (data/_aqueduct/state.db, READ-ONLY), or None when
     it cannot be read. A source that has succeeded before is never called "not yet wired" (2026-10-18: the
     generator said that of insee_melodi, which was paused, and it would say it of every source taken off the run).
-    None means UNKNOWN: the page then says only that the source is not on the automated run."""
+    None means UNKNOWN: the page then says only that the source is not on the daily update run."""
     sd = os.environ.get("AQUEDUCT_STATE_DIR") or os.path.join(os.path.dirname(HERE), "data", "_aqueduct")
     path = os.path.join(sd, "state.db")
     if not os.path.isfile(path) or os.path.getsize(path) == 0:
-        print(f"  WARNING: no updater state at {path} - an unwired source is called 'not on the automated "
+        print(f"  WARNING: no updater state at {path} - an unwired source is called 'not on the daily update "
               f"run', never 'not yet wired'")
         return None
     try:
@@ -1254,7 +1254,8 @@ def load_last_success():
         finally:
             con.close()
     except sqlite3.Error as e:
-        print(f"  WARNING: updater state unreadable ({e}) - an unwired source is called 'not on the automated run'")
+        print(f"  WARNING: updater state unreadable ({e}) - an unwired source is called 'not on the daily update "
+              f"run', never 'not yet wired'")
         return None
     return {sid: str(ts) for sid, ts in rows}
 
@@ -1271,8 +1272,10 @@ def refresh_rows(sid, cadence, wiring=_DEFAULT, paused=_DEFAULT, last_success=_D
 
       paused (registry `paused`)        -> cadence "(paused)"; "paused - <reason>"
       wired                             -> the cadence; "live - this database is on the daily update run"
-      not wired, has succeeded before   -> "(not automated at the moment)"; "not on the automated run at the
-                                           moment - last automated update <date>"
+      not wired, has succeeded before   -> "(not on the daily update run)"; "not on the daily update run -
+                                           last automated update <date>" (a run_location: local source may be
+                                           refreshed by the workstation pass, so the page states the facts it
+                                           can prove: not on the daily run, and when it last succeeded)
       not wired, state unreadable       -> the same, without a date (never a claim it was never wired)
       not wired, never succeeded        -> "(target - not yet automated)"; "not yet wired - the initial load"
     No WIRING at all (the registry could not be read) says nothing, as before."""
@@ -1304,9 +1307,9 @@ def refresh_rows(sid, cadence, wiring=_DEFAULT, paused=_DEFAULT, last_success=_D
         rows.append(("Automated refresh", "not yet wired &mdash; the data here is the verified initial load." + board))
         return rows
     if cadence:
-        rows.append(("Update cadence", esc(cadence) + " <em>(not automated at the moment)</em>"))
+        rows.append(("Update cadence", esc(cadence) + " <em>(not on the daily update run)</em>"))
     when = f" &mdash; last automated update {esc(str(ran)[:10])}" if ran else ""
-    rows.append(("Automated refresh", "not on the automated run at the moment" + when + "." + board))
+    rows.append(("Automated refresh", "not on the daily update run" + when + "." + board))
     return rows
 
 def load_resolvable():
