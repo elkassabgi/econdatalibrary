@@ -536,7 +536,18 @@ def _parse_and_write(c, pid, zpath, out_path, done_path):
         log(msg)
         errlog(msg)
 
-    stats = {
+    stats = done_record(c, pid, st, out_path)
+    with open(done_path, "w", encoding="utf-8") as f:
+        json.dump(stats, f)
+    return stats
+
+
+def done_record(c, pid, st, out_path):
+    """The `.done` sidecar of one cube: StatCan's own cube fields (`c` is its getAllCubesListLite
+    entry) plus the parse's counts. ONE definition: the bulk run writes it here, and
+    tools/statcan_new_cubes.py writes the same record for a cube the lane listed as new, so
+    tools/catalog_statcan_tables.py reads the same title either way."""
+    return {
         "productId": pid,
         "title": c.get("cubeTitleEn"),
         "cansimId": c.get("cansimId"),
@@ -554,9 +565,6 @@ def _parse_and_write(c, pid, zpath, out_path, done_path):
         "file": os.path.basename(out_path),
         "file_bytes": os.path.getsize(out_path),
     }
-    with open(done_path, "w", encoding="utf-8") as f:
-        json.dump(stats, f)
-    return stats
 
 
 SIZECACHE = os.path.join(OUT, "_sizecache.json")
