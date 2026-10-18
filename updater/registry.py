@@ -45,8 +45,33 @@ resolver by `tests/test_csv_grain_field.py`, so the registry cannot claim a grai
 does not have (the R875 drift class: three grain registries already exist)."""
 
 
-def validate(reg: dict, expected_count: int | None = None) -> list[str]:
-    """Return a list of problems (empty = valid)."""
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _paused_run_members(root: str | None) -> dict:
+    """{workflow file: set of source ids it runs} for the two runs outside the registry's own flags - the
+    updater-heavy matrix (its ALL='[...]' list) and sec-edgar-daily.yml - the same reading as catalog/gen_site.py
+    load_wiring. A missing file contributes nothing (a test registry, a checkout without workflows)."""
+    import json as _json                                                 # noqa: PLC0415
+    import re as _re                                                     # noqa: PLC0415
+    root = _REPO if root is None else root
+    out = {}
+    heavy = os.path.join(root, ".github", "workflows", "updater-heavy.yml")
+    if os.path.isfile(heavy):
+        m = _re.search(r"ALL='(\[[^']*\])'", open(heavy, encoding="utf-8").read())
+        try:
+            out["updater-heavy.yml"] = set(_json.loads(m.group(1))) if m else set()
+        except ValueError:
+            out["updater-heavy.yml"] = set()
+    sec = os.path.join(root, ".github", "workflows", "sec-edgar-daily.yml")
+    if os.path.isfile(sec):
+        out["sec-edgar-daily.yml"] = set(_re.findall(r"sec_edgar(?:_xbrl)?", open(sec, encoding="utf-8").read()))
+    return out
+
+
+def validate(reg: dict, expected_count: int | None = None, workflows_root: str | None = None) -> list[str]:
+    """Return a list of problems (empty = valid). `workflows_root` is where .github/workflows is read for the
+    paused check (default: this checkout)."""
     problems = []
     sources = reg.get("sources", [])
     seen = set()
@@ -94,13 +119,20 @@ def validate(reg: dict, expected_count: int | None = None) -> list[str]:
         if "paused" in e:
             # `paused: "<reason>"` marks a source taken OFF the run on purpose (it was wired and has run): the
             # site says "paused - <reason>" instead of "live" or "not yet wired" (catalog/gen_site.py
-            # refresh_rows). The reason is shown to users, so it must be a sentence, and a paused source must
-            # not also be live.
+            # refresh_rows). The reason is shown to users, so it must be a sentence, and NO run may still pick a
+            # paused source up (AR-345 finding 5): not the cloud daily (live), not the workstation update pass
+            # (run_location: local, tools/_list_local_sources.py), not the heavy matrix, not sec-edgar-daily.
             pz = e.get("paused")
             if not isinstance(pz, str) or not pz.strip():
                 problems.append(f"{sid}: paused must be a non-empty reason string, got {pz!r}")
-            elif e.get("live"):
+            if e.get("live"):
                 problems.append(f"{sid}: paused and live: true together - a paused source is live: false")
+            if e.get("run_location") == "local":
+                problems.append(f"{sid}: paused and run_location: local together - the workstation update pass "
+                                f"still runs it")
+            for wf, run in _paused_run_members(workflows_root).items():
+                if sid in run:
+                    problems.append(f"{sid}: paused, but {wf} still runs it")
         if "served_by" in e and e.get("served_by") not in SERVED_BY:
             # `served_by: lane` takes the orchestrator's CSV phase and retry drain OFF a source whose
             # own continuous job serves it (statcan, 2026-09-23). A typo must not silently put a
