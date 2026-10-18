@@ -816,3 +816,37 @@ def test_under_the_r2_backend_the_lane_files_and_the_parquet_are_written_to_the_
     assert pq.read_metadata(io.BytesIO(held)).num_rows == 5
     assert sorted(k for k in r2.objects if k.startswith("series/")) == [
         "series/statcan%3A33101178%23Aden.csv", "series/statcan%3A33101178%23Windsor%20-%20other%20locations.csv"]
+
+
+# --------------------------------------------------------------------------- #
+# AR-340 round 3 pins (M24, M27, M28)
+# --------------------------------------------------------------------------- #
+def test_under_the_r2_backend_a_withdrawn_cube_is_recorded_in_the_store_objects(world, monkeypatch):
+    """M24/M28: the withdrawn disposition is written to the R2 state and the R2 debt, not the local files."""
+    pytest.importorskip("botocore")
+    r2 = _R2Store()
+    d = world["d"]
+    for name in ("_lane_state.json", "_catalogue_debt.json"):
+        r2.objects[f"clean_full/statcan/{name}"] = ((d / name).read_bytes(), {})
+    monkeypatch.setattr(blob.R2Blob, "client", property(lambda self: r2))
+    monkeypatch.setenv("AQUEDUCT_BACKEND", "r2")
+    world["net"]["lite"] = False
+    assert tool.run(_args(apply=True)) == 0
+    st = json.loads(r2.plain("clean_full/statcan/_lane_state.json"))
+    assert NEW_PID not in st["new_cubes"]
+    assert "getCubeMetadata FAILED" in st["withdrawn_upstream"][NEW_PID]["evidence"]
+    assert st["withdrawn_upstream"][NEW_PID]["release"] == REL
+    debt = json.loads(r2.plain("clean_full/statcan/_catalogue_debt.json"))
+    assert NEW_PID not in debt["new_cubes"]
+    assert f"clean_full/statcan/{NEW_PID}.parquet" not in r2.objects and world["net"]["downloads"] == 0
+
+
+def test_the_default_time_budget_is_90_minutes(world, monkeypatch):
+    """M27: a run without --max-minutes gets the 90-minute default (under the guard's 3-hour stall kill)."""
+    assert tool.MAX_MINUTES_DEFAULT == 90.0
+    seen = {}
+    monkeypatch.setattr(lane, "pin_backend", lambda *a, **k: None)
+    monkeypatch.setattr(writer_lock, "hold_or_refuse", lambda *a, **k: None)
+    monkeypatch.setattr(tool, "run", lambda a, **k: seen.setdefault("max_minutes", a.max_minutes) and 0)
+    tool.main(["--apply"])
+    assert seen["max_minutes"] == 90.0
