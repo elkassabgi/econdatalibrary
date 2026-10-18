@@ -590,3 +590,31 @@ test("the one-time page-view merge in the migration header is safe to run twice"
                      [{ path: "/", day: "2026-09-02", hits: 3 }, { path: "/about", day: "2026-09-01", hits: 7 }]);
   });
 });
+
+test("FORWARD on, the origin's list unreadable: the floor closes its sources with honest words (AR-341 re-review N2)",
+     { timeout: 300_000 }, async (t) => {
+  const seen: string[] = [];
+  const server = createServer((req, res) => {                 // an origin whose list route fails
+    seen.push(req.url ?? "");
+    res.writeHead(500, { "x-econ-origin": "1", "content-type": "application/json" });
+    res.end('{"error":"down"}');
+  });
+  const host = await listen(server);
+  t.after(() => server.close());
+  const persist = await seeded();
+  const w = await start(edgeOnlyConfig(), {
+    FORWARD: "on", ORIGIN_URL: `http://${host}`, ORIGIN_SECRET: "edge-test-secret", ORIGIN_TIMEOUT_MS: "1000",
+  }, persist);
+  t.after(() => w.stop());
+  const floorId = JSON.parse(readFileSync(new URL("../withheld.json", import.meta.url), "utf8"));
+  const held = Object.keys(floorId.ids).sort()[0];
+  const m1 = await get(w, `/v1/series/${encodeURIComponent(held)}.metadata.json`);
+  assert.equal(m1.status, 404, m1.text);
+  assert.match(JSON.parse(m1.text).detail, /our copy is incomplete/, "a floor id: the owner's sentence");
+  const m2 = await get(w, "/v1/series/insee_melodi%3ADD_CNA_APU.csv");          // complete, not on the floor
+  assert.equal(m2.status, 404, m2.text);
+  const b2 = JSON.parse(m2.text);
+  assert.equal(b2.error, "withheld", "still the fail-closed answer, before auth");
+  assert.equal(b2.detail, "Temporarily unavailable: the withheld-tables list could not be read; try again in a minute.");
+  assert.ok(seen.every((u) => u.startsWith("/v1/withheld")), "only the list read reached the origin");
+});
