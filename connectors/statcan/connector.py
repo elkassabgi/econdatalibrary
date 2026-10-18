@@ -37,17 +37,12 @@ HEADERS = {
     "Content-Type": "application/json",
 }
 
-# WDS frequencyCode -> contract frequency letter.
-FREQ_MAP = {
-    1: "D", 21: "D",          # daily
-    2: "W",                   # weekly
-    4: "irregular", 7: "irregular",  # biweekly / bimonthly
-    6: "M", 20: "M",          # monthly
-    9: "Q", 19: "Q",          # quarterly
-    11: "irregular",          # semi-annual
-    12: "A",                  # annual
-    13: "A", 14: "A", 15: "A", 16: "A", 17: "A", 18: "irregular",  # multi-year / occasional
-}
+# WDS frequencyCode -> contract frequency letter. THE SAME MAP as tools/catalog_statcan_tables.FREQ (its
+# comment has the rule and the evidence: StatCan's getCodeSets, R1615); tests/test_statcan_freq_codeset.py
+# pins both to that code list and to each other. A code not listed has no equivalent in the contract
+# (biweekly, bimonthly, semi-annual, every 2-10 years, "Occasional Daily") and gives NULL - never a guess:
+# the old map sent 13-17 to A, and a missing code to "irregular" or "M".
+FREQ_MAP = {1: "D", 2: "W", 6: "M", 9: "Q", 12: "A", 18: "irregular", 19: "Q", 20: "M"}
 
 # scalarFactorCode -> unit-of-measure phrase (power-of-ten label StatCan publishes against).
 SCALAR_LABEL = {
@@ -151,7 +146,7 @@ class StatCanConnector(Connector):
                     continue
                 info[int(vid)] = {
                     "title": (o.get("SeriesTitleEn") or "").strip(),
-                    "freq": FREQ_MAP.get(o.get("frequencyCode"), "irregular"),
+                    "freq": FREQ_MAP.get(o.get("frequencyCode")),   # not listed: NULL, never a guess
                     "product_id": o.get("productId"),
                 }
         return info
@@ -162,7 +157,7 @@ class StatCanConnector(Connector):
         sid = f"statcan:V{vector}"
         title = fallback_title  # curated label is the most readable; keep StatCan's raw title in metadata
         return SeriesMeta(
-            sid, title, i.get("freq", "M"), unit, geo, category, self.license_id,
+            sid, title, i.get("freq"), unit, geo, category, self.license_id,   # no info: NULL, not "M"
             {
                 "vector": f"V{vector}",
                 "vector_id": vector,

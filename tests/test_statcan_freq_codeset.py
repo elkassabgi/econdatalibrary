@@ -8,13 +8,22 @@ The expected letter is DERIVED from StatCan's text in tests/fixtures/statcan_get
 (getCodeSets `object.frequency`, copied verbatim), never restated here by code number, so the test pins the
 rule, not a copy of the map:
   * the text names exactly one of Daily/Weekly/Monthly/Quarterly/Annual -> that letter;
-  * "Occasional <one of those>" -> that letter (the observations are at it; only the release is occasional);
+  * "Occasional Quarterly" / "Occasional Monthly" -> Q / M (the letter is the PERIOD TYPE: review AR-344
+    found every date of the 48 code-19 and 52 code-20 cubes on the quarter / month grid);
+  * "Occasional Daily" -> absent: StatCan's only two code-21 cubes, 17100009 "Population estimates,
+    quarterly" and 17100121 "Estimates of the number of non-permanent residents by type, quarterly", are
+    quarterly in our store (AR-344), so the text's "Daily" is false for every cube filed under it;
   * plain "Occasional" -> "irregular" (the contract's word, connectors/base.py);
   * anything else (Biweekly, Bimonthly, Semi-annual, Every N years) has no equivalent -> absent (NULL).
+
+BOTH StatCan maps are pinned: the cataloguer's FREQ and connectors/statcan/connector.py FREQ_MAP (the
+connector is run by jobs/run_connector.py and jobs/ingest_all.py and writes statcan:V rows).
 """
 import importlib.util
 import json
 import os
+
+import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURE = os.path.join(ROOT, "tests", "fixtures", "statcan_getCodeSets_frequency.json")
@@ -22,12 +31,22 @@ LETTER = {"daily": "D", "weekly": "W", "monthly": "M", "quarterly": "Q", "annual
 VOCAB = {"D", "W", "M", "Q", "A", "irregular"}          # connectors/base.py SeriesMeta.frequency
 
 
-def _freq():
-    spec = importlib.util.spec_from_file_location("_cat_statcan_freq_test",
-                                                  os.path.join(ROOT, "tools", "catalog_statcan_tables.py"))
+def _load(name, rel):
+    spec = importlib.util.spec_from_file_location(name, os.path.join(ROOT, *rel.split("/")))
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
-    return m.FREQ
+    return m
+
+
+def _freq():
+    return _load("_cat_statcan_freq_test", "tools/catalog_statcan_tables.py").FREQ
+
+
+def _connector_map():
+    return _load("_statcan_connector_freq_test", "connectors/statcan/connector.py").FREQ_MAP
+
+
+MAPS = {"tools/catalog_statcan_tables.FREQ": _freq, "connectors/statcan/connector.FREQ_MAP": _connector_map}
 
 
 def _codes():
@@ -41,6 +60,8 @@ def expected_letter(text: str):
     words = text.strip().lower().split()
     if words == ["occasional"]:
         return "irregular"
+    if words == ["occasional", "daily"]:        # 17100009 and 17100121 are quarterly (module docstring)
+        return None
     if len(words) == 2 and words[0] == "occasional":
         return LETTER.get(words[1])
     if len(words) == 1:
@@ -65,19 +86,37 @@ def test_the_fixture_is_the_full_code_list():
     assert {expected_letter(t) for t in codes.values()} == VOCAB | {None}
 
 
-def test_freq_matches_statcans_code_list():
-    bad = mismatches(_freq(), _codes())
-    assert not bad, "tools/catalog_statcan_tables.FREQ disagrees with StatCan's getCodeSets:\n  " + "\n  ".join(bad)
+@pytest.mark.parametrize("name", sorted(MAPS))
+def test_each_map_matches_statcans_code_list(name):
+    bad = mismatches(MAPS[name](), _codes())
+    assert not bad, f"{name} disagrees with StatCan's getCodeSets:\n  " + "\n  ".join(bad)
 
 
-def test_the_check_fails_on_the_map_it_replaced():
-    """Negative control: the pre-R1615 map must FAIL, on the very codes AR-343 named."""
-    old = {1: "A", 2: "A", 4: "Q", 6: "M", 7: "M", 9: "A", 11: "A", 12: "A", 13: "A",
-           14: "D", 15: "W", 16: "D", 17: "Q", 18: "M", 19: "M", 20: "Q", 21: "A"}
-    bad = mismatches(old, _codes())
-    assert len(bad) == 15
-    for code in (1, 9, 16, 18):
+def test_the_two_maps_are_the_same():
+    assert _connector_map() == _freq()
+
+
+def test_the_check_fails_on_the_maps_it_replaced():
+    """Negative controls: both pre-R1615 maps must FAIL, on the codes the reviews named."""
+    old_cat = {1: "A", 2: "A", 4: "Q", 6: "M", 7: "M", 9: "A", 11: "A", 12: "A", 13: "A",
+               14: "D", 15: "W", 16: "D", 17: "Q", 18: "M", 19: "M", 20: "Q", 21: "A"}
+    bad = mismatches(old_cat, _codes())
+    assert len(bad) == 15                    # every code but 6 Monthly and 12 Annual
+    for code in (1, 9, 16, 18, 21):
         assert any(b.startswith(f"{code} ") for b in bad)
+    old_conn = {1: "D", 21: "D", 2: "W", 4: "irregular", 7: "irregular", 6: "M", 20: "M", 9: "Q", 19: "Q",
+                11: "irregular", 12: "A", 13: "A", 14: "A", 15: "A", 16: "A", 17: "A", 18: "irregular"}
+    bad = mismatches(old_conn, _codes())
+    for code in (4, 7, 11, 13, 14, 15, 16, 17, 21):
+        assert any(b.startswith(f"{code} ") for b in bad), code
+    assert mismatches({**_freq(), 21: "D"}, _codes())       # AR-344 finding 1: D for 21 is caught
+
+
+def test_no_invented_fallback_in_the_connector():
+    """AR-344 finding 8: the connector turned an unlisted code into "irregular" and missing info into "M"."""
+    src = open(os.path.join(ROOT, "connectors", "statcan", "connector.py"), encoding="utf-8").read()
+    assert 'FREQ_MAP.get(o.get("frequencyCode"))' in src
+    assert 'FREQ_MAP.get(o.get("frequencyCode"), ' not in src and 'i.get("freq", ' not in src
 
 
 def test_each_single_error_is_caught():

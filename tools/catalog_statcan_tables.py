@@ -58,11 +58,16 @@ BATCH = 10_000
 # tests/fixtures/statcan_getCodeSets_frequency.json, which tests/test_statcan_freq_codeset.py pins this map
 # against). The map it replaces disagreed with that list on 15 of 17 codes - 9 Quarterly -> A, 18 Occasional
 # -> M, 1 Daily -> A, 16 every 5 years -> D - and labelled 415,015 of 467,611 statcan rows wrongly (R1615).
-# Rule: a code whose text names one of daily/weekly/monthly/quarterly/annual gets that letter; "Occasional X"
-# gets X's letter (the observations are at X, only the release is occasional); plain "Occasional" is
-# `irregular`. Codes with no equivalent in the contract - 4 Biweekly, 7 Bimonthly, 11 Semi-annual, 13-17
-# every 2/3/4/5/10 years - are left out and stay NULL: a wrong frequency is worse than an absent one.
-FREQ = {1: "D", 2: "W", 6: "M", 9: "Q", 12: "A", 18: "irregular", 19: "Q", 20: "M", 21: "D"}
+# Rule: a code whose text names one of daily/weekly/monthly/quarterly/annual gets that letter; "Occasional
+# Quarterly" (19) and "Occasional Monthly" (20) get Q and M; plain "Occasional" (18) is `irregular`.
+# For 19 and 20 the letter is the PERIOD TYPE, not a promise of one value per quarter or month: every date
+# of the 48 code-19 cubes is on the quarter grid and every date of the 52 code-20 cubes on the month grid,
+# but most are spaced unevenly or hold one date (review AR-344, measured on the store). 13-17 (every
+# 2/3/4/5/10 years) stay NULL all the same: their text names a SPACING, and A would claim a value every year.
+# Left out, so NULL (a wrong frequency is worse than an absent one): 4 Biweekly, 7 Bimonthly, 11
+# Semi-annual, 13-17, and 21 "Occasional Daily" - StatCan's only two code-21 cubes, 17100009 and 17100121,
+# are quarterly in our store (AR-344), so D would be false for every cube StatCan files under it.
+FREQ = {1: "D", 2: "W", 6: "M", 9: "Q", 12: "A", 18: "irregular", 19: "Q", 20: "M"}
 
 
 def key_prefix(prefix: str = "series") -> str:

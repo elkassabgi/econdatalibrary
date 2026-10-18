@@ -187,6 +187,31 @@ def test_a_range_that_differs_from_the_plan_after_the_write_fails(world, monkeyp
     assert rec["rows_not_as_planned"] == 1 and rec["rows_not_as_planned_first"] == ["statcan:30"]
 
 
+def test_another_column_changed_during_the_run_fails(world, monkeypatch, capsys):
+    m = world["m"]
+    real = m.apply_changes
+
+    def and_a_title(con, changes, batch):
+        n = real(con, changes, batch)
+        con.execute("UPDATE series SET title='changed' WHERE series_id='statcan:30'")
+        con.commit()
+        return n
+    monkeypatch.setattr(m, "apply_changes", and_a_title)
+    assert _apply(world, "--expect-rows", str(N_CHANGE)) == 1
+    assert "a column other than frequency changed" in capsys.readouterr().out
+    (run,) = list(world["receipts"].iterdir())
+    rec = json.load(open(run / "receipt.json", encoding="utf-8"))
+    assert rec["other_columns_unchanged"] is False and rec["rows_not_as_planned"] == 0
+
+
+def test_a_clean_run_records_the_other_columns_unchanged(world):
+    assert _apply(world, "--expect-rows", str(N_CHANGE)) == 0
+    (run,) = list(world["receipts"].iterdir())
+    rec = json.load(open(run / "receipt.json", encoding="utf-8"))
+    assert rec["other_columns_unchanged"] is True
+    assert rec["other_columns_sha256_before"] == rec["other_columns_sha256_after"]
+
+
 def test_a_row_changed_since_the_plan_stops_its_batch(world):
     m = world["m"]
     con = cp.connect_path(world["db"], write=True)

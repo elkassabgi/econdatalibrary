@@ -25,7 +25,12 @@ ORDER: plan -> rollback file (every planned row: series_id, old, new) and plan w
 frequency IS ?` (exactly 1 row, else the batch rolls back and the run stops), re-read and checked BEFORE commit
 -> the whole range re-read: exactly the planned rows changed, nothing else did -> receipt.json and changed_ids.txt
 (the ids a later D1 update would need; D1 is not touched here). A run killed part-way is resumed by re-running:
-rows already corrected are no longer in the plan. Receipts: logs/statcan_freq_fix/<UTC stamp>/.
+rows already corrected are no longer in the plan. Receipts: logs/statcan_freq_fix/<UTC stamp>_<pid>/. The
+receipt also holds a sha256 over every other column of the statcan rows, before and after (they must match).
+
+AFTER --apply (review AR-344): the self-hosted catalogue snapshot taken before it still carries the old labels,
+and the snapshot step refuses while that copy exists. So: receipt OK -> move the old snapshot aside -> take a
+new snapshot -> read two control rows in it: statcan:10100008 (daily) = D and statcan:10100004 (quarterly) = Q.
 """
 from __future__ import annotations
 
@@ -33,6 +38,7 @@ import argparse
 import collections
 import datetime as dt
 import glob
+import hashlib
 import importlib.util
 import json
 import os
@@ -93,6 +99,19 @@ def read_range(con) -> dict:
                             (lo, hi)).fetchall())
 
 
+def other_columns_hash(con) -> str:
+    """sha256 over every statcan row's columns OTHER than frequency, in series_id order: the receipt's
+    measured proof that the run changed nothing but frequency (review AR-344, finding 9)."""
+    cols = [r[1] for r in con.execute("PRAGMA table_info(series)") if r[1] != "frequency"]
+    lo, hi = _cat().source_range()
+    h = hashlib.sha256()
+    q = f"SELECT {', '.join(cols)} FROM series WHERE series_id >= ? AND series_id < ? ORDER BY series_id"
+    for row in con.execute(q, (lo, hi)):
+        h.update(json.dumps(row, ensure_ascii=False, default=str).encode("utf-8"))
+        h.update(b"\n")
+    return h.hexdigest()
+
+
 def make_plan(rows: dict, codes: dict) -> tuple:
     """(changes [(series_id, old, new)], census {(code, old, new): rows}, problems [str])."""
     freq = _cat().FREQ
@@ -139,8 +158,8 @@ def apply_changes(con, changes: list, batch: int) -> int:
         con.execute("BEGIN IMMEDIATE")
         try:
             for sid, old, new in part:
-                n = con.execute("UPDATE series SET frequency=? WHERE series_id=? AND frequency IS ?",
-                                (new, sid, old)).rowcount
+                n = con.execute("UPDATE series SET frequency=? WHERE series_id=? AND source_id='statcan' "
+                                "AND frequency IS ?", (new, sid, old)).rowcount
                 if n != 1:
                     raise RuntimeError(f"{sid}: {n} row(s) held frequency {old!r} - the row changed since the plan")
             for sid, _old, new in part:
@@ -252,8 +271,10 @@ def _run(a) -> int:
              "census": [[c, o, n, v] for (c, o, n), v in census.items()]}, indent=1, ensure_ascii=False)])
         print(f"rollback file written first: {os.path.join(out, 'rollback.jsonl')}", flush=True)
 
+        others_before = other_columns_hash(con)
         written = apply_changes(con, changes, a.batch)
         after = read_range(con)
+        others_after = other_columns_hash(con)
         want = dict(before)
         want.update({s: n for s, _o, n in changes})
         wrong = sorted(s for s in want.keys() | after.keys() if want.get(s, "<absent>") != after.get(s, "<absent>"))
@@ -262,12 +283,17 @@ def _run(a) -> int:
                    "before": dict(collections.Counter(str(v) for v in before.values())),
                    "after": dict(collections.Counter(str(v) for v in after.values())),
                    "rows_not_as_planned": len(wrong), "rows_not_as_planned_first": wrong[:20],
+                   "other_columns_sha256_before": others_before, "other_columns_sha256_after": others_after,
+                   "other_columns_unchanged": others_before == others_after,
                    "d1": "NOT touched - changed_ids.txt lists the ids a later D1 frequency update needs"}
         _write_lines(os.path.join(out, "receipt.json"), [json.dumps(receipt, indent=1)])
         _write_lines(os.path.join(out, "changed_ids.txt"), (s for s, _o, _n in changes))
         print(json.dumps(receipt, indent=1))
         if wrong:
             print(f"FAILED: {len(wrong):,} row(s) in the range differ from the plan - see {out}")
+            return 1
+        if others_before != others_after:
+            print(f"FAILED: a column other than frequency changed in the statcan range during the run - see {out}")
             return 1
         print(f"OK: {written:,} row(s) rewritten, every other statcan row unchanged; receipts in {out}")
         return 0
