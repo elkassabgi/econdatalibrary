@@ -390,11 +390,12 @@ def test_no_request_starts_once_the_budget_is_spent():
     assert http.calls == [] and s.requests == 0
 
 
-def test_a_timeout_the_budget_shortened_is_a_budget_cut_not_a_failure():
+def test_a_timeout_the_budget_shortened_is_a_budget_cut_not_a_failure(monkeypatch):
     import requests as _rq
+    monkeypatch.setattr(ssb.time, "sleep", lambda s: None)  # retries must not outlast the budget here
 
     class _DL:
-        budget, t0 = 30.0, time.monotonic() - 27.0          # 3 s left: the 120 s timeout is cut
+        budget, t0 = 130.0, time.monotonic() - 30.0         # 100 s left: the 120 s timeout is cut
 
     class _Slow:
         def post(self, url, **kw):
