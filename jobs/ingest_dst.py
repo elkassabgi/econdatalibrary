@@ -82,12 +82,28 @@ def get_json(url: str, retries: int = 3) -> dict | list | None:
     return None
 
 
+# The FINAL answer of the last post_json call: its HTTP status (None when the last attempt raised before any
+# answer) and DST's errorTypeCode. post_json returns None for every kind of failure; the BULK fallback in
+# _post_rows must fire on exactly one kind - a final HTTP 500 - so the cause is kept here.
+_LAST_POST = {"status": None, "code": None}
+
+
+def _error_code(r) -> "str | None":
+    try:
+        return (r.json() or {}).get("errorTypeCode")
+    except Exception:                                                # noqa: BLE001 - a non-JSON error body
+        return None
+
+
 def post_json(url: str, body: dict, retries: int = 3) -> dict | None:
+    _LAST_POST.update(status=None, code=None)
     for attempt in range(retries):
         try:
             r = requests.post(url, json=body, headers=UA, timeout=120)
             if r.status_code == 200:
+                _LAST_POST.update(status=200, code=None)
                 return r.json()
+            _LAST_POST.update(status=r.status_code, code=_error_code(r))
             if r.status_code in (400, 403, 404):
                 return None
             if r.status_code == 429:
@@ -95,6 +111,7 @@ def post_json(url: str, body: dict, retries: int = 3) -> dict | None:
             log(f"  POST HTTP {r.status_code}: {url[-60:]}")
         except Exception as e:
             _reraise_fence(e)
+            _LAST_POST.update(status=None, code=None)                 # this attempt got no answer
             log(f"  POST ERR: {e}")
         time.sleep(5 * (attempt + 1))
     return None
@@ -293,9 +310,9 @@ def parse_jsonstat(data: dict, table_id: str) -> list[tuple[str, dt.date, float]
     return results
 
 
-def query_table(table_id: str, variables: list[dict]) -> list[tuple[str, dt.date, float]]:
+def query_table(table_id: str, variables: list[dict], suppressed=None) -> list[tuple[str, dt.date, float]]:
     """Fetch data for one DST table (rows only - the bulk path's contract, unchanged)."""
-    return query_table_detailed(table_id, variables)[0]
+    return query_table_detailed(table_id, variables, suppressed=suppressed)[0]
 
 
 # DST answers HTTP 500 to a data POST with too many TIME values even when MAX_CELLS holds (DNVALD, 2026-09-29:
@@ -318,8 +335,10 @@ def _is_undated_window(code: str) -> bool:
     return bool(_PART_YEAR.match(code))
 
 
-def query_table_detailed(table_id: str, variables: list[dict]) -> "tuple[list[tuple[str, dt.date, float]], str]":
-    """(rows, outcome). outcome is one of
+def query_table_detailed(table_id: str, variables: list[dict],
+                         suppressed=None) -> "tuple[list[tuple[str, dt.date, float]], str]":
+    """(rows, outcome). `suppressed` is the table's tableinfo `suppressedDataValue`, used only by the BULK fallback
+    (_post_rows, parse_bulk). outcome is one of
         ok            rows parsed
         no_selection  the table offers nothing to select - legitimately empty
         failed        a data POST failed (5xx/timeout after retries, 400/403/404; any one chunk fails the table) - the
@@ -334,13 +353,7 @@ def query_table_detailed(table_id: str, variables: list[dict]) -> "tuple[list[tu
         return [], "no_selection"
     tvar = next((s for s in selection if s.get("_time")), None)
     if tvar is None or len(tvar["values"]) <= TIME_CHUNK:
-        resp = _post_data(table_id, selection)
-        if resp is None:
-            return [], "failed"
-        rows = parse_jsonstat(resp, table_id)
-        if rows:
-            return rows, "ok"
-        return [], _why_empty(resp)
+        return _post_rows(table_id, selection, variables, suppressed)
     # MORE THAN TIME_CHUNK TIME VALUES: CHUNKS FROM THE START. The full POST was tried first, and for the daily
     # tables it fails every time (DNVALD, DNRENTD: 3 x HTTP 500 plus ~30 s of back-off, ~110 s per table per day,
     # review R1297) - a cost with no case where it helped that chunks do not also cover (BEV3A, 1,506 values,
@@ -348,14 +361,12 @@ def query_table_detailed(table_id: str, variables: list[dict]) -> "tuple[list[tu
     rows, spans = [], 0
     for i in range(0, len(tvar["values"]), TIME_CHUNK):
         part = [dict(s, values=tvar["values"][i:i + TIME_CHUNK]) if s is tvar else s for s in selection]
-        chunk = _post_data(table_id, part)
-        if chunk is None:
+        got, why = _post_rows(table_id, part, variables, suppressed)
+        if why == "failed":
             return [], "failed"              # a table is whole or owed: never keep the chunks before the failure
-        got = parse_jsonstat(chunk, table_id)
         if got:
             rows.extend(got)
             continue
-        why = _why_empty(chunk)
         if why == "all_null":
             continue                         # an all-missing stretch (holidays, a gap) - the other chunks stand
         if why == "span_time":
@@ -384,6 +395,161 @@ def _post_data(table_id, selection):
     resp = post_json(f"{BASE}/data", body)
     time.sleep(RATE)
     return resp or None
+
+
+# THE BULK FALLBACK (2026-10-19). Since 2026-09-30 DST answers every data POST for VNASFK and VNKSFK - even ONE
+# cell, in JSONSTAT and in CSV - with HTTP 500 {"errorTypeCode":"SYSTEM-100"}, while the same selection in its
+# streaming BULK format answers 200. Measured live 2026-10-19: 2 of the 24 tables with a version variable fail
+# this way, and the control FOLK1A answers 200 in all three formats. So when a JSONSTAT POST's FINAL answer is
+# HTTP 500 - and only then: never a 4xx, a 429, a 502/503/504, a timeout or a 200 - the same selection is asked
+# for once in BULK with codes (valuePresentation=Code) and parsed into exactly the rows parse_jsonstat makes.
+# Every use is printed and appended here; the fetcher resets the list per pass and names it in its note.
+BULK_FALLBACKS: list = []
+BULK_VALUE_COL = "INDHOLD"
+
+
+def _post_rows(table_id, selection, variables, suppressed=None) -> "tuple[list[tuple[str, dt.date, float]], str]":
+    """One data POST as (rows, why): why is ok | failed | all_null | span_time | unparsed (query_table_detailed)."""
+    _LAST_POST.update(status=None, code=None)
+    resp = _post_data(table_id, selection)
+    if resp is not None:
+        rows = parse_jsonstat(resp, table_id)
+        return (rows, "ok") if rows else ([], _why_empty(resp))
+    if _LAST_POST["status"] != 500:
+        return [], "failed"
+    log(f"  {table_id}: JSONSTAT POST answered HTTP 500 ({_LAST_POST['code'] or 'no error code'}); "
+        f"asking for the same selection in BULK format")
+    BULK_FALLBACKS.append(table_id)
+    text = _post_bulk(table_id, selection)
+    if text is None:
+        log(f"  {table_id}: the BULK POST failed too")
+        return [], "failed"
+    rows = parse_bulk(text, table_id, variables, selection, suppressed)
+    if rows is None:
+        log(f"  {table_id}: the BULK body does not have the requested columns - not parsed")
+        return [], "unparsed"
+    log(f"  {table_id}: BULK fallback parsed {len(rows):,} rows")
+    return (rows, "ok") if rows else ([], _why_empty_bulk(text, selection, suppressed))
+
+
+def _post_bulk(table_id, selection, retries: int = 3) -> "str | None":
+    """The same selection as _post_data, in DST's streaming BULK format with CODES (not labels), as text."""
+    body = {"table": table_id, "format": "BULK", "lang": "en", "valuePresentation": "Code",
+            "variables": [{"code": s["code"], "values": _wire_values(s)} for s in selection]}
+    out = None
+    for attempt in range(retries):
+        try:
+            r = requests.post(f"{BASE}/data", json=body, headers=UA, timeout=300)
+            if r.status_code == 200:
+                out = r.content.decode("utf-8-sig")
+                break
+            if r.status_code in (400, 403, 404):
+                break
+            if r.status_code == 429:
+                log("  429 throttle, sleeping 30s"); time.sleep(30); continue
+            log(f"  BULK POST HTTP {r.status_code}: {table_id}")
+        except Exception as e:
+            _reraise_fence(e)
+            log(f"  BULK POST ERR: {e}")
+        time.sleep(5 * (attempt + 1))
+    time.sleep(RATE)
+    return out
+
+
+def _bulk_records(text, selection):
+    """(header_ok, data rows) of a BULK body. The header must be the requested variable ids, upper-cased as DST
+    writes them, in request order, then the value column - anything else is refused, never guessed at."""
+    import csv
+    import io
+    recs = list(csv.reader(io.StringIO(text.lstrip(chr(0xFEFF))), delimiter=";"))
+    want = [str(s["code"]).upper() for s in selection] + [BULK_VALUE_COL]
+    if not recs or [h.strip().upper() for h in recs[0]] != want:
+        return False, []
+    body = [r for r in recs[1:] if r]
+    if any(len(r) != len(want) for r in body):
+        return False, []
+    return True, body
+
+
+def _finite(x) -> "float | None":
+    try:
+        v = float(str(x).strip())
+    except (TypeError, ValueError):
+        return None
+    return v if v == v and v not in (float("inf"), float("-inf")) else None
+
+
+def parse_bulk(text: str, table_id: str, variables: list[dict], selection: list[dict], suppressed=None):
+    """A BULK (valuePresentation=Code) body as the SAME (series_key, obs_date, value) rows parse_jsonstat makes for
+    the same selection, or None when the body does not have the requested columns.
+
+    series_key = 'DST:<table>' + ':<id>=<code>' for every non-time variable in request order: JSON-stat lists the
+    dimensions in that order, and its one extra dimension (ContentsCode, role metric) is skipped by parse_jsonstat
+    and absent here. The time column is the tableinfo variable flagged time; its date is parse_date(code), else
+    parse_date(label) with the label from tableinfo (parse_jsonstat's positional-code fallback). A missing value
+    ('..', empty, or anything that is not a finite number) is skipped, as JSON-stat's null is.
+
+    BULK STREAMS ONLY THE CELLS THAT EXIST. JSON-stat is dense: a cell the table does not hold is written as the
+    table's `suppressedDataValue` (tableinfo; "0" on the tables measured), so JSON-stat carries a 0.0 row there and
+    BULK carries nothing (measured 2026-10-19: VAN1UGE 248 JSON-stat rows, 17 BULK rows, the 231 others all 0.0).
+    Pass that value as `suppressed` and every selected cell BULK left out is filled with it, exactly as JSON-stat
+    fills it; a suppressed value that is not a number (e.g. '..') fills nothing, as JSON-stat's null stores nothing."""
+    ok, body = _bulk_records(text, selection)
+    if not ok:
+        return None
+    t_idx = next((i for i, s in enumerate(selection) if s.get("_time")), None)
+    if t_idx is None:
+        return None
+    tcode = selection[t_idx]["code"]
+    tvar = next((v for v in variables if v.get("id") == tcode), {})
+    labels = {str(v.get("id")): str(v.get("text") or "") for v in tvar.get("values", [])}
+    others = [(i, s["code"]) for i, s in enumerate(selection) if i != t_idx]
+
+    def _row(codes, v):
+        code = codes[t_idx]
+        obs_date = parse_date(code) or parse_date(labels.get(code, ""))
+        if obs_date is None:
+            return None
+        return (":".join([f"DST:{table_id}"] + [f"{cid}={codes[i]}" for i, cid in others]), obs_date, v)
+
+    rows, present = [], set()
+    for rec in body:
+        codes = tuple(rec[:-1])
+        present.add(codes)
+        v = _finite(rec[-1])
+        if v is None:
+            continue
+        r = _row(codes, v)
+        if r is not None:
+            rows.append(r)
+    fill = _finite(suppressed) if suppressed is not None else None
+    if fill is not None:
+        import itertools
+        for codes in itertools.product(*[[str(x) for x in s["values"]] for s in selection]):
+            if codes not in present:
+                r = _row(codes, fill)
+                if r is not None:
+                    rows.append(r)
+    return rows
+
+
+def _why_empty_bulk(text, selection, suppressed=None) -> str:
+    """_why_empty for a BULK body that gave no rows: every value missing, every period an undated window, or ours.
+    A cell BULK left out counts as JSON-stat writes it - the suppressed value - so the verdict is JSON-stat's."""
+    _ok, body = _bulk_records(text, selection)
+    numeric = any(_finite(r[-1]) is not None for r in body)
+    if not numeric and suppressed is not None and _finite(suppressed) is not None:
+        n_cells = 1
+        for s in selection:
+            n_cells *= len(s["values"])
+        numeric = len({tuple(r[:-1]) for r in body}) < n_cells       # some cell is filled with the number
+    if not numeric:
+        return "all_null"
+    tvar = next((s for s in selection if s.get("_time")), None)
+    codes = [str(c) for c in (tvar or {}).get("values", [])]
+    if codes and all(_is_undated_window(c) for c in codes):
+        return "span_time"
+    return "unparsed"
 
 
 def _why_empty(resp) -> str:
@@ -498,7 +664,7 @@ def main():
                 if not variables:
                     continue
 
-                rows = query_table(table_id, variables)
+                rows = query_table(table_id, variables, suppressed=meta.get("suppressedDataValue"))
                 n = 0
                 for key, d, v in rows:
                     tok = (key, d)
