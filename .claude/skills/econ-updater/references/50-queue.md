@@ -2061,7 +2061,7 @@ proof of a failing run. Triage each on its own.
 
 PR #173 fetches VNASFK and VNKSFK in BULK format (their JSONSTAT and CSV POSTs answer HTTP 500 SYSTEM-100 since
 2026-09-30) and declares dst `csv_grain: table`, so the health gate's remedy for an owed re-derive no longer names
-the bulk campaign and `tools/derive_csv_bulk.py` refuses a dst campaign (R498). Two items stay open:
+the bulk campaign and `tools/derive_csv_bulk.py` refuses a dst campaign (R498). Open items:
 
 1. **dst does not report `merged_rows=0` on a pass that merges nothing.** The orchestrator's no-cursors branch then
    books `full_rederive_owed` on any partial pass with no merge - a single DST bad hour is enough. The row booked
@@ -2070,13 +2070,28 @@ the bulk campaign and `tools/derive_csv_bulk.py` refuses a dst campaign (R498). 
    Fix shape: dst sets `merged_rows=0` when no subject merged (orchestrate.py treats `merged_rows == 0` as
    "nothing merged, coherence met"). Until then, clear a dst row only after the byte-compare and an R2
    LastModified re-check, with `tools/derive_csv_bulk.py --source dst --clear-owed-only`.
-2. **JSON-stat's suppressed zeros are SERVED today.** DST's JSON-stat is dense: a cell the table does not hold
-   arrives as the table's `suppressedDataValue` ("0"), and the JSONSTAT path stores it as a real 0.0. JSON-stat
-   carries no status for these cells, so it cannot tell them from a published zero; BULK streams only the cells
-   that exist. Measured on the recorded fixtures (tests/fixtures/dst_bulk/): VAN1UGE 231 of 248 JSON-stat rows
-   are such cells, REGR63 57 of 1,232, ANB10 19 of 900. The BULK path (PR #173) does not store them; the JSONSTAT
-   path still does. This needs its own fix AND a served-data plan (which stored 0.0 rows are fills, how to
-   find them across the store, what users have downloaded) - do not change it as a side effect of another fix.
+2. ~~JSON-stat's suppressed zeros are SERVED today~~ - WITHDRAWN 2026-10-19 (R1631): that item was WRONG. DST's
+   API help page defines a combination BULK leaves out as the number 0 ("Hvis en kombination af vaerdier mangler,
+   er observationen for denne kombination 0 (tallet nul)"), and tableinfo's `suppressedDataValue` as the value for
+   missing-row observations in the streaming formats. JSON-stat and DST's CSV write those cells as that value, so the
+   stored 0.0 rows are the publisher's value and nothing served needs to change for it. PR #173 had dropped the fill
+   on the BULK path on the wrong premise; the follow-up PR restores it (the table's own suppressedDataValue, read at
+   run time; a non-numeric value fills nothing and is counted), with a second BULK read in a different shape and a
+   store-side overwrite bound against a body cut short. Do NOT remove stored or served zeros on this basis.
+3. **Withdrawn cells keep their old value (SIU002).** DST now publishes 966 of SIU002's stored 2025-12-31 cells as
+   ".." (missing / confidential / too uncertain); the store and the served CSV still hold them, 269 as 0.0 and 697 as
+   non-zero values (measured 2026-10-19 against DST's live BULK and JSON-stat answers). A ".." gives no row and merge never deletes, so a value
+   DST withdraws stays served for ever. Measured on ONE table: census all served tables first (current JSON-stat
+   nulls against the store), then a removal keyed on (series_key, obs_date) through an explicit overwrite, archive
+   first, read-back against R2's parquet, catalogue date drift listed (D1 is frozen). Removing served values is a
+   deletion: Ahmed's decision, with the measured count.
+4. **35 served tables are one all-zero series, from the MAX_CELLS collapse** (37 all-zero store tables, 35 of them
+   catalogued; measured 2026-10-19 on a mirror of the R2 store). Over 50,000 cells `_query_selection` cuts every non-time variable to a
+   "total" code, else the FIRST code; when DST stores no row for that combination the table becomes DST's 0 for
+   every period (DNINTVAL, unit DKK bn, one key, 321 rows, all 0; DNBETAL; FERIEH2). DST's 0 is right for the
+   combination chosen; the chosen combination is the defect. Fix shape: pick the collapse combination from cells
+   DST stores (one BULK probe of the candidate codes). That changes the series_key inside a table-grain id, so it
+   is a RE-GRAIN: clean re-pull per table (R22), not a merge.
 
 Also seen, smaller: tables that store nothing (21 span_time tables plus 2 empty ones in run 39161839205) are due on
 every pass, because `due` includes "subject file missing"; 25 due tables drained in 4.8 min that run.

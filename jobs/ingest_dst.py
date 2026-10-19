@@ -24,6 +24,7 @@ Run: python jobs/ingest_dst.py
 """
 from __future__ import annotations
 import datetime as dt, json, os, re, time
+import collections
 from collections import defaultdict
 import pyarrow as pa, pyarrow.parquet as pq
 import requests
@@ -310,9 +311,9 @@ def parse_jsonstat(data: dict, table_id: str) -> list[tuple[str, dt.date, float]
     return results
 
 
-def query_table(table_id: str, variables: list[dict]) -> list[tuple[str, dt.date, float]]:
+def query_table(table_id: str, variables: list[dict], suppressed=None) -> list[tuple[str, dt.date, float]]:
     """Fetch data for one DST table (rows only - the bulk path's contract, unchanged)."""
-    return query_table_detailed(table_id, variables)[0]
+    return query_table_detailed(table_id, variables, suppressed=suppressed)[0]
 
 
 # DST answers HTTP 500 to a data POST with too many TIME values even when MAX_CELLS holds (DNVALD, 2026-09-29:
@@ -335,8 +336,10 @@ def _is_undated_window(code: str) -> bool:
     return bool(_PART_YEAR.match(code))
 
 
-def query_table_detailed(table_id: str, variables: list[dict]) -> "tuple[list[tuple[str, dt.date, float]], str]":
-    """(rows, outcome). A data POST whose final answer is HTTP 500 is retried in BULK format (_post_rows).
+def query_table_detailed(table_id: str, variables: list[dict],
+                         suppressed=None) -> "tuple[list[tuple[str, dt.date, float]], str]":
+    """(rows, outcome). A data POST whose final answer is HTTP 500 is retried in BULK format (_post_rows);
+    `suppressed` is the table's tableinfo suppressedDataValue, the BULK path's value for a left-out cell.
     outcome is one of
         ok            rows parsed
         no_selection  the table offers nothing to select - legitimately empty
@@ -352,7 +355,7 @@ def query_table_detailed(table_id: str, variables: list[dict]) -> "tuple[list[tu
         return [], "no_selection"
     tvar = next((s for s in selection if s.get("_time")), None)
     if tvar is None or len(tvar["values"]) <= TIME_CHUNK:
-        return _post_rows(table_id, selection, variables)
+        return _post_rows(table_id, selection, variables, suppressed)
     # MORE THAN TIME_CHUNK TIME VALUES: CHUNKS FROM THE START. The full POST was tried first, and for the daily
     # tables it fails every time (DNVALD, DNRENTD: 3 x HTTP 500 plus ~30 s of back-off, ~110 s per table per day,
     # review R1297) - a cost with no case where it helped that chunks do not also cover (BEV3A, 1,506 values,
@@ -360,7 +363,7 @@ def query_table_detailed(table_id: str, variables: list[dict]) -> "tuple[list[tu
     rows, spans = [], 0
     for i in range(0, len(tvar["values"]), TIME_CHUNK):
         part = [dict(s, values=tvar["values"][i:i + TIME_CHUNK]) if s is tvar else s for s in selection]
-        got, why = _post_rows(table_id, part, variables)
+        got, why = _post_rows(table_id, part, variables, suppressed)
         if why == "failed":
             return [], "failed"              # a table is whole or owed: never keep the chunks before the failure
         if got:
@@ -401,22 +404,33 @@ def _post_data(table_id, selection):
 # streaming BULK format answers 200. Measured live 2026-10-19: of the 23 tables with a version variable plus NASFK,
 # these 2 fail this way, and the control FOLK1A answers 200 in all three formats. So when a JSONSTAT POST's FINAL
 # answer is HTTP 500 - and only then: never a 4xx, a 429, a 502/503/504, a timeout or a 200 - the same selection is
-# asked for in BULK with codes (valuePresentation=Code; up to 3 tries) and parsed into the rows parse_jsonstat makes
-# for every cell BULK returns.
+# asked for in BULK with codes (valuePresentation=Code; up to 3 tries) and parsed into the rows parse_jsonstat makes.
 #
-# BULK STREAMS ONLY THE CELLS A TABLE HOLDS, AND THEY ARE NOT FILLED IN. JSON-stat is dense: a cell DST does not hold
-# arrives as the table's suppressedDataValue ("0"), a zero nobody published (VAN1UGE, measured 2026-10-19: 248
-# JSON-stat rows, of which 231 are such 0.0 cells; BULK streams 17). Copying that zero would also turn a body that was
-# cut short into zeros with the full row count (review AR-348). So the BULK path stores what BULK returns, and the
-# number of selected cells it did NOT return is printed and counted. VNASFK/VNKSFK stream 31 of 31 and 110 of 110.
+# A COMBINATION BULK LEAVES OUT IS THE NUMBER DST TELLS US TO USE. DST's API help page, BULK section: "Nogle
+# observationer udelades. Hvis en kombination af vaerdier mangler, er observationen for denne kombination 0 (tallet
+# nul)" (some observations are omitted; a missing combination is 0, the number zero); and, December 2017, the
+# tableinfo field suppressedDataValue "skal anvendes for manglende-raekke-observationer i streaming-formaterne" (is
+# the value for missing-row observations in the streaming formats). JSON-stat and DST's CSV write those cells as
+# that value. So every selected cell the body leaves out is filled with THIS table's suppressedDataValue, read from
+# its tableinfo at run time: a finite number fills; an absent or non-numeric value fills nothing, and the cells are
+# counted as "no fill value". A row DST does send with ".." is a represented cell without a number (missing,
+# confidential or too uncertain) and is never filled.
 #
-# Every use is recorded in BULK_FALLBACKS as {"table", "cells", "omitted"} (omitted None when no BULK body was
-# parsed); the fetcher resets the list per pass and names each table, with its omitted count, in its note.
+# A BODY CUT SHORT WOULD BECOME FILLED CELLS (review AR-348 G1), and a BULK body carries no length or end marker.
+# Two guards here, a third in the fetcher (review AR-349 C4): (a) the body is read a SECOND time in a different
+# shape - the time values (else the largest other variable) split in two halves, one POST each - and the union of
+# the two halves' parsed records must equal the first body's records, compared as record multisets because DST
+# does not promise the row order; a cut that depends on size or position cannot give the same records both ways.
+# (b) The fill applies only to cells of the parsed selection, after the header, field-count and code checks.
+# (c) dst.py refuses the fill when it would overwrite more than a small number of stored non-zero values.
+#
+# Every use is recorded in BULK_FALLBACKS (one dict per POST that fell back: table, cells, streamed, filled,
+# nofill, fill_value, status, filled_cells); the fetcher resets the list per pass and names each table in its note.
 BULK_FALLBACKS: list = []
 BULK_VALUE_COL = "INDHOLD"
 
 
-def _post_rows(table_id, selection, variables) -> "tuple[list[tuple[str, dt.date, float]], str]":
+def _post_rows(table_id, selection, variables, suppressed=None) -> "tuple[list[tuple[str, dt.date, float]], str]":
     """One data POST as (rows, why): why is ok | failed | all_null | span_time | unparsed (query_table_detailed)."""
     _LAST_POST.update(status=None, code=None)
     resp = _post_data(table_id, selection)
@@ -428,20 +442,36 @@ def _post_rows(table_id, selection, variables) -> "tuple[list[tuple[str, dt.date
     cells = _n_cells(selection)
     log(f"  {table_id}: JSONSTAT POST answered HTTP 500 ({_LAST_POST['code'] or 'no error code'}); "
         f"asking for the same selection in BULK format")
-    rec = {"table": table_id, "cells": cells, "omitted": None}
+    rec = {"table": table_id, "cells": cells, "streamed": None, "filled": 0, "nofill": 0,
+           "fill_value": suppressed, "status": "bulk_failed", "filled_cells": set()}
     BULK_FALLBACKS.append(rec)
     text = _post_bulk(table_id, selection)
     if text is None:
         log(f"  {table_id}: the BULK POST failed too")
         return [], "failed"
-    rows, omitted = _bulk_parse(text, table_id, variables, selection)
-    if rows is None:
+    ok, body = _bulk_records(text, selection)
+    if not ok:
+        rec["status"] = "not_the_selection"
         log(f"  {table_id}: the BULK body is not the requested selection (columns or codes) - not parsed")
         return [], "unparsed"
-    rec["omitted"] = omitted
-    log(f"  {table_id}: BULK fallback parsed {len(rows):,} rows; {omitted:,} of {cells:,} selected cells were "
-        f"not streamed and are not stored (JSON-stat would have written the table's suppressed value there)")
-    return (rows, "ok") if rows else ([], _why_empty_bulk(text, selection))
+    second = _second_read(table_id, selection)
+    if second is None:
+        rec["status"] = "second_read_failed"
+        log(f"  {table_id}: the second BULK read (two halves) failed or was not the selection - stays owed")
+        return [], "failed"
+    first = collections.Counter(tuple(r) for r in body)
+    if second != first:
+        rec["status"] = "reads_disagree"
+        log(f"  {table_id}: the two BULK reads disagree ({sum((first - second).values())} record(s) only in the "
+            f"first, {sum((second - first).values())} only in the halves) - a body cut short? stays owed")
+        return [], "failed"
+    rows, st = _bulk_rows(body, table_id, variables, selection, suppressed)
+    rec.update(status="ok", streamed=st["streamed"], filled=st["filled"], nofill=st["nofill"],
+               filled_cells=st["filled_cells"])
+    log(f"  {table_id}: BULK fallback parsed {len(rows):,} rows; {st['streamed']:,} of {cells:,} cells streamed, "
+        f"{st['filled']:,} filled with the table's suppressedDataValue {suppressed!r}, {st['nofill']:,} left out "
+        f"with no fill value")
+    return (rows, "ok") if rows else ([], _why_empty_bulk(text, selection, suppressed))
 
 
 def _n_cells(selection) -> int:
@@ -476,6 +506,42 @@ def _post_bulk(table_id, selection, retries: int = 3) -> "str | None":
     return out
 
 
+def _split_index(selection) -> "int | None":
+    """Which variable the second read splits: the time variable if it has 2+ values, else the non-time variable
+    with the most values (2+), skipping one whose values DST would read as a comparison ('<15'): a part of such a
+    variable must be sent by id, which DST answers with HTTP 400 (_wire_values). None: nothing can be split."""
+    t = next((i for i, s in enumerate(selection) if s.get("_time")), None)
+    if t is not None and len(selection[t]["values"]) >= 2:
+        return t
+    cand = [(len(s["values"]), i) for i, s in enumerate(selection)
+            if not s.get("_time") and len(s["values"]) >= 2 and not any(str(v)[:1] in "<>" for v in s["values"])]
+    return max(cand)[1] if cand else None
+
+
+def _second_read(table_id, selection) -> "collections.Counter | None":
+    """The selection read again in a DIFFERENT shape: two POSTs, one per half of one variable's values (or the same
+    POST again when no variable can be split - a one-cell body). Returns the multiset of parsed records, or None when
+    a read failed or a half was not its selection."""
+    i = _split_index(selection)
+    if i is None:
+        parts = [selection]
+    else:
+        vals = list(selection[i]["values"])
+        h = len(vals) // 2
+        parts = [[dict(s, values=v, _all=False) if k == i else s for k, s in enumerate(selection)]
+                 for v in (vals[:h], vals[h:])]
+    out = collections.Counter()
+    for part in parts:
+        text = _post_bulk(table_id, part)
+        if text is None:
+            return None
+        ok, body = _bulk_records(text, part)
+        if not ok:
+            return None
+        out.update(tuple(r) for r in body)
+    return out
+
+
 def _bulk_records(text, selection):
     """(ok, data rows) of a BULK body. Refused (ok False) unless the header is the requested variable ids, upper-cased
     as DST writes them, in request order, then the value column; every row has that many fields; and every code in
@@ -505,49 +571,78 @@ def _finite(x) -> "float | None":
     return v if v == v and v not in (float("inf"), float("-inf")) else None
 
 
-def _bulk_parse(text: str, table_id: str, variables: list[dict], selection: list[dict]):
-    """(rows, omitted): rows as parse_bulk; omitted = selected cells the body did not carry. (None, None) if refused."""
-    ok, body = _bulk_records(text, selection)
-    if not ok:
-        return None, None
+def _bulk_rows(body, table_id, variables, selection, suppressed=None):
+    """(rows, stats) from checked BULK records: the streamed rows parse_jsonstat would make, plus every selected
+    cell the body left out filled with `suppressed` when it is a finite number. stats: streamed (records), filled
+    (rows emitted by the fill), nofill (left-out cells with no fill value), filled_cells {(key, date)}."""
     t_idx = next((i for i, s in enumerate(selection) if s.get("_time")), None)
     if t_idx is None:
-        return None, None
+        return [], {"streamed": len(body), "filled": 0, "nofill": 0, "filled_cells": set()}
     tcode = selection[t_idx]["code"]
     tvar = next((v for v in variables if v.get("id") == tcode), {})
     labels = {str(v.get("id")): str(v.get("text") or "") for v in tvar.get("values", [])}
     others = [(i, s["code"]) for i, s in enumerate(selection) if i != t_idx]
-    rows, present = [], set()
-    for rec in body:
-        present.add(tuple(rec[:-1]))
-        v = _finite(rec[-1])
-        if v is None:
-            continue
-        code = rec[t_idx]
+
+    def _row(codes, v):
+        code = codes[t_idx]
         obs_date = parse_date(code) or parse_date(labels.get(code, ""))
         if obs_date is None:
-            continue
-        rows.append((":".join([f"DST:{table_id}"] + [f"{cid}={rec[i]}" for i, cid in others]), obs_date, v))
-    return rows, _n_cells(selection) - len(present)
+            return None
+        return (":".join([f"DST:{table_id}"] + [f"{cid}={codes[i]}" for i, cid in others]), obs_date, v)
+
+    rows, present = [], set()
+    for rec in body:
+        codes = tuple(rec[:-1])
+        present.add(codes)
+        v = _finite(rec[-1])
+        if v is None:
+            continue                     # '..': a represented cell with no number - never filled
+        r = _row(codes, v)
+        if r is not None:
+            rows.append(r)
+    fill = _finite(suppressed) if suppressed is not None else None
+    filled, nofill, filled_cells = 0, 0, set()
+    missing = _n_cells(selection) - len(present)
+    if missing:
+        if fill is None:
+            nofill = missing
+        else:
+            import itertools
+            for codes in itertools.product(*[[str(x) for x in s["values"]] for s in selection]):
+                if codes not in present:
+                    r = _row(codes, fill)
+                    if r is not None:
+                        rows.append(r)
+                        filled += 1
+                        filled_cells.add((r[0], r[1]))
+    return rows, {"streamed": len(body), "filled": filled, "nofill": nofill, "filled_cells": filled_cells}
 
 
-def parse_bulk(text: str, table_id: str, variables: list[dict], selection: list[dict]):
-    """A BULK (valuePresentation=Code) body as (series_key, obs_date, value) rows built exactly as parse_jsonstat
-    builds them, for the cells the body carries - or None when the body is not the requested selection.
+def parse_bulk(text: str, table_id: str, variables: list[dict], selection: list[dict], suppressed=None):
+    """A BULK (valuePresentation=Code) body as the (series_key, obs_date, value) rows parse_jsonstat makes for the
+    same selection, or None when the body is not the requested selection.
 
     series_key = 'DST:<table>' + ':<id>=<code>' for every non-time variable in request order: JSON-stat lists the
     dimensions in that order, and its one extra dimension (ContentsCode, role metric) is skipped by parse_jsonstat
     and absent here. The time column is the tableinfo variable flagged time; its date is parse_date(code), else
-    parse_date(label) with the label from tableinfo (parse_jsonstat's positional-code fallback). A missing value
-    ('..', empty, or anything that is not a finite number) is skipped, as JSON-stat's null is. A selected cell the
-    body does not carry gives no row (see the BULK FALLBACK note above: JSON-stat would show it as a fake 0.0)."""
-    return _bulk_parse(text, table_id, variables, selection)[0]
+    parse_date(label) with the label from tableinfo (parse_jsonstat's positional-code fallback). A '..' value is
+    skipped, as JSON-stat's null is. A selected cell the body leaves out is filled with `suppressed` (the table's
+    tableinfo suppressedDataValue) when that is a finite number - DST's documented value for it, and what JSON-stat
+    writes there - and gives no row otherwise."""
+    ok, body = _bulk_records(text, selection)
+    if not ok:
+        return None
+    return _bulk_rows(body, table_id, variables, selection, suppressed)[0]
 
 
-def _why_empty_bulk(text, selection) -> str:
-    """_why_empty for a BULK body that gave no rows: no number at all, every period an undated window, or ours."""
+def _why_empty_bulk(text, selection, suppressed=None) -> str:
+    """_why_empty for a BULK body that gave no rows: every value missing, every period an undated window, or ours.
+    A left-out cell counts as JSON-stat writes it - the fill value - so the verdict is JSON-stat's."""
     _ok, body = _bulk_records(text, selection)
-    if not any(_finite(r[-1]) is not None for r in body):
+    numeric = any(_finite(r[-1]) is not None for r in body)
+    if not numeric and suppressed is not None and _finite(suppressed) is not None:
+        numeric = len({tuple(r[:-1]) for r in body}) < _n_cells(selection)   # some cell is filled with the number
+    if not numeric:
         return "all_null"
     tvar = next((s for s in selection if s.get("_time")), None)
     codes = [str(c) for c in (tvar or {}).get("values", [])]
@@ -668,7 +763,7 @@ def main():
                 if not variables:
                     continue
 
-                rows = query_table(table_id, variables)
+                rows = query_table(table_id, variables, suppressed=meta.get("suppressedDataValue"))
                 n = 0
                 for key, d, v in rows:
                     tok = (key, d)

@@ -243,12 +243,17 @@ def _fetch_table_rows(table_id: str):
     variables = meta.get("variables", [])
     if not variables:
         return [], False  # genuinely no variables -> legitimately empty table
+    n0 = len(ing.BULK_FALLBACKS)
     try:
-        rows, outcome = ing.query_table_detailed(table_id, variables)
+        # the table's own suppressedDataValue: DST's value for a cell its BULK format leaves out (ingest_dst)
+        rows, outcome = ing.query_table_detailed(table_id, variables,
+                                                 suppressed=meta.get("suppressedDataValue"))
     except Exception as e:                                           # noqa: BLE001
         _reraise_unit_timeout(e)
         return [], True
     _fence_check("the data POST")
+    if outcome == "ok" and not _fill_guard(table_id, ing.BULK_FALLBACKS[n0:]):
+        return [], True
     # A FAILED DATA POST IS NOT A QUIET TABLE (review R1283). query_table returned [] for a POST that failed
     # (5xx/timeout after retries, 403) exactly as for a table with no rows, so the table was booked empty and
     # its manifest entry ADVANCED: that release was never taken until DST republished it. Measured
@@ -288,22 +293,96 @@ def _fence_check(where: str) -> None:
         raise orch.UnitTimeout(f"{SOURCE}: unit timeout fired during {where}")
 
 
+# THE STORE-SIDE FILL GUARD (review AR-349 C4c). merge lets new rows win, so a filled cell overwrites a stored value.
+# A genuine revision to 0 touches few cells; a body cut short on DST's side fills a whole block, and on a table we
+# already hold only the store can see it (the second read catches a cut that differs between reads; a cut that
+# repeats exactly in both shapes is the residue). So the fill is refused - the table stays owed, transient - when it
+# would overwrite more stored non-zero values than max(FILL_OVERWRITE_FLOOR, FILL_OVERWRITE_SHARE x the table's
+# stored non-zero cells). 1%: a whole-block cut on any table of real size is far above it, a revision is far below.
+# The floor of 10: on a small table one genuine revision must not hold it owed for ever. On a first pull nothing is
+# stored and the second read is the guard.
+FILL_OVERWRITE_FLOOR = 10
+FILL_OVERWRITE_SHARE = 0.01
+
+
+def _fill_overwrites(table_id: str, filled_cells: set, fill_value) -> "tuple[int, int] | None":
+    """(filled cells whose stored value is a non-zero number other than the fill value, the table's stored non-zero
+    cells), from the table's subject parquet; (0, 0) when nothing is stored; None when the store cannot be read."""
+    path = _subj_path(_subj(table_id))
+    try:
+        if not blob.exists(path):
+            return 0, 0
+        t = blob.read_table(path)
+    except Exception as e:                                           # noqa: BLE001
+        _reraise_unit_timeout(e)
+        print(f"[{SOURCE}] {table_id}: cannot read the stored subject file to check the BULK fill: {e}", flush=True)
+        return None
+    sub = t.filter(pc.starts_with(t.column("series_key"), f"DST:{table_id}:"))
+    fill = ing._finite(fill_value)
+    over = nonzero = 0
+    for k, d, v in zip(sub.column("series_key").to_pylist(), sub.column("obs_date").to_pylist(),
+                       sub.column("value").to_pylist()):
+        if v is None or v != v or v == 0:
+            continue
+        nonzero += 1
+        if (k, d) in filled_cells and v != fill:
+            over += 1
+    return over, nonzero
+
+
+def _fill_guard(table_id: str, recs: list) -> bool:
+    """True when this table's BULK fill (if any) may be stored. Records the overwrite count on each record."""
+    filled = set().union(*(r.get("filled_cells") or set() for r in recs)) if recs else set()
+    if not filled:
+        return True
+    res = _fill_overwrites(table_id, filled, recs[0].get("fill_value"))
+    if res is None:
+        for r in recs:
+            r["status"] = "fill_unchecked"
+        return False
+    over, nonzero = res
+    bound = max(FILL_OVERWRITE_FLOOR, int(FILL_OVERWRITE_SHARE * nonzero))
+    for r in recs:
+        r["overwrites"], r["bound"] = over, bound
+    if over > bound:
+        for r in recs:
+            r["status"] = "fill_refused"
+        print(f"[{SOURCE}] {table_id}: BULK FILL REFUSED - {over:,} filled cells would overwrite stored non-zero "
+              f"values (bound {bound:,} of {nonzero:,} stored non-zero cells); a body cut short? stays owed",
+              flush=True)
+        return False
+    if over:
+        print(f"[{SOURCE}] {table_id}: the BULK fill overwrites {over:,} stored non-zero value(s) "
+              f"(bound {bound:,}) - stored", flush=True)
+    return True
+
+
 def _bulk_fallback_note() -> str:
     """The pass's BULK fallbacks (jobs/ingest_dst._post_rows), printed and returned as a note fragment - '' if none.
-    A fallback is a publisher fault worked around, so it is counted where an operator reads it, never silent."""
+    A fallback is a publisher fault worked around, so it is counted where an operator reads it, never silent: per
+    table, the cells streamed, filled with the table's suppressedDataValue, left out with no fill value, the stored
+    non-zero values a fill overwrote, and every POST whose BULK answer was not used, by reason."""
     per: dict = {}                       # a chunked table can fall back once per chunk: one entry per table
     for r in ing.BULK_FALLBACKS:
-        t = per.setdefault(r["table"], {"cells": 0, "omitted": 0, "unread": 0})
+        t = per.setdefault(r["table"], {"cells": 0, "streamed": 0, "filled": 0, "nofill": 0, "over": 0,
+                                        "fill": r.get("fill_value"), "bad": {}})
         t["cells"] += r["cells"]
-        if r["omitted"] is None:
-            t["unread"] += 1             # no BULK body was parsed for this POST (failed or refused)
-        else:
-            t["omitted"] += r["omitted"]
+        if r["status"] in ("ok", "fill_refused") and r.get("streamed") is not None:
+            t["streamed"] += r["streamed"]
+            t["filled"] += r["filled"]
+            t["nofill"] += r["nofill"]
+        t["over"] = max(t["over"], r.get("overwrites") or 0)
+        if r["status"] != "ok":
+            t["bad"][r["status"]] = t["bad"].get(r["status"], 0) + 1
     if not per:
         return ""
-    parts = [f"{tid} ({t['omitted']:,} of {t['cells']:,} cells not streamed"
-             + (f", {t['unread']} BULK answer(s) unusable" if t["unread"] else "") + ")"
-             for tid, t in per.items()]
+    parts = []
+    for tid, t in per.items():
+        s = (f"{tid} ({t['streamed']:,} of {t['cells']:,} cells streamed, {t['filled']:,} filled with "
+             f"suppressedDataValue {t['fill']!r}, {t['nofill']:,} left out with no fill value, {t['over']:,} stored "
+             f"non-zero overwritten")
+        s += "".join(f", {n} {why.replace('_', ' ')}" for why, n in sorted(t["bad"].items()))
+        parts.append(s + ")")
     msg = f"BULK fallback for {len(per)} table(s) after a JSONSTAT HTTP 500: [{', '.join(parts)}]"
     print(f"[{SOURCE}] {msg}", flush=True)
     return msg
