@@ -180,6 +180,57 @@ def test_a_tree_search_deferred_on_the_first_table_of_a_pass_does_not_pin_the_ro
     assert _bookmark(tmp_path) == "A/f/A1.px"
 
 
+def test_a_budget_cut_on_the_first_table_of_a_pass_does_not_pin_the_rotation(tmp_path, monkeypatch):
+    """Review R1636 P1: a whole-budget tree search whose last listing is cut raises BudgetCut on the
+    FIRST table of the pass. Without its own anti-pin arm, three passes each fetched only that table
+    and the bookmark never moved."""
+    run, fetched = _setup(tmp_path, monkeypatch, {"A": 3},
+                          outcome=lambda db, p: H.BudgetCut("listing cut") if p.endswith("A1.px") else "data")
+    seen = []
+    for _ in range(3):
+        fetched.clear()
+        res = run(_DL())
+        seen.append(list(fetched))
+    assert seen[0] == ["A/f/A1.px", "A/f/A2.px", "A/f/A3.px"], seen
+    assert res.status == "partial" and "deferred by budget" in res.error, res.error
+    assert _bookmark(tmp_path) == "A/f/A3.px"
+
+
+def test_negative_control_a_budget_cut_later_in_the_pass_still_stops_it_without_passing_the_table(tmp_path,
+                                                                                                    monkeypatch):
+    run, fetched = _setup(tmp_path, monkeypatch, {"A": 3},
+                          outcome=lambda db, p: H.BudgetCut("cut") if p.endswith("A2.px") else "data")
+    run()
+    assert fetched == ["A/f/A1.px", "A/f/A2.px"] and _bookmark(tmp_path) == "A/f/A1.px"
+
+
+# ---- a throttled sweep stops (ssb #177's rule) ------------------------------------------------------
+
+def test_two_throttled_tables_in_a_row_stop_the_pass(tmp_path, monkeypatch):
+    thr = {"A/f/A2.px", "A/f/A3.px"}
+    run, fetched = _setup(tmp_path, monkeypatch, {"A": 5, "B": 2},
+                          outcome=lambda db, p: H.Throttled("HTTP 429") if f"{db}/{p}" in thr else "data")
+    res = run()
+    assert fetched == ["A/f/A1.px", "A/f/A2.px", "A/f/A3.px"], fetched
+    assert res.status == "partial" and "2/3 sub-unit(s) transient-failed" in res.error, res.error
+    assert "4 table(s) deferred after 2 tables in a row were throttled" in res.error, res.error
+    assert _keys(tmp_path, "A") == ["ICE:A:f:A1.px:Dim=0"], "the rows fetched before the stop merged"
+
+
+def test_negative_control_throttled_tables_that_are_not_in_a_row_do_not_stop_the_pass(tmp_path, monkeypatch):
+    thr = {"A/f/A1.px", "A/f/A3.px"}
+    run, fetched = _setup(tmp_path, monkeypatch, {"A": 4},
+                          outcome=lambda db, p: H.Throttled("HTTP 429") if f"{db}/{p}" in thr else "data")
+    res = run()
+    assert len(fetched) == 4 and "deferred" not in res.error, (fetched, res.error)
+
+
+def test_a_request_429_on_every_try_raises_throttled(slept):
+    s, _log = _sess([_Resp(429)] * H.MAX_ATTEMPTS)
+    with pytest.raises(H.Throttled):
+        H._get_meta(s, "u")
+
+
 def test_the_tree_search_is_not_started_without_the_budget_it_needs(monkeypatch):
     monkeypatch.setattr(H.time, "sleep", lambda s: None)
     asked = []
@@ -263,6 +314,24 @@ def test_a_timeout_the_budget_cut_short_is_a_budget_cut_not_a_failure(slept):
         H._post_data(s, "u", {})
 
 
+@pytest.mark.parametrize("call", ["get", "post", "listing"])
+def test_a_body_read_timeout_cut_by_the_budget_is_a_budget_cut(slept, call):
+    """requests 2.32.5 raises ConnectionError, not Timeout, for a read timeout while the BODY downloads
+    (review R1636). With the timeout cut to the budget left it is the budget, not the table."""
+    s, _log = _sess([requests.ConnectionError("Read timed out.")], left_s=20)
+    with pytest.raises(H.BudgetCut):
+        {"get": lambda: H._get_meta(s, "u"), "post": lambda: H._post_data(s, "u", {}),
+         "listing": lambda: H._listing(s, "u")}[call]()
+    assert s._hagstofa_stats.get("timeouts") == 1
+
+
+def test_negative_control_an_uncut_connection_error_is_still_a_failure(slept):
+    s, _log = _sess([requests.ConnectionError("reset")] * H.MAX_ATTEMPTS, left_s=600)
+    with pytest.raises(H.TransientError) as e:
+        H._get_meta(s, "u")
+    assert not isinstance(e.value, H.BudgetCut)
+
+
 def test_negative_control_an_ordinary_timeout_is_still_a_transient_failure(slept):
     s, _log = _sess([requests.Timeout("t")] * H.MAX_ATTEMPTS)
     with pytest.raises(H.TransientError) as e:
@@ -324,7 +393,9 @@ def test_a_retry_after_longer_than_the_budget_left_stops_instead_of_waiting(slep
 # ---- the budget itself ------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("window_min,env,want", [(45, None, 30.0), (20, None, 10.0), (45, "12", 12.0),
-                                                 (8, None, 0.0), (45, "nan", 30.0)])
+                                                 (8, None, 2.0), (3, None, 1.5), (45, "nan", 30.0),
+                                                 (45, "0", 30.0), (45, "-5", 30.0), (0, None, 30.0),
+                                                 (0, "12", 12.0)])
 def test_the_unit_window_can_only_lower_the_budget(monkeypatch, window_min, env, want):
     monkeypatch.setattr(MS, "unit_window_s", lambda: (window_min * 60.0, "armed alarm"))
     if env is None:
@@ -332,6 +403,14 @@ def test_the_unit_window_can_only_lower_the_budget(monkeypatch, window_min, env,
     else:
         monkeypatch.setenv("HAGSTOFA_BUDGET_MIN", env)
     assert H._budget_minutes()[0] == want
+
+
+def test_a_disabled_unit_timeout_does_not_become_a_zero_budget(monkeypatch):
+    """Review R1636 P2: AQUEDUCT_UNIT_TIMEOUT_MIN=0 (no hard limit) read as a 0-min budget, so every
+    table was deferred, silently. The real window reader runs here (no alarm armed in a test)."""
+    monkeypatch.setenv("AQUEDUCT_UNIT_TIMEOUT_MIN", "0")
+    monkeypatch.delenv("HAGSTOFA_BUDGET_MIN", raising=False)
+    assert H._budget_minutes()[0] == H.BUDGET_MIN
 
 
 def test_the_budget_clock_starts_before_the_store_is_read(tmp_path, monkeypatch):
