@@ -607,10 +607,18 @@ test("FORWARD on, the origin's list unreadable: the floor closes its sources wit
   }, persist);
   t.after(() => w.stop());
   const floorId = JSON.parse(readFileSync(new URL("../withheld.json", import.meta.url), "utf8"));
-  const held = Object.keys(floorId.ids).sort()[0];
+  const held = Object.keys(floorId.ids).sort().find((k) => k.startsWith("insee_melodi:"))!;   // dst sorts first
   const m1 = await get(w, `/v1/series/${encodeURIComponent(held)}.metadata.json`);
   assert.equal(m1.status, 404, m1.text);
   assert.match(JSON.parse(m1.text).detail, /our copy is incomplete/, "a floor id: the owner's sentence");
+  // dst (2026-10-19): a floor dst id keeps the Denmark sentence; a complete dst table is closed with the honest words
+  const d1 = await get(w, `/v1/series/${encodeURIComponent("dst:DST:DNINTVAL")}.metadata.json`);
+  assert.equal(d1.status, 404, d1.text);
+  assert.match(JSON.parse(d1.text).detail, /shows only zeros .* from Statistics Denmark\.$/, "a floor dst id");
+  const d2 = await get(w, `/v1/series/${encodeURIComponent("dst:DST:FOLK1A")}.csv`);
+  assert.equal(d2.status, 404, d2.text);
+  assert.equal(JSON.parse(d2.text).detail,
+               "Temporarily unavailable: the withheld-tables list could not be read; try again in a minute.");
   const m2 = await get(w, "/v1/series/insee_melodi%3ADD_CNA_APU.csv");          // complete, not on the floor
   assert.equal(m2.status, 404, m2.text);
   const b2 = JSON.parse(m2.text);
