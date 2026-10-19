@@ -255,8 +255,9 @@ def _fetch_table_rows(table_id: str):
     # 2026-09-29: DNVALD answered HTTP 500 three times (too many time values in one POST - the ingester now
     # retries in time chunks), DNINDEX's 1,121 daily values parsed to 0 rows (the daily grammar was missing).
     if outcome == "failed":
-        print(f"[{SOURCE}] {table_id}: the data POST failed (even in time chunks) - transient, stays owed",
-              flush=True)
+        # "(even in time chunks)" was printed here for every failed table, chunked or not; VNASFK/VNKSFK were never
+        # chunked (31 and 110 time values against TIME_CHUNK 1,000). The ingester's log names the HTTP answer.
+        print(f"[{SOURCE}] {table_id}: the data POST failed - transient, stays owed", flush=True)
         return [], True
     if outcome == "unparsed":
         print(f"[{SOURCE}] {table_id}: HTTP 200 with values that parsed to 0 rows - OUR parser gap, not an "
@@ -287,9 +288,37 @@ def _fence_check(where: str) -> None:
         raise orch.UnitTimeout(f"{SOURCE}: unit timeout fired during {where}")
 
 
+def _bulk_fallback_note() -> str:
+    """The pass's BULK fallbacks (jobs/ingest_dst._post_rows), printed and returned as a note fragment - '' if none.
+    A fallback is a publisher fault worked around, so it is counted where an operator reads it, never silent."""
+    per: dict = {}                       # a chunked table can fall back once per chunk: one entry per table
+    for r in ing.BULK_FALLBACKS:
+        t = per.setdefault(r["table"], {"cells": 0, "omitted": 0, "unread": 0})
+        t["cells"] += r["cells"]
+        if r["omitted"] is None:
+            t["unread"] += 1             # no BULK body was parsed for this POST (failed or refused)
+        else:
+            t["omitted"] += r["omitted"]
+    if not per:
+        return ""
+    parts = [f"{tid} ({t['omitted']:,} of {t['cells']:,} cells not streamed"
+             + (f", {t['unread']} BULK answer(s) unusable" if t["unread"] else "") + ")"
+             for tid, t in per.items()]
+    msg = f"BULK fallback for {len(per)} table(s) after a JSONSTAT HTTP 500: [{', '.join(parts)}]"
+    print(f"[{SOURCE}] {msg}", flush=True)
+    return msg
+
+
+def _with_note(res: Result, note: str) -> Result:
+    if note:
+        res.error = "; ".join(x for x in (res.error, note) if x)
+    return res
+
+
 def update(unit, since) -> Result:
     out_dir = config.source_dir(SOURCE)
     os.makedirs(out_dir, exist_ok=True)
+    ing.BULK_FALLBACKS.clear()               # this pass's count only
     before = _total_rows()
 
     # Catalog drives both change-detection and the work set. A transient/definitive
@@ -446,4 +475,4 @@ def update(unit, since) -> Result:
                      changed_keys=res.changed_keys,
                      error=f"budget spent with {remaining} of {len(due)} due table(s) "
                            f"still behind upstream; manifest checkpointed, a later pass drains them")
-    return _with_catalog_token(res, tables)
+    return _with_catalog_token(_with_note(res, _bulk_fallback_note()), tables)

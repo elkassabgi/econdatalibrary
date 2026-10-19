@@ -2056,3 +2056,29 @@ Also open, outside this class: a cursor-grain audit (real mapper, stored cursors
 GRAIN-MISMATCH for abs, bls, census, ecb, ember, ilostat, norgesbank, ons_uk and stat_slovenia.
 Several of them report changed keys in a shape the stored cursors do not carry, so 0% there is not
 proof of a failing run. Triage each on its own.
+
+### dst - OPEN after PR #173 (BULK fallback; measured 2026-10-19)
+
+PR #173 fetches VNASFK and VNKSFK in BULK format (their JSONSTAT and CSV POSTs answer HTTP 500 SYSTEM-100 since
+2026-09-30) and declares dst `csv_grain: table`, so the health gate's remedy for an owed re-derive no longer names
+the bulk campaign and `tools/derive_csv_bulk.py` refuses a dst campaign (R498). Two items stay open:
+
+1. **dst does not report `merged_rows=0` on a pass that merges nothing.** The orchestrator's no-cursors branch then
+   books `full_rederive_owed` on any partial pass with no merge - a single DST bad hour is enough. The row booked
+   2026-10-18T21:40:39Z was such a booking: 2,264 of 2,264 served dst CSVs were byte-identical to a derive from the
+   R2 store (newest store write 2026-10-16T13:17:37Z), and a second instrument (DuckDB aggregates per id) agreed.
+   Fix shape: dst sets `merged_rows=0` when no subject merged (orchestrate.py treats `merged_rows == 0` as
+   "nothing merged, coherence met"). Until then, clear a dst row only after the byte-compare and an R2
+   LastModified re-check, with `tools/derive_csv_bulk.py --source dst --clear-owed-only`.
+2. **JSON-stat's suppressed zeros are SERVED today.** DST's JSON-stat is dense: a cell the table does not hold
+   arrives as the table's `suppressedDataValue` ("0"), and the JSONSTAT path stores it as a real 0.0. JSON-stat
+   carries no status for these cells, so it cannot tell them from a published zero; BULK streams only the cells
+   that exist. Measured on the recorded fixtures (tests/fixtures/dst_bulk/): VAN1UGE 231 of 248 JSON-stat rows
+   are such cells, REGR63 57 of 1,232, ANB10 19 of 900. The BULK path (PR #173) does not store them; the JSONSTAT
+   path still does. This needs its own fix AND a served-data plan (which stored 0.0 rows are fills, how to
+   find them across the store, what users have downloaded) - do not change it as a side effect of another fix.
+
+Also seen, smaller: tables that store nothing (21 span_time tables plus 2 empty ones in run 39161839205) are due on
+every pass, because `due` includes "subject file missing"; 25 due tables drained in 4.8 min that run.
+VNASFK/VNKSFK have never been stored or catalogued: once a pass merges them they are uncatalogued store tables
+until someone catalogues them.
