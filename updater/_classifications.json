@@ -995,7 +995,7 @@
     "vintage_signal": "PxWeb per-table metadata 'updated'/last-modified field on data.ssb.no (GET table metadata) to decide whether to re-query; drive startPeriod off max stored obs_date per series.",
     "since_param": "PxWeb time-dimension value selection (filter:item on the time variable), set to values > max stored obs_date — PxWeb has no literal startPeriod token, so restrict the explicit time-value list to newer codes.",
     "out_paths_note": "per-group parquet files data/clean_full/ssb/grp_<subject>.parquet (~186 files, keyed by first 2 chars of table id) plus cached ssb/_catalog.json — writes to MANY group files; delta must read-existing, compute max obs_date, merge+overwrite each group.",
-    "rate_note": "No API key; custom UA; RATE=0.25s between calls; HTTP 429 -> 30s sleep; MAX_CELLS=80000 cap downsamples oversized tables (time kept full).",
+    "rate_note": "No API key; custom UA; every request (retries included) starts at least MIN_INTERVAL_S=2.5s after the previous one, i.e. at most 24 per minute against SSB's documented 30 queries per 60 s per IP; HTTP 429 honours Retry-After, else waits 61 then 121 s; a Retry-After longer than 60 s or than the budget left, or 2 throttled tables in a row, stop the sweep and defer the rest; MAX_CELLS=80000 cap downsamples oversized tables (time kept full).",
     "key_env": "none",
     "confidence": "high",
     "open_question": "Catalog is cached to _catalog.json and never re-crawled — should delta runs re-crawl the catalog (delete _catalog.json) to discover newly published tables, or only refresh known groups?"

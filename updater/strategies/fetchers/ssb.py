@@ -110,8 +110,15 @@ MAX_CELLS = 80_000       # matches jobs/ingest_ssb.py (SSB's own limit is 800,00
 #
 # So EVERY request - GET, POST, and every retry - starts at least MIN_INTERVAL_S after the previous
 # one: 2.5 s is at most 24 per minute, 80% of the documented 30. The limit is per IP and a GitHub
-# runner's IP is shared, so pacing cannot promise zero 429s; the 429 path below honours Retry-After,
-# backs off on the window's scale, never sleeps past the budget, and stops the sweep on a streak.
+# runner's IP may be shared, so pacing cannot promise zero 429s; the 429 path below honours
+# Retry-After, backs off on the window's scale, never sleeps past the budget, and stops the sweep on
+# a streak or on a Retry-After longer than one window.
+#
+# NOT PROVEN to cure the 429s. The old loop's estimated average on 10-16 was 27-29 requests per
+# minute, under both 30 and the edge's 40, and still 260 of 338 tables failed - so something else
+# (a penalty period, a second window, another client on the IP) may hold the block. Each 429 is
+# therefore logged with its raw Retry-After and X-Ratelimit-* headers, and each pass prints its
+# request count, 429 count and the lowest X-Ratelimit-Remaining seen: the first CI pass decides.
 MIN_INTERVAL_DEFAULT_S = 2.5
 MIN_INTERVAL_FLOOR_S = 2.0   # exactly 30 per minute: an override may never go faster than this
 MIN_INTERVAL_CEIL_S = 60.0   # one window; an "inf" override must not park the run in the pacer
@@ -130,8 +137,10 @@ def _min_interval(raw) -> float:
 
 
 MIN_INTERVAL_S = _min_interval(os.environ.get("AQUEDUCT_SSB_MIN_INTERVAL_S"))
-THROTTLE_BASE_S = 15         # 429 without Retry-After: wait 15, 30, 60 s ...
-THROTTLE_CAP_S = 60          # ... never longer than one 60-second window
+THROTTLE_BASE_S = 60         # 429 without Retry-After: wait one full window (61 s with the helper's +1),
+THROTTLE_CAP_S = 120         # then 121 s; never longer
+THROTTLE_MAX_RETRIES = 2     # a 429 is retried at most twice per request (61 s, 121 s), then Throttled
+RETRY_AFTER_STOP_S = 60      # SSB asking for more than one window: stop the sweep, do not wait it out
 THROTTLE_STREAK_STOP = 2     # this many tables in a row throttled out -> stop the sweep
 REQUEST_TIMEOUT_FLOOR_S = 5  # a request timeout is cut to the budget left, but never below this
 TIMEOUT_META = 60
@@ -286,9 +295,19 @@ class Throttled(TransientError):
     is longer than the budget left: nothing broke, the budget ran out, so update() books the table
     DEFERRED and stops the sweep as a budget stop (R303)."""
 
-    def __init__(self, msg: str, over_budget: bool = False):
+    def __init__(self, msg: str, over_budget: bool = False, stop_now: bool = False):
         super().__init__(msg)
         self.over_budget = over_budget
+        # SSB asked for more than one window (Retry-After > RETRY_AFTER_STOP_S): stop the sweep at
+        # once. Waiting out a long Retry-After clamped to 121 s and retrying inside it (review: 8
+        # requests and 726 s of sleep on "Retry-After: 3600") only spends the budget being refused.
+        self.stop_now = stop_now
+
+
+class BudgetCut(TransientError):
+    """The budget ran out before or during a request: the request was not started, or its timeout
+    had been cut to the budget left and it timed out. Nothing broke - update() books the table
+    DEFERRED and stops the sweep as a budget stop (R303), never a failure of the table's group."""
 
 
 class _PacedSession:
@@ -303,33 +322,77 @@ class _PacedSession:
         self._clock = clock or time.monotonic
         self._sleep = sleep or time.sleep
         self._last = None
-        self.requests = 0            # requests sent, for the run's own log line
+        self.requests = 0            # requests sent, for the pass's own log line
+        self.throttled = 0           # responses that were HTTP 429
+        self.min_remaining = None    # lowest X-Ratelimit-Remaining seen this pass
+        self.forbidden = []          # data POSTs answered 403 (SSB: query too large)
 
     def _pace(self):
         if self._last is not None:
             gap = self.interval - (self._clock() - self._last)
             if gap > 0:
                 self._sleep(gap)
+        left = self.budget_left_s()
+        if left is not None and left <= 0:
+            # Never START a request after the budget is spent (review: three POSTs started at
+            # t=61, 68 and 77 s on a 60 s budget, because the budget was only checked per table).
+            raise BudgetCut("budget spent before the request could start")
         self._last = self._clock()
         self.requests += 1
 
     def _bounded(self, kw):
         """Cap the request timeout by the budget left (never below REQUEST_TIMEOUT_FLOOR_S), so a hung
         request near the end of the budget cannot run into the orchestrator's 45-minute kill: the
-        old 60/120 s x 4 attempts could take most of the 5 minutes of headroom on one table."""
+        old 60/120 s x 4 attempts could take most of the 5 minutes of headroom on one table.
+        Returns (kw, cut): cut = the timeout was shortened by the budget."""
         left = self.budget_left_s()
         t = kw.get("timeout")
-        if left is not None and isinstance(t, (int, float)):
-            kw["timeout"] = max(REQUEST_TIMEOUT_FLOOR_S, min(t, left))
-        return kw
+        cut = False
+        if left is not None and isinstance(t, (int, float)) and left < t:
+            kw["timeout"] = max(REQUEST_TIMEOUT_FLOOR_S, left)
+            cut = True
+        return kw, cut
+
+    def _send(self, fn, a, kw):
+        self._pace()
+        kw, cut = self._bounded(kw)
+        try:
+            r = fn(*a, **kw)
+        except requests.Timeout as e:
+            if cut:
+                # A timeout the BUDGET shortened is the budget running out, not the table failing
+                # (review: a healthy 20 s POST was booked "Read timed out (read timeout=5)" and its
+                # group counted failed).
+                raise BudgetCut(f"timed out after {kw.get('timeout'):.0f} s, cut to the budget left") from e
+            raise
+        self._observe(r)
+        return r
+
+    def _observe(self, r):
+        """Record what the rate limiter says, so the first real pass shows whether pacing cures it."""
+        h = getattr(r, "headers", None) or {}
+        rem = h.get("X-Ratelimit-Remaining")
+        try:
+            rem = int(rem) if rem is not None else None
+        except (TypeError, ValueError):
+            rem = None
+        if rem is not None and (self.min_remaining is None or rem < self.min_remaining):
+            self.min_remaining = rem
+        if getattr(r, "status_code", None) == 429:
+            self.throttled += 1
+            rl = {k: v for k, v in h.items() if str(k).lower().startswith("x-ratelimit")}
+            print(f"[ssb] HTTP 429 (#{self.throttled}, request {self.requests}): Retry-After="
+                  f"{h.get('Retry-After')!r} {rl}", flush=True)
+
+    def summary(self) -> str:
+        return (f"{self.requests} request(s) at one per {self.interval:g} s, {self.throttled} answered "
+                f"HTTP 429, lowest X-Ratelimit-Remaining {self.min_remaining}")
 
     def get(self, *a, **kw):
-        self._pace()
-        return self._s.get(*a, **self._bounded(kw))
+        return self._send(self._s.get, a, kw)
 
     def post(self, *a, **kw):
-        self._pace()
-        return self._s.post(*a, **self._bounded(kw))
+        return self._send(self._s.post, a, kw)
 
     def budget_left_s(self):
         """Seconds of budget left, or None when the deadline does not say (a test fake)."""
@@ -346,15 +409,38 @@ class _PacedSession:
 def _throttle_wait(resp, attempt: int) -> int:
     """Seconds to wait after a 429: the server's Retry-After when it sends one (both RFC 9110 forms,
     clamped to [1, 120] + 1 by the shared helper), else THROTTLE_BASE_S * 2**attempt capped at
-    THROTTLE_CAP_S - the 60-second window, not the 1-4 s that retried inside it."""
+    THROTTLE_CAP_S: 61 then 121 s - at least one full window, never the 1-4 s that retried inside it."""
     return retry_after_seconds(resp, default=min(THROTTLE_BASE_S * 2 ** attempt, THROTTLE_CAP_S))
 
 
+def _raw_retry_after_s(resp):
+    """The server's Retry-After in seconds, UNCLAMPED (both forms), or None if absent/unreadable.
+    The shared helper clamps to 120 s, which hides a server asking for an hour."""
+    h = getattr(resp, "headers", None) or {}
+    raw = str(h.get("Retry-After") or "").strip()
+    if not raw:
+        return None
+    if raw.isdigit():
+        return int(raw)
+    try:
+        from email.utils import parsedate_to_datetime
+        when = parsedate_to_datetime(raw)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=dt.timezone.utc)
+        return int((when - dt.datetime.now(dt.timezone.utc)).total_seconds())
+    except Exception:                                        # noqa: BLE001
+        return None
+
+
 def _on_429(sess, what: str, resp, attempt: int) -> None:
-    """Sleep before retrying a 429, or raise Throttled when the retries are spent or the wait is
-    longer than the budget left (never sleep past the budget)."""
-    if attempt == MAX_ATTEMPTS - 1:
-        raise Throttled(f"{what}: HTTP 429 after {MAX_ATTEMPTS} tries")
+    """Sleep before retrying a 429, or raise Throttled when the retries are spent, when SSB asks for
+    more than one window (stop_now), or when the wait is longer than the budget left (never sleep
+    past the budget)."""
+    raw = _raw_retry_after_s(resp)
+    if raw is not None and raw > RETRY_AFTER_STOP_S:
+        raise Throttled(f"{what}: HTTP 429, Retry-After {raw} s", stop_now=True)
+    if attempt >= min(THROTTLE_MAX_RETRIES, MAX_ATTEMPTS - 1):
+        raise Throttled(f"{what}: HTTP 429 after {attempt + 1} tries")
     wait = _throttle_wait(resp, attempt)
     left = sess.budget_left_s() if hasattr(sess, "budget_left_s") else None
     if left is not None and wait >= left:
@@ -398,7 +484,7 @@ def _get_meta(sess: requests.Session, table_id: str):
 
 
 def _post_data(sess: requests.Session, table_id: str, body: dict):
-    """POST a JSON-stat2 query. Returns dict | None(legit empty: 400/404) | raises (403: too large)."""
+    """POST a JSON-stat2 query. Returns dict | None(empty: 400/404, and 403 - printed) | raises."""
     url = f"{BASE}/{table_id}"
     last = None
     for a in range(MAX_ATTEMPTS):
@@ -418,12 +504,17 @@ def _post_data(sess: requests.Session, table_id: str, body: dict):
                     raise TransientError(f"ssb data {table_id}: {last}")
                 time.sleep(min(2 ** a, 20)); continue
         if r.status_code == 403:
-            # NOT an empty answer. SSB documents it: "403 - blocking when querying for large data
-            # sets. The API limit is 800,000 cells." (PxWebApi user guide, 2022). Booked empty, a
-            # table over the limit read as quiet for ever. A retry will not heal it, and the label
-            # says so; MAX_CELLS = 80,000 should keep it from firing at all.
-            raise TransientError(f"ssb data {table_id}: HTTP 403 too large (800k-cell limit), "
-                                 f"retry won't heal")
+            # Booked empty, as before - but NOT SILENTLY. SSB documents it: "403 - blocking when
+            # querying for large data sets. The API limit is 800,000 cells." (PxWebApi user guide,
+            # 2022), so a 403 may be a table we never fetch rather than a quiet one. It is not made a
+            # failure here: how many tables answer 403 is not measured (454 of 6,022 local catalogue
+            # tables hold zero rows), and a failure on every pass would quarantine their groups. It
+            # is printed and counted in the pass summary so the first real pass measures it.
+            print(f"[ssb] HTTP 403 on the data POST for {table_id}: SSB blocks queries over "
+                  f"800,000 cells - booked empty, not fetched", flush=True)
+            if hasattr(sess, "forbidden"):
+                sess.forbidden.append(table_id)
+            return None
         if r.status_code in (400, 404):
             return None  # no rows for this selection — legitimately empty
         if r.status_code == 429:
@@ -619,7 +710,7 @@ def _group_of(table_id: str) -> str:
 def _deferral_label(what: str, kind: str, why: str) -> str:
     """The deferral label for a sweep that stopped early, naming WHY (R299: one label per cause)."""
     if why == "throttled":
-        return f"{what}: SSB throttled (HTTP 429 on {THROTTLE_STREAK_STOP} tables in a row), {kind} deferred"
+        return f"{what}: SSB throttled (HTTP 429), {kind} deferred"
     if why == "budget_wait":
         return f"{what}: an HTTP 429 wait was longer than the budget left, {kind} deferred"
     return (f"{what}: budget {BUDGET_MIN:.0f} min spent, group deferred" if kind == "group"
@@ -636,9 +727,17 @@ def _book_request_failure(tally, e, tid: str, where: str, streak: int):
       SSB is refusing us, every further table would fail the same way and keep its window full.
     - any other TransientError: a named transient failure, and the streak is broken.
     """
+    if isinstance(e, BudgetCut):
+        tally.deferred_unit(f"{tid}: {where} — {str(e)[-70:]}, table deferred")
+        return streak, "budget"
     if isinstance(e, Throttled) and e.over_budget:
         tally.deferred_unit(f"{tid}: {where} — {str(e)[-70:]}, table deferred")
         return streak, "budget_wait"
+    if isinstance(e, Throttled) and e.stop_now:
+        # SSB asked for more than one window. Not waited out (the helper would clamp it to 121 s
+        # and retry inside it): the table is a named transient failure and the sweep stops now.
+        tally.transient_unit(f"{tid}: {where} — {str(e)[-55:]}")
+        return streak + 1, "throttled"
     # NAME THE TABLE. ssb sweeps ~1,515 tables, so an unlabelled count is a number
     # with 1,515 candidates behind it and five different causes below.
     tally.transient_unit(f"{tid}: {where} — {str(e)[-55:]}")   # existing data untouched
@@ -858,7 +957,7 @@ def update(unit, since) -> Result:
                 continue
             throttle_streak = 0
             if not resp:
-                tally.empty_unit()       # 400/404 on the selection — legit empty
+                tally.empty_unit()       # 400/404 on the selection — legit empty (403 printed)
                 time.sleep(RATE)
                 continue
 
@@ -984,9 +1083,13 @@ def update(unit, since) -> Result:
         # the deferred groups would appear nowhere but the CI log (review AR-351, finding 7). Say it.
         ids = list(getattr(tally, "deferred_ids", []) or [])
         named = ", ".join(str(i).split(":")[0] for i in ids[:8]) + (f", +{len(ids) - 8} more" if len(ids) > 8 else "")
-        res.error = ((res.error or "") + f"; sweep stopped: SSB throttled (HTTP 429 on "
-                     f"{THROTTLE_STREAK_STOP} tables in a row), {tally.deferred} sub-unit(s) deferred "
-                     f"to a later pass [{named}], {sess.requests} request(s) sent")
+        res.error = ((res.error or "") + f"; sweep stopped: SSB throttled (HTTP 429), "
+                     f"{tally.deferred} sub-unit(s) deferred to a later pass [{named}]; "
+                     f"{sess.summary()}")
+    # THE MEASUREMENT this change still owes (pacing is not proven to cure the 429s): every pass
+    # says how many requests it sent, how many were refused and how close the limiter came.
+    print(f"[ssb] pass summary: {sess.summary()}; {len(sess.forbidden)} data POST(s) answered 403"
+          + (f" {sess.forbidden[:10]}" if sess.forbidden else ""), flush=True)
     # {} is a real statement ("no served value changed") and is honoured by the orchestrator.
     res.changed_keys = changed
     return res

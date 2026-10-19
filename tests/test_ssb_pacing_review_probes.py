@@ -140,9 +140,13 @@ def test_p3_retry_after_is_honoured_and_capped(monkeypatch, tmp_path):
             return _Resp(429, headers={"Retry-After": "86400"})
         return _ok(tid, method, n)
     sess, clock = _wire(monkeypatch, tmp_path, script, groups=("Aa",), per_group=2)
-    ssb.update(None, None)
+    res = ssb.update(None, None)
     big = [s for s in clock.sleeps if s > ssb.MIN_INTERVAL_S + 0.5]
-    assert big == [8, 121], clock.sleeps
+    # Retry-After 7 is waited (8 s with the helper's +1). Retry-After 86400 is NOT waited and NOT
+    # retried: it is longer than one window, so the sweep stops at once (second review, finding 2).
+    assert big == [8], clock.sleeps
+    assert [tid for _, m, tid in sess.log if tid == "Aa1"] == ["Aa1"], "Aa1 asked once, never retried"
+    assert "sweep stopped" in (res.error or "")
 
 
 def test_p4_wait_longer_than_budget_left_is_not_slept_and_is_a_deferral(monkeypatch, tmp_path):

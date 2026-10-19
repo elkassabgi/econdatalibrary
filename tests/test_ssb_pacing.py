@@ -139,17 +139,44 @@ def test_backoff_without_retry_after_is_window_scale_and_capped(monkeypatch):
     s, http, clk = _paced([_Resp(429)], interval=0.0)
     with pytest.raises(ssb.Throttled) as ei:
         ssb._get_meta(s, "T1")
-    assert not ei.value.over_budget
-    assert clk.slept == [16, 31, 61, 61, 61, 61], clk.slept     # 15, 30, 60, cap ... (+1 each)
-    assert max(clk.slept) <= ssb.THROTTLE_CAP_S + 1
-    assert s.requests == 7
+    assert not ei.value.over_budget and not ei.value.stop_now
+    # one full window first (60 + the helper's 1 s), then 120 + 1, and never a third wait, however
+    # many attempts the 5xx path is allowed (review: a 16 s first wait retried inside the window)
+    assert clk.slept == [61, 121], clk.slept
+    assert min(clk.slept) > 60 and max(clk.slept) <= ssb.THROTTLE_CAP_S + 1
+    assert s.requests == 1 + ssb.THROTTLE_MAX_RETRIES
+
+
+def test_the_backoff_cap_holds_if_more_429_retries_are_ever_allowed(monkeypatch):
+    monkeypatch.setattr(ssb, "MAX_ATTEMPTS", 7)
+    monkeypatch.setattr(ssb, "THROTTLE_MAX_RETRIES", 5)
+    s, http, clk = _paced([_Resp(429)], interval=0.0)
+    with pytest.raises(ssb.Throttled):
+        ssb._get_meta(s, "T1")
+    assert clk.slept == [61, 121, 121, 121, 121], clk.slept     # 60, 120, then capped (+1 each)
 
 
 def test_default_attempts_then_throttled_is_a_transient_error():
     s, http, clk = _paced([_Resp(429)], interval=0.0)
     with pytest.raises(ssb.TransientError):
         ssb._post_data(s, "T1", {})
-    assert clk.slept == [16, 31, 61]
+    assert clk.slept == [61, 121]
+
+
+def test_a_retry_after_longer_than_one_window_stops_at_once_without_waiting():
+    """Review: "Retry-After: 3600" on every answer gave 8 requests and 726 s of 121-s sleeps, because
+    the shared helper clamps to 120 s and the loop retried inside SSB's own stated wait."""
+    s, http, clk = _paced([_Resp(429, {"Retry-After": "3600"})], interval=0.0)
+    with pytest.raises(ssb.Throttled) as ei:
+        ssb._get_meta(s, "T1")
+    assert ei.value.stop_now and clk.slept == [] and s.requests == 1
+    assert "Retry-After 3600" in str(ei.value)
+
+
+def test_a_retry_after_of_one_window_is_still_waited():
+    s, http, clk = _paced([_Resp(429, {"Retry-After": "60"}), _Resp(200, body={"ok": 1})], interval=0.0)
+    assert ssb._get_meta(s, "T1") == {"ok": 1}
+    assert clk.slept == [61]
 
 
 def test_a_wait_longer_than_the_budget_left_is_never_slept():
@@ -335,12 +362,90 @@ def test_request_timeouts_are_cut_to_the_budget_left_but_not_below_the_floor():
     assert seen[-1] == 60, "without a real deadline the timeout is untouched"
 
 
-def test_a_post_answered_403_is_a_named_failure_not_an_empty_table():
+def test_a_post_answered_403_is_booked_empty_but_recorded_and_printed(capsys):
+    """SSB documents 403 as blocking queries over 800,000 cells. Not made a failure (unmeasured how
+    many tables it hits; a failure every pass would quarantine their groups), but never silent."""
     s, http, clk = _paced([_Resp(403)], interval=0.0)
-    with pytest.raises(ssb.TransientError) as ei:
+    assert ssb._post_data(s, "T1", {}) is None
+    assert s.forbidden == ["T1"] and s.requests == 1, "recorded once, not retried"
+    assert "HTTP 403 on the data POST for T1" in capsys.readouterr().out
+
+
+def test_the_pass_summary_counts_429s_and_the_lowest_remaining():
+    s, http, clk = _paced([_Resp(200, {"X-Ratelimit-Remaining": "12"}),
+                           _Resp(429, {"Retry-After": "1", "X-Ratelimit-Remaining": "0"}),
+                           _Resp(200, {"X-Ratelimit-Remaining": "7"}, body={"ok": 1})], interval=0.0)
+    s.get("u")
+    assert ssb._get_meta(s, "T1") == {"ok": 1}
+    assert (s.requests, s.throttled, s.min_remaining) == (3, 1, 0)
+    assert "3 request(s)" in s.summary() and "1 answered HTTP 429" in s.summary()
+
+
+def test_no_request_starts_once_the_budget_is_spent():
+    class _DL:
+        budget, t0 = 10.0, time.monotonic() - 11.0          # spent a second ago
+    s, http, clk = _paced([_Resp(200)], interval=0.0, deadline=_DL())
+    with pytest.raises(ssb.BudgetCut):
+        ssb._get_meta(s, "T1")
+    assert http.calls == [] and s.requests == 0
+
+
+def test_a_timeout_the_budget_shortened_is_a_budget_cut_not_a_failure():
+    import requests as _rq
+
+    class _DL:
+        budget, t0 = 30.0, time.monotonic() - 27.0          # 3 s left: the 120 s timeout is cut
+
+    class _Slow:
+        def post(self, url, **kw):
+            raise _rq.ReadTimeout(f"Read timed out. (read timeout={kw['timeout']})")
+    s = ssb._PacedSession(0.0, deadline=_DL(), session=_Slow())
+    with pytest.raises(ssb.BudgetCut):
         ssb._post_data(s, "T1", {})
-    assert "HTTP 403" in str(ei.value)[-55:], "the label the note keeps must still say 403"
-    assert s.requests == 1, "a 403 is not retried"
+
+
+def test_a_timeout_the_budget_did_not_shorten_is_still_retried_as_before():
+    import requests as _rq
+    calls = []
+
+    class _Slow:
+        def get(self, url, **kw):
+            calls.append(kw["timeout"])
+            raise _rq.ReadTimeout("Read timed out.")
+    s = ssb._PacedSession(0.0, deadline=None, session=_Slow(), sleep=lambda x: None)
+    with pytest.raises(ssb.TransientError) as ei:
+        ssb._get_meta(s, "T1")
+    assert not isinstance(ei.value, ssb.BudgetCut) and len(calls) == ssb.MAX_ATTEMPTS
+
+
+def test_a_budget_cut_inside_a_group_defers_and_releases_it(monkeypatch, tmp_path):
+    asked = []
+
+    def _meta(sess, tid):
+        asked.append(tid)
+        if tid == "Aa1":
+            raise ssb.BudgetCut("timed out after 5 s, cut to the budget left")
+        return None
+    _wire(monkeypatch, tmp_path, _meta)
+    res = ssb.update(None, None)
+    assert asked == ["Aa0", "Aa1"]
+    note = res.error or ""
+    assert res.status == "partial" and "none failed" in note, note
+    cyc = _cycle(tmp_path)
+    assert cyc.failing == {} and "grp_Aa.parquet" in cyc.unvisited(), (cyc.failing, cyc.visited)
+
+
+def test_a_long_retry_after_stops_the_sweep_after_one_table(monkeypatch, tmp_path):
+    asked = []
+
+    def _meta(sess, tid):
+        asked.append(tid)
+        raise ssb.Throttled(f"ssb meta {tid}: HTTP 429, Retry-After 3600 s", stop_now=True)
+    _wire(monkeypatch, tmp_path, _meta)
+    res = ssb.update(None, None)
+    assert asked == ["Aa0"], asked
+    assert "sweep stopped: SSB throttled" in (res.error or "")
+    assert _cycle(tmp_path).failing == {}
 
 
 def test_a_post_answered_400_is_still_legitimately_empty():

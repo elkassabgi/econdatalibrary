@@ -4302,8 +4302,8 @@ sources:
       merge+overwrite each group.
     rate_note: No API key; custom UA; every request (retries included) starts at least MIN_INTERVAL_S=2.5s after the previous
       one, i.e. at most 24 per minute against SSB's documented 30 queries per 60 s per IP; HTTP 429 honours Retry-After, else
-      waits 15/30/60 s; the sweep stops after 2 throttled tables in a row and defers the rest; MAX_CELLS=80000 cap downsamples
-      oversized tables (time kept full).
+      waits 61 then 121 s; a Retry-After longer than 60 s or than the budget left, or 2 throttled tables in a row, stop the
+      sweep and defer the rest; MAX_CELLS=80000 cap downsamples oversized tables (time kept full).
     key_env: none
     confidence: high
     open_question: Catalog is cached to _catalog.json and never re-crawled — should delta runs re-crawl the catalog (delete
