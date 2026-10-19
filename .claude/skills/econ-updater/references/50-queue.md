@@ -2092,6 +2092,25 @@ the bulk campaign and `tools/derive_csv_bulk.py` refuses a dst campaign (R498). 
    combination chosen; the chosen combination is the defect. Fix shape: pick the collapse combination from cells
    DST stores (one BULK probe of the candidate codes). That changes the series_key inside a table-grain id, so it
    is a RE-GRAIN: clean re-pull per table (R22), not a merge.
+   **WITHHELD, owner decision 2026-10-19 (PR #175).** The 35 are hidden from users through the withheld list
+   (`_aqueduct/withheld.json`, `until: "operator"`; their 404 says the copy shows only zeros because it was
+   downloaded at the wrong level of detail). Re-measured 2026-10-19 on a fresh R2 mirror: 35 of 35 catalogued, one
+   series_key, every value 0 (1,967 rows), over MAX_CELLS in today's tableinfo, and the collapsed selection IS the
+   stored key; the 35 served CSVs hold the same zero rows; DST at a finer grain has non-zero data (8 sampled).
+   - ORDER: worker deploy with dst in the floor FIRST, then `tools/withheld_list.py withhold <35> --until operator`.
+     A worker older than #175 rejects the WHOLE list on a dst id (the id has a second colon) and closes insee_melodi
+     whole on a cold isolate. After T0 the same holds for the self-hosted origin's worker build; t0_ready's
+     served-withheld check validates with the new Python rule and cannot see an old origin build.
+   - RELEASE CONDITION, per table, operator only: the selection fix above, a clean re-pull of that table (R22), its
+     served CSV read back with real (not all-zero) data, then `python tools/withheld_list.py release dst:DST:<T>
+     --apply`, `python tools/gen_withheld_floor.py --from-store`, commit, and the dst page again
+     (`catalog/gen_site.py --only dst` + a page-only Pages deploy). No fetcher releases a dst id
+     (`withheld_list.py` refuses `--until complete` for a source no fetcher un-hides).
+   - NOT covered by the decision (the owner's call): 23 single-series store tables are at least half zeros but not
+     all (22 catalogued; e.g. VAN8K 41 of 42 rows 0, DKSTAT 45/47, DNVPEJER 242/260, RAS301/302/308 16/17), and 698
+     catalogued dst tables serve exactly one series (how many of those are collapses: not measured). DNRENTD
+     (10,409 rows) and DNPRND (4,955) are all-zero and NOT catalogued: cataloguing the uncatalogued dst tables must
+     not serve them (withhold them first, or leave them out).
 
 Also seen, smaller: tables that store nothing (21 span_time tables plus 2 empty ones in run 39161839205) are due on
 every pass, because `due` includes "subject file missing"; 25 due tables drained in 4.8 min that run.
