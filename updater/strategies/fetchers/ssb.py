@@ -616,6 +616,38 @@ def _group_of(table_id: str) -> str:
 # --------------------------------------------------------------------------- #
 # contract entry point
 # --------------------------------------------------------------------------- #
+def _deferral_label(what: str, kind: str, why: str) -> str:
+    """The deferral label for a sweep that stopped early, naming WHY (R299: one label per cause)."""
+    if why == "throttled":
+        return f"{what}: SSB throttled (HTTP 429 on {THROTTLE_STREAK_STOP} tables in a row), {kind} deferred"
+    if why == "budget_wait":
+        return f"{what}: an HTTP 429 wait was longer than the budget left, {kind} deferred"
+    return (f"{what}: budget {BUDGET_MIN:.0f} min spent, group deferred" if kind == "group"
+            else f"{what}: budget spent, table deferred")
+
+
+def _book_request_failure(tally, e, tid: str, where: str, streak: int):
+    """Book one table whose request raised TransientError. Returns (streak, stop), stop being None,
+    "budget_wait" or "throttled".
+
+    - Throttled with over_budget: nothing broke, SSB asked for a wait the budget cannot cover.
+      DEFERRED, not failed (R303), and the sweep stops like a budget stop.
+    - Throttled: a named transient failure; THROTTLE_STREAK_STOP of them in a row stop the sweep.
+      SSB is refusing us, every further table would fail the same way and keep its window full.
+    - any other TransientError: a named transient failure, and the streak is broken.
+    """
+    if isinstance(e, Throttled) and e.over_budget:
+        tally.deferred_unit(f"{tid}: {where} — {str(e)[-70:]}, table deferred")
+        return streak, "budget_wait"
+    # NAME THE TABLE. ssb sweeps ~1,515 tables, so an unlabelled count is a number
+    # with 1,515 candidates behind it and five different causes below.
+    tally.transient_unit(f"{tid}: {where} — {str(e)[-55:]}")   # existing data untouched
+    if not isinstance(e, Throttled):
+        return 0, None
+    streak += 1
+    return streak, ("throttled" if streak >= THROTTLE_STREAK_STOP else None)
+
+
 def update(unit, since) -> Result:
     out_dir = config.source_dir(SOURCE)
     # No isdir guard: catalog + parquet reads/enumeration are blob-routed, so the local dir
@@ -671,13 +703,6 @@ def update(unit, since) -> Result:
             return stop
         return "budget" if dl.spent() else None
 
-    def _deferral(what: str, kind: str, why: str) -> str:
-        if why == "throttled":
-            return f"{what}: SSB throttled (HTTP 429 on {THROTTLE_STREAK_STOP} tables in a row), {kind} deferred"
-        if why == "budget_wait":
-            return f"{what}: an HTTP 429 wait was longer than the budget left, {kind} deferred"
-        return (f"{what}: budget {BUDGET_MIN:.0f} min spent, group deferred" if kind == "group"
-                else f"{what}: budget spent, table deferred")
     total = 0
     cursors: dict[str, str] = {}   # table_id -> frontier 'YYYY-MM-DD'
     # THE MERGE-MEASURED CHANGED SET, at TABLE grain ('SSB:<tid>' -> newest changed obs_date).
@@ -696,31 +721,15 @@ def update(unit, since) -> Result:
     cycle = RotationCycle(out_dir, pfiles)
     cut_group = None               # a group the budget stopped part-way: owed, and booked per table
 
-    def _book_request_failure(e, tid, where, fn):
-        """Book one table whose request raised TransientError, and decide whether to stop."""
+    def _on_request_failure(e, tid, where, fn):
+        """Book one table whose request raised TransientError (module-level _book_request_failure),
+        and stop the sweep when it says so. The CUT group is released after its loop, not failed."""
         nonlocal stop, throttle_streak, cut_group
-        if isinstance(e, Throttled) and e.over_budget:
-            # Nothing broke: SSB asked for a wait the budget cannot cover. Deferred, not failed
-            # (R303), and the sweep stops like any budget stop - the group is cut, not failed.
-            tally.deferred_unit(f"{tid}: {where} — {str(e)[-70:]}, table deferred")
-            stop, cut_group = "budget_wait", fn
-            print(f"[ssb] stopping the sweep at {tid}: {e}", flush=True)
-            return
-        # NAME THE TABLE. ssb sweeps ~1,515 tables, so an unlabelled count is a number
-        # with 1,515 candidates behind it and five different causes below.
-        tally.transient_unit(f"{tid}: {where} — {str(e)[-55:]}")   # existing data untouched
-        if not isinstance(e, Throttled):
-            throttle_streak = 0
-            return
-        throttle_streak += 1
-        if throttle_streak >= THROTTLE_STREAK_STOP and stop is None:
-            # SSB is refusing us. Every further table would fail the same way and keep its window
-            # full. Stop: the rest is deferred, and this group is CUT (released, not failed), so a
-            # throttle - SSB's state, not the group's - never moves it toward quarantine.
-            stop, cut_group = "throttled", fn
-            print(f"[ssb] stopping the sweep: {throttle_streak} tables in a row ran out of HTTP 429 "
-                  f"retries (last {tid}); {sess.requests} requests sent this pass at one per "
-                  f"{sess.interval:g} s", flush=True)
+        throttle_streak, why_now = _book_request_failure(tally, e, tid, where, throttle_streak)
+        if why_now and stop is None:
+            stop, cut_group = why_now, fn
+            print(f"[ssb] stopping the sweep at {tid} ({why_now}): {e}; {sess.requests} request(s) "
+                  f"sent this pass at one per {sess.interval:g} s", flush=True)
 
     for fn in pfiles:
         if cycle.done(fn):
@@ -739,7 +748,7 @@ def update(unit, since) -> Result:
             # A throttle stop is booked the same way, with its own label.
             for g in cycle.unvisited():
                 if g != cut_group:
-                    tally.deferred_unit(_deferral(g, "group", why))
+                    tally.deferred_unit(_deferral_label(g, "group", why))
             # Every group this pass did not reach still holds its rows: count them, as abs does,
             # or obs (served as obs_count) drops on every budget-stopped pass (AR-124 P7).
             for rest in pfiles[pfiles.index(fn):]:
@@ -780,7 +789,7 @@ def update(unit, since) -> Result:
         for tid in attempt_ids:
             why = _why_stop()
             if why:
-                tally.deferred_unit(_deferral(tid, "table", why))
+                tally.deferred_unit(_deferral_label(tid, "table", why))
                 cut_group = fn     # not visited: its remaining tables return with the cycle
                 continue
             stored_max = per_max.get(tid)
@@ -795,7 +804,7 @@ def update(unit, since) -> Result:
             try:
                 meta = _get_meta(sess, tid)
             except TransientError as e:
-                _book_request_failure(e, tid, "metadata", fn)
+                _on_request_failure(e, tid, "metadata", fn)
                 time.sleep(RATE)
                 continue
             throttle_streak = 0          # SSB answered: the streak is broken
@@ -844,7 +853,7 @@ def update(unit, since) -> Result:
             try:
                 resp = _post_data(sess, tid, body)
             except TransientError as e:
-                _book_request_failure(e, tid, "data POST", fn)
+                _on_request_failure(e, tid, "data POST", fn)
                 time.sleep(RATE)
                 continue
             throttle_streak = 0
@@ -977,7 +986,7 @@ def update(unit, since) -> Result:
         named = ", ".join(str(i).split(":")[0] for i in ids[:8]) + (f", +{len(ids) - 8} more" if len(ids) > 8 else "")
         res.error = ((res.error or "") + f"; sweep stopped: SSB throttled (HTTP 429 on "
                      f"{THROTTLE_STREAK_STOP} tables in a row), {tally.deferred} sub-unit(s) deferred "
-                     f"to the next pass [{named}], {sess.requests} request(s) sent")
+                     f"to a later pass [{named}], {sess.requests} request(s) sent")
     # {} is a real statement ("no served value changed") and is honoured by the orchestrator.
     res.changed_keys = changed
     return res
