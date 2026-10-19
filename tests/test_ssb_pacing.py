@@ -346,3 +346,18 @@ def test_a_post_answered_403_is_a_named_failure_not_an_empty_table():
 def test_a_post_answered_400_is_still_legitimately_empty():
     s, http, clk = _paced([_Resp(400)], interval=0.0)
     assert ssb._post_data(s, "T1", {}) is None
+
+
+def test_an_over_budget_wait_on_a_groups_last_table_still_releases_the_group(monkeypatch, tmp_path):
+    """The stop must cut the group itself: on the LAST table there is no later table whose deferral
+    would set the cut, and the group would be marked visited with that table never fetched."""
+    def _meta(sess, tid):
+        if tid == "Aa2":
+            raise ssb.Throttled(f"ssb meta {tid}: HTTP 429, wait 61 s is longer than the 20 s budget left",
+                                over_budget=True)
+        return None
+    _wire(monkeypatch, tmp_path, _meta)
+    ssb.update(None, None)
+    cyc = _cycle(tmp_path)
+    assert "grp_Aa.parquet" in cyc.unvisited(), "Aa2 was never fetched: Aa must stay owed"
+    assert cyc.failing == {} and cyc.in_flight is None, (cyc.failing, cyc.in_flight)
