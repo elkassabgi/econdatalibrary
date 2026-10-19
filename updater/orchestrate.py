@@ -1615,31 +1615,64 @@ def _eia_table_prefix(key: str) -> "str | None":
     return ".".join(segs[:depth])
 
 
-# UNCTAD dot-prefix table grain (WU-1 of the 2026-08-31 grain sweep). These nine
-# composite-trade sources store SERIES-grain dotted keys ('1560.P_06.02.586.M0100')
-# while their catalogues are minted at a DOT-PREFIX table grain — the resolver serves
-# them via the depth-agnostic exact|prefix predicate in _resolve.py::_DOT_TABLE_GRAIN,
-# so the MAPPER must carry the per-source MINTED depth. Every depth below was MEASURED
-# over the FULL stored cursor population (no sampling — 8,284,628 keys total), each
-# source mapping N/N = 100.0% with 0 nested-prefix ambiguities and every catalogue id
-# covered (discovery run wf_2029ceb4, scratchpad measure_unctad_dot.py, state.db +
-# catalog.db mode=ro). ictgoods is the depth-3 outlier: a shared constant would map 0%
-# there, which is why this is a per-source map, not a number. creativegoodsgr's
-# '|SPAN=nY' suffix lives inside segment 5 and never reaches a depth-2 prefix.
-# Before this tier all nine sat at 0% mapped, CAP-saturated, demoting every run —
-# the R497/eia shape: table-grain collapse turns a truncated 50k changed set into a
-# derivable few-hundred-id list.
-_UNCTAD_DOT_DEPTH = {
-    "unctad_biotrademerchrca": 1,
-    "unctad_ictgoods": 3,
-    "unctad_associatedplasticstradebypartner": 2,
-    "unctad_biotrademerchshare": 2,
-    "unctad_creativegoodsgr": 2,
-    "unctad_hiddenplasticstradebypartner": 2,
-    "unctad_intratrade": 2,
-    "unctad_plasticstradebypartner": 2,
-    "unctad_tradeservcattotal": 2,
-}
+# UNCTAD dot-prefix table grain: ONE source of truth, the resolver's own set.
+#
+# These composite-trade sources store SERIES-grain dotted keys ('1560.P_06.02.586.M0100')
+# while their catalogues are minted at a DOT-PREFIX table grain. The resolver serves them
+# through clients/python/econdl/_resolve.py::_DOT_TABLE_GRAIN with a depth-agnostic
+# predicate: id X serves key k  <=>  k == X  or  k startswith X + "." .
+#
+# THIS USED TO BE A SECOND, HAND-KEPT LIST - `_UNCTAD_DOT_DEPTH = {source: depth}` - and the
+# two drifted: the resolver set grew to 18 while the depth map stayed at 9, so the other nine
+# (criticalmineralstradebypart, oceantrade, gstptradematrix, creativegoodsvalue,
+# tradeservcatbypartner, nonplasticsubststradebypartner, biotrademerch, tradefoodcatbyproc,
+# tradefoodprocbycat) mapped 0% of their changed keys. The 2026-10-05 criticalminerals pass
+# merged its whole store and booked "8589597 changed series_keys have no catalog mapping",
+# so none of its 16,103 served CSVs re-derived. The only test joining the lists checked ONE
+# direction (map members must be in the resolver set), which is why it stayed green.
+#
+# So the mapper no longer keeps a depth at all. `_dot_table_ids` is the exact INVERSE of the
+# resolver predicate: the candidate ids of a key are the key itself and every dot-prefix of
+# it, and each one that is catalogued serves it. The depth is whatever the catalogue minted -
+# which is exactly what the resolver serves - and a new DOT source needs ONE edit (the
+# resolver set). Measured before the change (2026-10-18, DuckDB, catalog.db mode=ro) over the
+# FULL distinct store key population of 17 of the 18 members - 95,722,136 keys: 0 keys match
+# more than one catalogued prefix, and every match sits at the depth the old map held for the
+# nine it covered. The real mapper of origin/main and of this change, run over the full stored
+# cursor sets of the 13 members that have cursors, returns identical id and unmapped sets for
+# the old nine and 0 -> 100% for criticalminerals, creativegoodsvalue, gstptradematrix and
+# oceantrade (~11 s for criticalminerals' 8,589,597 keys, against 860 s through the old tiers).
+
+
+def _dot_table_members() -> frozenset:
+    """The resolver's `_DOT_TABLE_GRAIN`, imported - never retyped (R191/R192), and read on every
+    call (not cached), so the mapper can never hold a stale copy of the set.
+
+    An import failure RAISES: a mapper that silently fell back to "no DOT sources" would put
+    every one of them back at 0% mapped while the run carried on - the defect this replaces."""
+    import core.derive_csv  # noqa: F401,PLC0415 - puts clients/python on sys.path
+    from econdl import _resolve as _r                                   # noqa: PLC0415
+    return frozenset(_r._DOT_TABLE_GRAIN)
+
+
+def _dot_table_ids(key: str, natives) -> list:
+    """Catalogued natives that serve `key` under the resolver's DOT predicate, shortest first.
+
+    `natives` is the set of catalogued native ids of the source. The candidates are every
+    dot-prefix of the key and the key itself (the predicate's equality arm), so an at-grain key
+    maps to itself and `0000.1` can never claim `0000.10.x` (prefixes end on a '.' boundary).
+    EVERY catalogued candidate is returned, not the first: the resolver serves the key under
+    each of them, so each one's CSV is stale when the key changes."""
+    out = []
+    i = key.find(".")
+    while i != -1:
+        p = key[:i]
+        if p in natives:
+            out.append(p)
+        i = key.find(".", i + 1)
+    if key in natives:
+        out.append(key)
+    return out
 
 
 def _table_grain_native(source_id: str, key: str) -> "str | None":
@@ -1648,17 +1681,10 @@ def _table_grain_native(source_id: str, key: str) -> "str | None":
     None means "this key is not the shape its resolver serves" and the caller must leave it
     UNMAPPED — never guess. Returning a plausible-but-wrong id is strictly worse than
     reporting the miss, because the miss is visible in the note and the wrong id is not.
+    (The UNCTAD DOT sources are not here: `_catalog_ids_for` maps them by `_dot_table_ids`.)
     """
     if source_id == "eia":
         return _eia_table_prefix(key)
-    _ud = _UNCTAD_DOT_DEPTH.get(source_id)
-    if _ud is not None:
-        segs = key.split(".")
-        # `> depth`, never `>=`: an at-grain key (a catalogue id itself) stays with
-        # the exact tier — the eia guard, and R331's never-guess rule in this shape.
-        if len(segs) > _ud:
-            return ".".join(segs[:_ud])
-        return None
     spec = _TABLE_GRAIN.get(source_id)
     if spec is None or ":" not in key:
         return None
@@ -1979,7 +2005,33 @@ def _catalog_ids_for(source_id: str, changed_keys):
                 ("wikidata:", "wikidata;"))]
             _exp = {"companies": _all} if _all else {}
         _ember = _ember_index(con) if source_id == "ember" else None
+        # UNCTAD DOT table grain: the catalogued natives, ONCE per call from the source's PK range
+        # (indexed; 247 .. 32,374 rows for the 18 members), so each key costs set lookups instead
+        # of the exact tier's per-key PK seek (8,589,597 seeks for criticalminerals).
+        _dot = None
+        if source_id in _dot_table_members():
+            _pre = source_id + ":"
+            _dot = {cid[len(_pre):] for (cid,) in con.execute(
+                "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
+                (_pre, source_id + ";"))}
         for k in changed_keys:
+            if _dot is not None:
+                # The resolver predicate, inverted (see _dot_table_ids). No other IN-LOOP tier can
+                # map a DOT key: the exact tier is this tier's equality arm, `_flow_of` returns a
+                # DOT key unchanged, and no catalogue id of these sources carries a '#' part
+                # (measured, all 18). A key left unmapped here is NOT final: it still reaches the
+                # post-loop punctuation-insensitive fallback (`_norm_id`) below, exactly as before
+                # this tier existed, and only then the unmapped list (review AR-347 finding 5).
+                _hit = _dot_table_ids(str(k), _dot)
+                if _hit:
+                    for nat in _hit:
+                        cid = f"{source_id}:{nat}"
+                        if cid not in seen:
+                            seen.add(cid)
+                            exact.append(cid)
+                else:
+                    unmapped.append(k)
+                continue
             if _ember is not None:
                 # ember's changed keys are '<file stem>:<series_key>' (fetchers/ember.py) and its 60
                 # ids resolve to ONE native key in ONE of two files - an exact inverse of the

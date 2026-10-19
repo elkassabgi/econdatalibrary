@@ -2020,3 +2020,39 @@ run prints the R510 "unavailable" line every time. Effects: the R510 unlisted se
 2026-08-30) is invisible to `changed` again, and `build_catalog`'s subject-map refresh gets
 nothing, so a new matrix routes through one ReadMetadata call each. Needs the new parameters or a
 replacement full-catalogue call, and the warning should stop reading as a short outage.
+
+### unctad DOT table grain: the mapping is fixed (PR #172); per-release COVERAGE is not (2026-10-19)
+
+PR #172 makes the CSV mapper derive the UNCTAD DOT sources from the resolver's own set
+(`_resolve._DOT_TABLE_GRAIN`). Before it, 9 of the 18 members mapped 0% of their changed keys. That
+part is done. Two follow-ups are OPEN; neither is fixed by #172.
+
+1. **A release reaches only part of a big member's CSVs.** `_unctad.update` reports EVERY pulled key
+   as a cursor, so a merging pass maps the whole catalogue (criticalmineralstradebypart: 16,103 ids).
+   The CSV phase stops at the 45-min soft budget (`AQUEDUCT_DERIVE_BUDGET_MIN`; run_local_heavy.ps1
+   does not raise it, and the Windows fence is a no-op). Measured by review AR-347: 0.98 ids/s with 8
+   threads on criticalminerals, so about 2,657 of 16,103 ids per pass. Serial cost per id:
+   tradefoodprocbycat ~14 s, tradefoodcatbyproc ~16 s, biotrademerch ~90-100 s. The rest go to
+   `csv_retry_queue`, and `_drain_csv_retry_queue` runs only inside `_should_derive_csvs(status)`
+   (ok/partial). Between UNCTAD releases every pass is `no_change` (vintage probe matched), so the
+   queue does not drain until the next release, and nothing turns red (the deferral note does not
+   demote). Options: report merge-measured `changed_keys` from `_unctad`
+   (`merge_and_write(report_changed_keys=True)`) so only changed ids derive; or book the deferred ids
+   as desktop debt (`csv_desktop_owed`); or drain the queue on `no_change` passes too.
+2. **A value-only revision never derives.** `_unctad.update` books `added_unit(max(0, after - before))`.
+   A release that revises values without adding rows ends `no_change`, and `no_change` derives nothing.
+   Same class as worldbank_esg. The merge-measured `changed_keys` option in item 1 closes both.
+
+Measured 2026-10-18 (state, catalogue and store read-only; served CSVs by R2 GET): nothing served is
+stale today. Full compares of every served CSV against the store found 0 differing rows for
+criticalminerals (109,956,508 rows), creativegoodsvalue, gstptradematrix and oceantrade; the other
+five members have every CSV newer than the store file. The 2026-10-05 note "+109,956,508 new rows"
+is the whole store, not new data: under `AQUEDUCT_BACKEND=r2`, `blob.row_count` returns 0 for an R2
+object that does not exist, so `after - before` was the store total. Do NOT run a one-off re-derive:
+it would rewrite ~153k identical objects (old objects are plain CSV, a new PUT is gzipped, so the
+skip-identical check would not catch them).
+
+Also open, outside this class: a cursor-grain audit (real mapper, stored cursors) reads
+GRAIN-MISMATCH for abs, bls, census, ecb, ember, ilostat, norgesbank, ons_uk and stat_slovenia.
+Several of them report changed keys in a shape the stored cursors do not carry, so 0% there is not
+proof of a failing run. Triage each on its own.
