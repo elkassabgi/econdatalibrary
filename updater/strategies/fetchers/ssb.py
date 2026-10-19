@@ -707,14 +707,16 @@ def _group_of(table_id: str) -> str:
 # --------------------------------------------------------------------------- #
 # contract entry point
 # --------------------------------------------------------------------------- #
-def _deferral_label(what: str, kind: str, why: str) -> str:
-    """The deferral label for a sweep that stopped early, naming WHY (R299: one label per cause)."""
+def _deferral_label(what: str, deferred: str, why: str) -> str:
+    """The deferral label for a sweep that stopped early, naming WHY (R299: one label per cause).
+    `deferred` is the label's tail as the caller writes it: "group deferred" or "table deferred"."""
     if why == "throttled":
-        return f"{what}: SSB throttled (HTTP 429), {kind} deferred"
+        return f"{what}: SSB throttled (HTTP 429), {deferred}"
     if why == "budget_wait":
-        return f"{what}: an HTTP 429 wait was longer than the budget left, {kind} deferred"
-    return (f"{what}: budget {BUDGET_MIN:.0f} min spent, group deferred" if kind == "group"
-            else f"{what}: budget spent, table deferred")
+        return f"{what}: an HTTP 429 wait was longer than the budget left, {deferred}"
+    if deferred.startswith("group"):
+        return f"{what}: budget {BUDGET_MIN:.0f} min spent, {deferred}"
+    return f"{what}: budget spent, {deferred}"
 
 
 def _book_request_failure(tally, e, tid: str, where: str, streak: int):
@@ -847,7 +849,7 @@ def update(unit, since) -> Result:
             # A throttle stop is booked the same way, with its own label.
             for g in cycle.unvisited():
                 if g != cut_group:
-                    tally.deferred_unit(_deferral_label(g, "group", why))
+                    tally.deferred_unit(_deferral_label(g, "group deferred", why))
             # Every group this pass did not reach still holds its rows: count them, as abs does,
             # or obs (served as obs_count) drops on every budget-stopped pass (AR-124 P7).
             for rest in pfiles[pfiles.index(fn):]:
@@ -888,7 +890,7 @@ def update(unit, since) -> Result:
         for tid in attempt_ids:
             why = _why_stop()
             if why:
-                tally.deferred_unit(_deferral_label(tid, "table", why))
+                tally.deferred_unit(_deferral_label(tid, "table deferred", why))
                 cut_group = fn     # not visited: its remaining tables return with the cycle
                 continue
             stored_max = per_max.get(tid)
