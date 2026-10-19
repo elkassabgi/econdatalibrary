@@ -211,3 +211,75 @@ test("origin: GET /v1/withheld serves the local store's object behind the secret
   assert.equal(text, LIST, "the object's bytes, unchanged");
   assert.equal(r.headers.get("x-withheld-etag"), "e-list");
 });
+
+// dst (owner decision 2026-10-19): the zero-collapse tables. A dst catalogue id has a SECOND colon.
+const DST_HELD = "dst:DST:DNINTVAL";
+const DST_KEPT = "dst:DST:FOLK1A";
+const DST_SEED = SEED + `;
+  INSERT INTO series (series_id, source_id, title, license_id) VALUES ('${DST_HELD}', 'dst', 'International reserve assets (IMF compilation)', 'cc-by-4.0');
+  INSERT INTO series (series_id, source_id, title, license_id) VALUES ('${DST_KEPT}', 'dst', 'Population at the first day of the quarter', 'cc-by-4.0');
+  INSERT INTO source VALUES ('dst', 'Statistics Denmark', 'https://www.dst.dk', 'cc-by-4.0', 'Source: Statistics Denmark', NULL);
+  INSERT INTO license VALUES ('cc-by-4.0', 'CC BY 4.0', 1, 1, 1, 0, NULL);
+  INSERT INTO source_counts VALUES ('dst', 2)`;
+const DENMARK = "Temporarily withheld: our copy of this table shows only zeros because it was downloaded at the wrong " +
+  "level of detail; it is listed again when it is downloaded again correctly from Statistics Denmark.";
+
+test("production: a withheld dst table answers 404 with the Denmark sentence; insee keeps its own; controls open",
+     { timeout: 300_000 }, async (t) => {
+  const persist = newPersist("econ-withheld-dst-");
+  const list = JSON.stringify({ version: 1, ids: {
+    [HELD]: { since: "2026-10-17", why: "t", until: "complete" },
+    [DST_HELD]: { since: "2026-10-19", why: "zero collapse", until: "operator" } } });
+  await withBindings(EDGE_CONFIG, persist, async (env) => {
+    await execSql(env.CATALOG, DST_SEED);
+    await execSql(env.CATALOG_CLIMATE, SHARD);
+    await env.SERIES_BUCKET.put("_aqueduct/withheld.json", list);
+    await env.SERIES_BUCKET.put("_aqueduct/stats.json", JSON.stringify({ individual_series: 5 }));
+  });
+  const w = await start(EDGE_CONFIG, {}, persist);
+  t.after(() => w.stop());
+  const m = await getJson(w, `/v1/series/${enc(DST_HELD)}.metadata.json`);
+  assert.equal(m.status, 404, m.text);
+  assert.equal(m.body.error, "withheld");
+  assert.equal(m.body.detail, DENMARK);
+  const c = await getJson(w, `/v1/series/${enc(DST_HELD)}.csv`);
+  assert.equal(c.status, 404, "before auth");
+  assert.equal(c.body.detail, DENMARK);
+  assert.equal((await getJson(w, `/v1/series/${enc(DST_KEPT)}.metadata.json`)).status, 200, "a dst control is open");
+  assert.equal((await getJson(w, `/v1/series/${enc(DST_KEPT)}.csv`)).status, 401, "control: auth runs as before");
+  const im = await getJson(w, `/v1/series/${enc(HELD)}.metadata.json`);
+  assert.equal(im.body.detail, "Temporarily withheld: our copy is incomplete and is being re-downloaded from INSEE; " +
+    "it is listed again when the download is complete.", "the insee sentence is unchanged");
+  const browse = await getJson(w, "/v1/catalog?source=dst");
+  assert.deepEqual((browse.body.results as { series_id: string }[]).map((r) => r.series_id), [DST_KEPT]);
+  assert.equal(browse.body.total, 1);
+  const bn = await getJson(w, `/v1/bundle?ids=${enc(DST_HELD)},${enc(HELD)}`);
+  const un = bn.body["econdl:unresolved"] as { id: string; reason: string }[];
+  assert.match(un.find((u) => u.id === DST_HELD)!.reason, /^withheld: our copy of this table shows only zeros .* from Statistics Denmark \(HTTP 404 'withheld' on direct fetch\)$/);
+  assert.equal(un.find((u) => u.id === HELD)!.reason, "withheld: our copy is incomplete and is being re-downloaded; " +
+    "it is listed again when the download is complete (HTTP 404 'withheld' on direct fetch)", "insee: unchanged");
+});
+
+test("production: no list -> the floor closes dst WHOLE; a complete dst table gets the unreadable-list sentence",
+     { timeout: 300_000 }, async (t) => {
+  const persist = newPersist("econ-withheld-dst-floor-");
+  await withBindings(EDGE_CONFIG, persist, async (env) => {
+    await execSql(env.CATALOG, DST_SEED);
+    await execSql(env.CATALOG_CLIMATE, SHARD);
+  });
+  const w = await start(EDGE_CONFIG, {}, persist);
+  t.after(() => w.stop());
+  const UNREADABLE = "Temporarily unavailable: the withheld-tables list could not be read; try again in a minute.";
+  const km = await getJson(w, `/v1/series/${enc(DST_KEPT)}.metadata.json`);
+  assert.equal(km.status, 404, km.text);
+  assert.equal(km.body.error, "withheld");
+  assert.equal(km.body.detail, UNREADABLE);
+  assert.equal((await getJson(w, `/v1/series/${enc(DST_HELD)}.metadata.json`)).body.detail, DENMARK,
+               "a dst id in the committed floor keeps the Denmark sentence");
+  assert.equal((await getJson(w, `/v1/series/${enc(OTHER)}.metadata.json`)).status, 200, "another source is open");
+  const browse = await getJson(w, "/v1/catalog?source=dst");
+  assert.deepEqual(browse.body.results, []);
+  const b = await getJson(w, "/v1/bundle?source=dst");
+  assert.equal(b.status, 404, b.text);
+  assert.equal(b.body.detail, UNREADABLE);
+});

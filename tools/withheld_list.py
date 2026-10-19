@@ -9,7 +9,7 @@ incomplete table is hidden from users until it is complete. Every write here is 
     python tools/withheld_list.py release  ID [ID ...] [--apply]    # take ids off the list (they are listed again)
 
 Rules:
-  - every id must pass the worker's own rule (tools/gen_withheld_floor.py validate: [a-z0-9_]:[A-Za-z0-9_.-], at
+  - every id must pass the worker's own rule (tools/gen_withheld_floor.py validate: [a-z0-9_]:[A-Za-z0-9_.:-], at
     most 500, until complete|operator); a list the worker would reject is never written;
   - `withhold` / `release` replace the object only while its ETag is the one read (If-Match); a change in between
     refuses (exit 4) and nothing is written;
@@ -22,7 +22,11 @@ Rules:
     after the floor was committed hidden (AR-341 finding 2). A new source goes into withheld.json first, then
     tools/gen_withheld_floor.py, commit, worker deploy - then `withhold`;
   - after a change, tools/gen_withheld_floor.py --from-store refreshes the committed floor (a stale floor no
-    longer opens anything: it decides only which sources close whole, and which ids are named in it).
+    longer opens anything: it decides only which sources close whole, and which ids are named in it);
+  - `withhold --until complete` is REFUSED for a source no fetcher un-hides (AUTO_UNHIDE_SOURCES: insee_melodi
+    only): `complete` promises an automatic release, and for any other source - dst (owner decision 2026-10-19:
+    the zero-collapse tables, released by an operator after their re-grain) - nothing would ever make it. Such
+    ids are withheld `--until operator` and leave the list only by `release`.
 Exit: 0 ok or dry run, 2 refused (validation, exists), 4 the condition failed, 5 read-back mismatch."""
 from __future__ import annotations
 
@@ -37,6 +41,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 import gen_withheld_floor as G  # noqa: E402
+
+# The sources whose FETCHER removes an `until: "complete"` entry by itself (insee_melodi.unwithhold, which skips
+# every id of another source). Every other source's ids are released by an operator (`release`) only.
+AUTO_UNHIDE_SOURCES = frozenset({"insee_melodi"})
 
 KEY = G.KEY
 
@@ -145,6 +153,13 @@ def main(argv=None) -> int:
                   f"so a worker that cannot read the list would SHOW them. Add one to withheld.json, run "
                   f"tools/gen_withheld_floor.py, commit and deploy the worker first")
             return 2
+        if a.until == "complete":
+            manual = sorted(i for i in a.ids if i.split(":", 1)[0] not in AUTO_UNHIDE_SOURCES)
+            if manual:
+                print(f"REFUSED: {manual}: no fetcher un-hides their source (only {sorted(AUTO_UNHIDE_SOURCES)}), so "
+                      f"'until: complete' would never be met - withhold them with --until operator; an operator "
+                      f"releases them (release ID --apply)")
+                return 2
         for i in a.ids:
             ids[i] = {"since": today, "why": a.why.strip(), "until": a.until}
         missing = sorted(set(a.ids) - catalogued(list(a.ids)))

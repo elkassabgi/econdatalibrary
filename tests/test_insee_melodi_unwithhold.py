@@ -69,6 +69,19 @@ def test_a_complete_table_whose_csv_holds_every_row_is_un_withheld(env, monkeypa
     assert f"{SEED}: UN-WITHHELD - complete per INSEE paging, CSV 25 lines == 25 rows" in capsys.readouterr().out
 
 
+def test_dst_entries_survive_an_insee_un_hide_byte_for_byte(env, monkeypatch):
+    """Owner decision 2026-10-19: dst's zero-collapse tables are released by an OPERATOR only. insee_melodi's un-hide
+    must leave every dst entry as it is - even one wrongly marked `complete` whose native part names a flow that IS
+    complete here (the planted positive: without the `insee_melodi:` prefix filter this pass would remove it)."""
+    dst = {"dst:DST:DNINTVAL": {"since": "2026-10-19", "why": "zero collapse", "until": "operator"},
+           f"dst:{SEED}": {"since": "2026-10-19", "why": "planted", "until": "complete"}}
+    fake, st = _complete(env, monkeypatch, {SID: ENT, **dst})
+    env.run(fake)
+    got = _ids(st)
+    assert SID not in got and st.puts == [M.WITHHELD_KEY], "the insee entry still goes"
+    assert {k: v for k, v in got.items() if k.startswith("dst:")} == dst
+
+
 def test_a_csv_that_does_not_hold_every_row_keeps_it_withheld(env, monkeypatch):
     fake, st = _complete(env, monkeypatch, {SID: ENT}, csv_lines=10)
     r = env.run(fake)

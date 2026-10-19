@@ -1479,7 +1479,7 @@ def load_withheld():
         return {}
     out = {}
     for sid in sorted(ids):
-        if re.fullmatch(r"[a-z0-9_]+:[A-Za-z0-9_.-]+", sid):
+        if re.fullmatch(r"[a-z0-9_]+:[A-Za-z0-9_.:-]+", sid):     # = withheld.ts WITHHELD_ID_RE (dst:DST:<T>)
             out.setdefault(sid.split(":", 1)[0], []).append(sid)
     return out
 

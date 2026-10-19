@@ -18,7 +18,7 @@ import type { Env, SourceRow, LicenseRow, SeriesRow, SeriesIdRow } from "./types
 import { SELECT_SOURCE, SELECT_LICENSE, SELECT_SERIES, seriesIdsForSourceSql } from "./sql.ts";
 import { json, badRequest, licenseBlock, supportedSources, sourceOf, dbFor, dbForSeries } from "./util.ts";
 import { NON_REDISTRIBUTABLE, isSeriesCarvedOut } from "./denylist.ts";
-import { type Withheld, LIST_UNREADABLE_DETAIL, forSource, isSourceClosed, isWithheld } from "./withheld.ts";
+import { type Withheld, LIST_UNREADABLE_DETAIL, forSource, isSourceClosed, isWithheld, withheldReason } from "./withheld.ts";
 
 const PROFILE = "tabular-data-package";
 const SCHEMA_VERSION = "1.0";
@@ -123,8 +123,7 @@ export async function handleBundle(url: URL, env: Env, withheld: Withheld): Prom
     // A WITHHELD id the caller named: unresolved with its own reason (the 404 the series routes answer).
     if (isWithheld(withheld, id)) {
       unresolved.push({ id, reason: withheld.ids.has(id)
-        ? "withheld: our copy is incomplete and is being re-downloaded; it is listed " +
-          "again when the download is complete (HTTP 404 'withheld' on direct fetch)"
+        ? withheldReason(id)                 // per source: dst's words are not "being re-downloaded" (withheld.ts)
         // its source is closed only because the list could not be read (AR-341 re-review N2)
         : "withheld: the withheld-tables list could not be read; try again in a minute (HTTP 404 'withheld' on " +
           "direct fetch)" });
