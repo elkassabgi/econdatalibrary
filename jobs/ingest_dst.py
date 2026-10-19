@@ -399,8 +399,8 @@ def _post_data(table_id, selection):
 
 # THE BULK FALLBACK (2026-10-19). Since 2026-09-30 DST answers every data POST for VNASFK and VNKSFK - even ONE
 # cell, in JSONSTAT and in CSV - with HTTP 500 {"errorTypeCode":"SYSTEM-100"}, while the same selection in its
-# streaming BULK format answers 200. Measured live 2026-10-19: 2 of the 24 tables with a version variable fail
-# this way, and the control FOLK1A answers 200 in all three formats. So when a JSONSTAT POST's FINAL answer is
+# streaming BULK format answers 200. Measured live 2026-10-19: of the 23 tables with a version variable plus NASFK,
+# these 2 fail this way, and the control FOLK1A answers 200 in all three formats. So when a JSONSTAT POST's FINAL answer is
 # HTTP 500 - and only then: never a 4xx, a 429, a 502/503/504, a timeout or a 200 - the same selection is asked
 # for once in BULK with codes (valuePresentation=Code) and parsed into exactly the rows parse_jsonstat makes.
 # Every use is printed and appended here; the fetcher resets the list per pass and names it in its note.

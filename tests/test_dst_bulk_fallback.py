@@ -2,7 +2,7 @@
 
 Since 2026-09-30 DST answers EVERY data POST for VNASFK and VNKSFK - one cell included, JSONSTAT and CSV alike - with
 HTTP 500 {"errorTypeCode":"SYSTEM-100"}, while its streaming BULK format answers 200 (measured live 2026-10-19; 2 of
-the 24 tables with a version variable; the control FOLK1A answers 200 in all three formats). The fallback must give
+the 23 tables with a version variable plus NASFK; the control FOLK1A answers 200 in all three formats). The fallback must give
 exactly the rows the JSONSTAT path gives, fire only on a final HTTP 500, and be counted where an operator reads it.
 
 The fixtures in tests/fixtures/dst_bulk/ are live api.statbank.dk answers (CC BY 4.0) recorded 2026-10-19: for each
