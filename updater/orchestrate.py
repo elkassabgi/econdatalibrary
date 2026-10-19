@@ -2016,10 +2016,12 @@ def _catalog_ids_for(source_id: str, changed_keys):
                 (_pre, source_id + ";"))}
         for k in changed_keys:
             if _dot is not None:
-                # The resolver predicate, inverted (see _dot_table_ids). A DOT key maps here or
-                # nowhere: the exact tier is this tier's equality arm, `_flow_of` returns a DOT
-                # key unchanged, and no catalogue id of these sources carries a '#' part
-                # (measured, all 18). Unmapped keys still reach the notes below unchanged.
+                # The resolver predicate, inverted (see _dot_table_ids). No other IN-LOOP tier can
+                # map a DOT key: the exact tier is this tier's equality arm, `_flow_of` returns a
+                # DOT key unchanged, and no catalogue id of these sources carries a '#' part
+                # (measured, all 18). A key left unmapped here is NOT final: it still reaches the
+                # post-loop punctuation-insensitive fallback (`_norm_id`) below, exactly as before
+                # this tier existed, and only then the unmapped list (review AR-347 finding 5).
                 _hit = _dot_table_ids(str(k), _dot)
                 if _hit:
                     for nat in _hit:
