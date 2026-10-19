@@ -73,6 +73,15 @@ def test_the_committed_list_names_the_35_dst_tables_all_until_operator():
     assert G.validate(COMMITTED)
 
 
+def test_the_bundle_gives_a_listed_id_its_sources_own_reason():
+    """The wiring test (workerd, CI) reads the reason end to end; this pins the call site where it can run anywhere:
+    a listed id's reason comes from withheldReason(id), not from one text for every source."""
+    src = open(os.path.join(ROOT, "api", "worker", "src", "bundle.ts"), encoding="utf-8").read()
+    branch = src[src.index("if (isWithheld(withheld, id)) {"):src.index("Canonical order (CONTRACT.md v1.1")]
+    assert "withheld.ids.has(id)\n        ? withheldReason(id)" in branch.replace("\r\n", "\n")
+    assert '"withheld: our copy is incomplete' not in branch, "a fixed text for every source is back in bundle.ts"
+
+
 def test_the_floor_names_dst():
     ts = open(G.TS_PATH, encoding="utf-8").read()
     assert f'"{DST}"' in ts and ts.count('"dst:DST:') == 35
