@@ -43,7 +43,13 @@ def test_the_ingester_names_why_a_body_parsed_to_nothing():
     assert ING._why_unparsed(_body(["2019-2023", "2020-2024"], [1.0, None])) == "span_time"
     assert ING._why_unparsed(_body(["2019-2023", "2024"], [1.0, 2.0])) == "unparsed", "mixed: ours"
     assert ING._why_unparsed(_body(["2019-2023"], [1.0], role_time=False)) == "span_time", "TLIST is time"
-    assert ING._why_unparsed(_body(["x1", "x2"], [1.0, 2.0])) == "unparsed"
+    # An authoritative time axis none of whose codes dates is NAMED since 2026-10-18 (undated_time),
+    # not filed as our gap; a body with NO authoritative axis is still our parser gap.
+    assert ING._why_unparsed(_body(["x1", "x2"], [1.0, 2.0])) == "undated_time"
+    nax = _body(["x1", "x2"], [1.0, 2.0], role_time=False)
+    nax["id"][1] = "CLASS"
+    nax["dimension"]["CLASS"] = nax["dimension"].pop("TLIST(A1)")
+    assert ING._why_unparsed(nax) == "unparsed", "no authoritative time axis: ours"
 
 
 OUTCOMES = {"HRD51": "all_null", "ROA41": "span_time", "GAP01": "unparsed", "HELD1": "all_null"}
@@ -72,7 +78,9 @@ def _run(tmp_path, monkeypatch, held=("HELD1", "OTHER"), matrices=tuple(OUTCOMES
 def test_a_never_stored_empty_or_undated_matrix_is_skipped_and_its_cursor_advances(tmp_path, monkeypatch):
     res, cursor, held_after, asked = _run(tmp_path, monkeypatch)
     err = res.error or ""
-    assert "HRD51" not in err and "ROA41" not in err, err
+    # NAMED in the skip clause since 2026-10-18 (never a silent drop), never as a failure label.
+    assert "HRD51:" not in err and "ROA41:" not in err, err
+    assert "held back until CSO re-releases them" in err and "HRD51" in err and "ROA41" in err, err
     assert "HRD51" in cursor and "ROA41" in cursor, "fetched again only when CSO changes them"
     assert "HRD51" not in held_after and "ROA41" not in held_after, "never claimed as held"
 
@@ -106,7 +114,7 @@ def test_a_matrix_whose_code_prefixes_another_is_not_mistaken_for_it(tmp_path, m
                              "obs_date": pa.array([__import__("datetime").date(2024, 12, 31)]),
                              "value": [1.0]}), str(tmp_path / "1_Sub.parquet"))
     res, cursor, held_after, asked = _run(tmp_path, monkeypatch)
-    assert "HRD51" in cursor and "HRD51" not in (res.error or ""), res.error
+    assert "HRD51" in cursor and "HRD51: all_null" not in (res.error or ""), res.error
 
 
 def test_a_year_named_axis_of_spans_is_span_time():
@@ -124,7 +132,7 @@ def test_an_unreadable_subject_file_is_treated_as_stored(tmp_path, monkeypatch):
 
 def test_with_no_held_set_the_store_still_decides(tmp_path, monkeypatch):
     res, cursor, held_after, asked = _run(tmp_path, monkeypatch, held=())
-    assert "HRD51" in cursor and "HRD51" not in (res.error or ""), res.error
+    assert "HRD51" in cursor and "HRD51: all_null" not in (res.error or ""), res.error
 
 
 def test_the_next_run_does_not_ask_again_until_cso_changes_it(tmp_path, monkeypatch):

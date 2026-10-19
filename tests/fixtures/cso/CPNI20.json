@@ -1,0 +1,188 @@
+{
+ "class": "dataset",
+ "dimension": {
+  "STATISTIC": {
+   "category": {
+    "index": [
+     "CPNI20C01",
+     "CPNI20C02"
+    ],
+    "label": {
+     "CPNI20C01": "Population Usually Resident  and Present",
+     "CPNI20C02": "Percentage of Population Usually Resident  and Present"
+    },
+    "unit": {
+     "CPNI20C01": {
+      "decimals": 0,
+      "label": "Number",
+      "position": "end"
+     },
+     "CPNI20C02": {
+      "decimals": 1,
+      "label": "%",
+      "position": "end"
+     }
+    }
+   },
+   "label": "Statistic"
+  },
+  "TLIST(A1)": {
+   "category": {
+    "index": [
+     "2021/2022"
+    ],
+    "label": {
+     "2021/2022": "2021/2022"
+    }
+   },
+   "label": "Census Year"
+  },
+  "C04335V05114": {
+   "category": {
+    "index": [
+     "IE0",
+     "N92000002"
+    ],
+    "label": {
+     "IE0": "Ireland",
+     "N92000002": "Northern Ireland"
+    }
+   },
+   "label": "Ireland and Northern Ireland"
+  },
+  "C02712V03280": {
+   "category": {
+    "index": [
+     "01",
+     "61",
+     "35",
+     "36",
+     "60",
+     "02",
+     "14"
+    ],
+    "label": {
+     "01": "Roman Catholic",
+     "61": "Protestant and Other Christian religion, n.e.s.",
+     "35": "No religion",
+     "36": "Not stated",
+     "60": "Islam",
+     "02": "Other stated religions (1)",
+     "14": "Hindu"
+    }
+   },
+   "label": "Religion"
+  }
+ },
+ "extension": {
+  "matrix": "CPNI20",
+  "reasons": [
+   "Planned release"
+  ],
+  "language": {
+   "code": "en",
+   "name": "English"
+  },
+  "elimination": {
+   "C04335V05114": null,
+   "C02712V03280": null
+  },
+  "subject": {
+   "code": 76,
+   "value": "Census 2022"
+  },
+  "product": {
+   "code": "CPNI",
+   "value": "Ireland and Northern Ireland - A Joint Census Publication 2021-2022"
+  },
+  "official": true,
+  "copyright": {
+   "name": "Central Statistics Office and Northern Ireland Statistics and Research Agency",
+   "code": "CSONISRA",
+   "href": "https://www.cso.ie"
+  },
+  "exceptional": false,
+  "reservation": false,
+  "archive": false,
+  "experimental": false,
+  "analytical": false
+ },
+ "href": "https://ws.cso.ie/public/api.restful/PxStat.Data.Cube_API.ReadDataset/CPNI20/PX/2013/en",
+ "id": [
+  "STATISTIC",
+  "TLIST(A1)",
+  "C04335V05114",
+  "C02712V03280"
+ ],
+ "label": "Population Usually Resident",
+ "link": {
+  "alternate": [
+   {
+    "type": "text/csv",
+    "href": "https://ws.cso.ie/public/api.restful/PxStat.Data.Cube_API.ReadDataset/CPNI20/CSV/1.0/en"
+   },
+   {
+    "type": "application/json",
+    "href": "https://ws.cso.ie/public/api.restful/PxStat.Data.Cube_API.ReadDataset/CPNI20/JSON-stat/2.0/en"
+   },
+   {
+    "type": "application/json",
+    "href": "https://ws.cso.ie/public/api.restful/PxStat.Data.Cube_API.ReadDataset/CPNI20/JSON-stat/1.0/en"
+   },
+   {
+    "type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "href": "https://ws.cso.ie/public/api.restful/PxStat.Data.Cube_API.ReadDataset/CPNI20/XLSX/2007/en"
+   }
+  ]
+ },
+ "note": [
+  "For Ireland, 'Atheist' and 'Agnostic' is included in 'No religion' category.\r\n[url=https://www.cso.ie/en/releasesandpublications/ep/p-cpini/irelandandnorthernireland-ajointcensuspublication2021-2022/backgroundnotes/]See background notes for more information.[/url]",
+  "For more information, please go to the [url=https://www.cso.ie/en/statistics/population/censusofpopulation2022/irelandandnorthernireland-ajointcensuspublication2021-2022/]statistical release page[/url] on our website"
+ ],
+ "role": {
+  "metric": [
+   "STATISTIC"
+  ],
+  "time": [
+   "TLIST(A1)"
+  ]
+ },
+ "size": [
+  2,
+  1,
+  2,
+  7
+ ],
+ "updated": "2025-07-03T11:00:00.000Z",
+ "value": [
+  3515861.0,
+  340368.0,
+  740033.0,
+  339562.0,
+  81930.0,
+  34082.0,
+  33043.0,
+  805151.0,
+  710993.0,
+  330983.0,
+  30529.0,
+  10870.0,
+  10459.0,
+  4190.0,
+  69.1,
+  6.7,
+  14.6,
+  6.7,
+  1.6,
+  0.7,
+  0.6,
+  42.3,
+  37.4,
+  17.4,
+  1.6,
+  0.6,
+  0.5,
+  0.2
+ ],
+ "version": "2.0"
+}

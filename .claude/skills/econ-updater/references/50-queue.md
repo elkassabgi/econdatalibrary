@@ -1957,3 +1957,66 @@ same year would collide). The catalogue title must then say the value is a five-
 
 HRD51 and DOTA09 (the other two of the twelve) are published with EVERY value null (DOTA09's note:
 "removed pending a review"); they come back when CSO moves their release stamp.
+
+### cso CPNI / EOSA / EAACC: 59 tables NOT HOSTED - slash-form time codes, a date-convention decision (2026-10-18)
+
+Probed live 2026-10-18 (all HTTP 200, real values, authoritative TLIST(A1) axis). Every time code is
+a slash form the grammar does not date:
+
+| time code(s) | tables | axis label |
+|---|---|---|
+| `2021/2022` | CPNI09-10, 12-21, 23-40, 42-46, 48-53 (41) | Census Year |
+| `2001/2002`, `2021/2022` | CPNI11 | Census Year |
+| `2012/17` | EOSA01-12 | Academic Years |
+| `2017/21` | EOSA13-14 | Year |
+| `2023/2024` | EAACC21 (Year), EAACC22 (Academic Year) | |
+| `2013/16` | EAACC05 | Year |
+| `2012/21` (label `2012-2021`) | FAW011, FAW05 | found by review AR-346 in the next 80 unheld |
+
+They are never stored. Before branch fix/cso-undated-never-stored they were booked 'unparsed'
+transient, sorted first (unheld), and filled 59 of 60 slots of every run. Now the outcome is
+`undated_time`: skipped, cursor advanced, named once in the note, fetched again when CSO moves the
+release stamp.
+
+DO NOT date `2021/2022` with the split-year rule: it is the joint census of Ireland (2022) and
+Northern Ireland (2021), and the rule would put Census 2022 at 2021-12-31. To host them, choose a
+date per form (e.g. 2022-12-31 for the joint census, period-END for `2012/17`-style windows) and
+apply it only on an authoritative time axis, with an injectivity check. That is the owner's call.
+
+HAZARD with that decision (review AR-346 S5): CSO's own forms are slash code + dash label (EOSA01
+`2012/17` / `2012-2017`) and compact code + slash label (HSPAE136 `20112012` / `2011/12`). A CPNI
+re-release coded `20212022` (the compact rule in cso.py `_parse_period` dates it) or labelled
+`2021-2022` (the label fallback dates it) would put Census 2022 at 2021-12-31 SILENTLY, and a
+re-release is exactly what re-fetches these tables. Not guarded yet; pin it when the convention is
+chosen.
+
+WHAT THE DRAIN LOOKS LIKE (measured 2026-10-18, corrected by AR-346 R3). The changed queue was
+10,844; ~3,441 of the unheld matrices behind the 59 are uncatalogued (0 in the 7,896-matrix
+catalogue). Without a reservation they would all go first, ~58 runs (~29 days) in which no served
+cso matrix gets a revision. The same branch reserves half of each 60-matrix batch for HELD
+revisions (`HELD_RESERVED_FRAC`), so served data moves from the first run; the uncatalogued backlog
+then takes ~115 runs at 30 a run. The total stays ~200-375 runs at two crons a day. Expect cso to
+read ATTENTION ('csv coherence unmet' from runs that pull uncatalogued matrices), not ROTATING,
+while that backlog lasts. Do NOT raise CSO_MAX_TABLES on the cloud route: BUDGET_MIN is checked only
+inside the fetch loop, the subject merges come after it, and the 45-min kill then discards the
+batch's cursor and held writes (AR-346 addendum). A large-lane catch-up must run in chunks inside
+the state lineage.
+
+OPEN, same class (AR-346 S4, R313): this is the third head-blocking shape in a month (HRD51/ROA*,
+then HSPAE136/EIIA15, then these). Any never-stored matrix that fails permanently for another
+reason (`no_body` on a 404, `unparsed` for a non-time reason, no subject mapping) still holds a head
+slot. Follow-up: a failure sidecar `{matrix: stamp}`, and a never-stored matrix that failed at the
+same stamp sorts after held revisions.
+
+OPEN (AR-346 S8): the never-stored check (`_stored_in_subject`) reads only the matrix's CURRENT
+subject file. A matrix CSO moved to another subject, with rows in the old file and missing from
+`_held.json` (R1113 found 67 such), reads as never stored and could be skipped while served.
+Pre-existing for all_null/span_time; undated_time widens it.
+
+OPEN (AR-346 S9, its own cso item): CSO changed the `Navigation_API.Search` contract. Probed
+2026-10-18: `{"LngIsoCode":"en"}` -> HTTP 200 with JSON-RPC error -32099 "Validation failed";
+`Search: "census"` -> 100 rows (a capped keyword search). `search_vintages()` returns {} and the
+run prints the R510 "unavailable" line every time. Effects: the R510 unlisted set (495 on
+2026-08-30) is invisible to `changed` again, and `build_catalog`'s subject-map refresh gets
+nothing, so a new matrix routes through one ReadMetadata call each. Needs the new parameters or a
+replacement full-catalogue call, and the warning should stop reading as a short outage.

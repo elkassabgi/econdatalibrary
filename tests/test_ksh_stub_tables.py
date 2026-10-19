@@ -478,7 +478,8 @@ def test_no_non_failure_note_in_the_code_contains_a_segment_separator():
     # (review R1134). Such a head is resolved to the constant's text before the prefix test.
     heads = {n: getattr(base, n) for n in ("ROTATION_NOTE", "NOT_HOSTED_NOTE")}
     found, by_head = 0, 0
-    for rel in ("updater/orchestrate.py", "updater/strategies/fetchers/ksh_stadat.py"):
+    for rel in ("updater/orchestrate.py", "updater/strategies/fetchers/ksh_stadat.py",
+                "updater/strategies/fetchers/cso.py"):   # cso's skip note (AR-346 R2)
         tree = ast.parse(open(os.path.join(ROOT, rel), encoding="utf-8").read())
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
