@@ -34,7 +34,7 @@ import pyarrow as pa
 import requests
 
 from ... import config, blob, merge
-from ..base import Result
+from ..base import NOT_HOSTED_NOTE, Result
 from ._common import CURSOR_CAP, Deadline, Tally, finalize, merge_cursor_map
 from ._vintage import content_hash, UA
 
@@ -131,9 +131,15 @@ def fold_unlisted(search_vintages_map, listing, scope):
 
 
 UNLISTED_RESERVED_FRAC = 0.25
+# SERVED DATA MUST NOT WAIT BEHIND STRANGERS (review AR-346 R3, 2026-10-19). Class 0 ("not held")
+# sorts first, and once the 59 undatable heads stop blocking it, the next ~3,441 class-0 matrices
+# are ones we have never stored and do not catalogue (0 of them in the 7,896-matrix catalogue).
+# At 60 a run that is ~58 runs, about 29 days, in which no matrix we SERVE gets a revision. Half of
+# every batch is therefore held for matrices the store already holds, newest revision first.
+HELD_RESERVED_FRAC = 0.5
 
 
-def take_batch(ordered, cap, unlisted=frozenset()):
+def take_batch(ordered, cap, unlisted=frozenset(), held=frozenset()):
     """The bounded slice a run actually pulls, with a RESERVED share for the unlisted set.
 
     WHY A RESERVATION AND NOT JUST A RANK (R511, second attempt). Giving the unlisted set its
@@ -151,16 +157,34 @@ def take_batch(ordered, cap, unlisted=frozenset()):
     before R510. They are a finite backlog (495 today), not a standing claim: once they carry
     a cursor they stop differing from it and drop out of `changed` naturally, and the
     reservation costs nothing on a run where none are pending.
+
+    The same reasoning, second reservation: `held` (what the store already holds) gets
+    HELD_RESERVED_FRAC of the batch, counting any held matrix the unlisted share already took. When
+    the head of `ordered` is held anyway (the steady state) and no unlisted matrix waits beyond it,
+    the batch equals `ordered[:cap]`; the held share only bites when class 0 crowds the window.
     """
-    if not unlisted or cap <= 0:
+    if cap <= 0 or (not unlisted and not held):
         return ordered[:cap]
-    quota = max(1, int(cap * UNLISTED_RESERVED_FRAC))
-    picked, rest = [], []
-    for m in ordered:
-        if m in unlisted and len(picked) < quota:
-            picked.append(m)
-        else:
-            rest.append(m)
+    picked, taken = [], set()
+    if unlisted:
+        quota = max(1, int(cap * UNLISTED_RESERVED_FRAC))
+        for m in ordered:
+            if len(picked) >= quota:
+                break
+            if m in unlisted:
+                picked.append(m)
+                taken.add(m)
+    if held:
+        h_quota = max(1, int(cap * HELD_RESERVED_FRAC))
+        have = sum(1 for m in picked if m in held)
+        for m in ordered:
+            if have >= h_quota or len(picked) >= cap:
+                break
+            if m in held and m not in taken:
+                picked.append(m)
+                taken.add(m)
+                have += 1
+    rest = [m for m in ordered if m not in taken]
     return picked + rest[:cap - len(picked)]
 
 
@@ -593,7 +617,7 @@ def update(unit, since) -> Result:
         return finalize(tally, _total_rows(out_dir), None, source=SOURCE,
                         series_cursors={})
 
-    batch = take_batch(changed, MAX_TABLES, unlisted)
+    batch = take_batch(changed, MAX_TABLES, unlisted, held)
     # THE CAP REMAINDER IS A DEFERRAL, NOT NOTHING (2026-10-18). Matrices beyond the batch used to
     # be dropped without a tally, so a capped pass over 10,844 changed matrices could report `ok`
     # as if it had covered them (the R311 shape). `ok` stamps last_success_utc, and is_due then
@@ -801,9 +825,9 @@ def update(unit, since) -> Result:
               f"not individually reported", flush=True)
     res = finalize(tally, _total_rows(out_dir), last_obs, source=SOURCE,
                    series_cursors=series_cursors)
-    clause = skipped_note(skip_reason)
-    if clause:
-        res.error = (res.error or "") + clause
+    # A NON-FAILURE tail (NOT_HOSTED_NOTE prefix): health._deferral_only drops it segment by
+    # segment, so a pure deferral pass that also skipped a matrix still reads ROTATING (AR-346 R2).
+    res.error = "; ".join(x for x in (res.error, skipped_note(skip_reason)) if x) or None
     return res
 
 
@@ -842,8 +866,9 @@ def skipped_note(skip_reason: dict) -> str:
         kept.append(m)
         used += len(m) + 2
     more = f", +{n - len(kept)} more" if n > len(kept) else ""
-    return (f"; {n} never-stored matrix/matrices held back until CSO re-releases them "
-            f"({parts}) [{', '.join(kept)}{more}]")
+    # No "; " inside: health drops a note SEGMENT by its prefix (R1127); the caller joins it.
+    return (f"{NOT_HOSTED_NOTE} {n} never-stored matrix/matrices held back until CSO re-releases "
+            f"them ({parts}) [{', '.join(kept)}{more}]")
 
 
 def _write_cursor(path, mapping):

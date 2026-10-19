@@ -198,7 +198,8 @@ def test_update_actually_uses_the_reserved_batch():
     """
     src = open(cso.__file__, encoding="utf-8").read()
     body = src[src.index("def update("):]
-    assert "take_batch(changed, MAX_TABLES, unlisted)" in body, (
+    # the held set joined the call 2026-10-19 (AR-346 R3); the unlisted set is still passed
+    assert "take_batch(changed, MAX_TABLES, unlisted, held)" in body, (
         "update() no longer builds its batch through take_batch with the unlisted set — "
         "the reservation exists but nothing uses it, so a bounded run reaches zero of them")
     assert "batch = changed[:MAX_TABLES]" not in body, (
