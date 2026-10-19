@@ -1,5 +1,180 @@
 {
  "ids": {
+  "dst:DST:BOL103": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:BOL203": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:BOL204": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:BRN11": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:BRN13": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:BUDK100": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:DNBETAL": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:DNIFINVE": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:DNINTVAL": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:FAM111N": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:FAM122N": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:FAM133N": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:FERIEH2": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:FLY55": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:FLY66": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:FODIE": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:FV26KAND": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:KM4": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:KMST007A": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:KMSTA003": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:KMSTA005": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:KMSTA009": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:REGK100": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:SKI125": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:SKI125K": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:UHELD12": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:VAN66": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:VAN66KA": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:VAN66P": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:VAN77KAM": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:VAN77M": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:VAN77PM": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:VIE225": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:VIE825": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
+  "dst:DST:VIE825K": {
+   "since": "2026-10-19",
+   "until": "operator",
+   "why": "one all-zero series: the select-all query is over MAX_CELLS, so each variable was cut to one code and Statistics Denmark has no row for that cell; re-grain needed"
+  },
   "insee_melodi:DS_RP_EDUCATION_PRINC": {
    "since": "2026-10-17",
    "until": "complete",

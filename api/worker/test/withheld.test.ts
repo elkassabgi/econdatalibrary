@@ -7,7 +7,7 @@ import { test } from "node:test";
 import {
   TTL_FAIL_MS, TTL_OK_MS, WITHHELD_MAX, floorWithheld, forSource, isSourceClosed, isWithheld, keyWithWithheld,
   loadWithheld,
-  parseWithheld, resetWithheldCache, withheldResponse, LIST_UNREADABLE_DETAIL,
+  parseWithheld, resetWithheldCache, withheldDetail, withheldReason, withheldResponse, LIST_UNREADABLE_DETAIL,
 } from "../src/withheld.ts";
 import { WITHHELD_FLOOR } from "../src/withheldFloor.ts";
 import {
@@ -213,7 +213,7 @@ test("a series withheld only because its source is closed gets the unreadable-li
      async () => {
   resetWithheldCache();
   const f = await loadWithheld(async () => { throw new Error("down"); }, "store", () => 1);
-  const floorId = WITHHELD_FLOOR[0];
+  const floorId = WITHHELD_FLOOR.find((i) => i.startsWith("insee_melodi:"))!;   // dst ids sort first since 2026-10-19
   const r1 = await withheldResponse(floorId, f).json() as { error: string; detail: string };
   assert.equal(r1.error, "withheld");
   assert.match(r1.detail, /our copy is incomplete and is being re-downloaded from INSEE/, "a floor id IS incomplete");
@@ -223,4 +223,57 @@ test("a series withheld only because its source is closed gets the unreadable-li
   assert.equal(LIST_UNREADABLE_DETAIL,
                "Temporarily unavailable: the withheld-tables list could not be read; try again in a minute.");
   assert.doesNotMatch(r2.detail, /incomplete/, "never 'our copy is incomplete' for a table not on the list");
+});
+
+// dst (owner decision 2026-10-19): the zero-collapse tables. A dst catalogue id has a SECOND colon.
+const D = "dst:DST:DNINTVAL";
+const DENMARK = "Temporarily withheld: our copy of this table shows only zeros because it was downloaded at the wrong " +
+  "level of detail; it is listed again when it is downloaded again correctly from Statistics Denmark.";
+
+test("dst: the id rule admits a second colon and still refuses what could break the literal", () => {
+  assert.deepEqual([...parseWithheld(obj({ [D]: { ...ent, until: "operator" }, [A]: ent }))!].sort(), [D, A].sort());
+  for (const bad of ["dst:DST:x'y", "dst:DST:a b", "dst:", "dst:DST:%", "DST:DST:X", "dst:DST:x;DROP", "dst:DST:\"x\""]) {
+    assert.equal(parseWithheld(obj({ [bad]: ent })), null, bad);
+  }
+  assert.equal(withheldExcl([D, A]), ` AND series_id NOT IN ('${D}','${A}')`);
+});
+
+test("dst: a withheld id answers 404 with the Denmark sentence; insee keeps its sentence", async () => {
+  const b = await withheldResponse(D).json() as { error: string; series_id: string; detail: string };
+  assert.equal(b.error, "withheld");
+  assert.equal(b.series_id, D);
+  assert.equal(b.detail, DENMARK);
+  assert.equal(withheldDetail(A), "Temporarily withheld: our copy is incomplete and is being re-downloaded from INSEE; " +
+    "it is listed again when the download is complete.");
+  assert.equal(withheldDetail("wid:WID:x"), "Temporarily withheld: our copy is incomplete and is being re-downloaded " +
+    "from the publisher; it is listed again when the download is complete.", "the default is unchanged");
+});
+
+test("dst: the bundle reason is per source; insee's and the default are byte-unchanged", () => {
+  assert.equal(withheldReason(D), "withheld: our copy of this table shows only zeros because it was downloaded at the " +
+    "wrong level of detail; it is listed again when it is downloaded again correctly from Statistics Denmark (HTTP " +
+    "404 'withheld' on direct fetch)");
+  const old = "withheld: our copy is incomplete and is being re-downloaded; it is listed again when the download is " +
+    "complete (HTTP 404 'withheld' on direct fetch)";
+  assert.equal(withheldReason(A), old);
+  assert.equal(withheldReason("wid:WID:x"), old);
+});
+
+test("dst: the committed floor names dst, so an unreadable list closes dst WHOLE with the unreadable-list sentence",
+     async () => {
+  assert.ok(WITHHELD_FLOOR.includes(D), "the floor must name the dst tables");
+  resetWithheldCache();
+  const f = await loadWithheld(async () => { throw new Error("down"); }, "store", () => 1);
+  assert.ok(isSourceClosed(f, "dst"), "dst is a floor source");
+  assert.ok(isWithheld(f, "dst:DST:FOLK1A"), "a complete dst table is hidden while the list is unreadable");
+  const k = await withheldResponse("dst:DST:FOLK1A", f).json() as { error: string; detail: string };
+  assert.equal(k.error, "withheld");
+  assert.equal(k.detail, LIST_UNREADABLE_DETAIL);
+  const h = await withheldResponse(D, f).json() as { detail: string };
+  assert.equal(h.detail, DENMARK, "a dst id in the floor keeps its own sentence");
+  resetWithheldCache();
+  const g = await loadWithheld(async () => ({ text: obj({ [D]: { ...ent, until: "operator" } }), etag: "e" }), "store",
+                               () => 1);
+  assert.ok(isWithheld(g, D) && !isWithheld(g, "dst:DST:FOLK1A") && !isSourceClosed(g, "dst"),
+            "a good read withholds the listed dst ids only");
 });

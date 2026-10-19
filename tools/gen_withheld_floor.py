@@ -28,7 +28,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JSON_PATH = os.path.join(ROOT, "api", "worker", "withheld.json")
 TS_PATH = os.path.join(ROOT, "api", "worker", "src", "withheldFloor.ts")
 KEY = "_aqueduct/withheld.json"
-ID_RE = re.compile(r"^[a-z0-9_]+:[A-Za-z0-9_.-]+$")
+ID_RE = re.compile(r"^[a-z0-9_]+:[A-Za-z0-9_.:-]+$")   # = src/withheld.ts WITHHELD_ID_RE (a dst id has a 2nd colon)
 MAX = 500
 
 

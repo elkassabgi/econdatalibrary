@@ -143,7 +143,11 @@ unknown id under a gated prefix; 451 wins.
 api/worker/src/withheld.ts) - a table whose copy is incomplete and is being re-downloaded - answers **404** with
 `{"error":"withheld","series_id":<the id requested>,"detail":"Temporarily withheld: our copy is incomplete and is
 being re-downloaded from INSEE; it is listed again when the download is complete."}` on `.metadata.json` AND
-`.csv`, before auth (after the 451 gate). It is in no `/v1/catalog` browse, search or total, no `/v1/stats`
+`.csv`, before auth (after the 451 gate). The `detail` is per source: a `dst` table (added 2026-10-19, owner
+decision: tables whose one stored series is all zeros because they were downloaded at a too coarse selection) says
+`"Temporarily withheld: our copy of this table shows only zeros because it was downloaded at the wrong level of
+detail; it is listed again when it is downloaded again correctly from Statistics Denmark."`; a series id may hold
+more than one `:` (`dst:DST:DNINTVAL`). It is in no `/v1/catalog` browse, search or total, no `/v1/stats`
 `catalog_entries`, and no `/v1/bundle` enumeration; a bundle that names it lists it under `econdl:unresolved`
 with a reason starting `withheld:`. The error code is distinct from `not_found` (an unknown id) and from 451. It
 is listed again, with no client change, when the table is complete. If the worker cannot read the list and holds

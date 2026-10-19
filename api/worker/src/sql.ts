@@ -97,9 +97,9 @@ WHERE s.source_id = ?`;
 /** WITHHELD series (src/withheld.ts): ` AND <col> NOT IN ('id', ...)`, or "" for none.
  *
  * Literals, never bound parameters: D1 caps a statement at 100 bound variables (R224) and these statements
- * already bind theirs. Every id is checked against WITHHELD_ID_RE here - [a-z0-9_]:[A-Za-z0-9_.-] admits no
- * quote, space or wildcard - and a bad one THROWS (src/withheld.ts never lets one through; this is the second
- * barrier). Cost, the carveoutExcl precedent (2026-08-30): a NOT IN over literal series_ids is evaluated on the
+ * already bind theirs. Every id is checked against WITHHELD_ID_RE here - [a-z0-9_]:[A-Za-z0-9_.:-] admits no
+ * quote, space or wildcard (a ':' in the native part, as in dst:DST:DNINTVAL, cannot end a literal) - and a bad
+ * one THROWS (src/withheld.ts never lets one through; this is the second barrier). Cost, the carveoutExcl precedent (2026-08-30): a NOT IN over literal series_ids is evaluated on the
  * PK autoindex entry, so EXPLAIN QUERY PLAN and D1's billed rows_read do not move; the source-scoped forms
  * inline only that source's ids, so a source with none gets byte-identical SQL. */
 export function withheldExcl(ids: readonly string[], col: string = "series_id"): string {

@@ -1479,7 +1479,7 @@ def load_withheld():
         return {}
     out = {}
     for sid in sorted(ids):
-        if re.fullmatch(r"[a-z0-9_]+:[A-Za-z0-9_.-]+", sid):
+        if re.fullmatch(r"[a-z0-9_]+:[A-Za-z0-9_.:-]+", sid):     # = withheld.ts WITHHELD_ID_RE (dst:DST:<T>)
             out.setdefault(sid.split(":", 1)[0], []).append(sid)
     return out
 
@@ -1505,7 +1505,7 @@ def subtract_withheld(con, series_roll, withheld=None):
                 "WHERE series_id >= ? AND series_id < ? AND series_id NOT IN (%s)" % q,
                 [src + ":", src + ";", *sids]).fetchone()
             series_roll[src].update(min_start=r[0], max_end=r[1], n_geo=r[2], last_updated=r[3])
-            print("  withheld: %s n_series -%d (incomplete tables the worker withholds until complete); coverage "
+            print("  withheld: %s n_series -%d (tables the worker withholds from users); coverage "
                   "re-measured without them: %s .. %s" % (src, n, r[0], r[1]))
 
 # `<src>:<indicator>:` prefixes, matching denylist.ts::SERIES_CARVEOUT_LIKE exactly.

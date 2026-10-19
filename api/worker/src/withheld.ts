@@ -7,7 +7,9 @@
 //                                                                    "until": "complete" | "operator"}, ...}}
 // It is written by tools/withheld_list.py (operator, conditional writes) and maintained by the fetcher that
 // completes a table (insee_melodi removes an `until: "complete"` entry once the flow is complete per INSEE paging
-// AND its served CSV holds every row). No deploy is needed to hide or un-hide.
+// AND its served CSV holds every row). dst's entries (owner decision 2026-10-19: the zero-collapse tables) are
+// `until: "operator"`: no fetcher removes them, an operator releases each after its re-grain. No deploy is needed
+// to hide or un-hide (a NEW source must first be in the deployed floor - tools/withheld_list.py).
 //
 // WHERE IT IS READ:
 //   * cloud worker (FORWARD off) and the self-hosted origin (LOCAL): from SERIES_BUCKET - R2, or the local store
@@ -44,24 +46,46 @@ import { WITHHELD_FLOOR, WITHHELD_FLOOR_ETAG } from "./withheldFloor.ts";
 
 export const WITHHELD_KEY = "_aqueduct/withheld.json";
 export const WITHHELD_ROUTE = "/v1/withheld";
-/** The ids the SQL inlines as literals: no quote, no space, no wildcard can pass. */
-export const WITHHELD_ID_RE = /^[a-z0-9_]+:[A-Za-z0-9_.-]+$/;
+/** The ids the SQL inlines as literals: no quote, no space, no wildcard can pass. The native part may hold more
+ *  colons: a dst catalogue id is `dst:DST:DNINTVAL` (2026-10-19). Without ':' here such an id made the WHOLE list
+ *  invalid (every isolate on the floor) and withheldExcl throw. A colon cannot end a SQL string literal.
+ *  tools/gen_withheld_floor.py ID_RE and catalog/gen_site.py use this same pattern (tests/test_withheld_gate.py). */
+export const WITHHELD_ID_RE = /^[a-z0-9_]+:[A-Za-z0-9_.:-]+$/;
 /** More than this is refused as invalid (an inline NOT IN must stay small; a runaway writer must not grow it). */
 export const WITHHELD_MAX = 500;
 export const TTL_OK_MS = 300_000;
 export const TTL_FAIL_MS = 30_000;
 
-/** What a user reads (owner's wording, 2026-10-17). Per source: the sentence names the publisher. */
-const DETAIL_BY_SOURCE: Record<string, string> = {
-  insee_melodi: "Temporarily withheld: our copy is incomplete and is being re-downloaded from INSEE; it is " +
-    "listed again when the download is complete.",
+/** WHY a source's tables are withheld, in words that are true for that source (the part after
+ *  "Temporarily withheld: "). Per source: the sentence names the publisher.
+ *  - insee_melodi (owner's wording, 2026-10-17): truncated tables a running re-download completes.
+ *  - dst (owner decision, 2026-10-19): tables over MAX_CELLS whose select-all query the fetcher cut to ONE code per
+ *    variable - a cell Statistics Denmark holds no row for, so the one stored series is all zeros. Nothing is
+ *    re-downloading them yet (a re-grain is needed), and an OPERATOR releases them, never a fetcher. */
+const WHY_BY_SOURCE: Record<string, string> = {
+  insee_melodi: "our copy is incomplete and is being re-downloaded from INSEE; it is listed again when the " +
+    "download is complete.",
+  dst: "our copy of this table shows only zeros because it was downloaded at the wrong level of detail; it is " +
+    "listed again when it is downloaded again correctly from Statistics Denmark.",
 };
-const DETAIL_DEFAULT = "Temporarily withheld: our copy is incomplete and is being re-downloaded from the " +
-  "publisher; it is listed again when the download is complete.";
+const WHY_DEFAULT = "our copy is incomplete and is being re-downloaded from the publisher; it is listed again " +
+  "when the download is complete.";
 
 export function withheldDetail(id: string): string {
-  const i = id.indexOf(":");
-  return DETAIL_BY_SOURCE[i < 0 ? id : id.slice(0, i)] ?? DETAIL_DEFAULT;
+  return "Temporarily withheld: " + (WHY_BY_SOURCE[sourceOfId(id)] ?? WHY_DEFAULT);
+}
+
+/** The bundle's `econdl:unresolved` reason for an id ON the list. The default (insee_melodi and every source
+ *  without its own words) is the text the bundle has given since 2026-10-17, byte for byte; a source whose
+ *  sentence is NOT "being re-downloaded" (dst) gets its own, so the manifest never says what the 404 does not. */
+const BUNDLE_WHY_DEFAULT = "our copy is incomplete and is being re-downloaded; it is listed again when the " +
+  "download is complete";
+const BUNDLE_WHY_BY_SOURCE: Record<string, string> = {
+  dst: WHY_BY_SOURCE.dst.replace(/\.$/, ""),
+};
+
+export function withheldReason(id: string): string {
+  return `withheld: ${BUNDLE_WHY_BY_SOURCE[sourceOfId(id)] ?? BUNDLE_WHY_DEFAULT} (HTTP 404 'withheld' on direct fetch)`;
 }
 
 /** AR-341 re-review N2: the words for a series withheld ONLY because its whole source is closed (the list could not
