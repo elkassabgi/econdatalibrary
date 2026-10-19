@@ -163,7 +163,10 @@ def take_batch(ordered, cap, unlisted=frozenset(), held=frozenset()):
     the head of `ordered` is held anyway (the steady state) and no unlisted matrix waits beyond it,
     the batch equals `ordered[:cap]`; the held share only bites when class 0 crowds the window.
     """
-    if cap <= 0 or (not unlisted and not held):
+    # A NEGATIVE cap (CSO_MAX_TABLES=-1) used to slice ordered[:-1] = almost the whole queue
+    # (review AR-346 R1627). No cap means no batch, never "everything but one".
+    cap = max(0, int(cap))
+    if cap == 0 or (not unlisted and not held):
         return ordered[:cap]
     picked, taken = [], set()
     if unlisted:

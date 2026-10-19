@@ -2007,3 +2007,16 @@ then HSPAE136/EIIA15, then these). Any never-stored matrix that fails permanentl
 reason (`no_body` on a 404, `unparsed` for a non-time reason, no subject mapping) still holds a head
 slot. Follow-up: a failure sidecar `{matrix: stamp}`, and a never-stored matrix that failed at the
 same stamp sorts after held revisions.
+
+OPEN (AR-346 S8): the never-stored check (`_stored_in_subject`) reads only the matrix's CURRENT
+subject file. A matrix CSO moved to another subject, with rows in the old file and missing from
+`_held.json` (R1113 found 67 such), reads as never stored and could be skipped while served.
+Pre-existing for all_null/span_time; undated_time widens it.
+
+OPEN (AR-346 S9, its own cso item): CSO changed the `Navigation_API.Search` contract. Probed
+2026-10-18: `{"LngIsoCode":"en"}` -> HTTP 200 with JSON-RPC error -32099 "Validation failed";
+`Search: "census"` -> 100 rows (a capped keyword search). `search_vintages()` returns {} and the
+run prints the R510 "unavailable" line every time. Effects: the R510 unlisted set (495 on
+2026-08-30) is invisible to `changed` again, and `build_catalog`'s subject-map refresh gets
+nothing, so a new matrix routes through one ReadMetadata call each. Needs the new parameters or a
+replacement full-catalogue call, and the warning should stop reading as a short outage.

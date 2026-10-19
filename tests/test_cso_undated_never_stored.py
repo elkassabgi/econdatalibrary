@@ -182,9 +182,44 @@ def test_the_held_share_reaches_a_held_revision_behind_3000_unheld():
     batch = cso.take_batch(ordered, cso.MAX_TABLES, frozenset(), set(heldm))
     assert len(batch) == cso.MAX_TABLES
     got = [m for m in batch if m in heldm]
-    assert len(got) == int(cso.MAX_TABLES * cso.HELD_RESERVED_FRAC), len(got)
+    assert cso.MAX_TABLES == 60 and len(got) == 30, len(got)    # literal: half of 60
     assert got == [m for m in ordered if m in heldm][:len(got)], "newest held revisions first"
     assert [m for m in batch if m in unheld] == unheld[:cso.MAX_TABLES - len(got)]
+
+
+def test_take_batch_with_both_reservations_at_cap_60_1_and_2():
+    """AR-346 R1627: both sets at once - unlisted matrices inside the held set, plus one unlisted
+    stranger (an operator-named matrix the store does not hold) at the head. Every count is a
+    LITERAL, so a changed fraction cannot agree with itself."""
+    S = "S0"                                         # unlisted, NOT held, class 0
+    U = [f"U{i:03d}" for i in range(100)]            # unheld, class 0
+    L = [f"L{i:02d}" for i in range(20)]             # unlisted AND held, class 1
+    H = [f"H{i:03d}" for i in range(100)]            # held revisions, class 2
+    unlisted, held = set(L) | {S}, set(L) | set(H)
+    # Two orders. The REAL one (order_changed: class 0, then unlisted, then held revisions): the held
+    # share reaches the rest of L first, so the batch carries 15 + 6 unlisted. And L placed LAST, where
+    # the held share does not reach them: the unlisted count is exactly the quota.
+    # order -> {cap: (unlisted count, held count)}
+    cases = {"real": ([S] + U + L + H, {60: (21, 30), 1: (1, 0), 2: (2, 1)}),
+             "L last": ([S] + U + H + L, {60: (15, 30), 1: (1, 0), 2: (1, 1)})}
+    for name, (ordered, expect) in cases.items():
+        for cap, (n_unl, n_held) in expect.items():
+            batch = cso.take_batch(ordered, cap, unlisted, held)
+            assert len(batch) <= cap, (name, cap, len(batch))
+            assert len(batch) == cap, (name, cap, len(batch))
+            assert len(set(batch)) == len(batch), (name, cap, "duplicates")
+            assert sum(m in unlisted for m in batch) == n_unl, (name, cap, batch)
+            assert sum(m in held for m in batch) == n_held, (name, cap, batch)
+    b60 = cso.take_batch([S] + U + L + H, 60, unlisted, held)
+    assert b60[:15] == [S] + L[:14] and b60[15:31] == L[14:] + H[:10], b60[:32]
+    assert b60[31:] == U[:29]
+
+
+def test_a_negative_cap_takes_nothing():
+    ordered = [f"M{i}" for i in range(50)]
+    for kw in ({}, {"unlisted": {"M3"}}, {"held": {"M4"}}):
+        assert cso.take_batch(ordered, -1, **kw) == [], kw
+        assert cso.take_batch(ordered, 0, **kw) == [], kw
 
 
 def test_the_held_share_changes_nothing_when_the_head_is_held():
