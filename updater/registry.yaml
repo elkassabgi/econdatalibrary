@@ -1260,6 +1260,11 @@ sources:
       (~113 files total). Overview/yields files use series_key/obs_date/value (+ tvl_usd/apy/apy_base/apy_reward for yields).'
 - source_id: dst
   live: true
+  # csv_grain: table - one catalogue id (`dst:DST:<TABLE>`) serves every `DST:<TABLE>:...` key of its
+  # SHARED subject parquet. The bulk campaign writes one object per store key here (R498; measured
+  # 2026-10-19 on the R2 store: 959,014 distinct keys against 2,264 catalogued table ids), so the
+  # health gate must never name it for a dst debt.
+  csv_grain: table
   scripts:
   - jobs/ingest_dst.py
   strategy: overwrite_if_changed

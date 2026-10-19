@@ -31,14 +31,18 @@ def load(path: str | None = None) -> dict:
         return yaml.safe_load(f)
 
 
-CSV_GRAINS = {"series", "flow"}
+CSV_GRAINS = {"series", "flow", "table"}
 # Who writes a source's served CSVs. Absent = the orchestrator's CSV phase (every source but one).
 # "lane" = a continuous job of the source's own (jobs/statcan_lane.py), which holds the region's
 # writer lock; the orchestrator then derives nothing for it (orchestrate._served_by_lane).
 SERVED_BY = {"lane"}
 """`csv_grain` (optional registry field; default `series`). `flow` declares that one catalogue
 id serves a WHOLE store file (the resolver reads the file, not a keyed slice), as eurostat's
-`eurostat:<dataset>` ids do. Two things key on it: the health gate's remedy text for a
+`eurostat:<dataset>` ids do. `table` declares that one catalogue id serves every store key under its
+table prefix inside a SHARED store file (the resolver's prefix arm: dst's `dst:DST:<TABLE>` reads the
+`DST:<TABLE>:...` keys of its subject parquet), so neither the series-grain bulk campaign (one object per
+store key - R498; dst measured 2026-10-19: 959,014 store keys against 2,264 table ids) nor the whole-file flow path is right for it; only
+the health gate's remedy text reads it today. Two things key on `flow`: the health gate's remedy text for a
 `full_rederive_owed` row (the series-grain bulk tool writes 0 objects for such a source, R882)
 and the cloud derive's in-memory row ceiling (a whole-file CSV can be 8M+ rows). Pinned to the
 resolver by `tests/test_csv_grain_field.py`, so the registry cannot claim a grain the resolver

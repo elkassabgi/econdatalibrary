@@ -353,9 +353,18 @@ def main() -> int:
             raise ValueError("the registry parses to no source entries")
         _ent = next((e for e in _reg if e.get("source_id") == a.source), {}) or {}
         _misses = _ent.get("csv_misses") == "desktop_owed"
+        _table_grain = _ent.get("csv_grain") == "table"
     except Exception as _re:                                           # noqa: BLE001 - refuse, never guess
         print(f"REFUSING: cannot read the registry to check {a.source}'s csv_misses "
               f"({type(_re).__name__}: {str(_re)[:80]})")
+        return 2
+    if _table_grain and not a.clear_owed_only:
+        # A TABLE-GRAIN SOURCE (registry `csv_grain: table`, dst): one catalogue id serves every store key under
+        # its table prefix, and this tool writes one object per STORE key - wrong-grain objects that no catalogue
+        # id names (R498). Only the clear is allowed here.
+        print(f"REFUSING: {a.source} is csv_grain: table - this tool writes one object per store key, not per "
+              f"table id (R498). Re-derive the table ids that differ with python -m core.derive_csv --source "
+              f"{a.source} --only <file of those ids>, read them back, then run --clear-owed-only.")
         return 2
     if _misses and not a.clear_owed_only:
         print(f"REFUSING: {a.source} declares csv_misses: desktop_owed - this tool cannot derive its "

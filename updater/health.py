@@ -561,6 +561,21 @@ def assess(store=None) -> dict:
                            f"against R2's parquets, then `tools/derive_csv_bulk.py --source "
                            f"{sid} --clear-owed-only`; the bulk tool alone writes nothing at "
                            f"this grain")
+            elif e.get("csv_grain") == "table":
+                # TABLE grain (registry `csv_grain: table`, dst): one catalogue id serves every store key
+                # under its table prefix inside a shared file. The bulk campaign writes one object per STORE
+                # key (R498), so it must never be named here. The debt is first CHECKED, because this source
+                # books it on a pass that merged nothing (2026-10-18: 2,264 of 2,264 served CSVs were
+                # byte-identical to the store): byte-compare the served CSVs against a derive from R2's
+                # parquets; re-derive only the ids that differ, at table grain; re-check that R2's
+                # LastModified for the store has not moved since the compare; then clear.
+                _remedy = (f"this source is TABLE-grain (one catalogue id = every store key under one table "
+                           f"prefix): first byte-compare the served CSVs against a derive from R2's parquets; "
+                           f"re-derive only the ids that differ with `python -m core.derive_csv --bucket "
+                           f"econ-data --source {sid} --only <file of those ids>`; re-check that R2's "
+                           f"LastModified under clean_full/{sid}/ has not moved since the compare; then "
+                           f"`tools/derive_csv_bulk.py --source {sid} --clear-owed-only`. A bulk campaign "
+                           f"writes one object per store key here and is refused")
             elif e.get("csv_misses") == "desktop_owed":
                 # A csv_misses SOURCE (ilostat, R1148): the bulk tool cannot pay this debt - for ilostat
                 # it would PUT 'ilostat:ilostat:...' objects across ~391M store rows and clear the row

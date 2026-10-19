@@ -244,8 +244,7 @@ def _fetch_table_rows(table_id: str):
     if not variables:
         return [], False  # genuinely no variables -> legitimately empty table
     try:
-        rows, outcome = ing.query_table_detailed(table_id, variables,
-                                                 suppressed=meta.get("suppressedDataValue"))
+        rows, outcome = ing.query_table_detailed(table_id, variables)
     except Exception as e:                                           # noqa: BLE001
         _reraise_unit_timeout(e)
         return [], True
@@ -292,11 +291,22 @@ def _fence_check(where: str) -> None:
 def _bulk_fallback_note() -> str:
     """The pass's BULK fallbacks (jobs/ingest_dst._post_rows), printed and returned as a note fragment - '' if none.
     A fallback is a publisher fault worked around, so it is counted where an operator reads it, never silent."""
-    tids = list(dict.fromkeys(ing.BULK_FALLBACKS))          # a chunked table can fall back once per chunk
-    if not tids:
+    per: dict = {}                       # a chunked table can fall back once per chunk: one entry per table
+    for r in ing.BULK_FALLBACKS:
+        t = per.setdefault(r["table"], {"cells": 0, "omitted": 0, "unread": 0})
+        t["cells"] += r["cells"]
+        if r["omitted"] is None:
+            t["unread"] += 1             # no BULK body was parsed for this POST (failed or refused)
+        else:
+            t["omitted"] += r["omitted"]
+    if not per:
         return ""
-    print(f"[{SOURCE}] BULK fallback used for {len(tids)} table(s) after a JSONSTAT HTTP 500: {tids}", flush=True)
-    return f"BULK fallback for {len(tids)} table(s) after a JSONSTAT HTTP 500: [{', '.join(tids)}]"
+    parts = [f"{tid} ({t['omitted']:,} of {t['cells']:,} cells not streamed"
+             + (f", {t['unread']} BULK answer(s) unusable" if t["unread"] else "") + ")"
+             for tid, t in per.items()]
+    msg = f"BULK fallback for {len(per)} table(s) after a JSONSTAT HTTP 500: [{', '.join(parts)}]"
+    print(f"[{SOURCE}] {msg}", flush=True)
+    return msg
 
 
 def _with_note(res: Result, note: str) -> Result:
