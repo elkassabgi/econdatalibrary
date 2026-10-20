@@ -16,6 +16,12 @@
 #      otherwise would be the lie this file exists to avoid. It reports them under their own
 #      heading, with the finding, so a reader sees WHY rather than a silent omission.
 #
+# OPTIONAL `label`. catalog/gen_site.py prints "<publisher> has discontinued this dataset. This is
+# the final copy, and it is not updated." on every page listed here. Where the entry's own finding
+# shows the first sentence overstates (codes still published, or the dataset still live under a new
+# id scheme), `label` replaces that FIRST sentence only; the second is fixed in gen_site. Pinned by
+# tests/test_gen_site_discontinued.py.
+#
 # To add one: measure the publisher yourself, today. A note in a task, a comment in a fetcher, or
 # a previous session's summary is a citation, not a measurement (ledger R381, R386).
 
@@ -112,6 +118,7 @@ sources:
 
   - source_id: unesco_cltt
     publisher: UNESCO Institute for Statistics
+    label: UNESCO Institute for Statistics no longer publishes these series.
     dataset: Culture — international trade in cultural goods and services
     measured: 2026-08-07
     probe: >-
@@ -140,6 +147,7 @@ sources:
 
   - source_id: unesco_film
     publisher: UNESCO Institute for Statistics
+    label: UNESCO Institute for Statistics no longer publishes most of these series.
     dataset: Feature film statistics
     measured: 2026-08-07
     probe: >-
@@ -155,6 +163,7 @@ sources:
 
   - source_id: unesco_clte
     publisher: UNESCO Institute for Statistics
+    label: UNESCO Institute for Statistics no longer publishes most of these series.
     dataset: Culture employment
     measured: 2026-08-07
     probe: >-
@@ -206,6 +215,7 @@ sources:
 
   - source_id: fao_ew
     publisher: FAO (FAOSTAT)
+    label: FAOSTAT no longer publishes these series.
     dataset: Environment - Water withdrawal shares
     measured: 2026-08-08
     probe: >-
@@ -231,6 +241,7 @@ sources:
 
   - source_id: fao_ae
     publisher: FAO (FAOSTAT)
+    label: FAO (FAOSTAT) no longer publishes these series.
     dataset: ASTI - Expenditures (old id scheme)
     measured: 2026-08-08
     probe: >-
@@ -245,6 +256,7 @@ sources:
 
   - source_id: fao_af
     publisher: FAO (FAOSTAT)
+    label: FAO (FAOSTAT) no longer publishes these series.
     dataset: ASTI - Researchers (old id scheme)
     measured: 2026-08-08
     probe: >-
@@ -1121,6 +1133,7 @@ sources:
       data.
   - source_id: unctad_tabbapotta
     publisher: UNCTAD
+    label: UNCTAD no longer publishes this edition of these series.
     dataset: >-
       Trade in biotrade products, percentage of total trade - Annual (29,358 series, 2010-2020,
       reporter x partner-group)

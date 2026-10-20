@@ -37,6 +37,40 @@ def _text(rows):
     return " ".join(f"{k}: {v}" for k, v in rows)
 
 
+FINAL = "This is the final copy, and it is not updated."
+
+# The entries whose own finding shows "<publisher> has discontinued this dataset." overstates, and the sentence
+# that replaces it (2026-10-20). unesco_film: 1 of 76 codes still published. unesco_clte: 21 of 408 survive under
+# new CE.RA.* keys. fao_ae / fao_af: the live AE / AF datasets were re-dimensioned, the old composite ids have no
+# 1:1 successor. unctad_tabbapotta: the same indicator is published as a recomputed modern edition under M49 keys.
+# unesco_cltt: 0 of its 34 codes published while the CULTURE theme is alive (the file's own warning: the theme being
+# alive is not our indicators being alive), so only the series-level claim is measured. fao_ew: the probe says
+# AQUASTAT "left FAOSTAT's bulk distribution", which was measured inside FAOSTAT only, so the sentence names FAOSTAT.
+# "most of" (review AR, 2026-10-20): unesco_film's surviving code 220174 holds 123 of 8,527 catalogued series;
+# unesco_clte's 21 surviving codes hold at most 1,557 of 23,868 (the 21 largest codes' total), so "these series"
+# alone was false and "most of these series" is true. unctad_tabbapotta: UNCTAD publishes the indicator as a revised
+# edition, so only "this edition" is no longer published.
+LABELS = {
+    "unesco_film": "UNESCO Institute for Statistics no longer publishes most of these series.",
+    "unesco_clte": "UNESCO Institute for Statistics no longer publishes most of these series.",
+    "unesco_cltt": "UNESCO Institute for Statistics no longer publishes these series.",
+    "fao_ae": "FAO (FAOSTAT) no longer publishes these series.",
+    "fao_af": "FAO (FAOSTAT) no longer publishes these series.",
+    "fao_ew": "FAOSTAT no longer publishes these series.",
+    "unctad_tabbapotta": "UNCTAD no longer publishes this edition of these series.",
+}
+DEFAULT_CADENCE = "none &mdash; <em>discontinued by the publisher</em>"
+LABEL_CADENCE = "none &mdash; <em>archival copy</em>"
+
+
+def _first_sentence(entry):
+    """What the page must say first, from the entry alone (html-escaped as the page carries it)."""
+    import html
+    if entry.get("label"):
+        return html.escape(entry["label"].strip())
+    return html.escape(str(entry["publisher"]).strip()) + " has discontinued this dataset."
+
+
 def test_every_discontinued_source_reads_archival(G):
     """The REAL file, every entry, with the worst-case inputs: a cadence in the catalogue, a recorded success
     in state, and (for trademerchgr) the same shape the page builder would see after the registry entry went."""
@@ -45,7 +79,7 @@ def test_every_discontinued_source_reads_archival(G):
     state = {"last_success": {s: "2026-10-01T22:27:34+00:00" for s in disc}, "attempted": set(disc)}
     for sid in disc:
         t = _text(G.refresh_rows(sid, "weekly", wiring={sid: False}, meta={}, state=state))
-        assert ARCHIVAL in t and "has discontinued this dataset" in t and "not updated" in t, (sid, t)
+        assert ARCHIVAL in t and _first_sentence(disc[sid]) in t and FINAL in t, (sid, t)
         assert not any(p in t for p in PROMISES), (sid, t)
         assert "weekly" not in t, f"{sid}: the catalogue's cadence must not be shown for a frozen source"
 
@@ -86,6 +120,46 @@ def test_the_publisher_name_is_escaped(G):
     assert "<b>" not in t and "A &lt;b&gt;&amp;&lt;/b&gt; B has discontinued" in t
 
 
+def test_the_wording_overrides_are_exactly_these_and_the_default_holds_for_the_rest(G):
+    """The REAL file: exactly the LABELS entries carry a `label`, with exactly that text, and every other entry
+    still prints the default sentence. Adding, dropping or rewording a label fails here."""
+    disc = G.load_discontinued()
+    got = {sid: e["label"] for sid, e in disc.items() if "label" in e}
+    assert got == LABELS
+    for sid, e in disc.items():
+        t = _text(G.discontinued_rows(e))
+        if sid in LABELS:
+            assert f"&mdash; {LABELS[sid]} {FINAL}" in t, (sid, t)
+            assert f"Update cadence: {LABEL_CADENCE}" in t, (sid, t)
+            assert "has discontinued this dataset" not in t and "discontinued by the publisher" not in t, (sid, t)
+        else:
+            assert f"&mdash; {e['publisher']} has discontinued this dataset. {FINAL}" in t, (sid, t)
+            assert f"Update cadence: {DEFAULT_CADENCE}" in t, (sid, t)
+
+
+def test_a_label_replaces_only_the_first_sentence(G):
+    """The override cannot drop the archival claim, is escaped, and an entry without one keeps the default
+    (negative control: the same publisher prints the default sentence when `label` is absent)."""
+    t = _text(G.discontinued_rows({"publisher": "UNCTAD", "label": "UNCTAD no <i>longer</i> publishes these series."}))
+    assert ARCHIVAL in t and t.endswith(FINAL) and "<i>" not in t
+    assert "UNCTAD no &lt;i&gt;longer&lt;/i&gt; publishes these series. " + FINAL in t
+    assert "has discontinued" not in t and "discontinued by the publisher" not in t and LABEL_CADENCE in t
+    t0 = _text(G.discontinued_rows({"publisher": "UNCTAD"}))
+    assert "UNCTAD has discontinued this dataset. " + FINAL in t0 and "no longer publishes" not in t0
+    assert DEFAULT_CADENCE in t0 and LABEL_CADENCE not in t0
+
+
+@pytest.mark.parametrize("bad", ["", "   ", "null", "3", "[a, b]", "{x: 1}", "P no longer publishes these series"])
+def test_a_label_that_is_not_a_sentence_stops_the_build(G, tmp_path, bad):
+    f = tmp_path / "discontinued.yaml"
+    f.write_text(f"sources:\n  - source_id: x\n    publisher: P\n    label: {bad}\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="label"):
+        G.load_discontinued(str(f))
+    f.write_text("sources:\n  - source_id: x\n    publisher: P\n    label: P no longer publishes these series.\n",
+                 encoding="utf-8")
+    assert G.load_discontinued(str(f))["x"]["label"] == "P no longer publishes these series."
+
+
 def test_the_status_board_shows_discontinued_as_archival_not_attention():
     """AR-355. core/sync_state_d1.py publishes a discontinued source's recorded unit row with status 'discontinued';
     status.html gave every status it did not know the red 'bad' class ("failed ... until fixed"). It must be a
@@ -107,3 +181,21 @@ def test_the_regenerated_page_carries_the_label():
     low = page.lower()
     assert "not yet wired" not in low and "not automated at the moment" not in low
     assert "on the daily update run" not in low
+
+
+def test_every_discontinued_page_is_regenerated_with_its_sentence(G):
+    """The other 52 pages were regenerated (`gen_site.py --only <id>`, one run each) after the label landed (R1639:
+    they still said "not yet wired - the data here is the verified initial load"). Every page of every entry must
+    carry its own sentence and none of the old promises; this fails if a page is skipped or left stale."""
+    disc = G.load_discontinued()
+    for sid, e in disc.items():
+        page = open(os.path.join(ROOT, "catalog", "site", f"{sid}.html"), encoding="utf-8").read()
+        assert f"{_first_sentence(e)} {FINAL}" in page, sid
+        low = page.lower()
+        assert not any(p in low for p in ("not yet wired", "not automated at the moment",
+                                          "on the daily update run", "verified initial load")), sid
+        if sid in LABELS:
+            assert f"<dt>Update cadence</dt><dd>{LABEL_CADENCE}</dd>" in page, sid
+            assert "has discontinued this dataset" not in page and "discontinued by the publisher" not in page, sid
+        else:
+            assert f"<dt>Update cadence</dt><dd>{DEFAULT_CADENCE}</dd>" in page, sid
