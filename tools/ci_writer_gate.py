@@ -211,7 +211,7 @@ def _gh_runs(wf: str) -> list:
 
 
 def _gh_sched(wf: str) -> list:
-    """Scheduled runs only, reaching back far enough to measure a lag window (see assess for why it is separate)."""
+    """Scheduled runs only, so a burst of dispatches cannot hide whether a cron started (see assess)."""
     return _gh_json(["run", "list", "--workflow", wf, "--event", "schedule", "--limit", str(SCHED_LIMIT),
                      "--json", "createdAt,event,status"])
 
