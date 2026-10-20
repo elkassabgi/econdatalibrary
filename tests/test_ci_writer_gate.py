@@ -5,8 +5,9 @@ The run lists below reach back to 2026-08-20 so that a decision taken at the
 earliest collision has a real 14-day history to measure, rather than falling back because the fixture
 happened to start two days earlier.
 
-The fixtures are the scheduled runs GitHub actually created (gh run list, measured 2026-09-15) and the
-start times of the desktop passes whose pull/push window overlapped one (logs/local_heavy_*.log).
+The fixtures are the scheduled runs GitHub actually created (gh run list, measured 2026-09-15, extended
+2026-10-20 with every scheduled run created 2026-09-16..10-20) and the start times of the desktop passes
+whose pull/push window overlapped one (logs/local_heavy_*.log).
 """
 import pathlib
 import datetime as dt
@@ -24,6 +25,22 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 import ci_writer_gate as g  # noqa: E402
 
 DAILY_CREATED = [
+    # 2026-09-16..10-20, added 2026-10-20 (gh run list --workflow updater-daily.yml --event schedule)
+    "2026-10-20T11:04", "2026-10-19T22:00", "2026-10-19T12:27", "2026-10-18T20:07", "2026-10-18T10:33",
+    "2026-10-17T20:08", "2026-10-17T10:17", "2026-10-16T20:31", "2026-10-16T10:55", "2026-10-15T20:56",
+    "2026-10-15T11:00", "2026-10-14T21:17", "2026-10-14T11:23", "2026-10-13T22:18", "2026-10-13T13:45",
+    "2026-10-13T00:09", "2026-10-12T14:42", "2026-10-11T21:29", "2026-10-11T12:17", "2026-10-10T21:10",
+    "2026-10-10T12:04", "2026-10-09T22:16", "2026-10-09T12:45", "2026-10-08T22:54", "2026-10-08T12:59",
+    "2026-10-07T22:43", "2026-10-07T12:50", "2026-10-06T22:20", "2026-10-06T12:56", "2026-10-05T23:45",
+    "2026-10-05T13:53", "2026-10-04T20:52", "2026-10-04T11:55", "2026-10-03T20:36", "2026-10-03T11:15",
+    "2026-10-02T21:50", "2026-10-02T12:03", "2026-10-01T22:21", "2026-10-01T12:38", "2026-09-30T21:53",
+    "2026-09-30T12:05", "2026-09-29T21:53", "2026-09-29T12:19", "2026-09-28T22:56", "2026-09-28T13:11",
+    "2026-09-27T20:53", "2026-09-27T11:36", "2026-09-26T20:39", "2026-09-26T10:58", "2026-09-25T21:06",
+    "2026-09-25T11:22", "2026-09-24T21:09", "2026-09-24T11:17", "2026-09-23T21:05", "2026-09-23T10:58",
+    "2026-09-22T20:54", "2026-09-22T11:08", "2026-09-21T21:42", "2026-09-21T12:15", "2026-09-20T20:20",
+    "2026-09-20T10:50", "2026-09-19T20:03", "2026-09-19T10:28", "2026-09-18T20:25", "2026-09-18T10:44",
+    "2026-09-17T20:57", "2026-09-17T11:11", "2026-09-16T20:53",
+    # measured 2026-09-15/16
     "2026-09-16T11:00", "2026-09-15T20:52", "2026-09-15T11:18", "2026-09-14T21:29", "2026-09-14T12:06",
     "2026-09-13T20:20", "2026-09-13T11:16", "2026-09-12T20:11", "2026-09-12T10:16", "2026-09-11T20:28",
     "2026-09-11T10:47", "2026-09-10T20:26", "2026-09-10T10:50", "2026-09-09T20:26", "2026-09-09T10:54",
@@ -37,6 +54,22 @@ DAILY_CREATED = [
     "2026-08-21T18:24", "2026-08-21T06:25", "2026-08-20T18:25", "2026-08-20T06:24",
 ]
 HEAVY_CREATED = [
+    # 2026-09-17..10-20, added 2026-10-20 (gh run list --workflow updater-heavy.yml --event schedule)
+    "2026-10-20T08:07", "2026-10-19T20:15", "2026-10-19T08:25", "2026-10-18T17:36", "2026-10-18T07:42",
+    "2026-10-17T17:34", "2026-10-17T07:27", "2026-10-16T18:28", "2026-10-16T07:50", "2026-10-15T18:43",
+    "2026-10-15T07:56", "2026-10-14T18:59", "2026-10-14T08:19", "2026-10-13T20:23", "2026-10-13T10:01",
+    "2026-10-12T22:16", "2026-10-12T10:08", "2026-10-11T19:13", "2026-10-11T09:36", "2026-10-10T18:58",
+    "2026-10-10T09:19", "2026-10-09T19:51", "2026-10-09T09:55", "2026-10-08T20:16", "2026-10-08T09:51",
+    "2026-10-07T20:14", "2026-10-07T09:41", "2026-10-06T19:52", "2026-10-06T09:42", "2026-10-05T21:41",
+    "2026-10-05T09:56", "2026-10-04T18:25", "2026-10-04T09:16", "2026-10-03T18:22", "2026-10-03T08:48",
+    "2026-10-02T19:35", "2026-10-02T09:16", "2026-10-01T19:55", "2026-10-01T09:42", "2026-09-30T19:40",
+    "2026-09-30T09:14", "2026-09-29T19:41", "2026-09-29T09:24", "2026-09-28T20:51", "2026-09-28T09:17",
+    "2026-09-27T18:41", "2026-09-27T08:52", "2026-09-26T18:06", "2026-09-26T08:15", "2026-09-25T18:58",
+    "2026-09-25T08:28", "2026-09-24T18:42", "2026-09-24T08:04", "2026-09-23T18:41", "2026-09-23T08:13",
+    "2026-09-22T18:22", "2026-09-22T08:11", "2026-09-21T19:45", "2026-09-21T08:30", "2026-09-20T17:44",
+    "2026-09-20T08:13", "2026-09-19T17:30", "2026-09-19T07:45", "2026-09-18T17:55", "2026-09-18T07:55",
+    "2026-09-17T18:38", "2026-09-17T08:19",
+    # measured 2026-09-15/16
     "2026-09-16T18:30", "2026-09-16T08:13", "2026-09-15T18:32", "2026-09-15T08:19", "2026-09-14T19:38",
     "2026-09-14T08:29", "2026-09-13T17:44", "2026-09-13T07:55", "2026-09-12T17:28", "2026-09-12T07:37",
     "2026-09-11T17:57", "2026-09-11T07:42", "2026-09-10T17:55", "2026-09-10T07:48", "2026-09-09T18:03",
@@ -63,30 +96,6 @@ def history_as_of(now, status="completed"):
         return [{"createdAt": c + ":00Z", "event": "schedule", "status": status}
                 for c in created if at(c) <= now]
     return {"updater-daily.yml": rows(DAILY_CREATED), "updater-heavy.yml": rows(HEAVY_CREATED)}
-
-
-COLLISIONS = ["2026-09-08T10:31:28", "2026-09-13T10:32:09", "2026-09-15T10:38:56"]
-
-
-def _longest_free_run(span_min):
-    """Longest contiguous stretch of the 24 h clock left clear by pending windows of `span_min` at every cron."""
-    covered = set()
-    for hrs in g.WRITERS.values():
-        for h in hrs:
-            for k in range(span_min):
-                covered.add((h * 60 + k) % 1440)
-    free = set(range(1440)) - covered
-    if not free:
-        return 0
-    best = 0
-    for s in free:
-        if (s - 1) % 1440 in free:
-            continue                      # not the head of a run
-        ln, m = 0, s
-        while m % 1440 in free and ln <= 1440:
-            ln, m = ln + 1, m + 1
-        best = max(best, ln)
-    return best
 
 
 RUNNER_PS1 = pathlib.Path(__file__).resolve().parents[1] / "tools" / "run_local_heavy.ps1"
@@ -133,50 +142,123 @@ def test_a_pending_heavy_cron_blocks_after_the_morning_daily_run():
     assert blocked and "updater-heavy.yml 15:00Z cron has not started yet" in reason, reason
 
 
-def test_the_ceiling_is_derived_from_the_crons_and_always_leaves_a_block_a_pass_can_use():
-    """The invariant the 12 h constant violated, asserted on the value the gate actually applies.
+# THE FAILURES THAT ENDED THE 300-MINUTE CEILING. Each desktop pass below started while the 06:00Z cron was more
+# than 300 min old and had no run; the gate said CLEAR (logs/local_heavy_<stamp>.log, "CI writer gate: CLEAR"),
+# the cloud run was created a few minutes later and pushed first, and the pass's push was refused:
+#   pass 20260924-110309  gate CLEAR 11:03:25Z  run created 11:17:48Z (317.8 min)  push-state FAILED (2) 14:50:50Z
+#   pass 20261007-122218  gate CLEAR 12:22:32Z  run created 12:50:29Z (410.5 min)  push-state FAILED (2) 14:50:18Z
+#   pass 20261020-105957  gate CLEAR 11:00:13Z  run created 11:04:16Z (304.3 min)  push-state FAILED (2) 14:48:11Z
+# No run of either workflow (any event) was in flight at any of these instants (gh run list createdAt/updatedAt,
+# read 2026-10-20), so the CLEAR came from the cron check alone - which is what history_as_of reproduces.
+PUSH_FAILURES = [
+    ("2026-09-24T11:03:09", "2026-09-24T11:03:25", "2026-09-24T11:17"),
+    ("2026-10-07T12:22:18", "2026-10-07T12:22:32", "2026-10-07T12:50"),
+    ("2026-10-20T10:59:57", "2026-10-20T11:00:13", "2026-10-20T11:04"),
+]
+OLD_CEILING = dt.timedelta(minutes=300)     # (largest cron gap 9 h) - (FREE_BLOCK_MIN 4 h), removed 2026-10-20
 
-    max_pending_horizon() is computed from the cron layout, so moving a cron moves the ceiling with it. Whatever
-    the measured lag does - and it has risen every week since 2026-W34 - the union of the pending windows must
-    leave a contiguous block at least FREE_BLOCK_MIN long. With a 12 h window the four crons at 03/06/15/18Z
-    covered 24 h of 24 and the desktop ran 0 passes in 112 attempts (R1032/R1033).
+
+def cleared_by_the_old_ceiling(runs, now):
+    """What the old rule could at most have blocked: nothing in flight, and no un-started cron younger than 300 min.
+
+    The old horizon was min(measured p90, 300 min), so wherever this says CLEAR the old gate said CLEAR too."""
+    if any(r["status"] != "completed" for rows in runs.values() for r in rows):
+        return False
+    for wf, hours in g.WRITERS.items():
+        for back in (1, 0):
+            day = (now - dt.timedelta(days=back)).date()
+            for h in hours:
+                cron = dt.datetime(day.year, day.month, day.day, h, tzinfo=dt.timezone.utc)
+                if cron <= now < cron + OLD_CEILING and not any(
+                        cron <= g._parse(r["createdAt"]) < cron + g.CRON_SPACING for r in runs[wf]):
+                    return False
+    return True
+
+
+@pytest.mark.parametrize("pass_start,gate_read,run_created", PUSH_FAILURES)
+def test_every_push_failure_since_2026_09_20_now_reads_blocked(pass_start, gate_read, run_created):
+    for instant in (pass_start, gate_read):
+        now = at(instant)
+        runs = history_as_of(now)
+        assert run_created not in [r["createdAt"][:16] for r in runs["updater-daily.yml"]], "fixture: run not yet created"
+        assert at(run_created + ":00") > now, "fixture: the run came after the decision"
+        # NEGATIVE CONTROL: the fixture really is the defect - the old ceiling let this instant through.
+        if instant == gate_read:
+            assert cleared_by_the_old_ceiling(runs, now), f"{instant}: fixture does not reproduce the old CLEAR"
+        blocked, reason = g.decide(runs, now, ACTIVE)
+        assert blocked, f"{instant}: {reason}"
+        assert "updater-daily.yml 06:00Z cron has not started yet" in reason, reason
+
+
+def test_the_block_ends_when_the_late_run_has_been_created_and_finished():
+    """Control: the rule is 'until the run is created', not a longer fixed window.
+
+    2026-10-20: the 06:00Z daily run was created 11:04:16Z and completed 13:43:41Z; the 03:00Z heavy run was
+    created 08:07:39Z and completed 10:33:08Z; the next cron is 15:00Z. Nothing was in flight at 13:45Z."""
+    now = at("2026-10-20T13:45:00")
+    blocked, reason = g.decide(history_as_of(now), now, ACTIVE)
+    assert not blocked, reason
+    mins = g.minutes_until_block(history_as_of(now), now, ACTIVE)
+    assert mins == 75, f"the next block must be the 15:00Z cron, 75 min away; got {mins}"
+
+
+def test_the_late_run_blocks_while_it_is_in_flight():
+    now = at("2026-10-20T11:05:00")          # the 06:00Z run was created 11:04:16Z and ran until 13:43:41Z
+    runs = history_as_of(now)
+    runs["updater-daily.yml"][0] = dict(runs["updater-daily.yml"][0], status="in_progress")
+    blocked, reason = g.decide(runs, now, ACTIVE)
+    assert blocked and "in_progress" in reason, reason
+
+
+def test_the_window_covers_every_lag_measured_over_60_days():
+    """237 scheduled runs of both writers, 2026-08-21..10-20 (createdAt - cron): median 278, p99 661, max 710 min,
+    0 later than 720. A window shorter than the measured maximum is a CLEAR that the next late run collides with.
     """
-    ceiling = g.max_pending_horizon()
-    longest = _longest_free_run(int(ceiling.total_seconds() // 60))
-    want = int(g.FREE_BLOCK_MIN.total_seconds() // 60)
-    assert longest >= want, f"ceiling {ceiling} leaves only {longest} min of clear clock; a pass needs {want}"
+    assert g.PENDING_LIMIT >= dt.timedelta(minutes=710)
+    assert g.PENDING_LIMIT <= g.CRON_SPACING, "a run later than CRON_SPACING is credited to the next cron"
 
 
-def test_the_invariant_rejects_a_window_as_long_as_the_cron_gap():
-    """Negative control: the invariant must reject values that would leave no clear clock at all.
-
-    Named for what it checks, not for a cause: the 12 h constant was blamed for a zero-pass day and that
-    attribution is withdrawn (R1042). It is still a value this invariant must refuse.
-    """
-    assert _longest_free_run(12 * 60) == 0, "a 12 h window must leave no clear clock - it is why this exists"
-    assert _longest_free_run(9 * 60) == 0, "a window as long as the largest cron gap must leave nothing either"
-
-
-def test_the_ceiling_still_blocks_every_recorded_collision():
-    """The two properties this gate must hold at once, stated together so neither can be traded away quietly.
-
-    The three collisions began 272-278 min after the 06:00Z cron, so any ceiling below that unblocks one of them.
-    This is also why the runner's static blackouts cannot stay: they open at 10:30Z, 272 min after that cron, so
-    "spare the runner's free periods" and "block the recorded collisions" have no common solution.
-    """
-    latest = max(g._parse(c + "Z") - dt.datetime(2026, 9, int(c[8:10]), 6, tzinfo=dt.timezone.utc)
-                 for c in COLLISIONS)
-    assert g.max_pending_horizon() >= latest, (
-        f"ceiling {g.max_pending_horizon()} is shorter than the latest recorded collision at {latest}")
+def _all_started_but(now, missing, lag_min=30, days=3):
+    """Every cron of the last `days` started `lag_min` late and completed, except the (workflow, cron) in missing."""
+    out = {wf: [] for wf in g.WRITERS}
+    for wf, hours in g.WRITERS.items():
+        for d in range(days):
+            day = (now - dt.timedelta(days=d)).replace(hour=0, minute=0, second=0, microsecond=0)
+            for h in hours:
+                cron = day + dt.timedelta(hours=h)
+                created = cron + dt.timedelta(minutes=lag_min)
+                if created <= now and (wf, cron) not in missing:
+                    out[wf].append({"createdAt": created.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                    "event": "schedule", "status": "completed"})
+        out[wf].sort(key=lambda r: r["createdAt"], reverse=True)
+    return out
 
 
-def test_the_measured_horizon_is_bounded_by_the_ceiling_whatever_the_history_says():
-    """A rising lag must not be able to grow the window past the invariant."""
-    now = at("2026-09-15T12:00:00")
-    absurd = [{"createdAt": (at("2026-09-01T06:00:00") + dt.timedelta(days=d, hours=11)).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"), "event": "schedule", "status": "completed"} for d in range(14)]
-    assert g.pending_horizon(absurd, (6, 18), now) <= g.max_pending_horizon()
-    assert g.pending_horizon([], (6, 18), now) <= g.max_pending_horizon()
+def test_an_unstarted_cron_blocks_for_the_whole_measured_lag_and_then_hands_over():
+    cron = at("2026-10-14T06:00:00")
+    missing = {("updater-daily.yml", cron)}
+    now = cron + dt.timedelta(minutes=709)       # the 60-day maximum lag was 710 min
+    blocked, reason = g.decide(_all_started_but(now, missing), now, ACTIVE)
+    assert blocked and "updater-daily.yml 06:00Z cron has not started yet" in reason, reason
+
+    # At the limit the 06:00Z cron can no longer be credited a run; the 18:00Z cron is due and blocks itself.
+    now = cron + g.PENDING_LIMIT
+    blocked, reason = g.decide(_all_started_but(now, missing), now, ACTIVE)
+    assert blocked and "updater-daily.yml 18:00Z cron has not started yet" in reason, reason
+
+    # A skipped cron costs the desktop until the NEXT cron's run is created and done - then it is clear.
+    now = cron + g.PENDING_LIMIT + dt.timedelta(minutes=40)
+    blocked, reason = g.decide(_all_started_but(now, missing), now, ACTIVE)
+    assert not blocked, reason
+
+
+def test_an_unstarted_cron_from_yesterday_still_blocks_after_midnight():
+    cron = at("2026-10-14T18:00:00")
+    now = at("2026-10-15T01:00:00")              # 420 min late: the old ceiling had released it at 23:00Z
+    runs = _all_started_but(now, {("updater-daily.yml", cron)})
+    assert cleared_by_the_old_ceiling(runs, now), "control: the old rule said CLEAR here"
+    blocked, reason = g.decide(runs, now, ACTIVE)
+    assert blocked and "updater-daily.yml 18:00Z cron has not started yet" in reason, reason
 
 
 def test_a_pending_cron_past_the_warning_threshold_is_flagged_not_hidden():
@@ -335,42 +417,6 @@ def test_the_runner_budget_clamp_would_get_a_usable_answer_at_the_start_of_a_cle
     assert mins >= 45, f"only {mins} min before the gate blocks; the runner would abort rather than start"
 
 
-def test_the_free_block_is_not_allowed_to_be_defined_down_to_nothing():
-    """The invariant above compares the clear clock against FREE_BLOCK_MIN, so FREE_BLOCK_MIN itself needs a floor.
-
-    Without this, setting FREE_BLOCK_MIN to zero satisfies "leaves a block a pass can use" with a block of zero
-    minutes, and the ceiling grows to the full 9 h cron gap - the tiled clock of R1033 again, reached by changing
-    the yardstick instead of the measurement. The floor is the measured pass: 228 min, 10:38-14:26Z on 2026-09-15.
-    """
-    assert g.FREE_BLOCK_MIN >= dt.timedelta(minutes=228), (
-        "FREE_BLOCK_MIN is below the length of a measured desktop pass, so the invariant guards nothing")
-
-
-def test_a_skipped_cron_does_not_shift_every_later_pairing():
-    """R1034. GitHub skips scheduled runs; a loop that pairs each cron with the next unconsumed run turns one
-    skip into a cascade, crediting later runs to crons days earlier. That reported a median lag of 32,690 min
-    against a true 132, and the suite stayed green because absurd values clamp to the ceiling.
-
-    Here every run is exactly 120 min late and one cron never ran. Every lag must still read 120.
-    """
-    now = at("2026-09-15T12:00:00")
-    skipped = at("2026-09-05T18:00:00")
-    rows, day = [], at("2026-09-01T06:00:00")
-    while day < now:
-        for h in (6, 18):
-            cron = day.replace(hour=h)
-            if cron >= now or cron == skipped:
-                continue
-            rows.append({"createdAt": (cron + dt.timedelta(minutes=120)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                         "event": "schedule", "status": "completed"})
-        day += dt.timedelta(days=1)
-
-    lags = g._scheduled_lags(rows, (6, 18), now)
-    assert lags, "no lags computed at all"
-    assert max(lags) <= 130, f"a single skipped cron shifted the pairing; worst lags {sorted(lags)[-4:]}"
-    assert min(lags) >= 110, f"pairing drifted early; best lags {sorted(lags)[:4]}"
-
-
 def _flood(now, n=60):
     """A run list dominated by manual dispatches, as `gh run list` without --event returns it."""
     return {wf: [{"createdAt": (now - dt.timedelta(minutes=7 * i)).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -395,11 +441,9 @@ def _sched_all_started(now, lag_min=30, days=6):
     return out
 
 
-# 06:45Z, and the instant matters. Every cron here started 30 min late, so the MEASURED horizon floors at
-# 60 min and the 06:00Z pending window is 06:00-07:00Z. Outside it assess() returns on the window test and
-# never evaluates `started`, so a later instant tests nothing - mutation caught exactly that. Inside it,
-# with the run already created at 06:30Z: the schedule-only list says the cron HAS started (CLEAR), while a
-# dispatch-flooded list has no scheduled rows, falls back to the 3 h horizon and invents a pending cron.
+# 06:45Z. Every cron here started 30 min late, with the 06:00Z run created at 06:30Z: the schedule-only list
+# says every cron of the last 12 h HAS started (CLEAR), while a dispatch-flooded list has no scheduled rows,
+# so every one of them reads as never started.
 SPLIT_NOW = "2026-09-12T06:45:00"
 
 
@@ -452,24 +496,6 @@ def test_main_threads_the_schedule_only_fetch_through():
     rc_collapsed = g.main(fetch=lambda wf: flooded[wf], fetch_states=lambda: ACTIVE, now=now)
     assert rc_collapsed == g.EXIT_BLOCKED, (
         "control: without the schedule-only fetch the flooded list must block on a phantom pending cron")
-
-
-def test_the_runner_threshold_fits_inside_the_block_the_gate_guarantees():
-    """The two halves of this mechanism are in different languages and nothing coupled them.
-
-    run_local_heavy.ps1 refuses to start unless it sees $WantBlockMin + $marginMin minutes of clear time.
-    ci_writer_gate.py guarantees FREE_BLOCK_MIN. If the first ever exceeds the second the desktop stops running
-    and nothing says why - which is R1032's failure, reachable by editing one PowerShell default.
-    """
-    src = pathlib.Path(RUNNER_PS1).read_text(encoding="utf-8", errors="replace")
-    want = re.search(r"\$WantBlockMin\s*=\s*(\d+)", src)
-    margin = re.search(r"\$marginMin\s*=\s*(\d+)", src)
-    assert want and margin, f"cannot read the runner's thresholds from {RUNNER_PS1}; this test measures nothing"
-    need = int(want.group(1)) + int(margin.group(1))
-    have = int(g.FREE_BLOCK_MIN.total_seconds() // 60)
-    assert need <= have, (
-        f"the runner wants {need} min of clear time but the gate only guarantees {have}; "
-        "the desktop would hold for ever without ever saying why")
 
 
 def test_the_runner_escape_is_longer_than_its_cadence_floor():

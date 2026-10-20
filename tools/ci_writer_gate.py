@@ -16,12 +16,9 @@ flight. The gate blocks on either, for both state-writing workflows, and never a
 cannot read CI. It errs towards blocking, because a wrong CLEAR costs a pass's whole bookkeeping while a
 wrong BLOCK costs one tick (run_local_heavy.ps1 -SkipCiCheck overrides it):
   - every run that is not completed blocks, however old; one older than a day also prints a warning;
-  - a cron counts as pending until its scheduled run appears; the pending window is MEASURED from that
-    workflow's own recent starts at decision time (see pending_horizon), because the lag is not
-    stationary - pooled weekly medians ran 25 min in 2026-W34 and 301 in W38. It is bounded below by a
-    floor and above by a ceiling derived from the cron layout, so the windows can never tile the clock
-    however late GitHub becomes. Sizing it is worth about 120 clear minutes a week against a replay of
-    real history, so it is a correctness fix, not a throughput one (R1035, and R1042 correcting R1033);
+  - a cron blocks from its scheduled time until its scheduled run is created, at most PENDING_LIMIT
+    (12 h, the same window in which the gate credits a run to that cron). There is no shorter ceiling
+    any more - see PENDING_LIMIT for the measurement that removed it;
   - only a workflow GitHub reports as explicitly not active (disabled) is not waited for; one GitHub
     does not list at all is still waited for, with a warning.
 
@@ -38,48 +35,53 @@ import sys
 # `python -m updater.run --pull-state ... --push-state`.
 WRITERS = {"updater-daily.yml": (6, 18), "updater-heavy.yml": (3, 15)}
 CRON_SPACING = dt.timedelta(hours=12)          # between a workflow's two crons
-# How long a cron that has not started still blocks a desktop pass.
+# How long a cron that has not started still blocks a desktop pass: until its run is created, at most this.
 #
-# This is NOT a constant, because the thing it models is not stationary. Pooled weekly medians of the start lag
-# over the 201 scheduled runs GitHub still listed on 2026-09-16: 159, 179, 110, 126, 170, 106, 51, 25, 140, 260,
-# 256, 301 min. It fell to 25 min in W34 and has risen every week since. Three constants were tried and all three
-# were wrong for the reasons recorded in R1035: the p95 of the pooled lag (368 min) and 4.5 h were both fitted to
-# a lag that moves, and 4.5 h additionally unblocked all three recorded collisions, which began 1-9 min after the
-# runner's old free periods open. (The 12 h value was ALSO blamed for a zero-pass day; that attribution is
-# withdrawn - see R1042 - it was worth ~120 clear minutes a week, not the day.)
+# WHY THERE IS NO SHORTER CEILING (2026-10-20). Until then the window was the p90 of the workflow's own recent
+# start lag, clamped to a ceiling of (largest cron gap 9 h) - (a 4 h free block) = 300 min, so that the windows
+# could never cover the whole nominal clock. The cron did not keep to that ceiling. Every state-push failure of
+# the desktop pass since 2026-09-20 had one cause: the gate said CLEAR because the 06:00Z cron was more than
+# 300 min old, and the cloud run was created under the pass a few minutes later and pushed first:
+#     2026-09-24  CLEAR 11:03:25Z, run created 11:17:48Z (317.8 min after the cron)
+#     2026-10-07  CLEAR 12:22:32Z, run created 12:50:29Z (410.5 min)
+#     2026-10-20  CLEAR 11:00:13Z, run created 11:04:16Z (304.3 min); push refused at 14:48:11Z
+# Start lag (createdAt - cron, the field this gate reads) of the 237 scheduled runs of both writers over
+# 2026-08-21..10-20: median 278, p90 402, p95 428, p99 661, max 710 min; 83 of 237 runs came later than
+# 300 min, 13 later than 420, 4 later than 540, 0 later than 720. The 06:00Z cron alone: median 315, 35 of 59
+# later than 300. The weekly median rose from 21 min (2026-W34) to 377 (W41).
 #
-# WHAT THIS IS WORTH, measured before believing it: forcing each horizon through a replay of 7 days of real
-# history gives 2,285 clear min at 12 h, 2,400 at 5 h and 2,405 measured, against a constant 2,905 min of
-# in-flight blocking that no horizon touches. The whole change is ~120 clear minutes a WEEK. The earlier
-# claim that a 12 h window 'tiles the clock' was wrong: a window ends when its run appears, and runs do
-# appear (R1042 corrects R1033). The real constraint on the desktop was the runner's 20 h cadence clock,
-# which made it eligible at 10:32Z - inside a window a cloud writer occupied on 14 of the last 14 days
-# (R1037). Keep this measured rather than constant because the lag is not stationary, not because it buys
-# back the day.
+# So the lag is not bounded below the cron gap: the observed maximum of the 06:00Z (710), 03:00Z (663) and
+# 15:00Z (550) crons each exceeds the 540 min largest gap. No ceiling can both cover the lag and leave a free
+# block on the NOMINAL clock, and the free block was a property of the nominal clock only. A cron's window ends
+# when its run is created, and the run is then in flight, which blocks anyway - so the window length matters
+# only for a cron whose run has NOT been created, and a CLEAR in that state starts a pass that the run will
+# overlap when it is created, unless the cron was skipped or the run comes after the pass has pushed. A
+# measured, clamped horizon is also biased LOW exactly when it matters: it predicts how late an un-started
+# cron will be from the crons that did start, so the slow run is absent from its own sample.
 #
-# So the horizon is measured per workflow from that workflow's own recent scheduled starts, at decision time,
-# and clamped at both ends:
-#   floor   - a quiet or unreadable history must not silently disable the pending check;
-#   ceiling - derived from the crons themselves so the union of the windows can NEVER tile the clock. With the
-#             largest gap between consecutive crons at 9 h (06->15 and 18->03), a ceiling of
-#             9 h - FREE_BLOCK_MIN leaves a block at least FREE_BLOCK_MIN long every day, by construction.
-# tests/test_ci_writer_gate.py asserts the ceiling really is derived and really does leave that block.
-# KNOWN BIAS, not fixable from this data: the horizon must predict how late a cron that has NOT started will
-# be, and it is estimated from the crons that DID start. On a day the scheduler is unusually slow the slow run is
-# by construction absent from the sample, so this reads LOW exactly when it matters. A second, smaller bias runs
-# the same way: when GitHub skips a cron entirely, the skip and a very late start are indistinguishable here, and
-# _scheduled_lags resolves the ambiguity as "skipped", dropping the observation rather than recording a huge lag.
-# Both are why the ceiling exists and why the in-flight check is never relaxed.
-LAG_PERCENTILE = 0.90                           # cover 9 late starts in 10, then let the in-flight check take over
-LAG_WINDOW_DAYS = 14                            # recent behaviour only; W34's 25 min does not describe today
-LAG_MIN_SAMPLES = 4                             # below this the history says nothing; fall back to the floor
-FREE_BLOCK_MIN = dt.timedelta(hours=4)          # a measured desktop pass is 228 min (10:38-14:26Z, 2026-09-15)
-MIN_PENDING_HORIZON = dt.timedelta(hours=1)
-PENDING_HORIZON = dt.timedelta(hours=3)         # fallback ONLY: used when the history cannot be measured
-WARN_PENDING_AFTER = dt.timedelta(hours=4)      # clamped below the effective horizon so it can always fire
+# The limit is CRON_SPACING because that is the window in which the gate credits a run to a cron at all (the
+# `started` test below, and the same rule in tools/measure_ci_lag.py): a run created later than that is
+# indistinguishable from the next cron's run. At that point the workflow's next cron is due and blocks in its
+# own right, so for one workflow the block is continuous from a cron until a run is created. What a skipped
+# cron costs: the desktop waits for the next cron's run (3 skips in the 60 days above). What it costs if
+# GitHub stops creating scheduled runs without disabling the workflow: the desktop waits until it does, or
+# until someone runs with -SkipCiCheck; run_local_heavy.ps1 warns after 2 x $MinHours without a pass.
+#
+# Cost and benefit, measured on one frozen snapshot of that history with this repo's own instrument
+# (tools/measure_ci_lag.py, 60 days to 2026-10-20, old rule vs this one):
+#     replay  CLEAR time 338 -> 281 min/day (last 28 days 214 -> 171, last 14 days 217 -> 184)
+#     sweep   runner rule (want 150 min, max 36 h): 48 -> 43 passes, 9,667 -> 7,732 pass minutes,
+#             collisions 18 -> 0 (16 of the 48 old passes collided, so collision-free pass minutes
+#             6,379 -> 7,732); longest gap between pass starts 62.4 -> 73.4 h
+# The CLEAR time that goes is the time in which a pass would be overlapped. Re-measure with `replay` / `sweep`.
+PENDING_LIMIT = CRON_SPACING
+# A note, not a decision: a cron this late is in the tail of the measured lag (5 of 237 runs came later than
+# 8 h in the 60 days above), so it is worth saying that GitHub may have skipped it. Clamped below the limit
+# so it can always fire before the block ends.
+WARN_PENDING_AFTER = dt.timedelta(hours=8)
 WARN_UNFINISHED_AFTER = dt.timedelta(hours=24)
 RUN_LIMIT = 50            # unfiltered, for the in-flight check
-SCHED_LIMIT = 200         # scheduled runs only, for the cron check and the lag estimate
+SCHED_LIMIT = 200         # scheduled runs only, for the cron check
 WORKFLOW_LIMIT = 200
 EXIT_CLEAR, EXIT_UNKNOWN, EXIT_BLOCKED = 0, 2, 3
 
@@ -88,85 +90,16 @@ def _parse(ts: str) -> dt.datetime:
     return dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 
-
-def max_pending_horizon() -> dt.timedelta:
-    """The largest horizon that still leaves FREE_BLOCK_MIN of clear clock every day.
-
-    Derived from the crons rather than written down, so moving a cron moves the ceiling with it. The pending
-    windows are anchored at the cron hours; the clear time available between two consecutive crons is their gap
-    minus the horizon, so the binding constraint is the LARGEST gap - anything smaller is covered by the window
-    that starts at its own cron.
-    """
-    hours = sorted({h for hrs in WRITERS.values() for h in hrs})
-    gaps = [dt.timedelta(hours=(b - a)) for a, b in zip(hours, hours[1:])]
-    gaps.append(dt.timedelta(hours=(hours[0] + 24 - hours[-1])))
-    return max(gaps) - FREE_BLOCK_MIN
-
-
-def _scheduled_lags(rows: list, hours: tuple, now: dt.datetime) -> list:
-    """Start lag in minutes for recent scheduled runs, matched to crons in chronological order.
-
-    Greedy chronological matching, NOT "the most recent cron at or before the start". This runs PER WORKFLOW, so
-    the candidate crons are CRON_SPACING apart (12 h), never 3 h - the 03:00 and 06:00 crons belong to different
-    workflows and are never compared. The failure it avoids is the other one: GitHub skips scheduled runs, and a
-    loop that pairs each cron with the next unconsumed run shifts the whole sequence after one skip, crediting
-    runs to crons days earlier. That reported a median lag of 32,690 min against a true 132 (R1034).
-
-    A run more than CRON_SPACING after its cron is treated as belonging to a later cron, and this cron is
-    recorded as skipped. A genuinely enormous lag is therefore indistinguishable from a skip and is dropped
-    rather than recorded; see the LAG_PERCENTILE note above for why that bias is tolerated and bounded.
-    """
-    starts = sorted(_parse(r["createdAt"]) for r in rows
-                    if r.get("event") == "schedule" and r.get("createdAt"))
-    if not starts:
-        return []
-    horizon_start = now - dt.timedelta(days=LAG_WINDOW_DAYS)
-    crons = []
-    day = (horizon_start - dt.timedelta(days=1)).date()
-    while day <= now.date():
-        for h in hours:
-            crons.append(dt.datetime(day.year, day.month, day.day, h, tzinfo=dt.timezone.utc))
-        day += dt.timedelta(days=1)
-    crons.sort()
-
-    lags, i = [], 0
-    for cron in crons:
-        while i < len(starts) and starts[i] < cron:
-            i += 1
-        if i >= len(starts):
-            break
-        gap = starts[i] - cron
-        if gap > CRON_SPACING:
-            # This cron never ran: GitHub skips them. Leave the run for the cron it actually belongs to -
-            # consuming it here would shift every later pairing and credit runs to crons days earlier.
-            continue
-        if cron >= horizon_start:
-            lags.append(gap.total_seconds() / 60.0)
-        i += 1
-    return lags
-
-
-def pending_horizon(rows: list, hours: tuple, now: dt.datetime) -> dt.timedelta:
-    """How long this workflow's un-started cron should block, measured from its own recent starts."""
-    ceiling = max_pending_horizon()
-    lags = _scheduled_lags(rows, hours, now)
-    if len(lags) < LAG_MIN_SAMPLES:
-        return min(max(PENDING_HORIZON, MIN_PENDING_HORIZON), ceiling)
-    lags.sort()
-    idx = min(len(lags) - 1, int(len(lags) * LAG_PERCENTILE))
-    measured = dt.timedelta(minutes=lags[idx])
-    return min(max(measured, MIN_PENDING_HORIZON), ceiling)
-
 def assess(runs: dict, now: dt.datetime, states: dict | None = None,
            sched: dict | None = None) -> tuple[bool, str, list]:
     """runs: {workflow file: [{"createdAt", "event", "status"}, ...]} as `gh run list --json` gives them;
     states: {workflow file: "active" | "disabled_manually" | ...}, or None when not read;
-    sched: the same shape but SCHEDULED runs only, reaching further back - used for "has this cron started?"
-    and for the lag estimate. Defaults to `runs`, which is what the tests pass.
+    sched: the same shape but SCHEDULED runs only, reaching further back - used for "has this cron started?".
+    Defaults to `runs`, which is what the tests pass.
 
     Why two lists. The in-flight check must see every run, because a workflow_dispatch writes the state store
-    exactly like a cron does. The cron and lag logic must see a long, unbroken history of SCHEDULED runs, and a
-    single count-bounded unfiltered fetch cannot be both: this repo holds 334 daily runs of which 228 are not
+    exactly like a cron does. The cron logic must see an unbroken history of SCHEDULED runs, and a single
+    count-bounded unfiltered fetch cannot be both: this repo holds 334 daily runs of which 228 are not
     scheduled, so a burst of dispatches would push the scheduled rows out of a 50-row window and the gate would
     read "this cron never started" for every cron at once.
 
@@ -182,7 +115,7 @@ def assess(runs: dict, now: dt.datetime, states: dict | None = None,
                              f"day; if it is stuck, cancel it (or run with -SkipCiCheck)")
             return True, f"{wf} run created {r['createdAt']} is {r['status']}", notes
     for wf, hours in WRITERS.items():
-        horizon = pending_horizon(sched.get(wf, []), hours, now)
+        horizon = PENDING_LIMIT
         state = None if states is None else states.get(wf)
         if states is not None and state is None:
             notes.append(f"WARNING: {wf} is not in GitHub's workflow list; still waiting for its crons")
@@ -195,7 +128,9 @@ def assess(runs: dict, now: dt.datetime, states: dict | None = None,
                 cron = dt.datetime(day.year, day.month, day.day, h, tzinfo=dt.timezone.utc)
                 if not cron <= now < cron + horizon:
                     continue
-                started = any(r["event"] == "schedule" and cron <= _parse(r["createdAt"]) < cron + CRON_SPACING
+                # The same window as PENDING_LIMIT: a run is credited to this cron only if it was created
+                # within it, and the cron blocks for exactly as long as it can still be credited one.
+                started = any(r["event"] == "schedule" and cron <= _parse(r["createdAt"]) < cron + PENDING_LIMIT
                               for r in sched.get(wf, []))
                 if not started:
                     late = int((now - cron).total_seconds() // 60)
@@ -203,9 +138,8 @@ def assess(runs: dict, now: dt.datetime, states: dict | None = None,
                         notes.append(f"WARNING: {wf} {cron:%H:%M}Z cron has had no run for {late} min; "
                                      f"GitHub may have skipped it")
                     return True, (f"{wf} {cron:%H:%M}Z cron has not started yet ({late} min after its "
-                                  f"scheduled time; waiting up to "
-                                  f"{int(horizon.total_seconds() // 60)} min, measured from this "
-                                  f"workflow's own recent starts)"), notes
+                                  f"scheduled time; blocking until its run is created, at most "
+                                  f"{int(horizon.total_seconds() // 60)} min)"), notes
     return False, "no cloud state writer in flight or pending", notes
 
 
@@ -227,15 +161,14 @@ def minutes_until_block(runs: dict, now: dt.datetime, states: dict | None = None
     Returns 0 if the gate blocks right now, and the lookahead if it would not block within it. This walks the
     same assess() the gate uses rather than reimplementing the windows, so the two answers cannot drift apart.
 
-    KNOWN OPTIMISM: the walk holds the run history FROZEN at `now`. A cron that has not started yet is still
-    un-started at every future instant it examines, so its pending window closes on schedule and the walk sees
-    free time beyond it - where in reality the run may by then have started and be in flight. The answer is
-    therefore an upper bound on free time, and the caller is clamping a budget with it. This is the same
-    residual the horizon itself carries (a run later than the window collides, and the loser is whichever side
-    pushes second, R5), and it is bounded by the ceiling. How big: the largest daily lag in the recent window is
-    366 min against a 300 min ceiling, so up to ~66 min of overestimate; over the full history the gate quotes
-    (max 710 min) it reaches ~410 min. Re-measure with `python tools/measure_ci_lag.py sweep`, which models the
-    runner's wait rule; `replay` models only this gate and cannot settle a collision count.
+    The walk holds the run history FROZEN at `now`. That used to make the answer optimistic: a cron that had not
+    started was still un-started at every future instant examined, so its window closed on schedule and the walk
+    saw free time beyond it. Since PENDING_LIMIT a cron with no run blocks NOW, so at any instant this is asked
+    after a CLEAR, every cron of the last PENDING_LIMIT has its run, and the next block the walk finds is the next
+    cron's own scheduled time - which is the earliest instant that cron can produce a run. What the frozen walk
+    still cannot see: a workflow_dispatch created later, and a run created more than PENDING_LIMIT after its cron
+    (none in the 237 scheduled runs of 2026-08-21..10-20; max 710 min). Re-measure with
+    `python tools/measure_ci_lag.py sweep`, which models the runner's wait rule.
     """
     if assess(runs, now, states, sched)[0]:
         return 0
