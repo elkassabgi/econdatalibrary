@@ -1,0 +1,73 @@
+{
+ "what": "Probe receipt for updater/discontinued.yaml entry unctad_trademerchgr (UNCTAD US.TradeMerchGR withdrawn).",
+ "rerun": "Four keyless GETs, no credentials: request each url below in order and compare http_status and body.",
+ "user_agent": "econdatalibrary research probe; unctad_b1",
+ "probes": [
+  {
+   "role": "the withdrawn report (the fetcher's own vintage probe)",
+   "utc": "2026-10-20T02:34:11Z",
+   "url": "https://unctadstat-api.unctad.org/api/reportMetadata/US.TradeMerchGR/en",
+   "http_status": 400,
+   "bytes": 64,
+   "body_verbatim": "{\"Error\":\"report instance not found for report US.TradeMerchGR\"}"
+  },
+  {
+   "role": "negative control: an invented report name",
+   "utc": "2026-10-20T02:34:16Z",
+   "url": "https://unctadstat-api.unctad.org/api/reportMetadata/US.NoSuchReportB1Q7/en",
+   "http_status": 400,
+   "bytes": 68,
+   "body_verbatim": "{\"Error\":\"report instance not found for report US.NoSuchReportB1Q7\"}"
+  },
+  {
+   "role": "positive control: the live sibling report",
+   "utc": "2026-10-20T02:34:20Z",
+   "url": "https://unctadstat-api.unctad.org/api/reportMetadata/US.TradeMerchTotal/en",
+   "http_status": 200,
+   "bytes": 4399,
+   "sha256": "36d334b07c0546d64b0c7962f1f3def7e67d3efc1b54e9f83a16117f5d6761e5",
+   "fields": {
+    "name": "US.TradeMerchTotal",
+    "title": "Merchandise: Trade - Annual",
+    "version": 10011,
+    "lastUpdated": "2026-09-18T09:41:30"
+   }
+  },
+  {
+   "role": "the Data Centre catalogue (every report of every folder)",
+   "utc": "2026-10-20T02:34:24Z",
+   "url": "https://unctadstat-api.unctad.org/api/datacenter/en",
+   "http_status": 200,
+   "bytes": 33918,
+   "sha256": "f915613faea9f69c5cd49b4ca387f2d78c8cc1b46cd42cbc543a78bc8d057048",
+   "saved_as": "docs/evidence/unctad_datacenter_catalogue_20261020.json"
+  }
+ ],
+ "catalogue_diff_vs": "docs/evidence/unctad_datacenter_catalogue_20260810.json",
+ "catalogue_diff": {
+  "reports_snapshot": 99,
+  "reports_today": 99,
+  "removed": [
+   {
+    "reportName": "US.TradeMerchGR",
+    "reportTitle": "Merchandise: Total trade growth rates, annual",
+    "version": 10003
+   }
+  ],
+  "added": [
+   "US.IctUseTotal"
+  ],
+  "titled_DISCONTINUED_today": [
+   "US.BioTradeMerchMarketIndices",
+   "US.BioTradeMerchProdConcent",
+   "US.BiotradeMerchRCA",
+   "US.CommodityPriceIndices_A",
+   "US.CommodityPriceIndices_M",
+   "US.CommodityPrice_A",
+   "US.CommodityPrice_M",
+   "US.GNI"
+  ]
+ },
+ "withdrawal_window": "between 2026-10-01 and 2026-10-08 - inferred from our own run history, not stated by UNCTAD: last successful run 2026-10-01T22:27Z (no_change); the first cloud daily run that probed it (started 2026-10-08T12:59Z) got the HTTP 400 at 13:09:00Z and crashed before failures were recorded in state; first recorded transient_fail in the workstation state 2026-10-10T03:57Z",
+ "independent_review": "AR-354 measured the same answers 2026-10-20T02:10-02:16Z with a different invented name (and the /fr path of the withdrawn report: same 400)."
+}

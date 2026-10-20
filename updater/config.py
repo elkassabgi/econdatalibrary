@@ -262,7 +262,10 @@ BACKEND = os.environ.get("AQUEDUCT_BACKEND", "local")  # local | r2
 # 2026-09-08: The registry entries of licence-denied sources (gated, never served)
 #   were removed on Ahmed's order that no denied source is named or registered anywhere; their
 #   ids are deliberately not repeated here.
-EXPECTED_SOURCE_COUNT = 278
+# 2026-10-20: -unctad_trademerchgr (278 -> 277). UNCTAD withdrew US.TradeMerchGR (metadata HTTP 400 like an
+#   invented name; gone from the Data Centre catalogue). Its 1,754 ids stay SERVED frozen; evidence in
+#   updater/discontinued.yaml.
+EXPECTED_SOURCE_COUNT = 277
 
 # Production data root (the ~75B-obs library). On cloud this becomes the R2 bucket prefix.
 DATA_ROOT = os.path.abspath(os.environ.get("AQUEDUCT_DATA_ROOT", os.path.join(ROOT, "data", "clean_full")))

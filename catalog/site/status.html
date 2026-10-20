@@ -20,7 +20,7 @@
 h1{font-family:var(--serif);margin:.6rem 0 .4rem}
 .sub{color:var(--g600);line-height:1.55;max-width:70ch}
 .dot{display:inline-block;width:11px;height:11px;border-radius:50%;margin-right:.5rem;vertical-align:-1px}
-.ok{background:#16a34a}.warn{background:#d97706}.bad{background:#dc2626}.off{background:#9ca3af}.paused{background:#475569}
+.ok{background:#16a34a}.warn{background:#d97706}.bad{background:#dc2626}.off{background:#9ca3af}.paused{background:#475569}.archival{background:#cbd5e1;box-shadow:inset 0 0 0 1px #94a3b8}
 table{width:100%;border-collapse:collapse;margin-top:1.2rem;background:#fff;border:1px solid var(--g200);border-radius:10px;overflow:hidden}
 th,td{padding:.55rem .8rem;text-align:left;font-size:.9rem;border-top:1px solid var(--g200)}
 th{background:#f3f4f6;border-top:none;font-size:.8rem;text-transform:uppercase;letter-spacing:.04em;color:var(--g600)}
@@ -107,6 +107,7 @@ listed here honestly as “initial load” rather than pretended current.</p>
 <span class="dot ok"></span> updated &amp; current (or an honest <code>no_change</code> probe) &nbsp;·&nbsp;
 <span class="dot warn"></span> partial / transient issue — retries automatically next run &nbsp;·&nbsp;
 <span class="dot paused"></span> paused &mdash; updates are on hold by decision; the database&rsquo;s own page gives the reason, and it does not retry by itself &nbsp;&middot;&nbsp;
+<span class="dot archival"></span> archival &mdash; the publisher discontinued this dataset; the copy here is final and is not updated, so it is not a failure &nbsp;&middot;&nbsp;
 <span class="dot bad"></span> failed or past its expected update window — visible here and in the operator's daily report until fixed &nbsp;·&nbsp;
 <span class="dot off"></span> initial load; joins the automated rollout in an upcoming phase.<br>
 Statuses are never fabricated: a source's date only advances when new observations were actually
@@ -144,7 +145,7 @@ Promise.all([
   const rows=haveMeta?all.filter(r=>meta[r.source]):all;
   const hidden=all.length-rows.length;
   const now=Date.now();
-  let ok=0,warn=0,bad=0,paused=0,named=0;
+  let ok=0,warn=0,bad=0,paused=0,archival=0,named=0;
   // Sort by the human title so the board reads alphabetically the way a person would expect
   // ("Australian Bureau of Statistics", not "abs"); fall back to the id where untitled.
   const title=r=>(meta[r.source]&&meta[r.source].name)||r.source||'';
@@ -156,12 +157,15 @@ Promise.all([
     const nextTs=r.next_update_expected?Date.parse(r.next_update_expected):null;
     if(st==='ok'||st==='no_change'){cls=(nextTs&&now>nextTs+36e5*24)?'bad':'ok'}
     else if(st==='partial'||st==='transient_fail'){cls='warn'}
+    // A DISCONTINUED source (updater/discontinued.yaml; core/sync_state_d1.py publishes its recorded unit row with
+    // this status) is a final copy the publisher retired: neutral, never a red "attention" dot (AR-355).
+    else if(st==='discontinued'){cls='archival'}
     else{cls='bad'}
     const m=meta[r.source]||{};
     // A PAUSED source (registry `paused`, carried by sources_meta.json) is off every run on purpose: its last
     // run's partial/transient_fail would read as "retries automatically next run", which is untrue (AR-345 #4).
     if(m.paused)cls='paused';
-    if(cls==='ok')ok++;else if(cls==='warn')warn++;else if(cls==='paused')paused++;else bad++;
+    if(cls==='ok')ok++;else if(cls==='warn')warn++;else if(cls==='paused')paused++;else if(cls==='archival')archival++;else bad++;
     if(m.name)named++;
     // A source can hold several units (one per dataset/cube). They previously rendered as
     // identical-looking rows; name the unit when it is not the whole-source `_all`.
@@ -196,7 +200,8 @@ Promise.all([
   document.getElementById('summary').innerHTML=
     '<b>'+rows.length+'</b> published databases in the update ledger — '+
     '<span class="dot ok"></span>'+ok+' current · <span class="dot warn"></span>'+warn+
-    ' retrying · '+(paused?'<span class="dot paused"></span>'+paused+' paused · ':'')+'<span class="dot bad"></span>'+bad+' attention. '+
+    ' retrying · '+(paused?'<span class="dot paused"></span>'+paused+' paused · ':'')+
+    (archival?'<span class="dot archival"></span>'+archival+' archival · ':'')+'<span class="dot bad"></span>'+bad+' attention. '+
     'The wider catalog joins this ledger phase by phase.'+
     (untitled?' <span style="color:#6b7280">('+untitled+' shown by id — awaiting the next '+
       'catalog build)</span>':'')+

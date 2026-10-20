@@ -216,13 +216,25 @@ Every registered source with license/attribution + a freshness summary
 deliberately NOT pinned here — it changes whenever a source is added, or removed because
 we cannot host it (as in the removals of 2026-07-22/23). Read it from the endpoint.
 
+> **`status: "discontinued"` (since the freshness sync that follows 2026-10-20).** A source listed in
+> `updater/discontinued.yaml` — the publisher retired the dataset; we keep serving the final copy — reads
+> `freshness.status = "discontinued"` and `freshness.cadence = null`. `last_updated` is the last
+> successful refresh if the updater ever recorded one (e.g. `unctad_trademerchgr`, 2026-10-01), else null;
+> `data_through` is unchanged. Before this, the relay-era archival sources read status and cadence null with
+> no label, and `unctad_trademerchgr` kept reading `"ok"` / `"weekly"` from its last run. The value comes from
+> `core/sync_state_d1.py` (`_project`), which writes the D1 projection and the self-hosted origin's copy; no
+> worker change. A `unit_state` row the updater recorded for such a source (today only `unctad_trademerchgr/_all`)
+> is published with `status: "discontinued"` and its other columns kept, so `/v1/last-updates` shows it as
+> discontinued with `next_update_expected: null`, and `metadata.json`'s `last_updated` (which falls back to the
+> `_all` unit row) keeps its date. No unit row is made for a source the updater never ran.
+
 ### `GET /v1/last-updates`   ([w8], copy the relay aggregator `/last-updates`)
 Per dataset, projected from `unit_state` + `source_state` + registry cadence:
 ```jsonc
 { "generated": "2026-06-25T...Z",
   "datasets": [{
     "source": "bcb", "unit": "_all",
-    "status": "ok",                       // ok | no_change | partial | transient_fail
+    "status": "ok",                       // ok | no_change | partial | transient_fail | discontinued
     "last_updated": "2026-06-24T00:10:55Z",   // unit_state.last_success_utc
     "source_date_accessed": "2026-06-24T00:10:55Z",
     "source_version": "<upstream_vintage>",   // unit_state.upstream_vintage (may be null)
@@ -303,6 +315,8 @@ diverged, these are the pinned canonical shapes (the verify pass enforces them):
 
 - **`/v1/sources`** — NESTED per source:
   `{ "source": <id>, "name", "homepage", "license": {id,name,url,reservable,commercial_ok,attribution_required,no_modify}|null, "freshness": {status,last_updated,cadence}|null }`.
+  `freshness.status` is the last recorded run status, or `"discontinued"` (cadence null) for a source in
+  `updater/discontinued.yaml`.
 
 - **`/v1/last-updates` cadence** — `next_update_expected` = `last_success_utc` +
   {daily:1, weekly:7, monthly:30, quarterly:91, **annual:365**} days. Any other cadence

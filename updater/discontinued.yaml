@@ -1153,3 +1153,56 @@ sources:
       Keep SERVED-FROZEN as archival (distinct vintage of a superseded product; current
       edition auto-updates as unctad_biotrademerchshare). No fetcher can exist. This settles
       the LAST case of the legacy-38 review: 37 archival, 1 retired.
+
+  # THE FIRST SUCCESSOR-ERA ENTRY. Unlike the relay-era ids above, this source HAD a registry entry and a
+  # live fetcher (US.TradeMerchGR, successor #2, 2026-08-08). Freezing it removed the entry (and the count
+  # in updater/config.py) in the same commit. Every source in this file is published by core/sync_state_d1.py
+  # with freshness status "discontinued" and no cadence, and catalog/gen_site.py labels its page archival.
+  - source_id: unctad_trademerchgr
+    publisher: UNCTAD
+    dataset: >-
+      US.TradeMerchGR - "Merchandise: Total trade growth rates, annual" (1,754 series: 608 annual
+      year-on-year Economy.Flow.M4017 series plus 1,146 multi-year averages keyed |SPAN=3Y / |SPAN=5Y;
+      28,863 observations, 1981-12-31..2025-12-31)
+    measured: 2026-10-20
+    probe: >-
+      Re-runnable, keyless, four GETs (2026-10-20T02:34Z, 3.5 s apart). (1) GET
+      https://unctadstat-api.unctad.org/api/reportMetadata/US.TradeMerchGR/en - the fetcher's own
+      vintage probe (jobs/ingest_unctad_ds.py). (2) Negative control, an invented report name: GET
+      https://unctadstat-api.unctad.org/api/reportMetadata/US.NoSuchReportB1Q7/en. (3) Positive control,
+      the live sibling: GET https://unctadstat-api.unctad.org/api/reportMetadata/US.TradeMerchTotal/en.
+      (4) GET https://unctadstat-api.unctad.org/api/datacenter/en, every report of every folder diffed by
+      report name against docs/evidence/unctad_datacenter_catalogue_20260810.json. An independent review
+      (AR-354) measured the same four answers 02:10-02:16Z the same day, with a different invented name.
+    finding: >-
+      (1) HTTP 400, 64 bytes, body verbatim {"Error":"report instance not found for report
+      US.TradeMerchGR"} (AR-354 found the same on the /fr path). (2) HTTP 400 with the same text for the invented
+      name, so UNCTAD answers for US.TradeMerchGR exactly as for a report that never existed. (3) HTTP 200,
+      4,399 bytes, "Merchandise: Trade - Annual", version 10011, so the host and the route work. (4) HTTP
+      200, 33,918 bytes, 99 reports today and 99 in the 2026-08-10 snapshot: exactly ONE report was removed,
+      US.TradeMerchGR ("Merchandise: Total trade growth rates, annual", version 10003), and one added
+      (US.IctUseTotal). UNCTAD labels its other withdrawals in place with a "DISCONTINUED - " title prefix
+      (8 reports today, e.g. US.GNI, US.CommodityPrice_A); US.TradeMerchGR got no such label - it was
+      removed outright. UNCTAD gives no date; our runs bracket the withdrawal between 2026-10-01 (last
+      successful run, 22:27Z) and 2026-10-08 (the first cloud daily run that probed it got the 400 at
+      13:09Z; that run started 12:59Z and crashed before recording state, so state.db does not show it). The
+      workstation state lineage then booked transient_fail on it 19 times from 2026-10-10T03:57Z to
+      2026-10-19T22:40Z. Receipt of all four probes, with HTTP status and body:
+      docs/evidence/unctad_trademerchgr_withdrawal_20261020.json (the catalogue saved beside it as
+      docs/evidence/unctad_datacenter_catalogue_20261020.json). The publisher states no successor. US.TradeMerchTotal now carries a
+      measure 4023 "Growth rate, year-on-year", but M4017 and M4023 are different measure codes whose
+      values were NOT compared, and the 1,146 |SPAN= multi-year averages have no successor measure at all,
+      so a re-point would splice two products (R403 class). What we hold can no longer be re-crawled: the
+      workstation copy of the store (file of 2026-08-08; nine no_change runs followed it, R2 not read) has
+      28,863 rows, 1,754 keys and 0 duplicate (key, date), and the catalogue has the same 1,754 ids.
+    decision: >-
+      Keep SERVED-FROZEN as archival: all 1,754 ids stay catalogued and served (api/worker/src/util.ts
+      SUPPORTED_SOURCES keeps it); only the runner paths go (registry entry and fetcher module). No fetcher
+      can exist for a report the publisher no longer has. This applies Ahmed's standing ruling quoted in the
+      entries above (UNESCO, 2026-08-09): fully downloadable archival sources stay listed, labelled so nobody
+      expects fresh data. Licence unchanged (cc-by-3.0-igo): the UNCTAD entry in
+      DATABASE_LICENSES_VERBATIM.md does not name this id; it rests on that entry's publisher-wide grant
+      sentence, which covers all data and metadata on the UNCTAD Data Hub. DEPENDENCY: unctad_mttgra's entry
+      above keeps that store because "only 223 of 351 series are covered by trademerchgr"; this store is
+      frozen with the same data, so that sentence stays true. If US.TradeMerchTotal's M4023 is ever
+      catalogued as a successor, re-check unctad_mttgra against it before relying on either.

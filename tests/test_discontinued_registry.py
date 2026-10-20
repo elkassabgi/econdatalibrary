@@ -60,6 +60,21 @@ def test_a_source_cannot_be_dead_and_scheduled_at_once():
         f"that cannot move.")
 
 
+def test_a_discontinued_source_has_no_registry_entry_at_all():
+    """AR-355 surviving mutant m11. `live: false` is not enough: an entry with `run_location: local` is run by the
+    workstation pass whatever `live` says (and the heavy matrix and sec-edgar-daily run by other keys), while D1 and
+    the page would say "discontinued". All entries here follow the B1 shape - no registry entry - so a discontinued
+    id appearing in registry.yaml in ANY form is the contradiction."""
+    reg = yaml.safe_load(open(os.path.join(ROOT, "updater", "registry.yaml"), encoding="utf-8"))
+    registered = {s["source_id"] for s in reg["sources"]}
+    assert "unctad_trademerchtotal" in registered, "positive control: a registered sibling must be seen"
+    clash = sorted({e["source_id"] for e in _entries()} & registered)
+    assert not clash, (
+        f"{clash} are declared publisher-discontinued in discontinued.yaml AND have a registry.yaml entry. Something "
+        f"may still run them (run_location: local runs regardless of live). Remove the entry (and bump "
+        f"EXPECTED_SOURCE_COUNT in the same commit), or remove the discontinued.yaml entry.")
+
+
 def test_the_probe_names_a_real_endpoint_not_a_recollection():
     """'a previous session found' is how a citation gets laundered into evidence."""
     bad = [e["source_id"] for e in _entries()
@@ -77,6 +92,55 @@ def test_archival_series_are_still_counted_as_not_auto_updating():
     assert 'print(f"NOT scheduled           {len(gap) + len(arch):>6,}   "' in src, (
         "the NOT-scheduled line no longer adds the archival sources back in")
     assert "{gap_series + arch_series:>12,} series" in src
+
+
+def test_a_discontinued_source_stays_served():
+    """'Served-frozen' is half of every entry's decision. Removing a registry entry (the B1 shape, used by
+    unctad_trademerchgr on 2026-10-20) takes only the RUNNER path away; the worker must still resolve the ids.
+    A discontinued source dropped from SUPPORTED_SOURCES would answer 501 for data nobody can re-crawl."""
+    from tools.audit_schedule_coverage import supported_sources
+    served = supported_sources()
+    assert "unctad_trademerchtotal" in served, "positive control: the parser must see a known served source"
+    assert "zz_never_a_source" not in served, "negative control: the parser must not admit an invented id"
+    dropped = sorted({e["source_id"] for e in _entries()} - served)
+    assert not dropped, (
+        f"{dropped} are declared served-frozen in discontinued.yaml but are missing from SUPPORTED_SOURCES in "
+        f"api/worker/src/util.ts - users would get 501 for archival data that no fetcher can rebuild")
+
+
+def test_the_trademerchgr_probe_carries_both_controls_and_its_receipt():
+    """R426: a probe someone else can re-run. The generic check above passes on ANY URL in the text, so this
+    entry's probe could lose the withdrawn report's own URL and still pass it. Pin the three URLs that make the
+    verdict re-checkable (the report, the live sibling, the catalogue), the invented-name negative control, and
+    the saved receipt holding HTTP status and body."""
+    import json
+    e = {x["source_id"]: x for x in _entries()}["unctad_trademerchgr"]
+    probe = " ".join(str(e["probe"]).split())
+    for url in ("https://unctadstat-api.unctad.org/api/reportMetadata/US.TradeMerchGR/en",
+                "https://unctadstat-api.unctad.org/api/reportMetadata/US.TradeMerchTotal/en",
+                "https://unctadstat-api.unctad.org/api/datacenter/en"):
+        assert url in probe, f"the probe no longer names {url}"
+    assert "invented report name" in probe and "Negative control" in probe
+    rec = json.load(open(os.path.join(ROOT, "docs", "evidence", "unctad_trademerchgr_withdrawal_20261020.json"),
+                         encoding="utf-8"))
+    by_url = {p["url"]: p for p in rec["probes"]}
+    gr = by_url["https://unctadstat-api.unctad.org/api/reportMetadata/US.TradeMerchGR/en"]
+    assert gr["http_status"] == 400 and "report instance not found" in gr["body_verbatim"]
+    assert by_url["https://unctadstat-api.unctad.org/api/reportMetadata/US.TradeMerchTotal/en"]["http_status"] == 200
+    assert [r["reportName"] for r in rec["catalogue_diff"]["removed"]] == ["US.TradeMerchGR"]
+
+
+def test_a_coverage_claim_names_a_store_that_is_still_served():
+    """unctad_mttgra's entry keeps its store because 'only 223 of 351 series are covered by trademerchgr'.
+    That sentence is true only while unctad_trademerchgr is served with the same data. If someone retires the
+    trademerchgr ids, this fails and points at the entry whose reasoning just changed (AR-354 item 5)."""
+    from tools.audit_schedule_coverage import supported_sources
+    by_id = {e["source_id"]: e for e in _entries()}
+    assert "covered by trademerchgr" in str(by_id["unctad_mttgra"]["finding"]), (
+        "the unctad_mttgra entry no longer cites trademerchgr - update this test with the new dependency")
+    assert "unctad_trademerchgr" in supported_sources(), (
+        "unctad_mttgra's archival verdict relies on unctad_trademerchgr being served; re-check it before "
+        "retiring the trademerchgr ids")
 
 
 def test_a_missing_file_does_not_shrink_the_queue():

@@ -167,11 +167,19 @@ def test_the_primary_copy_carries_the_freshness_projection(tmp_path):
     _dated_catalogue(cat)
     _state_db(st, ["ecb", "noaa"])
     report = oc.build(str(cat), str(tmp_path / "out"), state_db=str(st))
-    assert report["freshness"]["unit_state"] == 2 and report["freshness"]["source_state"] == 2
+    # + one 'discontinued' source_state row per updater/discontinued.yaml entry (core.sync_state_d1._project,
+    # 2026-10-20): the origin publishes them exactly as the D1 sync does
+    from core import sync_state_d1
+    n_disc = len(sync_state_d1._discontinued_ids() - sync_state_d1._gated_ids())
+    assert n_disc >= 1
+    assert report["freshness"]["unit_state"] == 2 and report["freshness"]["source_state"] == 2 + n_disc
     assert report["freshness"]["source_data_through"] >= 1
     con = sqlite3.connect(tmp_path / "out" / "primary.sqlite")
     try:
         assert con.execute("SELECT data_through FROM source_data_through WHERE source_id='ecb'").fetchone() == ("2026-06-30",)
+        assert con.execute("SELECT status, cadence FROM source_state WHERE source_id='unctad_trademerchgr'"
+                           ).fetchone() == ("discontinued", None)
+        assert con.execute("SELECT status, cadence FROM source_state WHERE source_id='ecb'").fetchone() == ("ok", "daily")
     finally:
         con.close()
     assert sorted(os.listdir(tmp_path / "out")) == ["climate.sqlite", "primary.sqlite"], "no SQL left behind"

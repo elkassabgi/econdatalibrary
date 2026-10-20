@@ -395,7 +395,10 @@ class TestD1Sync:
         # whether the machine happens to have a catalog and how many sources it
         # holds — green in CI, red on a workstation, for no code reason.
         monkeypatch.setenv("ECONDL_CATALOG", str(tmp_path / "no_such_catalog.db"))
-        files, counts = d1sync.emit_sql(db, out)
+        # discontinued=set(): this pins SQL legality and replay equality on the scratch rows; the
+        # 'discontinued' rows emit_sql adds per updater/discontinued.yaml are pinned in
+        # tests/test_state_sync_withholds_discontinued.py
+        files, counts = d1sync.emit_sql(db, out, discontinued=set())
         assert counts == {"unit_state": 5, "source_state": 1}
         for p in files:
             assert os.path.getsize(p) <= d1sync.MAX_FILE_BYTES
@@ -421,7 +424,7 @@ class TestD1Sync:
                            ).fetchone()[0] == 100
         mem.close()
         # the module's own verifier agrees
-        d1sync.verify_replay(db, files, counts)
+        d1sync.verify_replay(db, files, counts, discontinued=set())
 
     def test_dry_run_executes_nothing(self, tmp_path, capsys, monkeypatch):
         db = str(tmp_path / "state.db")
