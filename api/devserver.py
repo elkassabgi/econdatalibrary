@@ -56,6 +56,13 @@ from core import freshness_vocab as _fv  # noqa: E402  - the vocabulary rule the
 _FV_CLASSES = None
 
 
+def _note_cols(conn, prefix: str) -> str:
+    """`last_error, last_attempt_utc` of unit_state, or NULL for the one a hand-built state db lacks (the
+    updater's state.db and the D1 projection always carry both; test fixtures may not)."""
+    have = {r[1] for r in conn.execute("PRAGMA table_info(unit_state)")}
+    return ", ".join(f"{prefix}{c}" if c in have else f"NULL AS {c}" for c in ("last_error", "last_attempt_utc"))
+
+
 def _fv_classes() -> dict:
     """core.freshness_vocab.classes(), read once (registry + workflows + gate files of this checkout)."""
     global _FV_CLASSES
@@ -694,7 +701,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             out: dict[str, list[dict]] = {}
             for r in conn.execute(
-                    "SELECT source_id, unit_id, status, last_error, last_attempt_utc, last_success_utc "
+                    f"SELECT source_id, unit_id, status, {_note_cols(conn, '')}, last_success_utc "
                     f"FROM unit_state WHERE source_id IN ({', '.join('?' * len(sids))}) "
                     "ORDER BY source_id, unit_id", sids):
                 out.setdefault(r["source_id"], []).append(dict(r))
@@ -714,7 +721,7 @@ class Handler(BaseHTTPRequestHandler):
                 "SELECT u.source_id, u.unit_id, u.status, u.last_success_utc, "
                 "       u.upstream_vintage, u.last_obs_date, u.obs_count, s.cadence, "
                 "       s.status AS source_status, s.last_success_utc AS source_last_success, "
-                "       u.last_error, u.last_attempt_utc "
+                f"       {_note_cols(conn, 'u.')} "
                 "FROM unit_state u LEFT JOIN source_state s ON s.source_id = u.source_id "
                 "ORDER BY u.source_id, u.unit_id").fetchall()
         finally:
