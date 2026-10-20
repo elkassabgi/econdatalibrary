@@ -16,6 +16,7 @@ import type { Env, LastUpdateRow } from "./types.ts";
 import { LAST_UPDATES } from "./sql.ts";
 import { NON_REDISTRIBUTABLE } from "./denylist.ts";
 import { json, nextUpdateExpected } from "./util.ts";
+import { promisesNextUpdate, sourceLabel, unitStatus } from "./freshness.ts";
 
 export async function handleLastUpdates(env: Env): Promise<Response> {
   const res = await env.CATALOG.prepare(LAST_UPDATES).all<LastUpdateRow>();
@@ -40,17 +41,42 @@ export async function handleLastUpdates(env: Env): Promise<Response> {
   // invented id absent).
   const servable = rows.filter((u) => !NON_REDISTRIBUTABLE.has(u.source_id));
 
-  const datasets = servable.map((u) => ({
-    source: u.source_id,
-    unit: u.unit_id,
-    status: u.status, // ok | no_change | partial | transient_fail (whatever state holds)
-    last_updated: u.last_success_utc, // null => "never succeeded", never a fake date
-    source_date_accessed: u.last_success_utc,
-    source_version: u.upstream_vintage, // may be null
-    last_obs_date: u.last_obs_date,
-    next_update_expected: nextUpdateExpected(u.last_success_utc, u.cadence),
-    obs_count: u.obs_count,
-  }));
+  // THE FRESHNESS VOCABULARY (src/freshness.ts; owner decisions 2026-10-20), judged once per SOURCE from
+  // its source_state row and all its unit rows, then applied to each unit: "late" replaces ok /
+  // no_change / partial / transient_fail; "paused" and "retired" replace the status and promise no next
+  // update (ksh used to promise 2027-06-24). The note and the attempt stamp are read, never printed.
+  const bySource = new Map<string, LastUpdateRow[]>();
+  for (const u of servable) {
+    const list = bySource.get(u.source_id) ?? [];
+    list.push(u);
+    bySource.set(u.source_id, list);
+  }
+  const now = Date.now();
+  const labels = new Map<string, string | null>();
+  for (const [sid, units] of bySource) {
+    const first = units[0];
+    const src = first.source_status === null && first.source_last_success === null && first.cadence === null
+      ? null
+      : { status: first.source_status, last_success_utc: first.source_last_success, cadence: first.cadence };
+    labels.set(sid, sourceLabel(sid, src, units, now));
+  }
+
+  const datasets = servable.map((u) => {
+    const label = labels.get(u.source_id) ?? null;
+    return {
+      source: u.source_id,
+      unit: u.unit_id,
+      // what state holds (ok | no_change | partial | transient_fail | discontinued), or late / paused /
+      // retired from the vocabulary
+      status: unitStatus(u.status, label),
+      last_updated: u.last_success_utc, // null => "never succeeded", never a fake date
+      source_date_accessed: u.last_success_utc,
+      source_version: u.upstream_vintage, // may be null
+      last_obs_date: u.last_obs_date,
+      next_update_expected: promisesNextUpdate(label) ? nextUpdateExpected(u.last_success_utc, u.cadence) : null,
+      obs_count: u.obs_count,
+    };
+  });
 
   return json({
     generated: new Date().toISOString(),

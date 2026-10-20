@@ -126,6 +126,24 @@ FUTURE_SKEW_HOURS = 0.25
 # named (partial) so it cannot grow silently (lane review).
 NEW_CUBE_DEBT_AMBER_DAYS = 30
 
+# THE VERDICTS THAT SAY THE LANE IS CURRENT (owner decision 2026-10-20: statcan must not read "late" on
+# the public API while its lane keeps it current). verdict() below has two such outcomes: `ok`, and the
+# amber `partial` - "alive and current, but something needs a human" (every owed release is younger
+# than OWED_AGE_MAX_DAYS). The orchestrator stores both kinds of `partial` - this amber one AND the red
+# DefinitiveError ones (dead lane, behind and not progressing, cubes failing) - as unit status `partial`
+# (orchestrate.py, `except DefinitiveError`), so the stored note is the only thing that tells them
+# apart. This pattern is a WHITELIST of the current verdicts' openings, anchored at the start:
+#   "statcan: lane current - ..."                              ok (stored only if a tail is joined)
+#   "statcan: N cube(s) QUARANTINED ..."                       amber
+#   "statcan: N merged cube(s) whose served ids ..."           amber
+#   "statcan: N released cube(s) not held, the oldest since"   amber (new-cube coverage debt)
+# DRAINING ("statcan: the lane is DRAINING - behind ...") is NOT current: the oldest owed release is
+# past OWED_AGE_MAX_DAYS. tools/gen_freshness_classes.py copies this pattern into the worker
+# (api/worker/src/freshnessClasses.ts); tests/test_freshness_vocab.py runs verdict() through every
+# branch and pins which outcomes match. Change a verdict's opening words and that test fails.
+LANE_CURRENT_PATTERN = (r"^statcan: (?:lane current - |\d+ cube\(s\) QUARANTINED |"
+                        r"\d+ merged cube\(s\) whose served ids |\d+ released cube\(s\) not held, the oldest since )")
+
 
 def _ingester():
     """jobs/ingest_statcan.py, the producer of every stored cube. Imported lazily so importing this

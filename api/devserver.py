@@ -49,6 +49,20 @@ sys.path.insert(0, os.path.join(_REPO, "clients", "python"))
 from econdl import _catalog, _resolve  # noqa: E402
 from econdl._resolve import ResolveError  # noqa: E402
 
+if _REPO not in sys.path:
+    sys.path.insert(1, _REPO)
+from core import freshness_vocab as _fv  # noqa: E402  - the vocabulary rule the worker mirrors
+
+_FV_CLASSES = None
+
+
+def _fv_classes() -> dict:
+    """core.freshness_vocab.classes(), read once (registry + workflows + gate files of this checkout)."""
+    global _FV_CLASSES
+    if _FV_CLASSES is None:
+        _FV_CLASSES = _fv.classes()
+    return _FV_CLASSES
+
 # --------------------------------------------------------------------------- #
 # config (resolved once at startup, stashed on the server)
 # --------------------------------------------------------------------------- #
@@ -621,6 +635,12 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
         sstate = self._source_state_map()
+        cls = _fv_classes()
+        now = datetime.now(timezone.utc)
+        # sources.ts: unit rows only for the sources judged on their latest pass (rotating / lane)
+        declared = [s for s, st in sstate.items() if (s in set(cls["rotating"]) or s in set(cls["lane"]))
+                    and st.get("status") in _fv.LATE_FROM_SOURCE]
+        units_by = self._unit_rows(declared)
         out = []
         for s in srcs:
             if s["source_id"] in _GATE:          # sources.ts:56 - a gated source is unlisted, not just undownloadable
@@ -629,6 +649,9 @@ class Handler(BaseHTTPRequestHandler):
             lic = (_catalog.get_license(lic_id, db=self.cfg.catalog)
                    if lic_id else None)
             st = sstate.get(s["source_id"])
+            label = _fv.source_label(s["source_id"], st, units_by.get(s["source_id"], []), now, cls)
+            if st is None and label is not None:
+                st = {"status": None, "last_success_utc": None, "cadence": None}
             out.append({
                 "source": s["source_id"],
                 "name": s.get("name"),
@@ -643,7 +666,7 @@ class Handler(BaseHTTPRequestHandler):
                     "no_modify": bool(lic.get("no_modify")),
                 } if lic and lic.get("license_id") else None),
                 "freshness": ({
-                    "status": st.get("status"),
+                    "status": label or st.get("status"),
                     "last_updated": st.get("last_success_utc"),
                     "cadence": st.get("cadence"),
                 } if st else None),
@@ -662,6 +685,23 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
 
+    def _unit_rows(self, sids: list[str]) -> dict[str, list[dict]]:
+        """sql.ts unitFreshnessSql: the unit rows of the named sources (status, note, attempt, success)."""
+        if not sids or not os.path.exists(self.cfg.state):
+            return {}
+        conn = sqlite3.connect(f"file:{self.cfg.state}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            out: dict[str, list[dict]] = {}
+            for r in conn.execute(
+                    "SELECT source_id, unit_id, status, last_error, last_attempt_utc, last_success_utc "
+                    f"FROM unit_state WHERE source_id IN ({', '.join('?' * len(sids))}) "
+                    "ORDER BY source_id, unit_id", sids):
+                out.setdefault(r["source_id"], []).append(dict(r))
+            return out
+        finally:
+            conn.close()
+
     # ---- GET /v1/last-updates ([w8]) ----
     def h_last_updates(self):
         if not os.path.exists(self.cfg.state):
@@ -672,27 +712,41 @@ class Handler(BaseHTTPRequestHandler):
             # Canonical SQL straight from CONTRACT.md (runs verbatim on D1).
             rows = conn.execute(
                 "SELECT u.source_id, u.unit_id, u.status, u.last_success_utc, "
-                "       u.upstream_vintage, u.last_obs_date, u.obs_count, s.cadence "
+                "       u.upstream_vintage, u.last_obs_date, u.obs_count, s.cadence, "
+                "       s.status AS source_status, s.last_success_utc AS source_last_success, "
+                "       u.last_error, u.last_attempt_utc "
                 "FROM unit_state u LEFT JOIN source_state s ON s.source_id = u.source_id "
                 "ORDER BY u.source_id, u.unit_id").fetchall()
         finally:
             conn.close()
+        rows = [dict(r) for r in rows if r["source_id"] not in _GATE]       # lastUpdates.ts:41
+        # lastUpdates.ts: the vocabulary is judged once per source, then applied to each unit
+        cls, now, by = _fv_classes(), datetime.now(timezone.utc), {}
+        for r in rows:
+            by.setdefault(r["source_id"], []).append(r)
+        labels = {}
+        for sid, us in by.items():
+            f = us[0]
+            src = (None if f["source_status"] is None and f["source_last_success"] is None and f["cadence"] is None
+                   else {"status": f["source_status"], "last_success_utc": f["source_last_success"],
+                         "cadence": f["cadence"]})
+            labels[sid] = _fv.source_label(sid, src, us, now, cls)
         datasets = []
         for r in rows:
-            if r["source_id"] in _GATE:          # lastUpdates.ts:41
-                continue
             last = r["last_success_utc"]
+            label = labels.get(r["source_id"])
             datasets.append({
                 "source": r["source_id"],
                 "unit": r["unit_id"],
                 # A unit with no last_success reports its current status + null date,
-                # never a fabricated freshness date (CONTRACT.md).
-                "status": r["status"],
+                # never a fabricated freshness date (CONTRACT.md); or late / paused / retired.
+                "status": _fv.unit_status(r["status"], label),
                 "last_updated": last,
                 "source_date_accessed": last,
                 "source_version": r["upstream_vintage"],
                 "last_obs_date": r["last_obs_date"],
-                "next_update_expected": _next_update_expected(last, r["cadence"]),
+                "next_update_expected": (_next_update_expected(last, r["cadence"])
+                                         if _fv.promises_next_update(label) else None),
                 "obs_count": r["obs_count"],
             })
         self._json(200, {"generated": _now_iso(), "datasets": datasets})

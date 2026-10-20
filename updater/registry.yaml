@@ -1322,6 +1322,16 @@ sources:
       first-of-period), value(float64). In-build (key,date) de-dup via ''seen'' set.'
 - source_id: ecb
   live: true
+  # rotating — DECLARED 2026-10-20 (owner decision on the public "late" status; core/freshness_vocab.py).
+  # A 35-minute pass reaches part of the 540 files and books the rest as deferred, so every pass ends
+  # `partial` and none stamps a success (R231): last_success has been 2026-07-16 since then. MEASURED on
+  # the state.db runs 2026-09-20..10-19: 49 passes, 45 of them "N sub-unit(s) attempted, none failed"
+  # (45..382 of 540), 4 with a transient failure. The "late" rule therefore judges ecb on its LATEST pass:
+  # not late while that pass failed nothing and ran within 2 x cadence. cso is NOT declared: its deferral
+  # notes cover 4-10 of ~10,750 matrices a pass (a backlog of months), so it is late, as the owner said.
+  # Measured alternative, not taken: the shared RotationCycle (ok = every file visited) replayed on the
+  # same history closes ecb's cycle every 1.4-4.0 days, past the 2-day window, so ecb would flicker late.
+  rotating: true
   # csv_merge_served — DECLARED 2026-09-23 (reviews R1132, R1136). The resolver serves the UNION
   # of the whole ecb/ directory: 8 of the 540 store files hold the 35 served ids (4 primaries, 4
   # ECB.DISS mirrors), and 27 ids live in two. A runner holds only the files its pass wrote, so a

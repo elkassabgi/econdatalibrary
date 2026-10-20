@@ -159,6 +159,12 @@ export interface LastUpdateRow {
   last_obs_date: string | null;
   obs_count: number | null;
   cadence: string | null;
+  // 2026-10-20, for src/freshness.ts: source_state's success-only status and stamp, the unit's note
+  // and last attempt.
+  source_status: string | null;
+  source_last_success: string | null;
+  last_error: string | null;
+  last_attempt_utc: string | null;
 }
 
 export interface CountRow {

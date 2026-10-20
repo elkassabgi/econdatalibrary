@@ -9,7 +9,8 @@
 // ---------------------------------------------------------------------------
 
 import type { Env, SourceJoinedRow } from "./types.ts";
-import { SELECT_SOURCES, SELECT_SOURCE_JOINED } from "./sql.ts";
+import { SELECT_SOURCES, SELECT_SOURCE_JOINED, unitFreshnessSql } from "./sql.ts";
+import { needsUnits, sourceLabel, type UnitFresh } from "./freshness.ts";
 import { json, SHARDED_SOURCES, dbFor } from "./util.ts";
 import { NON_REDISTRIBUTABLE } from "./denylist.ts";
 
@@ -55,6 +56,28 @@ export async function handleSources(env: Env): Promise<Response> {
   // reason, so no such id was the discrepancy.)
   const servable = rows.filter((r) => !NON_REDISTRIBUTABLE.has(r.source_id));
 
+  // THE FRESHNESS VOCABULARY (src/freshness.ts; owner decisions 2026-10-20). source_state.status is
+  // written only on a SUCCESS (R231), so a source that keeps running and ends partial read "ok" here
+  // for months (istat 98 days). Now: "late" past 2 x cadence since that success, "paused" for a
+  // registry pause, "retired" when no run mechanism names the source. Sources judged on their latest
+  // pass (registry rotating / served_by lane) need their unit rows: one primary-key seek per such id,
+  // and only for the ids that could read late at all.
+  const now = Date.now();
+  const wantUnits = servable
+    .filter((r) => needsUnits(r.source_id) && (r.source_status === "ok" || r.source_status === "no_change"))
+    .map((r) => r.source_id)
+    .slice(0, 100);
+  const unitsBy = new Map<string, UnitFresh[]>();
+  if (wantUnits.length) {
+    const ur = await env.CATALOG.prepare(unitFreshnessSql(wantUnits.length)).bind(...wantUnits)
+      .all<UnitFresh & { source_id: string }>();
+    for (const u of ur.results ?? []) {
+      const list = unitsBy.get(u.source_id) ?? [];
+      list.push(u);
+      unitsBy.set(u.source_id, list);
+    }
+  }
+
   // CANONICAL v1.1 NESTED shape (CONTRACT.md "Canonical response shapes"):
   //   { source, name, homepage, license:{...}|null, freshness:{...}|null }
   // attribution/terms_url are NOT part of this pin (they live in metadata.json
@@ -63,7 +86,15 @@ export async function handleSources(env: Env): Promise<Response> {
   return json({
     total: servable.length,
     sources: servable.map((r) => {
+      const label = sourceLabel(
+        r.source_id,
+        { status: r.source_status, last_success_utc: r.source_last_success, cadence: r.cadence },
+        unitsBy.get(r.source_id) ?? [],
+        now,
+      );
+      // A paused or retired source with no state row at all still says so (same object shape).
       const hasFreshness =
+        label !== null ||
         r.source_status !== null ||
         r.source_last_success !== null ||
         r.cadence !== null ||
@@ -85,7 +116,9 @@ export async function handleSources(env: Env): Promise<Response> {
           : null,
         freshness: hasFreshness
           ? {
-              status: r.source_status, // null when no source_state row (honest)
+              // The last SUCCESS's status (null when no source_state row), unless the vocabulary
+              // says late / paused / retired (src/freshness.ts).
+              status: label ?? r.source_status,
               last_updated: r.source_last_success, // null when never run (never faked)
               cadence: r.cadence,
               // Newest served observation (MAX series.end_date, stamped at sync

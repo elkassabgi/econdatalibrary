@@ -143,6 +143,16 @@ def validate(reg: dict, expected_count: int | None = None, workflows_root: str |
             # second writer back on the served objects.
             problems.append(f"{sid}: served_by must be one of {sorted(SERVED_BY)}, "
                             f"got {e.get('served_by')!r}")
+        if "rotating" in e:
+            # `rotating: true` declares a budget ROTATOR whose passes end `partial` by design and so never
+            # stamp a success (R231): the public "late" rule (core/freshness_vocab.py) judges it on its
+            # LATEST pass instead - not late while that pass failed nothing and ran within the window.
+            # A declaration that can hide staleness, so it is narrow: boolean true only, never on a
+            # paused source, and tests/test_freshness_vocab.py requires the fetcher to rotate.
+            if e.get("rotating") is not True:
+                problems.append(f"{sid}: rotating must be true (or absent), got {e.get('rotating')!r}")
+            if "paused" in e:
+                problems.append(f"{sid}: rotating and paused together - a paused source does not run")
     if expected_count is not None and len(sources) != expected_count:
         problems.append(f"expected {expected_count} sources, found {len(sources)}")
     return problems
