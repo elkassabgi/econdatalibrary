@@ -149,11 +149,13 @@ def test_a_label_replaces_only_the_first_sentence(G):
     assert DEFAULT_CADENCE in t0 and LABEL_CADENCE not in t0
 
 
-@pytest.mark.parametrize("bad", ["", "   ", "null", "3", "[a, b]", "{x: 1}", "P no longer publishes these series"])
+@pytest.mark.parametrize("bad", ["", "   ", "null", "3", "[a, b]", "{x: 1}", "P no longer publishes these series",
+                                 '""', "'   '"])
 def test_a_label_that_is_not_a_sentence_stops_the_build(G, tmp_path, bad):
     """Matches the label guard's OWN message. A bare match="label" also matched the generic FATAL text ("the
     archival label of every ..."), so a crash in the guard (.strip() on a non-string, [-1] on an empty string)
-    passed as if the guard had fired (AR-359: those two mutants survived)."""
+    passed as if the guard had fired (AR-359: those two mutants survived). '""' and "'   '" are the two inputs
+    that reach the guard as an empty or blank STRING (a bare `label:` is null in YAML, not "")."""
     f = tmp_path / "discontinued.yaml"
     f.write_text(f"sources:\n  - source_id: x\n    publisher: P\n    label: {bad}\n", encoding="utf-8")
     with pytest.raises(SystemExit, match="`label` must be a non-empty sentence"):
