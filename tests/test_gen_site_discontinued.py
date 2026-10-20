@@ -45,15 +45,19 @@ FINAL = "This is the final copy, and it is not updated."
 # 1:1 successor. unctad_tabbapotta: the same indicator is published as a recomputed modern edition under M49 keys.
 # unesco_cltt: 0 of its 34 codes published while the CULTURE theme is alive (the file's own warning: the theme being
 # alive is not our indicators being alive), so only the series-level claim is measured. fao_ew: the probe says
-# AQUASTAT "left FAOSTAT's bulk distribution", which was measured inside FAOSTAT only.
+# AQUASTAT "left FAOSTAT's bulk distribution", which was measured inside FAOSTAT only, so the sentence names FAOSTAT.
+# "most of" (review AR, 2026-10-20): unesco_film's surviving code 220174 holds 123 of 8,527 catalogued series;
+# unesco_clte's 21 surviving codes hold at most 1,557 of 23,868 (the 21 largest codes' total), so "these series"
+# alone was false and "most of these series" is true. unctad_tabbapotta: UNCTAD publishes the indicator as a revised
+# edition, so only "this edition" is no longer published.
 LABELS = {
-    "unesco_film": "UNESCO Institute for Statistics no longer publishes these series.",
-    "unesco_clte": "UNESCO Institute for Statistics no longer publishes these series.",
+    "unesco_film": "UNESCO Institute for Statistics no longer publishes most of these series.",
+    "unesco_clte": "UNESCO Institute for Statistics no longer publishes most of these series.",
     "unesco_cltt": "UNESCO Institute for Statistics no longer publishes these series.",
     "fao_ae": "FAO (FAOSTAT) no longer publishes these series.",
     "fao_af": "FAO (FAOSTAT) no longer publishes these series.",
-    "fao_ew": "FAO (FAOSTAT) no longer publishes these series.",
-    "unctad_tabbapotta": "UNCTAD no longer publishes these series.",
+    "fao_ew": "FAOSTAT no longer publishes these series.",
+    "unctad_tabbapotta": "UNCTAD no longer publishes this edition of these series.",
 }
 DEFAULT_CADENCE = "none &mdash; <em>discontinued by the publisher</em>"
 LABEL_CADENCE = "none &mdash; <em>archival copy</em>"

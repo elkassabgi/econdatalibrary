@@ -147,7 +147,7 @@ sources:
 
   - source_id: unesco_film
     publisher: UNESCO Institute for Statistics
-    label: UNESCO Institute for Statistics no longer publishes these series.
+    label: UNESCO Institute for Statistics no longer publishes most of these series.
     dataset: Feature film statistics
     measured: 2026-08-07
     probe: >-
@@ -163,7 +163,7 @@ sources:
 
   - source_id: unesco_clte
     publisher: UNESCO Institute for Statistics
-    label: UNESCO Institute for Statistics no longer publishes these series.
+    label: UNESCO Institute for Statistics no longer publishes most of these series.
     dataset: Culture employment
     measured: 2026-08-07
     probe: >-
@@ -215,7 +215,7 @@ sources:
 
   - source_id: fao_ew
     publisher: FAO (FAOSTAT)
-    label: FAO (FAOSTAT) no longer publishes these series.
+    label: FAOSTAT no longer publishes these series.
     dataset: Environment - Water withdrawal shares
     measured: 2026-08-08
     probe: >-
@@ -1133,7 +1133,7 @@ sources:
       data.
   - source_id: unctad_tabbapotta
     publisher: UNCTAD
-    label: UNCTAD no longer publishes these series.
+    label: UNCTAD no longer publishes this edition of these series.
     dataset: >-
       Trade in biotrade products, percentage of total trade - Annual (29,358 series, 2010-2020,
       reporter x partner-group)
