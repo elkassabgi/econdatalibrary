@@ -93,6 +93,28 @@ def test_a_discontinued_source_stays_served():
         f"api/worker/src/util.ts - users would get 501 for archival data that no fetcher can rebuild")
 
 
+def test_the_trademerchgr_probe_carries_both_controls_and_its_receipt():
+    """R426: a probe someone else can re-run. The generic check above passes on ANY URL in the text, so this
+    entry's probe could lose the withdrawn report's own URL and still pass it. Pin the three URLs that make the
+    verdict re-checkable (the report, the live sibling, the catalogue), the invented-name negative control, and
+    the saved receipt holding HTTP status and body."""
+    import json
+    e = {x["source_id"]: x for x in _entries()}["unctad_trademerchgr"]
+    probe = " ".join(str(e["probe"]).split())
+    for url in ("https://unctadstat-api.unctad.org/api/reportMetadata/US.TradeMerchGR/en",
+                "https://unctadstat-api.unctad.org/api/reportMetadata/US.TradeMerchTotal/en",
+                "https://unctadstat-api.unctad.org/api/datacenter/en"):
+        assert url in probe, f"the probe no longer names {url}"
+    assert "invented report name" in probe and "Negative control" in probe
+    rec = json.load(open(os.path.join(ROOT, "docs", "evidence", "unctad_trademerchgr_withdrawal_20261020.json"),
+                         encoding="utf-8"))
+    by_url = {p["url"]: p for p in rec["probes"]}
+    gr = by_url["https://unctadstat-api.unctad.org/api/reportMetadata/US.TradeMerchGR/en"]
+    assert gr["http_status"] == 400 and "report instance not found" in gr["body_verbatim"]
+    assert by_url["https://unctadstat-api.unctad.org/api/reportMetadata/US.TradeMerchTotal/en"]["http_status"] == 200
+    assert [r["reportName"] for r in rec["catalogue_diff"]["removed"]] == ["US.TradeMerchGR"]
+
+
 def test_a_coverage_claim_names_a_store_that_is_still_served():
     """unctad_mttgra's entry keeps its store because 'only 223 of 351 series are covered by trademerchgr'.
     That sentence is true only while unctad_trademerchgr is served with the same data. If someone retires the

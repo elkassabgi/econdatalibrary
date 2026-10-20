@@ -68,6 +68,6 @@
    "US.GNI"
   ]
  },
- "withdrawal_window": "between 2026-10-01 and 2026-10-08 - inferred from our own run history, not stated by UNCTAD: last successful run 2026-10-01T22:27Z (no_change); first failing run 2026-10-08 ~12:59Z (it crashed before failures were recorded in state); first recorded transient_fail in the workstation state 2026-10-10T03:57Z",
+ "withdrawal_window": "between 2026-10-01 and 2026-10-08 - inferred from our own run history, not stated by UNCTAD: last successful run 2026-10-01T22:27Z (no_change); the first cloud daily run that probed it (started 2026-10-08T12:59Z) got the HTTP 400 at 13:09:00Z and crashed before failures were recorded in state; first recorded transient_fail in the workstation state 2026-10-10T03:57Z",
  "independent_review": "AR-354 measured the same answers 2026-10-20T02:10-02:16Z with a different invented name (and the /fr path of the withdrawn report: same 400)."
 }

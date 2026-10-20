@@ -1184,7 +1184,8 @@ sources:
       (US.IctUseTotal). UNCTAD labels its other withdrawals in place with a "DISCONTINUED - " title prefix
       (8 reports today, e.g. US.GNI, US.CommodityPrice_A); US.TradeMerchGR got no such label - it was
       removed outright. UNCTAD gives no date; our runs bracket the withdrawal between 2026-10-01 (last
-      successful run, 22:27Z) and 2026-10-08 (the first cloud daily run that failed on it, 12:59Z). The
+      successful run, 22:27Z) and 2026-10-08 (the first cloud daily run that probed it got the 400 at
+      13:09Z; that run started 12:59Z and crashed before recording state, so state.db does not show it). The
       workstation state lineage then booked transient_fail on it 19 times from 2026-10-10T03:57Z to
       2026-10-19T22:40Z. Receipt of all four probes, with HTTP status and body:
       docs/evidence/unctad_trademerchgr_withdrawal_20261020.json (the catalogue saved beside it as
