@@ -146,7 +146,7 @@ def validate(reg: dict, expected_count: int | None = None, workflows_root: str |
         if "rotating" in e:
             # `rotating: true` declares a budget ROTATOR whose passes end `partial` by design and so never
             # stamp a success (R231): the public "late" rule (core/freshness_vocab.py) judges it on its
-            # LATEST pass instead - not late while that pass failed nothing and ran within the window.
+            # LATEST pass instead - not late while that pass refreshed it and ran within the window.
             # A declaration that can hide staleness, so it is narrow: boolean true only, never on a
             # paused source, and tests/test_freshness_vocab.py requires the fetcher to rotate.
             if e.get("rotating") is not True:

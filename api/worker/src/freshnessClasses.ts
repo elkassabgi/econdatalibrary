@@ -3,7 +3,7 @@
 // updater/discontinued.yaml, tools/audit_schedule_coverage.py, updater/health.py,
 // updater/strategies/base.py and updater/strategies/fetchers/statcan.py; the rule is
 // core/freshness_vocab.py, mirrored in src/freshness.ts.
-export const FRESHNESS_CLASSES_TAG = "fc-edd38259684e";
+export const FRESHNESS_CLASSES_TAG = "fc-635bc6a7b25e";
 // updater.health.SLA_TOLERANCE: a source is late past this many cadence periods since its last success.
 export const SLA_TOLERANCE = 2;
 // updater.strategies.base.CADENCE_DAYS - the health gate's clock (irregular = 7), NOT util.ts's
@@ -350,7 +350,7 @@ export const DISCONTINUED: ReadonlySet<string> = new Set<string>([
   "unesco_film",
   "unesco_inno",
 ]);
-// registry `rotating: true`: judged on its latest pass (a pure budget deferral is current).
+// registry `rotating: true`: judged on its latest pass (one that refreshed the source counts as current).
 export const ROTATING: ReadonlySet<string> = new Set<string>([
   "ecb",
 ]);
@@ -360,11 +360,8 @@ export const LANE: ReadonlySet<string> = new Set<string>([
 ]);
 // statcan.LANE_CURRENT_PATTERN: the reporter verdicts that say the lane is current.
 export const LANE_CURRENT_RE = new RegExp("^statcan: (?:lane current - |\\d+ cube\\(s\\) QUARANTINED |\\d+ merged cube\\(s\\) whose served ids |\\d+ released cube\\(s\\) not held, the oldest since )");
-// updater.health._DEFERRAL_BASE: finalize()'s pure budget-deferral sentence, anchored.
-export const DEFERRAL_RE = new RegExp("^[1-9]\\d* sub-unit\\(s\\) attempted, none failed; \\d+ (?:deferred\\ by\\ budget,\\ not\\ reached\\ in\\ this\\ pass|deferred\\ by\\ budget\\ and\\ taken\\ next\\ tick)(?: \\[[^\\]]*\\])?$");
-// updater.strategies.base.NON_FAILURE_NOTES: tails health._deferral_only drops before matching.
-export const NON_FAILURE_NOTES: readonly string[] = [
-  "csv coverage note:",
-  "not hosted note:",
-  "rotation note:",
-];
+// core/freshness_vocab.py ROTATION_*: the openings of finalize()'s notes that say a declared rotator's
+// pass refreshed the source (a clean deferral; x/N transient-failed with 2x < N; a completed fetch).
+export const ROTATION_DEFERRAL_RE = new RegExp("^[1-9]\\d* sub-unit\\(s\\) attempted, none failed; \\d+ deferred by budget");
+export const ROTATION_SOME_FAILED_RE = new RegExp("^([1-9]\\d*)/([1-9]\\d*) sub-unit\\(s\\) transient-failed; will retry");
+export const ROTATION_COMPLETED_RE = new RegExp("^(?:\\+\\d+ new rows|no new rows)(?:;|$)");

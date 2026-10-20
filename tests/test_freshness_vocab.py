@@ -127,6 +127,29 @@ def test_a_rotating_source_has_a_rotating_fetcher(cls):
         assert "rotate_after(" in src and "load_rotation(" in src and "deferred_unit(" in src, sid
 
 
+def test_the_rotation_openings_are_what_finalize_writes(cls):
+    """ROTATION_* are matched against stored notes; they must be the openings finalize() really emits."""
+    from updater.strategies.fetchers._common import Tally, finalize
+
+    def note(build):
+        t = Tally()
+        build(t)
+        return finalize(t, 10, "2026-10-01", source="zz", empty_window_floor=1000).error
+
+    deferral = note(lambda t: (t.added_unit(3), t.empty_unit(), t.deferred_unit("x: budget spent")))
+    some = note(lambda t: (t.added_unit(3), t.empty_unit(), t.transient_unit("y: HTTP 504")))
+    done = note(lambda t: t.added_unit(5))
+    quiet = note(lambda t: t.empty_unit())
+    assert re.match(cls["rotation_deferral"], deferral), deferral
+    m = re.match(cls["rotation_some_failed"], some)
+    assert m and (m.group(1), m.group(2)) == ("1", "3"), some
+    assert re.match(cls["rotation_completed"], done) and re.match(cls["rotation_completed"], quiet), (done, quiet)
+    assert fv.rotation_pass_refreshed(deferral, cls) and fv.rotation_pass_refreshed(some, cls)
+    # NEGATIVE: a pass whose every attempted sub-unit failed is not a refresh
+    allfail = note(lambda t: (t.transient_unit("a"), t.transient_unit("b")))
+    assert not fv.rotation_pass_refreshed(allfail, cls), allfail
+
+
 def test_the_registry_refuses_a_bad_rotating_value():
     from updater import registry
     base = {"source_id": "zz", "strategy": "extend_by_date", "cadence": "daily", "live": True}

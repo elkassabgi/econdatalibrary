@@ -10,9 +10,10 @@
 //   late     the source keeps running but its last full success is older than 2 x cadence
 //            (base.CADENCE_DAYS x health.SLA_TOLERANCE, `>` as health's RED-SLA). Source grain: the
 //            /v1/sources status and every unit row of the source whose stored status is ok, no_change,
-//            partial or transient_fail. NOT late: a `rotating: true` source whose latest pass is a pure
-//            budget deferral (health._deferral_only) and a `served_by: lane` source whose reporter says
-//            the lane is current - each only while that pass ran within the same window.
+//            partial or transient_fail. NOT late: a `rotating: true` source whose latest pass refreshed
+//            it (a clean deferral, under half of the attempted sub-units failed, or a completed fetch) and a
+//            `served_by: lane` source whose reporter says the lane is current - each only while that pass
+//            ran within the same window.
 //   paused   registry `paused:` (never a state row: nothing to delete on un-pause). No next update.
 //   retired  not discontinued, not paused, and no run mechanism names it (RUN_BY). No next update.
 // Precedence: discontinued > paused > retired > late > what state holds. Field shapes do not change:
@@ -20,8 +21,8 @@
 // ---------------------------------------------------------------------------
 
 import {
-  DEFERRAL_RE, DISCONTINUED, LANE, LANE_CURRENT_RE, LATE_CADENCE_DAYS, NON_FAILURE_NOTES, PAUSED,
-  ROTATING, RUN_BY, SLA_TOLERANCE,
+  DISCONTINUED, LANE, LANE_CURRENT_RE, LATE_CADENCE_DAYS, PAUSED, ROTATING, ROTATION_COMPLETED_RE,
+  ROTATION_DEFERRAL_RE, ROTATION_SOME_FAILED_RE, RUN_BY, SLA_TOLERANCE,
 } from "./freshnessClasses.ts";
 
 export const LATE = "late";
@@ -56,13 +57,15 @@ export interface FreshnessClasses {
   rotating: ReadonlySet<string>;
   lane: ReadonlySet<string>;
   laneCurrent: RegExp;
-  deferral: RegExp;
-  nonFailureNotes: readonly string[];
+  rotationDeferral: RegExp;
+  rotationSomeFailed: RegExp;
+  rotationCompleted: RegExp;
 }
 export const CLASSES: FreshnessClasses = {
   slaTolerance: SLA_TOLERANCE, cadenceDays: LATE_CADENCE_DAYS, paused: PAUSED, runBy: RUN_BY,
   discontinued: DISCONTINUED, rotating: ROTATING, lane: LANE, laneCurrent: LANE_CURRENT_RE,
-  deferral: DEFERRAL_RE, nonFailureNotes: NON_FAILURE_NOTES,
+  rotationDeferral: ROTATION_DEFERRAL_RE, rotationSomeFailed: ROTATION_SOME_FAILED_RE,
+  rotationCompleted: ROTATION_COMPLETED_RE,
 };
 
 function ts(v: string | null | undefined): number | null {
@@ -78,12 +81,13 @@ function over(v: string | null | undefined, days: number, now: number): boolean 
   return (now - t) / 86_400_000 > days;
 }
 
-/** health._deferral_only for ONE partial unit's note: drop the non-failure tails segment by segment, and
- *  the remainder must be finalize()'s anchored deferral sentence. */
-function cleanDeferral(note: string, c: FreshnessClasses): boolean {
-  const rest = note.split("; ").filter((seg) => !c.nonFailureNotes.some((p) => seg.startsWith(p)))
-    .join("; ").trim();
-  return c.deferral.test(rest);
+/** A declared rotator's partial pass refreshed the source (core/freshness_vocab.py ROTATION_*): a clean
+ *  budget deferral, a pass where fewer than half of the attempted sub-units transient-failed, or a completed
+ *  fetch the CSV phase demoted. Judged on the note's opening only. */
+export function rotationPassRefreshed(note: string, c: FreshnessClasses = CLASSES): boolean {
+  if (c.rotationDeferral.test(note) || c.rotationCompleted.test(note)) return true;
+  const m = c.rotationSomeFailed.exec(note);
+  return m !== null && Number(m[1]) * 2 < Number(m[2]);
 }
 
 /** The declared source's LATEST pass says it is current, and it ran within the window. */
@@ -95,7 +99,7 @@ function latestPassCurrent(kind: "rotating" | "lane", units: UnitFresh[], window
     if (UNIT_OK.has(st)) continue;
     if (st !== "partial") return false;
     const note = String(u.last_error ?? "");
-    if (kind === "lane" ? !c.laneCurrent.test(note) : !cleanDeferral(note, c)) return false;
+    if (kind === "lane" ? !c.laneCurrent.test(note) : !rotationPassRefreshed(note, c)) return false;
   }
   let newest: number | null = null;
   for (const u of units) {

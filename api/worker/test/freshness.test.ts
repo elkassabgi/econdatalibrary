@@ -6,7 +6,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { CLASSES, LATE, needsUnits, promisesNextUpdate, sourceLabel, unitStatus } from "../src/freshness.ts";
+import {
+  CLASSES, LATE, needsUnits, promisesNextUpdate, rotationPassRefreshed, sourceLabel, unitStatus,
+} from "../src/freshness.ts";
 import { DISCONTINUED, LANE, PAUSED, ROTATING, RUN_BY } from "../src/freshnessClasses.ts";
 import { runCases } from "./_freshness_runner.ts";
 
@@ -30,12 +32,25 @@ test("the lane grammar matches exactly the verdicts that say the lane is current
   assert.ok(verdicts.verdicts.some((v: { current: boolean }) => !v.current), "control: some are not");
 });
 
-test("the deferral grammar is health's: clean deferral yes, a transient pass or a zero-attempt pass no", () => {
-  assert.ok(CLASSES.deferral.test("164 sub-unit(s) attempted, none failed; 376 deferred by budget, not reached in this pass"));
-  assert.ok(CLASSES.deferral.test("1 sub-unit(s) attempted, none failed; 2 deferred by budget and taken next tick [a, b]"));
-  assert.ok(!CLASSES.deferral.test("0 sub-unit(s) attempted, none failed; 540 deferred by budget, not reached in this pass"));
-  assert.ok(!CLASSES.deferral.test("2/68 sub-unit(s) transient-failed; will retry"));
-  assert.ok(!CLASSES.deferral.test("164 sub-unit(s) attempted, none failed; 376 deferred by budget, not reached in this pass; csv_derive failed"));
+test("a rotator's pass refreshed: clean deferral, under half failed, completed fetch - and nothing else", () => {
+  for (const yes of [
+    "164 sub-unit(s) attempted, none failed; 376 deferred by budget, not reached in this pass",
+    "1 sub-unit(s) attempted, none failed; 2 deferred by budget and taken next tick [a, b]; csv coherence unmet: 3",
+    "2/68 sub-unit(s) transient-failed; will retry [CSEC: HTTP 504]",
+    "33/67 sub-unit(s) transient-failed; will retry",
+    "+15809 new rows; csv coherence unmet: 50000 changed series_keys",
+    "no new rows",
+  ]) assert.ok(rotationPassRefreshed(yes), yes);
+  for (const no of [
+    "0 sub-unit(s) attempted, none failed; 540 deferred by budget, not reached in this pass",
+    "34/68 sub-unit(s) transient-failed; will retry",
+    "68/68 sub-unit(s) transient-failed; will retry",
+    "ecb: 1/188 sub-unit(s) returned 200 but parsed 0 rows from a non-trivial body",
+    "UNEXPECTED:IncompleteRead(266234 bytes read)",
+    "ecb/_all exceeded its 45-minute hard limit and was interrupted",
+    "no new rowsX",
+    "",
+  ]) assert.ok(!rotationPassRefreshed(no), no);
 });
 
 test("today's production classes: ecb rotates, statcan is a lane, insee_melodi is paused, ksh is retired", () => {

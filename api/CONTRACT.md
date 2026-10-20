@@ -343,8 +343,8 @@ diverged, these are the pinned canonical shapes (the verify pass enforces them):
     `next_update_expected` (already past) are unchanged. A source that has NEVER succeeded is not labelled
     late: there is no success to date (its status stays null, or the unit's own status). Not late, because
     their currency is judged on their LATEST pass, which must have run within the same window: a registry
-    `rotating: true` source whose latest pass failed nothing and was stopped only by its budget (today
-    `ecb`), and a `served_by: lane` source whose reporter's latest verdict says the lane is current (today
+    `rotating: true` source whose latest pass refreshed it - a budget deferral that failed nothing, a pass
+    in which fewer than half of the attempted sub-units failed, or a completed fetch (today `ecb`) - and a `served_by: lane` source whose reporter's latest verdict says the lane is current (today
     `statcan`).
   - `"paused"` — the registry marks the source `paused:` (updates on hold by decision; the source's page
     gives the reason). From the registry, never from a state row. `next_update_expected: null`. A paused

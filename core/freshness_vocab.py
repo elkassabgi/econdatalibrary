@@ -12,8 +12,11 @@ and promised a next update for sources nothing runs any more (ksh: 2027-06-24). 
            /v1/last-updates whose stored status is ok / no_change / partial / transient_fail.
            Two exceptions, for sources whose currency a success stamp cannot show, both DECLARED in the
            registry and both judged on the LATEST pass, which must have run within the same window:
-             * `rotating: true` (ecb): a budget rotator. Current while every unit is ok / no_change or a
-               pure budget deferral - health._deferral_only, the gate's own ROTATING test.
+             * `rotating: true` (ecb): a budget rotator. Current while its latest pass REFRESHED: a budget
+               deferral that failed nothing, a pass in which fewer than half of the attempted sub-units
+               transient-failed, or a completed fetch - whatever CSV-phase tail follows (ROTATION_* below).
+               Late when that pass died whole (transient_fail), refused structurally, failed half or more
+               of what it attempted, or ran outside the window.
              * `served_by: lane` (statcan): current while the reporter's latest verdict says the lane is
                current (updater/strategies/fetchers/statcan.py LANE_CURRENT_PATTERN).
            The grammar alone is not enough and is not used alone: cso's latest note is a pure deferral
@@ -56,12 +59,29 @@ LATE_FROM_SOURCE = ("ok", "no_change")
 LATE_FROM_UNIT = ("ok", "no_change", "partial", "transient_fail")
 _UNIT_OK = ("ok", "no_change")
 
+# A DECLARED ROTATOR'S PASS REFRESHED THE SOURCE (registry `rotating: true`). The openings of the notes
+# updater/strategies/fetchers/_common.finalize() writes - tests/test_freshness_vocab.py runs finalize() and
+# pins each one - matched at the START of the stored note only, so the CSV phase's tails do not decide it.
+#
+# WHY NOT health._deferral_only's exact grammar (the first version of this rule, review R1649): replayed hour
+# by hour on ecb's passes 2026-09-20..10-20 it read late 146 of 736 hours (19.8%) - 101 of them after a pass
+# where 1 or 2 of 30-340 files answered HTTP 504, 39 after a clean deferral whose note carried a "csv
+# coherence unmet" tail. Neither says ecb stopped refreshing: a failed file is retried on the next pass, and
+# coherence-unmet names changed store keys with no catalogue row (ecb is catalog_scope: subset - 35 served
+# ids) - a CSV-phase signal the health gate keeps showing as ATTENTION. The source is late when its pass
+# REFRESHED NOTHING worth the name: a whole-pass crash (status transient_fail), a structural refusal, half
+# or more of the attempted sub-units failing, or no pass inside the window. "Half" is a choice, not a
+# measurement: ecb's failing passes failed 1-2 sub-units (2/68, 2/30, 1/134), a refusing upstream fails all.
+ROTATION_DEFERRAL = r"^[1-9]\d* sub-unit\(s\) attempted, none failed; \d+ deferred by budget"
+ROTATION_SOME_FAILED = r"^([1-9]\d*)/([1-9]\d*) sub-unit\(s\) transient-failed; will retry"
+ROTATION_COMPLETED = r"^(?:\+\d+ new rows|no new rows)(?:;|$)"
+
 
 def classes() -> dict:
     """Everything the rule needs that is not in a state row, read from the code (never typed here).
 
     {"sla_tolerance", "cadence_days", "paused": {sid: reason}, "run_by", "discontinued", "lane", "rotating",
-     "lane_current": regex, "deferral": regex, "non_failure_notes": prefixes}
+     "lane_current": regex, "rotation_deferral" / "rotation_some_failed" / "rotation_completed": regexes}
     """
     import yaml
 
@@ -104,8 +124,9 @@ def classes() -> dict:
         "lane": keep(lane),
         "rotating": keep(rotating),
         "lane_current": statcan.LANE_CURRENT_PATTERN,
-        "deferral": health._DEFERRAL_BASE.pattern,
-        "non_failure_notes": list(base.NON_FAILURE_NOTES),
+        "rotation_deferral": ROTATION_DEFERRAL,
+        "rotation_some_failed": ROTATION_SOME_FAILED,
+        "rotation_completed": ROTATION_COMPLETED,
     }
 
 
@@ -127,17 +148,20 @@ def _over(ts, days: float, now: dt.datetime) -> bool | None:
     return (now - t).total_seconds() / 86400.0 > days
 
 
-def _clean_deferral(note: str, cls: dict) -> bool:
-    """health._deferral_only's test for ONE partial unit's note: drop the non-failure tails segment by segment,
-    and the rest must be the anchored deferral sentence finalize() writes."""
-    base = "; ".join(seg for seg in str(note or "").split("; ")
-                     if not seg.startswith(tuple(cls["non_failure_notes"]))).strip()
-    return re.match(cls["deferral"], base) is not None
+def rotation_pass_refreshed(note: str, cls: dict) -> bool:
+    """A declared rotator's partial pass refreshed the source (see ROTATION_* above): a clean deferral, a pass
+    where fewer than half of the attempted sub-units transient-failed, or a completed fetch the CSV phase
+    demoted. Judged on the note's opening only."""
+    note = str(note or "")
+    if re.match(cls["rotation_deferral"], note) or re.match(cls["rotation_completed"], note):
+        return True
+    m = re.match(cls["rotation_some_failed"], note)
+    return bool(m) and int(m.group(1)) * 2 < int(m.group(2))
 
 
 def latest_pass_current(kind: str, units: list[dict], window_days: float, now: dt.datetime, cls: dict) -> bool:
     """The declared source's LATEST pass says it is current (kind "rotating" or "lane"), and it ran within the
-    window. Every unit must say so; a unit that failed anything makes the source late."""
+    window. Every unit must say so."""
     if not units:
         return False
     for u in units:
@@ -150,7 +174,7 @@ def latest_pass_current(kind: str, units: list[dict], window_days: float, now: d
         if kind == "lane":
             if not re.match(cls["lane_current"], note):
                 return False
-        elif not _clean_deferral(note, cls):
+        elif not rotation_pass_refreshed(note, cls):
             return False
     attempts = [u.get("last_attempt_utc") for u in units if _ts(u.get("last_attempt_utc"))]
     if not attempts:
