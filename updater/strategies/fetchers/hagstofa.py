@@ -58,8 +58,8 @@ import requests
 
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
-from ._common import (Deadline, Tally, finalize, load_rotation, rotate_after,
-                      sane_since, save_rotation)
+from ._common import (Deadline, Tally, finalize, load_rotation, retry_after_seconds,
+                      rotate_after, sane_since, save_rotation)
 
 import sys
 # The shared value-first PxWeb time-axis resolver lives in this repo's core/ package
@@ -86,6 +86,34 @@ TRAIL_YEARS = 5        # trailing-window fallback when a boundary is corrupt/far
 LABELS_FILE = "_labels.json"          # {table prefix: {dimension: {code: label}}} (R1124)
 WITHDRAWN_FILE = "_withdrawn.json"
 WITHDRAWN_RECHECK_DAYS = 30
+
+# THE PASS MUST END INSIDE ITS BUDGET (2026-10-19). 10 of the 12 runs from 2026-10-02 to 10-16 were
+# killed by the orchestrator's 45-minute limit although the budget below is 30 minutes. Measured from
+# the run logs: the budget was checked only at the top of each DATABASE; Ibuar (529 tables) ended at
+# ~15 min, so Samfelag (736 tables, ~26-28 min with its table-tree search) started and was still being
+# fetched at 45 min - ~450 tables after the budget was spent at ~31 min. Its rows were never merged,
+# and the rotation bookmark, saved only at the end of update(), was never written, so the next run took
+# the same path to the same kill (8 kills in a row, 10-10 to 10-15). Now: the budget clock starts at
+# update() entry, it is checked before EVERY table, the bookmark is at TABLE grain and is saved after
+# every merge, and every request and every wait is cut to the budget left.
+BUDGET_MIN = 30.0             # HAGSTOFA_BUDGET_MIN overrides; the unit window can only lower it
+HARD_MARGIN_MIN = 10.0        # kept between the budget and the unit's hard limit: the last request,
+                              # one merge (<= 105 s measured on Samfelag's tail + merge, 10-16), the
+                              # sidecar writes and finalize
+REQUEST_TIMEOUT_FLOOR_S = 5   # a request timeout is cut to the budget left, but never below this
+RATE_WINDOW_S = 10            # the publisher's rate window: GET /pxen/api/v1/en/?config answered
+                              # {"maxCalls":100,"timeWindow":10} on 2026-10-19; a 429 with no
+                              # Retry-After waits one window (+1 s)
+# A table-tree search (both language sites, ~395 listings each) is started only with this much budget
+# left. Measured: the search took ~13 min on 2026-10-03 (tables 50 -> 130 of Atvinnuvegir, 7.3 -> 22.2
+# min) and was still running 13.0-13.5 min after it started when the budget cut it on 10-15. Started
+# later than this it is cut, nothing is cached, and the whole search repeats on every pass.
+TREE_SEARCH_MIN = 15.0
+THROTTLE_STREAK_STOP = 2      # this many tables in a row throttled out (HTTP 429 on every try) stop the
+                              # pass, as ssb #177 does: the rest is deferred, fetched rows still merge
+RETRY_AFTER_STOP_S = 60       # a 429 asking for longer than this stops the pass at once (ssb #177)
+BUDGET_FLOOR_MIN = 2.0        # a positive window too short for the margin still gets this budget
+                              # (capped at half the window), never a silent zero
 
 
 # --------------------------------------------------------------------------- #
@@ -317,18 +345,136 @@ def _session() -> requests.Session:
     return s
 
 
+class BudgetCut(TransientError):
+    """The budget ran out before or during a request: the request was not started, its timeout had
+    been cut to the budget left and it timed out, or a retry wait was longer than the budget left.
+    Nothing broke. update() books the table DEFERRED and ends the pass as a budget stop (R303), never
+    as a failed table. A TransientError subclass, so code that only knows TransientError still treats
+    it as "retrying later can help"."""
+
+
+class Throttled(TransientError):
+    """HTTP 429 on every try of one request, or a Retry-After longer than RETRY_AFTER_STOP_S
+    (`stop_now`). A failed table (retrying later can help); update() counts it towards
+    THROTTLE_STREAK_STOP, and stops the pass at once on `stop_now`."""
+
+    def __init__(self, msg: str, stop_now: bool = False):
+        super().__init__(msg)
+        self.stop_now = stop_now
+
+
+def _stat(sess, key: str, n: int = 1) -> None:
+    st = getattr(sess, "_hagstofa_stats", None)
+    if isinstance(st, dict):
+        st[key] = st.get(key, 0) + n
+
+
+def _dl_left_s(dl):
+    """Seconds left on a Deadline, or None when it does not say (no deadline, or a test fake)."""
+    budget, t0 = getattr(dl, "budget", None), getattr(dl, "t0", None)
+    if not isinstance(budget, (int, float)) or not isinstance(t0, (int, float)):
+        return None
+    return budget - (time.monotonic() - t0)
+
+
+def _left_s(sess):
+    return _dl_left_s(getattr(sess, "_hagstofa_dl", None))
+
+
+def _timeout(sess, t: float) -> tuple[float, bool]:
+    """(timeout to use, cut). No request STARTS after the budget is spent; a timeout longer than the
+    budget left is cut to it (never below REQUEST_TIMEOUT_FLOOR_S), so a hung request near the end of
+    the budget cannot run into the orchestrator's kill. The old 90/120 s x 4 attempts plus back-off
+    could take ~8 minutes on one table. RESIDUAL: requests' timeout bounds each socket operation, not
+    the whole response, so a body that trickles in can still outlast it."""
+    left = _left_s(sess)
+    if left is None:
+        return t, False
+    if left <= 0:
+        raise BudgetCut("budget spent before the request could start")
+    if left < t:
+        return max(REQUEST_TIMEOUT_FLOOR_S, left), True
+    return t, False
+
+
+def _wait(sess, seconds: float, what: str) -> None:
+    """Sleep before a retry, unless the wait is longer than the budget left: then BudgetCut."""
+    left = _left_s(sess)
+    if left is not None and seconds >= left:
+        raise BudgetCut(f"{what}: a {seconds:.0f} s retry wait is longer than the {max(left, 0):.0f} s "
+                        f"budget left")
+    time.sleep(seconds)
+
+
+def _pause(sess) -> None:
+    """The polite gap between calls, never past the budget."""
+    left = _left_s(sess)
+    time.sleep(RATE if left is None else max(0.0, min(RATE, left)))
+
+
+def _wait_429(sess, r, what: str) -> None:
+    """HTTP 429: honour Retry-After (both RFC 9110 forms, clamped to [1, 120] + 1 s by the shared
+    helper); without it wait one rate window (+1 s). The old code retried after 1, 2 and 4 s, inside
+    the publisher's 10-second window."""
+    _stat(sess, "http429")
+    h = getattr(r, "headers", None) or {}
+    print(f"[{SOURCE}] HTTP 429 on {what}: Retry-After={h.get('Retry-After')!r}", flush=True)
+    raw = _raw_retry_after_s(r)
+    if raw is not None and raw > RETRY_AFTER_STOP_S:
+        # The shared helper clamps to 120 s, so "Retry-After: 3600" would be slept as 121 s and retried
+        # inside the server's window (ssb #177, AR-352 #4). Stop the pass instead of waiting it out.
+        raise Throttled(f"{what}: HTTP 429 with Retry-After {raw} s", stop_now=True)
+    _wait(sess, retry_after_seconds(r, default=RATE_WINDOW_S), what)
+
+
+def _raw_retry_after_s(resp):
+    """The server's Retry-After in seconds, UNCLAMPED (both RFC 9110 forms), or None."""
+    h = getattr(resp, "headers", None) or {}
+    raw = str(h.get("Retry-After") or "").strip()
+    if not raw:
+        return None
+    if raw.isdigit():
+        return int(raw)
+    try:
+        from email.utils import parsedate_to_datetime
+        when = parsedate_to_datetime(raw)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=dt.timezone.utc)
+        return int((when - dt.datetime.now(dt.timezone.utc)).total_seconds())
+    except Exception:                                        # noqa: BLE001
+        return None
+
+
 def _get_meta(sess, url):
     """GET PxWeb table metadata. 200 -> dict; 404/400 -> None (table retired/empty);
-    timeout/5xx/429/network/non-JSON -> TransientError after the retry budget."""
+    timeout/5xx/429/network/non-JSON -> TransientError after the retry budget; the budget running
+    out first -> BudgetCut."""
     last = None
     for a in range(MAX_ATTEMPTS):
+        to, cut = _timeout(sess, TIMEOUT)
+        _stat(sess, "requests")
         try:
-            r = sess.get(url, timeout=TIMEOUT)
-        except (requests.Timeout, requests.ConnectionError) as e:
+            r = sess.get(url, timeout=to)
+        except requests.Timeout as e:
+            _stat(sess, "timeouts")
+            if cut:
+                raise BudgetCut(f"hagstofa GET {url}: timed out after {to:.0f} s, cut to the budget left") from e
             last = str(e)[:120]
             if a == MAX_ATTEMPTS - 1:
                 raise TransientError(f"hagstofa GET {url}: {last}")
-            time.sleep(min(2 ** a, 20)); continue
+            _wait(sess, min(2 ** a, 20), f"GET {url}"); continue
+        except requests.ConnectionError as e:
+            if cut:
+                # requests raises ConnectionError, not Timeout, for a read timeout while the BODY downloads
+                # (models.iter_content, review R1636): with the timeout cut to the budget left it is the
+                # budget running out, exactly like a cut Timeout - never a failed table
+                _stat(sess, "timeouts")
+                raise BudgetCut(f"hagstofa GET {url}: connection ended after a timeout cut to the budget "
+                                f"left ({to:.0f} s)") from e
+            last = str(e)[:120]
+            if a == MAX_ATTEMPTS - 1:
+                raise TransientError(f"hagstofa GET {url}: {last}")
+            _wait(sess, min(2 ** a, 20), f"GET {url}"); continue
         if r.status_code == 200:
             try:
                 return r.json()
@@ -336,28 +482,48 @@ def _get_meta(sess, url):
                 last = "bad json"
                 if a == MAX_ATTEMPTS - 1:
                     raise TransientError(f"hagstofa GET {url}: {last}")
-                time.sleep(min(2 ** a, 20)); continue
+                _wait(sess, min(2 ** a, 20), f"GET {url}"); continue
         if r.status_code in (400, 404):
             return None
-        if r.status_code in (429, 500, 502, 503, 504):
+        if r.status_code == 429:
+            last = "HTTP 429"
+            if a == MAX_ATTEMPTS - 1:
+                raise Throttled(f"hagstofa GET {url}: HTTP 429 after {MAX_ATTEMPTS} tries")
+            _wait_429(sess, r, f"GET {url}"); continue
+        if r.status_code in (500, 502, 503, 504):
+            _stat(sess, "http5xx")
             last = f"HTTP {r.status_code}"
             if a == MAX_ATTEMPTS - 1:
                 raise TransientError(f"hagstofa GET {url}: {last}")
-            time.sleep(min(2 ** a, 30)); continue
+            _wait(sess, min(2 ** a, 30), f"GET {url}"); continue
         raise DefinitiveError(f"hagstofa GET {url}: HTTP {r.status_code}")
     raise TransientError(f"hagstofa GET {url}: {last}")
 
 
 def _listing(sess, url):
     """One PxWeb folder listing, or None when it could not be READ (network, non-200, not a
-    non-empty JSON list). 429 is waited out a few times, as _get_meta does."""
+    non-empty JSON list). 429 is waited out a few times (Retry-After honoured). A timeout that the
+    BUDGET cut short, or a wait longer than the budget left, is BudgetCut - never "unreadable",
+    which would read as a structural break (review of 2026-10-19)."""
     for a in range(4):
+        to, cut = _timeout(sess, TIMEOUT)
+        _stat(sess, "requests")
+        _stat(sess, "listings")
         try:
-            r = sess.get(url, timeout=TIMEOUT)
-        except requests.RequestException:
+            r = sess.get(url, timeout=to)
+        except requests.Timeout as e:
+            _stat(sess, "timeouts")
+            if cut:
+                raise BudgetCut(f"listing {url}: timed out after {to:.0f} s, cut to the budget left") from e
+            return None
+        except requests.RequestException as e:
+            if cut:
+                # a body read timeout is a ConnectionError in requests (review R1636): budget, not unreadable
+                _stat(sess, "timeouts")
+                raise BudgetCut(f"listing {url}: connection ended after a timeout cut to the budget left") from e
             return None
         if r.status_code == 429 and a < 3:
-            time.sleep(30)
+            _wait_429(sess, r, f"listing {url}")
             continue
         if r.status_code != 200:
             return None
@@ -392,6 +558,9 @@ def _table_tree(sess, base=None, dl=None):
             pass
     if base in cache:
         return cache[base]
+    t_start = time.monotonic()
+    n_list = 0
+    print(f"[{SOURCE}] table-tree search of {base} started", flush=True)
     tree: dict = {}
     root = _listing(sess, f"{base}/")
     ok = root is not None
@@ -407,7 +576,8 @@ def _table_tree(sess, base=None, dl=None):
             break
         db, folder = queue.pop()
         items = _listing(sess, f"{base}/{db}/{folder}/" if folder else f"{base}/{db}/")
-        time.sleep(RATE)
+        n_list += 1
+        _pause(sess)
         if items is None:
             ok = False
             break
@@ -421,6 +591,8 @@ def _table_tree(sess, base=None, dl=None):
                 queue.append((db, child))
     result = tree if ok else None
     cache[base] = result
+    print(f"[{SOURCE}] table-tree search of {base} ended after {time.monotonic() - t_start:.0f} s and "
+          f"{n_list + 1} listing(s): {'complete' if ok else 'NOT complete'}", flush=True)
     return result
 
 
@@ -429,13 +601,28 @@ def _post_data(sess, url, body):
     timeout/5xx/429/network/non-JSON -> TransientError after the retry budget."""
     last = None
     for a in range(MAX_ATTEMPTS):
+        to, cut = _timeout(sess, TIMEOUT + 30)
+        _stat(sess, "requests")
         try:
-            r = sess.post(url, json=body, timeout=TIMEOUT + 30)
-        except (requests.Timeout, requests.ConnectionError) as e:
+            r = sess.post(url, json=body, timeout=to)
+        except requests.Timeout as e:
+            _stat(sess, "timeouts")
+            if cut:
+                raise BudgetCut(f"hagstofa POST {url}: timed out after {to:.0f} s, cut to the budget left") from e
             last = str(e)[:120]
             if a == MAX_ATTEMPTS - 1:
                 raise TransientError(f"hagstofa POST {url}: {last}")
-            time.sleep(min(2 ** a, 20)); continue
+            _wait(sess, min(2 ** a, 20), f"POST {url}"); continue
+        except requests.ConnectionError as e:
+            if cut:
+                # a body read timeout surfaces as ConnectionError (see _get_meta): the budget, not the table
+                _stat(sess, "timeouts")
+                raise BudgetCut(f"hagstofa POST {url}: connection ended after a timeout cut to the budget "
+                                f"left ({to:.0f} s)") from e
+            last = str(e)[:120]
+            if a == MAX_ATTEMPTS - 1:
+                raise TransientError(f"hagstofa POST {url}: {last}")
+            _wait(sess, min(2 ** a, 20), f"POST {url}"); continue
         if r.status_code == 200:
             try:
                 return r.json()
@@ -443,14 +630,20 @@ def _post_data(sess, url, body):
                 last = "bad json"
                 if a == MAX_ATTEMPTS - 1:
                     raise TransientError(f"hagstofa POST {url}: {last}")
-                time.sleep(min(2 ** a, 20)); continue
+                _wait(sess, min(2 ** a, 20), f"POST {url}"); continue
         if r.status_code in (400, 403):
             return None
-        if r.status_code in (429, 500, 502, 503, 504):
+        if r.status_code == 429:
+            last = "HTTP 429"
+            if a == MAX_ATTEMPTS - 1:
+                raise Throttled(f"hagstofa POST {url}: HTTP 429 after {MAX_ATTEMPTS} tries")
+            _wait_429(sess, r, f"POST {url}"); continue
+        if r.status_code in (500, 502, 503, 504):
+            _stat(sess, "http5xx")
             last = f"HTTP {r.status_code}"
             if a == MAX_ATTEMPTS - 1:
                 raise TransientError(f"hagstofa POST {url}: {last}")
-            time.sleep(min(2 ** a, 30)); continue
+            _wait(sess, min(2 ** a, 30), f"POST {url}"); continue
         raise DefinitiveError(f"hagstofa POST {url}: HTTP {r.status_code}")
     raise TransientError(f"hagstofa POST {url}: {last}")
 
@@ -569,7 +762,7 @@ def _fetch_table(sess, db, path, prefix, since_date, dl=None):
     """
     url = f"{BASE}/{db}/{path}/"
     meta = _get_meta(sess, url)
-    time.sleep(RATE)
+    _pause(sess)
     if meta is None and since_date is not None:
         # THE ENGLISH SITE DROPS TABLES THE ICELANDIC SITE STILL SERVES AT THE SAME PATH (review
         # R1112: SJA04901 answers 400 on pxen but 200 on pxis). That is a NAMED BREAK, never a
@@ -579,7 +772,7 @@ def _fetch_table(sess, db, path, prefix, since_date, dl=None):
         # 2024 values landed one species code higher - 134 of 214 stored (key, date) pairs would have
         # been overwritten with a neighbour's value (R1120). Matching dimension NAMES proves nothing.
         meta_is = _get_meta(sess, f"{BASE_IS}/{db}/{path}/")
-        time.sleep(RATE)
+        _pause(sess)
         if isinstance(meta_is, dict) and meta_is.get("variables"):
             print(f"[hagstofa] {path}: DROPPED from the English site; the Icelandic site still serves "
                   f"it at the same path, but its value codes are positions in a different order, so "
@@ -622,6 +815,16 @@ def _missing_verdict(sess, db, path, since_date, dl=None):
                   f"{seen['date']}) - a re-key, not followed automatically", flush=True)
             return [], "structural"
         return [], "quiet"
+    cache = getattr(sess, "_hagstofa_trees", None) or {}
+    left = _dl_left_s(dl)
+    if left is not None and not (BASE in cache and BASE_IS in cache) and left < TREE_SEARCH_MIN * 60:
+        # Not started: it would be cut, cache nothing, and be paid again by every pass (it was, on
+        # every run from 2026-10-02 to 10-16). update() stops the pass here and does not move its
+        # bookmark past this table, so the next pass begins with it and its full budget.
+        print(f"[hagstofa] {path}: HTTP 400/404; the table-tree search needs up to {TREE_SEARCH_MIN:.0f} "
+              f"min and {left / 60:.1f} min of budget is left - not started, decided by a later pass",
+              flush=True)
+        return [], "deferred"
     trees = [_table_tree(sess, BASE, dl), _table_tree(sess, BASE_IS, dl)]
     leaf = path.rpartition("/")[2]
     if any(t is None for t in trees):
@@ -706,7 +909,7 @@ def _fetch_with_meta(sess, url, meta, path, prefix, since_date):
     body = {"query": _build_query(variables, tvar, time_codes),
             "response": {"format": "json-stat2"}}
     resp = _post_data(sess, url, body)
-    time.sleep(RATE)
+    _pause(sess)
     if resp is None:
         # PxWeb rejected the query (400/403). On an incremental tail this is benign
         # (treat as quiet); on a full fetch of a table with no history it's empty.
@@ -732,6 +935,12 @@ def _fetch_with_meta(sess, url, meta, path, prefix, since_date):
 # --------------------------------------------------------------------------- #
 def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via on-disk max)
     from ..base import Result  # local import keeps the module importable standalone
+
+    # THE CLOCK STARTS HERE, before the catalogue and the 5 store reads (~1 min in CI: the Deadline
+    # used to start 0.7-1.0 min after the unit), so the budget bounds the whole pass.
+    budget_min, budget_why = _budget_minutes()
+    dl = Deadline(minutes=budget_min)
+    print(f"[{SOURCE}] budget {dl.budget_min:.1f} min ({budget_why})", flush=True)
 
     out_dir = config.source_dir(SOURCE)
     # No isdir guard: the table set comes from the (blob-routed) catalog and every store
@@ -763,6 +972,8 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
                                                               boundary=db_boundary[db], all_keys=db_keys[db])
 
     sess = _session()
+    sess._hagstofa_dl = dl           # every request and retry wait is cut to the budget left
+    sess._hagstofa_stats = {}
     wpath = os.path.join(out_dir, WITHDRAWN_FILE)
     try:
         raw = blob.read_bytes(wpath)
@@ -787,34 +998,39 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
     maxd: dt.date | None = None
     total = 0
 
-    # BOUND BELOW THE ORCHESTRATOR'S 45-MINUTE CAP, AND ROTATE.
-    # hagstofa's measured cloud runs are 53.0 min median / 72.4 max — over the cap on every
-    # run, and the cap landed 2026-08-01 (36130d02) after its last run. The merge is INSIDE
-    # this loop, so a kill truncates rather than discards (unlike bcb/unhcr, which merged
-    # after their loops) — but `sorted(by_db)` is a FIXED order, so the kill lands in the
-    # same place every time and the tail dbs are never reached at all, however many runs
-    # pass. A bound over a fixed order is a truncation, not a budget (R190).
+    # BOUND BELOW THE ORCHESTRATOR'S HARD LIMIT, AND ROTATE - AT TABLE GRAIN (2026-10-19).
+    # The work list is every (db, table) in a FIXED order: sorted dbs, catalogue order inside a db.
+    # A bound over a fixed order is a truncation unless each pass starts where the last one stopped
+    # (R190), so it is rotated after a bookmark naming the last table whose result is DURABLE
+    # ("<db>/<table path>"). Consecutive tables of one db are a SEGMENT, merged once (a kill loses at
+    # most the segment in flight - the merge is inside the loop, R249). The bookmark is saved after
+    # each segment's merge, never only at the end (R273: a save at the end is what the kill destroys).
     #
-    # 30 minutes also gives the shared daily run its time back: all 106 live cloud sources
-    # cost a median 1,211 min against a 240-min budget, and only 20 were attempted on
-    # 2026-08-02 because a handful ran to the cap.
-    budget_min = float(os.environ.get("HAGSTOFA_BUDGET_MIN", "30"))
-    dl = Deadline(minutes=budget_min)
-    dbs = rotate_after(sorted(by_db), load_rotation(out_dir))
-    last_db = ""
-
-    for db in dbs:
-        if dl.spent():
-            print(f"[{SOURCE}] budget of {budget_min:.0f} min spent after "
-                  f"{dl.elapsed_min():.1f} min — stopped after db {last_db!r}, "
-                  f"{len(dbs) - dbs.index(db)} of {len(dbs)} db(s) deferred to a later "
-                  f"pass", flush=True)
-            break
-        last_db = db
+    # The Deadline is checked before EVERY table (R286: checked per db, the pass ran 30 min + the rest
+    # of Samfelag, 736 tables). When it is spent the pass stops: the rows already fetched are merged,
+    # every table not reached is booked DEFERRED (not attempted, not failed: `partial`, never
+    # `no_change` - R303, R311), and the bookmark stays on the last durable table, so the next pass
+    # of this source starts with the first table this one did not reach.
+    work = [(db, t) for db in sorted(by_db) for t in by_db[db]]
+    bookmark = _bookmark_key(load_rotation(out_dir), by_db)
+    work = rotate_after(work, bookmark, key=_work_key)
+    rows_by_db: dict[str, int] = {}
+    seg_log: list[str] = []
+    stop = None                      # why the pass ended early, or None
+    first = True                     # no table of this pass has a result yet
+    streak = 0                       # tables in a row throttled out (HTTP 429 on every try)
+    saved = {"withdrawn": json.dumps(withdrawn_before, sort_keys=True), "labels": labels_before}
+    i = 0
+    while i < len(work):
+        db = work[i][0]
+        j = i
+        while j < len(work) and work[j][0] == db:
+            j += 1
+        seg = work[i:j]
+        t_seg = time.monotonic()
         path = os.path.join(out_dir, f"{db}.parquet")
         before = blob.row_count(path)
         tmax = db_table_max.get(db, {})
-        tables = by_db[db]
 
         # seed cursors with the on-disk frontier so an untouched table still reports
         # its real cursor (a frozen table can't hide behind the db-level max). SKIP a
@@ -832,8 +1048,13 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
         vals: list[float] = []
 
         processed = 0
-        for t in tables:
+        last_done = None             # the last table of this segment whose result is final
+        cut_at = None                # index in `seg` of the first table NOT booked when the pass stops
+        for k_idx, (_db, t) in enumerate(seg):
             if limit is not None and processed >= limit:
+                break
+            if dl.spent():
+                stop, cut_at = "budget", k_idx
                 break
             processed += 1
             tpath = t["path"]
@@ -842,14 +1063,62 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
 
             try:
                 rows, outcome = _fetch_table(sess, db, tpath, prefix, since_date, dl=dl)
+            except BudgetCut as e:
+                # the budget ran out inside this table's requests: nothing failed (R303)
+                _stat(sess, "budget_cuts")
+                if first:
+                    # The pass STARTED on this table with its whole budget and still ran out inside it (a
+                    # whole-budget table-tree search whose last listing was cut). Stopping without moving the
+                    # bookmark would start every later pass on this one table: pinned (review R1636 P1). So it
+                    # is deferred and passed over, as the "deferred" outcome below is.
+                    tally.deferred_unit(f"{tpath} (budget: {e}; the pass began on it with its whole "
+                                        f"{dl.budget_min:.0f}-min budget, so it is passed over until the "
+                                        f"rotation returns to it)")
+                    last_done, first = _work_key((db, t)), False
+                    continue
+                tally.deferred_unit(f"{tpath} (budget: {e})")
+                stop, cut_at = "budget", k_idx + 1
+                break
+            except Throttled as e:
+                tally.transient_unit(f"{tpath}: {e}")
+                last_done, first = _work_key((db, t)), False
+                streak += 1
+                if getattr(e, "stop_now", False):
+                    print(f"[{SOURCE}] {e} - longer than {RETRY_AFTER_STOP_S} s, the pass stops here",
+                          flush=True)
+                    stop, cut_at = "retry_after", k_idx + 1
+                    break
+                if streak >= THROTTLE_STREAK_STOP:
+                    # ssb #177's rule: a throttled sweep only spends its budget being refused
+                    print(f"[{SOURCE}] {streak} tables in a row were throttled (HTTP 429 on every try) - "
+                          f"the pass stops here", flush=True)
+                    stop, cut_at = "throttled", k_idx + 1
+                    break
+                continue
             except TransientError:
                 tally.transient_unit(tpath)  # -> partial; existing rows for this table kept
+                last_done, first, streak = _work_key((db, t)), False, 0
                 continue
+            streak = 0
 
             labels_now = sess._hagstofa_labels.pop(prefix, None)
             if outcome == "deferred":
+                if first:
+                    # The pass STARTED here with its whole budget and the table-tree search still could
+                    # not run or finish. Stopping here again would pin every later pass to this one
+                    # table (R190), so it is booked deferred (nothing failed, R1124) and named, the
+                    # bookmark moves past it, and the pass goes on while budget is left.
+                    tally.deferred_unit(f"{tpath} (budget: table-tree search; not decided within a whole "
+                                        f"pass's {dl.budget_min:.0f}-min budget, passed over until the "
+                                        f"rotation returns to it)")
+                    last_done, first = _work_key((db, t)), False
+                    continue
+                # Stop HERE, without moving the bookmark past it: the next pass of this source begins
+                # with this table and its whole budget, so the search can finish and cache its verdict.
                 tally.deferred_unit(f"{tpath} (budget: table-tree search)")
-                continue
+                stop, cut_at = "tree", k_idx + 1
+                break
+            last_done, first = _work_key((db, t)), False
             if outcome == "structural":
                 tally.structural_unit(tpath)  # finalize() raises DefinitiveError
                 continue
@@ -976,7 +1245,10 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
             # doesn't feed the all-empty structural floor.
             tally.added_unit(n_acc)
 
-        # Merge this db's accumulated new rows (one atomic publish per file).
+        # Merge this segment's accumulated new rows (one atomic publish per file) - also when the
+        # pass stops inside the segment: the rows already fetched are kept, never thrown away.
+        fetch_s = time.monotonic() - t_seg
+        t_merge = time.monotonic()
         if vals:
             new_tbl = pa.table({
                 "series_key": pa.array(keys, pa.string()),
@@ -985,37 +1257,46 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
             })
             n, md = merge.merge_and_write(path, new_tbl, mode="merge", dedup_keys=DEDUP)
             label_maps.update(pending_labels)      # the labels these merged rows were keyed under
-            total += n
+            rows_by_db[db] = n
             if md:
                 md_d = dt.date.fromisoformat(md)
                 if maxd is None or md_d > maxd:
                     maxd = md_d
         else:
-            total += before
+            rows_by_db.setdefault(db, before)
+        merge_s = time.monotonic() - t_merge
+        # THE BOOKMARK MOVES ONLY NOW, after the merge: it names the last table whose result is in the
+        # store (or final - a quiet, refused or failed table). A kill before this line re-does at most
+        # this segment and never skips a table. A table booked deferred is never passed.
+        if last_done:
+            save_rotation(out_dir, last_done)
+        _save_sidecars(sess, saved, wpath, lpath, label_maps)
+        seg_log.append(f"{db} {processed} table(s) fetch {fetch_s:.0f} s merge {merge_s:.1f} s")
+        print(f"[{SOURCE}] {db}: {processed} of {len(seg)} table(s) in {fetch_s:.0f} s, merge {merge_s:.1f} s"
+              f"{f', bookmark after {last_done}' if last_done else ''}", flush=True)
+        if stop is not None:
+            # Every table not reached is DEFERRED (not attempted, not failed), here and in later dbs.
+            for _d, rest in seg[cut_at:] + work[j:]:
+                tally.deferred_unit(f"{_d}/{rest['path']}")
+            print(f"[{SOURCE}] {_STOP_WORDS[stop]} stop after "
+                  f"{dl.elapsed_min():.1f} min of a {dl.budget_min:.1f}-min budget: "
+                  f"{len(seg) - cut_at + len(work) - j} table(s) not reached in this pass, "
+                  f"{tally.deferred} deferred in all", flush=True)
+            break
+        i = j
 
-    # Bookmark after a complete pass too, so the wrap goes through this same path and no
-    # branch can quietly stop the rotation.
-    if last_db:
-        save_rotation(out_dir, last_db)
-    if sess._hagstofa_withdrawn != withdrawn_before:
-        try:
-            blob.write_bytes_atomic(wpath, json.dumps(sess._hagstofa_withdrawn, indent=1,
-                                                      sort_keys=True).encode("utf-8"))
-        except Exception as e:                               # noqa: BLE001
-            # losing it costs one more tree search next run, never a wrong verdict - but say so
-            print(f"[{SOURCE}] could not save {wpath} ({type(e).__name__}: {e})", flush=True)
+    total = sum(rows_by_db.values())
+    _save_sidecars(sess, saved, wpath, lpath, label_maps)
+    st = getattr(sess, "_hagstofa_stats", {}) or {}
+    print(f"[{SOURCE}] pass: {dl.elapsed_min():.1f} min of {dl.budget_min:.1f}; requests {st.get('requests', 0)}, "
+          f"HTTP 429 {st.get('http429', 0)}, 5xx {st.get('http5xx', 0)}, timeouts {st.get('timeouts', 0)}, "
+          f"budget cuts {st.get('budget_cuts', 0)}, tree listings {st.get('listings', 0)}; "
+          f"{'; '.join(seg_log) or 'no table reached'}", flush=True)
 
     if unchecked:
         print(f"[{SOURCE}] {len(unchecked)} table(s) merged with no stored value at their newest period "
               f"to compare, so no shift check could run: {', '.join(unchecked[:10])}"
               f"{' ...' if len(unchecked) > 10 else ''}", flush=True)
-    if json.dumps(label_maps, sort_keys=True) != labels_before:
-        try:
-            blob.write_bytes_atomic(lpath, json.dumps(label_maps, sort_keys=True,
-                                                      ensure_ascii=False).encode("utf-8"))
-        except Exception as e:                               # noqa: BLE001
-            # losing it costs a re-seed through the neighbour check next run - but say so
-            print(f"[{SOURCE}] could not save {lpath} ({type(e).__name__}: {e})", flush=True)
 
     last_obs = maxd.isoformat() if maxd else None
     # empty_window_floor = <#subunits> - 1 (per the S3 contract). The blunt all-empty
@@ -1027,5 +1308,115 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
     # while the precise per-table structural_unit() signal remains the real break
     # detector. (attempted = tables we actually reached this run; subset in test mode.)
     n_sub = tally.attempted if tally.attempted else len(catalog)
-    return finalize(tally, total, last_obs, source=SOURCE, series_cursors=cursors,
-                    empty_window_floor=max(n_sub - 1, 1))
+    try:
+        res = finalize(tally, total, last_obs, source=SOURCE, series_cursors=cursors,
+                       empty_window_floor=max(n_sub - 1, 1))
+    except DefinitiveError as e:
+        # finalize() names only the structural tables here, so a budget stop would leave no trace in
+        # the stored note (review 2026-10-19, C7). The clause goes BEFORE the offender list, which the
+        # orchestrator's clip may cut.
+        # The transient tables too (AR-352 #2): while the 7 refusals stand, finalize raises on every
+        # pass and its message names only the structural tables, so one 5xx / timeout / 429 table
+        # would be invisible in state and in the digest.
+        raise DefinitiveError(_with_deferral(_with_transient(str(e), tally), tally, stop)) from e
+    if tally.deferred and res.error and "deferred" not in res.error:
+        res.error = _with_deferral(res.error, tally, stop)  # finalize() names transients before deferrals
+    return res
+
+
+_STOP_WORDS = {"budget": "budget", "tree": "table-tree search",
+               "throttled": f"throttle ({THROTTLE_STREAK_STOP} tables in a row HTTP 429)",
+               "retry_after": f"throttle (Retry-After over {RETRY_AFTER_STOP_S} s)"}
+
+
+def _with_transient(msg: str, tally) -> str:
+    """Insert the transient count and the first transient table before the offender list."""
+    if not tally.transient:
+        return msg
+    clause = (f"; also {tally.transient} table(s) transient-failed (5xx, timeout or HTTP 429)"
+              f" (first: {tally.transient_ids[0] if tally.transient_ids else '?'})")
+    at = msg.find(" [")
+    return msg[:at] + clause + msg[at:] if at >= 0 else msg + clause
+
+
+def _with_deferral(msg: str, tally, stop=None) -> str:
+    if not tally.deferred:
+        return msg
+    why = {"throttled": f"deferred after {THROTTLE_STREAK_STOP} tables in a row were throttled (HTTP 429)",
+           "retry_after": f"deferred after an HTTP 429 asked to wait over {RETRY_AFTER_STOP_S} s"
+           }.get(stop, "deferred by budget")
+    clause = (f"; also {tally.deferred} table(s) {why}, not reached in this pass"
+              f" (first: {tally.deferred_ids[0] if tally.deferred_ids else '?'})")
+    at = msg.find(" [")
+    return msg[:at] + clause + msg[at:] if at >= 0 else msg + clause
+
+
+def _budget_minutes() -> tuple[float, str]:
+    """The pass budget: HAGSTOFA_BUDGET_MIN (default 30), lowered so that HARD_MARGIN_MIN stays
+    between it and the unit's real hard limit. The orchestrator clamps a late unit's window to what is
+    left of the run, so the limit is not always 45 minutes; the armed alarm is read when one is live
+    (_melodi_state.unit_window_s, the same reader insee_melodi uses)."""
+    try:
+        cfg = float(os.environ.get("HAGSTOFA_BUDGET_MIN", str(BUDGET_MIN)))
+    except ValueError:
+        cfg = BUDGET_MIN
+    if not cfg > 0 or cfg == float("inf"):                  # NaN, 0, negative or inf: never a usable budget
+        print(f"[{SOURCE}] HAGSTOFA_BUDGET_MIN={os.environ.get('HAGSTOFA_BUDGET_MIN')!r} is not a usable "
+              f"budget - using {BUDGET_MIN:g} min", flush=True)
+        cfg = BUDGET_MIN
+    from ._melodi_state import unit_window_s                # noqa: PLC0415
+    window_s, src = unit_window_s()
+    if not window_s > 0:
+        # AQUEDUCT_UNIT_TIMEOUT_MIN <= 0 disables the hard limit deliberately: there is no window to fit
+        # under, so the configured budget stands (review R1636 P2: this read as a zero budget and every
+        # table was deferred, silently).
+        print(f"[{SOURCE}] no unit hard limit is set ({src} gives {window_s / 60:g} min) - the "
+              f"configured budget stands", flush=True)
+        return cfg, f"configured {cfg:g} min, no unit hard limit ({src})"
+    fit = window_s / 60.0 - HARD_MARGIN_MIN
+    budget = min(cfg, fit)
+    if budget < BUDGET_FLOOR_MIN:
+        # a late unit whose window is shorter than the margin: a small budget, said out loud, never zero
+        floor = min(BUDGET_FLOOR_MIN, window_s / 120.0)
+        print(f"[{SOURCE}] the unit window is {window_s / 60:.1f} min ({src}), too short for the "
+              f"{HARD_MARGIN_MIN:g}-min margin - budget {max(budget, floor):.1f} min", flush=True)
+        budget = max(budget, floor)
+    return budget, (f"configured {cfg:g} min, unit window {window_s / 60:.1f} min from {src}, "
+                    f"{HARD_MARGIN_MIN:g} min kept for the last merge and the state writes")
+
+
+def _work_key(item) -> str:
+    db, t = item
+    return f"{db}/{t['path']}"
+
+
+def _bookmark_key(bm: str, by_db: dict) -> str:
+    """A bookmark is '<db>/<table path>'. The code before 2026-10-19 saved a bare db name, meaning
+    "after that whole db": it maps to that db's LAST table, so the first pass after this change
+    starts exactly where the old code would have."""
+    if bm in by_db and by_db[bm]:
+        return f"{bm}/{by_db[bm][-1]['path']}"
+    return bm
+
+
+def _save_sidecars(sess, saved: dict, wpath: str, lpath: str, label_maps: dict) -> None:
+    """Write _withdrawn.json and _labels.json when they changed since the last write - after every
+    segment, not only at the end, so a kill does not lose them (R273)."""
+    w = json.dumps(sess._hagstofa_withdrawn, sort_keys=True)
+    if w != saved["withdrawn"]:
+        try:
+            blob.write_bytes_atomic(wpath, json.dumps(sess._hagstofa_withdrawn, indent=1,
+                                                      sort_keys=True).encode("utf-8"))
+            saved["withdrawn"] = w
+        except Exception as e:                               # noqa: BLE001
+            # losing it costs one more tree search, never a wrong verdict - but say so
+            print(f"[{SOURCE}] could not save {wpath} ({type(e).__name__}: {e})", flush=True)
+    lab = json.dumps(label_maps, sort_keys=True)
+    if lab != saved["labels"]:
+        try:
+            blob.write_bytes_atomic(lpath, json.dumps(label_maps, sort_keys=True,
+                                                      ensure_ascii=False).encode("utf-8"))
+            saved["labels"] = lab
+        except Exception as e:                               # noqa: BLE001
+            # losing it costs a re-seed through the neighbour check - but say so
+            print(f"[{SOURCE}] could not save {lpath} ({type(e).__name__}: {e})", flush=True)

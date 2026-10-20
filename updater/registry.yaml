@@ -2553,8 +2553,9 @@ sources:
       last_obs+1); no literal startPeriod query string — selection is a POSTed JSON query.
     out_paths_note: per-database files data/clean_full/hagstofa/{Efnahagur,Atvinnuvegir,Ibuar,Samfelag,Umhverfi}.parquet (5
       files) plus _catalog.json.
-    rate_note: No key; RATE=0.3s between calls, 429 → sleep 30s; MAX_CELLS=100000 caps large tables (silently aggregates non-time
-      dims — coverage limit, not a refresh blocker).
+    rate_note: No key; RATE=0.25s between calls (publisher config 100 calls per 10 s); HTTP 429 honours Retry-After, else waits
+      one 10-s window; every request timeout and retry wait is cut to the budget left; MAX_CELLS=100000 caps large tables (silently
+      aggregates non-time dims — coverage limit, not a refresh blocker).
     key_env: none
     confidence: medium
     open_question: _catalog.json cached indefinitely so new tables/databases won't appear without invalidation; and the MAX_CELLS
