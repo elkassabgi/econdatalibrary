@@ -217,7 +217,7 @@ deliberately NOT pinned here — it changes whenever a source is added, or remov
 we cannot host it (as in the removals of 2026-07-22/23). Read it from the endpoint.
 
 > **`status: "discontinued"` (since the freshness sync that follows 2026-10-20).** A source listed in
-> `updater/discontinued.yaml` — the publisher retired the dataset; we keep serving the final copy — reads
+> `updater/discontinued.yaml` — an archival copy we keep serving and no longer update — reads
 > `freshness.status = "discontinued"` and `freshness.cadence = null`. `last_updated` is the last
 > successful refresh if the updater ever recorded one (e.g. `unctad_trademerchgr`, 2026-10-01), else null;
 > `data_through` is unchanged. Before this, the relay-era archival sources read status and cadence null with

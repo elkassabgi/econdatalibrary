@@ -147,7 +147,10 @@ def _discontinued_ids(path: str | None = None) -> set[str]:
 
 
 DISCONTINUED_STATUS = "discontinued"
-DISCONTINUED_NOTE = "publisher discontinued; served frozen (updater/discontinued.yaml)"
+# Neutral on purpose (AR-359 #4): 7 entries carry a softer `label` because their own finding shows "the publisher
+# discontinued it" overstates (codes still published, a revised edition). "Archival copy; not updated" is true of
+# all of them. This column is not selected by /v1/sources or /v1/last-updates (api/worker/src/sql.ts).
+DISCONTINUED_NOTE = "archival copy; not updated (updater/discontinued.yaml)"
 
 
 def _project(table: str, rows: list, cols: list[str], gated: set[str], frozen: set[str]) -> list[tuple]:

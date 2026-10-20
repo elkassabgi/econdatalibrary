@@ -1249,7 +1249,7 @@ PAUSED = {sid: m["paused"] for sid, m in REG_META.items() if m["paused"]}
 
 
 def load_discontinued(path=None):
-    """{source_id: entry} from updater/discontinued.yaml - datasets the PUBLISHER retired, served frozen.
+    """{source_id: entry} from updater/discontinued.yaml - archival copies, served frozen (see discontinued_rows).
 
     WHY (2026-10-20, review of unctad_trademerchgr). Every decision in that file cites the owner's rule of
     2026-08-09: archival sources stay listed "labelled so nobody expects fresh data". This generator never read
@@ -1285,14 +1285,15 @@ DISCONTINUED = load_discontinued()
 
 
 def discontinued_rows(entry):
-    """The two refresh rows of a publisher-discontinued source. Every clause is what discontinued.yaml holds: the
-    publisher retired the dataset, the copy here is the last one, and nothing refreshes it.
+    """The two refresh rows of a source listed in discontinued.yaml. Every clause is what that file holds for ALL of
+    its entries: the copy here is an archival one, it is the last one, and nothing refreshes it. Whether the
+    publisher discontinued the whole dataset is per entry (the first sentence below), not true of every entry.
 
     `label` (optional, per entry) replaces ONLY the first sentence, "<publisher> has discontinued this dataset.",
     where the entry's own finding shows that sentence overstates (2026-10-20, AR-355's note): unesco_film still has
-    1 of its 76 codes published, unesco_clte 21 of 408 under new keys. The second sentence is fixed here, so no
-    label can drop the archival claim. A labelled entry's cadence row reads "archival copy", not "discontinued by
-    the publisher", so the two rows never contradict each other."""
+    1 of its 76 codes published, unesco_clte 21 of its 408 (the CE.RA.* codes, a form our own keys already use).
+    The second sentence is fixed here, so no label can drop the archival claim. A labelled entry's cadence row
+    reads "archival copy", not "discontinued by the publisher", so the two rows never contradict each other."""
     who = esc(str(entry.get("publisher") or "The publisher").strip())
     if entry.get("label"):
         # the cadence row must not repeat the claim the label withdraws ("discontinued by the publisher")

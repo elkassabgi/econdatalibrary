@@ -136,6 +136,27 @@ def test_metadata_json_last_updated_keeps_its_date(tmp_path, monkeypatch):
     assert by_unit["_all"]["last_success_utc"] == LAST
 
 
+def test_the_note_is_true_of_every_entry_and_no_endpoint_serves_it(tmp_path, monkeypatch):
+    """AR-359 #4. The note goes on every discontinued source's row, including the 7 whose `label` says the publisher
+    no longer publishes (most of) these series, not that it discontinued the dataset. So it may say only what is
+    true of all of them. And the claim in the PR / CONTRACT.md that changing it changes nothing /v1/sources or
+    /v1/last-updates return rests on the worker never selecting the column: pin that too."""
+    note = d1sync.DISCONTINUED_NOTE.lower()
+    assert "archival copy" in note and "not updated" in note, note
+    for claim in ("publisher discontinued", "discontinued by", "retired"):
+        assert claim not in note, note
+    db, out = _setup(tmp_path, monkeypatch)
+    files, _ = d1sync.emit_sql(db, out, gated=set(), discontinued={FROZEN, NOROW})
+    mem = _replay(files)
+    got = {r[0]: r[1] for r in mem.execute("SELECT source_id, note FROM source_state")}
+    assert got[FROZEN] == got[NOROW] == d1sync.DISCONTINUED_NOTE and got[KEPT] is None, got
+    sql = open(os.path.join(ROOT, "api", "worker", "src", "sql.ts"), encoding="utf-8").read()
+    stmts = [s for s in re.findall(r"`([^`]*)`", sql) if re.search(r"\bsource_state\b", s)]
+    assert len(stmts) >= 4, "the source_state SELECTs moved - re-check what /v1/sources and /v1/last-updates read"
+    for s in stmts:
+        assert not re.search(r"\bnote\b", s) and not re.search(r"\b(ss|s)\.\*|SELECT\s+\*", s), s
+
+
 def test_without_the_list_the_stale_row_is_projected(tmp_path, monkeypatch):
     """Negative control on the fixture: with nothing discontinued the stale row IS emitted, so the test above
     passes because of the rule and not because the fixture never produced it."""
