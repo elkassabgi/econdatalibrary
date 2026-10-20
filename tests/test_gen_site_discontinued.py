@@ -40,8 +40,8 @@ def _text(rows):
 FINAL = "This is the final copy, and it is not updated."
 
 # The entries whose own finding shows "<publisher> has discontinued this dataset." overstates, and the sentence
-# that replaces it (2026-10-20). unesco_film: 1 of 76 codes still published. unesco_clte: 21 of 408 survive under
-# new CE.RA.* keys. fao_ae / fao_af: the live AE / AF datasets were re-dimensioned, the old composite ids have no
+# that replaces it (2026-10-20). unesco_film: 1 of 76 codes still published. unesco_clte: 21 of its 408 codes are
+# still published, all of them CE.RA.* codes, a form our own keys already use (not new keys). fao_ae / fao_af: the live AE / AF datasets were re-dimensioned, the old composite ids have no
 # 1:1 successor. unctad_tabbapotta: the same indicator is published as a recomputed modern edition under M49 keys.
 # unesco_cltt: 0 of its 34 codes published while the CULTURE theme is alive (the file's own warning: the theme being
 # alive is not our indicators being alive), so only the series-level claim is measured. fao_ew: the probe says
@@ -149,11 +149,16 @@ def test_a_label_replaces_only_the_first_sentence(G):
     assert DEFAULT_CADENCE in t0 and LABEL_CADENCE not in t0
 
 
-@pytest.mark.parametrize("bad", ["", "   ", "null", "3", "[a, b]", "{x: 1}", "P no longer publishes these series"])
+@pytest.mark.parametrize("bad", ["", "   ", "null", "3", "[a, b]", "{x: 1}", "P no longer publishes these series",
+                                 '""', "'   '"])
 def test_a_label_that_is_not_a_sentence_stops_the_build(G, tmp_path, bad):
+    """Matches the label guard's OWN message. A bare match="label" also matched the generic FATAL text ("the
+    archival label of every ..."), so a crash in the guard (.strip() on a non-string, [-1] on an empty string)
+    passed as if the guard had fired (AR-359: those two mutants survived). '""' and "'   '" are the two inputs
+    that reach the guard as an empty or blank STRING (a bare `label:` is null in YAML, not "")."""
     f = tmp_path / "discontinued.yaml"
     f.write_text(f"sources:\n  - source_id: x\n    publisher: P\n    label: {bad}\n", encoding="utf-8")
-    with pytest.raises(SystemExit, match="label"):
+    with pytest.raises(SystemExit, match="`label` must be a non-empty sentence"):
         G.load_discontinued(str(f))
     f.write_text("sources:\n  - source_id: x\n    publisher: P\n    label: P no longer publishes these series.\n",
                  encoding="utf-8")
@@ -170,6 +175,24 @@ def test_the_status_board_shows_discontinued_as_archival_not_attention():
     assert rule in s and s.index(rule) < s.index("else{cls='bad'}"), "decided before the red catch-all"
     assert "else if(cls==='archival')archival++;else bad++;" in s, "counted on its own, never as attention"
     assert "archival+' archival · '" in s, "the summary line names the archival count"
+
+
+# Claims that are true of SOME discontinued.yaml entries only: the 7 labelled ones say the publisher no longer
+# publishes (most of) these series or this edition, not that it discontinued the dataset (AR-359 #4).
+PER_ENTRY_CLAIMS = ("publisher discontinued", "discontinued this dataset", "discontinued by the publisher",
+                    "publisher retired", "retired the dataset")
+
+
+def test_the_status_legend_makes_no_claim_that_is_false_for_a_labelled_entry():
+    """The board's archival legend explains a status that ANY of the 53 entries can carry, so it may say only
+    what holds for all of them: an archival copy, final, not updated. Negative control: the old legend fails."""
+    s = open(os.path.join(ROOT, "catalog", "site", "status.html"), encoding="utf-8").read()
+    start = s.index('<span class="dot archival"></span> archival')
+    legend = s[start:s.index("&middot;", start)].lower()
+    assert "archival copy" in legend and "not updated" in legend, legend
+    assert not any(c in legend for c in PER_ENTRY_CLAIMS), legend
+    old = "archival &mdash; the publisher discontinued this dataset; the copy here is final and is not updated"
+    assert any(c in old for c in PER_ENTRY_CLAIMS), "negative control: the old legend must trip the check"
 
 
 def test_the_regenerated_page_carries_the_label():

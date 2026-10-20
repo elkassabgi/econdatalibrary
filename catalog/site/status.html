@@ -107,7 +107,7 @@ listed here honestly as “initial load” rather than pretended current.</p>
 <span class="dot ok"></span> updated &amp; current (or an honest <code>no_change</code> probe) &nbsp;·&nbsp;
 <span class="dot warn"></span> partial / transient issue — retries automatically next run &nbsp;·&nbsp;
 <span class="dot paused"></span> paused &mdash; updates are on hold by decision; the database&rsquo;s own page gives the reason, and it does not retry by itself &nbsp;&middot;&nbsp;
-<span class="dot archival"></span> archival &mdash; the publisher discontinued this dataset; the copy here is final and is not updated, so it is not a failure &nbsp;&middot;&nbsp;
+<span class="dot archival"></span> archival &mdash; an archival copy; the copy here is final and is not updated, so it is not a failure &nbsp;&middot;&nbsp;
 <span class="dot bad"></span> failed or past its expected update window — visible here and in the operator's daily report until fixed &nbsp;·&nbsp;
 <span class="dot off"></span> initial load; joins the automated rollout in an upcoming phase.<br>
 Statuses are never fabricated: a source's date only advances when new observations were actually
@@ -158,7 +158,7 @@ Promise.all([
     if(st==='ok'||st==='no_change'){cls=(nextTs&&now>nextTs+36e5*24)?'bad':'ok'}
     else if(st==='partial'||st==='transient_fail'){cls='warn'}
     // A DISCONTINUED source (updater/discontinued.yaml; core/sync_state_d1.py publishes its recorded unit row with
-    // this status) is a final copy the publisher retired: neutral, never a red "attention" dot (AR-355).
+    // this status) is an archival copy that is not updated: neutral, never a red "attention" dot (AR-355).
     else if(st==='discontinued'){cls='archival'}
     else{cls='bad'}
     const m=meta[r.source]||{};

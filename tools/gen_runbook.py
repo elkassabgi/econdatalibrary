@@ -244,8 +244,26 @@ def store_frontier(sid, reg):
     return len(files), hi, obs
 
 
+_DISCONTINUED = []
+
+
+def discontinued_ids() -> set:
+    """Source ids listed in updater/discontinued.yaml (archival copies, served frozen, no fetcher).
+
+    WHY (AR-355, 2026-10-20). This generator never read that file, so a source with no registry entry fell to the
+    `run_location` default and its page said "runs where: cloud (GitHub Actions)" - untrue for every archival
+    source (unctad_trademerchgr's page said it after its registry entry and fetcher were removed). The SAME reader
+    as the freshness sync (core.sync_state_d1._discontinued_ids), so the two never disagree; an unreadable file
+    stops the run there too. Read once per process."""
+    if not _DISCONTINUED:
+        from core.sync_state_d1 import _discontinued_ids               # noqa: PLC0415
+        _DISCONTINUED.append(_discontinued_ids())
+    return _DISCONTINUED[0]
+
+
 def render(sid, reg, st, runs, cat, served, with_store=False, findings=None):
     e = reg.get(sid, {})
+    archival = sid.lower() in discontinued_ids()
     units = st.get(sid, [])
     L = []
     A = L.append
@@ -269,7 +287,10 @@ def render(sid, reg, st, runs, cat, served, with_store=False, findings=None):
     A(f"| check cadence | {_fmt(e.get('cadence'))} |")
     if e.get("data_cadence"):
         A(f"| **data** cadence (lateness clock) | {e['data_cadence']} |")
-    A(f"| runs where | {_fmt(e.get('run_location'), 'cloud (GitHub Actions)')} |")
+    if archival:
+        A("| runs where | nowhere — an archival copy, not updated (listed in `updater/discontinued.yaml`) |")
+    else:
+        A(f"| runs where | {_fmt(e.get('run_location'), 'cloud (GitHub Actions)')} |")
     A(f"| refresh cost | {_fmt(e.get('refresh_cost'))} |")
     A(f"| store dir | `data/clean_full/{_fmt(e.get('out_dir'), sid)}/` |")
     if e.get("upstream_verified"):

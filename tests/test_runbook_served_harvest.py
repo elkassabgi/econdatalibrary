@@ -55,3 +55,25 @@ def test_harvest_handles_packed_lines_and_comment_prose(tmp_path, monkeypatch):
     monkeypatch.setattr(gen, "UTIL_TS", str(fixture))
     got = gen.load_served()
     assert got == {"alpha", "bravo", "charlie", "delta", "echo"}, got
+
+
+def _runs_where(page):
+    return next(ln for ln in page.splitlines() if ln.startswith("| runs where |"))
+
+
+def test_an_archival_source_page_does_not_say_it_runs_in_the_cloud():
+    """AR-355. A source in updater/discontinued.yaml has no registry entry, so `run_location` fell to its default
+    and the page said "runs where: cloud (GitHub Actions)". It runs nowhere. Negative control: an unregistered id
+    that is NOT in the file still gets the old default, so the archival line comes from the file, not from the
+    missing registry entry. Also pins the committed unctad_trademerchgr page (regenerated with this change)."""
+    gen = _load("gen_runbook_t3", os.path.join("tools", "gen_runbook.py"))
+    disc = gen.discontinued_ids()
+    assert "unctad_trademerchgr" in disc and len(disc) >= 53
+    args = ({}, {}, {}, {}, set())
+    for sid in ("unctad_trademerchgr", "unesco_clte", "imf_ifs"):
+        row = _runs_where(gen.render(sid, *args))
+        assert "nowhere" in row and "archival copy" in row and "cloud" not in row, (sid, row)
+    assert "cloud (GitHub Actions)" in _runs_where(gen.render("zz_not_listed_anywhere", *args))
+    page = open(os.path.join(ROOT, "docs", "runbook", "unctad_trademerchgr.md"), encoding="utf-8").read()
+    row = _runs_where(page)
+    assert "nowhere" in row and "cloud" not in row, row
