@@ -80,9 +80,8 @@ export const WITHHELD_FLOOR: readonly string[] = [
   "insee_melodi:DS_RP_TD_POPULATION_AGESEX_PRINC",
   "insee_melodi:DS_RP_TD_POPULATION_PCSAGESEX_COMP",
   "insee_melodi:DS_SIDE_CREA_COM",
-  "insee_melodi:DS_SIDE_CREA_DEP_REG_NAT",
   "insee_melodi:DS_SIDE_CREA_ENT_DEP_REG_NAT_CJ",
   "insee_melodi:DS_SIDE_STOCKS_COM",
   "insee_melodi:DS_TOUR_CAP",
 ];
-export const WITHHELD_FLOOR_ETAG = "floor-a187282230b2";
+export const WITHHELD_FLOOR_ETAG = "floor-5d6432cabbcb";
