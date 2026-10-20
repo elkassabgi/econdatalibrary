@@ -111,6 +111,7 @@ RATE_WINDOW_S = 10            # the publisher's rate window: GET /pxen/api/v1/en
 TREE_SEARCH_MIN = 15.0
 THROTTLE_STREAK_STOP = 2      # this many tables in a row throttled out (HTTP 429 on every try) stop the
                               # pass, as ssb #177 does: the rest is deferred, fetched rows still merge
+RETRY_AFTER_STOP_S = 60       # a 429 asking for longer than this stops the pass at once (ssb #177)
 BUDGET_FLOOR_MIN = 2.0        # a positive window too short for the margin still gets this budget
                               # (capped at half the window), never a silent zero
 
@@ -353,8 +354,13 @@ class BudgetCut(TransientError):
 
 
 class Throttled(TransientError):
-    """HTTP 429 on every try of one request. A failed table (retrying later can help); update() also
-    counts it towards THROTTLE_STREAK_STOP."""
+    """HTTP 429 on every try of one request, or a Retry-After longer than RETRY_AFTER_STOP_S
+    (`stop_now`). A failed table (retrying later can help); update() counts it towards
+    THROTTLE_STREAK_STOP, and stops the pass at once on `stop_now`."""
+
+    def __init__(self, msg: str, stop_now: bool = False):
+        super().__init__(msg)
+        self.stop_now = stop_now
 
 
 def _stat(sess, key: str, n: int = 1) -> None:
@@ -413,7 +419,30 @@ def _wait_429(sess, r, what: str) -> None:
     _stat(sess, "http429")
     h = getattr(r, "headers", None) or {}
     print(f"[{SOURCE}] HTTP 429 on {what}: Retry-After={h.get('Retry-After')!r}", flush=True)
+    raw = _raw_retry_after_s(r)
+    if raw is not None and raw > RETRY_AFTER_STOP_S:
+        # The shared helper clamps to 120 s, so "Retry-After: 3600" would be slept as 121 s and retried
+        # inside the server's window (ssb #177, AR-352 #4). Stop the pass instead of waiting it out.
+        raise Throttled(f"{what}: HTTP 429 with Retry-After {raw} s", stop_now=True)
     _wait(sess, retry_after_seconds(r, default=RATE_WINDOW_S), what)
+
+
+def _raw_retry_after_s(resp):
+    """The server's Retry-After in seconds, UNCLAMPED (both RFC 9110 forms), or None."""
+    h = getattr(resp, "headers", None) or {}
+    raw = str(h.get("Retry-After") or "").strip()
+    if not raw:
+        return None
+    if raw.isdigit():
+        return int(raw)
+    try:
+        from email.utils import parsedate_to_datetime
+        when = parsedate_to_datetime(raw)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=dt.timezone.utc)
+        return int((when - dt.datetime.now(dt.timezone.utc)).total_seconds())
+    except Exception:                                        # noqa: BLE001
+        return None
 
 
 def _get_meta(sess, url):
@@ -1054,6 +1083,11 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
                 tally.transient_unit(f"{tpath}: {e}")
                 last_done, first = _work_key((db, t)), False
                 streak += 1
+                if getattr(e, "stop_now", False):
+                    print(f"[{SOURCE}] {e} - longer than {RETRY_AFTER_STOP_S} s, the pass stops here",
+                          flush=True)
+                    stop, cut_at = "retry_after", k_idx + 1
+                    break
                 if streak >= THROTTLE_STREAK_STOP:
                     # ssb #177's rule: a throttled sweep only spends its budget being refused
                     print(f"[{SOURCE}] {streak} tables in a row were throttled (HTTP 429 on every try) - "
@@ -1281,21 +1315,36 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
         # finalize() names only the structural tables here, so a budget stop would leave no trace in
         # the stored note (review 2026-10-19, C7). The clause goes BEFORE the offender list, which the
         # orchestrator's clip may cut.
-        raise DefinitiveError(_with_deferral(str(e), tally, stop)) from e
+        # The transient tables too (AR-352 #2): while the 7 refusals stand, finalize raises on every
+        # pass and its message names only the structural tables, so one 5xx / timeout / 429 table
+        # would be invisible in state and in the digest.
+        raise DefinitiveError(_with_deferral(_with_transient(str(e), tally), tally, stop)) from e
     if tally.deferred and res.error and "deferred" not in res.error:
         res.error = _with_deferral(res.error, tally, stop)  # finalize() names transients before deferrals
     return res
 
 
 _STOP_WORDS = {"budget": "budget", "tree": "table-tree search",
-               "throttled": f"throttle ({THROTTLE_STREAK_STOP} tables in a row HTTP 429)"}
+               "throttled": f"throttle ({THROTTLE_STREAK_STOP} tables in a row HTTP 429)",
+               "retry_after": f"throttle (Retry-After over {RETRY_AFTER_STOP_S} s)"}
+
+
+def _with_transient(msg: str, tally) -> str:
+    """Insert the transient count and the first transient table before the offender list."""
+    if not tally.transient:
+        return msg
+    clause = (f"; also {tally.transient} table(s) transient-failed (5xx, timeout or HTTP 429)"
+              f" (first: {tally.transient_ids[0] if tally.transient_ids else '?'})")
+    at = msg.find(" [")
+    return msg[:at] + clause + msg[at:] if at >= 0 else msg + clause
 
 
 def _with_deferral(msg: str, tally, stop=None) -> str:
     if not tally.deferred:
         return msg
-    why = (f"deferred after {THROTTLE_STREAK_STOP} tables in a row were throttled (HTTP 429)"
-           if stop == "throttled" else "deferred by budget")
+    why = {"throttled": f"deferred after {THROTTLE_STREAK_STOP} tables in a row were throttled (HTTP 429)",
+           "retry_after": f"deferred after an HTTP 429 asked to wait over {RETRY_AFTER_STOP_S} s"
+           }.get(stop, "deferred by budget")
     clause = (f"; also {tally.deferred} table(s) {why}, not reached in this pass"
               f" (first: {tally.deferred_ids[0] if tally.deferred_ids else '?'})")
     at = msg.find(" [")

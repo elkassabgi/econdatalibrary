@@ -151,6 +151,68 @@ def test_a_kill_inside_a_later_segment_keeps_the_bookmark_of_the_merged_one(tmp_
     assert _keys(tmp_path, "B") == [], "B's segment was in flight: nothing of it is claimed"
 
 
+def test_a_kill_keeps_the_sidecars_of_the_merged_segment(tmp_path, monkeypatch):
+    """AR-352 #1: _labels.json and _withdrawn.json are written after each segment, so a kill in a
+    later segment does not lose what the merged one learned (R273)."""
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(H.config, "source_dir", lambda s: str(tmp_path))
+    monkeypatch.setattr(H, "_load_catalog", lambda: _cat({"A": 2, "B": 2}))
+    monkeypatch.setattr(H, "Deadline", lambda minutes: _DL())
+
+    def fetch(sess, db, path, prefix, since, **k):
+        if f"{db}/{path}" == "B/f/B2.px":
+            raise RuntimeError("simulated kill")
+        sess._hagstofa_labels[prefix] = {"Dim": {"0": "Total"}}
+        if db == "A":
+            sess._hagstofa_withdrawn[f"{db}/f/gone.px"] = {"verdict": "withdrawn", "date": "2026-10-19"}
+        return [(f"{prefix}:Dim=0", B, 1.0)], "data"
+    monkeypatch.setattr(H, "_fetch_table", fetch)
+    with pytest.raises(RuntimeError):
+        H.update(types.SimpleNamespace(config={}, key="hagstofa/_all"), None)
+    labels = json.loads((tmp_path / "_labels.json").read_text(encoding="utf-8"))
+    assert "ICE:A:f:A1.px" in labels and "ICE:A:f:A2.px" in labels, labels
+    assert json.loads((tmp_path / "_withdrawn.json").read_text())["A/f/gone.px"]["verdict"] == "withdrawn"
+
+
+def test_a_transient_table_moves_the_bookmark(tmp_path, monkeypatch):
+    """The design (AR-352 M21): a failed table has a final outcome for this pass and waits one rotation;
+    only deferred tables hold the bookmark."""
+    run, _f = _setup(tmp_path, monkeypatch, {"A": 3},
+                     outcome=lambda db, p: H.TransientError("5xx") if p.endswith("A3.px") else "data")
+    run()
+    assert _bookmark(tmp_path) == "A/f/A3.px"
+
+
+def test_a_budget_cut_books_the_cut_table_once(tmp_path, monkeypatch):
+    """AR-352 M17: 3 tables, BudgetCut on the 2nd -> exactly 2 deferred (the cut table and the 3rd)."""
+    run, _f = _setup(tmp_path, monkeypatch, {"A": 3},
+                     outcome=lambda db, p: H.BudgetCut("cut") if p.endswith("A2.px") else "data")
+    res = run()
+    assert "2 deferred by budget" in res.error, res.error
+
+
+def test_the_structural_note_also_names_transient_tables(tmp_path, monkeypatch):
+    """AR-352 #2: finalize() names only the refused tables when it raises, so a 5xx / timeout / 429
+    table was invisible in state while the 7 refusals stand."""
+    def outcome(db, p):
+        if p.endswith("A1.px"):
+            return "structural"
+        if p.endswith("A2.px"):
+            return H.TransientError("HTTP 503")
+        return "data"
+    run, _f = _setup(tmp_path, monkeypatch, {"A": 3}, outcome=outcome)
+    res = run()
+    assert res.status == "structural"
+    assert "1 table(s) transient-failed" in res.error and "(first: f/A2.px)" in res.error, res.error
+    assert res.error.index("transient-failed") < res.error.index(" ["), "before the offender list"
+
+
+def test_negative_control_a_clean_structural_note_has_no_transient_clause(tmp_path, monkeypatch):
+    run, _f = _setup(tmp_path, monkeypatch, {"A": 2},
+                     outcome=lambda db, p: "structural" if p.endswith("A1.px") else "data")
+    assert "transient" not in run().error
+
+
 # ---- the table-tree search --------------------------------------------------------------------------
 
 def test_a_deferred_tree_search_stops_the_pass_and_leads_the_next_one(tmp_path, monkeypatch):
@@ -295,6 +357,12 @@ def test_a_request_timeout_is_cut_to_the_budget_left(slept):
     assert H.REQUEST_TIMEOUT_FLOOR_S <= log[0] <= 20, log
 
 
+def test_a_cut_timeout_never_drops_below_the_floor(slept):
+    s, log = _sess([_Resp(200, {"variables": []})], left_s=1)
+    H._get_meta(s, "u")
+    assert log == [H.REQUEST_TIMEOUT_FLOOR_S], log
+
+
 def test_negative_control_with_budget_to_spare_the_timeout_is_not_cut(slept):
     s, log = _sess([_Resp(200, {"variables": []})], left_s=600)
     H._get_meta(s, "u")
@@ -381,6 +449,29 @@ def test_429_on_a_listing_honours_retry_after(slept):
     s, _log = _sess([_Resp(429, headers={"Retry-After": "3"}), _Resp(200, [])])
     assert H._listing(s, "u") == []
     assert slept == [4]
+
+
+def test_a_long_retry_after_stops_instead_of_a_clamped_wait(slept):
+    """ssb #177 / AR-352 #4: the shared helper clamps to 121 s, which retries inside the server's window."""
+    s, _log = _sess([_Resp(429, headers={"Retry-After": "3600"}), _Resp(200, {})], left_s=600)
+    with pytest.raises(H.Throttled) as e:
+        H._get_meta(s, "u")
+    assert e.value.stop_now and slept == []
+
+
+def test_negative_control_a_retry_after_at_the_limit_is_waited(slept):
+    s, _log = _sess([_Resp(429, headers={"Retry-After": str(H.RETRY_AFTER_STOP_S)}), _Resp(200, {})], left_s=600)
+    H._get_meta(s, "u")
+    assert slept == [H.RETRY_AFTER_STOP_S + 1]
+
+
+def test_a_long_retry_after_stops_the_pass_at_once(tmp_path, monkeypatch):
+    run, fetched = _setup(tmp_path, monkeypatch, {"A": 4},
+                          outcome=lambda db, p: H.Throttled("HTTP 429 with Retry-After 3600 s", stop_now=True)
+                          if p.endswith("A2.px") else "data")
+    res = run()
+    assert fetched == ["A/f/A1.px", "A/f/A2.px"], fetched
+    assert "2 table(s) deferred after an HTTP 429 asked to wait over 60 s" in res.error, res.error
 
 
 def test_a_retry_after_longer_than_the_budget_left_stops_instead_of_waiting(slept):
