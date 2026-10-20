@@ -1248,6 +1248,46 @@ REG_META = load_registry_meta()
 PAUSED = {sid: m["paused"] for sid, m in REG_META.items() if m["paused"]}
 
 
+def load_discontinued(path=None):
+    """{source_id: entry} from updater/discontinued.yaml - datasets the PUBLISHER retired, served frozen.
+
+    WHY (2026-10-20, review of unctad_trademerchgr). Every decision in that file cites the owner's rule of
+    2026-08-09: archival sources stay listed "labelled so nobody expects fresh data". This generator never read
+    the file, so the label did not exist: a relay-era archival page said "not yet wired - the data here is the
+    verified initial load" (a promise of a fetcher the file says cannot exist), and unctad_trademerchgr, once its
+    registry entry went, would have said "weekly (not automated at the moment)". refresh_rows now prints an
+    archival line for every source listed here, ahead of every other rule.
+
+    An ABSENT file labels nothing (a checkout without it makes no claim). A file that exists and cannot be read,
+    or names no source, STOPS the build: a silent {} would put the false "not yet wired" line back on every archival page."""
+    p = path or os.path.join(os.path.dirname(HERE), "updater", "discontinued.yaml")
+    if not os.path.exists(p):
+        return {}
+    try:
+        import yaml
+        with open(p, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh) or {}
+        out = {str(e["source_id"]): e for e in (doc.get("sources") or [])}
+        if not out:                     # a file that EXISTS and names nobody is a broken file, not "none"
+            raise ValueError("no source_id in it")
+        return out
+    except Exception as e:                                   # noqa: BLE001
+        raise SystemExit(f"FATAL: {p} is unreadable ({type(e).__name__}: {e}) - the archival label of every "
+                         "discontinued source depends on it") from None
+
+
+DISCONTINUED = load_discontinued()
+
+
+def discontinued_rows(entry):
+    """The two refresh rows of a publisher-discontinued source. Every clause is what discontinued.yaml holds: the
+    publisher retired the dataset, the copy here is the last one, and nothing refreshes it."""
+    who = esc(str(entry.get("publisher") or "The publisher").strip())
+    return [("Update cadence", "none &mdash; <em>discontinued by the publisher</em>"),
+            ("Automated refresh", f"<strong>archival</strong> &mdash; {who} has discontinued this dataset. "
+                                  "This is the final copy, and it is not updated.")]
+
+
 def _state_db_path():
     """THE updater's state database (updater.config.STATE_DB: AQUEDUCT_STATE_DIR, else <root>/data/_aqueduct)."""
     root = os.path.dirname(HERE)
@@ -1299,10 +1339,13 @@ _DEFAULT = object()
 BOARD = " See the <a href=\"status.html\">Source Status board</a>."
 
 
-def refresh_rows(sid, cadence, wiring=_DEFAULT, meta=_DEFAULT, state=_DEFAULT):
+def refresh_rows(sid, cadence, wiring=_DEFAULT, meta=_DEFAULT, state=_DEFAULT, disc=_DEFAULT):
     """The "Update cadence" and "Automated refresh" rows of a source page: [(label, html), ...]. Every sentence is
-    one the registry or the updater state proves (AR-345):
+    one the registry, updater/discontinued.yaml or the updater state proves (AR-345):
 
+      discontinued (discontinued.yaml)  "none - discontinued by the publisher"; "archival - <publisher> has
+                                        discontinued this dataset. This is the final copy, and it is not updated."
+                                        Checked FIRST: no other rule may promise a refresh for it.
       paused (registry)                 "(paused)"; "paused - <reason>."
       wired (WIRING: the cloud daily, the heavy matrix, sec-edgar-daily)
                                         the cadence; "live - this database is on the daily update run"
@@ -1317,6 +1360,9 @@ def refresh_rows(sid, cadence, wiring=_DEFAULT, meta=_DEFAULT, state=_DEFAULT):
     No WIRING at all (the registry could not be read) says nothing, as before. Every refresh row links the board."""
     wiring = WIRING if wiring is _DEFAULT else wiring
     meta = REG_META if meta is _DEFAULT else meta
+    disc = DISCONTINUED if disc is _DEFAULT else disc
+    if sid in (disc or {}):
+        return discontinued_rows(disc[sid])
     m = (meta or {}).get(sid) or {}
     rows = []
 

@@ -80,13 +80,15 @@ def _replay(files):
 def test_a_gated_source_is_withheld_from_all_three_projections(tmp_path, monkeypatch):
     db, out = _setup(tmp_path, monkeypatch)
     # upper-cased on purpose: the gate is matched case-insensitively
-    files, counts = d1sync.emit_sql(db, out, gated={GATED.upper()})
+    # discontinued=set(): this test pins the GATE; the discontinued rule (which adds a 'discontinued' source_state
+    # row per updater/discontinued.yaml entry) has its own file, tests/test_state_sync_withholds_discontinued.py
+    files, counts = d1sync.emit_sql(db, out, gated={GATED.upper()}, discontinued=set())
     got = _replay(files)
     for table, ids in got.items():
         assert GATED not in ids, f"a gated source reached {table}"
         assert KEPT in ids, f"positive control: the non-gated source is missing from {table}"
     assert counts["unit_state"] == 1 and counts["source_state"] == 1
-    d1sync.verify_replay(db, files, counts, gated={GATED})
+    d1sync.verify_replay(db, files, counts, gated={GATED}, discontinued=set())
 
 
 def test_without_a_gate_both_are_projected(tmp_path, monkeypatch):

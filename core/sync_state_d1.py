@@ -108,6 +108,83 @@ def _gated_ids() -> set[str]:
     return {s.lower() for s in gen_denylist.committed_gate()}
 
 
+# The publisher-discontinued list, read from the CODE checkout (not ECONDL_ROOT, which can point at a data root).
+DISCONTINUED_YAML = os.path.join(_REPO, "updater", "discontinued.yaml")
+
+
+def _discontinued_ids(path: str | None = None) -> set[str]:
+    """Every source id in updater/discontinued.yaml, lower-cased. _project() publishes them as 'discontinued'.
+
+    WHY (2026-10-20, AR-354 item 1). A discontinued source is served frozen and no fetcher runs it, so whatever
+    state.db last recorded for it is a claim about runs that will never happen again. The 52 relay-era entries
+    never had a state row (/v1/sources showed status, last_updated and cadence null - no label at all). The
+    first successor-era entry, unctad_trademerchgr, ran for two months under the registry: its leftover row
+    ("ok", "weekly", last success 2026-10-01) kept being published, so /v1/sources told users a report UNCTAD
+    had withdrawn was refreshed weekly. A live:false flag or a removed registry entry does not change that row
+    (only a success writes source_state, R231; the sync is upsert-only), and state.db rows are never deleted
+    (they are history). So the rule lives here, where the projection is built: the D1 sync and the self-hosted
+    origin builder (tools/selfhost/origin_copies.py) both call emit_sql. source_data_through is NOT touched:
+    "data through" is a fact about the served data.
+
+    An ABSENT file labels nothing (a checkout without it makes no claim). A file that exists but cannot be
+    parsed, or names no source, STOPS the sync: publishing blind would re-publish every frozen source's stale row, and
+    tests/test_discontinued_registry.py parses the same file in CI, so this cannot reach a run unnoticed.
+    """
+    p = path or DISCONTINUED_YAML
+    if not os.path.exists(p):
+        return set()
+    try:
+        import yaml                                                          # noqa: PLC0415
+        with open(p, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh) or {}
+        ids = {str(e["source_id"]).lower() for e in (doc.get("sources") or [])}
+        if not ids:                     # a file that EXISTS and names nobody is a broken file, not "none"
+            raise ValueError("no source_id in it")
+        return ids
+    except Exception as e:                                                   # noqa: BLE001
+        raise SystemExit(f"FATAL: {p} is unreadable ({type(e).__name__}: {e}) - refusing to publish freshness "
+                         "rows without it (every discontinued source's stale row would go out)") from None
+
+
+DISCONTINUED_STATUS = "discontinued"
+DISCONTINUED_NOTE = "publisher discontinued; served frozen (updater/discontinued.yaml)"
+
+
+def _project(table: str, rows: list, cols: list[str], gated: set[str], frozen: set[str]) -> list[tuple]:
+    """The rows of `table` the projection publishes. ONE definition, used by emit_sql and verify_replay.
+
+      every table      a gated source's rows are withheld (the gate wins over everything, and is never named)
+      unit_state       a discontinued source's rows are withheld: no fetcher runs it, so a unit row is a claim
+                       about runs that will never happen (the 52 relay-era entries never had one)
+      source_state     a discontinued source gets exactly ONE row with status 'discontinued' and cadence NULL.
+                       A recorded row keeps its strategy and last_success/last_attempt (true history: when it
+                       was last refreshed); a source with no recorded row gets one with those NULL. The D1 sync
+                       is upsert-all, so this OVERWRITES a stale row ("ok", "weekly") instead of leaving it -
+                       no delete is needed. /v1/sources then says status "discontinued", cadence null.
+    """
+    keep = _servable(rows, cols, gated)
+    if table == "unit_state":
+        return _servable(keep, cols, frozen)
+    if table != "source_state":
+        return keep
+    i_sid = cols.index("source_id")
+    blank = {c: None for c in cols}
+    out, seen = [], set()
+    for r in keep:
+        sid = str(r[i_sid]).lower()
+        if sid not in frozen:
+            out.append(tuple(r))
+            continue
+        d = dict(zip(cols, r))
+        d.update(status=DISCONTINUED_STATUS, cadence=None, note=DISCONTINUED_NOTE)
+        out.append(tuple(d[c] for c in cols))
+        seen.add(sid)
+    for sid in sorted(frozen - seen - gated):
+        d = dict(blank, source_id=sid, status=DISCONTINUED_STATUS, note=DISCONTINUED_NOTE)
+        out.append(tuple(d[c] for c in cols))
+    return out
+
+
 def _echo(s: str) -> str:
     """Make wrangler's output printable on THIS stdout, whatever its encoding.
 
@@ -212,20 +289,23 @@ def data_through_stmts(dt_rows: list[tuple[str, str]]) -> list[str]:
 
 
 def emit_sql(state_db: str, out_dir: str, gated: set[str] | None = None, catalogue: str | None = None,
-             data_through: bool = True) -> tuple[list[str], dict[str, int]]:
+             data_through: bool = True, discontinued: set[str] | None = None) -> tuple[list[str], dict[str, int]]:
     """Emit chunked upsert .sql files for every NON-GATED row of the freshness tables.
 
     Returns (ordered file paths, {table: row count}). Files must be executed in
     the returned order (DDL for a table always precedes its upserts). `gated`
-    defaults to the committed worker gate (_gated_ids); tests pass their own. `catalogue` names the
+    defaults to the committed worker gate (_gated_ids); tests pass their own. `discontinued` (default:
+    _discontinued_ids) is applied by _project to unit_state/source_state only, never to data_through. `catalogue` names the
     catalogue data_through is computed from (default: ECONDL_CATALOG or the checkout's). data_through=False
     leaves source_data_through out: the self-hosted origin reads only state.db inside the writer lock and
     computes data_through from its own copy afterwards (tools/selfhost/origin_copies.py; R1191 finding 5).
     """
     gated = _gated_ids() if gated is None else {s.lower() for s in gated}
+    frozen = _discontinued_ids() if discontinued is None else {s.lower() for s in discontinued}
     # Strictly read-only: this script must never write (or WAL-touch) state.db.
     conn = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True)
     counts: dict[str, int] = {}
+    recorded: dict[str, int] = {}
     stmts: list[str] = []
     try:
         for table in TABLES:
@@ -234,7 +314,9 @@ def emit_sql(state_db: str, out_dir: str, gated: set[str] | None = None, catalog
             upd = ", ".join(f'"{c}"=excluded."{c}"' for c in cols if c not in pk)
             conflict = ", ".join(f'"{c}"' for c in pk)
             stmts.append(ddl)  # no-op on the live D1; makes a fresh D1 workable
-            rows = _servable(conn.execute(f"SELECT {collist} FROM {table}").fetchall(), cols, gated)
+            raw = conn.execute(f"SELECT {collist} FROM {table}").fetchall()
+            recorded[table] = len(_servable(raw, cols, gated))     # what state.db HOLDS, for the zero-row guard
+            rows = _project(table, raw, cols, gated, frozen)
             counts[table] = len(rows)
             for i in range(0, len(rows), ROWS_PER_STMT):
                 chunk = rows[i:i + ROWS_PER_STMT]
@@ -278,7 +360,10 @@ def emit_sql(state_db: str, out_dir: str, gated: set[str] | None = None, catalog
     # exactly the condition the guard is for (a skipped --pull-state). Caught by
     # tests/test_updater_phase1.py::test_zero_row_projection_refused after the
     # data_through emission was added, 2026-08-23.
-    state_rows = counts.get("unit_state", 0) + counts.get("source_state", 0)
+    # And on the rows state.db RECORDS, not on what is emitted: the 'discontinued' source_state rows are
+    # made here from updater/discontinued.yaml, so an EMPTY state.db still emits ~50 of them, and counting
+    # those would let a skipped --pull-state through again (caught by that same test, 2026-10-20).
+    state_rows = recorded.get("unit_state", 0) + recorded.get("source_state", 0)
     if state_rows == 0:
         raise SystemExit(
             f"FATAL: {state_db} has zero unit_state/source_state rows — refusing to "
@@ -310,15 +395,18 @@ def emit_sql(state_db: str, out_dir: str, gated: set[str] | None = None, catalog
 
 
 def verify_replay(state_db: str, files: list[str], counts: dict[str, int],
-                  gated: set[str] | None = None) -> None:
+                  gated: set[str] | None = None, discontinued: set[str] | None = None) -> None:
     """Replay the emitted SQL into in-memory SQLite; require row-for-row equality.
 
     Runs the files TWICE to also prove idempotency (second pass must change
     nothing). Any mismatch is fatal — broken SQL must never reach remote D1.
-    Equality is against the NON-GATED rows of the source db, and the replay must
-    hold no gated row at all: a withheld row that still reached the SQL is fatal.
+    Equality is against _project() of the source db (gate withheld; discontinued sources: no unit_state row and
+    one source_state row marked 'discontinued'). Then, independently of _project: the replay must hold no gated
+    row, no discontinued unit_state row, and for every discontinued source exactly one source_state row whose
+    status is 'discontinued' and whose cadence is NULL - a stale "ok"/"weekly" row that reached the SQL is fatal.
     """
     gated = _gated_ids() if gated is None else {s.lower() for s in gated}
+    frozen = _discontinued_ids() if discontinued is None else {s.lower() for s in discontinued}
     src = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True)
     mem = sqlite3.connect(":memory:")
     try:
@@ -331,13 +419,29 @@ def verify_replay(state_db: str, files: list[str], counts: dict[str, int],
             order = ", ".join(f'"{c}"' for c in pk)
             collist = ", ".join(f'"{c}"' for c in cols)
             q = f"SELECT {collist} FROM {table} ORDER BY {order}"
-            want = _servable(src.execute(q).fetchall(), cols, gated)
+            ipk = [cols.index(c) for c in pk]
+            want = sorted(_project(table, src.execute(q).fetchall(), cols, gated, frozen),
+                          key=lambda r: tuple(r[i] for i in ipk))
             got = mem.execute(q).fetchall()
             # BEFORE the equality test, so this refusal is the one that fires for a gated row: after
             # it, the filtered `want` already makes any gated row a plain mismatch and this line
             # would be unreachable (review of PR #36).
             if len(_servable(got, cols, gated)) != len(got):
                 raise SystemExit(f"FATAL: a gated source's row reached the {table} SQL — not executing")
+            # The discontinued rule, checked on the REPLAY and not through _project (so a broken _project that
+            # emits and expects the same stale row cannot pass).
+            i_sid = cols.index("source_id")
+            mine = [r for r in got if str(r[i_sid]).lower() in frozen]
+            if table == "unit_state" and mine:
+                raise SystemExit(f"FATAL: a discontinued source's row reached the {table} SQL (a run claim for a "
+                                 "source no fetcher runs) — not executing")
+            if table == "source_state":
+                i_st, i_cad = cols.index("status"), cols.index("cadence")
+                stale = [r[i_sid] for r in mine if r[i_st] != DISCONTINUED_STATUS or r[i_cad] is not None]
+                missing = sorted(frozen - gated - {str(r[i_sid]).lower() for r in mine})
+                if stale or missing:
+                    raise SystemExit(f"FATAL: discontinued source(s) not marked in the source_state SQL "
+                                     f"(stale status/cadence: {stale[:5]}, no row: {missing[:5]}) — not executing")
             if got != want:
                 raise SystemExit(
                     f"FATAL: replay verify failed for {table} "
@@ -419,11 +523,13 @@ def main(argv: list[str] | None = None) -> None:
 
     out_dir = tempfile.mkdtemp(prefix="d1_state_sync_")
     gated = _gated_ids()   # read ONCE, so the emit and its verifier judge the same gate
-    files, counts = emit_sql(args.state_db, out_dir, gated=gated)
+    frozen = _discontinued_ids()   # ...and the same discontinued list
+    files, counts = emit_sql(args.state_db, out_dir, gated=gated, discontinued=frozen)
     total = sum(counts.values())
     print(f"emitted {len(files)} file(s), {total} rows "
-          f"({', '.join(f'{t}={n}' for t, n in counts.items())}) -> {out_dir}")
-    verify_replay(args.state_db, files, counts, gated=gated)
+          f"({', '.join(f'{t}={n}' for t, n in counts.items())}) -> {out_dir}"
+          f"; {len(frozen)} discontinued source(s) published as '{DISCONTINUED_STATUS}' (no unit rows)")
+    verify_replay(args.state_db, files, counts, gated=gated, discontinued=frozen)
 
     if args.dry_run:
         print("DRY RUN — not executing. SQL files:")

@@ -79,6 +79,33 @@ def test_archival_series_are_still_counted_as_not_auto_updating():
     assert "{gap_series + arch_series:>12,} series" in src
 
 
+def test_a_discontinued_source_stays_served():
+    """'Served-frozen' is half of every entry's decision. Removing a registry entry (the B1 shape, used by
+    unctad_trademerchgr on 2026-10-20) takes only the RUNNER path away; the worker must still resolve the ids.
+    A discontinued source dropped from SUPPORTED_SOURCES would answer 501 for data nobody can re-crawl."""
+    from tools.audit_schedule_coverage import supported_sources
+    served = supported_sources()
+    assert "unctad_trademerchtotal" in served, "positive control: the parser must see a known served source"
+    assert "zz_never_a_source" not in served, "negative control: the parser must not admit an invented id"
+    dropped = sorted({e["source_id"] for e in _entries()} - served)
+    assert not dropped, (
+        f"{dropped} are declared served-frozen in discontinued.yaml but are missing from SUPPORTED_SOURCES in "
+        f"api/worker/src/util.ts - users would get 501 for archival data that no fetcher can rebuild")
+
+
+def test_a_coverage_claim_names_a_store_that_is_still_served():
+    """unctad_mttgra's entry keeps its store because 'only 223 of 351 series are covered by trademerchgr'.
+    That sentence is true only while unctad_trademerchgr is served with the same data. If someone retires the
+    trademerchgr ids, this fails and points at the entry whose reasoning just changed (AR-354 item 5)."""
+    from tools.audit_schedule_coverage import supported_sources
+    by_id = {e["source_id"]: e for e in _entries()}
+    assert "covered by trademerchgr" in str(by_id["unctad_mttgra"]["finding"]), (
+        "the unctad_mttgra entry no longer cites trademerchgr - update this test with the new dependency")
+    assert "unctad_trademerchgr" in supported_sources(), (
+        "unctad_mttgra's archival verdict relies on unctad_trademerchgr being served; re-check it before "
+        "retiring the trademerchgr ids")
+
+
 def test_a_missing_file_does_not_shrink_the_queue():
     from tools.audit_schedule_coverage import discontinued
     assert isinstance(discontinued(), dict)
