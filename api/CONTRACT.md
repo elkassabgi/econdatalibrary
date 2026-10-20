@@ -216,6 +216,11 @@ Every registered source with license/attribution + a freshness summary
 deliberately NOT pinned here — it changes whenever a source is added, or removed because
 we cannot host it (as in the removals of 2026-07-22/23). Read it from the endpoint.
 
+> **`status: "late" | "paused" | "retired"` (since 2026-10-20).** `freshness.status` is the status of the
+> last SUCCESSFUL run, not of the last run, so a source that kept running and ended `partial` kept reading
+> `"ok"` (istat did, 98 days after its last success). The worker now labels it — see "Freshness vocabulary"
+> under Canonical response shapes for the exact rule.
+
 > **`status: "discontinued"` (since the freshness sync that follows 2026-10-20).** A source listed in
 > `updater/discontinued.yaml` — an archival copy we keep serving and no longer update — reads
 > `freshness.status = "discontinued"` and `freshness.cadence = null`. `last_updated` is the last
@@ -235,6 +240,7 @@ Per dataset, projected from `unit_state` + `source_state` + registry cadence:
   "datasets": [{
     "source": "bcb", "unit": "_all",
     "status": "ok",                       // ok | no_change | partial | transient_fail | discontinued
+                                          //   | late | paused | retired  (vocabulary, see Canonical shapes)
     "last_updated": "2026-06-24T00:10:55Z",   // unit_state.last_success_utc
     "source_date_accessed": "2026-06-24T00:10:55Z",
     "source_version": "<upstream_vintage>",   // unit_state.upstream_vintage (may be null)
@@ -261,10 +267,13 @@ Per dataset, projected from `unit_state` + `source_state` + registry cadence:
 Canonical SQL (runs verbatim on D1 — D1 *is* SQLite):
 ```sql
 SELECT u.source_id, u.unit_id, u.status, u.last_success_utc, u.upstream_vintage,
-       u.last_obs_date, u.obs_count, s.cadence
+       u.last_obs_date, u.obs_count, s.cadence,
+       s.status AS source_status, s.last_success_utc AS source_last_success,
+       u.last_error, u.last_attempt_utc
 FROM unit_state u LEFT JOIN source_state s ON s.source_id = u.source_id
 ORDER BY u.source_id, u.unit_id;
 ```
+The last four columns (2026-10-20) feed the freshness vocabulary and are never printed: same rows, same join.
 `next_update_expected` = `last_success_utc` + {daily:1d, weekly:7d, monthly:30d,
 quarterly:91d}. A unit with no `last_success_utc` reports `last_updated:null,
 status:"<current>"` — never a fabricated date.
@@ -315,8 +324,37 @@ diverged, these are the pinned canonical shapes (the verify pass enforces them):
 
 - **`/v1/sources`** — NESTED per source:
   `{ "source": <id>, "name", "homepage", "license": {id,name,url,reservable,commercial_ok,attribution_required,no_modify}|null, "freshness": {status,last_updated,cadence}|null }`.
-  `freshness.status` is the last recorded run status, or `"discontinued"` (cadence null) for a source in
-  `updater/discontinued.yaml`.
+  `freshness.status` is the status of the source's LAST SUCCESSFUL run (`ok` or `no_change`: the updater
+  writes `source_state` only on a success, so a later `partial` run never changes it), or null when it has
+  never succeeded; or one of the labels below. It is NOT the last run's status - that is on
+  `/v1/last-updates`. Labels: `"discontinued"` (cadence null) for a source in `updater/discontinued.yaml`;
+  `"late"`, `"paused"`, `"retired"` from the freshness vocabulary (next section).
+
+- **Freshness vocabulary (since 2026-10-20; new values of the existing `status` strings, no shape change)**
+  — `/v1/sources` `freshness.status` and `/v1/last-updates` `status`. Computed by the worker
+  (`api/worker/src/freshness.ts`; the same rule in Python, `core/freshness_vocab.py`, runs the dev shim), once
+  per SOURCE, from its `source_state` row, its `unit_state` rows and classes generated from the registry
+  (`api/worker/src/freshnessClasses.ts`, `tools/gen_freshness_classes.py`). Precedence: `discontinued` >
+  `paused` > `retired` > `late` > the stored value.
+  - `"late"` — the source is still run, but its last success is older than 2 x its cadence (the health
+    gate's clock: daily 1, weekly 7, monthly 28, quarterly 90, annual 365, irregular 7 days, times 2.0). On
+    `/v1/sources` it replaces `ok`/`no_change`; on `/v1/last-updates` it replaces `ok`, `no_change`,
+    `partial` and `transient_fail` on every unit row of that source. `last_updated` and
+    `next_update_expected` (already past) are unchanged. A source that has NEVER succeeded is not labelled
+    late: there is no success to date (its status stays null, or the unit's own status). Not late, because
+    their currency is judged on their LATEST pass, which must have run within the same window: a registry
+    `rotating: true` source whose latest pass refreshed it - a budget deferral that failed nothing, a pass
+    in which fewer than half of the attempted sub-units failed, or a completed fetch (today `ecb`) - and a `served_by: lane` source whose reporter's latest verdict says the lane is current (today
+    `statcan`).
+  - `"paused"` — the registry marks the source `paused:` (updates on hold by decision; the source's page
+    gives the reason). From the registry, never from a state row. `next_update_expected: null`. A paused
+    source with no state row at all still gets a `freshness` object on `/v1/sources` (other fields null).
+  - `"retired"` — no run mechanism refreshes the source any more and it is not a discontinued archival
+    source: not registry `live: true`, not in the updater-heavy matrix, not run by sec-edgar-daily, not
+    `run_location: local`, not `served_by: lane`, not a D1-only writer, not paused. Its data stays where it
+    is; `next_update_expected: null` (no update is promised). On 2026-10-20 the rule selects `ksh`,
+    `imf_hpdd` and `imf_fiscaldecentralization` among the ids the API carries; none of them is listed on
+    `/v1/sources`.
 
 - **`/v1/last-updates` cadence** — `next_update_expected` = `last_success_utc` +
   {daily:1, weekly:7, monthly:30, quarterly:91, **annual:365**} days. Any other cadence

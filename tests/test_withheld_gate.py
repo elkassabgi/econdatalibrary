@@ -36,6 +36,7 @@ EXEMPT = {
     "SERIES_IDS_FOR_SOURCE": "kept for callers/tests; no handler prepares it",
     "LAST_UPDATES": "unit grain (state tables), no series id",
     "UNIT_STATE_FOR_SOURCE": "unit grain",
+    "unitFreshnessSql": "unit grain (state tables), no series id",
     "carveoutExcl": "a fragment builder",
     "hasCarveouts": "a predicate",
     "withheldExcl": "THE fragment builder itself",

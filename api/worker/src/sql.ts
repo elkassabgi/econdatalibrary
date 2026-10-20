@@ -337,12 +337,27 @@ SELECT series_id FROM series WHERE source_id = ? ORDER BY series_id`;
 // state.db (D1 binding `STATE`, or same DB with both tables) -----------------
 
 /** THE CANONICAL last-updates SQL, copied verbatim from CONTRACT.md §/v1/last-updates.
- *  Runs unchanged on D1 (D1 is SQLite). 48 rows; 0 ok/no_change with null. */
+ *  Runs unchanged on D1 (D1 is SQLite). 48 rows; 0 ok/no_change with null.
+ *  The last four columns (2026-10-20) feed the freshness vocabulary (src/freshness.ts): the source's
+ *  success-only status and stamp, and each unit's note and last attempt. Same rows, same join: the
+ *  rows read do not change. */
 export const LAST_UPDATES = `
 SELECT u.source_id, u.unit_id, u.status, u.last_success_utc, u.upstream_vintage,
-       u.last_obs_date, u.obs_count, s.cadence
+       u.last_obs_date, u.obs_count, s.cadence,
+       s.status AS source_status, s.last_success_utc AS source_last_success,
+       u.last_error, u.last_attempt_utc
 FROM unit_state u LEFT JOIN source_state s ON s.source_id = u.source_id
 ORDER BY u.source_id, u.unit_id`;
+
+/** The unit rows /v1/sources needs for the freshness vocabulary: only the sources whose label is judged on
+ *  their latest pass (src/freshness.ts needsUnits - registry `rotating: true` and `served_by: lane`), so
+ *  the statement is a primary-key seek per id ((source_id, unit_id) is the key), never a scan. `n`
+ *  placeholders, n <= 100 (D1's bound-variable cap, R224); the handler checks. */
+export function unitFreshnessSql(n: number): string {
+  if (!Number.isInteger(n) || n < 1 || n > 100) throw new Error(`unitFreshnessSql: bad id count ${n}`);
+  return `SELECT source_id, unit_id, status, last_error, last_attempt_utc, last_success_utc
+FROM unit_state WHERE source_id IN (${Array(n).fill("?").join(", ")}) ORDER BY source_id, unit_id`;
+}
 
 /** Freshness for ONE source's units (used to enrich series metadata last_updated). */
 export const UNIT_STATE_FOR_SOURCE = `
