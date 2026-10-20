@@ -579,7 +579,7 @@
     "vintage_signal": "PxWeb per-table metadata 'updated' field (GET table metadata at https://px.hagstofa.is/pxis/api/v1/...): compare each table's 'updated' to last ingest, re-pull only changed tables.",
     "since_param": "PxWeb selection 'values' filter on the time dimension (post only the latest period codes, i.e. period >= last_obs+1); no literal startPeriod query string — selection is a POSTed JSON query.",
     "out_paths_note": "per-database files data/clean_full/hagstofa/{Efnahagur,Atvinnuvegir,Ibuar,Samfelag,Umhverfi}.parquet (5 files) plus _catalog.json.",
-    "rate_note": "No key; RATE=0.3s between calls, 429 → sleep 30s; MAX_CELLS=100000 caps large tables (silently aggregates non-time dims — coverage limit, not a refresh blocker).",
+    "rate_note": "No key; RATE=0.25s between calls (publisher config: 100 calls per 10 s); HTTP 429 honours Retry-After, else waits one 10-s window; every request timeout and retry wait is cut to the budget left; MAX_CELLS=100000 caps large tables (silently aggregates non-time dims — coverage limit, not a refresh blocker).",
     "key_env": "none",
     "confidence": "medium",
     "open_question": "_catalog.json cached indefinitely so new tables/databases won't appear without invalidation; and the MAX_CELLS auto-aggregation means some series are already truncated — confirm whether to raise the cell cap when adding incremental support."

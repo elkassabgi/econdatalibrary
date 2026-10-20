@@ -2116,3 +2116,25 @@ Also seen, smaller: tables that store nothing (21 span_time tables plus 2 empty 
 every pass, because `due` includes "subject file missing"; 25 due tables drained in 4.8 min that run.
 VNASFK/VNKSFK have never been stored or catalogued: once a pass merges them they are uncatalogued store tables
 until someone catalogues them.
+
+### hagstofa - OPEN: "partial forever" while the 7 refused tables stand (review AR-352, 2026-10-20)
+
+PR #178 makes every hagstofa pass end inside its budget. It does NOT change what follows.
+
+- Seven stored tables are refused as RESTRUCTURED or re-coded (MAN02007, MAN43006, VIN10001, VIN10040,
+  SKO02108, VIN00002, VIN00003 in the 2026-10-16 note). Each is a `structural_unit`, so `finalize()`
+  raises `DefinitiveError` on every pass that ends. `orchestrate.py` (the `except DefinitiveError`
+  branch) then records `partial` with NO `series_cursors`, and the CSV phase does not run.
+- So no hagstofa CSV has been re-derived by the updater since at least 2026-08-24: every finished run
+  since then is structural, and every killed run is `transient_fail`. Rows merge into the store; the
+  served CSVs do not move. The served lag is NOT measured (AR-352 made no R2 or served read).
+- `last_success_utc` is never set, so the health row is a permanent ATTENTION that looks the same
+  whether hagstofa is healthy (refusing 7 tables) or broken.
+
+Fix pattern to evaluate: `_giant.run_giant` returns `partial` WITH the changed set when its
+`finalize()` raises on structural sub-units. FIRST STEP, before any code: measure how many CSVs that
+would derive per pass. Cursors are seeded with every reached table's on-disk frontier, so "changed"
+would be every table of every reached database; count the catalogue ids that maps to (the catalogue
+holds 1,068 hagstofa ids) and check it against the runner's derive budget. If it does not fit,
+report only the tables that actually merged rows. The re-keys of the 7 tables (catalogue path,
+frozen D1 sync) would also clear it.
