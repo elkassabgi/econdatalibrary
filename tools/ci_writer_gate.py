@@ -45,6 +45,9 @@ CRON_SPACING = dt.timedelta(hours=12)          # between a workflow's two crons
 #     2026-09-24  CLEAR 11:03:25Z, run created 11:17:48Z (317.8 min after the cron)
 #     2026-10-07  CLEAR 12:22:32Z, run created 12:50:29Z (410.5 min)
 #     2026-10-20  CLEAR 11:00:13Z, run created 11:04:16Z (304.3 min); push refused at 14:48:11Z
+# The same CLEAR cost the CLOUD its record 7 more times in that period (09-29, 10-01..10-05, 10-13: the desktop
+# pushed first and the cloud run's "Push state to R2" step failed). Of the 34 desktop passes since 2026-09-20
+# that got a CLEAR, these 10 were overlapped by a scheduled run; this rule blocks all 10 and none of the 24.
 # Start lag (createdAt - cron, the field this gate reads) of the 237 scheduled runs of both writers over
 # 2026-08-21..10-20: median 278, p90 402, p95 428, p99 661, max 710 min; 83 of 237 runs came later than
 # 300 min, 13 later than 420, 4 later than 540. The 06:00Z cron alone: median 315, 35 of 59 later than 300.

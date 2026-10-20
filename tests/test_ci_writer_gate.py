@@ -190,6 +190,39 @@ def test_every_push_failure_since_2026_09_20_now_reads_blocked(pass_start, gate_
         assert "updater-daily.yml 06:00Z cron has not started yet" in reason, reason
 
 
+# EVERY desktop pass since 2026-09-20 that the gate let start (the "CI writer gate: CLEAR" line of each
+# logs/local_heavy_<stamp>.log, 34 passes), split by whether a scheduled cloud run was created between that
+# CLEAR and the pass's last line. 10 were overlapped: the 3 refused desktop pushes above, and 7 whose desktop
+# push won - the "Push state to R2" step of each of those 7 cloud runs reads failure (gh run view --json jobs,
+# runs 36567385772, 36863134400, 37004436689, 37119058547, 37200338220, 37320360751, 38407606463). The other
+# 24 were not overlapped.
+OVERLAPPED_CLEARS = ["2026-09-24T11:03:25", "2026-09-29T11:02:46", "2026-10-01T11:02:08", "2026-10-02T11:01:28",
+                     "2026-10-03T11:00:34", "2026-10-04T11:02:47", "2026-10-05T11:25:45", "2026-10-07T12:22:32",
+                     "2026-10-13T12:36:38", "2026-10-20T11:00:13"]
+UNOVERLAPPED_CLEARS = ["2026-09-20T12:28:32", "2026-09-20T13:37:01", "2026-09-20T13:47:34", "2026-09-20T22:31:37",
+                       "2026-09-21T13:11:25", "2026-09-21T13:32:26", "2026-09-21T13:42:58", "2026-09-21T13:53:30",
+                       "2026-09-21T23:23:32", "2026-09-24T01:11:53", "2026-09-24T01:54:26", "2026-09-24T02:05:02",
+                       "2026-09-24T02:15:40", "2026-09-25T01:06:53", "2026-09-26T13:20:50", "2026-10-08T00:10:54",
+                       "2026-10-08T23:10:18", "2026-10-09T22:39:56", "2026-10-10T23:22:25", "2026-10-11T23:50:31",
+                       "2026-10-15T02:19:03", "2026-10-17T01:27:29", "2026-10-17T23:20:28", "2026-10-18T23:01:46"]
+
+
+@pytest.mark.parametrize("instant", OVERLAPPED_CLEARS)
+def test_every_real_pass_a_cloud_run_overlapped_now_reads_blocked(instant):
+    now = at(instant)
+    runs = history_as_of(now)
+    assert cleared_by_the_old_ceiling(runs, now), "control: the old ceiling said CLEAR here"
+    blocked, reason = g.decide(runs, now, ACTIVE)
+    assert blocked and "cron has not started yet" in reason, reason
+
+
+@pytest.mark.parametrize("instant", UNOVERLAPPED_CLEARS)
+def test_no_real_pass_that_was_not_overlapped_is_taken_away(instant):
+    now = at(instant)
+    blocked, reason = g.decide(history_as_of(now), now, ACTIVE)
+    assert not blocked, reason
+
+
 def test_the_block_ends_when_the_late_run_has_been_created_and_finished():
     """Control: the rule is 'until the run is created', not a longer fixed window.
 
