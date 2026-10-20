@@ -47,8 +47,11 @@ CRON_SPACING = dt.timedelta(hours=12)          # between a workflow's two crons
 #     2026-10-20  CLEAR 11:00:13Z, run created 11:04:16Z (304.3 min); push refused at 14:48:11Z
 # Start lag (createdAt - cron, the field this gate reads) of the 237 scheduled runs of both writers over
 # 2026-08-21..10-20: median 278, p90 402, p95 428, p99 661, max 710 min; 83 of 237 runs came later than
-# 300 min, 13 later than 420, 4 later than 540, 0 later than 720. The 06:00Z cron alone: median 315, 35 of 59
-# later than 300. The weekly median rose from 21 min (2026-W34) to 377 (W41).
+# 300 min, 13 later than 420, 4 later than 540. The 06:00Z cron alone: median 315, 35 of 59 later than 300.
+# The weekly median rose from 21 min (2026-W34) to 377 (W41). That pairing credits a run to a cron only within
+# 12 h, so it cannot see a lag longer than that: 3 crons had no run in their 12 h, and the 15:00Z heavy window
+# of 2026-08-28 held TWO runs (15:14:02Z, 23:46:21Z) after a 03:00Z cron with none - either a 734 min lag or
+# a skip plus an extra run, and the data cannot say which.
 #
 # So the lag is not bounded below the cron gap: the observed maximum of the 06:00Z (710), 03:00Z (663) and
 # 15:00Z (550) crons each exceeds the 540 min largest gap. No ceiling can both cover the lag and leave a free
@@ -66,6 +69,12 @@ CRON_SPACING = dt.timedelta(hours=12)          # between a workflow's two crons
 # cron costs: the desktop waits for the next cron's run (3 skips in the 60 days above). What it costs if
 # GitHub stops creating scheduled runs without disabling the workflow: the desktop waits until it does, or
 # until someone runs with -SkipCiCheck; run_local_heavy.ps1 warns after 2 x $MinHours without a pass.
+# KNOWN RESIDUAL: a run created more than 12 h after its cron is credited to the next cron of that workflow,
+# and the next cron's own run then arrives unannounced (the 2026-08-28 shape above: once 15:14Z had finished,
+# this rule would read the heavy writer as done until 23:46Z; on that day the daily writer blocked anyway).
+# One such window in 60 days; the in-flight check still blocks the moment the second run is created.
+# This restores the 12 h window of PR #29, which was blamed for a zero-pass day (R1032/R1033); that
+# attribution was withdrawn (R1042): a window ends when its run appears, and runs do appear.
 #
 # Cost and benefit, measured on one frozen snapshot of that history with this repo's own instrument
 # (tools/measure_ci_lag.py, 60 days to 2026-10-20, old rule vs this one):
@@ -73,6 +82,9 @@ CRON_SPACING = dt.timedelta(hours=12)          # between a workflow's two crons
 #     sweep   runner rule (want 150 min, max 36 h): 48 -> 43 passes, 9,667 -> 7,732 pass minutes,
 #             collisions 18 -> 0 (16 of the 48 old passes collided, so collision-free pass minutes
 #             6,379 -> 7,732); longest gap between pass starts 62.4 -> 73.4 h
+# Both read scheduled runs only. A second simulation that also feeds manual dispatches to the in-flight check
+# agrees: 60 days 48 -> 43 passes, 9,957 -> 7,972 pass minutes, collisions 18 -> 2 (both left are dispatches,
+# which no gate can predict); last 28 days 21 -> 17 passes, 4,207 -> 2,527 pass minutes, 11 -> 1 collisions.
 # The CLEAR time that goes is the time in which a pass would be overlapped. Re-measure with `replay` / `sweep`.
 PENDING_LIMIT = CRON_SPACING
 # A note, not a decision: a cron this late is in the tail of the measured lag (5 of 237 runs came later than
@@ -167,7 +179,7 @@ def minutes_until_block(runs: dict, now: dt.datetime, states: dict | None = None
     after a CLEAR, every cron of the last PENDING_LIMIT has its run, and the next block the walk finds is the next
     cron's own scheduled time - which is the earliest instant that cron can produce a run. What the frozen walk
     still cannot see: a workflow_dispatch created later, and a run created more than PENDING_LIMIT after its cron
-    (none in the 237 scheduled runs of 2026-08-21..10-20; max 710 min). Re-measure with
+    (see the KNOWN RESIDUAL at PENDING_LIMIT: one ambiguous window in 2026-08-21..10-20). Re-measure with
     `python tools/measure_ci_lag.py sweep`, which models the runner's wait rule.
     """
     if assess(runs, now, states, sched)[0]:

@@ -211,8 +211,9 @@ def test_the_late_run_blocks_while_it_is_in_flight():
 
 
 def test_the_window_covers_every_lag_measured_over_60_days():
-    """237 scheduled runs of both writers, 2026-08-21..10-20 (createdAt - cron): median 278, p99 661, max 710 min,
-    0 later than 720. A window shorter than the measured maximum is a CLEAR that the next late run collides with.
+    """237 scheduled runs of both writers, 2026-08-21..10-20 (createdAt - cron): median 278, p99 661, max 710 min
+    (as paired within 12 h; the one ambiguous window is the KNOWN RESIDUAL in the gate). A window shorter than the
+    measured maximum is a CLEAR that the next late run collides with.
     """
     assert g.PENDING_LIMIT >= dt.timedelta(minutes=710)
     assert g.PENDING_LIMIT <= g.CRON_SPACING, "a run later than CRON_SPACING is credited to the next cron"
@@ -237,7 +238,7 @@ def _all_started_but(now, missing, lag_min=30, days=3):
 def test_an_unstarted_cron_blocks_for_the_whole_measured_lag_and_then_hands_over():
     cron = at("2026-10-14T06:00:00")
     missing = {("updater-daily.yml", cron)}
-    now = cron + dt.timedelta(minutes=709)       # the 60-day maximum lag was 710 min
+    now = cron + g.PENDING_LIMIT - dt.timedelta(minutes=1)     # 719 min; the 60-day maximum lag was 710
     blocked, reason = g.decide(_all_started_but(now, missing), now, ACTIVE)
     assert blocked and "updater-daily.yml 06:00Z cron has not started yet" in reason, reason
 
@@ -250,6 +251,70 @@ def test_an_unstarted_cron_blocks_for_the_whole_measured_lag_and_then_hands_over
     now = cron + g.PENDING_LIMIT + dt.timedelta(minutes=40)
     blocked, reason = g.decide(_all_started_but(now, missing), now, ACTIVE)
     assert not blocked, reason
+
+
+def test_if_github_stops_creating_scheduled_runs_the_desktop_gets_no_clear_time():
+    """The cost of the rule, pinned so it is a decision and not a surprise (R1033's arithmetic, true for this case).
+
+    With no scheduled run created after 2026-10-14T00:00Z, every cron from 03:00Z on blocks for 12 h, and the four
+    windows cover the clock. The only release is -SkipCiCheck; run_local_heavy.ps1 warns after 2 x $MinHours."""
+    cutoff = at("2026-10-14T00:00:00")
+    t, clear = at("2026-10-14T03:00:00"), []
+    while t < at("2026-10-15T03:00:00"):
+        hist = {wf: [r for r in rows if g._parse(r["createdAt"]) < cutoff]
+                for wf, rows in _all_started_but(t, set()).items()}
+        if not g.decide(hist, t, ACTIVE)[0]:
+            clear.append(t)
+        t += dt.timedelta(minutes=5)
+    assert clear == [], f"expected no clear instant in a scheduler stall, got {clear[:3]}"
+    # control: the same walk with the runs present does find clear time, so the walk can see it
+    t, found = at("2026-10-14T03:00:00"), False
+    while t < at("2026-10-15T03:00:00") and not found:
+        found = not g.decide(_all_started_but(t, set()), t, ACTIVE)[0]
+        t += dt.timedelta(minutes=5)
+    assert found, "control: with every run present the walk must find a clear instant"
+
+
+# A TYPICAL DAY, from the medians of 2026-08-21..10-20 (gh run list, createdAt and updatedAt of the scheduled
+# runs): start lag 03Z 314, 06Z 315, 15Z 208, 18Z 173 min; duration daily 171, heavy 78 min.
+TYPICAL_LAG = {("updater-heavy.yml", 3): 314, ("updater-daily.yml", 6): 315,
+               ("updater-heavy.yml", 15): 208, ("updater-daily.yml", 18): 173}
+TYPICAL_DUR = {"updater-daily.yml": 171, "updater-heavy.yml": 78}
+
+
+def _typical_history(now):
+    out = {wf: [] for wf in g.WRITERS}
+    for wf, hours in g.WRITERS.items():
+        for d in range(3):
+            day = (now - dt.timedelta(days=d)).replace(hour=0, minute=0, second=0, microsecond=0)
+            for h in hours:
+                created = day + dt.timedelta(hours=h, minutes=TYPICAL_LAG[(wf, h)])
+                if created <= now:
+                    done = created + dt.timedelta(minutes=TYPICAL_DUR[wf]) <= now
+                    out[wf].append({"createdAt": created.strftime("%Y-%m-%dT%H:%M:%SZ"), "event": "schedule",
+                                    "status": "completed" if done else "in_progress"})
+        out[wf].sort(key=lambda r: r["createdAt"], reverse=True)
+    return out
+
+
+def test_on_a_typical_day_the_runner_still_gets_a_window_it_will_start_in():
+    """Replaces the coupling to the removed FREE_BLOCK_MIN. run_local_heavy.ps1 starts only when the gate's
+    --until-block answer minus $marginMin reaches $WantBlockMin (before $MaxHours). On a day at the measured
+    medians the only such window is after the 18:00Z run (23:44Z -> 03:00Z); raising either PowerShell default
+    past it means the desktop waits for the $MaxHours escape every day, and this test says so."""
+    src = pathlib.Path(RUNNER_PS1).read_text(encoding="utf-8", errors="replace")
+    want = re.search(r"\$WantBlockMin\s*=\s*(\d+)", src)
+    margin = re.search(r"\$marginMin\s*=\s*(\d+)", src)
+    assert want and margin, f"cannot read the runner's thresholds from {RUNNER_PS1}; this test measures nothing"
+    best, t = 0, at("2026-10-14T00:00:00")
+    while t < at("2026-10-15T00:00:00"):
+        hist = _typical_history(t)
+        if not g.decide(hist, t, ACTIVE)[0]:
+            best = max(best, g.minutes_until_block(hist, t, ACTIVE))
+        t += dt.timedelta(minutes=5)
+    usable = best - int(margin.group(1))
+    assert usable >= int(want.group(1)), (
+        f"on a typical day the best window gives {usable} usable min; the runner wants {want.group(1)}")
 
 
 def test_an_unstarted_cron_from_yesterday_still_blocks_after_midnight():
