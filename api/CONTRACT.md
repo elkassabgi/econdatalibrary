@@ -223,8 +223,10 @@ we cannot host it (as in the removals of 2026-07-22/23). Read it from the endpoi
 > `data_through` is unchanged. Before this, the relay-era archival sources read status and cadence null with
 > no label, and `unctad_trademerchgr` kept reading `"ok"` / `"weekly"` from its last run. The value comes from
 > `core/sync_state_d1.py` (`_project`), which writes the D1 projection and the self-hosted origin's copy; no
-> worker change. The projection publishes no `unit_state` row for them (nothing runs them), so they are not on
-> `/v1/last-updates`; a unit row already in D1 stays until it is removed, because the D1 sync never deletes.
+> worker change. A `unit_state` row the updater recorded for such a source (today only `unctad_trademerchgr/_all`)
+> is published with `status: "discontinued"` and its other columns kept, so `/v1/last-updates` shows it as
+> discontinued with `next_update_expected: null`, and `metadata.json`'s `last_updated` (which falls back to the
+> `_all` unit row) keeps its date. No unit row is made for a source the updater never ran.
 
 ### `GET /v1/last-updates`   ([w8], copy the relay aggregator `/last-updates`)
 Per dataset, projected from `unit_state` + `source_state` + registry cadence:
@@ -232,7 +234,7 @@ Per dataset, projected from `unit_state` + `source_state` + registry cadence:
 { "generated": "2026-06-25T...Z",
   "datasets": [{
     "source": "bcb", "unit": "_all",
-    "status": "ok",                       // ok | no_change | partial | transient_fail
+    "status": "ok",                       // ok | no_change | partial | transient_fail | discontinued
     "last_updated": "2026-06-24T00:10:55Z",   // unit_state.last_success_utc
     "source_date_accessed": "2026-06-24T00:10:55Z",
     "source_version": "<upstream_vintage>",   // unit_state.upstream_vintage (may be null)

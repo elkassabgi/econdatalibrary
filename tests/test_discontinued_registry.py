@@ -60,6 +60,21 @@ def test_a_source_cannot_be_dead_and_scheduled_at_once():
         f"that cannot move.")
 
 
+def test_a_discontinued_source_has_no_registry_entry_at_all():
+    """AR-355 surviving mutant m11. `live: false` is not enough: an entry with `run_location: local` is run by the
+    workstation pass whatever `live` says (and the heavy matrix and sec-edgar-daily run by other keys), while D1 and
+    the page would say "discontinued". All entries here follow the B1 shape - no registry entry - so a discontinued
+    id appearing in registry.yaml in ANY form is the contradiction."""
+    reg = yaml.safe_load(open(os.path.join(ROOT, "updater", "registry.yaml"), encoding="utf-8"))
+    registered = {s["source_id"] for s in reg["sources"]}
+    assert "unctad_trademerchtotal" in registered, "positive control: a registered sibling must be seen"
+    clash = sorted({e["source_id"] for e in _entries()} & registered)
+    assert not clash, (
+        f"{clash} are declared publisher-discontinued in discontinued.yaml AND have a registry.yaml entry. Something "
+        f"may still run them (run_location: local runs regardless of live). Remove the entry (and bump "
+        f"EXPECTED_SOURCE_COUNT in the same commit), or remove the discontinued.yaml entry.")
+
+
 def test_the_probe_names_a_real_endpoint_not_a_recollection():
     """'a previous session found' is how a citation gets laundered into evidence."""
     bad = [e["source_id"] for e in _entries()

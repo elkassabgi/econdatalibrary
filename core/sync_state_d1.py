@@ -154,8 +154,13 @@ def _project(table: str, rows: list, cols: list[str], gated: set[str], frozen: s
     """The rows of `table` the projection publishes. ONE definition, used by emit_sql and verify_replay.
 
       every table      a gated source's rows are withheld (the gate wins over everything, and is never named)
-      unit_state       a discontinued source's rows are withheld: no fetcher runs it, so a unit row is a claim
-                       about runs that will never happen (the 52 relay-era entries never had one)
+      unit_state       a RECORDED unit row of a discontinued source is published with status 'discontinued'; every
+                       other column is kept. It is NOT dropped: the worker's metadata.json falls back to the
+                       source's `_all` unit row for `last_updated` when the series row has none (metadata.ts), so
+                       dropping it would null a true last-refresh date on every served id (AR-355, all 1,754 of
+                       unctad_trademerchgr). The upsert overwrites the stale "transient_fail" row in D1. No unit row
+                       is MADE for a source state.db never recorded one for (the 52 relay-era entries): that would
+                       add rows to /v1/last-updates and the Status board for sources nothing ever ran.
       source_state     a discontinued source gets exactly ONE row with status 'discontinued' and cadence NULL.
                        A recorded row keeps its strategy and last_success/last_attempt (true history: when it
                        was last refreshed); a source with no recorded row gets one with those NULL. The D1 sync
@@ -163,11 +168,13 @@ def _project(table: str, rows: list, cols: list[str], gated: set[str], frozen: s
                        no delete is needed. /v1/sources then says status "discontinued", cadence null.
     """
     keep = _servable(rows, cols, gated)
+    i_sid = cols.index("source_id")
     if table == "unit_state":
-        return _servable(keep, cols, frozen)
+        i_st = cols.index("status")
+        return [tuple(r) if str(r[i_sid]).lower() not in frozen
+                else tuple(DISCONTINUED_STATUS if i == i_st else v for i, v in enumerate(r)) for r in keep]
     if table != "source_state":
         return keep
-    i_sid = cols.index("source_id")
     blank = {c: None for c in cols}
     out, seen = [], set()
     for r in keep:
@@ -400,10 +407,11 @@ def verify_replay(state_db: str, files: list[str], counts: dict[str, int],
 
     Runs the files TWICE to also prove idempotency (second pass must change
     nothing). Any mismatch is fatal — broken SQL must never reach remote D1.
-    Equality is against _project() of the source db (gate withheld; discontinued sources: no unit_state row and
-    one source_state row marked 'discontinued'). Then, independently of _project: the replay must hold no gated
-    row, no discontinued unit_state row, and for every discontinued source exactly one source_state row whose
-    status is 'discontinued' and whose cadence is NULL - a stale "ok"/"weekly" row that reached the SQL is fatal.
+    Equality is against _project() of the source db (gate withheld; discontinued sources: their RECORDED unit rows
+    and one source_state row, all marked 'discontinued'). Then, independently of _project: the replay must hold no
+    gated row; exactly the discontinued unit rows state.db records (none dropped, none made up), each marked
+    'discontinued'; and for every discontinued source exactly one source_state row whose status is 'discontinued'
+    and whose cadence is NULL - a stale "ok"/"weekly"/"transient_fail" row that reached the SQL is fatal.
     """
     gated = _gated_ids() if gated is None else {s.lower() for s in gated}
     frozen = _discontinued_ids() if discontinued is None else {s.lower() for s in discontinued}
@@ -432,9 +440,18 @@ def verify_replay(state_db: str, files: list[str], counts: dict[str, int],
             # emits and expects the same stale row cannot pass).
             i_sid = cols.index("source_id")
             mine = [r for r in got if str(r[i_sid]).lower() in frozen]
-            if table == "unit_state" and mine:
-                raise SystemExit(f"FATAL: a discontinued source's row reached the {table} SQL (a run claim for a "
-                                 "source no fetcher runs) — not executing")
+            if table == "unit_state":
+                i_st = cols.index("status")
+                had = {tuple(r[i] for i in ipk) for r in src.execute(q).fetchall()
+                       if str(r[i_sid]).lower() in frozen and str(r[i_sid]).lower() not in gated}
+                have = {tuple(r[i] for i in ipk) for r in mine}
+                stale = [r[i_sid] for r in mine if r[i_st] != DISCONTINUED_STATUS]
+                if stale or have != had:
+                    raise SystemExit(
+                        f"FATAL: discontinued source(s) wrong in the unit_state SQL (stale status: {stale[:5]}; "
+                        f"recorded but missing: {sorted(had - have)[:5]}; made up: {sorted(have - had)[:5]}) — a "
+                        "dropped row would null metadata.json last_updated, a made-up one adds a board row; "
+                        "not executing")
             if table == "source_state":
                 i_st, i_cad = cols.index("status"), cols.index("cadence")
                 stale = [r[i_sid] for r in mine if r[i_st] != DISCONTINUED_STATUS or r[i_cad] is not None]
@@ -528,7 +545,7 @@ def main(argv: list[str] | None = None) -> None:
     total = sum(counts.values())
     print(f"emitted {len(files)} file(s), {total} rows "
           f"({', '.join(f'{t}={n}' for t, n in counts.items())}) -> {out_dir}"
-          f"; {len(frozen)} discontinued source(s) published as '{DISCONTINUED_STATUS}' (no unit rows)")
+          f"; {len(frozen)} discontinued source(s) published as '{DISCONTINUED_STATUS}' (recorded unit rows relabelled, none made)")
     verify_replay(args.state_db, files, counts, gated=gated, discontinued=frozen)
 
     if args.dry_run:

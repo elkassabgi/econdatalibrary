@@ -86,6 +86,18 @@ def test_the_publisher_name_is_escaped(G):
     assert "<b>" not in t and "A &lt;b&gt;&amp;&lt;/b&gt; B has discontinued" in t
 
 
+def test_the_status_board_shows_discontinued_as_archival_not_attention():
+    """AR-355. core/sync_state_d1.py publishes a discontinued source's recorded unit row with status 'discontinued';
+    status.html gave every status it did not know the red 'bad' class ("failed ... until fixed"). It must be a
+    neutral archival dot, decided before the catch-all, counted on its own, and explained in the legend."""
+    s = open(os.path.join(ROOT, "catalog", "site", "status.html"), encoding="utf-8").read()
+    rule = "else if(st==='discontinued'){cls='archival'}"
+    assert ".archival{background:" in s and '<span class="dot archival"></span> archival' in s, "style and legend"
+    assert rule in s and s.index(rule) < s.index("else{cls='bad'}"), "decided before the red catch-all"
+    assert "else if(cls==='archival')archival++;else bad++;" in s, "counted on its own, never as attention"
+    assert "archival+' archival · '" in s, "the summary line names the archival count"
+
+
 def test_the_regenerated_page_carries_the_label():
     """catalog/site/unctad_trademerchgr.html was regenerated with `gen_site.py --only unctad_trademerchgr` in the
     change that froze it. Pin what a visitor reads there."""
