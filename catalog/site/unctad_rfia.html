@@ -334,7 +334,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-09-09');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-10-20');
     if(d.as_of){var _ag=tago(d.as_of);
       document.getElementById('sb-data').textContent='Data updated: '+fdate(d.as_of)+(_ag?' ('+_ag+')':'');}
   }).catch(function(){
@@ -371,7 +371,8 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dl class="kv"><dt>Download</dt><dd><a href="download.html?source=unctad_rfia">Select &amp; download unctad_rfia series as CSV &rarr;</a></dd>
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/unctad_rfia">https://econdatalibrary.com/unctad_rfia</a></dd>
-<dt>Automated refresh</dt><dd>not yet wired &mdash; the data here is the verified initial load. See the <a href="status.html">Source Status board</a>.</dd></dl>
+<dt>Update cadence</dt><dd>none &mdash; <em>discontinued by the publisher</em></dd>
+<dt>Automated refresh</dt><dd><strong>archival</strong> &mdash; UNCTAD has discontinued this dataset. This is the final copy, and it is not updated.</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

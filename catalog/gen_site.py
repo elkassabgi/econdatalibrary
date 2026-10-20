@@ -1270,6 +1270,11 @@ def load_discontinued(path=None):
         out = {str(e["source_id"]): e for e in (doc.get("sources") or [])}
         if not out:                     # a file that EXISTS and names nobody is a broken file, not "none"
             raise ValueError("no source_id in it")
+        for sid, e in out.items():      # an optional `label` must be a real sentence (see discontinued_rows)
+            if "label" in e and not (isinstance(e["label"], str) and e["label"].strip()
+                                     and e["label"].strip()[-1] in ".!?"):
+                raise ValueError(f"{sid}: `label` must be a non-empty sentence ending in . ! or ?, "
+                                 f"got {e['label']!r}")
         return out
     except Exception as e:                                   # noqa: BLE001
         raise SystemExit(f"FATAL: {p} is unreadable ({type(e).__name__}: {e}) - the archival label of every "
@@ -1281,10 +1286,21 @@ DISCONTINUED = load_discontinued()
 
 def discontinued_rows(entry):
     """The two refresh rows of a publisher-discontinued source. Every clause is what discontinued.yaml holds: the
-    publisher retired the dataset, the copy here is the last one, and nothing refreshes it."""
+    publisher retired the dataset, the copy here is the last one, and nothing refreshes it.
+
+    `label` (optional, per entry) replaces ONLY the first sentence, "<publisher> has discontinued this dataset.",
+    where the entry's own finding shows that sentence overstates (2026-10-20, AR-355's note): unesco_film still has
+    1 of its 76 codes published, unesco_clte 21 of 408 under new keys. The second sentence is fixed here, so no
+    label can drop the archival claim. A labelled entry's cadence row reads "archival copy", not "discontinued by
+    the publisher", so the two rows never contradict each other."""
     who = esc(str(entry.get("publisher") or "The publisher").strip())
-    return [("Update cadence", "none &mdash; <em>discontinued by the publisher</em>"),
-            ("Automated refresh", f"<strong>archival</strong> &mdash; {who} has discontinued this dataset. "
+    if entry.get("label"):
+        # the cadence row must not repeat the claim the label withdraws ("discontinued by the publisher")
+        first, cadence = esc(entry["label"].strip()), "none &mdash; <em>archival copy</em>"
+    else:
+        first, cadence = f"{who} has discontinued this dataset.", "none &mdash; <em>discontinued by the publisher</em>"
+    return [("Update cadence", cadence),
+            ("Automated refresh", f"<strong>archival</strong> &mdash; {first} "
                                   "This is the final copy, and it is not updated.")]
 
 
