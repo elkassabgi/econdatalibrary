@@ -2792,6 +2792,63 @@ def _catalog_idx(records):
     return idx
 
 
+def _idx_json(idx):
+    """The ONE encoding of the hub's embedded IDX array (render_catalog and splice_hub_rows both use it)."""
+    return json.dumps(idx, ensure_ascii=False).replace("</", "<\\/")
+
+
+def splice_hub_rows(html, new_rows, ids):
+    """Replace ONLY the IDX rows of `ids` in an existing catalog.html; every other byte is kept.
+
+    Why it exists: `--only SRC --with-catalog` re-renders EVERY source's hub row from the local catalogue, and the
+    local catalogue drifts from what is served while the D1 catalogue sync is frozen (2026-10-20: the re-render
+    moved statcan to a count the API does not serve). So a page regenerated for one source could not bring its hub
+    row along without also publishing drift for others. This takes the named rows from the same records the
+    pages are built from and leaves the rest of the committed hub exactly as it is.
+
+    `new_rows` maps source id -> the row _catalog_idx() builds for it. Refuses (SystemExit), writing nothing,
+    when the hub does not hold exactly one IDX line, when that line does not re-encode to itself (the splice
+    would then rewrite rows it was not asked to touch), when a named id is not exactly once in the hub or has no
+    new row, or when a new row's fields differ in NAME from the old one (the hub's shape changed: a full build is
+    due, not a splice). Returns (new_html, [(id, {field: (old, new)}), ...]); an unchanged row is listed with {}.
+    """
+    lines = html.splitlines(keepends=True)
+    at = [i for i, ln in enumerate(lines) if ln.startswith("const IDX=")]
+    if len(at) != 1:
+        raise SystemExit(f"--hub-rows: catalog.html holds {len(at)} 'const IDX=' line(s), expected exactly 1")
+    i = at[0]
+    if i + 1 >= len(lines) or not lines[i + 1].startswith("const API="):
+        raise SystemExit("--hub-rows: the IDX line is not followed by 'const API=' - not the hub this splices")
+    body = lines[i].rstrip("\r\n")
+    eol = lines[i][len(body):]
+    if not body.endswith(";"):
+        raise SystemExit("--hub-rows: the IDX line does not end in ';'")
+    seg = body[len("const IDX="):-1]
+    idx = json.loads(seg.replace("<\\/", "</"))
+    if _idx_json(idx) != seg:
+        raise SystemExit("--hub-rows: the committed IDX does not re-encode to itself - a splice would rewrite "
+                         "rows it was not asked to touch; run a full build instead")
+    pos = {}
+    for k, row in enumerate(idx):
+        pos.setdefault(row.get("id"), []).append(k)
+    changes = []
+    for sid in ids:
+        if len(pos.get(sid, [])) != 1:
+            raise SystemExit(f"--hub-rows: {sid!r} is {len(pos.get(sid, []))} time(s) in the hub, expected once")
+        if sid not in new_rows:
+            raise SystemExit(f"--hub-rows: {sid!r} has no published record (not reservable, or no series) - "
+                             f"removing a hub row changes the source count; run a full build instead")
+        k = pos[sid][0]
+        old, new = idx[k], new_rows[sid]
+        if set(old) != set(new):
+            raise SystemExit(f"--hub-rows: {sid!r} row fields changed {sorted(set(old) ^ set(new))} - "
+                             f"the hub's shape moved; run a full build instead")
+        changes.append((sid, {f: (old[f], new[f]) for f in old if old[f] != new[f]}))
+        idx[k] = new
+    lines[i] = "const IDX=" + _idx_json(idx) + ";" + eol
+    return "".join(lines), changes
+
+
 # Card-grid + filter-bar CSS for catalog.html (moved off the homepage).
 CATALOG_UI_CSS = """
 .wrapc{max-width:var(--max-width);margin:0 auto;padding:2.2rem 1.5rem 4rem}
@@ -3298,7 +3355,7 @@ def render_catalog(records, generated):
     search against the API, unchanged from the old homepage behavior.
     """
     idx = _catalog_idx(records)
-    data = json.dumps(idx, ensure_ascii=False).replace("</", "<\\/")
+    data = _idx_json(idx)
     n_total = len(records)
     n_open = sum(1 for r in records if r["reservable"])
     n_meta = n_total - n_open
@@ -3877,10 +3934,16 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Generate the econdatalibrary static site (catalog/site/).")
     ap.add_argument("--only", metavar="SOURCE", help="write only catalog/site/SOURCE.html (see the note in main)")
     ap.add_argument("--with-catalog", action="store_true", help="with --only: also write catalog/site/catalog.html")
+    ap.add_argument("--hub-rows", metavar="SRC[,SRC...]",
+                    help="rewrite ONLY these sources' rows in the existing catalog/site/catalog.html and write "
+                         "nothing else (see splice_hub_rows)")
     _a = ap.parse_args(argv)
     only, with_catalog = _a.only, _a.with_catalog
+    hub_rows = list(dict.fromkeys(s.strip() for s in (_a.hub_rows or "").split(",") if s.strip()))
     if with_catalog and not only:
         ap.error("--with-catalog goes with --only (a full build writes catalog.html anyway)")
+    if _a.hub_rows is not None and (only or with_catalog or not hub_rows):
+        ap.error("--hub-rows takes one or more source ids and goes alone (not with --only / --with-catalog)")
     licenses, sources, series_roll, source_meta = load_registry()
     sidecar, generated = load_sidecar()
 
@@ -3956,6 +4019,24 @@ def main(argv=None):
         print(f"  WARNING: schema.org license OMITTED for license id(s) {_nolic} "
               "-- no license.url and no LICENSE_LABEL entry (add the label, quoted "
               "from DATABASE_LICENSES_VERBATIM.md; never publish the raw id)")
+
+    if hub_rows:
+        # --hub-rows: the named rows of the COMMITTED hub, from the same records the pages are built from, and
+        # nothing else (no page, no sitemap, no state file, no "Website updated" stamp). Read and written with
+        # newline="" so the file's line endings survive byte for byte.
+        hub = os.path.join(OUT_DIR, "catalog.html")
+        with open(hub, encoding="utf-8", newline="") as f:
+            html = f.read()
+        fresh = {r["id"]: r for r in _catalog_idx([r for r in records if r["id"] in hub_rows])}
+        html, changes = splice_hub_rows(html, fresh, hub_rows)
+        with open(hub, "w", encoding="utf-8", newline="") as f:
+            f.write(html)
+        for sid, delta in changes:
+            print(f"  hub row {sid}: " + (", ".join(f"{k} {a!r} -> {b!r}" for k, (a, b) in sorted(delta.items()))
+                                          or "unchanged"))
+        print(f"Wrote ONLY the {len(changes)} named row(s) of catalog.html in {OUT_DIR} (--hub-rows); "
+              f"every other row and file is untouched")
+        return
 
     # Per-dataset pages
     n_pages = 0
