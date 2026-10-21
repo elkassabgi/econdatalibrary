@@ -8,7 +8,7 @@ replaced the first push's backup. It happened on 2026-10-21: a 14:13Z operator p
 The stamp now carries the UTC time of day for every writer. These tests pin:
   * two same-day desktop pushes leave two backups, each holding its own push's bytes;
   * the cloud key still ends in the GITHUB_RUN_ID, now with the time of day;
-  * retention still keeps the 7 newest, in chronological order, over a mix of old-form keys (already in
+  * retention still keeps the 7 newest, in the order documented at run.BACKUP_STAMP_FMT, over a mix of old-form keys (already in
     the bucket) and new-form keys, and on old-form keys alone it prunes exactly what the old rule did;
   * a push never deletes the backup it has just written.
 
@@ -164,9 +164,10 @@ def test_the_stamp_is_utc_whatever_the_clock_zone():
 
 
 # ---------------------------------------------------------------- retention over old and new key forms
-# Chronological order, oldest first. Old-form keys are what the bucket holds from before this change;
-# within one day the old form cannot say which push came first, and the old rule broke that tie by the
-# runid text (digits before 'local'), so the old-form same-day pairs below are listed in that order.
+# The order retention treats as oldest-first. Across days and among new-form keys it is the real time
+# order. Old-form keys of ONE day carry no time, so the old rule broke their tie on the runid text
+# (digits before 'local'): the old-form same-day pairs below are listed in THAT order, which is not their
+# real time order (on 2026-10-18 the -local key was written at 01:20Z, after neither cloud key).
 CHRONO = [
     BACKUPS + "state-20261017-39100000001.db.zst",
     BACKUPS + "state-20261018-39200000002.db.zst",
@@ -183,10 +184,28 @@ CHRONO = [
 ]
 
 
-def test_lexical_order_is_chronological_across_key_forms():
-    shuffled = CHRONO[:]
-    random.Random(1650).shuffle(shuffled)
-    assert sorted(shuffled) == CHRONO
+def test_keys_from_the_real_key_function_sort_in_time_order():
+    """Keys built by backup_key() itself, at shuffled times and for both writers, are pruned oldest
+    first by backups_to_prune() - across days, within a day, across writers."""
+    rng = random.Random(1650)
+    start = dt.datetime(2026, 10, 19, 0, 0, 0, tzinfo=UTC)
+    times = sorted({start + dt.timedelta(seconds=rng.randint(0, 4 * 86400)) for _ in range(40)})
+    keys = [runmod.backup_key(t, rng.choice(["local", "39591300199", "39600000001"])) for t in times]
+    shuffled = keys[:]
+    rng.shuffle(shuffled)
+    assert runmod.backups_to_prune(shuffled, just_written=keys[-1]) == keys[:-7]
+
+
+def test_transition_day_old_code_key_written_late_counts_as_older():
+    """Documented limit: a writer still on old code (the desktop before its checkout is pulled) writes
+    `state-<day>-local` AFTER new-form keys of that day exist. It sorts before them whatever its real
+    time, so retention treats it as the older one."""
+    new_early = BACKUPS + "state-20261022T150500Z-39700000002.db.zst"     # 15:05Z, new code
+    old_late = BACKUPS + "state-20261022-local.db.zst"                    # 20:00Z, old code
+    later_day = BACKUPS + "state-20261023T010000Z-local.db.zst"
+    assert runmod.backups_to_prune([later_day, new_early, old_late], just_written=later_day,
+                                   keep=2) == [old_late]
+    assert runmod.backups_to_prune([new_early, old_late], just_written=new_early, keep=1) == [old_late]
 
 
 def test_retention_keeps_the_seven_newest_across_mixed_forms():
@@ -231,3 +250,16 @@ def test_push_prunes_old_form_keys_and_keeps_its_own(r2):
     assert r2.s3.backups() == sorted(old)[-6:] + [ours]
     assert r2.s3.objs[ours] == r2.s3.objs[runmod.STATE_KEY]
     assert sorted(r2.s3.deleted) == sorted(old)[:3]
+
+
+def test_retention_log_reports_what_was_really_kept_when_the_guard_fires(r2, capsys):
+    """A clock behind the bucket's keys puts our key outside the newest 7; the guard keeps it, so 8
+    stay, and the log line must say 8, not 7."""
+    future = [BACKUPS + f"state-202610{d:02d}T060000Z-3900000{d:04d}.db.zst" for d in range(22, 31)]
+    for k in future:
+        r2.s3.objs[k] = b"x"
+    r2.clock["now"] = dt.datetime(2026, 10, 21, 14, 13, 0, tzinfo=UTC)
+    assert runmod.push_state() == 0
+    ours = BACKUPS + "state-20261021T141300Z-local.db.zst"
+    assert ours in r2.s3.backups() and len(r2.s3.backups()) == 8
+    assert "pruned 2 old backup(s), kept 8" in capsys.readouterr().out

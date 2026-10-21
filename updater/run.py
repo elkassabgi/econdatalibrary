@@ -50,13 +50,19 @@ BACKUP_KEY_FMT = BACKUP_PREFIX + "state-{stamp}-{runid}.db.zst"
 # THE STAMP CARRIES THE TIME OF DAY, NOT ONLY THE DATE (ledger R1650). With a date alone every desktop
 # push of one UTC day wrote the SAME key, `state-<YYYYMMDD>-local.db.zst`, so the second push replaced
 # the first push's backup: on 2026-10-21 a 14:13Z operator push overwrote the 01:55Z local heavy pass's
-# restore point. A cloud re-run attempt keeps its GITHUB_RUN_ID, so it had the same defect. One format for
-# every writer keeps the lexical order of the keys chronological, which the retention below relies on:
+# restore point. A cloud re-run attempt keeps its GITHUB_RUN_ID, so it would have had the same defect (no
+# re-run attempt was seen in 240 runs to 2026-10-21). One format for every writer:
 #   new  state-20261021T141300Z-local.db.zst   state-20261021T060512Z-39591300199.db.zst
 #   old  state-20261021-local.db.zst           state-20261021-39591300199.db.zst
-# An old key sorts before every new key of the same day ('-' < 'T'), after every key of an earlier day,
-# and before every key of a later day. Seconds are enough: a successful push needs the ETag the previous
-# successful push of this lineage left (the conditional PUT below), and VACUUM INTO + zstd-9 take minutes.
+# WHAT THE LEXICAL ORDER (the retention's order) IS, AND IS NOT:
+#   * chronological across days, and among new-form keys (the stamp is fixed-width UTC to the second);
+#   * NOT chronological among old-form keys of one day: they tie on the date and break the tie on the
+#     runid text, so `-local` sorts last whatever its time (2026-10-18: -39136217439 at 15:16Z,
+#     -39161839205 at 22:53Z, then -local at 01:20Z);
+#   * an old-form key sorts before every new-form key of its day ('-' < 'T'), even one written later by
+#     a writer still on old code (the desktop checkout until it is pulled).
+# Seconds are enough: a successful push needs the ETag the previous successful push of this lineage left
+# (the conditional PUT below), and VACUUM INTO + zstd-9 take minutes.
 BACKUP_STAMP_FMT = "%Y%m%dT%H%M%SZ"
 BACKUP_KEEP = 7
 ETAG_PATH = os.path.join(config.STATE_DIR, ".state_etag")
@@ -122,9 +128,10 @@ def backup_key(now: datetime.datetime, runid: str) -> str:
 def backups_to_prune(keys: list[str], just_written: str, keep: int = BACKUP_KEEP) -> list[str]:
     """The backup keys retention deletes: all but the `keep` newest, never the one this push wrote.
 
-    Newest = last in lexical order, which is chronological for both key forms (see BACKUP_STAMP_FMT).
-    `just_written` is excluded whatever its position, so a clock behind another writer's cannot make a
-    push delete the restore point it has just made."""
+    Newest = last in lexical order: chronological across days and among new-form keys, with the
+    old-form same-day exceptions listed at BACKUP_STAMP_FMT. `just_written` is excluded whatever its
+    position, so a clock behind another writer's cannot make a push delete the restore point it has just
+    made; then one more than `keep` backups remain."""
     ordered = sorted(k for k in keys if k.startswith(BACKUP_PREFIX))
     return [k for k in ordered[:-keep] if k != just_written]
 
@@ -441,16 +448,20 @@ def push_state() -> int:
 
     # RETENTION (cost plan 2026-08-18): nothing ever deleted the backups and
     # 275 had accumulated. Newest 7 has covered every restore this store has
-    # ever needed. Since R1650 each desktop push keeps its own key (before, all
-    # desktop pushes of one day shared one), so 7 can span fewer days than it
-    # did. Prune failures never fail the push — the push itself already succeeded.
+    # ever needed. Measured 2026-10-21 on real listings: 7 keys spanned about
+    # 1.5 to 2 days (about 4 cloud pushes and 1 desktop push per day). Since
+    # R1650 an extra same-day desktop push keeps its own key instead of
+    # replacing one, so the span can shrink a little more on such days.
+    # Prune failures never fail the push — the push itself already succeeded.
     try:
-        prune = backups_to_prune(r2.list_keys(BACKUP_PREFIX), written)
+        listed = r2.list_keys(BACKUP_PREFIX)
+        prune = backups_to_prune(listed, written)
         for old in prune:
             r2.delete(old)
         if prune:
+            kept = len(set(listed) | {written}) - len(set(prune))
             print(f"[push-state] backup retention: pruned {len(prune)} old "
-                  f"backup(s), kept the newest {BACKUP_KEEP}")
+                  f"backup(s), kept {kept}")
     except Exception as e:  # noqa: BLE001
         print(f"[push-state] backup retention skipped ({type(e).__name__}: "
               f"{str(e)[:80]}) — push itself succeeded", file=sys.stderr)
