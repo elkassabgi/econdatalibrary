@@ -254,7 +254,8 @@ def test_a_412_over_our_own_landed_attempt_is_a_successful_push(cas, seed):
     cas.s3.land_then_412 = True
     assert runmod.push_state() == 0
     assert _stored() == _md5(cas.s3.objs[runmod.STATE_KEY]), "our object's ETag is recorded"
-    # same-day pushes share one backup key, so count the PUTs and check what the backup holds
+    # pushes in the same SECOND share one backup key (the stamp is to the second, R1650), and these
+    # run back to back, so count the PUTs and check what the newest backup holds
     assert sum(1 for key, _ in cas.s3.puts if key.startswith(BACKUPS)) == n_backup_puts + 1, \
         "the backup is written as for any push"
     assert cas.s3.objs[cas.s3.backups()[-1]] == cas.s3.objs[runmod.STATE_KEY]

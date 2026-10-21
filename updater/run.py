@@ -22,7 +22,12 @@ table lives INSIDE state.db, so two writers each holding their own downloaded
 copy can never arbitrate through it. The GitHub Actions concurrency group is
 the serializer; the CAS here is the backstop that turns a lost race into a
 loud red run instead of silent state corruption. Every successful push also
-writes a dated backup under ``_aqueduct/backups/``.
+writes a backup under ``_aqueduct/backups/`` at a key of its own, stamped with
+the UTC date AND time of day (``state-<YYYYMMDD>T<HHMMSS>Z-<runid>.db.zst``).
+Before R1650 the stamp was the date alone, so every desktop push of one UTC day
+wrote ``state-<YYYYMMDD>-local.db.zst`` and the later push REPLACED the earlier
+push's backup: a writer whose state another push overwrote did NOT always have
+its own backup to restore from.
 """
 from __future__ import annotations
 import argparse
@@ -40,7 +45,26 @@ from . import config
 # regardless of AQUEDUCT_BACKEND — these flags exist precisely so a run on any
 # machine (CI runner, laptop drain) round-trips the same authoritative copy.
 STATE_KEY = "_aqueduct/state.db.zst"
-BACKUP_KEY_FMT = "_aqueduct/backups/state-{stamp}-{runid}.db.zst"
+BACKUP_PREFIX = "_aqueduct/backups/"
+BACKUP_KEY_FMT = BACKUP_PREFIX + "state-{stamp}-{runid}.db.zst"
+# THE STAMP CARRIES THE TIME OF DAY, NOT ONLY THE DATE (ledger R1650). With a date alone every desktop
+# push of one UTC day wrote the SAME key, `state-<YYYYMMDD>-local.db.zst`, so the second push replaced
+# the first push's backup: on 2026-10-21 a 14:13Z operator push overwrote the 01:55Z local heavy pass's
+# restore point. A cloud re-run attempt keeps its GITHUB_RUN_ID, so it would have had the same defect (no
+# re-run attempt was seen in 240 runs to 2026-10-21). One format for every writer:
+#   new  state-20261021T141300Z-local.db.zst   state-20261021T060512Z-39591300199.db.zst
+#   old  state-20261021-local.db.zst           state-20261021-39591300199.db.zst
+# WHAT THE LEXICAL ORDER (the retention's order) IS, AND IS NOT:
+#   * chronological across days, and among new-form keys (the stamp is fixed-width UTC to the second);
+#   * NOT chronological among old-form keys of one day: they tie on the date and break the tie on the
+#     runid text, so `-local` sorts last whatever its time (2026-10-18: -39136217439 at 15:16Z,
+#     -39161839205 at 22:53Z, then -local at 01:20Z);
+#   * an old-form key sorts before every new-form key of its day ('-' < 'T'), even one written later by
+#     a writer still on old code (the desktop checkout until it is pulled).
+# Seconds are enough: a successful push needs the ETag the previous successful push of this lineage left
+# (the conditional PUT below), and VACUUM INTO + zstd-9 take minutes.
+BACKUP_STAMP_FMT = "%Y%m%dT%H%M%SZ"
+BACKUP_KEEP = 7
 ETAG_PATH = os.path.join(config.STATE_DIR, ".state_etag")
 # What --push-state tells a later workflow step when the compare-and-swap refuses because another
 # writer saved after this machine's pull: `steps.push_state.outputs.refused == 'another_writer'`.
@@ -88,6 +112,28 @@ def _step_output(name: str, value: str) -> None:
             f.write(f"{name}={value}\n")
     except OSError as e:
         print(f"[state] could not write the step output {name} ({type(e).__name__})", file=sys.stderr)
+
+
+def _utcnow() -> datetime.datetime:
+    """The clock the backup key reads (one place, so a test can pin it)."""
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def backup_key(now: datetime.datetime, runid: str) -> str:
+    """The dated backup key for a push at `now` (UTC) by `runid` (GITHUB_RUN_ID, or 'local')."""
+    return BACKUP_KEY_FMT.format(stamp=now.astimezone(datetime.timezone.utc).strftime(BACKUP_STAMP_FMT),
+                                 runid=runid)
+
+
+def backups_to_prune(keys: list[str], just_written: str, keep: int = BACKUP_KEEP) -> list[str]:
+    """The backup keys retention deletes: all but the `keep` newest, never the one this push wrote.
+
+    Newest = last in lexical order: chronological across days and among new-form keys, with the
+    old-form same-day exceptions listed at BACKUP_STAMP_FMT. `just_written` is excluded whatever its
+    position, so a clock behind another writer's cannot make a push delete the restore point it has just
+    made; then one more than `keep` backups remain."""
+    ordered = sorted(k for k in keys if k.startswith(BACKUP_PREFIX))
+    return [k for k in ordered[:-keep] if k != just_written]
 
 
 def _live_pids() -> set[int]:
@@ -393,28 +439,29 @@ def push_state() -> int:
         return 1
     _record_etag(new_etag)  # a second push in the same job must pass its own CAS
 
-    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
-    runid = os.environ.get("GITHUB_RUN_ID", "local")
-    backup_key = BACKUP_KEY_FMT.format(stamp=stamp, runid=runid)
-    r2.put_atomic(backup_key, comp)
+    # A NEW KEY PER PUSH (R1650): the stamp carries the time of day, so a second push on the same UTC
+    # day writes its own backup beside the first instead of replacing it.
+    written = backup_key(_utcnow(), os.environ.get("GITHUB_RUN_ID", "local"))
+    r2.put_atomic(written, comp)
     print(f"[push-state] ok: r2://{r2.bucket}/{STATE_KEY} (etag {new_etag}) "
-          f"+ backup {backup_key}")
+          f"+ backup {written}")
 
-    # RETENTION (cost plan 2026-08-18): every push writes a ~540 MB backup and
-    # nothing ever deleted them — 275 had accumulated (55.8 GB and
-    # growing ~1.6 GB/day at 2-3 pushes). Newest 7 ≈ three days of pushes, which
-    # has covered every restore this store has ever needed. Prune failures never
-    # fail the push — the push itself already succeeded.
+    # RETENTION (cost plan 2026-08-18): nothing ever deleted the backups and
+    # 275 had accumulated. Newest 7 has covered every restore this store has
+    # ever needed. Measured 2026-10-21 on real listings: 7 keys spanned about
+    # 1.5 to 2 days (about 4 cloud pushes and 1 desktop push per day). Since
+    # R1650 an extra same-day desktop push keeps its own key instead of
+    # replacing one, so the span can shrink a little more on such days.
+    # Prune failures never fail the push — the push itself already succeeded.
     try:
-        backups = sorted(r2.list_keys("_aqueduct/backups/"))
-        # keys embed a YYYYMMDD stamp, so lexical sort is chronological within
-        # the fixed prefix; runid suffix ties same-day pushes (order irrelevant
-        # to a keep-newest-7 policy at 2-3 pushes/day).
-        for old in backups[:-7]:
+        listed = r2.list_keys(BACKUP_PREFIX)
+        prune = backups_to_prune(listed, written)
+        for old in prune:
             r2.delete(old)
-        if len(backups) > 7:
-            print(f"[push-state] backup retention: pruned {len(backups) - 7} old "
-                  f"backup(s), kept 7")
+        if prune:
+            kept = len(set(listed) | {written}) - len(set(prune))
+            print(f"[push-state] backup retention: pruned {len(prune)} old "
+                  f"backup(s), kept {kept}")
     except Exception as e:  # noqa: BLE001
         print(f"[push-state] backup retention skipped ({type(e).__name__}: "
               f"{str(e)[:80]}) — push itself succeeded", file=sys.stderr)
