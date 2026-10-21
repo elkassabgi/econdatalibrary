@@ -191,6 +191,11 @@ def test_keys_from_the_real_key_function_sort_in_time_order():
     start = dt.datetime(2026, 10, 19, 0, 0, 0, tzinfo=UTC)
     times = sorted({start + dt.timedelta(seconds=rng.randint(0, 4 * 86400)) for _ in range(40)})
     keys = [runmod.backup_key(t, rng.choice(["local", "39591300199", "39600000001"])) for t in times]
+    # old-form keys already in the bucket: an earlier day, and the first new-form day itself (written
+    # before the change landed) - both must count as older than every new-form key of that day
+    old = [BACKUPS + "state-20261018-39000000001.db.zst", BACKUPS + "state-20261018-local.db.zst",
+           BACKUPS + "state-20261019-39500000001.db.zst", BACKUPS + "state-20261019-local.db.zst"]
+    keys = old + keys
     shuffled = keys[:]
     rng.shuffle(shuffled)
     assert runmod.backups_to_prune(shuffled, just_written=keys[-1]) == keys[:-7]
