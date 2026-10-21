@@ -271,7 +271,7 @@ def fake_r2(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "STATE_DIR", state_dir)
     monkeypatch.setattr(config, "STATE_DB", state_db)
     monkeypatch.setattr(runmod, "ETAG_PATH", os.path.join(state_dir, ".state_etag"))
-    # The backup key embeds `os.environ.get("GITHUB_RUN_ID", "local")` (run.py:175), so these
+    # The backup key embeds `os.environ.get("GITHUB_RUN_ID", "local")` (run.py push_state), so these
     # tests read differently on a laptop and on a runner. Pin the environment instead of
     # asserting whichever one happens to be running: unset here, and covered explicitly for the
     # set case by test_backup_key_carries_run_id below.
