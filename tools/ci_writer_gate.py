@@ -71,7 +71,9 @@ CRON_SPACING = dt.timedelta(hours=12)          # between a workflow's two crons
 # own right, so for one workflow the block is continuous from a cron until a run is created. What a skipped
 # cron costs: the desktop waits for the next cron's run (3 skips in the 60 days above). What it costs if
 # GitHub stops creating scheduled runs without disabling the workflow: the desktop waits until it does, or
-# until someone runs with -SkipCiCheck; run_local_heavy.ps1 warns after 2 x $MinHours without a pass.
+# until someone runs with -SkipCiCheck. run_local_heavy.ps1 warns after 2 x $MinHours without a pass, but that
+# is a line in a local log and it fires routinely (review AR-362). The alert that leaves the machine is
+# tools/scheduler_stall.py: the guard loop mails the owner when a writer has had no scheduled run for 36 h.
 # KNOWN RESIDUAL: a run created more than 12 h after its cron is credited to the next cron of that workflow,
 # and the next cron's own run then arrives unannounced (the 2026-08-28 shape above: once 15:14Z had finished,
 # this rule would read the heavy writer as done until 23:46Z; on that day the daily writer blocked anyway).
@@ -195,8 +197,8 @@ def minutes_until_block(runs: dict, now: dt.datetime, states: dict | None = None
     return int(lookahead.total_seconds() // 60)
 
 
-def _gh_json(args: list):
-    out = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=60)
+def _gh_json(args: list, timeout: int = 60):
+    out = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=timeout)
     if out.returncode != 0:
         raise RuntimeError(f"gh {' '.join(args)} failed: {out.stderr.strip()[:200]}")
     data = json.loads(out.stdout)
@@ -210,14 +212,16 @@ def _gh_runs(wf: str) -> list:
     return _gh_json(["run", "list", "--workflow", wf, "--limit", str(RUN_LIMIT), "--json", "createdAt,event,status"])
 
 
-def _gh_sched(wf: str) -> list:
-    """Scheduled runs only, so a burst of dispatches cannot hide whether a cron started (see assess)."""
+def _gh_sched(wf: str, timeout: int = 60) -> list:
+    """Scheduled runs only, so a burst of dispatches cannot hide whether a cron started (see assess).
+    tools/scheduler_stall.py reads the same list with a shorter timeout (it runs inside the guard tick)."""
     return _gh_json(["run", "list", "--workflow", wf, "--event", "schedule", "--limit", str(SCHED_LIMIT),
-                     "--json", "createdAt,event,status"])
+                     "--json", "createdAt,event,status"], timeout=timeout)
 
 
-def _gh_states() -> dict:
-    rows = _gh_json(["workflow", "list", "--all", "--limit", str(WORKFLOW_LIMIT), "--json", "path,state"])
+def _gh_states(timeout: int = 60) -> dict:
+    rows = _gh_json(["workflow", "list", "--all", "--limit", str(WORKFLOW_LIMIT), "--json", "path,state"],
+                    timeout=timeout)
     return {r["path"].rsplit("/", 1)[-1]: r["state"] for r in rows}
 
 

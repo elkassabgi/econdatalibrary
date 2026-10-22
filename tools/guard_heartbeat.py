@@ -383,7 +383,29 @@ def _sec_edgar_problem(rec, now) -> "str | None":
     return None
 
 
-def publish() -> int:
+def _stall_summary():
+    """The scheduler-stall check's last evaluation (tools/scheduler_stall.py), from its local state file."""
+    try:
+        import scheduler_stall                               # noqa: PLC0415
+        return scheduler_stall.summary_for_beat()
+    except Exception as e:                                   # noqa: BLE001
+        return {"unreadable": f"{type(e).__name__}: {e}"[:200]}
+
+
+def _stall_tick() -> str:
+    """Run the scheduler-stall check (it mails the owner when GitHub stops creating the scheduled updater
+    runs - review AR-362). Called AFTER the beat is published, so a slow GitHub can cost this check, never the
+    beat. It evaluates at most every 30 min and never raises."""
+    try:
+        import scheduler_stall                               # noqa: PLC0415
+        return scheduler_stall.tick()
+    except Exception as e:                                   # noqa: BLE001
+        return f"scheduler-stall: could not run ({type(e).__name__}: {str(e)[:160]})"
+
+
+def publish(stall_check: bool = False) -> int:
+    """stall_check: also run tools/scheduler_stall.py after the PUT. `--publish` (the guard loop) turns it on;
+    a direct call does not, so a test of the beat never reaches GitHub or mail."""
     # `jobs_alive` keeps its meaning - the tracked ingesters PRESENT - so every existing reader
     # is unchanged. What was missing is why `3/3` could be published while istat_sliced was
     # exiting after nine seconds (R799): the beat carried no way to tell a crawl from a
@@ -406,6 +428,8 @@ def publish() -> int:
     body["sec_edgar_local"] = sec
     # judged here as well as in check(): the public route carries only this verdict, never the record
     body["sec_edgar_local_problem"] = _sec_edgar_problem(sec, dt.datetime.now(dt.timezone.utc))
+    if stall_check:
+        body["scheduler_stall"] = _stall_summary()
     data = json.dumps(body, indent=2).encode("utf-8")
     from core import cutover                                 # noqa: PLC0415
     if cutover.is_cut_over():
@@ -419,6 +443,8 @@ def publish() -> int:
     print(f"published {KEY}: {body['utc']} host={body['host']} "
           + (f"jobs_alive={len(body['jobs_alive'])}/{len(TRACKED)}" if detail is not None
              else "jobs_alive=UNKNOWN (process table unreadable)"))
+    if stall_check:
+        print(_stall_tick())
     return 0
 
 
@@ -485,6 +511,15 @@ def check(max_age_min: float, local: bool = False) -> int:
         print("  NOTE: this beat predates the statcan lane (no `statcan_lane` field) - the "
               "workstation's checkout of tools/guard_heartbeat.py is older than the lane, so the "
               "lane is UNMONITORED from CI until it is updated.")
+    # Printed, never failed: the workstation mails this itself (tools/scheduler_stall.py), and a run reading it
+    # here is a scheduled run, which proves the scheduler is not stalled for THIS workflow.
+    stall = body.get("scheduler_stall")
+    if isinstance(stall, dict) and stall.get("last_verdict") in ("stalled", "unknown"):
+        print(f"  NOTE: the workstation's scheduler-stall check reads {stall.get('last_verdict')} "
+              f"(writers {stall.get('stalled')}, evaluated {stall.get('last_evaluated_utc')}, "
+              f"alert mailed: {bool(stall.get('alert_active'))})")
+    elif isinstance(stall, dict) and "unreadable" in stall:
+        print(f"  NOTE: the workstation's scheduler-stall state is unreadable ({stall['unreadable']})")
     sec_bad = (_sec_edgar_problem(body["sec_edgar_local"], dt.datetime.now(dt.timezone.utc))
                if "sec_edgar_local" in body else None)
     if "sec_edgar_local" not in body:
@@ -606,7 +641,7 @@ def main() -> int:
                      help="with --check: read the full beat from the self-hosted store on this machine")
     a = ap.parse_args()
     if a.publish:
-        return publish()
+        return publish(stall_check=True)
     if a.from_url:
         return check_url(a.from_url, a.max_age_min)
     return check(a.max_age_min, local=a.local)
