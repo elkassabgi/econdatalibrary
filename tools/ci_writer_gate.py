@@ -212,7 +212,11 @@ def _gh_runs(wf: str) -> list:
 
 
 def _gh_sched(wf: str) -> list:
-    """Scheduled runs only, so a burst of dispatches cannot hide whether a cron started (see assess)."""
+    """Scheduled runs only, so a burst of dispatches cannot hide whether a cron started (see assess).
+
+    Its answer can be EMPTY for a writer that has scheduled runs (R1660), so main() never uses it directly: it
+    goes through read_sched(), which reads an empty answer again and cross-checks it against the unfiltered
+    listing. Raises on a gh failure, a timeout, or an answer that is not a list."""
     return _gh_json(["run", "list", "--workflow", wf, "--event", "schedule", "--limit", str(SCHED_LIMIT),
                      "--json", "createdAt,event,status"])
 
