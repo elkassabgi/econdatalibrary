@@ -1,6 +1,6 @@
 # Family Time Stamp — contract `ekd-time/1`
 
-Draft 6, 2026-10-02. Status: working contract; decision 4: yes (the owner, 2026-10-02) - version 1 is a
+Draft 7, 2026-10-22. Status: working contract; decision 4: yes (the owner, 2026-10-02) - version 1 is a
 declaration only. No change of meaning is planned. Version 1 is not bound yet: it is bound on the date of the
 first release of a tool that writes these manifests (see Versioning), and until then it is still a draft.
 Home of this file: `docs/contracts/ekd-time-1.md` in the repository `elkassabgi/econdatalibrary`, branch `main`.
@@ -28,12 +28,15 @@ This contract is a DECLARATION about data as it is stored. It changes no stored 
 
 The manifest is a Frictionless `datapackage.json`, Data Package version 1 (the `profile` key), the descriptor
 format econ's Python client already writes as a lock file. In a family bundle one resource = one library
-object, with `bytes` and `hash` under the rules below. The family adds objects prefixed `ekd:`. Field names are
-written exactly as in this file (snake_case).
+object, with `bytes` and `hash` under the rules below. The family adds objects prefixed `ekd:`. Field names
+are written exactly as in this file (snake_case).
 
 **Who writes them.** The bundle builder writes them into the manifest of the bundle it builds. No library API
-changes in version 1. Econ's `/v1/bundle` answer stays as it is: econ's conformance test pins the exact key set
-of that answer, so an extra key there is a change to econ's own contract.
+changes in version 1: this is about the `ekd:` objects. The bundle builder writes them, and no library API has
+to change for them. It does not stop a library from serving its own record of an object (`ekd:edition`,
+below). The hf record of decision 5 (section 5) is such a record: the library's own record of this section,
+not an `ekd:` object. Econ's `/v1/bundle` answer stays as it is: econ's conformance test pins the exact key
+set of that answer, so an extra key there is a change to econ's own contract.
 
 **Scope.** One declaration covers one resource and the one column that dates the ROW. Other date-like columns
 are attributes and are not declared in version 1. A resource that holds series which do not share one
@@ -139,13 +142,13 @@ Dates are text or date values in the manifest, never nanosecond timestamps (thos
   delivered the bytes are the record of those bytes. In both cases the builder hashes the whole object it
   received and compares; when the hashes differ, `sha256` and `row_count` are null and listed. The same
   record gives hf `observed_through`, under the same check. A builder may always leave `sha256` and
-  `row_count` null and list them. hf serves no such record today. Until it serves one - the per-ticker
-  manifest, or the response values above - a builder does not fill hf `sha256` or `row_count` from bytes it
-  downloaded; both stay null and are listed in `not_recorded`. Econ and ip publish no such record in version
-  1: for them the builder may write the SHA-256 and the row count of the whole object as it received it. In
-  every library, a file rebuilt from parts (units or slices of rows, not byte ranges of one object) and
-  verified by value does not carry the library object's `sha256`: `sha256` and `row_count` stay null and are
-  listed in `not_recorded`.
+  `row_count` null and list them. hf serves no such record today (until the hf worker change of section 4 is
+  deployed). Until it serves one - the per-ticker manifest, or the response values above - a builder does not
+  fill hf `sha256` or `row_count` from bytes it downloaded; both stay null and are listed in `not_recorded`.
+  Econ and ip publish no such record in version 1: for them the builder may write the SHA-256 and the row
+  count of the whole object as it received it. In every library, a file rebuilt from parts (units or slices of
+  rows, not byte ranges of one object) and verified by value does not carry the library object's `sha256`:
+  `sha256` and `row_count` stay null and are listed in `not_recorded`.
 - Reserved names, not delivered in version 1: `library_sequence`, `history_revision`, `value_digest` (in
   `ekd:edition`); `value_state`, `released_utc` (in `ekd:time`). Until they are delivered a builder keeps such
   values in its own state file, outside the `ekd:` objects.
@@ -266,16 +269,39 @@ with more columns than the current files. Before the builder writes `declared: t
 served file per timeframe for one active and one inactive ticker and compares the first, the last and one
 holiday-week label with this table.
 
-What hf does not expose today: `sha256`, `row_count` and `observed_through` PER TICKER (the API gives only
-`size_bytes` and `last_modified`, and only for the 1-minute Parquet file). The site's `end_date` is one date
-for the whole library and is only an upper bound for a ticker; a builder may show it under its own name, not as
-an `ekd:` field. Until hf serves its own record of an object (section 2), these fields are null and listed in
-`not_recorded`.
-`bytes` is filled as section 2 says. hf `published_utc` may be filled from the ticker information route
-(`/v1/symbols/{ticker}`: `last_modified`, cut to the second) only for the object that route describes - today
-the 1-minute Parquet file, `raw` or `clean`, and no other hf object - and only when the builder read the route
-before and after the download, both reads gave the same `last_modified`, and `size_bytes` equals the length it
-received. In every other case `published_utc` is null and listed.
+What hf exposes per ticker. Until the hf worker change that serves the record below is deployed, hf does not
+expose `sha256`, `row_count` and `observed_through` PER TICKER (the API gives only `size_bytes` and
+`last_modified`, and only for the 1-minute Parquet file), and these fields are null and listed in
+`not_recorded`. The site's `end_date` is one date for the whole library and is only an upper bound for a
+ticker; a builder may show it under its own name, not as an `ekd:` field.
+After that change is deployed, hf serves its own record of an object (section 2) in the two places below. It
+is the per-ticker hf manifest of decision 5: the values that the hf daily pipeline stores with each object,
+and a per-ticker list that the API builds from those values when it is asked.
+- In the same response as the whole object's bytes, on a 200 answer of `/v1/download/{ticker}`,
+  `/v1/bars/{ticker}`, `/v1/variables/{ticker}` and `/v1/quality/{ticker}`: six headers, `X-HF-Record`,
+  `X-HF-SHA256`, `X-HF-Bytes`, `X-HF-Row-Count`, `X-HF-Observed-Through` and `X-HF-Published-UTC`. hf sends
+  none of the six when it has no record that it trusts for the object; `X-HF-Observed-Through` can be absent
+  alone.
+- `/v1/manifest/{ticker}`: a list of the ticker's objects with the same values. When it and a download
+  response name different hashes, the values of the download response are the record of the bytes it
+  delivered (section 2).
+A builder takes these values only from an answer that carries them, under the checks of section 2, and only
+when `X-HF-Record` is `1`; any other value, or no such header, means no record. In the list, an object with
+`"record": null` has no record. Where they are absent, `sha256`, `row_count` and `observed_through` are null
+and listed in `not_recorded`.
+The six header names, the route `/v1/manifest/{ticker}` and the names inside its answer are hf's own API, not
+`ekd:` fields. A later change of these names by hf is a wording update of this section, not `ekd-time/2`.
+`bytes` is filled as section 2 says. hf `published_utc` may be filled from two sources:
+- the `X-HF-Published-UTC` header, for every hf object: from the response that delivered the object's bytes,
+  the time at which hf's store took the write of that object, cut to the second (the same time as
+  `last_modified` of `/v1/symbols/{ticker}`, cut to the second, for the objects that route describes). hf
+  sends it only together with a record that it trusts, and only after the worker change above is deployed.
+  The builder uses it only when `X-HF-Record` is `1` and `X-HF-Bytes` equals the length it received;
+- the ticker information route (`/v1/symbols/{ticker}`: `last_modified`, cut to the second), only for the
+  object that route describes - today the 1-minute Parquet file, `raw` or `clean`, and no other hf object -
+  and only when the builder read the route before and after the download, both reads gave the same
+  `last_modified`, and `size_bytes` equals the length it received.
+In every other case `published_utc` is null and listed.
 
 **ip**: `patent_measures.parquet` - `column: grant_date`, `kind: date`, `grain: daily`, `stamp: date`,
 `zone: null`, `stored_as: date`. `assignee_year.parquet` - `column: grant_year`, `kind: period`,
@@ -291,7 +317,7 @@ many series. A join across econ series, or between econ and another library, is 
 econ series "as published" is such a join. The econ client's `to_wide()` aligns series on equal labels, which
 rule 1 forbids. It is outside this contract, and a family engine does not call it.
 
-## 5. Open decisions (the owner's; numbered as in draft 4)
+## 5. The owner's decisions (numbered as in draft 4; none is open)
 
 - Decision 4. Is version 1 a declaration only, with no stored date changed? DECIDED: yes (the owner,
   2026-10-02). The condition of the release rule of section 2 is met.
@@ -303,6 +329,32 @@ rule 1 forbids. It is outside this contract, and a family engine does not call i
   refused.
 
 ## 6. Changes
+
+- **Draft 7 (2026-10-22), wording and one added source (WIDENS)**, after two answers of the owner of
+  2026-10-22: hf may add the `X-HF-*` download headers and the route `/v1/manifest/{ticker}`, although section
+  2 says "No library API changes in version 1" (yes); the values stored on each hf object and the per-ticker
+  list built from them are the per-ticker hf manifest of decision 5 (yes). No field changed its name, type or
+  meaning. No rule changed except the one source added in the fourth item; the third item says how a builder
+  reads the hf record. Version 1 is still not bound; the words "decision 4: yes" stay in the status line.
+  - Section 2, "Who writes them": "No library API changes in version 1" now says that it is about the `ekd:`
+    objects, and that the hf record of decision 5 is the library's own record of section 2. This records the
+    owner's ruling of 2026-10-22 (the first answer above) that the sentence always meant the `ekd:` objects.
+    It is his reading written down, not a change of rule. "hf serves no such record today" now adds "until the
+    hf worker change of section 4 is deployed". Other lines of section 2 are re-wrapped; their words are
+    unchanged.
+  - Section 4, "What hf does not expose today" is now "What hf exposes per ticker". It says what hf serves and
+    where: six headers on the answers of four data routes, and the route `/v1/manifest/{ticker}`. It also says
+    that hf serves them only after the hf worker change is deployed. Until then the draft 6 rule stands.
+  - Section 4, how a builder reads that record: only when `X-HF-Record` is `1`; in the list, an object with
+    `"record": null` has no record. The header names, the route and the names in its answer are hf's own API,
+    not `ekd:` fields, so a change of them by hf is a wording update, not `ekd-time/2`.
+  - Section 4, hf `published_utc` (WIDENS, in the sense of the draft 6 list): the `X-HF-Published-UTC` header
+    is added as a source for every hf object. hf sends it only together with a record that it trusts. The
+    builder uses it only when `X-HF-Record` is `1` and `X-HF-Bytes` equals the length it received. The
+    meaning of `published_utc` is the same (when the library last wrote this object to its store). The ticker
+    information route and its two-read check are unchanged.
+  - Section 5: the heading "Open decisions" is now "The owner's decisions", because none is open. The status
+    line says draft 7.
 
 - **2026-10-21, status only (still draft 6):** the owner said yes on decisions 5 and 6. Their lines in section 5
   record it. No rule, field or date changed, and the status line is unchanged (version 1 is still not bound).
