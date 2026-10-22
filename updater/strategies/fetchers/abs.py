@@ -439,7 +439,7 @@ def update(unit, since) -> Result:
         where = (f"the source's next pass RESUMES AFTER {last_attempted} so they actually drain"
                  if last_attempted else
                  (f"only the every-pass head ({head_ran} flow(s)) ran; NO rotation flow was "
-                  f"attempted, so the bookmark is unchanged and the next pass retries this same "
+                  f"attempted, so the bookmark is unchanged and a later pass retries this same "
                   f"point (check the budget, not the rotation)") if head_ran else
                  "NO flow was attempted at all — the bookmark is unchanged, so the source's next "
                  "pass retries this same point (check the budget, not the rotation)")
