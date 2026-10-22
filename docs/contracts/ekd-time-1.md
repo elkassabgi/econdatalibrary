@@ -295,14 +295,17 @@ rule 1 forbids. It is outside this contract, and a family engine does not call i
 
 - Decision 4. Is version 1 a declaration only, with no stored date changed? DECIDED: yes (the owner,
   2026-10-02). The condition of the release rule of section 2 is met.
-- Decision 5. Who writes the per-ticker hf manifest? Working answer: the daily pipeline.
+- Decision 5. Who writes the per-ticker hf manifest? DECIDED: the daily pipeline (the owner, 2026-10-22).
 - Decision 6 (not a part of this contract; listed so that it has a home; wording as in draft 4). Start the
-  econ dates project (Part B) after the workstation switch, source by source? Working answer: yes. The
-  measurement can run now; everything that changes the store, the catalogue or the worker runs after the
-  switch and after its 14-day fallback window. Until an econ source is declared, period-aligned econ output is
+  econ dates project (Part B) after the workstation switch, source by source? DECIDED: yes (the owner,
+  2026-10-22). The measurement can run now; everything that changes the store, the catalogue or the worker
+  runs after the switch and after its 14-day fallback window. Until an econ source is declared, period-aligned econ output is
   refused.
 
 ## 6. Changes
+
+- **2026-10-22, status only (still draft 6):** the owner said yes on decisions 5 and 6. Their lines in section 5
+  record it. No rule, field or date changed, and the status line is unchanged (version 1 is still not bound).
 
 - **2026-10-11, wording only (still draft 6):** the paragraph on the hf start date in section 4 is shorter;
   its line in the draft 5 list uses the same words; the note in rule 5 of section 3 is reworded. No rule, field
