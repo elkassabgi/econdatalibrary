@@ -73,7 +73,8 @@ CRON_SPACING = dt.timedelta(hours=12)          # between a workflow's two crons
 # GitHub stops creating scheduled runs without disabling the workflow: the desktop waits until it does, or
 # until someone runs with -SkipCiCheck. run_local_heavy.ps1 warns after 2 x $MinHours without a pass, but that
 # is a line in a local log and it fires routinely (review AR-362). The alert that leaves the machine is
-# tools/scheduler_stall.py: the guard loop mails the owner when a writer has had no scheduled run for 36 h.
+# tools/scheduler_stall.py: the guard loop mails the owner when a writer has had no scheduled run, or has held an
+# unfinished run, for 36 h.
 # KNOWN RESIDUAL: a run created more than 12 h after its cron is credited to the next cron of that workflow,
 # and the next cron's own run then arrives unannounced (the 2026-08-28 shape above: once 15:14Z had finished,
 # this rule would read the heavy writer as done until 23:46Z; on that day the daily writer blocked anyway).
@@ -207,9 +208,10 @@ def _gh_json(args: list, timeout: int = 60):
     return data
 
 
-def _gh_runs(wf: str) -> list:
+def _gh_runs(wf: str, timeout: int = 60) -> list:
     """Every recent run of this workflow, whatever triggered it: a manual dispatch holds the state store too."""
-    return _gh_json(["run", "list", "--workflow", wf, "--limit", str(RUN_LIMIT), "--json", "createdAt,event,status"])
+    return _gh_json(["run", "list", "--workflow", wf, "--limit", str(RUN_LIMIT), "--json", "createdAt,event,status"],
+                    timeout=timeout)
 
 
 def _gh_sched(wf: str, timeout: int = 60) -> list:

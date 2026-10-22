@@ -392,13 +392,14 @@ def _stall_summary():
         return {"unreadable": f"{type(e).__name__}: {e}"[:200]}
 
 
-def _stall_tick() -> str:
+def _stall_tick(started: float) -> str:
     """Run the scheduler-stall check (it mails the owner when GitHub stops creating the scheduled updater
     runs - review AR-362). Called AFTER the beat is published, so a slow GitHub can cost this check, never the
-    beat. It evaluates at most every 30 min and never raises."""
+    beat. `started` is when this publish began: the loop kills it at 90 s and the check budgets against that.
+    It evaluates at most every 30 min and never raises."""
     try:
         import scheduler_stall                               # noqa: PLC0415
-        return scheduler_stall.tick()
+        return scheduler_stall.tick(started=started)
     except Exception as e:                                   # noqa: BLE001
         return f"scheduler-stall: could not run ({type(e).__name__}: {str(e)[:160]})"
 
@@ -406,6 +407,8 @@ def _stall_tick() -> str:
 def publish(stall_check: bool = False) -> int:
     """stall_check: also run tools/scheduler_stall.py after the PUT. `--publish` (the guard loop) turns it on;
     a direct call does not, so a test of the beat never reaches GitHub or mail."""
+    import time                                              # noqa: PLC0415
+    started = time.monotonic()
     # `jobs_alive` keeps its meaning - the tracked ingesters PRESENT - so every existing reader
     # is unchanged. What was missing is why `3/3` could be published while istat_sliced was
     # exiting after nine seconds (R799): the beat carried no way to tell a crawl from a
@@ -444,7 +447,7 @@ def publish(stall_check: bool = False) -> int:
           + (f"jobs_alive={len(body['jobs_alive'])}/{len(TRACKED)}" if detail is not None
              else "jobs_alive=UNKNOWN (process table unreadable)"))
     if stall_check:
-        print(_stall_tick())
+        print(_stall_tick(started))
     return 0
 
 
@@ -511,15 +514,27 @@ def check(max_age_min: float, local: bool = False) -> int:
         print("  NOTE: this beat predates the statcan lane (no `statcan_lane` field) - the "
               "workstation's checkout of tools/guard_heartbeat.py is older than the lane, so the "
               "lane is UNMONITORED from CI until it is updated.")
-    # Printed, never failed: the workstation mails this itself (tools/scheduler_stall.py), and a run reading it
-    # here is a scheduled run, which proves the scheduler is not stalled for THIS workflow.
-    stall = body.get("scheduler_stall")
-    if isinstance(stall, dict) and stall.get("last_verdict") in ("stalled", "unknown"):
-        print(f"  NOTE: the workstation's scheduler-stall check reads {stall.get('last_verdict')} "
-              f"(writers {stall.get('stalled')}, evaluated {stall.get('last_evaluated_utc')}, "
-              f"alert mailed: {bool(stall.get('alert_active'))})")
-    elif isinstance(stall, dict) and "unreadable" in stall:
-        print(f"  NOTE: the workstation's scheduler-stall state is unreadable ({stall['unreadable']})")
+    # THE SCHEDULER-STALL ALARM (tools/scheduler_stall.py) mails from the workstation when GitHub stops creating
+    # the updater runs - and then THIS check does not run. So this is where the alarm is shown to be ARMED, while
+    # the scheduler still works: a beat that carries the field and says it is not armed FAILS. Its verdict
+    # (stalled / unknown) is printed, never failed: the workstation mails that itself.
+    stall_bad = None
+    if "scheduler_stall" in body:
+        stall = body["scheduler_stall"]
+        import scheduler_stall                               # noqa: PLC0415
+        stall_bad = scheduler_stall.armed_problem(stall, dt.datetime.now(dt.timezone.utc))
+        if isinstance(stall, dict) and stall.get("last_verdict") in ("stalled", "unknown"):
+            print(f"  NOTE: the workstation's scheduler-stall check reads {stall.get('last_verdict')} "
+                  f"(writers {stall.get('stalled')}, evaluated {stall.get('last_evaluated_utc')}, "
+                  f"alert mailed: {bool(stall.get('alert_active'))})")
+    else:
+        print("  NOTE: this beat predates the scheduler-stall check (no `scheduler_stall` field) - the "
+              "workstation's checkout is older, so a stall of GitHub's scheduler is UNALERTED until it is updated.")
+    if stall_bad:
+        print(f"SCHEDULER-STALL ALARM NOT ARMED: {stall_bad}")
+        print("  It is the only alert that reaches the owner when GitHub stops creating the scheduled updater "
+              "runs (every other one runs inside updater-daily). On the workstation: "
+              "python tools/scheduler_stall.py, and logs/scheduler_stall.json.")
     sec_bad = (_sec_edgar_problem(body["sec_edgar_local"], dt.datetime.now(dt.timezone.utc))
                if "sec_edgar_local" in body else None)
     if "sec_edgar_local" not in body:
@@ -536,7 +551,7 @@ def check(max_age_min: float, local: bool = False) -> int:
         print("  statcan is refreshed and served ONLY by jobs/statcan_lane.py (a guard job); nothing "
               "else in CI judges a run_location=local source.")
         return 1
-    if sec_bad:
+    if sec_bad or stall_bad:
         return 1
 
     print(f"guard heartbeat OK: {age:.1f} min old ({beat.isoformat()}) — {where}"

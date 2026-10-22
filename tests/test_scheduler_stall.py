@@ -2,11 +2,14 @@
 (review AR-362 of PR #185 - the CI writer gate fails closed, so such a stall blocks every desktop pass).
 
 Planted stalls and planted non-stalls, each with a control that differs in ONE property, plus a replay of the real
-scheduled-run history (tests/fixtures/scheduler_stall_history.json) that the rule must sit through silently."""
+scheduled-run history (tests/fixtures/scheduler_stall_history.json) that the rule must sit through silently.
+No test here can reach a mail service or GitHub: see the autouse fixture."""
 import datetime as dt
 import json
 import os
+import re
 import sys
+import time
 
 import pytest
 
@@ -16,14 +19,27 @@ import ci_writer_gate as gate  # noqa: E402
 import guard_heartbeat as gh  # noqa: E402
 import scheduler_stall as ss  # noqa: E402
 
+_REAL_GH_JSON = gate._gh_json
+
 UTC = dt.timezone.utc
 NOW = dt.datetime(2026, 10, 22, 12, 0, tzinfo=UTC)
 ACTIVE = {"updater-daily.yml": "active", "updater-heavy.yml": "active"}
 HISTORY = os.path.join(ROOT, "tests", "fixtures", "scheduler_stall_history.json")
+MAIL_OK = {"CLOUDFLARE_EMAIL_TOKEN": "t", "CLOUDFLARE_ACCOUNT_ID": "a", "RESEND_API_KEY": "", "DIGEST_TO": ""}
 
 
-def run(t: dt.datetime, event="schedule"):
-    return {"createdAt": t.strftime("%Y-%m-%dT%H:%M:%SZ"), "event": event, "status": "completed"}
+@pytest.fixture(autouse=True)
+def _no_real_mail_and_no_real_env(monkeypatch, tmp_path):
+    """The production checkout (tools/pretest.py) has a .env with real mail settings (R1210 class): point the
+    module at a .env that does not exist, and make any real mail POST or gh call fail the test."""
+    monkeypatch.setattr(ss, "ENV_PATH", str(tmp_path / "no-such" / ".env"))
+    import core.status_mail as sm
+    monkeypatch.setattr(sm, "_post", lambda *a, **k: pytest.fail("a test reached a real mail POST"))
+    monkeypatch.setattr(gate, "_gh_json", lambda *a, **k: pytest.fail("a test reached gh"))
+
+
+def run(t: dt.datetime, event="schedule", status="completed"):
+    return {"createdAt": t.strftime("%Y-%m-%dT%H:%M:%SZ"), "event": event, "status": status}
 
 
 def sched(daily_age_h, heavy_age_h, now=NOW):
@@ -41,6 +57,17 @@ def test_the_limit_is_36_h_one_skipped_cron_plus_the_gates_credit_window():
     assert ss.STALL_AFTER == 2 * gate.CRON_SPACING + gate.PENDING_LIMIT
     # the largest lag the gate credits to a cron, after one skipped cron, stays under the limit
     assert dt.timedelta(hours=24) + dt.timedelta(minutes=710) < ss.STALL_AFTER
+
+
+def test_the_gates_writer_crons_match_the_workflow_files():
+    """The rule's arithmetic (and the gate's) assumes these crons; a moved cron must fail here (review 12)."""
+    for wf, hours in gate.WRITERS.items():
+        with open(os.path.join(ROOT, ".github", "workflows", wf), encoding="utf-8") as fh:
+            crons = re.findall(r"cron:\s*'([^']+)'", fh.read())
+        got = sorted(int(c.split()[1]) for c in crons)
+        assert got == sorted(hours), (wf, crons)
+        assert all(c.split()[0] == "0" for c in crons)
+        assert max(b - a for a, b in zip(got, got[1:] + [got[0] + 24])) * 3600 == gate.CRON_SPACING.total_seconds()
 
 
 def test_a_writer_with_no_scheduled_run_for_37_h_is_stalled_and_one_at_35_h_is_not():
@@ -66,10 +93,30 @@ def test_a_fresh_manual_dispatch_does_not_hide_a_stalled_schedule():
     assert ss.assess(s, ACTIVE, NOW)["stalled"] == []
 
 
+def test_the_newest_run_is_the_max_not_the_first_listed():
+    s = {"updater-daily.yml": [run(NOW - dt.timedelta(hours=50)), run(NOW - dt.timedelta(hours=2))],
+         "updater-heavy.yml": [run(NOW - dt.timedelta(hours=1))]}
+    assert ss.assess(s, ACTIVE, NOW)["stalled"] == []
+
+
+def test_an_unfinished_writer_run_older_than_the_limit_is_a_stall_although_crons_keep_firing():
+    """Review finding 1: the gate blocks on every unfinished writer run, and GitHub keeps creating scheduled runs
+    behind it as pending, so the newest createdAt stays fresh."""
+    runs = {"updater-heavy.yml": [run(NOW - dt.timedelta(hours=40), status="in_progress"),
+                                  run(NOW - dt.timedelta(hours=1), status="pending")]}
+    v = ss.assess(sched(2, 1), ACTIVE, NOW, runs)
+    assert stalled_names(v) == ["updater-heavy.yml"] and "still in_progress" in v["stalled"][0]["reason"]
+    # control: the same run 20 h old (heavy runs last up to 23.6 h) is not
+    runs["updater-heavy.yml"][0] = run(NOW - dt.timedelta(hours=20), status="in_progress")
+    assert ss.assess(sched(2, 1), ACTIVE, NOW, runs)["stalled"] == []
+
+
 def test_a_disabled_workflow_is_not_judged_because_the_gate_does_not_wait_for_it():
     states = dict(ACTIVE, **{"updater-heavy.yml": "disabled_manually"})
     v = ss.assess(sched(2, 100), states, NOW)
     assert v["stalled"] == [] and any("disabled_manually" in n for n in v["notes"])
+    empty = {"updater-daily.yml": [run(NOW)], "updater-heavy.yml": []}
+    assert ss.assess(empty, states, NOW)["stalled"] == [], "disabled + nothing listed is still not judged"
     # control: the same history, the workflow active -> stalled
     assert stalled_names(ss.assess(sched(2, 100), ACTIVE, NOW)) == ["updater-heavy.yml"]
 
@@ -82,9 +129,15 @@ def test_a_workflow_missing_from_githubs_list_is_still_judged_like_the_gate_stil
 
 def test_no_scheduled_run_listed_at_all_is_a_stall_with_no_age():
     v = ss.assess({"updater-daily.yml": [], "updater-heavy.yml": [run(NOW)]}, ACTIVE, NOW)
-    assert v["stalled"] == [{"workflow": "updater-daily.yml", "newest": None, "age_h": None}]
+    assert stalled_names(v) == ["updater-daily.yml"] and v["stalled"][0]["age_h"] is None
     subject, text = ss.compose("stall", v, {}, NOW)
-    assert "lists no scheduled" in subject and "lists NO scheduled run" in text
+    assert "no scheduled run listed" in subject and "lists NO scheduled run" in text
+
+
+def test_a_newest_run_in_this_machines_future_is_clock_skew_not_fresh():
+    with pytest.raises(ss.ClockSkew):
+        ss.assess(sched(-1, 1), ACTIVE, NOW)
+    assert ss.assess(sched(-0.1, 1), ACTIVE, NOW)["stalled"] == []    # 6 min ahead: within the slack
 
 
 def _history():
@@ -105,8 +158,8 @@ def _replay(runs, start, end, step=dt.timedelta(minutes=30)):
 
 
 def test_the_real_history_never_reads_stalled():
-    """No false alarm over the measured history: the 85 days in which both writers ran (from 2026-07-28), including the 2026-08-31
-    skips (gap 26.1 h) and the 710-min lag of 2026-08-28."""
+    """No false alarm over the measured history: the 85 days in which both writers ran (from 2026-07-28),
+    including the 2026-08-31 skips (gap 26.1 h) and the 710-min lag of 2026-08-28."""
     runs, snap = _history()
     start = max(v[0] for v in runs.values()) + dt.timedelta(minutes=1)
     assert len(runs["updater-daily.yml"]) > 150 and len(runs["updater-heavy.yml"]) > 150
@@ -115,72 +168,98 @@ def test_the_real_history_never_reads_stalled():
 
 def test_the_real_history_with_its_newest_runs_removed_reads_stalled_within_the_limit():
     """The same replay, with the scheduler planted dead at a real instant: every run after it removed. The rule must
-    fire, and no later than 36 h after the last run it saw (plus one evaluation step)."""
-    runs, snap = _history()
+    fire, after 36 h and no later than one evaluation step past it."""
+    runs, _snap = _history()
     cut = dt.datetime(2026, 10, 10, 0, 0, tzinfo=UTC)
     dead = {wf: [c for c in v if c <= cut] for wf, v in runs.items()}
-    last = max(c for v in dead.values() for c in v)
     hits = _replay(dead, cut, cut + dt.timedelta(hours=48))
     assert hits, "a scheduler dead for 48 h was never reported"
-    newest_each = min(max(v) for v in dead.values())
-    assert hits[0] - newest_each <= ss.STALL_AFTER + dt.timedelta(minutes=30)
-    assert hits[0] - newest_each > ss.STALL_AFTER
-    assert last <= cut
+    oldest_newest = min(max(v) for v in dead.values())
+    assert ss.STALL_AFTER < hits[0] - oldest_newest <= ss.STALL_AFTER + dt.timedelta(minutes=30)
 
 
 # ------------------------------------------------------------------ the state machine
-STALL = {"stalled": [{"workflow": "updater-daily.yml", "newest": "2026-10-20T20:00:00Z", "age_h": 40.0}],
-         "ok": [{"workflow": "updater-heavy.yml", "newest": "2026-10-22T10:00:00Z", "age_h": 2.0}], "notes": []}
+STALL = {"stalled": [{"workflow": "updater-daily.yml", "newest": "2026-10-20T20:00:00Z", "age_h": 40.0,
+                      "reason": "newest scheduled run created 2026-10-20T20:00:00Z (40.0 h ago)"}],
+         "ok": [{"workflow": "updater-heavy.yml", "newest": "2026-10-22T10:00:00Z", "age_h": 2.0,
+                 "reason": "newest scheduled run created 2026-10-22T10:00:00Z (2.0 h ago)"}], "notes": []}
 OK = {"stalled": [], "ok": STALL["ok"] + [{"workflow": "updater-daily.yml", "newest": "2026-10-22T11:00:00Z",
-                                         "age_h": 1.0}], "notes": []}
+                                         "age_h": 1.0, "reason": "fresh"}], "notes": []}
 
 
-def test_a_stall_mails_on_its_second_sighting_not_its_first():
+def _deliver(s, kind, now):
+    return ss.on_delivered(s, kind, now) if kind else s
+
+
+def test_a_stall_comes_due_on_its_second_sighting_not_its_first():
     s1, k1 = ss.step({}, STALL, None, NOW)
     assert k1 is None and s1["episode_since_utc"] == "2026-10-22T12:00:00Z"
     s2, k2 = ss.step(s1, STALL, None, NOW + dt.timedelta(minutes=30))
-    assert k2 == "stall" and s2["alert_active"] is True
-    # control: a first sighting followed by a clean evaluation mails nothing and closes the episode
+    assert k2 == "stall"
+    # control: a first sighting followed by a clean evaluation is due nothing and closes the episode
     s3, k3 = ss.step(s1, OK, None, NOW + dt.timedelta(minutes=30))
-    assert k3 is None and s3["episode_since_utc"] is None and not s3["alert_active"]
+    assert k3 is None and s3["episode_since_utc"] is None and not s3.get("alert_active")
 
 
-def test_a_stall_reminds_every_24_h_and_not_before():
+def test_an_undelivered_stall_keeps_coming_due():
     s, _ = ss.step({}, STALL, None, NOW)
     s, k = ss.step(s, STALL, None, NOW + dt.timedelta(minutes=30))
-    assert k == "stall"
+    s, k = ss.step(s, STALL, None, NOW + dt.timedelta(minutes=60))
+    assert k == "stall", "not delivered, so still due"
+
+
+def test_a_delivered_stall_reminds_every_24_h_and_not_before():
+    s, _ = ss.step({}, STALL, None, NOW)
+    t = NOW + dt.timedelta(minutes=30)
+    s, k = ss.step(s, STALL, None, t)
+    s = _deliver(s, k, t)
     s, k = ss.step(s, STALL, None, NOW + dt.timedelta(hours=24))
     assert k is None
-    s, k = ss.step(s, STALL, None, NOW + dt.timedelta(hours=24, minutes=31))
+    s, k = ss.step(s, STALL, None, t + dt.timedelta(hours=24))
     assert k == "remind"
 
 
-def test_recovery_mails_once_after_an_alert_and_never_without_one():
+def test_recovery_comes_due_once_after_a_delivered_alert_and_never_without_one():
     s, _ = ss.step({}, STALL, None, NOW)
-    s, _ = ss.step(s, STALL, None, NOW + dt.timedelta(minutes=30))
+    t = NOW + dt.timedelta(minutes=30)
+    s, k = ss.step(s, STALL, None, t)
+    s = _deliver(s, k, t)
     s, k = ss.step(s, OK, None, NOW + dt.timedelta(hours=1))
-    assert k == "recovered" and not s["alert_active"] and s["episode_since_utc"] is None
-    s, k = ss.step(s, OK, None, NOW + dt.timedelta(hours=2))
-    assert k is None
+    assert k == "recovered"
+    s = _deliver(s, k, NOW + dt.timedelta(hours=1))
+    assert not s["alert_active"] and s["episode_since_utc"] is None
+    assert ss.step(s, OK, None, NOW + dt.timedelta(hours=2))[1] is None
     assert ss.step({}, OK, None, NOW)[1] is None
 
 
-def test_github_unreadable_for_more_than_36_h_mails_blind_once():
+def test_github_unreadable_for_more_than_36_h_comes_due_blind_once():
     s, k = ss.step({}, None, "RuntimeError: gh auth", NOW)
     assert k is None and s["unknown_since_utc"] == "2026-10-22T12:00:00Z"
-    s, k = ss.step(s, None, "RuntimeError: gh auth", NOW + dt.timedelta(hours=35))
+    s, k = ss.step(s, None, "e", NOW + dt.timedelta(hours=35))
     assert k is None
-    s, k = ss.step(s, None, "RuntimeError: gh auth", NOW + dt.timedelta(hours=36, minutes=30))
+    t = NOW + dt.timedelta(hours=36, minutes=30)
+    s, k = ss.step(s, None, "e", t)
     assert k == "blind"
-    s, k = ss.step(s, None, "RuntimeError: gh auth", NOW + dt.timedelta(hours=40))
+    s = _deliver(s, k, t)
+    s, k = ss.step(s, None, "e", NOW + dt.timedelta(hours=40))
     assert k is None, "the blind mail is sent once per blind spell"
     s, k = ss.step(s, OK, None, NOW + dt.timedelta(hours=41))
     assert s["unknown_since_utc"] is None and s["blind_alerted"] is False
 
 
+def test_future_stored_instants_are_discarded_not_waited_for():
+    """Review finding 6: a corrected clock must not freeze the reminder or the blind clock."""
+    s = {"alert_active": True, "episode_since_utc": "2026-10-20T00:00:00Z", "last_mail_utc": "2027-01-01T00:00:00Z"}
+    assert ss.step(s, STALL, None, NOW)[1] == "remind"
+    s, k = ss.step({"unknown_since_utc": "2027-01-01T00:00:00Z"}, None, "e", NOW)
+    assert k is None and s["unknown_since_utc"] == "2026-10-22T12:00:00Z", "restarted at now"
+
+
 def test_an_unreadable_spell_does_not_close_an_open_stall_episode():
     s, _ = ss.step({}, STALL, None, NOW)
-    s, _ = ss.step(s, STALL, None, NOW + dt.timedelta(minutes=30))
+    t = NOW + dt.timedelta(minutes=30)
+    s, k = ss.step(s, STALL, None, t)
+    s = _deliver(s, k, t)
     s, k = ss.step(s, None, "TimeoutExpired", NOW + dt.timedelta(hours=1))
     assert k is None and s["alert_active"] is True
 
@@ -192,110 +271,216 @@ class Mailer:
 
     def __call__(self, subject, text):
         self.sent.append((subject, text))
+        if isinstance(self.result, BaseException):
+            raise self.result
         return self.result
 
 
-def _tick(tmp_path, verdict_sched, now, mailer, states=ACTIVE, cut=False):
-    return ss.tick(now=now, read=lambda: (verdict_sched, states), send=mailer,
-                   path=str(tmp_path / "logs" / "scheduler_stall.json"), cut_over=lambda: cut)
+class Rig:
+    def __init__(self, tmp_path, mailer=None, env=None):
+        self.path = str(tmp_path / "logs" / "scheduler_stall.json")
+        self.mailer = mailer or Mailer()
+        self.env = MAIL_OK if env is None else env
+        self.reads = 0
+
+    def tick(self, now, s=None, states=ACTIVE, runs=None, started=None, cut=False, read=None):
+        def default_read(budget_end):
+            self.reads += 1
+            return s, (runs or {}), states
+        return ss.tick(now=now, started=time.monotonic() if started is None else started, read=read or default_read,
+                       send=self.mailer, path=self.path, cut_over=lambda: cut, env=self.env)
+
+    def state(self):
+        with open(self.path, encoding="utf-8") as fh:
+            return json.load(fh)
 
 
-def test_tick_mails_a_planted_stall_on_the_second_evaluation_and_records_it(tmp_path):
-    m = Mailer()
-    _tick(tmp_path, sched(40, 2), NOW, m)
-    assert m.sent == []
-    out = _tick(tmp_path, sched(40.5, 2.5), NOW + dt.timedelta(minutes=30), m)
-    assert len(m.sent) == 1 and "stall mail sent (cloudflare)" in out
-    subject, text = m.sent[0]
-    assert "desktop pass is blocked" in subject and "updater-daily.yml" in text and "updater-heavy.yml" in text
-    st = json.loads((tmp_path / "logs" / "scheduler_stall.json").read_text())
-    assert st["alert_active"] is True and st["last_verdict"] == "stalled"
-    # the next evaluation inside 24 h sends nothing
-    _tick(tmp_path, sched(41.5, 3.5), NOW + dt.timedelta(hours=1, minutes=30), m)
-    assert len(m.sent) == 1
+def _confirmed_stall(rig, t=NOW):
+    """Two evaluations 30 min apart that see the same stall -> a stall mail is due."""
+    rig.tick(t, sched(40, 2, t))
+    out = rig.tick(t + dt.timedelta(minutes=30), sched(40, 2, t + dt.timedelta(minutes=30)))
+    assert "stall mail due" in out
+    return t + dt.timedelta(minutes=30)
 
 
-def test_tick_sends_nothing_for_a_planted_non_stall(tmp_path):
-    m = Mailer()
-    for i in range(6):
-        _tick(tmp_path, sched(30, 20), NOW + dt.timedelta(minutes=30 * i), m)
-    assert m.sent == []
+def test_a_planted_stall_is_mailed_once_in_the_tick_after_it_is_confirmed(tmp_path):
+    rig = Rig(tmp_path)
+    t = _confirmed_stall(rig)
+    assert rig.mailer.sent == [], "the evaluation only decides; the send is the next tick's first act"
+    out = rig.tick(t + dt.timedelta(minutes=5), sched(40, 2))
+    assert "stall mail sent (cloudflare)" in out and len(rig.mailer.sent) == 1
+    subject, text = rig.mailer.sent[0]
+    assert subject.startswith("[econ] scheduler stall: updater-daily.yml") and "updater-heavy.yml" in text
+    st = rig.state()
+    assert st["alert_active"] is True and "mail_due" not in st and st["last_send"]["result"] == "cloudflare"
+    for i in range(2, 12):         # the next five hours: nothing more
+        rig.tick(t + dt.timedelta(minutes=30 * i), sched(40 + i / 2, 2, t + dt.timedelta(minutes=30 * i)))
+    assert len(rig.mailer.sent) == 1
 
 
-def test_a_mail_that_was_not_delivered_is_retried_at_the_next_evaluation(tmp_path):
+def test_a_planted_non_stall_mails_nothing(tmp_path):
+    rig = Rig(tmp_path)
+    for i in range(12):
+        t = NOW + dt.timedelta(minutes=30 * i)
+        rig.tick(t, sched(30, 20, t))
+    assert rig.mailer.sent == [] and rig.state()["last_verdict"] == "ok"
+
+
+def test_an_undelivered_mail_stays_due_and_is_retried_but_not_every_tick(tmp_path):
     for failed in ("skipped", "failed"):
-        d = tmp_path / failed
-        m = Mailer(failed)
-        _tick(d, sched(40, 2), NOW, m)
-        out = _tick(d, sched(40, 2), NOW + dt.timedelta(minutes=30), m)
-        assert len(m.sent) == 1 and "NOT sent" in out
-        st = json.loads((d / "logs" / "scheduler_stall.json").read_text())
-        assert not st.get("alert_active"), "an undelivered mail must not be recorded as sent"
-        m.result = "resend"
-        _tick(d, sched(40, 2), NOW + dt.timedelta(minutes=60), m)
-        assert len(m.sent) == 2 and "STILL" not in m.sent[1][0], "the retry is the onset mail, not a reminder"
-        assert json.loads((d / "logs" / "scheduler_stall.json").read_text())["alert_active"] is True
+        rig = Rig(tmp_path / failed, Mailer(failed))
+        t = _confirmed_stall(rig)
+        out = rig.tick(t + dt.timedelta(minutes=5), sched(40, 2))
+        assert len(rig.mailer.sent) == 1 and "NOT sent" in out
+        st = rig.state()
+        assert not st.get("alert_active") and st["mail_due"]["kind"] == "stall"
+        rig.tick(t + dt.timedelta(minutes=10), sched(40, 2))
+        rig.tick(t + dt.timedelta(minutes=20), sched(40, 2))
+        assert len(rig.mailer.sent) == 1, "a failed send is retried at most every 30 min, not every 5"
+        rig.mailer.result = "resend"
+        rig.tick(t + dt.timedelta(minutes=40), sched(40, 2))
+        assert len(rig.mailer.sent) == 2 and "(reminder)" not in rig.mailer.sent[1][0]
+        assert rig.state()["alert_active"] is True
+
+
+def test_a_kill_during_the_send_cannot_repeat_the_mail_every_tick(tmp_path):
+    """Review finding 3: the loop kills the publish at 90 s. A kill after the mail is accepted and before the result
+    is recorded leaves an attempt with no result; the next ticks must hold it, not resend it."""
+    rig = Rig(tmp_path, Mailer(KeyboardInterrupt()))
+    t = _confirmed_stall(rig)
+    with pytest.raises(KeyboardInterrupt):
+        rig.tick(t + dt.timedelta(minutes=5), sched(40, 2))
+    assert len(rig.mailer.sent) == 1
+    rig.mailer.result = "cloudflare"
+    for m in (10, 40, 120, 300):
+        out = rig.tick(t + dt.timedelta(minutes=m), sched(40, 2))
+        assert "never reported back" in out
+    assert len(rig.mailer.sent) == 1
+    out = rig.tick(t + dt.timedelta(hours=6, minutes=10), sched(46, 2))
+    assert "stall mail sent" in out and len(rig.mailer.sent) == 2, "after the hold-off: at most one duplicate"
+
+
+def test_a_slow_tick_defers_the_send_and_skips_the_evaluation(tmp_path):
+    rig = Rig(tmp_path)
+    t = _confirmed_stall(rig)
+    late = time.monotonic() - 30            # 30 s of the guard tick already gone
+    out = rig.tick(t + dt.timedelta(minutes=5), sched(40, 2), started=late)
+    assert "deferred" in out and rig.mailer.sent == []
+    reads = rig.reads
+    rig2 = Rig(tmp_path / "b")
+    out = rig2.tick(NOW, sched(1, 1), started=time.monotonic() - 50)
+    assert "evaluation skipped" in out and rig2.reads == 0
+    assert reads == 2
 
 
 def test_tick_evaluates_at_most_every_30_min(tmp_path):
-    calls = []
-
-    def read():
-        calls.append(1)
-        return sched(1, 1), ACTIVE
-    p = str(tmp_path / "s.json")
-    ss.tick(now=NOW, read=read, send=Mailer(), path=p, cut_over=lambda: False)
-    ss.tick(now=NOW + dt.timedelta(minutes=5), read=read, send=Mailer(), path=p, cut_over=lambda: False)
-    ss.tick(now=NOW + dt.timedelta(minutes=29), read=read, send=Mailer(), path=p, cut_over=lambda: False)
-    assert len(calls) == 1
-    ss.tick(now=NOW + dt.timedelta(minutes=30), read=read, send=Mailer(), path=p, cut_over=lambda: False)
-    assert len(calls) == 2
-    # a clock that moved back does not silence it
-    ss.tick(now=NOW - dt.timedelta(hours=2), read=read, send=Mailer(), path=p, cut_over=lambda: False)
-    assert len(calls) == 3
+    rig = Rig(tmp_path)
+    for m in (0, 5, 29):
+        rig.tick(NOW + dt.timedelta(minutes=m), sched(1, 1))
+    assert rig.reads == 1
+    rig.tick(NOW + dt.timedelta(minutes=30), sched(1, 1))
+    assert rig.reads == 2
+    rig.tick(NOW - dt.timedelta(hours=2), sched(1, 1))      # a clock that moved back does not silence it
+    assert rig.reads == 3
 
 
 def test_a_state_that_cannot_be_written_mails_nothing(tmp_path, monkeypatch):
-    m = Mailer()
-    p = str(tmp_path / "s.json")
-    ss.tick(now=NOW, read=lambda: (sched(40, 2), ACTIVE), send=m, path=p, cut_over=lambda: False)
+    rig = Rig(tmp_path)
+    t = _confirmed_stall(rig)
 
     def boom(*a, **k):
         raise PermissionError("denied")
     monkeypatch.setattr(ss, "save_state", boom)
-    out = ss.tick(now=NOW + dt.timedelta(minutes=30), read=lambda: (sched(40, 2), ACTIVE), send=m, path=p,
-                  cut_over=lambda: False)
-    assert m.sent == [] and "nothing mailed" in out
+    out = rig.tick(t + dt.timedelta(minutes=5), sched(40, 2))
+    assert rig.mailer.sent == [] and "check failed" in out
+    rig2 = Rig(tmp_path / "b")
+    out = rig2.tick(NOW, sched(1, 1))
+    assert "nothing mailed" in out
+
+
+def test_a_second_loop_holding_the_lock_skips_this_tick(tmp_path):
+    rig = Rig(tmp_path)
+    os.makedirs(os.path.dirname(rig.path), exist_ok=True)
+    open(rig.path + ".lock", "w").close()
+    assert "holds the lock" in rig.tick(NOW, sched(1, 1)) and rig.reads == 0
+    old = time.time() - 11 * 60                             # a holder killed 11 min ago: taken over
+    os.utime(rig.path + ".lock", (old, old))
+    assert "ok" in rig.tick(NOW, sched(1, 1)) and rig.reads == 1
+    assert not os.path.exists(rig.path + ".lock"), "released"
 
 
 def test_a_corrupt_state_file_starts_fresh_and_says_so(tmp_path):
-    p = tmp_path / "s.json"
-    p.write_text("{not json")
-    out = ss.tick(now=NOW, read=lambda: (sched(1, 1), ACTIVE), send=Mailer(), path=str(p), cut_over=lambda: False)
-    assert "unreadable" in out and json.loads(p.read_text())["last_verdict"] == "ok"
+    rig = Rig(tmp_path)
+    os.makedirs(os.path.dirname(rig.path), exist_ok=True)
+    with open(rig.path, "w") as fh:
+        fh.write("{not json")
+    assert ss.summary_for_beat(rig.path).get("unreadable")
+    out = rig.tick(NOW, sched(1, 1))
+    assert "unreadable" in out and rig.state()["last_verdict"] == "ok" and rig.state()["state_reset"]
 
 
-def test_github_unreadable_is_unknown_not_ok_and_not_stalled(tmp_path):
-    def read():
+def test_github_unreadable_or_clock_skew_is_unknown_not_ok_and_not_stalled(tmp_path):
+    def read(budget_end):
         raise RuntimeError("gh run list failed: HTTP 401")
-    p = str(tmp_path / "s.json")
-    out = ss.tick(now=NOW, read=read, send=Mailer(), path=p, cut_over=lambda: False)
-    assert "unknown" in out
-    st = json.loads(open(p).read())
+    rig = Rig(tmp_path)
+    assert "unknown" in rig.tick(NOW, read=read)
+    st = rig.state()
     assert st["last_verdict"] == "unknown" and "401" in st["last_error"]
+    rig2 = Rig(tmp_path / "skew")
+    assert "unknown" in rig2.tick(NOW, sched(-2, 1))
+    assert "ClockSkew" in rig2.state()["last_error"]
+
+
+def test_a_blind_evaluation_keeps_a_mail_already_due(tmp_path):
+    rig = Rig(tmp_path, Mailer("failed"))
+    t = _confirmed_stall(rig)
+
+    def read(budget_end):
+        raise TimeoutError("gh")
+    rig.tick(t + dt.timedelta(minutes=30), read=read)
+    assert rig.state()["mail_due"]["kind"] == "stall"
 
 
 def test_after_t0_nothing_is_read_and_nothing_is_mailed(tmp_path):
-    m = Mailer()
-    out = ss.tick(now=NOW, read=lambda: pytest.fail("GitHub read after T0"), send=m,
-                  path=str(tmp_path / "s.json"), cut_over=lambda: True)
-    assert "not applicable after T0" in out and m.sent == []
+    rig = Rig(tmp_path)
+    out = rig.tick(NOW, read=lambda b: pytest.fail("GitHub read after T0"), cut=True)
+    assert "not applicable after T0" in out and rig.mailer.sent == []
 
 
-def test_tick_never_raises(tmp_path):
-    out = ss.tick(now=NOW, read=lambda: (sched(1, 1), ACTIVE), send=Mailer(), path=str(tmp_path / "s.json"),
+def test_tick_never_raises_an_exception(tmp_path):
+    out = ss.tick(now=NOW, read=lambda b: (sched(1, 1), {}, ACTIVE), send=Mailer(), path=str(tmp_path / "s.json"),
                   cut_over=lambda: (_ for _ in ()).throw(OSError("flag unreadable")))
     assert out.startswith("scheduler-stall: check failed")
+
+
+def test_the_github_read_respects_the_time_left_in_the_tick(monkeypatch):
+    seen = []
+    monkeypatch.setattr(gate, "_gh_sched", lambda wf, timeout: seen.append(timeout) or [])
+    monkeypatch.setattr(gate, "_gh_runs", lambda wf, timeout: seen.append(timeout) or [])
+    monkeypatch.setattr(gate, "_gh_states", lambda timeout: seen.append(timeout) or {})
+    ss._read_github(time.monotonic() + 300)
+    assert seen == [20, 20, 20, 20, 20]
+    seen.clear()
+    ss._read_github(time.monotonic() + 9.5)
+    assert seen and max(seen) <= 9
+    with pytest.raises(TimeoutError):
+        ss._read_github(time.monotonic() + 1)
+
+
+# ------------------------------------------------------------------ mail settings and sender
+def test_mail_settings_read_only_the_mail_keys_from_env_and_the_environment_wins(tmp_path, monkeypatch):
+    p = tmp_path / ".env"
+    p.write_text('R2_WRITE_SECRET_ACCESS_KEY=nope\nRESEND_API_KEY="r"\nDIGEST_TO=x@example.org\n'
+                 "CLOUDFLARE_EMAIL_TOKEN=fromfile\n", encoding="utf-8")
+    monkeypatch.setenv("CLOUDFLARE_EMAIL_TOKEN", "fromenv")
+    monkeypatch.delenv("R2_WRITE_SECRET_ACCESS_KEY", raising=False)
+    env = ss.mail_env(str(p))
+    assert env["RESEND_API_KEY"] == "r" and env["DIGEST_TO"] == "x@example.org"
+    assert env["CLOUDFLARE_EMAIL_TOKEN"] == "fromenv"
+    assert "R2_WRITE_SECRET_ACCESS_KEY" not in env and not os.environ.get("R2_WRITE_SECRET_ACCESS_KEY")
+    assert ss.mail_setup(env) == {"mail_configured": True, "transport": "resend", "mail_to": "DIGEST_TO"}
+    assert ss.mail_setup({k: "" for k in ss.MAIL_KEYS}) == {
+        "mail_configured": False, "transport": "none", "mail_to": "default admin@hfdatalibrary.com"}
 
 
 def test_mail_goes_from_the_status_address_never_a_person(monkeypatch):
@@ -306,18 +491,15 @@ def test_mail_goes_from_the_status_address_never_a_person(monkeypatch):
         return "skipped"
     import core.status_mail as sm
     monkeypatch.setattr(sm, "send_status_mail", fake)
-    monkeypatch.setattr("core.config.load_env", lambda *a, **k: {})
-    monkeypatch.delenv("DIGEST_TO", raising=False)
-    assert ss.send_mail("s", "t") == "skipped"
-    assert seen["sender"] == "Econ Data Library <noreply@hfdatalibrary.com>"
-    assert seen["to"] == "admin@hfdatalibrary.com"
+    assert ss.send_mail("s", "t", {k: "" for k in ss.MAIL_KEYS}) == "skipped"
+    assert seen == {"sender": "Econ Data Library <noreply@hfdatalibrary.com>", "to": "admin@hfdatalibrary.com"}
 
 
-def test_every_mail_kind_composes(monkeypatch):
+def test_every_mail_kind_composes_with_the_stable_prefix():
     for kind, v in (("stall", STALL), ("remind", STALL), ("recovered", OK), ("blind", None)):
         subject, text = ss.compose(kind, v, {"episode_since_utc": "x", "unknown_since_utc": "y",
                                              "last_error": "e"}, NOW)
-        assert subject.startswith("econ: ") and "tools/scheduler_stall.py" in text
+        assert subject.startswith("[econ] scheduler stall") and "tools/scheduler_stall.py" in text
 
 
 # ------------------------------------------------------------------ the gate's fetchers carry the timeout
@@ -330,12 +512,14 @@ def test_the_gates_fetchers_pass_the_timeout_and_keep_60_s_by_default(monkeypatc
     def fake_run(cmd, **kw):
         seen.append(kw["timeout"])
         return R()
+    monkeypatch.setattr(gate, "_gh_json", _REAL_GH_JSON)   # the real one, with subprocess faked below
     monkeypatch.setattr(gate.subprocess, "run", fake_run)
     gate._gh_sched("updater-daily.yml")
     gate._gh_sched("updater-daily.yml", timeout=ss.GH_TIMEOUT_S)
-    gate._gh_states(timeout=ss.GH_TIMEOUT_S)
+    gate._gh_states(timeout=7)
     gate._gh_runs("updater-daily.yml")
-    assert seen == [60, 20, 20, 60]
+    gate._gh_runs("updater-daily.yml", timeout=5)
+    assert seen == [60, 20, 7, 60, 5]
 
 
 # ------------------------------------------------------------------ riding the guard loop
@@ -352,11 +536,12 @@ def _beat_rig(monkeypatch, order):
 def test_publish_flag_runs_the_stall_check_after_the_beat_is_put(monkeypatch):
     order = []
     _beat_rig(monkeypatch, order)
-    monkeypatch.setattr(ss, "tick", lambda *a, **k: order.append(("tick", None)) or "scheduler-stall: ok")
+    monkeypatch.setattr(ss, "tick", lambda *a, **k: order.append(("tick", k.get("started"))) or "scheduler-stall: ok")
     monkeypatch.setattr(sys, "argv", ["guard_heartbeat.py", "--publish"])
     assert gh.main() == 0
     assert [o[0] for o in order] == ["put", "tick"]
     assert order[0][1]["scheduler_stall"] == {"last_verdict": "ok"}
+    assert isinstance(order[1][1], float) and order[1][1] <= time.monotonic(), "the publish's start is passed"
 
 
 def test_a_failing_stall_check_does_not_change_the_publish(monkeypatch, capsys):
@@ -379,18 +564,49 @@ def test_a_direct_publish_never_reaches_github(monkeypatch):
     assert "scheduler_stall" not in order[0][1]
 
 
-def test_the_cloud_check_prints_a_stalled_verdict_but_does_not_fail_on_it(monkeypatch, capsys):
+def _check(monkeypatch, stall, present=True):
     body = {"utc": dt.datetime.now(UTC).isoformat(), "host": "w", "jobs_alive": [], "tracked": [],
-            "jobs_detail": [], "table_ok": True, "emptiness": {"ran": True, "fetch_without_write": 0},
-            "scheduler_stall": {"last_verdict": "stalled", "stalled": ["updater-heavy.yml"],
-                                "last_evaluated_utc": "2026-10-22T11:30:00Z", "alert_active": True}}
+            "jobs_detail": [], "table_ok": True, "emptiness": {"ran": True, "fetch_without_write": 0}}
+    if present:
+        body["scheduler_stall"] = stall
 
     class C:
         def get_object(self, **kw):
             import io
             return {"Body": io.BytesIO(json.dumps(body).encode())}
     monkeypatch.setattr(gh.r2_util, "client", lambda *a, **k: C())
-    monkeypatch.setattr(gh, "_lane_problem", lambda *a, **k: None)
-    assert gh.check(45) == 0
+    return gh.check(45)
+
+
+def _armed(**kw):
+    now = dt.datetime.now(UTC)
+    s = {"last_evaluated_utc": ss._iso(now - dt.timedelta(minutes=20)), "last_verdict": "ok", "stalled": [],
+         "alert_active": False, "unknown_since_utc": None, "mail_configured": True, "transport": "cloudflare",
+         "mail_to": "DIGEST_TO", "last_send": None, "mail_due": None}
+    s.update(kw)
+    return s
+
+
+def test_the_cloud_check_passes_an_armed_alarm_and_prints_a_stalled_verdict(monkeypatch, capsys):
+    assert _check(monkeypatch, _armed()) == 0
+    assert _check(monkeypatch, _armed(last_verdict="stalled", stalled=["updater-heavy.yml"], alert_active=True)) == 0
     out = capsys.readouterr().out
     assert "scheduler-stall check reads stalled" in out and "updater-heavy.yml" in out
+
+
+def test_the_cloud_check_FAILS_when_the_alarm_is_not_armed(monkeypatch, capsys):
+    """Review finding 5: the alarm can only be shown armed while the scheduler works - so this is where it fails."""
+    now = dt.datetime.now(UTC)
+    old = ss._iso(now - dt.timedelta(hours=7))
+    for bad in (_armed(mail_configured=False), _armed(last_evaluated_utc=old), _armed(unknown_since_utc=old),
+                _armed(mail_due={"kind": "stall", "since": old}), {"never_evaluated": True}, {"unreadable": "x"},
+                "garbage"):
+        assert _check(monkeypatch, bad) == 1, bad
+        assert "SCHEDULER-STALL ALARM NOT ARMED" in capsys.readouterr().out
+    # controls: a mail due for 1 h, GitHub unreadable for 1 h, after T0, and an older publisher - all pass
+    recent = ss._iso(now - dt.timedelta(hours=1))
+    for fine in (_armed(mail_due={"kind": "stall", "since": recent}), _armed(unknown_since_utc=recent),
+                 {"not_applicable": "after T0"}):
+        assert _check(monkeypatch, fine) == 0, fine
+    assert _check(monkeypatch, None, present=False) == 0
+    assert "predates the scheduler-stall check" in capsys.readouterr().out
