@@ -26,7 +26,8 @@ waits for those), a writer is STALLED when
     unfinished writer run however old, and GitHub keeps creating scheduled runs behind it as pending, so the
     first rule alone cannot see this shape (plan review finding 1). Normal: createdAt -> updatedAt at most
     11.5 h (daily) and 23.6 h (heavy) over the AR-362 snapshot.
-A disabled workflow is not judged: the gate does not wait for it, so it blocks nothing. After T0 the gate is
+For a disabled workflow only the second rule applies: the gate does not wait for its crons, but its in-flight
+check still blocks on an unfinished run of it, whatever its state (review AR-366). After T0 the gate is
 not asked (the cloud updater workflows are disabled), so this does nothing. A newest createdAt more than 10 min
 in the future means this machine's clock is behind: that evaluation is UNKNOWN, never "fresh".
 
@@ -62,9 +63,14 @@ Measured on the workstation under normal load (plan review, 2026-10-22 ~02:00Z):
 24.5-29.3 s after it starts, plus the PUT (about 31.3 s). Step 1 makes five gh calls and took 17.2-17.6 s
 (review, 06:10Z), so the send decision comes at about 49 s; a send is one POST (a second only on a Cloudflare
 failure). Each step records `last_step_elapsed_s`, so the margin on the
-real machine is in the state file and the beat. Under a 100% CPU load the publish has reached this step at
-100-130 s, after the kill: then nothing evaluates, the beat itself is being lost too, and the cloud's check
-reds on both while CI runs.
+real machine is in the state file and the beat. UNDER HEAVY LOAD THIS STEP IS STARVED, AND THE CLOUD CHECK MAY
+NOT SAY SO: on 2026-10-22, 02:40Z-05:55Z, the guard loop logged 18 "heartbeat publish EXCEEDED 90s" lines, the
+publish reached this step at 100-130 s (after the kill), and the beats that did land had emptiness_ran=false
+(the audit at its 60 s timeout), so the step was skipped while the cloud's beat check could stay green. A spell
+like that is shorter than ARMED_MAX_AGE (6 h), so nothing reds for it. What it costs is TIME, not the alarm: a
+stall that is due during such a spell is mailed late by the length of the spell, at the first tick after it
+in which the step is reached. It is a delay, not a loss - the state file and the rule do not depend on the
+spell, and a spell longer than 6 h reds the cloud check ("no evaluation for 6 h") while CI runs.
 
 STATE. logs/scheduler_stall.json, written atomically, under an OS file lock (released when the holder dies) so
 that two guard loops cannot both send. Stored instants more than 5 min in the future (a clock that was
@@ -143,9 +149,20 @@ def _past(s, now: dt.datetime) -> dt.datetime | None:
 
 
 # ------------------------------------------------------------------ the rule
+def _stuck(wf: str, runs: dict, now: dt.datetime) -> dict | None:
+    """The oldest run of this writer (any trigger) unfinished for more than STALL_AFTER, or None."""
+    stuck = [r for r in runs.get(wf, []) if r.get("status") != "completed" and _t(r.get("createdAt"))
+             and now - _t(r["createdAt"]) > STALL_AFTER]
+    return min(stuck, key=lambda r: r["createdAt"]) if stuck else None
+
+
 def assess(sched: dict, states: dict, now: dt.datetime, runs: dict | None = None) -> dict:
     """sched: {workflow: [runs]} SCHEDULED runs only (gate._gh_sched); runs: {workflow: [runs]} of any trigger
     (gate._gh_runs), for the unfinished-run rule; states: {workflow: state} (gate._gh_states). Pure.
+
+    The unfinished-run rule applies WHATEVER the workflow's state: the gate's in-flight check blocks on an
+    unfinished run of a disabled workflow too (review AR-366). Only the scheduled-run rule is skipped for a
+    workflow that is not active, because the gate does not wait for its crons.
 
     Returns {"stalled": [...], "ok": [...], "notes": [...]}; each writer row is
     {"workflow", "newest": iso | None, "age_h": float | None, "reason": str}. Raises ClockSkew."""
@@ -153,10 +170,11 @@ def assess(sched: dict, states: dict, now: dt.datetime, runs: dict | None = None
     runs = runs or {}
     for wf in gate.WRITERS:
         state = states.get(wf)
-        if state is not None and state != "active":
-            out["notes"].append(f"{wf} is {state}: the gate does not wait for it, so it is not judged")
-            continue
-        if state is None:
+        judged = state is None or state == "active"
+        if not judged:
+            out["notes"].append(f"{wf} is {state}: the gate does not wait for its crons, so only an unfinished "
+                                f"run of it is judged")
+        elif state is None:
             out["notes"].append(f"{wf} is not in GitHub's workflow list; the gate still waits for it, so it is judged")
         created = [c for c in (_t(r.get("createdAt")) for r in sched.get(wf, []) if r.get("event") == "schedule")
                    if c is not None]
@@ -165,22 +183,21 @@ def assess(sched: dict, states: dict, now: dt.datetime, runs: dict | None = None
             raise ClockSkew(f"{wf}'s newest scheduled run is {_iso(newest)}, after this machine's clock {_iso(now)}")
         age_h = None if newest is None else round(max(0.0, (now - newest).total_seconds() / 3600), 1)
         row = {"workflow": wf, "newest": _iso(newest), "age_h": age_h}
-        if newest is None:
+        r0 = _stuck(wf, runs, now)
+        if judged and newest is None:
             row["reason"] = "GitHub lists NO scheduled run (the listing may be wrong; the gate blocks either way)"
-        elif now - newest > STALL_AFTER:
+        elif judged and now - newest > STALL_AFTER:
             row["reason"] = f"newest scheduled run created {row['newest']} ({age_h:.1f} h ago)"
+        elif r0 is not None:
+            row["stuck_h"] = round((now - _t(r0["createdAt"])).total_seconds() / 3600, 1)
+            row["reason"] = (f"a {r0.get('event')} run created {r0['createdAt']} is still {r0.get('status')} "
+                             f"after {row['stuck_h']:.1f} h (the gate blocks on it"
+                             + ("; scheduled runs queue behind it)" if judged else f", although {wf} is {state})"))
         else:
-            stuck = [r for r in runs.get(wf, []) if r.get("status") != "completed" and _t(r.get("createdAt"))
-                     and now - _t(r["createdAt"]) > STALL_AFTER]
-            if stuck:
-                r0 = min(stuck, key=lambda r: r["createdAt"])
-                row["stuck_h"] = round((now - _t(r0["createdAt"])).total_seconds() / 3600, 1)
-                row["reason"] = (f"a {r0.get('event')} run created {r0['createdAt']} is still {r0.get('status')} "
-                                 f"after {row['stuck_h']:.1f} h (the gate blocks on it; scheduled runs queue behind it)")
-            else:
+            if judged:
                 row["reason"] = f"newest scheduled run created {row['newest']} ({age_h:.1f} h ago)"
                 out["ok"].append(row)
-                continue
+            continue
         out["stalled"].append(row)
     return out
 

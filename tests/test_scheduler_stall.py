@@ -131,6 +131,22 @@ def test_a_disabled_workflow_is_not_judged_because_the_gate_does_not_wait_for_it
     assert stalled_names(ss.assess(sched(2, 100), ACTIVE, NOW)) == ["updater-heavy.yml"]
 
 
+def test_a_stuck_run_of_a_DISABLED_writer_is_a_stall_because_the_gate_still_blocks_on_it():
+    """Review AR-366, required change 1: the gate's in-flight check ignores the workflow's state."""
+    states = dict(ACTIVE, **{"updater-heavy.yml": "disabled_manually"})
+    runs = {"updater-heavy.yml": [run(NOW - dt.timedelta(hours=48), event="workflow_dispatch", status="in_progress")]}
+    gate_runs = {"updater-daily.yml": [run(NOW - dt.timedelta(hours=2))],
+                 "updater-heavy.yml": runs["updater-heavy.yml"] + [run(NOW - dt.timedelta(hours=2))]}
+    assert gate.assess(gate_runs, NOW, states, sched(2, 2))[0] is True, "the gate blocks on it"
+    v = ss.assess(sched(2, 100), states, NOW, runs)
+    assert stalled_names(v) == ["updater-heavy.yml"] and "disabled_manually" in v["stalled"][0]["reason"]
+    # controls: the same disabled writer with that run 20 h old, or completed, is not stalled
+    runs["updater-heavy.yml"][0] = run(NOW - dt.timedelta(hours=20), event="workflow_dispatch", status="in_progress")
+    assert ss.assess(sched(2, 100), states, NOW, runs)["stalled"] == []
+    runs["updater-heavy.yml"][0] = run(NOW - dt.timedelta(hours=48), event="workflow_dispatch")
+    assert ss.assess(sched(2, 100), states, NOW, runs)["stalled"] == []
+
+
 def test_a_workflow_missing_from_githubs_list_is_still_judged_like_the_gate_still_waits_for_it():
     v = ss.assess(sched(2, 100), {"updater-daily.yml": "active"}, NOW)
     assert stalled_names(v) == ["updater-heavy.yml"]
