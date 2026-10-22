@@ -434,6 +434,16 @@ jobs:
         if: ${{ always() }}
         run: python tools/guard_heartbeat.py --check
 
+      - name: Scheduler-stall alarm armed
+        # tools/scheduler_stall.py mails the owner from the workstation when GitHub stops creating the scheduled
+        # updater runs - and then THIS run does not happen. So the only time the alarm can be shown to be armed is
+        # while the scheduler still works: red when the beat says it has not evaluated for 6 h, has no mail
+        # service, cannot read GitHub for 6 h, or has a mail due and undelivered for 6 h. Its own step, not part
+        # of the watchdog step above (review AR-366): a lasting "not armed" must never hide a dead watchdog, and
+        # the log must say WHICH claim failed. always() for the same reason as the step above.
+        if: ${{ always() }}
+        run: python tools/guard_heartbeat.py --check-stall-armed
+
       - name: Served-bytes freshness probe (rotating sample)
         # THE EMPIRICAL HALF OF R380. The health gate reads state.db, so a source can be green
         # on freshness while every object a user downloads is a year old — which is exactly

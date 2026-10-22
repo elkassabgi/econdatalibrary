@@ -515,26 +515,13 @@ def check(max_age_min: float, local: bool = False) -> int:
               "workstation's checkout of tools/guard_heartbeat.py is older than the lane, so the "
               "lane is UNMONITORED from CI until it is updated.")
     # THE SCHEDULER-STALL ALARM (tools/scheduler_stall.py) mails from the workstation when GitHub stops creating
-    # the updater runs - and then THIS check does not run. So this is where the alarm is shown to be ARMED, while
-    # the scheduler still works: a beat that carries the field and says it is not armed FAILS. Its verdict
-    # (stalled / unknown) is printed, never failed: the workstation mails that itself.
-    stall_bad = None
-    if "scheduler_stall" in body:
-        stall = body["scheduler_stall"]
-        import scheduler_stall                               # noqa: PLC0415
-        stall_bad = scheduler_stall.armed_problem(stall, dt.datetime.now(dt.timezone.utc))
-        if isinstance(stall, dict) and stall.get("last_verdict") in ("stalled", "unknown"):
-            print(f"  NOTE: the workstation's scheduler-stall check reads {stall.get('last_verdict')} "
-                  f"(writers {stall.get('stalled')}, evaluated {stall.get('last_evaluated_utc')}, "
-                  f"alert mailed: {bool(stall.get('alert_active'))})")
-    else:
-        print("  NOTE: this beat predates the scheduler-stall check (no `scheduler_stall` field) - the "
-              "workstation's checkout is older, so a stall of GitHub's scheduler is UNALERTED until it is updated.")
-    if stall_bad:
-        print(f"SCHEDULER-STALL ALARM NOT ARMED: {stall_bad}")
-        print("  It is the only alert that reaches the owner when GitHub stops creating the scheduled updater "
-              "runs (every other one runs inside updater-daily). On the workstation: "
-              "python tools/scheduler_stall.py, and logs/scheduler_stall.json.")
+    # the updater runs. Whether it is ARMED is judged by its OWN step (--check-stall-armed, AR-366), never here: a
+    # lasting "not armed" in this step would hide a later dead watchdog behind it. This only prints its verdict.
+    stall = body.get("scheduler_stall")
+    if isinstance(stall, dict) and stall.get("last_verdict") in ("stalled", "unknown"):
+        print(f"  NOTE: the workstation's scheduler-stall check reads {stall.get('last_verdict')} "
+              f"(writers {stall.get('stalled')}, evaluated {stall.get('last_evaluated_utc')}, "
+              f"alert mailed: {bool(stall.get('alert_active'))})")
     sec_bad = (_sec_edgar_problem(body["sec_edgar_local"], dt.datetime.now(dt.timezone.utc))
                if "sec_edgar_local" in body else None)
     if "sec_edgar_local" not in body:
@@ -551,7 +538,7 @@ def check(max_age_min: float, local: bool = False) -> int:
         print("  statcan is refreshed and served ONLY by jobs/statcan_lane.py (a guard job); nothing "
               "else in CI judges a run_location=local source.")
         return 1
-    if sec_bad or stall_bad:
+    if sec_bad:
         return 1
 
     print(f"guard heartbeat OK: {age:.1f} min old ({beat.isoformat()}) — {where}"
@@ -642,11 +629,47 @@ def check_url(url: str, max_age_min: float, require_sec_edgar: bool = False) -> 
     return 0
 
 
+def check_stall_armed() -> int:
+    """CI, its OWN step (AR-366): fail when the beat says the scheduler-stall alarm is NOT ARMED.
+
+    The alarm mails from the workstation when GitHub stops creating the updater runs - and then CI does not run.
+    So the only time it can be shown to be armed is while the scheduler still works, which is here. A separate
+    step from --check, so that a lasting "not armed" never hides a later dead watchdog, and the log says WHICH
+    claim failed. A beat without the field (an older publisher) is a NOTE; an unreadable beat is --check's
+    failure, not this one's, and is reported as a NOTE here."""
+    try:
+        raw = r2_util.client().get_object(Bucket=BUCKET, Key=KEY)["Body"].read()
+        body = json.loads(raw.decode("utf-8"))
+    except Exception as e:                                   # noqa: BLE001
+        print(f"  NOTE: no readable beat ({type(e).__name__}) - the watchdog step reports that; the scheduler-stall "
+              f"alarm cannot be judged this run")
+        return 0
+    if "scheduler_stall" not in body:
+        print("  NOTE: this beat predates the scheduler-stall check (no `scheduler_stall` field) - the "
+              "workstation's checkout is older, so a stall of GitHub's scheduler is UNALERTED until it is updated.")
+        return 0
+    import scheduler_stall                                   # noqa: PLC0415
+    stall = body["scheduler_stall"]
+    bad = scheduler_stall.armed_problem(stall, dt.datetime.now(dt.timezone.utc))
+    if bad:
+        print(f"SCHEDULER-STALL ALARM NOT ARMED: {bad}")
+        print("  It is the only alert that reaches the owner when GitHub stops creating the scheduled updater "
+              "runs (every other one runs inside updater-daily). On the workstation: "
+              "python tools/scheduler_stall.py, and logs/scheduler_stall.json.")
+        return 1
+    s_ = stall if isinstance(stall, dict) else {}
+    print(f"scheduler-stall alarm armed: last evaluation {s_.get('last_evaluated_utc')}, verdict "
+          f"{s_.get('last_verdict')}, transport {s_.get('transport')}, step at {s_.get('last_step_elapsed_s')} s")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--publish", action="store_true", help="workstation: stamp a completed tick")
     g.add_argument("--check", action="store_true", help="CI: fail if the beat is stale")
+    g.add_argument("--check-stall-armed", action="store_true",
+                   help="CI: fail if the beat says the scheduler-stall alarm is not armed")
     ap.add_argument("--max-age-min", type=float, default=DEFAULT_MAX_AGE_MIN)
     src = ap.add_mutually_exclusive_group()
     src.add_argument("--from-url", default=None,
@@ -657,6 +680,8 @@ def main() -> int:
     a = ap.parse_args()
     if a.publish:
         return publish(stall_check=True)
+    if a.check_stall_armed:
+        return check_stall_armed()
     if a.from_url:
         return check_url(a.from_url, a.max_age_min)
     return check(a.max_age_min, local=a.local)

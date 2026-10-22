@@ -658,8 +658,8 @@ def test_a_direct_publish_never_reaches_github(monkeypatch):
     assert "scheduler_stall" not in order[0][1]
 
 
-def _check(monkeypatch, stall, present=True):
-    body = {"utc": dt.datetime.now(UTC).isoformat(), "host": "w", "jobs_alive": [], "tracked": [],
+def _beat(monkeypatch, stall, present=True, utc=None):
+    body = {"utc": (utc or dt.datetime.now(UTC)).isoformat(), "host": "w", "jobs_alive": [], "tracked": [],
             "jobs_detail": [], "table_ok": True, "emptiness": {"ran": True, "fetch_without_write": 0}}
     if present:
         body["scheduler_stall"] = stall
@@ -669,7 +669,16 @@ def _check(monkeypatch, stall, present=True):
             import io
             return {"Body": io.BytesIO(json.dumps(body).encode())}
     monkeypatch.setattr(gh.r2_util, "client", lambda *a, **k: C())
+
+
+def _check(monkeypatch, stall, present=True, utc=None):
+    _beat(monkeypatch, stall, present, utc)
     return gh.check(45)
+
+
+def _armed_check(monkeypatch, stall, present=True, utc=None):
+    _beat(monkeypatch, stall, present, utc)
+    return gh.check_stall_armed()
 
 
 def _armed(**kw):
@@ -681,26 +690,65 @@ def _armed(**kw):
     return s
 
 
-def test_the_cloud_check_passes_an_armed_alarm_and_prints_a_stalled_verdict(monkeypatch, capsys):
+def test_the_watchdog_check_prints_a_stalled_verdict_and_never_fails_on_the_alarm(monkeypatch, capsys):
+    """AR-366 round 2: the armed check has its OWN step, so the watchdog step never fails on it."""
     assert _check(monkeypatch, _armed()) == 0
     assert _check(monkeypatch, _armed(last_verdict="stalled", stalled=["updater-heavy.yml"], alert_active=True)) == 0
     out = capsys.readouterr().out
     assert "scheduler-stall check reads stalled" in out and "updater-heavy.yml" in out
+    assert _check(monkeypatch, _armed(mail_configured=False)) == 0, "an unarmed alarm is not the watchdog's failure"
+    assert "NOT ARMED" not in capsys.readouterr().out
 
 
-def test_the_cloud_check_FAILS_when_the_alarm_is_not_armed(monkeypatch, capsys):
+def test_an_unarmed_alarm_cannot_hide_a_dead_watchdog(monkeypatch, capsys):
+    """The two claims fail in two steps: a stale beat still fails the watchdog step while the alarm is unarmed."""
+    stale = dt.datetime.now(UTC) - dt.timedelta(hours=2)
+    assert _check(monkeypatch, _armed(mail_configured=False), utc=stale) == 1
+    assert "GUARD HEARTBEAT STALE" in capsys.readouterr().out
+    assert _armed_check(monkeypatch, _armed(mail_configured=False), utc=stale) == 1
+    assert "SCHEDULER-STALL ALARM NOT ARMED" in capsys.readouterr().out
+
+
+def test_the_armed_step_FAILS_when_the_alarm_is_not_armed(monkeypatch, capsys):
     """Review finding 5: the alarm can only be shown armed while the scheduler works - so this is where it fails."""
     now = dt.datetime.now(UTC)
     old = ss._iso(now - dt.timedelta(hours=7))
     for bad in (_armed(mail_configured=False), _armed(last_evaluated_utc=old), _armed(unknown_since_utc=old),
                 _armed(mail_due={"kind": "stall", "since": old}), {"never_evaluated": True}, {"unreadable": "x"},
                 "garbage"):
-        assert _check(monkeypatch, bad) == 1, bad
+        assert _armed_check(monkeypatch, bad) == 1, bad
         assert "SCHEDULER-STALL ALARM NOT ARMED" in capsys.readouterr().out
     # controls: a mail due for 1 h, GitHub unreadable for 1 h, after T0, and an older publisher - all pass
     recent = ss._iso(now - dt.timedelta(hours=1))
-    for fine in (_armed(mail_due={"kind": "stall", "since": recent}), _armed(unknown_since_utc=recent),
+    for fine in (_armed(), _armed(mail_due={"kind": "stall", "since": recent}), _armed(unknown_since_utc=recent),
                  {"not_applicable": "after T0"}):
-        assert _check(monkeypatch, fine) == 0, fine
-    assert _check(monkeypatch, None, present=False) == 0
+        assert _armed_check(monkeypatch, fine) == 0, fine
+    assert _armed_check(monkeypatch, None, present=False) == 0
     assert "predates the scheduler-stall check" in capsys.readouterr().out
+
+
+def test_the_armed_step_does_not_fail_on_a_missing_beat_that_the_watchdog_step_reports(monkeypatch, capsys):
+    class C:
+        def get_object(self, **kw):
+            raise FileNotFoundError("no beat")
+    monkeypatch.setattr(gh.r2_util, "client", lambda *a, **k: C())
+    assert gh.check_stall_armed() == 0 and "cannot be judged" in capsys.readouterr().out
+    assert gh.check(45) == 1
+
+
+def test_the_daily_workflow_runs_the_armed_check_in_its_own_always_step_after_the_watchdog():
+    with open(os.path.join(ROOT, ".github", "workflows", "updater-daily.yml"), encoding="utf-8") as fh:
+        y = fh.read()
+    w = y.index("run: python tools/guard_heartbeat.py --check\n")
+    a = y.index("run: python tools/guard_heartbeat.py --check-stall-armed")
+    assert w < a
+    step = y[y.rindex("- name:", 0, a):a]
+    assert "Scheduler-stall alarm armed" in step and "if: ${{ always() }}" in step
+    assert "--check-stall-armed" not in y[:w], "not folded into the watchdog step"
+
+
+def test_the_flag_reaches_the_armed_check(monkeypatch):
+    called = []
+    monkeypatch.setattr(gh, "check_stall_armed", lambda: called.append(1) or 7)
+    monkeypatch.setattr(sys, "argv", ["guard_heartbeat.py", "--check-stall-armed"])
+    assert gh.main() == 7 and called == [1]
