@@ -237,6 +237,56 @@ def test_over_the_changed_keys_cap_the_cursor_path_carries_the_catalogued_series
     assert res.series_cursors == {f"LF:{LF_KEY}": _days(10).isoformat()}, res.series_cursors
 
 
+def test_over_the_cap_the_orchestrator_derives_the_visited_catalogued_ids(monkeypatch, tmp_path):
+    """Review of this change: with A2 the fallback cursors MAP, so the over-cap path now derives the
+    visited catalogued ids (a superset of the changed ones); the truncation flag still stands."""
+    import sqlite3
+    import types
+    from updater import derive, orchestrate
+    monkeypatch.setattr(A.merge, "CHANGED_KEYS_CAP", 1)
+    flows = {"AAA": [("a1", _days(900)), ("a2", _days(900))], "LF": [(LF_KEY, _days(30))],
+             "CPI": [(CPI_KEY, _days(60))]}
+    _wire(monkeypatch, tmp_path, flows, tails={"AAA": [("a1", _days(800)), ("a2", _days(800))]})
+    res = A.update(None, None)
+    assert res.changed_keys is None and res.cursor_cap_hit is True
+    cat = tmp_path / "catalog.db"
+    con = sqlite3.connect(cat)
+    con.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT)")
+    con.executemany("INSERT INTO series VALUES (?,?)", [(f"abs:{k}", "abs") for k in sorted(A.CATALOGUED)])
+    con.commit()
+    con.close()
+    monkeypatch.setenv("ECONDL_CATALOG", str(cat))
+    monkeypatch.setattr(orchestrate.config, "BACKEND", "r2")
+    orchestrate._REG_ENTRIES = None
+    asked = []
+    monkeypatch.setattr(derive, "derive_and_put", lambda ids, blob, **k: asked.extend(ids) or {})
+    unit = types.SimpleNamespace(key="abs/_all", source_id="abs", unit_id="_all")
+    failed, note, deferred, reasons = orchestrate._derive_changed_csvs(unit, res, object(), store=None)
+    assert sorted(asked) == [f"abs:CPI:{CPI_KEY}", f"abs:LF:{LF_KEY}"], asked
+    assert failed == [], failed
+    # The debt row itself is booked by orchestrate.py's cursor_cap_hit branch from the flag asserted
+    # above - unchanged code, not re-driven here.
+
+
+def test_when_only_the_head_ran_the_log_does_not_say_no_flow_was_attempted(monkeypatch, tmp_path, capsys):
+    flows = {"AAA": [("a", _days(900))], "LF": [(LF_KEY, _days(30))]}
+    _wire(monkeypatch, tmp_path, flows, allow=1)
+    A.update(None, None)
+    out = capsys.readouterr().out
+    assert "only the every-pass head (1 flow(s)) ran" in out and "NO flow was attempted at all" not in out, out
+
+
+def test_an_unreadable_store_frontier_is_said_not_swallowed(monkeypatch, tmp_path, capsys):
+    flows = {"LF": [(LF_KEY, _days(30))]}
+    _wire(monkeypatch, tmp_path, flows)
+
+    def _boom(path, columns=None):
+        raise OSError("pretend R2 refused the read")
+    monkeypatch.setattr(A.blob, "read_table", _boom)
+    assert A._store_frontier(str(tmp_path / "LF.parquet"), A.CATALOGUED_KEYS["LF"]) == (None, {})
+    assert "store frontier unreadable (OSError" in capsys.readouterr().out
+
+
 def test_the_head_is_the_connector_set_minus_the_ceased_pair():
     """18 catalogued ids = the connector's SERIES (measured equal to the local catalog.db's abs rows,
     by primary-key range, 2026-10-22). If a series is catalogued later this test names the change."""
