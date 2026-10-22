@@ -129,6 +129,60 @@ def test_a_fresh_catalogued_flow_does_not_read_red_data(monkeypatch, tmp_path):
     assert res.series_cursors[f"LF:{LF_KEY}"] == fresh.isoformat()
 
 
+def test_a_transient_uncatalogued_flow_leaves_no_flow_sentinel_and_the_gate_stays_red(monkeypatch, tmp_path):
+    """AR-371 C2: the removed '__flow__<FLOW>' sentinel fed the gate an uncatalogued flow's frontier on a
+    transient failure. A fresh POPULATION_CLOCK that fails must not keep a stale catalogued set green."""
+    # A failing pass reads ATTENTION whatever its cursors (health.py checks attention before data), so the
+    # sentinel's harm is the row it LEAVES in state: pass 1 fails, pass 2 is a clean rotation, and the gate
+    # reads the state both passes wrote (upserts accumulate).
+    flows = {**_store(_days(100), _days(120)), "ZZZ_REST2": [("Z.2", _days(900))]}
+    _wire(monkeypatch, tmp_path, flows, allow=4, fail=("POPULATION_CLOCK",))
+    res1 = A.update(None, None)
+    assert "POPULATION_CLOCK" in res1.error, res1.error                  # it really failed
+    assert not [k for k in res1.series_cursors if k.startswith("__flow__")], res1.series_cursors
+    _wire(monkeypatch, tmp_path, flows, allow=4)                         # clean; the rest deferred
+    res2 = A.update(None, None)
+    assert res2.status == "partial" and "none failed" in res2.error, res2.error
+    row = _gate(res2, extra_cursors=res1.series_cursors)
+    assert row["health"] == "RED-DATA" and row["newest_obs"] == _days(100).isoformat(), row
+
+
+def test_a_head_flow_merge_reaches_changed_keys_and_the_derive(monkeypatch, tmp_path):
+    """AR-371 C1: the #74 path (merge-measured changed_keys) is how the served LF/CPI/WPI/ANA_AGG/AWE CSVs
+    re-derive. A new LF row on an under-cap pass must reach changed_keys AND the derive."""
+    import sqlite3
+    import types
+    from updater import derive, orchestrate
+    flows = {"AAA": [("a", _days(900))], "LF": [(LF_KEY, _days(40))]}
+    _wire(monkeypatch, tmp_path, flows, tails={"LF": [(LF_KEY, _days(40)), (LF_KEY, _days(10))]})
+    res = A.update(None, None)
+    # (AAA:a changes too: the fake re-fetch carries value 2.0 over the stored 1.0 - an uncatalogued key)
+    assert res.changed_keys.get(f"LF:{LF_KEY}") == _days(10).isoformat(), res.changed_keys
+    cat = tmp_path / "catalog.db"
+    con = sqlite3.connect(cat)
+    con.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT)")
+    con.executemany("INSERT INTO series VALUES (?,?)", [(f"abs:{k}", "abs") for k in sorted(A.CATALOGUED)])
+    con.commit()
+    con.close()
+    monkeypatch.setenv("ECONDL_CATALOG", str(cat))
+    monkeypatch.setattr(orchestrate.config, "BACKEND", "r2")
+    orchestrate._REG_ENTRIES = None
+    asked = []
+    monkeypatch.setattr(derive, "derive_and_put", lambda ids, blob, **k: asked.extend(ids) or {})
+    unit = types.SimpleNamespace(key="abs/_all", source_id="abs", unit_id="_all")
+    failed, note, deferred, reasons = orchestrate._derive_changed_csvs(unit, res, object(), store=None)
+    assert asked == [f"abs:LF:{LF_KEY}"] and failed == [], (asked, failed)
+
+
+def test_an_older_fetched_row_never_lowers_a_cursor(monkeypatch, tmp_path):
+    """AR-371 C3: the cursor is raised by the published rows, never lowered - an older (revised) row
+    arriving after a newer one must not win."""
+    flows = {"LF": [(LF_KEY, _days(30))]}
+    _wire(monkeypatch, tmp_path, flows, tails={"LF": [(LF_KEY, _days(10)), (LF_KEY, _days(50))]})
+    res = A.update(None, None)
+    assert res.series_cursors[f"LF:{LF_KEY}"] == _days(10).isoformat(), res.series_cursors
+
+
 def test_negative_control_a_fresh_cursor_in_state_does_move_the_gate(monkeypatch, tmp_path):
     """The RED above is the fetcher's doing, not a gate that ignores cursors: the same stale pass
     with one fresh cursor in state (what the removed bare-key fold could put there) reads green."""
