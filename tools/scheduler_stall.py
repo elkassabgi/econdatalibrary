@@ -44,18 +44,29 @@ mail comes 24-36 h after the first cron GitHub did not create, when the desktop 
 
 MAIL. A stall mails once when it is seen on two evaluations in a row (one odd listing cannot mail), again every
 REMIND_EVERY while it lasts, and once when every writer is clear again. GitHub unreadable for longer than
-STALL_AFTER sends a "blind" mail: the gate cannot read CI either, answers UNKNOWN, and run_local_heavy.ps1 does
-not start then. The sender is the status address the digest uses (noreply@hfdatalibrary.com), never a person.
+STALL_AFTER sends ONE "blind" mail per blind spell (no reminder, no "over" mail): the gate cannot read CI either,
+answers UNKNOWN, and run_local_heavy.ps1 does not start then. The sender is the status address the digest uses
+(noreply@hfdatalibrary.com), never a person.
 
-TWO PHASES, BECAUSE THE GUARD LOOP KILLS THE PUBLISH AT 90 s. An evaluation (four gh calls, about 11-20 s) only
-DECIDES a mail and records it as due. The send happens in a later tick, first thing in the step, and only when
-little of the 90 s has gone (two mail POSTs can take 60 s). Before a send the attempt is recorded; a later tick
-that finds an attempt with no result (the process was killed during the send) waits HOLD_OFF before it tries
-again. So a kill can cause a duplicate mail, never one per tick. A mail that is skipped (no mail service
-configured) or fails stays due and is tried again at the next tick.
+THE GUARD LOOP KILLS THE PUBLISH AT 90 s, and this step runs after the beat's PUT. A detached child process does
+not escape that: measured 2026-10-22, a DETACHED_PROCESS child of the job died at the Stop-Job (91 lines written
+at the stop, 91 fifteen seconds later; CREATE_BREAKAWAY_FROM_JOB is refused). So each step does, in this order:
+  1. EVALUATE when CHECK_EVERY has passed, if at most EVAL_START_MAX_S of the publish has gone; every gh call is
+     bounded by the time left to HARD_STOP_S. A mail the verdict makes due is recorded as due.
+  2. SEND a due mail, if at most SEND_START_MAX_S has gone. The attempt is recorded first; an attempt that never
+     reported back (killed during the send) holds that mail for HOLD_OFF, so a kill can cause one duplicate,
+     never one per tick. An undelivered mail (no service configured, or a failure - which can also be a
+     Cloudflare timeout after it accepted the mail) is retried at most every CHECK_EVERY and at most
+     MAX_SENDS_PER_DAY times a day. A deferred or held send never stops step 1.
+Measured on the workstation under normal load (plan review, 2026-10-22 ~02:00Z): the publish reaches this step
+24.5-29.3 s after it starts, plus the PUT. Step 1 needs about 11 s (gh 5.0 s + 5.0 s + 0.5 s, 01:54Z), a send
+one POST (a second only on a Cloudflare failure). Each step records `last_step_elapsed_s`, so the margin on the
+real machine is in the state file and the beat. Under a 100% CPU load the publish has reached this step at
+100-130 s, after the kill: then nothing evaluates, the beat itself is being lost too, and the cloud's check
+reds on both while CI runs.
 
-STATE. logs/scheduler_stall.json, written atomically, under a lock file so that two guard loops cannot both
-send. Evaluated at most every CHECK_EVERY. Stored instants more than 5 min in the future (a clock that was
+STATE. logs/scheduler_stall.json, written atomically, under an OS file lock (released when the holder dies) so
+that two guard loops cannot both send. Stored instants more than 5 min in the future (a clock that was
 corrected) are discarded. A state that cannot be written mails nothing. The beat carries a summary, and the
 cloud's guard_heartbeat --check FAILS while CI runs if this check is not armed (no evaluation for 6 h, no mail
 service configured, GitHub unreadable for 6 h, or a mail due and undelivered for 6 h): the only time the alarm
@@ -91,10 +102,11 @@ HOLD_OFF = dt.timedelta(hours=6)          # after a send that never reported bac
 ARMED_MAX_AGE = dt.timedelta(hours=6)     # guard_heartbeat --check: how stale "armed" may be
 FUTURE_SLACK = dt.timedelta(minutes=5)
 CLOCK_SKEW = dt.timedelta(minutes=10)
-# Seconds since the publish started (the guard loop kills it at 90 s). Mail POSTs: up to 2 x 30 s.
-EVAL_START_MAX_S, SEND_START_MAX_S, HARD_STOP_S = 40, 25, 85
+# Seconds since the publish started (the guard loop kills it at 90 s); see the docstring for the measurement.
+# A send started at 70 s has 20 s for one POST (normally 1-2 s); a slower one may be killed, which HOLD_OFF covers.
+EVAL_START_MAX_S, SEND_START_MAX_S, HARD_STOP_S = 55, 70, 80
 GH_TIMEOUT_S = 20
-LOCK_STALE = dt.timedelta(minutes=10)
+MAX_SENDS_PER_DAY = 4
 STATE_PATH = os.path.join(ROOT, "logs", "scheduler_stall.json")
 ENV_PATH = os.path.join(ROOT, ".env")
 MAIL_KEYS = ("CLOUDFLARE_EMAIL_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "RESEND_API_KEY", "DIGEST_TO")
@@ -161,15 +173,24 @@ def assess(sched: dict, states: dict, now: dt.datetime, runs: dict | None = None
                      and now - _t(r["createdAt"]) > STALL_AFTER]
             if stuck:
                 r0 = min(stuck, key=lambda r: r["createdAt"])
+                row["stuck_h"] = round((now - _t(r0["createdAt"])).total_seconds() / 3600, 1)
                 row["reason"] = (f"a {r0.get('event')} run created {r0['createdAt']} is still {r0.get('status')} "
-                                 f"after {(now - _t(r0['createdAt'])).total_seconds() / 3600:.1f} h (the gate blocks "
-                                 f"on it; scheduled runs queue behind it)")
+                                 f"after {row['stuck_h']:.1f} h (the gate blocks on it; scheduled runs queue behind it)")
             else:
                 row["reason"] = f"newest scheduled run created {row['newest']} ({age_h:.1f} h ago)"
                 out["ok"].append(row)
                 continue
         out["stalled"].append(row)
     return out
+
+
+def _short(row: dict) -> str:
+    """The subject's few words for one stalled writer: which rule, and how long."""
+    if row.get("stuck_h") is not None:
+        return f"a run unfinished for {row['stuck_h']:.0f} h"
+    if row.get("age_h") is None:
+        return "no scheduled run listed"
+    return f"no scheduled run for {row['age_h']:.0f} h"
 
 
 def _describe(rows: list) -> str:
@@ -181,9 +202,8 @@ def compose(kind: str, verdict: dict | None, state: dict, now: dt.datetime) -> t
     prefix, so the owner can filter it into a folder he reads, never lose it."""
     if kind in ("stall", "remind"):
         names = ", ".join(r["workflow"] for r in verdict["stalled"])
-        ages = [r["age_h"] for r in verdict["stalled"]]
-        what = (f"no scheduled run for {max(ages):.0f} h" if None not in ages else "no scheduled run listed")
-        subject = f"[econ] scheduler stall{' (reminder)' if kind == 'remind' else ''}: {names} - {what}"
+        subject = (f"[econ] scheduler stall{' (reminder)' if kind == 'remind' else ''}: {names} - "
+                   + "; ".join(_short(r) for r in verdict["stalled"]))
         text = (f"A state-writing workflow has been without a new scheduled run, or held by an unfinished run, for "
                 f"more than {LIMIT_H} h:\n{_describe(verdict['stalled'])}\n\n"
                 "tools/ci_writer_gate.py blocks the desktop heavy pass while a cron has no run and while a writer "
@@ -295,36 +315,36 @@ def save_state(state: dict, path: str = STATE_PATH) -> None:
             time.sleep(0.2)
 
 
-def _lock(path: str, now: dt.datetime) -> bool:
-    """One evaluation-or-send at a time, even with two guard loops. A lock older than LOCK_STALE is a killed
-    holder (the loop kills at 90 s) and is taken over."""
+def _lock(path: str):
+    """One step at a time, even with two guard loops: an OS lock on an open handle (msvcrt on Windows, flock
+    elsewhere). The OS releases it when the holder dies - the loop kills at 90 s - so there is no stale lock to
+    judge or take over, and no takeover race. Returns the open handle, or None when another process holds it."""
     lock = path + ".lock"
     os.makedirs(os.path.dirname(lock), exist_ok=True)
-    for _ in range(2):
-        try:
-            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, _iso(now).encode())
-            os.close(fd)
-            return True
-        except FileExistsError:
-            try:
-                age = time.time() - os.path.getmtime(lock)
-            except OSError:
-                continue
-            if age < LOCK_STALE.total_seconds():
-                return False
-            try:
-                os.remove(lock)
-            except OSError:
-                return False
-    return False
-
-
-def _unlock(path: str) -> None:
+    fh = open(lock, "a+b")
     try:
-        os.remove(path + ".lock")
+        if os.name == "nt":
+            import msvcrt                                    # noqa: PLC0415
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl                                     # noqa: PLC0415
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fh
+    except OSError:
+        fh.close()
+        return None
+
+
+def _unlock(fh) -> None:
+    try:
+        if os.name == "nt":
+            import msvcrt                                    # noqa: PLC0415
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
     except OSError:
         pass
+    fh.close()
 
 
 def mail_env(env_path: str | None = None) -> dict:
@@ -395,58 +415,19 @@ def tick(now: dt.datetime | None = None, started: float | None = None, read=_rea
             cut_over = cutover.is_cut_over
         if cut_over():
             return "scheduler-stall: not applicable after T0 (the CI writer gate is not asked)"
-        if not _lock(path, now):
-            return "scheduler-stall: another evaluation holds the lock - skipped"
+        lock = _lock(path)
+        if lock is None:
+            return "scheduler-stall: another step holds the lock - skipped"
         try:
             return _tick_locked(now, started, read, send, path, env)
         finally:
-            _unlock(path)
+            _unlock(lock)
     except Exception as e:                                   # noqa: BLE001 - never break the guard tick
         return f"scheduler-stall: check failed ({type(e).__name__}: {str(e)[:160]})"
 
 
-def _tick_locked(now, started, read, send, path, env) -> str:
-    state = load_state(path)
-    load_error = state.pop("_load_error", None)
-    if load_error:
-        state["state_reset"] = f"{_iso(now)}: {load_error}"
-    elapsed = time.monotonic() - started
-    due = state.get("mail_due")
-
-    # PHASE 1 - a mail decided earlier: send it first, while the most of the tick is left. A send that already
-    # failed for this kind is retried at most every CHECK_EVERY, and in between the evaluation keeps running.
-    prev = state.get("last_send") if isinstance(state.get("last_send"), dict) else {}
-    prev_at = _past(prev.get("at"), now) if prev.get("kind") == (due or {}).get("kind") else None
-    retry_wait = (prev_at is not None and prev.get("result") not in ("cloudflare", "resend")
-                  and now < prev_at + CHECK_EVERY)
-    if isinstance(due, dict) and due.get("kind") and not retry_wait:
-        attempt = state.get("mail_attempt")
-        at = _past(attempt.get("at"), now) if isinstance(attempt, dict) else None
-        if at is not None and now - at < HOLD_OFF:
-            return (f"scheduler-stall: {due['kind']} mail attempted {attempt.get('at')} never reported back (killed "
-                    f"mid-send?) - held until {_iso(at + HOLD_OFF)} so a kill cannot repeat it every tick")
-        if elapsed > SEND_START_MAX_S:
-            return f"scheduler-stall: {due['kind']} mail due, deferred ({elapsed:.0f} s of the tick gone)"
-        save_state(dict(state, mail_attempt={"kind": due["kind"], "at": _iso(now)}), path)
-        result = send(due["subject"], due["text"])
-        state.pop("mail_attempt", None)
-        state["last_send"] = {"kind": due["kind"], "at": _iso(now), "result": result}
-        if result in ("cloudflare", "resend"):
-            state = on_delivered(state, due["kind"], now)
-            state.pop("mail_due", None)
-            save_state(state, path)
-            return f"scheduler-stall: {due['kind']} mail sent ({result})"
-        save_state(state, path)
-        return f"scheduler-stall: {due['kind']} mail NOT sent ({result}) - tried again at the next tick"
-
-    # PHASE 2 - evaluate, at most every CHECK_EVERY, and only with time left in the tick.
-    last = _past(state.get("last_evaluated_utc"), now)
-    if last is not None and now < last + CHECK_EVERY:
-        if load_error:
-            save_state(state, path)
-        return f"scheduler-stall: evaluated {state.get('last_evaluated_utc')}, next after {_iso(last + CHECK_EVERY)}"
-    if elapsed > EVAL_START_MAX_S:
-        return f"scheduler-stall: evaluation skipped ({elapsed:.0f} s of the tick gone)"
+def _evaluate(state, due, now, started, read, env, notes) -> dict:
+    """Step 1. Returns the state after the evaluation, with `mail_due` set, kept or dropped."""
     try:
         sched, runs, states = read(started + HARD_STOP_S)
         verdict, error = assess(sched, states, now, runs), None
@@ -459,16 +440,81 @@ def _tick_locked(now, started, read, send, path, env) -> str:
             new.pop("mail_due", None)
     else:
         subject, text = compose(kind, verdict, new, now)
-        new["mail_due"] = {"kind": kind, "subject": subject, "text": text, "since":
-                           (due or {}).get("since") if (due or {}).get("kind") == kind else _iso(now)}
+        same = isinstance(due, dict) and due.get("kind") == kind
+        new["mail_due"] = {"kind": kind, "subject": subject, "text": text,
+                           "since": due.get("since") if same else _iso(now),
+                           "sends": due.get("sends", []) if same else []}
+    notes.append(f"{new.get('last_verdict')}" + (f" ({', '.join(new.get('stalled') or [])})"
+                                                  if new.get("stalled") else "")
+                 + (f", {kind} mail due" if kind else ""))
+    return new
+
+
+def _send(state, now, started, send, path, notes) -> dict:
+    """Step 2. Sends the due mail when nothing holds it. Returns the state after it."""
+    due = state.get("mail_due")
+    if not (isinstance(due, dict) and due.get("kind")):
+        return state
+    kind = due["kind"]
+    attempt = state.get("mail_attempt") if isinstance(state.get("mail_attempt"), dict) else None
+    at = _past((attempt or {}).get("at"), now)
+    if at is not None and now - at < HOLD_OFF:
+        notes.append(f"{kind} mail attempted {attempt.get('at')} never reported back (killed mid-send?) - held "
+                     f"until {_iso(at + HOLD_OFF)}")
+        return state
+    sends = [s for s in (_past(x, now) for x in due.get("sends", [])) if s is not None]
+    if sends and now < max(sends) + CHECK_EVERY:
+        notes.append(f"{kind} mail not delivered at {_iso(max(sends))} - next try after {_iso(max(sends) + CHECK_EVERY)}")
+        return state
+    if len([s for s in sends if now - s < dt.timedelta(hours=24)]) >= MAX_SENDS_PER_DAY:
+        notes.append(f"{kind} mail tried {MAX_SENDS_PER_DAY} times in 24 h - paused (a Cloudflare timeout after "
+                     "acceptance would otherwise repeat a delivered mail)")
+        return state
+    elapsed = time.monotonic() - started
+    if elapsed > SEND_START_MAX_S:
+        notes.append(f"{kind} mail due, deferred ({elapsed:.0f} s of the tick gone)")
+        return state
+    due = dict(due, sends=[_iso(s) for s in sends] + [_iso(now)])
+    state = dict(state, mail_due=due, mail_attempt={"kind": kind, "at": _iso(now)})
+    save_state(state, path)               # the attempt is on disk BEFORE the mail can leave
+    result = send(due["subject"], due["text"])
+    state.pop("mail_attempt", None)
+    state["last_send"] = {"kind": kind, "at": _iso(now), "result": result}
+    if result in ("cloudflare", "resend"):
+        state = on_delivered(state, kind, now)
+        state.pop("mail_due", None)
+        notes.append(f"{kind} mail sent ({result})")
+    else:
+        notes.append(f"{kind} mail NOT sent ({result}) - tried again after {_iso(now + CHECK_EVERY)}")
+    save_state(state, path)
+    return state
+
+
+def _tick_locked(now, started, read, send, path, env) -> str:
+    state = load_state(path)
+    load_error = state.pop("_load_error", None)
+    notes = []
+    if load_error:
+        state["state_reset"] = f"{_iso(now)}: {load_error}"
+        notes.append(f"state file was unreadable ({load_error}), started fresh")
+    state["last_step_elapsed_s"] = round(time.monotonic() - started, 1)
+
+    # 1. EVALUATE - first, so a held or deferred send never freezes the verdict, recovery or armed-ness.
+    last = _past(state.get("last_evaluated_utc"), now)
+    if last is not None and now < last + CHECK_EVERY:
+        notes.append(f"evaluated {state.get('last_evaluated_utc')}, next after {_iso(last + CHECK_EVERY)}")
+    elif time.monotonic() - started > EVAL_START_MAX_S:
+        notes.append(f"evaluation skipped ({time.monotonic() - started:.0f} s of the tick gone)")
+    else:
+        state = _evaluate(state, state.get("mail_due"), now, started, read, env, notes)
     try:
-        save_state(new, path)
+        save_state(state, path)
     except Exception as e:                                   # noqa: BLE001
         return f"scheduler-stall: could not write {path} ({type(e).__name__}) - nothing mailed"
-    return (f"scheduler-stall: {new.get('last_verdict')}"
-            + (f" ({', '.join(new.get('stalled') or [])})" if new.get("stalled") else "")
-            + (f"; {kind} mail due, sent at the next tick" if kind else "")
-            + (f"; state file was unreadable ({load_error}), started fresh" if load_error else ""))
+
+    # 2. SEND a due mail.
+    _send(state, now, started, send, path, notes)
+    return "scheduler-stall: " + "; ".join(notes)
 
 
 # ------------------------------------------------------------------ the beat and its cloud reader
@@ -488,7 +534,7 @@ def summary_for_beat(path: str = STATE_PATH) -> dict:
     due = s.get("mail_due") if isinstance(s.get("mail_due"), dict) else None
     return {**{k: s.get(k) for k in ("last_evaluated_utc", "last_verdict", "stalled", "alert_active",
                                      "episode_since_utc", "unknown_since_utc", "mail_configured", "transport",
-                                     "mail_to", "last_send")},
+                                     "mail_to", "last_send", "last_step_elapsed_s")},
             "mail_due": None if due is None else {"kind": due.get("kind"), "since": due.get("since")}}
 
 

@@ -106,8 +106,18 @@ def test_an_unfinished_writer_run_older_than_the_limit_is_a_stall_although_crons
                                   run(NOW - dt.timedelta(hours=1), status="pending")]}
     v = ss.assess(sched(2, 1), ACTIVE, NOW, runs)
     assert stalled_names(v) == ["updater-heavy.yml"] and "still in_progress" in v["stalled"][0]["reason"]
+    subject, _ = ss.compose("stall", v, {}, NOW)
+    assert subject.endswith("updater-heavy.yml - a run unfinished for 40 h")
     # control: the same run 20 h old (heavy runs last up to 23.6 h) is not
     runs["updater-heavy.yml"][0] = run(NOW - dt.timedelta(hours=20), status="in_progress")
+    assert ss.assess(sched(2, 1), ACTIVE, NOW, runs)["stalled"] == []
+
+
+def test_completed_runs_older_than_the_limit_are_not_stuck():
+    """Review finding 2: _gh_runs returns the last 50 runs, nearly all completed and older than 36 h. Only an
+    UNFINISHED run is stuck; every completed one is the excluded population and must stay excluded."""
+    runs = {wf: [run(NOW - dt.timedelta(hours=h)) for h in (40, 60, 100)]
+            + [run(NOW - dt.timedelta(hours=50), event="workflow_dispatch")] for wf in gate.WRITERS}
     assert ss.assess(sched(2, 1), ACTIVE, NOW, runs)["stalled"] == []
 
 
@@ -151,7 +161,8 @@ def _replay(runs, start, end, step=dt.timedelta(minutes=30)):
     hits, t = [], start
     while t <= end:
         s = {wf: [run(c) for c in v if c <= t] for wf, v in runs.items()}
-        if ss.assess(s, ACTIVE, t)["stalled"]:
+        # the same runs as the unfiltered list too (all completed, as they are in GitHub's listing by now)
+        if ss.assess(s, ACTIVE, t, {wf: v[-50:] for wf, v in s.items()})["stalled"]:
             hits.append(t)
         t += step
     return hits
@@ -286,7 +297,7 @@ class Rig:
     def tick(self, now, s=None, states=ACTIVE, runs=None, started=None, cut=False, read=None):
         def default_read(budget_end):
             self.reads += 1
-            return s, (runs or {}), states
+            return (s if s is not None else sched(40, 2, now)), (runs or {}), states
         return ss.tick(now=now, started=time.monotonic() if started is None else started, read=read or default_read,
                        send=self.mailer, path=self.path, cut_over=lambda: cut, env=self.env)
 
@@ -296,25 +307,26 @@ class Rig:
 
 
 def _confirmed_stall(rig, t=NOW):
-    """Two evaluations 30 min apart that see the same stall -> a stall mail is due."""
-    rig.tick(t, sched(40, 2, t))
-    out = rig.tick(t + dt.timedelta(minutes=30), sched(40, 2, t + dt.timedelta(minutes=30)))
+    """Two evaluations 30 min apart that see the same stall: the second decides the mail and sends it."""
+    rig.tick(t)
+    assert rig.mailer.sent == [], "one sighting mails nothing"
+    out = rig.tick(t + dt.timedelta(minutes=30))
     assert "stall mail due" in out
     return t + dt.timedelta(minutes=30)
 
 
-def test_a_planted_stall_is_mailed_once_in_the_tick_after_it_is_confirmed(tmp_path):
+def test_a_planted_stall_is_mailed_once_when_it_is_confirmed(tmp_path):
     rig = Rig(tmp_path)
     t = _confirmed_stall(rig)
-    assert rig.mailer.sent == [], "the evaluation only decides; the send is the next tick's first act"
-    out = rig.tick(t + dt.timedelta(minutes=5), sched(40, 2))
-    assert "stall mail sent (cloudflare)" in out and len(rig.mailer.sent) == 1
+    assert len(rig.mailer.sent) == 1
     subject, text = rig.mailer.sent[0]
-    assert subject.startswith("[econ] scheduler stall: updater-daily.yml") and "updater-heavy.yml" in text
+    assert subject == "[econ] scheduler stall: updater-daily.yml - no scheduled run for 40 h"
+    assert "updater-heavy.yml" in text
     st = rig.state()
     assert st["alert_active"] is True and "mail_due" not in st and st["last_send"]["result"] == "cloudflare"
-    for i in range(2, 12):         # the next five hours: nothing more
-        rig.tick(t + dt.timedelta(minutes=30 * i), sched(40 + i / 2, 2, t + dt.timedelta(minutes=30 * i)))
+    assert isinstance(st["last_step_elapsed_s"], float)
+    for i in range(1, 12):         # the next five and a half hours: nothing more
+        rig.tick(t + dt.timedelta(minutes=30 * i))
     assert len(rig.mailer.sent) == 1
 
 
@@ -326,51 +338,86 @@ def test_a_planted_non_stall_mails_nothing(tmp_path):
     assert rig.mailer.sent == [] and rig.state()["last_verdict"] == "ok"
 
 
-def test_an_undelivered_mail_stays_due_and_is_retried_but_not_every_tick(tmp_path):
+def test_an_undelivered_mail_stays_due_and_is_retried_every_30_min_not_every_tick(tmp_path):
     for failed in ("skipped", "failed"):
         rig = Rig(tmp_path / failed, Mailer(failed))
         t = _confirmed_stall(rig)
-        out = rig.tick(t + dt.timedelta(minutes=5), sched(40, 2))
-        assert len(rig.mailer.sent) == 1 and "NOT sent" in out
+        assert len(rig.mailer.sent) == 1
         st = rig.state()
         assert not st.get("alert_active") and st["mail_due"]["kind"] == "stall"
-        rig.tick(t + dt.timedelta(minutes=10), sched(40, 2))
-        rig.tick(t + dt.timedelta(minutes=20), sched(40, 2))
-        assert len(rig.mailer.sent) == 1, "a failed send is retried at most every 30 min, not every 5"
+        for m in (5, 10, 20, 25):
+            rig.tick(t + dt.timedelta(minutes=m))
+        assert len(rig.mailer.sent) == 1, "retried at most every 30 min, not every 5"
         rig.mailer.result = "resend"
-        rig.tick(t + dt.timedelta(minutes=40), sched(40, 2))
+        rig.tick(t + dt.timedelta(minutes=31))
         assert len(rig.mailer.sent) == 2 and "(reminder)" not in rig.mailer.sent[1][0]
         assert rig.state()["alert_active"] is True
 
 
-def test_a_kill_during_the_send_cannot_repeat_the_mail_every_tick(tmp_path):
-    """Review finding 3: the loop kills the publish at 90 s. A kill after the mail is accepted and before the result
-    is recorded leaves an attempt with no result; the next ticks must hold it, not resend it."""
-    rig = Rig(tmp_path, Mailer(KeyboardInterrupt()))
+def test_an_undelivered_mail_is_tried_at_most_4_times_a_day(tmp_path):
+    """Review finding 6: a Cloudflare timeout after it accepted the mail reads as not delivered."""
+    rig = Rig(tmp_path, Mailer("skipped"))
     t = _confirmed_stall(rig)
+    for i in range(1, 30):
+        rig.tick(t + dt.timedelta(minutes=31 * i))
+    assert len(rig.mailer.sent) == 4
+    rig.tick(t + dt.timedelta(hours=24, minutes=5))
+    assert len(rig.mailer.sent) == 5, "the next day it tries again"
+
+
+def test_a_kill_during_the_send_cannot_repeat_the_mail_every_tick_and_does_not_stop_the_evaluation(tmp_path):
+    """Review finding 3: the loop kills the publish at 90 s. A kill after the mail is accepted and before the result
+    is recorded leaves an attempt with no result; the next ticks hold it, and keep evaluating."""
+    rig = Rig(tmp_path, Mailer(KeyboardInterrupt()))
+    rig.tick(NOW)
     with pytest.raises(KeyboardInterrupt):
-        rig.tick(t + dt.timedelta(minutes=5), sched(40, 2))
-    assert len(rig.mailer.sent) == 1
+        rig.tick(NOW + dt.timedelta(minutes=30))
+    t = NOW + dt.timedelta(minutes=30)
+    assert len(rig.mailer.sent) == 1 and rig.state()["mail_attempt"]["kind"] == "stall"
     rig.mailer.result = "cloudflare"
-    for m in (10, 40, 120, 300):
-        out = rig.tick(t + dt.timedelta(minutes=m), sched(40, 2))
+    reads = rig.reads
+    for m in (35, 60, 120, 300):
+        out = rig.tick(t + dt.timedelta(minutes=m))
         assert "never reported back" in out
     assert len(rig.mailer.sent) == 1
-    out = rig.tick(t + dt.timedelta(hours=6, minutes=10), sched(46, 2))
+    assert rig.reads == reads + 3, "the hold-off holds the send, not the evaluation"
+    out = rig.tick(t + dt.timedelta(hours=6, minutes=10))
     assert "stall mail sent" in out and len(rig.mailer.sent) == 2, "after the hold-off: at most one duplicate"
 
 
-def test_a_slow_tick_defers_the_send_and_skips_the_evaluation(tmp_path):
+def test_a_stall_that_ends_during_a_hold_off_sends_no_stale_stall_mail(tmp_path):
+    rig = Rig(tmp_path, Mailer(KeyboardInterrupt()))
+    rig.tick(NOW)
+    with pytest.raises(KeyboardInterrupt):
+        rig.tick(NOW + dt.timedelta(minutes=30))
+    rig.mailer.result = "cloudflare"
+    t = NOW + dt.timedelta(hours=2)
+    rig.tick(t, sched(1, 1, t))                     # the scheduler is back
+    assert "mail_due" not in rig.state()
+    rig.tick(NOW + dt.timedelta(hours=7), sched(1, 1, NOW + dt.timedelta(hours=7)))
+    assert len(rig.mailer.sent) == 1
+
+
+def test_a_slow_tick_skips_the_evaluation_and_defers_the_send(tmp_path):
     rig = Rig(tmp_path)
-    t = _confirmed_stall(rig)
-    late = time.monotonic() - 30            # 30 s of the guard tick already gone
-    out = rig.tick(t + dt.timedelta(minutes=5), sched(40, 2), started=late)
-    assert "deferred" in out and rig.mailer.sent == []
-    reads = rig.reads
-    rig2 = Rig(tmp_path / "b")
-    out = rig2.tick(NOW, sched(1, 1), started=time.monotonic() - 50)
-    assert "evaluation skipped" in out and rig2.reads == 0
-    assert reads == 2
+    out = rig.tick(NOW, sched(1, 1), started=time.monotonic() - 60)       # 60 s of the publish gone
+    assert "evaluation skipped" in out and rig.reads == 0
+    rig2 = Rig(tmp_path / "b", Mailer("failed"))
+    t = _confirmed_stall(rig2)
+    rig2.mailer.result = "cloudflare"
+    out = rig2.tick(t + dt.timedelta(minutes=31), started=time.monotonic() - 75)
+    assert "deferred" in out and len(rig2.mailer.sent) == 1
+    out = rig2.tick(t + dt.timedelta(minutes=36), started=time.monotonic() - 20)
+    assert "stall mail sent" in out and len(rig2.mailer.sent) == 2
+
+
+def test_the_send_budget_fits_the_measured_workstation_times():
+    """Plan review 2026-10-22: the publish reached this step 24.5-29.3 s in under normal load (plus the PUT), and
+    an evaluation is about 11 s of gh calls. Both must fit, with one POST after them, inside the 90 s kill."""
+    reach, evaluation, one_post = 29.3 + 2.0, 11.0, 2.0
+    assert reach <= ss.EVAL_START_MAX_S
+    assert reach + evaluation <= ss.SEND_START_MAX_S
+    assert ss.SEND_START_MAX_S + 15 <= 90 and ss.HARD_STOP_S < 90
 
 
 def test_tick_evaluates_at_most_every_30_min(tmp_path):
@@ -386,27 +433,27 @@ def test_tick_evaluates_at_most_every_30_min(tmp_path):
 
 def test_a_state_that_cannot_be_written_mails_nothing(tmp_path, monkeypatch):
     rig = Rig(tmp_path)
-    t = _confirmed_stall(rig)
+    rig.tick(NOW)
 
     def boom(*a, **k):
         raise PermissionError("denied")
     monkeypatch.setattr(ss, "save_state", boom)
-    out = rig.tick(t + dt.timedelta(minutes=5), sched(40, 2))
-    assert rig.mailer.sent == [] and "check failed" in out
-    rig2 = Rig(tmp_path / "b")
-    out = rig2.tick(NOW, sched(1, 1))
-    assert "nothing mailed" in out
+    out = rig.tick(NOW + dt.timedelta(minutes=30))
+    assert rig.mailer.sent == [] and "nothing mailed" in out
 
 
 def test_a_second_loop_holding_the_lock_skips_this_tick(tmp_path):
     rig = Rig(tmp_path)
-    os.makedirs(os.path.dirname(rig.path), exist_ok=True)
-    open(rig.path + ".lock", "w").close()
-    assert "holds the lock" in rig.tick(NOW, sched(1, 1)) and rig.reads == 0
-    old = time.time() - 11 * 60                             # a holder killed 11 min ago: taken over
-    os.utime(rig.path + ".lock", (old, old))
+    held = ss._lock(rig.path)
+    assert held is not None
+    try:
+        assert "holds the lock" in rig.tick(NOW, sched(1, 1)) and rig.reads == 0
+    finally:
+        ss._unlock(held)
     assert "ok" in rig.tick(NOW, sched(1, 1)) and rig.reads == 1
-    assert not os.path.exists(rig.path + ".lock"), "released"
+    again = ss._lock(rig.path)
+    assert again is not None, "the step released its lock"
+    ss._unlock(again)
 
 
 def test_a_corrupt_state_file_starts_fresh_and_says_so(tmp_path):
@@ -434,11 +481,15 @@ def test_github_unreadable_or_clock_skew_is_unknown_not_ok_and_not_stalled(tmp_p
 def test_a_blind_evaluation_keeps_a_mail_already_due(tmp_path):
     rig = Rig(tmp_path, Mailer("failed"))
     t = _confirmed_stall(rig)
+    called = []
 
     def read(budget_end):
+        called.append(1)
         raise TimeoutError("gh")
-    rig.tick(t + dt.timedelta(minutes=30), read=read)
+    out = rig.tick(t + dt.timedelta(minutes=30), read=read)
+    assert called and "unknown" in out and rig.state()["last_verdict"] == "unknown"
     assert rig.state()["mail_due"]["kind"] == "stall"
+    assert len(rig.mailer.sent) == 2, "the kept mail is tried again"
 
 
 def test_after_t0_nothing_is_read_and_nothing_is_mailed(tmp_path):
