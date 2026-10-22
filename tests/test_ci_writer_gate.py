@@ -604,3 +604,144 @@ def test_the_runner_escape_is_longer_than_its_cadence_floor():
     assert mx and mn, "cannot read the runner's cadence parameters"
     assert int(mx.group(1)) > int(mn.group(1)), (
         f"$MaxHours {mx.group(1)} must be greater than $MinHours {mn.group(1)}")
+
+
+# --- AN EMPTY SCHEDULED-RUN LISTING (ledger R1660) ------------------------------------------------------------
+# `gh run list --event schedule` can answer [] for a writer that has scheduled runs. Before the fix, that one
+# empty read made every cron of the last 12 h read as not started.
+
+class _Seq:
+    """A fake --event schedule fetch: answers from `answers[wf]` in order (the last answer repeats), counting calls.
+    An answer that is an Exception instance is raised."""
+    def __init__(self, answers):
+        self.answers, self.calls = answers, {wf: 0 for wf in answers}
+
+    def __call__(self, wf):
+        seq = self.answers[wf]
+        a = seq[min(self.calls[wf], len(seq) - 1)]
+        self.calls[wf] += 1
+        if isinstance(a, Exception):
+            raise a
+        return list(a)
+
+
+def _with_sched_rows(now, keep=50):
+    """An unfiltered listing that DOES carry the scheduled runs (newest first, capped like RUN_LIMIT)."""
+    sched, flood = _sched_all_started(now), _flood(now, n=10)
+    return {wf: sorted(sched[wf] + flood[wf], key=lambda r: r["createdAt"], reverse=True)[:keep] for wf in g.WRITERS}
+
+
+def test_an_empty_then_full_scheduled_listing_is_read_again_not_believed(capsys):
+    now = at(SPLIT_NOW)
+    sched, unfiltered = _sched_all_started(now), _flood(now)       # the unfiltered list has NO scheduled row
+    fs, sleeps = _Seq({wf: [[], sched[wf]] for wf in g.WRITERS}), []
+    rc = g.main(fetch=lambda wf: unfiltered[wf], fetch_states=lambda: ACTIVE, now=now, fetch_sched=fs,
+                sleep=sleeps.append)
+    out = capsys.readouterr().out
+    assert rc == g.EXIT_CLEAR, out
+    assert fs.calls == {wf: 2 for wf in g.WRITERS}, fs.calls
+    assert sleeps == [g.SCHED_RETRY_PAUSE_S] * len(g.WRITERS), sleeps
+    assert "came back empty, then held" in out, out
+
+    # NEGATIVE CONTROL: the same instant with a listing that stays empty must still block (fail closed).
+    fs = _Seq({wf: [[]] for wf in g.WRITERS})
+    rc = g.main(fetch=lambda wf: unfiltered[wf], fetch_states=lambda: ACTIVE, now=now, fetch_sched=fs,
+                sleep=lambda s: None)
+    out = capsys.readouterr().out
+    assert rc == g.EXIT_BLOCKED and "cron has not started yet" in out, out
+
+
+def test_an_empty_filtered_listing_takes_the_scheduled_rows_of_the_unfiltered_one(capsys):
+    now = at(SPLIT_NOW)
+    unfiltered = _with_sched_rows(now)
+    assert all(any(r["event"] == "schedule" for r in unfiltered[wf]) for wf in g.WRITERS), "fixture lost its rows"
+    fs = _Seq({wf: [[]] for wf in g.WRITERS})                      # empty on every read
+    rc = g.main(fetch=lambda wf: unfiltered[wf], fetch_states=lambda: ACTIVE, now=now, fetch_sched=fs,
+                sleep=lambda s: None)
+    out = capsys.readouterr().out
+    assert rc == g.EXIT_CLEAR, out
+    assert "scheduled run(s) in the unfiltered listing instead" in out, out
+    assert fs.calls == {wf: 1 + g.SCHED_EMPTY_RETRIES for wf in g.WRITERS}, fs.calls
+
+    # NEGATIVE CONTROL: the same rows as manual dispatches are not scheduled runs and must not rescue a cron.
+    as_dispatch = {wf: [dict(r, event="workflow_dispatch") for r in rows] for wf, rows in unfiltered.items()}
+    rc = g.main(fetch=lambda wf: as_dispatch[wf], fetch_states=lambda: ACTIVE, now=now,
+                fetch_sched=_Seq({wf: [[]] for wf in g.WRITERS}), sleep=lambda s: None)
+    out = capsys.readouterr().out
+    assert rc == g.EXIT_BLOCKED, out
+    assert "holds no scheduled run either" in out and "in the unfiltered listing instead" not in out, out
+
+
+def test_a_truly_empty_scheduled_history_still_blocks(capsys):
+    """No scheduled run anywhere: the cron check must keep failing closed, never CLEAR and never skip the writer."""
+    now = at("2026-09-14T23:30:00")
+    hist = history_as_of(now)
+    # control: with a readable history this instant is CLEAR, so a BLOCK below is caused by the empty listing
+    assert g.main(fetch=lambda wf: hist[wf], fetch_states=lambda: ACTIVE, now=now) == g.EXIT_CLEAR
+    capsys.readouterr()
+    for unfiltered in ({wf: [] for wf in g.WRITERS}, _flood(now)):
+        rc = g.main(fetch=lambda wf: unfiltered[wf], fetch_states=lambda: ACTIVE, now=now,
+                    fetch_sched=_Seq({wf: [[]] for wf in g.WRITERS}), sleep=lambda s: None)
+        out = capsys.readouterr().out
+        assert rc == g.EXIT_BLOCKED and "BLOCKED: " in out and "cron has not started yet" in out, out
+        assert "holds no scheduled run either" in out, out
+        # the budget clamp must read 0, and print ONLY the number (the runner parses the whole output as an int)
+        rc = g.main(fetch=lambda wf: unfiltered[wf], fetch_states=lambda: ACTIVE, now=now, until_block=True,
+                    fetch_sched=_Seq({wf: [[]] for wf in g.WRITERS}), sleep=lambda s: None)
+        assert rc == g.EXIT_CLEAR and capsys.readouterr().out.strip() == "0"
+
+
+def test_until_block_prints_only_the_number_after_an_empty_read(capsys):
+    now = at(SPLIT_NOW)
+    sched, unfiltered = _sched_all_started(now), _flood(now)
+    rc = g.main(fetch=lambda wf: unfiltered[wf], fetch_states=lambda: ACTIVE, now=now, until_block=True,
+                fetch_sched=_Seq({wf: [[], sched[wf]] for wf in g.WRITERS}), sleep=lambda s: None)
+    out = capsys.readouterr().out.strip()
+    assert rc == g.EXIT_CLEAR and re.fullmatch(r"\d+", out) and int(out) > 0, out
+
+
+def test_a_read_that_raises_on_the_retry_is_unknown_never_clear(capsys):
+    now = at(SPLIT_NOW)
+    sched, unfiltered = _sched_all_started(now), _with_sched_rows(now)
+    for until_block in (False, True):
+        fs = _Seq({wf: [[], RuntimeError("gh: HTTP 502")] for wf in g.WRITERS})
+        rc = g.main(fetch=lambda wf: unfiltered[wf], fetch_states=lambda: ACTIVE, now=now, until_block=until_block,
+                    fetch_sched=fs, sleep=lambda s: None)
+        out = capsys.readouterr().out
+        assert rc == g.EXIT_UNKNOWN and out.startswith("UNKNOWN") and "502" in out, out
+
+
+def test_a_normal_read_is_one_call_no_pause_and_no_note():
+    now = at(SPLIT_NOW)
+    sched, unfiltered = _sched_all_started(now), _with_sched_rows(now)
+    sleeps = []
+    for wf in g.WRITERS:
+        fs = _Seq({wf: [sched[wf]]})
+        rows, notes = g.read_sched(wf, fs, unfiltered[wf], sleep=sleeps.append)
+        assert fs.calls[wf] == 1 and notes == [] and rows == sched[wf], (fs.calls, notes)
+    assert sleeps == []
+
+
+def test_the_retry_is_bounded_and_short():
+    assert 1 <= g.SCHED_EMPTY_RETRIES <= 3 and 0 < g.SCHED_RETRY_PAUSE_S <= 5
+    wf, sleeps = "updater-heavy.yml", []
+    fs = _Seq({wf: [[]]})
+    rows, notes = g.read_sched(wf, fs, [], sleep=sleeps.append)
+    assert rows == [] and fs.calls[wf] == 1 + g.SCHED_EMPTY_RETRIES and len(sleeps) == g.SCHED_EMPTY_RETRIES
+    assert any(f"empty on {1 + g.SCHED_EMPTY_RETRIES} read(s)" in n for n in notes), notes
+
+
+def test_a_listing_that_lacks_the_newest_scheduled_run_gains_it_from_the_unfiltered_one():
+    """A non-empty but short filtered answer: the 06:30Z daily run is in the unfiltered list only."""
+    now = at(SPLIT_NOW)
+    sched, unfiltered = _sched_all_started(now), _with_sched_rows(now)
+    short = {wf: list(rows) for wf, rows in sched.items()}
+    assert short["updater-daily.yml"][0]["createdAt"] == "2026-09-12T06:30:00Z"
+    short["updater-daily.yml"] = short["updater-daily.yml"][1:]
+    blocked, reason, _n = g.assess(unfiltered, now, ACTIVE, short)
+    assert blocked and "06:00Z cron has not started yet" in reason, "control: the short listing alone blocks"
+    rows, notes = g.read_sched("updater-daily.yml", lambda wf: short[wf], unfiltered["updater-daily.yml"])
+    assert rows[0]["createdAt"] == "2026-09-12T06:30:00Z" and any("lacked 1 scheduled run" in n for n in notes)
+    assert len({r["createdAt"] for r in rows}) == len(rows), "a run must not be added twice"
+    fixed = dict(short, **{"updater-daily.yml": rows})
+    assert not g.assess(unfiltered, now, ACTIVE, fixed)[0]
