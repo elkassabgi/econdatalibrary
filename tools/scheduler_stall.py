@@ -59,8 +59,9 @@ at the stop, 91 fifteen seconds later; CREATE_BREAKAWAY_FROM_JOB is refused). So
      Cloudflare timeout after it accepted the mail) is retried at most every CHECK_EVERY and at most
      MAX_SENDS_PER_DAY times a day. A deferred or held send never stops step 1.
 Measured on the workstation under normal load (plan review, 2026-10-22 ~02:00Z): the publish reaches this step
-24.5-29.3 s after it starts, plus the PUT. Step 1 needs about 11 s (gh 5.0 s + 5.0 s + 0.5 s, 01:54Z), a send
-one POST (a second only on a Cloudflare failure). Each step records `last_step_elapsed_s`, so the margin on the
+24.5-29.3 s after it starts, plus the PUT (about 31.3 s). Step 1 makes five gh calls and took 17.2-17.6 s
+(review, 06:10Z), so the send decision comes at about 49 s; a send is one POST (a second only on a Cloudflare
+failure). Each step records `last_step_elapsed_s`, so the margin on the
 real machine is in the state file and the beat. Under a 100% CPU load the publish has reached this step at
 100-130 s, after the kill: then nothing evaluates, the beat itself is being lost too, and the cloud's check
 reds on both while CI runs.
@@ -269,7 +270,10 @@ def step(state: dict, verdict: dict | None, error: str | None, now: dt.datetime)
         last = _past(s.get("last_mail_utc"), now)
         return s, ("remind" if last is None or now - last >= REMIND_EVERY else None)
     s["last_verdict"] = "ok"
-    if s.get("alert_active"):
+    # An onset/reminder send that never reported back (killed mid-send) may have reached the owner: he gets the
+    # "over" mail too, rather than a last word that says "stalled".
+    attempt = s.get("mail_attempt") if isinstance(s.get("mail_attempt"), dict) else {}
+    if s.get("alert_active") or attempt.get("kind") in ("stall", "remind"):
         return s, "recovered"
     s["episode_since_utc"] = None
     return s, None
@@ -281,6 +285,7 @@ def on_delivered(state: dict, kind: str, now: dt.datetime) -> dict:
         s["alert_active"] = True
     elif kind == "recovered":
         s["alert_active"], s["episode_since_utc"] = False, None
+        s.pop("mail_attempt", None)
     elif kind == "blind":
         s["blind_alerted"] = True
     return s
@@ -438,6 +443,8 @@ def _evaluate(state, due, now, started, read, env, notes) -> dict:
     if kind is None:
         if verdict is not None:       # a blind evaluation says nothing about a mail already due: keep it
             new.pop("mail_due", None)
+    elif kind == "blind" and isinstance(due, dict) and due.get("kind") in ("stall", "remind", "recovered"):
+        pass      # an undelivered stall-episode mail is not replaced; blind stays due until that one is delivered
     else:
         subject, text = compose(kind, verdict, new, now)
         same = isinstance(due, dict) and due.get("kind") == kind
@@ -457,7 +464,8 @@ def _send(state, now, started, send, path, notes) -> dict:
         return state
     kind = due["kind"]
     attempt = state.get("mail_attempt") if isinstance(state.get("mail_attempt"), dict) else None
-    at = _past((attempt or {}).get("at"), now)
+    # The hold-off is for a repeat of the SAME mail; a different kind (the "over" mail after a killed onset) goes.
+    at = _past((attempt or {}).get("at"), now) if (attempt or {}).get("kind") == kind else None
     if at is not None and now - at < HOLD_OFF:
         notes.append(f"{kind} mail attempted {attempt.get('at')} never reported back (killed mid-send?) - held "
                      f"until {_iso(at + HOLD_OFF)}")

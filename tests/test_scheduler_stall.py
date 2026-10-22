@@ -392,10 +392,37 @@ def test_a_stall_that_ends_during_a_hold_off_sends_no_stale_stall_mail(tmp_path)
         rig.tick(NOW + dt.timedelta(minutes=30))
     rig.mailer.result = "cloudflare"
     t = NOW + dt.timedelta(hours=2)
-    rig.tick(t, sched(1, 1, t))                     # the scheduler is back
-    assert "mail_due" not in rig.state()
-    rig.tick(NOW + dt.timedelta(hours=7), sched(1, 1, NOW + dt.timedelta(hours=7)))
-    assert len(rig.mailer.sent) == 1
+    out = rig.tick(t, sched(1, 1, t))               # the scheduler is back, inside the 6 h hold-off
+    # the killed onset may have reached the owner, so he gets the "over" mail - never a stale "stall" one
+    assert "recovered mail sent" in out and len(rig.mailer.sent) == 2
+    assert rig.mailer.sent[1][0].startswith("[econ] scheduler stall over")
+    st = rig.state()
+    assert "mail_due" not in st and "mail_attempt" not in st
+    for h in (3, 7, 12):
+        rig.tick(NOW + dt.timedelta(hours=h), sched(1, 1, NOW + dt.timedelta(hours=h)))
+    assert len(rig.mailer.sent) == 2
+
+
+def test_a_blind_mail_does_not_replace_an_undelivered_stall_mail(tmp_path):
+    """Review round 2, change 2."""
+    rig = Rig(tmp_path, Mailer("failed"))
+    t = _confirmed_stall(rig)
+
+    def read(budget_end):
+        raise TimeoutError("gh")
+    for i in range(1, 80):                           # 40 h blind, retries failing
+        rig.tick(t + dt.timedelta(minutes=30 * i), read=read)
+    st = rig.state()
+    assert st["unknown_since_utc"] and st["mail_due"]["kind"] == "stall"
+    assert all("blind" not in s[0] for s in rig.mailer.sent)
+    rig.mailer.result = "cloudflare"
+    before = len(rig.mailer.sent)
+    for i in range(1, 60):                           # the mail path is back; the daily cap paces the first retry
+        rig.tick(t + dt.timedelta(hours=40, minutes=31 * i), read=read)
+    delivered = [s[0] for s in rig.mailer.sent[before:]]
+    assert len(delivered) == 2, delivered
+    assert delivered[0].startswith("[econ] scheduler stall: "), "the stall mail goes first"
+    assert "check blind" in delivered[1], "then the blind one"
 
 
 def test_a_slow_tick_skips_the_evaluation_and_defers_the_send(tmp_path):
@@ -413,8 +440,8 @@ def test_a_slow_tick_skips_the_evaluation_and_defers_the_send(tmp_path):
 
 def test_the_send_budget_fits_the_measured_workstation_times():
     """Plan review 2026-10-22: the publish reached this step 24.5-29.3 s in under normal load (plus the PUT), and
-    an evaluation is about 11 s of gh calls. Both must fit, with one POST after them, inside the 90 s kill."""
-    reach, evaluation, one_post = 29.3 + 2.0, 11.0, 2.0
+    an evaluation's five gh calls took 17.2-17.6 s. Both must fit, with one POST after them, inside the 90 s kill."""
+    reach, evaluation, one_post = 29.3 + 2.0, 17.6, 2.0
     assert reach <= ss.EVAL_START_MAX_S
     assert reach + evaluation <= ss.SEND_START_MAX_S
     assert ss.SEND_START_MAX_S + 15 <= 90 and ss.HARD_STOP_S < 90
