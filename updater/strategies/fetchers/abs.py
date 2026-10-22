@@ -47,6 +47,7 @@ existing data is always preserved by merge (never shrinks).
 from __future__ import annotations
 import datetime as dt
 import os
+import time
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -54,14 +55,61 @@ import pyarrow.compute as pc
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import (CURSOR_CAP, Deadline, RotationCycle, Tally, finalize, load_rotation,
+from ._common import (Deadline, RotationCycle, Tally, finalize, load_rotation,
                       rotate_after, save_rotation)
 
 # Reuse the ingester verbatim: enumeration, streaming+retry, parse helpers.
 import jobs.ingest_abs_full as ing
+# The catalogued set comes from the connector that built the catalogue (its "Starter set"),
+# never from a second hand-typed list (R159).
+from connectors.abs.connector import SERIES as _CONNECTOR_SERIES
 
 SOURCE = "abs"
 DEDUP = ("series_key", "obs_date")
+
+# THE CATALOGUED FLOWS DRIVE THE HEALTH GATE AND ARE VISITED EVERY PASS (2026-10-22, AR-367).
+#
+# The gate's newest_obs is max(series_cursor <= today) (health.py _recency_signal). abs used to
+# report a run-global fold of BARE store keys, capped at CURSOR_CAP and filled in rotation order,
+# so census flows filled it and none of the 18 catalogued series was ever a cursor: 549,344 abs
+# cursor rows, max <= today 2025-12-31 (an annual ERP key), and the gate read RED-DATA at 295 d
+# for a number that described no served series (daily run 39677388361). Bare keys never map to
+# the 'abs:<FLOW>:<key>' catalogue ids (AR-132), and since #74 the CSV derive uses the
+# merge-measured changed_keys, so those cursors fed ONLY the gate - and a fresh UNCATALOGUED flow
+# (POPULATION_CLOCK, BOP_FACTOR hold 2026-09-30) would have kept abs green while the served series
+# aged. So series_cursors are now exactly the catalogued series, in the catalogue's '<FLOW>:<key>'
+# form, valued at their STORE frontier (read before the fetch, raised by the rows the merge
+# published). Not data_cadence / publication_lag_days / upstream_verified: each would hide a real
+# lag behind ABS. The gate still takes the max over these AND the legacy bare rows already in state
+# (put_series_cursors upserts and never deletes): 549,344 rows whose newest observed date is
+# 2025-12-31 (state copy 2026-10-20), already past the 84-day clock, so they cannot mask a stale
+# catalogued set - unless a run of the OLD code adds fresh bare keys before this ships. Pruning them
+# is tools/prune_series_cursors.py's job (a state write, not done here).
+CATALOGUED = frozenset(_CONNECTOR_SERIES)                     # '<FLOW>:<key>', 18 ids
+CATALOGUED_KEYS = {f: frozenset(k.split(":", 1)[1] for k in CATALOGUED if k.split(":", 1)[0] == f)
+                   for f in {k.split(":", 1)[0] for k in CATALOGUED}}
+# CEASED at the publisher, measured 2026-10-22 (dataflow names, 14 GETs 2 s apart):
+#   CPI_M "CEASED - Dataset: CPI_M. The Monthly Consumer Price Index (CPI) Indicator ..." ends 2025-09
+#   RT    "CEASED - Dataset: RT. This dataset has been discontinued."                  ends 2025-06
+# Our store and served CSVs equal ABS's final data. They stay in the ordinary rotation (once per
+# cycle, which also writes their cursors); fetching them on EVERY pass would cost 2 GETs (~4-5 s)
+# for rows that cannot change. This fetcher has no CEASED-text or per-flow skip mechanism, and
+# this is not one: it only scopes the every-pass head. If ABS revives either, the rotation sees it.
+CEASED_FLOWS = frozenset({"CPI_M", "RT"})
+# Visited at the head of EVERY pass, before the rotation. LF sat at rotation position 1,168 of
+# 1,222 and a pass reaches ~150-280 flows, so LF and CPI fell a release or two behind ABS between
+# visits. Measured cost (2026-10-22, the fetcher's own collect(), BASE, UA and startPeriod, 2 s
+# apart): ONE GET per flow, no retries; LF 4.11/2.41 s, WPI 2.29/2.25, AWE 2.48/0.31, CPI
+# 4.83/3.67, ANA_AGG 1.93/1.73 = 15.6 / 10.4 s per pass for the five. It comes OUT of BUDGET_MIN
+# (the same dl.spent() check), never on top of it. Not measured: the R2 read + merge per flow on
+# a runner (the five files are 3.6 MB, 0.67 MB and < 0.11 MB each); the pass prints its own time.
+# Per head flow and pass that is one R2 read before the fetch (the same read _flow_max_obs made
+# for any visited flow) plus the merge's read and write, because the boundary-year tail always
+# returns rows. dl.spent() is checked only BEFORE a flow starts, so the worst case of one flow
+# (collect()'s 5 x stream_rows' 5 attempts, timeout 300 s each) is NOT bounded by the budget - as
+# for every abs flow; the 45-minute unit cap is what bounds it. "Every pass" is abs's real pass
+# rate: about weekly (runs 6-8 days apart while the unit is partial), not daily.
+HEAD_FLOWS = tuple(sorted(set(CATALOGUED_KEYS) - CEASED_FLOWS))
 
 # WHY THIS SOURCE HAS A BUDGET AND A CURSOR CAP (2026-07-30).
 #
@@ -85,6 +133,8 @@ DEDUP = ("series_key", "obs_date")
 #      _common's cap docstring enumerates the sources checked against it; abs was never
 #      one of them. abs holds 18 catalog ids, so _catalog_ids_for maps almost nothing and
 #      reporting millions of cursors buys nothing while costing millions of state rows.
+#      (2026-10-22: the cursors are now the 18 catalogued series only - see CATALOGUED above -
+#      so this term is bounded by construction, not by a cap.)
 #   2. Per-flow Arrow buffers and collect()'s three parallel row-lists were dropped but
 #      never returned to the OS; over 1,222 iterations the pool only grows.
 #   3. No self-limit. AQUEDUCT_RUN_BUDGET_MIN is checked BETWEEN sources, so a source that
@@ -104,6 +154,36 @@ def _flow_max_obs(path: str):
         return m
     except Exception:
         return None
+
+
+def _as_date(v):
+    return v.date() if isinstance(v, dt.datetime) else v
+
+
+def _store_frontier(path: str, want: frozenset):
+    """(flow max obs_date, {key: max obs_date} for the `want` keys) from ONE read of the stored
+    parquet - a catalogued flow's file is small (LF, the largest, 3.6 MB). (None, {}) if unreadable,
+    exactly as _flow_max_obs degrades."""
+    try:
+        t = blob.read_table(path, columns=["series_key", "obs_date"])
+        if t.num_rows == 0:
+            return None, {}
+        flow_max = _as_date(pc.max(t.column("obs_date")).as_py())
+        sub = t.filter(pc.is_in(t.column("series_key"), value_set=pa.array(sorted(want), pa.string())))
+        per = {}
+        if sub.num_rows:
+            g = sub.group_by("series_key").aggregate([("obs_date", "max")])
+            for k, d in zip(g.column("series_key").to_pylist(), g.column("obs_date_max").to_pylist()):
+                if d is not None:
+                    per[k] = _as_date(d)
+        return flow_max, per
+    except Exception as exc:                                   # noqa: BLE001
+        # SAID, not swallowed (review of this change): the flow's served series then report no
+        # cursor this pass and the tail is a full-history fetch (startPeriod None).
+        print(f"[abs] {os.path.basename(path)}: store frontier unreadable ({type(exc).__name__}: "
+              f"{str(exc)[:160]}) - no catalogued cursors from the store this pass; full-history "
+              f"fetch", flush=True)
+        return None, {}
 
 
 def _flow_start_param(max_obs):
@@ -149,10 +229,10 @@ def update(unit, since) -> Result:
     tally = Tally()
     total = 0
     last_obs = None
-    cursors: dict[str, str] = {}   # series_key -> max obs_date written this run
+    # '<FLOW>:<series_key>' -> store frontier, for the CATALOGUED series only (see CATALOGUED)
+    cursors: dict[str, str] = {}
     # '<FLOW>:<series_key>' -> changed date (merge-measured); None once the pass passed the cap
     changed: dict[str, str | None] | None = {}
-    cursors_capped = False
     dl = Deadline(minutes=BUDGET_MIN)
     deferred = 0
 
@@ -165,6 +245,14 @@ def update(unit, since) -> Result:
     if resume:
         pfiles = rotate_after(pfiles, resume)
         print(f"[abs] resuming after {resume} ({len(pfiles)} flows, rotated)", flush=True)
+    # The live catalogued flows go FIRST on every pass, then the rotation without them. Rotating the
+    # FULL list before taking them out keeps the position of an old bookmark that names one.
+    present = set(pfiles)
+    head = [f"{f}.parquet" for f in HEAD_FLOWS if f"{f}.parquet" in present]
+    head_set = set(head)
+    pfiles = head + [f for f in pfiles if f not in head_set]
+    head_s = 0.0
+    head_ran = 0
     last_attempted = None
     # `ok` = EVERY flow attempted since the last ok (RotationCycle, 2026-09-23). A pass reaches
     # ~118 of 1,222 flows (daily run 35783253243: "118 sub-unit(s) attempted, none failed; 1104
@@ -178,9 +266,11 @@ def update(unit, since) -> Result:
         path = os.path.join(out_dir, fn)
         flow = fn[:-len(".parquet")]
         before = blob.row_count(path)
-        if cycle.done(fn):
+        in_head = fn in head_set
+        if cycle.done(fn) and not in_head:
             # Visited this cycle: no work owed (review R1105 P1). Its rows still count: `obs` is
-            # the store total and is served as obs_count (review AR-123 P5).
+            # the store total and is served as obs_count (review AR-123 P5). A HEAD flow is fetched
+            # anyway: it carries served series and is visited on every pass (HEAD_FLOWS).
             total += before
             continue
 
@@ -197,14 +287,28 @@ def update(unit, since) -> Result:
                 tally.deferred_unit(f"{flow} deferred (budget {BUDGET_MIN:.0f} min)")
             total += before
             continue
-        last_attempted = fn
-        # Saved per flow, not only after the loop (R273): abs's fetch ran 43.9 min on 09-16 against
-        # the 45-minute unit cap, and an end-of-loop save is what the kill destroys (R1105).
-        save_rotation(out_dir, fn)
+        if not in_head:
+            # The bookmark is the ROTATION's position. A head flow is not a rotation step, so it
+            # must not move it (else every pass would resume after ANA_AGG/AWE/CPI/LF/WPI).
+            last_attempted = fn
+            # Saved per flow, not only after the loop (R273): abs's fetch ran 43.9 min on 09-16
+            # against the 45-minute unit cap, and an end-of-loop save is what the kill destroys.
+            save_rotation(out_dir, fn)
         cycle.begin(fn)                     # a raise or kill inside it counts (AR-127 P5)
         fails_before = cycle.failures(tally)
+        t_flow = time.monotonic()
+        head_ran += in_head
 
-        max_obs = _flow_max_obs(path)
+        want = CATALOGUED_KEYS.get(flow)
+        if want:
+            # ONE read gives the tail's boundary AND the served series' store frontier. Reported now,
+            # before the fetch: it is what the store holds whatever the fetch does next (a transient
+            # failure, a quiet tail or a refused write leaves exactly this).
+            max_obs, frontier = _store_frontier(path, want)
+            for k, d in frontier.items():
+                cursors[f"{flow}:{k}"] = d.isoformat()
+        else:
+            max_obs = _flow_max_obs(path)
         start = _flow_start_param(max_obs)
         params = {"startPeriod": start} if start else None
 
@@ -219,13 +323,12 @@ def update(unit, since) -> Result:
             # at that scale cannot be acted on.
             tally.transient_unit(f"{flow}: {type(exc).__name__} — {str(exc)[:160]}")
             total += before
-            mx = max_obs.isoformat() if max_obs else None
-            # seed this flow's frontier so a transient flow can't hide behind the max:
-            # carry forward each on-disk series cursor is too costly per-flow; record the
-            # flow-level frontier under a flow sentinel key for visibility.
-            if mx:
-                cursors.setdefault(f"__flow__{flow}", mx)
+            # No '__flow__<FLOW>' sentinel cursor any more (2026-10-22): for an UNCATALOGUED flow
+            # it fed the gate a frontier no served series has (the A1 objection, AR-367), and a
+            # catalogued flow's series already reported their store frontier above.
             cycle.visit(fn, failed=True)     # stays owed (R1105 P2)
+            if in_head:
+                head_s += time.monotonic() - t_flow
             continue
 
         if not keys:
@@ -244,6 +347,8 @@ def update(unit, since) -> Result:
             if mx and (last_obs is None or mx > last_obs):
                 last_obs = mx
             cycle.visit(fn)                  # a quiet flow was looked at and is current: done
+            if in_head:
+                head_s += time.monotonic() - t_flow
             continue
 
         tbl = _build_table(keys, dates, vals)
@@ -268,6 +373,8 @@ def update(unit, since) -> Result:
             tally.transient_unit(f"{flow}: write refused — {str(e)[:160]}")
             total += before
             cycle.visit(fn, failed=True)     # stays owed (R1105 P3)
+            if in_head:
+                head_s += time.monotonic() - t_flow
             continue
 
         total += n
@@ -295,27 +402,17 @@ def update(unit, since) -> Result:
         tally.added_unit(len(keys))
         if md and (last_obs is None or md > last_obs):
             last_obs = md
-        # per-series cursors for the rows we just fetched (the moved series), BOUNDED.
-        # Once the cap is reached we stop ADDING new keys but keep advancing ones already
-        # held, so the reported set stays coherent rather than truncating mid-flow. The
-        # cap being hit is printed below — a silent bound is the defect, not the bound.
-        # Folded straight from the row stream rather than via a per-flow
-        # {series_key: max} dict. ABS holds 376,332,763 distinct series (measured
-        # 2026-07-30 over the 976,632,535-row store), and the census cross-tabs are
-        # ~1 observation per series, so an intermediate dict for one big flow is itself
-        # millions of entries — allocated in full BEFORE any cap could apply.
-        for k, d in zip(keys, dates):
-            if d is None:
-                continue
-            v = d.isoformat()
-            prev = cursors.get(k)
-            if prev is None:
-                if len(cursors) >= CURSOR_CAP:
-                    cursors_capped = True
+        # The merge PUBLISHED these rows, so a catalogued series' store frontier is now the larger
+        # of what the store held and what was fetched for it. Only catalogued keys are cursors (see
+        # CATALOGUED); no fold over an uncatalogued flow's rows, so no per-series dict at all for
+        # the census cross-tabs (~1 observation per series, 376,332,763 series in the store).
+        if want:
+            for k, d in zip(keys, dates):
+                if d is None or k not in want:
                     continue
-                cursors[k] = v
-            elif v > prev:
-                cursors[k] = v
+                ck, v = f"{flow}:{k}", d.isoformat()
+                if v > cursors.get(ck, ""):
+                    cursors[ck] = v
 
         # VISITED only once the flow's fetch finished without a failure (stat_latvia review R1103,
         # P2): a flow whose fetch failed stays owed, so the cycle cannot close without it.
@@ -325,6 +422,8 @@ def update(unit, since) -> Result:
         # flows RSS only ever climbs.
         del tbl, keys, dates, vals
         pa.default_memory_pool().release_unused()
+        if in_head:
+            head_s += time.monotonic() - t_flow
 
     # Both bounds are DISCLOSED. A cap that trims the reported changed-set, or a budget
     # that leaves flows unattempted, must say so in the log — otherwise the next reader
@@ -339,14 +438,19 @@ def update(unit, since) -> Result:
     if deferred:
         where = (f"the source's next pass RESUMES AFTER {last_attempted} so they actually drain"
                  if last_attempted else
+                 (f"only the every-pass head ({head_ran} flow(s)) ran; NO rotation flow was "
+                  f"attempted, so the bookmark is unchanged and a later pass retries this same "
+                  f"point (check the budget, not the rotation)") if head_ran else
                  "NO flow was attempted at all — the bookmark is unchanged, so the source's next "
                  "pass retries this same point (check the budget, not the rotation)")
         print(f"[abs] BUDGET {BUDGET_MIN:.0f} min spent after {dl.elapsed_min():.1f} min — "
               f"{deferred}/{len(pfiles)} flow(s) still owed this cycle; {where} "
               f"(run reports partial, vintage not advanced)", flush=True)
-    if cursors_capped:
-        print(f"[abs] cursor set hit the {CURSOR_CAP:,} cap — further changed series are "
-              f"not individually reported", flush=True)
+    # The head's cost, every pass, so a real run log measures it on the runner (the probe that set
+    # HEAD_FLOWS measured only the ABS GETs). And how many catalogued series the gate will see.
+    print(f"[abs] head (every pass): {len(head)} catalogued flow(s) "
+          f"{', '.join(f[:-len('.parquet')] for f in head) or '-'} took {head_s:.1f} s; "
+          f"{len(cursors)}/{len(CATALOGUED)} catalogued series reported as cursors", flush=True)
 
     # empty_window_floor = (#subunits) - 1 per the S3 contract: a genuine wholesale
     # outage (every one of ~1222 flows empty) raises DefinitiveError, while a single
@@ -356,8 +460,16 @@ def update(unit, since) -> Result:
     # complete: every merge this pass reported ({} = nothing changed); None = over the cap (cursors)
     res.changed_keys = changed
     if changed is None:
-        # The fallback cursors are bare store keys, which can never map to 'abs:<FLOW>:<key>' ids:
-        # say the changed-set evidence is truncated, so the orchestrator books a durable
+        # Say the changed-set evidence is truncated, so the orchestrator books a durable
         # full_rederive_owed (health: ATTENTION) instead of the change vanishing (review AR-132).
+        # Since 2026-10-22 the fallback cursors are the catalogued series this pass VISITED, in the
+        # mappable '<FLOW>:<key>' form (they used to be bare store keys that could never map). So the
+        # orchestrator's fallback (changed_keys None -> series_cursors) now DERIVES those ids - at
+        # least the head's 15 - a superset of what changed among served series. Each visited flow
+        # merged and so wrote its file on this runner, so the derive can read it; a head flow whose
+        # fetch failed reported store cursors without a write, and under r2 its ids fast-fail into
+        # csv_retry_queue (that pass is partial for its failure anyway). The flag stays: the
+        # debt is booked deliberately conservative, as AR-132 decided. Never seen in production
+        # (CHANGED_KEYS_CAP 2,000,000; 0 over-cap passes in 13 abs runs, state copy 2026-10-20).
         res.cursor_cap_hit = True
     return res

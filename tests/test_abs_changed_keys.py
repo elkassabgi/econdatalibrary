@@ -50,7 +50,10 @@ def test_a_pass_over_the_changed_keys_cap_reports_none_and_says_so(monkeypatch, 
     res = A.update(None, None)                            # 3 flows, one changed key each
     assert res.changed_keys is None, res.changed_keys
     assert "falls back to the cursor path" in capsys.readouterr().out
-    assert res.series_cursors, "the cursor path still has its cursors"
+    # 2026-10-22: cursors are the CATALOGUED series only (bare keys of uncatalogued flows never mapped,
+    # AR-132, and fed only the health gate - AR-367). These three flows are uncatalogued; the
+    # catalogued case of this path is pinned in test_abs_catalogued_flows.py.
+    assert res.series_cursors == {}, res.series_cursors
 
 
 def test_an_overflowed_pass_says_its_evidence_is_truncated(monkeypatch, tmp_path):
