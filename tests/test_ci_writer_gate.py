@@ -849,6 +849,26 @@ def test_an_unfinished_run_in_the_scheduled_listing_blocks_on_its_own(status):
     assert g.minutes_until_block(quiet, now, ACTIVE, sched=sched) == 0
 
 
+@pytest.mark.parametrize("status", ["queued", "waiting", "pending", "requested", "in_progress"])
+def test_an_unfinished_scheduled_listing_row_older_than_a_day_still_blocks_and_warns(status):
+    """Review AR-376 (surviving mutant S4): age never excuses an unfinished row - 30 h old here, past
+    WARN_UNFINISHED_AFTER, only in the scheduled listing. It blocks, and it warns that it may be stuck."""
+    now, quiet = _ar375("completed")
+    old = {"createdAt": _iso(now - dt.timedelta(hours=30)), "event": "schedule", "status": status}
+    assert now - _parse_iso(old["createdAt"]) > g.WARN_UNFINISHED_AFTER
+    sched = {wf: list(rows) for wf, rows in quiet.items()}
+    sched["updater-daily.yml"] = sorted(sched["updater-daily.yml"] + [old], key=lambda r: r["createdAt"],
+                                        reverse=True)
+    blocked, reason, notes = g.assess(quiet, now, ACTIVE, sched)
+    assert blocked and f"is {status}" in reason and old["createdAt"] in reason, reason
+    assert any("more than a day" in n for n in notes), notes
+    assert g.minutes_until_block(quiet, now, ACTIVE, sched=sched) == 0
+
+
+def _parse_iso(s):
+    return dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+
 def test_a_still_empty_unfiltered_listing_blocks_on_its_own(capsys):
     """The `unread` rule on its own: no unfinished run anywhere, every cron credited, but one writer's unfiltered
     listing read empty three times. Before AR-375 that writer's in-flight check had nothing to look at: CLEAR."""

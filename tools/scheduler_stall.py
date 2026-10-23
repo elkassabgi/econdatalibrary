@@ -62,8 +62,11 @@ mailed 12 times over 85 days of replayed history with 65-minute empty episodes).
   * keeps what it was for the confirmation: stalled before, it still counts as stalled for the next sighting;
   * has a clock: undetermined for longer than STALL_AFTER makes the one "blind" mail due, which says the true
     thing - that the workstation cannot see that writer's runs.
-A writer with an unfinished run older than STALL_AFTER in a non-empty unfiltered listing is stalled whatever
-its scheduled listing says (that rule needs only the unfiltered listing).
+A writer with an unfinished run older than STALL_AFTER in EITHER listing is stalled whatever else its listings
+say. The gate blocks on an unfinished run in either listing since review AR-375, and a scheduled run left queued
+can drop out of the newest-50 unfiltered rows while the 200-row scheduled listing still holds it; reading only
+the unfiltered listing here then said "ok" while the gate blocked for as long as GitHub kept the run unfinished -
+silent starvation (R1032 class, review AR-376).
 
 WHY 36 HOURS. Measured on a gh snapshot of both writers' scheduled runs at 2026-10-22T01:51Z: over the 85 days
 in which both writers ran (both two-cron schedules exist for about 70 of them), the largest gap between two
@@ -216,10 +219,12 @@ def assess(sched: dict, states: dict, now: dt.datetime, runs: dict | None = None
     """sched: {workflow: [runs]} SCHEDULED runs only, as gate.read_sched() returns them (so an empty list means
     three empty reads AND no scheduled run in the unfiltered listing); runs: {workflow: [runs]} of any trigger,
     as _read_unfiltered() returns them, for the unfinished-run rule (an empty or missing list means that listing
-    was read empty three times; None = the rule is not asked, for callers that hold no unfiltered listing);
+    was read empty three times; None = the caller holds no unfiltered listing);
     states: {workflow: state} (gate._gh_states). Pure.
 
-    The unfinished-run rule applies WHATEVER the workflow's state: the gate's in-flight check blocks on an
+    The unfinished-run rule reads the unfiltered rows AND the scheduled rows, as the gate's in-flight check does
+    (review AR-376): an unfinished scheduled run that only the scheduled listing still holds blocks the gate, so
+    it must be able to stall here. It applies WHATEVER the workflow's state: the gate's in-flight check blocks on an
     unfinished run of a disabled workflow too (review AR-366). Only the scheduled-run rule is skipped for a
     workflow that is not active, because the gate does not wait for its crons.
 
@@ -246,7 +251,9 @@ def assess(sched: dict, states: dict, now: dt.datetime, runs: dict | None = None
         age_h = None if newest is None else round(max(0.0, (now - newest).total_seconds() / 3600), 1)
         row = {"workflow": wf, "newest": _iso(newest), "age_h": age_h}
         unfiltered = None if runs is None else (runs.get(wf) or [])
-        r0 = _stuck(wf, {wf: unfiltered}, now) if unfiltered else None
+        # The unfinished-run rule reads BOTH listings, as the gate's in-flight check does (review AR-376).
+        pool = list(unfiltered or []) + list(sched.get(wf, []))
+        r0 = _stuck(wf, {wf: pool}, now) if pool else None
         sched_empty = judged and newest is None
         unfiltered_empty = unfiltered is not None and not unfiltered
         if judged and not sched_empty and now - newest > STALL_AFTER:

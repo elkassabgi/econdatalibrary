@@ -78,7 +78,8 @@ CRON_SPACING = dt.timedelta(hours=12)          # between a workflow's two crons
 # until someone runs with -SkipCiCheck. run_local_heavy.ps1 warns after 2 x $MinHours without a pass, but that
 # is a line in a local log and it fires routinely (review AR-362). The alert that leaves the machine is
 # tools/scheduler_stall.py: the guard loop evaluates it, and it warns when a writer has had no scheduled run, or
-# has held an unfinished run, for 36 h. It runs in SHADOW mode (records the mail, sends nothing) until the owner
+# has held an unfinished run (in either listing, as this gate reads them - review AR-376), for 36 h. It runs in
+# SHADOW mode (records the mail, sends nothing) until the owner
 # creates its flag file (ledger R1661), and it reads the scheduled runs through read_sched() below (R1660).
 # KNOWN RESIDUAL: a run created more than 12 h after its cron is credited to the next cron of that workflow,
 # and the next cron's own run then arrives unannounced (the 2026-08-28 shape above: once 15:14Z had finished,
