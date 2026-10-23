@@ -30,6 +30,7 @@ import datetime as dt
 import json
 import subprocess
 import sys
+import time
 
 # Workflow file -> UTC hours of its schedule crons (.github/workflows/<file>); both run
 # `python -m updater.run --pull-state ... --push-state`.
@@ -211,7 +212,11 @@ def _gh_runs(wf: str) -> list:
 
 
 def _gh_sched(wf: str) -> list:
-    """Scheduled runs only, so a burst of dispatches cannot hide whether a cron started (see assess)."""
+    """Scheduled runs only, so a burst of dispatches cannot hide whether a cron started (see assess).
+
+    Its answer can be EMPTY for a writer that has scheduled runs (R1660), so main() never uses it directly: it
+    goes through read_sched(), which reads an empty answer again and cross-checks it against the unfiltered
+    listing. Raises on a gh failure, a timeout, or an answer that is not a list."""
     return _gh_json(["run", "list", "--workflow", wf, "--event", "schedule", "--limit", str(SCHED_LIMIT),
                      "--json", "createdAt,event,status"])
 
@@ -221,23 +226,107 @@ def _gh_states() -> dict:
     return {r["path"].rsplit("/", 1)[-1]: r["state"] for r in rows}
 
 
-def main(fetch=_gh_runs, fetch_states=_gh_states, now=None, until_block=False, fetch_sched=None) -> int:
+# AN EMPTY SCHEDULED-RUN LISTING IS NOT EVIDENCE THAT NO CRON STARTED (ledger R1660, 2026-10-22).
+# `gh run list --workflow <wf> --event schedule` sometimes answers an empty list, exit 0, for a writer that has
+# scheduled runs: at 15:00:51Z it returned 0 rows for updater-heavy.yml, whose newest scheduled run was created at
+# 08:14:42Z, and at 14:57:42Z, about 3 min earlier, the same call returned 0 rows for updater-daily.yml. assess()
+# then finds no run for any cron of the last 12 h and BLOCKS. That fails closed, but every such read takes a tick
+# from the desktop's windows for nothing.
+#
+# How often, measured afterwards (MEASURED_EMPTY_RATE): the same call, with the same arguments as _gh_sched, read
+# 64 times per writer 30-60 s apart, 2026-10-22 18:37:02Z..19:43:14Z (128 reads), next to the unfiltered call at
+# the same moment: 0 of 64 empty for each writer, 0 errors, and no non-empty answer lacked a scheduled run that
+# the unfiltered one held. A second, independent sample (review AR-374) read 0 of 78. So 0 of 206 in all - the
+# empties are EPISODIC, not a steady rate: R1660's two came about 3 min apart and then none in the next 206 reads.
+# A rate measured outside an episode says nothing about one, which is why this guard does not depend on it.
+# Instrument: `gh run list --workflow <wf> --event schedule --limit 200 --json createdAt,event,status` and
+# `gh run list --workflow <wf> --limit 50 --json createdAt,event,status`, counted per read (ledger R1660).
+MEASURED_EMPTY_RATE = {"updater-daily.yml": (0, 64), "updater-heavy.yml": (0, 64)}   # (empty, reads), 2026-10-22
+#
+# So an empty filtered answer is read again, and is cross-checked against the unfiltered listing main() has
+# already fetched (no extra call). Every schedule-event row in the unfiltered listing is a real scheduled run
+# GitHub reports, so adding the ones the filtered answer lacks can only credit a cron with a run that exists.
+# The unfiltered listing is the newest RUN_LIMIT runs of any trigger, so it holds at most a SUBSET of the
+# scheduled history; a subset can only make a cron read as not started, never as started. So this can turn a
+# false BLOCK into the right answer and can never turn a true BLOCK into CLEAR.
+# What stays BLOCKED: an empty filtered listing on every read AND no schedule-event row in the unfiltered one.
+# That is either a real "no scheduled run" (GitHub stopped creating them) or an empty read during a burst of
+# dispatches; this code cannot tell those apart, so it keeps the fail-closed answer and says so in a warning.
+# A read that RAISES (gh failed, timed out, or answered something that is not a list) is not retried: it
+# propagates to main(), which answers UNKNOWN and exits 2, exactly as before.
+#
+# Bound: at most SCHED_EMPTY_RETRIES extra reads per writer, SCHED_RETRY_PAUSE_S apart, and only after an EMPTY
+# answer; each read keeps _gh_json's own 60 s subprocess timeout. A normal read is unchanged (one call per writer).
+# WORST-CASE TIME of one gate call, every gh call at its 60 s timeout:
+#     before   2 unfiltered + 2 scheduled + 1 workflow list         = 5 x 60                    = 300 s
+#     now      the same + 2 retries per writer, only after an empty = 300 + 2 x 2 x (60 + 2)    = 548 s
+# Measured reads take 5.6 s (unfiltered) and 9.5 s (scheduled) at most (the 128 reads above), so a retried empty
+# read adds about 2 x (2 + 10) = 24 s per writer in practice. Against the callers:
+#   - tools/derive_csv_bulk.py runs `--until-block` with a 300 s timeout. The old worst case already met it; past
+#     it, subprocess raises TimeoutExpired, which that tool treats as "cannot tell" and refuses to clear. Fails
+#     closed.
+#   - tools/run_local_heavy.ps1 runs the gate and then `--until-block` with no timeout. It waits; exit 3 is BLOCKED,
+#     any other non-zero exit or an `--until-block` answer that is not one integer is "cannot tell", and in both
+#     cases the pass does not start. Fails closed.
+# A read that times out RAISES (it is not an empty answer), so it is never retried: main() answers UNKNOWN, exit 2.
+SCHED_EMPTY_RETRIES = 2
+SCHED_RETRY_PAUSE_S = 2.0
+
+
+def read_sched(wf: str, fetch_sched, unfiltered: list, sleep=time.sleep) -> tuple[list, list]:
+    """The scheduled runs of `wf` for assess(), and the notes about how they were read.
+
+    fetch_sched(wf) -> list of scheduled runs (the `--event schedule` listing); unfiltered: that writer's
+    unfiltered listing, as main() already fetched it. See the block above for why each step is safe."""
+    notes = []
+    rows = list(fetch_sched(wf))
+    reads = 1
+    while not rows and reads <= SCHED_EMPTY_RETRIES:
+        sleep(SCHED_RETRY_PAUSE_S)
+        rows = list(fetch_sched(wf))
+        reads += 1
+    seen = {r.get("createdAt") for r in rows}
+    extra = [r for r in unfiltered if r.get("event") == "schedule" and r.get("createdAt") not in seen]
+    if not rows and extra:
+        notes.append(f"WARNING: {wf} scheduled-run listing came back empty on {reads} read(s); using the "
+                     f"{len(extra)} scheduled run(s) in the unfiltered listing instead (R1660)")
+    elif not rows:
+        notes.append(f"WARNING: {wf} scheduled-run listing came back empty on {reads} read(s) and the unfiltered "
+                     f"listing holds no scheduled run either; every cron of the last 12 h reads as not started")
+    elif reads > 1:
+        notes.append(f"NOTE: {wf} scheduled-run listing came back empty, then held {len(rows)} run(s) on read "
+                     f"{reads} (R1660)")
+    if extra and rows:
+        notes.append(f"NOTE: {wf} scheduled-run listing lacked {len(extra)} scheduled run(s) that the unfiltered "
+                     f"listing holds; added them")
+    if extra:
+        rows = sorted(rows + extra, key=lambda r: r["createdAt"], reverse=True)
+    return rows, notes
+
+
+def main(fetch=_gh_runs, fetch_states=_gh_states, now=None, until_block=False, fetch_sched=None,
+         sleep=time.sleep) -> int:
     try:
         runs = {wf: fetch(wf) for wf in WRITERS}
         getter = fetch_sched if fetch_sched is not None else (_gh_sched if fetch is _gh_runs else fetch)
-        sched = {wf: getter(wf) for wf in WRITERS}
+        sched, read_notes = {}, []
+        for wf in WRITERS:
+            sched[wf], wf_notes = read_sched(wf, getter, runs[wf], sleep=sleep)
+            read_notes += wf_notes
         states = fetch_states()
         now = now or dt.datetime.now(dt.timezone.utc)
         if until_block:
-            # For the runner's budget clamp. Prints minutes only, so a caller can read it directly; a failure to
-            # read CI still prints UNKNOWN and exits 2, which the caller must treat as "do not start".
+            # For the runner's budget clamp. Prints minutes only, so a caller can read it directly (the runner
+            # parses the whole output as one integer, so the read notes are NOT printed here; the plain gate
+            # call the runner makes first prints them); a failure to read CI still prints UNKNOWN and exits 2,
+            # which the caller must treat as "do not start".
             print(minutes_until_block(runs, now, states, sched=sched))
             return EXIT_CLEAR
         blocked, reason, notes = assess(runs, now, states, sched)
     except Exception as e:  # noqa: BLE001 - failing to read CI is "cannot tell", never "clear"
         print(f"UNKNOWN: could not read CI runs ({type(e).__name__}: {str(e)[:200]})")
         return EXIT_UNKNOWN
-    for n in notes:
+    for n in read_notes + notes:
         print(n)
     print(("BLOCKED: " if blocked else "CLEAR: ") + reason)
     return EXIT_BLOCKED if blocked else EXIT_CLEAR
