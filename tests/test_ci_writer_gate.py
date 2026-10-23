@@ -745,3 +745,172 @@ def test_a_listing_that_lacks_the_newest_scheduled_run_gains_it_from_the_unfilte
     assert len({r["createdAt"] for r in rows}) == len(rows), "a run must not be added twice"
     fixed = dict(short, **{"updater-daily.yml": rows})
     assert not g.assess(unfiltered, now, ACTIVE, fixed)[0]
+
+
+# --- AN EMPTY UNFILTERED LISTING (review AR-375) ----------------------------------------------------------------
+# main() read the unfiltered listing ONCE and the in-flight check read only it. One empty answer for a writer whose
+# scheduled run was in progress hid the run, and the same run credited its cron as started from the scheduled
+# listing: CLEAR, exit 0, during a cloud run. Fixed twice: the empty answer is read again and a still-empty one
+# blocks (`unread`), and the in-flight check reads the scheduled listing too. Each fix is tested on its own below.
+
+AR375_NOW = "2026-10-22T21:30:00"
+
+
+def _iso(d):
+    return d.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _ar375(status="in_progress"):
+    """The probe of AR-375 (F:/work/ar375/probe_gate_failopen.py): a scheduled daily run created 20 min ago with
+    `status`, and every cron of the last 12 h credited. With status 'completed' it is a truly quiet system."""
+    now = at(AR375_NOW)
+    run = {"createdAt": _iso(now - dt.timedelta(minutes=20)), "event": "schedule", "status": status}
+    def done(h):
+        return {"createdAt": _iso(now - dt.timedelta(hours=h)), "event": "schedule", "status": "completed"}
+    return now, {"updater-daily.yml": [run, done(12), done(24)], "updater-heavy.yml": [done(3), done(15)]}
+
+
+def _main(now, unfiltered, sched, until_block=False, states=ACTIVE, sleep=lambda s: None):
+    return g.main(fetch=unfiltered, fetch_states=lambda: states, now=now, until_block=until_block,
+                  fetch_sched=sched, sleep=sleep)
+
+
+@pytest.mark.parametrize("daily_answers", [[[]], "empty-then-full"], ids=["empty-on-every-read", "empty-once"])
+def test_AR375_probe_an_empty_unfiltered_answer_never_clears_a_run_in_progress(capsys, daily_answers):
+    now, full = _ar375()
+    answers = {wf: [full[wf]] for wf in g.WRITERS}
+    answers["updater-daily.yml"] = [[], full["updater-daily.yml"]] if daily_answers == "empty-then-full" else [[]]
+    rc = _main(now, _Seq(answers), lambda wf: list(full[wf]))
+    out = capsys.readouterr().out
+    assert rc in (g.EXIT_BLOCKED, g.EXIT_UNKNOWN) and "CLEAR" not in out, out
+    assert rc == g.EXIT_BLOCKED and "is in_progress" in out, out
+    # --until-block reads the same listings: it must say "no free time", as exactly one integer
+    rc = _main(now, _Seq(answers), lambda wf: list(full[wf]), until_block=True)
+    out = capsys.readouterr().out
+    assert rc == g.EXIT_CLEAR and out.strip() == "0", out
+
+
+def test_AR375_positive_control_and_a_truly_quiet_system(capsys):
+    now, full = _ar375()
+    # positive control: the unfiltered listing answered, so the plain in-flight check blocks on it
+    rc = _main(now, lambda wf: list(full[wf]), lambda wf: list(full[wf]))
+    out = capsys.readouterr().out
+    assert rc == g.EXIT_BLOCKED and "is in_progress" in out and "scheduled-run listing" not in out, out
+    # a truly quiet system: the same history with the run finished stays CLEAR, and --until-block counts forward
+    now, quiet = _ar375("completed")
+    rc = _main(now, lambda wf: list(quiet[wf]), lambda wf: list(quiet[wf]))
+    out = capsys.readouterr().out
+    assert rc == g.EXIT_CLEAR and out.strip() == "CLEAR: no cloud state writer in flight or pending", out
+    rc = _main(now, lambda wf: list(quiet[wf]), lambda wf: list(quiet[wf]), until_block=True)
+    out = capsys.readouterr().out.strip()
+    assert rc == g.EXIT_CLEAR and re.fullmatch(r"\d+", out) and int(out) > 0, out
+
+
+def test_an_empty_unfiltered_answer_is_read_again_and_a_quiet_answer_then_clears(capsys):
+    """Fix 1 on its own: the re-read. Without it the empty first answer would block (unread) for nothing."""
+    now, quiet = _ar375("completed")
+    fu, sleeps = _Seq({wf: [[], quiet[wf]] for wf in g.WRITERS}), []
+    rc = _main(now, fu, lambda wf: list(quiet[wf]), sleep=sleeps.append)
+    out = capsys.readouterr().out
+    assert rc == g.EXIT_CLEAR, out
+    assert fu.calls == {wf: 2 for wf in g.WRITERS}, fu.calls
+    assert sleeps == [g.SCHED_RETRY_PAUSE_S] * len(g.WRITERS), sleeps
+    assert "unfiltered run listing came back empty, then held" in out, out
+    # NEGATIVE CONTROL: a listing that stays empty is not "nothing in flight"
+    rc = _main(now, _Seq({wf: [[]] for wf in g.WRITERS}), lambda wf: list(quiet[wf]))
+    out = capsys.readouterr().out
+    assert rc == g.EXIT_BLOCKED and "cannot be ruled out" in out, out
+
+
+def test_the_re_read_finds_a_manual_dispatch_the_scheduled_listing_cannot_show(capsys):
+    """A dispatch is in no scheduled listing, so only the re-read of the unfiltered one can see it."""
+    now, quiet = _ar375("completed")
+    dispatch = {"createdAt": _iso(now - dt.timedelta(minutes=5)), "event": "workflow_dispatch",
+                "status": "in_progress"}
+    answers = {wf: [quiet[wf]] for wf in g.WRITERS}
+    answers["updater-heavy.yml"] = [[], [dispatch] + quiet["updater-heavy.yml"]]
+    rc = _main(now, _Seq(answers), lambda wf: list(quiet[wf]))
+    out = capsys.readouterr().out
+    assert rc == g.EXIT_BLOCKED, out
+    assert f"BLOCKED: updater-heavy.yml run created {dispatch['createdAt']} is in_progress" in out, out
+
+
+@pytest.mark.parametrize("status", ["queued", "waiting", "pending", "requested", "in_progress"])
+def test_an_unfinished_run_in_the_scheduled_listing_blocks_on_its_own(status):
+    """Fix 2 on its own: a non-empty unfiltered listing that does not show the run unfinished (all completed here),
+    while the scheduled listing does. Before AR-375 this read CLEAR: the run credited its cron and nothing else
+    looked at its status."""
+    now, quiet = _ar375("completed")
+    _now, sched = _ar375(status)
+    blocked, reason, _n = g.assess(quiet, now, ACTIVE, sched)
+    assert blocked and f"is {status}" in reason and "scheduled-run listing" in reason, reason
+    # control: the same scheduled listing with the run finished is clear
+    assert not g.assess(quiet, now, ACTIVE, quiet)[0]
+    assert g.minutes_until_block(quiet, now, ACTIVE, sched=sched) == 0
+
+
+def test_a_still_empty_unfiltered_listing_blocks_on_its_own(capsys):
+    """The `unread` rule on its own: no unfinished run anywhere, every cron credited, but one writer's unfiltered
+    listing read empty three times. Before AR-375 that writer's in-flight check had nothing to look at: CLEAR."""
+    now, quiet = _ar375("completed")
+    answers = {wf: [quiet[wf]] for wf in g.WRITERS}
+    answers["updater-heavy.yml"] = [[]]
+    fu = _Seq(answers)
+    rc = _main(now, fu, lambda wf: list(quiet[wf]))
+    out = capsys.readouterr().out
+    assert rc == g.EXIT_BLOCKED, out
+    assert fu.calls["updater-heavy.yml"] == 1 + g.SCHED_EMPTY_RETRIES and fu.calls["updater-daily.yml"] == 1
+    assert "BLOCKED: updater-heavy.yml run listing came back empty on every read" in out, out
+    assert "WARNING: updater-heavy.yml unfiltered run listing came back empty on 3 read(s)" in out, out
+    rc = _main(now, _Seq(answers), lambda wf: list(quiet[wf]), until_block=True)
+    out = capsys.readouterr().out
+    assert rc == g.EXIT_CLEAR and out.strip() == "0", out
+    runs = dict(quiet, **{"updater-heavy.yml": []})
+    assert g.minutes_until_block(runs, now, ACTIVE, sched=quiet, unread={"updater-heavy.yml"}) == 0
+    assert g.minutes_until_block(runs, now, ACTIVE, sched=quiet) > 0, "control: without `unread` it is clear"
+
+
+def test_an_unread_writer_blocks_even_when_its_workflow_is_disabled(capsys):
+    """The in-flight check ignores the workflow state (AR-366): a disabled workflow can still hold a run."""
+    now, quiet = _ar375("completed")
+    states = dict(ACTIVE, **{"updater-heavy.yml": "disabled_manually"})
+    rc = _main(now, lambda wf: list(quiet[wf]), lambda wf: list(quiet[wf]), states=states)
+    out = capsys.readouterr().out
+    assert rc == g.EXIT_CLEAR and "its crons are not waited for" in out, "control: " + out
+    answers = {wf: [quiet[wf]] for wf in g.WRITERS}
+    answers["updater-heavy.yml"] = [[]]
+    rc = _main(now, _Seq(answers), lambda wf: list(quiet[wf]), states=states)
+    out = capsys.readouterr().out
+    assert rc == g.EXIT_BLOCKED and "came back empty on every read" in out, out
+
+
+def test_read_unfiltered_is_one_call_normally_and_bounded_when_empty():
+    now, quiet = _ar375("completed")
+    wf, sleeps = "updater-daily.yml", []
+    fu = _Seq({wf: [quiet[wf]]})
+    assert g.read_unfiltered(wf, fu, sleep=sleeps.append) == (quiet[wf], []) and fu.calls[wf] == 1 and sleeps == []
+    fu = _Seq({wf: [[]]})
+    rows, notes = g.read_unfiltered(wf, fu, sleep=sleeps.append)
+    assert rows == [] and fu.calls[wf] == 1 + g.SCHED_EMPTY_RETRIES
+    assert sleeps == [g.SCHED_RETRY_PAUSE_S] * g.SCHED_EMPTY_RETRIES
+    assert any(f"empty on {1 + g.SCHED_EMPTY_RETRIES} read(s)" in n for n in notes), notes
+
+
+def test_an_unfiltered_read_that_raises_on_the_retry_is_unknown_never_clear(capsys):
+    now, quiet = _ar375("completed")
+    for until_block in (False, True):
+        fu = _Seq({wf: [[], RuntimeError("gh: HTTP 502")] for wf in g.WRITERS})
+        rc = _main(now, fu, lambda wf: list(quiet[wf]), until_block=until_block)
+        out = capsys.readouterr().out
+        assert rc == g.EXIT_UNKNOWN and out.startswith("UNKNOWN") and "502" in out, out
+
+
+def test_the_worst_case_time_note_matches_the_constants():
+    """The note in ci_writer_gate.py states a ceiling for one gate call; it must follow the re-read constants.
+    5 single reads, plus SCHED_EMPTY_RETRIES re-reads per writer of each of the TWO listings."""
+    src = open(os.path.join(ROOT, "tools", "ci_writer_gate.py"), encoding="utf-8").read()
+    m = re.search(r"#\s+now\s+\+ 2 retries per writer of the unfiltered listing too = .*= (\d+) s", src)
+    assert m, "the worst-case line for the unfiltered re-reads is missing"
+    timeout = 60
+    expect = 5 * timeout + 2 * len(g.WRITERS) * g.SCHED_EMPTY_RETRIES * (timeout + g.SCHED_RETRY_PAUSE_S)
+    assert int(m.group(1)) == expect, (m.group(1), expect)
