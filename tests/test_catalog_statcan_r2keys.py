@@ -398,8 +398,9 @@ class _CountedSource:
     run that has passed `step_cap` or that the backstop cancelled, i.e. one where the tool has
     already broken its promise."""
 
-    def __init__(self, con, steps, step_cap, cancel):
+    def __init__(self, con, steps, step_cap, cancel, between_steps=None):
         self._con, self._steps, self._cap, self._cancel = con, steps, step_cap, cancel
+        self._between = between_steps
 
     def backup(self, target, *, pages=-1, progress=None, name="main", sleep=0.25):
         def counted(status, remaining, total):
@@ -410,21 +411,25 @@ class _CountedSource:
                 raise _StepCapExceeded(f"cancelled by the {BACKSTOP_S}s backstop after {len(self._steps):,} steps")
             if len(self._steps) > self._cap:
                 raise _StepCapExceeded(f"no abort within {self._cap:,} backup steps")
+            if self._between is not None:   # the backup's read lock is released between steps
+                self._between()
         return self._con.backup(target, pages=pages, progress=counted, name=name, sleep=sleep)
 
     def __getattr__(self, attr):
         return getattr(self._con, attr)
 
 
-def _backup_under_backstop(monkeypatch, src, dst, step_cap, **kw):
+def _backup_under_backstop(monkeypatch, src, dst, step_cap, between_steps=None, **kw):
     """Run backup_sqlite in a thread; return (outcome, remaining-per-step). Fails if the thread is
-    still alive after BACKSTOP_S - a hang, whatever the disk."""
+    still alive after BACKSTOP_S - a hang, whatever the disk. `between_steps`, if given, runs
+    after every step (after the tool's own progress callback), in the backup's thread."""
     import threading
     from tools import catalog_statcan_tables as t
     steps, cancel, out = [], threading.Event(), {}
     real_connect = t.catalog_path.connect_path
     monkeypatch.setattr(t.catalog_path, "connect_path",
-                        lambda *a, **k: _CountedSource(real_connect(*a, **k), steps, step_cap, cancel))
+                        lambda *a, **k: _CountedSource(real_connect(*a, **k), steps, step_cap, cancel,
+                                                       between_steps))
 
     def run():
         try:
@@ -464,6 +469,12 @@ def _assert_stalled_by_a_named_signal(out, steps, *, stall_steps, max_restarts):
         tail = steps[-(stall_steps + 1):]
         assert len(tail) == stall_steps + 1 and len(set(tail)) == 1, (
             f"names no-progress but `remaining` moved in its last {stall_steps} steps: {tail}")
+        # ...and not LATER than that: the counter resets on any change and fires the moment it
+        # reaches stall_steps, so the flat suffix is exactly stall_steps + 1 values (AR-377 F1).
+        assert len(steps) == stall_steps + 1 or steps[-(stall_steps + 2)] != steps[-1], (
+            f"no-progress fired LATE: `remaining` was flat for more than {stall_steps} steps: "
+            f"{steps[-(stall_steps + 6):]}")
+    assert "holders now:" in msg, f"the error no longer names the holders: {msg}"
     print(f"stalled after {len(steps):,} steps, {restarts} restart(s), signal="
           f"{'restarts' if by_restarts else 'no-progress'}")
 
@@ -486,14 +497,23 @@ def test_backup_aborts_on_a_writer_that_never_pauses(tmp_path, monkeypatch):
             time.sleep(0.005)
         w.close()
     th = threading.Thread(target=writer, daemon=True); th.start()
+    # The writer is THIS process, which db_holders() excludes by design, so a real lookup has
+    # nothing of ours to find. Pin the wiring instead: the abort must ask about the live db and
+    # put the answer in its error. db_holders itself is tested on a real child process above.
+    from tools import catalog_statcan_tables as t
+    asked = []
+    monkeypatch.setattr(t, "db_holders", lambda p: asked.append(p) or [(4242, "sentinel-holder")])
     try:
         # 5,000 steps: ~9x the most measured (581, slow HDD). The guard fires on restarts or a flat
-        # run, so it is the step COUNT that bounds it; past this cap it did not fire.
+        # run, so a step count bounds it; past this cap, or past the backstop on a slow disk
+        # (~0.12 s a step on the HDD), it did not fire.
         out, steps = _backup_under_backstop(monkeypatch, src, dst, 5_000,
                                             pages=32, sleep=0.005, stall_steps=20, max_restarts=50)
     finally:
         stop.set(); th.join(timeout=5)
     _assert_stalled_by_a_named_signal(out, steps, stall_steps=20, max_restarts=50)
+    assert asked == [src], f"the abort looked up holders of {asked}, not the live db {src}"
+    assert "(4242, 'sentinel-holder')" in str(out["error"]), "the error does not name the holders"
 
 
 def test_db_holders_sees_another_process_holding_the_file(tmp_path):
@@ -541,27 +561,29 @@ def test_livelock_is_caught_at_the_SHIPPED_page_size_and_leaves_no_torn_copy(tmp
     """R583: at pages=4096 a restarted copy completes its full chunk from the beginning every time,
     so `remaining` never rises and never falls - the restart-only detector was inert. The
     no-progress signal must fire, and the failed copy must not survive under the real name."""
-    import threading, time
     src = str(tmp_path / "live.db"); dst = str(tmp_path / "bak.db")
     _big_db(src, 60_000)                                       # ~30 MB > one 4096-page step
-    stop = threading.Event()
-    def writer():
-        w = sqlite3.connect(src, timeout=0.2)
-        while not stop.is_set():
-            try:
-                w.execute("INSERT INTO t VALUES('w')"); w.commit()
-            except sqlite3.OperationalError:
-                pass
-            time.sleep(0.002)
-        w.close()
-    th = threading.Thread(target=writer, daemon=True); th.start()
+    # The writer commits BETWEEN every pair of steps - a writer that never pauses, by construction.
+    # A writer THREAD (timeout=0.2) is not one on a loaded HDD: a 4096-page step outlasts its busy
+    # timeout, it misses the 2 ms gap between steps, and two unrestarted steps finish this 2-step
+    # copy. That happened in 2 of 3 runs on F: on 2026-10-23 ("backup completed under a steady
+    # writer") with the tool unchanged.
+    w = {}
+    def write_between_steps():
+        if "con" not in w:
+            w["con"] = sqlite3.connect(src, timeout=30.0, check_same_thread=False)
+        w["con"].execute("INSERT INTO t VALUES('w')"); w["con"].commit()
     try:
-        # 2,000 steps: far above the 12 measured on the slow HDD (10 flat steps after one restart).
-        # The guard fires on restarts or a flat run, so the step COUNT bounds it, not the clock.
-        out, steps = _backup_under_backstop(monkeypatch, src, dst, 2_000,
+        # 561 steps = (max_restarts + 1) x (stall_steps + 1) bounds the guard's worst case here:
+        # with a commit before every step `remaining` can only stay flat or rise, so at most 51
+        # rises, each followed by at most 10 flat steps. Measured: 12 steps. On a fast disk a late
+        # guard hits this cap first; on a slow one (a step plus a commit up to ~2 s) the 600 s
+        # backstop may come first. Either is an assertion failure.
+        out, steps = _backup_under_backstop(monkeypatch, src, dst, 561, between_steps=write_between_steps,
                                             pages=4096, sleep=0.002, stall_steps=10, max_restarts=50)
     finally:
-        stop.set(); th.join(timeout=5)
+        if "con" in w:
+            w["con"].close()
     _assert_stalled_by_a_named_signal(out, steps, stall_steps=10, max_restarts=50)
     assert not os.path.exists(dst), "a torn copy was left under the authoritative name"
     assert not os.path.exists(dst + ".partial")
