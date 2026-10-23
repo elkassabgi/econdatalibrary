@@ -383,7 +383,33 @@ def _sec_edgar_problem(rec, now) -> "str | None":
     return None
 
 
-def publish() -> int:
+def _stall_summary():
+    """The scheduler-stall check's last evaluation (tools/scheduler_stall.py), from its local state file."""
+    try:
+        import scheduler_stall                               # noqa: PLC0415
+        return scheduler_stall.summary_for_beat()
+    except Exception as e:                                   # noqa: BLE001
+        return {"unreadable": f"{type(e).__name__}: {e}"[:200]}
+
+
+def _stall_tick(started: float) -> str:
+    """Run the scheduler-stall check (it warns the owner when GitHub stops creating the scheduled updater
+    runs - review AR-362; in SHADOW mode, the default, it only records the mail it would send - R1661). Called
+    AFTER the beat is published, so a slow GitHub can cost this check, never the beat. `started` is when this
+    publish began: the loop kills it at 90 s and the check budgets against that. It evaluates at most every
+    30 min and never raises."""
+    try:
+        import scheduler_stall                               # noqa: PLC0415
+        return scheduler_stall.tick(started=started)
+    except Exception as e:                                   # noqa: BLE001
+        return f"scheduler-stall: could not run ({type(e).__name__}: {str(e)[:160]})"
+
+
+def publish(stall_check: bool = False) -> int:
+    """stall_check: also run tools/scheduler_stall.py after the PUT. `--publish` (the guard loop) turns it on;
+    a direct call does not, so a test of the beat never reaches GitHub or mail."""
+    import time                                              # noqa: PLC0415
+    started = time.monotonic()
     # `jobs_alive` keeps its meaning - the tracked ingesters PRESENT - so every existing reader
     # is unchanged. What was missing is why `3/3` could be published while istat_sliced was
     # exiting after nine seconds (R799): the beat carried no way to tell a crawl from a
@@ -406,6 +432,8 @@ def publish() -> int:
     body["sec_edgar_local"] = sec
     # judged here as well as in check(): the public route carries only this verdict, never the record
     body["sec_edgar_local_problem"] = _sec_edgar_problem(sec, dt.datetime.now(dt.timezone.utc))
+    if stall_check:
+        body["scheduler_stall"] = _stall_summary()
     data = json.dumps(body, indent=2).encode("utf-8")
     from core import cutover                                 # noqa: PLC0415
     if cutover.is_cut_over():
@@ -419,6 +447,8 @@ def publish() -> int:
     print(f"published {KEY}: {body['utc']} host={body['host']} "
           + (f"jobs_alive={len(body['jobs_alive'])}/{len(TRACKED)}" if detail is not None
              else "jobs_alive=UNKNOWN (process table unreadable)"))
+    if stall_check:
+        print(_stall_tick(started))
     return 0
 
 
@@ -485,6 +515,16 @@ def check(max_age_min: float, local: bool = False) -> int:
         print("  NOTE: this beat predates the statcan lane (no `statcan_lane` field) - the "
               "workstation's checkout of tools/guard_heartbeat.py is older than the lane, so the "
               "lane is UNMONITORED from CI until it is updated.")
+    # THE SCHEDULER-STALL ALARM (tools/scheduler_stall.py) warns from the workstation when GitHub stops creating
+    # the updater runs (in shadow mode, the default, it records the mail and sends nothing). Whether it is ARMED is
+    # judged by its OWN step (--check-stall-armed, AR-366), never here: a lasting "not armed" in this step would
+    # hide a later dead watchdog behind it. This only prints its verdict.
+    stall = body.get("scheduler_stall")
+    if isinstance(stall, dict) and stall.get("last_verdict") in ("stalled", "unknown"):
+        print(f"  NOTE: the workstation's scheduler-stall check ({stall.get('mode') or 'send'} mode) reads "
+              f"{stall.get('last_verdict')} (writers {stall.get('stalled')}, evaluated "
+              f"{stall.get('last_evaluated_utc')}, alert {'recorded' if stall.get('mode') == 'shadow' else 'mailed'}: "
+              f"{bool(stall.get('alert_active'))})")
     sec_bad = (_sec_edgar_problem(body["sec_edgar_local"], dt.datetime.now(dt.timezone.utc))
                if "sec_edgar_local" in body else None)
     if "sec_edgar_local" not in body:
@@ -592,11 +632,63 @@ def check_url(url: str, max_age_min: float, require_sec_edgar: bool = False) -> 
     return 0
 
 
+def check_stall_armed() -> int:
+    """CI, its OWN step (AR-366): fail when the beat says the scheduler-stall alarm is NOT ARMED.
+
+    The alarm warns from the workstation when GitHub stops creating the updater runs - and then CI does not run.
+    So the only time it can be shown to be armed is while the scheduler still works, which is here. A separate
+    step from --check, so that a lasting "not armed" never hides a later dead watchdog, and the log says WHICH
+    claim failed. A beat without the field (an older publisher) is a NOTE; an unreadable beat is --check's
+    failure, not this one's, and is reported as a NOTE here.
+
+    In SHADOW mode (the default, R1661) the alarm sends nothing, so this fails only when it is not EVALUATING
+    (no evaluation for 6 h, never evaluated, an unreadable state); it never fails on "no mail service" or an
+    unsent mail. It prints the shadow verdict and the would-be mails, so a week of these logs is the evidence the
+    owner reads before he turns sending on."""
+    try:
+        raw = r2_util.client().get_object(Bucket=BUCKET, Key=KEY)["Body"].read()
+        body = json.loads(raw.decode("utf-8"))
+    except Exception as e:                                   # noqa: BLE001
+        print(f"  NOTE: no readable beat ({type(e).__name__}) - the watchdog step reports that; the scheduler-stall "
+              f"alarm cannot be judged this run")
+        return 0
+    if "scheduler_stall" not in body:
+        print("  NOTE: this beat predates the scheduler-stall check (no `scheduler_stall` field) - the "
+              "workstation's checkout is older, so a stall of GitHub's scheduler is UNALERTED until it is updated.")
+        return 0
+    import scheduler_stall                                   # noqa: PLC0415
+    stall = body["scheduler_stall"]
+    now = dt.datetime.now(dt.timezone.utc)
+    bad = scheduler_stall.armed_problem(stall, now)
+    shadow = isinstance(stall, dict) and stall.get("mode") == "shadow"
+    lines = scheduler_stall.shadow_report(stall, now) if shadow else []
+    if bad:
+        print(f"SCHEDULER-STALL ALARM NOT ARMED{' (shadow mode: not evaluating)' if shadow else ''}: {bad}")
+        print("  It is the only alert that reaches the owner when GitHub stops creating the scheduled updater "
+              "runs (every other one runs in a GitHub workflow). On the workstation: "
+              "python tools/scheduler_stall.py, and logs/scheduler_stall.json.")
+        for line in lines:
+            print(line)
+        return 1
+    s_ = stall if isinstance(stall, dict) else {}
+    if shadow:
+        print("scheduler-stall alarm evaluating in SHADOW mode (it sends nothing until the owner creates "
+              "logs/SCHEDULER_STALL_SEND on the workstation):")
+        for line in lines:
+            print(line)
+        return 0
+    print(f"scheduler-stall alarm armed: last evaluation {s_.get('last_evaluated_utc')}, verdict "
+          f"{s_.get('last_verdict')}, transport {s_.get('transport')}, step at {s_.get('last_step_elapsed_s')} s")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--publish", action="store_true", help="workstation: stamp a completed tick")
     g.add_argument("--check", action="store_true", help="CI: fail if the beat is stale")
+    g.add_argument("--check-stall-armed", action="store_true",
+                   help="CI: fail if the beat says the scheduler-stall alarm is not armed")
     ap.add_argument("--max-age-min", type=float, default=DEFAULT_MAX_AGE_MIN)
     src = ap.add_mutually_exclusive_group()
     src.add_argument("--from-url", default=None,
@@ -606,7 +698,9 @@ def main() -> int:
                      help="with --check: read the full beat from the self-hosted store on this machine")
     a = ap.parse_args()
     if a.publish:
-        return publish()
+        return publish(stall_check=True)
+    if a.check_stall_armed:
+        return check_stall_armed()
     if a.from_url:
         return check_url(a.from_url, a.max_age_min)
     return check(a.max_age_min, local=a.local)

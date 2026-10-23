@@ -434,6 +434,18 @@ jobs:
         if: ${{ always() }}
         run: python tools/guard_heartbeat.py --check
 
+      - name: Scheduler-stall alarm armed
+        # tools/scheduler_stall.py warns the owner from the workstation when GitHub stops creating the scheduled
+        # updater runs - and then THIS run does not happen. So the only time the alarm can be shown to be armed is
+        # while the scheduler still works. SHADOW MODE (the default, ledger R1661: it records the mail it would
+        # send and sends nothing): red only when the beat says it has not evaluated for 6 h; the shadow verdict
+        # and the would-be mails are printed. With sending on (the owner's flag file): also red on no mail
+        # service, GitHub unreadable for 6 h, or a mail due and undelivered for 6 h. Its own step, not part of
+        # the watchdog step above (review AR-366): a lasting "not armed" must never hide a dead watchdog, and
+        # the log must say WHICH claim failed. always() for the same reason as the step above.
+        if: ${{ always() }}
+        run: python tools/guard_heartbeat.py --check-stall-armed
+
       - name: Served-bytes freshness probe (rotating sample)
         # THE EMPIRICAL HALF OF R380. The health gate reads state.db, so a source can be green
         # on freshness while every object a user downloads is a year old — which is exactly
