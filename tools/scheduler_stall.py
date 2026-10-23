@@ -4,8 +4,11 @@ SHADOW MODE IS THE DEFAULT (ledger R1661). The check evaluates, and records in i
 what it WOULD mail (kind, subject, time). It sends NOTHING until a person creates the flag file SEND_FLAG
 (logs/SCHEDULER_STALL_SEND in the checkout the guard loop runs - E:). That file is the owner's step, taken only
 after a week of shadow evaluations with 0 false would-be mails. logs/ is gitignored, so no pull, merge or
-checkout can create or remove it. Deleting it is the OFF switch: it takes effect at the next guard tick (about
-5 minutes), with no commit, no CI run and no relaunch. The first version of this check (PR #191) went live
+checkout can create or remove it. AN AGENT NEVER CREATES IT: turning the mail on is the owner's act, by hand,
+on the workstation. Deleting it is the OFF switch: it takes effect at the next guard tick (about 5 minutes),
+with no commit, no CI run and no relaunch. When sending is turned on while a shadow episode is open, the
+episode starts again at the switch (review AR-375), so the owner's first real mail is a true onset, confirmed
+on two new evaluations - never a reminder or an "over" mail for a stall he was never told about. The first version of this check (PR #191) went live
 sending and mailed a false stall and a false recovery within hours (R1660, R1661); its revert then waited 3 h
 on a CI runner while the live copy kept sending.
 
@@ -32,27 +35,35 @@ THE RULE. For each writer the gate waits for (active, or missing from GitHub's w
 waits for those), a writer is STALLED when
   * its newest SCHEDULED run was created more than STALL_AFTER ago (a manual dispatch does not count: it
     writes the state, but it says nothing about the scheduler); or
-  * GitHub lists no scheduled run for it at all, CONFIRMED (see "AN EMPTY LISTING" below); or
   * one of its runs (any trigger) has not completed for more than STALL_AFTER. The gate blocks on every
     unfinished writer run however old, and GitHub keeps creating scheduled runs behind it as pending, so the
     first rule alone cannot see this shape (plan review finding 1). Normal: createdAt -> updatedAt at most
     11.5 h (daily) and 23.6 h (heavy) over the AR-362 snapshot.
-For a disabled workflow only the third rule applies: the gate does not wait for its crons, but its in-flight
+A writer whose listing cannot be read to an answer is UNDETERMINED, never stalled and never clear (below).
+For a disabled workflow only the second rule applies: the gate does not wait for its crons, but its in-flight
 check still blocks on an unfinished run of it, whatever its state (review AR-366). After T0 the gate is
 not asked (the cloud updater workflows are disabled), so this does nothing. A newest createdAt more than 10 min
 in the future means this machine's clock is behind: that evaluation is UNKNOWN, never "fresh".
 
-AN EMPTY LISTING IS NEVER A STALL BY ITSELF (ledger R1660). `gh run list --workflow <wf> --event schedule`
-sometimes answers an empty list, exit 0, for a writer that has scheduled runs: on 2026-10-22 it did so for
-updater-daily.yml at 14:57:42Z and for updater-heavy.yml at 15:00:51Z, and PR #191 read each as "GitHub lists
-NO scheduled run" and mailed. So this check never calls the gate's raw `_gh_sched`. It reads through
-`ci_writer_gate.read_sched()`, the gate's own reader since PR #193: an empty answer is read up to 2 more times,
-2 s apart, and schedule-event rows of the unfiltered listing are added when the filtered answer lacks them. A
-writer then reads "no scheduled run listed" only when all 3 reads were empty AND the unfiltered listing holds no
-scheduled run either. Even that is not yet a stall: it must hold on 2 evaluations in a row (CHECK_EVERY apart)
-for the SAME writer, and a stall must then be seen on one more evaluation for the same writer before a mail
-comes due (the confirmation below). A blind evaluation in between keeps the count; a readable one that sees a
-scheduled run resets it.
+AN EMPTY LISTING IS NEVER A STALL, AND NEVER A RECOVERY (ledgers R1660, R1663). `gh run list --workflow <wf>
+--event schedule` sometimes answers an empty list, exit 0, for a writer that has scheduled runs: on 2026-10-22 it
+did so for updater-daily.yml at 14:57:42Z and for updater-heavy.yml at 15:00:51Z, and PR #191 read each as
+"GitHub lists NO scheduled run" and mailed. So this check never calls the gate's raw `_gh_sched`. It reads the
+unfiltered listing first - an empty answer read up to 2 more times, 2 s apart (`_read_unfiltered`) - and then the
+scheduled runs through `ci_writer_gate.read_sched()`, the gate's own reader since PR #193: an empty answer is
+read up to 2 more times, and schedule-event rows of the unfiltered listing are added when the filtered answer
+lacks them. A writer whose scheduled listing is STILL empty, or whose unfiltered listing is still empty, is
+UNDETERMINED for that evaluation: a real stall still lists the OLD scheduled runs (the age rule fires on them),
+and every writer has runs in its unfiltered listing, so a listing with no row at all is a read fault, not a
+scheduler fact (review AR-375: a rule that read a confirmed-empty listing on 2 evaluations as a stall would have
+mailed 12 times over 85 days of replayed history with 65-minute empty episodes). An undetermined writer:
+  * is neither stalled nor ok: it does not confirm an onset, does not reset an open episode, and cannot make the
+    "over" mail due (AR-375's false "recovered": one empty read inside a stall gave stall, recovered, stall);
+  * keeps what it was for the confirmation: stalled before, it still counts as stalled for the next sighting;
+  * has a clock: undetermined for longer than STALL_AFTER makes the one "blind" mail due, which says the true
+    thing - that the workstation cannot see that writer's runs.
+A writer with an unfinished run older than STALL_AFTER in a non-empty unfiltered listing is stalled whatever
+its scheduled listing says (that rule needs only the unfiltered listing).
 
 WHY 36 HOURS. Measured on a gh snapshot of both writers' scheduled runs at 2026-10-22T01:51Z: over the 85 days
 in which both writers ran (both two-cron schedules exist for about 70 of them), the largest gap between two
@@ -69,8 +80,9 @@ mail comes 24-36 h after the first cron GitHub did not create, when the desktop 
 MAIL (the same in shadow mode, where "sent" means "recorded as would-be"). A stall comes due when the SAME
 writer is seen stalled on two evaluations in a row (one odd listing cannot mail, and two different writers
 seen once each cannot mail either - the R1660 shape), again every REMIND_EVERY while it lasts, and once when
-every writer is clear again. GitHub unreadable for longer than STALL_AFTER makes ONE "blind" mail due per blind
-spell (no reminder, no "over" mail): the gate cannot read CI either, answers UNKNOWN, and run_local_heavy.ps1
+every writer is POSITIVELY clear on RECOVER_EVALUATIONS (2) evaluations in a row - recovery is confirmed like
+onset, and an undetermined writer is not clear. GitHub unreadable (the whole evaluation, or one writer's
+listings) for longer than STALL_AFTER makes ONE "blind" mail due per blind spell (no reminder, no "over" mail): the gate cannot read CI either, answers UNKNOWN, and run_local_heavy.ps1
 does not start then. The sender is the status address the digest uses (noreply@hfdatalibrary.com), never a
 person. In shadow mode a would-be mail moves the state machine exactly as a delivered one does, so the shadow
 log shows the mails the live alarm would have sent, in order. Turning sending on during an open episode
@@ -90,8 +102,8 @@ at the stop, 91 fifteen seconds later; CREATE_BREAKAWAY_FROM_JOB is refused). So
 Measured on the workstation under normal load (plan review, 2026-10-22 ~02:00Z): the publish reaches this step
 24.5-29.3 s after it starts, plus the PUT (about 31.3 s). Step 1 makes five gh calls and took 17.2-17.6 s
 (review, 06:10Z), so the send decision comes at about 49 s; a send is one POST (a second only on a Cloudflare
-failure). An empty filtered answer adds up to 2 x (2 s + one read) per writer; when that leaves no time, the
-evaluation is UNKNOWN. Each step records `last_step_elapsed_s`, so the margin on the real machine is in the
+failure). An empty answer (filtered or unfiltered) adds up to 2 x (2 s + one read) per listing; when that
+leaves no time, the evaluation is UNKNOWN. Each step records `last_step_elapsed_s`, so the margin on the real machine is in the
 state file and the beat. UNDER HEAVY LOAD THIS STEP IS STARVED, AND THE CLOUD CHECK MAY NOT SAY SO: on
 2026-10-22, 02:40Z-05:55Z, the guard loop logged 18 "heartbeat publish EXCEEDED 90s" lines, the publish reached
 this step at 100-130 s (after the kill), and the beats that did land had emptiness_ran=false (the audit at its
@@ -106,7 +118,7 @@ that two guard loops cannot both send. Stored instants more than 5 min in the fu
 corrected) are discarded. A state that cannot be written mails nothing. The beat carries a summary, with the
 mode and the latest would-be mails. The cloud's guard_heartbeat --check-stall-armed FAILS while CI runs when no
 evaluation has completed for 6 h; with sending on it also fails on no mail service configured, GitHub
-unreadable for 6 h, or a mail due and undelivered for 6 h. In shadow mode those three are printed, not failed:
+unreadable (or one writer undetermined) for 6 h, or a mail due and undelivered for 6 h. In shadow mode those three are printed, not failed:
 nothing is meant to be sent. The only time the alarm can be shown to be evaluating is while the scheduler still
 works.
 
@@ -140,7 +152,7 @@ HOLD_OFF = dt.timedelta(hours=6)          # after a send that never reported bac
 ARMED_MAX_AGE = dt.timedelta(hours=6)     # guard_heartbeat --check-stall-armed: how stale an evaluation may be
 FUTURE_SLACK = dt.timedelta(minutes=5)
 CLOCK_SKEW = dt.timedelta(minutes=10)
-EMPTY_EVALUATIONS = 2                     # evaluations in a row a confirmed-empty listing must hold (R1660)
+RECOVER_EVALUATIONS = 2                   # evaluations in a row every writer must be clear before "over" (R1663)
 # Seconds since the publish started (the guard loop kills it at 90 s); see the docstring for the measurement.
 # A send started at 70 s has 20 s for one POST (normally 1-2 s); a slower one may be killed, which HOLD_OFF covers.
 EVAL_START_MAX_S, SEND_START_MAX_S, HARD_STOP_S = 55, 70, 80
@@ -200,22 +212,24 @@ def _stuck(wf: str, runs: dict, now: dt.datetime) -> dict | None:
     return min(stuck, key=lambda r: r["createdAt"]) if stuck else None
 
 
-def assess(sched: dict, states: dict, now: dt.datetime, runs: dict | None = None, empty_before=()) -> dict:
+def assess(sched: dict, states: dict, now: dt.datetime, runs: dict | None = None) -> dict:
     """sched: {workflow: [runs]} SCHEDULED runs only, as gate.read_sched() returns them (so an empty list means
-    three empty reads AND no scheduled run in the unfiltered listing); runs: {workflow: [runs]} of any trigger
-    (gate._gh_runs), for the unfinished-run rule; states: {workflow: state} (gate._gh_states); empty_before: the
-    writers whose listing was confirmed empty on the previous readable evaluation. Pure.
+    three empty reads AND no scheduled run in the unfiltered listing); runs: {workflow: [runs]} of any trigger,
+    as _read_unfiltered() returns them, for the unfinished-run rule (an empty or missing list means that listing
+    was read empty three times; None = the rule is not asked, for callers that hold no unfiltered listing);
+    states: {workflow: state} (gate._gh_states). Pure.
 
     The unfinished-run rule applies WHATEVER the workflow's state: the gate's in-flight check blocks on an
-    unfinished run of a disabled workflow too (review AR-366). Only the scheduled-run rules are skipped for a
+    unfinished run of a disabled workflow too (review AR-366). Only the scheduled-run rule is skipped for a
     workflow that is not active, because the gate does not wait for its crons.
 
-    Returns {"stalled": [...], "ok": [...], "empty": [...], "notes": [...]}; each writer row is
-    {"workflow", "newest": iso | None, "age_h": float | None, "reason": str}. "empty" lists the judged writers
-    whose listing is confirmed empty in THIS evaluation (the caller keeps it for the next). Raises ClockSkew."""
-    out = {"stalled": [], "ok": [], "empty": [], "notes": []}
-    runs = runs or {}
-    empty_before = set(empty_before or ())
+    A writer is UNDETERMINED when neither rule can stall it and one of its listings read empty: a judged writer's
+    scheduled listing (a real stall still lists the old runs), or any writer's unfiltered listing (every writer
+    has runs there). Never ok, never stalled (R1660, R1663).
+
+    Returns {"stalled": [...], "ok": [...], "undetermined": [workflow, ...], "notes": [...]}; each writer row is
+    {"workflow", "newest": iso | None, "age_h": float | None, "reason": str}. Raises ClockSkew."""
+    out = {"stalled": [], "ok": [], "undetermined": [], "notes": []}
     for wf in gate.WRITERS:
         state = states.get(wf)
         judged = state is None or state == "active"
@@ -231,25 +245,22 @@ def assess(sched: dict, states: dict, now: dt.datetime, runs: dict | None = None
             raise ClockSkew(f"{wf}'s newest scheduled run is {_iso(newest)}, after this machine's clock {_iso(now)}")
         age_h = None if newest is None else round(max(0.0, (now - newest).total_seconds() / 3600), 1)
         row = {"workflow": wf, "newest": _iso(newest), "age_h": age_h}
-        r0 = _stuck(wf, runs, now)
-        empty = judged and newest is None
-        if empty:
-            out["empty"].append(wf)
-        if empty and wf in empty_before:
-            row["reason"] = (f"GitHub lists NO scheduled run, on {EMPTY_EVALUATIONS} evaluations in a row (each: "
-                             f"{1 + gate.SCHED_EMPTY_RETRIES} empty reads and no scheduled run in the unfiltered "
-                             f"listing; the listing may still be wrong - the gate blocks either way)")
-        elif judged and not empty and now - newest > STALL_AFTER:
+        unfiltered = None if runs is None else (runs.get(wf) or [])
+        r0 = _stuck(wf, {wf: unfiltered}, now) if unfiltered else None
+        sched_empty = judged and newest is None
+        unfiltered_empty = unfiltered is not None and not unfiltered
+        if judged and not sched_empty and now - newest > STALL_AFTER:
             row["reason"] = f"newest scheduled run created {row['newest']} ({age_h:.1f} h ago)"
         elif r0 is not None:
             row["stuck_h"] = round((now - _t(r0["createdAt"])).total_seconds() / 3600, 1)
             row["reason"] = (f"a {r0.get('event')} run created {r0['createdAt']} is still {r0.get('status')} "
                              f"after {row['stuck_h']:.1f} h (the gate blocks on it"
                              + ("; scheduled runs queue behind it)" if judged else f", although {wf} is {state})"))
-        elif empty:
-            out["notes"].append(f"{wf}: GitHub lists no scheduled run on this evaluation (confirmed by "
-                                f"{1 + gate.SCHED_EMPTY_RETRIES} reads and the unfiltered listing); not a stall "
-                                f"until the next evaluation sees the same (R1660)")
+        elif sched_empty or unfiltered_empty:
+            which = " and ".join(n for n, e in (("scheduled", sched_empty), ("unfiltered", unfiltered_empty)) if e)
+            out["undetermined"].append(wf)
+            out["notes"].append(f"{wf}: UNDETERMINED - its {which} listing read empty on every read (a read fault: "
+                                f"a real stall still lists the old runs); neither stalled nor clear (R1660, R1663)")
             continue
         else:
             if judged:
@@ -304,6 +315,15 @@ def compose(kind: str, verdict: dict | None, state: dict, now: dt.datetime) -> t
                 f"for that long:\n{_describe(verdict['ok'])}\n\nThe stall first seen "
                 f"{state.get('episode_since_utc')} is over. The desktop pass starts again at its next CLEAR "
                 "window. Nothing to do.\n")
+    elif kind == "blind" and state.get("undetermined_since") and not state.get("unknown_since_utc"):
+        names = ", ".join(sorted(state["undetermined_since"]))
+        subject = (f"[econ] scheduler stall check blind: the run listings of {names} read empty from the "
+                   f"workstation for {LIMIT_H}+ h")
+        text = (f"Since {', '.join(f'{k} {v}' for k, v in sorted(state['undetermined_since'].items()))} every read of "
+                "these writers' run listings came back EMPTY (each read 3 times; a real stall still lists the old "
+                "runs, so this is a read fault, not a scheduler fact). This check cannot say whether GitHub is "
+                "creating their runs, and tools/ci_writer_gate.py sees the same listings. On the workstation: "
+                "gh run list --workflow <wf> --limit 5, gh auth status, and githubstatus.com.\n")
     elif kind == "blind":
         subject = f"[econ] scheduler stall check blind: GitHub Actions unreadable from the workstation for {LIMIT_H}+ h"
         text = (f"Since {state.get('unknown_since_utc')} every attempt to read the updater runs failed. "
@@ -325,7 +345,9 @@ def step(state: dict, verdict: dict | None, error: str | None, now: dt.datetime)
 
     A stall comes due only when a writer stalled now was ALSO stalled on the previous readable evaluation: the
     confirmation is per writer, so two different writers seen once each (R1660's two empty listings, 3 min
-    apart) confirm nothing."""
+    apart) confirm nothing. An UNDETERMINED writer (verdict["undetermined"]) keeps its previous stalled-or-not
+    for that confirmation, blocks recovery and never closes an episode. "recovered" needs every writer clear on
+    RECOVER_EVALUATIONS readable evaluations in a row (ok_streak; a blind evaluation neither counts nor resets)."""
     s = dict(state)
     s["last_evaluated_utc"] = _iso(now)
     if verdict is None:
@@ -339,24 +361,43 @@ def step(state: dict, verdict: dict | None, error: str | None, now: dt.datetime)
             return s, "blind"
         return s, None
     before = set(s.get("stalled") or [])
-    s["unknown_since_utc"], s["blind_alerted"], s["last_error"] = None, False, None
-    s["stalled"] = [r["workflow"] for r in verdict["stalled"]]
-    s["empty_listing"] = list(verdict.get("empty") or [])
-    if verdict["stalled"]:
-        s["last_verdict"] = "stalled"
+    und = [wf for wf in (verdict.get("undetermined") or [])]
+    stalled_now = [r["workflow"] for r in verdict["stalled"]]
+    s["unknown_since_utc"], s["last_error"] = None, None
+    # Per-writer "cannot tell" clocks: kept while a writer stays undetermined, dropped when it is determined.
+    old = s.get("undetermined_since") if isinstance(s.get("undetermined_since"), dict) else {}
+    s["undetermined_since"] = {wf: (_iso(_past(old.get(wf), now)) if _past(old.get(wf), now) else _iso(now))
+                               for wf in und}
+    s["undetermined"] = und
+    if not und:
+        s["blind_alerted"] = False
+    blind_due = (not s.get("blind_alerted")
+                 and any(now - _t(v) > STALL_AFTER for v in s["undetermined_since"].values()))
+    # The confirmation memory: an undetermined writer keeps what it was (stalled before -> still stalled).
+    s["stalled"] = sorted(set(stalled_now) | (before & set(und)))
+    if stalled_now:
+        s["last_verdict"], s["ok_streak"] = "stalled", 0
         if _past(s.get("episode_since_utc"), now) is None:
             s["episode_since_utc"] = _iso(now)      # first sighting: confirm on the next evaluation
         if not s.get("alert_active"):
             # confirmed only when the SAME writer was stalled on the previous readable evaluation
-            return s, ("stall" if before & set(s["stalled"]) else None)
-        last = _past(s.get("last_mail_utc"), now)
-        return s, ("remind" if last is None or now - last >= REMIND_EVERY else None)
+            kind = "stall" if before & set(stalled_now) else None
+        else:
+            last = _past(s.get("last_mail_utc"), now)
+            kind = "remind" if last is None or now - last >= REMIND_EVERY else None
+        return s, (kind or ("blind" if blind_due else None))
+    if und:
+        # Nothing stalled, but not every writer is clear: no recovery, no episode reset (R1663).
+        s["last_verdict"], s["ok_streak"] = "undetermined", 0
+        return s, ("blind" if blind_due else None)
     s["last_verdict"] = "ok"
+    s["ok_streak"] = int(s.get("ok_streak") or 0) + 1
     # An onset/reminder send that never reported back (killed mid-send) may have reached the owner: he gets the
     # "over" mail too, rather than a last word that says "stalled".
     attempt = s.get("mail_attempt") if isinstance(s.get("mail_attempt"), dict) else {}
     if s.get("alert_active") or attempt.get("kind") in ("stall", "remind"):
-        return s, "recovered"
+        # recovery is confirmed like onset: every writer clear on RECOVER_EVALUATIONS evaluations in a row
+        return s, ("recovered" if s["ok_streak"] >= RECOVER_EVALUATIONS else None)
     s["episode_since_utc"] = None
     return s, None
 
@@ -477,18 +518,38 @@ def send_mail(subject: str, text: str, env: dict | None = None) -> str:
 
 
 # ------------------------------------------------------------------ one tick
+def _read_unfiltered(wf: str, fetch, sleep=time.sleep) -> tuple[list, list]:
+    """The unfiltered listing of `wf`, read the way gate.read_sched() reads the scheduled one: an EMPTY answer is
+    read up to gate.SCHED_EMPTY_RETRIES more times, gate.SCHED_RETRY_PAUSE_S apart (R1660 applies to both
+    listings; review AR-375 found one empty unfiltered read clearing a stuck-run alert). Still empty -> [] and a
+    note; assess() then books the writer UNDETERMINED. A read that raises propagates (the evaluation is UNKNOWN)."""
+    rows, reads = list(fetch(wf)), 1
+    while not rows and reads <= gate.SCHED_EMPTY_RETRIES:
+        sleep(gate.SCHED_RETRY_PAUSE_S)
+        rows, reads = list(fetch(wf)), reads + 1
+    if not rows:
+        return rows, [f"WARNING: {wf} unfiltered run listing came back empty on {reads} read(s); its unfinished-run "
+                      f"rule cannot be judged this evaluation (R1660)"]
+    return rows, ([f"NOTE: {wf} unfiltered run listing came back empty, then held {len(rows)} run(s) on read "
+                   f"{reads} (R1660)"] if reads > 1 else [])
+
+
 def _read_github(budget_end: float, sleep=time.sleep):
     """(sched, runs, states, notes) with the gate's own fetchers; every call bounded by GH_TIMEOUT_S and by the
-    time left before the guard loop's kill. The scheduled runs come through gate.read_sched() - NEVER the raw
-    `_gh_sched` answer - so an empty answer is read again and cross-checked against the unfiltered listing,
-    which is therefore read first (R1660)."""
+    time left before the guard loop's kill. The unfiltered listing comes through _read_unfiltered() and the
+    scheduled runs through gate.read_sched() - NEVER a raw `_gh_runs` / `_gh_sched` answer - so an empty answer
+    is read again, and the scheduled one is cross-checked against the unfiltered listing, which is therefore
+    read first (R1660, R1663)."""
     def t():
         left = budget_end - time.monotonic()
         if left < 2:
             raise TimeoutError("no time left in this guard tick")
         return int(min(GH_TIMEOUT_S, left))
-    runs = {wf: gate._gh_runs(wf, timeout=t()) for wf in gate.WRITERS}
-    sched, notes = {}, []
+    runs, notes = {}, []
+    for wf in gate.WRITERS:
+        runs[wf], wf_notes = _read_unfiltered(wf, lambda w: gate._gh_runs(w, timeout=t()), sleep=sleep)
+        notes += wf_notes
+    sched = {}
     for wf in gate.WRITERS:
         sched[wf], wf_notes = gate.read_sched(wf, lambda w: gate._gh_sched(w, timeout=t()), runs[wf], sleep=sleep)
         notes += wf_notes
@@ -525,7 +586,7 @@ def _evaluate(state, due, now, started, read, env, notes) -> dict:
         got = read(started + HARD_STOP_S)
         sched, runs, states = got[:3]
         read_notes = list(got[3]) if len(got) > 3 else []
-        verdict, error = assess(sched, states, now, runs, state.get("empty_listing") or ()), None
+        verdict, error = assess(sched, states, now, runs), None
         verdict["notes"] = read_notes + verdict["notes"]
     except Exception as e:                                   # noqa: BLE001 - "cannot read" is its own verdict
         verdict, error = None, f"{type(e).__name__}: {e}"
@@ -533,7 +594,9 @@ def _evaluate(state, due, now, started, read, env, notes) -> dict:
     new["last_notes"] = [] if verdict is None else verdict["notes"][-8:]
     new.update(mail_setup(mail_env() if env is None else env))
     if kind is None:
-        if verdict is not None:       # a blind evaluation says nothing about a mail already due: keep it
+        # A blind evaluation, or one whose only news is an UNDETERMINED writer, says nothing about a mail already
+        # due: keep it. A determined verdict that makes nothing due drops it.
+        if verdict is not None and (verdict["stalled"] or not verdict.get("undetermined")):
             new.pop("mail_due", None)
     elif kind == "blind" and isinstance(due, dict) and due.get("kind") in ("stall", "remind", "recovered"):
         pass      # an undelivered stall-episode mail is not replaced; blind stays due until that one is delivered
@@ -613,6 +676,18 @@ def _send(state, now, started, send, path, notes, sending) -> dict:
     return state
 
 
+def switch_to_sending(state: dict, now: dt.datetime) -> dict:
+    """The owner has just created the flag (the last tick was in shadow mode). Start any open shadow episode
+    again, so his first real mail is a true onset confirmed on two new evaluations - not a reminder, and not an
+    "over" mail for a stall he was never told about (review AR-375). The undetermined clocks are facts about the
+    listings and stay. Pure."""
+    s = dict(state)
+    for k in ("mail_due", "mail_attempt", "episode_since_utc"):
+        s.pop(k, None)
+    s.update(alert_active=False, stalled=[], ok_streak=0, blind_alerted=False, sending_since_utc=_iso(now))
+    return s
+
+
 def _tick_locked(now, started, read, send, path, env, sending) -> str:
     state = load_state(path)
     load_error = state.pop("_load_error", None)
@@ -620,6 +695,9 @@ def _tick_locked(now, started, read, send, path, env, sending) -> str:
     if load_error:
         state["state_reset"] = f"{_iso(now)}: {load_error}"
         notes.append(f"state file was unreadable ({load_error}), started fresh")
+    if sending and state.get("mode") == "shadow":
+        state = switch_to_sending(state, now)
+        notes.append("sending turned on: any open shadow episode starts again, so the first real mail is an onset")
     state["mode"] = "send" if sending else "shadow"
     state["last_step_elapsed_s"] = round(time.monotonic() - started, 1)
 
@@ -657,7 +735,8 @@ def summary_for_beat(path: str = STATE_PATH) -> dict:
         return {"unreadable": s["_load_error"]}
     due = s.get("mail_due") if isinstance(s.get("mail_due"), dict) else None
     would = [w for w in (s.get("would_mail") or []) if isinstance(w, dict)]
-    return {**{k: s.get(k) for k in ("mode", "last_evaluated_utc", "last_verdict", "stalled", "empty_listing",
+    return {**{k: s.get(k) for k in ("mode", "last_evaluated_utc", "last_verdict", "stalled", "undetermined",
+                                     "undetermined_since", "ok_streak",
                                      "alert_active", "episode_since_utc", "unknown_since_utc", "mail_configured",
                                      "transport", "mail_to", "last_send", "last_step_elapsed_s")},
             "would_mail_count": int(s.get("would_mail_count") or 0),
@@ -688,6 +767,11 @@ def armed_problem(summary, now: dt.datetime) -> str | None:
     since = _t(summary.get("unknown_since_utc"))
     if since is not None and now - since > ARMED_MAX_AGE:
         return f"the workstation cannot read GitHub Actions since {summary.get('unknown_since_utc')}"
+    und = summary.get("undetermined_since") if isinstance(summary.get("undetermined_since"), dict) else {}
+    old = sorted(wf for wf, v in und.items() if _t(v) is not None and now - _t(v) > ARMED_MAX_AGE)
+    if old:
+        return (f"the workstation has read {', '.join(old)} as UNDETERMINED (empty run listings) since "
+                f"{', '.join(und[wf] for wf in old)}")
     due = summary.get("mail_due") or {}
     dsince = _t(due.get("since"))
     if dsince is not None and now - dsince > ARMED_MAX_AGE:
@@ -742,7 +826,7 @@ def main(argv: list[str] | None = None) -> int:
     state = load_state()
     try:
         sched, runs, states, notes = _read_github(time.monotonic() + 120)
-        v = assess(sched, states, now, runs, state.get("empty_listing") or ())
+        v = assess(sched, states, now, runs)
     except Exception as e:                                   # noqa: BLE001
         print(f"UNKNOWN: could not read GitHub ({type(e).__name__}: {str(e)[:200]})")
         return 2

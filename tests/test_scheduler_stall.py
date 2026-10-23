@@ -159,23 +159,31 @@ def test_a_workflow_missing_from_githubs_list_is_still_judged_like_the_gate_stil
     assert any("not in GitHub's workflow list" in n for n in v["notes"])
 
 
-def test_no_scheduled_run_listed_is_a_stall_only_on_the_second_evaluation_in_a_row():
-    """R1660: a confirmed-empty listing (what read_sched returns as []) is NOT a stall on its first evaluation;
-    it is when the previous evaluation saw the same writer empty too."""
+def test_a_confirmed_empty_listing_is_UNDETERMINED_never_stalled_and_never_ok():
+    """R1660 / R1663: what read_sched returns as [] (three empty reads, no scheduled row in the unfiltered
+    listing) is a read fault. The writer is neither stalled nor ok - counting it as ok is what made AR-375's
+    false 'recovered' (its mutant E5)."""
     s = {"updater-daily.yml": [], "updater-heavy.yml": [run(NOW)]}
-    first = ss.assess(s, ACTIVE, NOW)
-    assert first["stalled"] == [] and first["empty"] == ["updater-daily.yml"]
-    assert any("not a stall until the next evaluation" in n for n in first["notes"])
-    v = ss.assess(s, ACTIVE, NOW, empty_before=first["empty"])
-    assert stalled_names(v) == ["updater-daily.yml"] and v["stalled"][0]["age_h"] is None
-    assert "on 2 evaluations in a row" in v["stalled"][0]["reason"]
-    subject, text = ss.compose("stall", v, {}, NOW)
-    assert "no scheduled run listed" in subject and "lists NO scheduled run" in text
-    # controls: the OTHER writer empty before is not this writer's confirmation; a disabled writer never counts
-    assert ss.assess(s, ACTIVE, NOW, empty_before=["updater-heavy.yml"])["stalled"] == []
+    v = ss.assess(s, ACTIVE, NOW)
+    assert v["stalled"] == [] and v["undetermined"] == ["updater-daily.yml"]
+    assert [r["workflow"] for r in v["ok"]] == ["updater-heavy.yml"], "the empty writer is NOT in ok"
+    assert any("UNDETERMINED" in n and "scheduled listing" in n for n in v["notes"])
+    # an empty UNFILTERED listing (the stuck rule's input) is undetermined too, even with a fresh scheduled run
+    v2 = ss.assess(sched(2, 1), ACTIVE, NOW, {"updater-daily.yml": [run(NOW)], "updater-heavy.yml": []})
+    assert v2["undetermined"] == ["updater-heavy.yml"] and [r["workflow"] for r in v2["ok"]] == ["updater-daily.yml"]
+    # but a stuck run in a non-empty unfiltered listing stalls the writer whatever its scheduled listing says
+    stuck = {"updater-daily.yml": [run(NOW)], "updater-heavy.yml": [run(NOW - dt.timedelta(hours=40), status="queued")]}
+    v3 = ss.assess({"updater-daily.yml": [run(NOW)], "updater-heavy.yml": []}, ACTIVE, NOW, stuck)
+    assert stalled_names(v3) == ["updater-heavy.yml"] and v3["undetermined"] == []
+    # and an age stall needs only the scheduled listing
+    v4 = ss.assess(sched(2, 40), ACTIVE, NOW, {"updater-daily.yml": [run(NOW)], "updater-heavy.yml": []})
+    assert stalled_names(v4) == ["updater-heavy.yml"]
+    # controls: a disabled writer's empty scheduled listing is not judged at all; no unfiltered listing given
+    # (runs=None) asks nothing of the stuck rule
     states = dict(ACTIVE, **{"updater-daily.yml": "disabled_manually"})
-    off = ss.assess(s, states, NOW, empty_before=["updater-daily.yml"])
-    assert off["stalled"] == [] and off["empty"] == []
+    off = ss.assess(s, states, NOW)
+    assert off["stalled"] == [] and off["undetermined"] == []
+    assert ss.assess(sched(2, 1), ACTIVE, NOW)["undetermined"] == []
 
 
 def test_a_newest_run_in_this_machines_future_is_clock_skew_not_fresh():
@@ -288,11 +296,48 @@ def test_recovery_comes_due_once_after_a_delivered_alert_and_never_without_one()
     s, k = ss.step(s, STALL, None, t)
     s = _deliver(s, k, t)
     s, k = ss.step(s, OK, None, NOW + dt.timedelta(hours=1))
+    assert k is None, "one clear evaluation does not confirm a recovery (R1663)"
+    s, k = ss.step(s, OK, None, NOW + dt.timedelta(minutes=90))
     assert k == "recovered"
-    s = _deliver(s, k, NOW + dt.timedelta(hours=1))
+    s = _deliver(s, k, NOW + dt.timedelta(minutes=90))
     assert not s["alert_active"] and s["episode_since_utc"] is None
     assert ss.step(s, OK, None, NOW + dt.timedelta(hours=2))[1] is None
     assert ss.step({}, OK, None, NOW)[1] is None
+
+
+UND = {"stalled": [], "ok": [OK["ok"][0]], "undetermined": ["updater-daily.yml"], "notes": []}
+
+
+def test_an_undetermined_evaluation_neither_recovers_nor_resets_and_breaks_the_clear_streak():
+    s, _ = ss.step({}, STALL, None, NOW)
+    s, k = ss.step(s, STALL, None, NOW + dt.timedelta(minutes=30))
+    s = _deliver(s, k, NOW + dt.timedelta(minutes=30))
+    s, k = ss.step(s, UND, None, NOW + dt.timedelta(minutes=60))
+    assert k is None and s["alert_active"] and s["episode_since_utc"] and s["stalled"] == ["updater-daily.yml"]
+    s, k = ss.step(s, OK, None, NOW + dt.timedelta(minutes=90))
+    s, k2 = ss.step(s, UND, None, NOW + dt.timedelta(minutes=120))
+    s, k3 = ss.step(s, OK, None, NOW + dt.timedelta(minutes=150))
+    assert (k, k2, k3) == (None, None, None), "ok, undetermined, ok is not two clear evaluations in a row"
+    assert ss.step(s, OK, None, NOW + dt.timedelta(minutes=180))[1] == "recovered"
+    # before any alert: an undetermined writer that was stalled still confirms its stall on its next sighting
+    s, _ = ss.step({}, STALL, None, NOW)
+    s, k = ss.step(s, UND, None, NOW + dt.timedelta(minutes=30))
+    assert k is None and s["episode_since_utc"] == "2026-10-22T12:00:00Z"
+    assert ss.step(s, STALL, None, NOW + dt.timedelta(minutes=60))[1] == "stall"
+
+
+def test_a_writer_undetermined_for_more_than_36_h_makes_one_blind_mail_due_never_a_stall():
+    s, k = ss.step({}, UND, None, NOW)
+    assert k is None and s["undetermined_since"] == {"updater-daily.yml": "2026-10-22T12:00:00Z"}
+    t = NOW + dt.timedelta(hours=36, minutes=30)
+    s, k = ss.step(s, UND, None, t)
+    assert k == "blind"
+    subject, text = ss.compose("blind", UND, s, t)
+    assert "updater-daily.yml" in subject and "read empty" in subject and "read fault" in text
+    s = _deliver(s, k, t)
+    assert ss.step(s, UND, None, t + dt.timedelta(hours=1))[1] is None, "once per spell"
+    s, _ = ss.step(s, OK, None, t + dt.timedelta(hours=2))
+    assert s["undetermined_since"] == {} and s["blind_alerted"] is False
 
 
 def test_github_unreadable_for_more_than_36_h_comes_due_blind_once():
@@ -355,7 +400,7 @@ class Rig:
     def tick(self, now, s=None, states=ACTIVE, runs=None, started=None, cut=False, read=None):
         def default_read(budget_end):
             self.reads += 1
-            return (s if s is not None else sched(40, 2, now)), (runs or {}), states
+            return (s if s is not None else sched(40, 2, now)), runs, states
         return ss.tick(now=now, started=time.monotonic() if started is None else started, read=read or default_read,
                        send=self.mailer, path=self.path, cut_over=lambda: cut, env=self.env, flag=self.flag)
 
@@ -451,6 +496,9 @@ def test_a_stall_that_ends_during_a_hold_off_sends_no_stale_stall_mail(tmp_path)
     rig.mailer.result = "cloudflare"
     t = NOW + dt.timedelta(hours=2)
     out = rig.tick(t, sched(1, 1, t))               # the scheduler is back, inside the 6 h hold-off
+    assert "mail sent" not in out and len(rig.mailer.sent) == 1, "one clear evaluation confirms no recovery"
+    t = NOW + dt.timedelta(hours=2, minutes=30)
+    out = rig.tick(t, sched(1, 1, t))
     # the killed onset may have reached the owner, so he gets the "over" mail - never a stale "stall" one
     assert "recovered mail sent" in out and len(rig.mailer.sent) == 2
     assert rig.mailer.sent[1][0].startswith("[econ] scheduler stall over")
@@ -592,7 +640,7 @@ def test_tick_never_raises_an_exception(tmp_path):
 def test_the_github_read_respects_the_time_left_in_the_tick(monkeypatch):
     seen = []
     monkeypatch.setattr(gate, "_gh_sched", lambda wf, timeout: seen.append(timeout) or [run(NOW)])
-    monkeypatch.setattr(gate, "_gh_runs", lambda wf, timeout: seen.append(timeout) or [])
+    monkeypatch.setattr(gate, "_gh_runs", lambda wf, timeout: seen.append(timeout) or [run(NOW)])
     monkeypatch.setattr(gate, "_gh_states", lambda timeout: seen.append(timeout) or {})
     ss._read_github(time.monotonic() + 300, sleep=lambda s: None)
     assert seen == [20, 20, 20, 20, 20]
@@ -614,7 +662,7 @@ def test_an_empty_listing_with_no_time_left_for_its_rereads_is_unknown_never_a_s
     out = rig.tick(NOW, read=lambda b: ss._read_github(time.monotonic() + 3.5))
     st = rig.state()
     assert "unknown" in out and st["last_verdict"] == "unknown" and "TimeoutError" in st["last_error"]
-    assert st.get("empty_listing") is None and st.get("stalled") is None
+    assert st.get("undetermined") is None and st.get("stalled") is None
 
 
 # ------------------------------------------------------------------ mail settings and sender
@@ -706,7 +754,7 @@ def test_shadow_mode_never_calls_a_send_function_even_with_a_planted_stall(tmp_p
     while t < NOW + dt.timedelta(hours=72):
         stalled_now = t < NOW + dt.timedelta(hours=60)
         s = sched(40, 2, t) if stalled_now else sched(1, 1, t)
-        outs.append(ss.tick(now=t, started=time.monotonic(), read=lambda b, s=s: (s, {}, ACTIVE), path=path,
+        outs.append(ss.tick(now=t, started=time.monotonic(), read=lambda b, s=s: (s, None, ACTIVE), path=path,
                             cut_over=lambda: False, env=MAIL_OK, flag=flag))         # send= left at its default
         t += dt.timedelta(minutes=5)
     with open(path, encoding="utf-8") as fh:
@@ -776,10 +824,11 @@ def test_a_shadow_would_be_mail_keeps_the_send_window(tmp_path):
 class FakeGH:
     """gh, faked at the gate's fetchers, so the module's real _read_github -> gate.read_sched path runs.
     sched[wf]: a list of answers for the --event schedule call (the last one repeats); runs[wf]: the unfiltered
-    listing. Counts every call."""
+    listing - one answer (a list of run dicts, or a callable), or a list of answers whose first item is itself a
+    list or a callable (the last one repeats). Counts every call."""
     def __init__(self, monkeypatch, sched, runs, states=None):
         self.sched, self.runs, self.states = sched, runs, states or dict(ACTIVE)
-        self.calls = {"sched": {wf: 0 for wf in gate.WRITERS}, "runs": 0, "states": 0}
+        self.calls = {"sched": {wf: 0 for wf in gate.WRITERS}, "runs": {wf: 0 for wf in gate.WRITERS}, "states": 0}
         monkeypatch.setattr(gate, "_gh_sched", self._sched)
         monkeypatch.setattr(gate, "_gh_runs", self._runs)
         monkeypatch.setattr(gate, "_gh_states", self._states)
@@ -792,8 +841,11 @@ class FakeGH:
         return list(a() if callable(a) else a)
 
     def _runs(self, wf, timeout=60):
-        self.calls["runs"] += 1
         r = self.runs[wf]
+        i = self.calls["runs"][wf]
+        self.calls["runs"][wf] += 1
+        if isinstance(r, list) and r and (isinstance(r[0], list) or callable(r[0])):
+            r = r[min(i, len(r) - 1)]
         return list(r() if callable(r) else r)
 
     def _states(self, timeout=60):
@@ -815,44 +867,111 @@ def test_a_transient_EMPTY_listing_with_scheduled_runs_in_the_unfiltered_one_is_
     for i in range(6):
         rig.tick(NOW + dt.timedelta(minutes=30 * i), read=_real_read)
     st = rig.state()
-    assert st["last_verdict"] == "ok" and st["stalled"] == [] and st["empty_listing"] == []
+    assert st["last_verdict"] == "ok" and st["stalled"] == [] and st["undetermined"] == []
     assert not st.get("would_mail") and rig.mailer.sent == []
     assert gh_.calls["sched"]["updater-heavy.yml"] == 6 * (1 + gate.SCHED_EMPTY_RETRIES), "re-read every time"
     assert any("using the 1 scheduled run(s) in the unfiltered listing" in n for n in st["last_notes"])
     # and one empty read that the re-read answers is no stall either
+    dispatch = [run(NOW - dt.timedelta(hours=1), event="workflow_dispatch")]
     gh2 = FakeGH(monkeypatch, sched={"updater-daily.yml": [fresh], "updater-heavy.yml": [[], fresh]},
-                 runs={"updater-daily.yml": fresh, "updater-heavy.yml": []})
+                 runs={"updater-daily.yml": fresh, "updater-heavy.yml": dispatch})
     rig2 = Rig(tmp_path / "b", Mailer(), sending=False)
     rig2.tick(NOW, read=_real_read)
-    assert rig2.state()["empty_listing"] == [] and gh2.calls["sched"]["updater-heavy.yml"] == 2
+    assert rig2.state()["undetermined"] == [] and gh2.calls["sched"]["updater-heavy.yml"] == 2
 
 
-def test_three_empty_reads_and_an_empty_unfiltered_listing_on_two_evaluations_is_a_stall(tmp_path, monkeypatch):
+def test_three_empty_reads_and_an_empty_unfiltered_listing_are_UNDETERMINED_never_a_stall(tmp_path, monkeypatch):
+    """AR-375 required 2: a confirmed all-empty listing is a read fault (a real stall still lists the old
+    scheduled runs). However long it lasts it never becomes a stall; past 36 h it is the one 'blind' mail."""
     fresh = [run(NOW - dt.timedelta(hours=3))]
     dispatch = [run(NOW - dt.timedelta(hours=1), event="workflow_dispatch")]   # no scheduled run among them
-    gh_ = FakeGH(monkeypatch, sched={"updater-daily.yml": [fresh], "updater-heavy.yml": [[]]},
-                 runs={"updater-daily.yml": fresh, "updater-heavy.yml": dispatch})
+    clock = {"t": NOW}
+    daily = lambda: [run(clock["t"] - dt.timedelta(hours=3))]          # noqa: E731 - daily keeps running
+    gh_ = FakeGH(monkeypatch, sched={"updater-daily.yml": [daily], "updater-heavy.yml": [[]]},
+                 runs={"updater-daily.yml": [daily], "updater-heavy.yml": dispatch})
     rig = Rig(tmp_path, Mailer(), sending=False)
     rig.tick(NOW, read=_real_read)
     st = rig.state()
     assert gh_.calls["sched"]["updater-heavy.yml"] == 3, "three reads"
-    assert st["stalled"] == [] and st["empty_listing"] == ["updater-heavy.yml"], "one evaluation is not a stall"
-    rig.tick(NOW + dt.timedelta(minutes=30), read=_real_read)
+    assert st["last_verdict"] == "undetermined" and st["undetermined"] == ["updater-heavy.yml"]
+    assert st["stalled"] == []
+    for i in range(1, 76):                           # 37.5 h, one evaluation every 30 min
+        clock["t"] = NOW + dt.timedelta(minutes=30 * i)
+        rig.tick(clock["t"], read=_real_read)
+        assert rig.state()["stalled"] == [], i
     st = rig.state()
-    assert st["last_verdict"] == "stalled" and st["stalled"] == ["updater-heavy.yml"], "two evaluations are"
-    assert not st.get("would_mail"), "and the stall itself is confirmed on the next evaluation"
-    rig.tick(NOW + dt.timedelta(minutes=60), read=_real_read)
-    st = rig.state()
-    assert [w["kind"] for w in st["would_mail"]] == ["stall"] and rig.mailer.sent == []
-    assert st["would_mail"][0]["subject"].endswith("updater-heavy.yml - no scheduled run listed")
-    # control: the same, but the second evaluation's listing answers -> no stall, and the count resets
-    gh2 = FakeGH(monkeypatch, sched={"updater-daily.yml": [fresh], "updater-heavy.yml": [[], [], [], fresh]},
+    assert [w["kind"] for w in st["would_mail"]] == ["blind"] and rig.mailer.sent == []
+    assert "updater-heavy.yml" in st["would_mail"][0]["subject"] and "read empty" in st["would_mail"][0]["subject"]
+    assert st["undetermined_since"] == {"updater-heavy.yml": "2026-10-22T12:00:00Z"}
+    # control: the same listings with one scheduled run in them -> determined, ok
+    gh2 = FakeGH(monkeypatch, sched={"updater-daily.yml": [fresh], "updater-heavy.yml": [[], [], fresh]},
                  runs={"updater-daily.yml": fresh, "updater-heavy.yml": dispatch})
     rig2 = Rig(tmp_path / "b", Mailer(), sending=False)
     rig2.tick(NOW, read=_real_read)
-    rig2.tick(NOW + dt.timedelta(minutes=30), read=_real_read)
-    assert rig2.state()["stalled"] == [] and rig2.state()["empty_listing"] == []
-    assert gh2.calls["sched"]["updater-heavy.yml"] == 4
+    assert rig2.state()["last_verdict"] == "ok" and rig2.state()["undetermined"] == []
+    assert gh2.calls["sched"]["updater-heavy.yml"] == 3
+
+
+def _stalled_rig(tmp_path, monkeypatch, heavy_sched, heavy_runs):
+    """A shadow rig over FakeGH whose heavy answers are given as lists of per-evaluation answers."""
+    fresh = lambda: [run(NOW)]                                          # noqa: E731
+    gh_ = FakeGH(monkeypatch, sched={"updater-daily.yml": [fresh], "updater-heavy.yml": heavy_sched},
+                 runs={"updater-daily.yml": [fresh], "updater-heavy.yml": heavy_runs})
+    return Rig(tmp_path, Mailer(), sending=False), gh_
+
+
+def test_P1_one_empty_scheduled_listing_inside_a_real_stall_is_no_recovery(tmp_path, monkeypatch):
+    """AR-375 probe P1: a real 40 h heavy stall, one evaluation whose scheduled listing is confirmed empty. Before
+    the fix the would-be mails were stall, recovered, stall."""
+    plan = {"n": 0}
+    old = [run(NOW - dt.timedelta(hours=40))]
+    dispatch = [run(NOW - dt.timedelta(hours=1), event="workflow_dispatch")]
+    rig, _ = _stalled_rig(tmp_path, monkeypatch, [lambda: [] if plan["n"] in (2, 3) else old], [dispatch])
+    for i in range(8):                               # evaluations 2 and 3: the listing reads empty
+        plan["n"] = i
+        rig.tick(NOW + dt.timedelta(minutes=30 * i), read=_real_read)
+        if i in (2, 3):
+            assert rig.state()["last_verdict"] == "undetermined", i
+    assert [w["kind"] for w in rig.state()["would_mail"]] == ["stall"], rig.state()["would_mail"]
+    assert rig.state()["alert_active"] is True
+
+
+def test_P9_one_empty_unfiltered_listing_during_a_stuck_run_alert_is_no_recovery(tmp_path, monkeypatch):
+    """AR-375 probe P9 / live plant L4: the stuck-run rule's input read empty once. Now it is re-read, and still
+    empty is UNDETERMINED - never clear."""
+    plan = {"n": 0}
+    stuck = [run(NOW - dt.timedelta(hours=40), status="in_progress"), run(NOW, status="pending")]
+    rig, gh_ = _stalled_rig(tmp_path, monkeypatch, [lambda: [run(NOW)]],
+                            [lambda: [] if plan["n"] == 2 else stuck])
+    for i in range(6):
+        plan["n"] = i
+        rig.tick(NOW + dt.timedelta(minutes=30 * i), read=_real_read)
+    st = rig.state()
+    assert [w["kind"] for w in st["would_mail"]] == ["stall"] and st["alert_active"] is True
+    assert gh_.calls["runs"]["updater-heavy.yml"] == 5 + (1 + gate.SCHED_EMPTY_RETRIES), "the empty one re-read"
+    # control: an empty unfiltered answer that the re-read answers keeps the writer determined (stalled)
+    seq = iter([[], stuck] + [stuck] * 50)
+    rig2, gh2 = _stalled_rig(tmp_path / "b", monkeypatch, [lambda: [run(NOW)]], [lambda: next(seq)])
+    rig2.tick(NOW, read=_real_read)
+    assert rig2.state()["stalled"] == ["updater-heavy.yml"] and gh2.calls["runs"]["updater-heavy.yml"] == 2
+    assert any("came back empty, then held 2 run(s)" in n for n in rig2.state()["last_notes"])
+
+
+def test_recovery_needs_every_writer_clear_on_two_evaluations_in_a_row_through_the_tick(tmp_path, monkeypatch):
+    plan = {"n": 0}
+    old = [run(NOW - dt.timedelta(hours=40))]
+    dispatch = [run(NOW - dt.timedelta(hours=1), event="workflow_dispatch")]
+    # 0-1 stalled (onset at 1); 2 clear; 3 undetermined; 4 clear; 5 clear -> recovered at 5
+    answers = {0: old, 1: old, 2: [run(NOW)], 3: [], 4: [run(NOW)], 5: [run(NOW)], 6: [run(NOW)]}
+    rig, _ = _stalled_rig(tmp_path, monkeypatch, [lambda: answers[plan["n"]]], [dispatch])
+    kinds = []
+    for i in range(7):
+        plan["n"] = i
+        rig.tick(NOW + dt.timedelta(minutes=30 * i), read=_real_read)
+        kinds.append([w["kind"] for w in rig.state().get("would_mail") or []])
+    assert kinds[1] == ["stall"] and kinds[4] == ["stall"], kinds
+    assert kinds[5] == ["stall", "recovered"] and kinds[6] == ["stall", "recovered"], kinds
+    assert rig.state()["would_mail"][1]["at"] == ss._iso(NOW + dt.timedelta(minutes=150))
 
 
 def test_the_R1660_shape_two_writers_empty_on_alternate_evaluations_never_stalls(tmp_path, monkeypatch):
@@ -861,18 +980,20 @@ def test_the_R1660_shape_two_writers_empty_on_alternate_evaluations_never_stalls
 
     def answer(wf):
         return lambda: [] if (turn["n"] % 2 == 0) == (wf == "updater-daily.yml") else fresh
-    FakeGH(monkeypatch, sched={wf: [answer(wf)] for wf in gate.WRITERS}, runs={wf: [] for wf in gate.WRITERS})
+    dispatch = [run(NOW - dt.timedelta(hours=1), event="workflow_dispatch")]
+    FakeGH(monkeypatch, sched={wf: [answer(wf)] for wf in gate.WRITERS}, runs={wf: dispatch for wf in gate.WRITERS})
     rig = Rig(tmp_path, Mailer(), sending=False)
     for i in range(8):
         turn["n"] = i
         rig.tick(NOW + dt.timedelta(minutes=30 * i), read=_real_read)
-        assert rig.state()["stalled"] == [], i
+        assert rig.state()["stalled"] == [] and len(rig.state()["undetermined"]) == 1, i
     assert not rig.state().get("would_mail")
 
 
-def _tick_replay(tmp_path, monkeypatch, runs_by_wf, start, end, sending=False, mailer=None):
+def _tick_replay(tmp_path, monkeypatch, runs_by_wf, start, end, sending=False, mailer=None, blank=None):
     """The guard tick every 30 min over a span, reading GitHub through the real _read_github/read_sched with a
-    fake gh that answers what existed at that instant (newest first, at the gate's limits)."""
+    fake gh that answers what existed at that instant (newest first, at the gate's limits). blank(wf, t): True
+    makes EVERY listing of that writer read empty at t (both calls, every re-read) - the R1660 episode shape."""
     import bisect
     rig = Rig(tmp_path, mailer or Mailer(), sending=sending)
     clock = {"t": start}
@@ -880,6 +1001,8 @@ def _tick_replay(tmp_path, monkeypatch, runs_by_wf, start, end, sending=False, m
     rows = {wf: [run(c) for c in v] for wf, v in asc.items()}
 
     def listed(wf, limit):
+        if blank is not None and blank(wf, clock["t"]):
+            return []
         n = bisect.bisect_right(asc[wf], clock["t"])
         return rows[wf][max(0, n - limit):n][::-1]
     FakeGH(monkeypatch, sched={wf: [lambda wf=wf: listed(wf, gate.SCHED_LIMIT)] for wf in gate.WRITERS},
@@ -916,6 +1039,61 @@ def test_a_planted_real_stall_in_the_history_gives_a_would_be_mail_and_sends_not
     # control: the same plant with the owner's flag set sends exactly that mail
     rig2 = _tick_replay(tmp_path / "send", monkeypatch, dead, cut, cut + dt.timedelta(hours=48), sending=True)
     assert [s[0] for s in rig2.mailer.sent] == [st["would_mail"][0]["subject"]]
+
+
+def _episodes(spans):
+    """blank(wf, t) for a list of (writer, start, minutes) all-empty episodes."""
+    def blank(wf, t):
+        return any(w == wf and s <= t < s + dt.timedelta(minutes=m) for w, s, m in spans)
+    return blank
+
+
+def test_long_all_empty_episodes_in_the_real_history_give_zero_would_be_mails(tmp_path, monkeypatch):
+    """AR-375 required 2, as a test: its replay gave 12 would-be mails with 65-min episodes and 76 with 95-min
+    ones. Here: 12 episodes of 95 min to 5 h, both writers, every listing empty, over the 85-day history."""
+    runs, snap = _history()
+    start = max(v[0] for v in runs.values()) + dt.timedelta(minutes=1)
+    spans = []
+    for i in range(12):
+        wf = sorted(gate.WRITERS)[i % 2]
+        spans.append((wf, start + dt.timedelta(days=3 + 6.5 * i, hours=i), (95, 185, 300)[i % 3]))
+    rig = _tick_replay(tmp_path, monkeypatch, runs, start, snap, blank=_episodes(spans))
+    st = rig.state()
+    assert st.get("would_mail_count", 0) == 0 and not st.get("would_mail"), st.get("would_mail")
+    assert st["last_verdict"] == "ok"
+
+
+def test_short_all_empty_episodes_inside_a_planted_stall_make_no_recovery_and_no_second_onset(tmp_path, monkeypatch):
+    """AR-375's replay shape: a planted real stall from 2026-10-10T00Z with all-empty episodes inside it (10, 35,
+    65 min, both writers). Before the fix: a false 'recovered' and a second onset. Now: one onset, reminders."""
+    runs, _snap = _history()
+    cut = dt.datetime(2026, 10, 10, 0, 0, tzinfo=UTC)
+    dead = {wf: [c for c in v if c <= cut] for wf, v in runs.items()}
+    spans = [(wf, cut + dt.timedelta(hours=h), m) for h, m in ((40, 10), (44, 35), (50, 65), (60, 35), (70, 10))
+             for wf in gate.WRITERS]
+    rig = _tick_replay(tmp_path, monkeypatch, dead, cut, cut + dt.timedelta(hours=96), blank=_episodes(spans))
+    kinds = [w["kind"] for w in rig.state()["would_mail"]]
+    assert kinds[0] == "stall" and set(kinds[1:]) <= {"remind"} and len(kinds) >= 2, kinds
+    assert rig.mailer.sent == []
+
+
+def test_turning_sending_on_during_an_open_shadow_episode_starts_it_again(tmp_path):
+    """AR-375 recommended: the owner's first real mail is a confirmed onset, never a reminder."""
+    rig = Rig(tmp_path, Mailer(), sending=False)
+    _confirmed_stall_shadow(rig)
+    assert rig.state()["alert_active"] is True
+    with open(rig.flag, "w", encoding="utf-8") as fh:            # the owner turns sending on
+        fh.write("on\n")
+    out = rig.tick(NOW + dt.timedelta(hours=1))
+    st = rig.state()
+    assert "starts again" in out and st["mode"] == "send" and st["alert_active"] is False and rig.mailer.sent == []
+    assert st["sending_since_utc"] == "2026-10-22T13:00:00Z"
+    out = rig.tick(NOW + dt.timedelta(hours=1, minutes=30))
+    assert len(rig.mailer.sent) == 1 and rig.mailer.sent[0][0].startswith("[econ] scheduler stall: "), out
+    assert "(reminder)" not in rig.mailer.sent[0][0]
+    # and a later tick in send mode does not start it again
+    rig.tick(NOW + dt.timedelta(hours=2))
+    assert rig.state()["alert_active"] is True and "sending_since_utc" in rig.state()
 
 
 def test_the_beat_carries_the_mode_and_the_latest_would_be_mails(tmp_path, monkeypatch):
