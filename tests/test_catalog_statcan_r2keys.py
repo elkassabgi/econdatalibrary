@@ -377,11 +377,101 @@ def test_reconcile_refuses_when_fts_holds_an_orphan_of_any_spelling():
         assert reconcile_fts_source(con) == 1
 
 
-def test_backup_aborts_on_a_writer_that_never_pauses(tmp_path):
+# The stall guard in backup_sqlite counts STEPS and RESTARTS, not seconds. Each restart waits for
+# the writer's commit, and a commit is a disk flush on the temp drive: measured 2026-10-23 at
+# 145-1,456 ms on a busy SATA HDD against 3-18 ms on NVMe, so the same abort took 62-68 s there
+# and 1.9 s here, at 494-581 steps and 180 steps. A wall-clock bound tests the disk, not the guard.
+# So the two livelock tests below assert what the tool promises - the "backup stalled" error,
+# naming the signal that fired, within a bounded number of steps and restarts - and keep only a
+# generous hang backstop.
+BACKSTOP_S = 600
+
+
+class _StepCapExceeded(Exception):
+    """Raised by the test's step counter, never by the tool: the guard did not fire in time."""
+
+
+class _CountedSource:
+    """The tool's read connection, wrapped so the test can COUNT backup steps without changing
+    what the tool does: backup() gets the tool's own arguments, and the tool's own progress
+    callback runs first on every step. Only after it returns does the counter act - to stop a
+    run that has passed `step_cap` or that the backstop cancelled, i.e. one where the tool has
+    already broken its promise."""
+
+    def __init__(self, con, steps, step_cap, cancel):
+        self._con, self._steps, self._cap, self._cancel = con, steps, step_cap, cancel
+
+    def backup(self, target, *, pages=-1, progress=None, name="main", sleep=0.25):
+        def counted(status, remaining, total):
+            self._steps.append(remaining)
+            if progress is not None:
+                progress(status, remaining, total)
+            if self._cancel.is_set():
+                raise _StepCapExceeded(f"cancelled by the {BACKSTOP_S}s backstop after {len(self._steps):,} steps")
+            if len(self._steps) > self._cap:
+                raise _StepCapExceeded(f"no abort within {self._cap:,} backup steps")
+        return self._con.backup(target, pages=pages, progress=counted, name=name, sleep=sleep)
+
+    def __getattr__(self, attr):
+        return getattr(self._con, attr)
+
+
+def _backup_under_backstop(monkeypatch, src, dst, step_cap, **kw):
+    """Run backup_sqlite in a thread; return (outcome, remaining-per-step). Fails if the thread is
+    still alive after BACKSTOP_S - a hang, whatever the disk."""
+    import threading
+    from tools import catalog_statcan_tables as t
+    steps, cancel, out = [], threading.Event(), {}
+    real_connect = t.catalog_path.connect_path
+    monkeypatch.setattr(t.catalog_path, "connect_path",
+                        lambda *a, **k: _CountedSource(real_connect(*a, **k), steps, step_cap, cancel))
+
+    def run():
+        try:
+            out["result"] = t.backup_sqlite(src, dst, **kw)
+        except BaseException as e:  # noqa: BLE001 - handed to the asserting thread
+            out["error"] = e
+    th = threading.Thread(target=run, daemon=True); th.start()
+    th.join(timeout=BACKSTOP_S)
+    if th.is_alive():
+        cancel.set(); th.join(timeout=60)
+        raise AssertionError(f"backup still running after {BACKSTOP_S}s ({len(steps):,} steps) - a hang")
+    return out, steps
+
+
+def _assert_stalled_by_a_named_signal(out, steps, *, stall_steps, max_restarts):
+    """The promise: 'backup stalled', naming exactly ONE signal, and that signal is what the steps
+    the tool was shown actually did. Restarts are read from the tool's own message."""
+    import re
+    assert "result" not in out, "backup completed under a steady writer - the stall guard did not fire"
+    err = out.get("error")
+    assert not isinstance(err, _StepCapExceeded), f"the stall guard did not fire: {err}"
+    assert isinstance(err, RuntimeError) and "backup stalled" in str(err), repr(err)
+    msg = str(err)
+    by_restarts = f"more than {max_restarts} restarts" in msg
+    by_no_progress = f"no progress for {stall_steps} consecutive steps" in msg
+    assert by_restarts != by_no_progress, f"the error must name exactly one signal: {msg}"
+    m = re.search(r"\(([\d,]+) of [\d,]+ pages remaining, (\d+) restart\(s\)", msg)
+    assert m, f"the error no longer reports pages remaining and restarts: {msg}"
+    remaining, restarts = int(m.group(1).replace(",", "")), int(m.group(2))
+    assert remaining == steps[-1], (remaining, steps[-1])          # it reports the step it aborted on
+    ups = sum(1 for a, b in zip(steps, steps[1:]) if b > a)       # a rise in `remaining` is a restart
+    assert restarts == ups, f"tool reports {restarts} restart(s), the steps it was shown hold {ups}"
+    if by_restarts:
+        assert restarts == max_restarts + 1, msg
+    else:
+        assert restarts <= max_restarts, msg
+        tail = steps[-(stall_steps + 1):]
+        assert len(tail) == stall_steps + 1 and len(set(tail)) == 1, (
+            f"names no-progress but `remaining` moved in its last {stall_steps} steps: {tail}")
+    print(f"stalled after {len(steps):,} steps, {restarts} restart(s), signal="
+          f"{'restarts' if by_restarts else 'no-progress'}")
+
+
+def test_backup_aborts_on_a_writer_that_never_pauses(tmp_path, monkeypatch):
     """R580: an incremental backup restarts after every foreign write; under a steady writer it
     makes ZERO progress forever. It must abort and name the holders, not hang."""
     import threading, time
-    from tools.catalog_statcan_tables import backup_sqlite
     src = str(tmp_path / "live.db"); dst = str(tmp_path / "bak.db")
     con = sqlite3.connect(src); con.execute("CREATE TABLE t(x)")
     con.executemany("INSERT INTO t VALUES(?)", [("x" * 500,) for _ in range(60_000)]); con.commit(); con.close()
@@ -396,16 +486,14 @@ def test_backup_aborts_on_a_writer_that_never_pauses(tmp_path):
             time.sleep(0.005)
         w.close()
     th = threading.Thread(target=writer, daemon=True); th.start()
-    t0 = time.time()
     try:
-        try:
-            backup_sqlite(src, dst, pages=32, sleep=0.005, stall_steps=20, max_restarts=50)
-        except RuntimeError as e:
-            assert "backup stalled" in str(e) and time.time() - t0 < 60
-        else:
-            raise AssertionError("backup completed under a steady writer - the stall guard did not fire")
+        # 5,000 steps: ~9x the most measured (581, slow HDD). The guard fires on restarts or a flat
+        # run, so it is the step COUNT that bounds it; past this cap it did not fire.
+        out, steps = _backup_under_backstop(monkeypatch, src, dst, 5_000,
+                                            pages=32, sleep=0.005, stall_steps=20, max_restarts=50)
     finally:
         stop.set(); th.join(timeout=5)
+    _assert_stalled_by_a_named_signal(out, steps, stall_steps=20, max_restarts=50)
 
 
 def test_db_holders_sees_another_process_holding_the_file(tmp_path):
@@ -449,12 +537,11 @@ def _big_db(path, rows):
     con.executemany("INSERT INTO t VALUES(?)", [("x" * 500,) for _ in range(rows)]); con.commit(); con.close()
 
 
-def test_livelock_is_caught_at_the_SHIPPED_page_size_and_leaves_no_torn_copy(tmp_path):
+def test_livelock_is_caught_at_the_SHIPPED_page_size_and_leaves_no_torn_copy(tmp_path, monkeypatch):
     """R583: at pages=4096 a restarted copy completes its full chunk from the beginning every time,
     so `remaining` never rises and never falls - the restart-only detector was inert. The
     no-progress signal must fire, and the failed copy must not survive under the real name."""
     import threading, time
-    from tools.catalog_statcan_tables import backup_sqlite
     src = str(tmp_path / "live.db"); dst = str(tmp_path / "bak.db")
     _big_db(src, 60_000)                                       # ~30 MB > one 4096-page step
     stop = threading.Event()
@@ -468,17 +555,14 @@ def test_livelock_is_caught_at_the_SHIPPED_page_size_and_leaves_no_torn_copy(tmp
             time.sleep(0.002)
         w.close()
     th = threading.Thread(target=writer, daemon=True); th.start()
-    t0 = time.time()
     try:
-        try:
-            backup_sqlite(src, dst, pages=4096, sleep=0.002, stall_steps=10)
-        except RuntimeError as e:
-            assert "no progress" in str(e) or "restarts" in str(e), str(e)
-            assert time.time() - t0 < 60
-        else:
-            raise AssertionError("backup completed under a steady writer at pages=4096 - the guard did not fire")
+        # 2,000 steps: far above the 12 measured on the slow HDD (10 flat steps after one restart).
+        # The guard fires on restarts or a flat run, so the step COUNT bounds it, not the clock.
+        out, steps = _backup_under_backstop(monkeypatch, src, dst, 2_000,
+                                            pages=4096, sleep=0.002, stall_steps=10, max_restarts=50)
     finally:
         stop.set(); th.join(timeout=5)
+    _assert_stalled_by_a_named_signal(out, steps, stall_steps=10, max_restarts=50)
     assert not os.path.exists(dst), "a torn copy was left under the authoritative name"
     assert not os.path.exists(dst + ".partial")
 
