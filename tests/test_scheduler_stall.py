@@ -119,6 +119,42 @@ def test_an_unfinished_writer_run_older_than_the_limit_is_a_stall_although_crons
     assert ss.assess(sched(2, 1), ACTIVE, NOW, runs)["stalled"] == []
 
 
+def _alarm_gap(zombie_status="queued"):
+    """Review AR-376's probe_alarm_gap shape: a scheduled daily run unfinished for 40 h that has dropped out of
+    the newest-50 unfiltered rows (50 newer runs, all completed), while every cron of the last 12 h is credited."""
+    now = dt.datetime(2026, 10, 22, 21, 30, tzinfo=UTC)
+
+    def row(m, st="completed", ev="schedule"):
+        return run(now - dt.timedelta(minutes=m), event=ev, status=st)
+    zombie = row(40 * 60, zombie_status)
+    d_sched = [row(80), row(12 * 60 + 80), row(24 * 60 + 80), zombie, row(48 * 60 + 80)]
+    d_unf = [row(80)] + [row(5 + i * 20, ev="workflow_dispatch") for i in range(49)]
+    h = [row(270), row(12 * 60 + 270)]
+    assert len(d_unf) == gate.RUN_LIMIT and zombie not in d_unf
+    return now, {"updater-daily.yml": d_sched, "updater-heavy.yml": h}, {"updater-daily.yml": d_unf,
+                                                                          "updater-heavy.yml": h}
+
+
+@pytest.mark.parametrize("status", ["queued", "in_progress", "waiting", "pending", "requested"])
+def test_a_stuck_run_only_the_SCHEDULED_listing_holds_is_a_stall_because_the_gate_blocks_on_it(status):
+    """Review AR-376, required change 2: since AR-375 the gate blocks on an unfinished row of the scheduled listing.
+    A queued scheduled run can fall out of the newest-50 unfiltered rows while the 200-row scheduled listing keeps
+    it, so an unfinished-run rule that read only the unfiltered listing said ok/ok while the gate blocked for ever
+    (silent starvation, R1032 class). The alarm must report what the gate blocks on."""
+    now, sch, runs = _alarm_gap(status)
+    assert gate.assess(runs, now, ACTIVE, sch)[0] is True, "the gate blocks on it"
+    v = ss.assess(sch, ACTIVE, now, runs)
+    assert stalled_names(v) == ["updater-daily.yml"], v
+    assert f"still {status}" in v["stalled"][0]["reason"] and v["stalled"][0]["stuck_h"] == 40.0
+    # with no unfiltered listing at all the scheduled row still counts
+    assert stalled_names(ss.assess(sch, ACTIVE, now)) == ["updater-daily.yml"]
+    # controls: the same run finished -> the gate is clear and the alarm reads both writers ok
+    now, sch, runs = _alarm_gap("completed")
+    assert gate.assess(runs, now, ACTIVE, sch)[0] is False
+    v = ss.assess(sch, ACTIVE, now, runs)
+    assert v["stalled"] == [] and sorted(r["workflow"] for r in v["ok"]) == sorted(gate.WRITERS)
+
+
 def test_completed_runs_older_than_the_limit_are_not_stuck():
     """Review finding 2: _gh_runs returns the last 50 runs, nearly all completed and older than 36 h. Only an
     UNFINISHED run is stuck; every completed one is the excluded population and must stay excluded."""
