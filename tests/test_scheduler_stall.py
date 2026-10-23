@@ -1137,6 +1137,16 @@ def test_the_armed_step_in_SHADOW_mode_fails_only_when_the_alarm_is_not_evaluati
     assert _armed_check(monkeypatch, _armed(mail_configured=False)) == 1
 
 
+def test_with_sending_on_a_writer_undetermined_for_6_h_is_not_armed(monkeypatch, capsys):
+    now = dt.datetime.now(UTC)
+    old, recent = ss._iso(now - dt.timedelta(hours=7)), ss._iso(now - dt.timedelta(hours=1))
+    assert _armed_check(monkeypatch, _armed(mode="send", undetermined_since={"updater-heavy.yml": old})) == 1
+    assert "updater-heavy.yml as UNDETERMINED" in capsys.readouterr().out
+    assert _armed_check(monkeypatch, _armed(mode="send", undetermined_since={"updater-heavy.yml": recent})) == 0
+    assert _armed_check(monkeypatch, _armed(mode="shadow", undetermined_since={"updater-heavy.yml": old})) == 0
+    assert "with sending on, this would read NOT ARMED" in capsys.readouterr().out
+
+
 # ------------------------------------------------------------------ riding the guard loop
 def _beat_rig(monkeypatch, order):
     class C:
