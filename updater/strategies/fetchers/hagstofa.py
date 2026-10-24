@@ -50,7 +50,7 @@ import importlib.util
 import json
 import os
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -171,6 +171,20 @@ def _table_prefix(db: str, path: str) -> str:
     return f"ICE:{db}:{path.replace('/', ':')}"
 
 
+def _table_of(key: str) -> str | None:
+    """The TABLE prefix of a stored series_key: everything through the first ':'-segment that ends in
+    '.px' ('ICE:Samfelag:a:b:VIN00900.px:Kyn=0' -> 'ICE:Samfelag:a:b:VIN00900.px'), or None. The one
+    definition used for the per-table profile AND for folding the merge's changed keys, so the two
+    can never disagree about which table a key belongs to. Catalogue ids are 'hagstofa:' + this."""
+    if not key:
+        return None
+    parts = key.split(":")
+    for i, p in enumerate(parts):
+        if p.endswith(".px"):
+            return ":".join(parts[: i + 1])
+    return None
+
+
 def _key_scheme(key: str, prefix: str) -> tuple:
     """The dimension NAMES of a key after its table prefix: 'ICE:db:t.px:Land=1:Eining=0' ->
     ('Land', 'Eining'). Two schemes in one table = two id systems for the same data. Only the
@@ -180,8 +194,8 @@ def _key_scheme(key: str, prefix: str) -> tuple:
     return tuple(seg.split("=", 1)[0] for seg in rest.split(":") if "=" in seg) if rest else ()
 
 
-def _per_table_profile(path: str, boundary: dict | None = None, all_keys: dict | None = None
-                       ) -> tuple[dict[str, dt.date], dict[str, dict]]:
+def _per_table_profile(path: str, boundary: dict | None = None, all_keys: dict | None = None,
+                       codes: dict | None = None) -> tuple[dict[str, dt.date], dict[str, dict]]:
     """For a db parquet, per TABLE prefix: max(obs_date), and the key schemes stored ({scheme: rows}).
 
     A series_key is 'ICE:<db>:<path>.px:<dim>=...'. The table prefix is the substring
@@ -191,6 +205,12 @@ def _per_table_profile(path: str, boundary: dict | None = None, all_keys: dict |
     `boundary`, when given, is filled from the same read with {prefix: (date, {series_key: value})} at
     each table's newest SANE date - what the shift check compares a fetch against. Not the raw max: a
     far-future placeholder (MAN02007's 2100-12-31) would leave nothing to compare (review R1124).
+
+    `codes`, when given, is filled with {prefix: scheme profile} (see _scheme_profile) - what the
+    changed-set scheme guard (_second_key_scheme) reads. It is COMPACT on purpose: per table, series
+    per dimension-name scheme and the first obs_date of each (dimension, code) - sized by the codes,
+    not by the ~3M stored series (review AR-380: per-series spans held up to ~2 GB for the whole pass).
+    The per-series first dates it needs live only while one db file is read.
     """
     out: dict[str, dt.date] = {}
     sane_out: dict[str, dt.date] = {}
@@ -203,17 +223,10 @@ def _per_table_profile(path: str, boundary: dict | None = None, all_keys: dict |
     keys = t.column("series_key").to_pylist()
     dates = t.column("obs_date").to_pylist()
     prefs: list = []
+    kfirst: dict = {}                # series_key -> (prefix, first obs_date or None); this file only
     for k, o in zip(keys, dates):
         prefs.append(None)
-        if not k:
-            continue
-        # table prefix = up to and including the '.px' segment
-        parts = k.split(":")
-        pref = None
-        for i, p in enumerate(parts):
-            if p.endswith(".px"):
-                pref = ":".join(parts[: i + 1])
-                break
+        pref = _table_of(k)          # table prefix = up to and including the '.px' segment
         if pref is None:
             continue
         prefs[-1] = pref
@@ -222,10 +235,14 @@ def _per_table_profile(path: str, boundary: dict | None = None, all_keys: dict |
         sc = schemes.setdefault(pref, {})
         ks = _key_scheme(k, pref)
         sc[ks] = sc.get(ks, 0) + 1                  # rows per scheme: which one DOMINATES (R1139)
-        if o is None:
-            continue
         if isinstance(o, dt.datetime):
             o = o.date()
+        if codes is not None:
+            kf = kfirst.get(k)
+            if kf is None or (o is not None and (kf[1] is None or o < kf[1])):
+                kfirst[k] = (pref, o)
+        if o is None:
+            continue
         prev = out.get(pref)
         if prev is None or o > prev:
             out[pref] = o
@@ -241,6 +258,9 @@ def _per_table_profile(path: str, boundary: dict | None = None, all_keys: dict |
                 o = o.date()
             if o == sane_out.get(pref):
                 boundary.setdefault(pref, (o, {}))[1][k] = v
+    if codes is not None:
+        for k, (pref, o) in kfirst.items():
+            _scheme_add(codes.setdefault(pref, _new_scheme_profile()), k, pref, o, new_series=True)
     return out, schemes
 
 
@@ -248,6 +268,88 @@ def _key_codes(key: str, prefix: str) -> dict:
     """{dimension: code} of a series key after its table prefix ('...SKO02102.px:Skóli=61:Kyn=1')."""
     rest = key[len(prefix) + 1:]
     return dict(seg.split("=", 1) for seg in rest.split(":") if "=" in seg) if rest else {}
+
+
+def _new_scheme_profile() -> dict:
+    """One table's scheme profile: {"names": Counter(dimension-name scheme -> series),
+    "first": {dimension: {code: first obs_date}}}."""
+    return {"names": Counter(), "first": {}}
+
+
+def _scheme_add(prof: dict, key: str, prefix: str, d, new_series: bool) -> None:
+    """Fold one (series_key, obs_date) into a scheme profile; `new_series` counts the key's scheme once."""
+    if new_series:
+        prof["names"][_key_scheme(key, prefix)] += 1
+    if d is None:
+        return
+    for dim, code in _key_codes(key, prefix).items():
+        fd = prof["first"].setdefault(dim, {})
+        c = fd.get(code)
+        if c is None or d < c:
+            fd[code] = d
+
+
+def _scheme_profile(items, prefix: str) -> dict:
+    """The scheme profile of one table from (series_key, obs_date) pairs (tests and census tools)."""
+    prof, seen = _new_scheme_profile(), set()
+    for k, d in items:
+        _scheme_add(prof, k, prefix, d, new_series=k not in seen)
+        seen.add(k)
+    return prof
+
+
+def _second_key_scheme(prof: dict | None) -> str | None:
+    """Why ONE table's stored series hold MORE THAN ONE key scheme, or None if they hold one.
+
+    `prof` is the table's scheme profile (_scheme_profile): store rows, plus whatever this pass merged.
+    A table is catalogued, derived and served as ONE id, so a table holding two schemes would serve two
+    id systems for the same data in one CSV (review AR-378, ledger R1668). Two classes, both read from
+    the keys:
+
+    1. NAME schemes - the tuple of dimension names differs between series (SJA04903: Tegund/Land/...
+       beside Species/Country/...; _key_scheme).
+    2. VALUE-CODE systems under the SAME names (R1130, R1153): Hagstofa's codes are positions
+       ('Kyn=0'); a re-code replaces them with label text ('Kyn=Alls') and every re-coded series is
+       new beside its positional twin. Per dimension, each code is dated by the first obs_date of any
+       series carrying it. A second system arrives on a day on which >= 2 codes of ONE kind (digit /
+       text) first appear while NO code of the other kind first appears that day, the other kind
+       already has >= 2 codes, the new ones number at least half of them, and the new kind is still
+       the MINORITY of the dimension's codes so far: VIN00900's Landsvaedi 0/1/2 since 2003, then 3
+       text codes on 2026-01-01 and no new digit code. It does not fire on (a) a dimension born mixed
+       (digit and text codes from the first day, e.g. HS codes), (b) a few text members added to
+       many digit codes (a new total), (c) a full cube landing after aggregated history, where new
+       digit AND new text codes arrive on the same day (SKO00031), or (d) new members of the kind
+       that already dominates (FYR04200: 55 digit codes and 2 text codes, then 2 more digit codes -
+       review AR-380 measured 25 such false holds at +2 members without the minority clause). Both
+       directions are checked (text beside digit, digit beside text).
+    """
+    if not prof:
+        return None
+    names = prof["names"]
+    if len(names) > 1:
+        (n1, c1), (n2, c2) = names.most_common(2)
+        # no '[' in the reason: the notes put the offender list after the first " [" (_with_transient)
+        return (f"{len(names)} dimension-name schemes ({c1:,} series under {'/'.join(n1[:3]) or '-'}, "
+                f"{c2:,} under {'/'.join(n2[:3]) or '-'})")
+    for dim, codes in prof["first"].items():
+        new_on: dict = defaultdict(lambda: [0, 0])          # day -> [new digit codes, new text codes]
+        for code, f in codes.items():
+            new_on[f][0 if code.isdigit() else 1] += 1
+        seen = [0, 0]
+        for day in sorted(new_on):
+            nd, nt = new_on[day]
+            for new, other_new, same_seen, other_seen, kind, other in (
+                    (nt, nd, seen[1], seen[0], "text", "digit"),
+                    (nd, nt, seen[0], seen[1], "digit", "text")):
+                # same_seen < other_seen, strictly: at a tie neither kind is the second system
+                if (new >= 2 and other_new == 0 and other_seen >= 2 and 2 * new >= other_seen
+                        and same_seen < other_seen):
+                    return (f"a second value-code system under the same names: dimension {dim!r} held "
+                            f"{other_seen} {other} code(s), then {new} {kind} code(s) first appear on "
+                            f"{day} with no new {other} code")
+            seen[0] += nd
+            seen[1] += nt
+    return None
 
 
 def _labels_moved(stored: dict, now: dict, only_codes: dict | None = None) -> str | None:
@@ -965,11 +1067,14 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
     db_schemes: dict[str, dict[str, dict]] = {}
     db_boundary: dict[str, dict[str, dict]] = {}
     db_keys: dict[str, dict[str, set]] = {}
+    db_codes: dict[str, dict[str, dict]] = {}      # db -> table prefix -> scheme profile (the guard)
     for db in by_db:
         db_boundary[db] = {}
         db_keys[db] = {}
+        db_codes[db] = {}
         db_table_max[db], db_schemes[db] = _per_table_profile(os.path.join(out_dir, f"{db}.parquet"),
-                                                              boundary=db_boundary[db], all_keys=db_keys[db])
+                                                              boundary=db_boundary[db], all_keys=db_keys[db],
+                                                              codes=db_codes[db])
 
     sess = _session()
     sess._hagstofa_dl = dl           # every request and retry wait is cut to the budget left
@@ -995,6 +1100,14 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
     unchecked = []                   # tables that merged with no stored value to compare against
     tally = Tally()
     cursors: dict[str, str] = {}     # table prefix -> max obs_date (per-table freshness)
+    # THE MERGE-MEASURED CHANGED SET (Result.changed_keys), folded to TABLE grain - the grain of the
+    # catalogue ('hagstofa:' + table prefix). The cursors above cannot be the changed set: they are seeded
+    # with every reached table's stored frontier, so "changed" would be every table of every reached db
+    # (619 of 1,068 ids on the 2026-10-22 pass, review AR-378), refused tables included. Only the merge
+    # knows which tables' served values moved (new rows, or a revised value); an idempotent re-fetch of
+    # the boundary period reports nothing.
+    changed: dict[str, str | None] = {}
+    refused: set[str] = set()        # table prefixes booked structural (refused) in this pass
     maxd: dt.date | None = None
     total = 0
 
@@ -1121,6 +1234,7 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
             last_done, first = _work_key((db, t)), False
             if outcome == "structural":
                 tally.structural_unit(tpath)  # finalize() raises DefinitiveError
+                refused.add(prefix)
                 continue
             if outcome in ("empty", "quiet"):
                 tally.empty_unit(tpath)
@@ -1160,6 +1274,7 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
                            "re-key it deliberately")
                     print(f"[{SOURCE}] {why}", flush=True)      # the result error is clipped (R1124)
                     tally.structural_unit(why)
+                    refused.add(prefix)
                     continue
             # THE SAME NAMES CAN HIDE RENUMBERED CODES (R1119, R1120, R1124). With a label map from the
             # last clean merge the label decides, exactly; without one, the neighbour-shift signature.
@@ -1216,6 +1331,7 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
                        f"the table is re-keyed deliberately")
                 print(f"[{SOURCE}] {why}", flush=True)
                 tally.structural_unit(why)
+                refused.add(prefix)
                 continue
             checked = bdate is not None and any(d == bdate and k in bvals for k, d, _v in rows)
             if bdate is not None and not checked:
@@ -1255,7 +1371,31 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
                 "obs_date":   pa.array(dates, pa.date32()),
                 "value":      pa.array(vals, pa.float64()),
             })
-            n, md = merge.merge_and_write(path, new_tbl, mode="merge", dedup_keys=DEDUP)
+            # changed_keys_cap = this table's own size, as stat_estonia/ssb do: the report is bounded by
+            # what is merged, so it never refuses (a refusal would raise before any write).
+            n, md, ch = merge.merge_and_write(path, new_tbl, mode="merge", dedup_keys=DEDUP,
+                                              report_changed_keys=True,
+                                              changed_keys_cap=max(new_tbl.num_rows, 1))
+            for k, d in ch.items():
+                # a key with no '.px' segment keeps its WHOLE key, so it lands in the orchestrator's
+                # unmapped set and is seen, never silently dropped (stat_estonia, R1129)
+                pref = _table_of(k) or k
+                if pref and (pref not in changed or (d and str(d) > str(changed[pref] or ""))):
+                    changed[pref] = d
+            del ch
+            # what the store holds now, for the scheme guard below: this pass's merged rows join the
+            # stored profile (a table can BECOME two-scheme in this very merge)
+            codes_db = db_codes.setdefault(db, {})
+            stored_keys = db_keys.get(db, {})
+            for k, d in zip(keys, dates):
+                pref = _table_of(k)
+                if pref is None:
+                    continue
+                prof = codes_db.setdefault(pref, _new_scheme_profile())
+                is_new = k not in stored_keys.get(pref, ()) and k not in prof.setdefault("_merged", set())
+                if is_new:
+                    prof["_merged"].add(k)
+                _scheme_add(prof, k, pref, d, new_series=is_new)
             label_maps.update(pending_labels)      # the labels these merged rows were keyed under
             rows_by_db[db] = n
             if md:
@@ -1308,6 +1448,7 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
     # while the precise per-table structural_unit() signal remains the real break
     # detector. (attempted = tables we actually reached this run; subset in test mode.)
     n_sub = tally.attempted if tally.attempted else len(catalog)
+    changed, held = _guard_changed(changed, db_codes, refused)
     try:
         res = finalize(tally, total, last_obs, source=SOURCE, series_cursors=cursors,
                        empty_window_floor=max(n_sub - 1, 1))
@@ -1315,13 +1456,86 @@ def update(unit, since) -> Result:  # noqa: ARG001  (since handled per-table via
         # finalize() names only the structural tables here, so a budget stop would leave no trace in
         # the stored note (review 2026-10-19, C7). The clause goes BEFORE the offender list, which the
         # orchestrator's clip may cut.
-        # The transient tables too (AR-352 #2): while the 7 refusals stand, finalize raises on every
+        # The transient tables too (AR-352 #2): while the refusals stand, finalize raises on every
         # pass and its message names only the structural tables, so one 5xx / timeout / 429 table
         # would be invisible in state and in the digest.
-        raise DefinitiveError(_with_deferral(_with_transient(str(e), tally), tally, stop)) from e
+        msg = _with_held(_with_deferral(_with_transient(str(e), tally), tally, stop), held)
+        if not changed:
+            raise DefinitiveError(msg) from e
+        # THE CHANGED SET MUST SURVIVE finalize()'s STRUCTURAL RAISE (review AR-378, Route B), exactly as
+        # _giant.run_giant does. finalize raises on ANY refused table, and the orchestrator maps a raise
+        # to `partial` with NO Result: no CSV phase, no series_cursors. Hagstofa has refused tables on
+        # every pass since 2026-07-14, so the updater has never derived one hagstofa CSV, while every
+        # pass merged rows into the store (228 of 1,068 served CSVs differed from the R2 store on
+        # 2026-10-23). The recorded outcome is the raise's own - `partial`, no last_success, vintage
+        # not advanced, the same error text naming the refused tables - plus the derive of the tables
+        # this pass merged. Re-raised unchanged when nothing merged.
+        print(f"[{SOURCE}] finalize raised structural with {len(changed):,} merged table(s) to derive - "
+              f"returning partial WITH the changed set: {str(e)[:120]}", flush=True)
+        return Result(status="partial", obs=total, last_obs_date=last_obs, new_vintage="date-tail",
+                      series_cursors=cursors, changed_keys=changed, error=msg)
     if tally.deferred and res.error and "deferred" not in res.error:
         res.error = _with_deferral(res.error, tally, stop)  # finalize() names transients before deferrals
+    res.changed_keys = changed        # {} when every merge was idempotent: honoured as "nothing changed"
+    if held:
+        # A changed table held back from its CSV is served stale on purpose: never `ok` over it.
+        if res.status in ("ok", "no_change"):
+            res.status = "partial"
+        res.error = _with_held(res.error or "", held)
     return res
+
+
+_REFUSED_HERE = "refused in this pass"
+_NO_TABLE = "no '.px' table segment, so no scheme could be checked"
+HELD_NAMED_MAX = 10                    # tables named in the note; the count is always complete
+
+
+def _guard_changed(changed: dict, db_codes: dict, refused: set) -> tuple[dict, dict]:
+    """THE SCHEME GUARD on the changed set (review AR-378, ledger R1668). Returns (changed, held):
+    `changed` without every table that must not be derived, `held` = {table prefix: why}.
+
+    Dropped: (1) a table refused in this pass (a refused table merges nothing, so it cannot be in the
+    merge-measured set; this keeps it so if that ever changes); (2) a table whose stored rows - after
+    this pass's merge - hold MORE THAN ONE key scheme (_second_key_scheme: two dimension-name schemes,
+    or a second value-code system under the same names). Deriving such a table publishes two id
+    systems in one served CSV; on 2026-10-23 14 catalogued tables were in that state on R2 while their
+    served copy still held one scheme. (3) A key the fold could not cut to a table (no '.px' segment;
+    0 such stored keys on 2026-10-23): no scheme can be checked, so it is held, never passed through
+    (fail closed, review AR-380). Each drop is printed and named in the result note."""
+    out, held = {}, {}
+    for pref, d in changed.items():
+        if pref in refused:
+            held[pref] = _REFUSED_HERE
+            continue
+        if _table_of(pref) != pref:
+            held[pref] = _NO_TABLE
+            continue
+        db = pref.split(":")[1]
+        why = _second_key_scheme(db_codes.get(db, {}).get(pref))
+        if why:
+            held[pref] = f"stored rows hold {why}"
+            continue
+        out[pref] = d
+    for pref, why in sorted(held.items()):
+        print(f"[{SOURCE}] NOT DERIVED {pref}: {why}", flush=True)
+    return out, held
+
+
+def _with_held(msg: str, held: dict) -> str:
+    """Insert the held-back count and the held tables (first HELD_NAMED_MAX, each with its reason
+    clipped) before the offender list. Named on the pass whose merge changed them: a held table that a
+    later pass does not change is not named again (the queue item records the standing set)."""
+    if not held:
+        return msg
+    names = sorted(held)
+    shown = ", ".join(f"{p.split(':')[-1]} ({held[p][:60]})" for p in names[:HELD_NAMED_MAX])
+    more = f", +{len(names) - HELD_NAMED_MAX} more" if len(names) > HELD_NAMED_MAX else ""
+    clause = (f"; also {len(held)} changed table(s) NOT derived - a second key scheme in the store, or "
+              f"refused: {shown}{more}")
+    if not msg:
+        return clause[2:]
+    at = msg.find(" [")
+    return msg[:at] + clause + msg[at:] if at >= 0 else msg + clause
 
 
 _STOP_WORDS = {"budget": "budget", "tree": "table-tree search",

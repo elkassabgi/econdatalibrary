@@ -901,7 +901,7 @@ def _book_fence_trip(unit, res, store, fence_min: float):
     ck = getattr(res, "changed_keys", None)
     changed = sorted(k for k in (ck if ck is not None else (res.series_cursors or {})) if k is not None)
     try:
-        ids, _unm = _catalog_ids_for(unit.source_id, changed)
+        ids, _unm = _map_changed(unit.source_id, changed, merge_measured=ck is not None)
     except Exception as e:                                   # noqa: BLE001 - the mapper itself failed
         ok = _note_unmapped_debt(store, unit.source_id, changed,
                                  f"csv fence tripped and the changed keys could not be mapped ({type(e).__name__})")
@@ -1099,7 +1099,11 @@ def _derive_changed_csvs(unit, res, blob, store=None):
         #      ids) re-derive ALL of the source's ids — coherence guaranteed at
         #      trivial cost; larger sources demote to partial with the gap named
         #      (never a silent §5.7 violation).
-        ids, unmapped = _catalog_ids_for(unit.source_id, changed)
+        # A MERGE-MEASURED changed set never expands to derive-all (review AR-380): it names every key
+        # whose served value moved, so an unmapped key in it is a table with no catalogue row, not a
+        # sign that something served went stale. Expanding re-derived the WHOLE source on any backend
+        # but r2 - for hagstofa that published exactly the two-scheme tables its fetcher holds back.
+        ids, unmapped = _map_changed(unit.source_id, changed, merge_measured=migrated)
         if not ids:
             # NAME THE CAUSE YOU MEASURED, NOT THE ONE THAT SOUNDS RIGHT. This note used to
             # end "and the source exceeds the derive-all cap" unconditionally — the same
@@ -1382,7 +1386,7 @@ def _derive_changed_csvs(unit, res, blob, store=None):
             _ids = list(_q)
             if not _ids:
                 try:
-                    _ids = [s for s in _catalog_ids_for(unit.source_id, changed)[0]
+                    _ids = [s for s in _map_changed(unit.source_id, changed, merge_measured=migrated)[0]
                             if isinstance(s, str) and s.startswith(unit.source_id + ":")]
                 except Exception as _me:                     # noqa: BLE001
                     # NOTHING TO BOOK OR QUEUE BY ID (R1148 A3): the mapper failed twice. Leave the one
@@ -1956,10 +1960,31 @@ def _ecb_held_ids(key, native):
     return sorted(native[h] for h in hits if h in native)
 
 
+_DERIVE_ALL_FALLBACK = True
+"""Read by _catalog_ids_for; False only inside _map_changed for a MERGE-MEASURED set (a module
+switch, not a keyword, so the many test doubles of _catalog_ids_for(source, keys) keep working)."""
+
+
+def _map_changed(source_id: str, changed_keys, merge_measured: bool):
+    """_catalog_ids_for for the derive paths. A MERGE-MEASURED changed set (Result.changed_keys) never
+    widens to derive-all (review AR-380): it names every key whose served value moved, so an unmapped
+    key in it is a table with no catalogue row, not a sign that something served went stale, and the
+    mapped ids are exactly what must be derived. Widening re-derived the WHOLE source on any backend but
+    r2 (local, and selfhost after T0) - for hagstofa that published exactly the two-scheme tables its
+    fetcher holds back from the changed set. A cursor-reported set keeps the old fallback."""
+    global _DERIVE_ALL_FALLBACK
+    _DERIVE_ALL_FALLBACK = not merge_measured
+    try:
+        return _catalog_ids_for(source_id, changed_keys)
+    finally:
+        _DERIVE_ALL_FALLBACK = True
+
+
 def _catalog_ids_for(source_id: str, changed_keys):
     """Map changed store series_keys to catalog series_ids (see hook comment).
     Returns (ids_to_derive, unmapped_keys). Reads the catalog read-only from
-    $ECONDL_CATALOG or <root>/data/catalog.db."""
+    $ECONDL_CATALOG or <root>/data/catalog.db. The derive-all fallback below runs only while
+    _DERIVE_ALL_FALLBACK is True (see _map_changed)."""
     import sqlite3
     # ecb store files this call could not read for containment (review R1136): they were claimed
     # by the NAME rule, which never claims a mirror, so the caller must demote, not stay quiet.
@@ -2336,7 +2361,7 @@ def _catalog_ids_for(source_id: str, changed_keys):
         # uploads are therefore merged with the served CSV (registry csv_merge_served,
         # updater/derive.py). Locally, where the full store is present, derive-all still runs
         # and still guarantees coherence for small sources.
-        if config.BACKEND == "r2":
+        if config.BACKEND == "r2" or not _DERIVE_ALL_FALLBACK:
             return exact, unmapped
         # Same PK-range substitution, same reason: two more full scans of an 11.9 GB file
         # on the derive-all path.
