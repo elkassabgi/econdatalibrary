@@ -66,6 +66,7 @@ HONEST STATUS (Tally + finalize):
 """
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import io
 import os
@@ -79,8 +80,9 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import (CURSOR_CAP, Deadline, Tally, api_key, cursors_from_table, finalize,
+from ._common import (CURSOR_CAP, Deadline, Tally, _named, api_key, cursors_from_table, finalize,
                       load_rotation, merge_cursor_map, rotate_after, save_rotation)
+from . import _census_retired as _retired
 
 SOURCE = "census"
 BASE = "https://api.census.gov/data/timeseries"
@@ -250,6 +252,56 @@ _IMPLICIT = ("time", "us", "world")
 # Never requested in get=: derived here, not served by the API.
 _DERIVED = ("series_key", "obs_date")
 
+# NEVER A PIN, compared lower-case: the geography and time columns the API returns BECAUSE of the
+# request (for=us:* / for=world:* / for=state:*, time=...), and the query's own parameter names.
+#
+# WHY. The pins (_dims_from_store) are read from the store: any column holding one value
+# everywhere becomes `<col>=<value>` on the request. `us` (EITS, '1') and `world` (the 8 BETA
+# intltrade flows, '1') hold one value everywhere - because they ARE the geography we asked for -
+# and they sit in the stored series_key too. They were removed from get= (_IMPLICIT) but not from
+# the pins, so from 345fa2dec (2026-09-21) every EITS and BETA request sent us=1 or world=1 and
+# Census answered HTTP 400 "unknown predicate variable". Run 2701 (2026-10-10): 29 of 45 flows
+# refused, 8 BETA + 21 EITS; in its 45 pinning lines exactly those 29 carry us or world. Checked
+# against the publisher's own variables.json for all 29 (2026-10-26): us and world are not
+# variables at all, and every other pin name is a declared string predicate - except eits/qtax's
+# NATION, which variables.json lists with NO predicateType, like STATE, because it is the
+# nation-level geography column (qtax's geography.json levels are us and state). So `nation` is
+# dropped wherever the flow sends for=us:* (_GEO_ALIASES), and only there.
+#
+# `state` and `nation` ARE NOT in this fixed set, on purpose (review AR-388): intltrade's statehs /
+# statenaics carry STATE as an ordinary grain variable in series_key and send no for= at all
+# (imports/statehs even splits its request on STATE); dropping a single-valued STATE there would
+# widen the request to every state - the CTY_CODE double count. STATE is dropped only when THIS
+# flow sends for=state:* (EITS, see _predicates), NATION only when it sends for=us:*.
+#
+# Dropping one of these pins narrows nothing: the `for=` predicate already selects that geography.
+# This is the opposite of dropping CTY_CODE (a real grain selector, whose loss double-counts).
+#
+# APPLIED TO THE FINAL pins dict, in update(), whatever produced the pin: on 20 of the 21 EITS
+# flows `us=1` is a series_key dimension and comes from the key-derived pins, on eits/qtax and the
+# 8 BETA flows it comes from _single_valued_columns (review AR-388).
+_NEVER_PIN_REQUEST = frozenset({"time", "us", "world",
+                                "get", "for", "in", "key", "ucgid"})
+# Columns that ARE the geography of a hierarchy under another name: for=us:* also returns the
+# nation-level column NATION on eits/qtax (variables.json: no predicateType).
+_GEO_ALIASES = {"us": ("nation",)}
+
+
+def _request_pins(pins: dict, preds=()) -> tuple[dict, list]:
+    """(pins safe to send, names dropped). Drops _NEVER_PIN_REQUEST and, for every `for=`
+    predicate this flow sends, its hierarchy name ('us:*' -> 'us', 'state:*' -> 'state') and that
+    hierarchy's aliases (_GEO_ALIASES), case-insensitively. Every other pin is returned unchanged
+    and in order."""
+    blocked = set(_NEVER_PIN_REQUEST)
+    for p in preds:
+        if p:
+            h = p.split(":", 1)[0].strip().lower()
+            blocked.add(h)
+            blocked.update(_GEO_ALIASES.get(h, ()))
+    keep = {k: v for k, v in pins.items() if k.lower() not in blocked}
+    dropped = [k for k in pins if k.lower() in blocked]
+    return keep, dropped
+
 
 def implemented() -> bool:
     return True
@@ -273,10 +325,15 @@ def _ingest():
     return J
 
 
-def _flows(out_dir: str) -> list[str]:
+def _flows(out_dir: str, excluded: list | None = None, today=None, environ=None) -> list[str]:
     """Full flow PATHS that already exist on disk, e.g. "eits/marts", "intltrade/exports/hs".
     We never mint a new flow here — a flow that has never been ingested is backfill, not a
     date tail.
+
+    A flow the PUBLISHER retires (_census_retired.RETIRED_UPSTREAM, the one list the full
+    re-ingest job reads too) is left out from its effective date, with a loud line per flow, and
+    appended to `excluded` so the caller can name it in the run note. See that module for when the
+    switch takes effect and why.
 
     WAS EITS-ONLY, AND THAT WAS A MEASUREMENT ERROR, NOT A DESIGN. The module docstring called
     the other files "periodic snapshots ... they do not gain periods, they gain a whole new
@@ -311,7 +368,12 @@ def _flows(out_dir: str) -> list[str]:
                   f"Re-key first (tools/audit_dedup_uniqueness.py).", flush=True)
             continue
         out.append(flow)
-    return sorted(out)
+    kept, gone = _retired.split_retired(sorted(out), today=today, environ=environ)
+    for flow, eff, notice in gone:
+        print(_retired.exclusion_line(f"[{SOURCE}]", flow, eff, notice), flush=True)
+        if excluded is not None:
+            excluded.append(flow)
+    return kept
 
 
 # NEVER PINNED, however single-valued the store looks. LAST_UPDATE is a revision marker, not a
@@ -391,6 +453,9 @@ def _dims_from_store(path: str) -> tuple[list[str], list[str], list, dict]:
     # known-series filter and ADDS, because the dedup keys do include CTY_CODE. That is silent
     # double counting under a published id, which is worse than the 500 it replaces.
     pins.update(_single_valued_columns(path, [c for c in cols if c not in pins]))
+    # These are the STORE's single-valued columns, geography included. update() removes the
+    # request's own geography/time (_request_pins) before anything is sent, and prints what it
+    # removed - done there, once, because only there are the flow's `for=` predicates known.
     return dims, cols, list(shapes.items()), pins
 
 
@@ -661,6 +726,47 @@ def _why(e: Exception, limit: int = 120) -> str:
     return f"{type(e).__name__}: {msg}" if msg else type(e).__name__
 
 
+class _Refused(DefinitiveError):
+    """A non-200, non-204, non-retryable HTTP answer (400, 404, ...): the API REFUSED the request.
+
+    Still a DefinitiveError, so nothing about how the source fails changes. It exists so the run
+    note can say what happened. finalize()'s shared text calls every structural sub-unit "returned
+    200 but parsed 0 rows", which was false for all 29 HTTP 400s of run 2701 (2026-10-10) and sent
+    the reader looking for a schema break; update() reports these by status code instead.
+    """
+
+    def __init__(self, msg: str, status: int, reason: str):
+        super().__init__(msg)
+        self.status = status
+        self.reason = reason
+
+
+def _said(label: str) -> str:
+    """Print a failed sub-unit to the run log and return its label for the tally.
+
+    Until this, a refusal reached ONLY the state note: run 2701's log (2026-10-10) holds no
+    "HTTP 400" line although 29 flows were refused, so the log could not show that a pass was
+    clean. The post-merge proof greps for these lines."""
+    print(f"[{SOURCE}] SUB-UNIT FAILED - {label}", flush=True)
+    return label
+
+
+def _gone_early(flow: str, e: Exception) -> bool:
+    """True when a flow on the retired-upstream list answers 404/410 BEFORE its listed date.
+
+    THE RETIREMENT ARRIVED EARLY, or the recorded date is wrong (review AR-388). Booked as
+    structural it would fail the WHOLE source, which is exactly what the list exists to prevent.
+    So it is skipped loudly and named in the note instead. Never for an unlisted flow (a 404 there
+    stays a refusal), and never for any other status.
+    """
+    if not (isinstance(e, _Refused) and e.status in (404, 410)
+            and _retired.effective_from(flow) is not None):
+        return False
+    print(f"[{SOURCE}] {flow}: RETIRED UPSTREAM EARLY - HTTP {e.status} before its listed date; "
+          f"not fetched, stored data kept", flush=True)
+    return True
+
+
 def _fetch(sess: requests.Session, flow: str, get_cols: list[str], time_value: str,
            key: str | None, pred: str = "us:*", pins: dict | None = None):
     """One flow's date tail -> the raw JSON matrix. Raises TransientError on flaky failures,
@@ -723,14 +829,17 @@ def _fetch(sess: requests.Session, flow: str, get_cols: list[str], time_value: s
             last = f"HTTP {r.status_code}"
             time.sleep(2 ** attempt)
             continue
-        raise DefinitiveError(f"{SOURCE} {flow}: HTTP {r.status_code}: {r.text[:160]}")
+        reason = " ".join((r.text or "")[:160].split())
+        raise _Refused(f"{SOURCE} {flow}: HTTP {r.status_code}: {reason}", r.status_code, reason)
     raise TransientError(f"{SOURCE} {flow}: {last} after {MAX_ATTEMPTS} attempts")
 
 
 def update(unit, since) -> Result:
     out_dir = config.source_dir(SOURCE)
     os.makedirs(out_dir, exist_ok=True)
-    flows = _flows(out_dir)
+    retired: list[str] = []          # flows the publisher retired, skipped loudly (_census_retired)
+    refused: list[tuple] = []        # (label, HTTP status) of sub-units the API refused
+    flows = _flows(out_dir, excluded=retired)
     if not flows:
         raise DefinitiveError(
             f"{SOURCE}: no {'/'.join(FAMILIES)} parquet in {out_dir}; run the first-pass ingest "
@@ -785,13 +894,18 @@ def update(unit, since) -> Result:
             continue
         dim_cols, data_cols, shapes, pins = _dims_from_store(path)
         if not dim_cols:
-            tally.structural_unit(f"{flow}: no dimensions recoverable from stored series_key")
+            tally.structural_unit(_said(f"{flow}: no dimensions recoverable from stored series_key"))
             continue
         get_cols = [c for c in data_cols if c.lower() not in _IMPLICIT]
-        if pins:
-            print(f"[census] {flow}: pinning {pins} - the grain the store holds", flush=True)
         gcol = _geo_col(data_cols)
         levels = _store_geo_levels(path, gcol) if gcol else set()
+        # The second filter, against the predicates THIS flow sends (see _NEVER_PIN_REQUEST).
+        pins, dropped_pins = _request_pins(pins, _predicates_for(flow, levels))
+        if dropped_pins:
+            print(f"[census] {flow}: not pinning {dropped_pins} - the request's own "
+                  f"geography/time", flush=True)
+        if pins:
+            print(f"[census] {flow}: pinning {pins} - the grain the store holds", flush=True)
 
         # EACH PREDICATE KEEPS ITS OWN HEADER. They are not the same shape: `for=us:*`
         # answers qtax with 16 columns ending in `us`, `for=state:*` with 17 ending in
@@ -839,11 +953,18 @@ def update(unit, since) -> Result:
                         # nothing else. Eight sub-units failed that way for three days and the only
                         # way to learn why was to replay the request by hand - a timeout, a 429 and
                         # an upstream error page are three different problems wearing one message.
-                        tally.transient_unit(f"{flow} time={tv} for={pred} - {_why(e)}")
+                        tally.transient_unit(_said(f"{flow} time={tv} for={pred} - {_why(e)}"))
                         failed = True
                         break
                     except DefinitiveError as e:
-                        tally.structural_unit(f"{flow} time={tv} for={pred} - {_why(e)}")
+                        label = f"{flow} time={tv} for={pred} - {_why(e)}"
+                        if _gone_early(flow, e):     # a LISTED flow already removed: named skip
+                            retired.append(f"{flow} (HTTP {e.status} before its listed date)")
+                            failed = True
+                            break
+                        tally.structural_unit(_said(label))
+                        if isinstance(e, _Refused):
+                            refused.append((label, e.status))
                         failed = True
                         break
                     time.sleep(RATE)
@@ -872,7 +993,7 @@ def update(unit, since) -> Result:
         if not parts:
             # A BOUNDARY re-fetch must re-return at least the boundary period. Nothing at all
             # means the shape we ask for is gone, not that the flow is quiet.
-            tally.structural_unit(f"{flow}: boundary re-fetch returned no rows")
+            tally.structural_unit(_said(f"{flow}: boundary re-fetch returned no rows"))
             continue
 
         # CASE-INSENSITIVE for the two well-known columns. eits/qtax names its variables in
@@ -905,8 +1026,8 @@ def update(unit, since) -> Result:
             # `time` is still required of everyone: without it there is no obs_date.
             needs_value_col = flow.startswith("eits/")
             if ti is None or (needs_value_col and vi is None):
-                tally.structural_unit(f"{flow}: response lacks time"
-                                      + ("/cell_value" if needs_value_col else ""))
+                tally.structural_unit(_said(f"{flow}: response lacks time"
+                                            + ("/cell_value" if needs_value_col else "")))
                 broke = True
                 break
             gi = lidx.get("geo_level_code")
@@ -944,6 +1065,7 @@ def update(unit, since) -> Result:
             under.append(f"{flow} unknown-shape x{unknown_shape}")
 
         if not keys:
+            _receipt(flow, mx, 0, 0, path)
             tally.empty_unit(flow)                           # already at the publisher's frontier
             continue
 
@@ -963,6 +1085,7 @@ def update(unit, since) -> Result:
         # So: keep what we publish, count what we skip, and let a deliberate backfill decide
         # about the rest. The shape check is subsumed — an unknown shape cannot be a known key.
         known = _store_keys(path)
+        skipped_new = 0
         if known:
             keep = [i for i, k in enumerate(keys) if k in known]
             skipped_new = len(keys) - len(keep)
@@ -972,6 +1095,7 @@ def update(unit, since) -> Result:
                       f"series this flow does not yet publish (new coverage needs a backfill "
                       f"and a catalogue row, not a tail)", flush=True)
             if not keep:
+                _receipt(flow, mx, 0, skipped_new, path)
                 tally.empty_unit(flow)
                 continue
             keys = [keys[i] for i in keep]
@@ -995,9 +1119,10 @@ def update(unit, since) -> Result:
             n, md = merge.merge_and_write(path, tbl, mode="merge",
                                           dedup_keys=_dedup_for(flow, data_cols))
         except DefinitiveError:
-            tally.transient_unit(f"{flow}: merge refused")
+            tally.transient_unit(_said(f"{flow}: merge refused"))
             continue
         added = max(0, n - before_rows)
+        _receipt(flow, mx, len(keys), skipped_new, path)
 
         # COVERAGE IS A STRUCTURAL QUESTION — "did we ASK for everything?" — not a statistical
         # one. The first version of this guard compared distinct series returned against
@@ -1055,9 +1180,16 @@ def update(unit, since) -> Result:
     if last_flow:
         save_rotation(out_dir, last_flow)
 
-    res = finalize(tally, total, max_last or (since or None), source=SOURCE,
-                   series_cursors=cursors or None,
-                   empty_window_floor=max(10, len(flows)))
+    retired_note = (f"{len(retired)} flow(s) RETIRED UPSTREAM, not fetched, stored data kept"
+                    + _named(retired)) if retired else ""
+    try:
+        res = finalize(tally, total, max_last or (since or None), source=SOURCE,
+                       series_cursors=cursors or None,
+                       empty_window_floor=max(10, len(flows)))
+    except DefinitiveError as e:
+        if not refused:
+            raise
+        raise DefinitiveError(_refused_message(tally, refused, retired_note)) from e
 
     # Never a clean result over flows whose tail did not span them, and never over a run that
     # stopped on its budget with flows untouched.
@@ -1075,4 +1207,56 @@ def update(unit, since) -> Result:
                          merged_rows=res.merged_rows, cursor_cap_hit=res.cursor_cap_hit,
                          changed_keys=res.changed_keys,
                          error=msg)
+    # The retired flows are NAMED in the note, never silent - and never a reason to demote: a
+    # permanent, explained exclusion that reddened every run would be the "partial forever" this
+    # change exists to end. Appended LAST so no branch above can drop it.
+    if retired_note:
+        res = dataclasses.replace(res, error="; ".join(x for x in (res.error, retired_note) if x))
     return res
+
+
+def _rows_since(path: str, mx) -> int | None:
+    """Rows the store holds with obs_date >= mx, or None if it cannot be read."""
+    try:
+        import pyarrow.compute as pc
+        od = blob.read_table(path, columns=["obs_date"]).column("obs_date")
+        return int(pc.sum(pc.greater_equal(od, pa.scalar(mx, pa.date32()))).as_py() or 0)
+    except Exception:                                        # noqa: BLE001
+        return None
+
+
+def _receipt(flow: str, mx, returned: int, skipped_new: int, path: str) -> None:
+    """ONE line per tailed flow: rows the API returned for the window (after the known-series
+    filter) against rows the store holds for it AFTER the merge. The post-merge proof of the pin
+    fix reads exactly this line for every one of the 29 flows refused on 2026-10-10 (review AR-387:
+    rows returned == rows stored, per flow, no sampling - R236/R1695). MATCH needs equality; a
+    store that cannot be read prints UNREAD, never MATCH."""
+    stored = _rows_since(path, mx)
+    verdict = "UNREAD" if stored is None else ("MATCH" if stored == returned else "DIFFER")
+    print(f"[{SOURCE}] {flow}: RECEIPT window>={mx} returned={returned} "
+          f"skipped_new={skipped_new} stored={stored} {verdict}", flush=True)
+
+
+def _refused_message(tally: Tally, refused: list, retired_note: str = "") -> str:
+    """The DefinitiveError text when the API REFUSED sub-units with a non-200 status.
+
+    Same outcome as finalize()'s structural raise - the whole source fails, existing data kept -
+    but each class is reported as what it was: HTTP refusals by status code (the reason text is in
+    each label), and only the remaining structural sub-units as "returned 200 but parsed 0 rows".
+    The shared finalize() text is untouched; every other fetcher still uses it.
+    """
+    labels = [lbl for lbl, _st in refused]
+    codes: dict = {}
+    for _lbl, st in refused:
+        codes[st] = codes.get(st, 0) + 1
+    by_code = ", ".join(f"HTTP {c} x{n}" for c, n in sorted(codes.items()))
+    parts = [f"{SOURCE}: {len(refused)}/{tally.attempted} sub-unit(s) REFUSED by the API with a "
+             f"non-200 status ({by_code}); existing data kept" + _named(labels)]
+    rest = [lbl for lbl in tally.structural_ids if lbl not in set(labels)]
+    other = tally.structural - len(refused)
+    if other > 0:
+        parts.append(f"{other}/{tally.attempted} sub-unit(s) returned 200 but parsed 0 rows "
+                     f"(schema/structural break)" + _named(rest))
+    if retired_note:
+        parts.append(retired_note)
+    return "; ".join(parts)
