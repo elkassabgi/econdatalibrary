@@ -996,6 +996,15 @@ def main():
     if "--match" in args:
         sub = args[args.index("--match") + 1]
         paths = [p for p in paths if sub in p]
+    # RETIRED UPSTREAM - the same list the census fetcher and jobs/_census_intltrade_full.py read
+    # (updater/strategies/fetchers/_census_retired.py). Applied after every selection flag: with no
+    # args, --group intltrade or --match this walk includes all 18 BETA datasets, and it overwrites
+    # a parquet whenever rows arrive. Imported here, not at module top: the fetcher imports this
+    # module for its key helpers. ROOT is on sys.path (module top).
+    from updater.strategies.fetchers import _census_retired as _retired
+    paths, gone = _retired.split_retired(paths)
+    for p, eff, notice in gone:
+        print(_retired.exclusion_line("[ingest_census]", p, eff, notice), flush=True)
     cap = None
     if "--capstates" in args:
         cap = int(args[args.index("--capstates") + 1])

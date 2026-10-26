@@ -28,6 +28,11 @@ Usage:
   python jobs/_census_intltrade_full.py --base          # 18 base+state datasets
   python jobs/_census_intltrade_full.py --beta          # 18 BETA world-level
   python jobs/_census_intltrade_full.py                 # everything
+
+RETIRED UPSTREAM: every route above skips the datasets in
+updater/strategies/fetchers/_census_retired.py from their effective date (the 18 BETA
+datasets, removed by the Census Bureau on 2026-11-19, or earlier once the operator activates
+it). That is the same list the updater's census fetcher reads.
 """
 import datetime as dt
 import json
@@ -43,6 +48,7 @@ import pyarrow.parquet as pq
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 sys.path.insert(0, ROOT)
+from updater.strategies.fetchers import _census_retired as _retired  # noqa: E402  ONE shared list
 RAW = os.path.join(ROOT, "data", "raw", "census")
 OUT = os.path.join(ROOT, "data", "clean_full", "census")
 os.makedirs(OUT, exist_ok=True)
@@ -556,6 +562,15 @@ def main():
     if "--match" in args:
         sub = args[args.index("--match") + 1]
         paths = [p for p in paths if sub in p]
+
+    # RETIRED UPSTREAM - the SAME list the updater's census fetcher reads
+    # (updater/strategies/fetchers/_census_retired.py). Applied LAST, after every selection flag,
+    # so no path into this job (the default all-36, --beta, --only, --match) can reach a removed
+    # endpoint after its effective date. BETA_OK above is not edited: before that date --beta still
+    # pulls the 8, which is what the one refresh pass needs.
+    paths, gone = _retired.split_retired(paths)
+    for p, eff, notice in gone:
+        print(_retired.exclusion_line("[intltrade_full]", p, eff, notice), flush=True)
 
     # budgets (seconds). HS datasets run PER MONTH (~204 slices) and must run with
     # NO other concurrent census job (concurrent large responses make month-slices
