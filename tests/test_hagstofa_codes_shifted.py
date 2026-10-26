@@ -32,6 +32,14 @@ sys.path.insert(0, ROOT)
 
 from updater.strategies.fetchers import hagstofa as H  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def _no_quarantine(monkeypatch):
+    """The real SKO02102 is on the changed-set QUARANTINE (its R2 store already holds the R1124
+    renumbering, review AR-379). These tests are about the merge-time shift guards on its shape, not about
+    that list, which tests/test_hagstofa_changed_set.py covers."""
+    monkeypatch.setattr(H, "QUARANTINE", {})
+
 PATH = "skolamal/2_grunnskolastig/0_gsNemendur/SKO02102.px"
 PREFIX = f"ICE:Samfelag:{PATH.replace('/', ':')}"
 B = dt.date(2024, 12, 31)

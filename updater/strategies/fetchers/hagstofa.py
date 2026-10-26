@@ -60,6 +60,9 @@ from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ._common import (Deadline, Tally, finalize, load_rotation, retry_after_seconds,
                       rotate_after, sane_since, save_rotation)
+# Imported, not read from a file at run time: an unreadable list must stop the fetcher, never let a
+# quarantined table through (fail closed, review AR-379).
+from ._hagstofa_quarantine import QUARANTINE
 
 import sys
 # The shared value-first PxWeb time-axis resolver lives in this repo's core/ package
@@ -1490,7 +1493,8 @@ _NO_TABLE = "no '.px' table segment, so no scheme could be checked"
 HELD_NAMED_MAX = 10                    # tables named in the note; the count is always complete
 
 
-def _guard_changed(changed: dict, db_codes: dict, refused: set) -> tuple[dict, dict]:
+def _guard_changed(changed: dict, db_codes: dict, refused: set,
+                   quarantine: dict | None = None) -> tuple[dict, dict]:
     """THE SCHEME GUARD on the changed set (review AR-378, ledger R1668). Returns (changed, held):
     `changed` without every table that must not be derived, `held` = {table prefix: why}.
 
@@ -1501,11 +1505,19 @@ def _guard_changed(changed: dict, db_codes: dict, refused: set) -> tuple[dict, d
     systems in one served CSV; on 2026-10-23 14 catalogued tables were in that state on R2 while their
     served copy still held one scheme. (3) A key the fold could not cut to a table (no '.px' segment;
     0 such stored keys on 2026-10-23): no scheme can be checked, so it is held, never passed through
-    (fail closed, review AR-380). Each drop is printed and named in the result note."""
+    (fail closed, review AR-380). (4) A table on the QUARANTINE list (_hagstofa_quarantine; `quarantine`
+    overrides it in tests): its stored rows already hold damage of another class - a code offset, a
+    rescale, a boundary splice - measured store-vs-served, which no fetch-time comparison can see (review
+    AR-379). It stays held until a review removes its entry. Each drop is printed and named in the note.
+    The guard covers KEY SCHEMES by rule and the quarantine by list; it is not a general damage detector."""
+    quarantine = QUARANTINE if quarantine is None else quarantine
     out, held = {}, {}
     for pref, d in changed.items():
         if pref in refused:
             held[pref] = _REFUSED_HERE
+            continue
+        if pref in quarantine:
+            held[pref] = f"quarantined: {quarantine[pref]}"
             continue
         if _table_of(pref) != pref:
             held[pref] = _NO_TABLE
@@ -1530,8 +1542,8 @@ def _with_held(msg: str, held: dict) -> str:
     names = sorted(held)
     shown = ", ".join(f"{p.split(':')[-1]} ({held[p][:60]})" for p in names[:HELD_NAMED_MAX])
     more = f", +{len(names) - HELD_NAMED_MAX} more" if len(names) > HELD_NAMED_MAX else ""
-    clause = (f"; also {len(held)} changed table(s) NOT derived - a second key scheme in the store, or "
-              f"refused: {shown}{more}")
+    clause = (f"; also {len(held)} changed table(s) NOT derived - a second key scheme in the store, "
+              f"quarantined, or refused: {shown}{more}")
     if not msg:
         return clause[2:]
     at = msg.find(" [")

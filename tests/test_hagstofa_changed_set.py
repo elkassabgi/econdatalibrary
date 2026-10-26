@@ -366,3 +366,90 @@ def test_table_of_cuts_at_the_px_segment():
     assert H._table_of("ICE:Samfelag:a:b:VIN00900.px:Kyn=0:Eining=A: 1") == "ICE:Samfelag:a:b:VIN00900.px"
     assert H._table_of("ICE:Samfelag:a:VIN00900.px") == "ICE:Samfelag:a:VIN00900.px"
     assert H._table_of("no table here") is None and H._table_of("") is None
+
+
+# ---- the half threshold of the value rule (review AR-379 M17) --------------------------------------
+
+@pytest.mark.parametrize("n_digit,n_text,held", [(4, 2, True), (3, 2, True), (5, 2, False)])
+def test_rule_new_codes_must_be_at_least_half_of_the_other_kind(n_digit, n_text, held):
+    """2 new text codes beside 4 (exactly half) or 3 digit codes are a second system; beside 5 they are
+    new members. `new >= other_seen` would miss the first two."""
+    p = _p(M)
+    rows = ([(f"{p}:Kyn={c}", _d(y)) for c in map(str, range(n_digit)) for y in (2003, 2025)]
+            + [(f"{p}:Kyn=T{i}", _d(2025)) for i in range(n_text)])
+    assert bool(_rule(rows, p)) is held
+
+
+# ---- the QUARANTINE: measured store damage no fetch guard can see (review AR-379) ------------------
+
+def test_the_quarantine_holds_a_listed_table_with_its_evidence(tmp_path, monkeypatch):
+    """A single-scheme table (no rule fires) that is on the list merges, but never reaches the changed set,
+    and the note names it with its evidence."""
+    _store(tmp_path, [(f"{_p(A)}:Kyn=0", D0, 1.0), (f"{_p(M)}:Kyn=0", D0, 1.0)])
+    monkeypatch.setattr(H, "QUARANTINE", {_p(M): "OFFSET 9 of 9 at code -1 (test)"})
+    res = _run(tmp_path, monkeypatch, [A, M], {A: ([(f"{_p(A)}:Kyn=0", D1, 2.0)], "data"),
+                                               M: ([(f"{_p(M)}:Kyn=0", D1, 2.0)], "data")})
+    assert set(res.changed_keys) == {_p(A)}, res.changed_keys
+    assert res.status == "partial" and "quarantined: OFFSET 9 of 9" in res.error, res.error
+    assert f"{_p(M)}:Kyn=0" in _keys(tmp_path), "the merge itself is unchanged"
+
+
+def test_negative_control_an_unlisted_table_is_derived(tmp_path, monkeypatch):
+    _store(tmp_path, [(f"{_p(M)}:Kyn=0", D0, 1.0)])
+    monkeypatch.setattr(H, "QUARANTINE", {_p(A): "listed elsewhere"})
+    res = _run(tmp_path, monkeypatch, [M], {M: ([(f"{_p(M)}:Kyn=0", D1, 2.0)], "data")})
+    assert res.changed_keys == {_p(M): D1.isoformat()} and res.status == "ok", res
+
+
+def test_the_shipped_quarantine_lists_the_37_measured_tables():
+    from updater.strategies.fetchers._hagstofa_quarantine import QUARANTINE
+    assert H.QUARANTINE is QUARANTINE and len(QUARANTINE) == 37
+    by_table = {p.split(":")[-1]: (p, ev) for p, ev in QUARANTINE.items()}
+    for t in ("SKO02102.px", "UMH31220.px", "UMH31230.px", "UMH31101.px", "UMH31107.px"):
+        assert t in by_table, t
+    assert "OFFSET" in by_table["SKO02102.px"][1] and "RESCALE" in by_table["UMH31230.px"][1]
+    for p, ev in QUARANTINE.items():
+        assert H._table_of(p) == p and p.startswith("ICE:"), p           # a table prefix, as the fold makes
+        assert ev.strip() and "E3 2026-10-24" in ev, (p, ev)              # every entry carries its evidence
+
+
+# ---- merge_measured at the csv-fence and crash call sites (review AR-380 N1/N2, AR-379) ------------
+
+def _record_map(monkeypatch, raises=False):
+    from updater import orchestrate
+    seen = []
+
+    def fake(source_id, keys, merge_measured):
+        seen.append(merge_measured)
+        if raises:
+            raise RuntimeError("mapper down")
+        return [], list(keys)
+
+    monkeypatch.setattr(orchestrate, "_map_changed", fake)
+    monkeypatch.setattr(orchestrate, "_csv_misses", lambda sid: "desktop_owed")
+    monkeypatch.setattr(orchestrate, "_note_unmapped_debt", lambda *a, **k: True)
+    return seen
+
+
+@pytest.mark.parametrize("merge_measured", [True, False])
+def test_the_fence_site_passes_merge_measured(monkeypatch, merge_measured):
+    from updater import orchestrate
+    seen = _record_map(monkeypatch)
+    res = types.SimpleNamespace(changed_keys=({"k": None} if merge_measured else None),
+                                series_cursors={"k": "2025-12-31"})
+    unit = types.SimpleNamespace(key="x/_all", source_id="x", unit_id="_all")
+    orchestrate._book_fence_trip(unit, res, store=None, fence_min=60)
+    assert seen == [merge_measured]
+
+
+@pytest.mark.parametrize("merge_measured", [True, False])
+def test_the_crash_site_passes_merge_measured(monkeypatch, merge_measured):
+    """The first mapping raises (the crash); the csv_misses branch maps again: both calls carry it."""
+    from updater import orchestrate
+    seen = _record_map(monkeypatch, raises=True)
+    res = types.SimpleNamespace(status="partial", obs=1, merged_rows=None,
+                                changed_keys=({"k": None} if merge_measured else None),
+                                series_cursors={"k": "2025-12-31"})
+    unit = types.SimpleNamespace(key="x/_all", source_id="x", unit_id="_all")
+    orchestrate._derive_changed_csvs(unit, res, object(), store=None)
+    assert seen == [merge_measured, merge_measured], seen
