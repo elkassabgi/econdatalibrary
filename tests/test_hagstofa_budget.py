@@ -202,7 +202,9 @@ def test_the_structural_note_also_names_transient_tables(tmp_path, monkeypatch):
         return "data"
     run, _f = _setup(tmp_path, monkeypatch, {"A": 3}, outcome=outcome)
     res = run()
-    assert res.status == "structural"
+    # A3 merged a new row, so since Route B (AR-378) the raise comes back as `partial` WITH the changed
+    # set and the raise's own text; the note contract below is unchanged.
+    assert res.status == "partial" and res.changed_keys == {"ICE:A:f:A3.px": B.isoformat()}, res
     assert "1 table(s) transient-failed" in res.error and "(first: f/A2.px)" in res.error, res.error
     assert res.error.index("transient-failed") < res.error.index(" ["), "before the offender list"
 

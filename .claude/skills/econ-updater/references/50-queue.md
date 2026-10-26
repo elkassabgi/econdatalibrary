@@ -2117,24 +2117,86 @@ every pass, because `due` includes "subject file missing"; 25 due tables drained
 VNASFK/VNKSFK have never been stored or catalogued: once a pass merges them they are uncatalogued store tables
 until someone catalogues them.
 
-### hagstofa - OPEN: "partial forever" while the 7 refused tables stand (review AR-352, 2026-10-20)
+### hagstofa - "partial forever": the updater has NEVER derived a hagstofa CSV (corrected 2026-10-24; reviews AR-352, AR-378)
 
-PR #178 makes every hagstofa pass end inside its budget. It does NOT change what follows.
+THE EARLIER VERSION OF THIS ITEM WAS WRONG IN FOUR PLACES, and is replaced here (ledger R1668):
+"since at least 2026-08-24" is really NEVER; the refused set is 15 tables across one rotation, not 7;
+"re-key the 7 and it clears" is wrong (8 more stay refused); and the local `hagstofa_fix` mirror used
+as a baseline in that investigation is NOT an R2 snapshot - nothing measured against it is a served or
+store fact (so "at most 46 ids per pass" is not measured).
 
-- Seven stored tables are refused as RESTRUCTURED or re-coded (MAN02007, MAN43006, VIN10001, VIN10040,
-  SKO02108, VIN00002, VIN00003 in the 2026-10-16 note). Each is a `structural_unit`, so `finalize()`
-  raises `DefinitiveError` on every pass that ends. `orchestrate.py` (the `except DefinitiveError`
-  branch) then records `partial` with NO `series_cursors`, and the CSV phase does not run.
-- So no hagstofa CSV has been re-derived by the updater since at least 2026-08-24: every finished run
-  since then is structural, and every killed run is `transient_fail`. Rows merge into the store; the
-  served CSVs do not move. The served lag is NOT measured (AR-352 made no R2 or served read).
-- `last_success_utc` is never set, so the health row is a permanent ATTENTION that looks the same
-  whether hagstofa is healthy (refusing 7 tables) or broken.
+What is true, measured 2026-10-23 (served-vs-store over all 1,068 catalogued ids, two instruments that
+agree to the row; state read from a CI copy):
 
-Fix pattern to evaluate: `_giant.run_giant` returns `partial` WITH the changed set when its
-`finalize()` raises on structural sub-units. FIRST STEP, before any code: measure how many CSVs that
-would derive per pass. Cursors are seeded with every reached table's on-disk frontier, so "changed"
-would be every table of every reached database; count the catalogue ids that maps to (the catalogue
-holds 1,068 hagstofa ids) and check it against the runner's derive budget. If it does not fit,
-report only the tables that actually merged rows. The re-keys of the 7 tables (catalogue path,
-frozen D1 sync) would also clear it.
+- `finalize()` raises `DefinitiveError` on any refused (structural) table, and `orchestrate.py`'s
+  `except DefinitiveError` branch records `partial` with NO Result: no CSV phase, no
+  `put_series_cursors`. Every hagstofa run in the state lineage (27, from 2026-07-14) is `partial` or
+  `transient_fail`; `last_success_utc` is NULL and `series_cursor` holds 0 hagstofa rows. So the
+  updater has never derived a hagstofa CSV. All 1,068 served objects date from the 2026-09-01 manual
+  derive; 228 of them differ from the R2 store (183 lack store rows, 174 end earlier, 134 carry revised
+  values; none serves a row the store lacks).
+- The refused set over one rotation is 15 tables: the 2026-10-16 pass refused MAN02007, MAN43006,
+  VIN10001, VIN10040, SKO02108, VIN00002, VIN00003; the 2026-10-22 pass refused UMH51101, SJA05003,
+  SJA04903, SJA04904, MAN02007, MAN43006 (RESTRUCTURED), SJA04901 (dropped from the English site) and
+  FYR02103, FYR02104, FYR03002 (moved). Re-keying 7 leaves 8.
+- The SCHEME HAZARD (R1153, R1668): 50 catalogued tables hold more than one key scheme in the R2 store
+  (42 with two dimension-name schemes, 8 with a second value-code system under the same names). In 14
+  of them the served copy still holds ONE scheme, so deriving them would publish a second id system:
+  SJA04903, SJA04904, SJA04905, SKO02108, VIN00002, VIN00003 (names) and THJ05161, VIN00001, VIN00900,
+  VIN00910, VIN00920, VIN00930, VIN01001, VIN01005 (value codes). The other 36 are served with both
+  schemes already (since the 2026-09-01 derive or earlier).
+
+FIX, branch fix/hagstofa-changed-set (Route B): the segment merge reports its merge-measured changed
+keys, folded to the table prefix (the catalogue grain); when `finalize()` raises and something
+changed, `update()` returns `partial` WITH that changed set, the series cursors and the raise's own
+text, as `_giant.run_giant` does (nothing changed: re-raise). A SCHEME GUARD drops from the changed set
+every table refused in the pass and every table whose stored rows (after the merge) hold more than one
+key scheme, by rule (`_second_key_scheme`), and names each in the note. The status stays `partial`
+and the refused tables stay named. In the orchestrator a merge-measured changed set no longer widens
+to derive-all off r2 (`_map_changed`): one uncatalogued changed table would otherwise re-derive all
+1,068 ids, held tables included (review AR-380). It covers passes that reach `finalize()`; a pass
+killed at the 45-minute limit still returns no Result. Census of the rule on an R2 copy (md5 == ETag): exactly the 50
+tables above, the 14 among them being exactly the flagged tables whose served copy is single-scheme.
+
+STILL OPEN after that branch:
+
+1. WHAT THE GUARD HOLDS BACK: the 36 already-mixed tables are never derived by the updater either,
+   until each is re-keyed. 34 of them serve exactly what the store holds today; TEK01002 does not (its
+   store holds newer periods and 432 more series) and stays at its 2026-09-01 copy; VIN10040 is refused
+   anyway.
+2. THE QUARANTINE (review AR-379, ledger R1673): the store also holds damage that is not a key scheme
+   and that no fetch-time guard can see, because the fetcher compares a fetch with the STORE and never
+   the store with the SERVED copy. 37 tables, measured store-vs-served (the re-derive planner's
+   instrument 3, 2026-10-24), are held by an explicit list, `updater/strategies/fetchers/
+   _hagstofa_quarantine.py` (full table ids and one evidence line each), until a review clears each
+   entry. SKO02102 is the R1124 renumbering (1,143 of 1,143 revised cells equal the served value at
+   school code -1); UMH31220 and UMH31230 are a x2 rescale at 2023-12-31.
+3. THE BACKLOG IS 174 IDS, NOT 212: 228 differing - 54 excluded. A one-off re-derive (`core.derive_csv
+   --only`) of the 174, after proving the derive reads a copy level with R2 by content (R383), then a
+   read-back of every served CSV against R2's own parquet. The 54 EXCLUDED ids stay stale and need a
+   re-key or a clean re-pull (R22), by reason class (several tables carry more than one):
+   - SCHEME, names (8): SJA04903, SJA04904, SJA04905, SKO02108, VIN00002, VIN00003, TEK01002, VIN10040;
+   - SCHEME, value codes (8): THJ05161, VIN00001, VIN00900, VIN00910, VIN00920, VIN00930, VIN01001,
+     VIN01005;
+   - OFFSET (1): SKO02102 (also SPLICE, JUMP);
+   - RELABEL (1): UMH31107 (publisher gives 2.A = 0.94 for 2022, the store 1,871.92 - AR-381; also
+     SPLICE, JUMP);
+   - RESCALE (2): UMH31220 (also SPLICE), UMH31230 (also SPLICE, JUMP);
+   - SPLICE + JUMP (6): THJ05511, UMH01111, UMH31108, UMH31109, UMH31118, UMH31119;
+   - SPLICE (19): VIN02091, SJA01101, SJA01102, THJ05611, THJ05614, THJ05811, THJ05181, THJ05221,
+     THJ05281, THJ10001, THJ10002, THJ03105, THJ03111, THJ06021, UTA06203, LAU04109, VIN01206, UMH31110,
+     UMH31101 (a vintage splice: LULUCF_WETLAND CH4 2022 stored 37,746.48, publisher 667.09 - AR-381);
+   - JUMP (8): THJ05532, THJ05151, THJ05171, THJ05251, THJ05267, THJ05271, UTA06003, UTA04010;
+   - REFUSED (1): VIN10001 (VIN10040 is refused too, and listed under names).
+   SPLICE and JUMP are the planner's thresholds: some of those tables are probably genuine volatility,
+   and each needs a look before it is re-pulled or released from the quarantine.
+4. SERVED == STORE DOES NOT MEAN PUBLISHER-CURRENT. A date-tail fetch re-pulls only the boundary period,
+   so where the publisher revised its HISTORY the store mixes vintages (UMH31101's 56x break is one), and a
+   re-derive faithfully serves that mix. Only a clean re-pull of the table repairs it.
+5. OPEN, PRE-EXISTING: a NEW uniform rescale of the boundary period (the UMH31220/31230 shape) passes every
+   current fetch guard and would merge and be derived. A new code offset is already refused by CODES
+   SHIFTED (R1124, R1130). Not fixed by Route B.
+6. RE-KEYS of the 15 refused tables and of the 50 mixed ones (clean re-pull at table grain, R22; the
+   stray second-scheme rows go archive-first as part of each re-key - removing stored rows is the
+   owner's decision). Until then hagstofa stays `partial` and `last_success_utc` stays NULL. A re-key is
+   a catalogue change; re-keyed ids reach users through the workstation catalogue at T0.
