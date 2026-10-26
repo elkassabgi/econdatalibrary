@@ -290,6 +290,29 @@ def test_update_sends_no_geography_pin_and_merges_rows_returned(tmp_path, monkey
     out = capsys.readouterr().out
     assert "eits/marts: not pinning ['us']" in out
     assert "intltrade/exports/sitcexport: not pinning ['world']" in out
+    # THE RECEIPT the post-merge proof greps: 4 marts rows returned at/after 2026-02 (2 boundary
+    # + 2 new), 4 stored; 1 BETA row at 2025-12, 1 stored.
+    assert ("[census] eits/marts: RECEIPT window>=2026-02-01 returned=4 skipped_new=0 stored=4 "
+            "MATCH") in out, out
+    assert ("[census] intltrade/exports/sitcexport: RECEIPT window>=2025-12-01 returned=1 "
+            "skipped_new=0 stored=1 MATCH") in out, out
+
+
+def test_the_receipt_says_differ_when_the_api_did_not_return_a_stored_boundary_row(
+        tmp_path, monkeypatch, capsys):
+    """The receipt must be able to fail: drop one stored boundary series from the answer."""
+    api = _setup(tmp_path, monkeypatch)
+    api.flows["eits/marts"]["rows"] = [r for r in api.flows["eits/marts"]["rows"]
+                                       if not (r[1] == "4400A" and r[5] == "2026-02")]
+    cs.update(types.SimpleNamespace(source_id="census", unit_id="_all"), None)
+    out = capsys.readouterr().out
+    assert "eits/marts: RECEIPT window>=2026-02-01 returned=3 skipped_new=0 stored=4 DIFFER" in out
+
+
+def test_an_unreadable_store_never_reads_as_a_match(monkeypatch, capsys):
+    monkeypatch.setattr(cs, "_rows_since", lambda path, mx: None)
+    cs._receipt("eits/marts", dt.date(2026, 2, 1), 0, 0, "x.parquet")
+    assert "stored=None UNREAD" in capsys.readouterr().out
 
 
 def test_the_fixture_reproduces_both_origins_of_the_bad_pin(tmp_path, monkeypatch):

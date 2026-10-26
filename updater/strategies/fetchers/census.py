@@ -1055,6 +1055,7 @@ def update(unit, since) -> Result:
             under.append(f"{flow} unknown-shape x{unknown_shape}")
 
         if not keys:
+            _receipt(flow, mx, 0, 0, path)
             tally.empty_unit(flow)                           # already at the publisher's frontier
             continue
 
@@ -1074,6 +1075,7 @@ def update(unit, since) -> Result:
         # So: keep what we publish, count what we skip, and let a deliberate backfill decide
         # about the rest. The shape check is subsumed — an unknown shape cannot be a known key.
         known = _store_keys(path)
+        skipped_new = 0
         if known:
             keep = [i for i, k in enumerate(keys) if k in known]
             skipped_new = len(keys) - len(keep)
@@ -1083,6 +1085,7 @@ def update(unit, since) -> Result:
                       f"series this flow does not yet publish (new coverage needs a backfill "
                       f"and a catalogue row, not a tail)", flush=True)
             if not keep:
+                _receipt(flow, mx, 0, skipped_new, path)
                 tally.empty_unit(flow)
                 continue
             keys = [keys[i] for i in keep]
@@ -1109,6 +1112,7 @@ def update(unit, since) -> Result:
             tally.transient_unit(f"{flow}: merge refused")
             continue
         added = max(0, n - before_rows)
+        _receipt(flow, mx, len(keys), skipped_new, path)
 
         # COVERAGE IS A STRUCTURAL QUESTION — "did we ASK for everything?" — not a statistical
         # one. The first version of this guard compared distinct series returned against
@@ -1199,6 +1203,28 @@ def update(unit, since) -> Result:
     if retired_note:
         res = dataclasses.replace(res, error="; ".join(x for x in (res.error, retired_note) if x))
     return res
+
+
+def _rows_since(path: str, mx) -> int | None:
+    """Rows the store holds with obs_date >= mx, or None if it cannot be read."""
+    try:
+        import pyarrow.compute as pc
+        od = blob.read_table(path, columns=["obs_date"]).column("obs_date")
+        return int(pc.sum(pc.greater_equal(od, pa.scalar(mx, pa.date32()))).as_py() or 0)
+    except Exception:                                        # noqa: BLE001
+        return None
+
+
+def _receipt(flow: str, mx, returned: int, skipped_new: int, path: str) -> None:
+    """ONE line per tailed flow: rows the API returned for the window (after the known-series
+    filter) against rows the store holds for it AFTER the merge. The post-merge proof of the pin
+    fix reads exactly this line for every one of the 29 flows refused on 2026-10-10 (review AR-387:
+    rows returned == rows stored, per flow, no sampling - R236/R1695). MATCH needs equality; a
+    store that cannot be read prints UNREAD, never MATCH."""
+    stored = _rows_since(path, mx)
+    verdict = "UNREAD" if stored is None else ("MATCH" if stored == returned else "DIFFER")
+    print(f"[{SOURCE}] {flow}: RECEIPT window>={mx} returned={returned} "
+          f"skipped_new={skipped_new} stored={stored} {verdict}", flush=True)
 
 
 def _refused_message(tally: Tally, refused: list, retired_note: str = "") -> str:
