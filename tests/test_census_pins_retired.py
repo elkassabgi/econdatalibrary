@@ -214,9 +214,15 @@ def _store(path, table):
     pq.write_table(table, path)
 
 
-def _setup(tmp_path, monkeypatch, *, beta_value="999"):
+BEFORE_REMOVAL = dt.date(2026, 10, 26)
+
+
+def _setup(tmp_path, monkeypatch, *, beta_value="999", today=BEFORE_REMOVAL):
     monkeypatch.setenv("AQUEDUCT_BACKEND", "local")
     monkeypatch.delenv(R.ENV_ACTIVATE, raising=False)
+    # THE CLOCK IS PINNED (review AR-388): update() -> _flows() -> split_retired() reads the real
+    # UTC date, so without this every update() test here would go red by itself on 2026-11-19.
+    monkeypatch.setattr(R, "today_utc", lambda: today)
     monkeypatch.setattr(cs.config, "source_dir", lambda s: str(tmp_path))
     monkeypatch.setattr(cs, "_ingest", _ingest_stub)
     monkeypatch.setattr(cs, "_api_key", lambda: "test-key-not-real")
@@ -373,6 +379,38 @@ def test_a_404_on_an_unlisted_flow_still_fails_the_source(tmp_path, monkeypatch)
     with pytest.raises(DefinitiveError) as ei:
         cs.update(types.SimpleNamespace(source_id="census", unit_id="_all"), None)
     assert "REFUSED by the API" in str(ei.value) and "HTTP 404 x1" in str(ei.value)
+
+
+def test_on_the_removal_day_with_no_operator_date_update_stops_asking(tmp_path, monkeypatch, capsys):
+    """The safety net through update() itself: the operator forgot, the clock reached 2026-11-19."""
+    api = _setup(tmp_path, monkeypatch, today=dt.date(2026, 11, 19))
+    res = cs.update(types.SimpleNamespace(source_id="census", unit_id="_all"), None)
+    assert all(f != "intltrade/exports/sitcexport" for f, _p in api.calls), api.calls
+    assert any(f == "eits/marts" for f, _p in api.calls)
+    assert res.status in ("ok", "no_change"), res
+    assert "1 flow(s) RETIRED UPSTREAM" in (res.error or "") and "sitcexport" in res.error
+    assert ("intltrade/exports/sitcexport: RETIRED UPSTREAM - not fetched (excluded from "
+            "2026-11-19)") in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("today", [dt.date(2026, 10, 26), dt.date(2026, 11, 19), dt.date(2027, 6, 1)])
+def test_the_marts_tail_does_not_depend_on_the_clock(tmp_path, monkeypatch, today):
+    """Any update() behaviour that is not about the switch must hold before AND after 11-19."""
+    api = _setup(tmp_path, monkeypatch, today=today)
+    cs.update(types.SimpleNamespace(source_id="census", unit_id="_all"), None)
+    marts = [p for f, p in api.calls if f == "eits/marts"]
+    assert marts and all("us" not in p for p in marts)
+
+
+def test_every_failed_sub_unit_is_printed_to_the_log(tmp_path, monkeypatch, capsys):
+    """Run 2701's log had no HTTP 400 line at all - the refusals reached only the state note."""
+    _setup(tmp_path, monkeypatch)
+    monkeypatch.setattr(cs, "_request_pins", lambda pins, preds=(): (dict(pins), []))
+    with pytest.raises(DefinitiveError):
+        cs.update(types.SimpleNamespace(source_id="census", unit_id="_all"), None)
+    out = capsys.readouterr().out
+    assert out.count("[census] SUB-UNIT FAILED - ") == 2, out
+    assert "eits/marts time=from 2026 for=us:* - _Refused: census eits/marts: HTTP 400" in out
 
 
 def test_a_refusal_is_reported_by_its_http_code(tmp_path, monkeypatch):

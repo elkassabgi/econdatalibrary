@@ -741,6 +741,16 @@ class _Refused(DefinitiveError):
         self.reason = reason
 
 
+def _said(label: str) -> str:
+    """Print a failed sub-unit to the run log and return its label for the tally.
+
+    Until this, a refusal reached ONLY the state note: run 2701's log (2026-10-10) holds no
+    "HTTP 400" line although 29 flows were refused, so the log could not show that a pass was
+    clean. The post-merge proof greps for these lines."""
+    print(f"[{SOURCE}] SUB-UNIT FAILED - {label}", flush=True)
+    return label
+
+
 def _gone_early(flow: str, e: Exception) -> bool:
     """True when a flow on the retired-upstream list answers 404/410 BEFORE its listed date.
 
@@ -884,7 +894,7 @@ def update(unit, since) -> Result:
             continue
         dim_cols, data_cols, shapes, pins = _dims_from_store(path)
         if not dim_cols:
-            tally.structural_unit(f"{flow}: no dimensions recoverable from stored series_key")
+            tally.structural_unit(_said(f"{flow}: no dimensions recoverable from stored series_key"))
             continue
         get_cols = [c for c in data_cols if c.lower() not in _IMPLICIT]
         gcol = _geo_col(data_cols)
@@ -943,7 +953,7 @@ def update(unit, since) -> Result:
                         # nothing else. Eight sub-units failed that way for three days and the only
                         # way to learn why was to replay the request by hand - a timeout, a 429 and
                         # an upstream error page are three different problems wearing one message.
-                        tally.transient_unit(f"{flow} time={tv} for={pred} - {_why(e)}")
+                        tally.transient_unit(_said(f"{flow} time={tv} for={pred} - {_why(e)}"))
                         failed = True
                         break
                     except DefinitiveError as e:
@@ -952,7 +962,7 @@ def update(unit, since) -> Result:
                             retired.append(f"{flow} (HTTP {e.status} before its listed date)")
                             failed = True
                             break
-                        tally.structural_unit(label)
+                        tally.structural_unit(_said(label))
                         if isinstance(e, _Refused):
                             refused.append((label, e.status))
                         failed = True
@@ -983,7 +993,7 @@ def update(unit, since) -> Result:
         if not parts:
             # A BOUNDARY re-fetch must re-return at least the boundary period. Nothing at all
             # means the shape we ask for is gone, not that the flow is quiet.
-            tally.structural_unit(f"{flow}: boundary re-fetch returned no rows")
+            tally.structural_unit(_said(f"{flow}: boundary re-fetch returned no rows"))
             continue
 
         # CASE-INSENSITIVE for the two well-known columns. eits/qtax names its variables in
@@ -1016,8 +1026,8 @@ def update(unit, since) -> Result:
             # `time` is still required of everyone: without it there is no obs_date.
             needs_value_col = flow.startswith("eits/")
             if ti is None or (needs_value_col and vi is None):
-                tally.structural_unit(f"{flow}: response lacks time"
-                                      + ("/cell_value" if needs_value_col else ""))
+                tally.structural_unit(_said(f"{flow}: response lacks time"
+                                            + ("/cell_value" if needs_value_col else "")))
                 broke = True
                 break
             gi = lidx.get("geo_level_code")
@@ -1109,7 +1119,7 @@ def update(unit, since) -> Result:
             n, md = merge.merge_and_write(path, tbl, mode="merge",
                                           dedup_keys=_dedup_for(flow, data_cols))
         except DefinitiveError:
-            tally.transient_unit(f"{flow}: merge refused")
+            tally.transient_unit(_said(f"{flow}: merge refused"))
             continue
         added = max(0, n - before_rows)
         _receipt(flow, mx, len(keys), skipped_new, path)
