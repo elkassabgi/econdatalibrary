@@ -7,8 +7,11 @@ a real keyed pass of ALL 29 (review AR-387 correction 1; R236, R1695) - one
 `tools/run_local_heavy.ps1 -Only census -Force` pass on the workstation, BEFORE 2026-11-19, with
 CENSUS_RETIRED_UPSTREAM_FROM unset - and this tool reads that pass's log and the store it wrote:
 
-  0. GREEN: the summary line reads `ok census/_all` or `no_change census/_all`, and the log carries
-     RECEIPT lines at all (a log from before the fix has none).
+  0. GREEN: the summary line reads `ok census/_all` or `no_change census/_all` with no failed
+     sub-unit - OR `partial` where EVERY failed sub-unit is transient ("TransientError": a timeout,
+     a 5xx, a broken stream after the retries) and on one of the 16 CONTROL flows, never on one of
+     the 29 (decided explicitly, review AR-388). And the log carries RECEIPT lines at all (a log
+     from before the fix has none).
   1. RECEIPT: each of the 29 flows prints `RECEIPT window>=D returned=R ... stored=T MATCH`, and an
      INDEPENDENT count of the store parquet's rows with obs_date >= D equals both R and T.
   2. REFUSALS: 0 lines containing "HTTP 400", "unknown predicate variable" or a census
@@ -129,25 +132,39 @@ def main(argv=None) -> int:
     lines, old = read_lines(a.log), read_lines(a.old_log)
     fails = []
 
-    # 0. the pass ran census and ended GREEN (ok / no_change), on a fetcher that prints failures
+    # 0 + 2. how the pass ended, and every failed sub-unit (the fix prints each one)
     status = [m.group(1) for ln in lines
               if (m := re.match(r"^\s+(\S+)\s+census/_all\s*$", ln))]
-    print(f"census/_all summary status: {status or 'ABSENT'}")
-    if status != ["ok"] and status != ["no_change"]:
-        fails.append(f"census/_all did not end ok/no_change in this pass: {status or 'no summary line'}"
-                     " - read its unit_state note")
-    if not any("RECEIPT window>=" in ln for ln in lines):
-        fails.append("no RECEIPT line at all: this log predates the fix (or census never ran)")
-
-    # 2. refusals / failures - visible in the log since the fix prints every failed sub-unit
+    failed = [ln.strip() for ln in lines if ln.startswith("[census] ") and "SUB-UNIT FAILED" in ln]
     n400 = sum("HTTP 400" in ln for ln in lines)
     nunk = sum("unknown predicate variable" in ln for ln in lines)
-    nfail = sum(ln.startswith("[census] ") and "SUB-UNIT FAILED" in ln for ln in lines)
+    print(f"census/_all summary status: {status or 'ABSENT'}")
     print(f"lines with 'HTTP 400': {n400}; 'unknown predicate variable': {nunk}; "
-          f"census SUB-UNIT FAILED: {nfail}")
-    if n400 or nunk or nfail:
-        fails.append(f"failures in the log (HTTP 400 x{n400}, unknown predicate x{nunk}, "
-                     f"SUB-UNIT FAILED x{nfail})")
+          f"census SUB-UNIT FAILED: {len(failed)}")
+    for ln in failed:
+        print("  " + ln[:240])
+    if n400 or nunk:
+        fails.append(f"refusals in the log (HTTP 400 x{n400}, unknown predicate x{nunk})")
+    # A `partial` IS ACCEPTED ONLY IN ONE SHAPE, decided explicitly (review AR-388 item 4): every
+    # failed sub-unit is a TRANSIENT failure (its label carries "TransientError", i.e. a timeout,
+    # a 5xx or a broken stream after the retries) on a CONTROL flow - never on one of the 29 this
+    # proof is about, whose receipts are required below anyway. A census.gov reset on, say,
+    # exports/naics then cannot block the proof of a fix that never touched that flow's request,
+    # while any structural failure, merge refusal or failure on a refused flow still fails it.
+    bad_fail = [ln for ln in failed
+                if "TransientError" not in ln
+                or any(ln.split("SUB-UNIT FAILED - ", 1)[-1].startswith(f + " ") for f in REFUSED)]
+    if status in (["ok"], ["no_change"]):
+        if failed:
+            fails.append(f"{len(failed)} SUB-UNIT FAILED line(s) under an ok/no_change status")
+    elif status == ["partial"] and failed and not bad_fail:
+        print("ACCEPTED partial: every failure is transient and on a control flow (see above)")
+    else:
+        fails.append(f"census/_all ended {status or 'with no summary line'}"
+                     + (f"; {len(bad_fail)} failure(s) not transient-on-a-control" if bad_fail else "")
+                     + " - read its unit_state note")
+    if not any("RECEIPT window>=" in ln for ln in lines):
+        fails.append("no RECEIPT line at all: this log predates the fix (or census never ran)")
 
     # 3. pins
     new_p, old_p = pins_of(lines), pins_of(old)
