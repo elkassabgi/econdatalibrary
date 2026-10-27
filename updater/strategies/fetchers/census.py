@@ -726,6 +726,20 @@ def _why(e: Exception, limit: int = 120) -> str:
     return f"{type(e).__name__}: {msg}" if msg else type(e).__name__
 
 
+# A BROKEN STREAM IS RETRIED LIKE A DROPPED CONNECTION. requests raises ChunkedEncodingError when
+# census.gov resets the connection while the body is streaming ("Connection broken:
+# ConnectionResetError(10054 ...)"), and ContentDecodingError for a body cut inside its compression.
+# Neither is a requests.ConnectionError: both derive from RequestException only. So they escaped
+# this retry loop and update() itself, and the orchestrator booked the WHOLE source transient_fail
+# with no Result - no cursors, no CSV derive for flows already merged in that pass. It happened
+# twice: run 542 (2026-08-06, 7,055 s) and run 3437 (2026-10-27, 1,933 s, during exports/naics's
+# 7-way split, the largest bodies of the pass), the post-merge proof pass of the pin fix. Same
+# tuple as faostat/gleif/statcan already use; after MAX_ATTEMPTS it is a TransientError, i.e. a
+# named transient sub-unit for THAT flow, and every other flow keeps its result.
+_RETRYABLE = (requests.Timeout, requests.ConnectionError,
+              requests.exceptions.ChunkedEncodingError, requests.exceptions.ContentDecodingError)
+
+
 class _Refused(DefinitiveError):
     """A non-200, non-204, non-retryable HTTP answer (400, 404, ...): the API REFUSED the request.
 
@@ -799,8 +813,8 @@ def _fetch(sess: requests.Session, flow: str, get_cols: list[str], time_value: s
     for attempt in range(MAX_ATTEMPTS):
         try:
             r = sess.get(url, params=params, timeout=timeout)
-        except (requests.Timeout, requests.ConnectionError) as e:
-            last = str(e)
+        except _RETRYABLE as e:
+            last = f"{type(e).__name__}: {e}"
             time.sleep(2 ** attempt)
             continue
         if r.status_code == 200:

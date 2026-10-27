@@ -76,10 +76,43 @@ def test_the_2026_10_10_log_itself_fails(tmp_path):
                for ln in L],                                                           # control changed
     lambda L: L + ["[census] intltrade/exports/sitcexport: RETIRED UPSTREAM - not fetched"],
     lambda L: [ln.replace("  ok ", "  partial ") for ln in L],                          # not green
+    lambda L: [ln.replace("  ok ", "  error ") for ln in L],                            # run 3437
     lambda L: [ln for ln in L if "census/_all" not in ln or ">>>" in ln],              # no summary
 ])
 def test_each_check_can_fail(tmp_path, mutate):
     assert _run(tmp_path, mutate(_new_lines()), "--log-only") == 1
+
+
+def _partial_with(lines, failure):
+    out = [ln.replace("  ok ", "  partial ") for ln in lines]
+    return out + [f"[census] SUB-UNIT FAILED - {failure}"]
+
+
+def test_a_partial_whose_only_failure_is_transient_on_a_control_passes(tmp_path, capsys):
+    """A census.gov reset on exports/naics (a control: its request is unchanged by the fix) must not
+    block the proof - the fix itself turns that reset into an honest named partial."""
+    lines = _partial_with(_new_lines(), "intltrade/exports/naics time=2026-09 for=None - "
+                          "TransientError: census intltrade/exports/naics: ChunkedEncodingError: "
+                          "Connection broken after 3 attempts")
+    assert _run(tmp_path, lines, "--log-only") == 0
+    assert "ACCEPTED partial" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("failure", [
+    # transient, but on one of the 29 the proof is about
+    "intltrade/exports/sitcexport time=2025-12 for=world:* - TransientError: census x: HTTP 503",
+    # structural on a control
+    "intltrade/exports/naics: boundary re-fetch returned no rows",
+    # merge refused on a control (not a publisher hiccup)
+    "intltrade/exports/naics: merge refused",
+])
+def test_a_partial_with_any_other_failure_fails(tmp_path, failure):
+    assert _run(tmp_path, _partial_with(_new_lines(), failure), "--log-only") == 1
+
+
+def test_a_partial_with_no_named_failure_fails(tmp_path):
+    lines = [ln.replace("  ok ", "  partial ") for ln in _new_lines()]
+    assert _run(tmp_path, lines, "--log-only") == 1
 
 
 def _store(tmp_path, beta_val="5", twin_val="5", rows=3):
