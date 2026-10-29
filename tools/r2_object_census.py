@@ -32,14 +32,17 @@ CREDENTIALS. Loaded exactly as the other reviewed read tools load them: core.r2_
 (the same call tools/clear_csv_desktop_owed.py makes). This file never reads a key file itself, and never
 prints, logs or writes a credential or the endpoint. Every exception is reduced to a CODE before it is
 shown - botocore's connection and timeout errors carry the endpoint URL in their message, so str(error) is
-never printed (ledger K2). After T0 r2_util.client() refuses every call, so this tool stops working with it.
+never printed (ledger K2). After T0 the tool refuses before loading the credentials (core.cutover), and
+r2_util.client() would refuse every call in any case.
 
 OUTPUT goes only to --out: an absolute, new path under F:\\ or under the system temp directory, never on D:
 or E:, never inside this repository. Nothing else is written: no D1, no state, no repo files.
 
 COST GUARD. The planned operation count is printed before any request. A LIST page (up to 1,000 keys) is a
-Class A operation; a HEAD is a Class B operation. More than --max-ops (default 2,000) planned or performed
-operations is refused unless --max-ops is raised explicitly. For `head` the count is known before the run
+Class A operation; a HEAD is a Class B operation. --max-ops (default 2,000) caps LOGICAL operations - LIST
+pages and HEADs - not HTTP requests: core.r2_util's client retries a failed request (botocore standard mode,
+max_attempts 5; one HEAD to an unreachable endpoint was measured at 6 signed attempts), so under throttling or
+5xx answers the requests sent can reach about 6 x --max-ops. For `head` the count is known before the run
 (one HEAD per distinct key) and an over-cap plan is refused before the client is built. For `list` the page
 count is known only as the listing proceeds: the listing stops, VOID, before it would request page
 --max-ops + 1.
@@ -141,6 +144,12 @@ class ReadOnlyClient:
     def __init__(self, client, *, allow_unhooked: bool = False):
         events = getattr(getattr(client, "meta", None), "events", None)
         if events is not None:
+            # Registered FIRST on BOTH the wildcard and the s3 name. botocore runs a responder registered on
+            # 'before-call.*.*' (botocore's Stubber uses it) BEFORE a register_first handler on
+            # 'before-call.s3' - measured: such a responder answered a put_object and the s3-only lock was
+            # never asked. register_first on the wildcard runs ahead of it.
+            events.register_first("before-call.*.*", _refuse_other_operations,
+                                  unique_id="r2-object-census-read-only-any")
             events.register_first("before-call.s3", _refuse_other_operations,
                                   unique_id="r2-object-census-read-only")
         elif not allow_unhooked:
@@ -162,8 +171,14 @@ class ReadOnlyClient:
 
 
 def open_client():
-    """The read client, loaded the way the other reviewed read tools load it, behind both locks."""
+    """The read client, loaded the way the other reviewed read tools load it, behind both locks.
+
+    After T0 the cloud copy is frozen and a census of it would describe a copy nobody serves from, so this
+    refuses BEFORE the credentials are loaded (r2_util.client() would refuse every call anyway; this says so
+    first and loudly)."""
     from core import r2_util                            # noqa: PLC0415
+    from core.cutover import refuse_if_cut_over          # noqa: PLC0415
+    refuse_if_cut_over("tools/r2_object_census.py (a census of the frozen cloud copy)")
     return ReadOnlyClient(r2_util.client(write=False))
 
 
@@ -364,7 +379,8 @@ def run_head(client, bucket: str, keys: list[str]):
 # ---------------------------------------------------------------------------------------------------------
 HELP_EPILOG = """\
 cost: a LIST page (up to 1,000 keys) is a Class A operation; a HEAD is a Class B operation.
-More than --max-ops planned or performed operations (default 2,000) is refused unless --max-ops is raised.
+More than --max-ops (default 2,000) LIST pages or HEADs is refused unless --max-ops is raised. The cap counts
+operations, not HTTP requests: with retries (up to ~6 attempts each) the requests sent can exceed it.
 exit codes: 0 done; 1 head error rows; 2 refused; 3 listing VOID; 4 over the --max-ops cap.
 """
 

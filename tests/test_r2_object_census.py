@@ -182,6 +182,112 @@ def test_control_a_real_client_signs_and_sends_list_and_head(real_client):
     assert signed == ["ListObjectsV2", "HeadObject"]
 
 
+def test_after_t0_the_real_client_is_refused_before_credentials_load(tmp_path, monkeypatch, capsys):
+    from core import cutover, r2_util
+    flag = tmp_path / "CUTOVER"
+    flag.write_text("")
+    monkeypatch.setattr(cutover, "FLAG_PATH", str(flag))
+    loaded = []
+    monkeypatch.setattr(r2_util, "client", lambda **kw: loaded.append(kw) or FakeS3())
+    with pytest.raises(cutover.CutoverRefused):
+        C.open_client()
+    assert loaded == []
+    keys = tmp_path / "keys.txt"
+    keys.write_text("series/a.csv\n")
+    rc = C.main(["head", "--bucket", "b", "--keys-file", str(keys), "--out", str(tmp_path / "h.tsv")])
+    assert rc == C.EXIT_REFUSED and "CutoverRefused" in capsys.readouterr().out and loaded == []
+    assert not (tmp_path / "h.tsv").exists() and not (tmp_path / "h.tsv.partial").exists()
+
+
+def test_control_before_t0_the_real_client_loads_read_credentials(tmp_path, monkeypatch):
+    from core import cutover, r2_util
+    monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "NO_CUTOVER"))
+    loaded = []
+
+    class _Events:
+        def register_first(self, *a, **k):
+            loaded.append("hook")
+
+    class _Meta:
+        events = _Events()
+
+    class _Client:
+        meta = _Meta()
+    monkeypatch.setattr(r2_util, "client", lambda **kw: loaded.append(kw) or _Client())
+    assert isinstance(C.open_client(), C.ReadOnlyClient)
+    assert loaded == [{"write": False}, "hook", "hook"]          # read creds, then the two before-call locks
+
+
+def _wire_recorders(raw):
+    """before-sign records what would be signed; before-send stands in for the wire and raises."""
+    signed = []
+    raw.meta.events.register("before-sign.s3", lambda operation_name=None, **_kw: signed.append(operation_name))
+
+    def before_send(request, **_kw):
+        raise _Sent(request.method)
+    raw.meta.events.register("before-send.s3", before_send)
+    return signed
+
+
+def test_open_client_is_the_read_client_behind_both_locks(tmp_path, monkeypatch):
+    """THE PRODUCTION PATH (AR-399 D1): the real open_client() over the real r2_util.client(), with only the
+    credentials faked. r2_util.creds(write=False) falls back to the WRITE keys when the read keys are absent,
+    so the client the tool holds can be write-capable and the two locks are the barrier - test them here."""
+    from core import cutover, r2_util
+    monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "NO_CUTOVER"))
+    asked = []
+
+    def fake_creds(write=False):
+        asked.append(write)
+        return {"endpoint": "https://example.invalid", "key": "test", "secret": "test",
+                "mode": "write" if write else "read"}
+    monkeypatch.setattr(r2_util, "creds", fake_creds)
+    ro = C.open_client()
+    assert isinstance(ro, C.ReadOnlyClient)
+    assert asked == [False]                                      # the READ credentials were asked for
+    raw = ro._client
+    signed = _wire_recorders(raw)
+    for op, kw in [("put_object", {"Bucket": "b", "Key": "k", "Body": b"x"}),
+                   ("get_object", {"Bucket": "b", "Key": "k"}),
+                   ("delete_object", {"Bucket": "b", "Key": "k"})]:
+        with pytest.raises(C.WriteRefused):
+            getattr(ro, op)(**kw)
+        with pytest.raises(C.WriteRefused):
+            getattr(raw, op)(**kw)
+    assert signed == []
+    with pytest.raises(_Sent):                                   # control: a HEAD is signed and would be sent
+        ro.head_object(Bucket="b", Key="k")
+    assert signed[:1] == ["HeadObject"]
+
+
+def test_the_hook_runs_before_any_other_before_call_responder(tmp_path, monkeypatch):
+    """register_first on the wildcard, not register and not the s3 name alone: a handler that ANSWERS
+    before-call on 'before-call.*.*' (botocore's Stubber is one) otherwise replies to a put before the lock is
+    asked - measured: with only register_first('before-call.s3') this test failed."""
+    import boto3
+    from botocore.awsrequest import AWSResponse
+    from botocore.config import Config
+    from core import cutover, r2_util
+    monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "NO_CUTOVER"))
+    raw = r2_util.guard_client(boto3.client("s3", endpoint_url="https://example.invalid",
+                                            aws_access_key_id="test", aws_secret_access_key="test",
+                                            config=Config(region_name="auto", retries={"max_attempts": 0})))
+    answered = []
+
+    def responder(model=None, **_kw):                            # answers any call, as Stubber's handler does
+        answered.append(model.name)
+        return AWSResponse("https://example.invalid", 200, {}, None), {"IsTruncated": False}
+    raw.meta.events.register("before-call.*.*", responder)       # registered BEFORE the tool wraps the client
+    ro = C.ReadOnlyClient(raw)
+    for _ in range(2):
+        with pytest.raises(C.WriteRefused):
+            raw.put_object(Bucket="b", Key="k", Body=b"x")
+    assert answered == []
+    # control: the responder is live and answers an allowed call, so it would have answered the put
+    assert ro.list_objects_v2(Bucket="b", Prefix="p")["IsTruncated"] is False
+    assert answered == ["ListObjectsV2"]
+
+
 # ---- 2. output-path guard ------------------------------------------------------------------------------------
 REPO_W = r"F:\claude_wt\econ_r2census"
 
@@ -206,6 +312,38 @@ def test_a_temp_root_on_d_is_still_refused():
     with pytest.raises(C.Refused):
         C.check_out_path(r"D:\temp\claude\x.tsv", pathmod=ntpath, temp_roots=[r"D:\temp"], repo_root=REPO_W,
                          check_fs=False)
+
+
+def _dir_link(link, target):
+    """A directory link: a symlink, or on Windows without the symlink privilege a junction (no privilege
+    needed). Returns False when neither can be made."""
+    try:
+        os.symlink(str(target), str(link), target_is_directory=True)
+        return True
+    except (OSError, NotImplementedError, AttributeError):
+        pass
+    if os.name == "nt":
+        try:
+            import _winapi
+            _winapi.CreateJunction(str(target), str(link))
+            return True
+        except (OSError, ImportError, AttributeError):
+            return False
+    return False
+
+
+def test_a_link_that_points_into_a_refused_tree_is_refused(tmp_path):
+    """AR-399 D2: the guard judges where the path LEADS (realpath), so an allowed-looking link into the repo
+    tree (or, on the desktop, an F: link to D:) is refused."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    link = tmp_path / "looks_allowed"
+    if not _dir_link(link, repo):
+        pytest.skip("cannot create a directory symlink or junction on this machine")
+    with pytest.raises(C.Refused, match="inside the repository"):
+        C.check_out_path(str(link / "out.tsv"), temp_roots=[str(tmp_path)], repo_root=str(repo))
+    # control: the same tree reached by a plain path is allowed when nothing is a link into the repo
+    assert C.check_out_path(str(tmp_path / "plain.tsv"), temp_roots=[str(tmp_path)], repo_root=str(repo))
 
 
 def test_the_real_guard_refuses_an_existing_file_and_a_missing_parent(tmp_path):
@@ -285,6 +423,7 @@ def test_help_names_class_a_and_class_b(capsys):
         C.main(["--help"])
     out = capsys.readouterr().out
     assert "LIST page" in out and "Class A" in out and "HEAD is a Class B" in out and "2,000" in out
+    assert "not HTTP requests" in out                            # AR-399 D3: the bound is stated honestly
 
 
 # ---- 4. redaction --------------------------------------------------------------------------------------------
