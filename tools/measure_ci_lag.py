@@ -10,8 +10,14 @@ rather than believed.
     python tools/measure_ci_lag.py occupancy    # which hours the cloud writers really occupy
     python tools/measure_ci_lag.py collisions   # how often a start lands in a window the desktop may use
     python tools/measure_ci_lag.py replay       # replay the gate over real history: clear minutes per day
+    python tools/measure_ci_lag.py fetch --out DIR                 # freeze runs + jobs of both writers (gh, read-only)
+    python tools/measure_ci_lag.py replay61 --baseline --history DIR --logs LOGS --state COPY   # reproduce first
+    python tools/measure_ci_lag.py replay61 --history DIR --logs LOGS --state COPY              # the 6.1 sweep
 
-All read-only: `gh run list` only. Nothing here writes, deploys or runs the updater.
+All read-only: `gh run list` / `gh run view` only, the desktop logs read, a state COPY opened ?immutable=1. Nothing
+here writes to the repo's state, deploys or runs the updater. `replay61` is the starvation plan's section-6.1 replay
+(the W windows, D3's no-progress back-off, the desktop state lease with fairness and re-dispatch); its model and every
+assumption are described in the block above `cmd_fetch`.
 """
 from __future__ import annotations
 
@@ -368,9 +374,1231 @@ def cmd_sweep(args):
               (f"   COLLISION at {hit[0]:%H:%M}Z" if hit else ""))
 
 
+# ======================================================================================================
+# 6.1 REPLAY: the W windows, D3's no-progress back-off and the desktop state lease (starvation plan rev 9,
+# section 6.1, reviewed AR-393 round 9). Every function from here to cmd_fetch is a MODEL; the inputs are frozen
+# files (`fetch`, the desktop wrapper logs, one state copy), so a re-run on the same files gives the same numbers.
+#
+# What is held from history, per cloud run: when GitHub CREATED it (the arrival), how long its jobs ran once the
+# first one started (queue time excluded, job level - section 2.3 of the plan: a queued run reads the state when its
+# job STARTS), when inside that it reads the state (updater-daily: the "Pull state" step; updater-heavy: the `setup`
+# job, where A puts its one lease check), when its last push ended, and whether a push succeeded (A5's `completed`).
+# What is re-simulated: the shared `aqueduct-updater` concurrency group (one run in progress, at most ONE pending,
+# a newer arrival evicts the pending one - updater-heavy.yml 51-55), the lease (A1-A3), the fairness rule (A3.2),
+# re-dispatch (A3.6), the runner's start rule (run_local_heavy.ps1), and the orchestrator's order and admission over
+# the local units (production order_units / overdue_key / last_turn_utc / is_due / run_cost_estimate are CALLED, not
+# copied; the admission reserve is a two-line formula inside run_once and is restated with its line number).
+# ======================================================================================================
+import heapq          # noqa: E402
+import math           # noqa: E402
+import re             # noqa: E402
+import sqlite3        # noqa: E402
+import statistics     # noqa: E402
+from bisect import bisect_left, bisect_right   # noqa: E402
+from dataclasses import dataclass              # noqa: E402
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.append(ROOT)          # for the production updater.* functions the unit book calls
+
+# run_local_heavy.ps1, read at origin/main e2e69cf41 (the values the replay's "today" must reproduce)
+PS1_MARGIN_MIN = 25          # $marginMin
+PS1_MIN_USABLE = 20          # `if ($untilCron -lt 20)` -> ABORT
+PS1_WANT_BLOCK = 150         # $WantBlockMin
+PS1_MAX_HOURS = 36           # $MaxHours
+PS1_MIN_HOURS = 20           # $MinHours
+PS1_GRACE_MIN = 10           # $graceMin (the HARD STOP fires this long after the budget)
+PS1_BUDGET_CAP = 2880        # AQUEDUCT_RUN_BUDGET_MIN default before the clamp
+# orchestrate.run_once admission (updater/orchestrate.py 2548-2566): need = min(2 x timeout, max(2 x 1.5 x est, 10))
+# with the timeout `_unit_timeout_min()` = 45 when AQUEDUCT_UNIT_TIMEOUT_MIN is unset; W never sets it (plan W rev 3).
+UNIT_TIMEOUT_MIN = 45.0
+# Plan 3.1 / 3.2: re-read wait W = 120 s; lease expiry E = 2 x 31.3 min; the holder's push refuses 2 min before.
+LEASE_W_MIN = 2.0
+LEASE_E_MIN = 63.0
+# The resumable list of plan W5 (bea, census, istat by their Deadlines; wid, ons_uk, imf_imts_direct, unctad_* once
+# their stop points land - W3b). "W on" clocks exactly these; "W off" clocks none, which is what W does in the near
+# term (W3b: CLOCKED ships with every margin None).
+W_CLOCKED = ("bea", "census", "istat", "wid", "ons_uk", "imf_imts_direct")
+W_CLOCKED_PREFIX = ("unctad_",)
+# A finished turn of these sources advances nothing the progress probe reads (tools/unit_progress_probe.py diffs
+# last_success_utc and upstream_vintage). Evidence: istat's partial note "vintage not advanced", the 10-24 pass that
+# ran only istat (13,751 s) and stamped nothing, and the 10-25 pass that finished istat, bea, bls, eia and reported
+# "3 unit(s) advanced".
+NO_ADVANCE = frozenset({"istat"})
+# Not work: statcan is a 2-s reporter (jobs/statcan_lane.py does its work, plan section 1); cbs_nl and gus_dbw are
+# PROTECTED (orchestrate.FIRSTPASS_DIRS) and never attempted.
+NOT_WORK = frozenset({"statcan", "cbs_nl", "gus_dbw"})
+
+
+def _ts(s):
+    if not s:
+        return None
+    d = _parse(s)
+    return d if d.year >= 2000 else None
+
+
+def _mins(a, b) -> float:
+    return (b - a).total_seconds() / 60.0
+
+
+def _iso(t: dt.datetime) -> str:
+    return t.astimezone(dt.timezone.utc).isoformat(timespec="seconds")
+
+
+@dataclass
+class CloudRun:
+    wf: str
+    run_id: int
+    event: str
+    created: dt.datetime
+    status: str
+    conclusion: str
+    exec_min: float          # first job start -> run end (queue excluded)
+    read_off_min: float      # first job start -> the state read (daily "Pull state"; heavy `setup`)
+    push_off_min: float      # first job start -> end of its last successful "Push state" step (else exec_min)
+    completed_ok: bool       # A5 `completed`: daily = a "Push state" step succeeded; heavy = run conclusion success
+    pushes: int              # successful "Push state" steps (every one writes a backup, plan 2.4)
+    hist_start: dt.datetime | None
+    hist_end: dt.datetime | None
+    has_jobs: bool
+    dispatched: bool = False  # created by the replay's own re-dispatch (A3.6), not by history
+
+
+def _cloud_run(wf: str, r: dict, jobs) -> CloudRun:
+    created = _parse(r["createdAt"])
+    end = _parse(r["updatedAt"]) if r.get("status") == "completed" else None
+    starts = [t for t in (_ts(j.get("startedAt")) for j in (jobs or [])) if t]
+    if jobs is None:
+        first = _ts(r.get("startedAt")) or created      # run level only: startedAt == createdAt (plan 2.3)
+    else:
+        first = min(starts) if starts else None
+    exec_min = max(0.0, _mins(first, end)) if (end and first) else 0.0
+    read_off, push_off, pushes = 0.0, exec_min, 0
+    if jobs and first:
+        steps = [s for j in jobs for s in (j.get("steps") or [])]
+        if wf == "updater-daily.yml":
+            ps = sorted(t for t in (_ts(s.get("startedAt")) for s in steps if s["name"].startswith("Pull state")) if t)
+            if ps:
+                read_off = max(0.0, _mins(first, ps[0]))
+        else:
+            su = [t for t in (_ts(j.get("startedAt")) for j in jobs if j.get("name") == "setup") if t]
+            if su:
+                read_off = max(0.0, _mins(first, min(su)))
+        pe = [t for t in (_ts(s.get("completedAt")) for s in steps
+                          if s["name"].startswith("Push state") and s.get("conclusion") == "success") if t]
+        pushes = len(pe)
+        if pe:
+            push_off = max(0.0, _mins(first, max(pe)))
+    if wf == "updater-daily.yml":
+        ok = pushes >= 1 if jobs is not None else r.get("conclusion") in ("success", "failure")
+    else:
+        ok = r.get("conclusion") == "success"
+    return CloudRun(wf, int(r["databaseId"]), r.get("event", ""), created, r.get("status", ""),
+                    r.get("conclusion") or "", exec_min, read_off, push_off, bool(ok and end), pushes, first, end,
+                    jobs is not None)
+
+
+def load_cloud_history(hist_dir: str) -> list:
+    """Every run of both writers from a `fetch` directory, oldest first."""
+    out = []
+    for wf in g.WRITERS:
+        with open(os.path.join(hist_dir, f"runs_{wf}.json"), encoding="utf-8") as f:
+            rows = json.load(f)
+        for r in rows:
+            path = os.path.join(hist_dir, "jobs", f"{r['databaseId']}.json")
+            jobs = None
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as f:
+                    jobs = json.load(f).get("jobs")
+            out.append(_cloud_run(wf, r, jobs))
+    out.sort(key=lambda x: (x.created, x.run_id))
+    return out
+
+
+def cron_blocks(runs: list, since: dt.datetime, until: dt.datetime) -> list:
+    """[(cron, end, wf)]: ci_writer_gate.assess's pending rule as intervals. A cron blocks from its time until a
+    SCHEDULE run of that writer is created within PENDING_LIMIT of it, at most PENDING_LIMIT. Under the lease it does
+    not block at all (A); scheduled runs are created at their historical times in every scenario, so this list is
+    the same in all of them."""
+    created = {wf: sorted(r.created for r in runs if r.wf == wf and r.event == "schedule") for wf in g.WRITERS}
+    out = []
+    day = (since - dt.timedelta(days=1)).date()
+    while dt.datetime(day.year, day.month, day.day, tzinfo=dt.timezone.utc) <= until:
+        for wf, hours in g.WRITERS.items():
+            for h in hours:
+                cron = dt.datetime(day.year, day.month, day.day, h, tzinfo=dt.timezone.utc)
+                c = created[wf]
+                i = bisect_left(c, cron)
+                c1 = c[i] if i < len(c) and c[i] < cron + g.PENDING_LIMIT else None
+                end = c1 if c1 is not None else cron + g.PENDING_LIMIT
+                if end > cron:
+                    out.append((cron, end, wf))
+        day += dt.timedelta(days=1)
+    return sorted(out)
+
+
+def _merge(iv: list) -> list:
+    out = []
+    for s, e in sorted(iv):
+        if out and s <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], e)
+        else:
+            out.append([s, e])
+    return out
+
+
+def free_windows(runs: list, since: dt.datetime, until: dt.datetime, pending: bool = True) -> list:
+    """The gate's free windows over history, as intervals: a run blocks from createdAt until it completed (any
+    event - a dispatch writes the state too), a cron per cron_blocks. Same model as the planner's analyze_runs.py
+    (plan 2.2), cross-checked minute by minute against the production assess() by gate_minutes_production."""
+    busy = [(max(r.created, since), min(r.hist_end or until, until)) for r in runs
+            if (r.hist_end or until) > since and r.created < until]
+    if pending:
+        busy += [(max(c, since), min(e, until)) for c, e, _w in cron_blocks(runs, since, until) if e > since and c < until]
+    free, t = [], since
+    for s, e in _merge([b for b in busy if b[1] > b[0]]):
+        if s > t:
+            free.append((t, s))
+        t = max(t, e)
+    if t < until:
+        free.append((t, until))
+    return free
+
+
+def window_stats(free: list, since: dt.datetime, until: dt.datetime, margin: float = PS1_MARGIN_MIN) -> dict:
+    fm = [_mins(a, b) for a, b in free]
+    days = _mins(since, until) / 1440.0
+    return {"days": days, "free_min": sum(fm), "per_day": sum(fm) / days if days else 0.0, "windows": len(fm),
+            "ge90": sum(1 for m in fm if m - margin >= 90), "ge150": sum(1 for m in fm if m - margin >= 150),
+            "longest": max(fm) if fm else 0.0}
+
+
+def _as_of_lists(runs: list):
+    """Pre-sorted views so the production assess() can be asked about any instant without rebuilding history."""
+    per = {}
+    for wf in g.WRITERS:
+        rs = sorted((r for r in runs if r.wf == wf), key=lambda r: r.created)
+        per[wf] = (rs, [r.created for r in rs], [r for r in rs if r.event == "schedule"],
+                   [r.created for r in rs if r.event == "schedule"])
+    return per
+
+
+def _runs_as_of(per: dict, now: dt.datetime):
+    unf, sch = {}, {}
+    for wf, (rs, cs, ss, scs) in per.items():
+        def row(r):
+            done = r.hist_end is not None and r.hist_end <= now
+            return {"createdAt": r.created.strftime("%Y-%m-%dT%H:%M:%SZ"), "event": r.event,
+                    "status": "completed" if done else "in_progress"}
+        i = bisect_right(cs, now)
+        unf[wf] = [row(r) for r in reversed(rs[max(0, i - g.RUN_LIMIT):i])]
+        j = bisect_right(scs, now)
+        sch[wf] = [row(r) for r in reversed(ss[max(0, j - g.SCHED_LIMIT):j])]
+    return unf, sch
+
+
+def gate_minutes_production(runs: list, since: dt.datetime, until: dt.datetime, step_min: int = 1) -> list:
+    """Free windows from the PRODUCTION ci_writer_gate.assess(), asked once per `step_min` minute with the
+    listings as gh would have returned them at that instant (unfiltered newest RUN_LIMIT, scheduled newest
+    SCHED_LIMIT). The control for free_windows: two instruments, one answer (R0 rule 1)."""
+    per = _as_of_lists(runs)
+    free, cur, t = [], None, since
+    step = dt.timedelta(minutes=step_min)
+    while t < until:
+        unf, sch = _runs_as_of(per, t)
+        clear = not g.assess(unf, t, None, sch)[0]
+        if clear and cur is None:
+            cur = t
+        elif not clear and cur is not None:
+            free.append((cur, t))
+            cur = None
+        t += step
+    if cur is not None:
+        free.append((cur, until))
+    return free
+
+
+def until_block_fast(t: dt.datetime) -> int:
+    """minutes_until_block() after a CLEAR answer: every cron of the last PENDING_LIMIT has its run (else the gate
+    would block now) and nothing is in flight, so the frozen walk first blocks at the next cron of either writer,
+    found on the walk's own 5-minute grid from `t`. Checked against the production function in `replay61 --check`."""
+    best = None
+    for hours in g.WRITERS.values():
+        for back in (0, 1):
+            d = (t + dt.timedelta(days=back)).date()
+            for h in hours:
+                c = dt.datetime(d.year, d.month, d.day, h, tzinfo=dt.timezone.utc)
+                if c > t and (best is None or c < best):
+                    best = c
+    k = math.ceil(_mins(t, best) / 5.0 - 1e-9)
+    return int(min(k * 5, 720))
+
+
+# ------------------------------------------------------------------ desktop logs: margins, tail, probe, passes
+
+_HMS = re.compile(r"^﻿?\[(\d\d):(\d\d):(\d\d)\] (.*)$")
+
+
+def _stamp_dt(stamp: str) -> dt.datetime:
+    return dt.datetime.strptime(stamp, "%Y%m%d-%H%M%S").replace(tzinfo=dt.timezone.utc)
+
+
+def parse_wrapper_log(path: str) -> dict:
+    """One run_local_heavy wrapper log -> its timed events. Times carry only HH:MM:SS, so the date comes from the
+    file's stamp and advances at each wrap past midnight."""
+    stamp = os.path.basename(path)[len("local_heavy_"):-len(".log")]
+    base = _stamp_dt(stamp)
+    day, last, ev = base.replace(hour=0, minute=0, second=0), None, []
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            m = _HMS.match(line.rstrip("\r\n"))
+            if not m:
+                continue
+            t = day.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=int(m.group(3)))
+            if last is not None and t < last - dt.timedelta(hours=1):
+                day += dt.timedelta(days=1)
+                t += dt.timedelta(days=1)
+            last = t
+            ev.append((t, m.group(4)))
+    out = {"stamp": stamp, "start": base, "events": ev}
+    for t, msg in ev:
+        if msg.startswith("pull-state ..."):
+            out["pull_at"] = t
+        elif msg.startswith("running updater"):
+            out["updater_at"] = t
+        elif msg.startswith("push-state ..."):
+            out["push_at"] = t
+        elif msg.startswith("cadence stamped") or msg.startswith("cadence NOT stamped") or \
+                msg.startswith("push-state FAILED"):
+            out.setdefault("push_done", t)
+            out["stamped"] = msg.startswith("cadence stamped")
+        elif msg.startswith("whole-run budget") or msg.startswith("per-source budget override"):
+            m2 = re.search(r"whole-run budget: (\d+) min", msg)
+            if m2:
+                out["budget"] = int(m2.group(1))
+        elif msg.startswith("HARD STOP"):
+            out["hard_stop"] = True
+    return out
+
+
+def desktop_passes(logdir: str, since_stamp: str = "") -> list:
+    """Every wrapper log that pulled state (a pass), oldest first. Plain listdir + sort, never mtime order."""
+    names = sorted(n for n in os.listdir(logdir)
+                   if re.fullmatch(r"local_heavy_\d{8}-\d{6}\.log", n) and n[len("local_heavy_"):] >= since_stamp)
+    out = []
+    for n in names:
+        p = parse_wrapper_log(os.path.join(logdir, n))
+        if "pull_at" in p:
+            out.append(p)
+    return out
+
+
+def pass_overheads(passes: list) -> dict:
+    """Pull (pull-state -> updater start) and push (push-state -> the stamp line) minutes, measured per pass."""
+    pull = [_mins(p["pull_at"], p["updater_at"]) for p in passes if "updater_at" in p]
+    push = [_mins(p["push_at"], p["push_done"]) for p in passes if "push_at" in p and "push_done" in p]
+    return {"n_pull": len(pull), "n_push": len(push),
+            "pull_median": statistics.median(pull) if pull else float("nan"),
+            "push_median": statistics.median(push) if push else float("nan"),
+            "pull_max": max(pull) if pull else float("nan"), "push_max": max(push) if push else float("nan")}
+
+
+_DERIVE_SPENT = re.compile(r"derive budget of ([0-9.]+) min spent")
+_TOOK = re.compile(r"^\[orchestrator\] <<< ([^/\s]+)/\S+ took ([0-9,]+)s")
+_START = re.compile(r"^\[orchestrator\] >>> ([^/\s]+)/")
+_TIMED = re.compile(r"(probe|detect_change|csv phase|finaliz)\w*[^\n]*?\b[0-9.]+ ?s\b", re.I)
+
+
+def measure_tail_probe(logdir: str) -> dict:
+    """What the updater logs say about W's `tail` (CSV phase + finalize) and `P` (probe), plan W2.
+
+    The logs carry NO phase timestamps, so neither is measured directly. What they do carry:
+      - per unit, `derive budget of N min spent` each time a CSV phase ran its whole derive budget - main derive
+        and the csv-retry drain each have one, so a unit run with two such lines spent >= 2 x N in CSV phases;
+      - `<<< src took Ns` for every unit that finished.
+    So `tail` gets a measured LOWER bound (the largest sum of spent derive budgets in one unit run); the code's
+    upper bound per CSV phase is the fence min(60, rem + 2) (orchestrate._csv_fence_min). `P` cannot be bounded
+    from the logs at all: the count of timed probe/CSV lines is returned so the reader can see it is zero."""
+    names = sorted(n for n in os.listdir(logdir) if re.fullmatch(r"local_heavy_updater_\d{8}-\d{6}\.log", n))
+    unit_runs, spent, timed = 0, [], 0
+    for n in names:
+        cur, acc = None, 0.0
+        with open(os.path.join(logdir, n), encoding="utf-8", errors="replace") as f:
+            for line in f:
+                m = _START.match(line)
+                if m:
+                    cur, acc = m.group(1), 0.0
+                    unit_runs += 1
+                    continue
+                m = _DERIVE_SPENT.search(line)
+                if m and cur:
+                    acc += float(m.group(1))
+                if _TIMED.search(line):
+                    timed += 1
+                m = _TOOK.match(line)
+                if m and cur == m.group(1):
+                    if acc > 0:
+                        spent.append((acc, n, cur, int(m.group(2).replace(",", ""))))
+                    cur, acc = None, 0.0
+    spent.sort(reverse=True)
+    return {"logs": len(names), "unit_runs": unit_runs, "csv_budget_hits": spent,
+            "tail_lower_bound_min": spent[0][0] if spent else 0.0, "timed_phase_lines": timed}
+
+
+# ------------------------------------------------------------------ the local units (one state copy)
+
+@dataclass
+class SimUnit:
+    source_id: str
+    cadence: str
+    unit_id: str = "_all"
+
+    @property
+    def key(self):
+        return f"{self.source_id}/{self.unit_id}"
+
+    @property
+    def config(self):
+        return {"cadence": self.cadence}
+
+
+class _StoreShim:
+    """StateStore.run_cost_estimate / last_kill_utc read only `self.db`; this lets the replay call them unchanged."""
+    def __init__(self, db):
+        self.db = db
+
+
+def local_units_from_registry(path: str | None = None) -> dict:
+    """{source_id: cadence} for run_location: local, from updater/registry.yaml (the list run_local_heavy.ps1 uses,
+    via tools/_list_local_sources.py), minus NOT_WORK."""
+    import yaml
+    path = path or os.path.join(ROOT, "updater", "registry.yaml")
+    with open(path, encoding="utf-8") as f:
+        d = yaml.safe_load(f) or {}
+    return {e["source_id"]: (e.get("cadence") or "monthly") for e in (d.get("sources") or [])
+            if e.get("run_location") == "local" and e.get("source_id") and e["source_id"] not in NOT_WORK}
+
+
+class UnitBook:
+    """The owed work of the local units, advanced pass by pass with the production scheduling rules.
+
+    Work per turn (minutes) = the duration of the unit's NEWEST `runs` row in the copy (the plan's q_owed rule; a
+    killed or transient row is a censored LOWER bound, listed in `censored`). A finished turn's status is the newest
+    ok / no_change / partial row of that source (`outcome`; 'ok' when there is none - listed in `assumed_ok`)."""
+
+    def __init__(self, cadences: dict, state: dict, runs_rows: list, work: dict, outcome: dict,
+                 censored=(), assumed_ok=()):
+        from updater.strategies.base import Strategy
+        from updater import orchestrate as orch
+        from updater.state import StateStore
+        self._is_due = Strategy.is_due
+        self._orch, self._store = orch, StateStore
+        self.units = {s: SimUnit(s, c) for s, c in sorted(cadences.items())}
+        self.state = {s: dict(state.get(s) or {}) for s in self.units}
+        self.work = {s: float(work.get(s, 0.0)) for s in self.units}
+        self.remaining = dict(self.work)
+        self.outcome = {s: outcome.get(s, "ok") for s in self.units}
+        self.censored, self.assumed_ok = set(censored), set(assumed_ok)
+        self.db = sqlite3.connect(":memory:")
+        self.db.execute("CREATE TABLE runs(id INTEGER PRIMARY KEY AUTOINCREMENT, ts_utc TEXT, source_id TEXT, "
+                        "unit_id TEXT, status TEXT, obs INTEGER, dur_s REAL, note TEXT)")
+        self.db.executemany("INSERT INTO runs(ts_utc, source_id, unit_id, status, dur_s) VALUES (?,?,?,?,?)",
+                            [r for r in runs_rows if r[1] in self.units])
+        self.attempts = Counter()
+        self.finished = Counter()
+
+    def is_due(self, sid: str, now: dt.datetime) -> bool:
+        return self._is_due(None, self.units[sid], self.state[sid], now)
+
+    def owed(self, now: dt.datetime) -> float:
+        return sum(self.remaining[s] for s in self.units if self.is_due(s, now))
+
+    def due_set(self, now: dt.datetime) -> list:
+        return [s for s in self.units if self.is_due(s, now)]
+
+    def _row(self, t, sid, status, dur_min):
+        self.db.execute("INSERT INTO runs(ts_utc, source_id, unit_id, status, dur_s) VALUES (?,?,?,?,?)",
+                        (_iso(t), sid, "_all", status, dur_min * 60.0))
+
+    def run_pass(self, start: dt.datetime, budget_min: float, w_on: bool = False, tail_min: float = 90.0,
+                 kill_keeps_progress: bool = False, grace_min: float = PS1_GRACE_MIN) -> dict:
+        """One updater run of the whole local route with budget `budget_min`, starting at `start`.
+
+        Order: production order_units (cost band, then cadence-normalised staleness of last_turn_utc). Admission:
+        orchestrate.py 2548-2566. A unit that is admitted and due runs its remaining work:
+          - W off, or a unit not on the clocked list: to completion, or to the HARD STOP at budget + grace, where it
+            is killed (a `killed_external` row, tools/record_killed_unit.py) and the pass ends; its progress is lost
+            unless `kill_keeps_progress` (a sensitivity case - plan W5 says no unit has shown a persisted bookmark);
+          - W on and clocked: to completion if it fits the time left, else stopped at the run deadline, keeping
+            (time left - tail) minutes of progress (the update window is rem - tail, plan W2), recorded as a
+            transient_fail (the UnitTimeout path)."""
+        orch, store = self._orch, self._store
+        shim = _StoreShim(self.db)
+        costs = store.run_cost_estimate(shim)
+        kills = store.last_kill_utc(shim)
+        now_iso = _iso(start)
+
+        def staleness(u):
+            last = orch.last_turn_utc(self.state[u.source_id], kills.get((u.source_id, u.unit_id)))
+            return (orch.overdue_key(last, u.cadence, now_iso), u.key)
+
+        order = orch.order_units(list(self.units.values()), costs, staleness)
+        e, advanced, hard, stopped, ran = 0.0, False, None, None, []
+        for u in order:
+            sid = u.source_id
+            est = costs.get(sid)
+            need = 2 * UNIT_TIMEOUT_MIN if est is None else min(2 * UNIT_TIMEOUT_MIN, max(2 * 1.5 * (est / 60.0),
+                                                                                        10.0))
+            if e + need > budget_min:
+                continue                                   # BUDGET SKIP
+            t_unit = start + dt.timedelta(minutes=e)
+            if not self.is_due(sid, t_unit):
+                continue                                   # NOT DUE
+            self.attempts[sid] += 1
+            R = self.remaining[sid]
+            clocked = w_on and (sid in W_CLOCKED or sid.startswith(W_CLOCKED_PREFIX))
+            limit = budget_min - e if clocked else budget_min + grace_min - e
+            if R <= limit:
+                e += R
+                t_end = start + dt.timedelta(minutes=e)
+                st, status = self.state[sid], self.outcome[sid]
+                st["last_attempt_utc"], st["status"] = _iso(t_end), status
+                if status in ("ok", "no_change"):
+                    st["last_success_utc"] = _iso(t_end)
+                self._row(t_end, sid, status, R)
+                self.remaining[sid] = self.work[sid]
+                self.finished[sid] += 1
+                advanced = advanced or sid not in NO_ADVANCE
+                ran.append((sid, R, status))
+                continue
+            t_end = start + dt.timedelta(minutes=e + limit)
+            if clocked:
+                self.remaining[sid] = R - max(0.0, limit - tail_min)
+                self.state[sid]["last_attempt_utc"], self.state[sid]["status"] = _iso(t_end), "transient_fail"
+                self._row(t_end, sid, "transient_fail", limit)
+                stopped = sid
+                ran.append((sid, limit, "stopped"))
+                e += limit
+                continue                                   # every later unit is budget-skipped (e == budget)
+            if kill_keeps_progress and (sid in W_CLOCKED or sid.startswith(W_CLOCKED_PREFIX)):
+                self.remaining[sid] = R - limit
+            self._row(t_end, sid, "killed_external", limit)
+            hard = sid
+            ran.append((sid, limit, "killed"))
+            e += limit
+            break
+        return {"used_min": e, "advanced": advanced, "hard_stop": hard, "stopped": stopped, "ran": ran}
+
+
+def load_unit_book(db_path: str, copy_utc: dt.datetime, shift: dt.timedelta, cadences: dict | None = None,
+                   desktop_windows: list | None = None) -> UnitBook:
+    """The owed units from one state COPY, opened read-only (?immutable=1), every timestamp moved by `shift` so the
+    copy's instant lands on the replay's first instant. Rows dated after the copy are ignored.
+
+    `desktop_windows` ([(updater start, push end)] of the real desktop passes, from the wrapper logs): when given, a
+    finished turn's outcome is read only from rows written inside a desktop pass, so a cloud row - e.g. the
+    45.0-min `partial` that is the CI timeout, censored by R625 rule 2 - cannot decide it. A source with no finished
+    desktop row is assumed to end `ok` (listed in `assumed_ok`)."""
+    cadences = cadences or local_units_from_registry()
+    con = sqlite3.connect(f"file:{db_path}?immutable=1", uri=True)
+    wins = sorted(desktop_windows or [])
+    wstarts = [a for a, _b in wins]
+
+    def on_desktop(ts) -> bool:
+        if desktop_windows is None:
+            return True
+        d = dt.datetime.fromisoformat(str(ts))
+        d = d if d.tzinfo else d.replace(tzinfo=dt.timezone.utc)
+        i = bisect_right(wstarts, d) - 1
+        return i >= 0 and wins[i][0] <= d <= wins[i][1]
+
+    def mv(s):
+        if not s:
+            return s
+        d = dt.datetime.fromisoformat(str(s))
+        d = d if d.tzinfo else d.replace(tzinfo=dt.timezone.utc)
+        return _iso(d + shift)
+
+    srcs = sorted(cadences)
+    q = ",".join("?" * len(srcs))
+    state = {}
+    for sid, ls, la, st in con.execute(f"SELECT source_id, last_success_utc, last_attempt_utc, status FROM "
+                                       f"unit_state WHERE unit_id='_all' AND source_id IN ({q})", srcs):
+        state[sid] = {"last_success_utc": mv(ls), "last_attempt_utc": mv(la), "status": st}
+    raw = list(con.execute(f"SELECT ts_utc, source_id, unit_id, status, dur_s FROM runs WHERE source_id IN ({q}) "
+                           f"AND ts_utc <= ? ORDER BY id", srcs + [_iso(copy_utc)]))
+    rows = [(mv(ts), sid, uid, status, dur) for ts, sid, uid, status, dur in raw]
+    work, outcome, censored, assumed = {}, {}, [], []
+    for sid in srcs:
+        nr = [r for r in rows if r[1] == sid]
+        if nr:
+            work[sid] = (nr[-1][4] or 0.0) / 60.0
+            if nr[-1][3] in ("killed_external", "transient_fail"):
+                censored.append(sid)
+        good = [r for r, o in zip(rows, raw) if r[1] == sid and r[3] in ("ok", "no_change", "partial")
+                and on_desktop(o[0])]
+        if good:
+            outcome[sid] = good[-1][3]
+        else:
+            assumed.append(sid)
+    con.close()
+    return UnitBook(cadences, state, rows, work, outcome, censored, assumed)
+
+
+# ------------------------------------------------------------------ the simulator
+
+@dataclass
+class ReplayConfig:
+    policy: str = "today"            # "today": the ps1 + gate as on main; "lease": plan A (fallback = today)
+    dispatch: bool = True            # A3.6 re-dispatch works (True) or the credential cannot dispatch (False)
+    lease_min: float = 240.0         # L
+    min_hours: float = PS1_MIN_HOURS
+    backoff_h: float | None = None   # D3 NoProgressBackoffH; None = no D3 (today)
+    w_on: bool = False               # W with every resumable candidate clocked (W off = the near term, W3b)
+    tail_min: float = 90.0
+    kill_keeps_progress: bool = False
+    pull_min: float = 2.0
+    push_min: float = 6.9
+    dispatch_latency_min: float = 1.0
+    tick_min: float = 5.0
+    want_block: float = PS1_WANT_BLOCK
+    max_hours: float = PS1_MAX_HOURS
+    # NOT in the plan (a sensitivity case): D3 as written holds only windows below WantBlockMin, and a lease window
+    # is L >= 180, so under A an EMPTY lease is never backed off. True also holds lease attempts while the
+    # no-progress stamp is younger than backoff_h.
+    d3_leases: bool = False
+
+    def label(self) -> str:
+        d3 = "off" if self.backoff_h is None else f"{self.backoff_h:g}" + ("+L" if self.d3_leases else "")
+        if self.policy == "today":
+            return f"today MinH={self.min_hours:g} D3={d3} W={'on' if self.w_on else 'off'}"
+        return (f"A L={self.lease_min:g} MinH={self.min_hours:g} D3={d3} W={'on' if self.w_on else 'off'} "
+                f"dispatch={'yes' if self.dispatch else 'no'}")
+
+
+def deferred_minutes(hist_dir: str, since: dt.datetime, until: dt.datetime) -> dict:
+    """How long a DEFERRED run holds the concurrency group (A5), from the measured steps of real runs created in
+    [since, until): updater-daily = first job start -> "Pull state" start, + the pull (a --read-only pull costs the
+    same download), + the "Health gate" step, + everything after it; updater-heavy = its `setup` job (a deferring
+    setup emits an empty matrix, so no leg runs) + 1 min for A5's new `record` job (not measurable yet).
+    Returns the medians and the sample sizes."""
+    parts = defaultdict(list)
+    for wf in g.WRITERS:
+        with open(os.path.join(hist_dir, f"runs_{wf}.json"), encoding="utf-8") as f:
+            rows = json.load(f)
+        for r in rows:
+            c = _parse(r["createdAt"])
+            path = os.path.join(hist_dir, "jobs", f"{r['databaseId']}.json")
+            if not (since <= c < until) or r.get("status") != "completed" or not os.path.exists(path):
+                continue
+            with open(path, encoding="utf-8") as f:
+                jobs = json.load(f).get("jobs") or []
+            starts = [t for t in (_ts(j.get("startedAt")) for j in jobs) if t]
+            if not starts:
+                continue
+            first, end = min(starts), _parse(r["updatedAt"])
+            if wf == "updater-daily.yml":
+                steps = {s["name"].split(" (")[0]: s for j in jobs for s in (j.get("steps") or [])}
+                ps = next((s for n, s in steps.items() if n.startswith("Pull state")), None)
+                hg = next((s for n, s in steps.items() if n.startswith("Health gate")), None)
+                if ps and hg and _ts(ps.get("startedAt")) and _ts(hg.get("completedAt")):
+                    parts["d_lead"].append(_mins(first, _ts(ps["startedAt"])))
+                    parts["d_pull"].append(_mins(_ts(ps["startedAt"]), _ts(ps["completedAt"])))
+                    parts["d_health"].append(_mins(_ts(hg["startedAt"]), _ts(hg["completedAt"])))
+                    parts["d_post"].append(_mins(_ts(hg["completedAt"]), end))
+            else:
+                su = [j for j in jobs if j.get("name") == "setup" and _ts(j.get("startedAt")) and
+                      _ts(j.get("completedAt"))]
+                if su:
+                    parts["h_setup"].append(_mins(_ts(su[0]["startedAt"]), _ts(su[0]["completedAt"])))
+    med = {k: statistics.median(v) for k, v in parts.items() if v}
+    daily = sum(med.get(k, 0.0) for k in ("d_lead", "d_pull", "d_health", "d_post"))
+    return {"updater-daily.yml": daily, "updater-heavy.yml": med.get("h_setup", 1.0) + 1.0,
+            "parts": med, "n": {k: len(v) for k, v in parts.items()}}
+
+
+def dispatch_templates(runs: list, since: dt.datetime, until: dt.datetime) -> dict:
+    """What a re-dispatched run of a writer that was NOT deferred looks like (A3.6 dispatches every OWED writer,
+    and after a lease both are owed by A3.2's rule): the median measured scheduled run of that writer in the span.
+    A writer that WAS deferred is re-dispatched with that deferred run's own measured durations."""
+    out = {}
+    for wf in g.WRITERS:
+        sel = [r for r in runs if r.wf == wf and r.event == "schedule" and r.has_jobs and r.completed_ok
+               and since <= r.created < until]
+        out[wf] = CloudRun(wf, 0, "workflow_dispatch", since, "completed", "",
+                           statistics.median(r.exec_min for r in sel), statistics.median(r.read_off_min for r in sel),
+                           statistics.median(r.push_off_min for r in sel), True,
+                           int(statistics.median(r.pushes for r in sel)), None, None, True, dispatched=True)
+    return out
+
+
+class Replay:
+    """One scenario over [start, end) with a warm-up of the cloud group before `start` (the desktop is idle in the
+    warm-up, so the group's state at `start` is history's)."""
+
+    PRIO_DONE, PRIO_RELEASE, PRIO_ARRIVE, PRIO_TICK = 0, 1, 2, 3
+
+    def __init__(self, cfg: ReplayConfig, runs: list, book: UnitBook, start: dt.datetime, end: dt.datetime,
+                 deferred_min: dict, templates: dict, last_success: dt.datetime, last_noprogress: dt.datetime | None,
+                 warmup: dt.timedelta = dt.timedelta(days=3)):
+        self.cfg, self.book, self.start, self.end = cfg, book, start, end
+        self.runs = [r for r in runs if start - warmup <= r.created < end]
+        self.blocks = cron_blocks(runs, start - warmup, end)
+        self.block_starts = [b[0] for b in self.blocks]
+        self.deferred_min, self.templates = deferred_minutes_default(deferred_min), templates
+        self.ev, self.seq = [], 0
+        self.running, self.pending = None, None
+        self.lease = None                     # (taken, release) of the CURRENT lease
+        self.leases, self.passes = [], []
+        self.ref = None                       # A3.2 reference time of the last lease (None: first-lease rule holds)
+        self.busy_until = start
+        self.last_success, self.last_noprog = last_success, last_noprogress
+        self.done = []                        # (wf, start, end, deferred, run)
+        self.evicted = []
+        self.dispatch_q, self.dispatched = [], []
+        self.lease_deferred = {}              # wf -> the newest run deferred under the current lease
+        self.arrivals = sorted(r.created for r in self.runs)
+        self._real_by_end = {}
+        for wf in g.WRITERS:
+            rs = sorted((r for r in runs if r.wf == wf and r.has_jobs and r.hist_end is not None
+                         and r.event == "schedule"), key=lambda r: r.hist_end)
+            self._real_by_end[wf] = (rs, [r.hist_end for r in rs])
+        self.owed_series = []
+        for r in self.runs:
+            self._push(r.created, self.PRIO_ARRIVE, ("arrive", r))
+        t = start
+        while t < end:
+            self._push(t, self.PRIO_TICK, ("tick", None))
+            t += dt.timedelta(minutes=cfg.tick_min)
+
+    def _push(self, t, prio, item):
+        self.seq += 1
+        heapq.heappush(self.ev, (t, prio, self.seq, item))
+
+    # -- the concurrency group
+    def _lease_active(self, x: dt.datetime) -> bool:
+        return self.lease is not None and self.lease[0] <= x < self.lease[1]
+
+    def _start(self, r: CloudRun, s: dt.datetime):
+        deferred = self.cfg.policy == "lease" and self._lease_active(s + dt.timedelta(minutes=r.read_off_min))
+        dur = self.deferred_min[r.wf] if deferred else r.exec_min
+        self.running = (r, s, s + dt.timedelta(minutes=dur), deferred)
+        if deferred:
+            self.lease_deferred[r.wf] = r
+        self._push(self.running[2], self.PRIO_DONE, ("done", None))
+
+    def _arrive(self, r: CloudRun, t: dt.datetime):
+        if self.running is None and self.pending is None:
+            self._start(r, t)
+        elif self.pending is None:
+            self.pending = (r, t)
+        else:
+            self.evicted.append((self.pending[0], self.pending[1], t))
+            if self.pending[0].dispatched and self.pending[0].wf not in self.dispatch_q:
+                self.dispatch_q.insert(0, self.pending[0].wf)
+            self.pending = (r, t)
+
+    def _done(self, t: dt.datetime):
+        r, s, e, deferred = self.running
+        self.done.append((r.wf, s, e, deferred, r))
+        self.running = None
+        if self.pending is not None:
+            nxt, _arr = self.pending
+            self.pending = None
+            self._start(nxt, t)
+
+    def _inflight(self) -> bool:
+        return self.running is not None or self.pending is not None
+
+    def _cron_pending(self, t: dt.datetime) -> bool:
+        i = bisect_right(self.block_starts, t)
+        for c, e, _wf in self.blocks[max(0, i - 8):i]:
+            if c <= t < e:
+                return True
+        return False
+
+    def _completed_after(self, wf: str, ref: dt.datetime | None) -> bool:
+        for w, _s, e, deferred, r in reversed(self.done):
+            if w == wf and not deferred and r.completed_ok:
+                return ref is None or e > ref
+        return False
+
+    def _fair(self) -> bool:
+        if self.ref is None:
+            return all(self._completed_after(wf, None) for wf in g.WRITERS)   # the first-lease rule (A3.2)
+        return all(self._completed_after(wf, self.ref) for wf in g.WRITERS)
+
+    # -- the desktop
+    def _pass(self, t: dt.datetime, budget: float, mode: str):
+        cfg = self.cfg
+        pre = LEASE_W_MIN if mode == "lease" else 0.0
+        upd = t + dt.timedelta(minutes=pre + cfg.pull_min)
+        res = self.book.run_pass(upd, budget, cfg.w_on, cfg.tail_min, cfg.kill_keeps_progress)
+        push_end = upd + dt.timedelta(minutes=res["used_min"] + cfg.push_min)
+        if res["advanced"]:
+            self.last_success = push_end
+        else:
+            self.last_noprog = push_end
+        self.passes.append({"mode": mode, "start": t, "pull": t + dt.timedelta(minutes=pre), "end": push_end,
+                            "budget": budget, **res})
+        self.busy_until = push_end
+        return push_end
+
+    def _gate_attempt(self, t: dt.datetime, since_h: float):
+        cfg = self.cfg
+        if self._inflight() or self._cron_pending(t):
+            return "blocked"
+        until_cron = until_block_fast(t) - PS1_MARGIN_MIN
+        if until_cron < PS1_MIN_USABLE:
+            return "short"
+        young = (cfg.backoff_h is not None and self.last_noprog is not None
+                 and _mins(self.last_noprog, t) < cfg.backoff_h * 60.0)
+        if until_cron < cfg.want_block and (since_h < cfg.max_hours or young):
+            return "hold"
+        self._pass(t, float(min(PS1_BUDGET_CAP, until_cron)), "gate")
+        return "pass"
+
+    def _lease_attempt(self, t: dt.datetime):
+        cfg = self.cfg
+        self.lease_deferred = {}
+        w_end = t + dt.timedelta(minutes=LEASE_W_MIN)
+        i = bisect_right(self.arrivals, t)
+        if i < len(self.arrivals) and self.arrivals[i] <= w_end:
+            self.lease = (t, w_end)                       # A3.4: an unfinished run at the re-read -> stand down
+            self.leases.append({"taken": t, "release": w_end, "stood_down": True})
+            self.busy_until = w_end
+            self._push(w_end, self.PRIO_RELEASE, ("release", None))
+            return "stand_down"
+        # The pass is computed whole at its start (the unit book needs no cloud input), so the lease's release is
+        # known before any cloud event inside it is processed; every run that reads the state inside it defers.
+        release = self._pass(t, float(cfg.lease_min), "lease")
+        expires = t + dt.timedelta(minutes=LEASE_W_MIN + cfg.lease_min + LEASE_E_MIN)
+        self.lease = (t, release)
+        self.leases.append({"taken": t, "release": release, "stood_down": False,
+                            "push_refused": release > expires - dt.timedelta(minutes=2)})
+        self._push(release, self.PRIO_RELEASE, ("release", None))
+        return "lease"
+
+    def _release(self, t: dt.datetime):
+        self.ref = t
+        if self.cfg.dispatch:
+            first = sorted(self.lease_deferred, key=lambda w: self.lease_deferred[w].created)
+            self.dispatch_q = first + [w for w in g.WRITERS if w not in first]
+            self._try_dispatch(t)
+
+    def _latest_real(self, wf: str, t: dt.datetime):
+        """The writer's newest historical run that had ENDED by `t` (job-level times known): the stand-in for an
+        owed writer that was not deferred. Local in time on purpose - its durations and whether its push succeeded
+        follow the cloud's own condition then (heavy's duration doubled W40 -> W41, plan 2.3; a heavy leg failing
+        for days fails a dispatched run too), where a span-wide median would not."""
+        rs, ends = self._real_by_end[wf]
+        i = bisect_right(ends, t)
+        return rs[i - 1] if i else None
+
+    def _try_dispatch(self, t: dt.datetime) -> bool:
+        """A3.6: one owed writer at a time, never while a run of the group is queued or pending."""
+        while self.dispatch_q and self._completed_after(self.dispatch_q[0], self.ref):
+            self.dispatch_q.pop(0)
+        if not self.dispatch_q or self.pending is not None or (self.lease and self.lease[0] <= t < self.lease[1]):
+            return False
+        wf = self.dispatch_q[0]
+        if self.running is not None and self.running[0].wf == wf:
+            return False
+        src = self.lease_deferred.get(wf) or self._latest_real(wf, t) or self.templates[wf]
+        r = CloudRun(wf, -len(self.dispatched) - 1, "workflow_dispatch", t + dt.timedelta(
+            minutes=self.cfg.dispatch_latency_min), "completed", "", src.exec_min, src.read_off_min, src.push_off_min,
+            src.completed_ok, src.pushes, None, None, True, dispatched=True)
+        self.dispatch_q.pop(0)
+        self.dispatched.append(r)
+        self._push(r.created, self.PRIO_ARRIVE, ("arrive", r))
+        return True
+
+    def _tick(self, t: dt.datetime):
+        cfg = self.cfg
+        if cfg.policy == "lease" and cfg.dispatch and t >= self.busy_until and self._try_dispatch(t):
+            return
+        if t < self.busy_until or t >= self.end:
+            return
+        since_h = _mins(self.last_success, t) / 60.0
+        if since_h < cfg.min_hours:
+            return
+        if cfg.policy == "lease":
+            if self._inflight():
+                return
+            young = (cfg.backoff_h is not None and self.last_noprog is not None
+                     and _mins(self.last_noprog, t) < cfg.backoff_h * 60.0)
+            if self._fair() and not self.dispatch_q and not (cfg.d3_leases and young):
+                self._lease_attempt(t)
+                return
+        self._gate_attempt(t, since_h)
+
+    def run(self) -> "Replay":
+        while self.ev:
+            t, _p, _s, (kind, item) = heapq.heappop(self.ev)
+            if kind == "done":
+                self._done(t)
+            elif kind == "arrive":
+                self._arrive(item, t)
+            elif kind == "release":
+                if self.lease and self.lease[1] == t:
+                    self._release(t)
+            elif kind == "tick":
+                if len(self.owed_series) == 0 or (t - self.owed_series[-1][0]) >= dt.timedelta(hours=6):
+                    self.owed_series.append((t, self.book.owed(t)))
+                self._tick(t)
+        return self
+
+
+def deferred_minutes_default(d: dict) -> dict:
+    return {"updater-daily.yml": d.get("updater-daily.yml", 8.0), "updater-heavy.yml": d.get("updater-heavy.yml",
+                                                                                              2.0)}
+
+
+def _overlap(a0, a1, b0, b1) -> bool:
+    return a0 < b1 and b0 < a1
+
+
+def replay_metrics(rp: Replay, owed_start: float, due_start: list) -> dict:
+    """The plan 6.1 outputs for one scenario, over [start, end)."""
+    S, E = rp.start, rp.end
+    days = _mins(S, E) / 1440.0
+    ps = [p for p in rp.passes if S <= p["start"] < E]
+    out = {"label": rp.cfg.label(), "days": days,
+           "window_min_day": sum(p["budget"] for p in ps) / days,
+           "used_min_day": sum(p["used_min"] for p in ps) / days,
+           "passes": len(ps), "lease_passes": sum(1 for p in ps if p["mode"] == "lease"),
+           "gate_passes": sum(1 for p in ps if p["mode"] == "gate"),
+           "stand_downs": sum(1 for x in rp.leases if x["stood_down"] and S <= x["taken"] < E),
+           "push_refused": sum(1 for x in rp.leases if x.get("push_refused")),
+           "hard_stops": sum(1 for p in ps if p["hard_stop"]),
+           "empty_passes": sum(1 for p in ps if not p["advanced"]),
+           "desktop_pushes_day": len(ps) / days}
+    cloud_state = []
+    for wf in g.WRITERS:
+        comp = sorted(e for w, _s, e, d, r in rp.done if w == wf and not d and r.completed_ok)
+        prev = [e for e in comp if e < S]
+        inside = [e for e in comp if S <= e < E]
+        pts = ([prev[-1]] if prev else [S]) + inside + [E]
+        gaps = [_mins(a, b) / 60.0 for a, b in zip(pts, pts[1:])]
+        sel = [(s, d, r) for w, s, _e, d, r in rp.done if w == wf and S <= s < E]
+        out[wf] = {"runs_day": len(inside) / days, "longest_gap_h": max(gaps),
+                   "deferred": sum(1 for _s, d, _r in sel if d),
+                   "dispatched": sum(1 for _s, d, r in sel if r.dispatched and not d),
+                   "evicted": sum(1 for r, _a, t in rp.evicted if r.wf == wf and S <= t < E),
+                   "evicted_hist": sum(1 for r, _a, t in rp.evicted if r.wf == wf and S <= t < E
+                                       and not r.dispatched),
+                   "pushes_day": sum(r.pushes for _s, d, r in sel if not d) / days}
+        cloud_state += [(s + dt.timedelta(minutes=r.read_off_min), s + dt.timedelta(minutes=r.push_off_min), r)
+                        for s, d, r in sel if not d]
+    out["collisions"] = sum(1 for p in ps for a, b, _r in cloud_state if _overlap(p["pull"], p["end"], a, b))
+    owed_end = rp.book.owed(E)
+    att = {s: rp.book.attempts[s] for s in due_start}
+    fin = {s: rp.book.finished[s] for s in due_start}
+    out.update({"owed_start": owed_start, "owed_end": owed_end,
+                "due_start": len(due_start), "attempts_per_due_unit": (sum(att.values()) / len(att)) if att else 0.0,
+                "min_attempts": min(att.values()) if att else 0,
+                "never_finished": sorted(s for s, n in fin.items() if n == 0),
+                "attempts": att, "finished": fin})
+    out["drains"] = owed_end < owed_start and not out["never_finished"]
+    out["cloud_ge2"] = all(out[wf]["runs_day"] >= 2.0 for wf in g.WRITERS)
+    out["A_ok"] = out["drains"] and out["cloud_ge2"]
+    return out
+
+
+@dataclass
+class ReplayInputs:
+    runs: list
+    deferred: dict
+    templates: dict
+    db_path: str
+    copy_utc: dt.datetime
+    start: dt.datetime
+    end: dt.datetime
+    last_success: dt.datetime          # the ps1 stamp in force at the copy, moved to `start`
+    last_noprogress: dt.datetime | None
+    overheads: dict
+    desktop_windows: list
+
+
+def run_scenario(cfg: ReplayConfig, inp: ReplayInputs) -> dict:
+    shift = inp.start - inp.copy_utc
+    book = load_unit_book(inp.db_path, inp.copy_utc, shift, desktop_windows=inp.desktop_windows)
+    owed0, due0 = book.owed(inp.start), book.due_set(inp.start)
+    rp = Replay(cfg, inp.runs, book, inp.start, inp.end, inp.deferred, inp.templates, inp.last_success,
+                inp.last_noprogress).run()
+    m = replay_metrics(rp, owed0, due0)
+    m["_replay"] = rp
+    return m
+
+
+def _fmt_row(m: dict) -> str:
+    d, h = m["updater-daily.yml"], m["updater-heavy.yml"]
+    return (f"{m['label']:<46} {m['window_min_day']:6.0f} {m['used_min_day']:6.0f} {m['passes']:4d} "
+            f"{m['lease_passes']:4d} {m['stand_downs']:3d} {m['hard_stops']:3d} {m['empty_passes']:3d} "
+            f"{m['owed_start']:7.1f} {m['owed_end']:7.1f} {m['attempts_per_due_unit']:5.2f} {m['min_attempts']:3d} "
+            f"{len(m['never_finished']):3d} {d['runs_day']:5.2f} {h['runs_day']:5.2f} "
+            f"{max(d['longest_gap_h'], h['longest_gap_h']):6.1f} {d['deferred'] + h['deferred']:4d} "
+            f"{d['dispatched'] + h['dispatched']:4d} {d['evicted'] + h['evicted']:3d} "
+            f"{d['evicted_hist'] + h['evicted_hist']:3d} {m['collisions']:3d} "
+            f"{m['desktop_pushes_day']:5.2f} {d['pushes_day'] + h['pushes_day']:6.1f}  "
+            f"{'drain' if m['drains'] else 'NO-drain'} {'cloud>=2' if m['cloud_ge2'] else 'cloud<2'} "
+            f"A={'YES' if m['A_ok'] else 'NO'}")
+
+
+_HEADER = (f"{'setting':<46} {'win/d':>6} {'used/d':>6} {'pass':>4} {'leas':>4} {'sd':>3} {'hs':>3} {'emp':>3} "
+           f"{'owed0':>7} {'owedE':>7} {'att/u':>5} {'min':>3} {'nf':>3} {'dly/d':>5} {'hvy/d':>5} {'gap_h':>6} "
+           f"{'dfr':>4} {'dsp':>4} {'ev':>3} {'evh':>3} {'col':>3} {'dp/d':>5} {'cp/d':>6}  verdict")
+
+
+def load_replay_inputs(args) -> ReplayInputs:
+    end = _parse(args.end)
+    start = end - dt.timedelta(days=args.days)
+    runs = load_cloud_history(args.history)
+    oldest = {wf: min((r.created for r in runs if r.wf == wf), default=None) for wf in g.WRITERS}
+    for wf, o in oldest.items():
+        if o is None or o > start - dt.timedelta(days=3):
+            sys.exit(f"history for {wf} starts {o}, after the replay's warm-up {start - dt.timedelta(days=3)}; "
+                     f"fetch more (--limit) or shorten --days")
+    nojobs = [r for r in runs if start - dt.timedelta(days=3) <= r.created < end and not r.has_jobs]
+    if nojobs:
+        print(f"WARNING: {len(nojobs)} run(s) in the span have no job file; they use run-level times "
+              f"(startedAt == createdAt): {[r.run_id for r in nojobs][:10]}")
+    passes = desktop_passes(args.logs)
+    copy_utc = _parse(args.copy_utc)
+    before = [p for p in passes if p.get("push_done") and p["push_done"] <= copy_utc]
+    ls = max((p["push_done"] for p in before if p.get("stamped")), default=copy_utc - dt.timedelta(hours=60))
+    ln = max((p["push_done"] for p in before if not p.get("stamped")), default=None)
+    shift = start - copy_utc
+    return ReplayInputs(runs, deferred_minutes(args.history, start, end), dispatch_templates(runs, start, end),
+                        args.state, copy_utc, start, end, ls + shift, (ln + shift) if ln else None,
+                        pass_overheads([p for p in passes if p["stamp"] >= "20260830"]),
+                        [(p["updater_at"], p["push_done"]) for p in passes if "updater_at" in p and "push_done" in p])
+
+
+def _cfg_from(args, **kw) -> ReplayConfig:
+    base = dict(pull_min=args.pull_min, push_min=args.push_min, tail_min=args.tail_min,
+                kill_keeps_progress=args.kill_keeps_progress, d3_leases=args.d3_leases,
+                dispatch_latency_min=args.dispatch_latency)
+    base.update(kw)
+    return ReplayConfig(**base)
+
+
+def cmd_replay61(args):
+    """Plan 6.1. `--baseline` reproduces the plan's measured figures first; the sweep runs only if they match."""
+    if args.baseline:
+        ok = baseline61(args)
+        sys.exit(0 if ok else 1)
+    inp = load_replay_inputs(args)
+    if args.pull_min is None:
+        args.pull_min = round(inp.overheads["pull_median"], 1)
+    if args.push_min is None:
+        args.push_min = round(inp.overheads["push_median"], 1)
+    print(f"span {inp.start:%Y-%m-%dT%H:%MZ} .. {inp.end:%Y-%m-%dT%H:%MZ} ({_mins(inp.start, inp.end) / 1440:.2f} d); "
+          f"state copy {inp.copy_utc:%Y-%m-%dT%H:%MZ} moved to the span start")
+    print(f"desktop pull {args.pull_min} min, push {args.push_min} min (medians of {inp.overheads['n_pull']} / "
+          f"{inp.overheads['n_push']} passes since 2026-08-30); tail {args.tail_min} min; deferred run holds the group "
+          f"daily {inp.deferred['updater-daily.yml']:.1f} min, heavy {inp.deferred['updater-heavy.yml']:.1f} min "
+          f"(parts {json.dumps({k: round(v, 2) for k, v in inp.deferred['parts'].items()})}, n {inp.deferred['n']})")
+    t = inp.templates
+    print("dispatch template (median scheduled run): " + "; ".join(
+        f"{wf} exec {t[wf].exec_min:.0f} read +{t[wf].read_off_min:.1f} push +{t[wf].push_off_min:.0f} pushes "
+        f"{t[wf].pushes}" for wf in g.WRITERS))
+    print(f"initial ps1 stamps (moved): last success {inp.last_success:%Y-%m-%dT%H:%MZ}, last no-progress "
+          f"{inp.last_noprogress:%Y-%m-%dT%H:%MZ}" if inp.last_noprogress else "")
+    print(f"sensitivity knobs: kill keeps progress {args.kill_keeps_progress}; D3 also holds leases {args.d3_leases}; "
+          f"dispatch latency {args.dispatch_latency} min")
+    print()
+    print(_HEADER)
+    rows = []
+    scen = []
+    for w_on in args.w:
+        for mh in ([] if args.no_today else args.min_hours):
+            for bo in args.backoff:
+                scen.append(_cfg_from(args, policy="today", min_hours=mh, backoff_h=bo, w_on=w_on))
+        for L in args.lease:
+            for mh in args.min_hours:
+                for bo in args.backoff:
+                    for dsp in (True, False):
+                        scen.append(_cfg_from(args, policy="lease", lease_min=L, min_hours=mh, backoff_h=bo,
+                                              w_on=w_on, dispatch=dsp))
+    for cfg in scen:
+        m = run_scenario(cfg, inp)
+        rows.append(m)
+        print(_fmt_row(m), flush=True)
+    if args.json:
+        with open(args.json, "w", encoding="utf-8") as f:
+            json.dump([{k: v for k, v in m.items() if k != "_replay"} for m in rows], f, indent=1, default=str)
+    print("\ncolumns: win/d = desktop window (budget) min/day; used/d = updater min/day; pass / leas = passes / of "
+          "them under a lease; sd = lease stand-downs (a run created inside W); hs = hard stops; emp = passes that "
+          "advanced nothing; owed0 / owedE = owed minutes at the start / end; att/u = attempts per unit due at the "
+          "start; min = fewest attempts of those units; nf = of those units, how many never finished a turn; "
+          "dly/d hvy/d = completed non-deferred cloud runs/day; gap_h = longest gap between completed runs of "
+          "either writer; dfr = deferred runs; dsp = re-dispatched runs that ran; ev = evicted pending runs (evh = of them, "
+          "runs GitHub created - a cron or manual run lost to the queue); col = "
+          "collisions; dp/d = desktop pushes/day; cp/d = cloud pushes/day (every heavy leg push counted)")
+    print("verdict: A=YES only if the owed set drains (owed at the end below the start AND every unit due at the start "
+          "finished a turn) AND each writer keeps >= 2.0 completed non-deferred runs/day (plan 6.1).")
+
+
+def baseline61(args) -> bool:
+    """The 'today' reproduction (plan 2.2 / 2.6 / A6a), each figure with its tolerance, before any sweep."""
+    ok = True
+
+    def check(name, got, want, tol):
+        nonlocal ok
+        good = abs(got - want) <= tol
+        ok = ok and good
+        print(f"  {'PASS' if good else 'FAIL'}  {name}: expected {want}, got {round(got, 2)} (tolerance +/-{tol})")
+
+    since, until = _parse("2026-10-14T18:00:00Z"), _parse("2026-10-28T22:00:00Z")
+    print(f"1. free windows {since:%Y-%m-%dT%H:%MZ} .. {until:%Y-%m-%dT%H:%MZ} (plan 2.2: 217 min/day, 29 windows, "
+          f">=90 usable 9, >=150 usable 7, longest 318)")
+    sources = []
+    if args.planner_runs:
+        rows = []
+        for wf, fn in zip(g.WRITERS, args.planner_runs):
+            with open(fn, encoding="utf-8") as f:
+                rows += [_cloud_run(wf, r, None) for r in json.load(f)]
+        sources.append(("planner's frozen gh json (22:25Z)", rows))
+    sources.append((f"this fetch ({args.history})", load_cloud_history(args.history)))
+    for name, runs in sources:
+        for inst, free in (("interval model", free_windows(runs, since, until)),
+                           ("production assess(), 1-min steps", gate_minutes_production(runs, since, until))):
+            s = window_stats(free, since, until)
+            print(f"  [{name}; {inst}] {s['free_min']:.0f} min = {s['per_day']:.1f} min/day over {s['days']:.2f} d; "
+                  f"windows {s['windows']}; >=90 {s['ge90']}; >=150 {s['ge150']}; longest {s['longest']:.0f}")
+            check("free min/day", s["per_day"], 217, 1.5)
+            check("windows", s["windows"], 29, 0)
+            check(">=150 usable", s["ge150"], 7, 0)
+            check(">=90 usable", s["ge90"], 9, 0)
+            check("longest", s["longest"], 318, 1.5)
+    runs = sources[-1][1]
+    print("2. until_block_fast == production minutes_until_block at every CLEAR 5-min tick of that span")
+    per = _as_of_lists(runs)
+    n = bad = 0
+    t = since
+    while t < until:
+        unf, sch = _runs_as_of(per, t)
+        if not g.assess(unf, t, None, sch)[0]:
+            n += 1
+            prod = g.minutes_until_block(unf, t, None, sched=sch)
+            if prod != until_block_fast(t):
+                bad += 1
+        t += dt.timedelta(minutes=5)
+    check(f"mismatches over {n} clear ticks", bad, 0, 0)
+    inp = load_replay_inputs(args)
+    print(f"3. the re-simulated concurrency group reproduces history (no lease): first-job starts of the runs created "
+          f"in {inp.start:%Y-%m-%d} .. {inp.end:%Y-%m-%d}")
+    shift = inp.start - inp.copy_utc
+    book = load_unit_book(inp.db_path, inp.copy_utc, shift)
+    rp = Replay(ReplayConfig(policy="today", min_hours=10 ** 9), inp.runs, book, inp.start, inp.end, inp.deferred,
+                inp.templates, inp.last_success, inp.last_noprogress).run()   # the desktop never starts: cloud only
+    diffs = [abs(_mins(s, r.hist_start)) for _w, s, _e, _d, r in rp.done
+             if r.has_jobs and r.hist_start and inp.start <= r.created < inp.end]
+    big = sum(1 for d in diffs if d > 1.0)
+    print(f"   {len(diffs)} runs compared; max |sim - history| {max(diffs):.1f} min; > 1 min: {big}; "
+          f"evictions simulated {len(rp.evicted)}")
+    check("runs off by > 1 min", big, 0, 0)
+    print("4. updater-heavy liveness since 2026-10-14T18:00Z (plan A6a, AR-393 r7: 29 runs, 27 success, 1.92/day, "
+          "gap median 12.2 h, max 24.1 h; AR-393's list ended 2026-10-29T01:05Z)")
+    hs = [r for r in inp.runs if r.wf == "updater-heavy.yml" and r.created >= _parse("2026-10-14T18:00:00Z")
+          and r.created <= _parse("2026-10-29T01:05:00Z")]
+    succ = sorted(r.hist_end for r in hs if r.conclusion == "success")
+    gaps = [_mins(a, b) / 60 for a, b in zip(succ, succ[1:])]
+    span_d = _mins(_parse("2026-10-14T18:00:00Z"), _parse("2026-10-29T01:05:00Z")) / 1440
+    print(f"   runs {len(hs)}, success {len(succ)}, {len(succ) / span_d:.2f}/day, gap median "
+          f"{statistics.median(gaps):.1f} h, max {max(gaps):.1f} h")
+    check("heavy successes", len(succ), 27, 1)
+    check("heavy gap max h", max(gaps), 24.1, 0.15)
+    print(f"5. owed at the copy {inp.copy_utc:%Y-%m-%dT%H:%MZ} (plan 2.6 / q_owed.py: 1,578.6 min over 15 due units)")
+    b0 = load_unit_book(inp.db_path, inp.copy_utc, dt.timedelta(0), desktop_windows=inp.desktop_windows)
+    check("owed min", b0.owed(inp.copy_utc), 1578.6, 0.15)
+    check("due units", len(b0.due_set(inp.copy_utc)), 15, 0)
+    print(f"   due: {', '.join(b0.due_set(inp.copy_utc))}")
+    print(f"   censored work terms (killed/transient newest row): {', '.join(sorted(b0.censored)) or '-'}")
+    print(f"   finished-turn outcome per unit (newest ok/no_change/partial row written inside a desktop pass, "
+          f"{len(inp.desktop_windows)} pass windows): " + ", ".join(
+              f"{s}={b0.outcome[s]}{'(assumed)' if s in b0.assumed_ok else ''}" for s in sorted(b0.units)))
+    tp = measure_tail_probe(args.logs)
+    print(f"6. W inputs from the updater logs ({tp['logs']} logs, {tp['unit_runs']} unit runs): CSV-phase derive "
+          f"budgets spent in {len(tp['csv_budget_hits'])} unit runs; largest in one unit run "
+          f"{tp['tail_lower_bound_min']:.0f} min (a LOWER bound on tail); timed probe/CSV lines {tp['timed_phase_lines']}"
+          f" (so P is not measurable from these logs)")
+    for acc, n_, src, took in tp["csv_budget_hits"]:
+        print(f"     {n_}  {src:<10} derive budgets spent {acc:.0f} min, unit took {took:,} s")
+    oh = inp.overheads
+    print(f"7. pass overheads since 2026-08-30: pull median {oh['pull_median']:.1f} (max {oh['pull_max']:.1f}, "
+          f"n {oh['n_pull']}), push median {oh['push_median']:.1f} (max {oh['push_max']:.1f}, n {oh['n_push']}) "
+          f"(plan 3.2, 52 passes since 09-15: pull median 2.0, push 6.9)")
+    print(f"\nBASELINE {'REPRODUCED' if ok else 'NOT REPRODUCED - do not sweep'}")
+    return ok
+
+
+def cmd_fetch(args):
+    """Freeze the cloud history the lease replay reads: every run of both writers (any event) and, for each run
+    created inside the window, its jobs and steps. Read-only gh calls; the files are the replay's only cloud input,
+    so a re-run of the replay on the same directory gives the same numbers."""
+    os.makedirs(os.path.join(args.out, "jobs"), exist_ok=True)
+    cut = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=args.days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for wf in g.WRITERS:
+        out = subprocess.run(["gh", "run", "list", "--workflow", wf, "--limit", str(args.limit), "--json",
+                              "databaseId,createdAt,startedAt,updatedAt,event,status,conclusion,attempt"],
+                             capture_output=True, text=True, timeout=300)
+        if out.returncode != 0:
+            sys.exit(f"gh failed for {wf}: {out.stderr.strip()[:300]}")
+        rows = json.loads(out.stdout)
+        with open(os.path.join(args.out, f"runs_{wf}.json"), "w", encoding="utf-8") as f:
+            json.dump(rows, f, indent=0)
+        want = [r for r in rows if r["createdAt"] >= cut]
+        if rows and min(r["createdAt"] for r in rows) > cut:
+            print(f"WARNING: {wf}: the {len(rows)}-run listing starts after {cut}; raise --limit")
+        failed = 0
+        for r in want:
+            path = os.path.join(args.out, "jobs", f"{r['databaseId']}.json")
+            if os.path.exists(path) and r.get("status") == "completed" and not args.refresh:
+                continue
+            v = subprocess.run(["gh", "run", "view", str(r["databaseId"]), "--json", "jobs,createdAt,updatedAt,"
+                                "status,conclusion,attempt"], capture_output=True, text=True, timeout=180)
+            if v.returncode != 0:
+                failed += 1
+                continue
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(v.stdout)
+        print(f"{wf}: {len(rows)} runs listed, {len(want)} created since {cut}, {failed} job reads FAILED")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("fetch")
+    p.add_argument("--out", required=True)
+    p.add_argument("--days", type=int, default=75)
+    p.add_argument("--limit", type=int, default=400)
+    p.add_argument("--refresh", action="store_true")
+    p.set_defaults(fn=cmd_fetch)
+    p = sub.add_parser("replay61", help="plan 6.1: W windows, D3 back-off, the lease model (see the block above "
+                                        "cmd_fetch)")
+    p.add_argument("--history", required=True, help="a `fetch` directory")
+    p.add_argument("--logs", required=True, help="the desktop wrapper/updater log directory (read only)")
+    p.add_argument("--state", required=True, help="a state.db COPY (opened ?immutable=1)")
+    p.add_argument("--copy-utc", default="2026-10-28T13:45:00Z")
+    p.add_argument("--end", default="2026-10-28T22:00:00Z")
+    p.add_argument("--days", type=float, default=60.0)
+    p.add_argument("--baseline", action="store_true")
+    p.add_argument("--planner-runs", nargs=2, metavar=("DAILY_JSON", "HEAVY_JSON"))
+    p.add_argument("--lease", type=float, nargs="+", default=[180, 240, 300, 360])
+    p.add_argument("--min-hours", type=float, nargs="+", default=[6, 10, 14, 20])
+    p.add_argument("--backoff", type=lambda s: None if s == "off" else float(s), nargs="+", default=[4, 8, 12])
+    p.add_argument("--w", type=lambda s: s == "on", nargs="+", default=[False, True], help="off / on")
+    p.add_argument("--tail-min", type=float, default=90.0)
+    p.add_argument("--pull-min", type=float, default=None)
+    p.add_argument("--push-min", type=float, default=None)
+    p.add_argument("--kill-keeps-progress", action="store_true")
+    p.add_argument("--d3-leases", action="store_true", help="sensitivity, not in the plan: D3 also holds leases")
+    p.add_argument("--dispatch-latency", type=float, default=1.0, help="minutes from dispatch to the run's creation")
+    p.add_argument("--no-today", action="store_true", help="skip the 'today' rows")
+    p.add_argument("--json")
+    p.set_defaults(fn=cmd_replay61)
     sub.add_parser("lag").set_defaults(fn=cmd_lag)
     p = sub.add_parser("occupancy")
     p.add_argument("--days", type=int, default=14)
