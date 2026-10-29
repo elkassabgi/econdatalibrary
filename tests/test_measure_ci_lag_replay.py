@@ -687,6 +687,47 @@ def test_drop_cron_removes_exactly_the_runs_credited_to_it():
     assert m.writers_without([(DAILY, 18)]) == {DAILY: (6,), HEAVY: (3, 15)}
 
 
+def test_drop_cron_credits_runs_at_their_real_lags():
+    # review AR-403 F1: the real 18:00Z runs are created 19:56Z..01:57Z next day (start lag median 173, max 477 min),
+    # never in the 18:xx hour; a 06:00Z run was once created at 17:49 (709 min late) and belongs to 06:00
+    rs = [run(DAILY, "2026-09-01T06:10", 60),                              # 06 cron, day 1
+          run(DAILY, "2026-09-01T21:30", 60),                              # 18 cron day 1, 3.5 h late
+          run(DAILY, "2026-09-01T18:30", 10, event="workflow_dispatch"),   # manual in the window: stays
+          run(HEAVY, "2026-09-01T18:20", 30),                              # the other writer: stays
+          run(DAILY, "2026-09-02T06:05", 60),
+          run(DAILY, "2026-09-03T01:57", 60),                              # 18 cron of 09-02, after midnight
+          run(DAILY, "2026-09-03T17:49", 60),                              # 06 cron of 09-03, 709 min late: stays
+          run(DAILY, "2026-09-03T20:00", 60),                              # 18 cron of 09-03
+          run(DAILY, "2026-09-04T19:00", 60),                              # 18 cron of 09-04
+          run(DAILY, "2026-09-04T19:30", 60)]                              # a second run in that window: stays
+    kept, dropped = m.drop_cron_runs(rs, DAILY, 18)
+    assert sorted(r.created for r in dropped) == [T("2026-09-01T21:30"), T("2026-09-03T01:57"),
+                                                  T("2026-09-03T20:00"), T("2026-09-04T19:00")]
+    assert sorted(r.created for r in kept) == sorted([T("2026-09-01T06:10"), T("2026-09-01T18:30"),
+                                                      T("2026-09-01T18:20"), T("2026-09-02T06:05"),
+                                                      T("2026-09-03T17:49"), T("2026-09-04T19:30")])
+
+
+def test_gate_attempt_without_init_falls_back_to_the_gates_crons():
+    # review AR-403 F0: tests/test_d3_noprogress_backoff.py builds a Replay with object.__new__; _gate_attempt must
+    # not need `writers` (gate's WRITERS), and a cut set on the object is still honoured
+    def attempt(writers=None):
+        r = object.__new__(m.Replay)
+        r.cfg = m.ReplayConfig(policy="today")
+        r.last_noprog = None
+        r._inflight = lambda: False
+        r._cron_pending = lambda t: False
+        got = []
+        r._pass = lambda t, budget, mode: got.append(budget)
+        if writers is not None:
+            r.writers = writers
+        r._gate_attempt(T("2026-10-01T15:45"), 100.0)
+        return got
+
+    assert attempt() == [110.0]                                    # until the 18:00 cron: 135 - 25
+    assert attempt(m.writers_without([(DAILY, 18)])) == [650.0]    # until heavy 03:00: 675 - 25
+
+
 def test_drop_cron_frees_the_window_in_the_gate_model():
     since, until = T("2026-10-01T00:00"), T("2026-10-02T00:00")
     rs = day_history()
@@ -786,8 +827,9 @@ def test_defaults_leave_the_label_and_the_json_as_pr200():
 
 
 def _cli_inputs(tmp_path):
-    """A planted `fetch` dir (both writers, each cron's run 5 min late, 2026-10-18 .. 10-28), one desktop pass log
-    and a state copy: enough for cmd_replay61 to run a 2-day span end to end."""
+    """A planted `fetch` dir (both writers, 2026-10-18 .. 10-28), one desktop pass log and a state copy: enough for
+    cmd_replay61 to run a 2-day span end to end. Runs are 5 min late, except at real lags (review AR-403 F1): the
+    daily 18:00Z runs are created at 21:30, 10-22's at 01:57 next day, and 10-20's 06:00Z run at 17:49."""
     import json
     import sqlite3
     hist = tmp_path / "hist"
@@ -802,6 +844,10 @@ def _cli_inputs(tmp_path):
         for day in range(18, 29):
             for h in hours:
                 c = T(f"2026-10-{day:02d}T{h:02d}:05")
+                if wf == DAILY and h == 18:
+                    c = T(f"2026-10-{day + 1:02d}T01:57") if day == 22 else T(f"2026-10-{day:02d}T21:30")
+                elif wf == DAILY and day == 20:
+                    c = T("2026-10-20T17:49")
                 e = c + dt.timedelta(minutes=minutes)
                 i = next(rid)
                 rows.append({"databaseId": i, "createdAt": iso(c), "startedAt": iso(c), "updatedAt": iso(e),
@@ -871,10 +917,11 @@ def test_cmd_replay61_runs_each_extension_end_to_end(tmp_path, monkeypatch, caps
     out, rows, js = _cli(monkeypatch, capsys, base, ["--order", "production", "attempt"], tmp_path / "o.json")
     assert len(rows) == 4 and ["ord=attempt" in r for r in rows] == [False, False, True, True]
     assert [x["cfg"].get("order", "production") for x in js] == ["production", "production", "attempt", "attempt"]
-    # --drop-cron: the cut is stated with its count - 11 days x one 18:05 run, each 5 min after its cron
+    # --drop-cron: the cut is stated with its count - 11 days x one 18:00Z run, 10 at 21:30 (210 min) and one at
+    # 01:57 next day (477 min)
     out, rows, js = _cli(monkeypatch, capsys, base, ["--drop-cron", "updater-daily.yml:18"], tmp_path / "c.json")
     assert "C: dropped the 18:00Z cron of updater-daily.yml from the gate model (crons now (6,)) and the 11 " \
-           "scheduled history run(s)" in out and "start lag min 5, median 5, max 5 min" in out
+           "scheduled history run(s)" in out and "start lag min 210, median 210, max 477 min" in out
     assert all("C=-daily18" in r for r in rows) and all(x["cfg"]["drop_cron"] == [[DAILY, 18]] for x in js)
     # --clocked-extra oecd with a given bound: the CONDITIONAL statement, and the label carries the bound
     out, rows, js = _cli(monkeypatch, capsys, base, ["--clocked-extra", "oecd", "--flow-bound", "oecd=60"],
@@ -899,8 +946,10 @@ def test_cli_inputs_carry_the_cut_and_simulate_carries_the_order(tmp_path):
     cut = m.load_replay_inputs(args)
     # the 11 runs credited to the 18:00 cron leave the history the replay reads, not only the printed count
     assert len(inp.runs) - len(cut.runs) == 11 and len(cut.dropped) == 11 and cut.drop_cron == ((DAILY, 18),)
-    assert not any(r.wf == DAILY and r.created.hour == 18 for r in cut.runs)
-    assert sum(1 for r in inp.runs if r.wf == DAILY and r.created.hour == 18) == 11
+    late = {T(f"2026-10-{d:02d}T21:30") for d in range(18, 29) if d != 22} | {T("2026-10-23T01:57")}
+    assert {r.created for r in cut.dropped} == late                          # the 18:00Z runs at their real lags
+    assert not any(r.created in late for r in cut.runs)
+    assert T("2026-10-20T17:49") in {r.created for r in cut.runs if r.wf == DAILY}   # 06:00Z's late run stays
     # simulate() hands the order to the unit book: istat (success 07-14, attempt 10-25) and bea (success 09-01),
     # both in band 2, swap places in the first pass
     def first_pass(order):

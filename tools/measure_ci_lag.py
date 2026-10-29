@@ -1387,7 +1387,12 @@ class Replay:
         cfg = self.cfg
         if self._inflight() or self._cron_pending(t):
             return "blocked"
-        until_cron = until_block_fast(t, self.writers) - PS1_MARGIN_MIN
+        # A Replay built without __init__ (tests/test_d3_noprogress_backoff.py uses object.__new__) has no
+        # `writers`: fall back to the gate's WRITERS. With the gate's own crons the call is PR #200's exactly (that
+        # test also stands in a one-argument until_block_fast); only a --drop-cron cut passes its writers.
+        w = getattr(self, "writers", None) or g.WRITERS
+        ub = until_block_fast(t) if w == g.WRITERS else until_block_fast(t, w)
+        until_cron = ub - PS1_MARGIN_MIN
         if until_cron < PS1_MIN_USABLE:
             return "short"
         young = (cfg.backoff_h is not None and self.last_noprog is not None
