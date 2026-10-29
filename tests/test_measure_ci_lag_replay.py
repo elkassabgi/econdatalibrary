@@ -138,7 +138,9 @@ def test_unit_book_from_a_copy_reads_outcome_from_desktop_rows_only(tmp_path):
     con.execute("INSERT INTO unit_state(source_id, unit_id, last_success_utc, status) VALUES "
                 "('a', '_all', '2026-09-01T00:00:00+00:00', 'partial')")
     con.executemany("INSERT INTO runs(ts_utc, source_id, unit_id, status, dur_s) VALUES (?, 'a', '_all', ?, ?)",
-                    [("2026-10-01T10:00:00+00:00", "ok", 3000.0),          # inside a desktop pass
+                    [("2026-09-01T10:00:00+00:00", "partial", 9000.0),      # 150 min: a longer turn on record
+                     ("2026-09-02T10:00:00+00:00", "transient_fail", 7200.0),  # 120 min
+                     ("2026-10-01T10:00:00+00:00", "ok", 3000.0),          # inside a desktop pass
                      ("2026-10-02T12:00:00+00:00", "partial", 2700.0),     # a cloud row (45.0 min, the CI cap)
                      ("2026-10-03T12:00:00+00:00", "killed_external", 6000.0),
                      ("2026-10-30T00:00:00+00:00", "ok", 1.0)])           # after the copy: ignored
@@ -152,6 +154,33 @@ def test_unit_book_from_a_copy_reads_outcome_from_desktop_rows_only(tmp_path):
     # negative control: without the pass windows the cloud row decides
     b = m.load_unit_book(str(db), copy, dt.timedelta(0), cadences={"a": "monthly"})
     assert b.outcome["a"] == "partial"
+    # AR-394 F1: a censored term takes the largest lower bound on record, then the multiplier
+    kw = dict(cadences={"a": "monthly"}, desktop_windows=win)
+    assert m.load_unit_book(str(db), copy, dt.timedelta(0), censored_bound="kills", **kw).work["a"] == 120.0
+    assert m.load_unit_book(str(db), copy, dt.timedelta(0), censored_bound="tightest", **kw).work["a"] == 150.0
+    assert m.load_unit_book(str(db), copy, dt.timedelta(0), censored_bound="tightest", censored_mult=1.5,
+                            **kw).work["a"] == 225.0
+    with pytest.raises(ValueError):
+        m.load_unit_book(str(db), copy, dt.timedelta(0), censored_bound="loosest", **kw)
+
+
+def test_uncensored_terms_ignore_the_bound_and_the_multiplier(tmp_path):
+    import sqlite3
+    db = tmp_path / "state.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE unit_state(source_id TEXT, unit_id TEXT, strategy TEXT, upstream_vintage TEXT, "
+                "last_success_utc TEXT, last_attempt_utc TEXT, status TEXT, last_obs_date TEXT, obs_count INTEGER, "
+                "attempt_count INTEGER, last_error TEXT)")
+    con.execute("CREATE TABLE runs(id INTEGER PRIMARY KEY AUTOINCREMENT, ts_utc TEXT, source_id TEXT, unit_id TEXT, "
+                "status TEXT, obs INTEGER, dur_s REAL, note TEXT)")
+    con.executemany("INSERT INTO runs(ts_utc, source_id, unit_id, status, dur_s) VALUES (?, 'b', '_all', ?, ?)",
+                    [("2026-10-01T10:00:00+00:00", "killed_external", 9000.0),
+                     ("2026-10-02T10:00:00+00:00", "ok", 600.0)])          # newest row finished: not censored
+    con.commit()
+    con.close()
+    b = m.load_unit_book(str(db), T("2026-10-28T00:00"), dt.timedelta(0), cadences={"b": "daily"},
+                         censored_bound="tightest", censored_mult=2.0)
+    assert b.work["b"] == 10.0 and not b.censored
 
 
 # ------------------------------------------------------------------ the concurrency group
@@ -310,9 +339,96 @@ def test_verdict_needs_both_drain_and_two_runs_a_day():
     # negative control for "drains": a unit due at the start that never finished a turn
     assert m.replay_metrics(rp, 100.0, ["u", "never_ran"])["never_finished"] == ["never_ran"]
     assert not m.replay_metrics(rp, 100.0, ["u", "never_ran"])["drains"]
-    # and the cloud half alone: pretend both writers completed 3 runs a day
-    met["updater-daily.yml"]["runs_day"] = met["updater-heavy.yml"]["runs_day"] = 3.0
-    assert all(met[wf]["runs_day"] >= 2.0 for wf in g.WRITERS)
+    # the positive case through the code (review AR-394 F3): one day with 3 completed runs per writer and a unit that
+    # finishes -> drains, cloud >= 2/day, A = YES; then one heavy run fewer than 2/day -> A = NO
+    day = [run(DAILY, "2026-10-02T01:00", 30), run(DAILY, "2026-10-02T08:00", 30), run(DAILY, "2026-10-02T16:00", 30),
+           run(HEAVY, "2026-10-02T04:00", 30), run(HEAVY, "2026-10-02T12:00", 30), run(HEAVY, "2026-10-02T20:00", 30)]
+    warm = [run(DAILY, "2026-10-01T10:00", 30), run(HEAVY, "2026-10-01T11:00", 30)]
+    rp = make_replay(m.ReplayConfig(policy="today", min_hours=10 ** 9), warm + day, units={"u": 10.0},
+                     start="2026-10-02T00:00", end="2026-10-03T00:00").run()
+    rp.book.finished["u"] = 1
+    rp.book.remaining["u"] = 0.0
+    met = m.replay_metrics(rp, 10.0, ["u"])
+    assert (met["updater-daily.yml"]["runs_day"], met["updater-heavy.yml"]["runs_day"]) == (3.0, 3.0)
+    assert met["drains"] and met["cloud_ge2"] and met["A_ok"]
+    # longest gap: heavy's warm-up run ended 10-01 11:30, its next one 10-02 04:30 -> 17 h (under A5's 30 h)
+    assert met["longest_gap_h"] == 17.0 and not met["gap_over_30h"]
+    rp = make_replay(m.ReplayConfig(policy="today", min_hours=10 ** 9), warm + day[:4], units={"u": 10.0},
+                     start="2026-10-02T00:00", end="2026-10-03T00:00").run()
+    rp.book.finished["u"] = 1
+    met = m.replay_metrics(rp, 10.0, ["u"])
+    assert met["updater-heavy.yml"]["runs_day"] == 1.0 and not met["cloud_ge2"] and not met["A_ok"]
+
+
+# ------------------------------------------------------------------ AR-394 F3: the three surviving mutants
+
+def _jobs_run(wf, conclusion, push):
+    r = {"databaseId": 7, "createdAt": "2026-10-01T10:00:00Z", "updatedAt": "2026-10-01T12:00:00Z",
+         "status": "completed", "conclusion": conclusion, "event": "schedule", "startedAt": "2026-10-01T10:00:00Z"}
+    steps = [{"name": "Pull state from R2", "startedAt": "2026-10-01T10:01:00Z", "completedAt": "2026-10-01T10:03:00Z",
+              "conclusion": "success"},
+             {"name": "Push state to R2 (compare-and-swap)", "startedAt": "2026-10-01T11:50:00Z",
+              "completedAt": "2026-10-01T11:55:00Z", "conclusion": push}]
+    jobs = [{"name": "setup" if wf == HEAVY else "update", "startedAt": "2026-10-01T10:00:30Z",
+             "completedAt": "2026-10-01T12:00:00Z", "steps": steps}]
+    return m._cloud_run(wf, r, jobs)
+
+
+def test_completed_rule_daily_is_its_push_heavy_is_its_conclusion():
+    # daily: the health gate makes every run `failure`, so a successful push is what completes it (A5)
+    assert _jobs_run(DAILY, "failure", "success").completed_ok
+    assert not _jobs_run(DAILY, "failure", "failure").completed_ok
+    # heavy: `success` only when every leg's pull, updater and push (or no-op) succeeded; a pushed but failed run
+    # is NOT completed (kills the mutant "heavy completed = any finished run")
+    assert _jobs_run(HEAVY, "success", "success").completed_ok
+    assert not _jobs_run(HEAVY, "failure", "success").completed_ok
+    assert not _jobs_run(HEAVY, "cancelled", "success").completed_ok
+
+
+def test_no_dispatch_while_a_run_of_the_group_is_pending():
+    rp = make_replay(lease_cfg(dispatch=True), lease_history())
+    t = T("2026-10-01T21:00")
+    rp.ref, rp.dispatch_q = T("2026-10-01T20:00"), [HEAVY]
+    busy, waiting = run(DAILY, "2026-10-01T20:30", 60), run(DAILY, "2026-10-01T20:40", 60)
+    rp.running = (busy, busy.created, busy.created + dt.timedelta(minutes=60), False)
+    rp.pending = (waiting, waiting.created)
+    assert not rp._try_dispatch(t) and rp.dispatched == [] and rp.dispatch_q == [HEAVY]   # A3.6
+    rp.pending = None
+    assert rp._try_dispatch(t) and [r.wf for r in rp.dispatched] == [HEAVY]               # positive control
+
+
+def test_a_run_reads_the_lease_when_its_job_starts_not_when_it_is_created():
+    rp = make_replay(lease_cfg(), lease_history())
+    rp.lease = (T("2026-10-01T19:00"), T("2026-10-01T20:00"))
+    queued_in = run(DAILY, "2026-10-01T18:00", 30)        # created before the lease, job starts inside it
+    rp._start(queued_in, T("2026-10-01T19:10"))
+    assert rp.running[3] is True
+    rp.running = None
+    queued_out = run(HEAVY, "2026-10-01T19:50", 30)       # created inside, job starts after the release
+    rp._start(queued_out, T("2026-10-01T20:10"))
+    assert rp.running[3] is False
+
+
+# ------------------------------------------------------------------ AR-394 F2 / F4
+
+def test_lease_budget_is_l_minus_the_ps1_margin():
+    rp = make_replay(lease_cfg(lease_margin_min=25.0), lease_history(), units={"u": 300.0}).run()
+    assert rp.passes[0]["mode"] == "lease" and rp.passes[0]["budget"] == 155.0
+    rp = make_replay(lease_cfg(), lease_history(), units={"u": 300.0}).run()
+    assert rp.passes[0]["budget"] == 180.0
+
+
+def test_manual_dispatches_can_be_excluded_from_completed_runs():
+    manual = run(DAILY, "2026-10-01T20:00", 30, event="workflow_dispatch")
+    sched = run(HEAVY, "2026-10-01T21:00", 30)
+    hist = [run(DAILY, "2026-09-30T18:05", 60), run(HEAVY, "2026-10-01T15:05", 10), manual, sched]
+    for man, want in ((True, 1.0 / (4 / 24)), (False, 0.0)):
+        rp = make_replay(m.ReplayConfig(policy="today", min_hours=10 ** 9, count_manual=man), hist,
+                         start="2026-10-01T20:00", end="2026-10-02T00:00").run()
+        met = m.replay_metrics(rp, 0.0, [])
+        assert met["updater-daily.yml"]["runs_day"] == pytest.approx(want)
+        assert met["updater-heavy.yml"]["runs_day"] == pytest.approx(6.0)   # the scheduled run always counts
+        assert rp._completed_after(DAILY, T("2026-10-01T19:00")) is man
 
 
 @pytest.mark.parametrize("since_success_h, due", [(0.5, False), (23.0, True)])

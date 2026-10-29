@@ -395,7 +395,7 @@ import re             # noqa: E402
 import sqlite3        # noqa: E402
 import statistics     # noqa: E402
 from bisect import bisect_left, bisect_right   # noqa: E402
-from dataclasses import dataclass              # noqa: E402
+from dataclasses import asdict, dataclass      # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -890,15 +890,30 @@ class UnitBook:
         return {"used_min": e, "advanced": advanced, "hard_stop": hard, "stopped": stopped, "ran": ran}
 
 
+CENSORED_BOUNDS = ("newest", "kills", "tightest")
+
+
 def load_unit_book(db_path: str, copy_utc: dt.datetime, shift: dt.timedelta, cadences: dict | None = None,
-                   desktop_windows: list | None = None) -> UnitBook:
+                   desktop_windows: list | None = None, censored_bound: str = "newest",
+                   censored_mult: float = 1.0) -> UnitBook:
     """The owed units from one state COPY, opened read-only (?immutable=1), every timestamp moved by `shift` so the
     copy's instant lands on the replay's first instant. Rows dated after the copy are ignored.
 
     `desktop_windows` ([(updater start, push end)] of the real desktop passes, from the wrapper logs): when given, a
     finished turn's outcome is read only from rows written inside a desktop pass, so a cloud row - e.g. the
     45.0-min `partial` that is the CI timeout, censored by R625 rule 2 - cannot decide it. A source with no finished
-    desktop row is assumed to end `ok` (listed in `assumed_ok`)."""
+    desktop row is assumed to end `ok` (listed in `assumed_ok`).
+
+    CENSORED WORK TERMS (review AR-394 F1). A unit whose newest row is a kill or a transient has no measured full
+    turn: every number the copy holds is a LOWER bound. `censored_bound` picks which one is used for those units only:
+      - "newest": the newest row (the plan's q_owed rule; reproduces its 1,578.6 - the baseline uses this);
+      - "kills": the largest killed / transient row (AR-394's tightest-kill figure, 1,858.5 at the copy);
+      - "tightest": the largest killed / transient / partial row - a partial is a turn that ran at least that long
+        (oecd's 406.7-min partial of 2026-08-02), so this is the tightest lower bound the copy holds.
+    `censored_mult` then multiplies those terms (x1, x1.5, x2 in the sweep): the real turn is longer by an unknown
+    factor, and a verdict that flips inside that range is not shown by the replay."""
+    if censored_bound not in CENSORED_BOUNDS:
+        raise ValueError(f"censored_bound must be one of {CENSORED_BOUNDS}")
     cadences = cadences or local_units_from_registry()
     con = sqlite3.connect(f"file:{db_path}?immutable=1", uri=True)
     wins = sorted(desktop_windows or [])
@@ -935,6 +950,10 @@ def load_unit_book(db_path: str, copy_utc: dt.datetime, shift: dt.timedelta, cad
             work[sid] = (nr[-1][4] or 0.0) / 60.0
             if nr[-1][3] in ("killed_external", "transient_fail"):
                 censored.append(sid)
+                kinds = {"newest": (), "kills": ("killed_external", "transient_fail"),
+                         "tightest": ("killed_external", "transient_fail", "partial")}[censored_bound]
+                bounds = [(x[4] or 0.0) / 60.0 for x in nr if x[3] in kinds]
+                work[sid] = max([work[sid]] + bounds) * censored_mult
         good = [r for r, o in zip(rows, raw) if r[1] == sid and r[3] in ("ok", "no_change", "partial")
                 and on_desktop(o[0])]
         if good:
@@ -967,13 +986,34 @@ class ReplayConfig:
     # is L >= 180, so under A an EMPTY lease is never backed off. True also holds lease attempts while the
     # no-progress stamp is younger than backoff_h.
     d3_leases: bool = False
+    # Review AR-394 F2. The updater's budget under a lease. Plan A3.5 says "pass with budget L"; plan A4 says the
+    # token's --until-block returns min(L, minutes to expires - E) = L, and run_local_heavy.ps1 then takes its
+    # $marginMin = 25 off whatever --until-block answers (`$untilCron = $untilBlock - $marginMin`). With the ps1
+    # unchanged - and A4 changes only the gate - the pass runs with L - 25. The verdict uses 25.
+    lease_margin_min: float = 0.0
+    # Review AR-394 F1: which lower bound a censored work term takes, and its multiplier (see load_unit_book).
+    censored_bound: str = "tightest"
+    censored_mult: float = 1.0
+    # Review AR-394 F4: do historical MANUAL dispatches (most were single-source proofs) count as completed cloud
+    # runs - for the >= 2/day half and for A3.2's fairness? They always occupy the queue either way. The replay's
+    # own re-dispatches are full runs and always count.
+    count_manual: bool = True
 
     def label(self) -> str:
         d3 = "off" if self.backoff_h is None else f"{self.backoff_h:g}" + ("+L" if self.d3_leases else "")
+        tail = (f" c={self.censored_bound[0]}x{self.censored_mult:g}"
+                f"{'' if self.count_manual else ' man=excl'}")
         if self.policy == "today":
-            return f"today MinH={self.min_hours:g} D3={d3} W={'on' if self.w_on else 'off'}"
-        return (f"A L={self.lease_min:g} MinH={self.min_hours:g} D3={d3} W={'on' if self.w_on else 'off'} "
-                f"dispatch={'yes' if self.dispatch else 'no'}")
+            return f"today MinH={self.min_hours:g} D3={d3} W={'on' if self.w_on else 'off'}{tail}"
+        return (f"A L={self.lease_min:g}-{self.lease_margin_min:g} MinH={self.min_hours:g} D3={d3} "
+                f"W={'on' if self.w_on else 'off'} disp={'yes' if self.dispatch else 'no'}{tail}")
+
+
+def _counts(r: "CloudRun", cfg: ReplayConfig) -> bool:
+    """Is this finished, non-deferred run a `completed` row for A3.2 and for runs/day?"""
+    if not r.completed_ok:
+        return False
+    return cfg.count_manual or r.dispatched or r.event != "workflow_dispatch"
 
 
 def deferred_minutes(hist_dir: str, since: dt.datetime, until: dt.datetime) -> dict:
@@ -1119,7 +1159,7 @@ class Replay:
 
     def _completed_after(self, wf: str, ref: dt.datetime | None) -> bool:
         for w, _s, e, deferred, r in reversed(self.done):
-            if w == wf and not deferred and r.completed_ok:
+            if w == wf and not deferred and _counts(r, self.cfg):
                 return ref is None or e > ref
         return False
 
@@ -1171,7 +1211,7 @@ class Replay:
             return "stand_down"
         # The pass is computed whole at its start (the unit book needs no cloud input), so the lease's release is
         # known before any cloud event inside it is processed; every run that reads the state inside it defers.
-        release = self._pass(t, float(cfg.lease_min), "lease")
+        release = self._pass(t, float(cfg.lease_min) - cfg.lease_margin_min, "lease")
         expires = t + dt.timedelta(minutes=LEASE_W_MIN + cfg.lease_min + LEASE_E_MIN)
         self.lease = (t, release)
         self.leases.append({"taken": t, "release": release, "stood_down": False,
@@ -1275,7 +1315,7 @@ def replay_metrics(rp: Replay, owed_start: float, due_start: list) -> dict:
            "desktop_pushes_day": len(ps) / days}
     cloud_state = []
     for wf in g.WRITERS:
-        comp = sorted(e for w, _s, e, d, r in rp.done if w == wf and not d and r.completed_ok)
+        comp = sorted(e for w, _s, e, d, r in rp.done if w == wf and not d and _counts(r, rp.cfg))
         prev = [e for e in comp if e < S]
         inside = [e for e in comp if S <= e < E]
         pts = ([prev[-1]] if prev else [S]) + inside + [E]
@@ -1302,6 +1342,10 @@ def replay_metrics(rp: Replay, owed_start: float, due_start: list) -> dict:
     out["drains"] = owed_end < owed_start and not out["never_finished"]
     out["cloud_ge2"] = all(out[wf]["runs_day"] >= 2.0 for wf in g.WRITERS)
     out["A_ok"] = out["drains"] and out["cloud_ge2"]
+    # A5's deferral alarm fires when a writer has no completed non-deferred run for 30 h (review AR-394 F4).
+    out["longest_gap_h"] = max(out[wf]["longest_gap_h"] for wf in g.WRITERS)
+    out["gap_over_30h"] = out["longest_gap_h"] > 30.0
+    out["cfg"] = asdict(rp.cfg)
     return out
 
 
@@ -1322,7 +1366,8 @@ class ReplayInputs:
 
 def run_scenario(cfg: ReplayConfig, inp: ReplayInputs) -> dict:
     shift = inp.start - inp.copy_utc
-    book = load_unit_book(inp.db_path, inp.copy_utc, shift, desktop_windows=inp.desktop_windows)
+    book = load_unit_book(inp.db_path, inp.copy_utc, shift, desktop_windows=inp.desktop_windows,
+                          censored_bound=cfg.censored_bound, censored_mult=cfg.censored_mult)
     owed0, due0 = book.owed(inp.start), book.due_set(inp.start)
     rp = Replay(cfg, inp.runs, book, inp.start, inp.end, inp.deferred, inp.templates, inp.last_success,
                 inp.last_noprogress).run()
@@ -1333,7 +1378,7 @@ def run_scenario(cfg: ReplayConfig, inp: ReplayInputs) -> dict:
 
 def _fmt_row(m: dict) -> str:
     d, h = m["updater-daily.yml"], m["updater-heavy.yml"]
-    return (f"{m['label']:<46} {m['window_min_day']:6.0f} {m['used_min_day']:6.0f} {m['passes']:4d} "
+    return (f"{m['label']:<66} {m['window_min_day']:6.0f} {m['used_min_day']:6.0f} {m['passes']:4d} "
             f"{m['lease_passes']:4d} {m['stand_downs']:3d} {m['hard_stops']:3d} {m['empty_passes']:3d} "
             f"{m['owed_start']:7.1f} {m['owed_end']:7.1f} {m['attempts_per_due_unit']:5.2f} {m['min_attempts']:3d} "
             f"{len(m['never_finished']):3d} {d['runs_day']:5.2f} {h['runs_day']:5.2f} "
@@ -1345,7 +1390,7 @@ def _fmt_row(m: dict) -> str:
             f"A={'YES' if m['A_ok'] else 'NO'}")
 
 
-_HEADER = (f"{'setting':<46} {'win/d':>6} {'used/d':>6} {'pass':>4} {'leas':>4} {'sd':>3} {'hs':>3} {'emp':>3} "
+_HEADER = (f"{'setting':<66} {'win/d':>6} {'used/d':>6} {'pass':>4} {'leas':>4} {'sd':>3} {'hs':>3} {'emp':>3} "
            f"{'owed0':>7} {'owedE':>7} {'att/u':>5} {'min':>3} {'nf':>3} {'dly/d':>5} {'hvy/d':>5} {'gap_h':>6} "
            f"{'dfr':>4} {'dsp':>4} {'ev':>3} {'evh':>3} {'col':>3} {'dp/d':>5} {'cp/d':>6}  verdict")
 
@@ -1378,7 +1423,7 @@ def load_replay_inputs(args) -> ReplayInputs:
 def _cfg_from(args, **kw) -> ReplayConfig:
     base = dict(pull_min=args.pull_min, push_min=args.push_min, tail_min=args.tail_min,
                 kill_keeps_progress=args.kill_keeps_progress, d3_leases=args.d3_leases,
-                dispatch_latency_min=args.dispatch_latency)
+                dispatch_latency_min=args.dispatch_latency, censored_bound=args.censored_bound)
     base.update(kw)
     return ReplayConfig(**base)
 
@@ -1411,16 +1456,21 @@ def cmd_replay61(args):
     print(_HEADER)
     rows = []
     scen = []
-    for w_on in args.w:
-        for mh in ([] if args.no_today else args.min_hours):
-            for bo in args.backoff:
-                scen.append(_cfg_from(args, policy="today", min_hours=mh, backoff_h=bo, w_on=w_on))
-        for L in args.lease:
-            for mh in args.min_hours:
-                for bo in args.backoff:
-                    for dsp in (True, False):
-                        scen.append(_cfg_from(args, policy="lease", lease_min=L, min_hours=mh, backoff_h=bo,
-                                              w_on=w_on, dispatch=dsp))
+    for cm in args.censored_mult:
+        for man in args.count_manual:
+            for w_on in args.w:
+                for mh in ([] if args.no_today else args.min_hours):
+                    for bo in args.backoff:
+                        scen.append(_cfg_from(args, policy="today", min_hours=mh, backoff_h=bo, w_on=w_on,
+                                              censored_mult=cm, count_manual=man))
+                for L in args.lease:
+                    for mg in args.lease_margin:
+                        for mh in args.min_hours:
+                            for bo in (args.lease_backoff if args.lease_backoff is not None else args.backoff):
+                                for dsp in args.dispatch:
+                                    scen.append(_cfg_from(args, policy="lease", lease_min=L, lease_margin_min=mg,
+                                                          min_hours=mh, backoff_h=bo, w_on=w_on, dispatch=dsp,
+                                                          censored_mult=cm, count_manual=man))
     for cfg in scen:
         m = run_scenario(cfg, inp)
         rows.append(m)
@@ -1515,6 +1565,14 @@ def baseline61(args) -> bool:
     check("owed min", b0.owed(inp.copy_utc), 1578.6, 0.15)
     check("due units", len(b0.due_set(inp.copy_utc)), 15, 0)
     print(f"   due: {', '.join(b0.due_set(inp.copy_utc))}")
+    bk = load_unit_book(inp.db_path, inp.copy_utc, dt.timedelta(0), desktop_windows=inp.desktop_windows,
+                        censored_bound="kills")
+    check("owed min, censored terms at their largest kill/transient (AR-394 F1)", bk.owed(inp.copy_utc), 1858.5, 0.15)
+    bt = load_unit_book(inp.db_path, inp.copy_utc, dt.timedelta(0), desktop_windows=inp.desktop_windows,
+                        censored_bound="tightest")
+    print(f"   owed with the TIGHTEST bound (largest kill/transient/partial; the sweep's default): "
+          f"{bt.owed(inp.copy_utc):.1f} min; censored terms: " + ", ".join(
+              f"{s} {b0.work[s]:.1f}->{bk.work[s]:.1f}->{bt.work[s]:.1f}" for s in sorted(b0.censored)))
     print(f"   censored work terms (killed/transient newest row): {', '.join(sorted(b0.censored)) or '-'}")
     print(f"   finished-turn outcome per unit (newest ok/no_change/partial row written inside a desktop pass, "
           f"{len(inp.desktop_windows)} pass windows): " + ", ".join(
@@ -1597,6 +1655,16 @@ def main():
     p.add_argument("--d3-leases", action="store_true", help="sensitivity, not in the plan: D3 also holds leases")
     p.add_argument("--dispatch-latency", type=float, default=1.0, help="minutes from dispatch to the run's creation")
     p.add_argument("--no-today", action="store_true", help="skip the 'today' rows")
+    p.add_argument("--censored-bound", choices=CENSORED_BOUNDS, default="tightest",
+                   help="lower bound a censored work term takes (load_unit_book; AR-394 F1)")
+    p.add_argument("--censored-mult", type=float, nargs="+", default=[1.0, 1.5, 2.0])
+    p.add_argument("--lease-margin", type=float, nargs="+", default=[25.0, 0.0],
+                   help="minutes taken off L for the pass budget; 25 = plan A4 + the ps1 $marginMin (AR-394 F2)")
+    p.add_argument("--count-manual", type=lambda s: s == "yes", nargs="+", default=[False, True],
+                   help="yes / no: historical manual dispatches count as completed cloud runs (AR-394 F4)")
+    p.add_argument("--dispatch", type=lambda s: s == "yes", nargs="+", default=[True, False], help="yes / no")
+    p.add_argument("--lease-backoff", type=lambda s: None if s == "off" else float(s), nargs="+", default=None,
+                   help="D3 values for the lease rows (default: --backoff); D3 never binds a lease of L >= 150")
     p.add_argument("--json")
     p.set_defaults(fn=cmd_replay61)
     sub.add_parser("lag").set_defaults(fn=cmd_lag)
