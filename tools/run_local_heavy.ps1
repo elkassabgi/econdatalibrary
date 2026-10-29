@@ -57,7 +57,16 @@ param(
     # 120 and 150 measure identically (13 passes, 0 collisions), 160-170 drop to 11 passes, and 180 costs 4
     # collisions. The flat part is narrow and the cliff is 30 min away, so do not raise this without re-running
     # `python tools/measure_ci_lag.py sweep`.
-    [int]      $WantBlockMin = 150
+    [int]      $WantBlockMin = 150,
+    # D3, the no-progress back-off. Past $MaxHours the hold above is dropped, and a pass that advances nothing
+    # writes no success stamp (R625/R630, correct in itself), so before D3 every window of 20+ usable minutes
+    # started another pass that pulled and pushed the whole state store to do nothing. A pushed pass that
+    # advanced nothing now writes local_heavy.last_noprogress, and while that stamp is younger than this many
+    # hours a window below $WantBlockMin is HELD even past $MaxHours; a window of $WantBlockMin or more still
+    # starts. 8, NEVER 12: in the replay (measure_ci_lag.py replay61, compared per unit by AR-393 round 10) no
+    # unit loses an attempt at 4 h or 8 h in any setting, while at 12 h bea falls from 15 attempts to 1 and istat
+    # loses 2-3. Do not raise this without re-running that comparison.
+    [double]   $NoProgressBackoffH = 8
 )
 
 $ErrorActionPreference = 'Stop'
@@ -83,6 +92,12 @@ function Say($msg) {
 # only durable, reboot-surviving mechanism is the Startup guard loop - which is built to keep
 # long-running jobs ALIVE, not to run a job on a cadence. -IfDue bridges that.
 $stampFile = Join-Path $logDir 'local_heavy.last_success'
+# D3: written only by a pushed whole-route pass that advanced nothing (Test-NoProgressShouldStamp). It never
+# moves the 20-hour clock above; it only lets the window choice below hold short windows for a while.
+$noProgFile = Join-Path $logDir 'local_heavy.last_noprogress'
+# The decisions this runner takes are pure functions in cadence_decision.ps1, tested against real PowerShell
+# (tools/test_cadence_decision.ps1). Loaded here, before the first decision that uses one.
+. (Join-Path $PSScriptRoot 'cadence_decision.ps1')
 
 $lockFile = Join-Path $logDir 'local_heavy.lock'
 
@@ -152,6 +167,9 @@ if ($IfDue) {
             }
         } catch { }   # unreadable stamp: treat as due rather than never running again
     }
+    # D3: how long since the last pushed pass that advanced nothing. Read only here, under -IfDue, so a manual
+    # invocation is never held by it. $null (missing, unreadable or future-dated) means no back-off.
+    $script:NoProgressAgeHours = Get-StampAgeHours -Path $noProgFile
 }
 
 Say "local heavy updater starting; log -> $log"
@@ -355,12 +373,18 @@ if ($selfHosted) {
     }
     # WAIT FOR A WINDOW WORTH USING. Without this the runner takes the first gap it is offered, and because
     # the stamp is written at the END of a pass, a short pass at a busy hour re-anchors every later one there.
-    if ($untilCron -lt $WantBlockMin -and $script:SinceLastHours -lt $MaxHours) {
+    # D3 adds one reason to hold a SHORT window: a pushed pass advanced nothing less than $NoProgressBackoffH
+    # hours ago. The rule is Test-WindowShouldHold, the replay's own predicate term for term.
+    $hold = Test-WindowShouldHold -UntilCronMin $untilCron -WantBlockMin $WantBlockMin `
+                -SinceLastHours $script:SinceLastHours -MaxHours $MaxHours `
+                -NoProgressAgeHours $script:NoProgressAgeHours -NoProgressBackoffH $NoProgressBackoffH
+    if ($hold.Hold) {
         Say ("HOLDING: " + $untilCron + " usable min is less than the " + $WantBlockMin + " min wanted, and " +
-             "it is only " + [int]$script:SinceLastHours + " h since the last pass. Waiting for a longer " +
-             "window. Past " + $MaxHours + " h this preference is dropped and a short window is accepted - but " +
-             "that only relaxes THIS check: while the gate itself says BLOCKED the pass still cannot start, " +
-             "however long it has been. A multi-day silence means the gate, not this hold.")
+             $hold.Why + ". Waiting for a longer window. Past " + $MaxHours + " h this preference is dropped " +
+             "unless the last pushed pass advanced nothing within " + $NoProgressBackoffH + " h (D3) - and a " +
+             "window of " + $WantBlockMin + " min or more always starts. That only relaxes THIS check: while " +
+             "the gate itself says BLOCKED the pass still cannot start, however long it has been. A multi-day " +
+             "silence means the gate, not this hold.")
         exit 0
     }
     if ([int]$env:AQUEDUCT_RUN_BUDGET_MIN -gt $untilCron) {
@@ -500,7 +524,7 @@ $snapRaw = ( & $pythonExe (Join-Path $PSScriptRoot 'unit_progress_probe.py') --s
 # THE PATTERN IS THE GUARD, not the comparison beside it: '^\d+$' rejects an empty string, a
 # warning line and the -1 sentinel alike, so `-ge 0` can only ever see a non-negative number
 # (R634). It is kept because it states the intent, not because it can fire.
-. (Join-Path $PSScriptRoot 'cadence_decision.ps1')
+# (cadence_decision.ps1, which defines Read-ProbeNumber, is dot-sourced near the top.)
 $snapshotOk = ($null -ne (Read-ProbeNumber $snapRaw))
 $proc = Start-Process -FilePath $pythonExe -ArgumentList (@('-u','-m','updater.run') + $srcArgs) `
         -PassThru -NoNewWindow `
@@ -623,6 +647,18 @@ if ($decision.Stamp) {
     Say ("cadence stamped - state committed (" + $decision.Why + ")")
 } else {
     Say ("cadence NOT stamped: " + $decision.Why + " - this pass is due again on the next guard tick")
+}
+# D3: a SEPARATE stamp, written only by a scheduled whole-route pass that pulled the state, pushed it, and
+# advanced nothing (Test-NoProgressShouldStamp). Never on a push failure, a crash, a hard stop or a manual
+# -Only/-Force proof. The 20-hour clock above is untouched by it.
+$noProg = Test-NoProgressShouldStamp -PushRc $pushRc -Crashed $crashed -HardStopped ($hardStopped -or $rc -eq 124) `
+              -Manual ([bool]$Only -or [bool]$Force) -PulledState (-not $selfHosted) -Advanced $advanced
+if ($noProg.Stamp) {
+    Set-Content -Path $noProgFile -Value ((Get-Date).ToUniversalTime().ToString('o')) -Encoding ascii
+    Say ("no-progress stamp written (" + $noProg.Why + "): windows under " + $WantBlockMin + " min are held for " +
+         $NoProgressBackoffH + " h, even past " + $MaxHours + " h")
+} else {
+    Say ("no-progress stamp not written: " + $noProg.Why)
 }
 if (Test-Path $progressSnap) { Remove-Item $progressSnap -ErrorAction SilentlyContinue }
 Release-LocalHeavyLock

@@ -580,6 +580,28 @@ def _has_adapter(unit) -> bool:
     return True
 
 
+def _budget_skip_due_label(unit, store, force) -> str:
+    """PRINT ONLY: would this budget-skipped unit have been due? For the BUDGET SKIP line, nothing else.
+
+    The budget gate runs BEFORE the due check, so a skip line used to name units that were not due at all -
+    21 lines printed against 15 units due on the 2026-10-28 13:45Z desktop pass - and a reader counting skip
+    lines as "work that lost its turn" over-counted by six (starvation plan B3, ledger R1708). The label asks
+    the SAME question the due check below would ask (`Strategy.is_due` on the stored unit state, or `force`),
+    and is computed only for a unit the gate has already skipped. It decides nothing: the skip, its position
+    in the loop and every list it feeds are unchanged, which is why the due check was NOT moved ahead of the
+    gate (that would reorder it before `_has_adapter` and change what a skipped unit records).
+
+    It must never be able to break the loop it annotates, so any failure prints as `due unknown (...)`.
+    """
+    if force:
+        return "due (--force)"
+    try:
+        us = store.get_unit(unit.source_id, unit.unit_id)
+        return "due" if get_strategy(unit.strategy).is_due(unit, us) else "not due"
+    except Exception as e:  # noqa: BLE001 - a label, never a decision
+        return f"due unknown ({type(e).__name__})"
+
+
 def _is_live(unit) -> bool:
     """Live tier = the rollout perimeter, carried as `live: true` on the registry
     entry (one source of truth in DATA — a hardcoded Python source list would be
@@ -2579,7 +2601,9 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             # The numbers printed are the ones that DECIDED: `_now` is the instant the
             # comparison used, not a fresh clock read, and `_need_min` is the RESERVE this
             # gate requires - a worst case, not an estimate of what the unit would take.
-            print(f"[orchestrator] BUDGET SKIP {unit.source_id}/{unit.unit_id}: the gate "
+            # B3: `due` / `not due` says whether this skip cost the unit a turn it was owed. Label only.
+            print(f"[orchestrator] BUDGET SKIP {unit.source_id}/{unit.unit_id} "
+                  f"({_budget_skip_due_label(unit, store, force)}): the gate "
                   f"reserves {_need_min:.0f} min (worst case, not an estimate) and "
                   f"{max(0.0, (run_deadline - _now) / 60.0):.0f} min remain in this pass - "
                   f"deferred to the next one", flush=True)
