@@ -437,3 +437,506 @@ def test_book_owed_is_the_sum_of_the_due_units_work(since_success_h, due):
     b = book({"a": 30.0, "b": 12.5},
              state={"b": {"last_success_utc": m._iso(now - dt.timedelta(hours=since_success_h))}})
     assert b.owed(now) == (42.5 if due else 30.0)          # daily cadence: due after 0.9 x 24 h = 21.6 h
+
+
+# ================================================================== PR 2 (PLAN rev 10 R10.3 item 2): the extensions
+# Each flag: a planted case with the answer worked by hand, and a control where the one fact the flag reads is
+# removed, so a flag that does nothing (or does something else) fails.
+
+BIG = 6000.0                                                # 100 min on record: band 3, admission reserve 90 min
+
+
+def b2_book(order, p_attempt="2026-09-29T00:00:00+00:00", kill_r=None, **kw):
+    """p: partial, success 07-14, attempt `p_attempt` (istat's shape); q: ok, success 09-02; r: ok, success 09-03,
+    and a kill row if `kill_r`. All monthly, all due at 10-01 (28 x 0.9 = 25.2 d), all in band 3."""
+    st = {"p": {"last_success_utc": "2026-07-14T00:00:00+00:00", "last_attempt_utc": p_attempt, "status": "partial"},
+          "q": {"last_success_utc": "2026-09-02T00:00:00+00:00", "last_attempt_utc": "2026-09-02T00:00:00+00:00",
+                "status": "ok"},
+          "r": {"last_success_utc": "2026-09-03T00:00:00+00:00", "last_attempt_utc": "2026-09-03T00:00:00+00:00",
+                "status": "ok"}}
+    rows = [("2026-07-01T00:00:00+00:00", s, "_all", "ok", BIG) for s in ("p", "q", "r")]
+    if kill_r:
+        rows.append((kill_r, "r", "_all", "killed_external", BIG))
+    return m.UnitBook({s: "monthly" for s in st}, st, rows, {"p": 100.0, "q": 50.0, "r": 20.0},
+                      {"p": "partial", "q": "ok", "r": "ok"}, order=order, **kw)
+
+
+def _grid(b):
+    return [b.is_due(s, T("2026-10-01T00:00") + dt.timedelta(days=k)) for s in sorted(b.units) for k in range(0, 60, 3)]
+
+
+def test_b2_order_attempt_changes_only_the_order():
+    t0 = T("2026-10-01T00:00")
+    prod, att = b2_book("production"), b2_book("attempt")
+    assert _grid(prod) == _grid(att)                       # due-ness is the same before the pass ...
+    rp, ra = prod.run_pass(t0, 1000.0), att.run_pass(t0, 1000.0)
+    # production: p by its 07-14 success (-79/30), q 09-02 (-29/30), r 09-03; B2: p by its 09-29 attempt (-2/30)
+    assert [x[0] for x in rp["ran"]] == ["p", "q", "r"]
+    assert [x[0] for x in ra["ran"]] == ["q", "r", "p"]
+    # ... and everything except the order is identical: what ran, for how long, with which status, the minutes,
+    # the counters, every unit's status, and due-ness on a 60-day grid after the pass
+    assert sorted(rp["ran"]) == sorted(ra["ran"]) and rp["used_min"] == ra["used_min"] == 170.0
+    assert (rp["advanced"], rp["hard_stop"], rp["stopped"]) == (ra["advanced"], ra["hard_stop"], ra["stopped"])
+    assert prod.attempts == att.attempts and prod.finished == att.finished and prod.remaining == att.remaining
+    assert {s: prod.state[s]["status"] for s in prod.units} == {s: att.state[s]["status"] for s in att.units}
+    assert _grid(prod) == _grid(att) and prod.owed(T("2026-10-05T00:00")) == att.owed(T("2026-10-05T00:00"))
+
+
+def test_b2_negative_control_no_newer_attempt_means_the_production_order():
+    # p's attempt equals its success: nothing for B2 to read, so the two orders must agree unit for unit
+    prod = b2_book("production", p_attempt="2026-07-14T00:00:00+00:00")
+    att = b2_book("attempt", p_attempt="2026-07-14T00:00:00+00:00")
+    # the stamp itself, unit by unit, equals production last_turn_utc (read before any pass moves a stamp)
+    for s in ("p", "q", "r"):
+        assert att._last_turn(att.state[s], None) == prod._last_turn(prod.state[s], None) == \
+            prod._orch.last_turn_utc(prod.state[s], None)
+    assert prod.run_pass(T("2026-10-01T00:00"), 1000.0)["ran"] == att.run_pass(T("2026-10-01T00:00"), 1000.0)["ran"]
+
+
+def test_b2_keeps_the_production_kill_rule():
+    # r was killed on 09-30, after its 09-03 success: both orders sort r by the kill (production last_turn_utc), so
+    # r goes LAST in production too; B2 must not drop the kill
+    prod = b2_book("production", kill_r="2026-09-30T00:00:00+00:00")
+    att = b2_book("attempt", kill_r="2026-09-30T00:00:00+00:00")
+    assert [x[0] for x in prod.run_pass(T("2026-10-01T00:00"), 1000.0)["ran"]] == ["p", "q", "r"]
+    assert [x[0] for x in att.run_pass(T("2026-10-01T00:00"), 1000.0)["ran"]] == ["q", "p", "r"]   # kill 09-30 > p 09-29
+    with pytest.raises(ValueError):
+        b2_book("newest")
+
+
+def test_b2_changes_admission_only_through_the_order():
+    # 200 min, a 90-min reserve each: production runs p (0 -> 100), q (100 + 90 <= 200 -> 150) and refuses r
+    # (150 + 90 > 200); B2 runs q (-> 50), r (50 + 90 <= 200 -> 70), p (70 + 90 <= 200 -> 170). Same units, same
+    # rule; the order decides who is refused.
+    assert [x[0] for x in b2_book("production").run_pass(T("2026-10-01T00:00"), 200.0)["ran"]] == ["p", "q"]
+    assert [x[0] for x in b2_book("attempt").run_pass(T("2026-10-01T00:00"), 200.0)["ran"]] == ["q", "r", "p"]
+
+
+# ------------------------------------------------------------------ --due-from-attempt
+
+def test_due_from_attempt_puts_a_partial_behind_an_old_success_on_the_partial_clock():
+    st = {"p": {"last_success_utc": "2026-07-14T00:00:00+00:00", "last_attempt_utc": "2026-10-01T00:00:00+00:00",
+                "status": "partial"}}
+    prod = book({"p": 60.0}, cadence={"p": "monthly"}, state=st)
+    flag = m.UnitBook({"p": "monthly"}, st, [], {"p": 60.0}, {}, due_from_attempt=True)
+    for day, want in ((1, False), (6, False), (7, True)):  # min(28, 7) x 0.9 = 6.3 days from the 10-01 attempt
+        t = T("2026-10-01T00:00") + dt.timedelta(days=day)
+        assert prod.is_due("p", t) and flag.is_due("p", t) is want, day     # production: due at every pass
+    assert prod.owed(T("2026-10-03T00:00")) == 60.0 and flag.owed(T("2026-10-03T00:00")) == 0.0
+
+
+@pytest.mark.parametrize("row", [
+    {"last_success_utc": "2026-09-30T00:00:00+00:00", "last_attempt_utc": "2026-09-30T00:00:00+00:00", "status": "ok"},
+    {"last_success_utc": "2026-07-14T00:00:00+00:00", "last_attempt_utc": "2026-10-01T00:00:00+00:00",
+     "status": "transient_fail"},
+    {"last_attempt_utc": "2026-10-01T00:00:00+00:00", "status": "partial"},
+    {"last_success_utc": "2026-10-01T00:00:00+00:00", "last_attempt_utc": "2026-09-01T00:00:00+00:00",
+     "status": "partial"},
+    {"last_success_utc": "2026-07-14T00:00:00+00:00", "last_attempt_utc": "not a date", "status": "partial"},
+])
+def test_due_from_attempt_controls_every_other_unit_is_production(row):
+    st = {"u": dict(row)}
+    prod = book({"u": 10.0}, cadence={"u": "monthly"}, state=st)
+    flag = m.UnitBook({"u": "monthly"}, st, [], {"u": 10.0}, {}, due_from_attempt=True)
+    for day in range(0, 40):
+        t = T("2026-10-01T00:00") + dt.timedelta(days=day)
+        assert prod.is_due("u", t) == flag.is_due("u", t), (row, day)
+
+
+def test_due_from_attempt_after_a_replayed_partial_turn():
+    # p finishes a turn as partial at 10-01 00:10; production keeps it due (old success), the flag waits 6.3 days
+    st = {"p": {"last_success_utc": "2026-07-14T00:00:00+00:00", "status": "partial",
+                "last_attempt_utc": "2026-08-01T00:00:00+00:00"}}
+    rows = [("2026-07-01T00:00:00+00:00", "p", "_all", "partial", 600.0)]
+    for flag in (False, True):
+        b = m.UnitBook({"p": "monthly"}, st, rows, {"p": 10.0}, {"p": "partial"}, due_from_attempt=flag)
+        assert b.is_due("p", T("2026-10-01T00:00"))                         # due before the turn either way
+        b.run_pass(T("2026-10-01T00:00"), 100.0)
+        assert b.state["p"]["last_attempt_utc"] == "2026-10-01T00:10:00+00:00"
+        assert b.is_due("p", T("2026-10-02T00:00")) is (not flag)
+
+
+# ------------------------------------------------------------------ --clocked-extra, whole flows
+
+def test_clocked_extra_whole_flows_keep_only_whole_pieces():
+    rows = [("2026-09-01T00:00:00+00:00", "oecd", "_all", "ok", BIG)]
+    # W on, oecd extra, per-flow bound 60: budget 200 -> stopped at 200; window 200 - tail 90 = 110 -> 1 whole
+    # piece of 60 kept -> 240 left (divisible minutes would keep 110 -> 190)
+    b = m.UnitBook({"oecd": "monthly"}, {}, rows, {"oecd": 300.0}, {}, clocked_extra=("oecd",),
+                   whole_flow={"oecd": 60.0})
+    r = b.run_pass(T("2026-10-01T00:00"), 200.0, w_on=True, tail_min=90.0)
+    assert r["hard_stop"] is None and r["stopped"] == "oecd" and r["used_min"] == 200.0
+    assert b.remaining["oecd"] == 240.0
+    assert b.db.execute("SELECT status FROM runs ORDER BY id DESC LIMIT 1").fetchone() == ("transient_fail",)
+    # the next pass: 240 > 200 again -> one more piece -> 180; the third: 180 <= 200 -> finishes
+    b.run_pass(T("2026-10-02T00:00"), 200.0, w_on=True, tail_min=90.0)
+    assert b.remaining["oecd"] == 180.0
+    r = b.run_pass(T("2026-10-03T00:00"), 200.0, w_on=True, tail_min=90.0)
+    assert r["ran"] == [("oecd", 180.0, "ok")] and b.remaining["oecd"] == 300.0 and b.finished["oecd"] == 1
+
+
+def test_clocked_extra_controls():
+    rows = [("2026-09-01T00:00:00+00:00", s, "_all", "ok", BIG) for s in ("oecd", "foo")]
+
+    def one(src, **kw):
+        b = m.UnitBook({src: "monthly"}, {}, rows, {src: 300.0}, {}, **kw)
+        return b, b.run_pass(T("2026-10-01T00:00"), 200.0, w_on=True, tail_min=90.0)
+
+    # a divisible extra (no bound): keeps the whole window, 300 - 110 = 190
+    b, r = one("foo", clocked_extra=("foo",))
+    assert r["stopped"] == "foo" and b.remaining["foo"] == 190.0
+    # a flow longer than the window keeps nothing: 300 left, every pass, forever
+    b, r = one("oecd", clocked_extra=("oecd",), whole_flow={"oecd": 120.0})
+    assert r["stopped"] == "oecd" and b.remaining["oecd"] == 300.0
+    # not on the list: killed at the hard stop exactly as before (W on)
+    b, r = one("oecd")
+    assert r["hard_stop"] == "oecd" and r["used_min"] == 210.0 and b.remaining["oecd"] == 300.0
+    # W off: the extra list does nothing (as for W_CLOCKED)
+    b = m.UnitBook({"oecd": "monthly"}, {}, rows, {"oecd": 300.0}, {}, clocked_extra=("oecd",),
+                   whole_flow={"oecd": 60.0})
+    r = b.run_pass(T("2026-10-01T00:00"), 200.0, w_on=False)
+    assert r["hard_stop"] == "oecd" and b.remaining["oecd"] == 300.0
+    # --kill-keeps-progress with whole flows: a kill at 210 keeps 3 pieces of 60
+    b = m.UnitBook({"oecd": "monthly"}, {}, rows, {"oecd": 300.0}, {}, clocked_extra=("oecd",),
+                   whole_flow={"oecd": 60.0})
+    b.run_pass(T("2026-10-01T00:00"), 200.0, w_on=False, kill_keeps_progress=True)
+    assert b.remaining["oecd"] == 120.0
+    # oecd is never divisible: refused without its per-flow bound
+    with pytest.raises(ValueError):
+        m.UnitBook({"oecd": "monthly"}, {}, rows, {"oecd": 300.0}, {}, clocked_extra=("oecd",))
+
+
+def _oecd_log(tmp_path):
+    (tmp_path / "local_heavy_updater_20261018-230130.log").write_text(
+        "[oecd] 25/99 flows � +0 rows, 0 quiet, 0 transient, 0 structural, 999,999s\n"       # before >>>: ignored
+        "[orchestrator] >>> oecd/_all (strategy=giant_changed_units, cadence=monthly)\n"
+        "[oecd] catalogue 1,550 flow(s); selected 75 changed/new/redo\n"
+        "[oecd] 25/75 flows � +4,354 rows, 0 quiet, 23 transient, 0 structural, 295s\n"
+        "[oecd] 50/75 flows � +503,578 rows, 0 quiet, 35 transient, 0 structural, 1,379s\n"
+        "[bea] 25/30 flows — +1 rows, 0 quiet, 0 transient, 0 structural, 99,000s\n"            # another source
+        "[orchestrator] >>> oecd/_all (strategy=giant_changed_units, cadence=monthly)\n"
+        "[oecd] 25/75 flows — +0 rows, 0 quiet, 20 transient, 0 structural, 600s\n",
+        encoding="utf-8")
+    (tmp_path / "guard_localheavy_0811_1622.log").write_text(
+        "[orchestrator] >>> oecd/_all (strategy=giant_changed_units, cadence=monthly)\n"
+        "[oecd] 225/400 flows � +12,885,660 rows, 3 quiet, 39 transient, 56 structural, 15,175s\n"
+        "[oecd] 250/400 flows � +137,543,173 rows, 3 quiet, 40 transient, 56 structural, 19,154s\n",
+        encoding="utf-8")
+    (tmp_path / "local_heavy_20261018-230130.log").write_text(
+        "[oecd] 25/75 flows - +0 rows, 0 quiet, 0 transient, 0 structural, 88,888s\n", encoding="utf-8")  # wrapper
+
+
+def test_giant_flow_blocks_reads_25_flow_blocks_per_unit_run(tmp_path):
+    _oecd_log(tmp_path)
+    fb = m.giant_flow_blocks(str(tmp_path), "oecd")
+    # blocks: 0->25 295 s, 25->50 1,084 s, 0->25 600 s (second run), 0->225 15,175 s, 225->250 3,979 s
+    assert [(round(b[0] * 60), b[3], b[4]) for b in fb["blocks"]] == [
+        (15175, 0, 225), (3979, 225, 250), (1084, 25, 50), (600, 0, 25), (295, 0, 25)]
+    assert fb["unit_runs"] == 3 and fb["files"] == 2 and fb["largest_min"] == pytest.approx(15175 / 60)
+    assert m.giant_flow_blocks(str(tmp_path), "census")["blocks"] == []                   # no line: no bound
+
+
+def test_resolve_whole_flow_derives_states_and_refuses(tmp_path):
+    import argparse
+    (tmp_path / "local_heavy_updater_20261018-230130.log").write_text(
+        "[orchestrator] >>> oecd/_all (strategy=giant_changed_units, cadence=monthly)\n"
+        "[oecd] 25/75 flows - +4,354 rows, 0 quiet, 23 transient, 0 structural, 295s\n"
+        "[oecd] 50/75 flows - +503,578 rows, 0 quiet, 35 transient, 0 structural, 3,295s\n", encoding="utf-8")
+    a = argparse.Namespace(clocked_extra=["oecd", "foo"], flow_bound=[], logs=str(tmp_path))
+    lines = m.resolve_whole_flow(a)
+    assert a.whole_flow == {"oecd": 50.0}                                    # (3,295 - 295) / 60, the largest block
+    assert any("CONDITIONAL" in x and "50 min" in x and "ASSUMED" in x for x in lines)
+    assert any("1.79B rows" in x for x in lines) and any(x.startswith("foo: clocked in divisible") for x in lines)
+    a = argparse.Namespace(clocked_extra=["oecd"], flow_bound=[("oecd", 120.0)], logs=str(tmp_path))
+    lines = m.resolve_whole_flow(a)
+    assert a.whole_flow == {"oecd": 120.0} and any("given by --flow-bound" in x for x in lines)
+    with pytest.raises(SystemExit):                                          # a bound for an unclocked source
+        m.resolve_whole_flow(argparse.Namespace(clocked_extra=[], flow_bound=[("oecd", 9.0)], logs=str(tmp_path)))
+    (tmp_path / "empty").mkdir()
+    with pytest.raises(SystemExit):                                          # whole flows, no log line, no bound
+        m.resolve_whole_flow(argparse.Namespace(clocked_extra=["oecd"], flow_bound=[], logs=str(tmp_path / "empty")))
+
+
+# ------------------------------------------------------------------ --drop-cron (C)
+
+def c_history():
+    """day_history plus: a manual daily dispatch at 09-30 18:01 (BEFORE that cron's scheduled run) and at 10-01 18:30,
+    and a SECOND scheduled daily run at 10-01 20:00."""
+    return sorted(day_history() + [run(DAILY, "2026-09-30T18:01", 10, event="workflow_dispatch"),
+                                   run(DAILY, "2026-10-01T18:30", 10, event="workflow_dispatch"),
+                                   run(DAILY, "2026-10-01T20:00", 10)], key=lambda r: r.created)
+
+
+def test_drop_cron_removes_exactly_the_runs_credited_to_it():
+    rs = c_history()
+    kept, dropped = m.drop_cron_runs(rs, DAILY, 18)
+    # credited to an 18:00 cron: the first scheduled daily run in [18:00, +12 h): 09-30 18:05 and 10-01 18:00
+    assert sorted(r.created for r in dropped) == [T("2026-09-30T18:05"), T("2026-10-01T18:00")]
+    assert len(kept) == len(rs) - 2
+    assert T("2026-10-01T18:30") in [r.created for r in kept]           # a manual dispatch is not a cron's run,
+    assert T("2026-09-30T18:01") in [r.created for r in kept]           # even when it comes first in the window
+    assert T("2026-10-01T20:00") in [r.created for r in kept]           # nor is a second run in the same window
+    assert T("2026-10-01T08:00") in [r.created for r in kept]           # the 06:00 cron's run stays
+    # control: dropping heavy 15 takes heavy's 15:05 and 15:10 runs and no daily run
+    _k, d = m.drop_cron_runs(rs, HEAVY, 15)
+    assert sorted(r.created for r in d) == [T("2026-09-30T15:05"), T("2026-10-01T15:10")]
+    with pytest.raises(ValueError):
+        m.drop_cron_runs(rs, DAILY, 17)                                  # not a cron: never silently nothing
+    with pytest.raises(ValueError):
+        m.writers_without([("updater-nope.yml", 6)])
+    assert m.writers_without([(DAILY, 18)]) == {DAILY: (6,), HEAVY: (3, 15)}
+
+
+def test_drop_cron_frees_the_window_in_the_gate_model():
+    since, until = T("2026-10-01T00:00"), T("2026-10-02T00:00")
+    rs = day_history()
+    w = m.writers_without([(DAILY, 18)])
+    kept, _d = m.drop_cron_runs(rs, DAILY, 18)
+
+    def free(runs, writers):                 # free_windows' model, with the cron hours as a parameter
+        busy = [(max(r.created, since), min(r.hist_end, until)) for r in runs if r.hist_end > since
+                and r.created < until]
+        busy += [(max(c, since), min(e, until)) for c, e, _w in m.cron_blocks(runs, since, until, writers)
+                 if e > since and c < until]
+        return 1440 - sum(m._mins(a, b) for a, b in m._merge([b for b in busy if b[1] > b[0]]))
+
+    # PR #200's day: 1010 free; C: the 18:00 cron and its run gone -> busy 03-04:30, 06-10, 15-15:40 -> 1070
+    assert free(rs, None) == 1010 == sum(m._mins(a, b) for a, b in m.free_windows(rs, since, until))
+    assert free(kept, w) == 1070
+    # controls: the runs cut but the cron kept -> 10-01's 18:00 cron blocks 18-24 and 09-30's (its 18:05 run cut too)
+    # blocks 00-06, so 1010 - 300 - 180 - 90 = 440; the cron cut but the run kept -> the run still occupies 18-19 (1010)
+    assert free(kept, None) == 440
+    assert free(rs, w) == 1010
+    # until_block_fast: at 16:01 the next block was the 18:00 cron (120); under C it is heavy 03:00 (659 -> 660)
+    assert m.until_block_fast(T("2026-10-01T16:01")) == 120
+    assert m.until_block_fast(T("2026-10-01T16:01"), w) == 660
+    assert m.until_block_fast(T("2026-10-01T16:01"), {DAILY: (), HEAVY: ()}) == 720
+
+
+def test_drop_cron_reaches_the_replayed_gate():
+    # a today-policy pass at the 15:45 tick: until-block 135 -> budget 110 (MaxHours past, so a short window is taken);
+    # under C the next block is 03:00 -> 675 -> budget 650
+    def passes(cfg, runs):
+        return make_replay(cfg, runs, units={"u": 10.0}, start="2026-10-01T15:45").run().passes
+
+    kept, _d = m.drop_cron_runs(day_history(), DAILY, 18)
+    today = passes(m.ReplayConfig(policy="today", min_hours=1.0), day_history())
+    c = passes(m.ReplayConfig(policy="today", min_hours=1.0, drop_cron=((DAILY, 18),)), kept)
+    assert today[0]["budget"] == 110.0 and c[0]["budget"] == 650.0
+    # the 18:00 cron no longer blocks: under C the gate passes again inside 18:00-19:00 (today: the cron's run is in
+    # flight 18:00-19:00, so no pass starts there)
+    assert any(T("2026-10-01T18:00") <= p["start"] < T("2026-10-01T19:00") for p in c)
+    assert not any(T("2026-10-01T18:00") <= p["start"] < T("2026-10-01T19:00") for p in today)
+
+
+def test_simulate_refuses_a_cron_cut_without_its_history():
+    inp = m.ReplayInputs([], {}, {}, "x", T("2026-10-28T13:45"), T("2026-10-14T22:00"), T("2026-10-28T22:00"),
+                         T("2026-10-14T00:00"), None, {}, [])
+    with pytest.raises(ValueError):
+        m.simulate(m.ReplayConfig(drop_cron=((DAILY, 18),)), inp)
+
+
+# ------------------------------------------------------------------ --cloud-floor
+
+def _floor_replay():
+    day = [run(DAILY, "2026-10-02T08:00", 30), run(HEAVY, "2026-10-02T04:00", 30), run(HEAVY, "2026-10-02T12:00", 30)]
+    warm = [run(DAILY, "2026-10-01T10:00", 30), run(HEAVY, "2026-10-01T11:00", 30)]
+    rp = make_replay(m.ReplayConfig(policy="today", min_hours=10 ** 9), warm + day, units={"u": 10.0},
+                     start="2026-10-02T00:00", end="2026-10-03T00:00").run()
+    rp.book.finished["u"], rp.book.remaining["u"] = 1, 0.0
+    return rp
+
+
+def test_cloud_floor_replaces_the_two_runs_a_day():
+    rp = _floor_replay()
+    two = m.replay_metrics(rp, 10.0, ["u"])                                  # daily 1/day, heavy 2/day
+    assert (two["updater-daily.yml"]["runs_day"], two["updater-heavy.yml"]["runs_day"]) == (1.0, 2.0)
+    assert two["drains"] and not two["cloud_ge2"] and not two["A_ok"]
+    assert "cloud_floor" not in two and "cloud_ok" not in two and "cloud_floor" not in two["cfg"]
+    one = m.replay_metrics(rp, 10.0, ["u"], m.replace(rp.cfg, cloud_floor=1.0))
+    assert one["cloud_ok"] and one["A_ok"] and one["cloud_floor"] == 1.0 and one["cfg"]["cloud_floor"] == 1.0
+    assert not one["cloud_ge2"]                                               # the literal 2/day test is kept
+    three = m.replay_metrics(rp, 10.0, ["u"], m.replace(rp.cfg, cloud_floor=3.0))
+    assert not three["cloud_ok"] and not three["A_ok"]
+    assert "cloud<2 A=NO" in m._fmt_row(two) and "cloud>=1 A=YES" in m._fmt_row(one)
+    assert one["label"].endswith(" floor=1") and two["label"] == rp.cfg.label()
+    with pytest.raises(ValueError):                                          # only the floor may differ
+        m.replay_metrics(rp, 10.0, ["u"], m.replace(rp.cfg, min_hours=5.0))
+
+
+# ------------------------------------------------------------------ defaults: PR #200's output, byte for byte
+
+PR200_CFG_KEYS = ["policy", "dispatch", "lease_min", "min_hours", "backoff_h", "w_on", "tail_min", "kill_keeps_progress",
+                  "pull_min", "push_min", "dispatch_latency_min", "tick_min", "want_block", "max_hours", "d3_leases",
+                  "lease_margin_min", "censored_bound", "censored_mult", "count_manual"]
+
+
+def test_defaults_leave_the_label_and_the_json_as_pr200():
+    c = m.ReplayConfig(policy="lease", lease_min=360.0, lease_margin_min=25.0, min_hours=6.0, backoff_h=8.0,
+                       w_on=True, count_manual=False)
+    assert list(m.cfg_dict(c)) == PR200_CFG_KEYS
+    assert c.label() == "A L=360-25 MinH=6 D3=8 W=on disp=yes c=tx1 man=excl"
+    assert m.ReplayConfig(policy="today").label() == "today MinH=20 D3=off W=off c=tx1"
+    for kw, mark in ((dict(order="attempt"), " ord=attempt"), (dict(clocked_extra=("oecd",),
+                     whole_flow=(("oecd", 75.6),)), " clk+=oecd(75.6)"),
+                     (dict(drop_cron=((DAILY, 18),)), " C=-daily18"), (dict(due_from_attempt=True), " due=att"),
+                     (dict(cloud_floor=1.0), " floor=1")):
+        x = m.replace(c, **kw)
+        assert mark in x.label() and set(m.cfg_dict(x)) - set(PR200_CFG_KEYS) == set(kw), kw
+
+
+def _cli_inputs(tmp_path):
+    """A planted `fetch` dir (both writers, each cron's run 5 min late, 2026-10-18 .. 10-28), one desktop pass log
+    and a state copy: enough for cmd_replay61 to run a 2-day span end to end."""
+    import json
+    import sqlite3
+    hist = tmp_path / "hist"
+    (hist / "jobs").mkdir(parents=True)
+    rid = iter(range(1000, 10 ** 6))
+
+    def iso(t):
+        return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    for wf, hours, minutes in ((DAILY, (6, 18), 60), (HEAVY, (3, 15), 30)):
+        rows = []
+        for day in range(18, 29):
+            for h in hours:
+                c = T(f"2026-10-{day:02d}T{h:02d}:05")
+                e = c + dt.timedelta(minutes=minutes)
+                i = next(rid)
+                rows.append({"databaseId": i, "createdAt": iso(c), "startedAt": iso(c), "updatedAt": iso(e),
+                             "event": "schedule", "status": "completed", "conclusion": "success", "attempt": 1})
+                steps = [{"name": "Pull state from R2", "startedAt": iso(c + dt.timedelta(minutes=1)),
+                          "completedAt": iso(c + dt.timedelta(minutes=3)), "conclusion": "success"},
+                         {"name": "Health gate (fail past 2x SLA)", "startedAt": iso(e - dt.timedelta(minutes=4)),
+                          "completedAt": iso(e - dt.timedelta(minutes=2)), "conclusion": "success"},
+                         {"name": "Push state to R2 (compare-and-swap)", "startedAt": iso(e - dt.timedelta(minutes=8)),
+                          "completedAt": iso(e - dt.timedelta(minutes=5)), "conclusion": "success"}]
+                jobs = [{"name": "setup" if wf == HEAVY else "update", "startedAt": iso(c), "completedAt": iso(e),
+                         "steps": steps}]
+                (hist / "jobs" / f"{i}.json").write_text(json.dumps({"jobs": jobs}), encoding="utf-8")
+        (hist / f"runs_{wf}.json").write_text(json.dumps(rows), encoding="utf-8")
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "local_heavy_20261025-220113.log").write_text(
+        "[22:01:13] local heavy updater starting\n[22:01:42] whole-run budget: 275 min\n[22:01:42] pull-state ...\n"
+        "[22:04:30] running updater for 30 source(s)\n[01:37:33] push-state ...\n"
+        "[01:45:02] cadence stamped - state committed (3 unit(s) advanced)\n", encoding="utf-8")
+    db = tmp_path / "state.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE unit_state(source_id TEXT, unit_id TEXT, strategy TEXT, upstream_vintage TEXT, "
+                "last_success_utc TEXT, last_attempt_utc TEXT, status TEXT, last_obs_date TEXT, obs_count INTEGER, "
+                "attempt_count INTEGER, last_error TEXT)")
+    con.execute("CREATE TABLE runs(id INTEGER PRIMARY KEY AUTOINCREMENT, ts_utc TEXT, source_id TEXT, unit_id TEXT, "
+                "status TEXT, obs INTEGER, dur_s REAL, note TEXT)")
+    con.execute("INSERT INTO unit_state(source_id, unit_id, last_success_utc, last_attempt_utc, status) VALUES "
+                "('istat', '_all', '2026-07-14T00:00:00+00:00', '2026-10-25T23:00:00+00:00', 'partial')")
+    con.execute("INSERT INTO runs(ts_utc, source_id, unit_id, status, dur_s) VALUES "
+                "('2026-10-25T23:00:00+00:00', 'istat', '_all', 'partial', 3000.0)")
+    # bea: ok, success 09-01 - between istat's success and its attempt, in the same cost band (50 min)
+    con.execute("INSERT INTO unit_state(source_id, unit_id, last_success_utc, last_attempt_utc, status) VALUES "
+                "('bea', '_all', '2026-09-01T00:00:00+00:00', '2026-09-01T00:00:00+00:00', 'ok')")
+    con.execute("INSERT INTO runs(ts_utc, source_id, unit_id, status, dur_s) VALUES "
+                "('2026-09-01T00:00:00+00:00', 'bea', '_all', 'ok', 3000.0)")
+    con.commit()
+    con.close()
+    return ["--history", str(hist), "--logs", str(logs), "--state", str(db), "--days", "2", "--lease", "300",
+            "--min-hours", "6", "--backoff", "8", "--w", "off", "--lease-margin", "25", "--count-manual", "no",
+            "--dispatch", "yes", "--censored-mult", "1"]
+
+
+def _cli(monkeypatch, capsys, base, extra, json_path):
+    import json
+    monkeypatch.setattr(sys, "argv", ["x", "replay61"] + base + extra + ["--json", str(json_path)])
+    m.main()
+    out = capsys.readouterr().out
+    rows = [ln for ln in out.splitlines() if ln.startswith(("today ", "A L="))]
+    return out, rows, json.loads(json_path.read_text(encoding="utf-8"))
+
+
+def test_cmd_replay61_runs_each_extension_end_to_end(tmp_path, monkeypatch, capsys):
+    base = _cli_inputs(tmp_path)
+    out, rows, js = _cli(monkeypatch, capsys, base, [], tmp_path / "d.json")
+    # no flag: one today row and one lease row, PR #200's labels and cfg keys, no extension line
+    assert [r.split("  ")[0].strip() for r in rows] == ["today MinH=6 D3=8 W=off c=tx1 man=excl",
+                                                         "A L=300-25 MinH=6 D3=8 W=off disp=yes c=tx1 man=excl"]
+    assert "extensions (PR 2)" not in out and "cloud floor" not in out and ">= 2.0 completed" in out
+    assert [list(x["cfg"]) for x in js] == [PR200_CFG_KEYS] * 2
+    # --cloud-floor 1 2: every scenario once per floor, from ONE replay (same numbers, different verdict basis)
+    out, rows, js = _cli(monkeypatch, capsys, base, ["--cloud-floor", "1", "2"], tmp_path / "f.json")
+    assert len(rows) == 4 and [x["cfg"].get("cloud_floor", 2.0) for x in js] == [1.0, 2.0, 1.0, 2.0]
+    assert js[0]["owed_end"] == js[1]["owed_end"] and js[0]["updater-daily.yml"] == js[1]["updater-daily.yml"]
+    assert "floor=1" in rows[0] and "floor=" not in rows[1] and "the row's floor (1 / 2" in out
+    # --order production attempt: both orders, the attempt rows labelled
+    out, rows, js = _cli(monkeypatch, capsys, base, ["--order", "production", "attempt"], tmp_path / "o.json")
+    assert len(rows) == 4 and ["ord=attempt" in r for r in rows] == [False, False, True, True]
+    assert [x["cfg"].get("order", "production") for x in js] == ["production", "production", "attempt", "attempt"]
+    # --drop-cron: the cut is stated with its count - 11 days x one 18:05 run, each 5 min after its cron
+    out, rows, js = _cli(monkeypatch, capsys, base, ["--drop-cron", "updater-daily.yml:18"], tmp_path / "c.json")
+    assert "C: dropped the 18:00Z cron of updater-daily.yml from the gate model (crons now (6,)) and the 11 " \
+           "scheduled history run(s)" in out and "start lag min 5, median 5, max 5 min" in out
+    assert all("C=-daily18" in r for r in rows) and all(x["cfg"]["drop_cron"] == [[DAILY, 18]] for x in js)
+    # --clocked-extra oecd with a given bound: the CONDITIONAL statement, and the label carries the bound
+    out, rows, js = _cli(monkeypatch, capsys, base, ["--clocked-extra", "oecd", "--flow-bound", "oecd=60"],
+                         tmp_path / "k.json")
+    assert "CONDITIONAL on the bound 'no single oecd flow takes longer than 60 min' (given by --flow-bound)" in out
+    assert all("clk+=oecd(60)" in r for r in rows) and js[0]["cfg"]["whole_flow"] == [["oecd", 60.0]]
+    # --due-from-attempt: istat (partial since 10-25, success 07-14) leaves the owed set at the start
+    out, rows, js = _cli(monkeypatch, capsys, base, ["--due-from-attempt"], tmp_path / "a.json")
+    _o, _r, js0 = _cli(monkeypatch, capsys, base, [], tmp_path / "d2.json")
+    assert all("due=att" in r for r in rows)
+    assert js0[0]["owed_start"] - js[0]["owed_start"] == pytest.approx(50.0)     # istat's 3,000-s turn
+
+
+def test_cli_inputs_carry_the_cut_and_simulate_carries_the_order(tmp_path):
+    import argparse
+    base = _cli_inputs(tmp_path)
+    kw = dict(zip(base[0:6:2], base[1:6:2]))
+    args = argparse.Namespace(history=kw["--history"], logs=kw["--logs"], state=kw["--state"], days=2.0,
+                              copy_utc="2026-10-28T13:45:00Z", end="2026-10-28T22:00:00Z", drop_cron=[])
+    inp = m.load_replay_inputs(args)
+    args.drop_cron = [(DAILY, 18)]
+    cut = m.load_replay_inputs(args)
+    # the 11 runs credited to the 18:00 cron leave the history the replay reads, not only the printed count
+    assert len(inp.runs) - len(cut.runs) == 11 and len(cut.dropped) == 11 and cut.drop_cron == ((DAILY, 18),)
+    assert not any(r.wf == DAILY and r.created.hour == 18 for r in cut.runs)
+    assert sum(1 for r in inp.runs if r.wf == DAILY and r.created.hour == 18) == 11
+    # simulate() hands the order to the unit book: istat (success 07-14, attempt 10-25) and bea (success 09-01),
+    # both in band 2, swap places in the first pass
+    def first_pass(order):
+        cfg = m.ReplayConfig(policy="today", min_hours=6.0, backoff_h=8.0, order=order, pull_min=2.0, push_min=7.0)
+        rp, _o, _d = m.simulate(cfg, inp)
+        ran = [x[0] for x in rp.passes[0]["ran"]]
+        return ran.index("istat") < ran.index("bea")
+    assert first_pass("production") and not first_pass("attempt")
+
+
+def test_b2_an_unparseable_attempt_is_ignored_as_production_ignores_it():
+    # q's attempt stamp is unparseable: B2 must sort q by its success (as production does), not treat the junk stamp
+    # as never-run (overdue_key's -inf would put q first)
+    st = {"p": {"last_success_utc": "2026-08-01T00:00:00+00:00", "last_attempt_utc": "2026-08-01T00:00:00+00:00",
+                "status": "ok"},
+          "q": {"last_success_utc": "2026-09-01T00:00:00+00:00", "last_attempt_utc": "garbage", "status": "ok"}}
+    rows = [("2026-07-01T00:00:00+00:00", s, "_all", "ok", BIG) for s in st]
+    for order in ("production", "attempt"):
+        b = m.UnitBook({s: "monthly" for s in st}, st, rows, {"p": 10.0, "q": 10.0}, {}, order=order)
+        assert [x[0] for x in b.run_pass(T("2026-10-01T00:00"), 1000.0)["ran"]] == ["p", "q"], order
+
+
+def test_cli_parsers_and_baseline_refuses_the_extensions(monkeypatch):
+    import argparse
+    assert m._wf_hour("updater-daily.yml:18") == (DAILY, 18)
+    assert m._src_minutes("oecd=75.6") == ("oecd", 75.6)
+    for bad in ("updater-daily.yml:17", "nope.yml:6", "updater-daily.yml"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            m._wf_hour(bad)
+    for bad in ("oecd", "oecd=", "oecd=x", "oecd=0"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            m._src_minutes(bad)
+    for flag in (["--order", "attempt"], ["--due-from-attempt"], ["--cloud-floor", "1"],
+                 ["--drop-cron", "updater-daily.yml:18"], ["--clocked-extra", "oecd"]):
+        monkeypatch.setattr(sys, "argv", ["x", "replay61", "--baseline", "--history", "h", "--logs", "l",
+                                          "--state", "s"] + flag)
+        with pytest.raises(SystemExit) as e:
+            m.main()
+        assert "takes none of" in str(e.value.code), flag

@@ -388,6 +388,9 @@ def cmd_sweep(args):
 # re-dispatch (A3.6), the runner's start rule (run_local_heavy.ps1), and the orchestrator's order and admission over
 # the local units (production order_units / overdue_key / last_turn_utc / is_due / run_cost_estimate are CALLED, not
 # copied; the admission reserve is a two-line formula inside run_once and is restated with its line number).
+# The PR 2 extensions (see WHOLE_FLOW below) are candidate RULES, not production: --order attempt hands
+# last_turn_utc a different stamp, --due-from-attempt calls production's own partial clock (base._due_after) for one
+# more class of unit, and --drop-cron edits the schedule. Each is off by default.
 # ======================================================================================================
 import heapq          # noqa: E402
 import math           # noqa: E402
@@ -395,7 +398,7 @@ import re             # noqa: E402
 import sqlite3        # noqa: E402
 import statistics     # noqa: E402
 from bisect import bisect_left, bisect_right   # noqa: E402
-from dataclasses import asdict, dataclass      # noqa: E402
+from dataclasses import asdict, dataclass, replace   # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -428,6 +431,19 @@ NO_ADVANCE = frozenset({"istat"})
 # Not work: statcan is a 2-s reporter (jobs/statcan_lane.py does its work, plan section 1); cbs_nl and gus_dbw are
 # PROTECTED (orchestrate.FIRSTPASS_DIRS) and never attempted.
 NOT_WORK = frozenset({"statcan", "cbs_nl", "gus_dbw"})
+# PLAN rev 10 R10.2/R10.3 item 2 (PR 2): replay extensions. Every one is OFF by default, and with all of them off
+# the output is the output of PR #200 byte for byte (rows, labels, json).
+#   --order attempt      B2: staleness from the later of last_success, last_attempt and the last kill (production
+#                        orders by last_turn_utc, which reads last_success first). It changes the ORDER only.
+#   --clocked-extra SRC  treat SRC as clocked/resumable like W_CLOCKED (only while W is on, as for W_CLOCKED).
+#   --flow-bound SRC=MIN a stop keeps only WHOLE pieces of MIN minutes (a giant's per-flow loop stops between
+#                        flows, _giant.py). A source in WHOLE_FLOW must have one: oecd's largest flow is 1.79B rows
+#                        (ledger R244), so its work is never divisible minutes.
+#   --drop-cron WF:HH    remove that cron from the gate model AND the scheduled history runs credited to it.
+#   --cloud-floor N      completed runs/day per writer in the strict rule (default 2, the plan 6.1 floor).
+#   --due-from-attempt   a partial behind an older success is due on the 7-day partial clock from its attempt.
+WHOLE_FLOW = frozenset({"oecd"})
+ORDERS = ("production", "attempt")
 
 
 def _ts(s):
@@ -435,6 +451,17 @@ def _ts(s):
         return None
     d = _parse(s)
     return d if d.year >= 2000 else None
+
+
+def _stamp_or_none(s):
+    """A state stamp as an aware datetime (offset-less read as UTC, as orchestrate.last_turn_utc does), or None."""
+    if not s:
+        return None
+    try:
+        d = dt.datetime.fromisoformat(str(s))
+    except (ValueError, TypeError):
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=dt.timezone.utc)
 
 
 def _mins(a, b) -> float:
@@ -515,16 +542,17 @@ def load_cloud_history(hist_dir: str) -> list:
     return out
 
 
-def cron_blocks(runs: list, since: dt.datetime, until: dt.datetime) -> list:
+def cron_blocks(runs: list, since: dt.datetime, until: dt.datetime, writers: dict | None = None) -> list:
     """[(cron, end, wf)]: ci_writer_gate.assess's pending rule as intervals. A cron blocks from its time until a
     SCHEDULE run of that writer is created within PENDING_LIMIT of it, at most PENDING_LIMIT. Under the lease it does
     not block at all (A); scheduled runs are created at their historical times in every scenario, so this list is
-    the same in all of them."""
-    created = {wf: sorted(r.created for r in runs if r.wf == wf and r.event == "schedule") for wf in g.WRITERS}
+    the same in all of them. `writers` ({wf: cron hours}) defaults to the gate's WRITERS (--drop-cron passes fewer)."""
+    writers = g.WRITERS if writers is None else writers
+    created = {wf: sorted(r.created for r in runs if r.wf == wf and r.event == "schedule") for wf in writers}
     out = []
     day = (since - dt.timedelta(days=1)).date()
     while dt.datetime(day.year, day.month, day.day, tzinfo=dt.timezone.utc) <= until:
-        for wf, hours in g.WRITERS.items():
+        for wf, hours in writers.items():
             for h in hours:
                 cron = dt.datetime(day.year, day.month, day.day, h, tzinfo=dt.timezone.utc)
                 c = created[wf]
@@ -618,20 +646,58 @@ def gate_minutes_production(runs: list, since: dt.datetime, until: dt.datetime, 
     return free
 
 
-def until_block_fast(t: dt.datetime) -> int:
+def until_block_fast(t: dt.datetime, writers: dict | None = None) -> int:
     """minutes_until_block() after a CLEAR answer: every cron of the last PENDING_LIMIT has its run (else the gate
     would block now) and nothing is in flight, so the frozen walk first blocks at the next cron of either writer,
-    found on the walk's own 5-minute grid from `t`. Checked against the production function in `replay61 --check`."""
+    found on the walk's own 5-minute grid from `t`. Checked against the production function in `replay61 --check`.
+    `writers` defaults to the gate's WRITERS; with no cron left at all the walk's 720-min ceiling answers."""
     best = None
-    for hours in g.WRITERS.values():
+    for hours in (g.WRITERS if writers is None else writers).values():
         for back in (0, 1):
             d = (t + dt.timedelta(days=back)).date()
             for h in hours:
                 c = dt.datetime(d.year, d.month, d.day, h, tzinfo=dt.timezone.utc)
                 if c > t and (best is None or c < best):
                     best = c
+    if best is None:
+        return 720
     k = math.ceil(_mins(t, best) / 5.0 - 1e-9)
     return int(min(k * 5, 720))
+
+
+def writers_without(drops) -> dict:
+    """The gate's WRITERS with the (wf, hour) crons in `drops` removed. An unknown writer or hour is an error, so
+    a typo cannot silently drop nothing."""
+    out = {wf: tuple(hs) for wf, hs in g.WRITERS.items()}
+    for wf, h in drops:
+        if wf not in out or h not in out[wf]:
+            raise ValueError(f"--drop-cron {wf}:{h}: not a cron of the gate's WRITERS {g.WRITERS}")
+        out[wf] = tuple(x for x in out[wf] if x != h)
+    return out
+
+
+def drop_cron_runs(runs: list, wf: str, hour: int) -> tuple:
+    """C (plan R10.2): the SCHEDULED runs of `wf` credited to its `hour`:00Z cron, removed from history.
+
+    A run is credited to a cron by the gate's own rule (cron_blocks, ci_writer_gate's `started` test): the first
+    scheduled run of that writer created in [cron, cron + PENDING_LIMIT). A writer's crons are PENDING_LIMIT apart,
+    so the windows do not overlap and a run is credited to at most one cron. The gate's KNOWN RESIDUAL applies: a run
+    more than 12 h late is credited to the next cron. Manual dispatches are never credited to a cron and stay, and so
+    does a second scheduled run inside one window. Returns (kept, dropped)."""
+    writers_without([(wf, hour)])                                   # validates wf and hour
+    sched = sorted((r for r in runs if r.wf == wf and r.event == "schedule"), key=lambda r: (r.created, r.run_id))
+    cs = [r.created for r in sched]
+    dropped = []
+    if sched:
+        day = (cs[0] - dt.timedelta(days=1)).date()
+        while dt.datetime(day.year, day.month, day.day, tzinfo=dt.timezone.utc) <= cs[-1]:
+            cron = dt.datetime(day.year, day.month, day.day, hour, tzinfo=dt.timezone.utc)
+            i = bisect_left(cs, cron)
+            if i < len(cs) and cs[i] < cron + g.PENDING_LIMIT:
+                dropped.append(sched[i])
+            day += dt.timedelta(days=1)
+    gone = {id(r) for r in dropped}
+    return [r for r in runs if id(r) not in gone], dropped
 
 
 # ------------------------------------------------------------------ desktop logs: margins, tail, probe, passes
@@ -745,6 +811,43 @@ def measure_tail_probe(logdir: str) -> dict:
             "tail_lower_bound_min": spent[0][0] if spent else 0.0, "timed_phase_lines": timed}
 
 
+_GIANT_PROGRESS = r"^\[{sid}\] (\d+)/(\d+) flows\b.*?, ([0-9,]+)s\s*$"
+
+
+def giant_flow_blocks(logdir: str, sid: str) -> dict:
+    """What the desktop logs say about the time of ONE flow of giant `sid` (for --clocked-extra in whole flows).
+
+    _giant.run_giant prints a progress line every 25 flows - "[oecd] 50/144 flows - +14,126 rows, ..., 4,163s" -
+    with the seconds since the unit started. No line times a single flow. So the logs give BLOCKS: the time between
+    two progress lines of one unit run (the first block also holds the catalogue read). Every flow inside a block
+    took at most the block's time, so the largest block is the only per-flow bound the logs can give, and it holds
+    only for the flows that were timed; a flow that never finished inside a block (a killed run's last flows) is not
+    bounded by anything. Reads the desktop updater logs (local_heavy_updater_*.log) and the older guard loop logs
+    (guard_localheavy_*.log), both written on this machine. Returns the blocks, largest first."""
+    prog = re.compile(_GIANT_PROGRESS.format(sid=re.escape(sid)))
+    start = re.compile(r"^\[orchestrator\] >>> " + re.escape(sid) + r"/")
+    names = sorted(n for n in os.listdir(logdir)
+                   if re.fullmatch(r"(local_heavy_updater_\d{8}-\d{6}|guard_localheavy_\d{4}_\d{4})\.log", n))
+    blocks, unit_runs = [], 0
+    for n in names:
+        prev = None
+        with open(os.path.join(logdir, n), encoding="utf-8", errors="replace") as f:
+            for ln, line in enumerate(f, 1):
+                line = line.rstrip("\r\n")
+                if start.match(line):
+                    prev, unit_runs = (0, 0.0), unit_runs + 1
+                    continue
+                m = prog.match(line)
+                if m and prev is not None:
+                    k, s = int(m.group(1)), float(m.group(3).replace(",", ""))
+                    if k > prev[0] and s >= prev[1]:
+                        blocks.append(((s - prev[1]) / 60.0, n, ln, prev[0], k))
+                    prev = (k, s)
+    blocks.sort(reverse=True)
+    return {"files": len(names), "unit_runs": unit_runs, "blocks": blocks,
+            "largest_min": blocks[0][0] if blocks else None}
+
+
 # ------------------------------------------------------------------ the local units (one state copy)
 
 @dataclass
@@ -787,12 +890,24 @@ class UnitBook:
     ok / no_change / partial row of that source (`outcome`; 'ok' when there is none - listed in `assumed_ok`)."""
 
     def __init__(self, cadences: dict, state: dict, runs_rows: list, work: dict, outcome: dict,
-                 censored=(), assumed_ok=()):
+                 censored=(), assumed_ok=(), order: str = "production", clocked_extra=(), whole_flow=None,
+                 due_from_attempt: bool = False):
         from updater.strategies.base import Strategy
+        from updater.strategies import base
         from updater import orchestrate as orch
         from updater.state import StateStore
         self._is_due = Strategy.is_due
+        self._base = base
         self._orch, self._store = orch, StateStore
+        if order not in ORDERS:
+            raise ValueError(f"order must be one of {ORDERS}")
+        # The PR 2 extensions (see WHOLE_FLOW above); the defaults are PR #200's model exactly.
+        self.order, self.clocked_extra = order, frozenset(clocked_extra)
+        self.whole_flow = dict(whole_flow or {})
+        self.due_from_attempt = due_from_attempt
+        for s in self.clocked_extra & WHOLE_FLOW:
+            if not self.whole_flow.get(s):
+                raise ValueError(f"{s} is clocked only in whole flows: give its per-flow bound (whole_flow)")
         self.units = {s: SimUnit(s, c) for s, c in sorted(cadences.items())}
         self.state = {s: dict(state.get(s) or {}) for s in self.units}
         self.work = {s: float(work.get(s, 0.0)) for s in self.units}
@@ -808,7 +923,48 @@ class UnitBook:
         self.finished = Counter()
 
     def is_due(self, sid: str, now: dt.datetime) -> bool:
-        return self._is_due(None, self.units[sid], self.state[sid], now)
+        st = self.state[sid]
+        if self.due_from_attempt and self._partial_behind_success(st):
+            # --due-from-attempt (plan R10.2, istat's demand): production's partial-retry clock, from the attempt,
+            # for a partial whose attempt is newer than an old success. Production is_due measures from
+            # last_success_utc whenever one exists, so such a unit is due at every pass.
+            b = self._base
+            return b._due_after(min(b.CADENCE_DAYS.get(self.units[sid].cadence, 7), b.PARTIAL_RETRY_DAYS),
+                                st.get("last_attempt_utc"), now)
+        return self._is_due(None, self.units[sid], st, now)
+
+    @staticmethod
+    def _partial_behind_success(st: dict) -> bool:
+        ls, la = st.get("last_success_utc"), st.get("last_attempt_utc")
+        if st.get("status") != "partial" or not ls or not la:
+            return False                     # no success on record: production already uses the partial clock
+        a, s = _stamp_or_none(la), _stamp_or_none(ls)
+        return a is not None and s is not None and a > s
+
+    def _clocked(self, sid: str, w_on: bool) -> bool:
+        return w_on and (sid in W_CLOCKED or sid.startswith(W_CLOCKED_PREFIX) or sid in self.clocked_extra)
+
+    def _resumable(self, sid: str) -> bool:
+        return sid in W_CLOCKED or sid.startswith(W_CLOCKED_PREFIX) or sid in self.clocked_extra
+
+    def _kept(self, sid: str, minutes: float) -> float:
+        """Progress a stop keeps out of `minutes` of update window: all of it, or for a whole-flow source only the
+        whole pieces of its per-flow bound that fit (a flow in flight at the stop is lost)."""
+        b = self.whole_flow.get(sid)
+        if not b:
+            return minutes
+        return b * math.floor(minutes / b + 1e-9)
+
+    def _last_turn(self, st: dict, kill):
+        """The stamp the order sorts on. production: orchestrate.last_turn_utc (last_success, else last_attempt,
+        or the kill if later). attempt (B2): the later of last_success and last_attempt, then the same production
+        kill rule - only the stamp handed in changes."""
+        if self.order == "production":
+            return self._orch.last_turn_utc(st, kill)
+        ls, la = st.get("last_success_utc"), st.get("last_attempt_utc")
+        s, a = _stamp_or_none(ls), _stamp_or_none(la)
+        later = la if (a is not None and (s is None or a > s)) else (ls or la)
+        return self._orch.last_turn_utc({"last_success_utc": later}, kill)
 
     def owed(self, now: dt.datetime) -> float:
         return sum(self.remaining[s] for s in self.units if self.is_due(s, now))
@@ -839,7 +995,7 @@ class UnitBook:
         now_iso = _iso(start)
 
         def staleness(u):
-            last = orch.last_turn_utc(self.state[u.source_id], kills.get((u.source_id, u.unit_id)))
+            last = self._last_turn(self.state[u.source_id], kills.get((u.source_id, u.unit_id)))
             return (orch.overdue_key(last, u.cadence, now_iso), u.key)
 
         order = orch.order_units(list(self.units.values()), costs, staleness)
@@ -856,7 +1012,7 @@ class UnitBook:
                 continue                                   # NOT DUE
             self.attempts[sid] += 1
             R = self.remaining[sid]
-            clocked = w_on and (sid in W_CLOCKED or sid.startswith(W_CLOCKED_PREFIX))
+            clocked = self._clocked(sid, w_on)
             limit = budget_min - e if clocked else budget_min + grace_min - e
             if R <= limit:
                 e += R
@@ -873,15 +1029,15 @@ class UnitBook:
                 continue
             t_end = start + dt.timedelta(minutes=e + limit)
             if clocked:
-                self.remaining[sid] = R - max(0.0, limit - tail_min)
+                self.remaining[sid] = R - self._kept(sid, max(0.0, limit - tail_min))
                 self.state[sid]["last_attempt_utc"], self.state[sid]["status"] = _iso(t_end), "transient_fail"
                 self._row(t_end, sid, "transient_fail", limit)
                 stopped = sid
                 ran.append((sid, limit, "stopped"))
                 e += limit
                 continue                                   # every later unit is budget-skipped (e == budget)
-            if kill_keeps_progress and (sid in W_CLOCKED or sid.startswith(W_CLOCKED_PREFIX)):
-                self.remaining[sid] = R - limit
+            if kill_keeps_progress and self._resumable(sid):
+                self.remaining[sid] = R - self._kept(sid, limit)
             self._row(t_end, sid, "killed_external", limit)
             hard = sid
             ran.append((sid, limit, "killed"))
@@ -895,7 +1051,7 @@ CENSORED_BOUNDS = ("newest", "kills", "tightest")
 
 def load_unit_book(db_path: str, copy_utc: dt.datetime, shift: dt.timedelta, cadences: dict | None = None,
                    desktop_windows: list | None = None, censored_bound: str = "newest",
-                   censored_mult: float = 1.0) -> UnitBook:
+                   censored_mult: float = 1.0, **book_kw) -> UnitBook:
     """The owed units from one state COPY, opened read-only (?immutable=1), every timestamp moved by `shift` so the
     copy's instant lands on the replay's first instant. Rows dated after the copy are ignored.
 
@@ -911,7 +1067,10 @@ def load_unit_book(db_path: str, copy_utc: dt.datetime, shift: dt.timedelta, cad
       - "tightest": the largest killed / transient / partial row - a partial is a turn that ran at least that long
         (oecd's 406.7-min partial of 2026-08-02), so this is the tightest lower bound the copy holds.
     `censored_mult` then multiplies those terms (x1, x1.5, x2 in the sweep): the real turn is longer by an unknown
-    factor, and a verdict that flips inside that range is not shown by the replay."""
+    factor, and a verdict that flips inside that range is not shown by the replay.
+
+    `book_kw` (order, clocked_extra, whole_flow, due_from_attempt) go to UnitBook unchanged; they change no work
+    term, state stamp or outcome read here."""
     if censored_bound not in CENSORED_BOUNDS:
         raise ValueError(f"censored_bound must be one of {CENSORED_BOUNDS}")
     cadences = cadences or local_units_from_registry()
@@ -961,7 +1120,7 @@ def load_unit_book(db_path: str, copy_utc: dt.datetime, shift: dt.timedelta, cad
         else:
             assumed.append(sid)
     con.close()
-    return UnitBook(cadences, state, rows, work, outcome, censored, assumed)
+    return UnitBook(cadences, state, rows, work, outcome, censored, assumed, **book_kw)
 
 
 # ------------------------------------------------------------------ the simulator
@@ -998,15 +1157,54 @@ class ReplayConfig:
     # runs - for the >= 2/day half and for A3.2's fairness? They always occupy the queue either way. The replay's
     # own re-dispatches are full runs and always count.
     count_manual: bool = True
+    # PLAN rev 10 R10.3 item 2 (PR 2). The defaults are PR #200's model; a field left at its default is left out of
+    # the label and of the json `cfg`, so the output with no new flag is PR #200's byte for byte.
+    order: str = "production"          # B2: "attempt" = the later of last_success / last_attempt / last kill
+    clocked_extra: tuple = ()          # sources clocked like W_CLOCKED while W is on
+    whole_flow: tuple = ()             # ((source, per-flow bound min), ...): a stop keeps whole pieces only
+    drop_cron: tuple = ()              # ((wf, hour), ...): C - the cron and its credited history runs removed
+    cloud_floor: float = 2.0           # completed runs/day per writer in the strict rule
+    due_from_attempt: bool = False     # a partial behind an old success is due on the partial clock
+
+    def writers(self) -> dict:
+        return writers_without(self.drop_cron) if self.drop_cron else g.WRITERS
+
+    def _ext(self) -> str:
+        out = ""
+        if self.order != "production":
+            out += f" ord={self.order}"
+        if self.clocked_extra:
+            wf = dict(self.whole_flow)
+            out += " clk+=" + ",".join(s + (f"({wf[s]:g})" if s in wf else "") for s in self.clocked_extra)
+        if self.drop_cron:
+            out += " C=" + ",".join(f"-{w.split('.')[0].replace('updater-', '')}{h:02d}" for w, h in self.drop_cron)
+        if self.due_from_attempt:
+            out += " due=att"
+        if self.cloud_floor != 2.0:
+            out += f" floor={self.cloud_floor:g}"
+        return out
 
     def label(self) -> str:
         d3 = "off" if self.backoff_h is None else f"{self.backoff_h:g}" + ("+L" if self.d3_leases else "")
         tail = (f" c={self.censored_bound[0]}x{self.censored_mult:g}"
-                f"{'' if self.count_manual else ' man=excl'}")
+                f"{'' if self.count_manual else ' man=excl'}{self._ext()}")
         if self.policy == "today":
             return f"today MinH={self.min_hours:g} D3={d3} W={'on' if self.w_on else 'off'}{tail}"
         return (f"A L={self.lease_min:g}-{self.lease_margin_min:g} MinH={self.min_hours:g} D3={d3} "
                 f"W={'on' if self.w_on else 'off'} disp={'yes' if self.dispatch else 'no'}{tail}")
+
+
+_EXT_DEFAULTS = {"order": "production", "clocked_extra": (), "whole_flow": (), "drop_cron": (), "cloud_floor": 2.0,
+                 "due_from_attempt": False}
+
+
+def cfg_dict(cfg: ReplayConfig) -> dict:
+    """asdict(cfg) without the PR 2 fields that sit at their defaults (so PR #200's json is unchanged)."""
+    d = asdict(cfg)
+    for k, v in _EXT_DEFAULTS.items():
+        if (tuple(d[k]) if isinstance(v, tuple) else d[k]) == v:
+            del d[k]
+    return d
 
 
 def _counts(r: "CloudRun", cfg: ReplayConfig) -> bool:
@@ -1083,7 +1281,8 @@ class Replay:
                  warmup: dt.timedelta = dt.timedelta(days=3)):
         self.cfg, self.book, self.start, self.end = cfg, book, start, end
         self.runs = [r for r in runs if start - warmup <= r.created < end]
-        self.blocks = cron_blocks(runs, start - warmup, end)
+        self.writers = cfg.writers()          # the gate's crons (--drop-cron: fewer; history is cut by the caller)
+        self.blocks = cron_blocks(runs, start - warmup, end, self.writers)
         self.block_starts = [b[0] for b in self.blocks]
         self.deferred_min, self.templates = deferred_minutes_default(deferred_min), templates
         self.ev, self.seq = [], 0
@@ -1188,7 +1387,7 @@ class Replay:
         cfg = self.cfg
         if self._inflight() or self._cron_pending(t):
             return "blocked"
-        until_cron = until_block_fast(t) - PS1_MARGIN_MIN
+        until_cron = until_block_fast(t, self.writers) - PS1_MARGIN_MIN
         if until_cron < PS1_MIN_USABLE:
             return "short"
         young = (cfg.backoff_h is not None and self.last_noprog is not None
@@ -1298,12 +1497,17 @@ def _overlap(a0, a1, b0, b1) -> bool:
     return a0 < b1 and b0 < a1
 
 
-def replay_metrics(rp: Replay, owed_start: float, due_start: list) -> dict:
-    """The plan 6.1 outputs for one scenario, over [start, end)."""
+def replay_metrics(rp: Replay, owed_start: float, due_start: list, cfg: ReplayConfig | None = None) -> dict:
+    """The plan 6.1 outputs for one scenario, over [start, end). `cfg` (default: the replay's) may differ from the
+    replay's only in cloud_floor - the floor is a verdict input, not a simulation input, so one replay serves every
+    floor."""
+    cfg = rp.cfg if cfg is None else cfg
+    if cfg != rp.cfg and replace(cfg, cloud_floor=rp.cfg.cloud_floor) != rp.cfg:
+        raise ValueError("replay_metrics: cfg may differ from the replay's only in cloud_floor")
     S, E = rp.start, rp.end
     days = _mins(S, E) / 1440.0
     ps = [p for p in rp.passes if S <= p["start"] < E]
-    out = {"label": rp.cfg.label(), "days": days,
+    out = {"label": cfg.label(), "days": days,
            "window_min_day": sum(p["budget"] for p in ps) / days,
            "used_min_day": sum(p["used_min"] for p in ps) / days,
            "passes": len(ps), "lease_passes": sum(1 for p in ps if p["mode"] == "lease"),
@@ -1341,11 +1545,15 @@ def replay_metrics(rp: Replay, owed_start: float, due_start: list) -> dict:
                 "attempts": att, "finished": fin})
     out["drains"] = owed_end < owed_start and not out["never_finished"]
     out["cloud_ge2"] = all(out[wf]["runs_day"] >= 2.0 for wf in g.WRITERS)
-    out["A_ok"] = out["drains"] and out["cloud_ge2"]
+    cloud_ok = out["cloud_ge2"]
+    if cfg.cloud_floor != 2.0:          # --cloud-floor: the strict rule's floor; cloud_ge2 keeps its literal meaning
+        out["cloud_floor"] = cfg.cloud_floor
+        out["cloud_ok"] = cloud_ok = all(out[wf]["runs_day"] >= cfg.cloud_floor for wf in g.WRITERS)
+    out["A_ok"] = out["drains"] and cloud_ok
     # A5's deferral alarm fires when a writer has no completed non-deferred run for 30 h (review AR-394 F4).
     out["longest_gap_h"] = max(out[wf]["longest_gap_h"] for wf in g.WRITERS)
     out["gap_over_30h"] = out["longest_gap_h"] > 30.0
-    out["cfg"] = asdict(rp.cfg)
+    out["cfg"] = cfg_dict(cfg)
     return out
 
 
@@ -1362,15 +1570,28 @@ class ReplayInputs:
     last_noprogress: dt.datetime | None
     overheads: dict
     desktop_windows: list
+    drop_cron: tuple = ()              # the crons whose credited runs were cut from `runs` (load_replay_inputs)
+    dropped: tuple = ()                # those runs
 
 
-def run_scenario(cfg: ReplayConfig, inp: ReplayInputs) -> dict:
+def simulate(cfg: ReplayConfig, inp: ReplayInputs):
+    """One scenario's replay, before any verdict: (replay, owed at the start, units due at the start)."""
+    if tuple(cfg.drop_cron) != tuple(inp.drop_cron):
+        raise ValueError(f"cfg.drop_cron {cfg.drop_cron} != the inputs' cut {inp.drop_cron}: the cron and its "
+                         f"history runs must go together")
     shift = inp.start - inp.copy_utc
     book = load_unit_book(inp.db_path, inp.copy_utc, shift, desktop_windows=inp.desktop_windows,
-                          censored_bound=cfg.censored_bound, censored_mult=cfg.censored_mult)
+                          censored_bound=cfg.censored_bound, censored_mult=cfg.censored_mult, order=cfg.order,
+                          clocked_extra=cfg.clocked_extra, whole_flow=dict(cfg.whole_flow),
+                          due_from_attempt=cfg.due_from_attempt)
     owed0, due0 = book.owed(inp.start), book.due_set(inp.start)
     rp = Replay(cfg, inp.runs, book, inp.start, inp.end, inp.deferred, inp.templates, inp.last_success,
                 inp.last_noprogress).run()
+    return rp, owed0, due0
+
+
+def run_scenario(cfg: ReplayConfig, inp: ReplayInputs) -> dict:
+    rp, owed0, due0 = simulate(cfg, inp)
     m = replay_metrics(rp, owed0, due0)
     m["_replay"] = rp
     return m
@@ -1386,7 +1607,8 @@ def _fmt_row(m: dict) -> str:
             f"{d['dispatched'] + h['dispatched']:4d} {d['evicted'] + h['evicted']:3d} "
             f"{d['evicted_hist'] + h['evicted_hist']:3d} {m['collisions']:3d} "
             f"{m['desktop_pushes_day']:5.2f} {d['pushes_day'] + h['pushes_day']:6.1f}  "
-            f"{'drain' if m['drains'] else 'NO-drain'} {'cloud>=2' if m['cloud_ge2'] else 'cloud<2'} "
+            f"{'drain' if m['drains'] else 'NO-drain'} "
+            f"cloud{'>=' if m.get('cloud_ok', m['cloud_ge2']) else '<'}{m.get('cloud_floor', 2.0):g} "
             f"A={'YES' if m['A_ok'] else 'NO'}")
 
 
@@ -1399,6 +1621,11 @@ def load_replay_inputs(args) -> ReplayInputs:
     end = _parse(args.end)
     start = end - dt.timedelta(days=args.days)
     runs = load_cloud_history(args.history)
+    drops = tuple(dict.fromkeys(getattr(args, "drop_cron", None) or ()))
+    dropped = []
+    for wf, h in drops:                                  # C: before anything reads the history
+        runs, d = drop_cron_runs(runs, wf, h)
+        dropped += d
     oldest = {wf: min((r.created for r in runs if r.wf == wf), default=None) for wf in g.WRITERS}
     for wf, o in oldest.items():
         if o is None or o > start - dt.timedelta(days=3):
@@ -1417,22 +1644,99 @@ def load_replay_inputs(args) -> ReplayInputs:
     return ReplayInputs(runs, deferred_minutes(args.history, start, end), dispatch_templates(runs, start, end),
                         args.state, copy_utc, start, end, ls + shift, (ln + shift) if ln else None,
                         pass_overheads([p for p in passes if p["stamp"] >= "20260830"]),
-                        [(p["updater_at"], p["push_done"]) for p in passes if "updater_at" in p and "push_done" in p])
+                        [(p["updater_at"], p["push_done"]) for p in passes if "updater_at" in p and "push_done" in p],
+                        drops, tuple(dropped))
 
 
 def _cfg_from(args, **kw) -> ReplayConfig:
     base = dict(pull_min=args.pull_min, push_min=args.push_min, tail_min=args.tail_min,
                 kill_keeps_progress=args.kill_keeps_progress, d3_leases=args.d3_leases,
-                dispatch_latency_min=args.dispatch_latency, censored_bound=args.censored_bound)
+                dispatch_latency_min=args.dispatch_latency, censored_bound=args.censored_bound,
+                clocked_extra=tuple(dict.fromkeys(args.clocked_extra or ())),
+                whole_flow=tuple(sorted(args.whole_flow.items())), drop_cron=tuple(dict.fromkeys(args.drop_cron or ())),
+                due_from_attempt=args.due_from_attempt)
     base.update(kw)
     return ReplayConfig(**base)
+
+
+def _src_minutes(s: str) -> tuple:
+    src, _, v = s.partition("=")
+    if not src or not v:
+        raise argparse.ArgumentTypeError(f"expected SRC=MINUTES, got {s!r}")
+    try:
+        x = float(v)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected SRC=MINUTES, got {s!r}") from None
+    if not x > 0:
+        raise argparse.ArgumentTypeError(f"{s!r}: the per-flow bound must be > 0 minutes")
+    return src, x
+
+
+def _wf_hour(s: str) -> tuple:
+    wf, _, h = s.rpartition(":")
+    try:
+        out = (wf, int(h))
+        writers_without([out])
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(f"--drop-cron {s!r}: expected WF:HH, a cron of {g.WRITERS} ({e})") from None
+    return out
+
+
+def resolve_whole_flow(args) -> list:
+    """{source: per-flow bound} for every --clocked-extra source that is stopped in whole flows, and the lines that
+    say where each bound came from. A WHOLE_FLOW source takes --flow-bound if given, else the largest 25-flow block
+    the desktop logs time (giant_flow_blocks); with neither it is refused. Every row that clocks it is CONDITIONAL
+    on that bound, and the lines say so."""
+    given = dict(args.flow_bound or [])
+    stray = sorted(set(given) - set(args.clocked_extra or ()))
+    if stray:
+        sys.exit(f"--flow-bound for {stray}: not clocked (add --clocked-extra) - a bound nothing uses is a typo")
+    out, lines = {}, []
+    for s in args.clocked_extra or ():
+        if s in given:
+            out[s] = given[s]
+        if s not in WHOLE_FLOW and s not in given:
+            lines.append(f"{s}: clocked in divisible minutes (no --flow-bound given; not in WHOLE_FLOW)")
+            continue
+        fb = giant_flow_blocks(args.logs, s)
+        meas = (f"the logs time {s} in blocks of 25 flows only ({len(fb['blocks'])} blocks in {fb['unit_runs']} "
+                f"unit runs, {fb['files']} log files); ")
+        if fb["blocks"]:
+            b0 = fb["blocks"][0]
+            meas += f"largest block {b0[0]:.1f} min ({b0[1]} line {b0[2]}: flows {b0[3]}->{b0[4]})"
+        else:
+            meas += "no block found"
+        if s not in out:
+            if fb["largest_min"] is None:
+                sys.exit(f"{s} is clocked only in whole flows and the logs time none of its flows: give --flow-bound "
+                         f"{s}=MIN")
+            out[s] = round(fb["largest_min"], 1)
+            how = "ASSUMED = the largest measured 25-flow block"
+        else:
+            how = "given by --flow-bound"
+        lines.append(f"{s}: clocked in WHOLE FLOWS. No log line times one flow: {meas}. Every row with {s} clocked is "
+                     f"CONDITIONAL on the bound 'no single {s} flow takes longer than {out[s]:g} min' ({how}); the "
+                     f"turn is modelled as equal pieces of that bound, and a stop keeps only the whole pieces done "
+                     f"before the update window ends (time left - tail).")
+        if s == "oecd":
+            lines.append("oecd: its largest flow file is 1.79B rows (ledger R244); no log line shows how long that "
+                         "flow takes to fetch, so the bound above is not shown to cover it.")
+    args.whole_flow = out
+    return lines
 
 
 def cmd_replay61(args):
     """Plan 6.1. `--baseline` reproduces the plan's measured figures first; the sweep runs only if they match."""
     if args.baseline:
+        ext = [f for f, on in (("--order", args.order != ["production"]), ("--clocked-extra", args.clocked_extra),
+                               ("--flow-bound", args.flow_bound), ("--drop-cron", args.drop_cron),
+                               ("--cloud-floor", args.cloud_floor != [2.0]),
+                               ("--due-from-attempt", args.due_from_attempt)) if on]
+        if ext:
+            sys.exit(f"--baseline reproduces today's measured figures; it takes none of {ext}")
         ok = baseline61(args)
         sys.exit(0 if ok else 1)
+    ext_lines = resolve_whole_flow(args)
     inp = load_replay_inputs(args)
     if args.pull_min is None:
         args.pull_min = round(inp.overheads["pull_median"], 1)
@@ -1452,29 +1756,50 @@ def cmd_replay61(args):
           f"{inp.last_noprogress:%Y-%m-%dT%H:%MZ}" if inp.last_noprogress else "")
     print(f"sensitivity knobs: kill keeps progress {args.kill_keeps_progress}; D3 also holds leases {args.d3_leases}; "
           f"dispatch latency {args.dispatch_latency} min")
+    if (args.order != ["production"] or args.clocked_extra or args.drop_cron or args.cloud_floor != [2.0]
+            or args.due_from_attempt):
+        print(f"extensions (PR 2): order {args.order}; clocked extra (W on only) {args.clocked_extra or '-'}; "
+              f"due from attempt {args.due_from_attempt}; cloud floor {args.cloud_floor} runs/day per writer")
+        for wf, h in inp.drop_cron:
+            got = [r for r in inp.dropped if r.wf == wf]
+            lag = sorted(_mins(r.created.replace(hour=h, minute=0, second=0, microsecond=0)
+                               if r.created.hour >= h else
+                               (r.created - dt.timedelta(days=1)).replace(hour=h, minute=0, second=0, microsecond=0),
+                               r.created) for r in got)
+            print(f"C: dropped the {h:02d}:00Z cron of {wf} from the gate model (crons now "
+                  f"{writers_without(inp.drop_cron)[wf]}) and the {len(got)} scheduled history "
+                  f"run(s) credited to it ({min(got, key=lambda r: r.created).created:%Y-%m-%d} .. "
+                  f"{max(got, key=lambda r: r.created).created:%Y-%m-%d}; start lag min {lag[0]:.0f}, median "
+                  f"{statistics.median(lag):.0f}, max {lag[-1]:.0f} min)" if got else
+                  f"C: dropped the {h:02d}:00Z cron of {wf}; NO history run was credited to it")
+        for ln in ext_lines:
+            print(ln)
     print()
     print(_HEADER)
     rows = []
     scen = []
-    for cm in args.censored_mult:
-        for man in args.count_manual:
-            for w_on in args.w:
-                for mh in ([] if args.no_today else args.min_hours):
-                    for bo in args.backoff:
-                        scen.append(_cfg_from(args, policy="today", min_hours=mh, backoff_h=bo, w_on=w_on,
-                                              censored_mult=cm, count_manual=man))
-                for L in args.lease:
-                    for mg in args.lease_margin:
-                        for mh in args.min_hours:
-                            for bo in (args.lease_backoff if args.lease_backoff is not None else args.backoff):
-                                for dsp in args.dispatch:
-                                    scen.append(_cfg_from(args, policy="lease", lease_min=L, lease_margin_min=mg,
-                                                          min_hours=mh, backoff_h=bo, w_on=w_on, dispatch=dsp,
-                                                          censored_mult=cm, count_manual=man))
+    for order in args.order:
+        for cm in args.censored_mult:
+            for man in args.count_manual:
+                for w_on in args.w:
+                    for mh in ([] if args.no_today else args.min_hours):
+                        for bo in args.backoff:
+                            scen.append(_cfg_from(args, policy="today", min_hours=mh, backoff_h=bo, w_on=w_on,
+                                                  censored_mult=cm, count_manual=man, order=order))
+                    for L in args.lease:
+                        for mg in args.lease_margin:
+                            for mh in args.min_hours:
+                                for bo in (args.lease_backoff if args.lease_backoff is not None else args.backoff):
+                                    for dsp in args.dispatch:
+                                        scen.append(_cfg_from(args, policy="lease", lease_min=L, lease_margin_min=mg,
+                                                              min_hours=mh, backoff_h=bo, w_on=w_on, dispatch=dsp,
+                                                              censored_mult=cm, count_manual=man, order=order))
     for cfg in scen:
-        m = run_scenario(cfg, inp)
-        rows.append(m)
-        print(_fmt_row(m), flush=True)
+        rp, owed0, due0 = simulate(cfg, inp)
+        for fl in args.cloud_floor:                     # the floor is a verdict input: one replay serves all
+            m = replay_metrics(rp, owed0, due0, replace(cfg, cloud_floor=fl))
+            rows.append(m)
+            print(_fmt_row(m), flush=True)
     if args.json:
         with open(args.json, "w", encoding="utf-8") as f:
             json.dump([{k: v for k, v in m.items() if k != "_replay"} for m in rows], f, indent=1, default=str)
@@ -1486,8 +1811,10 @@ def cmd_replay61(args):
           "either writer; dfr = deferred runs; dsp = re-dispatched runs that ran; ev = evicted pending runs (evh = of them, "
           "runs GitHub created - a cron or manual run lost to the queue); col = "
           "collisions; dp/d = desktop pushes/day; cp/d = cloud pushes/day (every heavy leg push counted)")
+    floor = ("2.0" if args.cloud_floor == [2.0] else
+             "the row's floor (" + " / ".join(f"{x:g}" for x in args.cloud_floor) + ", --cloud-floor)")
     print("verdict: A=YES only if the owed set drains (owed at the end below the start AND every unit due at the start "
-          "finished a turn) AND each writer keeps >= 2.0 completed non-deferred runs/day (plan 6.1).")
+          f"finished a turn) AND each writer keeps >= {floor} completed non-deferred runs/day (plan 6.1).")
 
 
 def baseline61(args) -> bool:
@@ -1665,6 +1992,21 @@ def main():
     p.add_argument("--dispatch", type=lambda s: s == "yes", nargs="+", default=[True, False], help="yes / no")
     p.add_argument("--lease-backoff", type=lambda s: None if s == "off" else float(s), nargs="+", default=None,
                    help="D3 values for the lease rows (default: --backoff); D3 never binds a lease of L >= 150")
+    # PLAN rev 10 R10.3 item 2 (PR 2); see WHOLE_FLOW above. All off by default.
+    p.add_argument("--order", choices=ORDERS, nargs="+", default=["production"],
+                   help="unit order: production last_turn_utc, or 'attempt' (B2: the later of last success, last "
+                        "attempt and last kill)")
+    p.add_argument("--clocked-extra", action="append", default=[], metavar="SRC",
+                   help="repeatable: clock SRC like W_CLOCKED while W is on")
+    p.add_argument("--flow-bound", action="append", type=_src_minutes, default=[], metavar="SRC=MIN",
+                   help="repeatable: a clocked SRC keeps only whole pieces of MIN minutes (default for oecd: the "
+                        "largest 25-flow block in the logs)")
+    p.add_argument("--drop-cron", action="append", type=_wf_hour, default=[], metavar="WF:HH",
+                   help="repeatable: remove that cron from the gate model and the history runs credited to it (C)")
+    p.add_argument("--cloud-floor", type=float, nargs="+", default=[2.0],
+                   help="completed runs/day per writer in the strict rule (default 2)")
+    p.add_argument("--due-from-attempt", action="store_true",
+                   help="a partial behind an older success is due on the 7-day partial clock from its attempt")
     p.add_argument("--json")
     p.set_defaults(fn=cmd_replay61)
     sub.add_parser("lag").set_defaults(fn=cmd_lag)
