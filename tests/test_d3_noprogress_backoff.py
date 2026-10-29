@@ -3,15 +3,21 @@
 Three things are pinned here; the hand-worked planted cases live in tools/test_cadence_decision.ps1 and run through
 tests/test_cadence_decision_ps.py.
 
-1. PARITY WITH THE REPLAY. The 8-hour value was chosen on tools/measure_ci_lag.py `replay61`, whose hold rule is
-   Replay._gate_attempt. A back-off whose production predicate drifts from the modelled one is a back-off nobody
-   measured. So the SAME grid of inputs goes through the replay's own method and through the ps1's
-   Test-WindowShouldHold in real PowerShell, and every answer must agree.
+1. PARITY WITH THE REPLAY - OF THE HOLD RULE ONLY. The 8-hour value was chosen on tools/measure_ci_lag.py
+   `replay61`, whose hold rule is Replay._gate_attempt. So the SAME grid of inputs goes through the replay's own
+   method and through the ps1's Test-WindowShouldHold in real PowerShell, and every answer must agree.
+   The WHEN-TO-STAMP rule is NOT claimed to be the replay's: Replay._pass stamps last_noprog on every pass that
+   advanced nothing, including a hard-stopped one, while production deliberately excludes rc 124. AR-398's patched
+   replay (32 today rows, with and without the hard-stop stamp) gave identical results, so the difference changes
+   nothing the replay measured; it is a deliberate difference, not parity.
 2. THE PARITY CHECK CAN FAIL. The same grid against a copy of cadence_decision.ps1 with the D3 term removed must
    disagree - on exactly the cases where the back-off is the only reason to hold.
-3. THE STAMP IS WRITTEN IN ONE PLACE, UNDER THE TESTED DECISION. Read with PowerShell's own parser: the only
-   command that writes local_heavy.last_noprogress sits inside `if ($noProg.Stamp)`, and $noProg comes from
-   Test-NoProgressShouldStamp.
+3. THE STAMP IS WRITTEN IN ONE PLACE, UNDER THE TESTED DECISION, TO ITS OWN FILE. Read with PowerShell's own
+   parser: the only command that writes $noProgFile sits inside `if ($noProg.Stamp)`, $noProg comes from
+   Test-NoProgressShouldStamp, $noProgFile is exactly 'local_heavy.last_noprogress' and is not the success stamp.
+4. THE RUNNER DECIDES BY THE TESTED HOLD (review AR-398 D1). The HOLDING branch's condition is exactly
+   `$hold.Hold`, `$hold` comes from Test-WindowShouldHold with every argument pinned, and the stamp age it is given
+   is read once, under -IfDue, from $noProgFile. Each pin has a mutant that must break it (AR-398 G, H, I, P, Q).
 
 Skipped where no PowerShell exists; GitHub's ubuntu runners carry pwsh, so CI runs them.
 """
@@ -153,30 +159,70 @@ param([string]$Path)
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
 "PARSE_ERRORS=" + $errors.Count
-$cmds = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true)
-foreach ($c in $cmds) {
-    $t = $c.Extent.Text
-    if ($t -notmatch '\$noProgFile') { continue }
-    $name = $c.GetCommandName()
+function Conds($node) {
+    # the conditions of every enclosing `if` whose FIRST clause body holds $node, innermost last
     $conds = @()
-    $p = $c.Parent
+    $p = $node.Parent
     while ($p) {
         if ($p -is [System.Management.Automation.Language.IfStatementAst]) {
             $first = $p.Clauses[0]
-            if ($c.Extent.StartOffset -ge $first.Item2.Extent.StartOffset -and
-                $c.Extent.EndOffset -le $first.Item2.Extent.EndOffset) {
-                $conds += $first.Item1.Extent.Text.Trim()
+            if ($node.Extent.StartOffset -ge $first.Item2.Extent.StartOffset -and
+                $node.Extent.EndOffset -le $first.Item2.Extent.EndOffset) {
+                $conds = @($first.Item1.Extent.Text.Trim()) + $conds
             }
         }
         $p = $p.Parent
     }
-    "CMD|" + $name + "|" + ($conds -join ' && ') + "|" + $c.Extent.StartLineNumber
+    return ($conds -join ' && ')
+}
+function Flat($s) { return ("$s" -replace '`\s*\r?\n', ' ' -replace '\s+', ' ').Trim() }
+$cmds = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true)
+foreach ($c in $cmds) {
+    $name = $c.GetCommandName()
+    $t = $c.Extent.Text
+    if ($t -match '\$noProgFile' -or $t -match '\$stampFile') {
+        "CMD|" + $name + "|" + (Conds $c) + "|" + (Flat $t)
+    }
+    if ($name -in @('Test-WindowShouldHold', 'Test-NoProgressShouldStamp', 'Get-StampAgeHours')) {
+        $els = $c.CommandElements
+        $pairs = @()
+        for ($i = 1; $i -lt $els.Count; $i++) {
+            $e = $els[$i]
+            if ($e -is [System.Management.Automation.Language.CommandParameterAst]) {
+                if ($null -ne $e.Argument) { $arg = $e.Argument.Extent.Text }
+                elseif ($i + 1 -lt $els.Count -and
+                        -not ($els[$i + 1] -is [System.Management.Automation.Language.CommandParameterAst])) {
+                    $i++; $arg = $els[$i].Extent.Text
+                } else { $arg = '' }
+                $pairs += ($e.ParameterName + '=' + (Flat $arg))
+            } else {
+                $pairs += ('?=' + (Flat $e.Extent.Text))
+            }
+        }
+        "CALL|" + $name + "|" + ($pairs -join ';;')
+    }
+}
+$ifs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] }, $true)
+foreach ($f in $ifs) {
+    $body = $f.Clauses[0].Item2.Extent.Text
+    if ($body.Contains('HOLDING: ')) { "HOLDIF|" + (Flat $f.Clauses[0].Item1.Extent.Text) }
 }
 $assigns = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true)
 foreach ($a in $assigns) {
-    if ($a.Left.Extent.Text -eq '$noProg') { "ASSIGN|" + ($a.Right.Extent.Text -replace '\s+', ' ') }
+    $l = $a.Left.Extent.Text
+    if ($l -in @('$noProg', '$hold', '$noProgFile', '$stampFile', '$script:NoProgressAgeHours')) {
+        "ASSIGN|" + $l + "|" + (Conds $a) + "|" + (Flat $a.Right.Extent.Text)
+    }
 }
 """
+
+WRITERS = ("Set-Content", "Add-Content", "Out-File", "New-Item", "Copy-Item", "Move-Item")
+HOLD_ARGS = {"UntilCronMin": "$untilCron", "WantBlockMin": "$WantBlockMin", "SinceLastHours": "$script:SinceLastHours",
+             "MaxHours": "$MaxHours", "NoProgressAgeHours": "$script:NoProgressAgeHours",
+             "NoProgressBackoffH": "$NoProgressBackoffH"}
+NOPROG_ARGS = {"PushRc": "$pushRc", "Crashed": "$crashed", "HardStopped": "($hardStopped -or $rc -eq 124)",
+               "Manual": "([bool]$Only -or [bool]$Force)", "PulledState": "(-not $selfHosted)",
+               "Advanced": "$advanced"}
 
 
 def _runner_probe(tmp_path, path=RUNNER):
@@ -187,41 +233,120 @@ def _runner_probe(tmp_path, path=RUNNER):
     assert r.returncode == 0, r.stderr[-800:]
     lines = r.stdout.splitlines()
     errors = int(next(ln for ln in lines if ln.startswith("PARSE_ERRORS=")).split("=")[1])
-    cmds = [ln.split("|")[1:] for ln in lines if ln.startswith("CMD|")]
-    assigns = [ln.split("|", 1)[1] for ln in lines if ln.startswith("ASSIGN|")]
-    return errors, cmds, assigns
+    cmds = [ln.split("|", 3)[1:] for ln in lines if ln.startswith("CMD|")]            # [name, conds, text]
+    calls = [ln.split("|", 2)[1:] for ln in lines if ln.startswith("CALL|")]          # [name, k=v;;k=v]
+    holdifs = [ln.split("|", 1)[1] for ln in lines if ln.startswith("HOLDIF|")]
+    assigns = [ln.split("|", 3)[1:] for ln in lines if ln.startswith("ASSIGN|")]      # [left, conds, right]
+    return errors, cmds, calls, holdifs, assigns
+
+
+def _args(call):
+    return dict(kv.split("=", 1) for kv in call[1].split(";;")) if call[1] else {}
+
+
+def _runner_violations(tmp_path, path=RUNNER):
+    """Every way the runner can fail to use the tested D3 decisions, as a list (empty = the wiring holds)."""
+    errors, cmds, calls, holdifs, assigns = _runner_probe(tmp_path, path)
+    v = []
+    if errors:
+        v.append(f"parse errors: {errors}")
+
+    def one(left):
+        a = [x for x in assigns if x[0] == left]
+        if len(a) != 1:
+            v.append(f"{left} assigned {len(a)} time(s), want 1: {a}")
+            return None
+        return a[0]
+
+    def one_call(name):
+        c = [x for x in calls if x[0] == name]
+        if len(c) != 1:
+            v.append(f"{name} called {len(c)} time(s), want 1: {c}")
+            return {}
+        return _args(c[0])
+
+    # --- the hold (AR-398 D1: mutants G, H, I) ---
+    if holdifs != ["$hold.Hold"]:
+        v.append(f"the HOLDING branch must be decided by exactly `$hold.Hold`, found {holdifs}")
+    h = one("$hold")
+    if h and not h[2].startswith("Test-WindowShouldHold "):
+        v.append(f"$hold must come from Test-WindowShouldHold: {h}")
+    got = one_call("Test-WindowShouldHold")
+    if got != HOLD_ARGS:
+        v.append(f"Test-WindowShouldHold arguments {got} != {HOLD_ARGS}")
+    # --- the stamp age the hold is given ---
+    age = one("$script:NoProgressAgeHours")
+    if age and (age[2] != "Get-StampAgeHours -Path $noProgFile" or age[1] != "$IfDue"):
+        v.append(f"$script:NoProgressAgeHours must be `Get-StampAgeHours -Path $noProgFile` under $IfDue: {age}")
+    if one_call("Get-StampAgeHours") != {"Path": "$noProgFile"}:
+        v.append("Get-StampAgeHours must be called once, on $noProgFile")
+    # --- the stamp's identity (AR-398 D2: mutant P) ---
+    npf, sf = one("$noProgFile"), one("$stampFile")
+    if npf and npf[2] != "Join-Path $logDir 'local_heavy.last_noprogress'":
+        v.append(f"$noProgFile must be logs/local_heavy.last_noprogress: {npf}")
+    if sf and sf[2] != "Join-Path $logDir 'local_heavy.last_success'":
+        v.append(f"$stampFile changed: {sf}")
+    if npf and sf and npf[2] == sf[2]:
+        v.append("$noProgFile is the success stamp")
+    # --- the writer: one, under the tested decision, UTC round-trip (and mutant Q) ---
+    nwriters = [c for c in cmds if c[0] in WRITERS and "$noProgFile" in c[2]]
+    if len(nwriters) != 1 or nwriters[0][1].split(" && ")[-1:] != ["$noProg.Stamp"]:
+        v.append(f"exactly one write of $noProgFile, directly under `if ($noProg.Stamp)`: {nwriters}")
+    elif "-Value ((Get-Date).ToUniversalTime().ToString('o'))" not in nwriters[0][2]:
+        v.append(f"the no-progress stamp must be written as UTC round-trip ('o'): {nwriters[0]}")
+    swriters = [c for c in cmds if c[0] in WRITERS and "$stampFile" in c[2]]
+    if any("$noProg.Stamp" in c[1] for c in swriters):
+        v.append(f"the success stamp is written under the no-progress decision: {swriters}")
+    n = one("$noProg")
+    if n and not n[2].startswith("Test-NoProgressShouldStamp "):
+        v.append(f"$noProg must come from Test-NoProgressShouldStamp: {n}")
+    got = one_call("Test-NoProgressShouldStamp")
+    if got != NOPROG_ARGS:
+        v.append(f"Test-NoProgressShouldStamp arguments {got} != {NOPROG_ARGS}")
+    return v
 
 
 @needs_ps
-def test_the_stamp_is_written_only_under_the_tested_decision(tmp_path):
-    errors, cmds, assigns = _runner_probe(tmp_path)
-    assert errors == 0
-    writers = [c for c in cmds if c[0] in ("Set-Content", "Add-Content", "Out-File", "New-Item", "Copy-Item",
-                                            "Move-Item")]
-    assert len(writers) == 1, writers
-    assert writers[0][1] == "$noProg.Stamp", writers
-    assert len(assigns) == 1 and assigns[0].startswith("Test-NoProgressShouldStamp "), assigns
-    # every input the binding conditions name is passed, and the manual/pull flags come from the right places
-    a = assigns[0]
-    for needle in ("-PushRc $pushRc", "-Crashed $crashed", "-HardStopped ($hardStopped -or $rc -eq 124)",
-                   "-Manual ([bool]$Only -or [bool]$Force)", "-PulledState (-not $selfHosted)",
-                   "-Advanced $advanced"):
-        assert needle in a, (needle, a)
-    readers = [c for c in cmds if c[0] == "Get-StampAgeHours"]
-    assert len(readers) == 1 and readers[0][1] == "$IfDue", readers
+def test_the_runner_uses_the_tested_d3_decisions(tmp_path):
+    v = _runner_violations(tmp_path)
+    assert not v, "\n".join(v)
+
+
+# Each mutant is one edit to the runner that the suite must reject (AR-398's G, H, I, M, P, Q, plus an unconditional
+# write). (old, new, the word the violation must name).
+MUTANTS = {
+    "G no stamp age to the hold": ("-NoProgressAgeHours $script:NoProgressAgeHours", "-NoProgressAgeHours $null",
+                                   "Test-WindowShouldHold arguments"),
+    "H back-off 0 at the call": ("-NoProgressBackoffH $NoProgressBackoffH", "-NoProgressBackoffH 0",
+                                 "Test-WindowShouldHold arguments"),
+    "I old inline rule": ("    if ($hold.Hold) {",
+                          "    if ($untilCron -lt $WantBlockMin -and $script:SinceLastHours -lt $MaxHours) {",
+                          "HOLDING branch"),
+    "M stamp also read outside IfDue": ('Say "local heavy updater starting; log -> $log"',
+                                        'if (-not $IfDue) { $script:NoProgressAgeHours = Get-StampAgeHours -Path '
+                                        '$noProgFile }\nSay "local heavy updater starting; log -> $log"',
+                                        "$script:NoProgressAgeHours assigned 2"),
+    "P stamp file is the success stamp": ("$noProgFile = Join-Path $logDir 'local_heavy.last_noprogress'",
+                                          "$noProgFile = Join-Path $logDir 'local_heavy.last_success'",
+                                          "local_heavy.last_noprogress"),
+    "Q stamp in local time": ("Set-Content -Path $noProgFile -Value ((Get-Date).ToUniversalTime().ToString('o'))",
+                              "Set-Content -Path $noProgFile -Value ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))",
+                              "UTC round-trip"),
+    "W unconditional write": ("if ($noProg.Stamp) {", "if ($true) {", "directly under"),
+}
 
 
 @needs_ps
-def test_the_writer_probe_can_fail(tmp_path):
-    """Negative control: an unconditional write of the stamp must be reported."""
+@pytest.mark.parametrize("name", sorted(MUTANTS))
+def test_each_wiring_mutant_is_caught(tmp_path, name):
+    old, new, word = MUTANTS[name]
     src = open(RUNNER, encoding="utf-8-sig").read()
-    bad = src.replace("if ($noProg.Stamp) {", "if ($true) {", 1)
-    assert bad != src
-    p = tmp_path / "bad.ps1"
-    p.write_text(bad, encoding="utf-8-sig")
-    _, cmds, _ = _runner_probe(tmp_path, p)
-    writers = [c for c in cmds if c[0] == "Set-Content"]
-    assert writers and writers[0][1] != "$noProg.Stamp"
+    assert src.count(old) == 1, f"precondition: the mutated text occurs once ({src.count(old)})"
+    p = tmp_path / "mutant.ps1"
+    p.write_text(src.replace(old, new), encoding="utf-8-sig")
+    v = _runner_violations(tmp_path, p)
+    assert v, f"mutant {name} was not caught"
+    assert any(word in x for x in v), (name, v)
 
 
 if __name__ == "__main__":

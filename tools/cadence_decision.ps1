@@ -49,9 +49,13 @@ function Test-NoProgressShouldStamp {
       Should this pass write local_heavy.last_noprogress (D3, the no-progress back-off)?
 
       ONLY a scheduled whole-route pass that PULLED the state, PUSHED it successfully and
-      advanced nothing. That is the predicate the replay modelled (tools/measure_ci_lag.py,
-      Replay._pass: the stamp is set at push end of a pass that advanced nothing) and the one
-      AR-393 round 10 made binding. Every other ending is NOT an empty pass and writes nothing:
+      advanced nothing - the rule AR-393 round 10 made binding. It is NOT exactly the replay's:
+      tools/measure_ci_lag.py Replay._pass stamps at push end of EVERY pass that advanced nothing,
+      a hard-stopped one included. Excluding rc 124 here is a DELIBERATE difference, and AR-398
+      measured it to change nothing in the replay (a patched replay over 32 today rows, with and
+      without the hard-stop stamp, gave identical empty passes, passes, used minutes, owed end and
+      per-unit attempts). The replay models no push failure, crash or manual pass at all.
+      Every ending below writes nothing:
         * push-state failed     - the pass's outcome is not in the shared state at all;
         * the updater crashed   - a signal kill, not an orderly empty pass;
         * hard stop (rc 124)    - a unit was killed mid-run; it was busy, not idle;
