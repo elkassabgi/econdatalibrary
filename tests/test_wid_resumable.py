@@ -403,6 +403,82 @@ def test_an_unreadable_owed_country_keeps_its_mark(env, monkeypatch):
     assert "AA: owed keys unreadable" in res.error, res.error
 
 
+@pytest.mark.parametrize("fault", ["read-raises", "not-json", "not-an-object"])
+def test_an_unreadable_marker_raises_and_keeps_every_owed_mark(env, monkeypatch, fault):
+    """A present marker that cannot be read must not read as a first run: {} drops every owed mark,
+    and the keys they owe are never handed over. f5fb6609d and 7df50c8 returned {} here."""
+    from updater.errors import TransientError
+    _setup(env.out)
+    done = {c: f"{NEW}|{SIZE}" for c in COUNTRIES}
+    done["AA"] = f"{NEW}|{SIZE}|owed"
+    wid._save_done(env.out, done)
+    path = os.path.join(env.out, wid.DONE_FILE)
+    before = open(path, "rb").read()
+    if fault == "read-raises":
+        real = blob.read_bytes
+
+        def flaky(p):
+            if p.endswith(wid.DONE_FILE):
+                raise OSError("planted: transient GET of the marker")
+            return real(p)
+
+        monkeypatch.setattr(blob, "read_bytes", flaky)
+    else:
+        with open(path, "wb") as fh:
+            fh.write(b"{not json" if fault == "not-json" else b'["AA"]')
+        before = open(path, "rb").read()
+    # A read that RAISES may pass; corrupt content will not - so it is definitive, and its message
+    # must never send the reader to delete the marker (that alone loses every owed key).
+    want = TransientError if fault == "read-raises" else DefinitiveError
+    with pytest.raises(want, match="resume marker") as ei:
+        wid.update(None, None)
+    if want is DefinitiveError:
+        assert "retrying will not help" in str(ei.value)
+        assert "full_rederive_owed" in str(ei.value), "the recovery names the re-derive"
+    assert env.fetched == [], "nothing is downloaded on an unreadable marker"
+    assert open(path, "rb").read() == before, "the stored marker is left untouched"
+    if fault == "read-raises":
+        monkeypatch.setattr(blob, "read_bytes", real)
+        assert _marker(env.out)["AA"] == f"{NEW}|{SIZE}|owed"
+
+
+def test_a_failed_pre_merge_mark_does_not_merge(env, monkeypatch):
+    """AR-406 F3 (K9). The "merging|" mark is the only record of a published merge whose owed stamp
+    is not written yet. 084ca9a swallowed a failed save of it and merged anyway: a kill after the
+    publish then left AA final over revised values that nothing derives (no_change, green). Now a
+    failed pre-merge save means: do not merge, keep the stamp, transient, partial."""
+    _setup(env.out)
+    path_aa = os.path.join(env.out, "AA.parquet")
+    stored_before = blob.read_table(path_aa).to_pydict()
+    real = blob.write_bytes_atomic
+
+    def no_merging_mark(p, data):
+        if p.endswith(wid.DONE_FILE) and b'"AA": "merging|' in data:
+            raise OSError("planted: the PUT of AA's pre-merge mark failed")
+        return real(p, data)
+
+    monkeypatch.setattr(blob, "write_bytes_atomic", no_merging_mark)
+    res = wid.update(None, None)
+    assert blob.read_table(path_aa).to_pydict() == stored_before, "AA was merged without its mark"
+    assert res.status == "partial", res
+    assert "AA: pre-merge mark not saved" in res.error, res.error
+    monkeypatch.setattr(blob, "write_bytes_atomic", real)
+    m = _marker(env.out)
+    assert m["AA"] == f"{OLD}|{SIZE}", m["AA"]          # its old final stamp: re-fetched later
+    assert not any(k.endswith(":AA") for k in (res.changed_keys or {})), "AA reported unmerged"
+    others = [c for c in COUNTRIES if c != "AA"]
+    assert all(m[c].startswith(NEW) for c in others), m  # the other countries went ahead
+
+
+def test_an_absent_marker_is_a_first_run(env):
+    """Negative control for the test above: no marker at all is {} and every country is fetched."""
+    _setup(env.out)
+    os.remove(os.path.join(env.out, wid.DONE_FILE))
+    res = wid.update(None, None)
+    assert sorted(env.fetched) == sorted(COUNTRIES), env.fetched
+    assert res.status in ("ok", "no_change"), res
+
+
 def test_a_corrupt_owed_parquet_makes_the_pass_partial_not_no_change(env, capsys):
     """AR-406 F1 (K5), with a REAL unreadable file: no stand-in for _carry."""
     _setup(env.out)

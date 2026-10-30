@@ -95,7 +95,7 @@ import pyarrow as pa
 import requests
 
 from ... import blob, config, merge
-from ...errors import TransientError
+from ...errors import DefinitiveError, TransientError
 from ..base import Result
 from ._common import (CURSOR_CAP, Tally, _max_by_key, cursors_from_table, finalize,
                       merge_cursor_map)
@@ -181,23 +181,48 @@ DONE_FILE = "_country_vintage.json"
 
 
 def _load_done(out_dir):
-    """{country: "last_modified|size"} for countries already merged at that vintage."""
+    """{country: "last_modified|size"} for countries already merged at that vintage.
+
+    Only an ABSENT marker (blob.read_bytes -> None, or empty) is a first run and gives {}. Returning
+    {} for a marker that is present but unusable would drop every owed mark, and the keys they owe
+    would never be handed over (AR-406, PR 5). So:
+      the read RAISES (an R2 GET error, a locked file)  -> TransientError: retry, marker untouched;
+      bytes read but not a JSON object (corrupt content) -> DefinitiveError: retrying cannot help.
+    The stored marker is never rewritten here."""
+    path = os.path.join(out_dir, DONE_FILE)
     try:
-        raw = blob.read_bytes(os.path.join(out_dir, DONE_FILE))
-        return json.loads(raw) if raw else {}
-    except Exception:                                         # noqa: BLE001
-        return {}                                             # a lost marker re-fetches
+        raw = blob.read_bytes(path)
+    except Exception as e:                                    # noqa: BLE001
+        raise TransientError(f"wid: resume marker unreadable: {e!r}") from e
+    if not raw:
+        return {}
+    try:
+        done = json.loads(raw)
+    except ValueError:
+        done = None
+    if not isinstance(done, dict):
+        # Do NOT tell the reader to delete it: an absent marker is {} and drops every owed mark.
+        raise DefinitiveError(
+            f"wid: resume marker {DONE_FILE} content is corrupt (not a JSON object); retrying will "
+            f"not help. Recovery: book a full wid re-derive (full_rederive_owed) together with "
+            f"removing the marker - removing it alone loses every owed key.")
+    return done
 
 
-def _save_done(out_dir, done):
+def _save_done(out_dir, done) -> bool:
+    """Persist the marker; True when it was written. Most callers may ignore a failure: a lost owed
+    or final stamp re-fetches or over-reports, never under-reports. The ONE save that must fail
+    closed is the "merging|" mark before a merge publishes - its caller checks the return."""
     try:
         blob.write_bytes_atomic(os.path.join(out_dir, DONE_FILE),
                                 json.dumps(done, sort_keys=True).encode())
+        return True
     except Exception as e:                                    # noqa: BLE001
         # Never fail the run over the resume marker — losing it costs a re-fetch,
         # not correctness. But say so, or a silently unwritten marker looks exactly
         # like a working resume that mysteriously never advances.
         print(f"[wid] WARNING: could not persist resume marker: {e!r}", flush=True)
+        return False
 
 
 def _margin_floor_s() -> float:
@@ -314,9 +339,7 @@ def update(unit, since) -> Result:
     identical = 0                  # merged, and the merge changed no served value
     carried: list = []             # countries whose owed mark this pass hands over
     owed_now: list = []            # countries this pass merged with a change (marked owed)
-    done = _load_done(out_dir)
-    if not isinstance(done, dict):
-        done = {}
+    done = _load_done(out_dir)     # raises TransientError on a present but unreadable marker
     dirty = False
     floor_s = _margin_floor_s()
     end_ts = _window_end_ts()      # read HERE, at update time, never at import
@@ -508,7 +531,18 @@ def update(unit, since) -> Result:
             # marker and no Result speaks for.
             was_merging = isinstance(_stamp, str) and _stamp.startswith(_MERGING)
             done[country] = _stamp if was_merging else _MERGING + str(_stamp or "")
-            _save_done(out_dir, done)
+            if not _save_done(out_dir, done):
+                # FAIL CLOSED (AR-406 F3). The "merging|" mark is the only record that speaks for a
+                # published merge whose owed stamp is not written yet. If it is not stored, a kill
+                # after the publish leaves a final-looking stamp over revised values that nothing
+                # derives. So do not merge: restore the stamp and let a later pass retry.
+                if _stamp is None:
+                    done.pop(country, None)
+                else:
+                    done[country] = _stamp
+                tally.transient_unit(f"{country}: pre-merge mark not saved")
+                outcome = "transient (pre-merge mark not saved; not merged)"
+                continue
             n, md, ch = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP,
                                               report_changed_keys=True,
                                               changed_keys_cap=max(tbl.num_rows, 1))
