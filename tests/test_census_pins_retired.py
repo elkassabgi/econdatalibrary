@@ -370,8 +370,9 @@ def test_a_listed_flow_gone_early_is_skipped_loudly_not_a_whole_source_failure(t
 
 
 def test_a_404_on_an_unlisted_flow_still_fails_the_source(tmp_path, monkeypatch):
-    """The early-retirement path is for LISTED flows only; an unlisted 404 stays a refusal."""
-    api = _setup(tmp_path, monkeypatch)
+    """The early-retirement path is for LISTED flows only; an unlisted 404 stays a refusal.
+    Nothing else changed (the BETA flow re-returns its stored value), so the source raises."""
+    api = _setup(tmp_path, monkeypatch, beta_value="100")
     real_get = api.get
     api.get = lambda url, params=None, timeout=None: (
         _Resp(404, text="error: unknown dataset") if url.endswith("marts")
@@ -379,6 +380,20 @@ def test_a_404_on_an_unlisted_flow_still_fails_the_source(tmp_path, monkeypatch)
     with pytest.raises(DefinitiveError) as ei:
         cs.update(types.SimpleNamespace(source_id="census", unit_id="_all"), None)
     assert "REFUSED by the API" in str(ei.value) and "HTTP 404 x1" in str(ei.value)
+
+
+def test_a_404_beside_a_changed_flow_is_partial_with_the_changed_table(tmp_path, monkeypatch):
+    """Route B (the window-cap PR, AR-407 O7): the refusal is still named, but the table another
+    flow CHANGED in the same pass is handed to the CSV step instead of being lost to the raise."""
+    api = _setup(tmp_path, monkeypatch)                      # sitcexport revised 100 -> 999
+    real_get = api.get
+    api.get = lambda url, params=None, timeout=None: (
+        _Resp(404, text="error: unknown dataset") if url.endswith("marts")
+        else real_get(url, params=params, timeout=timeout))
+    res = cs.update(types.SimpleNamespace(source_id="census", unit_id="_all"), None)
+    assert res.status == "partial", res
+    assert "REFUSED by the API" in res.error and "HTTP 404 x1" in res.error
+    assert sorted(res.series_cursors) == ["intltrade__exports__sitcexport"]
 
 
 def test_on_the_removal_day_with_no_operator_date_update_stops_asking(tmp_path, monkeypatch, capsys):
