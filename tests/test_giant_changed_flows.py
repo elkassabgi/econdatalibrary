@@ -5,7 +5,7 @@ Without it a giant source that merges rows returns neither `changed_keys` nor
 the only exit is a manual desktop campaign (eurostat, 2026-09-07: 400 flows selected, 360
 parquets rewritten, ~108 actually changed). Each test below has the direction that would
 have caught that defect AND the direction that keeps the old behaviour byte-identical for
-callers that do not opt in (oecd, sec_edgar, _iep).
+callers that do not opt in (sec_edgar, _iep; oecd opted in 2026-10-29 with its own mapping tier).
 
 Hermetic: a tmp source dir under the LOCAL blob backend; no catalog.db, no store, no R2.
 """
@@ -243,9 +243,15 @@ def test_sidecar_state_unchanged_by_the_report(tmp_path, monkeypatch):
 
 def test_eurostat_opts_in_and_no_other_giant_caller_does():
     """Pinned so the opt-in cannot silently spread to a source whose catalogue grain has
-    not been measured (oecd, sec_edgar, _iep)."""
+    not been measured (sec_edgar, _iep). oecd joined on 2026-10-29 only WITH its grain measured
+    and mapped: 28 catalogued ids over two template files (orchestrate._oecd_index, the inverse
+    of econdl._resolve._OECD_TEMPLATES), pinned by tests/test_oecd_resumable.py - the real-28 map,
+    the dropped-template mutant that must turn the run red, and a real run_once that derives a
+    changed flow's served ids. A new name here needs the same."""
     fdir = os.path.join(ROOT, "updater", "strategies", "fetchers")
     src = {f: open(os.path.join(fdir, f), encoding="utf-8").read()
            for f in os.listdir(fdir) if f.endswith(".py") and f != "_giant.py"}
     optin = sorted(f for f, s in src.items() if "report_changed_flows=True" in s)
-    assert optin == ["eurostat.py"], optin
+    assert optin == ["eurostat.py", "oecd.py"], optin
+    # and the orchestrator really has the oecd tier the opt-in depends on
+    assert "def _oecd_index" in open(os.path.join(ROOT, "updater", "orchestrate.py"), encoding="utf-8").read()

@@ -498,11 +498,13 @@ def _settle_attempt(state: dict, fid: str, tally) -> tuple:
     return status, kind
 
 
-def _retry_note(plan: dict, state: dict, catalog: dict, skipped: list) -> "tuple":
+def _retry_note(plan: dict, state: dict, catalog: dict, skipped: list,
+                too_big_clause: bool = True) -> "tuple":
     """(note, unresolved). `unresolved` is True when failed or too_big flows were not attempted in
     this pass: such a pass must never read `ok`. The note is None when there is nothing to say.
     The wording is its own - never finalize's "deferred by budget" grammar, which health would
-    read as a healthy rotation."""
+    read as a healthy rotation. too_big_clause=False (a caller with no row ceiling, oecd) leaves out
+    the "too big for the runner" clause, which such a caller can never fill."""
     def _ids(xs):
         xs = sorted(xs)
         return "[" + ", ".join(xs[:10]) + (f", +{len(xs) - 10} more" if len(xs) > 10 else "") + "]"
@@ -516,15 +518,17 @@ def _retry_note(plan: dict, state: dict, catalog: dict, skipped: list) -> "tuple
         return None, False
     note = (f"retry note: {b:,} failed flow(s) wait out their back-off, {w + k:,} due failed flow(s) "
             f"wait for a later retry slice ({k:,} stopped by its {RETRY_SLICE_SECONDS} s limit), "
-            f"outlasts the limit: {len(outlasts):,} {_ids(outlasts)}, too big for the runner (not "
-            f"fetched, not served): {len(too_big):,} {_ids(too_big)}")
+            f"outlasts the limit: {len(outlasts):,} {_ids(outlasts)}"
+            + (f", too big for the runner (not fetched, not served): {len(too_big):,} {_ids(too_big)}"
+               if too_big_clause or too_big else ""))
     return note, bool(b or w or k or too_big)
 
 
 def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, timeout,
               max_flows=DEFAULT_MAX_FLOWS_PER_TICK, min_ratio=0.97,
               report_changed_flows: bool = False, bounded_merge: bool = False,
-              checkpoint_every: int | None = None, retry_slice: "dict | None" = None):
+              checkpoint_every: int | None = None, retry_slice: "dict | None" = None,
+              flow_log: bool = False, owed_marks: bool = False):
     """Generic S4 driver. Sources supply two callables:
 
       fetch_catalog() -> {flow_id: {"vintage", "filename", **meta}}   (raises Transient on net fail)
@@ -595,9 +599,35 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
     "too_big"): the row is booked `too_big` with the ceiling and parser it was refused under, and
     its `vintage` is left as it was (the stored data does not match the new upstream version). A
     pass that left failed or too_big flows unattempted never returns ok: it returns partial with a
-    "retry note" naming them. Without the opt-in nothing here changes."""
+    "retry note" naming them. Without the opt-in nothing here changes.
+
+    flow_log=True (opt-in, oecd; default False keeps every other caller's log byte-identical) prints
+    two lines per selected flow: "[<source>] flow k/n start <flow> at <UTC>Z (unit +Ns)" before the
+    stored-footer read, and "[<source>] flow k/n done <flow>: <status>, <rows> rows fetched, <s>s"
+    when its outcome is in (the rate pause is not counted). Before this the only timing was the
+    progress line every 25 flows, so a replay could bound one flow only by the largest 25-flow block,
+    and no line covered a single flow at all. A flow that a kill or the hard limit ends has a start
+    line and no done line: its start time against the kill time is a lower bound for it. Neither line
+    begins "[<source>] <k>/<n> flows", so tools/measure_ci_lag.py's progress-line reader
+    (_GIANT_PROGRESS) still reads only the 25-flow lines.
+
+    owed_marks=True (opt-in, oecd; requires report_changed_flows and checkpoint_every; default False
+    keeps eurostat byte-identical) makes the changed set survive a KILL. A checkpoint saves a merged
+    flow's new vintage, so after a kill (run_local_heavy.ps1's taskkill runs no except, no finally, no
+    final save and no CSV step) the flow is not selected again and no later merge reports it changed:
+    its served CSVs would stay stale with nothing on record (AR-320 F2, R1562). With the opt-in, a flow
+    whose merge changed served data gets `csv_owed` in its sidecar row IN THE SAME UPDATE that advances
+    its vintage, so every checkpoint that saves the vintage saves the mark. Each pass starts its changed
+    set from the marks it loads (`carried`), and clears them only in its own FINAL save, i.e. only in a
+    pass that goes on to return them to the CSV step. What can still be lost: a kill between that final
+    save and the end of the CSV step. Local route only: the derive reads the merged file from this
+    machine's disk (blob keeps the local copy), which a fresh CI runner does not have (AR-320 F3).
+    retry_slice with owed_marks also saves the state before flow 1, so the attempt of a flow killed in
+    flight is on record from the first flow on."""
     if retry_slice is not None and not (report_changed_flows and checkpoint_every):
         raise ValueError("run_giant: retry_slice requires report_changed_flows and checkpoint_every")
+    if owed_marks and not (report_changed_flows and checkpoint_every):
+        raise ValueError("run_giant: owed_marks requires report_changed_flows and checkpoint_every")
     source_dir = (unit.out_paths or [None])[0]
     if source_dir is None:
         raise DefinitiveError(f"{source}: unit has no out_paths (source dir unknown)")
@@ -628,12 +658,15 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
     print(f"[{source}] catalogue {len(catalog):,} flow(s); selected {len(selected):,} "
           f"changed/new/redo{' (CAPPED - the rest is selected again by a later pass)' if capped else ''}",
           flush=True)
+    # A caller with no row ceiling (oecd) can never book a flow too_big: its notes leave the clause out.
+    _too_big_clause = retry_slice is not None and retry_slice.get("ceiling") is not None
     if plan is not None:
         _tb = sorted(plan["too_big"])
         print(f"[{source}] retry slice: {len(plan['slice']):,} failed flow(s) due now (at most "
               f"{RETRY_SLICE_FLOWS}, {RETRY_SLICE_SECONDS} s); {len(plan['backed_off']):,} wait out their "
-              f"back-off; {len(plan['waiting']):,} due wait for a later slice; too big for the runner "
-              f"(not fetched, not served): {len(_tb):,} {_tb[:20]}", flush=True)
+              f"back-off; {len(plan['waiting']):,} due wait for a later slice"
+              + (f"; too big for the runner (not fetched, not served): {len(_tb):,} {_tb[:20]}"
+                 if _too_big_clause or _tb else ""), flush=True)
     t_start = time.time()
 
     tally = Tally()
@@ -642,6 +675,24 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
     max_last = None
     changed_flows: dict = {}   # {flow_id: max changed obs_date | None}, merge-measured
     merged_n = over_cap_n = 0  # flows that reached the merge; of those, over the report cap
+    # owed_marks: flows an earlier pass merged with a change and never handed to the CSV step (it was
+    # killed after a checkpoint saved them). They go into this pass's changed set from the start, so
+    # every Result below carries them. They are kept APART from changed_flows (what THIS pass merged with
+    # a change), and joined only into Result.changed_keys (_report): the capped branch's no-progress
+    # guard, the limit hand-over and the merge-measured count read this pass's own work only (AR-404 O4).
+    carried: dict = {}
+    if owed_marks:
+        for fid, st in state.items():
+            if isinstance(st, dict) and "csv_owed" in st:
+                carried[fid] = st.get("csv_owed") or None
+        # Printed on EVERY pass, zero included: on the desktop a pass is usually ended by the HARD STOP
+        # before any later line, and this count is the only record of the owed backlog (AR-404 O5).
+        print(f"[{source}] owed to the CSV step by an earlier pass that did not reach it: "
+              f"{len(carried):,} flow(s) {sorted(carried)[:10]}", flush=True)
+
+    def _report() -> dict:
+        """Result.changed_keys: the marks carried in, then this pass's merge-measured changed flows."""
+        return {**carried, **changed_flows}
 
     if bounded_merge and not checkpoint_every:
         # The timeout handling below that keeps a hard per-unit limit from being booked as one
@@ -685,7 +736,21 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
     # rate pause and the stored-footer read (a whole-object GET under r2). A timeout landing
     # in either used to end the sweep without the timeout checkpoint (2026-09-14 review).
     # Behaviour is otherwise unchanged: everything still propagates.
+    # flow_log: the flow whose start line was printed and whose done line is still owed.
+    timed: dict = {"fid": None}
+
+    def _flow_done():
+        fid_ = timed["fid"]
+        timed["fid"] = None
+        rows = timed.get("rows")
+        print(f"[{source}] flow {timed['k']:,}/{len(selected):,} done {fid_}: "
+              f"{(state.get(fid_) or {}).get('status')}, "
+              f"{(f'{rows:,}' if isinstance(rows, int) else '-')} rows fetched, "
+              f"{time.time() - timed['t0']:.1f}s", flush=True)
+
     def _pause():
+        if flow_log and timed["fid"] is not None:
+            _flow_done()
         if cur["fid"] is not None:
             _settle()
         try:
@@ -747,6 +812,11 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
                 _presave()                  # a whole-state save, so it also stands for the periodic one
             elif checkpoint_every and n_done > 1 and (n_done - 1) % checkpoint_every == 0:
                 _checkpoint(n_done - 1, "periodic")
+            elif owed_marks and plan is not None and n_done == 1:
+                # THE FIRST FLOW TOO (owed_marks + retry_slice, oecd). The periodic checkpoint first runs
+                # before flow 2, so a fresh flow 1 that a kill ends kept its recorded attempt in memory
+                # only: it was flow 1 of every later pass, killed in the same place (AR-404 stall_first).
+                _checkpoint(0, "before the first flow")
             # Every 25 flows, and always on the last one. Bounded on purpose: one line per flow
             # would bury a 1,400-flow sweep's real events in noise.
             if n_done % 25 == 0 or n_done == len(selected):
@@ -756,10 +826,19 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
                       f"{time.time() - t_start:,.0f}s", flush=True)
             meta = catalog[fid]
             out_path = os.path.join(source_dir, meta["filename"])
+            if flow_log:
+                # The start line comes BEFORE the stored-footer read and the fetch, so a flow that a kill
+                # ends is still on record with its start time (see flow_log in the docstring).
+                timed.update(fid=fid, k=n_done, t0=time.time(), rows=None)
+                print(f"[{source}] flow {n_done:,}/{len(selected):,} start {fid} at "
+                      f"{time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(timed['t0']))}Z "
+                      f"(unit +{timed['t0'] - t_start:,.0f}s)", flush=True)
             since = sane_since(_stored_max(out_path))
             flow_st = dict(state.get(fid, {}))
             try:
                 table, status = fetch_flow(fid, meta, since, sess)
+                if flow_log and isinstance(table, pa.Table):
+                    timed["rows"] = table.num_rows
             except TransientError as e:
                 if checkpoint_every and _is_unit_timeout(e):
                     # Raised after the unit's alarm fired: the timeout in another form, not this flow's
@@ -910,6 +989,10 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
                         _flow_changed, _when = True, (str(last) if last else None)
                     if _flow_changed:
                         changed_flows[fid] = _when
+                        if owed_marks:
+                            # IN THE SAME ROW UPDATE AS THE NEW VINTAGE (below): a checkpoint that saves
+                            # one saves the other. The value is the changed set's date, "" for None.
+                            flow_st["csv_owed"] = _when or ""
                 else:
                     n, last = _merge(out_path, table, min_ratio=min_ratio)
             except DefinitiveError as e:
@@ -978,6 +1061,13 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
     # Mark flows present in the catalogue but never touched (not selected) so first-ever
     # runs don't perpetually re-select everything: only flows we DIDN'T select keep their
     # prior state; brand-new-but-unselected (cap overflow) stay absent -> reselected.
+    if owed_marks:
+        # CLEARED ONLY HERE, in the save of a pass that returns them to the CSV step below (every return
+        # after this point carries changed_flows). The checkpoints above keep the marks. If this save
+        # fails, the stored copy still holds them and a later pass reports them again.
+        for fid in _report():
+            if isinstance(state.get(fid), dict) and "csv_owed" in state[fid]:
+                state[fid] = {k: v for k, v in state[fid].items() if k != "csv_owed"}
     try:
         save_state(source_dir, state)
     except Exception as e:                              # noqa: BLE001
@@ -1002,12 +1092,14 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
         # orchestrator prints "mapped N" only on its fallback tier, so without this a clean tick
         # leaves no number to compare the derived count against.
         print(f"[{source}] changed flows (merge-measured): {len(changed_flows):,} of "
-              f"{merged_n:,} merged ({over_cap_n:,} over the report cap, reported as changed)",
+              f"{merged_n:,} merged ({over_cap_n:,} over the report cap, reported as changed)"
+              + (f"; {len(carried):,} carried from an earlier pass's owed mark" if owed_marks else ""),
               flush=True)
 
     # retry_slice: what this pass left unattempted among the failed and too_big flows. A pass that
     # left any never returns ok (below): "Nothing is ever laundered into ok" holds with back-off too.
-    retry_note, unresolved = (_retry_note(plan, state, catalog, slice_skipped) if plan is not None
+    retry_note, unresolved = (_retry_note(plan, state, catalog, slice_skipped,
+                                          too_big_clause=_too_big_clause) if plan is not None
                               else (None, False))
     if retry_note:
         print(f"[{source}] {retry_note}", flush=True)
@@ -1023,7 +1115,7 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
         if limit_note:
             _answer_hard_limit()
         return Result(status="transient_fail", obs=total_rows, last_obs_date=max_last,
-                      new_vintage=_catalog_token(catalog), changed_keys=changed_flows,
+                      new_vintage=_catalog_token(catalog), changed_keys=_report(),
                       error=_with_note(" - ".join(x for x in (limit_note, save_note) if x)))
 
     if capped:
@@ -1053,14 +1145,14 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
               f"{'due at the next run' if unfinished else 'partial'}", flush=True)
         if unfinished:
             return Result(status="transient_fail", obs=total_rows, last_obs_date=max_last,
-                          new_vintage=_catalog_token(catalog), changed_keys=changed_flows,
+                          new_vintage=_catalog_token(catalog), changed_keys=_report(),
                           error=_with_note(
                               f"selected>cap: fetched {len(selected):,} flows; {beyond_fresh:,} "
                               f"changed or new and {beyond_retry:,} retry flow(s) wait beyond the "
                               f"cap; the unit is due again at the next run (+{tally.added} rows)"))
         return Result(status="partial", obs=total_rows, last_obs_date=max_last,
                       new_vintage=_catalog_token(catalog),
-                      changed_keys=(changed_flows if report_changed_flows else None),
+                      changed_keys=(_report() if report_changed_flows else None),
                       error=_with_note(
                           f"selected>cap: fetched {len(selected):,} flows; {beyond_fresh:,} "
                           f"changed or new and {beyond_retry:,} retry flow(s) wait beyond the "
@@ -1074,7 +1166,9 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
         res = finalize(tally, total_rows, max_last, source=source,
                        empty_window_floor=max(10, len(selected) // 2))
     except DefinitiveError as e:
-        if not (report_changed_flows and changed_flows):
+        # _report(), not changed_flows: a pass that carried owed marks has CLEARED them in its final save
+        # above, so it must hand them to the CSV step even when it merged nothing itself (AR-404 O3).
+        if not (report_changed_flows and _report()):
             raise
         # THE CHANGED SET MUST SURVIVE finalize()'s STRUCTURAL RAISE (design review change 1).
         # finalize raises on ANY structural sub-unit and the orchestrator maps that to
@@ -1085,17 +1179,23 @@ def run_giant(unit, *, source, fetch_catalog, fetch_flow, csv_accept, rate, time
         # tick is clean with probability 0.9^n). Same recorded outcome as the raise — partial,
         # vintage un-bumped, no last_success, the same error text — plus the derive of what
         # merged. Re-raised unchanged when nothing merged, or without the opt-in.
-        print(f"[{source}] finalize raised structural with {len(changed_flows):,} merged "
+        print(f"[{source}] finalize raised structural with {len(_report()):,} merged "
               f"flow(s) to derive — returning partial WITH the changed set: {str(e)[:120]}",
               flush=True)
         return Result(status="partial", obs=total_rows, last_obs_date=max_last,
                       new_vintage=_catalog_token(catalog), error=_with_note(str(e)),
-                      changed_keys=changed_flows)
+                      changed_keys=_report())
     # carry a catalogue-level vintage token so detect_change can cheaply short-circuit
     # next tick when the whole catalogue is unmoved.
     res.new_vintage = _catalog_token(catalog)
     if report_changed_flows:
-        res.changed_keys = changed_flows      # {} when every merge was idempotent — honoured
+        res.changed_keys = _report()          # {} when every merge was idempotent — honoured
+    if carried and res.status == "no_change":
+        # A QUIET PASS THAT CARRIED OWED MARKS (AR-404 O3). no_change runs no CSV step
+        # (orchestrate._should_derive_csvs), and this pass's final save has cleared the marks, so the
+        # owed flows would be lost. `ok` is the same outcome for the schedule and the success time
+        # (both are a clean pass) and it does run the CSV step for the carried flows.
+        res.status = "ok"
     if retry_note:
         # NEVER ok WHILE FAILED OR too_big FLOWS WAIT. With the retry slice a backed-off failure is
         # not attempted, so it is not in the tally, and finalize would return ok: last_success set,

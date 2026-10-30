@@ -1126,6 +1126,34 @@ def _derive_changed_csvs(unit, res, blob, store=None):
         # sign that something served went stale. Expanding re-derived the WHOLE source on any backend
         # but r2 - for hagstofa that published exactly the two-scheme tables its fetcher holds back.
         ids, unmapped = _map_changed(unit.source_id, changed, merge_measured=migrated)
+        if unit.source_id == "oecd" and unmapped:
+            # A SERVED FLOW THE oecd TIER MISSED MUST DEMOTE, NOT READ GREEN (AR-404 O1). oecd declares
+            # `catalog_scope: subset`, whose safety sample tests only '<source>:<key>' and dot-prefix forms -
+            # a flow stem never shares a prefix with 'oecd:<IND>:<geo>', so that sample is blind here, and
+            # an unmapped key next to mapped ones only ever yields a coverage note. The second instrument
+            # is independent of _oecd_index: the flow each catalogued row's own metadata names. Unreadable
+            # metadata counts as served (fail closed).
+            _meta = None
+            try:
+                import sqlite3 as _sq
+                _cat = (os.environ.get("ECONDL_CATALOG")
+                        or os.path.join(config.ROOT, "data", "catalog.db"))
+                with _sq.connect(f"file:{_cat}?mode=ro", uri=True) as _c:
+                    _meta = _oecd_metadata_flows(_c)
+            except Exception:                               # noqa: BLE001 - a check must never raise
+                _meta = None
+            missed = sorted(str(k) for k in unmapped if _meta is None or str(k) in _meta)
+            if missed:
+                note = (f"csv coherence unmet: {len(missed)} changed oecd flow(s) are SERVED by the "
+                        f"catalogue's own metadata but mapped to no catalogue id (oecd tier missed them, "
+                        f"or the metadata could not be read): {missed[:5]}")
+                print(f"[orchestrator] {unit.key}: {note}", flush=True)
+                # DURABLE, as the no-cursors branch is: the fetcher's owed marks are cleared once it
+                # returns, so the note alone would vanish on the next quiet pass.
+                if store is not None:
+                    store.note_full_rederive_owed(unit.source_id, vintage=str(res.new_vintage or ""),
+                                                  note=note[:200])
+                return [], note, [], {}
         if not ids:
             # NAME THE CAUSE YOU MEASURED, NOT THE ONE THAT SOUNDS RIGHT. This note used to
             # end "and the source exceeds the derive-all cap" unconditionally — the same
@@ -1934,6 +1962,56 @@ def _ember_index(con) -> dict:
     return out
 
 
+def _oecd_index(con) -> dict:
+    """{'<flow file stem>': [catalogue id]} for every CATALOGUED oecd id the resolver can serve - the inverse
+    of econdl._resolve._resolve_oecd, built from ITS OWN template table (never retyped: R191/R192).
+
+    oecd's catalogue is a curated set `oecd:<INDICATOR>:<geo>`; the resolver serves each id from ONE flow
+    file (`_OECD_TEMPLATES[INDICATOR][0]`). _giant.run_giant(report_changed_flows=True) reports changed
+    flows by their catalogue stem, which is that file name without '.parquet'. So a changed flow claims
+    every catalogued id served from its file, and a changed flow no catalogued id is served from claims
+    nothing. An id whose indicator has no template is left out: the resolver cannot serve it, so it could
+    not be derived anyway."""
+    import core.derive_csv  # noqa: F401,PLC0415 - puts clients/python on sys.path
+    from econdl import _resolve as _r                                   # noqa: PLC0415
+    out: dict = {}
+    for (cid,) in con.execute("SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
+                              ("oecd:", "oecd;")):
+        parts = cid.split(":")
+        if len(parts) != 3:
+            continue
+        tmpl = _r._OECD_TEMPLATES.get(parts[1])
+        if tmpl is None or not tmpl[0].endswith(".parquet"):
+            continue
+        out.setdefault(tmpl[0][:-len(".parquet")], []).append(cid)
+    return out
+
+
+def _oecd_metadata_flows(con) -> "set | None":
+    """The flow stems the catalogued oecd rows' OWN metadata names ('dataflow': '<AGENCY>,<ID>[,<VER>]',
+    written by connectors/oecd at catalogue time), spelled as fetchers/oecd.fetch_catalog spells a stem
+    ('<AGENCY>__<ID>'). Used only by the subset safety sample: it does not read _OECD_TEMPLATES, so a
+    flow the oecd tier fails to map still counts as SERVED and the run demotes instead of reading green.
+    A row without readable metadata adds nothing. None when the column cannot be read at all: the caller
+    then counts every sampled key as served (fail closed - "cannot judge" must not read as "fine")."""
+    out: set = set()
+    import json  # noqa: PLC0415
+    try:
+        rows = con.execute("SELECT metadata FROM series WHERE series_id >= ? AND series_id < ?",
+                           ("oecd:", "oecd;")).fetchall()
+    except Exception:                                    # noqa: BLE001 - no metadata column: no instrument
+        return None
+    for (md,) in rows:
+        try:
+            flow = (json.loads(md) or {}).get("dataflow") if md else None
+        except (TypeError, ValueError):
+            flow = None
+        parts = str(flow).split(",") if flow else []
+        if len(parts) >= 2 and parts[0] and parts[1]:
+            out.add((parts[0] + "__" + parts[1]).replace("/", "_").replace(":", "_"))
+    return out
+
+
 
 def _with_ecb_unread(unit, note):
     """Put a FAILURE segment for any ecb file the last `_catalog_ids_for` could not read FIRST in the
@@ -2052,6 +2130,7 @@ def _catalog_ids_for(source_id: str, changed_keys):
                 ("wikidata:", "wikidata;"))]
             _exp = {"companies": _all} if _all else {}
         _ember = _ember_index(con) if source_id == "ember" else None
+        _oecd = _oecd_index(con) if source_id == "oecd" else None
         # UNCTAD DOT table grain: the catalogued natives, ONCE per call from the source's PK range
         # (indexed; 247 .. 32,374 rows for the 18 members), so each key costs set lookups instead
         # of the exact tier's per-key PK seek (8,589,597 seeks for criticalminerals).
@@ -2085,6 +2164,20 @@ def _catalog_ids_for(source_id: str, changed_keys):
                 # resolver, so a key maps here or nowhere. No other tier is tried: they read
                 # '<source>:<key>' forms ember never catalogues, and the split-part tier full-scans.
                 _hit = _ember.get(k)
+                if _hit:
+                    for cid in _hit:
+                        if cid not in seen:
+                            seen.add(cid)
+                            exact.append(cid)
+                else:
+                    unmapped.append(k)
+                continue
+            if _oecd is not None:
+                # oecd's changed keys are flow stems (_giant.run_giant, report_changed_flows) and its
+                # catalogued ids are served from one template file each: the exact inverse of the resolver,
+                # so a key maps here or nowhere (the ember shape). No other tier is tried: no oecd id is
+                # '<source>:<flow stem>', and the split-part tier full-scans.
+                _hit = _oecd.get(k)
                 if _hit:
                     for cid in _hit:
                         if cid not in seen:

@@ -652,28 +652,33 @@ def _resolve_ecb(series_id: str, root: str) -> Resolution:
 
 
 # --- oecd ------------------------------------------------------------------
+# catalog: oecd:<INDICATOR>:<geo>  e.g. oecd:GDP_GROWTH_QOQ:USA, oecd:CPI_YOY:GBR
+# On disk: per-dataflow long parquet files (key_col 'series_key' = full SDMX key,
+# e.g. 'Q.Y.USA.S1.S1.B1GQ._Z._Z._Z.PC.L.G1.T0102'). The catalog id is curated
+# (indicator + ref_area only, per the catalog metadata's {dataflow, ref_area}); each
+# indicator pins exactly ONE SDMX dataflow file + ONE series_key template, with {geo}
+# substituted to give an exact-match native key. Composite: split id, re-join into the
+# full dotted SDMX key via the indicator's template.
+# MODULE LEVEL (2026-10-29) so the updater's changed-flow mapper (orchestrate._oecd_index) imports
+# this table instead of retyping it (R191/R192): a changed flow file claims exactly the catalogued ids
+# this resolver serves from it. The content is unchanged.
+_OECD_TEMPLATES = {
+    "GDP_GROWTH_QOQ": (
+        "OECD.SDD.NAD__DSD_NAMAIN1@DF_QNA_EXPENDITURE_GROWTH_OECD.parquet",
+        "Q.Y.{geo}.S1.S1.B1GQ._Z._Z._Z.PC.L.G1.T0102",
+    ),
+    "GDP_GROWTH_YOY": (
+        "OECD.SDD.NAD__DSD_NAMAIN1@DF_QNA_EXPENDITURE_GROWTH_OECD.parquet",
+        "Q.Y.{geo}.S1.S1.B1GQ._Z._Z._Z.PC.L.GY.T0102",
+    ),
+    "CPI_YOY": (
+        "OECD.SDD.TPS__DSD_PRICES@DF_PRICES_ALL.parquet",
+        "{geo}.M.N.CPI.PA._T.N.GY",
+    ),
+}
+
+
 def _resolve_oecd(series_id: str, root: str) -> Resolution:
-    # catalog: oecd:<INDICATOR>:<geo>  e.g. oecd:GDP_GROWTH_QOQ:USA, oecd:CPI_YOY:GBR
-    # On disk: per-dataflow long parquet files (key_col 'series_key' = full SDMX key,
-    # e.g. 'Q.Y.USA.S1.S1.B1GQ._Z._Z._Z.PC.L.G1.T0102'). The catalog id is curated
-    # (indicator + ref_area only, per the catalog metadata's {dataflow, ref_area}); each
-    # indicator pins exactly ONE SDMX dataflow file + ONE series_key template, with {geo}
-    # substituted to give an exact-match native key. Composite: split id, re-join into the
-    # full dotted SDMX key via the indicator's template.
-    _OECD_TEMPLATES = {
-        "GDP_GROWTH_QOQ": (
-            "OECD.SDD.NAD__DSD_NAMAIN1@DF_QNA_EXPENDITURE_GROWTH_OECD.parquet",
-            "Q.Y.{geo}.S1.S1.B1GQ._Z._Z._Z.PC.L.G1.T0102",
-        ),
-        "GDP_GROWTH_YOY": (
-            "OECD.SDD.NAD__DSD_NAMAIN1@DF_QNA_EXPENDITURE_GROWTH_OECD.parquet",
-            "Q.Y.{geo}.S1.S1.B1GQ._Z._Z._Z.PC.L.GY.T0102",
-        ),
-        "CPI_YOY": (
-            "OECD.SDD.TPS__DSD_PRICES@DF_PRICES_ALL.parquet",
-            "{geo}.M.N.CPI.PA._T.N.GY",
-        ),
-    }
     parts = series_id.split(":")
     if len(parts) != 3:
         raise ResolveError(f"{series_id}: expected oecd:<indicator>:<geo>")

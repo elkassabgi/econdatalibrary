@@ -15,7 +15,7 @@ WHAT THESE TESTS HOLD (run_giant with retry_slice, eurostat's opt-in):
   - a body over the row ceiling is booked `too_big` (its `vintage` untouched) and not fetched again
     until the ceiling covers it or the parser changes; it is listed and never served;
   - a pass that left failed or too_big flows unattempted never returns `ok`;
-  - the old-writer rule, the shared classification, oecd unchanged.
+  - the old-writer rule, the shared classification; oecd takes the slice since 2026-10-29 (no row ceiling).
 
 Several tests drive the REAL orchestrate.run_once for the registry entry `eurostat` with a strategy that
 calls the REAL run_giant with eurostat's options; the rest drive run_giant directly. The catalogue, the
@@ -491,7 +491,10 @@ def test_a_clean_pass_with_nothing_waiting_is_still_ok(rig, monkeypatch):
 
 # ---- callers without the opt-in -------------------------------------------------------------------
 
-def test_oecd_has_no_retry_slice_and_keeps_its_ordering(tmp_path, monkeypatch):
+def test_oecd_takes_the_retry_slice_since_it_opts_in(tmp_path, monkeypatch, capsys):
+    """oecd OPTS IN since 2026-10-29 (oecd.update, retry_slice with no row ceiling). Before, this test pinned
+    that a backed-off failure was fetched first on every oecd pass. Now it waits out its back-off, the pass
+    is never ok while it waits, and the note leaves out the too-big clause oecd can never fill."""
     monkeypatch.setattr(oecd, "RATE", 0)
     cat = _cat(["a1", "z1"])
     _seed(tmp_path, {"a1": {"status": "definitive_fail", "fails": 3,
@@ -501,11 +504,12 @@ def test_oecd_has_no_retry_slice_and_keeps_its_ordering(tmp_path, monkeypatch):
     monkeypatch.setattr(oecd, "fetch_flow",
                         lambda fid, meta, since, s: seen.append(fid) or ((None, "structural") if fid == "a1"
                                                                          else _ok(fid)))
-    with pytest.raises(_giant.DefinitiveError):
-        oecd.update(_Unit(tmp_path), None)
-    assert seen == ["a1", "z1"], "a backed-off failure is fetched first, as before"
+    res = oecd.update(_Unit(tmp_path), None)
+    assert seen == ["z1"], "the backed-off failure is NOT fetched first any more"
+    assert res.status == "partial" and "retry note: 1 failed flow(s) wait out their back-off" in res.error
+    assert "too big for the runner" not in res.error and "too big for the runner" not in capsys.readouterr().out
     row = _state(tmp_path)["a1"]
-    assert row["status"] == "definitive_fail" and "fail_kind" not in row and row["fails"] == 3
+    assert row["status"] == "definitive_fail" and row["fails"] == 3
 
 
 def test_retry_slice_needs_the_changed_set_and_checkpoints(tmp_path):

@@ -292,7 +292,9 @@ def test_without_the_opt_in_a_capped_pass_stays_partial(rig, capsys):
     assert rig.due_an_hour_later() is False
 
 
-def test_the_oecd_path_stays_partial_when_capped(tmp_path, monkeypatch):
+def test_the_oecd_path_is_due_at_the_next_run_when_capped_with_fresh_flows_left(tmp_path, monkeypatch):
+    """oecd OPTS IN since 2026-10-29 (oecd.update: report_changed_flows, retry_slice, ...). Before, this
+    test pinned the no-opt-in partial; the opt-in's rule is the one above, now on the oecd path itself."""
     monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
     monkeypatch.setattr(oecd, "RATE", 0)
     monkeypatch.setattr(oecd, "fetch_catalog", lambda: _cat())
@@ -300,8 +302,32 @@ def test_the_oecd_path_stays_partial_when_capped(tmp_path, monkeypatch):
     monkeypatch.setitem(_giant.run_giant.__kwdefaults__, "max_flows", 2)   # oecd uses the default cap
 
     class _U:
-        out_paths = [str(tmp_path)]
+        out_paths = [str(tmp_path / "a")]
 
     res = oecd.update(_U(), None)
-    assert res.status == "partial" and res.changed_keys is None
-    assert res.error.startswith("selected>cap: fetched 2 flows; 2 changed or new and 0 retry flow(s)")
+    assert res.status == "transient_fail" and set(res.changed_keys) == {"f1", "f2"}
+    assert res.error.startswith("selected>cap: fetched 2 flows; 2 changed or new and 0 retry flow(s) wait "
+                                "beyond the cap; the unit is due again at the next run")
+
+
+def test_the_oecd_path_keeps_the_partial_clock_when_only_retries_wait(tmp_path, monkeypatch):
+    """The control: the remainder beyond the cap is only flows that failed last time (due retries past the
+    slice), so the capped oecd pass stays partial."""
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.setattr(oecd, "RATE", 0)
+    d = tmp_path / "b"
+    os.makedirs(d)
+    # all four failed long ago (due), no fresh flow: the slice takes them, the cap of 2 leaves 2 retries
+    old = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=60)).isoformat(timespec="seconds")
+    (d / "_giant_state.json").write_text(json.dumps(
+        {f: {"status": "transient_fail", "fails": 1, "failed_at": old} for f in FLOWS}), encoding="utf-8")
+    monkeypatch.setattr(oecd, "fetch_catalog", lambda: _cat())
+    monkeypatch.setattr(oecd, "fetch_flow", lambda fid, meta, since, session: _ok(fid))
+    monkeypatch.setitem(_giant.run_giant.__kwdefaults__, "max_flows", 2)
+
+    class _U:
+        out_paths = [str(d)]
+
+    res = oecd.update(_U(), None)
+    assert res.status == "partial", (res.status, res.error)
+    assert "0 changed or new and 2 retry flow(s) wait beyond the cap" in res.error
