@@ -183,7 +183,8 @@ DONE_FILE = "_country_vintage.json"
 def _load_done(out_dir):
     """{country: "last_modified|size"} for countries already merged at that vintage.
 
-    Only an ABSENT marker (blob.read_bytes -> None, or empty) is a first run and gives {}. Returning
+    Only an ABSENT marker (blob.read_bytes -> None) is a first run and gives {}; a zero-byte marker
+    is corrupt (this code never writes one: an empty dict serialises to "{}"). Returning
     {} for a marker that is present but unusable would drop every owed mark, and the keys they owe
     would never be handed over (AR-406, PR 5). So:
       the read RAISES (an R2 GET error, a locked file)  -> TransientError: retry, marker untouched;
@@ -194,10 +195,10 @@ def _load_done(out_dir):
         raw = blob.read_bytes(path)
     except Exception as e:                                    # noqa: BLE001
         raise TransientError(f"wid: resume marker unreadable: {e!r}") from e
-    if not raw:
+    if raw is None:
         return {}
     try:
-        done = json.loads(raw)
+        done = json.loads(raw)                                # b"" is corrupt, not absent
     except ValueError:
         done = None
     if not isinstance(done, dict):
@@ -218,9 +219,12 @@ def _save_done(out_dir, done) -> bool:
                                 json.dumps(done, sort_keys=True).encode())
         return True
     except Exception as e:                                    # noqa: BLE001
-        # Never fail the run over the resume marker — losing it costs a re-fetch,
-        # not correctness. But say so, or a silently unwritten marker looks exactly
-        # like a working resume that mysteriously never advances.
+        # A failed write does not raise here: for most saves a lost stamp costs a re-fetch or an
+        # over-report, not correctness. But say so, or a silently unwritten marker looks exactly
+        # like a working resume that mysteriously never advances. The pre-merge save checks the
+        # return, so with the marker store unwritable NO country is merged: each one is transient
+        # "pre-merge mark not saved" and the pass is partial - a stalled wid with that line is a
+        # marker-store fault, not a fetch fault.
         print(f"[wid] WARNING: could not persist resume marker: {e!r}", flush=True)
         return False
 

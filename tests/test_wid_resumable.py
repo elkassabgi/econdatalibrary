@@ -403,7 +403,7 @@ def test_an_unreadable_owed_country_keeps_its_mark(env, monkeypatch):
     assert "AA: owed keys unreadable" in res.error, res.error
 
 
-@pytest.mark.parametrize("fault", ["read-raises", "not-json", "not-an-object"])
+@pytest.mark.parametrize("fault", ["read-raises", "not-json", "not-an-object", "zero-bytes"])
 def test_an_unreadable_marker_raises_and_keeps_every_owed_mark(env, monkeypatch, fault):
     """A present marker that cannot be read must not read as a first run: {} drops every owed mark,
     and the keys they owe are never handed over. f5fb6609d and 7df50c8 returned {} here."""
@@ -425,7 +425,7 @@ def test_an_unreadable_marker_raises_and_keeps_every_owed_mark(env, monkeypatch,
         monkeypatch.setattr(blob, "read_bytes", flaky)
     else:
         with open(path, "wb") as fh:
-            fh.write(b"{not json" if fault == "not-json" else b'["AA"]')
+            fh.write({"not-json": b"{not json", "not-an-object": b'["AA"]', "zero-bytes": b""}[fault])
         before = open(path, "rb").read()
     # A read that RAISES may pass; corrupt content will not - so it is definitive, and its message
     # must never send the reader to delete the marker (that alone loses every owed key).
