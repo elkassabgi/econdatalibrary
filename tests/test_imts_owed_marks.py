@@ -212,14 +212,41 @@ def test_the_pre_merge_mark_fails_closed_nothing_is_merged_and_the_slices_stay(e
     assert [u.split("?")[1] for u in env.imf.data_requests()] == ["startPeriod=2025&endPeriod=2027"]
 
 
-def test_a_handed_mark_not_recorded_is_handed_over_again(env):
+def test_a_handed_mark_not_recorded_is_handed_over_again(env, tmp_path, monkeypatch):
     env.setup("base")
     env.imf.up = "add"
-    F.update(None, None)                                        # no orchestrator: nothing records it
+    db = str(tmp_path / "st" / "state.db")
+    os.makedirs(os.path.dirname(db))
+    monkeypatch.setattr(config, "STATE_DB", db)
+    _recorded_state(db, "an older attempt, before this hand-over")
+    F.update(None, None)                                        # killed before the orchestrator recorded it
     tok = _mark()["token"]
     r = F.update(None, None)
     assert r.status == "ok" and len(r.changed_keys) == N_KEYS
     assert _mark()["token"] != tok
+
+
+def test_an_unreadable_state_db_is_not_a_record(env, tmp_path, monkeypatch):
+    env.setup("base")
+    env.imf.up = "add"
+    db = tmp_path / "st" / "state.db"
+    os.makedirs(db.parent)
+    db.write_bytes(b"not a sqlite file at all" * 100)
+    monkeypatch.setattr(config, "STATE_DB", str(db))
+    F.update(None, None)
+    r = F.update(None, None)
+    assert r.status == "ok" and len(r.changed_keys) == N_KEYS
+
+
+def test_no_state_db_means_no_orchestrator_and_the_mark_settles(env):
+    env.setup("base")
+    env.imf.up = "add"
+    assert not os.path.exists(config.STATE_DB)
+    F.update(None, None)
+    assert _mark()["form"] == "handed"
+    r = F.update(None, None)
+    assert (r.status, r.changed_keys) == ("no_change", {})
+    assert _mark() == {}
 
 
 def test_a_handed_mark_recorded_after_the_csv_step_is_settled(env, tmp_path, monkeypatch):
@@ -373,4 +400,22 @@ def test_run_once_hands_over_records_settles_and_a_quiet_pass_derives_nothing(ri
     assert (rig.state.get_unit(SRC, "_all")["last_error"] or "").startswith(tok)
     assert rig.run() == [(f"{SRC}/_all", "no_change")]       # recorded -> settled; nothing changed
     assert rig.put_ids() == []
+    assert _mark() == {}
+
+
+def test_run_once_killed_inside_its_csv_step_loses_nothing(rig, monkeypatch):
+    rig.env.setup("base")
+    rig.env.imf.up = "add"
+    real = orchestrate._derive_changed_csvs
+
+    def killed(*a, **k):
+        raise KeyboardInterrupt("planted kill inside the orchestrator's CSV step")
+    monkeypatch.setattr(orchestrate, "_derive_changed_csvs", killed)
+    with pytest.raises(KeyboardInterrupt):
+        rig.run()
+    monkeypatch.setattr(orchestrate, "_derive_changed_csvs", real)
+    assert _mark()["form"] == "handed"                       # returned, never recorded
+    assert rig.run() == [(f"{SRC}/_all", "ok")]              # the re-merge changes nothing ...
+    assert rig.put_ids() == TABLE_IDS                        # ... and every table is derived anyway
+    assert rig.run() == [(f"{SRC}/_all", "no_change")]
     assert _mark() == {}

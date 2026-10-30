@@ -100,16 +100,19 @@ CHANGE SIGNAL, OWED MARK, ROUTE B (PR B, 2026-10-30; review AR-410 O9, classes (
     "handed" mark is settled ONLY when a later pass finds its token in unit_state.last_error, which the
     orchestrator writes AFTER the CSV step, without the csv-fence note; otherwise every key is handed
     over again. So a kill after the update returns and before the orchestrator records the CSV step
-    loses nothing. Over-reporting re-derives identical CSVs; it never leaves a changed one behind. The
+    loses nothing. With NO state.db at all the update ran outside the orchestrator (which creates it
+    before any update), and the mark settles as census's does. Over-reporting re-derives identical
+    CSVs; it never leaves a changed one behind. The
     read fails closed: absent = nothing owed; a raising read = TransientError; content that is not a mark
     = DefinitiveError, whose recovery is to write a valid "owed" mark. A pass that returns without
     merging (a stop, a transient) keeps the mark and names it as deferred.
   * (j) ROUTE B: a structural refusal (_refuse), a refused merge, or a finalize that raises, while
     anything changed or is owed, returns `partial` WITH every stored key's cursor, the keys as
     changed_keys, and the refusal text. It raises only when nothing changed and nothing is owed.
-STATED RESIDUALS: the mark is settled by evidence in state.db, so a pass that cannot read state.db (or
-an orchestrator that never records the unit) hands every key over on every merging pass - the cost
-main paid on every ok pass, never a lost key; a "merging" mark left by a kill BEFORE the merge
+STATED RESIDUALS: the mark is settled by evidence in state.db, so a pass that cannot read an existing
+state.db hands every key over on every merging pass - the cost main paid on every ok pass, never a
+lost key; outside the orchestrator (no state.db) a kill after the return is not covered, as in census
+and wid; a "merging" mark left by a kill BEFORE the merge
 published over-reports once; a pass that stops before the merge carries the debt to the next merging
 pass, not this one; a pass killed after this change but before its first mark was written behaves as
 on main.
@@ -542,8 +545,16 @@ def _handed_recorded(source_id: str, token: str):
     hand-over: it writes the Result's error, which starts with the token, into unit_state.last_error
     AFTER the CSV step (orchestrate.run_once: CSV phase, retry queue, then upsert_unit). A csv-fence
     note there means the phase was abandoned, so the keys were NOT derived. Anything unreadable
-    (no state.db, a locked or missing table) counts as NOT recorded: the keys are handed over again,
-    which over-reports and never loses the debt."""
+    (a locked or corrupt state.db, a missing table) counts as NOT recorded: the keys are handed over
+    again, which over-reports and never loses the debt.
+
+    NO state.db AT ALL is the one exception: the orchestrator creates it (StateStore() at the start of
+    run_once) before any update runs, so its absence means this update, and the one that took the
+    hand-over, ran OUTSIDE the orchestrator (a test, a harness, a direct call). That Result went to
+    its caller, and nothing will ever record it here, so waiting for a record would hand every key
+    over on every pass for ever. It settles, as census and wid settle on return."""
+    if not os.path.exists(config.STATE_DB):
+        return True, "no state.db: not run under the orchestrator, so the hand-over went to its caller"
     try:
         con = sqlite3.connect(f"file:{config.STATE_DB}?mode=ro", uri=True, timeout=5)
         try:
