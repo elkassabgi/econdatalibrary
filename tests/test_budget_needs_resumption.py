@@ -44,7 +44,15 @@ FETCHER_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 NO_ROTATION_REVIEWED = {
     "bea", "bis", "boc", "comtrade", "cso", "dst", "eia", "ember",
     "fed_board", "idb", "ksh_stadat", "snb", "stats_nz", "zillow",
+    "imf_imts_direct",
 }
+# imf_imts_direct ADDED 2026-10-30 (PLAN R10.3 step 4), loop read: run_sliced walks a fixed list of ~10
+# period slices, but every finished slice is kept on disk with a marker record (bounds, fetch time,
+# rows), and a later pass skips each kept slice before its stop check - so each pass starts at the
+# first slice not yet kept, never at 1900 again. The newest slice is never kept (it is re-pulled on
+# the merging pass by design). A slice too big for the windows given cannot finish; its cut time is
+# kept as a lower bound and the stop sentence names that case (review AR-410 W6) rather than the
+# pass re-walking it silently. tests/test_imts_window_cap.py holds both behaviours.
 # ilostat was REMOVED 2026-10-16 (AR-328). It sat here on the strength of its per-indicator sidecar,
 # but ILO re-stamps most of its list between weekly passes, so the sidecar never emptied the head
 # and 11 of 11 passes stopped at positions 675-1298 of ~1,960 - the tail was never fetched (R313).
