@@ -56,6 +56,19 @@ def _bound_in(fn) -> set:
     return out
 
 
+def _own_nodes(fn):
+    """fn's nodes WITHOUT the bodies of functions nested in it. A nested def is checked on its own
+    visit, with its own parameters and every enclosing scope; walking it from the outer function as
+    well read the inner function's parameters as unbound (2026-10-30: imf_imts_direct's nested
+    `_refuse(label)` was reported as using an unbound `label` - the checker's third blind spot)."""
+    stack = list(ast.iter_child_nodes(fn))
+    while stack:
+        node = stack.pop()
+        yield node
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            stack.extend(ast.iter_child_nodes(node))
+
+
 def _unbound_label_names() -> list[tuple[str, int, str]]:
     problems = []
     for dirpath, dirnames, filenames in os.walk(FETCHERS):
@@ -94,7 +107,7 @@ def _unbound_label_names() -> list[tuple[str, int, str]]:
                     if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         names |= _bound_in(scope)
                     scope = parents.get(scope)
-                for call in ast.walk(fn):
+                for call in _own_nodes(fn):
                     if (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
                             and call.func.attr in METHODS):
                         used = {n.id for arg in list(call.args) + [k.value for k in call.keywords]
@@ -136,3 +149,26 @@ def test_the_checker_is_not_vacuous(tmp_path) -> None:
     finally:
         FETCHERS = original
     assert any(u == "nope" for _, _, u in found), f"the checker missed a plain NameError: {found}"
+
+
+def test_a_nested_function_is_checked_in_its_own_scope(tmp_path) -> None:
+    """A nested def's own parameter is bound (no finding); an unbound name inside it is still found,
+    once, and so is one in the enclosing function after it."""
+    d = tmp_path / "fetchers"
+    d.mkdir()
+    (d / "x.py").write_text(
+        "def run(tally):\n"
+        "    def _refuse(label):\n"
+        "        tally.structural_unit(label)\n"
+        "        tally.transient_unit(f'{inner_nope}')\n"
+        "    tally.empty_unit(f'{outer_nope}')\n"
+        "    return _refuse('x')\n",
+        encoding="utf-8")
+
+    global FETCHERS
+    original, FETCHERS = FETCHERS, str(d)
+    try:
+        found = sorted(u for _, _, u in _unbound_label_names())
+    finally:
+        FETCHERS = original
+    assert found == ["inner_nope", "outer_nope"], found
