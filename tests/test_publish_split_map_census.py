@@ -303,3 +303,59 @@ def test_catalogued_parts_counts_only_census_part_ids():
     con.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY)")
     con.executemany("INSERT INTO series VALUES (?)", [(i,) for i in IDS + ["censusx:a#b", "census;z#q"]])
     assert T.catalogued_parts(con, "census") == {"intltrade__exports__hs": 2, "eits__m3": 1}
+
+
+# ---- the ilostat path: the guards the generalisation must not have lost (AR-409 P32, P33) -------------
+class _IloR2:
+    def __init__(self):
+        self.objs, self.puts = {}, 0
+
+    def get(self, key):
+        return self.objs.get(key)
+
+    def put_atomic(self, key, body):
+        self.puts += 1
+        self.objs[key] = body
+
+
+def _ilostat(tmp_path, monkeypatch, *args):
+    from core import cutover
+    from updater import blob
+    monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "NO_CUTOVER"))
+    monkeypatch.setenv("AQUEDUCT_BACKEND", "local")
+    local = tmp_path / "data" / "clean_full" / "ilostat" / "_split_map.json"
+    local.parent.mkdir(parents=True)
+    local.write_bytes(b'{"EMP_TEMP_Q": {"col": "classif1"}}')
+    cat = tmp_path / "catalog.db"
+    con = sqlite3.connect(cat)
+    con.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT)")
+    con.execute("INSERT INTO series VALUES ('ilostat:EMP_TEMP_Q#p1', 'ilostat')")
+    con.commit()
+    con.close()
+    fake = _IloR2()
+    monkeypatch.setattr(blob, "_r2_routed", lambda: fake)
+    return local, cat, fake, (lambda *extra: T.main(["--local", str(local), "--catalog", str(cat), *args, *extra]))
+
+
+def test_ilostat_with_a_wrong_expect_md5_is_refused_and_writes_nothing(tmp_path, monkeypatch, capsys):
+    _local, _cat, fake, run = _ilostat(tmp_path, monkeypatch, "--apply")
+    assert run("--expect-md5", "0" * 32) == 2 and fake.puts == 0 and fake.objs == {}
+    assert "not the expected" in capsys.readouterr().out
+
+
+def test_control_ilostat_with_the_right_expect_md5_or_none_publishes(tmp_path, monkeypatch):
+    local, _cat, fake, run = _ilostat(tmp_path, monkeypatch, "--apply")
+    assert run("--expect-md5", hashlib.md5(local.read_bytes()).hexdigest()) == 0 and fake.puts == 1
+    _l2, _c2, fake2, run2 = _ilostat(tmp_path / "b", monkeypatch, "--apply")
+    assert run2() == 0 and fake2.puts == 1                       # without the flag: the original behaviour
+
+
+def test_ilostat_after_t0_is_refused_before_anything(tmp_path, monkeypatch):
+    from core import cutover
+    _local, _cat, fake, run = _ilostat(tmp_path, monkeypatch, "--apply")
+    flag = tmp_path / "CUTOVER"
+    flag.write_text("")
+    monkeypatch.setattr(cutover, "FLAG_PATH", str(flag))
+    with pytest.raises(cutover.CutoverRefused):
+        run()
+    assert fake.puts == 0 and fake.objs == {}

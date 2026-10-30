@@ -19,7 +19,9 @@ WHAT IT WRITES, only under --dest (a NEW or EMPTY folder):
   csv/<name>     the CSV: the same bytes for a plain object, the gunzipped bytes for a gzip one
   manifest.tsv   one row per id: id, key, status, etag, content_length, content_encoding, csvmd5,
                  last_modified, md5 of raw, md5 of csv, and the checks - md5(raw) == ETag (single-part), and
-                 md5(csv) == the csvmd5 metadata when the object carries one
+                 md5(csv) == the csvmd5 metadata when the object carries one. A body that starts with the gzip
+                 magic bytes (\\x1f\\x8b) but carries no Content-Encoding (the R560 class) is a FAILURE row,
+                 never read as a plain CSV; nothing is written for a failed row.
 <name> is the key's last segment (e.g. census%3Aeits__m3%23no.csv), the same name the derive's local copies
 use. A name with any character outside [A-Za-z0-9%._~-], or two ids giving one name, is refused.
 
@@ -252,6 +254,10 @@ def run_get(client, bucket: str, plan, dest: str, *, max_bytes: int):
                 except (ValueError, zlib.error):
                     raise _RowFail("gzip_unreadable") from None
             elif enc == "":
+                # A gzip body stored WITHOUT Content-Encoding (the R560 class) must not be booked as a good
+                # plain CSV: the magic bytes \x1f\x8b say what the header does not. Failed, never guessed.
+                if raw[:2] == b"\x1f\x8b":
+                    raise _RowFail("gzip_body_without_content_encoding")
                 csv = raw
             else:
                 raise _RowFail(f"encoding:{enc[:20]}")

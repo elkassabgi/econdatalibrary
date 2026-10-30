@@ -56,6 +56,8 @@ class FakeS3:
         o = self.objects[Key]
         r = {"Body": io.BytesIO(o["body"]), "ETag": f'"{o.get("etag", hashlib.md5(o["body"]).hexdigest())}"',
              "ContentLength": o.get("clen", len(o["body"])), "LastModified": T1, "Metadata": o.get("meta", {})}
+        if r["ContentLength"] is None:                  # a response without ContentLength
+            del r["ContentLength"]
         if o.get("enc"):
             r["ContentEncoding"] = o["enc"]
         return r
@@ -245,6 +247,34 @@ def test_a_body_over_the_byte_cap_is_a_failure_and_not_written(tmp_path):
     rc, _, dest = _main(tmp_path, [ID_PLAIN], fake, "--max-bytes", "10")
     assert rc == F.EXIT_FAILED_ROWS and not os.path.exists(os.path.join(dest, "csv", KEY_PLAIN.split("/")[1]))
     assert "\t200:too_large:" in open(os.path.join(dest, "manifest.tsv")).read()
+
+
+def test_without_content_length_an_over_cap_body_writes_nothing(tmp_path):
+    """AR-409 F22: with ContentLength absent the read-time cap is the only guard - a truncated body must not
+    be written (the ETag failure would come too late)."""
+    fake = FakeS3({KEY_PLAIN: {"body": CSV, "clen": None}})
+    rc, _, dest = _main(tmp_path, [ID_PLAIN], fake, "--max-bytes", "10")
+    name = KEY_PLAIN.split("/")[1]
+    assert rc == F.EXIT_FAILED_ROWS
+    assert not os.path.exists(os.path.join(dest, "raw", name)) and not os.path.exists(os.path.join(dest, "csv", name))
+    assert sorted(os.listdir(os.path.join(dest, "raw"))) == [] and sorted(os.listdir(os.path.join(dest, "csv"))) == []
+    assert f"{KEY_PLAIN}\t200:too_large\t" in open(os.path.join(dest, "manifest.tsv")).read()
+
+
+def test_control_without_content_length_a_body_under_the_cap_is_written(tmp_path):
+    fake = FakeS3({KEY_PLAIN: {"body": CSV, "clen": None}})
+    rc, _, dest = _main(tmp_path, [ID_PLAIN], fake)
+    assert rc == F.EXIT_OK and open(os.path.join(dest, "csv", KEY_PLAIN.split("/")[1]), "rb").read() == CSV
+
+
+def test_a_gzip_body_without_content_encoding_is_a_failure_and_not_written(tmp_path):
+    """R560 class: gzip bytes stored with no Content-Encoding must not be booked as a good plain CSV."""
+    gz = _gz(CSV)
+    fake = FakeS3({KEY_PLAIN: {"body": gz}})                 # ETag == md5(gz), so only the magic check fails
+    rc, _, dest = _main(tmp_path, [ID_PLAIN], fake)
+    name = KEY_PLAIN.split("/")[1]
+    assert rc == F.EXIT_FAILED_ROWS and not os.path.exists(os.path.join(dest, "csv", name))
+    assert "\t200:gzip_body_without_content_encoding\t" in open(os.path.join(dest, "manifest.tsv")).read()
 
 
 def test_the_byte_cap_cannot_be_raised(tmp_path):
