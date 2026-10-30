@@ -42,7 +42,10 @@ again, so a stamp must never outlive the changed keys it stands for. A merge tha
 values is stamped "mod|size|owed" in the loop. Only the end of an update that returns those keys
 in its Result turns the marks final ("mod|size"). A pass that finds an owed mark (an earlier pass
 was killed, or finalize raised) does not download the country. It reads the stored parquet and
-reports every key in it. A merge that changed nothing is stamped final at once. Before each merge
+reports every key in it; if that file cannot be read, the mark stays owed and the country is a
+transient sub-unit, so the pass is partial and never no_change. If WID has republished an owed
+country meanwhile, the pass that fetches it reports every key of the stored file, not only its own
+diff. A merge that changed nothing is stamped final at once. Before each merge
 the marker also records "merging|<old stamp>", so a kill between the merge's publish and its owed
 stamp makes the pass that re-fetches the country report all of its keys (its re-merge alone would
 report none). So the marker is written twice per merged country and once per header-only entity:
@@ -238,6 +241,13 @@ def _window_end_ts():
 #                     reported by the pass that finds the mark (see _carry).
 #   "mod|size|empty"  WID publishes the entity as a header-only file: no parquet, never fetched again
 #                     until it is republished.
+#   "mod|size|empty|owed"  header-only now, but the stored parquet holds values an earlier merge
+#                     revised and no Result has handed over. The gate does not match it, so the next
+#                     pass fetches the 47-byte file again and carries the stored keys again.
+# A stamp that owes keys ("|owed" at any vintage, or "merging|") and is NOT skipped by the gate (WID
+# republished the country, or its parquet is gone) makes the fetching pass hand over EVERY key of the
+# stored file: its merge's report holds only the diff against the store, and the earlier merge's
+# revisions are already in the store (AR-406 F2).
 # and one transient form, written BEFORE each merge:
 #   "merging|<the stamp it had>"   a merge was about to publish. If a kill lands between the publish
 #                     and the owed stamp, the country is fetched again (the gate does not match this
@@ -355,6 +365,12 @@ def update(unit, since) -> Result:
         # run forever (which is exactly what used to happen).
         _stamp = done.get(country)
         _base = f"{_mod}|{_size}"
+        # A stamp that still OWES keys, whatever vintage it names: "merging|..." or "...|owed".
+        # When the gate below does not skip the country (WID republished it, or its parquet is
+        # gone), the pass that fetches it must hand over every key of the stored file, not only
+        # its own merge's diff (see the merge and the empty branch).
+        owes_all = isinstance(_stamp, str) and (_stamp.startswith(_MERGING)
+                                                or _stamp.endswith(_OWED))
         if _stamp == _base + _EMPTY or (_stamp in (_base, _base + _OWED) and blob.exists(path)):
             if _stamp == _base + _OWED:
                 # TWO-PHASE STAMP, phase 2: merged by an earlier pass that never handed its keys
@@ -364,15 +380,20 @@ def update(unit, since) -> Result:
                 if _stop_now():
                     deferred += 1
                     continue
-                skipped += 1
                 try:
                     ch = _carry(path)
                 except Exception as e:                        # noqa: BLE001
-                    # Unreadable: keep the mark (it is retried by a later pass) and say so. The
-                    # mark is never cleared without its keys in a Result.
+                    # Unreadable (a corrupt file, or a transient R2 GET): keep the mark, so a later
+                    # pass retries it, and TALLY it, so this pass is partial. Without the tally
+                    # (AR-406 F1, K5) the pass read no_change: last_success was set, wid was not due
+                    # again for days, and the debt showed nowhere. The mark is never cleared
+                    # without its keys in a Result.
                     print(f"[wid] {country}: owed mark kept - stored keys unreadable: {e!r}",
                           flush=True)
+                    tally.transient_unit(f"{country}: owed keys unreadable")
                     continue
+                # Not counted in `skipped`: a carried country is in the "carried" line, and its keys
+                # are still owed, so it is not "already at the published vintage" in the log's sense.
                 carried.append(country)
                 changed_over = _changed_fold(changed, ch) or changed_over
                 cursors_capped = merge_cursor_map(cursors, ch, cap=CURSOR_CAP) or cursors_capped
@@ -429,6 +450,31 @@ def update(unit, since) -> Result:
                 # CSV (header present, the columns we key on) with zero data rows is EMPTY;
                 # anything we cannot read as that CSV at all is structural.
                 if _has_expected_header(text):
+                    if owes_all and blob.exists(path):
+                        # Republished as header-only while an earlier merge's keys are still owed
+                        # (an "|owed" or "merging|" stamp). The stored parquet keeps those values
+                        # and nobody has derived them: hand them over here, and stamp
+                        # "|empty|owed" so the debt survives until this Result settles it.
+                        try:
+                            ch_e = _carry(path)
+                        except Exception as e:                # noqa: BLE001
+                            print(f"[wid] {country}: owed mark kept - stored keys unreadable: "
+                                  f"{e!r}", flush=True)
+                            tally.transient_unit(f"{country}: owed keys unreadable")
+                            outcome = "empty upstream, owed keys unreadable, mark kept"
+                            continue
+                        tally.empty_unit(country)
+                        changed_over = _changed_fold(changed, ch_e) or changed_over
+                        cursors_capped = (merge_cursor_map(cursors, ch_e, cap=CURSOR_CAP)
+                                          or cursors_capped)
+                        done[country] = _base + _EMPTY + (_OWED if ch_e else "")
+                        if ch_e:
+                            carried.append(country)
+                        dirty = True
+                        _save_done(out_dir, done)
+                        outcome = (f"empty (header only), {len(ch_e):,} owed keys carried, "
+                                   f"stamped {'empty owed' if ch_e else 'empty'}")
+                        continue
                     tally.empty_unit(country)
                     # STAMP THE EMPTY ONES TOO, or they are re-fetched forever AND become the only
                     # thing a later run attempts: once every real country is stamped, these 12 are
@@ -466,9 +512,12 @@ def update(unit, since) -> Result:
             n, md, ch = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP,
                                               report_changed_keys=True,
                                               changed_keys_cap=max(tbl.num_rows, 1))
-            if was_merging:
-                # An earlier pass died inside this country's merge: whatever it published is in the
-                # store now, and today's report cannot see it. Hand over every key the file holds.
+            if owes_all:
+                # The stored file holds values no Result has handed over: an earlier pass died
+                # inside this country's merge ("merging|"), or merged it and never settled its owed
+                # mark ("|owed") before WID republished it (AR-406 F2, K7). Today's report sees
+                # only the diff against the store, so it would drop every key the earlier merge
+                # revised and this one did not. Hand over every key the file holds.
                 ch = {**_carry(path), **ch}
             t_merge = time.time() - m0
             # Cursors (per-series freshness) still come from the NEW table, as before.

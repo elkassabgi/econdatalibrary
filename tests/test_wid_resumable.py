@@ -125,11 +125,12 @@ def env(tmp_path, monkeypatch):
     clock = _Clock()
     monkeypatch.setattr(wid, "time", clock)
     e = types.SimpleNamespace(out=str(data / "clean_full" / "wid"), clock=clock, fetched=[],
-                              countries=list(COUNTRIES), bump=1.0, dur=1.0, bodies={})
+                              countries=list(COUNTRIES), bump=1.0, dur=1.0, bodies={},
+                              mod=NEW)
 
     def get(url, headers=None, timeout=None):
         if url == wid.INDEX:
-            return _Resp(_listing(e.countries))
+            return _Resp(_listing(e.countries, mod=e.mod))
         c = url.rsplit("WID_data_", 1)[1][:-4]
         e.fetched.append(c)
         clock.time()
@@ -345,7 +346,7 @@ def test_a_raise_after_merges_keeps_the_owed_marks_and_a_later_pass_hands_them_o
     assert all(s == f"{NEW}|{SIZE}" for s in _marker(env.out).values())
 
 
-def test_a_carry_only_pass_runs_the_csv_step(env):
+def test_a_carry_only_pass_runs_the_csv_step(env, capsys):
     """Nothing to download, owed marks to hand over: never no_change (the CSV step needs ok/partial)."""
     _setup(env.out)
     done = {c: f"{NEW}|{SIZE}|owed" for c in COUNTRIES[:2]}
@@ -355,6 +356,11 @@ def test_a_carry_only_pass_runs_the_csv_step(env):
     assert env.fetched == []
     assert res.status == "ok" and "carried" in res.error, res
     assert set(res.changed_keys) == set(_keys("AA") + _keys("AB"))
+    # A carried country is counted once, in the "carried" line, never as "already at the published
+    # vintage" (7df50c8 counted the 2 carried countries in both lines).
+    out = capsys.readouterr().out
+    assert f"[wid] {N - 2} country file(s) already at the published vintage" in out, out
+    assert "[wid] 2 country file(s) merged by an earlier pass" in out, out
 
 
 def test_an_owed_mark_past_the_ceiling_stays_owed_and_the_pass_is_partial(env, monkeypatch):
@@ -391,6 +397,152 @@ def test_an_unreadable_owed_country_keeps_its_mark(env, monkeypatch):
     res = wid.update(None, None)
     assert _marker(env.out)["AA"] == f"{NEW}|{SIZE}|owed", "never cleared without its keys"
     assert res.changed_keys == {}
+    # AR-406 F1: the debt must show. 7df50c8 returned no_change here (last_success set, not due again
+    # for days) and counted AA as "already at the published vintage".
+    assert res.status == "partial", res
+    assert "AA: owed keys unreadable" in res.error, res.error
+
+
+def test_a_corrupt_owed_parquet_makes_the_pass_partial_not_no_change(env, capsys):
+    """AR-406 F1 (K5), with a REAL unreadable file: no stand-in for _carry."""
+    _setup(env.out)
+    done = {c: f"{NEW}|{SIZE}" for c in COUNTRIES}
+    done["AC"] = f"{NEW}|{SIZE}|owed"
+    wid._save_done(env.out, done)
+    with open(os.path.join(env.out, "AC.parquet"), "wb") as fh:
+        fh.write(b"PAR1 this is not a parquet file PAR1")
+    res = wid.update(None, None)
+    assert env.fetched == []
+    assert res.status == "partial", res                    # 7df50c8: no_change
+    assert "AC: owed keys unreadable" in res.error, res.error
+    assert res.changed_keys == {}
+    assert _marker(env.out)["AC"] == f"{NEW}|{SIZE}|owed"
+    out = capsys.readouterr().out
+    assert f"{N - 1} country file(s) already at the published vintage" in out, out
+
+
+NEW2 = "2026-10-15 10:00"                                   # a second WID re-issue
+
+
+def _csv_vars(country, bumps):
+    lines = ["country;variable;percentile;year;value;age;pop"]
+    for v in VARS:
+        for y in (2022, 2023, 2024):
+            lines.append(f"{country};{v};p0p100;{y};{100.0 + y + bumps[v]};999;j")
+    return "\n".join(lines) + "\n"
+
+
+def _r1_then_owed(env):
+    """R1: WID revises all three AA series; one pass merges them. Then the marker is put back to what
+    a kill before the end-of-update save leaves on disk: AA's per-country owed stamp."""
+    _setup(env.out)
+    done = {c: f"{NEW}|{SIZE}" for c in COUNTRIES}
+    done["AA"] = f"{OLD}|{SIZE}"
+    wid._save_done(env.out, done)
+    res1 = wid.update(None, None)
+    assert env.fetched == ["AA"] and set(res1.changed_keys) == set(_keys("AA")), res1
+    mk = _marker(env.out)
+    assert mk["AA"] == f"{NEW}|{SIZE}", mk["AA"]
+    return mk
+
+
+@pytest.mark.parametrize("owed", [True, False], ids=["owed", "negative-control-final"])
+def test_a_republish_of_an_owed_country_hands_over_the_earlier_merges_keys(env, owed):
+    """AR-406 F2 (K7). R1 revised 3 of 3 AA series and a kill left "R1|owed". WID then republishes AA
+    with only ahwealj999 moved again (R2). The pass that fetches AA must hand over all 3 keys: the
+    R1 revisions of the other two are in the store, and no Result has carried them. 7df50c8 handed
+    over only the R1->R2 diff (1 key), returned ok and made the mark final.
+    Negative control: with a FINAL R1 stamp nothing is owed, and only the R2 diff is reported."""
+    mk = _r1_then_owed(env)
+    if owed:
+        mk["AA"] = f"{NEW}|{SIZE}|owed"
+    mk.update({c: f"{NEW2}|{SIZE}" for c in COUNTRIES if c != "AA"})
+    wid._save_done(env.out, mk)
+    env.mod = NEW2
+    env.bodies["AA"] = _Resp(_csv_vars("AA", {"ahwealj999": 2.0, "sptincj992": 1.0,
+                                              "anninci999": 1.0}))
+    env.fetched.clear()
+    res = wid.update(None, None)
+    assert env.fetched == ["AA"], env.fetched
+    assert res.status == "ok", res
+    want = set(_keys("AA")) if owed else {"WID:ahwealj999:p0p100:999:j:AA"}
+    assert set(res.changed_keys) == want, sorted(res.changed_keys)
+    assert _marker(env.out)["AA"] == f"{NEW2}|{SIZE}"
+
+
+@pytest.mark.parametrize("stamp", [f"{NEW}|{SIZE}|owed", f"merging|{NEW}|{SIZE}",
+                                   f"{NEW2}|{SIZE}|empty|owed"])
+def test_an_owing_country_republished_header_only_still_hands_over_its_keys(env, stamp):
+    """AR-406 F2, the same shape on the empty branch: a stamp that owes keys, and WID republishes the
+    country as a header-only file. The stored parquet keeps the earlier merge's values, so its keys
+    are handed over and the stamp goes "|empty|owed" until this Result settles it. 7df50c8 stamped
+    "|empty" and dropped the debt. The third stamp is that intermediate form, left by a pass that
+    raised or was killed before it settled."""
+    _setup(env.out)
+    done = {c: f"{NEW2}|{SIZE}" for c in COUNTRIES}
+    done["AA"] = stamp
+    wid._save_done(env.out, done)
+    env.mod = NEW2
+    env.bodies["AA"] = _Resp("country;variable;percentile;year;value;age;pop\n")
+    res = wid.update(None, None)
+    assert env.fetched == ["AA"], env.fetched
+    assert res.status == "ok", res
+    assert set(res.changed_keys) == set(_keys("AA")), res.changed_keys
+    assert _marker(env.out)["AA"] == f"{NEW2}|{SIZE}|empty"
+
+
+def test_a_raise_after_an_empty_owed_carry_keeps_the_debt(env):
+    """The "|empty|owed" form is what survives a pass that carried an empty republish's keys and then
+    raised (here: a structural country). The next pass fetches the header-only file again and hands
+    the keys over again; only then is the stamp "|empty"."""
+    _setup(env.out)
+    done = {c: f"{NEW2}|{SIZE}" for c in COUNTRIES}
+    done["AA"] = f"{NEW}|{SIZE}|owed"
+    done["AB"] = f"{NEW}|{SIZE}"
+    wid._save_done(env.out, done)
+    env.mod = NEW2
+    env.bodies["AA"] = _Resp("country;variable;percentile;year;value;age;pop\n")
+    env.bodies["AB"] = _Resp("<html>maintenance</html>")          # structural -> finalize raises
+    with pytest.raises(DefinitiveError):
+        wid.update(None, None)
+    assert _marker(env.out)["AA"] == f"{NEW2}|{SIZE}|empty|owed"
+    del env.bodies["AB"]
+    env.fetched.clear()
+    res = wid.update(None, None)
+    assert env.fetched == ["AA", "AB"], env.fetched
+    assert set(_keys("AA")) <= set(res.changed_keys), sorted(res.changed_keys)
+    assert _marker(env.out)["AA"] == f"{NEW2}|{SIZE}|empty"
+
+
+def test_an_owed_header_only_republish_with_an_unreadable_parquet_is_partial(env):
+    """F1's rule on the empty branch: the stored keys cannot be read, so the old owed stamp stays (not
+    "|empty", which would drop the debt) and the pass is partial."""
+    _setup(env.out)
+    done = {c: f"{NEW2}|{SIZE}" for c in COUNTRIES}
+    done["AA"] = f"{NEW}|{SIZE}|owed"
+    wid._save_done(env.out, done)
+    with open(os.path.join(env.out, "AA.parquet"), "wb") as fh:
+        fh.write(b"PAR1 this is not a parquet file PAR1")
+    env.mod = NEW2
+    env.bodies["AA"] = _Resp("country;variable;percentile;year;value;age;pop\n")
+    res = wid.update(None, None)
+    assert env.fetched == ["AA"], env.fetched
+    assert res.status == "partial" and "AA: owed keys unreadable" in res.error, res
+    assert _marker(env.out)["AA"] == f"{NEW}|{SIZE}|owed"
+
+
+def test_a_final_country_republished_header_only_owes_nothing(env):
+    """Negative control for the test above: a FINAL stamp owes nothing, so the empty republish stamps
+    "|empty" and reports no key (the pass is no_change)."""
+    _setup(env.out)
+    done = {c: f"{NEW2}|{SIZE}" for c in COUNTRIES}
+    done["AA"] = f"{NEW}|{SIZE}"
+    wid._save_done(env.out, done)
+    env.mod = NEW2
+    env.bodies["AA"] = _Resp("country;variable;percentile;year;value;age;pop\n")
+    res = wid.update(None, None)
+    assert env.fetched == ["AA"] and res.status == "no_change" and res.changed_keys == {}, res
+    assert _marker(env.out)["AA"] == f"{NEW2}|{SIZE}|empty"
 
 
 # ---- (4) the window cap ---------------------------------------------------------------------------
