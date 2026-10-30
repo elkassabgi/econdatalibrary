@@ -63,12 +63,27 @@ HONEST STATUS (Tally + finalize):
   transient_unit()  timeout / 5xx / 429 / unparseable -> partial, existing data untouched
   structural_unit() a 200 with a real header and 0 usable rows from a BOUNDARY re-fetch, which
                     must always re-return at least the boundary period -> DefinitiveError
+  revised_unit()    the merge changed stored values and added no row (compared here, _tail_changed)
+  deferred_unit()   a stop (budget or window end) or the tail cap left the flow behind -> partial
+When finalize raises while some table changed or is owed, the pass is `partial` WITH those tables
+(Route B, hagstofa's shape); it raises only when nothing changed.
+
+WINDOW END AND OWED TABLES (PLAN R10.3 step 4, 2026-10-30): see MARGIN_FLOOR_MIN_DEFAULT and
+OWED_FILE below. Stated residuals: a requests timeout bounds the connect and each read gap, not a
+whole body, so one slow-streaming response can still pass the ceiling; a kill between the final
+marker save and the orchestrator's CSV step loses that pass's hand-over; the CSV-phase time is not
+measured, so the 5-min floor is a choice; a split slice that answers 204 counts as complete, so once
+the stored max passes that month the slice is never asked again; an unreadable owed marker stops
+census (fail closed); tables merged by a pass that died BEFORE this change carry no mark and are
+re-derived only when a later merge changes them.
 """
 from __future__ import annotations
 
 import dataclasses
 import datetime as dt
 import io
+import json
+import math
 import os
 import re
 import sys
@@ -80,8 +95,9 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import (CURSOR_CAP, Deadline, Tally, _named, api_key, cursors_from_table, finalize,
-                      load_rotation, merge_cursor_map, rotate_after, save_rotation)
+from ._common import (CURSOR_CAP, ROTATION_FILE, Deadline, Tally, _named, api_key,
+                      cursors_from_table, finalize, load_rotation, merge_cursor_map, rotate_after,
+                      save_rotation)
 from . import _census_retired as _retired
 
 SOURCE = "census"
@@ -235,6 +251,43 @@ def _dedup_for(flow: str, data_cols: list) -> tuple:
     extra = [c for c in _EXTRA_DIMS.get(flow, ()) if c in data_cols]
     return tuple(list(DEDUP) + extra) if extra else DEDUP
 BUDGET_MIN = float(os.environ.get("CENSUS_BUDGET_MIN", "20"))
+
+# THE WINDOW END (PLAN R10.3 step 4, the wid template of econ #205). BUDGET_MIN above is this
+# fetcher's OWN budget, and on the desktop it is not even that: run_local_heavy.ps1 sets
+# AQUEDUCT_BUDGET_MIN_OVERRIDE=360, which Deadline uses in its place. So census never knew when the
+# pass ends; it started flows until the ps1 HARD STOP killed it ten minutes after the run ceiling,
+# with no Result, no cursors and no CSV step for what it had already merged. Now, when the
+# orchestrator has set a run ceiling (orchestrate._RUN_DEADLINE_TS, from AQUEDUCT_RUN_BUDGET_MIN,
+# which the ps1 clamps to the time left before the CI window), census stops starting work when
+# the time left is below the margin:
+#     margin = floor + 2 x (longest request + longest merge seen this pass)
+# A stop check precedes every request (each flow, each time window, each split part), and what
+# can follow one check is at most one request and this flow's merge. Each request is also CLAMPED
+# to end by (ceiling - floor): its timeout is cut to the time left and no retry starts after it
+# (_fetch). The floor is the TAIL reserved for the last merge, finalize and the orchestrator's CSV
+# step. It is AQUEDUCT_CENSUS_MARGIN_MIN, default 5 min, a CHOSEN value, not a measurement: the plan's
+# measured margin (W3: from >= 7 days of the per-flow timing lines this module now prints) does
+# not exist yet. With no ceiling (CI, a bare --source run) the window check does nothing.
+MARGIN_FLOOR_MIN_DEFAULT = 5.0
+
+# OWED TABLES (two-phase marks), data/clean_full/census/_census_owed.json: {table_id: form}.
+# census's CSVs are TABLE grain (catalogue ids census:<store file>[#part]), so a table's served
+# CSVs are re-derived whenever its id is in a Result's series_cursors and the pass reaches the CSV
+# step. Before this, a pass killed after a merge published (or one whose finalize raised on a
+# structural flow) returned no Result, and the next pass handed the table over again ONLY if some
+# flow added a row: a re-merge of rows already stored, or a revision-only republish, booked
+# added=0, the pass ended no_change and the CSV step never ran (measured on main 5084a528d,
+# F:/work/econ_census_cap_tmp/pk_main.log S1/S2). Forms:
+#   "merging"  written BEFORE a merge publishes; if that save fails the merge is not attempted.
+#   "owed"     the merge landed (and changed the table, or the table was owed already).
+# Both forms mean the same thing to the next pass: hand the table over (its id in series_cursors,
+# whatever happens to its flow) and do not end no_change. A mark is removed only at the end of an
+# update that returns a Result carrying it. Over-reporting re-derives identical CSVs; it never
+# leaves a changed one behind.
+OWED_FILE = "_census_owed.json"
+_MERGING = "merging"
+_OWED = "owed"
+_MARK_FORMS = (_MERGING, _OWED)
 RATE = 0.3
 TIMEOUT = 120
 TIMEOUT_LARGE = int(os.environ.get("CENSUS_TIMEOUT_LARGE", "420"))   # month-grained bulk flows
@@ -755,6 +808,11 @@ class _Refused(DefinitiveError):
         self.reason = reason
 
 
+class _WindowStop(Exception):
+    """A request that cannot finish before the reserved tail (the run ceiling minus the margin
+    floor): not started, or its retry abandoned. A STOP, never a failure - the caller defers."""
+
+
 def _said(label: str) -> str:
     """Print a failed sub-unit to the run log and return its label for the tally.
 
@@ -782,7 +840,8 @@ def _gone_early(flow: str, e: Exception) -> bool:
 
 
 def _fetch(sess: requests.Session, flow: str, get_cols: list[str], time_value: str,
-           key: str | None, pred: str = "us:*", pins: dict | None = None):
+           key: str | None, pred: str = "us:*", pins: dict | None = None,
+           req_end_ts: float | None = None):
     """One flow's date tail -> the raw JSON matrix. Raises TransientError on flaky failures,
     DefinitiveError on a hard 4xx that is not a rate limit (a broken request, not a bad day).
 
@@ -809,12 +868,29 @@ def _fetch(sess: requests.Session, flow: str, get_cols: list[str], time_value: s
     # much larger body, so the ceiling is raised for that family rather than the flow being
     # reported as a transient failure it is not.
     timeout = TIMEOUT_LARGE if flow.startswith("intltrade/") else TIMEOUT
+    # THE REQUEST IS CLAMPED TO THE WINDOW (AR-407 O1). With a run ceiling, req_end_ts is the
+    # ceiling minus the reserved tail. Each attempt's timeout is at most the time left to it, and
+    # no attempt or backoff starts once that is spent - otherwise one request (3 attempts x
+    # TIMEOUT_LARGE 420 s plus backoff, ~21 min) could run far past the stop check before it. A
+    # requests timeout bounds the connect and each read GAP, not the whole body (residual).
+    def _left() -> float | None:
+        return None if req_end_ts is None else req_end_ts - time.time()
+
     last = None
     for attempt in range(MAX_ATTEMPTS):
+        left = _left()
+        if left is not None and left <= 0:
+            raise _WindowStop(f"request not started: the reserved tail before the run ceiling is "
+                              f"reached (attempt {attempt + 1})")
+        eff = timeout if left is None else max(1.0, min(float(timeout), left))
         try:
-            r = sess.get(url, params=params, timeout=timeout)
+            r = sess.get(url, params=params, timeout=eff)
         except _RETRYABLE as e:
             last = f"{type(e).__name__}: {e}"
+            left = _left()
+            if left is not None and (left <= 2 ** attempt or (
+                    eff < timeout and isinstance(e, requests.Timeout))):
+                raise _WindowStop(f"request abandoned at the window end ({last})") from e
             time.sleep(2 ** attempt)
             continue
         if r.status_code == 200:
@@ -841,11 +917,148 @@ def _fetch(sess: requests.Session, flow: str, get_cols: list[str], time_value: s
             return []                                        # no content at/after boundary
         if r.status_code in _TRANSIENT_HTTP:
             last = f"HTTP {r.status_code}"
+            left = _left()
+            if left is not None and left <= 2 ** attempt:
+                raise _WindowStop(f"retry abandoned at the window end ({last})")
             time.sleep(2 ** attempt)
             continue
         reason = " ".join((r.text or "")[:160].split())
         raise _Refused(f"{SOURCE} {flow}: HTTP {r.status_code}: {reason}", r.status_code, reason)
     raise TransientError(f"{SOURCE} {flow}: {last} after {MAX_ATTEMPTS} attempts")
+
+
+def _margin_floor_s() -> float:
+    """AQUEDUCT_CENSUS_MARGIN_MIN in seconds, read at each update. A value that is not a finite
+    number >= 0 falls back to the default and says so: a bad value must not remove the margin."""
+    raw = os.environ.get("AQUEDUCT_CENSUS_MARGIN_MIN")
+    if raw is None or raw == "":
+        return MARGIN_FLOOR_MIN_DEFAULT * 60
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        v = float("nan")
+    if not (math.isfinite(v) and v >= 0):
+        print(f"[{SOURCE}] AQUEDUCT_CENSUS_MARGIN_MIN={raw!r} is not a finite number >= 0 - using "
+              f"{MARGIN_FLOOR_MIN_DEFAULT:g} min", flush=True)
+        return MARGIN_FLOOR_MIN_DEFAULT * 60
+    return v * 60
+
+
+def _window_end_ts():
+    """The pass's run ceiling as an epoch timestamp, or None when none is set. Read through
+    sys.modules (as wid and _giant do), so this module never imports the orchestrator."""
+    orch = sys.modules.get("updater.orchestrate")
+    ts = getattr(orch, "_RUN_DEADLINE_TS", None) if orch is not None else None
+    if isinstance(ts, bool) or not isinstance(ts, (int, float)) or not math.isfinite(ts):
+        return None
+    return float(ts)
+
+
+def _load_owed(out_dir) -> dict:
+    """{table_id: form} from OWED_FILE. FAILS CLOSED: an absent marker is {} (nothing owed); a read
+    that raises is a TransientError (retry later, nothing merged); content that is not a
+    {str: "merging"|"owed"} object is a DefinitiveError. Returning {} for an unusable marker would
+    silently drop every owed table, and the CSVs it owes would never be derived."""
+    path = os.path.join(out_dir, OWED_FILE)
+    try:
+        raw = blob.read_bytes(path)
+    except Exception as e:                                   # noqa: BLE001
+        raise TransientError(f"{SOURCE}: owed-table marker {OWED_FILE} unreadable: {e!r}") from e
+    if raw is None:
+        return {}
+    try:
+        obj = json.loads(raw.decode("utf-8"))
+        ok = isinstance(obj, dict) and all(isinstance(k, str) and v in _MARK_FORMS
+                                           for k, v in obj.items())
+    except (ValueError, UnicodeDecodeError):
+        ok = False
+    if not ok:
+        raise DefinitiveError(
+            f"{SOURCE}: owed-table marker {OWED_FILE} is present but not a {{table: "
+            f"'merging'|'owed'}} object; existing data kept. Recovery: re-derive every census "
+            f"table CSV (full re-derive) together with removing the marker - removing it alone "
+            f"loses every owed table.")
+    return obj
+
+
+def _save_owed(out_dir, owed: dict) -> bool:
+    """Persist the marker; True when written. Callers may ignore a failure after a merge (the mark
+    left behind over-reports); the pre-merge "merging" save is checked and fails closed."""
+    try:
+        blob.write_bytes_atomic(os.path.join(out_dir, OWED_FILE),
+                                json.dumps(owed, indent=1, sort_keys=True).encode("utf-8"))
+        return True
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[{SOURCE}] owed-table marker NOT saved: {e!r}", flush=True)
+        return False
+
+
+_ABSENT = object()
+
+
+def _tail_changed(path: str, tbl, dedup_keys, mx):
+    """True when merging `tbl` would change what the store holds at/after `mx`: a dedup key the
+    store lacks there, or one whose other columns differ (values compared as Python objects, so
+    null == null). False when every row is already stored identically. None when the store cannot
+    be read - the caller treats that as changed (over-reporting re-derives identical CSVs, it
+    never leaves a changed one behind). Only the tail is read back: every row of `tbl` is dated
+    >= mx (the caller's filter), so nothing older can collide."""
+    try:
+        import pyarrow.compute as pc
+        cols = list(tbl.column_names)
+        st = blob.read_table(path, columns=cols)
+        st = st.filter(pc.greater_equal(st.column("obs_date"), pa.scalar(mx, pa.date32())))
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[{SOURCE}] {os.path.basename(path)}: stored tail unreadable for the change "
+              f"check ({e!r}) - treated as changed", flush=True)
+        return None
+    keys = [k for k in dedup_keys if k in cols]
+    vals = [c for c in cols if c not in keys]
+
+    def _rows(t):
+        kc = [t.column(k).to_pylist() for k in keys]
+        vc = [t.column(c).to_pylist() for c in vals]
+        vv = zip(*vc) if vc else (() for _ in range(t.num_rows))
+        return dict(zip(zip(*kc), vv)) if kc else {}
+    old = _rows(st)
+    for k, v in _rows(tbl).items():
+        if old.get(k, _ABSENT) != v:
+            return True
+    return False
+
+
+def _level_mirror(path: str) -> bool:
+    """Make the LOCAL file at `path` hold the store object's bytes. Local backend: the file is the
+    store, nothing to do (True when it exists). r2: the object is streamed down (blob.local_copy)
+    and replaces the local mirror atomically. False when the store holds no such object."""
+    got = blob.local_copy(path)
+    if got is None:
+        return False
+    src, is_tmp = got
+    if is_tmp:
+        for attempt in range(6):
+            try:
+                os.replace(src, path)
+                break
+            except PermissionError:
+                if attempt == 5:
+                    raise
+                time.sleep(0.2 * (2 ** attempt))
+    return True
+
+
+def _save_bookmark(out_dir, key: str) -> bool:
+    """The rotation bookmark, in _common.save_rotation's exact format, but a failure is SAID
+    (AR-407 S5): save_rotation swallows it, and three capped passes then all started at the same
+    flow with no line anywhere saying why. Still never fatal - a lost bookmark costs a re-walk."""
+    try:
+        blob.write_bytes_atomic(os.path.join(out_dir, ROTATION_FILE),
+                                json.dumps({"after": key}, indent=1).encode("utf-8"))
+        return True
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[{SOURCE}] rotation bookmark {ROTATION_FILE} NOT saved ({e!r}) - a later pass "
+              f"starts where this one did", flush=True)
+        return False
 
 
 def update(unit, since) -> Result:
@@ -872,19 +1085,102 @@ def update(unit, since) -> Result:
     under: list[str] = []
     deferred = 0
 
+    # OWED TABLES first (see OWED_FILE): a table an earlier pass merged and never handed over is
+    # handed over by THIS Result, whether or not its flow is reached. Fails closed (_load_owed).
+    owed = _load_owed(out_dir)
+    carried: list[str] = []
+    for tid in sorted(owed):
+        opath = os.path.join(out_dir, f"{tid}.parquet")
+        # THE DERIVE READS THE LOCAL MIRROR (R383/R151; AR-407 O6). On the desktop
+        # AQUEDUCT_BACKEND=r2 and a carried table's flow may not be visited this pass, so its local
+        # file is whatever an earlier pass left. It is replaced by the store object's own bytes
+        # first, so the CSVs this mark settles on are derived from what the store holds.
+        try:
+            leveled = _level_mirror(opath)
+        except Exception as e:                               # noqa: BLE001
+            print(f"[{SOURCE}] {tid}: local mirror not refreshed from the store: {e!r}", flush=True)
+            leveled = False
+        omx = _stored_max(opath) if leveled else None
+        if omx is None:
+            # Never cleared on an empty answer: the mark stays, and the pass is partial.
+            tally.transient_unit(_said(f"{tid}: owed table's stored rows unreadable - mark kept"))
+            continue
+        iso = omx if isinstance(omx, str) else omx.isoformat()
+        if cursors.get(tid, "") < iso:
+            cursors[tid] = iso
+        carried.append(tid)
+    if carried:
+        print(f"[{SOURCE}] {len(carried)} table(s) merged by an earlier pass and never handed over "
+              f"(owed mark) - handed over now: {carried[:8]}{'...' if len(carried) > 8 else ''}",
+              flush=True)
+    settle: set = set(carried)       # marks this Result hands over (cleared at the very end)
+
+    # THE STOP CHECK (see MARGIN_FLOOR_MIN_DEFAULT). Once it fires it stays fired.
+    floor_s = _margin_floor_s()
+    end_ts = _window_end_ts()        # read HERE, at update time, never at import
+    if end_ts is None:
+        print(f"[{SOURCE}] no run ceiling set - the window-end check is off "
+              f"(budget {dl.budget_min:g} min only)", flush=True)
+    else:
+        print(f"[{SOURCE}] run ceiling "
+              f"{dt.datetime.fromtimestamp(end_ts, dt.timezone.utc):%Y-%m-%dT%H:%M:%S}Z "
+              f"({(end_ts - time.time()) / 60:.1f} min left); margin floor {floor_s / 60:g} min",
+              flush=True)
+    longest_req = 0.0                # the longest single request (retries included) this pass
+    longest_merge = 0.0              # the longest merge this pass
+    capped_by = None                 # "budget" or "window" once fired
+    cap_left_s = cap_margin_s = 0.0
+
+    def _stop_now() -> bool:
+        nonlocal capped_by, cap_left_s, cap_margin_s
+        if capped_by is None:
+            margin_s = floor_s + 2.0 * (longest_req + longest_merge)
+            if dl.spent():
+                capped_by = "budget"
+            elif end_ts is not None and end_ts - time.time() < margin_s:
+                capped_by = "window"
+                cap_left_s, cap_margin_s = end_ts - time.time(), margin_s
+        return capped_by is not None
+
+    def _force_window_stop() -> None:
+        """A request clamped at the reserved tail (_WindowStop) fires the window stop."""
+        nonlocal capped_by, cap_left_s, cap_margin_s
+        capped_by = "window"
+        cap_left_s = (end_ts - time.time()) if end_ts is not None else 0.0
+        cap_margin_s = floor_s
+
     # Resume just after wherever the last run stopped, wrapping around (R190). An unknown or
     # empty bookmark degrades to "start at the top", so a first run or a renamed flow never
-    # skips anything.
-    flows = rotate_after(flows, load_rotation(out_dir))
+    # skips anything. A READ THAT RAISES is a named TransientError (AR-407 S6), not a bare OSError
+    # that the orchestrator books as UNEXPECTED.
+    try:
+        start_bookmark = load_rotation(out_dir)
+    except Exception as e:                                   # noqa: BLE001
+        raise TransientError(f"{SOURCE}: rotation bookmark {ROTATION_FILE} unreadable: "
+                             f"{e!r}") from e
+    bookmark_failed = False
+    flows = rotate_after(flows, start_bookmark)
     last_flow = ""
+    n_flows = len(flows)
 
-    for flow in flows:
+    for k_flow, flow in enumerate(flows, 1):
         path = os.path.join(out_dir, f"{_store_name(flow)}.parquet")
         before_rows = blob.row_count(path)
         total += before_rows
-        if dl.spent():
+        if _stop_now():
             deferred += 1
             continue
+        c0 = time.time()
+        n_req = 0
+        t_req = 0.0
+        t_merge = None
+
+        def _done(outcome: str) -> None:
+            """ONE timing line per flow worked (W3 step 1: the margin is to be measured from these)."""
+            parts_ = f"{n_req} request(s) {t_req:.1f}s" + (
+                f", merge {t_merge:.1f}s" if t_merge is not None else "")
+            print(f"[{SOURCE}] flow {k_flow}/{n_flows} done {flow}: {outcome}; {parts_}; "
+                  f"total {time.time() - c0:.1f}s", flush=True)
         # AFTER the deferral check, never before. The bookmark means "the last flow this run
         # actually WORKED ON"; setting it at the top of the loop would stamp a flow that was
         # deferred on budget, and the next run — starting just after it — would skip the very
@@ -900,15 +1196,21 @@ def update(unit, since) -> Result:
         # re-walking the same prefix (R273 — twelve of fourteen rotating sources have never
         # persisted one, for exactly this reason). One small write per flow buys immunity from
         # an assumption I have already seen bend once.
-        save_rotation(out_dir, flow)
+        # A FAILED save is said out loud (AR-407 S5): save_rotation swallows it, and three capped
+        # passes then started at the same flow with nothing anywhere saying why.
+        if not _save_bookmark(out_dir, flow):
+            bookmark_failed = True
+        tid = _store_name(flow)
 
         mx = _stored_max(path)
         if mx is None:
             tally.empty_unit(flow)
+            _done("empty or unreadable store file")
             continue
         dim_cols, data_cols, shapes, pins = _dims_from_store(path)
         if not dim_cols:
             tally.structural_unit(_said(f"{flow}: no dimensions recoverable from stored series_key"))
+            _done("structural (no dimensions)")
             continue
         get_cols = [c for c in data_cols if c.lower() not in _IMPLICIT]
         gcol = _geo_col(data_cols)
@@ -933,34 +1235,51 @@ def update(unit, since) -> Result:
         # imports/naics over 47 columns read-timed-out at 120s). Every response is still parsed
         # against its OWN header, which is what the paragraph above is about, so adding a second
         # loop changes nothing about that invariant.
-        parts = []
         failed = False
+        gone = False                 # a listed retired flow answered 404/410 early: skipped, named
+        stopped = False              # the stop check fired inside this flow (budget or window end)
         empty_slices: list = []
+        # THE CONTIGUOUS PREFIX OF COMPLETE WINDOWS (AR-407 O4). A window is COMPLETE when every
+        # predicate (qtax: us:* and state:*) and every split part of it answered without failure
+        # (a 204 counts as answered). Only that prefix, from the boundary forward, is merged - on a
+        # stop AND on a failure. Merging a later window over an incomplete one would leave a
+        # permanent hole: the next pass tails from the new stored max (`d < mx` is skipped below).
+        # And an incomplete window is never merged at all: a part-month written as if complete is
+        # worse than no month (the rule the old mid-split deferral stated).
+        complete: list = []          # [(tv, [parts of that window])]
+        last_window_rows = False     # did the LAST complete window return any row?
         # Computed once per flow: the split set depends on the store, not on the time window.
         reqs = _split_requests(flow, path, dim_cols, pins)
         if len(reqs) > 1:
             print(f"[census] {flow}: {len(reqs)} requests per window, split on "
                   f"{_SPLIT_DIM.get(flow)} - the whole request 500s, the parts do not", flush=True)
-        for tv in _time_windows(flow, mx):
+        windows = _time_windows(flow, mx)
+        req_end_ts = None if end_ts is None else end_ts - floor_s
+        for tv in windows:
+            wparts: list = []
+            wrows = False
             for pred in _predicates_for(flow, levels):
                 for req_pins in reqs:
-                    # THE BUDGET IS CHECKED BETWEEN SPLIT VALUES, not only between flows. A split
-                    # turns one request into seven, while the deadline is otherwise consulted two
-                    # loops out - which is how a 20-minute budget was once spent after 35.6 min.
-                    # Stopping mid-split abandons the whole flow rather than merging a fragment:
-                    # a part-month written as if complete is worse than no month at all.
-                    if len(reqs) > 1 and dl.spent():
-                        # A DEFERRAL, NOT A FAILURE. Nothing here failed: the budget ran out and
-                        # rotation takes this flow next tick. transient_unit would inflate
-                        # `attempted` and report a deliberate stop as a failure - the exact defect
-                        # that made ecb read "252/540 sub-unit(s) transient-failed" when 0 of 288
-                        # attempted had failed.
-                        tally.deferred_unit(f"{flow} time={tv}: budget spent mid-split, "
-                                            f"{len(reqs)} part(s) required - nothing merged")
-                        failed = True
+                    # THE STOP CHECK PRECEDES EVERY REQUEST: each flow, each time window, each
+                    # split part. A split turns one request into seven, which is how a 20-minute
+                    # budget was once spent after 35.6 min when the deadline was only consulted
+                    # between flows. A stop is a DEFERRAL, never a failure (R303: ecb read
+                    # "252/540 sub-unit(s) transient-failed" when 0 of 288 attempted had failed).
+                    if _stop_now():
+                        stopped = True
                         break
+                    r0 = time.time()
                     try:
-                        part = _fetch(sess, flow, get_cols, tv, key, pred, req_pins)
+                        # The request itself is clamped to end before the reserved tail (AR-407 O1):
+                        # one request could otherwise run 3 x TIMEOUT_LARGE plus backoff past a check.
+                        part = _fetch(sess, flow, get_cols, tv, key, pred, req_pins,
+                                      req_end_ts=req_end_ts)
+                    except _WindowStop as e:
+                        print(f"[{SOURCE}] {flow} time={tv}: {e}", flush=True)
+                        if capped_by is None:
+                            _force_window_stop()
+                        stopped = True
+                        break
                     except TransientError as e:
                         # CARRY THE REASON. Until 2026-09-17 both branches discarded the exception,
                         # so the run note read `intltrade/imports/sitc time=2026-03 for=None` and
@@ -974,6 +1293,7 @@ def update(unit, since) -> Result:
                         label = f"{flow} time={tv} for={pred} - {_why(e)}"
                         if _gone_early(flow, e):     # a LISTED flow already removed: named skip
                             retired.append(f"{flow} (HTTP {e.status} before its listed date)")
+                            gone = True
                             failed = True
                             break
                         tally.structural_unit(_said(label))
@@ -981,9 +1301,15 @@ def update(unit, since) -> Result:
                             refused.append((label, e.status))
                         failed = True
                         break
+                    finally:
+                        took_r = time.time() - r0
+                        n_req += 1
+                        t_req += took_r
+                        longest_req = max(longest_req, took_r)
                     time.sleep(RATE)
                     if part and len(part) >= 2:
-                        parts.append(part)
+                        wparts.append(part)
+                        wrows = True
                     elif len(reqs) > 1:
                         # A SPLIT SLICE THAT CAME BACK WITH NO ROWS IS SAID OUT LOUD. Unsplit, an
                         # empty body leaves `parts` empty and the structural guard below fires.
@@ -993,22 +1319,57 @@ def update(unit, since) -> Result:
                         # rather than failed, but it is never silent.
                         empty_slices.append(f"{tv}/{_SPLIT_DIM.get(flow)}="
                                             f"{req_pins.get(_SPLIT_DIM.get(flow))}")
-                if failed:
+                if failed or stopped:
                     break
-            if failed or dl.spent():
-                break
-        if failed:
-            continue
+            if failed or stopped:
+                break                                # this window is incomplete: not kept
+            complete.append((tv, wparts))
+            last_window_rows = wrows
+        parts = [p for _tv, wp in complete for p in wp]
+        # STILL BEHIND AFTER THE TAIL CAP (AR-407 O8). The walk stops at _MAX_TAIL_MONTHS windows.
+        # The flow is still behind only when the LAST window returned data: a store far behind an
+        # upstream that publishes nothing newer answers 204 there, and must not read partial for
+        # ever (R231).
+        tail_capped = (not failed and not stopped and len(windows) >= _MAX_TAIL_MONTHS > 1
+                       and last_window_rows
+                       and windows[-1] < f"{dt.date.today():%Y-%m}")
+        stop_label = None
+        if stopped:
+            stop_label = (f"{flow}: stopped at the {'window end' if capped_by == 'window' else 'budget'}"
+                          f" after {len(complete)} of {len(windows)} window(s)")
         if empty_slices:
             print(f"[census] {flow}: {len(empty_slices)} split slice(s) returned no rows - "
                   f"{empty_slices[:6]}", flush=True)
-        rows = parts[0] if parts else []
 
+        if failed and not parts:
+            _done("retired upstream early, skipped" if gone else "failed (see SUB-UNIT FAILED)")
+            continue
+        if stopped and not parts:
+            # NO PROGRESS: the bookmark is NOT wound back (AR-407 O3, R313). It already names this
+            # flow, so the next pass starts AFTER it and the rotation moves on; a flow that cannot
+            # finish one window in the time a pass has left must not hold the head for ever.
+            tally.deferred_unit(stop_label + " - nothing merged; the bookmark moves past it")
+            _done("stopped before any complete window (deferred, bookmark advanced past it)")
+            continue
         if not parts:
+            if failed or stopped:
+                if stopped:
+                    tally.deferred_unit(stop_label + " - nothing merged")
+                _done("no rows in the complete windows before the stop/failure")
+                continue
             # A BOUNDARY re-fetch must re-return at least the boundary period. Nothing at all
             # means the shape we ask for is gone, not that the flow is quiet.
             tally.structural_unit(_said(f"{flow}: boundary re-fetch returned no rows"))
+            _done("structural (boundary re-fetch returned no rows)")
             continue
+
+        def _book_stop() -> None:
+            """A merged flow that the stop or the tail cap left behind is DEFERRED, never ok (R311)."""
+            if stopped:
+                tally.deferred_unit(stop_label + " - the complete windows were merged")
+            if tail_capped:
+                tally.deferred_unit(f"{flow}: {len(windows)}-month tail cap reached at {windows[-1]} "
+                                    f"and that month returned data - later months not asked yet")
 
         # CASE-INSENSITIVE for the two well-known columns. eits/qtax names its variables in
         # UPPERCASE both in our store and upstream (CELL_VALUE, TIME_SLOT_ID, ...) while the
@@ -1068,6 +1429,9 @@ def update(unit, since) -> Result:
                     i = hidx.get(c)
                     cols[c].append(row[i] if i is not None and i < len(row) else None)
         if broke:
+            if stopped:
+                tally.deferred_unit(stop_label + " - nothing merged")
+            _done("structural (response lacks time/cell_value)")
             continue
 
         # A DROP MUST NEVER BE SILENT. Rows whose dimension set matches no stored shape are
@@ -1080,7 +1444,10 @@ def update(unit, since) -> Result:
 
         if not keys:
             _receipt(flow, mx, 0, 0, path)
-            tally.empty_unit(flow)                           # already at the publisher's frontier
+            if not failed:
+                tally.empty_unit(flow)                       # already at the publisher's frontier
+            _book_stop()
+            _done("no tail rows (at the publisher's frontier)")
             continue
 
         # THIS IS A TAIL, NOT A BACKFILL — merge only series the flow ALREADY publishes.
@@ -1110,7 +1477,10 @@ def update(unit, since) -> Result:
                       f"and a catalogue row, not a tail)", flush=True)
             if not keep:
                 _receipt(flow, mx, 0, skipped_new, path)
-                tally.empty_unit(flow)
+                if not failed:
+                    tally.empty_unit(flow)
+                _book_stop()
+                _done("no tail rows for series the flow publishes")
                 continue
             keys = [keys[i] for i in keep]
             dates = [dates[i] for i in keep]
@@ -1125,17 +1495,60 @@ def update(unit, since) -> Result:
             arrays[c] = pa.array([None if v is None else str(v) for v in cols[c]], pa.string())
         tbl = pa.table(arrays)
 
-        try:
-            # The key that IDENTIFIES a row in this flow — wider than (series_key,
-            # obs_date) for intltrade, whose series_key omits real dimensions like
-            # DISTRICT. See _dedup_for; without it 11 of 24 flows collapse instead
-            # of extending.
-            n, md = merge.merge_and_write(path, tbl, mode="merge",
-                                          dedup_keys=_dedup_for(flow, data_cols))
-        except DefinitiveError:
-            tally.transient_unit(_said(f"{flow}: merge refused"))
+        # TWO-PHASE MARK, phase 1 (see OWED_FILE): "merging" goes to the marker BEFORE the merge
+        # publishes, so a kill between the publish and the Result leaves a mark that the next pass
+        # hands over. FAIL CLOSED: if the mark is not stored, do not merge.
+        prev_mark = owed.get(tid)
+        owed[tid] = prev_mark or _MERGING
+        if not _save_owed(out_dir, owed):
+            if prev_mark is None:
+                owed.pop(tid, None)
+            else:
+                owed[tid] = prev_mark
+            tally.transient_unit(_said(f"{flow}: pre-merge owed mark not saved - not merged"))
+            _book_stop()
+            _done("transient (pre-merge owed mark not saved; not merged)")
             continue
+        # The key that IDENTIFIES a row in this flow — wider than (series_key, obs_date) for
+        # intltrade, whose series_key omits real dimensions like DISTRICT. See _dedup_for; without
+        # it 11 of 24 flows collapse instead of extending.
+        dk = _dedup_for(flow, data_cols)
+        m0 = time.time()
+        # DID THIS MERGE CHANGE A SERVED VALUE? `n - before_rows` counts rows ADDED only, so a
+        # pure revision, or a re-merge of rows an earlier killed pass already published, read as
+        # EMPTY: the pass ended no_change and the CSV step never ran (S1/S2). merge's own report
+        # (report_changed_keys) cannot answer it for census: it compares a column named `value`,
+        # census has none (cell_value, ALL_VAL_MO, ...), and without one it reports EVERY
+        # boundary collision as changed. So the tail rows are compared here, whole rows by the
+        # dedup key, before the merge (_tail_changed). None = could not tell -> changed.
+        ch = _tail_changed(path, tbl, dk, mx)
+        try:
+            n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=dk)
+        except (DefinitiveError, ValueError):
+            # ValueError too (AR-407 O5): merge raises it for a malformed request of its own, and
+            # it must cost this flow, not escape update() as an UNEXPECTED whole-source failure.
+            if prev_mark is None:
+                owed.pop(tid, None)
+            else:
+                owed[tid] = prev_mark
+            _save_owed(out_dir, owed)
+            t_merge = time.time() - m0
+            tally.transient_unit(_said(f"{flow}: merge refused"))
+            _book_stop()
+            _done("transient (merge refused)")
+            continue
+        t_merge = time.time() - m0
+        longest_merge = max(longest_merge, t_merge)
         added = max(0, n - before_rows)
+        changed_tbl = bool(added) or ch is None or ch
+        # TWO-PHASE MARK, phase 1 done: a merge that changed the table (or a table already owed)
+        # is OWED until this update returns a Result carrying it; an identical merge owes nothing.
+        if changed_tbl or prev_mark:
+            owed[tid] = _OWED
+            settle.add(tid)
+        else:
+            owed.pop(tid, None)
+        _save_owed(out_dir, owed)
         _receipt(flow, mx, len(keys), skipped_new, path)
 
         # COVERAGE IS A STRUCTURAL QUESTION — "did we ASK for everything?" — not a statistical
@@ -1156,7 +1569,14 @@ def update(unit, since) -> Result:
                              f"{'...' if len(missed) > 4 else ''}")
 
         total += added
-        tally.added_unit(added, flow)
+        if not failed:              # a failed flow is already booked; its prefix merge is extra
+            if added:
+                tally.added_unit(added, flow)
+            elif changed_tbl:
+                tally.revised_unit(flow)       # changed served values without adding a row
+            else:
+                tally.added_unit(0, flow)      # merged and identical
+        _book_stop()
         if md and (max_last is None or str(md) > str(max_last)):
             max_last = str(md)
         # Cursors are reported at TABLE grain (2026-08-05): the catalog serves census
@@ -1166,17 +1586,43 @@ def update(unit, since) -> Result:
         # re-derived. _store_name(flow) IS the catalog id suffix; split parts are
         # expanded by the orchestrator's `#`-suffix rule. md is the merge's own max
         # obs_date, i.e. post keep-filter — a dropped new-coverage row cannot advance it.
-        if md:
+        # ONLY A CHANGED TABLE IS CURSORED (AR-407 O2), plus the owed tables handed over above. An
+        # identical re-merge was cursored before, so every visited table was re-derived by every
+        # ok pass: CSV-phase time spent after the window stop for bytes that did not move.
+        if md and (changed_tbl or prev_mark):
             iso = md if isinstance(md, str) else md.isoformat()
-            tid = _store_name(flow)
             if cursors.get(tid, "") < iso:
                 cursors[tid] = iso
+        elif tid in settle and tid not in cursors:
+            settle.discard(tid)                                  # never settle a mark not carried
+        # WIND-BACK (R298), only when the stopped flow made PROGRESS - its stored max advanced
+        # (AR-407 O3 ii). The next pass then starts AT this flow and continues its walk; without
+        # progress the bookmark stays on this flow, so the rotation moves past it (R313). BOUND: a
+        # flow can lead consecutive passes only while each one advances its stored max by at least
+        # one complete window, so at most (months it is behind) passes in a row.
+        md_d = md if not isinstance(md, str) else dt.date.fromisoformat(md[:10])
+        if stopped and md_d and md_d > mx:
+            back = flows[k_flow - 2] if k_flow > 1 else start_bookmark
+            if not _save_bookmark(out_dir, back):
+                bookmark_failed = True
+            print(f"[{SOURCE}] {flow}: stopped with progress ({mx} -> {md_d}); the source's next "
+                  f"walk resumes AT this flow (bookmark wound back to {back or 'the top'!r})",
+                  flush=True)
+        elif stopped:
+            print(f"[{SOURCE}] {flow}: stopped without advancing its stored max; the bookmark "
+                  f"stays on it, so the rotation moves past it (R313)", flush=True)
         print(f"[{SOURCE}] {flow}: +{max(0, n - before_rows):,} row(s) "
               f"({len(seen_series):,} series at/after {mx})", flush=True)
+        _done(f"{'changed' if changed_tbl else 'identical'}, +{added:,} rows"
+              + (", stopped" if stopped else "") + (", tail cap" if tail_capped else "")
+              + (", failed after a merged prefix" if failed else ""))
 
-    if deferred:
-        print(f"[{SOURCE}] budget of {BUDGET_MIN} min spent after {dl.elapsed_min():.1f} min; "
-              f"{deferred} of {len(flows)} flow(s) deferred to a later pass", flush=True)
+    if deferred or capped_by:
+        why = (f"{cap_left_s / 60:.1f} min left before the run ceiling, under the "
+               f"{cap_margin_s / 60:.1f}-min margin" if capped_by == "window"
+               else f"budget of {dl.budget_min:g} min spent after {dl.elapsed_min():.1f} min")
+        print(f"[{SOURCE}] {why}; {deferred} of {len(flows)} flow(s) deferred to a later pass",
+              flush=True)
 
     # R190. "Deferred to the next tick" is only true if the next tick STARTS SOMEWHERE ELSE.
     # _flows() sorts, so the order is fixed and every "eits/..." precedes every "intltrade/...";
@@ -1186,13 +1632,10 @@ def update(unit, since) -> Result:
     # That is the exact silent, self-certifying outage R190 describes, and adding the family
     # without this would have re-created it.
     #
-    # Belt to the per-flow save's braces. The bookmark is written inside the loop after every
-    # flow (see there), so a hard kill cannot lose it; this final write only covers the case
-    # where the loop completed and the last flow is the natural resume point — saved even after
-    # a COMPLETE pass, so the wrap goes through this same path and no branch can quietly stop
-    # the rotation.
-    if last_flow:
-        save_rotation(out_dir, last_flow)
+    # NO END-OF-FUNCTION SAVE ANY MORE (AR-407 O3 i, R311). The bookmark is written before every
+    # flow worked, so the last flow worked is already the resume point after a complete pass, and
+    # the wrap goes through that same per-flow write. The final save that used to stand here
+    # (save_rotation(last_flow)) would OVERWRITE a wind-back - the stat_estonia defect.
 
     retired_note = (f"{len(retired)} flow(s) RETIRED UPSTREAM, not fetched, stored data kept"
                     + _named(retired)) if retired else ""
@@ -1201,9 +1644,21 @@ def update(unit, since) -> Result:
                        series_cursors=cursors or None,
                        empty_window_floor=max(10, len(flows)))
     except DefinitiveError as e:
-        if not refused:
-            raise
-        raise DefinitiveError(_refused_message(tally, refused, retired_note)) from e
+        why = _refused_message(tally, refused, retired_note) if refused else str(e)
+        if not cursors:
+            # Nothing changed and nothing is owed: the whole-source refusal stands as before.
+            raise DefinitiveError(why) from e
+        # ROUTE B (hagstofa's shape, AR-407 O7). A structural or refused flow used to raise here
+        # AFTER other flows had merged, so the pass had no Result and nothing it merged was derived
+        # for as long as that flow kept failing (R1694: weeks). Now the pass is `partial` WITH the
+        # tables it changed or carried, and the refusal text still names every refused flow. The
+        # owed marks of those tables settle below; a failing flow's own data is untouched.
+        print(f"[{SOURCE}] {why} - {len(cursors)} changed/owed table(s) handed over anyway",
+              flush=True)
+        res = Result(status="partial", obs=total, last_obs_date=max_last or (since or None),
+                     new_vintage="date-tail", series_cursors=dict(cursors),
+                     merged_rows=None, cursor_cap_hit=False, changed_keys=None,
+                     error=f"{why}; {len(cursors)} changed/owed table(s) handed over to the CSV step")
 
     # Never a clean result over flows whose tail did not span them, and never over a run that
     # stopped on its budget with flows untouched.
@@ -1212,7 +1667,8 @@ def update(unit, since) -> Result:
         if under:
             note.append("tail UNDER-COVERED " + ", ".join(sorted(under)[:6]))
         if deferred:
-            note.append(f"{deferred} flow(s) deferred on budget")
+            note.append(f"{deferred} flow(s) deferred "
+                        + ("at the window end" if capped_by == "window" else "on budget"))
         msg = "; ".join(note)
         print(f"[{SOURCE}] {msg}", flush=True)
         if res.status in ("ok", "no_change"):
@@ -1221,11 +1677,35 @@ def update(unit, since) -> Result:
                          merged_rows=res.merged_rows, cursor_cap_hit=res.cursor_cap_hit,
                          changed_keys=res.changed_keys,
                          error=msg)
+        elif deferred:
+            res = dataclasses.replace(res, error="; ".join(x for x in (res.error, msg) if x))
+    if carried and res.status == "no_change":
+        # Nothing new this pass, but owed tables are handed over: the CSV step must run, and only
+        # ok/partial reach it (orchestrate._should_derive_csvs).
+        res = dataclasses.replace(res, status="ok", error=(
+            f"{res.error}; {len(carried)} table(s) carried from an earlier pass's owed mark"))
+    if not cursors:
+        # NOTHING CHANGED AND NOTHING IS OWED, said in the one form the orchestrator reads
+        # (AR-407 O2): without it a capped pass that merged nothing books full_rederive_owed and
+        # "csv coherence unmet" (orchestrate.py, the no-cursors branches of the CSV step).
+        res = dataclasses.replace(res, merged_rows=0)
+    if bookmark_failed:
+        res = dataclasses.replace(res, error="; ".join(x for x in (
+            res.error, f"rotation bookmark {ROTATION_FILE} could NOT be saved - a later pass "
+                       f"starts where this one did") if x))
     # The retired flows are NAMED in the note, never silent - and never a reason to demote: a
     # permanent, explained exclusion that reddened every run would be the "partial forever" this
     # change exists to end. Appended LAST so no branch above can drop it.
     if retired_note:
         res = dataclasses.replace(res, error="; ".join(x for x in (res.error, retired_note) if x))
+    # TWO-PHASE MARK, the end: this Result carries every settled table (series_cursors), so the
+    # marks are removed. A kill between this save and the orchestrator's CSV step is NOT covered
+    # (stated residual, as in wid).
+    done_marks = [t for t in settle if t in cursors and t in owed]
+    if done_marks:
+        for t in done_marks:
+            owed.pop(t, None)
+        _save_owed(out_dir, owed)
     return res
 
 
