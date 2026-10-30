@@ -545,10 +545,107 @@ def test_a_carried_table_is_read_from_the_store_object_not_a_stale_mirror(env):
     assert pq.read_table(path).num_rows == 4 and not os.path.exists(fresh)
 
 
-def test_an_owed_table_the_store_cannot_produce_keeps_its_mark(env):
+def test_an_owed_table_with_no_store_object_is_released_by_name(env):
+    """AR-407 review 3 ii: no object -> nothing to derive; keeping the mark would be partial for
+    ever (R231). Released, named in the note, and the pass is not demoted for it."""
     _write_eits(env.d, "eits/fa")
     with open(os.path.join(env.d, cs.OWED_FILE), "w") as fh:
         json.dump({"eits__gone": "owed"}, fh)
     res = cs.update(UNIT, None)
-    assert res.status == "partial" and "mark kept" in res.error, res
-    assert json.load(open(os.path.join(env.d, cs.OWED_FILE))) == {"eits__gone": "owed"}
+    assert res.status == "no_change", res
+    assert "1 owed table(s) RELEASED, no store object to derive from [eits__gone]" in res.error
+    assert json.load(open(os.path.join(env.d, cs.OWED_FILE))) == {}
+    assert cs.update(UNIT, None).error == "no new rows", "released once, not every pass"
+
+
+def test_an_owed_table_the_store_cannot_read_keeps_its_mark(env):
+    _write_eits(env.d, "eits/fa")
+    _write_eits(env.d, "eits/fb")
+    os.replace(os.path.join(env.d, "eits__fb.parquet"), os.path.join(env.d, "bds.parquet"))
+    with open(os.path.join(env.d, cs.OWED_FILE), "w") as fh:
+        json.dump({"bds": "owed"}, fh)                       # a table no flow of this pass visits
+    env.mp.setattr(cs.blob, "local_copy", lambda p: (_ for _ in ()).throw(OSError("planted GET")))
+    res = cs.update(UNIT, None)
+    assert res.status == "partial" and "not readable from the store" in res.error, res
+    assert json.load(open(os.path.join(env.d, cs.OWED_FILE))) == {"bds": "owed"}
+
+
+def test_owed_tables_are_not_leveled_after_the_stop(env):
+    """AR-407 review 3 i: the leveling download is under the stop check."""
+    _write_eits(env.d, "eits/fa")
+    with open(os.path.join(env.d, cs.OWED_FILE), "w") as fh:
+        json.dump({"eits__fa": "owed"}, fh)
+    calls = []
+    env.mp.setattr(cs.blob, "local_copy", lambda p: calls.append(p) or (p, False))
+    env.mp.setattr(env.O, "_RUN_DEADLINE_TS", time.time() - 1)
+    res = cs.update(UNIT, None)
+    assert calls == [] and res.status == "partial" and "mark kept" in res.error, res
+    assert json.load(open(os.path.join(env.d, cs.OWED_FILE))) == {"eits__fa": "owed"}
+
+
+# ---- the margin itself: floor + 2 x (longest request + longest merge) -------------------------
+
+def _clock(env):
+    off = [0.0]
+    env.mp.setattr(cs, "time", types.SimpleNamespace(time=lambda: time.time() + off[0],
+                                                     sleep=lambda s: None,
+                                                     monotonic=time.monotonic))
+    return off
+
+
+def test_the_margin_counts_the_longest_request_not_only_the_floor(env):
+    """Ceiling 50 s away, floor 30 s, the first request takes 10 s: 40 s left is above the floor
+    (so the request clamp would still start the next request) but below floor + 2 x 10 = 50 s,
+    so the next window is NOT requested."""
+    _write_hs(env.d, "2026-01")
+    env.mp.setenv("AQUEDUCT_CENSUS_MARGIN_MIN", "0.5")
+    off = _clock(env)
+    env.mp.setattr(env.O, "_RUN_DEADLINE_TS", time.time() + 50)
+
+    def hook(n, flow, params):
+        off[0] += 10.0                                       # every request takes 10 s
+    env.api.on_call = hook
+    res = cs.update(UNIT, None)
+    assert [c[1] for c in env.api.calls] == ["2026-01"], env.api.calls
+    assert res.status == "partial" and "stopped at the window end after 1 of 6" in res.error, res
+
+
+def test_a_slow_owed_table_leveling_counts_in_the_margin(env):
+    """The leveling download is timed like a request: 10 s of it leaves 40 s, under 30 + 2 x 10."""
+    _write_eits(env.d, "eits/fa")
+    os.replace(os.path.join(env.d, "eits__fa.parquet"), os.path.join(env.d, "bds.parquet"))
+    _write_hs(env.d, "2026-01")
+    with open(os.path.join(env.d, cs.OWED_FILE), "w") as fh:
+        json.dump({"bds": "owed"}, fh)
+    env.mp.setenv("AQUEDUCT_CENSUS_MARGIN_MIN", "0.5")
+    off = _clock(env)
+    env.mp.setattr(env.O, "_RUN_DEADLINE_TS", time.time() + 50)
+
+    def slow_copy(p):
+        off[0] += 10.0
+        return (p, False)
+    env.mp.setattr(cs.blob, "local_copy", slow_copy)
+    res = cs.update(UNIT, None)
+    assert env.api.calls == [] and res.status == "partial", (env.api.calls, res)
+    assert sorted(res.series_cursors) == ["bds"], "the leveled table is still handed over"
+
+
+def test_a_stop_after_only_the_boundary_window_does_not_wind_back(env):
+    """No progress (the boundary month re-merged, the stored max did not move): the bookmark stays
+    on the flow so the rotation moves past it (R313)."""
+    _write_eits(env.d, "eits/fa")
+    _write_hs(env.d, "2026-01")
+    env.mp.setenv("AQUEDUCT_CENSUS_MARGIN_MIN", "0.5")
+    off = _clock(env)
+    env.mp.setattr(env.O, "_RUN_DEADLINE_TS", time.time() + 3600)
+    with open(os.path.join(env.d, "_rotation.json"), "w") as fh:
+        json.dump({"after": "eits/fa"}, fh)                  # hs leads
+
+    def hook(n, flow, params):
+        if n == 1:
+            off[0] = 3600.0                                  # the ceiling passes during window 1
+    env.api.on_call = hook
+    res = cs.update(UNIT, None)
+    assert res.status == "partial" and "after 1 of 6" in res.error, res
+    assert _max(env.d, "intltrade__exports__hs") == "2026-01-01"
+    assert _bookmark(env.d) == "intltrade/exports/hs", "no progress: not wound back"

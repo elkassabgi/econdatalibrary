@@ -70,7 +70,9 @@ When finalize raises while some table changed or is owed, the pass is `partial` 
 
 WINDOW END AND OWED TABLES (PLAN R10.3 step 4, 2026-10-30): see MARGIN_FLOOR_MIN_DEFAULT and
 OWED_FILE below. Stated residuals: a requests timeout bounds the connect and each read gap, not a
-whole body, so one slow-streaming response can still pass the ceiling; a kill between the final
+whole body, so a body that keeps trickling can still pass the ceiling, and its ONLY bound is the
+ps1 HARD STOP (ceiling + its grace); _tail_changed reads the merged flow's whole store object a
+second time (one more whole-object GET per merged flow under r2); a kill between the final
 marker save and the orchestrator's CSV step loses that pass's hand-over; the CSV-phase time is not
 measured, so the 5-min floor is a choice; a split slice that answers 204 counts as complete, so once
 the stored max passes that month the slice is never asked again; an unreadable owed marker stops
@@ -1088,32 +1090,9 @@ def update(unit, since) -> Result:
     # OWED TABLES first (see OWED_FILE): a table an earlier pass merged and never handed over is
     # handed over by THIS Result, whether or not its flow is reached. Fails closed (_load_owed).
     owed = _load_owed(out_dir)
-    carried: list[str] = []
-    for tid in sorted(owed):
-        opath = os.path.join(out_dir, f"{tid}.parquet")
-        # THE DERIVE READS THE LOCAL MIRROR (R383/R151; AR-407 O6). On the desktop
-        # AQUEDUCT_BACKEND=r2 and a carried table's flow may not be visited this pass, so its local
-        # file is whatever an earlier pass left. It is replaced by the store object's own bytes
-        # first, so the CSVs this mark settles on are derived from what the store holds.
-        try:
-            leveled = _level_mirror(opath)
-        except Exception as e:                               # noqa: BLE001
-            print(f"[{SOURCE}] {tid}: local mirror not refreshed from the store: {e!r}", flush=True)
-            leveled = False
-        omx = _stored_max(opath) if leveled else None
-        if omx is None:
-            # Never cleared on an empty answer: the mark stays, and the pass is partial.
-            tally.transient_unit(_said(f"{tid}: owed table's stored rows unreadable - mark kept"))
-            continue
-        iso = omx if isinstance(omx, str) else omx.isoformat()
-        if cursors.get(tid, "") < iso:
-            cursors[tid] = iso
-        carried.append(tid)
-    if carried:
-        print(f"[{SOURCE}] {len(carried)} table(s) merged by an earlier pass and never handed over "
-              f"(owed mark) - handed over now: {carried[:8]}{'...' if len(carried) > 8 else ''}",
-              flush=True)
-    settle: set = set(carried)       # marks this Result hands over (cleared at the very end)
+    carried: list[str] = []          # owed tables this Result hands over
+    released: list[str] = []         # owed tables whose store object no longer exists
+    settle: set = set()              # marks this Result hands over (cleared at the very end)
 
     # THE STOP CHECK (see MARGIN_FLOOR_MIN_DEFAULT). Once it fires it stays fired.
     floor_s = _margin_floor_s()
@@ -1148,6 +1127,56 @@ def update(unit, since) -> Result:
         capped_by = "window"
         cap_left_s = (end_ts - time.time()) if end_ts is not None else 0.0
         cap_margin_s = floor_s
+
+    # THE OWED TABLES, under the stop check (AR-407 review 3 i): leveling a mirror can download a
+    # whole object, so each one is a timed step like a request, and a stop leaves the mark for a
+    # later pass (deferred, never failed).
+    for tid in sorted(owed):
+        if _stop_now():
+            tally.deferred_unit(f"{tid}: owed table not handed over before the stop - mark kept")
+            continue
+        opath = os.path.join(out_dir, f"{tid}.parquet")
+        # THE DERIVE READS THE LOCAL MIRROR (R383/R151; AR-407 O6). On the desktop
+        # AQUEDUCT_BACKEND=r2 and a carried table's flow may not be visited this pass, so its local
+        # file is whatever an earlier pass left. It is replaced by the store object's own bytes
+        # first, so the CSVs this mark settles on are derived from what the store holds.
+        l0 = time.time()
+        try:
+            leveled = _level_mirror(opath)
+        except Exception as e:                               # noqa: BLE001
+            # A read that FAILED: the mark stays, the pass is partial, and a pass that can read
+            # the store hands the table over.
+            tally.transient_unit(_said(f"{tid}: owed table not readable from the store ({e!r}) "
+                                       f"- mark kept"))
+            continue
+        finally:
+            longest_req = max(longest_req, time.time() - l0)
+        if not leveled:
+            # THE STORE HOLDS NO SUCH OBJECT (AR-407 review 3 ii). There is nothing a CSV could be
+            # derived from, so keeping the mark would make every pass partial for ever with no
+            # release path (R231). It is RELEASED, by name, and does not demote the pass. (A table
+            # that comes back is a new merge, which marks it again.)
+            released.append(tid)
+            owed.pop(tid, None)
+            continue
+        omx = _stored_max(opath)
+        if omx is None:
+            # Present but unreadable: never cleared on an empty answer; the mark stays (partial).
+            tally.transient_unit(_said(f"{tid}: owed table's stored rows unreadable - mark kept"))
+            continue
+        iso = omx if isinstance(omx, str) else omx.isoformat()
+        if cursors.get(tid, "") < iso:
+            cursors[tid] = iso
+        carried.append(tid)
+        settle.add(tid)
+    if released:
+        _save_owed(out_dir, owed)
+        print(f"[{SOURCE}] {len(released)} owed table(s) RELEASED - the store holds no object for "
+              f"them, so nothing can be derived: {released[:8]}", flush=True)
+    if carried:
+        print(f"[{SOURCE}] {len(carried)} table(s) merged by an earlier pass and never handed over "
+              f"(owed mark) - handed over now: {carried[:8]}{'...' if len(carried) > 8 else ''}",
+              flush=True)
 
     # Resume just after wherever the last run stopped, wrapping around (R190). An unknown or
     # empty bookmark degrades to "start at the top", so a first run or a renamed flow never
@@ -1689,6 +1718,10 @@ def update(unit, since) -> Result:
         # (AR-407 O2): without it a capped pass that merged nothing books full_rederive_owed and
         # "csv coherence unmet" (orchestrate.py, the no-cursors branches of the CSV step).
         res = dataclasses.replace(res, merged_rows=0)
+    if released:
+        res = dataclasses.replace(res, error="; ".join(x for x in (
+            res.error, f"{len(released)} owed table(s) RELEASED, no store object to derive from"
+                       + _named(released)) if x))
     if bookmark_failed:
         res = dataclasses.replace(res, error="; ".join(x for x in (
             res.error, f"rotation bookmark {ROTATION_FILE} could NOT be saved - a later pass "
