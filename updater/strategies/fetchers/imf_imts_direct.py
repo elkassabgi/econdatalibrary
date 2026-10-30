@@ -91,7 +91,7 @@ CHANGE SIGNAL, OWED MARK, ROUTE B (PR B, 2026-10-30; review AR-410 O9, classes (
   * (b) data/clean_full/<source>/_imts_owed.json, THROUGH BLOB beside the store and its .dims.json, on
     the census precedent (_census_owed.json). The debt belongs to the STORE: the store goes through blob
     (r2 today, the local store after T0), so a mark kept anywhere else could be lost or stale while the
-    store it speaks for moves. The kept slices stay LOCAL: losing them costs a re-pull, never a CSV.
+    store it speaks for moves. The kept slices stay LOCAL: losing them means a re-pull, never a CSV.
     Forms: "merging" is written BEFORE merge_and_write publishes (that save FAILS CLOSED: nothing is
     merged); "owed" after the merge when it changed something or a debt was carried ({} when it changed
     nothing); "handed" when the update returns a Result carrying the keys - its token starts the
@@ -103,19 +103,24 @@ CHANGE SIGNAL, OWED MARK, ROUTE B (PR B, 2026-10-30; review AR-410 O9, classes (
     loses nothing. With NO state.db at all the update ran outside the orchestrator (which creates it
     before any update), and the mark settles as census's does. Over-reporting re-derives identical
     CSVs; it never leaves a changed one behind. The
-    read fails closed: absent = nothing owed; a raising read = TransientError; content that is not a mark
-    = DefinitiveError, whose recovery is to write a valid "owed" mark. A pass that returns without
-    merging (a stop, a transient) keeps the mark and names it as deferred.
+    read fails closed: a raising read = TransientError; content that is not a mark = DefinitiveError,
+    whose recovery is to write a valid "owed" mark; an explicit {} = nothing owed. An ABSENT mark beside
+    an EXISTING store is read as "owed" ONCE (review AR-410, R1766): main re-derived every key on every
+    pass that added a row, and wrote no mark, so a store that main left with stale CSVs (a kill after its
+    merge, a revision-only pass that read no_change) carries a debt nothing records. The first pass of
+    this code hands every stored key over, and from then on the mark is always present. With no store
+    an absent mark is nothing owed (nothing is served). A pass that returns without merging (a stop, a
+    transient) keeps the mark and names it as deferred.
   * (j) ROUTE B: a structural refusal (_refuse), a refused merge, or a finalize that raises, while
     anything changed or is owed, returns `partial` WITH every stored key's cursor, the keys as
     changed_keys, and the refusal text. It raises only when nothing changed and nothing is owed.
 STATED RESIDUALS: the mark is settled by evidence in state.db, so a pass that cannot read an existing
-state.db hands every key over on every merging pass - the cost main paid on every ok pass, never a
+state.db hands every key over on every merging pass - the derive work main did on every ok pass, never a
 lost key; outside the orchestrator (no state.db) a kill after the return is not covered, as in census
 and wid; a "merging" mark left by a kill BEFORE the merge
 published over-reports once; a pass that stops before the merge carries the debt to the next merging
-pass, not this one; a pass killed after this change but before its first mark was written behaves as
-on main.
+pass, not this one; the first pass after the switch from main hands every stored key over once (the
+absent mark), whether or not main left a debt - an over-report, never a lost key.
 """
 from __future__ import annotations
 
@@ -496,16 +501,17 @@ def _owed_path(out_dir: str) -> str:
 
 
 def _load_owed(out_dir: str) -> dict:
-    """The owed mark: {} (nothing owed) or {"flow", "form", "utc"[, "token"]}. FAILS CLOSED:
-    ABSENT -> {} (nothing owed); a read that RAISES -> TransientError (retry later, nothing pulled);
-    content that is present but not a mark -> DefinitiveError naming its recovery. Returning {} for an
-    unusable mark would drop the debt, and the CSVs it owes would never be derived."""
+    """The owed mark: {} (nothing owed), {"flow", "form", "utc"[, "token"]}, or None when ABSENT (the
+    caller decides: beside an existing store it is owed once, see the module docstring). FAILS CLOSED:
+    a read that RAISES -> TransientError (retry later, nothing pulled); content that is present but not
+    a mark -> DefinitiveError naming its recovery. Returning {} for an unusable mark would drop the
+    debt, and the CSVs it owes would never be derived."""
     try:
         raw = blob.read_bytes(_owed_path(out_dir))
     except Exception as e:                                   # noqa: BLE001
         raise TransientError(f"{SOURCE}: owed mark {OWED_FILE} unreadable: {e!r}") from e
     if raw is None:
-        return {}
+        return None
     try:
         obj = json.loads(raw.decode("utf-8"))
         ok = isinstance(obj, dict) and (obj == {} or (
@@ -518,7 +524,7 @@ def _load_owed(out_dir: str) -> dict:
             f"{SOURCE}: owed mark {OWED_FILE} is present but is not a mark; existing data kept. "
             f"RECOVERY (operator): overwrite it through blob with "
             f'{{"flow": "{FLOW}", "form": "owed", "utc": "<now>"}} - the source\'s next pass then hands every '
-            f"stored key to the CSV step and settles the mark. Anything that leaves no mark loses the "
+            f"stored key to the CSV step and settles the mark. An explicit {{}} instead would drop the "
             f"keys it owes.")
     return obj
 
@@ -683,6 +689,15 @@ def run_sliced(flow: str, agency: str, source_id: str):
 
     # THE OWED MARK, before anything else can return (see the module docstring). Fails closed.
     owed = _load_owed(out_dir)
+    if owed is None:
+        if before > 0:
+            # ABSENT beside an existing store: owed ONCE (main wrote no mark and may have left stale CSVs).
+            owed = _mark(_OWED)
+            print(f"[{SOURCE}] no owed mark beside a store of {before:,} rows (the first pass after the "
+                  f"switch from main, or a lost mark) - every stored key goes to the CSV step once",
+                  flush=True)
+        else:
+            owed = {}
     if owed.get("form") == _HANDED:
         recorded, how = _handed_recorded(source_id, owed["token"])
         if recorded:

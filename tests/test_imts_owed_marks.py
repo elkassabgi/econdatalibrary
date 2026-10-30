@@ -286,10 +286,82 @@ def test_a_stop_keeps_the_mark_and_names_the_debt(env, monkeypatch):
 
 # ---- the read fails closed ------------------------------------------------------------------------
 
-def test_an_absent_mark_is_nothing_owed(env):
+def test_an_explicit_empty_mark_is_nothing_owed(env):
     env.setup("base")
+    assert _mark() == {}
+    r = F.update(None, None)
+    assert (r.status, r.changed_keys) == ("no_change", {})
+
+
+def test_an_absent_mark_with_no_store_is_nothing_owed(env):
+    assert not os.path.exists(env.store()) and not os.path.exists(_mark_path())
+    env.imf.up = "base"
+    r = F.update(None, None)                                    # first ingest: every key is new anyway
+    assert r.status == "ok" and len(r.changed_keys) == N_KEYS
+    assert "switch from main" not in r.error
+
+
+def test_an_absent_mark_beside_a_store_is_owed_once(env):
+    env.setup("base", settled=False)                            # the store exactly as main leaves it
+    r = F.update(None, None)                                    # nothing changed upstream
+    assert r.status == "ok" and len(r.changed_keys) == N_KEYS
+    assert _mark()["form"] == "handed"
+    r = F.update(None, None)                                    # no state.db: settled; owed only once
+    assert (r.status, r.changed_keys) == ("no_change", {})
+
+
+def test_r1766_stale_csvs_main_left_are_derived_by_the_first_pass_after_the_switch(env, monkeypatch):
+    """AR-410 F:/work/ar410/pk_t.py T1: MAIN's pass is killed after its merge with a revision-only upstream
+    (the store is revised, the CSVs are not, and main writes no mark); then this code runs with a new month
+    added. Main's own next ok pass re-derives every key; so must this one - not only the one it changed."""
+    env.setup("base", settled=False)
+    env.imf.up = "rev"
+    real = merge.merge_and_write
+
+    def killed(*a, **k):
+        real(*a, **k)
+        raise KeyboardInterrupt("planted kill after main's merge published")
+    monkeypatch.setattr(merge, "merge_and_write", killed)
+    with pytest.raises(KeyboardInterrupt):
+        F._base.run("IMTS", "IMF.STA", SRC)                    # MAIN's code path (_imf_direct.run)
+    monkeypatch.setattr(merge, "merge_and_write", real)
     assert not os.path.exists(_mark_path())
-    assert F.update(None, None).status == "no_change"
+    env.imf.up = "add"                                          # pk_t's addrev, in this fake: M05 appended
+    r = F.update(None, None)
+    assert r.status == "ok"
+    assert sorted(r.changed_keys) == sorted(r.series_cursors) and len(r.changed_keys) == N_KEYS
+
+
+def test_leftover_tmp_mark_files_from_a_kill_are_removed(env):
+    env.setup("base")
+    stray = os.path.join(config.source_dir(SRC), F.OWED_FILE + ".4242.deadbeef.tmp")
+    with open(stray, "w") as fh:
+        fh.write("{")
+    F.update(None, None)
+    assert not os.path.exists(stray)
+
+
+def test_a_settled_mark_is_saved_as_empty_even_when_the_pass_then_stops(env, tmp_path, monkeypatch):
+    env.setup("base")
+    env.imf.up = "add"
+    F.update(None, None)
+    db = str(tmp_path / "st" / "state.db")
+    os.makedirs(os.path.dirname(db))
+    monkeypatch.setattr(config, "STATE_DB", db)
+    _recorded_state(db, f"{_mark()['token']}: +1 new rows")
+    env.ceiling(30.0)                                           # stops before any slice
+    r = F.update(None, None)
+    assert r.status == "partial" and "owed keys of an earlier merge" not in r.error
+    assert _mark() == {}
+
+
+def test_route_b_with_no_store_releases_the_mark(env):
+    _plant({"flow": "IMTS", "form": "owed", "utc": "2026-10-30T12:00:00Z"})
+    assert not os.path.exists(env.store())
+    env.imf.up = "empty"
+    with pytest.raises(DefinitiveError, match="RELEASED"):
+        F.update(None, None)
+    assert _mark() == {}
 
 
 def test_a_mark_whose_read_raises_is_a_transient_error_and_nothing_is_pulled(env, monkeypatch):

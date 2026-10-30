@@ -93,11 +93,15 @@ def env(tmp_path, monkeypatch):
     def store():
         return os.path.join(config.source_dir(SRC), f"{SRC}.parquet")
 
-    def setup(up="base"):
-        """The store as main's whole-flow ingester writes it (rows AND the real 5-dim sidecar)."""
+    def setup(up="base", settled=True):
+        """The store as main's whole-flow ingester writes it (rows AND the real 5-dim sidecar).
+        settled=True also writes the explicit "nothing owed" mark ({}) that a settled PR B pass leaves;
+        settled=False is the store exactly as main leaves it (no mark: owed once, R1766)."""
         imf.up = up
         os.makedirs(config.source_dir(SRC), exist_ok=True)
         assert ing.pull("IMTS", "IMF.STA", SRC, out_path=store(), min_obs=0) > 0
+        if settled:
+            blob.write_bytes_atomic(os.path.join(config.source_dir(SRC), "_imts_owed.json"), b"{}")
         imf.requests.clear()
 
     def ceiling(seconds_left):
