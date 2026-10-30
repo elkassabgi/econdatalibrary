@@ -225,11 +225,55 @@ def fetch_flow(flow_id, meta, since, session):
     return table, "ok"
 
 
+# Save the per-flow sidecar after EVERY flow. eurostat saves every 10 of its ~400 short CI flows;
+# oecd's flows are long (the largest 25-flow block in the desktop logs took 75.6 min) and the pass is
+# ended by run_local_heavy.ps1's HARD STOP (taskkill), which skips every end-of-run save. With a
+# save per flow a kill loses only the flow in flight.
+CHECKPOINT_EVERY = 1
+
+# The parser version the retry slice records on a row (_giant._too_big_rearmed reads it only for a
+# `too_big` row). oecd has no row ceiling (`ceiling: None`), so fetch_flow never books `too_big`; the
+# value is kept so a later ceiling has a version to compare. Bump it when _parse_csv changes.
+PARSE_VERSION = "oecd-csv-1"
+
+
 def update(unit, since) -> Result:
+    """RESUMABLE (2026-10-29): eurostat's four run_giant opt-ins, plus owed_marks and per-flow timing lines.
+
+      checkpoint_every  - the sidecar (_giant_state.json) is saved between flows, so a pass the HARD STOP
+                          kills keeps every finished flow's vintage, and a later pass selects only the
+                          flows it did not finish (R273: written where an interrupted run reaches it).
+                          Before, save_state ran once after the loop and a kill lost all of it.
+      bounded_merge     - each flow merges through merge.merge_and_write_bounded: the peak does not grow
+                          with the stored file (OECD.STI.PIE__DSD_TIVA_FDVA@DF_FDVA holds 1,792,000,000
+                          rows, >125 GB decoded; registry note). Requires checkpoint_every.
+      report_changed_flows - the merge-measured changed flows ride on Result.changed_keys; the
+                          orchestrator maps a changed flow to the catalogue ids the resolver serves from
+                          that flow's file (orchestrate._oecd_index, the inverse of
+                          econdl._resolve._OECD_TEMPLATES), and the registry declares
+                          `catalog_scope: subset`. A capped pass that merged a change and left fresh
+                          flows beyond the cap is due at the next run (_giant's capped rule); a
+                          structural flow no longer drops the changed set.
+      flow_log          - one start and one done line per flow, so a later replay can bound one flow's
+                          time (before: only the 25-flow progress blocks; no line covered the 1.79B-row
+                          flow, R244).
+      retry_slice       - each flow's attempt is written into its row before the fetch and saved (also
+                          before flow 1), so a flow that a kill ends in flight reads as FAILED to every
+                          later pass and comes back only through the backed-off retry slice (12 h, 24 h, ... up
+                          to 16 d), instead of heading every later pass (the R313 wedge). A pass never
+                          reads ok while failed flows wait; their note names the flows that keep
+                          outlasting the limit. Structural flows back off the same way.
+      owed_marks        - a flow merged with a change and then lost to a kill (its checkpoint saved
+                          the new vintage, the CSV step never ran) is carried into each later pass's
+                          changed set from its sidecar mark, until a pass hands it to the CSV step.
+    oecd is NOT on any clocked list: no unit clock exists on Windows, and no per-flow bound is measured."""
     return _giant.run_giant(
         unit, source="oecd",
         fetch_catalog=fetch_catalog, fetch_flow=fetch_flow,
-        csv_accept=CSV_ACCEPT, rate=RATE, timeout=TIMEOUT)
+        csv_accept=CSV_ACCEPT, rate=RATE, timeout=TIMEOUT,
+        report_changed_flows=True, bounded_merge=True,
+        checkpoint_every=CHECKPOINT_EVERY, flow_log=True,
+        retry_slice={"ceiling": None, "parser": PARSE_VERSION}, owed_marks=True)
 
 
 def current_vintage(unit) -> str | None:

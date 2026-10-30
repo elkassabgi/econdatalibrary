@@ -13,8 +13,8 @@ WHAT THESE TESTS HOLD.
       PUT in the same run; the unit stays transient_fail, with no success time, and is due
       again at the next run;
   (b) the same when every save of the state file fails; and a failed final save alone;
-  (c) a caller without the opt-in gets the limit and the save error raised, as before (the oecd
-      path too), and select_flows answers as before;
+  (c) a caller without the opt-in gets the limit and the save error raised, as before, and
+      select_flows answers as before; the oecd path opts in since 2026-10-29 and hands over like (a)/(b);
   (d) a limit that fires before any flow merged a change is raised as before: the unit is
       recorded transient_fail and no CSV step runs.
 
@@ -466,51 +466,40 @@ def test_without_the_opt_in_a_failed_final_save_is_raised_as_before(tmp_path, mo
         _run_giant(tmp_path, lambda fid: (_tbl(_rows(fid)), "ok"), report_changed_flows=False)
 
 
-def test_the_oecd_path_raises_the_limit_and_the_save_error_as_before(tmp_path, monkeypatch):
-    """oecd calls run_giant with no opt-in at all. A limit that leaves its flow loop is raised, with
-    no state saved; a limit raised inside its fetch is booked as one failed flow and the sweep goes on;
-    a failed final save is raised. All three as before this change."""
+def test_the_oecd_path_hands_its_changed_flows_over_since_it_opts_in(tmp_path, monkeypatch):
+    """oecd OPTS IN since 2026-10-29 (oecd.update: report_changed_flows, bounded_merge, checkpoint_every=1,
+    retry_slice, owed_marks). Before, this test pinned the no-opt-in path (limit and save error raised).
+    Now: a limit that leaves its flow loop after two changed flows returns transient_fail WITH them and
+    the checkpoint on disk; a failed final save with a changed set in hand returns transient_fail with it."""
     monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
     monkeypatch.setattr(orchestrate, "UNIT_TIMEOUT_FIRED", False)
     monkeypatch.setattr(orchestrate, "UNIT_TIMEOUT_ANSWERED", False, raising=False)
     monkeypatch.setattr(oecd, "RATE", 0)
     monkeypatch.setattr(oecd, "fetch_catalog", lambda: dict(CAT))
     monkeypatch.setattr(oecd, "fetch_flow", lambda fid, meta, since, session: (_tbl(_rows(fid)), "ok"))
-    real = merge.merge_and_write
+    real = merge.merge_and_write_bounded
 
     def merge_with_alarm(out_path, table, **kw):
         if out_path.endswith("F3.parquet"):
             _alarm()
         return real(out_path, table, **kw)
 
-    monkeypatch.setattr(merge, "merge_and_write", merge_with_alarm)
-    with pytest.raises(orchestrate.UnitTimeout):
-        oecd.update(_Unit(tmp_path / "a"), None)
-    assert not (tmp_path / "a" / "_giant_state.json").exists(), "no checkpoint, no final save: as before"
-    assert orchestrate.UNIT_TIMEOUT_ANSWERED is False
+    monkeypatch.setattr(merge, "merge_and_write_bounded", merge_with_alarm)
+    res = oecd.update(_Unit(tmp_path / "a"), None)
+    assert res.status == "transient_fail" and set(res.changed_keys) == {"f1", "f2"}
+    assert "hard limit reached in flow 3 of 5" in res.error
+    side = json.loads((tmp_path / "a" / "_giant_state.json").read_text(encoding="utf-8"))
+    assert {f for f, s in side.items() if s.get("status") == "ok"} == {"f1", "f2"}
     monkeypatch.setattr(orchestrate, "UNIT_TIMEOUT_FIRED", False)
-    monkeypatch.setattr(merge, "merge_and_write", real)
-
-    def fetch_with_alarm(fid, meta, since, session):
-        if fid == "f3":
-            _alarm()
-        return _tbl(_rows(fid)), "ok"
-
-    monkeypatch.setattr(oecd, "fetch_flow", fetch_with_alarm)
-    res = oecd.update(_Unit(tmp_path / "b"), None)
-    assert res.status == "partial" and res.changed_keys is None
-    assert res.error.startswith("1/5 sub-unit(s) transient-failed") and "f3" in res.error
-    side = json.loads((tmp_path / "b" / "_giant_state.json").read_text(encoding="utf-8"))
-    assert {f for f, s in side.items() if s.get("status") == "ok"} == {"f1", "f2", "f4", "f5"}
-    monkeypatch.setattr(orchestrate, "UNIT_TIMEOUT_FIRED", False)
-    monkeypatch.setattr(oecd, "fetch_flow", lambda fid, meta, since, session: (_tbl(_rows(fid)), "ok"))
+    monkeypatch.setattr(merge, "merge_and_write_bounded", real)
 
     def no_save(source_dir, state):
         raise OSError("PUT of the state file failed")
 
     monkeypatch.setattr(_giant, "save_state", no_save)
-    with pytest.raises(OSError, match="PUT of the state file failed"):
-        oecd.update(_Unit(tmp_path / "c"), None)
+    res = oecd.update(_Unit(tmp_path / "c"), None)
+    assert res.status == "transient_fail" and set(res.changed_keys) == set(FLOWS)
+    assert "the state file was NOT saved (OSError" in res.error
 
 
 def test_select_flows_answers_as_before():

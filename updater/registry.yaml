@@ -3544,6 +3544,13 @@ sources:
   # cannot process is updated locally. Run it with tools/run_local_heavy.ps1.
   run_location: local
   live: false
+  # catalog_scope - DECLARED 2026-10-29 with the resumable opt-in (fetchers/oecd.py update). The store
+  # holds ~1,450 dataflow files; the catalogue serves a curated set oecd:<INDICATOR>:<geo>, which
+  # econdl._resolve._resolve_oecd serves from ONE template file per indicator. Changed flows are
+  # merge-measured and mapped back by orchestrate._oecd_index (the resolver's own table inverted), so a
+  # pass that moves only uncatalogued flows maps to zero and is COVERAGE, not a coherence failure.
+  # Adding this key does NOT change the source count (R347: no EXPECTED_SOURCE_COUNT bump).
+  catalog_scope: subset
   scripts:
   - jobs/ingest_oecd.py
   strategy: giant_changed_units
