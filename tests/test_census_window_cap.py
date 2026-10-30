@@ -570,6 +570,46 @@ def test_an_owed_table_the_store_cannot_read_keeps_its_mark(env):
     assert json.load(open(os.path.join(env.d, cs.OWED_FILE))) == {"bds": "owed"}
 
 
+def test_an_owed_table_present_but_unreadable_keeps_its_mark_and_is_not_released(env):
+    """AR-407 r1 K9: the store object EXISTS (so leveling succeeds) but its rows cannot be read
+    (_stored_max -> None). That is not the absent-object case: releasing it would drop a debt the
+    store still holds. The mark stays and the pass is partial."""
+    _write_eits(env.d, "eits/fa")
+    with open(os.path.join(env.d, "bds.parquet"), "wb") as fh:
+        fh.write(b"PAR1 not a parquet file PAR1")          # a table no flow of this pass visits
+    with open(os.path.join(env.d, cs.OWED_FILE), "w") as fh:
+        json.dump({"bds": "owed"}, fh)
+    res = cs.update(UNIT, None)
+    assert res.status == "partial" and "stored rows unreadable - mark kept" in res.error, res
+    assert "RELEASED" not in (res.error or ""), res
+    assert "bds" not in (res.series_cursors or {}), res
+    assert json.load(open(os.path.join(env.d, cs.OWED_FILE))) == {"bds": "owed"}
+
+
+def test_a_revision_whose_tail_change_read_fails_is_still_handed_over(env):
+    """AR-407 r1 S2u: a revision-only republish (no row added) while the change check's own store
+    read raises and the merge's read succeeds. "Could not tell" must count as changed: the table
+    is cursored, never booked no_change with the revision left underived."""
+    _write_eits(env.d, "eits/fa")
+    env.api.eits = "revise"
+    real_rt = cs.blob.read_table
+    planted = []
+
+    def rt(path, columns=None, *a, **k):
+        # The change check is the only census read naming every column of the flow; every other
+        # census read names <= 1 column, and merge's own read names none.
+        if columns is not None and "obs_date" in columns and len(columns) > 3:
+            planted.append(path)
+            raise OSError(f"planted: tail read failed for {path}")
+        return real_rt(path, columns, *a, **k)
+    env.mp.setattr(cs.blob, "read_table", rt)
+    res = cs.update(UNIT, None)
+    assert planted, "the planted failure never hit the change check"
+    assert res.status == "ok" and sorted(res.series_cursors) == ["eits__fa"], res
+    assert env.O._should_derive_csvs(res.status, res.changed_keys)
+    assert pq.read_table(os.path.join(env.d, "eits__fa.parquet")).num_rows == 4  # merge did land
+
+
 def test_owed_tables_are_not_leveled_after_the_stop(env):
     """AR-407 review 3 i: the leveling download is under the stop check."""
     _write_eits(env.d, "eits/fa")
