@@ -535,6 +535,24 @@ def test_every_outcome_branch_prints_a_start_and_a_done_line(tmp_path, local, mo
     assert flow_lines and not any(prog.match(x) for x in flow_lines)
 
 
+def test_the_start_line_is_printed_before_the_stored_footer_read(tmp_path, local, monkeypatch, capsys):
+    """AR-404 M14b: the start line must come BEFORE sane_since(_stored_max(...)). Under r2 that read is a
+    whole-object GET, and a kill landing in it must still leave the flow's start time on record. Here the
+    footer read raises; the start line must already be in the log."""
+    monkeypatch.setattr(oecd, "fetch_catalog", lambda: _cat(["only"]))
+    monkeypatch.setattr(oecd, "fetch_flow", lambda fid, meta, since, s: (_tbl(["k"]), "ok"))
+
+    def footer(out_path):
+        raise RuntimeError("footer read died")
+
+    monkeypatch.setattr(_giant, "_max_obs_date", footer)
+    with pytest.raises(RuntimeError, match="footer read died"):
+        oecd.update(_Unit(tmp_path), None)
+    out = capsys.readouterr().out
+    assert re.search(r"^\[oecd\] flow 1/1 start only at ", out, re.M), out
+    assert "flow 1/1 done" not in out
+
+
 def test_without_flow_log_no_timing_line_is_printed(tmp_path, local, capsys):
     _giant.run_giant(_Unit(tmp_path), source="zz", fetch_catalog=lambda: _cat(["a"]),
                      fetch_flow=lambda *a: (_tbl(["k"]), "ok"), csv_accept="", rate=0, timeout=1)
