@@ -409,9 +409,9 @@ def _cut_first_slice(env, monkeypatch):
     return lb
 
 
-def _margin_s(out):
+def _margin_s(out, lab="1900-1959"):
     import re
-    m = re.search(r"under the ([0-9.]+)-min margin before slice 1900-1959", out)
+    m = re.search(rf"under the ([0-9.]+)-min margin before slice {lab}", out)
     assert m, out
     return float(m.group(1)) * 60
 
@@ -455,6 +455,148 @@ def test_w6_the_bound_goes_once_the_slice_finishes_and_ages_out_after_the_open_b
     env.ceiling(250.0)
     F.update(None, None)
     assert any("startPeriod=1900&" in u for u in env.imf.data_requests()), "an aged bound still applied"
+
+
+def _cut_newest_slice(env, monkeypatch):
+    """AR-410's scenario: 60-s floor, 60-s merge reserve. Pass 1 keeps the 8 closed and open slices and
+    stops before the newest (it needs 120 s); pass 2 starts the newest and the window end cuts it.
+    Returns the newest slice's lower bound."""
+    env.setup("base")
+    monkeypatch.setenv("AQUEDUCT_IMTS_MARGIN_MIN", "1")
+    monkeypatch.setenv("AQUEDUCT_IMTS_MERGE_RESERVE_MIN", "1")
+    env.imf.per_request, env.imf.chunks = 0.0, 1
+    env.ceiling(100.0)
+    assert F.update(None, None).status == "partial"
+    assert len(_slices()) == 8, _slices()
+    env.imf.per_request, env.imf.chunks = 400.0, 8
+    env.ceiling(130.0)
+    assert F.update(None, None).status == "partial"
+    cut = F._load_marker(F._slice_dir(SRC)).get("cut", {})
+    assert set(cut) == {"2025-2027"}, cut
+    env.imf.requests.clear()
+    return cut["2025-2027"]["elapsed_s"]
+
+
+def test_w6_a_window_over_2x_the_bound_but_under_the_margin_names_the_term_that_set_it(
+        env, monkeypatch, capsys):
+    lb = _cut_newest_slice(env, monkeypatch)
+    capsys.readouterr()
+    w = 2 * lb + 30.0                  # 2 x lb <= window < 2 x lb + the 60-s reserve = the margin
+    env.ceiling(w)
+    res = F.update(None, None)
+    out = capsys.readouterr().out
+    assert res.status == "partial" and env.imf.data_requests() == [], res.error
+    assert 2 * lb <= w < _margin_s(out, "2025-2027"), (w, lb, out)
+    assert "under 2 x the slice's measured lower bound" not in out, out
+    assert "window shorter than the slice's measured lower bound" not in out, out
+    assert "clears 2 x the slice's measured lower bound" in out, out
+    assert ("set by 2 x the slice's measured lower bound" in out
+            and "plus the 1.0-min merge reserve the newest slice needs" in out), out
+    assert "release: a longer window (operator)" in out, out
+
+
+def test_w6_a_window_over_2x_the_bound_but_under_the_floor_names_the_floor(env, monkeypatch, capsys):
+    lb = _cut_first_slice(env, monkeypatch)
+    monkeypatch.setenv("AQUEDUCT_IMTS_MARGIN_MIN", "10")          # 600 s floor > 2 x lb
+    assert 2 * lb < 2 * lb + 50.0 < 600.0
+    capsys.readouterr()
+    env.ceiling(2 * lb + 50.0)
+    res = F.update(None, None)
+    out = capsys.readouterr().out
+    assert res.status == "partial" and env.imf.data_requests() == [], res.error
+    stop = [ln for ln in out.splitlines() if "STOP before the window end" in ln]
+    assert len(stop) == 1, out
+    assert "under 2 x the slice's measured lower bound" not in stop[0], stop
+    assert "set by the 10.0-min floor" in stop[0] and "merge reserve" not in stop[0], stop
+
+
+def test_margin_terms_names_the_largest_term_and_the_reserve():
+    assert F._margin_terms(60.0, 10.0, 100.0, 0.0).startswith("2 x the slice's measured lower bound (3.3")
+    assert F._margin_terms(60.0, 200.0, 100.0, 0.0).startswith("2 x the slowest slice this pass (6.7")
+    assert F._margin_terms(900.0, 200.0, 100.0, 0.0) == "the 15.0-min floor"
+    assert F._margin_terms(60.0, 0.0, 100.0, 60.0).endswith("plus the 1.0-min merge reserve the newest "
+                                                             "slice needs")
+    assert F._margin_terms(60.0, 100.0, 100.0, 0.0).startswith("2 x the slice's measured lower bound")
+
+
+def test_w6_a_later_shorter_cut_keeps_the_larger_earlier_bound(env, monkeypatch):
+    env.setup("base")
+    monkeypatch.setenv("AQUEDUCT_IMTS_MARGIN_MIN", "0.5")         # 30-s floor
+    env.imf.per_request, env.imf.chunks = 400.0, 8                # 50-s chunks
+    env.ceiling(40.0)
+    assert F.update(None, None).status == "partial"
+    lb = F._load_marker(F._slice_dir(SRC))["cut"]["1900-1959"]["elapsed_s"]
+    assert 40.0 <= lb < 60.0, lb                  # so 2 x lb + 10 s stays under the 121-s retry wait
+    env.imf.requests.clear()
+    env.imf.status["1900"] = [(503, 120)]         # the slice starts, then a 121-s wait it cannot take
+    env.ceiling(2 * lb + 10.0)
+    res = F.update(None, None)
+    assert res.status == "partial" and len(env.imf.data_requests()) == 1, res.error
+    cut = F._load_marker(F._slice_dir(SRC)).get("cut", {})
+    assert cut["1900-1959"]["elapsed_s"] == lb, (cut, lb)       # max over the cuts, not the last one
+
+
+# ---- kept slices: the age bounds and the checks on reuse (AR-410) --------------------------------
+
+def _keep_eight(env, monkeypatch):
+    env.setup("base")
+    monkeypatch.setenv("AQUEDUCT_IMTS_MARGIN_MIN", "1")
+    monkeypatch.setenv("AQUEDUCT_IMTS_MERGE_RESERVE_MIN", "1")
+    env.imf.per_request, env.imf.chunks = 0.0, 1
+    env.ceiling(100.0)                 # closed + open slices need 60 s, the newest 120 s: it stops
+    assert F.update(None, None).status == "partial"
+    assert len(_slices()) == 8, _slices()
+    env.imf.requests.clear()
+    env.mp.setattr(orchestrate, "_RUN_DEADLINE_TS", None)
+
+
+def _starts(env):
+    return sorted(u.split("startPeriod=")[1].split("&")[0] for u in env.imf.data_requests())
+
+
+@pytest.mark.parametrize("days,pulled", [
+    (5, ["2025"]),                                         # inside both bounds: only the newest
+    (30, ["2025"]),                                        # still inside the 31-d open bound
+    (32, ["2020", "2025"]),                                # the open slice aged out, no closed one
+])
+def test_kept_slices_are_re_pulled_only_past_their_age_bound(env, monkeypatch, days, pulled):
+    assert (F.CLOSED_MAX_AGE_DAYS_DEFAULT, F.OPEN_MAX_AGE_DAYS_DEFAULT) == (365.0, 31.0)
+    _keep_eight(env, monkeypatch)
+    env.clock.t += days * 86400
+    assert F.update(None, None).status in ("ok", "no_change")
+    assert _starts(env) == pulled, (days, _starts(env))
+
+
+@pytest.mark.parametrize("days,pulled", [
+    (9, ["2025"]),
+    (11, ["2020", "2025"]),                                # past the 10-d open bound only
+    (19, ["2020", "2025"]),
+    (21, sorted(p.split("-")[0] for p in PLAN_2026)),      # past the 20-d closed bound too
+])
+def test_the_closed_age_bound_re_pulls_the_closed_slices(env, monkeypatch, days, pulled):
+    """365 d cannot pass on the test clock without a new year changing the plan's bounds (which
+    re-pulls by bounds, not by age), so the closed bound is tested through its knob."""
+    monkeypatch.setenv("AQUEDUCT_IMTS_CLOSED_MAX_AGE_DAYS", "20")
+    monkeypatch.setenv("AQUEDUCT_IMTS_OPEN_MAX_AGE_DAYS", "10")
+    _keep_eight(env, monkeypatch)
+    env.clock.t += days * 86400
+    assert F.update(None, None).status in ("ok", "no_change")
+    assert _starts(env) == pulled, (days, _starts(env))
+
+
+@pytest.mark.parametrize("field", ["dims", "rows"])
+def test_a_kept_slice_whose_record_disagrees_is_re_pulled(env, monkeypatch, field):
+    _keep_eight(env, monkeypatch)
+    d = F._slice_dir(SRC)
+    mk = F._load_marker(d)
+    rec = mk["slices"]["1970-1979"]
+    if field == "dims":
+        rec["dims"] = list(rec["dims"])[:-1]               # recorded under other dims than the store's
+    else:
+        rec["rows"] = rec["rows"] + 1                      # the file on disk no longer has those rows
+    F._save_marker(d, mk)
+    assert F.update(None, None).status in ("ok", "no_change")
+    assert _starts(env) == ["1970", "2025"], (field, _starts(env))
 
 
 def test_a_retry_wait_that_would_pass_the_window_end_stops_the_pass(env, monkeypatch):

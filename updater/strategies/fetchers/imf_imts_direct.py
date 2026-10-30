@@ -449,6 +449,18 @@ def _store_min_date(path: str):
 
 # --------------------------------------------------------------------------------------------
 
+def _margin_terms(floor_s: float, longest: float, lb: float, add: float) -> str:
+    """Name the term that set a slice's margin, max(floor, 2 x longest, 2 x lb) + add: the largest
+    of the three (ties go to the bound, then the slowest slice), then the merge reserve if added."""
+    if 2 * lb >= 2 * longest and 2 * lb >= floor_s:
+        t = f"2 x the slice's measured lower bound ({2 * lb / 60:.1f} min)"
+    elif 2 * longest >= floor_s:
+        t = f"2 x the slowest slice this pass ({2 * longest / 60:.1f} min)"
+    else:
+        t = f"the {floor_s / 60:.1f}-min floor"
+    return t + (f" plus the {add / 60:.1f}-min merge reserve the newest slice needs" if add else "")
+
+
 def run_sliced(flow: str, agency: str, source_id: str):
     tally = Tally()
     out_dir = config.source_dir(source_id)
@@ -565,16 +577,24 @@ def run_sliced(flow: str, agency: str, source_id: str):
             continue
         left = dl.left()
         lb = cut[lab]["elapsed_s"] if lab in cut else 0.0     # W6: this slice's own measured lower bound
-        need = max(floor_s, 2 * longest, 2 * lb) + (reserve_s if kind == "newest" else 0.0)
+        add = reserve_s if kind == "newest" else 0.0
+        need = max(floor_s, 2 * longest, 2 * lb) + add
         if left is not None and left < need:
             why = f"{left / 60:.1f} min left, under the {need / 60:.1f}-min margin before slice {lab}"
             if lb and win_s is not None and win_s < need:
-                why += (f"; window shorter than the slice's measured lower bound (the pass's window "
-                        f"{win_s / 60:.1f} min, the slice cut after {lb / 60:.1f} min on an earlier pass): "
-                        f"it cannot finish in a window this short" if win_s < lb else
-                        f"; the pass's window ({win_s / 60:.1f} min) is under 2 x the slice's measured "
-                        f"lower bound ({lb / 60:.1f} min, cut on an earlier pass): it cannot start in a "
-                        f"window this short")
+                # The sentence names the term that set the margin, never one the window clears (AR-410).
+                if win_s < lb:
+                    why += (f"; window shorter than the slice's measured lower bound (the pass's window "
+                            f"{win_s / 60:.1f} min, the slice cut after {lb / 60:.1f} min on an earlier "
+                            f"pass): it cannot finish in a window this short")
+                elif win_s < 2 * lb:
+                    why += (f"; the pass's window ({win_s / 60:.1f} min) is under 2 x the slice's measured "
+                            f"lower bound ({lb / 60:.1f} min, cut on an earlier pass): it cannot start in a "
+                            f"window this short")
+                else:
+                    why += (f"; the pass's window ({win_s / 60:.1f} min) clears 2 x the slice's measured "
+                            f"lower bound ({2 * lb / 60:.1f} min) but is under the {need / 60:.1f}-min "
+                            f"margin, set by {_margin_terms(floor_s, longest, lb, add)}")
                 why += "; release: a longer window (operator)"
             return _stop(why, _todo(i, have))
         url = f"{ing.BASE}/data/{agency},{flow}/all?startPeriod={a}&endPeriod={b}"
