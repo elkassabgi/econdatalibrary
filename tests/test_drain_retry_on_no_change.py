@@ -207,20 +207,53 @@ def test_no_leftover_time_means_no_drain(rig, monkeypatch, capsys):
 def test_the_margin_is_kept_from_the_remainder(rig, monkeypatch):
     monkeypatch.setenv("AQUEDUCT_RUN_BUDGET_MIN", "20")
     monkeypatch.setenv("AQUEDUCT_RETRY_DRAIN_MARGIN_MIN", "15")
-    seen = {}
-    real = orchestrate._drain_csv_retry_queue
-
-    def spy(unit, blob, store, budget_min=None, id_gate=None):
-        seen["budget"] = budget_min
-        return real(unit, blob, store, budget_min=budget_min, id_gate=id_gate)
-    monkeypatch.setattr(orchestrate, "_drain_csv_retry_queue", spy)
+    seen = _spy_derive_budget(monkeypatch)
     rig.seed(SRC, _ids(1))
     rig.run()
     assert 4.0 < seen["budget"] <= 5.0, seen       # 20-min run, ~0 spent, 15-min margin
 
 
+def _spy_derive_budget(monkeypatch):
+    """Record the budget_min the drain hands derive_and_put."""
+    seen = {}
+    real = derive.derive_and_put
+
+    def spy(ids, blob, budget_min=None, **kw):
+        seen["budget"] = budget_min
+        return real(ids, blob, budget_min=budget_min, **kw)
+    monkeypatch.setattr(derive, "derive_and_put", spy)
+    return seen
+
+
+def test_a_2880_minute_run_budget_still_caps_the_drain_and_its_lease(rig, monkeypatch):
+    """AR-413 F1: run_local_heavy.ps1 sets AQUEDUCT_RUN_BUDGET_MIN=2880. Remainder minus margin alone gave one drain
+    2,865 minutes; the cap is AQUEDUCT_RETRY_DRAIN_MAX_MIN, default the derive budget (45), and the lease follows."""
+    monkeypatch.setenv("AQUEDUCT_RUN_BUDGET_MIN", "2880")
+    seen = _spy_derive_budget(monkeypatch)
+    ttls = []
+    real = rig.state.claim_lease
+
+    def spy(key, owner, ttl_s=3600):
+        ttls.append((key, ttl_s))
+        return real(key, owner=owner, ttl_s=ttl_s)
+    monkeypatch.setattr(rig.state, "claim_lease", spy)
+    rig.seed(SRC, _ids(1))
+    rig.run()
+    assert 44.0 < seen["budget"] <= 45.0, seen
+    drain_ttls = [t for k, t in ttls if k == f"{SRC}/_all"]
+    assert drain_ttls and drain_ttls[-1] <= (45 + 15) * 60 + 1, drain_ttls
+    monkeypatch.setenv("AQUEDUCT_RETRY_DRAIN_MAX_MIN", "10")
+    rig.seed(SRC, _ids(1))
+    rig.run()
+    assert 9.0 < seen["budget"] <= 10.0, seen
+    monkeypatch.setenv("AQUEDUCT_RETRY_DRAIN_MAX_MIN", "0")          # never "unbounded"
+    assert orchestrate._drain_max_min() == 45.0
+
+
 def test_sources_drain_oldest_enqueued_first_under_one_pass_budget(rig, monkeypatch, capsys):
-    monkeypatch.setenv("AQUEDUCT_RUN_BUDGET_MIN", "15.2")            # ~0.2 min (12 s) of leftover time in all
+    # the pass budget is fixed here, not taken from a tight run ceiling: the unit loop before it (registry load,
+    # probe) takes seconds on a loaded machine and would eat a ceiling sized to the second
+    monkeypatch.setattr(orchestrate, "_leftover_drain_min", lambda: 0.2)   # 12 s of leftover time in all
     monkeypatch.setattr(orchestrate, "_DRAIN_FLOOR_MIN", 0.05)
     rig.slow = 0.1
     rig.seed(SRC, _ids(400), when="2026-10-20T00:00:00Z")            # newer
@@ -236,7 +269,7 @@ def test_sources_drain_oldest_enqueued_first_under_one_pass_budget(rig, monkeypa
 
 
 def test_a_source_the_pass_budget_did_not_reach_is_named(rig, monkeypatch, capsys):
-    monkeypatch.setenv("AQUEDUCT_RUN_BUDGET_MIN", "15.2")
+    monkeypatch.setattr(orchestrate, "_leftover_drain_min", lambda: 0.2)
     monkeypatch.setattr(orchestrate, "_DRAIN_FLOOR_MIN", 0.05)
     rig.slow = 0.1
     rig.seed(SRC2, _ids(400, SRC2), when="2026-09-01T00:00:00Z")
@@ -275,7 +308,7 @@ def test_a_tried_refailure_counts_and_keeps_its_age(rig):
 
 
 def test_ids_the_derive_budget_never_reached_keep_their_counter(rig, monkeypatch):
-    monkeypatch.setenv("AQUEDUCT_RUN_BUDGET_MIN", "15.03")           # ~0.03 min = ~1.8 s of drain
+    monkeypatch.setattr(orchestrate, "_leftover_drain_min", lambda: 0.03)  # ~1.8 s of drain
     monkeypatch.setattr(orchestrate, "_DRAIN_FLOOR_MIN", 0.01)
     rig.slow = 0.2
     rig.seed(SRC, _ids(40))
@@ -373,12 +406,18 @@ def test_the_drain_lease_lives_for_its_budget_plus_the_margin(rig, monkeypatch):
 # ---- (e) the mirror check under r2 ------------------------------------------------------------------
 
 class _S3:
-    def __init__(self, etag, size):
-        self.etag, self.size, self.heads = etag, size, []
+    def __init__(self, etag, size, head_s=0.0):
+        self.etag, self.size, self.head_s, self.heads, self.gets = etag, size, head_s, [], []
 
     def head_object(self, Bucket, Key):
         self.heads.append(Key)
+        if self.head_s:
+            time.sleep(self.head_s)
         return {"ETag": f'"{self.etag}"', "ContentLength": self.size, "LastModified": "2026-10-30T00:00:00Z"}
+
+    def get_object(self, **kw):                                        # what _r2_object_md5 would call
+        self.gets.append(kw.get("Key"))
+        raise AssertionError("the drain's mirror check read a whole object")
 
 
 @pytest.fixture
@@ -423,6 +462,38 @@ def test_a_mirror_equal_to_r2_derives(r2rig):
     r2rig.seed(SRC, _ids(2))
     r2rig.run()
     assert len(r2rig.blob.keys) == 2 and r2rig.queue() == {}
+
+
+def test_an_unknown_multipart_layout_is_held_back_without_reading_the_object(r2rig, capsys):
+    """AR-413 F2: _compare_one GETs a whole object for an unknown multipart layout (biotrademerch: one 18 GB file).
+    The drain's check only HEADs: the file reads unproven, its ids stay queued, and the object is never read."""
+    f, md5, holder = r2rig.r2
+    holder["s3"] = _S3("ab" * 16 + "-3", f.stat().st_size)          # a 3-part ETag no known layout of this file gives
+    r2rig.seed(SRC, _ids(2))
+    r2rig.run()
+    assert holder["s3"].gets == [], "no GET of a whole object"
+    assert r2rig.blob.keys == [] and len(r2rig.queue()) == 2
+    assert "HOLDS BACK" in capsys.readouterr().out
+
+
+def test_the_mirror_check_is_charged_to_the_drain_time(r2rig, monkeypatch, capsys):
+    """AR-413 F2: the derive budget is what is left AFTER the check, and the check stops at the drain's end."""
+    f, md5, holder = r2rig.r2
+    holder["s3"] = _S3(md5, f.stat().st_size, head_s=1.0)
+    monkeypatch.setattr(orchestrate, "_leftover_drain_min", lambda: 0.1)     # 6 s for the whole drain
+    monkeypatch.setattr(orchestrate, "_DRAIN_FLOOR_MIN", 0.01)
+    seen = _spy_derive_budget(monkeypatch)
+    r2rig.seed(SRC, _ids(2))
+    r2rig.run()
+    assert seen["budget"] <= 0.1 - 0.9 / 60, seen                    # the 1 s HEAD came off the derive budget
+    # the drain's time runs out INSIDE the check: nothing is derived, and the unchecked ids stay queued
+    holder["s3"] = _S3(md5, f.stat().st_size, head_s=7.0)
+    r2rig.blob.keys.clear()
+    seen.clear()
+    r2rig.seed(SRC, _ids(2))
+    r2rig.run()
+    assert "budget" not in seen and r2rig.blob.keys == [] and len(r2rig.queue()) == 2
+    assert all(r["attempts"] == 1 for r in r2rig.queue().values())
 
 
 def test_no_r2_client_holds_everything_back(r2rig, monkeypatch):

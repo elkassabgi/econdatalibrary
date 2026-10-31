@@ -1480,12 +1480,14 @@ _DERIVE_ALL_CAP = 5000
 _CSV_RETRY_CAP = 20_000
 
 
-def _drain_csv_retry_queue(unit, blob, store, budget_min=None, id_gate=None) -> dict:
+def _drain_csv_retry_queue(unit, blob, store, deadline_ts=None, id_gate=None) -> dict:
     """Drain the csv retry queue for one unit, bounded per run (the rules are at the call site in run_once).
     A function so its fence trip can be RUN against a StateStore in a test (review R1254 item 1).
 
-    budget_min: the derive budget for THIS drain (the leftover drain after the unit loop passes its share of the
-    pass budget); None = _capped_derive_budget(), as the in-loop drain always had.
+    deadline_ts: the epoch time this drain must end by (the leftover drain after the unit loop passes the end of
+    the pass budget). The derive budget is what is left of it AFTER id_gate ran, so the gate's own time is charged
+    (review AR-413 F2); nothing is derived when less than 0.01 min is left. None = _capped_derive_budget(), as the
+    in-loop drain always had.
     id_gate: ids -> (ids to derive, {id: why not}); an id it holds back is not attempted and stays queued with its
     attempts unchanged (the leftover drain's mirror check, _r2_mirror_gate).
     Returns {queued, attempted, cleared, still_queued, held_back} for the caller's line."""
@@ -1513,7 +1515,16 @@ def _drain_csv_retry_queue(unit, blob, store, budget_min=None, id_gate=None) -> 
                       f"{len(_held):,} held back (see the lines above), all still queued", flush=True)
                 _summary["still_queued"] = len(_retry_rows)
                 return _summary
-        _budget = _capped_derive_budget() if budget_min is None else {"budget_min": max(0.05, float(budget_min))}
+        if deadline_ts is None:
+            _budget = _capped_derive_budget()
+        else:
+            _left = (deadline_ts - time.time()) / 60.0      # AFTER the gate: its HEADs and hashes are charged
+            if _left < 0.01:
+                print(f"[orchestrator] {unit.source_id}: csv retry queue {len(_retry_rows):,} -> none attempted, the "
+                      f"drain's time was spent before the derive (mirror check) - all still queued", flush=True)
+                _summary["still_queued"] = len(_retry_rows)
+                return _summary
+            _budget = {"budget_min": _left}
         from . import derive as _derive_mod
         # ITS OWN HARD FENCE (R1246 finding 4). derive_and_put now lets the fence through and
         # stops at once (1 s wait slices, queue cancelled, running PUTs left to finish unbooked),
@@ -1620,20 +1631,50 @@ def _drain_margin_min() -> float:
     return max(0.0, m)
 
 
+def _drain_max_min() -> float:
+    """The CAP on the whole pass's leftover drain: AQUEDUCT_RETRY_DRAIN_MAX_MIN, default the derive budget
+    (AQUEDUCT_DERIVE_BUDGET_MIN, 45). A non-positive or unreadable value falls back to 45, never to "unbounded"."""
+    try:
+        d = float(os.environ.get("AQUEDUCT_DERIVE_BUDGET_MIN", "45") or 45)
+    except ValueError:
+        d = 45.0
+    d = d if d > 0 else 45.0
+    try:
+        c = float(os.environ.get("AQUEDUCT_RETRY_DRAIN_MAX_MIN", "") or d)
+    except ValueError:
+        c = d
+    return c if c > 0 else 45.0
+
+
 def _leftover_drain_min() -> float:
-    """Minutes the leftover drain may use, for the whole pass: the run ceiling's remainder minus the margin; with
-    no ceiling (AQUEDUCT_RUN_BUDGET_MIN <= 0) the derive budget. Never negative."""
+    """Minutes the leftover drain may use, for the whole pass: min(the run ceiling's remainder minus the margin,
+    _drain_max_min()); with no ceiling (AQUEDUCT_RUN_BUDGET_MIN <= 0) the cap. Never negative.
+
+    CAPPED (review AR-413 F1): run_local_heavy.ps1 sets AQUEDUCT_RUN_BUDGET_MIN=2880, so "remainder minus margin"
+    alone gave one source's drain 2,865 minutes - a pass that sat in drains for up to ~47 h holding its locks."""
+    cap = _drain_max_min()
     rem = _remaining_run_min()
     if rem is None:
-        try:
-            b = float(os.environ.get("AQUEDUCT_DERIVE_BUDGET_MIN", "45") or 45)
-        except ValueError:
-            b = 45.0
-        return b if b > 0 else 45.0
-    return max(0.0, rem - _drain_margin_min())
+        return cap
+    return max(0.0, min(rem - _drain_margin_min(), cap))
 
 
-def _r2_mirror_gate(source_id: str):
+class _HeadOnlyS3:
+    """An R2 client for the drain's mirror check that can HEAD and nothing else. _compare_one GETs a WHOLE object
+    when its multipart layout is unknown (_r2_object_md5); in a drain that could be an 18 GB file (review AR-413
+    F2). Refused here, _r2_object_md5 answers None and the file reads "unproven", so its ids are held back."""
+
+    def __init__(self, s3):
+        self._s3 = s3
+
+    def head_object(self, **kw):
+        return self._s3.head_object(**kw)
+
+    def get_object(self, **kw):
+        raise RuntimeError("the csv retry drain's mirror check never reads a whole object")
+
+
+def _r2_mirror_gate(source_id: str, deadline_ts: "float | None" = None):
     """The leftover drain's mirror check, or None where none is needed (backend local/selfhost, or after T0).
 
     Under AQUEDUCT_BACKEND=r2 the derive READS this machine's mirror and WRITES the served CSV, and a no_change or
@@ -1642,7 +1683,10 @@ def _r2_mirror_gate(source_id: str):
     core.derive_csv._compare_one - the --only gate's comparison, md5 or the multipart ETag (_local_digests) and a
     HEAD - once per file per drain. An id with any file not "equal" is held back: not attempted, still queued,
     attempts unchanged, and the file is named. An id that does not resolve here passes: derive fails it and its
-    attempt is counted. No R2 client: everything is held back (fail closed)."""
+    attempt is counted. No R2 client: everything is held back (fail closed).
+    BOUNDED (review AR-413 F2): the check stops at `deadline_ts` and holds back every id it did not reach; and it
+    never GETs an object (_HeadOnlyS3), so a file in an unknown multipart layout reads "unproven" and is held back.
+    One file's md5 is not interrupted once started."""
     from core import cutover                                         # noqa: PLC0415
     b = (os.environ.get("AQUEDUCT_BACKEND", "local") or "local").strip().lower()
     if b != "r2" or cutover.is_cut_over():
@@ -1654,13 +1698,19 @@ def _r2_mirror_gate(source_id: str):
         from .blob import R2_BUCKET                                  # noqa: PLC0415
         data_root = os.path.abspath(_resolve.default_data_root())
         try:
-            s3 = r2_util.client()
+            s3 = _HeadOnlyS3(r2_util.client())
         except Exception as e:                                       # noqa: BLE001 - fail closed, loudly
             print(f"[orchestrator] {source_id}: csv retry drain HOLDS BACK all {len(ids):,} id(s): no R2 client to "
                   f"compare the mirror with ({type(e).__name__}: {str(e)[:80]})", flush=True)
             return [], {s: "no R2 client" for s in ids}
         seen, keep, held, named = {}, [], {}, set()
-        for sid in ids:
+        for i, sid in enumerate(ids):
+            if deadline_ts is not None and time.time() >= deadline_ts:
+                rest = ids[i:]
+                held.update({s: "not checked: the drain's time ran out in the mirror check" for s in rest})
+                print(f"[orchestrator] {source_id}: the drain's time ran out in the mirror check - {len(rest):,} "
+                      f"id(s) not checked, held back and still queued", flush=True)
+                break
             try:
                 files = _dc._read_set(sid, _resolve.resolve(sid), data_root)
             except Exception:                                        # noqa: BLE001 - derive fails it, counted
@@ -1731,7 +1781,7 @@ def _drain_leftover_retries(candidates: dict, blob, store) -> list:
             break
         units = candidates[sid]
         unit = units[0]
-        ttl = int((left + margin) * 60.0) + 1
+        ttl = int((min(left, budget) + margin) * 60.0) + 1     # budget <= _drain_max_min(): the TTL is capped too
         got = []
         for u in units:
             if not store.claim_lease(u.key, owner=OWNER, ttl_s=ttl):
@@ -1748,7 +1798,8 @@ def _drain_leftover_retries(candidates: dict, blob, store) -> list:
         t = time.time()
         summ, err = None, None
         try:
-            summ = _drain_csv_retry_queue(unit, blob, store, budget_min=left, id_gate=_r2_mirror_gate(sid))
+            summ = _drain_csv_retry_queue(unit, blob, store, deadline_ts=deadline,
+                                          id_gate=_r2_mirror_gate(sid, deadline))
         except (KeyboardInterrupt, SystemExit):
             raise
         except BaseException as e:                                   # noqa: BLE001 - one source's drain, never the pass

@@ -327,6 +327,28 @@ def test_tail_lower_bound_counts_both_csv_phases_of_one_unit_run(tmp_path):
     assert tp["timed_phase_lines"] == 0
 
 
+def test_a_leftover_csv_retry_drain_is_not_a_unit_run_nor_a_tail(tmp_path):
+    """orchestrate._drain_leftover_retries prints a `(csv retry drain)` block after the unit loop. Its spent budget
+    must not be added to the no_change unit whose `>>>` it follows (which never prints `<<<`), nor counted as a run."""
+    (tmp_path / "local_heavy_updater_20261025-220113.log").write_text(
+        "[orchestrator] >>> bea/_all (x)\n  derive budget of 45 min spent\n[orchestrator] <<< bea/_all took 1,892s\n"
+        "[orchestrator] >>> wid/_all (strategy=overwrite_if_changed, cadence=irregular)\n"
+        "[orchestrator] >>> oecd/_all (strategy=giant_changed_units, cadence=monthly)\n"
+        "[oecd] 25/75 flows - +4,354 rows, 0 quiet, 23 transient, 0 structural, 295s\n"
+        "[orchestrator] <<< oecd/_all took 400s\n"
+        "[orchestrator] >>> wid/_all (csv retry drain)\n  derive budget of 155 min spent - 9 id(s)\n"
+        "[orchestrator] <<< wid/_all took 9,300s (csv retry drain: attempted 9, cleared 0, still queued 9)\n"
+        "[orchestrator] >>> oecd/_all (csv retry drain)\n"
+        "[oecd] 50/75 flows - +4,354 rows, 0 quiet, 23 transient, 0 structural, 9,295s\n"
+        "[orchestrator] <<< oecd/_all took 60s (csv retry drain: attempted 1, cleared 1, still queued 0)\n",
+        encoding="utf-8")
+    tp = m.measure_tail_probe(str(tmp_path))
+    assert tp["unit_runs"] == 3 and tp["tail_lower_bound_min"] == 45.0, tp
+    assert [(x[2], x[0]) for x in tp["csv_budget_hits"]] == [("bea", 45.0)]
+    fb = m.giant_flow_blocks(str(tmp_path), "oecd")
+    assert fb["unit_runs"] == 1 and [(round(b[0] * 60), b[3], b[4]) for b in fb["blocks"]] == [(295, 0, 25)], fb
+
+
 # ------------------------------------------------------------------ the verdict
 
 def test_verdict_needs_both_drain_and_two_runs_a_day():
