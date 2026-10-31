@@ -152,7 +152,8 @@ def make(ds: str, source: str, window: bool = False):
 #     time left must be at least max(AQUEDUCT_UNCTAD_MARGIN_MIN floor, 2 x the longest request this pass);
 #     every attempt is clamped to the network time left and every retry sleep counts against it, so a
 #     request's WHOLE retry ladder ends before the reserve (jobs.ingest_unctad_ds.Window). ALL measures are
-#     walked first; the reserve is checked again before the parse and merge. A stop books the rest as
+#     walked first; the reserve is checked again before the parse and merge, EXCEPT on a pass that made no
+#     Facts request (chunk or size-cap probe; replay-only: stopping it could never progress). A stop books the rest as
 #     deferred (finalize's ROTATING sentence), merges nothing, reports merged_rows=0, keeps every chunk and
 #     every size-cap answer on disk, and stamps no vintage, so a later pass resumes the walk. A stopped
 #     pass's run row still reads about its window's minutes, so the orchestrator's admission reserve keeps
@@ -193,8 +194,9 @@ def make(ds: str, source: str, window: bool = False):
 #     it returns no_change with the token (or, with a debt, ok handing every stored key over from the
 #     store), so a lost vintage stamp - a kill or a lost state push after the merge, or the NULL vintage
 #     this source starts from - can never make every pass replay and stop before the assembly. With NO
-#     record (the first passes after the switch from main) a fully spilled walk still replays every chunk
-#     before the reserve check: re-reading chunks makes no network request and is not interrupted.
+#     record (the first passes after the switch from main, or after a merge whose record was lost) a fully
+#     spilled walk replays every chunk, and because it made NO Facts request (dimension lists aside) it does
+#     not take the reserve stop: it assembles as main does (review AR-411 U3), bounded by the ps1 hard stop.
 #     THE SIDECARS MOVE WITH THE STORE: <store>.release.json, _unctad_owed.json and <store>.keyshape.json
 #     describe that store. If the store is restored or replaced from an older copy (a T0 move, a backup
 #     restore, an operator re-pull) while the release record survives, that release is skipped as "already
@@ -204,8 +206,9 @@ def make(ds: str, source: str, window: bool = False):
 #     once from the footer statistics); a release whose keys have another shape is STRUCTURAL (Route B when
 #     something is owed, never green): the text names it a re-grain, an operator re-key (R22 clean re-pull),
 #     never a merge.
-# STATED RESIDUALS: re-reading spilled chunks is not interrupted, so without a release record a replay longer
-# than the window still ends in the ps1 hard stop, as on main; a server that delays its first byte while the
+# STATED RESIDUALS: a replay-only pass ignores the reserve, so a replay plus assembly longer than the run
+# budget plus 10 min is still killed by the ps1 hard stop, as on main (the kill loses nothing: the publish is
+# atomic and the 'merging' mark precedes it); a server that delays its first byte while the
 # client ignores the clamped read timeout is bounded only by that client (requests honours it; review
 # AR-411 P3st vs P3sth); every measure's CSV text is held in memory before the parse (about 2.7 GB of spills for
 # this source; the 36.5 GB and 116 GB spill sets of other giants cannot use this order unchanged);
@@ -430,8 +433,10 @@ def _windowed(ds: str, source: str):
 
         # a kill's leftovers are never reusable: a chunk's .tmp (its spill), an owed-mark .tmp (local mirror)
         sd = j._spill_dir(ds)
+        store_tmp = os.path.basename(path) + "."              # blob.write_table_atomic's <store>.<pid>.<id>.tmp
         for d, pred in ((sd, lambda f: f.endswith(".tmp")),
-                        (out_dir, lambda f: f.startswith(OWED_FILE + ".") and f.endswith(".tmp"))):
+                        (out_dir, lambda f: (f.startswith(OWED_FILE + ".") or f.startswith(store_tmp))
+                         and f.endswith(".tmp"))):
             if os.path.isdir(d):
                 for f in os.listdir(d):
                     if pred(f):
@@ -525,7 +530,18 @@ def _windowed(ds: str, source: str):
 
         def before_assembly():
             left = win.left()
-            if left is not None and left < reserve_s:
+            if win.posts == 0:
+                # A REPLAY-ONLY PASS (review AR-411 U3): every chunk and size-cap answer came from the spill -
+                # the walk POSTed nothing (a dimension list it had to ask for is cached now and keeps no chunk
+                # work, so it does not count). Stopping here
+                # would leave the next pass exactly where this one is - a livelock main does not have. It
+                # assembles as main does; the outer bound is the ps1 hard stop (run budget + 10 min). A kill
+                # inside the merge loses nothing: the publish is one atomic replace (blob.write_table_atomic)
+                # and the 'merging' owed mark was stored before it.
+                say(f"replay-only pass (no Facts request this pass): assembling regardless of "
+                    f"the {reserve_s / 60:g}-min reserve"
+                    + (f" with {left / 60:.1f} min left" if left is not None else ""))
+            elif left is not None and left < reserve_s:
                 raise j.WindowStop(f"{left / 60:.1f} min left, under the {reserve_s / 60:g}-min assembly "
                                    f"reserve before the parse and merge")
             say(f"walk timing: every measure walked in {_time.time() - t_pass:.1f}s; "

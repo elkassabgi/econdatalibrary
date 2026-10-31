@@ -211,6 +211,17 @@ if __name__ == "__main__":
             print("PLANTED KILL after merge_and_write", flush=True)
             os._exit(137)
         merge.merge_and_write = _m
+    elif kill == "in_publish":
+        # inside merge_and_write's publish: the new parquet is written to its temp name, the replace onto
+        # the store has NOT happened - the process dies there
+        real_replace = os.replace
+
+        def _r(src, dst, *a, **kw):
+            if str(dst).endswith(f"{SID}.parquet"):
+                print("PLANTED KILL inside the store publish (before the replace)", flush=True)
+                os._exit(137)
+            return real_replace(src, dst, *a, **kw)
+        os.replace = _r
     elif kill.startswith("after_owed_save:"):
         n, real_w = int(kill.split(":")[1]), blob.write_bytes_atomic
         cnt = [0]

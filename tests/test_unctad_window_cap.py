@@ -356,6 +356,89 @@ def test_a_merged_release_with_a_lost_stamp_is_stamped_without_a_walk(env):
     assert json.load(open(_record_path(env)))["token"] == "10010|2026-10-22T00:00:00"
 
 
+def _slow_replay(env, monkeypatch, per_read_s):
+    """Every re-read of a spilled chunk costs per_read_s on the pinned clock (the 2.7 GB replay)."""
+    import builtins
+    real_open = builtins.open
+    sd = os.path.join(env["root"], "spill")
+
+    def slow_open(p, *a, **kw):
+        if str(p).startswith(sd) and str(p).endswith(".csv") and not (a and "w" in a[0]) \
+                and "w" not in kw.get("mode", ""):
+            env["clock"].sleep(per_read_s)
+        return real_open(p, *a, **kw)
+    monkeypatch.setattr(j, "open", slow_open, raising=False)
+
+
+def test_the_switch_state_from_main_merges_and_stamps_on_pass_one(env, monkeypatch):
+    """Review AR-411 U3 (its pk_t5 shape): main did the first ingest, every chunk is spilled under main's bare
+    version token, the vintage is NULL and there is no release record. The replay alone outlasts the window
+    minus the reserve. Main assembles regardless and stamps; stopping before the assembly would leave every
+    pass exactly where the last one was. The pass that POSTed nothing assembles, stamps, and the next pass
+    is the cheap already-merged one."""
+    _seed(env)
+    _forget_release(env)                                    # main writes no record
+    sd = os.path.join(env["root"], "spill", F.SID)
+    os.remove(os.path.join(sd, j.DIMS_FILE))                # main caches no dimension lists
+    with open(os.path.join(sd, "_token.txt"), "w") as fh:
+        fh.write("10009")                                   # main's bare version token
+    _slow_replay(env, monkeypatch, 30.0)                    # 60 chunks x 30 s = 30 min of replay
+    res, took = _run(env, "base", post_s=60.0, ceiling_s=70 * MIN)   # 10 min of window past the reserve
+    assert res.status == "no_change", res.error
+    assert res.new_vintage == "10009|2026-08-05T13:55:36"
+    assert [k for k, _ in env["api"].log if k in ("leaf", "cap")] == [], "nothing was POSTed: a replay"
+    assert took >= 30 * MIN                                 # it did replay, past the reserve, as main does
+    assert json.load(open(_record_path(env)))["token"] == res.new_vintage
+    again, took2 = _run(env, "base", post_s=60.0, ceiling_s=70 * MIN)
+    assert again.status == "no_change" and took2 < MIN and [k for k, _ in env["api"].log] == ["meta"]
+
+
+def test_a_replay_that_must_fetch_makes_progress_every_pass_and_converges(env, monkeypatch):
+    """Three chunks lost late in a 30-min replay, 10 min of window past the reserve. A pass that has POSTed
+    nothing takes ONE request from the reserve (so no pass is wasted), then a pass that POSTed takes the
+    reserve stop and keeps the chunk; the pass that POSTs nothing assembles. No livelock, no chunk asked
+    twice, and only a POSTing pass ever reads partial."""
+    _seed(env)
+    _forget_release(env)
+    sd = os.path.join(env["root"], "spill", F.SID)
+    for p in sorted(glob.glob(os.path.join(sd, "*.csv")))[-3:]:
+        os.remove(p)                                        # three chunks to fetch again
+    _slow_replay(env, monkeypatch, 30.0)
+    asked, statuses = [], []
+    for _ in range(6):
+        res, took = _run(env, "base", post_s=1.0, ceiling_s=70 * MIN)
+        statuses.append(res.status)
+        n = len(env["api"].leaves())
+        asked += env["api"].leaves()
+        assert res.status in ("partial", "no_change"), res.error
+        if res.status == "partial":
+            assert n >= 1, "a stopped pass fetched nothing: the livelock"
+            assert took <= 70 * MIN + 2 * MIN
+        else:
+            break
+    assert statuses[-1] == "no_change" and res.new_vintage == "10009|2026-08-05T13:55:36", statuses
+    assert len(asked) == len(set(asked)) == 3
+    assert F.store_of(env["root"]) == F.truth("base")
+
+
+def test_a_kill_inside_the_store_publish_loses_nothing(env):
+    """The merge publishes by one atomic replace and the 'merging' mark is stored before it: a process killed
+    between writing the new parquet and replacing the store leaves the OLD store readable, and the next
+    pass merges the release and hands its keys over."""
+    _seed(env)
+    before = F.store_of(env["root"])
+    rc, out = _child(env["root"], "rev", "in_publish")
+    assert rc == 137 and "PLANTED KILL inside the store publish" in out, out[-600:]
+    assert F.store_of(env["root"]) == before                 # the old store, intact
+    mark = json.load(open(os.path.join(env["root"], "clean_full", F.SID, U.OWED_FILE)))
+    assert mark["form"] == "merging"
+    res, _ = _run(env, "rev")
+    assert res.status == "ok" and F.store_of(env["root"]) == F.truth("rev")
+    assert sorted(res.changed_keys) == sorted(F.truth("rev"))
+    left = [f for f in os.listdir(os.path.join(env["root"], "clean_full", F.SID)) if f.endswith(".tmp")]
+    assert left == [], left
+
+
 def test_a_dimension_cache_under_another_token_is_never_used(env):
     _seed(env)
     _forget_release(env)

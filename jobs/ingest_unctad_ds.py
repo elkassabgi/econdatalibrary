@@ -228,6 +228,8 @@ class Window:
         self.reserve_s = float(reserve_s)
         self.longest = 0.0
         self.requests = 0
+        self.posts = 0
+        self._borrow = False
         self.say = say or log
         self._last_tick = time.monotonic()
 
@@ -242,16 +244,31 @@ class Window:
     def need(self) -> float:
         return max(self.floor_s, 2.0 * self.longest)
 
+    def _limit(self):
+        """The deadline the request in flight is held to: the network deadline, or - for the one request a
+        pass that has POSTed nothing may BORROW from the reserve - the window end itself."""
+        return self.left() if self._borrow else self.net_left()
+
     def before_request(self, what: str) -> None:
         left = self.net_left()
+        self._borrow = False
         if left is not None and left < self.need():
+            # PROGRESS GUARANTEE (review AR-411 U3): a pass that has POSTed nothing yet - typically one that
+            # replayed its chunks up to the first one it lacks - may take its next request from the reserve
+            # when the window end itself still allows it. Refusing would leave the next pass exactly where this
+            # one is, for ever; after one POST the stop applies as usual and the fetched chunk is kept.
+            if self.posts == 0 and self.left() is not None and self.left() >= self.need():
+                self._borrow = True
+                self.say(f"  no Facts request yet this pass and {left / 60:.1f} min of network time left: "
+                         f"{what} is taken from the assembly reserve so the pass makes progress")
+                return
             raise WindowStop(f"{left / 60:.1f} min of network time left (window end minus the "
                              f"{self.reserve_s / 60:g}-min assembly reserve), under the {self.need() / 60:.1f}-min "
                              f"margin (max of the {self.floor_s / 60:.1f}-min floor and 2 x the longest request "
                              f"this pass, {self.longest:.1f}s) before {what}")
 
     def timeout(self, cap: float) -> float:
-        left = self.net_left()
+        left = self._limit()
         if left is None:
             return cap
         if left <= 1.0:
@@ -259,13 +276,18 @@ class Window:
         return min(cap, left)
 
     def sleep(self, s: float) -> None:
-        left = self.net_left()
+        left = self._limit()
         if left is not None and s >= left:
             raise WindowStop(f"a {s:.0f}s retry wait would pass the network deadline ({max(left, 0):.0f}s left)")
         time.sleep(s)
 
-    def record(self, seconds: float) -> None:
+    def record(self, seconds: float, post: bool = True) -> None:
+        """One network request's time. post=False for a dimension-table GET: `posts` counts only the Facts
+        POSTs (chunks and size-cap probes), the work a stop would keep (review AR-411 U3)."""
         self.requests += 1
+        if post:
+            self.posts += 1
+        self._borrow = False
         self.longest = max(self.longest, float(seconds))
 
     def tick(self, msg: str) -> None:
@@ -438,7 +460,7 @@ def dim_codes(ds_name: str, version, dim_table: str, window: "Window | None" = N
     window.before_request(f"dimension {dim_table}")
     t0 = time.time()
     rows = dim_rows(ds_name, version, dim_table, window=window)
-    window.record(time.time() - t0)
+    window.record(time.time() - t0, post=False)
     return [x["Code"] for x in rows if x.get("Code") is not None]
 
 
