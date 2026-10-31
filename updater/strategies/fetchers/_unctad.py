@@ -195,6 +195,11 @@ def make(ds: str, source: str, window: bool = False):
 #     this source starts from - can never make every pass replay and stop before the assembly. With NO
 #     record (the first passes after the switch from main) a fully spilled walk still replays every chunk
 #     before the reserve check: re-reading chunks makes no network request and is not interrupted.
+#     THE SIDECARS MOVE WITH THE STORE: <store>.release.json, _unctad_owed.json and <store>.keyshape.json
+#     describe that store. If the store is restored or replaced from an older copy (a T0 move, a backup
+#     restore, an operator re-pull) while the release record survives, that release is skipped as "already
+#     merged" - so move, restore or delete them together with the parquet. The already-merged-with-debt
+#     path reads two columns of the whole store (100,233,168 rows here) into Python lists.
 #   * KEY SHAPE (l): the number of key parts is pinned to the store (a sidecar <store>.keyshape.json, seeded
 #     once from the footer statistics); a release whose keys have another shape is STRUCTURAL (Route B when
 #     something is owed, never green): the text names it a re-grain, an operator re-key (R22 clean re-pull),
