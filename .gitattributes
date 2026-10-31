@@ -1,3 +1,7 @@
 # Shell scripts Ahmed runs from Git Bash on Windows must keep LF endings: with core.autocrlf=true a
 # checkout gives them CRLF and bash fails on the stray carriage returns.
 tools/selfhost/*.sh text eol=lf
+
+# Recorded publisher answers: their bytes are pinned by sha256 in tests/test_unctad_metadata_url.py, so no
+# end-of-line conversion may touch them.
+tests/fixtures/unctad/*.json -text
