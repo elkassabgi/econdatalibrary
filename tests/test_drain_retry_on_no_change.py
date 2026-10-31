@@ -372,6 +372,28 @@ def test_a_source_that_ran_update_drains_once_in_the_loop_not_again(rig):
     assert rig.queue()[_ids(2)[0]]["attempts"] == 2, "the in-loop drain counts a tried refailure too"
 
 
+def test_a_source_with_one_quiet_unit_and_one_that_ran_is_not_drained(rig, monkeypatch):
+    """A source qualifies only when EVERY unit of it this pass was a no_change or NOT DUE. Here cnb/_all's probe
+    matches but a second unit of cnb ran update() (transient_fail): no leftover drain for cnb."""
+    import dataclasses
+    real_units = orchestrate.registry.all_units
+
+    def units(path=None):
+        us = real_units(path)
+        base = next(u for u in us if u.source_id == SRC)
+        return us + [dataclasses.replace(base, unit_id="part2")]
+    monkeypatch.setattr(orchestrate.registry, "all_units", units)
+
+    class _TwoUnits(_Strategy):
+        def detect_change(self, unit, us):
+            self._cur = "v1"
+            return None if unit.unit_id == "_all" else "v2"
+    rig.seed(SRC, _ids(2))
+    results = rig.run(strategy=_TwoUnits(result=Result(status="transient_fail", error="503")))
+    assert sorted(results) == [(f"{SRC}/_all", "no_change"), (f"{SRC}/part2", "transient_fail")], results
+    assert rig.derived == [] and len(rig.queue()) == 2
+
+
 def test_a_plain_transient_fail_does_not_drain(rig):
     rig.seed(SRC, _ids(2))
     rig.run(strategy=_Strategy(vintage="v2", result=Result(status="transient_fail", error="503")))
@@ -494,6 +516,7 @@ def test_the_mirror_check_is_charged_to_the_drain_time(r2rig, monkeypatch, capsy
     r2rig.run()
     assert "budget" not in seen and r2rig.blob.keys == [] and len(r2rig.queue()) == 2
     assert all(r["attempts"] == 1 for r in r2rig.queue().values())
+    assert "time ran out in the mirror check" in capsys.readouterr().out
 
 
 def test_no_r2_client_holds_everything_back(r2rig, monkeypatch):
