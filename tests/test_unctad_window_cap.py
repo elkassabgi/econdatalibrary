@@ -1,0 +1,263 @@
+"""unctad_nonplasticsubststradebypartner: the WINDOWED update (PLAN R10.3 step 4, 2026-10-30).
+
+What main did, measured with the real fetcher against a faked API and a real os._exit (receipts in the PR):
+it never read the window end, one request could take ~6 x 900 s plus sleeps, a kill after the merge left a
+debt nothing recorded, a revision with no new row read no_change, a same-version re-issue re-used old chunks,
+and a new key dimension merged silently. Each test below pins one of those, against the REAL module and the
+REAL job, with a fake API (tests/_unctad_fake.py) and a PINNED clock (a FakeClock, so the window arithmetic
+is exact). Every other unctad module keeps main's update: the first two tests pin that.
+"""
+import glob
+import json
+import os
+import subprocess
+import sys
+
+import pytest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import _unctad_fake as F  # noqa: E402
+import jobs.ingest_unctad_ds as j  # noqa: E402
+from updater.strategies.fetchers import _unctad as U  # noqa: E402
+
+FETCHERS = os.path.join(ROOT, "updater", "strategies", "fetchers")
+MIN = 60.0
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    monkeypatch.delenv("AQUEDUCT_BACKEND", raising=False)
+    monkeypatch.delenv("AQUEDUCT_UNCTAD_MARGIN_MIN", raising=False)
+    monkeypatch.delenv("AQUEDUCT_UNCTAD_ASSEMBLY_RESERVE_MIN", raising=False)
+    clock = F.FakeClock()
+    api = F.FakeApi(clock)
+    F.install(j, U, str(tmp_path), api, clock, setattr_=monkeypatch.setattr)
+    orch = type(sys)("updater.orchestrate")
+    orch._RUN_DEADLINE_TS = None
+    monkeypatch.setitem(sys.modules, "updater.orchestrate", orch)
+    return {"root": str(tmp_path), "api": api, "clock": clock, "orch": orch}
+
+
+def _np():
+    from updater.strategies.fetchers import unctad_nonplasticsubststradebypartner as NP
+    return NP
+
+
+def _run(env, up="base", post_s=0.0, ceiling_s=None, status=None):
+    env["api"].up, env["api"].post_s, env["api"].status = up, post_s, status
+    env["api"].log.clear()
+    env["orch"]._RUN_DEADLINE_TS = None if ceiling_s is None else env["clock"].time() + ceiling_s
+    t0 = env["clock"].time()
+    res = _np().update(None, None)
+    return res, env["clock"].time() - t0
+
+
+def _seed(env):
+    """The store a clean base pull builds, and its marks settled (no state.db = outside the orchestrator)."""
+    res, _ = _run(env, "base")
+    assert res.status == "ok", res.error
+    res, _ = _run(env, "base")                   # settles the 'handed' mark left by the seed; nothing changed
+    assert res.status == "no_change", res.error
+    return res
+
+
+# ---------------------------------------------------------------- the other 95 modules keep main's update
+
+def test_only_nonplastics_opts_in():
+    opted = []
+    for p in sorted(glob.glob(os.path.join(FETCHERS, "unctad_*.py"))):
+        src = open(p, encoding="utf-8").read()
+        assert "from ._unctad import make" in src, p
+        if "window=True" in src:
+            opted.append(os.path.basename(p)[:-3])
+    assert opted == ["unctad_nonplasticsubststradebypartner"]
+    from updater.strategies.fetchers import unctad_tradefoodcatbyproc as T
+    assert T.update.__qualname__ == "make.<locals>.update"
+    assert _np().update.__qualname__ == "_windowed.<locals>.update"
+
+
+def test_a_module_that_does_not_opt_in_ignores_the_ceiling(env, monkeypatch):
+    """The un-opted update pulls the whole release whatever the ceiling says, request for request."""
+    from updater.strategies.fetchers import unctad_tradefoodcatbyproc as T
+    monkeypatch.setattr(j, "_spill_dir", lambda ds: os.path.join(env["root"], "spill_t", j.source_id_for(ds)))
+    env["api"].up = "base"
+    r1 = T.update(None, None)
+    log1 = list(env["api"].log)
+    import shutil
+    shutil.rmtree(os.path.join(env["root"], "spill_t"))
+    shutil.rmtree(os.path.join(env["root"], "clean_full", "unctad_tradefoodcatbyproc"))
+    env["api"].log.clear()
+    env["orch"]._RUN_DEADLINE_TS = env["clock"].time() - 3600      # long past
+    env["api"].post_s = 30.0
+    r2 = T.update(None, None)
+    assert r1.status == r2.status == "ok"
+    assert env["api"].log == log1 and len(env["api"].leaves()) == 60
+    assert r2.changed_keys is None and r1.series_cursors == r2.series_cursors
+
+
+# ---------------------------------------------------------------- (a)(g)(h) the window
+
+def test_a_pass_stops_before_the_window_end_minus_the_reserve_and_keeps_its_chunks(env):
+    _seed(env)
+    before = F.store_of(env["root"])
+    # every POST 60 s; ceiling 75 min; reserve 60 min, floor 5 min -> 15 min of network time
+    res, took = _run(env, "rev", post_s=60.0, ceiling_s=75 * MIN)
+    assert res.status == "partial" and res.merged_rows == 0
+    assert "deferred by budget, not reached in this pass" in res.error
+    assert res.new_vintage == "date-tail"                          # never the release token
+    assert took <= 15 * MIN, took                                  # the reserve was never touched
+    assert F.store_of(env["root"]) == before                        # nothing merged
+    n = len(env["api"].leaves())
+    assert n > 0 and len(glob.glob(os.path.join(env["root"], "spill", F.SID, "*.csv"))) >= n
+
+
+def test_a_chain_of_short_passes_resumes_and_converges(env):
+    _seed(env)
+    asked, statuses = [], []
+    for _ in range(60):
+        res, took = _run(env, "rev", post_s=60.0, ceiling_s=75 * MIN)
+        statuses.append(res.status)
+        assert took <= 15 * MIN
+        asked += env["api"].leaves()
+        if res.status != "partial":
+            break
+    assert statuses[-1] == "ok", statuses
+    assert len(asked) == len(set(asked)) == 60, "every leaf asked exactly once across the chain"
+    assert F.store_of(env["root"]) == F.truth("rev")
+
+
+def test_the_whole_retry_ladder_ends_before_the_reserve(env):
+    _seed(env)
+    # every POST answers 503 after 100 s: main's ladder is 6 x (100 s + 20..120 s) per request, then splits
+    res, took = _run(env, "rev", post_s=100.0, ceiling_s=75 * MIN, status=503)
+    assert res.status == "partial" and "stopped before the window end" in res.error
+    assert took <= 15 * MIN, took
+
+
+def test_no_ceiling_nothing_stops(env):
+    _seed(env)
+    res, _ = _run(env, "rev", post_s=60.0)
+    assert res.status == "ok"
+
+
+# ---------------------------------------------------------------- (c) a revision is a change
+
+def test_a_revision_without_a_new_row_reads_ok_and_names_exactly_the_revised_keys(env):
+    _seed(env)
+    res, _ = _run(env, "rev")
+    assert res.status == "ok" and "revised stored values" in res.error
+    tr = F.truth("rev")
+    assert sorted(res.changed_keys) == sorted(tr)                   # every key carries a 2005 obs
+    assert all(v == "2005-12-31" for v in res.changed_keys.values() if v is not None)
+    assert res.new_vintage == "10010|2026-10-22T00:00:00"
+    again, _ = _run(env, "rev")                                     # the same release again: nothing changed
+    assert again.status == "no_change" and again.changed_keys == {}
+
+
+# ---------------------------------------------------------------- (b)(n) the owed mark
+
+def _child(root, up, kill):
+    p = subprocess.run([sys.executable, "-B", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                          "_unctad_fake.py"), root, up, kill],
+                       capture_output=True, text=True, timeout=300,
+                       env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+    return p.returncode, p.stdout + p.stderr
+
+
+@pytest.mark.parametrize("kill", ["after_merge", "after_owed_save:2"])
+def test_a_kill_after_the_merge_is_handed_over_by_the_next_pass(env, kill):
+    _seed(env)
+    rc, out = _child(env["root"], "rev", kill)
+    assert rc == 137 and "PLANTED KILL" in out, out[-600:]
+    assert F.store_of(env["root"]) == F.truth("rev")                # the merge published
+    res, _ = _run(env, "rev")                                       # identical merge, but the debt is owed
+    assert res.status == "ok"
+    assert sorted(res.changed_keys) == sorted(F.truth("rev"))
+
+
+def test_an_absent_mark_beside_an_existing_store_is_owed_once(env):
+    _seed(env)
+    os.remove(os.path.join(env["root"], "clean_full", F.SID, U.OWED_FILE))
+    res, _ = _run(env, "base")                                      # the same release: identical merge
+    assert res.status == "ok" and len(res.changed_keys) == len(F.truth("base"))
+
+
+def test_the_pre_merge_mark_fails_closed(env, monkeypatch):
+    _seed(env)
+    real = U.blob.write_bytes_atomic
+
+    def w(path, data, *a, **kw):
+        if str(path).endswith(U.OWED_FILE) and json.loads(data.decode()).get("form") in ("merging", "owed"):
+            raise OSError("planted")
+        return real(path, data, *a, **kw)
+    monkeypatch.setattr(U.blob, "write_bytes_atomic", w)
+    before = F.store_of(env["root"])
+    res, _ = _run(env, "rev")
+    assert res.status == "partial" and "pre-merge owed mark not saved" in res.error
+    assert F.store_of(env["root"]) == before
+
+
+def test_a_mark_that_is_not_a_mark_fails_closed(env):
+    _seed(env)
+    with open(os.path.join(env["root"], "clean_full", F.SID, U.OWED_FILE), "w") as fh:
+        fh.write("[1, 2]")
+    with pytest.raises(U.DefinitiveError, match="is present but is not a mark"):
+        _run(env, "rev")
+
+
+# ---------------------------------------------------------------- (k) the spill gate
+
+def _killed_walk(env, up, n_leaves):
+    """A pass that persisted some chunks of `up` from an empty spill and then stopped (the clock-limited
+    ceiling stops it cleanly before the walk ends)."""
+    import shutil
+    shutil.rmtree(os.path.join(env["root"], "spill", F.SID), ignore_errors=True)
+    res, _ = _run(env, up, post_s=60.0, ceiling_s=(65 + n_leaves) * MIN)
+    assert res.status == "partial"
+    return len(env["api"].leaves())
+
+
+def test_a_same_version_reissue_discards_the_old_chunks(env):
+    _seed(env)
+    k = _killed_walk(env, "base", 10)                       # chunks of release 10009|2026-08-05 kept
+    assert k > 0
+    res, _ = _run(env, "reissue")                           # 10009 re-issued: lastUpdated moved
+    assert len(env["api"].leaves()) == 60, "every chunk asked again"
+    assert res.status == "ok" and F.store_of(env["root"]) == F.truth("reissue")
+
+
+@pytest.mark.parametrize("old_spills, expect_leaves", [(False, None), (True, 60)])
+def test_a_legacy_bare_version_token(env, old_spills, expect_leaves):
+    """main wrote the bare version. Accepted only when the release's lastUpdated is earlier than every chunk."""
+    _seed(env)
+    k = _killed_walk(env, "base", 10)
+    sd = os.path.join(env["root"], "spill", F.SID)
+    with open(os.path.join(sd, "_token.txt"), "w") as fh:
+        fh.write("10009")                                   # main's form
+    if old_spills:
+        for p in glob.glob(os.path.join(sd, "*.csv")):
+            os.utime(p, (1754006400.0, 1754006400.0))       # 2025-08-01: before lastUpdated 2026-08-05
+    res, _ = _run(env, "base")
+    assert res.status in ("ok", "no_change")
+    assert len(env["api"].leaves()) == (expect_leaves if expect_leaves is not None else 60 - k)
+
+
+# ---------------------------------------------------------------- (l)(j) the key shape
+
+def test_a_new_key_dimension_is_refused_by_name(env):
+    _seed(env)
+    with pytest.raises(U.DefinitiveError, match="re-grain|re-key"):
+        _run(env, "regrain")
+    assert {k.count(".") for k in F.store_of(env["root"])} == {4}
+
+
+def test_a_refusal_with_a_debt_hands_the_debt_over(env):
+    _seed(env)
+    rc, out = _child(env["root"], "rev", "after_merge")
+    assert rc == 137
+    res, _ = _run(env, "regrain")
+    assert res.status == "partial" and "R22" in res.error
+    assert sorted(res.changed_keys) == sorted(F.truth("rev"))
