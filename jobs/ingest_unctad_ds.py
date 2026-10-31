@@ -7,8 +7,16 @@ contract was read from the app's own generated code sample and PROVEN live 2026-
 (scratchpad unctad_auth_findings.md):
 
   catalogue+schema (keyless):
-    GET https://unctadstat-api.unctad.org/api/datacenter/en            (99 datasets)
-    GET https://unctadstat-api.unctad.org/api/reportMetadata/{DS}/en   (dims+measures+version)
+    GET https://unctadstat-api.unctad.org/api/datacenter               (99 datasets)
+    GET https://unctadstat-api.unctad.org/api/reportMetadata/{DS}      (dims+measures+version)
+  NO LANGUAGE SEGMENT. Both used to take a trailing `/en` (the last cloud unctad ok was
+  2026-10-27 23:49Z). From the 2026-10-29 22:45Z updater-daily run on, every unctad probe failed
+  with "404 ... reportMetadata/<DS>/en" (run 41054519780: 68 such lines); measured 2026-10-31
+  00:45Z, `.../reportMetadata/US.TradeMerchTotal/en` and `.../datacenter/en` answer 404. Without the segment
+  reportMetadata/US.TradeMerchTotal answers 200 with a body byte-identical to the /en answer
+  recorded on 2026-10-20 (sha256 36d334b0...61e5, docs/evidence/
+  unctad_trademerchgr_withdrawal_20261020.json), so the parse and the version|lastUpdated token
+  are unchanged. The datacenter answer did change shape: see tools/title_unctad_from_api.py.
   observations (keyed — UNCTAD_CLIENT_ID / UNCTAD_API_KEY from .env, NEVER in code):
     POST https://unctadstat-user-api.unctad.org/{DS}/cur/Facts?culture=en
     headers ClientId / ClientSecret; multipart form $select/$filter/$format=csv
@@ -78,8 +86,13 @@ def creds():
     return cid, key
 
 
+def report_metadata_url(ds_name: str) -> str:
+    """The keyless metadata address. No `/en` segment: UNCTAD answers 404 to it since 2026-10-29."""
+    return f"{META}/reportMetadata/{ds_name}"
+
+
 def report_metadata(ds_name: str) -> dict:
-    r = requests.get(f"{META}/reportMetadata/{ds_name}/en", headers=UA, timeout=120)
+    r = requests.get(report_metadata_url(ds_name), headers=UA, timeout=120)
     r.raise_for_status()
     return r.json()
 

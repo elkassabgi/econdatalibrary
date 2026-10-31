@@ -1,0 +1,1197 @@
+[
+ {
+  "id": 45,
+  "title": "International trade",
+  "reports": [],
+  "subFolders": [
+   {
+    "id": 1,
+    "title": "Trade in merchandise",
+    "reports": [
+     {
+      "id": 2650,
+      "version": 10011,
+      "title": "Merchandise: Trade - Annual",
+      "lastUpdatedDate": "2026-10-08T12:58:00",
+      "category": "International trade in goods and services",
+      "name": "US.TradeMerchTotal",
+      "order": 1
+     },
+     {
+      "id": 2649,
+      "version": 10011,
+      "title": "Merchandise: Trade balance - Annual",
+      "lastUpdatedDate": "2026-10-08T12:58:00",
+      "category": "International trade in goods and services",
+      "name": "US.TradeMerchBalance",
+      "order": 3
+     },
+     {
+      "id": 2612,
+      "version": 10019,
+      "title": "Merchandise: Trade volume - Growth rates - Quarterly (analytical)",
+      "lastUpdatedDate": "2026-10-08T12:58:00",
+      "category": "International trade in goods and services",
+      "name": "US.MerchVolumeQuarterly",
+      "order": 4
+     },
+     {
+      "id": 2663,
+      "version": 10008,
+      "title": "Merchandise: Trade matrix - Annual (analytical)",
+      "lastUpdatedDate": "2026-10-30T07:07:00",
+      "category": "International trade in goods and services",
+      "name": "US.TradeMatrix",
+      "order": 5
+     },
+     {
+      "id": 2512,
+      "version": 10015,
+      "title": "Merchandise: Trade - Core indices - Annual (analytical)",
+      "lastUpdatedDate": "2026-07-20T11:13:00",
+      "category": "International trade in goods and services",
+      "name": "US.TermsOfTrade",
+      "order": 6
+     },
+     {
+      "id": 2661,
+      "version": 10008,
+      "title": "Merchandise: Intra-trade and extra-trade of country groups by product, annual (analytical)",
+      "lastUpdatedDate": "2026-10-30T07:07:00",
+      "category": "International trade in goods and services",
+      "name": "US.IntraTrade",
+      "order": 7
+     },
+     {
+      "id": 2640,
+      "version": 10004,
+      "title": "Merchandise: Trade price index – Quarterly (analytical)",
+      "lastUpdatedDate": "2026-10-26T10:50:00",
+      "category": "International trade in goods and services",
+      "name": "US.TradePriceIndices_Q",
+      "order": 8
+     },
+     {
+      "id": 2668,
+      "version": 10008,
+      "title": "Merchandise: Standard product concentration and diversification indices - Annual (analytical)",
+      "lastUpdatedDate": "2026-10-30T07:07:00",
+      "category": "International trade in goods and services",
+      "name": "US.ConcentDiversIndices",
+      "order": 9
+     },
+     {
+      "id": 2667,
+      "version": 10007,
+      "title": "Merchandise: Market concentration and structural change indices - Annual (analytical)",
+      "lastUpdatedDate": "2026-10-30T07:07:00",
+      "category": "International trade",
+      "name": "US.ConcentStructIndices",
+      "order": 10
+     },
+     {
+      "id": 2003,
+      "version": 10005,
+      "title": "Merchandise: Theil indices of product and market concentration - Annual (analytical)",
+      "lastUpdatedDate": "2025-12-03T09:00:00",
+      "category": "International merchandise trade",
+      "name": "US.MerchTheilIndices",
+      "order": 11
+     },
+     {
+      "id": 2662,
+      "version": 10008,
+      "title": "Merchandise: Revealed Comparative Advantage index - Annual (analytical)",
+      "lastUpdatedDate": "2026-10-30T10:46:00",
+      "category": "Trade indicators",
+      "name": "US.RCA",
+      "order": 12
+     },
+     {
+      "id": 2587,
+      "version": 10004,
+      "title": "Merchandise: Import tariff rates - Annual",
+      "lastUpdatedDate": "2026-09-28T11:02:00",
+      "category": "International trade in goods and services",
+      "name": "US.Tariff",
+      "order": 13
+     },
+     {
+      "id": 2665,
+      "version": 10008,
+      "title": "GSTP: Merchandise trade matrix - Annual (analytical)",
+      "lastUpdatedDate": "2026-10-30T07:57:00",
+      "category": "International trade",
+      "name": "US.GSTP_TradeMatrix",
+      "order": 15
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   },
+   {
+    "id": 5,
+    "title": "Trade in services",
+    "reports": [
+     {
+      "id": 2672,
+      "version": 10010,
+      "title": "Services: Trade by main category - Quarterly",
+      "lastUpdatedDate": "2026-10-30T16:04:00",
+      "category": "International trade in goods and services",
+      "name": "US.TotAndComServicesQuarterly",
+      "order": 3
+     },
+     {
+      "id": 2544,
+      "version": 10005,
+      "title": "Services: Trade by category - Annual",
+      "lastUpdatedDate": "2026-07-23T11:34:00",
+      "category": "International trade in goods and services",
+      "name": "US.TradeServCatTotal",
+      "order": 4
+     },
+     {
+      "id": 2545,
+      "version": 10005,
+      "title": "Services: Bilateral trade by category - Annual",
+      "lastUpdatedDate": "2026-07-23T11:34:00",
+      "category": "International trade in goods and services",
+      "name": "US.TradeServCatByPartner",
+      "order": 4
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   },
+   {
+    "id": 6,
+    "title": "Trade in creative goods and services",
+    "reports": [
+     {
+      "id": 2222,
+      "version": 10002,
+      "title": "Creative goods: Bilateral trade by product group - Annual (analytical)",
+      "lastUpdatedDate": "2026-04-02T15:01:00",
+      "category": "Creative economy",
+      "name": "US.CreativeGoodsValue",
+      "order": 0
+     },
+     {
+      "id": 2220,
+      "version": 10002,
+      "title": "Creative goods: Bilateral trade by product group - Growth rates - Annual (analytical)",
+      "lastUpdatedDate": "2026-04-02T15:01:00",
+      "category": "Creative economy",
+      "name": "US.CreativeGoodsGR",
+      "order": 1
+     },
+     {
+      "id": 2073,
+      "version": 10003,
+      "title": "Creative services: Trade - Annual (analytical)",
+      "lastUpdatedDate": "2026-04-02T15:05:00",
+      "category": "Creative economy",
+      "name": "US.CreativeServ_Indiv_Tot",
+      "order": 3
+     },
+     {
+      "id": 2072,
+      "version": 10003,
+      "title": "Creative services: exports of selected groups of economies - Annual (analytical)",
+      "lastUpdatedDate": "2026-04-02T15:05:00",
+      "category": "Creative economy",
+      "name": "US.CreativeServ_Group_E",
+      "order": 4
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   },
+   {
+    "id": 54,
+    "title": "Trade in critical minerals",
+    "reports": [
+     {
+      "id": 2502,
+      "version": 10004,
+      "title": "Critical minerals: Bilateral trade by product group - Annual (analytical)",
+      "lastUpdatedDate": "2026-07-14T09:51:00",
+      "category": "International trade",
+      "name": "US.CriticalMinerals_TradeByPart",
+      "order": 1
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   },
+   {
+    "id": 31,
+    "title": "Food trade by processing level",
+    "reports": [
+     {
+      "id": 1676,
+      "version": 10003,
+      "title": "Food categories: Bilateral trade by processing level - Annual (analytical)",
+      "lastUpdatedDate": "2025-03-20T12:39:00",
+      "category": "International trade",
+      "name": "US.TradeFoodCatByProc",
+      "order": -2
+     },
+     {
+      "id": 1674,
+      "version": 10003,
+      "title": "Food categories: Revealed comparative advantage index by processing level - Annual (analytical)",
+      "lastUpdatedDate": "2025-03-20T12:39:00",
+      "category": "International trade in goods",
+      "name": "US.TradeFoodProcCat_Cat_RCA",
+      "order": -1
+     },
+     {
+      "id": 1677,
+      "version": 10003,
+      "title": "Food processing: Bilateral trade by food category - Annual (analytical)",
+      "lastUpdatedDate": "2025-03-20T12:39:00",
+      "category": "International trade",
+      "name": "US.TradeFoodProcByCat",
+      "order": 0
+     },
+     {
+      "id": 1675,
+      "version": 10003,
+      "title": "Food processing: Revealed comparative advantage index by food category - Annual (analytical)",
+      "lastUpdatedDate": "2025-03-20T12:39:00",
+      "category": "International trade in goods",
+      "name": "US.TradeFoodProcCat_Proc_RCA",
+      "order": 1
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   }
+  ],
+  "isParentFolder": true
+ },
+ {
+  "id": 34,
+  "title": "Economy, investment and finance",
+  "reports": [],
+  "subFolders": [
+   {
+    "id": 12,
+    "title": "National accounts",
+    "reports": [
+     {
+      "id": 2471,
+      "version": 10003,
+      "title": "Gross domestic product: Total and per capita - Annual",
+      "lastUpdatedDate": "2026-06-26T12:34:00",
+      "category": "Economic trends",
+      "name": "US.GDPTotal",
+      "order": 0
+     },
+     {
+      "id": 2174,
+      "version": 10004,
+      "title": "Gross domestic product: By expenditure and by sector - Annual",
+      "lastUpdatedDate": "2026-03-06T15:28:00",
+      "category": "Economic trends",
+      "name": "US.GDPComponent",
+      "order": 2
+     },
+     {
+      "id": 543,
+      "version": 10001,
+      "title": "DISCONTINUED - Nominal GNI, total and per capita, annual",
+      "lastUpdatedDate": "2023-07-18T16:51:00",
+      "category": "Economic trends",
+      "name": "US.GNI",
+      "order": 3
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   },
+   {
+    "id": 11,
+    "title": "Investment and balance of payments",
+    "reports": [
+     {
+      "id": 2575,
+      "version": 10005,
+      "title": "Balance of payments: Goods and services trade - Annual",
+      "lastUpdatedDate": "2026-09-01T06:44:00",
+      "category": "International trade in goods and services",
+      "name": "US.GoodsAndServicesBpm6",
+      "order": -1
+     },
+     {
+      "id": 2576,
+      "version": 10005,
+      "title": "Balance of payments: Goods and services trade balance indicators - Annual",
+      "lastUpdatedDate": "2026-09-01T06:44:00",
+      "category": "International trade in goods and services",
+      "name": "US.GoodsAndServBalanceBpm6",
+      "order": 0
+     },
+     {
+      "id": 2574,
+      "version": 10005,
+      "title": "Balance of payments: Goods and services trade openness indicators - Annual",
+      "lastUpdatedDate": "2026-09-01T06:44:00",
+      "category": "International trade in goods and services",
+      "name": "US.GoodsAndServTradeOpennessBpm6",
+      "order": 1
+     },
+     {
+      "id": 2620,
+      "version": 10005,
+      "title": "Balance of payments: Current account balance - Annual",
+      "lastUpdatedDate": "2026-09-24T07:08:00",
+      "category": "Economic trends",
+      "name": "US.CurrAccBalance",
+      "order": 2
+     },
+     {
+      "id": 2659,
+      "version": 10005,
+      "title": "Personal remittances: receipts and payments, annual",
+      "lastUpdatedDate": "2025-11-05T10:12:00",
+      "category": "External financial resources",
+      "name": "US.Remittances",
+      "order": 3
+     },
+     {
+      "id": 2660,
+      "version": 10015,
+      "title": "Foreign direct investment: Inward and outward flows and stock, annual",
+      "lastUpdatedDate": "2026-10-21T14:08:00",
+      "category": "Foreign direct investment",
+      "name": "US.FdiFlowsStock",
+      "order": 4
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   },
+   {
+    "id": 14,
+    "title": "Productive capacities",
+    "reports": [
+     {
+      "id": 2005,
+      "version": 10007,
+      "title": "Structural transformation: Productive Capacities Index - Annual (analytical)",
+      "lastUpdatedDate": "2025-10-31T14:19:00",
+      "category": "Multi theme statistics",
+      "name": "US.PCI",
+      "order": 1
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   },
+   {
+    "id": 15,
+    "title": "Inflation and exchange rates",
+    "reports": [
+     {
+      "id": 2553,
+      "version": 10004,
+      "title": "Inflation: Consumer price index - Annual",
+      "lastUpdatedDate": "2026-08-28T08:04:00",
+      "category": "Economic trends",
+      "name": "US.Cpi_A",
+      "order": 1
+     },
+     {
+      "id": 2362,
+      "version": 10017,
+      "title": "Exchange rates: Currency cross rates - Annual",
+      "lastUpdatedDate": "2026-05-29T14:04:00",
+      "category": "Economic trends",
+      "name": "US.ExchangeRateCrosstab",
+      "order": 2
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   },
+   {
+    "id": 3,
+    "title": "Commodity prices",
+    "reports": [
+     {
+      "id": 2596,
+      "version": 10021,
+      "title": "Commodity prices: UNCTAD Commodity Price Index - Annual",
+      "lastUpdatedDate": "2026-02-10T13:02:00",
+      "category": "Commodities",
+      "name": "US.UCPI_A",
+      "order": 0
+     },
+     {
+      "id": 2642,
+      "version": 10022,
+      "title": "Commodity prices: UNCTAD Commodity Price Index - Monthly",
+      "lastUpdatedDate": "2026-10-09T14:30:00",
+      "category": "Commodities prices",
+      "name": "US.UCPI_M",
+      "order": 1
+     },
+     {
+      "id": 1662,
+      "version": 10011,
+      "title": "DISCONTINUED - UNCTAD Commodity Price Index, 1995-2024, annual (2015=100)",
+      "lastUpdatedDate": "2025-03-12T13:35:00",
+      "category": "Commodities",
+      "name": "US.CommodityPriceIndices_A",
+      "order": 2
+     },
+     {
+      "id": 1900,
+      "version": 10012,
+      "title": "DISCONTINUED - UNCTAD Commodity Price Index, January 1995 - June 2025, monthly (2015=100)",
+      "lastUpdatedDate": "2025-08-11T14:32:00",
+      "category": "Commodities",
+      "name": "US.CommodityPriceIndices_M",
+      "order": 3
+     },
+     {
+      "id": 1663,
+      "version": 10011,
+      "title": "DISCONTINUED - Commodity prices, 1995-2024, annual",
+      "lastUpdatedDate": "2025-03-12T13:35:00",
+      "category": "Commodities",
+      "name": "US.CommodityPrice_A",
+      "order": 4
+     },
+     {
+      "id": 1899,
+      "version": 10012,
+      "title": "DISCONTINUED - Commodity prices, January 1995 - June 2025, monthly",
+      "lastUpdatedDate": "2025-08-11T14:32:00",
+      "category": "Commodities",
+      "name": "US.CommodityPrice_M",
+      "order": 4
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   },
+   {
+    "id": 28,
+    "title": "Public finance",
+    "reports": [
+     {
+      "id": 590,
+      "version": 10001,
+      "title": "Government expenditures: By function - Annual",
+      "lastUpdatedDate": "2023-07-18T16:51:00",
+      "category": "Public Finance",
+      "name": "US.GovExpenditures",
+      "order": 1
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   }
+  ],
+  "isParentFolder": true
+ },
+ {
+  "id": 8,
+  "title": "Maritime and other transport",
+  "reports": [],
+  "subFolders": [
+   {
+    "id": 38,
+    "title": "Merchant fleet",
+    "reports": [
+     {
+      "id": 2353,
+      "version": 10002,
+      "title": "Merchant fleet: By flag of registration and ship type - Annual (analytical)",
+      "lastUpdatedDate": "2026-06-18T13:50:00",
+      "category": "Maritime transport",
+      "name": "US.MerchantFleet",
+      "order": 1
+     },
+     {
+      "id": 2337,
+      "version": 10002,
+      "title": "Merchant fleet: By beneficial ownership - Annual (analytical)",
+      "lastUpdatedDate": "2026-06-18T13:52:00",
+      "category": "Maritime transport",
+      "name": "US.FleetBeneficialOwners",
+      "order": 2
+     },
+     {
+      "id": 2339,
+      "version": 10002,
+      "title": "Merchant fleet: Share by flag of registration - Annual (analytical)",
+      "lastUpdatedDate": "2026-06-18T13:52:00",
+      "category": "Maritime transport",
+      "name": "US.VesselValueByRegistration",
+      "order": 3
+     },
+     {
+      "id": 2338,
+      "version": 10002,
+      "title": "Merchant fleet: Share by beneficial ownership - Annual (analytical)",
+      "lastUpdatedDate": "2026-06-18T13:52:00",
+      "category": "Maritime transport",
+      "name": "US.VesselValueByOwnership",
+      "order": 4
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   },
+   {
+    "id": 43,
+    "title": "Ship building and recycling",
+    "reports": [
+     {
+      "id": 2439,
+      "version": 10002,
+      "title": "Merchant fleet: Ship building - Annual",
+      "lastUpdatedDate": "2026-06-18T13:48:00",
+      "category": "Maritime transport",
+      "name": "US.ShipBuilding",
+      "order": 1
+     },
+     {
+      "id": 2440,
+      "version": 10002,
+      "title": "Merchant fleet: Ship recycling - Annual",
+      "lastUpdatedDate": "2026-06-18T13:48:00",
+      "category": "Maritime transport",
+      "name": "US.ShipScrapping",
+      "order": 2
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   },
+   {
+    "id": 39,
+    "title": "Freight volumes by sea",
+    "reports": [
+     {
+      "id": 2253,
+      "version": 10003,
+      "title": "Freight: Seaborne trade by cargo type - Annual (analytical)",
+      "lastUpdatedDate": "2026-03-17T10:39:00",
+      "category": "Maritime transport",
+      "name": "US.SeaborneTrade",
+      "order": 1
+     },
+     {
+      "id": 2263,
+      "version": 10003,
+      "title": "Freight: Container port throughput - Annual (analytical)",
+      "lastUpdatedDate": "2026-04-15T15:06:00",
+      "category": "Maritime transport",
+      "name": "US.ContPortThroughput",
+      "order": 2
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   },
+   {
+    "id": 40,
+    "title": "Port calls and performance",
+    "reports": [
+     {
+      "id": 1064,
+      "version": 10002,
+      "title": "Port calls: Performance indicators - Annual (analytical)",
+      "lastUpdatedDate": "2024-03-28T16:47:00",
+      "category": "Maritime transport",
+      "name": "US.PortCalls",
+      "order": 1
+     },
+     {
+      "id": 1066,
+      "version": 10002,
+      "title": "Port calls: Performance indicators - Semi-annual (analytical)",
+      "lastUpdatedDate": "2024-03-28T16:47:00",
+      "category": "Maritime transport",
+      "name": "US.PortCalls_S",
+      "order": 2
+     },
+     {
+      "id": 1065,
+      "version": 10002,
+      "title": "Port calls: Calls by commercial market - Annual (analytical)",
+      "lastUpdatedDate": "2024-03-28T16:25:00",
+      "category": "Maritime transport",
+      "name": "US.PortCallsArrivals",
+      "order": 3
+     },
+     {
+      "id": 1067,
+      "version": 10002,
+      "title": "Port calls: Calls by commercial market - Semi-annual (analytical)",
+      "lastUpdatedDate": "2024-03-28T16:25:00",
+      "category": "Maritime transport",
+      "name": "US.PortCallsArrivals_S",
+      "order": 4
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   },
+   {
+    "id": 41,
+    "title": "Maritime connectivity",
+    "reports": [
+     {
+      "id": 2595,
+      "version": 10013,
+      "title": "Liner shipping: Connectivity index - Monthly (analytical)",
+      "lastUpdatedDate": "2026-09-28T11:09:00",
+      "category": "Maritime transport",
+      "name": "US.LSCI_M",
+      "order": 1
+     },
+     {
+      "id": 2594,
+      "version": 10013,
+      "title": "Liner shipping: Connectivity index - Quarterly (analytical)",
+      "lastUpdatedDate": "2026-09-28T11:09:00",
+      "category": "Maritime transport",
+      "name": "US.LSCI",
+      "order": 2
+     },
+     {
+      "id": 2474,
+      "version": 10004,
+      "title": "Liner shipping: Bilateral connectivity index - Quarterly (analytical)",
+      "lastUpdatedDate": "2026-06-26T14:38:00",
+      "category": "Maritime transport",
+      "name": "US.LSBCI",
+      "order": 3
+     },
+     {
+      "id": 2584,
+      "version": 10008,
+      "title": "Liner shipping: Port connectivity index - Quarterly (analytical)",
+      "lastUpdatedDate": "2026-09-28T11:09:00",
+      "category": "Maritime transport",
+      "name": "US.PLSCI",
+      "order": 4
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   },
+   {
+    "id": 42,
+    "title": "Seafarer supply",
+    "reports": [
+     {
+      "id": 981,
+      "version": 10002,
+      "title": "Seafarer: Supply estimates by rank - Quinquennial (analytical)",
+      "lastUpdatedDate": "2023-07-18T11:00:00",
+      "category": "Maritime transport",
+      "name": "US.Seafarers",
+      "order": 1
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   },
+   {
+    "id": 9,
+    "title": "Global transport of merchandise trade",
+    "reports": [
+     {
+      "id": 1107,
+      "version": 10001,
+      "title": "Trade and transport: By destination, mode and product group  - Annual (analytical)",
+      "lastUpdatedDate": "2024-05-22T09:00:00",
+      "category": "International trade",
+      "name": "US.TransportCosts",
+      "order": 1
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   }
+  ],
+  "isParentFolder": true
+ },
+ {
+  "id": 35,
+  "title": "Environment and related trade",
+  "reports": [],
+  "subFolders": [
+   {
+    "id": 26,
+    "title": "Trade in biodiversity-based products",
+    "reports": [
+     {
+      "id": 2517,
+      "version": 10003,
+      "title": "Biotrade: Bilateral trade by product - Annual (analytical)",
+      "lastUpdatedDate": "2026-07-20T06:30:00",
+      "category": "Merchandise biotrade",
+      "name": "US.BiotradeMerch",
+      "order": -4
+     },
+     {
+      "id": 2516,
+      "version": 10003,
+      "title": "BioTrade: Bilateral trade as percentage of total trade - Annual (analytical)",
+      "lastUpdatedDate": "2026-07-20T06:30:00",
+      "category": "International trade in goods and services",
+      "name": "US.BiotradeMerchShare",
+      "order": -1
+     },
+     {
+      "id": 2513,
+      "version": 10003,
+      "title": "BioTrade: Trade as percentage of Gross Domestic Product - Annual (analytical)",
+      "lastUpdatedDate": "2026-07-20T06:30:00",
+      "category": "International trade in goods and services",
+      "name": "US.BioTradeMerchGDPShare",
+      "order": 0
+     },
+     {
+      "id": 2121,
+      "version": 10002,
+      "title": "DISCONTINUED - BioTrade: Revealed Comparative Advantage index - Annual (analytical)",
+      "lastUpdatedDate": "2025-11-28T16:02:00",
+      "category": "Merchandise biotrade",
+      "name": "US.BiotradeMerchRCA",
+      "order": 2
+     },
+     {
+      "id": 2120,
+      "version": 10002,
+      "title": "DISCONTINUED - BioTrade: Product concentration index - Annual (analytical)",
+      "lastUpdatedDate": "2025-11-28T16:02:00",
+      "category": "International trade in goods and services",
+      "name": "US.BioTradeMerchProdConcent",
+      "order": 3
+     },
+     {
+      "id": 2124,
+      "version": 10002,
+      "title": "DISCONTINUED - BioTrade: Market concentration and structural change indices - Annual (analytical)",
+      "lastUpdatedDate": "2025-11-28T16:02:00",
+      "category": "Environment and related trade",
+      "name": "US.BioTradeMerchMarketIndices",
+      "order": 4
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   },
+   {
+    "id": 25,
+    "title": "Trade in ocean goods and services",
+    "reports": [
+     {
+      "id": 2426,
+      "version": 10001,
+      "title": "Ocean goods: Bilateral trade by product group - Annual (analytical)",
+      "lastUpdatedDate": "2026-06-08T11:51:00",
+      "category": "International trade in goods and services",
+      "name": "US.OceanTrade",
+      "order": 7
+     },
+     {
+      "id": 2609,
+      "version": 10012,
+      "title": "Ocean services: Trade - Annual (analytical)",
+      "lastUpdatedDate": "2026-09-18T14:15:00",
+      "category": "International trade in goods and services",
+      "name": "US.OceanServices",
+      "order": 8
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   },
+   {
+    "id": 46,
+    "title": "Trade in non-plastic substitutes",
+    "reports": [
+     {
+      "id": 2610,
+      "version": 10009,
+      "title": "Non-plastics: Bilateral trade of non-plastic substitutes - Annual (analytical)",
+      "lastUpdatedDate": "2026-10-02T12:38:00",
+      "category": "Environment and related trade",
+      "name": "US.NonPlasticSubstsTradeByPartner",
+      "order": 1
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   },
+   {
+    "id": 24,
+    "title": "Trade in plastic-based products",
+    "reports": [
+     {
+      "id": 2581,
+      "version": 10017,
+      "title": "Plastics: Bilateral trade across plastics life-cycle stages - Annual (analytical)",
+      "lastUpdatedDate": "2026-09-04T12:05:00",
+      "category": "Plastics trade",
+      "name": "US.PlasticsTradebyPartner",
+      "order": 1
+     },
+     {
+      "id": 2582,
+      "version": 10017,
+      "title": "Plastics: Bilateral trade of plastics associated products - Annual (analytical)",
+      "lastUpdatedDate": "2026-09-04T12:05:00",
+      "category": "Plastics trade",
+      "name": "US.AssociatedPlasticsTradebyPartner",
+      "order": 2
+     },
+     {
+      "id": 2583,
+      "version": 10017,
+      "title": "Plastics: Bilateral trade of plastic packaging, synthetic textiles and synthetic rubber - Annual (analytical)",
+      "lastUpdatedDate": "2026-09-04T12:05:00",
+      "category": "Plastics trade",
+      "name": "US.HiddenPlasticsTradebyPartner",
+      "order": 3
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   },
+   {
+    "id": 47,
+    "title": "Trade in green industrial goods",
+    "reports": [
+     {
+      "id": 2446,
+      "version": 10001,
+      "title": "Green industrial goods: Trade - Annual (Analytical)",
+      "lastUpdatedDate": "2026-06-12T13:45:00",
+      "category": "Environment and related trade",
+      "name": "US.EnvironmentalGoodsTrade",
+      "order": 0
+     },
+     {
+      "id": 2445,
+      "version": 10001,
+      "title": "Green industrial goods: Revealed comparative advantage index - Annual (analytical)",
+      "lastUpdatedDate": "2026-06-12T13:45:00",
+      "category": "Environment and related trade",
+      "name": "US.EnvironmentalGoodsRCA",
+      "order": 1
+     },
+     {
+      "id": 2447,
+      "version": 10001,
+      "title": "Industrial wastewater treatment: Trade of associated products - Annul (ananlytical)",
+      "lastUpdatedDate": "2026-06-12T13:45:00",
+      "category": "Environment and related trade",
+      "name": "US.WastewaterTreatment",
+      "order": 1
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   }
+  ],
+  "isParentFolder": true
+ },
+ {
+  "id": 36,
+  "title": "Digital economy and technology",
+  "reports": [],
+  "subFolders": [
+   {
+    "id": 19,
+    "title": "Digital economy",
+    "reports": [
+     {
+      "id": 2238,
+      "version": 10008,
+      "title": "ICT producing sector: Workforce involved and value added - Annual",
+      "lastUpdatedDate": "2026-04-20T14:48:00",
+      "category": "Information Economy",
+      "name": "US.IctProductionSector",
+      "order": 0
+     },
+     {
+      "id": 2533,
+      "version": 10002,
+      "title": "ICT goods: Bilateral trade by category - Annual",
+      "lastUpdatedDate": "2025-12-01T13:16:00",
+      "category": "Digital economy",
+      "name": "US.IctGoods",
+      "order": 1
+     },
+     {
+      "id": 2347,
+      "version": 10009,
+      "title": "ICT use in business: Core indicators - Annual",
+      "lastUpdatedDate": "2026-09-14T09:05:00",
+      "category": "Digital economy",
+      "name": "US.IctUseTotal",
+      "order": 4
+     },
+     {
+      "id": 2064,
+      "version": 10006,
+      "title": "ICT use in business: Core indicators by location type - Annual",
+      "lastUpdatedDate": "2025-12-08T09:44:00",
+      "category": "Information Economy",
+      "name": "US.IctUseLocation",
+      "order": 5
+     },
+     {
+      "id": 2266,
+      "version": 10008,
+      "title": "ICT use in business: Core indicators by enterprise size - Annual",
+      "lastUpdatedDate": "2026-04-20T14:49:00",
+      "category": "Information Economy",
+      "name": "US.IctUseEnterprSize",
+      "order": 6
+     },
+     {
+      "id": 2250,
+      "version": 10009,
+      "title": "ICT use in business: Core indicators by economic activity (ISIC Rev. 4) - Annual",
+      "lastUpdatedDate": "2026-04-20T14:52:00",
+      "category": "Information economy",
+      "name": "US.IctUseEconActivity_Isic4",
+      "order": 7
+     },
+     {
+      "id": 2114,
+      "version": 10007,
+      "title": "ICT use in business: Core indicators by economic activity (ISIC Rev. 3.1) - Annual",
+      "lastUpdatedDate": "2025-12-08T09:44:00",
+      "category": "Information Economy",
+      "name": "US.IctUseEconActivity",
+      "order": 7
+     },
+     {
+      "id": 2631,
+      "version": 10007,
+      "title": "Digitally deliverable services: Trade - Annual (analytical)",
+      "lastUpdatedDate": "2026-09-29T13:47:00",
+      "category": "Information economy",
+      "name": "US.DigitallyDeliverableServices",
+      "order": 9
+     },
+     {
+      "id": 2636,
+      "version": 10008,
+      "title": "ICT services: Trade - Annual",
+      "lastUpdatedDate": "2026-09-29T13:43:00",
+      "category": "Information economy",
+      "name": "US.TradeServICT",
+      "order": 10
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   },
+   {
+    "id": 48,
+    "title": "E-commerce",
+    "reports": [
+     {
+      "id": 2656,
+      "version": 10010,
+      "title": "E-commerce: Domestic and international sales - Annual (analytical)",
+      "lastUpdatedDate": "2026-10-14T15:16:00",
+      "category": "E-commerce",
+      "name": "US.ECommerceTotal",
+      "order": 1
+     },
+     {
+      "id": 2657,
+      "version": 10010,
+      "title": "E-commerce: International digitally ordered trade, bilateral – Annual (analytical)",
+      "lastUpdatedDate": "2026-10-14T15:16:00",
+      "category": "E-commerce",
+      "name": "US.ECommerceInternational",
+      "order": 1
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   },
+   {
+    "id": 23,
+    "title": "Technology and innovation",
+    "reports": [
+     {
+      "id": 1861,
+      "version": 10006,
+      "title": "Technology: Frontier technology readiness index - Annual (analytical)",
+      "lastUpdatedDate": "2025-07-18T16:34:00",
+      "category": "Technology and innovation",
+      "name": "US.FTRI",
+      "order": 1
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   }
+  ],
+  "isParentFolder": true
+ },
+ {
+  "id": 37,
+  "title": "Population and inclusiveness",
+  "reports": [],
+  "subFolders": [
+   {
+    "id": 16,
+    "title": "Population",
+    "reports": [
+     {
+      "id": 2329,
+      "version": 10002,
+      "title": "Population: Total - Annual",
+      "lastUpdatedDate": "2026-05-21T18:32:00",
+      "category": "Population and inclusiveness",
+      "name": "US.PopTotal",
+      "order": 0
+     },
+     {
+      "id": 2330,
+      "version": 10002,
+      "title": "Population: Structure by gender and age group - Annual",
+      "lastUpdatedDate": "2026-05-21T18:32:00",
+      "category": "Population and inclusiveness",
+      "name": "US.PopAgeStruct",
+      "order": 2
+     },
+     {
+      "id": 2331,
+      "version": 10002,
+      "title": "Population: Dependency ratios - Annual",
+      "lastUpdatedDate": "2026-05-21T18:32:00",
+      "category": "Population and inclusiveness",
+      "name": "US.PopDependency",
+      "order": 2
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   },
+   {
+    "id": 30,
+    "title": "Inclusive growth",
+    "reports": [
+     {
+      "id": 1631,
+      "version": 10006,
+      "title": "Inclusiveness: Inclusive growth index - Annual (analytical)",
+      "lastUpdatedDate": "2025-03-10T14:55:00",
+      "category": "Inclusive Growth",
+      "name": "US.InclusiveGrowth",
+      "order": 1
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   },
+   {
+    "id": 32,
+    "title": "Gender and trade",
+    "reports": [
+     {
+      "id": 1315,
+      "version": 10001,
+      "title": "Gender: Domestic value added in gross exports by sex and broad sector - Annual (analytical)",
+      "lastUpdatedDate": "2024-10-10T12:39:00",
+      "category": "Gender",
+      "name": "US.Gender_DomesticValueAdded",
+      "order": 1
+     },
+     {
+      "id": 1312,
+      "version": 10001,
+      "title": "Gender: Employment and earnings by sex - Annual (analytical)",
+      "lastUpdatedDate": "2024-10-10T12:39:00",
+      "category": "Gender",
+      "name": "US.Gender_TradableIndustries",
+      "order": 2
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   }
+  ],
+  "isParentFolder": true
+ },
+ {
+  "id": 49,
+  "title": "SDG Indicators",
+  "reports": [],
+  "subFolders": [
+   {
+    "id": 50,
+    "title": "Goal 9",
+    "reports": [
+     {
+      "id": 2254,
+      "version": 10003,
+      "title": "Indicator 9.1.2: Freight loaded and unloaded - Annual",
+      "lastUpdatedDate": "2026-04-16T07:41:00",
+      "category": "SDG Indicators",
+      "name": "US.SDG_LULFRG",
+      "order": 0
+     },
+     {
+      "id": 2264,
+      "version": 10003,
+      "title": "Indicator 9.1.2: Container port traffic - Annual",
+      "lastUpdatedDate": "2026-04-15T15:06:00",
+      "category": "SDG",
+      "name": "US.SDG_PORFVOL",
+      "order": 0
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   },
+   {
+    "id": 53,
+    "title": "Goal 16",
+    "reports": [
+     {
+      "id": 2493,
+      "version": 10002,
+      "title": "Indicator 16.4.1: Trade misinvoicing illicit financial flows, IFFs - Annual ",
+      "lastUpdatedDate": "2026-06-09T09:17:00",
+      "category": "SDG Indicators",
+      "name": "US.IFF_TradeMisinvoicing",
+      "order": 0
+     },
+     {
+      "id": 2492,
+      "version": 10002,
+      "title": "Indicator 16.4.1: Crime-related illicit financial flows, IFFs - Annual",
+      "lastUpdatedDate": "2026-06-09T09:17:00",
+      "category": "SDG Indicators",
+      "name": "US.IFF_CrimesRelated",
+      "order": 1
+     }
+    ],
+    "subFolders": [],
+    "isParentFolder": false
+   }
+  ],
+  "isParentFolder": true
+ }
+]
