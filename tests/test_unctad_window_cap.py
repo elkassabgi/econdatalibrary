@@ -393,32 +393,39 @@ def test_the_switch_state_from_main_merges_and_stamps_on_pass_one(env, monkeypat
     assert again.status == "no_change" and took2 < MIN and [k for k, _ in env["api"].log] == ["meta"]
 
 
-def test_a_replay_that_must_fetch_makes_progress_every_pass_and_converges(env, monkeypatch):
-    """Three chunks lost late in a 30-min replay, 10 min of window past the reserve. A pass that has POSTed
-    nothing takes ONE request from the reserve (so no pass is wasted), then a pass that POSTed takes the
-    reserve stop and keeps the chunk; the pass that POSTs nothing assembles. No livelock, no chunk asked
-    twice, and only a POSTing pass ever reads partial."""
+def test_chunks_missing_late_in_a_long_replay_are_all_fetched_in_pass_one(env, monkeypatch):
+    """Review AR-411 B2/B3: three chunks lost at the END of the walk, every re-read costs 30 s (a 30-min
+    replay), 10 min of window past the reserve. The walk goes by PRESENCE (a stat per reused chunk), so it
+    reaches the missing chunks at once, fetches all three in the network window, and the 30-min re-read
+    happens in the parse, after the reserve check - one pass, merged and stamped."""
     _seed(env)
     _forget_release(env)
     sd = os.path.join(env["root"], "spill", F.SID)
-    for p in sorted(glob.glob(os.path.join(sd, "*.csv")))[-3:]:
-        os.remove(p)                                        # three chunks to fetch again
+    for p in sorted(glob.glob(os.path.join(sd, "*.csv")), key=os.path.getmtime)[-3:]:
+        os.remove(p)                                        # the last three chunks the walk wrote
     _slow_replay(env, monkeypatch, 30.0)
-    asked, statuses = [], []
-    for _ in range(6):
-        res, took = _run(env, "base", post_s=1.0, ceiling_s=70 * MIN)
-        statuses.append(res.status)
-        n = len(env["api"].leaves())
-        asked += env["api"].leaves()
-        assert res.status in ("partial", "no_change"), res.error
-        if res.status == "partial":
-            assert n >= 1, "a stopped pass fetched nothing: the livelock"
-            assert took <= 70 * MIN + 2 * MIN
-        else:
-            break
-    assert statuses[-1] == "no_change" and res.new_vintage == "10009|2026-08-05T13:55:36", statuses
-    assert len(asked) == len(set(asked)) == 3
+    res, took = _run(env, "base", post_s=1.0, ceiling_s=70 * MIN)
+    assert len(env["api"].leaves()) == 3
+    assert res.status == "no_change" and res.new_vintage == "10009|2026-08-05T13:55:36", res.error
+    assert took >= 28 * MIN                                 # the re-read happened, in the parse
     assert F.store_of(env["root"]) == F.truth("base")
+    again, _ = _run(env, "base")
+    assert [k for k, _ in env["api"].log] == ["meta"]       # the release record: nothing walked
+
+
+def test_a_spill_unreadable_in_the_parse_is_removed_and_fetched_again(env):
+    _seed(env)
+    _forget_release(env)
+    sd = os.path.join(env["root"], "spill", F.SID)
+    bad = sorted(glob.glob(os.path.join(sd, "*.csv")))[7]
+    with open(bad, "wb") as fh:
+        fh.write(b"\xff\xfe\xfa not utf-8")
+    res, _ = _run(env, "base")                              # the same release: its chunks are reused
+    assert res.status == "partial" and "unreadable" in res.error and not os.path.exists(bad)
+    assert len(env["api"].leaves()) == 0
+    res, _ = _run(env, "base")
+    assert len(env["api"].leaves()) == 1                    # only that chunk is fetched again
+    assert res.status == "no_change" and F.store_of(env["root"]) == F.truth("base")
 
 
 def test_a_kill_inside_the_store_publish_loses_nothing(env):

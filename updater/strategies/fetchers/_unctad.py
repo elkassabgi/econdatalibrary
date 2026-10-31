@@ -189,6 +189,12 @@ def make(ds: str, source: str, window: bool = False):
 #     The DIMENSION code lists are cached beside the spills under the same token rules (_dims.json, review
 #     AR-411 U2), so a fully spilled walk asks the network nothing after the metadata GET and reaches the
 #     assembly; without that a tight window stopped every pass after measure 1's replay - a livelock.
+#   * PRESENCE WALK (review AR-411 B2/B3): the walk needs only the size-cap answers, the dimension lists
+#     and which chunk files EXIST, so a reused chunk costs a stat and the walk reaches the chunks it lacks at
+#     once, in the network window; every chunk's text is read once, one file at a time, in the parse after
+#     the assembly check. A chunk unreadable there is removed and the pass ends transient (a later pass
+#     fetches it again). So a re-read never eats the network window, and missing chunks late in the walk
+#     are all fetched in the first pass the window allows.
 #   * RELEASE RECORD (review AR-411 P3r/P3L): after a merge (and its post-merge mark) <store>.release.json
 #     records the release token merged. A pass whose probed release equals it does not walk or assemble:
 #     it returns no_change with the token (or, with a debt, ok handing every stored key over from the
@@ -210,8 +216,9 @@ def make(ds: str, source: str, window: bool = False):
 # budget plus 10 min is still killed by the ps1 hard stop, as on main (the kill loses nothing: the publish is
 # atomic and the 'merging' mark precedes it); a server that delays its first byte while the
 # client ignores the clamped read timeout is bounded only by that client (requests honours it; review
-# AR-411 P3st vs P3sth); every measure's CSV text is held in memory before the parse (about 2.7 GB of spills for
-# this source; the 36.5 GB and 116 GB spill sets of other giants cannot use this order unchanged);
+# AR-411 P3st vs P3sth); the parse reads one spilled chunk at a time, but the parsed ROWS of every measure are
+# held as Python lists before the merge (about 2.7 GB of spill text becomes ~100M rows here; the 36.5 GB
+# and 116 GB spill sets of other giants, 394M and 1.06B rows, cannot be assembled this way unchanged);
 # report_metadata (one GET, a line this change does not touch) and the dimension GETs are
 # bounded per read, not in total, against a body that drips; the parse and the merge cannot be interrupted,
 # so the assembly reserve is the only bound on them; a lastUpdated move inside a multi-turn walk restarts the
@@ -241,8 +248,15 @@ MARGIN_FLOOR_MIN_DEFAULT = 5.0        # CHOSEN (largest spill gap measured on th
 # min. ON MAIN each interval holds the LAST measure's re-read and parse plus the merge; THIS update parses
 # EVERY measure after the walk, and this store has 2 measures (M0100 50,312,430 rows, M2200 49,920,738; a
 # DuckDB census of the desktop store copy), so the bound is 2 x 21.9 = 43.8 min (as if each interval were
-# all parse). Reserve = 60 min, about 1.4 x that bound. NOT measured: the change report and the key-shape
-# pass this update adds; the phase timing lines below measure them.
+# all parse). WITH THE PRESENCE WALK the parse also RE-READS every spilled chunk of every measure (about
+# 2.7 GB here), so the whole replay-only turns are the better bound (they hold every measure's re-read, the
+# parse and the merge): gstptradematrix 10-08, 3.2 GB / 76,643,660 rows in 14.8 min -> 19.4 min scaled by
+# rows (12.5 by bytes); creativegoodsvalue 10-04, 3.9 GB / 75,560,775 rows in 44.8 min -> 59.4 min by rows
+# (31.0 by bytes) - but ~36 min of that turn was network size-cap probing (12:27:24 -> 13:03:32), so its
+# re-read + parse + merge was at most ~8.6 min. Reserve = 60 min: ~3.1 x the gstptradematrix bound and just
+# over the creativegoodsvalue whole-turn bound, network included. ESTIMATED from siblings, not measured on
+# this source; NOT measured at all: the change report and the key-shape pass this update adds. The phase
+# timing lines below measure them on the first admitted pass.
 ASSEMBLY_RESERVE_MIN_DEFAULT = 60.0
 OWED_FILE = "_unctad_owed.json"
 _MERGING, _OWED, _HANDED = "merging", "owed", "handed"

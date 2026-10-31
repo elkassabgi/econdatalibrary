@@ -245,18 +245,21 @@ class Window:
         return max(self.floor_s, 2.0 * self.longest)
 
     def _limit(self):
-        """The deadline the request in flight is held to: the network deadline, or - for the one request a
-        pass that has POSTed nothing may BORROW from the reserve - the window end itself."""
+        """The deadline the request in flight is held to: the network deadline, or - for a request a pass
+        that has POSTed nothing may BORROW from the reserve - the window end itself."""
         return self.left() if self._borrow else self.net_left()
 
     def before_request(self, what: str) -> None:
         left = self.net_left()
         self._borrow = False
         if left is not None and left < self.need():
-            # PROGRESS GUARANTEE (review AR-411 U3): a pass that has POSTed nothing yet - typically one that
-            # replayed its chunks up to the first one it lacks - may take its next request from the reserve
-            # when the window end itself still allows it. Refusing would leave the next pass exactly where this
-            # one is, for ever; after one POST the stop applies as usual and the fetched chunk is kept.
+            # PROGRESS GUARANTEE (review AR-411 U3, B4): while a pass has POSTed nothing yet - the metadata and
+            # dimension GETs do not count - each request until its FIRST POST may be taken from the reserve
+            # when the window end itself still allows it. With the presence walk (a reused chunk costs a stat)
+            # this matters only for a window that is short from the start. After the first POST the stop
+            # applies as usual and every fetched chunk is kept. NOT guaranteed (AR-411 B2): a first chunk
+            # slower than the window end is cut, kept nowhere, and the next pass in an equally short window
+            # meets it again; the release is a longer window.
             if self.posts == 0 and self.left() is not None and self.left() >= self.need():
                 self._borrow = True
                 self.say(f"  no Facts request yet this pass and {left / 60:.1f} min of network time left: "
@@ -530,6 +533,32 @@ def _load_capped(spill_dir: str, meta: dict, token: "str | None" = None) -> dict
 DIMS_FILE = "_dims.json"      # WINDOWED pulls only: {dimension table name: [codes]} under the spill token
 
 
+class SpillRef(str):
+    """WINDOWED pulls only: a chunk named by its spill file, read once in the parse (pull_rows). A str
+    subclass holding the path, so lists of chunks keep their type."""
+
+
+class SpillUnreadable(RuntimeError):
+    """A spilled chunk could not be read in the parse: the file is removed, so a later pass fetches it."""
+
+
+def read_chunk(item) -> str:
+    """The CSV text of one chunk: a SpillRef is read from its file (removed if unreadable, see SpillUnreadable);
+    anything else is the text itself."""
+    if not isinstance(item, SpillRef):
+        return item
+    try:
+        with open(str(item), encoding="utf-8") as fh:
+            return fh.read()
+    except (OSError, UnicodeDecodeError) as e:
+        try:
+            os.remove(str(item))
+        except OSError:
+            pass
+        raise SpillUnreadable(f"spilled chunk {os.path.basename(str(item))} unreadable ({e!r}); removed, "
+                              f"a later pass fetches it again") from e
+
+
 def _load_dims(spill_dir: str, meta: dict, token: str) -> dict:
     """The dimension code lists an earlier WINDOWED pass of the SAME release cached beside its spills (review
     AR-411 U2): with them a fully spilled walk asks the network nothing after the metadata, so a tight window
@@ -710,7 +739,15 @@ def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
             # by each file's own header and is unaffected by file names.
             ck = hashlib.sha1(repr((select, tgroup, restr)).encode()).hexdigest()[:16]
             sp = os.path.join(spill_dir, ck + ".csv")
-            if os.path.exists(sp):
+            if window is not None and os.path.isfile(sp):
+                # WINDOWED: walk by PRESENCE (review AR-411 B2/B3). The split decisions need only the size-cap
+                # answers, the dimension lists and which chunk files exist, so a reused chunk costs a stat; its
+                # contents are read once, in the parse (pull_rows), after the assembly check. The replay then
+                # no longer eats the network window, and missing chunks late in the walk are fetched first.
+                out.append(SpillRef(sp))
+                reused += 1
+                continue
+            if window is None and os.path.exists(sp):
                 try:
                     out.append(open(sp, encoding="utf-8").read())
                     reused += 1
@@ -736,7 +773,7 @@ def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
                 with open(sp + ".tmp", "w", encoding="utf-8") as fh:
                     fh.write(text)
                 os.replace(sp + ".tmp", sp)
-                out.append(text)
+                out.append(text if window is None else SpillRef(sp))
             except (FactsSizeCap, FactsUnreachable) as split_err:
                 if isinstance(split_err, FactsSizeCap):
                     if ck not in capped:
@@ -871,7 +908,8 @@ def pull_rows(ds_name: str, cid: str, key: str, meta: dict, progress=None,
     rows_k, rows_d, rows_v = [], [], []
     # WINDOWED (opt-in, `window` given; None = exactly as before): EVERY measure's walk runs first, then
     # `before_assembly()` (the caller's reserve check, which may raise WindowStop), then the parse - so a stop
-    # never throws away a parse, and the parse and its time are measured on their own.
+    # never throws away a parse, and the parse and its time are measured on their own. The walk returns
+    # SpillRef paths; the parse reads each chunk's file here, one at a time (read_chunk).
     walked = None
     if window is not None:
         walked = []
@@ -889,7 +927,10 @@ def pull_rows(ds_name: str, cid: str, key: str, meta: dict, progress=None,
         else:
             texts = dict(walked)[mcode]
         n0 = len(rows_k)
-        for rec in (rec for text in texts for rec in csv.DictReader(io.StringIO(text))):
+        recs = ((rec for text in texts for rec in csv.DictReader(io.StringIO(text))) if walked is None
+                # WINDOWED: each chunk is read from its spill HERE, one at a time (the walk only stat'ed it)
+                else (rec for item in texts for rec in csv.DictReader(io.StringIO(read_chunk(item)))))
+        for rec in recs:
             vals = [rec.get(f"{f}_Code", "") for f in kfields]
             tv = rec.get(tfield) or rec.get(f"{tfield}_Code", "")
             vv = rec.get(f"M{mcode}_Value", "")
