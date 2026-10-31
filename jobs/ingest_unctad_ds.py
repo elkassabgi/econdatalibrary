@@ -206,6 +206,102 @@ class FactsSizeCap(RuntimeError):
         self.cap, self.estimated = cap, estimated
 
 
+class WindowStop(Exception):
+    """The pass's window end arrived before the next request (opt-in WINDOWED pulls only). Nothing from the
+    request that was not started is lost; every finished chunk and every size-cap answer stays on disk."""
+
+
+class Window:
+    """The run ceiling for one WINDOWED pull (opt-in; every caller that passes no window is unchanged).
+
+    end_ts: the pass's run ceiling as an epoch timestamp, or None (no ceiling: nothing ever stops).
+    reserve_s: the time the caller keeps for what follows the network walk (the parse and the merge). The
+    network phase ends at `end_ts - reserve_s`, so no request, retry or sleep can eat that reserve.
+    Before every NETWORK request (never before a chunk re-read from the spill) `before_request` refuses to
+    start one when the network time left is under max(floor, 2 x the longest request this pass). Every
+    attempt is clamped to the network time left (`timeout`), and every retry sleep counts against it
+    (`sleep`), so the WHOLE retry ladder of one request ends by `end_ts - reserve_s`. `record` keeps the
+    longest request; `tick` prints one progress line at most every `tick_s` seconds."""
+
+    def __init__(self, end_ts, floor_s: float = 300.0, tick_s: float = 60.0, say=None, reserve_s: float = 0.0):
+        self.end, self.floor_s, self.tick_s = end_ts, float(floor_s), float(tick_s)
+        self.reserve_s = float(reserve_s)
+        self.longest = 0.0
+        self.requests = 0
+        self.posts = 0
+        self._borrow = False
+        self.say = say or log
+        self._last_tick = time.monotonic()
+
+    def left(self):
+        """Time left to the window end itself (the assembly reserve check reads this)."""
+        return None if self.end is None else self.end - time.time()
+
+    def net_left(self):
+        """Time left for network requests: to the window end minus the reserve."""
+        return None if self.end is None else self.end - self.reserve_s - time.time()
+
+    def need(self) -> float:
+        return max(self.floor_s, 2.0 * self.longest)
+
+    def _limit(self):
+        """The deadline the request in flight is held to: the network deadline, or - for a request a pass
+        that has POSTed nothing may BORROW from the reserve - the window end itself."""
+        return self.left() if self._borrow else self.net_left()
+
+    def before_request(self, what: str) -> None:
+        left = self.net_left()
+        self._borrow = False
+        if left is not None and left < self.need():
+            # PROGRESS GUARANTEE (review AR-411 U3, B4): while a pass has POSTed nothing yet - the metadata and
+            # dimension GETs do not count - each request until its FIRST POST may be taken from the reserve
+            # when the window end itself still allows it. With the presence walk (a reused chunk costs a stat)
+            # this matters only for a window that is short from the start. After the first POST the stop
+            # applies as usual and every fetched chunk is kept. NOT guaranteed (AR-411 B2): a first chunk
+            # slower than the window end is cut, kept nowhere, and the next pass in an equally short window
+            # meets it again; the release is a longer window.
+            if self.posts == 0 and self.left() is not None and self.left() >= self.need():
+                self._borrow = True
+                self.say(f"  no Facts request yet this pass and {left / 60:.1f} min of network time left: "
+                         f"{what} is taken from the assembly reserve so the pass makes progress")
+                return
+            raise WindowStop(f"{left / 60:.1f} min of network time left (window end minus the "
+                             f"{self.reserve_s / 60:g}-min assembly reserve), under the {self.need() / 60:.1f}-min "
+                             f"margin (max of the {self.floor_s / 60:.1f}-min floor and 2 x the longest request "
+                             f"this pass, {self.longest:.1f}s) before {what}")
+
+    def timeout(self, cap: float) -> float:
+        left = self._limit()
+        if left is None:
+            return cap
+        if left <= 1.0:
+            raise WindowStop(f"{max(left, 0):.0f}s of network time left before the window end minus the reserve")
+        return min(cap, left)
+
+    def sleep(self, s: float) -> None:
+        left = self._limit()
+        if left is not None and s >= left:
+            raise WindowStop(f"a {s:.0f}s retry wait would pass the network deadline ({max(left, 0):.0f}s left)")
+        time.sleep(s)
+
+    def record(self, seconds: float, post: bool = True) -> None:
+        """One network request's time. post=False for a dimension-table GET: `posts` counts only the Facts
+        POSTs (chunks and size-cap probes), the work a stop would keep (review AR-411 U3)."""
+        self.requests += 1
+        if post:
+            self.posts += 1
+        self._borrow = False
+        self.longest = max(self.longest, float(seconds))
+
+    def tick(self, msg: str) -> None:
+        now = time.monotonic()
+        if now - self._last_tick >= self.tick_s:
+            self._last_tick = now
+            left = self.left()
+            self.say(f"  {msg}; {self.requests:,} request(s), longest {self.longest:.1f}s"
+                     + (f", {left / 60:.1f} min left" if left is not None else ""))
+
+
 def _post_with_deadline(url, headers, files, connect_timeout=20,
                         chunk_timeout=120, total_deadline=900):
     """POST with a hard TOTAL wall-clock deadline.
@@ -241,23 +337,34 @@ def _post_with_deadline(url, headers, files, connect_timeout=20,
     return resp
 
 
-def facts_csv(ds_name: str, select: str, cid: str, key: str, flt: str | None = None) -> str:
+def facts_csv(ds_name: str, select: str, cid: str, key: str, flt: str | None = None,
+              window: "Window | None" = None) -> str:
+    # window (opt-in): every attempt is clamped to the time left and every retry sleep counts against it, so
+    # one call can no longer outlast the pass (~6 x 900 s + sleeps before). None = exactly as before.
     form = {"$select": select, "$format": "csv"}
     if flt:
         form["$filter"] = flt
     files = {k: (None, v) for k, v in form.items()}
+    _sleep = window.sleep if window is not None else time.sleep
     for attempt in range(6):
         try:
-            r = _post_with_deadline(f"{FACTS}/{ds_name}/cur/Facts?culture=en",
-                                    headers={"ClientId": cid, "ClientSecret": key, **UA},
-                                    files=files)
+            if window is None:
+                r = _post_with_deadline(f"{FACTS}/{ds_name}/cur/Facts?culture=en",
+                                        headers={"ClientId": cid, "ClientSecret": key, **UA},
+                                        files=files)
+            else:
+                tot = window.timeout(900)
+                r = _post_with_deadline(f"{FACTS}/{ds_name}/cur/Facts?culture=en",
+                                        headers={"ClientId": cid, "ClientSecret": key, **UA},
+                                        files=files, connect_timeout=min(20, tot),
+                                        chunk_timeout=min(120, tot), total_deadline=tot)
             if r.status_code == 200:
                 return r.text
             # 500 belongs here too: MEASURED 2026-08-12, a lone 500 at hour ~5.5 of
             # the M0100 campaign killed the whole run via the RuntimeError below,
             # same transient-gateway class as the 401 blip documented under it.
             if r.status_code in (429, 500, 502, 503, 504):
-                time.sleep(20 * (attempt + 1)); continue
+                _sleep(20 * (attempt + 1)); continue
             if r.status_code == 401:
                 # MEASURED 2026-08-10: a 401 killed the US.BiotradeMerch pull at hour
                 # ~19 — and the SAME credentials returned 200 through this exact code
@@ -267,7 +374,7 @@ def facts_csv(ds_name: str, select: str, cid: str, key: str, flt: str | None = N
                 # real revocation and falls through to FactsUnreachable.
                 log(f"  Facts HTTP 401 (transient gateway auth blip); "
                     f"retry {attempt + 1} in {60 * (attempt + 1)}s")
-                time.sleep(60 * (attempt + 1)); continue
+                _sleep(60 * (attempt + 1)); continue
             if r.status_code == 400 and "maximal size" in r.text.lower():
                 m = re.search(r"Maximal size\s*:\s*(\d+).*?Estimated size\s*:\s*(\d+)",
                               r.text, re.S)
@@ -276,14 +383,14 @@ def facts_csv(ds_name: str, select: str, cid: str, key: str, flt: str | None = N
             raise RuntimeError(f"Facts HTTP {r.status_code}: {r.text[:300]}")
         except requests.RequestException as e:
             log(f"  transient {type(e).__name__}; retry {attempt + 1}")
-            time.sleep(30 * (attempt + 1))
+            _sleep(30 * (attempt + 1))
     raise FactsUnreachable(f"Facts unreachable for {ds_name} after retries")
 
 
 DIM_RETRY = (401, 429, 500, 502, 503, 504)   # the statuses facts_csv retries on this gateway
 
 
-def dim_rows(ds_name: str, version, dim_table: str) -> list[dict]:
+def dim_rows(ds_name: str, version, dim_table: str, window: "Window | None" = None) -> list[dict]:
     """One dimension table -> its rows ({Code, Label, ...}) in the publisher's order.
 
     THE one request path for a dimension table. dim_codes (the chunked pull) and
@@ -320,10 +427,16 @@ def dim_rows(ds_name: str, version, dim_table: str) -> list[dict]:
     cid, key = creds()
     url = f"{FACTS}/{ds_name}/{version}/{dim_table}?$orderby=Order&culture=en"
     for attempt in range(4):
-        r = requests.get(url, headers={"ClientId": cid, "ClientSecret": key, **UA}, timeout=120)
+        if window is None:
+            r = requests.get(url, headers={"ClientId": cid, "ClientSecret": key, **UA}, timeout=120)
+        else:
+            # Clamped per read; a body that drips under the read timeout is not bounded in total
+            # (a small JSON table; stated residual of the windowed pull).
+            r = requests.get(url, headers={"ClientId": cid, "ClientSecret": key, **UA},
+                             timeout=window.timeout(120))
         if r.status_code in DIM_RETRY and attempt < 3:
             log(f"  dimension {dim_table}: HTTP {r.status_code}; retry {attempt + 1}")
-            time.sleep(20 * (attempt + 1))
+            (window.sleep if window is not None else time.sleep)(20 * (attempt + 1))
             continue
         break
     r.raise_for_status()
@@ -336,7 +449,7 @@ def dim_rows(ds_name: str, version, dim_table: str) -> list[dict]:
     return list(vals)
 
 
-def dim_codes(ds_name: str, version, dim_table: str) -> list[str]:
+def dim_codes(ds_name: str, version, dim_table: str, window: "Window | None" = None) -> list[str]:
     """One dimension table -> its codes in the publisher's order (for chunked Facts pulls).
 
     The request, its address and its rules are dim_rows, above. This keeps the codes only.
@@ -345,7 +458,13 @@ def dim_codes(ds_name: str, version, dim_table: str) -> list[str]:
     does not depend on the order of the list it was cut from) but the cached size-cap answers,
     which would be asked again over the network.
     """
-    return [x["Code"] for x in dim_rows(ds_name, version, dim_table) if x.get("Code") is not None]
+    if window is None:
+        return [x["Code"] for x in dim_rows(ds_name, version, dim_table) if x.get("Code") is not None]
+    window.before_request(f"dimension {dim_table}")
+    t0 = time.time()
+    rows = dim_rows(ds_name, version, dim_table, window=window)
+    window.record(time.time() - t0, post=False)
+    return [x["Code"] for x in rows if x.get("Code") is not None]
 
 
 CAPPED_FILE = "_capped.tsv"   # one "<cache key>\t<cap>\t<estimate>\t." line per size-capped probe
@@ -356,12 +475,47 @@ def _spill_dir(ds_name: str) -> str:
                                         "data", "_unctad_spill", source_id_for(ds_name)))
 
 
-def _load_capped(spill_dir: str, meta: dict) -> dict:
+LEGACY_TZ_SLACK_S = 86400.0   # lastUpdated carries no zone: an earlier-than test must hold for any zone
+
+
+def _oldest_spill_mtime(spill_dir: str):
+    ts = [e.stat().st_mtime for e in os.scandir(spill_dir) if e.name.endswith(".csv")] \
+        if os.path.isdir(spill_dir) else []
+    return min(ts) if ts else None
+
+
+def _spill_token_matches(old, token: str, version, spill_dir: "str | None" = None) -> bool:
+    """The WINDOWED pull's spill gate: the spills belong to this release when their token is the full release
+    token (version|lastUpdated).
+
+    LEGACY (review AR-411 O1): a bare version (what every pull wrote before the windowed one) equal to this
+    release's version is accepted ONLY when the release's lastUpdated is earlier than the OLDEST spill's mtime
+    by more than LEGACY_TZ_SLACK_S (lastUpdated carries no zone) - then every chunk was fetched after the
+    release was last updated, so none can hold an earlier issue of it. Otherwise (a later or unparseable
+    lastUpdated, no chunk on disk) the spills are discarded. The walk then rewrites the full token."""
+    if old == token:
+        return True
+    if old is None or old != f"{version}" or not token.startswith(f"{version}|") or spill_dir is None:
+        return False
+    try:
+        lu = dt.datetime.fromisoformat(token.split("|", 1)[1][:19]).replace(tzinfo=dt.timezone.utc).timestamp()
+    except ValueError:
+        return False
+    oldest = _oldest_spill_mtime(spill_dir)
+    return oldest is not None and lu + LEGACY_TZ_SLACK_S < oldest
+
+
+def _load_capped(spill_dir: str, meta: dict, token: "str | None" = None) -> dict:
     """{cache key: (cap, estimate)} from an earlier pass under the SAME release; {} otherwise. A torn
-    last line (a kill mid-append) is skipped: that probe is simply asked again."""
+    last line (a kill mid-append) is skipped: that probe is simply asked again. token (windowed pulls
+    only): the full release token, compared by _spill_token_matches; None = the version, as before."""
     tp, cp = os.path.join(spill_dir, "_token.txt"), os.path.join(spill_dir, CAPPED_FILE)
     try:
-        if open(tp, encoding="utf-8").read().strip() != f"{meta.get('version')}":
+        old = open(tp, encoding="utf-8").read().strip()
+        if token is None:
+            if old != f"{meta.get('version')}":
+                return {}
+        elif not _spill_token_matches(old, token, meta.get("version"), spill_dir):
             return {}
         lines = open(cp, encoding="utf-8").read().splitlines()
     except OSError:
@@ -376,6 +530,65 @@ def _load_capped(spill_dir: str, meta: dict) -> dict:
     return out
 
 
+DIMS_FILE = "_dims.json"      # WINDOWED pulls only: {dimension table name: [codes]} under the spill token
+
+
+class SpillRef(str):
+    """WINDOWED pulls only: a chunk named by its spill file, read once in the parse (pull_rows). A str
+    subclass holding the path, so lists of chunks keep their type."""
+
+
+class SpillUnreadable(RuntimeError):
+    """A spilled chunk could not be read in the parse: the file is removed, so a later pass fetches it."""
+
+
+def read_chunk(item) -> str:
+    """The CSV text of one chunk: a SpillRef is read from its file (removed if unreadable, see SpillUnreadable);
+    anything else is the text itself."""
+    if not isinstance(item, SpillRef):
+        return item
+    try:
+        with open(str(item), encoding="utf-8") as fh:
+            return fh.read()
+    except (OSError, UnicodeDecodeError) as e:
+        try:
+            os.remove(str(item))
+        except OSError:
+            pass
+        raise SpillUnreadable(f"spilled chunk {os.path.basename(str(item))} unreadable ({e!r}); removed, "
+                              f"a later pass fetches it again") from e
+
+
+def _load_dims(spill_dir: str, meta: dict, token: str) -> dict:
+    """The dimension code lists an earlier WINDOWED pass of the SAME release cached beside its spills (review
+    AR-411 U2): with them a fully spilled walk asks the network nothing after the metadata, so a tight window
+    reaches the assembly instead of stopping after one measure's replay and replaying it again. Same gate as
+    the spills and the size-cap answers (_spill_token_matches); anything unreadable is simply asked again."""
+    tp, dp = os.path.join(spill_dir, "_token.txt"), os.path.join(spill_dir, DIMS_FILE)
+    try:
+        old = open(tp, encoding="utf-8").read().strip()
+        if not _spill_token_matches(old, token, meta.get("version"), spill_dir):
+            return {}
+        import json as _json
+        obj = _json.load(open(dp, encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(obj, dict):
+        return {}
+    return {k: v for k, v in obj.items() if isinstance(k, str) and isinstance(v, list)}
+
+
+def _save_dims(spill_dir: str, dims: dict) -> None:
+    import json as _json
+    p = os.path.join(spill_dir, DIMS_FILE)
+    try:
+        with open(p + ".tmp", "w", encoding="utf-8") as fh:
+            _json.dump(dims, fh)
+        os.replace(p + ".tmp", p)
+    except OSError as e:                     # only progress is lost: a later pass asks for the lists again
+        log(f"  dimension cache {p} not saved ({e!r})")
+
+
 def _record_cap(spill_dir: str, capped: dict, ck: str, e: "FactsSizeCap") -> None:
     if ck in capped:
         return
@@ -385,22 +598,52 @@ def _record_cap(spill_dir: str, capped: dict, ck: str, e: "FactsSizeCap") -> Non
 
 
 def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
-                      tdim: dict, progress=None) -> list[str]:
+                      tdim: dict, progress=None, window: "Window | None" = None,
+                      spill_token: "str | None" = None) -> list[str]:
     """Full-dataset pull that respects the size cap: try one POST; on FactsSizeCap,
     partition the TIME dimension's codes into groups sized from the error's own
     numbers (cap/estimated, 15% headroom) and pull per group; a group that still
-    caps is split in half recursively (down to single codes)."""
+    caps is split in half recursively (down to single codes).
+
+    WINDOWED (opt-in, `window` and `spill_token` given; None = exactly as before): before every NETWORK
+    request - the whole-measure probe, a dimension table, a leaf or a size-cap probe, never a chunk re-read
+    from the spill - `window.before_request` may raise WindowStop; every request is clamped to the window,
+    timed, and a progress line is printed at most once a minute. The spills are gated on the full release
+    token (`spill_token`, see _spill_token_matches), and a spill directory whose token is ABSENT is said
+    to be discarded before it is."""
     import hashlib
+    _t_walk = time.time()
     spill_dir = _spill_dir(ds_name)
-    capped = _load_capped(spill_dir, meta)
+    capped = (_load_capped(spill_dir, meta) if spill_token is None
+              else _load_capped(spill_dir, meta, token=spill_token))
     top = hashlib.sha1(repr((select, "ALL")).encode()).hexdigest()[:16]
     top_was_cached = top in capped       # the whole-measure probe is a size-cap answer too
     try:
         if top in capped:
             raise FactsSizeCap(*capped[top])                 # probed on an earlier pass
-        return [facts_csv(ds_name, select, cid, key)]
+        if window is None:
+            return [facts_csv(ds_name, select, cid, key)]
+        window.before_request("the whole-measure probe")
+        _t = time.time()
+        try:
+            return [facts_csv(ds_name, select, cid, key, window=window)]
+        finally:
+            window.record(time.time() - _t)
     except FactsSizeCap as e:
-        codes = dim_codes(ds_name, meta.get("version"), tdim["name"])
+        # WINDOWED: the dimension code lists come from the cache under the release token when it has them
+        # (review AR-411 U2), so a fully spilled walk asks the network nothing; new lists are saved below.
+        dims = _load_dims(spill_dir, meta, spill_token) if window is not None else {}
+        dims_new = {}
+
+        def _codes(name):
+            if window is None:
+                return dim_codes(ds_name, meta.get("version"), name)
+            if name in dims:
+                return list(dims[name])
+            got = dim_codes(ds_name, meta.get("version"), name, window=window)
+            dims[name] = dims_new[name] = list(got)
+            return got
+        codes = _codes(tdim["name"])
         if not codes:
             raise
         frac = max(1e-6, e.cap / e.estimated * 0.85)
@@ -444,14 +687,24 @@ def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
         # Version-gated exactly like the IMF sliced resume (tests/test_imf_sliced_resume):
         # a new UNCTAD release wipes the spills — two vintages must never be assembled.
         import shutil as _sh
-        token = f"{meta.get('version')}"
+        token = spill_token or f"{meta.get('version')}"
         token_path = os.path.join(spill_dir, "_token.txt")
         if os.path.isdir(spill_dir):
             old = (open(token_path, encoding="utf-8").read().strip()
                    if os.path.exists(token_path) else None)
-            if old != token:
+            same = (old == token) if spill_token is None else _spill_token_matches(
+                old, token, meta.get("version"), spill_dir)
+            if not same:
+                if window is not None:
+                    n_sp = sum(1 for x in os.listdir(spill_dir) if x.endswith(".csv"))
+                    log(f"  {ds_name}: spill token {old!r} is not release {token!r}"
+                        + (" (token file ABSENT)" if old is None else "")
+                        + f" - discarding {n_sp:,} spilled chunk(s) and the size-cap answers")
                 _sh.rmtree(spill_dir, ignore_errors=True)
                 capped = {}                                  # another vintage's probes, too
+            elif window is not None and old != token:
+                log(f"  {ds_name}: legacy bare-version spill token {old!r} accepted for release {token!r} "
+                    f"(its lastUpdated is earlier than every spilled chunk); rewritten as the full token")
         os.makedirs(spill_dir, exist_ok=True)
         with open(token_path, "w", encoding="utf-8") as fh:
             fh.write(token)
@@ -463,6 +716,9 @@ def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
         # a cap is a property of the query and the release. A stale cap only replays the split pass 1
         # made - never wrong rows. Only a SIZE CAP is cached: an unreachable request is asked again.
         _record_cap(spill_dir, capped, top, e)
+        if window is not None:
+            if dims_new or not os.path.exists(os.path.join(spill_dir, DIMS_FILE)):
+                _save_dims(spill_dir, dims)            # after the gate: the directory holds THIS release
 
         reused = 0
         # size-cap answers this pass had to ask the API for (not in the cache). The whole-measure
@@ -483,7 +739,15 @@ def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
             # by each file's own header and is unaffected by file names.
             ck = hashlib.sha1(repr((select, tgroup, restr)).encode()).hexdigest()[:16]
             sp = os.path.join(spill_dir, ck + ".csv")
-            if os.path.exists(sp):
+            if window is not None and os.path.isfile(sp):
+                # WINDOWED: walk by PRESENCE (review AR-411 B2/B3). The split decisions need only the size-cap
+                # answers, the dimension lists and which chunk files exist, so a reused chunk costs a stat; its
+                # contents are read once, in the parse (pull_rows), after the assembly check. The replay then
+                # no longer eats the network window, and missing chunks late in the walk are fetched first.
+                out.append(SpillRef(sp))
+                reused += 1
+                continue
+            if window is None and os.path.exists(sp):
                 try:
                     out.append(open(sp, encoding="utf-8").read())
                     reused += 1
@@ -493,12 +757,23 @@ def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
             try:
                 if ck in capped:
                     raise FactsSizeCap(*capped[ck])          # probed on an earlier pass
-                text = facts_csv(ds_name, select, cid, key,
-                                 flt=flt_for_item(tgroup, restr))
+                if window is None:
+                    text = facts_csv(ds_name, select, cid, key,
+                                     flt=flt_for_item(tgroup, restr))
+                else:
+                    window.tick(f"{ds_name} walk [{select.rsplit(', ', 1)[-1]}]: {len(out):,} chunks "
+                                f"({reused:,} reused), {caps_asked:,} size-cap answers asked")
+                    window.before_request(f"chunk {len(out) + 1:,} of [{select.rsplit(', ', 1)[-1]}]")
+                    _t = time.time()
+                    try:
+                        text = facts_csv(ds_name, select, cid, key,
+                                         flt=flt_for_item(tgroup, restr), window=window)
+                    finally:
+                        window.record(time.time() - _t)
                 with open(sp + ".tmp", "w", encoding="utf-8") as fh:
                     fh.write(text)
                 os.replace(sp + ".tmp", sp)
-                out.append(text)
+                out.append(text if window is None else SpillRef(sp))
             except (FactsSizeCap, FactsUnreachable) as split_err:
                 if isinstance(split_err, FactsSizeCap):
                     if ck not in capped:
@@ -528,8 +803,9 @@ def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
                     if nxt >= len(kdims):
                         raise   # atomic cell set still too big — new layout class
                     if nxt not in kdim_codes:
-                        kdim_codes[nxt] = dim_codes(ds_name, meta.get("version"),
-                                                    kdims[nxt]["name"])
+                        kdim_codes[nxt] = _codes(kdims[nxt]["name"])
+                        if window is not None and kdims[nxt]["name"] in dims_new:
+                            _save_dims(spill_dir, dims)
                         if progress:
                             progress(f"  still caps at single codes: also splitting "
                                      f"by {kdims[nxt]['name']} "
@@ -546,6 +822,9 @@ def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
         log(f"  {ds_name} chunk walk complete for [{select.rsplit(', ', 1)[-1]}]: {len(out):,} "
             f"chunks = {reused:,} reused from the spill + {len(out) - reused:,} fetched; "
             f"size-cap answers asked this pass: {caps_asked:,}")
+        if window is not None:
+            log(f"  {ds_name} walk timing [{select.rsplit(', ', 1)[-1]}]: {time.time() - _t_walk:.1f}s, "
+                f"{window.requests:,} request(s) so far this pass, longest {window.longest:.1f}s")
         return out
 
 
@@ -606,7 +885,8 @@ def dataset_time_dim(meta: dict) -> dict:
 
 
 def pull_rows(ds_name: str, cid: str, key: str, meta: dict, progress=None,
-              measures_filter: list[str] | None = None):
+              measures_filter: list[str] | None = None, window: "Window | None" = None,
+              spill_token: "str | None" = None, before_assembly=None):
     """Fetch + parse ALL observations for one dataset. THE single row-building path —
     the ingest below and every fetcher call this, so the parse rules cannot drift
     between the two (the insee_bdm/eurostat parity lesson, R-ledger 2026-08-08).
@@ -626,11 +906,31 @@ def pull_rows(ds_name: str, cid: str, key: str, meta: dict, progress=None,
                              f"{dataset_layout(meta)[4]}")
     tdim = dataset_time_dim(meta)
     rows_k, rows_d, rows_v = [], [], []
+    # WINDOWED (opt-in, `window` given; None = exactly as before): EVERY measure's walk runs first, then
+    # `before_assembly()` (the caller's reserve check, which may raise WindowStop), then the parse - so a stop
+    # never throws away a parse, and the parse and its time are measured on their own. The walk returns
+    # SpillRef paths; the parse reads each chunk's file here, one at a time (read_chunk).
+    walked = None
+    if window is not None:
+        walked = []
+        for mcode in measures:
+            select = ", ".join(f"{f}/Code" for f in kfields) + f", {tfield}, M{mcode}/Value"
+            walked.append((mcode, facts_csv_chunked(ds_name, select, cid, key, meta, tdim, progress=progress,
+                                                    window=window, spill_token=spill_token)))
+        if before_assembly is not None:
+            before_assembly()
+        t_parse = time.time()
     for mcode in measures:
-        select = ", ".join(f"{f}/Code" for f in kfields) + f", {tfield}, M{mcode}/Value"
-        texts = facts_csv_chunked(ds_name, select, cid, key, meta, tdim, progress=progress)
+        if walked is None:
+            select = ", ".join(f"{f}/Code" for f in kfields) + f", {tfield}, M{mcode}/Value"
+            texts = facts_csv_chunked(ds_name, select, cid, key, meta, tdim, progress=progress)
+        else:
+            texts = dict(walked)[mcode]
         n0 = len(rows_k)
-        for rec in (rec for text in texts for rec in csv.DictReader(io.StringIO(text))):
+        recs = ((rec for text in texts for rec in csv.DictReader(io.StringIO(text))) if walked is None
+                # WINDOWED: each chunk is read from its spill HERE, one at a time (the walk only stat'ed it)
+                else (rec for item in texts for rec in csv.DictReader(io.StringIO(read_chunk(item)))))
+        for rec in recs:
             vals = [rec.get(f"{f}_Code", "") for f in kfields]
             tv = rec.get(tfield) or rec.get(f"{tfield}_Code", "")
             vv = rec.get(f"M{mcode}_Value", "")
@@ -653,6 +953,8 @@ def pull_rows(ds_name: str, cid: str, key: str, meta: dict, progress=None,
             rows_v.append(v)
         if progress:
             progress(f"  M{mcode}: {len(rows_k) - n0:,} obs")
+    if walked is not None:
+        log(f"  {ds_name} parse timing: {time.time() - t_parse:.1f}s for {len(rows_k):,} obs")
 
     # THE KEY HAS TO BE A KEY, AND THIS IS THE ONLY PLACE THAT CAN CHECK IT (R814).
     # `dataset_layout` derives kfields from the DEFAULT LAYOUT's axes, so a dimension the
