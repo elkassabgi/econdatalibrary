@@ -167,12 +167,27 @@ def make(ds: str, source: str, window: bool = False):
 #     ("merging" before the merge - fails closed -, "owed" after it, "handed" with a token settled from
 #     unit_state.last_error). An ABSENT mark beside an existing store is owed ONCE (main left no mark).
 #     ROUTE B: a structural refusal while something is owed returns partial WITH every stored key.
+#     WHAT THE MARK CANNOT DO FOR A PROBE-GATED SOURCE (review AR-411 U1; a STATED RESIDUAL): it is read
+#     only by update(), and update() runs only when the release probe does NOT match the stored vintage.
+#     After a pass that ends ok and stamps the token, every later pass is probe-matched: run_once books
+#     no_change and goes on without calling update(), and without draining csv_retry_queue (that drain runs
+#     only inside a deriving run). So a hand-over the CSV phase did not finish - the csv fence, or the
+#     derive budget's deferrals parked in csv_retry_queue - is NOT re-handed and NOT drained until UNCTAD's
+#     NEXT release. Size: the first completing pass reads the absent mark as owed once and hands over every
+#     stored key, which maps to all 22,079 catalogued table ids; at ~0.98 ids/s (review AR-347) that is
+#     ~6 h of CSV phase against a 45-min derive budget, so most of it parks in csv_retry_queue for up to a
+#     release interval (annual data) while the run reads green. tests/test_unctad_window_cap.py pins this
+#     behaviour through the real probe path. The general fix (drain the queue on probe-matched passes) is
+#     a shared-orchestrator change for every source, outside this one-source change.
 #   * SPILLS (k): gated on the full release token version|lastUpdated, so a re-issue under the same version
 #     wipes the chunks AND the size-cap answers (_capped.tsv, same directory) at the walk's start. A legacy
 #     bare-version token is accepted only when the release's lastUpdated is earlier than every spilled
 #     chunk (jobs.ingest_unctad_ds._spill_token_matches). The spills are NOT cleared after a merge: the
 #     vintage is stamped later (orchestrator + state push), and a lost CAS or a kill before the push must not
 #     turn a later pass into a full network re-walk. Disk is held until the next release, as on main.
+#     The DIMENSION code lists are cached beside the spills under the same token rules (_dims.json, review
+#     AR-411 U2), so a fully spilled walk asks the network nothing after the metadata GET and reaches the
+#     assembly; without that a tight window stopped every pass after measure 1's replay - a livelock.
 #   * KEY SHAPE (l): the number of key parts is pinned to the store (a sidecar <store>.keyshape.json, seeded
 #     once from the footer statistics); a release whose keys have another shape is STRUCTURAL (Route B when
 #     something is owed, never green): the text names it a re-grain, an operator re-key (R22 clean re-pull),
@@ -289,7 +304,11 @@ def _save_owed(out_dir: str, mark: dict, source: str) -> bool:
 def _handed_recorded(source: str, token: str):
     """(recorded, why) - the imf_imts_direct rule: settled only when unit_state.last_error carries the
     token without the csv-fence note; anything unreadable counts as NOT recorded; no state.db at all means
-    the update ran outside the orchestrator, and the hand-over went to its caller."""
+    the update ran outside the orchestrator, and the hand-over went to its caller.
+
+    This is read only when update() runs, i.e. on a pass whose release probe did not match: for this
+    probe-gated source a 'not recorded' verdict re-hands the keys only at the next UNCTAD release, never
+    on the probe-matched passes in between (see "WHAT THE MARK CANNOT DO" above)."""
     if not os.path.exists(config.STATE_DB):
         return True, "no state.db: not run under the orchestrator, so the hand-over went to its caller"
     try:

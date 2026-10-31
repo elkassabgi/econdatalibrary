@@ -505,6 +505,39 @@ def _load_capped(spill_dir: str, meta: dict, token: "str | None" = None) -> dict
     return out
 
 
+DIMS_FILE = "_dims.json"      # WINDOWED pulls only: {dimension table name: [codes]} under the spill token
+
+
+def _load_dims(spill_dir: str, meta: dict, token: str) -> dict:
+    """The dimension code lists an earlier WINDOWED pass of the SAME release cached beside its spills (review
+    AR-411 U2): with them a fully spilled walk asks the network nothing after the metadata, so a tight window
+    reaches the assembly instead of stopping after one measure's replay and replaying it again. Same gate as
+    the spills and the size-cap answers (_spill_token_matches); anything unreadable is simply asked again."""
+    tp, dp = os.path.join(spill_dir, "_token.txt"), os.path.join(spill_dir, DIMS_FILE)
+    try:
+        old = open(tp, encoding="utf-8").read().strip()
+        if not _spill_token_matches(old, token, meta.get("version"), spill_dir):
+            return {}
+        import json as _json
+        obj = _json.load(open(dp, encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(obj, dict):
+        return {}
+    return {k: v for k, v in obj.items() if isinstance(k, str) and isinstance(v, list)}
+
+
+def _save_dims(spill_dir: str, dims: dict) -> None:
+    import json as _json
+    p = os.path.join(spill_dir, DIMS_FILE)
+    try:
+        with open(p + ".tmp", "w", encoding="utf-8") as fh:
+            _json.dump(dims, fh)
+        os.replace(p + ".tmp", p)
+    except OSError as e:                     # only progress is lost: a later pass asks for the lists again
+        log(f"  dimension cache {p} not saved ({e!r})")
+
+
 def _record_cap(spill_dir: str, capped: dict, ck: str, e: "FactsSizeCap") -> None:
     if ck in capped:
         return
@@ -546,8 +579,20 @@ def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
         finally:
             window.record(time.time() - _t)
     except FactsSizeCap as e:
-        codes = (dim_codes(ds_name, meta.get("version"), tdim["name"]) if window is None
-                 else dim_codes(ds_name, meta.get("version"), tdim["name"], window=window))
+        # WINDOWED: the dimension code lists come from the cache under the release token when it has them
+        # (review AR-411 U2), so a fully spilled walk asks the network nothing; new lists are saved below.
+        dims = _load_dims(spill_dir, meta, spill_token) if window is not None else {}
+        dims_new = {}
+
+        def _codes(name):
+            if window is None:
+                return dim_codes(ds_name, meta.get("version"), name)
+            if name in dims:
+                return list(dims[name])
+            got = dim_codes(ds_name, meta.get("version"), name, window=window)
+            dims[name] = dims_new[name] = list(got)
+            return got
+        codes = _codes(tdim["name"])
         if not codes:
             raise
         frac = max(1e-6, e.cap / e.estimated * 0.85)
@@ -620,6 +665,9 @@ def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
         # a cap is a property of the query and the release. A stale cap only replays the split pass 1
         # made - never wrong rows. Only a SIZE CAP is cached: an unreachable request is asked again.
         _record_cap(spill_dir, capped, top, e)
+        if window is not None:
+            if dims_new or not os.path.exists(os.path.join(spill_dir, DIMS_FILE)):
+                _save_dims(spill_dir, dims)            # after the gate: the directory holds THIS release
 
         reused = 0
         # size-cap answers this pass had to ask the API for (not in the cache). The whole-measure
@@ -696,10 +744,9 @@ def facts_csv_chunked(ds_name: str, select: str, cid: str, key: str, meta: dict,
                     if nxt >= len(kdims):
                         raise   # atomic cell set still too big — new layout class
                     if nxt not in kdim_codes:
-                        kdim_codes[nxt] = (dim_codes(ds_name, meta.get("version"), kdims[nxt]["name"])
-                                           if window is None else
-                                           dim_codes(ds_name, meta.get("version"), kdims[nxt]["name"],
-                                                     window=window))
+                        kdim_codes[nxt] = _codes(kdims[nxt]["name"])
+                        if window is not None and kdims[nxt]["name"] in dims_new:
+                            _save_dims(spill_dir, dims)
                         if progress:
                             progress(f"  still caps at single codes: also splitting "
                                      f"by {kdims[nxt]['name']} "

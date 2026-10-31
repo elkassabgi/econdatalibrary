@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import _unctad_fake as F  # noqa: E402
 import jobs.ingest_unctad_ds as j  # noqa: E402
+from updater import orchestrate as _ORCH  # noqa: E402  (the real one; the fixture swaps in a stand-in)
 from updater.strategies.fetchers import _unctad as U  # noqa: E402
 
 FETCHERS = os.path.join(ROOT, "updater", "strategies", "fetchers")
@@ -261,3 +262,74 @@ def test_a_refusal_with_a_debt_hands_the_debt_over(env):
     res, _ = _run(env, "regrain")
     assert res.status == "partial" and "R22" in res.error
     assert sorted(res.changed_keys) == sorted(F.truth("rev"))
+
+
+# ---------------------------------------------------------------- U1: the probe-gated residual, pinned
+
+def test_a_probe_matched_pass_neither_calls_update_nor_drains_the_retry_queue(env, monkeypatch):
+    """STATED RESIDUAL (review AR-411 U1), pinned through the REAL probe path: run_once -> the real
+    bulk_snapshot_if_changed detect_change -> this module's current_vintage -> the (faked) metadata.
+    When the probe matches the stored vintage, run_once books no_change and goes on: update() is not
+    called, so an owed mark - here a 'handed' one whose CSV phase was cut at its fence - is NOT re-handed,
+    and csv_retry_queue is NOT drained. Both wait for UNCTAD's next release. If this test starts failing
+    because the orchestrator drains on probe-matched passes, the residual is closed: update the docstring."""
+    from updater.state import StateStore
+
+    orchestrate = _ORCH                                                      # the REAL orchestrator
+    monkeypatch.delenv("AQUEDUCT_LIVE_ONLY", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.delenv("AQUEDUCT_RUN_BUDGET_MIN", raising=False)
+    monkeypatch.delenv("AQUEDUCT_UNIT_TIMEOUT_MIN", raising=False)
+    monkeypatch.setitem(sys.modules, "updater.orchestrate", orchestrate)
+    monkeypatch.setattr(orchestrate, "_RUN_DEADLINE_TS", orchestrate._RUN_DEADLINE_TS)
+    calls = []
+    monkeypatch.setattr(_np(), "update", lambda unit, since: calls.append(unit) or (_ for _ in ()).throw(
+        AssertionError("update() must not be called on a probe-matched pass")))
+    store = StateStore(os.path.join(env["root"], "state.db"))
+    token = U._token(F.meta(F.release("base")))
+    hand = "hand-over 2026-10-30T00:00:00Z-000000000000"
+    store.upsert_unit(F.SID, "_all", strategy="bulk_snapshot_if_changed", upstream_vintage=token,
+                      status="ok", last_success_utc="2026-01-01T00:00:00+00:00",
+                      last_attempt_utc="2026-01-01T00:00:00+00:00",
+                      last_error=f"{hand}: +1 new rows; csv phase exceeded its 45-min fence")
+    store.enqueue_csv_retry(F.SID, [f"{F.SID}:C1.E1"], error="derive budget spent (deferred)")
+    out_dir = os.path.join(env["root"], "clean_full", F.SID)
+    os.makedirs(out_dir, exist_ok=True)
+    mark = {"ds": F.DS, "form": "handed", "utc": "2026-10-30T00:00:00Z", "token": hand}
+    with open(os.path.join(out_dir, U.OWED_FILE), "w") as fh:
+        json.dump(mark, fh)
+    env["api"].up = "base"
+    results = orchestrate.run_once(sources=[F.SID], store=store)
+    assert (f"{F.SID}/_all", "no_change") in results, results
+    assert calls == [], "update() ran: the probe did not gate it"
+    assert [k for k, _ in env["api"].log] == ["meta"], "only the release probe touched the API"
+    q = store.db.execute("SELECT series_id FROM csv_retry_queue WHERE source_id=?", (F.SID,)).fetchall()
+    assert [r[0] for r in q] == [f"{F.SID}:C1.E1"], "the retry queue was drained on a probe-matched pass"
+    assert json.load(open(os.path.join(out_dir, U.OWED_FILE))) == mark, "the owed mark was touched"
+    note = store.db.execute("SELECT note FROM runs WHERE source_id=?", (F.SID,)).fetchall()
+    assert note and note[-1][0].startswith("vintage probe matched stored")
+
+
+# ---------------------------------------------------------------- U2: a fully spilled walk asks nothing
+
+def test_a_fully_spilled_pass_in_a_tight_window_reaches_the_assembly_and_stamps(env):
+    """Review AR-411 U2: with every chunk spilled, the walk used to ask dim_codes once per measure, so a tight
+    window stopped it after measure 1's replay and the next pass replayed measure 1 again, for ever. The
+    dimension lists are cached under the release token now: the pass asks only the release metadata."""
+    _seed(env)
+    res, took = _run(env, "base", post_s=60.0, ceiling_s=66 * MIN)  # 1 min over floor + reserve
+    assert [k for k, _ in env["api"].log] == ["meta"], env["api"].log
+    assert res.status == "no_change" and res.new_vintage == "10009|2026-08-05T13:55:36"
+
+
+def test_a_dimension_cache_under_another_token_is_never_used(env):
+    _seed(env)
+    sd = os.path.join(env["root"], "spill", F.SID)
+    with open(os.path.join(sd, "_token.txt"), "w") as fh:
+        fh.write("10008|2026-01-01T00:00:00")                # another release
+    with open(os.path.join(sd, j.DIMS_FILE), "w") as fh:
+        json.dump({"Years": [1999], "Categories": ["C9"]}, fh)
+    res, _ = _run(env, "base")
+    assert ("dim", "Years") in env["api"].log, "the lists were asked again"
+    assert len(env["api"].leaves()) == 60 and F.store_of(env["root"]) == F.truth("base")
+    assert json.load(open(os.path.join(sd, j.DIMS_FILE)))["Years"] == list(range(2000, 2010))
