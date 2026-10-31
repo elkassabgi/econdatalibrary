@@ -188,11 +188,21 @@ def make(ds: str, source: str, window: bool = False):
 #     The DIMENSION code lists are cached beside the spills under the same token rules (_dims.json, review
 #     AR-411 U2), so a fully spilled walk asks the network nothing after the metadata GET and reaches the
 #     assembly; without that a tight window stopped every pass after measure 1's replay - a livelock.
+#   * RELEASE RECORD (review AR-411 P3r/P3L): after a merge (and its post-merge mark) <store>.release.json
+#     records the release token merged. A pass whose probed release equals it does not walk or assemble:
+#     it returns no_change with the token (or, with a debt, ok handing every stored key over from the
+#     store), so a lost vintage stamp - a kill or a lost state push after the merge, or the NULL vintage
+#     this source starts from - can never make every pass replay and stop before the assembly. With NO
+#     record (the first passes after the switch from main) a fully spilled walk still replays every chunk
+#     before the reserve check: re-reading chunks makes no network request and is not interrupted.
 #   * KEY SHAPE (l): the number of key parts is pinned to the store (a sidecar <store>.keyshape.json, seeded
 #     once from the footer statistics); a release whose keys have another shape is STRUCTURAL (Route B when
 #     something is owed, never green): the text names it a re-grain, an operator re-key (R22 clean re-pull),
 #     never a merge.
-# STATED RESIDUALS: every measure's CSV text is held in memory before the parse (about 2.7 GB of spills for
+# STATED RESIDUALS: re-reading spilled chunks is not interrupted, so without a release record a replay longer
+# than the window still ends in the ps1 hard stop, as on main; a server that delays its first byte while the
+# client ignores the clamped read timeout is bounded only by that client (requests honours it; review
+# AR-411 P3st vs P3sth); every measure's CSV text is held in memory before the parse (about 2.7 GB of spills for
 # this source; the 36.5 GB and 116 GB spill sets of other giants cannot use this order unchanged);
 # report_metadata (one GET, a line this change does not touch) and the dimension GETs are
 # bounded per read, not in total, against a body that drips; the parse and the merge cannot be interrupted,
@@ -357,6 +367,35 @@ def _store_shape(path: str):
         return None
 
 
+class _AlreadyMerged(Exception):
+    """Internal: the release probed is the one the release record says the store already holds."""
+
+
+def _release_path(path: str) -> str:
+    return path + ".release.json"
+
+
+def _release_record(path: str):
+    """The release token the windowed update last merged into this store (<store>.release.json, through blob),
+    or None - absent, unreadable or malformed all read as None, which only means 'walk as usual'."""
+    try:
+        raw = blob.read_bytes(_release_path(path))
+        if raw is None:
+            return None
+        v = _json.loads(raw.decode("utf-8")).get("token")
+        return v if isinstance(v, str) and v else None
+    except Exception:                                        # noqa: BLE001
+        return None
+
+
+def _save_release(path: str, ds: str, tok: str, source: str) -> None:
+    try:
+        blob.write_bytes_atomic(_release_path(path), _json.dumps(
+            {"ds": ds, "token": tok, "utc": _utc(_time.time())}, sort_keys=True).encode("utf-8"))
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[{source}] release record NOT saved ({e!r}); a later pass of this release walks again", flush=True)
+
+
 def _fold(keys, dates) -> dict:
     cursors = {}
     for k, d in zip(keys, dates):
@@ -459,6 +498,26 @@ def _windowed(ds: str, source: str):
                     raise                                    # nothing owed: as before
                 return _hand_over_all(str(e))
 
+        def _already_merged(tok):
+            if not debt["on"]:
+                say(f"release {tok} is already merged into the store (release record) - no walk and no "
+                    f"assembly; nothing owed")
+                return Result(status="no_change", obs=before, new_vintage=tok, changed_keys={}, merged_rows=0,
+                              error="no new rows; this release is already merged into the store (release record)")
+            try:
+                t = blob.read_table(path, columns=["series_key", "obs_date"])
+            except Exception as e:                           # noqa: BLE001
+                tally.transient_unit(f"{ds}: store not readable to hand the owed keys over ({e!r})"[:200])
+                return _fin(merged_rows=0)
+            cur = _fold(t.column("series_key").to_pylist(), t.column("obs_date").to_pylist())
+            say(f"release {tok} is already merged into the store (release record) - no walk; {len(cur):,} owed "
+                f"key(s) handed over from the store")
+            return _handed(Result(
+                status="ok", obs=t.num_rows, last_obs_date=max(cur.values()) if cur else None, new_vintage=tok,
+                series_cursors=cur, changed_keys=dict(cur), merged_rows=0,
+                error=f"no new rows; this release is already merged into the store (release record); "
+                      f"{len(cur):,} key(s) owed by an earlier merge handed over"))
+
         def before_assembly():
             left = win.left()
             if left is not None and left < reserve_s:
@@ -467,14 +526,24 @@ def _windowed(ds: str, source: str):
             say(f"walk timing: every measure walked in {_time.time() - t_pass:.1f}s; "
                 f"{win.requests:,} request(s), longest {win.longest:.1f}s")
 
+        meta = tok = None
         try:
             win.before_request("the release metadata")
             cid, key = j.creds()
             meta = j.report_metadata(ds)
             tok = _token(meta)
+            # THE RELEASE RECORD (review AR-411 U2/P3L): this release was ALREADY merged into the store by an
+            # earlier pass whose vintage stamp was lost (a kill or a lost state push after the merge, or the
+            # NULL vintage this source starts from). Re-walking and re-assembling it would change nothing, and
+            # in a window shorter than the replay it would stop before the assembly on every pass, for ever.
+            rec = _release_record(path) if (tok is not None and before > 0) else None
+            if rec == tok:
+                raise _AlreadyMerged()
             rows_k, rows_d, rows_v = j.pull_rows(
                 ds, cid, key, meta, progress=j.log, window=win,
                 spill_token=tok or f"{meta.get('version')}", before_assembly=before_assembly)
+        except _AlreadyMerged:
+            return _already_merged(tok)
         except j.WindowStop as e:
             tally.deferred_unit(f"{ds}: stopped before the window end - {str(e)[:200]}")
             say(f"STOP before the window end: {e}; every chunk and size-cap answer stays on disk for a later "
@@ -525,6 +594,10 @@ def _windowed(ds: str, source: str):
         owes = debt["on"] or changed is None or bool(changed)
         mark_ok = _save_owed(out_dir, {"ds": ds, "form": _OWED, "utc": _utc(_time.time())} if owes else {},
                              source)
+        if tok is not None:
+            # after the merge AND the post-merge mark: the store now holds this release, whatever happens to
+            # the vintage stamp (the orchestrator writes it later). A failed save only costs a later re-walk.
+            _save_release(path, ds, tok, source)
         after = blob.row_count(path)
         added = max(0, after - before)
         if added:

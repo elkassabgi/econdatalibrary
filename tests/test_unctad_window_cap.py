@@ -211,11 +211,21 @@ def test_a_mark_that_is_not_a_mark_fails_closed(env):
 
 # ---------------------------------------------------------------- (k) the spill gate
 
+def _record_path(env):
+    return os.path.join(env["root"], "clean_full", F.SID, f"{F.SID}.parquet.release.json")
+
+
+def _forget_release(env):
+    """Remove the release record, as a store main built (no record) has none - so the walk runs."""
+    if os.path.exists(_record_path(env)):
+        os.remove(_record_path(env))
+
 def _killed_walk(env, up, n_leaves):
     """A pass that persisted some chunks of `up` from an empty spill and then stopped (the clock-limited
     ceiling stops it cleanly before the walk ends)."""
     import shutil
     shutil.rmtree(os.path.join(env["root"], "spill", F.SID), ignore_errors=True)
+    _forget_release(env)
     res, _ = _run(env, up, post_s=60.0, ceiling_s=(65 + n_leaves) * MIN)
     assert res.status == "partial"
     return len(env["api"].leaves())
@@ -317,13 +327,38 @@ def test_a_fully_spilled_pass_in_a_tight_window_reaches_the_assembly_and_stamps(
     window stopped it after measure 1's replay and the next pass replayed measure 1 again, for ever. The
     dimension lists are cached under the release token now: the pass asks only the release metadata."""
     _seed(env)
+    _forget_release(env)                                    # no record: the walk itself must reach the assembly
     res, took = _run(env, "base", post_s=60.0, ceiling_s=66 * MIN)  # 1 min over floor + reserve
     assert [k for k, _ in env["api"].log] == ["meta"], env["api"].log
     assert res.status == "no_change" and res.new_vintage == "10009|2026-08-05T13:55:36"
+    assert "assembly timing" in (res.error or "") or res.changed_keys == {}
+
+
+def test_a_merged_release_with_a_lost_stamp_is_stamped_without_a_walk(env):
+    """Review AR-411 P3r/P3L: the store already holds the release (its record says so) but the vintage was
+    never stamped. However short the window - here just over floor + reserve - the pass asks only the
+    metadata, walks and assembles nothing, and returns the token; with a debt it hands every key over."""
+    _seed(env)
+    rec = json.load(open(_record_path(env)))
+    assert rec["token"] == "10009|2026-08-05T13:55:36"
+    import shutil
+    shutil.rmtree(os.path.join(env["root"], "spill", F.SID))            # not even a spill is needed
+    res, _ = _run(env, "base", post_s=60.0, ceiling_s=66 * MIN)
+    assert [k for k, _ in env["api"].log] == ["meta"]
+    assert res.status == "no_change" and res.new_vintage == rec["token"] and res.changed_keys == {}
+    os.remove(os.path.join(env["root"], "clean_full", F.SID, U.OWED_FILE))  # a debt: owed once
+    res, _ = _run(env, "base", post_s=60.0, ceiling_s=66 * MIN)
+    assert [k for k, _ in env["api"].log] == ["meta"]
+    assert res.status == "ok" and res.new_vintage == rec["token"]
+    assert sorted(res.changed_keys) == sorted(F.truth("base"))
+    res, _ = _run(env, "rev")                                            # another release walks as usual
+    assert res.status == "ok" and len(env["api"].leaves()) == 60
+    assert json.load(open(_record_path(env)))["token"] == "10010|2026-10-22T00:00:00"
 
 
 def test_a_dimension_cache_under_another_token_is_never_used(env):
     _seed(env)
+    _forget_release(env)
     sd = os.path.join(env["root"], "spill", F.SID)
     with open(os.path.join(sd, "_token.txt"), "w") as fh:
         fh.write("10008|2026-01-01T00:00:00")                # another release
