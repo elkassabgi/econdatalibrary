@@ -772,6 +772,9 @@ def pass_overheads(passes: list) -> dict:
 _DERIVE_SPENT = re.compile(r"derive budget of ([0-9.]+) min spent")
 _TOOK = re.compile(r"^\[orchestrator\] <<< ([^/\s]+)/\S+ took ([0-9,]+)s")
 _START = re.compile(r"^\[orchestrator\] >>> ([^/\s]+)/")
+# orchestrate._drain_leftover_retries prints `>>> <unit> (csv retry drain)` / `<<< <unit> took Ns` after the unit loop.
+# That is not a unit run, and its spent derive budget is not a unit's tail (tools/record_killed_unit.py skips it too).
+_DRAIN_MARK = "(csv retry drain)"
 _TIMED = re.compile(r"(probe|detect_change|csv phase|finaliz)\w*[^\n]*?\b[0-9.]+ ?s\b", re.I)
 
 
@@ -792,6 +795,9 @@ def measure_tail_probe(logdir: str) -> dict:
         with open(os.path.join(logdir, n), encoding="utf-8", errors="replace") as f:
             for line in f:
                 m = _START.match(line)
+                if m and _DRAIN_MARK in line:
+                    cur, acc = None, 0.0                    # a leftover drain: not a unit, its budget is nobody's tail
+                    continue
                 if m:
                     cur, acc = m.group(1), 0.0
                     unit_runs += 1
@@ -834,6 +840,9 @@ def giant_flow_blocks(logdir: str, sid: str) -> dict:
         with open(os.path.join(logdir, n), encoding="utf-8", errors="replace") as f:
             for ln, line in enumerate(f, 1):
                 line = line.rstrip("\r\n")
+                if start.match(line) and _DRAIN_MARK in line:
+                    prev = None                             # a leftover drain: not a unit run
+                    continue
                 if start.match(line):
                     prev, unit_runs = (0, 0.0), unit_runs + 1
                     continue
