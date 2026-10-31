@@ -25,10 +25,11 @@ WHAT THESE TESTS HOLD.
       1900 is refused.
   (6) A REAL process death (os._exit) after k slices resumes from the kept bounds, across a year
       rollover; the open window's age bound cannot livelock a pass-per-week cadence.
-  (7) UNCHANGED FROM MAIN (open for the next PR, (b)/(c)/(j)): a revision-only pull, a re-merge after a
-      killed merge, and a structural pass after one read the same here as through _imf_direct.run.
+  (7) PR B ((b)/(c)/(j), tests/test_imts_owed_marks.py holds the rest): a revision-only pull reads ok and
+      hands over the revised keys, where main reads no_change; a re-merge after a killed merge hands over
+      every key, where main reads no_change; a structural pass with nothing owed raises as on main.
   (8) Through the REAL orchestrate.run_once: a stop is partial with no success and still reaches the
-      csv retry-queue drain; a merging pass derives every catalogued table.
+      csv retry-queue drain; a merging pass derives the tables it changed (main: every table).
   (9) The opt-in is pinned: only imf_imts_direct calls run_sliced, every other _imf_direct importer still
       calls _base.run, and the shared modules do not read the ceiling.
 """
@@ -79,6 +80,8 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(F, "time", clock, raising=False)       # raising=False: the same file runs on main
     monkeypatch.setattr(urllib.request, "urlopen", imf.urlopen)
     monkeypatch.setattr(orchestrate, "_RUN_DEADLINE_TS", None)
+    # PR B reads state.db (read-only) to settle an owed mark: never the worktree's real one here
+    monkeypatch.setattr(config, "STATE_DB", str(tmp_path / "_aqueduct_absent" / "state.db"))
     monkeypatch.setattr(ing.time, "sleep", lambda s: None)        # main's retry sleeps (reference only)
     e = types.SimpleNamespace(tmp=tmp_path, clock=clock, imf=imf, mp=monkeypatch)
 
@@ -90,11 +93,15 @@ def env(tmp_path, monkeypatch):
     def store():
         return os.path.join(config.source_dir(SRC), f"{SRC}.parquet")
 
-    def setup(up="base"):
-        """The store as main's whole-flow ingester writes it (rows AND the real 5-dim sidecar)."""
+    def setup(up="base", settled=True):
+        """The store as main's whole-flow ingester writes it (rows AND the real 5-dim sidecar).
+        settled=True also writes the explicit "nothing owed" mark ({}) that a settled PR B pass leaves;
+        settled=False is the store exactly as main leaves it (no mark: owed once, R1766)."""
         imf.up = up
         os.makedirs(config.source_dir(SRC), exist_ok=True)
         assert ing.pull("IMTS", "IMF.STA", SRC, out_path=store(), min_obs=0) > 0
+        if settled:
+            blob.write_bytes_atomic(os.path.join(config.source_dir(SRC), "_imts_owed.json"), b"{}")
         imf.requests.clear()
 
     def ceiling(seconds_left):
@@ -786,7 +793,7 @@ def test_one_window_a_week_converges_without_a_re_expiry_loop(env, monkeypatch):
     assert statuses[-1] == "ok" and len(statuses) == len(PLAN_2026), statuses
 
 
-# ---- (7) unchanged from main: (b), (c), (j) stay open for the next PR ----------------------------
+# ---- (7) PR B: (c) and (b) now differ from main; (j) with nothing owed does not -------------------
 
 def _both(env, scenario):
     out = {}
@@ -799,21 +806,24 @@ def _both(env, scenario):
 def _run(how):
     try:
         r = base.run("IMTS", "IMF.STA", SRC) if how == "main" else F.update(None, None)
-        return (r.status, orchestrate._should_derive_csvs(r.status))
+        ck = getattr(r, "changed_keys", None)
+        return (r.status, orchestrate._should_derive_csvs(r.status), None if ck is None else len(ck))
     except DefinitiveError as e:
-        return ("DefinitiveError", type(e).__name__)
+        return ("DefinitiveError", type(e).__name__, None)
 
 
-def test_c_revision_only_reads_the_same_as_main(env):
+def test_c_revision_only_reads_ok_and_hands_over_the_revised_keys(env):
     def sc(how):
         env.setup("base")
         env.imf.up = "rev"
         return _run(how)
     out = _both(env, sc)
-    assert out["main"] == out["head"] == ("no_change", False), out
+    assert out["main"] == ("no_change", False, None), out
+    # rev moves 1949 (A), 2005-Q2 (Q) and 2026-M04 (M): three keys, merge-measured
+    assert out["head"] == ("ok", True, 3), out
 
 
-def test_b_and_s1n_a_re_merge_after_a_killed_merge_reads_the_same_as_main(env, monkeypatch):
+def test_b_and_s1n_a_re_merge_after_a_killed_merge_hands_over_every_key(env, monkeypatch):
     def sc(how):
         env.setup("base")
         env.imf.up = "add"
@@ -828,16 +838,17 @@ def test_b_and_s1n_a_re_merge_after_a_killed_merge_reads_the_same_as_main(env, m
         monkeypatch.setattr(base.merge, "merge_and_write", real)
         return _run(how)
     out = _both(env, sc)
-    assert out["main"] == out["head"] == ("no_change", False), out
+    assert out["main"] == ("no_change", False, None), out
+    assert out["head"] == ("ok", True, len(fake.SERIES)), out      # every stored key, not the re-merge's 0
 
 
-def test_j_a_structural_pass_reads_the_same_as_main(env):
+def test_j_a_structural_pass_with_nothing_owed_reads_the_same_as_main(env):
     def sc(how):
         env.setup("base")
         env.imf.up = "empty"
         return _run(how)
     out = _both(env, sc)
-    assert out["main"] == out["head"] == ("DefinitiveError", "DefinitiveError"), out
+    assert out["main"] == out["head"] == ("DefinitiveError", "DefinitiveError", None), out
 
 
 # ---- (8) through the REAL run_once -------------------------------------------------------------
@@ -925,12 +936,13 @@ def test_a_stop_through_the_real_run_once_is_partial_no_success_and_reaches_the_
     assert rig.put_ids() == []
 
 
-def test_a_merging_pass_through_the_real_run_once_derives_every_table(rig):
+def test_a_merging_pass_through_the_real_run_once_derives_the_tables_it_changed(rig):
     rig.env.setup("base")
     rig.env.imf.up = "add"
     results = rig.run()
     assert results == [(f"{SRC}/_all", "ok")], results
-    assert rig.put_ids() == TABLE_IDS
+    # add appends 2026-M05 to the one monthly series: one changed table (main derived all five)
+    assert rig.put_ids() == [i for i in TABLE_IDS if i.endswith(".M.MG_CIF_USD")]
 
 
 # ---- (9) the opt-in is pinned ----------------------------------------------------------------------

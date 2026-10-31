@@ -79,12 +79,48 @@ chain is merged as pulled, so an IMF revision to it made after that pull can wai
 next sweep after the chain merges re-pulls it). A pass deletes
 .sdmx.tmp / .parquet.tmp left in that directory by a kill; it never touches anything outside it.
 
-OPEN until the next PR (pinned as unchanged from main by tests/test_imts_window_cap.py): the status
-comes from rows added, so a revision-only republish reads no_change and derives nothing (c); a kill
-between the merge and the CSV step loses those keys (b) - the kept slices do NOT protect this: a kill
-after merge_and_write and before the slices are cleared leaves a store whose row count moved, so the
-later pass discards them and re-pulls the sweep, then re-merges nothing new, exactly as on main; a
-structural pass after such a kill derives nothing (j).
+CHANGE SIGNAL, OWED MARK, ROUTE B (PR B, 2026-10-30; review AR-410 O9, classes (c), (b), (j)).
+  * (c) The merge reports its changed keys (merge_and_write report_changed_keys=True) with a PER-CALL
+    changed_keys_cap = the assembled table's own row count, so the report cannot refuse on size. They
+    are Result.changed_keys, the set the CSV step derives (orchestrate._derive_changed_csvs; {} = nothing
+    changed). A revision with no added row is revised_unit, so it reads ok and the CSV step runs. A
+    report refused anyway (a ValueError before any I/O) runs the plain merge and the change is UNKNOWN:
+    every key is handed over, never a truncated list. No cap on the SET: the catalogue is table grain
+    (orchestrate._TABLE_GRAIN: 472,238 keys map to 2,937 table ids), so all keys cost the same derive
+    every ok pass on main already paid. series_cursors stay ALL keys, as before (health's frontier).
+  * (b) data/clean_full/<source>/_imts_owed.json, THROUGH BLOB beside the store and its .dims.json, on
+    the census precedent (_census_owed.json). The debt belongs to the STORE: the store goes through blob
+    (r2 today, the local store after T0), so a mark kept anywhere else could be lost or stale while the
+    store it speaks for moves. The kept slices stay LOCAL: losing them means a re-pull, never a CSV.
+    Forms: "merging" is written BEFORE merge_and_write publishes (that save FAILS CLOSED: nothing is
+    merged); "owed" after the merge when it changed something or a debt was carried ({} when it changed
+    nothing); "handed" when the update returns a Result carrying the keys - its token starts the
+    Result's error. A pass that finds "merging" or "owed" hands over EVERY stored key (the mark does not
+    record which keys) and never ends no_change, also when its own re-merge changes nothing (S1n). A
+    "handed" mark is settled ONLY when a later pass finds its token in unit_state.last_error, which the
+    orchestrator writes AFTER the CSV step, without the csv-fence note; otherwise every key is handed
+    over again. So a kill after the update returns and before the orchestrator records the CSV step
+    loses nothing. With NO state.db at all the update ran outside the orchestrator (which creates it
+    before any update), and the mark settles as census's does. Over-reporting re-derives identical
+    CSVs; it never leaves a changed one behind. The
+    read fails closed: a raising read = TransientError; content that is not a mark = DefinitiveError,
+    whose recovery is to write a valid "owed" mark; an explicit {} = nothing owed. An ABSENT mark beside
+    an EXISTING store is read as "owed" ONCE (review AR-410, R1766): main re-derived every key on every
+    pass that added a row, and wrote no mark, so a store that main left with stale CSVs (a kill after its
+    merge, a revision-only pass that read no_change) carries a debt nothing records. The first pass of
+    this code hands every stored key over, and from then on the mark is always present. With no store
+    an absent mark is nothing owed (nothing is served). A pass that returns without merging (a stop, a
+    transient) keeps the mark and names it as deferred.
+  * (j) ROUTE B: a structural refusal (_refuse), a refused merge, or a finalize that raises, while
+    anything changed or is owed, returns `partial` WITH every stored key's cursor, the keys as
+    changed_keys, and the refusal text. It raises only when nothing changed and nothing is owed.
+STATED RESIDUALS: the mark is settled by evidence in state.db, so a pass that cannot read an existing
+state.db hands every key over on every merging pass - the derive work main did on every ok pass, never a
+lost key; outside the orchestrator (no state.db) a kill after the return is not covered, as in census
+and wid; a "merging" mark left by a kill BEFORE the merge
+published over-reports once; a pass that stops before the merge carries the debt to the next merging
+pass, not this one; the first pass after the switch from main hands every stored key over once (the
+absent mark), whether or not main left a debt - an over-report, never a lost key.
 """
 from __future__ import annotations
 
@@ -92,6 +128,8 @@ import datetime as dt
 import json
 import math
 import os
+import secrets
+import sqlite3
 import sys
 import time
 import urllib.error
@@ -103,7 +141,8 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 from ... import blob, config, merge
-from ...errors import TransientError
+from ...errors import DefinitiveError, TransientError
+from ..base import Result
 from . import _imf_direct as _base
 from ._common import Tally, finalize, retry_after_seconds
 from jobs import ingest_imf_direct as ing
@@ -119,6 +158,13 @@ CLOSED_MAX_AGE_DAYS_DEFAULT = 365.0  # CHOSEN
 OPEN_MAX_AGE_DAYS_DEFAULT = 31.0     # CHOSEN: one monthly cadence
 MARKER = "marker.json"
 CHUNK = 1 << 20
+
+# THE OWED MARK (PR B, see the module docstring): data/clean_full/<source>/_imts_owed.json, THROUGH BLOB.
+OWED_FILE = "_imts_owed.json"
+_MERGING, _OWED, _HANDED = "merging", "owed", "handed"
+_FORMS = (_MERGING, _OWED, _HANDED)
+_FENCE_NOTE = "csv phase exceeded its"     # orchestrate's csv-fence note: the hand-over was NOT derived
+_DEBT_LABEL = "owed keys of an earlier merge (mark kept; a pass that merges hands them over)"
 
 
 def current_vintage(unit):
@@ -448,6 +494,101 @@ def _store_min_date(path: str):
 
 
 # --------------------------------------------------------------------------------------------
+# the owed mark (PR B)
+
+def _owed_path(out_dir: str) -> str:
+    return os.path.join(out_dir, OWED_FILE)
+
+
+def _load_owed(out_dir: str) -> dict:
+    """The owed mark: {} (nothing owed), {"flow", "form", "utc"[, "token"]}, or None when ABSENT (the
+    caller decides: beside an existing store it is owed once, see the module docstring). FAILS CLOSED:
+    a read that RAISES -> TransientError (retry later, nothing pulled); content that is present but not
+    a mark -> DefinitiveError naming its recovery. Returning {} for an unusable mark would drop the
+    debt, and the CSVs it owes would never be derived."""
+    try:
+        raw = blob.read_bytes(_owed_path(out_dir))
+    except Exception as e:                                   # noqa: BLE001
+        raise TransientError(f"{SOURCE}: owed mark {OWED_FILE} unreadable: {e!r}") from e
+    if raw is None:
+        return None
+    try:
+        obj = json.loads(raw.decode("utf-8"))
+        ok = isinstance(obj, dict) and (obj == {} or (
+            obj.get("flow") == FLOW and obj.get("form") in _FORMS and isinstance(obj.get("utc"), str)
+            and (obj["form"] != _HANDED or (isinstance(obj.get("token"), str) and bool(obj["token"])))))
+    except (ValueError, UnicodeDecodeError):
+        ok = False
+    if not ok:
+        raise DefinitiveError(
+            f"{SOURCE}: owed mark {OWED_FILE} is present but is not a mark; existing data kept. "
+            f"RECOVERY (operator): overwrite it through blob with "
+            f'{{"flow": "{FLOW}", "form": "owed", "utc": "<now>"}} - the source\'s next pass then hands every '
+            f"stored key to the CSV step and settles the mark. An explicit {{}} instead would drop the "
+            f"keys it owes.")
+    return obj
+
+
+def _save_owed(out_dir: str, mark: dict) -> bool:
+    """Persist the mark through blob (atomic); True when written. Only the pre-merge "merging" save
+    must fail closed, and its caller checks the return; any other failed save leaves an older form
+    behind, which over-reports (re-derives identical CSVs) and never under-reports."""
+    try:
+        blob.write_bytes_atomic(_owed_path(out_dir),
+                                json.dumps(mark, indent=1, sort_keys=True).encode("utf-8"))
+        return True
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[{SOURCE}] owed mark NOT saved ({e!r})", flush=True)
+        return False
+
+
+def _mark(form: str, **kw) -> dict:
+    return {"flow": FLOW, "form": form, "utc": _utc(time.time()), **kw}
+
+
+def _handed_recorded(source_id: str, token: str):
+    """(recorded, why). A "handed" mark is settled only on EVIDENCE that the orchestrator persisted the
+    hand-over: it writes the Result's error, which starts with the token, into unit_state.last_error
+    AFTER the CSV step (orchestrate.run_once: CSV phase, retry queue, then upsert_unit). A csv-fence
+    note there means the phase was abandoned, so the keys were NOT derived. Anything unreadable
+    (a locked or corrupt state.db, a missing table) counts as NOT recorded: the keys are handed over
+    again, which over-reports and never loses the debt.
+
+    NO state.db AT ALL is the one exception: the orchestrator creates it (StateStore() at the start of
+    run_once) before any update runs, so its absence means this update, and the one that took the
+    hand-over, ran OUTSIDE the orchestrator (a test, a harness, a direct call). That Result went to
+    its caller, and nothing will ever record it here, so waiting for a record would hand every key
+    over on every pass for ever. It settles, as census and wid settle on return."""
+    if not os.path.exists(config.STATE_DB):
+        return True, "no state.db: not run under the orchestrator, so the hand-over went to its caller"
+    try:
+        con = sqlite3.connect(f"file:{config.STATE_DB}?mode=ro", uri=True, timeout=5)
+        try:
+            rows = con.execute("SELECT last_error FROM unit_state WHERE source_id=?",
+                               (source_id,)).fetchall()
+        finally:
+            con.close()
+    except Exception as e:                                   # noqa: BLE001
+        return False, f"state not readable ({type(e).__name__})"
+    for (err,) in rows:
+        if err and token in err:
+            if _FENCE_NOTE in err:
+                return False, "recorded, but the csv phase was abandoned at its fence"
+            return True, "recorded"
+    return False, "not recorded (a kill before the orchestrator's CSV step?)"
+
+
+def _fold_cursors(tbl) -> dict:
+    cursors = {}
+    for k, d in zip(tbl.column("series_key").to_pylist(), tbl.column("obs_date").to_pylist()):
+        if d:
+            iso = d.isoformat()
+            if k not in cursors or iso > cursors[k]:
+                cursors[k] = iso
+    return cursors
+
+
+# --------------------------------------------------------------------------------------------
 
 def _margin_terms(floor_s: float, longest: float, lb: float, add: float) -> str:
     """Name the term that set a slice's margin, max(floor, 2 x longest, 2 x lb) + add: the largest
@@ -480,13 +621,55 @@ def run_sliced(flow: str, agency: str, source_id: str):
           f"merge reserve {reserve_s / 60:g} min", flush=True)
     floor_env = len(plan) + 1          # finalize's all-empty guard is for empty WINDOWS, not slices
 
+    debt = {"on": False}               # an owed mark this pass must hand over (set below)
+
     def _fin(**kw):
+        # Every path that returns without merging: an owed debt stays on its mark, and says so.
+        if debt["on"]:
+            tally.deferred_unit(_DEBT_LABEL)
         return finalize(tally, kw.pop("rows", before), kw.pop("mx", None) or _base._max_date(path),
                         source=source_id, empty_window_floor=floor_env, **kw)
 
+    def _handed(res):
+        """THE MARK'S LAST FORM: this Result carries the keys. The token goes at the START of the
+        Result's error (orchestrate clips the end, never the start), and a later pass settles the
+        mark only when the token shows the orchestrator recorded this Result after its CSV step."""
+        token = f"hand-over {_utc(time.time())}-{secrets.token_hex(6)}"
+        if _save_owed(out_dir, _mark(_HANDED, token=token)):
+            print(f"[{SOURCE}] owed mark -> handed ({token}); settled by the first later pass that finds "
+                  f"it recorded", flush=True)
+        res.error = f"{token}: {res.error or ''}"
+        return res
+
+    def _hand_over_all(why: str):
+        """ROUTE B with a debt and nothing merged (a refusal, a refused merge): `partial` WITH every
+        stored key, and the refusal text. Without the store there is nothing to derive: the mark is
+        released by name. A store that cannot be read keeps the mark."""
+        if not blob.exists(path):
+            _save_owed(out_dir, {})
+            raise DefinitiveError(f"{why}; owed mark RELEASED: the store holds no object, so nothing "
+                                  f"can be derived")
+        try:
+            t = blob.read_table(path, columns=["series_key", "obs_date"])
+        except Exception as e:                                   # noqa: BLE001
+            raise DefinitiveError(f"{why}; owed mark kept - the store could not be read to hand its "
+                                  f"keys over ({e!r})") from e
+        cur = _fold_cursors(t)
+        print(f"[{SOURCE}] {why} - ROUTE B: {len(cur):,} owed key(s) handed over anyway", flush=True)
+        return _handed(Result(
+            status="partial", obs=t.num_rows,
+            last_obs_date=pc.max(t.column("obs_date")).as_py() if t.num_rows else None,
+            new_vintage="date-tail", series_cursors=cur, changed_keys=dict(cur),
+            error=f"{why}; {len(cur):,} key(s) owed by an earlier merge handed over to the CSV step"))
+
     def _refuse(label: str):
         tally.structural_unit(label)
-        return _fin()
+        try:
+            return _fin()                                 # raises DefinitiveError (structural)
+        except DefinitiveError as e:
+            if not debt["on"]:
+                raise                                     # nothing changed, nothing owed: as before
+            return _hand_over_all(str(e))
 
     sdir = _slice_dir(source_id)
     os.makedirs(sdir, exist_ok=True)
@@ -496,6 +679,40 @@ def run_sliced(flow: str, agency: str, source_id: str):
                 os.remove(os.path.join(sdir, f))
             except OSError:
                 pass
+    if os.path.isdir(out_dir):                        # a kill inside an owed-mark write (local mirror)
+        for f in os.listdir(out_dir):
+            if f.startswith(OWED_FILE + ".") and f.endswith(".tmp"):
+                try:
+                    os.remove(os.path.join(out_dir, f))
+                except OSError:
+                    pass
+
+    # THE OWED MARK, before anything else can return (see the module docstring). Fails closed.
+    owed = _load_owed(out_dir)
+    if owed is None:
+        if before > 0:
+            # ABSENT beside an existing store: owed ONCE (main wrote no mark and may have left stale CSVs).
+            owed = _mark(_OWED)
+            print(f"[{SOURCE}] no owed mark beside a store of {before:,} rows (the first pass after the "
+                  f"switch from main, or a lost mark) - every stored key goes to the CSV step once",
+                  flush=True)
+        else:
+            owed = {}
+    if owed.get("form") == _HANDED:
+        recorded, how = _handed_recorded(source_id, owed["token"])
+        if recorded:
+            print(f"[{SOURCE}] owed mark settled: {owed['token']} was recorded by the orchestrator after "
+                  f"its CSV step", flush=True)
+            _save_owed(out_dir, {})
+            owed = {}
+        else:
+            debt["on"] = True
+            print(f"[{SOURCE}] owed mark {owed['token']} {how} - every stored key is handed over again",
+                  flush=True)
+    elif owed:
+        debt["on"] = True
+        print(f"[{SOURCE}] owed mark '{owed['form']}' ({owed['utc']}): an earlier merge's keys were never "
+              f"handed over - every stored key goes to the CSV step", flush=True)
 
     pinned = _pinned_dims(path, before)
     smin = _store_min_date(path)
@@ -675,23 +892,78 @@ def run_sliced(flow: str, agency: str, source_id: str):
         _clear_dir(sdir)
         return _refuse(f"{flow}: sliced pull assembled {fresh.num_rows:,} rows, under the {before // 2:,} "
                        f"floor (half the store); refusing to publish a partial as complete")
-    merge.merge_and_write(path, fresh, mode="merge", dedup_keys=_base.DEDUP)
+    # TWO-PHASE MARK, phase 1: "merging" (or "owed", if a debt is carried) BEFORE the merge publishes, so
+    # a kill between the publish and the Result leaves a mark a later pass hands over. FAIL CLOSED: if
+    # the mark is not stored, nothing is merged (the kept slices stay; a later pass merges them).
+    if not _save_owed(out_dir, _mark(_OWED if debt["on"] else _MERGING)):
+        for lab in pulled:
+            tally.empty_unit(f"{lab} pulled, kept for the merge")
+        tally.transient_unit("merge: pre-merge owed mark not saved - not merged, kept slices stay")
+        return _fin(merged_rows=0)
+    # (c) THE CHANGE SIGNAL: the merge's own report. The cap is PER CALL, this table's own size, so the
+    # report can never refuse on size; if it refuses anyway (before any I/O, a ValueError), the plain
+    # merge runs and the change is UNKNOWN, which hands every key over - never a truncated list.
+    try:
+        try:
+            _n, _last, changed = merge.merge_and_write(path, fresh, mode="merge", dedup_keys=_base.DEDUP,
+                                                       report_changed_keys=True,
+                                                       changed_keys_cap=max(fresh.num_rows, 1))
+        except ValueError as e:
+            if not str(e).startswith("report_changed_keys refused"):
+                raise
+            print(f"[{SOURCE}] change report refused ({e}) - plain merge, every key handed over",
+                  flush=True)
+            merge.merge_and_write(path, fresh, mode="merge", dedup_keys=_base.DEDUP)
+            changed = None
+    except DefinitiveError as e:
+        # merge refuses BEFORE it writes (never-shrink, a dropped column): nothing was published, so
+        # the mark goes back to what it was. With a debt, ROUTE B hands it over; without, as before.
+        _save_owed(out_dir, owed)
+        if not debt["on"]:
+            raise
+        return _hand_over_all(f"{flow}: merge refused ({e})")
     t_merged = time.time()
+    owes = debt["on"] or changed is None or bool(changed)
+    # TWO-PHASE MARK, phase 2: the merge landed. A change (or a carried debt) is OWED until a Result
+    # carries it; an identical merge owes nothing. A failed save leaves "merging": an over-report.
+    _save_owed(out_dir, _mark(_OWED) if owes else {})
     tbl = blob.read_table(path)
-    tally.added_unit(max(0, tbl.num_rows - before), flow)
-    cursors = {}
-    for k, d in zip(tbl.column("series_key").to_pylist(), tbl.column("obs_date").to_pylist()):
-        if d:
-            iso = d.isoformat()
-            if k not in cursors or iso > cursors[k]:
-                cursors[k] = iso
+    added = max(0, tbl.num_rows - before)
+    if added:
+        tally.added_unit(added, flow)
+    elif changed is None or changed:
+        tally.revised_unit(flow)                      # served values changed, no row added
+    else:
+        tally.added_unit(0, flow)                     # merged and identical
+    # Cursors stay ALL keys (per-series freshness, health's frontier), as before PR B.
+    cursors = _fold_cursors(tbl)
+    # THE DERIVE SET: the merge-measured changed keys; EVERY key when a debt is carried (an owed mark
+    # does not record which keys an earlier merge changed) or the change is unknown.
+    ck = dict(cursors) if (debt["on"] or changed is None) else {k: v for k, v in changed.items()}
     if before == 0:
         blob.write_bytes_atomic(path + ".dims.json", json.dumps(
             {"flow": flow, "agency": agency, "key_dims": pinned}, indent=1).encode("utf-8"))
     print(f"[{SOURCE}] merged {fresh.num_rows:,} rows from {len(parts)} slice(s): concat+merge "
           f"{t_merged - tm:.1f}s, read-back+cursors {time.time() - t_merged:.1f}s; store "
-          f"{tbl.num_rows:,} rows" + (f"; empty windows {', '.join(empties)}" if empties else ""),
-          flush=True)
+          f"{tbl.num_rows:,} rows; {len(changed) if changed is not None else 'unknown'} key(s) changed"
+          + (f", {len(ck):,} handed over (owed mark)" if debt["on"] else "")
+          + (f"; empty windows {', '.join(empties)}" if empties else ""), flush=True)
     _clear_dir(sdir)                                  # slices go only AFTER the merge succeeded
     mx = pc.max(tbl.column("obs_date")).as_py()
-    return finalize(tally, tbl.num_rows, mx, source=source_id, series_cursors=cursors)
+    try:
+        res = finalize(tally, tbl.num_rows, mx, source=source_id, series_cursors=cursors)
+    except DefinitiveError as e:
+        if not owes:
+            raise                                     # nothing changed, nothing owed: as before
+        # ROUTE B (j): partial WITH the cursors and the refusal text, never a lost hand-over.
+        print(f"[{SOURCE}] {e} - ROUTE B: {len(ck):,} changed/owed key(s) handed over anyway", flush=True)
+        res = Result(status="partial", obs=tbl.num_rows, last_obs_date=mx, new_vintage="date-tail",
+                     series_cursors=cursors,
+                     error=f"{e}; {len(ck):,} changed/owed key(s) handed over to the CSV step")
+    res.changed_keys = ck
+    if debt["on"] and res.status == "no_change":
+        # Nothing new, but owed keys are handed over: the CSV step must run, and only ok/partial reach
+        # it (orchestrate._should_derive_csvs).
+        res.status = "ok"
+        res.error = f"{res.error}; {len(ck):,} key(s) carried from an earlier merge's owed mark"
+    return _handed(res) if owes else res
