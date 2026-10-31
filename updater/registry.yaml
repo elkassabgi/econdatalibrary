@@ -5149,7 +5149,7 @@ sources:
   out_dir: unctad_tradefoodprocbycat
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.TradeFoodProcByCat/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.TradeFoodProcByCat -> version|lastUpdated
 - source_id: unctad_tradefoodcatbyproc
   # GIANT #14 (2026-08-16, #127): 394,118,603 obs / 26,579,759 series, 4 measures
   # (M4023 growth + M0100 US$ value + M5066 %food + M5058 %merch), pulled with the
@@ -5173,7 +5173,7 @@ sources:
   out_dir: unctad_tradefoodcatbyproc
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.TradeFoodCatByProc/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.TradeFoodCatByProc -> version|lastUpdated
 - source_id: unctad_trademerchtotal
   # FIRST UNCTAD successor (2026-08-08, #70): the publisher's own documented data API,
   # contract read from the app's generated code sample and PROVEN live (HTTP 200, real
@@ -5197,7 +5197,7 @@ sources:
   review: true
   adapter:
     vintage_signal: >-
-      GET https://unctadstat-api.unctad.org/api/reportMetadata/US.TradeMerchTotal/en
+      GET https://unctadstat-api.unctad.org/api/reportMetadata/US.TradeMerchTotal
       (keyless) -> f"{version}|{lastUpdated}", e.g. '10003|2026-03-11T08:15:49'.
     since_param: n/a (whole-snapshot re-pull on vintage move, merged never-shrink)
     out_paths_note: 'Single file data/clean_full/unctad_trademerchtotal/unctad_trademerchtotal.parquet;
@@ -5229,7 +5229,7 @@ sources:
   review: true
   adapter:
     vintage_signal: >-
-      GET https://unctadstat-api.unctad.org/api/reportMetadata/US.TradeMerchBalance/en
+      GET https://unctadstat-api.unctad.org/api/reportMetadata/US.TradeMerchBalance
       (keyless) -> f"{version}|{lastUpdated}".
     since_param: n/a (whole-snapshot re-pull on vintage move, merged never-shrink)
     out_paths_note: 'Single file data/clean_full/unctad_trademerchbalance/unctad_trademerchbalance.parquet;
@@ -5257,7 +5257,7 @@ sources:
   review: true
   adapter:
     vintage_signal: >-
-      GET https://unctadstat-api.unctad.org/api/reportMetadata/US.MerchVolumeQuarterly/en
+      GET https://unctadstat-api.unctad.org/api/reportMetadata/US.MerchVolumeQuarterly
       (keyless) -> f"{version}|{lastUpdated}".
     since_param: n/a (whole-snapshot re-pull on vintage move, merged never-shrink)
     out_paths_note: 'Single file data/clean_full/unctad_merchvolumequarterly/unctad_merchvolumequarterly.parquet;
@@ -5283,7 +5283,7 @@ sources:
   review: true
   adapter:
     vintage_signal: >-
-      GET https://unctadstat-api.unctad.org/api/reportMetadata/US.TermsOfTrade/en
+      GET https://unctadstat-api.unctad.org/api/reportMetadata/US.TermsOfTrade
       (keyless) -> f"{version}|{lastUpdated}".
     since_param: n/a (whole-snapshot re-pull on vintage move, merged never-shrink)
     out_paths_note: 'Single file data/clean_full/unctad_termsoftrade/unctad_termsoftrade.parquet;
@@ -5309,7 +5309,7 @@ sources:
   review: true
   adapter:
     vintage_signal: >-
-      GET https://unctadstat-api.unctad.org/api/reportMetadata/US.TradePriceIndices_Q/en
+      GET https://unctadstat-api.unctad.org/api/reportMetadata/US.TradePriceIndices_Q
       (keyless) -> f"{version}|{lastUpdated}".
     since_param: n/a (whole-snapshot re-pull on vintage move, merged never-shrink)
     out_paths_note: 'Single file data/clean_full/unctad_tradepriceindicesq/unctad_tradepriceindicesq.parquet;
@@ -5334,7 +5334,7 @@ sources:
   out_dir: unctad_concentdiversindices
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.ConcentDiversIndices/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.ConcentDiversIndices -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>, annual Dec-31
     rate_note: family contract (see banner)
@@ -5352,7 +5352,7 @@ sources:
   out_dir: unctad_concentstructindices
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.ConcentStructIndices/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.ConcentStructIndices -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>, annual Dec-31
     rate_note: family contract (see banner)
@@ -5371,7 +5371,7 @@ sources:
   out_dir: unctad_rca
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.RCA/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.RCA -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move; size-cap chunking auto-applies)
     out_paths_note: single parquet, series_key = <dims>.M<measure>, annual Dec-31
     rate_note: family contract (see banner); chunked POSTs when over the 62,500-cell cap
@@ -5389,7 +5389,7 @@ sources:
   out_dir: unctad_tariff
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.Tariff/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.Tariff -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move; size-cap chunking auto-applies)
     out_paths_note: single parquet, series_key = <dims>.M<measure>, annual Dec-31
     rate_note: family contract (see banner)
@@ -5407,7 +5407,7 @@ sources:
   out_dir: unctad_merchtheilindices
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.MerchTheilIndices/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.MerchTheilIndices -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>, annual Dec-31
     rate_note: family contract (see banner)
@@ -5425,7 +5425,7 @@ sources:
   out_dir: unctad_totandcomservicesquarterly
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.TotAndComServicesQuarterly/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.TotAndComServicesQuarterly -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move; size-cap chunking auto-applies)
     out_paths_note: single parquet, series_key = <dims>.M<measure>, quarter-start
     rate_note: family contract (see banner)
@@ -5443,7 +5443,7 @@ sources:
   out_dir: unctad_ucpia
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.UCPI_A/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.UCPI_A -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <CommodityCode>.M<measure>, annual Dec-31
     rate_note: family contract (see banner)
@@ -5461,7 +5461,7 @@ sources:
   out_dir: unctad_ucpim
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.UCPI_M/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.UCPI_M -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <CommodityCode>.M<measure>, month-start
     rate_note: family contract (see banner)
@@ -5479,7 +5479,7 @@ sources:
   out_dir: unctad_commoditypriceindicesa
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.CommodityPriceIndices_A/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.CommodityPriceIndices_A -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <CommodityCode>.M<measure>, annual Dec-31
     rate_note: family contract (see banner)
@@ -5511,7 +5511,7 @@ sources:
   out_dir: unctad_commoditypriceindicesm
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.CommodityPriceIndices_M/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.CommodityPriceIndices_M -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <CommodityCode>.M<measure>, month-start
     rate_note: family contract (see banner)
@@ -5529,7 +5529,7 @@ sources:
   out_dir: unctad_commoditypricea
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.CommodityPrice_A/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.CommodityPrice_A -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <CommodityCode>.M<measure>, annual Dec-31
     rate_note: family contract (see banner)
@@ -5561,7 +5561,7 @@ sources:
   out_dir: unctad_commoditypricem
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.CommodityPrice_M/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.CommodityPrice_M -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <CommodityCode>.M<measure>, month-start
     rate_note: family contract (see banner)
@@ -5579,7 +5579,7 @@ sources:
   out_dir: unctad_ifftrademisinvoicing
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.IFF_TradeMisinvoicing/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.IFF_TradeMisinvoicing -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -5597,7 +5597,7 @@ sources:
   out_dir: unctad_ictproductionsector
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.IctProductionSector/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.IctProductionSector -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -5615,7 +5615,7 @@ sources:
   out_dir: unctad_iffcrimesrelated
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.IFF_CrimesRelated/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.IFF_CrimesRelated -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -5633,7 +5633,7 @@ sources:
   out_dir: unctad_creativeservgroupe
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.CreativeServ_Group_E/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.CreativeServ_Group_E -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -5651,7 +5651,7 @@ sources:
   out_dir: unctad_sdgporfvol
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.SDG_PORFVOL/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.SDG_PORFVOL -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -5669,7 +5669,7 @@ sources:
   out_dir: unctad_contportthroughput
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.ContPortThroughput/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.ContPortThroughput -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -5687,7 +5687,7 @@ sources:
   out_dir: unctad_shipscrapping
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.ShipScrapping/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.ShipScrapping -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -5705,7 +5705,7 @@ sources:
   out_dir: unctad_vesselvaluebyownership
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.VesselValueByOwnership/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.VesselValueByOwnership -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -5723,7 +5723,7 @@ sources:
   out_dir: unctad_shipbuilding
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.ShipBuilding/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.ShipBuilding -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -5741,7 +5741,7 @@ sources:
   out_dir: unctad_vesselvaluebyregistration
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.VesselValueByRegistration/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.VesselValueByRegistration -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -5759,7 +5759,7 @@ sources:
   out_dir: unctad_biotrademerchgdpshare
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.BioTradeMerchGDPShare/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.BioTradeMerchGDPShare -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -5777,7 +5777,7 @@ sources:
   out_dir: unctad_sdglulfrg
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.SDG_LULFRG/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.SDG_LULFRG -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -5795,7 +5795,7 @@ sources:
   out_dir: unctad_biotrademerchprodconcent
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.BioTradeMerchProdConcent/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.BioTradeMerchProdConcent -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -5813,7 +5813,7 @@ sources:
   out_dir: unctad_curraccbalance
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.CurrAccBalance/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.CurrAccBalance -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -5847,7 +5847,7 @@ sources:
   out_dir: unctad_cpi_annual
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.Cpi_A/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.Cpi_A -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -5865,7 +5865,7 @@ sources:
   out_dir: unctad_lscim
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.LSCI_M/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.LSCI_M -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -5897,7 +5897,7 @@ sources:
   out_dir: unctad_gni
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.GNI/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.GNI -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -5915,7 +5915,7 @@ sources:
   out_dir: unctad_inclusivegrowth
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.InclusiveGrowth/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.InclusiveGrowth -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -5933,7 +5933,7 @@ sources:
   out_dir: unctad_lsci
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.LSCI/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.LSCI -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -5951,7 +5951,7 @@ sources:
   out_dir: unctad_portcallsarrivals
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.PortCallsArrivals/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.PortCallsArrivals -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -5983,7 +5983,7 @@ sources:
   out_dir: unctad_portcallsarrivalss
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.PortCallsArrivals_S/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.PortCallsArrivals_S -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6001,7 +6001,7 @@ sources:
   out_dir: unctad_remittances
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.Remittances/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.Remittances -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6019,7 +6019,7 @@ sources:
   out_dir: unctad_poptotal
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.PopTotal/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.PopTotal -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6037,7 +6037,7 @@ sources:
   out_dir: unctad_popdependency
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.PopDependency/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.PopDependency -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6055,7 +6055,7 @@ sources:
   out_dir: unctad_ictuselocation
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.IctUseLocation/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.IctUseLocation -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6073,7 +6073,7 @@ sources:
   out_dir: unctad_creativeservindivtot
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.CreativeServ_Indiv_Tot/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.CreativeServ_Indiv_Tot -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6091,7 +6091,7 @@ sources:
   out_dir: unctad_ftri
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.FTRI/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.FTRI -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6123,7 +6123,7 @@ sources:
   out_dir: unctad_seafarers
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.Seafarers/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.Seafarers -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6141,7 +6141,7 @@ sources:
   out_dir: unctad_plsci
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.PLSCI/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.PLSCI -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6159,7 +6159,7 @@ sources:
   out_dir: unctad_portcalls
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.PortCalls/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.PortCalls -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6191,7 +6191,7 @@ sources:
   out_dir: unctad_portcallss
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.PortCalls_S/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.PortCalls_S -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6209,7 +6209,7 @@ sources:
   out_dir: unctad_gdptotal
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.GDPTotal/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.GDPTotal -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6241,7 +6241,7 @@ sources:
   out_dir: unctad_genderdomesticvalueadded
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.Gender_DomesticValueAdded/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.Gender_DomesticValueAdded -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6259,7 +6259,7 @@ sources:
   out_dir: unctad_tradeservict
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.TradeServICT/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.TradeServICT -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6277,7 +6277,7 @@ sources:
   out_dir: unctad_wastewatertreatment
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.WastewaterTreatment/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.WastewaterTreatment -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6295,7 +6295,7 @@ sources:
   out_dir: unctad_fdiflowsstock
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.FdiFlowsStock/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.FdiFlowsStock -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6313,7 +6313,7 @@ sources:
   out_dir: unctad_pci
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.PCI/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.PCI -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6331,7 +6331,7 @@ sources:
   out_dir: unctad_seabornetrade
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.SeaborneTrade/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.SeaborneTrade -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6349,7 +6349,7 @@ sources:
   out_dir: unctad_goodsandservicesbpm6
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.GoodsAndServicesBpm6/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.GoodsAndServicesBpm6 -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6367,7 +6367,7 @@ sources:
   out_dir: unctad_goodsandservbalancebpm6
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.GoodsAndServBalanceBpm6/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.GoodsAndServBalanceBpm6 -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6399,7 +6399,7 @@ sources:
   out_dir: unctad_govexpenditures
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.GovExpenditures/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.GovExpenditures -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6417,7 +6417,7 @@ sources:
   out_dir: unctad_gendertradableindustries
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.Gender_TradableIndustries/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.Gender_TradableIndustries -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6435,7 +6435,7 @@ sources:
   out_dir: unctad_environmentalgoodsrca
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.EnvironmentalGoodsRCA/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.EnvironmentalGoodsRCA -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6453,7 +6453,7 @@ sources:
   out_dir: unctad_goodsandservtradeopennessbpm6
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.GoodsAndServTradeOpennessBpm6/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.GoodsAndServTradeOpennessBpm6 -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6471,7 +6471,7 @@ sources:
   out_dir: unctad_oceanservices
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.OceanServices/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.OceanServices -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6489,7 +6489,7 @@ sources:
   out_dir: unctad_biotrademerchmarketindices
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.BioTradeMerchMarketIndices/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.BioTradeMerchMarketIndices -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6507,7 +6507,7 @@ sources:
   out_dir: unctad_merchantfleet
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.MerchantFleet/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.MerchantFleet -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6525,7 +6525,7 @@ sources:
   out_dir: unctad_ictuseenterprsize
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.IctUseEnterprSize/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.IctUseEnterprSize -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6543,7 +6543,7 @@ sources:
   out_dir: unctad_gdpcomponent
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.GDPComponent/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.GDPComponent -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move; size-cap chunking auto-applies)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6575,7 +6575,7 @@ sources:
   out_dir: unctad_ictuseeconactivity
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.IctUseEconActivity/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.IctUseEconActivity -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move; size-cap chunking auto-applies)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6593,7 +6593,7 @@ sources:
   out_dir: unctad_tradefoodproccatcatrca
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.TradeFoodProcCat_Cat_RCA/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.TradeFoodProcCat_Cat_RCA -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move; size-cap chunking auto-applies)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6611,7 +6611,7 @@ sources:
   out_dir: unctad_tradefoodproccatprocrca
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.TradeFoodProcCat_Proc_RCA/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.TradeFoodProcCat_Proc_RCA -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move; size-cap chunking auto-applies)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6629,7 +6629,7 @@ sources:
   out_dir: unctad_popagestruct
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.PopAgeStruct/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.PopAgeStruct -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move; size-cap chunking auto-applies)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6647,7 +6647,7 @@ sources:
   out_dir: unctad_fleetbeneficialowners
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.FleetBeneficialOwners/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.FleetBeneficialOwners -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move; size-cap chunking auto-applies)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6665,7 +6665,7 @@ sources:
   out_dir: unctad_environmentalgoodstrade
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.EnvironmentalGoodsTrade/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.EnvironmentalGoodsTrade -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move; size-cap chunking auto-applies)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6683,7 +6683,7 @@ sources:
   out_dir: unctad_digitallydeliverableservices
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.DigitallyDeliverableServices/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.DigitallyDeliverableServices -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move; size-cap chunking auto-applies)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6701,7 +6701,7 @@ sources:
   out_dir: unctad_lsbci
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.LSBCI/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.LSBCI -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move; size-cap chunking auto-applies)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6719,7 +6719,7 @@ sources:
   out_dir: unctad_exchangeratecrosstab
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.ExchangeRateCrosstab/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.ExchangeRateCrosstab -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move; size-cap chunking auto-applies)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6737,7 +6737,7 @@ sources:
   out_dir: unctad_ictuseeconactivityisic4
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.IctUseEconActivity_Isic4/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.IctUseEconActivity_Isic4 -> version|lastUpdated
     since_param: n/a (whole-snapshot re-pull on vintage move; size-cap chunking auto-applies)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6755,7 +6755,7 @@ sources:
   out_dir: unctad_intratrade
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.IntraTrade/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.IntraTrade -> version|lastUpdated
     since_param: n/a (whole-snapshot chunked re-pull on vintage move)
     out_paths_note: single parquet; CATALOG grain = first two dot-segments of series_key (_DOT_TABLE_GRAIN)
     rate_note: chunked Facts POSTs (62,500-cell cap; IntraTrade measured 31 years x economy-halves)
@@ -6773,7 +6773,7 @@ sources:
   out_dir: unctad_tradeservcattotal
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.TradeServCatTotal/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.TradeServCatTotal -> version|lastUpdated
     since_param: n/a (whole-snapshot chunked re-pull on vintage move)
     out_paths_note: single parquet; CATALOG grain = first two dot-segments of series_key (_DOT_TABLE_GRAIN)
     rate_note: chunked Facts POSTs (62,500-cell cap; IntraTrade measured 31 years x economy-halves)
@@ -6791,7 +6791,7 @@ sources:
   out_dir: unctad_biotrademerchshare
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.BiotradeMerchShare/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.BiotradeMerchShare -> version|lastUpdated
     since_param: n/a (whole-snapshot chunked re-pull on vintage move)
     out_paths_note: single parquet; CATALOG grain = first two dot-segments of series_key (_DOT_TABLE_GRAIN)
     rate_note: chunked Facts POSTs (62,500-cell cap; IntraTrade measured 31 years x economy-halves)
@@ -6809,7 +6809,7 @@ sources:
   out_dir: unctad_biotrademerchrca
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.BiotradeMerchRCA/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.BiotradeMerchRCA -> version|lastUpdated
     since_param: n/a (whole-snapshot chunked re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6827,7 +6827,7 @@ sources:
   out_dir: unctad_ecommercetotal
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.ECommerceTotal/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.ECommerceTotal -> version|lastUpdated
     since_param: n/a (whole-snapshot chunked re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6845,7 +6845,7 @@ sources:
   out_dir: unctad_associatedplasticstradebypartner
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.AssociatedPlasticsTradebyPartner/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.AssociatedPlasticsTradebyPartner -> version|lastUpdated
     since_param: n/a (whole-snapshot chunked re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6863,7 +6863,7 @@ sources:
   out_dir: unctad_hiddenplasticstradebypartner
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.HiddenPlasticsTradebyPartner/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.HiddenPlasticsTradebyPartner -> version|lastUpdated
     since_param: n/a (whole-snapshot chunked re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6881,7 +6881,7 @@ sources:
   out_dir: unctad_ecommerceinternational
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.ECommerceInternational/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.ECommerceInternational -> version|lastUpdated
     since_param: n/a (whole-snapshot chunked re-pull on vintage move)
     out_paths_note: single parquet, series_key = <dims>.M<measure>
     rate_note: family contract (see banner)
@@ -6900,7 +6900,7 @@ sources:
   out_dir: unctad_plasticstradebypartner
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.PlasticsTradebyPartner/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.PlasticsTradebyPartner -> version|lastUpdated
     since_param: n/a (whole-snapshot chunked re-pull on vintage move)
     out_paths_note: single parquet; CATALOG grain = first two dot-segments (_DOT_TABLE_GRAIN)
     rate_note: family contract; chunked POSTs (62,500-cell cap)
@@ -6919,7 +6919,7 @@ sources:
   out_dir: unctad_ictgoods
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.IctGoods/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.IctGoods -> version|lastUpdated
     since_param: n/a (whole-snapshot chunked re-pull on vintage move)
     out_paths_note: single parquet; CATALOG grain = first three dot-segments (_DOT_TABLE_GRAIN)
     rate_note: family contract; chunked POSTs
@@ -6945,7 +6945,7 @@ sources:
   out_dir: unctad_gstptradematrix
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.GSTP_TradeMatrix/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.GSTP_TradeMatrix -> version|lastUpdated
     since_param: n/a (whole-snapshot chunked re-pull on vintage move)
     out_paths_note: single parquet; CATALOG grain = first two dot-segments (_DOT_TABLE_GRAIN)
     rate_note: family contract; chunked POSTs
@@ -6971,7 +6971,7 @@ sources:
   out_dir: unctad_creativegoodsvalue
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.CreativeGoodsValue/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.CreativeGoodsValue -> version|lastUpdated
     since_param: n/a (whole-snapshot chunked re-pull on vintage move)
     out_paths_note: single parquet; CATALOG grain = first two dot-segments (_DOT_TABLE_GRAIN)
     rate_note: family contract; chunked POSTs
@@ -6990,7 +6990,7 @@ sources:
   out_dir: unctad_creativegoodsgr
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.CreativeGoodsGR/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.CreativeGoodsGR -> version|lastUpdated
     since_param: n/a (whole-snapshot chunked re-pull on vintage move)
     out_paths_note: single parquet; CATALOG grain = first two dot-segments (_DOT_TABLE_GRAIN)
     rate_note: family contract; chunked POSTs
@@ -7071,7 +7071,7 @@ sources:
   out_dir: unctad_criticalmineralstradebypart
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.CriticalMinerals_TradeByPart/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.CriticalMinerals_TradeByPart -> version|lastUpdated
     since_param: n/a (whole-snapshot chunked re-pull on vintage move)
 - source_id: unctad_oceantrade
   # GIANT #6 (2026-08-08, #70): 82,384,490 obs / 8,984,193 series; depth-3 DOT-prefix
@@ -7093,7 +7093,7 @@ sources:
   out_dir: unctad_oceantrade
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.OceanTrade/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.OceanTrade -> version|lastUpdated
     since_param: n/a (whole-snapshot chunked re-pull on vintage move)
     out_paths_note: single parquet; CATALOG grain = first three dot-segments (_DOT_TABLE_GRAIN)
     rate_note: family contract; chunked POSTs
@@ -7119,7 +7119,7 @@ sources:
   out_dir: unctad_nonplasticsubststradebypartner
   review: true
   adapter:
-    vintage_signal: GET /api/reportMetadata/US.NonPlasticSubstsTradeByPartner/en -> version|lastUpdated
+    vintage_signal: GET /api/reportMetadata/US.NonPlasticSubstsTradeByPartner -> version|lastUpdated
     since_param: n/a (whole-snapshot chunked re-pull on vintage move)
     out_paths_note: single parquet; CATALOG grain = first two dot-segments (_DOT_TABLE_GRAIN)
     rate_note: family contract; chunked POSTs recursing across every key dim (one Economy x one Year still caps)

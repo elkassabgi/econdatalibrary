@@ -1187,6 +1187,11 @@ sources:
       (4) GET https://unctadstat-api.unctad.org/api/datacenter/en, every report of every folder diffed by
       report name against docs/evidence/unctad_datacenter_catalogue_20260810.json. An independent review
       (AR-354) measured the same four answers 02:10-02:16Z the same day, with a different invented name.
+      TO RE-RUN AFTER 2026-10-29, DROP THE /en SEGMENT: since then UNCTAD answers 404 to it (all 68 unctad
+      probes of updater-daily run 41054519780 got 404 on reportMetadata/DS/en; datacenter/en is 404 too).
+      Without it, (3) answered 200 on 2026-10-31 with a body byte-identical to the 2026-10-20 /en answer
+      (sha256 36d334b0...61e5), and (4) answers the same 99 reports in a new shape (report key `name`, not
+      `reportName`). The URLs above are kept as requested on 2026-10-20.
     finding: >-
       (1) HTTP 400, 64 bytes, body verbatim {"Error":"report instance not found for report
       US.TradeMerchGR"} (AR-354 found the same on the /fr path). (2) HTTP 400 with the same text for the invented

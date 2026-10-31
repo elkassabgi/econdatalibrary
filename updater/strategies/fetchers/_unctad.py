@@ -2,10 +2,14 @@
 thin per-source modules.
 
 The publisher's own documented data API (contract proven live 2026-08-07): vintage is
-KEYLESS — `GET /api/reportMetadata/{DS}/en` returns {version, lastUpdated}, the
+KEYLESS — `GET /api/reportMetadata/{DS}` returns {version, lastUpdated}, the
 publisher's own statement of the current release — and observations are keyed
 (ClientId/ClientSecret via CI secrets or .env) through
 `POST https://unctadstat-user-api.unctad.org/{DS}/cur/Facts`.
+
+The metadata address has NO language segment: `.../reportMetadata/{DS}/en` answers 404 since
+2026-10-29 (every unctad probe failed in updater-daily 41054519780). The address is built in ONE
+place, jobs/ingest_unctad_ds.report_metadata_url; tests/test_unctad_metadata_url.py pins it.
 
 Whole-dataset snapshot: re-pull ONLY when the vintage token moves, MERGE with dedup
 (series_key, obs_date) so a revision updates in place and never-shrink holds. ALL parse

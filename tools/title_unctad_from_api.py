@@ -9,7 +9,7 @@ label source.
 
 It is also not needed. Everything required is on UNCTAD's own endpoints:
 
-  report title    GET /api/reportMetadata/{DS}/en   -> `title`                  (keyless)
+  report title    GET /api/reportMetadata/{DS}      -> `title`                  (keyless; no /en)
   measure label   same document                     -> defaults.observations[].measures[] {code,label}
   dimension label the dimension table, [{Code, Label, ...}], read through
                   jobs/ingest_unctad_ds.dim_rows                                (credentialed)
@@ -48,39 +48,53 @@ _spec = importlib.util.spec_from_file_location("iu", os.path.join(ROOT, "jobs", 
 iu = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(iu)
 
-_DATACENTER = "https://unctadstat-api.unctad.org/api/datacenter/en"
+# No `/en` segment: `.../datacenter/en` answers 404 since 2026-10-29 (see jobs/ingest_unctad_ds.py).
+_DATACENTER = f"{iu.META}/datacenter"
 _REPORTS: list = []
 
 
 def _advertised_reports() -> list:
-    """Every reportName UNCTAD's own datacenter advertises (cached for the process).
+    """Every report name UNCTAD's own datacenter advertises (cached for the process).
 
     A refused or failed request is an ERROR here, not an empty list. It used to be swallowed, and
     main() then printed "no UNCTAD dataset in its registry vintage_signal - skipped" for a source
     whose dataset simply could not be looked up, with exit status 0. This is the same keyless host
     that began to block its dimension address on 2026-10-13.
+
+    TWO SHAPES. The `/en` answer (receipt docs/evidence/unctad_datacenter_catalogue_20261020.json)
+    named each report `reportName`. The answer without the segment (measured 2026-10-31T00:53Z,
+    600,770 B) names it `name`, beside `title` and `notes`, inside each folder's `reports` list; the
+    99 names are the same 99 as the 2026-10-20 receipt. Both shapes are read. A 200 that yields NO
+    report name is a contract change, so it raises: an empty list would title nothing with exit 0.
     """
     if not _REPORTS:
         r = requests.get(_DATACENTER, headers=iu.UA, timeout=180)
         r.raise_for_status()
         j = r.json()
 
-        def walk(o):
+        def walk(o, in_reports=False):
             if isinstance(o, dict):
-                if o.get("reportName"):
-                    _REPORTS.append(o["reportName"])
-                for v in o.values():
-                    walk(v)
+                name = o.get("reportName") or (o.get("name") if in_reports else None)
+                if name:
+                    _REPORTS.append(name)
+                for k, v in o.items():
+                    walk(v, in_reports=(k == "reports"))
             elif isinstance(o, list):
                 for v in o:
-                    walk(v)
+                    walk(v, in_reports=in_reports)
         walk(j)
+        if not _REPORTS:
+            raise RuntimeError(f"{_DATACENTER} answered {r.status_code} but advertised no report name "
+                               f"(neither 'reportName' nor a 'reports[].name') - the catalogue shape changed")
     return _REPORTS
 
 
 def _ds_for(source_id: str, reg: dict):
     vs = str(((reg.get(source_id) or {}).get("adapter") or {}).get("vintage_signal", ""))
-    m = re.search(r"reportMetadata/([A-Za-z0-9_.]+)/", vs)
+    # The dataset name is `<agency>.<report>` (all 99 UNCTAD advertises have exactly one dot). Matched
+    # by that shape, NOT by a trailing '/': the vintage_signal strings dropped their '/en' segment on
+    # 2026-10-31 and some end the name at a space; the older '/en' spelling still matches.
+    m = re.search(r"reportMetadata/([A-Za-z0-9_]+\.[A-Za-z0-9_]+)", vs)
     if m:
         return m.group(1)
     # FALL BACK TO UNCTAD'S OWN CATALOGUE WHEN THE REGISTRY NAMES NO DATASET. Some entries
