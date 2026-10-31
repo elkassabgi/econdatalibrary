@@ -66,13 +66,34 @@ def parse_killed(log_text: str, total_elapsed_s: float):
     construction; its unaccounted time lands in the residual — the over-estimate direction
     run_cost_estimate documents as safe.
     """
+    hit = _parse(log_text, total_elapsed_s)
+    return None if hit is None or hit[3] else hit[:3]
+
+
+# The leftover csv retry drain after the unit loop (orchestrate._drain_leftover_retries) prints
+# `>>> <unit> (csv retry drain)` ... `<<< <unit> took Ns`. A kill inside it is not a unit's cost: the drain
+# runs in leftover time under the pass budget and writes no run row, so nothing is recorded for it.
+_DRAIN_MARK = "(csv retry drain)"
+
+
+def killed_in_drain(log_text: str, total_elapsed_s: float) -> "tuple[str, str] | None":
+    """(source_id, unit_id) when the kill landed inside a leftover csv retry drain, else None."""
+    hit = _parse(log_text, total_elapsed_s)
+    return hit[:2] if hit is not None and hit[3] else None
+
+
+def _parse(log_text: str, total_elapsed_s: float):
     started: list[tuple[str, str]] = []
+    drains: list[bool] = []
     done_s = 0.0
     done: set[tuple[str, str]] = set()
     for line in log_text.splitlines():
         m = _START.search(line)
         if m:
             started.append((m.group(1), m.group(2)))
+            drains.append(_DRAIN_MARK in line)
+            # a drain re-opens a unit key that may have been closed (or never closed) by the loop
+            done.discard((m.group(1), m.group(2)))
             continue
         m = _DONE.search(line)
         if m:
@@ -89,7 +110,7 @@ def parse_killed(log_text: str, total_elapsed_s: float):
         return None                     # the final unit completed; the pass ended cleanly
     src, unit = last
     attributed = max(60.0, total_elapsed_s - done_s)
-    return src, unit, round(attributed, 1)
+    return src, unit, round(attributed, 1), drains[-1]
 
 
 def main() -> int:
@@ -100,6 +121,11 @@ def main() -> int:
     a = ap.parse_args()
 
     text = open(a.log_path, encoding="utf-8", errors="replace").read()
+    drain = killed_in_drain(text, a.total_elapsed_s)
+    if drain is not None:
+        print("killed during the leftover csv retry drain of %s/%s - not a unit's run, nothing recorded; "
+              "its ids stay queued" % drain)
+        return 0
     hit = parse_killed(text, a.total_elapsed_s)
     if hit is None:
         print("every started unit completed — nothing was killed mid-flight, nothing to do")

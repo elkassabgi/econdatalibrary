@@ -214,11 +214,22 @@ def test_run_once_hands_the_drain_over_only_when_the_csv_fence_held():
     call it exactly once, only under `if not _csv_fence_tripped` - retrying OLD ids in an exhausted window is the
     overrun being fenced."""
     import ast
+    import inspect
     run_once = _fn_ast("run_once")
     calls = [n for n in ast.walk(run_once) if isinstance(n, ast.Call)
              and getattr(n.func, "id", None) == "_drain_csv_retry_queue"]
     assert len(calls) == 1 and [ast.unparse(a) for a in calls[0].args] == ["unit", "blob", "store"], \
         [ast.unparse(c) for c in calls]
+    # MODULE-WIDE (review AR-413 O3): a drain call hidden in a helper would pass the run_once-only count above. The
+    # only other caller is the leftover drain after the unit loop, which runs no fresh CSV phase and so has no
+    # fence verdict to share (its gates: tests/test_drain_retry_on_no_change.py).
+    tree = ast.parse(inspect.getsource(orchestrate))
+    callers = sorted({fn.name for fn in ast.walk(tree) if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+                      for n in ast.walk(fn) if isinstance(n, ast.Call)
+                      and getattr(n.func, "id", None) == "_drain_csv_retry_queue"})
+    assert callers == ["_drain_leftover_retries", "run_once"], callers
+    every = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_drain_csv_retry_queue"]
+    assert len(every) == 2, [ast.unparse(c) for c in every]
     gates = [n for n in ast.walk(run_once) if isinstance(n, ast.If) and ast.unparse(n.test) == "not _csv_fence_tripped"
              and any(c is calls[0] for s in n.body for c in ast.walk(s))]
     assert len(gates) == 1

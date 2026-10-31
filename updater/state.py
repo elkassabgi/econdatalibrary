@@ -254,12 +254,31 @@ class StateStore:
         self.db.commit()
 
     def csv_retries(self, source_id=None):
+        # LEAST-TRIED FIRST, then oldest (review AR-413 O5, R313). With no ORDER BY the drain's per-pass cap took
+        # the first _CSV_RETRY_CAP rows in rowid order, so ids that fail every time held the head for ever and the
+        # tail of a larger queue was never attempted. A tried refailure now raises `attempts`, so it sorts behind
+        # ids not yet tried.
         if source_id:
             rows = self.db.execute(
-                "SELECT * FROM csv_retry_queue WHERE source_id=?", (source_id,))
+                "SELECT * FROM csv_retry_queue WHERE source_id=? "
+                "ORDER BY attempts, enqueued_utc, rowid", (source_id,))
         else:
-            rows = self.db.execute("SELECT * FROM csv_retry_queue")
+            rows = self.db.execute("SELECT * FROM csv_retry_queue ORDER BY attempts, enqueued_utc, rowid")
         return [dict(r) for r in rows]
+
+    def csv_retry_sources(self) -> dict:
+        """{source_id: (queued rows, oldest enqueued_utc)} - one GROUP BY, for ordering the leftover drain."""
+        return {sid: (n, lo) for sid, n, lo in self.db.execute(
+            "SELECT source_id, COUNT(*), MIN(enqueued_utc) FROM csv_retry_queue GROUP BY source_id")}
+
+    def note_csv_retry_refailed(self, reasons: dict):
+        """A queued id the drain TRIED and that failed again: attempts + 1, and its own reason when it has one.
+        enqueued_utc is kept (the debt keeps its age); enqueue_csv_retry would reset it."""
+        self.db.executemany(
+            "UPDATE csv_retry_queue SET attempts=attempts+1, last_error=COALESCE(?, last_error) "
+            "WHERE series_id=?",
+            [(None if r is None else str(r), str(s)) for s, r in reasons.items()])
+        self.db.commit()
 
     def clear_csv_retries(self, series_ids):
         self.db.executemany("DELETE FROM csv_retry_queue WHERE series_id=?",
