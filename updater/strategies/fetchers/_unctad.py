@@ -212,7 +212,8 @@ def make(ds: str, source: str, window: bool = False):
 #     once from the footer statistics); a release whose keys have another shape is STRUCTURAL (Route B when
 #     something is owed, never green): the text names it a re-grain, an operator re-key (R22 clean re-pull),
 #     never a merge.
-# STATED RESIDUALS: a replay-only pass ignores the reserve, so a replay plus assembly longer than the run
+# STATED RESIDUALS: a DIRECTORY at a chunk's spill path makes every pass transient (as on main; the operator
+# removes it); a replay-only pass ignores the reserve, so a replay plus assembly longer than the run
 # budget plus 10 min is still killed by the ps1 hard stop, as on main (the kill loses nothing: the publish is
 # atomic and the 'merging' mark precedes it); a server that delays its first byte while the
 # client ignores the clamped read timeout is bounded only by that client (requests honours it; review
@@ -255,8 +256,10 @@ MARGIN_FLOOR_MIN_DEFAULT = 5.0        # CHOSEN (largest spill gap measured on th
 # (31.0 by bytes) - but ~36 min of that turn was network size-cap probing (12:27:24 -> 13:03:32), so its
 # re-read + parse + merge was at most ~8.6 min. Reserve = 60 min: ~3.1 x the gstptradematrix bound and just
 # over the creativegoodsvalue whole-turn bound, network included. ESTIMATED from siblings, not measured on
-# this source; NOT measured at all: the change report and the key-shape pass this update adds. The phase
-# timing lines below measure them on the first admitted pass.
+# this source. On top of it: + <= ~6 min for the change report on a mostly-revised pass (measured on
+# imf_imts_direct: about 3.6 us per changed row, review AR-410); NOT measured at all: the cursor fold
+# (_fold) and the key-shape pass over 100M strings that this update adds. The phase timing lines below
+# measure them on the first admitted pass.
 ASSEMBLY_RESERVE_MIN_DEFAULT = 60.0
 OWED_FILE = "_unctad_owed.json"
 _MERGING, _OWED, _HANDED = "merging", "owed", "handed"
