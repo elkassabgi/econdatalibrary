@@ -148,6 +148,58 @@ function Test-WindowShouldHold {
     return [pscustomobject]@{ Hold = $false; Young = $young; Why = "past $MaxHours h and no recent empty pass" }
 }
 
+function Get-PostPullBudget {
+    <#
+      .SYNOPSIS
+      After pull-state: the updater's run budget and its HARD STOP, both from the cloud writer's block INSTANT.
+
+      WHY (AR-405 G2). The runner clamped AQUEDUCT_RUN_BUDGET_MIN to (untilBlock - 25) BEFORE pull-state, but
+      the orchestrator starts its clock (orchestrate._RUN_DEADLINE_TS = updater start + budget) only when the
+      updater launches, and the hard stop was "budget + 10 min" from then. So the pull's duration, the post-stop
+      overrun and push-state all landed after the window. Measured 2026-10-31 01:57Z: untilBlock 65, pull 36.1
+      min, budget 40 - a pass that used its budget would have pushed ~29 min after the block (R5).
+
+      THE ARITHMETIC (all UTC, minutes):
+        BlockAt    = UntilReadAt + UntilBlock - Granularity   minutes_until_block walks in 5-min steps and can
+                                                              overstate by up to one step (ci_writer_gate.py)
+        HardStop   = BlockAt - PushAllowance - KillLag        push-state must still fit after the kill
+        RunDeadline= HardStop - Overrun                       the orchestrator's soft ceiling; a unit may
+                                                              overrun it (merge/finalize/CSV tail) up to the stop
+        Budget     = floor(RunDeadline - Now)                 Now = when the updater is about to launch
+      Worst case push end = HardStop + KillLag + PushAllowance = BlockAt <= the true block instant.
+      Below $MinBudgetMin the updater is not started (Run = false).
+    #>
+    param(
+        [DateTime] $UntilReadAtUtc,
+        [double]   $UntilBlockMin,
+        [DateTime] $NowUtc,
+        [double]   $CurrentBudgetMin,
+        [double]   $GranularityMin = 5,
+        [double]   $PushAllowanceMin = 19,
+        [double]   $KillLagMin = 1,
+        [double]   $OverrunMin = 10,
+        [double]   $MinBudgetMin = 20
+    )
+    $blockAt  = $UntilReadAtUtc.AddMinutes($UntilBlockMin - $GranularityMin)
+    $hardStop = $blockAt.AddMinutes(-($PushAllowanceMin + $KillLagMin))
+    $runEnd   = $hardStop.AddMinutes(-$OverrunMin)
+    $remaining = [int][math]::Floor(($runEnd - $NowUtc).TotalMinutes)
+    $budget = [int][math]::Min([math]::Floor($CurrentBudgetMin), $remaining)
+    # A budget a caller set LOWER keeps its own, earlier, hard stop (budget + overrun from now): never later
+    # than the block-derived one.
+    $own = $NowUtc.AddMinutes($budget + $OverrunMin)
+    if ($budget -lt $remaining -and $own -lt $hardStop) { $hardStop = $own }
+    $elapsed = ($NowUtc - $UntilReadAtUtc).TotalMinutes
+    $tail = ("untilBlock " + $UntilBlockMin + " - granularity " + $GranularityMin + " - push allowance " +
+             $PushAllowanceMin + " - kill lag " + $KillLagMin + " - overrun " + $OverrunMin + " - " +
+             [math]::Round($elapsed, 1) + " min elapsed since the gate was read")
+    $o = [pscustomobject]@{ Run = ($budget -ge $MinBudgetMin); BudgetMin = $budget; RemainingMin = $remaining
+                            HardStopUtc = $hardStop; BlockAtUtc = $blockAt; Why = '' }
+    if ($o.Run) { $o.Why = ("" + $budget + " min (" + $tail + "); hard stop " + $hardStop.ToString('HH:mm:ss') + "Z") }
+    else { $o.Why = ("only " + $budget + " min (" + $tail + "), minimum " + $MinBudgetMin) }
+    return $o
+}
+
 function Test-CadenceShouldStamp {
     <#
       .SYNOPSIS

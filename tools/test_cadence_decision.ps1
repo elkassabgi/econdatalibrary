@@ -117,6 +117,74 @@ try {
     Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
 }
 
+# --- G2 (AR-405): budget and hard stop re-derived AFTER pull-state, from the block INSTANT -------------
+# Timeline in minutes from the instant untilBlock is read (t=0). The TRUE block can be up to one gate step
+# (5 min) earlier than untilBlock says. Pull ends at P; the updater may run to the hard stop H; the kill and
+# the recorder take up to K; push-state takes up to U. Safe = the updater is not started, or
+# H + K + U <= untilBlock - 5.
+$t0 = [DateTime]::Parse('2026-10-31T01:57:34.0000000Z', [Globalization.CultureInfo]::InvariantCulture,
+                        [Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+function Post($until, $pull, [double]$current = -1) {
+    if ($current -lt 0) { $current = $until - 25 }   # what the pre-pull clamp set
+    Get-PostPullBudget -UntilReadAtUtc $t0 -UntilBlockMin $until -NowUtc $t0.AddMinutes($pull) -CurrentBudgetMin $current
+}
+function HardMin($r) { ($r.HardStopUtc - $t0).TotalMinutes }
+# What main does: budget fixed before the pull, hard stop = pull end + budget + 10.
+function OldPushEnd($until, $pull, $push) { $pull + ($until - 25) + 10 + (1/3) + $push }
+
+# THE SUM AR-415 ASKED FOR: pull 36.1, deadline from pull end, hard stop, kill lag 20 s, push 18.7, gate step 5.
+foreach ($until in @(65, 120, 200, 300)) {
+    $r = Post $until 36.1
+    if ($r.Run) {
+        $end = (HardMin $r) + (1/3) + 18.7
+        Check ("sum: untilBlock $until, pull 36.1, push 18.7 -> push ends before untilBlock - 5") ($end -le ($until - 5)) 'True'
+        # The soft deadline the orchestrator gets leaves the 10-min overrun before the hard stop.
+        Check ("sum: untilBlock $until -> pull end + budget + 10 <= hard stop") ((36.1 + $r.BudgetMin + 10) -le ((HardMin $r) + 1e-9)) 'True'
+    } else {
+        Check ("sum: untilBlock $until, pull 36.1 -> updater skipped") $r.Run 'False'
+    }
+}
+# The 2026-10-31 01:57Z pass itself: untilBlock 65, pull 36.1, push 7.9.
+Check '10-31: OLD rule pushes AFTER the block (negative control)' ((OldPushEnd 65 36.1 7.9) -gt 65) 'True'
+Check '10-31: NEW rule skips the updater' (Post 65 36.1).Run 'False'
+# A slow pull in a long window: the budget SHRINKS by the pull.
+Check 'slow pull, 200-min window: budget 200-5-19-1-10-36.1 = 128' (Post 200 36.1).BudgetMin '128'
+Check 'slow pull, 200-min window: hard stop at t+175' (HardMin (Post 200 36.1)) '175'
+Check 'slow pull, 200-min window, push 18.7: OLD rule late (negative control)' ((OldPushEnd 200 36.1 18.7) -gt 195) 'True'
+# Ordinary pull (2.9 min, the slowest of the 11 ordinary passes in AR-414's 12).
+Check 'usual pull, 150-min window -> 112' (Post 150 2.9).BudgetMin '112'
+Check 'no elapsed time, 150-min window -> 115' (Post 150 0).BudgetMin '115'
+# A budget a caller set LOWER is kept, and its own hard stop (budget + 10 from now) is the earlier one.
+$r = Post 300 3 60
+Check 'a lower budget already set is kept' $r.BudgetMin '60'
+Check 'and its hard stop is now + 60 + 10' (HardMin $r) '73'
+# Rounds DOWN; the minimum is inclusive; a pull longer than the window skips.
+Check 'remaining 20.9 rounds down to 20 and runs'  (Post 60 4.1 100).Run 'True'
+Check 'remaining 19.9 rounds down to 19 and skips' (Post 60 5.1 100).Run 'False'
+Check 'a pull longer than the window -> skip'      (Post 65 70).Run 'False'
+# Time zones: the function works on the instants it is given; a local-kind Now would be a caller bug, so
+# the runner passes [DateTime]::UtcNow (pinned in tests/test_cadence_decision_ps.py).
+# THE PROPERTY, over a grid: untilBlock 45..300 (every window the runner can start), pull 0..60 min in
+# 0.5-min steps, push 18.7 (the slowest of 118 measured), kill lag 20 s, true block 5 min early.
+$bad = 0; $cases = 0; $minHead = 999.0; $oldBad = 0
+foreach ($until in 45..300) {
+    foreach ($pull2 in 0..120) {
+        $pull = $pull2 / 2.0
+        $r = Post $until $pull
+        $cases++
+        if ($r.Run) {
+            $head = ($until - 5) - ((HardMin $r) + (1/3) + 18.7)
+            if ($head -lt $minHead) { $minHead = $head }
+            if ($head -lt 0) { $bad++ }
+            if ((36.1 -ge 0) -and (($pull + $r.BudgetMin + 10) -gt ((HardMin $r) + 1e-9))) { $bad++ }
+        }
+        if ((OldPushEnd $until $pull 18.7) -gt ($until - 5)) { $oldBad++ }
+    }
+}
+Check ("grid of " + $cases + " windows x pulls: no started pass pushes after the true block") $bad '0'
+Check ('grid: worst-case headroom ' + [math]::Round($minHead, 3) + ' min is at least 0.9') ([math]::Round($minHead, 6) -ge 0.9) 'True'
+Check 'grid, OLD rule: passes push after the block (negative control)' ($oldBad -gt 0) 'True'
+
 if ($fail -gt 0) { Write-Output "$fail check(s) FAILED"; exit 1 }
 Write-Output 'all cadence-decision checks passed'
 exit 0
