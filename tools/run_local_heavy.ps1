@@ -478,8 +478,8 @@ if ($selfHosted) {
 # budget AND the hard stop are now derived from the block INSTANT (Get-PostPullBudget states the formula):
 #   hard stop = readAt + untilBlock - 5 (gate step) - 19 (push-state allowance) - 1 (kill/poll lag)
 #   budget    = hard stop - 10 (post-deadline overrun) - now
-# 19 min push allowance: the slowest of 118 measured push-states was 18.7 min (AR-414, F:/work/ar414,
-# from local_heavy_*.log push-state -> cadence lines). Only when the clamp ran (no -SkipCiCheck, not after T0).
+# 19 min push allowance: the slowest of 118 measured push-states was 18.7 min (review AR-414,
+# measured from the logs/local_heavy_*.log push-state -> cadence lines). Only when the clamp ran (no -SkipCiCheck, not after T0).
 $postHardStopUtc = $null
 if ($null -ne $untilReadAt) {
     $post = Get-PostPullBudget -UntilReadAtUtc $untilReadAt -UntilBlockMin $untilBlock -NowUtc ([DateTime]::UtcNow) `
