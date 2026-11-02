@@ -342,6 +342,7 @@ if (-not $env:AQUEDUCT_RUN_BUDGET_MIN)      { $env:AQUEDUCT_RUN_BUDGET_MIN      
 # So ask the gate, which reads real run state. A clamped pass is still a useful pass: the giants resume
 # part-by-part (R190), so stopping on budget defers work rather than discarding it.
 $marginMin = 25
+$untilReadAt = $null   # set only when the clamp below runs; the post-pull recompute keys on it
 if ($null -eq $script:SinceLastHours) { $script:SinceLastHours = 9999 }
 if ($selfHosted) {
     Say "after T0: the run budget is not clamped to a CI schedule (no cloud writer; the updater holds the lock)"
@@ -352,6 +353,9 @@ if ($selfHosted) {
     # Continue for this call only: see the lister above (stderr under Stop terminates PS 5.1).
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
+    # The instant untilBlock is measured FROM, taken before the call so the post-pull recompute below
+    # never credits the gate's own run time to the pass.
+    $untilReadAt = [DateTime]::UtcNow   # UTC: a DST fall-back during the pull must not shorten elapsed
     try {
         $untilOut = (& $pythonExe $gate --until-block 2>&1 | Out-String).Trim()
         $untilRc  = $LASTEXITCODE
@@ -369,6 +373,15 @@ if ($selfHosted) {
     if ($untilCron -lt 20) {
         Say ("ABORT: only " + $untilCron + " usable min before a cloud state writer is due - too little to " +
              "be worth a state pull/push cycle. Next tick will pick this up.")
+        exit 0
+    }
+    # THE SAME RULE THE POST-PULL RECOMPUTE APPLIES (AR-405 G2), asked now with an ordinary 3-min pull
+    # (p90 of the last 30 pulls is 2.9 min), so a window that rule would refuse never costs a state pull.
+    $pre = Get-PostPullBudget -UntilReadAtUtc $untilReadAt -UntilBlockMin $untilBlock `
+               -NowUtc ([DateTime]::UtcNow.AddMinutes(3)) -CurrentBudgetMin ([int]$env:AQUEDUCT_RUN_BUDGET_MIN)
+    if (-not $pre.Run) {
+        Say ("ABORT: even after an ordinary 3-min pull-state the updater would get " + $pre.Why +
+             ". Not pulling the state store for a pass that would be skipped. Next tick will pick this up.")
         exit 0
     }
     # WAIT FOR A WINDOW WORTH USING. Without this the runner takes the first gap it is offered, and because
@@ -458,6 +471,35 @@ if ($selfHosted) {
     }
 }
 
+# RE-DERIVE THE BUDGET AFTER PULL-STATE (AR-405 G2). The clamp above ran BEFORE the pull, but the
+# orchestrator starts its clock only when the updater launches, so the pull's duration was added to the
+# end of the pass. On 2026-10-31 01:57Z the pull took 36.1 min of a 65-min window (budget 40): a pass
+# that used its budget would have pushed ~29 min after the next cloud writer's block time (R5). Both the
+# budget AND the hard stop are now derived from the block INSTANT (Get-PostPullBudget states the formula):
+#   hard stop = readAt + untilBlock - 5 (gate step) - 19 (push-state allowance) - 1 (kill/poll lag)
+#   budget    = hard stop - 10 (post-deadline overrun) - now
+# 19 min push allowance: the slowest of 118 measured push-states was 18.7 min (review AR-414,
+# measured from the logs/local_heavy_*.log push-state -> cadence lines). Only when the clamp ran (no -SkipCiCheck, not after T0).
+$postHardStopUtc = $null
+if ($null -ne $untilReadAt) {
+    $post = Get-PostPullBudget -UntilReadAtUtc $untilReadAt -UntilBlockMin $untilBlock -NowUtc ([DateTime]::UtcNow) `
+                -CurrentBudgetMin ([int]$env:AQUEDUCT_RUN_BUDGET_MIN)
+    if (-not $post.Run) {
+        # Nothing has been written: pull-state only replaced the local state.db with the remote copy, so
+        # there is nothing to push. No updater, no push, no stamp; the next guard tick asks the gate again.
+        Say ("SKIPPING UPDATER AFTER PULL-STATE: " + $post.Why + ". Nothing changed, so nothing is pushed " +
+             "(R5: the push must end before the cloud writer's block time).")
+        Release-LocalHeavyLock
+        exit 0
+    }
+    if ($post.BudgetMin -ne [int]$env:AQUEDUCT_RUN_BUDGET_MIN) {
+        Say ("whole-run budget re-derived after pull-state " + $env:AQUEDUCT_RUN_BUDGET_MIN + " -> " +
+             $post.Why)
+        $env:AQUEDUCT_RUN_BUDGET_MIN = "$($post.BudgetMin)"
+    }
+    $postHardStopUtc = $post.HardStopUtc
+}
+
 # NOT $args - that is a reserved automatic variable and assigning to it breaks arg passing.
 $srcArgs = @()
 foreach ($t in $targets) { $srcArgs += '--source'; $srcArgs += $t }
@@ -478,10 +520,14 @@ Say ("running updater for " + $targets.Count + " source(s) ...")
 # finished instead of losing the whole run's bookkeeping to a compare-and-swap it was always
 # going to lose.
 $graceMin = 10
-$hardDeadline = (Get-Date).AddMinutes([int]$env:AQUEDUCT_RUN_BUDGET_MIN + $graceMin)
+# UTC throughout, so a DST change mid-pass cannot move the stop. When the post-pull recompute ran, the stop
+# is its block-derived instant (AR-405 G2); otherwise (-SkipCiCheck, after T0) budget + grace as before.
+$hardDeadlineUtc = [DateTime]::UtcNow.AddMinutes([int]$env:AQUEDUCT_RUN_BUDGET_MIN + $graceMin)
+if ($null -ne $postHardStopUtc) { $hardDeadlineUtc = $postHardStopUtc }
+Say ("hard stop at " + $hardDeadlineUtc.ToString('yyyy-MM-dd HH:mm:ss') + "Z")
 # Captured for the killed-unit recorder below: the elapsed it attributes is measured from the
 # moment the updater is launched, matching the log the parser reads.
-$updaterStart = Get-Date
+$updaterStart = [DateTime]::UtcNow
 $hardStopped = $false
 # CAPTURE THE UPDATER'S OUTPUT. -NoNewWindow with no redirection sends it to the parent's
 # console, and this script runs unattended from the guard, so the console is nowhere: every
@@ -535,9 +581,9 @@ $proc = Start-Process -FilePath $pythonExe -ArgumentList (@('-u','-m','updater.r
 # finished derive_noaa 975 times (e9587cb8f).
 $null = $proc.Handle
 while (-not $proc.HasExited) {
-    if ((Get-Date) -gt $hardDeadline) {
+    if ([DateTime]::UtcNow -gt $hardDeadlineUtc) {
         Say ("HARD STOP: the updater passed its " + $env:AQUEDUCT_RUN_BUDGET_MIN +
-             "-min budget by " + $graceMin + " min and is still running. Terminating so " +
+             "-min budget and its overrun allowance and is still running. Terminating so " +
              "push-state happens BEFORE the CI window (R448). Data is safe - stores are " +
              "written atomically - and every fetcher resumes.")
         # Continue for this call only: 2>&1 under Stop terminates PS 5.1 on the first stderr line.
@@ -574,7 +620,7 @@ Say ("updater exit code: " + $rc)
 # core point was that a recorder failing silently in this path re-opens the starvation while
 # everyone believes it fixed. It never aborts the pass - push-state must still run.
 if ($hardStopped) {
-    $elapsedS = [int]((Get-Date) - $updaterStart).TotalSeconds
+    $elapsedS = [int]([DateTime]::UtcNow - $updaterStart).TotalSeconds
     Say ("recording externally-killed unit (elapsed " + $elapsedS + "s) ...")
     # Continue for this call only: it runs after the lock is taken and before push-state, and 2>&1
     # under Stop terminates PS 5.1 on the first stderr line, which would skip push-state.
