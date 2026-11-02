@@ -1599,7 +1599,8 @@ def _drain_csv_retry_queue(unit, blob, store, deadline_ts=None, id_gate=None) ->
 
 # THE LEFTOVER DRAIN (review AR-413, decisions D1-D6 of 2026-10-31). The in-loop drain runs only inside the CSV
 # phase of a pass that ran update() and merged (ok/partial, or a transient_fail with a changed set). A source whose
-# probe matched (no_change) or that was NOT DUE parks its ids until its upstream next changes: months for a
+# probe matched (no_change), that was NOT DUE or that was BUDGET SKIPPED (G1) parks its ids until it next runs
+# update() on a changed upstream: months for a
 # quarterly or annual publisher, while the resumable fetchers hand over every key on their first pass and the
 # desktop defers most of them to the queue. So AFTER the unit loop, in the pass's LEFTOVER time only, those
 # sources' queues are drained, oldest-enqueued source first, under ONE budget for the whole pass:
@@ -1612,8 +1613,8 @@ def _drain_csv_retry_queue(unit, blob, store, deadline_ts=None, id_gate=None) ->
 #   * NOTHING is written to unit_state, source_state or runs: the no_change / NOT DUE records stay exactly as the
 #     loop wrote them (imf_imts_direct settles its handed mark on last_error), and the drain's time is on its own
 #     `>>> <unit> (csv retry drain)` / `<<< <unit> took Ns` lines, never in a unit's dur_s;
-#   * not on a cloud runner: under r2 a runner holds only the files its own pass wrote, and a no_change or NOT DUE
-#     pass wrote none, so every id would fail (and a flow-grain or desktop_owed queue would move wholesale to
+#   * not on a cloud runner: under r2 a runner holds only the files its own pass wrote, and a no_change, NOT DUE
+#     or BUDGET SKIPPED pass wrote none, so every id would fail (and a flow-grain or desktop_owed queue would move wholesale to
 #     csv_desktop_owed);
 #   * under AQUEDUCT_BACKEND=r2 (the desktop before T0) an id is derived only when every local store file it reads
 #     is R2's object (_r2_mirror_gate): a mirror behind R2 would regress a served CSV (R383/R548);
@@ -1677,8 +1678,8 @@ class _HeadOnlyS3:
 def _r2_mirror_gate(source_id: str, deadline_ts: "float | None" = None):
     """The leftover drain's mirror check, or None where none is needed (backend local/selfhost, or after T0).
 
-    Under AQUEDUCT_BACKEND=r2 the derive READS this machine's mirror and WRITES the served CSV, and a no_change or
-    NOT DUE pass wrote no store file, so the mirror can be behind R2 (R383, R548: the eurostat MIGR_ASYUMWITM case).
+    Under AQUEDUCT_BACKEND=r2 the derive READS this machine's mirror and WRITES the served CSV, and a no_change,
+    NOT DUE or BUDGET SKIPPED pass wrote no store file, so the mirror can be behind R2 (R383, R548: the eurostat MIGR_ASYUMWITM case).
     Every local file an id reads (core.derive_csv._read_set) is compared with R2's object of the same key by
     core.derive_csv._compare_one - the --only gate's comparison, md5 or the multipart ETag (_local_digests) and a
     HEAD - once per file per drain. An id with any file not "equal" is held back: not attempted, still queued,
@@ -1742,7 +1743,7 @@ def _r2_mirror_gate(source_id: str, deadline_ts: "float | None" = None):
 
 def _drain_leftover_retries(candidates: dict, blob, store) -> list:
     """Drain the retry queues of `candidates` ({source_id: [units]}: sources whose every unit this pass was an
-    earned no_change or NOT DUE) in the pass's leftover time. Rules: the block comment above. Returns
+    earned no_change, NOT DUE or BUDGET SKIPPED) in the pass's leftover time. Rules: the block comment above. Returns
     [(source_id, summary or None)] for the sources it drained."""
     done: list = []
     if not candidates:
@@ -1750,10 +1751,14 @@ def _drain_leftover_retries(candidates: dict, blob, store) -> list:
     queued = store.csv_retry_sources()
     have = {s: queued[s] for s in candidates if (queued.get(s) or (0, None))[0] > 0}
     if not have:
+        # SAID, not silent (review AR-413 P9): a pass with quiet sources and nothing parked is a fact a reader of
+        # the log needs, or "no drain line" cannot be told from "the drain never ran".
+        print(f"[orchestrator] csv retry drain after the unit loop: 0 candidates with queued ids "
+              f"({len(candidates)} no_change/NOT DUE/BUDGET SKIPPED source(s) checked)", flush=True)
         return done
     if _here() == "cloud":
         print(f"[orchestrator] csv retry drain after the unit loop: NOT on a cloud runner - "
-              f"{sum(n for n, _ in have.values()):,} parked id(s) of {len(have)} no_change/NOT DUE source(s) not "
+              f"{sum(n for n, _ in have.values()):,} parked id(s) of {len(have)} no_change/NOT DUE/BUDGET SKIPPED source(s) not "
               f"drained on this pass (a runner holds only the files its own pass wrote)", flush=True)
         return done
     lane = sorted(s for s in have if _served_by_lane(s))
@@ -1770,7 +1775,7 @@ def _drain_leftover_retries(candidates: dict, blob, store) -> list:
               f"{', '.join(order[:12])}{' ...' if len(order) > 12 else ''}", flush=True)
         return done
     deadline = time.time() + budget * 60.0
-    print(f"[orchestrator] csv retry drain after the unit loop: {len(order)} no_change/NOT DUE source(s) with "
+    print(f"[orchestrator] csv retry drain after the unit loop: {len(order)} no_change/NOT DUE/BUDGET SKIPPED source(s) with "
           f"parked ids, {budget:.1f} min of leftover time ({margin:.0f}-min margin kept), oldest-enqueued first",
           flush=True)
     for i, sid in enumerate(order):
@@ -2888,11 +2893,18 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
     protected_skipped = []
     wrong_location = []
     not_due = []
-    # THE LEFTOVER DRAIN'S CANDIDATES (_drain_leftover_retries): units that were NOT DUE or an earned no_change.
+    # THE LEFTOVER DRAIN'S CANDIDATES (_drain_leftover_retries): units that were NOT DUE, BUDGET SKIPPED (G1) or
+    # an earned no_change.
     # A source qualifies only if NONE of its units did anything else this pass (ran update, was locked, failed its
     # probe, or answered an undeterminable probe) - those sources are in _drain_block.
     _drain_ok: dict = {}
     _drain_block: set = set()
+    # G1: the BUDGET SKIPPED units in _drain_ok. The budget gate runs BEFORE _has_adapter, so one of them can be a
+    # unit the loop would have called PENDING (no fetcher) or BROKEN (fetcher fails at import). Their adapter is
+    # checked after the loop, only when a drain can follow (not dry), and a unit without a working one blocks its
+    # source. Checked there, not in the gate's branch, so the loop's own order (gate, _has_adapter, is_due) and what
+    # a skipped unit costs inside the loop stay exactly as before.
+    _skipped_for_drain: list = []
 
     for unit in units:
         if sources and unit.source_id not in sources:
@@ -2977,6 +2989,15 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                   f"reserves {_need_min:.0f} min (worst case, not an estimate) and "
                   f"{max(0.0, (run_deadline - _now) / 60.0):.0f} min remain in this pass - "
                   f"deferred to the next one", flush=True)
+            # G1: a BUDGET SKIPPED unit did nothing this pass, exactly like a NOT DUE one, so its source is a
+            # leftover-drain candidate. Without this the giants that hold the largest queues (usda, wid, eia,
+            # istat) never drained: the desktop pass of 2026-11-02 01:07Z had 90 min left and budget-skipped
+            # every one of them against a 90-min reserve. The reserve bounds an UPDATE's overrun; the drain has
+            # its own bound (_leftover_drain_min: the remainder minus the margin, capped), runs after the loop,
+            # and writes no unit_state, source_state or runs row - so the unit stays owed its next turn.
+            # Its adapter is checked AFTER the loop, before the drain (review AR-413 P3): see _skipped_for_drain.
+            _drain_ok.setdefault(unit.source_id, []).append(unit)
+            _skipped_for_drain.append(unit)
             continue
         try:
             runnable = _has_adapter(unit)
@@ -3398,6 +3419,17 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                   f"{time.time() - t_unit:,.0f}s{mem}{bad}", flush=True)
     if not dry:
         # AFTER the loop, in leftover time only (D1, review AR-413): see _drain_leftover_retries.
+        for _u in _skipped_for_drain:
+            if _u.source_id in {s for s, _k in _drain_block}:
+                continue
+            try:
+                _ok = bool(_has_adapter(_u))
+            except Exception:                            # noqa: BLE001 - BROKEN: never drained, never fatal
+                _ok = False
+            if not _ok:
+                _drain_block.add((_u.source_id, _u.key))
+                print(f"[orchestrator] csv retry drain: {_u.key} was BUDGET SKIPPED and has no working adapter "
+                      f"(PENDING or BROKEN) - {_u.source_id} is not drained this pass", flush=True)
         _blocked = {s for s, _k in _drain_block}
         try:
             _drain_leftover_retries({s: us_ for s, us_ in _drain_ok.items() if s not in _blocked}, blob, store)

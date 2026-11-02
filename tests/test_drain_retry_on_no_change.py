@@ -1,4 +1,5 @@
-"""No_change and NOT DUE sources drain their csv_retry_queue AFTER the unit loop, in leftover time.
+"""No_change, NOT DUE and BUDGET SKIPPED (G1) sources drain their csv_retry_queue AFTER the unit loop, in
+leftover time.
 
 WHAT WAS WRONG. run_once called _drain_csv_retry_queue only inside the CSV phase of a pass that ran update() and
 merged (ok/partial, or a transient_fail with a changed set). A source whose vintage probe matched the stored one
@@ -187,11 +188,155 @@ def test_a_not_due_source_drains_too_and_gets_no_state_row_from_it(rig):
     assert rig.runs() == []
 
 
-def test_an_empty_queue_drains_nothing_and_prints_no_drain_line(rig, capsys):
+def test_an_empty_queue_drains_nothing_and_says_so(rig, capsys):
     rig.seed(SRC, [])
     assert rig.run() == [(f"{SRC}/_all", "no_change")]
     assert rig.derived == [] and rig.blob.keys == []
-    assert "csv retry drain" not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "(csv retry drain)" not in out, "no source is drained"
+    assert "csv retry drain after the unit loop: 0 candidates with queued ids (1 " in out, \
+        "AR-413 P9: an empty drain is said, not silent"
+
+
+# ---- (a2) G1: a BUDGET SKIPPED source drains too ------------------------------------------------------
+
+class _NeverProbed(_Strategy):
+    def detect_change(self, unit, us):
+        raise AssertionError("a budget-skipped unit is never probed")
+
+    def is_due(self, unit, us, **k):
+        # The BUDGET SKIP label (_budget_skip_due_label) asks is_due and prints "due unknown" on any error; the
+        # loop's own due check is not guarded, so a unit that got past the gate would fail the test here.
+        raise AssertionError("a budget-skipped unit never reaches the due check")
+
+
+def test_g1_budget_skipped_sources_drain_and_keep_their_turn(rig, monkeypatch, capsys):
+    """The desktop pass of 2026-11-02 01:07Z had 90 min left and budget-skipped every giant (usda, wid, eia, istat)
+    against a 90-min reserve, so the leftover drain never ran for the queues they hold. A unit with no cost on
+    record needs 2 x 45 = 90 min; a 60-min run skips both sources (two sources: a single-source dispatch is never
+    capped) and the drain then gets min(60 - 15, 45) = 45 min."""
+    monkeypatch.setenv("AQUEDUCT_RUN_BUDGET_MIN", "60")
+    rig.seed(SRC, _ids(2))
+    rig.seed(SRC2, _ids(3, SRC2))
+    before = {s_: rig.state.get_unit(s_, "_all") for s_ in (SRC, SRC2)}
+    assert rig.run(strategy=_NeverProbed(), sources=(SRC, SRC2)) == []
+    out = capsys.readouterr().out
+    for s_, n in ((SRC, 2), (SRC2, 3)):
+        assert f"[orchestrator] BUDGET SKIP {s_}/_all" in out
+        assert f"[orchestrator] >>> {s_}/_all (csv retry drain)" in out
+        assert rig.queue(s_) == {} and len(_puts(rig, _ids(n, s_))) == n
+        assert rig.state.get_unit(s_, "_all") == before[s_], "the drain writes nothing on a budget-skipped unit"
+        assert rig.runs(s_) == [], "no run row: the unit is still owed its turn"
+        assert rig.state.lease_holder(f"{s_}/_all") is None
+    assert "NOT ATTEMPTED this run" in out, "the skip summary is unchanged"
+
+
+def test_g1_a_budget_skip_with_no_leftover_time_does_not_drain(rig, monkeypatch, capsys):
+    monkeypatch.setenv("AQUEDUCT_RUN_BUDGET_MIN", "10")              # skipped, and 10 - 15 < the floor
+    rig.seed(SRC, _ids(2))
+    rig.seed(SRC2, _ids(2, SRC2))
+    rig.run(strategy=_NeverProbed(), sources=(SRC, SRC2))
+    out = capsys.readouterr().out
+    assert f"BUDGET SKIP {SRC}/_all" in out and "no leftover time" in out
+    assert rig.derived == [] and len(rig.queue(SRC)) == 2 and len(rig.queue(SRC2)) == 2
+
+
+def test_g1_a_budget_skipped_unit_beside_one_that_ran_blocks_the_source(rig, monkeypatch, capsys):
+    """AR-413 P2: the every-unit rule holds for a budget skip. cnb has two units; the cost on record is per SOURCE,
+    so a stand-in cost map answers "never run" (reserve 90 > 60: BUDGET SKIP) for cnb's first unit the loop
+    reaches and 1 s (admitted) for the second, which then runs update() and transient-fails. cnb is not drained."""
+    import dataclasses
+    real_units = orchestrate.registry.all_units
+
+    def units(path=None):
+        us = real_units(path)
+        base = next(u for u in us if u.source_id == SRC)
+        return us + [dataclasses.replace(base, unit_id="part2")]
+    monkeypatch.setattr(orchestrate.registry, "all_units", units)
+
+    class _Costs(dict):
+        armed = False
+        calls = 0
+
+        def get(self, k, d=None):
+            if self.armed and k == SRC:
+                _Costs.calls += 1
+                return None if _Costs.calls == 1 else 1.0
+            return super().get(k, d)
+    costs = _Costs()
+    monkeypatch.setattr(rig.state, "run_cost_estimate", lambda *a, **k: costs)
+    real_order = orchestrate.order_units
+
+    def order(us, c, st):
+        out = real_order(us, c, st)
+        costs.armed = True                          # only the budget gate's lookups see the stand-in answers
+        return out
+    monkeypatch.setattr(orchestrate, "order_units", order)
+
+    class _Ran(_Strategy):
+        def detect_change(self, unit, us):
+            self._cur = "v1"
+            return "v2"
+    monkeypatch.setenv("AQUEDUCT_RUN_BUDGET_MIN", "60")
+    rig.seed(SRC, _ids(2))
+    rig.run(strategy=_Ran(result=Result(status="transient_fail", error="503")), sources=(SRC, SRC2))
+    out = capsys.readouterr().out
+    assert out.count(f"BUDGET SKIP {SRC}/") == 1, out
+    assert rig.strategy.ran >= 1, "the admitted cnb unit ran update()"
+    assert rig.derived == [] and len(rig.queue()) == 2, "a source with a unit that ran is not leftover-drained"
+
+
+def test_g1_a_single_source_dispatch_is_never_budget_skipped(rig, monkeypatch, capsys):
+    monkeypatch.setenv("AQUEDUCT_RUN_BUDGET_MIN", "60")              # reserve 90 > 60, but one source: never capped
+    rig.seed(SRC, _ids(2))
+    assert rig.run() == [(f"{SRC}/_all", "no_change")]
+    out = capsys.readouterr().out
+    assert "[orchestrator] BUDGET SKIP " not in out
+    assert rig.queue() == {}, "it drains as a no_change, exactly as before G1"
+
+
+@pytest.mark.parametrize("kind", ["pending", "broken"])
+def test_g1_a_budget_skipped_unit_without_a_working_adapter_is_not_drained(rig, monkeypatch, capsys, kind):
+    """AR-413 P3: the budget gate runs before _has_adapter. A skipped unit the loop would call PENDING (no fetcher)
+    or BROKEN (fetcher fails at import) blocks its source; the other skipped source still drains."""
+    real = orchestrate._has_adapter
+
+    def has(unit):
+        if unit.source_id == SRC:
+            if kind == "broken":       # the loop's BROKEN branch: _has_adapter raises
+                raise ImportError("planted: the adapter fails at import")
+            return False               # the loop's PENDING branch
+        return real(unit)
+    monkeypatch.setattr(orchestrate, "_has_adapter", has)
+    monkeypatch.setenv("AQUEDUCT_RUN_BUDGET_MIN", "60")
+    rig.seed(SRC, _ids(2))
+    rig.seed(SRC2, _ids(2, SRC2))
+    rig.run(strategy=_NeverProbed(), sources=(SRC, SRC2))
+    out = capsys.readouterr().out
+    assert f"BUDGET SKIP {SRC}/_all" in out and f"BUDGET SKIP {SRC2}/_all" in out
+    assert f">>> {SRC}/_all (csv retry drain)" not in out
+    assert not [d for d in rig.derived if d.startswith(SRC + ":")] and len(rig.queue(SRC)) == 2
+    assert rig.queue(SRC2) == {}, "the source with a working fetcher still drains (negative control)"
+    assert rig.runs(SRC) == [], "nothing recorded for the skipped unit"
+    assert f"csv retry drain: {SRC}/_all was BUDGET SKIPPED and has no working adapter" in out
+
+
+def test_g1_a_budget_skipped_imf_imts_direct_keeps_its_handed_mark(rig, monkeypatch):
+    """AR-413 P5: a budget skip writes NOTHING to unit_state, source_state or runs. imf_imts_direct settles its
+    handed mark on last_error; a budget skip (and the drain after it) must not touch it."""
+    imts = "imf_imts_direct"
+    monkeypatch.setenv("AQUEDUCT_RUN_BUDGET_MIN", "60")
+    rig.seed(imts, [f"{imts}:A.B.C.D.E.F"])
+    rig.seed(SRC, _ids(1))
+    unit_before = rig.state.get_unit(imts, "_all")
+    src_rows = lambda: rig.state.db.execute(                          # noqa: E731
+        "SELECT * FROM source_state WHERE source_id=?", (imts,)).fetchall()
+    src_before = src_rows()
+    rig.run(strategy=_NeverProbed(), sources=(imts, SRC))
+    assert rig.state.get_unit(imts, "_all") == unit_before
+    assert rig.state.get_unit(imts, "_all")["last_error"] == TOKEN, "the handed mark is byte-identical"
+    assert src_rows() == src_before and rig.runs(imts) == []
+    assert rig.queue(imts) == {}, "not vacuous: imf_imts_direct WAS drained, and its record is still untouched"
 
 
 # ---- (b) one leftover budget ------------------------------------------------------------------------
@@ -373,7 +518,7 @@ def test_a_source_that_ran_update_drains_once_in_the_loop_not_again(rig):
 
 
 def test_a_source_with_one_quiet_unit_and_one_that_ran_is_not_drained(rig, monkeypatch):
-    """A source qualifies only when EVERY unit of it this pass was a no_change or NOT DUE. Here cnb/_all's probe
+    """A source qualifies only when EVERY unit of it this pass was a no_change, NOT DUE or BUDGET SKIPPED. Here cnb/_all's probe
     matches but a second unit of cnb ran update() (transient_fail): no leftover drain for cnb."""
     import dataclasses
     real_units = orchestrate.registry.all_units
