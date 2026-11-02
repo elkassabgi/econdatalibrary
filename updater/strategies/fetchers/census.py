@@ -946,6 +946,23 @@ def _margin_floor_s() -> float:
     return v * 60
 
 
+# ONE DURABLE UNIT OF PROGRESS, for the start gate (window_admission_reserve_min): one request and its
+# flow's merge. The request term is the code's own per-request bound, TIMEOUT_LARGE (a request is clamped
+# to end by ceiling - floor). The merge term is CHOSEN, not measured: no census pass has run on the
+# per-flow timing lines since #206, and the older logs carry no per-flow times (review AR-415 D).
+ADMISSION_MERGE_MIN = 5.0
+
+
+def window_admission_reserve_min() -> float:
+    """THE START GATE'S RESERVE for census, in minutes (registry `window_stop: true`; read by
+    orchestrate._window_stop_reserve): margin floor + one request (TIMEOUT_LARGE) + one merge
+    (ADMISSION_MERGE_MIN) = 17 by default. With less, a pass could only stop, record a partial, and (no
+    success on record) wait out the partial clock for nothing (review AR-415 B). The floor is read through
+    the SAME helper the stop check reads (AQUEDUCT_CENSUS_MARGIN_MIN, default 5, chosen), and the request
+    term is the same TIMEOUT_LARGE the requests use, so the gate and the fetcher cannot disagree."""
+    return _margin_floor_s() / 60.0 + TIMEOUT_LARGE / 60.0 + ADMISSION_MERGE_MIN
+
+
 def _window_end_ts():
     """The pass's run ceiling as an epoch timestamp, or None when none is set. Read through
     sys.modules (as wid and _giant do), so this module never imports the orchestrator."""
@@ -1704,7 +1721,7 @@ def update(unit, since) -> Result:
             res = Result(status="partial", obs=res.obs, last_obs_date=res.last_obs_date,
                          new_vintage=res.new_vintage, series_cursors=res.series_cursors,
                          merged_rows=res.merged_rows, cursor_cap_hit=res.cursor_cap_hit,
-                         changed_keys=res.changed_keys,
+                         changed_keys=res.changed_keys, window_stop=res.window_stop,
                          error=msg)
         elif deferred:
             res = dataclasses.replace(res, error="; ".join(x for x in (res.error, msg) if x))
@@ -1739,6 +1756,12 @@ def update(unit, since) -> Result:
         for t in done_marks:
             owed.pop(t, None)
         _save_owed(out_dir, owed)
+    if capped_by == "window":
+        # THE WINDOW-STOP SIGNAL (Result.window_stop; registry window_stop: true). "none" only when no flow
+        # was attempted (deferred_unit does not count as attempted) and nothing is handed over: then the
+        # orchestrator records no unit state, so the stop does not put census on the partial clock.
+        res = dataclasses.replace(res, window_stop=(
+            "none" if (tally.attempted == 0 and not cursors) else "progress"))
     return res
 
 

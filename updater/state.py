@@ -417,6 +417,27 @@ class StateStore:
             "SELECT source_id, unit_id, MAX(ts_utc) FROM runs "
             "WHERE status = 'killed_external' GROUP BY source_id, unit_id")}
 
+    def last_window_stop_utc(self) -> dict:
+        """{(source_id, unit_id): ts_utc of its newest `window_stopped` run} - for ORDERING only.
+
+        orchestrate.run_once writes that row for a declared window-stoppable unit whose window stop made no
+        durable progress, and writes NO unit_state for it; the row is then the only record that the unit
+        had a turn. Read by orchestrate.declared_last_turn_utc, never by is_due."""
+        return {(sid, uid): ts for sid, uid, ts in self.db.execute(
+            "SELECT source_id, unit_id, MAX(ts_utc) FROM runs "
+            "WHERE status = 'window_stopped' GROUP BY source_id, unit_id")}
+
+    def window_stop_streak(self, source_id: str, unit_id: str) -> tuple:
+        """(count, minutes) of `window_stopped` runs rows since this unit's last row of any other status:
+        what a no-progress stop keeps visible, since it writes no unit state. Minutes matter as much as the
+        count - a cut slice can spend a whole window and still read as no progress."""
+        n, s = self.db.execute(
+            "SELECT COUNT(*), COALESCE(SUM(dur_s), 0) FROM runs WHERE source_id=? AND unit_id=? "
+            "AND status='window_stopped' AND id > COALESCE((SELECT MAX(id) FROM runs WHERE source_id=? "
+            "AND unit_id=? AND COALESCE(status, '') <> 'window_stopped'), 0)",
+            (source_id, unit_id, source_id, unit_id)).fetchone()
+        return int(n or 0), float(s or 0.0) / 60.0
+
     def run_cost_estimate(self, sample=5) -> dict:
         """{source_id: seconds} — what a run of this source COSTS, for scheduling.
 
@@ -443,7 +464,11 @@ class StateStore:
             "SELECT source_id, MAX(dur_s) FROM ("
             "  SELECT source_id, dur_s,"
             "         ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY id DESC) AS rn"
-            "  FROM runs) WHERE rn <= ? GROUP BY source_id", (sample,))
+            "  FROM runs WHERE COALESCE(status, '') <> 'window_stopped'"
+            ") WHERE rn <= ? GROUP BY source_id", (sample,))
+        # `window_stopped` rows are EXCLUDED (2026-11-02): orchestrate.run_once writes one for a declared
+        # unit's window stop before any durable progress - not a turn, so not a cost; five of them would
+        # otherwise roll the unit's real runs out of the window and move its band and order.
         est = {sid: (d or 0.0) for sid, d in rows}
         # `killed_external` joins the floor set (2026-08-31): a unit hard-killed from outside
         # spent AT LEAST dur_s on an attempt that got somewhere, which is exactly what the

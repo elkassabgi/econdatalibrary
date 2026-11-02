@@ -689,3 +689,46 @@ def test_a_stop_after_only_the_boundary_window_does_not_wind_back(env):
     assert res.status == "partial" and "after 1 of 6" in res.error, res
     assert _max(env.d, "intltrade__exports__hs") == "2026-01-01"
     assert _bookmark(env.d) == "intltrade/exports/hs", "no progress: not wound back"
+
+
+# ---- Result.window_stop (admission for window-stoppable units, orchestrate._window_stop_no_progress) ----
+
+def test_window_stop_signal_none_when_the_ceiling_starts_nothing(env):
+    _write_eits(env.d, "eits/fa")
+    _write_hs(env.d, "2026-01")
+    env.mp.setattr(env.O, "_RUN_DEADLINE_TS", time.time() - 1)
+    res = cs.update(UNIT, None)
+    assert env.api.calls == [] and res.status == "partial"
+    assert res.window_stop == "none" and not res.series_cursors and not res.changed_keys
+    assert env.O._window_stop_no_progress(_declared_unit(), res)
+
+
+def test_window_stop_signal_progress_after_a_merged_prefix(env):
+    _write_eits(env.d, "eits/fa")
+    _write_hs(env.d, "2026-01")
+    env.mp.setenv("AQUEDUCT_CENSUS_MARGIN_MIN", "0.5")
+    env.mp.setattr(env.O, "_RUN_DEADLINE_TS", time.time() + 3600)
+    with open(os.path.join(env.d, "_rotation.json"), "w") as fh:
+        json.dump({"after": "eits/fa"}, fh)
+    off = [0.0]
+    env.mp.setattr(cs, "time", types.SimpleNamespace(time=lambda: time.time() + off[0],
+                                                     sleep=lambda s: None, monotonic=time.monotonic))
+
+    def hook(n, flow, params):
+        if n == 2:
+            off[0] = 3600.0
+    env.api.on_call = hook
+    res = cs.update(UNIT, None)
+    assert res.status == "partial" and res.window_stop == "progress", res
+    assert not env.O._window_stop_no_progress(_declared_unit(), res)
+
+
+def test_no_window_stop_signal_without_a_ceiling(env):
+    _write_eits(env.d, "eits/fa")
+    res = cs.update(UNIT, None)
+    assert res.window_stop is None
+
+
+def _declared_unit():
+    from updater import registry
+    return next(u for u in registry.all_units() if u.source_id == "census")

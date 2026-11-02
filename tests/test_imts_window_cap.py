@@ -921,10 +921,26 @@ def rig(env, tmp_path, monkeypatch):
     r.state.close()
 
 
+def test_a_no_progress_stop_through_the_real_run_once_records_no_unit_state(rig, monkeypatch):
+    """imf_imts_direct declares window_stop: a stop before any slice (Result.window_stop "none") is not a turn
+    (admission for window-stoppable units, review AR-415 B): no unit state, a window_stopped runs row."""
+    rig.env.setup("base")
+    rig.env.imf.up = "add"
+    before = rig.state.get_unit(SRC, "_all")
+    monkeypatch.setenv("AQUEDUCT_RUN_BUDGET_MIN", "0.5")     # 30 s: under the 5-min floor
+    results = rig.run()
+    assert results == [(f"{SRC}/_all", "window_stopped")], results
+    assert rig.state.get_unit(SRC, "_all") == before
+    assert rig.state.recent_runs(1)[0]["status"] == "window_stopped"
+    assert rig.drained == [] and rig.put_ids() == []
+
+
 def test_a_stop_through_the_real_run_once_is_partial_no_success_and_reaches_the_drain(rig, monkeypatch):
     rig.env.setup("base")
     rig.env.imf.up = "add"
-    monkeypatch.setenv("AQUEDUCT_RUN_BUDGET_MIN", "0.5")     # 30 s: under the 5-min floor
+    rig.env.imf.per_request = 20.0
+    monkeypatch.setenv("AQUEDUCT_IMTS_MARGIN_MIN", "0.1")    # 6 s: slice 1 fits, then 2 x 20 s does not
+    monkeypatch.setenv("AQUEDUCT_RUN_BUDGET_MIN", "0.5")     # 30 s
     results = rig.run()
     assert results == [(f"{SRC}/_all", "partial")], results
     row = rig.state.get_unit(SRC, "_all")
@@ -976,3 +992,33 @@ def test_only_imf_imts_direct_runs_sliced_and_every_other_importer_still_calls_b
 def test_the_shared_default_path_does_not_read_the_ceiling():
     for rel in ("updater/strategies/fetchers/_imf_direct.py", "jobs/ingest_imf_direct.py"):
         assert "_RUN_DEADLINE_TS" not in open(os.path.join(ROOT, rel), encoding="utf-8").read(), rel
+
+
+# ---- Result.window_stop (admission for window-stoppable units, orchestrate._window_stop_no_progress) ----
+
+def _declared_imts():
+    from updater import registry
+    return next(u for u in registry.all_units() if u.source_id == SRC)
+
+
+def test_window_stop_signal_none_before_any_slice(env):
+    env.setup("base")
+    env.ceiling(30.0)
+    res = F.update(None, None)
+    assert res.window_stop == "none" and env.imf.data_requests() == []
+    assert orchestrate._window_stop_no_progress(_declared_imts(), res)
+
+
+def test_window_stop_signal_progress_after_kept_slices(env, monkeypatch):
+    env.setup("base")
+    env.imf.up, env.imf.per_request = "add", 100.0
+    monkeypatch.setenv("AQUEDUCT_IMTS_MARGIN_MIN", "1")
+    env.ceiling(350.0)
+    res = F.update(None, None)
+    assert len(env.imf.data_requests()) == 2 and res.window_stop == "progress", res
+    assert not orchestrate._window_stop_no_progress(_declared_imts(), res)
+
+
+def test_no_window_stop_signal_without_a_ceiling(env):
+    env.setup("base")
+    assert F.update(None, None).window_stop is None

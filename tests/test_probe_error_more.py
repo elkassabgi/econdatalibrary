@@ -76,7 +76,9 @@ def test_every_label_in_run_once_is_either_in_the_heavy_list_or_named_here():
     text = open(os.path.join(root, ".github", "workflows", "updater-heavy.yml"), encoding="utf-8").read()
     listed = set(text.split('bad=$(grep -E "^\\s+(', 1)[1].split(")", 1)[0].split("|"))
     assert listed <= given, f"the workflow names a label run_once never gives: {sorted(listed - given)}"
-    assert given - listed == {"no_change", "due", "locked", "partial"}, sorted(given - listed)
+    # window_stopped (2026-11-02): a declared window-stoppable unit's stop before any durable progress - the
+    # same side as partial (a window stop is not a failure of the source; its WARNING line covers a stuck one).
+    assert given - listed == {"no_change", "due", "locked", "partial", "window_stopped"}, sorted(given - listed)
 
 
 class _ReprRaises(Exception):

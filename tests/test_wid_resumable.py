@@ -769,3 +769,35 @@ def test_the_real_gate_skips_a_stamped_empty_entity_without_a_parquet(env):
     wid._save_done(env.out, {"ON": f"{NEW}|{SIZE}|empty", "FR": f"{NEW}|{SIZE}"})
     wid.update(None, None)
     assert env.fetched == ["FR"], "ON skipped with no parquet; FR has a final stamp and no parquet"
+
+
+# ---- Result.window_stop (admission for window-stoppable units, orchestrate._window_stop_no_progress) ----
+
+def _declared_wid():
+    from updater import registry
+    return next(u for u in registry.all_units() if u.source_id == "wid")
+
+
+def test_window_stop_signal_none_when_the_floor_stops_the_first_country(env, monkeypatch):
+    _setup(env.out)
+    monkeypatch.setenv("AQUEDUCT_WID_MARGIN_MIN", "0.1")
+    _ceiling(env, monkeypatch, 5)
+    res = wid.update(None, None)
+    assert env.fetched == [] and res.window_stop == "none", res
+    assert res.changed_keys == {} and orchestrate._window_stop_no_progress(_declared_wid(), res)
+
+
+def test_window_stop_signal_progress_after_countries_merged(env, monkeypatch):
+    _setup(env.out)
+    env.dur = 10.0
+    monkeypatch.setenv("AQUEDUCT_WID_MARGIN_MIN", "0.1")
+    _ceiling(env, monkeypatch, 60)
+    res = wid.update(None, None)
+    assert env.fetched == COUNTRIES[:5] and res.window_stop == "progress", res
+    assert not orchestrate._window_stop_no_progress(_declared_wid(), res)
+
+
+def test_no_window_stop_signal_without_a_ceiling(env, monkeypatch):
+    _setup(env.out)
+    monkeypatch.setattr(orchestrate, "_RUN_DEADLINE_TS", None)
+    assert wid.update(None, None).window_stop is None

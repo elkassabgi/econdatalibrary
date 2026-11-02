@@ -273,6 +273,24 @@ def _utc(ts) -> str:
     return _dt.datetime.fromtimestamp(ts, _dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def windowed_admission_reserve_min(source: str) -> float:
+    """The start gate's reserve for a source on the WINDOWED update, in minutes: margin floor + assembly
+    reserve, through the SAME env reads as _windowed (AQUEDUCT_UNCTAD_MARGIN_MIN 5, chosen, +
+    AQUEDUCT_UNCTAD_ASSEMBLY_RESERVE_MIN 60, measured on siblings). The assembly reserve MUST be in it: a
+    replay-only pass (no Facts request) parses and merges WITHOUT checking the reserve, so a unit admitted
+    with less than it could assemble past the ceiling. Exposed per source by the opted-in module as
+    window_admission_reserve_min(); only modules that declare `window_stop: true` may expose that.
+    Plus ADMISSION_NETWORK_MIN of network time, so an admitted pass can spill at least some chunks (one
+    durable unit of progress; review AR-415 B): 75 min by default."""
+    return (_env_num(source, "AQUEDUCT_UNCTAD_MARGIN_MIN", MARGIN_FLOOR_MIN_DEFAULT) + ADMISSION_NETWORK_MIN
+            + _env_num(source, "AQUEDUCT_UNCTAD_ASSEMBLY_RESERVE_MIN", ASSEMBLY_RESERVE_MIN_DEFAULT))
+
+
+# The network time the start gate adds to the windowed update's reserve. CHOSEN: the largest gap between two
+# spill writes measured on the 10-08 turn was 42 s, so 10 min is about 14 chunks; not a measured need.
+ADMISSION_NETWORK_MIN = 10.0
+
+
 def _window_end_ts():
     """The pass's run ceiling as an epoch timestamp, or None. Read through sys.modules (as wid, census and
     imf_imts_direct do), so this module never imports the orchestrator."""
@@ -586,7 +604,12 @@ def _windowed(ds: str, source: str):
             tally.deferred_unit(f"{ds}: stopped before the window end - {str(e)[:200]}")
             say(f"STOP before the window end: {e}; every chunk and size-cap answer stays on disk for a later "
                 f"pass ({_time.time() - t_pass:.1f}s into the pass)")
-            return _fin(merged_rows=0)
+            res = _fin(merged_rows=0)
+            # THE WINDOW-STOP SIGNAL (Result.window_stop; registry window_stop: true): durable progress is a
+            # Facts POST completed this pass (win.posts counts them after they return; its chunk or size-cap
+            # answer is kept on disk). Without one the orchestrator records no unit state for the stop.
+            res.window_stop = "progress" if win.posts > 0 else "none"
+            return res
         except j.UnsupportedLayout as e:
             return _refuse(f"{ds}: unsupported layout — {str(e)[:160]}")
         except Exception as e:                               # noqa: BLE001 — network/contract

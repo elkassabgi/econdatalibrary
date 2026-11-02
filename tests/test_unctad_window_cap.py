@@ -605,3 +605,24 @@ def test_a_handed_mark_settles_only_on_its_own_unfenced_record(env, last_error, 
         assert res.status == "no_change" and res.changed_keys == {}
     else:
         assert res.status == "ok" and sorted(res.changed_keys) == sorted(F.truth("base"))
+
+
+# ---- Result.window_stop (admission for window-stoppable units, orchestrate._window_stop_no_progress) ----
+
+def test_window_stop_signal_none_when_nothing_is_asked(env):
+    _seed(env)
+    _forget_release(env)
+    res, _ = _run(env, "rev", post_s=60.0, ceiling_s=4 * MIN)
+    assert env["api"].log == [] and res.window_stop == "none", res
+
+
+def test_window_stop_signal_progress_after_chunks_spilled(env):
+    _seed(env)
+    res, _ = _run(env, "rev", post_s=60.0, ceiling_s=75 * MIN)
+    assert len(env["api"].leaves()) > 0 and res.window_stop == "progress", res
+
+
+def test_no_window_stop_signal_without_a_ceiling(env):
+    _seed(env)
+    res, _ = _run(env, "base")
+    assert res.window_stop is None

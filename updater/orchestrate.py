@@ -319,6 +319,102 @@ def _unit_timeout_min() -> float:
         return 45.0
 
 
+_DECLARED_RESERVE_CAP_MIN = 90.0   # a declared reserve never exceeds the default worst case (2 x 45 min)
+WINDOW_STOP_WARN_STREAK = 5   # consecutive no-progress window stops before the pass prints a WARNING
+
+
+def _window_stop_no_progress(unit, res) -> bool:
+    """Is this Result a window stop made before ANY durable progress, by a unit that declares window_stop?
+
+    Only a `partial` whose fetcher says window_stop == "none" qualifies, and anything the orchestrator would
+    act on overrides the flag (fail toward recording): series cursors, a non-empty changed set, merged rows,
+    or a full-rederive flag. `obs` is NOT evidence - most fetchers put the store's total there."""
+    if (unit.config or {}).get("window_stop") is not True:
+        return False
+    if getattr(res, "window_stop", None) != "none" or res.status != "partial":
+        return False
+    if res.series_cursors or getattr(res, "changed_keys", None) or getattr(res, "cursor_cap_hit", None):
+        return False
+    mr = getattr(res, "merged_rows", None)
+    return not (isinstance(mr, int) and mr > 0)
+
+
+WINDOW_STOP_WARN_MINUTES = 90.0  # ... or their summed minutes (one full window): a cut slice can spend it all
+
+
+def _window_stop_streak(store, unit) -> tuple:
+    """(count, minutes) of this unit's `window_stopped` runs since its last other runs row
+    (StateStore.window_stop_streak). (0, 0.0) when it cannot be read - visibility only, never a decision."""
+    try:
+        return store.window_stop_streak(unit.source_id, unit.unit_id)
+    except Exception:                                              # noqa: BLE001 - visibility only
+        return 0, 0.0
+
+
+def declared_last_turn_utc(state_row, last_kill_utc, last_window_stop_utc):
+    """When a WINDOW-STOPPABLE unit (registry window_stop: true) last had a turn, for ORDERING only: the latest
+    of last_turn_utc's answer, its last_attempt_utc and its newest `window_stopped` run.
+
+    last_turn_utc keys on last_success when one exists, so a unit with an old success whose passes window-stop
+    (partial, progress or not) never moves its key and leads its band for ever - review AR-415's wedge: such a
+    unit was admitted in 5 of 5 short passes while a wid-like unit and a never-success unit got none. Every
+    window stop moves this key: a progressing stop stamps last_attempt (partial), and a no-progress stop
+    writes the window_stopped row. So the declared units rotate. It is never EARLIER than last_turn_utc (it
+    only adds stamps to a max), so it can only move a unit BACK in the order, never ahead of an undeclared
+    unit it would have followed. is_due and health never read it. Unparseable stamps are ignored."""
+    from datetime import datetime, timezone
+    base = last_turn_utc(state_row, last_kill_utc)
+
+    def _p(s):
+        if not s:
+            return None
+        try:
+            d = datetime.fromisoformat(str(s))
+        except (ValueError, TypeError):
+            return None
+        return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+    best, best_d = base, _p(base)
+    for cand in ((state_row or {}).get("last_attempt_utc"), last_window_stop_utc):
+        d = _p(cand)
+        if d is not None and (best_d is None or d > best_d):
+            best, best_d = cand, d
+    return best
+
+
+def _window_stop_reserve(unit):
+    """The start gate's reserve for a WINDOW-STOPPABLE unit: (minutes, None), or (None, why) when the unit
+    declares window_stop but its reserve cannot be read, or (None, None) when it does not declare it.
+
+    THE DECLARATION is the registry key `window_stop: true` (validated boolean, carried in unit.config by
+    registry.to_units), and it is honoured only together with the fetcher's own
+    window_admission_reserve_min(). A declared unit's fetcher reads _RUN_DEADLINE_TS and stops at the run
+    ceiling on its own, keeping its work for a later pass; so the question the gate asks of it is not "can
+    it FINISH?" (the 90-min worst case, or 3 x its estimate) but "is there time for it to STOP CLEANLY AND
+    HAND OVER?" - its margin floor plus the merge or assembly reserve it keeps before the ceiling, which only
+    the fetcher knows. With less than that it could only stop at once (or, on a replay-only unctad pass,
+    assemble past the ceiling), so its own figure is the reserve, exactly.
+
+    FAILS CLOSED: a declared unit whose fetcher will not import, lacks the function, raises, or returns
+    anything but a finite number >= 0 keeps today's reserve (the larger one) and the gate says why. An
+    undeclared unit never imports anything here, so its admission is untouched. The set of declared sources
+    and the fetchers exposing the function are pinned to each other by tests/test_admit_window_stoppable.py.
+    """
+    if (unit.config or {}).get("window_stop") is not True:
+        return None, None
+    import math
+    try:
+        from .strategies import fetchers as _fetchers
+        fn = getattr(_fetchers.get(unit.source_id), "window_admission_reserve_min", None)
+        if not callable(fn):
+            return None, "declares window_stop but its fetcher has no window_admission_reserve_min()"
+        v = fn()
+    except Exception as e:                                         # noqa: BLE001 - fail closed, say why
+        return None, f"window_admission_reserve_min() failed: {e!r}"
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0:
+        return None, f"window_admission_reserve_min() returned {v!r}, not a finite number >= 0"
+    return float(v), None
+
+
 # The RUN ceiling, as an absolute wall-clock timestamp, shared by every phase.
 # Run 31466202723 (and the two 250-min kills before it) proved the phases'
 # INDIVIDUAL bounds do not compose: the start-gate stopped new units at 240 min,
@@ -2846,10 +2942,19 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
     # a turn, and putting it last would be the starvation this whole ordering exists to undo.
     _now = now_utc()
     _kills = store.last_kill_utc()     # {(source_id, unit_id): ts} - one read of `runs` per pass
+    try:
+        _wstops = store.last_window_stop_utc()   # ordering of declared units only; an older store has none
+    except Exception:                                              # noqa: BLE001 - ordering input, never fatal
+        _wstops = {}
 
     def _staleness(unit):
         st = store.get_unit(unit.source_id, unit.unit_id) or {}
-        last = last_turn_utc(st, _kills.get((unit.source_id, unit.unit_id)))
+        if (unit.config or {}).get("window_stop") is True:
+            # Declared window-stoppable units ROTATE: every window stop moves the key back (review AR-415 C).
+            last = declared_last_turn_utc(st, _kills.get((unit.source_id, unit.unit_id)),
+                                          _wstops.get((unit.source_id, unit.unit_id)))
+        else:
+            last = last_turn_utc(st, _kills.get((unit.source_id, unit.unit_id)))
         cadence = (unit.config or {}).get("cadence")
         # Cadence-normalized: a 5d-stale daily (5x overdue) outranks a 10d-stale
         # annual (0.03x) — absolute age inverted exactly that on 2026-08-18.
@@ -2893,8 +2998,9 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
     protected_skipped = []
     wrong_location = []
     not_due = []
-    # THE LEFTOVER DRAIN'S CANDIDATES (_drain_leftover_retries): units that were NOT DUE, BUDGET SKIPPED (G1) or
-    # an earned no_change.
+    # THE LEFTOVER DRAIN'S CANDIDATES (_drain_leftover_retries): units that were NOT DUE, BUDGET SKIPPED (G1), an
+    # earned no_change, or a declared unit's window stop before any durable progress (the non-turn: it ran its
+    # update but wrote nothing, and its adapter worked, so it needs no _skipped_for_drain check).
     # A source qualifies only if NONE of its units did anything else this pass (ran update, was locked, failed its
     # probe, or answered an undeterminable probe) - those sources are in _drain_block.
     _drain_ok: dict = {}
@@ -2951,7 +3057,26 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
         # A skip count is only meaningful over units that would otherwise have RUN.
         _est_s = _costs.get(unit.source_id)
         _worst_min = 2 * _unit_timeout_min()
-        if _est_s is None:
+        # WINDOW-STOPPABLE units (registry window_stop: true) reserve what THEY need to stop cleanly and hand
+        # over, declared by their fetcher (_window_stop_reserve). Every other unit takes the branches below,
+        # unchanged, and so does a declared unit whose reserve cannot be read (fail closed, announced).
+        _ws_min, _ws_bad = _window_stop_reserve(unit)
+        _basis = "worst case, not an estimate"
+        if _ws_bad:
+            print(f"[orchestrator] WINDOW STOP {unit.key}: {_ws_bad} - keeping the standard reserve",
+                  flush=True)
+        if _ws_min is not None:
+            # The declared figure WINS whenever the unit timeout is enabled - even a short one: with
+            # AQUEDUCT_UNIT_TIMEOUT_MIN=10 the worst case is 20, and min(20, 75) would admit nonplastics below
+            # its own 60-min assembly reserve (review AR-415). It is capped at the DEFAULT worst case (2 x 45 =
+            # 90), so an env override cannot make a declared unit harder to admit than an undeclared giant on
+            # default settings. A DISABLED timeout (<= 0, or nan) keeps reserving 0 for every unit, exactly as
+            # before. It also takes precedence over the never-run worst case (est None): what a unit needs to
+            # stop does not depend on a cost on record.
+            _need_min = min(_DECLARED_RESERVE_CAP_MIN, _ws_min) if _worst_min > 0 else 0.0
+            _basis = ("declared by its window-stopping fetcher: margin floor + hand-over reserve, "
+                      "not a worst case")
+        elif _est_s is None:
             # Never run, so no cost on record and no basis for a smaller reserve.
             _need_min = _worst_min
         else:
@@ -2986,7 +3111,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             # B3: `due` / `not due` says whether this skip cost the unit a turn it was owed. Label only.
             print(f"[orchestrator] BUDGET SKIP {unit.source_id}/{unit.unit_id} "
                   f"({_budget_skip_due_label(unit, store, force)}): the gate "
-                  f"reserves {_need_min:.0f} min (worst case, not an estimate) and "
+                  f"reserves {_need_min:.0f} min ({_basis}) and "
                   f"{max(0.0, (run_deadline - _now) / 60.0):.0f} min remain in this pass - "
                   f"deferred to the next one", flush=True)
             # G1: a BUDGET SKIPPED unit did nothing this pass, exactly like a NOT DUE one, so its source is a
@@ -2999,6 +3124,12 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             _drain_ok.setdefault(unit.source_id, []).append(unit)
             _skipped_for_drain.append(unit)
             continue
+        if _ws_min is not None and run_deadline is not None:
+            # Printed at the gate, BEFORE the adapter and due checks: it says the budget let the unit
+            # through, not that it ran (a NOT DUE line may still follow).
+            print(f"[orchestrator] WINDOW STOP {unit.key}: passes the start gate on its declared "
+                  f"{_need_min:g}-min reserve ({max(0.0, (run_deadline - _now) / 60.0):.0f} min remain); "
+                  f"its fetcher stops at the run ceiling", flush=True)
         try:
             runnable = _has_adapter(unit)
         except Exception as e:  # noqa: BLE001 — adapter module EXISTS but is broken at
@@ -3194,6 +3325,39 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             with _unit_deadline(unit.key, _unit_window_min()):
                 res = strat.run(unit, since=sane_since((us or {}).get("last_obs_date")))
             status = res.status
+            if _window_stop_no_progress(unit, res):
+                # A WINDOW STOP BEFORE ANY DURABLE PROGRESS IS NOT A TURN (review AR-415 B). Recording it as
+                # `partial` would stamp last_attempt, so a unit with no success on record (census,
+                # nonplastics) would wait min(cadence, 7) days on the partial clock (base.Strategy.is_due)
+                # for a turn that did nothing. So NO unit state is written. A `window_stopped` runs row keeps
+                # it visible (streak + minutes below) and moves its ORDER key back (declared_last_turn_utc,
+                # via StateStore.last_window_stop_utc), so the declared units rotate. run_cost_estimate
+                # excludes that status from BOTH its queries (the MAX-over-last-5 and the floor), and
+                # last_kill_utc reads only killed_external. The lease is released by `finally`.
+                _n0, _m0 = _window_stop_streak(store, unit)
+                _streak, _mins = _n0 + 1, _m0 + (time.time() - t0) / 60.0
+                print(f"[orchestrator] WINDOW STOP {unit.key}: stopped at the run ceiling before any durable "
+                      f"progress - not recorded as a turn (still due; its order key moves back); "
+                      f"{_streak} consecutive window_stopped run(s), {_mins:.1f} min, since its last "
+                      f"recorded turn" + (f" ({res.error})" if res.error else ""), flush=True)
+                if _streak >= WINDOW_STOP_WARN_STREAK or _mins >= WINDOW_STOP_WARN_MINUTES:
+                    print(f"[orchestrator] WARNING {unit.key}: {_streak} consecutive window stops with NO "
+                          f"progress, {_mins:.1f} min spent - its windows are too short for its next "
+                          f"sub-unit (see its stop sentence); a longer window or an operator release is "
+                          f"needed", flush=True)
+                if not dry:
+                    store.log_run(unit.source_id, unit.unit_id, "window_stopped",
+                                  dur_s=round(time.time() - t0, 1),
+                                  note=_clip_err(f"window stop, no durable progress, all work deferred "
+                                                 f"(streak {_streak}): "
+                                                 f"{res.error or ''}"))
+                results.append((unit.key, "window_stopped"))
+                # Nothing touched this unit's store, so the leftover drain may treat it like NOT DUE
+                # (_drain_leftover_retries). A window stop usually ends AT the deadline, so that drain's
+                # leftover time is then ~0: eligible, not drained (stated residual).
+                _drain_block.discard((unit.source_id, unit.key))
+                _drain_ok.setdefault(unit.source_id, []).append(unit)
+                continue
             ok = status in ("ok", "no_change")
             err_note = res.error
             # Contract step 5 (§5.7): a successful merge re-derives the changed

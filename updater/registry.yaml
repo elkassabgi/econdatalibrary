@@ -784,6 +784,9 @@ sources:
   # A fetcher that trusted the status code would record a successful empty run forever, so the
   # fetcher detects that page explicitly and refuses.
   run_location: local
+  # window_stop: the fetcher stops at the pass's run ceiling and declares its own admission reserve
+  # (window_admission_reserve_min); the start gate uses that reserve, not the 90-min worst case.
+  window_stop: true
   scripts:
   - jobs/ingest_census.py
   strategy: extend_by_date
@@ -7109,6 +7112,9 @@ sources:
   # docstring records that, and warns its numbers are a LOWER BOUND because it omits
   # the new data and the combined merge. usda repeated the failure on 2026-08-22.
   run_location: local
+  # window_stop: the fetcher stops at the pass's run ceiling and declares its own admission reserve
+  # (window_admission_reserve_min); the start gate uses that reserve, not the 90-min worst case.
+  window_stop: true
   live: true
   scripts: [jobs/ingest_unctad_ds.py]
   strategy: bulk_snapshot_if_changed
@@ -7798,6 +7804,9 @@ sources:
   # More minutes cannot fix a memory wall. The workstation has the memory; the local
   # heavy lane reads this flag from the registry (tools/_list_local_sources.py).
   run_location: local
+  # window_stop: the fetcher stops at the pass's run ceiling and declares its own admission reserve
+  # (window_admission_reserve_min); the start gate uses that reserve, not the 90-min worst case.
+  window_stop: true
   live: false
   scripts:
   - jobs/ingest_imf_direct.py
@@ -9831,6 +9840,9 @@ sources:
   # (424 files, bounded by the largest one) - but "probably" is exactly what wrongly routed
   # `abs` here, so it stays put until someone measures it.
   run_location: local
+  # window_stop: the fetcher stops at the pass's run ceiling and declares its own admission reserve
+  # (window_admission_reserve_min); the start gate uses that reserve, not the 90-min worst case.
+  window_stop: true
   live: true
   scripts:
   - updater/strategies/fetchers/wid.py
