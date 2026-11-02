@@ -209,6 +209,71 @@ def test_exactly_the_declared_fetchers_expose_the_reserve():
     assert _exposing(paths) == _declared()
 
 
+def _sets_window_stop(path: str) -> bool:
+    """Does this module ASSIGN Result.window_stop - `x.window_stop = ...` or `window_stop=...` in a call that is
+    not merely carrying another Result's value through (`window_stop=res.window_stop`)? AST, not text."""
+    tree = ast.parse(open(path, encoding="utf-8").read(), filename=path)
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Assign) and any(isinstance(t, ast.Attribute) and t.attr == "window_stop"
+                                             for t in n.targets):
+            return True
+        if isinstance(n, ast.Call) and n.func and getattr(n.func, "attr", getattr(n.func, "id", "")) == "replace":
+            for kw in n.keywords:
+                if kw.arg == "window_stop" and not (isinstance(kw.value, ast.Attribute)
+                                                    and kw.value.attr == "window_stop"):
+                    return True
+    return False
+
+
+def _reads_run_deadline(path: str) -> bool:
+    """Does this module READ orchestrate._RUN_DEADLINE_TS (a getattr(orch, "_RUN_DEADLINE_TS", ...) or an
+    attribute load)? A comment or docstring mention does not count."""
+    tree = ast.parse(open(path, encoding="utf-8").read(), filename=path)
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Attribute) and n.attr == "_RUN_DEADLINE_TS" and isinstance(n.ctx, ast.Load):
+            return True
+        if (isinstance(n, ast.Call) and getattr(n.func, "id", "") == "getattr" and len(n.args) >= 2
+                and isinstance(n.args[1], ast.Constant) and n.args[1].value == "_RUN_DEADLINE_TS"):
+            return True
+    return False
+
+
+def _honouring_problems(declared) -> list:
+    """Every declared source's fetcher (its module, or the shared module its update comes from: an unctad
+    module whose update is _unctad.make(..., window=True)) must read the run deadline AND set
+    Result.window_stop. Returns the sources that fail."""
+    bad = []
+    for sid in sorted(declared):
+        path = os.path.join(FETCHER_DIR, f"{sid}.py")
+        if not os.path.exists(path):
+            bad.append(f"{sid}: no fetcher module")
+            continue
+        paths = [path]
+        tree = ast.parse(open(path, encoding="utf-8").read())
+        windowed = any(isinstance(n, ast.Call) and getattr(n.func, "id", "") == "make"
+                       and any(k.arg == "window" and getattr(k.value, "value", None) is True for k in n.keywords)
+                       for n in ast.walk(tree))
+        if windowed:
+            paths.append(os.path.join(FETCHER_DIR, "_unctad.py"))
+        if not any(_reads_run_deadline(p) for p in paths):
+            bad.append(f"{sid}: does not read _RUN_DEADLINE_TS")
+        if not any(_sets_window_stop(p) for p in paths):
+            bad.append(f"{sid}: never sets Result.window_stop")
+    return bad
+
+
+def test_every_declared_source_honours_the_run_deadline_and_sets_the_signal():
+    assert _honouring_problems(_declared()) == []
+
+
+def test_planting_the_flag_on_oecd_or_an_undeclared_unctad_module_fails_the_honouring_check():
+    bad = _honouring_problems(_declared() | {"oecd", "unctad_biotrademerch"})
+    assert any(b.startswith("oecd: does not read _RUN_DEADLINE_TS") for b in bad), bad
+    assert any(b.startswith("oecd: never sets Result.window_stop") for b in bad), bad
+    assert any(b.startswith("unctad_biotrademerch:") for b in bad), bad
+    assert len(bad) == 4, bad                       # the four declared sources still pass
+
+
 def test_a_fifth_module_exposing_the_reserve_fails_the_pin(tmp_path):
     planted = tmp_path / "unctad_biotrademerch.py"
     planted.write_text("from ._unctad import make\n\n\ndef window_admission_reserve_min() -> float:\n"

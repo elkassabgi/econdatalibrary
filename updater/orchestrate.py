@@ -2998,8 +2998,9 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
     protected_skipped = []
     wrong_location = []
     not_due = []
-    # THE LEFTOVER DRAIN'S CANDIDATES (_drain_leftover_retries): units that were NOT DUE, BUDGET SKIPPED (G1) or
-    # an earned no_change.
+    # THE LEFTOVER DRAIN'S CANDIDATES (_drain_leftover_retries): units that were NOT DUE, BUDGET SKIPPED (G1), an
+    # earned no_change, or a declared unit's window stop before any durable progress (the non-turn: it ran its
+    # update but wrote nothing, and its adapter worked, so it needs no _skipped_for_drain check).
     # A source qualifies only if NONE of its units did anything else this pass (ran update, was locked, failed its
     # probe, or answered an undeterminable probe) - those sources are in _drain_block.
     _drain_ok: dict = {}

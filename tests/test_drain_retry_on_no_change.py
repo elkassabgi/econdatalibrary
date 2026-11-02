@@ -325,7 +325,9 @@ def test_g1_a_budget_skipped_imf_imts_direct_keeps_its_handed_mark(rig, monkeypa
     """AR-413 P5: a budget skip writes NOTHING to unit_state, source_state or runs. imf_imts_direct settles its
     handed mark on last_error; a budget skip (and the drain after it) must not touch it."""
     imts = "imf_imts_direct"
-    monkeypatch.setenv("AQUEDUCT_RUN_BUDGET_MIN", "60")
+    # 50, not 60: imf_imts_direct declares window_stop and reserves its own 55 min, so a 60-min pass admits it;
+    # 50 keeps it BUDGET SKIPPED, which is what this test is about.
+    monkeypatch.setenv("AQUEDUCT_RUN_BUDGET_MIN", "50")
     rig.seed(imts, [f"{imts}:A.B.C.D.E.F"])
     rig.seed(SRC, _ids(1))
     unit_before = rig.state.get_unit(imts, "_all")
