@@ -119,6 +119,7 @@ class FakeApi:
     def __init__(self, clock: FakeClock, up="base", post_s=0.0, status=None):
         import requests
         self.clock, self.up, self.post_s, self.status = clock, up, post_s, status
+        self.get_s = 0.0                                # seconds a DIMENSION GET takes (0 = instant)
         self.log = []
         self.RequestException, self.HTTPError = requests.RequestException, requests.HTTPError
 
@@ -129,6 +130,15 @@ class FakeApi:
             return _Resp(200, js=meta(rel))
         m = re.search(r"/(\w+)\?\$orderby", url)
         dim = m.group(1) if m else ""
+        if self.get_s:
+            # a dimension GET slower than its read timeout is CUT, as a real socket would cut it
+            rt = timeout[1] if isinstance(timeout, tuple) else timeout
+            if rt is not None and self.get_s > float(rt):
+                self.clock.sleep(float(rt))
+                self.log.append(("cut", dim))
+                import requests
+                raise requests.ReadTimeout(f"planted: dimension {dim} not answered within {rt}s")
+            self.clock.sleep(self.get_s)
         self.log.append(("dim", dim))
         if dim == "Years":
             return _Resp(200, js={"value": [{"Code": y} for y in rel["years"]]})
@@ -148,12 +158,21 @@ class FakeApi:
         est = len(years)
         for s in sets:
             est *= len(s)
+        # THE READ TIMEOUT IS HONOURED, as a real socket would (review AR-411 u03, its P3sth): an answer slower
+        # than the read timeout the client hands over arrives never - the clock moves by the timeout and the
+        # request is CUT (logged "cut", nothing kept).
+        rt = timeout[1] if isinstance(timeout, tuple) else timeout
+        if rt is not None and self.post_s > float(rt):
+            self.clock.sleep(float(rt))
+            self.log.append(("cut", form.get("$filter", "")))
+            import requests
+            raise requests.ReadTimeout(f"planted: no answer within the {rt}s read timeout")
         self.clock.sleep(self.post_s)
         if self.status is not None:
             self.log.append(("status", self.status))
             return _Resp(self.status, "forced")
         if est > CAP:
-            self.log.append(("cap", form.get("$filter", "")))
+            self.log.append(("cap", (mcode, form.get("$filter", ""))))
             return _Resp(400, f"The request exceed the maximal size. Maximal size : {CAP}. Estimated size : {est}.")
         self.log.append(("leaf", (mcode, form.get("$filter", ""))))
         out = io.StringIO()

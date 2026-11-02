@@ -47,8 +47,8 @@ def _np():
     return NP
 
 
-def _run(env, up="base", post_s=0.0, ceiling_s=None, status=None):
-    env["api"].up, env["api"].post_s, env["api"].status = up, post_s, status
+def _run(env, up="base", post_s=0.0, ceiling_s=None, status=None, get_s=0.0):
+    env["api"].up, env["api"].post_s, env["api"].status, env["api"].get_s = up, post_s, status, get_s
     env["api"].log.clear()
     env["orch"]._RUN_DEADLINE_TS = None if ceiling_s is None else env["clock"].time() + ceiling_s
     t0 = env["clock"].time()
@@ -240,17 +240,26 @@ def test_a_same_version_reissue_discards_the_old_chunks(env):
     assert res.status == "ok" and F.store_of(env["root"]) == F.truth("reissue")
 
 
-@pytest.mark.parametrize("old_spills, expect_leaves", [(False, None), (True, 60)])
-def test_a_legacy_bare_version_token(env, old_spills, expect_leaves):
-    """main wrote the bare version. Accepted only when the release's lastUpdated is earlier than every chunk."""
+LU_BASE = 1785938136.0                                      # 2026-08-05T13:55:36Z, release "base"'s lastUpdated
+
+
+@pytest.mark.parametrize("spill_mtime, expect_leaves", [
+    (None, None),                    # chunks written now, months after lastUpdated: accepted
+    (1754006400.0, 60),              # 2025-08-01, a year before lastUpdated: wiped
+    (LU_BASE - 12 * 3600, 60),       # 12 h BEFORE lastUpdated, inside the zone slack: wiped (AR-411 u08)
+    (LU_BASE + 12 * 3600, 60),       # 12 h AFTER: still inside the 24-h slack, so not proven later: wiped
+])
+def test_a_legacy_bare_version_token(env, spill_mtime, expect_leaves):
+    """main wrote the bare version. Accepted only when the release's lastUpdated is earlier than every chunk
+    by more than the 24-h zone slack."""
     _seed(env)
     k = _killed_walk(env, "base", 10)
     sd = os.path.join(env["root"], "spill", F.SID)
     with open(os.path.join(sd, "_token.txt"), "w") as fh:
         fh.write("10009")                                   # main's form
-    if old_spills:
+    if spill_mtime is not None:
         for p in glob.glob(os.path.join(sd, "*.csv")):
-            os.utime(p, (1754006400.0, 1754006400.0))       # 2025-08-01: before lastUpdated 2026-08-05
+            os.utime(p, (spill_mtime, spill_mtime))
     res, _ = _run(env, "base")
     assert res.status in ("ok", "no_change")
     assert len(env["api"].leaves()) == (expect_leaves if expect_leaves is not None else 60 - k)
@@ -458,3 +467,141 @@ def test_a_dimension_cache_under_another_token_is_never_used(env):
     assert ("dim", "Years") in env["api"].log, "the lists were asked again"
     assert len(env["api"].leaves()) == 60 and F.store_of(env["root"]) == F.truth("base")
     assert json.load(open(os.path.join(sd, j.DIMS_FILE)))["Years"] == list(range(2000, 2010))
+
+
+# ---------------------------------------------------------------- review AR-411's mutants on f1aaeb84
+
+def _posts(env, kinds=("leaf", "cap", "cut")):
+    return [k for k, _ in env["api"].log if k in kinds]
+
+
+def test_a_request_that_cannot_finish_is_refused_up_front(env):
+    """u01/u20: a window whose END is under the margin: nothing is asked, not even the metadata - no request
+    is started only to be cut (the fake honours the read timeout, and would log a cut)."""
+    _seed(env)
+    _forget_release(env)
+    res, took = _run(env, "rev", post_s=60.0, ceiling_s=4 * MIN)     # 4 min < the 5-min floor
+    assert res.status == "partial" and "stopped before the window end" in res.error
+    assert env["api"].log == [] and took < 1.0
+
+
+def test_no_request_runs_past_the_network_deadline_and_none_is_cut_by_a_late_start(env):
+    """u01/u23: with chunks of 70 s and 10 min of network time, the pass stops when the next chunk would not
+    fit its margin; every request it started finished (none cut). Without the check before each chunk, the
+    chunk started with 40 s left would be cut by the clamp (the fake honours the read timeout)."""
+    _seed(env)
+    _forget_release(env)
+    import shutil
+    shutil.rmtree(os.path.join(env["root"], "spill", F.SID))
+    res, took = _run(env, "rev", post_s=70.0, ceiling_s=70 * MIN)
+    assert res.status == "partial" and took <= 10 * MIN
+    assert "cut" not in _posts(env) and len(_posts(env)) > 0
+
+
+def test_each_attempt_is_clamped_to_the_network_deadline(env):
+    """u03: the per-attempt timeout is min(cap, time left). A server that never answers within 480 s against
+    6 min of network time: the attempts are cut at the deadline, not 120 s past it."""
+    _seed(env)
+    _forget_release(env)
+    import shutil
+    shutil.rmtree(os.path.join(env["root"], "spill", F.SID))
+    res, took = _run(env, "rev", post_s=480.0, ceiling_s=66 * MIN)  # 66 - 60 reserve = 6 min of network
+    assert res.status == "partial" and "stopped before the window end" in res.error
+    assert "cut" in _posts(env)
+    assert took <= 6 * MIN + 1.0, took
+
+
+def test_the_margin_is_twice_the_longest_request(env, monkeypatch):
+    """u02: after a 100-s request the margin is 200 s (floor set to 1 min): with 180 s left the next request
+    is refused, not started."""
+    monkeypatch.setenv("AQUEDUCT_UNCTAD_MARGIN_MIN", "1")
+    _seed(env)
+    _forget_release(env)
+    import shutil
+    shutil.rmtree(os.path.join(env["root"], "spill", F.SID))
+    res, took = _run(env, "rev", post_s=100.0, ceiling_s=60 * MIN + 280.0)
+    assert res.status == "partial"
+    assert _posts(env) == ["cap"], env["api"].log                  # the whole-measure probe only
+    assert "dim" not in [k for k, _ in env["api"].log], "u18: the dimension GET is refused too"
+    assert "2 x the longest request" in res.error and took <= 280.0
+
+
+def test_a_dimension_get_is_clamped_to_the_network_deadline(env, monkeypatch):
+    """u25: the dimension GET's read timeout is min(120 s, time left). A GET that answers in 200 s with 90 s of
+    network time left is cut at the deadline, not at 120 s."""
+    monkeypatch.setenv("AQUEDUCT_UNCTAD_MARGIN_MIN", "1")
+    _seed(env)
+    _forget_release(env)
+    import shutil
+    shutil.rmtree(os.path.join(env["root"], "spill", F.SID))
+    res, took = _run(env, "rev", post_s=0.0, get_s=200.0, ceiling_s=60 * MIN + 90.0)
+    assert res.status == "partial" and "cut" in [k for k, _ in env["api"].log]
+    assert took <= 90.0 + 1.0, took
+
+
+def test_the_second_measures_probe_is_refused_when_its_margin_is_gone(env, monkeypatch):
+    """u19: measure 1's 51 POSTs of 20 s fit; the window then leaves 50 s, under the 60-s margin, so the
+    whole-measure probe of measure 2 is NOT sent."""
+    monkeypatch.setenv("AQUEDUCT_UNCTAD_MARGIN_MIN", "1")
+    _seed(env)
+    _forget_release(env)
+    import shutil
+    shutil.rmtree(os.path.join(env["root"], "spill", F.SID))
+    res, _ = _run(env, "base", post_s=20.0, ceiling_s=60 * MIN + 1070.0)
+    m1 = [d for k, d in env["api"].log if k in ("leaf", "cap") and d[0] == "0100"]
+    m2 = [d for k, d in env["api"].log if k in ("leaf", "cap") and d[0] == "2200"]
+    assert res.status == "partial" and len(m1) == 51 and m2 == [], (len(m1), m2[:2])
+
+
+def test_a_replay_only_pass_assembles_in_a_window_under_the_reserve(env):
+    """u39/u37/u40: chunks complete, no release record, no dimension cache (main's state), a window short
+    from the start (59 min: under the 60-min reserve, over the floor). The metadata and the dimension GETs
+    are borrowed (u37), they are not POSTs (u40), and a pass that POSTed nothing assembles regardless of
+    the reserve (u39): merged and stamped in this pass."""
+    _seed(env)
+    _forget_release(env)
+    os.remove(os.path.join(env["root"], "spill", F.SID, j.DIMS_FILE))
+    res, _ = _run(env, "base", post_s=60.0, ceiling_s=59 * MIN)
+    assert ("dim", "Years") in env["api"].log and _posts(env) == []
+    assert res.status == "no_change" and res.new_vintage == "10009|2026-08-05T13:55:36", res.error
+
+
+def test_a_short_window_whose_borrowed_post_completes_the_walk_still_stops_before_the_assembly(env):
+    """u10 (AR-411 S13): one chunk missing, a window short from the start (59 min: under the reserve, over
+    the floor). The pass borrows the request, the walk completes, and - having POSTed - it takes the reserve
+    stop. Pass 2 is replay-only and assembles."""
+    _seed(env)
+    _forget_release(env)
+    sd = os.path.join(env["root"], "spill", F.SID)
+    os.remove(sorted(glob.glob(os.path.join(sd, "*.csv")))[0])
+    res, _ = _run(env, "base", post_s=1.0, ceiling_s=59 * MIN)
+    assert len(env["api"].leaves()) == 1
+    assert res.status == "partial" and "assembly reserve" in res.error
+    res, _ = _run(env, "base", post_s=1.0, ceiling_s=59 * MIN)
+    assert len(env["api"].leaves()) == 0 and res.status == "no_change"
+    assert res.new_vintage == "10009|2026-08-05T13:55:36"
+
+
+HAND = "hand-over 2026-10-30T00:00:00Z-aaaaaaaaaaaa"
+
+
+@pytest.mark.parametrize("last_error, settles", [
+    ("+5 new rows", False),                                             # u16: another run's text
+    (f"{HAND}: +5 new rows; csv phase exceeded its 45-min fence", False),  # u17: recorded, but fenced
+    (f"{HAND}: +5 new rows", True),                                     # the control: recorded, settles
+])
+def test_a_handed_mark_settles_only_on_its_own_unfenced_record(env, last_error, settles):
+    """A 'handed' mark settles only when unit_state.last_error carries ITS token without the csv-fence note.
+    Otherwise the pass hands every key over again (here through the release record: no walk)."""
+    from updater.state import StateStore
+    _seed(env)
+    store = StateStore(U.config.STATE_DB)
+    store.upsert_unit(F.SID, "_all", strategy="bulk_snapshot_if_changed", status="ok", last_error=last_error)
+    store.db.close()
+    with open(os.path.join(env["root"], "clean_full", F.SID, U.OWED_FILE), "w") as fh:
+        json.dump({"ds": F.DS, "form": "handed", "utc": "2026-10-30T00:00:00Z", "token": HAND}, fh)
+    res, _ = _run(env, "base")
+    if settles:
+        assert res.status == "no_change" and res.changed_keys == {}
+    else:
+        assert res.status == "ok" and sorted(res.changed_keys) == sorted(F.truth("base"))
