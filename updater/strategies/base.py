@@ -100,6 +100,17 @@ class Result:
     #
     # So this is an AFFIRMATIVE CLAIM, not an inference: a fetcher sets it only where it knows.
     merged_rows: int | None = None
+    # WINDOW STOP (2026-11-02, admission for window-stoppable units). Set ONLY by a fetcher whose registry
+    # entry declares `window_stop: true`, on a pass that its own run-ceiling check ended:
+    #   "progress" - the pass made durable progress before it stopped (a request completed, a country was
+    #                stamped, a slice kept, a chunk spilled, a merge landed): recorded as today.
+    #   "none"     - it stopped before ANY durable progress. orchestrate.run_once then records NO unit
+    #                state for it (no status, no last_attempt), so the unit does not land on the partial
+    #                clock; it logs a `window_stopped` runs row instead (which moves its ORDER key back,
+    #                orchestrate.declared_last_turn_utc, and no cost estimate reads). Cursors,
+    #                changed keys or merged rows on the Result override "none" (fail toward recording).
+    # None (default) = not a window stop, or a fetcher that does not declare one: nothing changes.
+    window_stop: str | None = None
 
 
 def cadence_due(cadence: str, last_success_utc: str | None, now: datetime | None = None) -> bool:

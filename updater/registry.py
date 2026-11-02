@@ -153,6 +153,14 @@ def validate(reg: dict, expected_count: int | None = None, workflows_root: str |
                 problems.append(f"{sid}: rotating must be true (or absent), got {e.get('rotating')!r}")
             if "paused" in e:
                 problems.append(f"{sid}: rotating and paused together - a paused source does not run")
+        if "window_stop" in e:
+            # `window_stop: true` declares that this source's fetcher stops at the pass's run ceiling on its
+            # own (it reads orchestrate._RUN_DEADLINE_TS) and still hands its work over. The start gate
+            # then admits it with the reserve the fetcher declares (window_admission_reserve_min()), not
+            # the 90-min worst case. Boolean true only: a typo like "yes" must not silently shrink a
+            # reserve. tests/test_admit_window_stoppable.py pins the declared set against the fetchers.
+            if e.get("window_stop") is not True:
+                problems.append(f"{sid}: window_stop must be true (or absent), got {e.get('window_stop')!r}")
     if expected_count is not None and len(sources) != expected_count:
         problems.append(f"expected {expected_count} sources, found {len(sources)}")
     return problems
@@ -186,7 +194,9 @@ def to_units(entry: dict) -> list[Unit]:
                 # `ons_uk`, destroyed the runner. A routing label no code consults is a
                 # comment, not a routing decision - and it only looks like it works for as
                 # long as something else happens to be blocking the traffic.
-                "run_location": entry.get("run_location") or "any"}
+                "run_location": entry.get("run_location") or "any",
+                # The start gate's window-stop declaration (see validate): `is True` only.
+                "window_stop": entry.get("window_stop") is True}
     units_spec = entry.get("units")
     if units_spec:
         out = []

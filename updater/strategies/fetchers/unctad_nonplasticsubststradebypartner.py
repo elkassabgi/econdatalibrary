@@ -15,7 +15,13 @@ WINDOWED UPDATE".
 """
 from __future__ import annotations
 
-from ._unctad import make
+from ._unctad import make, windowed_admission_reserve_min
 
 current_vintage, update = make("US.NonPlasticSubstsTradeByPartner",
                                "unctad_nonplasticsubststradebypartner", window=True)
+
+
+def window_admission_reserve_min() -> float:
+    """The start gate's reserve (registry `window_stop: true`): margin floor 5 + minimum network time 10 +
+    assembly reserve 60 = 75 min by default. See _unctad.windowed_admission_reserve_min."""
+    return windowed_admission_reserve_min("unctad_nonplasticsubststradebypartner")

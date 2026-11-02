@@ -202,6 +202,22 @@ def _plan(today: "dt.date | None" = None) -> list:
     return plan
 
 
+# ONE DURABLE UNIT OF PROGRESS, for the start gate: one slice. ESTIMATED, not measured: the module's own
+# estimate for its largest decade (2010s, ~27-30 min from the 10-10 average rate; see WINDOWS above). The
+# per-slice timing lines are the measurement once a pass has run.
+ADMISSION_SLICE_MIN = 30.0
+
+
+def window_admission_reserve_min() -> float:
+    """THE START GATE'S RESERVE for imf_imts_direct, in minutes (registry `window_stop: true`; read by
+    orchestrate._window_stop_reserve): margin floor + one slice (ADMISSION_SLICE_MIN) + merge reserve =
+    55 by default, through the SAME env reads as run_sliced (AQUEDUCT_IMTS_MARGIN_MIN 5,
+    AQUEDUCT_IMTS_MERGE_RESERVE_MIN 20, both chosen). The newest slice is started only with margin + merge
+    reserve left, so with less than this sum a pass may only stop."""
+    return (_env_num("AQUEDUCT_IMTS_MARGIN_MIN", MARGIN_FLOOR_MIN_DEFAULT) + ADMISSION_SLICE_MIN
+            + _env_num("AQUEDUCT_IMTS_MERGE_RESERVE_MIN", MERGE_RESERVE_MIN_DEFAULT))
+
+
 def _window_end_ts():
     """The pass's run ceiling as an epoch timestamp, or None. Read through sys.modules (as wid and
     census do), so this module never imports the orchestrator."""
@@ -729,7 +745,11 @@ def run_sliced(flow: str, agency: str, source_id: str):
             tally.deferred_unit(lab)
         print(f"[{SOURCE}] STOP before the window end: {why}; {len(todo)} deferred; kept slices stay "
               f"on disk for a later pass", flush=True)
-        return _fin(merged_rows=0)
+        res = _fin(merged_rows=0)
+        # THE WINDOW-STOP SIGNAL (Result.window_stop; registry window_stop: true): durable progress is a
+        # slice pulled and kept THIS pass. Without one the orchestrator records no unit state for the stop.
+        res.window_stop = "progress" if pulled else "none"
+        return res
 
     def _todo(i: int, have: dict) -> list:
         return [x[0] for x in plan[i:] if x[0] not in have] + ["merge"]

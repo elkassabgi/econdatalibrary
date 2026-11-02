@@ -1108,7 +1108,10 @@ def load_unit_book(db_path: str, copy_utc: dt.datetime, shift: dt.timedelta, cad
     for sid, ls, la, st in con.execute(f"SELECT source_id, last_success_utc, last_attempt_utc, status FROM "
                                        f"unit_state WHERE unit_id='_all' AND source_id IN ({q})", srcs):
         state[sid] = {"last_success_utc": mv(ls), "last_attempt_utc": mv(la), "status": st}
-    raw = list(con.execute(f"SELECT ts_utc, source_id, unit_id, status, dur_s FROM runs WHERE source_id IN ({q}) "
+    # `window_stopped` rows (orchestrate.run_once: a declared unit's window stop before any durable progress) are
+    # not turns and carry no work figure: a seconds-long row would otherwise become the unit's remaining work.
+    raw = list(con.execute(f"SELECT ts_utc, source_id, unit_id, status, dur_s FROM runs WHERE COALESCE(status, '') <> 'window_stopped' "
+                           f"AND source_id IN ({q}) "
                            f"AND ts_utc <= ? ORDER BY id", srcs + [_iso(copy_utc)]))
     rows = [(mv(ts), sid, uid, status, dur) for ts, sid, uid, status, dur in raw]
     work, outcome, censored, assumed = {}, {}, [], []

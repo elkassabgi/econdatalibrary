@@ -774,6 +774,6 @@ def update(unit, since) -> Result:
             res = Result(status="partial", obs=res.obs, last_obs_date=res.last_obs_date,
                          new_vintage=res.new_vintage, series_cursors=res.series_cursors,
                          merged_rows=res.merged_rows, cursor_cap_hit=res.cursor_cap_hit,
-                         changed_keys=res.changed_keys,
+                         changed_keys=res.changed_keys, window_stop=res.window_stop,
                          error=note)
     return res

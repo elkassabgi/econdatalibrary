@@ -247,6 +247,22 @@ def _margin_floor_s() -> float:
     return v * 60
 
 
+# ONE DURABLE UNIT OF PROGRESS, for the start gate: one country (download, parse, merge, stamp). CHOSEN, not
+# measured: the per-country timing lines date from #205 and no wid pass has run since 2026-10-17 (review
+# AR-415 D). Replace it with 2 x the longest country seen once those lines exist.
+ADMISSION_COUNTRY_MIN = 15.0
+
+
+def window_admission_reserve_min() -> float:
+    """THE START GATE'S RESERVE for wid, in minutes (registry `window_stop: true`; read by
+    orchestrate._window_stop_reserve): margin floor + one country (ADMISSION_COUNTRY_MIN) = 20 by default.
+    The floor goes through the SAME helper the window check reads (AQUEDUCT_WID_MARGIN_MIN, default 5,
+    chosen). wid starts a country only with at least max(floor, 2 x the longest country so far) left. A
+    country is not clamped once started: a first country longer than its share can run past the ceiling,
+    up to run_local_heavy.ps1's hard stop (the same bound as any admitted unit today)."""
+    return _margin_floor_s() / 60.0 + ADMISSION_COUNTRY_MIN
+
+
 def _window_end_ts():
     """The pass's run ceiling as an epoch timestamp, or None when no ceiling is set.
 
@@ -655,4 +671,8 @@ def update(unit, since) -> Result:
         for c in settled:
             done[c] = done[c][:-len(_OWED)]
         _save_done(out_dir, done)
+    if capped_by == "window":
+        # THE WINDOW-STOP SIGNAL (Result.window_stop; registry window_stop: true): "none" only when no
+        # country was attempted this pass and nothing is handed over.
+        res.window_stop = "none" if (tally.attempted == 0 and not carried and not cursors) else "progress"
     return res
