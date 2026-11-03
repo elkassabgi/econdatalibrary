@@ -399,8 +399,23 @@ def _series_csv_bytes(series_id: str) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 
+def _catalog_path() -> str:
+    """The catalogue the id list is read from. With $ECONDL_CATALOG set it is the resolver's own answer
+    (econdl._catalog.default_db: the override before T0; after T0 the build, and an override naming any
+    other file is refused), so the ids and their resolution come from the SAME file - before this, the ids
+    came from the checkout while the resolver followed the override. Unset: the checkout's CATALOG, as before.
+    The override lets a run read a COPY of the production catalogue instead of opening it in place (R1780)."""
+    if os.environ.get("ECONDL_CATALOG"):
+        from econdl import _catalog                                  # noqa: PLC0415
+        return _catalog.default_db()
+    return CATALOG
+
+
 def _catalog_ids(limit: int | None, source: list | None):
-    conn = sqlite3.connect(f"file:{CATALOG}?mode=ro", uri=True)
+    path = _catalog_path()
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"catalogue not found: {path}")
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
         q = "SELECT series_id, source_id FROM series"
         if source:
