@@ -9,8 +9,13 @@ run_once then fixes _RUN_DEADLINE_TS = launch + budget and its start gate compar
 updater launch (so the pull moved the deadline later), hard stop = budget + 10, no pre-pull check, no skip.
 
 What is checked here:
-  - post_pull_budget (the replay's port) equals the REAL PowerShell function on a grid (where PowerShell exists;
-    CI runs on Linux and skips it, said so), and its constants equal the .ps1 parameter defaults (everywhere);
+  - post_pull_budget (the replay's port) equals the REAL PowerShell function on a grid, under the ENGINE PRODUCTION
+    RUNS: Windows PowerShell 5.1 (Desktop edition, powershell.exe). The workstation's Startup launcher EconGuard.cmd
+    starts RELAUNCH_GUARD_LOOP.ps1 with `powershell`, and RELAUNCH_GUARD.ps1 starts run_local_heavy.ps1 with
+    `Start-Process 'powershell.exe'`. Under any other engine (PowerShell 7 / pwsh on the Linux CI runner, or none)
+    the grid is SKIPPED with the reason: pwsh 7's DateTime.AddMinutes keeps sub-millisecond ticks where 5.1 rounds
+    to the millisecond, so 6 of the 132 instants differ by 1 ms there (CI run 41711323156) - a difference of an
+    engine production does not use. The constants equal the .ps1 parameter defaults (everywhere);
   - pencil cases of the formula and of replayed passes: the budget, the kill at the block-derived hard stop, the
     pre-pull refusal and the post-pull skip (nothing pushed, nothing stamped);
   - the replay's gate goes through orchestrate.start_gate_refuses (shared, not copied).
@@ -47,8 +52,26 @@ def _grid():
     return [(ub, p, _cur(ub, c)) for ub in UNTIL for p in PULL for c in CURRENT]
 
 
-@pytest.mark.skipif(POWERSHELL is None, reason="no PowerShell on this host (CI is Linux): the formula check is not run")
+def _production_engine():
+    """powershell.exe when it is Windows PowerShell 5.1 Desktop (the engine run_local_heavy.ps1 runs under in
+    production), else (None, why)."""
+    exe = shutil.which("powershell")
+    if exe is None:
+        return None, ("no powershell.exe (Windows PowerShell 5.1, the engine production runs run_local_heavy.ps1 "
+                      "under) on this host" + (f"; {POWERSHELL} is another engine" if POWERSHELL else ""))
+    r = subprocess.run([exe, "-NoProfile", "-Command",
+                        "'' + $PSVersionTable.PSEdition + ' ' + $PSVersionTable.PSVersion.ToString()"],
+                       capture_output=True, text=True, timeout=120)
+    ed = (r.stdout or "").strip()
+    if r.returncode != 0 or not ed.startswith("Desktop 5.1"):
+        return None, f"powershell on this host is {ed or 'unreadable'!r}, not Windows PowerShell 5.1 Desktop (production)"
+    return exe, ed
+
+
 def test_post_pull_budget_equals_the_powershell_function_on_a_grid(tmp_path):
+    engine, why = _production_engine()
+    if engine is None:
+        pytest.skip(why)
     cases = tmp_path / "cases.txt"
     cases.write_text("\n".join(f"{ub},{p},{c}" for ub, p, c in _grid()), encoding="ascii")
     script = tmp_path / "run.ps1"
@@ -63,7 +86,7 @@ def test_post_pull_budget_equals_the_powershell_function_on_a_grid(tmp_path):
         "  Write-Output ('' + $ln + '|' + $o.Run + '|' + $o.BudgetMin + '|' + $o.RemainingMin + '|' + "
         "$o.HardStopUtc.ToString('yyyy-MM-ddTHH:mm:ss.fff'))\n"
         "}\n", encoding="ascii")
-    r = subprocess.run([POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+    r = subprocess.run([engine, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
                        capture_output=True, text=True, timeout=300)
     assert r.returncode == 0, (r.stdout + r.stderr)[-2000:]
     got = [ln.split("|") for ln in r.stdout.splitlines() if "|" in ln]
@@ -79,6 +102,17 @@ def test_post_pull_budget_equals_the_powershell_function_on_a_grid(tmp_path):
     # the grid has both answers and both hard-stop forms, or it proves nothing
     runs = {m.post_pull_budget(READ_AT, ub, READ_AT + dt.timedelta(minutes=p), c)["run"] for ub, p, c in _grid()}
     assert runs == {True, False}
+
+
+def test_the_replays_gate_never_reaches_the_branch_where_the_engines_differ():
+    """The 1-ms engine difference is only in the `own` hard stop (now + budget + 10, `now` carrying a fractional pull).
+    The replay's gate passes CurrentBudgetMin = min(2880, untilBlock - 25), which is always above the block-derived
+    remaining floor(untilBlock - 35 - pull), so that branch never fires there: the hard stop is read_at + untilBlock
+    - 25 in whole minutes, for every untilBlock up to 2880 (more than any cron gap) and every pull of the grid."""
+    for ub in range(45, 2881):
+        for p in PULL + [0.37, 59.9]:
+            o = m.post_pull_budget(READ_AT, ub, READ_AT + dt.timedelta(minutes=p), min(m.PS1_BUDGET_CAP, ub - 25))
+            assert o["hard_stop"] == READ_AT + dt.timedelta(minutes=ub - 25), (ub, p)
 
 
 def test_the_ports_constants_are_the_ps1_parameter_defaults():
