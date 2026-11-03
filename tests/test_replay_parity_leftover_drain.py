@@ -185,16 +185,17 @@ class Harness:
                 "end_min": round(r["used_min"], 6), "queue": {s: v[0] for s, v in self.book.retry_queue.items()}}, r
 
 
-def _both(tmp_path, monkeypatch, capsys, **kw):
+def _both(tmp_path, monkeypatch, capsys, budget=100, **kw):
     h = Harness(tmp_path, monkeypatch, **kw)
-    start, p, out = h.production(100, capsys)
-    r, raw = h.replay(start, 100)
+    start, p, out = h.production(budget, capsys)
+    r, raw = h.replay(start, budget)
     return p, r, raw, out
 
 
+@pytest.mark.parametrize("budget", [100, 50])
 @pytest.mark.parametrize("rate", [None, 2.0])
-def test_the_replay_drains_what_run_once_drains(tmp_path, monkeypatch, capsys, rate):
-    p, r, _raw, out = _both(tmp_path, monkeypatch, capsys, rate=rate)
+def test_the_replay_drains_what_run_once_drains(tmp_path, monkeypatch, capsys, rate, budget):
+    p, r, _raw, out = _both(tmp_path, monkeypatch, capsys, budget=budget, rate=rate)
     for k in ("drained", "not_drained", "end_min", "queue"):
         assert p[k] == r[k], f"{k}: run_once {p[k]!r} replay {r[k]!r}\n{out[-2500:]}"
 
@@ -210,6 +211,15 @@ def test_pencil_rate(tmp_path, monkeypatch, capsys):
     p, _r, _raw, _out = _both(tmp_path, monkeypatch, capsys, rate=2.0)
     assert p["drained"] == [("c", 25.0), ("b", 20.0)] and p["not_drained"] == ["n"] and p["end_min"] == 70.0
     assert p["queue"] == {"n": 30, "b": 60, "d": 10}
+
+
+def test_pencil_the_margin_binds(tmp_path, monkeypatch, capsys):
+    # budget 50: n 0, a 0->5; b NOT DUE; d 5 + 60 > 50 and c 5 + 90 > 50 BUDGET SKIP -> both candidates. Drain
+    # min(45 - 15, 45) = 30 (the margin binds, not the cap), order d (07-01), c, b, n: d takes all 30; ends at 35
+    p, r, raw, _out = _both(tmp_path, monkeypatch, capsys, budget=50)
+    assert [x[0] for x in raw["ran"]] == ["n", "a"] and raw["budget_skipped"] == [("d", 60.0), ("c", 90.0)]
+    assert p["drained"] == r["drained"] == [("d", 30.0)] and p["not_drained"] == ["c", "b", "n"]
+    assert p["end_min"] == r["end_min"] == 35.0
 
 
 def test_a_non_turn_is_a_candidate_but_ends_at_the_deadline(tmp_path, monkeypatch, capsys):
