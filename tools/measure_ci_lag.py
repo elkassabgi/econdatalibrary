@@ -412,15 +412,18 @@ PS1_MAX_HOURS = 36           # $MaxHours
 PS1_MIN_HOURS = 20           # $MinHours
 PS1_GRACE_MIN = 10           # $graceMin (the HARD STOP fires this long after the budget)
 PS1_BUDGET_CAP = 2880        # AQUEDUCT_RUN_BUDGET_MIN default before the clamp
-# orchestrate.run_once admission (updater/orchestrate.py 2548-2566): need = min(2 x timeout, max(2 x 1.5 x est, 10))
-# with the timeout `_unit_timeout_min()` = 45 when AQUEDUCT_UNIT_TIMEOUT_MIN is unset; W never sets it (plan W rev 3).
+# orchestrate.run_once admission, through the same function (orchestrate.admission_reserve): need = min(2 x timeout,
+# max(2 x 1.5 x est, 10)), or min(90, the fetcher's declared reserve) for a window_stop unit, with the timeout
+# `_unit_timeout_min()` = 45 when AQUEDUCT_UNIT_TIMEOUT_MIN is unset; W never sets it (plan W rev 3). The replay passes
+# this constant, so its reserve does not depend on the environment it runs in.
 UNIT_TIMEOUT_MIN = 45.0
 # Plan 3.1 / 3.2: re-read wait W = 120 s; lease expiry E = 2 x 31.3 min; the holder's push refuses 2 min before.
 LEASE_W_MIN = 2.0
 LEASE_E_MIN = 63.0
 # The resumable list of plan W5 (bea, census, istat by their Deadlines; wid, ons_uk, imf_imts_direct, unctad_* once
-# their stop points land - W3b). "W on" clocks exactly these; "W off" clocks none, which is what W does in the near
-# term (W3b: CLOCKED ships with every margin None).
+# their stop points land - W3b). "W on" clocks exactly these; "W off" clocks only the units that DECLARE
+# `window_stop: true` in the registry (PR #215: census, wid, imf_imts_direct, unctad_nonplasticsubststradebypartner),
+# whose fetchers stop at the run ceiling in production today - UnitBook clocks those with W on or off.
 W_CLOCKED = ("bea", "census", "istat", "wid", "ons_uk", "imf_imts_direct")
 W_CLOCKED_PREFIX = ("unctad_",)
 # A finished turn of these sources advances nothing the progress probe reads (tools/unit_progress_probe.py diffs
@@ -864,6 +867,7 @@ class SimUnit:
     source_id: str
     cadence: str
     unit_id: str = "_all"
+    window_stop: bool = False          # registry `window_stop: true` (PR #215), as registry.to_units carries it
 
     @property
     def key(self):
@@ -872,8 +876,9 @@ class SimUnit:
     @property
     def config(self):
         # Mirrors a registry Unit: registry.to_units keeps the cadence on Unit.cadence and never puts it in config.
-        # Returning it here let the replay order by a cadence production never reads (AR-421).
-        return {}
+        # Returning it here let the replay order by a cadence production never reads (AR-421). The window_stop
+        # declaration IS in a registry Unit's config, and the production order key and start gate read it there.
+        return {"window_stop": self.window_stop is True}
 
 
 class _StoreShim:
@@ -893,16 +898,33 @@ def local_units_from_registry(path: str | None = None) -> dict:
             if e.get("run_location") == "local" and e.get("source_id") and e["source_id"] not in NOT_WORK}
 
 
+def local_window_stop_from_registry(path: str | None = None) -> frozenset:
+    """The local sources that declare `window_stop: true` (PR #215), read through production registry.to_units -
+    the function that puts the flag in a Unit's config - so the replay's declared set cannot drift from it."""
+    import yaml
+    from updater import registry
+    path = path or os.path.join(ROOT, "updater", "registry.yaml")
+    with open(path, encoding="utf-8") as f:
+        d = yaml.safe_load(f) or {}
+    return frozenset(u.source_id for e in (d.get("sources") or [])
+                     if e.get("run_location") == "local" and e.get("source_id") and e["source_id"] not in NOT_WORK
+                     for u in registry.to_units(e) if (u.config or {}).get("window_stop") is True)
+
+
 class UnitBook:
     """The owed work of the local units, advanced pass by pass with the production scheduling rules.
 
     Work per turn (minutes) = the duration of the unit's NEWEST `runs` row in the copy (the plan's q_owed rule; a
     killed or transient row is a censored LOWER bound, listed in `censored`). A finished turn's status is the newest
-    ok / no_change / partial row of that source (`outcome`; 'ok' when there is none - listed in `assumed_ok`)."""
+    ok / no_change / partial row of that source (`outcome`; 'ok' when there is none - listed in `assumed_ok`).
+
+    `window_stop`: the sources that declare `window_stop: true` (PR #215; load_unit_book reads the registry). They
+    are ordered by orchestrate.declared_last_turn_utc, reserve their fetcher's declared figure at the start gate,
+    stop at the run ceiling with or without W, and a stop that keeps no progress is not a turn (see run_pass)."""
 
     def __init__(self, cadences: dict, state: dict, runs_rows: list, work: dict, outcome: dict,
                  censored=(), assumed_ok=(), order: str = "production", clocked_extra=(), whole_flow=None,
-                 due_from_attempt: bool = False):
+                 due_from_attempt: bool = False, window_stop=()):
         from updater.strategies.base import Strategy
         from updater.strategies import base
         from updater import orchestrate as orch
@@ -919,7 +941,8 @@ class UnitBook:
         for s in self.clocked_extra & WHOLE_FLOW:
             if not self.whole_flow.get(s):
                 raise ValueError(f"{s} is clocked only in whole flows: give its per-flow bound (whole_flow)")
-        self.units = {s: SimUnit(s, c) for s, c in sorted(cadences.items())}
+        ws = frozenset(window_stop or ())
+        self.units = {s: SimUnit(s, c, window_stop=s in ws) for s, c in sorted(cadences.items())}
         self.state = {s: dict(state.get(s) or {}) for s in self.units}
         self.work = {s: float(work.get(s, 0.0)) for s in self.units}
         self.remaining = dict(self.work)
@@ -952,11 +975,18 @@ class UnitBook:
         a, s = _stamp_or_none(la), _stamp_or_none(ls)
         return a is not None and s is not None and a > s
 
+    def _declared(self, sid: str) -> bool:
+        return self.units[sid].window_stop is True
+
     def _clocked(self, sid: str, w_on: bool) -> bool:
-        return w_on and (sid in W_CLOCKED or sid.startswith(W_CLOCKED_PREFIX) or sid in self.clocked_extra)
+        # A DECLARED unit stops at the run ceiling in production today (its fetcher reads _RUN_DEADLINE_TS, PRs
+        # #205-#211, declared by #215), so it is clocked whether or not W is on. W on adds the plan's candidates.
+        return self._declared(sid) or (w_on and (sid in W_CLOCKED or sid.startswith(W_CLOCKED_PREFIX)
+                                                 or sid in self.clocked_extra))
 
     def _resumable(self, sid: str) -> bool:
-        return sid in W_CLOCKED or sid.startswith(W_CLOCKED_PREFIX) or sid in self.clocked_extra
+        return (self._declared(sid) or sid in W_CLOCKED or sid.startswith(W_CLOCKED_PREFIX)
+                or sid in self.clocked_extra)
 
     def _kept(self, sid: str, minutes: float) -> float:
         """Progress a stop keeps out of `minutes` of update window: all of it, or for a whole-flow source only the
@@ -966,16 +996,20 @@ class UnitBook:
             return minutes
         return b * math.floor(minutes / b + 1e-9)
 
-    def _last_turn(self, st: dict, kill):
-        """The stamp the order sorts on. production: orchestrate.last_turn_utc (last_success, else last_attempt,
-        or the kill if later). attempt (B2): the later of last_success and last_attempt, then the same production
-        kill rule - only the stamp handed in changes."""
-        if self.order == "production":
-            return self._orch.last_turn_utc(st, kill)
-        ls, la = st.get("last_success_utc"), st.get("last_attempt_utc")
-        s, a = _stamp_or_none(ls), _stamp_or_none(la)
-        later = la if (a is not None and (s is None or a > s)) else (ls or la)
-        return self._orch.last_turn_utc({"last_success_utc": later}, kill)
+    def _last_turn(self, st: dict, kill, unit=None, wstop=None):
+        """The stamp the order sorts on, through production orchestrate.order_last_turn: last_turn_utc
+        (last_success, else last_attempt, or the kill if later) for an undeclared unit, declared_last_turn_utc
+        (that, its last_attempt and its newest window_stopped run) for a declared one. attempt (B2): the state row
+        handed in carries the later of last_success and last_attempt - only the stamp handed in changes. `unit`
+        None: an undeclared unit (the B2 tests call it so)."""
+        row = st
+        if self.order != "production":
+            ls, la = st.get("last_success_utc"), st.get("last_attempt_utc")
+            s, a = _stamp_or_none(ls), _stamp_or_none(la)
+            row = {"last_success_utc": la if (a is not None and (s is None or a > s)) else (ls or la)}
+        if unit is None:
+            return self._orch.last_turn_utc(row, kill)
+        return self._orch.order_last_turn(unit, row, kill, wstop)
 
     def owed(self, now: dt.datetime) -> float:
         return sum(self.remaining[s] for s in self.units if self.is_due(s, now))
@@ -991,37 +1025,49 @@ class UnitBook:
                  kill_keeps_progress: bool = False, grace_min: float = PS1_GRACE_MIN) -> dict:
         """One updater run of the whole local route with budget `budget_min`, starting at `start`.
 
-        Order: production order_units (cost band, then cadence-normalised staleness of last_turn_utc). Admission:
-        orchestrate.py 2548-2566. A unit that is admitted and due runs its remaining work:
-          - W off, or a unit not on the clocked list: to completion, or to the HARD STOP at budget + grace, where it
-            is killed (a `killed_external` row, tools/record_killed_unit.py) and the pass ends; its progress is lost
-            unless `kill_keeps_progress` (a sensitivity case - plan W5 says no unit has shown a persisted bookmark);
-          - W on and clocked: to completion if it fits the time left, else stopped at the run deadline, keeping
-            (time left - tail) minutes of progress (the update window is rem - tail, plan W2), recorded as a
-            transient_fail (the UnitTimeout path)."""
+        Order: production order_units (cost band, then cadence-normalised staleness of orchestrate.order_last_turn:
+        last_turn_utc, or declared_last_turn_utc for a declared unit). Admission: orchestrate.admission_reserve (a
+        declared unit reserves its fetcher's figure, capped at 90). A unit that is admitted and due runs its
+        remaining work:
+          - not clocked (W off and not declared, or not on the clocked list): to completion, or to the HARD STOP at
+            budget + grace, where it is killed (a `killed_external` row, tools/record_killed_unit.py) and the pass
+            ends; its progress is lost unless `kill_keeps_progress` (a sensitivity case - plan W5 says no unit has
+            shown a persisted bookmark);
+          - clocked: to completion if it fits the time left, else stopped at the run deadline, keeping
+            (time left - tail) minutes of progress (the update window is rem - tail, plan W2). A DECLARED unit's
+            stop is recorded as run_once records it since PR #215: progress kept -> `partial` (last_attempt moves,
+            last_success does not); no progress -> NOT A TURN: no unit state, a `window_stopped` runs row (which
+            moves its order key back). An undeclared clocked unit (W on) is a transient_fail (the UnitTimeout
+            path).
+        The returned `budget_skipped` lists (source, reserve) in gate order; `not_due` the sources the gate let
+        through that were not due."""
         orch, store = self._orch, self._store
         shim = _StoreShim(self.db)
         costs = store.run_cost_estimate(shim)
         kills = store.last_kill_utc(shim)
+        wstops = store.last_window_stop_utc(shim)
         now_iso = _iso(start)
 
         def staleness(u):
-            last = self._last_turn(self.state[u.source_id], kills.get((u.source_id, u.unit_id)))
+            k = (u.source_id, u.unit_id)
+            last = self._last_turn(self.state[u.source_id], kills.get(k), u, wstops.get(k))
             # The cadence production's order key uses, through the same function (AR-421: passing u.cadence here
             # replayed an order run_once never ran).
             return (orch.overdue_key(last, orch.order_cadence(u), now_iso), u.key)
 
         order = orch.order_units(list(self.units.values()), costs, staleness)
         e, advanced, hard, stopped, ran = 0.0, False, None, None, []
+        budget_skipped, not_due = [], []
         for u in order:
             sid = u.source_id
-            est = costs.get(sid)
-            need = 2 * UNIT_TIMEOUT_MIN if est is None else min(2 * UNIT_TIMEOUT_MIN, max(2 * 1.5 * (est / 60.0),
-                                                                                        10.0))
+            # production's reserve, through the same function (a declared unit: its fetcher's figure)
+            need = orch.admission_reserve(u, costs.get(sid), UNIT_TIMEOUT_MIN)[0]
             if e + need > budget_min:
+                budget_skipped.append((sid, need))
                 continue                                   # BUDGET SKIP
             t_unit = start + dt.timedelta(minutes=e)
             if not self.is_due(sid, t_unit):
+                not_due.append(sid)
                 continue                                   # NOT DUE
             self.attempts[sid] += 1
             R = self.remaining[sid]
@@ -1042,11 +1088,19 @@ class UnitBook:
                 continue
             t_end = start + dt.timedelta(minutes=e + limit)
             if clocked:
-                self.remaining[sid] = R - self._kept(sid, max(0.0, limit - tail_min))
-                self.state[sid]["last_attempt_utc"], self.state[sid]["status"] = _iso(t_end), "transient_fail"
-                self._row(t_end, sid, "transient_fail", limit)
+                kept = self._kept(sid, max(0.0, limit - tail_min))
+                self.remaining[sid] = R - kept
+                if self._declared(sid) and not kept > 0:
+                    # orchestrate._window_stop_no_progress: NOT A TURN - no unit state, a window_stopped row
+                    self._row(t_end, sid, "window_stopped", limit)
+                    ran.append((sid, limit, "window_stopped"))
+                else:
+                    # a declared unit's progressing stop is its fetcher's `partial`; an undeclared one times out
+                    status = "partial" if self._declared(sid) else "transient_fail"
+                    self.state[sid]["last_attempt_utc"], self.state[sid]["status"] = _iso(t_end), status
+                    self._row(t_end, sid, status, limit)
+                    ran.append((sid, limit, "stopped"))
                 stopped = sid
-                ran.append((sid, limit, "stopped"))
                 e += limit
                 continue                                   # every later unit is budget-skipped (e == budget)
             if kill_keeps_progress and self._resumable(sid):
@@ -1056,7 +1110,8 @@ class UnitBook:
             ran.append((sid, limit, "killed"))
             e += limit
             break
-        return {"used_min": e, "advanced": advanced, "hard_stop": hard, "stopped": stopped, "ran": ran}
+        return {"used_min": e, "advanced": advanced, "hard_stop": hard, "stopped": stopped, "ran": ran,
+                "budget_skipped": budget_skipped, "not_due": not_due}
 
 
 CENSORED_BOUNDS = ("newest", "kills", "tightest")
@@ -1064,7 +1119,7 @@ CENSORED_BOUNDS = ("newest", "kills", "tightest")
 
 def load_unit_book(db_path: str, copy_utc: dt.datetime, shift: dt.timedelta, cadences: dict | None = None,
                    desktop_windows: list | None = None, censored_bound: str = "newest",
-                   censored_mult: float = 1.0, **book_kw) -> UnitBook:
+                   censored_mult: float = 1.0, window_stop=None, **book_kw) -> UnitBook:
     """The owed units from one state COPY, opened read-only (?immutable=1), every timestamp moved by `shift` so the
     copy's instant lands on the replay's first instant. Rows dated after the copy are ignored.
 
@@ -1081,6 +1136,8 @@ def load_unit_book(db_path: str, copy_utc: dt.datetime, shift: dt.timedelta, cad
         (oecd's 406.7-min partial of 2026-08-02), so this is the tightest lower bound the copy holds.
     `censored_mult` then multiplies those terms (x1, x1.5, x2 in the sweep): the real turn is longer by an unknown
     factor, and a verdict that flips inside that range is not shown by the replay.
+
+    `window_stop`: the declared sources (PR #215); None = the registry's (local_window_stop_from_registry).
 
     `book_kw` (order, clocked_extra, whole_flow, due_from_attempt) go to UnitBook unchanged; they change no work
     term, state stamp or outcome read here."""
@@ -1112,15 +1169,16 @@ def load_unit_book(db_path: str, copy_utc: dt.datetime, shift: dt.timedelta, cad
     for sid, ls, la, st in con.execute(f"SELECT source_id, last_success_utc, last_attempt_utc, status FROM "
                                        f"unit_state WHERE unit_id='_all' AND source_id IN ({q})", srcs):
         state[sid] = {"last_success_utc": mv(ls), "last_attempt_utc": mv(la), "status": st}
-    # `window_stopped` rows (orchestrate.run_once: a declared unit's window stop before any durable progress) are
-    # not turns and carry no work figure: a seconds-long row would otherwise become the unit's remaining work.
-    raw = list(con.execute(f"SELECT ts_utc, source_id, unit_id, status, dur_s FROM runs WHERE COALESCE(status, '') <> 'window_stopped' "
-                           f"AND source_id IN ({q}) "
+    raw = list(con.execute(f"SELECT ts_utc, source_id, unit_id, status, dur_s FROM runs WHERE source_id IN ({q}) "
                            f"AND ts_utc <= ? ORDER BY id", srcs + [_iso(copy_utc)]))
+    # Every row goes into the book's own runs table, `window_stopped` ones too: production orders a declared unit by
+    # its newest one (StateStore.last_window_stop_utc -> orchestrate.declared_last_turn_utc), and run_cost_estimate
+    # already excludes them. They are NOT turns and carry no work figure, so they are left out of the work term
+    # below (a seconds-long row would otherwise become the unit's remaining work) and of the outcome.
     rows = [(mv(ts), sid, uid, status, dur) for ts, sid, uid, status, dur in raw]
     work, outcome, censored, assumed = {}, {}, [], []
     for sid in srcs:
-        nr = [r for r in rows if r[1] == sid]
+        nr = [r for r in rows if r[1] == sid and r[3] != "window_stopped"]
         if nr:
             work[sid] = (nr[-1][4] or 0.0) / 60.0
             if nr[-1][3] in ("killed_external", "transient_fail"):
@@ -1136,7 +1194,8 @@ def load_unit_book(db_path: str, copy_utc: dt.datetime, shift: dt.timedelta, cad
         else:
             assumed.append(sid)
     con.close()
-    return UnitBook(cadences, state, rows, work, outcome, censored, assumed, **book_kw)
+    ws = local_window_stop_from_registry() if window_stop is None else frozenset(window_stop)
+    return UnitBook(cadences, state, rows, work, outcome, censored, assumed, window_stop=ws & set(srcs), **book_kw)
 
 
 # ------------------------------------------------------------------ the simulator
