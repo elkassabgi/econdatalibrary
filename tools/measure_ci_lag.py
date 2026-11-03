@@ -871,7 +871,9 @@ class SimUnit:
 
     @property
     def config(self):
-        return {"cadence": self.cadence}
+        # Mirrors a registry Unit: registry.to_units keeps the cadence on Unit.cadence and never puts it in config.
+        # Returning it here let the replay order by a cadence production never reads (AR-421).
+        return {}
 
 
 class _StoreShim:
@@ -1005,7 +1007,9 @@ class UnitBook:
 
         def staleness(u):
             last = self._last_turn(self.state[u.source_id], kills.get((u.source_id, u.unit_id)))
-            return (orch.overdue_key(last, u.cadence, now_iso), u.key)
+            # The cadence production's order key uses, through the same function (AR-421: passing u.cadence here
+            # replayed an order run_once never ran).
+            return (orch.overdue_key(last, orch.order_cadence(u), now_iso), u.key)
 
         order = orch.order_units(list(self.units.values()), costs, staleness)
         e, advanced, hard, stopped, ran = 0.0, False, None, None, []

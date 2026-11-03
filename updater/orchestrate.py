@@ -111,6 +111,17 @@ def overdue_key(last_utc, cadence, now_utc):
     return -(age_days / days)
 
 
+def order_cadence(unit):
+    """The cadence run_once's order key passes to overdue_key for `unit` - the ONE place that choice is made.
+
+    tools/measure_ci_lag.py replays the production order through this same function: the replay passed
+    `u.cadence` while run_once read `unit.config`, so it modelled an order production never ran (review AR-421).
+    registry.to_units puts the cadence on Unit.cadence, never in config, so today this returns None for every
+    registry unit and the order is by age alone (overdue_key's monthly default). Changing that is a policy
+    decision (draft PR #218), made here and replayed before it ships."""
+    return (unit.config or {}).get("cadence")
+
+
 def last_turn_utc(state_row, last_kill_utc):
     """When this unit last HAD A TURN, for ordering: the later of its state stamp and its last kill.
 
@@ -2955,10 +2966,9 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                                           _wstops.get((unit.source_id, unit.unit_id)))
         else:
             last = last_turn_utc(st, _kills.get((unit.source_id, unit.unit_id)))
-        cadence = (unit.config or {}).get("cadence")
         # Cadence-normalized: a 5d-stale daily (5x overdue) outranks a 10d-stale
         # annual (0.03x) — absolute age inverted exactly that on 2026-08-18.
-        return (overdue_key(last, cadence, _now), unit.key)
+        return (overdue_key(last, order_cadence(unit), _now), unit.key)
 
     _costs = store.run_cost_estimate()
     units = order_units(units, _costs, _staleness)
