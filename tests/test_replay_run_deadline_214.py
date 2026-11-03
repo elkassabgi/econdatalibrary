@@ -125,14 +125,16 @@ def _gate(monkeypatch, ub, units, pull=2.0, rows=None):
 
 
 def test_a_gate_pass_kills_at_the_block_derived_hard_stop(monkeypatch):
-    # ub 200 at 12:00, pull 2: deadline 12:00 + 165 = 14:45, updater 12:02 -> budget 163; hard stop 14:55 = 173 min
-    # after the launch. A 300-min unit (reserve min(90, 3 x 100) = 90) is admitted and killed there: 173 used.
+    # ub 200 at 12:00, pull 2.5: deadline 12:00 + 165 = 14:45, updater 12:02:30 -> budget floor(162.5) = 162; the
+    # hard stop is the block-derived 14:55 = 172.5 min after the launch, NOT budget + 10 = 172 (the floor's half
+    # minute stays with the unit). A 300-min unit (reserve min(90, 3 x 100) = 90) is admitted and killed there.
     # Before #214: budget 175, killed at 185.
     rows = [("2026-09-01T00:00:00+00:00", "g", "_all", "ok", 6000.0)]
-    t, r, verdict = _gate(monkeypatch, 200, {"g": 300.0}, rows=rows)
+    t, r, verdict = _gate(monkeypatch, 200, {"g": 300.0}, rows=rows, pull=2.5)
     p = r.passes[0]
-    assert verdict == "pass" and p["budget"] == 163.0 and p["hard_stop"] == "g" and p["used_min"] == pytest.approx(173.0)
-    assert p["end"] == t + dt.timedelta(minutes=2 + 173 + 7)
+    assert verdict == "pass" and p["budget"] == 162.0 and p["hard_stop"] == "g"
+    assert p["used_min"] == pytest.approx(172.5)
+    assert p["end"] == t + dt.timedelta(minutes=2.5 + 172.5 + 7)
 
 
 def test_a_unit_is_refused_against_the_deadline_not_the_old_budget(monkeypatch):
