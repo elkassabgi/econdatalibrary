@@ -2955,7 +2955,9 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                                           _wstops.get((unit.source_id, unit.unit_id)))
         else:
             last = last_turn_utc(st, _kills.get((unit.source_id, unit.unit_id)))
-        cadence = (unit.config or {}).get("cadence")
+        # The cadence lives on the Unit (registry.to_units); config never carries it, so reading
+        # config alone scored every unit as monthly. Config stays only as a fallback.
+        cadence = getattr(unit, "cadence", None) or (unit.config or {}).get("cadence")
         # Cadence-normalized: a 5d-stale daily (5x overdue) outranks a 10d-stale
         # annual (0.03x) — absolute age inverted exactly that on 2026-08-18.
         return (overdue_key(last, cadence, _now), unit.key)
