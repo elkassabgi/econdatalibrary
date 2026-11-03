@@ -385,9 +385,10 @@ def cmd_sweep(args):
 # job, where A puts its one lease check), when its last push ended, and whether a push succeeded (A5's `completed`).
 # What is re-simulated: the shared `aqueduct-updater` concurrency group (one run in progress, at most ONE pending,
 # a newer arrival evicts the pending one - updater-heavy.yml 51-55), the lease (A1-A3), the fairness rule (A3.2),
-# re-dispatch (A3.6), the runner's start rule (run_local_heavy.ps1), and the orchestrator's order and admission over
-# the local units (production order_units / overdue_key / last_turn_utc / is_due / run_cost_estimate are CALLED, not
-# copied; the admission reserve is a two-line formula inside run_once and is restated with its line number).
+# re-dispatch (A3.6), the runner's start rule (run_local_heavy.ps1, with PR #214's budget and hard stop from the
+# block instant: post_pull_budget, checked against the real PowerShell function), and the orchestrator's order and
+# admission over the local units (production order_units / overdue_key / order_last_turn / admission_reserve /
+# start_gate_refuses / is_due / run_cost_estimate / last_kill_utc / last_window_stop_utc are CALLED, not copied).
 # The PR 2 extensions (see WHOLE_FLOW below) are candidate RULES, not production: --order attempt hands
 # last_turn_utc a different stamp, --due-from-attempt calls production's own partial clock (base._due_after) for one
 # more class of unit, and --drop-cron edits the schedule. Each is off by default.
@@ -412,6 +413,15 @@ PS1_MAX_HOURS = 36           # $MaxHours
 PS1_MIN_HOURS = 20           # $MinHours
 PS1_GRACE_MIN = 10           # $graceMin (the HARD STOP fires this long after the budget)
 PS1_BUDGET_CAP = 2880        # AQUEDUCT_RUN_BUDGET_MIN default before the clamp
+# PR #214 (AR-405 G2): tools/cadence_decision.ps1 Get-PostPullBudget's parameter defaults, and the pull the pre-pull
+# check assumes (run_local_heavy.ps1 `-NowUtc ([DateTime]::UtcNow.AddMinutes(3))`). Pinned to the .ps1 text by
+# tests/test_replay_run_deadline_214.py, and post_pull_budget is checked against the real PowerShell function there.
+PS1_G2_GRANULARITY_MIN = 5
+PS1_G2_PUSH_ALLOWANCE_MIN = 19
+PS1_G2_KILL_LAG_MIN = 1
+PS1_G2_OVERRUN_MIN = 10
+PS1_G2_MIN_BUDGET_MIN = 20
+PS1_G2_PRE_PULL_MIN = 3
 # orchestrate.run_once admission, through the same function (orchestrate.admission_reserve): need = min(2 x timeout,
 # max(2 x 1.5 x est, 10)), or min(90, the fetcher's declared reserve) for a window_stop unit, with the timeout
 # `_unit_timeout_min()` = 45 when AQUEDUCT_UNIT_TIMEOUT_MIN is unset; W never sets it (plan W rev 3). The replay passes
@@ -447,6 +457,29 @@ NOT_WORK = frozenset({"statcan", "cbs_nl", "gus_dbw"})
 #   --due-from-attempt   a partial behind an older success is due on the 7-day partial clock from its attempt.
 WHOLE_FLOW = frozenset({"oecd"})
 ORDERS = ("production", "attempt")
+
+
+def post_pull_budget(read_at: dt.datetime, until_block_min: float, now: dt.datetime,
+                     current_budget_min: float) -> dict:
+    """tools/cadence_decision.ps1 Get-PostPullBudget (PR #214), term for term: the updater's budget and its HARD
+    STOP, both from the cloud writer's block INSTANT read at `read_at` (before pull-state), for an updater launched
+    at `now`.
+        block_at  = read_at + until_block - granularity
+        hard_stop = block_at - push allowance - kill lag
+        run_end   = hard_stop - overrun                  (the orchestrator's run deadline)
+        remaining = floor(run_end - now); budget = min(floor(current budget), remaining)
+        a budget a caller set lower keeps its own earlier hard stop (now + budget + overrun)
+    run = budget >= the minimum (20). PowerShell's [math]::Floor and [int] are matched (floor, then an exact int)."""
+    block_at = read_at + dt.timedelta(minutes=until_block_min - PS1_G2_GRANULARITY_MIN)
+    hard_stop = block_at - dt.timedelta(minutes=PS1_G2_PUSH_ALLOWANCE_MIN + PS1_G2_KILL_LAG_MIN)
+    run_end = hard_stop - dt.timedelta(minutes=PS1_G2_OVERRUN_MIN)
+    remaining = int(math.floor(_mins(now, run_end)))
+    budget = int(min(math.floor(current_budget_min), remaining))
+    own = now + dt.timedelta(minutes=budget + PS1_G2_OVERRUN_MIN)
+    if budget < remaining and own < hard_stop:
+        hard_stop = own
+    return {"run": budget >= PS1_G2_MIN_BUDGET_MIN, "budget": budget, "remaining": remaining,
+            "hard_stop": hard_stop, "block_at": block_at}
 
 
 def _ts(s):
@@ -1022,8 +1055,14 @@ class UnitBook:
                         (_iso(t), sid, "_all", status, dur_min * 60.0))
 
     def run_pass(self, start: dt.datetime, budget_min: float, w_on: bool = False, tail_min: float = 90.0,
-                 kill_keeps_progress: bool = False, grace_min: float = PS1_GRACE_MIN) -> dict:
+                 kill_keeps_progress: bool = False, grace_min: float = PS1_GRACE_MIN,
+                 hard_stop_min: float | None = None) -> dict:
         """One updater run of the whole local route with budget `budget_min`, starting at `start`.
+
+        TIMING AS PRODUCTION (PR #214): run_once fixes its run deadline at launch (start + budget) and the start gate
+        compares the CLOCK (start + minutes used) with that deadline, through orchestrate.start_gate_refuses. The ps1
+        HARD STOP is `hard_stop_min` minutes after `start` (the gate pass passes post_pull_budget's block-derived
+        instant); None = budget + grace, the -SkipCiCheck / lease form.
 
         Order: production order_units (cost band, then cadence-normalised staleness of orchestrate.order_last_turn:
         last_turn_utc, or declared_last_turn_utc for a declared unit). Admission: orchestrate.admission_reserve (a
@@ -1058,21 +1097,25 @@ class UnitBook:
         order = orch.order_units(list(self.units.values()), costs, staleness)
         e, advanced, hard, stopped, ran = 0.0, False, None, None, []
         budget_skipped, not_due = [], []
+        # run_once: _RUN_DEADLINE_TS = launch + AQUEDUCT_RUN_BUDGET_MIN; the ps1 kills at its hard stop
+        deadline_ts = (start + dt.timedelta(minutes=budget_min)).timestamp()
+        stop_min = budget_min + grace_min if hard_stop_min is None else hard_stop_min
         for u in order:
             sid = u.source_id
             # production's reserve, through the same function (a declared unit: its fetcher's figure)
             need = orch.admission_reserve(u, costs.get(sid), UNIT_TIMEOUT_MIN)[0]
-            if e + need > budget_min:
+            t_unit = start + dt.timedelta(minutes=e)
+            # production's gate: the clock now, plus the reserve, against the run deadline (same function)
+            if orch.start_gate_refuses(t_unit.timestamp(), need, deadline_ts):
                 budget_skipped.append((sid, need))
                 continue                                   # BUDGET SKIP
-            t_unit = start + dt.timedelta(minutes=e)
             if not self.is_due(sid, t_unit):
                 not_due.append(sid)
                 continue                                   # NOT DUE
             self.attempts[sid] += 1
             R = self.remaining[sid]
             clocked = self._clocked(sid, w_on)
-            limit = budget_min - e if clocked else budget_min + grace_min - e
+            limit = budget_min - e if clocked else stop_min - e
             if R <= limit:
                 e += R
                 t_end = start + dt.timedelta(minutes=e)
@@ -1364,6 +1407,7 @@ class Replay:
         self.running, self.pending = None, None
         self.lease = None                     # (taken, release) of the CURRENT lease
         self.leases, self.passes = [], []
+        self.skipped = []                     # gate passes whose updater the ps1 skipped after pull-state (#214)
         self.ref = None                       # A3.2 reference time of the last lease (None: first-lease rule holds)
         self.busy_until = start
         self.last_success, self.last_noprog = last_success, last_noprogress
@@ -1443,11 +1487,26 @@ class Replay:
         return all(self._completed_after(wf, self.ref) for wf in g.WRITERS)
 
     # -- the desktop
-    def _pass(self, t: dt.datetime, budget: float, mode: str):
+    def _pass(self, t: dt.datetime, budget: float, mode: str, until_block: float | None = None):
+        """One desktop pass from `t`. A gate pass hands `until_block` (read at `t`): the ps1 then re-derives the
+        budget and the hard stop after pull-state from the block instant (PR #214, post_pull_budget), and skips the
+        updater when under 20 min remain - nothing written, so no push and no stamp (`self.skipped`). `budget` is
+        then the clamp the ps1 set before the pull (its CurrentBudgetMin). A lease pass keeps `budget` + grace."""
         cfg = self.cfg
         pre = LEASE_W_MIN if mode == "lease" else 0.0
         upd = t + dt.timedelta(minutes=pre + cfg.pull_min)
-        res = self.book.run_pass(upd, budget, cfg.w_on, cfg.tail_min, cfg.kill_keeps_progress)
+        hard_stop_min = None
+        if until_block is not None:
+            post = post_pull_budget(t, until_block, upd, budget)
+            if not post["run"]:
+                if not hasattr(self, "skipped"):
+                    self.skipped = []
+                self.skipped.append({"start": t, "pull": t, "end": upd, "budget": post["budget"]})
+                self.busy_until = upd
+                return upd
+            budget, hard_stop_min = float(post["budget"]), _mins(upd, post["hard_stop"])
+        res = self.book.run_pass(upd, budget, cfg.w_on, cfg.tail_min, cfg.kill_keeps_progress,
+                                 hard_stop_min=hard_stop_min)
         push_end = upd + dt.timedelta(minutes=res["used_min"] + cfg.push_min)
         if res["advanced"]:
             self.last_success = push_end
@@ -1470,11 +1529,16 @@ class Replay:
         until_cron = ub - PS1_MARGIN_MIN
         if until_cron < PS1_MIN_USABLE:
             return "short"
+        # PR #214: the post-pull rule asked BEFORE the lock and the pull, with an ordinary 3-min pull and the
+        # unclamped budget (run_local_heavy.ps1 `$pre = Get-PostPullBudget ...`); a refusal pulls nothing
+        if not post_pull_budget(t, ub, t + dt.timedelta(minutes=PS1_G2_PRE_PULL_MIN), PS1_BUDGET_CAP)["run"]:
+            return "short"
         young = (cfg.backoff_h is not None and self.last_noprog is not None
                  and _mins(self.last_noprog, t) < cfg.backoff_h * 60.0)
         if until_cron < cfg.want_block and (since_h < cfg.max_hours or young):
             return "hold"
-        self._pass(t, float(min(PS1_BUDGET_CAP, until_cron)), "gate")
+        # the ps1 clamps to untilCron before the pull; _pass re-derives the budget and the stop after it (#214)
+        self._pass(t, float(min(PS1_BUDGET_CAP, until_cron)), "gate", until_block=ub)
         return "pass"
 
     def _lease_attempt(self, t: dt.datetime):
@@ -1596,7 +1660,8 @@ def replay_metrics(rp: Replay, owed_start: float, due_start: list, cfg: ReplayCo
            "push_refused": sum(1 for x in rp.leases if x.get("push_refused")),
            "hard_stops": sum(1 for p in ps if p["hard_stop"]),
            "empty_passes": sum(1 for p in ps if not p["advanced"]),
-           "desktop_pushes_day": len(ps) / days}
+           "desktop_pushes_day": len(ps) / days,
+           "post_pull_skips": sum(1 for p in getattr(rp, "skipped", []) if S <= p["start"] < E)}
     cloud_state = []
     for wf in g.WRITERS:
         comp = sorted(e for w, _s, e, d, r in rp.done if w == wf and not d and _counts(r, rp.cfg))

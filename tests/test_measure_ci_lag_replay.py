@@ -252,8 +252,10 @@ def test_negative_control_no_lease_means_no_deferral_and_a_collision():
     rp = make_replay(m.ReplayConfig(policy="today", min_hours=1.0, pull_min=2.0, push_min=7.0), lease_history(),
                      units={"u": 100.0}).run()
     assert not any(d for _w, _s, _e, d, _r in rp.done)
-    # gate pass at 19:00 (until the 03:00 cron: 480 - 25 = 455 min budget); the 19:30 dispatch overlaps it
-    assert rp.passes[0]["mode"] == "gate" and rp.passes[0]["budget"] == 455.0
+    # gate pass at 19:00, until the 03:00 cron 480 min. PR #214: run deadline = 19:00 + 480 - 5 - 19 - 1 - 10 = 02:25, the
+    # updater starts after the 2-min pull at 19:02 -> budget floor(443) = 443 (was 480 - 25 = 455 before #214); the
+    # 19:30 dispatch overlaps the pass
+    assert rp.passes[0]["mode"] == "gate" and rp.passes[0]["budget"] == 443.0
     assert m.replay_metrics(rp, 100.0, ["u"])["collisions"] == 1
 
 
@@ -740,7 +742,7 @@ def test_gate_attempt_without_init_falls_back_to_the_gates_crons():
         r._inflight = lambda: False
         r._cron_pending = lambda t: False
         got = []
-        r._pass = lambda t, budget, mode: got.append(budget)
+        r._pass = lambda t, budget, mode, **kw: got.append(budget)   # budget = the pre-pull clamp
         if writers is not None:
             r.writers = writers
         r._gate_attempt(T("2026-10-01T15:45"), 100.0)
@@ -777,15 +779,16 @@ def test_drop_cron_frees_the_window_in_the_gate_model():
 
 
 def test_drop_cron_reaches_the_replayed_gate():
-    # a today-policy pass at the 15:45 tick: until-block 135 -> budget 110 (MaxHours past, so a short window is taken);
-    # under C the next block is 03:00 -> 675 -> budget 650
+    # a today-policy pass at the 15:45 tick: until-block 135 (MaxHours past, so a short window is taken). PR #214: the
+    # updater starts after the 2-min pull at 15:47, deadline 15:45 + 135 - 35 = 17:25 -> budget 98 (was 135 - 25 = 110);
+    # under C the next block is 03:00 -> 675 -> 675 - 35 - 2 = 638 (was 650)
     def passes(cfg, runs):
         return make_replay(cfg, runs, units={"u": 10.0}, start="2026-10-01T15:45").run().passes
 
     kept, _d = m.drop_cron_runs(day_history(), DAILY, 18)
     today = passes(m.ReplayConfig(policy="today", min_hours=1.0), day_history())
     c = passes(m.ReplayConfig(policy="today", min_hours=1.0, drop_cron=((DAILY, 18),)), kept)
-    assert today[0]["budget"] == 110.0 and c[0]["budget"] == 650.0
+    assert today[0]["budget"] == 98.0 and c[0]["budget"] == 638.0
     # the 18:00 cron no longer blocks: under C the gate passes again inside 18:00-19:00 (today: the cron's run is in
     # flight 18:00-19:00, so no pass starts there)
     assert any(T("2026-10-01T18:00") <= p["start"] < T("2026-10-01T19:00") for p in c)

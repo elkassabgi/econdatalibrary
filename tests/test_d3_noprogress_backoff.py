@@ -43,10 +43,11 @@ needs_ps = pytest.mark.skipif(POWERSHELL is None, reason="no PowerShell on this 
 BACKOFF_H = 8.0
 T0 = dt.datetime(2026, 10, 28, 12, 0, tzinfo=dt.timezone.utc)
 
-# usable minutes (>= 20: below that both sides ABORT before the hold is asked), hours since the last pass that
+# usable minutes (>= 33: below that both sides ABORT before the hold is asked - since PR #214 the pre-pull check
+# refuses floor(untilBlock - 35 - 3) < 20, i.e. untilCron < 33; it was >= 20 before), hours since the last pass that
 # advanced something (>= MinHours 20: below that both sides stop earlier), age of the no-progress stamp (None = no
 # stamp; the edges 8.0 and 7.99 included because the rule is a strict <).
-UNTIL = [20, 60, 119, 149, 150, 151, 200, 275]
+UNTIL = [33, 60, 119, 149, 150, 151, 200, 275]
 SINCE = [20.5, 30, 35.99, 36, 40, 200]
 AGE = [None, 0.0, 2.0, 7.99, 8.0, 9.0, 30.0]
 GRID = list(itertools.product(UNTIL, SINCE, AGE))
@@ -61,7 +62,7 @@ def _replay_hold(until_cron, since_h, age_h, backoff_h=BACKOFF_H):
     r._inflight = lambda: False
     r._cron_pending = lambda t: False
     started = []
-    r._pass = lambda t, budget, mode: started.append(budget)
+    r._pass = lambda t, budget, mode, **kw: started.append(budget)
     orig = m.until_block_fast
     m.until_block_fast = lambda t: until_cron + m.PS1_MARGIN_MIN
     try:
