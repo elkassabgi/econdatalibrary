@@ -1826,9 +1826,32 @@ def _leftover_drain_min() -> float:
     alone gave one source's drain 2,865 minutes - a pass that sat in drains for up to ~47 h holding its locks."""
     cap = _drain_max_min()
     rem = _remaining_run_min()
-    if rem is None:
-        return cap
-    return max(0.0, min(rem - _drain_margin_min(), cap))
+    return leftover_drain_budget_min(rem, _drain_margin_min() if rem is not None else 0.0, cap)
+
+
+def leftover_drain_budget_min(rem_min, margin_min, cap_min) -> float:
+    """_leftover_drain_min's arithmetic on its three inputs (the run ceiling's remainder, None = no ceiling; the
+    margin; the cap), so tools/measure_ci_lag.py's replay sizes the drain with the same rule. Unchanged."""
+    if rem_min is None:
+        return cap_min
+    return max(0.0, min(rem_min - margin_min, cap_min))
+
+
+def drain_candidates(drain_ok: dict, drain_block) -> dict:
+    """run_once's leftover-drain candidates: {source_id: [units]} of _drain_ok, minus every source with a unit in
+    _drain_block ((source_id, key) pairs: a unit that ran its update, was locked, failed its probe or answered an
+    undeterminable one). Moved out of run_once unchanged; the replay calls it."""
+    _blocked = {s for s, _k in drain_block}
+    return {s: us_ for s, us_ in drain_ok.items() if s not in _blocked}
+
+
+def drain_order(candidates, queued: dict, lane=()) -> tuple:
+    """(have, order) of _drain_leftover_retries: `have` = the candidates with queued ids ({source_id: (n, oldest
+    enqueued)} from StateStore.csv_retry_sources), `order` = those not served by a lane, oldest-enqueued first.
+    Moved out unchanged; the replay calls it."""
+    have = {s: queued[s] for s in candidates if (queued.get(s) or (0, None))[0] > 0}
+    order = [s for _lo, s in sorted(((lo or ""), s) for s, (_n, lo) in have.items() if s not in lane)]
+    return have, order
 
 
 class _HeadOnlyS3:
@@ -1920,7 +1943,7 @@ def _drain_leftover_retries(candidates: dict, blob, store) -> list:
     if not candidates:
         return done
     queued = store.csv_retry_sources()
-    have = {s: queued[s] for s in candidates if (queued.get(s) or (0, None))[0] > 0}
+    have = drain_order(candidates, queued)[0]
     if not have:
         # SAID, not silent (review AR-413 P9): a pass with quiet sources and nothing parked is a fact a reader of
         # the log needs, or "no drain line" cannot be told from "the drain never ran".
@@ -1935,7 +1958,7 @@ def _drain_leftover_retries(candidates: dict, blob, store) -> list:
     lane = sorted(s for s in have if _served_by_lane(s))
     if lane:
         print(f"[orchestrator] csv retry drain: served_by lane, never drained here: {', '.join(lane)}", flush=True)
-    order = [s for _lo, s in sorted(((lo or ""), s) for s, (_n, lo) in have.items() if s not in lane)]
+    order = drain_order(candidates, queued, lane)[1]       # oldest-enqueued first, lanes left out
     if not order:
         return done
     budget = _leftover_drain_min()
@@ -3636,9 +3659,8 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 _drain_block.add((_u.source_id, _u.key))
                 print(f"[orchestrator] csv retry drain: {_u.key} was BUDGET SKIPPED and has no working adapter "
                       f"(PENDING or BROKEN) - {_u.source_id} is not drained this pass", flush=True)
-        _blocked = {s for s, _k in _drain_block}
         try:
-            _drain_leftover_retries({s: us_ for s, us_ in _drain_ok.items() if s not in _blocked}, blob, store)
+            _drain_leftover_retries(drain_candidates(_drain_ok, _drain_block), blob, store)
         except (KeyboardInterrupt, SystemExit):
             raise
         except BaseException as e:                       # noqa: BLE001 - the drain never ends a pass that ran
