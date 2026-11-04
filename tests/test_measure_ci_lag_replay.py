@@ -1073,33 +1073,84 @@ def test_free_windows_on_a_planted_day_of_the_new_schedule_agree_with_production
                                                                      (T("2026-11-05T04:30"), T("2026-11-05T06:00"))]
 
 
-def test_a_span_that_mixes_the_two_cron_tables_is_refused(monkeypatch):
-    """Review AR-426: for the next 60 days every replay of real history crosses 2026-11-04. The readers refuse it
-    rather than model one side with the wrong crons."""
-    before, after = T("2026-11-03T08:00"), T("2026-11-05T08:00")
-    m.check_schedule_span([before], "old table, old runs")                    # autouse: the old table
-    with pytest.raises(SystemExit, match="on or after 2026-11-04"):
-        m.check_schedule_span([before, after], "old table, mixed")
-    monkeypatch.setattr(g, "WRITERS", {DAILY: (6,), HEAVY: (3, 12)})
-    m.check_schedule_span([after], "new table, new runs")
-    with pytest.raises(SystemExit, match="--schedule until-2026-11-04"):
-        m.check_schedule_span([before, after], "new table, mixed")
-    monkeypatch.setattr(m, "ALLOW_MIXED_SCHEDULE", True)
-    m.check_schedule_span([before, after], "override")                       # --allow-mixed-schedule
+NEW_TABLE = {DAILY: (6,), HEAVY: (3, 12)}
 
 
-def test_load_cloud_history_applies_the_span_check(tmp_path, monkeypatch):
+def test_the_boundary_is_after_the_last_old_table_runs_and_before_the_first_new_only_cron():
+    """Review AR-426 r2: 2026-11-04's 18:00Z daily, at the measured 391-min lag max, is created by 00:31Z on 11-05;
+    the first new-only cron is the 11-05 12:00Z heavy. The boundary sits between them (merge before 12:00Z)."""
+    assert m.SCHEDULE_CHANGE_UTC == T("2026-11-05T06:00")
+    assert T("2026-11-04T18:00") + dt.timedelta(minutes=391) < m.SCHEDULE_CHANGE_UTC < T("2026-11-05T12:00")
+
+
+def test_a_mixed_span_is_filtered_not_refused_and_the_counts_are_printed(monkeypatch, capsys):
+    """Review AR-426 r2: the readers keep the modelled side and say how many runs they dropped from the other."""
+    rows = [{"c": T("2026-11-03T08:00"), "s": True}, {"c": T("2026-11-04T19:00"), "s": True},
+            {"c": m.SCHEDULE_CHANGE_UTC, "s": True},                                 # the boundary instant itself
+            {"c": T("2026-11-05T13:00"), "s": True},
+            {"c": T("2026-11-05T14:00"), "s": False},                                # a manual dispatch: always kept
+            {"c": None, "s": True}]                                                  # no time: kept
+    f = lambda xs: m.filter_schedule_span(xs, lambda r: r["c"], lambda r: r["s"], "W")
+    old = f(rows)                                                                    # autouse: the old table
+    assert [r["c"] for r in old] == [T("2026-11-03T08:00"), T("2026-11-04T19:00"), T("2026-11-05T14:00"), None]
+    err = capsys.readouterr().err
+    assert "W: dropped 2 scheduled run(s) created on or after 2026-11-05T06:00Z" in err and "kept 4 of 6" in err
+    monkeypatch.setattr(g, "WRITERS", dict(NEW_TABLE))
+    new = f(rows)
+    assert [r["c"] for r in new] == [m.SCHEDULE_CHANGE_UTC, T("2026-11-05T13:00"), T("2026-11-05T14:00"), None]
+    err = capsys.readouterr().err
+    assert "W: dropped 2 scheduled run(s) created before 2026-11-05T06:00Z" in err and "kept 4 of 6" in err
+    # the boundary instant is on the new side: one microsecond earlier it is old
+    edge = [{"c": m.SCHEDULE_CHANGE_UTC - dt.timedelta(microseconds=1), "s": True}]
+    assert f(edge) == []
+    capsys.readouterr()
+    monkeypatch.setattr(m, "ALLOW_MIXED_SCHEDULE", True)                            # --allow-mixed-schedule
+    assert f(rows) == rows
+    assert "W: kept 2 scheduled run(s) created before 2026-11-05T06:00Z (--allow-mixed-schedule" in \
+        capsys.readouterr().err
+
+
+def test_gh_reader_filters_the_other_table(monkeypatch, capsys):
+    import json
+    import subprocess
+    out = [{"createdAt": "2026-11-04T18:05:00Z"}, {"createdAt": "2026-11-05T12:20:00Z"}]
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, json.dumps(out), ""))
+    assert m._gh(HEAVY, "createdAt") == [out[0]]                                     # old table: the 11-04 run
+    assert "dropped 1 scheduled run(s) created on or after" in capsys.readouterr().err
+    monkeypatch.setattr(g, "WRITERS", dict(NEW_TABLE))
+    assert m._gh(HEAVY, "createdAt") == [out[1]]                                     # in force: the 11-05 run
+    assert "dropped 1 scheduled run(s) created before" in capsys.readouterr().err
+
+
+def test_every_gh_command_exits_cleanly_when_the_filter_leaves_nothing(monkeypatch, capsys):
+    """Before SCHEDULE_CHANGE_UTC has passed, the table in force keeps no run at all. Each of the six gh commands
+    then says so and prints no figure, instead of crashing on an empty list."""
+    import argparse
+    monkeypatch.setattr(m, "_gh", lambda *a, **k: [])
+    ns = argparse.Namespace(days=14, tol=10.0, show=14, window=["q=0056-0732"], want=[120], maxh=[36],
+                            min_hours=20, margin=25, min_usable=20, step=5)
+    for name in ("lag", "occupancy", "collisions", "windows", "sweep", "replay"):
+        getattr(m, f"cmd_{name}")(ns)
+        assert f"{name}: no scheduled runs on the modelled side of 2026-11-05T06:00Z" in capsys.readouterr().out
+
+
+def test_load_cloud_history_filters_a_mixed_span(tmp_path, monkeypatch, capsys):
     import json
     (tmp_path / "jobs").mkdir()
-    for wf in (DAILY, HEAVY):
+
+    def row(i, when, event="schedule"):
+        return {"databaseId": i, "createdAt": when, "startedAt": when, "updatedAt": when, "event": event,
+                "status": "completed", "conclusion": "success", "attempt": 1}
+    for wf, base in ((DAILY, 10), (HEAVY, 20)):
         (tmp_path / f"runs_{wf}.json").write_text(json.dumps([
-            {"databaseId": 1 if wf == DAILY else 2, "createdAt": "2026-11-03T08:00:00Z",
-             "startedAt": "2026-11-03T08:00:00Z", "updatedAt": "2026-11-03T09:00:00Z", "event": "schedule",
-             "status": "completed", "conclusion": "success", "attempt": 1}]), encoding="utf-8")
-    assert len(m.load_cloud_history(str(tmp_path))) == 2                    # old table, old runs: read
-    monkeypatch.setattr(g, "WRITERS", {DAILY: (6,), HEAVY: (3, 12)})
-    with pytest.raises(SystemExit):
-        m.load_cloud_history(str(tmp_path))                                 # in force, old runs: refused
+            row(base + 1, "2026-11-03T08:00:00Z"), row(base + 2, "2026-11-05T08:00:00Z"),
+            row(base + 3, "2026-11-03T09:00:00Z", "workflow_dispatch")]), encoding="utf-8")
+    ids = lambda: sorted(x.run_id for x in m.load_cloud_history(str(tmp_path)))
+    assert ids() == [11, 13, 21, 23]                                                 # old table: no exit
+    assert "dropped 2 scheduled run(s) created on or after 2026-11-05T06:00Z" in capsys.readouterr().err
+    monkeypatch.setattr(g, "WRITERS", dict(NEW_TABLE))
+    assert ids() == [12, 13, 22, 23]                                                 # in force: no exit
+    assert "dropped 2 scheduled run(s) created before 2026-11-05T06:00Z" in capsys.readouterr().err
 
 
 def test_the_default_cloud_floor_is_each_writers_cron_count(monkeypatch):

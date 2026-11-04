@@ -17,8 +17,9 @@ rather than believed.
 THE SCHEDULE CHANGED ON 2026-11-04 (updater-daily lost its 18:00Z cron; updater-heavy's 15:00Z cron moved to
 12:00Z). Every model here reads the crons from the gate's WRITERS, i.e. the schedule IN FORCE. History from before
 that day ran under the old crons: replay it with `--schedule until-2026-11-04` (before the subcommand), which sets
-the gate's table to ci_writer_gate.WRITERS_UNTIL_2026_11_04 for the run. A span that crosses 2026-11-04 is judged by
-one table throughout, so one side of it is modelled with the wrong crons - split such a span, or say so.
+the gate's table to ci_writer_gate.WRITERS_UNTIL_2026_11_04 for the run. The readers keep only the scheduled runs
+on the modelled table's side of SCHEDULE_CHANGE_UTC (2026-11-05T06:00Z, see the block at that constant) and print how
+many they dropped; --allow-mixed-schedule keeps both sides, and one side is then modelled with the wrong crons.
 
 All read-only: `gh run list` / `gh run view` only, the desktop logs read, a state COPY opened ?immutable=1. Nothing
 here writes to the repo's state, deploys or runs the updater. `replay61` is the starvation plan's section-6.1 replay
@@ -46,31 +47,55 @@ RUNNER_FREE_HISTORICAL = [(10 * 60 + 30, 14 * 60 + 40), (22 * 60 + 30, 2 * 60 + 
 MEASURED_PASS_MIN = 228          # desktop pass 10:38-14:26Z, 2026-09-15 (logs/local_heavy_*.log)
 
 
-# THE TWO CRON TABLES MUST NOT BE MIXED IN ONE SPAN (review AR-426). Scheduled runs created before SCHEDULE_CHANGE_UTC
-# ran under ci_writer_gate.WRITERS_UNTIL_2026_11_04; later ones under the table in force. Every reader of real history
-# below goes through check_schedule_span(), which refuses (exit) when the history holds scheduled runs from the other
-# side of the change than the table being modelled: in-force with older runs, or the old table with newer runs. The
-# boundary is the day of the owner's decision; runs created on the day the change MERGED can belong to either table,
-# so set SCHEDULE_CHANGE_UTC to the merge instant if it differs. --allow-mixed-schedule overrides, and the result then
-# models one side with the wrong crons - say so wherever it is quoted.
-SCHEDULE_CHANGE_UTC = dt.datetime(2026, 11, 4, tzinfo=dt.timezone.utc)
+# THE TWO CRON TABLES MUST NOT BE MIXED IN ONE SPAN (review AR-426 r1, r2). Scheduled runs created before
+# SCHEDULE_CHANGE_UTC ran under ci_writer_gate.WRITERS_UNTIL_2026_11_04; runs created at or after it ran under the table
+# in force (the boundary instant itself is on the new side). Every reader of real history below (_gh,
+# load_cloud_history) goes through filter_schedule_span(), which KEEPS only the scheduled runs on the side that the
+# modelled table covers and prints to stderr how many it dropped and from which side. Non-scheduled runs (manual
+# dispatches) are kept on both sides. --allow-mixed-schedule keeps both sides, and the result then models one side
+# with the wrong crons - say so wherever it is quoted.
+#
+# WHY 2026-11-05T06:00Z. The two tables differ only at the heavy 12:00Z/15:00Z and the daily 18:00Z crons; the 03:00Z
+# heavy and 06:00Z daily crons are in both. The last old-table runs are 2026-11-04's 15:00Z heavy and 18:00Z daily
+# (18:00Z lag max measured 391 min, so created by about 00:31Z on 11-05). The first new-only cron is the 2026-11-05
+# 12:00Z heavy. Any instant between those is exact, and the 03:00Z heavy and 06:00Z daily runs near it are the same
+# under both tables. THIS HOLDS ONLY IF THE CHANGE MERGES BEFORE 2026-11-05T12:00Z. If it merges later, the 11-05
+# 15:00Z (and 18:00Z) crons still run under the old table after this instant: move SCHEDULE_CHANGE_UTC to the merge
+# instant.
+SCHEDULE_CHANGE_UTC = dt.datetime(2026, 11, 5, 6, 0, tzinfo=dt.timezone.utc)
 ALLOW_MIXED_SCHEDULE = False
 
 
-def check_schedule_span(created, what: str) -> None:
-    """Exit unless every scheduled createdAt in `created` falls on the side of SCHEDULE_CHANGE_UTC that g.WRITERS models."""
-    created = [c for c in created if c is not None]
-    if ALLOW_MIXED_SCHEDULE or not created:
-        return
+def filter_schedule_span(items: list, created, scheduled, what: str) -> list:
+    """Keep the items whose scheduled run lies on the side of SCHEDULE_CHANGE_UTC that g.WRITERS models.
+
+    created(item) -> datetime | None, scheduled(item) -> bool. Unscheduled items and items without a creation time
+    are kept. Prints the dropped count and its side to stderr (also when it is 0, so a log shows the filter ran).
+    With ALLOW_MIXED_SCHEDULE nothing is dropped, and the count kept from the other side is printed instead."""
     old = g.WRITERS == g.WRITERS_UNTIL_2026_11_04
-    bad = [c for c in created if (c >= SCHEDULE_CHANGE_UTC) == old]
-    if bad:
-        side = "on or after" if old else "before"
-        hint = ("drop --schedule until-2026-11-04 or end the span before it" if old else
-                "pass --schedule until-2026-11-04 (before the subcommand) or start the span after it")
-        sys.exit(f"{what}: {len(bad)} scheduled run(s) created {side} {SCHEDULE_CHANGE_UTC:%Y-%m-%dT%H:%MZ}, which "
-                 f"ran under the other cron table than the one modelled ({g.WRITERS}); {hint}, or pass "
-                 f"--allow-mixed-schedule and say that one side is modelled with the wrong crons")
+    other = [x for x in items
+             if scheduled(x) and created(x) is not None and (created(x) >= SCHEDULE_CHANGE_UTC) == old]
+    side = "on or after" if old else "before"
+    when = f"{SCHEDULE_CHANGE_UTC:%Y-%m-%dT%H:%MZ}"
+    if ALLOW_MIXED_SCHEDULE:
+        print(f"{what}: kept {len(other)} scheduled run(s) created {side} {when} (--allow-mixed-schedule: they are "
+              f"modelled with the wrong crons)", file=sys.stderr)
+        return list(items)
+    drop = set(map(id, other))
+    kept = [x for x in items if id(x) not in drop]
+    print(f"{what}: dropped {len(other)} scheduled run(s) created {side} {when} (the other cron table); "
+          f"kept {len(kept)} of {len(items)}", file=sys.stderr)
+    return kept
+
+
+def _nothing_to_measure(n: int, what: str) -> bool:
+    """True (after saying so) when the span filter left no run to measure, e.g. the table in force before
+    SCHEDULE_CHANGE_UTC has passed. The command then prints no figure and exits 0: an empty span is not a result."""
+    if n:
+        return False
+    print(f"{what}: no scheduled runs on the modelled side of {SCHEDULE_CHANGE_UTC:%Y-%m-%dT%H:%MZ} for {g.WRITERS}; "
+          f"nothing to measure (no figure printed)")
+    return True
 
 
 def _gh(wf: str, fields: str, limit: int = 200) -> list:
@@ -80,8 +105,8 @@ def _gh(wf: str, fields: str, limit: int = 200) -> list:
     if out.returncode != 0:
         sys.exit(f"gh failed for {wf}: {out.stderr.strip()[:300]}")
     rows = json.loads(out.stdout)
-    check_schedule_span([_parse(r.get("createdAt")) for r in rows], f"gh run list --workflow {wf}")
-    return rows
+    return filter_schedule_span(rows, lambda r: _parse(r.get("createdAt")), lambda r: True,
+                                f"gh run list --workflow {wf}")
 
 
 def _parse(s):
@@ -139,6 +164,8 @@ def cmd_lag(_args):
         print(f"{wf}: n={len(v)}  median {_pct(v, .5):.0f}  p90 {_pct(v, .9):.0f}  p95 {_pct(v, .95):.0f}  "
               f"max {max(v):.0f} min" if v else f"{wf}: no runs")
     print()
+    if _nothing_to_measure(len(pooled), "lag"):
+        return
     by_week = defaultdict(list)
     for s, l in pooled:
         by_week[s.isocalendar()[:2]].append(l)
@@ -167,6 +194,8 @@ def cmd_occupancy(args):
                 skipped += 1
                 continue
             spans.append((st, en))
+    if _nothing_to_measure(newest is not None, "occupancy"):
+        return
     cut = newest - dt.timedelta(days=args.days)
     recent = [s for s in spans if s[0] >= cut]
     durs = [(en - st).total_seconds() / 60 for st, en in recent]
@@ -218,6 +247,8 @@ def cmd_collisions(args):
     for wf, hours in g.WRITERS.items():
         rows += [(s, wf, l) for s, l in _lags(_gh(wf, "startedAt,createdAt"), hours)]
     rows.sort()
+    if _nothing_to_measure(len(rows), "collisions"):
+        return
     newest = rows[-1][0]
     print("a 'collision' here is a cloud run STARTING inside a window the runner's static blackouts leave open,")
     print("i.e. while a desktop pass that began when the blackout lifted is still holding the state store.\n")
@@ -253,6 +284,8 @@ def cmd_replay(args):
             out[wf] = seen[:g.RUN_LIMIT]
         return out
 
+    if _nothing_to_measure(sum(map(len, raw.values())), "replay"):
+        return
     newest = max(_parse(r["createdAt"]) for rows in raw.values() for r in rows)
     end_day = newest.replace(hour=0, minute=0, second=0, microsecond=0)
     begin = end_day - dt.timedelta(days=args.days - 1)
@@ -302,6 +335,8 @@ def cmd_windows(args):
             newest = st if newest is None else max(newest, st)
             if r.get("status") == "completed" and en and en > st:
                 spans.append((st, en))
+    if _nothing_to_measure(newest is not None, "windows"):
+        return
     named = dict(w.split("=", 1) for w in args.window)
     print(f"newest run start {newest:%Y-%m-%d %H:%M}Z; {len(spans)} finished runs\n")
     print(f"{'window':<28}" + "".join(f"{str(d) + ' days':>16}" for d in args.days))
@@ -342,6 +377,8 @@ def cmd_sweep(args):
     """
     raw = {wf: _gh(wf, "createdAt,updatedAt,status") for wf in g.WRITERS}
     cloud = sorted(_parse(r["createdAt"]) for rows in raw.values() for r in rows if r.get("createdAt"))
+    if _nothing_to_measure(len(cloud), "sweep"):
+        return
     newest = max(cloud)
     start_at = (newest - dt.timedelta(days=args.days)).replace(hour=0, minute=0, second=0, microsecond=0)
     active = {wf: "active" for wf in g.WRITERS}
@@ -611,8 +648,7 @@ def load_cloud_history(hist_dir: str) -> list:
                     jobs = json.load(f).get("jobs")
             out.append(_cloud_run(wf, r, jobs))
     out.sort(key=lambda x: (x.created, x.run_id))
-    check_schedule_span([x.created for x in out if x.event == "schedule"], f"history {hist_dir}")
-    return out
+    return filter_schedule_span(out, lambda x: x.created, lambda x: x.event == "schedule", f"history {hist_dir}")
 
 
 def cron_blocks(runs: list, since: dt.datetime, until: dt.datetime, writers: dict | None = None) -> list:
@@ -2290,7 +2326,8 @@ def main():
                     help="the cron table to model: the one in force (default) or the one before 2026-11-04, for "
                          "history from before that day")
     ap.add_argument("--allow-mixed-schedule", action="store_true",
-                    help="model a span that crosses 2026-11-04 with one table anyway (one side is then wrong)")
+                    help="keep the scheduled runs from the other side of SCHEDULE_CHANGE_UTC too (one side is then "
+                         "modelled with the wrong crons); by default they are dropped and counted")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("fetch")
     p.add_argument("--out", required=True)
