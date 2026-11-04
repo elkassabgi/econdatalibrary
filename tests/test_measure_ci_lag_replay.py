@@ -1046,13 +1046,14 @@ def test_use_schedule_sets_the_table_and_in_force_leaves_it(monkeypatch):
 
 def test_free_windows_on_a_planted_day_of_the_new_schedule_agree_with_production(monkeypatch):
     """2026-11-05 on the schedule in force, every cron with its run (created, minutes):
-    the day before: daily 06:30 (60), heavy 12:30 (30); heavy 03:00 -> 03:30 (60); daily 06:00 -> 08:00 (120);
+    the day before: heavy 03:30 (30), daily 06:30 (60), heavy 12:30 (30); heavy 03:00 -> 03:30 (60); daily 06:00 -> 08:00 (120);
     heavy 12:00 -> 16:00 (60).
     busy: 03:00-04:30 (cron, then run), 06:00-10:00, 12:00-17:00 (the 12:00 cron until its run is created, then
     the run); free 00:00-03:00, 04:30-06:00, 10:00-12:00, 17:00-24:00. No 15:00Z or 18:00Z block."""
     monkeypatch.setattr(g, "WRITERS", {DAILY: (6,), HEAVY: (3, 12)})
     since, until = T("2026-11-05T00:00"), T("2026-11-06T00:00")
-    rs = sorted([run(DAILY, "2026-11-04T06:30", 60), run(HEAVY, "2026-11-04T12:30", 30),
+    rs = sorted([run(HEAVY, "2026-11-04T03:30", 30), run(DAILY, "2026-11-04T06:30", 60),
+                 run(HEAVY, "2026-11-04T12:30", 30),
                  run(HEAVY, "2026-11-05T03:30", 60),
                  run(DAILY, "2026-11-05T08:00", 120), run(HEAVY, "2026-11-05T16:00", 60)], key=lambda r: r.created)
     want = [(T("2026-11-05T00:00"), T("2026-11-05T03:00")), (T("2026-11-05T04:30"), T("2026-11-05T06:00")),
@@ -1070,3 +1071,46 @@ def test_free_windows_on_a_planted_day_of_the_new_schedule_agree_with_production
     free2 = m.free_windows(rs2, since, until)
     assert free2 == m.gate_minutes_production(rs2, since, until) == [(T("2026-11-05T00:00"), T("2026-11-05T03:00")),
                                                                      (T("2026-11-05T04:30"), T("2026-11-05T06:00"))]
+
+
+def test_a_span_that_mixes_the_two_cron_tables_is_refused(monkeypatch):
+    """Review AR-426: for the next 60 days every replay of real history crosses 2026-11-04. The readers refuse it
+    rather than model one side with the wrong crons."""
+    before, after = T("2026-11-03T08:00"), T("2026-11-05T08:00")
+    m.check_schedule_span([before], "old table, old runs")                    # autouse: the old table
+    with pytest.raises(SystemExit, match="on or after 2026-11-04"):
+        m.check_schedule_span([before, after], "old table, mixed")
+    monkeypatch.setattr(g, "WRITERS", {DAILY: (6,), HEAVY: (3, 12)})
+    m.check_schedule_span([after], "new table, new runs")
+    with pytest.raises(SystemExit, match="--schedule until-2026-11-04"):
+        m.check_schedule_span([before, after], "new table, mixed")
+    monkeypatch.setattr(m, "ALLOW_MIXED_SCHEDULE", True)
+    m.check_schedule_span([before, after], "override")                       # --allow-mixed-schedule
+
+
+def test_load_cloud_history_applies_the_span_check(tmp_path, monkeypatch):
+    import json
+    (tmp_path / "jobs").mkdir()
+    for wf in (DAILY, HEAVY):
+        (tmp_path / f"runs_{wf}.json").write_text(json.dumps([
+            {"databaseId": 1 if wf == DAILY else 2, "createdAt": "2026-11-03T08:00:00Z",
+             "startedAt": "2026-11-03T08:00:00Z", "updatedAt": "2026-11-03T09:00:00Z", "event": "schedule",
+             "status": "completed", "conclusion": "success", "attempt": 1}]), encoding="utf-8")
+    assert len(m.load_cloud_history(str(tmp_path))) == 2                    # old table, old runs: read
+    monkeypatch.setattr(g, "WRITERS", {DAILY: (6,), HEAVY: (3, 12)})
+    with pytest.raises(SystemExit):
+        m.load_cloud_history(str(tmp_path))                                 # in force, old runs: refused
+
+
+def test_the_default_cloud_floor_is_each_writers_cron_count(monkeypatch):
+    """On the table in force updater-daily has one cron, so the literal 2/day (cloud_ge2) cannot pass by construction;
+    the default verdict asks each writer for its own cron count a day instead. On the old table the two agree."""
+    rp = _floor_replay()                                                     # daily 1/day, heavy 2/day
+    old = m.replay_metrics(rp, 10.0, ["u"])
+    assert not old["cloud_ge2"] and not old["cloud_ge_crons"] and not old["A_ok"]
+    assert "cloud_floor_by_writer" not in old
+    monkeypatch.setattr(g, "WRITERS", {DAILY: (6,), HEAVY: (3, 12)})
+    new = m.replay_metrics(rp, 10.0, ["u"])
+    assert not new["cloud_ge2"] and new["cloud_ge_crons"] and new["A_ok"]
+    assert new["cloud_floor_by_writer"] == {DAILY: 1.0, HEAVY: 2.0}
+    assert "cloud>=1/2 A=YES" in m._fmt_row(new) and "cloud<2 A=NO" in m._fmt_row(old)

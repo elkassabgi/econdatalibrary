@@ -46,13 +46,42 @@ RUNNER_FREE_HISTORICAL = [(10 * 60 + 30, 14 * 60 + 40), (22 * 60 + 30, 2 * 60 + 
 MEASURED_PASS_MIN = 228          # desktop pass 10:38-14:26Z, 2026-09-15 (logs/local_heavy_*.log)
 
 
+# THE TWO CRON TABLES MUST NOT BE MIXED IN ONE SPAN (review AR-426). Scheduled runs created before SCHEDULE_CHANGE_UTC
+# ran under ci_writer_gate.WRITERS_UNTIL_2026_11_04; later ones under the table in force. Every reader of real history
+# below goes through check_schedule_span(), which refuses (exit) when the history holds scheduled runs from the other
+# side of the change than the table being modelled: in-force with older runs, or the old table with newer runs. The
+# boundary is the day of the owner's decision; runs created on the day the change MERGED can belong to either table,
+# so set SCHEDULE_CHANGE_UTC to the merge instant if it differs. --allow-mixed-schedule overrides, and the result then
+# models one side with the wrong crons - say so wherever it is quoted.
+SCHEDULE_CHANGE_UTC = dt.datetime(2026, 11, 4, tzinfo=dt.timezone.utc)
+ALLOW_MIXED_SCHEDULE = False
+
+
+def check_schedule_span(created, what: str) -> None:
+    """Exit unless every scheduled createdAt in `created` falls on the side of SCHEDULE_CHANGE_UTC that g.WRITERS models."""
+    created = [c for c in created if c is not None]
+    if ALLOW_MIXED_SCHEDULE or not created:
+        return
+    old = g.WRITERS == g.WRITERS_UNTIL_2026_11_04
+    bad = [c for c in created if (c >= SCHEDULE_CHANGE_UTC) == old]
+    if bad:
+        side = "on or after" if old else "before"
+        hint = ("drop --schedule until-2026-11-04 or end the span before it" if old else
+                "pass --schedule until-2026-11-04 (before the subcommand) or start the span after it")
+        sys.exit(f"{what}: {len(bad)} scheduled run(s) created {side} {SCHEDULE_CHANGE_UTC:%Y-%m-%dT%H:%MZ}, which "
+                 f"ran under the other cron table than the one modelled ({g.WRITERS}); {hint}, or pass "
+                 f"--allow-mixed-schedule and say that one side is modelled with the wrong crons")
+
+
 def _gh(wf: str, fields: str, limit: int = 200) -> list:
     out = subprocess.run(["gh", "run", "list", "--workflow", wf, "--event", "schedule",
                           "--json", fields, "-L", str(limit)],
                          capture_output=True, text=True, timeout=180)
     if out.returncode != 0:
         sys.exit(f"gh failed for {wf}: {out.stderr.strip()[:300]}")
-    return json.loads(out.stdout)
+    rows = json.loads(out.stdout)
+    check_schedule_span([_parse(r.get("createdAt")) for r in rows], f"gh run list --workflow {wf}")
+    return rows
 
 
 def _parse(s):
@@ -582,6 +611,7 @@ def load_cloud_history(hist_dir: str) -> list:
                     jobs = json.load(f).get("jobs")
             out.append(_cloud_run(wf, r, jobs))
     out.sort(key=lambda x: (x.created, x.run_id))
+    check_schedule_span([x.created for x in out if x.event == "schedule"], f"history {hist_dir}")
     return out
 
 
@@ -601,9 +631,8 @@ def cron_blocks(runs: list, since: dt.datetime, until: dt.datetime, writers: dic
             for h in hours:
                 cron = dt.datetime(day.year, day.month, day.day, h, tzinfo=dt.timezone.utc)
                 c = created[wf]
-                i = bisect_left(c, cron)
                 lim = windows[wf][h]
-                c1 = c[i] if i < len(c) and c[i] < cron + lim else None
+                c1 = g.credit_instant(c, cron, h, wf, windows)    # the gate's own rule, CREDIT_AMBIGUITY included
                 end = c1 if c1 is not None else cron + lim
                 if end > cron:
                     out.append((cron, end, wf))
@@ -1819,7 +1848,13 @@ def replay_metrics(rp: Replay, owed_start: float, due_start: list, cfg: ReplayCo
                 "attempts": att, "finished": fin})
     out["drains"] = owed_end < owed_start and not out["never_finished"]
     out["cloud_ge2"] = all(out[wf]["runs_day"] >= 2.0 for wf in g.WRITERS)
-    cloud_ok = out["cloud_ge2"]
+    # THE DEFAULT FLOOR IS EACH WRITER'S OWN CRON COUNT A DAY (review AR-426). It was a literal 2.0, which was every
+    # writer's cron count until 2026-11-04 and which updater-daily (one cron) can no longer meet by construction. On
+    # the old table the two rules are the same rule; cloud_ge2 keeps its literal meaning for comparison.
+    floors = {wf: float(len(cfg.writers().get(wf, ()))) for wf in g.WRITERS}
+    out["cloud_ge_crons"] = cloud_ok = all(out[wf]["runs_day"] >= floors[wf] for wf in g.WRITERS)
+    if set(floors.values()) != {2.0}:
+        out["cloud_floor_by_writer"] = floors
     if cfg.cloud_floor != 2.0:          # --cloud-floor: the strict rule's floor; cloud_ge2 keeps its literal meaning
         out["cloud_floor"] = cfg.cloud_floor
         out["cloud_ok"] = cloud_ok = all(out[wf]["runs_day"] >= cfg.cloud_floor for wf in g.WRITERS)
@@ -1871,6 +1906,13 @@ def run_scenario(cfg: ReplayConfig, inp: ReplayInputs) -> dict:
     return m
 
 
+def _floor_label(m: dict) -> str:
+    if "cloud_floor" in m:
+        return f"{m['cloud_floor']:g}"
+    by = m.get("cloud_floor_by_writer")
+    return "/".join(f"{v:g}" for v in by.values()) if by else "2"
+
+
 def _fmt_row(m: dict) -> str:
     d, h = m["updater-daily.yml"], m["updater-heavy.yml"]
     return (f"{m['label']:<66} {m['window_min_day']:6.0f} {m['used_min_day']:6.0f} {m['passes']:4d} "
@@ -1882,7 +1924,8 @@ def _fmt_row(m: dict) -> str:
             f"{d['evicted_hist'] + h['evicted_hist']:3d} {m['collisions']:3d} "
             f"{m['desktop_pushes_day']:5.2f} {d['pushes_day'] + h['pushes_day']:6.1f}  "
             f"{'drain' if m['drains'] else 'NO-drain'} "
-            f"cloud{'>=' if m.get('cloud_ok', m['cloud_ge2']) else '<'}{m.get('cloud_floor', 2.0):g} "
+            f"cloud{'>=' if m.get('cloud_ok', m.get('cloud_ge_crons', m['cloud_ge2'])) else '<'}"
+            f"{_floor_label(m)} "
             f"A={'YES' if m['A_ok'] else 'NO'}")
 
 
@@ -2085,7 +2128,11 @@ def cmd_replay61(args):
           "either writer; dfr = deferred runs; dsp = re-dispatched runs that ran; ev = evicted pending runs (evh = of them, "
           "runs GitHub created - a cron or manual run lost to the queue); col = "
           "collisions; dp/d = desktop pushes/day; cp/d = cloud pushes/day (every heavy leg push counted)")
-    floor = ("2.0" if args.cloud_floor == [2.0] else
+    _w = writers_without(tuple(dict.fromkeys(args.drop_cron or ()))) if args.drop_cron else g.WRITERS
+    _n = {wf.split(".")[0].replace("updater-", ""): len(hs) for wf, hs in _w.items()}
+    floor = (("2.0" if set(_n.values()) == {2} else
+              "its own cron count (" + ", ".join(f"{k} {v}" for k, v in _n.items()) + ")")
+             if args.cloud_floor == [2.0] else
              "the row's floor (" + " / ".join(f"{x:g}" for x in args.cloud_floor) + ", --cloud-floor)")
     print("verdict: A=YES only if the owed set drains (owed at the end below the start AND every unit due at the start "
           f"finished a turn) AND each writer keeps >= {floor} completed non-deferred runs/day (plan 6.1).")
@@ -2242,6 +2289,8 @@ def main():
     ap.add_argument("--schedule", choices=sorted(SCHEDULES), default="in-force",
                     help="the cron table to model: the one in force (default) or the one before 2026-11-04, for "
                          "history from before that day")
+    ap.add_argument("--allow-mixed-schedule", action="store_true",
+                    help="model a span that crosses 2026-11-04 with one table anyway (one side is then wrong)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("fetch")
     p.add_argument("--out", required=True)
@@ -2326,7 +2375,11 @@ def main():
     p.add_argument("--step", type=int, default=5)
     p.set_defaults(fn=cmd_replay)
     args = ap.parse_args()
-    print(f"schedule modelled: {args.schedule} {use_schedule(args.schedule)}", file=sys.stderr)
+    global ALLOW_MIXED_SCHEDULE
+    ALLOW_MIXED_SCHEDULE = args.allow_mixed_schedule
+    print(f"schedule modelled: {args.schedule} {use_schedule(args.schedule)}"
+          + (" - MIXED SPANS ALLOWED, one side is modelled with the wrong crons" if ALLOW_MIXED_SCHEDULE else ""),
+          file=sys.stderr)
     args.fn(args)
 
 

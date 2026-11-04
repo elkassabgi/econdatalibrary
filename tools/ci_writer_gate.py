@@ -71,6 +71,40 @@ def pending_limit(wf: str, hour: int, writers: dict | None = None) -> dt.timedel
     return cron_windows(writers)[wf][hour]
 
 
+# A RUN THAT MAY BELONG TO THE PREVIOUS CRON IS NOT CREDITED TO THIS ONE (review AR-426, coordinator's decision of
+# 2026-11-04). Heavy's 03:00Z window is 9 h, shorter than that cron's measured lag tail: the scheduled heavy run of
+# 2026-08-27 was created 14:02Z, a 03:00Z run 662 min late. Credited to the 12:00Z cron by window alone, it would make
+# the gate read CLEAR once it finished, while the real 12:00Z run had not been created - the collision this gate exists
+# to prevent. So when the previous cron of the same workflow has NO run in its own window, a run created before that
+# previous cron + CREDIT_AMBIGUITY may be its late run, and does not start this cron. This cron then needs a run created
+# after that instant, or a SECOND run in its window. CREDIT_AMBIGUITY is the measured lag ceiling (60-day maximum 710
+# min, rounded up). Where every window is at least that long - the table before 2026-11-04 (all 12 h), and daily's one
+# cron (24 h) - the ambiguous span is empty and the rule is the plain window rule. What it gives up: after a 03:00Z cron
+# GitHub really skipped, a 12:00Z run created before 15:00Z is not believed, so the gate blocks until the next heavy run
+# or until the 12:00Z window ends at 03:00Z - about one night of desktop time (3 skips of any cron in 60 days).
+CREDIT_AMBIGUITY = dt.timedelta(hours=12)
+
+
+def credit_instant(created: list, cron: dt.datetime, hour: int, wf: str, windows: dict | None = None):
+    """When the `hour`:00Z cron at `cron` counts as started: the createdAt of the scheduled run that starts it, or None.
+
+    `created`: the createdAt of the writer's SCHEDULED runs, sorted. `windows`: cron_windows() (default: of WRITERS).
+    One rule for the gate (assess) and for tools/measure_ci_lag.py (cron_blocks), so the two cannot drift apart."""
+    windows = cron_windows() if windows is None else windows
+    ws = windows[wf]
+    own = [c for c in created if cron <= c < cron + ws[hour]]
+    if not own:
+        return None
+    hs = sorted(ws)
+    prev_h = hs[hs.index(hour) - 1]
+    prev_cron = cron - ws[prev_h]                       # the previous cron's window ends exactly at this cron
+    ambiguous_until = prev_cron + CREDIT_AMBIGUITY
+    if ambiguous_until <= cron or any(prev_cron <= c < cron for c in created):
+        return own[0]
+    later = [c for c in own if c >= ambiguous_until]
+    return min(own[1:2] + later[:1]) if (len(own) > 1 or later) else None
+
+
 # How long a cron that has not started still blocks a desktop pass: until its run is created, at most this.
 #
 # WHY THERE IS NO SHORTER CEILING (2026-10-20). Until then the window was the p90 of the workflow's own recent
@@ -129,10 +163,11 @@ def pending_limit(wf: str, hour: int, writers: dict | None = None) -> dt.timedel
 #   - The heavy 03:00Z window shrank from 12 h to 9 h, and that is below the measured lag tail (60-day maximum
 #     of the 03:00Z cron 663 min, and 4 of the 237 runs of both writers later than 540; over the 30 days to
 #     2026-11-04 the 03:00Z maximum was 448, measured from the gh run history on that day). The
-#     block stays continuous - at 12:00Z the 12:00Z cron blocks in its own right - but a 03:00Z run created
-#     more than 9 h late is credited to the 12:00Z cron: the KNOWN RESIDUAL above, now at 9 h instead of 12 h.
-#     Crons 9 h apart cannot tell those two runs apart, whatever the window; the in-flight check still blocks
-#     each run the moment it is created.
+#     block stays continuous - at 12:00Z the 12:00Z cron blocks in its own right. Crons 9 h apart cannot tell a
+#     03:00Z run created more than 9 h late from the 12:00Z run by window alone, so a run that may be the 03:00Z
+#     cron's late run does not start the 12:00Z cron (CREDIT_AMBIGUITY, review AR-426): the gate keeps blocking
+#     until a second heavy run or the end of the 12:00Z window, giving up about one night after a 03:00Z
+#     cron GitHub really skipped. (The real case: the heavy run of 2026-08-27, created 14:02Z, 662 min late.)
 #
 # Cost and benefit, measured on one frozen snapshot of that history with this repo's own instrument
 # (tools/measure_ci_lag.py, 60 days to 2026-10-20, old rule vs this one):
@@ -204,6 +239,7 @@ def assess(runs: dict, now: dt.datetime, states: dict | None = None,
         elif state is not None and state != "active":
             notes.append(f"NOTE: {wf} is {state}; its crons are not waited for")
             continue
+        created = sorted(_parse(r["createdAt"]) for r in sched.get(wf, []) if r["event"] == "schedule")
         for back in (1, 0):
             day = (now - dt.timedelta(days=back)).date()
             for h in hours:
@@ -212,11 +248,15 @@ def assess(runs: dict, now: dt.datetime, states: dict | None = None,
                 if not cron <= now < cron + horizon:
                     continue
                 # The same window as pending_limit(): a run is credited to this cron only if it was created
-                # within it, and the cron blocks for exactly as long as it can still be credited one.
-                started = any(r["event"] == "schedule" and cron <= _parse(r["createdAt"]) < cron + horizon
-                              for r in sched.get(wf, []))
+                # within it, and the cron blocks for exactly as long as it can still be credited one. A run that
+                # may be the previous cron's late run does not count (CREDIT_AMBIGUITY).
+                started = credit_instant(created, cron, h, wf, windows) is not None
                 if not started:
                     late = int((now - cron).total_seconds() // 60)
+                    if any(cron <= c < cron + horizon for c in created):
+                        notes.append(f"NOTE: {wf} {cron:%H:%M}Z: the run in its window was created before "
+                                     f"{CREDIT_AMBIGUITY.total_seconds() / 3600:.0f} h after the previous cron, which "
+                                     f"has no run of its own, so it may be that cron's late run; waiting for another")
                     if now - cron >= min(WARN_PENDING_AFTER, horizon * 0.75):
                         notes.append(f"WARNING: {wf} {cron:%H:%M}Z cron has had no run for {late} min; "
                                      f"GitHub may have skipped it")

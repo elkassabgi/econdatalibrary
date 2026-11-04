@@ -1071,3 +1071,116 @@ def test_no_18Z_or_15Z_cron_blocks_any_more():
         assert not blocked, (t, reason)
     now = at("2026-11-05T22:00:00")
     assert g.minutes_until_block(_all_started_but(now, set()), now, ACTIVE) == 300   # to the 03:00Z heavy cron
+
+
+# ------------------------------------------------------------------ the CREDIT half of the window (review AR-426)
+# The window does two jobs: it caps how long a cron with no run blocks, AND it decides which cron a run is credited to.
+# The tests above pin the first job at the new lengths; these pin the second. A credit window left at 12 h (AR-426's
+# mutant m5) reads the late run below as "no run" and blocks; a gate whose two jobs drifted the other way could
+# fail open.
+
+def _rows(*created):
+    return [{"createdAt": c, "event": "schedule", "status": "completed"} for c in sorted(created, reverse=True)]
+
+
+@pytest.mark.parametrize("created", ["2026-11-05T19:00:00Z", "2026-11-06T05:30:00Z"])   # 13 h and 23.5 h late
+def test_a_daily_run_created_12_to_24_h_after_its_cron_is_credited_and_clears_once_done(created):
+    runs = {"updater-daily.yml": _rows("2026-11-04T09:00:00Z", created),
+            "updater-heavy.yml": _rows("2026-11-04T16:00:00Z", "2026-11-05T08:00:00Z", "2026-11-05T16:00:00Z",
+                                       "2026-11-06T05:00:00Z")}
+    now = g._parse(created) + dt.timedelta(minutes=10)
+    blocked, reason = g.decide(runs, now, ACTIVE)
+    assert not blocked, reason
+    # control: without that run the same instant blocks on the 06:00Z cron
+    runs["updater-daily.yml"] = _rows("2026-11-04T09:00:00Z")
+    blocked, reason = g.decide(runs, now, ACTIVE)
+    assert blocked and "updater-daily.yml 06:00Z cron has not started yet" in reason, reason
+
+
+def test_a_heavy_12Z_run_created_after_midnight_is_credited_and_clears_once_done():
+    runs = {"updater-daily.yml": _rows("2026-11-05T12:00:00Z"),
+            "updater-heavy.yml": _rows("2026-11-04T16:00:00Z", "2026-11-05T08:00:00Z", "2026-11-06T01:00:00Z")}
+    now = at("2026-11-06T02:00:00")               # the 12:00Z run came 13 h late; the 03:00Z cron had its run
+    blocked, reason = g.decide(runs, now, ACTIVE)
+    assert not blocked, reason
+    assert g.credit_instant([g._parse(r["createdAt"]) for r in reversed(runs["updater-heavy.yml"])],
+                            at("2026-11-05T12:00:00"), 12, "updater-heavy.yml") == at("2026-11-06T01:00:00")
+    runs["updater-heavy.yml"] = _rows("2026-11-04T16:00:00Z", "2026-11-05T08:00:00Z")      # control
+    blocked, reason = g.decide(runs, now, ACTIVE)
+    assert blocked and "updater-heavy.yml 12:00Z cron has not started yet" in reason, reason
+
+
+# ------------------------------------------------------------------ a run that may be the 03:00Z cron's late run
+# Coordinator's decision of 2026-11-04 on review AR-426 (c): the SAFER rule. See CREDIT_AMBIGUITY in the gate.
+
+def _heavy_only(now):
+    """The real heavy history at `now`; the daily writer's 06:00Z runs planted on time and done, so that only the heavy
+    writer is judged (on 08-27 the real daily run came at 17:00Z and would block first)."""
+    h = history_as_of(now)
+    h["updater-daily.yml"] = _rows(*[f"2026-08-{d:02d}T06:30:00Z" for d in (25, 26, 27, 28)
+                                     if at(f"2026-08-{d:02d}T07:30:00") <= now])
+    return h
+
+
+@pytest.mark.parametrize("instant,blocked_by", [
+    ("2026-08-27T11:00:00", "03:00Z"),          # the 03:00Z cron has no run yet, inside its 9 h window
+    ("2026-08-27T13:00:00", "12:00Z"),          # its window has ended; the 12:00Z cron has no run either
+    ("2026-08-27T16:00:00", "12:00Z"),          # 14:02Z run done: it may be 03:00Z's, so 12:00Z is still unstarted
+    ("2026-08-27T20:00:00", "12:00Z"),
+    ("2026-08-27T23:59:00", "12:00Z"),
+])
+def test_the_real_2026_08_27_late_03Z_run_does_not_start_the_12Z_cron(instant, blocked_by):
+    """REAL HISTORY, judged by the schedule in force (a what-if: on 08-27 the crons were 03:00Z and 15:00Z). The 03:00Z
+    heavy run of 2026-08-27 was created 14:02Z, 662 min late; the next heavy run was created 2026-08-28T00:09Z. On the
+    9 h + 15 h windows alone, 14:02Z would start the 12:00Z cron and the gate would read CLEAR from its end until
+    00:09Z. It must keep blocking until the second run arrives."""
+    now = at(instant)
+    blocked, reason, notes = g.assess(_heavy_only(now), now, ACTIVE)
+    assert blocked and f"updater-heavy.yml {blocked_by} cron has not started yet" in reason, reason
+    if now >= at("2026-08-27T14:02:00"):
+        assert any("may be that cron's late run" in n for n in notes), notes
+
+
+def test_the_real_2026_08_27_case_clears_once_the_second_run_has_come(monkeypatch):
+    now = at("2026-08-28T00:30:00")               # the 00:09Z run (completed in this fixture) starts the 12:00Z cron
+    blocked, reason = g.decide(_heavy_only(now), now, ACTIVE)
+    assert not blocked, reason
+    # NEGATIVE CONTROL: without the ambiguity rule the 14:02Z run alone would have read CLEAR at 16:00Z
+    now = at("2026-08-27T16:00:00")
+    monkeypatch.setattr(g, "CREDIT_AMBIGUITY", dt.timedelta(0))
+    blocked, reason = g.decide(_heavy_only(now), now, ACTIVE)
+    assert not blocked, reason
+
+
+def test_after_a_skipped_03Z_cron_an_early_12Z_run_is_not_believed_and_a_later_one_is():
+    """WHAT IT GIVES UP, pinned: after a 03:00Z cron GitHub really skipped, a 12:00Z run created before 15:00Z (03:00Z +
+    CREDIT_AMBIGUITY) cannot be told from the 03:00Z run, so the gate blocks until another heavy run or until the
+    12:00Z window ends at 03:00Z - about one night. A 12:00Z run created at or after 15:00Z is believed at once."""
+    daily = _rows("2026-11-05T12:00:00Z", "2026-11-06T09:00:00Z")
+    heavy_before = ["2026-11-04T16:00:00Z"]                           # 11-04's 12:00Z; 11-05's 03:00Z is skipped
+    runs = {"updater-daily.yml": daily, "updater-heavy.yml": _rows(*heavy_before, "2026-11-05T12:30:00Z")}
+    for t in ("2026-11-05T14:00:00", "2026-11-05T22:00:00", "2026-11-06T02:59:00"):
+        blocked, reason = g.decide(runs, at(t), ACTIVE)
+        assert blocked and "updater-heavy.yml 12:00Z cron has not started yet" in reason, (t, reason)
+    blocked, reason = g.decide(runs, at("2026-11-06T03:00:00"), ACTIVE)     # the next 03:00Z cron takes over
+    assert blocked and "updater-heavy.yml 03:00Z cron has not started yet" in reason, reason
+    late = {"updater-daily.yml": daily, "updater-heavy.yml": _rows(*heavy_before, "2026-11-05T15:30:00Z")}
+    assert not g.decide(late, at("2026-11-05T16:00:00"), ACTIVE)[0]
+    two = {"updater-daily.yml": daily,
+           "updater-heavy.yml": _rows(*heavy_before, "2026-11-05T12:30:00Z", "2026-11-05T14:00:00Z")}
+    assert not g.decide(two, at("2026-11-05T14:30:00"), ACTIVE)[0]          # a second run in the window is believed
+
+
+def test_the_ambiguous_span_is_empty_on_the_old_table_and_for_the_daily_cron():
+    """Where every window is at least CREDIT_AMBIGUITY long the rule is the plain window rule, so the old table's
+    history tests above judge exactly as the gate did before 2026-11-04."""
+    for writers in (SCHEDULE_UNTIL_2026_11_04, SCHEDULE_FROM_2026_11_04):
+        for wf, ws in g.cron_windows(writers).items():
+            hs = sorted(ws)
+            for h in hs:
+                prev = hs[hs.index(h) - 1]
+                empty = ws[prev] >= g.CREDIT_AMBIGUITY
+                assert empty == (writers is SCHEDULE_UNTIL_2026_11_04 or wf == "updater-daily.yml" or h == 3), \
+                    (wf, h, ws)
+    assert g.CREDIT_AMBIGUITY >= dt.timedelta(minutes=710)
+    assert g.WRITERS_UNTIL_2026_11_04 == SCHEDULE_UNTIL_2026_11_04
