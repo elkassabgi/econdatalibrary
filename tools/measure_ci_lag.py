@@ -941,6 +941,7 @@ class UnitBook:
         for s in self.clocked_extra & WHOLE_FLOW:
             if not self.whole_flow.get(s):
                 raise ValueError(f"{s} is clocked only in whole flows: give its per-flow bound (whole_flow)")
+        self._stop_cache, self.stop_fallback, self._tail_default = {}, set(), 90.0
         ws = frozenset(window_stop or ())
         self.units = {s: SimUnit(s, c, window_stop=s in ws) for s, c in sorted(cadences.items())}
         self.state = {s: dict(state.get(s) or {}) for s in self.units}
@@ -977,6 +978,47 @@ class UnitBook:
 
     def _declared(self, sid: str) -> bool:
         return self.units[sid].window_stop is True
+
+    def stop_figures(self, sid: str) -> tuple:
+        """(tail_min, piece_min, source) for a declared unit, from ITS FETCHER: window_stop_tail_min() (where it
+        stops, before the run ceiling) and window_stop_piece_min() (the window a stop needs to count as progress),
+        read through the same fetchers.get the start gate's window_admission_reserve_min goes through. Each is
+        built on the env helpers the fetcher's own stop check reads, so the replay holds no copied table. When
+        they cannot be read (missing, raising, not a finite number >= 0) the replay falls back to tail_min and
+        piece 0, says so in `stop_fallback`, and does not hide it."""
+        if sid in self._stop_cache:
+            return self._stop_cache[sid]
+        out = None
+        try:
+            from updater.strategies import fetchers as _f
+            mod = _f.get(sid)
+            t, p = mod.window_stop_tail_min(), mod.window_stop_piece_min()
+            if all(not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v) and v >= 0
+                   for v in (t, p)):
+                out = (float(t), float(p), "fetcher")
+        except Exception:                                  # noqa: BLE001 - fall back, recorded
+            out = None
+        if out is None:
+            self.stop_fallback.add(sid)
+            out = (None, 0.0, "tail_min")
+        self._stop_cache[sid] = out
+        return out
+
+    def _declared_stop(self, sid: str, limit: float) -> tuple:
+        """(minutes used, minutes of work kept) when a declared unit does not finish in the `limit` minutes left
+        to the run ceiling. It works until its stop point, ceiling - tail, and returns there - a stop merges
+        nothing and returns at once (unctad's WindowStop, imts's _Stop), so the minutes between its stop point
+        and the ceiling stay with the pass. It keeps the work done in that window, in whole pieces when its
+        progress unit is a piece (imts: a slice); kept 0 is its window_stop "none". A piece unit returns as soon
+        as the next piece cannot finish before its stop point (imts: the next-slice check fails at once), so it
+        uses the pieces it did; one that did none ran a piece into its stop point and used the whole window."""
+        tail, piece, _src = self.stop_figures(sid)
+        tail = self._tail_default if tail is None else tail
+        window = max(0.0, limit - tail)
+        if not piece > 0:
+            return window, window
+        kept = piece * math.floor(window / piece + 1e-9)
+        return (kept if kept > 0 else window), kept
 
     def _clocked(self, sid: str, w_on: bool) -> bool:
         # A DECLARED unit stops at the run ceiling in production today (its fetcher reads _RUN_DEADLINE_TS, PRs
@@ -1033,14 +1075,17 @@ class UnitBook:
             budget + grace, where it is killed (a `killed_external` row, tools/record_killed_unit.py) and the pass
             ends; its progress is lost unless `kill_keeps_progress` (a sensitivity case - plan W5 says no unit has
             shown a persisted bookmark);
-          - clocked: to completion if it fits the time left, else stopped at the run deadline, keeping
-            (time left - tail) minutes of progress (the update window is rem - tail, plan W2). A DECLARED unit's
-            stop is recorded as run_once records it since PR #215: progress kept -> `partial` (last_attempt moves,
-            last_success does not); no progress -> NOT A TURN: no unit state, a `window_stopped` runs row (which
-            moves its order key back). An undeclared clocked unit (W on) is a transient_fail (the UnitTimeout
-            path).
+          - clocked: to completion if it fits the time left, else stopped. A DECLARED unit stops by ITS FETCHER's
+            rule (_declared_stop, stop_figures): at ceiling - its tail (census and wid 5, imts 25, unctad 65 by
+            default), keeping the work done before that (in whole slices for imts), and it returns there - the pass
+            goes on and the gate may still admit a unit in the minutes left. Its stop is recorded as run_once
+            records it since PR #215: progress kept -> `partial` (last_attempt moves, last_success does not); no
+            progress -> NOT A TURN: no unit state, a `window_stopped` runs row (which moves its order key back).
+            An undeclared clocked unit (W on) is stopped at the run deadline keeping (time left - tail_min)
+            minutes (plan W2) and is a transient_fail (the UnitTimeout path).
         The returned `budget_skipped` lists (source, reserve) in gate order; `not_due` the sources the gate let
         through that were not due."""
+        self._tail_default = tail_min                      # a declared unit whose fetcher figures cannot be read
         orch, store = self._orch, self._store
         shim = _StoreShim(self.db)
         costs = store.run_cost_estimate(shim)
@@ -1088,21 +1133,27 @@ class UnitBook:
                 continue
             t_end = start + dt.timedelta(minutes=e + limit)
             if clocked:
-                kept = self._kept(sid, max(0.0, limit - tail_min))
+                if self._declared(sid):
+                    # the FETCHER's own stop rule (_declared_stop): it returns at its stop point, before the
+                    # ceiling, and the pass goes on with the next unit
+                    used, kept = self._declared_stop(sid, limit)
+                else:
+                    used, kept = limit, self._kept(sid, max(0.0, limit - tail_min))   # plan W2's model (W on)
+                t_end = start + dt.timedelta(minutes=e + used)
                 self.remaining[sid] = R - kept
                 if self._declared(sid) and not kept > 0:
                     # orchestrate._window_stop_no_progress: NOT A TURN - no unit state, a window_stopped row
-                    self._row(t_end, sid, "window_stopped", limit)
-                    ran.append((sid, limit, "window_stopped"))
+                    self._row(t_end, sid, "window_stopped", used)
+                    ran.append((sid, used, "window_stopped"))
                 else:
                     # a declared unit's progressing stop is its fetcher's `partial`; an undeclared one times out
                     status = "partial" if self._declared(sid) else "transient_fail"
                     self.state[sid]["last_attempt_utc"], self.state[sid]["status"] = _iso(t_end), status
-                    self._row(t_end, sid, status, limit)
-                    ran.append((sid, limit, "stopped"))
+                    self._row(t_end, sid, status, used)
+                    ran.append((sid, used, "stopped"))
                 stopped = sid
-                e += limit
-                continue                                   # every later unit is budget-skipped (e == budget)
+                e += used
+                continue                                   # the gate decides what the time left still admits
             if kill_keeps_progress and self._resumable(sid):
                 self.remaining[sid] = R - self._kept(sid, limit)
             self._row(t_end, sid, "killed_external", limit)

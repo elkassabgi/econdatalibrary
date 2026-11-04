@@ -218,6 +218,22 @@ def window_admission_reserve_min() -> float:
             + _env_num("AQUEDUCT_IMTS_MERGE_RESERVE_MIN", MERGE_RESERVE_MIN_DEFAULT))
 
 
+def window_stop_tail_min() -> float:
+    """WHERE imf_imts_direct STOPS, in minutes before the run ceiling (for tools/measure_ci_lag.py's replay;
+    nothing in the updater calls it): margin floor + merge reserve, through the SAME env reads as run_sliced. The
+    newest slice is started only with the floor (or 2 x the longest slice) PLUS the merge reserve left, and the
+    merge needs the reserve; a stop merges nothing and returns at once. The 2 x longest term is NOT in this."""
+    return (_env_num("AQUEDUCT_IMTS_MARGIN_MIN", MARGIN_FLOOR_MIN_DEFAULT)
+            + _env_num("AQUEDUCT_IMTS_MERGE_RESERVE_MIN", MERGE_RESERVE_MIN_DEFAULT))
+
+
+def window_stop_piece_min() -> float:
+    """The window an imts stop needs to count as PROGRESS, in minutes: one slice (ADMISSION_SLICE_MIN, the
+    module's own ESTIMATE for its largest slice). window_stop is "progress" only when a slice was pulled; a slice
+    cut by the window end keeps nothing."""
+    return ADMISSION_SLICE_MIN
+
+
 def _window_end_ts():
     """The pass's run ceiling as an epoch timestamp, or None. Read through sys.modules (as wid and
     census do), so this module never imports the orchestrator."""

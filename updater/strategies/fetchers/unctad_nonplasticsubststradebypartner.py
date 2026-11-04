@@ -15,7 +15,7 @@ WINDOWED UPDATE".
 """
 from __future__ import annotations
 
-from ._unctad import make, windowed_admission_reserve_min
+from ._unctad import make, windowed_admission_reserve_min, windowed_stop_tail_min
 
 current_vintage, update = make("US.NonPlasticSubstsTradeByPartner",
                                "unctad_nonplasticsubststradebypartner", window=True)
@@ -25,3 +25,15 @@ def window_admission_reserve_min() -> float:
     """The start gate's reserve (registry `window_stop: true`): margin floor 5 + minimum network time 10 +
     assembly reserve 60 = 75 min by default. See _unctad.windowed_admission_reserve_min."""
     return windowed_admission_reserve_min("unctad_nonplasticsubststradebypartner")
+
+
+def window_stop_tail_min() -> float:
+    """Where the windowed update stops, before the run ceiling: margin floor 5 + assembly reserve 60 = 65 min by
+    default (for tools/measure_ci_lag.py's replay). See _unctad.windowed_stop_tail_min."""
+    return windowed_stop_tail_min("unctad_nonplasticsubststradebypartner")
+
+
+def window_stop_piece_min() -> float:
+    """The window a stop needs to count as progress: 0 - window_stop is "progress" once one Facts POST has
+    returned (win.posts), and the first one is made whenever the first network check passes."""
+    return 0.0
