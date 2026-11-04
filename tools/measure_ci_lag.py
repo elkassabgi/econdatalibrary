@@ -957,7 +957,7 @@ class UnitBook:
 
     def __init__(self, cadences: dict, state: dict, runs_rows: list, work: dict, outcome: dict,
                  censored=(), assumed_ok=(), order: str = "production", clocked_extra=(), whole_flow=None,
-                 due_from_attempt: bool = False, window_stop=()):
+                 due_from_attempt: bool = False, window_stop=(), retry_queue=None):
         from updater.strategies.base import Strategy
         from updater.strategies import base
         from updater import orchestrate as orch
@@ -987,6 +987,8 @@ class UnitBook:
                         "unit_id TEXT, status TEXT, obs INTEGER, dur_s REAL, note TEXT)")
         self.db.executemany("INSERT INTO runs(ts_utc, source_id, unit_id, status, dur_s) VALUES (?,?,?,?,?)",
                             [r for r in runs_rows if r[1] in self.units])
+        # csv_retry_queue per source: {source: [queued ids, oldest enqueued_utc]} (load_unit_book reads the copy's)
+        self.retry_queue = {s: [int(n), lo] for s, (n, lo) in (retry_queue or {}).items() if s in self.units and n}
         self.attempts = Counter()
         self.finished = Counter()
 
@@ -1098,7 +1100,7 @@ class UnitBook:
 
     def run_pass(self, start: dt.datetime, budget_min: float, w_on: bool = False, tail_min: float = 90.0,
                  kill_keeps_progress: bool = False, grace_min: float = PS1_GRACE_MIN,
-                 hard_stop_min: float | None = None) -> dict:
+                 hard_stop_min: float | None = None, drain_rate: float | None = None) -> dict:
         """One updater run of the whole local route with budget `budget_min`, starting at `start`.
 
         TIMING AS PRODUCTION (PR #214): run_once fixes its run deadline at launch (start + budget) and the start gate
@@ -1142,6 +1144,9 @@ class UnitBook:
         order = orch.order_units(list(self.units.values()), costs, staleness)
         e, advanced, hard, stopped, ran = 0.0, False, None, None, []
         budget_skipped, not_due = [], []
+        # run_once's leftover-drain bookkeeping: _drain_ok {source: [units]} (NOT DUE, BUDGET SKIPPED, an earned
+        # no_change, a declared non-turn) and _drain_block {(source, key)} (a unit that ran its update)
+        drain_ok, drain_block = {}, set()
         # run_once: _RUN_DEADLINE_TS = launch + AQUEDUCT_RUN_BUDGET_MIN; the ps1 kills at its hard stop
         deadline_ts = (start + dt.timedelta(minutes=budget_min)).timestamp()
         stop_min = budget_min + grace_min if hard_stop_min is None else hard_stop_min
@@ -1153,11 +1158,14 @@ class UnitBook:
             # production's gate: the clock now, plus the reserve, against the run deadline (same function)
             if orch.start_gate_refuses(t_unit.timestamp(), need, deadline_ts):
                 budget_skipped.append((sid, need))
+                drain_ok.setdefault(sid, []).append(u)     # G1 (#213)
                 continue                                   # BUDGET SKIP
             if not self.is_due(sid, t_unit):
                 not_due.append(sid)
+                drain_ok.setdefault(sid, []).append(u)
                 continue                                   # NOT DUE
             self.attempts[sid] += 1
+            drain_block.add((sid, u.key))                  # lifted below only by a no_change or a non-turn
             R = self.remaining[sid]
             clocked = self._clocked(sid, w_on)
             limit = budget_min - e if clocked else stop_min - e
@@ -1173,6 +1181,10 @@ class UnitBook:
                 self.finished[sid] += 1
                 advanced = advanced or sid not in NO_ADVANCE
                 ran.append((sid, R, status))
+                if status == "no_change":
+                    # run_once's earned no_change (the vintage probe matched; the work on record is the probe's)
+                    drain_block.discard((sid, u.key))
+                    drain_ok.setdefault(sid, []).append(u)
                 continue
             t_end = start + dt.timedelta(minutes=e + limit)
             if clocked:
@@ -1188,6 +1200,8 @@ class UnitBook:
                     # orchestrate._window_stop_no_progress: NOT A TURN - no unit state, a window_stopped row
                     self._row(t_end, sid, "window_stopped", used)
                     ran.append((sid, used, "window_stopped"))
+                    drain_block.discard((sid, u.key))      # nothing touched its store: a drain candidate (#215)
+                    drain_ok.setdefault(sid, []).append(u)
                 else:
                     # a declared unit's progressing stop is its fetcher's `partial`; an undeclared one times out
                     status = "partial" if self._declared(sid) else "transient_fail"
@@ -1204,8 +1218,50 @@ class UnitBook:
             ran.append((sid, limit, "killed"))
             e += limit
             break
+        drained, not_drained = [], []
+        if hard is None:                                   # a hard stop kills the updater: no drain follows
+            e, drained, not_drained = self._leftover_drain(drain_ok, drain_block, e, budget_min, drain_rate)
         return {"used_min": e, "advanced": advanced, "hard_stop": hard, "stopped": stopped, "ran": ran,
-                "budget_skipped": budget_skipped, "not_due": not_due}
+                "budget_skipped": budget_skipped, "not_due": not_due, "retry_drained": drained,
+                "retry_not_drained": not_drained}
+
+    def _leftover_drain(self, drain_ok, drain_block, e, budget_min, drain_rate):
+        """orchestrate._drain_leftover_retries after the unit loop (PRs #212/#213), with production's candidate
+        rule (drain_candidates), order (drain_order: oldest-enqueued first) and budget (leftover_drain_budget_min:
+        min(time to the run deadline - margin, cap), margin and cap read by production's own helpers; nothing below
+        _DRAIN_FLOOR_MIN starts). Each source drains with what is left of that budget and holds the pass for it.
+
+        The derive's speed is NOT in the copy, so it is an input: `drain_rate` ids per minute, or None = every source
+        reached uses ALL the time left (an upper bound on the drain's occupancy; the queue is then not reduced,
+        because how many ids cleared is unknown). With a rate, a source takes min(time left, its ids / rate) for at
+        most _CSV_RETRY_CAP ids and that many leave its queue. NOT modelled: the in-loop drain of a unit that ran,
+        ids enqueued by later passes, the mirror check, lease refusals. Returns (minutes used, [(source, minutes)],
+        [sources with queued ids not reached])."""
+        orch = self._orch
+        cands = orch.drain_candidates(drain_ok, drain_block)
+        _have, order = orch.drain_order(cands, {s: tuple(v) for s, v in self.retry_queue.items()})
+        if not order:
+            return e, [], []
+        budget = orch.leftover_drain_budget_min(max(0.0, budget_min - e), orch._drain_margin_min(),
+                                                orch._drain_max_min())
+        if budget < orch._DRAIN_FLOOR_MIN:
+            return e, [], list(order)
+        end, drained = e + budget, []
+        for i, s in enumerate(order):
+            left = end - e
+            if left < orch._DRAIN_FLOOR_MIN:
+                return e, drained, list(order[i:])
+            n = self.retry_queue[s][0]
+            use = left if drain_rate is None else min(left, min(n, orch._CSV_RETRY_CAP) / drain_rate)
+            if drain_rate is not None:
+                gone = min(n, orch._CSV_RETRY_CAP, int(math.floor(use * drain_rate + 1e-9)))
+                if gone >= n:
+                    del self.retry_queue[s]
+                else:
+                    self.retry_queue[s][0] = n - gone
+            e += use
+            drained.append((s, use))
+        return e, drained, []
 
 
 CENSORED_BOUNDS = ("newest", "kills", "tightest")
@@ -1287,9 +1343,16 @@ def load_unit_book(db_path: str, copy_utc: dt.datetime, shift: dt.timedelta, cad
             outcome[sid] = good[-1][3]
         else:
             assumed.append(sid)
+    # the leftover drain's input (orchestrate._drain_leftover_retries reads StateStore.csv_retry_sources)
+    queue = {}
+    if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='csv_retry_queue'").fetchone():
+        queue = {sid: (n, mv(lo)) for sid, n, lo in con.execute(
+            f"SELECT source_id, COUNT(*), MIN(enqueued_utc) FROM csv_retry_queue WHERE source_id IN ({q}) "
+            f"GROUP BY source_id", srcs)}
     con.close()
     ws = local_window_stop_from_registry() if window_stop is None else frozenset(window_stop)
-    return UnitBook(cadences, state, rows, work, outcome, censored, assumed, window_stop=ws & set(srcs), **book_kw)
+    return UnitBook(cadences, state, rows, work, outcome, censored, assumed, window_stop=ws & set(srcs),
+                    retry_queue=queue, **book_kw)
 
 
 # ------------------------------------------------------------------ the simulator
@@ -1334,6 +1397,7 @@ class ReplayConfig:
     drop_cron: tuple = ()              # ((wf, hour), ...): C - the cron and its credited history runs removed
     cloud_floor: float = 2.0           # completed runs/day per writer in the strict rule
     due_from_attempt: bool = False     # a partial behind an old success is due on the partial clock
+    drain_rate: float | None = None    # leftover csv-retry drain (#212/#213): ids/min; None = it uses all leftover time
 
     def writers(self) -> dict:
         return writers_without(self.drop_cron) if self.drop_cron else g.WRITERS
@@ -1349,6 +1413,8 @@ class ReplayConfig:
             out += " C=" + ",".join(f"-{w.split('.')[0].replace('updater-', '')}{h:02d}" for w, h in self.drop_cron)
         if self.due_from_attempt:
             out += " due=att"
+        if self.drain_rate is not None:
+            out += f" drain={self.drain_rate:g}/min"
         if self.cloud_floor != 2.0:
             out += f" floor={self.cloud_floor:g}"
         return out
@@ -1364,7 +1430,7 @@ class ReplayConfig:
 
 
 _EXT_DEFAULTS = {"order": "production", "clocked_extra": (), "whole_flow": (), "drop_cron": (), "cloud_floor": 2.0,
-                 "due_from_attempt": False}
+                 "due_from_attempt": False, "drain_rate": None}
 
 
 def cfg_dict(cfg: ReplayConfig) -> dict:
@@ -1557,7 +1623,7 @@ class Replay:
                 return upd
             budget, hard_stop_min = float(post["budget"]), _mins(upd, post["hard_stop"])
         res = self.book.run_pass(upd, budget, cfg.w_on, cfg.tail_min, cfg.kill_keeps_progress,
-                                 hard_stop_min=hard_stop_min)
+                                 hard_stop_min=hard_stop_min, drain_rate=cfg.drain_rate)
         push_end = upd + dt.timedelta(minutes=res["used_min"] + cfg.push_min)
         if res["advanced"]:
             self.last_success = push_end
@@ -1850,7 +1916,7 @@ def _cfg_from(args, **kw) -> ReplayConfig:
                 dispatch_latency_min=args.dispatch_latency, censored_bound=args.censored_bound,
                 clocked_extra=tuple(dict.fromkeys(args.clocked_extra or ())),
                 whole_flow=tuple(sorted(args.whole_flow.items())), drop_cron=tuple(dict.fromkeys(args.drop_cron or ())),
-                due_from_attempt=args.due_from_attempt)
+                due_from_attempt=args.due_from_attempt, drain_rate=args.drain_rate)
     base.update(kw)
     return ReplayConfig(**base)
 
@@ -2203,6 +2269,8 @@ def main():
                    help="completed runs/day per writer in the strict rule (default 2)")
     p.add_argument("--due-from-attempt", action="store_true",
                    help="a partial behind an older success is due on the 7-day partial clock from its attempt")
+    p.add_argument("--drain-rate", type=float, default=None, metavar="IDS_PER_MIN",
+                   help="leftover csv-retry drain speed (default: unknown - a drained source uses all the leftover time)")
     p.add_argument("--json")
     p.set_defaults(fn=cmd_replay61)
     sub.add_parser("lag").set_defaults(fn=cmd_lag)
