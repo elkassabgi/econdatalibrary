@@ -480,6 +480,16 @@ def admission_reserve(unit, est_s, unit_timeout_min=None):
     return _need_min, _basis, _ws_min, _ws_bad
 
 
+def start_gate_refuses(now_ts, need_min, run_deadline, single_source=False) -> bool:
+    """run_once's start gate: True when a unit that may still need `need_min` minutes from the CLOCK reading
+    `now_ts` could run past the run DEADLINE `run_deadline` (epoch seconds; None = no ceiling). A single-source
+    dispatch is never refused (a manual proof must run the source under test). Moved out of run_once's unit loop
+    unchanged, so tools/measure_ci_lag.py's replay compares the same instants the same way."""
+    return (run_deadline is not None
+            and now_ts + need_min * 60.0 > run_deadline
+            and not single_source)
+
+
 # The RUN ceiling, as an absolute wall-clock timestamp, shared by every phase.
 # Run 31466202723 (and the two 250-min kills before it) proved the phases'
 # INDIVIDUAL bounds do not compose: the start-gate stopped new units at 240 min,
@@ -3124,9 +3134,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             print(f"[orchestrator] WINDOW STOP {unit.key}: {_ws_bad} - keeping the standard reserve",
                   flush=True)
         _now = time.time()
-        if (run_deadline is not None
-                and _now + _need_min * 60.0 > run_deadline
-                and not (sources and len(sources) == 1)):
+        if start_gate_refuses(_now, _need_min, run_deadline, bool(sources and len(sources) == 1)):
             # WORST-CASE LOOKAHEAD, not a point check: a unit owns up to TWO
             # per-unit SIGALRM windows (detect_change probe + update), so the
             # question is "could this unit still be running past the ceiling?",
