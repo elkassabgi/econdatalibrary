@@ -58,11 +58,32 @@ def stalled_names(v):
 
 
 # ------------------------------------------------------------------ the rule
-def test_the_limit_is_36_h_one_skipped_cron_plus_the_gates_credit_window():
+def _gaps(hours):
+    """The gaps between consecutive crons of one workflow, around the day (one cron: [24 h])."""
+    hs = sorted(hours)
+    return [dt.timedelta(hours=((hs[(i + 1) % len(hs)] - h) % 24) or 24) for i, h in enumerate(hs)]
+
+
+def test_the_limit_is_36_h_and_what_it_means_on_the_2026_11_04_schedule():
+    """36 h was 2 x CRON_SPACING + PENDING_LIMIT while both writers had two crons 12 h apart. The schedule of
+    2026-11-04 (daily 06:00Z only, heavy 03:00Z and 12:00Z) has no single spacing, so the limit is pinned here
+    against each writer's own gaps (see the docstring of tools/scheduler_stall.py)."""
     assert ss.STALL_AFTER == dt.timedelta(hours=36)
-    assert ss.STALL_AFTER == 2 * gate.CRON_SPACING + gate.PENDING_LIMIT
-    # the largest lag the gate credits to a cron, after one skipped cron, stays under the limit
-    assert dt.timedelta(hours=24) + dt.timedelta(minutes=710) < ss.STALL_AFTER
+    assert ss.LAG_ALLOWANCE >= dt.timedelta(minutes=710)          # the measured maximum start lag
+    for wf, hours in gate.WRITERS.items():
+        g_ = _gaps(hours)
+        # no skip: the age is at most the largest gap + the lag - a writer that misses nothing cannot mail
+        assert max(g_) + ss.LAG_ALLOWANCE <= ss.STALL_AFTER, (wf, g_)
+        assert max(g_) + dt.timedelta(minutes=710) < ss.STALL_AFTER, (wf, g_)
+    # one skipped HEAVY cron (the two gaps around it, 24 h) does not mail ...
+    heavy = _gaps(gate.WRITERS["updater-heavy.yml"])
+    one_skip = max(heavy[i] + heavy[(i + 1) % len(heavy)] for i in range(len(heavy)))
+    assert one_skip + dt.timedelta(minutes=710) < ss.STALL_AFTER, one_skip
+    # ... one skipped DAILY cron (48 h) does: a decision, because the gate then blocks the desktop for a day
+    daily = _gaps(gate.WRITERS["updater-daily.yml"])
+    assert daily == [dt.timedelta(hours=24)], daily
+    assert 2 * daily[0] > ss.STALL_AFTER
+    assert gate.pending_limit("updater-daily.yml", 6) == dt.timedelta(hours=24)
 
 
 def test_the_gates_writer_crons_match_the_workflow_files():
@@ -73,7 +94,8 @@ def test_the_gates_writer_crons_match_the_workflow_files():
         got = sorted(int(c.split()[1]) for c in crons)
         assert got == sorted(hours), (wf, crons)
         assert all(c.split()[0] == "0" for c in crons)
-        assert max(b - a for a, b in zip(got, got[1:] + [got[0] + 24])) * 3600 == gate.CRON_SPACING.total_seconds()
+        # the gate's windows are the gaps this file's crons leave (the stall rule's arithmetic reads them)
+        assert sorted(gate.cron_windows()[wf].values()) == sorted(_gaps(got)), (wf, crons)
 
 
 def test_a_writer_with_no_scheduled_run_for_37_h_is_stalled_and_one_at_35_h_is_not():

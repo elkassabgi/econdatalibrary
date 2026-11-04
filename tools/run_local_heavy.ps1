@@ -317,8 +317,11 @@ if (-not $env:AQUEDUCT_RUN_BUDGET_MIN)      { $env:AQUEDUCT_RUN_BUDGET_MIN      
 # tomorrow so they go first.
 # FOUR CI state writers, not two. Every one of them runs --pull-state ... --push-state, so a
 # local pass must not let its own pull->push interval overlap ANY of them:
-#     updater-heavy.yml  cron 03:00Z and 15:00Z
-#     updater-daily.yml  cron 06:00Z and 18:00Z
+#     updater-heavy.yml  cron 03:00Z and 15:00Z   (03:00Z and 12:00Z since 2026-11-04)
+#     updater-daily.yml  cron 06:00Z and 18:00Z   (06:00Z only since 2026-11-04)
+# (The schedule of 2026-11-04 is the owner's decision to give this pass a nightly window. The live
+# table is WRITERS in tools/ci_writer_gate.py, which tests check against the workflow files; this
+# script reads it only through the gate and holds no cron times of its own.)
 # The previous model listed only the two DAILY crons and stored them ALREADY GUARD-ADJUSTED
 # (05:40 standing for a 06:00 cron). Two defects followed from that. It was blind to the heavy
 # workflow entirely, and because the stored value was the guard rather than the cron, crossing

@@ -84,6 +84,22 @@ HEAVY_CREATED = [
 ]
 ACTIVE = {"updater-daily.yml": "active", "updater-heavy.yml": "active"}
 
+# THE SCHEDULE THE FIXTURES RAN UNDER. Every run in DAILY_CREATED / HEAVY_CREATED was created before the owner's
+# schedule change of 2026-11-04 (updater-daily lost its 18:00Z cron, updater-heavy's 15:00Z cron moved to 12:00Z).
+# A test that replays that history must judge it by the crons GitHub was firing then, or it judges a 15:00Z heavy
+# run against a 12:00Z cron that did not exist. Those tests take the `old_schedule` fixture. With this table the
+# generalized rule (ci_writer_gate.cron_windows) gives every cron the 12 h window the gate had before 2026-11-04,
+# so they also prove the change reproduces the old rule exactly on the old schedule. The tests of the schedule
+# in force (the workflow files) are below, under "THE 2026-11-04 SCHEDULE".
+SCHEDULE_UNTIL_2026_11_04 = {"updater-daily.yml": (6, 18), "updater-heavy.yml": (3, 15)}
+SCHEDULE_FROM_2026_11_04 = {"updater-daily.yml": (6,), "updater-heavy.yml": (3, 12)}
+OLD_WINDOW = dt.timedelta(hours=12)        # every cron's window under SCHEDULE_UNTIL_2026_11_04
+
+
+@pytest.fixture
+def old_schedule(monkeypatch):
+    monkeypatch.setattr(g, "WRITERS", dict(SCHEDULE_UNTIL_2026_11_04))
+
 
 def at(s):
     return dt.datetime.fromisoformat(s).replace(tzinfo=dt.timezone.utc)
@@ -111,6 +127,7 @@ def old_check(runs):
     "2026-09-13T10:32:09",   # desktop pass whose push was refused (pull 10:32, push 14:26)
     "2026-09-15T10:38:56",   # desktop pass that pushed first; the cloud run's push was refused at 15:28
 ])
+@pytest.mark.usefixtures("old_schedule")
 def test_every_recorded_collision_is_blocked_and_the_old_check_let_it_through(pass_start):
     now = at(pass_start)
     runs = history_as_of(now)
@@ -121,6 +138,7 @@ def test_every_recorded_collision_is_blocked_and_the_old_check_let_it_through(pa
 
 
 
+@pytest.mark.usefixtures("old_schedule")
 def test_a_run_in_flight_blocks():
     now = at("2026-09-15T12:00:00")
     runs = history_as_of(now)
@@ -129,6 +147,7 @@ def test_a_run_in_flight_blocks():
     assert blocked and "in_progress" in reason, reason
 
 
+@pytest.mark.usefixtures("old_schedule")
 def test_clear_after_the_evening_runs_and_before_the_next_cron():
     # daily 18:00Z run 21:29->22:36 and heavy 15:00Z run 19:38->20:57 had both completed by 23:30
     now = at("2026-09-14T23:30:00")
@@ -136,6 +155,7 @@ def test_clear_after_the_evening_runs_and_before_the_next_cron():
     assert not blocked, reason
 
 
+@pytest.mark.usefixtures("old_schedule")
 def test_a_pending_heavy_cron_blocks_after_the_morning_daily_run():
     now = at("2026-09-15T15:40:00")      # the 15:00Z heavy cron had no run yet
     blocked, reason = g.decide(history_as_of(now), now, ACTIVE)
@@ -170,12 +190,13 @@ def cleared_by_the_old_ceiling(runs, now):
             for h in hours:
                 cron = dt.datetime(day.year, day.month, day.day, h, tzinfo=dt.timezone.utc)
                 if cron <= now < cron + OLD_CEILING and not any(
-                        cron <= g._parse(r["createdAt"]) < cron + g.CRON_SPACING for r in runs[wf]):
+                        cron <= g._parse(r["createdAt"]) < cron + OLD_WINDOW for r in runs[wf]):
                     return False
     return True
 
 
 @pytest.mark.parametrize("pass_start,gate_read,run_created", PUSH_FAILURES)
+@pytest.mark.usefixtures("old_schedule")
 def test_every_push_failure_since_2026_09_20_now_reads_blocked(pass_start, gate_read, run_created):
     for instant in (pass_start, gate_read):
         now = at(instant)
@@ -208,6 +229,7 @@ UNOVERLAPPED_CLEARS = ["2026-09-20T12:28:32", "2026-09-20T13:37:01", "2026-09-20
 
 
 @pytest.mark.parametrize("instant", OVERLAPPED_CLEARS)
+@pytest.mark.usefixtures("old_schedule")
 def test_every_real_pass_a_cloud_run_overlapped_now_reads_blocked(instant):
     now = at(instant)
     runs = history_as_of(now)
@@ -217,12 +239,14 @@ def test_every_real_pass_a_cloud_run_overlapped_now_reads_blocked(instant):
 
 
 @pytest.mark.parametrize("instant", UNOVERLAPPED_CLEARS)
+@pytest.mark.usefixtures("old_schedule")
 def test_no_real_pass_that_was_not_overlapped_is_taken_away(instant):
     now = at(instant)
     blocked, reason = g.decide(history_as_of(now), now, ACTIVE)
     assert not blocked, reason
 
 
+@pytest.mark.usefixtures("old_schedule")
 def test_the_block_ends_when_the_late_run_has_been_created_and_finished():
     """Control: the rule is 'until the run is created', not a longer fixed window.
 
@@ -235,6 +259,7 @@ def test_the_block_ends_when_the_late_run_has_been_created_and_finished():
     assert mins == 75, f"the next block must be the 15:00Z cron, 75 min away; got {mins}"
 
 
+@pytest.mark.usefixtures("old_schedule")
 def test_the_late_run_blocks_while_it_is_in_flight():
     now = at("2026-10-20T11:05:00")          # the 06:00Z run was created 11:04:16Z and ran until 13:43:41Z
     runs = history_as_of(now)
@@ -243,13 +268,31 @@ def test_the_late_run_blocks_while_it_is_in_flight():
     assert blocked and "in_progress" in reason, reason
 
 
+@pytest.mark.usefixtures("old_schedule")
 def test_the_window_covers_every_lag_measured_over_60_days():
     """237 scheduled runs of both writers, 2026-08-21..10-20 (createdAt - cron): median 278, p99 661, max 710 min
     (as paired within 12 h; the one ambiguous window is the KNOWN RESIDUAL in the gate). A window shorter than the
     measured maximum is a CLEAR that the next late run collides with.
     """
-    assert g.PENDING_LIMIT >= dt.timedelta(minutes=710)
-    assert g.PENDING_LIMIT <= g.CRON_SPACING, "a run later than CRON_SPACING is credited to the next cron"
+    for wf, ws in g.cron_windows(SCHEDULE_UNTIL_2026_11_04).items():
+        assert set(ws.values()) == {OLD_WINDOW}, (wf, ws)        # the 12 h PENDING_LIMIT the gate had
+    assert OLD_WINDOW >= dt.timedelta(minutes=710)
+
+
+def test_the_new_windows_and_the_one_that_is_shorter_than_the_measured_lag():
+    """THE 2026-11-04 SCHEDULE. Each cron's window runs to the next cron of its workflow. Daily (one cron) 24 h and
+    heavy 12:00Z 15 h cover the 60-day maximum lag of 710 min; heavy 03:00Z gets 9 h, which does NOT cover that
+    cron's own 60-day maximum (663 min). That is the KNOWN RESIDUAL at 9 h (see the gate), pinned here so that it
+    is a decision: a 03:00Z run created more than 9 h late is credited to the 12:00Z cron."""
+    w = g.cron_windows()
+    assert w == {"updater-daily.yml": {6: dt.timedelta(hours=24)},
+                 "updater-heavy.yml": {3: dt.timedelta(hours=9), 12: dt.timedelta(hours=15)}}, w
+    assert w["updater-daily.yml"][6] >= dt.timedelta(minutes=710)
+    assert w["updater-heavy.yml"][12] >= dt.timedelta(minutes=710)
+    assert w["updater-heavy.yml"][3] < dt.timedelta(minutes=663)
+    for wf, ws in w.items():                     # the windows of one workflow tile the day exactly
+        assert sum(ws.values(), dt.timedelta()) == dt.timedelta(hours=24), (wf, ws)
+    assert g.pending_limit("updater-heavy.yml", 3) == dt.timedelta(hours=9)
 
 
 def _all_started_but(now, missing, lag_min=30, days=3):
@@ -268,20 +311,21 @@ def _all_started_but(now, missing, lag_min=30, days=3):
     return out
 
 
+@pytest.mark.usefixtures("old_schedule")
 def test_an_unstarted_cron_blocks_for_the_whole_measured_lag_and_then_hands_over():
     cron = at("2026-10-14T06:00:00")
     missing = {("updater-daily.yml", cron)}
-    now = cron + g.PENDING_LIMIT - dt.timedelta(minutes=1)     # 719 min; the 60-day maximum lag was 710
+    now = cron + OLD_WINDOW - dt.timedelta(minutes=1)     # 719 min; the 60-day maximum lag was 710
     blocked, reason = g.decide(_all_started_but(now, missing), now, ACTIVE)
     assert blocked and "updater-daily.yml 06:00Z cron has not started yet" in reason, reason
 
     # At the limit the 06:00Z cron can no longer be credited a run; the 18:00Z cron is due and blocks itself.
-    now = cron + g.PENDING_LIMIT
+    now = cron + OLD_WINDOW
     blocked, reason = g.decide(_all_started_but(now, missing), now, ACTIVE)
     assert blocked and "updater-daily.yml 18:00Z cron has not started yet" in reason, reason
 
     # A skipped cron costs the desktop until the NEXT cron's run is created and done - then it is clear.
-    now = cron + g.PENDING_LIMIT + dt.timedelta(minutes=40)
+    now = cron + OLD_WINDOW + dt.timedelta(minutes=40)
     blocked, reason = g.decide(_all_started_but(now, missing), now, ACTIVE)
     assert not blocked, reason
 
@@ -311,7 +355,10 @@ def test_if_github_stops_creating_scheduled_runs_the_desktop_gets_no_clear_time(
 # A TYPICAL DAY, from the medians of 2026-08-21..10-20 (gh run list, createdAt and updatedAt of the scheduled
 # runs): start lag 03Z 314, 06Z 315, 15Z 208, 18Z 173 min; duration daily 171, heavy 78 min.
 TYPICAL_LAG = {("updater-heavy.yml", 3): 314, ("updater-daily.yml", 6): 315,
-               ("updater-heavy.yml", 15): 208, ("updater-daily.yml", 18): 173}
+               ("updater-heavy.yml", 15): 208, ("updater-daily.yml", 18): 173,
+               # The 12:00Z heavy cron has no history yet; it is given the 15:00Z cron's median lag. That is an
+               # ASSUMPTION (the owner's evidence modelled the move the same way), not a measurement.
+               ("updater-heavy.yml", 12): 208}
 TYPICAL_DUR = {"updater-daily.yml": 171, "updater-heavy.yml": 78}
 
 
@@ -330,11 +377,16 @@ def _typical_history(now):
     return out
 
 
-def test_on_a_typical_day_the_runner_still_gets_a_window_it_will_start_in():
+@pytest.mark.parametrize("schedule", ["until_2026_11_04", "from_2026_11_04"])
+def test_on_a_typical_day_the_runner_still_gets_a_window_it_will_start_in(schedule, monkeypatch):
     """Replaces the coupling to the removed FREE_BLOCK_MIN. run_local_heavy.ps1 starts only when the gate's
     --until-block answer minus $marginMin reaches $WantBlockMin (before $MaxHours). On a day at the measured
-    medians the only such window is after the 18:00Z run (23:44Z -> 03:00Z); raising either PowerShell default
-    past it means the desktop waits for the $MaxHours escape every day, and this test says so."""
+    medians the only such window under the old schedule was after the 18:00Z run (23:44Z -> 03:00Z); under the
+    2026-11-04 schedule it is after the 12:00Z heavy run (16:46Z -> 03:00Z, with the 12:00Z lag ASSUMED equal to
+    the 15:00Z median). Raising either PowerShell default past it means the desktop waits for the $MaxHours
+    escape every day, and this test says so."""
+    if schedule == "until_2026_11_04":
+        monkeypatch.setattr(g, "WRITERS", dict(SCHEDULE_UNTIL_2026_11_04))
     src = pathlib.Path(RUNNER_PS1).read_text(encoding="utf-8", errors="replace")
     want = re.search(r"\$WantBlockMin\s*=\s*(\d+)", src)
     margin = re.search(r"\$marginMin\s*=\s*(\d+)", src)
@@ -350,6 +402,7 @@ def test_on_a_typical_day_the_runner_still_gets_a_window_it_will_start_in():
         f"on a typical day the best window gives {usable} usable min; the runner wants {want.group(1)}")
 
 
+@pytest.mark.usefixtures("old_schedule")
 def test_an_unstarted_cron_from_yesterday_still_blocks_after_midnight():
     cron = at("2026-10-14T18:00:00")
     now = at("2026-10-15T01:00:00")              # 420 min late: the old ceiling had released it at 23:00Z
@@ -359,6 +412,7 @@ def test_an_unstarted_cron_from_yesterday_still_blocks_after_midnight():
     assert blocked and "updater-daily.yml 18:00Z cron has not started yet" in reason, reason
 
 
+@pytest.mark.usefixtures("old_schedule")
 def test_a_pending_cron_past_the_warning_threshold_is_flagged_not_hidden():
     cron = at("2026-09-15T15:00:00")
     now = cron + g.WARN_PENDING_AFTER + dt.timedelta(minutes=5)
@@ -369,6 +423,7 @@ def test_a_pending_cron_past_the_warning_threshold_is_flagged_not_hidden():
     assert any("may have skipped it" in n for n in notes), notes
 
 
+@pytest.mark.usefixtures("old_schedule")
 def test_a_manual_dispatch_does_not_count_as_the_scheduled_run():
     now = at("2026-09-15T10:38:56")
     runs = history_as_of(now)
@@ -377,6 +432,7 @@ def test_a_manual_dispatch_does_not_count_as_the_scheduled_run():
     assert g.decide(runs, now, ACTIVE)[0]
 
 
+@pytest.mark.usefixtures("old_schedule")
 def test_a_disabled_workflow_is_not_waited_for():
     now = at("2026-09-15T15:40:00")      # heavy 15:00Z pending, but the workflow is disabled
     states = {"updater-daily.yml": "active", "updater-heavy.yml": "disabled_manually"}
@@ -385,6 +441,7 @@ def test_a_disabled_workflow_is_not_waited_for():
     assert any("disabled_manually" in n for n in notes), notes
 
 
+@pytest.mark.usefixtures("old_schedule")
 def test_a_workflow_missing_from_githubs_list_is_still_waited_for():
     now = at("2026-09-15T15:40:00")
     blocked, reason, notes = g.assess(history_as_of(now), now, {"updater-daily.yml": "active"})
@@ -392,6 +449,7 @@ def test_a_workflow_missing_from_githubs_list_is_still_waited_for():
     assert any("not in GitHub's workflow list" in n for n in notes), notes
 
 
+@pytest.mark.usefixtures("old_schedule")
 def test_without_workflow_states_every_writer_is_waited_for():
     now = at("2026-09-15T15:40:00")
     blocked, reason, notes = g.assess(history_as_of(now), now, None)
@@ -399,6 +457,7 @@ def test_without_workflow_states_every_writer_is_waited_for():
 
 
 @pytest.mark.parametrize("status", ["queued", "waiting", "pending", "requested", "in_progress"])
+@pytest.mark.usefixtures("old_schedule")
 def test_an_unfinished_run_blocks_however_old_and_an_old_one_warns(status):
     now = at("2026-09-14T23:30:00")
     runs = history_as_of(now)
@@ -409,6 +468,7 @@ def test_an_unfinished_run_blocks_however_old_and_an_old_one_warns(status):
     assert any("more than a day" in n for n in notes), notes
 
 
+@pytest.mark.usefixtures("old_schedule")
 def test_main_exit_codes_notes_and_unknown_is_never_clear(capsys):
     now = at("2026-09-15T10:38:56")
     runs = history_as_of(now)
@@ -477,6 +537,7 @@ def test_the_runner_calls_the_gate_instead_of_the_old_single_workflow_check():
     assert "--workflow=updater-daily.yml --limit 5" not in body
 
 
+@pytest.mark.usefixtures("old_schedule")
 def test_minutes_until_block_is_zero_while_the_gate_blocks():
     now = at("2026-09-15T15:40:00")          # a pending heavy cron, already asserted blocked above
     runs = history_as_of(now)
@@ -484,6 +545,7 @@ def test_minutes_until_block_is_zero_while_the_gate_blocks():
     assert g.minutes_until_block(runs, now, ACTIVE) == 0
 
 
+@pytest.mark.usefixtures("old_schedule")
 def test_minutes_until_block_counts_forward_to_the_next_block_and_agrees_with_decide():
     """The answer must be the same rule, not a second copy of the schedule: step to it and check both sides."""
     now = at("2026-09-15T00:30:00")
@@ -497,6 +559,7 @@ def test_minutes_until_block_counts_forward_to_the_next_block_and_agrees_with_de
     assert g.decide(runs, at_block, ACTIVE)[0], "gate does not block at the reported time"
 
 
+@pytest.mark.usefixtures("old_schedule")
 def test_minutes_until_block_never_exceeds_its_lookahead():
     now = at("2026-09-15T00:30:00")
     runs = history_as_of(now)
@@ -504,6 +567,7 @@ def test_minutes_until_block_never_exceeds_its_lookahead():
     assert g.minutes_until_block(runs, now, ACTIVE, lookahead=look) <= int(look.total_seconds() // 60)
 
 
+@pytest.mark.usefixtures("old_schedule")
 def test_the_runner_budget_clamp_would_get_a_usable_answer_at_the_start_of_a_clear_block():
     """The point of the whole change: the runner must be told how long it really has, not what a fixed list says.
 
@@ -672,6 +736,7 @@ def test_an_empty_filtered_listing_takes_the_scheduled_rows_of_the_unfiltered_on
     assert "holds no scheduled run either" in out and "in the unfiltered listing instead" not in out, out
 
 
+@pytest.mark.usefixtures("old_schedule")
 def test_a_truly_empty_scheduled_history_still_blocks(capsys):
     """No scheduled run anywhere: the cron check must keep failing closed, never CLEAR and never skip the writer."""
     now = at("2026-09-14T23:30:00")
@@ -934,3 +999,75 @@ def test_the_worst_case_time_note_matches_the_constants():
     timeout = 60
     expect = 5 * timeout + 2 * len(g.WRITERS) * g.SCHED_EMPTY_RETRIES * (timeout + g.SCHED_RETRY_PAUSE_S)
     assert int(m.group(1)) == expect, (m.group(1), expect)
+
+
+# ------------------------------------------------------------------ THE 2026-11-04 SCHEDULE
+# Owner's decision of 2026-11-04: updater-daily keeps only its 06:00Z cron, updater-heavy runs at 03:00Z and
+# 12:00Z. The tests below are synthetic (no run of the new schedule existed when they were written) and use the
+# schedule in force, g.WRITERS, which test_the_writer_list_matches_the_workflows ties to the workflow files.
+
+def _workflow_crons(wf):
+    """Every `cron:` expression in the workflow file, whatever its form."""
+    body = open(os.path.join(ROOT, ".github", "workflows", wf), encoding="utf-8").read()
+    return re.findall(r"^\s*-\s*cron:\s*'([^']+)'", body, flags=re.M)
+
+
+def test_the_schedule_in_force_is_the_owners_2026_11_04_decision():
+    assert g.WRITERS == SCHEDULE_FROM_2026_11_04, g.WRITERS
+    assert _workflow_crons("updater-daily.yml") == ["0 6 * * *"]
+    assert _workflow_crons("updater-heavy.yml") == ["0 3 * * *", "0 12 * * *"]
+
+
+def test_the_gates_cron_table_equals_every_cron_of_the_writer_workflows():
+    """Stricter than test_the_writer_list_matches_the_workflows: it reads EVERY cron line, so a cron in another
+    form (a minute other than 0, a day-of-week) cannot hide from the table either."""
+    for wf, hours in g.WRITERS.items():
+        crons = _workflow_crons(wf)
+        assert crons, f"{wf}: no cron line found; this test would measure nothing"
+        assert all(c.split()[0] == "0" and c.split()[2:] == ["*", "*", "*"] for c in crons), (wf, crons)
+        assert sorted(int(c.split()[1]) for c in crons) == sorted(hours), (wf, crons, hours)
+
+
+def test_a_daily_cron_with_no_run_blocks_past_18Z_and_hands_over_to_the_next_days_cron():
+    """With one daily cron a 12 h window would have answered CLEAR from 18:00Z while the 06:00Z run could still be
+    created; the 24 h window keeps the block until the next day's cron takes over."""
+    cron = at("2026-11-05T06:00:00")
+    missing = {("updater-daily.yml", cron)}
+    for now in (at("2026-11-05T18:30:00"), at("2026-11-06T05:59:00")):
+        blocked, reason = g.decide(_all_started_but(now, missing), now, ACTIVE)
+        assert blocked and "updater-daily.yml 06:00Z cron has not started yet" in reason, (now, reason)
+        # control: the same instant with that run present is clear, so the block is the missing run's
+        assert not g.decide(_all_started_but(now, set()), now, ACTIVE)[0], now
+    now = at("2026-11-06T06:00:00")
+    blocked, reason = g.decide(_all_started_but(now, missing), now, ACTIVE)
+    assert blocked and "06:00Z cron has not started yet (0 min" in reason, reason
+    now = at("2026-11-06T06:40:00")      # the next day's run was created 06:30 and is done
+    assert not g.decide(_all_started_but(now, missing), now, ACTIVE)[0]
+
+
+def test_a_heavy_12Z_cron_with_no_run_still_blocks_after_midnight():
+    cron = at("2026-11-05T12:00:00")
+    now = at("2026-11-06T01:00:00")      # 780 min late: past a 12 h window, inside the 15 h one
+    blocked, reason = g.decide(_all_started_but(now, {("updater-heavy.yml", cron)}), now, ACTIVE)
+    assert blocked and "updater-heavy.yml 12:00Z cron has not started yet" in reason, reason
+
+
+def test_a_heavy_03Z_cron_with_no_run_hands_over_to_the_12Z_cron():
+    cron = at("2026-11-05T03:00:00")
+    missing = {("updater-heavy.yml", cron)}
+    now = at("2026-11-05T11:59:00")
+    blocked, reason = g.decide(_all_started_but(now, missing), now, ACTIVE)
+    assert blocked and "updater-heavy.yml 03:00Z cron has not started yet" in reason, reason
+    now = at("2026-11-05T12:00:00")
+    blocked, reason = g.decide(_all_started_but(now, missing), now, ACTIVE)
+    assert blocked and "updater-heavy.yml 12:00Z cron has not started yet" in reason, reason
+
+
+def test_no_18Z_or_15Z_cron_blocks_any_more():
+    """The point of the change: once the day's runs are done, nothing blocks at 15:00Z or 18:00Z."""
+    for t in ("2026-11-05T15:05:00", "2026-11-05T18:05:00", "2026-11-05T22:00:00"):
+        now = at(t)
+        blocked, reason = g.decide(_all_started_but(now, set()), now, ACTIVE)
+        assert not blocked, (t, reason)
+    now = at("2026-11-05T22:00:00")
+    assert g.minutes_until_block(_all_started_but(now, set()), now, ACTIVE) == 300   # to the 03:00Z heavy cron

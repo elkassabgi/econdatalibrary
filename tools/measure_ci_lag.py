@@ -14,6 +14,12 @@ rather than believed.
     python tools/measure_ci_lag.py replay61 --baseline --history DIR --logs LOGS --state COPY   # reproduce first
     python tools/measure_ci_lag.py replay61 --history DIR --logs LOGS --state COPY              # the 6.1 sweep
 
+THE SCHEDULE CHANGED ON 2026-11-04 (updater-daily lost its 18:00Z cron; updater-heavy's 15:00Z cron moved to
+12:00Z). Every model here reads the crons from the gate's WRITERS, i.e. the schedule IN FORCE. History from before
+that day ran under the old crons: replay it with `--schedule until-2026-11-04` (before the subcommand), which sets
+the gate's table to ci_writer_gate.WRITERS_UNTIL_2026_11_04 for the run. A span that crosses 2026-11-04 is judged by
+one table throughout, so one side of it is modelled with the wrong crons - split such a span, or say so.
+
 All read-only: `gh run list` / `gh run view` only, the desktop logs read, a state COPY opened ?immutable=1. Nothing
 here writes to the repo's state, deploys or runs the updater. `replay61` is the starvation plan's section-6.1 replay
 (the W windows, D3's no-progress back-off, the desktop state lease with fairness and re-dispatch); its model and every
@@ -75,6 +81,7 @@ def _lags(rows: list, hours: tuple) -> list:
             crons.append(dt.datetime(day.year, day.month, day.day, h, tzinfo=dt.timezone.utc))
         day += dt.timedelta(days=1)
     crons.sort()
+    window = g.cron_windows({"_": hours})["_"]     # to the next cron of this workflow (the gate's credit window)
     out, i = [], 0
     for cron in crons:
         while i < len(starts) and starts[i] < cron:
@@ -82,7 +89,7 @@ def _lags(rows: list, hours: tuple) -> list:
         if i >= len(starts):
             break
         gap = starts[i] - cron
-        if gap > g.CRON_SPACING:
+        if gap > window[cron.hour]:
             continue                 # cron skipped by GitHub; do not consume the next cron's run
         out.append((starts[i], gap.total_seconds() / 60.0))
         i += 1
@@ -580,10 +587,12 @@ def load_cloud_history(hist_dir: str) -> list:
 
 def cron_blocks(runs: list, since: dt.datetime, until: dt.datetime, writers: dict | None = None) -> list:
     """[(cron, end, wf)]: ci_writer_gate.assess's pending rule as intervals. A cron blocks from its time until a
-    SCHEDULE run of that writer is created within PENDING_LIMIT of it, at most PENDING_LIMIT. Under the lease it does
+    SCHEDULE run of that writer is created within its window of it, at most that window (ci_writer_gate.cron_windows of
+    `writers`: the time to that writer's next cron). Under the lease it does
     not block at all (A); scheduled runs are created at their historical times in every scenario, so this list is
     the same in all of them. `writers` ({wf: cron hours}) defaults to the gate's WRITERS (--drop-cron passes fewer)."""
     writers = g.WRITERS if writers is None else writers
+    windows = g.cron_windows(writers)
     created = {wf: sorted(r.created for r in runs if r.wf == wf and r.event == "schedule") for wf in writers}
     out = []
     day = (since - dt.timedelta(days=1)).date()
@@ -593,8 +602,9 @@ def cron_blocks(runs: list, since: dt.datetime, until: dt.datetime, writers: dic
                 cron = dt.datetime(day.year, day.month, day.day, h, tzinfo=dt.timezone.utc)
                 c = created[wf]
                 i = bisect_left(c, cron)
-                c1 = c[i] if i < len(c) and c[i] < cron + g.PENDING_LIMIT else None
-                end = c1 if c1 is not None else cron + g.PENDING_LIMIT
+                lim = windows[wf][h]
+                c1 = c[i] if i < len(c) and c[i] < cron + lim else None
+                end = c1 if c1 is not None else cron + lim
                 if end > cron:
                     out.append((cron, end, wf))
         day += dt.timedelta(days=1)
@@ -683,7 +693,7 @@ def gate_minutes_production(runs: list, since: dt.datetime, until: dt.datetime, 
 
 
 def until_block_fast(t: dt.datetime, writers: dict | None = None) -> int:
-    """minutes_until_block() after a CLEAR answer: every cron of the last PENDING_LIMIT has its run (else the gate
+    """minutes_until_block() after a CLEAR answer: every cron still inside its window has its run (else the gate
     would block now) and nothing is in flight, so the frozen walk first blocks at the next cron of either writer,
     found on the walk's own 5-minute grid from `t`. Checked against the production function in `replay61 --check`.
     `writers` defaults to the gate's WRITERS; with no cron left at all the walk's 720-min ceiling answers."""
@@ -716,20 +726,22 @@ def drop_cron_runs(runs: list, wf: str, hour: int) -> tuple:
     """C (plan R10.2): the SCHEDULED runs of `wf` credited to its `hour`:00Z cron, removed from history.
 
     A run is credited to a cron by the gate's own rule (cron_blocks, ci_writer_gate's `started` test): the first
-    scheduled run of that writer created in [cron, cron + PENDING_LIMIT). A writer's crons are PENDING_LIMIT apart,
-    so the windows do not overlap and a run is credited to at most one cron. The gate's KNOWN RESIDUAL applies: a run
-    more than 12 h late is credited to the next cron. Manual dispatches are never credited to a cron and stay, and so
+    scheduled run of that writer created in [cron, cron + window), the window being the time to that writer's next
+    cron in the gate's WRITERS (ci_writer_gate.pending_limit), so the windows do not overlap and a run is credited to
+    at most one cron. The gate's KNOWN RESIDUAL applies: a run later than its window is credited to the next cron.
+    Manual dispatches are never credited to a cron and stay, and so
     does a second scheduled run inside one window. Returns (kept, dropped)."""
     writers_without([(wf, hour)])                                   # validates wf and hour
     sched = sorted((r for r in runs if r.wf == wf and r.event == "schedule"), key=lambda r: (r.created, r.run_id))
     cs = [r.created for r in sched]
+    lim = g.pending_limit(wf, hour)
     dropped = []
     if sched:
         day = (cs[0] - dt.timedelta(days=1)).date()
         while dt.datetime(day.year, day.month, day.day, tzinfo=dt.timezone.utc) <= cs[-1]:
             cron = dt.datetime(day.year, day.month, day.day, hour, tzinfo=dt.timezone.utc)
             i = bisect_left(cs, cron)
-            if i < len(cs) and cs[i] < cron + g.PENDING_LIMIT:
+            if i < len(cs) and cs[i] < cron + lim:
                 dropped.append(sched[i])
             day += dt.timedelta(days=1)
     gone = {id(r) for r in dropped}
@@ -2214,8 +2226,22 @@ def cmd_fetch(args):
         print(f"{wf}: {len(rows)} runs listed, {len(want)} created since {cut}, {failed} job reads FAILED")
 
 
+SCHEDULES = {"in-force": None, "until-2026-11-04": "WRITERS_UNTIL_2026_11_04"}
+
+
+def use_schedule(name: str) -> dict:
+    """Point the gate's WRITERS at the named schedule for this process (see the module docstring); returns it."""
+    attr = SCHEDULES[name]
+    if attr is not None:
+        g.WRITERS = dict(getattr(g, attr))
+    return g.WRITERS
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--schedule", choices=sorted(SCHEDULES), default="in-force",
+                    help="the cron table to model: the one in force (default) or the one before 2026-11-04, for "
+                         "history from before that day")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("fetch")
     p.add_argument("--out", required=True)
@@ -2300,6 +2326,7 @@ def main():
     p.add_argument("--step", type=int, default=5)
     p.set_defaults(fn=cmd_replay)
     args = ap.parse_args()
+    print(f"schedule modelled: {args.schedule} {use_schedule(args.schedule)}", file=sys.stderr)
     args.fn(args)
 
 

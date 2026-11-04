@@ -20,6 +20,16 @@ DAILY, HEAVY = "updater-daily.yml", "updater-heavy.yml"
 _ids = iter(range(1, 10 ** 6))
 
 
+# EVERY PLANTED DAY BELOW (but the last group) IS ON THE SCHEDULE BEFORE 2026-11-04 - daily 06:00Z and 18:00Z,
+# heavy 03:00Z and 15:00Z - and so are the --drop-cron cases (C dropped the 18:00Z cron from that table). They test
+# the instrument's mechanics, which do not depend on the table, so they run with the table they were planted on
+# (measure_ci_lag.py --schedule until-2026-11-04 does the same for real history). The group at the end plants a day
+# of the schedule in force.
+@pytest.fixture(autouse=True)
+def _old_schedule(monkeypatch):
+    monkeypatch.setattr(g, "WRITERS", dict(g.WRITERS_UNTIL_2026_11_04))
+
+
 def T(s):
     return dt.datetime.fromisoformat(s).replace(tzinfo=dt.timezone.utc)
 
@@ -765,9 +775,14 @@ def test_drop_cron_frees_the_window_in_the_gate_model():
                  if e > since and c < until]
         return 1440 - sum(m._mins(a, b) for a, b in m._merge([b for b in busy if b[1] > b[0]]))
 
-    # PR #200's day: 1010 free; C: the 18:00 cron and its run gone -> busy 03-04:30, 06-10, 15-15:40 -> 1070
+    # PR #200's day: 1010 free; C: the 18:00 cron and its run gone -> busy 03-04:30, 06-10, 15-15:40 -> 1070 - but
+    # only if 09-30's 06:00 cron had its run. The planted history has none, and with one daily cron left its window
+    # runs to the NEXT 06:00 (24 h, ci_writer_gate.cron_windows; it was a fixed 12 h before 2026-11-04), so it
+    # blocks 10-01 00:00-06:00 too: 1070 - 180 - 90 = 800. With that morning run planted it is 1070 again.
     assert free(rs, None) == 1010 == sum(m._mins(a, b) for a, b in m.free_windows(rs, since, until))
-    assert free(kept, w) == 1070
+    assert free(kept, w) == 800
+    kept_am = sorted(kept + [run(DAILY, "2026-09-30T06:30", 60)], key=lambda r: r.created)
+    assert free(kept_am, w) == 1070
     # controls: the runs cut but the cron kept -> 10-01's 18:00 cron blocks 18-24 and 09-30's (its 18:05 run cut too)
     # blocks 00-06, so 1010 - 300 - 180 - 90 = 440; the cron cut but the run kept -> the run still occupies 18-19 (1010)
     assert free(kept, None) == 440
@@ -1014,3 +1029,44 @@ def test_cli_parsers_and_baseline_refuses_the_extensions(monkeypatch):
         with pytest.raises(SystemExit) as e:
             m.main()
         assert "takes none of" in str(e.value.code), flag
+
+
+# ------------------------------------------------------------------ the 2026-11-04 schedule (daily 06, heavy 03 + 12)
+
+def test_the_old_table_is_the_one_the_planted_days_use():
+    assert g.WRITERS_UNTIL_2026_11_04 == {DAILY: (6, 18), HEAVY: (3, 15)}
+    assert g.WRITERS == g.WRITERS_UNTIL_2026_11_04          # the autouse fixture
+
+
+def test_use_schedule_sets_the_table_and_in_force_leaves_it(monkeypatch):
+    monkeypatch.setattr(g, "WRITERS", {DAILY: (6,), HEAVY: (3, 12)})
+    assert m.use_schedule("in-force") == {DAILY: (6,), HEAVY: (3, 12)}
+    assert m.use_schedule("until-2026-11-04") == {DAILY: (6, 18), HEAVY: (3, 15)}
+
+
+def test_free_windows_on_a_planted_day_of_the_new_schedule_agree_with_production(monkeypatch):
+    """2026-11-05 on the schedule in force, every cron with its run (created, minutes):
+    the day before: daily 06:30 (60), heavy 12:30 (30); heavy 03:00 -> 03:30 (60); daily 06:00 -> 08:00 (120);
+    heavy 12:00 -> 16:00 (60).
+    busy: 03:00-04:30 (cron, then run), 06:00-10:00, 12:00-17:00 (the 12:00 cron until its run is created, then
+    the run); free 00:00-03:00, 04:30-06:00, 10:00-12:00, 17:00-24:00. No 15:00Z or 18:00Z block."""
+    monkeypatch.setattr(g, "WRITERS", {DAILY: (6,), HEAVY: (3, 12)})
+    since, until = T("2026-11-05T00:00"), T("2026-11-06T00:00")
+    rs = sorted([run(DAILY, "2026-11-04T06:30", 60), run(HEAVY, "2026-11-04T12:30", 30),
+                 run(HEAVY, "2026-11-05T03:30", 60),
+                 run(DAILY, "2026-11-05T08:00", 120), run(HEAVY, "2026-11-05T16:00", 60)], key=lambda r: r.created)
+    want = [(T("2026-11-05T00:00"), T("2026-11-05T03:00")), (T("2026-11-05T04:30"), T("2026-11-05T06:00")),
+            (T("2026-11-05T10:00"), T("2026-11-05T12:00")), (T("2026-11-05T17:00"), T("2026-11-06T00:00"))]
+    assert m.free_windows(rs, since, until) == want
+    assert m.gate_minutes_production(rs, since, until) == want
+    # the walk from 17:00 meets the next cron, 03:00Z, 600 min away - capped at the 720-min ceiling it is under
+    per = m._as_of_lists(rs)
+    unf, sch = m._runs_as_of(per, T("2026-11-05T17:00"))
+    assert g.minutes_until_block(unf, T("2026-11-05T17:00"), None, sched=sch) == 600 == m.until_block_fast(
+        T("2026-11-05T17:00"))
+    # negative control: without that morning daily run the 06:00 cron blocks for its whole 24 h window
+    rs2 = [r for r in rs if not (r.wf == DAILY and r.created == T("2026-11-05T08:00"))]
+    assert len(rs2) == len(rs) - 1
+    free2 = m.free_windows(rs2, since, until)
+    assert free2 == m.gate_minutes_production(rs2, since, until) == [(T("2026-11-05T00:00"), T("2026-11-05T03:00")),
+                                                                     (T("2026-11-05T04:30"), T("2026-11-05T06:00"))]
