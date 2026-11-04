@@ -286,6 +286,16 @@ def windowed_admission_reserve_min(source: str) -> float:
             + _env_num(source, "AQUEDUCT_UNCTAD_ASSEMBLY_RESERVE_MIN", ASSEMBLY_RESERVE_MIN_DEFAULT))
 
 
+def windowed_stop_tail_min(source: str) -> float:
+    """WHERE the windowed update STOPS, in minutes before the run ceiling (for tools/measure_ci_lag.py's replay;
+    nothing in the updater calls it): margin floor + assembly reserve, through the SAME env reads as _windowed.
+    The network phase ends at the ceiling minus the assembly reserve, and a request needs at least
+    max(floor, 2 x the longest request) of network time; a WindowStop merges nothing and returns at once. The
+    2 x longest term is NOT in this figure."""
+    return (_env_num(source, "AQUEDUCT_UNCTAD_MARGIN_MIN", MARGIN_FLOOR_MIN_DEFAULT)
+            + _env_num(source, "AQUEDUCT_UNCTAD_ASSEMBLY_RESERVE_MIN", ASSEMBLY_RESERVE_MIN_DEFAULT))
+
+
 # The network time the start gate adds to the windowed update's reserve. CHOSEN: the largest gap between two
 # spill writes measured on the 10-08 turn was 42 s, so 10 min is about 14 chunks; not a measured need.
 ADMISSION_NETWORK_MIN = 10.0

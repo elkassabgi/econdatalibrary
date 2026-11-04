@@ -21,8 +21,9 @@ PENCIL (budget 100; bands by cost: n 0 (a probe-only no_change, 0 s), a / b 1, d
   d (07-01, the oldest) is blocked.
   - no rate: c takes all 45 -> b, n not reached; the pass ends at 70.
   - 2 ids/min: c 50 ids -> 25 min, queue 0; b 100 ids, 20 min left -> 40 cleared, 60 left; n not reached; ends at 70.
-  - with w (declared, reserve 17, 300 min, tail 90) first in band 3: it is admitted at 25, keeps max(0, 75 - 90) = 0
-    -> a non-turn at the deadline -> candidate, but 0 min are left: no drain, c, b, n, w named.
+  - with w (declared, 300 min, first in band 3; its fetcher's own tail and progress piece): admitted at 25, it stops
+    at ITS stop point having kept nothing -> a non-turn and a candidate. Tail 8 / piece 70: stops at 92, 8 min left,
+    no drain, c, b, n, w named. Tail 50 / piece 30: stops at 50, the drain gets 35 min.
 """
 from __future__ import annotations
 
@@ -80,7 +81,11 @@ class Harness:
         units = [Unit(source_id=s, unit_id="_all", strategy="sim", cadence=c, out_paths=[],
                       config={"run_location": "local", "live": True, "window_stop": s in self.declared})
                  for s, c in self.cad.items()]
-        mods = {s: types.SimpleNamespace(window_admission_reserve_min=lambda r=r: r) for s, r in self.declared.items()}
+        # declared {sid: (reserve, tail, piece)}: the figures both sides read (window_stop_tail_min / _piece_min)
+        mods = {s: types.SimpleNamespace(window_admission_reserve_min=lambda r=r: r,
+                                         window_stop_tail_min=lambda t=t: t, window_stop_piece_min=lambda p=p: p)
+                for s, (r, t, p) in self.declared.items()}
+        self.mods = mods
         for k in ("AQUEDUCT_LIVE_ONLY", "GITHUB_ACTIONS", "AQUEDUCT_UNIT_TIMEOUT_MIN", "AQUEDUCT_RUN_LOCATION",
                   "AQUEDUCT_BACKEND", "AQUEDUCT_RETRY_DRAIN_MARGIN_MIN", "AQUEDUCT_RETRY_DRAIN_MAX_MIN",
                   "AQUEDUCT_DERIVE_BUDGET_MIN"):
@@ -148,11 +153,27 @@ class Harness:
         if sid not in self.declared or r <= limit:
             self.clock.t += r * 60.0
             return Result(status=self.book.outcome[sid], obs=1, new_vintage="v-new", merged_rows=1)
-        kept = max(0.0, limit - self.tail)
-        self.clock.t = orchestrate._RUN_DEADLINE_TS
-        self.left[sid] = r - kept
+        # the declared FETCHER's rule, step by step (as tests/test_replay_parity_declared_units.py): pieces that end
+        # before ceiling - tail; none done -> one runs into the stop point; returns at once when the next cannot
+        stop_at = orchestrate._RUN_DEADLINE_TS - self.mods[sid].window_stop_tail_min() * 60.0
+        piece, done = self.mods[sid].window_stop_piece_min() * 60.0, 0.0
+        while True:
+            if piece > 0:
+                if self.clock.t + piece <= stop_at:
+                    self.clock.t += piece
+                    done += piece
+                    continue
+                if done == 0:
+                    self.clock.t = max(self.clock.t, stop_at)
+                break
+            step = min(60.0, stop_at - self.clock.t)
+            if step <= 0:
+                break
+            self.clock.t += step
+            done += step
+        self.left[sid] = r - done / 60.0
         return Result(status="partial", obs=0, new_vintage=None, merged_rows=0, changed_keys={},
-                      error="stopped at the run ceiling", window_stop="progress" if kept > 0 else "none")
+                      error="stopped before the run ceiling", window_stop="progress" if done > 0 else "none")
 
     def drain(self, unit, blob, store, deadline_ts=None, id_gate=None):
         """The derive inside the leftover drain, on the virtual clock: all the time it is given, or `rate` ids/min."""
@@ -222,11 +243,22 @@ def test_pencil_the_margin_binds(tmp_path, monkeypatch, capsys):
     assert p["end_min"] == r["end_min"] == 35.0
 
 
-def test_a_non_turn_is_a_candidate_but_ends_at_the_deadline(tmp_path, monkeypatch, capsys):
-    p, r, raw, out = _both(tmp_path, monkeypatch, capsys, declared={"w": 17.0})
-    assert ("w", 75.0, "window_stopped") in raw["ran"]
-    assert p["drained"] == r["drained"] == [] and p["end_min"] == r["end_min"] == 100.0
+def test_a_non_turn_near_the_ceiling_leaves_no_drain(tmp_path, monkeypatch, capsys):
+    # w (reserve 17, tail 8, piece 70) admitted at 25: window 75 - 8 = 67 < one piece -> runs into its stop point at
+    # 92, keeps nothing -> a non-turn and a candidate; 8 min left -> min(8 - 15, 45) = 0: no drain, 4 named
+    p, r, raw, out = _both(tmp_path, monkeypatch, capsys, declared={"w": (17.0, 8.0, 70.0)})
+    assert ("w", 67.0, "window_stopped") in raw["ran"]
+    assert p["drained"] == r["drained"] == [] and p["end_min"] == r["end_min"] == 92.0
     assert p["not_drained"] == r["not_drained"] == ["c", "b", "n", "w"], out[-1500:]
+
+
+def test_a_non_turn_that_stops_early_leaves_the_drain_its_time(tmp_path, monkeypatch, capsys):
+    # w (reserve 17, tail 50, piece 30) admitted at 25: window 75 - 50 = 25 < one piece -> stops at 50, keeps
+    # nothing; 50 min left -> drain min(35, 45) = 35: c (oldest) takes it all, ends at 85; b, n, w not reached
+    p, r, raw, out = _both(tmp_path, monkeypatch, capsys, declared={"w": (17.0, 50.0, 30.0)})
+    assert ("w", 25.0, "window_stopped") in raw["ran"] and raw["budget_skipped"] == [("c", 90.0)]
+    assert p["drained"] == r["drained"] == [("c", 35.0)] and p["end_min"] == r["end_min"] == 85.0
+    assert p["not_drained"] == r["not_drained"] == ["b", "n", "w"], out[-1500:]
 
 
 def test_negative_control_no_drain_in_the_replay_diverges(tmp_path, monkeypatch, capsys):

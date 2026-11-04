@@ -963,6 +963,22 @@ def window_admission_reserve_min() -> float:
     return _margin_floor_s() / 60.0 + TIMEOUT_LARGE / 60.0 + ADMISSION_MERGE_MIN
 
 
+def window_stop_tail_min() -> float:
+    """WHERE census STOPS, in minutes before the run ceiling (for tools/measure_ci_lag.py's replay; nothing in
+    the updater calls it): the margin floor, through the SAME helper update()'s stop check reads. Every request
+    is preceded by that check (end - now < floor + 2 x (longest request + longest merge) this pass) and clamped
+    to end by ceiling - floor (`req_end_ts`), so before any request is timed the stop point is ceiling - floor.
+    The 2 x longest term grows as the pass runs and is NOT in this figure."""
+    return _margin_floor_s() / 60.0
+
+
+def window_stop_piece_min() -> float:
+    """The window a census stop needs to count as PROGRESS, in minutes: 0. update() reports window_stop "none"
+    only when no flow was attempted and nothing is carried (the WINDOW-STOP SIGNAL at the end of update), and a
+    flow is attempted whenever the first stop check passes - so any window past the floor is progress."""
+    return 0.0
+
+
 def _window_end_ts():
     """The pass's run ceiling as an epoch timestamp, or None when none is set. Read through
     sys.modules (as wid and _giant do), so this module never imports the orchestrator."""

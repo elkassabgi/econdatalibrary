@@ -263,6 +263,21 @@ def window_admission_reserve_min() -> float:
     return _margin_floor_s() / 60.0 + ADMISSION_COUNTRY_MIN
 
 
+def window_stop_tail_min() -> float:
+    """WHERE wid STOPS, in minutes before the run ceiling (for tools/measure_ci_lag.py's replay; nothing in the
+    updater calls it): the margin floor, through the SAME helper the window check reads. A country starts only
+    with at least max(floor, 2 x the longest country so far) left, so before any country is timed the stop point
+    is ceiling - floor. The 2 x longest term, and a country that overruns once started, are NOT in this figure."""
+    return _margin_floor_s() / 60.0
+
+
+def window_stop_piece_min() -> float:
+    """The window a wid stop needs to count as PROGRESS, in minutes: 0. update() reports window_stop "none" only
+    when no country was attempted and nothing is handed over, and the first country is attempted whenever the
+    first window check passes."""
+    return 0.0
+
+
 def _window_end_ts():
     """The pass's run ceiling as an epoch timestamp, or None when no ceiling is set.
 
