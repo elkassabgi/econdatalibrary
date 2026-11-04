@@ -17,7 +17,8 @@ cannot read CI. It errs towards blocking, because a wrong CLEAR costs a pass's w
 wrong BLOCK costs one tick (run_local_heavy.ps1 -SkipCiCheck overrides it):
   - every run that is not completed blocks, however old; one older than a day also prints a warning;
   - a cron blocks from its scheduled time until its scheduled run is created, at most PENDING_LIMIT
-    (12 h, the same window in which the gate credits a run to that cron). There is no shorter ceiling
+    (pending_limit(): the time to that workflow's next cron - 24 h for the one daily cron, 9 h and 15 h for the
+    two heavy ones - the same window in which the gate credits a run to that cron). There is no shorter ceiling
     any more - see PENDING_LIMIT for the measurement that removed it;
   - only a workflow GitHub reports as explicitly not active (disabled) is not waited for; one GitHub
     does not list at all is still waited for, with a warning;
@@ -36,9 +37,74 @@ import sys
 import time
 
 # Workflow file -> UTC hours of its schedule crons (.github/workflows/<file>); both run
-# `python -m updater.run --pull-state ... --push-state`.
-WRITERS = {"updater-daily.yml": (6, 18), "updater-heavy.yml": (3, 15)}
-CRON_SPACING = dt.timedelta(hours=12)          # between a workflow's two crons
+# `python -m updater.run --pull-state ... --push-state`. tests/test_ci_writer_gate.py and
+# tests/test_scheduler_stall.py read the workflow files and fail when this table and their crons disagree.
+#
+# SCHEDULE OF 2026-11-04 (owner's decision): the 18:00Z updater-daily cron is removed and the 15:00Z
+# updater-heavy cron moves to 12:00Z, so that the desktop pass gets a window at night. Before that the
+# schedule was daily (6, 18) and heavy (3, 15): two crons per workflow, 12 h apart, and every window
+# below was the one constant 12 h. Now a workflow's crons are not evenly spaced (heavy 03->12 is 9 h,
+# 12->03 is 15 h; daily has one cron, 24 h from the next), so the window is per cron: see cron_windows().
+WRITERS = {"updater-daily.yml": (6,), "updater-heavy.yml": (3, 12)}
+# The table before 2026-11-04. The gate never reads it; it is here, next to the one in force, for tools that replay
+# history from before that day (tools/measure_ci_lag.py --schedule until-2026-11-04) and for the tests that do.
+WRITERS_UNTIL_2026_11_04 = {"updater-daily.yml": (6, 18), "updater-heavy.yml": (3, 15)}
+
+
+def cron_windows(writers: dict | None = None) -> dict:
+    """{workflow: {cron hour: window}}: the time from each cron to the NEXT cron of the same workflow.
+
+    This is the window in which the gate credits a scheduled run to that cron (the `started` test in assess)
+    and the longest a cron with no run still blocks (PENDING_LIMIT below explains why the two are the same).
+    The windows of one workflow tile the clock without overlapping, so a run is credited to at most one cron.
+    A workflow with one cron a day gets 24 h. `writers` defaults to WRITERS (tools/measure_ci_lag.py passes a
+    cut schedule)."""
+    out = {}
+    for wf, hours in (WRITERS if writers is None else writers).items():
+        hs = sorted(set(hours))
+        out[wf] = {h: dt.timedelta(hours=((hs[(i + 1) % len(hs)] - h) % 24) or 24) for i, h in enumerate(hs)}
+    return out
+
+
+def pending_limit(wf: str, hour: int, writers: dict | None = None) -> dt.timedelta:
+    """The credit window and blocking ceiling of the `hour`:00Z cron of `wf` (cron_windows)."""
+    return cron_windows(writers)[wf][hour]
+
+
+# A RUN THAT MAY BELONG TO THE PREVIOUS CRON IS NOT CREDITED TO THIS ONE (review AR-426, coordinator's decision of
+# 2026-11-04). Heavy's 03:00Z window is 9 h, shorter than that cron's measured lag tail: the scheduled heavy run of
+# 2026-08-27 was created 14:02Z, a 03:00Z run 662 min late. Credited to the 12:00Z cron by window alone, it would make
+# the gate read CLEAR once it finished, while the real 12:00Z run had not been created - the collision this gate exists
+# to prevent. So when the previous cron of the same workflow has NO run in its own window, a run created before that
+# previous cron + CREDIT_AMBIGUITY may be its late run, and does not start this cron. This cron then needs a run created
+# after that instant, or a SECOND run in its window. CREDIT_AMBIGUITY is the measured lag ceiling (60-day maximum 710
+# min, rounded up). Where every window is at least that long - the table before 2026-11-04 (all 12 h), and daily's one
+# cron (24 h) - the ambiguous span is empty and the rule is the plain window rule. What it gives up: after a 03:00Z cron
+# GitHub really skipped, a 12:00Z run created before 15:00Z is not believed, so the gate blocks until the next heavy run
+# or until the 12:00Z window ends at 03:00Z - about one night of desktop time (3 skips of any cron in 60 days).
+CREDIT_AMBIGUITY = dt.timedelta(hours=12)
+
+
+def credit_instant(created: list, cron: dt.datetime, hour: int, wf: str, windows: dict | None = None):
+    """When the `hour`:00Z cron at `cron` counts as started: the createdAt of the scheduled run that starts it, or None.
+
+    `created`: the createdAt of the writer's SCHEDULED runs, sorted. `windows`: cron_windows() (default: of WRITERS).
+    One rule for the gate (assess) and for tools/measure_ci_lag.py (cron_blocks), so the two cannot drift apart."""
+    windows = cron_windows() if windows is None else windows
+    ws = windows[wf]
+    own = [c for c in created if cron <= c < cron + ws[hour]]
+    if not own:
+        return None
+    hs = sorted(ws)
+    prev_h = hs[hs.index(hour) - 1]
+    prev_cron = cron - ws[prev_h]                       # the previous cron's window ends exactly at this cron
+    ambiguous_until = prev_cron + CREDIT_AMBIGUITY
+    if ambiguous_until <= cron or any(prev_cron <= c < cron for c in created):
+        return own[0]
+    later = [c for c in own if c >= ambiguous_until]
+    return min(own[1:2] + later[:1]) if (len(own) > 1 or later) else None
+
+
 # How long a cron that has not started still blocks a desktop pass: until its run is created, at most this.
 #
 # WHY THERE IS NO SHORTER CEILING (2026-10-20). Until then the window was the p90 of the workflow's own recent
@@ -69,9 +135,10 @@ CRON_SPACING = dt.timedelta(hours=12)          # between a workflow's two crons
 # measured, clamped horizon is also biased LOW exactly when it matters: it predicts how late an un-started
 # cron will be from the crons that did start, so the slow run is absent from its own sample.
 #
-# The limit is CRON_SPACING because that is the window in which the gate credits a run to a cron at all (the
-# `started` test below, and the same rule in tools/measure_ci_lag.py): a run created later than that is
-# indistinguishable from the next cron's run. At that point the workflow's next cron is due and blocks in its
+# The limit is the time to the workflow's next cron (cron_windows; it was CRON_SPACING = 12 h while every
+# workflow had two crons 12 h apart) because that is the window in which the gate credits a run to a cron at
+# all (the `started` test below, and the same rule in tools/measure_ci_lag.py): a run created later than that
+# is indistinguishable from the next cron's run. At that point the workflow's next cron is due and blocks in its
 # own right, so for one workflow the block is continuous from a cron until a run is created. What a skipped
 # cron costs: the desktop waits for the next cron's run (3 skips in the 60 days above). What it costs if
 # GitHub stops creating scheduled runs without disabling the workflow: the desktop waits until it does, or
@@ -88,6 +155,20 @@ CRON_SPACING = dt.timedelta(hours=12)          # between a workflow's two crons
 # This restores the 12 h window of PR #29, which was blamed for a zero-pass day (R1032/R1033); that
 # attribution was withdrawn (R1042): a window ends when its run appears, and runs do appear.
 #
+# SINCE THE 2026-11-04 SCHEDULE the windows are daily 06:00Z 24 h, heavy 03:00Z 9 h, heavy 12:00Z 15 h.
+#   - The daily window grew from 12 h to 24 h. With one cron a day, a 12 h window would answer CLEAR from 18:00Z
+#     while a 06:00Z run not yet created could still arrive (the 18:00Z cron used to take over the block at
+#     that point); 24 h keeps the block continuous until a run is created, as before. A skipped daily cron now
+#     blocks the desktop until the NEXT day's run.
+#   - The heavy 03:00Z window shrank from 12 h to 9 h, and that is below the measured lag tail (60-day maximum
+#     of the 03:00Z cron 663 min, and 4 of the 237 runs of both writers later than 540; over the 30 days to
+#     2026-11-04 the 03:00Z maximum was 448, measured from the gh run history on that day). The
+#     block stays continuous - at 12:00Z the 12:00Z cron blocks in its own right. Crons 9 h apart cannot tell a
+#     03:00Z run created more than 9 h late from the 12:00Z run by window alone, so a run that may be the 03:00Z
+#     cron's late run does not start the 12:00Z cron (CREDIT_AMBIGUITY, review AR-426): the gate keeps blocking
+#     until a second heavy run or the end of the 12:00Z window, giving up about one night after a 03:00Z
+#     cron GitHub really skipped. (The real case: the heavy run of 2026-08-27, created 14:02Z, 662 min late.)
+#
 # Cost and benefit, measured on one frozen snapshot of that history with this repo's own instrument
 # (tools/measure_ci_lag.py, 60 days to 2026-10-20, old rule vs this one):
 #     replay  CLEAR time 338 -> 281 min/day (last 28 days 214 -> 171, last 14 days 217 -> 184)
@@ -98,7 +179,8 @@ CRON_SPACING = dt.timedelta(hours=12)          # between a workflow's two crons
 # agrees: 60 days 48 -> 43 passes, 9,957 -> 7,972 pass minutes, collisions 18 -> 2 (both left are dispatches,
 # which no gate can predict); last 28 days 21 -> 17 passes, 4,207 -> 2,527 pass minutes, 11 -> 1 collisions.
 # The CLEAR time that goes is the time in which a pass would be overlapped. Re-measure with `replay` / `sweep`.
-PENDING_LIMIT = CRON_SPACING
+# "PENDING_LIMIT" (the name the comment above goes by) is no longer one constant: it is pending_limit(wf, hour),
+# from cron_windows() above.
 # A note, not a decision: a cron this late is in the tail of the measured lag (5 of 237 runs came later than
 # 8 h in the 60 days above), so it is worth saying that GitHub may have skipped it. Clamped below the limit
 # so it can always fire before the block ends.
@@ -149,26 +231,32 @@ def assess(runs: dict, now: dt.datetime, states: dict | None = None,
                     notes.append(f"WARNING: {wf} run created {r['createdAt']} has been {r['status']} for more "
                                  f"than a day; if it is stuck, cancel it (or run with -SkipCiCheck)")
                 return True, f"{wf} run created {r['createdAt']} is {r['status']}{where}", notes
+    windows = cron_windows()
     for wf, hours in WRITERS.items():
-        horizon = PENDING_LIMIT
         state = None if states is None else states.get(wf)
         if states is not None and state is None:
             notes.append(f"WARNING: {wf} is not in GitHub's workflow list; still waiting for its crons")
         elif state is not None and state != "active":
             notes.append(f"NOTE: {wf} is {state}; its crons are not waited for")
             continue
+        created = sorted(_parse(r["createdAt"]) for r in sched.get(wf, []) if r["event"] == "schedule")
         for back in (1, 0):
             day = (now - dt.timedelta(days=back)).date()
             for h in hours:
+                horizon = windows[wf][h]
                 cron = dt.datetime(day.year, day.month, day.day, h, tzinfo=dt.timezone.utc)
                 if not cron <= now < cron + horizon:
                     continue
-                # The same window as PENDING_LIMIT: a run is credited to this cron only if it was created
-                # within it, and the cron blocks for exactly as long as it can still be credited one.
-                started = any(r["event"] == "schedule" and cron <= _parse(r["createdAt"]) < cron + PENDING_LIMIT
-                              for r in sched.get(wf, []))
+                # The same window as pending_limit(): a run is credited to this cron only if it was created
+                # within it, and the cron blocks for exactly as long as it can still be credited one. A run that
+                # may be the previous cron's late run does not count (CREDIT_AMBIGUITY).
+                started = credit_instant(created, cron, h, wf, windows) is not None
                 if not started:
                     late = int((now - cron).total_seconds() // 60)
+                    if any(cron <= c < cron + horizon for c in created):
+                        notes.append(f"NOTE: {wf} {cron:%H:%M}Z: the run in its window was created before "
+                                     f"{CREDIT_AMBIGUITY.total_seconds() / 3600:.0f} h after the previous cron, which "
+                                     f"has no run of its own, so it may be that cron's late run; waiting for another")
                     if now - cron >= min(WARN_PENDING_AFTER, horizon * 0.75):
                         notes.append(f"WARNING: {wf} {cron:%H:%M}Z cron has had no run for {late} min; "
                                      f"GitHub may have skipped it")

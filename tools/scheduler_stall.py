@@ -75,10 +75,20 @@ consecutive scheduled-run creations of one writer is 1,569 min (26.2 h: the 2026
 sampling the age on a 5-minute grid) gives 26.1 h. Start lag over the 60 days to 2026-10-20 (review AR-362):
 p99 661, max 710 min. The age this rule reads is at most "one cron gap + the next run's lag" without a skip
 (12 h + 710 min = 23.8 h) and "one skipped cron + the next run's lag" with one skip (24 h + 710 min = 35.8 h).
-36 h = 2 x CRON_SPACING + PENDING_LIMIT: one skipped cron plus the 12 h window in which the gate credits a run
+36 h was 2 x CRON_SPACING + PENDING_LIMIT: one skipped cron plus the 12 h window in which the gate credited a run
 to its cron at all. Two consecutive skips of one workflow can cross it; none was seen. The cost is speed: the
 mail comes 24-36 h after the first cron GitHub did not create, when the desktop has been blocked about a day
 (the normal longest gap between desktop passes is about 73 h, AR-362).
+
+SINCE THE 2026-11-04 SCHEDULE (updater-daily 06:00Z only, updater-heavy 03:00Z and 12:00Z) the crons are no longer
+12 h apart, so the limit is kept as the number it was, 36 h, and pinned against the new schedule instead of being
+derived from one spacing (LAG_ALLOWANCE = 12 h covers the measured maximum lag of 710 min):
+  * no skip: the age is at most the writer's largest cron gap + the lag - daily 24 h + 12 h = 36 h, heavy
+    15 h + 12 h = 27 h - so a writer that misses nothing cannot cross it (daily only just: 24 h + 710 min = 35.8 h);
+  * one skipped HEAVY cron: the two gaps around it, 24 h, + the lag - at most 35.8 h, as before - does not mail;
+  * one skipped DAILY cron: 48 h + the lag - it MAILS, at 36 h. That is deliberate: with one daily cron, the gate
+    blocks the desktop from a skipped 06:00Z cron until the next day's run (24 h, ci_writer_gate.cron_windows), so
+    one daily skip now blocks the desktop for the "about a day" that two skips used to.
 
 MAIL (the same in shadow mode, where "sent" means "recorded as would-be"). A stall comes due when the SAME
 writer is seen stalled on two evaluations in a row (one odd listing cannot mail, and two different writers
@@ -148,7 +158,8 @@ for _p in (ROOT, os.path.join(ROOT, "tools")):
 
 import ci_writer_gate as gate                                # noqa: E402
 
-STALL_AFTER = 2 * gate.CRON_SPACING + gate.PENDING_LIMIT     # 36 h - see the docstring for the measurement
+STALL_AFTER = dt.timedelta(hours=36)                         # see the docstring: pinned to the schedule by the tests
+LAG_ALLOWANCE = dt.timedelta(hours=12)                       # the measured maximum start lag, 710 min, rounded up
 REMIND_EVERY = dt.timedelta(hours=24)
 CHECK_EVERY = dt.timedelta(minutes=30)
 HOLD_OFF = dt.timedelta(hours=6)          # after a send that never reported back (killed mid-send)

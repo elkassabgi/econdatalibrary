@@ -33,7 +33,15 @@ on:
     # its whole budget drains the expensive backlog — halving the rotation period
     # without touching the ordering policy in orchestrate.order_units. The
     # aqueduct-updater concurrency group still serializes it against the heavy.
-    - cron: '0 18 * * *'  # daily 18:00 UTC: expensive-band drain pass
+    #
+    # REMOVED 2026-11-04 (owner's decision): the 18:00 UTC cron described above is gone, so that the
+    # desktop updater (tools/run_local_heavy.ps1, gated by tools/ci_writer_gate.py) gets a nightly
+    # window: with it, the 18:00 run and its queue behind the heavy run filled the night (no night of
+    # 2026-10-28..11-03 had a 150-min free window for the desktop). What that gives up, stated so it is a decision and not
+    # a surprise: this workflow drops from ~2 to ~1 scheduled run a day, the expensive band loses its
+    # drain pass (its rotation period roughly doubles again), and a manual dispatch of this workflow
+    # at night now lands inside the desktop's window - dispatch only when the desktop pass is idle,
+    # or the second state push is refused and that pass's bookkeeping is lost.
   workflow_dispatch:
     inputs:
       source:
