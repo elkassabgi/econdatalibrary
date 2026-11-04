@@ -426,6 +426,60 @@ def _window_stop_reserve(unit):
     return float(v), None
 
 
+def order_last_turn(unit, state_row, last_kill_utc, last_window_stop_utc):
+    """The stamp run_once's order key sorts `unit` by - the ONE place the declared/undeclared choice is made.
+
+    A unit that declares window_stop (registry `window_stop: true`) sorts by declared_last_turn_utc, every other
+    unit by last_turn_utc. tools/measure_ci_lag.py's starvation replay calls this same function, so the replay
+    cannot order a declared unit by a key production does not use (review of PR #215: the replay kept
+    last_turn_utc for every unit). Moved out of run_once's _staleness unchanged."""
+    if (unit.config or {}).get("window_stop") is True:
+        # Declared window-stoppable units ROTATE: every window stop moves the key back (review AR-415 C).
+        return declared_last_turn_utc(state_row, last_kill_utc, last_window_stop_utc)
+    return last_turn_utc(state_row, last_kill_utc)
+
+
+def admission_reserve(unit, est_s, unit_timeout_min=None):
+    """The start gate's reserve for `unit`: (need_min, basis, declared_min, why_not_declared).
+
+    est_s is the unit's run_cost_estimate (None = never run). unit_timeout_min defaults to _unit_timeout_min();
+    tools/measure_ci_lag.py's replay passes its own (the 45-min default). declared_min / why_not_declared are
+    _window_stop_reserve's answer, returned so run_once can print what it printed before. Moved out of
+    run_once's unit loop unchanged, so the replay reserves exactly what production reserves (review of PR #215:
+    the replay kept the old 90-min rule for the declared units)."""
+    _worst_min = 2 * (_unit_timeout_min() if unit_timeout_min is None else unit_timeout_min)
+    # WINDOW-STOPPABLE units (registry window_stop: true) reserve what THEY need to stop cleanly and hand
+    # over, declared by their fetcher (_window_stop_reserve). Every other unit takes the branches below,
+    # unchanged, and so does a declared unit whose reserve cannot be read (fail closed, announced).
+    _ws_min, _ws_bad = _window_stop_reserve(unit)
+    _basis = "worst case, not an estimate"
+    if _ws_min is not None:
+        # The declared figure WINS whenever the unit timeout is enabled - even a short one: with
+        # AQUEDUCT_UNIT_TIMEOUT_MIN=10 the worst case is 20, and min(20, 75) would admit nonplastics below
+        # its own 60-min assembly reserve (review AR-415). It is capped at the DEFAULT worst case (2 x 45 =
+        # 90), so an env override cannot make a declared unit harder to admit than an undeclared giant on
+        # default settings. A DISABLED timeout (<= 0, or nan) keeps reserving 0 for every unit, exactly as
+        # before. It also takes precedence over the never-run worst case (est None): what a unit needs to
+        # stop does not depend on a cost on record.
+        _need_min = min(_DECLARED_RESERVE_CAP_MIN, _ws_min) if _worst_min > 0 else 0.0
+        _basis = ("declared by its window-stopping fetcher: margin floor + hand-over reserve, "
+                  "not a worst case")
+    elif est_s is None:
+        # Never run, so no cost on record and no basis for a smaller reserve.
+        _need_min = _worst_min
+    else:
+        # Room for 1.5x this unit's MEASURED cost in each of its two windows. The old
+        # rule reserved the fleet worst case (2 x 45 = 90 min) against every unit, so
+        # the effective scheduling horizon was 200 of the 290 budgeted minutes and boc
+        # - measured at 14.6 min - was refused a turn with 89 minutes still on the
+        # clock. It went RED-SLA at 4 days on a DAILY cadence for that reason alone,
+        # alongside dst and riksbank, and those three failed the health gate on five
+        # consecutive runs. A reserve is meant to bound THIS unit's overrun; sizing it
+        # by the slowest unit in the fleet is what starved the cheap ones.
+        _need_min = min(_worst_min, max(2 * 1.5 * (est_s / 60.0), 10.0))
+    return _need_min, _basis, _ws_min, _ws_bad
+
+
 # The RUN ceiling, as an absolute wall-clock timestamp, shared by every phase.
 # Run 31466202723 (and the two 250-min kills before it) proved the phases'
 # INDIVIDUAL bounds do not compose: the start-gate stopped new units at 240 min,
@@ -2960,12 +3014,9 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
 
     def _staleness(unit):
         st = store.get_unit(unit.source_id, unit.unit_id) or {}
-        if (unit.config or {}).get("window_stop") is True:
-            # Declared window-stoppable units ROTATE: every window stop moves the key back (review AR-415 C).
-            last = declared_last_turn_utc(st, _kills.get((unit.source_id, unit.unit_id)),
-                                          _wstops.get((unit.source_id, unit.unit_id)))
-        else:
-            last = last_turn_utc(st, _kills.get((unit.source_id, unit.unit_id)))
+        # declared_last_turn_utc for a window_stop unit, last_turn_utc for every other (order_last_turn)
+        last = order_last_turn(unit, st, _kills.get((unit.source_id, unit.unit_id)),
+                               _wstops.get((unit.source_id, unit.unit_id)))
         # Cadence-normalized: a 5d-stale daily (5x overdue) outranks a 10d-stale
         # annual (0.03x) — absolute age inverted exactly that on 2026-08-18.
         return (overdue_key(last, order_cadence(unit), _now), unit.key)
@@ -3066,39 +3117,12 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
         # never in scope — a two-source dispatch reported "100 source(s) NOT ATTEMPTED".
         # A skip count is only meaningful over units that would otherwise have RUN.
         _est_s = _costs.get(unit.source_id)
-        _worst_min = 2 * _unit_timeout_min()
-        # WINDOW-STOPPABLE units (registry window_stop: true) reserve what THEY need to stop cleanly and hand
-        # over, declared by their fetcher (_window_stop_reserve). Every other unit takes the branches below,
-        # unchanged, and so does a declared unit whose reserve cannot be read (fail closed, announced).
-        _ws_min, _ws_bad = _window_stop_reserve(unit)
-        _basis = "worst case, not an estimate"
+        # The reserve: a declared unit's own figure, else min(2 x timeout, 3 x est floored at 10), else the worst
+        # case for a never-run unit (admission_reserve, shared with tools/measure_ci_lag.py's replay).
+        _need_min, _basis, _ws_min, _ws_bad = admission_reserve(unit, _est_s)
         if _ws_bad:
             print(f"[orchestrator] WINDOW STOP {unit.key}: {_ws_bad} - keeping the standard reserve",
                   flush=True)
-        if _ws_min is not None:
-            # The declared figure WINS whenever the unit timeout is enabled - even a short one: with
-            # AQUEDUCT_UNIT_TIMEOUT_MIN=10 the worst case is 20, and min(20, 75) would admit nonplastics below
-            # its own 60-min assembly reserve (review AR-415). It is capped at the DEFAULT worst case (2 x 45 =
-            # 90), so an env override cannot make a declared unit harder to admit than an undeclared giant on
-            # default settings. A DISABLED timeout (<= 0, or nan) keeps reserving 0 for every unit, exactly as
-            # before. It also takes precedence over the never-run worst case (est None): what a unit needs to
-            # stop does not depend on a cost on record.
-            _need_min = min(_DECLARED_RESERVE_CAP_MIN, _ws_min) if _worst_min > 0 else 0.0
-            _basis = ("declared by its window-stopping fetcher: margin floor + hand-over reserve, "
-                      "not a worst case")
-        elif _est_s is None:
-            # Never run, so no cost on record and no basis for a smaller reserve.
-            _need_min = _worst_min
-        else:
-            # Room for 1.5x this unit's MEASURED cost in each of its two windows. The old
-            # rule reserved the fleet worst case (2 x 45 = 90 min) against every unit, so
-            # the effective scheduling horizon was 200 of the 290 budgeted minutes and boc
-            # - measured at 14.6 min - was refused a turn with 89 minutes still on the
-            # clock. It went RED-SLA at 4 days on a DAILY cadence for that reason alone,
-            # alongside dst and riksbank, and those three failed the health gate on five
-            # consecutive runs. A reserve is meant to bound THIS unit's overrun; sizing it
-            # by the slowest unit in the fleet is what starved the cheap ones.
-            _need_min = min(_worst_min, max(2 * 1.5 * (_est_s / 60.0), 10.0))
         _now = time.time()
         if (run_deadline is not None
                 and _now + _need_min * 60.0 > run_deadline
