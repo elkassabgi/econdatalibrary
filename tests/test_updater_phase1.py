@@ -356,6 +356,45 @@ class TestStateCAS:
         # pulled copy pushes cleanly (etags line up end-to-end)
         assert runmod.push_state() == 0
 
+    def _pull_refused_local_untouched(self, fake_r2, stored: bytes):
+        before = open(fake_r2.state_db, "rb").read()
+        etag_before = open(runmod.ETAG_PATH, encoding="utf-8").read()
+        fake_r2.s3.objs[runmod.STATE_KEY] = stored
+        assert runmod.pull_state() == 1
+        assert open(fake_r2.state_db, "rb").read() == before, "a refused pull must not replace state.db"
+        assert open(runmod.ETAG_PATH, encoding="utf-8").read() == etag_before, "nor record its etag"
+        left = [n for n in os.listdir(fake_r2.state_dir) if n.endswith(".tmp")]
+        assert left == [], f"temp file left behind: {left}"
+
+    def test_pull_refuses_truncated_object(self, fake_r2):
+        """pull_state streams with copy_stream, which returns SHORT output on a truncated frame instead
+        of raising as decompress() did (AR-429 r2). The frame-header size check must catch it."""
+        assert runmod.push_state() == 0
+        full = fake_r2.s3.objs[runmod.STATE_KEY]
+        for cut in (full[:-1], full[: len(full) // 2]):
+            self._pull_refused_local_untouched(fake_r2, cut)
+
+    def test_pull_refuses_frame_without_content_size(self, fake_r2):
+        import zstandard
+        assert runmod.push_state() == 0
+        raw = zstandard.ZstdDecompressor().decompress(fake_r2.s3.objs[runmod.STATE_KEY])
+        no_size = zstandard.ZstdCompressor(write_content_size=False).compressobj()
+        stored = no_size.compress(raw) + no_size.flush()
+        assert zstandard.frame_content_size(stored) == -1   # the case under test, not assumed
+        self._pull_refused_local_untouched(fake_r2, stored)
+
+    def test_pull_refuses_two_concatenated_frames(self, fake_r2):
+        assert runmod.push_state() == 0
+        full = fake_r2.s3.objs[runmod.STATE_KEY]
+        self._pull_refused_local_untouched(fake_r2, full + full)
+
+    def test_push_frame_records_content_size(self, fake_r2):
+        import zstandard
+        assert runmod.push_state() == 0
+        stored = fake_r2.s3.objs[runmod.STATE_KEY]
+        raw = zstandard.ZstdDecompressor().decompress(stored)
+        assert zstandard.frame_content_size(stored) == len(raw) > 0
+
 
 # ---------------------------------------------------------------------------
 # D1 sync: emitted SQL validity + idempotency + refusals

@@ -210,7 +210,8 @@ jobs:
         # NO SPACE, measured 2026-11-05 on the 13 failed heavy jobs of 2026-11-01..11-04 (jobs API
         # step results + annotations): 6 were disk - 3 died writing state.db inside --pull-state,
         # 2 in the catalog stream and then at push-state's VACUUM INTO, 1 on the runner's own log.
-        # (The other 7 lost the runner during --pull-state: memory, addressed by streaming in
+        # (The other 7 lost the runner during --pull-state: likely memory, not proven - no log
+        # survives from them; addressed by streaming in
         # updater/run.py, not by this step.) The peak is at push-state: state.db 15,820,623,872 B
         # + catalog.db 11,906,957,312 B + VACUUM INTO's second copy of state.db ~= 43.5 GB, before
         # any fetched data. The readable disk failures drew runners with < 15.82 GB free.
