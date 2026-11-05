@@ -203,8 +203,11 @@ def test_dedup_ignores_only_tracking_keys():
     keys = {wn.item_key("p", {"link": u}) for u in (
         "https://pub.example.org/n?NewsID=101", "https://pub.example.org/n?NewsID=102",
         "https://pub.example.org/n?item=7", "https://pub.example.org/n?item=8",
-        "https://pub.example.org/notices#a", "https://pub.example.org/notices#b")}
-    assert len(keys) == 6
+        "https://pub.example.org/notices#a", "https://pub.example.org/notices#b",
+        "https://databank.worldbank.org/reports.aspx?source=2",
+        "https://databank.worldbank.org/reports.aspx?source=57",
+        "https://pub.example.org/n?ref=2026-11", "https://pub.example.org/n?ref=2026-12")}
+    assert len(keys) == 10
 
 
 FRAG = b"""<main><a href="/notices#a">Planned maintenance window</a>

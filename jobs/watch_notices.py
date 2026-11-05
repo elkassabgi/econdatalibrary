@@ -258,7 +258,10 @@ def score(text: str, compiled: dict, extra=()) -> "tuple[int, list]":
 # Query keys that only track the visitor. EVERY other key is kept, and so is the fragment: an
 # allow-list (id, p, article) folded NewsID=101 and NewsID=102 into one key, and dropping the fragment
 # folded /notices#a and /notices#b, so a discontinuation was marked seen without being scored (AR-432 #1).
-TRACKING = re.compile(r"^(utm_\w*|fbclid|gclid|mc_cid|mc_eid|_ga|ref|source)$", re.IGNORECASE)
+# Only keys that are never an id anywhere: `source` and `ref` are not here, because World Bank DataBank
+# names its database with ?source=N (AR-432 r2). A key kept by mistake costs a duplicate item someone
+# dismisses; a key dropped by mistake loses a notice silently - so the list stays short.
+TRACKING = re.compile(r"^(utm_\w*|fbclid|gclid|mc_cid|mc_eid|_ga)$", re.IGNORECASE)
 
 
 def canonical_link(link: str) -> str:
