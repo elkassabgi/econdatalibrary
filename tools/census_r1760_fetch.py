@@ -23,6 +23,7 @@ import json
 import os
 import sys
 import time
+from urllib.parse import quote, quote_plus
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -76,7 +77,10 @@ def fetch(table: str, time_clause: str, out_dir: str, key: str, sess=None) -> di
     except requests.RequestException as e:
         # requests' ConnectionError/SSLError carry urllib3's message WITH the full query string, key included
         # (review AR-440, demonstrated): the message is scrubbed and the traceback suppressed (`from None`).
-        raise SystemExit(f"{stem}: {type(e).__name__}: " + str(e).replace(key, "<key>")[:300]) from None
+        msg = str(e)
+        for form in {key, quote(key, safe=""), quote_plus(key)}:          # raw and URL-encoded forms
+            msg = msg.replace(form, "<key>")
+        raise SystemExit(f"{stem}: {type(e).__name__}: " + msg[:300]) from None
     body = r.content
     secs = round(time.monotonic() - t0, 2)
     ctype = (r.headers.get("Content-Type") or "").lower()

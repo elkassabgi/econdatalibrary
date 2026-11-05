@@ -63,15 +63,46 @@ def test_the_plan_stays_inside_each_affected_range():
     assert F.plan("naics", 2018) == [] and F.plan("sitc", 2023) == []
 
 
-def test_out_must_be_outside_the_checkout_whatever_the_case():
-    for p in (os.path.join(ROOT, "data", "x"), os.path.join(ROOT, "data", "x").upper()):
-        with pytest.raises(SystemExit, match="outside the checkout"):
-            F.main(["--calibrate", "--out", p])
+@pytest.fixture
+def offline(monkeypatch):
+    """No test may reach the real key or the network (review AR-440 r2): a guard that failed to fire used to
+    fall through to _key() and requests."""
+    def no_key():
+        raise AssertionError("the real key loader was reached")
+
+    class NoNet:
+        def get(self, *a, **k):
+            raise AssertionError("a request was about to be sent")
+    monkeypatch.setattr(F, "_key", no_key)
+    monkeypatch.setattr(F.requests, "Session", NoNet)
+
+
+def test_out_must_be_outside_the_checkout(offline):
+    with pytest.raises(SystemExit, match="outside the checkout"):
+        F.main(["--calibrate", "--out", os.path.join(ROOT, "data", "x")])
+
+
+@pytest.mark.skipif(os.path.normcase("A") != "a", reason="paths are case-sensitive here: an upper-cased path "
+                                                         "is a different folder")
+def test_out_must_be_outside_the_checkout_whatever_the_case(offline):
+    with pytest.raises(SystemExit, match="outside the checkout"):
+        F.main(["--calibrate", "--out", os.path.join(ROOT, "data", "x").upper()])
 
 
 class Raising:
     def get(self, url, params=None, headers=None, timeout=None):
         raise F.requests.ConnectionError(f"Max retries exceeded with url: /x?get=a&time=2015-06&key={params['key']}")
+
+
+def test_an_encoded_key_is_scrubbed_too(tmp_path):
+    k = "a+b/c=d"
+
+    class R:
+        def get(self, url, params=None, headers=None, timeout=None):
+            raise F.requests.ConnectionError("url: /x?key=" + F.quote(k, safe="") + " raw " + k)
+    with pytest.raises(SystemExit) as e:
+        F.fetch("enduse", "2015-06", str(tmp_path), k, R())
+    assert k not in str(e.value) and F.quote(k, safe="") not in str(e.value)
 
 
 def test_a_connection_error_never_shows_the_key(tmp_path, capsys):
