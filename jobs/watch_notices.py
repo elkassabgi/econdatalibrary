@@ -25,6 +25,7 @@ import argparse
 import datetime as dt
 import email.utils
 import hashlib
+import html.entities
 import html.parser
 import json
 import os
@@ -85,8 +86,13 @@ def _text(el, *names) -> str:
     pass the first-poll age gate as new; review AR-432 #3). Namespace-agnostic."""
     for name in names:
         for child in el:
-            if _local(child) == name and (child.text or "").strip():
-                return child.text.strip()
+            if _local(child) != name:
+                continue
+            # itertext: an Atom type="xhtml" title holds its words in a <div>/<span>, not in .text
+            # (StatCan's Daily: 290 entries read as empty titles - measured 2026-11-05).
+            t = " ".join("".join(child.itertext()).split())
+            if t:
+                return t
     return ""
 
 
@@ -190,12 +196,28 @@ class _Anchors(html.parser.HTMLParser):
         self._close_a()
 
 
+_XML_OWN = {"amp", "lt", "gt", "quot", "apos"}
+_ENTITY = re.compile(rb"&([A-Za-z][A-Za-z0-9]{1,31});")
+
+
+def _xml_entities(body: bytes) -> bytes:
+    """HTML named entities (&mdash; &nbsp; ...) as numeric references. XML knows only five names, and a
+    feed that uses another one with no DTD is not well-formed: the Fed's Data Download feed failed
+    whole on one &mdash; (measured 2026-11-05). An unknown name is left alone, so it still fails loud."""
+    def sub(m):
+        name = m.group(1).decode("ascii")
+        if name in _XML_OWN or name not in html.entities.name2codepoint:
+            return m.group(0)
+        return f"&#{html.entities.name2codepoint[name]};".encode("ascii")
+    return _ENTITY.sub(sub, body)
+
+
 def parse_items(kind: str, body: bytes, base_url: str, selector: str = "") -> list:
     """[{title, link, date, summary}] from one feed body. Raises ValueError on a body it cannot read."""
     items = []
     if kind in ("rss", "atom"):
         try:
-            root = ET.fromstring(body)
+            root = ET.fromstring(_xml_entities(body))
         except ET.ParseError as e:
             raise ValueError(f"not XML: {e}") from None
         for el in root.iter():

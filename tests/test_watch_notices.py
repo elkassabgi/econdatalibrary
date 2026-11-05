@@ -93,6 +93,20 @@ def test_rss_atom_and_html_parse():
     assert any("shut down" in i["title"] for i in whole), "no selector = the whole page"
 
 
+def test_xhtml_titles_and_html_entities():
+    """Two real feeds measured 2026-11-05: StatCan's Daily (type="xhtml" titles read as empty) and the
+    Fed's Data Download feed (one &mdash; with no DTD failed the whole feed)."""
+    atom = b"""<feed xmlns="http://www.w3.org/2005/Atom"><entry><title type="xhtml">
+      <div xmlns="http://www.w3.org/1999/xhtml">Provincial accounts, <span class="refper">2025</span></div></title>
+      <link href="https://x.org/a"/><updated>2026-11-05T08:30:00-05:00</updated></entry></feed>"""
+    assert wn.parse_items("atom", atom, "https://x.org/")[0]["title"] == "Provincial accounts, 2025"
+    rss = b"""<rss><channel><item><title>H15 &mdash; Discontinuance&nbsp;of rates &amp; more</title>
+      <link>https://x.org/1</link></item></channel></rss>"""
+    assert wn.parse_items("rss", rss, "https://x.org/")[0]["title"] == "H15 — Discontinuance of rates & more"   # nbsp folds to a space
+    with pytest.raises(ValueError):                       # an unknown name still fails loud
+        wn.parse_items("rss", rss.replace(b"&mdash;", b"&nosuchname;"), "https://x.org/")
+
+
 def test_a_body_that_is_not_xml_raises():
     with pytest.raises(ValueError):
         wn.parse_items("rss", b"<html>gone</html", "https://x/")
