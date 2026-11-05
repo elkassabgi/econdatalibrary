@@ -58,6 +58,12 @@ param(
     # collisions. The flat part is narrow and the cliff is 30 min away, so do not raise this without re-running
     # `python tools/measure_ci_lag.py sweep`.
     [int]      $WantBlockMin = 150,
+    # CPU priority class for the pass's heavy children: pull-state, the updater with everything it starts,
+    # and the progress diff. Below normal by default, to yield the CPU to other interactive or batch work on
+    # the host. The gate, the progress snapshot, the hard-stop watchdog, the killed-unit recorder and
+    # push-state keep this runner's own class: they are the R5 safety tail. See tools/pass_priority.ps1.
+    [ValidateSet('Normal', 'BelowNormal', 'Idle')]
+    [string]   $Priority = 'BelowNormal',
     # D3, the no-progress back-off. Past $MaxHours the hold above is dropped, and a pass that advances nothing
     # writes no success stamp (R625/R630, correct in itself), so before D3 every window of 20+ usable minutes
     # started another pass that pulled and pushed the whole state store to do nothing. A pushed pass that
@@ -98,6 +104,9 @@ $noProgFile = Join-Path $logDir 'local_heavy.last_noprogress'
 # The decisions this runner takes are pure functions in cadence_decision.ps1, tested against real PowerShell
 # (tools/test_cadence_decision.ps1). Loaded here, before the first decision that uses one.
 . (Join-Path $PSScriptRoot 'cadence_decision.ps1')
+# Enter-PassPriority / Exit-PassPriority: lower this runner's class only around the lines that start a heavy
+# child, so the child inherits it at creation (tools/pass_priority.ps1 says why that, and not the child).
+. (Join-Path $PSScriptRoot 'pass_priority.ps1')
 
 $lockFile = Join-Path $logDir 'local_heavy.lock'
 
@@ -173,6 +182,11 @@ if ($IfDue) {
 }
 
 Say "local heavy updater starting; log -> $log"
+# The runner's own class at the start, before anything is lowered: the R5 tail is checked against it below.
+$runnerClass = [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass
+Say ("CPU priority: " + $Priority + " for pull-state, the updater with everything it starts and the progress " +
+     "diff; the gate, the progress snapshot, the hard-stop watchdog, the killed-unit recorder and push-state " +
+     "stay at this runner's own class (" + $runnerClass + ")")
 
 # --- which sources are routed here? read the registry, never a second copy of the list ---
 $lister = Join-Path $repo 'tools\_list_local_sources.py'
@@ -466,7 +480,10 @@ if ($selfHosted) {
     Say "after T0: no state pull - state.db is local (updater.run refuses a state pull after T0)"
 } else {
     Say "pull-state ..."
-    & $pythonExe -m updater.run --pull-state
+    # At -Priority: a pull slowed by other work on the host is SAFE - the post-pull recompute below is anchored to
+    # the block instant read before the pull, and skips the updater (nothing pushed) when too little is left.
+    $prio = Enter-PassPriority $Priority
+    try { & $pythonExe -m updater.run --pull-state } finally { Exit-PassPriority $prio }
     if ($LASTEXITCODE -ne 0) {
         Say ("pull-state FAILED (" + $LASTEXITCODE + ") - aborting before any write")
         Release-LocalHeavyLock
@@ -564,6 +581,8 @@ Say ("updater output -> " + $updaterLog)
 # partition of it can carry this decision. The probe diffs `unit_state.last_success_utc` and
 # `upstream_vintage`, which are written only on real progress (R630).
 $progressSnap = Join-Path $logDir ("local_heavy_progress_{0}.json" -f $stamp)
+# NOT LOWERED: the snapshot is cheap and runs after the budget is computed, so a starved one would only
+# shorten the updater's time, to no gain.
 $snapRaw = ( & $pythonExe (Join-Path $PSScriptRoot 'unit_progress_probe.py') --snapshot $progressSnap 2>$null ) | Select-Object -Last 1
 # EMPTY STDOUT IS NOT ZERO. In PowerShell 5.1 `[int]$null` is 0 and does NOT throw, so a
 # sentinel the helper prints from its own except-branch cannot cover the case where the helper
@@ -575,9 +594,15 @@ $snapRaw = ( & $pythonExe (Join-Path $PSScriptRoot 'unit_progress_probe.py') --s
 # (R634). It is kept because it states the intent, not because it can fire.
 # (cadence_decision.ps1, which defines Read-ProbeNumber, is dot-sourced near the top.)
 $snapshotOk = ($null -ne (Read-ProbeNumber $snapRaw))
-$proc = Start-Process -FilePath $pythonExe -ArgumentList (@('-u','-m','updater.run') + $srcArgs) `
-        -PassThru -NoNewWindow `
-        -RedirectStandardOutput $updaterLog -RedirectStandardError $updaterErr
+# The updater is created while this runner is at -Priority, so it and every process it starts inherit that
+# class; the runner then returns to its own class for the watchdog loop below, which must not be starved
+# past the hard stop.
+$prio = Enter-PassPriority $Priority
+try {
+    $proc = Start-Process -FilePath $pythonExe -ArgumentList (@('-u','-m','updater.run') + $srcArgs) `
+            -PassThru -NoNewWindow `
+            -RedirectStandardOutput $updaterLog -RedirectStandardError $updaterErr
+} finally { Exit-PassPriority $prio }
 # Cache the handle BEFORE any wait, or PS 5.1 leaves ExitCode $null on a clean exit and the
 # `if ($null -eq $rc) { $rc = 124 }` guard below silently relabels every SUCCESSFUL run as a
 # timeout. That is the same null-ExitCode defect that had RELAUNCH_GUARD resurrecting a
@@ -608,6 +633,29 @@ elseif ($proc.HasExited) { $proc.Refresh(); $rc = $proc.ExitCode }
 else { $rc = 124 }
 if ($null -eq $rc) { $rc = 124 }
 Say ("updater exit code: " + $rc)
+# CPU TIME AGAINST WALL TIME, so the effect of -Priority can be measured pass by pass: a pass yielding to
+# other work on the host shows a low ratio. The updater process only (its own children are not included; fetch, merge
+# and derive run inside it). Read through the handle cached above; a failure to read never stops the pass.
+try {
+    $cpuS = [math]::Round($proc.TotalProcessorTime.TotalSeconds, 1)
+    $wallS = [math]::Round(([DateTime]::UtcNow - $updaterStart).TotalSeconds, 1)
+    Say ("updater CPU time: " + $cpuS + " s over " + $wallS + " s wall at priority " + $Priority)
+} catch {
+    Say ("updater CPU time: unreadable (" + $_.Exception.Message + ")")
+}
+
+# READ BACK THIS RUNNER'S OWN CLASS for the R5 tail: the killed-unit recorder and push-state below must run
+# at the class the runner started with, not at -Priority (tools/pass_priority.ps1 says why). Every lowered
+# child above is wrapped in Enter/Exit-PassPriority; this line is the runtime proof that each Exit put the
+# class back. If one did not, say so loudly and put it back here, before the tail runs.
+$tailClass = [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass
+Say ("CPU priority for the R5 tail (recorder, push-state): " + $tailClass + " (runner started at " +
+     $runnerClass + ")")
+if ($tailClass -ne $runnerClass) {
+    Say ("WARNING: the runner is at " + $tailClass + ", not " + $runnerClass + ", after its lowered " +
+         "children - a priority restore failed; restoring " + $runnerClass + " before the recorder and push-state")
+    Exit-PassPriority $runnerClass
+}
 
 # RECORD THE UNIT THE KILL UN-RECORDED, before push-state carries the state away. A unit
 # killed by the taskkill above dies without writing its `runs` row, so run_cost_estimate
@@ -679,7 +727,10 @@ $crashed = ($rc -lt 0) -or ($rc -eq 134) -or ($rc -eq 137) -or ($rc -eq 139)
 # state store's own progress fields, not from an exit code and not from a count of attempts.
 $advanced = $null            # $null is UNKNOWN, and unknown is not permission
 if ($snapshotOk) {
-    $diffRaw = ( & $pythonExe (Join-Path $PSScriptRoot 'unit_progress_probe.py') --diff $progressSnap 2>$null ) | Select-Object -Last 1
+    $prio = Enter-PassPriority $Priority
+    try {
+        $diffRaw = ( & $pythonExe (Join-Path $PSScriptRoot 'unit_progress_probe.py') --diff $progressSnap 2>$null ) | Select-Object -Last 1
+    } finally { Exit-PassPriority $prio }
     $advanced = Read-ProbeNumber $diffRaw -AllowNegative
     if ($null -ne $advanced -and $advanced -lt 0) { $advanced = $null }   # the probe's sentinel
 }
