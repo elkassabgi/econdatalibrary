@@ -11,7 +11,8 @@
 import { llmComplete, costUsd } from "./llm.ts";
 import { TOOL_SCHEMAS, executeTool, type ToolCtx, type DownloadOffer } from "./tools.ts";
 import { systemPrompt } from "./prompt.ts";
-import { makeAnthropicClient, runAnthropicLoop, type MessagesClient } from "./anthropic.ts";
+import { makeAnthropicClient, requirePriceCard, runAnthropicLoop, type MessagesClient } from "./anthropic.ts";
+import { DEEPSEEK_RESERVE_USD } from "./pricing.ts";
 import type { ChatMessage, Config, Env, Visitor } from "./types.ts";
 
 export interface AgentResult {
@@ -19,6 +20,14 @@ export interface AgentResult {
   offers: DownloadOffer[];
   registerNeeded: boolean;
   costUsd: number;
+}
+
+// Per-request reserve held at gate time (index.ts), from the same price table
+// that charges the reply. Claude: the model's card (a model without a card is
+// mock and never called). DeepSeek and the mock: the existing reserve.
+export function reserveUsdFor(config: Config): number {
+  if (config.provider === "anthropic" && !config.mock) return requirePriceCard(config.model).reserveUsd;
+  return DEEPSEEK_RESERVE_USD;
 }
 
 // Injection point for tests: build the Claude client from the key. The default

@@ -33,6 +33,8 @@
     "MODEL": "deepseek-v4-flash",
     // Used only when PROVIDER = "anthropic". Claude counts its thinking toward
     // the reply cap, so it has its own cap (MAX_OUTPUT_TOKENS is DeepSeek's).
+    // ANTHROPIC_MODEL must have a price card in src/pricing.ts, or it is refused
+    // (keyless mock, /health mock_reason "unpriced_model").
     "ANTHROPIC_MODEL": "claude-haiku-5-5",
     "ANTHROPIC_MAX_OUTPUT_TOKENS": "2000",
     "MONTHLY_USD_CAP": "30",

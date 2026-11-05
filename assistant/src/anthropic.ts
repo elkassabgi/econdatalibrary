@@ -16,21 +16,23 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { executeTool, TOOL_SCHEMAS, type ToolCtx } from "./tools.ts";
+import { priceCardFor, type ClaudePriceCard } from "./pricing.ts";
 import type { ChatMessage, Config } from "./types.ts";
 
-// --- prices (USD per token). Claude Haiku 5.5 published prices. Verify before launch.
-// Two rate cards, chosen by prompt length (input + cache read + cache write):
-// up to 100K tokens, and above 100K. Cache reads bill at 0.1x the input rate,
-// 5-minute cache writes at 1.25x, 1-hour cache writes at 2x. Thinking tokens
-// are billed as output and are already inside usage.output_tokens.
-export const CLAUDE_PRICE_IN = 0.10 / 1_000_000;
-export const CLAUDE_PRICE_OUT = 0.50 / 1_000_000;
-export const CLAUDE_PRICE_IN_LONG = 0.50 / 1_000_000;
-export const CLAUDE_PRICE_OUT_LONG = 2.50 / 1_000_000;
-export const CLAUDE_LONG_PROMPT_ABOVE = 100_000;
-export const CLAUDE_CACHE_READ_MULT = 0.1;
-export const CLAUDE_CACHE_WRITE_5M_MULT = 1.25;
-export const CLAUDE_CACHE_WRITE_1H_MULT = 2;
+// Prices are per MODEL, from the cards in pricing.ts (verify before launch). A
+// model without a card is refused before any API call (fail closed).
+export class UnpricedModelError extends Error {
+  constructor(model: string) {
+    super(`Claude model "${model}" has no price card in pricing.ts; refusing to call it`);
+    this.name = "UnpricedModelError";
+  }
+}
+
+export function requirePriceCard(model: string): Readonly<ClaudePriceCard> {
+  const card = priceCardFor(model);
+  if (!card) throw new UnpricedModelError(model);
+  return card;
+}
 
 // Effort for chat. Claude Haiku 5.5 defaults to "medium"; chat routes do well
 // at "low" (fewer, more consolidated tool calls, terser replies).
@@ -38,17 +40,23 @@ export const CLAUDE_EFFORT = "low" as const;
 
 export const REFUSAL_TEXT =
   "I can't help with that request. I can help you find, understand, and download data from the ElkassabgiData libraries.";
+// Shown alone when a reply hit max_tokens with no text, and APPENDED to any
+// partial text (the cut can remove the licence / caveat lines).
 export const TRUNCATED_TEXT =
-  "My answer ran too long and was cut off — please narrow the question.";
+  "_(Answer cut short: it reached the length limit, so the end — including any licence or caveat lines — may be missing. Please narrow the question.)_";
 const EMPTY_TEXT = "I'm not sure how to answer that yet — try rephrasing.";
 const FINAL_ASK = "Give your best final answer now using what you've gathered. Do not call more tools.";
 
 const nz = (v: number | null | undefined): number =>
   typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0;
 
-// Price one response.usage. input_tokens is the UNCACHED remainder only; the
-// full prompt is input + cache_creation + cache_read (and selects the rate card).
-export function anthropicCostUsd(u: Partial<Anthropic.Usage> | null | undefined): number {
+// Price one response.usage with the card of the model that served it.
+// input_tokens is the UNCACHED remainder only; the full prompt is input +
+// cache_creation + cache_read (and selects the rate card). Thinking tokens are
+// billed as output and are already inside usage.output_tokens. An unpriced
+// model throws (UnpricedModelError) rather than being charged at a guess.
+export function anthropicCostUsd(model: string, u: Partial<Anthropic.Usage> | null | undefined): number {
+  const card = requirePriceCard(model);
   if (!u) return 0;
   const input = nz(u.input_tokens);
   const output = nz(u.output_tokens);
@@ -56,14 +64,14 @@ export function anthropicCostUsd(u: Partial<Anthropic.Usage> | null | undefined)
   const write = nz(u.cache_creation_input_tokens);
   const write1h = Math.min(write, nz(u.cache_creation?.ephemeral_1h_input_tokens));
   const write5m = write - write1h;
-  const long = input + read + write > CLAUDE_LONG_PROMPT_ABOVE;
-  const pin = long ? CLAUDE_PRICE_IN_LONG : CLAUDE_PRICE_IN;
-  const pout = long ? CLAUDE_PRICE_OUT_LONG : CLAUDE_PRICE_OUT;
+  const long = input + read + write > card.longAbove;
+  const pin = long ? card.inLongPerToken : card.inPerToken;
+  const pout = long ? card.outLongPerToken : card.outPerToken;
   return (
     input * pin +
-    read * pin * CLAUDE_CACHE_READ_MULT +
-    write5m * pin * CLAUDE_CACHE_WRITE_5M_MULT +
-    write1h * pin * CLAUDE_CACHE_WRITE_1H_MULT +
+    read * pin * card.cacheReadMult +
+    write5m * pin * card.cacheWrite5mMult +
+    write1h * pin * card.cacheWrite1hMult +
     output * pout
   );
 }
@@ -155,8 +163,10 @@ function terminalText(msg: Anthropic.Message): string | null {
     case "refusal":
       return REFUSAL_TEXT;
     case "max_tokens":
-    case "model_context_window_exceeded":
-      return textOf(msg) || TRUNCATED_TEXT;
+    case "model_context_window_exceeded": {
+      const partial = textOf(msg);
+      return partial ? `${partial}\n\n${TRUNCATED_TEXT}` : TRUNCATED_TEXT;
+    }
     default:
       return null;
   }
@@ -170,20 +180,29 @@ export async function runAnthropicLoop(
   ctx: ToolCtx,
   onToolCall: (name: string) => void,
 ): Promise<AnthropicLoopResult> {
+  // Fail closed BEFORE any call: a model the cap cannot price is never called.
+  requirePriceCard(config.model);
   const messages = toAnthropicHistory(history);
-  // Stable prefix: tools (breakpoint on the last tool) + system (breakpoint here).
+  // Cache breakpoints (all 5-minute, 3 of the 4 allowed), following
+  // shared/prompt-caching.md "robust combination for agent loops":
+  //   1. last tool        — static, shared by every visitor
+  //   2. system block     — per sign-in state / name
+  //   3. top-level cache_control — automatic breakpoint on the last block of the
+  //      growing conversation, so each tool round re-reads the history from
+  //      cache instead of paying the full input rate for it again.
   const base = {
     model: config.model,
     max_tokens: config.maxOutputTokens,
     system: [{ type: "text" as const, text: system, cache_control: { type: "ephemeral" as const } }],
     tools: ANTHROPIC_TOOLS,
     output_config: { effort: CLAUDE_EFFORT },
+    cache_control: { type: "ephemeral" as const },
   };
   let cost = 0;
 
   for (let round = 0; round < config.maxToolRounds; round++) {
     const resp = await client.messages.create({ ...base, tool_choice: { type: "auto" }, messages });
-    cost += anthropicCostUsd(resp.usage);
+    cost += anthropicCostUsd(config.model, resp.usage);
 
     // Check the stop reason BEFORE running any tool.
     const terminal = terminalText(resp);
@@ -232,7 +251,7 @@ export async function runAnthropicLoop(
     messages.push({ role: "user", content: FINAL_ASK });
   }
   const resp = await client.messages.create({ ...base, tool_choice: { type: "none" }, messages });
-  cost += anthropicCostUsd(resp.usage);
+  cost += anthropicCostUsd(config.model, resp.usage);
   const terminal = terminalText(resp);
   if (terminal !== null) return { text: terminal, costUsd: cost };
   return {

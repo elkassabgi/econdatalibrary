@@ -59,7 +59,7 @@ to `hfdatalibrary/_headers` `connect-src`.
 |---|---|---|
 | `PROVIDER` | `deepseek` | `deepseek` or `anthropic`; any other value resolves to `deepseek` (`/health` reports the provider in use) |
 | `MODEL` | `deepseek-v4-flash` | DeepSeek model |
-| `ANTHROPIC_MODEL` | `claude-haiku-5-5` | Claude model (used only when `PROVIDER=anthropic`) |
+| `ANTHROPIC_MODEL` | `claude-haiku-5-5` | Claude model (used only when `PROVIDER=anthropic`). Only a model with a price card in `src/pricing.ts` can be selected; today that is `claude-haiku-5-5` only |
 | `ANTHROPIC_MAX_OUTPUT_TOKENS` | `2000` | max tokens per Claude reply; Claude's thinking counts toward it |
 | `MONTHLY_USD_CAP` | `30` | hard monthly spend kill-switch |
 | `ANON_PER_HOUR` / `ANON_PER_DAY` | `5` / `15` | anonymous message limits (per IP) |
@@ -85,22 +85,34 @@ cap. Nothing changes until you do these steps yourself:
    npx wrangler secret put ANTHROPIC_API_KEY
    ```
 3. In `wrangler.jsonc` set `"PROVIDER": "anthropic"` (and optionally
-   `ANTHROPIC_MODEL` / `ANTHROPIC_MAX_OUTPUT_TOKENS`), then `npm run deploy`.
-4. Check `GET /health`: it must show `"provider": "anthropic"` and `"mock": false`.
-   With `PROVIDER=anthropic` and no `ANTHROPIC_API_KEY`, the Worker runs the
-   keyless mock (`"mock": true`), the same as DeepSeek without its key.
+   `ANTHROPIC_MAX_OUTPUT_TOKENS`), then `npm run deploy`.
+4. Check `GET /health`: it must show `"provider": "anthropic"`, `"mock": false`
+   and `"mock_reason": null`. With `PROVIDER=anthropic` and no
+   `ANTHROPIC_API_KEY`, the Worker runs the keyless mock (`"mock_reason":
+   "no_key"`), the same as DeepSeek without its key.
+
+**Only priced models can be selected.** The monthly cap charges each reply with
+the price card of its model, in `src/pricing.ts`, and the per-request reserve
+comes from the same card. If `ANTHROPIC_MODEL` names a model with no card, the
+Worker refuses it: no Claude call is made, the keyless mock answers, and
+`/health` shows `"mock_reason": "unpriced_model"` with the list of
+`priced_models`. To use another Claude model, first add its card (from the
+published prices, with a reserve that covers a worst-case turn) and a test, then
+set `ANTHROPIC_MODEL`.
 
 To go back, set `"PROVIDER": "deepseek"` and deploy again (the Claude secret can
-stay; it is not read). Before launch, verify the per-token constants in
-`src/anthropic.ts` (`CLAUDE_PRICE_*` and the cache multipliers) against the
+stay; it is not read). Before launch, verify the price card in
+`src/pricing.ts` (per-token constants and cache multipliers) against the
 current published prices, as for the DeepSeek constants in `src/llm.ts`.
 
 How the Claude path calls the API: model `claude-haiku-5-5`,
 `output_config.effort = "low"`, adaptive thinking left at its default (on),
-`tool_choice: auto`, no sampling parameters, prompt caching on the stable prefix
-(one breakpoint on the last tool, one on the system prompt). The stop reason is
-checked before any tool runs (`refusal` and `max_tokens` end the turn and no tool
-runs), the full `response.content` (thinking blocks included) goes back
+`tool_choice: auto`, no sampling parameters, prompt caching with one breakpoint
+on the last tool, one on the system prompt, and top-level automatic caching for
+the growing conversation. The stop reason is checked before any tool runs
+(`refusal` and `max_tokens` end the turn and no tool runs; a reply cut at
+`max_tokens` carries a visible "Answer cut short" note), the full
+`response.content` (thinking blocks included) goes back
 unchanged, and all tool results of a turn go back in one user message, with
 `is_error: true` on failures. Each reply is priced from `response.usage` (input,
 output including thinking, cache read, cache write) and charged to the same

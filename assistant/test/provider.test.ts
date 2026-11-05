@@ -10,14 +10,17 @@ import { readFileSync } from "node:fs";
 
 import { loadConfig, resolveProvider, DEFAULT_DEEPSEEK_MODEL, DEFAULT_ANTHROPIC_MODEL } from "../src/types.ts";
 import { TOOL_SCHEMAS } from "../src/tools.ts";
-import { runAgent } from "../src/agent.ts";
+import { reserveUsdFor, runAgent } from "../src/agent.ts";
+import { CLAUDE_PRICES, DEEPSEEK_RESERVE_USD, priceCardFor, pricedModels } from "../src/pricing.ts";
+import { mockNote } from "../src/llm.ts";
 import {
   ANTHROPIC_TOOLS, CLAUDE_EFFORT, REFUSAL_TEXT, TRUNCATED_TEXT,
-  anthropicCostUsd, isToolError, parseToolInput, toAnthropicHistory, toAnthropicTools,
+  UnpricedModelError, anthropicCostUsd, isToolError, parseToolInput, runAnthropicLoop, toAnthropicHistory, toAnthropicTools,
 } from "../src/anthropic.ts";
 
 const ANON = { registered: false, userId: null, email: null, name: null, apiKey: null };
 const DUMMY = "dummy-value-for-tests"; // not a key; the fake client never sends it anywhere
+const H = "claude-haiku-5-5";
 
 // --- fetch stub ---------------------------------------------------------------
 let fetched: string[] = [];
@@ -114,12 +117,76 @@ test("PROVIDER=anthropic: Claude model + own cap; mock exactly when ITS key is a
   assert.equal(noKey.model, "claude-haiku-5-5");
   assert.equal(noKey.maxOutputTokens, 2000);
   assert.equal(noKey.mock, true);
+  assert.equal(noKey.mockReason, "no_key");
   const withKey = claudeConfig();
   assert.equal(withKey.mock, false);
-  assert.equal(claudeConfig({ ANTHROPIC_MODEL: "claude-sonnet-5-5", ANTHROPIC_MAX_OUTPUT_TOKENS: "3000" }).model, "claude-sonnet-5-5");
+  assert.equal(withKey.mockReason, null);
   assert.equal(claudeConfig({ ANTHROPIC_MAX_OUTPUT_TOKENS: "3000" }).maxOutputTokens, 3000);
   // MODEL (the DeepSeek var) never leaks into the Claude model id
   assert.equal(claudeConfig({ MODEL: "deepseek-v4-flash" }).model, "claude-haiku-5-5");
+});
+
+// --- price table: fail closed ----------------------------------------------------
+test("price table holds claude-haiku-5-5 with the reference prices, and nothing else", () => {
+  assert.deepEqual(pricedModels(), ["claude-haiku-5-5"]);
+  const c = CLAUDE_PRICES["claude-haiku-5-5"];
+  close(c.inPerToken, 0.10e-6);
+  close(c.outPerToken, 0.50e-6);
+  close(c.inLongPerToken, 0.50e-6);
+  close(c.outLongPerToken, 2.50e-6);
+  assert.equal(c.longAbove, 100_000);
+  assert.equal(c.cacheReadMult, 0.1);
+  assert.equal(c.cacheWrite5mMult, 1.25);
+  assert.equal(c.cacheWrite1hMult, 2);
+  assert.ok(c.reserveUsd >= 0.0377, "reserve covers the reviewer's worst turn (0.0377)");
+  assert.equal(priceCardFor("toString"), null); // own keys only
+  assert.equal(priceCardFor("claude-sonnet-5-5"), null);
+  assert.ok(Object.isFrozen(CLAUDE_PRICES) && Object.isFrozen(c));
+});
+
+test("an unpriced ANTHROPIC_MODEL is refused: mock with reason unpriced_model, even with a key", () => {
+  for (const model of ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5-20990101", "nonsense"]) {
+    const c = claudeConfig({ ANTHROPIC_MODEL: model });
+    assert.equal(c.model, model);
+    assert.equal(c.mock, true, model);
+    assert.equal(c.mockReason, "unpriced_model", model);
+  }
+  // the reason wins over a missing key too, so /health names the real blocker
+  assert.equal(loadConfig({ PROVIDER: "anthropic", ANTHROPIC_MODEL: "claude-sonnet-5-5" } as any).mockReason, "unpriced_model");
+  // DeepSeek is not affected by the Claude table
+  assert.equal(loadConfig({ DEEPSEEK_API_KEY: DUMMY, MODEL: "deepseek-v9" } as any).mock, false);
+});
+
+test("an unpriced model never reaches messages.create (runAgent and the loop itself)", async () => {
+  const { factory, requests, keys } = fakeClient([msg([{ type: "text", text: "should not happen" }], "end_turn")]);
+  const cfg = claudeConfig({ ANTHROPIC_MODEL: "claude-sonnet-5-5" });
+  const r = await runAgent({ ANTHROPIC_API_KEY: DUMMY } as any, cfg, ANON, [{ role: "user", content: "poverty Poland" }], () => {}, { anthropicClient: factory });
+  assert.deepEqual(keys, []);
+  assert.equal(requests.length, 0);
+  assert.match(r.text, /has no price card/);
+  assert.equal(r.costUsd, 0);
+  for (const u of fetched) assert.doesNotMatch(u, /anthropic|deepseek/);
+
+  // defence in depth: even a config forced to mock=false is refused before the call
+  const forced = { ...cfg, mock: false, mockReason: null };
+  const client = factory(DUMMY);
+  await assert.rejects(runAnthropicLoop(client, forced, "sys", [{ role: "user", content: "q" }], { visitor: ANON, offers: [], register: { needed: false } }, () => {}), UnpricedModelError);
+  assert.equal(requests.length, 0);
+  assert.throws(() => anthropicCostUsd("claude-sonnet-5-5", { input_tokens: 1 }), UnpricedModelError);
+  assert.throws(() => reserveUsdFor(forced as any), UnpricedModelError);
+});
+
+test("per-request reserve comes from the same table, per model", () => {
+  assert.equal(reserveUsdFor(claudeConfig()), CLAUDE_PRICES["claude-haiku-5-5"].reserveUsd);
+  assert.equal(reserveUsdFor(loadConfig({ DEEPSEEK_API_KEY: DUMMY } as any)), DEEPSEEK_RESERVE_USD);
+  assert.equal(DEEPSEEK_RESERVE_USD, 0.02); // DeepSeek's reserve is unchanged
+  assert.equal(reserveUsdFor(loadConfig({} as any)), DEEPSEEK_RESERVE_USD); // mock
+});
+
+test("mock reply names the selected provider and the reason", () => {
+  assert.match(mockNote(loadConfig({} as any)), /no DeepSeek key.*Provider: deepseek/);
+  assert.match(mockNote(loadConfig({ PROVIDER: "anthropic" } as any)), /no Claude key.*Provider: anthropic/);
+  assert.match(mockNote(claudeConfig({ ANTHROPIC_MODEL: "claude-sonnet-5-5" })), /"claude-sonnet-5-5" has no price card.*Provider: anthropic/);
 });
 
 // --- schema translation ---------------------------------------------------------
@@ -146,31 +213,31 @@ test("tool schemas are translated once from TOOL_SCHEMAS, field for field", () =
 const close = (a: number, b: number) => assert.ok(Math.abs(a - b) < 1e-12, `${a} != ${b}`);
 
 test("usage -> cost: per-token constants, cache read/write, 1h writes", () => {
-  close(anthropicCostUsd(null), 0);
-  close(anthropicCostUsd(undefined), 0);
-  close(anthropicCostUsd({ input_tokens: 0, output_tokens: 0 }), 0);
-  close(anthropicCostUsd({ input_tokens: 50_000 }), 50_000 * 0.10e-6);
-  close(anthropicCostUsd({ output_tokens: 1_000 }), 1_000 * 0.50e-6); // thinking is inside output_tokens
-  close(anthropicCostUsd({ cache_read_input_tokens: 50_000 }), 50_000 * 0.10e-6 * 0.1);
-  close(anthropicCostUsd({ cache_creation_input_tokens: 40_000 }), 40_000 * 0.10e-6 * 1.25);
+  close(anthropicCostUsd(H, null), 0);
+  close(anthropicCostUsd(H, undefined), 0);
+  close(anthropicCostUsd(H, { input_tokens: 0, output_tokens: 0 }), 0);
+  close(anthropicCostUsd(H, { input_tokens: 50_000 }), 50_000 * 0.10e-6);
+  close(anthropicCostUsd(H, { output_tokens: 1_000 }), 1_000 * 0.50e-6); // thinking is inside output_tokens
+  close(anthropicCostUsd(H, { cache_read_input_tokens: 50_000 }), 50_000 * 0.10e-6 * 0.1);
+  close(anthropicCostUsd(H, { cache_creation_input_tokens: 40_000 }), 40_000 * 0.10e-6 * 1.25);
   close(
-    anthropicCostUsd({ cache_creation_input_tokens: 40_000, cache_creation: { ephemeral_5m_input_tokens: 30_000, ephemeral_1h_input_tokens: 10_000 } } as any),
+    anthropicCostUsd(H, { cache_creation_input_tokens: 40_000, cache_creation: { ephemeral_5m_input_tokens: 30_000, ephemeral_1h_input_tokens: 10_000 } } as any),
     30_000 * 0.10e-6 * 1.25 + 10_000 * 0.10e-6 * 2,
   );
   close(
-    anthropicCostUsd({ input_tokens: 1_200, output_tokens: 300, cache_read_input_tokens: 2_000, cache_creation_input_tokens: 500 }),
+    anthropicCostUsd(H, { input_tokens: 1_200, output_tokens: 300, cache_read_input_tokens: 2_000, cache_creation_input_tokens: 500 }),
     1_200 * 0.10e-6 + 300 * 0.50e-6 + 2_000 * 0.10e-6 * 0.1 + 500 * 0.10e-6 * 1.25,
   );
   // nulls (the SDK types allow them) and junk count as zero
-  close(anthropicCostUsd({ input_tokens: 10, output_tokens: 10, cache_read_input_tokens: null, cache_creation_input_tokens: null } as any), 10 * 0.10e-6 + 10 * 0.50e-6);
-  close(anthropicCostUsd({ input_tokens: -5, output_tokens: Number.NaN } as any), 0);
+  close(anthropicCostUsd(H, { input_tokens: 10, output_tokens: 10, cache_read_input_tokens: null, cache_creation_input_tokens: null } as any), 10 * 0.10e-6 + 10 * 0.50e-6);
+  close(anthropicCostUsd(H, { input_tokens: -5, output_tokens: Number.NaN } as any), 0);
 });
 
 test("usage -> cost: the long-prompt rate card applies above 100K prompt tokens", () => {
   // exactly 100K (input + cache read + cache write) is still the standard card
-  close(anthropicCostUsd({ input_tokens: 60_000, cache_read_input_tokens: 40_000, output_tokens: 100 }),
+  close(anthropicCostUsd(H, { input_tokens: 60_000, cache_read_input_tokens: 40_000, output_tokens: 100 }),
     60_000 * 0.10e-6 + 40_000 * 0.10e-6 * 0.1 + 100 * 0.50e-6);
-  close(anthropicCostUsd({ input_tokens: 60_001, cache_read_input_tokens: 40_000, output_tokens: 100 }),
+  close(anthropicCostUsd(H, { input_tokens: 60_001, cache_read_input_tokens: 40_000, output_tokens: 100 }),
     60_001 * 0.50e-6 + 40_000 * 0.50e-6 * 0.1 + 100 * 2.50e-6);
 });
 
@@ -230,8 +297,8 @@ test("tool loop: full content appended (thinking kept), ONE user message of tool
   assert.deepEqual(r.offers, []);       // ...and so no download link was handed out
   assert.deepEqual(status, ["Searching the catalog…", "Preparing the equity-data download…", "Working…"]);
   close(r.costUsd,
-    anthropicCostUsd({ input_tokens: 1_000, output_tokens: 200, cache_creation_input_tokens: 3_000 }) +
-    anthropicCostUsd({ input_tokens: 1_500, output_tokens: 100, cache_read_input_tokens: 3_000 }));
+    anthropicCostUsd(H, { input_tokens: 1_000, output_tokens: 200, cache_creation_input_tokens: 3_000 }) +
+    anthropicCostUsd(H, { input_tokens: 1_500, output_tokens: 100, cache_read_input_tokens: 3_000 }));
 
   // request shape
   for (const q of requests) {
@@ -240,6 +307,7 @@ test("tool loop: full content appended (thinking kept), ONE user message of tool
     assert.deepEqual(q.output_config, { effort: CLAUDE_EFFORT });
     assert.equal(CLAUDE_EFFORT, "low");
     assert.deepEqual(q.tool_choice, { type: "auto" });
+    assert.deepEqual(q.cache_control, { type: "ephemeral" }); // automatic breakpoint on the conversation tail
     for (const k of ["temperature", "top_p", "top_k", "thinking", "stream"]) assert.equal(k in q, false, `${k} must not be sent`);
     assert.deepEqual(q.tools, JSON.parse(JSON.stringify(ANTHROPIC_TOOLS)));
     assert.equal(q.system.length, 1);
@@ -303,7 +371,10 @@ test("max_tokens: a possibly truncated tool_use is never executed", async () => 
 
   const partial = fakeClient([msg([{ type: "text", text: "Partial answer" }], "max_tokens")]);
   const r2 = await runAgent({} as any, claudeConfig(), ANON, [{ role: "user", content: "q" }], () => {}, { anthropicClient: partial.factory });
-  assert.equal(r2.text, "Partial answer");
+  assert.equal(r2.text, `Partial answer
+
+${TRUNCATED_TEXT}`);
+  assert.match(r2.text, /Answer cut short/);
 });
 
 test("out of rounds: final call keeps tools, sets tool_choice none, asks inside the pending tool_result turn", async () => {
@@ -330,7 +401,7 @@ test("PROVIDER=anthropic without its key runs the keyless mock and never builds 
   assert.equal(cfg.mock, true);
   const r = await runAgent({} as any, cfg, ANON, [{ role: "user", content: "poverty Poland" }], () => {}, { anthropicClient: factory });
   assert.deepEqual(keys, []);
-  assert.match(r.text, /demo mode/);
+  assert.match(r.text, /demo mode: no Claude key configured. Provider: anthropic/);
   assert.equal(r.costUsd, 0);
   for (const u of fetched) assert.doesNotMatch(u, /anthropic|deepseek/);
 });

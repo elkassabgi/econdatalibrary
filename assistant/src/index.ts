@@ -9,15 +9,16 @@
 // ---------------------------------------------------------------------------
 
 import { loadConfig, type Env, type Visitor, type ChatMessage } from "./types.ts";
-import { runAgent } from "./agent.ts";
+import { reserveUsdFor, runAgent } from "./agent.ts";
+import { pricedModels } from "./pricing.ts";
 import { verifyTurnstile, verifyAnonPass, issueAnonPass } from "./turnstile.ts";
 
 export { AssistantState } from "./state.ts";
 
 const HF_ME = "https://api.hfdatalibrary.com/v1/auth/me";
-// Conservative upper-bound per-request cost, reserved at gate time so the
-// monthly budget cap holds under concurrency (reconciled to actual at charge).
-const ESTIMATE_USD = 0.02;
+// The per-request reserve held at gate time so the monthly budget cap holds
+// under concurrency (reconciled to actual at charge) comes from reserveUsdFor
+// (agent.ts): per model from pricing.ts for Claude, the existing value for DeepSeek.
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -32,7 +33,8 @@ export default {
       // Turnstile config is advertised so the widget stays in lockstep with the
       // Worker (one source of truth) — never a secret-set-but-no-sitekey lockout.
       return json({
-        ok: true, service: "elkassabgidata-assistant", provider: cfg.provider, mock: cfg.mock, model: cfg.model,
+        ok: true, service: "elkassabgidata-assistant", provider: cfg.provider, mock: cfg.mock, mock_reason: cfg.mockReason, model: cfg.model,
+        ...(cfg.provider === "anthropic" ? { priced_models: pricedModels() } : {}),
         turnstile: { required: !!env.TURNSTILE_SECRET, sitekey: env.TURNSTILE_SITEKEY || null },
       }, 200, cors);
     }
@@ -45,6 +47,7 @@ export default {
 
 async function handleChat(request: Request, env: Env, ctx: ExecutionContext, cors: Record<string, string>): Promise<Response> {
   const cfg = loadConfig(env);
+  const ESTIMATE_USD = reserveUsdFor(cfg);
 
   // --- parse + sanitize -----------------------------------------------------
   let body: any;

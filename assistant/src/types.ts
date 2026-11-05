@@ -7,6 +7,8 @@
 // data access is HTTP to the already-live workers.
 // ---------------------------------------------------------------------------
 
+import { priceCardFor } from "./pricing.ts";
+
 export interface Env {
   // Durable Object holding rate-limit windows + monthly budget ledger.
   ASSISTANT_STATE: DurableObjectNamespace;
@@ -68,7 +70,12 @@ export interface Config {
   userPerDay: number;
   maxToolRounds: number;
   maxOutputTokens: number; // the selected provider's per-reply cap
-  mock: boolean; // true when the SELECTED provider's key is absent -> scripted mock LLM
+  // true -> scripted mock LLM, no model call. mockReason says why (shown on /health):
+  //   "no_key"          the SELECTED provider's key is absent
+  //   "unpriced_model"  PROVIDER=anthropic with a model that has no price card
+  //                     (pricing.ts). Fails closed: the cap cannot charge it right.
+  mock: boolean;
+  mockReason: "no_key" | "unpriced_model" | null;
 }
 
 export function loadConfig(env: Env): Config {
@@ -78,11 +85,15 @@ export function loadConfig(env: Env): Config {
   };
   const provider = resolveProvider(env.PROVIDER);
   const anthropic = provider === "anthropic";
+  const model = anthropic
+    ? (env.ANTHROPIC_MODEL || DEFAULT_ANTHROPIC_MODEL).trim()
+    : env.MODEL || DEFAULT_DEEPSEEK_MODEL;
+  const hasKey = anthropic ? !!env.ANTHROPIC_API_KEY : !!env.DEEPSEEK_API_KEY;
+  const mockReason: Config["mockReason"] =
+    anthropic && !priceCardFor(model) ? "unpriced_model" : !hasKey ? "no_key" : null;
   return {
     provider,
-    model: anthropic
-      ? env.ANTHROPIC_MODEL || DEFAULT_ANTHROPIC_MODEL
-      : env.MODEL || DEFAULT_DEEPSEEK_MODEL,
+    model,
     monthlyCapUsd: num(env.MONTHLY_USD_CAP, 30),
     anonPerHour: num(env.ANON_PER_HOUR, 5),
     anonPerDay: num(env.ANON_PER_DAY, 15),
@@ -92,7 +103,8 @@ export function loadConfig(env: Env): Config {
     maxOutputTokens: anthropic
       ? num(env.ANTHROPIC_MAX_OUTPUT_TOKENS, 2000)
       : num(env.MAX_OUTPUT_TOKENS, 800),
-    mock: anthropic ? !env.ANTHROPIC_API_KEY : !env.DEEPSEEK_API_KEY,
+    mock: mockReason !== null,
+    mockReason,
   };
 }
 
