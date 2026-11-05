@@ -348,6 +348,10 @@ def _var_limit(path, txt):
     return None
 
 
+class MergeRefused(RuntimeError):
+    """pull_slice could not merge variable chunks without copying values across rows (R1760)."""
+
+
 def pull_slice(path, m, keys, geo_for, geo_in, time_clause, extra):
     """Pull one (geo, time) slice, chunking variables; return (header, rows)
     or (None, []) on empty/204. Rows are lists aligned to a unified header.
@@ -428,6 +432,23 @@ def pull_slice(path, m, keys, geo_for, geo_in, time_clause, extra):
             idx = {}
             for r in range(nbase):
                 idx.setdefault(tuple(base_rows[r][base_h.index(k)] for k in kcommon), []).append(r)
+            # REFUSE A MERGE THAT CANNOT IDENTIFY ROWS (R1760). The keys here can be as coarse as ['time']: the
+            # intltrade imports tables merged a chunk the API answered at TOTAL grain onto every commodity row of
+            # the month, so CON_CHA_YR/DUT_VAL_*/AIR_VAL_YR held the national total in 100% of detail rows up to
+            # 2026-02. A tuple that names more than one chunk-0 row, or a chunk-N tuple that repeats, would copy
+            # one value onto many rows; stop instead, loud, with nothing returned for this slice.
+            multi = sum(1 for v in idx.values() if len(v) > 1)
+            seen2, dup2 = set(), 0
+            for row in rows2:
+                kt = tuple(row[i] for i in k2idx)
+                dup2 += kt in seen2
+                seen2.add(kt)
+            if not kcommon or multi or dup2:
+                raise MergeRefused(
+                    f"{path} {geo_for or ''} {time_clause}: chunk {getvars[len(keys):len(keys) + 3]}... does not "
+                    f"line up with chunk 0 ({len(rows2):,} vs {nbase:,} rows) and the shared keys {kcommon} do not "
+                    f"identify rows ({multi:,} key tuples name several chunk-0 rows, {dup2:,} repeat in chunk N). "
+                    f"Merging would copy values across rows (R1760): add the dimension columns to the keys.")
             for c in new_cols:
                 header.append(c)
                 cols.append([None] * nbase)
@@ -879,6 +900,10 @@ def ingest_dataset(m, max_child_states=None, budget_s=None):
     truncated = False
     t_start = time.time()
     outpath = os.path.join(OUT, safe_name(path) + ".parquet")
+    # WRITE ASIDE, RENAME ON SUCCESS (review AR-439): a refusal or a crash part-way through used to leave a valid
+    # SHORTER parquet at outpath (pyarrow closes the writer on garbage collection), and --resume then skipped it as
+    # done. The previous file now stays until this dataset completes.
+    partpath = outpath + ".partial"
 
     class _BudgetHit(Exception):
         pass
@@ -933,7 +958,7 @@ def ingest_dataset(m, max_child_states=None, budget_s=None):
                 if tcol:
                     fields.append(pa.field("obs_date", pa.date32()))
                 schema = pa.schema(fields)
-                writer = pq.ParquetWriter(outpath, schema, compression="zstd")
+                writer = pq.ParquetWriter(partpath, schema, compression="zstd")
             # realign this slice's rows to frozen schema_cols
             hidx = {c: i for i, c in enumerate(header)}
             src = [hidx.get(c) for c in schema_cols]
@@ -962,9 +987,28 @@ def ingest_dataset(m, max_child_states=None, budget_s=None):
         truncated = True
         print(f"    [budget {budget_s}s exceeded mid-slice -> stopping at {n:,} rows]",
               flush=True)
+    except BaseException:
+        # MergeRefused, a crash, an interrupt: nothing of this run reaches outpath.
+        if writer is not None:
+            try:
+                writer.close()
+            except Exception:                                    # noqa: BLE001
+                pass
+        if os.path.exists(partpath):
+            os.remove(partpath)
+        raise
 
     if writer is not None:
         writer.close()
+        # core.atomic.atomic_replace, not os.replace: on Windows a reader holding outpath open (a footer read)
+        # makes a bare replace raise WinError 5 (measured, review AR-439 r2). If even the bounded retries fail,
+        # the COMPLETE run stays in the .partial and the message says how to finish it - the work is not lost.
+        from core.atomic import atomic_replace                    # noqa: PLC0415
+        try:
+            atomic_replace(partpath, outpath)
+        except PermissionError as e:
+            raise RuntimeError(f"{path}: the complete run is in {partpath} but {outpath} is held open ({e}); "
+                               f"close the reader and move it over by hand - nothing was lost") from e
     return n, len(series), n_calls, truncated
 
 
