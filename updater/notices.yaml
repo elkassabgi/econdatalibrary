@@ -1,0 +1,97 @@
+# PUBLISHER NOTICE FEEDS - what jobs/watch_notices.py reads to see a publisher's announcements that a
+# dataset, an API or a URL is ending or changing, BEFORE a fetch breaks on it (design:
+# docs/maintenance/SOURCE_NOTICES.md).
+#
+# Kept OUT of registry.yaml on purpose: a registry entry change must bump EXPECTED_SOURCE_COUNT (R347)
+# and the updater refuses every run on a mismatch; this file is never read by a data run. A feed
+# belongs to a PUBLISHER, and `sources` lists the registry source_ids it speaks for (fnmatch globs).
+#
+# A feed URL goes in ONLY after someone opened it and saw announcements there (`verified_by`); a
+# guessed URL is a citation, not a measurement (R381). `feeds: []` with a dated note is the honest
+# state of a publisher not looked up yet - it shows as a gap in `maintenance_queue.py coverage`.
+#
+# Feed fields: url (https), kind (rss | atom | html_page), poll_days (>= 1), keywords_extra (the
+# publisher's own words: product names, API hosts, codes we hold), selector (html_page only: a CSS-like
+# "tag" or "tag.class" scope for the links), added, verified_by.
+version: 1
+publishers:
+- publisher_id: imf
+  name: International Monetary Fund
+  sources: [imf_*_direct, imf_weo, imf_commodity]
+  feeds: []
+  notes: not looked up yet (2026-11-05)
+- publisher_id: oecd
+  name: OECD
+  sources: [oecd]
+  feeds: []
+  notes: not looked up yet (2026-11-05)
+- publisher_id: eurostat
+  name: Eurostat
+  sources: [eurostat]
+  feeds: []
+  notes: not looked up yet (2026-11-05)
+- publisher_id: ons
+  name: Office for National Statistics (UK)
+  sources: [ons_uk]
+  feeds: []
+  notes: not looked up yet (2026-11-05); the API host is api.beta.ons.gov.uk - a host change is likely
+- publisher_id: statcan
+  name: Statistics Canada
+  sources: [statcan]
+  feeds: []
+  notes: not looked up yet (2026-11-05)
+- publisher_id: worldbank
+  name: World Bank
+  sources: [worldbank, worldbank_*]
+  feeds: []
+  notes: not looked up yet (2026-11-05); 13 ESG indicator ids were re-coded before (runbook)
+- publisher_id: bis
+  name: Bank for International Settlements
+  sources: [bis]
+  feeds: []
+  notes: not looked up yet (2026-11-05)
+- publisher_id: ecb
+  name: European Central Bank
+  sources: [ecb]
+  feeds: []
+  notes: not looked up yet (2026-11-05)
+- publisher_id: fed_board
+  name: Federal Reserve Board
+  sources: [fed_board]
+  feeds: []
+  notes: not looked up yet (2026-11-05)
+- publisher_id: abs
+  name: Australian Bureau of Statistics
+  sources: [abs]
+  feeds: []
+  notes: not looked up yet (2026-11-05)
+- publisher_id: insee
+  name: INSEE
+  sources: [insee_*]
+  feeds: []
+  notes: not looked up yet (2026-11-05)
+- publisher_id: cbs_nl
+  name: Statistics Netherlands (CBS)
+  sources: [cbs_nl]
+  feeds: []
+  notes: not looked up yet (2026-11-05)
+- publisher_id: bls
+  name: US Bureau of Labor Statistics
+  sources: [bls]
+  feeds: []
+  notes: not looked up yet (2026-11-05)
+- publisher_id: bea
+  name: US Bureau of Economic Analysis
+  sources: [bea]
+  feeds: []
+  notes: not looked up yet (2026-11-05)
+- publisher_id: boe
+  name: Bank of England
+  sources: [boe]
+  feeds: []
+  notes: not looked up yet (2026-11-05)
+- publisher_id: ilo
+  name: International Labour Organization
+  sources: [ilostat]
+  feeds: []
+  notes: not looked up yet (2026-11-05)
