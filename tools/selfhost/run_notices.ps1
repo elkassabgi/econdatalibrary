@@ -11,11 +11,16 @@
     a data run, before or after T0.
 
     -IfDue: exit 0 at once, writing nothing, unless a run is due:
-      * it is 09:00 UTC or later (03:00 on this machine's clock: off-peak), and no run that STARTED today
+      * it is 09:00 UTC or later (03:00 or 04:00 US Central, by season: off-peak), and no run that STARTED today
         (UTC) ended with exit 0. Each feed has its own poll_days on top, so a daily run fetches only the
         feeds that are due.
       * no attempt started in the last 2 h (a failed day is retried every 2 h, not every 5 minutes).
-      * no other run holds logs\notices.lock (PID plus start time; a dead or reused PID is a stale lock).
+      * no other run holds logs\notices.lock: the runner's PID and start time, and once started the python
+        child's too. Either one alive (same PID AND start time) holds it, so a python orphaned by a killed
+        runner still blocks a second writer of state.json (review AR-435).
+
+    TIME LIMIT. A run that has not ended after -LimitMin minutes (60) is killed with its whole process tree
+    (taskkill /T /F) and recorded as rc 96. A hung feed must not hold the lock until the next reboot.
 
     WHAT IT RUNS. `python jobs\watch_notices.py` at BelowNormal priority (the owner's own work comes first)
     and nothing else. It publishes nothing: queue items are private until triaged (tools/maintenance_queue.py).
@@ -28,7 +33,8 @@ param(
     # Overrides FOR TESTS ONLY (tests/test_notices_schedule.py). The guard passes none of them.
     [string] $Python = 'C:\Users\aelkassabgi\AppData\Local\Programs\Python\Python314\python.exe',
     [string] $NowUtc = '',
-    [string] $Job    = 'jobs\watch_notices.py'
+    [string] $Job    = 'jobs\watch_notices.py',
+    [double] $LimitMin = 60
 )
 $ErrorActionPreference = 'Continue'
 $root    = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -72,12 +78,17 @@ function Write-Status($r) {
 New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
 if (Test-Path -LiteralPath $lock) {
     $held = $false
+    $other = $null
     try {
         $parts = ((Get-Content -LiteralPath $lock -First 1).Trim()) -split ','
-        $other = [int]$parts[0]
-        $proc = Get-Process -Id $other -ErrorAction SilentlyContinue
-        if ($proc -and $other -ne $PID -and $proc.ProcessName -eq 'powershell' -and $parts.Count -ge 2 -and
-            $proc.StartTime.ToUniversalTime().Ticks.ToString() -eq $parts[1]) { $held = $true }
+        # pairs: runner pid,ticks[,python pid,ticks]
+        for ($k = 0; $k + 1 -lt $parts.Count; $k += 2) {
+            $id = [int]$parts[$k]
+            $proc = Get-Process -Id $id -ErrorAction SilentlyContinue
+            if ($proc -and $id -ne $PID -and $proc.StartTime.ToUniversalTime().Ticks.ToString() -eq $parts[$k + 1]) {
+                $held = $true; $other = $id
+            }
+        }
     } catch { $held = $false }
     if ($held) {
         if (-not $IfDue) { Write-Output "refused: another notices run holds $lock (pid $other)"; exit 3 }
@@ -102,9 +113,20 @@ try {
         -ArgumentList @('-B', '-u', $Job) -RedirectStandardOutput $log -RedirectStandardError $err
     $null = $p.Handle            # PS 5.1: without a handle read now, ExitCode is $null after WaitForExit
     try { $p.PriorityClass = 'BelowNormal' } catch { }                    # a run that ended at once has no handle
-    $p.WaitForExit()
-    $rc = $p.ExitCode
-    if ($null -eq $rc) { $rc = 97 }
+    try {
+        Set-Content -LiteralPath $lock -Encoding ascii -Value ("{0},{1},{2},{3}" -f $PID,
+            $me.StartTime.ToUniversalTime().Ticks, $p.Id, $p.StartTime.ToUniversalTime().Ticks)
+    } catch { }
+    if ($p.WaitForExit([int]($LimitMin * 60 * 1000))) {
+        $p.WaitForExit()                                                  # flush the redirected streams
+        $rc = $p.ExitCode
+        if ($null -eq $rc) { $rc = 97 }
+    } else {
+        & taskkill.exe /T /F /PID $p.Id | Out-Null
+        $p.WaitForExit(30000) | Out-Null
+        Add-Content -LiteralPath $log -Value ("runner: killed after {0} min (process tree)" -f $LimitMin)
+        $rc = 96
+    }
 } catch {
     Add-Content -LiteralPath $log -Value ("runner error: {0}" -f $_.Exception.Message)
     $rc = 98
@@ -127,4 +149,7 @@ Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue
 
 Get-ChildItem -Path $logsDir -Filter 'notices_*.log' -File -ErrorAction SilentlyContinue |
     Sort-Object Name -Descending | Select-Object -Skip 60 | Remove-Item -Force -ErrorAction SilentlyContinue
+# a run killed before its finally block leaves its .stderr behind; nothing else would ever remove it
+Get-ChildItem -Path $logsDir -Filter 'notices_*.log.stderr' -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.LastWriteTimeUtc -lt $now.AddDays(-1) } | Remove-Item -Force -ErrorAction SilentlyContinue
 exit $rc

@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -36,19 +37,23 @@ def test_the_guard_copy_starts_the_runner_with_if_due_and_no_redirect():
     assert "Redirect" not in block, "the runner writes its own log; a redirect leaves empty files every tick"
 
 
-def _scratch(tmp_path, job_rc):
+def _scratch(tmp_path, job_rc, sleep_s=0):
     root = tmp_path / "root"
     (root / "tools" / "selfhost").mkdir(parents=True)
     shutil.copy(PS1, root / "tools" / "selfhost" / "run_notices.ps1")
-    (root / "job.py").write_text(f"print('job ran')\nraise SystemExit({job_rc})\n", encoding="ascii")
+    (root / "job.py").write_text(f"import os, time\nprint('job ran', os.getpid(), flush=True)\n"
+                                 f"time.sleep({sleep_s})\nraise SystemExit({job_rc})\n", encoding="ascii")
     return root
 
 
+def _cmd(root, *args):
+    return [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+            str(root / "tools" / "selfhost" / "run_notices.ps1"), *args,
+            "-Python", sys.executable, "-Job", str(root / "job.py")]
+
+
 def _run(root, *args):
-    r = subprocess.run([POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                        str(root / "tools" / "selfhost" / "run_notices.ps1"), *args,
-                        "-Python", sys.executable, "-Job", str(root / "job.py")],
-                       capture_output=True, text=True, timeout=120)
+    r = subprocess.run(_cmd(root, *args), capture_output=True, text=True, timeout=120)
     st = root / "logs" / "notices.last.json"
     return r.returncode, (json.loads(st.read_text(encoding="ascii")) if st.exists() else None)
 
@@ -78,3 +83,44 @@ def test_a_failed_run_is_retried_after_two_hours_not_every_tick(tmp_path):
     assert len(list((root / "logs").glob("notices_*.log"))) == 1, "within 2 h of the attempt: nothing"
     _run(root, "-IfDue", "-NowUtc", "2026-11-06T11:00:00Z")
     assert len(list((root / "logs").glob("notices_*.log"))) == 2, "2 h later: retried"
+
+
+def _pid_alive(pid):
+    out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
+    return str(pid) in out
+
+
+@pytest.mark.skipif(not POWERSHELL, reason="Windows PowerShell only")
+def test_a_hung_run_is_killed_with_its_tree_at_the_limit(tmp_path):
+    """AR-435: no limit meant a hung watcher held the lock until a reboot, unreported."""
+    root = _scratch(tmp_path, 0, sleep_s=120)
+    rc, st = _run(root, "-IfDue", "-NowUtc", "2026-11-06T09:00:00Z", "-LimitMin", "0.1")
+    assert rc == 96 and st["rc"] == 96 and st["last_ok_started"] is None
+    log = next((root / "logs").glob("notices_*.log")).read_text(encoding="utf-8")
+    assert "killed after" in log
+    child = int(log.split("job ran", 1)[1].split()[0])
+    assert not _pid_alive(child), "the python child was killed too"
+    assert not (root / "logs" / "notices.lock").exists()
+
+
+@pytest.mark.skipif(not POWERSHELL, reason="Windows PowerShell only")
+def test_a_live_run_holds_the_lock(tmp_path):
+    root = _scratch(tmp_path, 0, sleep_s=25)
+    first = subprocess.Popen(_cmd(root, "-NowUtc", "2026-11-06T09:00:00Z"),
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        lock = root / "logs" / "notices.lock"
+        for _ in range(100):                                      # wait until the python child is in the lock
+            if lock.exists() and len(lock.read_text(encoding="ascii").strip().split(",")) == 4:
+                break
+            time.sleep(1)
+        assert len(lock.read_text(encoding="ascii").strip().split(",")) == 4, "runner and child are recorded"
+        r = subprocess.run(_cmd(root, "-NowUtc", "2026-11-06T09:01:00Z"), capture_output=True, text=True,
+                           timeout=60)
+        assert r.returncode == 3 and "refused" in r.stdout
+        r = subprocess.run(_cmd(root, "-IfDue", "-NowUtc", "2026-11-06T12:00:00Z"), capture_output=True,
+                           text=True, timeout=60)
+        assert r.returncode == 0 and len(list((root / "logs").glob("notices_*.log"))) == 1, "-IfDue: silent"
+    finally:
+        first.wait(timeout=120)
+    assert first.returncode == 0
