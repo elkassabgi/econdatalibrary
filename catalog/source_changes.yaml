@@ -1,0 +1,20 @@
+# SOURCE CHANGES - the public record of publisher changes that affect this library: a dataset, an API or
+# a series that a publisher has ended, moved, re-coded or re-based. Rendered by catalog/gen_site.py as
+# source_changes.html (docs/maintenance/SOURCE_NOTICES.md).
+#
+# AN ENTRY GOES IN ONLY AFTER REVIEW. The watcher's queue (data/_maintenance/queue.jsonl) is private; an
+# item reaches this file only when someone has read the publisher's notice, checked what it does to OUR
+# fetch, and written the entry by hand. A notice is a citation, not a measurement: say what the publisher
+# announced and, separately, what we measured or did.
+#
+# Fields (all required except `until`):
+#   date      YYYY-MM-DD the publisher announced it (or the change took effect, if it was not announced)
+#   sources   [registry source_id, ...] - our sources it affects
+#   change    one or two sentences IN OUR OWN WORDS: what the publisher did. No quotation over 15 words.
+#   effect    what it means for this library's data, and what we did
+#   status    announced | in_effect | handled
+#   link      https URL of the publisher's own notice
+#   until     optional YYYY-MM-DD: the date the change takes effect, for an announced change
+# Checked at build time by catalog/gen_site.py load_source_changes (a bad entry stops the build).
+version: 1
+entries: []
