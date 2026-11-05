@@ -403,21 +403,30 @@ def _notices_beat():
         pass
     except Exception as e:                                   # noqa: BLE001
         out["run"] = {"unreadable": f"{type(e).__name__}: {e}"[:200]}
+    # EVERYTHING that touches queue lines is inside the guard, and the sort keys are coerced: a line with
+    # score "5" beside score 3, or mixed-type found_utc, raised TypeError in sort() below the old guard and
+    # stopped the whole beat - the watchdog - until the line was removed (review AR-436, R1810).
+    def _num(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return 0.0
     try:
         try:
             import maintenance_queue as mq                   # noqa: PLC0415 - run as a script from tools/
         except ImportError:
             from tools import maintenance_queue as mq        # noqa: PLC0415
-        new = [d for d in mq.load(NOTICES_QUEUE_LOCAL).values() if d.get("status") == "new"]
+        new = [d for d in mq.load(NOTICES_QUEUE_LOCAL).values()
+               if isinstance(d, dict) and d.get("status") == "new"]
+        out["new"] = len(new)
+        out["broken"] = sum(1 for d in new if d.get("kind") == "feed_broken")
+        new.sort(key=lambda d: (-_num(d.get("score")), str(d.get("found_utc") or "")))
+        out["items"] = [{"publisher_id": str(d.get("publisher_id") or ""), "kind": str(d.get("kind") or ""),
+                         "score": _num(d.get("score")), "title": str(d.get("title") or "")[:120],
+                         "link": str(d.get("link") or "")[:300]}
+                        for d in new[:NOTICES_ITEMS_MAX]]
     except (Exception, SystemExit) as e:                     # noqa: BLE001 - load() exits on a bad line
-        out["unreadable"] = f"queue: {type(e).__name__}: {e}"[:200]
-        return out
-    out["new"] = len(new)
-    out["broken"] = sum(1 for d in new if d.get("kind") == "feed_broken")
-    new.sort(key=lambda d: (-(d.get("score") or 0), d.get("found_utc") or ""))
-    out["items"] = [{"publisher_id": d.get("publisher_id"), "kind": d.get("kind"), "score": d.get("score"),
-                     "title": str(d.get("title") or "")[:120], "link": d.get("link") or ""}
-                    for d in new[:NOTICES_ITEMS_MAX]]
+        out.update(new=0, broken=0, items=[], unreadable=f"queue: {type(e).__name__}: {e}"[:200])
     return out
 
 
@@ -470,7 +479,10 @@ def publish(stall_check: bool = False) -> int:
     body["sec_edgar_local"] = sec
     # judged here as well as in check(): the public route carries only this verdict, never the record
     body["sec_edgar_local_problem"] = _sec_edgar_problem(sec, dt.datetime.now(dt.timezone.utc))
-    body["notices"] = _notices_beat()
+    try:
+        body["notices"] = _notices_beat()
+    except BaseException as e:                               # noqa: BLE001 - the beat must go out regardless
+        body["notices"] = {"unreadable": f"{type(e).__name__}: {e}"[:200]}
     if stall_check:
         body["scheduler_stall"] = _stall_summary()
     data = json.dumps(body, indent=2).encode("utf-8")

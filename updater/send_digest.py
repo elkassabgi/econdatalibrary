@@ -335,47 +335,78 @@ GUARD_BEAT_KEY = "_aqueduct/guard_heartbeat.json"
 NOTICES_RUN_LATE_H = 30.0     # the runner is due once a day from 09:00 UTC; a day plus retries is late
 
 
-def read_guard_beat():
+GUARD_BEAT_READ_S = 20.0     # the read runs in the daily job's tail; botocore's defaults allow minutes
+GUARD_BEAT_OLD_H = 2.0       # the guard publishes every 5 minutes: 2 h old means the loop is down
+
+
+def read_guard_beat(timeout_s: float = GUARD_BEAT_READ_S):
     """The workstation's guard beat from R2 (tools/guard_heartbeat.py --publish), or {"unreadable": why}.
-    It carries the publisher-notice summary, which this CI job cannot see any other way."""
-    try:
-        _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        if _root not in sys.path:
-            sys.path.insert(0, _root)
-        from core import r2_util                                          # noqa: PLC0415
-        raw = r2_util.client().get_object(Bucket="econ-data", Key=GUARD_BEAT_KEY)["Body"].read()
-        beat = _json.loads(raw.decode("utf-8"))
-        return beat if isinstance(beat, dict) else {"unreadable": "not a JSON object"}
-    except Exception as e:                                                # noqa: BLE001 - a section, not the run
-        return {"unreadable": f"{type(e).__name__}: {str(e)[:160]}"}
+    It carries the publisher-notice summary, which this CI job cannot see any other way. BOUNDED: the read
+    runs on a daemon thread joined for `timeout_s`, so a slow or black-holed R2 costs the mail 20 s, not
+    botocore's retries of 60 s connects (review AR-436)."""
+    import threading                                                      # noqa: PLC0415
+    box = {}
+
+    def _get():
+        try:
+            _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            if _root not in sys.path:
+                sys.path.insert(0, _root)
+            from core import r2_util                                      # noqa: PLC0415
+            raw = r2_util.client().get_object(Bucket="econ-data", Key=GUARD_BEAT_KEY)["Body"].read()
+            beat = _json.loads(raw.decode("utf-8"))
+            box["v"] = beat if isinstance(beat, dict) else {"unreadable": "not a JSON object"}
+        except Exception as e:                                            # noqa: BLE001 - a section, not the run
+            box["v"] = {"unreadable": f"{type(e).__name__}: {str(e)[:160]}"}
+    t = threading.Thread(target=_get, daemon=True)
+    t.start()
+    t.join(timeout_s)
+    return box.get("v") or {"unreadable": f"no answer from R2 in {timeout_s:.0f} s"}
 
 
 def notices_lines(beat, now) -> list:
-    """Text lines for the publisher-notice section (docs/maintenance/SOURCE_NOTICES.md), or [] when the beat
-    predates the watcher. It names NEW queue items only - nothing in the queue is public - and says plainly
-    when it could not look, so an unreadable beat never reads as "no notices"."""
+    """Text lines for the publisher-notice section (docs/maintenance/SOURCE_NOTICES.md), or [] when there is
+    nothing to say: a beat that predates the watcher, or a watcher never run with an empty queue (a line
+    printed every morning that says nothing trains the reader to skip the section). It names NEW queue items
+    only - nothing in the queue is public - and says plainly when it could not look, so an unreadable beat
+    never reads as "no notices". A beat older than GUARD_BEAT_OLD_H is named as such: a dead guard loop is a
+    different fault from a late watcher."""
     if not isinstance(beat, dict) or "unreadable" in beat:
         why = beat.get("unreadable") if isinstance(beat, dict) else "no beat"
         return ["  publisher notices: could not read the workstation beat (" + str(why)[:120] + ")", ""]
     n = beat.get("notices")
     if not isinstance(n, dict):
         return []
-    out = []
     run = n.get("run")
+    if run is None and not n.get("new") and not n.get("unreadable"):
+        return []
+    out = []
+    try:
+        b = _dt.datetime.fromisoformat(str(beat.get("utc")).replace("Z", "+00:00"))
+        age_h = (now - (b if b.tzinfo else b.replace(tzinfo=_dt.timezone.utc))).total_seconds() / 3600
+    except (ValueError, TypeError):
+        age_h = None
+    stale = age_h is None or age_h > GUARD_BEAT_OLD_H
+    if stale:
+        out.append("  publisher notices: the workstation beat is "
+                   + ("undated" if age_h is None else f"{age_h:.0f} h old") + " - the guard loop is not "
+                   "publishing; what follows is as of that beat")
     if n.get("unreadable"):
         out.append(f"  publisher notices: the queue is unreadable ({str(n['unreadable'])[:120]})")
     if run is None:
-        out.append("  publisher notices: the watcher has not run on the workstation yet")
+        out.append(f"  publisher notices: {n.get('new', 0)} new, {n.get('broken', 0)} broken feed(s); "
+                   f"the daily run has not run on the workstation yet")
     elif isinstance(run, dict) and run.get("unreadable"):
         out.append(f"  publisher notices: its status file is unreadable ({str(run['unreadable'])[:100]})")
     elif isinstance(run, dict):
         late = ""
-        try:
-            ok = _dt.datetime.fromisoformat(str(run.get("last_ok_started")).replace("Z", "+00:00"))
-            if (now - ok).total_seconds() > NOTICES_RUN_LATE_H * 3600:
-                late = f"  LATE (last ok run {run.get('last_ok_started')})"
-        except (ValueError, TypeError):
-            late = "  LATE (no ok run yet)"
+        if not stale:                    # an old beat cannot tell whether the watcher is late
+            try:
+                ok = _dt.datetime.fromisoformat(str(run.get("last_ok_started")).replace("Z", "+00:00"))
+                if (now - ok).total_seconds() > NOTICES_RUN_LATE_H * 3600:
+                    late = f"  LATE (last ok run {run.get('last_ok_started')})"
+            except (ValueError, TypeError):
+                late = "  LATE (no ok run yet)"
         rc = run.get("rc")
         tail = "" if rc in (0, None) else f"  last run exited {rc}"
         out.append(f"  publisher notices: {n.get('new', 0)} new, {n.get('broken', 0)} broken feed(s){late}{tail}")
