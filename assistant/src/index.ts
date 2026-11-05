@@ -8,16 +8,17 @@
 // download tools only ever return links, gated behind free registration.
 // ---------------------------------------------------------------------------
 
-import { loadConfig, type Env, type Visitor, type ChatMessage } from "./types";
-import { runAgent } from "./agent";
-import { verifyTurnstile, verifyAnonPass, issueAnonPass } from "./turnstile";
+import { loadConfig, type Env, type Visitor, type ChatMessage } from "./types.ts";
+import { reserveUsdFor, runAgent } from "./agent.ts";
+import { healthBody } from "./health.ts";
+import { verifyTurnstile, verifyAnonPass, issueAnonPass } from "./turnstile.ts";
 
-export { AssistantState } from "./state";
+export { AssistantState } from "./state.ts";
 
 const HF_ME = "https://api.hfdatalibrary.com/v1/auth/me";
-// Conservative upper-bound per-request cost, reserved at gate time so the
-// monthly budget cap holds under concurrency (reconciled to actual at charge).
-const ESTIMATE_USD = 0.02;
+// The per-request reserve held at gate time so the monthly budget cap holds
+// under concurrency (reconciled to actual at charge) comes from reserveUsdFor
+// (agent.ts): per model from pricing.ts for Claude, the existing value for DeepSeek.
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -28,13 +29,7 @@ export default {
 
     const url = new URL(request.url);
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) {
-      const cfg = loadConfig(env);
-      // Turnstile config is advertised so the widget stays in lockstep with the
-      // Worker (one source of truth) — never a secret-set-but-no-sitekey lockout.
-      return json({
-        ok: true, service: "elkassabgidata-assistant", mock: cfg.mock, model: cfg.model,
-        turnstile: { required: !!env.TURNSTILE_SECRET, sitekey: env.TURNSTILE_SITEKEY || null },
-      }, 200, cors);
+      return json(healthBody(loadConfig(env), env), 200, cors);
     }
     if (request.method === "POST" && url.pathname === "/chat") {
       return handleChat(request, env, ctx, cors);
@@ -45,6 +40,7 @@ export default {
 
 async function handleChat(request: Request, env: Env, ctx: ExecutionContext, cors: Record<string, string>): Promise<Response> {
   const cfg = loadConfig(env);
+  const ESTIMATE_USD = reserveUsdFor(cfg);
 
   // --- parse + sanitize -----------------------------------------------------
   let body: any;

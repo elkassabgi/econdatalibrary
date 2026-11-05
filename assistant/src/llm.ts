@@ -6,7 +6,7 @@
 // loop so the entire flow + UI can be demoed locally with no key and no spend.
 // ---------------------------------------------------------------------------
 
-import type { ChatMessage, Config, Env, ToolCall, Usage } from "./types";
+import type { ChatMessage, Config, Env, ToolCall, Usage } from "./types.ts";
 
 const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 
@@ -33,7 +33,7 @@ export async function llmComplete(
   messages: ChatMessage[],
   tools: readonly unknown[],
 ): Promise<LlmResult> {
-  if (config.mock) return mockComplete(messages);
+  if (config.mock) return mockComplete(messages, mockNote(config));
 
   const body = {
     model: config.model,
@@ -97,7 +97,16 @@ function mockCall(name: string, args: unknown): ToolCall {
   return { id: `mock_${name}`, type: "function", function: { name, arguments: JSON.stringify(args) } };
 }
 
-function mockComplete(messages: ChatMessage[]): LlmResult {
+// The demo-mode line names the SELECTED provider and why it is not live.
+export function mockNote(config: Config): string {
+  const name = config.provider === "anthropic" ? "Claude" : "DeepSeek";
+  const why = config.mockReason === "unpriced_model"
+    ? `the ${name} model "${config.model}" has no price card, so it is not called`
+    : `no ${name} key configured`;
+  return `_(demo mode: ${why}. Provider: ${config.provider}.)_`;
+}
+
+function mockComplete(messages: ChatMessage[], note: string): LlmResult {
   const last = messages[messages.length - 1];
 
   if (last?.role === "tool") {
@@ -109,7 +118,7 @@ function mockComplete(messages: ChatMessage[]): LlmResult {
           return { message: { role: "assistant", content: null, tool_calls: [mockCall("prepare_download", { series_id: results[0].series_id })] }, usage: {} };
         }
       } catch { /* fall through */ }
-      return { message: { role: "assistant", content: "I searched the catalog but didn't find a clear match — try naming the country, indicator, and units. _(demo mode: no DeepSeek key configured.)_" }, usage: {} };
+      return { message: { role: "assistant", content: `I searched the catalog but didn't find a clear match — try naming the country, indicator, and units. ${note}` }, usage: {} };
     }
     // Step 3: after prepare_download, give a grounded answer from the real search hits.
     const searchMsg = [...messages].reverse().find((m) => m.role === "tool" && m.name === "search_series");
@@ -122,7 +131,7 @@ function mockComplete(messages: ChatMessage[]): LlmResult {
     const tail = gated
       ? "The data is available to download — you'll just need a free account (instant, no cost)."
       : "I've prepared your download — click the button below.";
-    return { message: { role: "assistant", content: `Here's what I found in the Econ Data Library:\n\n${lines}\n\n${tail}\n\n_(demo mode: connect a DeepSeek key for full reasoning, disambiguation, and citations.)_` }, usage: {} };
+    return { message: { role: "assistant", content: `Here's what I found in the Econ Data Library:\n\n${lines}\n\n${tail}\n\n${note}` }, usage: {} };
   }
 
   // Step 1: search the catalog with keywords pulled from the latest question.

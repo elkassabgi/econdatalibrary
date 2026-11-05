@@ -9,7 +9,7 @@
 // it was not already free to search.
 // ---------------------------------------------------------------------------
 
-import type { Visitor } from "./types";
+import type { Visitor } from "./types.ts";
 
 const ECON = "https://econdl-api.elkassabgi.workers.dev";
 const HF_API = "https://api.hfdatalibrary.com";
