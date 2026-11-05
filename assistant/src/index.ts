@@ -10,7 +10,7 @@
 
 import { loadConfig, type Env, type Visitor, type ChatMessage } from "./types.ts";
 import { reserveUsdFor, runAgent } from "./agent.ts";
-import { pricedModels } from "./pricing.ts";
+import { healthBody } from "./health.ts";
 import { verifyTurnstile, verifyAnonPass, issueAnonPass } from "./turnstile.ts";
 
 export { AssistantState } from "./state.ts";
@@ -29,14 +29,7 @@ export default {
 
     const url = new URL(request.url);
     if (request.method === "GET" && (url.pathname === "/" || url.pathname === "/health")) {
-      const cfg = loadConfig(env);
-      // Turnstile config is advertised so the widget stays in lockstep with the
-      // Worker (one source of truth) — never a secret-set-but-no-sitekey lockout.
-      return json({
-        ok: true, service: "elkassabgidata-assistant", provider: cfg.provider, mock: cfg.mock, mock_reason: cfg.mockReason, model: cfg.model,
-        ...(cfg.provider === "anthropic" ? { priced_models: pricedModels() } : {}),
-        turnstile: { required: !!env.TURNSTILE_SECRET, sitekey: env.TURNSTILE_SITEKEY || null },
-      }, 200, cors);
+      return json(healthBody(loadConfig(env), env), 200, cors);
     }
     if (request.method === "POST" && url.pathname === "/chat") {
       return handleChat(request, env, ctx, cors);

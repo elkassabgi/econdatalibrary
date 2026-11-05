@@ -13,6 +13,7 @@ import { TOOL_SCHEMAS } from "../src/tools.ts";
 import { reserveUsdFor, runAgent } from "../src/agent.ts";
 import { CLAUDE_PRICES, DEEPSEEK_RESERVE_USD, priceCardFor, pricedModels } from "../src/pricing.ts";
 import { mockNote } from "../src/llm.ts";
+import { healthBody } from "../src/health.ts";
 import {
   ANTHROPIC_TOOLS, CLAUDE_EFFORT, REFUSAL_TEXT, TRUNCATED_TEXT,
   UnpricedModelError, anthropicCostUsd, isToolError, parseToolInput, runAnthropicLoop, toAnthropicHistory, toAnthropicTools,
@@ -181,6 +182,30 @@ test("per-request reserve comes from the same table, per model", () => {
   assert.equal(reserveUsdFor(loadConfig({ DEEPSEEK_API_KEY: DUMMY } as any)), DEEPSEEK_RESERVE_USD);
   assert.equal(DEEPSEEK_RESERVE_USD, 0.02); // DeepSeek's reserve is unchanged
   assert.equal(reserveUsdFor(loadConfig({} as any)), DEEPSEEK_RESERVE_USD); // mock
+});
+
+test("/health shows the provider, mock and the mock reason (incl. unpriced_model)", () => {
+  const ds = healthBody(loadConfig({} as any), {} as any);
+  assert.equal(ds.provider, "deepseek");
+  assert.equal(ds.mock, true);
+  assert.equal(ds.mock_reason, "no_key");
+  assert.equal("priced_models" in ds, false);
+  const live = healthBody(claudeConfig(), {} as any);
+  assert.deepEqual([live.provider, live.mock, live.mock_reason, live.model], ["anthropic", false, null, "claude-haiku-5-5"]);
+  assert.deepEqual(live.priced_models, ["claude-haiku-5-5"]);
+  const refused = healthBody(claudeConfig({ ANTHROPIC_MODEL: "claude-sonnet-5-5" }), {} as any);
+  assert.deepEqual([refused.mock, refused.mock_reason, refused.model], [true, "unpriced_model", "claude-sonnet-5-5"]);
+});
+
+test("index.ts gates and settles with reserveUsdFor(cfg), not a fixed reserve", () => {
+  // index.ts imports the Durable Object (cloudflare:workers), so it cannot load
+  // under node; this pins the wiring at the source level instead.
+  const src = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+  assert.match(src, /const ESTIMATE_USD = reserveUsdFor\(cfg\);/);
+  assert.match(src, /reserveUsd: ESTIMATE_USD/);
+  assert.match(src, /settle\(result\.costUsd - ESTIMATE_USD\)/);
+  assert.doesNotMatch(src, /ESTIMATE_USD\s*=\s*[0-9.]/);
+  assert.match(src, /json\(healthBody\(loadConfig\(env\), env\), 200, cors\)/);
 });
 
 test("mock reply names the selected provider and the reason", () => {
