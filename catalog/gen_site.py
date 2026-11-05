@@ -3821,12 +3821,16 @@ def render_contact():
 
 SOURCE_CHANGES = os.path.join(HERE, "source_changes.yaml")
 _CHANGE_STATUS = {"announced": "Announced", "in_effect": "In effect", "handled": "Handled"}
-# Quotations in every common style (AR-437 A2): straight and curly double, curly single, guillemets, low-9
-# quotes, and straight single quotes only at word edges - so "publisher's" is an apostrophe, not a quote.
-_QUOTE_RE = re.compile(r"[\"“„]([^\"“”„]+)[\"”“]"
-                       r"|[‘‚]([^‘’‚]+)’"
-                       r"|[«‹]([^«»‹›]+)[»›]"
-                       r"|(?<!\w)'([^']+?)'(?!\w)")
+# Quotations in every common style (AR-437 A2): straight, curly and full-width double, low-9, curly single,
+# guillemets, and straight single quotes. A single quote OPENS only at a word start and CLOSES only before a
+# non-word character, so an apostrophe inside a word (O'Brien, publisher's) neither opens nor ends a quotation;
+# an unclosed quotation counts to the end of the field (r2: each of those hid a 16-word quote). Known gap: a
+# plural possessive (users') inside a single-quoted span still closes it early - review catches what this misses.
+_QUOTE_RE = re.compile(
+    r"[\"“„＂](.+?)(?:[\"”“＂]|$)"
+    r"|(?<!\w)[‘‚](.+?)(?:’(?!\w)|$)"
+    r"|[«‹](.+?)(?:[»›]|$)"
+    r"|(?<!\w)'(.+?)(?:'(?!\w)|$)", re.S)
 QUOTE_MAX_WORDS = 15
 
 

@@ -49,6 +49,12 @@ def test_empty_says_so_and_is_noindex_until_it_has_an_entry():
     "«" + " ".join(["w"] * 16) + "»",
     "„" + " ".join(["w"] * 16) + "“",
     '"' + " ".join(["a"] * 10) + '" and "' + " ".join(["b"] * 10) + '"',
+    # AR-437 r2: an apostrophe inside the quotation, or no closing mark, hid each of these
+    "'" + " ".join(["w"] * 7) + " O'Brien " + " ".join(["w"] * 8) + "'",
+    "'" + " ".join(["w"] * 7) + " publisher's " + " ".join(["w"] * 8) + "'",
+    "‘" + " ".join(["w"] * 7) + " publisher’s " + " ".join(["w"] * 8) + "’",
+    '"' + " ".join(["w"] * 16),
+    "“" + " ".join(["w"] * 16),
 ])
 def test_every_quote_style_and_the_total_count(tmp_path, quoted):
     """AR-437 A2: each of these was accepted with more than 15 quoted words."""
@@ -59,6 +65,8 @@ def test_every_quote_style_and_the_total_count(tmp_path, quoted):
 def test_apostrophes_are_not_quotes(tmp_path):
     text = "The publisher's API and the bank's feeds moved; users' scripts and the agency's old URL fail."
     _load(tmp_path, [dict(GOOD, change=text)])
+    _load(tmp_path, [dict(GOOD, change="O'Brien's team said the 'old endpoint' closes and the publisher’s "
+                                       "‘new API’ replaces it.")])
 
 
 @pytest.mark.parametrize("patch,why", [
