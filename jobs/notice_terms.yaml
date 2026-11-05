@@ -1,0 +1,20 @@
+# Words that make a publisher's announcement worth a look (jobs/watch_notices.py score()).
+# strong = the announcement is about something ENDING or MOVING (+3 each, counted once per term);
+# medium = something changing (+1). An item scoring >= THRESHOLD in watch_notices.py goes to the
+# maintenance queue; below it, it is only counted. Matching is case-insensitive on the item title
+# (and summary, when the feed has one). A trailing * matches any word ending.
+# Adding a missed word is a one-line change here plus a planted case in tests/test_watch_notices.py.
+strong:
+  en: [discontinu*, deprecat*, decommission*, sunset*, retire*, "end of life", "no longer",
+       "will be removed", "will cease", "cease*", "shut down", "shut-down", "shutdown", migrat*,
+       "new api", "api version", "breaking change", "replaced by", "moved to", "new url",
+       "new address", rebas*, "re-bas*", "base year", "classification change", "terminat*"]
+  # Not here on purpose (review AR-432 #6): withdraw*/abandon* match ordinary English releases;
+  # bare "eingestellt" also means "posted online"; French "migration" double-counts en migrat*.
+  de: ["wird eingestellt", "werden eingestellt", "nicht mehr", abgekündigt, umstellung, "neue schnittstelle"]
+  fr: ["arrêt*", "arret*", "supprim*", "nouvelle api", "changement de base", "ne sera plus"]
+  nl: [stopgezet, "stopt met", "vervalt", "nieuwe api", "migratie"]
+  es: [descontinu*, "dejará de", "nueva api", "migración", "cambio de base"]
+medium:
+  en: [change*, revision*, revised, redesign*, maintenance, outage, downtime, "new release",
+       "new version", update*]
