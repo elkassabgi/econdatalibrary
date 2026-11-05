@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import hashlib
+import io
 import os
 import sqlite3
 import sys
@@ -219,8 +220,24 @@ def pull_state() -> int:
               f"Re-run --pull-state.", file=sys.stderr)
         return 1
 
-    raw = zstandard.ZstdDecompressor().decompress(data)
     os.makedirs(config.STATE_DIR, exist_ok=True)
+    # STREAM IT (2026-11-05). This used to decompress() into one bytes object - 15,820,623,872 B on
+    # 2026-11-04 next to the 0.95 GB download, on a 16 GB runner - and seven heavy jobs from 11-01 to
+    # 11-04 died in this step with "The hosted runner lost communication". Decompress straight into the
+    # temp file instead. It still happens BEFORE the WAL set-aside below, as before: a corrupt or
+    # truncated object fails here and leaves the local state.db where it was.
+    tmp = f"{config.STATE_DB}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
+    try:
+        with open(tmp, "wb") as f:
+            zstandard.ZstdDecompressor().copy_stream(io.BytesIO(data), f)
+        raw_len = os.path.getsize(tmp)
+    except BaseException:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        raise
 
     # R407. os.replace swaps the .db but leaves -wal/-shm beside it, so a WAL
     # belonging to the OLD database gets replayed against the freshly downloaded
@@ -243,12 +260,13 @@ def pull_state() -> int:
                     os.replace(src, os.path.join(keep, os.path.basename(src) + "." + stamp))
                 except OSError as e:
                     print(f"[pull-state] ERROR: could not set aside {src}: {e}", file=sys.stderr)
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
                     return 1
 
-    tmp = f"{config.STATE_DB}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
     try:
-        with open(tmp, "wb") as f:
-            f.write(raw)
         try:
             os.replace(tmp, config.STATE_DB)  # atomic publish of the local copy
         except PermissionError:
@@ -272,7 +290,7 @@ def pull_state() -> int:
             except OSError:
                 pass
     _record_etag(etag_after)
-    print(f"[pull-state] ok: {len(data):,} B compressed -> {len(raw):,} B at "
+    print(f"[pull-state] ok: {len(data):,} B compressed -> {raw_len:,} B at "
           f"{config.STATE_DB} (etag {etag_after})")
     return 0
 
@@ -380,8 +398,18 @@ def push_state() -> int:
             con.execute("VACUUM INTO ?", (tmp_db,))
         finally:
             con.close()
+        # STREAM IT (2026-11-05). This used to f.read() the whole vacuumed copy (15,820,623,872 B on
+        # 2026-11-04) and compress it as one bytes object: ~16 GB resident on a 16 GB runner. Only the
+        # compressed bytes (~0.95 GB) are held now. size= writes the content size into the frame
+        # header, as one-shot compress() did, so readers that call decompress() still work.
+        raw_len = os.path.getsize(tmp_db)
+        out = io.BytesIO()
         with open(tmp_db, "rb") as f:
-            raw = f.read()
+            # Level 9: the db compresses once per run but transfers twice
+            # (state + backup) — worth the extra CPU for the smaller round-trip.
+            zstandard.ZstdCompressor(level=9).copy_stream(f, out, size=raw_len)
+        comp = out.getvalue()
+        del out
     finally:
         if os.path.exists(tmp_db):
             try:
@@ -389,10 +417,7 @@ def push_state() -> int:
             except OSError:
                 pass
 
-    # Level 9: the ~207 MB db compresses once per run but transfers twice
-    # (state + backup) — worth the extra CPU for the smaller round-trip.
-    comp = zstandard.ZstdCompressor(level=9).compress(raw)
-    print(f"[push-state] {len(raw):,} B vacuumed -> {len(comp):,} B zstd")
+    print(f"[push-state] {raw_len:,} B vacuumed -> {len(comp):,} B zstd")
 
     # THE SWAP (R1197). Conditional on the ETag compared above: If-Match it while an object existed,
     # If-None-Match '*' for the seed. The compare above ran minutes ago (VACUUM INTO + zstd-9 take ~5 min
