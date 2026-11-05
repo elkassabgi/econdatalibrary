@@ -33,5 +33,10 @@ daily digest, and the public "Source changes" page (`catalog/source_changes.yaml
 - **Private until reviewed.** A queue item becomes a public entry only through a reviewed edit
   of `catalog/source_changes.yaml`. A notice is a citation, not a measurement: adding a source
   to `updater/discontinued.yaml` still needs its own probe.
+- **A feed must see what it claims.** Every HTML page carries `evidence`, a title seen there as
+  this parser reads it. `python jobs/watch_notices.py --check` fetches every feed once and fails
+  on a feed with no items or without its evidence. Run it before a feed is added or changed.
+- **Notice pages.** A page that lists only announcements has `notice_page: true`: after its
+  first poll, every new link on it is queued, whatever its title says.
 - **Gaps show.** A publisher with `feeds: []` carries a dated note, and
   `python tools/maintenance_queue.py coverage` lists every such publisher.

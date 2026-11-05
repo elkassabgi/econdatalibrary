@@ -12,7 +12,9 @@
 #
 # Feed fields: url (https), kind (rss | atom | html_page), poll_days (>= 1), keywords_extra (the
 # publisher's own words: product names, API hosts, codes we hold), selector (html_page only: a CSS-like
-# "tag" or "tag.class" scope for the links), added, verified_by.
+# "tag", "tag.class" or ".class" scope for the links), notice_page (html_page that lists ONLY announcements:
+# every new link is queued), evidence (a title seen there AS PARSED - `watch_notices.py --check` verifies
+# it), added, verified_by.
 version: 1
 publishers:
 - publisher_id: imf
@@ -91,6 +93,8 @@ publishers:
     - data.worldbank.org
     added: '2026-11-05'
     verified_by: 'claude session 2026-11-05 (WebFetch, newest item seen: 2026, October (Quarterly Update) 2026-10)'
+    notice_page: true
+    evidence: October (Quarterly Update)
     selector: main
   notes: feeds looked up 2026-11-05
 - publisher_id: bis
@@ -115,8 +119,8 @@ publishers:
   sources:
   - ecb
   feeds: []
-  notes: 'left out 2026-11-05: https://www.ecb.europa.eu/rss/statpress.html - TLS certificate did not verify from
-    the desktop (unable to get local issuer certificate)'
+  notes: 'left out 2026-11-05: https://www.ecb.europa.eu/rss/statpress.html - TLS verify failed on the desktop (unable
+    to get local issuer certificate: the local CA store lacks the issuer); re-test once the desktop trusts it'
 - publisher_id: fed_board
   name: Federal Reserve Board
   sources:
@@ -135,34 +139,17 @@ publishers:
   name: Australian Bureau of Statistics
   sources:
   - abs
-  feeds:
-  - url: https://www.abs.gov.au/about/our-organisation/corporate-reporting/abs-corporate-plan/2026-27/changes-forward-work-program
-    kind: html_page
-    poll_days: 7
-    keywords_extra:
-    - data.api.abs.gov.au
-    - ABS Data API
-    added: '2026-11-05'
-    verified_by: 'claude session 2026-11-05 (WebFetch, newest item seen: Monthly Employee Earnings Indicator ceased
-      from August 2026 2026-08-31)'
-    selector: main
-  notes: feeds looked up 2026-11-05
+  feeds: []
+  notes: 'left out 2026-11-05: https://www.abs.gov.au/about/our-organisation/corporate-reporting/abs-corporate-plan/2026-27/changes-forward-work-program
+    - the notices are plain text, not links, so this parser sees none of them; needs a text mode (not built); the
+    URL also carries the year 2026-27'
 - publisher_id: insee
   name: INSEE
   sources:
   - insee_*
-  feeds:
-  - url: https://www.insee.fr/fr/information/2862832
-    kind: html_page
-    poll_days: 7
-    keywords_extra:
-    - api.insee.fr
-    - portail-api.insee.fr
-    added: '2026-11-05'
-    verified_by: 'claude session 2026-11-05 (WebFetch, newest item seen: nouvel indice FSV Fourniture de signalisation
-      verticale 2026-07-10)'
-    selector: main
-  notes: feeds looked up 2026-11-05
+  feeds: []
+  notes: 'left out 2026-11-05: https://www.insee.fr/fr/information/2862832 - the notices are plain text, not links,
+    so this parser sees none of them; needs a text mode (not built)'
 - publisher_id: cbs_nl
   name: Statistics Netherlands (CBS)
   sources:
@@ -179,7 +166,9 @@ publishers:
     - SDMX
     added: '2026-11-05'
     verified_by: 'claude session 2026-11-05 (WebFetch, newest item seen: Nieuwsbrief februari 2026 2026-02)'
-    selector: main
+    selector: aside.sidebar-red
+    notice_page: true
+    evidence: Nieuwsbrief februari 2026
   notes: feeds looked up 2026-11-05
 - publisher_id: bls
   name: US Bureau of Labor Statistics
@@ -197,21 +186,14 @@ publishers:
     verified_by: 'claude session 2026-11-05 (WebFetch, newest item seen: Availability of October 2025 U.S. Import
       and Export Price Indexes in BLS Database, page modified 2026-03-11)'
     selector: div.help
+    notice_page: true
+    evidence: Discontinuation of the Location Quotient Calculator
   notes: feeds looked up 2026-11-05
 - publisher_id: bea
   name: US Bureau of Economic Analysis
   sources:
   - bea
   feeds:
-  - url: https://www.bea.gov/information-updates-national-economic-accounts
-    kind: html_page
-    poll_days: 7
-    keywords_extra:
-    - apps.bea.gov/api
-    - BEA API
-    added: '2026-11-05'
-    verified_by: 'claude session 2026-11-05 (WebFetch, newest item seen: Data availability, September 30, 2026 2026-09-30)'
-    selector: div.col-md-8
   - url: https://apps.bea.gov/rss/rss.xml
     kind: rss
     poll_days: 7
@@ -221,7 +203,8 @@ publishers:
     added: '2026-11-05'
     verified_by: 'claude session 2026-11-05 (WebFetch, newest item seen: U.S. International Trade in Goods and Services,
       September 2026 2026-11-04)'
-  notes: feeds looked up 2026-11-05
+  notes: 'feeds looked up 2026-11-05; left out 2026-11-05: https://www.bea.gov/information-updates-national-economic-accounts
+    - the cited update is not in the raw HTML (the page fills it in a browser); needs another channel'
 - publisher_id: boe
   name: Bank of England
   sources:
@@ -243,6 +226,8 @@ publishers:
     added: '2026-11-05'
     verified_by: 'claude session 2026-11-05 (WebFetch, newest item seen: Statistical Notice 2026/08 - Changes to
       the criteria for monthly form BT reporting 2026-09-15)'
+    notice_page: true
+    evidence: Statistical Notice 2026/08
     selector: main
   notes: feeds looked up 2026-11-05
 - publisher_id: ilo

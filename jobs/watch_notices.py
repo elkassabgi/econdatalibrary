@@ -400,7 +400,10 @@ def run(registry: dict, terms: dict, state: dict, now: dt.datetime, fetch=None,
                     continue                                   # history at first sight: seen, not news
                 s, matched = score(f"{it['title']} {it.get('summary', '')}", compiled,
                                    feed.get("keywords_extra") or ())
-                if s < THRESHOLD:
+                # A NOTICE PAGE lists only announcements (BoE statistical notices, CBS StatLine newsletters),
+                # so every new link on it is news even when its title names no strong term - "Statistical
+                # Notice 2026/08 - Changes to..." scored 1 and was never queued (review AR-434).
+                if s < THRESHOLD and not feed.get("notice_page"):
                     stats["low"] += 1
                     continue
                 stats["queued"] += 1
@@ -410,6 +413,42 @@ def run(registry: dict, terms: dict, state: dict, now: dt.datetime, fetch=None,
     state["seen"] = sorted(seen)
     state["last_run"] = iso(now)
     return out, state, stats
+
+
+def check(registry: dict, fetch=None, sleep=None) -> list:
+    """[(publisher_id, url, problem)] for every feed that cannot see what its registry entry says it sees.
+
+    Each feed is fetched once (HOST_GAP_S apart per host) and parsed with its committed kind and selector.
+    A feed with no items is a problem; so is an `evidence` text (a title the person who added the feed
+    saw there) that no parsed item contains. Review AR-434 found four html_page feeds blind to the very
+    item their verified_by cited - a page summary is not what this parser reads."""
+    fetch = fetch or http_get
+    sleep = sleep or time.sleep
+    problems, last_hit = [], {}
+    for pub in registry.get("publishers") or []:
+        for feed in pub.get("feeds") or []:
+            url = feed["url"]
+            host = urllib.parse.urlsplit(url).netloc
+            if host in last_hit:
+                wait = HOST_GAP_S - (time.monotonic() - last_hit[host])
+                if wait > 0:
+                    sleep(wait)
+            try:
+                _, body, _, _ = fetch(url, None, None)
+                items = parse_items(feed["kind"], body, url, feed.get("selector", ""))
+            except Exception as e:                             # noqa: BLE001
+                problems.append((pub["publisher_id"], url, f"{type(e).__name__}: {str(e)[:120]}"))
+                continue
+            finally:
+                last_hit[host] = time.monotonic()
+            if not items:
+                problems.append((pub["publisher_id"], url, "no items"))
+                continue
+            ev = " ".join(str(feed.get("evidence") or "").lower().split())
+            if ev and not any(ev in " ".join(f"{i['title']} {i.get('summary', '')}".lower().split())
+                              for i in items):
+                problems.append((pub["publisher_id"], url, f"evidence not among {len(items)} items: {ev[:80]}"))
+    return problems
 
 
 # ---------------------------------------------------------------------------------------------- files
@@ -444,7 +483,15 @@ def main(argv=None) -> int:
     ap.add_argument("--registry", default=REGISTRY)
     ap.add_argument("--state", default=STATE)
     ap.add_argument("--queue", default=QUEUE)
+    ap.add_argument("--check", action="store_true",
+                    help="fetch every feed once and verify it parses to items holding its evidence; writes nothing")
     a = ap.parse_args(argv)
+    if a.check:
+        problems = check(load_yaml(a.registry))
+        for pid, url, why in problems:
+            print(f"  FAIL {pid:<10} {why}  {url[:90]}")
+        print(f"[notices] check: {len(problems)} problem(s)")
+        return 1 if problems else 0
     now = now_utc()
     lines, state, stats = run(load_yaml(a.registry), load_yaml(TERMS), read_state(a.state), now)
     print(f"[notices] {iso(now)} " + " ".join(f"{k}={v}" for k, v in stats.items()))
