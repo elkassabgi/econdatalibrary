@@ -900,6 +900,10 @@ def ingest_dataset(m, max_child_states=None, budget_s=None):
     truncated = False
     t_start = time.time()
     outpath = os.path.join(OUT, safe_name(path) + ".parquet")
+    # WRITE ASIDE, RENAME ON SUCCESS (review AR-439): a refusal or a crash part-way through used to leave a valid
+    # SHORTER parquet at outpath (pyarrow closes the writer on garbage collection), and --resume then skipped it as
+    # done. The previous file now stays until this dataset completes.
+    partpath = outpath + ".partial"
 
     class _BudgetHit(Exception):
         pass
@@ -954,7 +958,7 @@ def ingest_dataset(m, max_child_states=None, budget_s=None):
                 if tcol:
                     fields.append(pa.field("obs_date", pa.date32()))
                 schema = pa.schema(fields)
-                writer = pq.ParquetWriter(outpath, schema, compression="zstd")
+                writer = pq.ParquetWriter(partpath, schema, compression="zstd")
             # realign this slice's rows to frozen schema_cols
             hidx = {c: i for i, c in enumerate(header)}
             src = [hidx.get(c) for c in schema_cols]
@@ -983,9 +987,20 @@ def ingest_dataset(m, max_child_states=None, budget_s=None):
         truncated = True
         print(f"    [budget {budget_s}s exceeded mid-slice -> stopping at {n:,} rows]",
               flush=True)
+    except BaseException:
+        # MergeRefused, a crash, an interrupt: nothing of this run reaches outpath.
+        if writer is not None:
+            try:
+                writer.close()
+            except Exception:                                    # noqa: BLE001
+                pass
+        if os.path.exists(partpath):
+            os.remove(partpath)
+        raise
 
     if writer is not None:
         writer.close()
+        os.replace(partpath, outpath)
     return n, len(series), n_calls, truncated
 
 
