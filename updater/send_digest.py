@@ -331,6 +331,63 @@ def firstpass_ages(store_root: str, names, now: float):
             out.append((name, (now - newest) / 3600.0, newest_name))
     return sorted(out, key=lambda r: -r[1])
 
+GUARD_BEAT_KEY = "_aqueduct/guard_heartbeat.json"
+NOTICES_RUN_LATE_H = 30.0     # the runner is due once a day from 09:00 UTC; a day plus retries is late
+
+
+def read_guard_beat():
+    """The workstation's guard beat from R2 (tools/guard_heartbeat.py --publish), or {"unreadable": why}.
+    It carries the publisher-notice summary, which this CI job cannot see any other way."""
+    try:
+        _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if _root not in sys.path:
+            sys.path.insert(0, _root)
+        from core import r2_util                                          # noqa: PLC0415
+        raw = r2_util.client().get_object(Bucket="econ-data", Key=GUARD_BEAT_KEY)["Body"].read()
+        beat = _json.loads(raw.decode("utf-8"))
+        return beat if isinstance(beat, dict) else {"unreadable": "not a JSON object"}
+    except Exception as e:                                                # noqa: BLE001 - a section, not the run
+        return {"unreadable": f"{type(e).__name__}: {str(e)[:160]}"}
+
+
+def notices_lines(beat, now) -> list:
+    """Text lines for the publisher-notice section (docs/maintenance/SOURCE_NOTICES.md), or [] when the beat
+    predates the watcher. It names NEW queue items only - nothing in the queue is public - and says plainly
+    when it could not look, so an unreadable beat never reads as "no notices"."""
+    if not isinstance(beat, dict) or "unreadable" in beat:
+        why = beat.get("unreadable") if isinstance(beat, dict) else "no beat"
+        return ["  publisher notices: could not read the workstation beat (" + str(why)[:120] + ")", ""]
+    n = beat.get("notices")
+    if not isinstance(n, dict):
+        return []
+    out = []
+    run = n.get("run")
+    if n.get("unreadable"):
+        out.append(f"  publisher notices: the queue is unreadable ({str(n['unreadable'])[:120]})")
+    if run is None:
+        out.append("  publisher notices: the watcher has not run on the workstation yet")
+    elif isinstance(run, dict) and run.get("unreadable"):
+        out.append(f"  publisher notices: its status file is unreadable ({str(run['unreadable'])[:100]})")
+    elif isinstance(run, dict):
+        late = ""
+        try:
+            ok = _dt.datetime.fromisoformat(str(run.get("last_ok_started")).replace("Z", "+00:00"))
+            if (now - ok).total_seconds() > NOTICES_RUN_LATE_H * 3600:
+                late = f"  LATE (last ok run {run.get('last_ok_started')})"
+        except (ValueError, TypeError):
+            late = "  LATE (no ok run yet)"
+        rc = run.get("rc")
+        tail = "" if rc in (0, None) else f"  last run exited {rc}"
+        out.append(f"  publisher notices: {n.get('new', 0)} new, {n.get('broken', 0)} broken feed(s){late}{tail}")
+    for it in n.get("items") or []:
+        out.append(f"     {str(it.get('publisher_id') or ''):10} {str(it.get('title') or '')[:90]}")
+        if it.get("link"):
+            out.append(f"                {str(it['link'])[:110]}")
+    if out and (n.get("new") or 0) > len(n.get("items") or []):
+        out.append(f"     ... and {n['new'] - len(n['items'])} more (python tools/maintenance_queue.py list --status new)")
+    return out + ([""] if out else [])
+
+
 def is_late(cadence: str, ts, now) -> bool:
     """True when `ts` is older than the source's cadence allows.
 
@@ -564,6 +621,9 @@ def main() -> None:
                 lines.append(f"     {name:12} last wrote {age_h:5.1f}h ago "
                              f"({newest[:34]}){mark}")
             lines.append("")
+    # PUBLISHER NOTICES (2026-11-05): what the workstation's watcher found that is ending or changing.
+    _notices = notices_lines(read_guard_beat(), dt.datetime.now(dt.timezone.utc))
+    lines += _notices
     for r in ok:
         # A "data through" frontier far in the future is a legitimate projection
         # horizon (e.g. official multi-year forecasts that
@@ -678,6 +738,14 @@ def main() -> None:
             f'<td style="padding:7px 10px;border-top:1px solid #e5e7eb;color:{grey};'
             f'font-size:12px;">{esc(str(r[4] or "")[:110])}</td></tr>')
 
+    # The same lines as the text body, in the same section style: one place builds the words.
+    notices_html = ""
+    if _notices:
+        notices_html = ("<h3 style='font-family:Georgia,serif;font-size:15px;margin:14px 0 6px;'>Publisher notices</h3>"
+                        "<pre style='margin:0;padding:8px 11px;background:#f9fafb;border:1px solid #e5e7eb;"
+                        "border-radius:8px;font-size:12px;white-space:pre-wrap;'>"
+                        + esc(chr(10).join(l for l in _notices if l)) + "</pre>")
+
     current_rows = ""
     for r in ok:
         st_color = green if r[1] == "ok" else grey
@@ -708,6 +776,7 @@ def main() -> None:
     {"<h3 style='font-family:Georgia,serif;font-size:15px;margin:14px 0 6px;color:" + red + ";'>Needs attention</h3><table role='presentation' width='100%' style='border-collapse:collapse;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;'><tr><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Source</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Status</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Data through</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Last tried</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Detail</th></tr>" + attention_rows + "</table>" if (attention or bad) else ""}
     {progress_html}
     {notes_html}
+    {notices_html}
     <h3 style="font-family:Georgia,serif;font-size:15px;margin:18px 0 6px;">Current sources ({len(ok)})</h3>
     <table role="presentation" width="100%" style="border-collapse:collapse;">
       <tr><th align="left" style="padding:5px 10px;font-size:11px;color:{grey};text-transform:uppercase;">Source</th>

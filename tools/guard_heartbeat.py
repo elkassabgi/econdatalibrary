@@ -383,6 +383,44 @@ def _sec_edgar_problem(rec, now) -> "str | None":
     return None
 
 
+NOTICES_STATUS_LOCAL = os.path.join(ROOT, "logs", "notices.last.json")
+NOTICES_QUEUE_LOCAL = os.path.join(ROOT, "data", "_maintenance", "queue.jsonl")
+NOTICES_ITEMS_MAX = 10
+
+
+def _notices_beat():
+    """The publisher-notice watch for the daily digest (docs/maintenance/SOURCE_NOTICES.md): the runner's status
+    file (tools/selfhost/run_notices.ps1) and the queue's NEW items, best score first. The digest runs on CI and
+    cannot see this machine, so the beat carries it. /v1/guard-heartbeat copies none of it (that route serves
+    whitelisted counts only), so the titles stay off the public surface. Never raises: a fault is reported as
+    `unreadable`, never as an empty queue."""
+    out = {"run": None, "new": 0, "broken": 0, "items": []}
+    try:
+        with open(NOTICES_STATUS_LOCAL, encoding="utf-8-sig") as fh:
+            rec = json.load(fh)
+        out["run"] = rec if isinstance(rec, dict) else {"unreadable": "not a JSON object"}
+    except FileNotFoundError:
+        pass
+    except Exception as e:                                   # noqa: BLE001
+        out["run"] = {"unreadable": f"{type(e).__name__}: {e}"[:200]}
+    try:
+        try:
+            import maintenance_queue as mq                   # noqa: PLC0415 - run as a script from tools/
+        except ImportError:
+            from tools import maintenance_queue as mq        # noqa: PLC0415
+        new = [d for d in mq.load(NOTICES_QUEUE_LOCAL).values() if d.get("status") == "new"]
+    except (Exception, SystemExit) as e:                     # noqa: BLE001 - load() exits on a bad line
+        out["unreadable"] = f"queue: {type(e).__name__}: {e}"[:200]
+        return out
+    out["new"] = len(new)
+    out["broken"] = sum(1 for d in new if d.get("kind") == "feed_broken")
+    new.sort(key=lambda d: (-(d.get("score") or 0), d.get("found_utc") or ""))
+    out["items"] = [{"publisher_id": d.get("publisher_id"), "kind": d.get("kind"), "score": d.get("score"),
+                     "title": str(d.get("title") or "")[:120], "link": d.get("link") or ""}
+                    for d in new[:NOTICES_ITEMS_MAX]]
+    return out
+
+
 def _stall_summary():
     """The scheduler-stall check's last evaluation (tools/scheduler_stall.py), from its local state file."""
     try:
@@ -432,6 +470,7 @@ def publish(stall_check: bool = False) -> int:
     body["sec_edgar_local"] = sec
     # judged here as well as in check(): the public route carries only this verdict, never the record
     body["sec_edgar_local_problem"] = _sec_edgar_problem(sec, dt.datetime.now(dt.timezone.utc))
+    body["notices"] = _notices_beat()
     if stall_check:
         body["scheduler_stall"] = _stall_summary()
     data = json.dumps(body, indent=2).encode("utf-8")
