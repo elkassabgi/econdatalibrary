@@ -27,7 +27,9 @@
     and nothing else. It publishes nothing: queue items are private until triaged (tools/maintenance_queue.py).
 
     WHERE TO LOOK. logs\notices_<UTC stamp>.log holds the run's output; logs\notices.last.json holds
-    {started, ended, rc, pid, last_ok_started} ("ended": null while running, or after a kill).
+    {started, ended, rc, pid, last_ok_started, note} ("ended": null while running, or after a kill). `note` is the
+    runner's own word on a kill or an error. It goes in the status record, not the log: a python that survived
+    the kill still holds the log open, so a log write failed every time (review AR-438).
 #>
 param(
     [switch] $IfDue,
@@ -35,6 +37,8 @@ param(
     [string] $Python = 'C:\Users\aelkassabgi\AppData\Local\Programs\Python\Python314\python.exe',
     [string] $NowUtc = '',
     [string] $Job    = 'jobs\watch_notices.py',
+    [switch] $NoKill,                 # test only: skip taskkill, to exercise the "python survived" path
+    [double] $KillWaitS = 30,
     [double] $LimitMin = 60
 )
 $ErrorActionPreference = 'Continue'
@@ -112,7 +116,7 @@ Set-Content -LiteralPath $lock -Encoding ascii -Value ("{0},{1}" -f $PID, $me.St
 $stamp = $now.ToString('yyyyMMddTHHmmssZ')
 $log   = Join-Path $logsDir ("notices_{0}.log" -f $stamp)
 $err   = $log + '.stderr'
-$rec = [ordered]@{ started = (Iso $now); ended = $null; rc = $null; pid = $PID; last_ok_started = (Iso $prevOk) }
+$rec = [ordered]@{ started = (Iso $now); ended = $null; rc = $null; pid = $PID; last_ok_started = (Iso $prevOk); note = $null }
 Write-Status $rec
 
 $env:PYTHONIOENCODING = 'utf-8'
@@ -133,19 +137,19 @@ try {
         $rc = $p.ExitCode
         if ($null -eq $rc) { $rc = 97 }
     } else {
-        & taskkill.exe /T /F /PID $p.Id | Out-Null
-        if ($p.WaitForExit(30000)) {
-            Add-Content -LiteralPath $log -Value ("runner: killed after {0} min (process tree)" -f $LimitMin)
+        if (-not $NoKill) { & taskkill.exe /T /F /PID $p.Id | Out-Null }
+        if ($p.WaitForExit([int]($KillWaitS * 1000))) {
+            $rec.note = ("killed after {0} min (process tree)" -f $LimitMin)
             $rc = 96
         } else {
             # STILL ALIVE: keep the lock (it names this python), so the next run is refused rather than racing it
-            # on data\_notices\state.json (review AR-435 r2). The heartbeat's digest line shows rc 95.
-            Add-Content -LiteralPath $log -Value ("runner: could NOT kill python pid {0} after {1} min; lock kept" -f $p.Id, $LimitMin)
+            # on data\_notices\state.json (review AR-435 r2). The digest line shows rc 95.
+            $rec.note = ("could NOT kill python pid {0} after {1} min; lock kept" -f $p.Id, $LimitMin)
             $rc = 95
         }
     }
 } catch {
-    Add-Content -LiteralPath $log -Value ("runner error: {0}" -f $_.Exception.Message)
+    $rec.note = ("runner error: {0}" -f $_.Exception.Message)
     $rc = 98
 } finally {
     if (Test-Path -LiteralPath $err) {
