@@ -12,86 +12,227 @@
 #
 # Feed fields: url (https), kind (rss | atom | html_page), poll_days (>= 1), keywords_extra (the
 # publisher's own words: product names, API hosts, codes we hold), selector (html_page only: a CSS-like
-# "tag" or "tag.class" scope for the links), added, verified_by.
+# "tag", "tag.class" or ".class" scope for the links), notice_page (html_page that lists ONLY announcements:
+# every new link is queued), evidence (a title seen there AS PARSED - `watch_notices.py --check` verifies
+# it), added, verified_by.
 version: 1
 publishers:
 - publisher_id: imf
   name: International Monetary Fund
-  sources: [imf_*_direct, imf_weo, imf_commodity]
+  sources:
+  - imf_*_direct
+  - imf_weo
+  - imf_commodity
   feeds: []
-  notes: not looked up yet (2026-11-05)
+  notes: 'no feed verified 2026-11-05: data.imf.org news builds its list with JavaScript; RSS URLs 404'
 - publisher_id: oecd
   name: OECD
-  sources: [oecd]
+  sources:
+  - oecd
   feeds: []
-  notes: not looked up yet (2026-11-05)
+  notes: 'no feed verified 2026-11-05: oecd.org answered HTTP 403 to the lookup'
 - publisher_id: eurostat
   name: Eurostat
-  sources: [eurostat]
-  feeds: []
-  notes: not looked up yet (2026-11-05)
+  sources:
+  - eurostat
+  feeds:
+  - url: https://ec.europa.eu/eurostat/en/search?p_p_id=estatsearchportlet_WAR_estatsearchportlet&p_p_lifecycle=2&p_p_state=maximized&p_p_mode=view&p_p_resource_id=atom&_estatsearchportlet_WAR_estatsearchportlet_collection=CAT_EURNEW
+    kind: atom
+    poll_days: 7
+    keywords_extra:
+    - dissemination API
+    - SDMX
+    added: '2026-11-05'
+    verified_by: 'claude session 2026-11-05 (WebFetch, newest item seen: EU stocks outside the EU drop 2% in 2025
+      2026-11-05)'
+  notes: 'feeds looked up 2026-11-05; left out 2026-11-05: https://ec.europa.eu/eurostat/help/maintenance-information
+    - maintenance windows are table rows with no links; needs a text mode (not built)'
 - publisher_id: ons
   name: Office for National Statistics (UK)
-  sources: [ons_uk]
-  feeds: []
-  notes: not looked up yet (2026-11-05); the API host is api.beta.ons.gov.uk - a host change is likely
+  sources:
+  - ons_uk
+  feeds:
+  - url: https://www.ons.gov.uk/releasecalendar?rss
+    kind: rss
+    poll_days: 7
+    keywords_extra:
+    - api.beta.ons.gov.uk
+    - api.ons.gov.uk
+    - ONS API
+    added: '2026-11-05'
+    verified_by: 'claude session 2026-11-05 (WebFetch, newest item seen: Experiences of NHS healthcare services
+      in England: 5 November 2026 2026-11-05)'
+  notes: feeds looked up 2026-11-05
 - publisher_id: statcan
   name: Statistics Canada
-  sources: [statcan]
-  feeds: []
-  notes: not looked up yet (2026-11-05)
+  sources:
+  - statcan
+  feeds:
+  - url: https://www150.statcan.gc.ca/n1/rss/dai-quo/0-eng.atom
+    kind: atom
+    poll_days: 7
+    keywords_extra:
+    - Web Data Service
+    - WDS
+    added: '2026-11-05'
+    verified_by: 'claude session 2026-11-05 (WebFetch, newest item seen: Provincial and territorial economic accounts,
+      2025 2026-11-05)'
+  notes: 'feeds looked up 2026-11-05; left out 2026-11-05: https://www.statcan.gc.ca/en/trust/delivering-trusted-data
+    - discontinued activities are plain text under headings; needs a text mode (not built)'
 - publisher_id: worldbank
   name: World Bank
-  sources: [worldbank, worldbank_*]
-  feeds: []
-  notes: not looked up yet (2026-11-05); 13 ESG indicator ids were re-coded before (runbook)
+  sources:
+  - worldbank
+  - worldbank_*
+  feeds:
+  - url: https://datatopics.worldbank.org/world-development-indicators/release-note-toc.html
+    kind: html_page
+    poll_days: 7
+    keywords_extra:
+    - api.worldbank.org
+    - data.worldbank.org
+    added: '2026-11-05'
+    verified_by: 'claude session 2026-11-05 (WebFetch, newest item seen: 2026, October (Quarterly Update) 2026-10)'
+    notice_page: true
+    evidence: October (Quarterly Update)
+    selector: main
+  notes: feeds looked up 2026-11-05
 - publisher_id: bis
   name: Bank for International Settlements
-  sources: [bis]
-  feeds: []
-  notes: not looked up yet (2026-11-05)
+  sources:
+  - bis
+  feeds:
+  - url: https://data.bis.org/feed.xml
+    kind: rss
+    poll_days: 7
+    keywords_extra:
+    - data.bis.org
+    - stats.bis.org
+    - SDMX
+    - api-doc
+    added: '2026-11-05'
+    verified_by: 'claude session 2026-11-05 (WebFetch, newest item seen: release-calendar feed, lastBuildDate 2026-11-05;
+      items run to Effective exchange rates, 2027-05-24 / Nominal daily data 2027-05-27)'
+  notes: feeds looked up 2026-11-05
 - publisher_id: ecb
   name: European Central Bank
-  sources: [ecb]
+  sources:
+  - ecb
   feeds: []
-  notes: not looked up yet (2026-11-05)
+  notes: 'left out 2026-11-05: https://www.ecb.europa.eu/rss/statpress.html - TLS verify failed on the desktop (unable
+    to get local issuer certificate: the local CA store lacks the issuer); re-test once the desktop trusts it'
 - publisher_id: fed_board
   name: Federal Reserve Board
-  sources: [fed_board]
-  feeds: []
-  notes: not looked up yet (2026-11-05)
+  sources:
+  - fed_board
+  feeds:
+  - url: https://www.federalreserve.gov/feeds/datadownload.xml
+    kind: rss
+    poll_days: 7
+    keywords_extra:
+    - federalreserve.gov/datadownload
+    added: '2026-11-05'
+    verified_by: 'claude session 2026-11-05 (WebFetch, newest item seen: H10: Foreign Exchange Rates - H.10 Data
+      Download Program 2026-11-02)'
+  notes: feeds looked up 2026-11-05
 - publisher_id: abs
   name: Australian Bureau of Statistics
-  sources: [abs]
+  sources:
+  - abs
   feeds: []
-  notes: not looked up yet (2026-11-05)
+  notes: 'left out 2026-11-05: https://www.abs.gov.au/about/our-organisation/corporate-reporting/abs-corporate-plan/2026-27/changes-forward-work-program
+    - the notices are plain text, not links, so this parser sees none of them; needs a text mode (not built); the
+    URL also carries the year 2026-27'
 - publisher_id: insee
   name: INSEE
-  sources: [insee_*]
+  sources:
+  - insee_*
   feeds: []
-  notes: not looked up yet (2026-11-05)
+  notes: 'left out 2026-11-05: https://www.insee.fr/fr/information/2862832 - the notices are plain text, not links,
+    so this parser sees none of them; needs a text mode (not built)'
 - publisher_id: cbs_nl
   name: Statistics Netherlands (CBS)
-  sources: [cbs_nl]
-  feeds: []
-  notes: not looked up yet (2026-11-05)
+  sources:
+  - cbs_nl
+  feeds:
+  - url: https://www.cbs.nl/nl-nl/cijfers/statline/vernieuwing-statline
+    kind: html_page
+    poll_days: 7
+    keywords_extra:
+    - OData
+    - opendata.cbs.nl
+    - datasets.cbs.nl
+    - odata4
+    - SDMX
+    added: '2026-11-05'
+    verified_by: 'claude session 2026-11-05 (WebFetch, newest item seen: Nieuwsbrief februari 2026 2026-02)'
+    selector: aside.sidebar-red
+    notice_page: true
+    evidence: Nieuwsbrief februari 2026
+  notes: feeds looked up 2026-11-05
 - publisher_id: bls
   name: US Bureau of Labor Statistics
-  sources: [bls]
-  feeds: []
-  notes: not looked up yet (2026-11-05)
+  sources:
+  - bls
+  feeds:
+  - url: https://www.bls.gov/help/notice.htm
+    kind: html_page
+    poll_days: 7
+    keywords_extra:
+    - api.bls.gov
+    - Public Data API
+    - download.bls.gov
+    added: '2026-11-05'
+    verified_by: 'claude session 2026-11-05 (WebFetch, newest item seen: Availability of October 2025 U.S. Import
+      and Export Price Indexes in BLS Database, page modified 2026-03-11)'
+    selector: div.help
+    notice_page: true
+    evidence: Discontinuation of the Location Quotient Calculator
+  notes: feeds looked up 2026-11-05
 - publisher_id: bea
   name: US Bureau of Economic Analysis
-  sources: [bea]
-  feeds: []
-  notes: not looked up yet (2026-11-05)
+  sources:
+  - bea
+  feeds:
+  - url: https://apps.bea.gov/rss/rss.xml
+    kind: rss
+    poll_days: 7
+    keywords_extra:
+    - apps.bea.gov/api
+    - BEA API
+    added: '2026-11-05'
+    verified_by: 'claude session 2026-11-05 (WebFetch, newest item seen: U.S. International Trade in Goods and Services,
+      September 2026 2026-11-04)'
+  notes: 'feeds looked up 2026-11-05; left out 2026-11-05: https://www.bea.gov/information-updates-national-economic-accounts
+    - the cited update is not in the raw HTML (the page fills it in a browser); needs another channel'
 - publisher_id: boe
   name: Bank of England
-  sources: [boe]
-  feeds: []
-  notes: not looked up yet (2026-11-05)
+  sources:
+  - boe
+  feeds:
+  - url: https://www.bankofengland.co.uk/rss/statistics
+    kind: rss
+    poll_days: 7
+    keywords_extra:
+    - IADB
+    added: '2026-11-05'
+    verified_by: 'claude session 2026-11-05 (WebFetch, newest item seen: UK International Reserves - October 2026
+      2026-11-04)'
+  - url: https://www.bankofengland.co.uk/statistics/data-collection/statistical-notices
+    kind: html_page
+    poll_days: 7
+    keywords_extra:
+    - IADB
+    added: '2026-11-05'
+    verified_by: 'claude session 2026-11-05 (WebFetch, newest item seen: Statistical Notice 2026/08 - Changes to
+      the criteria for monthly form BT reporting 2026-09-15)'
+    notice_page: true
+    evidence: Statistical Notice 2026/08
+    selector: main
+  notes: feeds looked up 2026-11-05
 - publisher_id: ilo
   name: International Labour Organization
-  sources: [ilostat]
+  sources:
+  - ilostat
   feeds: []
-  notes: not looked up yet (2026-11-05)
+  notes: 'no feed verified 2026-11-05: ilostat.ilo.org answered HTTP 403 to the lookup'

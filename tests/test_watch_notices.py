@@ -78,6 +78,10 @@ def test_registry_rules_hold_on_the_committed_file():
             assert fd.get("verified_by"), "a feed goes in only after someone saw it (R381)"
             assert fd["url"] not in urls, f"duplicate feed {fd['url']}"
             urls.add(fd["url"])
+            if fd["kind"] == "html_page":
+                assert fd.get("evidence"), f"{fd['url']}: an html page needs `evidence` that --check can verify (AR-434)"
+            if fd.get("notice_page"):
+                assert fd["kind"] == "html_page", "notice_page applies to html pages only"
 
 
 # ------------------------------------------------------------------------------------------ parsing
@@ -91,6 +95,47 @@ def test_rss_atom_and_html_parse():
         "links outside the scope (nav) and fragment links are not items"
     whole = wn.parse_items("html_page", HTML, "https://pub.example.org/news")
     assert any("shut down" in i["title"] for i in whole), "no selector = the whole page"
+
+
+def test_xhtml_titles_and_html_entities():
+    """Two real feeds measured 2026-11-05: StatCan's Daily (type="xhtml" titles read as empty) and the
+    Fed's Data Download feed (one &mdash; with no DTD failed the whole feed)."""
+    atom = b"""<feed xmlns="http://www.w3.org/2005/Atom"><entry><title type="xhtml">
+      <div xmlns="http://www.w3.org/1999/xhtml">Provincial accounts, <span class="refper">2025</span></div></title>
+      <link href="https://x.org/a"/><updated>2026-11-05T08:30:00-05:00</updated></entry></feed>"""
+    assert wn.parse_items("atom", atom, "https://x.org/")[0]["title"] == "Provincial accounts, 2025"
+    rss = b"""<rss><channel><item><title>H15 &mdash; Discontinuance&nbsp;of rates &amp; more</title>
+      <link>https://x.org/1</link></item></channel></rss>"""
+    assert wn.parse_items("rss", rss, "https://x.org/")[0]["title"] == "H15 — Discontinuance of rates & more"   # nbsp folds to a space
+    with pytest.raises(ValueError):                       # an unknown name still fails loud
+        wn.parse_items("rss", rss.replace(b"&mdash;", b"&nosuchname;"), "https://x.org/")
+
+
+NOTICES = b"""<main><a href="/n/8">Statistical Notice 2026/08 - Changes to form BT</a></main>"""
+
+
+def test_a_notice_page_queues_every_new_link_after_the_first_poll():
+    feed = dict(FEED, kind="html_page", selector="main", notice_page=True)
+    st = {"feeds": {feed["url"]: {"last_ok": "2026-11-01T00:00:00Z", "last_checked": "2026-11-01T00:00:00Z"}}}
+    lines, _, _ = wn.run(reg([feed]), TERMS, st, NOW, fetcher({feed["url"]: NOTICES}), sleep=lambda s: None)
+    assert [l["title"] for l in lines] == ["Statistical Notice 2026/08 - Changes to form BT"]
+    plain = dict(feed, notice_page=False)
+    lines, _, _ = wn.run(reg([plain]), TERMS, st, NOW, fetcher({feed["url"]: NOTICES}), sleep=lambda s: None)
+    assert lines == [], "the same title on an ordinary page scores below the threshold"
+    first, _, _ = wn.run(reg([feed]), TERMS, {}, NOW, fetcher({feed["url"]: NOTICES}), sleep=lambda s: None)
+    assert first == [], "history at first sight is not news, notice page or not"
+
+
+def test_check_finds_a_feed_blind_to_its_evidence():
+    ok = dict(FEED, kind="html_page", selector="main", evidence="Statistical notice 2026/08")
+    blind = dict(ok, url="https://pub.example.org/other", evidence="Nieuwsbrief februari 2026")
+    empty = dict(ok, url="https://pub.example.org/empty", selector="aside")
+    broken = dict(ok, url="https://pub.example.org/gone")
+    got = wn.check(reg([ok, blind, empty, broken]),
+                   fetcher({u: NOTICES for u in (ok["url"], blind["url"], empty["url"])}, fail={broken["url"]}),
+                   sleep=lambda s: None)
+    assert [(u.rsplit("/", 1)[1], why.split(":")[0].split(" among")[0]) for _, u, why in got] == \
+        [("other", "evidence not"), ("empty", "no items"), ("gone", "OSError")]
 
 
 def test_a_body_that_is_not_xml_raises():
