@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import hashlib
+import io
 import os
 import sqlite3
 import sys
@@ -219,36 +220,68 @@ def pull_state() -> int:
               f"Re-run --pull-state.", file=sys.stderr)
         return 1
 
-    raw = zstandard.ZstdDecompressor().decompress(data)
     os.makedirs(config.STATE_DIR, exist_ok=True)
-
-    # R407. os.replace swaps the .db but leaves -wal/-shm beside it, so a WAL
-    # belonging to the OLD database gets replayed against the freshly downloaded
-    # one: `PRAGMA integrity_check` came back "Rowid out of order" and every
-    # push-state then died on `VACUUM INTO`. Worse, that WAL can hold local runs
-    # that were never pushed, so deleting it blind DESTROYS work. Back the pair
-    # up first, then clear them, and say so.
-    wal, shm = config.STATE_DB + "-wal", config.STATE_DB + "-shm"
-    if os.path.exists(wal):
-        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        keep = os.path.join(config.STATE_DIR, "_superseded")
-        os.makedirs(keep, exist_ok=True)
-        print(f"[pull-state] WARNING: a write-ahead log is present ({os.path.getsize(wal):,} B). "
-              f"It belongs to the LOCAL database being replaced and may hold runs that were "
-              f"never pushed. Backing the local state up to {keep} before overwriting.",
-              file=sys.stderr)
-        for src in (config.STATE_DB, wal, shm):
-            if os.path.exists(src):
-                try:
-                    os.replace(src, os.path.join(keep, os.path.basename(src) + "." + stamp))
-                except OSError as e:
-                    print(f"[pull-state] ERROR: could not set aside {src}: {e}", file=sys.stderr)
-                    return 1
-
+    # STREAM IT (2026-11-05). This used to decompress() into one bytes object - 15,820,623,872 B on
+    # 2026-11-04 next to the 0.95 GB download, on a 16 GB runner. Seven heavy jobs from 11-01 to 11-04
+    # lost their runner in this step ("The hosted runner lost communication"); memory is the likely
+    # cause, not proven - no log survives from those runners. Decompress straight into the temp file
+    # instead, BEFORE the WAL set-aside below, so a bad object fails here and leaves the local
+    # state.db where it was.
+    #
+    # copy_stream does NOT reject a truncated frame the way decompress() did (measured with
+    # zstandard 0.25.0, review AR-429 r2: half a frame and frame-minus-1-byte both returned short
+    # output with no error). So check the bytes written against the size in the frame header, and
+    # refuse a frame with no recorded size: push_state always writes it.
     tmp = f"{config.STATE_DB}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
     try:
-        with open(tmp, "wb") as f:
-            f.write(raw)
+        try:
+            want = zstandard.frame_content_size(data)
+        except zstandard.ZstdError as e:
+            print(f"[pull-state] ERROR: r2://{r2.bucket}/{STATE_KEY} is not a zstd frame: {e}",
+                  file=sys.stderr)
+            return 1
+        if want is None or want < 0:
+            print(f"[pull-state] ERROR: r2://{r2.bucket}/{STATE_KEY} has no content size in its "
+                  f"frame header, so a short download cannot be detected. Refusing it.",
+                  file=sys.stderr)
+            return 1
+        try:
+            with open(tmp, "wb") as f:
+                zstandard.ZstdDecompressor().copy_stream(io.BytesIO(data), f)
+        except zstandard.ZstdError as e:
+            print(f"[pull-state] ERROR: r2://{r2.bucket}/{STATE_KEY} did not decompress: {e}. "
+                  f"Local state left as it was.", file=sys.stderr)
+            return 1
+        raw_len = os.path.getsize(tmp)
+        if raw_len != want:
+            print(f"[pull-state] ERROR: decompressed {raw_len:,} B but the frame header says "
+                  f"{want:,} B - the object is truncated or damaged. Local state left as it was.",
+                  file=sys.stderr)
+            return 1
+
+        # R407. os.replace swaps the .db but leaves -wal/-shm beside it, so a WAL
+        # belonging to the OLD database gets replayed against the freshly downloaded
+        # one: `PRAGMA integrity_check` came back "Rowid out of order" and every
+        # push-state then died on `VACUUM INTO`. Worse, that WAL can hold local runs
+        # that were never pushed, so deleting it blind DESTROYS work. Back the pair
+        # up first, then clear them, and say so.
+        wal, shm = config.STATE_DB + "-wal", config.STATE_DB + "-shm"
+        if os.path.exists(wal):
+            stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            keep = os.path.join(config.STATE_DIR, "_superseded")
+            os.makedirs(keep, exist_ok=True)
+            print(f"[pull-state] WARNING: a write-ahead log is present ({os.path.getsize(wal):,} B). "
+                  f"It belongs to the LOCAL database being replaced and may hold runs that were "
+                  f"never pushed. Backing the local state up to {keep} before overwriting.",
+                  file=sys.stderr)
+            for src in (config.STATE_DB, wal, shm):
+                if os.path.exists(src):
+                    try:
+                        os.replace(src, os.path.join(keep, os.path.basename(src) + "." + stamp))
+                    except OSError as e:
+                        print(f"[pull-state] ERROR: could not set aside {src}: {e}", file=sys.stderr)
+                        return 1
+
         try:
             os.replace(tmp, config.STATE_DB)  # atomic publish of the local copy
         except PermissionError:
@@ -266,13 +299,15 @@ def pull_state() -> int:
                   file=sys.stderr)
             return 1
     finally:
+        # ONE cleanup for the whole life of tmp (a ~15.8 GB file): every return and every
+        # exception above, including an interrupt inside the WAL set-aside, lands here.
         if os.path.exists(tmp):
             try:
                 os.remove(tmp)
             except OSError:
                 pass
     _record_etag(etag_after)
-    print(f"[pull-state] ok: {len(data):,} B compressed -> {len(raw):,} B at "
+    print(f"[pull-state] ok: {len(data):,} B compressed -> {raw_len:,} B at "
           f"{config.STATE_DB} (etag {etag_after})")
     return 0
 
@@ -380,8 +415,18 @@ def push_state() -> int:
             con.execute("VACUUM INTO ?", (tmp_db,))
         finally:
             con.close()
+        # STREAM IT (2026-11-05). This used to f.read() the whole vacuumed copy (15,820,623,872 B on
+        # 2026-11-04) and compress it as one bytes object: ~16 GB resident on a 16 GB runner. Only the
+        # compressed bytes (~0.95 GB) are held now. size= writes the content size into the frame
+        # header, as one-shot compress() did, so readers that call decompress() still work.
+        raw_len = os.path.getsize(tmp_db)
+        out = io.BytesIO()
         with open(tmp_db, "rb") as f:
-            raw = f.read()
+            # Level 9: the db compresses once per run but transfers twice
+            # (state + backup) — worth the extra CPU for the smaller round-trip.
+            zstandard.ZstdCompressor(level=9).copy_stream(f, out, size=raw_len)
+        comp = out.getvalue()
+        del out
     finally:
         if os.path.exists(tmp_db):
             try:
@@ -389,10 +434,7 @@ def push_state() -> int:
             except OSError:
                 pass
 
-    # Level 9: the ~207 MB db compresses once per run but transfers twice
-    # (state + backup) — worth the extra CPU for the smaller round-trip.
-    comp = zstandard.ZstdCompressor(level=9).compress(raw)
-    print(f"[push-state] {len(raw):,} B vacuumed -> {len(comp):,} B zstd")
+    print(f"[push-state] {raw_len:,} B vacuumed -> {len(comp):,} B zstd")
 
     # THE SWAP (R1197). Conditional on the ETag compared above: If-Match it while an object existed,
     # If-None-Match '*' for the seed. The compare above ran minutes ago (VACUUM INTO + zstd-9 take ~5 min
