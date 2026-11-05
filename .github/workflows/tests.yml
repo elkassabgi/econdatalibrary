@@ -133,3 +133,16 @@ jobs:
 
       - name: worker typecheck
         run: npm run typecheck --prefix api/worker
+
+      # THE ASSISTANT WORKER (assistant/) HAD NO TESTS AND NO TYPECHECK IN CI. Its Claude
+      # adapter is tested here with a fake client and a stubbed fetch: no network, no key, no
+      # model call, so the step needs no secret and spends nothing. Same node:test runner as
+      # the api worker above, install first for the same reason (the SDK is a runtime import).
+      - name: Install assistant deps
+        run: npm ci --prefix assistant --no-audit --no-fund
+
+      - name: assistant tests (node:test)
+        run: npm test --prefix assistant
+
+      - name: assistant typecheck
+        run: npm run typecheck --prefix assistant

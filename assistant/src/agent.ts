@@ -8,10 +8,11 @@
 // offers + accumulated cost.
 // ---------------------------------------------------------------------------
 
-import { llmComplete, costUsd } from "./llm";
-import { TOOL_SCHEMAS, executeTool, type ToolCtx, type DownloadOffer } from "./tools";
-import { systemPrompt } from "./prompt";
-import type { ChatMessage, Config, Env, Visitor } from "./types";
+import { llmComplete, costUsd } from "./llm.ts";
+import { TOOL_SCHEMAS, executeTool, type ToolCtx, type DownloadOffer } from "./tools.ts";
+import { systemPrompt } from "./prompt.ts";
+import { makeAnthropicClient, runAnthropicLoop, type MessagesClient } from "./anthropic.ts";
+import type { ChatMessage, Config, Env, Visitor } from "./types.ts";
 
 export interface AgentResult {
   text: string;
@@ -20,18 +21,36 @@ export interface AgentResult {
   costUsd: number;
 }
 
+// Injection point for tests: build the Claude client from the key. The default
+// is the official SDK client; tests pass a fake (no network, no key).
+export interface AgentDeps {
+  anthropicClient?: (apiKey: string) => MessagesClient;
+}
+
 export async function runAgent(
   env: Env,
   config: Config,
   visitor: Visitor,
   history: ChatMessage[],
   onStatus: (label: string) => void,
+  deps: AgentDeps = {},
 ): Promise<AgentResult> {
+  const system = systemPrompt(visitor.registered, visitor.name);
+  const ctx: ToolCtx = { visitor, offers: [], register: { needed: false } };
+
+  // Claude only when it is selected AND its key is present; with the key absent
+  // config.mock is true and the keyless mock below runs instead.
+  if (config.provider === "anthropic" && !config.mock) {
+    const client = (deps.anthropicClient ?? makeAnthropicClient)(env.ANTHROPIC_API_KEY as string);
+    const r = await runAnthropicLoop(client, config, system, history, ctx, (name) => onStatus(statusFor(name)));
+    return { text: r.text, offers: ctx.offers, registerNeeded: ctx.register.needed, costUsd: r.costUsd };
+  }
+
+  // DeepSeek (default) and the keyless mock: the OpenAI-compatible loop.
   const messages: ChatMessage[] = [
-    { role: "system", content: systemPrompt(visitor.registered, visitor.name) },
+    { role: "system", content: system },
     ...history,
   ];
-  const ctx: ToolCtx = { visitor, offers: [], register: { needed: false } };
   let cost = 0;
 
   for (let round = 0; round < config.maxToolRounds; round++) {

@@ -6,7 +6,7 @@
 // loop so the entire flow + UI can be demoed locally with no key and no spend.
 // ---------------------------------------------------------------------------
 
-import type { ChatMessage, Config, Env, ToolCall, Usage } from "./types";
+import type { ChatMessage, Config, Env, ToolCall, Usage } from "./types.ts";
 
 const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
 

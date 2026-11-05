@@ -9,7 +9,7 @@
 // ---------------------------------------------------------------------------
 
 import { DurableObject } from "cloudflare:workers";
-import type { Env } from "./types";
+import type { Env } from "./types.ts";
 
 interface RlSpec { key: string; max: number; windowS: number; }
 interface Window { count: number; start: number; } // start = epoch ms

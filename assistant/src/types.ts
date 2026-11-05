@@ -15,6 +15,9 @@ export interface Env {
   // DeepSeek API key. When ABSENT, the Worker runs in MOCK mode (deterministic
   // scripted loop) so the whole flow + UI can be demoed with no key/spend.
   DEEPSEEK_API_KEY?: string;
+  // Anthropic (Claude) API key. Read ONLY when PROVIDER="anthropic"; when that
+  // provider is selected and this key is ABSENT, the Worker runs in MOCK mode.
+  ANTHROPIC_API_KEY?: string;
   // Cloudflare Turnstile secret. When ABSENT, Turnstile verification is skipped
   // (dev/local only) — set it in production so anonymous chat is bot-gated.
   TURNSTILE_SECRET?: string;
@@ -26,7 +29,12 @@ export interface Env {
   TURNSTILE_SITEKEY?: string;
 
   // --- non-secret vars (wrangler.jsonc "vars", all optional w/ safe defaults)
-  MODEL?: string;                    // default "deepseek-v4-flash"
+  PROVIDER?: string;                 // "deepseek" (default) | "anthropic"
+  MODEL?: string;                    // DeepSeek model, default "deepseek-v4-flash"
+  ANTHROPIC_MODEL?: string;          // Claude model, default "claude-haiku-5-5"
+  // Claude counts its (adaptive) thinking toward max_tokens, so it gets its own
+  // cap; MAX_OUTPUT_TOKENS stays the DeepSeek cap. Default "2000".
+  ANTHROPIC_MAX_OUTPUT_TOKENS?: string;
   MONTHLY_USD_CAP?: string;          // default "30"
   ANON_PER_HOUR?: string;            // default "5"
   ANON_PER_DAY?: string;             // default "15"
@@ -36,17 +44,31 @@ export interface Env {
   MAX_OUTPUT_TOKENS?: string;        // default "800"
 }
 
+export type Provider = "deepseek" | "anthropic";
+
+export const DEFAULT_PROVIDER: Provider = "deepseek";
+export const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash";
+export const DEFAULT_ANTHROPIC_MODEL = "claude-haiku-5-5";
+
+// PROVIDER is matched exactly (after trim + lower-case). Anything other than
+// "anthropic" — unset, empty, or a typo — resolves to the DeepSeek default, and
+// /health reports the provider actually in use so a typo is visible there.
+export function resolveProvider(v: string | undefined): Provider {
+  return (v ?? "").trim().toLowerCase() === "anthropic" ? "anthropic" : DEFAULT_PROVIDER;
+}
+
 // Resolved runtime config (env vars parsed once, with defaults).
 export interface Config {
-  model: string;
+  provider: Provider;
+  model: string; // the selected provider's model
   monthlyCapUsd: number;
   anonPerHour: number;
   anonPerDay: number;
   userPerHour: number;
   userPerDay: number;
   maxToolRounds: number;
-  maxOutputTokens: number;
-  mock: boolean; // true when no DeepSeek key -> scripted mock LLM
+  maxOutputTokens: number; // the selected provider's per-reply cap
+  mock: boolean; // true when the SELECTED provider's key is absent -> scripted mock LLM
 }
 
 export function loadConfig(env: Env): Config {
@@ -54,16 +76,23 @@ export function loadConfig(env: Env): Config {
     const n = v == null ? NaN : Number(v);
     return Number.isFinite(n) ? n : d;
   };
+  const provider = resolveProvider(env.PROVIDER);
+  const anthropic = provider === "anthropic";
   return {
-    model: env.MODEL || "deepseek-v4-flash",
+    provider,
+    model: anthropic
+      ? env.ANTHROPIC_MODEL || DEFAULT_ANTHROPIC_MODEL
+      : env.MODEL || DEFAULT_DEEPSEEK_MODEL,
     monthlyCapUsd: num(env.MONTHLY_USD_CAP, 30),
     anonPerHour: num(env.ANON_PER_HOUR, 5),
     anonPerDay: num(env.ANON_PER_DAY, 15),
     userPerHour: num(env.USER_PER_HOUR, 20),
     userPerDay: num(env.USER_PER_DAY, 60),
     maxToolRounds: num(env.MAX_TOOL_ROUNDS, 6),
-    maxOutputTokens: num(env.MAX_OUTPUT_TOKENS, 800),
-    mock: !env.DEEPSEEK_API_KEY,
+    maxOutputTokens: anthropic
+      ? num(env.ANTHROPIC_MAX_OUTPUT_TOKENS, 2000)
+      : num(env.MAX_OUTPUT_TOKENS, 800),
+    mock: anthropic ? !env.ANTHROPIC_API_KEY : !env.DEEPSEEK_API_KEY,
   };
 }
 

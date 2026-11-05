@@ -11,7 +11,7 @@
 // error; fail-open only when no secret is configured (local/dev).
 // ---------------------------------------------------------------------------
 
-import type { Env } from "./types";
+import type { Env } from "./types.ts";
 
 const SITEVERIFY = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 const PASS_TTL_S = 30 * 60;

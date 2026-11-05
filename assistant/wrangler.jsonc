@@ -4,6 +4,8 @@
 //
 // Secrets (set with `wrangler secret put`, never in this file):
 //   DEEPSEEK_API_KEY   — DeepSeek key. ABSENT => MOCK mode (scripted, no spend).
+//   ANTHROPIC_API_KEY  — Claude key, read ONLY when PROVIDER = "anthropic".
+//                        ABSENT with that provider => MOCK mode.
 //   TURNSTILE_SECRET   — Cloudflare Turnstile secret (bot-gate anon chat).
 //   ANON_PASS_SECRET   — any random string; signs the short-lived anon pass.
 {
@@ -25,7 +27,14 @@
   },
 
   "vars": {
+    // Model provider: "deepseek" (the default) or "anthropic" (Claude). See
+    // README "Switching to Claude". Anything else resolves to "deepseek".
+    "PROVIDER": "deepseek",
     "MODEL": "deepseek-v4-flash",
+    // Used only when PROVIDER = "anthropic". Claude counts its thinking toward
+    // the reply cap, so it has its own cap (MAX_OUTPUT_TOKENS is DeepSeek's).
+    "ANTHROPIC_MODEL": "claude-haiku-5-5",
+    "ANTHROPIC_MAX_OUTPUT_TOKENS": "2000",
     "MONTHLY_USD_CAP": "30",
     // Set this to your Turnstile sitekey WHEN you set the TURNSTILE_SECRET
     // (via `wrangler secret put`). The widget reads it from /health, so the two
