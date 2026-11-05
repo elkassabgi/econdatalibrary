@@ -46,6 +46,27 @@ def test_a_failed_gh_call_blocks_instead_of_reading_idle(monkeypatch, tmp_path):
     assert len(why) == 2 and all("could not check CI" in w for w in why)
 
 
+def test_pending_counts_as_in_flight(monkeypatch, tmp_path):
+    _fake_gh(monkeypatch, tmp_path, {"updater-heavy.yml": [{"status": "pending", "databaseId": 9}]})
+    assert psc.runs_in_flight() == ["CI updater-heavy 9 is pending"]
+
+
+def test_no_tool_keeps_its_own_copy():
+    """AR-431: cso_repull_subject.py and repull_file.py had private copies that read updater-daily only."""
+    own = []
+    for d in ("tools", "jobs", "updater", "core"):
+        for dirpath, _, files in os.walk(os.path.join(ROOT, d)):
+            for fn in files:
+                if fn.endswith(".py") and fn != "prune_series_cursors.py":
+                    p = os.path.join(dirpath, fn)
+                    if "def runs_in_flight" in open(p, encoding="utf-8", errors="replace").read():
+                        own.append(os.path.relpath(p, ROOT))
+    assert own == [], f"import runs_in_flight from tools.prune_series_cursors instead: {own}"
+    for rel in ("tools/cso_repull_subject.py", "tools/repull_file.py"):
+        assert "from tools.prune_series_cursors import runs_in_flight" in open(
+            os.path.join(ROOT, rel), encoding="utf-8").read()
+
+
 def test_the_workstation_lock_blocks(monkeypatch, tmp_path):
     _fake_gh(monkeypatch, tmp_path, {})
     (tmp_path / "logs").mkdir()
