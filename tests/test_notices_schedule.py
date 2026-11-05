@@ -96,11 +96,48 @@ def test_a_hung_run_is_killed_with_its_tree_at_the_limit(tmp_path):
     root = _scratch(tmp_path, 0, sleep_s=120)
     rc, st = _run(root, "-IfDue", "-NowUtc", "2026-11-06T09:00:00Z", "-LimitMin", "0.1")
     assert rc == 96 and st["rc"] == 96 and st["last_ok_started"] is None
+    assert "killed after" in st["note"], "the runner's word is in the status record (AR-438)"
     log = next((root / "logs").glob("notices_*.log")).read_text(encoding="utf-8")
-    assert "killed after" in log
     child = int(log.split("job ran", 1)[1].split()[0])
     assert not _pid_alive(child), "the python child was killed too"
     assert not (root / "logs" / "notices.lock").exists()
+
+
+@pytest.mark.skipif(not POWERSHELL, reason="Windows PowerShell only")
+def test_an_empty_lock_is_held_while_new_and_stale_when_old(tmp_path):
+    """AR-435 r2: Set-Content truncates then writes, so a reader can see an empty line; that must not read as free."""
+    root = _scratch(tmp_path, 0)
+    (root / "logs").mkdir()
+    lock = root / "logs" / "notices.lock"
+    lock.write_text("", encoding="ascii")
+    rc, st = _run(root, "-NowUtc", "2026-11-06T09:00:00Z")
+    assert rc == 3 and st is None, "a lock written seconds ago is another run starting"
+    old = time.time() - 60
+    os.utime(lock, (old, old))
+    rc, st = _run(root, "-NowUtc", "2026-11-06T09:00:00Z")
+    assert rc == 0 and st["rc"] == 0 and not lock.exists(), "an empty lock a minute old is stale"
+
+
+@pytest.mark.skipif(not POWERSHELL, reason="Windows PowerShell only")
+def test_a_python_that_survives_the_kill_keeps_the_lock_and_says_why(tmp_path):
+    """AR-438: run the real rc 95 path (kill skipped with the test-only -NoKill), not a grep of the source."""
+    root = _scratch(tmp_path, 0, sleep_s=60)
+    try:
+        # no captured output: the surviving python inherits the runner's pipes, and a capture would wait for it
+        rc = subprocess.run(_cmd(root, "-IfDue", "-NowUtc", "2026-11-06T09:00:00Z", "-LimitMin", "0.05", "-NoKill",
+                                 "-KillWaitS", "1"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            timeout=60).returncode
+        st = json.loads((root / "logs" / "notices.last.json").read_text(encoding="ascii"))
+        assert rc == 95 and st["rc"] == 95 and "could NOT kill python" in st["note"]
+        lock = root / "logs" / "notices.lock"
+        assert lock.exists() and len(lock.read_text(encoding="ascii").strip().split(",")) == 4, "lock kept"
+        r = subprocess.run(_cmd(root, "-NowUtc", "2026-11-06T09:30:00Z"), stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, text=True, timeout=60)
+        assert r.returncode == 3 and "refused" in r.stdout, "the surviving python still holds the lock"
+    finally:
+        log = next((root / "logs").glob("notices_*.log")).read_text(encoding="utf-8")
+        child = int(log.split("job ran", 1)[1].split()[0])
+        subprocess.run(["taskkill", "/F", "/PID", str(child)], capture_output=True)
 
 
 @pytest.mark.skipif(not POWERSHELL, reason="Windows PowerShell only")
