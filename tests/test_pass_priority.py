@@ -1,9 +1,13 @@
-"""tools/run_local_heavy.ps1 -Priority (owner, 2026-11-04): the desktop pass yields the CPU to the owner's own work.
+"""tools/run_local_heavy.ps1 -Priority (2026-11-04): the desktop pass yields the CPU to other work on the host.
 
-The runner lowers its OWN priority class only around the lines that start a heavy child (pull-state, the progress
-probe, the updater), so the child inherits the class at creation and so does everything the child starts; then it
-returns to its own class for the hard-stop watchdog. The gate, the killed-unit recorder and push-state are not
-lowered: they are the R5 safety tail (tools/pass_priority.ps1 says why).
+The runner lowers its OWN priority class only around the lines that start a heavy child (pull-state, the updater,
+the progress diff), so the child inherits the class at creation and so does everything the child starts; then it
+returns to its own class for the hard-stop watchdog. The gate, the progress snapshot, the killed-unit recorder and
+push-state are not lowered: the recorder and push-state are the R5 safety tail (tools/pass_priority.ps1 says why).
+The R5 tail is pinned three ways, because a no-op restore or a stray lowering is otherwise invisible (review
+AR-427): the helper's lower-then-restore round trip, a parser count (every Enter-PassPriority is one wrapped
+try/finally block and nothing else assigns a priority class), and the real runner's own read-back before the
+tail, asserted Normal.
 
 What is checked here:
   - everywhere (no PowerShell): the default is BelowNormal, the switch accepts exactly Normal|BelowNormal|Idle, the
@@ -108,11 +112,28 @@ foreach ($c in $cmds) {
     }
     "CALL|" + $hit + "|" + $lowered
 }
+# Every way to lower the runner, counted, so a lowering outside the recognised shape cannot hide (AR-427 m4, m6).
+$enters = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and
+                         $n.GetCommandName() -eq 'Enter-PassPriority' }, $true)
+"ENTER_CALLS=" + @($enters).Count
+$tries = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.TryStatementAst] -and $n.Finally -and
+                        $n.Finally.Extent.Text.Contains('Exit-PassPriority $prio') }, $true)
+$wrapped = 0
+foreach ($q in $tries) {
+    $sib = $q.Parent.Statements
+    if (-not $sib) { continue }
+    $i = [array]::IndexOf(@($sib), $q)
+    if ($i -gt 0 -and $sib[$i - 1].Extent.Text -eq '$prio = Enter-PassPriority $Priority') { $wrapped++ }
+}
+"WRAPPED_TRIES=" + $wrapped
+$assigns = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                          $n.Left -is [System.Management.Automation.Language.MemberExpressionAst] -and
+                          $n.Left.Member.Extent.Text -eq 'PriorityClass' }, $true)
+"CLASS_ASSIGNS=" + @($assigns).Count
 """
 
-LOWERED = {"--pull-state", "unit_progress_probe.py') --snapshot", "unit_progress_probe.py') --diff",
-           "Start-Process -FilePath $pythonExe"}
-NOT_LOWERED = {"--push-state", "record_killed_unit.py", "$gate 2>&1", "$gate --until-block", "$lister 2>&1",
+LOWERED = {"--pull-state", "unit_progress_probe.py') --diff", "Start-Process -FilePath $pythonExe"}
+NOT_LOWERED = {"--push-state", "record_killed_unit.py", "unit_progress_probe.py') --snapshot", "$gate 2>&1", "$gate --until-block", "$lister 2>&1",
                "taskkill"}
 
 
@@ -180,6 +201,85 @@ def test_the_lowered_probe_can_fail(tmp_path):
     p2.write_text(bad2, encoding="utf-8-sig")
     calls = [ln.split("|")[1:] for ln in _param_probe(tmp_path, str(p2)) if ln.startswith("CALL|")]
     assert ["--push-state", "True"] in calls, calls
+
+
+def _counts(lines):
+    return {k: int(v) for k, v in (ln.split("=", 1) for ln in lines
+                                   if ln.split("=", 1)[0] in ("ENTER_CALLS", "WRAPPED_TRIES", "CLASS_ASSIGNS"))}
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="needs PowerShell")
+def test_every_lowering_is_one_wrapped_block_and_nothing_else_sets_a_class(tmp_path):
+    """Enter-PassPriority appears only as `$prio = Enter...` right before a try whose finally restores it, one per
+    lowered child; and the runner never assigns .PriorityClass itself. With controls: a bare global lower (AR-427 m4),
+    a bare lower before push-state (m6) and a direct class assignment must each break the count."""
+    got = _counts(_param_probe(tmp_path))
+    assert got == {"ENTER_CALLS": len(LOWERED), "WRAPPED_TRIES": len(LOWERED), "CLASS_ASSIGNS": 0}, got
+    src = open(RUNNER, encoding="utf-8-sig").read().replace("\r\n", "\n")
+    anchors = {
+        "global": ("$selfHosted = ($cutOut -eq '1')\n",
+                   "$selfHosted = ($cutOut -eq '1')\n$null = Enter-PassPriority $Priority\n"),
+        "push": ("    & $pythonExe -m updater.run --push-state\n",
+                 "    $null = Enter-PassPriority $Priority\n    & $pythonExe -m updater.run --push-state\n"),
+        "assign": ("    & $pythonExe -m updater.run --push-state\n",
+                   "    [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'Idle'\n"
+                   "    & $pythonExe -m updater.run --push-state\n"),
+    }
+    for name, (old, new) in anchors.items():
+        assert src.count(old) == 1, f"precondition: anchor for {name}"
+        p = tmp_path / f"ctl_{name}.ps1"
+        p.write_text(src.replace(old, new), encoding="utf-8-sig")
+        bad = _counts(_param_probe(tmp_path, str(p)))
+        assert bad != got, f"control {name} was not detected: {bad}"
+
+
+HELPER_PROBE = r"""
+param([string]$Helper, [string]$Want)
+. $Helper
+$me = [System.Diagnostics.Process]::GetCurrentProcess()
+$me.PriorityClass = 'Normal'
+"START=" + $me.PriorityClass
+$prev = Enter-PassPriority $Want
+$me.Refresh()
+"INSIDE=" + $me.PriorityClass
+"PREV=" + $prev
+Exit-PassPriority $prev
+$me.Refresh()
+"AFTER=" + $me.PriorityClass
+"""
+
+
+@pytest.mark.parametrize("want", ["BelowNormal", "Idle"])
+def test_the_helper_lower_then_restore_gives_back_the_starting_class(tmp_path, want):
+    """AR-427 m3: an Exit-PassPriority that does nothing passed every other test. Windows only: an unprivileged
+    process elsewhere cannot raise its own priority back, so the round trip cannot be run there."""
+    if os.name != "nt" or POWERSHELL is None:
+        pytest.skip("needs PowerShell on Windows (raising a class back needs privilege elsewhere)")
+    probe = tmp_path / "helper_probe.ps1"
+    probe.write_text(HELPER_PROBE, encoding="utf-8")
+    r = subprocess.run([POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+                        str(probe), "-Helper", HELPER, "-Want", want], capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, (r.stdout + r.stderr)[-1500:]
+    lines = r.stdout.splitlines()
+    assert "START=Normal" in lines and "INSIDE=" + want in lines and "PREV=Normal" in lines, lines
+    assert "AFTER=Normal" in lines, f"the restore did not give back the starting class: {lines}"
+    assert "WARNING" not in r.stdout + r.stderr
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="needs PowerShell")
+def test_a_failed_restore_is_said_not_swallowed(tmp_path):
+    """A restore that cannot be applied leaves the runner low for the R5 tail; it must reach the log, through Say
+    when the runner defines it, and never throw."""
+    probe = tmp_path / "fail_probe.ps1"
+    probe.write_text("param([string]$Helper)\n. $Helper\n"
+                     "function Say($msg) { 'SAID|' + $msg }\n"
+                     "Exit-PassPriority 'NotAPriorityClass'\n'RETURNED'\n", encoding="utf-8")
+    r = subprocess.run([POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+                        str(probe), "-Helper", HELPER], capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, (r.stdout + r.stderr)[-1500:]
+    said = [ln for ln in r.stdout.splitlines() if ln.startswith("SAID|")]
+    assert said and "CPU priority restore to 'NotAPriorityClass' FAILED" in said[0], r.stdout + r.stderr
+    assert "RETURNED" in r.stdout.splitlines()
 
 
 # ------------------------------------------------------------------ Windows PowerShell 5.1: the real runner
@@ -269,13 +369,18 @@ def test_the_real_runner_starts_its_heavy_children_at_the_class_asked(tmp_path, 
     # every child ran exactly once and each one says what class it ran at
     assert set(got) == {"lister", "cutover_probe", "probe --snapshot", "updater", "updater child",
                         "probe --diff"}, (rows, r.stdout[-2000:])
-    lowered = {"probe --snapshot", "updater", "updater child", "probe --diff"}
+    lowered = {"updater", "updater child", "probe --diff"}
     for who, classes in got.items():
         expect = CLASS[want] if who in lowered else NORMAL
         assert classes == {expect}, f"{who} ran at {classes}, expected {hex(expect)} (rows {rows})"
     # the updater's own child inherited it with no help: nothing in the fake sets a class
     assert "CPU priority: " + want + " for pull-state" in r.stdout
     assert "own class (Normal)" in r.stdout, "the runner itself must stay at Normal (watchdog, push-state)"
+    # THE R5 TAIL, read back by the runner itself after the watchdog loop and before the recorder and push-state
+    # (AR-427 m3, m4: a no-op restore or a lowering never undone left this runner low and passed everything else)
+    assert "CPU priority for the R5 tail (recorder, push-state): Normal (runner started at Normal)" in r.stdout, \
+        r.stdout[-2500:]
+    assert "priority restore failed" not in r.stdout and "restore to" not in r.stdout, r.stdout[-2500:]
     assert re.search(r"updater CPU time: [0-9.]+ s over [0-9.]+ s wall at priority " + want, r.stdout), r.stdout
 
 

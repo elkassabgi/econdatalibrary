@@ -58,9 +58,9 @@ param(
     # collisions. The flat part is narrow and the cliff is 30 min away, so do not raise this without re-running
     # `python tools/measure_ci_lag.py sweep`.
     [int]      $WantBlockMin = 150,
-    # CPU priority class for the pass's heavy children: pull-state, the progress probe, and the updater with
-    # everything it starts. The owner runs his own models on all 96 threads in the hours this pass runs, and
-    # the pass must yield to them (2026-11-04). The gate, the hard-stop watchdog, the killed-unit recorder and
+    # CPU priority class for the pass's heavy children: pull-state, the updater with everything it starts,
+    # and the progress diff. Below normal by default, to yield the CPU to other interactive or batch work on
+    # the host. The gate, the progress snapshot, the hard-stop watchdog, the killed-unit recorder and
     # push-state keep this runner's own class: they are the R5 safety tail. See tools/pass_priority.ps1.
     [ValidateSet('Normal', 'BelowNormal', 'Idle')]
     [string]   $Priority = 'BelowNormal',
@@ -182,9 +182,11 @@ if ($IfDue) {
 }
 
 Say "local heavy updater starting; log -> $log"
-Say ("CPU priority: " + $Priority + " for pull-state, the progress probe and the updater with everything it " +
-     "starts; the gate, the hard-stop watchdog, the killed-unit recorder and push-state stay at this runner's " +
-     "own class (" + [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass + ")")
+# The runner's own class at the start, before anything is lowered: the R5 tail is checked against it below.
+$runnerClass = [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass
+Say ("CPU priority: " + $Priority + " for pull-state, the updater with everything it starts and the progress " +
+     "diff; the gate, the progress snapshot, the hard-stop watchdog, the killed-unit recorder and push-state " +
+     "stay at this runner's own class (" + $runnerClass + ")")
 
 # --- which sources are routed here? read the registry, never a second copy of the list ---
 $lister = Join-Path $repo 'tools\_list_local_sources.py'
@@ -478,7 +480,7 @@ if ($selfHosted) {
     Say "after T0: no state pull - state.db is local (updater.run refuses a state pull after T0)"
 } else {
     Say "pull-state ..."
-    # At -Priority: a pull slowed by the owner's work is SAFE - the post-pull recompute below is anchored to
+    # At -Priority: a pull slowed by other work on the host is SAFE - the post-pull recompute below is anchored to
     # the block instant read before the pull, and skips the updater (nothing pushed) when too little is left.
     $prio = Enter-PassPriority $Priority
     try { & $pythonExe -m updater.run --pull-state } finally { Exit-PassPriority $prio }
@@ -579,10 +581,9 @@ Say ("updater output -> " + $updaterLog)
 # partition of it can carry this decision. The probe diffs `unit_state.last_success_utc` and
 # `upstream_vintage`, which are written only on real progress (R630).
 $progressSnap = Join-Path $logDir ("local_heavy_progress_{0}.json" -f $stamp)
-$prio = Enter-PassPriority $Priority
-try {
-    $snapRaw = ( & $pythonExe (Join-Path $PSScriptRoot 'unit_progress_probe.py') --snapshot $progressSnap 2>$null ) | Select-Object -Last 1
-} finally { Exit-PassPriority $prio }
+# NOT LOWERED: the snapshot is cheap and runs after the budget is computed, so a starved one would only
+# shorten the updater's time, to no gain.
+$snapRaw = ( & $pythonExe (Join-Path $PSScriptRoot 'unit_progress_probe.py') --snapshot $progressSnap 2>$null ) | Select-Object -Last 1
 # EMPTY STDOUT IS NOT ZERO. In PowerShell 5.1 `[int]$null` is 0 and does NOT throw, so a
 # sentinel the helper prints from its own except-branch cannot cover the case where the helper
 # never runs at all - a missing script or an interpreter that fails to start prints nothing,
@@ -632,8 +633,8 @@ elseif ($proc.HasExited) { $proc.Refresh(); $rc = $proc.ExitCode }
 else { $rc = 124 }
 if ($null -eq $rc) { $rc = 124 }
 Say ("updater exit code: " + $rc)
-# CPU TIME AGAINST WALL TIME, so the effect of -Priority can be measured pass by pass: a pass yielding to the
-# owner's work shows a low ratio. The updater process only (its own children are not included; fetch, merge
+# CPU TIME AGAINST WALL TIME, so the effect of -Priority can be measured pass by pass: a pass yielding to
+# other work on the host shows a low ratio. The updater process only (its own children are not included; fetch, merge
 # and derive run inside it). Read through the handle cached above; a failure to read never stops the pass.
 try {
     $cpuS = [math]::Round($proc.TotalProcessorTime.TotalSeconds, 1)
@@ -641,6 +642,19 @@ try {
     Say ("updater CPU time: " + $cpuS + " s over " + $wallS + " s wall at priority " + $Priority)
 } catch {
     Say ("updater CPU time: unreadable (" + $_.Exception.Message + ")")
+}
+
+# READ BACK THIS RUNNER'S OWN CLASS for the R5 tail: the killed-unit recorder and push-state below must run
+# at the class the runner started with, not at -Priority (tools/pass_priority.ps1 says why). Every lowered
+# child above is wrapped in Enter/Exit-PassPriority; this line is the runtime proof that each Exit put the
+# class back. If one did not, say so loudly and put it back here, before the tail runs.
+$tailClass = [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass
+Say ("CPU priority for the R5 tail (recorder, push-state): " + $tailClass + " (runner started at " +
+     $runnerClass + ")")
+if ($tailClass -ne $runnerClass) {
+    Say ("WARNING: the runner is at " + $tailClass + ", not " + $runnerClass + ", after its lowered " +
+         "children - a priority restore failed; restoring " + $runnerClass + " before the recorder and push-state")
+    Exit-PassPriority $runnerClass
 }
 
 # RECORD THE UNIT THE KILL UN-RECORDED, before push-state carries the state away. A unit
