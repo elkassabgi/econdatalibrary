@@ -177,6 +177,7 @@ SITEMAP_EXTRA = [
     ("api.html", "monthly"),
     ("mcp.html", "monthly"),
     ("cite.html", "monthly"),
+    ("source_changes.html", "weekly"),
     ("stats.html", "monthly"),
     ("contact.html", "yearly"),
 ]
@@ -3683,6 +3684,7 @@ def render_docs():
 <p>Bundles are snapshot-pinned: a bundle manifest records the snapshot date and the exact member series, so the same request reproduces the same data. Every CSV carries its license and producer-first citation in a comment header.</p>
 <h2>The update pipeline</h2>
 <p>Sources are refreshed by a cadence-aware pipeline (daily, weekly, monthly, annual — matching each publisher's own schedule). Freshness is never fabricated: a series' date advances only when observations were actually fetched, and failures surface on the public <a href="status.html">status board</a> rather than being hidden.</p>
+<p>When a publisher ends, moves, re-codes or re-bases a dataset we carry, the change and what it means for our copy are recorded on the <a href="source_changes.html">Source Changes</a> page.</p>
 <h2>Multilingual titles</h2>
 <p>Series search is available in six languages (English, Arabic, Spanish, French, Russian, Chinese) using only the sources' official translations — titles are never machine-translated.</p>
 <h2>One account, one family</h2>
@@ -3815,6 +3817,93 @@ def render_contact():
     return _info_page("Contact",
                       "Contact Ahmed Elkassabgi about the Econ Data Library: questions, data issues, and source requests for free economic & financial time-series data.",
                       "contact.html", body)
+
+
+SOURCE_CHANGES = os.path.join(HERE, "source_changes.yaml")
+_CHANGE_STATUS = {"announced": "Announced", "in_effect": "In effect", "handled": "Handled"}
+# Quotations in every common style (AR-437 A2): straight, curly and full-width double, low-9, curly single,
+# guillemets, and straight single quotes. A single quote OPENS only at a word start and CLOSES only before a
+# non-word character, so an apostrophe inside a word (O'Brien, publisher's) neither opens nor ends a quotation;
+# an unclosed quotation counts to the end of the field (r2: each of those hid a 16-word quote). Known gap: a
+# plural possessive (users') inside a single-quoted span still closes it early - review catches what this misses.
+_QUOTE_RE = re.compile(
+    r"[\"“„＂](.+?)(?:[\"”“＂]|$)"
+    r"|(?<!\w)[‘‚](.+?)(?:’(?!\w)|$)"
+    r"|[«‹](.+?)(?:[»›]|$)"
+    r"|(?<!\w)'(.+?)(?:'(?!\w)|$)", re.S)
+QUOTE_MAX_WORDS = 15
+
+
+def load_source_changes(path=None, source_ids=None, denylisted=None):
+    """The reviewed entries of catalog/source_changes.yaml, newest first. RAISES on any entry that breaks the
+    file's rules, so a bad entry stops the build instead of publishing (docs/maintenance/SOURCE_NOTICES.md).
+    `source_ids` / `denylisted` default to the registry and the worker's gate."""
+    import yaml
+    with open(path or SOURCE_CHANGES, encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh) or {}
+    entries = doc.get("entries") or []
+    if source_ids is None:
+        with open(os.path.join(os.path.dirname(HERE), "updater", "registry.yaml"), encoding="utf-8") as fh:
+            source_ids = {e["source_id"] for e in (yaml.safe_load(fh) or {}).get("sources") or []}
+    if denylisted is None:
+        denylisted = load_denylisted()
+    out = []
+    for n, e in enumerate(entries, 1):
+        where = f"source_changes.yaml entry {n}"
+        for k in ("date", "sources", "change", "effect", "status", "link"):
+            if not e.get(k):
+                raise SystemExit(f"{where}: `{k}` is required")
+        for k in ("date", "until"):
+            if e.get(k) is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(e[k])):
+                raise SystemExit(f"{where}: `{k}` must be YYYY-MM-DD, got {e[k]!r}")
+        if e["status"] not in _CHANGE_STATUS:
+            raise SystemExit(f"{where}: status must be one of {sorted(_CHANGE_STATUS)}")
+        if not str(e["link"]).startswith("https://"):
+            raise SystemExit(f"{where}: link must be https")
+        bad = [s for s in e["sources"] if s not in source_ids]
+        if bad:
+            raise SystemExit(f"{where}: not registry sources: {bad}")
+        gated = [s for s in e["sources"] if s in denylisted]
+        if gated:
+            raise SystemExit(f"{where}: lists a source the worker refuses to serve ({len(gated)}); not publishable")
+        for k in ("change", "effect"):
+            if len(str(e[k])) > 400:
+                raise SystemExit(f"{where}: `{k}` is over 400 characters - say it shorter, in our own words")
+            quoted = sum(len("".join(g).split()) for g in _QUOTE_RE.findall(str(e[k])))
+            if quoted > QUOTE_MAX_WORDS:
+                raise SystemExit(f"{where}: `{k}` quotes {quoted} words of the publisher (at most "
+                                 f"{QUOTE_MAX_WORDS} in all) - say it in our own words")
+        out.append(e)
+    return sorted(out, key=lambda e: str(e["date"]), reverse=True)
+
+
+def render_source_changes(entries=None):
+    entries = load_source_changes() if entries is None else entries
+    body = ('\n<p class="lead">Changes that publishers have made or announced to the datasets this library '
+            'carries: a dataset ended, an API moved, series re-coded or re-based. Each entry links to the '
+            'publisher&rsquo;s own notice and says what it means for our copy.</p>\n')
+    if not entries:
+        body += ("<p>No publisher change is listed yet. Entries appear here after review, when a publisher "
+                 "announces that something we carry is ending or changing.</p>\n")
+    for e in entries:
+        until = f' &middot; takes effect {esc(e["until"])}' if e.get("until") else ""
+        srcs = ", ".join(f'<a href="{esc(s)}.html"><code>{esc(s)}</code></a>' for s in e["sources"])
+        body += (f'<div style="border:1px solid var(--g200);border-radius:12px;padding:1rem 1.2rem;margin:0 0 1rem">'
+                 f'<p style="margin:0 0 .35rem;color:var(--g500);font-size:.9rem">{esc(e["date"])} &middot; '
+                 f'{esc(_CHANGE_STATUS[e["status"]])}{until} &middot; {srcs}</p>'
+                 f'<p style="margin:0 0 .35rem">{esc(e["change"])}</p>'
+                 f'<p style="margin:0 0 .35rem"><strong>For this library:</strong> {esc(e["effect"])}</p>'
+                 f'<p style="margin:0"><a href="{esc(e["link"])}" rel="noopener">Publisher&rsquo;s notice</a></p>'
+                 f'</div>\n')
+    html = _info_page("Source Changes",
+                      "Changes publishers have made or announced to the datasets in the Econ Data Library, "
+                      "with what each one means for the data.",
+                      "source_changes.html", body)
+    if not entries:
+        # NOINDEX WHILE EMPTY (review AR-437 A1): a page shell with one "nothing yet" line is a thin page. The
+        # tag also takes it out of sitemap.xml (main() drops noindex pages); the first entry brings both back.
+        html = html.replace("</head>", '<meta name="robots" content="noindex">\n</head>', 1)
+    return html
 
 
 def _institutions_block():
@@ -4174,6 +4263,7 @@ def main(argv=None):
     _write(os.path.join(OUT_DIR, "cite.html"), render_cite())
     _write(os.path.join(OUT_DIR, "contact.html"), render_contact())
     _write(os.path.join(OUT_DIR, "stats.html"), render_stats())
+    _write(os.path.join(OUT_DIR, "source_changes.html"), render_source_changes())
 
     # ---- sitemap.xml --------------------------------------------------------
     # WHAT WAS WRONG: the sitemap held the two hub URLs plus the dataset pages and
