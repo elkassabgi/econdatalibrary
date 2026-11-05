@@ -67,17 +67,23 @@ def runs_in_flight() -> list:
     lock = os.path.join(ROOT, "logs", "local_heavy.lock")
     if os.path.exists(lock):
         why.append(f"workstation lock held ({lock})")
-    try:
-        out = subprocess.run(
-            ["gh", "run", "list", "--workflow=updater-daily.yml", "--limit", "5",
-             "--json", "status,databaseId"],
-            capture_output=True, text=True, timeout=60, cwd=ROOT)
-        if out.returncode == 0:
+    # BOTH cloud workflows pull and push the state (AR-430, R1804): this read only updater-daily, and a
+    # heavy run queued at 19:15Z on 2026-11-05 would not have stopped an --apply. A gh call that fails
+    # is a blocker too - a check that could not look must not read as "idle".
+    for wf in ("updater-daily.yml", "updater-heavy.yml"):
+        try:
+            out = subprocess.run(
+                ["gh", "run", "list", f"--workflow={wf}", "--limit", "5",
+                 "--json", "status,databaseId"],
+                capture_output=True, text=True, timeout=60, cwd=ROOT)
+            if out.returncode != 0:
+                why.append(f"could not check CI {wf} (gh exit {out.returncode}) — refusing to assume it is idle")
+                continue
             for r in json.loads(out.stdout or "[]"):
-                if r.get("status") in ("in_progress", "queued", "requested", "waiting"):
-                    why.append(f"CI updater-daily {r['databaseId']} is {r['status']}")
-    except Exception as e:                                     # noqa: BLE001
-        why.append(f"could not check CI ({type(e).__name__}) — refusing to assume it is idle")
+                if r.get("status") in ("in_progress", "queued", "requested", "waiting", "pending"):
+                    why.append(f"CI {wf[:-4]} {r['databaseId']} is {r['status']}")
+        except Exception as e:                                 # noqa: BLE001
+            why.append(f"could not check CI {wf} ({type(e).__name__}) — refusing to assume it is idle")
     return why
 
 
