@@ -20,7 +20,8 @@
         runner still blocks a second writer of state.json (review AR-435).
 
     TIME LIMIT. A run that has not ended after -LimitMin minutes (60) is killed with its whole process tree
-    (taskkill /T /F) and recorded as rc 96. A hung feed must not hold the lock until the next reboot.
+    (taskkill /T /F) and recorded as rc 96. A hung feed must not hold the lock until the next reboot. If python
+    is still alive 30 s after the kill, the run records rc 95 and KEEPS the lock, which names that python.
 
     WHAT IT RUNS. `python jobs\watch_notices.py` at BelowNormal priority (the owner's own work comes first)
     and nothing else. It publishes nothing: queue items are private until triaged (tools/maintenance_queue.py).
@@ -79,17 +80,27 @@ New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
 if (Test-Path -LiteralPath $lock) {
     $held = $false
     $other = $null
+    $readOk = $false
     try {
-        $parts = ((Get-Content -LiteralPath $lock -First 1).Trim()) -split ','
+        $parts = ((Get-Content -LiteralPath $lock -First 1 -ErrorAction Stop) -as [string]).Trim() -split ','
         # pairs: runner pid,ticks[,python pid,ticks]
         for ($k = 0; $k + 1 -lt $parts.Count; $k += 2) {
+            $readOk = $true
             $id = [int]$parts[$k]
             $proc = Get-Process -Id $id -ErrorAction SilentlyContinue
             if ($proc -and $id -ne $PID -and $proc.StartTime.ToUniversalTime().Ticks.ToString() -eq $parts[$k + 1]) {
                 $held = $true; $other = $id
             }
         }
-    } catch { $held = $false }
+    } catch { $readOk = $false }
+    if (-not $readOk -and -not $held) {
+        # FAIL CLOSED WHILE IT IS BEING WRITTEN (review AR-435 r2): Set-Content truncates, then writes, so a reader
+        # can catch an empty line, and a read can throw. A lock that new is another run starting, not a stale one.
+        try {
+            $age = ((Get-Date).ToUniversalTime() - (Get-Item -LiteralPath $lock -ErrorAction Stop).LastWriteTimeUtc).TotalSeconds
+            if ($age -lt 10) { $held = $true; $other = 'unknown (lock being written)' }
+        } catch { $held = $true; $other = 'unknown (lock unreadable)' }
+    }
     if ($held) {
         if (-not $IfDue) { Write-Output "refused: another notices run holds $lock (pid $other)"; exit 3 }
         exit 0
@@ -123,9 +134,15 @@ try {
         if ($null -eq $rc) { $rc = 97 }
     } else {
         & taskkill.exe /T /F /PID $p.Id | Out-Null
-        $p.WaitForExit(30000) | Out-Null
-        Add-Content -LiteralPath $log -Value ("runner: killed after {0} min (process tree)" -f $LimitMin)
-        $rc = 96
+        if ($p.WaitForExit(30000)) {
+            Add-Content -LiteralPath $log -Value ("runner: killed after {0} min (process tree)" -f $LimitMin)
+            $rc = 96
+        } else {
+            # STILL ALIVE: keep the lock (it names this python), so the next run is refused rather than racing it
+            # on data\_notices\state.json (review AR-435 r2). The heartbeat's digest line shows rc 95.
+            Add-Content -LiteralPath $log -Value ("runner: could NOT kill python pid {0} after {1} min; lock kept" -f $p.Id, $LimitMin)
+            $rc = 95
+        }
     }
 } catch {
     Add-Content -LiteralPath $log -Value ("runner error: {0}" -f $_.Exception.Message)
@@ -145,7 +162,7 @@ $rec.ended = (Iso $end)
 $rec.rc = $rc
 if ($rc -eq 0) { $rec.last_ok_started = (Iso $now) }
 Write-Status $rec
-Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue
+if ($rc -ne 95) { Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue }
 
 Get-ChildItem -Path $logsDir -Filter 'notices_*.log' -File -ErrorAction SilentlyContinue |
     Sort-Object Name -Descending | Select-Object -Skip 60 | Remove-Item -Force -ErrorAction SilentlyContinue

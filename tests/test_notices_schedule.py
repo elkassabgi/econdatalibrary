@@ -104,6 +104,26 @@ def test_a_hung_run_is_killed_with_its_tree_at_the_limit(tmp_path):
 
 
 @pytest.mark.skipif(not POWERSHELL, reason="Windows PowerShell only")
+def test_an_empty_lock_is_held_while_new_and_stale_when_old(tmp_path):
+    """AR-435 r2: Set-Content truncates then writes, so a reader can see an empty line; that must not read as free."""
+    root = _scratch(tmp_path, 0)
+    (root / "logs").mkdir()
+    lock = root / "logs" / "notices.lock"
+    lock.write_text("", encoding="ascii")
+    rc, st = _run(root, "-NowUtc", "2026-11-06T09:00:00Z")
+    assert rc == 3 and st is None, "a lock written seconds ago is another run starting"
+    old = time.time() - 60
+    os.utime(lock, (old, old))
+    rc, st = _run(root, "-NowUtc", "2026-11-06T09:00:00Z")
+    assert rc == 0 and st["rc"] == 0 and not lock.exists(), "an empty lock a minute old is stale"
+
+
+def test_a_python_that_survives_the_kill_keeps_the_lock():
+    src = open(PS1, encoding="ascii").read()
+    assert "$rc = 95" in src and "if ($rc -ne 95) { Remove-Item -LiteralPath $lock" in src
+
+
+@pytest.mark.skipif(not POWERSHELL, reason="Windows PowerShell only")
 def test_a_live_run_holds_the_lock(tmp_path):
     root = _scratch(tmp_path, 0, sleep_s=25)
     first = subprocess.Popen(_cmd(root, "-NowUtc", "2026-11-06T09:00:00Z"),
