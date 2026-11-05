@@ -24,7 +24,6 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import email.utils
-import fnmatch
 import hashlib
 import html.parser
 import json
@@ -56,6 +55,7 @@ STRONG, MEDIUM, SCOPE = 3, 1, 2
 HOST_GAP_S = 5.0
 MAX_REQUESTS = 200
 TIMEOUT_S = 30
+MAX_BODY = 20_000_000
 BROKEN_AFTER = 3         # consecutive failures before a feed_broken item
 FIRST_POLL_DAYS = 90     # on a feed's first poll, only items dated this recently are queued
 TITLE_MAX = 160
@@ -75,24 +75,46 @@ def load_yaml(path: str) -> dict:
 
 
 # ---------------------------------------------------------------------------------------------- parse
+def _local(el) -> str:
+    return el.tag.rsplit("}", 1)[-1]
+
+
 def _text(el, *names) -> str:
-    """First non-empty child text among `names` (namespace-agnostic: matches the local name)."""
-    for child in el:
-        local = child.tag.rsplit("}", 1)[-1]
-        if local in names and (child.text or "").strip():
-            return child.text.strip()
+    """Non-empty child text for the FIRST of `names` present, in the order given - not document
+    order, so `published` wins over an `updated` written before it (a revised old entry must not
+    pass the first-poll age gate as new; review AR-432 #3). Namespace-agnostic."""
+    for name in names:
+        for child in el:
+            if _local(child) == name and (child.text or "").strip():
+                return child.text.strip()
     return ""
 
 
 def _atom_link(entry) -> str:
-    best = ""
+    """rel=alternate (the default rel); failing that any link that is not an enclosure, a self/edit
+    link or a related file (AR-432 #4)."""
+    other = ""
     for child in entry:
-        if child.tag.rsplit("}", 1)[-1] == "link":
-            rel = child.get("rel", "alternate")
-            if rel == "alternate" and child.get("href"):
-                return child.get("href")
-            best = best or child.get("href", "")
-    return best
+        if _local(child) != "link" or not child.get("href"):
+            continue
+        rel = child.get("rel", "alternate")
+        if rel == "alternate":
+            return child.get("href")
+        if rel not in ("enclosure", "self", "edit", "related") and not other:
+            other = child.get("href")
+    return other
+
+
+def _rss_link(item) -> str:
+    """<link> text; else an atom:link href; else a guid that is a URL (AR-432 #5)."""
+    link = _text(item, "link")
+    if link:
+        return link
+    for child in item:
+        if _local(child) == "link" and child.get("href"):
+            return child.get("href")
+    guid = _text(item, "guid")
+    return guid if guid.startswith(("http://", "https://")) else ""
 
 
 def parse_date(s: str) -> "dt.datetime | None":
@@ -115,36 +137,57 @@ def parse_date(s: str) -> "dt.datetime | None":
 
 
 class _Anchors(html.parser.HTMLParser):
-    """(text, href) of every <a> inside the scope element `tag` / `tag.class` (whole page if none)."""
+    """(text, href) of every <a> inside the scope `tag`, `tag.class` or `.class` (whole page if no
+    selector). The scope is tracked by the tag name of the element that opened it, so `.news` on a
+    <section> works (AR-432 #8). An <a> left open is closed by the next <a> or the end of the body."""
 
     def __init__(self, selector: str = ""):
         super().__init__(convert_charrefs=True)
         tag, _, cls = (selector or "").partition(".")
-        self.scope_tag, self.scope_cls = tag.lower(), cls
-        self.depth = 0 if tag else 1                        # >0 = inside the scope
+        self.want_tag, self.want_cls = tag.lower(), cls
+        self.scoped = bool(tag or cls)
+        self.scope_tag, self.depth = None, 0                # depth > 0 = inside the scope
         self.out, self._href, self._buf = [], None, []
 
+    def _inside(self) -> bool:
+        return not self.scoped or self.depth > 0
+
     def _is_scope(self, tag, attrs) -> bool:
-        if tag != self.scope_tag:
+        if self.want_tag and tag != self.want_tag:
             return False
-        return not self.scope_cls or self.scope_cls in (dict(attrs).get("class") or "").split()
+        return not self.want_cls or self.want_cls in (dict(attrs).get("class") or "").split()
 
-    def handle_starttag(self, tag, attrs):
-        if self.scope_tag and (self.depth or self._is_scope(tag, attrs)) and tag == self.scope_tag:
-            self.depth += 1
-        if self.depth and tag == "a" and dict(attrs).get("href"):
-            self._href, self._buf = dict(attrs)["href"], []
-
-    def handle_endtag(self, tag):
-        if tag == "a" and self._href is not None:
+    def _close_a(self):
+        if self._href is not None:
             self.out.append((" ".join("".join(self._buf).split()), self._href))
             self._href = None
-        if self.scope_tag and tag == self.scope_tag and self.depth:
+
+    def handle_starttag(self, tag, attrs):
+        if self.scoped:
+            if self.depth == 0 and self._is_scope(tag, attrs):
+                self.scope_tag, self.depth = tag, 1
+            elif self.depth and tag == self.scope_tag:
+                self.depth += 1
+        if tag == "a":
+            self._close_a()
+            if self._inside() and dict(attrs).get("href"):
+                self._href, self._buf = dict(attrs)["href"], []
+
+    def handle_endtag(self, tag):
+        if tag == "a":
+            self._close_a()
+        if self.scoped and self.depth and tag == self.scope_tag:
             self.depth -= 1
+            if self.depth == 0:
+                self._close_a()
 
     def handle_data(self, data):
         if self._href is not None:
             self._buf.append(data)
+
+    def close(self):
+        super().close()
+        self._close_a()
 
 
 def parse_items(kind: str, body: bytes, base_url: str, selector: str = "") -> list:
@@ -159,19 +202,27 @@ def parse_items(kind: str, body: bytes, base_url: str, selector: str = "") -> li
             local = el.tag.rsplit("}", 1)[-1]
             if local not in ("item", "entry"):
                 continue
-            link = _text(el, "link") if local == "item" else _atom_link(el)
+            link = _rss_link(el) if local == "item" else _atom_link(el)
             items.append({"title": _text(el, "title"),
                           "link": urllib.parse.urljoin(base_url, link) if link else "",
-                          "date": _text(el, "pubDate", "published", "updated", "date"),
+                          "date": _text(el, "pubDate", "published", "date", "issued", "updated"),
                           "summary": _text(el, "description", "summary")})
     elif kind == "html_page":
         p = _Anchors(selector)
         p.feed(body.decode("utf-8", errors="replace"))
+        p.close()
+        # ONE item per link, carrying the text of EVERY anchor to it. A "Read more" anchor before the
+        # title anchor used to claim the key first, and the real title ("Series X discontinued") was
+        # then skipped as seen and never scored (AR-432 #2). Title = the longest text; all texts score.
+        by_link: dict = {}
         for text, href in p.out:
             if not text or href.startswith(("#", "mailto:", "javascript:")):
                 continue
-            items.append({"title": text, "link": urllib.parse.urljoin(base_url, href), "date": "",
-                          "summary": ""})
+            by_link.setdefault(urllib.parse.urljoin(base_url, href), []).append(text)
+        for link, texts in by_link.items():
+            uniq = list(dict.fromkeys(texts))
+            items.append({"title": max(uniq, key=len), "link": link, "date": "",
+                          "summary": " | ".join(t for t in uniq if t != max(uniq, key=len))})
     else:
         raise ValueError(f"unknown feed kind {kind!r}")
     return items
@@ -204,11 +255,18 @@ def score(text: str, compiled: dict, extra=()) -> "tuple[int, list]":
 
 
 # ---------------------------------------------------------------------------------------------- dedup
+# Query keys that only track the visitor. EVERY other key is kept, and so is the fragment: an
+# allow-list (id, p, article) folded NewsID=101 and NewsID=102 into one key, and dropping the fragment
+# folded /notices#a and /notices#b, so a discontinuation was marked seen without being scored (AR-432 #1).
+TRACKING = re.compile(r"^(utm_\w*|fbclid|gclid|mc_cid|mc_eid|_ga|ref|source)$", re.IGNORECASE)
+
+
 def canonical_link(link: str) -> str:
     u = urllib.parse.urlsplit(link)
-    keep = [(k, v) for k, v in urllib.parse.parse_qsl(u.query) if k.lower() in ("id", "p", "article")]
-    return urllib.parse.urlunsplit((u.scheme.lower(), u.netloc.lower(), u.path.rstrip("/"),
-                                    urllib.parse.urlencode(keep), ""))
+    keep = sorted((k, v) for k, v in urllib.parse.parse_qsl(u.query, keep_blank_values=True)
+                  if not TRACKING.match(k))
+    return urllib.parse.urlunsplit((u.scheme.lower(), u.netloc.lower(), u.path.rstrip("/") or "/",
+                                    urllib.parse.urlencode(keep), u.fragment))
 
 
 def item_key(publisher_id: str, it: dict) -> str:
@@ -228,7 +286,11 @@ def http_get(url: str, etag: "str | None", modified: "str | None"):
     req = urllib.request.Request(url, headers=hdr)
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT_S) as r:   # noqa: S310 - https only (registry test)
-            return r.status, r.read(5_000_000), r.headers.get("ETag"), r.headers.get("Last-Modified")
+            body = r.read(MAX_BODY + 1)
+            if len(body) > MAX_BODY:
+                # Say so: a cut XML body used to surface as "not XML" and then as feed_broken (AR-432 #9).
+                raise ValueError(f"body over {MAX_BODY:,} B - raise MAX_BODY or choose a smaller feed")
+            return r.status, body, r.headers.get("ETag"), r.headers.get("Last-Modified")
     except urllib.error.HTTPError as e:
         if e.code == 304:
             return 304, None, etag, modified
@@ -366,8 +428,9 @@ def main(argv=None) -> int:
     if a.dry_run:
         print("[notices] --dry-run: nothing written")
         return 0
-    # The queue first, then the seen-set: a crash between the two re-queues the same ids next run (the
-    # queue tool folds lines by id), where the other order would lose them for good.
+    # The queue first, then the seen-set: a crash between the two re-queues the same notice ids next run
+    # (the queue tool folds lines by id), where the other order would lose them for good. A feed_broken
+    # id carries its run time, so that one item can repeat once after such a crash.
     append_queue(a.queue, lines)
     write_state(a.state, state)
     return 0

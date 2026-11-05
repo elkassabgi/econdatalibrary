@@ -6,11 +6,13 @@
 # Adding a missed word is a one-line change here plus a planted case in tests/test_watch_notices.py.
 strong:
   en: [discontinu*, deprecat*, decommission*, sunset*, retire*, "end of life", "no longer",
-       "will be removed", "will cease", "cease*", "shut down", "shutdown", migrat*, "new api",
-       "api version", "breaking change", "replaced by", "moved to", "new url", "new address",
-       rebas*, "re-bas*", "base year", "classification change", "terminat*", "withdraw*"]
-  de: [eingestellt, "wird eingestellt", abgekündigt, umstellung, "neue schnittstelle"]
-  fr: ["arrêt*", "supprim*", "abandon*", "migration", "nouvelle api", "changement de base"]
+       "will be removed", "will cease", "cease*", "shut down", "shut-down", "shutdown", migrat*,
+       "new api", "api version", "breaking change", "replaced by", "moved to", "new url",
+       "new address", rebas*, "re-bas*", "base year", "classification change", "terminat*"]
+  # Not here on purpose (review AR-432 #6): withdraw*/abandon* match ordinary English releases;
+  # bare "eingestellt" also means "posted online"; French "migration" double-counts en migrat*.
+  de: ["wird eingestellt", "werden eingestellt", "nicht mehr", abgekündigt, umstellung, "neue schnittstelle"]
+  fr: ["arrêt*", "arret*", "supprim*", "nouvelle api", "changement de base", "ne sera plus"]
   nl: [stopgezet, "stopt met", "vervalt", "nieuwe api", "migratie"]
   es: [descontinu*, "dejará de", "nueva api", "migración", "cambio de base"]
 medium:

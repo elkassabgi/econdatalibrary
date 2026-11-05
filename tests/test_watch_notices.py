@@ -112,6 +112,10 @@ def test_dates():
     ("Quarterly GDP release", False),
     ("Minor update", False),                   # one medium word is below the threshold
     ("Retirement age statistics published", True),   # retire* is broad on purpose; triage filters
+    ("Tabellen online eingestellt", False),             # "posted online", not "discontinued"
+    ("Revised figures withdrawn from the release", False),
+    ("Legacy portal shut-down", True),
+    ("Arret de la serie", True),
 ])
 def test_score_threshold(title, queued):
     s, _ = wn.score(title, wn.compile_terms(TERMS))
@@ -191,11 +195,57 @@ def test_the_request_cap_skips_and_counts(monkeypatch):
     assert len(calls) == 1 and stats["skipped_cap"] == 1
 
 
-def test_dedup_ignores_tracking_query_and_fragment():
-    a = wn.item_key("p", {"link": "https://Pub.example.org/news/1/?utm_source=x#frag"})
+def test_dedup_ignores_only_tracking_keys():
+    a = wn.item_key("p", {"link": "https://Pub.example.org/news/1/?utm_source=x&fbclid=y"})
     b = wn.item_key("p", {"link": "https://pub.example.org/news/1"})
-    c = wn.item_key("p", {"link": "https://pub.example.org/news/1?id=5"})
-    assert a == b and a != c
+    assert a == b
+    # every other query key and the fragment tell two notices apart (AR-432 #1)
+    keys = {wn.item_key("p", {"link": u}) for u in (
+        "https://pub.example.org/n?NewsID=101", "https://pub.example.org/n?NewsID=102",
+        "https://pub.example.org/n?item=7", "https://pub.example.org/n?item=8",
+        "https://pub.example.org/notices#a", "https://pub.example.org/notices#b")}
+    assert len(keys) == 6
+
+
+FRAG = b"""<main><a href="/notices#a">Planned maintenance window</a>
+<a href="/notices#b">API v1 will be discontinued</a></main>"""
+READMORE = b"""<main><div><a href="/n/5">Read more</a><h3><a href="/n/5">Series X discontinued</a></h3></div></main>"""
+
+
+@pytest.mark.parametrize("body,title", [(FRAG, "API v1 will be discontinued"),
+                                        (READMORE, "Series X discontinued")])
+def test_html_notices_that_used_to_be_lost_are_queued(body, title):
+    """Two AR-432 probes: anchors differing only by fragment, and a Read-more anchor before the title."""
+    feed = dict(FEED, kind="html_page", selector="main")
+    st = {"feeds": {feed["url"]: {"last_ok": "2026-11-01T00:00:00Z", "last_checked": "2026-11-01T00:00:00Z"}}}
+    lines, _, _ = wn.run(reg([feed]), TERMS, st, NOW, fetcher({feed["url"]: body}), sleep=lambda s: None)
+    assert [l["title"] for l in lines] == [title]
+
+
+def test_atom_prefers_published_and_skips_enclosures():
+    body = b"""<feed xmlns="http://www.w3.org/2005/Atom"><entry><title>t</title>
+    <link rel="enclosure" href="/f.pdf"/><link rel="related" href="/r"/><link href="/real"/>
+    <updated>2026-11-04T00:00:00Z</updated><published>2023-01-01T00:00:00Z</published></entry>
+    <entry><title>u</title><link rel="enclosure" href="/g.pdf"/><link rel="via" href="/via"/></entry></feed>"""
+    a, b = wn.parse_items("atom", body, "https://pub.example.org/")
+    assert a["link"] == "https://pub.example.org/real" and a["date"].startswith("2023")
+    assert b["link"] == "https://pub.example.org/via"
+
+
+def test_rss_link_falls_back_to_atom_link_then_guid():
+    body = b"""<rss xmlns:atom="http://www.w3.org/2005/Atom"><channel>
+    <item><title>a</title><atom:link href="https://pub.example.org/x"/></item>
+    <item><title>b</title><guid>https://pub.example.org/y</guid></item>
+    <item><title>c</title><guid isPermaLink="false">tag-123</guid></item></channel></rss>"""
+    assert [i["link"] for i in wn.parse_items("rss", body, "https://pub.example.org/")] == \
+        ["https://pub.example.org/x", "https://pub.example.org/y", ""]
+
+
+def test_class_only_selector_and_unclosed_anchor():
+    body = b"""<nav><a href="/x">service shut down</a></nav><section class="news">
+    <a href="/n/1">Dataset retired<a href="/n/2">Annual report</section><a href="/n/3">outside</a>"""
+    got = wn.parse_items("html_page", body, "https://pub.example.org/", ".news")
+    assert [i["title"] for i in got] == ["Dataset retired", "Annual report"]
 
 
 def test_run_does_not_mutate_the_callers_state():
