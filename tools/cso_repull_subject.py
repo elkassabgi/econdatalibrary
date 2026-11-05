@@ -40,7 +40,6 @@ import argparse
 import datetime as dt
 import json
 import os
-import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -51,24 +50,9 @@ from tools._store_banner import banner                             # noqa: E402
 from updater.strategies.fetchers import cso as C                   # noqa: E402
 
 
-def runs_in_flight() -> "list[str]":
-    """R5: the store is single-writer. Never mutate a cursor under a live run."""
-    why = []
-    lock = os.path.join(ROOT, "logs", "local_heavy.lock")
-    if os.path.exists(lock):
-        why.append(f"workstation lock held ({lock})")
-    try:
-        out = subprocess.run(
-            ["gh", "run", "list", "--workflow=updater-daily.yml", "--limit", "5",
-             "--json", "status,databaseId"],
-            capture_output=True, text=True, timeout=60, cwd=ROOT)
-        if out.returncode == 0:
-            for r in json.loads(out.stdout or "[]"):
-                if r.get("status") in ("in_progress", "queued", "requested", "waiting"):
-                    why.append(f"CI updater-daily {r['databaseId']} is {r['status']}")
-    except Exception as e:                                         # noqa: BLE001
-        why.append(f"could not check CI ({type(e).__name__}) — refusing to assume it is idle")
-    return why
+# ONE in-flight check for every state-writing tool (AR-431): this file kept its own copy, which read
+# only updater-daily and took a failed gh call for idle.
+from tools.prune_series_cursors import runs_in_flight  # noqa: E402,F401
 
 
 def main() -> int:
