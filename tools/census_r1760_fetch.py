@@ -33,16 +33,21 @@ BASE = "https://api.census.gov/data/timeseries/intltrade/imports/"
 UA = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
 GAP_S = 5.0
 TIMEOUT_S = 300
-IDENTITY = ["COMM_LVL", "SUMMARY_LVL2", "DISTRICT"]
+# SUMMARY_LVL is asked for too: the store holds only 'DET' and the tail fetcher pins it; R0 must PROVE the API
+# answers CTY_CODE='-' at that level rather than assume it (review AR-440).
+IDENTITY = ["SUMMARY_LVL", "COMM_LVL", "SUMMARY_LVL2", "DISTRICT"]
 TABLES = {
-    # table: (commodity column, the columns R1760 measured as copied)
-    "enduse": ("I_ENDUSE", ["CON_CHA_YR", "DUT_VAL_YR", "DUT_VAL_MO", "AIR_VAL_YR"]),
-    "naics": ("NAICS", ["CON_CHA_YR", "DUT_VAL_YR", "DUT_VAL_MO", "AIR_VAL_YR"]),
-    "sitc": ("SITC", ["CON_CHA_YR", "DUT_VAL_YR", "DUT_VAL_MO", "AIR_VAL_YR"]),
-    "hitech": ("HITECH", ["DUT_VAL_YR", "DUT_VAL_MO", "AIR_VAL_YR"]),   # its CON_CHA_YR sat in chunk 0
+    # table: (commodity column, the columns R1760 measured as copied, first affected month in the store)
+    "enduse": ("I_ENDUSE", ["CON_CHA_YR", "DUT_VAL_YR", "DUT_VAL_MO", "AIR_VAL_YR"], "2010-01"),
+    "naics": ("NAICS", ["CON_CHA_YR", "DUT_VAL_YR", "DUT_VAL_MO", "AIR_VAL_YR"], "2019-01"),
+    "sitc": ("SITC", ["CON_CHA_YR", "DUT_VAL_YR", "DUT_VAL_MO", "AIR_VAL_YR"], "2024-01"),
+    "hitech": ("HITECH", ["DUT_VAL_YR", "DUT_VAL_MO", "AIR_VAL_YR"], "2010-01"),   # its CON_CHA_YR sat in chunk 0
 }
 LAST_BAD = "2026-02"                       # R1760: copied on every date up to here, on none from 2026-03
-CALIBRATE = [("enduse", "2015-06"), ("enduse", "2026-03")]   # an old month, and a clean one as the control
+# an old month and a clean one as the control, for the widest table too
+CALIBRATE = [("enduse", "2015-06"), ("enduse", "2026-03"), ("naics", "2019-06"), ("naics", "2026-03")]
+# NOT covered here (separate steps): asm/area2012 and asm/area2017 (findings section 7), imports/usda (needs a
+# full re-pull: its chunk 1 carried the commodity code itself).
 
 
 def _key() -> str:
@@ -55,7 +60,7 @@ def _key() -> str:
 
 def request(table: str, time_clause: str) -> "tuple[str, dict]":
     """(url without key, params without key) for one table and a time= clause (YYYY-MM or 'from+..+to+..')."""
-    comm, cols = TABLES[table]
+    comm, cols, _first = TABLES[table]
     params = {"get": ",".join([comm] + IDENTITY + cols), "CTY_CODE": "-", "time": time_clause}
     return BASE + table, params
 
@@ -64,8 +69,14 @@ def fetch(table: str, time_clause: str, out_dir: str, key: str, sess=None) -> di
     """One request; the raw body and a manifest line go to out_dir. Returns the manifest record."""
     sess = sess or requests.Session()
     url, params = request(table, time_clause)
+    stem = f"{table}_{time_clause.replace('+', '_')}"
     t0 = time.monotonic()
-    r = sess.get(url, params={**params, "key": key}, headers=UA, timeout=TIMEOUT_S)
+    try:
+        r = sess.get(url, params={**params, "key": key}, headers=UA, timeout=TIMEOUT_S)
+    except requests.RequestException as e:
+        # requests' ConnectionError/SSLError carry urllib3's message WITH the full query string, key included
+        # (review AR-440, demonstrated): the message is scrubbed and the traceback suppressed (`from None`).
+        raise SystemExit(f"{stem}: {type(e).__name__}: " + str(e).replace(key, "<key>")[:300]) from None
     body = r.content
     secs = round(time.monotonic() - t0, 2)
     ctype = (r.headers.get("Content-Type") or "").lower()
@@ -82,7 +93,6 @@ def fetch(table: str, time_clause: str, out_dir: str, key: str, sess=None) -> di
             rec["header"] = js[0] if js else []
         except ValueError as e:
             rec["kind"], rec["error"] = "unparseable", str(e)[:120]
-    stem = f"{table}_{time_clause.replace('+', '_')}"
     if key.encode() in body:                                 # checked BEFORE anything is written
         raise SystemExit(f"{stem}: the response echoes the key; nothing written")
     os.makedirs(out_dir, exist_ok=True)
@@ -94,13 +104,16 @@ def fetch(table: str, time_clause: str, out_dir: str, key: str, sess=None) -> di
 
 
 def plan(table: str, year: int) -> list:
-    """Per-month time= clauses for one year, never past LAST_BAD."""
-    out = []
-    for m in range(1, 13):
-        ym = f"{year}-{m:02d}"
-        if ym <= LAST_BAD:
-            out.append(ym)
-    return out
+    """Per-month time= clauses for one year, inside the table's affected range (first stored month..LAST_BAD).
+    Per month, as census.py splits intltrade, because a whole year of naics timed out."""
+    first = TABLES[table][2]
+    return [ym for ym in (f"{year}-{m:02d}" for m in range(1, 13)) if first <= ym <= LAST_BAD]
+
+
+def _inside(path: str, root: str) -> bool:
+    p = os.path.normcase(os.path.realpath(path))
+    r = os.path.normcase(os.path.realpath(root))
+    return p == r or p.startswith(r.rstrip("\\/") + os.sep)
 
 
 def main(argv=None) -> int:
@@ -110,7 +123,7 @@ def main(argv=None) -> int:
     ap.add_argument("--table", choices=sorted(TABLES))
     ap.add_argument("--year", type=int)
     a = ap.parse_args(argv)
-    if os.path.abspath(a.out).startswith(os.path.abspath(ROOT)):
+    if _inside(a.out, ROOT):
         raise SystemExit("--out must be outside the checkout (a scratch folder)")
     if a.calibrate:
         work = CALIBRATE
@@ -126,6 +139,11 @@ def main(argv=None) -> int:
         rec = fetch(t, ym, a.out, key, sess)
         print(f"{t:7} {ym}  {rec['status']} {rec['kind']:5} rows={rec.get('rows', '-')} "
               f"bytes={rec['bytes']:,} {rec['seconds']}s", flush=True)
+        if rec["kind"] not in ("json", "empty"):
+            # An HTML page (a missing or bad key) or an error answers every later request the same way: stop.
+            print(f"stopping: {t} {ym} answered {rec['kind']} (HTTP {rec['status']})", flush=True)
+            return 2
+    # Re-runs append manifest lines while each .raw is overwritten: readers take the LAST line per stem.
     return 0
 
 

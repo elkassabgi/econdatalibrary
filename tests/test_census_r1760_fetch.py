@@ -29,7 +29,7 @@ class Sess:
 def test_the_request_carries_identity_and_only_the_bad_columns():
     url, p = F.request("enduse", "2015-06")
     assert url.endswith("/imports/enduse") and p["CTY_CODE"] == "-" and p["time"] == "2015-06"
-    assert p["get"].split(",") == ["I_ENDUSE", "COMM_LVL", "SUMMARY_LVL2", "DISTRICT",
+    assert p["get"].split(",") == ["I_ENDUSE", "SUMMARY_LVL", "COMM_LVL", "SUMMARY_LVL2", "DISTRICT",
                                    "CON_CHA_YR", "DUT_VAL_YR", "DUT_VAL_MO", "AIR_VAL_YR"]
     assert "CON_CHA_YR" not in F.request("hitech", "2015-06")[1]["get"], "hitech's CON_CHA_YR was clean"
 
@@ -57,11 +57,37 @@ def test_a_body_echoing_the_key_stops_before_anything_is_written(tmp_path):
     assert not out.exists()
 
 
-def test_the_plan_never_reaches_clean_months():
+def test_the_plan_stays_inside_each_affected_range():
     assert F.plan("enduse", 2026) == ["2026-01", "2026-02"]
     assert len(F.plan("enduse", 2015)) == 12
+    assert F.plan("naics", 2018) == [] and F.plan("sitc", 2023) == []
 
 
-def test_out_must_be_outside_the_checkout():
-    with pytest.raises(SystemExit, match="outside the checkout"):
-        F.main(["--calibrate", "--out", os.path.join(ROOT, "data", "x")])
+def test_out_must_be_outside_the_checkout_whatever_the_case():
+    for p in (os.path.join(ROOT, "data", "x"), os.path.join(ROOT, "data", "x").upper()):
+        with pytest.raises(SystemExit, match="outside the checkout"):
+            F.main(["--calibrate", "--out", p])
+
+
+class Raising:
+    def get(self, url, params=None, headers=None, timeout=None):
+        raise F.requests.ConnectionError(f"Max retries exceeded with url: /x?get=a&time=2015-06&key={params['key']}")
+
+
+def test_a_connection_error_never_shows_the_key(tmp_path, capsys):
+    """AR-440: requests' ConnectionError carries the full query string, key included."""
+    with pytest.raises(SystemExit) as e:
+        F.fetch("enduse", "2015-06", str(tmp_path), KEY, Raising())
+    assert KEY not in str(e.value) and "<key>" in str(e.value)
+    assert e.value.__cause__ is None and e.value.__suppress_context__, "no chained traceback carries it"
+    out = capsys.readouterr()
+    assert KEY not in out.out + out.err
+
+
+def test_main_stops_at_the_first_html_answer(tmp_path, monkeypatch):
+    monkeypatch.setattr(F, "_key", lambda: KEY)
+    monkeypatch.setattr(F.requests, "Session", lambda: Sess(Resp(b"<html>Missing Key</html>", ctype="text/html")))
+    monkeypatch.setattr(F.time, "sleep", lambda s: None)
+    assert F.main(["--calibrate", "--out", str(tmp_path / "o")]) == 2
+    lines = (tmp_path / "o" / "manifest.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1, "one html answer, then nothing more is asked"
