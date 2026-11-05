@@ -1000,7 +1000,15 @@ def ingest_dataset(m, max_child_states=None, budget_s=None):
 
     if writer is not None:
         writer.close()
-        os.replace(partpath, outpath)
+        # core.atomic.atomic_replace, not os.replace: on Windows a reader holding outpath open (a footer read)
+        # makes a bare replace raise WinError 5 (measured, review AR-439 r2). If even the bounded retries fail,
+        # the COMPLETE run stays in the .partial and the message says how to finish it - the work is not lost.
+        from core.atomic import atomic_replace                    # noqa: PLC0415
+        try:
+            atomic_replace(partpath, outpath)
+        except PermissionError as e:
+            raise RuntimeError(f"{path}: the complete run is in {partpath} but {outpath} is held open ({e}); "
+                               f"close the reader and move it over by hand - nothing was lost") from e
     return n, len(series), n_calls, truncated
 
 

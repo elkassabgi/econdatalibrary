@@ -115,6 +115,27 @@ def test_a_refusal_part_way_leaves_the_previous_file_whole(ic, monkeypatch, tmp_
     assert not (tmp_path / (out.name + ".partial")).exists(), "and no partial is left behind"
 
 
+def test_a_held_target_keeps_the_complete_partial_and_says_so(ic, monkeypatch, tmp_path):
+    """AR-439 r2: a bare os.replace raised WinError 5 under a reader; the retrying helper is used, and when even
+    it fails the complete run stays in the .partial with a message naming both paths."""
+    monkeypatch.setattr(ic, "OUT", str(tmp_path))
+    monkeypatch.setattr(ic, "var_classes", lambda path: (set(), set()))
+    monkeypatch.setattr(ic, "_slice_plan", lambda m, mx: iter([(None, None, "a", "time=2015-06", {})]))
+    monkeypatch.setattr(ic, "pull_slice", lambda *a: (HEAD, [list(r) for r in DETAIL], "ok"))
+    import core.atomic as atomic
+    seen = []
+
+    def held(tmp, dest, *a, **k):
+        seen.append((tmp, dest))
+        raise PermissionError(5, "held open")
+    monkeypatch.setattr(atomic, "atomic_replace", held)
+    with pytest.raises(RuntimeError, match="nothing was lost"):
+        ic.ingest_dataset(_m())
+    out = tmp_path / (ic.safe_name(PATH) + ".parquet")
+    assert seen and seen[0][1] == str(out), "the retrying helper was called for the final path"
+    assert pq.read_metadata(str(out) + ".partial").num_rows == 3, "the complete run is kept"
+
+
 def test_a_complete_run_replaces_the_file(ic, monkeypatch, tmp_path):
     monkeypatch.setattr(ic, "OUT", str(tmp_path))
     monkeypatch.setattr(ic, "var_classes", lambda path: (set(), set()))
