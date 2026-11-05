@@ -317,3 +317,16 @@ if ((Test-Path 'C:\ProgramData\econ\CUTOVER') -and (Test-Path $secEdgar)) {
     -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$secEdgar,'-IfDue') `
     -WorkingDirectory $root -WindowStyle Hidden
 }
+
+# --- PUBLISHER NOTICES, DAILY (added 2026-11-05) ----------------------------------------------------------
+# jobs/watch_notices.py reads the publishers' announcement feeds (updater/notices.yaml) and queues what is
+# ending or changing (data\_maintenance\queue.jsonl, private). It never opens the updater's state or the
+# catalogue, so it has no T0 gate. -IfDue exits at once unless a run is due (09:00 UTC or later, no ok run
+# started today, no attempt in the last 2 h, no other run holding logs\notices.lock); the script writes its
+# own log and status file (logs\notices_*.log, logs\notices.last.json), so nothing is redirected here.
+$notices = Join-Path (Join-Path (Join-Path $root 'tools') 'selfhost') 'run_notices.ps1'
+if (Test-Path $notices) {
+  Start-Process 'powershell.exe' `
+    -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$notices,'-IfDue') `
+    -WorkingDirectory $root -WindowStyle Hidden
+}
