@@ -32,7 +32,8 @@ from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan s
 # Hand-maintained pages that are deliberately not dataset pages (gen_site.py:52).
 HUB = {"_redirects", "download", "status", "mcp", "account", "404", "index", "catalog",
        "docs", "about", "terms", "privacy", "api", "sources", "changelog", "citation",
-       "coverage", "licenses", "faq", "contact", "methodology"}
+       "coverage", "licenses", "faq", "contact", "methodology",
+       "source_changes"}   # noindex (so out of the sitemap) while it has no entries - AR-437
 
 ok = True
 

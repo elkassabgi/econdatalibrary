@@ -3821,7 +3821,13 @@ def render_contact():
 
 SOURCE_CHANGES = os.path.join(HERE, "source_changes.yaml")
 _CHANGE_STATUS = {"announced": "Announced", "in_effect": "In effect", "handled": "Handled"}
-_QUOTE_RE = re.compile(r"[\"“]([^\"”]+)[\"”]")
+# Quotations in every common style (AR-437 A2): straight and curly double, curly single, guillemets, low-9
+# quotes, and straight single quotes only at word edges - so "publisher's" is an apostrophe, not a quote.
+_QUOTE_RE = re.compile(r"[\"“„]([^\"“”„]+)[\"”“]"
+                       r"|[‘‚]([^‘’‚]+)’"
+                       r"|[«‹]([^«»‹›]+)[»›]"
+                       r"|(?<!\w)'([^']+?)'(?!\w)")
+QUOTE_MAX_WORDS = 15
 
 
 def load_source_changes(path=None, source_ids=None, denylisted=None):
@@ -3859,9 +3865,10 @@ def load_source_changes(path=None, source_ids=None, denylisted=None):
         for k in ("change", "effect"):
             if len(str(e[k])) > 400:
                 raise SystemExit(f"{where}: `{k}` is over 400 characters - say it shorter, in our own words")
-            for q in _QUOTE_RE.findall(str(e[k])):
-                if len(q.split()) > 15:
-                    raise SystemExit(f"{where}: `{k}` quotes more than 15 words of the publisher")
+            quoted = sum(len("".join(g).split()) for g in _QUOTE_RE.findall(str(e[k])))
+            if quoted > QUOTE_MAX_WORDS:
+                raise SystemExit(f"{where}: `{k}` quotes {quoted} words of the publisher (at most "
+                                 f"{QUOTE_MAX_WORDS} in all) - say it in our own words")
         out.append(e)
     return sorted(out, key=lambda e: str(e["date"]), reverse=True)
 
@@ -3884,10 +3891,15 @@ def render_source_changes(entries=None):
                  f'<p style="margin:0 0 .35rem"><strong>For this library:</strong> {esc(e["effect"])}</p>'
                  f'<p style="margin:0"><a href="{esc(e["link"])}" rel="noopener">Publisher&rsquo;s notice</a></p>'
                  f'</div>\n')
-    return _info_page("Source Changes",
+    html = _info_page("Source Changes",
                       "Changes publishers have made or announced to the datasets in the Econ Data Library, "
                       "with what each one means for the data.",
                       "source_changes.html", body)
+    if not entries:
+        # NOINDEX WHILE EMPTY (review AR-437 A1): a page shell with one "nothing yet" line is a thin page. The
+        # tag also takes it out of sitemap.xml (main() drops noindex pages); the first entry brings both back.
+        html = html.replace("</head>", '<meta name="robots" content="noindex">\n</head>', 1)
+    return html
 
 
 def _institutions_block():

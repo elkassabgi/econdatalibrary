@@ -36,9 +36,29 @@ def test_a_good_entry_renders_with_its_link_and_sources(tmp_path):
     assert GOOD["link"] in html and "Publisher&rsquo;s notice" in html
 
 
-def test_empty_says_so():
+def test_empty_says_so_and_is_noindex_until_it_has_an_entry():
     html = G.render_source_changes([])
     assert "No publisher change is listed yet" in html
+    assert G._NOINDEX_RE.search(html), "a thin page stays out of the index and the sitemap (AR-437 A1)"
+    assert not G._NOINDEX_RE.search(G.render_source_changes([GOOD]))
+
+
+@pytest.mark.parametrize("quoted", [
+    "'" + " ".join(["w"] * 16) + "'",
+    "‘" + " ".join(["w"] * 16) + "’",
+    "«" + " ".join(["w"] * 16) + "»",
+    "„" + " ".join(["w"] * 16) + "“",
+    '"' + " ".join(["a"] * 10) + '" and "' + " ".join(["b"] * 10) + '"',
+])
+def test_every_quote_style_and_the_total_count(tmp_path, quoted):
+    """AR-437 A2: each of these was accepted with more than 15 quoted words."""
+    with pytest.raises(SystemExit, match="quotes"):
+        _load(tmp_path, [dict(GOOD, change=f"The publisher wrote {quoted} today.")])
+
+
+def test_apostrophes_are_not_quotes(tmp_path):
+    text = "The publisher's API and the bank's feeds moved; users' scripts and the agency's old URL fail."
+    _load(tmp_path, [dict(GOOD, change=text)])
 
 
 @pytest.mark.parametrize("patch,why", [
@@ -50,7 +70,7 @@ def test_empty_says_so():
     ({"effect": ""}, "`effect` is required"),
     ({"change": "x" * 401}, "over 400"),
     ({"change": 'They wrote "one two three four five six seven eight nine ten eleven twelve thirteen fourteen '
-                'fifteen sixteen" today.'}, "more than 15 words"),
+                'fifteen sixteen" today.'}, "quotes 16 words"),
 ])
 def test_each_rule_stops_the_build(tmp_path, patch, why):
     with pytest.raises(SystemExit, match=why):
