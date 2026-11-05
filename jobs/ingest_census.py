@@ -348,6 +348,10 @@ def _var_limit(path, txt):
     return None
 
 
+class MergeRefused(RuntimeError):
+    """pull_slice could not merge variable chunks without copying values across rows (R1760)."""
+
+
 def pull_slice(path, m, keys, geo_for, geo_in, time_clause, extra):
     """Pull one (geo, time) slice, chunking variables; return (header, rows)
     or (None, []) on empty/204. Rows are lists aligned to a unified header.
@@ -428,6 +432,23 @@ def pull_slice(path, m, keys, geo_for, geo_in, time_clause, extra):
             idx = {}
             for r in range(nbase):
                 idx.setdefault(tuple(base_rows[r][base_h.index(k)] for k in kcommon), []).append(r)
+            # REFUSE A MERGE THAT CANNOT IDENTIFY ROWS (R1760). The keys here can be as coarse as ['time']: the
+            # intltrade imports tables merged a chunk the API answered at TOTAL grain onto every commodity row of
+            # the month, so CON_CHA_YR/DUT_VAL_*/AIR_VAL_YR held the national total in 100% of detail rows up to
+            # 2026-02. A tuple that names more than one chunk-0 row, or a chunk-N tuple that repeats, would copy
+            # one value onto many rows; stop instead, loud, with nothing returned for this slice.
+            multi = sum(1 for v in idx.values() if len(v) > 1)
+            seen2, dup2 = set(), 0
+            for row in rows2:
+                kt = tuple(row[i] for i in k2idx)
+                dup2 += kt in seen2
+                seen2.add(kt)
+            if not kcommon or multi or dup2:
+                raise MergeRefused(
+                    f"{path} {geo_for or ''} {time_clause}: chunk {getvars[len(keys):len(keys) + 3]}... does not "
+                    f"line up with chunk 0 ({len(rows2):,} vs {nbase:,} rows) and the shared keys {kcommon} do not "
+                    f"identify rows ({multi:,} key tuples name several chunk-0 rows, {dup2:,} repeat in chunk N). "
+                    f"Merging would copy values across rows (R1760): add the dimension columns to the keys.")
             for c in new_cols:
                 header.append(c)
                 cols.append([None] * nbase)
