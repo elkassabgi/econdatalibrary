@@ -189,3 +189,55 @@ def test_run_once_hands_the_latest_real_run_to_admission(tmp_path, monkeypatch):
     want = (datetime.now(timezone.utc) - datetime(2026, 10, 12, 2, 47, 52, tzinfo=timezone.utc)).total_seconds() / 86400
     lr, waited = seen["istat"]
     assert lr == 8870.0 and waited is not None and abs(waited - want) < 0.1, seen
+
+
+# ---- the wait RESETS on a recent kill or attempt (review AR-450 round 4) ----------------------------------------
+# The mutant "wait counted from last_success only" survived: a unit with an old success and recent kills (istat's
+# shape) would take the decayed (normal) reserve on every pass and be admitted and killed every pass.
+
+def _reserve_after(tmp_path, monkeypatch, *, kill_days=None, attempt_days=None):
+    from datetime import datetime, timedelta, timezone
+    from updater.state import StateStore
+    monkeypatch.setattr(orchestrate, "hard_timeout_available", lambda: False)
+    store = StateStore(str(tmp_path / "state.db"))
+    now = datetime.now(timezone.utc)
+    iso = lambda d: (now - timedelta(days=d)).isoformat(timespec="seconds")   # noqa: E731
+    store.upsert_unit("istat", "_all", strategy="sdmx_delta", status="partial",
+                      last_success_utc=iso(100), last_attempt_utc=iso(attempt_days if attempt_days else 100))
+    turn = kill_days if kill_days is not None else attempt_days
+    status = "killed_external" if kill_days is not None else "partial"
+    store.db.execute("INSERT INTO runs(ts_utc,source_id,unit_id,status,obs,dur_s,note) VALUES (?,?,?,?,?,?,?)",
+                     (iso(turn), "istat", "_all", status, 0, TFP, "planted"))
+    store.db.commit()
+    real = orchestrate.admission_reserve
+    seen = {}
+
+    def wrap(unit, est_s, *a, **k):
+        r = real(unit, est_s, *a, **k)
+        seen[unit.source_id] = (k.get("waited_days"), r[0])
+        raise SystemExit(0)
+    monkeypatch.setattr(orchestrate, "admission_reserve", wrap)
+    try:
+        orchestrate.run_once(sources=["istat"], dry=True, store=store)
+    except SystemExit:
+        pass
+    return seen["istat"]
+
+
+def test_a_recent_kill_resets_the_wait_despite_an_old_success(tmp_path, monkeypatch):
+    waited, need = _reserve_after(tmp_path, monkeypatch, kill_days=1)
+    assert waited is not None and abs(waited - 1.0) < 0.05, waited          # measured from the kill, not day -100
+    full = TFP / 60.0
+    assert abs(need - (90.0 + (full - 90.0) * (1 - 1.0 / orchestrate.RESERVE_DECAY_DAYS))) < 0.2, need
+    assert need > 200.0                                                     # NOT the decayed 90
+
+
+def test_a_recent_attempt_resets_the_wait_despite_an_old_success(tmp_path, monkeypatch):
+    waited, need = _reserve_after(tmp_path, monkeypatch, attempt_days=2)
+    assert waited is not None and abs(waited - 2.0) < 0.05, waited
+    assert need > 200.0, need
+
+
+def test_negative_control_an_old_turn_does_decay(tmp_path, monkeypatch):
+    waited, need = _reserve_after(tmp_path, monkeypatch, kill_days=90)
+    assert waited > 60 and need == 90.0, (waited, need)
