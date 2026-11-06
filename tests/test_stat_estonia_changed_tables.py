@@ -51,7 +51,10 @@ def _run(tmp_path, monkeypatch, new_for):
     monkeypatch.setattr(S, "_ingester", lambda: types.SimpleNamespace(
         BASE="https://x", parse_jsonstat2=lambda resp, prefix, tcode: resp["rows"]))
     monkeypatch.setattr(S, "_get_meta", lambda sess, url: {"variables": [{"code": "Aasta"}]})
-    monkeypatch.setattr(S, "_build_query", lambda ing, variables, stored_max: ([{"q": 1}], "Aasta", 1))
+    # the planning seam (was _build_query): one POST, no date filter (every fetched row is compared)
+    monkeypatch.setattr(S, "_plan_table", lambda ing, variables, stored_max, **kw: {
+        "tcode": "Aasta", "queries": [[{"q": 1}]], "dates": None, "n_new": 1, "n_boundary": 0,
+        "n_rev": 0, "grain": "full", "per_period": 1})
 
     def _post(sess, url, body):
         path = url.split("https://x/", 1)[1]
