@@ -1209,6 +1209,7 @@ class UnitBook:
         orch, store = self._orch, self._store
         shim = _StoreShim(self.db)
         costs = store.run_cost_estimate(shim)
+        last_real = store.last_real_duration(shim)
         kills = store.last_kill_utc(shim)
         wstops = store.last_window_stop_utc(shim)
         now_iso = _iso(start)
@@ -1232,7 +1233,10 @@ class UnitBook:
         for u in order:
             sid = u.source_id
             # production's reserve, through the same function (a declared unit: its fetcher's figure)
-            need = orch.admission_reserve(u, costs.get(sid), UNIT_TIMEOUT_MIN)[0]
+            # the workstation has no per-unit hard timeout (Windows, no setitimer): hard_timeout=False, and the
+            # newest real run per source through production StateStore.last_real_duration (2026-11-06)
+            need = orch.admission_reserve(u, costs.get(sid), UNIT_TIMEOUT_MIN, last_real_s=last_real.get(sid),
+                                          hard_timeout=False)[0]
             t_unit = start + dt.timedelta(minutes=e)
             # production's gate: the clock now, plus the reserve, against the run deadline (same function)
             if orch.start_gate_refuses(t_unit.timestamp(), need, deadline_ts):

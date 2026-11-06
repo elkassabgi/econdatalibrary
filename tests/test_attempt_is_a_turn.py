@@ -90,7 +90,8 @@ def test_an_offset_less_attempt_does_not_raise():
 
 
 def test_the_new_stamp_is_never_earlier_than_the_old_one():
-    """Every input only makes the key LATER: a unit can move back in its band, never ahead of where it sorted."""
+    """Every input only makes a unit's OWN key later. (Relative order can still change either way: a unit whose
+    key did not move sorts ahead of one whose key moved back.)"""
     from datetime import datetime, timezone
 
     def p(s):

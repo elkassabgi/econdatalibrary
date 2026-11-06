@@ -31,8 +31,19 @@ from updater import orchestrate, registry
 from updater.state import StateStore
 
 DECLARED = {"census": 17.0, "wid": 20.0, "imf_imts_direct": 55.0,
-            "unctad_nonplasticsubststradebypartner": 75.0}
+            "unctad_nonplasticsubststradebypartner": 75.0,
+            # 2026-11-06 (review AR-450): on _unctad's windowed update, the same 75-min reserve
+            "unctad_creativegoodsvalue": 75.0, "unctad_criticalmineralstradebypart": 75.0,
+            "unctad_gstptradematrix": 75.0, "unctad_tradeservcatbypartner": 75.0}
 UNDECLARED_GIANT = "oecd"                      # resumable, but does not stop at the window end
+
+
+@pytest.fixture(autouse=True)
+def _posix_platform(monkeypatch):
+    """These tests pin the gate WITH a per-unit hard timeout (the reserves of #215: 90 for an undeclared giant).
+    The no-hard-timeout rule (2026-11-06) is pinned in tests/test_no_timeout_reserve.py; without this the result
+    depended on the machine (Windows has no setitimer)."""
+    monkeypatch.setattr(orchestrate, "hard_timeout_available", lambda: True)
 FETCHER_DIR = os.path.join(os.path.dirname(orchestrate.__file__), "strategies", "fetchers")
 ENV = ("AQUEDUCT_CENSUS_MARGIN_MIN", "AQUEDUCT_WID_MARGIN_MIN", "AQUEDUCT_IMTS_MARGIN_MIN",
        "AQUEDUCT_IMTS_MERGE_RESERVE_MIN", "AQUEDUCT_UNCTAD_MARGIN_MIN", "AQUEDUCT_UNCTAD_ASSEMBLY_RESERVE_MIN",

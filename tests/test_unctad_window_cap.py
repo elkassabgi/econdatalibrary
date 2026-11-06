@@ -67,14 +67,19 @@ def _seed(env):
 
 # ---------------------------------------------------------------- the other 95 modules keep main's update
 
-def test_only_nonplastics_opts_in():
+def test_only_the_measured_size_range_opts_in():
+    # 2026-11-06 (review AR-450): the three siblings the 60-min assembly reserve was measured on (gstptradematrix,
+    # creativegoodsvalue, criticalmineralstradebypart) and tradeservcatbypartner (14M rows) joined nonplastics. The
+    # food pair (337M / 394M rows) and biotrademerch (1.06B) stay on main's update: the windowed parse holds every
+    # measure's rows in Python lists, which _unctad.py's residuals say cannot assemble them unchanged.
     opted = []
     for p in sorted(glob.glob(os.path.join(FETCHERS, "unctad_*.py"))):
         src = open(p, encoding="utf-8").read()
         assert "from ._unctad import make" in src, p
         if "window=True" in src:
             opted.append(os.path.basename(p)[:-3])
-    assert opted == ["unctad_nonplasticsubststradebypartner"]
+    assert opted == ["unctad_creativegoodsvalue", "unctad_criticalmineralstradebypart", "unctad_gstptradematrix",
+                     "unctad_nonplasticsubststradebypartner", "unctad_tradeservcatbypartner"]
     from updater.strategies.fetchers import unctad_tradefoodcatbyproc as T
     assert T.update.__qualname__ == "make.<locals>.update"
     assert _np().update.__qualname__ == "_windowed.<locals>.update"

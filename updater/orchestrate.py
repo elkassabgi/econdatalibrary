@@ -148,9 +148,10 @@ def last_turn_utc(state_row, last_kill_utc):
     after it. Review AR-421's 60-day replay of main's real order (2026-08-29..10-28) measured the
     trade: istat held the first long turn in 32 of 45 passes under the old stamp and 3 of 46 under
     this one; 6 local units never finished under the old stamp, 2 under this one. The kill still
-    takes over only while it is the latest of the stamps, and every input can only make the key
-    LATER, so the change moves a unit back in its band, never ahead of where it sorted before. An
-    attempt dated in the FUTURE is ignored here, exactly as a future kill is below.
+    takes over only while it is the latest of the stamps. Every input can only make a unit's OWN key
+    later; that is all "never earlier" means. Relative to other units the order can move either way:
+    a unit whose key did not move sorts AHEAD of units whose keys moved back (census ahead of istat).
+    An attempt dated in the FUTURE is ignored here, exactly as a future kill is below.
 
     Unparseable values are ignored in favour of the other, so a malformed kill row can never make a
     unit look MORE overdue than its state says; if neither parses, the state value is returned
@@ -463,14 +464,47 @@ def order_last_turn(unit, state_row, last_kill_utc, last_window_stop_utc):
     return last_turn_utc(state_row, last_kill_utc)
 
 
-def admission_reserve(unit, est_s, unit_timeout_min=None):
+def hard_timeout_available() -> bool:
+    """Can the per-unit SIGALRM cut a unit on this platform? False on Windows (no signal.setitimer): the
+    workstation pass. One function, so a test pins the platform it models instead of inheriting the machine's."""
+    import signal as _sig
+    return hasattr(_sig, "setitimer")
+
+
+def admission_reserve(unit, est_s, unit_timeout_min=None, last_real_s=None, hard_timeout=None):
     """The start gate's reserve for `unit`: (need_min, basis, declared_min, why_not_declared).
 
     est_s is the unit's run_cost_estimate (None = never run). unit_timeout_min defaults to _unit_timeout_min();
     tools/measure_ci_lag.py's replay passes its own (the 45-min default). declared_min / why_not_declared are
     _window_stop_reserve's answer, returned so run_once can print what it printed before. Moved out of
     run_once's unit loop unchanged, so the replay reserves exactly what production reserves (review of PR #215:
-    the replay kept the old 90-min rule for the declared units)."""
+    the replay kept the old 90-min rule for the declared units).
+
+    NO HARD TIMEOUT, NO STOP (2026-11-06). The 2 x timeout cap assumes the per-unit SIGALRM can cut a unit at
+    unit_timeout_min. Where it cannot (hard_timeout False: Windows has no setitimer, so the workstation pass), a
+    unit that does NOT declare window_stop runs until it ends or the ps1 hard stop kills it, and a kill loses the
+    rest of the pass. So such a unit also reserves its LATEST REAL RUN (last_real_s: StateStore.last_real_duration,
+    the newest ok/no_change/partial/killed_external duration - not the MAX of five, which kept eia's one 70,234 s
+    outlier and locked it out, R1709). A kill row is censored, so for a killed unit this is a LOWER bound and it
+    rises with each kill. Measured with review AR-450's replay (tools/measure_ci_lag.py replay61, schedule
+    until-2026-11-04, 60 d, 'today' MinH 20 D3 8 W off x1), together with the last_turn_utc rotation and four more
+    unctad window_stop declarations: hard stops 8 -> 3 and owed minutes at the end 1,650.8 -> 1,144.9 against main.
+    AR-450's simpler pass simulation still shows more hard stops than main (PR #241 body); hard_timeout None reads
+    the platform (signal.setitimer); True (POSIX, the cloud) leaves every reserve exactly as before. A declared
+    unit keeps its declared figure. last_real_s None (never run) keeps the never-run worst case."""
+    if hard_timeout is None:
+        hard_timeout = hard_timeout_available()
+    need, basis, ws_min, ws_bad = _admission_reserve_base(unit, est_s, unit_timeout_min)
+    if (not hard_timeout and ws_min is None and last_real_s is not None and need > 0
+            and last_real_s / 60.0 > need):
+        return (last_real_s / 60.0,
+                "its latest real run: no hard timeout on this platform and no window_stop, so it cannot be cut",
+                ws_min, ws_bad)
+    return need, basis, ws_min, ws_bad
+
+
+def _admission_reserve_base(unit, est_s, unit_timeout_min=None):
+    """admission_reserve's rule before 2026-11-06, unchanged (see admission_reserve)."""
     _worst_min = 2 * (_unit_timeout_min() if unit_timeout_min is None else unit_timeout_min)
     # WINDOW-STOPPABLE units (registry window_stop: true) reserve what THEY need to stop cleanly and hand
     # over, declared by their fetcher (_window_stop_reserve). Every other unit takes the branches below,
@@ -3079,6 +3113,12 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
         return (overdue_key(last, order_cadence(unit), _now), unit.key)
 
     _costs = store.run_cost_estimate()
+    # the newest real run per source, for admission_reserve's no-hard-timeout rule (one read of `runs` per pass);
+    # unreadable -> {} keeps every reserve as before rather than failing the pass
+    try:
+        _last_real = store.last_real_duration()
+    except Exception:                                              # noqa: BLE001 - admission input, never fatal
+        _last_real = {}
     units = order_units(units, _costs, _staleness)
 
     results = []
@@ -3176,7 +3216,8 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
         _est_s = _costs.get(unit.source_id)
         # The reserve: a declared unit's own figure, else min(2 x timeout, 3 x est floored at 10), else the worst
         # case for a never-run unit (admission_reserve, shared with tools/measure_ci_lag.py's replay).
-        _need_min, _basis, _ws_min, _ws_bad = admission_reserve(unit, _est_s)
+        _need_min, _basis, _ws_min, _ws_bad = admission_reserve(unit, _est_s,
+                                                                last_real_s=_last_real.get(unit.source_id))
         if _ws_bad:
             print(f"[orchestrator] WINDOW STOP {unit.key}: {_ws_bad} - keeping the standard reserve",
                   flush=True)
