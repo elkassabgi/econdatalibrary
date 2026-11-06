@@ -500,12 +500,14 @@ def _grid(b):
 
 
 def test_b2_order_attempt_changes_only_the_order():
+    # SINCE 2026-11-06 PRODUCTION IS B2 (orchestrate.last_turn_utc takes the later of success and attempt), so the
+    # two orders now AGREE: p by its 09-29 attempt (-2/30), q 09-02 (-29/30), r 09-03. Before, production sorted p by
+    # its 07-14 success and ran it first. The old clock's negative control lives in tests/test_attempt_is_a_turn.py.
     t0 = T("2026-10-01T00:00")
     prod, att = b2_book("production"), b2_book("attempt")
     assert _grid(prod) == _grid(att)                       # due-ness is the same before the pass ...
     rp, ra = prod.run_pass(t0, 1000.0), att.run_pass(t0, 1000.0)
-    # production: p by its 07-14 success (-79/30), q 09-02 (-29/30), r 09-03; B2: p by its 09-29 attempt (-2/30)
-    assert [x[0] for x in rp["ran"]] == ["p", "q", "r"]
+    assert [x[0] for x in rp["ran"]] == ["q", "r", "p"]
     assert [x[0] for x in ra["ran"]] == ["q", "r", "p"]
     # ... and everything except the order is identical: what ran, for how long, with which status, the minutes,
     # the counters, every unit's status, and due-ness on a 60-day grid after the pass
@@ -529,20 +531,20 @@ def test_b2_negative_control_no_newer_attempt_means_the_production_order():
 
 def test_b2_keeps_the_production_kill_rule():
     # r was killed on 09-30, after its 09-03 success: both orders sort r by the kill (production last_turn_utc), so
-    # r goes LAST in production too; B2 must not drop the kill
+    # r goes LAST; B2 must not drop the kill. Production is B2 since 2026-11-06, so both read q, p (09-29), r (09-30).
     prod = b2_book("production", kill_r="2026-09-30T00:00:00+00:00")
     att = b2_book("attempt", kill_r="2026-09-30T00:00:00+00:00")
-    assert [x[0] for x in prod.run_pass(T("2026-10-01T00:00"), 1000.0)["ran"]] == ["p", "q", "r"]
+    assert [x[0] for x in prod.run_pass(T("2026-10-01T00:00"), 1000.0)["ran"]] == ["q", "p", "r"]
     assert [x[0] for x in att.run_pass(T("2026-10-01T00:00"), 1000.0)["ran"]] == ["q", "p", "r"]   # kill 09-30 > p 09-29
     with pytest.raises(ValueError):
         b2_book("newest")
 
 
 def test_b2_changes_admission_only_through_the_order():
-    # 200 min, a 90-min reserve each: production runs p (0 -> 100), q (100 + 90 <= 200 -> 150) and refuses r
-    # (150 + 90 > 200); B2 runs q (-> 50), r (50 + 90 <= 200 -> 70), p (70 + 90 <= 200 -> 170). Same units, same
-    # rule; the order decides who is refused.
-    assert [x[0] for x in b2_book("production").run_pass(T("2026-10-01T00:00"), 200.0)["ran"]] == ["p", "q"]
+    # 200 min, a 90-min reserve each: the OLD production order ran p (0 -> 100), q (100 + 90 <= 200 -> 150) and
+    # refused r (150 + 90 > 200); B2 runs q (-> 50), r (50 + 90 <= 200 -> 70), p (70 + 90 <= 200 -> 170). Same units,
+    # same rule; the order decides who is refused. Production is B2 since 2026-11-06, so both arms run all three.
+    assert [x[0] for x in b2_book("production").run_pass(T("2026-10-01T00:00"), 200.0)["ran"]] == ["q", "r", "p"]
     assert [x[0] for x in b2_book("attempt").run_pass(T("2026-10-01T00:00"), 200.0)["ran"]] == ["q", "r", "p"]
 
 
@@ -975,7 +977,7 @@ def test_cmd_replay61_runs_each_extension_end_to_end(tmp_path, monkeypatch, caps
     assert js0[0]["owed_start"] - js[0]["owed_start"] == pytest.approx(50.0)     # istat's 3,000-s turn
 
 
-def test_cli_inputs_carry_the_cut_and_simulate_carries_the_order(tmp_path):
+def test_cli_inputs_carry_the_cut_and_simulate_carries_the_order(tmp_path, monkeypatch):
     import argparse
     base = _cli_inputs(tmp_path)
     kw = dict(zip(base[0:6:2], base[1:6:2]))
@@ -997,6 +999,19 @@ def test_cli_inputs_carry_the_cut_and_simulate_carries_the_order(tmp_path):
         rp, _o, _d = m.simulate(cfg, inp)
         ran = [x[0] for x in rp.passes[0]["ran"]]
         return ran.index("istat") < ran.index("bea")
+    # Since 2026-11-06 production IS B2, so both orders put bea first ...
+    assert not first_pass("production") and not first_pass("attempt")
+    # ... and to show simulate() still carries `order`, the production arm runs the PRE-B2 clock (success first),
+    # while the attempt arm hands that same clock a row whose success is the later stamp - so the arms must differ.
+    import updater.orchestrate as _o
+    _new = _o.last_turn_utc
+
+    def _old_clock(row, kill):
+        row = dict(row or {})
+        if row.get("last_success_utc"):
+            row["last_attempt_utc"] = None
+        return _new(row, kill)
+    monkeypatch.setattr(_o, "last_turn_utc", _old_clock)
     assert first_pass("production") and not first_pass("attempt")
 
 

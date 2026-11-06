@@ -137,12 +137,20 @@ def last_turn_utc(state_row, last_kill_utc):
     ORDERING ONLY. Nothing here stamps unit_state, admits or refuses a unit, or reads a duration:
     is_due's partial-retry clock and health.py still read last_attempt_utc exactly as before, so
     this cannot re-open R639 (a kill rule that stamps and runs away) or R684 (an admission change)
-    and does not trust a censored kill duration (R625). The state stamp it compares against is the
-    SAME one the old clock read - `last_success_utc`, falling back to `last_attempt_utc` - so a unit
-    with a success on record is judged by that success, exactly as before; the kill takes over only
-    while it is the later of the two, and a later success replaces it. (A unit whose newer PARTIAL
-    attempts are hidden behind an older success is an older property of this clock, left unchanged
-    here: changing it reorders every partial source and needs its own replay.)
+    and does not trust a censored kill duration (R625).
+
+    AN ATTEMPT IS A TURN TOO (2026-11-06, plan item B2). The state stamp is the LATER of
+    `last_success_utc` and `last_attempt_utc`. It used to be `last_success_utc`, falling back to
+    `last_attempt_utc`, so a unit whose passes end `partial` (which never stamps last_success, R231)
+    kept its OLD success as its key and led its band on every pass: istat (success 2026-07-14,
+    partial ever since) and bea (success 2026-09-16) took 7,469 s + 5,496 s of the 223-min desktop
+    pass of 2026-11-05, while census (no success, attempted 2026-10-27) was BUDGET SKIP in every pass
+    after it. Review AR-421's 60-day replay of main's real order (2026-08-29..10-28) measured the
+    trade: istat held the first long turn in 32 of 45 passes under the old stamp and 3 of 46 under
+    this one; 6 local units never finished under the old stamp, 2 under this one. The kill still
+    takes over only while it is the latest of the stamps, and every input can only make the key
+    LATER, so the change moves a unit back in its band, never ahead of where it sorted before. An
+    attempt dated in the FUTURE is ignored here, exactly as a future kill is below.
 
     Unparseable values are ignored in favour of the other, so a malformed kill row can never make a
     unit look MORE overdue than its state says; if neither parses, the state value is returned
@@ -156,7 +164,21 @@ def last_turn_utc(state_row, last_kill_utc):
         d = datetime.fromisoformat(str(v))
         return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
 
-    last = (state_row or {}).get("last_success_utc") or (state_row or {}).get("last_attempt_utc")
+    def _ok(v):
+        try:
+            return _parse(v)
+        except (ValueError, TypeError):
+            return None
+
+    _succ = (state_row or {}).get("last_success_utc")
+    _att = (state_row or {}).get("last_attempt_utc")
+    last = _succ or _att
+    if _succ and _att:
+        _sd, _ad = _ok(_succ), _ok(_att)
+        # the later of the two; an unreadable one yields to a readable one; both unreadable: as before. A future
+        # attempt is not a turn that happened, and taken at face value it would bury the unit (the kill rule below).
+        if _ad is not None and (_sd is None or _ad > _sd) and _ad <= datetime.now(timezone.utc):
+            last = _att
     if not last_kill_utc:
         return last
     try:
@@ -366,9 +388,11 @@ def declared_last_turn_utc(state_row, last_kill_utc, last_window_stop_utc):
     """When a WINDOW-STOPPABLE unit (registry window_stop: true) last had a turn, for ORDERING only: the latest
     of last_turn_utc's answer, its last_attempt_utc and its newest `window_stopped` run.
 
-    last_turn_utc keys on last_success when one exists, so a unit with an old success whose passes window-stop
-    (partial, progress or not) never moves its key and leads its band for ever - review AR-415's wedge: such a
-    unit was admitted in 5 of 5 short passes while a wid-like unit and a never-success unit got none. Every
+    last_turn_utc keyed on last_success when one existed, so a unit with an old success whose passes window-stop
+    (partial, progress or not) never moved its key and led its band for ever - review AR-415's wedge: such a
+    unit was admitted in 5 of 5 short passes while a wid-like unit and a never-success unit got none. Since
+    2026-11-06 (B2) last_turn_utc already takes the later of success and attempt for EVERY unit; what this
+    function still adds is the newest `window_stopped` run, which only a declared unit writes. Every
     window stop moves this key: a progressing stop stamps last_attempt (partial), and a no-progress stop
     writes the window_stopped row. So the declared units rotate. It is never EARLIER than last_turn_utc (it
     only adds stamps to a max), so it can only move a unit BACK in the order, never ahead of an undeclared
