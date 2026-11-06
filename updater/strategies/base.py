@@ -19,7 +19,11 @@ from datetime import datetime, timezone
 NOT_HOSTED_NOTE = "not hosted note:"
 # The same kind of tail for where a rotation stands (tables owed / never fetched) - ksh_stadat, R1123.
 ROTATION_NOTE = "rotation note:"
-NON_FAILURE_NOTES = ("csv coverage note:", NOT_HOSTED_NOTE, ROTATION_NOTE)
+# The same kind of tail for what a pass's merge did, counted from a whole-row compare: changed / added /
+# held rows per table (stat_estonia, R1830's shape). A refusal or a defect is NEVER only in this note:
+# the fetcher also books it transient, which keeps the source in ATTENTION.
+MERGE_NOTE = "merge note:"
+NON_FAILURE_NOTES = ("csv coverage note:", NOT_HOSTED_NOTE, ROTATION_NOTE, MERGE_NOTE)
 
 # nominal days between upstream updates per cadence (0.9 slack applied in cadence_due)
 CADENCE_DAYS = {
