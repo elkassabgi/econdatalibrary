@@ -568,3 +568,107 @@ def test_a_merge_report_that_disagrees_with_the_compare_is_a_named_defect(env):
     pub = Pub({RAA: (RAA_VARS, lambda c: 10.0 if c["Kvartal"] in ("1", "2") or c["Aasta"] != str(Y) else None)})
     res = env.run(pub, [RAA])
     assert res.status == "partial" and "merge DEFECT" in res.error and "changed-key report" in res.error, res.error
+
+
+# ---- AR-453 R3: the standing revision hold, pinned -------------------------------------------------
+TO53 = "majandus/toostus/TO0053.PX"
+RM = "majandus/x/RM01.PX"            # revised history -> stamped "merged"
+RN = "majandus/x/RN01.PX"            # nothing to change -> stamped "no change"
+
+
+def _hold_setup(env):
+    """One subject file: TO0053 (revision rows over the bound -> withheld), RM (a D1 table whose past
+    year is revised -> merged) and RN (a D1 table, identical history -> no change)."""
+    codes = [_month(b) for b in range(14, 0, -1)]
+    tvars = [{"code": "Kuu", "time": True, "values": [c for c, _ in codes]},
+             {"code": "EMTAK", "values": [f"C{i:02d}" for i in range(60)]}]
+    p53 = S._table_prefix(TO53)
+    rows = [(f"{p53}:EMTAK=C00", d, 1.0) for _, d in codes[:-1]]
+    rows += [(f"{p53}:EMTAK=C{i:02d}", codes[-2][1], 1.0) for i in range(1, 60)]
+    for path in (RM, RN):
+        pre = S._table_prefix(path)
+        rows += [(f"{pre}:Kvartal={q}", END(y), 10.0) for y in (Y - 2, Y - 1) for q in "1234"]
+        rows += [(f"{pre}:Kvartal=1", END(Y), 10.0)]
+    _write_store(env.tmp, "majandus", rows)
+    env.mp.setenv(REVISION_ENV, dt.date.today().isoformat())
+    later = lambda c: c["Aasta"] != str(Y) or c["Kvartal"] == "1"        # noqa: E731
+    pub1 = {TO53: (tvars, lambda c: 2.0 if c["EMTAK"] == "C00" else 1.0),
+            RM: (RAA_VARS, lambda c: 11.0 if c["Aasta"] == str(Y - 2) else (10.0 if later(c) else None)),
+            RN: (RAA_VARS, lambda c: 10.0 if later(c) else None)}
+    return pub1
+
+
+def _withheld_labels(res):
+    import re
+    head = res.error.split("; merge note:")[0]
+    return head, re.findall(r"([\w/.-]+\.PX): WITHHELD", head)
+
+
+def test_a_standing_hold_books_only_withheld_stamps_once_with_their_counts(env):
+    """Pass 1 re-pulls all three: TO0053 is booked WITHHELD exactly ONCE (its own merge booking, not a
+    second standing one: kills R2/R6). Pass 2 re-pulls none: only TO0053 holds (merged / no change
+    stamps book nothing: kills R4), its label carries the STAMPED counts (kills R5), and the hold does
+    not count as attempted (R3-2)."""
+    import re
+    pub1 = _hold_setup(env)
+    res1 = env.run(Pub(pub1), [TO53, RM, RN])
+    side = json.loads((env.tmp / REVISION_FILE).read_text())
+    assert {p: side[p]["outcome"] for p in (TO53, RM, RN)} == \
+        {TO53: "withheld", RM: "merged", RN: "no change"}, side
+    head1, w1 = _withheld_labels(res1)
+    assert w1 == [TO53], f"withheld once, on the pass that re-pulls it: {head1}"
+    n_rev = side[TO53]["withheld_revision"]
+    assert n_rev > 50 and f"+ {n_rev} revision row(s)" in head1, head1
+
+    # pass 2: the publisher has published the later quarters of RN (so the pass is not all-empty)
+    pub2 = dict(pub1)
+    pub2[RN] = (RAA_VARS, lambda c: 10.0)
+    p2 = Pub(pub2)
+    res2 = env.run(p2, [TO53, RM, RN])
+    assert not [p for p, _ in p2.posts if p == TO53], "the hold sends no request"
+    head2, w2 = _withheld_labels(res2)
+    assert w2 == [TO53], f"only the withheld stamp holds, merged / no change do not: {head2}"
+    assert re.search(rf"TO0053\.PX: WITHHELD since \S+ - 0 row\(s\) .* \+ {n_rev} revision row\(s\)", head2), head2
+    assert "?" not in head2, "the counts come from the stamp"
+    assert res2.status == "partial" and head2.startswith("1/3 sub-unit(s) transient-failed"), \
+        f"3 tables attempted; the standing hold is not one of them: {head2}"
+
+
+def _raa_q12(c):
+    """Pass 1 publishes Q1-Q2 of the current year, pass 2 all four, so neither pass is all-empty."""
+    return 10.0 if c["Aasta"] != str(Y) or c["Kvartal"] in ("1", "2") else None
+
+
+def _stale_side(env, path):
+    (env.tmp / REVISION_FILE).write_text(json.dumps({path: {
+        "at": "2026-11-01", "outcome": "withheld", "withheld_new_series": 0, "withheld_revision": 77}}),
+        encoding="utf-8")
+
+
+def test_a_hold_for_a_table_gone_from_the_catalogue_is_dropped_and_named_once(env):
+    gone = "majandus/gone/GONE.PX"
+    _raa_store(env.tmp)
+    env.mp.setenv(REVISION_ENV, dt.date.today().isoformat())
+    _stale_side(env, gone)
+    res = env.run(Pub({RAA: (RAA_VARS, _raa_q12)}), [RAA])
+    assert "GONE.PX: WITHHELD" not in res.error and res.status == "ok", res.error
+    assert f"stale hold dropped: {gone} (not in the catalogue)" in res.error, res.error
+    assert gone not in json.loads((env.tmp / REVISION_FILE).read_text())
+    res2 = env.run(Pub({RAA: (RAA_VARS, lambda c: 10.0)}), [RAA])
+    assert "GONE.PX" not in (res2.error or ""), "named ONCE"
+
+
+def test_a_hold_for_a_table_that_turned_cold_is_dropped_and_named_once(env):
+    arch = "Lepetatud_tabelid/A/OLD1.PX"
+    avars = [{"code": "Aasta", "time": True, "values": ["2000", "2001"]}, {"code": "X", "values": ["1"]}]
+    _raa_store(env.tmp)
+    _write_store(env.tmp, "Lepetatud_tabelid", [(S._table_prefix(arch) + ":X=1", dt.date(2001, 12, 31), 1.0)])
+    env.mp.setenv(REVISION_ENV, dt.date.today().isoformat())
+    _stale_side(env, arch)
+    pub = Pub({RAA: (RAA_VARS, _raa_q12), arch: (avars, lambda c: 1.0)})
+    res = env.run(pub, [RAA, arch])
+    assert "OLD1.PX: WITHHELD" not in res.error and res.status == "ok", res.error
+    assert f"stale hold dropped: {arch} (cold)" in res.error, res.error
+    assert arch not in json.loads((env.tmp / REVISION_FILE).read_text())
+    res2 = env.run(Pub({RAA: (RAA_VARS, lambda c: 10.0), arch: (avars, lambda c: 1.0)}), [RAA, arch])
+    assert "OLD1.PX" not in (res2.error or ""), "named ONCE"

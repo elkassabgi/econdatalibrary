@@ -1076,6 +1076,8 @@ def update(unit, since) -> Result:
     rev_spent_s = 0.0
     rev_done = rev_left = 0
     rev_stamped: set = set()       # table paths whose revision outcome was stamped THIS pass
+    rev_cold_paths: set = set()    # cold table paths of the subjects this pass reached
+    rev_stale: list = []           # standing holds dropped this pass (gone or cold), named in the note
     note_stats: dict = {}          # {table prefix: compare stats} over the whole pass, for the note
     # THE REQUEST COST OF THIS PASS, printed at the end (VERIFY V-M1: the boundary's cost is not yet
     # measured; this line is the instrument, read on the first runs after the merge).
@@ -1143,6 +1145,7 @@ def update(unit, since) -> Result:
         _cold_book = load_rotation(out_dir, _cold_file)
         cold_set, cold_due = _cold_plan(subj_tables, subj, stored, _cold_book,
                                         dt.date.today(), _cold_after_days(), _cold_slice())
+        rev_cold_paths |= cold_set     # every cold table of a reached subject (standing holds, R3-2)
         if cold_set:
             print(f"[{SOURCE}] {subj}: {len(cold_set)} of {len(subj_tables)} table(s) cold "
                   f"(archive or frontier older than {_cold_after_days():.0f}d); "
@@ -1575,14 +1578,29 @@ def update(unit, since) -> Result:
     # named WITHHELD transient - no request is sent - until the stamp changes: a person repairs the table
     # or edits/removes its sidecar entry, or the next due re-pull merges. Disarming the window stands the
     # holds down with it (off means off: the sidecar is not read), and re-arming brings them back.
+    # A STALE HOLD IS DROPPED (review AR-453 R3-2): a stamp for a table that is no longer in this pass's
+    # table list (it left the catalogue) or is cold can never be re-pulled, so it would hold the source in
+    # ATTENTION for ever. Its sidecar entry is removed and the table is named ONCE in the merge note as
+    # "stale hold dropped". A table in a subject this pass did not reach keeps its hold (its coldness is
+    # not known this pass). A standing hold is booked transient but NOT attempted: no request was made.
     if revision_armed:
+        cat_paths = {t["path"] for s_ in by_subject for t in by_subject[s_]}
         for tp_, e_ in sorted(rev_state.items()):
-            if (isinstance(e_, dict) and e_.get("outcome") == "withheld" and tp_ not in rev_stamped):
-                tally.transient_unit(_said(
-                    f"{tp_}: WITHHELD since {e_.get('at')} - {e_.get('withheld_new_series', '?')} row(s) "
-                    f"under series the table never held + {e_.get('withheld_revision', '?')} revision "
-                    f"row(s) over the growth bound - needs review (standing hold, not re-pulled this "
-                    f"pass)"))
+            if not (isinstance(e_, dict) and e_.get("outcome") == "withheld" and tp_ not in rev_stamped):
+                continue
+            if tp_ not in cat_paths or tp_ in rev_cold_paths:
+                rev_stale.append(f"{tp_} ({'cold' if tp_ in cat_paths else 'not in the catalogue'})")
+                del rev_state[tp_]
+                print(f"[{SOURCE}] stale hold dropped: {rev_stale[-1]}", flush=True)
+                continue
+            tally.transient += 1
+            tally.transient_ids.append(_said(
+                f"{tp_}: WITHHELD since {e_.get('at')} - {e_.get('withheld_new_series', '?')} row(s) "
+                f"under series the table never held + {e_.get('withheld_revision', '?')} revision "
+                f"row(s) over the growth bound - needs review (standing hold, not re-pulled this "
+                f"pass)"))
+        if rev_stale:
+            _save_revision_state(out_dir, rev_state)
     print(f"[{SOURCE}] requests this pass: {req_posts} POST(s) over {req_chunks} planned chunk(s); "
           f"tables by grain: full={req_tables['full']} aggregate={req_tables['aggregate']}; "
           f"boundary {b_mode} (asked on {req_bnd} table(s), {req_d1} visited table(s) D1-shape), revision {'ARMED' if revision_armed else 'off'}; "
@@ -1601,6 +1619,8 @@ def update(unit, since) -> Result:
     if revision_armed:
         extra = (f"revision window {rev_done} table(s) re-pulled, {rev_left} due table(s) left "
                  f"for a later pass")
+        if rev_stale:
+            extra += f", stale hold dropped: {', '.join(rev_stale)}"
     note = _merge_note(note_stats, extra)
     if note:
         res.error = "; ".join(x for x in (res.error, note) if x)
