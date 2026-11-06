@@ -26,6 +26,14 @@ from updater import orchestrate  # noqa: E402
 from updater.orchestrate import admission_reserve  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _restore_run_deadline(monkeypatch):
+    """run_once sets the module global orchestrate._RUN_DEADLINE_TS and nothing clears it; left set, it leaks into
+    later test files (tests/test_csv_coverage_note.py failed 7 tests on CI, review AR-450 round 5, R1839)."""
+    from updater import orchestrate as _orch
+    monkeypatch.setattr(_orch, "_RUN_DEADLINE_TS", _orch._RUN_DEADLINE_TS)
+
+
 class _U:
     def __init__(self, sid, declared=False):
         self.source_id, self.unit_id = sid, "_all"
