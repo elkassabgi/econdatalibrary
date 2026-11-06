@@ -1235,8 +1235,11 @@ class UnitBook:
             # production's reserve, through the same function (a declared unit: its fetcher's figure)
             # the workstation has no per-unit hard timeout (Windows, no setitimer): hard_timeout=False, and the
             # newest real run per source through production StateStore.last_real_duration (2026-11-06)
+            # waited_days: days since its last turn at the pass start, by the stamp the order sorts on (the decay)
+            k = (u.source_id, u.unit_id)
+            waited = orch.age_days(self._last_turn(self.state[sid], kills.get(k), u, wstops.get(k)), now_iso)
             need = orch.admission_reserve(u, costs.get(sid), UNIT_TIMEOUT_MIN, last_real_s=last_real.get(sid),
-                                          hard_timeout=False)[0]
+                                          hard_timeout=False, waited_days=waited)[0]
             t_unit = start + dt.timedelta(minutes=e)
             # production's gate: the clock now, plus the reserve, against the run deadline (same function)
             if orch.start_gate_refuses(t_unit.timestamp(), need, deadline_ts):

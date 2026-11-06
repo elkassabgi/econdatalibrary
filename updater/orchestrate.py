@@ -471,7 +471,30 @@ def hard_timeout_available() -> bool:
     return hasattr(_sig, "setitimer")
 
 
-def admission_reserve(unit, est_s, unit_timeout_min=None, last_real_s=None, hard_timeout=None):
+# The workstation reserve's EXTRA over the normal reserve falls linearly to 0 over this many days since the unit's last
+# turn (review AR-450 round 2, R1838): without it a unit whose newest real run is longer than every pass is never
+# admitted again (unctad_tradefoodprocbycat: 224.3 min against a longest recent pass of 223), and each kill raises the
+# figure. 7 days: after a week of waiting a unit reserves exactly what main reserves, so it is admitted by the first pass
+# that gives it the normal reserve - the same weekly turn a monthly-cadence source like istat needs.
+RESERVE_DECAY_DAYS = 7.0
+
+
+def age_days(stamp, now_utc_iso) -> float | None:
+    """Days from `stamp` to `now_utc_iso` (both ISO; offset-less read as UTC), or None when either is unreadable."""
+    from datetime import datetime, timezone
+
+    def _p(v):
+        d = datetime.fromisoformat(str(v))
+        return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+    if not stamp:
+        return None
+    try:
+        return max(0.0, (_p(now_utc_iso) - _p(stamp)).total_seconds() / 86400.0)
+    except (ValueError, TypeError):
+        return None
+
+
+def admission_reserve(unit, est_s, unit_timeout_min=None, last_real_s=None, hard_timeout=None, waited_days=None):
     """The start gate's reserve for `unit`: (need_min, basis, declared_min, why_not_declared).
 
     est_s is the unit's run_cost_estimate (None = never run). unit_timeout_min defaults to _unit_timeout_min();
@@ -497,9 +520,16 @@ def admission_reserve(unit, est_s, unit_timeout_min=None, last_real_s=None, hard
     need, basis, ws_min, ws_bad = _admission_reserve_base(unit, est_s, unit_timeout_min)
     if (not hard_timeout and ws_min is None and last_real_s is not None and need > 0
             and last_real_s / 60.0 > need):
-        return (last_real_s / 60.0,
-                "its latest real run: no hard timeout on this platform and no window_stop, so it cannot be cut",
-                ws_min, ws_bad)
+        # DECAY (AR-450 round 2): the extra falls to 0 over RESERVE_DECAY_DAYS since the unit's last turn. An UNKNOWN
+        # wait (None: no readable turn stamp) takes the normal reserve - main's - so an unreadable stamp can never
+        # bring the lock-out back.
+        factor = 0.0 if waited_days is None else max(0.0, 1.0 - waited_days / RESERVE_DECAY_DAYS)
+        decayed = need + (last_real_s / 60.0 - need) * factor
+        if decayed > need:
+            return (decayed,
+                    "its latest real run: no hard timeout on this platform and no window_stop, so it cannot be cut "
+                    f"(falling to the normal reserve over {RESERVE_DECAY_DAYS:g} days of waiting)",
+                    ws_min, ws_bad)
     return need, basis, ws_min, ws_bad
 
 
@@ -3112,6 +3142,14 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
         # annual (0.03x) — absolute age inverted exactly that on 2026-08-18.
         return (overdue_key(last, order_cadence(unit), _now), unit.key)
 
+    _pass_start_iso = _now    # `_now` is reused as an epoch inside the unit loop
+
+    def _waited_days(unit):
+        """Days since this unit's last turn, by the SAME stamp the order sorts on (admission_reserve's decay)."""
+        st = store.get_unit(unit.source_id, unit.unit_id) or {}
+        return age_days(order_last_turn(unit, st, _kills.get((unit.source_id, unit.unit_id)),
+                                        _wstops.get((unit.source_id, unit.unit_id))), _pass_start_iso)
+
     _costs = store.run_cost_estimate()
     # the newest real run per source, for admission_reserve's no-hard-timeout rule (one read of `runs` per pass);
     # unreadable -> {} keeps every reserve as before rather than failing the pass
@@ -3217,7 +3255,8 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
         # The reserve: a declared unit's own figure, else min(2 x timeout, 3 x est floored at 10), else the worst
         # case for a never-run unit (admission_reserve, shared with tools/measure_ci_lag.py's replay).
         _need_min, _basis, _ws_min, _ws_bad = admission_reserve(unit, _est_s,
-                                                                last_real_s=_last_real.get(unit.source_id))
+                                                                last_real_s=_last_real.get(unit.source_id),
+                                                                waited_days=_waited_days(unit))
         if _ws_bad:
             print(f"[orchestrator] WINDOW STOP {unit.key}: {_ws_bad} - keeping the standard reserve",
                   flush=True)
