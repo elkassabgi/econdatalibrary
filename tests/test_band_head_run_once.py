@@ -121,3 +121,47 @@ def test_with_a_hard_timeout_no_head_is_looked_for(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrate, "hard_timeout_available", lambda: True)
     seen, _order, _s, _u = _heads(tmp_path, monkeypatch, lambda u: True)
     assert seen == {OLD_NOT_DUE: False, YOUNG_DUE: False}, seen
+
+
+LOW_BAND = "bis"               # monthly; a 300-s run puts it in band 1 (120-600 s), so it runs BEFORE band 3
+GIANT = "bls"                  # weekly; a 3-h run puts it in band 3 with a raised (180-min) reserve
+
+
+def test_one_head_per_band_a_lower_band_head_does_not_take_band_3s(tmp_path, monkeypatch):
+    """REVIEW AR-450 round 4: the mutant `_band_heads_taken.update(range(9))` (one head per PASS) survived every test,
+    because each used one band. Here a band-1 unit takes band 1's head first; the band-3 unit must STILL be band 3's
+    head and be offered the normal 90-min reserve - not its raised 180."""
+    store = StateStore(str(tmp_path / "state.db"))
+    now = datetime.now(timezone.utc)
+    from updater import registry
+    units = {u.source_id: u for u in registry.all_units() if u.unit_id == "_all"}
+    for sid, days, dur in ((LOW_BAND, 40, 300.0), (GIANT, 10, THREE_H)):
+        stamp = (now - timedelta(days=days)).isoformat(timespec="seconds")
+        store.upsert_unit(sid, "_all", strategy=units[sid].strategy, status="ok",
+                          last_success_utc=stamp, last_attempt_utc=stamp)
+        store.db.execute("INSERT INTO runs(ts_utc,source_id,unit_id,status,obs,dur_s,note) VALUES (?,?,?,?,?,?,?)",
+                         (stamp, sid, "_all", "ok", 1, dur, "planted"))
+    store.db.commit()
+    # preconditions: two different bands, both due
+    est = store.run_cost_estimate()
+    assert orchestrate.cost_band(est[LOW_BAND]) == 1 and orchestrate.cost_band(est[GIANT]) == 3, est
+    for sid in (LOW_BAND, GIANT):
+        assert orchestrate._budget_skip_due_label(units[sid], store, False) == "due", sid
+    real = orchestrate.admission_reserve
+    seen, order = {}, []
+
+    def wrap(unit, est_s, *a, **k):
+        r = real(unit, est_s, *a, **k)
+        seen[unit.source_id] = (k.get("band_head", False), r[0])
+        order.append(unit.source_id)
+        return r
+    monkeypatch.setattr(orchestrate, "admission_reserve", wrap)
+    monkeypatch.setattr(orchestrate, "_has_adapter", lambda u: True)
+    monkeypatch.setenv("AQUEDUCT_RUN_BUDGET_MIN", "240")
+    try:
+        orchestrate.run_once(sources=[LOW_BAND, GIANT], dry=True, store=store)
+    except SystemExit:
+        pass
+    assert order == [LOW_BAND, GIANT], order                       # the lower band's head is chosen first
+    assert seen[LOW_BAND][0] is True, seen
+    assert seen[GIANT] == (True, 90.0), seen                       # band 3's own head: the normal reserve
