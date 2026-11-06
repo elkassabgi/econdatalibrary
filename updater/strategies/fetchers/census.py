@@ -63,7 +63,7 @@ HONEST STATUS (Tally + finalize):
   transient_unit()  timeout / 5xx / 429 / unparseable -> partial, existing data untouched
   structural_unit() a 200 with a real header and 0 usable rows from a BOUNDARY re-fetch, which
                     must always re-return at least the boundary period -> DefinitiveError
-  revised_unit()    the merge changed stored values and added no row (compared here, _tail_changed)
+  revised_unit()    the merge changed stored values and added no row (compared here, _tail_diff)
   deferred_unit()   a stop (budget or window end) or the tail cap left the flow behind -> partial
 When finalize raises while some table changed or is owed, the pass is `partial` WITH those tables
 (Route B, hagstofa's shape); it raises only when nothing changed.
@@ -71,7 +71,7 @@ When finalize raises while some table changed or is owed, the pass is `partial` 
 WINDOW END AND OWED TABLES (PLAN R10.3 step 4, 2026-10-30): see MARGIN_FLOOR_MIN_DEFAULT and
 OWED_FILE below. Stated residuals: a requests timeout bounds the connect and each read gap, not a
 whole body, so a body that keeps trickling can still pass the ceiling, and its ONLY bound is the
-ps1 HARD STOP (ceiling + its grace); _tail_changed reads the merged flow's whole store object a
+ps1 HARD STOP (ceiling + its grace); _tail_diff reads the merged flow's whole store object a
 second time (one more whole-object GET per merged flow under r2); a kill between the final
 marker save and the orchestrator's CSV step loses that pass's hand-over; the CSV-phase time is not
 measured, so the 5-min floor is a choice; a split slice that answers 204 counts as complete, so once
@@ -757,11 +757,20 @@ def _time_windows(flow: str, mx) -> list[str]:
     learn. Bounded: at most _MAX_TAIL_MONTHS, so a long-frozen file cannot spend the whole
     budget in one flow — it converges over ticks instead, like every other bounded sweep here.
 
-    FORWARD ONLY, AND THAT IS WHY THE ANNUAL RE-PULL EXISTS (R1819). Nothing older than the boundary
-    month (intltrade) or the boundary year (EITS) is ever asked again, so the publisher's restatement
-    of complete prior years never reached the store: imports/hitech 2023-01..2025-12 differs from
-    what the API serves (AR-442). intltrade's re-pull is _census_revision.py. EITS has the same
-    defect and NO re-pull yet (a prior-year revision of an EITS flow is still never fetched).
+    WHAT IS MERGED IS WHAT IS ASKED (_tail_floor, R1830). intltrade asks from the boundary month and
+    merges from it. EITS asks `from <boundary year>` and merges EVERY row it gets back from 1 January
+    of that year, so a revised earlier month of the boundary year overwrites its stored row (keyed on
+    (series_key, obs_date); nothing is deleted). Until 2026-11 the row filter kept only rows dated at
+    or after the stored max MONTH and threw the rest of the year away although the request had
+    fetched it: measured 2026-11-06 against the 2026-10-27 store, marts 652, ftd 30 and resconst 67
+    such rows differed from the API (AR-449).
+
+    FORWARD ONLY BEFORE THAT YEAR, AND THAT IS WHY THE ANNUAL RE-PULL EXISTS (R1819). Nothing older
+    than the boundary month (intltrade) or the boundary year (EITS) is asked by the tail, so the
+    publisher's restatement of complete prior years never reached the store: imports/hitech
+    2023-01..2025-12 differs from what the API serves (AR-442), and EITS marts 2021 differs in 929 of
+    2,016 rows and 2024 in 1,099 (AR-449). Both families are re-pulled by _census_revision.py, each
+    OFF until its own activation is set.
     """
     if not flow.startswith("intltrade/"):
         return [f"from {mx.year}"]
@@ -776,6 +785,17 @@ def _time_windows(flow: str, mx) -> list[str]:
             m = 1
             y += 1
     return out
+
+
+def _tail_floor(flow: str, mx):
+    """The oldest obs_date the tail MERGES for this flow: the first period its request asks for.
+
+    intltrade: the stored max (its first window is the boundary month). EITS: 1 January of the stored
+    max's year, because `from <year>` returns the whole year and every month of it is a row the
+    publisher may have revised (R1830)."""
+    if flow.startswith("intltrade/"):
+        return mx
+    return dt.date(mx.year, 1, 1)
 
 
 def _why(e: Exception, limit: int = 120) -> str:
@@ -1036,21 +1056,25 @@ def _save_owed(out_dir, owed: dict) -> bool:
         return False
 
 
-_ABSENT = object()
+def _tail_diff(path: str, tbl, dedup_keys, floor):
+    """What merging `tbl` would do to the stored rows dated >= `floor`, keyed on the flow's full row
+    identity (its dedup key), whole rows compared as Python objects (null == null):
 
+        {"changed": stored keys whose other columns differ (overwritten in place by the merge),
+         "added":   keys the store lacks in the window (new rows under series already published),
+         "held":    stored keys in the window the fetch did not return (KEPT - merge never deletes),
+         "dup_new": fetched rows beyond one per key, "dup_store": stored rows beyond one per key}
 
-def _tail_changed(path: str, tbl, dedup_keys, mx):
-    """True when merging `tbl` would change what the store holds at/after `mx`: a dedup key the
-    store lacks there, or one whose other columns differ (values compared as Python objects, so
-    null == null). False when every row is already stored identically. None when the store cannot
-    be read - the caller treats that as changed (over-reporting re-derives identical CSVs, it
-    never leaves a changed one behind). Only the tail is read back: every row of `tbl` is dated
-    >= mx (the caller's filter), so nothing older can collide."""
+    A non-zero dup_* means the key does not identify a row, so a merge would collapse rows or pick a
+    value arbitrarily: the caller REFUSES that merge (R280). None when the store cannot be read - the
+    caller treats that as changed (over-reporting re-derives identical CSVs, it never leaves a
+    changed one behind). Only the window is read back: every row of `tbl` is dated >= floor (the
+    caller's filter), so nothing older can collide."""
     try:
         import pyarrow.compute as pc
         cols = list(tbl.column_names)
         st = blob.read_table(path, columns=cols)
-        st = st.filter(pc.greater_equal(st.column("obs_date"), pa.scalar(mx, pa.date32())))
+        st = st.filter(pc.greater_equal(st.column("obs_date"), pa.scalar(floor, pa.date32())))
     except Exception as e:                                   # noqa: BLE001
         print(f"[{SOURCE}] {os.path.basename(path)}: stored tail unreadable for the change "
               f"check ({e!r}) - treated as changed", flush=True)
@@ -1064,10 +1088,11 @@ def _tail_changed(path: str, tbl, dedup_keys, mx):
         vv = zip(*vc) if vc else (() for _ in range(t.num_rows))
         return dict(zip(zip(*kc), vv)) if kc else {}
     old = _rows(st)
-    for k, v in _rows(tbl).items():
-        if old.get(k, _ABSENT) != v:
-            return True
-    return False
+    new = _rows(tbl)
+    return {"changed": sum(1 for k, v in new.items() if k in old and old[k] != v),
+            "added": sum(1 for k in new if k not in old),
+            "held": sum(1 for k in old if k not in new),
+            "dup_new": tbl.num_rows - len(new), "dup_store": st.num_rows - len(old)}
 
 
 def _level_mirror(path: str) -> bool:
@@ -1313,7 +1338,8 @@ def update(unit, since) -> Result:
         # predicate (qtax: us:* and state:*) and every split part of it answered without failure
         # (a 204 counts as answered). Only that prefix, from the boundary forward, is merged - on a
         # stop AND on a failure. Merging a later window over an incomplete one would leave a
-        # permanent hole: the next pass tails from the new stored max (`d < mx` is skipped below).
+        # permanent hole: the next pass tails from the new stored max (rows dated before the flow's
+        # _tail_floor are skipped below).
         # And an incomplete window is never merged at all: a part-month written as if complete is
         # worse than no month (the rule the old mid-split deferral stated).
         complete: list = []          # [(tv, [parts of that window])]
@@ -1451,6 +1477,10 @@ def update(unit, since) -> Result:
         # two fixed names needed it.
         cols: dict[str, list] = {c: [] for c in data_cols}
         unknown_shape = 0
+        empty_measure = 0
+        # The oldest date this flow's request asked for: EITS 1 January of the boundary year,
+        # intltrade the boundary month (see _tail_floor; R1830).
+        floor = _tail_floor(flow, mx)
         keys: list[str] = []
         dates: list[dt.date] = []
         seen_series: set = set()
@@ -1478,13 +1508,14 @@ def update(unit, since) -> Result:
             gi = lidx.get("geo_level_code")
             for row in part[1:]:
                 d = J.parse_obs_date(row[ti])
-                if d is None or d < mx:
-                    continue                                 # strictly the tail (boundary incl.)
+                if d is None or d < floor:
+                    continue                                 # before what the request asked for
                 # Skip the empty-measure row only where there IS a single measure column to
                 # judge. A flow with many measures (intltrade) has no one cell to call empty,
                 # and dropping on any single one would silently discard rows that carry the
                 # others.
                 if vi is not None and row[vi] in (None, ""):
+                    empty_measure += 1
                     continue
                 sk = _key_for(J, row, hidx, dim_cols, shapes, f"timeseries/{flow}")
                 if sk is None:
@@ -1513,7 +1544,7 @@ def update(unit, since) -> Result:
             under.append(f"{flow} unknown-shape x{unknown_shape}")
 
         if not keys:
-            _receipt(flow, mx, 0, 0, path)
+            _receipt(flow, floor, 0, 0, path)
             if not failed:
                 tally.empty_unit(flow)                       # already at the publisher's frontier
             _book_stop()
@@ -1546,7 +1577,7 @@ def update(unit, since) -> Result:
                       f"series this flow does not yet publish (new coverage needs a backfill "
                       f"and a catalogue row, not a tail)", flush=True)
             if not keep:
-                _receipt(flow, mx, 0, skipped_new, path)
+                _receipt(flow, floor, 0, skipped_new, path)
                 if not failed:
                     tally.empty_unit(flow)
                 _book_stop()
@@ -1565,6 +1596,36 @@ def update(unit, since) -> Result:
             arrays[c] = pa.array([None if v is None else str(v) for v in cols[c]], pa.string())
         tbl = pa.table(arrays)
 
+        # The key that IDENTIFIES a row in this flow — wider than (series_key, obs_date) for
+        # intltrade, whose series_key omits real dimensions like DISTRICT. See _dedup_for; without
+        # it 11 of 24 flows collapse instead of extending.
+        dk = _dedup_for(flow, data_cols)
+        # DID THIS MERGE CHANGE A SERVED VALUE, AND HOW? `n - before_rows` counts rows ADDED only, so a
+        # pure revision, or a re-merge of rows an earlier killed pass already published, read as
+        # EMPTY: the pass ended no_change and the CSV step never ran (S1/S2). merge's own report
+        # (report_changed_keys) cannot answer it for census: it compares a column named `value`,
+        # census has none (cell_value, ALL_VAL_MO, ...), and without one it reports EVERY
+        # boundary collision as changed. So the window's rows are compared here, whole rows by the
+        # dedup key, before the merge (_tail_diff). None = could not tell -> changed.
+        diff = _tail_diff(path, tbl, dk, floor)
+        if diff is None:
+            print(f"[{SOURCE}] {flow}: window>={floor} not compared (store unreadable) - the merge "
+                  f"is treated as a change", flush=True)
+        else:
+            print(f"[{SOURCE}] {flow}: window>={floor} changed={diff['changed']} "
+                  f"added={diff['added']} held={diff['held']} (held = stored rows the fetch did not "
+                  f"return, kept); not merged: empty-measure={empty_measure} "
+                  f"unknown-shape={unknown_shape} new-series={skipped_new}", flush=True)
+            if diff["dup_new"] or diff["dup_store"]:
+                # THE KEY IS NOT A KEY (R280): merge would collapse rows or keep an arbitrary value.
+                tally.transient_unit(_said(
+                    f"{flow}: merge refused - key {list(dk)} is not unique in the window >= {floor} "
+                    f"({diff['dup_new']} duplicate fetched row(s), {diff['dup_store']} duplicate "
+                    f"stored row(s)); nothing merged, stored rows kept"))
+                _book_stop()
+                _done("transient (merge refused: key not unique)")
+                continue
+
         # TWO-PHASE MARK, phase 1 (see OWED_FILE): "merging" goes to the marker BEFORE the merge
         # publishes, so a kill between the publish and the Result leaves a mark that the next pass
         # hands over. FAIL CLOSED: if the mark is not stored, do not merge.
@@ -1579,19 +1640,7 @@ def update(unit, since) -> Result:
             _book_stop()
             _done("transient (pre-merge owed mark not saved; not merged)")
             continue
-        # The key that IDENTIFIES a row in this flow — wider than (series_key, obs_date) for
-        # intltrade, whose series_key omits real dimensions like DISTRICT. See _dedup_for; without
-        # it 11 of 24 flows collapse instead of extending.
-        dk = _dedup_for(flow, data_cols)
         m0 = time.time()
-        # DID THIS MERGE CHANGE A SERVED VALUE? `n - before_rows` counts rows ADDED only, so a
-        # pure revision, or a re-merge of rows an earlier killed pass already published, read as
-        # EMPTY: the pass ended no_change and the CSV step never ran (S1/S2). merge's own report
-        # (report_changed_keys) cannot answer it for census: it compares a column named `value`,
-        # census has none (cell_value, ALL_VAL_MO, ...), and without one it reports EVERY
-        # boundary collision as changed. So the tail rows are compared here, whole rows by the
-        # dedup key, before the merge (_tail_changed). None = could not tell -> changed.
-        ch = _tail_changed(path, tbl, dk, mx)
         try:
             n, md = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=dk)
         except (DefinitiveError, ValueError):
@@ -1610,7 +1659,9 @@ def update(unit, since) -> Result:
         t_merge = time.time() - m0
         longest_merge = max(longest_merge, t_merge)
         added = max(0, n - before_rows)
-        changed_tbl = bool(added) or ch is None or ch
+        # A revision of any row in the window (changed) is a change: the table is owed, cursored and
+        # handed to the CSV step, exactly like an added row.
+        changed_tbl = bool(added) or diff is None or bool(diff["changed"] or diff["added"])
         # TWO-PHASE MARK, phase 1 done: a merge that changed the table (or a table already owed)
         # is OWED until this update returns a Result carrying it; an identical merge owes nothing.
         if changed_tbl or prev_mark:
@@ -1619,7 +1670,7 @@ def update(unit, since) -> Result:
         else:
             owed.pop(tid, None)
         _save_owed(out_dir, owed)
-        _receipt(flow, mx, len(keys), skipped_new, path)
+        _receipt(flow, floor, len(keys), skipped_new, path)
 
         # COVERAGE IS A STRUCTURAL QUESTION — "did we ASK for everything?" — not a statistical
         # one. The first version of this guard compared distinct series returned against
@@ -1682,7 +1733,7 @@ def update(unit, since) -> Result:
             print(f"[{SOURCE}] {flow}: stopped without advancing its stored max; the bookmark "
                   f"stays on it, so the rotation moves past it (R313)", flush=True)
         print(f"[{SOURCE}] {flow}: +{max(0, n - before_rows):,} row(s) "
-              f"({len(seen_series):,} series at/after {mx})", flush=True)
+              f"({len(seen_series):,} series at/after {floor})", flush=True)
         _done(f"{'changed' if changed_tbl else 'identical'}, +{added:,} rows"
               + (", stopped" if stopped else "") + (", tail cap" if tail_capped else "")
               + (", failed after a merged prefix" if failed else ""))
@@ -1707,9 +1758,10 @@ def update(unit, since) -> Result:
     # the wrap goes through that same per-flow write. The final save that used to stand here
     # (save_rotation(last_flow)) would OVERWRITE a wind-back - the stat_estonia defect.
 
-    # THE ANNUAL REVISION RE-PULL (R1819; _census_revision.py). The tail above never asks a month older
-    # than each flow's boundary again, so a publisher's restatement of prior years never reached the
-    # store. Off until activated; runs after the tail, under the same stop check, and its published
+    # THE ANNUAL REVISION RE-PULL (R1819, R1830; _census_revision.py). The tail above never asks a period
+    # older than each flow's boundary month (intltrade) or boundary year (EITS) again, so a publisher's
+    # restatement of prior years never reached the store. Off until activated (intltrade and EITS each
+    # have their own switch); runs after the tail, under the same stop check, and its published
     # tables go through the same owed-mark + cursor path as a tail merge.
     rev_prev: dict = {}
 

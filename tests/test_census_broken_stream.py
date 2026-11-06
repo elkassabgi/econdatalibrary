@@ -47,7 +47,7 @@ def test_a_broken_stream_is_retried_and_the_retry_merges(tmp_path, monkeypatch, 
     assert res.status in ("ok", "no_change"), res
     assert sorted(r["cell_value"] for r in _rows(tmp_path, "eits__marts")
                   if r["obs_date"].isoformat() == "2026-03-01") == ["12", "22"]
-    assert "eits/marts: RECEIPT window>=2026-02-01 returned=4 skipped_new=0 stored=4 MATCH" \
+    assert "eits/marts: RECEIPT window>=2026-01-01 returned=6 skipped_new=0 stored=6 MATCH" \
         in capsys.readouterr().out
 
 

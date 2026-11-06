@@ -1,4 +1,18 @@
-"""census intltrade: the ANNUAL REVISION RE-PULL (ledger R1819, review AR-442 5d; design review AR-444).
+"""census intltrade AND EITS: the ANNUAL REVISION RE-PULL (ledger R1819, review AR-442 5d; design review
+AR-444; EITS added for R1830).
+
+EITS (added 2026-11-06). The tail asks each EITS flow `from <boundary year>` and merges that whole year
+(census._tail_floor), so the current year's revisions reach the store; no EITS year before it is ever
+asked again. AR-449 measured that gap with census.py's own request path: marts 2021 differs from the
+store in 929 of 2,016 rows and 2024 in 1,099; ftd 2021 36/72 and 2024 72/72; m3 and resconst 0. The
+same machinery covers it, with three differences, and NOTHING ELSE about the campaign changes:
+  * a PIECE is (flow, YEAR) with `time=<year>` - one request per year (qtax: one per predicate),
+    answered for monthly and quarterly flows - and the window is YEARS_EITS complete prior years;
+  * each EITS flow is its OWN family and its own sentinel (family_of / sentinel_of): the surveys are
+    separate programmes, so nothing couples them the way the intltrade TOTALs couple the tables;
+  * its own switch, ENV_ACTIVATE_EITS / OPERATOR_ACTIVATED_EITS_ON, so arming one family kind never arms
+    the other. The dedup key is (series_key, obs_date), so the label guard below never fires for EITS.
+The rest of this docstring is written for intltrade and holds for EITS with "month" read as "year".
 
 WHY. census.py's tail (_time_windows) walks forward from each flow's newest stored month and
 re-requests only that boundary month, so a month older than the boundary is never asked again. The
@@ -81,8 +95,19 @@ STATE_FILE = "_census_revision.json"
 ENV_ACTIVATE = "CENSUS_REVISION_FROM"
 # Set by a reviewed one-line commit, after the R1760 repair plan has fixed the order. None = off.
 OPERATOR_ACTIVATED_ON: dt.date | None = None
+# EITS HAS ITS OWN SWITCH (R1830). Arming intltrade (which waits on the R1760 repair order) must not
+# arm a re-pull of the 21 EITS flows, and the reverse. None = off.
+ENV_ACTIVATE_EITS = "CENSUS_REVISION_EITS_FROM"
+OPERATOR_ACTIVATED_EITS_ON: dt.date | None = None
 
 YEARS = 3
+# EITS: FIVE complete prior years, one piece per (flow, YEAR), `time=<year>`. CHOSEN, not derived from
+# the publisher's text. Measured 2026-11-06 (AR-449, census.py's own request path): marts differs from
+# the store in 929 of 2,016 rows of 2021 and 1,099 of 2024, ftd in 36/72 and 72/72; m3 and resconst 0
+# in both. 2021 is the oldest year measured, so 5 covers what was seen; years before it are not
+# measured. `time=<year>` was answered for monthly (ftd, marts, m3, resconst) and quarterly (qfr) flows.
+YEARS_EITS = 5
+EITS_PREFIX = "eits-"           # family name of one EITS flow: "eits-<leaf>" (no '/' or ':' - a path)
 # CHOSEN, not measured: AR-442 found the store's 2026-03 history ingested before the 2026-04 release
 # (published ~June), the release an annual revision would normally ride on. The probe covers a later one.
 START_MMDD_DEFAULT = "07-01"
@@ -118,17 +143,24 @@ def _env_float(name, default):
         return default
 
 
-def activated_on(environ=None):
+def is_eits(fam) -> bool:
+    return bool(fam) and fam.startswith(EITS_PREFIX)
+
+
+def activated_on(environ=None, family=None):
+    """The activation date for `family` (intltrade's when None or an intltrade family); None = off."""
     env = os.environ if environ is None else environ
-    raw = (env.get(ENV_ACTIVATE) or "").strip()
+    name, fallback = ((ENV_ACTIVATE_EITS, OPERATOR_ACTIVATED_EITS_ON) if is_eits(family)
+                      else (ENV_ACTIVATE, OPERATOR_ACTIVATED_ON))
+    raw = (env.get(name) or "").strip()
     if raw:
         try:
             return dt.date.fromisoformat(raw)
         except ValueError:
-            print(f"[census] WARNING: {ENV_ACTIVATE}={raw!r} is not YYYY-MM-DD - annual revision OFF",
+            print(f"[census] WARNING: {name}={raw!r} is not YYYY-MM-DD - annual revision OFF",
                   flush=True)
             return None
-    return OPERATOR_ACTIVATED_ON
+    return fallback
 
 
 def start_date(year: int) -> dt.date:
@@ -147,12 +179,37 @@ def staging_root() -> str:
 
 
 def family_of(flow: str):
+    """intltrade: the direction (imports/exports), whose tables move together (AR-442 5b). EITS: each
+    flow is its OWN family - the surveys are separate programmes with their own revision calendars, so
+    one flow's campaign never waits for another's."""
     p = flow.split("/")
-    return p[1] if len(p) >= 3 and p[0] == "intltrade" else None
+    if len(p) >= 3 and p[0] == "intltrade":
+        return p[1]
+    if len(p) == 2 and p[0] == "eits" and p[1]:
+        return EITS_PREFIX + p[1]
+    return None
+
+
+def sentinel_of(fam):
+    """The flow probed for drift: intltrade's small table per direction; an EITS family's own flow."""
+    if is_eits(fam):
+        return "eits/" + fam[len(EITS_PREFIX):]
+    return SENTINEL.get(fam)
 
 
 def window_months(cycle: int) -> list[str]:
     return [f"{y:04d}-{m:02d}" for y in range(cycle - YEARS, cycle) for m in range(1, 13)]
+
+
+def window_pieces(fam, cycle: int) -> list[str]:
+    """The pieces of a campaign: months (YYYY-MM) for intltrade, years (YYYY) for EITS."""
+    if is_eits(fam):
+        return [f"{y:04d}" for y in range(cycle - YEARS_EITS, cycle)]
+    return window_months(cycle)
+
+
+def _first_piece_of_last_year(fam, cycle: int) -> str:
+    return f"{cycle - 1:04d}" if is_eits(fam) else f"{cycle - 1:04d}-01"
 
 
 def is_label(col: str) -> bool:
@@ -210,7 +267,8 @@ def _stage_path(fam, fs, flow, month):
 # ---- reading the store ------------------------------------------------------------------------------
 
 def stored_months(path, months) -> dict:
-    """{YYYY-MM: rows} for the months in `months` that the store holds rows for."""
+    """{piece: rows} for the pieces in `months` that the store holds rows for. A piece is a month
+    (YYYY-MM, intltrade) or a year (YYYY, EITS)."""
     want = set(months)
     try:
         od = blob.read_table(path, columns=["obs_date"]).column("obs_date").to_pylist()
@@ -220,14 +278,18 @@ def stored_months(path, months) -> dict:
     for d in od:
         if d is None:
             continue
-        k = f"{d.year:04d}-{d.month:02d}"
-        if k in want:
-            out[k] = out.get(k, 0) + 1
+        for k in (f"{d.year:04d}-{d.month:02d}", f"{d.year:04d}"):
+            if k in want:
+                out[k] = out.get(k, 0) + 1
     return out
 
 
 def _month_bounds(month):
-    y, m = int(month[:4]), int(month[5:7])
+    """[lo, hi) of a piece: one month for YYYY-MM, one calendar year for YYYY."""
+    y = int(month[:4])
+    if len(month) == 4:
+        return dt.date(y, 1, 1), dt.date(y + 1, 1, 1)
+    m = int(month[5:7])
     lo = dt.date(y, m, 1)
     hi = dt.date(y + (m == 12), 1 if m == 12 else m + 1, 1)
     return lo, hi
@@ -315,19 +377,23 @@ def fetch_month(ctx, flow, path, month):
             time.sleep(cs.RATE)
             if part and len(part) >= 2:
                 parts.append(part)
-    lo, _hi = _month_bounds(month)
+    lo, hi = _month_bounds(month)
     known = cs._store_keys(path)
     cols = {c: [] for c in data_cols}
     keys, dates = [], []
     for part in parts:
         hidx = {c: i for i, c in enumerate(part[0])}
-        ti = {c.lower(): i for i, c in enumerate(part[0])}.get("time")
+        lidx = {c.lower(): i for i, c in enumerate(part[0])}
+        ti = lidx.get("time")
         if ti is None:
             return "fail", f"{flow} revision time={month}: response lacks time"
         for row in part[1:]:
             d = ctx.J.parse_obs_date(row[ti])
-            if d is None or (d.year, d.month) != (lo.year, lo.month):
+            if d is None or not (lo <= d < hi):
                 continue
+            vi = lidx.get("cell_value")
+            if vi is not None and row[vi] in (None, ""):
+                continue                                     # the tail's empty-measure rule (EITS)
             sk = cs._key_for(ctx.J, row, hidx, dim_cols, shapes, f"timeseries/{flow}")
             if sk is None or (known and sk not in known):
                 continue                                     # never mints a series (R278)
@@ -356,23 +422,29 @@ class Outcome:
         self.published: list = []
 
 
-def _plan(fs, fam_flows, path_of):
-    """[(flow, month, stored_rows)] in campaign order: sentinel flow first, months ascending.
+def _plan(fs, fam_flows, path_of, fam=None):
+    """[(flow, piece, stored_rows)] in campaign order: sentinel flow first, pieces ascending.
     Recomputed every pass from the flows the tail sees (AR-444 b)."""
     out = []
     for flow in fam_flows:
-        sm = stored_months(path_of(flow), window_months(fs["cycle"]))
+        sm = stored_months(path_of(flow), window_pieces(fam, fs["cycle"]))
         out += [(flow, mo, sm[mo]) for mo in sorted(sm)]
     return out
+
+
+def _active(fam, today) -> bool:
+    act = activated_on(family=fam)
+    return act is not None and today >= act
 
 
 def run(ctx, flows, out_dir, today) -> Outcome:
     from . import census as cs
     oc = Outcome()
-    act = activated_on()
-    if act is None or today < act:
+    fams_seen = {family_of(f) for f in flows} - {None}
+    if not any(_active(f, today) for f in fams_seen):
         print(f"[census] annual revision OFF (not activated: {ENV_ACTIVATE} / "
-              f"_census_revision.OPERATOR_ACTIVATED_ON)", flush=True)
+              f"_census_revision.OPERATOR_ACTIVATED_ON for intltrade, {ENV_ACTIVATE_EITS} / "
+              f"_census_revision.OPERATOR_ACTIVATED_EITS_ON for EITS)", flush=True)
         return oc
     try:
         st = load_state(out_dir)
@@ -396,7 +468,9 @@ def run(ctx, flows, out_dir, today) -> Outcome:
             families.setdefault(fam, []).append(f)
     cycle = today.year
     for fam in sorted(families):
-        sent = SENTINEL.get(fam)
+        if not _active(fam, today):
+            continue                                         # this family's switch is off
+        sent = sentinel_of(fam)
         fam_flows = sorted(families[fam], key=lambda f: (f != sent, f))
         fs = st["families"].get(fam)
         # ---- due? ---------------------------------------------------------------------------------
@@ -439,7 +513,17 @@ def run(ctx, flows, out_dir, today) -> Outcome:
         failed_flows = fs.setdefault("failed_flows", {})
         live = [f for f in fam_flows if f not in failed_flows]
         if fs["phase"] == "fetch":
-            plan = _plan(fs, live, path_of)
+            plan = _plan(fs, live, path_of, fam)
+            if not plan and is_eits(fam) and not failed_flows:
+                # An EITS flow with NO stored rows in the window (eits/mhs, retired 2014): nothing to
+                # re-pull, said once, and the family is done for the cycle.
+                fs["phase"], fs["completed"] = "done", today.isoformat()
+                fs["last_probe"] = today.isoformat()
+                save_state(out_dir, st)
+                oc.notes.append(f"{fam}: annual revision cycle {cycle} - no stored rows in "
+                                f"{window_pieces(fam, cycle)[0]}..{window_pieces(fam, cycle)[-1]}, "
+                                f"nothing to re-pull")
+                continue
             if plan and fs.get("first_piece") is None:
                 fs["first_piece"] = [plan[0][0], plan[0][1]]
             todo = [(f, mo, n) for f, mo, n in plan
@@ -566,7 +650,7 @@ def run(ctx, flows, out_dir, today) -> Outcome:
 def _sentinel_drift(ctx, flow, path, cycle, month=None):
     """Reasons the publisher's sentinel month differs from the store; [] when equal; None if unknown."""
     from . import census as cs
-    month = month or f"{cycle - 1:04d}-01"
+    month = month or _first_piece_of_last_year(family_of(flow), cycle)
     if not stored_months(path, [month]):
         return None
     kind, val = fetch_month(ctx, flow, path, month)
@@ -669,9 +753,10 @@ def _publish(ctx, cs, fam, fs, fam_flows, path_of, oc, out_dir, st, today):
         if iso and oc.cursors.get(tid, "") < iso:
             oc.cursors[tid] = iso
         save_state(out_dir, st)
-        oc.notes.append(f"{flow}: annual revision published {len(months)} month(s): {counts}")
+        oc.notes.append(f"{flow}: annual revision published {len(months)} "
+                        f"{'year' if is_eits(fam) else 'month'}(s): {counts}")
         print(f"[census] {flow}: annual revision published {new.num_rows:,} row(s) over "
-              f"{len(months)} month(s); {counts}", flush=True)
+              f"{len(months)} {'year' if is_eits(fam) else 'month'}(s); {counts}", flush=True)
     fs["phase"] = "done"
     fs["completed"] = fs.get("completed") or today.isoformat()
 
@@ -686,7 +771,8 @@ def _note_holds(oc, fam, fs):
                         f"they are the old vintage beside revised rows, so those months' details may not "
                         f"sum to the revised TOTAL")
     if months:
-        oc.notes.append(f"{fam}: {months} stored month(s) answered no rows on re-pull - kept as stored")
+        oc.notes.append(f"{fam}: {months} stored {'year' if is_eits(fam) else 'month'}(s) answered no "
+                        f"rows on re-pull - kept as stored")
     for kind, what in (("failed_flows", "failed on consecutive passes"),
                        ("growth_held", "would add rows over the bound"),
                        ("label_conflicts", "differ only in a label column")):
