@@ -252,7 +252,10 @@ def _setup(tmp_path, monkeypatch, *, beta_value="999", today=BEFORE_REMOVAL):
         "eits/marts": {"predicates": {"cell_value", "category_code", "program_code",
                                       "geo_level_code", "time_slot_id", "error_data"},
                        "header": eits_h,
-                       "rows": [["11", "44X72", "MARTS", "US", "0", "2026-02", "1"],
+                       # `time=from 2026` answers the WHOLE year, January included (R1830).
+                       "rows": [["10", "44X72", "MARTS", "US", "0", "2026-01", "1"],
+                                ["20", "4400A", "MARTS", "US", "0", "2026-01", "1"],
+                                ["11", "44X72", "MARTS", "US", "0", "2026-02", "1"],
                                 ["21", "4400A", "MARTS", "US", "0", "2026-02", "1"],
                                 ["12", "44X72", "MARTS", "US", "0", "2026-03", "1"],
                                 ["22", "4400A", "MARTS", "US", "0", "2026-03", "1"]]},
@@ -296,9 +299,10 @@ def test_update_sends_no_geography_pin_and_merges_rows_returned(tmp_path, monkey
     out = capsys.readouterr().out
     assert "eits/marts: not pinning ['us']" in out
     assert "intltrade/exports/sitcexport: not pinning ['world']" in out
-    # THE RECEIPT the post-merge proof greps: 4 marts rows returned at/after 2026-02 (2 boundary
-    # + 2 new), 4 stored; 1 BETA row at 2025-12, 1 stored.
-    assert ("[census] eits/marts: RECEIPT window>=2026-02-01 returned=4 skipped_new=0 stored=4 "
+    # THE RECEIPT the post-merge proof greps: 6 marts rows returned at/after 2026-01-01 (EITS merges
+    # from 1 January of the boundary year, R1830: 2 January + 2 boundary + 2 new), 6 stored; 1 BETA
+    # row at 2025-12, 1 stored (intltrade's window still starts at its boundary month).
+    assert ("[census] eits/marts: RECEIPT window>=2026-01-01 returned=6 skipped_new=0 stored=6 "
             "MATCH") in out, out
     assert ("[census] intltrade/exports/sitcexport: RECEIPT window>=2025-12-01 returned=1 "
             "skipped_new=0 stored=1 MATCH") in out, out
@@ -312,7 +316,7 @@ def test_the_receipt_says_differ_when_the_api_did_not_return_a_stored_boundary_r
                                        if not (r[1] == "4400A" and r[5] == "2026-02")]
     cs.update(types.SimpleNamespace(source_id="census", unit_id="_all"), None)
     out = capsys.readouterr().out
-    assert "eits/marts: RECEIPT window>=2026-02-01 returned=3 skipped_new=0 stored=4 DIFFER" in out
+    assert "eits/marts: RECEIPT window>=2026-01-01 returned=5 skipped_new=0 stored=6 DIFFER" in out
 
 
 def test_an_unreadable_store_never_reads_as_a_match(monkeypatch, capsys):
