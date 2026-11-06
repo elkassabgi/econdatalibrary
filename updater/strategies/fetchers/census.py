@@ -90,6 +90,7 @@ import os
 import re
 import sys
 import time
+import types
 
 import pyarrow as pa
 import requests
@@ -101,6 +102,7 @@ from ._common import (CURSOR_CAP, ROTATION_FILE, Deadline, Tally, _named, api_ke
                       cursors_from_table, finalize, load_rotation, merge_cursor_map, rotate_after,
                       save_rotation)
 from . import _census_retired as _retired
+from . import _census_revision as _revision
 
 SOURCE = "census"
 BASE = "https://api.census.gov/data/timeseries"
@@ -754,6 +756,12 @@ def _time_windows(flow: str, mx) -> list[str]:
     and the walk stops at today because a future month is a 204 and costs a round trip to
     learn. Bounded: at most _MAX_TAIL_MONTHS, so a long-frozen file cannot spend the whole
     budget in one flow — it converges over ticks instead, like every other bounded sweep here.
+
+    FORWARD ONLY, AND THAT IS WHY THE ANNUAL RE-PULL EXISTS (R1819). Nothing older than the boundary
+    month (intltrade) or the boundary year (EITS) is ever asked again, so the publisher's restatement
+    of complete prior years never reached the store: imports/hitech 2023-01..2025-12 differs from
+    what the API serves (AR-442). intltrade's re-pull is _census_revision.py. EITS has the same
+    defect and NO re-pull yet (a prior-year revision of an EITS flow is still never fetched).
     """
     if not flow.startswith("intltrade/"):
         return [f"from {mx.year}"]
@@ -1699,6 +1707,66 @@ def update(unit, since) -> Result:
     # the wrap goes through that same per-flow write. The final save that used to stand here
     # (save_rotation(last_flow)) would OVERWRITE a wind-back - the stat_estonia defect.
 
+    # THE ANNUAL REVISION RE-PULL (R1819; _census_revision.py). The tail above never asks a month older
+    # than each flow's boundary again, so a publisher's restatement of prior years never reached the
+    # store. Off until activated; runs after the tail, under the same stop check, and its published
+    # tables go through the same owed-mark + cursor path as a tail merge.
+    rev_prev: dict = {}
+
+    def _note_req(s: float) -> None:
+        nonlocal longest_req
+        longest_req = max(longest_req, s)
+
+    def _note_merge(s: float) -> None:
+        nonlocal longest_merge
+        longest_merge = max(longest_merge, s)
+
+    def _mark_merging(tid: str) -> bool:
+        rev_prev[tid] = owed.get(tid)
+        owed[tid] = rev_prev[tid] or _MERGING
+        if _save_owed(out_dir, owed):
+            return True
+        _mark_cancel(tid)
+        return False
+
+    def _mark_cancel(tid: str) -> None:
+        if rev_prev.get(tid) is None:
+            owed.pop(tid, None)
+        else:
+            owed[tid] = rev_prev[tid]
+        _save_owed(out_dir, owed)
+
+    def _mark_owed(tid: str) -> None:
+        owed[tid] = _OWED
+        settle.add(tid)
+        _save_owed(out_dir, owed)
+
+    rev_notes: list = []
+    rev_ctx = types.SimpleNamespace(
+        sess=sess, key=key, J=J, stop_now=_stop_now, force_stop=_force_window_stop,
+        req_end_ts=None if end_ts is None else end_ts - floor_s, note_req=_note_req,
+        note_merge=_note_merge, mark_merging=_mark_merging, mark_owed=_mark_owed,
+        mark_cancel=_mark_cancel)
+    try:
+        rev = _revision.run(rev_ctx, flows, out_dir, _retired.today_utc())
+    except DefinitiveError as e:
+        # A malformed revision state stops the RE-PULL, never the tail (fail closed, named).
+        tally.transient_unit(_said(f"annual revision not run - {_why(e, 200)}"))
+        rev = None
+    if rev is not None:
+        for lbl in rev.transient:
+            tally.transient_unit(_said(lbl))
+        for lbl in rev.deferred:
+            tally.deferred_unit(lbl)
+        for flow in rev.published:
+            tally.revised_unit(f"{flow} (annual revision)")
+        for tid, iso in rev.cursors.items():
+            if cursors.get(tid, "") < iso:
+                cursors[tid] = iso
+        rev_notes = list(rev.notes)
+        for n_ in rev_notes:
+            print(f"[{SOURCE}] {n_}", flush=True)
+
     retired_note = (f"{len(retired)} flow(s) RETIRED UPSTREAM, not fetched, stored data kept"
                     + _named(retired)) if retired else ""
     try:
@@ -1762,6 +1830,9 @@ def update(unit, since) -> Result:
     # The retired flows are NAMED in the note, never silent - and never a reason to demote: a
     # permanent, explained exclusion that reddened every run would be the "partial forever" this
     # change exists to end. Appended LAST so no branch above can drop it.
+    if rev_notes:
+        # Named on every pass while they stand (held rows, defects), never a reason to demote.
+        res = dataclasses.replace(res, error="; ".join(x for x in [res.error] + rev_notes if x))
     if retired_note:
         res = dataclasses.replace(res, error="; ".join(x for x in (res.error, retired_note) if x))
     # TWO-PHASE MARK, the end: this Result carries every settled table (series_cursors), so the
