@@ -39,7 +39,9 @@ TIMEOUT_S = 300
 IDENTITY = ["SUMMARY_LVL", "COMM_LVL", "SUMMARY_LVL2", "DISTRICT"]
 # Clean columns, asked for in the same request so the patch can require fetched == stored on every row of a month:
 # a publisher revision changes them too, and the bad columns alone cannot show it (review AR-442 5a, R1819).
-GATE = ["GEN_VAL_MO", "CON_VAL_MO", "AIR_VAL_MO"]
+# CON_CHA_MO guards the charges column the patch writes, CAL_DUT_MO the duty columns (review AR-445, R1820):
+# in the revised sitc 2024-01, 3,599 rows changed only their charges.
+GATE = ["GEN_VAL_MO", "CON_VAL_MO", "AIR_VAL_MO", "CON_CHA_MO", "CAL_DUT_MO"]
 TABLES = {
     # table: (commodity column, the columns R1760 measured as copied, first affected month in the store)
     "enduse": ("I_ENDUSE", ["CON_CHA_YR", "DUT_VAL_YR", "DUT_VAL_MO", "AIR_VAL_YR"], "2010-01"),
