@@ -37,6 +37,9 @@ TIMEOUT_S = 300
 # SUMMARY_LVL is asked for too: the store holds only 'DET' and the tail fetcher pins it; R0 must PROVE the API
 # answers CTY_CODE='-' at that level rather than assume it (review AR-440).
 IDENTITY = ["SUMMARY_LVL", "COMM_LVL", "SUMMARY_LVL2", "DISTRICT"]
+# Clean columns, asked for in the same request so the patch can require fetched == stored on every row of a month:
+# a publisher revision changes them too, and the bad columns alone cannot show it (review AR-442 5a, R1819).
+GATE = ["GEN_VAL_MO", "CON_VAL_MO", "AIR_VAL_MO"]
 TABLES = {
     # table: (commodity column, the columns R1760 measured as copied, first affected month in the store)
     "enduse": ("I_ENDUSE", ["CON_CHA_YR", "DUT_VAL_YR", "DUT_VAL_MO", "AIR_VAL_YR"], "2010-01"),
@@ -62,7 +65,7 @@ def _key() -> str:
 def request(table: str, time_clause: str) -> "tuple[str, dict]":
     """(url without key, params without key) for one table and a time= clause (YYYY-MM or 'from+..+to+..')."""
     comm, cols, _first = TABLES[table]
-    params = {"get": ",".join([comm] + IDENTITY + cols), "CTY_CODE": "-", "time": time_clause}
+    params = {"get": ",".join([comm] + IDENTITY + cols + GATE), "CTY_CODE": "-", "time": time_clause}
     return BASE + table, params
 
 

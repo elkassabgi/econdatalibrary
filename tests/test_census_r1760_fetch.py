@@ -30,7 +30,8 @@ def test_the_request_carries_identity_and_only_the_bad_columns():
     url, p = F.request("enduse", "2015-06")
     assert url.endswith("/imports/enduse") and p["CTY_CODE"] == "-" and p["time"] == "2015-06"
     assert p["get"].split(",") == ["I_ENDUSE", "SUMMARY_LVL", "COMM_LVL", "SUMMARY_LVL2", "DISTRICT",
-                                   "CON_CHA_YR", "DUT_VAL_YR", "DUT_VAL_MO", "AIR_VAL_YR"]
+                                   "CON_CHA_YR", "DUT_VAL_YR", "DUT_VAL_MO", "AIR_VAL_YR",
+                                   "GEN_VAL_MO", "CON_VAL_MO", "AIR_VAL_MO"]
     assert "CON_CHA_YR" not in F.request("hitech", "2015-06")[1]["get"], "hitech's CON_CHA_YR was clean"
 
 
