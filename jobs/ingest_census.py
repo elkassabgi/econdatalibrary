@@ -27,6 +27,7 @@ Usage:
 import datetime as dt
 import json
 import os
+import re
 import sys
 import time
 import threading
@@ -201,9 +202,9 @@ _MEASURE_COLS = {"cell_value"}
 _MEASURE_COLS_U = {c.upper() for c in _MEASURE_COLS}
 
 
-def key_columns(m):
-    """Dimension/identifier columns that uniquely tag a record (kept in every
-    variable chunk and used to merge chunks + build series_key)."""
+def _id_columns(m):
+    """The required columns plus a fixed list of time/geography identifiers. This was the WHOLE of key_columns
+    until R1760, and it still leads every chunk in the same order."""
     av = set(m["allvars"])
     keys = []
     for k in m["allvars"]:
@@ -216,6 +217,30 @@ def key_columns(m):
         if cand in av and cand not in keys:
             keys.append(cand)
     return keys
+
+
+# ROW-IDENTITY DIMENSIONS (R1760, review AR-439). A Census chunk that does not request a classification column is
+# answered at that classification's TOTAL: asm/area2017's chunks 1-4 carried no NAICS2017 and came back as the
+# NAICS 31-33 row, and the intltrade imports chunk 1 carried no commodity column and came back as the national TOTAL.
+# These columns are requested in EVERY chunk so each chunk is answered at the same grain as chunk 0, and the merge
+# runs on them. Classification codes and their level/summary/district columns only: labels and attributes
+# (NAICS2017_LABEL, SECTOR, INDLEVEL) follow from the code, and geography is set by for=/in= and keyed by GEO_ID.
+_IDENTITY_DIM_RE = re.compile(r"^(NAICS\d*|SITC|HITECH|USDA|[IE]_ENDUSE|[IE]_COMMODITY|COMM_LVL|SUMMARY_LVL2?|"
+                              r"DISTRICT)$")
+
+
+def identity_dims(m):
+    """The dataset's classification columns that are not already identifiers, in the order the variable
+    chunks request them (value_columns' order)."""
+    lead = _id_columns(m)
+    return [c for c in value_columns(m, lead) if _IDENTITY_DIM_RE.match(c)]
+
+
+def key_columns(m):
+    """Dimension/identifier columns that uniquely tag a record (kept in every
+    variable chunk and used to merge chunks): the identifiers, then the row-identity dimensions."""
+    lead = _id_columns(m)
+    return lead + [c for c in identity_dims(m) if c not in lead]
 
 
 # Some datasets are multi-dimensional cubes whose dimension axes are mutually
@@ -352,23 +377,44 @@ class MergeRefused(RuntimeError):
     """pull_slice could not merge variable chunks without copying values across rows (R1760)."""
 
 
+def _make_chunks(m, keys, cap):
+    """The get= lists for one slice, each at most `cap` variables.
+
+    Chunk 0 is laid out exactly as before R1760: the identifiers (_id_columns), then the first columns in
+    value_columns order. So its request, and with it the header, the column order and the series_key of every table
+    that merged correctly, are byte-identical to before. Every LATER chunk repeats all the keys - the identifiers
+    AND the row-identity dimensions - so the API answers it at chunk 0's grain and the merge matches rows on them.
+
+    A row-identity column that does not fit in that chunk 0 is REFUSED, not moved: such a chunk 0 was answered at a
+    coarser grain than the chunks that carry the column (aies NAICS, intltrade usda USDA, sitcimport SITC), and
+    taking the column in changes the table's columns, rows and series_key. That is a reviewed re-grain (R22)."""
+    idset = set(_id_columns(m))
+    lead = [k for k in keys if k in idset]
+    dims = [k for k in keys if k not in idset]
+    order = value_columns(m, lead)
+    room0 = max(1, cap - len(lead))
+    outside = [d for d in dims if d not in order[:room0]]
+    if outside:
+        raise MergeRefused(
+            f"{m['path']}: the row-identity column(s) {outside} do not fit in chunk 0 as it is laid out today, so "
+            f"chunk 0 is answered at a coarser grain than the chunks that carry them. Taking them into chunk 0 "
+            f"changes this table's columns, rows and series_key - a reviewed re-grain (R22), not done here.")
+    chunks = [lead + order[:room0]]
+    rest = [v for v in order[room0:] if v not in keys]
+    room = max(1, cap - len(keys))
+    for i in range(0, len(rest), room):
+        chunks.append(list(keys) + rest[i:i + room])
+    return chunks
+
+
 def pull_slice(path, m, keys, geo_for, geo_in, time_clause, extra):
     """Pull one (geo, time) slice, chunking variables; return (header, rows)
     or (None, []) on empty/204. Rows are lists aligned to a unified header.
     Adapts to per-dataset get= variable caps and default-geography rejection."""
-    vals = value_columns(m, keys)
     cap = _varlimit_cache.get(path, MAX_GET)
 
     def make_chunks(cap):
-        room = max(1, cap - len(keys))
-        if not vals:
-            return [list(keys)]
-        out = []
-        i = 0
-        while i < len(vals):
-            out.append(list(keys) + vals[i:i + room])
-            i += room
-        return out
+        return _make_chunks(m, keys, cap)
 
     def fetch(getvars):
         req_get = [g for g in getvars if not _not_in_get(g, time_clause, extra)]
@@ -402,7 +448,6 @@ def pull_slice(path, m, keys, geo_for, geo_in, time_clause, extra):
     base_rows = js[1:]
     header = list(base_h)
     cols = [list(col) for col in zip(*base_rows)] if base_rows else [[] for _ in base_h]
-    base_kidx = [base_h.index(k) for k in keys if k in base_h]
     nbase = len(base_rows)
     for getvars in chunks[1:]:
         st2, js2, txt2 = fetch(getvars)
@@ -410,15 +455,18 @@ def pull_slice(path, m, keys, geo_for, geo_in, time_clause, extra):
             continue
         h2 = js2[0]
         rows2 = js2[1:]
-        # alignment check on shared keys (sample); fall back to dict-merge if off
-        aligned = len(rows2) == nbase
-        if aligned and base_kidx:
-            k2idx = [h2.index(k) for k in keys if k in h2 and k in base_h]
-            bk = [base_h.index(k) for k in keys if k in h2 and k in base_h]
-            for s in range(0, nbase, max(1, nbase // 25 + 1)):
-                if tuple(rows2[s][i] for i in k2idx) != tuple(base_rows[s][i] for i in bk):
-                    aligned = False
-                    break
+        # Positional splice only when it is PROVEN (R1760): same row count, the shared keys equal row for row (every
+        # row, not a sample), and those keys identify the chunk-0 rows. Keys that name several rows - ['time'] over a
+        # month of commodities - cannot prove which row a value belongs to; such a chunk goes to the dict-merge
+        # below, whose guard refuses it.
+        kshared = [k for k in keys if k in h2 and k in base_h]
+        aligned = len(rows2) == nbase and bool(kshared)
+        if aligned:
+            k2idx = [h2.index(k) for k in kshared]
+            bk = [base_h.index(k) for k in kshared]
+            btup = [tuple(base_rows[s][i] for i in bk) for s in range(nbase)]
+            aligned = (len(set(btup)) == nbase
+                       and all(tuple(rows2[s][i] for i in k2idx) == btup[s] for s in range(nbase)))
         new_cols = [c for c in h2 if c not in header]
         if aligned:
             for c in new_cols:
