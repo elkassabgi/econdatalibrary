@@ -474,9 +474,10 @@ def hard_timeout_available() -> bool:
 # The workstation reserve's EXTRA over the normal reserve falls linearly to 0 over this many days since the unit's last
 # turn (review AR-450 round 2, R1838): without it a unit whose newest real run is longer than every pass is never
 # admitted again (unctad_tradefoodprocbycat: 224.3 min against a longest recent pass of 223), and each kill raises the
-# figure. 7 days: after a week of waiting a unit reserves exactly what main reserves, so it is admitted by the first pass
-# that gives it the normal reserve - the same weekly turn a monthly-cadence source like istat needs.
-RESERVE_DECAY_DAYS = 7.0
+# figure. 60 days: after two months of waiting a unit reserves exactly what main reserves, so it is admitted by the
+# first pass that gives it the normal reserve. CHOSEN from AR-450's replay sweep of 7, 14, 21, 30 and 60 days (PR #241):
+# fewest hard stops of the decays; the owner picks between this and the band-head rule (PR #241 head).
+RESERVE_DECAY_DAYS = 60.0
 
 
 def age_days(stamp, now_utc_iso) -> float | None:

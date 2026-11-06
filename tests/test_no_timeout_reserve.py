@@ -103,11 +103,12 @@ def _need(waited):
                              waited_days=waited)[0]
 
 
-def test_the_extra_falls_linearly_to_the_normal_reserve_over_seven_days():
-    full = TFP / 60.0
+def test_the_extra_falls_linearly_to_the_normal_reserve_over_the_decay_days():
+    full, d = TFP / 60.0, orchestrate.RESERVE_DECAY_DAYS
+    assert d == 60.0
     assert abs(_need(0.0) - full) < 1e-9
-    assert abs(_need(3.5) - (90.0 + (full - 90.0) / 2)) < 1e-9
-    assert _need(7.0) == 90.0 and _need(30.0) == 90.0
+    assert abs(_need(d / 2) - (90.0 + (full - 90.0) / 2)) < 1e-9
+    assert _need(d) == 90.0 and _need(2 * d) == 90.0
 
 
 def test_an_unknown_wait_takes_the_normal_reserve():
@@ -130,9 +131,10 @@ def _passes_until_admitted(decay, max_passes=60):
 def test_a_unit_whose_last_run_is_longer_than_every_budget_is_still_admitted_within_k_passes():
     assert TFP / 60.0 > max(RECENT_BUDGETS)
     k = _passes_until_admitted(decay=True)
-    # after 7 days it needs the normal 90 min; the first such pass in the cycle is pass 9 (budget 90)
+    # 224.3 min falls under the 223-min pass after about half a day of waiting, so the first 223-min pass (the 11th)
+    # admits it when it is reached at minute 0; with more time used ahead of it, later (by day 60 it needs only 90)
     assert k is not None and k <= len(RECENT_BUDGETS), k
-    assert k == 9, k
+    assert k == 11, k
 
 
 def test_negative_control_without_the_decay_it_is_never_admitted():
