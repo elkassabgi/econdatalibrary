@@ -11,7 +11,7 @@ WHAT IT NEVER DOES. It writes nothing to the store, R2 or D1. It writes raw resp
 request URL WITHOUT the key, into --out (a scratch folder), plus a manifest. The key is read in-process by the
 fetchers' own updater/strategies/fetchers/_common.api_key and is never printed or written (R1685).
 
-    python tools/census_r1760_fetch.py --calibrate --out F:/work/r1760/fetch     # R0: 2 requests
+    python tools/census_r1760_fetch.py --calibrate --out F:/work/r1760/fetch     # R0: 4 requests
     python tools/census_r1760_fetch.py --table enduse --year 2015 --out ...      # one year of one table
 """
 from __future__ import annotations
@@ -93,10 +93,17 @@ def fetch(table: str, time_clause: str, out_dir: str, key: str, sess=None) -> di
     if rec["kind"] == "json":
         try:
             js = json.loads(body.decode("utf-8"))
-            rec["rows"] = max(0, len(js) - 1)
-            rec["header"] = js[0] if js else []
         except ValueError as e:
-            rec["kind"], rec["error"] = "unparseable", str(e)[:120]
+            js, rec["kind"], rec["error"] = None, "unparseable", str(e)[:120]
+        if rec["kind"] == "json":
+            if not isinstance(js, list) or not all(isinstance(row, list) for row in js):
+                rec["kind"], rec["error"] = "unparseable", "the body is not a list of rows"
+            else:
+                rec["rows"] = max(0, len(js) - 1)
+                rec["header"] = js[0] if js else []
+                # The API answers the asked columns, then the predicate columns (review AR-443).
+                if js and rec["header"] != params["get"].split(",") + ["CTY_CODE", "time"]:
+                    rec["kind"] = "bad_header"
     if key.encode() in body:                                 # checked BEFORE anything is written
         raise SystemExit(f"{stem}: the response echoes the key; nothing written")
     os.makedirs(out_dir, exist_ok=True)
@@ -143,9 +150,12 @@ def main(argv=None) -> int:
         rec = fetch(t, ym, a.out, key, sess)
         print(f"{t:7} {ym}  {rec['status']} {rec['kind']:5} rows={rec.get('rows', '-')} "
               f"bytes={rec['bytes']:,} {rec['seconds']}s", flush=True)
-        if rec["kind"] not in ("json", "empty"):
+        if rec["kind"] != "json" or not rec.get("rows"):
             # An HTML page (a missing or bad key) or an error answers every later request the same way: stop.
-            print(f"stopping: {t} {ym} answered {rec['kind']} (HTTP {rec['status']})", flush=True)
+            # No rows stops too, whether a 204 or a 200 with a header only: every month asked for is one the
+            # store holds, so no rows is a gap the patch would silently skip (reviews AR-441 C2, AR-443).
+            print(f"stopping: {t} {ym} answered {rec['kind']} rows={rec.get('rows', 0)} "
+                  f"(HTTP {rec['status']})", flush=True)
             return 2
     # Re-runs append manifest lines while each .raw is overwritten: readers take the LAST line per stem.
     return 0

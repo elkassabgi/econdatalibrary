@@ -35,7 +35,8 @@ def test_the_request_carries_identity_and_only_the_bad_columns():
 
 
 def test_json_is_recorded_and_the_key_is_never_written(tmp_path):
-    body = json.dumps([["I_ENDUSE", "COMM_LVL"], ["0", "1"], ["1", "1"]]).encode()
+    hdr = F.request("enduse", "2015-06")[1]["get"].split(",") + ["CTY_CODE", "time"]
+    body = json.dumps([hdr, ["0"] * len(hdr), ["1"] * len(hdr)]).encode()
     s = Sess(Resp(body))
     rec = F.fetch("enduse", "2015-06", str(tmp_path), KEY, s)
     assert s.calls[0][1]["key"] == KEY, "the key goes to the request"
@@ -122,3 +123,37 @@ def test_main_stops_at_the_first_html_answer(tmp_path, monkeypatch):
     assert F.main(["--calibrate", "--out", str(tmp_path / "o")]) == 2
     lines = (tmp_path / "o" / "manifest.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1, "one html answer, then nothing more is asked"
+
+
+HDR = F.request("enduse", "2015-06")[1]["get"].split(",") + ["CTY_CODE", "time"]
+
+
+@pytest.mark.parametrize("resp,kind", [
+    (Resp(b"", status=204, ctype=""), "empty"),
+    (Resp(json.dumps([HDR]).encode()), "json"),                       # a header and no rows (AR-443)
+    (Resp(b"[]"), "json"),
+    (Resp(b"null"), "unparseable"),
+    (Resp(b'{"a": 1}'), "unparseable"),
+    (Resp(json.dumps([HDR[:-1], ["x"] * 10]).encode()), "bad_header"),
+])
+def test_main_stops_at_the_first_month_without_rows(tmp_path, monkeypatch, resp, kind):
+    """AR-441 C2, AR-443: no rows for a month the store holds is a gap, not a month to skip past."""
+    monkeypatch.setattr(F, "_key", lambda: KEY)
+    monkeypatch.setattr(F.requests, "Session", lambda: Sess(resp))
+    monkeypatch.setattr(F.time, "sleep", lambda s: None)
+    assert F.main(["--calibrate", "--out", str(tmp_path / "o")]) == 2
+    lines = (tmp_path / "o" / "manifest.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1 and json.loads(lines[0])["kind"] == kind
+
+
+def test_a_full_month_goes_on(tmp_path, monkeypatch):
+    """The negative control: a header and rows is data, and all four requests are made."""
+    class Echo:                                   # answers each request with the columns it asked for
+        def get(self, url, params=None, headers=None, timeout=None):
+            hdr = params["get"].split(",") + ["CTY_CODE", "time"]
+            return Resp(json.dumps([hdr, ["0"] * len(hdr)]).encode())
+    monkeypatch.setattr(F, "_key", lambda: KEY)
+    monkeypatch.setattr(F.requests, "Session", Echo)
+    monkeypatch.setattr(F.time, "sleep", lambda s: None)
+    assert F.main(["--calibrate", "--out", str(tmp_path / "o")]) == 0
+    assert len((tmp_path / "o" / "manifest.jsonl").read_text(encoding="utf-8").splitlines()) == 4
