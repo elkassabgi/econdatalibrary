@@ -22,6 +22,14 @@ import pytest
 from updater import orchestrate
 from updater.state import StateStore, now_utc
 
+
+@pytest.fixture(autouse=True)
+def _posix_platform(monkeypatch):
+    """These tests record _has_adapter calls as admissions. On the workstation platform (no per-unit hard timeout)
+    run_once also calls it through _can_head_band to pick each band's head (2026-11-06), which would count as an
+    admission here. The label and the gate are what this file pins, so it runs as on Linux CI."""
+    monkeypatch.setattr(orchestrate, "hard_timeout_available", lambda: True)
+
 SOURCES = ["cnb", "frankfurter"]          # both cadence: daily, both with a fetcher module
 
 

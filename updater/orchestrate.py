@@ -834,6 +834,21 @@ def _has_adapter(unit) -> bool:
     return True
 
 
+def _can_head_band(unit, store, force) -> bool:
+    """May this unit be its band's HEAD (admission_reserve's band_head)? Only a unit that is DUE (a label that cannot
+    be read counts as due: main's reserve is the safe side) AND whose adapter works. The adapter condition (review
+    AR-450 round 3): the head is chosen before run_once's own _has_adapter check, and a PENDING or BROKEN unit records
+    no turn, so without it such a unit would hold the head of its band in every pass. An adapter check that raises
+    counts as no adapter. Kept out of the unit loop so the loop's own call order (gate, _has_adapter, is_due) is the
+    same as before (tests/test_budget_skip_due_label.py)."""
+    if _budget_skip_due_label(unit, store, force) == "not due":
+        return False
+    try:
+        return bool(_has_adapter(unit))
+    except Exception:                                              # noqa: BLE001 - a broken adapter never heads
+        return False
+
+
 def _budget_skip_due_label(unit, store, force) -> str:
     """Would this unit be due? For the BUDGET SKIP line, and (since 2026-11-06) to find each cost band's HEAD for
     admission_reserve's band_head rule: the first unit of a band whose label is not "not due" (an unknown label
@@ -3198,6 +3213,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
     # a skipped unit costs inside the loop stay exactly as before.
     _skipped_for_drain: list = []
     _band_heads_taken: set = set()    # cost bands whose head (admission_reserve's band_head) this pass has seen
+    _hard_timeout = hard_timeout_available()    # the band-head rule applies only without it (admission_reserve)
 
     for unit in units:
         if sources and unit.source_id not in sources:
@@ -3246,15 +3262,16 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
         # The reserve: a declared unit's own figure, else min(2 x timeout, 3 x est floored at 10), else the worst
         # case for a never-run unit (admission_reserve, shared with tools/measure_ci_lag.py's replay).
         # The band head: the first unit of its cost band, in run order, that is due (or whose due-ness cannot be
-        # read: fail toward main's reserve). Only it is offered the normal reserve (admission_reserve).
+        # read: fail toward main's reserve) and has a working adapter (_can_head_band). Only it is offered the normal
+        # reserve (admission_reserve). Looked for only where the rule applies: no per-unit hard timeout.
         _band = cost_band(_est_s)
         _is_head = False
-        if _band not in _band_heads_taken and _budget_skip_due_label(unit, store, force) != "not due":
+        if not _hard_timeout and _band not in _band_heads_taken and _can_head_band(unit, store, force):
             _is_head = True
             _band_heads_taken.add(_band)
         _need_min, _basis, _ws_min, _ws_bad = admission_reserve(unit, _est_s,
                                                                 last_real_s=_last_real.get(unit.source_id),
-                                                                band_head=_is_head)
+                                                                hard_timeout=_hard_timeout, band_head=_is_head)
         if _ws_bad:
             print(f"[orchestrator] WINDOW STOP {unit.key}: {_ws_bad} - keeping the standard reserve",
                   flush=True)

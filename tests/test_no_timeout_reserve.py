@@ -223,6 +223,7 @@ def test_last_real_duration_is_the_newest_run_that_got_somewhere(tmp_path):
 
 def test_run_once_hands_the_latest_real_run_to_admission(tmp_path, monkeypatch):
     from updater.state import StateStore
+    monkeypatch.setattr(orchestrate, "hard_timeout_available", lambda: False)     # the workstation, on any machine
     store = StateStore(str(tmp_path / "state.db"))
     store.db.execute("INSERT INTO runs(ts_utc,source_id,unit_id,status,obs,dur_s,note) VALUES (?,?,?,?,?,?,?)",
                      ("2026-10-12T02:47:52+00:00", "istat", "_all", "killed_external", 0, 8870.0, "planted"))
@@ -233,6 +234,7 @@ def test_run_once_hands_the_latest_real_run_to_admission(tmp_path, monkeypatch):
         pass
 
     def probe(unit, est_s, unit_timeout_min=None, last_real_s=None, hard_timeout=None, band_head=False):
+        assert hard_timeout is False
         seen[unit.source_id] = (last_real_s, band_head)
         raise _Stop()
     monkeypatch.setattr(orchestrate, "admission_reserve", probe)
