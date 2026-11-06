@@ -3,9 +3,11 @@
 Statistics Estonia is a pure **PxWeb** source (no SDMX 2.1, so no ?updatedAfter /
 ?startPeriod — the date-tail is expressed as a POST whose TIME dimension is restricted
 to the period codes from the stored max on). The strategy is `sdmx_delta`: for each
-table we read the already-published max(obs_date) and request the newer periods AND the
-boundary period itself (hot tables; see BOUNDARY_ENV), plus - only when the revision window
-is armed (OFF by default, REVISION_ENV) - the last N years before it. Every fetched row is
+table we read the already-published max(obs_date) and request the newer periods AND - for a hot
+table of the D1 shape (a YEAR axis with a quarter/month variable; see BOUNDARY_ENV) - the boundary
+period itself, plus - only when the revision window is armed (OFF by default, REVISION_ENV) - the
+last N calendar years up to and including the stored max (N=5: 2022-2026 for a 2026 max; any table
+shape). Every fetched row is
 compared with the stored row on (series_key, obs_date), and only changed and added rows are
 merged; a stored row the fetch did not return is HELD (kept). Nothing is ever deleted.
 
@@ -138,12 +140,21 @@ OBS_HORIZON = dt.date.today() + dt.timedelta(days=400)
 #       dimensions under other names are missed), 106 of them show the frozen symptom now.
 #   D0  published revisions of past periods are never fetched: 5,887 rows in 4 of the 11 tables,
 #       national accounts back to 1995, industrial production 2025-09..2026-07.
-# THE BOUNDARY (D1 fix) - ON by default: a hot table with stored rows re-requests the period of its
-# stored max, and every row of that period is compared with the store and merged (revised values
-# overwrite on (series_key, obs_date); nothing is deleted). Cold tables (archive / finished) keep the
-# strictly-newer request: re-reading a finished table's boundary on every cold visit buys nothing
-# (review CHALLENGE M1). STAT_ESTONIA_BOUNDARY_REFETCH=0 turns the boundary off (an operator valve if
-# the per-pass budget suffers; the extra POST per hot table is NOT measured).
+# THE BOUNDARY (D1 fix) - ON by default, for D1-SHAPE tables only: a hot table whose time axis is a
+# YEAR and which carries a sub-period variable (Kvartal, Kuu, Registreerimiskuu, ...; _is_subperiod_name)
+# re-requests the period of its stored max, and every row of that period is compared with the store and
+# merged (revised values overwrite on (series_key, obs_date); nothing is deleted).
+# WHY D1 ONLY (review AR-453 C1): the boundary costs one POST per table on EVERY visit, and 1,113 stored
+# tables are hot; at ~0.75 s a POST that is ~14 minutes of an 18-minute pass. Only on a D1 table does
+# the boundary carry data nothing else can reach - later quarters/months arrive under the year code
+# already stored, which the strictly-newer request never asks again. On any other table the boundary
+# only re-reads the last period for a revision, which is the revision window's job (D0). A rule on
+# "stored max in the current year" would not narrow it: most hot tables end this year.
+# Cold tables (archive / finished) keep the strictly-newer request (review CHALLENGE M1).
+# STAT_ESTONIA_BOUNDARY_REFETCH: unset/"1" = D1 tables (default), "0" = off (the operator valve),
+# "all" = every hot table (the first build's rule, for an operator who wants last-period revisions).
+# TRIGGER (PR #243): if a pass attempts fewer than 900 tables, set it to 0 and re-plan; the
+# "requests this pass" log line is the instrument.
 # THE REVISION WINDOW (D0 fix) - OFF by default, its own switch (census #239's pattern): see
 # revision_activated_on().
 BOUNDARY_ENV = "STAT_ESTONIA_BOUNDARY_REFETCH"
@@ -151,8 +162,11 @@ REVISION_ENV = "STAT_ESTONIA_REVISION_FROM"
 # Set by a reviewed one-line commit. None = off. STAT_ESTONIA_REVISION_FROM=YYYY-MM-DD arms it on a
 # workstation instead.
 OPERATOR_ACTIVATED_ON: dt.date | None = None
-# CHOSEN, not measured: the measured revisions sit in 2022-2026 for RAA0063, RAA0042 and TO0053, but
-# RAA0012's 272 seasonally adjusted rows before 2021 are OUTSIDE a 5-year window.
+# CHOSEN, not measured. The floor is 1 January of (stored max year - YEARS + 1): for a 2026 max and
+# YEARS=5 that is 2022-01-01, so the window is 2022-2026, the current year included, and 2021 is
+# OUTSIDE it. Replayed on the measurement's saved answers (review AR-453): the default window recovers
+# 5,592 of the 5,887 measured revised rows; the 295 it misses are all RAA0012's (225 of its 520 are
+# inside). RAA0063, RAA0042 and TO0053's revisions are all inside.
 REVISION_YEARS_DEFAULT = 5
 REVISION_EVERY_DAYS_DEFAULT = 90     # a table is re-pulled at most this often (slow cadence)
 REVISION_RETRY_DAYS = 7              # ... or this soon after a transient attempt
@@ -173,9 +187,46 @@ GROWTH_PCT = 1.0
 NOTE_MAX_CHARS = 700
 
 
-def boundary_refetch_on(environ=None) -> bool:
+def boundary_mode(environ=None) -> str:
+    """"d1" (default: D1-shape hot tables), "all" (every hot table) or "off" (BOUNDARY_ENV=0)."""
     env = os.environ if environ is None else environ
-    return (env.get(BOUNDARY_ENV) or "1").strip() != "0"
+    raw = (env.get(BOUNDARY_ENV) or "1").strip().lower()
+    return "off" if raw == "0" else "all" if raw == "all" else "d1"
+
+
+def boundary_refetch_on(environ=None) -> bool:
+    return boundary_mode(environ) != "off"
+
+
+# A SUB-PERIOD VARIABLE: its code (the series-key part name) is, or ENDS in, a quarter / half-year /
+# month / week word. Word-final, so 'Registreerimiskuu', 'Sünnikuu', 'Surmakuu' (month of registration,
+# birth, death - review CHALLENGE m2: 54 year-only tables the exact list missed, 4 frozen) count, and
+# 'Leibkonnaliikme kuu netosissetulek' (monthly income) or 'Aasta algul ja lõpul' do not. A false
+# positive costs one POST per visit and nothing else; a false negative is a frozen D1 table.
+_SUBPERIOD_STEMS = ("kvartal", "kuu", "poolaasta", "nadal", "quarter", "month", "half-year", "week")
+
+
+def _fold(s: str) -> str:
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFKD", str(s).lower())
+                   if not unicodedata.combining(c))
+
+
+def _is_subperiod_name(code: str) -> bool:
+    words = _fold(code).split()
+    if not words:
+        return False
+    last = words[-1]
+    return last in _SUBPERIOD_STEMS or last.endswith("kuu") or last.endswith("kvartal")
+
+
+def _is_d1_shape(dates, var_codes) -> bool:
+    """A YEAR axis (every parsed period is 31 Dec) and a sub-period variable among the others. The
+    same rule classifies a stored table from its keys (dates + key-part names) and a visited table from
+    its metadata (parsed time codes + variable codes), so the count in PR #243 is the fetcher's rule."""
+    ds = [d for d in dates if d is not None]
+    return bool(ds) and all(d.month == 12 and d.day == 31 for d in ds) and any(
+        _is_subperiod_name(c) for c in var_codes)
 
 
 def revision_activated_on(environ=None):
@@ -563,7 +614,7 @@ def _selection(ing, variables, time_idx, meta_time_code, *, force_aggregate=Fals
     return sels, per, "aggregate"
 
 
-def _plan_table(ing, variables, stored_max: dt.date | None, *, boundary: bool = True,
+def _plan_table(ing, variables, stored_max: dt.date | None, *, boundary: bool | str = True,
                 rev_floor: dt.date | None = None, full_pull_grain: str = "ingester"):
     """The POSTs one table visit sends, or None when the table has no time dimension.
 
@@ -574,9 +625,11 @@ def _plan_table(ing, variables, stored_max: dt.date | None, *, boundary: bool = 
 
     THE CODES ASKED (stored_max not None):
       * new      - codes dated after the stored max (the old tail);
-      * boundary - codes dated ON the stored max, when `boundary` (D1: the year code of a table that
-                   keys its quarter or month; also a revised last period);
-      * revision - codes dated in [rev_floor, stored_max), when the revision window gives a floor (D0).
+      * boundary - codes dated ON the stored max: when `boundary` is "all", or when it is truthy and
+                   the table has the D1 shape (_is_d1_shape: the year code of a table that keys its
+                   quarter or month). False / "off" asks no boundary.
+      * revision - codes dated in [rev_floor, stored_max), when the revision window gives a floor (D0);
+                   an armed window also asks the boundary, on any table shape.
     THE time axis is picked with the shared value-first resolver (core/pxweb.py) fed the SAME inputs
     ing.parse_jsonstat2 resolves with, so the axis restricted here is EXACTLY the axis the parser keys
     obs_date on (the old first-is_time_dim pick froze Kuu+Aasta cubes).
@@ -601,6 +654,8 @@ def _plan_table(ing, variables, stored_max: dt.date | None, *, boundary: bool = 
         return None              # no time dimension -> nothing date-tailable (census snapshot)
     tvar = variables[time_idx]
     all_time = list(tvar.get("values") or [])
+    d1 = _is_d1_shape([ing.parse_date(c) for c in all_time],
+                      [v.get("code", "") for i, v in enumerate(variables) if i != time_idx])
     n_new = n_bnd = n_rev = 0
     if stored_max is None:
         # first-time / unmapped / corrupt-boundary table -> full pull (merge dedups). Publisher order is
@@ -610,7 +665,12 @@ def _plan_table(ing, variables, stored_max: dt.date | None, *, boundary: bool = 
     else:
         dated = [(c, d) for c in all_time if (d := ing.parse_date(c)) is not None]
         new = [(c, d) for c, d in dated if d > stored_max]
-        bnd = [(c, d) for c, d in dated if d == stored_max] if boundary else []
+        # An ARMED revision window re-pulls through the stored max, whatever the table's shape: without
+        # this a non-D1 table's last period is never re-read (the AR-453 replay lost TO0053's 117
+        # revised rows at its stored month when the boundary was narrowed to D1).
+        ask_bnd = (boundary == "all" or rev_floor is not None
+                   or (bool(boundary) and boundary != "off" and d1))
+        bnd = [(c, d) for c, d in dated if d == stored_max] if ask_bnd else []
         rev = ([(c, d) for c, d in dated if rev_floor <= d < stored_max]
                if rev_floor is not None else [])
         n_new, n_bnd, n_rev = len(new), len(bnd), len(rev)
@@ -618,7 +678,8 @@ def _plan_table(ing, variables, stored_max: dt.date | None, *, boundary: bool = 
         codes = [c for c, _ in picked]
         dates = {d for _, d in picked}
     plan = {"tcode": tvar.get("code"), "queries": [], "dates": dates, "n_new": n_new,
-            "n_boundary": n_bnd, "n_rev": n_rev, "grain": None, "per_period": 0}
+            "n_boundary": n_bnd, "n_rev": n_rev, "grain": None, "per_period": 0,
+            "d1": d1, "tail_grain_changed": False}
     if not codes:
         return plan
     sels, per, grain = _selection(ing, variables, time_idx, meta_time_code)
@@ -628,6 +689,13 @@ def _plan_table(ing, variables, stored_max: dt.date | None, *, boundary: bool = 
         if grain == "full" and len(codes) * per > ing.MAX_CELLS:
             sels, per, grain = _selection(ing, variables, time_idx, meta_time_code, force_aggregate=True)
         step = len(codes)                                  # one POST, as before
+    elif n_new and grain == "full":
+        # MAIN'S GRAIN FOR THE SAME TAIL (review AR-453 C2): main measured MAX_CELLS against the
+        # restricted (new-only) list, so it aggregated a tail of many periods. Where this request is
+        # full detail and main's would have been aggregate, the tail's rows under keys the table never
+        # held are a grain change and stay under the new-series bound; anywhere else the tail merges
+        # exactly as on main (a genuine new category included).
+        plan["tail_grain_changed"] = n_new * per > ing.MAX_CELLS
     plan["grain"], plan["per_period"] = grain, per
     for j in range(0, len(codes), step):
         part = codes[j:j + step]
@@ -678,7 +746,10 @@ def _compare_subject(path, fetched, stored_rows):
 
     Per table: changed (stored key+date, other value: overwritten), added (key+date the store lacks),
     held (stored rows at the asked dates the fetch did not return: KEPT, merge never deletes),
-    withheld_new_series / withheld_revision (added rows a growth bound keeps OUT of the merge, named),
+    withheld_new_series / withheld_revision (added rows a growth bound keeps OUT of the merge, named;
+    the new-series bound covers rows dated AT or BEFORE the stored max - the boundary and the revision
+    window - and the new tail only when fetched[t]["tail_grain_changed"]; a same-grain tail merges as
+    on main, review AR-453 C2),
     refused (the key is not unique in the fetch or in the stored window: nothing of the table merges).
     Returns (stats, merge_table|None). One pass over the stored file in batches, vectorised (R244).
     """
@@ -748,7 +819,6 @@ def _compare_subject(path, fetched, stored_rows):
         return c
     n_changed = _count_by(changed_m)
     n_added = _count_by(added_m)
-    n_added_new = _count_by(pc.and_(added_m, is_new_series))
     n_matched = _count_by(matched)
     n_window = defaultdict(int)
     for t in W.column("tbl").to_pylist():
@@ -761,6 +831,14 @@ def _compare_subject(path, fetched, stored_rows):
         below.append(sm is not None and d < sm)
     below = pa.array(below, pa.bool_())
     n_added_rev = _count_by(pc.and_(pc.and_(added_m, pc.invert(is_new_series)), below))
+    # rows the NEW-SERIES bound applies to: at or before the stored max (boundary, revision window), or
+    # anywhere in a table whose new tail changed grain against main's request
+    at_or_below = []
+    for t, d in zip(J.column("tbl").to_pylist(), J.column("obs_date").to_pylist()):
+        sm = smax.get(t)
+        at_or_below.append(bool(fetched[t].get("tail_grain_changed")) or (sm is not None and d <= sm))
+    bounded = pc.and_(pc.and_(added_m, is_new_series), pa.array(at_or_below, pa.bool_()))
+    n_added_new = _count_by(bounded)
 
     stats, refuse, hold_new, hold_rev = {}, set(), set(), set()
     for t in tbls:
@@ -787,7 +865,7 @@ def _compare_subject(path, fetched, stored_rows):
         keep = pc.and_(keep, pc.invert(pc.is_in(tblcol, value_set=pa.array(sorted(refuse), pa.string()))))
     if hold_new:
         in_h = pc.is_in(tblcol, value_set=pa.array(sorted(hold_new), pa.string()))
-        keep = pc.and_(keep, pc.invert(pc.and_(pc.and_(in_h, added_m), is_new_series)))
+        keep = pc.and_(keep, pc.invert(pc.and_(in_h, bounded)))
     if hold_rev:
         in_h = pc.is_in(tblcol, value_set=pa.array(sorted(hold_rev), pa.string()))
         keep = pc.and_(keep, pc.invert(pc.and_(pc.and_(pc.and_(in_h, added_m),
@@ -987,7 +1065,8 @@ def update(unit, since) -> Result:
 
     # THE BOUNDARY AND THE REVISION WINDOW (see BOUNDARY_ENV / REVISION_ENV at the top).
     today = dt.date.today()
-    boundary_on = boundary_refetch_on()
+    b_mode = boundary_mode()
+    boundary_on = b_mode != "off"
     act = revision_activated_on()
     revision_armed = act is not None and act <= today
     # OFF means OFF: no sidecar read, no sidecar write, no period before the boundary asked.
@@ -999,7 +1078,7 @@ def update(unit, since) -> Result:
     note_stats: dict = {}          # {table prefix: compare stats} over the whole pass, for the note
     # THE REQUEST COST OF THIS PASS, printed at the end (VERIFY V-M1: the boundary's cost is not yet
     # measured; this line is the instrument, read on the first runs after the merge).
-    req_posts = req_chunks = 0
+    req_posts = req_chunks = req_d1 = req_bnd = 0
     req_tables: dict = defaultdict(int)          # {grain: tables planned with >= 1 POST}
     if revision_armed:
         print(f"[{SOURCE}] revision window ARMED (from {act}): last {rev_years} year(s) per hot table, "
@@ -1171,13 +1250,16 @@ def update(unit, since) -> Result:
                 else:
                     rev_left += 1          # due, slice spent: a later pass (named in the merge note)
             plan = _plan_table(ing, meta["variables"], stored_max,
-                               boundary=boundary_on and not is_cold, rev_floor=rev_floor)
+                               boundary=b_mode if (boundary_on and not is_cold) else "off",
+                               rev_floor=rev_floor)
             if plan is None or not plan["queries"]:
                 tally.empty_unit(tpath)    # no time dim, or nothing at/after the stored max
                 time.sleep(RATE)
                 continue
             is_rev = rev_floor is not None and plan["n_rev"] > 0
             req_tables[plan["grain"]] += 1
+            req_d1 += int(bool(plan["d1"]))
+            req_bnd += int(plan["n_boundary"] > 0)
             req_chunks += len(plan["queries"])
 
             # 3) data POSTs, one per chunk, ALL OR NOTHING for the table (see _plan_table)
@@ -1300,7 +1382,8 @@ def update(unit, since) -> Result:
             fetched[prefix] = {"rows": kept, "dates": dset, "stored_max": stored_max,
                                "dup_fetched": sum(c - 1 for c in seen_n.values()),
                                "path": tpath, "n_outside": n_outside, "grain": plan["grain"],
-                               "chunks": len(plan["queries"])}
+                               "chunks": len(plan["queries"]),
+                               "tail_grain_changed": plan["tail_grain_changed"]}
             if is_rev:
                 rev_tables.add(prefix)
             time.sleep(RATE)
@@ -1392,6 +1475,18 @@ def update(unit, since) -> Result:
                             f"stored rows kept"))
                     elif not merged_ok and (st["merged_added"] or st["merged_changed"]):
                         pass                                 # booked transient above
+                    elif st["withheld_new_series"] or st["withheld_revision"]:
+                        # WITHHELD ROWS NEED A PERSON (review AR-453 C2): booked TRANSIENT and named, so
+                        # the source reads ATTENTION in the gate and the digest every pass until someone
+                        # acts. The merge note alone is a non-failure tail that health strips. What did
+                        # merge from this table (changed values, added rows outside the bound) is in the
+                        # store and the row total; its added rows still count in tally.added.
+                        tally.added += st["merged_added"]
+                        tally.transient_unit(_said(
+                            f"{tp}: WITHHELD {st['withheld_new_series']} row(s) under series the table "
+                            f"never held + {st['withheld_revision']} revision row(s) over the growth "
+                            f"bound - needs review ({st['merged_changed']} changed / "
+                            f"{st['merged_added']} added merged)"))
                     elif st["merged_added"]:
                         tally.added_unit(st["merged_added"])
                     elif st["merged_changed"]:
@@ -1466,7 +1561,7 @@ def update(unit, since) -> Result:
 
     print(f"[{SOURCE}] requests this pass: {req_posts} POST(s) over {req_chunks} planned chunk(s); "
           f"tables by grain: full={req_tables['full']} aggregate={req_tables['aggregate']}; "
-          f"boundary {'ON' if boundary_on else 'OFF'}, revision {'ARMED' if revision_armed else 'off'}; "
+          f"boundary {b_mode} (asked on {req_bnd} table(s), {req_d1} visited table(s) D1-shape), revision {'ARMED' if revision_armed else 'off'}; "
           f"{tally.attempted} sub-unit(s) attempted", flush=True)
     last_obs = maxd.isoformat() if maxd is not None else (since or None)
     # empty_window_floor = (#sub-units) - 1 per the contract: a real wholesale outage

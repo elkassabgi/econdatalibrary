@@ -190,6 +190,22 @@ def test_the_switches_default_boundary_on_and_revision_off():
     assert S.revision_activated_on({S.REVISION_ENV: "soon"}) is None, "unparseable = off"
     assert S.boundary_refetch_on({}) is True
     assert S.boundary_refetch_on({S.BOUNDARY_ENV: "0"}) is False
+    assert (S.boundary_mode({}), S.boundary_mode({S.BOUNDARY_ENV: "0"}),
+            S.boundary_mode({S.BOUNDARY_ENV: "all"})) == ("d1", "off", "all")
+
+
+def test_the_d1_rule_from_metadata_and_from_stored_keys():
+    """AR-453 C1: the boundary is asked only for a YEAR axis with a sub-period variable. Planted
+    positives (the exact names and the word-final '-kuu' names the first count missed) and negatives
+    (a monthly axis; 'kuu' inside a longer phrase; a stock 'beginning/end of year' dimension)."""
+    yrs = [END(Y - 1), END(Y)]
+    for name in ("Kvartal", "Kuu", "Registreerimiskuu", "Sünnikuu", "Poolaasta", "Quarter"):
+        assert S._is_d1_shape(yrs, ["Sugu", name]), name
+    for name in ("Leibkonnaliikme kuu netosissetulek", "Aasta algul ja lõpul", "Tegevusala",
+                 "Arsti külastamine viimase 12 kuu jooksul"):
+        assert not S._is_d1_shape(yrs, ["Sugu", name]), name
+    assert not S._is_d1_shape([dt.date(Y, 1, 1), dt.date(Y, 2, 1)], ["Kvartal"]), "not a year axis"
+    assert not S._is_d1_shape([], ["Kvartal"])
 
 
 def test_revision_off_by_default_asks_nothing_old_and_touches_no_sidecar(env):
@@ -260,33 +276,95 @@ def test_revision_rows_that_would_add_many_rows_are_withheld_but_changed_rows_me
     res = env.run(pub, [path])
     st = _store(env.tmp, "majandus")
     assert st[(f"{pre}:EMTAK=C00", codes[0][1])] == 2.0, "the aggregate key's revision merged"
+    assert st[(f"{pre}:EMTAK=C00", codes[-2][1])] == 2.0, "the armed window re-reads the stored max too"
+    assert pub.asked_times(path, "Kuu") == [c for c, _ in codes], "window + stored max + new month"
     assert (f"{pre}:EMTAK=C05", codes[0][1]) not in st, "detail history withheld (store repair is separate)"
     assert "withheld" in res.error and "TO0053.PX" in res.error, res.error
+    assert res.status == "partial" and "WITHHELD" in res.error.split("; merge note:")[0], \
+        "AR-453 C2: a withheld table is a named transient the gate sees, not only a merge-note line"
     assert json.loads((env.tmp / REVISION_FILE).read_text())[path]["outcome"] == "withheld"
     pub2 = Pub(pub.tables)
     env.run(pub2, [path])
-    assert pub2.asked_times(path, "Kuu") == [codes[-1][0]], \
-        "stamped withheld: waits its cadence, only the boundary (the month merged above) is asked"
+    assert pub2.posts == [], "stamped withheld: waits its cadence; a monthly table asks no boundary"
 
 
-# ---- B1: the tail must not mint a mixed-grain table ---------------------------------------------------
-def test_a_new_period_in_full_detail_does_not_add_series_an_aggregate_table_never_held(env):
-    """The bulk ingest stored this table AGGREGATED (whole history over MAX_CELLS) while one month in
-    full detail fits. Main asks the new month in full detail and adds every detail series - a new
-    D2 table. Now those rows are withheld and the aggregate key's new month still merges."""
-    path = "majandus/ehitus/EH045.PX"
-    codes = [_month(b) for b in (3, 2, 1)]
-    tvars = [{"code": "Kuu", "time": True, "values": [c for c, _ in codes]},
-             {"code": "Liik", "values": [f"L{i:03d}" for i in range(120)]}]
-    pre = S._table_prefix(path)
-    _write_store(env.tmp, "majandus", [(f"{pre}:Liik=L000", d, 5.0) for _, d in codes[:2]])
-    pub = Pub({path: (tvars, lambda c: 5.0)})
-    res = env.run(pub, [path])
+# ---- C2: the new-series bound, where it applies --------------------------------------------------
+EH = "majandus/ehitus/EH045.PX"
+EH_CODES = [_month(b) for b in (3, 2, 1)]
+EH_VARS = [{"code": "Kuu", "time": True, "values": [c for c, _ in EH_CODES]},
+           {"code": "Liik", "values": [f"L{i:03d}" for i in range(120)]}]
+
+
+def _eh_store(tmp_path, upto=2):
+    pre = S._table_prefix(EH)
+    _write_store(tmp_path, "majandus", [(f"{pre}:Liik=L000", d, 5.0) for _, d in EH_CODES[:upto]])
+    return pre
+
+
+def test_a_new_category_on_the_normal_tail_merges_as_on_main(env):
+    """AR-453 C2: main asks the new month in full detail (one month fits MAX_CELLS) and merges every
+    series it returns - a genuine new category included. Same request grain as main, so no bound."""
+    pre = _eh_store(env.tmp)
+    pub = Pub({EH: (EH_VARS, lambda c: 5.0)})
+    res = env.run(pub, [EH])
     st = _store(env.tmp, "majandus")
-    assert (f"{pre}:Liik=L000", codes[2][1]) in st, "the stored grain's new month merged"
-    assert not [k for k, _ in st if not k.endswith("L000")], "no detail series added"
-    # 119 detail series at the boundary month AND at the new month: the boundary path is guarded too
-    assert "withheld 238 new-series" in res.error, res.error
+    assert len([k for k, d in st if d == EH_CODES[2][1]]) == 120, "all 120 series of the new month merged"
+    assert (f"{pre}:Liik=L007", EH_CODES[1][1]) not in st, "no boundary asked on a monthly table"
+    assert res.status == "ok" and "WITHHELD" not in res.error, res.error
+    assert pub.asked_times(EH, "Kuu") == [EH_CODES[2][0]], "main's request: the new month only"
+
+
+def test_new_series_at_the_boundary_are_withheld_and_reach_the_gate(env):
+    """B1 on the boundary path (mode 'all'): the stored month never held the detail series. They are
+    withheld - and booked as a named transient, so the source is ATTENTION, not a silent hold."""
+    from updater.health import _deferral_only
+    pre = _eh_store(env.tmp)
+    env.mp.setenv(BOUNDARY_ENV, "all")
+    pub = Pub({EH: (EH_VARS, lambda c: 5.0)})
+    res = env.run(pub, [EH])
+    st = _store(env.tmp, "majandus")
+    assert not [k for k, d in st if d == EH_CODES[1][1] and not k.endswith("L000")], "boundary detail withheld"
+    assert len([k for k, d in st if d == EH_CODES[2][1]]) == 120, "the same-grain new month still merged"
+    head = res.error.split("; merge note:")[0]
+    assert res.status == "partial" and "WITHHELD 119" in head and "EH045.PX" in head, res.error
+    assert not _deferral_only([{"status": res.status, "last_error": res.error}]), "reads ATTENTION"
+    assert (f"{pre}:Liik=L000", EH_CODES[2][1]) in st
+
+
+def test_a_tail_whose_grain_differs_from_mains_keeps_the_bound(env):
+    """Two pending months, 240 cells over a 200-cell cap: main aggregates (L000 only); this request is
+    full detail in chunks. The detail rows are a grain change, so they are withheld and named."""
+    env.ing.MAX_CELLS = 200
+    pre = _eh_store(env.tmp, upto=1)
+    pub = Pub({EH: (EH_VARS, lambda c: 5.0)})
+    res = env.run(pub, [EH])
+    st = _store(env.tmp, "majandus")
+    assert {k for k, _ in st} == {f"{pre}:Liik=L000"}, "no detail series added"
+    assert (f"{pre}:Liik=L000", EH_CODES[2][1]) in st, "the stored grain's new months merged"
+    assert pub.cells(EH) == [120, 120]
+    assert "withheld 238 new-series" in res.error and res.status == "partial", res.error
+
+
+# ---- C3: only the periods asked are compared --------------------------------------------------
+def test_a_period_the_request_did_not_ask_is_dropped_not_merged(env):
+    """AR-453 C3 (mutant M16): the publisher answers an extra, unasked year. Its rows lie outside the
+    compared window, so keeping them would count stored rows as added and trip the merge's row-count
+    DEFECT. They are dropped and counted as outside_asked; only the asked period merges."""
+    class _Extra(Pub):
+        def post(self, sess, url, body):
+            body = json.loads(json.dumps(body))
+            for x in body["query"]:
+                if x["code"] == "Aasta":
+                    x["selection"]["values"] = [str(Y - 2)] + list(x["selection"]["values"])
+            return super().post(sess, url, body)
+    pre = _raa_store(env.tmp)
+    pub = _Extra({RAA: (RAA_VARS, lambda c: 10.0)})
+    res = env.run(pub, [RAA])
+    assert str(Y - 2) in pub.asked_times(RAA, "Aasta"), "the fake really answered the unasked year"
+    st = _store(env.tmp, "majandus")
+    assert len(st) == 4 + 4 + 4, "the 3 missing quarters of the stored year merged, nothing else"
+    assert res.status == "ok" and "DEFECT" not in res.error, res.error
+    assert st[(f"{pre}:Kvartal=4", END(Y))] == 10.0
 
 
 # ---- chunked pull ---------------------------------------------------------------------------------
@@ -309,7 +387,7 @@ def _to_store(tmp_path, extra=()):
 
 
 def test_an_over_cap_table_is_pulled_in_time_chunks_at_full_detail(env):
-    """Boundary + 4 new months x 3 codes = 15 cells over a 6-cell cap. Main measures the cap against the
+    """4 new months x 3 codes = 12 cells over a 6-cell cap (no boundary: a monthly table). Main measures the cap against the
     restricted list and collapses Tegevusala to one code (the D2 mechanism); now each POST stays under
     the cap, the codes go OLDEST FIRST although the publisher lists them newest first, and every
     detail series lands."""
@@ -319,9 +397,9 @@ def test_an_over_cap_table_is_pulled_in_time_chunks_at_full_detail(env):
     env.run(pub, [TO])
     st = _store(env.tmp, "majandus")
     assert len(st) == 15 and {k for k, _ in st} == {f"{pre}:Tegevusala={x}" for x in "ABC"}, sorted(st)
-    assert pub.cells(TO) == [6, 6, 3]
+    assert pub.cells(TO) == [6, 6]
     asked = pub.asked_times(TO, "Kuu")
-    assert asked == [c for c, _ in MONTHS], "ascending, so a failed later chunk can never land before an older one"
+    assert asked == [c for c, _ in MONTHS[1:]], "ascending, so a failed later chunk can never land before an older one"
 
 
 def test_a_table_with_no_stored_rows_keeps_the_ingesters_single_request(env):
@@ -369,7 +447,7 @@ def test_the_deadline_between_chunks_abandons_the_table_and_resumes_at_it(env):
     pub = Pub({TO: (_to_vars(), lambda c: 2.0)})
     res = env.run(pub, [TO])
     assert len(_store(env.tmp, "majandus")) == 3, "nothing of the table merged"
-    assert "stopped between its 3 request chunks" in res.error, res.error
+    assert "stopped between its 2 request chunks" in res.error, res.error
     bm = json.loads((env.tmp / "_rotation_table.json").read_text())["after"]
     assert bm == "majandus|", "the table bookmark points BEFORE the abandoned table"
 
@@ -436,8 +514,8 @@ def test_the_merge_note_keeps_a_deferral_pass_rotating_and_a_failure_attention(e
     pre = _raa_store(env.tmp)
     t = pq.read_table(str(env.tmp / "majandus.parquet"))
     _write_store(env.tmp, "majandus", list(zip(t.column("series_key").to_pylist(), t.column("obs_date").to_pylist(),
-                                              t.column("value").to_pylist())) + [(f"{pw}:X=1", END(Y), 1.0)])
-    wvars = [{"code": "Aasta", "time": True, "values": [str(Y)]}, {"code": "X", "values": ["1"]}]
+                                              t.column("value").to_pylist())) + [(f"{pw}:Kuu=1", END(Y), 1.0)])
+    wvars = [{"code": "Aasta", "time": True, "values": [str(Y)]}, {"code": "Kuu", "values": ["1"]}]
     # an archive subject with a cold, not-due table makes the pass a deferral pass
     arch = "Lepetatud_tabelid/A/OLD1.PX"
     _write_store(env.tmp, "Lepetatud_tabelid", [(S._table_prefix(arch) + ":X=1", dt.date(2001, 12, 31), 1.0)])

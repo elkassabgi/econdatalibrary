@@ -54,7 +54,7 @@ def _run(tmp_path, monkeypatch, new_for):
     # the planning seam (was _build_query): one POST, no date filter (every fetched row is compared)
     monkeypatch.setattr(S, "_plan_table", lambda ing, variables, stored_max, **kw: {
         "tcode": "Aasta", "queries": [[{"q": 1}]], "dates": None, "n_new": 1, "n_boundary": 0,
-        "n_rev": 0, "grain": "full", "per_period": 1})
+        "n_rev": 0, "grain": "full", "per_period": 1, "d1": False, "tail_grain_changed": False})
 
     def _post(sess, url, body):
         path = url.split("https://x/", 1)[1]
