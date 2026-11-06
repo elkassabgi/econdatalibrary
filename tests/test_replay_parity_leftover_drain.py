@@ -54,8 +54,10 @@ def _workstation_platform(monkeypatch):
 
 
 # 2026-11-06: c's newest real run is 6,000 s, so on the workstation it reserves 100 min (admission_reserve's
-# no-hard-timeout rule), not the 90-min cap. The drained amounts below do not depend on it.
+# no-hard-timeout rule), not the 90-min cap - unless it is the HEAD of its band (the first due unit of band 3 in this
+# pass), which is offered the normal 90 (C_HEAD_RESERVE). The drained amounts below do not depend on it.
 C_RESERVE = 100.0
+C_HEAD_RESERVE = 90.0
 
 BASE = {"n": "monthly", "a": "monthly", "b": "monthly", "d": "monthly", "c": "monthly"}
 QUEUE = {"n": (30, "2026-09-15"), "b": (100, "2026-09-01"), "d": (10, "2026-07-01"), "c": (50, "2026-08-01")}
@@ -236,7 +238,7 @@ def test_the_replay_drains_what_run_once_drains(tmp_path, monkeypatch, capsys, r
 def test_pencil_no_rate(tmp_path, monkeypatch, capsys):
     p, _r, raw, _out = _both(tmp_path, monkeypatch, capsys)
     assert [x[0] for x in raw["ran"]] == ["n", "a", "d"] and raw["not_due"] == ["b"]
-    assert raw["budget_skipped"] == [("c", C_RESERVE)]
+    assert raw["budget_skipped"] == [("c", C_HEAD_RESERVE)]           # c heads band 3 here
     assert p["drained"] == [("c", 45.0)] and p["not_drained"] == ["b", "n"] and p["end_min"] == 70.0
 
 
@@ -250,7 +252,7 @@ def test_pencil_the_margin_binds(tmp_path, monkeypatch, capsys):
     # budget 50: n 0, a 0->5; b NOT DUE; d 5 + 60 > 50 and c 5 + 90 > 50 BUDGET SKIP -> both candidates. Drain
     # min(45 - 15, 45) = 30 (the margin binds, not the cap), order d (07-01), c, b, n: d takes all 30; ends at 35
     p, r, raw, _out = _both(tmp_path, monkeypatch, capsys, budget=50)
-    assert [x[0] for x in raw["ran"]] == ["n", "a"] and raw["budget_skipped"] == [("d", 60.0), ("c", C_RESERVE)]
+    assert [x[0] for x in raw["ran"]] == ["n", "a"] and raw["budget_skipped"] == [("d", 60.0), ("c", C_HEAD_RESERVE)]
     assert p["drained"] == r["drained"] == [("d", 30.0)] and p["not_drained"] == ["c", "b", "n"]
     assert p["end_min"] == r["end_min"] == 35.0
 

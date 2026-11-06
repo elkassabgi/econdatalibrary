@@ -76,15 +76,18 @@ def order_units(units, costs, staleness_key, fast_lane_seconds=FAST_LANE_SECONDS
     `costs` maps source_id -> estimated seconds; a source ABSENT from it has never run and
     sorts into the cheap band, so it keeps absolute priority for its first turn.
     """
-    def band(unit):
-        est = costs.get(unit.source_id)
-        if est is None or est < fast_lane_seconds:
-            return 0
-        for i, ceiling in enumerate(BAND_LADDER_SECONDS):
-            if est < ceiling:
-                return i + 1
-        return len(BAND_LADDER_SECONDS) + 1
-    return sorted(units, key=lambda u: (band(u), staleness_key(u)))
+    return sorted(units, key=lambda u: (cost_band(costs.get(u.source_id), fast_lane_seconds), staleness_key(u)))
+
+
+def cost_band(est, fast_lane_seconds=FAST_LANE_SECONDS) -> int:
+    """order_units' band for an estimate in seconds (None = never run -> band 0). Extracted unchanged, so the start
+    gate's band-head rule (admission_reserve) reads the same band the order sorts by."""
+    if est is None or est < fast_lane_seconds:
+        return 0
+    for i, ceiling in enumerate(BAND_LADDER_SECONDS):
+        if est < ceiling:
+            return i + 1
+    return len(BAND_LADDER_SECONDS) + 1
 
 
 CADENCE_DAYS = {"daily": 1.0, "weekly": 7.0, "monthly": 30.0,
@@ -464,6 +467,19 @@ def order_last_turn(unit, state_row, last_kill_utc, last_window_stop_utc):
     return last_turn_utc(state_row, last_kill_utc)
 
 
+# The workstation reserve's ceiling (review AR-450 round 2, R1838). WHY A CEILING: the reserve is a unit's newest real
+# run, a kill raises it, and only a run lowers it, so without a bound a unit whose figure exceeds every pass is never
+# admitted again. WHY 210: below the longest pass the schedule in force has given - 223 min, the 2026-11-05 22:42 pass,
+# longest of the 11 desktop passes measured since the 2026-11-04 cron change - with 13 min for the units ahead of it.
+# The ceiling alone is NOT the no-lock-out guarantee: units in lower bands run first and can use more than the 13
+# minutes it leaves (AR-450's sim: census and wid). The guarantee is the BAND HEAD rule in admission_reserve; the
+# ceiling only keeps the other units' reserves admissible in the long pass. WHY NOT A DECAY (falling to the normal
+# reserve over D days of waiting), tried in AR-450's replay: a 7-day decay had more hard stops than this rule in every
+# row; a 60-day decay had fewer hard stops in every row but more owed minutes at the end in both x1.5 rows, and its
+# bound is D days of waiting, not a count of turns. The sweep is in the PR body; the choice is open to review.
+WORKSTATION_RESERVE_CEILING_MIN = 210.0
+
+
 def hard_timeout_available() -> bool:
     """Can the per-unit SIGALRM cut a unit on this platform? False on Windows (no signal.setitimer): the
     workstation pass. One function, so a test pins the platform it models instead of inheriting the machine's."""
@@ -471,7 +487,7 @@ def hard_timeout_available() -> bool:
     return hasattr(_sig, "setitimer")
 
 
-def admission_reserve(unit, est_s, unit_timeout_min=None, last_real_s=None, hard_timeout=None):
+def admission_reserve(unit, est_s, unit_timeout_min=None, last_real_s=None, hard_timeout=None, band_head=False):
     """The start gate's reserve for `unit`: (need_min, basis, declared_min, why_not_declared).
 
     est_s is the unit's run_cost_estimate (None = never run). unit_timeout_min defaults to _unit_timeout_min();
@@ -495,10 +511,19 @@ def admission_reserve(unit, est_s, unit_timeout_min=None, last_real_s=None, hard
     if hard_timeout is None:
         hard_timeout = hard_timeout_available()
     need, basis, ws_min, ws_bad = _admission_reserve_base(unit, est_s, unit_timeout_min)
-    if (not hard_timeout and ws_min is None and last_real_s is not None and need > 0
+    # THE BAND HEAD (review AR-450 round 2, R1838): the first DUE unit of its cost band in this pass - under the
+    # last_turn_utc rotation, the one that has waited longest - is offered the normal reserve (main's rule), never
+    # the raised one. Every turn moves a unit behind every due unit that did not run, so each due unit becomes its
+    # band's head within as many admitting passes as the band has units, and a head is admitted by any pass that
+    # still has the normal reserve when the band starts: no figure can lock a unit out.
+    if (not hard_timeout and not band_head and ws_min is None and last_real_s is not None and need > 0
             and last_real_s / 60.0 > need):
-        return (last_real_s / 60.0,
-                "its latest real run: no hard timeout on this platform and no window_stop, so it cannot be cut",
+        # THE CEILING (review AR-450 round 2, R1838): never above WORKSTATION_RESERVE_CEILING_MIN, so the figure
+        # cannot outgrow every pass and lock the unit out for good (unctad_tradefoodprocbycat's 224.3 min against a
+        # longest recent pass of 223). It never lowers a reserve below `need`.
+        return (max(need, min(last_real_s / 60.0, WORKSTATION_RESERVE_CEILING_MIN)),
+                "its latest real run: no hard timeout on this platform and no window_stop, so it cannot be cut "
+                f"(at most {WORKSTATION_RESERVE_CEILING_MIN:g} min)",
                 ws_min, ws_bad)
     return need, basis, ws_min, ws_bad
 
@@ -810,7 +835,10 @@ def _has_adapter(unit) -> bool:
 
 
 def _budget_skip_due_label(unit, store, force) -> str:
-    """PRINT ONLY: would this budget-skipped unit have been due? For the BUDGET SKIP line, nothing else.
+    """Would this unit be due? For the BUDGET SKIP line, and (since 2026-11-06) to find each cost band's HEAD for
+    admission_reserve's band_head rule: the first unit of a band whose label is not "not due" (an unknown label
+    counts as due, which gives that unit main's normal reserve - the fail-safe direction). Nothing else reads it.
+    (The text below predates the band-head use.)
 
     The budget gate runs BEFORE the due check, so a skip line used to name units that were not due at all -
     21 lines printed against 15 units due on the 2026-10-28 13:45Z desktop pass - and a reader counting skip
@@ -3169,6 +3197,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
     # source. Checked there, not in the gate's branch, so the loop's own order (gate, _has_adapter, is_due) and what
     # a skipped unit costs inside the loop stay exactly as before.
     _skipped_for_drain: list = []
+    _band_heads_taken: set = set()    # cost bands whose head (admission_reserve's band_head) this pass has seen
 
     for unit in units:
         if sources and unit.source_id not in sources:
@@ -3216,8 +3245,16 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
         _est_s = _costs.get(unit.source_id)
         # The reserve: a declared unit's own figure, else min(2 x timeout, 3 x est floored at 10), else the worst
         # case for a never-run unit (admission_reserve, shared with tools/measure_ci_lag.py's replay).
+        # The band head: the first unit of its cost band, in run order, that is due (or whose due-ness cannot be
+        # read: fail toward main's reserve). Only it is offered the normal reserve (admission_reserve).
+        _band = cost_band(_est_s)
+        _is_head = False
+        if _band not in _band_heads_taken and _budget_skip_due_label(unit, store, force) != "not due":
+            _is_head = True
+            _band_heads_taken.add(_band)
         _need_min, _basis, _ws_min, _ws_bad = admission_reserve(unit, _est_s,
-                                                                last_real_s=_last_real.get(unit.source_id))
+                                                                last_real_s=_last_real.get(unit.source_id),
+                                                                band_head=_is_head)
         if _ws_bad:
             print(f"[orchestrator] WINDOW STOP {unit.key}: {_ws_bad} - keeping the standard reserve",
                   flush=True)

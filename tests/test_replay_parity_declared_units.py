@@ -68,7 +68,7 @@ TAIL = 60.0      # the replay's tail_min: it must NOT decide a declared unit's s
 def _workstation_platform(monkeypatch):
     """The replay models the WORKSTATION (admission_reserve(..., hard_timeout=False)); run_once must see the same
     platform on any machine, Linux CI included (2026-11-06). Under it an undeclared unit reserves at least its newest
-    real run: big 6,000 s -> 100 min, an undeclared cen 9,000 s -> 150 min."""
+    real run (big 6,000 s -> 100 min) unless it is its band's head (the undeclared cen -> the normal 90)."""
     monkeypatch.setattr(orchestrate, "hard_timeout_available", lambda: False)
 
 # scenario: cadences, declared {sid: (reserve, tail, piece)}, unit_state rows, runs rows (days ago, sid, status, dur_s)
@@ -302,14 +302,15 @@ def test_negative_control_the_same_harness_detects_the_replays_old_stop_rule(tmp
 
 def test_negative_control_the_same_harness_detects_an_undeclared_book(tmp_path, monkeypatch, capsys):
     """A book loaded WITHOUT the declaration (what the replay was before this change) diverges in the first pass -
-    cen is reserved its newest real run, 9,000 s = 150 min (min(90, 3 x 150) = 90 before 2026-11-06), and skipped."""
+    cen is reserved 90 and skipped: its newest real run is 9,000 s = 150 min, but as the first due unit of its band it
+    is the band head, which admission_reserve offers the normal reserve (2026-11-06)."""
     h = Harness(tmp_path, monkeypatch)
     h.book = m.load_unit_book(h.db_path, dt.datetime.fromtimestamp(h.clock.t, dt.timezone.utc), dt.timedelta(0),
                               cadences=dict(A["cadence"]), window_stop=set())
     start, p = h.production_pass(100, capsys)
     r = h.replay_pass(start, 100)
     assert p["ran"] == ["small", "kil", "cen"] and r["ran"] == ["small", "kil"]
-    assert ("cen", 150) in r["budget_skipped"]
+    assert ("cen", 90) in r["budget_skipped"]        # undeclared, cen heads its band: offered the normal reserve
 
 
 # ------------------------------------------------------------------ the REAL declared fetchers' figures

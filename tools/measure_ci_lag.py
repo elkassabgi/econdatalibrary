@@ -1224,6 +1224,7 @@ class UnitBook:
         order = orch.order_units(list(self.units.values()), costs, staleness)
         e, advanced, hard, stopped, ran = 0.0, False, None, None, []
         budget_skipped, not_due = [], []
+        heads_taken = set()          # cost bands whose head this pass has seen (admission_reserve's band_head)
         # run_once's leftover-drain bookkeeping: _drain_ok {source: [units]} (NOT DUE, BUDGET SKIPPED, an earned
         # no_change, a declared non-turn) and _drain_block {(source, key)} (a unit that ran its update)
         drain_ok, drain_block = {}, set()
@@ -1235,8 +1236,14 @@ class UnitBook:
             # production's reserve, through the same function (a declared unit: its fetcher's figure)
             # the workstation has no per-unit hard timeout (Windows, no setitimer): hard_timeout=False, and the
             # newest real run per source through production StateStore.last_real_duration (2026-11-06)
+            # the band head (first DUE unit of its cost band in run order) is offered the normal reserve, as in run_once
+            band = orch.cost_band(costs.get(sid))
+            head = False
+            if band not in heads_taken and self.is_due(sid, start):
+                head = True
+                heads_taken.add(band)
             need = orch.admission_reserve(u, costs.get(sid), UNIT_TIMEOUT_MIN, last_real_s=last_real.get(sid),
-                                          hard_timeout=False)[0]
+                                          hard_timeout=False, band_head=head)[0]
             t_unit = start + dt.timedelta(minutes=e)
             # production's gate: the clock now, plus the reserve, against the run deadline (same function)
             if orch.start_gate_refuses(t_unit.timestamp(), need, deadline_ts):
