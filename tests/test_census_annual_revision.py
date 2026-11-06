@@ -97,6 +97,7 @@ class _API:
         self.label = {}               # (flow, month) -> HITECH_DESC value served
         self.extra = set()            # (flow, month): also serve a row the store lacks (CTY_CODE 5700)
         self.refuse = set()           # flows whose months before 2026-01 answer HTTP 400
+        self.refuse_from = {}         # (flow, month) -> answer HTTP 400 from this call number on
         self.calls = []
         self.on_call = None
 
@@ -107,6 +108,9 @@ class _API:
         self.calls.append((flow, tv, p.get("STATE")))
         if self.on_call:
             self.on_call(self, flow, tv)
+        n_asked = sum(1 for c in self.calls if c[:2] == (flow, tv))
+        if (flow, tv) in self.refuse_from and n_asked >= self.refuse_from[(flow, tv)]:
+            return _Resp(400, ["error: unknown variable"])
         if flow in self.refuse and tv < "2026-01":
             return _Resp(400, ["error: unknown variable"])
         if tv > self.last or (flow, tv) in self.empty or flow not in DIM:
@@ -622,3 +626,30 @@ def test_a_flow_refused_on_every_pass_is_held_and_the_family_still_publishes(env
     assert "failed on consecutive passes" in notes[-1], notes[-1]
     refused = [c for c in env.api.calls if c[0] == EU and c[1] < "2026-01"]
     assert len(refused) <= 6, len(refused)                        # not asked again once held
+
+
+def test_a_verify_month_refused_on_every_pass_holds_its_flow_and_the_family_publishes(env):
+    """Review AR-444 R1828: the verify re-fetch had no cap, so one refused month blocked the family."""
+    from updater.errors import DefinitiveError
+    _on(env)
+    _write(env.d, HT, "2025-10", "2026-01")
+    _write(env.d, EU, "2025-11", "2026-01")
+    env.api.refuse_from[(HT, "2025-10")] = 2        # staged fine, then refused at every verify
+    notes = []
+    for _ in range(6):                               # a FIXED bound: the cap must be reached by then
+        try:
+            notes.append(cs.update(UNIT, None).error or "")
+        except DefinitiveError as e:
+            notes.append(str(e))
+        if _state(env)["imports"]["phase"] == "done":
+            break
+    fam = _state(env)["imports"]
+    assert fam["phase"] == "done", (fam, notes)
+    assert HT in fam["failed_flows"] and HT not in fam["published"], fam
+    assert _store(env.d, EU)[(f"{EU}|I_ENDUSE=01", "2025-11-01")]["GEN_VAL_MO"] == \
+        _val(EU, "2025-11", "01", "new")
+    assert _store(env.d, HT)[(f"{HT}|HITECH=01", "2025-11-01")]["GEN_VAL_MO"] == \
+        _val(HT, "2025-11", "01", "old")
+    asked = [c for c in env.api.calls if c[:2] == (HT, "2025-10")]
+    assert len(asked) <= 1 + 3, len(asked)                    # one fetch + at most the cap of verifies
+    assert "REFUSED by the API" in notes[0] and "transient-failed" not in notes[0], notes[0]

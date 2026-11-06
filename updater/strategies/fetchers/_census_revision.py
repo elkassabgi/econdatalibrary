@@ -58,6 +58,10 @@ OPERATOR_ACTIVATED_ON, or by ENV_ACTIVATE on the workstation.
 STATED RESIDUALS. The publish of one family can span passes if a pass stops part-way; until it ends,
 the family's tables are of two vintages (a later pass finishes the publish after its forward tail and before any new revision fetch). A flow
 whose piece fails on PIECE_FAIL_CAP consecutive passes is HELD by name and the family goes on without it.
+EVERY CALLER OF fetch_month IS BOUNDED (review AR-444 R1825/R1828): the fetch loop and the verify step
+count consecutive failures per piece and hold the flow at PIECE_FAIL_CAP; the sentinel probe returns
+None on failure, does not stamp last_probe, and is asked again at most once per pass while the family
+is done; the post-publish sentinel check runs once and a failure there sets no flag.
 census's cadence is monthly, so the probe can run only as often as census is attempted. Real piece
 times are not measured (exports/naics was ~537 s for one month split 7 ways).
 """
@@ -493,13 +497,36 @@ def run(ctx, flows, out_dir, today) -> Outcome:
                 if kind == "stop":
                     oc.deferred.append(f"{fam}: annual revision - verify stopped")
                     continue
-                if kind != "ok":
-                    oc.transient.append(f"{fam}: annual revision verify re-fetch {kind}: {(val[0] if isinstance(val, tuple) else val) or ''}")
+                if kind in ("fail", "refused"):
+                    # CAPPED LIKE A FETCH PIECE (review AR-444 R1828): a verify month that fails on
+                    # PIECE_FAIL_CAP consecutive passes holds its flow, and a later pass verifies on the
+                    # next staged piece in plan order (or says SKIPPED when none is left). A refusal is
+                    # booked structural with its status, as in the fetch loop.
+                    if kind == "refused":
+                        oc.structural.append((f"verify {val[0]}", val[1]))
+                        label = val[0]
+                    else:
+                        oc.transient.append(f"verify {val}")
+                        label = val
+                    pk = f"verify|{fp[0]}|{fp[1]}"
+                    vf = fs.setdefault("fails", {})
+                    vf[pk] = vf.get(pk, 0) + 1
+                    if vf[pk] >= PIECE_FAIL_CAP:
+                        failed_flows[fp[0]] = (f"verify month {fp[1]} failed on {vf[pk]} consecutive "
+                                               f"passes: {label}")
+                        print(f"[census] {fp[0]}: annual revision HOLDS this flow - "
+                              f"{failed_flows[fp[0]]}", flush=True)
+                    save_state(out_dir, st)
+                    oc.deferred.append(f"{fam}: annual revision verify not passed this pass")
                     continue
+                fs.setdefault("fails", {}).pop(f"verify|{fp[0]}|{fp[1]}", None)
                 staged = blob.read_table(_stage_path(fam, fs, fp[0], fp[1]))
                 dk = cs._dedup_for(fp[0], [c for c in staged.column_names
                                            if c not in ("series_key", "obs_date")])
-                why = differs(val, staged, dk) or differs(staged, val, dk)
+                if kind == "empty":
+                    why = [f"{fp[0]} {fp[1]} now answers no rows; {staged.num_rows} were staged"]
+                else:
+                    why = differs(val, staged, dk) or differs(staged, val, dk)
                 if why:
                     if fs["attempt"] >= MAX_ATTEMPTS_PER_CYCLE:
                         fs["stuck"] = (f"the publisher moved during attempt {fs['attempt']} "
