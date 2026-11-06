@@ -9,6 +9,7 @@ own run_once/order_units found it; these tests pin the rule and use that replay'
 The negative control reproduces the starvation with the old clock, so the ordering test cannot pass by accident.
 """
 from __future__ import annotations
+import pytest
 
 import os
 import sqlite3
@@ -18,6 +19,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from updater.orchestrate import last_turn_utc, order_units, overdue_key  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _restore_run_deadline(monkeypatch):
+    """run_once sets the module global orchestrate._RUN_DEADLINE_TS and nothing clears it; left set, it leaks into
+    later test files (tests/test_csv_coverage_note.py failed 7 tests on CI, review AR-450 round 5, R1839)."""
+    from updater import orchestrate as _orch
+    monkeypatch.setattr(_orch, "_RUN_DEADLINE_TS", _orch._RUN_DEADLINE_TS)
 
 NOW = "2026-09-17T22:37:00+00:00"
 
