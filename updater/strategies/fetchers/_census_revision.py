@@ -32,17 +32,23 @@ re-pull would break that agreement, AR-442 5b):
      no longer serves are HELD: counted, sampled and named in every run note, never removed (deleting
      served rows is the owner's decision, AR-442 5c, R278). They are old-vintage rows next to revised
      ones, so those months' detail rows may no longer sum to the revised TOTAL (R1817) - the note says
-     so. A flow whose staged rows match a stored row on every key column except a LABEL column
-     (LAST_UPDATE, *_LDESC, *_SDESC, *_NAME are dedup-key columns for intltrade, see _dedup_for) is
-     not merged, because the merge would ADD a second row instead of overwriting (AR-444, checked
-     note); it is held and named. Published tables go through census's owed-mark path, so their
+     so. A flow whose staged rows match a stored row on every key column except a LABEL column is
+     not merged, because the merge would ADD a second row instead of overwriting; it is held and
+     named. A label is every dedup-key column that is not a declared dimension code (DIMENSION_CODES,
+     read from the real schemas: *_LDESC, *_SDESC, HITECH_DESC, CTY_NAME, DIST_NAME, UNIT_QY1,
+     LAST_UPDATE - R1824). LAST_UPDATE stays in _dedup_for's key (it is '0' on every stored row of
+     all 24 tables and the key without labels is unique, AR-444 redkey_all.log); the TAIL would still
+     duplicate a row whose LAST_UPDATE or label the publisher changes at the boundary month - a
+     pre-existing property this module does not change. Every published flow's note carries
+     changed / added / held counts per year, and a flow that would ADD more rows under served ids
+     than the growth bound (ADDED_CAP_*) is held, not merged (R1824 D2). Published tables go through census's owed-mark path, so their
      table CSVs are re-derived. After the last flow, the sentinel month must equal the store; if it
      does not, that is reported as a DEFECT and no new attempt is started (AR-444 c).
 
 BUDGET. The pieces run AFTER the tail, under census's own stop check (budget + window end). A
 separate per-pass cap, BUDGET_MIN_DEFAULT, gates only the START of a new piece; a piece already
 started is finished unless the stop check fires (AR-444 d - a month slower than the cap would
-otherwise never be staged). A stop inside a piece stages nothing for that month; the next pass asks
+otherwise never be staged). A stop inside a piece stages nothing for that month; a later pass asks
 it again.
 
 OFF BY DEFAULT (AR-444 e). Merging this code must not arm a write over ~15.2M served rows ahead of the
@@ -50,7 +56,8 @@ R1760 repair sequence. It runs only from the date set by a reviewed one-line com
 OPERATOR_ACTIVATED_ON, or by ENV_ACTIVATE on the workstation.
 
 STATED RESIDUALS. The publish of one family can span passes if a pass stops part-way; until it ends,
-the family's tables are of two vintages (the next pass publishes before it fetches anything new).
+the family's tables are of two vintages (a later pass finishes the publish after its forward tail and before any new revision fetch). A flow
+whose piece fails on PIECE_FAIL_CAP consecutive passes is HELD by name and the family goes on without it.
 census's cadence is monthly, so the probe can run only as often as census is attempted. Real piece
 times are not measured (exports/naics was ~537 s for one month split 7 ways).
 """
@@ -78,10 +85,25 @@ START_MMDD_DEFAULT = "07-01"
 PROBE_DAYS_DEFAULT = 7
 BUDGET_MIN_DEFAULT = 30.0
 MAX_ATTEMPTS_PER_CYCLE = 3
+PIECE_FAIL_CAP = 3          # consecutive failing passes of one piece before its flow is held
 SAMPLE_KEYS = 5
 # One small, unsplit flow per family. An explicit list, following census.py's own precedent.
 SENTINEL = {"imports": "intltrade/imports/hitech", "exports": "intltrade/exports/hitech"}
-_LABEL_SUFFIXES = ("_LDESC", "_SDESC", "_NAME")
+# THE DIMENSION CODES of the 24 intltrade tables - an ALLOW-LIST, read from the real store schemas
+# (review AR-444 schema.log: the dedup-key columns of all 24 tables). Every other dedup-key column is a
+# LABEL: *_LDESC, *_SDESC, HITECH_DESC, CTY_NAME, DIST_NAME, UNIT_QY1, LAST_UPDATE. A suffix rule missed
+# HITECH_DESC and UNIT_QY1 (R1824), and HITECH is the sentinel table, so the rule is inverted: anything
+# not declared a code is a label. An unknown new column therefore errs toward HOLDING a flow (a label
+# conflict), never toward adding a duplicate row.
+DIMENSION_CODES = frozenset({
+    "DF", "SUMMARY_LVL", "SUMMARY_LVL2", "COMM_LVL", "DISTRICT", "CTY_CODE", "STATE", "MONTH",
+    "WORLD", "E_ENDUSE", "I_ENDUSE", "HITECH", "E_COMMODITY", "I_COMMODITY", "NAICS", "SITC", "USDA",
+    "SERIES_KEY", "OBS_DATE", "TIME"})
+# A revised year may ADD rows under series the flow already publishes (the intltrade dedup key is wider
+# than series_key: hitech 2025 has 12 fetch-only key-months, AR-442). Bounded per flow: more than
+# max(ADDED_CAP_MIN_ROWS, ADDED_CAP_PCT % of the stored rows in the re-pulled months) is HELD, not merged.
+ADDED_CAP_MIN_ROWS_DEFAULT = 50
+ADDED_CAP_PCT_DEFAULT = 1.0
 
 
 def _env_float(name, default):
@@ -130,8 +152,8 @@ def window_months(cycle: int) -> list[str]:
 
 
 def is_label(col: str) -> bool:
-    u = col.upper()
-    return u == "LAST_UPDATE" or u.endswith(_LABEL_SUFFIXES)
+    """True for every dedup-key column that is not a declared dimension code (DIMENSION_CODES)."""
+    return col.upper() not in DIMENSION_CODES
 
 
 # ---- state ------------------------------------------------------------------------------------------
@@ -251,17 +273,22 @@ def differs(fetched, reference, keys) -> list[str]:
 # ---- one month from the API -------------------------------------------------------------------------
 
 def fetch_month(ctx, flow, path, month):
-    """('ok', table) | ('empty', None) | ('stop', None) | ('fail', label). Same request as the tail."""
+    """('ok', table) | ('empty', None) | ('stop', None) | ('fail', label) | ('refused', label).
+    Same request as the tail. 'refused' is a DefinitiveError (an HTTP refusal, a broken shape): the
+    tail books those as structural and so does the caller; 'fail' is a TransientError."""
     from . import census as cs
+    p0 = time.time()
     dim_cols, data_cols, shapes, pins = cs._dims_from_store(path)
     if not dim_cols:
-        return "fail", f"{flow} {month}: no dimensions recoverable from the stored series_key"
+        return "refused", f"{flow} {month}: no dimensions recoverable from the stored series_key"
     get_cols = [c for c in data_cols if c.lower() not in cs._IMPLICIT]
     gcol = cs._geo_col(data_cols)
     levels = cs._store_geo_levels(path, gcol) if gcol else set()
     preds = cs._predicates_for(flow, levels)
     pins, _dropped = cs._request_pins(pins, preds)
     reqs = cs._split_requests(flow, path, dim_cols, pins)
+    # The store re-reads above are part of what one piece costs: timed into the stop margin.
+    ctx.note_req(time.time() - p0)
     parts = []
     for pred in preds:
         for rp in reqs:
@@ -274,8 +301,10 @@ def fetch_month(ctx, flow, path, month):
             except cs._WindowStop:
                 ctx.force_stop()
                 return "stop", None
-            except (TransientError, DefinitiveError) as e:
+            except TransientError as e:
                 return "fail", f"{flow} revision time={month} for={pred} - {cs._why(e)}"
+            except DefinitiveError as e:
+                return "refused", f"{flow} revision time={month} for={pred} - {cs._why(e)}"
             finally:
                 ctx.note_req(time.time() - r0)
             time.sleep(cs.RATE)
@@ -317,6 +346,7 @@ class Outcome:
         self.cursors: dict = {}      # table id -> max obs_date iso (published tables)
         self.deferred: list = []
         self.transient: list = []
+        self.structural: list = []   # refusals (DefinitiveError), booked as the tail books them
         self.notes: list = []
         self.published: list = []
 
@@ -398,30 +428,47 @@ def run(ctx, flows, out_dir, today) -> Outcome:
             oc.notes.append(f"{fam}: annual revision STUCK - {fs['stuck']}")
             continue
         # ---- fetch --------------------------------------------------------------------------------
+        # A FLOW WHOSE PIECE FAILS ON PIECE_FAIL_CAP CONSECUTIVE PASSES is held by name and the family
+        # goes on without it (review AR-444 phase 3: one refused flow otherwise kept the whole family in
+        # "fetch" for ever, R1694's 29 refused flows being the precedent).
+        failed_flows = fs.setdefault("failed_flows", {})
+        live = [f for f in fam_flows if f not in failed_flows]
         if fs["phase"] == "fetch":
-            plan = _plan(fs, fam_flows, path_of)
+            plan = _plan(fs, live, path_of)
             if plan and fs.get("first_piece") is None:
                 fs["first_piece"] = [plan[0][0], plan[0][1]]
             todo = [(f, mo, n) for f, mo, n in plan
                     if mo not in fs["staged"].get(f, []) and mo not in fs["holds"].get(f, {})]
-            left = len(todo)
+            fails = fs.setdefault("fails", {})
             for flow, mo, n in todo:
+                if flow in failed_flows:
+                    continue
                 if not may_start():
                     break
                 kind, val = fetch_month(ctx, flow, path_of(flow), mo)
                 if kind == "stop":
                     break
-                if kind == "fail":
-                    oc.transient.append(val)
+                if kind in ("fail", "refused"):
+                    (oc.structural if kind == "refused" else oc.transient).append(val)
+                    pk = f"{flow}|{mo}"
+                    fails[pk] = fails.get(pk, 0) + 1
+                    if fails[pk] >= PIECE_FAIL_CAP:
+                        failed_flows[flow] = f"{mo} failed on {fails[pk]} consecutive passes: {val}"
+                        print(f"[census] {flow}: annual revision HOLDS this flow - {failed_flows[flow]}",
+                              flush=True)
+                    save_state(out_dir, st)
                     continue
+                fails.pop(f"{flow}|{mo}", None)
                 if kind == "empty":
                     fs["holds"].setdefault(flow, {})[mo] = (f"publisher answered no rows; the store "
                                                             f"holds {n} - kept, not re-pulled")
                 else:
                     blob.write_table_atomic(_stage_path(fam, fs, flow, mo), val)
                     fs["staged"].setdefault(flow, []).append(mo)
-                left -= 1
                 save_state(out_dir, st)
+            live = [f for f in fam_flows if f not in failed_flows]
+            left = sum(1 for f, mo, _n in todo if f in live and mo not in fs["staged"].get(f, [])
+                       and mo not in fs["holds"].get(f, {}))
             if left:
                 oc.deferred.append(f"{fam}: annual revision cycle {cycle} attempt {fs['attempt']} - "
                                    f"{left} of {len(plan)} month piece(s) not yet fetched")
@@ -430,8 +477,13 @@ def run(ctx, flows, out_dir, today) -> Outcome:
             if not may_start():
                 oc.deferred.append(f"{fam}: annual revision - all pieces staged, verify not yet run")
                 continue
-            fp = fs.get("first_piece")
-            if fp and fp[0] in fam_flows and fp[1] in fs["staged"].get(fp[0], []):
+            # The FIRST STAGED piece in campaign order (the planned first piece unless it was held).
+            fp = next(([f, mo] for f, mo, _n in plan if f in live and mo in fs["staged"].get(f, [])),
+                      None)
+            if fp is None:
+                oc.notes.append(f"{fam}: annual revision verify SKIPPED - no piece was staged "
+                                f"(every piece held)")
+            if fp:
                 kind, val = fetch_month(ctx, fp[0], path_of(fp[0]), fp[1])
                 if kind == "stop":
                     oc.deferred.append(f"{fam}: annual revision - verify stopped")
@@ -459,14 +511,16 @@ def run(ctx, flows, out_dir, today) -> Outcome:
             save_state(out_dir, st)
         # ---- publish ------------------------------------------------------------------------------
         if fs["phase"] == "publish":
-            _publish(ctx, cs, fam, fs, fam_flows, path_of, oc, out_dir, st, today)
+            live = [f for f in fam_flows if f not in failed_flows]
+            _publish(ctx, cs, fam, fs, live, path_of, oc, out_dir, st, today)
             if fs["phase"] == "publish":
                 oc.deferred.append(f"{fam}: annual revision publish part-way - "
-                                   f"{len(fs['published'])} of {len(fam_flows)} flow(s) done; the "
-                                   f"family is two vintages until it finishes")
+                                   f"{len([f for f in fs['published'] if f in live])} of {len(live)} "
+                                   f"flow(s) done; the family is two vintages until it finishes")
                 continue
-            if sent in fam_flows and fs["first_piece"]:
-                drift = _sentinel_drift(ctx, sent, path_of(sent), cycle, month=fs["first_piece"][1])
+            sm = sorted(fs["staged"].get(sent, [])) if sent in live else []
+            if sm and sent not in fs.get("label_conflicts", {}) and sent not in fs.get("growth_held", {}):
+                drift = _sentinel_drift(ctx, sent, path_of(sent), cycle, month=sm[0])
                 fs["drift_after_publish"] = bool(drift)
                 if drift:
                     oc.notes.append(f"{fam}: DEFECT - sentinel differs from the store right after "
@@ -504,14 +558,29 @@ def _publish(ctx, cs, fam, fs, fam_flows, path_of, oc, out_dir, st, today):
         if ctx.stop_now():
             return
         path = path_of(flow)
+        c0 = time.time()                 # the comparison below is timed into the stop margin too
         tid = cs._store_name(flow)
         new = pa.concat_tables([blob.read_table(_stage_path(fam, fs, flow, mo)) for mo in months])
         data_cols = [c for c in new.column_names if c not in ("series_key", "obs_date")]
         dk = cs._dedup_for(flow, data_cols)
         old = _store_rows_in(path, months + held_months, new.column_names)
-        newk = set(_rowmap(new.select([c for c in dk if c in new.column_names]), dk)[0])
-        oldmap = _rowmap(old.select([c for c in dk if c in old.column_names]), dk)[0]
+        newfull = _rowmap(new, dk)[0]
+        oldfull = _rowmap(old.select([c for c in new.column_names if c in old.column_names]), dk)[0]
+        newk = set(newfull)
+        oldmap = oldfull
         store_only = [k for k in oldmap if k not in newk]
+        added = [k for k in newk if k not in oldmap]
+        changed = [k for k in newk if k in oldmap and oldmap[k] != newfull[k]]
+        # obs_date is the second key part (dk starts series_key, obs_date): count by YEAR.
+        by_year: dict = {}
+        for name, ks in (("changed", changed), ("added", added), ("held", store_only)):
+            for k in ks:
+                y = str(k[1])[:4]
+                by_year.setdefault(y, {"changed": 0, "added": 0, "held": 0})[name] += 1
+        counts = " ".join(f"{y} changed={v['changed']} added={v['added']} held={v['held']}"
+                          for y, v in sorted(by_year.items())) or "no difference"
+        fs.setdefault("counts", {})[flow] = by_year
+        ctx.note_merge(time.time() - c0)
         # LABEL CONFLICT: same row on every non-label key column, different label -> a merge would ADD.
         nolab = [c for c in dk if not is_label(c)]
         if len(nolab) < len(dk):
@@ -529,7 +598,21 @@ def _publish(ctx, cs, fam, fs, fam_flows, path_of, oc, out_dir, st, today):
             save_state(out_dir, st)
             oc.notes.append(f"{flow}: annual revision NOT merged - {conflicts} stored row(s) differ from "
                             f"the publisher only in a label column, so a merge would add a second row; "
-                            f"held for a re-key decision")
+                            f"held for a re-key decision ({counts})")
+            continue
+        # THE GROWTH BOUND (R1824 D2): rows the publisher serves that the store lacks are ADDED by the
+        # merge under ids already served. Counted always; over the bound the flow is held, not merged.
+        cap_min = _env_float("CENSUS_REVISION_ADDED_CAP_MIN_ROWS", ADDED_CAP_MIN_ROWS_DEFAULT)
+        cap_pct = _env_float("CENSUS_REVISION_ADDED_CAP_PCT", ADDED_CAP_PCT_DEFAULT)
+        allowed = max(cap_min, cap_pct / 100.0 * len(oldmap))
+        if len(added) > allowed:
+            fs.setdefault("growth_held", {})[flow] = {"added": len(added), "allowed": allowed,
+                                                     "stored": len(oldmap)}
+            fs["published"].append(flow)
+            save_state(out_dir, st)
+            oc.notes.append(f"{flow}: annual revision NOT merged - it would ADD {len(added):,} row(s) under "
+                            f"served ids against {len(oldmap):,} stored in the re-pulled months (bound "
+                            f"{allowed:,.0f}); held for approval ({counts})")
             continue
         if not ctx.mark_merging(tid):
             oc.transient.append(f"{flow}: annual revision pre-merge owed mark not saved - not merged")
@@ -554,8 +637,9 @@ def _publish(ctx, cs, fam, fs, fam_flows, path_of, oc, out_dir, st, today):
         if iso and oc.cursors.get(tid, "") < iso:
             oc.cursors[tid] = iso
         save_state(out_dir, st)
+        oc.notes.append(f"{flow}: annual revision published {len(months)} month(s): {counts}")
         print(f"[census] {flow}: annual revision published {new.num_rows:,} row(s) over "
-              f"{len(months)} month(s); {len(store_only):,} store-only row(s) held", flush=True)
+              f"{len(months)} month(s); {counts}", flush=True)
     fs["phase"] = "done"
     fs["completed"] = fs.get("completed") or today.isoformat()
 
@@ -571,3 +655,9 @@ def _note_holds(oc, fam, fs):
                         f"sum to the revised TOTAL")
     if months:
         oc.notes.append(f"{fam}: {months} stored month(s) answered no rows on re-pull - kept as stored")
+    for kind, what in (("failed_flows", "failed on consecutive passes"),
+                       ("growth_held", "would add rows over the bound"),
+                       ("label_conflicts", "differ only in a label column")):
+        if fs.get(kind):
+            oc.notes.append(f"{fam}: annual revision HELD {len(fs[kind])} flow(s) unmerged that {what}: "
+                            f"{sorted(fs[kind])[:6]} - owner decision")

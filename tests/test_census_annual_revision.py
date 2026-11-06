@@ -94,7 +94,9 @@ class _API:
         self.last = "2026-01"         # newest month published
         self.drop = set()             # (flow, month, code) the publisher no longer serves
         self.empty = set()            # (flow, month) answered 204
-        self.label = {}               # (flow, month) -> LDESC value served
+        self.label = {}               # (flow, month) -> HITECH_DESC value served
+        self.extra = set()            # (flow, month): also serve a row the store lacks (CTY_CODE 5700)
+        self.refuse = set()           # flows whose months before 2026-01 answer HTTP 400
         self.calls = []
         self.on_call = None
 
@@ -105,17 +107,21 @@ class _API:
         self.calls.append((flow, tv, p.get("STATE")))
         if self.on_call:
             self.on_call(self, flow, tv)
+        if flow in self.refuse and tv < "2026-01":
+            return _Resp(400, ["error: unknown variable"])
         if tv > self.last or (flow, tv) in self.empty or flow not in DIM:
             return _Resp(204)
         hdr, rows = _rows(flow, tv, self.vintage)
         rows = [r for r in rows if (flow, tv, r[0]) not in self.drop]
         if flow == SH and p.get("STATE"):
             rows = [r for r in rows if r[1] == p["STATE"]]
+        if (flow, tv) in self.extra:
+            rows = rows + [[rows[0][0], "5700", "1", tv]]       # a known series, a new CTY_CODE
         if (flow, tv) in self.label:
-            hdr = hdr[:-1] + ["HITECH_LDESC", "time"]
+            hdr = hdr[:-1] + ["HITECH_DESC", "time"]
             rows = [r[:-1] + [self.label[(flow, tv)], r[-1]] for r in rows]
-        elif flow == HT and "HITECH_LDESC" in (p.get("get") or ""):
-            hdr = hdr[:-1] + ["HITECH_LDESC", "time"]
+        elif flow == HT and "HITECH_DESC" in (p.get("get") or ""):
+            hdr = hdr[:-1] + ["HITECH_DESC", "time"]
             rows = [r[:-1] + [f"desc{r[0]}", r[-1]] for r in rows]
         return _Resp(200, [hdr] + rows)
 
@@ -147,7 +153,7 @@ def _write(d, flow, first, last, label=False):
     arrays = {"series_key": keys, "obs_date": pa.array(dates, pa.date32())}
     arrays.update(cols)
     if label:
-        arrays["HITECH_LDESC"] = [f"desc{v}" for v in cols["HITECH"]]
+        arrays["HITECH_DESC"] = [f"desc{v}" for v in cols["HITECH"]]
     pq.write_table(pa.table(arrays), os.path.join(d, cs._store_name(flow) + ".parquet"))
 
 
@@ -475,3 +481,142 @@ def test_a_malformed_state_file_stops_the_re_pull_not_the_tail(env):
     assert "annual revision not run" in res.error
     assert ("intltrade/imports/hitech|HITECH=01", "2026-02-01") in _store(env.d, HT)
     assert _window_calls(env) == []
+
+
+# ---- R1824 D1: the label rule, against the REAL key columns of all 24 tables --------------------------
+
+# The dedup-key columns (minus series_key, obs_date, time) of every intltrade table, copied from the
+# real store schemas (review AR-444 schema.log, 2026-11-06). Written out here, independently of the
+# module, so a rule that drifts from the real names fails.
+REAL_KEY_COLS = {
+    "exports/enduse": "DF SUMMARY_LVL COMM_LVL E_ENDUSE_LDESC E_ENDUSE DISTRICT SUMMARY_LVL2 CTY_NAME "
+                      "E_ENDUSE_SDESC LAST_UPDATE DIST_NAME CTY_CODE",
+    "exports/enduseexport": "E_ENDUSE DF SUMMARY_LVL SUMMARY_LVL2 COMM_LVL DISTRICT world",
+    "exports/hitech": "DF SUMMARY_LVL COMM_LVL DISTRICT SUMMARY_LVL2 CTY_NAME HITECH_DESC HITECH "
+                      "LAST_UPDATE DIST_NAME CTY_CODE",
+    "exports/hitechexport": "HITECH DF SUMMARY_LVL SUMMARY_LVL2 COMM_LVL DISTRICT world",
+    "exports/hs": "E_COMMODITY DF SUMMARY_LVL SUMMARY_LVL2 COMM_LVL UNIT_QY1 LAST_UPDATE MONTH CTY_CODE "
+                  "DISTRICT",
+    "exports/naics": "DF SUMMARY_LVL COMM_LVL NAICS DISTRICT NAICS_LDESC SUMMARY_LVL2 CTY_NAME NAICS_SDESC "
+                     "LAST_UPDATE DIST_NAME CTY_CODE",
+    "exports/sitc": "SITC_LDESC DF SUMMARY_LVL COMM_LVL DISTRICT SUMMARY_LVL2 CTY_NAME SITC SITC_SDESC "
+                    "LAST_UPDATE DIST_NAME CTY_CODE",
+    "exports/sitcexport": "SITC DF SUMMARY_LVL SUMMARY_LVL2 COMM_LVL DISTRICT world",
+    "exports/statehs": "SUMMARY_LVL COMM_LVL STATE E_COMMODITY_SDESC SUMMARY_LVL2 CTY_NAME "
+                       "E_COMMODITY_LDESC LAST_UPDATE E_COMMODITY CTY_CODE",
+    "exports/statenaics": "SUMMARY_LVL COMM_LVL STATE NAICS NAICS_LDESC SUMMARY_LVL2 CTY_NAME NAICS_SDESC "
+                          "LAST_UPDATE CTY_CODE",
+    "exports/usda": "DF SUMMARY_LVL COMM_LVL DISTRICT SUMMARY_LVL2 CTY_NAME LAST_UPDATE DIST_NAME USDA "
+                    "CTY_CODE",
+    "exports/usdaexport": "USDA DF SUMMARY_LVL SUMMARY_LVL2 COMM_LVL DISTRICT world",
+    "imports/enduse": "SUMMARY_LVL COMM_LVL LAST_UPDATE DIST_NAME I_ENDUSE_LDESC I_ENDUSE DISTRICT "
+                      "SUMMARY_LVL2 CTY_NAME I_ENDUSE_SDESC CTY_CODE",
+    "imports/enduseimport": "I_ENDUSE SUMMARY_LVL SUMMARY_LVL2 COMM_LVL DISTRICT world",
+    "imports/hitech": "SUMMARY_LVL COMM_LVL HITECH LAST_UPDATE DIST_NAME DISTRICT SUMMARY_LVL2 CTY_NAME "
+                      "HITECH_DESC CTY_CODE",
+    "imports/hitechimport": "HITECH SUMMARY_LVL SUMMARY_LVL2 COMM_LVL DISTRICT world",
+    "imports/hs": "I_COMMODITY SUMMARY_LVL SUMMARY_LVL2 COMM_LVL UNIT_QY1 LAST_UPDATE MONTH CTY_CODE DISTRICT",
+    "imports/naics": "SUMMARY_LVL COMM_LVL NAICS NAICS_LDESC LAST_UPDATE DIST_NAME DISTRICT SUMMARY_LVL2 "
+                     "CTY_NAME NAICS_SDESC CTY_CODE",
+    "imports/sitc": "SITC_LDESC SUMMARY_LVL COMM_LVL SITC_SDESC LAST_UPDATE DIST_NAME DISTRICT SUMMARY_LVL2 "
+                    "CTY_NAME SITC CTY_CODE",
+    "imports/sitcimport": "SITC SUMMARY_LVL SUMMARY_LVL2 COMM_LVL DISTRICT world",
+    "imports/statehs": "I_COMMODITY SUMMARY_LVL SUMMARY_LVL2 LAST_UPDATE MONTH CTY_CODE STATE COMM_LVL",
+    "imports/statenaics": "SUMMARY_LVL COMM_LVL STATE NAICS NAICS_LDESC SUMMARY_LVL2 CTY_NAME NAICS_SDESC "
+                          "LAST_UPDATE CTY_CODE",
+    "imports/usda": "SUMMARY_LVL COMM_LVL DISTRICT SUMMARY_LVL2 CTY_NAME LAST_UPDATE DIST_NAME CTY_CODE USDA",
+    "imports/usdaimport": "USDA SUMMARY_LVL SUMMARY_LVL2 COMM_LVL DISTRICT world",
+}
+# Classified by reading each name: codes select a row, labels describe it.
+REAL_LABELS = {"E_ENDUSE_LDESC", "E_ENDUSE_SDESC", "I_ENDUSE_LDESC", "I_ENDUSE_SDESC", "HITECH_DESC",
+               "NAICS_LDESC", "NAICS_SDESC", "SITC_LDESC", "SITC_SDESC", "E_COMMODITY_LDESC",
+               "E_COMMODITY_SDESC", "CTY_NAME", "DIST_NAME", "UNIT_QY1", "LAST_UPDATE"}
+REAL_CODES = {"DF", "SUMMARY_LVL", "SUMMARY_LVL2", "COMM_LVL", "DISTRICT", "CTY_CODE", "STATE", "MONTH",
+              "world", "E_ENDUSE", "I_ENDUSE", "HITECH", "E_COMMODITY", "I_COMMODITY", "NAICS", "SITC",
+              "USDA"}
+
+
+def test_every_real_key_column_of_every_table_is_classified_correctly():
+    assert len(REAL_KEY_COLS) == 24
+    seen = set()
+    for table, cols in REAL_KEY_COLS.items():
+        for c in cols.split():
+            seen.add(c)
+            assert c in REAL_LABELS or c in REAL_CODES, (table, c)     # the test's own lists are complete
+            assert rv.is_label(c) == (c in REAL_LABELS), (table, c)
+    assert seen == REAL_LABELS | REAL_CODES                             # no list entry is invented
+    assert rv.is_label("HITECH_DESC") and rv.is_label("UNIT_QY1")      # the two R1824 misses
+    for k in ("series_key", "obs_date", "time"):
+        assert not rv.is_label(k)
+
+
+def test_the_label_guard_holds_a_relabel_under_the_real_column_name(env):
+    """R1824: with HITECH_DESC the old guard kept 6 rows AND added 4 (10), reporting them 'held'."""
+    _on(env)
+    _write(env.d, HT, "2025-11", "2026-01", label=True)
+    for mo in ("2025-11", "2025-12"):
+        env.api.label[(HT, mo)] = "renamed by the publisher"
+    before = pq.read_table(os.path.join(env.d, "intltrade__imports__hitech.parquet")).num_rows
+    res = cs.update(UNIT, None)
+    after = pq.read_table(os.path.join(env.d, "intltrade__imports__hitech.parquet")).num_rows
+    assert after == before == 6, (before, after)
+    assert "label column" in res.error and "HELD 4 store-only" not in res.error, res.error
+
+
+# ---- R1824 D2: rows the publisher serves and the store lacks ----------------------------------------------
+
+def test_a_planted_fetch_only_row_is_added_and_counted_per_year(env):
+    _on(env)
+    _write(env.d, HT, "2025-11", "2026-01")
+    env.api.extra.add((HT, "2025-12"))
+    before = len(_store(env.d, HT))
+    res = cs.update(UNIT, None)
+    st = pq.read_table(os.path.join(env.d, "intltrade__imports__hitech.parquet")).to_pylist()
+    assert len(st) == before + 1, (len(st), before)
+    assert any(r["CTY_CODE"] == "5700" for r in st)
+    assert "2025 changed=4 added=1 held=0" in res.error, res.error
+    assert _state(env)["imports"]["counts"][HT]["2025"] == {"changed": 4, "added": 1, "held": 0}
+
+
+def test_a_flow_that_would_add_more_than_the_bound_is_held_not_merged(env):
+    _on(env)
+    _write(env.d, HT, "2025-11", "2026-01")
+    env.api.extra.add((HT, "2025-12"))
+    env.mp.setenv("CENSUS_REVISION_ADDED_CAP_MIN_ROWS", "0")
+    env.mp.setenv("CENSUS_REVISION_ADDED_CAP_PCT", "0")
+    before = _store(env.d, HT)
+    res = cs.update(UNIT, None)
+    assert _store(env.d, HT) == before                                 # nothing merged at all
+    fam = _state(env)["imports"]
+    assert fam["growth_held"][HT]["added"] == 1, fam
+    assert "would ADD 1 row(s)" in res.error and "held for approval" in res.error, res.error
+
+
+# ---- review AR-444 phase 3: a flow refused on every pass must not block its family ------------------------
+
+def test_a_flow_refused_on_every_pass_is_held_and_the_family_still_publishes(env):
+    from updater.errors import DefinitiveError
+    _on(env)
+    _write(env.d, HT, "2025-10", "2026-01")
+    _write(env.d, EU, "2025-11", "2026-01")
+    env.api.refuse.add(EU)                    # its window months answer HTTP 400; its tail still works
+    notes = []
+    for _ in range(5):                        # a FIXED bound: the cap must be reached by then
+        try:
+            res = cs.update(UNIT, None)
+            notes.append(res.error or "")
+        except DefinitiveError as e:          # a refusal is structural, as the tail books it
+            notes.append(str(e))
+        if _state(env)["imports"]["phase"] == "done":
+            break
+    fam = _state(env)["imports"]
+    assert fam["phase"] == "done", fam
+    assert EU in fam["failed_flows"] and EU not in fam["published"], fam
+    assert _store(env.d, HT)[(f"{HT}|HITECH=01", "2025-11-01")]["GEN_VAL_MO"] == \
+        _val(HT, "2025-11", "01", "new")
+    assert _store(env.d, EU)[(f"{EU}|I_ENDUSE=01", "2025-11-01")]["GEN_VAL_MO"] == \
+        _val(EU, "2025-11", "01", "old")
+    assert "HTTP 400" in notes[0] and "transient-failed" not in notes[0], notes[0]
+    assert "failed on consecutive passes" in notes[-1], notes[-1]
+    refused = [c for c in env.api.calls if c[0] == EU and c[1] < "2026-01"]
+    assert len(refused) <= 6, len(refused)                        # not asked again once held

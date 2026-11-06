@@ -1754,6 +1754,8 @@ def update(unit, since) -> Result:
         tally.transient_unit(_said(f"annual revision not run - {_why(e, 200)}"))
         rev = None
     if rev is not None:
+        for lbl in rev.structural:
+            tally.structural_unit(_said(lbl))
         for lbl in rev.transient:
             tally.transient_unit(_said(lbl))
         for lbl in rev.deferred:
