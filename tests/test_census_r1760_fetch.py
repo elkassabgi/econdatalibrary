@@ -122,3 +122,13 @@ def test_main_stops_at_the_first_html_answer(tmp_path, monkeypatch):
     assert F.main(["--calibrate", "--out", str(tmp_path / "o")]) == 2
     lines = (tmp_path / "o" / "manifest.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1, "one html answer, then nothing more is asked"
+
+
+def test_main_stops_at_the_first_empty_answer(tmp_path, monkeypatch):
+    """AR-441 C2: a 204 for a month the store holds is a gap, not a month to skip past."""
+    monkeypatch.setattr(F, "_key", lambda: KEY)
+    monkeypatch.setattr(F.requests, "Session", lambda: Sess(Resp(b"", status=204, ctype="")))
+    monkeypatch.setattr(F.time, "sleep", lambda s: None)
+    assert F.main(["--calibrate", "--out", str(tmp_path / "o")]) == 2
+    lines = (tmp_path / "o" / "manifest.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1 and json.loads(lines[0])["kind"] == "empty"

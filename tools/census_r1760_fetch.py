@@ -11,7 +11,7 @@ WHAT IT NEVER DOES. It writes nothing to the store, R2 or D1. It writes raw resp
 request URL WITHOUT the key, into --out (a scratch folder), plus a manifest. The key is read in-process by the
 fetchers' own updater/strategies/fetchers/_common.api_key and is never printed or written (R1685).
 
-    python tools/census_r1760_fetch.py --calibrate --out F:/work/r1760/fetch     # R0: 2 requests
+    python tools/census_r1760_fetch.py --calibrate --out F:/work/r1760/fetch     # R0: 4 requests
     python tools/census_r1760_fetch.py --table enduse --year 2015 --out ...      # one year of one table
 """
 from __future__ import annotations
@@ -143,8 +143,10 @@ def main(argv=None) -> int:
         rec = fetch(t, ym, a.out, key, sess)
         print(f"{t:7} {ym}  {rec['status']} {rec['kind']:5} rows={rec.get('rows', '-')} "
               f"bytes={rec['bytes']:,} {rec['seconds']}s", flush=True)
-        if rec["kind"] not in ("json", "empty"):
+        if rec["kind"] != "json":
             # An HTML page (a missing or bad key) or an error answers every later request the same way: stop.
+            # An empty answer (204) stops too: every month asked for is one the store holds, so no rows is a
+            # gap the patch would silently skip (review AR-441 C2).
             print(f"stopping: {t} {ym} answered {rec['kind']} (HTTP {rec['status']})", flush=True)
             return 2
     # Re-runs append manifest lines while each .raw is overwritten: readers take the LAST line per stem.
