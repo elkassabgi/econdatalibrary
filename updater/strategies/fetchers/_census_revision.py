@@ -280,7 +280,7 @@ def fetch_month(ctx, flow, path, month):
     p0 = time.time()
     dim_cols, data_cols, shapes, pins = cs._dims_from_store(path)
     if not dim_cols:
-        return "refused", f"{flow} {month}: no dimensions recoverable from the stored series_key"
+        return "refused", (f"{flow} {month}: no dimensions recoverable from the stored series_key", None)
     get_cols = [c for c in data_cols if c.lower() not in cs._IMPLICIT]
     gcol = cs._geo_col(data_cols)
     levels = cs._store_geo_levels(path, gcol) if gcol else set()
@@ -304,7 +304,8 @@ def fetch_month(ctx, flow, path, month):
             except TransientError as e:
                 return "fail", f"{flow} revision time={month} for={pred} - {cs._why(e)}"
             except DefinitiveError as e:
-                return "refused", f"{flow} revision time={month} for={pred} - {cs._why(e)}"
+                return "refused", (f"{flow} revision time={month} for={pred} - {cs._why(e)}",
+                                   getattr(e, "status", None))
             finally:
                 ctx.note_req(time.time() - r0)
             time.sleep(cs.RATE)
@@ -346,7 +347,7 @@ class Outcome:
         self.cursors: dict = {}      # table id -> max obs_date iso (published tables)
         self.deferred: list = []
         self.transient: list = []
-        self.structural: list = []   # refusals (DefinitiveError), booked as the tail books them
+        self.structural: list = []   # (label, HTTP status|None): booked as the tail books refusals
         self.notes: list = []
         self.published: list = []
 
@@ -449,7 +450,11 @@ def run(ctx, flows, out_dir, today) -> Outcome:
                 if kind == "stop":
                     break
                 if kind in ("fail", "refused"):
-                    (oc.structural if kind == "refused" else oc.transient).append(val)
+                    if kind == "refused":
+                        oc.structural.append(val)          # (label, HTTP status or None)
+                        val = val[0]
+                    else:
+                        oc.transient.append(val)
                     pk = f"{flow}|{mo}"
                     fails[pk] = fails.get(pk, 0) + 1
                     if fails[pk] >= PIECE_FAIL_CAP:
@@ -489,7 +494,7 @@ def run(ctx, flows, out_dir, today) -> Outcome:
                     oc.deferred.append(f"{fam}: annual revision - verify stopped")
                     continue
                 if kind != "ok":
-                    oc.transient.append(f"{fam}: annual revision verify re-fetch {kind}: {val or ''}")
+                    oc.transient.append(f"{fam}: annual revision verify re-fetch {kind}: {(val[0] if isinstance(val, tuple) else val) or ''}")
                     continue
                 staged = blob.read_table(_stage_path(fam, fs, fp[0], fp[1]))
                 dk = cs._dedup_for(fp[0], [c for c in staged.column_names

@@ -1754,8 +1754,12 @@ def update(unit, since) -> Result:
         tally.transient_unit(_said(f"annual revision not run - {_why(e, 200)}"))
         rev = None
     if rev is not None:
-        for lbl in rev.structural:
+        for lbl, status in rev.structural:
             tally.structural_unit(_said(lbl))
+            if status is not None:
+                # An HTTP refusal is reported as one (_refused_message), never as "returned 200 but
+                # parsed 0 rows" - review AR-444 R1827.
+                refused.append((lbl, status))
         for lbl in rev.transient:
             tally.transient_unit(_said(lbl))
         for lbl in rev.deferred:

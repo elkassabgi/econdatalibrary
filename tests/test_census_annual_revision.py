@@ -616,7 +616,9 @@ def test_a_flow_refused_on_every_pass_is_held_and_the_family_still_publishes(env
         _val(HT, "2025-11", "01", "new")
     assert _store(env.d, EU)[(f"{EU}|I_ENDUSE=01", "2025-11-01")]["GEN_VAL_MO"] == \
         _val(EU, "2025-11", "01", "old")
-    assert "HTTP 400" in notes[0] and "transient-failed" not in notes[0], notes[0]
+    for n in notes[:rv.PIECE_FAIL_CAP]:      # the passes while the cap is being reached
+        assert "REFUSED by the API" in n and "HTTP 400" in n, n
+        assert "returned 200" not in n and "transient-failed" not in n, n
     assert "failed on consecutive passes" in notes[-1], notes[-1]
     refused = [c for c in env.api.calls if c[0] == EU and c[1] < "2026-01"]
     assert len(refused) <= 6, len(refused)                        # not asked again once held
