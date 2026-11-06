@@ -268,7 +268,8 @@ def test_the_planted_passes_are_the_pencil_figures(tmp_path, monkeypatch, capsys
     so a harness that drifted into some other scenario cannot keep the differential vacuous."""
     _h, out = _passes(tmp_path, monkeypatch, capsys)
     (p1, _), (p2, _), (p3, _) = out
-    assert p1["ran"] == ["small", "kil", "cen"] and p1["budget_skipped"] == [("big", 100.0), ("imt", 55.0)]
+    # DECAY OPTION: big's newest run (100 min) was 40 days before pass 1: 90 + 10 x (1 - 40/60), rounded by the harness
+    assert p1["ran"] == ["small", "kil", "cen"] and p1["budget_skipped"] == [("big", 93.0), ("imt", 55.0)]
     assert [x[1:] for x in p1["rows"]] == [("small", "ok", 300.0), ("kil", "ok", 3000.0), ("cen", "partial", 2400.0)]
     assert p1["state"]["cen"][0] == "partial" and p1["end_min"] == 95.0     # returned at its stop point, not 100
     assert p2["ran"] == ["big"] and p2["budget_skipped"] == [("imt", 55.0)]
@@ -309,7 +310,7 @@ def test_negative_control_the_same_harness_detects_an_undeclared_book(tmp_path, 
     start, p = h.production_pass(100, capsys)
     r = h.replay_pass(start, 100)
     assert p["ran"] == ["small", "kil", "cen"] and r["ran"] == ["small", "kil"]
-    assert ("cen", 150) in r["budget_skipped"]
+    assert ("cen", 90) in r["budget_skipped"]       # DECAY OPTION: cen last ran 70 days ago, past the 60-day decay
 
 
 # ------------------------------------------------------------------ the REAL declared fetchers' figures

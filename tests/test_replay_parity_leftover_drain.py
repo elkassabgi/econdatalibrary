@@ -55,7 +55,8 @@ def _workstation_platform(monkeypatch):
 
 # 2026-11-06: c's newest real run is 6,000 s, so on the workstation it reserves 100 min (admission_reserve's
 # no-hard-timeout rule), not the 90-min cap. The drained amounts below do not depend on it.
-C_RESERVE = 100.0
+# DECAY OPTION: c last ran 40 days before the pass, so its 10-min extra has decayed to 10 x (1 - 40/60).
+C_RESERVE = 90.0 + 10.0 * (1.0 - 40.0 / orchestrate.RESERVE_DECAY_DAYS)
 
 BASE = {"n": "monthly", "a": "monthly", "b": "monthly", "d": "monthly", "c": "monthly"}
 QUEUE = {"n": (30, "2026-09-15"), "b": (100, "2026-09-01"), "d": (10, "2026-07-01"), "c": (50, "2026-08-01")}
