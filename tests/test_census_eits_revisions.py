@@ -301,3 +301,48 @@ def test_family_and_piece_helpers():
     assert rv.window_pieces("imports", 2026)[0] == "2023-01"
     assert rv._month_bounds("2024") == (dt.date(2024, 1, 1), dt.date(2025, 1, 1))
     assert rv._month_bounds("2024-12") == (dt.date(2024, 12, 1), dt.date(2025, 1, 1))
+
+
+# ---- review AR-451 (R1833): the two properties no test pinned -----------------------------------
+
+MIXED = ["intltrade/imports/hitech", "intltrade/exports/hitech", "eits/marts", "eits/qtax"]
+
+
+@pytest.mark.parametrize("armed, allowed", [
+    (rv.ENV_ACTIVATE, {"imports", "exports"}),
+    (rv.ENV_ACTIVATE_EITS, {"eits-marts", "eits-qtax"}),
+])
+def test_mixed_flows_one_switch_runs_only_its_own_families(tmp_path, monkeypatch, armed, allowed):
+    """intltrade and EITS flows pass through run() TOGETHER, as in production. With both kinds
+    present the run-level gate opens, so only the per-family gate keeps the other kind's campaign
+    (about 147 requests and store writes for EITS) from starting. start_date is in the far future,
+    so a family that passes the gate stops at 'not due' and fetches nothing."""
+    for v in (rv.ENV_ACTIVATE, rv.ENV_ACTIVATE_EITS):
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setenv(armed, "2026-01-01")
+    monkeypatch.setattr(rv, "OPERATOR_ACTIVATED_ON", None)
+    monkeypatch.setattr(rv, "OPERATOR_ACTIVATED_EITS_ON", None)
+    seen = []
+    real = rv.sentinel_of
+    monkeypatch.setattr(rv, "sentinel_of", lambda fam: (seen.append(fam), real(fam))[1])
+    monkeypatch.setattr(rv, "start_date", lambda year: dt.date(9999, 1, 1))
+    ctx = types.SimpleNamespace(stop_now=lambda: False)
+    oc = rv.run(ctx, MIXED, str(tmp_path), dt.date(2026, 11, 6))
+    assert set(seen) == allowed, (armed, sorted(seen))
+    assert not oc.published and not oc.cursors, vars(oc)
+
+
+def test_an_empty_cell_value_on_re_pull_keeps_the_stored_value(env):
+    """The re-pull applies the tail's empty-measure rule: an empty cell_value the API answers for a
+    stored key is skipped, never written over the stored value. A real revision in the same year
+    makes the year publish, so the empty cell is tested on a path that writes the store."""
+    env.mp.setenv(rv.ENV_ACTIVATE_EITS, "2026-01-01")
+    _write(env.d, "eits/fa", "2024-01", "2026-03")
+    env.api.serve("eits/fa", "2024-01", "2026-03")
+    env.api.data[("eits/fa", "2024-05", "C1")] = ""             # the publisher answers an empty cell
+    env.api.data[("eits/fa", "2024-06", "C1")] = "555.5"        # and revises another month
+    res = cs.update(UNIT, None)
+    assert _val(env.d, "eits/fa", "C1", "2024-06-01") == "555.5", "the year was re-pulled"
+    assert _val(env.d, "eits/fa", "C1", "2024-05-01") == _v("2024-05", "C1"), "empty cell not written"
+    assert len(_store(env.d, "eits/fa")) == 2 * 27, "no row added or removed"
+    assert "eits__fa" in (res.series_cursors or {}), res
