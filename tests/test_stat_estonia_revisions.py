@@ -284,8 +284,13 @@ def test_revision_rows_that_would_add_many_rows_are_withheld_but_changed_rows_me
         "AR-453 C2: a withheld table is a named transient the gate sees, not only a merge-note line"
     assert json.loads((env.tmp / REVISION_FILE).read_text())[path]["outcome"] == "withheld"
     pub2 = Pub(pub.tables)
-    env.run(pub2, [path])
+    res2 = env.run(pub2, [path])
     assert pub2.posts == [], "stamped withheld: waits its cadence; a monthly table asks no boundary"
+    # AR-453 R2-1: the hold STANDS - the second pass re-books the named transient from the sidecar
+    from updater.health import _deferral_only
+    head2 = res2.error.split("; merge note:")[0]
+    assert res2.status == "partial" and "TO0053.PX: WITHHELD since" in head2, res2.error
+    assert "standing hold" in head2 and not _deferral_only([{"status": res2.status, "last_error": res2.error}])
 
 
 # ---- C2: the new-series bound, where it applies --------------------------------------------------
@@ -535,9 +540,20 @@ def test_a_cold_table_sends_no_boundary_request(env):
     arch = "Lepetatud_tabelid/A/OLD1.PX"
     avars = [{"code": "Aasta", "time": True, "values": ["2000", "2001"]}, {"code": "X", "values": ["1"]}]
     _write_store(env.tmp, "Lepetatud_tabelid", [(S._table_prefix(arch) + ":X=1", dt.date(2001, 12, 31), 1.0)])
-    pub = Pub({arch: (avars, lambda c: 9.0)})
-    env.run(pub, [arch])
-    assert pub.posts == [], "cold (archive): strictly newer only, and nothing is newer"
+    # AR-453 R2-2: a cold D1-SHAPE table too (year axis + Kvartal), else d1 mode asks it nothing anyway
+    arch2 = "Lepetatud_tabelid/A/OLD2.PX"
+    qvars = [{"code": "Aasta", "time": True, "values": ["2000", "2001"]},
+             {"code": "Kvartal", "values": ["1", "2", "3", "4"]}]
+    _write_store(env.tmp, "Lepetatud_tabelid",
+                 [(S._table_prefix(arch) + ":X=1", dt.date(2001, 12, 31), 1.0),
+                  (S._table_prefix(arch2) + ":Kvartal=1", dt.date(2001, 12, 31), 1.0)])
+    assert S._is_d1_shape([dt.date(2001, 12, 31)], ["Kvartal"])
+    _raa_store(env.tmp)               # a HOT D1 control: its boundary IS asked (and keeps the pass
+    pub = Pub({arch: (avars, lambda c: 9.0), arch2: (qvars, lambda c: 9.0),   # off the all-empty floor)
+               RAA: (RAA_VARS, lambda c: 10.0)})
+    env.run(pub, [RAA, arch, arch2])
+    assert [p for p, _ in pub.posts] == [RAA], \
+        "cold (archive): strictly newer only, and nothing is newer - D1 shape or not; the hot D1 table asks"
 
 
 def test_a_merge_report_that_disagrees_with_the_compare_is_a_named_defect(env):

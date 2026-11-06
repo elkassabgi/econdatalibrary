@@ -1075,6 +1075,7 @@ def update(unit, since) -> Result:
     rev_slice_s = _env_num("STAT_ESTONIA_REVISION_BUDGET_MIN", REVISION_BUDGET_MIN_DEFAULT) * 60
     rev_spent_s = 0.0
     rev_done = rev_left = 0
+    rev_stamped: set = set()       # table paths whose revision outcome was stamped THIS pass
     note_stats: dict = {}          # {table prefix: compare stats} over the whole pass, for the note
     # THE REQUEST COST OF THIS PASS, printed at the end (VERIFY V-M1: the boundary's cost is not yet
     # measured; this line is the instrument, read on the first runs after the merge).
@@ -1477,8 +1478,11 @@ def update(unit, since) -> Result:
                         pass                                 # booked transient above
                     elif st["withheld_new_series"] or st["withheld_revision"]:
                         # WITHHELD ROWS NEED A PERSON (review AR-453 C2): booked TRANSIENT and named, so
-                        # the source reads ATTENTION in the gate and the digest every pass until someone
-                        # acts. The merge note alone is a non-failure tail that health strips. What did
+                        # the source reads ATTENTION in the gate and the digest. A boundary withhold
+                        # recurs on every visit; a revision withhold is re-booked from its sidecar stamp
+                        # on every armed pass (the standing hold before finalize, R2-1), so either way
+                        # it stays ATTENTION until someone acts. The merge note alone is a non-failure
+                        # tail that health strips. What did
                         # merge from this table (changed values, added rows outside the bound) is in the
                         # store and the row total; its added rows still count in tally.added.
                         tally.added += st["merged_added"]
@@ -1506,6 +1510,12 @@ def update(unit, since) -> Result:
                               else "merged" if (st["merged_added"] or st["merged_changed"])
                               else "no change")
                         rev_state[tp] = {"at": today.isoformat(), "outcome": oc}
+                        if oc == "withheld":
+                            # the counts travel with the stamp, so the STANDING hold below can name
+                            # them on the passes that do not re-pull the table
+                            rev_state[tp].update(withheld_new_series=st["withheld_new_series"],
+                                                 withheld_revision=st["withheld_revision"])
+                        rev_stamped.add(tp)
                         rev_dirty = True
                         rev_done += 1
                 note_stats.update(stats)
@@ -1559,6 +1569,20 @@ def update(unit, since) -> Result:
         visited = set(subjects[:subjects.index(last_subj) + 1])
         n_subunits = sum(len(by_subject[s]) for s in visited if s in by_subject)
 
+    # A STANDING REVISION HOLD (review AR-453 R2-1). A revision withhold is stamped "withheld" and the
+    # table is not re-pulled for REVISION_EVERY_DAYS (90), so without this the source would read ROTATING
+    # again from the next pass. While the sidecar says "withheld", every ARMED pass re-books the table's
+    # named WITHHELD transient - no request is sent - until the stamp changes: a person repairs the table
+    # or edits/removes its sidecar entry, or the next due re-pull merges. Disarming the window stands the
+    # holds down with it (off means off: the sidecar is not read), and re-arming brings them back.
+    if revision_armed:
+        for tp_, e_ in sorted(rev_state.items()):
+            if (isinstance(e_, dict) and e_.get("outcome") == "withheld" and tp_ not in rev_stamped):
+                tally.transient_unit(_said(
+                    f"{tp_}: WITHHELD since {e_.get('at')} - {e_.get('withheld_new_series', '?')} row(s) "
+                    f"under series the table never held + {e_.get('withheld_revision', '?')} revision "
+                    f"row(s) over the growth bound - needs review (standing hold, not re-pulled this "
+                    f"pass)"))
     print(f"[{SOURCE}] requests this pass: {req_posts} POST(s) over {req_chunks} planned chunk(s); "
           f"tables by grain: full={req_tables['full']} aggregate={req_tables['aggregate']}; "
           f"boundary {b_mode} (asked on {req_bnd} table(s), {req_d1} visited table(s) D1-shape), revision {'ARMED' if revision_armed else 'off'}; "
