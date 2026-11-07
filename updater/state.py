@@ -475,13 +475,21 @@ class StateStore:
         # floor exists to remember. Without it, five fast post-kill rows (locked 0.0s,
         # transient_fails during an upstream outage) roll the kill out of the MAX window and
         # the floor then restores the OLD cheap estimate — one starvation relapse per outage.
-        floors = self.db.execute(
+        # through the class, not self: tools/measure_ci_lag.py calls this unbound on a shim that holds only `db`
+        for sid, d in StateStore.last_real_duration(self).items():
+            if d is not None and sid in est and d > est[sid]:
+                est[sid] = d
+        return est
+
+    def last_real_duration(self) -> dict:
+        """{source_id: dur_s of its newest ok / no_change / partial / killed_external run} - the newest attempt that
+        GOT SOMEWHERE (a kill spent at least dur_s on such an attempt). It is run_cost_estimate's floor (the query
+        moved here unchanged), and orchestrate.admission_reserve reads it for a unit that cannot be stopped inside
+        a pass (2026-11-06): the newest real run, where the MAX of five keeps one outlier for five turns (eia's
+        70,234 s of 2026-08-22, the R1709 lock-out)."""
+        return {sid: d for sid, d in self.db.execute(
             "SELECT source_id, dur_s FROM ("
             "  SELECT source_id, dur_s,"
             "         ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY id DESC) AS rn"
             "  FROM runs WHERE status IN ('ok','no_change','partial','killed_external')"
-            ") WHERE rn = 1")
-        for sid, d in floors:
-            if d is not None and sid in est and d > est[sid]:
-                est[sid] = d
-        return est
+            ") WHERE rn = 1")}

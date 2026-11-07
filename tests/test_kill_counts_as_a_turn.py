@@ -9,6 +9,7 @@ own run_once/order_units found it; these tests pin the rule and use that replay'
 The negative control reproduces the starvation with the old clock, so the ordering test cannot pass by accident.
 """
 from __future__ import annotations
+import pytest
 
 import os
 import sqlite3
@@ -18,6 +19,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from updater.orchestrate import last_turn_utc, order_units, overdue_key  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _restore_run_deadline(monkeypatch):
+    """run_once sets the module global orchestrate._RUN_DEADLINE_TS and nothing clears it; left set, it leaks into
+    later test files (tests/test_csv_coverage_note.py failed 7 tests on CI, review AR-450 round 5, R1839)."""
+    from updater import orchestrate as _orch
+    monkeypatch.setattr(_orch, "_RUN_DEADLINE_TS", _orch._RUN_DEADLINE_TS)
 
 NOW = "2026-09-17T22:37:00+00:00"
 
@@ -40,9 +49,13 @@ def test_an_earlier_kill_does_not_override_a_newer_success():
     assert last_turn_utc(st, "2026-09-11T02:34:13+00:00") == "2026-09-16T00:00:00+00:00"
 
 
-def test_no_kill_leaves_the_old_clock_exactly():
+def test_no_kill_takes_the_later_of_success_and_attempt():
+    # 2026-11-06 (B2, tests/test_attempt_is_a_turn.py): an attempt is a turn too. This test pinned "success first"
+    # before; a newer attempt (a partial run) now moves the key, so a permanently partial unit stops leading its band.
     st = {"last_success_utc": "2026-09-04T01:02:02+00:00", "last_attempt_utc": "2026-09-10T00:00:00+00:00"}
-    assert last_turn_utc(st, None) == "2026-09-04T01:02:02+00:00"   # success first, as before
+    assert last_turn_utc(st, None) == "2026-09-10T00:00:00+00:00"
+    st = {"last_success_utc": "2026-09-10T00:00:00+00:00", "last_attempt_utc": "2026-09-04T01:02:02+00:00"}
+    assert last_turn_utc(st, None) == "2026-09-10T00:00:00+00:00"   # a newer success still wins
     assert last_turn_utc({}, None) is None                           # never-run stays never-run
 
 

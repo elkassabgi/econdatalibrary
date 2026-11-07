@@ -6938,6 +6938,9 @@ sources:
   # docstring records that, and warns its numbers are a LOWER BOUND because it omits
   # the new data and the combined merge. usda repeated the failure on 2026-08-22.
   run_location: local
+  # window_stop (2026-11-06): on _unctad's windowed update, like nonplasticsubststradebypartner; one of
+  # the three sibling turns its 60-min assembly reserve was measured on (see _unctad.py).
+  window_stop: true
   live: true
   scripts: [jobs/ingest_unctad_ds.py]
   strategy: bulk_snapshot_if_changed
@@ -6964,6 +6967,9 @@ sources:
   # docstring records that, and warns its numbers are a LOWER BOUND because it omits
   # the new data and the combined merge. usda repeated the failure on 2026-08-22.
   run_location: local
+  # window_stop (2026-11-06): on _unctad's windowed update, like nonplasticsubststradebypartner; one of
+  # the three sibling turns its 60-min assembly reserve was measured on (see _unctad.py).
+  window_stop: true
   live: true
   scripts: [jobs/ingest_unctad_ds.py]
   strategy: bulk_snapshot_if_changed
@@ -7019,6 +7025,10 @@ sources:
   # run moves the source to the most expensive cost band, which starts only after the cheaper bands.
   # The number of turns is NOT measured (review R1152).
   run_location: local
+  # window_stop (2026-11-06): on _unctad's windowed update, like nonplasticsubststradebypartner, so a
+  # pass stops it between chunk requests before the run ceiling and keeps the spills, instead of the
+  # hard stop. 14,337,747 rows: inside the sibling range the 60-min assembly reserve was measured on.
+  window_stop: true
   live: true
   scripts: [jobs/ingest_unctad_ds.py]
   strategy: bulk_snapshot_if_changed
@@ -7064,6 +7074,9 @@ sources:
   # docstring records that, and warns its numbers are a LOWER BOUND because it omits
   # the new data and the combined merge. usda repeated the failure on 2026-08-22.
   run_location: local
+  # window_stop (2026-11-06): on _unctad's windowed update, like nonplasticsubststradebypartner; one of
+  # the three sibling turns its 60-min assembly reserve was measured on (see _unctad.py).
+  window_stop: true
   live: true
   scripts: [jobs/ingest_unctad_ds.py]
   strategy: bulk_snapshot_if_changed

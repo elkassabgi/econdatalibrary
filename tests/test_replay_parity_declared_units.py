@@ -63,6 +63,14 @@ from updater.strategies.base import Result, Strategy, Unit  # noqa: E402
 
 TAIL = 60.0      # the replay's tail_min: it must NOT decide a declared unit's stop (a value no declared tail has)
 
+
+@pytest.fixture(autouse=True)
+def _workstation_platform(monkeypatch):
+    """The replay models the WORKSTATION (admission_reserve(..., hard_timeout=False)); run_once must see the same
+    platform on any machine, Linux CI included (2026-11-06). Under it an undeclared unit reserves at least its newest
+    real run: big 6,000 s -> 100 min, an undeclared cen 9,000 s -> 150 min."""
+    monkeypatch.setattr(orchestrate, "hard_timeout_available", lambda: False)
+
 # scenario: cadences, declared {sid: (reserve, tail, piece)}, unit_state rows, runs rows (days ago, sid, status, dur_s)
 A = {"cadence": {"small": "daily", "kil": "monthly", "cen": "monthly", "big": "monthly", "imt": "monthly"},
      "declared": {"cen": (17.0, 5.0, 0.0), "imt": (55.0, 25.0, 30.0)},
@@ -260,12 +268,13 @@ def test_the_planted_passes_are_the_pencil_figures(tmp_path, monkeypatch, capsys
     so a harness that drifted into some other scenario cannot keep the differential vacuous."""
     _h, out = _passes(tmp_path, monkeypatch, capsys)
     (p1, _), (p2, _), (p3, _) = out
-    assert p1["ran"] == ["small", "kil", "cen"] and p1["budget_skipped"] == [("big", 90.0), ("imt", 55.0)]
+    # DECAY OPTION: big's newest run (100 min) was 40 days before pass 1: 90 + 10 x (1 - 40/60), rounded by the harness
+    assert p1["ran"] == ["small", "kil", "cen"] and p1["budget_skipped"] == [("big", 93.0), ("imt", 55.0)]
     assert [x[1:] for x in p1["rows"]] == [("small", "ok", 300.0), ("kil", "ok", 3000.0), ("cen", "partial", 2400.0)]
     assert p1["state"]["cen"][0] == "partial" and p1["end_min"] == 95.0     # returned at its stop point, not 100
     assert p2["ran"] == ["big"] and p2["budget_skipped"] == [("imt", 55.0)]
     assert sorted(p2["not_due"]) == ["cen", "kil", "small"]                  # cen: the partial clock
-    assert p3["ran"] == ["imt"] and p3["budget_skipped"] == [("big", 90.0)] and "cen" in p3["not_due"]
+    assert p3["ran"] == ["imt"] and p3["budget_skipped"] == [("big", 100.0)] and "cen" in p3["not_due"]
     assert [x[1:] for x in p3["rows"]] == [("imt", "partial", 90 * 60.0)] and p3["end_min"] == 90.0
     assert p3["state"]["imt"][0] == "partial" and p3["state"]["imt"][2] == p2["state"]["imt"][2]   # success kept
 
@@ -294,14 +303,14 @@ def test_negative_control_the_same_harness_detects_the_replays_old_stop_rule(tmp
 
 def test_negative_control_the_same_harness_detects_an_undeclared_book(tmp_path, monkeypatch, capsys):
     """A book loaded WITHOUT the declaration (what the replay was before this change) diverges in the first pass -
-    cen is reserved min(90, 3 x 150) = 90 and skipped."""
+    cen is reserved its newest real run, 9,000 s = 150 min (min(90, 3 x 150) = 90 before 2026-11-06), and skipped."""
     h = Harness(tmp_path, monkeypatch)
     h.book = m.load_unit_book(h.db_path, dt.datetime.fromtimestamp(h.clock.t, dt.timezone.utc), dt.timedelta(0),
                               cadences=dict(A["cadence"]), window_stop=set())
     start, p = h.production_pass(100, capsys)
     r = h.replay_pass(start, 100)
     assert p["ran"] == ["small", "kil", "cen"] and r["ran"] == ["small", "kil"]
-    assert ("cen", 90) in r["budget_skipped"]
+    assert ("cen", 90) in r["budget_skipped"]       # DECAY OPTION: cen last ran 70 days ago, past the 60-day decay
 
 
 # ------------------------------------------------------------------ the REAL declared fetchers' figures
@@ -324,7 +333,10 @@ def test_every_declared_fetcher_exposes_its_stop_figures(clean_env):
     one slice; nonplastics: floor 5 + assembly reserve 60)."""
     ws = m.local_window_stop_from_registry()
     got = {s: (fetchers.get(s).window_stop_tail_min(), fetchers.get(s).window_stop_piece_min()) for s in sorted(ws)}
-    assert got == {"census": (5.0, 0.0), "imf_imts_direct": (25.0, 30.0), NP: (65.0, 0.0), "wid": (5.0, 0.0)}, got
+    # 2026-11-06: four more unctad modules on the windowed update, the same figures as nonplastics
+    assert got == {"census": (5.0, 0.0), "imf_imts_direct": (25.0, 30.0), NP: (65.0, 0.0), "wid": (5.0, 0.0),
+                   "unctad_creativegoodsvalue": (65.0, 0.0), "unctad_criticalmineralstradebypart": (65.0, 0.0),
+                   "unctad_gstptradematrix": (65.0, 0.0), "unctad_tradeservcatbypartner": (65.0, 0.0)}, got
     b = m.UnitBook({s: "monthly" for s in ws}, {}, [], {s: 1.0 for s in ws}, {}, window_stop=ws)
     assert all(b.stop_figures(s)[2] == "fetcher" for s in ws) and not b.stop_fallback
 
@@ -399,7 +411,7 @@ def test_the_replay_orders_and_admits_through_the_production_functions(monkeypat
     flip = {"a": "2026-09-30T00:00:00+00:00", "b": "2026-09-02T00:00:00+00:00"}
     assert ran(order_last_turn=lambda u, row, k, w: flip[u.source_id]) == ["b", "a"]
     monkeypatch.undo()
-    assert ran(admission_reserve=lambda u, est, t=None: (101.0 if u.source_id == "a" else 10.0, "", None, None)) == \
+    assert ran(admission_reserve=lambda u, est, t=None, **kw: (101.0 if u.source_id == "a" else 10.0, "", None, None)) == \
         ["b"]
 
 

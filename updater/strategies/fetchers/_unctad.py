@@ -60,8 +60,8 @@ def _token(meta: dict) -> "str | None":
 def make(ds: str, source: str, window: bool = False):
     """Return (current_vintage, update) bound to one UNCTADstat dataset.
 
-    window=True opts ONE source into the WINDOWED update (see _windowed below). Every module that passes
-    nothing gets exactly the update it had before."""
+    window=True opts that source into the WINDOWED update (see _windowed below); five modules do, listed in
+    "THE WINDOWED UPDATE". Every module that passes nothing gets exactly the update it had before."""
 
     def current_vintage(unit):
         j = _job()
@@ -137,8 +137,12 @@ def make(ds: str, source: str, window: bool = False):
 # ================================================================================================
 # THE WINDOWED UPDATE (opt-in, make(..., window=True); PLAN R10.3 step 4, 2026-10-30)
 #
-# Opted in: unctad_nonplasticsubststradebypartner ONLY. Every other unctad module calls make(ds, source)
-# and runs the update above, unchanged (tests/test_unctad_window_cap.py pins that differentially).
+# Opted in: unctad_nonplasticsubststradebypartner (2026-10-30) and, from 2026-11-06 (review AR-450),
+# unctad_creativegoodsvalue, unctad_gstptradematrix, unctad_criticalmineralstradebypart (the three sibling turns
+# the assembly reserve below was measured on) and unctad_tradeservcatbypartner (14M rows). The food pair and
+# unctad_biotrademerch stay out: see the residual on parsed rows held as Python lists. Every other unctad module
+# calls make(ds, source) and runs the update above, unchanged (tests/test_unctad_window_cap.py pins the set and
+# that difference).
 #
 # WHY (measured, receipts in the PR): its stored vintage is NULL, so every due turn is forced to pull. Its
 # 2026-10-08 desktop turn re-walked release 10009 from nothing and was killed by the ps1 hard stop at

@@ -137,12 +137,21 @@ def last_turn_utc(state_row, last_kill_utc):
     ORDERING ONLY. Nothing here stamps unit_state, admits or refuses a unit, or reads a duration:
     is_due's partial-retry clock and health.py still read last_attempt_utc exactly as before, so
     this cannot re-open R639 (a kill rule that stamps and runs away) or R684 (an admission change)
-    and does not trust a censored kill duration (R625). The state stamp it compares against is the
-    SAME one the old clock read - `last_success_utc`, falling back to `last_attempt_utc` - so a unit
-    with a success on record is judged by that success, exactly as before; the kill takes over only
-    while it is the later of the two, and a later success replaces it. (A unit whose newer PARTIAL
-    attempts are hidden behind an older success is an older property of this clock, left unchanged
-    here: changing it reorders every partial source and needs its own replay.)
+    and does not trust a censored kill duration (R625).
+
+    AN ATTEMPT IS A TURN TOO (2026-11-06, plan item B2). The state stamp is the LATER of
+    `last_success_utc` and `last_attempt_utc`. It used to be `last_success_utc`, falling back to
+    `last_attempt_utc`, so a unit whose passes end `partial` (which never stamps last_success, R231)
+    kept its OLD success as its key and led its band on every pass: istat (success 2026-07-14,
+    partial ever since) and bea (success 2026-09-16) took 7,469 s + 5,496 s of the 223-min desktop
+    pass of 2026-11-05, while census (no success, attempted 2026-10-27) was BUDGET SKIP in every pass
+    after it. Review AR-421's 60-day replay of main's real order (2026-08-29..10-28) measured the
+    trade: istat held the first long turn in 32 of 45 passes under the old stamp and 3 of 46 under
+    this one; 6 local units never finished under the old stamp, 2 under this one. The kill still
+    takes over only while it is the latest of the stamps. Every input can only make a unit's OWN key
+    later; that is all "never earlier" means. Relative to other units the order can move either way:
+    a unit whose key did not move sorts AHEAD of units whose keys moved back (census ahead of istat).
+    An attempt dated in the FUTURE is ignored here, exactly as a future kill is below.
 
     Unparseable values are ignored in favour of the other, so a malformed kill row can never make a
     unit look MORE overdue than its state says; if neither parses, the state value is returned
@@ -156,7 +165,21 @@ def last_turn_utc(state_row, last_kill_utc):
         d = datetime.fromisoformat(str(v))
         return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
 
-    last = (state_row or {}).get("last_success_utc") or (state_row or {}).get("last_attempt_utc")
+    def _ok(v):
+        try:
+            return _parse(v)
+        except (ValueError, TypeError):
+            return None
+
+    _succ = (state_row or {}).get("last_success_utc")
+    _att = (state_row or {}).get("last_attempt_utc")
+    last = _succ or _att
+    if _succ and _att:
+        _sd, _ad = _ok(_succ), _ok(_att)
+        # the later of the two; an unreadable one yields to a readable one; both unreadable: as before. A future
+        # attempt is not a turn that happened, and taken at face value it would bury the unit (the kill rule below).
+        if _ad is not None and (_sd is None or _ad > _sd) and _ad <= datetime.now(timezone.utc):
+            last = _att
     if not last_kill_utc:
         return last
     try:
@@ -366,9 +389,11 @@ def declared_last_turn_utc(state_row, last_kill_utc, last_window_stop_utc):
     """When a WINDOW-STOPPABLE unit (registry window_stop: true) last had a turn, for ORDERING only: the latest
     of last_turn_utc's answer, its last_attempt_utc and its newest `window_stopped` run.
 
-    last_turn_utc keys on last_success when one exists, so a unit with an old success whose passes window-stop
-    (partial, progress or not) never moves its key and leads its band for ever - review AR-415's wedge: such a
-    unit was admitted in 5 of 5 short passes while a wid-like unit and a never-success unit got none. Every
+    last_turn_utc keyed on last_success when one existed, so a unit with an old success whose passes window-stop
+    (partial, progress or not) never moved its key and led its band for ever - review AR-415's wedge: such a
+    unit was admitted in 5 of 5 short passes while a wid-like unit and a never-success unit got none. Since
+    2026-11-06 (B2) last_turn_utc already takes the later of success and attempt for EVERY unit; what this
+    function still adds is the newest `window_stopped` run, which only a declared unit writes. Every
     window stop moves this key: a progressing stop stamps last_attempt (partial), and a no-progress stop
     writes the window_stopped row. So the declared units rotate. It is never EARLIER than last_turn_utc (it
     only adds stamps to a max), so it can only move a unit BACK in the order, never ahead of an undeclared
@@ -439,14 +464,78 @@ def order_last_turn(unit, state_row, last_kill_utc, last_window_stop_utc):
     return last_turn_utc(state_row, last_kill_utc)
 
 
-def admission_reserve(unit, est_s, unit_timeout_min=None):
+def hard_timeout_available() -> bool:
+    """Can the per-unit SIGALRM cut a unit on this platform? False on Windows (no signal.setitimer): the
+    workstation pass. One function, so a test pins the platform it models instead of inheriting the machine's."""
+    import signal as _sig
+    return hasattr(_sig, "setitimer")
+
+
+# The workstation reserve's EXTRA over the normal reserve falls linearly to 0 over this many days since the unit's last
+# turn (review AR-450 round 2, R1838): without it a unit whose newest real run is longer than every pass is never
+# admitted again (unctad_tradefoodprocbycat: 224.3 min against a longest recent pass of 223), and each kill raises the
+# figure. 60 days: after two months of waiting a unit reserves exactly what main reserves, so it is admitted by the
+# first pass that gives it the normal reserve. CHOSEN from AR-450's replay sweep of 7, 14, 21, 30 and 60 days (PR #241):
+# fewest hard stops of the decays; the owner picks between this and the band-head rule (PR #241 head).
+RESERVE_DECAY_DAYS = 60.0
+
+
+def age_days(stamp, now_utc_iso) -> float | None:
+    """Days from `stamp` to `now_utc_iso` (both ISO; offset-less read as UTC), or None when either is unreadable."""
+    from datetime import datetime, timezone
+
+    def _p(v):
+        d = datetime.fromisoformat(str(v))
+        return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+    if not stamp:
+        return None
+    try:
+        return max(0.0, (_p(now_utc_iso) - _p(stamp)).total_seconds() / 86400.0)
+    except (ValueError, TypeError):
+        return None
+
+
+def admission_reserve(unit, est_s, unit_timeout_min=None, last_real_s=None, hard_timeout=None, waited_days=None):
     """The start gate's reserve for `unit`: (need_min, basis, declared_min, why_not_declared).
 
     est_s is the unit's run_cost_estimate (None = never run). unit_timeout_min defaults to _unit_timeout_min();
     tools/measure_ci_lag.py's replay passes its own (the 45-min default). declared_min / why_not_declared are
     _window_stop_reserve's answer, returned so run_once can print what it printed before. Moved out of
     run_once's unit loop unchanged, so the replay reserves exactly what production reserves (review of PR #215:
-    the replay kept the old 90-min rule for the declared units)."""
+    the replay kept the old 90-min rule for the declared units).
+
+    NO HARD TIMEOUT, NO STOP (2026-11-06). The 2 x timeout cap assumes the per-unit SIGALRM can cut a unit at
+    unit_timeout_min. Where it cannot (hard_timeout False: Windows has no setitimer, so the workstation pass), a
+    unit that does NOT declare window_stop runs until it ends or the ps1 hard stop kills it, and a kill loses the
+    rest of the pass. So such a unit also reserves its LATEST REAL RUN (last_real_s: StateStore.last_real_duration,
+    the newest ok/no_change/partial/killed_external duration - not the MAX of five, which kept eia's one 70,234 s
+    outlier and locked it out, R1709). A kill row is censored, so for a killed unit this is a LOWER bound and it
+    rises with each kill. Measured with review AR-450's replay (tools/measure_ci_lag.py replay61, schedule
+    until-2026-11-04, 60 d, 'today' MinH 20 D3 8 W off x1), together with the last_turn_utc rotation and four more
+    unctad window_stop declarations: hard stops 8 -> 3 and owed minutes at the end 1,650.8 -> 1,144.9 against main.
+    AR-450's simpler pass simulation still shows more hard stops than main (PR #241 body); hard_timeout None reads
+    the platform (signal.setitimer); True (POSIX, the cloud) leaves every reserve exactly as before. A declared
+    unit keeps its declared figure. last_real_s None (never run) keeps the never-run worst case."""
+    if hard_timeout is None:
+        hard_timeout = hard_timeout_available()
+    need, basis, ws_min, ws_bad = _admission_reserve_base(unit, est_s, unit_timeout_min)
+    if (not hard_timeout and ws_min is None and last_real_s is not None and need > 0
+            and last_real_s / 60.0 > need):
+        # DECAY (AR-450 round 2): the extra falls to 0 over RESERVE_DECAY_DAYS since the unit's last turn. An UNKNOWN
+        # wait (None: no readable turn stamp) takes the normal reserve - main's - so an unreadable stamp can never
+        # bring the lock-out back.
+        factor = 0.0 if waited_days is None else max(0.0, 1.0 - waited_days / RESERVE_DECAY_DAYS)
+        decayed = need + (last_real_s / 60.0 - need) * factor
+        if decayed > need:
+            return (decayed,
+                    "its latest real run: no hard timeout on this platform and no window_stop, so it cannot be cut "
+                    f"(falling to the normal reserve over {RESERVE_DECAY_DAYS:g} days of waiting)",
+                    ws_min, ws_bad)
+    return need, basis, ws_min, ws_bad
+
+
+def _admission_reserve_base(unit, est_s, unit_timeout_min=None):
+    """admission_reserve's rule before 2026-11-06, unchanged (see admission_reserve)."""
     _worst_min = 2 * (_unit_timeout_min() if unit_timeout_min is None else unit_timeout_min)
     # WINDOW-STOPPABLE units (registry window_stop: true) reserve what THEY need to stop cleanly and hand
     # over, declared by their fetcher (_window_stop_reserve). Every other unit takes the branches below,
@@ -3054,7 +3143,21 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
         # annual (0.03x) — absolute age inverted exactly that on 2026-08-18.
         return (overdue_key(last, order_cadence(unit), _now), unit.key)
 
+    _pass_start_iso = _now    # `_now` is reused as an epoch inside the unit loop
+
+    def _waited_days(unit):
+        """Days since this unit's last turn, by the SAME stamp the order sorts on (admission_reserve's decay)."""
+        st = store.get_unit(unit.source_id, unit.unit_id) or {}
+        return age_days(order_last_turn(unit, st, _kills.get((unit.source_id, unit.unit_id)),
+                                        _wstops.get((unit.source_id, unit.unit_id))), _pass_start_iso)
+
     _costs = store.run_cost_estimate()
+    # the newest real run per source, for admission_reserve's no-hard-timeout rule (one read of `runs` per pass);
+    # unreadable -> {} keeps every reserve as before rather than failing the pass
+    try:
+        _last_real = store.last_real_duration()
+    except Exception:                                              # noqa: BLE001 - admission input, never fatal
+        _last_real = {}
     units = order_units(units, _costs, _staleness)
 
     results = []
@@ -3152,7 +3255,9 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
         _est_s = _costs.get(unit.source_id)
         # The reserve: a declared unit's own figure, else min(2 x timeout, 3 x est floored at 10), else the worst
         # case for a never-run unit (admission_reserve, shared with tools/measure_ci_lag.py's replay).
-        _need_min, _basis, _ws_min, _ws_bad = admission_reserve(unit, _est_s)
+        _need_min, _basis, _ws_min, _ws_bad = admission_reserve(unit, _est_s,
+                                                                last_real_s=_last_real.get(unit.source_id),
+                                                                waited_days=_waited_days(unit))
         if _ws_bad:
             print(f"[orchestrator] WINDOW STOP {unit.key}: {_ws_bad} - keeping the standard reserve",
                   flush=True)

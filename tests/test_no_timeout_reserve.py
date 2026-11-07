@@ -1,0 +1,252 @@
+"""Without a per-unit hard timeout, an unstoppable unit reserves its latest real run (2026-11-06, review AR-450).
+
+WHY. admission_reserve caps a reserve at 2 x unit_timeout_min (90 min) because the per-unit SIGALRM can cut a unit
+there. The workstation runs Windows, which has no setitimer, so nothing cuts a unit that does not declare
+window_stop: it runs until it ends or the ps1 hard stop kills it, and the kill loses the rest of the pass. AR-450
+replayed PR #241's order change (attempt is a turn) and found hard stops rising 8 -> 18 in its 'today' row, all of
+them such units (unctad food pair, biotrademerch, oecd, usda) admitted with 90 min left and killed.
+
+THE RULE: hard_timeout False and no declared window_stop -> the reserve is at least last_real_s, the unit's newest
+ok/no_change/partial/killed_external duration (StateStore.last_real_duration). Not the MAX of five: eia's MAX holds
+one 70,234 s outlier (2026-08-22) and a reserve built on it locked eia out (R1709). The negative controls below
+pin that POSIX (hard_timeout True), declared units, never-run units and a disabled timeout keep today's reserve.
+"""
+from __future__ import annotations
+import pytest
+
+import os
+import sqlite3
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+from updater import orchestrate  # noqa: E402
+from updater.orchestrate import admission_reserve  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _restore_run_deadline(monkeypatch):
+    """run_once sets the module global orchestrate._RUN_DEADLINE_TS and nothing clears it; left set, it leaks into
+    later test files (tests/test_csv_coverage_note.py failed 7 tests on CI, review AR-450 round 5, R1839)."""
+    from updater import orchestrate as _orch
+    monkeypatch.setattr(_orch, "_RUN_DEADLINE_TS", _orch._RUN_DEADLINE_TS)
+
+
+class _U:
+    def __init__(self, sid, declared=False):
+        self.source_id, self.unit_id = sid, "_all"
+        self.config = {"window_stop": True} if declared else {}
+        self.key = f"{sid}/_all"
+
+
+# the 2026-11-06 state copy (F:/work/starve/state_q.log): MAX-of-5 estimate, newest real run
+FOOD = (13962.0, 8870.0)       # unctad_tradefoodcatbyproc: kills 13,962 s (09-21) and 8,870 s (10-12, newest)
+EIA = (70234.5, 3716.7)        # eia: the 08-22 outlier inside its five, newest ok 3,716.7 s
+
+
+def test_an_unstoppable_unit_reserves_its_latest_real_run_without_a_hard_timeout():
+    need, basis, ws, bad = admission_reserve(_U("unctad_tradefoodcatbyproc"), FOOD[0], 45.0,
+                                             last_real_s=FOOD[1], hard_timeout=False, waited_days=0.0)
+    assert abs(need - 8870.0 / 60.0) < 1e-9, need          # 147.8 min, not the 90-min cap
+    assert "latest real run" in basis and ws is None and bad is None
+
+
+def test_negative_control_with_a_hard_timeout_the_reserve_is_unchanged():
+    need, _b, _w, _x = admission_reserve(_U("unctad_tradefoodcatbyproc"), FOOD[0], 45.0,
+                                         last_real_s=FOOD[1], hard_timeout=True)
+    assert need == 90.0
+
+
+def test_the_outlier_in_the_max_of_five_does_not_lock_eia_out():
+    # R1709: a reserve from eia's MAX-of-5 (70,234 s = 1,170 min) fits no pass. Its newest real run is 62 min, under
+    # the normal 90, so its reserve stays 90.
+    need, _b, _w, _x = admission_reserve(_U("eia"), EIA[0], 45.0, last_real_s=EIA[1], hard_timeout=False)
+    assert need == 90.0
+
+
+def test_a_short_unit_keeps_its_small_reserve():
+    need, _b, _w, _x = admission_reserve(_U("bis"), 133.7, 45.0, last_real_s=130.0, hard_timeout=False)
+    assert need == max(2 * 1.5 * 133.7 / 60.0, 10.0)        # 10 min, as before: the latest run is shorter
+
+
+def test_a_declared_unit_keeps_its_declared_reserve(monkeypatch):
+    monkeypatch.setattr(orchestrate, "_window_stop_reserve", lambda u: (75.0, None))
+    need, _b, ws, _x = admission_reserve(_U("unctad_criticalmineralstradebypart", declared=True), 12120.0, 45.0,
+                                         last_real_s=10862.7, hard_timeout=False)
+    assert need == 75.0 and ws == 75.0
+
+
+def test_a_never_run_unit_keeps_the_worst_case():
+    need, _b, _w, _x = admission_reserve(_U("new_source"), None, 45.0, last_real_s=None, hard_timeout=False)
+    assert need == 90.0
+
+
+def test_a_disabled_timeout_still_reserves_nothing():
+    need, _b, _w, _x = admission_reserve(_U("unctad_tradefoodcatbyproc"), FOOD[0], 0.0,
+                                         last_real_s=FOOD[1], hard_timeout=False)
+    assert need == 0.0
+
+
+def test_the_platform_default_reads_setitimer(monkeypatch):
+    import signal
+    monkeypatch.delattr(signal, "setitimer", raising=False)
+    assert orchestrate.hard_timeout_available() is False
+    need, _b, _w, _x = admission_reserve(_U("unctad_tradefoodcatbyproc"), FOOD[0], 45.0, last_real_s=FOOD[1],
+                                         waited_days=0.0)
+    assert abs(need - 8870.0 / 60.0) < 1e-9
+    monkeypatch.setattr(signal, "setitimer", lambda *a: None, raising=False)
+    assert orchestrate.hard_timeout_available() is True
+    need, _b, _w, _x = admission_reserve(_U("unctad_tradefoodcatbyproc"), FOOD[0], 45.0, last_real_s=FOOD[1])
+    assert need == 90.0
+
+
+# ---- the decay: no lock-out (review AR-450 round 2, R1838) -----------------------------------------
+
+TFP = 13456.0          # unctad_tradefoodprocbycat's newest real run (a kill): 224.3 min, longer than every recent pass
+RECENT_BUDGETS = [35, 20, 60, 40, 30, 55, 40, 40, 90, 72, 223]     # the 11 desktop passes since 2026-10-30, measured
+
+
+def _need(waited):
+    return admission_reserve(_U("unctad_tradefoodprocbycat"), TFP, 45.0, last_real_s=TFP, hard_timeout=False,
+                             waited_days=waited)[0]
+
+
+def test_the_extra_falls_linearly_to_the_normal_reserve_over_the_decay_days():
+    full, d = TFP / 60.0, orchestrate.RESERVE_DECAY_DAYS
+    assert d == 60.0
+    assert abs(_need(0.0) - full) < 1e-9
+    assert abs(_need(d / 2) - (90.0 + (full - 90.0) / 2)) < 1e-9
+    assert _need(d) == 90.0 and _need(2 * d) == 90.0
+
+
+def test_an_unknown_wait_takes_the_normal_reserve():
+    assert _need(None) == 90.0           # never the full figure: an unreadable stamp cannot bring the lock-out back
+
+
+def _passes_until_admitted(decay, max_passes=60):
+    """One desktop pass a day, budgets cycling through RECENT_BUDGETS; the unit is reached at minute 0 of each pass
+    (the most favourable case, so a refusal here is a refusal in every case). Its last turn was day 0 and it never
+    runs, so its wait grows a day per pass. Returns the 1-based pass that admits it, or None."""
+    for k in range(max_passes):
+        budget = RECENT_BUDGETS[k % len(RECENT_BUDGETS)]
+        waited = float(k + 1) if decay else 0.0
+        need = _need(waited)
+        if not orchestrate.start_gate_refuses(0.0, need, budget * 60.0):
+            return k + 1
+    return None
+
+
+def test_a_unit_whose_last_run_is_longer_than_every_budget_is_still_admitted_within_k_passes():
+    assert TFP / 60.0 > max(RECENT_BUDGETS)
+    k = _passes_until_admitted(decay=True)
+    # 224.3 min falls under the 223-min pass after about half a day of waiting, so the first 223-min pass (the 11th)
+    # admits it when it is reached at minute 0; with more time used ahead of it, later (by day 60 it needs only 90)
+    assert k is not None and k <= len(RECENT_BUDGETS), k
+    assert k == 11, k
+
+
+def test_negative_control_without_the_decay_it_is_never_admitted():
+    assert _passes_until_admitted(decay=False) is None
+
+
+# ---- the store read -----------------------------------------------------------------------------
+
+def test_last_real_duration_is_the_newest_run_that_got_somewhere(tmp_path):
+    from updater.state import DDL, StateStore
+    db = str(tmp_path / "state.db")
+    con = sqlite3.connect(db)
+    con.executescript(DDL)
+    con.executemany("INSERT INTO runs(ts_utc,source_id,unit_id,status,obs,dur_s,note) VALUES (?,?,?,?,?,?,?)", [
+        ("2026-08-22T21:00:00+00:00", "eia", "_all", "partial", 0, 70234.5, ""),
+        ("2026-10-26T01:37:23+00:00", "eia", "_all", "ok", 0, 3716.7, ""),
+        ("2026-10-27T00:00:00+00:00", "eia", "_all", "transient_fail", 0, 5.0, ""),      # not a real run
+        ("2026-10-12T02:47:52+00:00", "food", "_all", "killed_external", 0, 8870.0, ""),
+        ("2026-10-13T00:00:00+00:00", "food", "_all", "window_stopped", 0, 1.0, ""),      # not a turn
+    ])
+    con.commit()
+    con.close()
+    st = StateStore(db)
+    assert st.last_real_duration() == {"eia": 3716.7, "food": 8870.0}
+    est = st.run_cost_estimate()                    # its floor is the same query, so the estimate is unchanged
+    assert est["eia"] == 70234.5 and est["food"] == 8870.0
+
+
+# ---- wiring, through the real run_once ------------------------------------------------------------
+
+def test_run_once_hands_the_latest_real_run_to_admission(tmp_path, monkeypatch):
+    from updater.state import StateStore
+    store = StateStore(str(tmp_path / "state.db"))
+    store.db.execute("INSERT INTO runs(ts_utc,source_id,unit_id,status,obs,dur_s,note) VALUES (?,?,?,?,?,?,?)",
+                     ("2026-10-12T02:47:52+00:00", "istat", "_all", "killed_external", 0, 8870.0, "planted"))
+    store.db.commit()
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def probe(unit, est_s, unit_timeout_min=None, last_real_s=None, hard_timeout=None, waited_days=None):
+        seen[unit.source_id] = (last_real_s, waited_days)
+        raise _Stop()
+    monkeypatch.setattr(orchestrate, "admission_reserve", probe)
+    try:
+        orchestrate.run_once(sources=["istat"], dry=True, store=store)
+    except _Stop:
+        pass
+    # the kill (no unit_state row) is istat's last turn, so its wait is the days since 2026-10-12, by the order's stamp
+    from datetime import datetime, timezone
+    want = (datetime.now(timezone.utc) - datetime(2026, 10, 12, 2, 47, 52, tzinfo=timezone.utc)).total_seconds() / 86400
+    lr, waited = seen["istat"]
+    assert lr == 8870.0 and waited is not None and abs(waited - want) < 0.1, seen
+
+
+# ---- the wait RESETS on a recent kill or attempt (review AR-450 round 4) ----------------------------------------
+# The mutant "wait counted from last_success only" survived: a unit with an old success and recent kills (istat's
+# shape) would take the decayed (normal) reserve on every pass and be admitted and killed every pass.
+
+def _reserve_after(tmp_path, monkeypatch, *, kill_days=None, attempt_days=None):
+    from datetime import datetime, timedelta, timezone
+    from updater.state import StateStore
+    monkeypatch.setattr(orchestrate, "hard_timeout_available", lambda: False)
+    store = StateStore(str(tmp_path / "state.db"))
+    now = datetime.now(timezone.utc)
+    iso = lambda d: (now - timedelta(days=d)).isoformat(timespec="seconds")   # noqa: E731
+    store.upsert_unit("istat", "_all", strategy="sdmx_delta", status="partial",
+                      last_success_utc=iso(100), last_attempt_utc=iso(attempt_days if attempt_days else 100))
+    turn = kill_days if kill_days is not None else attempt_days
+    status = "killed_external" if kill_days is not None else "partial"
+    store.db.execute("INSERT INTO runs(ts_utc,source_id,unit_id,status,obs,dur_s,note) VALUES (?,?,?,?,?,?,?)",
+                     (iso(turn), "istat", "_all", status, 0, TFP, "planted"))
+    store.db.commit()
+    real = orchestrate.admission_reserve
+    seen = {}
+
+    def wrap(unit, est_s, *a, **k):
+        r = real(unit, est_s, *a, **k)
+        seen[unit.source_id] = (k.get("waited_days"), r[0])
+        raise SystemExit(0)
+    monkeypatch.setattr(orchestrate, "admission_reserve", wrap)
+    try:
+        orchestrate.run_once(sources=["istat"], dry=True, store=store)
+    except SystemExit:
+        pass
+    return seen["istat"]
+
+
+def test_a_recent_kill_resets_the_wait_despite_an_old_success(tmp_path, monkeypatch):
+    waited, need = _reserve_after(tmp_path, monkeypatch, kill_days=1)
+    assert waited is not None and abs(waited - 1.0) < 0.05, waited          # measured from the kill, not day -100
+    full = TFP / 60.0
+    assert abs(need - (90.0 + (full - 90.0) * (1 - 1.0 / orchestrate.RESERVE_DECAY_DAYS))) < 0.2, need
+    assert need > 200.0                                                     # NOT the decayed 90
+
+
+def test_a_recent_attempt_resets_the_wait_despite_an_old_success(tmp_path, monkeypatch):
+    waited, need = _reserve_after(tmp_path, monkeypatch, attempt_days=2)
+    assert waited is not None and abs(waited - 2.0) < 0.05, waited
+    assert need > 200.0, need
+
+
+def test_negative_control_an_old_turn_does_decay(tmp_path, monkeypatch):
+    waited, need = _reserve_after(tmp_path, monkeypatch, kill_days=90)
+    assert waited > 60 and need == 90.0, (waited, need)

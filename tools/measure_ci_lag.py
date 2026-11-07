@@ -519,8 +519,10 @@ NO_ADVANCE = frozenset({"istat"})
 NOT_WORK = frozenset({"statcan", "cbs_nl", "gus_dbw"})
 # PLAN rev 10 R10.2/R10.3 item 2 (PR 2): replay extensions. Every one is OFF by default, and with all of them off
 # the output is the output of PR #200 byte for byte (rows, labels, json).
-#   --order attempt      B2: staleness from the later of last_success, last_attempt and the last kill (production
-#                        orders by last_turn_utc, which reads last_success first). It changes the ORDER only.
+#   --order attempt      B2: staleness from the later of last_success, last_attempt and the last kill. It changes the
+#                        ORDER only. SINCE 2026-11-06 PRODUCTION IS B2 (orchestrate.last_turn_utc takes the later of
+#                        success and attempt), so 'attempt' and 'production' order alike; the flag is kept so old
+#                        commands still run. A replay of the pre-B2 order needs the old clock patched in.
 #   --clocked-extra SRC  treat SRC as clocked/resumable like W_CLOCKED (only while W is on, as for W_CLOCKED).
 #   --flow-bound SRC=MIN a stop keeps only WHOLE pieces of MIN minutes (a giant's per-flow loop stops between
 #                        flows, _giant.py). A source in WHOLE_FLOW must have one: oecd's largest flow is 1.79B rows
@@ -1207,6 +1209,7 @@ class UnitBook:
         orch, store = self._orch, self._store
         shim = _StoreShim(self.db)
         costs = store.run_cost_estimate(shim)
+        last_real = store.last_real_duration(shim)
         kills = store.last_kill_utc(shim)
         wstops = store.last_window_stop_utc(shim)
         now_iso = _iso(start)
@@ -1230,7 +1233,13 @@ class UnitBook:
         for u in order:
             sid = u.source_id
             # production's reserve, through the same function (a declared unit: its fetcher's figure)
-            need = orch.admission_reserve(u, costs.get(sid), UNIT_TIMEOUT_MIN)[0]
+            # the workstation has no per-unit hard timeout (Windows, no setitimer): hard_timeout=False, and the
+            # newest real run per source through production StateStore.last_real_duration (2026-11-06)
+            # waited_days: days since its last turn at the pass start, by the stamp the order sorts on (the decay)
+            k = (u.source_id, u.unit_id)
+            waited = orch.age_days(self._last_turn(self.state[sid], kills.get(k), u, wstops.get(k)), now_iso)
+            need = orch.admission_reserve(u, costs.get(sid), UNIT_TIMEOUT_MIN, last_real_s=last_real.get(sid),
+                                          hard_timeout=False, waited_days=waited)[0]
             t_unit = start + dt.timedelta(minutes=e)
             # production's gate: the clock now, plus the reserve, against the run deadline (same function)
             if orch.start_gate_refuses(t_unit.timestamp(), need, deadline_ts):
@@ -2369,7 +2378,7 @@ def main():
     # PLAN rev 10 R10.3 item 2 (PR 2); see WHOLE_FLOW above. All off by default.
     p.add_argument("--order", choices=ORDERS, nargs="+", default=["production"],
                    help="unit order: production last_turn_utc, or 'attempt' (B2: the later of last success, last "
-                        "attempt and last kill)")
+                        "attempt and last kill; production is B2 since 2026-11-06, so the two agree)")
     p.add_argument("--clocked-extra", action="append", default=[], metavar="SRC",
                    help="repeatable: clock SRC like W_CLOCKED while W is on")
     p.add_argument("--flow-bound", action="append", type=_src_minutes, default=[], metavar="SRC=MIN",

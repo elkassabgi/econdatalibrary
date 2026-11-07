@@ -45,6 +45,19 @@ from updater.state import StateStore  # noqa: E402
 from updater.strategies import fetchers  # noqa: E402
 from updater.strategies.base import Result, Strategy, Unit  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def _workstation_platform(monkeypatch):
+    """The replay models the WORKSTATION (no per-unit hard timeout: admission_reserve(..., hard_timeout=False)), so
+    run_once must see the same platform on any machine, Linux CI included (2026-11-06)."""
+    monkeypatch.setattr(orchestrate, "hard_timeout_available", lambda: False)
+
+
+# 2026-11-06: c's newest real run is 6,000 s, so on the workstation it reserves 100 min (admission_reserve's
+# no-hard-timeout rule), not the 90-min cap. The drained amounts below do not depend on it.
+# DECAY OPTION: c last ran 40 days before the pass, so its 10-min extra has decayed to 10 x (1 - 40/60).
+C_RESERVE = 90.0 + 10.0 * (1.0 - 40.0 / orchestrate.RESERVE_DECAY_DAYS)
+
 BASE = {"n": "monthly", "a": "monthly", "b": "monthly", "d": "monthly", "c": "monthly"}
 QUEUE = {"n": (30, "2026-09-15"), "b": (100, "2026-09-01"), "d": (10, "2026-07-01"), "c": (50, "2026-08-01")}
 
@@ -224,7 +237,7 @@ def test_the_replay_drains_what_run_once_drains(tmp_path, monkeypatch, capsys, r
 def test_pencil_no_rate(tmp_path, monkeypatch, capsys):
     p, _r, raw, _out = _both(tmp_path, monkeypatch, capsys)
     assert [x[0] for x in raw["ran"]] == ["n", "a", "d"] and raw["not_due"] == ["b"]
-    assert raw["budget_skipped"] == [("c", 90.0)]
+    assert raw["budget_skipped"] == [("c", C_RESERVE)]
     assert p["drained"] == [("c", 45.0)] and p["not_drained"] == ["b", "n"] and p["end_min"] == 70.0
 
 
@@ -238,7 +251,7 @@ def test_pencil_the_margin_binds(tmp_path, monkeypatch, capsys):
     # budget 50: n 0, a 0->5; b NOT DUE; d 5 + 60 > 50 and c 5 + 90 > 50 BUDGET SKIP -> both candidates. Drain
     # min(45 - 15, 45) = 30 (the margin binds, not the cap), order d (07-01), c, b, n: d takes all 30; ends at 35
     p, r, raw, _out = _both(tmp_path, monkeypatch, capsys, budget=50)
-    assert [x[0] for x in raw["ran"]] == ["n", "a"] and raw["budget_skipped"] == [("d", 60.0), ("c", 90.0)]
+    assert [x[0] for x in raw["ran"]] == ["n", "a"] and raw["budget_skipped"] == [("d", 60.0), ("c", C_RESERVE)]
     assert p["drained"] == r["drained"] == [("d", 30.0)] and p["not_drained"] == ["c", "b", "n"]
     assert p["end_min"] == r["end_min"] == 35.0
 
@@ -256,7 +269,7 @@ def test_a_non_turn_that_stops_early_leaves_the_drain_its_time(tmp_path, monkeyp
     # w (reserve 17, tail 50, piece 30) admitted at 25: window 75 - 50 = 25 < one piece -> stops at 50, keeps
     # nothing; 50 min left -> drain min(35, 45) = 35: c (oldest) takes it all, ends at 85; b, n, w not reached
     p, r, raw, out = _both(tmp_path, monkeypatch, capsys, declared={"w": (17.0, 50.0, 30.0)})
-    assert ("w", 25.0, "window_stopped") in raw["ran"] and raw["budget_skipped"] == [("c", 90.0)]
+    assert ("w", 25.0, "window_stopped") in raw["ran"] and raw["budget_skipped"] == [("c", C_RESERVE)]
     assert p["drained"] == r["drained"] == [("c", 35.0)] and p["end_min"] == r["end_min"] == 85.0
     assert p["not_drained"] == r["not_drained"] == ["b", "n", "w"], out[-1500:]
 
