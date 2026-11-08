@@ -1208,11 +1208,17 @@ def _drain_residue_to_debts(store, source_id: str, out: dict, refailed: set) -> 
     return set(refailed)
 
 
-def _book_fence_trip(unit, res, store, fence_min: float):
+def _book_fence_trip(unit, res, store, fence_min: float, already_put=None):
     """A csv-fence trip on a `csv_misses: desktop_owed` source: book each mapped changed id as a
     desktop debt and return the note that replaces the default fence note ("re-derived only by a
     later pass that reports it changed" - here no later pass need report it: the change signal has
     already advanced). None for any other source (the caller keeps its note).
+
+    already_put: the ids derive_and_put PUT (or proved current) before the trip - the trip's
+    `derive_partial["put_ids"]` (DESIGN_v2 D3(b), AR-458 r1 D3(b)). They are current, so they are NOT
+    booked; B3 clears their old rows (run_once's handler). A trip before derive_and_put carries none,
+    so nothing is subtracted. Residual (AR-458 r2 (h)): a PUT that finishes after the trip, or whose
+    future was not yet consumed, is still booked although current - overstated, never hidden.
 
     PER ID, NOT full_rederive_owed (review R1137): health's remedy for a full re-derive is
     tools/derive_csv_bulk.py, which for ilostat would PUT 'ilostat:ilostat:...' objects across
@@ -1239,6 +1245,12 @@ def _book_fence_trip(unit, res, store, fence_min: float):
         ok = _note_unmapped_debt(store, unit.source_id, changed, "csv fence tripped and 0 changed keys mapped")
         return (f"csv phase exceeded its {fence_min:.0f}-min fence and its {len(changed)} changed key(s) "
                 f"mapped to 0 catalogue ids - {_recorded(ok)}"), []
+    _put = {str(s) for s in (already_put or [])}
+    if _put:
+        _n0 = len(ids)
+        ids = [s for s in ids if str(s) not in _put]
+        print(f"[orchestrator] {unit.key}: fence trip - {_n0 - len(ids):,} of {_n0:,} mapped changed id(s) were "
+              f"derived before it and are not booked", flush=True)
     if not _book_owed_items(store, unit.source_id, [(s, None, _DESKTOP_OWED_FENCE) for s in ids]):
         return (f"csv phase exceeded its {fence_min:.0f}-min fence and its {len(ids)} changed id(s) "
                 f"could NOT be booked as desktop debts - queued for retry instead"), list(ids)
@@ -1247,11 +1259,272 @@ def _book_fence_trip(unit, res, store, fence_min: float):
 
 
 def _csv_misses(source_id: str) -> str:
-    """The registry's optional `csv_misses` for a source ('desktop_owed' or '' by default)."""
+    """The registry's optional `csv_misses` for a source ('desktop_owed' or '' by default).
+
+    THE ONE CHOKE POINT of every csv_misses route (fence, zero-mapped, deferred, failed, crash, drain), and
+    therefore where the run-time HOLD of `csv_misses_from` applies (DESIGN_v2 §7): while the hold is on it
+    answers '' - routing OFF, today's behaviour exactly. See _csv_misses_hold_note."""
     global _REG_ENTRIES
     if _REG_ENTRIES is None:
         _catalog_scope(source_id)                            # loads _REG_ENTRIES
-    return str(((_REG_ENTRIES or {}).get(source_id) or {}).get("csv_misses") or "")
+    e = (_REG_ENTRIES or {}).get(source_id) or {}
+    v = str(e.get("csv_misses") or "")
+    if v and "csv_misses_from" in e and _csv_misses_hold_note(source_id):
+        return ""
+    return v
+
+
+# THE PR-2 HOLD (DESIGN_v2 §7; review AR-458 r2 (b)). A source that declares `csv_misses_from: '<ISO date>'`
+# keeps csv_misses routing OFF while csv_retry_queue holds ANY row of that source enqueued before that date.
+# fed_board's 29,975 legacy Z1 rows (2026-09-23) must not migrate into csv_desktop_owed before the Z1 heal and
+# tools/clear_fed_board_z1_retries.py have dealt with them (AR-455 D5: a current id moved there would be debt
+# no tool could clear). Decided ONCE per run, in run_once, from the state that run pulled
+# (StateStore.csv_retry_count_before: one count per declaring source, NULL stamps counted), and cached here
+# for that run only; run_once resets it at its start and its end.
+# FAIL CLOSED, every edge (AR-458 r2 (b)1-2, AR-461 F2): an unreadable queue, a call outside the run's
+# decision (a cache miss: a test, a tool, a caller before run_once), and a `csv_misses_from` that is not a
+# quoted ISO date or full UTC stamp (a bare YAML date loads as datetime.date) each HOLD - loudly. ONLY a
+# source that DECLARES csv_misses_from is ever held: ilostat shares _csv_misses and is untouched.
+# NOT covered by the hold, by design (AR-458 r2 (b)3): health.py and tools/derive_csv_bulk.py read the raw
+# registry key. That is safe only because health's csv_bulk branch comes before its csv_misses branch, and
+# because derive_csv_bulk's csv_bulk exemption needs both --qualify-with-shard and --only-catalogued.
+_CSV_MISSES_HOLD: "dict | None" = None
+_CSV_MISSES_HOLD_MISS_SEEN: set = set()
+
+
+def _misses_from_utc(v) -> "str | None":
+    """registry.csv_misses_from_utc: the validator and the hold parse the value with ONE function."""
+    try:
+        return registry.csv_misses_from_utc(v)
+    except Exception:                                        # noqa: BLE001 - cannot parse = HOLD
+        return None
+
+
+def _csv_misses_holds(store) -> dict:
+    """{source_id: hold note} for every registry source that declares `csv_misses_from`; '' = released.
+    Never raises: anything it cannot decide is a HOLD. One count per declaring source
+    (StateStore.csv_retry_count_before, which counts a NULL stamp as legacy - AR-461 F2b)."""
+    global _REG_ENTRIES
+    if _REG_ENTRIES is None:
+        _catalog_scope("")                                   # loads _REG_ENTRIES
+    declaring = {sid: e for sid, e in (_REG_ENTRIES or {}).items() if isinstance(e, dict) and "csv_misses_from" in e}
+    out: dict = {}
+    for sid, e in declaring.items():
+        frm = _misses_from_utc(e.get("csv_misses_from"))
+        if frm is None:
+            out[sid] = (f"csv coverage note: csv_misses HELD for {sid} - its csv_misses_from "
+                        f"{e.get('csv_misses_from')!r} is not a quoted ISO date or UTC stamp")
+            continue
+        try:
+            n, lo = store.csv_retry_count_before(sid, frm)
+        except Exception as ex:                              # noqa: BLE001 - fail CLOSED, loudly
+            out[sid] = (f"csv coverage note: csv_misses HELD for {sid} - the csv retry queue could not be read "
+                        f"({type(ex).__name__}), so legacy rows cannot be ruled out")
+            continue
+        out[sid] = (f"csv coverage note: csv_misses HELD for {sid} - {n:,} csv retry queue row(s) enqueued "
+                    f"before csv_misses_from {frm} remain (oldest {lo}) - run the Z1 heal and "
+                    f"tools/clear_fed_board_z1_retries.py") if n else ""
+    return out
+
+
+def _begin_csv_misses_hold(store) -> dict:
+    """run_once's start: RESET the run-scoped hold decision, then decide it afresh from `store` (AR-461 F2c: a
+    second run_once in one process never inherits the last run's "released"). A helper, so run_once itself
+    declares no `global` but _RUN_DEADLINE_TS (tests/test_run_ceiling.py pins that)."""
+    global _CSV_MISSES_HOLD
+    _CSV_MISSES_HOLD = None
+    _CSV_MISSES_HOLD = _csv_misses_holds(store)
+    return _CSV_MISSES_HOLD
+
+
+def _end_csv_misses_hold() -> None:
+    """run_once's end: the decision ends with the run, so a later caller outside run_once HOLDS (fail closed)."""
+    global _CSV_MISSES_HOLD
+    _CSV_MISSES_HOLD = None
+
+
+def _declares_misses_from(source_id: str) -> bool:
+    """True when the registry entry of `source_id` declares `csv_misses_from` (the hold applies to it only)."""
+    global _REG_ENTRIES
+    if _REG_ENTRIES is None:
+        _catalog_scope(source_id)                            # loads _REG_ENTRIES
+    return "csv_misses_from" in ((_REG_ENTRIES or {}).get(source_id) or {})
+
+
+def _csv_misses_hold_note(source_id: str) -> str:
+    """The hold note for a source declaring `csv_misses_from` ('' = released, routing ON). A source with no
+    run-scoped decision (outside run_once) HOLDS: a default of 'released' would fail open."""
+    hold = _CSV_MISSES_HOLD
+    if hold is None or source_id not in hold:
+        if source_id not in _CSV_MISSES_HOLD_MISS_SEEN:
+            _CSV_MISSES_HOLD_MISS_SEEN.add(source_id)
+            print(f"[orchestrator] {source_id}: csv_misses HELD - no run-scoped hold decision for this call "
+                  f"(outside run_once), so routing stays OFF", flush=True)
+        return (f"csv coverage note: csv_misses HELD for {source_id} - no run-scoped hold decision "
+                f"(outside run_once)")
+    return str(hold.get(source_id) or "")
+
+
+def _csv_owed_repay(source_id: str) -> str:
+    """The registry's optional `csv_owed_repay` ('fresh' or '')."""
+    global _REG_ENTRIES
+    if _REG_ENTRIES is None:
+        _catalog_scope(source_id)                            # loads _REG_ENTRIES
+    return str(((_REG_ENTRIES or {}).get(source_id) or {}).get("csv_owed_repay") or "")
+
+
+def _owed_repay_on(source_id: str) -> bool:
+    """Owed-first repay (§2) and the B3 payer (§3) run only for a `csv_owed_repay: fresh` source whose
+    csv_misses routing is ON - while the hold is on, neither runs (today's behaviour exactly)."""
+    return _csv_owed_repay(source_id) == "fresh" and _csv_misses(source_id) == "desktop_owed"
+
+
+def _owed_repay_ids(source_id: str, changed, store) -> list:
+    """OWED FIRST (DESIGN_v2 §2): the source's csv_desktop_owed ids this pass can pay, in series_id order.
+
+    PAYABLE: before T0 only an id whose shard (fed_board: its release, `<src>:<REL>:<key>`) this pass
+    republished - the changed keys are `<REL>:<key>`, so the republished set is their first segments. On a
+    runner a release file exists only in a pass that wrote it, and that file IS R2's object; an owed id of
+    another release would fail there and re-book every run. After T0 (core.cutover) the local store is
+    authoritative, so every owed id is payable.
+    A FAILED READ SKIPS THE REPAY, loudly (AR-458 r2 (e)): it never raises into the crash path, which would
+    book every mapped id on every pass."""
+    if not _owed_repay_on(source_id):
+        return []
+    if store is None:
+        print(f"[orchestrator] {source_id}: owed-first repay SKIPPED - no state store to read csv_desktop_owed "
+              f"from; this pass derives only its own changed ids", flush=True)
+        return []
+    try:
+        owed = [str(r["series_id"]) for r in store.csv_desktop_owed(source_id)]
+    except UnitTimeout:
+        raise
+    except Exception as e:                                   # noqa: BLE001 - loud, never fatal
+        if UNIT_TIMEOUT_FIRED:
+            raise UnitTimeout(f"the fence, arriving as {type(e).__name__}: {str(e)[:80]}") from e
+        print(f"[orchestrator] {source_id}: owed-first repay SKIPPED - csv_desktop_owed could not be read "
+              f"({type(e).__name__}: {str(e)[:100]}); the owed ids stay owed and this pass derives only its "
+              f"own changed ids", flush=True)
+        return []
+    if not owed:
+        return []
+    cut = _after_t0()
+    if cut:
+        pay = list(owed)
+    else:
+        shards = {str(k).split(":", 1)[0] for k in (changed or []) if k is not None and ":" in str(k)}
+        pre = source_id + ":"
+        pay = [s for s in owed if s.startswith(pre) and s[len(pre):].split(":", 1)[0] in shards]
+    print(f"[orchestrator] {source_id}: owed-first repay - {len(pay):,} of {len(owed):,} owed id(s) payable "
+          f"this pass ({'after T0: all' if cut else 'their release was republished'}); "
+          f"they are derived before this pass's own changed ids", flush=True)
+    return pay
+
+
+def _after_t0() -> bool:
+    """core.cutover.is_cut_over(), for the owed-first payable rule and B3's store check. An ERROR here counts
+    as BEFORE T0 (AR-461 F8): the payable set is then the narrower one, and B3 then asks for an R2 store."""
+    try:
+        from core import cutover                             # noqa: PLC0415
+        return bool(cutover.is_cut_over())
+    except Exception:                                        # noqa: BLE001
+        return False
+
+
+def _served_store(blob) -> bool:
+    """True when `blob` is the store users are served from (AR-461 F6): an R2Blob before T0 (derive_and_put's
+    wider _put_store sibling is an R2Blob on the same bucket), a SelfhostBlob after T0. A LocalBlob
+    (AQUEDUCT_BACKEND unset or 'local') or any other store is NOT: a PUT there proves nothing served."""
+    try:
+        from . import blob as _bm                            # noqa: PLC0415
+    except Exception:                                        # noqa: BLE001
+        return False
+    if _after_t0():
+        return isinstance(blob, _bm.SelfhostBlob)
+    return isinstance(blob, _bm.R2Blob) and bool(getattr(blob, "write", True))
+
+
+def _pay_owed_by_put(store, source_id: str, put_ids, blob) -> int:
+    """B3, THE AUTOMATIC PAYER (DESIGN_v2 §3): clear csv_desktop_owed AND csv_retry_queue rows for exactly
+    `put_ids` - the ids derive_and_put uploaded or proved already identical (csvmd5 / single-part ETag,
+    core.r2_util). Called after derive_and_put in the fresh phase, on the crash path and on the csv-fence trip
+    path, NEVER in the retry drain (AR-455 F4: a drain on a mirror behind R2 must not clear a debt). Only for
+    a `csv_owed_repay: fresh` source with routing ON, and only when `blob` - the store the derive PUT to - is
+    the SERVED store (_served_store, AR-461 F6). Returns the owed rows cleared; a failure is loud and clears
+    nothing it did not finish (the rows stay: overstated, never hidden)."""
+    put = sorted({str(s) for s in (put_ids or [])})
+    if not put or store is None or not _owed_repay_on(source_id):
+        return 0
+    if not _served_store(blob):
+        print(f"[orchestrator] {source_id}: B3 NOT clearing the debts of {len(put):,} derived id(s) - the derive "
+              f"wrote to {type(blob).__name__}, which is not the served store; their rows stand", flush=True)
+        return 0
+    try:
+        owed = {str(r["series_id"]) for r in store.csv_desktop_owed(source_id)}
+        queued = {str(r["series_id"]) for r in store.csv_retries(source_id)}
+        o = [s for s in put if s in owed]
+        q = [s for s in put if s in queued]
+        if o:
+            store.clear_csv_desktop_owed(o)
+        if q:
+            store.clear_csv_retries(q)
+    except UnitTimeout:
+        raise
+    except Exception as e:                                   # noqa: BLE001 - loud, never fatal
+        if UNIT_TIMEOUT_FIRED:
+            raise UnitTimeout(f"the fence, arriving as {type(e).__name__}: {str(e)[:80]}") from e
+        print(f"[orchestrator] {source_id}: B3 could not clear the debts of {len(put):,} derived id(s) "
+              f"({type(e).__name__}: {str(e)[:100]}) - their rows stand (overstated, never hidden)", flush=True)
+        return 0
+    if o or q:
+        print(f"[orchestrator] {source_id}: B3 cleared {len(o):,} csv_desktop_owed and {len(q):,} csv_retry_queue "
+              f"row(s) of ids this pass derived (uploaded or already current)", flush=True)
+    return len(o)
+
+
+def _repay_note(n_pay: int, n_paid: int, n_failed: int, n_deferred: int) -> str:
+    """The non-demoting note of an owed-first repay (no '; ' inside: health reads notes by segment)."""
+    return (f"csv coverage note: owed-first repay - {n_pay:,} payable owed id(s) derived first, {n_paid:,} "
+            f"cleared, {n_failed:,} failed again and {n_deferred:,} not reached, those stay owed")
+
+
+def _repay_owed_alone(unit, blob, store, changed, note):
+    """An EARLY EXIT of _derive_changed_csvs (nothing of this pass's own changed set reaches derive_and_put)
+    still repays the payable owed ids (AR-458 r2 (e): the repay sat after the early returns, so a pass with
+    no mapped id never repaid). Returns the caller's 4-tuple: `note` alone when there is nothing to repay
+    (every other source, byte for byte), else `note` joined with the repay's coverage note.
+    Old residue never demotes the run (the retry drain's R359 rule): an owed id that fails again is re-booked
+    with its new reason, and one not reached stays owed as it was. The fence propagates."""
+    pay = _owed_repay_ids(unit.source_id, changed, store)
+    if not pay:
+        return [], note, [], {}
+    try:
+        from . import derive                                 # noqa: PLC0415
+        if blob is None:
+            blob = _resolve_blob()
+        out = derive.derive_and_put(pay, blob, **_derive_width_kw(unit.source_id),
+                                    **_capped_derive_budget()) or {}
+    except UnitTimeout:
+        raise
+    except Exception as e:                                   # noqa: BLE001 - the owed rows stay as they were
+        if UNIT_TIMEOUT_FIRED:
+            raise UnitTimeout(f"the fence, arriving as {type(e).__name__}: {str(e)[:80]}") from e
+        rn = (f"csv coverage note: owed-first repay of {len(pay):,} owed id(s) crashed "
+              f"({type(e).__name__}: {str(e)[:80]}) and they stay owed")
+        print(f"[orchestrator] {unit.key}: {rn}", flush=True)
+        return [], (f"{note}; {rn}" if note else rn), [], {}
+    paid = _pay_owed_by_put(store, unit.source_id, out.get("put_ids"), blob)
+    _put = {str(s) for s in (out.get("put_ids") or [])}
+    _def = [str(s) for s in (out.get("deferred_ids") or [])]
+    _fr = out.get("failed_reasons") or {}
+    _failed = [str(s) for s in (out.get("failed") or []) if str(s) not in set(_def)]
+    if _failed:
+        _book_owed_items(store, unit.source_id, [
+            (s, None, f"{_DESKTOP_OWED_FAILED} ({str(_fr.get(s, '?'))[:120]})") for s in _failed])
+    _record_for_catalog_sync([s for s in pay if s in _put])
+    rn = _repay_note(len(pay), paid, len(_failed), len(_def))
+    print(f"[orchestrator] {unit.key}: {rn}", flush=True)
+    return [], (f"{note}; {rn}" if note else rn), [], {}
 
 
 def _book_csv_desktop_owed(store, source_id: str, large: dict, reason: str = _DESKTOP_OWED_TOO_LARGE) -> None:
@@ -1305,7 +1578,12 @@ def _derive_changed_csvs(unit, res, blob, store=None):
     from rows it actually merged (never inferred from schedules).
     ANY failure here (derive module missing, catalog unreadable, PUT exhausted its
     retries) must never crash or roll back the already-published parquet: the
-    caller demotes the run to `partial` and queues the ids in csv_retry_queue."""
+    caller demotes the run to `partial` and queues the ids in csv_retry_queue.
+
+    OWED FIRST (registry `csv_owed_repay: fresh`, fed_board; DESIGN_v2 §2): the payable csv_desktop_owed
+    ids go to derive_and_put BEFORE this pass's own changed ids, so a budget never defers the same tail
+    twice, and B3 (_pay_owed_by_put) clears every id the derive PUT or proved current. EVERY exit repays,
+    the early ones through _repay_owed_alone (AR-458 r2 (e)). For every other source both are no-ops."""
     migrated = getattr(res, "changed_keys", None) is not None
     if migrated:
         # The merge report's contract ADMITS a None key (null series_key — AR-029's
@@ -1338,7 +1616,8 @@ def _derive_changed_csvs(unit, res, blob, store=None):
             # rows". What actually makes this return safe is that `changed_keys == {}` is a
             # MERGE-MEASURED, value-comparing statement (merge.py:404-407, `_same_vals`): it
             # says nothing served changed, independently of any row count.
-            return [], None, [], {}
+            _f, _n, _d, _r = _repay_owed_alone(unit, blob, store, changed, None)
+            return _f, _n, _d, _r
     else:
         changed = sorted((res.series_cursors or {}).keys())
     if not changed:
@@ -1357,7 +1636,8 @@ def _derive_changed_csvs(unit, res, blob, store=None):
         # successful publish with every state write skipped - the gleif 2-tuple disease this
         # same function already carries two scars from.
         if getattr(res, "merged_rows", None) == 0:
-            return [], None, [], {}
+            _f, _n, _d, _r = _repay_owed_alone(unit, blob, store, changed, None)
+            return _f, _n, _d, _r
         # ASK ABOUT THE STORE THIS RUN WROTE, NOT THE SOURCE ID. Two registry entries have
         # out_dir != source_id and both are the sec_edgar collision (R275), so keying on the id
         # answered the wrong product in both directions: `sec_edgar` booked a debt every
@@ -1393,7 +1673,8 @@ def _derive_changed_csvs(unit, res, blob, store=None):
             # the only one whose catalogue is genuinely empty — so it alone reached this line.
             # R380 widened the reach by admitting `partial` runs here too.
             # (The FOURTH element is as load-bearing as the third was.)
-            return [], None, [], {}
+            _f, _n, _d, _r = _repay_owed_alone(unit, blob, store, changed, None)
+            return _f, _n, _d, _r
         if res.obs:
             # Coherence is UNMET, not merely unlogged: parquet changed but the
             # changed series are unknown, so their CSVs go stale. The caller
@@ -1412,10 +1693,14 @@ def _derive_changed_csvs(unit, res, blob, store=None):
                   f"fetcher reported no series_cursors (merged-row count not reported) — "
                   f"cannot re-derive CSVs for unknown series; the fetcher must report "
                   f"per-series cursors to satisfy CSV/parquet coherence (§5.7)", flush=True)
-            return [], (_NO_CURSORS_NOTE + f"; store holds {res.obs} rows, merged-row count "
-                        f"not reported — CSVs not re-derived (§5.7)"), [], {}
-        return [], None, [], {}
+            _f, _n, _d, _r = _repay_owed_alone(unit, blob, store, changed, (
+                _NO_CURSORS_NOTE + f"; store holds {res.obs} rows, merged-row count "
+                f"not reported — CSVs not re-derived (§5.7)"))
+            return _f, _n, _d, _r
+        _f, _n, _d, _r = _repay_owed_alone(unit, blob, store, changed, None)
+        return _f, _n, _d, _r
     ids: list = []   # pre-bound: the except below queues ONLY mapped catalog ids
+    out = None       # pre-bound: a crash AFTER derive_and_put returned subtracts its put_ids (DESIGN_v2 §3)
     try:
         # `changed` holds STORE series_keys; the derive/resolver layer needs
         # CATALOG series_ids. The key→id mapping is source-specific (e.g.
@@ -1457,7 +1742,8 @@ def _derive_changed_csvs(unit, res, blob, store=None):
                 if store is not None:
                     store.note_full_rederive_owed(unit.source_id, vintage=str(res.new_vintage or ""),
                                                   note=note[:200])
-                return [], note, [], {}
+                _f, _n, _d, _r = _repay_owed_alone(unit, blob, store, changed, note)
+                return _f, _n, _d, _r
         if not ids:
             # NAME THE CAUSE YOU MEASURED, NOT THE ONE THAT SOUNDS RIGHT. This note used to
             # end "and the source exceeds the derive-all cap" unconditionally — the same
@@ -1562,7 +1848,14 @@ def _derive_changed_csvs(unit, res, blob, store=None):
                 ok = _note_unmapped_debt(store, unit.source_id, sorted(str(k) for k in unmapped),
                                          "0 changed keys mapped to catalogue ids")
                 note = f"{note} - {_recorded(ok)}"
-            return [], _with_ecb_unread(unit, note), [], {}
+            _f, _n, _d, _r = _repay_owed_alone(unit, blob, store, changed, _with_ecb_unread(unit, note))
+            return _f, _n, _d, _r
+        # OWED FIRST (DESIGN_v2 §2): the payable owed ids, then this pass's own; dict.fromkeys keeps the order
+        # and drops an id that is both. A budget then defers this pass's tail, never last pass's again.
+        repay = _owed_repay_ids(unit.source_id, changed, store)
+        _repay_only = set(repay) - set(ids)
+        _fresh_ids = list(ids)
+        ids = list(dict.fromkeys(list(repay) + list(ids)))
         from . import derive  # lazy: lands with the derive work-package; missing => partial
         _flow = _csv_grain(unit.source_id) == "flow"
         # The keyword is passed ONLY for a flow-grain source. Every series-grain call keeps the
@@ -1570,18 +1863,28 @@ def _derive_changed_csvs(unit, res, blob, store=None):
         # **kwargs) and any other caller-side double keep working; CI caught the alternative in
         # three minutes (run 34166306918: 7 orchestrator tests failing on the new keyword).
         # The same rule for `workers` (registry csv_derive_workers): passed only when declared.
-        out = derive.derive_and_put(ids, blob if blob is not None else _resolve_blob(),
+        if blob is None:
+            blob = _resolve_blob()            # ONE store for the derive and B3's served-store check
+        out = derive.derive_and_put(ids, blob,
                                     **({"flow_grain": True} if _flow else {}),
                                     **_derive_width_kw(unit.source_id),
                                     **_capped_derive_budget()) or {}
+        # B3, FIRST (DESIGN_v2 §3): every id this derive PUT or proved already current pays its owed and
+        # queued rows now, before anything below can fail - so a later crash never re-books a current id.
+        _paid = _pay_owed_by_put(store, unit.source_id, out.get("put_ids"), blob)
         # SPLIT budget-deferral from breakage. derive.py puts unreached ids in BOTH
         # `failed` (so the caller queues them for retry) and `deferred_ids`; its own log
         # already subtracts them ("failed {len(failed) - deferred}"), the orchestrator did
         # not, and every large source therefore reported its budget as a fault and demoted.
         deferred_ids = [str(s) for s in (out.get("deferred_ids") or [])]
         _deferred_set = set(deferred_ids)
+        _def_all = list(deferred_ids)
         failed = [str(s) for s in (out.get("failed") or [])
                   if str(s) not in _deferred_set]
+        # AN OWED ID REPAID HERE THAT FAILS AGAIN IS OLD RESIDUE (the retry drain's R359 rule): re-booked with
+        # its new reason below, never queued and never demoting. Only this pass's own failures demote.
+        _repay_failed = [s for s in failed if s in _repay_only]
+        failed = [s for s in failed if s not in _repay_only]
         # THIRD OUTCOME (flow grain): too large for the cloud path. Booked as a per-id debt,
         # never counted as failed, never queued for retry, never recorded as derived.
         large = {str(k): int(v) for k, v in (out.get("deferred_large") or {}).items()}
@@ -1602,20 +1905,31 @@ def _derive_changed_csvs(unit, res, blob, store=None):
             # its change signal is a fetcher sidecar that has already advanced, so a budget-deferred
             # id would never be named again - and csv_retry_queue cannot drain on r2 (the file is not
             # on a later runner) and health never reads it. Book it as a visible, payable debt.
-            _book_csv_desktop_owed(store, unit.source_id, {s: None for s in deferred_ids},
-                                   reason=_DESKTOP_OWED_MISSED)
-            budget_owed, deferred_ids = list(deferred_ids), []
+            # ALL OR NONE, WITH A HOME EITHER WAY (DESIGN_v2 D3(c), AR-458 r1 D3(c)): _book_owed_items books
+            # every id in one batch or none, and when it returns False deferred_ids is KEPT, so the caller
+            # enqueues them. The old _book_csv_desktop_owed call had no fallback: with no store it printed
+            # NOT BOOKED and the ids were in no home. Ids the registry declares unserved by decision
+            # (`csv_desktop_exclude`) are left out exactly as that helper left them out.
+            _excl = _csv_desktop_excluded(unit.source_id)
+            _bk = [s for s in deferred_ids if s not in _excl]
+            if len(_bk) != len(deferred_ids):
+                print(f"[orchestrator] {unit.source_id}: {len(deferred_ids) - len(_bk)} id(s) NOT booked as desktop "
+                      f"debt — registry `csv_desktop_exclude` says unserved by decision", flush=True)
+            if _book_owed_items(store, unit.source_id, [(s, None, _DESKTOP_OWED_MISSED) for s in _bk]):
+                budget_owed, deferred_ids = list(_bk), []
         # FAILED IDS OF A csv_misses SOURCE ARE DEBTS TOO (review R1137). Queued for retry, 180 part ids
         # failed twice while their sidecar stamps had advanced: on the second run the unit read
         # no_change and nothing named them, and the queue cannot drain on r2 nor does health read it.
         # Booked with their OWN reason; they still demote this run (the note below names them).
         failed_owed: set = set()
-        if failed and _csv_misses(unit.source_id) == "desktop_owed":
+        if (failed or _repay_failed) and _csv_misses(unit.source_id) == "desktop_owed":
             # ONE call (R1144): an error on the 5th write used to leave 4 booked AND queued, 32 queued
-            # only. Now all are booked, or none are and all stay queued.
+            # only. Now all are booked, or none are and all stay queued. (A repaid owed id that failed
+            # again keeps its old owed row when this booking fails: it is never queued.)
             _fr = out.get("failed_reasons") or {}
             if _book_owed_items(store, unit.source_id, [
-                    (_s, None, f"{_DESKTOP_OWED_FAILED} ({str(_fr.get(_s, '?'))[:120]})") for _s in failed]):
+                    (_s, None, f"{_DESKTOP_OWED_FAILED} ({str(_fr.get(_s, '?'))[:120]})")
+                    for _s in failed + _repay_failed]):
                 failed_owed = set(failed)
         # A derived CSV is HOSTED but not yet DISCOVERABLE: nothing in the daily
         # pipeline pushed catalog rows to D1 (sync_state_d1 syncs freshness only,
@@ -1623,7 +1937,8 @@ def _derive_changed_csvs(unit, res, blob, store=None):
         # That silently stranded 31,259 series -- boe alone showed 21 of 30,674 in
         # the serving catalog while its fetcher had been live for weeks. Record what
         # we derived; the post-run catalog sync step upserts exactly these rows.
-        _record_for_catalog_sync([s for s in ids if s not in set(failed) and s not in large])
+        _record_for_catalog_sync([s for s in ids if s not in set(failed) and s not in set(_repay_failed)
+                                  and s not in large])
         # Name the failures, bounded. "failed 7/24" alone costs a bisect to act on,
         # which is why such notes sit unfixed for weeks (same reason Tally now carries
         # structural_ids). The count stays authoritative; the elision is explicit.
@@ -1631,7 +1946,7 @@ def _derive_changed_csvs(unit, res, blob, store=None):
         if failed:
             shown = ", ".join(failed[:5])
             more = f", +{len(failed) - 5} more" if len(failed) > 5 else ""
-            note = f"csv_derive failed {len(failed)}/{len(ids)} series [{shown}{more}]"
+            note = f"csv_derive failed {len(failed)}/{len(_fresh_ids)} series [{shown}{more}]"
         elif deferred_ids:
             # Budget spent, nothing broken. Disclosed on the unit and queued for retry,
             # but NOT a demotion: a source that is merely large would otherwise be
@@ -1704,6 +2019,11 @@ def _derive_changed_csvs(unit, res, blob, store=None):
             _kn = (f"csv coverage note: {sum(_kept.values()):,} served date(s) in {len(_kept):,} "
                    f"id(s) kept by the served-CSV merge, this machine's store files do not hold them")
             note = f"{note}; {_kn}" if note else _kn
+        if repay:
+            # The owed-first repay, disclosed and NON-demoting (AR-461 F5): its failures are old residue.
+            _rn = _repay_note(len(repay), _paid, len(_repay_failed), len([s for s in _def_all if s in set(repay)]))
+            print(f"[orchestrator] {unit.key}: {_rn}", flush=True)
+            note = f"{note}; {_rn}" if note else _rn
         # A csv_misses source's failures were booked as desktop debts above: NOT also queued (R1137).
         # The note still names them, so the run demotes.
         return ([s for s in failed if s not in failed_owed], _with_ecb_unread(unit, note), deferred_ids,
@@ -1734,13 +2054,21 @@ def _derive_changed_csvs(unit, res, blob, store=None):
         _crash = (f"csv_derive crashed: " + repr(e))[:200]
         _q = [s for s in ids
               if isinstance(s, str) and s.startswith(unit.source_id + ":")]
+        _mapped = bool(_q)
+        # A CRASH AFTER derive_and_put RETURNED (DESIGN_v2 §3 crash row; AR-461 F2d): the ids it PUT or proved
+        # current are not booked and not queued, in EVERY branch - queued, the UPSERT would give a current id
+        # a fresh stamp, which under the csv_misses_from hold reads as "not legacy". B3 pays their old rows.
+        _put = {str(s) for s in ((out or {}).get("put_ids") or [])}
+        if _put:
+            _pay_owed_by_put(store, unit.source_id, _put, blob)
+            _q = [s for s in _q if s not in _put]
         if _csv_misses(unit.source_id) == "desktop_owed":
             # A csv_misses SOURCE'S CRASH IS A DEBT, NOT QUEUE ROWS (R1144): 182 mapped ids went to the
             # queue, and on the next no_change run nothing named them. Its change signal has already
             # advanced, so "the next run re-derives the same changed set" is false here too: a crash
             # BEFORE mapping maps the changed set now. Booked in one call; the queue only if that fails.
             _ids = list(_q)
-            if not _ids:
+            if not _ids and not _mapped:     # mapped ids that were all PUT leave nothing to book or re-map
                 try:
                     _ids = [s for s in _map_changed(unit.source_id, changed, merge_measured=migrated)[0]
                             if isinstance(s, str) and s.startswith(unit.source_id + ":")]
@@ -1811,6 +2139,13 @@ def _drain_csv_retry_queue(unit, blob, store, deadline_ts=None, id_gate=None) ->
               f"'{unit.source_id}:' prefix) queued by the old crash path; "
               f"they can never resolve", flush=True)
     _summary["queued"] = len(_retry_rows)
+    if _retry_rows and _declares_misses_from(unit.source_id):
+        _held = _csv_misses_hold_note(unit.source_id)
+        if _held:
+            # DESIGN_v2 §7: while held the drain routes exactly as today - refailures stay queued with
+            # attempts bumped, nothing moves to csv_desktop_owed - and says why.
+            print(f"[orchestrator] {unit.source_id}: {_held} - the retry drain keeps today's routing",
+                  flush=True)
     if _retry_rows:
         _retry_ids = [r["series_id"] for r in _retry_rows][:_CSV_RETRY_CAP]
         if id_gate is not None:
@@ -3112,6 +3447,11 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
     if problems:
         raise SystemExit("registry invalid (fix before running):\n  " + "\n  ".join(problems[:20]))
     units = registry.all_units()
+    # THE csv_misses_from HOLD, decided ONCE for this run from the state it holds (DESIGN_v2 §7, AR-461 F2c):
+    # reset first, so a second run_once in one process never inherits the last run's "released".
+    for _hs, _hn in sorted(_begin_csv_misses_hold(store).items()):
+        print(f"[orchestrator] {_hs}: " + (_hn or "csv_misses routing ON - no csv retry queue row predates "
+                                           "its csv_misses_from"), flush=True)
 
     # RECONCILE WHAT WAS ASKED FOR AGAINST WHAT EXISTS, before running anything. `--source`
     # is a promise the caller makes to a human ("running updater for 14 source(s)") and the
@@ -3634,7 +3974,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 try:
                     with _unit_deadline(unit.key + " (csv phase)", _csv_fence):
                         csv_failed, csv_err, csv_deferred, csv_reasons = _derive_changed_csvs(unit, res, blob, store)
-                except UnitTimeout:
+                except UnitTimeout as _trip:
                     csv_failed, csv_deferred, csv_reasons = [], [], {}
                     csv_err = ("csv coverage note: csv phase exceeded its "
                                f"{_csv_fence:.0f}-min fence and was abandoned for this "
@@ -3642,7 +3982,14 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                                "is re-derived only by a later pass that reports it changed")
                     _csv_fence_tripped = True
                     print(f"[orchestrator] {unit.key}: {csv_err}", flush=True)
-                    _fence = _book_fence_trip(unit, res, store, _csv_fence)
+                    # D3(b) (DESIGN_v2 §3): what derive_and_put PUT before the trip rides on it as derive_partial
+                    # (derive.py:585). Those ids are current: B3 pays their rows, and they are not booked.
+                    _trip_put = {str(s) for s in ((getattr(_trip, "derive_partial", None) or {}).get("put_ids")
+                                                  or [])}
+                    if _trip_put and _owed_repay_on(unit.source_id):
+                        _pay_owed_by_put(store, unit.source_id, _trip_put,
+                                         blob if blob is not None else _resolve_blob())
+                    _fence = _book_fence_trip(unit, res, store, _csv_fence, already_put=_trip_put)
                     if _fence is not None:
                         _fence_note, _fence_q = _fence
                         csv_err = _fence_note
@@ -3650,6 +3997,13 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                         print(f"[orchestrator] {unit.key}: {csv_err}", flush=True)
                 else:
                     _csv_fence_tripped = False
+                # THE HOLD IS NEVER SILENT (DESIGN_v2 §7): a source held by csv_misses_from says so on the unit,
+                # as a non-demoting coverage note that reaches the digest, until its legacy rows are gone.
+                if _declares_misses_from(unit.source_id):
+                    _held = _csv_misses_hold_note(unit.source_id)
+                    if _held:
+                        print(f"[orchestrator] {unit.key}: {_held}", flush=True)
+                        csv_err = "; ".join(x for x in (csv_err, _held) if x)
                 # DRAIN THE RETRY QUEUE (2026-08-06). derive.py has promised since it
                 # gained a wall-clock budget that ids not reached "come back in `failed`
                 # ... so they are retried next run instead of lost" — but the queue was
@@ -3878,6 +4232,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             f"[orchestrator] RUN FAILURE: {len(live_set)} live-tier source(s) have no "
             f"runnable adapter: {', '.join(live_set)} — build the fetcher or remove "
             f"`live: true` from registry.yaml (no silent skips inside the rollout perimeter, §5.3)")
+    _end_csv_misses_hold()           # the run's hold decision ends with the run (a later caller HOLDS)
     return results
 
 

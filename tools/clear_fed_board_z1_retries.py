@@ -39,6 +39,15 @@ prints a credential, the endpoint or an exception message from the client.
 Exit codes: 0 every requested id was EQUAL (and, with --apply, cleared and pushed); 1 some ids STAND (the
 EQUAL ones are cleared with --apply); 2 refused (usage, cutover, copy not proven, spot mismatch, output);
 3 a writer guard refused; 4 pull-state failed; 5 Z1's ETag moved; 6 push-state failed.
+
+EXTENDED FOR fed_board Fix B PR-2 (DESIGN_v2 §3, the EQUAL-proof clear; AR-458 r2 (b)4). The DEFAULT is today's,
+unchanged: --copy <root>/fed_board/Z1.parquet, ids fed_board:Z1:*, rows of csv_retry_queue, the ETag guard on
+clean_full/fed_board/Z1.parquet. Two options widen it, with the same evidence chain:
+  --copy <root>/fed_board/<REL>.parquet  any release: the ids must be fed_board:<REL>:*, and the copy proof and
+                                         the ETag re-HEAD both follow <REL> (clean_full/fed_board/<REL>.parquet);
+  --table csv_desktop_owed               clear proven-current csv_desktop_owed rows instead (the owed ids that
+                                         tools/clear_csv_desktop_owed.py cannot clear: their served object is
+                                         already current, so its LastModified never moves).
 """
 from __future__ import annotations
 
@@ -60,6 +69,28 @@ Z1_KEY = "clean_full/fed_board/Z1.parquet"
 PREFIX = "fed_board:Z1:"
 EXIT_OK, EXIT_STAND, EXIT_REFUSED, EXIT_GUARD, EXIT_PULL, EXIT_MOVED, EXIT_PUSH = 0, 1, 2, 3, 4, 5, 6
 HEAD_WORKERS = 16
+TABLES = ("csv_retry_queue", "csv_desktop_owed")
+
+
+def release_of(copy: str):
+    """'<REL>' for a --copy at <root>/fed_board/<REL>.parquet (REL: capitals, digits, '_'; never a
+    '<REL>__series' sidecar), else None."""
+    import re                                                            # noqa: PLC0415
+    base = os.path.basename(copy)
+    if os.path.basename(os.path.dirname(copy)) != "fed_board" or not base.endswith(".parquet"):
+        return None
+    rel = base[:-len(".parquet")]
+    return rel if re.fullmatch(r"[A-Z0-9_]+", rel) and "__" not in rel else None
+
+
+def prefix_for(rel: str) -> str:
+    """The catalogue-id prefix of a release: PREFIX for Z1."""
+    return f"fed_board:{rel}:"
+
+
+def key_for(rel: str) -> str:
+    """The R2 key of a release's store file: Z1_KEY for Z1."""
+    return f"clean_full/fed_board/{rel}.parquet"
 
 
 class _HeadOnlyClient:
@@ -111,16 +142,18 @@ def head_row(s3, key: str) -> dict:
 
 
 def prove_copy(s3, copy: str):
-    """(etag, detail) when --copy is R2's Z1 object, else (None, detail). _compare_one keys the file by its
-    path under the data root, so the copy must sit at <root>/fed_board/Z1.parquet."""
+    """(etag, detail) when --copy is R2's object of its release, else (None, detail). _compare_one keys the file
+    by its path under the data root, so the copy must sit at <root>/fed_board/<REL>.parquet (Z1 by default);
+    the ETag read is the SAME release's key."""
     from core.derive_csv import _compare_one                            # noqa: PLC0415
     data_root = os.path.dirname(os.path.dirname(os.path.abspath(copy)))
-    if os.path.basename(copy) != "Z1.parquet" or os.path.basename(os.path.dirname(copy)) != "fed_board":
-        return None, f"--copy must be <root>\\fed_board\\Z1.parquet, got {copy}"
+    rel = release_of(copy)
+    if rel is None:
+        return None, f"--copy must be <root>\\fed_board\\<REL>.parquet (Z1.parquet by default), got {copy}"
     c = _compare_one(s3, BUCKET, os.path.abspath(copy), data_root)
     if c["verdict"] != "equal":
         return None, f"{c['verdict']}: {c['local']} | R2 {c['r2']}"
-    h = s3.head_object(Bucket=BUCKET, Key=Z1_KEY)
+    h = s3.head_object(Bucket=BUCKET, Key=key_for(rel))
     return (h.get("ETag") or "").strip('"'), f"equal: {c['local']} | R2 {c['r2']}"
 
 
@@ -128,14 +161,16 @@ def derive_local(copy: str, ids: list) -> dict:
     """{id: CSV bytes} for every id the copy holds rows for, in ONE sorted stream (derive_csv_bulk's code)."""
     import duckdb                                                        # noqa: PLC0415
     from tools.derive_csv_bulk import _csv_bytes, _stream_one            # noqa: PLC0415
+    rel = release_of(copy) or "Z1"
+    pre = prefix_for(rel)
     want = set(ids)
     out = {}
     con = duckdb.connect()
     con.execute("PRAGMA threads=4")
     for k, rows in _stream_one(con, copy):
-        sid = PREFIX + k
+        sid = pre + k
         if sid in want:
-            out[sid] = _csv_bytes("Z1:" + k, rows)
+            out[sid] = _csv_bytes(f"{rel}:" + k, rows)
     return out
 
 
@@ -186,22 +221,27 @@ def main(argv=None, s3=None, state_runner=None) -> int:
         print(str(e))
         return EXIT_REFUSED
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--copy", required=True, help="a local copy of R2's clean_full/fed_board/Z1.parquet")
-    ap.add_argument("--ids", required=True, help="fed_board:Z1:* ids, one per line")
+    ap.add_argument("--copy", required=True, help="a local copy of R2's clean_full/fed_board/Z1.parquet "
+                                                    "(or of another release's <REL>.parquet)")
+    ap.add_argument("--ids", required=True, help="fed_board:Z1:* ids (fed_board:<REL>:* for --copy <REL>), one per line")
     ap.add_argument("--out", required=True, help="NEW evidence TSV (not on D: or E:)")
     ap.add_argument("--spot", type=int, default=300, help="random ids also derived through the resolver")
     ap.add_argument("--apply", action="store_true", help="pull state, clear the EQUAL rows, push state")
+    ap.add_argument("--table", choices=TABLES, default="csv_retry_queue",
+                    help="the state table whose proven-current rows are cleared (default csv_retry_queue)")
     a = ap.parse_args(argv)
     runner = state_runner or run_state
+    rel = release_of(a.copy) or "Z1"        # an invalid --copy is refused by prove_copy below, as before
+    pre, rel_key = prefix_for(rel), key_for(rel)
 
     out = os.path.abspath(a.out)
     if out[:2].upper() in ("D:", "E:") or os.path.exists(out) or not os.path.isdir(os.path.dirname(out)):
         print(f"REFUSED: --out must be a new file in an existing folder, not on D: or E: ({out})")
         return EXIT_REFUSED
     ids = _read_ids(a.ids)
-    bad = [s for s in ids if not s.startswith(PREFIX)]
+    bad = [s for s in ids if not s.startswith(pre)]
     if not ids or bad:
-        print(f"REFUSED: --ids must hold only {PREFIX}* ids ({len(ids)} read, first outside: {bad[:3]})")
+        print(f"REFUSED: --ids must hold only {pre}* ids ({len(ids)} read, first outside: {bad[:3]})")
         return EXIT_REFUSED
     if len(set(ids)) != len(ids):
         print("REFUSED: --ids holds duplicates")
@@ -211,7 +251,7 @@ def main(argv=None, s3=None, state_runner=None) -> int:
         from core import r2_util                                          # noqa: PLC0415
         s3 = _HeadOnlyClient(r2_util.client(write=False))
     etag, detail = prove_copy(s3, a.copy)
-    print(f"Z1 copy vs R2: {detail}", flush=True)
+    print(f"{rel} copy vs R2: {detail}", flush=True)
     if etag is None:
         print("REFUSED: the copy is not R2's object - derive nothing from it")
         return EXIT_REFUSED
@@ -235,7 +275,7 @@ def main(argv=None, s3=None, state_runner=None) -> int:
     for v in verdict.values():
         tally[v] = tally.get(v, 0) + 1
     equal = [s for s in ids if verdict[s] == "equal"]
-    print(f"evidence: {dict(sorted(tally.items()))} over {len(ids):,} id(s) (Z1 ETag {etag}); written to {out}",
+    print(f"evidence: {dict(sorted(tally.items()))} over {len(ids):,} id(s) ({rel} ETag {etag}); written to {out}",
           flush=True)
     stand = len(ids) - len(equal)
     if not a.apply:
@@ -253,23 +293,34 @@ def main(argv=None, s3=None, state_runner=None) -> int:
     from updater.state import StateStore                                 # noqa: PLC0415
     st = StateStore()
     want = set(equal)
-    rows =[r["series_id"] for r in st.csv_retries("fed_board")
-            if r["series_id"] in want and r["series_id"].startswith(PREFIX)]
-    print(f"queue after pull: {len(rows):,} of the {len(equal):,} clearable id(s) are queued", flush=True)
-    h = s3.head_object(Bucket=BUCKET, Key=Z1_KEY)
+    owed_table = a.table == "csv_desktop_owed"
+
+    def _present():
+        src = st.csv_desktop_owed("fed_board") if owed_table else st.csv_retries("fed_board")
+        return [r["series_id"] for r in src if r["series_id"] in want and r["series_id"].startswith(pre)]
+    rows = _present()
+    if owed_table:
+        print(f"csv_desktop_owed after pull: {len(rows):,} of the {len(equal):,} clearable id(s) are owed", flush=True)
+    else:
+        print(f"queue after pull: {len(rows):,} of the {len(equal):,} clearable id(s) are queued", flush=True)
+    h = s3.head_object(Bucket=BUCKET, Key=rel_key)
     if (h.get("ETag") or "").strip('"') != etag:
-        print(f"REFUSED: Z1's ETag moved ({etag} -> {(h.get('ETag') or '').strip(chr(34))}) - a pass republished "
-              f"Z1, the evidence is about the old release. Nothing cleared, nothing pushed.")
+        print(f"REFUSED: {rel}'s ETag moved ({etag} -> {(h.get('ETag') or '').strip(chr(34))}) - a pass republished "
+              f"{rel}, the evidence is about the old release. Nothing cleared, nothing pushed.")
         return EXIT_MOVED
     from tools.derive_csv_bulk import CLEAR_WINDOW_MIN                    # noqa: PLC0415
     if not guards_ok(CLEAR_WINDOW_MIN // 2):
         print("REFUSED before the clear: a writer may start inside the push window. Nothing cleared.")
         return EXIT_GUARD
     if not rows:
-        print("no queued row to clear; nothing pushed")
+        print("no owed row to clear; nothing pushed" if owed_table else "no queued row to clear; nothing pushed")
         return EXIT_OK if not stand else EXIT_STAND
-    st.clear_csv_retries(rows)
-    left = sum(1 for r in st.csv_retries("fed_board") if r["series_id"] in set(rows))
+    if owed_table:
+        st.clear_csv_desktop_owed(rows)
+        left = sum(1 for r in st.csv_desktop_owed("fed_board") if r["series_id"] in set(rows))
+    else:
+        st.clear_csv_retries(rows)
+        left = sum(1 for r in st.csv_retries("fed_board") if r["series_id"] in set(rows))
     if left:
         print(f"REFUSED: {left} row(s) still present after the delete - not pushing")
         return EXIT_PUSH
@@ -278,7 +329,7 @@ def main(argv=None, s3=None, state_runner=None) -> int:
         print("push-state failed (a writer likely raced us): the clear is LOCAL ONLY and dies at the next pull. "
               "Re-run when the store is quiet.")
         return EXIT_PUSH
-    print(f"cleared {len(rows):,} fed_board Z1 csv_retry_queue row(s) and pushed; {stand:,} requested id(s) stand")
+    print(f"cleared {len(rows):,} fed_board {rel} {a.table} row(s) and pushed; {stand:,} requested id(s) stand")
     return EXIT_OK if not stand else EXIT_STAND
 
 

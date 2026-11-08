@@ -576,6 +576,24 @@ def assess(store=None) -> dict:
                            f"LastModified under clean_full/{sid}/ has not moved since the compare; then "
                            f"`tools/derive_csv_bulk.py --source {sid} --clear-owed-only`. A bulk campaign "
                            f"writes one object per store key here and is refused")
+            elif e.get("csv_bulk") == "qualify_with_shard" and " keys=" in str(owe.get("note") or ""):
+                # AN UNMAPPED-KEYS ROW of a csv_bulk source (fed_board, PR-1's carried condition; AR-461 F3/F4):
+                # orchestrate._note_unmapped_debt wrote it, so it names STORE keys '<REL>:<key>' the pass could
+                # not map, not a cut cursor set. The cap-hit remedy below would clear it unpaid. Its payers, on
+                # evidence: the campaign's zero-error stamp, which clears it only when every listed key was
+                # streamed (derived, or counted uncatalogued: such a key has no served CSV); or a desktop derive
+                # of the listed keys' ids, then the clear with --after-desktop-derive (tools/derive_csv_bulk.py
+                # refuses this row without it).
+                _note = str(owe.get("note") or "")
+                _remedy = (f"the note lists changed STORE keys ('<REL>:<key>') that could not be mapped to "
+                           f"catalogue ids: either run the {sid} campaign below from the checkout (steps (1)-(3) "
+                           f"of the cursor-cap remedy, ECONDL_ROOT unset), whose zero-error stamp clears this row "
+                           f"only if every listed key was streamed; or derive the catalogued ids '{sid}:<REL>:<key>' "
+                           f"of the listed keys from a proven copy of R2's release parquets with `python -m "
+                           f"core.derive_csv --bucket econ-data --source {sid} --only <file of those ids>`, read "
+                           f"them back, then `tools/derive_csv_bulk.py --source {sid} --clear-owed-only "
+                           f"--after-desktop-derive`. Note: {_note.split(' keys=', 1)[0][:240]}; keys: "
+                           f"{_note.split(' keys=', 1)[1][:300]}")
             elif e.get("csv_bulk") == "qualify_with_shard":
                 # fed_board (registry `csv_bulk: qualify_with_shard`, DESIGN_v2 §6). AHEAD of the csv_misses
                 # branch on purpose: should fed_board also declare csv_misses, ilostat's text (indicator
@@ -656,6 +674,11 @@ def assess(store=None) -> dict:
                 f"`python -m core.derive_csv --bucket econ-data --source {sid} --only <ids>` (it refuses "
                 f"a file that is not R2's), read each back against R2's parquet, then "
                 f"`tools/clear_csv_desktop_owed.py --source {sid} --apply`"
+                + (f". {sid} repays owed ids FIRST at the next republish of each id's release (registry "
+                   f"csv_owed_repay), so before T0 all {len(_dl)} wait for that; an id whose served CSV is "
+                   f"already current is cleared on proof by `tools/clear_fed_board_z1_retries.py --table "
+                   f"csv_desktop_owed --copy <proven copy of R2's <REL>.parquet> --ids <file> --out <new tsv>`"
+                   if e.get("csv_owed_repay") == "fresh" else "")
             ] + list(attention)
             if health in ("OK", "ROTATING"):
                 health = "ATTENTION"

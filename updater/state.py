@@ -271,6 +271,16 @@ class StateStore:
         return {sid: (n, lo) for sid, n, lo in self.db.execute(
             "SELECT source_id, COUNT(*), MIN(enqueued_utc) FROM csv_retry_queue GROUP BY source_id")}
 
+    def csv_retry_count_before(self, source_id, before_utc) -> tuple:
+        """(rows of `source_id` enqueued before `before_utc` OR with no stamp, MIN(enqueued_utc)) - the
+        csv_misses_from hold's legacy count (orchestrate._csv_misses_holds). A NULL stamp COUNTS: MIN()
+        ignores NULL, so a NULL-stamped legacy row beside a new one would read 'released' (AR-461 F2b).
+        `before_utc` is compared as text at full precision, in now_utc()'s format."""
+        n, lo = self.db.execute(
+            "SELECT COUNT(*), MIN(enqueued_utc) FROM csv_retry_queue WHERE source_id=? "
+            "AND (enqueued_utc IS NULL OR enqueued_utc < ?)", (source_id, before_utc)).fetchone()
+        return int(n or 0), lo
+
     def note_csv_retry_refailed(self, reasons: dict):
         """A queued id the drain TRIED and that failed again: attempts + 1, and its own reason when it has one.
         enqueued_utc is kept (the debt keeps its age); enqueue_csv_retry would reset it."""
