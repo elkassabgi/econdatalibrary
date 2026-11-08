@@ -16,8 +16,19 @@ uniform: sec_edgar has 2,039 files where R2 is ahead AND 6 where LOCAL is ahead 
 refresher overwrote 18 years of history with the new registrant's 274 facts. A blind sync in
 either direction destroys one side. AHEAD files are a MERGE queue and are reported as such.
 
+WHAT IT CANNOT SEE BY DEFAULT, AND --content. Row count and max date cannot see a VALUE revision
+at an identical shape (R555, R1853): on 2026-11-08 this tool reported fed_board "behind 0" while
+derive_csv's preflight refused SCOOS__series.parquet because its values differed from R2's. With
+`--content` (one --source only), every file that classifies `same` is also content-fingerprinted
+on both sides with the preflight's own data-level fingerprint (core.derive_csv.
+content_fingerprint_sql, R383/R549), and a mismatch is filed in a separate `revised` list.
+`revised` is never `behind`: tools/mirror_sync.py pulls it only with --include-revised, and only
+for a source whose R2 copy is authoritative. Without --content the output, the JSON and the exit
+code are exactly what they were.
+
     python tools/footer_diff.py --source sec_edgar
     python tools/footer_diff.py --source dst --json data/_probe/dst_diff.json
+    python tools/footer_diff.py --source fed_board --content --json data/_probe/fed_board_content.json
 """
 from __future__ import annotations
 
@@ -160,6 +171,45 @@ def _meta(path_or_file):
     return file_meta(path_or_file)
 
 
+# The fingerprint's DuckDB connection. An ungrouped sum() streams, so it needs neither much memory
+# nor a spill; the cap and the private spill directory are there so a large file cannot surprise
+# the box (R605, R612).
+FP_MEM_GB = 4
+FP_THREADS = 2
+
+
+def content_fingerprint(path) -> str:
+    """The data-level fingerprint of one parquet file, as a decimal string.
+
+    EXACTLY the preflight's fingerprint (core/derive_csv.py `_mirror_behind_store`): the file's own
+    columns from DESCRIBE, in its own order, through the one shared `content_fingerprint_sql`. The
+    preflight is the check that refused the campaign, so "level" has to mean what it means; a second
+    definition here would let the two disagree (R1853).
+
+    Session TimeZone is UTC so a TIMESTAMPTZ renders the same on every machine: mirror_sync compares
+    a value footer_diff recorded against one it computes itself, possibly on another host. A DuckDB
+    whose hash() differs from the recording one makes every recorded value mismatch, which
+    mirror_sync treats as a stale classification and refuses - it fails closed, never open.
+    A string, not an int: the HUGEINT sum exceeds what a JSON reader in PowerShell holds exactly.
+    """
+    import duckdb
+    from core import duck_spill
+    from core.derive_csv import content_fingerprint_sql
+    p = str(path).replace(os.sep, "/")
+    with duck_spill.connection_spill("footer_diff_content") as spill:
+        q = duckdb.connect()
+        try:
+            q.execute("SET TimeZone='UTC'")
+            q.execute(f"SET memory_limit='{FP_MEM_GB}GB'")
+            q.execute(f"SET threads={FP_THREADS}")
+            q.execute(f"SET temp_directory='{spill}'")
+            cols = [r[0] for r in q.execute(
+                f"describe select * from read_parquet('{p}')").fetchall()]
+            return str(q.execute(content_fingerprint_sql(cols, p)).fetchone()[0])
+        finally:
+            q.close()
+
+
 def catalogued_sources():
     from core import catalog_path                                     # noqa: PLC0415 - plan step 1
     con = catalog_path.connect()
@@ -167,7 +217,102 @@ def catalogued_sources():
         "select distinct source_id from series order by source_id")]
 
 
-def one_source(s3, src, workers, json_path=None, quiet=False):
+def _iso(lm):
+    """An object's LastModified as one UTC ISO string at WHOLE SECONDS (None when none was given),
+    so the value footer_diff records and the one mirror_sync reads back from a HEAD compare as text.
+
+    Whole seconds because the two calls disagree below that: a LIST carries milliseconds
+    (2026-09-25T13:31:13.647Z on fed_board's SCOOS__series) while a HEAD's Last-Modified header is
+    an HTTP date, whole seconds. Truncating makes R2's time earlier by under a second, which only
+    makes the direction guard refuse more, never less."""
+    if lm is None:
+        return None
+    import datetime as _dt
+    if isinstance(lm, str):
+        lm = _dt.datetime.fromisoformat(lm.replace("Z", "+00:00"))
+    if lm.tzinfo is None:
+        lm = lm.replace(tzinfo=_dt.timezone.utc)
+    return lm.astimezone(_dt.timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _plain_md5_etag(etag):
+    """The object's md5 when its ETag IS one (a single-part upload), else None (multipart '-N')."""
+    e = str(etag or "").strip('"').lower()
+    return e if len(e) == 32 and all(c in "0123456789abcdef" for c in e) else None
+
+
+def _file_md5(path) -> str:
+    import hashlib
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _content_check(s3, d, prefix, same_files, workers, info=None):
+    """(revised, errors) for files that classified `same` - by content fingerprint on both sides.
+
+    `same_files` is [(name, local_rows, r2_rows)]; `info` is {name: (LastModified, ETag)} from the
+    listing. A local file whose md5 equals the object's PLAIN ETag is byte-identical and so level
+    with no download. Every other R2 object is downloaded WHOLE into a private temp directory (a
+    fingerprint reads every value; a footer does not), fingerprinted, and removed. A file whose
+    check cannot run is an ERROR, never `same`: a guard that cannot read is not a pass (derive_csv's
+    preflight fails closed the same way). Entries of `revised` are
+    [name, local_rows, r2_rows, local_fingerprint, r2_fingerprint, r2_last_modified] - mirror_sync
+    re-checks all three on the bytes in hand before it replaces anything, and refuses a local file
+    written at or after R2's LastModified (content cannot say which side is newer; AR-464 C1).
+    """
+    import shutil
+    import tempfile
+    import uuid
+    info = info or {}
+    tmpdir = tempfile.mkdtemp(prefix="footer_diff_content_")
+
+    def one(item):
+        n, lr, rr = item
+        lm, etag = info.get(n, (None, None))
+        lpath = os.path.join(d, *(n + ".parquet").split("/"))
+        tmp = os.path.join(tmpdir, f"{uuid.uuid4().hex}.parquet")    # unique per file, any rel path
+        try:
+            plain = _plain_md5_etag(etag)
+            try:
+                if plain is not None and _file_md5(lpath) == plain:
+                    return n, "bytes", None             # byte-identical: level, nothing to download
+            except OSError as e:
+                return n, None, f"content local {type(e).__name__}"
+            try:
+                s3.download_file(BUCKET, prefix + n + ".parquet", tmp)
+                rfp = content_fingerprint(tmp)
+            except Exception as e:                                    # noqa: BLE001
+                return n, None, f"content R2 {type(e).__name__}"
+            try:
+                lfp = content_fingerprint(lpath)
+            except Exception as e:                                    # noqa: BLE001
+                return n, None, f"content local {type(e).__name__}"
+            return n, (lr, rr, lfp, rfp, _iso(lm)), None
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+    revised, errs = [], []
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(workers, 8))) as ex:
+            for n, got, err in ex.map(one, same_files):
+                if err:
+                    errs.append((n, err))
+                elif got == "bytes":
+                    continue
+                elif got[2] != got[3]:
+                    revised.append([n, got[0], got[1], got[2], got[3], got[4]])
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    return revised, errs
+
+
+def one_source(s3, src, workers, json_path=None, quiet=False, content=False):
     root = store_root_for(src)
     if root is None:
         # Say it, do not `continue`. A guard that goes quiet when it cannot find the store is
@@ -187,6 +332,7 @@ def one_source(s3, src, workers, json_path=None, quiet=False):
     # objects look R2-only, because os.listdir sees only the top directory.
     prefix = f"{root}/{src}/"
     r2 = {}
+    r2_info = {}        # name -> (LastModified, ETag): read only by --content
     tok = None
     while True:
         kw = {"Bucket": BUCKET, "Prefix": prefix, "MaxKeys": 1000}
@@ -197,6 +343,7 @@ def one_source(s3, src, workers, json_path=None, quiet=False):
             k = o["Key"]
             if k.endswith(".parquet"):
                 r2[k[len(prefix):-8]] = (k, o["Size"])
+                r2_info[k[len(prefix):-8]] = (o.get("LastModified"), o.get("ETag"))
         if not r.get("IsTruncated"):
             break
         tok = r["NextContinuationToken"]
@@ -224,6 +371,7 @@ def one_source(s3, src, workers, json_path=None, quiet=False):
         return n, (ll, rr), None
 
     behind, ahead, same, errs = [], [], 0, []
+    same_files = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
         for i, (n, pair, err) in enumerate(ex.map(one, common), 1):
             if err:
@@ -238,23 +386,47 @@ def one_source(s3, src, workers, json_path=None, quiet=False):
                     ahead.append((n, pair[0][0], pair[1][0]))
                 else:
                     same += 1
+                    same_files.append((n, pair[0][0], pair[1][0]))
             if not quiet and i % 2000 == 0:
                 print(f"   {i:,}/{len(common):,} compared", flush=True)
+
+    revised = []
+    if content:
+        # ONLY `same` files, never behind or ahead: a shape verdict already decided those, and
+        # `ahead` is the merge queue that nothing may overwrite (R388). A same-shape file whose
+        # values differ moves OUT of `same` - into `revised`, or into `errors` when its
+        # fingerprint could not be computed - so `same` keeps meaning "proven level".
+        if not quiet:
+            print(f"content-checking {len(same_files):,} same-shape file(s) by data fingerprint "
+                  f"(byte-identical by md5 = plain ETag skipped; every other R2 object downloaded "
+                  f"whole)", flush=True)
+        revised, c_errs = _content_check(s3, d, prefix, sorted(same_files), workers, r2_info)
+        same -= len(revised) + len(c_errs)
+        errs += c_errs
 
     only_r2 = sorted(set(r2) - loc)
     only_loc = sorted(loc - set(r2))
     res = {"source": src, "root": root, "same": same, "behind": behind, "ahead": ahead,
            "r2_only": only_r2, "local_only": only_loc, "errors": errs}
+    if content:
+        # A NEW KEY, added only under --content, so a default JSON is byte-for-byte what it was
+        # (the Fed Z1 heal reads behind / r2_only / errors / ahead from it).
+        res["revised"] = sorted(revised)
     if quiet:
         return res
     print(f"\nSAME            {same:,}")
     print(f"LOCAL BEHIND    {len(behind):,}   (sync these from R2)")
     print(f"LOCAL AHEAD     {len(ahead):,}   (MERGE queue — do NOT overwrite)")
+    if content:
+        print(f"REVISED         {len(revised):,}   (same shape, content differs — "
+              f"mirror_sync --include-revised, R2-authoritative sources only)")
     print(f"R2 ONLY         {len(only_r2):,}   local ONLY {len(only_loc):,}   errors {len(errs):,}")
     for n, l, r_ in sorted(ahead, key=lambda t: -(t[1] - t[2]))[:20]:
         print(f"   AHEAD  {n:14s} local {l:>9,} rows  R2 {r_:>9,}")
     for n, l, r_ in sorted(behind, key=lambda t: -(t[2] - t[1]))[:10]:
         print(f"   behind {n:14s} local {l:>9,} rows  R2 {r_:>9,}")
+    for n, l, r_, _lf, _rf, _lm in res.get("revised", [])[:20]:
+        print(f"   revised {n:13s} local {l:>9,} rows  R2 {r_:>9,}")
     for n, e in errs[:5]:
         print(f"   ERROR  {n}: {e}")
 
@@ -262,6 +434,10 @@ def one_source(s3, src, workers, json_path=None, quiet=False):
         os.makedirs(os.path.dirname(json_path), exist_ok=True)
         json.dump(res, open(json_path, "w", encoding="utf-8"), indent=1)
         print(f"\nwrote {json_path}")
+    if content:
+        # 0 under --content is the claim R1853 asks for - LEVEL: every file on both sides, every
+        # one proven equal by content. An error or an R2-only file is not level either.
+        return 0 if not (behind or ahead or revised or errs or only_r2) else 1
     return 0 if not behind and not ahead else 1
 
 
@@ -274,15 +450,23 @@ def main() -> int:
                     help="every catalogued source — the fleet answer, not one at a time")
     ap.add_argument("--workers", type=int, default=24)
     ap.add_argument("--json", help="write the classified lists here")
+    ap.add_argument("--content", action="store_true",
+                    help="also fingerprint every same-shape file on both sides (downloads each R2 "
+                         "object whole); a mismatch is listed as `revised`. One --source only")
     a = ap.parse_args()
 
+    if a.content and (a.all or len(a.source) != 1):
+        # One source at a time: --content downloads every same-shape object whole, and a fleet
+        # sweep of that is a different decision from a footer sweep.
+        print("--content needs exactly one --source (not --all)")
+        return 2
     from core import r2_util
     s3 = r2_util.cloud_client()     # a named final-sync reader: keeps reading the cloud after T0
     if not a.all:
         if len(a.source) != 1:
             print("pass exactly one --source, or --all")
             return 2
-        return one_source(s3, a.source[0], a.workers, a.json)
+        return one_source(s3, a.source[0], a.workers, a.json, content=a.content)
 
     srcs = a.source or catalogued_sources()
     print(f"sweeping {len(srcs):,} catalogued source(s) by parquet footer\n")
