@@ -64,12 +64,19 @@ def _fixture_zip(path):
     keys = [f"S{i:03d}.X" for i in range(N_KEYS)]
     keys[17], keys[29] = NEG_ZERO_KEY, NAN_KEY
     keys[5], keys[41] = CROSS_KEYS
+    # LOW-CARDINALITY values with 0.0 among them, like the rate releases (H15, SLOOS) where it bit: DuckDB keeps a
+    # lone -0.0 in a high-cardinality column and drops its sign only when 0.0 shares a low-cardinality column
+    # chunk (measured 2026-11-08, duckdb 1.5.4: 3 random values kept it, 10,000 rows of 5 values lost it). A
+    # fixture of random uniforms let the DuckDB mutant SURVIVE this test's first version.
+    pool = ["0.0", "0.25", "0.5", "1.0", "-1.5", "2.75"]
     obs = {}
     for k in keys:
         n = 3 if k in CROSS_KEYS else rnd.randint(2, 30)        # every key <= GROUP rows (T2's premise)
-        months = rnd.sample(range(0, 120), n)
-        obs[k] = [(f"{2010 + m // 12:04d}-{m % 12 + 1:02d}", f"{rnd.uniform(-50, 50):.6f}") for m in months]
-    obs[NEG_ZERO_KEY][0] = (obs[NEG_ZERO_KEY][0][0], "-0.0")
+        months = sorted(rnd.sample(range(0, 120), n))
+        obs[k] = [(f"{2010 + m // 12:04d}-{m % 12 + 1:02d}", rnd.choice(pool)) for m in months]
+        rnd.shuffle(obs[k])                                       # parse order is not date order
+    nz = sorted(rnd.sample(range(0, 120), 3))
+    obs[NEG_ZERO_KEY] = [(f"{2010 + m // 12:04d}-{m % 12 + 1:02d}", v) for m, v in zip(nz, ("0.0", "-0.0", "0.0"))]
     obs[NAN_KEY][1] = (obs[NAN_KEY][1][0], "NaN")
     rnd.shuffle(keys)
     ds_a = [k for k in keys if k not in CROSS_KEYS[1:]]
@@ -134,6 +141,9 @@ def test_t1_the_planted_values_are_really_there(stores):
     vals = pq.read_table(orig).column("value").to_pylist()
     neg_zero = [v for v in vals if v == 0.0 and struct.pack("<d", v)[7] & 0x80]
     assert len(neg_zero) == 1, "the fixture's -0.0 did not survive the parse"
+    assert sum(1 for v in vals if v == 0.0 and not struct.pack("<d", v)[7] & 0x80) >= 2, (
+        "the -0.0 needs +0.0 beside it in a low-cardinality column, or the DuckDB defect cannot show")
+    assert len({v for v in vals if v == v}) <= 8, "the value column must be low-cardinality"
     assert sum(1 for v in vals if v != v) == 1, "the fixture's NaN did not survive the parse"
     assert pq.ParquetFile(orig).metadata.num_rows > 4 * GROUP
 
