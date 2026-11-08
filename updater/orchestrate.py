@@ -1039,6 +1039,45 @@ def _csv_grain(source_id: str) -> str:
     return cache.get(source_id, "series")
 
 
+def _csv_derive_workers(source_id: str):
+    """The registry's `csv_derive_workers` for a source (an int), or None when it declares none.
+
+    fed_board declares 24 (DESIGN_v2 §1b): its quarterly Z1 republish is PUT-bound at 8 workers on
+    botocore's 10-connection pool (17.0 ids/s measured PUT-heavy). derive_and_put then runs that many
+    threads and widens an R2 store's pool to workers + 8. None = the keyword is NOT passed, so every
+    other source's call keeps the exact signature it had (the flow_grain rule: stubs without **kwargs
+    keep working). An unreadable registry declares nothing (today's behaviour).
+
+    THE FENCE IS NOT SWALLOWED (PR-1 review F2; the derive._merge_served_sources rule, 2026-09-28): this
+    is read inside the CSV phase's fence, so a UnitTimeout landing in the registry read - directly, or
+    disguised as another library's error after UNIT_TIMEOUT_FIRED - propagates, and nothing is cached:
+    a half-built cache would have run fed_board at 8 workers for the rest of the process. The map is
+    built locally and assigned only once complete."""
+    cache = getattr(_csv_derive_workers, "_cache", None)
+    if cache is None:
+        from .derive import _fence_exc, _raise_if_fence_in_disguise   # noqa: PLC0415
+        fence = _fence_exc()
+        built = {}
+        try:
+            for e in registry.load().get("sources", []):
+                w = e.get("csv_derive_workers")
+                if isinstance(w, int) and not isinstance(w, bool) and w > 0:
+                    built[e.get("source_id")] = w
+        except fence:
+            raise
+        except Exception as e:                              # noqa: BLE001
+            _raise_if_fence_in_disguise(fence, e)
+            built = {}
+        _csv_derive_workers._cache = cache = built
+    return cache.get(source_id)
+
+
+def _derive_width_kw(source_id: str) -> dict:
+    """{'workers': N} for a source that declares csv_derive_workers, else {} (the keyword is not passed)."""
+    w = _csv_derive_workers(source_id)
+    return {"workers": w} if w else {}
+
+
 def _served_by_lane(source_id: str) -> bool:
     """True when the registry says a continuous job of the source's own serves its CSVs
     (`served_by: lane` - statcan, jobs/statcan_lane.py). The CSV phase and the retry drain then
@@ -1525,8 +1564,10 @@ def _derive_changed_csvs(unit, res, blob, store=None):
         # exact signature it had, so the stubs in eleven existing test files (lambdas without
         # **kwargs) and any other caller-side double keep working; CI caught the alternative in
         # three minutes (run 34166306918: 7 orchestrator tests failing on the new keyword).
+        # The same rule for `workers` (registry csv_derive_workers): passed only when declared.
         out = derive.derive_and_put(ids, blob if blob is not None else _resolve_blob(),
                                     **({"flow_grain": True} if _flow else {}),
+                                    **_derive_width_kw(unit.source_id),
                                     **_capped_derive_budget()) or {}
         # SPLIT budget-deferral from breakage. derive.py puts unreached ids in BOTH
         # `failed` (so the caller queues them for retry) and `deferred_ids`; its own log
@@ -1798,6 +1839,7 @@ def _drain_csv_retry_queue(unit, blob, store, deadline_ts=None, id_gate=None) ->
                 _out = _derive_mod.derive_and_put(
                     _retry_ids, blob if blob is not None else _resolve_blob(),
                     **({"flow_grain": True} if _csv_grain(unit.source_id) == "flow" else {}),
+                    **_derive_width_kw(unit.source_id),
                     **_budget) or {}
             # TRIED and failed again - not the ids the budget never reached (derive lists those in `failed` too)
             _tried_failed = set(str(s) for s in (_out.get("failed") or [])) - set(

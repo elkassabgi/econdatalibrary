@@ -87,7 +87,7 @@ def test_reports_the_skipped_count_and_share(fake_bytes, capsys):
     assert res["skipped_identical"] == 5, res
     assert "5 were ALREADY CURRENT" in out, out
     # the share must divide by CSVs HANDLED (10), not by the skipped count
-    assert "50.0%" in out, out
+    assert "re-uploaded (50.0%)" in out, out
 
 
 def test_the_line_prints_even_when_nothing_was_skipped(fake_bytes, capsys):
@@ -96,7 +96,7 @@ def test_the_line_prints_even_when_nothing_was_skipped(fake_bytes, capsys):
     res, out = _run([f"src:{i}" for i in range(4)], blob, capsys)
     assert res["skipped_identical"] == 0, res
     assert "0 were ALREADY CURRENT" in out, out
-    assert "0.0%" in out, out
+    assert "re-uploaded (0.0%)" in out, out
 
 
 def test_a_second_call_does_not_inherit_the_first_calls_skips(fake_bytes, capsys):
@@ -162,4 +162,4 @@ def test_skipped_never_exceeds_handled(fake_bytes, capsys):
     res, out = _run([f"src:{i}" for i in range(6)], blob, capsys)
     assert res["skipped_identical"] == 6
     assert res["skipped_identical"] <= res["put"]
-    assert "100.0%" in out, out
+    assert "re-uploaded (100.0%)" in out, out

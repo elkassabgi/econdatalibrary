@@ -187,8 +187,23 @@ def _fresh_merge_served_cache():
     order-dependent: the full suite's order hid it). Cleared before and after each test."""
     from updater import derive
     derive._merge_served_sources._cache = None
+    # The orchestrator's registry caches likewise (PR-1 review F4): a test that faked the registry while
+    # _csv_derive_workers or _csv_grain filled its cache would hand later tests a fake width or grain - and a
+    # declared width passes `workers=` to stubs without **kwargs (the run-34166306918 class). Restored to what
+    # it was before the test, not cleared, so the suite does not re-parse the registry once per test.
+    try:
+        from updater import orchestrate
+    except Exception:                                    # noqa: BLE001
+        orchestrate = None
+    saved = None
+    if orchestrate is not None:
+        saved = (getattr(orchestrate._csv_derive_workers, "_cache", None),
+                 dict(orchestrate._csv_grain.__dict__.get("_cache") or {}))
     yield
     derive._merge_served_sources._cache = None
+    if orchestrate is not None and saved is not None:
+        orchestrate._csv_derive_workers._cache = saved[0]
+        orchestrate._csv_grain._cache = saved[1]
 
 
 _ALARM_MODULES = ("updater.orchestrate", "updater.derive")

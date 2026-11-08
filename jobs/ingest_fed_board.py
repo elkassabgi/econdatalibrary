@@ -62,7 +62,12 @@ OUTPUT_URL = "https://www.federalreserve.gov/datadownload/Output.aspx"
 DDP_HOME = "https://www.federalreserve.gov/datadownload/"
 UA = "Econ-Fin Data Library admin@hfdatalibrary.com"
 LICENSE_ID = "us-public-domain"
-BATCH = 1_000_000          # observation rows per Parquet row-group flush
+BATCH = 1_000_000          # observation rows per Parquet row-group flush (the PARSE buffer)
+# Row groups of the FINAL file, after the sorted rewrite (_rewrite_sorted). Measured 2026-11-08 on
+# copies of all 18 releases: the resolver reads one Z1 series at 78.1 ids/s serial on the sorted
+# 50k-row-group file against 4.45 ids/s on the parse order (8 row groups of 1M rows), because
+# pc.equal(series_key) can then skip row groups by their min/max statistics.
+SORTED_ROW_GROUP = 50_000
 CHUNK = 1 << 20            # 1 MiB download chunks
 MISSING_VALUE = -9999.0    # DDP sentinel for "no data" (paired with OBS_STATUS=ND)
 
@@ -256,6 +261,68 @@ def _series_descs(series_el):
 
 
 # ----------------------------------------------------------------------------
+# the sorted store: one release file rewritten in (series_key, obs_date) order
+# ----------------------------------------------------------------------------
+def _rewrite_sorted(obs_path: str) -> None:
+    """Rewrite <REL>.parquet sorted by (series_key, obs_date) in SORTED_ROW_GROUP-row groups.
+
+    WHY. The served CSV of a fed_board id is made by the resolver (core.derive_csv._series_csv_bytes),
+    which reads ONE series_key out of its release file. In the parse order the keys are spread over
+    every row group, so each id reads the whole file: Z1 (7.8M rows) derived at ~4 ids/s and its
+    quarterly republish could not finish inside the derive budget. Sorted, the min/max statistics of
+    each row group let the read skip all but one or two groups.
+
+    WHY THIS CANNOT CHANGE A SERVED BYTE. native_to_tidy re-sorts every series by (series_id,
+    obs_date) (econdl/_resolve.py), so the file's row order can only show through the tie order of
+    duplicate (key, date) rows. Those exist only as cross-listed copies in G17 and H6 and hold
+    identical values (AR-458 J2), and the sort is stable. Measured on copies of all 18 releases: 0 of
+    54,156 resolver CSVs differ (DESIGN_v2 K4, AR-458 r2 L2).
+
+    WHY PYARROW AND NEVER DUCKDB (R1845). A DuckDB `COPY ... ORDER BY` of the same files turned -0.0
+    into 0.0 (H15 17 values, SLOOS 1) and changed 10 of 54,156 served CSVs. pyarrow's sort_by +
+    write_table keeps every value bit. tests/test_fed_board_sorted_store.py plants a -0.0 and a NaN
+    and compares BIT patterns and served CSV bytes, because pyarrow's Table.equals counts -0.0 equal
+    to 0.0 and so cannot see that defect.
+
+    ONE WRITER. This runs inside ingest_release, which both the updater's fetcher
+    (updater/strategies/fetchers/fed_board.py) and this script's main() call, so the two paths
+    cannot drift. It only runs on a release that was just re-parsed, i.e. one being republished,
+    whose bytes (and R2 ETag) change anyway.
+
+    ATOMIC. Written to a unique <path>.<pid>.<hex>.tmp beside it (the blob.py convention) and moved
+    over the original with os.replace. A failure removes the temp, leaves the parse-order file intact
+    and raises; ingest_release then keeps that file and says so (it serves the same bytes).
+    """
+    import uuid
+    tbl = pq.read_table(obs_path)
+    tbl = tbl.sort_by([("series_key", "ascending"), ("obs_date", "ascending")])
+    tmp = f"{obs_path}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
+    try:
+        pq.write_table(tbl, tmp, compression="zstd", row_group_size=SORTED_ROW_GROUP)
+        os.replace(tmp, obs_path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _is_fence(e: BaseException) -> bool:
+    """True when `e` is the updater orchestrator's hard fence (UnitTimeout), directly or arriving in another
+    library's clothes after the alarm fired (updater.merge._unit_timeout_fired). Read from sys.modules only,
+    so the standalone script never imports the updater."""
+    orch = sys.modules.get("updater.orchestrate")
+    if orch is not None and isinstance(e, getattr(orch, "UnitTimeout", ())):
+        return True
+    merge = sys.modules.get("updater.merge")
+    try:
+        return bool(merge is not None and merge._unit_timeout_fired())
+    except Exception:                                        # noqa: BLE001
+        return False
+
+
+# ----------------------------------------------------------------------------
 # parse one release ZIP -> grouped Parquet (streamed) + metadata sidecar
 # ----------------------------------------------------------------------------
 def ingest_release(rel: str, zip_path: str):
@@ -263,7 +330,10 @@ def ingest_release(rel: str, zip_path: str):
 
     Returns a dict of stats. Memory stays bounded: we iterparse the data XML and
     clear each <Series> after writing its rows; observation rows flush to the
-    Parquet writer in BATCH-sized row groups.
+    Parquet writer in BATCH-sized row groups. The finished file is then rewritten
+    sorted by (series_key, obs_date) in SORTED_ROW_GROUP-row groups (_rewrite_sorted;
+    measured 2026-11-08 on the desktop: Z1 alone 6.0 s, all 18 releases 11.5 s with a peak working
+    set of 1,271 MB).
     """
     with zipfile.ZipFile(zip_path) as z:
         data_name = [n for n in z.namelist() if n.lower().endswith("_data.xml")][0]
@@ -369,6 +439,23 @@ def ingest_release(rel: str, zip_path: str):
         writer.close()
         xml_stream.close()
 
+    sorted_ok = None
+    if n_obs:
+        # A FAILED REWRITE NEVER WITHHOLDS THE RELEASE (PR-1 review F3). The parse-order file serves the
+        # same CSV bytes (only slower), so a deterministic failure - MemoryError on a runner, a pyarrow
+        # change - must not stop the release from ever republishing; it is said loudly instead. The
+        # orchestrator's fence is the exception: it ends the unit, never a fallback.
+        try:
+            _rewrite_sorted(obs_path)
+            sorted_ok = True
+        except Exception as e:                               # noqa: BLE001
+            if _is_fence(e):
+                raise
+            sorted_ok = False
+            print(f"WARNING: {rel} kept in PARSE order - the sorted rewrite failed "
+                  f"({type(e).__name__}: {str(e)[:160]}); its CSVs are unchanged but derive slowly",
+                  flush=True)
+
     # write the metadata sidecar (one row per series)
     meta_path = os.path.join(OUT, rel + "__series.parquet")
     if meta_rows:
@@ -392,6 +479,7 @@ def ingest_release(rel: str, zip_path: str):
         "end": str(mx) if mx else None,
         "bad_date": n_baddate,
         "missing_obs": n_missing,
+        "sorted": sorted_ok,          # True: rewritten sorted; False: kept in parse order; None: no obs
     }
 
 

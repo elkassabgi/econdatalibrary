@@ -576,6 +576,30 @@ def assess(store=None) -> dict:
                            f"LastModified under clean_full/{sid}/ has not moved since the compare; then "
                            f"`tools/derive_csv_bulk.py --source {sid} --clear-owed-only`. A bulk campaign "
                            f"writes one object per store key here and is refused")
+            elif e.get("csv_bulk") == "qualify_with_shard":
+                # fed_board (registry `csv_bulk: qualify_with_shard`, DESIGN_v2 §6). AHEAD of the csv_misses
+                # branch on purpose: should fed_board also declare csv_misses, ilostat's text (indicator
+                # stems, derive_ilostat_indicators.py) must never be its remedy - the wrong tool and the
+                # wrong unit (AR-458 D2, the R152 class). This row is the cursor-cap backstop: the cut keys
+                # are not recorded, so the payer is a campaign over EVERY key of every release, which the
+                # bulk tool streams. THE STEPS ARE THE REVIEWED Z1 HEAL'S (AR-456), each for a reason in the
+                # tool as it is (PR-1 review F1): the tool's mirror preflight reads the CHECKOUT's mirror,
+                # not ECONDL_ROOT, so the mirror is synced first and the copy is PROVEN R2's by md5/ETag (no
+                # reviewed tool GETs a store parquet into a new folder); it reads the registry under
+                # ECONDL_ROOT unless AQUEDUCT_REGISTRY points at the checkout's; its --verify resolver reads
+                # ECONDL_DATA; and in a new folder its end-of-run clear cannot see the logs/ lock and stamp,
+                # so it prints "NOT clearing" - the row is cleared afterwards from the checkout.
+                _remedy = (f"(1) sync the checkout's {sid} mirror with tools/footer_diff.py + "
+                           f"tools/mirror_sync.py --apply until the diff shows 0 behind and 0 R2-only; "
+                           f"(2) copy every release into a NEW folder <f>/data/clean_full/{sid}/ and prove "
+                           f"each copy is R2's object (size + md5/ETag), and copy the catalogue to "
+                           f"<f>/data/catalog.db; (3) with ECONDL_ROOT=<f>, AQUEDUCT_REGISTRY=<checkout>/"
+                           f"updater/registry.yaml and ECONDL_DATA=<f>/data/clean_full run "
+                           f"`tools/derive_csv_bulk.py --source {sid} --qualify-with-shard "
+                           f"--only-catalogued --bucket econ-data` (never --allow-stale-mirror; it prints "
+                           f"'NOT clearing' there, which is expected); (4) read the served CSVs back; "
+                           f"(5) then, from the checkout with ECONDL_ROOT unset, `tools/derive_csv_bulk.py "
+                           f"--source {sid} --clear-owed-only`")
             elif e.get("csv_misses") == "desktop_owed":
                 # A csv_misses SOURCE (ilostat, R1148): the bulk tool cannot pay this debt - for ilostat
                 # it would PUT 'ilostat:ilostat:...' objects across ~391M store rows and clear the row

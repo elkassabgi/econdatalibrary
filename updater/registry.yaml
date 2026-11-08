@@ -1882,6 +1882,17 @@ sources:
   refresh_cost: medium
   out_dir: fed_board
   review: true
+  # csv_derive_workers - DECLARED 2026-11-08 (DESIGN_v2 §1b, AR-458 r1 D1 + r2 (d)). A quarterly Z1
+  # republish is PUT-bound: 17.0 ids/s measured PUT-heavy at 8 workers on botocore's default 10-connection
+  # pool. 24 threads with a pool of 24 + 8 (updater/derive.py _put_store, built through the guarded
+  # R2 client) is expected near 50 ids/s; that figure is INFERRED (linear scaling, no R2 throttling) and
+  # is booked as MEASURED from the derive's own lines at the first fed_board republish after this.
+  csv_derive_workers: 24
+  # csv_bulk - DECLARED 2026-11-08 (DESIGN_v2 §6). tools/derive_csv_bulk.py derives fed_board's
+  # catalogue ids exactly only with --qualify-with-shard --only-catalogued (AR-458 J1: 12,746 of 12,746
+  # equal to the resolver). Read today ONLY by health's remedy text for a full_rederive_owed row (the
+  # cursor-cap backstop above FED_BOARD_CURSOR_CAP), which therefore names fed_board's own tool.
+  csv_bulk: qualify_with_shard
   adapter:
     vintage_signal: 'Per-release CONTENT HASH (sha256 of the downloaded zip), NOT an HTTP validator. MEASURED 2026-07-29:
       Output.aspx is generated per request - Last-Modified advances on EVERY call (03:17:40 / 03:18:01 / 03:18:21 on three
