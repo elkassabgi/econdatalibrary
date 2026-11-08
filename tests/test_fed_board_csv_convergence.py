@@ -884,6 +884,92 @@ def test_ar462_the_default_output_lines_are_todays(ctool, capsys):
     assert out[-1] == "cleared 1 fed_board Z1 csv_retry_queue row(s) and pushed; 0 requested id(s) stand", out[-1]
 
 
+#  AR-462 round 2, gap 1 (N6/N7/N8 survived prefix checks): the DEFAULT path's WHOLE stdout, line for line, against
+#  today's literal lines (base 681dc3461's print calls, copied as text). Only the ETag, the --out path and the copy
+#  proof's detail are filled in; the detail comes from core.derive_csv._compare_one, which this PR does not change.
+#  stderr must stay empty.
+_DEFAULT_CASES = {
+    #  case: (ids, apply, ETag moves at the pull, pull rc, expected rc name, expected lines after the first two)
+    "apply_clears": (["fed_board:Z1:A.Q"], True, False, 0, "EXIT_OK", [
+        "queue after pull: 1 of the 1 clearable id(s) are queued",
+        "cleared 1 fed_board Z1 csv_retry_queue row(s) and pushed; 0 requested id(s) stand"]),
+    "no_queued_row": (["fed_board:Z1:B.Q"], True, False, 0, "EXIT_OK", [
+        "queue after pull: 0 of the 1 clearable id(s) are queued",
+        "no queued row to clear; nothing pushed"]),
+    "etag_moved": (["fed_board:Z1:A.Q"], True, True, 0, "EXIT_MOVED", [
+        "queue after pull: 1 of the 1 clearable id(s) are queued",
+        "REFUSED: Z1's ETag moved ({etag} -> " + "9" * 32 + ") - a pass republished Z1, the evidence is about the "
+        "old release. Nothing cleared, nothing pushed."]),
+    "report_only": (["fed_board:Z1:A.Q", "fed_board:Z1:C.Q"], False, False, 0, "EXIT_STAND", [
+        "(report only: 1 clearable, 1 stand - pass --apply to pull, clear, push)"]),
+    "nothing_clearable": (["fed_board:Z1:C.Q"], True, False, 0, "EXIT_STAND", [
+        "nothing clearable; state untouched, no pull, no push"]),
+    "pull_failed": (["fed_board:Z1:A.Q"], True, False, 1, "EXIT_PULL", [
+        "REFUSED: pull-state failed; a clear applied to a stale copy dies at the next pull"]),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_DEFAULT_CASES))
+def test_ar462_r2_the_default_stdout_is_todays_line_for_line(ctool, tmp_path, capsys, case):
+    T = ctool.T
+    ids, apply, moves, pull_rc, want_rc, tail = _DEFAULT_CASES[case]
+    etag = ctool.s3.obj[T.Z1_KEY]["ETag"].strip('"')
+    before = ctool.state()
+
+    def runner(*a):
+        ctool.runs.append(a[0])
+        if moves:
+            ctool.s3.obj[T.Z1_KEY]["ETag"] = '"' + "9" * 32 + '"'
+        return pull_rc
+    idf = tmp_path / f"ids_gold_{case}.txt"
+    idf.write_text("\n".join(ids) + "\n", encoding="utf-8")
+    out = os.path.abspath(str(tmp_path / f"gold_{case}.tsv"))
+    from core.derive_csv import _compare_one
+    copy = os.path.abspath(ctool.copies["Z1"])
+    c = _compare_one(ctool.s3, T.BUCKET, copy, os.path.dirname(os.path.dirname(copy)))    # before any ETag move
+    rc = T.main(["--copy", ctool.copies["Z1"], "--ids", str(idf), "--out", out, "--spot", "2",
+                 *(["--apply"] if apply else [])], s3=ctool.s3, state_runner=runner)
+    cap = capsys.readouterr()
+    tally = {"equal": 0, "no_rows": 0}
+    for s in ids:
+        tally["no_rows" if s.endswith(":C.Q") else "equal"] += 1
+    tally = {k: v for k, v in sorted(tally.items()) if v}
+    want = [f"Z1 copy vs R2: equal: {c['local']} | R2 {c['r2']}",
+            f"evidence: {tally} over {len(ids)} id(s) (Z1 ETag {etag}); written to {out}"]
+    want += [ln.replace("{etag}", etag) for ln in tail]
+    assert cap.out.splitlines() == want, (case, cap.out)
+    assert cap.err == "", (case, cap.err)
+    assert rc == getattr(T, want_rc), (case, rc)
+    if case != "apply_clears":
+        assert ctool.state() == before, (case, "nothing changes on this path")
+    assert ctool.runs == ([] if not apply or case == "nothing_clearable" else
+                          ["--pull-state", "--push-state"] if case == "apply_clears" else ["--pull-state"]), ctool.runs
+
+
+def test_ar462_r2_owed_table_clears_an_owed_id_that_is_not_queued(ctool, capsys):
+    """AR-462 round 2, gap 2 (K2 survived: the old test's owed id was also queued). --table csv_desktop_owed must
+    SELECT its rows from the owed table: an owed id that is NOT queued is cleared; a queued id that is NOT owed is
+    left in the queue (and is not counted as owed)."""
+    T = ctool.T
+    st = StateStore()
+    st.note_csv_desktop_owed("fed_board", [("fed_board:Z1:B.Q", None, "owed")])     # owed, never queued
+    st.clear_csv_desktop_owed(["fed_board:Z1:A.Q"])                                # now queued, not owed
+    st.db.close()
+    q0, o0 = ctool.state()
+    assert "fed_board:Z1:B.Q" in o0 and "fed_board:Z1:B.Q" not in q0, (q0, o0)
+    assert "fed_board:Z1:A.Q" in q0 and "fed_board:Z1:A.Q" not in o0, (q0, o0)
+    capsys.readouterr()
+    rc = ctool.go("Z1", ["fed_board:Z1:A.Q", "fed_board:Z1:B.Q"], "--apply", "--table", "csv_desktop_owed",
+                  out="owed_only.tsv")
+    out = capsys.readouterr().out.splitlines()
+    assert rc == T.EXIT_OK, (rc, out)
+    q, o = ctool.state()
+    assert o == ["fed_board:H15:B.Q"], ("the not-queued owed id is cleared", o)
+    assert q == ["fed_board:H15:A.Q", "fed_board:Z1:A.Q"], ("the queued-only id stays queued", q)
+    assert "csv_desktop_owed after pull: 1 of the 2 clearable id(s) are owed" in out, out
+    assert out[-1] == "cleared 1 fed_board Z1 csv_desktop_owed row(s) and pushed; 0 requested id(s) stand", out[-1]
+
+
 def test_ar462_an_unknown_copy_name_falls_back_to_z1(ctool, tmp_path, capsys):
     """Kills G4: a --copy that names no release keeps today's order - the ids are checked against fed_board:Z1:
     (so Z1 ids pass that check) and the copy is then refused by its path, before anything is judged."""
