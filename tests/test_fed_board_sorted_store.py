@@ -352,7 +352,7 @@ def tmp_catalog(tmp_path, monkeypatch):
     monkeypatch.setenv("AQUEDUCT_BACKEND", "local")
     monkeypatch.setattr(orchestrate, "_record_for_catalog_sync", lambda ids: None)
     monkeypatch.setattr(orchestrate, "_csv_grain", lambda s: "series")
-    monkeypatch.setattr(orchestrate._csv_derive_workers, "_cache", {"zzwide": 24})
+    monkeypatch.setattr(orchestrate._csv_derive_workers, "_cache", {"zzwide": 24}, raising=False)
     return p
 
 
@@ -385,7 +385,7 @@ def test_t4_workers_reach_derive_only_for_a_declared_source(tmp_path, tmp_catalo
 
 def test_t4_the_real_registry_declares_fed_board_only(monkeypatch):
     from updater import orchestrate, registry
-    monkeypatch.setattr(orchestrate._csv_derive_workers, "_cache", None)
+    monkeypatch.setattr(orchestrate._csv_derive_workers, "_cache", None, raising=False)
     assert orchestrate._csv_derive_workers("fed_board") == 24
     assert orchestrate._csv_derive_workers("norgesbank") is None
     assert orchestrate._derive_width_kw("norgesbank") == {}
@@ -397,7 +397,7 @@ def test_t4_the_real_registry_declares_fed_board_only(monkeypatch):
 def test_t4_the_fence_inside_the_width_read_is_not_swallowed_or_cached(monkeypatch, how):
     """Review F2: swallowed and half-cached, fed_board would run at 8 workers for the rest of the process."""
     from updater import orchestrate, registry
-    monkeypatch.setattr(orchestrate._csv_derive_workers, "_cache", None)
+    monkeypatch.setattr(orchestrate._csv_derive_workers, "_cache", None, raising=False)
     monkeypatch.setattr(orchestrate, "UNIT_TIMEOUT_FIRED", how == "disguised")
 
     def load():
@@ -412,7 +412,7 @@ def test_t4_the_fence_inside_the_width_read_is_not_swallowed_or_cached(monkeypat
 
 def test_t4_an_unreadable_registry_declares_nothing(monkeypatch):
     from updater import orchestrate, registry
-    monkeypatch.setattr(orchestrate._csv_derive_workers, "_cache", None)
+    monkeypatch.setattr(orchestrate._csv_derive_workers, "_cache", None, raising=False)
     monkeypatch.setattr(orchestrate, "UNIT_TIMEOUT_FIRED", False)
     monkeypatch.setattr(registry, "load", lambda: (_ for _ in ()).throw(ValueError("bad yaml (test)")))
     assert orchestrate._csv_derive_workers("fed_board") is None
