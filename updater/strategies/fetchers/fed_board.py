@@ -221,7 +221,9 @@ def update(unit, since) -> Result:
 
             try:
                 stats = ig.ingest_release(rel, tmp)
-            except Exception:                                # noqa: BLE001
+            except Exception as e:                           # noqa: BLE001
+                if ig._is_fence(e):
+                    raise         # the orchestrator's fence ends the unit; never booked as a transient release
                 tally.transient_unit(rel)
                 continue
         finally:

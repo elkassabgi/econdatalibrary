@@ -1052,21 +1052,24 @@ def _csv_derive_workers(source_id: str):
     is read inside the CSV phase's fence, so a UnitTimeout landing in the registry read - directly, or
     disguised as another library's error after UNIT_TIMEOUT_FIRED - propagates, and nothing is cached:
     a half-built cache would have run fed_board at 8 workers for the rest of the process. The map is
-    built locally and assigned only once complete."""
+    built locally and assigned only once complete.
+
+    The fence is orchestrate's OWN (UnitTimeout, UNIT_TIMEOUT_FIRED): nothing is imported from
+    updater.derive here, because tests replace that module with a stub and an ImportError here would
+    be booked as "csv_derive crashed" (PR-1 review round 2, B1)."""
     cache = getattr(_csv_derive_workers, "_cache", None)
     if cache is None:
-        from .derive import _fence_exc, _raise_if_fence_in_disguise   # noqa: PLC0415
-        fence = _fence_exc()
         built = {}
         try:
             for e in registry.load().get("sources", []):
                 w = e.get("csv_derive_workers")
                 if isinstance(w, int) and not isinstance(w, bool) and w > 0:
                     built[e.get("source_id")] = w
-        except fence:
+        except UnitTimeout:
             raise
         except Exception as e:                              # noqa: BLE001
-            _raise_if_fence_in_disguise(fence, e)
+            if UNIT_TIMEOUT_FIRED:
+                raise UnitTimeout(f"the fence, arriving as {type(e).__name__}: {str(e)[:80]}") from e
             built = {}
         _csv_derive_workers._cache = cache = built
     return cache.get(source_id)

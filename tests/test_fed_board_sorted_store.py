@@ -418,6 +418,61 @@ def test_t4_an_unreadable_registry_declares_nothing(monkeypatch):
     assert orchestrate._csv_derive_workers("fed_board") is None
 
 
+def test_t4_a_fence_mid_loop_leaves_no_half_built_cache(monkeypatch):
+    """Review r2 item 4: the fence landing AFTER some entries were read must not cache those entries."""
+    from updater import orchestrate, registry
+    monkeypatch.setattr(orchestrate._csv_derive_workers, "_cache", None, raising=False)
+
+    def sources():
+        yield {"source_id": "aaa"}
+        raise orchestrate.UnitTimeout("alarm mid-loop (test)")
+    monkeypatch.setattr(registry, "load", lambda: {"sources": sources()})
+    with pytest.raises(orchestrate.UnitTimeout):
+        orchestrate._csv_derive_workers("fed_board")
+    assert orchestrate._csv_derive_workers._cache is None
+
+
+def test_t4_the_retry_drain_passes_the_declared_width(tmp_path, tmp_catalog, monkeypatch):
+    """Review r2 item 4: the drain's call site, not only the fresh phase."""
+    from updater import derive, orchestrate
+    from updater.state import StateStore
+    st = StateStore(path=str(tmp_path / "state.db"))
+    monkeypatch.setattr(orchestrate.config, "STATE_DIR", str(tmp_path / "_aqueduct"))
+    monkeypatch.setattr(orchestrate, "_csv_desktop_excluded", lambda sid: set())
+    st.enqueue_csv_retry("zzwide", ["zzwide:a", "zzwide:b"], "earlier failure")
+    calls = []
+
+    def fake(ids, blob, **kw):
+        calls.append((list(ids), dict(kw)))
+        return {"put": len(ids), "put_ids": list(ids), "failed": []}
+    monkeypatch.setattr(derive, "derive_and_put", fake)
+    orchestrate._drain_csv_retry_queue(_Unit("zzwide"), object(), st)
+    assert calls and calls[-1][1].get("workers") == 24, calls
+
+
+def test_t3r_a_disguised_fence_is_never_turned_into_a_fallback(tmp_path, monkeypatch):
+    """_is_fence's second branch: the alarm already fired, the error arrives as another library's."""
+    from updater import orchestrate
+
+    def interrupted(p):
+        raise RuntimeError("Query interrupted")
+    monkeypatch.setattr(ig, "_rewrite_sorted", interrupted)
+    monkeypatch.setattr(orchestrate, "UNIT_TIMEOUT_FIRED", True)
+    with pytest.raises(RuntimeError, match="Query interrupted"):
+        _ingest(tmp_path, monkeypatch, "disguised", rewrite=True)
+
+
+def test_t3r_the_fetcher_lets_the_fence_through(fake_fetch, monkeypatch):
+    """Review r2 item 5: fed_board.update's except around ingest_release booked the fence as a transient release."""
+    from updater import orchestrate
+
+    def fence(rel, z):
+        raise orchestrate.UnitTimeout("test: the unit's fence")
+    monkeypatch.setattr(ig, "ingest_release", fence)
+    with pytest.raises(orchestrate.UnitTimeout):
+        fake_fetch.update(None, None)
+
+
 @pytest.mark.parametrize("bad", [True, 0, 65, "24", 24.0, None])
 def test_t4_registry_validates_the_width(bad):
     from updater import registry
@@ -486,18 +541,20 @@ def test_t5_every_other_caller_keeps_50000(tmp_path):
     _keys_file(p, "B", 50_001)
     assert len(_common.merge_cursors({}, p)) == 50_000
     assert len(_common.merge_cursors({}, p, cap=120_000)) == 50_001
+    import ast
     fetchers = os.path.join(ROOT, "updater", "strategies", "fetchers")
-    callers = [f for f in os.listdir(fetchers) if f.endswith(".py")
-               and "merge_cursors(" in open(os.path.join(fetchers, f), encoding="utf-8").read()]
-    for f in callers:
-        src = open(os.path.join(fetchers, f), encoding="utf-8").read()
-        if f in ("_common.py", "fed_board.py"):
+    seen = {}
+    for f in sorted(os.listdir(fetchers)):
+        if not f.endswith(".py"):
             continue
-        i = 0
-        while (i := src.find("merge_cursors(", i)) != -1:
-            call = src[i:src.find(")", i) + 1]
-            assert "cap=" not in call, f"{f} passes cap= to merge_cursors: {call}"
-            i += 1
+        tree = ast.parse(open(os.path.join(fetchers, f), encoding="utf-8").read())
+        for n in ast.walk(tree):          # the call's real keywords: a text scan stops at a nested ')' (review r2)
+            if isinstance(n, ast.Call) and getattr(n.func, "id", getattr(n.func, "attr", None)) == "merge_cursors":
+                seen.setdefault(f, []).append(sorted(k.arg for k in n.keywords if k.arg))
+    assert {"bis.py", "eia.py", "fhfa.py", "ilostat.py", "fed_board.py"} <= set(seen), seen
+    for f, calls in seen.items():
+        for kws in calls:
+            assert ("cap" in kws) == (f == "fed_board.py"), f"{f}: merge_cursors keywords {kws}"
 
 
 # ----------------------------------------------------------------------------------------------- T6
@@ -519,7 +576,8 @@ def test_t6_health_names_fed_boards_own_remedy(monkeypatch, with_misses):
     assert row["health"] not in ("OK", "ROTATING")
     for token in ("--qualify-with-shard --only-catalogued", "--clear-owed-only", "ECONDL_DATA",
                   "AQUEDUCT_REGISTRY", "ECONDL_ROOT", "mirror_sync.py", "never --allow-stale-mirror",
-                  "NOT clearing", "catalog.db"):
+                  "NOT clearing", "catalog.db", "md5/ETag", "ECONDL_ROOT unset", "r2_object_census.py",
+                  "_compare_one"):
         assert token in text, f"remedy lacks {token!r}: {text}"
     assert "derive_ilostat_indicators" not in text and "indicator stems" not in text
     assert "success stamp clears" not in text, "the campaign's own stamp cannot clear the row from a new folder"
