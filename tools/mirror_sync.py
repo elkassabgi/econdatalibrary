@@ -17,6 +17,22 @@ there is to re-run footer_diff, not to copy from a snapshot of the past.
 
     python tools/footer_diff.py --all --json data/_probe/fleet_diff.json
     python tools/mirror_sync.py --from-json data/_probe/fleet_diff.json --apply
+
+SAME-SHAPE REVISIONS (R1853). Row count and max date cannot see a value revised in place, so a
+file R2 has revised at the same shape re-classifies here as 'same' and is kept for ever. With
+`footer_diff --content` the JSON carries a separate `revised` list, and `--include-revised` pulls
+it - only for a source whose R2 copy is authoritative (in updater/registry.yaml, not
+`run_location: local`, before T0), only when the bytes in hand still classify 'same' AND both
+fingerprints are still the ones footer_diff recorded, only when R2's object still has the
+recorded LastModified AND the local file was last written BEFORE it (content cannot say which
+side is newer: a local edit is never pulled over, AR-464 C1), and never a name that is also
+behind, R2-only or ahead. Without --include-revised nothing about this tool changes. With it, the
+exit code is 3 when any revised file was not replaced - but the PROOF that a source is level is a
+fresh `footer_diff --content` exiting 0 with its `revised` key present and empty, never this
+tool's exit code.
+
+    python tools/footer_diff.py --source fed_board --content --json data/_probe/fb.json
+    python tools/mirror_sync.py --from-json data/_probe/fb.json --source fed_board --include-revised --apply
 """
 from __future__ import annotations
 
@@ -380,12 +396,132 @@ def reap_dead_spill() -> int:
     return freed
 
 
-def sync_source(s3, rec, apply: bool):
+REGISTRY_PATH = os.path.join(ROOT, "updater", "registry.yaml")
+
+
+def r2_authoritative(src: str):
+    """(True, why) when R2 holds the authoritative copy of `src`'s store, else (False, why).
+
+    The ONLY case in which a same-shape revision may be pulled over a local file. A source that
+    runs on the workstation (`run_location: local`) publishes FROM local, so its R2 copy may be
+    BEHIND the mirror, and pulling would roll local back - R388's direction. Read straight from
+    this checkout's registry (not AQUEDUCT_REGISTRY: this tool's data root is this checkout).
+    Everything that cannot prove authority refuses: an unreadable registry, a source with no
+    entry, a cutover flag (after T0 the local store is the published one).
+    """
+    from core import cutover                                          # noqa: PLC0415
+    if cutover.is_cut_over():
+        return False, "after T0 the local store is the published one"
+    try:
+        import yaml
+        with open(REGISTRY_PATH, encoding="utf-8") as f:
+            reg = yaml.safe_load(f) or {}
+        # The entry that OWNS the directory: its out_dir (default: its source_id). An entry whose
+        # source_id is the directory's name but whose out_dir is elsewhere does not own it (AR-464).
+        ents = [e for e in (reg.get("sources") or []) if isinstance(e, dict)
+                and (e.get("out_dir") or e.get("source_id")) == src]
+    except Exception as e:                                            # noqa: BLE001
+        return False, (f"updater/registry.yaml unreadable ({type(e).__name__}) - cannot prove R2 "
+                       f"is authoritative")
+    if not ents:
+        return False, f"no updater/registry.yaml entry for {src} - cannot prove R2 is authoritative"
+    local = sorted(str(e.get("source_id")) for e in ents if e.get("run_location") == "local")
+    if local:
+        return False, (f"run_location: local ({', '.join(local)}) - its R2 copy may be BEHIND "
+                       f"local, so it is never pulled over it")
+    return True, "registry entry without run_location: local, before T0"
+
+
+def revised_entries(rec) -> dict:
+    """{name: (local_fingerprint, r2_fingerprint, r2_last_modified)} from a footer_diff --content
+    record.
+
+    A name that is ALSO behind, R2-only or ahead is dropped: footer_diff never files one name
+    twice, so such a record was edited or merged by hand, and `ahead` is the merge queue that
+    nothing overwrites (R388). Malformed entries raise - a classification this tool cannot read is
+    not one it acts on."""
+    other = ({x[0] for x in rec.get("behind", [])} | set(rec.get("r2_only", []))
+             | {x[0] for x in rec.get("ahead", [])})
+    out = {}
+    for x in rec.get("revised", []):
+        n, _lr, _rr, lfp, rfp, r2_lm = x
+        if n not in other:
+            out[n] = (str(lfp), str(rfp), r2_lm)
+    return out
+
+
+def _local_not_newer(s3, key: str, dest: str, recorded_lm):
+    """None when R2's object is still the recorded one AND was written after the local file, else
+    (kind, why).
+
+    THE DIRECTION GUARD (AR-464 C1). A fingerprint says the two copies differ; it cannot say which
+    is newer. Measured: a value edited in a local E2__series.parquet (mtime 2026-11-08) was filed
+    `revised` and pulled over by R2's 2026-07-30 object, logged only as "REVISION - replaced". So a
+    revision is pulled only when the local file was last written BEFORE R2's current object: a
+    local write at or after it cannot be the older side. LastModified is upload time, not content
+    (R383) - which is why it is only ever a reason to REFUSE, never a reason to pull.
+    kind 'stale' = R2's object is not the one footer_diff saw; 'newer' = local kept on direction;
+    'check' = the HEAD or the local stat could not run."""
+    from tools.footer_diff import _iso
+    if not recorded_lm:
+        return "check", "no R2 LastModified was recorded for this file - direction unknown"
+    try:
+        lm = s3.head_object(Bucket=BUCKET, Key=key)["LastModified"]
+        local_mtime = os.path.getmtime(dest)
+    except Exception as e:                                            # noqa: BLE001
+        return "check", f"direction check failed: {' '.join(str(e).split())[:100]}"
+    import datetime as _dt
+    lm_iso = _iso(lm)
+    if lm_iso != _iso(recorded_lm):
+        return "stale", "R2's object LastModified moved since footer_diff recorded it"
+    if local_mtime >= _dt.datetime.fromisoformat(lm_iso).timestamp():
+        lt = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(local_mtime))
+        return "newer", (f"the local file was written {lt}, not before R2's object "
+                         f"({lm_iso}) - R2 cannot be the later write")
+    return None
+
+
+def _revision_holds(dest: str, tmp: str, recorded):
+    """None when the recorded revision still describes both files, else (kind, why).
+
+    kind 'stale' = the sweep no longer describes them (re-run footer_diff --content);
+    kind 'check' = the fingerprint could not be computed (local kept, CHECK FAILED)."""
+    from tools.footer_diff import content_fingerprint
+    if not os.path.exists(dest):
+        return "stale", "the local file is gone - it was 'same' in the sweep"
+    try:
+        with _compare_gate:     # two DuckDB connections: bounded like every comparison (R628)
+            lfp, rfp = content_fingerprint(dest), content_fingerprint(tmp)
+    except Exception as e:                                            # noqa: BLE001
+        return "check", f"fingerprint failed: {' '.join(str(e).split())[:100]}"
+    rec_l, rec_r = recorded[0], recorded[1]
+    if lfp == rfp:
+        return "stale", "the local copy already equals R2's by content"
+    if rfp != rec_r:
+        return "stale", "R2's object is not the revision footer_diff fingerprinted"
+    if lfp != rec_l:
+        return "stale", "the local file changed since footer_diff fingerprinted it"
+    return None
+
+
+def sync_source(s3, rec, apply: bool, include_revised: bool = False, revised_report=None):
+    """(pulled, ahead). `revised_report`, when a dict, receives `replaced` and `refused`: the revised
+    names actually replaced, and every other revised name of this record - whatever refused it."""
     src, root = rec["source"], rec["root"]
     names = [n for n, _l, _r in rec["behind"]] + list(rec["r2_only"])
     # The recorded counts are no longer consulted: the check re-classifies the bytes in hand
     # with footer_diff's own decision function, which uses BOTH axes and both sides (R631).
     ahead = [n for n, _l, _r in rec["ahead"]]
+    # SAME-SHAPE REVISIONS, opt-in and only where R2 is authoritative (R1853). Gated HERE as well as
+    # in main(), so no caller of this function can pull a revision over a local-run source.
+    rev = revised_entries(rec) if include_revised else {}
+    asked = sorted(rev)
+    if revised_report is not None:
+        # Every revised name starts out refused; only a completed os.replace moves it (R652).
+        revised_report["replaced"], revised_report["refused"] = [], list(asked)
+    if rev and not r2_authoritative(src)[0]:
+        rev = {}
+    names += sorted(rev)
     if not names:
         return 0, ahead
     d = os.path.join(ROOT, "data", root, src)
@@ -404,6 +540,9 @@ def sync_source(s3, rec, apply: bool):
     check_failed = []
     withdrawals = []
     whole_row = []      # files with no key column: compared on every column (R617)
+    stale_revised = []  # a recorded revision that no longer describes the files: local kept
+    local_newer = []    # a revision refused on DIRECTION: local written at/after R2's object
+    revised_done = []   # same-shape revisions REPLACED - appended only after os.replace (R652)
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     ledger = os.path.join(ROOT, "logs", f"_mirror_sync_withdrawals_{stamp}_{src}.tsv")
     os.makedirs(os.path.dirname(ledger), exist_ok=True)
@@ -445,6 +584,32 @@ def sync_source(s3, rec, apply: bool):
                 local_is_junk = False
                 junk_note = None
                 weak_pct = None
+                is_rev = n in rev
+                if is_rev:
+                    # A REVISION IS PULLED ONLY WHILE IT IS STILL THE ONE THAT WAS MEASURED: both
+                    # fingerprints recomputed on the bytes in hand must equal footer_diff's, and
+                    # differ from each other. Checked BEFORE the corrupt-local branch below, so a
+                    # local file that cannot be fingerprinted is kept and never logged as
+                    # "replacing it" (R612).
+                    held = _revision_holds(dest, tmp, rev[n])
+                    if held is None:
+                        # the DIRECTION, per file: content cannot say which side is newer (C1)
+                        held = _local_not_newer(s3, f"{root}/{src}/{n}.parquet", dest, rev[n][2])
+                    if held is not None:
+                        kind, why = held
+                        if kind == "check":
+                            check_failed.append((n, why[:80]))
+                            record(n, "", "", f"CHECK FAILED - not replaced: {why}")
+                        elif kind == "newer":
+                            with lock:
+                                local_newer.append((n, why))
+                            record(n, "", "", f"LOCAL NEWER - local kept: {why}")
+                        else:
+                            with lock:
+                                stale_revised.append((n, why))
+                            record(n, "", "", f"STALE REVISION - local kept: {why}; re-run "
+                                              f"footer_diff --content")
+                        return
                 if os.path.exists(dest):
                     from tools.footer_diff import classify, file_meta
                     # AN UNREADABLE LOCAL FILE IS NOT A FILE TO PROTECT - but only when it is
@@ -497,7 +662,9 @@ def sync_source(s3, rec, apply: bool):
                             age = time.time() - os.path.getmtime(dest)
                         except OSError:
                             pass
-                        if corrupt and not being_written:
+                        # A revision is never a corrupt-file repair: its local copy was just
+                        # fingerprinted, so a footer that fails now is kept, not replaced.
+                        if corrupt and not being_written and not is_rev:
                             lm = None
                             local_is_junk = True
                             # HELD, NOT APPENDED. The summary line for this list says the files
@@ -530,11 +697,22 @@ def sync_source(s3, rec, apply: bool):
                         # passing as if both axes had spoken. They are disproportionately the
                         # keyless files, where the whole-row identity check is the real guard
                         # (R637).
-                        if lm[1] is None or rm[1] is None:
+                        # A REVISION'S verdict is the content fingerprint, not the row count, so
+                        # it is not a one-axis file (and not a weak comparison) for want of a date.
+                        if (lm[1] is None or rm[1] is None) and not is_rev:
                             one_axis.append(n)
                     else:
                         verdict = "behind"          # nothing readable to compare against
-                    if verdict != "behind":
+                    # A revision must still TIE on shape: 'behind' belongs to the shape path and
+                    # 'ahead' is the merge queue (R388), so either one refuses it here.
+                    if is_rev and verdict != "same":
+                        with lock:
+                            stale_revised.append((n, verdict))
+                        record(n, "", "", f"STALE REVISION - local kept: on the bytes in hand this "
+                                          f"file is '{verdict}', not 'same'; re-run footer_diff "
+                                          f"--content")
+                        return
+                    if not is_rev and verdict != "behind":
                         stale_files.append((n, verdict))
                         record(n, "", "", f"STALE CLASSIFICATION - local kept: on the bytes in "
                                           f"hand this file is '{verdict}', not 'behind' - the "
@@ -648,6 +826,11 @@ def sync_source(s3, rec, apply: bool):
                     # - replaced", then "replace FAILED - local kept", with the file untouched.
                     # R612's third recurrence in this file (R650).
                     record(n, lost, mode, "WEAK COMPARISON - about to replace: " + weak)
+                if is_rev:
+                    # INTENT before the replace, OUTCOME after it (R612).
+                    record(n, lost, mode, f"REVISION - replacing with R2's copy - intent: same shape, "
+                                          f"content fingerprint local {rev[n][0]} vs R2 {rev[n][1]}, "
+                                          f"both re-checked on the bytes in hand")
                 try:
                     os.replace(tmp, dest)
                 except OSError as e:
@@ -676,10 +859,14 @@ def sync_source(s3, rec, apply: bool):
                         weak_identity.append((n, lost, weak, weak_pct))
                     if junk_note is not None:
                         unreadable_local.append(junk_note)
+                    if is_rev:
+                        revised_done.append(n)
                 if lost:
                     record(n, lost, mode, "replaced with R2's copy; " + describe_loss(lost, bd))
                 if weak:
                     record(n, lost, mode, "WEAK COMPARISON - replaced: " + weak)
+                if is_rev:
+                    record(n, lost, mode, "REVISION - replaced with R2's copy")
             finally:
                 if os.path.exists(tmp):
                     try:
@@ -770,8 +957,20 @@ def sync_source(s3, rec, apply: bool):
               f"and were replaced with R2's copy - NOT necessarily withdrawals: {'; '.join(parts)}. Every "
               f"file in {ledger} (written before each replace); e.g. "
               f"{[(w[0], w[1], w[2]) for w in withdrawals[:3]]}")
+    if revised_done:
+        print(f"   {src}: {len(revised_done)} file(s) were REVISED at the same shape - their content "
+              f"fingerprint differed from R2's, and still did on the bytes in hand - and have been "
+              f"replaced with R2's copy; each is in {ledger}: {sorted(revised_done)[:3]}")
+    if stale_revised:
+        print(f"   {src}: {len(stale_revised)} revised file(s) no longer match the revision "
+              f"footer_diff --content recorded - local copies kept; re-run it. "
+              f"e.g. {sorted(stale_revised)[:3]}")
+    if local_newer:
+        print(f"   {src}: {len(local_newer)} revised file(s) were written LOCALLY at or after R2's "
+              f"object - content cannot say R2 is the newer side, so local copies kept (a merge "
+              f"decision, like the ahead queue): {sorted(local_newer)[:3]}")
     if not (withdrawals or check_failed or fail or stale_files or weak_identity
-            or unreadable_local or junk_kept):
+            or unreadable_local or junk_kept or revised_done or stale_revised or local_newer):
         try:
             os.remove(ledger)   # nothing to keep
         except OSError:
@@ -781,7 +980,12 @@ def sync_source(s3, rec, apply: bool):
     # STALE-refused files are not pulled either. The count subtracted `fail` and
     # `check_failed` and forgot the third not-pulled outcome, so a correctly refused file
     # was reported as synced - verbatim R612, one outcome later (R628).
-    return len(names) - len(fail) - len(check_failed) - len(stale_files), ahead
+    # A stale revision is a fourth not-pulled outcome, subtracted for the same reason (R628).
+    if revised_report is not None:
+        revised_report["replaced"] = sorted(revised_done)
+        revised_report["refused"] = sorted(set(asked) - set(revised_done))
+    return (len(names) - len(fail) - len(check_failed) - len(stale_files) - len(stale_revised)
+            - len(local_newer)), ahead
 
 
 def main() -> int:
@@ -797,6 +1001,9 @@ def main() -> int:
     ap.add_argument("--source", action="append", default=[], help="limit to these sources")
     ap.add_argument("--max-age-hours", type=float, default=6.0,
                     help="refuse a classification older than this (0 disables the check)")
+    ap.add_argument("--include-revised", action="store_true",
+                    help="also pull the `revised` files of a footer_diff --content JSON (same shape, "
+                         "content differs) - only for sources whose R2 copy is authoritative")
     a = ap.parse_args()
 
     # THE STALENESS REFUSAL THE DOCSTRING PROMISED. It did not exist: main() read the JSON and
@@ -817,9 +1024,26 @@ def main() -> int:
     recs = d["sources"] if "sources" in d else [d]
     if a.source:
         recs = [r for r in recs if r["source"] in set(a.source)]
-    todo = [r for r in recs if r["behind"] or r["r2_only"]]
+    # REVISIONS: opt-in, and refused per source where R2 is not authoritative. Decided once here for
+    # the printed lines; sync_source() decides again for itself, so neither can be bypassed alone.
+    rev_n, rev_refused = {}, []
+    for r in recs:
+        if a.include_revised and r.get("revised"):
+            ok, why = r2_authoritative(r["source"])
+            if ok:
+                rev_n[r["source"]] = len(revised_entries(r))
+            else:
+                rev_refused.append((r["source"], len(r["revised"]), why))
+    todo = [r for r in recs if r["behind"] or r["r2_only"] or rev_n.get(r["source"])]
     print(f"MODE: {'APPLY' if a.apply else 'REPORT ONLY'}   "
           f"{len(todo)} source(s) with files to pull\n")
+    for src, k, why in rev_refused:
+        print(f"  REVISED NOT PULLED  {src}: {k} same-shape revised file(s) left alone - {why}")
+    if not a.include_revised:
+        for r in recs:
+            if r.get("revised"):
+                print(f"  {r['source']}: {len(r['revised'])} same-shape revised file(s) in this JSON "
+                      f"were NOT considered - pass --include-revised to pull them")
 
     # The merge queue is built from EVERY record, not just the ones with something to pull.
     # Scoping it to `todo` hid eia's 30 ahead files entirely, because eia has nothing behind —
@@ -827,13 +1051,25 @@ def main() -> int:
     # shape of hole this session has spent the day closing.
     merge_queue = [(r["source"], [x[0] for x in r["ahead"]]) for r in recs if r["ahead"]]
     total = 0
+    rev_left = []       # revised files asked for and NOT replaced, after the run, per file
     for r in sorted(todo, key=lambda r: -(len(r["behind"]) + len(r["r2_only"]))):
-        n, ahead = sync_source(s3, r, a.apply) if a.apply else (
-            len(r["behind"]) + len(r["r2_only"]), [x[0] for x in r["ahead"]])
+        k_rev = rev_n.get(r["source"], 0)
+        if a.include_revised:
+            rep = {}
+            n, ahead = sync_source(s3, r, a.apply, include_revised=True, revised_report=rep) if a.apply else (
+                len(r["behind"]) + len(r["r2_only"]) + k_rev, [x[0] for x in r["ahead"]])
+            rev_left += [(r["source"], x) for x in rep.get("refused", [])]
+        else:
+            n, ahead = sync_source(s3, r, a.apply) if a.apply else (
+                len(r["behind"]) + len(r["r2_only"]), [x[0] for x in r["ahead"]])
         total += n
         note = f"   ({len(ahead)} AHEAD file(s) LEFT ALONE — merge queue)" if ahead else ""
-        print(f"  {r['source']:22s} {len(r['behind']):>4} behind + {len(r['r2_only']):>4} "
-              f"R2-only = {n:>4} pulled{note}")
+        if a.include_revised:
+            print(f"  {r['source']:22s} {len(r['behind']):>4} behind + {len(r['r2_only']):>4} "
+                  f"R2-only + {k_rev:>4} revised = {n:>4} pulled{note}")
+        else:
+            print(f"  {r['source']:22s} {len(r['behind']):>4} behind + {len(r['r2_only']):>4} "
+                  f"R2-only = {n:>4} pulled{note}")
 
     print(f"\n{total:,} file(s) {'pulled' if a.apply else 'would be pulled'}")
     if merge_queue:
@@ -845,7 +1081,15 @@ def main() -> int:
     # Sources whose whole store is missing locally cannot be compared OR repaired from here.
     for src in d.get("unchecked", []):
         print(f"   UNCHECKED {src}: no local parquets at all — footer_diff could not compare it")
-    return 0
+    if rev_left:
+        print(f"\nREVISED NOT REPLACED ({len(rev_left)}): {', '.join(f'{s}/{n}' for s, n in rev_left[:8])}"
+              + (" ..." if len(rev_left) > 8 else "") + " - the run's lines above say why")
+    # An explicit --include-revised that could not be honoured in full is not a success: a source
+    # refused on authority, or any revised file left unreplaced (stale, local newer, check failed,
+    # replace failed). Only reachable with that flag, so a default run's exit code is unchanged.
+    # This is a convenience, NOT the proof: the proof of a level mirror is a fresh
+    # `footer_diff --content` exiting 0 with its `revised` key present and empty.
+    return 3 if (rev_refused or rev_left) else 0
 
 
 if __name__ == "__main__":
