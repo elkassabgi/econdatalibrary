@@ -59,12 +59,27 @@ import tempfile
 from ... import config, blob
 from ...errors import TransientError
 from ..base import Result
-from ._common import CURSOR_CAP, Deadline, Tally, finalize, merge_cursors
+from ._common import Deadline, Tally, finalize, merge_cursors
 from jobs import ingest_fed_board as ig     # reuse discovery + downloader + production parser
 
 SOURCE = "fed_board"
 SIDECAR = "_release_hashes.json"
 BUDGET_MIN = 25
+
+FED_BOARD_CURSOR_CAP = 120_000
+"""fed_board's own cursor cap, used instead of _common.CURSOR_CAP (50,000).
+
+The universe is bounded and MEASURED: 41,716 Z1 store keys + 12,440 in the other 17 releases =
+54,156 (AR-458 J1, the store_keys column of its q_allrel.log summed, copies of E:'s mirror
+taken 2026-11-07). That is above 50,000, and releases merge in sorted order with Z1 last, so the global
+cap cut the SAME ~4,156 Z1 keys on every pass that republished all 18 releases - a debt no later
+republish could pay, because the cut keys were never recorded (R1844). 120,000 is over 2x the measured
+universe (pinned by tests/test_fed_board_sorted_store.py). The cost is linear and small: one catalogue
+query per key in orchestrate._catalog_ids_for (42,411 keys were handled on 2026-09-11).
+
+Above the cap - the Fed more than doubling its releases - the fetcher sets Result.cursor_cap_hit, as
+abs/fhfa do, and the orchestrator books full_rederive_owed; health then names fed_board's own remedy
+(the registry's `csv_bulk: qualify_with_shard`), never ilostat's."""
 
 
 def _zip_url(rel: str) -> str:
@@ -206,7 +221,9 @@ def update(unit, since) -> Result:
 
             try:
                 stats = ig.ingest_release(rel, tmp)
-            except Exception:                                # noqa: BLE001
+            except Exception as e:                           # noqa: BLE001
+                if ig._is_fence(e):
+                    raise         # the orchestrator's fence ends the unit; never booked as a transient release
                 tally.transient_unit(rel)
                 continue
         finally:
@@ -228,14 +245,16 @@ def update(unit, since) -> Result:
         # nothing and the source reports `partial` forever while its CSVs go stale.
         # Verified against catalog.db: fed_board:CHGDEL:<key> matches.
         merge_cursors(cursors, os.path.join(out_dir, f"{rel}.parquet"),
-                      key_prefix=f"{rel}:")
+                      cap=FED_BOARD_CURSOR_CAP, key_prefix=f"{rel}:")
         tally.added_unit(n_obs, rel)
         sidecar[rel] = digest                                # record ONLY after publishing
 
-    if len(cursors) >= CURSOR_CAP:
-        print(f"[fed_board] cursor set hit the {CURSOR_CAP:,} cap — further changed series are not "
-              f"individually reported; the orchestrator's derive-all path covers small "
-              f"catalogs", flush=True)
+    cap_hit = len(cursors) >= FED_BOARD_CURSOR_CAP
+    if cap_hit:
+        print(f"[fed_board] cursor set hit the {FED_BOARD_CURSOR_CAP:,} cap — further changed series "
+              f"are not individually reported; cursor_cap_hit is set, so the orchestrator books a "
+              f"full re-derive debt (fed_board's remedy: derive_csv_bulk --qualify-with-shard "
+              f"--only-catalogued)", flush=True)
     if unchanged:
         print(f"[fed_board] {unchanged}/{len(rels)} release(s) byte-identical — skipped",
               flush=True)
@@ -243,5 +262,7 @@ def update(unit, since) -> Result:
     if published == 0:
         published = sum(blob.row_count(os.path.join(out_dir, f))
                         for f in blob.list_parquets(out_dir))
-    return finalize(tally, published, since or None, source=SOURCE,
-                    series_cursors=cursors or None)
+    res = finalize(tally, published, since or None, source=SOURCE,
+                   series_cursors=cursors or None)
+    res.cursor_cap_hit = cap_hit
+    return res

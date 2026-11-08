@@ -601,8 +601,13 @@ def cursors_from_parquet(path, key_col="series_key", date_col="obs_date",
         return {}
 
 
-def merge_cursors(dst: dict, path, **kw) -> dict:
-    """Accumulate one file's cursors into `dst`, respecting CURSOR_CAP ACROSS FILES.
+def merge_cursors(dst: dict, path, cap: int = CURSOR_CAP, **kw) -> dict:
+    """Accumulate one file's cursors into `dst`, respecting `cap` (default CURSOR_CAP) ACROSS FILES.
+
+    `cap` bounds both the cross-file total and the per-file read (cursors_from_parquet's cap). Every
+    caller but one keeps the 50,000 default. fed_board passes its own FED_BOARD_CURSOR_CAP: its key
+    universe is bounded and measured (54,156 store keys over 18 releases, AR-458 J1), above 50,000, and
+    Z1 merges last, so the global cap cut the SAME ~4,156 Z1 keys on every all-release pass (R1844).
 
     cursors_from_parquet caps a SINGLE file. That is not enough for a multi-file source: zillow
     republishes up to 206 cubes (~543,000 series in union), bis 375 files (LBS alone has 608,570),
@@ -613,11 +618,11 @@ def merge_cursors(dst: dict, path, **kw) -> dict:
     Stops adding once dst reaches the cap and returns dst unchanged thereafter. The CALLER logs
     the fact; see the CURSOR_CAP docstring for why silence would be the real bug.
     """
-    if len(dst) >= CURSOR_CAP:
+    if len(dst) >= cap:
         return dst
-    got = cursors_from_parquet(path, **kw)
+    got = cursors_from_parquet(path, cap=cap, **kw)
     for k, v in got.items():
-        if len(dst) >= CURSOR_CAP:
+        if len(dst) >= cap:
             break
         dst[k] = v
     return dst

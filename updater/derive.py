@@ -219,8 +219,41 @@ def _merge_with_served(new: bytes, served: bytes):
     return buf.getvalue().encode("utf-8"), kept
 
 
+MAX_DECLARED_WORKERS = 64      # the registry validator's ceiling for `csv_derive_workers`
+POOL_HEADROOM = 8              # connections above the worker count for a declared-width store
+
+
+def _put_store(blob, workers: int):
+    """The store a DECLARED-width derive's threads write to: `blob` itself, or a sibling R2Blob.
+
+    WHY A SIBLING. An R2Blob built without `pool` gets botocore's default of 10 connections
+    (core/r2_util._boto3_client), and every thread shares the caller's one client, so concurrency
+    above 10 only queues for a connection. Measured on the cloud runner: 17.0 PUT-heavy ids/s at
+    8 workers (2.1 per worker), and bea's 64 threads on a 10-connection pool reached ~22/s. So a
+    source that declares more workers (registry `csv_derive_workers`, fed_board 24) needs a client
+    with workers + POOL_HEADROOM connections - the csv_store(pool=) pattern of
+    tools/_derive_bea_bulk.py.
+
+    THE SAME STORE, THE SAME GUARD (AR-458 r2 (d), R1204). The sibling is an R2Blob on the SAME
+    bucket with the same write flag, so every CSV still goes to the store the caller chose. Its
+    client comes from R2Blob.client -> core.r2_util.client(pool=), which installs the cutover
+    guard (r2_util.guard_client): after T0 every operation of the sibling is refused, exactly as
+    the caller's own client is. Built here, never by hand with boto3.
+
+    Any other store (SelfhostBlob after T0 serialises its writes on one connection; LocalBlob; a
+    test double) is returned unchanged: the width then changes nothing about the PUT."""
+    from . import blob as _blob_mod                                     # noqa: PLC0415
+    if type(blob) is not _blob_mod.R2Blob:
+        return blob
+    want = workers + POOL_HEADROOM
+    if blob.pool and blob.pool >= want:
+        return blob
+    return _blob_mod.R2Blob(bucket=blob.bucket, pool=want, write=blob.write)
+
+
 def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None, *,
-                   flow_grain: bool = False, flow_max_rows: int | None = None) -> dict:
+                   flow_grain: bool = False, flow_max_rows: int | None = None,
+                   workers: int | None = None) -> dict:
     """Derive the contract CSV for each series id and PUT it via `blob`.
 
     blob: any updater/blob.py backend — only put_atomic(key, data: bytes) is used.
@@ -241,6 +274,11 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
     object before the PUT (see _merge_with_served); `served_dates_kept` ({series_id: n}) says how
     many served dates this machine's store files did not hold. A served object that cannot be
     read or merged is a FAILURE (queued for retry), never an unmerged upload.
+
+    workers=N (registry `csv_derive_workers`, passed by the orchestrator ONLY for a source that
+    declares it - fed_board 24) replaces the default of 8 for this call (an explicitly set
+    AQUEDUCT_DERIVE_WORKERS still caps it), and an R2Blob store is widened to N + POOL_HEADROOM
+    connections (_put_store). Not passed, the call is exactly what it was.
     """
     # CONCURRENCY. Each series is an independent derive plus one PUT, and the PUT is
     # almost entirely round-trip latency to R2 — so serial execution ran at about ONE
@@ -266,13 +304,42 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
     from . import blob as _blob_mod
     _skipped_at_entry = _blob_mod.SKIPPED_IDENTICAL[0]
 
-    workers = int(os.environ.get("AQUEDUCT_DERIVE_WORKERS", "8") or 8)
+    declared = workers is not None
+    if declared:
+        workers = max(1, min(int(workers), MAX_DECLARED_WORKERS))
+        # An operator's explicit AQUEDUCT_DERIVE_WORKERS stays a CEILING (to serialise a run, or save
+        # memory); unset, the registry's declared width applies.
+        _env_w = os.environ.get("AQUEDUCT_DERIVE_WORKERS", "").strip()
+        if _env_w:
+            workers = max(1, min(workers, int(_env_w)))
+    else:
+        workers = int(os.environ.get("AQUEDUCT_DERIVE_WORKERS", "8") or 8)
     if flow_grain:
         workers = min(workers, int(os.environ.get("AQUEDUCT_FLOW_DERIVE_WORKERS", "")
                                    or FLOW_DERIVE_WORKERS))
     ids = list(dict.fromkeys(series_ids))        # dedupe, order preserved
     if workers <= 1 or len(ids) < 2:
         workers = 1
+    if declared and workers > 1:
+        blob = _put_store(blob, workers)
+    if declared:
+        # The configuration the PUT rate below is measured AT - the first fed_board pass after
+        # csv_derive_workers landed books the rate as MEASURED from these lines (DESIGN_v2 §1b).
+        print(f"  derive: {len(ids):,} id(s), {workers} worker(s) declared by the registry, store "
+              f"connection pool {getattr(blob, 'pool', None) or 'default'}", flush=True)
+    _t_start = time.monotonic()
+
+    def _rate(n_handled: int) -> str:
+        el = max(time.monotonic() - _t_start, 1e-9)
+        return f"{n_handled / el:.1f} ids/s over {el:.0f} s"
+
+    def _rate_and_current(n_handled: int) -> str:
+        """'R ids/s over S s, K already current (P%)': the PUT rate AND the share that was only a HEAD.
+        A HEAD-heavy pass overstates the PUT-heavy rate (AR-458 round 1, D1), so the two are always
+        printed together (the final line carries the share in its own clause)."""
+        sk = _blob_mod.SKIPPED_IDENTICAL[0] - _skipped_at_entry
+        share = f"{100.0 * sk / n_handled:.1f}%" if n_handled else "n/a"
+        return f"{_rate(n_handled)}, {sk:,} already current ({share})"
 
     def _blob():
         # EVERY THREAD WRITES THE STORE IT WAS GIVEN. This used to build a per-thread store with
@@ -457,7 +524,7 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
         while not _hb_stop.wait(120):
             with lock:
                 print(f"  [derive heartbeat] put {put:,}, failed {len(failed):,}, "
-                      f"budget {'spent' if _spent() else 'ok'}", flush=True)
+                      f"budget {'spent' if _spent() else 'ok'}; {_rate_and_current(put)}", flush=True)
 
     _hb = threading.Thread(target=_heartbeat, daemon=True)
     _hb.start()
@@ -539,7 +606,8 @@ def derive_and_put(series_ids: list[str], blob, budget_min: float | None = None,
     skipped = _blob_mod.SKIPPED_IDENTICAL[0] - _skipped_at_entry
     if put:
         print(f"  of {put:,} CSVs handled, {skipped:,} were ALREADY CURRENT and were not "
-              f"re-uploaded ({100.0 * skipped / put:.1f}%)", flush=True)
+              f"re-uploaded ({100.0 * skipped / put:.1f}%); {_rate(put)} with {workers} "
+              f"worker(s)", flush=True)
 
     if kept:
         print(f"  {sum(kept.values()):,} served date(s) in {len(kept):,} id(s) KEPT by the served-CSV "

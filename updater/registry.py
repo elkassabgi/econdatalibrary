@@ -32,6 +32,9 @@ def load(path: str | None = None) -> dict:
 
 
 CSV_GRAINS = {"series", "flow", "table"}
+# `csv_bulk` (optional): how tools/derive_csv_bulk.py must be run to derive this source's catalogue ids.
+# The one value: "qualify_with_shard" (fed_board) - with --qualify-with-shard --only-catalogued.
+CSV_BULK = {"qualify_with_shard"}
 # Who writes a source's served CSVs. Absent = the orchestrator's CSV phase (every source but one).
 # "lane" = a continuous job of the source's own (jobs/statcan_lane.py), which holds the region's
 # writer lock; the orchestrator then derives nothing for it (orchestrate._served_by_lane).
@@ -106,6 +109,20 @@ def validate(reg: dict, expected_count: int | None = None, workflows_root: str |
             # csv_merge_served: true merges each CSV upload with the served object (R1136). A typo
             # like "yes" must not silently switch it off - the derive reads `is True`.
             problems.append(f"{sid}: csv_merge_served must be boolean, got {e.get('csv_merge_served')!r}")
+        if "csv_derive_workers" in e:
+            # csv_derive_workers: N runs the CSV phase (and the retry drain) of THIS source with N threads
+            # and an R2 connection pool of N + 8 (updater/derive.py _put_store; fed_board 24, DESIGN_v2
+            # §1b). An int in 1..64 only: a string or a bool must not silently fall back to 8, and 64 is the
+            # most threads any derive here has run (bea's bulk tool).
+            w = e.get("csv_derive_workers")
+            if not isinstance(w, int) or isinstance(w, bool) or not 1 <= w <= 64:
+                problems.append(f"{sid}: csv_derive_workers must be an int in 1..64, got {w!r}")
+        if "csv_bulk" in e and e.get("csv_bulk") not in CSV_BULK:
+            # csv_bulk: qualify_with_shard declares that tools/derive_csv_bulk.py with --qualify-with-shard
+            # --only-catalogued derives this source's catalogue ids exactly (fed_board: AR-458 J1, 12,746 of
+            # 12,746 equal to the resolver). Read by health's remedy text for a full_rederive_owed row
+            # (fed_board's cursor-cap backstop), so a typo must not fall through to another source's remedy.
+            problems.append(f"{sid}: csv_bulk must be one of {sorted(CSV_BULK)}, got {e.get('csv_bulk')!r}")
         if "csv_misses" in e and e.get("csv_misses") != "desktop_owed":
             # csv_misses: desktop_owed books a series-grain source's missed CSV ids (budget-deferred,
             # failed, crash, fence trip) PER ID in csv_desktop_owed; changed keys that cannot be mapped
