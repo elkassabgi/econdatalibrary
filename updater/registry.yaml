@@ -1907,11 +1907,19 @@ sources:
   # csv_misses_from - the RUN-TIME HOLD (DESIGN_v2 §7; AR-458 r2 (b), AR-461 F2). While csv_retry_queue holds
   # any fed_board row enqueued before this UTC instant (or with no stamp), csv_misses and csv_owed_repay stay
   # OFF - today's routing exactly - and the unit says "csv_misses HELD". QUOTED (a bare YAML date is refused).
-  # A DAY AFTER the PR was built (2026-11-08), because the hold compares full stamps: a row the old code
-  # enqueues on the cut-off day itself is not legacy. If this merges on or after 2026-11-10, raise it to a day
-  # after the merge in the same commit. Measured on a copy of the workstation's state.db (2026-11-08T09:25Z): 29,975
-  # fed_board rows, all Z1, enqueued 2026-09-23T22:57:12..13+00:00, 0 without a stamp - so it HOLDS today.
-  csv_misses_from: '2026-11-10'
+  # WHY 2026-11-16 (reviews AR-461 F2a, AR-462 item 1). The hold compares full stamps, so the cut-off must lie
+  # AFTER the last row the pre-PR code can enqueue. Only the cloud daily run writes fed_board queue rows (no
+  # run_location; run_local_heavy.ps1 refuses a source not routed local), on a pass that republished a release.
+  # A cut-off too EARLY lets pre-PR rows stamped after it read "not legacy" (they would migrate to
+  # csv_desktop_owed before the heal - still payable, but not the planned order). A cut-off LATER than needed
+  # only keeps routing OFF longer: rows enqueued before it - by either code, while held - stay in the queue
+  # exactly as today until a drain derives them, a clear proves them, or a later enqueue re-stamps them; no row
+  # loses a payer. So the value sits a week after the build day, and it releases on the first run whose state
+  # holds no fed_board row stamped before 2026-11-16T00:00:00+00:00 (or with no stamp). If this merges on or
+  # after 2026-11-16, raise it to a day after the merge in the same commit. Measured on a copy of the
+  # workstation's state.db (2026-11-08T09:25Z): 29,975 fed_board rows, all Z1, enqueued
+  # 2026-09-23T22:57:12..13+00:00, 0 without a stamp - so it HOLDS today.
+  csv_misses_from: '2026-11-16'
   adapter:
     vintage_signal: 'Per-release CONTENT HASH (sha256 of the downloaded zip), NOT an HTTP validator. MEASURED 2026-07-29:
       Output.aspx is generated per request - Last-Modified advances on EVERY call (03:17:40 / 03:18:01 / 03:18:21 on three

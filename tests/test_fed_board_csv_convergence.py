@@ -365,9 +365,15 @@ def test_t12_a_legacy_row_holds_and_the_drain_routes_as_today(env, capsys):
 
 
 def test_t12_the_hold_releases_when_no_row_predates_the_cut_off(env):
-    _legacy(env.st, [Z[0]], stamp="2026-11-10T00:00:00+00:00")     # ON the cut-off instant: not legacy
+    # The instant is computed HERE from the registry's raw string, never through the parser under test: a
+    # parser shifted by a day or to the end of the day must fail (AR-462 D2/D4 survived a parser-derived instant).
+    e = {x["source_id"]: x for x in registry.load()["sources"]}[SRC]
+    frm = e["csv_misses_from"] + "T00:00:00+00:00"
+    assert registry.csv_misses_from_utc(e["csv_misses_from"]) == frm
+    one_s_before = (dt.datetime.fromisoformat(frm) - dt.timedelta(seconds=1)).isoformat(timespec="seconds")
+    _legacy(env.st, [Z[0]], stamp=frm)                              # ON the cut-off instant: not legacy
     assert _release(env.st)[SRC] == "" and orchestrate._csv_misses(SRC) == "desktop_owed"
-    _legacy(env.st, [Z[1]], stamp="2026-11-09T23:59:59+00:00")     # one second before it: legacy
+    _legacy(env.st, [Z[1]], stamp=one_s_before)                     # one second before it: legacy
     assert "HELD" in _release(env.st)[SRC]
 
 
@@ -753,3 +759,197 @@ def test_c_a_series_sidecar_is_not_a_release(ctool):
     T = ctool.T
     assert T.release_of(os.path.join("r", "fed_board", "Z1__series.parquet")) is None
     assert T.release_of(os.path.join("r", "other", "Z1.parquet")) is None
+
+
+# --------------------------------------------------------------------------------------------- review AR-462
+#  Its 9 surviving mutants, each now with a test: E2/E3/E4 an early exit that skips the repay; F2 an early exit
+#  that returns its failed owed ids for the queue; J2 a cutover error read as AFTER T0; J3 B3 / owed-first keyed
+#  on csv_owed_repay alone (running while held); G2 the clear tool's final line changed; G4 its fallback release
+#  changed; J5 only catalogued keys kept as the campaign's evidence.
+def _after_t0_env(env):
+    from core import cutover
+    flag = env.tmp / "CUTOVER"
+    flag.write_text("x")
+    env.mp.setattr(cutover, "FLAG_PATH", str(flag))
+    return blob_mod.SelfhostBlob.__new__(blob_mod.SelfhostBlob)       # the served store after T0 (never touched)
+
+
+_EXITS = {
+    "migrated_empty": lambda: Result(status="ok", obs=10, changed_keys={}),
+    "merged_rows_0": lambda: Result(status="ok", obs=10, merged_rows=0),
+    "vacuous_catalogue": lambda: Result(status="ok", obs=10),
+    "no_cursors_note": lambda: Result(status="ok", obs=10),
+    "nothing_at_all": lambda: Result(status="ok", obs=0),
+    "zero_mapped": lambda: _res([f"{SRC}:H15:NOT_CATALOGUED"]),
+}
+
+
+@pytest.mark.parametrize("exit_", sorted(_EXITS))
+def test_ar462_every_early_exit_repays_after_t0(env, exit_):
+    """AR-458 r2 (e): every exit of the CSV phase repays (after T0 every owed id is payable, whatever changed).
+    Kills E2 (the final no-changed exit), E3 (merged_rows == 0) and the others' twins."""
+    sh = _after_t0_env(env)
+    env.mp.setattr(orchestrate.config, "BACKEND", "r2")      # as on the runner: no derive-all widening
+    if exit_ in ("vacuous_catalogue", "no_cursors_note"):
+        env.mp.setattr(orchestrate, "_catalog_series_count", lambda s: 0 if exit_ == "vacuous_catalogue" else 5)
+    _release(env.st)
+    env.st.note_csv_desktop_owed(SRC, [(H[0], None, "owed")])
+    _fake(env)
+    failed, note, deferred, _ = orchestrate._derive_changed_csvs(UNIT, _EXITS[exit_](), sh, env.st)
+    assert env.calls == [[H[0]]], (exit_, env.calls)
+    assert _owed(env.st) == [] and failed == [] and deferred == [], (exit_, failed, deferred)
+    assert "owed-first repay" in note, note
+    if exit_ == "no_cursors_note":
+        assert note.startswith(orchestrate._NO_CURSORS_NOTE), "the caller books full_rederive_owed on this prefix"
+
+
+def test_ar462_the_oecd_exit_repays_too(env, monkeypatch):
+    """Kills E4: the oecd early exit (a served flow the oecd tier missed) still repays the owed ids."""
+    sh = _after_t0_env(env)
+    unit = types.SimpleNamespace(key="oecd/_all", source_id="oecd", unit_id="_all")
+    monkeypatch.setattr(orchestrate, "_map_changed", lambda s, keys, merge_measured: ([], list(keys)))
+    monkeypatch.setattr(orchestrate, "_owed_repay_on", lambda s: True)
+    env.st.note_csv_desktop_owed("oecd", [("oecd:OWED:A", None, "owed")])
+    _fake(env)
+    failed, note, deferred, _ = orchestrate._derive_changed_csvs(
+        unit, Result(status="ok", obs=10, changed_keys={"FLOW_X": "2026-01-01"}), sh, env.st)
+    assert env.calls == [["oecd:OWED:A"]] and failed == [], (env.calls, failed)
+    assert "oecd flow(s) are SERVED" in note and "owed-first repay" in note, note
+    assert [r["series_id"] for r in env.st.csv_desktop_owed("oecd")] == []
+
+
+def test_ar462_an_early_exit_never_queues_a_failed_owed_id(env):
+    """Kills F2: an owed id that fails again at an early exit stays OWED (re-booked, new reason); it is never
+    handed back for the retry queue, and it never demotes."""
+    sh = _after_t0_env(env)
+    _release(env.st)
+    env.st.note_csv_desktop_owed(SRC, [(H[0], None, "old reason")])
+    _fake(env, fail=[H[0]], reasons={H[0]: "ResolveError: zero rows for H15:H1"})
+    failed, note, deferred, reasons = orchestrate._derive_changed_csvs(
+        UNIT, Result(status="ok", obs=10, merged_rows=0), sh, env.st)
+    assert failed == [] and deferred == [] and reasons == {}, (failed, reasons)
+    assert note.startswith("csv coverage note:"), note
+    row = env.st.csv_desktop_owed(SRC)[0]
+    assert row["series_id"] == H[0] and "zero rows" in row["reason"], row
+
+
+def test_ar462_a_cutover_error_counts_as_before_t0(env, monkeypatch):
+    """Kills J2 (AR-461 F8): is_cut_over() raising is BEFORE T0 - the narrower payable set, and B3 asks for R2."""
+    from core import cutover
+
+    def boom():
+        raise OSError("flag unreadable")
+    monkeypatch.setattr(cutover, "is_cut_over", boom)
+    assert orchestrate._after_t0() is False
+    _release(env.st)
+    env.st.note_csv_desktop_owed(SRC, [(H[0], None, "owed")])
+    assert orchestrate._owed_repay_ids(SRC, ["Z1:K01"], env.st) == [], "H15 was not republished"
+    assert orchestrate._served_store(env.blob) is True
+    assert orchestrate._served_store(blob_mod.SelfhostBlob.__new__(blob_mod.SelfhostBlob)) is False
+
+
+def test_ar462_while_held_neither_b3_nor_owed_first_runs(env):
+    """Kills J3: csv_owed_repay: fresh alone must not switch B3 or the repay on while csv_misses is held."""
+    orchestrate._CSV_MISSES_HOLD = {SRC: "csv coverage note: csv_misses HELD for fed_board - planted"}
+    assert orchestrate._csv_owed_repay(SRC) == "fresh" and orchestrate._csv_misses(SRC) == ""
+    assert orchestrate._owed_repay_on(SRC) is False
+    env.st.note_csv_desktop_owed(SRC, [(Z[0], None, "owed"), (Z[5], None, "owed")])   # Z1 republishes below
+    env.st.enqueue_csv_retry(SRC, [Z[0]], "queued")
+    q0 = [(r["series_id"], r["attempts"], r["enqueued_utc"]) for r in env.st.csv_retries(SRC)]
+    reads = []
+    real = env.st.csv_desktop_owed
+    env.mp.setattr(env.st, "csv_desktop_owed", lambda *a, **k: reads.append(a) or real(*a, **k))
+    _fake(env)
+    orchestrate._derive_changed_csvs(UNIT, _res(Z[:2]), env.blob, env.st)            # the main path
+    assert env.calls == [Z[:2]], "no owed id is prepended while held (Z[5] would be payable)"
+    orchestrate._derive_changed_csvs(UNIT, Result(status="ok", obs=10, merged_rows=0), env.blob, env.st)
+    assert env.calls == [Z[:2]], "an early exit repays nothing while held"
+    _crash_after_derive(env, put=[Z[0]])
+    orchestrate._derive_changed_csvs(UNIT, _res(Z[:2]), env.blob, env.st)            # the crash path
+    assert orchestrate._pay_owed_by_put(env.st, SRC, [Z[0]], env.blob) == 0         # the fence path's call
+    assert reads == [], f"held: the owed table is never read ({len(reads)} reads)"
+    assert _owed(env.st) == sorted([Z[0], Z[5]]), "held: B3 clears no owed row although Z[0] was PUT"
+    assert [(r["series_id"], r["attempts"], r["enqueued_utc"]) for r in env.st.csv_retries(SRC)] == q0, \
+        "held: the queue row of a PUT id is untouched (today's behaviour exactly)"
+
+
+def test_ar462_the_default_output_lines_are_todays(ctool, capsys):
+    """Kills G2: the heal and its operators read this tool's lines; the default ones are byte-for-byte today's."""
+    T = ctool.T
+    assert ctool.go("Z1", ["fed_board:Z1:A.Q"], "--apply") == T.EXIT_OK
+    out = capsys.readouterr().out.splitlines()
+    assert any(ln.startswith("Z1 copy vs R2: equal: ") for ln in out), out
+    assert any(ln.startswith("evidence: {'equal': 1} over 1 id(s) (Z1 ETag ") for ln in out), out
+    assert "queue after pull: 1 of the 1 clearable id(s) are queued" in out, out
+    assert out[-1] == "cleared 1 fed_board Z1 csv_retry_queue row(s) and pushed; 0 requested id(s) stand", out[-1]
+
+
+def test_ar462_an_unknown_copy_name_falls_back_to_z1(ctool, tmp_path, capsys):
+    """Kills G4: a --copy that names no release keeps today's order - the ids are checked against fed_board:Z1:
+    (so Z1 ids pass that check) and the copy is then refused by its path, before anything is judged."""
+    T = ctool.T
+    bad = tmp_path / "root" / "fed_board" / "z1_copy.parquet"
+    bad.write_bytes(open(ctool.copies["Z1"], "rb").read())
+    ids = tmp_path / "ids_bad.txt"
+    ids.write_text("fed_board:Z1:A.Q\n", encoding="utf-8")
+    rc = T.main(["--copy", str(bad), "--ids", str(ids), "--out", str(tmp_path / "bad.tsv"), "--spot", "0"],
+                s3=ctool.s3, state_runner=lambda *a: 0)
+    out = capsys.readouterr().out
+    assert rc == T.EXIT_REFUSED and "--copy must be" in out and "--ids must hold" not in out, out
+
+
+def test_ar462_uncatalogued_streamed_keys_are_kept_as_evidence(tmp_path, monkeypatch):
+    """Kills J5: the campaign's evidence for an unmapped-keys row holds EVERY streamed key, the uncatalogued ones
+    too (such a key has no served CSV, so streaming it pays it). Run end to end in process: a one-release store,
+    the catalogue holding one of its two keys, a recording store, _durable_clear recorded."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from tools import derive_csv_bulk as dcb
+    for k in list(os.environ):
+        if k.startswith("GITHUB_") or k.startswith("AQUEDUCT_"):
+            monkeypatch.delenv(k, raising=False)
+    root = tmp_path / "root"
+    d = root / "data" / "clean_full" / "zzfb"
+    d.mkdir(parents=True)
+    pq.write_table(pa.table({"series_key": pa.array(["A", "B"], pa.string()),
+                             "obs_date": pa.array([dt.date(2020, 12, 31)] * 2, pa.date32()),
+                             "value": pa.array([1.0, 2.0], pa.float64())}), str(d / "REL.parquet"))
+    con = sqlite3.connect(root / "data" / "catalog.db")
+    con.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT)")
+    con.execute("INSERT INTO series VALUES ('zzfb:REL:A', 'zzfb')")
+    con.commit()
+    con.close()
+    monkeypatch.setattr(dcb, "ROOT", str(root))
+    import core.derive_csv as cdc
+    monkeypatch.setattr(cdc, "_mirror_behind_store", lambda sources, sample=0: [])
+    reg = tmp_path / "registry.yaml"
+    reg.write_text("- source_id: zzfb\n  csv_misses: desktop_owed\n  csv_bulk: qualify_with_shard\n", encoding="utf-8")
+    monkeypatch.setattr(config, "REGISTRY", str(reg))
+    monkeypatch.setattr(config, "STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(config, "STATE_DB", str(tmp_path / "state" / "state.db"))
+    seen = []
+    monkeypatch.setattr(dcb, "_durable_clear", lambda source, **kw: seen.append((source, kw)) or True)
+    from core import cutover
+    monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "no_flag" / "CUTOVER"))
+
+    class Store:
+        bucket = "econ-data"
+
+        def __init__(self):
+            self.put = {}
+
+        def list_modified(self, prefix):
+            return []
+
+        def put_atomic(self, key, data):
+            self.put[key] = data
+    store = Store()
+    monkeypatch.setattr(blob_mod, "R2Blob", lambda *a, **k: store)
+    monkeypatch.setattr(sys, "argv", ["derive_csv_bulk.py", "--source", "zzfb", "--bucket", "econ-data",
+                                      "--verify", "0", "--qualify-with-shard", "--only-catalogued",
+                                      "--failed-keys-file", str(tmp_path / "failed.tsv")])
+    assert dcb.main() in (0, None)
+    assert len(store.put) == 1, "only the catalogued key is written"
+    assert len(seen) == 1 and seen[0][0] == "zzfb", seen
+    kw = seen[0][1]
+    assert kw["refuse_unmapped"] is True and kw["streamed_keys"] == {"REL:A", "REL:B"}, kw
