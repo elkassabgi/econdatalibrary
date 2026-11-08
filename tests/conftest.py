@@ -201,8 +201,14 @@ def _fresh_merge_served_cache():
         _w = getattr(orchestrate._csv_derive_workers, "_cache", None)
         saved = (dict(_w) if _w is not None else None,
                  dict(orchestrate._csv_grain.__dict__.get("_cache") or {}))
+    # The csv_misses_from hold decision (Fix B PR-2) is run-scoped: no test inherits another's. None = no
+    # decision, which HOLDS a source that declares csv_misses_from (fail closed) and touches no other.
+    if orchestrate is not None:
+        orchestrate._CSV_MISSES_HOLD = None
     yield
     derive._merge_served_sources._cache = None
+    if orchestrate is not None:
+        orchestrate._CSV_MISSES_HOLD = None
     if orchestrate is not None and saved is not None:
         orchestrate._csv_derive_workers._cache = dict(saved[0]) if saved[0] is not None else None
         orchestrate._csv_grain._cache = dict(saved[1])

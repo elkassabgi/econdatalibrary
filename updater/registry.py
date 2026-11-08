@@ -35,6 +35,29 @@ CSV_GRAINS = {"series", "flow", "table"}
 # `csv_bulk` (optional): how tools/derive_csv_bulk.py must be run to derive this source's catalogue ids.
 # The one value: "qualify_with_shard" (fed_board) - with --qualify-with-shard --only-catalogued.
 CSV_BULK = {"qualify_with_shard"}
+# `csv_owed_repay` (optional, fed_board): "fresh" = the CSV phase derives the source's PAYABLE csv_desktop_owed
+# ids first and clears every id it derived (orchestrate._owed_repay_ids / _pay_owed_by_put, DESIGN_v2 §2-§3).
+CSV_OWED_REPAY = {"fresh"}
+
+
+def csv_misses_from_utc(v):
+    """`csv_misses_from` as a full UTC stamp in state.now_utc()'s format ('YYYY-MM-DDTHH:MM:SS+00:00'), or None.
+
+    Accepted: a STRING holding an ISO date 'YYYY-MM-DD' (= its 00:00:00 UTC) or exactly that full stamp. A
+    bare YAML date (`csv_misses_from: 2026-11-10`, unquoted) loads as datetime.date and is refused: compared
+    with a stored stamp it raises TypeError (AR-458 r2 (b)2). The hold compares at FULL precision (AR-461 F2a):
+    with a date, a row stamped ON that date is not legacy, so a date must be a day AFTER the deploy."""
+    import datetime as _dt
+    if not isinstance(v, str):
+        return None
+    try:
+        if len(v) == 10:
+            return (v + "T00:00:00+00:00") if _dt.date.fromisoformat(v).isoformat() == v else None
+        if len(v) == 25 and v.endswith("+00:00"):
+            return v if _dt.datetime.fromisoformat(v).isoformat(timespec="seconds") == v else None
+    except ValueError:
+        return None
+    return None
 # Who writes a source's served CSVs. Absent = the orchestrator's CSV phase (every source but one).
 # "lane" = a continuous job of the source's own (jobs/statcan_lane.py), which holds the region's
 # writer lock; the orchestrator then derives nothing for it (orchestrate._served_by_lane).
@@ -129,6 +152,25 @@ def validate(reg: dict, expected_count: int | None = None, workflows_root: str |
             # at all go to one full_rederive_owed row listing them (R1131, R1137, R1149). The only
             # value; a typo must not silently fall back to the retry queue that cannot drain on r2.
             problems.append(f"{sid}: csv_misses must be 'desktop_owed', got {e.get('csv_misses')!r}")
+        if "csv_misses_from" in e:
+            # csv_misses_from: '<ISO date or UTC stamp>' HOLDS csv_misses routing OFF while csv_retry_queue holds a
+            # row of this source enqueued before it (orchestrate._csv_misses_holds, DESIGN_v2 §7). QUOTED: a bare
+            # YAML date is a datetime.date, and the run-time hold would refuse it anyway (it fails closed).
+            if csv_misses_from_utc(e.get("csv_misses_from")) is None:
+                problems.append(f"{sid}: csv_misses_from must be a QUOTED ISO date 'YYYY-MM-DD' or UTC stamp "
+                                f"'YYYY-MM-DDTHH:MM:SS+00:00', got {e.get('csv_misses_from')!r}")
+            if e.get("csv_misses") != "desktop_owed":
+                problems.append(f"{sid}: csv_misses_from holds csv_misses routing, so it needs csv_misses: desktop_owed")
+        if "csv_owed_repay" in e:
+            # csv_owed_repay: fresh derives the payable owed ids first. Its payable rule reads a catalogue id as
+            # '<src>:<shard>:<key>' against changed keys '<shard>:<key>' - exactly what csv_bulk: qualify_with_shard
+            # declares - and it pays csv_misses debts, so both are required.
+            if e.get("csv_owed_repay") not in CSV_OWED_REPAY:
+                problems.append(f"{sid}: csv_owed_repay must be one of {sorted(CSV_OWED_REPAY)}, "
+                                f"got {e.get('csv_owed_repay')!r}")
+            if e.get("csv_misses") != "desktop_owed" or e.get("csv_bulk") != "qualify_with_shard":
+                problems.append(f"{sid}: csv_owed_repay needs csv_misses: desktop_owed and "
+                                f"csv_bulk: qualify_with_shard")
         if "csv_desktop_exclude" in e:
             # Catalogue ids unserved BY DECISION: never booked as a desktop debt (no derive will
             # ever pay it). Each must be a full catalogue id of THIS source.

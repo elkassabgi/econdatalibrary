@@ -213,7 +213,23 @@ def _writers_quiet(manual: str, window_min: int = CLEAR_WINDOW_MIN) -> bool:
     return True
 
 
-def _durable_clear(source: str) -> bool:
+def _unmapped_keys_unpaid(row: dict, streamed_keys) -> "list | None":
+    """For a full_rederive_owed row whose note carries an unmapped-keys record (orchestrate._UNMAPPED_KEYS_MARK,
+    ' keys=' + a JSON list of STORE keys): the listed keys NOT in `streamed_keys`. None for a row without the
+    record (a cap-hit or no-cursors row). A record that does not parse counts every key as unpaid (['?'])."""
+    import json as _json
+    note = str((row or {}).get("note") or "")
+    if " keys=" not in note:
+        return None
+    try:
+        keys = [str(k) for k in _json.loads(note.split(" keys=", 1)[1])]
+    except ValueError:
+        return ["?"]
+    have = set(streamed_keys or ())
+    return [k for k in keys if k not in have] if keys else ["?"]
+
+
+def _durable_clear(source: str, refuse_unmapped: bool = False, streamed_keys=None) -> bool:
     """Clear the full_rederive_owed row THROUGH the pull→push protocol (R529).
 
     The first cut cleared only the local state.db — and every heavy pass
@@ -231,6 +247,12 @@ def _durable_clear(source: str) -> bool:
     ALSO REFUSED unless no OTHER state writer can start inside the envelope (_writers_quiet,
     R1102): the cloud updater workflows, and a desktop pass that comes due mid-envelope. Both
     are checked before the pull and again before the push.
+
+    refuse_unmapped (passed only for a csv_bulk-exempt csv_misses source, fed_board): the PULLED row is
+    not cleared when its note carries an unmapped-keys record (' keys=') unless every listed key is in
+    `streamed_keys` - the keys a zero-error campaign streamed (AR-458 r2 (c), AR-461 F3/F4: the record
+    names keys a campaign over catalogued ids could skip, R1157). Checked AFTER the writer guards and
+    the pull, on the authoritative row, so nothing here runs before _writers_quiet (the heal's rules).
     """
     import subprocess
     manual = f"py tools/derive_csv_bulk.py --source {source} --clear-owed-only"
@@ -267,6 +289,15 @@ def _durable_clear(source: str) -> bool:
         print(f"no full_rederive_owed row for {source} in the authoritative store — "
               f"nothing to clear", flush=True)
         return True
+    if refuse_unmapped:
+        _row = next((r for r in st.full_rederives_owed() if r["source_id"] == source), None)
+        _unpaid = _unmapped_keys_unpaid(_row, streamed_keys)
+        if _unpaid:
+            print(f"NOT clearing the {source} row: its note records {len(_unpaid):,} unmapped STORE key(s) this "
+                  f"run did not stream (e.g. {_unpaid[:3]}). Derive their catalogue ids on the desktop, read them "
+                  f"back, then: {manual} --after-desktop-derive", flush=True)
+            st.db.close()
+            return False
     st.clear_full_rederive_owed(source)
     # Re-check the lock between the clear and the push (verifier's residual): a pass
     # STARTING in this window pulls state that still holds the row and would destroy
@@ -354,6 +385,12 @@ def main() -> int:
         _ent = next((e for e in _reg if e.get("source_id") == a.source), {}) or {}
         _misses = _ent.get("csv_misses") == "desktop_owed"
         _table_grain = _ent.get("csv_grain") == "table"
+        # THE csv_bulk EXEMPTION (DESIGN_v2 §4; AR-458 r2 (c), AR-461 F3/F4). The refusal below exists because
+        # this tool "cannot derive the catalogue ids" of a csv_misses source (ilostat). For a source declaring
+        # `csv_bulk: qualify_with_shard` (fed_board) it can, with BOTH --qualify-with-shard and --only-catalogued
+        # (AR-458 J1: 12,746 of 12,746 equal to the resolver). Its clear still never removes an unmapped-keys
+        # (' keys=') row unpaid: _durable_clear checks the row it PULLED (after the writer guards).
+        _exempt = _misses and _ent.get("csv_bulk") == "qualify_with_shard"
     except Exception as _re:                                           # noqa: BLE001 - refuse, never guess
         print(f"REFUSING: cannot read the registry to check {a.source}'s csv_misses "
               f"({type(_re).__name__}: {str(_re)[:80]})")
@@ -366,17 +403,26 @@ def main() -> int:
               f"table id (R498). Re-derive the table ids that differ with python -m core.derive_csv --source "
               f"{a.source} --only <file of those ids>, read them back, then run --clear-owed-only.")
         return 2
-    if _misses and not a.clear_owed_only:
+    if _exempt and not a.clear_owed_only and not (a.qualify_with_shard and a.only_catalogued):
+        print(f"REFUSING: {a.source} declares csv_misses: desktop_owed and csv_bulk: qualify_with_shard - this "
+              f"tool derives its catalogue ids only with BOTH --qualify-with-shard and --only-catalogued "
+              f"(without them it writes objects no catalogue id names).")
+        return 2
+    if _misses and not _exempt and not a.clear_owed_only:
         print(f"REFUSING: {a.source} declares csv_misses: desktop_owed - this tool cannot derive its "
               f"catalogue ids. Re-derive the keys its full_rederive_owed note lists with the source's "
               f"desktop tool (ilostat: tools/derive_ilostat_indicators.py --only <stems>, plus, for a "
               f"changed '<flow>_A' stem, its 3-colon legacy ids: python -m core.derive_csv --source "
               f"{a.source} --only <file of those ids>), then run --clear-owed-only --after-desktop-derive.")
         return 2
-    if _misses and a.clear_owed_only and not a.after_desktop_derive:
+    if _misses and not _exempt and a.clear_owed_only and not a.after_desktop_derive:
         print(f"REFUSING: {a.source}'s debt is paid by its desktop tool, not by this one; after that "
               f"re-derive, add --after-desktop-derive to clear the row.")
         return 2
+    # An exempt source's clear: --clear-owed-only clears a cap-hit row (health's fed_board remedy, step (5));
+    # an unmapped-keys row needs --after-desktop-derive (the desktop derive of the listed keys' ids) or the
+    # evidence of a campaign that streamed every listed key (the stamp below).
+    _clear_kw = ({"refuse_unmapped": not a.after_desktop_derive} if _exempt else {})
 
     if a.clear_owed_only:
         # --dry-run must stay dry HERE TOO (verifier's finding, the R503 class: this
@@ -386,7 +432,7 @@ def main() -> int:
             print(f"(dry run) would pull-state, clear full_rederive_owed for "
                   f"{a.source}, and push-state — nothing done")
             return 0
-        return 0 if _durable_clear(a.source) else 1
+        return 0 if _durable_clear(a.source, **_clear_kw) else 1
 
     import duckdb
     # WALK, AND RESOLVE THE ROOT. A flat os.listdir under clean_full returns [] for two real
@@ -732,8 +778,13 @@ def main() -> int:
 
     seen = 0
     uncat = 0
+    # EVERY key this campaign streamed (derived, or counted uncatalogued: no served CSV), for an exempt source's
+    # stamp: it clears an unmapped-keys row only when the row's keys are all here (AR-461 F4).
+    _streamed = set() if _exempt else None
     for k, rows in _stream(con, paths, qualify=a.qualify_with_shard):
         seen += 1
+        if _streamed is not None:
+            _streamed.add(k)
         if catalogued is not None and f"{a.source}:{k}" not in catalogued:
             uncat += 1
             continue
@@ -786,7 +837,8 @@ def main() -> int:
     if (not a.dry_run and counts["err"] == 0 and counts["put"] > 0
             and not a.skip_existing and not _cutoff_predates_debt):
         try:
-            _durable_clear(a.source)
+            _durable_clear(a.source, **({"refuse_unmapped": True, "streamed_keys": _streamed}
+                                        if _exempt else {}))
         except Exception as e:                               # noqa: BLE001
             print(f"WARNING: durable clear of full_rederive_owed for {a.source} raised "
                   f"{e!r} — the debt stands; after verifying the campaign, run "
