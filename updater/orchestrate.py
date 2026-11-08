@@ -1046,7 +1046,9 @@ def _csv_derive_workers(source_id: str):
     botocore's 10-connection pool (17.0 ids/s measured PUT-heavy). derive_and_put then runs that many
     threads and widens an R2 store's pool to workers + 8. None = the keyword is NOT passed, so every
     other source's call keeps the exact signature it had (the flow_grain rule: stubs without **kwargs
-    keep working). An unreadable registry declares nothing (today's behaviour).
+    keep working). An unreadable registry declares nothing for THIS call (today's behaviour) and is
+    not cached, so the next call reads it again (PR-1 review round 3, F1: a cached {} ran fed_board at
+    8 workers for the rest of the process after one transient error).
 
     THE FENCE IS NOT SWALLOWED (PR-1 review F2; the derive._merge_served_sources rule, 2026-09-28): this
     is read inside the CSV phase's fence, so a UnitTimeout landing in the registry read - directly, or
@@ -1070,7 +1072,7 @@ def _csv_derive_workers(source_id: str):
         except Exception as e:                              # noqa: BLE001
             if UNIT_TIMEOUT_FIRED:
                 raise UnitTimeout(f"the fence, arriving as {type(e).__name__}: {str(e)[:80]}") from e
-            built = {}
+            return None
         _csv_derive_workers._cache = cache = built
     return cache.get(source_id)
 

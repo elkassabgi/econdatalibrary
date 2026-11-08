@@ -416,6 +416,11 @@ def test_t4_an_unreadable_registry_declares_nothing(monkeypatch):
     monkeypatch.setattr(orchestrate, "UNIT_TIMEOUT_FIRED", False)
     monkeypatch.setattr(registry, "load", lambda: (_ for _ in ()).throw(ValueError("bad yaml (test)")))
     assert orchestrate._csv_derive_workers("fed_board") is None
+    # Review r3 F1: the error is not cached - a later readable registry gives the declared width.
+    assert getattr(orchestrate._csv_derive_workers, "_cache", None) is None
+    monkeypatch.setattr(registry, "load", lambda: {"sources": [{"source_id": "fed_board",
+                                                                  "csv_derive_workers": 24}]})
+    assert orchestrate._csv_derive_workers("fed_board") == 24
 
 
 def test_t4_a_fence_mid_loop_leaves_no_half_built_cache(monkeypatch):
@@ -576,7 +581,7 @@ def test_t6_health_names_fed_boards_own_remedy(monkeypatch, with_misses):
     assert row["health"] not in ("OK", "ROTATING")
     for token in ("--qualify-with-shard --only-catalogued", "--clear-owed-only", "ECONDL_DATA",
                   "AQUEDUCT_REGISTRY", "ECONDL_ROOT", "mirror_sync.py", "never --allow-stale-mirror",
-                  "NOT clearing", "catalog.db", "md5/ETag", "ECONDL_ROOT unset", "r2_object_census.py",
+                  "NOT clearing", "core.catalog_path.under(<f>)", "md5/ETag", "ECONDL_ROOT unset", "r2_object_census.py",
                   "_compare_one"):
         assert token in text, f"remedy lacks {token!r}: {text}"
     assert "derive_ilostat_indicators" not in text and "indicator stems" not in text
