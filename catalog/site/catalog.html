@@ -342,7 +342,7 @@ document.querySelectorAll('.chip').forEach(function(c){c.addEventListener('click
   const o=document.createElement('option');o.value=c;o.textContent=c;sel.appendChild(o);});
 })();
 function render(){
- if(curLang()!=='en'){clearTimeout(render._t);render._t=setTimeout(renderApi,250);return;}
+ if(curLang()!=='en'){clearTimeout(render._t);render._t=setTimeout(renderApi,400);return;}
  renderLocal();
 }
 function renderLocal(){
@@ -401,6 +401,7 @@ async function renderApi(){
  const L=curLang();
  const q=document.getElementById('q').value.trim();
  const cnt=document.getElementById('count');
+ if(q&&[...q].length<(L==='zh'?2:3)){cnt.textContent='';document.getElementById('results').innerHTML='';return;}
  cnt.textContent='Searching…';
  try{
   const u=API+'/v1/catalog?lang='+encodeURIComponent(L)+'&limit=50'+(q?('&q='+encodeURIComponent(q)):'');

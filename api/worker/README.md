@@ -15,7 +15,7 @@ verbatim (`src/sql.ts`) and the per-series CSV bytes are derived by the same
 
 | Endpoint | Status | Backend |
 |---|---|---|
-| `GET /v1/catalog` | **Fully live now** | D1 (FTS5 + LIKE fallback) |
+| `GET /v1/catalog` | **Fully live now** | D1 (FTS5; scoped LIKE fallback; no whole-table scan, see CONTRACT.md) |
 | `GET /v1/sources` | **Fully live now** | D1 (source ⋈ license ⋈ source_state) |
 | `GET /v1/last-updates` | **Fully live now** | D1 (canonical SQL + cadence math) |
 | `GET /v1/series/{id}.metadata.json` | **Fully live now** | D1 (series ⋈ source ⋈ license ⋈ unit_state) |
@@ -135,7 +135,7 @@ curl "https://api.example.com/v1/series/bls%3ACUUR0000SA0.csv"   # needs the R2 
 | `src/sql.ts` | the **verbatim** D1 SQL (same as the dev shim) |
 | `src/types.ts` | `Env` bindings + typed D1 row shapes (no `any`) |
 | `src/util.ts` | honest-status responses, license block, cadence math, supported-source list |
-| `src/catalog.ts` | `/v1/catalog` (FTS5 + LIKE) |
+| `src/catalog.ts` | `/v1/catalog` (FTS5; LIKE only with `source=`; index-bounded global fallbacks) |
 | `src/sources.ts` | `/v1/sources` |
 | `src/lastUpdates.ts` | `/v1/last-updates` |
 | `src/metadata.ts` | `/v1/series/{id}.metadata.json` |

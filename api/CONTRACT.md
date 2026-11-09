@@ -166,8 +166,17 @@ metadata pass (Task #5); fields absent until populated are omitted, never faked.
 ### `GET /v1/catalog`  (search + browse)
 Params: `q=` (FTS5 over title/geography), `source=`, `limit=` (default 50, max 500),
 `offset=`. Returns `{total, limit, offset, results:[{series_id,source,title,frequency,
-unit,geography,license_id,start_date,end_date}]}`. FTS5 with a LIKE fallback (mirrors
-`core/catalog.py::search`). **Catalogue grain is NOT uniform**, and the response says so:
+unit,geography,license_id,start_date,end_date}]}`. FTS5 first. With `source=`, a
+zero-match or malformed query falls back to LIKE inside that source (mirrors
+`core/catalog.py::search`, so infix matches such as `?source=bls&q=onfarm` still work).
+Without `source=` there is NO LIKE fallback (since 2026-11-09; it read the whole table on every
+no-match query). Instead, in order: an id-shaped `q` (`<source>:<id prefix>`) is a primary-key
+range lookup in that source; a malformed FTS expression is retried as plain quoted terms; a bare
+native code (`CUUR0000SA0`) is matched as an exact id in every served source (as typed and
+upper-cased); and a last word of 3+ characters is retried as an FTS prefix (`"emplo"*`). A
+global infix-only query therefore answers `total: 0`. Where a count is capped (the prefix retry,
+the id-prefix lookup) and the cap is reached, the body adds `"total_is_lower_bound": true` and
+`total` means "at least"; the field is absent otherwise. **Catalogue grain is NOT uniform**, and the response says so:
 `"catalog_coverage":"mixed grain: some sources are catalogued per series, others per table or
 flow — absence from this catalogue does not mean a series is unavailable"`. Where a source is
 catalogued per table or per flow, one catalogue row stands for a whole table and every series

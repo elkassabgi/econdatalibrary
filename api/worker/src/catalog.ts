@@ -2,20 +2,24 @@
 // src/catalog.ts  --  GET /v1/catalog  (search + browse), fully live from D1.
 //
 // Params: q= (FTS5 over title/geography), source=, limit= (default 50, max 500),
-// offset=. FTS5 primary path with a LIKE fallback -- the EXACT behaviour of
-// core/catalog.py::search and econdl._catalog.search (see src/sql.ts).
+// offset=. FTS5 primary path. With source= it keeps the LIKE fallback of
+// core/catalog.py::search and econdl._catalog.search (see src/sql.ts); without
+// source= the fallback is index-bounded instead (an id-prefix PK seek, or the
+// MATCH retried as quoted terms) - never a whole-table LIKE (2026-11-09).
 // Response carries catalog_coverage so absence is never read as nonexistence.
 // ---------------------------------------------------------------------------
 
 import type { Env, CatalogResultRow, CountRow } from "./types.ts";
 import {
-  searchFtsSql, searchFtsCountSql, searchLikeSql, searchLikeCountSql,
-  searchFtsSourceSql, searchFtsSourceCountSql, searchLikeSourceSql, searchLikeSourceCountSql,
+  searchFtsSql, searchFtsCountSql, searchIdPrefixSql, searchIdPrefixCountSql, searchBareCodeSql,
+  searchFtsCountCappedSql, searchFtsSourceSql, searchFtsSourceCountSql, searchLikeSourceSql, searchLikeSourceCountSql,
   browseSourceSql, browseSourceVisibleCountSql, hasCarveouts, withheldPresentCountSql,
   BROWSE_SOURCE_COUNT, BROWSE_SOURCE_COUNT_CACHED, browseAllSql, BROWSE_ALL_COUNT,
 } from "./sql.ts";
-import { type Withheld, forSource, isSourceClosed, isWithheld } from "./withheld.ts";
-import { json, clampInt, offsetInt, reqLang, localizedTitle, dbFor, supportedSources } from "./util.ts";
+import { type Withheld, WITHHELD_ID_RE, forSource, isSourceClosed, isWithheld } from "./withheld.ts";
+import {
+  json, clampInt, offsetInt, reqLang, localizedTitle, dbFor, supportedSources, SHARDED_SOURCES,
+} from "./util.ts";
 import { NON_REDISTRIBUTABLE, isSeriesCarvedOut, promotesToSourceBrowse } from "./denylist.ts";
 
 // Carries no COUNT, and — the part that matters — it KEEPS THE CAVEAT. The old value,
@@ -89,6 +93,85 @@ export function presentCount(db: D1Database, ids: readonly string[], w: Withheld
   return p;
 }
 
+/** A malformed MATCH expression rewritten as plain FTS5 terms: every run of letters/digits, double-quoted,
+ *  space-joined (implicit AND). A quoted string holding only word characters always parses, and the tokenizer
+ *  splits it exactly as it split the indexed titles. null when q has no word characters (nothing to search). */
+export function ftsTermsQuery(q: string): string | null {
+  const toks = q.match(/[\p{L}\p{N}]+/gu);
+  return toks && toks.length ? toks.map((t) => `"${t}"`).join(" ") : null;
+}
+
+/** The shortest last word the prefix retry will expand: `"e"*` or `"in"*` would match a large share of every
+ *  title in the catalogue. */
+export const PREFIX_MIN_CHARS = 3;
+/** The prefix retry's count ceiling per database; reaching it marks `total` as a lower bound. */
+export const PREFIX_COUNT_CAP = 1_000;
+
+/** The prefix retry: q's terms quoted as in ftsTermsQuery, the LAST one as a prefix (`"chôm"*`). null when the
+ *  last word is shorter than PREFIX_MIN_CHARS characters, or there are no words. */
+export function ftsPrefixQuery(q: string): string | null {
+  const toks = q.match(/[\p{L}\p{N}]+/gu);
+  if (!toks || !toks.length) return null;
+  const last = toks[toks.length - 1];
+  if ([...last].length < PREFIX_MIN_CHARS) return null;
+  return [...toks.slice(0, -1).map((t) => `"${t}"`), `"${last}"*`].join(" ");
+}
+
+/** An id-shaped q -> the PK range that holds every series id starting with it, inside its source's database.
+ *  Shape: `<source>:<native prefix>` with no whitespace (printable ASCII), the source part case-folded (source
+ *  ids are lower case) and the native part kept as typed (the PK compares bytes). Only a SUPPORTED or a gated
+ *  source qualifies - anything else is free text for FTS. hi is lo with its last character incremented, so
+ *  [lo, hi) is exactly the ids that begin with lo under the PK's BINARY collation. */
+export interface IdPrefix { source: string; lo: string; hi: string }
+export function idPrefixQuery(q: string, supported: ReadonlySet<string>): IdPrefix | null {
+  const m = /^([A-Za-z0-9_]+):([\x21-\x7e]+)$/.exec(q.trim());
+  if (!m) return null;
+  const source = m[1].toLowerCase();
+  if (!supported.has(source) && !NON_REDISTRIBUTABLE.has(source)) return null;
+  const lo = `${source}:${m[2]}`;
+  const hi = lo.slice(0, -1) + String.fromCharCode(lo.charCodeAt(lo.length - 1) + 1);
+  return { source, lo, hi };
+}
+
+/** A bare native code -> the full ids it could be, split by the database that holds each source: for every
+ *  served source (not gated, not closed) `<source>:<code>` as typed and, when different, upper-cased (LIKE was
+ *  ASCII-case-insensitive; PK equality is not, and native codes are overwhelmingly upper case). The code must
+ *  look like an id's native part (WITHHELD_ID_RE's alphabet, 2-200 characters, at least one letter or digit);
+ *  anything else - a sentence, a word with an accent - returns no candidates. */
+export function bareCodeIds(q: string, supported: ReadonlySet<string>, withheld: Withheld):
+    { primary: string[]; shard: string[] } {
+  const code = q.trim();
+  const out = { primary: [] as string[], shard: [] as string[] };
+  if (!/^[A-Za-z0-9_.:-]{2,200}$/.test(code) || !/[A-Za-z0-9]/.test(code)) return out;
+  const forms = code.toUpperCase() === code ? [code] : [code, code.toUpperCase()];
+  for (const s of [...supported].sort()) {
+    if (NON_REDISTRIBUTABLE.has(s) || isSourceClosed(withheld, s)) continue;
+    const ids = forms.map((f) => `${s}:${f}`).filter((id) => WITHHELD_ID_RE.test(id));
+    (SHARDED_SOURCES.has(s) ? out.shard : out.primary).push(...ids);
+  }
+  return out;
+}
+
+/** The id-prefix count's ceiling: the most PK entries one request walks to count a prefix. */
+export const ID_PREFIX_COUNT_CAP = 10_000;
+
+/** The id-prefix search: one source, one database, two PK-range statements (page + capped count). `total` is
+ *  the capped count, never below what this page returned, so a page and its total always agree; `lowerBound`
+ *  says the cap was reached. */
+async function idPrefixSearch(env: Env, idq: IdPrefix, withheld: Withheld, limit: number, offset: number):
+    Promise<{ results: CatalogResultRow[]; total: number; lowerBound: boolean }> {
+  const source = idq.source;
+  const db = dbFor(env, source);
+  const res = await db.prepare(searchIdPrefixSql(source, forSource(withheld, source)))
+    .bind(idq.lo, idq.hi, limit, offset).all<CatalogResultRow>();
+  const results = res.results ?? [];
+  const c = await db.prepare(searchIdPrefixCountSql(source, forSource(withheld, source)))
+    .bind(idq.lo, idq.hi, ID_PREFIX_COUNT_CAP + 1).first<CountRow>();
+  const n = c?.n ?? 0;
+  const total = Math.max(Math.min(n, ID_PREFIX_COUNT_CAP), results.length ? offset + results.length : 0);
+  return { results, total, lowerBound: n > ID_PREFIX_COUNT_CAP };
+}
+
 export async function handleCatalog(url: URL, env: Env, withheld: Withheld): Promise<Response> {
   const { lang, error } = reqLang(url);
   if (error) return error; // unsupported ?lang= -> honest 400, never silent English
@@ -149,6 +232,9 @@ export async function handleCatalog(url: URL, env: Env, withheld: Withheld): Pro
 
   let results: CatalogResultRow[] = [];
   let total = 0;
+  // True only when a CAPPED count reached its cap (the global prefix retry, the id-prefix seek): `total` is then
+  // "at least". Emitted as `total_is_lower_bound: true` in exactly that case, so every other body is unchanged.
+  let lowerBound = false;
 
   // Sharding (util.ts, task #45): source-scoped queries route to the shard that
   // holds that source; GLOBAL queries hit BOTH databases and merge, or sharded
@@ -166,79 +252,128 @@ export async function handleCatalog(url: URL, env: Env, withheld: Withheld): Pro
   if (src && isSourceClosed(withheld, src)) {
     // The whole source is withheld (src/withheld.ts: the list is unreadable and this isolate has no good copy, so
     // the floor applies): a scoped browse or search lists nothing and counts nothing; no statement runs.
-  } else if (q && q.trim()) {
-    // FTS5 primary path. D1 raises on a malformed MATCH expression, so we catch
-    // and fall back to LIKE -- mirroring the Python try/except OperationalError.
-    // When a source= is ALSO given, AND the source filter onto the search so the
-    // two combine (q + source) -- matching the dev shim; without this the Worker
-    // silently ignored source whenever q was present.
+  } else if (q && q.trim() && src) {
+    // SOURCE-SCOPED search: FTS5 first, then a LIKE fallback constrained to the source. D1 raises on a
+    // malformed MATCH expression, so we catch and fall back -- mirroring the Python try/except
+    // OperationalError. The q + source pair combine (matching the dev shim); without this the Worker silently
+    // ignored source whenever q was present. This fallback stays: `source_id = ?` rides idx_series_source, so
+    // it reads one source's rows (measured small), never the whole table -- and it carries the infix match
+    // FTS5 cannot (`?source=bls&q=onfarm`, tools/cost/smoke_public.py).
     let ftsOk = false;
     try {
-      if (src) {
-        // COUNT FIRST, for the same reason as the global branch below: this SQL carries
-        // LIMIT/OFFSET, so an offset past the last page returns zero rows LEGITIMATELY and the
-        // old `results.length > 0` test read that as "FTS failed" and re-ran everything through
-        // the LIKE fallback - a different engine, a different `total`, for a query that worked.
-        // The COUNT is index-backed and was already being run whenever results existed; the
-        // only new cost is running it on an empty page, which is far cheaper than the scan it
-        // replaces.
-        const c = await scopedDb.prepare(searchFtsSourceCountSql(src, whSrc)).bind(q, src).first<CountRow>();
-        const n = c?.n ?? 0;
-        const res = await scopedDb.prepare(searchFtsSourceSql(src, whSrc)).bind(q, src, limit, offset).all<CatalogResultRow>();
-        results = res.results ?? [];
-        if (n > 0) {
-          total = n;
-          ftsOk = true;
-        }
-      } else {
-        const [p, sh] = await Promise.all([
-          env.CATALOG.prepare(searchFtsSql(whAll)).bind(q, window, 0).all<CatalogResultRow>(),
-          env.CATALOG_CLIMATE.prepare(searchFtsSql(whAll)).bind(q, window, 0).all<CatalogResultRow>(),
-        ]);
-        const merged = [...(p.results ?? []), ...(sh.results ?? [])];
-        results = merged.slice(offset, offset + limit);
-        // JUDGE FTS ON WHAT THE SQL RETURNED, NOT ON WHAT SURVIVED THE SLICE.
-        //
-        // This read `results.length > 0` - the POST-SLICE page. So paging past the last page
-        // of a SUCCESSFUL search made `ftsOk` false and re-ran the whole query through the
-        // LIKE fallback, which is a full scan of both databases (~24.2M rows, 40-65 s) and
-        // reports a DIFFERENT total, because LIKE and MATCH match different things.
-        // Reproduced live: /v1/catalog?source=bls&q=employment returns total=2, and the same
-        // query at &offset=99 returns total=4. Two totals, two engines, one query.
-        //
-        // A crawler paging a search that WORKED triggers it on every query, which is not the
-        // "user typed something the index does not contain" case anyone was guarding against.
-        // `merged` is the FTS result set; if it is non-empty, FTS worked.
-        if (merged.length > 0) {
-          const [cp, cs] = await Promise.all([
-            env.CATALOG.prepare(searchFtsCountSql(whAll)).bind(q).first<CountRow>(),
-            env.CATALOG_CLIMATE.prepare(searchFtsCountSql(whAll)).bind(q).first<CountRow>(),
-          ]);
-          total = (cp?.n ?? 0) + (cs?.n ?? 0);
-          ftsOk = true;
-        }
+      // COUNT FIRST, for the same reason as the global branch below: this SQL carries
+      // LIMIT/OFFSET, so an offset past the last page returns zero rows LEGITIMATELY and the
+      // old `results.length > 0` test read that as "FTS failed" and re-ran everything through
+      // the LIKE fallback - a different engine, a different `total`, for a query that worked.
+      // The COUNT is index-backed and was already being run whenever results existed; the
+      // only new cost is running it on an empty page, which is far cheaper than the scan it
+      // replaces.
+      const c = await scopedDb.prepare(searchFtsSourceCountSql(src, whSrc)).bind(q, src).first<CountRow>();
+      const n = c?.n ?? 0;
+      const res = await scopedDb.prepare(searchFtsSourceSql(src, whSrc)).bind(q, src, limit, offset).all<CatalogResultRow>();
+      results = res.results ?? [];
+      if (n > 0) {
+        total = n;
+        ftsOk = true;
       }
     } catch {
       ftsOk = false; // malformed FTS query -> LIKE fallback below
     }
     if (!ftsOk) {
       const like = `%${q}%`;
-      if (src) {
-        const res = await scopedDb.prepare(searchLikeSourceSql(src, whSrc)).bind(like, like, src, limit, offset).all<CatalogResultRow>();
-        results = res.results ?? [];
-        const c = await scopedDb.prepare(searchLikeSourceCountSql(src, whSrc)).bind(like, like, src).first<CountRow>();
-        total = c?.n ?? results.length;
-      } else {
+      const res = await scopedDb.prepare(searchLikeSourceSql(src, whSrc)).bind(like, like, src, limit, offset).all<CatalogResultRow>();
+      results = res.results ?? [];
+      const c = await scopedDb.prepare(searchLikeSourceCountSql(src, whSrc)).bind(like, like, src).first<CountRow>();
+      total = c?.n ?? results.length;
+    }
+  } else if (q && q.trim()) {
+    // GLOBAL search (no source=). EVERY STATEMENT ON THIS PATH IS INDEX-BOUNDED (2026-11-09).
+    //
+    // Until now a global q that FTS did not match - zero rows, or a MATCH that threw - fell to a
+    // `title LIKE '%q%' OR series_id LIKE '%q%'` over the whole `series` table of BOTH databases, plus a COUNT
+    // of each: up to four full table scans per request. A 200 is edge-cached per URL, but every DISTINCT no-match
+    // q paid the set, and a client that gives up before the scan ends (the MCP server aborts at 25 s and
+    // retries once) never gets a cacheable answer at all and pays again on each repeat. `wrangler d1 insights`
+    // put that one statement at most of the catalogue's rows read.
+    //
+    // This SUPERSEDES a deliberate decision (ledger R675, 2026-09-03: the zero-result fallback was left in
+    // place for the malformed-MATCH case, for infix matching, and for parity with the local client). What
+    // replaces each reason, in the order tried:
+    //   1. an id or id prefix (`bls:CUUR0000SA0`, which FTS5 parses as a column filter and throws on) is a
+    //      PK-range seek inside that source's database (idPrefixQuery; no FTS at all);
+    //   2. FTS5 on q as given; a malformed expression (`GDP (nominal`, `covid-19`, `U.S.`) is retried ONCE as
+    //      quoted terms (ftsTermsQuery) - still the index;
+    //   3. nothing matched: a bare native code (`CUUR0000SA0`, `NY.GDP.MKTP.CD`) is looked up as an exact id in
+    //      every served source - PK equality seeks, about one row each (bareCodeIds);
+    //   4. still nothing: the last word as an FTS prefix (`"emplo"*`, at least 3 characters), with a CAPPED
+    //      count - a partial word typed into a search box finds its completions;
+    //   then total 0. Infix matching inside a source stays on the scoped path above, where it is cheap.
+    //   LOST, by decision: a global infix q (`onfarm` without source=) and a case-mangled bare code that
+    //   matches no FTS title. The local client keeps its LIKE fallback; the served API does not mirror it for
+    //   the unscoped case, because there it cannot be bounded.
+    const supported = supportedSources(env);
+    const idq = idPrefixQuery(q, supported);
+    if (idq) {
+      if (!NON_REDISTRIBUTABLE.has(idq.source) && !isSourceClosed(withheld, idq.source)) {
+        ({ results, total, lowerBound } = await idPrefixSearch(env, idq, withheld, limit, offset));
+      } // a gated or closed source's id: nothing, and no statement (the SQL would exclude it anyway)
+    } else {
+      const runFts = async (expr: string, capped: boolean) => {
         const [p, sh] = await Promise.all([
-          env.CATALOG.prepare(searchLikeSql(whAll)).bind(like, like, window, 0).all<CatalogResultRow>(),
-          env.CATALOG_CLIMATE.prepare(searchLikeSql(whAll)).bind(like, like, window, 0).all<CatalogResultRow>(),
+          env.CATALOG.prepare(searchFtsSql(whAll)).bind(expr, window, 0).all<CatalogResultRow>(),
+          env.CATALOG_CLIMATE.prepare(searchFtsSql(whAll)).bind(expr, window, 0).all<CatalogResultRow>(),
         ]);
-        results = [...(p.results ?? []), ...(sh.results ?? [])].slice(offset, offset + limit);
-        const [cp, cs] = await Promise.all([
-          env.CATALOG.prepare(searchLikeCountSql(whAll)).bind(like, like).first<CountRow>(),
-          env.CATALOG_CLIMATE.prepare(searchLikeCountSql(whAll)).bind(like, like).first<CountRow>(),
-        ]);
-        total = (cp?.n ?? 0) + (cs?.n ?? 0);
+        const merged = [...(p.results ?? []), ...(sh.results ?? [])];
+        results = merged.slice(offset, offset + limit);
+        // JUDGE FTS ON WHAT THE SQL RETURNED, NOT ON WHAT SURVIVED THE SLICE (R675): `merged` is the FTS
+        // result set; a zero-length PAGE of a successful search is legitimate and still needs its total.
+        if (merged.length > 0) {
+          if (capped) {
+            const [cp, cs] = await Promise.all([
+              env.CATALOG.prepare(searchFtsCountCappedSql(whAll)).bind(expr, PREFIX_COUNT_CAP + 1).first<CountRow>(),
+              env.CATALOG_CLIMATE.prepare(searchFtsCountCappedSql(whAll)).bind(expr, PREFIX_COUNT_CAP + 1).first<CountRow>(),
+            ]);
+            const a = cp?.n ?? 0, b = cs?.n ?? 0;
+            lowerBound = a > PREFIX_COUNT_CAP || b > PREFIX_COUNT_CAP;
+            total = Math.max(Math.min(a, PREFIX_COUNT_CAP) + Math.min(b, PREFIX_COUNT_CAP), offset + results.length);
+          } else {
+            const [cp, cs] = await Promise.all([
+              env.CATALOG.prepare(searchFtsCountSql(whAll)).bind(expr).first<CountRow>(),
+              env.CATALOG_CLIMATE.prepare(searchFtsCountSql(whAll)).bind(expr).first<CountRow>(),
+            ]);
+            total = (cp?.n ?? 0) + (cs?.n ?? 0);
+          }
+        } else {
+          total = 0;
+        }
+      };
+      try {
+        await runFts(q, false);
+      } catch {
+        // A malformed MATCH expression. Retry ONCE as plain quoted terms, which FTS5 always parses; if q has
+        // no word characters at all there is nothing to search. A second failure is not a syntax problem
+        // (the retry's expression cannot be malformed), so it propagates as a 500 - which is not edge-cached
+        // - instead of becoming a cached empty 200.
+        results = [];
+        total = 0;
+        const terms = ftsTermsQuery(q);
+        if (terms) await runFts(terms, false);
+      }
+      if (total === 0) {
+        const byDb = bareCodeIds(q, supported, withheld);
+        if (byDb.primary.length || byDb.shard.length) {
+          const run = (db: D1Database, ids: string[]) => ids.length
+            ? db.prepare(searchBareCodeSql(whAll)).bind(JSON.stringify(ids)).all<CatalogResultRow>()
+            : Promise.resolve({ results: [] as CatalogResultRow[] });
+          const [p, sh] = await Promise.all([run(env.CATALOG, byDb.primary), run(env.CATALOG_CLIMATE, byDb.shard)]);
+          const merged = [...(p.results ?? []), ...(sh.results ?? [])];
+          results = merged.slice(offset, offset + limit);
+          total = merged.length; // every match was read: the candidate list bounds it
+        }
+      }
+      if (total === 0) {
+        const prefix = ftsPrefixQuery(q);
+        if (prefix) await runFts(prefix, true);
       }
     }
   } else if (src) {
@@ -357,6 +492,7 @@ export async function handleCatalog(url: URL, env: Env, withheld: Withheld): Pro
     catalog_coverage: COVERAGE,
     results: visible,
   };
+  if (lowerBound) body.total_is_lower_bound = true;
   if (lang !== "en") body.lang = lang;
   return json(body);
 }

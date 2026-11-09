@@ -12,7 +12,8 @@ import {
 import { WITHHELD_FLOOR } from "../src/withheldFloor.ts";
 import {
   browseAllSql, browseSourceSql, browseSourceVisibleCountSql, searchFtsCountSql, searchFtsSourceCountSql,
-  searchFtsSourceSql, searchFtsSql, searchLikeCountSql, searchLikeSourceCountSql, searchLikeSourceSql, searchLikeSql,
+  searchFtsSourceSql, searchFtsSql, searchFtsCountCappedSql, searchBareCodeSql, searchIdPrefixSql, searchIdPrefixCountSql,
+  searchLikeSourceCountSql, searchLikeSourceSql,
   seriesIdsForSourceSql, withheldExcl, withheldPresentCountSql,
 } from "../src/sql.ts";
 import { presentCount } from "../src/catalog.ts";
@@ -116,7 +117,9 @@ test("every catalogue statement builder applies the exclusion it is given", () =
   const ids = [A, B];
   const builders: Array<[string, string]> = [
     ["searchFtsSql", searchFtsSql(ids)], ["searchFtsCountSql", searchFtsCountSql(ids)],
-    ["searchLikeSql", searchLikeSql(ids)], ["searchLikeCountSql", searchLikeCountSql(ids)],
+    ["searchFtsCountCappedSql", searchFtsCountCappedSql(ids)], ["searchBareCodeSql", searchBareCodeSql(ids)],
+    ["searchIdPrefixSql", searchIdPrefixSql("insee_melodi", ids)],
+    ["searchIdPrefixCountSql", searchIdPrefixCountSql("insee_melodi", ids)],
     ["browseAllSql", browseAllSql(ids)],
     ["searchFtsSourceSql", searchFtsSourceSql("insee_melodi", ids)],
     ["searchFtsSourceCountSql", searchFtsSourceCountSql("insee_melodi", ids)],

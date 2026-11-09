@@ -5,7 +5,9 @@
 // byte-for-byte query the local SQLite path runs. They are kept here, in one
 // place, so the Worker and the dev shim can never silently drift:
 //   * catalog search  -> mirrors clients/python/econdl/_catalog.py::search
-//                        and core/catalog.py::search (FTS5 + LIKE fallback).
+//                        and core/catalog.py::search (FTS5 + LIKE fallback). The served
+//                        GLOBAL fallback deliberately differs since 2026-11-09: it is
+//                        index-bounded, never a whole-table LIKE (see searchIdPrefixSql).
 //   * last-updates    -> the CANONICAL SQL spelled out verbatim in CONTRACT.md
 //                        (validated: 48 datasets, 0 ok/no_change with null).
 //   * series / source / license lookups -> the exact _catalog.py statements.
@@ -129,21 +131,58 @@ FROM series_fts f JOIN series s ON s.series_id = f.series_id
 WHERE series_fts MATCH ? ${EXCL_ALIASED}${withheldExcl(withheld, "s.series_id")} LIMIT ? OFFSET ?`;
 }
 
-/** LIKE fallback when FTS errors / matches nothing. Mirrors the Python fallback,
- *  extended with series_id LIKE (as _catalog.py does) so an id substring also hits. */
-export function searchLikeSql(withheld: readonly string[] = []): string {
+/* THERE IS NO GLOBAL (UNSCOPED) LIKE SEARCH ANY MORE (2026-11-09).
+ *
+ * `searchLikeSql` / `searchLikeCountSql` were `WHERE (title LIKE '%q%' OR series_id LIKE '%q%')` over the
+ * whole `series` table of BOTH catalogue databases. A leading wildcard cannot use an index and LIMIT does not
+ * bound a scan that finds nothing, so every global q that FTS did not match read every row of both tables, four
+ * statements per request. `wrangler d1 insights` attributed most of the catalogue's rows read to that one
+ * statement. The unscoped fallback is now index-bounded (catalog.ts): an id-shaped q takes the PK-range pair
+ * below, a bare native code takes searchBareCodeSql (PK equality), a malformed MATCH is retried as quoted
+ * terms, and a partial last word as a capped FTS prefix query. This supersedes the decision (ledger R675) to
+ * keep the served fallback identical to the local client's: the local LIKE stays, the served one cannot be
+ * bounded. The SOURCE-scoped LIKE pair further down stays: `source_id = ?` rides `idx_series_source`, so it
+ * reads one source's rows, not the table. */
+
+/** A bare native code (`CUUR0000SA0`, `NY.GDP.MKTP.CD`) as an exact id in any source. The one bind is a JSON array
+ *  of candidate full ids (`<source>:<code>` for each served source the database holds, as typed and upper-cased):
+ *  `IN (SELECT value FROM json_each(?))` is a PK equality seek per candidate - about one row read each, hit or
+ *  miss - and keeps the statement at one bind (D1 caps bound parameters). Bounded by the candidate count. */
+export function searchBareCodeSql(withheld: readonly string[] = []): string {
   return `
 SELECT series_id, source_id, title, frequency, unit, geography,
        license_id, start_date, end_date, metadata
-FROM series
-WHERE (title LIKE ? OR series_id LIKE ?) ${EXCL_BARE}${withheldExcl(withheld)}
-LIMIT ? OFFSET ?`;
+FROM series WHERE series_id IN (SELECT value FROM json_each(?)) ${EXCL_BARE}${withheldExcl(withheld)}
+ORDER BY series_id`;
 }
 
-/** Total count for a LIKE search (for the `total` field). */
-export function searchLikeCountSql(withheld: readonly string[] = []): string {
+/** A CAPPED FTS count, for the prefix retry only: the inner LIMIT stops the join after `cap` matches, so a short
+ *  prefix that matches millions of titles reads at most `cap` of them. Binds: match, cap. The handler marks the
+ *  total as a lower bound when the cap is reached. The primary FTS count (searchFtsCountSql) is unchanged. */
+export function searchFtsCountCappedSql(withheld: readonly string[] = []): string {
   return `
-SELECT COUNT(*) AS n FROM series WHERE (title LIKE ? OR series_id LIKE ?) ${EXCL_BARE}${withheldExcl(withheld)}`;
+SELECT COUNT(*) AS n FROM (SELECT 1 FROM series_fts f JOIN series s ON s.series_id = f.series_id
+WHERE series_fts MATCH ? ${EXCL_ALIASED}${withheldExcl(withheld, "s.series_id")} LIMIT ?)`;
+}
+
+/** An id-shaped q (`<source>:<native prefix>`), as a PK-range seek inside that source. Binds: lo, hi, limit,
+ *  offset, where [lo, hi) is the id-prefix range (catalog.ts idPrefixRange). Reads offset+limit PK entries at
+ *  most - the browseSourceSql plan with a longer prefix. The caller routes to the source's own database and
+ *  never calls this for a gated source, so only that source's carve-outs and withheld ids apply. */
+export function searchIdPrefixSql(source: string, withheld: readonly string[] = []): string {
+  return `
+SELECT series_id, source_id, title, frequency, unit, geography,
+       license_id, start_date, end_date, metadata
+FROM series WHERE series_id >= ? AND series_id < ?${carveoutExcl(source)}${withheldExcl(withheld)}
+ORDER BY series_id LIMIT ? OFFSET ?`;
+}
+
+/** Count for searchIdPrefixSql, CAPPED: the inner LIMIT stops the range walk after `cap` entries, so a short
+ *  prefix of a big source (`wid:`) reads at most `cap` index entries instead of the whole source. Binds: lo, hi,
+ *  cap. The handler reports min(true count, cap), and never less than the rows the page itself returned. */
+export function searchIdPrefixCountSql(source: string, withheld: readonly string[] = []): string {
+  return `
+SELECT COUNT(*) AS n FROM (SELECT 1 FROM series WHERE series_id >= ? AND series_id < ?${carveoutExcl(source)}${withheldExcl(withheld)} LIMIT ?)`;
 }
 
 /** Total count for an FTS search. */
