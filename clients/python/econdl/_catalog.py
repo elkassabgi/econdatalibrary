@@ -77,8 +77,11 @@ def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
 def search(query: str, *, limit: int = 20, db: str | None = None) -> list[dict[str, Any]]:
     """Full-text search over the series catalog; returns plain dict rows.
 
-    Mirrors core/catalog.py::search (FTS5 with a LIKE fallback) so the client
-    and server agree on results.
+    Mirrors core/catalog.py::search (FTS5 with a LIKE fallback) over the LOCAL
+    catalogue. The served /v1/catalog agrees only when it is given source=;
+    without it the API has no LIKE fallback (it cannot be bounded on the hosted
+    catalogue), so a global infix-only query can find rows here and none there
+    (api/CONTRACT.md, GET /v1/catalog).
     """
     conn = connect(db)
     try:

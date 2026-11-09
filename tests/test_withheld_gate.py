@@ -19,7 +19,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "api", "worker", "src")
 
 AWARE = {
-    "searchFtsSql", "searchFtsCountSql", "searchLikeSql", "searchLikeCountSql", "browseAllSql",
+    "searchFtsSql", "searchFtsCountSql", "searchFtsCountCappedSql", "searchBareCodeSql", "browseAllSql",
+    "searchIdPrefixSql", "searchIdPrefixCountSql",
     "searchFtsSourceSql", "searchFtsSourceCountSql", "searchLikeSourceSql", "searchLikeSourceCountSql",
     "browseSourceSql", "browseSourceVisibleCountSql", "seriesIdsForSourceSql",
 }
@@ -70,7 +71,7 @@ def test_every_sql_export_is_classified():
         assert "withheldExcl(" in body, f"{name} is listed as aware but does not apply withheldExcl"
 
 
-GLOBAL = ("searchFtsSql", "searchFtsCountSql", "searchLikeSql", "searchLikeCountSql", "browseAllSql")
+GLOBAL = ("searchFtsSql", "searchFtsCountSql", "searchFtsCountCappedSql", "searchBareCodeSql", "browseAllSql")
 # What a call site must pass (AR-341 finding 6: "non-empty" let `[]` through - mutants M16, M17, M30 survived)
 GLOBAL_ARG = re.compile(r"^whAll$")
 SCOPED_ARG = re.compile(r"^(src|source)\s*,\s*(whSrc|forSource\(withheld,\s*(src|source)\))$")

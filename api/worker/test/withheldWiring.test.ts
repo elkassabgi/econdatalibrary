@@ -42,6 +42,10 @@ const SHARD = `
   CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT, title TEXT, frequency TEXT, unit TEXT,
     geography TEXT, category TEXT, license_id TEXT, start_date TEXT, end_date TEXT, last_updated TEXT, metadata TEXT);
   CREATE TABLE source_counts (source_id TEXT PRIMARY KEY, n INTEGER)`;
+/** The search index, as production has it, for the test that searches every global path: built from `series`. */
+const FTS_FROM_SERIES = `
+  CREATE VIRTUAL TABLE series_fts USING fts5(series_id UNINDEXED, title, geography);
+  INSERT INTO series_fts (series_id, title, geography) SELECT series_id, title, geography FROM series`;
 
 async function getJson(w: Awaited<ReturnType<typeof start>>, path: string) {
   const r = await w.fetch(path);
@@ -55,8 +59,8 @@ test("production: a withheld table is unreachable on every route; a control id i
      { timeout: 300_000 }, async (t) => {
   const persist = newPersist("econ-withheld-");
   await withBindings(EDGE_CONFIG, persist, async (env) => {
-    await execSql(env.CATALOG, SEED);
-    await execSql(env.CATALOG_CLIMATE, SHARD);
+    await execSql(env.CATALOG, SEED + ";" + FTS_FROM_SERIES);
+    await execSql(env.CATALOG_CLIMATE, SHARD + ";" + FTS_FROM_SERIES);
     await env.SERIES_BUCKET.put("_aqueduct/withheld.json", LIST);
     await env.SERIES_BUCKET.put("_aqueduct/stats.json", JSON.stringify({ individual_series: 3 }));
   });
@@ -83,12 +87,25 @@ test("production: a withheld table is unreachable on every route; a control id i
   const all = await getJson(w, "/v1/catalog");
   assert.deepEqual((all.body.results as { series_id: string }[]).map((r) => r.series_id).sort(), [KEPT, OTHER].sort());
   assert.equal(all.body.total, 2, "the whole-table count loses the withheld row");
-  const q = await getJson(w, "/v1/catalog?q=MIG2");           // no series_fts here: the LIKE fallback runs
-  assert.equal(q.status, 200, q.text);
-  assert.deepEqual(q.body.results, [], "a search never finds a withheld table");
-  assert.equal(q.body.total, 0);
-  const qc = await getJson(w, "/v1/catalog?q=APU");
-  assert.deepEqual((qc.body.results as { series_id: string }[]).map((r) => r.series_id), [KEPT], "search control");
+  // Every global search path, each with a withheld probe AND a positive control on the SAME path (a probe that
+  // answers [] proves nothing unless its path can answer at all). The global LIKE fallback these once rode is
+  // gone (catalog.ts, 2026-11-09); the fixture now carries series_fts so FTS is the path it is in production.
+  const ids = (r: { body: Record<string, unknown> }) => (r.body.results as { series_id: string }[]).map((x) => x.series_id);
+  for (const [path, want, what] of [
+    ["/v1/catalog?q=MIG2", [], "FTS: a search never finds a withheld table"],
+    ["/v1/catalog?q=APU", [KEPT], "FTS: search control"],
+    [`/v1/catalog?q=${enc("insee_melodi:DS_RP")}`, [], "id prefix: the withheld id's prefix finds nothing"],
+    [`/v1/catalog?q=${enc("insee_melodi:DD_CNA")}`, [KEPT], "id prefix: control"],
+    ["/v1/catalog?q=DS_RP_TD_MIGRES_COMP", [], "bare code: the withheld id's native code finds nothing"],
+    ["/v1/catalog?q=dd_cna_apu", [KEPT], "bare code: control (typed lower case, found upper case)"],
+    ["/v1/catalog?q=Administr", [KEPT], "prefix retry: control"],
+    ["/v1/catalog?q=Residenti", [], "prefix retry: the withheld title's prefix finds nothing"],
+  ] as Array<[string, string[], string]>) {
+    const r = await getJson(w, path);
+    assert.equal(r.status, 200, `${what}: ${r.text}`);
+    assert.deepEqual(ids(r), want, what);
+    assert.equal(r.body.total, want.length, `${what}: total agrees with the page`);
+  }
 
   const st = await getJson(w, "/v1/stats");
   assert.equal(st.status, 200, st.text);
