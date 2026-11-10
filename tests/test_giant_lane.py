@@ -203,3 +203,98 @@ def test_the_replay_skips_through_the_production_function():
     plain = m.UnitBook({"p": "monthly", "q": "monthly"}, {}, [], {"p": 10.0, "q": 10.0}, {})
     plain.run_pass(start, budget_min=600)
     assert plain.attempts["p"] == 1, "control: without the flag the replay attempts p"
+
+
+# ------------------------------------------------------------------------------------ coverage audit (N1)
+
+def test_the_coverage_audit_counts_skip_units_as_on_paper_only():
+    import audit_schedule_coverage as a
+    sched, why = a.scheduled_sources()
+    for s in SKIP:
+        assert s not in sched and s not in why, why.get(s)
+        assert "desktop_lane: skip" in a.scheduled_sources.stranded[s]
+    assert "unctad_biotrademerch" in sched, "a 'last' unit is still attempted, so still scheduled"
+    assert "unctad_oceantrade" in sched
+
+
+# ------------------------------------------------------------------------------------ the digest's WIRING (B1)
+
+def _digest(tmp_path, monkeypatch, capsys):
+    """send_digest.main() end to end, with the REAL registry (the skip units in it) and a temp unit_state."""
+    import sqlite3
+    from updater import send_digest as sd
+    import core.status_mail as sm
+    db = tmp_path / "state.db"
+    con = sqlite3.connect(str(db))
+    con.execute("CREATE TABLE unit_state (source_id TEXT, status TEXT, last_obs_date TEXT, "
+                "last_success_utc TEXT, last_error TEXT, last_attempt_utc TEXT)")
+    con.execute("INSERT INTO unit_state VALUES (?,?,?,?,?,?)",
+                ("unctad_tradefoodprocbycat", "ok", "2025-12-31", "2026-11-01T00:00:00+00:00", None,
+                 "2026-11-01T00:00:00+00:00"))
+    con.commit()
+    con.close()
+    monkeypatch.setattr(sd, "STATE", str(db))
+    sent = {}
+
+    def fake_send(subject, body, html_doc, **kw):
+        sent.update(subject=subject, body=body, html=html_doc)
+        return "sent"
+
+    monkeypatch.setattr(sm, "send_status_mail", fake_send)
+    monkeypatch.setenv("RUN_STATUS", "success")
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    monkeypatch.delenv("AQUEDUCT_DIGEST_HTML_OUT", raising=False)
+    sd.main()
+    capsys.readouterr()
+    assert sent, "the report was not handed to the mail module"
+    return sent
+
+
+def test_both_digest_bodies_carry_the_giant_skip_lines(tmp_path, monkeypatch, capsys):
+    import html as H
+    sent = _digest(tmp_path, monkeypatch, capsys)
+    body, page = sent["body"], H.unescape(sent["html"])
+    for s in sorted(SKIP):
+        assert re.search(rf"GIANT SKIP \(ATTENTION\)\s+{s}\s", body), "not in the TEXT body: " + s
+    assert re.search(r"ordered LAST\s+unctad_biotrademerch", body)
+    assert "<b>giant units</b>" in page, "the HTML notes carry no giant-units section"
+    for s in sorted(SKIP):
+        assert re.search(rf"GIANT SKIP \(ATTENTION\)\s+{s}\s", page), "not in the HTML body: " + s
+    assert re.search(r"ordered LAST\s+unctad_biotrademerch", page)
+
+
+# ------------------------------------------------------------------------------------ the leftover drain (B2)
+
+def test_a_scheduled_pass_never_drains_a_skip_units_retries(tmp_path, monkeypatch, capsys):
+    """A skipped unit did not run, and it is NOT a leftover-drain candidate either, whatever its retry queue
+    holds (like PROTECTED). Control: a BUDGET SKIPPED unit in the same pass IS one."""
+    for v in ("AQUEDUCT_LIVE_ONLY", "GITHUB_ACTIONS", "AQUEDUCT_UNIT_TIMEOUT_MIN", "AQUEDUCT_RUN_LOCATION"):
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setenv("AQUEDUCT_RUN_BUDGET_MIN", "30")      # no cost on record -> 90-min reserve -> BUDGET SKIP
+    monkeypatch.setattr(orchestrate, "_RUN_DEADLINE_TS", orchestrate._RUN_DEADLINE_TS)
+    monkeypatch.setattr(orchestrate, "_after_t0", lambda: False)
+    store = StateStore(str(tmp_path / "state.db"))
+    for s in sorted(SKIP) + ["eia"]:
+        store.enqueue_csv_retry(s, [f"{s}:X:1", f"{s}:X:2"], error="leftover")
+    seen = {}
+    real = orchestrate.drain_candidates
+
+    def spy(drain_ok, drain_block):
+        out = real(drain_ok, drain_block)
+        seen["ok"], seen["cand"] = set(drain_ok), set(out)
+        return out
+
+    monkeypatch.setattr(orchestrate, "drain_candidates", spy)
+    monkeypatch.setattr(orchestrate, "_drain_leftover_retries", lambda cand, blob, st: [])
+    monkeypatch.setattr(orchestrate, "_has_adapter", lambda unit: True)
+    try:
+        orchestrate.run_once(sources=sorted(SKIP) + ["eia"], dry=False, store=store, scheduled=True)
+    except SystemExit:
+        pass
+    out = capsys.readouterr().out
+    assert "ok" in seen, "the drain was never reached - the harness is broken:\n" + out[-2000:]
+    assert "eia" in seen["ok"] and "eia" in seen["cand"], ("control: the BUDGET SKIPPED unit is a candidate", seen)
+    assert not SKIP & seen["ok"], seen
+    assert not SKIP & seen["cand"], seen
+    for s in SKIP:
+        assert f"GIANT SKIP (ATTENTION) {s}/_all" in out

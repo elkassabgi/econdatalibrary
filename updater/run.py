@@ -583,7 +583,8 @@ def main():
                     help="report what's due, make no changes")
     ap.add_argument("--scheduled", action="store_true",
                     help="this is the scheduled desktop pass (run_local_heavy.ps1 without -Only): "
-                         "sources with registry desktop_lane: giant are skipped and announced")
+                         "registry desktop_lane: skip sources are skipped and announced; "
+                         "desktop_lane: last sources are ordered last")
     ap.add_argument("--pull-state", action="store_true",
                     help="download R2 _aqueduct/state.db.zst to local state.db, "
                          "record its ETag, then exit")
