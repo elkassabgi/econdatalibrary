@@ -339,6 +339,42 @@ GUARD_BEAT_READ_S = 20.0     # the read runs in the daily job's tail; botocore's
 GUARD_BEAT_OLD_H = 2.0       # the guard publishes every 5 minutes: 2 h old means the loop is down
 
 
+def giant_lane_lines(entries, rows, now, held) -> list:
+    """Text lines for the registry `desktop_lane` sources, or [] when none is declared.
+
+    Its OWN section, not the first-pass crawlers' (their 6-h write clock measures a crawler, the wrong
+    measurement here; review AR-467 C4). A `skip` source is labelled GIANT SKIP (ATTENTION): the scheduled
+    desktop pass never attempts it, so its store does not refresh and no current route can finish a turn. A
+    `last` source is still attempted, after every other unit. `rows` are the unit_state rows main() reads
+    (source_id, status, last_obs_date, last_success_utc, ...); `held` is health.giant_skip_held, so the digest
+    and the health gate use one rule."""
+    flagged = sorted((e["source_id"], e) for e in (entries or []) if e.get("desktop_lane") in ("skip", "last"))
+    if not flagged:
+        return []
+    newest = {}
+    for r in rows:
+        if r[3] and (r[0] not in newest or str(r[3]) > str(newest[r[0]])):
+            newest[r[0]] = r[3]
+    out = ["  giant units (registry desktop_lane) - SKIP: not attempted by the scheduled desktop pass, store "
+           "frozen; LAST: attempted after every other unit:"]
+    for sid, e in flagged:
+        ts = newest.get(sid)
+        age = None
+        if ts:
+            try:
+                t = _dt.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+                if t.tzinfo is None:
+                    t = t.replace(tzinfo=_dt.timezone.utc)
+                age = (now - t).total_seconds() / 86400.0
+            except (ValueError, TypeError):
+                age = None
+        label = "GIANT SKIP (ATTENTION)" if held(e) else "ordered LAST"
+        seen = (f"last success {age:5.1f}d ago" if age is not None
+                else f"last success unreadable ({str(ts)[:25]})" if ts else "never succeeded")
+        out.append(f"     {label:22} {sid:30} {seen} (cadence {e.get('cadence') or '?'})")
+    return out + [""]
+
+
 def read_guard_beat(timeout_s: float = GUARD_BEAT_READ_S):
     """The workstation's guard beat from R2 (tools/guard_heartbeat.py --publish), or {"unreadable": why}.
     It carries the publisher-notice summary, which this CI job cannot see any other way. BOUNDED: the read
@@ -503,6 +539,14 @@ def main() -> None:
             os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                          "data", "clean_full"),
             FIRSTPASS_DIRS, _time.time())
+    # GIANT UNITS: computed once, rendered in both bodies (same reason as fp). An unreadable rule is SAID, never a
+    # silently empty section: a desktop_lane: skip store does not refresh on the scheduled pass.
+    try:
+        from updater.health import giant_skip_held                    # noqa: PLC0415
+        _giant = giant_lane_lines(_entries, rows, dt.datetime.now(dt.timezone.utc), giant_skip_held)
+    except Exception as _ge:                                          # noqa: BLE001
+        _giant = [f"  giant units: could not be listed ({type(_ge).__name__}) - the scheduled desktop pass "
+                  f"skips every registry desktop_lane: skip source (ATTENTION); check them by hand", ""]
 
     ok = [r for r in rows if r[1] in ("ok", "no_change")]
     warn = [r for r in rows if r[1] in ("partial", "transient_fail")]
@@ -652,6 +696,7 @@ def main() -> None:
                 lines.append(f"     {name:12} last wrote {age_h:5.1f}h ago "
                              f"({newest[:34]}){mark}")
             lines.append("")
+    lines += _giant
     # PUBLISHER NOTICES (2026-11-05): what the workstation's watcher found that is ending or changing.
     _notices = notices_lines(read_guard_beat(), dt.datetime.now(dt.timezone.utc))
     lines += _notices
@@ -724,6 +769,10 @@ def main() -> None:
             "<b>first-pass crawlers</b> — no unit_state row, so they are invisible to the health "
             f"gate:<table role='presentation' style='margin-top:5px;font-size:12px;'>{_rows}"
             "</table>")
+    if _giant:
+        notes_html += _note("<b>giant units</b><br>" + "<br>".join(
+            f"<b style='color:{amber};'>{esc(l.strip())}</b>" if "ATTENTION" in l else esc(l.strip())
+            for l in _giant if l.strip()))
 
     progress_html = ""
     if progress:

@@ -523,6 +523,12 @@ if ($null -ne $untilReadAt) {
 # NOT $args - that is a reserved automatic variable and assigning to it breaks arg passing.
 $srcArgs = @()
 foreach ($t in $targets) { $srcArgs += '--source'; $srcArgs += $t }
+# THE SCHEDULED PASS SAYS SO. Every routed source goes in as --source either way, so the updater cannot tell
+# this pass from a manual one by its arguments; --scheduled is how it knows. It skips (and announces) every
+# registry desktop_lane: skip source - a windowless whole-release pull whose turns held this pass to its hard
+# stop and wrote no progress (review AR-467). -Only <sid> still attempts such a source (no --scheduled), under
+# the same clamp and hard stop as this pass, so it is not a route that can finish one.
+if (-not $Only) { $srcArgs += '--scheduled'; Say 'SCHEDULED pass: registry desktop_lane: skip sources are not attempted (orchestrator prints GIANT SKIP)' }
 if ($Force) { $srcArgs += '--force'; Say 'FORCE: cadence gate overridden (manual proof)' }
 Say ("running updater for " + $targets.Count + " source(s) ...")
 

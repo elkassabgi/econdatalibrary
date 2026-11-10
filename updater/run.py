@@ -581,6 +581,9 @@ def main():
     ap.add_argument("--force", action="store_true", help="ignore cadence + change-detection")
     ap.add_argument("--dry", "--dry-run", dest="dry", action="store_true",
                     help="report what's due, make no changes")
+    ap.add_argument("--scheduled", action="store_true",
+                    help="this is the scheduled desktop pass (run_local_heavy.ps1 without -Only): "
+                         "sources with registry desktop_lane: giant are skipped and announced")
     ap.add_argument("--pull-state", action="store_true",
                     help="download R2 _aqueduct/state.db.zst to local state.db, "
                          "record its ETag, then exit")
@@ -624,10 +627,10 @@ def main():
         from core.catalog_path import writer_lock                           # noqa: PLC0415
         with writer_lock():
             res = orchestrate.run_once(sources=a.source, strategies=a.strategy, cadences=a.cadence,
-                                       force=a.force, dry=a.dry)
+                                       force=a.force, dry=a.dry, scheduled=a.scheduled)
     else:
         res = orchestrate.run_once(sources=a.source, strategies=a.strategy, cadences=a.cadence,
-                                   force=a.force, dry=a.dry)
+                                   force=a.force, dry=a.dry, scheduled=a.scheduled)
     print(f"\n=== {len(res)} unit(s) processed ===")
     for k, s in res:
         print(f"  {s:16} {k}")

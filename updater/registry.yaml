@@ -5188,6 +5188,18 @@ sources:
   data_cadence: annual
   refresh_cost: large
   out_dir: unctad_tradefoodprocbycat
+  # desktop_lane: skip (2026-11-10, review AR-467): the SCHEDULED desktop pass does not attempt this unit and
+  # says so. A MITIGATION, not the fix (R683 rule 3). Its fetcher is make(ds, source) - the windowless
+  # whole-release update, no Deadline - and its turns cannot finish a pass: kills on 2026-10-03 and 2026-11-06
+  # (censored lower bounds 224 and 154 min, R684), and its spill set (70,530 chunk files) dates from 2026-08-16/17
+  # plus 2 files of 2026-11-07, so the 2026-11-06 kill wrote no chunk. No current route can finish it either:
+  # run_local_heavy.ps1 -Only is clamped to the next CI writer and hard-stopped like the nightly pass; only
+  # -SkipCiCheck or T0 removes that.
+  desktop_lane: skip
+  desktop_lane_exit: >-
+    Owner: the project owner. Remove when a turn can finish inside its route - a streamed assembly of the
+    spilled release, a window or Deadline on its update, or T0 removing the pass clamp (the orchestrator
+    warns on every skip after T0).
   review: true
   adapter:
     vintage_signal: GET /api/reportMetadata/US.TradeFoodProcByCat -> version|lastUpdated
@@ -5212,6 +5224,17 @@ sources:
   data_cadence: annual
   refresh_cost: large
   out_dir: unctad_tradefoodcatbyproc
+  # desktop_lane: skip (2026-11-10, review AR-467): the SCHEDULED desktop pass does not attempt this unit and
+  # says so. A MITIGATION, not the fix (R683 rule 3). Its fetcher is make(ds, source) - the windowless
+  # whole-release update, no Deadline - and its turns cannot finish a pass: killed 2026-10-11 (censored lower
+  # bound 148 min, R684), and its spill set (81,666 chunk files) dates from 2026-08-15/16 plus 2 files of
+  # 2026-10-12, so the kill wrote no chunk. No current route can finish it either: run_local_heavy.ps1 -Only is
+  # clamped to the next CI writer and hard-stopped like the nightly pass; only -SkipCiCheck or T0 removes that.
+  desktop_lane: skip
+  desktop_lane_exit: >-
+    Owner: the project owner. Remove when a turn can finish inside its route - a streamed assembly of the
+    spilled release, a window or Deadline on its update, or T0 removing the pass clamp (the orchestrator
+    warns on every skip after T0).
   review: true
   adapter:
     vintage_signal: GET /api/reportMetadata/US.TradeFoodCatByProc -> version|lastUpdated
@@ -7099,6 +7122,15 @@ sources:
   # runner; it updates from the workstation, where the memory exists.
   run_location: local
   out_dir: unctad_biotrademerch
+  # desktop_lane: last (2026-11-10, review AR-467): ordered after every other unit of a pass, NOT skipped. Its
+  # fetcher is make(ds, source) - the windowless whole-release update, no Deadline (R683) - and the desktop
+  # runner hard-stopped passes with it in flight on 2026-10-08 and 2026-11-09 (censored lower bounds of 187 and
+  # 214 min, R684). Unlike the food pair it is still making durable progress: 10,036 spill chunks were written
+  # during the 2026-11-09 pass. Ordered last it keeps walking on idle tails without taking any other unit's turn.
+  desktop_lane: last
+  desktop_lane_exit: >-
+    Owner: the project owner. Remove when this unit finishes one turn inside a pass (its spill walk complete and its
+    release assembled and merged), or when its update gains a window or Deadline that bounds a turn.
   review: true
 - source_id: unctad_criticalmineralstradebypart
   # GIANT #8 (2026-08-09, #70): 109,956,508 obs / 8,589,597 series; depth-2 DOT-prefix

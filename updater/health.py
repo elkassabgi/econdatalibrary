@@ -299,6 +299,14 @@ def _stuck_transient(units, succ_age, sla_days, attempt_age) -> bool:
     return attempt_age is not None and attempt_age <= 2 and succ_age > STUCK_TRANSIENT_DAYS
 
 
+def giant_skip_held(entry: dict) -> bool:
+    """Is this a registry `desktop_lane: skip` source? The scheduled desktop pass never attempts it
+    (orchestrate._giant_lane_skip), so its store does not refresh and no current route can finish a turn: it is
+    HELD at ATTENTION or worse, never OK or ROTATING, whatever its state rows say (review AR-467 C4). One rule
+    for the health gate and the digest. A `desktop_lane: last` source is still attempted and is not held."""
+    return (entry or {}).get("desktop_lane") == "skip"
+
+
 def assess(store=None) -> dict:
     store = store or StateStore()
     now = datetime.now(timezone.utc)
@@ -680,6 +688,17 @@ def assess(store=None) -> dict:
                    f"csv_desktop_owed --copy <proven copy of R2's <REL>.parquet> --ids <file> --out <new tsv>`"
                    if e.get("csv_owed_repay") == "fresh" else "")
             ] + list(attention)
+            if health in ("OK", "ROTATING"):
+                health = "ATTENTION"
+        if giant_skip_held(e):
+            # HELD, never green (see giant_skip_held): the reason PREPENDED like the owed notes because it
+            # changes the verdict; a worse verdict (RED-*) stands.
+            _age = "never" if succ_age is None else f"{succ_age:.0f}d ago"
+            attention = [
+                f"GIANT SKIP (registry desktop_lane: skip): the scheduled desktop pass does not attempt {sid}, "
+                f"so its store does not refresh (last success {_age}); no current route can finish a turn "
+                f"(-Only is clamped and hard-stopped like the nightly pass). Exit: "
+                f"{e.get('desktop_lane_exit') or 'NOT DECLARED'}"] + list(attention)
             if health in ("OK", "ROTATING"):
                 health = "ATTENTION"
 
