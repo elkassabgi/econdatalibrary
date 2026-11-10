@@ -39,6 +39,14 @@ Check 'unknown on a clean exit'  (Test-CadenceShouldStamp -PushRc 0 -Crashed $fa
 Check 'unknown after a crash'    (Test-CadenceShouldStamp -PushRc 0 -Crashed $true  -Advanced $null).Stamp 'False'
 Check 'push failed, work done'   (Test-CadenceShouldStamp -PushRc 2 -Crashed $false -Advanced 5).Stamp   'False'
 Check 'crash, work done'         (Test-CadenceShouldStamp -PushRc 0 -Crashed $true  -Advanced 5).Stamp   'False'
+# THE TWO "NO" ANSWERS READ DIFFERENTLY. A pass that saved its state and moved no progress field said "nothing
+# was committed" - the same thing a failed push means - and was read as a lost push.
+$why0 = (Test-CadenceShouldStamp -PushRc 0 -Crashed $false -Advanced 0).Why
+$whyP = (Test-CadenceShouldStamp -PushRc 2 -Crashed $false -Advanced 0).Why
+Check 'advanced 0 says no progress field moved'  ($why0 -like '*no progress field moved*')  'True'
+Check 'advanced 0 no longer says nothing committed' ($why0 -like '*nothing was committed*') 'False'
+Check 'a push failure names the push'            ($whyP -like 'push-state failed*')        'True'
+Check 'the two reasons differ'                   ($why0 -ne $whyP)                          'True'
 
 # The end-to-end shape the runner uses: probe output -> decision. A native command that writes
 # to stderr becomes a TERMINATING error under `$ErrorActionPreference = 'Stop'` in PS 5.1, so

@@ -225,7 +225,10 @@ function Test-CadenceShouldStamp {
         return [pscustomobject]@{ Stamp = $false; Why = "the progress probe could not be read - refusing to assume anything was advanced" }
     }
     if (Test-PassAdvancedNothing $Advanced) {
-        return [pscustomobject]@{ Stamp = $false; Why = "NOT ONE unit advanced last_success_utc, upstream_vintage or last_obs_date - nothing was committed" }
+        # NOT "nothing was committed": the state was SAVED to reach this line (a failed push returns above
+        # with its own reason), so the pass's attempt rows, run rows and any killed-unit row WERE committed.
+        # What did not happen is progress: no unit moved one of the three fields the probe reads.
+        return [pscustomobject]@{ Stamp = $false; Why = "state saved, but NOT ONE unit advanced last_success_utc, upstream_vintage or last_obs_date - no progress field moved (a push failure reads 'push-state failed')" }
     }
     return [pscustomobject]@{ Stamp = $true; Why = "$Advanced unit(s) advanced" }
 }

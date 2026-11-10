@@ -980,6 +980,7 @@ class SimUnit:
     cadence: str
     unit_id: str = "_all"
     window_stop: bool = False          # registry `window_stop: true` (PR #215), as registry.to_units carries it
+    desktop_lane: "str | None" = None  # registry `desktop_lane` (skip / last, review AR-467), as to_units carries it
 
     @property
     def key(self):
@@ -990,7 +991,7 @@ class SimUnit:
         # Mirrors a registry Unit: registry.to_units keeps the cadence on Unit.cadence and never puts it in config.
         # Returning it here let the replay order by a cadence production never reads (AR-421). The window_stop
         # declaration IS in a registry Unit's config, and the production order key and start gate read it there.
-        return {"window_stop": self.window_stop is True}
+        return {"window_stop": self.window_stop is True, "desktop_lane": self.desktop_lane}
 
 
 class _StoreShim:
@@ -1008,6 +1009,20 @@ def local_units_from_registry(path: str | None = None) -> dict:
         d = yaml.safe_load(f) or {}
     return {e["source_id"]: (e.get("cadence") or "monthly") for e in (d.get("sources") or [])
             if e.get("run_location") == "local" and e.get("source_id") and e["source_id"] not in NOT_WORK}
+
+
+def local_desktop_lane_from_registry(path: str | None = None) -> dict:
+    """{source: 'skip' | 'last'} for the local sources that declare `desktop_lane` (review AR-467), read through
+    production registry.to_units - the function that puts the value in a Unit's config - so the replay skips and
+    orders exactly the units run_once skips and orders (R249)."""
+    import yaml
+    from updater import registry
+    path = path or os.path.join(ROOT, "updater", "registry.yaml")
+    with open(path, encoding="utf-8") as f:
+        d = yaml.safe_load(f) or {}
+    return {u.source_id: u.config["desktop_lane"] for e in (d.get("sources") or [])
+            if e.get("run_location") == "local" and e.get("source_id") and e["source_id"] not in NOT_WORK
+            for u in registry.to_units(e) if (u.config or {}).get("desktop_lane")}
 
 
 def local_window_stop_from_registry(path: str | None = None) -> frozenset:
@@ -1036,7 +1051,7 @@ class UnitBook:
 
     def __init__(self, cadences: dict, state: dict, runs_rows: list, work: dict, outcome: dict,
                  censored=(), assumed_ok=(), order: str = "production", clocked_extra=(), whole_flow=None,
-                 due_from_attempt: bool = False, window_stop=(), retry_queue=None):
+                 due_from_attempt: bool = False, window_stop=(), retry_queue=None, desktop_lane=None):
         from updater.strategies.base import Strategy
         from updater.strategies import base
         from updater import orchestrate as orch
@@ -1055,7 +1070,9 @@ class UnitBook:
                 raise ValueError(f"{s} is clocked only in whole flows: give its per-flow bound (whole_flow)")
         self._stop_cache, self.stop_fallback, self._tail_default = {}, set(), 90.0
         ws = frozenset(window_stop or ())
-        self.units = {s: SimUnit(s, c, window_stop=s in ws) for s, c in sorted(cadences.items())}
+        dl = dict(desktop_lane or {})
+        self.units = {s: SimUnit(s, c, window_stop=s in ws, desktop_lane=dl.get(s))
+                      for s, c in sorted(cadences.items())}
         self.state = {s: dict(state.get(s) or {}) for s in self.units}
         self.work = {s: float(work.get(s, 0.0)) for s in self.units}
         self.remaining = dict(self.work)
@@ -1230,8 +1247,13 @@ class UnitBook:
         # run_once: _RUN_DEADLINE_TS = launch + AQUEDUCT_RUN_BUDGET_MIN; the ps1 kills at its hard stop
         deadline_ts = (start + dt.timedelta(minutes=budget_min)).timestamp()
         stop_min = budget_min + grace_min if hard_stop_min is None else hard_stop_min
+        giant_skipped = []
         for u in order:
             sid = u.source_id
+            # run_once's GIANT SKIP, through the same function: this replays the SCHEDULED pass (--scheduled)
+            if orch._giant_lane_skip(u, None, True):
+                giant_skipped.append(sid)
+                continue
             # production's reserve, through the same function (a declared unit: its fetcher's figure)
             # the workstation has no per-unit hard timeout (Windows, no setitimer): hard_timeout=False, and the
             # newest real run per source through production StateStore.last_real_duration (2026-11-06)
@@ -1309,7 +1331,7 @@ class UnitBook:
             e, drained, not_drained = self._leftover_drain(drain_ok, drain_block, e, budget_min, drain_rate)
         return {"used_min": e, "advanced": advanced, "hard_stop": hard, "stopped": stopped, "ran": ran,
                 "budget_skipped": budget_skipped, "not_due": not_due, "retry_drained": drained,
-                "retry_not_drained": not_drained}
+                "retry_not_drained": not_drained, "giant_skipped": giant_skipped}
 
     def _leftover_drain(self, drain_ok, drain_block, e, budget_min, drain_rate):
         """orchestrate._drain_leftover_retries after the unit loop (PRs #212/#213), with production's candidate
@@ -1437,6 +1459,8 @@ def load_unit_book(db_path: str, copy_utc: dt.datetime, shift: dt.timedelta, cad
             f"GROUP BY source_id", srcs)}
     con.close()
     ws = local_window_stop_from_registry() if window_stop is None else frozenset(window_stop)
+    # registry desktop_lane (review AR-467), read through production registry.to_units; book_kw may override it
+    book_kw.setdefault("desktop_lane", {s: v for s, v in local_desktop_lane_from_registry().items() if s in srcs})
     return UnitBook(cadences, state, rows, work, outcome, censored, assumed, window_stop=ws & set(srcs),
                     retry_queue=queue, **book_kw)
 

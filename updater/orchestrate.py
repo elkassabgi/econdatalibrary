@@ -77,6 +77,10 @@ def order_units(units, costs, staleness_key, fast_lane_seconds=FAST_LANE_SECONDS
     sorts into the cheap band, so it keeps absolute priority for its first turn.
     """
     def band(unit):
+        # registry `desktop_lane: last` (review AR-467): after EVERY band, so the unit is admitted only once
+        # every other unit of the pass has run or been judged. Staleness still orders within it.
+        if _giant_lane_last(unit):
+            return len(BAND_LADDER_SECONDS) + 2
         est = costs.get(unit.source_id)
         if est is None or est < fast_lane_seconds:
             return 0
@@ -207,6 +211,33 @@ def _protected(unit) -> bool:
         if os.path.basename(str(p).rstrip("/\\")) in FIRSTPASS_DIRS:
             return True
     return False
+
+
+def _giant_lane_skip(unit, sources, scheduled) -> bool:
+    """Is this a `desktop_lane: skip` unit in a SCHEDULED pass? Then it is skipped, announced, never silent.
+
+    A MITIGATION, not the fix (R683 rule 3), and it partly reverses the R1838 reserve-decay design for the
+    units it names: the decay re-admits a giant ~7 days after a kill, at the head of a pass, where it is
+    killed again - about one lost pass per giant every 1-2 weeks. The flag stops that for the units MEASURED
+    as unable to finish (review AR-467): unctad_tradefoodprocbycat and unctad_tradefoodcatbyproc run
+    make(ds, source)'s windowless whole-release update with no Deadline, and their kills (10-03, 10-11, 11-06)
+    wrote no spill chunk, so each turn is a lost pass with zero progress. unctad_biotrademerch is NOT skipped:
+    it still makes durable progress, so it is `desktop_lane: last` (order_units sorts it after every unit).
+    Each flagged entry carries desktop_lane_exit (owner + exit condition; registry.validate refuses it absent).
+
+    THE SCHEDULED PASS IS NAMED BY THE CALLER, not inferred from --source: run_local_heavy.ps1 passes every
+    routed source as --source on its nightly pass too, so "an explicit --source" cannot tell that pass from
+    a manual one. The ps1 adds --scheduled when it was not given -Only; a run with no --source at all is
+    scheduled by definition. So the unit still runs on `run_local_heavy.ps1 -Only <sid>` and on a bare
+    `python -m updater.run --source <sid>`."""
+    if (unit.config or {}).get("desktop_lane") != "skip":
+        return False
+    return bool(scheduled) or not sources
+
+
+def _giant_lane_last(unit) -> bool:
+    """A `desktop_lane: last` unit: order_units sorts it after every other unit (see order_units)."""
+    return (getattr(unit, "config", None) or {}).get("desktop_lane") == "last"
 
 
 # Per-process owner token so leases are genuinely exclusive across runners.
@@ -3437,7 +3468,7 @@ def _catalog_ids_for(source_id: str, changed_keys):
 
 
 def run_once(sources=None, strategies=None, cadences=None, force=False, dry=False,
-             store=None, blob=None):
+             store=None, blob=None, scheduled=False):
     store = store or StateStore()
     # Validate the registry up front — fail loudly rather than silently run a
     # malformed/incomplete registry (the documented coverage gate). The expected
@@ -3580,6 +3611,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
     _RUN_DEADLINE_TS = run_deadline
     budget_skipped = []
     protected_skipped = []
+    giant_lane_skipped = []
     wrong_location = []
     not_due = []
     # THE LEFTOVER DRAIN'S CANDIDATES (_drain_leftover_retries): units that were NOT DUE, BUDGET SKIPPED (G1), an
@@ -3635,6 +3667,22 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             protected_skipped.append(unit.source_id)
             print(f"[orchestrator] PROTECTED {unit.key} — in-flight backfill, not "
                   f"attempted this run (FIRSTPASS_DIRS)", flush=True)
+            continue
+        if _giant_lane_skip(unit, sources, scheduled):
+            # ANNOUNCED where it happens, like PROTECTED: a pass that is hard-stopped never reaches the
+            # summary below, and a skip that leaves no trace reads as a bug (R101). Not a drain candidate
+            # and no state row, exactly like PROTECTED; health and the digest carry it from the registry.
+            giant_lane_skipped.append(unit.source_id)
+            print(f"[orchestrator] GIANT SKIP (ATTENTION) {unit.key} — registry desktop_lane: skip; not "
+                  f"attempted in a scheduled pass, so its store does NOT refresh. No current route can finish "
+                  f"it: run_local_heavy.ps1 -Only is clamped to the next CI writer and hard-stopped like this "
+                  f"pass; only -SkipCiCheck or T0 removes that. Exit: "
+                  f"{(unit.config or {}).get('desktop_lane_exit') or 'NOT DECLARED'}", flush=True)
+            if _after_t0():
+                # C2: after T0 the pass is not clamped, so the reason for the flag may be gone.
+                print(f"[orchestrator] WARNING GIANT SKIP {unit.key}: this is AFTER T0 - the desktop pass is no "
+                      f"longer clamped to a CI writer, so this flag may now freeze a unit that could finish. "
+                      f"Re-measure and remove desktop_lane per its exit condition.", flush=True)
             continue
         # AFTER the filters, deliberately: checked first it would count units that were
         # never in scope — a two-source dispatch reported "100 source(s) NOT ATTEMPTED".
@@ -4195,6 +4243,14 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
         print(f"[orchestrator] PROTECTED, not attempted this run: "
               f"{', '.join(sorted(set(protected_skipped)))} — in-flight backfill "
               f"(FIRSTPASS_DIRS). Expect RED-UNRUN/stale for these until it clears.",
+              flush=True)
+    if giant_lane_skipped:
+        # Restated for the same reason as PROTECTED. Their stores do NOT refresh on this pass, so health
+        # holds each at ATTENTION or worse (health.assess) and the digest lists them under their own label.
+        print(f"[orchestrator] GIANT SKIP (ATTENTION), not attempted in this scheduled pass: "
+              f"{', '.join(sorted(set(giant_lane_skipped)))} — registry desktop_lane: skip. Their stores "
+              f"do not refresh, and no current route can finish them (-Only is clamped and hard-stopped "
+              f"like this pass). Expect ATTENTION for these until each flag's exit condition is met.",
               flush=True)
     if budget_skipped:
         # LOUD, and never mistakable for a clean run: a capped run that reported only

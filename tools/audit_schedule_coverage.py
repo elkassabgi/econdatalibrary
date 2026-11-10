@@ -201,6 +201,14 @@ def scheduled_sources() -> tuple:
             continue
         why.setdefault(sid, "workstation route (run_location: local)")
 
+    # registry `desktop_lane: skip` (review AR-467): the scheduled desktop pass does not attempt the source
+    # (orchestrate._giant_lane_skip), and no route can finish a turn of it, so it is on paper only - whatever
+    # put it in `why` above (live: true, or the workstation route). `last` sources are still attempted.
+    for s in reg["sources"]:
+        if s.get("desktop_lane") == "skip":
+            why.pop(s["source_id"], None)
+            stranded[s["source_id"]] = "desktop_lane: skip (the scheduled desktop pass does not attempt it)"
+
     scheduled_sources.stranded = stranded
     return set(why), why
 

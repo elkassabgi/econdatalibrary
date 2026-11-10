@@ -62,6 +62,10 @@ def csv_misses_from_utc(v):
 # "lane" = a continuous job of the source's own (jobs/statcan_lane.py), which holds the region's
 # writer lock; the orchestrator then derives nothing for it (orchestrate._served_by_lane).
 SERVED_BY = {"lane"}
+# `desktop_lane` (optional): "skip" = the scheduled desktop pass does not attempt this source (only an explicit
+# request runs it, orchestrate._giant_lane_skip); "last" = it is ordered after every other unit
+# (orchestrate.order_units). Needs `desktop_lane_exit` (see validate).
+DESKTOP_LANES = {"skip", "last"}
 """`csv_grain` (optional registry field; default `series`). `flow` declares that one catalogue
 id serves a WHOLE store file (the resolver reads the file, not a keyed slice), as eurostat's
 `eurostat:<dataset>` ids do. `table` declares that one catalogue id serves every store key under its
@@ -220,6 +224,33 @@ def validate(reg: dict, expected_count: int | None = None, workflows_root: str |
             # reserve. tests/test_admit_window_stoppable.py pins the declared set against the fetchers.
             if e.get("window_stop") is not True:
                 problems.append(f"{sid}: window_stop must be true (or absent), got {e.get('window_stop')!r}")
+        if "desktop_lane" in e:
+            # A MITIGATION for windowless UNCTAD giants that held the desktop pass to its hard stop (review AR-467):
+            #   skip - the SCHEDULED desktop pass does not attempt the unit (orchestrate._giant_lane_skip); an
+            #          explicit request still does (run_local_heavy.ps1 -Only <sid>, or updater.run --source <sid>
+            #          without --scheduled). For units MEASURED as unable to finish a pass: their kills wrote no
+            #          spill chunk, so a turn is a lost pass with zero progress.
+            #   last - the unit is ORDERED after every other unit (orchestrate.order_units), so it is admitted only
+            #          after every other unit has run or been judged. For a unit still making durable progress.
+            # Fail-closed: exactly one of these two strings, only on a run_location: local source, never with
+            # window_stop (a fetcher that stops at the run ceiling bounds itself), and ALWAYS with
+            # `desktop_lane_exit`: a sentence naming the owner and the condition that removes the flag - a
+            # protection that outlives what it protects becomes the outage (orchestrate.py FIRSTPASS_DIRS note).
+            # tests/test_giant_lane.py pins the flagged set and every refusal here.
+            dx = e.get("desktop_lane_exit")
+            if not isinstance(dx, str) or not dx.strip():
+                problems.append(f"{sid}: desktop_lane needs desktop_lane_exit - a non-empty sentence naming the "
+                                f"owner and the condition that removes the flag, got {dx!r}")
+            if e.get("desktop_lane") not in DESKTOP_LANES:
+                problems.append(f"{sid}: desktop_lane must be one of {sorted(DESKTOP_LANES)}, "
+                                f"got {e.get('desktop_lane')!r}")
+            if e.get("run_location") != "local":
+                problems.append(f"{sid}: desktop_lane needs run_location: local (only the desktop pass reads it)")
+            if e.get("window_stop") is True:
+                problems.append(f"{sid}: desktop_lane and window_stop together - a window-stoppable fetcher "
+                                f"bounds itself and belongs in the scheduled pass")
+        elif "desktop_lane_exit" in e:
+            problems.append(f"{sid}: desktop_lane_exit without desktop_lane - remove both together")
     if expected_count is not None and len(sources) != expected_count:
         problems.append(f"expected {expected_count} sources, found {len(sources)}")
     return problems
@@ -255,7 +286,11 @@ def to_units(entry: dict) -> list[Unit]:
                 # long as something else happens to be blocking the traffic.
                 "run_location": entry.get("run_location") or "any",
                 # The start gate's window-stop declaration (see validate): `is True` only.
-                "window_stop": entry.get("window_stop") is True}
+                "window_stop": entry.get("window_stop") is True,
+                # The scheduled pass's skip declaration (see validate): the validated value, else None.
+                "desktop_lane": entry.get("desktop_lane") if entry.get("desktop_lane") in DESKTOP_LANES else None,
+                "desktop_lane_exit": entry.get("desktop_lane_exit") if entry.get("desktop_lane") in DESKTOP_LANES
+                else None}
     units_spec = entry.get("units")
     if units_spec:
         out = []
