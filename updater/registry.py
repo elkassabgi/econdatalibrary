@@ -71,10 +71,13 @@ id serves a WHOLE store file (the resolver reads the file, not a keyed slice), a
 `eurostat:<dataset>` ids do. `table` declares that one catalogue id serves every store key under its
 table prefix inside a SHARED store file (the resolver's prefix arm: dst's `dst:DST:<TABLE>` reads the
 `DST:<TABLE>:...` keys of its subject parquet), so neither the series-grain bulk campaign (one object per
-store key - R498; dst measured 2026-10-19: 959,014 store keys against 2,264 table ids) nor the whole-file flow path is right for it; only
-the health gate's remedy text reads it today. Two things key on `flow`: the health gate's remedy text for a
-`full_rederive_owed` row (the series-grain bulk tool writes 0 objects for such a source, R882)
-and the cloud derive's in-memory row ceiling (a whole-file CSV can be 8M+ rows). Pinned to the
+store key - R498; dst measured 2026-10-19: 959,014 store keys against 2,264 table ids) nor the whole-file flow path is right for it.
+`table` is read by exactly two things: the health gate's remedy text and tools/derive_csv_bulk.py's campaign
+refusal; the orchestrator compares only `== "flow"`, so `table` derives exactly as `series` there
+(tests/test_flow_grain_remedy_hazard.py pins it). Every `econdl._resolve._FLOW_GRAIN` member declares it
+(same test). Things that key on `flow`: the health gate's remedy text for a
+`full_rederive_owed` row (the series-grain bulk tool writes 0 objects for such a source, R882), the bulk
+tool's campaign refusal, and the cloud derive's in-memory row ceiling (a whole-file CSV can be 8M+ rows). Pinned to the
 resolver by `tests/test_csv_grain_field.py`, so the registry cannot claim a grain the resolver
 does not have (the R875 drift class: three grain registries already exist)."""
 

@@ -1109,8 +1109,10 @@ def _uncatalogued_by_form(source_id: str, unmapped) -> bool:
 
 
 def _csv_grain(source_id: str) -> str:
-    """The registry's `csv_grain` for a source ('series' unless declared 'flow'). Cached:
-    the registry is one YAML load and this is asked once per unit."""
+    """The registry's `csv_grain` for a source: its declared value ('flow' or 'table'), else 'series'.
+    Every caller here compares `== "flow"` only, so a `table` source derives exactly as a `series` one
+    (tests/test_flow_grain_remedy_hazard.py pins it). Cached: the registry is one YAML load and this is
+    asked once per unit."""
     cache = _csv_grain.__dict__.setdefault("_cache", {})
     if not cache:
         try:

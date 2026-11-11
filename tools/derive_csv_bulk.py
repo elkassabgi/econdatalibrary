@@ -395,6 +395,37 @@ def main() -> int:
         print(f"REFUSING: cannot read the registry to check {a.source}'s csv_misses "
               f"({type(_re).__name__}: {str(_re)[:80]})")
         return 2
+    # A PREFIX- OR FILE-GRAIN SOURCE, WHATEVER THE REGISTRY SAYS (2026-11-11, the bfs remedy hazard). The
+    # client resolver serves every `_FLOW_GRAIN` / `_DOT_TABLE_GRAIN` member by a key PREFIX, and a
+    # `csv_grain: flow` source by a whole file; this tool honours neither - it writes one object per STORE key.
+    # On bfs that is ~484k objects no catalogue id names, its --verify still passes (the resolver's exact-equal
+    # arm matches a full store key), and the zero-error end then clears the owed row unpaid. So a campaign is
+    # refused on the RESOLVER's word too, not only the registry's, and refused when the set cannot be read:
+    # refuse, never guess. Only the clear is allowed.
+    try:
+        from econdl import _resolve as _rz                              # noqa: PLC0415
+        _prefix_grain = set(_rz._FLOW_GRAIN) | set(_rz._DOT_TABLE_GRAIN)
+    except Exception as _ie:                                           # noqa: BLE001
+        _prefix_grain = None
+        _prefix_err = f"{type(_ie).__name__}: {str(_ie)[:80]}"
+    if not a.clear_owed_only:
+        if _prefix_grain is None:
+            print(f"REFUSING: cannot read the resolver's prefix-grain sources to check {a.source} "
+                  f"({_prefix_err}). Without them this tool cannot tell whether it would write one object per "
+                  f"store key where one catalogue id serves many. --clear-owed-only still runs.")
+            return 2
+        if _ent.get("csv_grain") == "flow":
+            print(f"REFUSING: {a.source} is csv_grain: flow - one catalogue id serves a whole store file and "
+                  f"this tool writes one object per store key. Derive the changed flow ids with python -m "
+                  f"core.derive_csv --source {a.source} --only <file of those ids>, read them back, then run "
+                  f"--clear-owed-only.")
+            return 2
+        if a.source in _prefix_grain and not _table_grain:
+            print(f"REFUSING: {a.source} is served by key PREFIX (econdl._resolve) but its registry entry does "
+                  f"not declare csv_grain: table - this tool writes one object per store key, not per catalogue "
+                  f"id (R498). Re-derive the ids that differ with python -m core.derive_csv --source {a.source} "
+                  f"--only <file of those ids>, read them back, then run --clear-owed-only.")
+            return 2
     if _table_grain and not a.clear_owed_only:
         # A TABLE-GRAIN SOURCE (registry `csv_grain: table`, dst): one catalogue id serves every store key under
         # its table prefix, and this tool writes one object per STORE key - wrong-grain objects that no catalogue

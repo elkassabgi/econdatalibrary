@@ -307,6 +307,22 @@ def giant_skip_held(entry: dict) -> bool:
     return (entry or {}).get("desktop_lane") == "skip"
 
 
+def _resolver_prefix_grain() -> set | None:
+    """Sources the client resolver serves by a key PREFIX (`econdl._resolve._FLOW_GRAIN` and
+    `_DOT_TABLE_GRAIN`): one catalogue id serves every store key under it. Imported, never retyped
+    (R191/R192). None when the resolver cannot be imported - the caller then knows nothing and keeps
+    the registry's word (tools/derive_csv_bulk.py refuses a campaign on that same failure)."""
+    import os                                                            # noqa: PLC0415
+    try:
+        p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "clients", "python")
+        if p not in sys.path:
+            sys.path.insert(0, p)
+        from econdl import _resolve                                      # noqa: PLC0415
+        return set(_resolve._FLOW_GRAIN) | set(_resolve._DOT_TABLE_GRAIN)
+    except Exception:                                                    # noqa: BLE001
+        return None
+
+
 def assess(store=None) -> dict:
     store = store or StateStore()
     now = datetime.now(timezone.utc)
@@ -569,7 +585,12 @@ def assess(store=None) -> dict:
                            f"against R2's parquets, then `tools/derive_csv_bulk.py --source "
                            f"{sid} --clear-owed-only`; the bulk tool alone writes nothing at "
                            f"this grain")
-            elif e.get("csv_grain") == "table":
+            elif e.get("csv_grain") == "table" or (
+                    not e.get("csv_grain") and sid in (_resolver_prefix_grain() or ())):
+                # A source the RESOLVER serves by prefix gets this text even with no declaration
+                # (defence in depth: tests/test_flow_grain_remedy_hazard.py ratchets the declaration for
+                # every _FLOW_GRAIN member, and an undeclared one must still never read the bulk campaign;
+                # bfs, 2026-11-11: 582 table ids over 483,667 store keys).
                 # TABLE grain (registry `csv_grain: table`, dst): one catalogue id serves every store key
                 # under its table prefix inside a shared file. The bulk campaign writes one object per STORE
                 # key (R498), so it must never be named here. The debt is first CHECKED, because this source
