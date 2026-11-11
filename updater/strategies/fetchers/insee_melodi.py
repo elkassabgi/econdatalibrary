@@ -205,7 +205,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize, load_rotation, rotate_after, save_rotation
+from ._common import Tally, finalize, load_rotation, parse_retry_after_s, rotate_after, save_rotation
 from . import _giant
 from . import _melodi_state as S
 
@@ -219,7 +219,9 @@ PAGE_CEILING = 20000     # cumulative per-attempt bound so a malformed paging bl
 CHUNK_PAGES = 100        # pages per staged chunk object
 MAX_ATTEMPTS = 5
 TIMEOUT = 120
-RATE = 2.1               # 30 req/min keyless limit -> >=2s between calls
+RETRY_AFTER_DEFAULT_S = 60   # a 429 with no usable Retry-After waits this long
+RETRY_AFTER_CAP_S = 120      # and no 429 waits longer than this, whatever the header asks
+RATE = 2.1              # 30 req/min keyless limit -> >=2s between calls
 PAGE_DELAY = 2.1         # between pages of the same flow (same 30 req/min budget)
 
 CLASSIFY_UNTIL_MIN = 5   # slot ends (minutes into the pass); the soft stop (35) ends the repair slot
@@ -336,8 +338,12 @@ def _request(sess, url, clock):
         elif r.status_code in (400, 404):
             return "nodata", r.status_code
         elif r.status_code == 429:
-            ra = r.headers.get("Retry-After")
-            wait = min(int(ra) if (ra and ra.isdigit()) else 60, 120)
+            # The one strict parser (R1870, AR-471). The old `int(ra) if ra.isdigit()` let "²"
+            # through (str.isdigit is True for it, int() refuses it), and that ValueError is raised
+            # OUTSIDE the try above, so one odd header ended the pass. A past HTTP-date floors to 0.
+            ra = parse_retry_after_s(r)
+            wait = (min(max(ra, 0), RETRY_AFTER_CAP_S) if ra is not None
+                    else RETRY_AFTER_DEFAULT_S)
             last = "HTTP 429"
             if attempt == MAX_ATTEMPTS - 1:
                 break
