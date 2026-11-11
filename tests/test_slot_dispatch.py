@@ -771,10 +771,12 @@ def test_cli_refuses_bad_values(argv, tmp_path):
 def test_process_check_sees_a_planted_process_and_a_clean_zero():
     """R1859: the checker's own command line contains the pattern; it must exclude itself, and see a real one."""
     pat = f"zz_{uuid.uuid4().hex[:10]}.ps1"
-    assert ed.local_pass_running(pat) is False
+    m0, u0 = ed.local_pass_probe(pat)
+    assert m0 == 0 and u0 >= 0                 # unreadable ones (elevated) are counted apart, never as a match
     p = subprocess.Popen(["powershell", "-NoProfile", "-Command", f"Start-Sleep 25 # {pat}"])
     try:
         time.sleep(3)
+        assert ed.local_pass_probe(pat)[0] == 1
         assert ed.local_pass_running(pat) is True
     finally:
         p.kill()
@@ -897,8 +899,11 @@ def test_one_marker_path_for_gate_and_dispatcher(tmp_path):
 def test_process_check_text_pins_self_exclusion_null_rule_and_pattern():
     assert ed.LOCAL_PASS_SCRIPT == "run_local_heavy.ps1"
     assert ed.local_pass_running.__defaults__[0] == "run_local_heavy.ps1"
+    assert ed.local_pass_probe.__defaults__[0] == "run_local_heavy.ps1"
     assert "$_.ProcessId -ne $PID" in ed._PS_CHECK                    # R1859
-    assert "$null -eq $_.CommandLine -or" in ed._PS_CHECK             # an unreadable command line counts
+    assert "$null -eq $_.CommandLine }).Count" in ed._PS_CHECK        # an unreadable command line is COUNTED (L-c)
+    assert "$null -ne $_.CommandLine -and" in ed._PS_CHECK            # ... separately from a matched one
+    assert 'Write-Output \\"$m $u\\"' in ed._PS_CHECK or 'Write-Output "$m $u"' in ed._PS_CHECK
     assert "powershell.exe" in ed._PS_CHECK and "pwsh.exe" in ed._PS_CHECK
 
 
@@ -957,3 +962,353 @@ def test_v2_replay_gate_blocks_an_uncredited_cron():
     assert rec["settled_at"] is None or rec["settled_at"] > t
     assert rp._v2_pending(t) is True
     assert rp._v2_pending(T("2026-11-12T02:59:00Z")) is False
+
+
+# ------------------------------------------------------------------ install hardening (AR-470 round 2: L-a, L-b, L-c)
+SLOT03 = "heavy-03Z-2026-11-12"
+
+
+def _evicted(rid, created="2026-11-12T03:01:00Z"):
+    return row(rid, created, event="workflow_dispatch", title=f"slot {SLOT03}", conclusion="cancelled")
+
+
+def test_la_lost_state_cannot_reset_the_dispatch_limit(tmp_path):
+    """L-a: no state file at all, but GitHub lists TWO evicted slot dispatches of the slot: the limit holds."""
+    d0, h0 = _hist()
+    gh = FakeGh(d0, h0 + [_evicted(72), _evicted(73, "2026-11-12T03:20:00Z")], jobs={72: [], 73: []})
+    d = _disp(tmp_path, gh, now=T("2026-11-12T04:30:00Z"))
+    assert not os.path.exists(d.paths["state"])
+    d.echo = True
+    d.look()
+    assert gh.sent == []
+    assert "listed 2" in open(d.paths["log"], encoding="utf-8").read()
+
+
+def test_la_control_one_listed_eviction_and_no_state_redispatches_once_and_heals_the_count(tmp_path, monkeypatch):
+    monkeypatch.setattr(ed, "LIST_WAIT_S", 0)
+    d0, h0 = _hist()
+    gh = FakeGh(d0, h0 + [_evicted(72)], jobs={72: []})
+    d = _disp(tmp_path, gh, now=T("2026-11-12T03:30:00Z"))
+    d.look()
+    assert gh.sent == [(H, {"slot": SLOT03})]
+    assert d.load_state()["slots"][SLOT03]["sent"] == 2           # max(state 0, listed 1) + 1
+
+
+def test_la_reset_count_in_state_is_not_trusted_over_the_listing(tmp_path):
+    d0, h0 = _hist()
+    gh = FakeGh(d0, h0 + [_evicted(72), _evicted(73, "2026-11-12T03:20:00Z")], jobs={72: [], 73: []})
+    d = _disp(tmp_path, gh, now=T("2026-11-12T04:30:00Z"))
+    d.save_state({"slots": {SLOT03: {"sent": 0}}})
+    d.look()
+    assert gh.sent == []
+
+
+def _plant_checkout(root, guard_root=None, runner=None, guard_text=None):
+    """A fake checkout with the runner's real path lines and a guard script naming `guard_root`."""
+    os.makedirs(os.path.join(root, "tools"), exist_ok=True)
+    os.makedirs(os.path.join(root, "logs"), exist_ok=True)
+    src = runner if runner is not None else open(os.path.join(ROOT, "tools", "run_local_heavy.ps1"),
+                                                 encoding="utf-8-sig").read()
+    with open(os.path.join(root, "tools", "run_local_heavy.ps1"), "w", encoding="utf-8") as f:
+        f.write(src)
+    if guard_text is None:
+        guard_text = (f'$root = "{guard_root if guard_root is not None else root}"\n'
+                      "$heavy = Join-Path (Join-Path $root 'tools') 'run_local_heavy.ps1'\n")
+    if guard_text is not False:
+        with open(os.path.join(root, "RELAUNCH_GUARD.ps1"), "w", encoding="utf-8") as f:
+            f.write(guard_text)
+    return str(root)
+
+
+def _probs(root, gate_root=None):
+    gate_root = root if gate_root is None else gate_root
+    return ed.root_problems(root, gate_root=gate_root,
+                            gate_marker=os.path.join(gate_root, "logs", os.path.basename(g.MARKER_PATH)))
+
+
+def test_lb_positive_control_the_desktop_checkout_passes(tmp_path):
+    root = _plant_checkout(tmp_path / "prod")
+    assert _probs(root) == []
+
+
+@pytest.mark.parametrize("case", ["no_guard", "guard_elsewhere", "guard_no_root", "guard_no_runner", "no_runner",
+                                  "runner_lock_moved", "runner_gate_moved", "other_gate_checkout"])
+def test_lb_refuses_any_checkout_but_the_desktop_pass_one(tmp_path, case):
+    real = open(os.path.join(ROOT, "tools", "run_local_heavy.ps1"), encoding="utf-8-sig").read()
+    root = str(tmp_path / "clone")
+    gate_root = None
+    if case == "no_guard":
+        _plant_checkout(root, guard_text=False)
+    elif case == "guard_elsewhere":
+        _plant_checkout(root, guard_root=str(tmp_path / "prod"))
+    elif case == "guard_no_root":
+        _plant_checkout(root, guard_text="# no root line\n& run_local_heavy.ps1\n")
+    elif case == "guard_no_runner":
+        _plant_checkout(root, guard_text=f'$root = "{root}"\n')
+    elif case == "no_runner":
+        _plant_checkout(root)
+        os.remove(os.path.join(root, "tools", "run_local_heavy.ps1"))
+    elif case == "runner_lock_moved":
+        _plant_checkout(root, runner=real.replace("Join-Path $logDir 'local_heavy.lock'",
+                                                  "Join-Path 'C:\\other' 'local_heavy.lock'"))
+    elif case == "runner_gate_moved":
+        _plant_checkout(root, runner=real.replace("Join-Path $repo 'tools\\ci_writer_gate.py'",
+                                                  "Join-Path 'C:\\other' 'tools\\ci_writer_gate.py'"))
+    elif case == "other_gate_checkout":
+        _plant_checkout(root)
+        gate_root = _plant_checkout(tmp_path / "prod")
+    probs = _probs(root, gate_root)
+    want = {"no_guard": "RELAUNCH_GUARD.ps1 cannot be read", "guard_elsewhere": "starts the desktop pass from",
+            "guard_no_root": "has no $root", "guard_no_runner": "does not start run_local_heavy.ps1",
+            "no_runner": "has no desktop pass", "runner_lock_moved": "no longer derives its lock",
+            "runner_gate_moved": "no longer derives its lock",
+            "other_gate_checkout": "is not the checkout this program and its gate run from"}[case]
+    assert any(want in p for p in probs), (case, probs)
+
+
+def test_la_unreadable_sent_count_is_the_limit(tmp_path):
+    d0, h0 = _hist()
+    gh = FakeGh(d0, h0 + [_evicted(72)], jobs={72: []})
+    d = _disp(tmp_path, gh, now=T("2026-11-12T03:30:00Z"))
+    d.save_state({"slots": {SLOT03: {"sent": "garbage"}}})
+    d.look()
+    assert gh.sent == []
+
+
+def test_lb_marker_must_be_the_gates_marker(tmp_path):
+    root = _plant_checkout(tmp_path / "prod")
+    probs = ed.root_problems(root, gate_root=root, gate_marker=os.path.join(root, "elsewhere", "econ_dispatch.marker"))
+    assert any("marker" in p for p in probs)
+
+
+def test_lb_dispatcher_uses_the_checked_paths(tmp_path):
+    d = ed.Dispatcher(str(tmp_path))
+    p = ed.root_paths(str(tmp_path))
+    assert d.paths["marker"] == p["marker"] and d.lock_file == p["lock"]
+    assert p["lock"] == os.path.join(str(tmp_path), "logs", "local_heavy.lock")
+    assert os.path.basename(p["marker"]) == os.path.basename(g.MARKER_PATH)
+
+
+def test_lb_runner_literals_are_in_the_real_runner():
+    src = open(os.path.join(ROOT, "tools", "run_local_heavy.ps1"), encoding="utf-8-sig").read()
+    assert [lit for lit in ed.RUNNER_PATH_LITERALS if lit not in src] == []
+
+
+@pytest.mark.parametrize("argv", [["--once"], ["manual", "--workflow", "updater-daily.yml", "--wait-min", "0"], []])
+def test_lb_cli_refuses_to_start_outside_the_desktop_checkout(argv, tmp_path):
+    """The real-gh CLI from a root that is not the desktop pass's checkout exits 2 before any gh call."""
+    r = _cli(argv, tmp_path)
+    assert r.returncode == 2 and "not the checkout the desktop pass runs from" in r.stderr, (r.returncode,
+                                                                                            r.stderr[-400:])
+
+
+def test_lb_cli_dry_run_only_warns(tmp_path):
+    r = _cli(["--once", "--dry-run"], tmp_path)
+    assert "WARNING (dry run, nothing is sent)" in r.stderr, r.stderr[-400:]
+    assert "Nothing was done" not in r.stderr
+
+
+def test_lb_guard_copy_and_launcher_draft_name_the_same_checkout():
+    guard = open(os.path.join(ROOT, "tools", "machine", "RELAUNCH_GUARD.ps1.workstation-copy"),
+                 encoding="utf-8-sig").read()
+    m = ed._GUARD_ROOT_RE.search(guard)
+    assert m and "run_local_heavy.ps1" in guard
+    draft = open(os.path.join(ROOT, "tools", "machine", "EconSlotDispatch.cmd.draft"), encoding="ascii").read()
+    prod = m.group(1)
+    assert f"'{prod}\\tools\\econ_dispatch.py' loop" in draft
+    assert f"Set-Location '{prod}'" in draft
+
+
+def _probe_disp(tmp_path, gh, probe, now=NOW):
+    os.makedirs(tmp_path / "logs", exist_ok=True)
+    return ed.Dispatcher(str(tmp_path), gh, now=lambda: now, sleep=lambda _s: None, lock_present=lambda: False,
+                         pass_probe=probe)
+
+
+def _loud_lines(d):
+    try:
+        return [ln for ln in open(d.paths["log"], encoding="utf-8") if "LOUD:" in ln]
+    except FileNotFoundError:
+        return []
+
+
+def test_lc_unreadable_command_line_blocks_loudly_and_rate_limited(tmp_path):
+    gh = FakeGh(*_hist())
+    d = _probe_disp(tmp_path, gh, lambda: (0, 2))
+    assert d.look() == 0 and gh.sent == []                         # fail safe
+    assert not os.path.exists(d.paths["marker"])
+    assert len(_loud_lines(d)) == 1 and "V2 IS STALLED" in _loud_lines(d)[0]
+    pc = d.load_state()["process_check"]
+    assert pc["state"] == "unreadable" and pc["unreadable_procs"] == 2 and pc["blocked_looks"] == 1
+    for minutes in (1, 30, 59):                                    # inside the hour: no second loud line
+        d2 = _probe_disp(tmp_path, FakeGh(*_hist()), lambda: (0, 2), now=NOW + dt.timedelta(minutes=minutes))
+        d2.look()
+    assert len(_loud_lines(d)) == 1
+    assert d.load_state()["process_check"]["blocked_looks"] == 4
+    assert d.load_state()["process_check"]["unreadable_since"] == iso(NOW)
+    d3 = _probe_disp(tmp_path, FakeGh(*_hist()), lambda: (0, 2), now=NOW + dt.timedelta(minutes=61))
+    d3.look()
+    assert len(_loud_lines(d)) == 2
+
+
+def test_lc_heartbeat_carries_the_field_and_clears_when_readable(tmp_path, monkeypatch):
+    monkeypatch.setattr(ed, "LIST_WAIT_S", 0)
+    d = _probe_disp(tmp_path, FakeGh(*_hist()), lambda: (0, 1))
+    d.look()
+    d.heartbeat()
+    lines = open(d.paths["heartbeat"], encoding="utf-8").read().splitlines()
+    assert lines[0] == iso(NOW)
+    import json as _json
+    f = _json.loads(lines[1])
+    assert f["process_check"] == "unreadable" and f["unreadable_since"] == iso(NOW) and f["unreadable_procs"] == 1
+    gh = FakeGh(*_hist())
+    d2 = _probe_disp(tmp_path, gh, lambda: (0, 0), now=NOW + dt.timedelta(minutes=5))
+    d2.look()
+    assert gh.sent == [(H, {"slot": SLOT03})]                      # control: a readable check dispatches
+    assert "readable again" in open(d2.paths["log"], encoding="utf-8").read()
+    d2.heartbeat()
+    f2 = _json.loads(open(d2.paths["heartbeat"], encoding="utf-8").read().splitlines()[1])
+    assert f2["process_check"] == "clear"
+
+
+def test_lc_matched_process_is_not_reported_as_unreadable(tmp_path):
+    d = _probe_disp(tmp_path, FakeGh(*_hist()), lambda: (1, 3))
+    d.look()
+    assert _loud_lines(d) == [] and "process_check" not in d.load_state()
+
+
+def test_lc_slot_alarm_shadow_reads_the_field(tmp_path):
+    import scheduler_stall as ss
+    now = T("2026-11-12T05:30:00Z")
+    hb = tmp_path / "hb"
+    sched = {D: [row(10, "2026-11-11T12:00:00Z", title="cron 0 6 * * *")],
+             H: [row(11, "2026-11-11T09:00:00Z", title="cron 0 3 * * *"),
+                 row(30, "2026-11-12T03:01:00Z", event="workflow_dispatch", title=f"slot {SLOT03}")]}
+    fresh = iso(now - dt.timedelta(minutes=1))
+    hb.write_text(fresh + '\n{"process_check": "clear", "checked_utc": "' + fresh + '"}\n', encoding="utf-8")
+    assert ss.dispatch_shadow(sched, None, now, heartbeat=str(hb))["flags"] == []          # control
+    hb.write_text(fresh + "\n", encoding="utf-8")                                        # pre-field dispatcher
+    assert ss.dispatch_shadow(sched, None, now, heartbeat=str(hb))["flags"] == []
+    hb.write_text(fresh + '\n{"process_check": "unreadable", "unreadable_since": "2026-11-12T01:00:00Z", '
+                  '"unreadable_procs": 2, "blocked_looks": 7, "last_seen_utc": "' + fresh + '"}\n', encoding="utf-8")
+    out = ss.dispatch_shadow(sched, None, now, heartbeat=str(hb))
+    assert any("BLOCKED since 2026-11-12T01:00:00Z" in f for f in out["flags"]), out
+    assert "UNREADABLE" in out["dispatcher"] and out["mode"].startswith("shadow")
+    hb.write_text(fresh + "\nnot json\n", encoding="utf-8")
+    assert any("line 2" in f for f in ss.dispatch_shadow(sched, None, now, heartbeat=str(hb))["flags"])
+
+
+def test_lc_shadow_reads_what_the_dispatcher_writes(tmp_path):
+    """End to end: the dispatcher's own heartbeat file, read by the shadow."""
+    import scheduler_stall as ss
+    d = _probe_disp(tmp_path, FakeGh(*_hist()), lambda: (0, 1))
+    d.look()
+    d.heartbeat()
+    sched = {D: [row(10, "2026-11-11T12:00:00Z", title="cron 0 6 * * *")], H: _hist()[1]}
+    out = ss.dispatch_shadow(sched, None, NOW + dt.timedelta(minutes=1), heartbeat=d.paths["heartbeat"])
+    assert any("BLOCKED" in f for f in out["flags"]), out
+
+
+@pytest.mark.skipif(os.name != "nt", reason="a Windows named mutex")
+def test_mutex_allows_only_one_loop(tmp_path):
+    name = f"Local\\EconSlotDispatchLoop_test_{uuid.uuid4().hex[:12]}"
+    held = ed.NamedMutex(name)
+    assert held.acquire()
+    try:
+        gh = FakeGh(*_hist())
+        d = _disp(tmp_path, gh)
+        d.mutex_name = name
+        assert d.loop(looks=1, sleep_s=0) == 0
+        assert gh.calls == []                                      # left without looking
+        assert "holds the loop mutex" in open(d.paths["log"], encoding="utf-8").read()
+    finally:
+        held.release()
+    gh2 = FakeGh(*_hist())                                         # control: released, the loop looks
+    d2 = _disp(tmp_path, gh2)
+    d2.mutex_name = name
+    d2.loop(looks=1, sleep_s=0)
+    assert gh2.calls != []
+    again = ed.NamedMutex(name)                                    # and the loop released it on the way out
+    assert again.acquire()
+    again.release()
+
+
+def test_mutex_name_is_one_per_root_written_one_way(tmp_path):
+    a = ed.mutex_name_for(str(tmp_path))
+    assert a == ed.mutex_name_for(str(tmp_path) + os.sep)
+    assert a.startswith("Local\\EconSlotDispatchLoop_") and a != ed.mutex_name_for(str(tmp_path / "x"))
+    assert ed.Dispatcher(str(tmp_path)).mutex_name == a
+
+
+def test_launcher_draft_header_and_command():
+    p = os.path.join(ROOT, "tools", "machine", "EconSlotDispatch.cmd.draft")
+    txt = open(p, encoding="ascii").read()                        # ASCII only (R196)
+    head = [ln for ln in txt.splitlines() if ln.startswith("rem")]
+    body = [ln for ln in txt.splitlines() if ln.strip() and not ln.startswith("rem") and ln.strip() != "@echo off"]
+    joined = "\n".join(head)
+    for word in ("NOT INSTALLED", "Stop switch", "STOP_DISPATCH", "Heartbeat", "econ_dispatch.heartbeat", "Log ",
+                 "econ_dispatch.log", "Remove", "mutex", "LOG-ON"):
+        assert word in joined, word
+    assert len(body) == 1 and body[0].startswith('start "" powershell -NoProfile -ExecutionPolicy Bypass '
+                                                 '-WindowStyle Hidden -Command ')
+    for bad in ("--gh", "--root", "--now", "--looks", "--sleep", "--dry-run", "--once", "manual"):
+        assert bad not in body[0], bad
+    assert body[0].count("econ_dispatch.py' loop") == 1
+    assert not os.path.basename(p).endswith(".cmd")               # a draft cannot run from Startup by accident
+
+
+# ------------------------------------------------------------------ AR-470 round 3 (R1875): the probe fails CLOSED
+class _Out:
+    def __init__(self, returncode, stdout, stderr=""):
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+
+@pytest.mark.parametrize("out", [_Out(1, "0 0\n", "cim failed"), _Out(0, "5\n"), _Out(0, "x 0\n"), _Out(0, "")],
+                         ids=["returncode_1", "one_field", "non_digit", "empty_stdout"])
+def test_probe_raises_on_output_it_cannot_measure(monkeypatch, out):
+    """An answer the probe cannot read must raise, never read as (0, 0) = "no pass running" (R503 class)."""
+    monkeypatch.setattr(ed, "_IS_WINDOWS", True)
+    calls = []
+
+    def fake_run(argv, *a, **k):
+        calls.append(argv)
+        return out
+    monkeypatch.setattr(ed.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="process check failed"):
+        ed.local_pass_probe("run_local_heavy.ps1")
+    with pytest.raises(RuntimeError):
+        ed.local_pass_running("run_local_heavy.ps1")
+    assert calls and calls[0][0] == "powershell"
+
+
+def test_probe_control_reads_two_counts(monkeypatch):
+    monkeypatch.setattr(ed, "_IS_WINDOWS", True)
+    monkeypatch.setattr(ed.subprocess, "run", lambda *a, **k: _Out(0, "noise\n1 2\n"))
+    assert ed.local_pass_probe() == (1, 2)
+
+
+def test_probe_that_raises_means_no_dispatch_and_a_log_line(tmp_path, monkeypatch):
+    """The real probe, fed unreadable output, inside a look: logged, return 1, and gh gets no `workflow run`."""
+    monkeypatch.setattr(ed, "_IS_WINDOWS", True)
+    real_run = ed.subprocess.run
+
+    def fake_run(argv, *a, **k):
+        if argv and argv[0] == "powershell":
+            return _Out(0, "garbage\n")
+        return real_run(argv, *a, **k)
+    monkeypatch.setattr(ed.subprocess, "run", fake_run)
+    gh = FakeGh(*_hist())
+    os.makedirs(tmp_path / "logs", exist_ok=True)
+    d = ed.Dispatcher(str(tmp_path), gh, now=lambda: NOW, sleep=lambda _s: None, lock_present=lambda: False)
+    assert d._pass_probe is ed.local_pass_probe            # the REAL probe, not an injected one
+    assert d.look() == 1
+    assert gh.sent == []                                     # no `workflow run` reached the fake gh
+    log = open(d.paths["log"], encoding="utf-8").read()
+    assert "process check failed" in log and "not now" in log
+    assert not os.path.exists(d.paths["marker"])            # the marker of an unsent dispatch is removed
+
+
+def test_probe_off_windows_raises_never_reads_as_idle(monkeypatch):
+    monkeypatch.setattr(ed, "_IS_WINDOWS", False)
+    with pytest.raises(RuntimeError, match="needs Windows"):
+        ed.local_pass_probe()

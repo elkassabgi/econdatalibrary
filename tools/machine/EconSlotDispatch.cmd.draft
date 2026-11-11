@@ -1,0 +1,34 @@
+@echo off
+rem EconSlotDispatch - DRAFT. NOT INSTALLED. Log-on launcher for the econ desktop slot dispatcher (PLAN V2,
+rem review AR-470, PR #254 and its install-hardening follow-up).
+rem
+rem INSTALL ONLY AFTER both PRs are merged, E:\research\econfindatalibrary is pulled to that main, and a
+rem post-merge receipt on a real cloud run has passed. The owner installs it; no agent does.
+rem   Install : copy this file to %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\EconSlotDispatch.cmd
+rem             (drop ".draft"), then log off and on, or run the copied file once.
+rem
+rem HOW IT RUNS (decided from the PR #254 code): its OWN loop, not a call from the guard tick.
+rem   "python tools\econ_dispatch.py loop" looks once a minute and dispatches a cron slot at its own time. The guard
+rem   tick (RELAUNCH_GUARD_LOOP.ps1) comes every 300 s and kills a tick after 120 s, while one look may wait up to
+rem   300 s for a sent dispatch to be listed; the slot alarm also expects a beat at least every 30 min
+rem   (scheduler_stall DISPATCH_HEARTBEAT_STALE).
+rem
+rem ONE COPY ONLY. The loop holds a named mutex (Local\EconSlotDispatchLoop_<root>) and the file lock
+rem   logs\econ_dispatch.loop.lock; a second copy logs "this copy leaves" and exits 0. With the real gh the program
+rem   also refuses to start from any checkout other than the one RELAUNCH_GUARD.ps1 runs run_local_heavy.ps1 from
+rem   (L-b), so a copy started from a clone exits 2 and sends nothing.
+rem
+rem   Stop switch : create E:\research\econfindatalibrary\logs\STOP_DISPATCH (or STOP_DISPATCH at the repo root);
+rem                 delete it to resume. The loop keeps running and keeps its heartbeat; it dispatches nothing.
+rem   Heartbeat   : E:\research\econfindatalibrary\logs\econ_dispatch.heartbeat - line 1 the UTC time of the last
+rem                 look, line 2 a JSON field ("process_check": "unreadable" = every dispatch blocked, see L-c).
+rem   Log         : E:\research\econfindatalibrary\logs\econ_dispatch.log (console output and a crash trace go to
+rem                 logs\econ_dispatch.console.log). State: logs\econ_dispatch.state.json.
+rem   Remove      : delete the Startup copy EconSlotDispatch.cmd and end the python process that runs
+rem                 "econ_dispatch.py loop" (or create the STOP file first). The crons of updater-heavy.yml and
+rem                 updater-daily.yml stay as they are and serve every slot, as before V2.
+rem   Look by hand: python tools\econ_dispatch.py --once --dry-run   (real gh, sends nothing, writes no state)
+rem
+rem Same mechanism as EconGuard.cmd and HfDailyDispatch.cmd: a Startup launcher fires at LOG-ON only.
+rem The interpreter is the same one RELAUNCH_GUARD_LOOP.ps1 pins, found through LOCALAPPDATA.
+start "" powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "Set-Location 'E:\research\econfindatalibrary'; & (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python314\python.exe') 'E:\research\econfindatalibrary\tools\econ_dispatch.py' loop 2>&1 | Out-File -FilePath 'E:\research\econfindatalibrary\logs\econ_dispatch.console.log' -Append -Encoding utf8"

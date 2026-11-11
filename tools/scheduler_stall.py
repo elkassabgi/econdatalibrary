@@ -560,10 +560,28 @@ def dispatch_shadow(sched: dict, runs: dict | None, now: dt.datetime, heartbeat:
     try:
         with open(path, encoding="utf-8") as f:
             hb = _t(f.readline().strip())
+            second = f.readline().strip()
         disp = "heartbeat unreadable" if hb is None else f"heartbeat {_iso(hb)}"
         if hb is None or now - hb > DISPATCH_HEARTBEAT_STALE:
             flags.append(f"dispatcher heartbeat {'unreadable' if hb is None else _iso(hb)} is older than "
                          f"{int(DISPATCH_HEARTBEAT_STALE.total_seconds() // 60)} min")
+        # L-c (AR-470 round 2): line 2 is the dispatcher's process-check field. "unreadable" means it blocks every
+        # dispatch (fail safe) because a powershell command line cannot be read - V2 is stalled while the loop lives.
+        # A heartbeat with no line 2 is from a dispatcher before this field; an unparsable one is flagged.
+        if second:
+            try:
+                field = json.loads(second)
+            except ValueError:
+                field = None
+            if not isinstance(field, dict):
+                flags.append("dispatcher heartbeat field (line 2) unreadable")
+            elif field.get("process_check") == "unreadable":
+                disp += " (process check UNREADABLE)"
+                flags.append(f"dispatcher BLOCKED since {field.get('unreadable_since')}: its process check cannot read "
+                             f"{field.get('unreadable_procs')} powershell command line(s), so it dispatches no slot "
+                             f"(fail safe); {field.get('blocked_looks')} blocked look(s), last {field.get('last_seen_utc')}")
+            elif field.get("process_check") == "unknown":
+                flags.append("dispatcher state file unreadable: it dispatches nothing until a person fixes it")
     except FileNotFoundError:
         disp = "not installed (no heartbeat file)"
     except Exception as e:  # noqa: BLE001
