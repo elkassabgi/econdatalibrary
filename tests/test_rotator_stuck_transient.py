@@ -20,6 +20,8 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
@@ -146,6 +148,14 @@ def test_a_fresh_last_success_is_never_aged_by_an_older_anchor():
     newest clean deferral pass 10 days old, is judged on the success (ATTENTION, not RED-SLA)."""
     st = _store("ecb", last_success_days=0.5, runs=[("_all", "partial", CLEAN, 10.0)])
     assert _row(st, "ecb")["health"] == "ATTENTION"
+
+
+@pytest.mark.parametrize("status", ["no_change", "killed_external", "transient_fail", "ok", "window_stopped"])
+def test_only_a_partial_row_can_be_the_anchor(status):
+    """A non-partial row carrying deferral-shaped text (half a day ago) must not anchor: the newest clean
+    PARTIAL is 10 days old, so RED-SLA (review AR-474's surviving mutant: partial_runs reading any status)."""
+    st = _store("ecb", runs=[("_all", "partial", CLEAN, 10.0), ("_all", status, CLEAN, 0.5)])
+    assert _row(st, "ecb")["health"] == "RED-SLA"
 
 
 def test_the_oldest_per_unit_anchor_wins():

@@ -1268,13 +1268,13 @@ def _book_fence_trip(unit, res, store, fence_min: float, already_put=None):
     except Exception as e:                                   # noqa: BLE001 - the mapper itself failed
         ok = _note_unmapped_debt(store, unit.source_id, changed,
                                  f"csv fence tripped and the changed keys could not be mapped ({type(e).__name__})")
-        return (f"csv phase exceeded its {fence_min:.0f}-min fence and its {len(changed)} changed key(s) "
+        return (f"{_CSV_FENCE_MARK} {fence_min:.0f}-min fence and its {len(changed)} changed key(s) "
                 f"could NOT be mapped ({type(e).__name__}: {str(e)[:100]}) - {_recorded(ok)}"), []
     if changed and not ids:
         # A non-empty changed set that maps to NOTHING is a mapping failure (R1144 RV-C), not "nothing to
         # book": it demotes, and the keys are recorded.
         ok = _note_unmapped_debt(store, unit.source_id, changed, "csv fence tripped and 0 changed keys mapped")
-        return (f"csv phase exceeded its {fence_min:.0f}-min fence and its {len(changed)} changed key(s) "
+        return (f"{_CSV_FENCE_MARK} {fence_min:.0f}-min fence and its {len(changed)} changed key(s) "
                 f"mapped to 0 catalogue ids - {_recorded(ok)}"), []
     _put = {str(s) for s in (already_put or [])}
     if _put:
@@ -1283,9 +1283,9 @@ def _book_fence_trip(unit, res, store, fence_min: float, already_put=None):
         print(f"[orchestrator] {unit.key}: fence trip - {_n0 - len(ids):,} of {_n0:,} mapped changed id(s) were "
               f"derived before it and are not booked", flush=True)
     if not _book_owed_items(store, unit.source_id, [(s, None, _DESKTOP_OWED_FENCE) for s in ids]):
-        return (f"csv phase exceeded its {fence_min:.0f}-min fence and its {len(ids)} changed id(s) "
+        return (f"{_CSV_FENCE_MARK} {fence_min:.0f}-min fence and its {len(ids)} changed id(s) "
                 f"could NOT be booked as desktop debts - queued for retry instead"), list(ids)
-    return (f"csv coverage note: csv phase exceeded its {fence_min:.0f}-min fence, {len(ids)} changed "
+    return (f"csv coverage note: {_CSV_FENCE_MARK} {fence_min:.0f}-min fence, {len(ids)} changed "
             f"id(s) booked as desktop debts (csv_desktop_owed), none re-derive on their own"), []
 
 
@@ -2178,9 +2178,13 @@ _NO_CURSORS_NOTE = "csv coherence unmet: fetcher reported no series_cursors"
 # R1868, the mixed-backend case). runs.ts_utc is the turn's END on the writer's clock; a writer clock behind
 # the store's only makes that turn's own writes look later, which books (the safe side). Any doubt books.
 #
-# KNOWN LIMIT, pre-existing and unchanged: a turn whose csv phase tripped its time fence logs a main-path row
-# without having booked; it counts as accounted here, as it already did for the next pass's cursors.
+# NOT A TURN WHOSE CSV PHASE TRIPPED ITS FENCE (review AR-474, R1877). That turn merged parquet, its csv phase was
+# abandoned (UnitTimeout inside _derive_changed_csvs, so the no-cursors debt was never booked), and run_once
+# still logs a main-path row with obs > 0. As a floor it would hide its own merge for good, where the code before
+# this change booked it on the next quiet pass. Its note always carries _CSV_FENCE_MARK (every fence note is
+# built from the constant), so the floor query skips it and the earlier accounted turn decides.
 _ACCOUNTED_STATUSES = ("ok", "partial")
+_CSV_FENCE_MARK = "csv phase exceeded its"   # the opening of every csv-fence note; the floor query skips it
 
 
 def _out_dirs(unit) -> list:
@@ -2203,8 +2207,9 @@ def _accounted_until(store, unit) -> "float | None":
         row = store.db.execute(
             "SELECT ts_utc FROM runs WHERE source_id=? AND unit_id=? AND status IN "
             f"({','.join('?' * len(_ACCOUNTED_STATUSES))}) AND COALESCE(obs, 0) > 0 "
+            "AND instr(COALESCE(note, ''), ?) = 0 "
             "ORDER BY ts_utc DESC, id DESC LIMIT 1",
-            (unit.source_id, unit.unit_id, *_ACCOUNTED_STATUSES)).fetchone()
+            (unit.source_id, unit.unit_id, *_ACCOUNTED_STATUSES, _CSV_FENCE_MARK)).fetchone()
         if not row or not row[0]:
             return None
         from datetime import datetime as _dt                            # noqa: PLC0415
@@ -4155,7 +4160,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                         csv_failed, csv_err, csv_deferred, csv_reasons = _derive_changed_csvs(unit, res, blob, store)
                 except UnitTimeout as _trip:
                     csv_failed, csv_deferred, csv_reasons = [], [], {}
-                    csv_err = ("csv coverage note: csv phase exceeded its "
+                    csv_err = (f"csv coverage note: {_CSV_FENCE_MARK} "
                                f"{_csv_fence:.0f}-min fence and was abandoned for this "
                                "run — cursors recorded, nothing queued, and a series' CSV "
                                "is re-derived only by a later pass that reports it changed")

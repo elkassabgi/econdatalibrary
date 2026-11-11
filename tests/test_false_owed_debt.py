@@ -6,8 +6,8 @@ non-zero. Passes that merged nothing booked debts nothing pays: bfs 2026-10-20 (
 by a catalogue HTTP 429), nyfed 2026-10-21 (8/8 sub-units transient), dst 2026-10-18.
 
 THE PREDICATE (orchestrate._no_store_write_proven): no `*.parquet` under the unit's out dirs changed
-after the END of the unit's newest ACCOUNTED turn - a main-path runs row (ok/partial/no_change, obs > 0)
-written after its derive phase. Writes left by a failed turn (obs 0 rows), an unrecorded kill, or a CI
+after the END of the unit's newest ACCOUNTED turn - a main-path runs row (ok/partial, obs > 0, not a
+csv-fence trip) written after its derive phase. Writes left by a failed turn (obs 0 rows), an unrecorded kill, or a CI
 pass whose state push was lost all postdate that row, so they still book (review R1865). Measured on the
 R2 listing under r2, on local mtimes otherwise. Every doubt books. merged_rows > 0 always books.
 
@@ -332,7 +332,7 @@ class _Strat(Strategy):
         return self.script.pop(0)(unit)
 
 
-def _run_once(tmp_path, monkeypatch, sid, script):
+def _run_once(tmp_path, monkeypatch, sid, script, catalog_count=None):
     d = _dir(tmp_path, sid)
     unit = Unit(source_id=sid, unit_id="_all", strategy="sim", cadence="daily", out_paths=[d],
                 config={"run_location": "local", "live": True})
@@ -348,7 +348,7 @@ def _run_once(tmp_path, monkeypatch, sid, script):
     mp.setattr(orchestrate, "_protected", lambda u: False)
     mp.setattr(orchestrate, "_is_live", lambda u: True)
     mp.setattr(orchestrate, "_served_by_lane", lambda s: False)
-    mp.setattr(orchestrate, "_catalog_series_count", lambda s: 582, raising=False)
+    mp.setattr(orchestrate, "_catalog_series_count", catalog_count or (lambda s: 582), raising=False)
     mp.setattr(orchestrate, "_drain_csv_retry_queue", lambda *a, **k: None)
     mp.setattr(orchestrate, "_drain_leftover_retries", lambda *a, **k: None)
     strat = _Strat(script)
@@ -409,6 +409,49 @@ def test_run_once_a_quiet_failure_does_not_poison_the_next_quiet_pass(tmp_path, 
     _run_once(tmp_path, monkeypatch, "nyfed", [raise_only])
     store = _run_once(tmp_path, monkeypatch, "nyfed", [_quiet])
     assert _owed(store, "nyfed") == []
+
+
+def _writes_30s_before_its_row(unit):
+    """The merge lands 30 s before the turn's runs row (a real turn spends minutes between them)."""
+    _write_parquet(os.path.join(unit.out_paths[0], "dst_b.parquet"), seconds_ago=30)
+    return _quiet(unit)
+
+
+def test_run_once_a_fence_tripped_turn_is_not_the_floor(tmp_path, monkeypatch):
+    """Review AR-474's probe (R1877), through the real run_once. A turn merges parquet, then its csv phase is
+    abandoned by the fence: UnitTimeout inside _derive_changed_csvs, raised here from _catalog_series_count,
+    a call inside the csv phase in the base and the head alike. run_once books nothing and logs a main-path
+    row with obs > 0. BASE (bf368276c): the next quiet pass books the debt. HEAD 7642a31d8: 0 owed for good,
+    because that row became the floor. Required here: the base's behaviour, 1 owed."""
+    _prime(tmp_path, "dst")
+    calls = {"n": 0}
+
+    def trip_first(s):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise orchestrate.UnitTimeout("csv phase fence (simulated slow call inside the csv phase)")
+        return 582
+    store = _run_once(tmp_path, monkeypatch, "dst", [_writes_30s_before_its_row], catalog_count=trip_first)
+    st, obs, note = store.db.execute("SELECT status, obs, note FROM runs WHERE source_id='dst' "
+                                     "ORDER BY id DESC LIMIT 1").fetchone()
+    assert st in ("ok", "partial") and obs > 0 and orchestrate._CSV_FENCE_MARK in note, (st, obs, note[:120])
+    assert _owed(store, "dst") == [], "precondition: the fence-tripped turn booked nothing"
+    store = _run_once(tmp_path, monkeypatch, "dst", [_quiet], catalog_count=trip_first)
+    assert len(_owed(store, "dst")) == 1, "the fence-tripped turn's merge must be booked by the next quiet pass"
+
+
+def test_run_once_control_a_writing_turn_without_a_trip_books_itself(tmp_path, monkeypatch):
+    _prime(tmp_path, "dst")
+    store = _run_once(tmp_path, monkeypatch, "dst", [_writes_30s_before_its_row])
+    assert len(_owed(store, "dst")) == 1
+
+
+def test_every_fence_note_carries_the_mark_the_floor_query_skips():
+    """The floor query skips a row by _CSV_FENCE_MARK, so no fence note may spell the words itself: the literal
+    may appear once in orchestrate.py, in the constant."""
+    src = open(os.path.join(ROOT, "updater", "orchestrate.py"), encoding="utf-8").read()
+    assert src.count("csv phase exceeded its") == 1
+    assert src.count("_CSV_FENCE_MARK") >= 6, "constant, floor query, run_once's fence note, 4 _book_fence_trip notes"
 
 
 def test_run_once_the_failure_path_logs_obs_zero():
