@@ -58,8 +58,8 @@ import requests
 
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
-from ._common import (Deadline, Tally, finalize, load_rotation, retry_after_seconds,
-                      rotate_after, sane_since, save_rotation)
+from ._common import (Deadline, Tally, finalize, load_rotation, parse_retry_after_s,
+                      retry_after_seconds, rotate_after, sane_since, save_rotation)
 # Imported, not read from a file at run time: an unreadable list must stop the fetcher, never let a
 # quarantined table through (fail closed, review AR-379).
 from ._hagstofa_quarantine import QUARANTINE
@@ -533,21 +533,13 @@ def _wait_429(sess, r, what: str) -> None:
 
 
 def _raw_retry_after_s(resp):
-    """The server's Retry-After in seconds, UNCLAMPED (both RFC 9110 forms), or None."""
-    h = getattr(resp, "headers", None) or {}
-    raw = str(h.get("Retry-After") or "").strip()
-    if not raw:
-        return None
-    if raw.isdigit():
-        return int(raw)
-    try:
-        from email.utils import parsedate_to_datetime
-        when = parsedate_to_datetime(raw)
-        if when.tzinfo is None:
-            when = when.replace(tzinfo=dt.timezone.utc)
-        return int((when - dt.datetime.now(dt.timezone.utc)).total_seconds())
-    except Exception:                                        # noqa: BLE001
-        return None
+    """The server's Retry-After in seconds, UNCLAMPED (both RFC 9110 forms), or None.
+
+    The shared strict parser (AR-471, R1870; AR-473): ASCII digits (over 6 significant digits saturate
+    to 999,999) or an HTTP-date, else None, and it
+    never raises. The inline copy this replaces used isdigit() + int(), which raised ValueError on
+    "²" or on 5,000 digits."""
+    return parse_retry_after_s(resp)
 
 
 def _get_meta(sess, url):
