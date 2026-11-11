@@ -114,7 +114,7 @@ def test_insee_http_date_is_honoured_within_the_cap(slept):
     slept.clear()
     assert _insee_wait(_http_date(3600), slept) == 120
     slept.clear()
-    assert _insee_wait(_http_date(-3600), slept) == 0       # a past date: retry now
+    assert _insee_wait(_http_date(-3600), slept) == 60      # a past date: the old default, not 0 (AR-476)
 
 
 # --------------------------------------------------------------------------------- ingest_oecd
@@ -214,7 +214,7 @@ def test_defillama_garbage_backs_off_and_never_raises(header, slept, monkeypatch
 def test_defillama_http_date_is_honoured_within_the_cap(slept, monkeypatch):
     assert 40 <= _defillama_wait(_http_date(45), slept, monkeypatch) <= 45
     slept.clear()
-    assert _defillama_wait(_http_date(-3600), slept, monkeypatch) == 0
+    assert _defillama_wait(_http_date(-3600), slept, monkeypatch) == 2.0   # a past date keeps the backoff (AR-476)
 
 
 # --------------------------------------------------------------------------------- ingest_gus_dbw
@@ -291,108 +291,132 @@ def test_wikidata_http_date_is_honoured_within_the_cap(slept, monkeypatch):
     assert 40 <= _wikidata_wait(_http_date(45), slept, monkeypatch) <= 45
 
 
-def test_wikidata_past_http_date_waits_zero_not_negative(slept, monkeypatch):
-    assert _wikidata_wait(_http_date(-3600), slept, monkeypatch) == 0
+def test_wikidata_past_http_date_keeps_the_old_backoff(slept, monkeypatch):
+    # base ignored dates and waited 10 x (attempt + 1); a past date must not retry at once
+    assert _wikidata_wait(_http_date(-3600), slept, monkeypatch) == 10
+
+
+def _seq_waits(make_resp, n, call, slept):
+    """Drive n consecutive 429s with a past HTTP-date, then a 200; return the waits."""
+    del slept[:]
+    call(make_resp, n)
+    return list(slept)
+
+
+def test_past_dates_pin_the_old_escalating_waits(slept, monkeypatch):
+    past = {"Retry-After": _http_date(-3600)}
+    # wikidata: 10, 20, 30 (base)
+    ok = _Resp(200, payload={"results": {"bindings": []}})
+    ok.raise_for_status = lambda: None
+    monkeypatch.setattr(W.requests, "get", _Sess([_Resp(429, past)] * 3 + [ok]).get)
+    W.run_sparql("SELECT 1", "t")
+    assert slept == [10, 20, 30]
+    del slept[:]
+    # defillama.get: 2, 4, 6 (base)
+    s = _Sess([_Resp(429, past)] * 3 + [_Resp(200, payload={"ok": 1})])
+    monkeypatch.setattr(DL, "sess", lambda: s)
+    DL.get("https://example.invalid/x")
+    assert slept == [2.0, 4.0, 6.0]
+    del slept[:]
+    # insee_melodi: 60 each time (base)
+    IM._request(_Sess([_Resp(429, past)] * 3 + [_Resp(200, payload={})]), "https://example.invalid/x",
+                _Clock())
+    assert slept == [60, 60, 60]
 
 
 def test_gus_parse_retry_after_floors_a_past_date():
     assert G._parse_retry_after(_http_date(-3600)) == 0
 
 
-# --------------------------------------------------------- the urllib3 adapters (review defect 1)
-# defillama's sess() and oecd's make_session() mount a urllib3 Retry that handles 429/503 BEFORE
-# the code above sees a response. Uncapped it slept up to 21,600 s per retry. These go through the
-# REAL adapter config, not a fake session.
-import http.server  # noqa: E402
-import threading  # noqa: E402
+# ----------------------------------------------- the urllib3 adapters (AR-476, R1880), no socket
+# defillama's sess() and oecd's make_session() mount a urllib3 Retry that PARSES and SLEEPS on
+# Retry-After for 429/503 BEFORE the code above sees a response. urllib3's own parser raised a raw
+# ValueError on 5,000 digits and its sleep ran to 21,600 s. These drive the REAL requests ->
+# HTTPAdapter -> urllib3 Retry path with HTTPConnectionPool._make_request replaced, so no socket
+# is opened (R1879: no 127.0.0.1 server in tests).
+import io  # noqa: E402
 
-import requests  # noqa: E402
+import urllib3.connectionpool as _cp  # noqa: E402
+from urllib3.response import HTTPResponse  # noqa: E402
 
 from updater.strategies.fetchers import _common as C  # noqa: E402
 
 
-class _UrllibResp:
-    def __init__(self, header):
-        self.status = 429
-        self.headers = {"Retry-After": header}
-
-    def getheader(self, k, default=None):
-        return self.headers.get(k, default)
-
-
-def _adapters():
+def _sessions():
     DL._local.__dict__.pop("s", None)
-    return {"defillama": DL.sess().get_adapter("https://x").max_retries,
-            "oecd": OE.make_session().get_adapter("https://x").max_retries}
+    return {"defillama": DL.sess(), "oecd": OE.make_session()}
+
+
+@pytest.fixture
+def wire(monkeypatch):
+    """Replace the wire: every request gets the scripted (status, Retry-After) responses."""
+    state = {"script": [], "calls": 0}
+
+    def fake_make_request(self, conn, method, url, **_kw):
+        i = min(state["calls"], len(state["script"]) - 1)
+        state["calls"] += 1
+        status, hdr = state["script"][i]
+        h = {} if hdr is None else {"Retry-After": hdr}
+        body = b'{"ok": 1}' if status == 200 else b""
+        return HTTPResponse(body=io.BytesIO(body), headers=h, status=status, preload_content=False,
+                            request_method=method, request_url=url)
+
+    monkeypatch.setattr(_cp.HTTPConnectionPool, "_make_request", fake_make_request)
+    return state
 
 
 @pytest.mark.parametrize("name", ["defillama", "oecd"])
-@pytest.mark.parametrize("header,want", [("7", 7), ("300", 300), ("301", 300), ("1000000", 300)])
-def test_the_session_adapter_caps_retry_after(name, header, want):
-    retry = _adapters()[name]
-    assert retry.respect_retry_after_header is True
-    assert retry.get_retry_after(_UrllibResp(header)) == want
+@pytest.mark.parametrize("status", [429, 503])
+@pytest.mark.parametrize("header", ["9" * 5000, "1" * 5000, "1000000"])
+def test_a_huge_header_through_the_real_session_waits_the_cap_and_never_raises(
+        name, status, header, wire, slept):
+    wire["script"] = [(status, header), (200, None)]
+    r = _sessions()[name].get("https://probe.invalid/x", timeout=5)
+    assert r.status_code == 200 and wire["calls"] == 2
+    assert slept == [300], slept
+
+
+@pytest.mark.parametrize("name", ["defillama", "oecd"])
+@pytest.mark.parametrize("header", ["inf", "²", "-5", "12.5", "nan", "Mon, 99 Foo 2026"])
+def test_a_garbage_header_through_the_real_session_backs_off_and_never_raises(
+        name, header, wire, slept):
+    # urllib3's own parser raised InvalidHeader here; now it is urllib3's exponential backoff
+    wire["script"] = [(429, header), (429, header), (200, None)]
+    r = _sessions()[name].get("https://probe.invalid/x", timeout=5)
+    assert r.status_code == 200 and wire["calls"] == 3
+    assert slept == [3.0], slept          # backoff 1.5 x 2**1 on the 2nd retry; the 1st is 0
+
+
+@pytest.mark.parametrize("name", ["defillama", "oecd"])
+@pytest.mark.parametrize("header,want", [("5", [5, 5]), ("300", [300, 300]), ("301", [300, 300])])
+def test_a_valid_header_through_the_real_session_keeps_its_wait(name, header, want, wire, slept):
+    wire["script"] = [(503, header), (503, header), (200, None)]
+    assert _sessions()[name].get("https://probe.invalid/x", timeout=5).status_code == 200
+    assert slept == want, slept
+
+
+@pytest.mark.parametrize("name", ["defillama", "oecd"])
+def test_a_past_date_through_the_real_session_backs_off(name, wire, slept):
+    past = _http_date(-3600)
+    wire["script"] = [(429, past), (429, past), (200, None)]
+    assert _sessions()[name].get("https://probe.invalid/x", timeout=5).status_code == 200
+    assert slept == [3.0], slept
 
 
 @pytest.mark.parametrize("name", ["defillama", "oecd"])
 def test_the_session_adapter_keeps_its_retry_policy(name):
-    retry = _adapters()[name]
+    retry = _sessions()[name].get_adapter("https://x").max_retries
     want = {"defillama": (5, {429, 500, 502, 503, 504}), "oecd": (4, {429, 502, 503, 504})}[name]
     assert (retry.total, set(retry.status_forcelist)) == want
-    assert retry.backoff_factor == 1.5
+    assert retry.backoff_factor == 1.5 and retry.respect_retry_after_header is True
+    assert retry.CAP_S == 300
+    assert type(retry.new()) is type(retry)          # survives urllib3's rebuild on every retry
 
 
-def test_an_old_urllib3_without_retry_after_max_does_not_honour_the_header(monkeypatch):
-    import urllib3.util.retry as UR
-
-    class _Old(UR.Retry):
-        def __init__(self, *a, retry_after_max=None, **kw):
-            if retry_after_max is not None:
-                raise TypeError("unexpected keyword argument 'retry_after_max'")
-            super().__init__(*a, **kw)
-
-    monkeypatch.setattr(UR, "Retry", _Old)
+def test_the_capped_retry_parser_never_raises_and_has_no_version_branch():
     r = C.capped_urllib3_retry(300, total=2, status_forcelist=(429,))
-    assert r.respect_retry_after_header is False
-
-
-class _H(http.server.BaseHTTPRequestHandler):
-    hits = []
-
-    def do_GET(self):  # noqa: N802
-        _H.hits.append(self.path)
-        if len(_H.hits) == 1:
-            self.send_response(429)
-            self.send_header("Retry-After", "1000000")
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-        else:
-            body = b'{"ok": 1}'
-            self.send_response(200)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-    def log_message(self, *_a):
-        pass
-
-
-@pytest.fixture
-def server():
-    _H.hits = []
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _H)
-    t = threading.Thread(target=srv.serve_forever, daemon=True)
-    t.start()
-    yield f"http://127.0.0.1:{srv.server_address[1]}"
-    srv.shutdown()
-
-
-@pytest.mark.parametrize("name", ["defillama", "oecd"])
-def test_end_to_end_a_huge_retry_after_through_the_real_adapter_waits_the_cap(name, server, slept):
-    # the job's own adapter, mounted for http so a localhost server can answer
-    retry = _adapters()[name]
-    s = requests.Session()
-    s.mount("http://", requests.adapters.HTTPAdapter(max_retries=retry))
-    r = s.get(server + "/x", timeout=10)
-    assert r.status_code == 200 and len(_H.hits) == 2
-    assert slept == [300], slept
+    for v in ["9" * 5000, "inf", "²", "-5", "", "   ", "abc", _http_date(-60)]:
+        assert r.parse_retry_after(v) == 0 or v.startswith("9")
+    assert r.parse_retry_after("9" * 5000) == 300
+    assert r.parse_retry_after("7") == 7
+    assert 40 <= r.parse_retry_after(_http_date(45)) <= 45

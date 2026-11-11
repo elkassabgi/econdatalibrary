@@ -111,21 +111,52 @@ def parse_retry_after_s(resp):
         return None
 
 
+_CAPPED_RETRY_CLASSES = {}
+
+
+class _RetryAfterHolder:
+    """The minimum `parse_retry_after_s` reads: a `.headers` mapping holding one Retry-After."""
+    __slots__ = ("headers",)
+
+    def __init__(self, value):
+        self.headers = {"Retry-After": value}
+
+
 def capped_urllib3_retry(cap_s: int, **kw):
-    """A urllib3 `Retry` that honours Retry-After but never sleeps longer than `cap_s` per retry.
+    """A urllib3 `Retry` that reads Retry-After with `parse_retry_after_s` and caps it at `cap_s`.
 
     A session with `Retry(respect_retry_after_header=True)` and 429/503 in its forcelist sleeps
     INSIDE urllib3, before the caller sees the response, so a cap in the caller's own 429 branch
-    never applies (Retry-After sweep review). urllib3 2.6 caps that sleep at `retry_after_max`,
-    whose default is 21,600 s. Pass the caller's cap there. An older urllib3 has no such
-    parameter and no cap at all; there the header is not honoured (urllib3's own exponential
-    backoff applies) rather than allowing an unbounded sleep."""
+    never applies. urllib3 also PARSES the header itself, and its parser raises (AR-476, R1880):
+    a raw ValueError for a 5,000-digit header (the int() digit limit), which escapes code that
+    catches only RequestException, and InvalidHeader for "inf", "-5" or a superscript digit.
+
+    So the returned object is a Retry SUBCLASS whose `parse_retry_after` is the shared strict
+    parser. It never raises, saturates a long delay, caps it at `cap_s`, and returns 0 for a
+    garbage header or a past date, so urllib3's own exponential backoff applies (sleep_for_retry
+    sleeps only for a truthy value). The cap lives in the subclass, not in `retry_after_max`, so it
+    is the same on every urllib3 version and there is no fail-open branch. The subclass survives
+    Retry.new(), which rebuilds the object with type(self) on every retry."""
     from urllib3.util.retry import Retry                                 # noqa: PLC0415
+    cap_s = int(cap_s)
+    cls = _CAPPED_RETRY_CLASSES.get(cap_s)
+    if cls is None:
+        class _CappedRetry(Retry):
+            CAP_S = cap_s
+
+            def parse_retry_after(self, retry_after):
+                try:
+                    ra = parse_retry_after_s(_RetryAfterHolder(retry_after))
+                except Exception:                                        # noqa: BLE001 - never raises
+                    ra = None
+                if ra is None or ra <= 0:
+                    return 0
+                return min(ra, self.CAP_S)
+
+        _CappedRetry.__name__ = _CappedRetry.__qualname__ = f"CappedRetry{cap_s}"
+        cls = _CAPPED_RETRY_CLASSES[cap_s] = _CappedRetry
     kw.pop("respect_retry_after_header", None)
-    try:
-        return Retry(respect_retry_after_header=True, retry_after_max=cap_s, **kw)
-    except TypeError:                                                    # urllib3 < 2.6
-        return Retry(respect_retry_after_header=False, **kw)
+    return cls(respect_retry_after_header=True, **kw)
 
 
 class Deadline:

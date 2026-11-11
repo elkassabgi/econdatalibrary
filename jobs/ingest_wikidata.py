@@ -61,10 +61,11 @@ def run_sparql(query: str, tag: str, timeout: int = 300) -> list[dict]:
             if r.status_code in (429, 500, 502, 503, 504):
                 wait = min(120, 10 * (attempt + 1))
                 # the shared strict parser (R1870): "²" passed isdigit() and int() raised, which
-                # the except below booked as a failed try; a past HTTP-date (< 0) waits 0 s
+                # the except below booked as a failed try. A PAST HTTP-date (< 0) keeps the
+                # backoff above, as base did, instead of retrying at once (AR-476).
                 ra = parse_retry_after_s(r)
-                if ra is not None:
-                    wait = min(RETRY_AFTER_CAP_S, max(ra, 0))
+                if ra is not None and ra >= 0:
+                    wait = min(RETRY_AFTER_CAP_S, ra)
                 print(f"  [{tag}] HTTP {r.status_code} -> backoff {wait}s (try {attempt+1}/{MAX_RETRIES})", flush=True)
                 time.sleep(wait)
                 last = f"HTTP {r.status_code}"

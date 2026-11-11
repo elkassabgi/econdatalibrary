@@ -340,9 +340,11 @@ def _request(sess, url, clock):
         elif r.status_code == 429:
             # The one strict parser (R1870, AR-471). The old `int(ra) if ra.isdigit()` let "²"
             # through (str.isdigit is True for it, int() refuses it), and that ValueError is raised
-            # OUTSIDE the try above, so one odd header ended the pass. A past HTTP-date floors to 0.
+            # OUTSIDE the try above, so one odd header ended the pass. A PAST HTTP-date (< 0; a
+            # server clock that lags ours) waits the default, as base did: retrying at once would
+            # spend up to 5 requests back to back against a 30 req/min limit (AR-476).
             ra = parse_retry_after_s(r)
-            wait = (min(max(ra, 0), RETRY_AFTER_CAP_S) if ra is not None
+            wait = (min(ra, RETRY_AFTER_CAP_S) if ra is not None and ra >= 0
                     else RETRY_AFTER_DEFAULT_S)
             last = "HTTP 429"
             if attempt == MAX_ATTEMPTS - 1:

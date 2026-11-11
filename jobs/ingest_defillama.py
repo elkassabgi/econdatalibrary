@@ -80,9 +80,11 @@ def get(url, timeout=120, tries=4):
             if r.status_code == 429:
                 # honor Retry-After if present, else escalating backoff
                 # the shared strict parser: "²" passed isdigit() and then float() raised, which
-                # the except below booked as a failed try; a past HTTP-date (< 0) waits 0 s
+                # the except below booked as a failed try. A PAST HTTP-date (< 0) keeps the
+                # escalating backoff, as base did, instead of retrying at once (AR-476).
                 ra = parse_retry_after_s(r)
-                time.sleep(min(max(ra, 0), RETRY_AFTER_CAP_S) if ra is not None else 2.0 * (i + 1))
+                time.sleep(min(ra, RETRY_AFTER_CAP_S) if ra is not None and ra >= 0
+                           else 2.0 * (i + 1))
                 last = "HTTP429"
                 continue
             last = f"HTTP{r.status_code}"
