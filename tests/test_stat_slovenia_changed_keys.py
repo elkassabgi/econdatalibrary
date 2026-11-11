@@ -276,3 +276,38 @@ def test_the_coverage_note_books_no_unmapped_debt_and_is_printed(catalog, monkey
     assert note.startswith("csv coverage note:"), note
     assert booked == []
     assert "[orchestrator] stat_slovenia: csv coverage note:" in capsys.readouterr().out
+
+
+# --- AR-472 round 2 (R1878): a key with a catalogue TWIN is drift on a catalogued table, never coverage ---
+
+@pytest.mark.parametrize("drift", ["SI:AAA01S.PX", "SI:AAA01S.px", "SI:AAA01S.Px", "SI:aaa01s.PX"])
+def test_a_key_with_a_catalogue_suffix_twin_demotes(catalog, drift):
+    """Suffix drift: a catalogue id is a prefix of the key at a '.', in any case. The mapper misses it
+    (its case-insensitive tier compares the whole string), so it reaches the zero-mapped branch."""
+    assert O._uncatalogued_by_form("stat_slovenia", [drift]) is False
+    note = _zero_mapped_note("stat_slovenia", {drift: None})
+    assert note.startswith("csv coherence unmet"), (drift, note)
+
+
+@pytest.mark.parametrize("drift", ["SI:aaa01s", "SI:Aaa01S"])
+def test_a_key_with_a_catalogue_case_twin_is_refused_by_the_helper(catalog, drift):
+    """Case drift: the helper refuses it on its own. (Through the branch, the mapper's case-insensitive
+    tier already maps it, so it never reaches the zero-mapped branch; the helper must not depend on that.)"""
+    assert O._uncatalogued_by_form("stat_slovenia", [drift]) is False
+
+
+def test_a_key_that_case_folds_onto_an_extending_id_demotes(catalog):
+    """Catalogued 'SI:DDD01S.PX' (21 real ids keep '.PX' on both sides), key 'SI:ddd01s': a twin."""
+    c = sqlite3.connect(catalog)
+    c.execute("INSERT INTO series VALUES ('stat_slovenia:SI:DDD01S.PX', 'stat_slovenia')")
+    c.commit()
+    c.close()
+    assert O._uncatalogued_by_form("stat_slovenia", ["SI:ddd01s"]) is False
+
+
+def test_an_uncatalogued_px_table_with_no_twin_is_still_coverage(catalog):
+    """POSITIVE CONTROL for the twin checks: a '.PX' table with no catalogue id at any '.' boundary or
+    under any case is the coverage case, so the new refusals do not swallow it."""
+    assert O._uncatalogued_by_form("stat_slovenia", ["SI:EEE01S.PX"]) is True
+    note = _zero_mapped_note("stat_slovenia", {"SI:EEE01S.PX": None})
+    assert note.startswith("csv coverage note:"), note

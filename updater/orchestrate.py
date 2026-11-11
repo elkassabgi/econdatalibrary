@@ -1069,10 +1069,17 @@ _CHANGED_KEY_FORM = {
 
 
 def _uncatalogued_by_form(source_id: str, unmapped) -> bool:
-    """True only when the source declares a key form, EVERY unmapped key has that form, and no
-    catalogue id equals any of them or starts with one (PK range, never LIKE - R492). The mapper's
-    punctuation- and case-insensitive tier has already missed each key, so a near-spelling is not
-    possible either. Fails closed: anything unreadable answers False and the branch demotes."""
+    """True only when the source declares a key form, EVERY unmapped key has that form, and no key has
+    a catalogue TWIN. Compared case-insensitively against the source's catalogue ids (one PK-range read,
+    never LIKE - R492), a key has a twin when
+      * a catalogue id equals it or extends it (catalogued 'SI:X.PX', key 'SI:X' or 'SI:x'), or
+      * a catalogue id is a prefix of it at a '.' boundary (catalogued 'SI:X', key 'SI:X.PX' or
+        'SI:X.px'). This covers a trailing '.px' in any case: the fetcher strips only lowercase '.px',
+        and SURS lists 57 ids with '.PX' (AR-472 round 2, R1878).
+    A twin is the R359 key drift on a CATALOGUED table, so it demotes. The mapper's case- and
+    punctuation-insensitive tier (_norm_id) cannot rule this out: it compares the WHOLE alphanumeric
+    string, so it never bridges a suffix. Fails closed: anything unreadable answers False (demote)."""
+    import bisect as _bi                                                 # noqa: PLC0415
     import re as _re                                                     # noqa: PLC0415
     form = _CHANGED_KEY_FORM.get(source_id)
     keys = [k for k in (unmapped or [])]
@@ -1085,11 +1092,17 @@ def _uncatalogued_by_form(source_id: str, unmapped) -> bool:
         _cat = (os.environ.get("ECONDL_CATALOG")
                 or os.path.join(config.ROOT, "data", "catalog.db"))
         with _sq.connect(f"file:{_cat}?mode=ro", uri=True) as _c:
-            for k in keys:
-                cand = f"{source_id}:{k}"
-                if _c.execute("SELECT 1 FROM series WHERE series_id >= ? AND series_id < ? LIMIT 1",
-                              (cand, cand + "\U0010ffff")).fetchone():
-                    return False
+            low = sorted(r[0].lower() for r in _c.execute(
+                "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
+                (source_id + ":", source_id + ";")))
+        lowset = set(low)
+        for k in keys:
+            cand = f"{source_id}:{k}".lower()
+            i = _bi.bisect_left(low, cand)
+            if i < len(low) and low[i].startswith(cand):                 # equal to, or extended by, an id
+                return False
+            if any(cand[:m.start()] in lowset for m in _re.finditer(r"\.", cand)):
+                return False                                             # an id is a prefix at a '.'
     except Exception:                                                    # noqa: BLE001 - fail closed
         return False
     return True
