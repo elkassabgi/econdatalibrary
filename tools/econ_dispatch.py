@@ -298,8 +298,11 @@ class Dispatcher:
                 return runs, sched, notes, (f"{wf} listing lacks run {known} seen by an earlier look (newest listed "
                                             f"{top}): a partial or stale answer")
         if not self.dry_run and "_unreadable" not in state:
-            new = {wf: max([seen.get(wf) or 0] + [r["databaseId"] for r in runs[wf]
-                                                   if isinstance(r.get("databaseId"), int)]) for wf in g.WRITERS}
+            new = dict(seen)
+            for wf in g.WRITERS:
+                got = [r["databaseId"] for r in runs[wf] if isinstance(r.get("databaseId"), int)]
+                if got:
+                    new[wf] = max(got + ([seen[wf]] if isinstance(seen.get(wf), int) else []))
             if new != seen:
                 state["seen_max"] = new
                 self.save_state(state)
