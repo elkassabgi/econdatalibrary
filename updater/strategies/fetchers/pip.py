@@ -99,30 +99,42 @@ def current_vintage(unit):
     return _current_release_for_ppp()
 
 
+_WHY_MAX = 120   # characters of a publisher error message kept in a failure label
+
+
 def _get_rows(version, pline, retries=4):
     """Bulk all-countries x all-years for one poverty line, pinned to `version`.
-    Returns (rows, ok): ok=False means a transient failure for this sub-unit."""
+
+    Returns (rows, status, why). status is "ok", "transient" or "structural"; `why` is a
+    short reason ("" on ok) that update() puts in the failure label, so the stored note
+    names the poverty line AND the cause. Until 2026-11-11 the reason was dropped here and
+    the note read only "1/2 sub-unit(s) transient-failed; will retry" - six runs in a row,
+    with no way to tell which of the ten lines failed, or why.
+    """
     params = {
         "country": "all", "year": "all",
         "povline": pline, "fill_gaps": "false",
         "welfare_type": "all", "reporting_level": "national",
         "format": "json", "version": version,
     }
+    why = ""
     for attempt in range(retries):
         try:
             r = requests.get(API, params=params, headers=UA, timeout=120)
-        except (requests.Timeout, requests.ConnectionError):
+        except (requests.Timeout, requests.ConnectionError) as e:
+            why = f"{type(e).__name__} (client timeout 120 s or connection drop)"
             if attempt >= retries - 1:
-                return [], "transient"
+                return [], "transient", f"{why} x{retries}"
             time.sleep(3 * (attempt + 1))
             continue
         if r.status_code == 200:
             try:
                 j = r.json()
             except ValueError:
-                return [], "structural"   # 200 with non-JSON body -> schema/structural break
+                # 200 with non-JSON body -> schema/structural break
+                return [], "structural", f"HTTP 200 non-JSON body, {len(r.content)} bytes"
             if isinstance(j, list):
-                return j, "ok"            # 200 JSON list (possibly empty = discontinued line)
+                return j, "ok", ""        # 200 JSON list (possibly empty = discontinued line)
             # 200 JSON OBJECT = PIP's error envelope, {"ok":[false],"error":[...]}.
             # NOT automatically structural. PIP answers its own server-side timeout this
             # way: povline 21.7 (the widest line, so the heaviest query) returns
@@ -134,19 +146,22 @@ def _get_rows(version, pline, retries=4):
             err = " ".join(str(x) for x in (j.get("error") or [])) if isinstance(j, dict) else ""
             if any(w in err.lower() for w in ("timeout", "timed out", "too large",
                                               "try again", "unavailable", "busy")):
+                why = f"PIP error envelope: {err[:_WHY_MAX]}"
                 if attempt >= retries - 1:
-                    return [], "transient"
+                    return [], "transient", f"{why} x{retries}"
                 time.sleep(10 * (attempt + 1))   # heavier backoff: the server is loaded
                 continue
-            return [], "structural"       # any other error envelope = real schema break
+            # any other error envelope = real schema break
+            return [], "structural", f"PIP error envelope: {err[:_WHY_MAX] or type(j).__name__}"
         if r.status_code in (429, 500, 502, 503, 504):
+            why = f"HTTP {r.status_code}"
             if attempt >= retries - 1:
-                return [], "transient"
+                return [], "transient", f"{why} x{retries}"
             time.sleep(30 if r.status_code == 429 else 3 * (attempt + 1))
             continue
         # other hard 4xx (e.g. the pinned version was removed) -> definitive/structural
-        return [], "structural"
-    return [], "transient"
+        return [], "structural", f"HTTP {r.status_code}"
+    return [], "transient", f"{why or 'no attempt made'} x{retries}"
 
 
 def _series_maxes(keys, dates):
@@ -170,33 +185,35 @@ def update(unit, since) -> Result:
     if version is None:
         # Can't determine the pinned-PPP release cheaply -> treat the whole pull as
         # transient (retry next tick); existing data left untouched.
-        tally.transient_unit()
+        tally.transient_unit(f"versions catalog: no {PPP_VERSION}-PPP PROD release readable")
         return finalize(tally, before, None, source=SOURCE)
 
     keys, dates, vals = [], [], []
-    transient = 0          # poverty-line sub-units that transient-failed (retry next run)
-    empty = 0              # poverty-line sub-units: 200 with an empty list (line not served)
-    structural = 0         # poverty-line sub-units: 200 with records but all-unparseable
+    # One LABEL per poverty-line sub-unit, not a count: "povline 21.70 (2170): <why>".
+    transient = []         # sub-units that transient-failed (retry next run)
+    empty = []             # sub-units: 200 with an empty list (line not served)
+    structural = []        # sub-units: a real break (non-JSON, error envelope, 4xx, 0 parsed)
     parsed_lines = 0       # poverty-line sub-units that yielded >0 obs
     for pline in POV_LINES:
         label = POV_LABELS[pline]
-        rows, st = _get_rows(version, pline)
+        unit_id = f"povline {pline:.2f} ({label})"
+        rows, st, why = _get_rows(version, pline)
         if st == "transient":
-            transient += 1
+            transient.append(f"{unit_id}: {why}")
             time.sleep(RATE)
             continue
         if st == "structural":
             # non-JSON 200, a JSON error object, or a hard 4xx (e.g. the pinned PIP
             # version was removed). This is a DEFINITIVE break, not a quiet day — count
             # it structural so finalize raises DefinitiveError -> unit 'partial' -> ATTENTION.
-            structural += 1
+            structural.append(f"{unit_id}: {why}")
             time.sleep(RATE)
             continue
         if not rows:
             # 200 with an empty JSON list: PIP serves no records for this poverty line
             # under the pinned product/release (e.g. a 2021-PPP line under the 2017-PPP
             # product). Historical rows are preserved by the merge. Honest empty sub-unit.
-            empty += 1
+            empty.append(f"{unit_id}: HTTP 200 empty list")
             time.sleep(RATE)
             continue
         line_obs = 0
@@ -226,19 +243,20 @@ def update(unit, since) -> Result:
         if line_obs:
             parsed_lines += 1
         else:
-            structural += 1  # 200 with records but every indicator unparseable -> structural
+            # 200 with records but every indicator unparseable -> structural
+            structural.append(f"{unit_id}: HTTP 200 with {len(rows)} record(s), 0 parsed")
         time.sleep(RATE)
 
     # Surface per-line outcomes BEFORE publishing so the status is honest. A line whose
     # 200 body had records but none parsed is a real structural break (raises). A line
     # that returned an empty list (discontinued/not-served line, history kept by merge)
     # is an honest empty sub-unit. Transients downgrade the whole run to 'partial'.
-    for _ in range(structural):
-        tally.structural_unit()
-    for _ in range(empty):
-        tally.empty_unit()
-    for _ in range(transient):
-        tally.transient_unit()
+    for lab in structural:
+        tally.structural_unit(lab)
+    for lab in empty:
+        tally.empty_unit(lab)
+    for lab in transient:
+        tally.transient_unit(lab)
 
     # If nothing parsed at all, let finalize raise the honest structural/empty-window error.
     if not keys:

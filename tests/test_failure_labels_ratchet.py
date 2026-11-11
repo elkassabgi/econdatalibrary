@@ -51,7 +51,9 @@ METHODS = {"transient_unit", "structural_unit"}
 # 26 -> 24: 2026-09-28 merge train (the PRs merged that day labelled two more in-loop calls).
 # 24 -> 23: dst names the table a transient failure belongs to (fix/dst-data-post-transient).
 # 23 -> 22: dst names the subject whose merge was refused (same branch, review R1297).
-BUDGET = 22
+# 22 -> 20: pip names the poverty line and the reason for a transient or structural sub-unit
+# (fix/pip-transient-label; six runs had read "1/2 sub-unit(s) transient-failed" with no name).
+BUDGET = 20
 
 
 class _Counter(ast.NodeVisitor):
