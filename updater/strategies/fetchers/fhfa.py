@@ -45,6 +45,13 @@ local backend all of them, since build() overwrites in place. Without a record, 
 marker is written into the STORE (blob: R2 under r2, never state.db, which a killed runner does
 not push) after download() and before build(), and cleared after the sidecar is written.
 
+THE STATE MUST CONFIRM THE LAST REBUILD (review AR-477 F3/C6). That home is state.db, and a run's
+state can be thrown away (a refused --push-state, a kill before the push) while its cubes, sidecar
+and cleared marker stay on R2. So every rebuild records a build id in the sidecar and returns it as
+new_vintage; a later pass trusts the store only if the PULLED state's unit_state.upstream_vintage
+for fhfa equals that id. If not, it does not skip and does not diff: it rebuilds with the cursor
+fallback, which books the debt (_build_confirmed).
+
 THE USED-UP SIGNAL NEEDS A HOME (review AR-477 F1/C1). Once a rebuild publishes, its change is
 never re-reported, so a changed id the CSV phase does not derive (fence trip, budget deferral,
 failure) is booked per id in csv_desktop_owed: the registry declares csv_misses: desktop_owed,
@@ -88,6 +95,43 @@ _KEY_COLS = ("series_key", "obs_date")
 # Store-side marker of a rebuild in progress (review AR-477 C2). Written before build(), cleared after the
 # sidecar; a pass that finds it set falls back to the cursor set and the debt.
 PENDING = "_rebuild_pending.json"
+
+
+def _state_vintage():
+    """fhfa's recorded upstream_vintage in the PULLED state (config.STATE_DB), read-only.
+    Raises when there is no state.db or it cannot be read (the caller treats that as unconfirmed)."""
+    import sqlite3
+    if not os.path.exists(config.STATE_DB):
+        raise FileNotFoundError(f"no state.db at {config.STATE_DB}")
+    con = sqlite3.connect(f"file:{config.STATE_DB}?mode=ro", uri=True, timeout=5)
+    try:
+        row = con.execute("SELECT upstream_vintage FROM unit_state WHERE source_id=? AND unit_id='_all'",
+                          (SOURCE,)).fetchone()
+    finally:
+        con.close()
+    return row[0] if row else None
+
+
+def _build_confirmed(last_build) -> "tuple[bool, str]":
+    """(confirmed, why) for the last rebuild recorded in the store's sidecar (review AR-477 F3/C6).
+
+    The cubes, the sidecar and the cleared PENDING marker reach R2 during the pass, but its CSV outcome
+    (derived ids, csv_desktop_owed bookings) lives in state.db, which is LOST when the push is refused
+    ("another writer won") or the runner dies before it. Then the next rebuild would diff against the
+    published cubes and read {}. So the store's record is trusted only when the PULLED state recorded the
+    same build id as fhfa's vintage (the orchestrator stores new_vintage on a clean pass; a partial pass
+    does not advance it, which also counts as unconfirmed - conservative). Anything unreadable, or no
+    state.db at all, is NOT confirmed. A sidecar with no build id predates this check (written by the
+    cursor-path code, whose every rebuild booked its debt) and is trusted once."""
+    if not last_build:
+        return True, "no build id recorded (pre-C6 sidecar)"
+    try:
+        v = _state_vintage()
+    except Exception as e:                                   # noqa: BLE001 - fail toward the debt
+        return False, f"state not readable ({type(e).__name__})"
+    if v == last_build:
+        return True, "recorded"
+    return False, f"state records {v!r}"
 
 
 def _pending_note(out_dir) -> "str | None":
@@ -247,11 +291,20 @@ def update(unit, since) -> Result:
     stale = _older_than(sidecar.get("built"), MAX_AGE_DAYS)
     have = bool(blob.list_parquets(out_dir))
 
-    if sidecar.get("token") == token and have and not stale:
+    # C6: did the PULLED state keep the last rebuild's outcome (its CSV bookings)? See _build_confirmed.
+    last_build = sidecar.get("build_id")
+    confirmed, why = _build_confirmed(last_build)
+    if sidecar.get("token") == token and have and not stale and confirmed:
         print("[fhfa] all 9 source files unchanged — skipped", flush=True)
-        return finalize(tally, sum(blob.row_count(os.path.join(out_dir, f))
-                                   for f in blob.list_parquets(out_dir)),
-                        since or None, source=SOURCE)
+        res = finalize(tally, sum(blob.row_count(os.path.join(out_dir, f))
+                                  for f in blob.list_parquets(out_dir)),
+                       since or None, source=SOURCE)
+        if last_build:
+            res.new_vintage = last_build      # = what the state already holds; never launders an unkept one
+        return res
+    if not confirmed:
+        print(f"[fhfa] the last rebuild ({last_build}) is not confirmed by the pulled state ({why}) - "
+              f"rebuilding with the cursor fallback, which books the debt", flush=True)
     if stale and sidecar.get("token") == token:
         print(f"[fhfa] validators unchanged {MAX_AGE_DAYS}d — forced rebuild (size-only gate "
               f"cannot see a same-length revision)", flush=True)
@@ -259,6 +312,10 @@ def update(unit, since) -> Result:
     # A rebuild that did not finish may already have changed the store (module docstring, PENDING):
     # its "previous" cubes would be its own new ones, and the diff would read {}.
     diff_err = _pending_note(out_dir)
+    if diff_err is None and not confirmed:
+        diff_err = f"the last rebuild's outcome is not in the pulled state ({why})"
+    build_id = (f"fhfa-build:{token}:"
+                f"{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}")
     prior: dict = {}
     if diff_err is None:
         # The previous cubes, read BEFORE build() can overwrite them (module docstring).
@@ -333,14 +390,19 @@ def update(unit, since) -> Result:
 
     blob.write_bytes_atomic(
         os.path.join(out_dir, SIDECAR),
-        json.dumps({"token": token, "built": dt.date.today().isoformat(),
+        json.dumps({"token": token, "built": dt.date.today().isoformat(), "build_id": build_id,
                     "files": vals}, indent=1, sort_keys=True).encode("utf-8"))
-    # Every cube is published and the sidecar records the build: the store is consistent again.
+    # Every cube is published and the sidecar records the build: the store is consistent again. The
+    # marker carries the build id, but clearing it proves only update()'s half; the state's half is
+    # checked by _build_confirmed in a later pass (C6).
     blob.write_bytes_atomic(os.path.join(out_dir, PENDING), json.dumps(
-        {"pending": False, "cleared": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")}
-    ).encode("utf-8"))
+        {"pending": False, "build_id": build_id,
+         "cleared": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")}).encode("utf-8"))
     res = finalize(tally, published, since or None, source=SOURCE,
                    series_cursors=cursors or None)
+    # C6: the orchestrator records new_vintage in unit_state on a clean pass, and that row reaches the
+    # following run only if this run's state is pushed - together with its CSV bookings.
+    res.new_vintage = build_id
     if diff_err is None and len(changed) > CHANGED_KEYS_BOUND:
         diff_err = f"{len(changed):,} changed keys exceed the {CHANGED_KEYS_BOUND:,} bound"
     if diff_err is None:

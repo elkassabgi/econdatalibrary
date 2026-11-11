@@ -98,6 +98,7 @@ def test_p1_fence_trip_then_forced_rebuild_leaves_the_changed_id_in_a_home(rig, 
         raise orchestrate.UnitTimeout("csv phase fence")
     st = _run(tmp_path, monkeypatch, res1, trip)
     o, q, d = _homes(st)
+    monkeypatch.setattr(config, "STATE_DB", str(tmp_path / "state.db"))   # run 1's state WAS kept (pushed)
     res2 = rig.rebuild({"hpi_master": _master(nsa={("K1", D[0]): 99.0})})     # forced rebuild, same data
     assert res2.changed_keys == {}, "the signal really is used up"
     assert [r["series_id"] for r in d] == ["fhfa:hpi_master:K1"], (o, q, d)

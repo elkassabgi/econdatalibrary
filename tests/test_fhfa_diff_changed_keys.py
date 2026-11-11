@@ -102,6 +102,17 @@ class Rig:
         monkeypatch.setattr(config, "source_dir", lambda s: str(self.out))
         monkeypatch.setattr(F.ig, "download", lambda: None)
         monkeypatch.setattr(F.ig, "build", self._build)
+        # The PULLED state the fetcher checks (C6). rebuild() records a clean pass's vintage there, as the
+        # orchestrator does when that run's state is pushed; tests that model a LOST state re-point it.
+        monkeypatch.setattr(config, "STATE_DB", str(tmp_path / "rig_state.db"))
+
+    def record(self, res):
+        """The orchestrator's clean-pass write: unit_state.upstream_vintage = res.new_vintage."""
+        if res.status in ("ok", "no_change") and res.new_vintage:
+            from updater.state import StateStore
+            st = StateStore(path=config.STATE_DB)
+            st.upsert_unit("fhfa", "_all", strategy="bulk_snapshot_if_changed", upstream_vintage=res.new_vintage)
+            st.db.close()
 
     def _build(self):
         self.events.append(("build",))
@@ -115,7 +126,9 @@ class Rig:
         self.cubes = dict(cubes)
         self.n += 1
         self.mp.setattr(F, "_validators", lambda sess, n=self.n: {"hpi_master.csv": f"v{n}"})
-        return F.update(None, None)
+        res = F.update(None, None)
+        self.record(res)
+        return res
 
 
 @pytest.fixture
