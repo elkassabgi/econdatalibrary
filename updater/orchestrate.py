@@ -1584,7 +1584,7 @@ def _book_csv_desktop_owed(store, source_id: str, large: dict, reason: str = _DE
           f"the previous vintage until the desktop derive pays the debt", flush=True)
 
 
-def _derive_changed_csvs(unit, res, blob, store=None, started_at=None):
+def _derive_changed_csvs(unit, res, blob, store=None):
     """Contract step 5 — CSV/parquet coherence (§5.7): re-derive the CSV of every
     series whose parquet changed this run.
 
@@ -1708,13 +1708,14 @@ def _derive_changed_csvs(unit, res, blob, store=None, started_at=None):
             return _f, _n, _d, _r
         if res.obs and not (isinstance(getattr(res, "merged_rows", None), int)
                             and getattr(res, "merged_rows", None) > 0) \
-                and _no_store_write_proven(unit, store, started_at if started_at is not None
-                                           else _UNIT_STARTED_AT.get(getattr(unit, "key", None))):
-            # NOTHING WAS WRITTEN, MEASURED ON THE STORE (see _no_store_write_proven). No served CSV can
-            # have gone stale in this pass, so coherence is met and no debt is booked; a debt an earlier
-            # pass booked stays until it is paid. A pass that wrote parquet still books below.
-            print(f"[orchestrator] {unit.key}: no series_cursors, and no store parquet was written in "
-                  f"this pass (store check) - no CSV can be stale, no re-derive debt booked", flush=True)
+                and _no_store_write_proven(unit, store):
+            # NOTHING WAS WRITTEN, MEASURED ON THE STORE (see _no_store_write_proven): no store parquet
+            # changed since this unit's last accounted turn ended, so no served CSV can have gone stale and
+            # no debt is booked; a debt an earlier pass booked stays until it is paid. Any write since that
+            # turn - this pass's, or one a failed or unrecorded turn left - still books below.
+            print(f"[orchestrator] {unit.key}: no series_cursors, and no store parquet changed since its "
+                  f"last accounted turn (store check) - no CSV can be stale, no re-derive debt booked",
+                  flush=True)
             _f, _n, _d, _r = _repay_owed_alone(unit, blob, store, changed, None)
             return _f, _n, _d, _r
         if res.obs:
@@ -2149,32 +2150,30 @@ def _derive_changed_csvs(unit, res, blob, store=None, started_at=None):
 _NO_CURSORS_NOTE = "csv coherence unmet: fetcher reported no series_cursors"
 
 
-# ---- WAS THE STORE WRITTEN? (2026-11-11, the false-debt fix) ------------------------------------------------
-# The no-cursors branch above booked `full_rederive_owed` on any pass whose fetcher reported neither cursors
-# nor merged_rows, using `res.obs` - the STORE TOTAL - as its only evidence. Passes that merged NOTHING booked
-# debts that nothing pays: bfs 2026-10-20 (a 9.3 s pass stopped by a catalogue HTTP 429), nyfed 2026-10-21
-# (8/8 sub-units transient), dst 2026-10-18 (the dst item in the skill's 50-queue: 2,264/2,264 served CSVs
-# byte-identical to the store). A served CSV is derived from store parquet ONLY, so a pass that wrote no store
-# parquet cannot have made one stale. That is MEASURED here, not inferred from a count (base.Result explains
-# why obs and tally.added cannot carry it):
+# ---- WAS THE STORE WRITTEN SINCE THE LAST ACCOUNTED TURN? (2026-11-11, the false-debt fix) ----------------
+# The no-cursors branch of _derive_changed_csvs booked `full_rederive_owed` on any pass whose fetcher reported
+# neither cursors nor merged_rows, with `res.obs` - the STORE TOTAL - as its only evidence. Passes that merged
+# NOTHING booked debts that nothing pays: bfs 2026-10-20 (a 9.3 s pass stopped by a catalogue HTTP 429), nyfed
+# 2026-10-21 (8/8 sub-units transient), dst 2026-10-18 (the dst item in the skill's 50-queue: 2,264/2,264 served
+# CSVs byte-identical to the store). A served CSV is derived from store parquet only.
 #
-#   * every store write primitive in updater/blob.py replaces the LOCAL file at the store path before any R2
-#     PUT (write_table_atomic, commit_local_file), or PUTs a file already written there (publish_file), and
-#     no fetcher passes blob= to merge_and_write or PUTs to R2 itself (tests/test_false_owed_debt.py pins
-#     that), so a `*.parquet` under the unit's out dirs with mtime >= the unit's start is the write signal on
-#     every backend;
-#   * publish_file under r2 re-PUTs EVERY local parquet in the directory, including files an EARLIER pass left
-#     behind with an old mtime, so for a fetcher that calls it the walk proves nothing and the debt is booked;
-#   * a pass that wrote parquet and then FAILED (time limit, raise, structural refusal) never reaches this
-#     branch, and the next pass may write nothing. The failure branches therefore stamp what they saw
-#     (_STORE_WRITE_*), and a later pass skips the debt only when the unit's previous turn is known not to
-#     have left an unaccounted write. Anything unknown books the debt, as before.
-_STORE_WRITE_YES = "store check: parquet written in this pass before it failed"
-_STORE_WRITE_NO = "store check: no parquet written in this pass"
-_STORE_WRITE_UNKNOWN = "store check: could not tell whether parquet was written"
-_STORE_WRITE_MARGIN_S = 5.0     # filesystem mtime granularity; a larger margin only books more debts
-_NOT_A_TURN = ("no_change", "locked", "window_stopped")
-_UNIT_STARTED_AT: dict = {}     # unit.key -> time.time() at the start of its turn in run_once
+# THE QUESTION IS NOT "DID THIS PASS WRITE?" (review R1865). A turn that wrote parquet and then never reached
+# the derive phase - a raise, the hard time limit, an external kill that wrote no runs row, a CI pass whose state
+# push lost (its runs row is gone, its R2 writes stand) - leaves writes nobody accounted for, and a fetcher that
+# checkpoints (dst saves its manifest per chunk) writes nothing on the next pass. So the skip asks whether ANY
+# store parquet changed after the END of this unit's newest ACCOUNTED turn: a runs row that only run_once's main
+# path writes, after its derive phase (status ok/partial/no_change with obs > 0 - _record, the failure path,
+# logs obs 0, and so do the locked, window_stopped, earned-no_change and killed_external rows). Every write
+# before that row's end was derived or booked by that turn; every write after it, by anything, books the debt.
+#
+# MEASURED ON THE STORE THE READER SEES: under r2 the R2 listing's LastModified (publish_file's re-PUT of old
+# local files shows there too); otherwise the local store's mtimes (the local and selfhost backends write the
+# store through the local path primitives). runs.ts_utc is the turn's END on the writer's clock; a writer clock
+# behind the store's only makes that turn's own writes look later, which books (the safe side). Any doubt books.
+#
+# KNOWN LIMIT, pre-existing and unchanged: a turn whose csv phase tripped its time fence logs a main-path row
+# without having booked; it counts as accounted here, as it already did for the next pass's cursors.
+_ACCOUNTED_STATUSES = ("ok", "partial", "no_change")
 
 
 def _out_dirs(unit) -> list:
@@ -2188,89 +2187,77 @@ def _out_dirs(unit) -> list:
     return dirs
 
 
-def _parquet_written_since(unit, started_at) -> "bool | None":
-    """True when a `*.parquet` under the unit's out dirs (recursive) has mtime >= started_at - margin; False when
-    none has; None when it cannot be told (no out dirs, a walk or stat error). Callers treat None as written."""
-    dirs = _out_dirs(unit)
-    if not dirs or started_at is None:
-        return None
-    floor = float(started_at) - _STORE_WRITE_MARGIN_S
-    errors = []
-    try:
-        for d in dirs:
-            if not os.path.isdir(d):
-                continue          # nothing was ever written here on this machine, so nothing this pass
-            for root, _dirs, files in os.walk(d, onerror=errors.append):
-                for f in files:
-                    if f.endswith(".parquet") and os.path.getmtime(os.path.join(root, f)) >= floor:
-                        return True
-    except OSError:
-        return None
-    return None if errors else False
-
-
-def _store_write_marker(unit, started_at) -> str:
-    """The note segment a FAILED pass carries: what the store-write walk saw. Never raises."""
-    try:
-        w = _parquet_written_since(unit, started_at)
-    except Exception:                                                   # noqa: BLE001 - a marker, never fatal
-        w = None
-    return {True: _STORE_WRITE_YES, False: _STORE_WRITE_NO}.get(w, _STORE_WRITE_UNKNOWN)
-
-
-def _with_store_marker(err, unit, started_at) -> str:
-    """err (already clipped) plus the marker, appended AFTER clipping so truncation can never cut it off."""
-    return f"{err}; {_store_write_marker(unit, started_at)}"
-
-
-def _publishes_whole_dir(source_id) -> bool:
-    """Does this source's fetcher call blob.publish_file? Under r2 that re-PUTs every local parquet in the
-    directory, old ones included, so an mtime walk cannot tell what reached the store. Unreadable = True."""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "strategies", "fetchers",
-                        f"{source_id}.py")
-    try:
-        with open(path, encoding="utf-8") as fh:
-            return "publish_file(" in fh.read()
-    except OSError:
-        return True
-
-
-def _previous_turn_clean(store, unit) -> bool:
-    """Did this unit's previous turn leave NO unaccounted store write? Its newest runs row that is a turn (not
-    no_change / locked / window_stopped) must be a failure row stamped _STORE_WRITE_NO, or an ok/partial row
-    with no store-check stamp at all (a pass that reached the derive phase, which books or derives its own
-    writes). A failure row stamped YES or UNKNOWN, an unstamped transient_fail (written before the stamps
-    existed, or a fetcher's own transient Result), killed_external, no history, or a read error: False."""
+def _accounted_until(store, unit) -> "float | None":
+    """Epoch END of this unit's newest accounted turn (see above), or None when there is none or it cannot be
+    read."""
     if store is None:
-        return False
+        return None
     try:
         row = store.db.execute(
-            "SELECT status, note FROM runs WHERE source_id=? AND unit_id=? AND COALESCE(status,'') NOT IN "
-            f"({','.join('?' * len(_NOT_A_TURN))}) ORDER BY ts_utc DESC, id DESC LIMIT 1",
-            (unit.source_id, unit.unit_id, *_NOT_A_TURN)).fetchone()
+            "SELECT ts_utc FROM runs WHERE source_id=? AND unit_id=? AND status IN "
+            f"({','.join('?' * len(_ACCOUNTED_STATUSES))}) AND COALESCE(obs, 0) > 0 "
+            "ORDER BY ts_utc DESC, id DESC LIMIT 1",
+            (unit.source_id, unit.unit_id, *_ACCOUNTED_STATUSES)).fetchone()
+        if not row or not row[0]:
+            return None
+        from datetime import datetime as _dt                            # noqa: PLC0415
+        ts = _dt.fromisoformat(str(row[0]))
+        if ts.tzinfo is None:
+            return None
+        return ts.timestamp()
     except Exception:                                                   # noqa: BLE001 - unknown books the debt
-        return False
-    if row is None:
-        return False
-    status, note = row[0], str(row[1] or "")
-    if note.endswith(_STORE_WRITE_NO):
-        return True
-    if _STORE_WRITE_YES in note or _STORE_WRITE_UNKNOWN in note:
-        return False
-    return status in ("ok", "partial")
+        return None
 
 
-def _no_store_write_proven(unit, store, started_at) -> bool:
-    """The ONE predicate that lets the no-cursors branch skip its debt: this pass wrote no store parquet, the walk
-    can see this fetcher's writes, and the previous turn left nothing unaccounted. Every doubt answers False."""
-    if started_at is None:
+def _store_blob_r2():
+    """The R2Blob the store path primitives write through when AQUEDUCT_BACKEND=r2, else None (a function, so a
+    test can stand a fake listing in)."""
+    from . import blob as _b                                            # noqa: PLC0415
+    return _b._r2_routed()
+
+
+def _store_key(path) -> str:
+    from . import blob as _b                                            # noqa: PLC0415
+    return _b._path_to_key(path)
+
+
+def _parquet_written_after(unit, floor) -> "bool | None":
+    """True when a `*.parquet` under the unit's out dirs (recursive) was modified after `floor` (epoch) in the
+    store the backend reads; False when none was; None when it cannot be told (no out dirs, a listing, walk or
+    stat error). Callers treat None as written."""
+    dirs = _out_dirs(unit)
+    if not dirs or floor is None:
+        return None
+    try:
+        r2 = _store_blob_r2()
+        if r2 is not None:
+            for d in dirs:
+                prefix = _store_key(d).rstrip("/") + "/"
+                for key, modified in r2.list_modified(prefix):
+                    if str(key).endswith(".parquet") and modified.timestamp() > floor:
+                        return True
+            return False
+        errors = []
+        for d in dirs:
+            if not os.path.isdir(d):
+                continue          # nothing was ever written here, so nothing since the floor
+            for root, _dirs, files in os.walk(d, onerror=errors.append):
+                for f in files:
+                    if f.endswith(".parquet") and os.path.getmtime(os.path.join(root, f)) > floor:
+                        return True
+        return None if errors else False
+    except Exception:                                                   # noqa: BLE001 - unknown books the debt
+        return None
+
+
+def _no_store_write_proven(unit, store) -> bool:
+    """The ONE predicate that lets the no-cursors branch skip its debt: no store parquet under this unit's out
+    dirs changed after the end of its newest accounted turn. Every doubt answers False (book the debt)."""
+    floor = _accounted_until(store, unit)
+    if floor is None:
         return False
-    if (os.environ.get("AQUEDUCT_BACKEND", "local") or "local").strip().lower() == "r2" \
-            and _publishes_whole_dir(unit.source_id):
-        return False
-    if _parquet_written_since(unit, started_at) is not False:
-        return False
-    return _previous_turn_clean(store, unit)
+    return _parquet_written_after(unit, floor) is False
+
 
 _DERIVE_ALL_CAP = 5000
 
@@ -4044,10 +4031,6 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
 
         merge.impossible_reset()   # per-unit, so the count below is THIS source's
         t0 = time.time()
-        # When THIS unit's turn started, for the no-cursors branch's store-write check
-        # (_derive_changed_csvs reads it by unit key; a map, not a new argument, so every stand-in
-        # with the 4-argument signature keeps working). Removed in `finally`.
-        _UNIT_STARTED_AT[unit.key] = t0
         try:
             # sane_since GUARDS THE CURSOR AT THE HAND-OFF, not in each fetcher. The stored
             # frontier is the furthest period the store holds, and for a source carrying
@@ -4299,27 +4282,18 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             # UNEXPECTED. Transient by design: nothing was corrupted, the source simply did
             # not finish, and it is re-queued.
             print(f"[orchestrator] TIMEOUT {unit.key} — {e}", flush=True)
-            # Every failure row carries what the store-write walk saw (_with_store_marker): a pass that
-            # wrote parquet and then failed never reached the derive phase, so the NEXT pass must not
-            # skip the no-cursors debt on the strength of its own empty walk (_previous_turn_clean).
-            _record(store, unit, "transient_fail", err=_with_store_marker(_clip_err(e), unit, t0),
-                    dur=time.time() - t0)
+            _record(store, unit, "transient_fail", err=_clip_err(e), dur=time.time() - t0)
             results.append((unit.key, "timeout"))
         except TransientError as e:
-            _record(store, unit, "transient_fail", err=_with_store_marker(_clip_err(e), unit, t0),
-                    dur=time.time() - t0)
+            _record(store, unit, "transient_fail", err=_clip_err(e), dur=time.time() - t0)
             results.append((unit.key, "transient_fail"))
         except DefinitiveError as e:
-            _record(store, unit, "partial", err=_with_store_marker(_clip_err(e), unit, t0),
-                    dur=time.time() - t0)
+            _record(store, unit, "partial", err=_clip_err(e), dur=time.time() - t0)
             results.append((unit.key, "partial"))
         except Exception as e:  # noqa: BLE001 — unexpected: treat as transient, surface, retry
-            _record(store, unit, "transient_fail",
-                    err=_with_store_marker(_clip_err("UNEXPECTED:" + _repr_of(e)), unit, t0),
-                    dur=time.time() - t0)
+            _record(store, unit, "transient_fail", err=_clip_err("UNEXPECTED:" + _repr_of(e)), dur=time.time() - t0)
             results.append((unit.key, "error"))
         finally:
-            _UNIT_STARTED_AT.pop(unit.key, None)
             store.release_lease(unit.key, owner=OWNER)
             # Per-unit cost, printed even on failure. Peak RSS is what turns "the
             # runner OOMed" into "THIS source needs 15 GB" — the fact that decides

@@ -141,6 +141,13 @@ def test_one_units_clean_pass_never_vouches_for_a_sibling():
     assert _row(st, "ecb")["health"] == "ATTENTION"
 
 
+def test_the_oldest_per_unit_anchor_wins():
+    """Both units have a clean pass, one fresh and one past the SLA: the stale one decides (RED-SLA)."""
+    st = _store("ecb", runs=[("_all", "partial", CLEAN, 5.0), ("_x", "partial", CLEAN, 0.5)],
+                extra_units=("_x",))
+    assert _row(st, "ecb")["health"] == "RED-SLA"
+
+
 def test_a_runs_read_error_falls_back_and_never_crashes_the_gate(capsys):
     st = _store("ecb", runs=[("_all", "partial", CLEAN, 1.0)])
 

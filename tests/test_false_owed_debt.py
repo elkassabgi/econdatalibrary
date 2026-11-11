@@ -1,17 +1,15 @@
-"""A pass that wrote NO store parquet must not book a full_rederive_owed debt (the false-debt fix).
+"""A no-cursors pass books a full_rederive_owed debt only when the store CHANGED since the last accounted turn.
 
 THE DEFECT (gate re-triage 2026-11-11). The no-cursors branch of _derive_changed_csvs booked a debt
 whenever a fetcher reported neither series_cursors nor merged_rows and `res.obs` (the STORE TOTAL) was
 non-zero. Passes that merged nothing booked debts nothing pays: bfs 2026-10-20 (a 9.3 s pass stopped
-by a catalogue HTTP 429), nyfed 2026-10-21 (8/8 sub-units transient), dst 2026-10-18. A served CSV is
-derived from store parquet only, so a pass that wrote none cannot have made one stale.
+by a catalogue HTTP 429), nyfed 2026-10-21 (8/8 sub-units transient), dst 2026-10-18.
 
-THE PREDICATE (orchestrate._no_store_write_proven), each leg pinned below with its negative control:
-  * no `*.parquet` under the unit's out dirs (recursive) has mtime >= the unit's start;
-  * the walk can see the fetcher's writes (not a publish_file fetcher under r2);
-  * the unit's previous turn left no unaccounted write (a FAILED pass stamps what it saw, and a
-    pass that wrote parquet and then failed never reached the derive phase).
-Every doubt books the debt, as before. merged_rows > 0 always books; merged_rows == 0 never did.
+THE PREDICATE (orchestrate._no_store_write_proven): no `*.parquet` under the unit's out dirs changed
+after the END of the unit's newest ACCOUNTED turn - a main-path runs row (ok/partial/no_change, obs > 0)
+written after its derive phase. Writes left by a failed turn (obs 0 rows), an unrecorded kill, or a CI
+pass whose state push was lost all postdate that row, so they still book (review R1865). Measured on the
+R2 listing under r2, on local mtimes otherwise. Every doubt books. merged_rows > 0 always books.
 
 Existing owed rows are not touched by this change.
 """
@@ -22,6 +20,7 @@ import sys
 import time
 import types
 import unittest.mock as mock
+from datetime import datetime, timedelta, timezone
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -36,12 +35,23 @@ from updater.state import StateStore                          # noqa: E402
 from updater.strategies import fetchers                       # noqa: E402
 from updater.strategies.base import Result, Strategy, Unit    # noqa: E402
 
+HOUR = 3600.0
 
-def _write_parquet(path, mtime=None):
+
+def _ago(seconds):
+    return time.time() - seconds
+
+
+def _iso_ago(seconds):
+    return datetime.fromtimestamp(_ago(seconds), timezone.utc).isoformat()
+
+
+def _write_parquet(path, seconds_ago=None):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     pq.write_table(pa.table({"series_key": ["k"], "obs_date": ["2026-01-01"], "value": [1.0]}), path)
-    if mtime is not None:
-        os.utime(path, (mtime, mtime))
+    if seconds_ago is not None:
+        t = _ago(seconds_ago)
+        os.utime(path, (t, t))
 
 
 class _U:
@@ -56,16 +66,26 @@ def _res(**kw):
     return Result(**base)
 
 
-def _derive(unit, res, store, started_at):
+def _derive(unit, res, store):
     with mock.patch.object(orchestrate, "_catalog_series_count", return_value=582, create=True):
-        return orchestrate._derive_changed_csvs(unit, res, blob=None, store=store, started_at=started_at)
+        return orchestrate._derive_changed_csvs(unit, res, blob=None, store=store)
 
 
-def _store_with_prev(tmp_path, sid, status="ok", note="+17407 new rows"):
+def _row(st, sid, status, seconds_ago, obs=5_408_880, note="n", uid="_all"):
+    st.db.execute("INSERT INTO runs(ts_utc,source_id,unit_id,status,obs,dur_s,note) VALUES(?,?,?,?,?,?,?)",
+                  (_iso_ago(seconds_ago), sid, uid, status, obs, 10.0, note))
+    st.db.commit()
+
+
+def _store(tmp_path, sid, floor_ago=1 * HOUR, status="ok"):
     st = StateStore(path=str(tmp_path / "state.db"))
-    if status is not None:
-        st.log_run(sid, "_all", status, note=note)
+    if floor_ago is not None:
+        _row(st, sid, status, floor_ago)
     return st
+
+
+def _dir(tmp_path, sid):
+    return str(tmp_path / "store" / sid)
 
 
 @pytest.fixture(autouse=True)
@@ -73,161 +93,208 @@ def _local_backend(monkeypatch):
     monkeypatch.setenv("AQUEDUCT_BACKEND", "local")
 
 
-# ---- the branch itself ------------------------------------------------------------------------------------
+def _books(note):
+    return note is not None and note.startswith(orchestrate._NO_CURSORS_NOTE)
+
+
+# ---- the branch itself (local backend) --------------------------------------------------------------------
 
 def test_a_zero_write_pass_books_no_debt(tmp_path):
-    d = str(tmp_path / "store" / "bfs")
-    old = time.time() - 86_400
-    _write_parquet(os.path.join(d, "BFS_a.parquet"), mtime=old)      # yesterday's store, untouched today
-    st = _store_with_prev(tmp_path, "bfs")
-    failed, note, deferred, reasons = _derive(_U("bfs", [d]), _res(), st, started_at=time.time() - 9.3)
+    d = _dir(tmp_path, "bfs")
+    _write_parquet(os.path.join(d, "BFS_a.parquet"), seconds_ago=24 * HOUR)
+    failed, note, deferred, reasons = _derive(_U("bfs", [d]), _res(), _store(tmp_path, "bfs"))
     assert note is None and failed == [] and deferred == [] and reasons == {}
 
 
 def test_negative_control_a_pass_that_wrote_parquet_without_cursors_still_books(tmp_path):
-    d = str(tmp_path / "store" / "bfs")
-    t0 = time.time() - 60
+    d = _dir(tmp_path, "bfs")
     _write_parquet(os.path.join(d, "BFS_a.parquet"))                 # written during this pass
-    st = _store_with_prev(tmp_path, "bfs")
-    _, note, _, _ = _derive(_U("bfs", [d]), _res(), st, started_at=t0)
-    assert note is not None and note.startswith(orchestrate._NO_CURSORS_NOTE)
+    _, note, _, _ = _derive(_U("bfs", [d]), _res(), _store(tmp_path, "bfs"))
+    assert _books(note)
+
+
+def test_an_unrecorded_killed_turn_s_write_books_on_the_next_quiet_pass(tmp_path):
+    """Review R1865's probe: ok turn 2 h ago, then a turn that wrote and was killed WITHOUT a runs row
+    (1 h ago), then this quiet pass. Its own walk of 'this pass' would be empty; the floor is the ok turn."""
+    d = _dir(tmp_path, "dst")
+    _write_parquet(os.path.join(d, "AKU110.parquet"), seconds_ago=1 * HOUR)
+    _, note, _, _ = _derive(_U("dst", [d]), _res(), _store(tmp_path, "dst", floor_ago=2 * HOUR))
+    assert _books(note)
+
+
+@pytest.mark.parametrize("status", ["transient_fail", "partial", "killed_external", "locked",
+                                    "window_stopped", "no_change"])
+def test_a_failure_or_non_turn_row_is_never_the_floor(tmp_path, status):
+    """A failure row (obs 0, the _record path - a pre-fix DefinitiveError partial included), a kill
+    record, or a non-turn row written AFTER the write must not move the floor past it."""
+    d = _dir(tmp_path, "dst")
+    st = _store(tmp_path, "dst", floor_ago=3 * HOUR)
+    _write_parquet(os.path.join(d, "AKU110.parquet"), seconds_ago=1 * HOUR)
+    _row(st, "dst", status, 0.5 * HOUR, obs=0, note="structural: 1/25 parsed 0 rows")
+    _, note, _, _ = _derive(_U("dst", [d]), _res(), st)
+    assert _books(note)
+
+
+def test_a_newer_accounted_turn_moves_the_floor(tmp_path):
+    d = _dir(tmp_path, "nyfed")
+    st = _store(tmp_path, "nyfed", floor_ago=3 * HOUR)
+    _write_parquet(os.path.join(d, "nyfed.parquet"), seconds_ago=2 * HOUR)
+    _row(st, "nyfed", "partial", 1 * HOUR, obs=17_407)                # main path, after the write
+    _, note, _, _ = _derive(_U("nyfed", [d]), _res(obs=17_407), st)
+    assert note is None
+
+
+def test_another_unit_s_floor_does_not_count(tmp_path):
+    d = _dir(tmp_path, "dst")
+    st = _store(tmp_path, "dst", floor_ago=3 * HOUR)
+    _write_parquet(os.path.join(d, "AKU110.parquet"), seconds_ago=2 * HOUR)
+    _row(st, "dst", "ok", 1 * HOUR, uid="_other")
+    _, note, _, _ = _derive(_U("dst", [d]), _res(), st)
+    assert _books(note)
+
+
+def test_no_history_books(tmp_path):
+    d = _dir(tmp_path, "bfs")
+    _write_parquet(os.path.join(d, "BFS_a.parquet"), seconds_ago=24 * HOUR)
+    _, note, _, _ = _derive(_U("bfs", [d]), _res(), _store(tmp_path, "bfs", floor_ago=None))
+    assert _books(note)
+
+
+def test_a_naive_timestamp_books(tmp_path):
+    d = _dir(tmp_path, "bfs")
+    _write_parquet(os.path.join(d, "BFS_a.parquet"), seconds_ago=24 * HOUR)
+    st = _store(tmp_path, "bfs", floor_ago=None)
+    st.db.execute("INSERT INTO runs(ts_utc,source_id,unit_id,status,obs,dur_s,note) "
+                  "VALUES('2026-11-10T10:00:00','bfs','_all','ok',5,1.0,'n')")
+    st.db.commit()
+    _, note, _, _ = _derive(_U("bfs", [d]), _res(), st)
+    assert _books(note)
+
+
+def test_a_store_without_a_runs_table_books():
+    class _Duck:
+        pass
+    assert orchestrate._accounted_until(_Duck(), _U("bfs", [])) is None
+    assert orchestrate._accounted_until(None, _U("bfs", [])) is None
 
 
 def test_a_write_in_a_nested_directory_is_seen(tmp_path):
-    d = str(tmp_path / "store" / "bea")
-    t0 = time.time() - 60
+    d = _dir(tmp_path, "bea")
     _write_parquet(os.path.join(d, "Regional", "CAINC5S.parquet"))
-    st = _store_with_prev(tmp_path, "bea")
-    _, note, _, _ = _derive(_U("bea", [d]), _res(), st, started_at=t0)
-    assert note is not None and note.startswith(orchestrate._NO_CURSORS_NOTE)
+    _, note, _, _ = _derive(_U("bea", [d]), _res(), _store(tmp_path, "bea"))
+    assert _books(note)
 
 
 def test_a_file_grain_out_path_walks_its_directory(tmp_path):
-    d = str(tmp_path / "store" / "eurostat")
-    t0 = time.time() - 60
+    d = _dir(tmp_path, "eurostat")
     _write_parquet(os.path.join(d, "OTHER_FLOW.parquet"))
-    st = _store_with_prev(tmp_path, "eurostat")
-    _, note, _, _ = _derive(_U("eurostat", [os.path.join(d, "MY_FLOW.parquet")]), _res(), st, started_at=t0)
-    assert note is not None, "a sibling written in the same directory is a write (conservative)"
+    _, note, _, _ = _derive(_U("eurostat", [os.path.join(d, "MY_FLOW.parquet")]), _res(),
+                            _store(tmp_path, "eurostat"))
+    assert _books(note), "a sibling written in the same directory is a write (conservative)"
 
 
 def test_sidecars_and_temp_files_are_not_store_writes(tmp_path):
-    d = str(tmp_path / "store" / "dst")
-    _write_parquet(os.path.join(d, "AKU110.parquet"), mtime=time.time() - 86_400)
+    d = _dir(tmp_path, "dst")
+    _write_parquet(os.path.join(d, "AKU110.parquet"), seconds_ago=24 * HOUR)
     for name in ("_manifest.json", "_rotation.json", "AKU110.parquet.123.ab.tmp"):
         with open(os.path.join(d, name), "w") as fh:
             fh.write("{}")
-    st = _store_with_prev(tmp_path, "dst")
-    _, note, _, _ = _derive(_U("dst", [d]), _res(), st, started_at=time.time() - 30)
+    _, note, _, _ = _derive(_U("dst", [d]), _res(), _store(tmp_path, "dst"))
     assert note is None
 
 
 def test_merged_rows_positive_always_books(tmp_path):
-    d = str(tmp_path / "store" / "bfs")
-    _write_parquet(os.path.join(d, "BFS_a.parquet"), mtime=time.time() - 86_400)
-    st = _store_with_prev(tmp_path, "bfs")
-    _, note, _, _ = _derive(_U("bfs", [d]), _res(merged_rows=5), st, started_at=time.time() - 30)
-    assert note is not None and note.startswith(orchestrate._NO_CURSORS_NOTE)
-
-
-def test_no_start_time_keeps_the_old_behaviour(tmp_path):
-    d = str(tmp_path / "store" / "bfs")
-    _write_parquet(os.path.join(d, "BFS_a.parquet"), mtime=time.time() - 86_400)
-    st = _store_with_prev(tmp_path, "bfs")
-    _, note, _, _ = _derive(_U("bfs", [d]), _res(), st, started_at=None)
-    assert note is not None and note.startswith(orchestrate._NO_CURSORS_NOTE)
+    d = _dir(tmp_path, "bfs")
+    _write_parquet(os.path.join(d, "BFS_a.parquet"), seconds_ago=24 * HOUR)
+    _, note, _, _ = _derive(_U("bfs", [d]), _res(merged_rows=5), _store(tmp_path, "bfs"))
+    assert _books(note)
 
 
 @pytest.mark.parametrize("out_paths", [[], None])
 def test_no_out_dirs_books(tmp_path, out_paths):
-    st = _store_with_prev(tmp_path, "bfs")
-    _, note, _, _ = _derive(_U("bfs", out_paths), _res(), st, started_at=time.time() - 30)
-    assert note is not None
+    _, note, _, _ = _derive(_U("bfs", out_paths), _res(), _store(tmp_path, "bfs"))
+    assert _books(note)
 
 
 def test_a_walk_error_books(tmp_path, monkeypatch):
-    d = str(tmp_path / "store" / "bfs")
-    _write_parquet(os.path.join(d, "BFS_a.parquet"), mtime=time.time() - 86_400)
-    st = _store_with_prev(tmp_path, "bfs")
+    d = _dir(tmp_path, "bfs")
+    _write_parquet(os.path.join(d, "BFS_a.parquet"), seconds_ago=24 * HOUR)
+    st = _store(tmp_path, "bfs")
 
     def bad_walk(top, onerror=None, **k):
         if onerror:
             onerror(OSError("denied"))
         return iter(())
     monkeypatch.setattr(orchestrate.os, "walk", bad_walk)
-    _, note, _, _ = _derive(_U("bfs", [d]), _res(), st, started_at=time.time() - 30)
-    assert note is not None
+    _, note, _, _ = _derive(_U("bfs", [d]), _res(), st)
+    assert _books(note)
 
 
 def test_a_stat_error_books(tmp_path, monkeypatch):
-    d = str(tmp_path / "store" / "bfs")
-    _write_parquet(os.path.join(d, "BFS_a.parquet"), mtime=time.time() - 86_400)
-    st = _store_with_prev(tmp_path, "bfs")
+    d = _dir(tmp_path, "bfs")
+    _write_parquet(os.path.join(d, "BFS_a.parquet"), seconds_ago=24 * HOUR)
+    st = _store(tmp_path, "bfs")
     monkeypatch.setattr(orchestrate.os.path, "getmtime",
                         lambda p: (_ for _ in ()).throw(OSError("gone")))
-    _, note, _, _ = _derive(_U("bfs", [d]), _res(), st, started_at=time.time() - 30)
-    assert note is not None
+    _, note, _, _ = _derive(_U("bfs", [d]), _res(), st)
+    assert _books(note)
 
 
-def test_under_r2_a_publish_file_fetcher_always_books(tmp_path, monkeypatch):
-    """publish_file re-PUTs every local parquet in the directory, old mtimes included."""
-    monkeypatch.setenv("AQUEDUCT_BACKEND", "r2")
-    for sid, books in (("noaa", True), ("bfs", False)):
-        d = str(tmp_path / "store" / sid)
-        _write_parquet(os.path.join(d, "x.parquet"), mtime=time.time() - 86_400)
-        st = StateStore(path=str(tmp_path / f"state_{sid}.db"))
-        st.log_run(sid, "_all", "ok", note="+1 new rows")
-        _, note, _, _ = _derive(_U(sid, [d]), _res(), st, started_at=time.time() - 30)
-        assert (note is not None) is books, (sid, note)
+# ---- under r2: the R2 listing, not the runner's disk -------------------------------------------------------
+
+class _FakeR2:
+    def __init__(self, objects=None, boom=False):
+        self.objects, self.boom, self.prefixes = objects or [], boom, []
+
+    def list_modified(self, prefix):
+        self.prefixes.append(prefix)
+        if self.boom:
+            raise RuntimeError("ServiceUnavailable")
+        return [(k, m) for k, m in self.objects if k.startswith(prefix)]
 
 
-# ---- the previous turn ------------------------------------------------------------------------------------
+def _r2(monkeypatch, fake):
+    monkeypatch.setattr(orchestrate, "_store_blob_r2", lambda: fake)
 
-@pytest.mark.parametrize("status,note,books", [
-    ("transient_fail", "boom; " + orchestrate._STORE_WRITE_YES, True),
-    ("partial", "structural; " + orchestrate._STORE_WRITE_YES, True),
-    ("transient_fail", "boom; " + orchestrate._STORE_WRITE_UNKNOWN, True),
-    ("transient_fail", "UnitTimeout('bfs/_all exceeded 45 min')", True),     # unstamped (pre-fix row)
-    ("killed_external", "killed by the window guard", True),
-    (None, None, True),                                                       # no history
-    ("transient_fail", "boom; " + orchestrate._STORE_WRITE_NO, False),
-    ("ok", "+17407 new rows", False),
-    ("partial", "8/8 sub-unit(s) transient-failed; will retry", False),
+
+def _utc_ago(seconds):
+    return datetime.now(timezone.utc) - timedelta(seconds=seconds)
+
+
+@pytest.mark.parametrize("objects,books", [
+    ([("clean_full/bfs/BFS_a.parquet", 24 * HOUR)], False),
+    ([("clean_full/bfs/BFS_a.parquet", 24 * HOUR), ("clean_full/bfs/BFS_b.parquet", 0.5 * HOUR)], True),
+    ([("clean_full/bfs/Sub/BFS_c.parquet", 0.5 * HOUR)], True),            # nested keys are listed
+    ([("clean_full/bfs/_rotation.json", 0.5 * HOUR)], False),               # sidecar, not a store parquet
+    ([("clean_full/bfsx/BFS_a.parquet", 0.5 * HOUR)], False),               # another source's prefix
 ])
-def test_the_previous_turn_decides_whether_an_unaccounted_write_may_exist(tmp_path, status, note, books):
-    d = str(tmp_path / "store" / "nyfed")
-    _write_parquet(os.path.join(d, "nyfed.parquet"), mtime=time.time() - 86_400)
-    st = _store_with_prev(tmp_path, "nyfed", status=status, note=note)
-    _, got, _, _ = _derive(_U("nyfed", [d]), _res(obs=17_407), st, started_at=time.time() - 30)
-    assert (got is not None) is books, (status, note, got)
+def test_under_r2_the_listing_decides(tmp_path, monkeypatch, objects, books):
+    """The runner's disk holds only this run's files; the store the reader sees is R2."""
+    fake = _FakeR2([(k, _utc_ago(s)) for k, s in objects])
+    _r2(monkeypatch, fake)
+    d = os.path.join(str(tmp_path), "data", "clean_full", "bfs")      # a store path with a /data/ segment
+    _, note, _, _ = _derive(_U("bfs", [d]), _res(), _store(tmp_path, "bfs"))
+    assert _books(note) is books, (objects, note)
+    assert fake.prefixes == ["clean_full/bfs/"]
 
 
-def test_non_turn_rows_are_skipped_when_finding_the_previous_turn(tmp_path):
-    d = str(tmp_path / "store" / "nyfed")
-    _write_parquet(os.path.join(d, "nyfed.parquet"), mtime=time.time() - 86_400)
-    st = _store_with_prev(tmp_path, "nyfed", status="transient_fail",
-                          note="boom; " + orchestrate._STORE_WRITE_YES)
-    for s in orchestrate._NOT_A_TURN:
-        st.log_run("nyfed", "_all", s, note="later, but not a turn")
-    _, got, _, _ = _derive(_U("nyfed", [d]), _res(obs=17_407), st, started_at=time.time() - 30)
-    assert got is not None
+def test_under_r2_a_listing_error_books(tmp_path, monkeypatch):
+    _r2(monkeypatch, _FakeR2(boom=True))
+    d = os.path.join(str(tmp_path), "data", "clean_full", "bfs")
+    _, note, _, _ = _derive(_U("bfs", [d]), _res(), _store(tmp_path, "bfs"))
+    assert _books(note)
 
 
-def test_a_store_without_a_runs_table_books():
-    class _Duck:
-        pass
-    assert orchestrate._previous_turn_clean(_Duck(), _U("bfs", [])) is False
-    assert orchestrate._previous_turn_clean(None, _U("bfs", [])) is False
+def test_under_r2_an_old_local_file_republished_shows_in_the_listing(tmp_path, monkeypatch):
+    """publish_file re-PUTs old local parquet; its R2 LastModified is the PUT time, and that is what is read."""
+    d = os.path.join(str(tmp_path), "data", "clean_full", "noaa")
+    _write_parquet(os.path.join(d, "gsom.parquet"), seconds_ago=30 * 24 * HOUR)   # old local mtime
+    _r2(monkeypatch, _FakeR2([("clean_full/noaa/gsom.parquet", _utc_ago(60))]))
+    _, note, _, _ = _derive(_U("noaa", [d]), _res(), _store(tmp_path, "noaa"))
+    assert _books(note)
 
 
-def test_the_marker_is_appended_after_clipping(tmp_path):
-    d = str(tmp_path / "store" / "bfs")
-    long = orchestrate._clip_err("x, " * 2000)
-    out = orchestrate._with_store_marker(long, _U("bfs", [d]), time.time() - 30)
-    assert out.endswith(orchestrate._STORE_WRITE_NO), out[-120:]
-
-
-# ---- through the REAL run_once: a pass that wrote and failed, then a pass that wrote nothing ---------------
+# ---- through the REAL run_once -----------------------------------------------------------------------------
 
 class _Strat(Strategy):
     name = "sim"
@@ -243,8 +310,7 @@ class _Strat(Strategy):
 
 
 def _run_once(tmp_path, monkeypatch, sid, script):
-    d = str(tmp_path / "store" / sid)
-    st_path = str(tmp_path / "state.db")
+    d = _dir(tmp_path, sid)
     unit = Unit(source_id=sid, unit_id="_all", strategy="sim", cadence="daily", out_paths=[d],
                 config={"run_location": "local", "live": True})
     for k in ("AQUEDUCT_LIVE_ONLY", "GITHUB_ACTIONS", "AQUEDUCT_UNIT_TIMEOUT_MIN"):
@@ -264,37 +330,36 @@ def _run_once(tmp_path, monkeypatch, sid, script):
     mp.setattr(orchestrate, "_drain_leftover_retries", lambda *a, **k: None)
     strat = _Strat(script)
     mp.setattr(orchestrate, "get_strategy", lambda name: strat)
-    store = StateStore(st_path)
+    store = StateStore(str(tmp_path / "state.db"))
     orchestrate.run_once(store=store, force=True)
-    return store, d
-
-
-def _writes(sid):
-    def w(unit):
-        _write_parquet(os.path.join(unit.out_paths[0], f"{sid}_a.parquet"))
-        return _res(obs=11_159_165, error="2/25 sub-unit(s) transient-failed; will retry")
-    return w
+    return store
 
 
 def _quiet(unit):
     return _res(obs=11_159_165, error="2/25 sub-unit(s) transient-failed; will retry")
 
 
+def _writes(unit):
+    _write_parquet(os.path.join(unit.out_paths[0], "dst_b.parquet"))
+    return _quiet(unit)
+
+
 def _owed(store, sid):
     return [r for r in store.full_rederives_owed() if r["source_id"] == sid]
 
 
-def _prime_old_store(tmp_path, sid):
-    _write_parquet(os.path.join(str(tmp_path / "store" / sid), f"{sid}_a.parquet"),
-                   mtime=time.time() - 86_400)
+def _prime(tmp_path, sid):
+    """An accounted turn 2 h ago, and a store last written a day ago."""
+    _write_parquet(os.path.join(_dir(tmp_path, sid), f"{sid}_a.parquet"), seconds_ago=24 * HOUR)
+    st = StateStore(str(tmp_path / "state.db"))
+    _row(st, sid, "ok", 2 * HOUR, obs=11_159_165, note="+3790 new rows")
 
 
 def test_run_once_zero_write_pass_books_nothing_and_a_writing_pass_books(tmp_path, monkeypatch):
-    _prime_old_store(tmp_path, "dst")
-    StateStore(str(tmp_path / "state.db")).log_run("dst", "_all", "ok", note="+3790 new rows")
-    store, _ = _run_once(tmp_path, monkeypatch, "dst", [_quiet])
+    _prime(tmp_path, "dst")
+    store = _run_once(tmp_path, monkeypatch, "dst", [_quiet])
     assert _owed(store, "dst") == []
-    store, _ = _run_once(tmp_path, monkeypatch, "dst", [_writes("dst")])
+    store = _run_once(tmp_path, monkeypatch, "dst", [_writes])
     assert len(_owed(store, "dst")) == 1, "negative control: a pass that wrote parquet books"
 
 
@@ -302,68 +367,31 @@ def test_run_once_zero_write_pass_books_nothing_and_a_writing_pass_books(tmp_pat
                                  DefinitiveError("dst: structural"),
                                  RuntimeError("unexpected")])
 def test_run_once_a_write_then_failure_makes_the_next_quiet_pass_book(tmp_path, monkeypatch, exc):
-    _prime_old_store(tmp_path, "dst")
-    StateStore(str(tmp_path / "state.db")).log_run("dst", "_all", "ok", note="+3790 new rows")
+    _prime(tmp_path, "dst")
 
     def write_then_raise(unit):
-        _write_parquet(os.path.join(unit.out_paths[0], "dst_b.parquet"))
+        _writes(unit)
         raise exc
-    store, _ = _run_once(tmp_path, monkeypatch, "dst", [write_then_raise])
-    last = store.db.execute("SELECT note FROM runs ORDER BY id DESC LIMIT 1").fetchone()[0]
-    assert last.endswith(orchestrate._STORE_WRITE_YES), last
+    store = _run_once(tmp_path, monkeypatch, "dst", [write_then_raise])
     assert _owed(store, "dst") == [], "the failed pass itself books nothing (unchanged)"
-    # the next pass writes nothing: its own walk is empty, but the previous turn wrote and failed
-    for f in os.listdir(str(tmp_path / "store" / "dst")):
-        os.utime(os.path.join(str(tmp_path / "store" / "dst"), f), (time.time() - 3600,) * 2)
-    store, _ = _run_once(tmp_path, monkeypatch, "dst", [_quiet])
+    store = _run_once(tmp_path, monkeypatch, "dst", [_quiet])
     assert len(_owed(store, "dst")) == 1, "the write before the failure is booked by the next quiet pass"
 
 
 def test_run_once_a_quiet_failure_does_not_poison_the_next_quiet_pass(tmp_path, monkeypatch):
-    _prime_old_store(tmp_path, "nyfed")
-    StateStore(str(tmp_path / "state.db")).log_run("nyfed", "_all", "ok", note="+17407 new rows")
+    _prime(tmp_path, "nyfed")
 
     def raise_only(unit):
         raise TransientError("nyfed: 8/8 transient")
-    store, _ = _run_once(tmp_path, monkeypatch, "nyfed", [raise_only])
-    last = store.db.execute("SELECT note FROM runs ORDER BY id DESC LIMIT 1").fetchone()[0]
-    assert last.endswith(orchestrate._STORE_WRITE_NO), last
-    store, _ = _run_once(tmp_path, monkeypatch, "nyfed", [_quiet])
+    _run_once(tmp_path, monkeypatch, "nyfed", [raise_only])
+    store = _run_once(tmp_path, monkeypatch, "nyfed", [_quiet])
     assert _owed(store, "nyfed") == []
 
 
-# ---- the evidence the walk rests on ----------------------------------------------------------------------
-
-def test_no_fetcher_writes_the_store_except_through_the_local_path_primitives():
-    """The mtime walk sees only writes that land on the local store path first. A fetcher that PUT to R2
-    itself, or handed merge_and_write an explicit blob=, would be invisible to it - and its debt dropped.
-    publish_file callers are handled separately (they always book under r2)."""
-    import re
-    root = os.path.join(ROOT, "updater", "strategies")
-    # JSON sidecars, not store parquet, each read at its own line (2026-11-11): insee_melodi's
-    # compare-and-swap of _aqueduct/withheld.json and _melodi_state's _flows.json. A NEW direct PUT
-    # fails this test until someone reads it and either routes it through blob's path primitives or
-    # adds it here with what it writes. Count-pinned so a fourth site in these files is not hidden.
-    allowed = {("insee_melodi.py", r"\.put_if\("): 1, ("_melodi_state.py", r"\.put_if\("): 2}
-    seen: dict = {}
-    bad = []
-    for dirpath, _d, files in os.walk(root):
-        for f in files:
-            if not f.endswith(".py"):
-                continue
-            src = open(os.path.join(dirpath, f), encoding="utf-8").read()
-            for pat in (r"\.put_atomic\(", r"\.put_file\(", r"\.put_gzip_file\(", r"\.put_if\(",
-                        r"merge_and_write(?:_bounded)?\([^)]*\bblob\s*="):
-                for m in re.finditer(pat, src):
-                    seen[(f, pat)] = seen.get((f, pat), 0) + 1
-                    if seen[(f, pat)] > allowed.get((f, pat), 0):
-                        bad.append(f"{f}:{src[:m.start()].count(chr(10)) + 1}: {pat}")
-    assert not bad, bad
-
-
-def test_the_publish_file_detector_finds_the_known_callers():
-    for sid in ("noaa", "usda", "cepii_baci", "eia", "fhfa", "fed_board", "ilostat"):
-        assert orchestrate._publishes_whole_dir(sid) is True, sid
-    for sid in ("bfs", "nyfed", "dst", "ecb"):
-        assert orchestrate._publishes_whole_dir(sid) is False, sid
-    assert orchestrate._publishes_whole_dir("no_such_source_xyz") is True, "unreadable must book"
+def test_run_once_the_failure_path_logs_obs_zero():
+    """The floor rule rests on it: _record (every failure branch) logs runs.obs = 0."""
+    import inspect
+    src = inspect.getsource(orchestrate._record)
+    assert "store.log_run(unit.source_id, unit.unit_id, status, dur_s=round(dur, 1), note=err)" in src
+    import updater.state as state_mod
+    assert inspect.signature(state_mod.StateStore.log_run).parameters["obs"].default == 0
