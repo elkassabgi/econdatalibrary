@@ -44,12 +44,21 @@ def retry_after_seconds(resp, default: int = 10) -> int:
     ONS publishes (developer.ons.gov.uk/bots) that ignoring this header can earn a block of
     "up to 1 hour" — which is exactly what kept killing CI runs. Clamped to [1, 120] so a
     hostile or bogus value can't park a job for an hour.
+
+    Delay-seconds must be 1-6 ASCII digits (AR-471, R1870): `isdigit()` is True for "²" and int()
+    then raised ValueError, as it does on a string of more than 4,300 digits. Anything else that is
+    not an HTTP-date counts as no header and gets `default`. Same rule as
+    updater/strategies/fetchers/_common.parse_retry_after_s; kept inline because this file also runs
+    as a plain script, where the `updater` package is not importable.
     """
-    raw = (resp.headers.get("Retry-After") or "").strip()
+    try:
+        raw = str(resp.headers.get("Retry-After") or "").strip()
+    except Exception:                                        # noqa: BLE001 - a header we cannot read
+        raw = ""
     wait = None
-    if raw.isdigit():
+    if re.fullmatch(r"[0-9]{1,6}", raw):
         wait = int(raw)
-    elif raw:
+    elif raw:                                                # 7+ digits fail as a date: `default`
         try:
             from email.utils import parsedate_to_datetime
             import datetime as _dt

@@ -66,8 +66,8 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import (Deadline, RotationCycle, Tally, finalize, load_rotation, retry_after_seconds,
-                      rotate_after, save_rotation)
+from ._common import (Deadline, RotationCycle, Tally, finalize, load_rotation, parse_retry_after_s,
+                      retry_after_seconds, rotate_after, save_rotation)
 
 import sys
 # The shared value-first PxWeb time-axis resolver lives in this repo's core/ package
@@ -415,21 +415,12 @@ def _throttle_wait(resp, attempt: int) -> int:
 
 def _raw_retry_after_s(resp):
     """The server's Retry-After in seconds, UNCLAMPED (both forms), or None if absent/unreadable.
-    The shared helper clamps to 120 s, which hides a server asking for an hour."""
-    h = getattr(resp, "headers", None) or {}
-    raw = str(h.get("Retry-After") or "").strip()
-    if not raw:
-        return None
-    if raw.isdigit():
-        return int(raw)
-    try:
-        from email.utils import parsedate_to_datetime
-        when = parsedate_to_datetime(raw)
-        if when.tzinfo is None:
-            when = when.replace(tzinfo=dt.timezone.utc)
-        return int((when - dt.datetime.now(dt.timezone.utc)).total_seconds())
-    except Exception:                                        # noqa: BLE001
-        return None
+    The shared helper clamps to 120 s, which hides a server asking for an hour.
+
+    The shared strict parser (AR-471, R1870): 1-6 ASCII digits or an HTTP-date, else None, and it
+    never raises. The inline copy this replaces used isdigit() + int(), which raised ValueError on
+    "²" or on 5,000 digits."""
+    return parse_retry_after_s(resp)
 
 
 def _on_429(sess, what: str, resp, attempt: int) -> None:

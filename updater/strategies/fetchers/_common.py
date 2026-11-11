@@ -18,6 +18,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import os
+import re
 import time
 
 from ..base import Result
@@ -56,22 +57,48 @@ def retry_after_seconds(resp, default: int = 10) -> int:
     Clamped to [1, 120] so a bogus or hostile value cannot park a run for hours; +1 so we
     resume just after the window rather than exactly on its edge.
     """
-    raw = (resp.headers.get("Retry-After") or "").strip() if getattr(resp, "headers", None) else ""
-    wait = None
-    if raw.isdigit():
-        wait = int(raw)
-    elif raw:
-        try:
-            from email.utils import parsedate_to_datetime
-            when = parsedate_to_datetime(raw)
-            if when.tzinfo is None:
-                when = when.replace(tzinfo=_dt.timezone.utc)
-            wait = int((when - _dt.datetime.now(_dt.timezone.utc)).total_seconds())
-        except Exception:
-            wait = None
+    wait = parse_retry_after_s(resp)
     if wait is None:
         wait = default
     return min(max(wait, 1), 120) + 1
+
+
+# delay-seconds as RFC 9110 writes it (1*DIGIT), ASCII only, at most 6 digits (999,999 s, ~11.6 days).
+# `str.isdigit()` is NOT this test: it is True for "²" and for other Unicode digits, and int() then
+# raises ValueError on "²" (R1870). int() also refuses a string of more than 4,300 digits.
+_RETRY_AFTER_DELAY = re.compile(r"[0-9]{1,6}")
+
+
+def parse_retry_after_s(resp):
+    """The server's Retry-After in seconds, UNCLAMPED, or None when there is no usable header.
+
+    The one parser for this header (AR-471, R1870): `retry_after_seconds` clamps its answer, and
+    hagstofa/ssb compare the raw value with their stop threshold. It NEVER raises, whatever the
+    header holds - a ValueError here once escaped the per-request retry loop and could end a pass.
+
+    - absent, empty or whitespace                    -> None
+    - 1 to 6 ASCII digits ("0", "30", "000060")      -> that int
+    - an HTTP-date (RFC 9110 IMF-fixdate and kin)    -> seconds from now, NEGATIVE for a past date
+                                                        (the caller floors it); a naive date is UTC
+    - anything else ("²", 5,000 digits, "-5", "12.5", "+5", "1e3", a non-date) -> None
+    """
+    try:
+        h = getattr(resp, "headers", None) or {}
+        raw = str(h.get("Retry-After") or "").strip()
+    except Exception:                                        # noqa: BLE001 - a header we cannot read
+        return None
+    if not raw:
+        return None
+    if _RETRY_AFTER_DELAY.fullmatch(raw):
+        return int(raw)
+    try:                                                     # 7+ digits fall through and fail as a date
+        from email.utils import parsedate_to_datetime
+        when = parsedate_to_datetime(raw)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=_dt.timezone.utc)
+        return int((when - _dt.datetime.now(_dt.timezone.utc)).total_seconds())
+    except Exception:                                        # noqa: BLE001 - not a date: no usable header
+        return None
 
 
 class Deadline:
