@@ -142,8 +142,8 @@ def credit_instant(created: list, cron: dt.datetime, hour: int, wf: str, windows
 # own right, so for one workflow the block is continuous from a cron until a run is created. What a skipped
 # cron costs: the desktop waits for the next cron's run (3 skips in the 60 days above). What it costs if
 # GitHub stops creating scheduled runs without disabling the workflow: the desktop waits until it does, or
-# until someone runs with -SkipCiCheck. run_local_heavy.ps1 warns after 2 x $MinHours without a pass, but that
-# is a line in a local log and it fires routinely (review AR-362). The alert that leaves the machine is
+# until someone runs with -SkipCiCheck. run_local_heavy.ps1 warns after $StarvationWarnHours (48 h) without a
+# stamped pass (review AR-469), but that is only a line in a local log. The alert that leaves the machine is
 # tools/scheduler_stall.py: the guard loop evaluates it, and it warns when a writer has had no scheduled run, or
 # has held an unfinished run (in either listing, as this gate reads them - review AR-376), for 36 h. It runs in
 # SHADOW mode (records the mail, sends nothing) until the owner

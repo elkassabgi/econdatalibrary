@@ -212,3 +212,59 @@ def test_negative_control_the_threshold_pin_rejects_84_and_28():
 def test_no_pause_flag_in_the_runner():
     """AR-469 round 2 R2-F1: a pause flag that nothing expires silently retires the route; it was removed."""
     assert "local_heavy.pause" not in _runner()
+
+
+# --- the starvation warning FIRES (AR-469 round 3, N1) --------------------------------------------------------------
+# The pins above check the comparison's text. This runs the real runner under PowerShell in a sandbox repo: a stamp
+# 49 h old (so -IfDue is due and past $StarvationWarnHours), a fake lister and a fake core.cutover (not cut over), and
+# a fake tools/ci_writer_gate.py that refuses (exit 3). The tick must print the WARNING and then ABORT with exit 2.
+# The negative control is the same tick at 47 h: it aborts the same way, with no WARNING.
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+
+import pytest  # noqa: E402
+
+POWERSHELL = shutil.which("powershell") or shutil.which("pwsh")
+
+
+def _gate_refused_tick(tmp_path, hours_since_stamp: float):
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for n in ("run_local_heavy.ps1", "cadence_decision.ps1", "pass_priority.ps1"):
+        shutil.copy2(ROOT / "tools" / n, tools / n)
+    (tools / "_list_local_sources.py").write_text("print('fake_source')\n", encoding="ascii")
+    (tools / "ci_writer_gate.py").write_text(
+        "import sys\nprint('BLOCK: fake gate, a cloud writer is running')\nsys.exit(3)\n", encoding="ascii")
+    core = tmp_path / "core"
+    core.mkdir()
+    (core / "__init__.py").write_text("", encoding="ascii")
+    (core / "cutover.py").write_text("def is_cut_over():\n    return False\n", encoding="ascii")
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    stamp = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours_since_stamp)
+    (logs / "local_heavy.last_success").write_text(stamp.strftime("%Y-%m-%dT%H:%M:%S.0000000Z") + "\n",
+                                                   encoding="ascii")
+    r = subprocess.run([POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+                        str(tools / "run_local_heavy.ps1"), "-IfDue"], capture_output=True, text=True,
+                       timeout=180, cwd=str(tmp_path))
+    return r
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="needs PowerShell (the workstation runs this script under it)")
+def test_the_starvation_warning_fires_on_a_refused_tick_past_the_threshold(tmp_path):
+    r = _gate_refused_tick(tmp_path, 49.0)
+    out = r.stdout
+    assert r.returncode == 2, (r.returncode, out[-800:], r.stderr[-800:])
+    assert "BLOCK: fake gate" in out, out[-800:]                      # the fake gate was really asked
+    assert re.search(r"WARNING: no stamped pass for 49 h", out), out[-800:]
+    assert "ABORT: a cloud state writer is running" in out, out[-800:]
+    assert "The gate has refused every attempt" not in out             # AR-469 N3: the old wording is gone
+
+
+@pytest.mark.skipif(POWERSHELL is None, reason="needs PowerShell")
+def test_negative_control_the_same_refused_tick_at_47_h_does_not_warn(tmp_path):
+    r = _gate_refused_tick(tmp_path, 47.0)
+    out = r.stdout
+    assert r.returncode == 2, (r.returncode, out[-800:], r.stderr[-800:])
+    assert "BLOCK: fake gate" in out and "ABORT: a cloud state writer is running" in out, out[-800:]
+    assert "WARNING: no stamped pass" not in out, out[-800:]

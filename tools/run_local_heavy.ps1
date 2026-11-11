@@ -75,6 +75,8 @@ param(
     # therefore past every healthy tick on this table: it means a second evening has gone by without a stamped
     # pass. It is also below updater/health.py route_silence's 3 days (72 h), so this warning comes first.
     # Pinned by tests/test_local_min_hours.py.
+    # TODO(AR-469 N4): re-check 48 h once about 30 days of this cron table exist (from about 2026-12-05): count
+    # the gate-refused ticks at 44 h or more since the stamp, and the healthy maximum of hours-since at a start.
     [int]      $StarvationWarnHours = 48,
     # How long to keep waiting for a window worth using before taking whatever is free. Swept against 14 days
     # of real history: at 30 h the runner settles for a short pass at a busy hour and its end time re-anchors
@@ -314,9 +316,9 @@ if ($selfHosted) {
         # looks exactly like a gate that is working, and the desktop ran 0 passes in 112 attempts on 2026-09-16
         # before anyone noticed. A refusal is normal; going longer than any healthy gap without a pass is not.
         if ($null -ne $script:SinceLastHours -and $script:SinceLastHours -ge $StarvationWarnHours) {
-            Say ("WARNING: no desktop pass has completed for " + [int]$script:SinceLastHours + " h. The gate " +
-                 "has refused every attempt. Local-route sources advance ONLY on these passes, so they are " +
-                 "not updating. Run 'python tools/measure_ci_lag.py replay' to see how much clear time the " +
+            Say ("WARNING: no stamped pass for " + [int]$script:SinceLastHours + " h, and the gate refused this " +
+                 "tick. Passes that ran but did not stamp (no progress, a failed push-state) count as missing. " +
+                 "Local-route sources advance ONLY on stamped passes, so they are not updating. Run 'python tools/measure_ci_lag.py replay' to see how much clear time the " +
                  "rule is actually leaving, and 'ci_writer_gate.py --until-block' for what it sees now.")
         }
         Say "ABORT: a cloud state writer is running or its scheduled run has not started yet."
