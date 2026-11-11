@@ -55,9 +55,12 @@ def _write_parquet(path, seconds_ago=None):
 
 
 class _U:
-    def __init__(self, sid, out_paths, uid="_all"):
+    """A workstation-route unit by default: the only route whose local mtimes are trusted without r2."""
+
+    def __init__(self, sid, out_paths, uid="_all", run_location="local"):
         self.source_id, self.unit_id, self.out_paths = sid, uid, out_paths
         self.key = f"{sid}/{uid}"
+        self.config = {"run_location": run_location}
 
 
 def _res(**kw):
@@ -133,6 +136,26 @@ def test_a_failure_or_non_turn_row_is_never_the_floor(tmp_path, status):
     _row(st, "dst", status, 0.5 * HOUR, obs=0, note="structural: 1/25 parsed 0 rows")
     _, note, _, _ = _derive(_U("dst", [d]), _res(), st)
     assert _books(note)
+
+
+def test_a_no_change_turn_that_rewrote_the_store_is_not_the_floor(tmp_path):
+    """Review R1868's probe: ok 3 h ago, a same-period rewrite 2 h ago by a turn that finalize called
+    no_change (obs = the store total, > 0; no_change never derives), then this quiet pass: it books."""
+    d = _dir(tmp_path, "dst")
+    st = _store(tmp_path, "dst", floor_ago=3 * HOUR)
+    _write_parquet(os.path.join(d, "AKU110.parquet"), seconds_ago=2 * HOUR)
+    _row(st, "dst", "no_change", 1 * HOUR, obs=11_159_165, note="no new rows")
+    _, note, _, _ = _derive(_U("dst", [d]), _res(), st)
+    assert _books(note)
+
+
+def test_a_cloud_route_unit_is_not_judged_by_a_local_walk(tmp_path):
+    """Without r2, a cloud-route unit's store writes are in R2 and invisible here: book, never skip."""
+    d = _dir(tmp_path, "bfs")
+    _write_parquet(os.path.join(d, "BFS_a.parquet"), seconds_ago=24 * HOUR)
+    for loc in ("any", None):
+        _, note, _, _ = _derive(_U("bfs", [d], run_location=loc), _res(), _store(tmp_path, "bfs"))
+        assert _books(note), loc
 
 
 def test_a_newer_accounted_turn_moves_the_floor(tmp_path):
@@ -273,7 +296,7 @@ def test_under_r2_the_listing_decides(tmp_path, monkeypatch, objects, books):
     fake = _FakeR2([(k, _utc_ago(s)) for k, s in objects])
     _r2(monkeypatch, fake)
     d = os.path.join(str(tmp_path), "data", "clean_full", "bfs")      # a store path with a /data/ segment
-    _, note, _, _ = _derive(_U("bfs", [d]), _res(), _store(tmp_path, "bfs"))
+    _, note, _, _ = _derive(_U("bfs", [d], run_location="any"), _res(), _store(tmp_path, "bfs"))
     assert _books(note) is books, (objects, note)
     assert fake.prefixes == ["clean_full/bfs/"]
 
@@ -281,7 +304,7 @@ def test_under_r2_the_listing_decides(tmp_path, monkeypatch, objects, books):
 def test_under_r2_a_listing_error_books(tmp_path, monkeypatch):
     _r2(monkeypatch, _FakeR2(boom=True))
     d = os.path.join(str(tmp_path), "data", "clean_full", "bfs")
-    _, note, _, _ = _derive(_U("bfs", [d]), _res(), _store(tmp_path, "bfs"))
+    _, note, _, _ = _derive(_U("bfs", [d], run_location="any"), _res(), _store(tmp_path, "bfs"))
     assert _books(note)
 
 

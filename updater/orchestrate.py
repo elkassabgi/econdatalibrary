@@ -2162,18 +2162,25 @@ _NO_CURSORS_NOTE = "csv coherence unmet: fetcher reported no series_cursors"
 # push lost (its runs row is gone, its R2 writes stand) - leaves writes nobody accounted for, and a fetcher that
 # checkpoints (dst saves its manifest per chunk) writes nothing on the next pass. So the skip asks whether ANY
 # store parquet changed after the END of this unit's newest ACCOUNTED turn: a runs row that only run_once's main
-# path writes, after its derive phase (status ok/partial/no_change with obs > 0 - _record, the failure path,
-# logs obs 0, and so do the locked, window_stopped, earned-no_change and killed_external rows). Every write
-# before that row's end was derived or booked by that turn; every write after it, by anything, books the debt.
+# path writes, after its derive phase (status ok or partial with obs > 0 - _record, the failure path, logs
+# obs 0, and so do the locked, window_stopped and killed_external rows). Every write before that row's end was
+# derived or booked by that turn; every write after it, by anything, books the debt.
+#
+# NOT no_change (review R1868). finalize returns no_change with obs = the store total whenever nothing was
+# counted as added or revised, while merge_and_write rewrites the file regardless, and a no_change turn never
+# reaches the derive phase (_should_derive_csvs). dst counts merges as max(0, n - before) and never as revised,
+# so a dst turn that rewrites same-period revisions reads no_change; as a floor it would hide its own rewrite.
 #
 # MEASURED ON THE STORE THE READER SEES: under r2 the R2 listing's LastModified (publish_file's re-PUT of old
-# local files shows there too); otherwise the local store's mtimes (the local and selfhost backends write the
-# store through the local path primitives). runs.ts_utc is the turn's END on the writer's clock; a writer clock
-# behind the store's only makes that turn's own writes look later, which books (the safe side). Any doubt books.
+# local files shows there too). Without r2 the local store's mtimes are trusted ONLY for a unit whose registry
+# run_location is "local" (the workstation route, which writes its store through the local path primitives):
+# a cloud-route unit's writes land in R2, which a local-backend pass cannot see, so such a pass books (review
+# R1868, the mixed-backend case). runs.ts_utc is the turn's END on the writer's clock; a writer clock behind
+# the store's only makes that turn's own writes look later, which books (the safe side). Any doubt books.
 #
 # KNOWN LIMIT, pre-existing and unchanged: a turn whose csv phase tripped its time fence logs a main-path row
 # without having booked; it counts as accounted here, as it already did for the next pass's cursors.
-_ACCOUNTED_STATUSES = ("ok", "partial", "no_change")
+_ACCOUNTED_STATUSES = ("ok", "partial")
 
 
 def _out_dirs(unit) -> list:
@@ -2237,6 +2244,8 @@ def _parquet_written_after(unit, floor) -> "bool | None":
                     if str(key).endswith(".parquet") and modified.timestamp() > floor:
                         return True
             return False
+        if ((getattr(unit, "config", None) or {}).get("run_location") or "cloud") != "local":
+            return None           # a cloud-route store lives in R2, invisible to this local walk: book
         errors = []
         for d in dirs:
             if not os.path.isdir(d):

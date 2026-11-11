@@ -141,6 +141,13 @@ def test_one_units_clean_pass_never_vouches_for_a_sibling():
     assert _row(st, "ecb")["health"] == "ATTENTION"
 
 
+def test_a_fresh_last_success_is_never_aged_by_an_older_anchor():
+    """The anchor can only make the age YOUNGER: a rotator that really succeeded half a day ago, with its
+    newest clean deferral pass 10 days old, is judged on the success (ATTENTION, not RED-SLA)."""
+    st = _store("ecb", last_success_days=0.5, runs=[("_all", "partial", CLEAN, 10.0)])
+    assert _row(st, "ecb")["health"] == "ATTENTION"
+
+
 def test_the_oldest_per_unit_anchor_wins():
     """Both units have a clean pass, one fresh and one past the SLA: the stale one decides (RED-SLA)."""
     st = _store("ecb", runs=[("_all", "partial", CLEAN, 5.0), ("_x", "partial", CLEAN, 0.5)],
