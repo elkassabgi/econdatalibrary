@@ -45,20 +45,22 @@ def retry_after_seconds(resp, default: int = 10) -> int:
     "up to 1 hour" — which is exactly what kept killing CI runs. Clamped to [1, 120] so a
     hostile or bogus value can't park a job for an hour.
 
-    Delay-seconds must be 1-6 ASCII digits (AR-471, R1870): `isdigit()` is True for "²" and int()
-    then raised ValueError, as it does on a string of more than 4,300 digits. Anything else that is
-    not an HTTP-date counts as no header and gets `default`. Same rule as
-    updater/strategies/fetchers/_common.parse_retry_after_s; kept inline because this file also runs
-    as a plain script, where the `updater` package is not importable.
+    Delay-seconds must be ASCII digits (AR-471, R1870): `isdigit()` is True for "²" and int() then
+    raised ValueError, as it does on a string of more than 4,300 digits. Leading zeros are ignored;
+    more than 6 significant digits saturate to 999,999 without int() (AR-473, R1872), which the clamp
+    makes 121 s. Anything else that is not an HTTP-date counts as no header and gets `default`. Same
+    rule as updater/strategies/fetchers/_common.parse_retry_after_s; kept inline because this file
+    also runs as a plain script, where the `updater` package is not importable.
     """
     try:
         raw = str(resp.headers.get("Retry-After") or "").strip()
     except Exception:                                        # noqa: BLE001 - a header we cannot read
         raw = ""
     wait = None
-    if re.fullmatch(r"[0-9]{1,6}", raw):
-        wait = int(raw)
-    elif raw:                                                # 7+ digits fail as a date: `default`
+    if re.fullmatch(r"[0-9]+", raw):
+        digits = raw.lstrip("0") or "0"                      # all zeros is 0
+        wait = 999_999 if len(digits) > 6 else int(digits)
+    elif raw:
         try:
             from email.utils import parsedate_to_datetime
             import datetime as _dt

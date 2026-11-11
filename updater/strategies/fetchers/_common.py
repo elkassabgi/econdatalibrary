@@ -63,10 +63,15 @@ def retry_after_seconds(resp, default: int = 10) -> int:
     return min(max(wait, 1), 120) + 1
 
 
-# delay-seconds as RFC 9110 writes it (1*DIGIT), ASCII only, at most 6 digits (999,999 s, ~11.6 days).
-# `str.isdigit()` is NOT this test: it is True for "²" and for other Unicode digits, and int() then
-# raises ValueError on "²" (R1870). int() also refuses a string of more than 4,300 digits.
-_RETRY_AFTER_DELAY = re.compile(r"[0-9]{1,6}")
+# delay-seconds as RFC 9110 writes it (1*DIGIT), ASCII only. `str.isdigit()` is NOT this test: it is
+# True for "²" and for other Unicode digits, and int() then raises ValueError on "²" (R1870). int() also
+# refuses a string of more than 4,300 digits, so a value of more than RETRY_AFTER_MAX_DIGITS significant
+# digits is never handed to int(): it SATURATES to RETRY_AFTER_SATURATED_S. Saturating, not ignoring,
+# is the point (AR-473, R1872): "1000000" is a lockout of 11.6 days, and treating it as "no header"
+# made hagstofa and ssb retry inside it where they used to stop the pass (the R1634 shape).
+_RETRY_AFTER_DELAY = re.compile(r"[0-9]+")
+RETRY_AFTER_MAX_DIGITS = 6
+RETRY_AFTER_SATURATED_S = 999_999
 
 
 def parse_retry_after_s(resp):
@@ -77,10 +82,12 @@ def parse_retry_after_s(resp):
     header holds - a ValueError here once escaped the per-request retry loop and could end a pass.
 
     - absent, empty or whitespace                    -> None
-    - 1 to 6 ASCII digits ("0", "30", "000060")      -> that int
+    - ASCII digits ("0", "30", "000060", "0000061")  -> that int, leading zeros ignored
+    - ASCII digits worth more than 6 digits ("1000000", 5,000 digits) -> RETRY_AFTER_SATURATED_S,
+                                                        without calling int()
     - an HTTP-date (RFC 9110 IMF-fixdate and kin)    -> seconds from now, NEGATIVE for a past date
                                                         (the caller floors it); a naive date is UTC
-    - anything else ("²", 5,000 digits, "-5", "12.5", "+5", "1e3", a non-date) -> None
+    - anything else ("²", "-5", "12.5", "+5", "1e3", a non-date) -> None
     """
     try:
         h = getattr(resp, "headers", None) or {}
@@ -90,8 +97,11 @@ def parse_retry_after_s(resp):
     if not raw:
         return None
     if _RETRY_AFTER_DELAY.fullmatch(raw):
-        return int(raw)
-    try:                                                     # 7+ digits fall through and fail as a date
+        digits = raw.lstrip("0") or "0"                      # all zeros is 0
+        if len(digits) > RETRY_AFTER_MAX_DIGITS:
+            return RETRY_AFTER_SATURATED_S
+        return int(digits)
+    try:
         from email.utils import parsedate_to_datetime
         when = parsedate_to_datetime(raw)
         if when.tzinfo is None:

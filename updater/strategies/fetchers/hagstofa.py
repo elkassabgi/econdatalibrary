@@ -535,7 +535,8 @@ def _wait_429(sess, r, what: str) -> None:
 def _raw_retry_after_s(resp):
     """The server's Retry-After in seconds, UNCLAMPED (both RFC 9110 forms), or None.
 
-    The shared strict parser (AR-471, R1870): 1-6 ASCII digits or an HTTP-date, else None, and it
+    The shared strict parser (AR-471, R1870; AR-473): ASCII digits (over 6 significant digits saturate
+    to 999,999) or an HTTP-date, else None, and it
     never raises. The inline copy this replaces used isdigit() + int(), which raised ValueError on
     "²" or on 5,000 digits."""
     return parse_retry_after_s(resp)

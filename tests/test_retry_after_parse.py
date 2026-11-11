@@ -80,7 +80,11 @@ VALID = {
     "121":         ("121", 121, 121, 121),
     "hour":        ("3600", 3600, 121, 121),
     "six-digits":  ("999999", 999999, 121, 121),
+    "123456":      ("123456", 123456, 121, 121),
     "leading-0":   ("000060", 60, 61, 61),
+    "7char-61":    ("0000061", 61, 62, 62),       # legal 1*DIGIT; AR-473 found the first version misread it
+    "zeros":       ("00000000", 0, 2, 2),
+    "long-1":      ("0000000000001", 1, 2, 2),
     "padded":      ("  30  ", 30, 31, 31),
     "tabs":        ("\t45\t", 45, 46, 46),
     "date+90":     (_fmt(NOW + dt.timedelta(seconds=90)), 90, 91, 91),
@@ -93,15 +97,24 @@ VALID = {
         (NOW + dt.timedelta(seconds=300)).astimezone(dt.timezone(dt.timedelta(hours=2)))), 300, 121, 121),
 }
 
-# Not a usable header: unclamped None, clamped = the caller's default + 1. The first four RAISED
-# ValueError before this change; the next two were read as a number (12 and 1,000,000) and now are not.
+# More than 6 significant digits SATURATE to 999,999 s, so every stop threshold still fires (AR-473,
+# R1872: treating "1000000" as no header made hagstofa and ssb retry inside an 11.6-day lockout, the
+# R1634 shape). Base read the first three as their exact value (unclamped 1,000,000 and up, clamped
+# 121) and RAISED ValueError on the last two; int() is never called on them now.
+SATURATED = {
+    "seven-digits":  "1000000",
+    "86400000":      "86400000",
+    "30-digits":     "1" * 30,
+    "4301-digits":   "9" * 4301,
+    "5000-digits":   "1" * 5000,
+}
+
+# Not a usable header: unclamped None, clamped = the caller's default + 1. The first two RAISED
+# ValueError before this change; Unicode digits were read as a number (12) and now are not.
 UNUSABLE = {
     "superscript-2": "²",
     "digit+sup":     "3²",
-    "5000-digits":   "1" * 5000,
-    "4301-digits":   "9" * 4301,
     "arabic-12":     "١٢",
-    "seven-digits":  "1000000",
     "minus-5":       "-5",
     "12.5":          "12.5",
     "plus-5":        "+5",
@@ -140,6 +153,19 @@ def test_clamped_parsers_keep_the_old_wait_for_valid_headers(parser, case):
 
 
 @pytest.mark.parametrize("parser", sorted(RAW_PARSERS))
+@pytest.mark.parametrize("case", sorted(SATURATED))
+def test_raw_parsers_saturate_long_delays_without_raising(parser, case):
+    assert RAW_PARSERS[parser](_resp(SATURATED[case])) == 999_999 == C.RETRY_AFTER_SATURATED_S
+
+
+@pytest.mark.parametrize("parser", sorted(CLAMPED))
+@pytest.mark.parametrize("case", sorted(SATURATED))
+def test_clamped_parsers_give_121_for_long_delays(parser, case):
+    assert CLAMPED[parser](_resp(SATURATED[case]), 10) == 121
+    assert CLAMPED[parser](_resp(SATURATED[case]), 61) == 121
+
+
+@pytest.mark.parametrize("parser", sorted(RAW_PARSERS))
 @pytest.mark.parametrize("case", sorted(UNUSABLE) + ["absent"])
 def test_raw_parsers_return_none_and_never_raise(parser, case):
     assert RAW_PARSERS[parser](_resp(UNUSABLE.get(case))) is None
@@ -153,10 +179,11 @@ def test_clamped_parsers_fall_back_to_the_default(parser, case):
 
 
 def test_ssb_throttle_wait_falls_back_to_its_own_backoff():
-    for header in ("²", "1" * 5000, "-5", "12.5", ""):
+    for header in ("²", "-5", "12.5", ""):
         assert S._throttle_wait(_resp(header), 0) == 61
         assert S._throttle_wait(_resp(header), 1) == 121
     assert S._throttle_wait(_resp("7"), 0) == 8, "positive control: a valid header still wins"
+    assert S._throttle_wait(_resp("1" * 5000), 0) == 121, "a saturated delay is the clamp, not the backoff"
 
 
 class _BadHeaders:
@@ -184,7 +211,7 @@ def test_a_non_string_header_value_is_read_as_text():
 
 def test_urllib_http_error_headers_work_for_imf_imts_direct():
     """imf_imts_direct hands retry_after_seconds an HTTPError, whose headers are an email Message."""
-    for header, want in (("7", 8), ("²", 11), ("1" * 5000, 11)):
+    for header, want in (("7", 8), ("²", 11), ("1" * 5000, 121), ("0000061", 62)):
         msg = email.message.Message()
         msg["Retry-After"] = header
         err = urllib.error.HTTPError("u", 429, "Too Many Requests", msg, None)
@@ -197,14 +224,25 @@ def test_hagstofa_429_handler_waits_the_window_on_a_garbage_header(monkeypatch):
     waited = []
     monkeypatch.setattr(H, "_stat", lambda sess, key: None)
     monkeypatch.setattr(H, "_wait", lambda sess, secs, what: waited.append(secs))
-    for header in ("²", "1" * 5000):
+    for header in ("²", "-5"):
         H._wait_429(object(), _resp(header), "t")
     assert waited == [H.RATE_WINDOW_S + 1] * 2, waited
     H._wait_429(object(), _resp("7"), "t")
     assert waited[-1] == 8, "positive control: a valid header is still honoured"
+    H._wait_429(object(), _resp("000060"), "t")
+    assert waited[-1] == 61, "60 s (with leading zeros) is still waited, not a stop"
+
+
+@pytest.mark.parametrize("header", ["3600", "1000000", "0000061", "1" * 5000])
+def test_hagstofa_429_handler_stops_the_pass_on_a_long_delay(monkeypatch, header):
+    """AR-473 / R1872 (the R1634 shape): a declared lockout over RETRY_AFTER_STOP_S stops the pass,
+    however many digits it is written with - never 'no header, retry in 11 s'."""
+    waited = []
+    monkeypatch.setattr(H, "_stat", lambda sess, key: None)
+    monkeypatch.setattr(H, "_wait", lambda sess, secs, what: waited.append(secs))
     with pytest.raises(H.Throttled) as ei:
-        H._wait_429(object(), _resp("3600"), "t")
-    assert ei.value.stop_now, "a long valid Retry-After still stops the pass"
+        H._wait_429(object(), _resp(header), "t")
+    assert ei.value.stop_now and waited == [], (header[:12], waited)
 
 
 class _SsbSess:
@@ -220,11 +258,19 @@ class _SsbSess:
 
 def test_ssb_429_handler_backs_off_on_a_garbage_header():
     sess = _SsbSess()
-    for header in ("²", "1" * 5000):
+    for header in ("²", "-5"):
         S._on_429(sess, "t", _resp(header), 0)
     assert sess.slept == [61, 61], sess.slept
     S._on_429(sess, "t", _resp("7"), 0)
     assert sess.slept[-1] == 8, "positive control: a valid header is still honoured"
+    S._on_429(sess, "t", _resp("000060"), 0)
+    assert sess.slept[-1] == 61, "60 s (with leading zeros) is still waited, not a stop"
+
+
+@pytest.mark.parametrize("header", ["3600", "1000000", "0000061", "1" * 5000])
+def test_ssb_429_handler_stops_the_sweep_on_a_long_delay(header):
+    """AR-473 / R1872 (the R1634 shape): base stopped on these; the first #256 head retried inside."""
+    sess = _SsbSess()
     with pytest.raises(S.Throttled) as ei:
-        S._on_429(sess, "t", _resp("3600"), 0)
-    assert ei.value.stop_now, "a long valid Retry-After still stops the sweep"
+        S._on_429(sess, "t", _resp(header), 0)
+    assert ei.value.stop_now and sess.slept == [], (header[:12], sess.slept)
