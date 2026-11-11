@@ -195,7 +195,8 @@ def test_durable_clear_refuses_while_a_cloud_writer_is_busy_or_unreadable(tmp_pa
 
 def test_durable_clear_refuses_when_a_desktop_pass_comes_due_inside_the_envelope(tmp_path, monkeypatch):
     """R1102 rule 2: the guard starts a pass the moment one is due and CI is clear."""
-    for hours_ago in (None, 19.8, 40.0):                          # no stamp, due in 12 min, overdue
+    from tools import derive_csv_bulk as _dcb
+    for hours_ago in (None, _dcb.LOCAL_MIN_HOURS - 0.2, 40.0):    # no stamp, due in 12 min, overdue
         if (tmp_path / "logs" / "local_heavy.last_success").exists():
             (tmp_path / "logs" / "local_heavy.last_success").unlink()
         dcb, calls = _clear_rig(tmp_path, monkeypatch, stamp_hours_ago=hours_ago)

@@ -163,7 +163,7 @@ def _stream(con, paths, qualify=False):
 # inside the push is no longer overwritten - but the push is then refused and the clear lost, so the whole
 # envelope still has to be quiet (R1102 rule 3). Asked for with a 3x margin.
 CLEAR_WINDOW_MIN = 30
-LOCAL_MIN_HOURS = 20          # tools/run_local_heavy.ps1 `$MinHours` default; pinned by a test
+LOCAL_MIN_HOURS = 14          # tools/run_local_heavy.ps1 `$MinHours` default; pinned by a test
 
 
 def _writers_quiet(manual: str, window_min: int = CLEAR_WINDOW_MIN) -> bool:
