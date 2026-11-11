@@ -835,7 +835,7 @@ def route_silence(report: dict) -> "list[str]":
     would have caught the 2026-08-02 outage and it would NOT. That day the guard loop died at
     15:16 and the local heavy pass went ~7h past due, but bis, bls, cepii_gravity and faostat
     still carried successes from the day before, so no three-day threshold could have fired.
-    A short outage on a route whose pass runs every ~20h is INVISIBLE here by construction,
+    A short outage on a route whose pass runs about daily is INVISIBLE here by construction,
     and the instrument for it is the guard's own heartbeat on that machine, not this.
 
     What this catches is the sustained case: the machine is off, or wedged, for days, and the
