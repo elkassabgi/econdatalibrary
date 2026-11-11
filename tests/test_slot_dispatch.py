@@ -1255,3 +1255,54 @@ def test_launcher_draft_header_and_command():
         assert bad not in body[0], bad
     assert body[0].count("econ_dispatch.py' loop") == 1
     assert not os.path.basename(p).endswith(".cmd")               # a draft cannot run from Startup by accident
+
+
+# ------------------------------------------------------------------ AR-470 round 3 (R1875): the probe fails CLOSED
+class _Out:
+    def __init__(self, returncode, stdout, stderr=""):
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+
+@pytest.mark.parametrize("out", [_Out(1, "0 0\n", "cim failed"), _Out(0, "5\n"), _Out(0, "x 0\n"), _Out(0, "")],
+                         ids=["returncode_1", "one_field", "non_digit", "empty_stdout"])
+def test_probe_raises_on_output_it_cannot_measure(monkeypatch, out):
+    """An answer the probe cannot read must raise, never read as (0, 0) = "no pass running" (R503 class)."""
+    monkeypatch.setattr(ed, "_IS_WINDOWS", True)
+    calls = []
+
+    def fake_run(argv, *a, **k):
+        calls.append(argv)
+        return out
+    monkeypatch.setattr(ed.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="process check failed"):
+        ed.local_pass_probe("run_local_heavy.ps1")
+    with pytest.raises(RuntimeError):
+        ed.local_pass_running("run_local_heavy.ps1")
+    assert calls and calls[0][0] == "powershell"
+
+
+def test_probe_control_reads_two_counts(monkeypatch):
+    monkeypatch.setattr(ed, "_IS_WINDOWS", True)
+    monkeypatch.setattr(ed.subprocess, "run", lambda *a, **k: _Out(0, "noise\n1 2\n"))
+    assert ed.local_pass_probe() == (1, 2)
+
+
+def test_probe_that_raises_means_no_dispatch_and_a_log_line(tmp_path, monkeypatch):
+    """The real probe, fed unreadable output, inside a look: logged, return 1, and gh gets no `workflow run`."""
+    monkeypatch.setattr(ed, "_IS_WINDOWS", True)
+    real_run = ed.subprocess.run
+
+    def fake_run(argv, *a, **k):
+        if argv and argv[0] == "powershell":
+            return _Out(0, "garbage\n")
+        return real_run(argv, *a, **k)
+    monkeypatch.setattr(ed.subprocess, "run", fake_run)
+    gh = FakeGh(*_hist())
+    os.makedirs(tmp_path / "logs", exist_ok=True)
+    d = ed.Dispatcher(str(tmp_path), gh, now=lambda: NOW, sleep=lambda _s: None, lock_present=lambda: False)
+    assert d._pass_probe is ed.local_pass_probe            # the REAL probe, not an injected one
+    assert d.look() == 1
+    assert gh.sent == []                                     # no `workflow run` reached the fake gh
+    log = open(d.paths["log"], encoding="utf-8").read()
+    assert "process check failed" in log and "not now" in log
+    assert not os.path.exists(d.paths["marker"])            # the marker of an unsent dispatch is removed

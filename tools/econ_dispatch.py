@@ -84,7 +84,8 @@ LIST_WAIT_S = 300                   # wait this long for a sent dispatch to be l
 LIST_POLL_S = 15
 GH_TIMEOUT_S = 60
 LOCAL_PASS_SCRIPT = "run_local_heavy.ps1"
-LOUD_EVERY = dt.timedelta(minutes=60)      # L-c: the "process check unreadable" line repeats at most this often
+_IS_WINDOWS = os.name == "nt"              # the process check is a CIM query (tests patch this, not os.name)
+LOUD_EVERY = dt.timedelta(minutes=60)     # L-c: the "process check unreadable" line repeats at most this often
 GUARD_SCRIPT = "RELAUNCH_GUARD.ps1"         # L-b: the machine-local script that starts run_local_heavy.ps1
 MUTEX_PREFIX = "Local\\EconSlotDispatchLoop_"
 # L-b: how tools/run_local_heavy.ps1 derives its lock and its gate from its OWN checkout. If one of these lines
@@ -255,8 +256,8 @@ _PS_CHECK = (
 
 def local_pass_probe(pattern: str = LOCAL_PASS_SCRIPT, timeout: int = 60) -> tuple:
     """(matched, unreadable): powershells running `pattern`, and powershells whose command line cannot be read.
-    Anything that cannot be measured raises."""
-    if os.name != "nt":
+    Anything that cannot be measured raises (fail closed: the dispatcher then sends nothing)."""
+    if not _IS_WINDOWS:
         raise RuntimeError("the process check needs Windows")
     env = dict(os.environ, ECON_DISPATCH_PATTERN=pattern)
     out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", _PS_CHECK], capture_output=True,
