@@ -62,7 +62,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize, sane_since, structural_on_zero_rows
+from ._common import Tally, finalize, retry_after_seconds, sane_since, structural_on_zero_rows
 
 import sys
 # The shared value-first PxWeb time-axis resolver lives in this repo's core/ package
@@ -85,6 +85,14 @@ MAX_CELLS = 100_000
 RATE = 0.3
 MAX_ATTEMPTS = 4
 TIMEOUT = 90
+# HTTP 429 / 503: wait what the server's Retry-After asks (both RFC 9110 forms), up to this
+# cap. A longer ask gives the request up at once as transient instead of retrying inside the
+# server's window (the hagstofa #178 / ssb #177 pattern: the shared helper alone would clamp
+# "3600" to 121 s and retry early). With no usable header the old back-off applies unchanged.
+# Before 2026-11-11 the back-off ignored the header (1, 2, 4 s), so a 429 was retried inside
+# the window the server had just asked us to wait.
+RETRY_AFTER_CAP_S = 60
+_RETRY_AFTER_STATUSES = (429, 503)
 
 
 # --------------------------------------------------------------------------- #
@@ -111,6 +119,44 @@ parse_jsonstat2_bfs = _ING.parse_jsonstat2_bfs
 # --------------------------------------------------------------------------- #
 # HTTP with transient/definitive discipline
 # --------------------------------------------------------------------------- #
+def _raw_retry_after_s(resp):
+    """The server's Retry-After in seconds, UNCLAMPED (both RFC 9110 forms), or None.
+
+    Same reader as hagstofa._raw_retry_after_s. None for an absent or unparseable header,
+    so the caller falls back to its own back-off. An HTTP-date in the past gives <= 0."""
+    h = getattr(resp, "headers", None) or {}
+    raw = str(h.get("Retry-After") or "").strip()
+    if not raw:
+        return None
+    if raw.isdigit():
+        return int(raw)
+    try:
+        from email.utils import parsedate_to_datetime
+        when = parsedate_to_datetime(raw)
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=dt.timezone.utc)
+        return int((when - dt.datetime.now(dt.timezone.utc)).total_seconds())
+    except Exception:                                        # noqa: BLE001
+        return None
+
+
+def _retry_wait(r, attempt, cap_backoff, what):
+    """Seconds to sleep before retrying a retryable HTTP status.
+
+    429/503 with a usable Retry-After: that many seconds (via the shared helper: at least 1,
+    plus 1 s so we resume just after the window). Over RETRY_AFTER_CAP_S: TransientError now,
+    no sleep - this request is given up for this run. Otherwise (no header, a garbage header,
+    or another status): the old back-off, min(2 ** attempt, cap_backoff)."""
+    if r.status_code in _RETRY_AFTER_STATUSES:
+        raw = _raw_retry_after_s(r)
+        if raw is not None:
+            if raw > RETRY_AFTER_CAP_S:
+                raise TransientError(f"bfs {what}: HTTP {r.status_code} with Retry-After {raw} s "
+                                     f"(over the {RETRY_AFTER_CAP_S} s cap; not retried this run)")
+            return retry_after_seconds(r)
+    return min(2 ** attempt, cap_backoff)
+
+
 def _get_json(sess, url):
     """GET JSON. 200 -> obj; 400/404 -> None (table absent on this endpoint);
     timeout/5xx/429/drop/bad-json after the retry budget -> TransientError."""
@@ -137,7 +183,7 @@ def _get_json(sess, url):
             last = f"HTTP {r.status_code}"
             if a == MAX_ATTEMPTS - 1:
                 raise TransientError(f"bfs GET {url[-60:]}: {last}")
-            time.sleep(min(2 ** a, 30)); continue
+            time.sleep(_retry_wait(r, a, 30, f"GET {url[-60:]}")); continue
         raise DefinitiveError(f"bfs GET {url[-60:]}: HTTP {r.status_code}")
     raise TransientError(f"bfs GET {url[-60:]}: {last}")
 
@@ -174,7 +220,7 @@ def _post_json(sess, url, body):
             last = f"HTTP {r.status_code}"
             if a == MAX_ATTEMPTS - 1:
                 raise TransientError(f"bfs POST {url[-60:]}: {last}")
-            time.sleep(min(2 ** a, 30)); continue
+            time.sleep(_retry_wait(r, a, 30, f"POST {url[-60:]}")); continue
         raise DefinitiveError(f"bfs POST {url[-60:]}: HTTP {r.status_code}")
     raise TransientError(f"bfs POST {url[-60:]}: {last}")
 
