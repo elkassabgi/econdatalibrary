@@ -155,7 +155,8 @@ def main() -> int:
               f"  then re-run tools/audit_impossible_dates.py --source {a.source} and expect zero.")
     else:
         print(f"\n  NEXT: dispatch the fetcher, e.g.\n"
-              f"    gh workflow run updater-daily.yml -f source={a.source} -f force=true\n"
+              f"    python tools/econ_dispatch.py manual --workflow updater-daily.yml --source {a.source} --force\n"
+              f"  (rule M: it waits for an empty concurrency group and a free desktop lock)\n"
               f"  then re-run tools/audit_impossible_dates.py --r2 --source {a.source} "
               f"and expect zero.")
     return 0

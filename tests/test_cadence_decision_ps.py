@@ -72,7 +72,7 @@ def test_the_budget_is_rederived_after_pull_state_and_before_the_hard_stop():
     assert "$postHardStopUtc = $post.HardStopUtc" in skip
     # The pre-pull check uses the same function, before the lock and the pull, and exits without either.
     pre = body.index("$pre = Get-PostPullBudget")
-    lock = body.index("Set-Content -Path $lockFile")
+    lock = body.index("[System.IO.FileMode]::CreateNew")       # the atomic lock (review AR-470 H1)
     assert gate_call < pre < lock < pull
     pre_block = body[pre:body.index("WAIT FOR A WINDOW WORTH USING", pre)]
     assert "exit 0" in pre_block and "--pull-state" not in pre_block
