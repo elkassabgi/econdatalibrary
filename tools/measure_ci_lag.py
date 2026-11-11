@@ -600,6 +600,13 @@ class CloudRun:
     hist_end: dt.datetime | None
     has_jobs: bool
     dispatched: bool = False  # created by the replay's own re-dispatch (A3.6), not by history
+    # V2 (desktop slot dispatch, PLAN V2 / AR-470). `title` is gh's displayTitle (the slot, ci_writer_gate.run_slot);
+    # `pulled`: a "Pull state" step succeeded (ci_writer_gate.run_settles' third leg; None = no job read);
+    # `noop`: the replay turned this late cron into the second run of a settled slot; `slot`: (wf, cron) in V2.
+    title: str = ""
+    pulled: bool | None = None
+    noop: bool = False
+    slot: tuple | None = None
 
 
 def _cloud_run(wf: str, r: dict, jobs) -> CloudRun:
@@ -631,9 +638,13 @@ def _cloud_run(wf: str, r: dict, jobs) -> CloudRun:
         ok = pushes >= 1 if jobs is not None else r.get("conclusion") in ("success", "failure")
     else:
         ok = r.get("conclusion") == "success"
+    pulled = None
+    if jobs is not None:
+        pulled = any((s.get("name") or "").startswith(g.PULL_STEP_PREFIX) and s.get("conclusion") == "success"
+                     for j in jobs for s in (j.get("steps") or []))
     return CloudRun(wf, int(r["databaseId"]), r.get("event", ""), created, r.get("status", ""),
                     r.get("conclusion") or "", exec_min, read_off, push_off, bool(ok and end), pushes, first, end,
-                    jobs is not None)
+                    jobs is not None, title=r.get("displayTitle") or "", pulled=pulled)
 
 
 def load_cloud_history(hist_dir: str) -> list:
@@ -661,7 +672,23 @@ def cron_blocks(runs: list, since: dt.datetime, until: dt.datetime, writers: dic
     the same in all of them. `writers` ({wf: cron hours}) defaults to the gate's WRITERS (--drop-cron passes fewer)."""
     writers = g.WRITERS if writers is None else writers
     windows = g.cron_windows(writers)
-    created = {wf: sorted(r.created for r in runs if r.wf == wf and r.event == "schedule") for wf in writers}
+    # Titled runs (V2: "cron <expr>" / "slot <tag>") credit exactly their own cron (ci_writer_gate.slot_credited);
+    # a titled run counts once created unless it ended without settling (cancelled, or no successful pull).
+    # Untitled history keeps credit_instant's window rule.
+    titled = defaultdict(list)
+    for r in runs:
+        if r.wf not in writers or not r.title:
+            continue
+        s = g.run_slot(r.wf, {"displayTitle": r.title, "event": r.event, "createdAt": _iso(r.created)}, writers)
+        if s is None:
+            continue
+        if r.status == "completed" and (r.conclusion == "cancelled" or r.pulled is False):
+            continue
+        titled[(r.wf, s[0])].append(r.created)
+    created = {wf: sorted(r.created for r in runs if r.wf == wf and r.event == "schedule" and not
+                          (r.title and g.run_slot(wf, {"displayTitle": r.title, "event": r.event,
+                                                       "createdAt": _iso(r.created)}, writers)))
+               for wf in writers}
     out = []
     day = (since - dt.timedelta(days=1)).date()
     while dt.datetime(day.year, day.month, day.day, tzinfo=dt.timezone.utc) <= until:
@@ -670,8 +697,10 @@ def cron_blocks(runs: list, since: dt.datetime, until: dt.datetime, writers: dic
                 cron = dt.datetime(day.year, day.month, day.day, h, tzinfo=dt.timezone.utc)
                 c = created[wf]
                 lim = windows[wf][h]
-                c1 = g.credit_instant(c, cron, h, wf, windows)    # the gate's own rule, CREDIT_AMBIGUITY included
-                end = c1 if c1 is not None else cron + lim
+                own = titled.get((wf, cron))
+                c1 = (min(own) if own else
+                      g.credit_instant(c, cron, h, wf, windows))  # the gate's own rule, CREDIT_AMBIGUITY included
+                end = min(c1, cron + lim) if c1 is not None else cron + lim
                 if end > cron:
                     out.append((cron, end, wf))
         day += dt.timedelta(days=1)
@@ -1508,6 +1537,15 @@ class ReplayConfig:
     cloud_floor: float = 2.0           # completed runs/day per writer in the strict rule
     due_from_attempt: bool = False     # a partial behind an old success is due on the partial clock
     drain_rate: float | None = None    # leftover csv-retry drain (#212/#213): ids/min; None = it uses all leftover time
+    # policy "v2" (PLAN V2, AR-470): the desktop dispatcher starts each cron slot at its time into an EMPTY group
+    # (no run running or pending, desktop idle, no dispatch in the last marker_min), at most twice per slot (the
+    # second only after the first was evicted), and only while the slot's cron is inside its own window and not
+    # credited. A historical scheduled run whose slot was settled (a real run of the slot started and finished)
+    # by the time it gets the group is a no-op: it waits in the workflow-level group like any run, then holds it
+    # noop_min, pulls nothing and counts as no completed run. The gate blocks marker_min after each dispatch.
+    noop_min: float = 2.0
+    marker_min: float = 10.0
+    sample_gate: bool = False          # record the gate's answer once a minute (always on under v2)
 
     def writers(self) -> dict:
         return writers_without(self.drop_cron) if self.drop_cron else g.WRITERS
@@ -1535,12 +1573,15 @@ class ReplayConfig:
                 f"{'' if self.count_manual else ' man=excl'}{self._ext()}")
         if self.policy == "today":
             return f"today MinH={self.min_hours:g} D3={d3} W={'on' if self.w_on else 'off'}{tail}"
+        if self.policy == "v2":
+            return (f"V2 MinH={self.min_hours:g} D3={d3} W={'on' if self.w_on else 'off'} noop={self.noop_min:g} "
+                    f"lat={self.dispatch_latency_min:g}{tail}")
         return (f"A L={self.lease_min:g}-{self.lease_margin_min:g} MinH={self.min_hours:g} D3={d3} "
                 f"W={'on' if self.w_on else 'off'} disp={'yes' if self.dispatch else 'no'}{tail}")
 
 
 _EXT_DEFAULTS = {"order": "production", "clocked_extra": (), "whole_flow": (), "drop_cron": (), "cloud_floor": 2.0,
-                 "due_from_attempt": False, "drain_rate": None}
+                 "due_from_attempt": False, "drain_rate": None, "noop_min": 2.0, "marker_min": 10.0, "sample_gate": False}
 
 
 def cfg_dict(cfg: ReplayConfig) -> dict:
@@ -1649,6 +1690,32 @@ class Replay:
                          and r.event == "schedule"), key=lambda r: r.hist_end)
             self._real_by_end[wf] = (rs, [r.hist_end for r in rs])
         self.owed_series = []
+        # V2: one record per cron slot, from the same blocks the gate's pending rule uses
+        self.v2 = {}
+        self.v2_noops, self.v2_lost, self.v2_markers = [], [], []
+        self.v2_last_dispatch = None
+        # The gate's answer once a minute (observation only: no event reads it), for the CLEAR / pending /
+        # in-flight minutes every arm reports (R1794).
+        self.gate_acct = Counter()
+        if cfg.policy == "v2" or getattr(cfg, "sample_gate", False):
+            t = start
+            while t < end:
+                self._push(t, self.PRIO_TICK + 1, ("gsample", None))
+                t += dt.timedelta(minutes=1)
+        if cfg.policy == "v2":
+            by_created = {(r.wf, r.created): r for r in self.runs if r.event == "schedule"}
+            win = g.cron_windows(self.writers)
+            for c, e, wf in self.blocks:
+                hist = by_created.get((wf, e))
+                self.v2[(wf, c)] = {"cron": c, "wf": wf, "until": c + win[wf][c.hour], "hist": hist,
+                                    "credit": e if hist is not None else None, "settled_at": None,
+                                    "dispatched": [], "by": None}
+                if hist is not None:
+                    hist.slot = (wf, c)
+            t = start
+            while t < end:
+                self._push(t, self.PRIO_TICK, ("dlook", None))
+                t += dt.timedelta(minutes=1)
         for r in self.runs:
             self._push(r.created, self.PRIO_ARRIVE, ("arrive", r))
         t = start
@@ -1665,6 +1732,15 @@ class Replay:
         return self.lease is not None and self.lease[0] <= x < self.lease[1]
 
     def _start(self, r: CloudRun, s: dt.datetime):
+        if self.cfg.policy == "v2" and r.slot is not None and r.slot in self.v2:
+            rec = self.v2[r.slot]
+            if rec["settled_at"] is not None and rec["settled_at"] <= s:
+                # the guard job finds an earlier run that settled the slot: a no-op, nothing pulled or pushed
+                r = replace(r, exec_min=self.cfg.noop_min, read_off_min=self.cfg.noop_min, push_off_min=0.0,
+                            pushes=0, completed_ok=False, noop=True)
+                self.v2_noops.append((r, s))
+            elif rec["by"] is None:
+                rec["by"] = "dispatch" if r.dispatched else "cron"
         deferred = self.cfg.policy == "lease" and self._lease_active(s + dt.timedelta(minutes=r.read_off_min))
         dur = self.deferred_min[r.wf] if deferred else r.exec_min
         self.running = (r, s, s + dt.timedelta(minutes=dur), deferred)
@@ -1679,6 +1755,7 @@ class Replay:
             self.pending = (r, t)
         else:
             self.evicted.append((self.pending[0], self.pending[1], t))
+            self.pending[0]._evicted = True       # V2: cancelled with zero jobs - the one re-dispatchable end
             if self.pending[0].dispatched and self.pending[0].wf not in self.dispatch_q:
                 self.dispatch_q.insert(0, self.pending[0].wf)
             self.pending = (r, t)
@@ -1687,6 +1764,9 @@ class Replay:
         r, s, e, deferred = self.running
         self.done.append((r.wf, s, e, deferred, r))
         self.running = None
+        if (self.cfg.policy == "v2" and r.slot in self.v2 and not r.noop and r.pulled is not False
+                and self.v2[r.slot]["settled_at"] is None):
+            self.v2[r.slot]["settled_at"] = e      # completed, not cancelled, pulled: ci_writer_gate.run_settles
         if self.pending is not None:
             nxt, _arr = self.pending
             self.pending = None
@@ -1695,7 +1775,53 @@ class Replay:
     def _inflight(self) -> bool:
         return self.running is not None or self.pending is not None
 
+    # -- V2: the desktop slot dispatcher (tools/econ_dispatch.py) and the gate's view of its slots
+    def _v2_credited(self, rec: dict, t: dt.datetime) -> bool:
+        if (rec["credit"] is not None and rec["credit"] <= t        # the cron's own (titled) run exists and was
+                and not getattr(rec["hist"], "_evicted", False)):  # not evicted (an eviction credits nothing, F3)
+            return True
+        return rec["settled_at"] is not None and rec["settled_at"] <= t
+
+    def _v2_pending(self, t: dt.datetime) -> bool:
+        """The gate's pending rule under V2: a cron blocks inside its window until credited; the marker blocks."""
+        if any(m0 <= t < m1 for m0, m1 in self.v2_markers[-3:]):
+            return True
+        return any(rec["cron"] <= t < rec["until"] and not self._v2_credited(rec, t) for rec in self._v2_live(t))
+
+    def _v2_live(self, t: dt.datetime):
+        d0 = t - dt.timedelta(days=1, hours=1)
+        return [rec for rec in self.v2.values() if d0 <= rec["cron"] <= t]
+
+    def _v2_look(self, t: dt.datetime):
+        cfg = self.cfg
+        if self.running is not None or self.pending is not None:      # R81/R291: only into an EMPTY group
+            return
+        if t < self.busy_until:                                       # local_heavy.lock / a local pass
+            return
+        if self.v2_last_dispatch is not None and _mins(self.v2_last_dispatch, t) < cfg.marker_min:
+            return
+        for rec in sorted(self._v2_live(t), key=lambda x: x["cron"]):
+            if not (rec["cron"] <= t < rec["until"]) or self._v2_credited(rec, t):
+                continue
+            ds = rec["dispatched"]
+            if len(ds) >= 2 or any(not getattr(x, "_evicted", False) for x in ds):
+                continue              # a dispatch that was not evicted is left to the cron; max one re-dispatch
+            src = rec["hist"] or self._latest_real(rec["wf"], t) or self.templates[rec["wf"]]
+            r = CloudRun(rec["wf"], -len(self.dispatched) - 1, "workflow_dispatch",
+                         t + dt.timedelta(minutes=cfg.dispatch_latency_min), "completed", "", src.exec_min,
+                         src.read_off_min, src.push_off_min, src.completed_ok, src.pushes, None, None, True,
+                         dispatched=True, title="slot " + g.slot_tag(rec["wf"], rec["cron"]),
+                         pulled=src.pulled, slot=(rec["wf"], rec["cron"]))
+            ds.append(r)
+            self.dispatched.append(r)
+            self.v2_last_dispatch = t
+            self.v2_markers.append((t, t + dt.timedelta(minutes=cfg.marker_min)))
+            self._push(r.created, self.PRIO_ARRIVE, ("arrive", r))
+            return
+
     def _cron_pending(self, t: dt.datetime) -> bool:
+        if self.cfg.policy == "v2":
+            return self._v2_pending(t)
         i = bisect_right(self.block_starts, t)
         for c, e, _wf in self.blocks[max(0, i - 8):i]:
             if c <= t < e:
@@ -1852,6 +1978,12 @@ class Replay:
             elif kind == "release":
                 if self.lease and self.lease[1] == t:
                     self._release(t)
+            elif kind == "dlook":
+                self._v2_look(t)
+            elif kind == "gsample":
+                k = ("pass" if t < self.busy_until else "inflight" if self._inflight()
+                     else "pending" if self._cron_pending(t) else "clear")
+                self.gate_acct[k] += 1
             elif kind == "tick":
                 if len(self.owed_series) == 0 or (t - self.owed_series[-1][0]) >= dt.timedelta(hours=6):
                     self.owed_series.append((t, self.book.owed(t)))
@@ -1904,8 +2036,10 @@ def replay_metrics(rp: Replay, owed_start: float, due_start: list, cfg: ReplayCo
                    "evicted_hist": sum(1 for r, _a, t in rp.evicted if r.wf == wf and S <= t < E
                                        and not r.dispatched),
                    "pushes_day": sum(r.pushes for _s, d, r in sel if not d) / days}
+        # A V2 no-op pulls and pushes nothing (its guard job ends first): it is not a state window. It is counted
+        # below as `noop_under_pass` - each one is a run the guard alone keeps off the state (AR-470 H3).
         cloud_state += [(s + dt.timedelta(minutes=r.read_off_min), s + dt.timedelta(minutes=r.push_off_min), r)
-                        for s, d, r in sel if not d]
+                        for s, d, r in sel if not d and not r.noop]
     out["collisions"] = sum(1 for p in ps for a, b, _r in cloud_state if _overlap(p["pull"], p["end"], a, b))
     owed_end = rp.book.owed(E)
     att = {s: rp.book.attempts[s] for s in due_start}
@@ -1932,6 +2066,22 @@ def replay_metrics(rp: Replay, owed_start: float, due_start: list, cfg: ReplayCo
     out["longest_gap_h"] = max(out[wf]["longest_gap_h"] for wf in g.WRITERS)
     out["gap_over_30h"] = out["longest_gap_h"] > 30.0
     out["cfg"] = cfg_dict(cfg)
+    acct = getattr(rp, "gate_acct", None)
+    if acct:
+        out["gate_min_day"] = {k: acct.get(k, 0) / days for k in ("clear", "pass", "inflight", "pending")}
+    if rp.cfg.policy == "v2" or getattr(rp, "v2", None):
+        recs = [x for x in getattr(rp, "v2", {}).values() if S <= x["cron"] < E]
+        out["v2"] = {"slots": len(recs),
+                     "by_dispatch": sum(1 for x in recs if x["by"] == "dispatch"),
+                     "by_cron": sum(1 for x in recs if x["by"] == "cron"),
+                     "unserved": sum(1 for x in recs if x["by"] is None),
+                     "dispatches": sum(len(x["dispatched"]) for x in recs),
+                     "redispatches": sum(max(0, len(x["dispatched"]) - 1) for x in recs),
+                     "noop_runs": sum(1 for _r, s in getattr(rp, "v2_noops", []) if S <= s < E),
+                     "noop_group_min_day": sum(rp.cfg.noop_min for _r, s in getattr(rp, "v2_noops", [])
+                                               if S <= s < E) / days,
+                     "noop_under_pass": sum(1 for _r, s in getattr(rp, "v2_noops", []) if S <= s < E and
+                                            any(p["pull"] <= s < p["end"] for p in ps))}
     return out
 
 
@@ -2317,7 +2467,8 @@ def cmd_fetch(args):
     cut = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=args.days)).strftime("%Y-%m-%dT%H:%M:%SZ")
     for wf in g.WRITERS:
         out = subprocess.run(["gh", "run", "list", "--workflow", wf, "--limit", str(args.limit), "--json",
-                              "databaseId,createdAt,startedAt,updatedAt,event,status,conclusion,attempt"],
+                              "databaseId,createdAt,startedAt,updatedAt,event,status,conclusion,attempt,"
+                              "displayTitle"],
                              capture_output=True, text=True, timeout=300)
         if out.returncode != 0:
             sys.exit(f"gh failed for {wf}: {out.stderr.strip()[:300]}")

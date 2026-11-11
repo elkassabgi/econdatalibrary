@@ -536,6 +536,58 @@ def send_mail(subject: str, text: str, env: dict | None = None) -> str:
 
 
 # ------------------------------------------------------------------ one tick
+# ------------------------------------------------------------------ the desktop slot dispatcher, SHADOW ONLY
+# PLAN V2 (review AR-470): the desktop dispatcher (tools/econ_dispatch.py) starts each cron slot at its time. Two
+# things are watched here, and in SHADOW only - recorded in the state file and the beat, NEVER mailed, whatever
+# SEND_FLAG says (R1661: a new alerting path is shadow-run on the live system first; a later reviewed change may
+# give these a mail):
+#   * the dispatcher's heartbeat is older than DISPATCH_HEARTBEAT_STALE while this guard loop runs (the dispatcher
+#     looks once a minute); a heartbeat file that never existed reads "not installed", not stale;
+#   * a slot has NO titled run at all (neither its slot dispatch nor its own cron run) SLOT_UNSTARTED_AFTER after its
+#     time, inside its own window. This reads the listings already read for the stall rule - no extra gh call in
+#     the guard tick - so it sees "nothing started", not "started and failed before its pull".
+# The stall rule above is unchanged: in V2 the crons keep being created (a no-op cron is a scheduled run).
+DISPATCH_HEARTBEAT = os.path.join(ROOT, "logs", "econ_dispatch.heartbeat")
+DISPATCH_HEARTBEAT_STALE = dt.timedelta(minutes=30)
+SLOT_UNSTARTED_AFTER = dt.timedelta(hours=2)
+
+
+def dispatch_shadow(sched: dict, runs: dict | None, now: dt.datetime, heartbeat: str | None = None) -> dict:
+    """{"flags": [...], "dispatcher": ...}: what the two V2 watches would report. Pure apart from reading the
+    heartbeat file. Never raises."""
+    flags, path = [], DISPATCH_HEARTBEAT if heartbeat is None else heartbeat
+    hb = None
+    try:
+        with open(path, encoding="utf-8") as f:
+            hb = _t(f.readline().strip())
+        disp = "heartbeat unreadable" if hb is None else f"heartbeat {_iso(hb)}"
+        if hb is None or now - hb > DISPATCH_HEARTBEAT_STALE:
+            flags.append(f"dispatcher heartbeat {'unreadable' if hb is None else _iso(hb)} is older than "
+                         f"{int(DISPATCH_HEARTBEAT_STALE.total_seconds() // 60)} min")
+    except FileNotFoundError:
+        disp = "not installed (no heartbeat file)"
+    except Exception as e:  # noqa: BLE001
+        disp = f"heartbeat unreadable ({type(e).__name__})"
+        flags.append(f"dispatcher heartbeat unreadable ({type(e).__name__})")
+    try:
+        windows = gate.cron_windows()
+        for wf, hours in gate.WRITERS.items():
+            rows = list((runs or {}).get(wf, [])) + list(sched.get(wf, []))
+            if not rows:
+                continue                      # an empty listing says nothing (R1660)
+            have = {s[0] for s in (gate.run_slot(wf, r) for r in rows) if s}
+            for back in (1, 0):
+                day = (now - dt.timedelta(days=back)).date()
+                for h in hours:
+                    cron = dt.datetime(day.year, day.month, day.day, h, tzinfo=dt.timezone.utc)
+                    if cron + SLOT_UNSTARTED_AFTER <= now < cron + windows[wf][h] and cron not in have:
+                        flags.append(f"slot {gate.slot_tag(wf, cron)} has no run {int((now - cron).total_seconds() // 60)}"
+                                     f" min after its time")
+    except Exception as e:  # noqa: BLE001
+        flags.append(f"slot watch failed ({type(e).__name__})")
+    return {"evaluated_utc": _iso(now), "dispatcher": disp, "flags": flags, "mode": "shadow (never mails)"}
+
+
 def _read_unfiltered(wf: str, fetch, sleep=time.sleep) -> tuple[list, list]:
     """The unfiltered listing of `wf`, read the way gate.read_sched() reads the scheduled one: an EMPTY answer is
     read up to gate.SCHED_EMPTY_RETRIES more times, gate.SCHED_RETRY_PAUSE_S apart (R1660 applies to both
@@ -606,9 +658,15 @@ def _evaluate(state, due, now, started, read, env, notes) -> dict:
         read_notes = list(got[3]) if len(got) > 3 else []
         verdict, error = assess(sched, states, now, runs), None
         verdict["notes"] = read_notes + verdict["notes"]
+        shadow = dispatch_shadow(sched, runs, now)
     except Exception as e:                                   # noqa: BLE001 - "cannot read" is its own verdict
-        verdict, error = None, f"{type(e).__name__}: {e}"
+        verdict, error, shadow = None, f"{type(e).__name__}: {e}", None
     new, kind = step(state, verdict, error, now)
+    if shadow is not None:
+        # SHADOW ONLY: recorded, never fed to step() or a mail (see dispatch_shadow)
+        new["dispatch_shadow"] = shadow
+        if shadow["flags"]:
+            notes.append("dispatch shadow: " + "; ".join(shadow["flags"][:3]))
     new["last_notes"] = [] if verdict is None else verdict["notes"][-8:]
     new.update(mail_setup(mail_env() if env is None else env))
     if kind is None:
@@ -756,7 +814,8 @@ def summary_for_beat(path: str = STATE_PATH) -> dict:
     return {**{k: s.get(k) for k in ("mode", "last_evaluated_utc", "last_verdict", "stalled", "undetermined",
                                      "undetermined_since", "ok_streak",
                                      "alert_active", "episode_since_utc", "unknown_since_utc", "mail_configured",
-                                     "transport", "mail_to", "last_send", "last_step_elapsed_s")},
+                                     "transport", "mail_to", "last_send", "last_step_elapsed_s",
+                                     "dispatch_shadow")},
             "would_mail_count": int(s.get("would_mail_count") or 0),
             "would_mail": [{k: w.get(k) for k in ("kind", "subject", "at")} for w in would[-5:]],
             "mail_due": None if due is None else {"kind": due.get("kind"), "since": due.get("since")}}

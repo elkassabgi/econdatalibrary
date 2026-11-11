@@ -18,6 +18,12 @@
 #     so a dry run truly writes nothing (test T-3).
 
 name: updater-daily
+# THE SLOT IN THE RUN'S NAME (PLAN V2, review AR-470). The desktop dispatcher (tools/econ_dispatch.py) starts the
+# 06:00Z slot at its time as a dispatch with input `slot` (daily-06Z-YYYY-MM-DD); the cron below stays as the
+# fallback. The title tells every reader which slot a run serves: "slot <tag>" ONLY for a dispatch with a slot and
+# no source / force / dry_run (a targeted or dry run must never settle the full pass, AR-470 (e)); "cron <expr>"
+# for a scheduled run; anything else is "manual ..." and has no slot. tests/test_slot_dispatch.py pins this.
+run-name: ${{ github.event_name == 'schedule' && format('cron {0}', github.event.schedule) || ((inputs.slot != '' && inputs.source == '' && !inputs.force && !inputs.dry_run) && format('slot {0}', inputs.slot) || format('manual source={0} force={1} dry_run={2}', inputs.source, inputs.force, inputs.dry_run)) }}
 
 on:
   schedule:
@@ -58,6 +64,11 @@ on:
         required: false
         type: boolean
         default: false
+      slot:
+        description: 'Desktop dispatcher only (tools/econ_dispatch.py): the slot this run serves, e.g. daily-06Z-2026-11-12. Leave empty for a manual run; never combine with source / force / dry_run.'
+        required: false
+        type: string
+        default: ''
 
 concurrency:
   group: aqueduct-updater
@@ -71,7 +82,42 @@ permissions:
   contents: read
 
 jobs:
+  # THE SLOT GUARD (PLAN V2, review AR-470 H3). Runs first, inside the workflow-level group like the rest, and
+  # decides whether this run does the work: the second run of a slot an earlier run already settled is a no-op,
+  # and every doubt FAILS CLOSED (red, nothing below runs). A separate job, not a step condition: `update` has 8
+  # always() steps (watchdog, probes, digest, heartbeat commit ...), and a job-level skip covers all of them -
+  # a no-op sends no digest and commits no heartbeat. tools/slot_check.py says how it decides.
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read        # list this workflow's runs and read the jobs of earlier runs of the slot
+    outputs:
+      real: ${{ steps.slot.outputs.real }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: tools
+      - name: Slot guard (before any state pull)
+        id: slot
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ECON_GH_REPO: ${{ github.repository }}
+          SLOT_WORKFLOW: updater-daily.yml
+          SLOT_EVENT: ${{ github.event_name }}
+          SLOT_SCHEDULE: ${{ github.event.schedule }}
+          SLOT_INPUT: ${{ inputs.slot }}
+          SLOT_SOURCE: ${{ inputs.source }}
+          SLOT_FORCE: ${{ inputs.force }}
+          SLOT_DRY_RUN: ${{ inputs.dry_run }}
+        run: python3 tools/slot_check.py
+
   update:
+    needs: guard
+    if: ${{ needs.guard.outputs.real == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 355   # 305-min step + ~50-min tail, ceiling-aware: GitHub kills jobs at 360
     # Write is needed only by the heartbeat step, which injects the token itself.

@@ -462,9 +462,31 @@ if ($lockHeldByOther) {
          'pass first.')
     exit 0
 }
-Set-Content -Path $lockFile -Value (
-    $PID.ToString() + ',' + (Get-Process -Id $PID).StartTime.ToUniversalTime().Ticks.ToString()
-) -Encoding ascii
+# >>> LOCK-THEN-REREAD (tests/test_slot_dispatch.py runs the lines between these two markers)
+# TAKE THE LOCK ATOMICALLY (review AR-470 H1). The desktop slot dispatcher (tools/econ_dispatch.py) writes its
+# marker, then reads this lock, then dispatches. Test-Path then Set-Content left a gap in which both could pass;
+# FileMode.CreateNew either creates the file or fails because it exists. A stale lock (checked above: no live
+# owner) is removed first; a CreateNew that still fails means another pass took it in between - refuse.
+if (Test-Path $lockFile) {
+    # remove only the STALE lock read above, never one another pass wrote since
+    $now1 = (Get-Content $lockFile -First 1 -ErrorAction SilentlyContinue)
+    if ($null -ne $lp -and ([string]$now1) -eq ([string]($lp -join ','))) {
+        Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
+    }
+}
+$lockText = $PID.ToString() + ',' + (Get-Process -Id $PID).StartTime.ToUniversalTime().Ticks.ToString()
+try {
+    $lockFs = [System.IO.File]::Open($lockFile, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write,
+                                     [System.IO.FileShare]::Read)
+    try {
+        $lockBytes = [System.Text.Encoding]::ASCII.GetBytes($lockText + "`r`n")
+        $lockFs.Write($lockBytes, 0, $lockBytes.Length)
+    } finally { $lockFs.Dispose() }
+} catch {
+    Say ('REFUSING TO START: local_heavy.lock appeared while this pass was taking it (' +
+         $_.Exception.Message + '). Another pass holds it.')
+    exit 0
+}
 
 function Release-LocalHeavyLock {
     # Only if it is still OURS. An aborting run must not free the lock of whoever owns it now.
@@ -475,6 +497,29 @@ function Release-LocalHeavyLock {
     } catch { return }
     Remove-Item $script:lockFile -ErrorAction SilentlyContinue
 }
+
+# ASK THE GATE AGAIN, NOW THAT THE LOCK IS HELD (review AR-470 H1). The first answer was read before the lock; in
+# between, the desktop slot dispatcher may have written its marker (it writes the marker, THEN reads this lock, THEN
+# dispatches). Lock first, then this read, so of the two orders exactly one side backs off. Anything but CLEAR
+# releases the lock and stops before the pull.
+if (-not $selfHosted -and -not $SkipCiCheck) {
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $gateOut2 = (& $pythonExe (Join-Path $repo 'tools\ci_writer_gate.py') 2>&1 | Out-String).Trim()
+        $gateRc2 = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
+    if ($gateRc2 -ne 0) {
+        Say ("ABORT AFTER TAKING THE LOCK: the CI writer gate no longer says CLEAR (exit " + $gateRc2 + "): " +
+             ($gateOut2 -replace '\s+', ' '))
+        Release-LocalHeavyLock
+        exit 2
+    }
+    Say "CI writer gate re-read with the lock held: CLEAR"
+}
+# <<< LOCK-THEN-REREAD
 
 if ($selfHosted) {
     Say "after T0: no state pull - state.db is local (updater.run refuses a state pull after T0)"

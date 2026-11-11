@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
+import re
 import subprocess
 import sys
 import time
@@ -103,6 +105,144 @@ def credit_instant(created: list, cron: dt.datetime, hour: int, wf: str, windows
         return own[0]
     later = [c for c in own if c >= ambiguous_until]
     return min(own[1:2] + later[:1]) if (len(own) > 1 or later) else None
+
+
+# ---------------------------------------------------------------- slots (desktop slot dispatch, PLAN V2, AR-470)
+# SINCE THE DESKTOP SLOT DISPATCHER (tools/econ_dispatch.py) the desktop starts each cron's work at the cron's own
+# time, and the cron, which GitHub still creates hours late, stays as the fallback. Every run names the slot it
+# serves in its run-name (the workflows' `run-name:`), so a run can be credited to exactly one cron:
+#     "slot heavy-03Z-2026-11-12"   a workflow_dispatch with the `slot` input (and no source / force / dry_run)
+#     "cron 0 3 * * *"              a scheduled run; its slot date is the latest 03:00Z at or before createdAt
+# Anything else (history from before this change, a manual source/force/dry_run dispatch) has no slot.
+#
+# ONE predicate decides whether a run SETTLES its slot - run_settles() below - and the in-workflow guard
+# (tools/slot_check.py), this gate (slot_credited) and the dispatcher all call it (review AR-470 H2; a test pins
+# that they do). An earlier run of the slot settles it when it is completed, not cancelled, and a "Pull state"
+# step of it succeeded: a run that failed before its pull did no work, and "success" alone is wrong here
+# (updater-daily ends `failure` on its health gate after the work is pushed - 38 of 38 scheduled runs since
+# 2026-10-20, AR-470 (c)). The second run of a settled slot is a no-op: its guard job ends before any state pull.
+SLOT_KIND = {"updater-daily.yml": "daily", "updater-heavy.yml": "heavy"}
+REPO = os.environ.get("ECON_GH_REPO", "elkassabgi/econdatalibrary")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MARKER_PATH = os.path.join(ROOT, "logs", "econ_dispatch.marker")
+# The dispatcher writes the marker BEFORE it reads the desktop lock and before `gh workflow run`, and refreshes it
+# just before the call; the gate blocks for MARKER_BLOCK after its time - "dispatched, maybe not listed yet". After
+# that the dispatched run is listed (in flight: blocks) or its cron is still uncredited (blocks), see
+# slot_credited().
+MARKER_BLOCK = dt.timedelta(minutes=10)
+PULL_STEP_PREFIX = "Pull state"
+_TAG_RE = re.compile(r"^(daily|heavy)-([0-9]{2})Z-([0-9]{4})-([0-9]{2})-([0-9]{2})$")
+_CRON_RE = re.compile(r"^0 ([0-9]{1,2}) \* \* \*$")
+
+
+def slot_tag(wf: str, cron: dt.datetime) -> str:
+    """'heavy-03Z-2026-11-12' for the 03:00Z cron of updater-heavy.yml on 2026-11-12."""
+    return f"{SLOT_KIND[wf]}-{cron:%H}Z-{cron:%Y-%m-%d}"
+
+
+def parse_slot_tag(tag: str, wf: str, writers: dict | None = None) -> dt.datetime | None:
+    """The cron instant a tag names, or None when the tag is malformed or names another workflow or hour."""
+    m = _TAG_RE.match((tag or "").strip())
+    if not m or m.group(1) != SLOT_KIND.get(wf):
+        return None
+    h = int(m.group(2))
+    if h not in (WRITERS if writers is None else writers).get(wf, ()):
+        return None
+    try:
+        return dt.datetime(int(m.group(3)), int(m.group(4)), int(m.group(5)), h, tzinfo=dt.timezone.utc)
+    except ValueError:
+        return None
+
+
+def cron_hour(expr: str, wf: str, writers: dict | None = None) -> int | None:
+    """The hour of a '0 H * * *' cron of `wf`, or None."""
+    m = _CRON_RE.match((expr or "").strip())
+    if not m:
+        return None
+    h = int(m.group(1))
+    return h if h in (WRITERS if writers is None else writers).get(wf, ()) else None
+
+
+def cron_slot_of(hour: int, created: dt.datetime) -> dt.datetime:
+    """The latest hour:00Z at or before `created`: the cron a scheduled run of that cron was created for (start lag
+    is below 24 h - 60-day maximum 710 min)."""
+    c = created.replace(hour=hour, minute=0, second=0, microsecond=0)
+    return c if c <= created else c - dt.timedelta(days=1)
+
+
+def run_slot(wf: str, row: dict, writers: dict | None = None):
+    """(cron instant, 'slot' | 'cron') for a run whose title names its slot, else None. A 'slot' title counts only on
+    a workflow_dispatch and a 'cron' title only on a schedule event."""
+    title = (row.get("displayTitle") or "").strip()
+    ev = row.get("event")
+    if title.startswith("slot ") and ev == "workflow_dispatch":
+        c = parse_slot_tag(title[5:], wf, writers)
+        return (c, "slot") if c is not None else None
+    if title.startswith("cron ") and ev == "schedule":
+        h = cron_hour(title[5:], wf, writers)
+        if h is None or not row.get("createdAt"):
+            return None
+        return cron_slot_of(h, _parse(row["createdAt"])), "cron"
+    return None
+
+
+def run_settles(row: dict, jobs) -> bool:
+    """THE settled predicate (AR-470 H2). `row`: a run listing row; `jobs`: that run's jobs with their steps
+    ([{"name", "steps": [{"name", "conclusion"}]}]), or None when they could not be read (= not settled).
+
+    True only when the run is completed, did not end cancelled, and some job's "Pull state" step succeeded."""
+    if row.get("status") != "completed" or (row.get("conclusion") or "cancelled") == "cancelled":
+        return False
+    if not jobs:
+        return False
+    return any((s.get("name") or "").startswith(PULL_STEP_PREFIX) and s.get("conclusion") == "success"
+               for j in jobs for s in (j.get("steps") or []))
+
+
+def slot_credited(wf: str, hour: int, cron: dt.datetime, rows: list, sched_rows: list, settled=frozenset(),
+                  windows: dict | None = None) -> bool:
+    """Has the `hour`:00Z cron at `cron` of `wf` started, for the gate's pending rule (and the dispatcher's "is this
+    slot still open")?
+
+    rows: every listed run of `wf` (both listings); sched_rows: its scheduled runs; settled: the databaseIds of
+    completed slot-tagged runs for which run_settles() is True (main() reads their jobs).
+      - a run titled with THIS slot - its own cron run or a slot dispatch - credits it while it is unfinished (the
+        in-flight check blocks anyway) and, once finished, only if it settled (run_settles). A late no-op cron
+        does not settle, but the run it deferred to did. An evicted or failed-closed cron run leaves the cron
+        uncredited until its window ends, and the dispatcher may serve the slot in that time (AR-470 round 2 F3);
+      - a titled run never credits another cron, by window or otherwise (AR-470 C7);
+      - runs with no slot title (history from before titles) keep credit_instant()'s window rule, ambiguity
+        included."""
+    for r in rows:
+        s = run_slot(wf, r)
+        if s is None or s[0] != cron:
+            continue
+        # The same rule for a titled cron run and a slot dispatch (review AR-470 round 2, F3): an evicted cron run,
+        # or one whose guard failed closed, did no work, so it must not read as the cron's start - else the gate
+        # reads CLEAR over a slot nothing served, and the dispatcher would see no open slot to serve.
+        if r.get("status") != "completed":
+            return True
+        if r.get("conclusion") != "cancelled" and r.get("databaseId") in settled:
+            return True
+    legacy = sorted(_parse(r["createdAt"]) for r in sched_rows
+                    if r.get("event") == "schedule" and run_slot(wf, r) is None)
+    return credit_instant(legacy, cron, hour, wf, windows) is not None
+
+
+def read_marker(path: str | None = None, now: dt.datetime | None = None) -> dt.datetime | None:
+    """The time in the dispatcher's marker, or None when there is no marker. A marker that exists but cannot be read
+    or parsed answers its file time, and failing that `now` (= blocks): it must never read as absent."""
+    path = MARKER_PATH if path is None else path
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return _parse(f.readline().strip())
+    except Exception:  # noqa: BLE001
+        try:
+            return dt.datetime.fromtimestamp(os.path.getmtime(path), dt.timezone.utc)
+        except Exception:  # noqa: BLE001
+            return now or dt.datetime.now(dt.timezone.utc)
 
 
 # How long a cron that has not started still blocks a desktop pass: until its run is created, at most this.
@@ -189,6 +329,8 @@ WARN_UNFINISHED_AFTER = dt.timedelta(hours=24)
 RUN_LIMIT = 50            # unfiltered, for the in-flight check
 SCHED_LIMIT = 200         # scheduled runs only, for the cron check
 WORKFLOW_LIMIT = 200
+# displayTitle carries the slot (run_slot); databaseId orders runs (AR-470 H2) and keys settled_runs.
+RUN_FIELDS = "createdAt,event,status,conclusion,displayTitle,databaseId"
 EXIT_CLEAR, EXIT_UNKNOWN, EXIT_BLOCKED = 0, 2, 3
 
 
@@ -197,7 +339,8 @@ def _parse(ts: str) -> dt.datetime:
 
 
 def assess(runs: dict, now: dt.datetime, states: dict | None = None,
-           sched: dict | None = None, unread=()) -> tuple[bool, str, list]:
+           sched: dict | None = None, unread=(), settled=frozenset(),
+           marker_at: dt.datetime | None = None) -> tuple[bool, str, list]:
     """runs: {workflow file: [{"createdAt", "event", "status"}, ...]} as `gh run list --json` gives them;
     states: {workflow file: "active" | "disabled_manually" | ...}, or None when not read;
     sched: the same shape but SCHEDULED runs only, reaching further back - used for "has this cron started?".
@@ -215,9 +358,15 @@ def assess(runs: dict, now: dt.datetime, states: dict | None = None,
     scheduled listing carries its status too; reading only the unfiltered listing let one empty unfiltered answer
     hide a scheduled run in progress, while that same run credited its cron as started - CLEAR during a cloud run.
 
+    settled: databaseIds of completed slot dispatches that settled their slot (slot_credited); marker_at: the
+    dispatcher's marker time (read_marker), which blocks for MARKER_BLOCK - a dispatch may be sent and not listed.
+
     Returns (blocked, reason, notes)."""
     notes = []
     sched = runs if sched is None else sched
+    if marker_at is not None and (now - marker_at < MARKER_BLOCK):
+        return True, (f"the desktop dispatcher marked a dispatch at {marker_at:%Y-%m-%dT%H:%M:%SZ}; its run may not "
+                      f"be listed yet (blocking {int(MARKER_BLOCK.total_seconds() // 60)} min from the mark)"), notes
     for wf in WRITERS:
         listings = [(runs.get(wf, []), "")]
         if sched is not runs:
@@ -239,7 +388,9 @@ def assess(runs: dict, now: dt.datetime, states: dict | None = None,
         elif state is not None and state != "active":
             notes.append(f"NOTE: {wf} is {state}; its crons are not waited for")
             continue
-        created = sorted(_parse(r["createdAt"]) for r in sched.get(wf, []) if r["event"] == "schedule")
+        created = sorted(_parse(r["createdAt"]) for r in sched.get(wf, [])
+                         if r["event"] == "schedule" and run_slot(wf, r) is None)
+        both = list(runs.get(wf, [])) + ([] if sched is runs else list(sched.get(wf, [])))
         for back in (1, 0):
             day = (now - dt.timedelta(days=back)).date()
             for h in hours:
@@ -250,7 +401,7 @@ def assess(runs: dict, now: dt.datetime, states: dict | None = None,
                 # The same window as pending_limit(): a run is credited to this cron only if it was created
                 # within it, and the cron blocks for exactly as long as it can still be credited one. A run that
                 # may be the previous cron's late run does not count (CREDIT_AMBIGUITY).
-                started = credit_instant(created, cron, h, wf, windows) is not None
+                started = slot_credited(wf, h, cron, both, sched.get(wf, []), settled, windows)
                 if not started:
                     late = int((now - cron).total_seconds() // 60)
                     if any(cron <= c < cron + horizon for c in created):
@@ -278,7 +429,7 @@ def decide(runs: dict, now: dt.datetime, states: dict | None = None) -> tuple[bo
 def minutes_until_block(runs: dict, now: dt.datetime, states: dict | None = None,
                         lookahead: dt.timedelta = dt.timedelta(hours=12),
                         step: dt.timedelta = dt.timedelta(minutes=5), sched: dict | None = None,
-                        unread=()) -> int:
+                        unread=(), settled=frozenset(), marker_at: dt.datetime | None = None) -> int:
     """How long from `now` before this same rule would block, in whole minutes.
 
     run_local_heavy.ps1 needs two answers, not one: "may I start?" and "when must I be finished?". It has been
@@ -300,12 +451,12 @@ def minutes_until_block(runs: dict, now: dt.datetime, states: dict | None = None
 
     `unread` (see assess) blocks at every instant, so a writer whose listing read empty gives 0.
     """
-    if assess(runs, now, states, sched, unread)[0]:
+    if assess(runs, now, states, sched, unread, settled, marker_at)[0]:
         return 0
     t, limit = now, now + lookahead
     while t < limit:
         t += step
-        if assess(runs, t, states, sched, unread)[0]:
+        if assess(runs, t, states, sched, unread, settled, marker_at)[0]:
             return max(0, int((t - now).total_seconds() // 60))
     return int(lookahead.total_seconds() // 60)
 
@@ -325,7 +476,7 @@ def _gh_runs(wf: str, timeout: int = 60) -> list:
 
     Its answer can be EMPTY for a writer that has runs (the R1660 class), so main() reads it through
     read_unfiltered(), never directly (review AR-375)."""
-    return _gh_json(["run", "list", "--workflow", wf, "--limit", str(RUN_LIMIT), "--json", "createdAt,event,status"],
+    return _gh_json(["run", "list", "--workflow", wf, "--limit", str(RUN_LIMIT), "--json", RUN_FIELDS],
                     timeout=timeout)
 
 
@@ -337,7 +488,44 @@ def _gh_sched(wf: str, timeout: int = 60) -> list:
     it against the unfiltered listing. tools/scheduler_stall.py passes a shorter timeout (it runs inside the guard
     tick). Raises on a gh failure, a timeout, or an answer that is not a list."""
     return _gh_json(["run", "list", "--workflow", wf, "--event", "schedule", "--limit", str(SCHED_LIMIT),
-                     "--json", "createdAt,event,status"], timeout=timeout)
+                     "--json", RUN_FIELDS], timeout=timeout)
+
+
+def _gh_jobs(run_id, timeout: int = 60) -> list:
+    """The jobs of one run with their steps' names and conclusions (for run_settles). Raises on any failure."""
+    out = subprocess.run(["gh", "api", f"repos/{REPO}/actions/runs/{int(run_id)}/jobs?per_page=100", "--jq",
+                          "[.jobs[] | {name, status, conclusion, steps: [.steps[]? | {name, conclusion}]}]"],
+                         capture_output=True, text=True, timeout=timeout)
+    if out.returncode != 0:
+        raise RuntimeError(f"gh api jobs of run {run_id} failed: {out.stderr.strip()[:200]}")
+    data = json.loads(out.stdout)
+    if not isinstance(data, list):
+        raise RuntimeError(f"jobs of run {run_id}: not a list")
+    return data
+
+
+def settled_runs(runs: dict, sched: dict, now: dt.datetime, fetch_jobs=_gh_jobs) -> tuple[frozenset, list]:
+    """The databaseIds of the completed titled runs (slot dispatches and titled cron runs, of the last 2 days) that
+    settle their slot, by run_settles() on their jobs. A run whose jobs cannot be read is NOT settled (its cron then
+    still blocks: fail closed), and a note says so."""
+    out, notes, seen = set(), [], set()
+    for wf in WRITERS:
+        for r in list(runs.get(wf, [])) + list(sched.get(wf, [])):
+            rid = r.get("databaseId")
+            s = run_slot(wf, r)
+            if (rid is None or rid in seen or s is None or r.get("status") != "completed"
+                    or r.get("conclusion") == "cancelled"):
+                continue
+            seen.add(rid)
+            if now - s[0] > dt.timedelta(days=2):
+                continue
+            try:
+                if run_settles(r, fetch_jobs(rid)):
+                    out.add(rid)
+            except Exception as e:  # noqa: BLE001
+                notes.append(f"WARNING: jobs of {wf} run {rid} could not be read ({type(e).__name__}); its slot is "
+                             f"treated as not settled")
+    return frozenset(out), notes
 
 
 def _gh_states(timeout: int = 60) -> dict:
@@ -471,7 +659,7 @@ def read_sched(wf: str, fetch_sched, unfiltered: list, sleep=time.sleep) -> tupl
 
 
 def main(fetch=_gh_runs, fetch_states=_gh_states, now=None, until_block=False, fetch_sched=None,
-         sleep=time.sleep) -> int:
+         sleep=time.sleep, fetch_jobs=None, marker_path=None) -> int:
     try:
         # The unfiltered listing first, never a raw answer: an empty one is read again, and one still empty
         # makes that writer `unread`, which blocks (review AR-375). read_sched() then cross-checks against it.
@@ -487,14 +675,21 @@ def main(fetch=_gh_runs, fetch_states=_gh_states, now=None, until_block=False, f
             read_notes += wf_notes
         states = fetch_states()
         now = now or dt.datetime.now(dt.timezone.utc)
+        # Slot dispatches settle their cron only through run_settles() on their jobs (AR-470 H2). The real jobs
+        # reader only with the real run reader: a test that fakes the listings never reaches GitHub.
+        jobs_reader = fetch_jobs if fetch_jobs is not None else (_gh_jobs if fetch is _gh_runs else (lambda _r: None))
+        settled, settle_notes = settled_runs(runs, sched, now, jobs_reader)
+        read_notes += settle_notes
+        marker_at = read_marker(marker_path, now)
         if until_block:
             # For the runner's budget clamp. Prints minutes only, so a caller can read it directly (the runner
             # parses the whole output as one integer, so the read notes are NOT printed here; the plain gate
             # call the runner makes first prints them); an `unread` writer reads 0; a failure to read CI still
             # prints UNKNOWN and exits 2, which the caller must treat as "do not start".
-            print(minutes_until_block(runs, now, states, sched=sched, unread=unread))
+            print(minutes_until_block(runs, now, states, sched=sched, unread=unread, settled=settled,
+                                      marker_at=marker_at))
             return EXIT_CLEAR
-        blocked, reason, notes = assess(runs, now, states, sched, unread)
+        blocked, reason, notes = assess(runs, now, states, sched, unread, settled, marker_at)
     except Exception as e:  # noqa: BLE001 - failing to read CI is "cannot tell", never "clear"
         print(f"UNKNOWN: could not read CI runs ({type(e).__name__}: {str(e)[:200]})")
         return EXIT_UNKNOWN

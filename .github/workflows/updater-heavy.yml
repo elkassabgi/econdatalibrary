@@ -33,6 +33,9 @@
 # max-parallel keeps the matrix off its own.
 
 name: updater-heavy
+# THE SLOT IN THE RUN'S NAME (PLAN V2, review AR-470): see updater-daily.yml. Heavy slots are heavy-03Z-<date> and
+# heavy-12Z-<date>; "slot <tag>" only for a dispatch with a slot and no source / force. tests/test_slot_dispatch.py.
+run-name: ${{ github.event_name == 'schedule' && format('cron {0}', github.event.schedule) || ((inputs.slot != '' && inputs.source == '' && !inputs.force) && format('slot {0}', inputs.slot) || format('manual source={0} force={1}', inputs.source, inputs.force)) }}
 
 on:
   schedule:
@@ -87,7 +90,16 @@ on:
         required: false
         type: boolean
         default: false
+      slot:
+        description: 'Desktop dispatcher only (tools/econ_dispatch.py): the slot this run serves, e.g. heavy-03Z-2026-11-12. Leave empty for a manual run; never combine with source / force.'
+        required: false
+        type: string
+        default: ''
 
+# WORKFLOW-level, kept so (review AR-470 H4). The throwaway-repo probe (2026-11-11) showed a job-level group on the
+# matrix lets each leg re-enter the group and evict whatever waits, and a job-level guard outside the group opens a
+# lost-slot interleaving. The cost kept: a late no-op cron waits in the group as `pending` until the run ahead ends,
+# then holds it about a minute for its guard job.
 concurrency:
   group: aqueduct-updater      # same group as updater-daily: never both at once
   cancel-in-progress: false
@@ -96,11 +108,43 @@ permissions:
   contents: read
 
 jobs:
+  # THE SLOT GUARD (PLAN V2, review AR-470 H3): the same guard as updater-daily.yml, before setup, so a no-op run
+  # (the second run of a settled slot) builds no matrix and pulls no state. Every doubt fails closed.
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read        # list this workflow's runs and read the jobs of earlier runs of the slot
+    outputs:
+      real: ${{ steps.slot.outputs.real }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: tools
+      - name: Slot guard (before any state pull)
+        id: slot
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ECON_GH_REPO: ${{ github.repository }}
+          SLOT_WORKFLOW: updater-heavy.yml
+          SLOT_EVENT: ${{ github.event_name }}
+          SLOT_SCHEDULE: ${{ github.event.schedule }}
+          SLOT_INPUT: ${{ inputs.slot }}
+          SLOT_SOURCE: ${{ inputs.source }}
+          SLOT_FORCE: ${{ inputs.force }}
+          SLOT_DRY_RUN: 'false'
+        run: python3 tools/slot_check.py
+
   # Builds the matrix. A job-level `if:` CANNOT reference `matrix` — GitHub rejects
   # the whole file with "Unrecognized named-value: 'matrix'", so filtering entries
   # that way takes the entire workflow down, cron included. The supported way to run
   # a subset is to compute the matrix itself and feed it through fromJSON.
   setup:
+    needs: guard
+    if: ${{ needs.guard.outputs.real == 'true' }}
     runs-on: ubuntu-latest
     outputs:
       sources: ${{ steps.pick.outputs.sources }}
@@ -157,6 +201,8 @@ jobs:
 
   heavy:
     needs: setup
+    # Explicit, so a no-op run (setup skipped) never expands a matrix from an empty output (AR-470 C2).
+    if: ${{ needs.setup.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 300
     strategy:
