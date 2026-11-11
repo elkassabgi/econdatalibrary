@@ -172,3 +172,107 @@ def test_a_table_reports_the_latest_changed_date_of_its_series(monkeypatch, tmp_
         {"code": "LETO", "values": ["2024", "2025", "2026"], "time": True}]})
     res = S.update(unit, None)
     assert {k: str(v)[:10] for k, v in res.changed_keys.items()} == {"SI:AAA01S": "2026-12-31"}
+
+
+# --- AR-472: the zero-mapped branch, driven through the production _derive_changed_csvs ----------------
+
+def _zero_mapped_note(source_id, changed_keys):
+    res = types.SimpleNamespace(changed_keys=changed_keys, series_cursors={}, obs=10, merged_rows=None,
+                                cursor_cap_hit=None, new_vintage=None)
+    unit = types.SimpleNamespace(source_id=source_id, key=f"{source_id}/_all", config={})
+    return O._derive_changed_csvs(unit, res, None, None)[1] or ""
+
+
+def test_uncatalogued_only_set_of_the_declared_form_is_a_coverage_note(catalog):
+    note = _zero_mapped_note("stat_slovenia", {"SI:CCC01S": "2025-12-31"})
+    assert note.startswith("csv coverage note:"), note
+
+
+def test_bare_table_id_keys_still_demote(catalog):
+    """NEGATIVE CONTROL: the pre-fix key form (bare table id) is exactly the mismatch the demote catches."""
+    note = _zero_mapped_note("stat_slovenia", {"AAA01S": "2025-12-31", "BBB01S": "2025-12-31"})
+    assert note.startswith("csv coherence unmet"), note
+
+
+@pytest.mark.parametrize("bad", ["SI:CCC01S:X=0", "si:CCC01S", "SI:", "CCC01S", "SI:CCC 01S"])
+def test_wrong_shape_keys_still_demote(catalog, bad):
+    note = _zero_mapped_note("stat_slovenia", {bad: None})
+    assert note.startswith("csv coherence unmet"), (bad, note)
+
+
+def test_one_wrong_shape_key_among_good_ones_still_demotes(catalog):
+    note = _zero_mapped_note("stat_slovenia", {"SI:CCC01S": None, "CCC02S": None})
+    assert note.startswith("csv coherence unmet"), note
+
+
+def test_a_key_with_a_catalogue_id_under_it_still_demotes(catalog):
+    """A near-miss is a mapper defect, not coverage: 'SI:DDD01S' unmapped while 'SI:DDD01S.PX' is catalogued."""
+    c = sqlite3.connect(catalog)
+    c.execute("INSERT INTO series VALUES ('stat_slovenia:SI:DDD01S.PX', 'stat_slovenia')")
+    c.commit()
+    c.close()
+    note = _zero_mapped_note("stat_slovenia", {"SI:DDD01S": None})
+    assert note.startswith("csv coherence unmet"), note
+
+
+def test_a_cursor_reported_set_still_demotes(catalog, monkeypatch):
+    """The rule is for MERGE-MEASURED sets only (changed_keys is not None). backend r2 = the cloud route,
+    where a cursor-reported set is not widened to derive-all and so reaches the zero-mapped branch."""
+    monkeypatch.setattr(O.config, "BACKEND", "r2")
+    res = types.SimpleNamespace(changed_keys=None, series_cursors={"SI:CCC01S": "2025-12-31"}, obs=10,
+                                merged_rows=None, cursor_cap_hit=None, new_vintage=None)
+    unit = types.SimpleNamespace(source_id="stat_slovenia", key="stat_slovenia/_all", config={})
+    note = O._derive_changed_csvs(unit, res, None, None)[1] or ""
+    assert note.startswith("csv coherence unmet"), note
+
+
+def test_another_merge_measured_source_on_this_branch_is_unchanged(tmp_path, monkeypatch):
+    """hagstofa is merge-measured, catalogue_scope full, and takes the same zero-mapped branch. It declares
+    no key form, so an uncatalogued-only changed set still demotes exactly as before."""
+    p = tmp_path / "catalog.db"
+    c = sqlite3.connect(p)
+    c.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT)")
+    c.execute("INSERT INTO series VALUES ('hagstofa:1_a/2_b/AAA00001.px', 'hagstofa')")
+    c.commit()
+    c.close()
+    monkeypatch.setenv("ECONDL_CATALOG", str(p))
+    assert "hagstofa" not in O._CHANGED_KEY_FORM
+    note = _zero_mapped_note("hagstofa", {"1_a/2_b/ZZZ00009.px": None})
+    assert note.startswith("csv coherence unmet"), note
+
+
+def test_a_catalogue_with_no_rows_for_the_source_still_demotes(tmp_path, monkeypatch):
+    """No catalogue rows at all = not catalogued, purged, or a stale coherence catalogue: never coverage."""
+    p = tmp_path / "catalog.db"
+    c = sqlite3.connect(p)
+    c.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT)")
+    c.execute("INSERT INTO series VALUES ('other:X', 'other')")
+    c.commit()
+    c.close()
+    monkeypatch.setenv("ECONDL_CATALOG", str(p))
+    note = _zero_mapped_note("stat_slovenia", {"SI:CCC01S": None})
+    assert note.startswith("csv coherence unmet"), note
+
+
+def test_only_stat_slovenia_declares_a_changed_key_form():
+    """R244 pin: every other merge-measured source keeps the zero-mapped demote byte for byte. Adding a
+    source here needs its own key-form review."""
+    assert set(O._CHANGED_KEY_FORM) == {"stat_slovenia"}
+
+
+def test_an_unreadable_catalogue_fails_closed(tmp_path, monkeypatch):
+    """The helper answers False (demote) when it cannot read the catalogue - never coverage by default."""
+    monkeypatch.setenv("ECONDL_CATALOG", str(tmp_path / "no_such_catalog.db"))
+    assert O._uncatalogued_by_form("stat_slovenia", ["SI:CCC01S"]) is False
+
+
+def test_the_coverage_note_books_no_unmapped_debt_and_is_printed(catalog, monkeypatch, capsys):
+    """The override clears the demote flag too, not only the note prefix: a source routed to desktop_owed
+    must not book zero-mapped debt for a pass whose verdict is coverage, and the verdict is printed."""
+    booked = []
+    monkeypatch.setattr(O, "_csv_misses", lambda sid: "desktop_owed")
+    monkeypatch.setattr(O, "_note_unmapped_debt", lambda *a, **k: booked.append(a) or True)
+    note = _zero_mapped_note("stat_slovenia", {"SI:CCC01S": "2025-12-31"})
+    assert note.startswith("csv coverage note:"), note
+    assert booked == []
+    assert "[orchestrator] stat_slovenia: csv coverage note:" in capsys.readouterr().out

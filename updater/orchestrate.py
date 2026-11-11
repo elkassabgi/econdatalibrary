@@ -1056,6 +1056,45 @@ def _classify_zero_mapped(source_id: str, scope: str, n_ids: "int | None",
     return note, True
 
 
+# THE STORE-KEY FORM OF A MERGE-MEASURED CHANGED KEY, per source, for the zero-mapped branch (AR-472).
+# A source listed here reports its changed set at catalogue grain, so a key of this form that maps to
+# nothing is a table with no catalogue row (coverage, AR-380), not a sign that served CSVs went stale.
+# OPT-IN on purpose: a generic "same shape as the catalogue" rule would also pass a case or grain
+# mismatch (eurostat's store codes are UPPERCASE, its catalogue codes lowercase), which is exactly the
+# defect the demote exists to catch (R359, R244). A key of any other form still demotes.
+#   stat_slovenia  'SI:<table id>' - fetchers/stat_slovenia.py _table_key; catalogue 'stat_slovenia:SI:<id>'
+_CHANGED_KEY_FORM = {
+    "stat_slovenia": r"SI:[^:\s]+",
+}
+
+
+def _uncatalogued_by_form(source_id: str, unmapped) -> bool:
+    """True only when the source declares a key form, EVERY unmapped key has that form, and no
+    catalogue id equals any of them or starts with one (PK range, never LIKE - R492). The mapper's
+    punctuation- and case-insensitive tier has already missed each key, so a near-spelling is not
+    possible either. Fails closed: anything unreadable answers False and the branch demotes."""
+    import re as _re                                                     # noqa: PLC0415
+    form = _CHANGED_KEY_FORM.get(source_id)
+    keys = [k for k in (unmapped or [])]
+    if form is None or not keys:
+        return False
+    if not all(isinstance(k, str) and _re.fullmatch(form, k) for k in keys):
+        return False
+    try:
+        import sqlite3 as _sq                                            # noqa: PLC0415
+        _cat = (os.environ.get("ECONDL_CATALOG")
+                or os.path.join(config.ROOT, "data", "catalog.db"))
+        with _sq.connect(f"file:{_cat}?mode=ro", uri=True) as _c:
+            for k in keys:
+                cand = f"{source_id}:{k}"
+                if _c.execute("SELECT 1 FROM series WHERE series_id >= ? AND series_id < ? LIMIT 1",
+                              (cand, cand + "\U0010ffff")).fetchone():
+                    return False
+    except Exception:                                                    # noqa: BLE001 - fail closed
+        return False
+    return True
+
+
 def _csv_grain(source_id: str) -> str:
     """The registry's `csv_grain` for a source ('series' unless declared 'flow'). Cached:
     the registry is one YAML load and this is asked once per unit."""
@@ -1870,6 +1909,14 @@ def _derive_changed_csvs(unit, res, blob, store=None):
                 unit.source_id, scope, n_ids, sample_hits, sample_n, len(unmapped),
                 cap_saturated=((not migrated) and len(unmapped) >= _CCAP)
                 or bool(getattr(res, "cursor_cap_hit", None)))   # (not the pinned booking read)
+            if demote and migrated and n_ids and _uncatalogued_by_form(unit.source_id, unmapped):
+                # AR-380 / AR-472: an unmapped key in a MERGE-MEASURED changed set is coverage, also when
+                # it is the ONLY kind of key in the set. Opt-in per source (_CHANGED_KEY_FORM), so a source
+                # whose key form has not been declared keeps the demote this branch exists for (R359).
+                note = (f"csv coverage note: {len(unmapped)} changed table(s) have no catalogue row for "
+                        f"{unit.source_id} (merge-measured, every key of the declared form, no catalogue "
+                        f"id at or under any of them) - nothing served changed")
+                demote = False
             if not demote:
                 print(f"[orchestrator] {unit.source_id}: {note}", flush=True)
             elif _csv_misses(unit.source_id) == "desktop_owed":
