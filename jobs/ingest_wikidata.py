@@ -36,6 +36,7 @@ import pyarrow.parquet as pq
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 sys.path.insert(0, ROOT)
+from updater.strategies.fetchers._common import parse_retry_after_s  # noqa: E402
 OUT = os.path.join(ROOT, "data", "clean_full", "wikidata")
 
 ENDPOINT = "https://query.wikidata.org/sparql"
@@ -44,6 +45,7 @@ HEADERS = {"User-Agent": USER_AGENT, "Accept": "application/sparql-results+json"
 
 PAGE = 1000          # distinct entities per page (WDQS handles this in a few seconds)
 MAX_RETRIES = 6
+RETRY_AFTER_CAP_S = 180     # the longest wait one Retry-After can set (unchanged)
 SLEEP_BETWEEN_PAGES = 1.0   # be polite to WDQS between pages
 
 
@@ -58,9 +60,11 @@ def run_sparql(query: str, tag: str, timeout: int = 300) -> list[dict]:
                              headers=HEADERS, timeout=timeout)
             if r.status_code in (429, 500, 502, 503, 504):
                 wait = min(120, 10 * (attempt + 1))
-                ra = r.headers.get("Retry-After")
-                if ra and ra.isdigit():
-                    wait = min(180, int(ra))
+                # the shared strict parser (R1870): "²" passed isdigit() and int() raised, which
+                # the except below booked as a failed try; a past HTTP-date (< 0) waits 0 s
+                ra = parse_retry_after_s(r)
+                if ra is not None:
+                    wait = min(RETRY_AFTER_CAP_S, max(ra, 0))
                 print(f"  [{tag}] HTTP {r.status_code} -> backoff {wait}s (try {attempt+1}/{MAX_RETRIES})", flush=True)
                 time.sleep(wait)
                 last = f"HTTP {r.status_code}"

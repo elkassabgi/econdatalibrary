@@ -32,9 +32,19 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import requests
 from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
+# run as `python jobs/ingest_defillama.py`, sys.path[0] is jobs/ and the repo root is not
+# importable; put it first so the shared Retry-After parser below can be imported
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from updater.strategies.fetchers._common import capped_urllib3_retry, parse_retry_after_s  # noqa: E402
+
+# The longest wait one Retry-After can set, in BOTH places that read it: the urllib3 adapter in
+# sess() (which handles 429/5xx first and, uncapped, slept up to 21,600 s per retry - about 5 days
+# over its 5 retries for "1000000") and the 429 branch in get(). A header up to 5 minutes keeps
+# the wait it had before.
+RETRY_AFTER_CAP_S = 300
 OUT = os.path.join(ROOT, "data", "clean_full", "defillama")
 UA = "Econ-Fin Data Library admin@hfdatalibrary.com"
 LICENSE = "defillama-open"
@@ -49,9 +59,9 @@ def sess():
     if s is None:
         s = requests.Session()
         s.headers.update({"User-Agent": UA})
-        retry = Retry(total=5, backoff_factor=1.5,
-                      status_forcelist=[429, 500, 502, 503, 504],
-                      allowed_methods=["GET"], respect_retry_after_header=True)
+        retry = capped_urllib3_retry(RETRY_AFTER_CAP_S, total=5, backoff_factor=1.5,
+                                     status_forcelist=[429, 500, 502, 503, 504],
+                                     allowed_methods=["GET"])
         ad = HTTPAdapter(max_retries=retry, pool_connections=MAXW, pool_maxsize=MAXW)
         s.mount("https://", ad)
         _local.s = s
@@ -69,8 +79,10 @@ def get(url, timeout=120, tries=4):
                 return {"__http__": r.status_code}
             if r.status_code == 429:
                 # honor Retry-After if present, else escalating backoff
-                ra = r.headers.get("Retry-After")
-                time.sleep(float(ra) if ra and ra.isdigit() else 2.0 * (i + 1))
+                # the shared strict parser: "²" passed isdigit() and then float() raised, which
+                # the except below booked as a failed try; a past HTTP-date (< 0) waits 0 s
+                ra = parse_retry_after_s(r)
+                time.sleep(min(max(ra, 0), RETRY_AFTER_CAP_S) if ra is not None else 2.0 * (i + 1))
                 last = "HTTP429"
                 continue
             last = f"HTTP{r.status_code}"

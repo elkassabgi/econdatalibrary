@@ -111,6 +111,23 @@ def parse_retry_after_s(resp):
         return None
 
 
+def capped_urllib3_retry(cap_s: int, **kw):
+    """A urllib3 `Retry` that honours Retry-After but never sleeps longer than `cap_s` per retry.
+
+    A session with `Retry(respect_retry_after_header=True)` and 429/503 in its forcelist sleeps
+    INSIDE urllib3, before the caller sees the response, so a cap in the caller's own 429 branch
+    never applies (Retry-After sweep review). urllib3 2.6 caps that sleep at `retry_after_max`,
+    whose default is 21,600 s. Pass the caller's cap there. An older urllib3 has no such
+    parameter and no cap at all; there the header is not honoured (urllib3's own exponential
+    backoff applies) rather than allowing an unbounded sleep."""
+    from urllib3.util.retry import Retry                                 # noqa: PLC0415
+    kw.pop("respect_retry_after_header", None)
+    try:
+        return Retry(respect_retry_after_header=True, retry_after_max=cap_s, **kw)
+    except TypeError:                                                    # urllib3 < 2.6
+        return Retry(respect_retry_after_header=False, **kw)
+
+
 class Deadline:
     """A wall-clock budget for ONE source, checked between sub-units.
 
