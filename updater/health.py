@@ -251,11 +251,61 @@ def _deferral_only(units) -> bool:
         # a rotation note on every pass for months. Only segments that START with a known
         # non-failure prefix are dropped; everything else must still read as the deferral note.
         # (No non-failure note may contain "; " itself - tests/test_ksh_stub_tables.py pins that.)
-        base = "; ".join(seg for seg in err.split("; ")
-                         if not seg.startswith(NON_FAILURE_NOTES)).strip()
-        if not _DEFERRAL_BASE.match(base):
+        if not _is_clean_deferral_note(err):
             return False
     return True
+
+
+def _is_clean_deferral_note(err) -> bool:
+    """The ONE reading of "this note is a pure budget deferral": drop the segments that start with a
+    known non-failure prefix, then the rest must match _DEFERRAL_BASE end to end. Shared by
+    _deferral_only (unit_state.last_error) and _rotation_success_utc (runs.note) - both columns
+    are written from the same err_note on every path (orchestrate.run_once, _record), so one
+    predicate must read both or the gate and the anchor could disagree about one string."""
+    err = str(err or "")
+    base = "; ".join(seg for seg in err.split("; ")
+                     if not seg.startswith(NON_FAILURE_NOTES)).strip()
+    return bool(_DEFERRAL_BASE.match(base))
+
+
+def _rotation_success_utc(store, sid, units):
+    """For a registry `rotating: true` source: per transient unit, the ts_utc of that unit's newest
+    `partial` runs row whose note is a CLEAN deferral (_is_clean_deferral_note). Returns the OLDEST
+    of those per-unit anchors - one unit's clean pass never vouches for a sibling - or None when any
+    transient unit has none, or when the runs table cannot be read (the caller then falls back to
+    last_success_utc, the direction toward RED; a read error must never crash assess() for the
+    whole fleet).
+
+    WHY IT EXISTS. A rotator's passes end `partial` by design and never set last_success_utc
+    (R231), so measured from that field ecb was 117 days "since success" on 2026-11-11 while it had
+    run 37 clean deferral passes since 10-20 - and its FIRST transient (an HTTP 504 on /dataflow,
+    2026-11-10) read RED-SLA. A clean deferral pass is the rotator's success: it fetched its slice
+    and nothing failed. A pass with ANY failure (the real 2026-11-03 row '1/35 sub-unit(s)
+    transient-failed') is not an anchor.
+
+    STRICTER THAN THE PUBLIC RULE, ON PURPOSE. core/freshness_vocab.py's "not late" reading of a
+    rotator's latest pass tolerates some failed files; the gate's anchor is the exact deferral
+    grammar the gate already uses for ROTATING, so it can only ever certify a pass the gate itself
+    would have called clean."""
+    want = [u.get("unit_id") for u in units if u.get("status") == "transient_fail"]
+    if not want:
+        return None
+    try:
+        anchors = []
+        for uid in want:
+            hit = None
+            for ts, note in store.partial_runs(sid, uid):
+                if _is_clean_deferral_note(note):
+                    hit = ts
+                    break
+            if hit is None:
+                return None
+            anchors.append(hit)
+        return min(anchors)
+    except Exception as e:                                   # noqa: BLE001 - never blind the gate
+        print(f"[health] {sid}: could not read rotation runs ({type(e).__name__}: {str(e)[:100]}) - "
+              f"judging on last_success_utc", flush=True)
+        return None
 
 
 def _stuck_transient(units, succ_age, sla_days, attempt_age) -> bool:
@@ -275,6 +325,15 @@ def _stuck_transient(units, succ_age, sla_days, attempt_age) -> bool:
         all eight measured FRESH on R2 today, ecb having written to the bucket this
         morning while its last_success read 38 days old. That is the wolf-crying this
         file already warns about, and it would bury the one real signal.
+
+        A ROTATOR CAN STILL TRANSIENT-FAIL. Earlier text here said ecb is "partial, never
+        transient_fail"; that was false. A whole-pass failure - the /dataflow enumeration
+        answering HTTP 504 (2026-11-10), an IncompleteRead, the hard time limit - records
+        `transient_fail`, and measured from last_success_utc (2026-07-16) ecb then read RED-SLA
+        on its first one. So for a registry `rotating: true` source the caller passes the age
+        of its newest CLEAN deferral pass instead (_rotation_success_utc), never older than
+        last_success_utc. A transient after a clean pass yesterday is ATTENTION; no clean pass
+        for longer than the SLA (2 days for daily ecb) is still RED-SLA.
 
       * only when a real last_success EXISTS and is past SLA. A source that has never
         succeeded keeps its current handling; "never" is a different diagnosis from
@@ -297,6 +356,22 @@ def _stuck_transient(units, succ_age, sla_days, attempt_age) -> bool:
     # source touched in the last two days that has not succeeded in fourteen is not
     # waiting for its cadence, it is broken.
     return attempt_age is not None and attempt_age <= 2 and succ_age > STUCK_TRANSIENT_DAYS
+
+
+def _stuck_succ_age(store, sid, entry, units, succ_age, now):
+    """The success age _stuck_transient judges, and ONLY it (every other branch and the displayed
+    last_success_age_d keep last_success_utc). Unchanged for every source not declared
+    `rotating: true`; for a declared rotator the younger of last_success_utc and the newest clean
+    deferral pass (_rotation_success_utc)."""
+    if (entry or {}).get("rotating") is not True:
+        return succ_age
+    anchor = _rotation_success_utc(store, sid, units)
+    if anchor is None:
+        return succ_age
+    a = _age_days(anchor, now)
+    if a is None:
+        return succ_age
+    return a if succ_age is None else min(succ_age, a)
 
 
 def giant_skip_held(entry: dict) -> bool:
@@ -466,7 +541,8 @@ def assess(store=None) -> dict:
             # never produced state: RED only if its adapter is built (should have run);
             # PENDING if the adapter isn't built yet (expected during the rollout).
             health = "RED-UNRUN" if _adapter_ready(e) else "PENDING"
-        elif _stuck_transient(units, succ_age, sla_days, attempt_age):
+        elif _stuck_transient(units, _stuck_succ_age(store, sid, e, units, succ_age, now),
+                              sla_days, attempt_age):
             # Explicitly RED, not merely "not ATTENTION". Bypassing the amber branch let
             # istat fall through every age check and land on OK - 40 days broken and
             # reading green, which is worse than the amber it replaced.
