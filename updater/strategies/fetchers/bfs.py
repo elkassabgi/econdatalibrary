@@ -62,7 +62,9 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import Tally, finalize, retry_after_seconds, sane_since, structural_on_zero_rows
+from ._common import (Tally, finalize, load_rotation, parse_retry_after_s,
+                      rotate_after, sane_since, save_rotation,
+                      structural_on_zero_rows)
 
 import sys
 # The shared value-first PxWeb time-axis resolver lives in this repo's core/ package
@@ -86,13 +88,45 @@ RATE = 0.3
 MAX_ATTEMPTS = 4
 TIMEOUT = 90
 # HTTP 429 / 503: wait what the server's Retry-After asks (both RFC 9110 forms), up to this
-# cap. A longer ask gives the request up at once as transient instead of retrying inside the
-# server's window (the hagstofa #178 / ssb #177 pattern: the shared helper alone would clamp
-# "3600" to 121 s and retry early). With no usable header the old back-off applies unchanged.
+# cap. A longer ask gives the request up at once as transient AND stops the pass (the rest is
+# deferred), instead of retrying inside the server's window or asking hundreds more tables in
+# it (the hagstofa #178 / ssb #177 pattern: the shared helper alone would clamp "3600" to 121 s
+# and retry early). With no usable header the old back-off applies unchanged.
 # Before 2026-11-11 the back-off ignored the header (1, 2, 4 s), so a 429 was retried inside
 # the window the server had just asked us to wait.
 RETRY_AFTER_CAP_S = 60
 _RETRY_AFTER_STATUSES = (429, 503)
+
+# PER-PASS bound on Retry-After sleeps (review AR-471 #2). The per-request cap alone allows
+# 3 x 61 s = 183 s per throttled request; over ~654 tables that is ~33 h, and in the cloud
+# the orchestrator's unit timeout (AQUEDUCT_UNIT_TIMEOUT_MIN, default 45) kills the pass
+# first. bfs merges ONCE, at the end of the pass, so a killed pass merges nothing. The
+# budget is a third of the unit timeout (900 s at 45 min): a normal pass takes ~18-20 min
+# (1,087-1,221 s in the runbook's recent runs), which leaves ~10 min of margin for the
+# merge. When a Retry-After wait would pass the budget, the request is given up, the rest
+# of the tables are DEFERRED (not attempted, R303) and the pass merges what it has.
+# The old exponential back-off (no usable header) is NOT counted here: it is unchanged.
+RETRY_AFTER_PASS_FRACTION = 1 / 3
+ROTATION_FILE = "_rotation.json"
+
+
+def _retry_after_pass_budget_s() -> float:
+    try:
+        unit_min = float(os.environ.get("AQUEDUCT_UNIT_TIMEOUT_MIN", "") or 45)
+    except ValueError:
+        unit_min = 45.0
+    return max(0.0, unit_min * 60 * RETRY_AFTER_PASS_FRACTION)
+
+
+class RetryAfterStop(TransientError):
+    """The server's Retry-After says stop: update() books the table transient and DEFERS the
+    rest of the pass; what was fetched still merges. Raised for a Retry-After over the cap
+    (the server asked for longer than we will wait, so asking 600 more tables in the same
+    window is the escalation hagstofa/ssb #177 stop for) and by RetryAfterBudgetSpent."""
+
+
+class RetryAfterBudgetSpent(RetryAfterStop):
+    """A Retry-After wait would pass this pass's Retry-After budget."""
 
 
 # --------------------------------------------------------------------------- #
@@ -119,41 +153,36 @@ parse_jsonstat2_bfs = _ING.parse_jsonstat2_bfs
 # --------------------------------------------------------------------------- #
 # HTTP with transient/definitive discipline
 # --------------------------------------------------------------------------- #
-def _raw_retry_after_s(resp):
-    """The server's Retry-After in seconds, UNCLAMPED (both RFC 9110 forms), or None.
-
-    Same reader as hagstofa._raw_retry_after_s. None for an absent or unparseable header,
-    so the caller falls back to its own back-off. An HTTP-date in the past gives <= 0."""
-    h = getattr(resp, "headers", None) or {}
-    raw = str(h.get("Retry-After") or "").strip()
-    if not raw:
-        return None
-    if raw.isdigit():
-        return int(raw)
-    try:
-        from email.utils import parsedate_to_datetime
-        when = parsedate_to_datetime(raw)
-        if when.tzinfo is None:
-            when = when.replace(tzinfo=dt.timezone.utc)
-        return int((when - dt.datetime.now(dt.timezone.utc)).total_seconds())
-    except Exception:                                        # noqa: BLE001
-        return None
+# The Retry-After READER is _common.parse_retry_after_s (#256): the one strict parser, which never
+# raises (a ValueError from `isdigit(); int()` once ended a whole bfs pass - AR-471 #1, R1870), and
+# which SATURATES more than 6 significant digits to RETRY_AFTER_SATURATED_S - always over this
+# module's cap, so a huge value gives the request up at once and stops the pass.
 
 
-def _retry_wait(r, attempt, cap_backoff, what):
+def _retry_wait(sess, r, attempt, cap_backoff, what):
     """Seconds to sleep before retrying a retryable HTTP status.
 
-    429/503 with a usable Retry-After: that many seconds (via the shared helper: at least 1,
-    plus 1 s so we resume just after the window). Over RETRY_AFTER_CAP_S: TransientError now,
-    no sleep - this request is given up for this run. Otherwise (no header, a garbage header,
-    or another status): the old back-off, min(2 ** attempt, cap_backoff)."""
+    429/503 with a usable Retry-After: max(that, 1) + 1 seconds (resume just after the
+    window; a past HTTP-date waits 2 s, never a negative sleep). Over RETRY_AFTER_CAP_S:
+    RetryAfterStop now, no sleep - the request is given up and update() stops the pass. A wait that would
+    pass the session's per-pass Retry-After budget (`sess._bfs_ra_left`, set by update()):
+    RetryAfterBudgetSpent, no sleep. Otherwise (no header, a garbage header, or another
+    status): the old back-off, min(2 ** attempt, cap_backoff), outside the budget."""
     if r.status_code in _RETRY_AFTER_STATUSES:
-        raw = _raw_retry_after_s(r)
+        raw = parse_retry_after_s(r)
         if raw is not None:
             if raw > RETRY_AFTER_CAP_S:
-                raise TransientError(f"bfs {what}: HTTP {r.status_code} with Retry-After {raw} s "
+                raise RetryAfterStop(f"bfs {what}: HTTP {r.status_code} with Retry-After {raw} s "
                                      f"(over the {RETRY_AFTER_CAP_S} s cap; not retried this run)")
-            return retry_after_seconds(r)
+            wait = max(raw, 1) + 1
+            left = getattr(sess, "_bfs_ra_left", None)
+            if left is not None:
+                if wait > left:
+                    raise RetryAfterBudgetSpent(
+                        f"bfs {what}: HTTP {r.status_code} Retry-After {raw} s would pass this "
+                        f"pass's Retry-After budget ({max(left, 0):.0f} s left)")
+                sess._bfs_ra_left = left - wait
+            return wait
     return min(2 ** attempt, cap_backoff)
 
 
@@ -183,7 +212,7 @@ def _get_json(sess, url):
             last = f"HTTP {r.status_code}"
             if a == MAX_ATTEMPTS - 1:
                 raise TransientError(f"bfs GET {url[-60:]}: {last}")
-            time.sleep(_retry_wait(r, a, 30, f"GET {url[-60:]}")); continue
+            time.sleep(_retry_wait(sess, r, a, 30, f"GET {url[-60:]}")); continue
         raise DefinitiveError(f"bfs GET {url[-60:]}: HTTP {r.status_code}")
     raise TransientError(f"bfs GET {url[-60:]}: {last}")
 
@@ -220,7 +249,7 @@ def _post_json(sess, url, body):
             last = f"HTTP {r.status_code}"
             if a == MAX_ATTEMPTS - 1:
                 raise TransientError(f"bfs POST {url[-60:]}: {last}")
-            time.sleep(_retry_wait(r, a, 30, f"POST {url[-60:]}")); continue
+            time.sleep(_retry_wait(sess, r, a, 30, f"POST {url[-60:]}")); continue
         raise DefinitiveError(f"bfs POST {url[-60:]}: HTTP {r.status_code}")
     raise TransientError(f"bfs POST {url[-60:]}: {last}")
 
@@ -379,6 +408,7 @@ def update(unit, since) -> Result:
     before = blob.row_count(path)
 
     sess = requests.Session()
+    sess._bfs_ra_left = _retry_after_pass_budget_s()   # per-pass Retry-After sleep budget
 
     # Catalog of all tables (sub-units). A transient catalog failure aborts the run
     # transiently (we cannot enumerate sub-units) rather than laundering to no_change.
@@ -401,16 +431,36 @@ def update(unit, since) -> Result:
     dates: list[dt.date] = []
     vals: list[float] = []
 
+    # ROTATION, used only after a Retry-After budget stop (R190): a stop over the publisher's
+    # fixed catalog order would otherwise re-walk the same prefix on every throttled pass and
+    # never reach the tail. The bookmark is the last table ATTEMPTED; it is saved only when a
+    # pass stops on the budget, and only after its merge, so a pass that never stops starts
+    # where the last stopped one left off and keeps that start.
+    catalog = rotate_after(list(catalog), load_rotation(out_dir, ROTATION_FILE),
+                           key=lambda it: it.get("dbid", "") if isinstance(it, dict) else "")
+    ra_stop = None          # the transient label of the table the budget stopped on
+    n_deferred = 0
+    last_attempted = ""
+
     for item in catalog:
         dbid = item.get("dbid", "")
         if not dbid:
             continue
+        if ra_stop is not None:
+            tally.deferred_unit(f"{dbid}: not attempted, Retry-After budget spent")
+            n_deferred += 1
+            continue
+        last_attempted = dbid
         url = f"{BASE_DE}/{dbid}/{dbid}.px/"
         since_max = dbid_max.get(dbid)  # None => table not yet on disk -> full fetch
 
         # 1) metadata
         try:
             meta = _get_json(sess, url)
+        except RetryAfterStop as e:
+            ra_stop = f"{dbid}: metadata GET stopped — {str(e)[:160]}"
+            tally.transient_unit(ra_stop)
+            continue
         except TransientError as e:
             # -> partial; keep going so one flaky table can't strand the rest
             tally.transient_unit(f"{dbid}: metadata GET failed — {str(e)[:120]}")
@@ -445,6 +495,10 @@ def update(unit, since) -> Result:
         body = {"query": query_vars, "response": {"format": "json-stat2"}}
         try:
             resp = _post_json(sess, url, body)
+        except RetryAfterStop as e:
+            ra_stop = f"{dbid}: data POST stopped — {str(e)[:160]}"
+            tally.transient_unit(ra_stop)
+            continue
         except TransientError as e:
             tally.transient_unit(f"{dbid}: data POST failed — {str(e)[:120]}")
             time.sleep(RATE)
@@ -491,6 +545,12 @@ def update(unit, since) -> Result:
 
     floor = len(catalog) + 1  # like treasury: steady-state can have ALL tables quiet
 
+    if ra_stop is not None:
+        # Name the stop FIRST, with the deferred count, so _named()'s 20-label cap never hides
+        # it behind ordinary transient tables. The count of transient units is unchanged.
+        tally.transient_ids.remove(ra_stop)
+        tally.transient_ids.insert(0, f"{ra_stop}; {n_deferred} later table(s) deferred")
+
     if not vals:
         # Nothing new fetched. finalize() decides honest status from the Tally.
         # Cursor keys are reported STORE-prefixed ('BFS:{dbid}', 2026-08-05): the
@@ -498,6 +558,8 @@ def update(unit, since) -> Result:
         # §5.7's exact rule — all 582 changed keys unmapped, every run demoted to
         # partial ("582 rows for it but none matched"), CSVs never re-derived.
         last_obs = max(cursors.values()) if cursors else (since or None)
+        if ra_stop is not None and last_attempted:
+            save_rotation(out_dir, last_attempted, ROTATION_FILE)
         return finalize(tally, before, last_obs, source=SOURCE,
                         series_cursors={f"BFS:{db}": d for db, d in cursors.items()},
                         empty_window_floor=floor)
@@ -508,6 +570,8 @@ def update(unit, since) -> Result:
         "value":      pa.array(vals, pa.float64()),
     })
     n, maxd = merge.merge_and_write(path, new_tbl, mode="merge", dedup_keys=DEDUP)
+    if ra_stop is not None and last_attempted:
+        save_rotation(out_dir, last_attempted, ROTATION_FILE)   # after the merge, never before
     last_obs = maxd or (max(cursors.values()) if cursors else None)
     # Same store-prefixed reporting as the quiet path above (catalog id 'bfs:BFS:{dbid}').
     return finalize(tally, n, last_obs, source=SOURCE,
