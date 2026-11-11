@@ -52,8 +52,10 @@ param(
     # must not overlap a pass get - the Fed Z1 heal (it waits for >= 150 gate-free minutes with the next pass
     # >= 150 min away) and derive_csv_bulk's durable clear (gate free >= 30 min and since + 0.5 h <
     # LOCAL_MIN_HOURS). At 14 h the replay gives the heal 0 opening ticks (32 at 20 h) and the clear about 110
-    # eligible minutes (about 785 at 20 h; review AR-469). Those lanes now reserve the gap with the pause flag
-    # (logs\local_heavy.pause, honoured by -IfDue below), not by an idle floor.
+    # eligible minutes (about 785 at 20 h; review AR-469). derive_csv_bulk._writers_quiet applies its own 14 h
+    # rule (LOCAL_MIN_HOURS), so after this change the durable clear keeps about 110 minutes per 5.91 days.
+    # Nothing in this runner reserves the gap for them: the owed clear and the heal run under the 20 h floor
+    # BEFORE this value lands, and a window-reservation mechanism is a separate, later design.
     # `measure_ci_lag.py replay61` over 2026-11-05T06:00Z..11-11T03:45Z (state copy 11-11T03:49Z, real ps1
     # stamps, D3 8, W off, censored x1): 20 h gives 235 window min/day, 14 h gives 378, with the same 6
     # passes, 6 stamped, 0 collisions and 0 evictions. 16 h gives 378 too, but loses 10 min after a pass that
@@ -65,12 +67,15 @@ param(
     # scheduler of its own).
     [int]      $MinHours = 14,
     # The starvation WARNING threshold, in hours since the last stamped pass (the gate-refusal branch below).
-    # It was 2 x $MinHours (40 h at 20 h, 28 h at 14 h), BELOW the gaps a healthy route already shows, so it
-    # fired as noise. Measured over the wrapper logs (stamped pass to stamped pass, 2026-09-01..11-11, 43
-    # passes): median 30.1 h; the five longest 70.6, 70.8, 72.2, 73.5 and 120.0 h, the last the 10-31..11-05
-    # outage. 84 = the longest normal gap (73.5 h) plus half a day, so it fires on an outage like 10-31 and
-    # not on a normal long gap. Pinned by tests/test_local_min_hours.py.
-    [int]      $StarvationWarnHours = 84,
+    # It was 2 x $MinHours: 28 h at 14 h, which a healthy route already reaches, so it would fire as noise.
+    # Derived from the cron table IN FORCE only (since 2026-11-05), because the longer gaps before it (up to
+    # 73.5 h, and 120 h on 10-31..11-05) were the gate starvation R1032 is about, not health. Wrapper logs
+    # 2026-11-05..11-11: stamped pass to stamped pass 23.9-24.1 h, and 47.8 h once (a pass on 11-09 that did
+    # not stamp). Hours since the last stamp when a pass started: 20.0-20.4 h, and 41.9 h once. 48 h is
+    # therefore past every healthy tick on this table: it means a second evening has gone by without a stamped
+    # pass. It is also below updater/health.py route_silence's 3 days (72 h), so this warning comes first.
+    # Pinned by tests/test_local_min_hours.py.
+    [int]      $StarvationWarnHours = 48,
     # How long to keep waiting for a window worth using before taking whatever is free. Swept against 14 days
     # of real history: at 30 h the runner settles for a short pass at a busy hour and its end time re-anchors
     # the cadence there, which cost 4 collisions against 0 at 36 h. That comparison counts a collision as a
@@ -135,19 +140,7 @@ $noProgFile = Join-Path $logDir 'local_heavy.last_noprogress'
 
 $lockFile = Join-Path $logDir 'local_heavy.lock'
 
-$pauseFile = Join-Path $logDir 'local_heavy.pause'
-
 if ($IfDue) {
-    # PAUSE FLAG. A desktop lane that must not overlap a pass (the Fed Z1 heal, derive_csv_bulk's durable
-    # clear, any long read of the shared state) reserves the time by creating logs\local_heavy.pause; while it
-    # exists every scheduled tick stands down here, BEFORE the lock, the stamp and the gate, and says so on one
-    # line (stdout only: no pass log, no lock). Delete the file to resume. It holds only -IfDue: a manual run is
-    # the operator's own decision. It does not stop a pass that is already running - check the lock first.
-    if (Test-Path $pauseFile) {
-        Write-Output ('[' + (Get-Date).ToUniversalTime().ToString('HH:mm:ss') + '] PAUSED: ' + $pauseFile +
-                      ' exists - no scheduled pass starts until it is removed.')
-        exit 0
-    }
     # Already running? The guard fires every 5 minutes and a real pass takes hours.
     #
     # A PID LOCKFILE, NOT A COMMAND-LINE SCAN. The first version of this searched for another

@@ -130,11 +130,12 @@ def test_negative_control_the_old_floor_waits_until_2230():
     assert _first_pass(m.ReplayConfig(policy="today", min_hours=20, backoff_h=8.0)) == _T("2026-11-07T22:30")
 
 
-# --- WHERE the floor and the warning threshold are used (review AR-469 F2, the R1726 class) -------------------------
-# A pinned default proves nothing if the comparison that uses it reads a literal. These read the two comparisons on
-# $script:SinceLastHours in the runner and require each to read its variable.
+# --- WHERE the floor and the warning threshold are used (review AR-469 F2 / R2-F4, the R1726 class) ----------------
+# A pinned default proves nothing if the comparison that uses it reads a literal. These read EVERY comparison on
+# SinceLastHours in the runner - with or without the script: scope, which at script scope are the same variable
+# (AR-469 R2-F4) - and require exactly the two that read their variables.
 
-_CMP = re.compile(r"\$script:SinceLastHours\s+-(lt|le|gt|ge)\s+(\([^()]*\)|[^()\s{]+)")
+_CMP = re.compile(r"\$(?:script:)?SinceLastHours\s+-(lt|le|gt|ge)\s+(\([^()]*\)|[^()\s{]+)")
 
 
 def _comparisons(text: str) -> list:
@@ -164,70 +165,50 @@ def test_negative_control_a_hard_coded_warning_is_seen():                  # mut
     assert ("ge", "(2 * 20)") in _comparisons(bad) and ("ge", "$StarvationWarnHours") not in _comparisons(bad)
 
 
-# The warning threshold, from data (AR-469 F3): stamped pass to stamped pass in the wrapper logs, 2026-09-01..11-11,
-# 43 passes - median 30.1 h, longest NORMAL gap 73.5 h (09-26), and one outage of 120.0 h (10-31..11-05). The warning
-# must sit above every normal gap and below the outage.
-LONGEST_NORMAL_GAP_H = 73.5
-OUTAGE_GAP_H = 120.0
+def test_negative_control_an_unscoped_second_warning_rule_is_seen():       # AR-469 round 2 mutant M6
+    text = _runner()
+    old = "$script:SinceLastHours -ge $StarvationWarnHours"
+    bad = text.replace(old, old + " -or $SinceLastHours -ge (2 * $MinHours)", 1)
+    assert bad != text
+    assert ("ge", "(2 * $MinHours)") in _comparisons(bad)
+    assert sorted(_comparisons(bad)) != [("ge", "$StarvationWarnHours"), ("lt", "$MinHours")]
 
 
-def test_the_starvation_warning_sits_between_normal_gaps_and_an_outage():
+# The warning threshold, from the cron table IN FORCE only (AR-469 R2-F5). Wrapper logs 2026-11-05..11-11: hours since
+# the last stamp when a pass started were 20.0-20.4 and once 41.9 (after the 11-09 pass did not stamp); stamped pass to
+# stamped pass 23.9-24.1 and once 47.8. The older, longer gaps (to 73.5 h, and 120 h) were gate starvation on the
+# previous table - what this warning exists to report - so they are not counted as healthy. The warning must sit above
+# every healthy tick on this table and fire before updater/health.py's route_silence (ROUTE_SILENCE_DAYS).
+LONGEST_HEALTHY_SINCE_AT_START_H = 41.9
+LONGEST_HEALTHY_STAMP_GAP_H = 47.8
+
+
+def _warn_hours() -> int:
     found = re.findall(r"^\s*\[int\]\s*\$StarvationWarnHours\s*=\s*(\d+)\s*,?\s*$", _runner(), flags=re.M)
     assert len(found) == 1, found
-    w = int(found[0])
-    assert LONGEST_NORMAL_GAP_H < w < OUTAGE_GAP_H, f"$StarvationWarnHours {w}"
-    assert w > 2 * m.PS1_MIN_HOURS, "the old 2 x $MinHours rule fired below normal gaps"
+    return int(found[0])
 
 
-# --- the pause flag (AR-469 F1): logs\local_heavy.pause holds every -IfDue tick --------------------------------------
-import shutil  # noqa: E402
-import subprocess  # noqa: E402
-
-import pytest  # noqa: E402
-
-POWERSHELL = shutil.which("powershell") or shutil.which("pwsh")
-
-
-def _sandbox(tmp_path, pause: bool):
-    """A copy of the runner and the two files it dot-sources, in a repo of its own with an empty logs dir and NO
-    stamp (so a pass is due) and no lister (so a tick that is not held stops at the lister's FATAL, touching
-    nothing)."""
-    tools = tmp_path / "tools"
-    tools.mkdir()
-    for n in ("run_local_heavy.ps1", "cadence_decision.ps1", "pass_priority.ps1"):
-        shutil.copy2(ROOT / "tools" / n, tools / n)
-    logs = tmp_path / "logs"
-    logs.mkdir()
-    if pause:
-        (logs / "local_heavy.pause").write_text("Fed Z1 heal\n", encoding="ascii")
-    r = subprocess.run([POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
-                        str(tools / "run_local_heavy.ps1"), "-IfDue"], capture_output=True, text=True,
-                       timeout=180, cwd=str(tmp_path))
-    return r, sorted(p.name for p in logs.iterdir())
+def _threshold_problems(w: int) -> list:
+    from updater import health
+    out = []
+    if not w >= LONGEST_HEALTHY_STAMP_GAP_H > LONGEST_HEALTHY_SINCE_AT_START_H:
+        out.append(f"{w} h fires on a healthy tick of the table in force")
+    if not w < health.ROUTE_SILENCE_DAYS * 24:
+        out.append(f"{w} h fires after route_silence ({health.ROUTE_SILENCE_DAYS * 24:g} h)")
+    if not w > 2 * m.PS1_MIN_HOURS:
+        out.append(f"{w} h is not above the old 2 x $MinHours rule")
+    return out
 
 
-@pytest.mark.skipif(POWERSHELL is None, reason="needs PowerShell (the workstation runs this script under it)")
-def test_the_pause_flag_holds_a_due_tick(tmp_path):
-    r, files = _sandbox(tmp_path, pause=True)
-    assert r.returncode == 0, (r.returncode, r.stdout[-500:], r.stderr[-500:])
-    assert "PAUSED:" in r.stdout and "local_heavy.pause" in r.stdout, r.stdout
-    assert "local heavy updater starting" not in r.stdout, r.stdout
-    assert files == ["local_heavy.pause"], f"a paused tick wrote {files}"      # no pass log, no lock
+def test_the_starvation_warning_sits_above_healthy_ticks_and_before_route_silence():
+    assert _threshold_problems(_warn_hours()) == []
 
 
-@pytest.mark.skipif(POWERSHELL is None, reason="needs PowerShell")
-def test_negative_control_without_the_flag_the_same_tick_starts(tmp_path):
-    r, files = _sandbox(tmp_path, pause=False)
-    assert "PAUSED:" not in r.stdout
-    assert "local heavy updater starting" in r.stdout, (r.stdout[-800:], r.stderr[-800:])
-    assert any(f.startswith("local_heavy_") and f.endswith(".log") for f in files), files
+def test_negative_control_the_threshold_pin_rejects_84_and_28():
+    assert _threshold_problems(84) and _threshold_problems(28)
 
 
-def test_the_pause_is_checked_before_the_lock_and_the_stamp():
-    text = _runner()
-    i_if = text.index("if ($IfDue) {")
-    i_pause = text.index("if (Test-Path $pauseFile)", i_if)
-    i_lock = text.index("$lockFile", i_if)
-    i_stamp = text.index("$script:SinceLastHours -lt $MinHours", i_if)
-    assert i_if < i_pause < i_lock < i_stamp
-    assert "$pauseFile = Join-Path $logDir 'local_heavy.pause'" in text
+def test_no_pause_flag_in_the_runner():
+    """AR-469 round 2 R2-F1: a pause flag that nothing expires silently retires the route; it was removed."""
+    assert "local_heavy.pause" not in _runner()

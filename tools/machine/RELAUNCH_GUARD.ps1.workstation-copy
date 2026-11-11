@@ -264,8 +264,7 @@ foreach ($j in $longJobs) {
 # by policy here, so this guard loop is the only durable, reboot-surviving trigger available.
 #
 # The cadence decision lives in the script, not here: -IfDue exits 0 immediately unless a run
-# is genuinely due (>= $MinHours since the last COMPLETED pass, no logs\local_heavy.pause) and no
-# other pass holds the lock, so
+# is genuinely due (>= $MinHours since the last COMPLETED pass) and no other pass holds the lock, so
 # calling it on every 5-minute tick is cheap and idempotent. The script also refuses to start
 # while a CI updater-daily run is in flight (R5: both writers compare-and-swap on the state
 # ETag, so an overlap throws away one run's state).
