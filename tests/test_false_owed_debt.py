@@ -187,8 +187,11 @@ def test_a_naive_timestamp_books(tmp_path):
     d = _dir(tmp_path, "bfs")
     _write_parquet(os.path.join(d, "BFS_a.parquet"), seconds_ago=24 * HOUR)
     st = _store(tmp_path, "bfs", floor_ago=None)
+    # a NAIVE timestamp one hour ago (after the store's last write a day ago): read as UTC it would make a
+    # valid floor and skip, so only refusing it books (fixed relative to now - a fixed date made it pass by luck)
+    naive = (datetime.now(timezone.utc) - timedelta(hours=1)).replace(tzinfo=None).isoformat()
     st.db.execute("INSERT INTO runs(ts_utc,source_id,unit_id,status,obs,dur_s,note) "
-                  "VALUES('2026-11-10T10:00:00','bfs','_all','ok',5,1.0,'n')")
+                  "VALUES(?,'bfs','_all','ok',5,1.0,'n')", (naive,))
     st.db.commit()
     _, note, _, _ = _derive(_U("bfs", [d]), _res(), st)
     assert _books(note)
