@@ -14,6 +14,12 @@ These are `.copy` files, deliberately not the live ones:
 | `RELAUNCH_GUARD_LOOP.ps1.workstation-copy` | `E:\research\econfindatalibrary\RELAUNCH_GUARD_LOOP.ps1` |
 | `RELAUNCH_GUARD.ps1.workstation-copy` | `E:\research\econfindatalibrary\RELAUNCH_GUARD.ps1` |
 
+One more file here is a DRAFT, not a copy of anything live: `EconSlotDispatch.cmd.draft` is the
+log-on launcher for the desktop slot dispatcher (`tools/econ_dispatch.py loop`, PLAN V2). It is
+NOT installed. The owner installs it only after the dispatcher PRs are merged, E: is pulled, and a
+post-merge receipt on a real cloud run has passed; its header holds the stop switch, heartbeat,
+log and remove steps. `tools/check_guard_copies.py` does not compare it (there is no live file).
+
 ## How the chain works
 
 1. **Startup folder** runs `EconGuard.cmd` at logon. Scheduled Tasks are blocked by policy on
