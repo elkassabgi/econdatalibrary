@@ -374,6 +374,16 @@ def _load_catalog(out_dir: str):
     return [item["id"] for item in data if item.get("type") == "t" and "id" in item]
 
 
+def _table_key(series_key: str) -> str:
+    """The catalogue-grain key of a store series_key: 'SI:<table_id>:<DIM>=<code>:...' -> 'SI:<table_id>'
+    (the catalogue id is 'stat_slovenia:' + this). A key without that shape is returned WHOLE, so it
+    lands in the orchestrator's unmapped set and is seen, never silently dropped."""
+    parts = str(series_key).split(":")
+    if len(parts) >= 2 and parts[0] == "SI" and parts[1]:
+        return f"SI:{parts[1]}"
+    return str(series_key)
+
+
 def _group_of(table_id: str) -> str:
     tid = table_id
     return tid[:3] if len(tid) >= 3 else tid[:1]
@@ -562,6 +572,7 @@ def update(unit, since) -> Result:
     sess = _session()
     tally = Tally()
     cursors: dict = {}        # table_id -> max obs_date written/known (ISO str)
+    changed: dict = {}        # 'SI:<table_id>' -> max changed obs_date, MERGE-measured (see the return)
     total_rows = 0
     overall_max = None
     # Tables whose METADATA returned 200 (table alive) but that are simply current —
@@ -861,7 +872,16 @@ def update(unit, since) -> Result:
                 "obs_date":   pa.array(grp_dates, pa.date32()),
                 "value":      pa.array(grp_vals, pa.float64()),
             })
-            n, md = merge.merge_and_write(path, new_tbl, mode="merge", dedup_keys=DEDUP)
+            # changed_keys_cap = this merge's own size, as hagstofa/stat_estonia/ssb do: the report
+            # is bounded by what is merged, so it never refuses (a refusal would raise before any write).
+            n, md, ch = merge.merge_and_write(path, new_tbl, mode="merge", dedup_keys=DEDUP,
+                                              report_changed_keys=True,
+                                              changed_keys_cap=max(new_tbl.num_rows, 1))
+            for k, d in ch.items():
+                pref = _table_key(k)
+                if pref not in changed or (d and str(d) > str(changed[pref] or "")):
+                    changed[pref] = d
+            del ch
             total_rows = total_rows - before + n   # replace the pre-count with the merged count
             if md:
                 md_d = dt.date.fromisoformat(md)
@@ -885,5 +905,14 @@ def update(unit, since) -> Result:
     # vanishes / host moved -> every table 404) still trips the floor. structural breaks are
     # caught precisely per-table via structural_unit().
     total_subunits = tally.attempted + current
-    return finalize(tally, total_rows, last_obs, source=SOURCE, series_cursors=cursors,
-                    empty_window_floor=max(total_subunits - 1, 1))
+    res = finalize(tally, total_rows, last_obs, source=SOURCE, series_cursors=cursors,
+                   empty_window_floor=max(total_subunits - 1, 1))
+    # THE MERGE-MEASURED CHANGED SET, at catalogue grain. The cursors cannot be the changed set: they are
+    # keyed by the bare table id ('0214809S') while the catalogue id is 'stat_slovenia:SI:0214809S', so
+    # none of them ever mapped, and every pass booked "csv coherence unmet" (0 of 4,439 stored cursors
+    # map; 4,111 of 4,111 catalogue ids map once the 'SI:' prefix is there). They are also seeded with
+    # every table of every visited group, merged or not, and under r2 a group this pass did not merge is
+    # not on the runner, so deriving it would fail. Only the merge knows which tables' served values
+    # moved. {} when every merge was idempotent: honoured as "nothing changed".
+    res.changed_keys = changed
+    return res
