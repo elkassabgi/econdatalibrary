@@ -1306,3 +1306,9 @@ def test_probe_that_raises_means_no_dispatch_and_a_log_line(tmp_path, monkeypatc
     log = open(d.paths["log"], encoding="utf-8").read()
     assert "process check failed" in log and "not now" in log
     assert not os.path.exists(d.paths["marker"])            # the marker of an unsent dispatch is removed
+
+
+def test_probe_off_windows_raises_never_reads_as_idle(monkeypatch):
+    monkeypatch.setattr(ed, "_IS_WINDOWS", False)
+    with pytest.raises(RuntimeError, match="needs Windows"):
+        ed.local_pass_probe()
