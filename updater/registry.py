@@ -38,6 +38,10 @@ CSV_BULK = {"qualify_with_shard"}
 # `csv_owed_repay` (optional, fed_board): "fresh" = the CSV phase derives the source's PAYABLE csv_desktop_owed
 # ids first and clears every id it derived (orchestrate._owed_repay_ids / _pay_owed_by_put, DESIGN_v2 §2-§3).
 CSV_OWED_REPAY = {"fresh"}
+# `csv_ids` (optional, fhfa): "shard_qualified" = every catalogue id is '<src>:<shard>:<key>' and the fetcher's
+# changed keys are '<shard>:<key>' - the property csv_owed_repay's payable rule reads - for a source the bulk
+# tool CANNOT derive (fhfa is served wide: derive_csv_bulk exits 2), so it must not declare csv_bulk.
+CSV_IDS = {"shard_qualified"}
 
 
 def csv_misses_from_utc(v):
@@ -172,9 +176,17 @@ def validate(reg: dict, expected_count: int | None = None, workflows_root: str |
             if e.get("csv_owed_repay") not in CSV_OWED_REPAY:
                 problems.append(f"{sid}: csv_owed_repay must be one of {sorted(CSV_OWED_REPAY)}, "
                                 f"got {e.get('csv_owed_repay')!r}")
-            if e.get("csv_misses") != "desktop_owed" or e.get("csv_bulk") != "qualify_with_shard":
+            if e.get("csv_misses") != "desktop_owed" or (
+                    e.get("csv_bulk") != "qualify_with_shard" and e.get("csv_ids") != "shard_qualified"):
                 problems.append(f"{sid}: csv_owed_repay needs csv_misses: desktop_owed and "
-                                f"csv_bulk: qualify_with_shard")
+                                f"csv_bulk: qualify_with_shard or csv_ids: shard_qualified")
+        if "csv_ids" in e:
+            if e.get("csv_ids") not in CSV_IDS:
+                problems.append(f"{sid}: csv_ids must be one of {sorted(CSV_IDS)}, got {e.get('csv_ids')!r}")
+            if "csv_bulk" in e:
+                # The two describe different tools' reach: csv_bulk says the bulk tool derives the ids, csv_ids
+                # says it cannot. Both on one entry would let health name the wrong remedy.
+                problems.append(f"{sid}: csv_ids is for a source the bulk tool cannot derive; drop csv_bulk")
         if "csv_desktop_exclude" in e:
             # Catalogue ids unserved BY DECISION: never booked as a desktop debt (no derive will
             # ever pay it). Each must be a full catalogue id of THIS source.

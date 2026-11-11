@@ -33,9 +33,22 @@ Before this, 89,706 series against CURSOR_CAP=50,000 booked full_rederive_owed o
 and the 882 hpi_at_3zip_quarterly ids sat beyond the cap on every pass.
 
 The diff FAILS TOWARD THE DEBT: if listing or reading a previous cube raises (other than an
-absent object, which reports that whole cube), if a diff raises, or if the set exceeds
-CHANGED_KEYS_BOUND, changed_keys stays None and cursor_cap_hit carries the cap check, so the
-orchestrator books full_rederive_owed exactly as before. Series present only in the OLD cube
+absent object, which reports that whole cube), if a diff raises, if either side of a cube is not
+unique on (series_key, obs_date), if the set exceeds CHANGED_KEYS_BOUND, or if the store's
+PENDING marker says the last rebuild did not finish, changed_keys stays None and cursor_cap_hit
+carries the cap check, so the orchestrator books full_rederive_owed exactly as before.
+
+PENDING (review AR-477 F2/C2). A rebuild that dies between build() and the sidecar write may
+already have changed the store - under r2 the cubes it published (hpi_master first), under the
+local backend all of them, since build() overwrites in place. Without a record, a later pass's
+"previous" cubes are that rebuild's NEW ones and the diff reads {}: the change is lost. So a
+marker is written into the STORE (blob: R2 under r2, never state.db, which a killed runner does
+not push) after download() and before build(), and cleared after the sidecar is written.
+
+THE USED-UP SIGNAL NEEDS A HOME (review AR-477 F1/C1). Once a rebuild publishes, its change is
+never re-reported, so a changed id the CSV phase does not derive (fence trip, budget deferral,
+failure) is booked per id in csv_desktop_owed: the registry declares csv_misses: desktop_owed,
+csv_owed_repay: fresh and csv_ids: shard_qualified for fhfa, and its comment names each payer. Series present only in the OLD cube
 (withdrawn upstream) are counted and printed, not reported - the cursors never reported them
 either, and their catalogue ids would only fail to resolve.
 
@@ -72,6 +85,29 @@ MAX_AGE_DAYS = 30
 # the 9 cubes, 2026-10-29 build). Above it the set is dropped and the debt booked (fail toward it).
 CHANGED_KEYS_BOUND = 200_000
 _KEY_COLS = ("series_key", "obs_date")
+# Store-side marker of a rebuild in progress (review AR-477 C2). Written before build(), cleared after the
+# sidecar; a pass that finds it set falls back to the cursor set and the debt.
+PENDING = "_rebuild_pending.json"
+
+
+def _pending_note(out_dir) -> "str | None":
+    """None when no unfinished rebuild is recorded in the store; else the reason to fall back.
+    An unreadable or unparseable marker counts as pending (fail toward the debt)."""
+    try:
+        raw = blob.read_bytes(os.path.join(out_dir, PENDING))
+    except Exception as e:                                   # noqa: BLE001
+        return f"the rebuild-pending marker could not be read ({e!r})"
+    if not raw:
+        return None
+    try:
+        m = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return "the rebuild-pending marker is unreadable"
+    if isinstance(m, dict) and m.get("pending") is False:
+        return None
+    since = m.get("since") if isinstance(m, dict) else None
+    return (f"a previous rebuild (started {since or '?'}) did not finish - the store may already hold its "
+            f"cubes, so a diff against them would read nothing changed")
 
 
 def _is_obs_cube(name: str) -> bool:
@@ -103,20 +139,35 @@ def _iso(v):
     return v.isoformat() if hasattr(v, "isoformat") else str(v)
 
 
+def _require_unique(con, view: str, side: str) -> None:
+    """count(*) == count(DISTINCT (series_key, obs_date)), or ValueError (measured true on every cube of the
+    07-30/09-01 builds, AR-477 item 1; nothing checked it at run time)."""
+    n, d = con.execute(f"SELECT count(*), count(DISTINCT (series_key, obs_date)) FROM {view}").fetchone()
+    if n != d:
+        raise ValueError(f"{side} cube is not unique on (series_key, obs_date): {n:,} rows, {d:,} distinct")
+
+
 def _changed_in_cube(old, new) -> dict:
     """{series_key: max obs_date (ISO) in NEW} for every key of NEW whose rows differ from OLD.
 
     A key changed when a row exists on one side only, or any non-key column IS DISTINCT FROM its
     counterpart (NULL == NULL and NaN == NaN read as the same, as merge._same_vals does). No old
-    table, or a different schema, reports every key of NEW. Keys only in OLD are not reported."""
+    table, or a different schema, reports every key of NEW. Keys only in OLD are not reported.
+
+    RAISES ValueError when either side is not unique on (series_key, obs_date) (review AR-477 C3):
+    the join pairs duplicates with each other, so identical duplicates can hide a change. The
+    caller then falls back to booking the debt."""
     import duckdb
     con = duckdb.connect()
     try:
         con.register("n", new)
+        _require_unique(con, "n", "new")
+        if old is not None:
+            con.register("o", old)
+            _require_unique(con, "o", "previous")
         if old is None or old.schema.remove_metadata() != new.schema.remove_metadata():
             rows = con.execute("SELECT series_key, max(obs_date) FROM n GROUP BY 1").fetchall()
             return {k: _iso(d) for k, d in rows}
-        con.register("o", old)
         vcols = [c for c in new.column_names if c not in _KEY_COLS]
         diff = " OR ".join(f'n."{c}" IS DISTINCT FROM o."{c}"' for c in vcols) or "FALSE"
         rows = con.execute(
@@ -205,15 +256,31 @@ def update(unit, since) -> Result:
         print(f"[fhfa] validators unchanged {MAX_AGE_DAYS}d — forced rebuild (size-only gate "
               f"cannot see a same-length revision)", flush=True)
 
-    # The previous cubes, read BEFORE build() can overwrite them (module docstring).
-    diff_err = None
-    try:
-        prior = _read_prior(out_dir, blob.list_parquets(out_dir))
-    except Exception as e:                                   # noqa: BLE001 - fall back to the debt
-        prior, diff_err = {}, f"previous cubes unreadable: {e!r}"
+    # A rebuild that did not finish may already have changed the store (module docstring, PENDING):
+    # its "previous" cubes would be its own new ones, and the diff would read {}.
+    diff_err = _pending_note(out_dir)
+    prior: dict = {}
+    if diff_err is None:
+        # The previous cubes, read BEFORE build() can overwrite them (module docstring).
+        try:
+            prior = _read_prior(out_dir, blob.list_parquets(out_dir))
+        except Exception as e:                               # noqa: BLE001 - fall back to the debt
+            prior, diff_err = {}, f"previous cubes unreadable: {e!r}"
 
     try:
         ig.download()
+    except Exception as e:                                   # noqa: BLE001
+        raise TransientError(f"fhfa: download/build failed: {e!r}") from e
+    # The marker goes into the STORE before build(): under the local backend build() overwrites the store
+    # files in place, under r2 publish_file changes them. state.db would not do - a killed runner never pushes.
+    try:
+        blob.write_bytes_atomic(os.path.join(out_dir, PENDING), json.dumps(
+            {"pending": True, "since": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")}
+        ).encode("utf-8"))
+    except Exception as e:                                   # noqa: BLE001 - unprotected: fall back
+        if diff_err is None:
+            diff_err = f"the rebuild-pending marker could not be written: {e!r}"
+    try:
         ig.build()
     except Exception as e:                                   # noqa: BLE001
         raise TransientError(f"fhfa: download/build failed: {e!r}") from e
@@ -268,6 +335,10 @@ def update(unit, since) -> Result:
         os.path.join(out_dir, SIDECAR),
         json.dumps({"token": token, "built": dt.date.today().isoformat(),
                     "files": vals}, indent=1, sort_keys=True).encode("utf-8"))
+    # Every cube is published and the sidecar records the build: the store is consistent again.
+    blob.write_bytes_atomic(os.path.join(out_dir, PENDING), json.dumps(
+        {"pending": False, "cleared": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")}
+    ).encode("utf-8"))
     res = finalize(tally, published, since or None, source=SOURCE,
                    series_cursors=cursors or None)
     if diff_err is None and len(changed) > CHANGED_KEYS_BOUND:

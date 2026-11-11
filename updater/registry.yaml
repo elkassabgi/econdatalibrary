@@ -2002,6 +2002,23 @@ sources:
   refresh_cost: fast
   out_dir: fhfa
   review: true
+  # csv_misses / csv_owed_repay / csv_ids - DECLARED 2026-11-11 (PR #260, review AR-477 C1). Since the fetcher
+  # reports a DIFF-MEASURED changed set, the change signal is used up when the rebuild publishes: a later
+  # rebuild of the same data diffs to {} (R1131/R1137). So every changed id the CSV phase does not derive
+  # (budget-deferred, failed, crashed, csv-fence trip) is booked PER ID in csv_desktop_owed, which health
+  # reads (ATTENTION). WHAT PAYS EACH (R1844): (1) owed-first repay at the next rebuild that CHANGES that id's
+  # cube - payable = owed ids whose cube is among the pass's changed keys (orchestrate._owed_repay_ids); a
+  # rebuild runner has every cube local, so the derive can run; (2) B3 clears any owed id a pass PUTs or proves
+  # current on R2; (3) for an id whose cube does not change again soon (an annual cube changes once a year; a
+  # no_change week runs no CSV phase at all), the desktop: core.derive_csv --only from a proven R2 copy, read
+  # back, then tools/clear_csv_desktop_owed.py --source fhfa --apply (health prints this). The diff's own
+  # fallback (cursor_cap_hit) still books full_rederive_owed; its remedy is the csv_ids text in health.py,
+  # cleared with --clear-owed-only --after-desktop-derive. No csv_misses_from hold: fhfa had 0
+  # csv_retry_queue rows (state copy, 2026-11-11). csv_ids, not csv_bulk: the bulk tool exits 2 on this
+  # WIDE store, and fhfa's ids are '<src>:<cube>:<key>' against changed keys '<cube>:<key>'.
+  csv_misses: desktop_owed
+  csv_owed_repay: fresh
+  csv_ids: shard_qualified
   adapter:
     vintage_signal: HTTP Last-Modified / ETag (or content hash) on each of the 9 fixed fhfa.gov file URLs (e.g. /hpi/download/monthly/hpi_master.csv);
       re-download + rebuild only files whose signal changed. Today --download overwrites raw unconditionally with no freshness
