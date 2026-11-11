@@ -331,6 +331,12 @@ sources:
       / year extra cols for ITA/IIP/IntlServ*/MNE). State in data/raw/bea/_done_groups.json (atomic temp+replace); manifest
       at data/raw/bea/catalog_manifest.json.'
 - source_id: bfs
+  # csv_grain: table - one catalogue id ('bfs:BFS:px-x-0102010000_100') serves every store key under its
+  # table prefix in a SHARED store file (econdl._resolve._FLOW_GRAIN: key == id or key starts with
+  # id + ':'). Measured 2026-11-11 on the desktop mirror: 582 catalogue ids; 483,667 distinct store keys in its 1 store file.
+  # The bulk campaign writes one object per STORE key, so it is refused here, and the health
+  # gate's remedy for an owed re-derive is the per-id byte-compare (the R498 class, as for dst).
+  csv_grain: table
   live: true
   scripts:
   - jobs/ingest_bfs.py
@@ -1116,6 +1122,12 @@ sources:
       Dec-31), value(float64); 2014-12-31..2025-12-31; 0 conflicting (series_key, obs_date) pairs.
   live: true
 - source_id: cso
+  # csv_grain: table - one catalogue id ('cso:CSO:A0101') serves every store key under its
+  # table prefix in a SHARED store file (econdl._resolve._FLOW_GRAIN: key == id or key starts with
+  # id + ':'). Measured 2026-11-11 on the desktop mirror: 7,896 catalogue ids; 14,125,609 distinct store keys in 40 of its 79 store files.
+  # The bulk campaign writes one object per STORE key, so it is refused here, and the health
+  # gate's remedy for an owed re-derive is the per-id byte-compare (the R498 class, as for dst).
+  csv_grain: table
   live: true
   scripts:
   - jobs/ingest_cso_ireland.py
@@ -2592,6 +2604,12 @@ sources:
       plus _cache/ (metadata JSON), _checkpoint.json, and logs/gus_dbw.DONE sentinel. area_15.parquet alone is ~109 MB. Schema:
       series_key (GUSDBW:var:sec:positions[:measure]), obs_date, value.'
 - source_id: hagstofa
+  # csv_grain: table - one catalogue id ('hagstofa:ICE:Atvinnuvegir:ferdathjonusta:farthegar:1_farthegar:SAM02001.px') serves every store key under its
+  # table prefix in a SHARED store file (econdl._resolve._FLOW_GRAIN: key == id or key starts with
+  # id + ':'). Measured 2026-11-11 on the desktop mirror: 1,068 catalogue ids; 3,003,464 distinct store keys in its 5 store files (7 bare keys equal an id).
+  # The bulk campaign writes one object per STORE key, so it is refused here, and the health
+  # gate's remedy for an owed re-derive is the per-id byte-compare (the R498 class, as for dst).
+  csv_grain: table
   live: true
   scripts:
   - jobs/ingest_hagstofa.py
@@ -4111,6 +4129,12 @@ sources:
       value float64) plus sidecar _series_catalog.json (the /Series catalog) and a _riksbank_log.txt. Checkpoints overwrite
       the whole parquet every 10 series (lines 175-182) and again at the end.'
 - source_id: scb
+  # csv_grain: table - one catalogue id ('scb:AA:AA0003:AA0003B:IntGr1KomUtbBAS') serves every store key under its
+  # table prefix in a SHARED store file (econdl._resolve._FLOW_GRAIN: key == id or key starts with
+  # id + ':'). Measured 2026-11-11 on the desktop mirror: 2,550 catalogue ids; 3,981,439 distinct store keys in its 19 store files.
+  # The bulk campaign writes one object per STORE key, so it is refused here, and the health
+  # gate's remedy for an owed re-derive is the per-id byte-compare (the R498 class, as for dst).
+  csv_grain: table
   live: true
   scripts:
   - jobs/ingest_scb.py
@@ -4345,6 +4369,12 @@ sources:
       separate jobs/ingest_sec_edgar.py — note this lands in clean_grouped, NOT clean_full (clean_full/sec_edgar is empty).
       ~123M obs total.'
 - source_id: ssb
+  # csv_grain: table - one catalogue id ('ssb:SSB:A1Skog') serves every store key under its
+  # table prefix in a SHARED store file (econdl._resolve._FLOW_GRAIN: key == id or key starts with
+  # id + ':'). Measured 2026-11-11 on the desktop mirror: 5,568 catalogue ids; 1,589,343 distinct store keys in 40 of its 186 store files.
+  # The bulk campaign writes one object per STORE key, so it is refused here, and the health
+  # gate's remedy for an owed re-derive is the per-id byte-compare (the R498 class, as for dst).
+  csv_grain: table
   live: true
   scripts:
   - jobs/ingest_ssb.py
@@ -4396,6 +4426,12 @@ sources:
     - per-group parquet files ssb/grp_<subject>.parquet (~186 files, keyed by first 2 chars of table id) plus a cached ssb/_catalog.json.
       Each group written once via a single pq.write_table.
 - source_id: stat_estonia
+  # csv_grain: table - one catalogue id ('stat_estonia:EE:<path>:EKS11.px') serves every store key under its
+  # table prefix in a SHARED store file (econdl._resolve._FLOW_GRAIN: key == id or key starts with
+  # id + ':'). Measured 2026-11-11 on the desktop mirror: 3,447 catalogue ids; 4,595,184 distinct store keys in its 7 store files.
+  # The bulk campaign writes one object per STORE key, so it is refused here, and the health
+  # gate's remedy for an owed re-derive is the per-id byte-compare (the R498 class, as for dst).
+  csv_grain: table
   live: true
   # catalog_scope — DECLARED 2026-09-23 (reviews R1129, R1133). The catalogue serves 3,447 of PxWeb's
   # 4,978 tables. It is NOT "every table with stored rows": 3,447 of the 3,464 stored table prefixes
@@ -4456,6 +4492,12 @@ sources:
       rahvaloendus, sotsiaalelu, keskkond, eri-valdkondade-statistika, Lepetatud_tabelid) plus cached _catalog.json. Each
       subject written once.'
 - source_id: stat_latvia
+  # csv_grain: table - one catalogue id ('stat_latvia:LV:OSP_OD:apsekojumi:arodizgl:1999_2005:ARA30.px') serves every store key under its
+  # table prefix in a SHARED store file (econdl._resolve._FLOW_GRAIN: key == id or key starts with
+  # id + ':'). Measured 2026-11-11 on the desktop mirror: 1,952 catalogue ids; 2,271,899 distinct store keys in its 16 store files.
+  # The bulk campaign writes one object per STORE key, so it is refused here, and the health
+  # gate's remedy for an owed re-derive is the per-id byte-compare (the R498 class, as for dst).
+  csv_grain: table
   live: true
   scripts:
   - jobs/ingest_stat_latvia.py
@@ -4502,6 +4544,12 @@ sources:
     - per-group parquet files stat_latvia/<db>_<subject>.parquet (16 files; group = database (OSP_PUB / OSP_OD) + first path
       segment, e.g. OSP_PUB_POP, OSP_PUB_EMP, OSP_OD_arhivs) plus cached _catalog.json. Each group written once.
 - source_id: stat_slovenia
+  # csv_grain: table - one catalogue id ('stat_slovenia:SI:0214809S') serves every store key under its
+  # table prefix in a SHARED store file (econdl._resolve._FLOW_GRAIN: key == id or key starts with
+  # id + ':'). Measured 2026-11-11 on the desktop mirror: 4,111 catalogue ids; 798,736 distinct store keys in 40 of its 146 store files.
+  # The bulk campaign writes one object per STORE key, so it is refused here, and the health
+  # gate's remedy for an owed re-derive is the per-id byte-compare (the R498 class, as for dst).
+  csv_grain: table
   live: true
   scripts:
   - jobs/ingest_stat_slovenia.py
@@ -4641,6 +4689,12 @@ sources:
       obs_date(date32), value, geo, uom, coordinate, status; plus _manifest.jsonl, _errors.log, _sizecache.json, _tmp/ zip
       staging.'
 - source_id: statfin
+  # csv_grain: table - one catalogue id ('statfin:adopt:11lv.px') serves every store key under its
+  # table prefix in a SHARED store file (econdl._resolve._FLOW_GRAIN: key == id or key starts with
+  # id + ':'). Measured 2026-11-11 on the desktop mirror: 1,539 catalogue ids; 364,588 distinct store keys in 40 of its 136 store files.
+  # The bulk campaign writes one object per STORE key, so it is refused here, and the health
+  # gate's remedy for an owed re-derive is the per-id byte-compare (the R498 class, as for dst).
+  csv_grain: table
   live: true
   scripts:
   - jobs/ingest_statfin.py
@@ -5123,6 +5177,12 @@ sources:
   - 'single parquet: data/clean_full/unesco_sdg/unesco_sdg.parquet. Schema: series_key (string), obs_date date32
     (period-START), value float64.'
 - source_id: unsdg
+  # csv_grain: table - one catalogue id ('unsdg:AG_FPA_CFPI') serves every store key under its
+  # table prefix in a SHARED store file (econdl._resolve._FLOW_GRAIN: key == id or key starts with
+  # id + ':'). Measured 2026-11-11 on the desktop mirror: 396 catalogue ids; 353,218 distinct store keys in its 1 store file.
+  # The bulk campaign writes one object per STORE key, so it is refused here, and the health
+  # gate's remedy for an owed re-derive is the per-id byte-compare (the R498 class, as for dst).
+  csv_grain: table
   # RE-ADDED 2026-08-06 (cycle 38, Ahmed's answer #5: serve unsdg+norgesbank). Purged
   # 2026-07-23 with the may-not-host batch; the audit then CLEARED it — UNdata Terms of Use
   # grant redistribution verbatim ("may be copied freely, duplicated and further distributed
