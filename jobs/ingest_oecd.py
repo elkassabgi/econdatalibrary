@@ -51,6 +51,7 @@ import pyarrow.parquet as pq
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 sys.path.insert(0, ROOT)
+from updater.strategies.fetchers._common import capped_urllib3_retry, parse_retry_after_s  # noqa: E402  (ROOT is on sys.path; this pulls in only the updater package and the stdlib)
 
 RAW = os.path.join(ROOT, "data", "raw", "oecd")
 OUT = os.path.join(ROOT, "data", "clean_full", "oecd")
@@ -85,6 +86,13 @@ CAP_HINT = 100_000_000      # effectively off; real splits are failure-driven
 # Kept modest so a single quota-blocked flow does not stall a worker for many minutes;
 # flows left 'failed'/'partial' are retried in a final low-concurrency pass.
 FULL_RETRIES = 6
+# The longest wait one Retry-After can set, in BOTH places that read it: the urllib3 adapter in
+# make_session (which retries 429/502/503/504 first and, uncapped, slept up to 21,600 s per retry)
+# and the non-429 retry of stream_full_retrying (which used float(ra) with no cap: "1000000" slept
+# 11.6 days, "inf" ended the worker thread with OverflowError from time.sleep). A header up to
+# 5 minutes keeps the wait it had before. (The app-level 429 wait is a fixed 35 s and does not
+# read the header: OECD sends Retry-After: 0 there; see below.)
+RETRY_AFTER_CAP_S = 300
 # fields that are NEVER part of the series key (attributes + time + value)
 NON_KEY = {"TIME_PERIOD", "OBS_VALUE", "OBS_STATUS", "UNIT_MULT", "DECIMALS",
            "BASE_PER", "DATAFLOW"}
@@ -151,11 +159,12 @@ def trip_cooldown(seconds):
 # ----------------------------------------------------------------------------- session
 def make_session():
     s = requests.Session()
-    retry = requests.adapters.Retry(
-        total=4, backoff_factor=1.5,
+    # The adapter retries 429/5xx itself, before stream_full_retrying sees a response, so its
+    # Retry-After sleep needs the same cap (urllib3's default ceiling is 21,600 s per retry).
+    retry = capped_urllib3_retry(
+        RETRY_AFTER_CAP_S, total=4, backoff_factor=1.5,
         status_forcelist=(429, 502, 503, 504),
         allowed_methods=("GET",),
-        respect_retry_after_header=True,
     )
     ad = requests.adapters.HTTPAdapter(max_retries=retry, pool_connections=12, pool_maxsize=12)
     s.mount("https://", ad)
@@ -288,7 +297,7 @@ def stream_to_file(sess, url, dest, timeout):
                     body = r.content[:300].decode("utf-8", "replace")
                 except Exception:
                     pass
-                ra = r.headers.get("Retry-After")
+                ra = parse_retry_after_s(r)              # seconds or None; never raises
                 if status == 429:
                     # OECD's application quota needs a real cooldown; a plain CF burst
                     # 429 clears fast. Penalty box is global so all threads ease off.
@@ -336,11 +345,10 @@ def stream_full_retrying(sess, url, dest, timeout, retries=FULL_RETRIES):
             wait = 35.0
         else:
             wait = min(60, 4 * (2 ** attempt)) + (attempt * 1.0)
-            if ra:
-                try:
-                    wait = max(wait, float(ra))
-                except (TypeError, ValueError):
-                    pass
+            if ra is not None:
+                # the shared strict parser: a finite int, capped, so the sleep below cannot
+                # overflow ("inf") or run for days ("1000000"); a past date (< 0) changes nothing
+                wait = max(wait, min(ra, RETRY_AFTER_CAP_S))
         time.sleep(wait)
     st, nb, ok, body = last
     nr = (st == 404 and NORECORDS_404 in (body or "").lower())

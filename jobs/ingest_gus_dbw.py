@@ -31,8 +31,7 @@ obs_date:   annual → Dec 31; quarter → quarter start; month/half/week → st
 Run: python jobs/ingest_gus_dbw.py
 """
 from __future__ import annotations
-import datetime as dt, glob, json, os, re, sys, time
-from email.utils import parsedate_to_datetime
+import datetime as dt, glob, json, os, re, sys, time, types
 
 # The guard launches this as `python jobs/ingest_gus_dbw.py` from the repo root, so sys.path[0]
 # is jobs/ and the repo root is NOT importable — `from jobs import ...` raises
@@ -40,6 +39,7 @@ from email.utils import parsedate_to_datetime
 # same import works whether this is run as a script or imported by the tests.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from jobs import gus_dbw_refresh as R                                        # noqa: E402
+from updater.strategies.fetchers._common import parse_retry_after_s          # noqa: E402
 import pyarrow as pa, pyarrow.parquet as pq                                  # noqa: E402
 import requests
 
@@ -121,22 +121,14 @@ def _parse_retry_after(val) -> int:
 
     The api-dbw gateway is Microsoft-IIS/ARR, which commonly emits the HTTP-date
     form; parsing it as int() (the old behavior) raised and silently degraded to a
-    0 → 30 s floor, defeating a multi-hour backoff. This honors both forms."""
-    if not val:
-        return 0
-    s = str(val).strip()
-    try:
-        return max(int(s), 0)
-    except (TypeError, ValueError):
-        pass
-    try:
-        when = parsedate_to_datetime(s)
-        if when is None:
-            return 0
-        now = dt.datetime.now(when.tzinfo) if when.tzinfo else dt.datetime.now()
-        return max(int((when - now).total_seconds()), 0)
-    except Exception:
-        return 0
+    0 → 30 s floor, defeating a multi-hour backoff. This honors both forms.
+
+    Since the Retry-After sweep this delegates to the shared strict parser
+    (`_common.parse_retry_after_s`, R1870). The old int() accepted "+5", "1_000" and "١٢", and a
+    5,000-digit header raised inside int() and read as 0 (the 30 s floor); it now saturates, so
+    the caller's 900 s cap applies. A naive HTTP-date is read as UTC (RFC 9110), not local time."""
+    ra = parse_retry_after_s(types.SimpleNamespace(headers={"Retry-After": val}))
+    return max(ra, 0) if ra is not None else 0
 
 
 def api_get(path: str, retries: int = 6):

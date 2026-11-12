@@ -1056,9 +1056,63 @@ def _classify_zero_mapped(source_id: str, scope: str, n_ids: "int | None",
     return note, True
 
 
+# THE STORE-KEY FORM OF A MERGE-MEASURED CHANGED KEY, per source, for the zero-mapped branch (AR-472).
+# A source listed here reports its changed set at catalogue grain, so a key of this form that maps to
+# nothing is a table with no catalogue row (coverage, AR-380), not a sign that served CSVs went stale.
+# OPT-IN on purpose: a generic "same shape as the catalogue" rule would also pass a case or grain
+# mismatch (eurostat's store codes are UPPERCASE, its catalogue codes lowercase), which is exactly the
+# defect the demote exists to catch (R359, R244). A key of any other form still demotes.
+#   stat_slovenia  'SI:<table id>' - fetchers/stat_slovenia.py _table_key; catalogue 'stat_slovenia:SI:<id>'
+_CHANGED_KEY_FORM = {
+    "stat_slovenia": r"SI:[^:\s]+",
+}
+
+
+def _uncatalogued_by_form(source_id: str, unmapped) -> bool:
+    """True only when the source declares a key form, EVERY unmapped key has that form, and no key has
+    a catalogue TWIN. Compared case-insensitively against the source's catalogue ids (one PK-range read,
+    never LIKE - R492), a key has a twin when
+      * a catalogue id equals it or extends it (catalogued 'SI:X.PX', key 'SI:X' or 'SI:x'), or
+      * a catalogue id is a prefix of it at a '.' boundary (catalogued 'SI:X', key 'SI:X.PX' or
+        'SI:X.px'). This covers a trailing '.px' in any case: the fetcher strips only lowercase '.px',
+        and SURS lists 57 ids with '.PX' (AR-472 round 2, R1878).
+    A twin is the R359 key drift on a CATALOGUED table, so it demotes. The mapper's case- and
+    punctuation-insensitive tier (_norm_id) cannot rule this out: it compares the WHOLE alphanumeric
+    string, so it never bridges a suffix. Fails closed: anything unreadable answers False (demote)."""
+    import bisect as _bi                                                 # noqa: PLC0415
+    import re as _re                                                     # noqa: PLC0415
+    form = _CHANGED_KEY_FORM.get(source_id)
+    keys = [k for k in (unmapped or [])]
+    if form is None or not keys:
+        return False
+    if not all(isinstance(k, str) and _re.fullmatch(form, k) for k in keys):
+        return False
+    try:
+        import sqlite3 as _sq                                            # noqa: PLC0415
+        _cat = (os.environ.get("ECONDL_CATALOG")
+                or os.path.join(config.ROOT, "data", "catalog.db"))
+        with _sq.connect(f"file:{_cat}?mode=ro", uri=True) as _c:
+            low = sorted(r[0].lower() for r in _c.execute(
+                "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
+                (source_id + ":", source_id + ";")))
+        lowset = set(low)
+        for k in keys:
+            cand = f"{source_id}:{k}".lower()
+            i = _bi.bisect_left(low, cand)
+            if i < len(low) and low[i].startswith(cand):                 # equal to, or extended by, an id
+                return False
+            if any(cand[:m.start()] in lowset for m in _re.finditer(r"\.", cand)):
+                return False                                             # an id is a prefix at a '.'
+    except Exception:                                                    # noqa: BLE001 - fail closed
+        return False
+    return True
+
+
 def _csv_grain(source_id: str) -> str:
-    """The registry's `csv_grain` for a source ('series' unless declared 'flow'). Cached:
-    the registry is one YAML load and this is asked once per unit."""
+    """The registry's `csv_grain` for a source: its declared value ('flow' or 'table'), else 'series'.
+    Every caller here compares `== "flow"` only, so a `table` source derives exactly as a `series` one
+    (tests/test_flow_grain_remedy_hazard.py pins it). Cached: the registry is one YAML load and this is
+    asked once per unit."""
     cache = _csv_grain.__dict__.setdefault("_cache", {})
     if not cache:
         try:
@@ -1302,13 +1356,13 @@ def _book_fence_trip(unit, res, store, fence_min: float, already_put=None):
     except Exception as e:                                   # noqa: BLE001 - the mapper itself failed
         ok = _note_unmapped_debt(store, unit.source_id, changed,
                                  f"csv fence tripped and the changed keys could not be mapped ({type(e).__name__})")
-        return (f"csv phase exceeded its {fence_min:.0f}-min fence and its {len(changed)} changed key(s) "
+        return (f"{_CSV_FENCE_MARK} {fence_min:.0f}-min fence and its {len(changed)} changed key(s) "
                 f"could NOT be mapped ({type(e).__name__}: {str(e)[:100]}) - {_recorded(ok)}"), []
     if changed and not ids:
         # A non-empty changed set that maps to NOTHING is a mapping failure (R1144 RV-C), not "nothing to
         # book": it demotes, and the keys are recorded.
         ok = _note_unmapped_debt(store, unit.source_id, changed, "csv fence tripped and 0 changed keys mapped")
-        return (f"csv phase exceeded its {fence_min:.0f}-min fence and its {len(changed)} changed key(s) "
+        return (f"{_CSV_FENCE_MARK} {fence_min:.0f}-min fence and its {len(changed)} changed key(s) "
                 f"mapped to 0 catalogue ids - {_recorded(ok)}"), []
     _put = {str(s) for s in (already_put or [])}
     if _put:
@@ -1317,9 +1371,9 @@ def _book_fence_trip(unit, res, store, fence_min: float, already_put=None):
         print(f"[orchestrator] {unit.key}: fence trip - {_n0 - len(ids):,} of {_n0:,} mapped changed id(s) were "
               f"derived before it and are not booked", flush=True)
     if not _book_owed_items(store, unit.source_id, [(s, None, _DESKTOP_OWED_FENCE) for s in ids]):
-        return (f"csv phase exceeded its {fence_min:.0f}-min fence and its {len(ids)} changed id(s) "
+        return (f"{_CSV_FENCE_MARK} {fence_min:.0f}-min fence and its {len(ids)} changed id(s) "
                 f"could NOT be booked as desktop debts - queued for retry instead"), list(ids)
-    return (f"csv coverage note: csv phase exceeded its {fence_min:.0f}-min fence, {len(ids)} changed "
+    return (f"csv coverage note: {_CSV_FENCE_MARK} {fence_min:.0f}-min fence, {len(ids)} changed "
             f"id(s) booked as desktop debts (csv_desktop_owed), none re-derive on their own"), []
 
 
@@ -1740,6 +1794,18 @@ def _derive_changed_csvs(unit, res, blob, store=None):
             # (The FOURTH element is as load-bearing as the third was.)
             _f, _n, _d, _r = _repay_owed_alone(unit, blob, store, changed, None)
             return _f, _n, _d, _r
+        if res.obs and not (isinstance(getattr(res, "merged_rows", None), int)
+                            and getattr(res, "merged_rows", None) > 0) \
+                and _no_store_write_proven(unit, store):
+            # NOTHING WAS WRITTEN, MEASURED ON THE STORE (see _no_store_write_proven): no store parquet
+            # changed since this unit's last accounted turn ended, so no served CSV can have gone stale and
+            # no debt is booked; a debt an earlier pass booked stays until it is paid. Any write since that
+            # turn - this pass's, or one a failed or unrecorded turn left - still books below.
+            print(f"[orchestrator] {unit.key}: no series_cursors, and no store parquet changed since its "
+                  f"last accounted turn (store check) - no CSV can be stale, no re-derive debt booked",
+                  flush=True)
+            _f, _n, _d, _r = _repay_owed_alone(unit, blob, store, changed, None)
+            return _f, _n, _d, _r
         if res.obs:
             # Coherence is UNMET, not merely unlogged: parquet changed but the
             # changed series are unknown, so their CSVs go stale. The caller
@@ -1904,6 +1970,14 @@ def _derive_changed_csvs(unit, res, blob, store=None):
                 unit.source_id, scope, n_ids, sample_hits, sample_n, len(unmapped),
                 cap_saturated=((not migrated) and len(unmapped) >= _CCAP)
                 or bool(getattr(res, "cursor_cap_hit", None)))   # (not the pinned booking read)
+            if demote and migrated and n_ids and _uncatalogued_by_form(unit.source_id, unmapped):
+                # AR-380 / AR-472: an unmapped key in a MERGE-MEASURED changed set is coverage, also when
+                # it is the ONLY kind of key in the set. Opt-in per source (_CHANGED_KEY_FORM), so a source
+                # whose key form has not been declared keeps the demote this branch exists for (R359).
+                note = (f"csv coverage note: {len(unmapped)} changed table(s) have no catalogue row for "
+                        f"{unit.source_id} (merge-measured, every key of the declared form, no catalogue "
+                        f"id at or under any of them) - nothing served changed")
+                demote = False
             if not demote:
                 print(f"[orchestrator] {unit.source_id}: {note}", flush=True)
             elif _csv_misses(unit.source_id) == "desktop_owed":
@@ -2170,6 +2244,130 @@ def _derive_changed_csvs(unit, res, blob, store=None):
 # (which writes the persistent debt row on seeing it). A shared constant, not a re-typed
 # string, so the two sides cannot drift (R142's marker rule).
 _NO_CURSORS_NOTE = "csv coherence unmet: fetcher reported no series_cursors"
+
+
+# ---- WAS THE STORE WRITTEN SINCE THE LAST ACCOUNTED TURN? (2026-11-11, the false-debt fix) ----------------
+# The no-cursors branch of _derive_changed_csvs booked `full_rederive_owed` on any pass whose fetcher reported
+# neither cursors nor merged_rows, with `res.obs` - the STORE TOTAL - as its only evidence. Passes that merged
+# NOTHING booked debts that nothing pays: bfs 2026-10-20 (a 9.3 s pass stopped by a catalogue HTTP 429), nyfed
+# 2026-10-21 (8/8 sub-units transient), dst 2026-10-18 (the dst item in the skill's 50-queue: 2,264/2,264 served
+# CSVs byte-identical to the store). A served CSV is derived from store parquet only.
+#
+# THE QUESTION IS NOT "DID THIS PASS WRITE?" (review R1865). A turn that wrote parquet and then never reached
+# the derive phase - a raise, the hard time limit, an external kill that wrote no runs row, a CI pass whose state
+# push lost (its runs row is gone, its R2 writes stand) - leaves writes nobody accounted for, and a fetcher that
+# checkpoints (dst saves its manifest per chunk) writes nothing on the next pass. So the skip asks whether ANY
+# store parquet changed after the END of this unit's newest ACCOUNTED turn: a runs row that only run_once's main
+# path writes, after its derive phase (status ok or partial with obs > 0 - _record, the failure path, logs
+# obs 0, and so do the locked, window_stopped and killed_external rows). Every write before that row's end was
+# derived or booked by that turn; every write after it, by anything, books the debt.
+#
+# NOT no_change (review R1868). finalize returns no_change with obs = the store total whenever nothing was
+# counted as added or revised, while merge_and_write rewrites the file regardless, and a no_change turn never
+# reaches the derive phase (_should_derive_csvs). dst counts merges as max(0, n - before) and never as revised,
+# so a dst turn that rewrites same-period revisions reads no_change; as a floor it would hide its own rewrite.
+#
+# MEASURED ON THE STORE THE READER SEES: under r2 the R2 listing's LastModified (publish_file's re-PUT of old
+# local files shows there too). Without r2 the local store's mtimes are trusted ONLY for a unit whose registry
+# run_location is "local" (the workstation route, which writes its store through the local path primitives):
+# a cloud-route unit's writes land in R2, which a local-backend pass cannot see, so such a pass books (review
+# R1868, the mixed-backend case). runs.ts_utc is the turn's END on the writer's clock; a writer clock behind
+# the store's only makes that turn's own writes look later, which books (the safe side). Any doubt books.
+#
+# NOT A TURN WHOSE CSV PHASE TRIPPED ITS FENCE (review AR-474, R1877). That turn merged parquet, its csv phase was
+# abandoned (UnitTimeout inside _derive_changed_csvs, so the no-cursors debt was never booked), and run_once
+# still logs a main-path row with obs > 0. As a floor it would hide its own merge for good, where the code before
+# this change booked it on the next quiet pass. Its note always carries _CSV_FENCE_MARK (every fence note is
+# built from the constant), so the floor query skips it and the earlier accounted turn decides.
+_ACCOUNTED_STATUSES = ("ok", "partial")
+_CSV_FENCE_MARK = "csv phase exceeded its"   # the opening of every csv-fence note; the floor query skips it
+
+
+def _out_dirs(unit) -> list:
+    """The store directories this unit writes: each out_path, or its parent for a file-grain out_path."""
+    dirs = []
+    for p in (getattr(unit, "out_paths", None) or []):
+        p = str(p)
+        d = os.path.dirname(p) if p.endswith(".parquet") else p
+        if d and d not in dirs:
+            dirs.append(d)
+    return dirs
+
+
+def _accounted_until(store, unit) -> "float | None":
+    """Epoch END of this unit's newest accounted turn (see above), or None when there is none or it cannot be
+    read."""
+    if store is None:
+        return None
+    try:
+        row = store.db.execute(
+            "SELECT ts_utc FROM runs WHERE source_id=? AND unit_id=? AND status IN "
+            f"({','.join('?' * len(_ACCOUNTED_STATUSES))}) AND COALESCE(obs, 0) > 0 "
+            "AND instr(COALESCE(note, ''), ?) = 0 "
+            "ORDER BY ts_utc DESC, id DESC LIMIT 1",
+            (unit.source_id, unit.unit_id, *_ACCOUNTED_STATUSES, _CSV_FENCE_MARK)).fetchone()
+        if not row or not row[0]:
+            return None
+        from datetime import datetime as _dt                            # noqa: PLC0415
+        ts = _dt.fromisoformat(str(row[0]))
+        if ts.tzinfo is None:
+            return None
+        return ts.timestamp()
+    except Exception:                                                   # noqa: BLE001 - unknown books the debt
+        return None
+
+
+def _store_blob_r2():
+    """The R2Blob the store path primitives write through when AQUEDUCT_BACKEND=r2, else None (a function, so a
+    test can stand a fake listing in)."""
+    from . import blob as _b                                            # noqa: PLC0415
+    return _b._r2_routed()
+
+
+def _store_key(path) -> str:
+    from . import blob as _b                                            # noqa: PLC0415
+    return _b._path_to_key(path)
+
+
+def _parquet_written_after(unit, floor) -> "bool | None":
+    """True when a `*.parquet` under the unit's out dirs (recursive) was modified after `floor` (epoch) in the
+    store the backend reads; False when none was; None when it cannot be told (no out dirs, a listing, walk or
+    stat error). Callers treat None as written."""
+    dirs = _out_dirs(unit)
+    if not dirs or floor is None:
+        return None
+    try:
+        r2 = _store_blob_r2()
+        if r2 is not None:
+            for d in dirs:
+                prefix = _store_key(d).rstrip("/") + "/"
+                for key, modified in r2.list_modified(prefix):
+                    if str(key).endswith(".parquet") and modified.timestamp() > floor:
+                        return True
+            return False
+        if ((getattr(unit, "config", None) or {}).get("run_location") or "cloud") != "local":
+            return None           # a cloud-route store lives in R2, invisible to this local walk: book
+        errors = []
+        for d in dirs:
+            if not os.path.isdir(d):
+                continue          # nothing was ever written here, so nothing since the floor
+            for root, _dirs, files in os.walk(d, onerror=errors.append):
+                for f in files:
+                    if f.endswith(".parquet") and os.path.getmtime(os.path.join(root, f)) > floor:
+                        return True
+        return None if errors else False
+    except Exception:                                                   # noqa: BLE001 - unknown books the debt
+        return None
+
+
+def _no_store_write_proven(unit, store) -> bool:
+    """The ONE predicate that lets the no-cursors branch skip its debt: no store parquet under this unit's out
+    dirs changed after the end of its newest accounted turn. Every doubt answers False (book the debt)."""
+    floor = _accounted_until(store, unit)
+    if floor is None:
+        return False
+    return _parquet_written_after(unit, floor) is False
+
 
 _DERIVE_ALL_CAP = 5000
 
@@ -4062,7 +4260,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                         csv_failed, csv_err, csv_deferred, csv_reasons = _derive_changed_csvs(unit, res, blob, store)
                 except UnitTimeout as _trip:
                     csv_failed, csv_deferred, csv_reasons = [], [], {}
-                    csv_err = ("csv coverage note: csv phase exceeded its "
+                    csv_err = (f"csv coverage note: {_CSV_FENCE_MARK} "
                                f"{_csv_fence:.0f}-min fence and was abandoned for this "
                                "run — cursors recorded, nothing queued, and a series' CSV "
                                "is re-derived only by a later pass that reports it changed")
