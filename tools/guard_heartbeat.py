@@ -430,6 +430,104 @@ def _notices_beat():
     return out
 
 
+LAUNCHER_WATCHDOG_DIR = r"F:\launcher_watchdog"
+LW_MAX_AGE_MIN = 30.0      # the hook starts one look per guard tick (5 min); six missed ticks is not a slow tick
+LW_ATTENTION = ("GAVE-UP", "cannot-tell", "bad-stamp", "no-write", "launch-failed", "disagree", "alive-stale")
+
+
+def _lw_age_min(utc, now):
+    try:
+        t = dt.datetime.fromisoformat(str(utc).replace("Z", "+00:00"))
+        t = t if t.tzinfo else t.replace(tzinfo=dt.timezone.utc)
+        return (now - t).total_seconds() / 60.0
+    except (TypeError, ValueError):
+        return None
+
+
+def _launcher_watchdog_beat(now=None) -> dict:
+    """The launcher watchdog's state, for the beat (review AR-481: a heartbeat nobody off the machine reads is a log).
+
+    The watchdog (F:\\launcher_watchdog\\launcher_watchdog.ps1, outside this repo) relaunches the workstation's other
+    log-on loops - IpGuard, HfRunner, HfRunnerDaily, HfDailyDispatch, EconSlotDispatch - from RELAUNCH_GUARD.ps1's tick.
+    Two files say how it is doing: status.json (written by the watchdog after every look: {utc, look, summary,
+    targets: {name: {state, since}}}) and hook.status (written by the guard's hook every tick: "<utc> <started |
+    missing | sha-mismatch | failed> <detail>"). This reads both and names what needs a person, judged HERE on the
+    machine at publish time so a reader needs no clock arithmetic. Never raises.
+
+    Neither file = the watchdog is not installed: {"installed": False}, and no problem (nothing to watch yet). Once
+    either exists, an absent or unreadable other one IS a problem, never a clean read.
+    """
+    now = now or dt.datetime.now(dt.timezone.utc)
+    out = {"installed": False, "status": None, "hook": None, "problems": []}
+    try:
+        st_path = os.path.join(LAUNCHER_WATCHDOG_DIR, "status.json")
+        hk_path = os.path.join(LAUNCHER_WATCHDOG_DIR, "hook.status")
+        try:
+            with open(st_path, encoding="utf-8-sig") as fh:
+                st = json.load(fh)
+            out["status"] = st if isinstance(st, dict) else {"unreadable": "not a JSON object"}
+        except FileNotFoundError:
+            pass
+        except Exception as e:                               # noqa: BLE001
+            out["status"] = {"unreadable": f"{type(e).__name__}: {e}"[:200]}
+        try:
+            with open(hk_path, encoding="utf-8-sig") as fh:
+                parts = fh.read().strip().split(" ", 2)
+            out["hook"] = ({"utc": parts[0], "state": parts[1], "detail": parts[2] if len(parts) > 2 else ""}
+                           if len(parts) >= 2 else {"unreadable": "not '<utc> <state> [detail]'"})
+        except FileNotFoundError:
+            pass
+        except Exception as e:                               # noqa: BLE001
+            out["hook"] = {"unreadable": f"{type(e).__name__}: {e}"[:200]}
+        out["installed"] = out["status"] is not None or out["hook"] is not None
+        if out["installed"]:
+            out["problems"] = _launcher_watchdog_problems(out["status"], out["hook"], now)
+    except Exception as e:                                   # noqa: BLE001 - the beat must go out regardless
+        out["problems"] = [f"could not be read ({type(e).__name__}: {str(e)[:160]})"]
+    return out
+
+
+def _launcher_watchdog_problems(st, hk, now) -> list:
+    """What needs a person, one line each; [] = healthy. GAVE-UP, CANNOT TELL (one launcher or the whole process
+    list), a stale look (a look that hangs keeps the lock, and every later copy leaves silently - only the age shows
+    it) and a hook that did not start the watchdog (a hash that no longer matches the pinned one, a missing file)."""
+    p = []
+    if hk is None:
+        p.append("hook.status is missing: the guard hook has never run (or was removed and status.json is left over)")
+    elif "unreadable" in hk:
+        p.append(f"hook.status is unreadable ({hk['unreadable']})")
+    else:
+        age = _lw_age_min(hk.get("utc"), now)
+        if age is None or age > LW_MAX_AGE_MIN:
+            p.append("the guard hook last ran " + ("at an unreadable time" if age is None else f"{age:.0f} min ago")
+                     + " (hook removed, or the guard loop is not ticking)")
+        if hk.get("state") != "started":
+            p.append(f"the guard hook did not start the watchdog: {hk.get('state')} {hk.get('detail') or ''}".rstrip()
+                     + (" - the installed file is not the reviewed one; reinstall after review"
+                        if hk.get("state") == "sha-mismatch" else ""))
+    if st is None:
+        p.append("status.json is missing: the watchdog has never finished a look")
+        return p
+    if "unreadable" in st:
+        p.append(f"status.json is unreadable ({st['unreadable']})")
+        return p
+    age = _lw_age_min(st.get("utc"), now)
+    if age is None or age > LW_MAX_AGE_MIN:
+        p.append("the last finished look is " + ("undated" if age is None else f"{age:.0f} min old")
+                 + " (a look that hangs holds the lock, and every later copy leaves silently)")
+    look = st.get("look")
+    if look and look != "ok":
+        p.append({"STOP": "paused: the watchdog's STOP file is present",
+                  "CANNOT-TELL-processes": "CANNOT TELL: the last look could not trust the process list; nothing done",
+                  "ERROR": "the last look stopped on an error (watchdog.log has it)"}.get(look, f"the last look: {look}"))
+    targets = st.get("targets") if isinstance(st.get("targets"), dict) else {}
+    for name, t in sorted(targets.items()):
+        state = t.get("state") if isinstance(t, dict) else None
+        if state in LW_ATTENTION:
+            p.append(f"{name} {state} since {t.get('since') or '?'}")
+    return p
+
+
 def _stall_summary():
     """The scheduler-stall check's last evaluation (tools/scheduler_stall.py), from its local state file."""
     try:
@@ -483,6 +581,8 @@ def publish(stall_check: bool = False) -> int:
         body["notices"] = _notices_beat()
     except BaseException as e:                               # noqa: BLE001 - the beat must go out regardless
         body["notices"] = {"unreadable": f"{type(e).__name__}: {e}"[:200]}
+    # the launcher watchdog's own state; /v1/guard-heartbeat copies none of it (that route serves whitelisted counts)
+    body["launcher_watchdog"] = _launcher_watchdog_beat()
     if stall_check:
         body["scheduler_stall"] = _stall_summary()
     data = json.dumps(body, indent=2).encode("utf-8")
@@ -576,6 +676,12 @@ def check(max_age_min: float, local: bool = False) -> int:
               f"{stall.get('last_verdict')} (writers {stall.get('stalled')}, evaluated "
               f"{stall.get('last_evaluated_utc')}, alert {'recorded' if stall.get('mode') == 'shadow' else 'mailed'}: "
               f"{bool(stall.get('alert_active'))})")
+    # THE LAUNCHER WATCHDOG is printed, never failed: it keeps the workstation's hf and IP loops alive, not an econ
+    # source, so it must not redden the econ updater's gate. The daily digest carries the same lines to the owner.
+    lw = body.get("launcher_watchdog")
+    if isinstance(lw, dict) and lw.get("installed"):
+        for line in lw.get("problems") or []:
+            print(f"  NOTE: LAUNCHER WATCHDOG: {line}")
     sec_bad = (_sec_edgar_problem(body["sec_edgar_local"], dt.datetime.now(dt.timezone.utc))
                if "sec_edgar_local" in body else None)
     if "sec_edgar_local" not in body:
