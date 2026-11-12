@@ -4144,6 +4144,13 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 obs_count=(res.obs if res.obs else (us or {}).get("obs_count")),
                 last_success_utc=(now_utc() if ok else (us or {}).get("last_success_utc")),
                 last_attempt_utc=now_utc(), last_error=err_note)
+            _receipt = getattr(res, "build_receipt", None)
+            if _receipt and status in ("ok", "partial") and not dry:
+                # BUILD RECEIPT (review AR-477 F4): every CSV booking of this pass is written above, in this
+                # state.db, so the receipt reaches a later run only with them. A partial records it too: its
+                # bookings were kept, and refusing it made fhfa rebuild every due pass after one failed CSV.
+                # A pass that raised (the except branches below) records none.
+                store.note_build_receipt(unit.source_id, unit.unit_id, _receipt)
             if res.series_cursors:
                 # per-series freshness stands even on a csv-partial: the parquet
                 # holding these observations DID publish (§5.1 — freshness only

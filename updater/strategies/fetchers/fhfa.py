@@ -48,9 +48,11 @@ not push) after download() and before build(), and cleared after the sidecar is 
 THE STATE MUST CONFIRM THE LAST REBUILD (review AR-477 F3/C6). That home is state.db, and a run's
 state can be thrown away (a refused --push-state, a kill before the push) while its cubes, sidecar
 and cleared marker stay on R2. So every rebuild records a build id in the sidecar and returns it as
-new_vintage; a later pass trusts the store only if the PULLED state's unit_state.upstream_vintage
-for fhfa equals that id. If not, it does not skip and does not diff: it rebuilds with the cursor
-fallback, which books the debt (_build_confirmed).
+new_vintage and as build_receipt; a later pass trusts the store only if the PULLED state holds that
+id. run_once records the receipt after the pass's CSV bookings on an ok OR partial pass (a partial's
+bookings are kept; review AR-477 F4), and upstream_vintage on an ok pass. If the state holds neither,
+the pass does not skip and does not diff: it rebuilds with the cursor fallback, which books the debt
+(_build_confirmed).
 
 THE USED-UP SIGNAL NEEDS A HOME (review AR-477 F1/C1). Once a rebuild publishes, its change is
 never re-reported, so a changed id the CSV phase does not derive (fence trip, budget deferral,
@@ -97,9 +99,12 @@ _KEY_COLS = ("series_key", "obs_date")
 PENDING = "_rebuild_pending.json"
 
 
-def _state_vintage():
-    """fhfa's recorded upstream_vintage in the PULLED state (config.STATE_DB), read-only.
-    Raises when there is no state.db or it cannot be read (the caller treats that as unconfirmed)."""
+def _state_records():
+    """The build ids the PULLED state (config.STATE_DB) holds for fhfa, read-only: its build_receipt (written
+    by run_once after the CSV bookings of an ok OR partial pass, review AR-477 F4) and its upstream_vintage
+    (an ok pass only). A state written before build_receipt existed has no such table: then only the
+    vintage counts. Raises when there is no state.db or it cannot be read (the caller treats that as
+    unconfirmed)."""
     import sqlite3
     if not os.path.exists(config.STATE_DB):
         raise FileNotFoundError(f"no state.db at {config.STATE_DB}")
@@ -107,9 +112,15 @@ def _state_vintage():
     try:
         row = con.execute("SELECT upstream_vintage FROM unit_state WHERE source_id=? AND unit_id='_all'",
                           (SOURCE,)).fetchone()
+        out = {row[0]} if row and row[0] else set()
+        if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='build_receipt'").fetchone():
+            rc = con.execute("SELECT receipt FROM build_receipt WHERE source_id=? AND unit_id='_all'",
+                             (SOURCE,)).fetchone()
+            if rc and rc[0]:
+                out.add(rc[0])
     finally:
         con.close()
-    return row[0] if row else None
+    return out
 
 
 def _build_confirmed(last_build) -> "tuple[bool, str]":
@@ -119,19 +130,20 @@ def _build_confirmed(last_build) -> "tuple[bool, str]":
     (derived ids, csv_desktop_owed bookings) lives in state.db, which is LOST when the push is refused
     ("another writer won") or the runner dies before it. Then the next rebuild would diff against the
     published cubes and read {}. So the store's record is trusted only when the PULLED state recorded the
-    same build id as fhfa's vintage (the orchestrator stores new_vintage on a clean pass; a partial pass
-    does not advance it, which also counts as unconfirmed - conservative). Anything unreadable, or no
-    state.db at all, is NOT confirmed. A sidecar with no build id predates this check (written by the
-    cursor-path code, whose every rebuild booked its debt) and is trusted once."""
+    same build id - as its build receipt (run_once writes Result.build_receipt after the bookings of an ok
+    OR partial pass) or as fhfa's vintage (an ok pass). A partial must count: its bookings are in the state,
+    and refusing it made one persistently failing CSV rebuild fhfa on every due pass (review AR-477 F4).
+    Anything unreadable, or no state.db at all, is NOT confirmed. A sidecar with no build id predates this
+    check (written by the cursor-path code, whose every rebuild booked its debt) and is trusted once."""
     if not last_build:
         return True, "no build id recorded (pre-C6 sidecar)"
     try:
-        v = _state_vintage()
+        held = _state_records()
     except Exception as e:                                   # noqa: BLE001 - fail toward the debt
         return False, f"state not readable ({type(e).__name__})"
-    if v == last_build:
+    if last_build in held:
         return True, "recorded"
-    return False, f"state records {v!r}"
+    return False, f"state records {sorted(held)!r}"
 
 
 def _pending_note(out_dir) -> "str | None":
@@ -403,6 +415,8 @@ def update(unit, since) -> Result:
     # C6: the orchestrator records new_vintage in unit_state on a clean pass, and that row reaches the
     # following run only if this run's state is pushed - together with its CSV bookings.
     res.new_vintage = build_id
+    # F4: and as a build receipt, which run_once records on a partial too (after its bookings).
+    res.build_receipt = build_id
     if diff_err is None and len(changed) > CHANGED_KEYS_BOUND:
         diff_err = f"{len(changed):,} changed keys exceed the {CHANGED_KEYS_BOUND:,} bound"
     if diff_err is None:

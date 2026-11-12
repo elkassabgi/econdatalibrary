@@ -81,6 +81,13 @@ CREATE TABLE IF NOT EXISTS full_rederive_owed(
   source_id TEXT PRIMARY KEY, vintage TEXT, noted_utc TEXT, note TEXT);
 CREATE TABLE IF NOT EXISTS csv_desktop_owed(
   series_id TEXT PRIMARY KEY, source_id TEXT, noted_utc TEXT, rows INTEGER, reason TEXT);
+-- A fetcher's record that a pass's CSV outcome is in THIS state (Result.build_receipt; review AR-477
+-- F3/F4). run_once writes it after every booking of an ok or partial pass, so it reaches a later run
+-- only together with those bookings: a state that is thrown away loses it too. fhfa compares it with
+-- the build id in its store sidecar. Unlike upstream_vintage it advances on a partial, whose bookings
+-- were kept.
+CREATE TABLE IF NOT EXISTS build_receipt(
+  source_id TEXT, unit_id TEXT, receipt TEXT, recorded_utc TEXT, PRIMARY KEY(source_id, unit_id));
 """
 
 _SRC_COLS = ["source_id", "strategy", "cadence", "status", "last_success_utc",
@@ -220,6 +227,21 @@ class StateStore:
 
     def all_units(self):
         return [dict(r) for r in self.db.execute("SELECT * FROM unit_state")]
+
+    # ---- build receipts (Result.build_receipt, review AR-477 F4) ----
+    def note_build_receipt(self, source_id, unit_id, receipt):
+        self._guard_old_id(source_id, "build_receipt")
+        self.db.execute(
+            "INSERT INTO build_receipt(source_id,unit_id,receipt,recorded_utc) VALUES(?,?,?,?) "
+            "ON CONFLICT(source_id,unit_id) DO UPDATE SET receipt=excluded.receipt, "
+            "recorded_utc=excluded.recorded_utc",
+            (source_id, unit_id, str(receipt), now_utc()))
+        self.db.commit()
+
+    def build_receipt(self, source_id, unit_id):
+        r = self.db.execute("SELECT receipt FROM build_receipt WHERE source_id=? AND unit_id=?",
+                            (source_id, unit_id)).fetchone()
+        return r[0] if r else None
 
     # ---- series cursors ----
     def series_cursors(self, sid) -> dict:
