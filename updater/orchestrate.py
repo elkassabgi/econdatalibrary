@@ -2279,6 +2279,12 @@ _NO_CURSORS_NOTE = "csv coherence unmet: fetcher reported no series_cursors"
 # still logs a main-path row with obs > 0. As a floor it would hide its own merge for good, where the code before
 # this change booked it on the next quiet pass. Its note always carries _CSV_FENCE_MARK (every fence note is
 # built from the constant), so the floor query skips it and the earlier accounted turn decides.
+#
+# NOT A TURN WHOSE NOTE CARRIES UNHOMED_NOTE (review AR-477 r8). run_once demotes such a turn to partial and logs
+# it with obs > 0, but a changed id or key of that turn got no home (its booking failed), so its writes were NOT
+# all derived or booked - the very property that makes a turn a floor. Today only a receipt-carrying result (fhfa)
+# is tagged; a future source with no cursors and that note would otherwise have its debt treated as accounted too
+# early. Matched by the one shared constant from updater/notes.py, as the digest matches it.
 _ACCOUNTED_STATUSES = ("ok", "partial")
 _CSV_FENCE_MARK = "csv phase exceeded its"   # the opening of every csv-fence note; the floor query skips it
 
@@ -2303,9 +2309,9 @@ def _accounted_until(store, unit) -> "float | None":
         row = store.db.execute(
             "SELECT ts_utc FROM runs WHERE source_id=? AND unit_id=? AND status IN "
             f"({','.join('?' * len(_ACCOUNTED_STATUSES))}) AND COALESCE(obs, 0) > 0 "
-            "AND instr(COALESCE(note, ''), ?) = 0 "
+            "AND instr(COALESCE(note, ''), ?) = 0 AND instr(COALESCE(note, ''), ?) = 0 "
             "ORDER BY ts_utc DESC, id DESC LIMIT 1",
-            (unit.source_id, unit.unit_id, *_ACCOUNTED_STATUSES, _CSV_FENCE_MARK)).fetchone()
+            (unit.source_id, unit.unit_id, *_ACCOUNTED_STATUSES, _CSV_FENCE_MARK, UNHOMED_NOTE)).fetchone()
         if not row or not row[0]:
             return None
         from datetime import datetime as _dt                            # noqa: PLC0415

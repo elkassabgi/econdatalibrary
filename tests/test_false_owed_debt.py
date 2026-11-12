@@ -167,6 +167,36 @@ def test_a_newer_accounted_turn_moves_the_floor(tmp_path):
     assert note is None
 
 
+@pytest.mark.parametrize("note", [
+    f"{orchestrate.UNHOMED_NOTE}: a changed id or key could not be booked (the state write failed), so the build "
+    f"is not confirmed and a later pass rebuilds",
+    f"csv coverage note: 3 deferred; {orchestrate.UNHOMED_NOTE}: a changed id could not be booked",
+])
+def test_an_unhomed_partial_turn_is_not_the_floor(tmp_path, note):
+    """Review AR-477 r8: a partial with obs > 0 whose note carries UNHOMED_NOTE had a changed id or key with no
+    home, so its writes were not all accounted. ok 3 h ago, a write 2 h ago, that partial 1 h ago: it books."""
+    d = _dir(tmp_path, "nyfed")
+    st = _store(tmp_path, "nyfed", floor_ago=3 * HOUR)
+    _write_parquet(os.path.join(d, "nyfed.parquet"), seconds_ago=2 * HOUR)
+    _row(st, "nyfed", "partial", 1 * HOUR, obs=17_407, note=note)
+    floor = orchestrate._accounted_until(st, _U("nyfed", [d]))
+    assert floor is not None and abs(floor - _ago(3 * HOUR)) < 60, "the earlier ok turn must stay the floor"
+    _, booked, _, _ = _derive(_U("nyfed", [d]), _res(obs=17_407), st)
+    assert _books(booked)
+
+
+def test_negative_control_an_ordinary_partial_turn_is_still_the_floor(tmp_path):
+    """The same layout with an ordinary partial note (no UNHOMED_NOTE): that partial is the floor, nothing books."""
+    d = _dir(tmp_path, "nyfed")
+    st = _store(tmp_path, "nyfed", floor_ago=3 * HOUR)
+    _write_parquet(os.path.join(d, "nyfed.parquet"), seconds_ago=2 * HOUR)
+    _row(st, "nyfed", "partial", 1 * HOUR, obs=17_407, note="csv coverage note: 3 changed ids deferred, none failed")
+    floor = orchestrate._accounted_until(st, _U("nyfed", [d]))
+    assert floor is not None and abs(floor - _ago(1 * HOUR)) < 60
+    _, booked, _, _ = _derive(_U("nyfed", [d]), _res(obs=17_407), st)
+    assert booked is None
+
+
 def test_another_unit_s_floor_does_not_count(tmp_path):
     d = _dir(tmp_path, "dst")
     st = _store(tmp_path, "dst", floor_ago=3 * HOUR)
