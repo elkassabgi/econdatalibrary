@@ -724,6 +724,20 @@ def assess(store=None) -> dict:
                            f"'NOT clearing' there, which is expected); (4) read the served CSVs back; "
                            f"(5) then, from the checkout with ECONDL_ROOT unset, `tools/derive_csv_bulk.py "
                            f"--source {sid} --clear-owed-only`")
+            elif e.get("csv_ids") == "shard_qualified":
+                # fhfa (registry `csv_ids: shard_qualified`): served WIDE, so tools/derive_csv_bulk.py skips every
+                # file and exits 2 - naming it would be a payer that cannot pay (R1844). AHEAD of the csv_misses
+                # branch: ilostat's text names indicator stems and its own tool. The row is either the
+                # cursor-cap fallback (the diff did not complete: every id may be stale) or an unmapped-keys row
+                # (' keys=': '<cube>:<key>' store keys whose ids are 'fhfa:<cube>:<key>').
+                _note = str(owe.get("note") or "")
+                _remedy = (f"the bulk tool cannot derive this WIDE source (it exits 2): copy the store's "
+                           f"parquets from R2 into a NEW folder (md5 == ETag), set ECONDL_DATA to it, "
+                           f"byte-compare the served CSVs against a derive from that copy, re-derive the ids "
+                           f"that differ ({'the listed keys as ' + repr(sid + ':<cube>:<key>') if ' keys=' in _note else 'any of the catalogue'}) "
+                           f"with `python -m core.derive_csv --bucket econ-data --source {sid} --only <file of "
+                           f"those ids>`, read them back against R2's parquets, then `tools/derive_csv_bulk.py "
+                           f"--source {sid} --clear-owed-only --after-desktop-derive`. Note: {_note[:240]}")
             elif e.get("csv_misses") == "desktop_owed":
                 # A csv_misses SOURCE (ilostat, R1148): the bulk tool cannot pay this debt - for ilostat
                 # it would PUT 'ilostat:ilostat:...' objects across ~391M store rows and clear the row
@@ -783,7 +797,12 @@ def assess(store=None) -> dict:
                    f"csv_owed_repay), so before T0 all {len(_dl)} wait for that; an id whose served CSV is "
                    f"already current is cleared on proof by `tools/clear_fed_board_z1_retries.py --table "
                    f"csv_desktop_owed --copy <proven copy of R2's <REL>.parquet> --ids <file> --out <new tsv>`"
-                   if e.get("csv_owed_repay") == "fresh" else "")
+                   if e.get("csv_owed_repay") == "fresh" and e.get("csv_bulk") == "qualify_with_shard" else "")
+                # fhfa (csv_ids: shard_qualified): its own payer line, never fed_board's Z1 tool (AR-477 C1).
+                + (f". {sid} repays owed ids FIRST at the next rebuild that CHANGES each id's cube (registry "
+                   f"csv_owed_repay; a rebuild that changes nothing pays nothing, and a no_change week runs no "
+                   f"CSV phase), so an annual cube's debt waits for the desktop derive above"
+                   if e.get("csv_owed_repay") == "fresh" and e.get("csv_ids") == "shard_qualified" else "")
             ] + list(attention)
             if health in ("OK", "ROTATING"):
                 health = "ATTENTION"

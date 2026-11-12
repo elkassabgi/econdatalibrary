@@ -115,6 +115,12 @@ class Result:
     #                changed keys or merged rows on the Result override "none" (fail toward recording).
     # None (default) = not a window stop, or a fetcher that does not declare one: nothing changes.
     window_stop: str | None = None
+    # BUILD RECEIPT (review AR-477 F4). Set only by a fetcher whose store records a build that the STATE must
+    # confirm (fhfa: the build id in its sidecar). run_once writes it to state.db's build_receipt AFTER the
+    # pass's CSV bookings, on an ok or partial pass, so a later run sees it only if those bookings were kept.
+    # It is not upstream_vintage: a partial does not advance that, although its bookings are in the state.
+    # None (default) = nothing is written.
+    build_receipt: str | None = None
 
 
 def cadence_due(cadence: str, last_success_utc: str | None, now: datetime | None = None) -> bool:

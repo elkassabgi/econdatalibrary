@@ -455,6 +455,48 @@ def notices_lines(beat, now) -> list:
     return out + ([""] if out else [])
 
 
+_KINDS_CACHE: list = []
+
+
+def _kinds() -> tuple:
+    """The digest's row kinds, in MATCH order. Built once, on first use.
+
+    UNHOMED comes BEFORE SUBSET (review AR-477 r5 F3): a pass whose changed ids got no health-read home also
+    carries 'csv coverage note' segments, and SUBSET (rank 8) is the permanent-by-construction group.
+
+    NEVER IMPORT updater.orchestrate HERE (review AR-477 r6): it pulls pyarrow, and this digest is an
+    `if: always()` step that must mail on a morning when the install failed. The marker lives in the
+    stdlib-only updater/notes.py. If even that cannot be read, the UNHOMED kind is left out (the row then
+    sorts as SUBSET or OTHER, never dropped) and the mail still goes."""
+    if not _KINDS_CACHE:
+        try:
+            from updater.notes import UNHOMED_NOTE                    # noqa: PLC0415
+            _unhomed = [("UNHOMED", 4, _re.compile(_re.escape(UNHOMED_NOTE), _re.I))]
+        except Exception as e:                                        # noqa: BLE001 - a classifier never ends the mail
+            print(f"[digest] WARNING: updater.notes unreadable ({type(e).__name__}) - the UNHOMED kind is off",
+                  flush=True)
+            _unhomed = []
+        _KINDS_CACHE.extend((
+            ("SCHEMA", 0, _re.compile(r"returned 200 but parsed 0 rows", _re.I)),
+            ("SHRINK", 1, _re.compile(r"refusing shrink", _re.I)),
+            ("MIGRATE", 2, _re.compile(r"migration has not completed", _re.I)),
+            ("RETRY", 3, _re.compile(r"transient-failed|UNEXPECTED:|UnitTimeout", _re.I)),
+            *_unhomed,
+            ("SUBSET", 8, _re.compile(r"csv coherence unmet|csv coverage note", _re.I)),
+            ("BUDGET", 9, _re.compile(r"deferred by budget", _re.I)),
+        ))
+    return tuple(_KINDS_CACHE)
+
+
+def kind_of(err) -> tuple:
+    """(sort rank, short label). Unmatched rows sort with the actionable ones, never last."""
+    text = str(err or "")
+    for name, rank, pat in _kinds():
+        if pat.search(text):
+            return rank, name
+    return 4, "OTHER"
+
+
 def launcher_watchdog_lines(beat, now) -> list:
     """Text lines for the workstation's launcher watchdog (tools/guard_heartbeat.py `_launcher_watchdog_beat`: it
     relaunches the hf and IP log-on loops), or [] when there is nothing to say: no beat field (an older publisher),
@@ -664,22 +706,7 @@ def main() -> None:
     # that is always that long cannot distinguish a new problem from the standing one. Rows are
     # sorted and given a reason; NONE is dropped, because a misclassification would otherwise
     # bury the row it misjudged, and this is a regex over error text, not an oracle.
-    _KINDS = (
-        ("SCHEMA", 0, _re.compile(r"returned 200 but parsed 0 rows", _re.I)),
-        ("SHRINK", 1, _re.compile(r"refusing shrink", _re.I)),
-        ("MIGRATE", 2, _re.compile(r"migration has not completed", _re.I)),
-        ("RETRY", 3, _re.compile(r"transient-failed|UNEXPECTED:|UnitTimeout", _re.I)),
-        ("SUBSET", 8, _re.compile(r"csv coherence unmet|csv coverage note", _re.I)),
-        ("BUDGET", 9, _re.compile(r"deferred by budget", _re.I)),
-    )
-
-    def kind_of(err) -> tuple:
-        """(sort rank, short label). Unmatched rows sort with the actionable ones, never last."""
-        text = str(err or "")
-        for name, rank, pat in _KINDS:
-            if pat.search(text):
-                return rank, name
-        return 4, "OTHER"
+    # kind_of is module-level (above main) so a test can call it (review AR-477 r5 F3).
 
     # ---- plain-text fallback (some clients / previews) ----
     lines = [f"Run {run_id}: {run_status}",

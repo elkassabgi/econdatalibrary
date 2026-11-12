@@ -17,7 +17,49 @@ Content-Length depending on the file.
 
 That makes the weakest files SIZE-only, which cannot see a revision that preserves the byte
 count — the same limitation as bis. So MAX_AGE_DAYS forces a rebuild when nothing has moved for
-a month. FHFA is quarterly-ish, so this costs one wasted rebuild every 30 days at most.
+a month. That forced rebuild was NOT cheap: before the diff below, it re-derived up to 50,000
+CSVs, a 30-48 min csv phase (runs of 2026-10-02: 2,902 s; 2026-10-29: 2,051 s), every 30 days.
+
+CHANGED SET - DIFF-MEASURED (2026-11-11). A rebuild overwrites every cube, so "every series was
+rewritten" is not "every series changed". Before the rebuild, update() reads the 9 previous obs
+cubes through blob (R2 under AQUEDUCT_BACKEND=r2 - the runner's local dir holds only this run's
+files, R36/R151); after it, _changed_in_cube() diffs each cube per (series_key, obs_date) in
+DuckDB (a row on one side only, or any value column IS DISTINCT FROM its counterpart), and the
+Result carries changed_keys = {"<cube>:<series_key>": max obs_date}, the key form the
+orchestrator already maps to 'fhfa:<cube>:<key>'. A forced rebuild where nothing moved reports
+{} (no derive, no debt); a monthly release reports hpi_master (+ the 3-zip cube in a quarterly
+month). The capped series_cursors stay, for health's freshness reading only (the ilostat shape).
+Before this, 89,706 series against CURSOR_CAP=50,000 booked full_rederive_owed on EVERY rebuild,
+and the 882 hpi_at_3zip_quarterly ids sat beyond the cap on every pass.
+
+The diff FAILS TOWARD THE DEBT: if listing or reading a previous cube raises (other than an
+absent object, which reports that whole cube), if a diff raises, if either side of a cube is not
+unique on (series_key, obs_date), if the set exceeds CHANGED_KEYS_BOUND, or if the store's
+PENDING marker says the last rebuild did not finish, changed_keys stays None and cursor_cap_hit
+carries the cap check, so the orchestrator books full_rederive_owed exactly as before.
+
+PENDING (review AR-477 F2/C2). A rebuild that dies between build() and the sidecar write may
+already have changed the store - under r2 the cubes it published (hpi_master first), under the
+local backend all of them, since build() overwrites in place. Without a record, a later pass's
+"previous" cubes are that rebuild's NEW ones and the diff reads {}: the change is lost. So a
+marker is written into the STORE (blob: R2 under r2, never state.db, which a killed runner does
+not push) after download() and before build(), and cleared after the sidecar is written.
+
+THE STATE MUST CONFIRM THE LAST REBUILD (review AR-477 F3/C6). That home is state.db, and a run's
+state can be thrown away (a refused --push-state, a kill before the push) while its cubes, sidecar
+and cleared marker stay on R2. So every rebuild records a build id in the sidecar and returns it as
+new_vintage and as build_receipt; a later pass trusts the store only if the PULLED state holds that
+id. run_once records the receipt after the pass's CSV bookings on an ok OR partial pass (a partial's
+bookings are kept; review AR-477 F4), and upstream_vintage on an ok pass. If the state holds neither,
+the pass does not skip and does not diff: it rebuilds with the cursor fallback, which books the debt
+(_build_confirmed).
+
+THE USED-UP SIGNAL NEEDS A HOME (review AR-477 F1/C1). Once a rebuild publishes, its change is
+never re-reported, so a changed id the CSV phase does not derive (fence trip, budget deferral,
+failure) is booked per id in csv_desktop_owed: the registry declares csv_misses: desktop_owed,
+csv_owed_repay: fresh and csv_ids: shard_qualified for fhfa, and its comment names each payer. Series present only in the OLD cube
+(withdrawn upstream) are counted and printed, not reported - the cursors never reported them
+either, and their catalogue ids would only fail to resolve.
 
 REBUILD IS ALL-OR-NOTHING, deliberately. `build()` regenerates all 9 cubes from RAW in one
 call; there is no per-cube entry point. So the gate is on the union of the 9 files and any
@@ -48,6 +90,159 @@ SIDECAR = "_raw_vintages.json"
 # Backstop for the size-only files: rebuild if nothing has moved in this many days, so a
 # same-byte-count revision cannot hide indefinitely.
 MAX_AGE_DAYS = 30
+# The diff-measured changed set is bounded far above the measured universe (89,706 series over
+# the 9 cubes, 2026-10-29 build). Above it the set is dropped and the debt booked (fail toward it).
+CHANGED_KEYS_BOUND = 200_000
+_KEY_COLS = ("series_key", "obs_date")
+# Store-side marker of a rebuild in progress (review AR-477 C2). Written before build(), cleared after the
+# sidecar; a pass that finds it set falls back to the cursor set and the debt.
+PENDING = "_rebuild_pending.json"
+
+
+def _state_records():
+    """The build ids the PULLED state (config.STATE_DB) holds for fhfa, read-only: its build_receipt (written
+    by run_once after the CSV bookings of an ok OR partial pass, review AR-477 F4) and its upstream_vintage
+    (an ok pass only). A state written before build_receipt existed has no such table: then only the
+    vintage counts. Raises when there is no state.db or it cannot be read (the caller treats that as
+    unconfirmed)."""
+    import sqlite3
+    if not os.path.exists(config.STATE_DB):
+        raise FileNotFoundError(f"no state.db at {config.STATE_DB}")
+    con = sqlite3.connect(f"file:{config.STATE_DB}?mode=ro", uri=True, timeout=5)
+    try:
+        row = con.execute("SELECT upstream_vintage FROM unit_state WHERE source_id=? AND unit_id='_all'",
+                          (SOURCE,)).fetchone()
+        out = {row[0]} if row and row[0] else set()
+        if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='build_receipt'").fetchone():
+            rc = con.execute("SELECT receipt FROM build_receipt WHERE source_id=? AND unit_id='_all'",
+                             (SOURCE,)).fetchone()
+            if rc and rc[0]:
+                out.add(rc[0])
+    finally:
+        con.close()
+    return out
+
+
+def _build_confirmed(last_build) -> "tuple[bool, str]":
+    """(confirmed, why) for the last rebuild recorded in the store's sidecar (review AR-477 F3/C6).
+
+    The cubes, the sidecar and the cleared PENDING marker reach R2 during the pass, but its CSV outcome
+    (derived ids, csv_desktop_owed bookings) lives in state.db, which is LOST when the push is refused
+    ("another writer won") or the runner dies before it. Then the next rebuild would diff against the
+    published cubes and read {}. So the store's record is trusted only when the PULLED state recorded the
+    same build id - as its build receipt (run_once writes Result.build_receipt after the bookings of an ok
+    OR partial pass) or as fhfa's vintage (an ok pass). A partial must count: its bookings are in the state,
+    and refusing it made one persistently failing CSV rebuild fhfa on every due pass (review AR-477 F4).
+    Anything unreadable, or no state.db at all, is NOT confirmed. A sidecar with no build id predates this
+    check (written by the cursor-path code, whose every rebuild booked its debt) and is trusted once."""
+    if not last_build:
+        return True, "no build id recorded (pre-C6 sidecar)"
+    try:
+        held = _state_records()
+    except Exception as e:                                   # noqa: BLE001 - fail toward the debt
+        return False, f"state not readable ({type(e).__name__})"
+    if last_build in held:
+        return True, "recorded"
+    return False, f"state records {sorted(held)!r}"
+
+
+def _pending_note(out_dir) -> "str | None":
+    """None when no unfinished rebuild is recorded in the store; else the reason to fall back.
+    An unreadable or unparseable marker counts as pending (fail toward the debt)."""
+    try:
+        raw = blob.read_bytes(os.path.join(out_dir, PENDING))
+    except Exception as e:                                   # noqa: BLE001
+        return f"the rebuild-pending marker could not be read ({e!r})"
+    if not raw:
+        return None
+    try:
+        m = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return "the rebuild-pending marker is unreadable"
+    if isinstance(m, dict) and m.get("pending") is False:
+        return None
+    since = m.get("since") if isinstance(m, dict) else None
+    return (f"a previous rebuild (started {since or '?'}) did not finish - the store may already hold its "
+            f"cubes, so a diff against them would read nothing changed")
+
+
+def _is_obs_cube(name: str) -> bool:
+    return (name.endswith(".parquet") and not name.endswith("__series.parquet")
+            and not name.startswith("_"))
+
+
+def _read_prior(out_dir, names) -> dict:
+    """{cube: previous Arrow table, or None when the object is ABSENT} for every obs cube named.
+
+    Read through blob BEFORE the rebuild: under the local backend build() overwrites these files
+    in place, and under r2 the runner's local dir is empty (R36). An absent object is a cube with
+    no previous version (every key reported); any OTHER failure raises, and the caller falls back
+    to booking the debt."""
+    prior = {}
+    for f in names:
+        if not _is_obs_cube(f):
+            continue
+        try:
+            prior[f[:-len(".parquet")]] = blob.read_table(os.path.join(out_dir, f))
+        except FileNotFoundError:
+            prior[f[:-len(".parquet")]] = None
+    return prior
+
+
+def _iso(v):
+    if v is None:
+        return None
+    return v.isoformat() if hasattr(v, "isoformat") else str(v)
+
+
+def _require_unique(con, view: str, side: str) -> None:
+    """count(*) == count(DISTINCT (series_key, obs_date)), or ValueError (measured true on every cube of the
+    07-30/09-01 builds, AR-477 item 1; nothing checked it at run time)."""
+    n, d = con.execute(f"SELECT count(*), count(DISTINCT (series_key, obs_date)) FROM {view}").fetchone()
+    if n != d:
+        raise ValueError(f"{side} cube is not unique on (series_key, obs_date): {n:,} rows, {d:,} distinct")
+
+
+def _changed_in_cube(old, new) -> dict:
+    """{series_key: max obs_date (ISO) in NEW} for every key of NEW whose rows differ from OLD.
+
+    A key changed when a row exists on one side only, or any non-key column IS DISTINCT FROM its
+    counterpart (NULL == NULL and NaN == NaN read as the same, as merge._same_vals does). No old
+    table, or a different schema, reports every key of NEW. Keys only in OLD are not reported.
+
+    RAISES ValueError when either side is not unique on (series_key, obs_date) (review AR-477 C3):
+    the join pairs duplicates with each other, so identical duplicates can hide a change. The
+    caller then falls back to booking the debt."""
+    import duckdb
+    con = duckdb.connect()
+    try:
+        con.register("n", new)
+        _require_unique(con, "n", "new")
+        if old is not None:
+            con.register("o", old)
+            _require_unique(con, "o", "previous")
+        if old is None or old.schema.remove_metadata() != new.schema.remove_metadata():
+            rows = con.execute("SELECT series_key, max(obs_date) FROM n GROUP BY 1").fetchall()
+            return {k: _iso(d) for k, d in rows}
+        vcols = [c for c in new.column_names if c not in _KEY_COLS]
+        diff = " OR ".join(f'n."{c}" IS DISTINCT FROM o."{c}"' for c in vcols) or "FALSE"
+        rows = con.execute(
+            "WITH ch AS ("
+            " SELECT DISTINCT coalesce(n.series_key, o.series_key) AS k"
+            " FROM n FULL OUTER JOIN o"
+            "   ON n.series_key IS NOT DISTINCT FROM o.series_key"
+            "  AND n.obs_date IS NOT DISTINCT FROM o.obs_date"
+            f" WHERE n.series_key IS NULL OR o.series_key IS NULL OR ({diff}))"
+            " SELECT n.series_key, max(n.obs_date) FROM n JOIN ch ON n.series_key = ch.k"
+            " GROUP BY 1").fetchall()
+        gone = con.execute("SELECT count(DISTINCT series_key) FROM o WHERE series_key NOT IN "
+                           "(SELECT series_key FROM n)").fetchone()[0]
+        if gone:
+            print(f"[fhfa] {gone:,} series present only in the previous cube (withdrawn "
+                  f"upstream) - counted, not reported as changed", flush=True)
+        return {k: _iso(d) for k, d in rows}
+    finally:
+        con.close()
 
 
 def _validators(sess) -> dict:
@@ -108,17 +303,53 @@ def update(unit, since) -> Result:
     stale = _older_than(sidecar.get("built"), MAX_AGE_DAYS)
     have = bool(blob.list_parquets(out_dir))
 
-    if sidecar.get("token") == token and have and not stale:
+    # C6: did the PULLED state keep the last rebuild's outcome (its CSV bookings)? See _build_confirmed.
+    last_build = sidecar.get("build_id")
+    confirmed, why = _build_confirmed(last_build)
+    if sidecar.get("token") == token and have and not stale and confirmed:
         print("[fhfa] all 9 source files unchanged — skipped", flush=True)
-        return finalize(tally, sum(blob.row_count(os.path.join(out_dir, f))
-                                   for f in blob.list_parquets(out_dir)),
-                        since or None, source=SOURCE)
+        res = finalize(tally, sum(blob.row_count(os.path.join(out_dir, f))
+                                  for f in blob.list_parquets(out_dir)),
+                       since or None, source=SOURCE)
+        if last_build:
+            res.new_vintage = last_build      # = what the state already holds; never launders an unkept one
+        return res
+    if not confirmed:
+        print(f"[fhfa] the last rebuild ({last_build}) is not confirmed by the pulled state ({why}) - "
+              f"rebuilding with the cursor fallback, which books the debt", flush=True)
     if stale and sidecar.get("token") == token:
         print(f"[fhfa] validators unchanged {MAX_AGE_DAYS}d — forced rebuild (size-only gate "
               f"cannot see a same-length revision)", flush=True)
 
+    # A rebuild that did not finish may already have changed the store (module docstring, PENDING):
+    # its "previous" cubes would be its own new ones, and the diff would read {}.
+    diff_err = _pending_note(out_dir)
+    if diff_err is None and not confirmed:
+        diff_err = f"the last rebuild's outcome is not in the pulled state ({why})"
+    build_id = (f"fhfa-build:{token}:"
+                f"{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}")
+    prior: dict = {}
+    if diff_err is None:
+        # The previous cubes, read BEFORE build() can overwrite them (module docstring).
+        try:
+            prior = _read_prior(out_dir, blob.list_parquets(out_dir))
+        except Exception as e:                               # noqa: BLE001 - fall back to the debt
+            prior, diff_err = {}, f"previous cubes unreadable: {e!r}"
+
     try:
         ig.download()
+    except Exception as e:                                   # noqa: BLE001
+        raise TransientError(f"fhfa: download/build failed: {e!r}") from e
+    # The marker goes into the STORE before build(): under the local backend build() overwrites the store
+    # files in place, under r2 publish_file changes them. state.db would not do - a killed runner never pushes.
+    try:
+        blob.write_bytes_atomic(os.path.join(out_dir, PENDING), json.dumps(
+            {"pending": True, "since": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")}
+        ).encode("utf-8"))
+    except Exception as e:                                   # noqa: BLE001 - unprotected: fall back
+        if diff_err is None:
+            diff_err = f"the rebuild-pending marker could not be written: {e!r}"
+    try:
         ig.build()
     except Exception as e:                                   # noqa: BLE001
         raise TransientError(f"fhfa: download/build failed: {e!r}") from e
@@ -130,7 +361,8 @@ def update(unit, since) -> Result:
 
     import pyarrow.parquet as pq
     published = 0
-    cursors: dict = {}          # §5.7 changed-series set across every rebuilt cube
+    cursors: dict = {}          # freshness cursors (capped); health reads them
+    changed: dict = {}          # §5.7 changed set, diff-measured per cube (module docstring)
     # CURSORS COLLECT FRESHEST-FILE-FIRST (2026-08-06). Alphabetical iteration filled
     # the 50,000-cursor cap with annual_* series (newest obs 2025-12-31) before
     # hpi_master's monthly series ever reported — measured: the store's
@@ -149,25 +381,57 @@ def update(unit, since) -> Result:
             # Verified against catalog.db: fhfa:annual_cbsa:01, fhfa:annual_county:01001.
             merge_cursors(cursors, local,
                           key_prefix=f"{f[:-len('.parquet')]}:")
+            if diff_err is None:
+                cube = f[:-len(".parquet")]
+                try:
+                    old = prior.get(cube)
+                    if old is None:
+                        print(f"[fhfa] {cube}: no previous cube in the store - every key "
+                              f"reported changed", flush=True)
+                    part = _changed_in_cube(old, pq.read_table(local))
+                    changed.update({f"{cube}:{k}": v for k, v in part.items()})
+                except Exception as e:                       # noqa: BLE001 - fall back to the debt
+                    diff_err = f"{cube}: diff failed: {e!r}"
     cap_hit = len(cursors) >= CURSOR_CAP
     if cap_hit:
-        print(f"[fhfa] cursor set hit the {CURSOR_CAP:,} cap — further changed series are not "
-              f"individually reported; the orchestrator's derive-all path covers small "
-              f"catalogs", flush=True)
+        print(f"[fhfa] cursor set hit the {CURSOR_CAP:,} cap — freshness cursors only; the CSV "
+              f"phase reads the diff-measured changed set when it is complete", flush=True)
     tally.added_unit(published, "fhfa")
     print(f"[fhfa] rebuilt {len(names)} parquet(s), {published:,} obs rows published",
           flush=True)
 
     blob.write_bytes_atomic(
         os.path.join(out_dir, SIDECAR),
-        json.dumps({"token": token, "built": dt.date.today().isoformat(),
+        json.dumps({"token": token, "built": dt.date.today().isoformat(), "build_id": build_id,
                     "files": vals}, indent=1, sort_keys=True).encode("utf-8"))
+    # Every cube is published and the sidecar records the build: the store is consistent again. The
+    # marker carries the build id, but clearing it proves only update()'s half; the state's half is
+    # checked by _build_confirmed in a later pass (C6).
+    blob.write_bytes_atomic(os.path.join(out_dir, PENDING), json.dumps(
+        {"pending": False, "build_id": build_id,
+         "cleared": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")}).encode("utf-8"))
     res = finalize(tally, published, since or None, source=SOURCE,
                    series_cursors=cursors or None)
-    # WU-2b: a rebuild touches all ~89,706 catalogued fhfa series; a capped cursor
-    # set therefore GUARANTEES starved catalogued ids (39,706 measured). Say so on
-    # the Result — the orchestrator books the full_rederive_owed debt from this.
-    # (The honest changed_keys migration is BLOCKED: report_changed_keys is
-    # merge-mode-only and fhfa overwrite-rebuilds — do not attempt it here.)
+    # C6: the orchestrator records new_vintage in unit_state on a clean pass, and that row reaches the
+    # following run only if this run's state is pushed - together with its CSV bookings.
+    res.new_vintage = build_id
+    # F4: and as a build receipt, which run_once records on a partial too (after its bookings).
+    res.build_receipt = build_id
+    if diff_err is None and len(changed) > CHANGED_KEYS_BOUND:
+        diff_err = f"{len(changed):,} changed keys exceed the {CHANGED_KEYS_BOUND:,} bound"
+    if diff_err is None:
+        # The CSV phase reads this complete, diff-measured set. merge_and_write's
+        # report_changed_keys is merge-mode only and fhfa overwrite-rebuilds, so the set is
+        # measured here, against the previous published cubes, instead.
+        res.changed_keys = changed
+        res.cursor_cap_hit = False
+        print(f"[fhfa] diff-measured changed set: {len(changed):,} series key(s) changed in "
+              f"this rebuild", flush=True)
+        return res
+    # FALLBACK = the WU-2b behaviour: a rebuild touches all ~89,706 catalogued fhfa series,
+    # and a capped cursor set GUARANTEES starved catalogued ids (39,706 measured). Say so on
+    # the Result - the orchestrator books the full_rederive_owed debt from this.
+    print(f"[fhfa] changed set NOT measured ({diff_err}) - falling back to the cursor set; "
+          f"a cap hit books the full re-derive debt", flush=True)
     res.cursor_cap_hit = cap_hit
     return res

@@ -1219,6 +1219,38 @@ _DESKTOP_OWED_FENCE = ("csv fence tripped before this changed id was derived, on
 
 _UNMAPPED_KEYS_MARK = " keys="
 
+# THE NO-HOME SIGNAL (review AR-477 r5 F1). When the unmapped-keys record itself cannot be written, its callers
+# (zero-mapped, fence trip, crash re-map) return no ids, so nothing in csv_failed or csv_deferred shows that the
+# changed keys are in no home. _note_unmapped_debt adds the source here instead; run_once clears it before a
+# unit's csv phase and reads it after, and then withholds the build receipt. A set, not a match on note text.
+_UNHOMED_SOURCES: set = set()
+# Shared with send_digest.kind_of (R142's marker rule): a note segment that starts with it is a real failure.
+# It lives in the stdlib-only updater/notes.py so the digest can read it without importing this module.
+from .notes import UNHOMED_NOTE  # noqa: E402
+
+
+def _record_build_receipt(store, unit, res, status: str, *, dry: bool, unhomed: bool) -> bool:
+    """Record the fetcher's Result.build_receipt for this unit, or not. True when recorded.
+
+    BUILD RECEIPT (review AR-477 F4): every CSV booking of the pass is written before this, in this state.db, so
+    the receipt reaches a later run only with them. A partial records it too: its bookings were kept, and refusing
+    it made fhfa rebuild every due pass after one failed CSV. A pass that raised (run_once's except branches)
+    records none. A pass that left a changed id or key with no health-read home (`unhomed`, review AR-477 r4/r5
+    F1) records none, so a later pass falls back. Only an ok or partial status records one, and never a dry run.
+    A function so each rule can be tested alone (review AR-477 r6: run_once's dry run never reaches here)."""
+    receipt = getattr(res, "build_receipt", None)
+    if not receipt:
+        return False
+    if unhomed:
+        print(f"[orchestrator] {unit.key}: build receipt NOT recorded - a changed id or key got no "
+              f"health-read home (its booking or its unmapped-keys record failed), so a later pass "
+              f"books the full debt", flush=True)
+        return False
+    if dry or status not in ("ok", "partial"):
+        return False
+    store.note_build_receipt(unit.source_id, unit.unit_id, receipt)
+    return True
+
 
 def _note_unmapped_debt(store, source_id: str, keys, why: str) -> bool:
     """The durable record for changed keys that could not be MAPPED to catalogue ids (R1148, R1149):
@@ -1227,6 +1259,7 @@ def _note_unmapped_debt(store, source_id: str, keys, why: str) -> bool:
     keys are STORE keys (ilostat: indicator stems), not catalogue ids. True when recorded."""
     import json as _json                                                # noqa: PLC0415
     if store is None:
+        _UNHOMED_SOURCES.add(source_id)
         return False
     try:
         old = next((r for r in store.full_rederives_owed() if r["source_id"] == source_id), None)
@@ -1244,6 +1277,7 @@ def _note_unmapped_debt(store, source_id: str, keys, why: str) -> bool:
     except Exception as e:                                           # noqa: BLE001 - loud, never fatal
         print(f"[orchestrator] {source_id}: could not record the unmapped keys ({type(e).__name__}: "
               f"{str(e)[:100]})", flush=True)
+        _UNHOMED_SOURCES.add(source_id)
         return False
 
 
@@ -4193,6 +4227,10 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             # giant sweep the hard limit ended after it had merged changed flows (_giant.run_giant).
             # Its status stays transient_fail below - a CSV failure does not demote it, the vintage
             # does not advance and no success is set - so the unit is due again at the next run.
+            # AR-477 r4 F1 / r5 F1: True when a changed id or key of this pass got no health-read home (set below,
+            # read by the build receipt). _UNHOMED_SOURCES is this unit's own: cleared here, read after the phase.
+            _unhomed = False
+            _UNHOMED_SOURCES.discard(unit.source_id)
             if _should_derive_csvs(status, getattr(res, "changed_keys", None)) and not dry and not _served_by_lane(unit.source_id):
                 # HARD FENCE around the WHOLE csv phase (2026-08-18): abs's
                 # post-merge phase ran 115 silent minutes past every soft budget
@@ -4277,6 +4315,18 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 # the same exhausted window is exactly the overrun being fenced.
                 if not _csv_fence_tripped:
                     _drain_csv_retry_queue(unit, blob, store)
+                # A `csv_misses: desktop_owed` id still in csv_failed or csv_deferred here is one whose
+                # csv_desktop_owed booking FAILED (derive failure, crash, fence trip or budget deferral). It
+                # goes only to csv_retry_queue, which cannot drain on r2 and which health does not read. The
+                # change signal is already spent, so this pass must NOT record its build receipt (below):
+                # a later pass of the unit then falls back and books the full debt (review AR-477 r4 F1).
+                # The same holds when the UNMAPPED-KEYS record could not be written (zero-mapped, fence trip
+                # or crash re-map): those callers return no ids, so _note_unmapped_debt's own signal is read
+                # here - those keys are not even queued (review AR-477 r5 F1).
+                if (csv_failed or csv_deferred) and _csv_misses(unit.source_id) == "desktop_owed":
+                    _unhomed = True
+                if unit.source_id in _UNHOMED_SOURCES:
+                    _unhomed = True
                 if csv_deferred:
                     store.enqueue_csv_retry(unit.source_id, csv_deferred,
                                             "derive budget spent — deferred, not failed")
@@ -4325,6 +4375,21 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                         status = "partial"
                     ok = False
                     err_note = "; ".join(x for x in (err_note, csv_err) if x)
+                if _unhomed and getattr(res, "build_receipt", None):
+                    # A BUDGET-DEFERRED id whose desktop booking failed does not demote a pass (it is a
+                    # coverage note), so the vintage below would advance to this build - and a fetcher that
+                    # reads its vintage as confirmation (fhfa._build_confirmed) skips just as it would on a
+                    # receipt (review AR-477 r4 F1). For a receipt-carrying result only: the pass is partial,
+                    # so neither record names the build and a later pass falls back. Other sources keep
+                    # their non-demoting deferral exactly as before.
+                    # The segment goes FIRST and carries UNHOMED_NOTE (review AR-477 r5 F3): the digest cuts the
+                    # error at 72 characters, and a row whose text starts "csv coverage note ... none failed"
+                    # was filed as SUBSET noise. send_digest.kind_of matches UNHOMED_NOTE before SUBSET.
+                    if status == "ok":
+                        status, ok = "partial", False
+                    err_note = "; ".join(x for x in ((
+                        f"{UNHOMED_NOTE}: a changed id or key could not be booked (the state write failed), "
+                        f"so the build is not confirmed and a later pass rebuilds"), err_note) if x)
             # last_obs_date must never regress (a run that wrote only some units can
             # report a lower max than what's already stored).
             old_last = (us or {}).get("last_obs_date")
@@ -4342,6 +4407,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 obs_count=(res.obs if res.obs else (us or {}).get("obs_count")),
                 last_success_utc=(now_utc() if ok else (us or {}).get("last_success_utc")),
                 last_attempt_utc=now_utc(), last_error=err_note)
+            _record_build_receipt(store, unit, res, status, dry=dry, unhomed=_unhomed)
             if res.series_cursors:
                 # per-series freshness stands even on a csv-partial: the parquet
                 # holding these observations DID publish (§5.1 — freshness only
