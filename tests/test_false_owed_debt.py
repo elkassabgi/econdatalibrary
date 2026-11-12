@@ -454,7 +454,7 @@ def test_every_fence_note_carries_the_mark_the_floor_query_skips():
     may appear once in orchestrate.py, in the constant."""
     src = open(os.path.join(ROOT, "updater", "orchestrate.py"), encoding="utf-8").read()
     assert src.count("csv phase exceeded its") == 1
-    assert src.count("_CSV_FENCE_MARK") >= 6, "constant, floor query, run_once's fence note, 4 _book_fence_trip notes"
+    assert src.count("{_CSV_FENCE_MARK}") == 5, "run_once's fence note and the 4 _book_fence_trip notes (AR-480)"
 
 
 def test_run_once_the_failure_path_logs_obs_zero():
