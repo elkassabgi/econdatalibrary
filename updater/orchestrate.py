@@ -1171,7 +1171,31 @@ _UNMAPPED_KEYS_MARK = " keys="
 # unit's csv phase and reads it after, and then withholds the build receipt. A set, not a match on note text.
 _UNHOMED_SOURCES: set = set()
 # Shared with send_digest.kind_of (R142's marker rule): a note segment that starts with it is a real failure.
-UNHOMED_NOTE = "csv debt has NO HOME"
+# It lives in the stdlib-only updater/notes.py so the digest can read it without importing this module.
+from .notes import UNHOMED_NOTE  # noqa: E402
+
+
+def _record_build_receipt(store, unit, res, status: str, *, dry: bool, unhomed: bool) -> bool:
+    """Record the fetcher's Result.build_receipt for this unit, or not. True when recorded.
+
+    BUILD RECEIPT (review AR-477 F4): every CSV booking of the pass is written before this, in this state.db, so
+    the receipt reaches a later run only with them. A partial records it too: its bookings were kept, and refusing
+    it made fhfa rebuild every due pass after one failed CSV. A pass that raised (run_once's except branches)
+    records none. A pass that left a changed id or key with no health-read home (`unhomed`, review AR-477 r4/r5
+    F1) records none, so a later pass falls back. Only an ok or partial status records one, and never a dry run.
+    A function so each rule can be tested alone (review AR-477 r6: run_once's dry run never reaches here)."""
+    receipt = getattr(res, "build_receipt", None)
+    if not receipt:
+        return False
+    if unhomed:
+        print(f"[orchestrator] {unit.key}: build receipt NOT recorded - a changed id or key got no "
+              f"health-read home (its booking or its unmapped-keys record failed), so a later pass "
+              f"books the full debt", flush=True)
+        return False
+    if dry or status not in ("ok", "partial"):
+        return False
+    store.note_build_receipt(unit.source_id, unit.unit_id, receipt)
+    return True
 
 
 def _note_unmapped_debt(store, source_id: str, keys, why: str) -> bool:
@@ -4185,18 +4209,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 obs_count=(res.obs if res.obs else (us or {}).get("obs_count")),
                 last_success_utc=(now_utc() if ok else (us or {}).get("last_success_utc")),
                 last_attempt_utc=now_utc(), last_error=err_note)
-            _receipt = getattr(res, "build_receipt", None)
-            if _receipt and _unhomed:
-                print(f"[orchestrator] {unit.key}: build receipt NOT recorded - a changed id or key got no "
-                      f"health-read home (its booking or its unmapped-keys record failed), so a later pass "
-                      f"books the full debt", flush=True)
-            elif _receipt and status in ("ok", "partial") and not dry:
-                # BUILD RECEIPT (review AR-477 F4): every CSV booking of this pass is written above, in this
-                # state.db, so the receipt reaches a later run only with them. A partial records it too: its
-                # bookings were kept, and refusing it made fhfa rebuild every due pass after one failed CSV.
-                # A pass that raised (the except branches below) records none. A pass that left a
-                # desktop_owed id only in csv_retry_queue records none either (the branch above).
-                store.note_build_receipt(unit.source_id, unit.unit_id, _receipt)
+            _record_build_receipt(store, unit, res, status, dry=dry, unhomed=_unhomed)
             if res.series_cursors:
                 # per-series freshness stands even on a csv-partial: the parquet
                 # holding these observations DID publish (§5.1 — freshness only

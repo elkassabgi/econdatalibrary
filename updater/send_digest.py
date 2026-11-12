@@ -459,19 +459,29 @@ _KINDS_CACHE: list = []
 
 
 def _kinds() -> tuple:
-    """The digest's row kinds, in MATCH order. Built once, on first use: UNHOMED's marker is orchestrate's
-    UNHOMED_NOTE (one constant, R142), and importing orchestrate at module load is not needed elsewhere here.
+    """The digest's row kinds, in MATCH order. Built once, on first use.
 
     UNHOMED comes BEFORE SUBSET (review AR-477 r5 F3): a pass whose changed ids got no health-read home also
-    carries 'csv coverage note' segments, and SUBSET (rank 8) is the permanent-by-construction group."""
+    carries 'csv coverage note' segments, and SUBSET (rank 8) is the permanent-by-construction group.
+
+    NEVER IMPORT updater.orchestrate HERE (review AR-477 r6): it pulls pyarrow, and this digest is an
+    `if: always()` step that must mail on a morning when the install failed. The marker lives in the
+    stdlib-only updater/notes.py. If even that cannot be read, the UNHOMED kind is left out (the row then
+    sorts as SUBSET or OTHER, never dropped) and the mail still goes."""
     if not _KINDS_CACHE:
-        from updater.orchestrate import UNHOMED_NOTE                  # noqa: PLC0415
+        try:
+            from updater.notes import UNHOMED_NOTE                    # noqa: PLC0415
+            _unhomed = [("UNHOMED", 4, _re.compile(_re.escape(UNHOMED_NOTE), _re.I))]
+        except Exception as e:                                        # noqa: BLE001 - a classifier never ends the mail
+            print(f"[digest] WARNING: updater.notes unreadable ({type(e).__name__}) - the UNHOMED kind is off",
+                  flush=True)
+            _unhomed = []
         _KINDS_CACHE.extend((
             ("SCHEMA", 0, _re.compile(r"returned 200 but parsed 0 rows", _re.I)),
             ("SHRINK", 1, _re.compile(r"refusing shrink", _re.I)),
             ("MIGRATE", 2, _re.compile(r"migration has not completed", _re.I)),
             ("RETRY", 3, _re.compile(r"transient-failed|UNEXPECTED:|UnitTimeout", _re.I)),
-            ("UNHOMED", 4, _re.compile(_re.escape(UNHOMED_NOTE), _re.I)),
+            *_unhomed,
             ("SUBSET", 8, _re.compile(r"csv coherence unmet|csv coverage note", _re.I)),
             ("BUDGET", 9, _re.compile(r"deferred by budget", _re.I)),
         ))
