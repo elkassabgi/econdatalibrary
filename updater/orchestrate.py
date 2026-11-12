@@ -3995,6 +3995,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             # giant sweep the hard limit ended after it had merged changed flows (_giant.run_giant).
             # Its status stays transient_fail below - a CSV failure does not demote it, the vintage
             # does not advance and no success is set - so the unit is due again at the next run.
+            _owed_left_in_queue = False      # AR-477 r4 F1: set below; read by the build receipt
             if _should_derive_csvs(status, getattr(res, "changed_keys", None)) and not dry and not _served_by_lane(unit.source_id):
                 # HARD FENCE around the WHOLE csv phase (2026-08-18): abs's
                 # post-merge phase ran 115 silent minutes past every soft budget
@@ -4079,6 +4080,13 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 # the same exhausted window is exactly the overrun being fenced.
                 if not _csv_fence_tripped:
                     _drain_csv_retry_queue(unit, blob, store)
+                # A `csv_misses: desktop_owed` id still in csv_failed or csv_deferred here is one whose
+                # csv_desktop_owed booking FAILED (derive failure, crash, fence trip or budget deferral). It
+                # goes only to csv_retry_queue, which cannot drain on r2 and which health does not read. The
+                # change signal is already spent, so this pass must NOT record its build receipt (below):
+                # the next pass then falls back and books the full debt (review AR-477 r4 F1).
+                if (csv_failed or csv_deferred) and _csv_misses(unit.source_id) == "desktop_owed":
+                    _owed_left_in_queue = True
                 if csv_deferred:
                     store.enqueue_csv_retry(unit.source_id, csv_deferred,
                                             "derive budget spent — deferred, not failed")
@@ -4127,6 +4135,17 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                         status = "partial"
                     ok = False
                     err_note = "; ".join(x for x in (err_note, csv_err) if x)
+                if _owed_left_in_queue and getattr(res, "build_receipt", None) and status == "ok":
+                    # A BUDGET-DEFERRED id whose desktop booking failed does not demote a pass (it is a
+                    # coverage note), so the vintage below would advance to this build - and a fetcher that
+                    # reads its vintage as confirmation (fhfa._build_confirmed) skips just as it would on a
+                    # receipt (review AR-477 r4 F1). For a receipt-carrying result only: the pass is partial,
+                    # so neither record names the build and the next pass falls back. Other sources keep
+                    # their non-demoting deferral exactly as before.
+                    status, ok = "partial", False
+                    err_note = "; ".join(x for x in (err_note, (
+                        "csv: desktop_owed id(s) could only be queued (their csv_desktop_owed booking failed) - "
+                        "the build is not confirmed")) if x)
             # last_obs_date must never regress (a run that wrote only some units can
             # report a lower max than what's already stored).
             old_last = (us or {}).get("last_obs_date")
@@ -4145,11 +4164,16 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 last_success_utc=(now_utc() if ok else (us or {}).get("last_success_utc")),
                 last_attempt_utc=now_utc(), last_error=err_note)
             _receipt = getattr(res, "build_receipt", None)
-            if _receipt and status in ("ok", "partial") and not dry:
+            if _receipt and _owed_left_in_queue:
+                print(f"[orchestrator] {unit.key}: build receipt NOT recorded - a desktop_owed id could only be "
+                      f"queued (its csv_desktop_owed booking failed), so the next pass books the full debt",
+                      flush=True)
+            elif _receipt and status in ("ok", "partial") and not dry:
                 # BUILD RECEIPT (review AR-477 F4): every CSV booking of this pass is written above, in this
                 # state.db, so the receipt reaches a later run only with them. A partial records it too: its
                 # bookings were kept, and refusing it made fhfa rebuild every due pass after one failed CSV.
-                # A pass that raised (the except branches below) records none.
+                # A pass that raised (the except branches below) records none. A pass that left a
+                # desktop_owed id only in csv_retry_queue records none either (the branch above).
                 store.note_build_receipt(unit.source_id, unit.unit_id, _receipt)
             if res.series_cursors:
                 # per-series freshness stands even on a csv-partial: the parquet
