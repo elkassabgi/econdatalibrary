@@ -232,3 +232,65 @@ function Test-CadenceShouldStamp {
     }
     return [pscustomobject]@{ Stamp = $true; Why = "$Advanced unit(s) advanced" }
 }
+
+# --- THE NIGHTLY BACKUP WINDOW (owner's decision, 2026-11-12) --------------------------------------------------
+# The workstation's nightly backup starts at 02:00 America/Chicago and reads the disks heavily. A desktop pass
+# that comes due inside this window does not START until it ends; a pass already running is never stopped (the
+# runner asks this once, under -IfDue, after the live-lock check and before it takes the lock). The window is on
+# the Chicago WALL CLOCK, whatever time zone this machine is set to, so it follows DST: 08:00-12:00Z in winter
+# (CST), 07:00-11:00Z in summer (CDT). On the spring-forward night 02:00-02:59 local does not exist and the
+# window is 08:00-11:00Z; on the fall-back night it is 08:00-12:00Z (02:00 CST is after the repeated hour).
+# Start inclusive, end exclusive: due at 01:59 starts, 02:00 and 05:59 hold, 06:00 starts.
+$script:BackupWindowStartHour = 2
+$script:BackupWindowEndHour   = 6
+# IANA first (pwsh 7 on Linux/CI, .NET 6+), then the Windows id for the same zone (Windows PowerShell 5.1 on
+# .NET Framework knows only Windows ids). Both are America/Chicago with its DST rules.
+$script:BackupWindowTimeZoneIds = @('America/Chicago', 'Central Standard Time')
+
+function Get-BackupWindowTimeZone {
+    foreach ($id in $script:BackupWindowTimeZoneIds) {
+        try { return [TimeZoneInfo]::FindSystemTimeZoneById($id) } catch { }
+    }
+    return $null
+}
+
+function Get-BackupWindowHold {
+    <#
+      .SYNOPSIS
+      Is $NowUtc inside the nightly backup window? A pure function of the instant: no file, no clock read.
+
+      Returns Hold, LocalNow (Chicago wall clock), ResumeUtc (06:00 Chicago of that night, when held),
+      WindowKey (the Chicago date of the window, for the once-per-window log line) and Why.
+
+      THE TIME ZONE CANNOT BE FOUND -> Hold = $false, with a Why that says so. Fail OPEN, deliberately: holding
+      on an unknown clock would hold every tick for ever, the silent starvation R1032 is about, while a pass that
+      overlaps the backup only runs slower.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][DateTime] $NowUtc,
+        [int] $StartHour = $script:BackupWindowStartHour,
+        [int] $EndHour   = $script:BackupWindowEndHour
+    )
+    if ($NowUtc.Kind -eq [DateTimeKind]::Local) { $NowUtc = $NowUtc.ToUniversalTime() }
+    elseif ($NowUtc.Kind -eq [DateTimeKind]::Unspecified) { $NowUtc = [DateTime]::SpecifyKind($NowUtc, [DateTimeKind]::Utc) }
+    $o = [pscustomobject]@{ Hold = $false; LocalNow = $null; ResumeUtc = $null; WindowKey = ''; Why = '' }
+    $tz = Get-BackupWindowTimeZone
+    if ($null -eq $tz) {
+        $o.Why = ("time zone not found (tried " + ($script:BackupWindowTimeZoneIds -join ', ') +
+                  "); the backup window is NOT applied")
+        return $o
+    }
+    $local = [TimeZoneInfo]::ConvertTimeFromUtc($NowUtc, $tz)
+    $o.LocalNow = $local
+    $tod = $local.TimeOfDay
+    if ($tod -ge [TimeSpan]::FromHours($StartHour) -and $tod -lt [TimeSpan]::FromHours($EndHour)) {
+        # The end hour is never inside a DST gap or overlap on this zone (both are at 01:00-03:00 local).
+        $endLocal = [DateTime]::SpecifyKind($local.Date.AddHours($EndHour), [DateTimeKind]::Unspecified)
+        $o.Hold = $true
+        $o.ResumeUtc = [TimeZoneInfo]::ConvertTimeToUtc($endLocal, $tz)
+        $o.WindowKey = $local.ToString('yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
+        $o.Why = ("{0:D2}:00-{1:D2}:00 {2} is the nightly backup window; it is {3} there" -f $StartHour, $EndHour,
+                  $tz.Id, $local.ToString('HH:mm', [Globalization.CultureInfo]::InvariantCulture))
+    }
+    return $o
+}

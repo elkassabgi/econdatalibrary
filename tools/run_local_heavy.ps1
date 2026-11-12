@@ -179,6 +179,28 @@ if ($IfDue) {
     # D3: how long since the last pushed pass that advanced nothing. Read only here, under -IfDue, so a manual
     # invocation is never held by it. $null (missing, unreadable or future-dated) means no back-off.
     $script:NoProgressAgeHours = Get-StampAgeHours -Path $noProgFile
+
+    # THE NIGHTLY BACKUP WINDOW (owner, 2026-11-12): a pass that is due between 02:00 and 06:00 America/Chicago
+    # waits and starts on the first tick from 06:00. Asked HERE, after the live-lock check above, so a tick that
+    # finds a pass running has already left and a running pass is never touched; and before this runner takes
+    # the lock, so a held tick holds nothing. Under -IfDue only: a manual run is the owner's own call. The rule
+    # and its DST handling are Get-BackupWindowHold in cadence_decision.ps1. ONE line per window, not per tick:
+    # the guard keeps every non-empty guard_localheavy_*.log, so a line every 5 minutes would be 48 files a night.
+    $bw = Get-BackupWindowHold -NowUtc ([DateTime]::UtcNow)
+    if ($bw.Hold) {
+        $bwMark = Join-Path $logDir 'local_heavy.backup_hold'
+        $bwSeen = $null
+        try { if (Test-Path $bwMark) { $bwSeen = (Get-Content $bwMark -First 1) } } catch { }
+        if ($bwSeen -ne $bw.WindowKey) {
+            Write-Output ('[' + (Get-Date).ToUniversalTime().ToString('HH:mm:ss') + '] BACKUP WINDOW: a pass is ' +
+                          'due but will not start now - ' + $bw.Why + '. It starts on the first tick from ' +
+                          $bw.ResumeUtc.ToString('yyyy-MM-ddTHH:mm') + 'Z (06:00 local). A running pass is ' +
+                          'never stopped by this.')
+            try { Set-Content -Path $bwMark -Value $bw.WindowKey -Encoding ascii } catch { }
+        }
+        exit 0
+    }
+    if ($bw.Why) { Write-Output ('[' + (Get-Date).ToUniversalTime().ToString('HH:mm:ss') + '] WARNING: ' + $bw.Why) }
 }
 
 Say "local heavy updater starting; log -> $log"
