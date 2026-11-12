@@ -1864,6 +1864,7 @@ def update(unit, since) -> Result:
                          new_vintage=res.new_vintage, series_cursors=res.series_cursors,
                          merged_rows=res.merged_rows, cursor_cap_hit=res.cursor_cap_hit,
                          changed_keys=res.changed_keys, window_stop=res.window_stop,
+                         build_receipt=res.build_receipt,
                          error=msg)
         elif deferred:
             res = dataclasses.replace(res, error="; ".join(x for x in (res.error, msg) if x))
