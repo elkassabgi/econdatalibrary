@@ -201,3 +201,68 @@ def test_check_prints_it_and_does_not_fail(monkeypatch, capsys):
     monkeypatch.setattr(cutover, "is_cut_over", lambda: False)
     assert GH.check(45.0) == 0
     assert "NOTE: LAUNCHER WATCHDOG: IpGuard GAVE-UP since x" in capsys.readouterr().out
+
+
+# ---- the whole digest, end to end (review AR-481 round 3: a mutant that dropped the section from the text body,
+#      or from the HTML body, passed every test above, because they call launcher_watchdog_lines() directly)
+def _send_digest(tmp_path, monkeypatch, beat):
+    """send_digest.main() with a one-row state file from the repository's StateStore, the gate's own verdict of
+    it, a planted guard beat, and the mail module replaced by a recorder."""
+    from updater import config, health, registry
+    from updater.state import StateStore
+    reg = {e["source_id"]: e for e in registry.load().get("sources", [])}
+    e = reg["abs"]
+    now = dt.datetime.now(dt.timezone.utc)
+    tried = now.strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    db = str(tmp_path / "state.db")
+    store = StateStore(db)
+    store.upsert_unit("abs", "_all", strategy=e["strategy"], status="ok",
+                      last_obs_date=(now - dt.timedelta(days=10)).strftime("%Y-%m-%d"),
+                      last_attempt_utc=tried, last_success_utc=tried, last_error=None)
+    store.upsert_source("abs", strategy=e["strategy"], cadence=e.get("cadence"), status="ok", last_attempt_utc=tried)
+    store.close()
+    monkeypatch.setattr(config, "STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "STATE_DB", db)
+    monkeypatch.setattr(sys, "argv", ["updater.health", "--json"])
+    try:
+        health.main()
+    except SystemExit:
+        pass
+    monkeypatch.setattr(SD, "STATE", db)
+    monkeypatch.setattr(SD, "read_guard_beat", lambda *a, **k: beat)
+    sent = {}
+    import core.status_mail as sm
+
+    def fake_send(subject, body, html_doc, **kw):
+        sent.update(subject=subject, body=body, html=html_doc)
+        return "sent"
+    monkeypatch.setattr(sm, "send_status_mail", fake_send)
+    monkeypatch.setenv("RUN_STATUS", "success")
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    monkeypatch.delenv("AQUEDUCT_DIGEST_HTML_OUT", raising=False)
+    SD.main()
+    assert sent, "the digest was not handed to the mail module"
+    return sent
+
+
+def _beat(problems):
+    return {"utc": dt.datetime.now(dt.timezone.utc).isoformat(), "host": "h",
+            "notices": {"run": None, "new": 0, "broken": 0, "items": []},
+            "launcher_watchdog": {"installed": True, "status": None, "hook": None, "problems": problems}}
+
+
+def test_the_digest_mail_carries_it_in_both_bodies(tmp_path, monkeypatch, capsys):
+    import html as H
+    sent = _send_digest(tmp_path, monkeypatch, _beat(["IpGuard GAVE-UP since 2026-11-12T09:00:00Z"]))
+    capsys.readouterr()
+    assert "IpGuard GAVE-UP since 2026-11-12T09:00:00Z" in sent["body"], sent["body"][-3000:]
+    assert "Launcher watchdog</h3>" in sent["html"], "the HTML body (the one that is read) has no section"
+    assert H.escape("IpGuard GAVE-UP since 2026-11-12T09:00:00Z") in sent["html"], sent["html"][-3000:]
+
+
+def test_the_digest_mail_is_silent_without_a_problem(tmp_path, monkeypatch, capsys):
+    """The negative control of the test above: the same run, no problem -> no section in either body."""
+    sent = _send_digest(tmp_path, monkeypatch, _beat([]))
+    capsys.readouterr()
+    assert "launcher watchdog" not in sent["body"].lower(), sent["body"][-3000:]
+    assert "Launcher watchdog" not in sent["html"]
