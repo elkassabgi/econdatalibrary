@@ -455,6 +455,38 @@ def notices_lines(beat, now) -> list:
     return out + ([""] if out else [])
 
 
+_KINDS_CACHE: list = []
+
+
+def _kinds() -> tuple:
+    """The digest's row kinds, in MATCH order. Built once, on first use: UNHOMED's marker is orchestrate's
+    UNHOMED_NOTE (one constant, R142), and importing orchestrate at module load is not needed elsewhere here.
+
+    UNHOMED comes BEFORE SUBSET (review AR-477 r5 F3): a pass whose changed ids got no health-read home also
+    carries 'csv coverage note' segments, and SUBSET (rank 8) is the permanent-by-construction group."""
+    if not _KINDS_CACHE:
+        from updater.orchestrate import UNHOMED_NOTE                  # noqa: PLC0415
+        _KINDS_CACHE.extend((
+            ("SCHEMA", 0, _re.compile(r"returned 200 but parsed 0 rows", _re.I)),
+            ("SHRINK", 1, _re.compile(r"refusing shrink", _re.I)),
+            ("MIGRATE", 2, _re.compile(r"migration has not completed", _re.I)),
+            ("RETRY", 3, _re.compile(r"transient-failed|UNEXPECTED:|UnitTimeout", _re.I)),
+            ("UNHOMED", 4, _re.compile(_re.escape(UNHOMED_NOTE), _re.I)),
+            ("SUBSET", 8, _re.compile(r"csv coherence unmet|csv coverage note", _re.I)),
+            ("BUDGET", 9, _re.compile(r"deferred by budget", _re.I)),
+        ))
+    return tuple(_KINDS_CACHE)
+
+
+def kind_of(err) -> tuple:
+    """(sort rank, short label). Unmatched rows sort with the actionable ones, never last."""
+    text = str(err or "")
+    for name, rank, pat in _kinds():
+        if pat.search(text):
+            return rank, name
+    return 4, "OTHER"
+
+
 def is_late(cadence: str, ts, now) -> bool:
     """True when `ts` is older than the source's cadence allows.
 
@@ -634,22 +666,7 @@ def main() -> None:
     # that is always that long cannot distinguish a new problem from the standing one. Rows are
     # sorted and given a reason; NONE is dropped, because a misclassification would otherwise
     # bury the row it misjudged, and this is a regex over error text, not an oracle.
-    _KINDS = (
-        ("SCHEMA", 0, _re.compile(r"returned 200 but parsed 0 rows", _re.I)),
-        ("SHRINK", 1, _re.compile(r"refusing shrink", _re.I)),
-        ("MIGRATE", 2, _re.compile(r"migration has not completed", _re.I)),
-        ("RETRY", 3, _re.compile(r"transient-failed|UNEXPECTED:|UnitTimeout", _re.I)),
-        ("SUBSET", 8, _re.compile(r"csv coherence unmet|csv coverage note", _re.I)),
-        ("BUDGET", 9, _re.compile(r"deferred by budget", _re.I)),
-    )
-
-    def kind_of(err) -> tuple:
-        """(sort rank, short label). Unmatched rows sort with the actionable ones, never last."""
-        text = str(err or "")
-        for name, rank, pat in _KINDS:
-            if pat.search(text):
-                return rank, name
-        return 4, "OTHER"
+    # kind_of is module-level (above main) so a test can call it (review AR-477 r5 F3).
 
     # ---- plain-text fallback (some clients / previews) ----
     lines = [f"Run {run_id}: {run_status}",
