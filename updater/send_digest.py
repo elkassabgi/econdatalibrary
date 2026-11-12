@@ -455,6 +455,36 @@ def notices_lines(beat, now) -> list:
     return out + ([""] if out else [])
 
 
+def launcher_watchdog_lines(beat, now) -> list:
+    """Text lines for the workstation's launcher watchdog (tools/guard_heartbeat.py `_launcher_watchdog_beat`: it
+    relaunches the hf and IP log-on loops), or [] when there is nothing to say: no beat field (an older publisher),
+    the watchdog not installed, or no problem. The problems were judged on the workstation when the beat was
+    published; a beat older than GUARD_BEAT_OLD_H says so first, because then they are as of that beat. An
+    unreadable beat is named by the publisher-notice section already, so it is not repeated here."""
+    if not isinstance(beat, dict) or "unreadable" in beat:
+        return []
+    lw = beat.get("launcher_watchdog")
+    if not isinstance(lw, dict) or not lw.get("installed"):
+        return []
+    probs = [str(p) for p in (lw.get("problems") or [])]
+    if not probs:
+        return []
+    out = []
+    try:
+        b = _dt.datetime.fromisoformat(str(beat.get("utc")).replace("Z", "+00:00"))
+        age_h = (now - (b if b.tzinfo else b.replace(tzinfo=_dt.timezone.utc))).total_seconds() / 3600
+    except (ValueError, TypeError):
+        age_h = None
+    if age_h is None or age_h > GUARD_BEAT_OLD_H:
+        out.append("  launcher watchdog: the workstation beat is "
+                   + ("undated" if age_h is None else f"{age_h:.0f} h old") + "; what follows is as of that beat")
+    out.append(f"  launcher watchdog (F:\\launcher_watchdog on the workstation): {len(probs)} item(s) need a look:")
+    out += [f"     {p[:160]}" for p in probs[:12]]
+    if len(probs) > 12:
+        out.append(f"     ... and {len(probs) - 12} more (status.json there)")
+    return out + [""]
+
+
 def is_late(cadence: str, ts, now) -> bool:
     """True when `ts` is older than the source's cadence allows.
 
@@ -698,8 +728,12 @@ def main() -> None:
             lines.append("")
     lines += _giant
     # PUBLISHER NOTICES (2026-11-05): what the workstation's watcher found that is ending or changing.
-    _notices = notices_lines(read_guard_beat(), dt.datetime.now(dt.timezone.utc))
+    _beat = read_guard_beat()
+    _notices = notices_lines(_beat, dt.datetime.now(dt.timezone.utc))
     lines += _notices
+    # LAUNCHER WATCHDOG (2026-11-12): the same beat, its GAVE-UP / CANNOT TELL / stale-look / pinned-hash lines
+    _lwatch = launcher_watchdog_lines(_beat, dt.datetime.now(dt.timezone.utc))
+    lines += _lwatch
     for r in ok:
         # A "data through" frontier far in the future is a legitimate projection
         # horizon (e.g. official multi-year forecasts that
@@ -825,6 +859,11 @@ def main() -> None:
                         "<pre style='margin:0;padding:8px 11px;background:#f9fafb;border:1px solid #e5e7eb;"
                         "border-radius:8px;font-size:12px;white-space:pre-wrap;'>"
                         + esc(chr(10).join(l for l in _notices if l)) + "</pre>")
+    if _lwatch:
+        notices_html += ("<h3 style='font-family:Georgia,serif;font-size:15px;margin:14px 0 6px;'>Launcher watchdog</h3>"
+                         "<pre style='margin:0;padding:8px 11px;background:#f9fafb;border:1px solid #e5e7eb;"
+                         "border-radius:8px;font-size:12px;white-space:pre-wrap;'>"
+                         + esc(chr(10).join(l for l in _lwatch if l)) + "</pre>")
 
     current_rows = ""
     for r in ok:
