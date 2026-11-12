@@ -411,6 +411,14 @@ class StateStore:
                             [(str(s),) for s in series_ids])
         self.db.commit()
 
+    def partial_runs(self, source_id, unit_id, limit=200):
+        """[(ts_utc, note)] of this unit's `partial` runs rows, NEWEST FIRST, at most `limit`. Read by
+        health._rotation_success_utc. Ordered by ts_utc (the run END time, the same basis as
+        last_success_utc), id as the tie-break; `runs` is small (4,193 rows on 2026-11-10)."""
+        return [(ts, note) for ts, note in self.db.execute(
+            "SELECT ts_utc, note FROM runs WHERE source_id=? AND unit_id=? AND status='partial' "
+            "ORDER BY ts_utc DESC, id DESC LIMIT ?", (source_id, unit_id, limit))]
+
     def recent_runs(self, limit=50):
         return [dict(r) for r in self.db.execute(
             "SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,))]
