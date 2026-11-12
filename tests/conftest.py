@@ -110,6 +110,17 @@ def _no_production_paths(tmp_path_factory):
         mp.setattr(catalog_path, "CHECKOUT_PATH", str(own / "checkout" / "data" / "catalog.db"))
         if blob is not None and hasattr(blob, "SELFHOST_BLOB_ROOT"):
             mp.setattr(blob, "SELFHOST_BLOB_ROOT", str(own / "blobs"))
+        try:
+            # the desktop launcher watchdog's folder (F:\launcher_watchdog): a test of publish() must never read
+            # what the real watchdog wrote, or its result would depend on the machine
+            # BOTH module objects: some tests import it bare (`import guard_heartbeat`, tools/ on sys.path),
+            # which is a second module with its own constant
+            import sys
+            from tools import guard_heartbeat as _gh
+            for _m in {id(m): m for m in (_gh, sys.modules.get("guard_heartbeat")) if m is not None}.values():
+                mp.setattr(_m, "LAUNCHER_WD_DIR", str(own / "launcher_watchdog"))
+        except Exception:                                # noqa: BLE001 - a test tree without tools/
+            pass
         if econdl_catalog is not None:
             for name, value in (("_CUTOVER_FLAG", cutover.FLAG_PATH), ("_BUILD_DB", catalog_path.BUILD_PATH),
                                 ("_DEFAULT_DB", catalog_path.CHECKOUT_PATH)):

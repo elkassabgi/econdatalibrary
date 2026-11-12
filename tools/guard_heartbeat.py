@@ -430,6 +430,103 @@ def _notices_beat():
     return out
 
 
+# The desktop LAUNCHER WATCHDOG (it watches the logon-only launchers: IpGuard, the hf runners, the econ dispatch
+# and origin tasks). It writes two ASCII files every 5 minutes: `watchdog.heartbeat` (line 1 = the UTC instant of
+# its last look, "yyyy-MM-ddTHH:mm:ssZ"; line 2 = a one-line summary such as "IpGuard=alive HfRunner=GAVE-UP",
+# or "STOP", or "CANNOT-TELL-processes") and `watchdog.log` ("<utc> [<pid>] <text>", rolled to watchdog.log.1 at
+# 5 MB; an alert's text starts "GAVE UP " or "CANNOT TELL"). The digest runs on CI and cannot see this machine,
+# so the beat carries a summary of both. /v1/guard-heartbeat copies none of it (whitelisted counts only).
+LAUNCHER_WD_DIR = r"F:\launcher_watchdog"
+LAUNCHER_WD_ALERTS_MAX = 10
+LAUNCHER_WD_ALERT_CHARS = 200
+LAUNCHER_WD_WINDOW_H = 24.0
+LAUNCHER_WD_TAIL_BYTES = 256 * 1024          # per log file; the beat must go out inside the loop's 90 s kill
+_LAUNCHER_WD_ALERT_PREFIXES = ("GAVE UP", "CANNOT TELL")
+
+
+def _wd_decode(raw: bytes) -> str:
+    """The writer is PowerShell: ASCII is the contract, but a UTF-16 (BOM) or UTF-8-BOM file must not read as
+    a junk summary with zero alerts. NULs are dropped and line ends normalised."""
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        text = raw.decode("utf-16", errors="replace")
+    else:
+        text = raw.decode("utf-8-sig", errors="replace")
+    return text.replace("\x00", "").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _wd_tail(path: str, nbytes: int) -> "tuple[list, bool]":
+    """(lines, cut): the last `nbytes` of `path` as lines; `cut` = the read started mid-file (its first, partial,
+    line is dropped). A missing file is ([], False)."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            start = max(0, size - nbytes)
+            fh.seek(start)
+            raw = fh.read(nbytes)
+    except FileNotFoundError:
+        return [], False
+    lines = _wd_decode(raw).split("\n")
+    if start > 0 and lines:
+        lines = lines[1:]
+    return [ln for ln in lines if ln.strip()], start > 0
+
+
+def _wd_stamp(s: str):
+    try:
+        d = dt.datetime.strptime(s.strip(), "%Y-%m-%dT%H:%M:%SZ")
+    except (TypeError, ValueError):
+        return None
+    return d.replace(tzinfo=dt.timezone.utc)
+
+
+def _launcher_wd_beat(wd_dir: "str | None" = None, now: "dt.datetime | None" = None):
+    """None when the watchdog's heartbeat file does not exist (not installed, or its folder is gone); else
+    {"hb_utc", "summary", "alerts", "alerts_total", "log_lines", "log_parsed", "window_cut"}. Alerts are the
+    GAVE UP / CANNOT TELL lines stamped within the last LAUNCHER_WD_WINDOW_H, newest LAUNCHER_WD_ALERTS_MAX,
+    each cut to LAUNCHER_WD_ALERT_CHARS, from a bounded tail of watchdog.log and (when that is short, i.e. just
+    rolled) watchdog.log.1. `window_cut` = the bytes read did not reach back 24 h, so older alerts may exist.
+    Never raises: any fault is {"unreadable": why} - an unreadable watchdog never reads as a quiet one."""
+    try:
+        d = wd_dir if wd_dir is not None else LAUNCHER_WD_DIR
+        now = now or dt.datetime.now(dt.timezone.utc)
+        try:
+            with open(os.path.join(d, "watchdog.heartbeat"), "rb") as fh:
+                hb = _wd_decode(fh.read(4096)).split("\n")
+        except FileNotFoundError:
+            return None
+        hb_utc = hb[0].strip() if hb else ""
+        summary = hb[1].strip() if len(hb) > 1 else ""
+        # A log fault (the writer mid-roll holds the file on Windows) must not cost the summary, which read fine.
+        log_err = None
+        try:
+            lines, cut = _wd_tail(os.path.join(d, "watchdog.log"), LAUNCHER_WD_TAIL_BYTES)
+            if not cut:                    # the current log holds less than the budget: reach into the rolled one
+                older, cut = _wd_tail(os.path.join(d, "watchdog.log.1"), LAUNCHER_WD_TAIL_BYTES)
+                lines = older + lines
+        except (Exception, SystemExit) as e:                 # noqa: BLE001
+            lines, cut, log_err = [], False, f"{type(e).__name__}: {e}"[:200]
+        if log_err:
+            return {"hb_utc": hb_utc[:40], "summary": summary[:400], "log_unreadable": log_err}
+        since = now - dt.timedelta(hours=LAUNCHER_WD_WINDOW_H)
+        alerts, parsed, oldest = [], 0, None
+        for ln in lines:
+            parts = ln.split(" ", 2)
+            t = _wd_stamp(parts[0]) if parts else None
+            if t is None:
+                continue
+            parsed += 1
+            oldest = t if oldest is None or t < oldest else oldest
+            text = parts[2] if len(parts) > 2 else ""
+            if t >= since and text.startswith(_LAUNCHER_WD_ALERT_PREFIXES):
+                alerts.append(ln[:LAUNCHER_WD_ALERT_CHARS])
+        return {"hb_utc": hb_utc[:40], "summary": summary[:400], "alerts": alerts[-LAUNCHER_WD_ALERTS_MAX:],
+                "alerts_total": len(alerts), "log_lines": len(lines), "log_parsed": parsed,
+                "window_cut": bool(cut and oldest is not None and oldest > since)}
+    except (Exception, SystemExit) as e:                     # noqa: BLE001 - a section, never the beat
+        return {"unreadable": f"{type(e).__name__}: {e}"[:200]}
+
+
 def _stall_summary():
     """The scheduler-stall check's last evaluation (tools/scheduler_stall.py), from its local state file."""
     try:
@@ -483,6 +580,10 @@ def publish(stall_check: bool = False) -> int:
         body["notices"] = _notices_beat()
     except BaseException as e:                               # noqa: BLE001 - the beat must go out regardless
         body["notices"] = {"unreadable": f"{type(e).__name__}: {e}"[:200]}
+    try:
+        body["launcher_watchdog"] = _launcher_wd_beat()
+    except BaseException as e:                               # noqa: BLE001 - the beat must go out regardless
+        body["launcher_watchdog"] = {"unreadable": f"{type(e).__name__}: {e}"[:200]}
     if stall_check:
         body["scheduler_stall"] = _stall_summary()
     data = json.dumps(body, indent=2).encode("utf-8")

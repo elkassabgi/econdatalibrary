@@ -455,6 +455,87 @@ def notices_lines(beat, now) -> list:
     return out + ([""] if out else [])
 
 
+LAUNCHER_WD_STALE_MIN = 15.0  # the launcher watchdog looks every 5 minutes: three missed looks is down
+
+
+def launcher_wd_lines(beat, now, public: bool = False) -> list:
+    """Text lines for the desktop launcher watchdog (tools/guard_heartbeat.py `_launcher_wd_beat`), or [] for a
+    beat whose publisher predates the field (the workstation checkout has not been updated). None in the beat
+    means the watchdog's heartbeat file does not exist. STALE is judged against the guard beat's OWN time, not
+    against `now`: an old guard beat (guard loop down) must not blame a watchdog that was fresh when it was read;
+    that case is named separately. public=True gives the version printed to the CI log - the repo is public,
+    so it carries a status and a count only, never the summary or the log lines (task names, pids, paths).
+    Before T0 only: this reads the beat from R2 (read_guard_beat); after T0 the beat moves to the self-hosted
+    store, as the notices section's does."""
+    if not isinstance(beat, dict) or "unreadable" in beat:
+        why = beat.get("unreadable") if isinstance(beat, dict) else "no beat"
+        return ["  launcher watchdog: could not read the workstation beat ("
+                + ("see the email" if public else str(why)[:120]) + ")", ""]
+    if "launcher_watchdog" not in beat:
+        return []
+    w = beat.get("launcher_watchdog")
+    if w is None:
+        return ["  launcher watchdog: NOT REPORTING - its heartbeat file (watchdog.heartbeat) does not exist on "
+                "the workstation (not installed, or its folder is gone)", ""]
+    if not isinstance(w, dict) or "unreadable" in w:
+        why = w.get("unreadable") if isinstance(w, dict) else f"not an object: {type(w).__name__}"
+        return ["  launcher watchdog: its files are unreadable ("
+                + ("see the email" if public else str(why)[:120]) + ")", ""]
+
+    def _t(v):
+        try:
+            d = _dt.datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+            return d if d.tzinfo else d.replace(tzinfo=_dt.timezone.utc)
+        except (ValueError, TypeError):
+            return None
+    out = []
+    b, hb = _t(beat.get("utc")), _t(w.get("hb_utc"))
+    if b is None or (now - b).total_seconds() > GUARD_BEAT_OLD_H * 3600:
+        out.append("  launcher watchdog: the workstation beat is "
+                   + ("undated" if b is None else f"{(now - b).total_seconds() / 3600:.0f} h old")
+                   + " - the guard loop is not publishing; what follows is as of that beat")
+    if hb is None:
+        state = "last look UNDATED" + ("" if public else f" ({str(w.get('hb_utc'))[:30]!r})")
+    else:
+        lag_min = ((b or now) - hb).total_seconds() / 60.0
+        age_min = (now - hb).total_seconds() / 60.0
+        state = f"last look {age_min:.0f} min ago"
+        if lag_min > LAUNCHER_WD_STALE_MIN:
+            state += f" - STALE (over {LAUNCHER_WD_STALE_MIN:.0f} min)"
+        elif lag_min < -2.0:
+            state += f" - CLOCK SKEW (stamped {-lag_min:.0f} min after the guard beat)"
+    n = w.get("alerts_total") if isinstance(w.get("alerts_total"), int) else len(w.get("alerts") or [])
+    if public:
+        out.append(f"  launcher watchdog: {state} - "
+                   + ("its log is unreadable" if w.get("log_unreadable") else f"{n} alert(s) in 24 h")
+                   + " (details in the email)")
+        return out + [""]
+    out.append(f"  launcher watchdog: {state} - {str(w.get('summary') or '(no summary)')[:200]}")
+    if w.get("log_unreadable"):
+        out.append(f"     its log is unreadable ({str(w['log_unreadable'])[:120]}) - alerts UNKNOWN, not none")
+    if w.get("log_lines") and not w.get("log_parsed"):
+        out.append("     its log has lines but none carries a readable time stamp - alerts UNKNOWN, not none")
+    alerts = w.get("alerts") or []
+    for a in alerts:
+        out.append(f"     {str(a)[:200]}")
+    if n > len(alerts):
+        out.append(f"     ... and {n - len(alerts)} older alert(s) in the last 24 h")
+    if w.get("window_cut"):
+        out.append("     (only the log's tail was read and it does not reach back 24 h - older alerts may exist)")
+    return out + [""]
+
+
+def redacted_log_body(lines, at: int, full: list, public: list) -> str:
+    """The text body with the launcher section (`full`, placed at `lines[at:]`) swapped for its public version.
+    When the section is not where it was placed (a later edit inserted lines before it), it never prints the
+    full lines anyway: every non-blank line of the section is removed wherever it is, and the public version
+    is appended - the digest must still go out, and the public log must still not carry the section."""
+    if lines[at:at + len(full)] == full:
+        return chr(10).join(lines[:at] + public + lines[at + len(full):])
+    drop = {l for l in full if l}
+    return chr(10).join([l for l in lines if l not in drop] + public)
+
+
 def is_late(cadence: str, ts, now) -> bool:
     """True when `ts` is older than the source's cadence allows.
 
@@ -698,8 +779,16 @@ def main() -> None:
             lines.append("")
     lines += _giant
     # PUBLISHER NOTICES (2026-11-05): what the workstation's watcher found that is ending or changing.
-    _notices = notices_lines(read_guard_beat(), dt.datetime.now(dt.timezone.utc))
+    # The beat is read ONCE and shared: two reads could disagree, and each costs up to GUARD_BEAT_READ_S.
+    _beat, _beat_now = read_guard_beat(), dt.datetime.now(dt.timezone.utc)
+    _notices = notices_lines(_beat, _beat_now)
     lines += _notices
+    # LAUNCHER WATCHDOG (2026-11-12): the desktop watchdog over the logon-only launchers. The CI log is public,
+    # so the printed body carries the redacted version (launcher_wd_lines public=True); the email the full one.
+    _launcher = launcher_wd_lines(_beat, _beat_now)
+    _launcher_public = launcher_wd_lines(_beat, _beat_now, public=True)
+    _launcher_at = len(lines)
+    lines += _launcher
     for r in ok:
         # A "data through" frontier far in the future is a legitimate projection
         # horizon (e.g. official multi-year forecasts that
@@ -715,6 +804,8 @@ def main() -> None:
         lines.append(f"     {r[0]:20} {r[1]:15} data through {r[2] or '—'}{_proj}")
     lines += ["", f"Live freshness feed: {feed}", f"Run log: {runlog}"]
     body = chr(10).join(lines)
+    # What the CI log prints (the repo is PUBLIC): the same body with the launcher section redacted.
+    log_body = redacted_log_body(lines, _launcher_at, _launcher, _launcher_public)
 
     # ---- HTML (the real email) ----
     import html as H
@@ -825,6 +916,12 @@ def main() -> None:
                         "<pre style='margin:0;padding:8px 11px;background:#f9fafb;border:1px solid #e5e7eb;"
                         "border-radius:8px;font-size:12px;white-space:pre-wrap;'>"
                         + esc(chr(10).join(l for l in _notices if l)) + "</pre>")
+    launcher_html = ""
+    if _launcher:
+        launcher_html = ("<h3 style='font-family:Georgia,serif;font-size:15px;margin:14px 0 6px;'>Launcher watchdog</h3>"
+                         "<pre style='margin:0;padding:8px 11px;background:#f9fafb;border:1px solid #e5e7eb;"
+                         "border-radius:8px;font-size:12px;white-space:pre-wrap;'>"
+                         + esc(chr(10).join(l for l in _launcher if l)) + "</pre>")
 
     current_rows = ""
     for r in ok:
@@ -857,6 +954,7 @@ def main() -> None:
     {progress_html}
     {notes_html}
     {notices_html}
+    {launcher_html}
     <h3 style="font-family:Georgia,serif;font-size:15px;margin:18px 0 6px;">Current sources ({len(ok)})</h3>
     <table role="presentation" width="100%" style="border-collapse:collapse;">
       <tr><th align="left" style="padding:5px 10px;font-size:11px;color:{grey};text-transform:uppercase;">Source</th>
@@ -886,7 +984,7 @@ def main() -> None:
         print(f"[digest] html written to {_html_out} ({len(html_doc):,} bytes)", flush=True)
 
 
-    print(f"[digest] {subject}\n{body}\n", flush=True)
+    print(f"[digest] {subject}\n{log_body}\n", flush=True)
     # Cloudflare Email Service first, Resend as before when it is not configured or refuses
     # (core/status_mail.py). An email failure must not flip a green run red: the run's status is
     # governed by the health gate, and GitHub's red-run notice needs no secret.
