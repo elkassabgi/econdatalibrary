@@ -4084,7 +4084,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 # csv_desktop_owed booking FAILED (derive failure, crash, fence trip or budget deferral). It
                 # goes only to csv_retry_queue, which cannot drain on r2 and which health does not read. The
                 # change signal is already spent, so this pass must NOT record its build receipt (below):
-                # the next pass then falls back and books the full debt (review AR-477 r4 F1).
+                # a later pass of the unit then falls back and books the full debt (review AR-477 r4 F1).
                 if (csv_failed or csv_deferred) and _csv_misses(unit.source_id) == "desktop_owed":
                     _owed_left_in_queue = True
                 if csv_deferred:
@@ -4140,7 +4140,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                     # coverage note), so the vintage below would advance to this build - and a fetcher that
                     # reads its vintage as confirmation (fhfa._build_confirmed) skips just as it would on a
                     # receipt (review AR-477 r4 F1). For a receipt-carrying result only: the pass is partial,
-                    # so neither record names the build and the next pass falls back. Other sources keep
+                    # so neither record names the build and a later pass falls back. Other sources keep
                     # their non-demoting deferral exactly as before.
                     status, ok = "partial", False
                     err_note = "; ".join(x for x in (err_note, (
@@ -4166,7 +4166,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             _receipt = getattr(res, "build_receipt", None)
             if _receipt and _owed_left_in_queue:
                 print(f"[orchestrator] {unit.key}: build receipt NOT recorded - a desktop_owed id could only be "
-                      f"queued (its csv_desktop_owed booking failed), so the next pass books the full debt",
+                      f"queued (its csv_desktop_owed booking failed), so a later pass books the full debt",
                       flush=True)
             elif _receipt and status in ("ok", "partial") and not dry:
                 # BUILD RECEIPT (review AR-477 F4): every CSV booking of this pass is written above, in this
