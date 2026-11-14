@@ -859,7 +859,9 @@ def test_defaults_leave_the_label_and_the_json_as_pr200():
                        w_on=True, count_manual=False)
     assert list(m.cfg_dict(c)) == PR200_CFG_KEYS
     assert c.label() == "A L=360-25 MinH=6 D3=8 W=on disp=yes c=tx1 man=excl"
-    assert m.ReplayConfig(policy="today").label() == "today MinH=20 D3=off W=off c=tx1"
+    # the default floor is run_local_heavy.ps1's $MinHours (20 until 2026-11-11; tests/test_local_min_hours.py)
+    assert m.ReplayConfig(policy="today").label() == f"today MinH={m.PS1_MIN_HOURS:g} D3=off W=off c=tx1"
+    assert m.ReplayConfig(policy="today", min_hours=20).label() == "today MinH=20 D3=off W=off c=tx1"
     for kw, mark in ((dict(order="attempt"), " ord=attempt"), (dict(clocked_extra=("oecd",),
                      whole_flow=(("oecd", 75.6),)), " clk+=oecd(75.6)"),
                      (dict(drop_cron=((DAILY, 18),)), " C=-daily18"), (dict(due_from_attempt=True), " due=att"),

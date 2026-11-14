@@ -334,7 +334,8 @@ def test_if_github_stops_creating_scheduled_runs_the_desktop_gets_no_clear_time(
     """The cost of the rule, pinned so it is a decision and not a surprise (R1033's arithmetic, true for this case).
 
     With no scheduled run created after 2026-10-14T00:00Z, every cron from 03:00Z on blocks for 12 h, and the four
-    windows cover the clock. The only release is -SkipCiCheck; run_local_heavy.ps1 warns after 2 x $MinHours."""
+    windows cover the clock. The only release is -SkipCiCheck; run_local_heavy.ps1 warns after $StarvationWarnHours
+    (48 h) without a stamped pass."""
     cutoff = at("2026-10-14T00:00:00")
     t, clear = at("2026-10-14T03:00:00"), []
     while t < at("2026-10-15T03:00:00"):
