@@ -3,7 +3,10 @@
 R1178: each ratchet had its own walk, and each pruned folders by NAME at any depth - so a file under, say,
 tools/x/data/ or updater/state/ was never scanned. The skip list names TOP-LEVEL folders only (the repo's
 data, docs, tests, ...); below the top, only folders that never hold our code are pruned. One walk, one
-pin (test_repo_walk.py), so the three cannot drift apart again."""
+pin (test_repo_walk.py), so the three cannot drift apart again.
+
+In a git checkout the walk is over the TRACKED files (tracked_files): an untracked scratch file in the
+production checkout once failed a ratchet there that CI, which checks out tracked files only, passed."""
 from __future__ import annotations
 
 import os
@@ -57,8 +60,45 @@ def parse_code(path: str):
     return ast.parse(read_code(path), filename=path)
 
 
+def tracked_files(root: str = ROOT) -> list[str] | None:
+    """The repo-relative paths git TRACKS under `root` (its index: committed, or added and not yet committed),
+    or None when `root` is not a git checkout (no .git directory or worktree file at `root`).
+
+    Why the ratchets walk this list and not the folder (t0_ready 2026-11-16): an UNTRACKED scratch file in the
+    production checkout (_verify_eia_resolver.py, never in git) failed the catalogue ratchet there while CI -
+    which checks out tracked files only - was green. A file nobody committed is not code the repo ships, and
+    the two places must judge the same tree. A git failure in a checkout RAISES: a ratchet never scans less
+    because it could not ask."""
+    if not os.path.exists(os.path.join(root, ".git")):
+        return None
+    import subprocess                                                           # noqa: PLC0415
+    # GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE from a calling hook would point git at another tree
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    r = subprocess.run(["git", "-C", root, "ls-files", "-z", "--cached"], capture_output=True, env=env)
+    if r.returncode != 0:
+        raise RuntimeError(f"git ls-files failed in {root} (exit {r.returncode}): "
+                           f"{r.stderr.decode('utf-8', 'replace')[-300:]}")
+    return [p for p in r.stdout.decode("utf-8", "surrogateescape").split("\0") if p]
+
+
 def code_files(extensions: tuple[str, ...], root: str = ROOT) -> Iterator[tuple[str, str]]:
-    """(repo-relative path with forward slashes, absolute path) for every file ending in `extensions`."""
+    """(repo-relative path with forward slashes, absolute path) for every file ending in `extensions`.
+
+    In a git checkout: the TRACKED files (tracked_files), with the same folder skips as the walk below; a
+    tracked file deleted from the working tree is not there to read and is left out, as the walk would.
+    Anywhere else (a test's temporary folder, an exported tree): the folder walk."""
+    tracked = tracked_files(root)
+    if tracked is not None:
+        for rel in tracked:
+            parts = rel.split("/")
+            if parts[0] in TOP_LEVEL_SKIP or any(d in ALWAYS_SKIP for d in parts[1:-1]):
+                continue
+            if not parts[-1].endswith(extensions):
+                continue
+            p = os.path.join(root, *parts)
+            if os.path.isfile(p):
+                yield rel, p
+        return
     for dirpath, dirs, files in os.walk(root):
         skip = TOP_LEVEL_SKIP if os.path.normcase(dirpath) == os.path.normcase(root) else ALWAYS_SKIP
         dirs[:] = [d for d in dirs if d not in skip]

@@ -387,10 +387,10 @@ def _code_only(src: str, ext: str, rel: str = "") -> str:
     return "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
 
 
-def _naming_files():
+def _naming_files(root=ROOT):
     found = set()
-    import _repo_walk                                  # the one shared walk (R1178)
-    for rel, p in _repo_walk.code_files((".py", ".ps1", ".sh"), ROOT):
+    import _repo_walk                                  # the one shared walk (R1178): the TRACKED files of a checkout
+    for rel, p in _repo_walk.code_files((".py", ".ps1", ".sh"), root):
         with open(p, encoding="utf-8", errors="replace") as fh:
             if NAMES_CATALOGUE.search(_code_only(fh.read(), os.path.splitext(p)[1], rel)):
                 found.add(rel)
