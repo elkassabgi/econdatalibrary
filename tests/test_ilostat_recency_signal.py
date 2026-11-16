@@ -64,6 +64,15 @@ def test_negative_control_the_old_code_path_would_report_since(tmp_path, monkeyp
     assert res.last_obs_date is None, res.last_obs_date
 
 
+def test_a_stored_since_does_not_win_over_the_published_date(tmp_path, monkeypatch):
+    """AR-491 condition 1: in production `since` is the stored last_obs_date from the first pass on
+    (orchestrate passes sane_since of it). `since or _observed_newest(...)` would freeze the reading at
+    its first value for good - every other test calls update(None, None) and cannot see that order."""
+    _wire(monkeypatch, tmp_path, [("UNE_M", "u1", PAST)])
+    res = I.update(None, OLDER)
+    assert res.last_obs_date == PAST, res.last_obs_date
+
+
 def test_nothing_published_passes_since_through(tmp_path, monkeypatch):
     _wire(monkeypatch, tmp_path, [("UNE_M", "u1", PAST)])
     I.update(None, None)                                          # publishes; stamps the sidecar
