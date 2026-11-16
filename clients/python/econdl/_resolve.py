@@ -470,7 +470,10 @@ def _resolve_fhfa(series_id: str, root: str) -> Resolution:
     # address one of them:
     #
     #   fhfa:<dataset>:<series_key>          the general form — one branch per store file
-    #   fhfa:<flavor>:<freq>:<place_id>      legacy, hpi_master only, kept so old links live
+    #   fhfa:<flavor>:<freq>:<place_id>      legacy, hpi_master only. Still PARSED here, but its
+    #                                        61 catalogue rows were retired on 2026-11-16 (review
+    #                                        AR-490), so the API answers 404 for these ids: the
+    #                                        series is served under the general form.
     #
     # The general form exists because the legacy one cannot NAME most of the source. It
     # hardcodes hpi_type 'traditional' (true of the 61 catalogued ids, not of the data:
