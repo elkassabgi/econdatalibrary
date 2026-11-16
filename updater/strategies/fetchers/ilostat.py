@@ -48,6 +48,7 @@ csv_desktop_owed, and with rotation the bookmark has already moved past them, so
 """
 from __future__ import annotations
 import bisect
+import datetime as dt
 import hashlib
 import json
 import os
@@ -66,6 +67,26 @@ BUDGET_MIN = 25
 
 def _rid(ds) -> str:
     return ds.get("id") or ""
+
+
+def _observed_newest(changed: dict, today: "dt.date | None" = None) -> "str | None":
+    """The newest observation this pass published that is not in the future: the max over the
+    per-indicator max dates in `changed` that are <= today, or None.
+
+    WHY (2026-11-16): health's newest_obs for ilostat came ONLY from the series cursors, because
+    update() passed `since` (the stored value, never set) to finalize as last_obs. merge_cursors
+    stops at CURSOR_CAP (50,000) and ILO holds ~15,800 series per indicator, so each pass recorded
+    cursors for its first ~3 indicators and the reading froze: newest_obs = 2026-08-01 on five
+    passes 10-20..11-16 while those passes published 508-673 indicators each, and the gate read
+    RED-DATA at 107 days. ILO's own UNE_DEAP_SEX_AGE_RT_M then held 2026M10.
+
+    An indicator whose max is a projection (> today) says nothing about how recent the observed
+    data is, so it is left out rather than clipped. The orchestrator keeps last_obs_date from
+    regressing (orchestrate.py, "last_obs_date must never regress"), so a pass that published only
+    older indicators cannot lower it. The cap is not raised (bounded by design)."""
+    today_iso = (today or dt.date.today()).isoformat()
+    vals = [str(v)[:10] for v in changed.values() if v and str(v)[:10] <= today_iso]
+    return max(vals) if vals else None
 
 
 def _resume_order(rows, after: str) -> list:
@@ -247,8 +268,9 @@ def update(unit, since) -> Result:
     if published == 0:
         published = sum(blob.row_count(os.path.join(out_dir, f))
                         for f in blob.list_parquets(out_dir))
+    last_obs = _observed_newest(changed) or since or None
     try:
-        res = finalize(tally, published, since or None, source=SOURCE,
+        res = finalize(tally, published, last_obs, source=SOURCE,
                        series_cursors=cursors or None)
     except DefinitiveError as e:
         if not changed:
@@ -258,7 +280,7 @@ def update(unit, since) -> Result:
         # advanced, so the orchestrator's "partial, no derive" would leave their CSVs stale for good.
         print(f"[ilostat] finalize raised structural with {len(changed):,} indicator(s) published - "
               f"returning partial WITH the changed set: {str(e)[:120]}", flush=True)
-        res = Result(status="partial", obs=published, last_obs_date=since or None,
+        res = Result(status="partial", obs=published, last_obs_date=last_obs,
                      new_vintage="date-tail", series_cursors=cursors or None, error=str(e))
     res.changed_keys = changed
     return res
