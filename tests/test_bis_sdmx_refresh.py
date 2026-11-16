@@ -66,8 +66,8 @@ D_NEW = _body([_line("D", "CA", "2026-05-26", 2.75), _line("D", "CA", "2026-11-1
 
 
 def _catalogue(tmp_path, ids):
-    p = tmp_path / "cat" / "catalog.db"
-    p.parent.mkdir(exist_ok=True)
+    p = tmp_path / "root" / "data" / "catalog.db"          # <root>/data/catalog.db, as catalog_path.under
+    p.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(str(p))
     con.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT)")
     con.executemany("INSERT INTO series VALUES (?, 'bis')", [(i,) for i in ids])
@@ -86,9 +86,9 @@ def _run(tmp_path, monkeypatch, bodies, cat_ids=CAT_IDS, zips=None):
     monkeypatch.setattr(B.config, "source_dir", lambda s: str(tmp_path))
     monkeypatch.setattr(B, "SDMX_PACE_S", 0)
     if cat_ids is None:
-        monkeypatch.setenv("ECONDL_CATALOG", str(tmp_path / "absent" / "catalog.db"))
+        monkeypatch.setattr(B.config, "ROOT", str(tmp_path / "absent"))
     else:
-        monkeypatch.setenv("ECONDL_CATALOG", _catalogue(tmp_path, cat_ids))
+        monkeypatch.setattr(B.config, "ROOT", os.path.dirname(os.path.dirname(_catalogue(tmp_path, cat_ids))))
     monkeypatch.setattr(B.ig, "BULK", zips or {})
     calls = []
 
@@ -217,9 +217,13 @@ def test_a_body_cut_mid_line_never_merges(tmp_path, monkeypatch):
     assert "WS_CBPOL:M" not in _vint(tmp_path)
 
 
-def test_a_body_cut_at_a_line_boundary_that_drops_a_stored_series_never_merges(tmp_path, monkeypatch):
-    """C2: a deterministic cut hashes the same twice and ends cleanly. The coverage check catches it."""
-    _store(tmp_path, STORE)
+STORE3 = STORE + [("M.JP", dt.date(2026, 4, 1), 0.5)]
+
+
+def test_a_body_cut_at_a_line_boundary_that_drops_stored_series_never_merges(tmp_path, monkeypatch):
+    """C2: a deterministic cut hashes the same twice and ends cleanly; it drops every series after
+    the cut. More than MISSING_KEYS_TOLERATED absent stored series blocks the merge."""
+    _store(tmp_path, STORE3)
     short = _body([_line("M", "CA", "2026-04", 2.75), _line("M", "CA", "2026-10", 2.5)])
     res, _ = _run(tmp_path, monkeypatch, {"M": [short], "D": [D_SAME]})
     assert res.status == "partial" and "absent from the body" in res.error, res
@@ -227,12 +231,31 @@ def test_a_body_cut_at_a_line_boundary_that_drops_a_stored_series_never_merges(t
     assert "WS_CBPOL:M" not in _vint(tmp_path)
 
 
-def test_a_body_with_fewer_rows_than_the_store_never_merges(tmp_path, monkeypatch):
-    _store(tmp_path, STORE + [("M.CA", dt.date(2026, 3, 1), 2.75)])
-    thin = _body([_line("M", "CA", "2026-10", 2.5), _line("M", "US", "2026-10", 4.125)])
-    res, _ = _run(tmp_path, monkeypatch, {"M": [thin], "D": [D_SAME]})
-    assert res.status == "partial" and "store holds" in res.error, res
+def test_a_body_whose_last_series_ends_before_the_store_never_merges(tmp_path, monkeypatch):
+    """A cut at a line boundary INSIDE the last series sent: it ends before its own stored newest."""
+    _store(tmp_path, STORE)
+    cut = _body([_line("M", "CA", "2026-04", 2.75), _line("M", "CA", "2026-10", 2.5),
+                 _line("M", "US", "2026-03", 4.375)])
+    res, _ = _run(tmp_path, monkeypatch, {"M": [cut], "D": [D_SAME]})
+    assert res.status == "partial" and "ends 2026-03-01, before the store's 2026-04-01" in res.error, res
     assert res.changed_keys == {}
+
+
+def test_an_upstream_deletion_does_not_block_the_refresh_for_ever(tmp_path, monkeypatch):
+    """Review F1: merge never deletes, so the store keeps a value BIS has deleted or blanked. A
+    shorter body than the store must still merge, or the block could never clear."""
+    _store(tmp_path, STORE + [("M.CA", dt.date(2026, 3, 1), 2.75)])
+    res, _ = _run(tmp_path, monkeypatch, {"M": [M_NEW], "D": [D_SAME]})
+    assert res.status == "ok", res
+    assert set(res.changed_keys) == {"WS_CBPOL:CA", "WS_CBPOL:US"}
+
+
+def test_one_retired_series_is_named_and_the_rest_still_merge(tmp_path, monkeypatch, capsys):
+    _store(tmp_path, STORE3)
+    res, _ = _run(tmp_path, monkeypatch, {"M": [M_NEW], "D": [D_SAME]})
+    assert res.status == "ok", res
+    assert set(res.changed_keys) == {"WS_CBPOL:CA", "WS_CBPOL:US"}
+    assert "['M.JP'] absent from the body" in capsys.readouterr().out
 
 
 def test_a_body_that_differs_between_two_fetches_never_merges(tmp_path, monkeypatch):

@@ -43,10 +43,11 @@ phase below refreshes every flow in SERVED_SDMX_FLOWS from stats.bis.org:
     ('guest$<ms>$*$1$WS_CBPOL', new on every call) and there is no Last-Modified.
   * A CHANGED body must pass, before it can merge: it ends with a newline and its last line has
     the header's field count (a mid-line cut); every row's STRUCTURE_ID is the pinned DSD and
-    ACTION is 'I'; a second fetch hashes the same (a cut that changes between calls); every
-    stored key of that FREQ is in the body and the body holds at least the stored row count (a
-    deterministic cut at a line boundary - merge only grows, so it would freeze those series
-    silently). Only keys the store already holds are merged (R278; new upstream keys are counted
+    ACTION is 'I'; a second fetch hashes the same (a cut that changes between calls); the last
+    series in the body reaches its own stored newest date and at most MISSING_KEYS_TOLERATED
+    stored series are absent (a deterministic cut at a line boundary - merge only grows, so it
+    would freeze those series silently; not a row-count rule, which one deleted upstream value
+    would trip for ever). Only keys the store already holds are merged (R278; new upstream keys are counted
     and skipped - nothing new is catalogued, and the D1 catalogue sync is frozen anyway).
   * FETCH FIRST, MERGE LAST. The bodies are fetched and validated before the CBS/LBS zips, so
     the zips' long merges cannot spend the Deadline and defer the served data; but they MERGE
@@ -65,6 +66,8 @@ phase below refreshes every flow in SERVED_SDMX_FLOWS from stats.bis.org:
     flow outside SERVED_SDMX_FLOWS books a named transient, so {} cannot hide it.
   * NOT MONITORED BY THE GATE: bis is `live: false` (workstation route), and the cadence is
     monthly, so served M data can lag upstream by up to about two cadence periods.
+  * MEMORY: validating the 'D' slice holds ~710k parsed rows as Python objects (order of 1-2 GB);
+    fine on the workstation route, re-measure before bis is ever routed to a CI runner.
 """
 from __future__ import annotations
 import csv
@@ -73,7 +76,7 @@ import hashlib
 import io
 import json
 import os
-import sqlite3
+
 import tempfile
 import time
 
@@ -224,11 +227,12 @@ def _served_native(flow, store_key) -> "str | None":
 def _catalogue_flows() -> "set | None":
     """The bis dataflows the catalogue serves (bis:<flow>:...), or None when it cannot be read.
     PK range, never `source_id=?` (one index) and never LIKE (R492)."""
-    cat = os.environ.get("ECONDL_CATALOG") or os.path.join(config.ROOT, "data", "catalog.db")
+    from core import catalog_path                    # noqa: PLC0415 - the one catalogue resolver
+    cat = catalog_path.under(config.ROOT)
     if not os.path.exists(cat):
         return None
     try:
-        con = sqlite3.connect(f"file:{cat}?mode=ro", uri=True)
+        con = catalog_path.connect_path(cat, write=False)
         try:
             ids = [r[0] for r in con.execute(
                 "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
@@ -255,7 +259,7 @@ def _sdmx_get(sess, flow, freq) -> "tuple[int, bytes]":
     raise last
 
 
-def _check_body(body, flow, freq, stored_keys, stored_rows):
+def _check_body(body, flow, freq, stored_newest):
     """Validate one SDMX-CSV body. Returns (rows, None, n_new_keys) or (None, (kind, why), 0),
     kind 'transient' (a cut or partial body: a later pass may get a whole one) or 'structural'
     (the shape itself changed: a later pass will not help)."""
@@ -278,40 +282,57 @@ def _check_body(body, flow, freq, stored_keys, stored_rows):
     if si is None or ai is None:
         return None, ("structural", "no STRUCTURE_ID/ACTION column"), 0
     bad = sum(1 for r in rd[1:] if len(r) != len(hdr) or r[si] != want or r[ai] != "I")
+    del rd                                   # ~710k rows for 'D': do not hold two parses at once
     if bad:
         return None, ("structural", f"{bad} row(s) not {want} / ACTION I / full width"), 0
     try:
         parsed = list(sdmx.iter_rows(io.StringIO(text)))
     except sdmx.NoObservations as e:
         return None, ("structural", f"no observations: {e}"), 0
-    kept = [r for r in parsed if r[0] in stored_keys]
-    new_keys = {r[0] for r in parsed} - set(stored_keys)
+    kept = [r for r in parsed if r[0] in stored_newest]
+    new_keys = {r[0] for r in parsed} - set(stored_newest)
     if not kept:
-        return None, ("structural", f"0 of {len(stored_keys)} stored series in a "
+        return None, ("structural", f"0 of {len(stored_newest)} stored series in a "
                                     f"{len(parsed)}-row body"), 0
-    missing = set(stored_keys) - {r[0] for r in kept}
+    # A cut AT a line boundary drops the newest rows of the series being sent (BIS streams each
+    # series in ascending date order) and every series after it. So: the LAST series must reach
+    # its own stored newest date, and at most MISSING_KEYS_TOLERATED stored series may be absent.
+    # Deliberately NOT a row-count rule: merge never deletes, so one deleted or blanked upstream
+    # value would make every later body shorter than the store, and the block would never clear
+    # (review F1, the R299 class).
+    last_key = kept[-1][0]
+    last_newest = max(r[1] for r in kept if r[0] == last_key).isoformat()
+    if last_newest < stored_newest[last_key]:
+        return None, ("transient", f"the body's last series {last_key} ends {last_newest}, before "
+                                   f"the store's {stored_newest[last_key]} (stream cut at a line?)"), 0
+    missing = set(stored_newest) - {r[0] for r in kept}
+    if len(missing) > MISSING_KEYS_TOLERATED:
+        return None, ("transient", f"{len(missing)} stored series absent from the body (e.g. "
+                                   f"{sorted(missing)[0]}; tolerated {MISSING_KEYS_TOLERATED})"), 0
     if missing:
-        return None, ("transient", f"{len(missing)} stored series absent from the body "
-                                   f"(e.g. {sorted(missing)[0]})"), 0
-    if len(kept) < stored_rows:
-        return None, ("transient", f"body has {len(kept)} rows for stored series, store holds "
-                                   f"{stored_rows}"), 0
+        print(f"[bis] {flow}:{freq}: stored series {sorted(missing)} absent from the body - not "
+              f"refreshed this pass (retired upstream?)", flush=True)
     return kept, None, len(new_keys)
 
 
+# Stored series of one FREQ that may be absent from a body while the rest still merge (printed). One
+# retired upstream series must not block the other 48 for ever: the store never forgets a key.
+MISSING_KEYS_TOLERATED = 1
+
+
 def _stored_layout(path) -> "dict | None":
-    """{FREQ: (set of stored keys, stored row count)} read through the store layer (R36), or None."""
+    """{FREQ: {stored key: newest stored obs date ISO}} read through the store layer (R36), or None."""
     if not blob.exists(path):
         return None
-    t = blob.read_table(path, columns=["series_key"])
+    t = blob.read_table(path, columns=["series_key", "obs_date"])
     out: dict = {}
-    for k in t.column("series_key").to_pylist():
-        if k is None:
+    for k, d in zip(t.column("series_key").to_pylist(), t.column("obs_date").to_pylist()):
+        if k is None or d is None:
             continue
-        fr = str(k).split(".")[0]
-        ks, n = out.get(fr, (set(), 0))
-        ks.add(k)
-        out[fr] = (ks, n + 1)
+        m = out.setdefault(str(k).split(".")[0], {})
+        iso = d.isoformat()
+        if iso > m.get(k, ""):
+            m[k] = iso
     return out
 
 
@@ -361,8 +382,7 @@ def _sdmx_prefetch(out_dir, sess, tally, dl, vint) -> dict:
             sha = hashlib.sha256(body).hexdigest()
             if (vint.get(label) or {}).get("sha256") == sha:
                 continue                                     # unchanged upstream: costs nothing more
-            keys, n_rows = layout[fr]
-            rows, problem, n_new = _check_body(body, flow, fr, keys, n_rows)
+            rows, problem, n_new = _check_body(body, flow, fr, layout[fr])
             if problem:
                 kind, why = problem
                 (tally.structural_unit if kind == "structural" else tally.transient_unit)(
