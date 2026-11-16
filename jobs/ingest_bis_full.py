@@ -46,6 +46,7 @@ import datetime as dt
 import glob as _glob
 import gzip
 import io
+import itertools
 import json
 import os
 import sys
@@ -304,18 +305,70 @@ def stream_query_to_tmp(agency, did, ver, key="all", max_tries=4):
     raise last if last else RuntimeError("download failed")
 
 
+class NoObservations(ValueError):
+    """The SDMX-CSV body has no header, or no TIME_PERIOD/OBS_VALUE column. str(e) is the note."""
+
+
+def iter_rows(fh, counts=None):
+    """Yield (series_key, obs_date, value, freq) from an open SDMX-CSV TEXT stream. PURE.
+
+    Extracted from parse_tmp_to_parquet so the updater (updater/strategies/fetchers/bis.py)
+    reuses the EXACT parse instead of copying it - the same move as
+    jobs/ingest_bis_cbs_lbs.iter_rows. No writer, no skip-if-exists rule, no logging policy.
+
+    Dimension columns = everything between the STRUCTURE/STRUCTURE_ID/ACTION prefix and
+    TIME_PERIOD; series_key = their join with '.'. FREQ is the first dimension column.
+    Raises NoObservations on the first next() when the header is unusable. Rows with no
+    numeric OBS_VALUE are skipped; rows whose TIME_PERIOD does not parse are skipped and
+    counted in counts["bad_periods"] when a dict is passed.
+    """
+    rd = csv.reader(fh)
+    hdr = next(rd, None)
+    if not hdr:
+        raise NoObservations("no header")
+    if "TIME_PERIOD" not in hdr or "OBS_VALUE" not in hdr:
+        raise NoObservations("no TIME_PERIOD/OBS_VALUE")
+    tpi = hdr.index("TIME_PERIOD")
+    ovi = hdr.index("OBS_VALUE")
+    # dims = columns AFTER the STRUCTURE/STRUCTURE_ID/ACTION prefix and
+    # BEFORE TIME_PERIOD. Robustly skip the three known prefix columns.
+    start = 0
+    for pref in ("STRUCTURE", "STRUCTURE_ID", "ACTION"):
+        if start < len(hdr) and hdr[start] == pref:
+            start += 1
+    dim_idx = [i for i in range(start, tpi) if i != ovi]
+    freq_col = None
+    for cand in ("FREQ", "FREQUENCY"):
+        if cand in hdr:
+            freq_col = hdr.index(cand)
+            break
+    for row in rd:
+        if len(row) <= tpi or len(row) <= ovi:
+            continue
+        val = to_float(row[ovi])
+        if val is None:
+            continue
+        d, finf = parse_period(row[tpi])
+        if d is None:
+            if counts is not None:
+                counts["bad_periods"] = counts.get("bad_periods", 0) + 1
+            continue
+        key = ".".join(row[i] if i < len(row) else "" for i in dim_idx)
+        fr = (row[freq_col] if (freq_col is not None and freq_col < len(row)) else "") or finf or ""
+        yield key, d, val, fr
+
+
 def parse_tmp_to_parquet(tmp: str, out_path: str):
     """Parse a temp .gz SDMX-CSV into a grouped parquet. Returns stats dict.
 
-    Dimension columns = everything between ACTION (col 2) and TIME_PERIOD;
-    series_key = their join with '.'. FREQ is the first dimension column.
+    The parse itself is iter_rows (above) - the one parser shared with the updater.
     """
     tmp_out = out_path + ".tmp"
     writer = None
     keys_buf, dates_buf, vals_buf, freq_buf = [], [], [], []
     n_obs = 0
     series_keys = set()
-    bad_periods = 0
+    counts = {"bad_periods": 0}
     freqs = set()
     dmin = dmax = None
 
@@ -333,39 +386,15 @@ def parse_tmp_to_parquet(tmp: str, out_path: str):
         keys_buf, dates_buf, vals_buf, freq_buf = [], [], [], []
 
     with gzip.open(tmp, "rt", encoding="utf-8-sig", newline="") as fh:
-        rd = csv.reader(fh)
-        hdr = next(rd, None)
-        if not hdr:
-            return {"status": "empty", "note": "no header"}
-        if "TIME_PERIOD" not in hdr or "OBS_VALUE" not in hdr:
-            return {"status": "empty", "note": "no TIME_PERIOD/OBS_VALUE"}
-        tpi = hdr.index("TIME_PERIOD")
-        ovi = hdr.index("OBS_VALUE")
-        # dims = columns AFTER the STRUCTURE/STRUCTURE_ID/ACTION prefix and
-        # BEFORE TIME_PERIOD. Robustly skip the three known prefix columns.
-        start = 0
-        for pref in ("STRUCTURE", "STRUCTURE_ID", "ACTION"):
-            if start < len(hdr) and hdr[start] == pref:
-                start += 1
-        dim_idx = [i for i in range(start, tpi) if i != ovi]
-        freq_col = None
-        for cand in ("FREQ", "FREQUENCY"):
-            if cand in hdr:
-                freq_col = hdr.index(cand)
-                break
+        rows = iter_rows(fh, counts)
+        try:
+            first = next(rows)
+        except NoObservations as e:
+            return {"status": "empty", "note": str(e)}
+        except StopIteration:
+            first = None
         writer = pq.ParquetWriter(tmp_out, SCHEMA, compression="zstd")
-        for row in rd:
-            if len(row) <= tpi or len(row) <= ovi:
-                continue
-            val = to_float(row[ovi])
-            if val is None:
-                continue
-            d, finf = parse_period(row[tpi])
-            if d is None:
-                bad_periods += 1
-                continue
-            key = ".".join(row[i] if i < len(row) else "" for i in dim_idx)
-            fr = (row[freq_col] if (freq_col is not None and freq_col < len(row)) else "") or finf or ""
+        for key, d, val, fr in itertools.chain([first] if first is not None else [], rows):
             keys_buf.append(key)
             dates_buf.append(d)
             vals_buf.append(val)
@@ -394,7 +423,7 @@ def parse_tmp_to_parquet(tmp: str, out_path: str):
         "status": "ok", "n_obs": n_obs, "n_series": len(series_keys),
         "parquet_bytes": os.path.getsize(out_path),
         "start": str(dmin), "end": str(dmax),
-        "freqs": sorted(f for f in freqs if f), "bad_periods": bad_periods,
+        "freqs": sorted(f for f in freqs if f), "bad_periods": counts["bad_periods"],
     }
 
 
