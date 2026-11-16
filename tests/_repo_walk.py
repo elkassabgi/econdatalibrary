@@ -74,11 +74,19 @@ def tracked_files(root: str = ROOT) -> list[str] | None:
     import subprocess                                                           # noqa: PLC0415
     # GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE from a calling hook would point git at another tree
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    # the repository git FINDS must be the one at `root`: an empty or broken .git inside another repository
+    # makes git search upward and answer for the parent - an empty list here, a ratchet that scans nothing
+    top = subprocess.run(["git", "-C", root, "rev-parse", "--show-toplevel"], capture_output=True, env=env)
+    found_top = top.stdout.decode("utf-8", "surrogateescape").strip()
+    if top.returncode != 0 or os.path.normcase(os.path.realpath(found_top)) != os.path.normcase(os.path.realpath(root)):
+        raise RuntimeError(f"git ls-files failed in {root}: git resolves it to {found_top or 'no repository'!r} "
+                           f"(exit {top.returncode}: {top.stderr.decode('utf-8', 'replace')[-300:]})")
     r = subprocess.run(["git", "-C", root, "ls-files", "-z", "--cached"], capture_output=True, env=env)
     if r.returncode != 0:
         raise RuntimeError(f"git ls-files failed in {root} (exit {r.returncode}): "
                            f"{r.stderr.decode('utf-8', 'replace')[-300:]}")
-    return [p for p in r.stdout.decode("utf-8", "surrogateescape").split("\0") if p]
+    # an unmerged path is listed once per stage: once each, in order
+    return list(dict.fromkeys(p for p in r.stdout.decode("utf-8", "surrogateescape").split("\0") if p))
 
 
 def code_files(extensions: tuple[str, ...], root: str = ROOT) -> Iterator[tuple[str, str]]:

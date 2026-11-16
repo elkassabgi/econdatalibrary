@@ -82,6 +82,28 @@ def test_a_git_failure_in_a_checkout_raises(tmp_path):
         list(W.code_files((".py",), str(tmp_path)))
 
 
+def test_an_empty_git_folder_inside_another_repository_raises(checkout):
+    """git searches upward from an empty .git and answers for the PARENT (exit 0, no files under it): that is
+    not this folder's file list (review of #268, finding 2)."""
+    inner = checkout.repo / "nested"
+    (inner / ".git").mkdir(parents=True)
+    (inner / "a.py").write_text("x = 1\n")
+    with pytest.raises(RuntimeError, match="git ls-files failed"):
+        list(W.code_files((".py",), str(inner)))
+
+
+def test_a_git_environment_from_a_caller_does_not_redirect_the_list(checkout, tmp_path, monkeypatch):
+    """A hook's GIT_DIR / GIT_INDEX_FILE naming another repository must not replace this checkout's index
+    (review of #268, finding 1: removing the strip survived every other test)."""
+    checkout("tools/tracked.py")
+    other = tmp_path / "other"
+    other.mkdir()
+    _git(other, "init", "-q")
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(other / ".git" / "index"))
+    assert {rel for rel, _ in W.code_files((".py",), str(checkout.repo))} == {"tools/tracked.py"}
+
+
 def test_the_catalogue_ratchet_sees_a_new_tracked_opener_and_not_an_untracked_one(checkout):
     """The proof at the ratchet itself (tests/test_catalog_path._naming_files): an untracked opener - the
     production-checkout case - is not found; the same file once tracked is, and so fails the ratchet."""
