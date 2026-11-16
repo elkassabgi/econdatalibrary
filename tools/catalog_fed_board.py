@@ -15,7 +15,8 @@ know which keys happen to collide.
 THE 21 EXISTING ROWS ARE REPLACED, THEIR CSVs ARE NOT. Those rows use the bare form
 (`fed_board:RIFSPFF_N.B`) and their derived CSVs are keyed by it in R2. The objects stay in R2,
 but the 21 bare-form catalogue rows were RETIRED from the served catalogue on 2026-11-16 (review
-AR-490): they had frozen at 2026-09-01 while the qualified ids stayed current. The API gates on
+AR-490): their CSVs were last written 2026-09-01 and no fetcher writes the bare ids; the qualified
+ids carry the same series (catalogue end date 2026-06-02 against 2026-06-01). The API gates on
 catalogue membership, so an old bare link now answers 404; the series is served under
 `fed_board:<FLOW>:<key>`. The resolver still accepts a bare unambiguous key for local use.
 

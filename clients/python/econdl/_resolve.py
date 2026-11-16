@@ -476,7 +476,7 @@ def _resolve_fhfa(series_id: str, root: str) -> Resolution:
     #                                        series is served under the general form.
     #
     # The general form exists because the legacy one cannot NAME most of the source. It
-    # hardcodes hpi_type 'traditional' (true of the 61 catalogued ids, not of the data:
+    # hardcodes hpi_type 'traditional' (true of the 61 ids once catalogued, not of the data:
     # hpi_master carries traditional, non-metro, distress-free, manufactured and
     # developmental), and it only ever reaches hpi_master.parquet — 1,178 of the source's
     # 89,706 series. The other 88,528 live in nine per-dataset files (annual_cbsa,

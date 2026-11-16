@@ -3,7 +3,8 @@
 NOT USED (2026-11-16): nothing in the repo imports this module. It builds the LEGACY id shape
 `fhfa:<at|po>:<Q|M>:<place>`, whose 61 catalogue rows were retired from the served catalogue on
 2026-11-16 (review AR-490): each one is served under `fhfa:hpi_master:traditional|<flavor>|<freq>|<place>`.
-The live fhfa path is updater/strategies/fetchers/fhfa.py. Do not revive this module's ids.
+The live fhfa path is updater/strategies/fetchers/fhfa.py (with jobs/ingest_fhfa.py). Do not revive
+this module's ids.
 
 FHFA publishes one consolidated "master" CSV that appends every HPI cut -- type
 (traditional/non-metro/distress-free/...), flavor (purchase-only / all-transactions /
