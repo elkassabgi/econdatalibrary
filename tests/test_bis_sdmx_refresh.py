@@ -276,6 +276,39 @@ def test_a_stable_cut_at_the_start_of_the_last_series_never_seals_it(tmp_path, m
     assert ("M.CA", dt.date(2026, 10, 1), 2.5) not in _rows(tmp_path)
 
 
+OLD = dt.date(1998, 12, 1)                       # older than RETIRED_AFTER_DAYS: looks retired
+STORE_OLD2 = STORE + [("M.JP", OLD, 0.5), ("M.ZA", OLD, 7.0)]
+
+
+def test_two_absent_retired_looking_series_exceed_the_tolerance_and_never_merge(tmp_path, monkeypatch):
+    """The coverage check on its own: two stored series are absent and BOTH look retired, so the
+    recent-absence check passes them and only MISSING_KEYS_TOLERATED (1) can refuse the body. The
+    pass must not report success, must not merge, and must not save the hash."""
+    _store(tmp_path, STORE_OLD2)
+    res, _ = _run(tmp_path, monkeypatch, {"M": [M_NEW], "D": [D_SAME]})
+    assert res.status != "ok", res
+    assert res.status == "partial" and "WS_CBPOL:M" in res.error, res
+    assert "2 stored series absent from the body" in res.error, res.error
+    assert res.changed_keys == {}, res.changed_keys
+    assert "WS_CBPOL:M" not in _vint(tmp_path), "the hash of a short body must not be saved"
+    assert ("M.CA", dt.date(2026, 10, 1), 2.5) not in _rows(tmp_path)
+
+
+def test_the_same_store_with_full_coverage_merges(tmp_path, monkeypatch):
+    """Negative control for the test above: the same store and the same served rows, but the body
+    also carries both old series. Nothing is absent, so the pass merges and saves the hash."""
+    _store(tmp_path, STORE_OLD2)
+    full = _body([_line("M", "CA", "2026-04", 2.75), _line("M", "CA", "2026-10", 2.5),
+                  _line("M", "JP", "1998-12", 0.5),
+                  _line("M", "US", "2026-04", 4.375), _line("M", "US", "2026-10", 4.125),
+                  _line("M", "ZA", "1998-12", 7.0)])
+    res, _ = _run(tmp_path, monkeypatch, {"M": [full], "D": [D_SAME]})
+    assert res.status == "ok", res
+    assert set(res.changed_keys) == {"WS_CBPOL:CA", "WS_CBPOL:US"}, res.changed_keys
+    assert _vint(tmp_path)["WS_CBPOL:M"]["sha256"] == hashlib.sha256(full).hexdigest()
+    assert ("M.CA", dt.date(2026, 10, 1), 2.5) in _rows(tmp_path)
+
+
 def test_the_retired_threshold_is_health_s_discontinued_line():
     from updater import health
     assert B.RETIRED_AFTER_DAYS == health.STALE_SERIES_DAYS
