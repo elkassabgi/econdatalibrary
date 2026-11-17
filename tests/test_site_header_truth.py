@@ -1,5 +1,6 @@
 """Every page of the econ site carries a TRUE header: a real "Website updated" date, no stale
-"Data updated" claim, no unsubstituted placeholder, and no "Under Construction" band.
+"Data updated" claim, and no unsubstituted placeholder. The homepage keeps its "Under
+Construction" band exactly once, and no other page carries one.
 
 WHY THIS EXISTS. On 2026-11-17 the live site showed three header defects at once:
   * /download, /status and /mcp printed the literal "Website updated: __SITE_UPDATED__". The
@@ -7,7 +8,10 @@ WHY THIS EXISTS. On 2026-11-17 the live site showed three header defects at once
     gen_site.py's _write() substitutes it, for generated pages.
   * every page printed "Data updated: August 23, 2026" while sources refresh daily. The value was
     /v1/stats `as_of`, the date of the series count, not of any data change.
-  * the homepage carried an "Under Construction" band added in July.
+The homepage's "Under Construction" band (aa2acd159, July) STAYS: it is the owner-accepted
+disclosure that datasets and their licensing are still being verified (ledger R409), and several
+licence verdicts are still open. Decision on PR #289, 2026-11-17. The check below pins it to
+exactly one copy, on index.html only.
 The same copy also carried fdate's date regex with doubled backslashes, so on those pages a
 date-only stamp was parsed as UTC midnight and shown one day early in the Americas.
 
@@ -75,8 +79,10 @@ def header_defects(name: str, html: str, canonical: tuple, G) -> list:
     out = []
     for m in PLACEHOLDER.finditer(html):
         out.append(f"{name}: unsubstituted placeholder {m.group(0)}")
-    if BAND.search(html):
-        out.append(f"{name}: 'Under Construction' band")
+    bands = len(BAND.findall(html))
+    want = 1 if name == "index.html" else 0
+    if bands != want:
+        out.append(f"{name}: {bands} 'Under Construction' bands, expected {want}")
     for s in STALE_FIELD:
         if s in html:
             out.append(f"{name}: stale status field {s!r}")
@@ -116,7 +122,11 @@ def test_homepage_keeps_its_census_date(G):
 
 def test_generator_template_is_clean(G):
     gen = _read(GEN)
-    assert not BAND.search(G.HEAD) and "<strong>Under Construction</strong>" not in gen
+    # the band lives in render_index only, never in the shared HEAD (which every page gets)
+    assert not BAND.search(G.HEAD)
+    assert gen.count("<strong>Under Construction</strong>") == 1
+    import inspect
+    assert "<strong>Under Construction</strong>" in inspect.getsource(G.render_index)
     for s in STALE_FIELD:
         assert s not in G.HEAD, s
     assert "fdate('__SITE_UPDATED__')" in G.HEAD
@@ -176,5 +186,14 @@ def test_controls_each_predicate_rejects_a_planted_defect(G):
     for label, html in planted.items():
         assert html != clean, label
         assert header_defects("download.html", html, canonical, G), f"control '{label}' was not rejected"
+    # the homepage: clean as served; rejected with the band removed or doubled
+    index = _pages()["index.html"]
+    assert header_defects("index.html", index, canonical, G) == []
+    m = BAND.search(index)
+    no_band = index[:m.start()] + "Being Built" + index[m.end():]
+    two_bands = index.replace("</body>", "<div>Under Construction</div></body>")
+    for label, html in (("band removed", no_band), ("band doubled", two_bands)):
+        assert html != index, label
+        assert header_defects("index.html", html, canonical, G), f"control '{label}' was not rejected"
     assert not PLACEHOLDER.search("obj.__proto__ and __init__ and WS_CBS_PUB__Q__US.parquet")
     assert PLACEHOLDER.search("fdate('__SITE_UPDATED__')") and PLACEHOLDER.search("<b>__GEN__</b>")
