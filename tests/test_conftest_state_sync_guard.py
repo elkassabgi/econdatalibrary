@@ -143,3 +143,104 @@ def test_a_test_that_leaves_the_process_changed_fails_and_the_next_does_not_inhe
 def test_an_ordinary_process_still_runs():
     r = subprocess.run([sys.executable, "-c", "print('ok')"], capture_output=True, text=True)
     assert r.returncode == 0 and r.stdout.strip() == "ok"
+
+
+# ---- no test starts a real wrangler -------------------------------------------------------------------------
+# Each spelling's PROGRAM and wrangler are paths that DO NOT EXIST under tmp_path: if the guard ever regressed,
+# the process would fail to start - it can never reach the registry or Cloudflare.
+def _wrangler_spellings(tmp):
+    js = str(tmp / "node_modules" / "wrangler" / "bin" / "wrangler.js")
+    node, npx, pnpm = str(tmp / "node"), str(tmp / "npx"), str(tmp / "pnpm")
+    remote = ["d1", "execute", "econ-catalog", "--remote", "--command", "SELECT 1"]
+    return [
+        [node, js, *remote],
+        [str(tmp / "wrangler.cmd"), "--version"],
+        [str(tmp / "WRANGLER.EXE"), "--version"],
+        [str(tmp / "bin" / "wrangler"), "--version"],
+        [npx, "wrangler@4", *remote],                                         # the old loader's form
+        [npx, "-y", "wrangler@3.114.0", "--version"],
+        [pnpm, "dlx", "wrangler@latest", "--version"],
+        [node, str(tmp / "x" / "wrangler.mjs"), "--version"],
+        [node, str(tmp / "node_modules" / "wrangler" / "wrangler-dist" / "cli.js"), *remote],
+        f'"{npx}" wrangler@4 d1 execute econ-catalog --remote --command "SELECT 1"',
+        f'"{tmp / "cmd"}" /c "{npx}" wrangler --version',
+        f'"{tmp / "bash"}" -c "{npx} -y wrangler@4 --version"',
+    ]
+
+
+def _guard():
+    """The suite's conftest, loaded under a name of its own (pytester runs register other modules named
+    `conftest`)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_suite_conftest_for_guard_tests", os.path.join(os.path.dirname(os.path.abspath(__file__)), "conftest.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.mark.wrangler_refusal_expected
+def test_a_real_wrangler_started_by_a_test_is_refused(tmp_path):
+    for argv in _wrangler_spellings(tmp_path):
+        with pytest.raises(RuntimeError, match="real wrangler"):
+            subprocess.run(argv, shell=isinstance(argv, str))
+        with pytest.raises(RuntimeError, match="real wrangler"):
+            subprocess.Popen(argv, shell=isinstance(argv, str))
+    with pytest.raises(RuntimeError, match="real wrangler"):
+        os.system(f'"{tmp_path / "npx"}" wrangler@4 --version')
+
+
+def test_the_matcher_names_every_spelling(tmp_path):
+    g = _guard()
+    assert all(g._starts_a_wrangler(argv) for argv in _wrangler_spellings(tmp_path))
+
+
+@pytest.mark.parametrize("argv", [
+    ["grep", "-rn", "wrangler", "."],
+    ["rg", "wrangler", "api/worker"],
+    [sys.executable, "-m", "pytest", "-k", "wrangler"],
+    "git log -- api/worker/wrangler.toml",
+    [sys.executable, "-B", "standin.py", "wrangler", "secret", "put", "X"],     # a stand-in's argument
+    [sys.executable, "-c", "print('ok')", "--name=no-wrangler-here", "wranglers"],
+])
+def test_a_mention_of_wrangler_is_not_refused(argv):
+    """Negative controls: the guard refuses a wrangler that would RUN, not every mention of the word."""
+    assert not _guard()._starts_a_wrangler(argv)
+
+
+def test_an_ordinary_process_that_mentions_wrangler_still_runs():
+    r = subprocess.run([sys.executable, "-c", "print('ok')", "--name=no-wrangler-here", "wranglers", "wrangler"],
+                       capture_output=True, text=True)
+    assert r.returncode == 0 and r.stdout.strip() == "ok"
+
+
+def test_only_the_guard_s_own_tests_may_carry_the_refusal_marker():
+    """Ratchet: the marker skips the teardown check, so a marked test (or a module-level pytestmark) could hide a
+    swallowed attempt. Only this file may use it, and never module-wide."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    marker = "wrangler_refusal_" + "expected"
+    import re
+    users = sorted(os.path.relpath(os.path.join(d, f), here).replace("\\", "/")
+                   for d, _, files in os.walk(here) for f in files if f.endswith(".py")
+                   and marker in open(os.path.join(d, f), encoding="utf-8", errors="replace").read())
+    assert users == ["conftest.py", "test_conftest_state_sync_guard.py"], users
+    own = open(os.path.abspath(__file__), encoding="utf-8").read()
+    assert not re.search(r"^pytestmark\s*=", own, re.M)
+
+
+def test_the_teardown_check_catches_a_swallowed_wrangler_refusal(pytester, tmp_path):
+    """A tool that catches the refusal must not turn the attempt into a pass."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    pytester.makeconftest(open(os.path.join(here, "conftest.py"), encoding="utf-8").read())
+    node = str(tmp_path / "node").replace("\\", "/")
+    missing = str(tmp_path / "wrangler.js").replace("\\", "/")
+    pytester.makepyfile(
+        "import subprocess, sys\n"
+        "def test_swallows():\n"
+        "    try:\n"
+        f"        subprocess.run([{node!r}, {missing!r}, '--version'])\n"
+        "    except RuntimeError:\n"
+        "        pass\n")
+    r = pytester.runpytest("-p", "no:cacheprovider")
+    r.assert_outcomes(passed=1, errors=1)
+    assert "started a real wrangler" in r.stdout.str()
