@@ -39,6 +39,7 @@ import urllib.parse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "clients", "python"))   # econdl: the station-form rule
 
 import duckdb                                                   # noqa: E402
 import pyarrow.parquet as pq                                    # noqa: E402
@@ -83,6 +84,23 @@ def catalogued() -> set[str]:
         con.close()
 
 
+def uncatalogued(keys, catalogued_short: set) -> list:
+    """Store keys with no catalogue id in ANY form, sorted.
+
+    A renamed Canadian station (store `gsom:CAN04047080:TAVG`, catalogue
+    `noaa:gsom:CA004047080:TAVG`) IS catalogued: the resolver serves the CA0 id from the CAN rows
+    (econdl._resolve.noaa_store_station_forms). Comparing the raw key alone called 354,295 such
+    series uncatalogued, and --apply would have written a second CSV for each under a CAN id that
+    no catalogue row names."""
+    from econdl import _resolve                                       # noqa: PLC0415
+    out = []
+    for k in keys:
+        forms = _resolve.noaa_catalogue_ids_for_store_key(k)
+        if not any(f[len(SOURCE) + 1:] in catalogued_short for f in forms):
+            out.append(k)
+    return sorted(out)
+
+
 def shard_for(store_key: str) -> str:
     """'gsom:AYM00089504:DSND' -> 'gsom__AY.parquet'. Verified against the real store layout;
     any key whose shard is absent is REPORTED, never silently dropped."""
@@ -106,7 +124,7 @@ def main() -> int:
         # an error other than not-found now raises instead of reading as "absent" (which re-wrote the object)
         return not store.exists(_r2_key(k))
 
-    todo = sorted(keys - catalogued())
+    todo = uncatalogued(keys, catalogued())
     print(f"uncatalogued: {len(todo):,}  — checking which of those also lack a CSV")
     with cf.ThreadPoolExecutor(max_workers=a.workers) as ex:
         flags = list(ex.map(absent, todo))
