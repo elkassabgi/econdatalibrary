@@ -124,7 +124,10 @@ def test_the_opens_are_read_only_with_sqlite_s_own_timeout(world, monkeypatch):
     seen = _spy(monkeypatch)
     orch._catalogue_ro().close()
     wb._published_keys()
-    assert seen == [(False, 5.0), (False, 5.0)], seen
+    # review C271-1: derive_csv._catalog_ids has no PRAGMA after its open, so 5 s IS its busy timeout
+    monkeypatch.setattr(dc, "CATALOG", str(world["wt"] / "data" / "catalog.db"))
+    dc._catalog_ids(None, ["ecb"])
+    assert seen == [(False, 5.0), (False, 5.0), (False, 5.0)], seen
 
 
 # ---- worldbank fetcher ---------------------------------------------------------------------------------
