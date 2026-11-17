@@ -16,11 +16,91 @@ import subprocess
 import pytest
 
 _FORBIDDEN = ("--pull-state", "--push-state")
-# NO TEST STARTS A REAL WRANGLER. Every D1, R2 and deploy road goes through wrangler, and on a machine with a
-# Cloudflare login a real one reaches production. Tests fake subprocess.run or core.d1_remote._wrangler; a
-# wrangler process that gets past the fake is refused here: any program or argument named wrangler,
-# wrangler.js, wrangler.cmd, wrangler.ps1 or wrangler.exe, in an argv list or a shell string.
-_WRANGLER = re.compile(r"(?:^|[\s\"'/\\])wrangler(?:\.js|\.cmd|\.ps1|\.exe)?(?=$|[\s\"'])", re.IGNORECASE)
+# NO TEST STARTS A REAL WRANGLER. The wrangler PROCESS roads (core/d1_remote.execute_wrangler, _wrangler and
+# execute_file, the deploy and secret tools) reach production from a machine with a Cloudflare login. Tests
+# fake subprocess.run or core.d1_remote._wrangler; a wrangler process that gets past the fake is refused here,
+# through subprocess.Popen (so subprocess.run too) and os.system.
+# What it does NOT cover:
+#   * the REST road: core/d1_remote.query() reaches D1 through urllib, which this guard cannot see. It is
+#     covered by the empty CLOUDFLARE_API_TOKEN set in _no_cloud_credentials_in_a_test, and its tests fake
+#     urlopen;
+#   * a wrangler started INSIDE a bash or PowerShell script that a test runs: the guard sees only the
+#     command line Python starts (`bash script.sh`). Those tests put a fake npx first on PATH.
+# The name is the cutover hook's own pattern (tools/selfhost/cutover_hook.py `_W`: wrangler, wrangler@<version>,
+# .cmd/.js/.mjs/.ps1/.exe) plus wrangler-dist/cli.js. It is refused only where it would RUN: as the program
+# (after wrappers such as nice/env/cmd /c/bash -c), or anywhere after an npx/pnpm/yarn/bunx/npm/node launcher.
+# A plain mention (`grep wrangler`, `rg wrangler`, `pytest -k wrangler`, a stand-in's argument) is not refused.
+_LAUNCHERS = frozenset({"npx", "pnpx", "pnpm", "yarn", "bunx", "bun", "npm", "node"})
+_WRAPPERS = frozenset({"nice", "env", "sudo", "cmd", "bash", "sh", "call", "start", "time", "timeout", "pwsh",
+                       "powershell", "exec"})
+
+
+def _hook_wrangler_name():
+    """The cutover hook's `_W` without its trailing `\\b.*?`, so it can name ONE token. Read from the hook
+    itself (no copy to drift); a hook whose pattern changed shape fails the whole suite here, loudly."""
+    import importlib.util
+    import os
+    import core
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(core.__file__))),
+                        "tools", "selfhost", "cutover_hook.py")
+    spec = importlib.util.spec_from_file_location("_cutover_hook_for_tests", path)
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+    tail = r"\b.*?"
+    assert hook._W.endswith(tail), f"tools/selfhost/cutover_hook.py _W changed shape: {hook._W!r}"
+    return re.compile(hook._W[:-len(tail)], re.IGNORECASE)
+
+
+_WRANGLER_NAME = _hook_wrangler_name()
+_WRANGLER_DIST = re.compile(r"(?:^|[/\\])wrangler-dist[/\\]cli\.m?js$", re.IGNORECASE)
+_LEX = re.compile(r'"([^"]*)"|\'([^\']*)\'|([;&|()\r\n]+)|([^\s"\';&|()]+)')
+
+
+def _base(token):
+    name = re.split(r"[/\\]", token)[-1].lower()
+    return re.sub(r"\.(exe|cmd|ps1|bat)$", "", name)
+
+
+def _is_wrangler(token):
+    return bool(_WRANGLER_NAME.fullmatch(re.split(r"[/\\]", token)[-1]) or _WRANGLER_DIST.search(token))
+
+
+def _segments(text, depth=0):
+    """The commands in a command line: cut at ; & | ( ) and newlines outside quotes. A quoted part is one token
+    AND, when it holds spaces, a command of its own (`bash -c "npx wrangler ..."`)."""
+    segs, cur = [], []
+    for m in _LEX.finditer(text):
+        quoted = m.group(1) if m.group(1) is not None else m.group(2)
+        if quoted is not None:
+            cur.append(quoted)
+            if depth < 4 and re.search(r"\s", quoted.strip()):
+                segs.extend(_segments(quoted, depth + 1))
+        elif m.group(3):
+            segs.append(cur)
+            cur = []
+        else:
+            cur.append(m.group(4))
+    segs.append(cur)
+    return [s for s in segs if s]
+
+
+def _starts_a_wrangler(args):
+    """True when this command line would RUN wrangler (see the comment above)."""
+    if isinstance(args, bytes):
+        args = args.decode(errors="replace")
+    text = args if isinstance(args, str) else subprocess.list2cmdline([str(a) for a in args])
+    for seg in _segments(text):
+        i = 0
+        while i < len(seg) and (seg[i].startswith("-") or re.fullmatch(r"/[A-Za-z]|\d+|[A-Za-z_]\w*=.*", seg[i])
+                                or _base(seg[i]) in _WRAPPERS):
+            i += 1
+        if i == len(seg):
+            continue
+        if _is_wrangler(seg[i]):
+            return True
+        if _base(seg[i]) in _LAUNCHERS and any(_is_wrangler(t) for t in seg[i + 1:]):
+            return True
+    return False
 
 pytest_plugins = ["pytester"]          # the guard's own can-fail test runs an isolated pytest
 
@@ -167,7 +247,7 @@ def _no_state_sync_from_a_test(request):
             if any(f in flat for f in _FORBIDDEN):
                 started.append(flat)
                 raise RuntimeError(f"a test started a state sync: {flat[:160]} (tests/conftest.py, R1204)")
-            if _WRANGLER.search(flat):
+            if _starts_a_wrangler(args):
                 wrangler.append(flat)
                 raise RuntimeError(f"a test started a real wrangler: {flat[:160]} (tests/conftest.py)")
             super().__init__(args, *a, **k)
@@ -178,7 +258,7 @@ def _no_state_sync_from_a_test(request):
         if any(f in str(cmd) for f in _FORBIDDEN):          # R1213: os.system bypassed the Popen guard
             started.append(str(cmd))
             raise RuntimeError(f"a test started a state sync: {str(cmd)[:160]} (tests/conftest.py, R1204)")
-        if _WRANGLER.search(str(cmd)):
+        if _starts_a_wrangler(str(cmd)):
             wrangler.append(str(cmd))
             raise RuntimeError(f"a test started a real wrangler: {str(cmd)[:160]} (tests/conftest.py)")
         return real_system(cmd)
