@@ -441,10 +441,25 @@ def _race(monkeypatch, sql):
 
 def test_a_second_fts_row_appearing_after_the_read_is_refused_in_the_transaction(cat, tmp_path, monkeypatch):
     _race(monkeypatch, "INSERT INTO series_fts VALUES ('src:b', 'T src:b', 'US')")
+    _d1(monkeypatch, [_row("src:a", unit="EUR"), _row("src:b", title="Newname")])
+    assert _run(monkeypatch, "--apply", "--update-differing") == 1
+    loc = _local(cat)
+    assert loc["src:b"]["title"] == "T src:b", "the chunk was rolled back"
+    assert loc["src:a"]["unit"] == "USD", "src:a's UPDATE earlier in the SAME chunk was rolled back too"
+    rc = _receipt(tmp_path)
+    assert "FTS index row" in rc["refused"] and rc["updated"] == 0
+
+
+def test_the_post_write_check_fails_when_the_new_title_is_not_exactly_one_index_row(cat, tmp_path, monkeypatch):
+    c = sqlite3.connect(cat)                       # a second index row holding the new title appears with the UPDATE
+    c.execute("CREATE TRIGGER dup AFTER UPDATE OF title ON series BEGIN "
+              "INSERT INTO series_fts VALUES (NEW.series_id, NEW.title, NEW.geography); END")
+    c.commit()
+    c.close()
     _d1(monkeypatch, [_row("src:a"), _row("src:b", title="Newname")])
     assert _run(monkeypatch, "--apply", "--update-differing") == 1
-    assert _local(cat)["src:b"]["title"] == "T src:b", "the chunk was rolled back"
-    assert "FTS index row" in _receipt(tmp_path)["refused"]
+    v = _receipt(tmp_path)["verify"]
+    assert v["fts_not_found"] == ["src:b"] and v["missing"] == [] and v["differing"] == [] and v["ok"] is False
 
 
 def test_a_local_row_appearing_before_its_insert_is_refused(cat, tmp_path, monkeypatch):
