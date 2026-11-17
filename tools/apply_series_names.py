@@ -36,6 +36,7 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 from core.titles import clean_title  # noqa: E402 - one rule for title line breaks (2026-10-01)
 SWEEP = os.path.join(ROOT, "data", "_series_names_staging", "econdl_sweep")
 PENDING = os.path.join(ROOT, "data", "_aqueduct", "pending_catalog_sync.txt")
@@ -128,14 +129,15 @@ def process(con, src, apply):
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(allow_abbrev=False)  # the lock choice in __main__ reads the exact flag
     ap.add_argument("--measure", action="store_true")
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--source")
     a = ap.parse_args()
     if a.measure == a.apply:
         ap.error("exactly one of --measure / --apply")
-    con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"), timeout=7200)
+    # --measure reads only (mode=ro); --apply writes (mode=rw). Neither creates a missing catalogue.
+    con = catalog_path.connect_path(catalog_path.under(ROOT), write=a.apply, timeout=7200)
     con.execute("PRAGMA busy_timeout=7200000")
     srcs = [a.source] if a.source else sources()
     tot = {"csv": 0, "matched": 0, "title_diff": 0, "unknown": 0,
@@ -156,4 +158,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if "--apply" not in sys.argv[1:]:
+        main()                               # --measure reads only: no lock
+    else:
+        with catalog_path.write_session():   # after T0: the single-writer lock
+            main()
