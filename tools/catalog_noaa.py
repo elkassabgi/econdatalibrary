@@ -214,7 +214,7 @@ def main() -> int:
     except sqlite3.Error as e:
         print(f"series_fts rebuild skipped: {e}")
     print("\nNEXT, and required before these are usable: derive their CSVs "
-          "(tools/derive_csv_bulk.py --source noaa), add 'noaa' to api/worker/src/util.ts "
+          "(tools/derive_csv_bulk.py --source noaa --only-catalogued), add 'noaa' to api/worker/src/util.ts "
           "SUPPORTED_SOURCES, and sync to D1. A catalogue row without a CSV is a listed series "
           "that will not download — exactly what the ten demo rows were.")
     return 0
