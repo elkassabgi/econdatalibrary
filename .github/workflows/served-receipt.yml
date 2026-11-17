@@ -1,0 +1,61 @@
+# served-receipt.yml - the "served" receipt: what USERS get from the public API, compared with R2.
+#
+# tools/served_receipt.py GETs each id's /v1/series/<id>.csv?raw=1 through the public worker with a real
+# user API key, GETs the R2 object the worker serves it from (GET-only client), and prints per id the
+# served newest date, the R2 newest date and equal/DIFFERENT. Any difference, any id it cannot fetch,
+# or a missing secret fails the job. See docs/SERVED_RECEIPT.md (expected-pending ids live there).
+#
+# ONE-TIME OWNER STEP: create an API key for the receipt on the site's account page and add it as the
+# repository secret ECON_RECEIPT_API_KEY. Until then every run fails with
+# "secret ECON_RECEIPT_API_KEY not set - owner step".
+#
+# READ-ONLY: no write to R2, D1 or the repository. The R2 pair below is the one stored in the repo; the
+# tool's GET-only lock refuses every other S3 operation before it is sent.
+
+name: served-receipt
+
+on:
+  workflow_dispatch:
+    inputs:
+      ids:
+        description: "Series ids, separated by spaces or commas (empty = the default sample in tools/served_receipt.py)"
+        required: false
+        default: ""
+  # Proposed weekly run (Mondays 07:23 UTC). Off until the owner has added the secret and the
+  # expected-pending ids in docs/SERVED_RECEIPT.md are equal; then uncomment.
+  # schedule:
+  #   - cron: "23 7 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: served-receipt
+  cancel-in-progress: false
+
+jobs:
+  receipt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install
+        run: pip install --quiet -r requirements-updater.txt
+      - name: Mask the API key
+        # Secrets are masked by Actions already; this registers the value again for any derived output.
+        # The workflow command is consumed by the runner and is not shown in the log.
+        env:
+          ECON_RECEIPT_API_KEY: ${{ secrets.ECON_RECEIPT_API_KEY }}
+        run: |
+          if [ -n "${ECON_RECEIPT_API_KEY}" ]; then printf '::add-mask::%s\n' "${ECON_RECEIPT_API_KEY}"; fi
+      - name: Served receipt
+        env:
+          ECON_RECEIPT_API_KEY: ${{ secrets.ECON_RECEIPT_API_KEY }}
+          R2_WRITE_ENDPOINT: ${{ secrets.R2_WRITE_ENDPOINT }}
+          R2_WRITE_ACCESS_KEY_ID: ${{ secrets.R2_WRITE_ACCESS_KEY_ID }}
+          R2_WRITE_SECRET_ACCESS_KEY: ${{ secrets.R2_WRITE_SECRET_ACCESS_KEY }}
+          RECEIPT_IDS: ${{ github.event.inputs.ids }}
+        run: python tools/served_receipt.py --ids "${RECEIPT_IDS}"
