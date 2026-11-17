@@ -150,16 +150,16 @@ REMOTE = re.compile(r"--remote(?![\w-])|/d1/database/")
 CODE = (".py", ".ps1", ".sh", ".yml", ".yaml", ".mjs", ".js", ".cjs", ".bat", ".cmd")
 
 
-def _code_files():
+def _code_files(root=ROOT):
     """Every script and workflow in the repo (a fixed folder list missed files before - the plan itself
-    first named one that lives under tools/)."""
+    first named one that lives under tools/) - the TRACKED ones in a checkout (tests/_repo_walk.tracked_files)."""
     import _repo_walk                                  # the one shared walk (R1178)
-    yield from _repo_walk.code_files(CODE, ROOT)
+    yield from _repo_walk.code_files(CODE, root)
 
 
-def test_no_new_file_calls_d1_remotely_outside_the_chokepoint():
+def _remote_d1_files(root=ROOT):
     found = set()
-    for rel, p in _code_files():
+    for rel, p in _code_files(root):
         with open(p, encoding="utf-8", errors="replace") as fh:
             src = fh.read()
             if rel.endswith(".py"):
@@ -167,6 +167,11 @@ def test_no_new_file_calls_d1_remotely_outside_the_chokepoint():
                 src = _repo_walk.code_text(src)          # code only: a docstring mention is not a caller
             if REMOTE.search(src):
                 found.add(rel)
+    return found
+
+
+def test_no_new_file_calls_d1_remotely_outside_the_chokepoint():
+    found = _remote_d1_files()
     found.discard("core/d1_remote.py")
     found -= set(HF_ONLY_REMOTE_D1) | CI_DISABLED_AT_T0
     found.discard("tools/selfhost/cutover_hook.py")   # names the roads in order to REFUSE them (plan change 5)
