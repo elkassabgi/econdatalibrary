@@ -241,10 +241,11 @@ def update_catalog(spans, apply_d1, last_updated=None):
     licence fix inert (R107).
     """
     n_local = n_new = 0
-    db = os.path.join(ROOT, "data", "catalog.db")
+    from core import catalog_path                             # noqa: PLC0415 - the one catalogue resolver
+    db = catalog_path.under(ROOT)
     if os.path.exists(db):
         import sqlite3
-        con = sqlite3.connect(db, timeout=120)  # plain-open: the catalogue (tests/catalog_db_legacy.txt); after T0 only under the writer lock (runtime guard)
+        con = catalog_path.connect_path(db, write=True, timeout=120)  # after T0 only the build, under the writer lock
         con.execute("PRAGMA busy_timeout=120000")
         # BEGIN IMMEDIATE with retries: the crawlers hold this database for hours and a
         # deferred transaction only discovers the lock at COMMIT, after every statement has
@@ -264,7 +265,7 @@ def update_catalog(spans, apply_d1, last_updated=None):
             # abort the D1 half after the R2 objects were already written (that is the hosted-but-
             # unlisted failure again). Say so loudly, leave the local rows for a --respan re-run.
             con.close()
-            print(f"  LOCAL CATALOGUE NOT UPDATED: catalog.db stayed locked through 12 attempts - "
+            print(f"  LOCAL CATALOGUE NOT UPDATED: {db} stayed locked through 12 attempts - "
                   f"{len(spans)} span(s) still to apply locally (re-run --respan for these idents without --d1); "
                   f"continuing to D1", flush=True)
             spans_local = []
@@ -497,11 +498,12 @@ def audit(client):
     with no catalog row) is the one that actually happened.
     """
     import sqlite3
-    db = os.path.join(ROOT, "data", "catalog.db")
+    from core import catalog_path                             # noqa: PLC0415 - the one catalogue resolver
+    db = catalog_path.under(ROOT)
     if not os.path.exists(db):
-        print("no local catalog.db — audit needs it; skipping")
+        print(f"no local catalogue at {db} — audit needs it; skipping")
         return 0
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=120)  # plain-open: the catalogue, read-only
+    con = catalog_path.connect_path(db, write=False, timeout=120)  # read-only
     con.execute("PRAGMA busy_timeout=120000")
     # primary-key RANGE, never `WHERE source_id=` (R721/R723/R737): the local catalogue has only
     # the PK autoindex, so a source_id predicate scans 13.5M rows under the crawlers' locks
@@ -662,15 +664,6 @@ def stamp_data_through_from_d1(source: str):
     return mod.stamp(source, apply=True)
 
 
-def _wrangler_cmd():
-    """The version-pinned local wrangler (never `npx wrangler`, which resolves whatever is on
-    PATH — R218/R220 class)."""
-    exe = os.path.join(ROOT, "api", "worker", "node_modules", ".bin", "wrangler.cmd")
-    if not os.path.exists(exe):
-        exe = os.path.join(ROOT, "api", "worker", "node_modules", ".bin", "wrangler")
-    return exe
-
-
 _WRANGLER_ENV = {"env": None, "mode": "inherited"}
 
 
@@ -697,13 +690,13 @@ def _d1_json(args, timeout=600):
     """Run `wrangler d1 execute econ-catalog --remote --json <args>` and parse the JSON array.
     Retries a transient 'Authentication error [code: 10000]' twice (an OAuth-refresh race between
     two wrangler processes, seen 2026-09-05; a dead token fails all three times and raises);
-    on 7403 switches once to the OAuth environment (see _wrangler_env)."""
-    import subprocess
+    on 7403 switches once to the OAuth environment (see _wrangler_env).
+    Each run goes through core.d1_remote.wrangler_execute (the one D1 chokepoint, plan 4c: it runs the
+    version-pinned local wrangler - never `npx wrangler`, R218/R220 - and refuses after T0)."""
+    from core import d1_remote                                # noqa: PLC0415
     last = None
     for attempt in range(4):
-        r = subprocess.run([_wrangler_cmd(), "d1", "execute", "econ-catalog", "--remote", "--json", *args],
-                           cwd=os.path.join(ROOT, "api", "worker"), capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", timeout=timeout, env=_wrangler_env())
+        r = d1_remote.wrangler_execute("econ-catalog", ["--json", *args], timeout=timeout, env=_wrangler_env())
         if r.returncode != 0 and "code: 7403" in (r.stdout or "") + (r.stderr or "") and _WRANGLER_ENV["mode"] == "inherited":
             _wrangler_env_fallback()
             continue
@@ -822,10 +815,11 @@ def respan(client, spec, apply=False, apply_d1=False, skip_local=False, local_ch
     print(f"  store parquets read: {len(truth):,}; no store object: {len(missing)} {missing[:5]}")
 
     # catalogue state: local by PK, D1 by PK
-    db = os.path.join(ROOT, "data", "catalog.db")
+    from core import catalog_path                             # noqa: PLC0415 - the one catalogue resolver
+    db = catalog_path.under(ROOT)
     local = {}
     if os.path.exists(db):
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)  # plain-open: the catalogue, read-only
+        con = catalog_path.connect_path(db, write=False, timeout=5.0)  # read-only; the PRAGMA below sets the real 120 s
         con.execute("PRAGMA busy_timeout=120000")
         for i in range(0, len(sids), 400):
             chunk = sids[i:i + 400]
@@ -890,7 +884,7 @@ def respan(client, spec, apply=False, apply_d1=False, skip_local=False, local_ch
         for j in range(0, len(todo_l), chunk):
             part = todo_l[j:j + chunk]
             for attempt in range(12):
-                con = sqlite3.connect(db, timeout=120, isolation_level=None)  # plain-open: the catalogue (--respan; refused after T0)
+                con = catalog_path.connect_path(db, write=True, timeout=120, isolation_level=None)  # --respan; refused after T0
                 con.execute("PRAGMA busy_timeout=120000")
                 try:
                     con.execute("BEGIN IMMEDIATE")
@@ -1192,7 +1186,7 @@ def main():
                     help="--respan only: rows per local IMMEDIATE transaction (default 400; R734 - one big COMMIT held "
                          "the crawlers off the catalogue for 25 minutes behind a long reader)")
     ap.add_argument("--skip-local", action="store_true",
-                    help="--respan only: write D1 but leave the local catalog.db rows for a later run without --d1 "
+                    help="--respan only: write D1 but leave the local catalogue rows for a later run without --d1 "
                          "(its rollback-journal COMMIT can block the crawlers for minutes behind a long reader, R734)")
     ap.add_argument("--dry-run", action="store_true",
                     help="explicit no-write run (already the default without --apply); named in ARGV so the "

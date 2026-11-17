@@ -140,7 +140,16 @@ EXPECTED_WRITERS = {
     "tools/title_idb_from_ckan.py", "tools/title_noaa_from_siblings.py", "tools/title_rba_from_csv.py",
     "tools/title_riksbank_fx.py", "tools/title_unctad_span_variants.py", "tools/title_unesco_dem_wb_codes.py",
     "tools/title_unhcr_from_siblings.py", "tools/title_vdem_from_codebook.py",
+    "tools/refresh_sec_edgar.py",                                                  # joined 2026-11-16 (t0_ready)
 }
+
+# Writers whose entry must NOT hold the lock for the whole run, each with the premise that makes it safe pinned
+# by test_the_lock_inside_main_premise below. tools/refresh_sec_edgar.py: its daily run spends most of its time
+# fetching SEC, and writer_lock() refuses at once rather than waiting - a lock around main() would refuse the
+# updater for the whole fetch. So it WAITS for the lock and holds it only around its writes (_waiting_writer_lock
+# in _refresh_local); after T0 its other write roads (--respan, and the pre-T0 R2 path) are refused before any
+# open, and connect_path(write=True) refuses any write without the lock.
+LOCK_INSIDE_MAIN = {"tools/refresh_sec_edgar.py"}
 
 
 def test_the_discovery_finds_exactly_the_committed_writers():
@@ -157,7 +166,7 @@ def test_a_writer_with_no_dry_mode_locks_its_whole_entry():
     `with catalog_path.write_session():` and every call of main() is inside it."""
     bad = []
     for rel, _p, block in WRITERS:
-        if block is None or "dry" in ARGS.get(rel, {}):
+        if block is None or "dry" in ARGS.get(rel, {}) or rel in LOCK_INSIDE_MAIN:
             continue
         first = block.body[0]
         ok = (isinstance(first, ast.With) and len(first.items) == 1
@@ -252,7 +261,8 @@ def test_a_writer_opens_nothing_with_plain_sqlite3_unless_it_says_why():
     assert not bad, f"plain sqlite3 opens in writers without a '# plain-open: <reason>': {bad}"
 
 
-@pytest.mark.parametrize("rel,path,block", [w for w in WRITERS if w[2] is not None], ids=lambda v: v if isinstance(v, str) and "/" in v and not os.path.isabs(v) else "")
+@pytest.mark.parametrize("rel,path,block", [w for w in WRITERS if w[2] is not None and w[0] not in LOCK_INSIDE_MAIN],
+                         ids=lambda v: v if isinstance(v, str) and "/" in v and not os.path.isabs(v) else "")
 def test_a_write_run_holds_the_lock(t0, monkeypatch, rel, path, block):
     seen = _run_main_block(rel, path, block, ARGS.get(rel, {}).get("write", []), monkeypatch)
     assert seen == [True], f"{rel}: its write run called main() with the lock held = {seen}"
@@ -386,3 +396,25 @@ def test_a_script_holds_the_lock_at_its_open(t0, monkeypatch, rel, path, block):
     open_at = next((i for i, s in enumerate(tree.body) if any(_is_write_open(n) for n in ast.walk(s))), None)
     assert lock_at is not None and open_at is not None and lock_at < open_at, \
         f"{rel}: the lock (statement {lock_at}) must come before the first write open (statement {open_at})"
+
+def test_the_lock_inside_main_premise(t0, monkeypatch):
+    """LOCK_INSIDE_MAIN is exactly one file, and its premise holds when RUN after T0: a catalogue write
+    without the lock is refused (the open itself refuses), and the daily refresh writes under the lock it
+    waited for (tests/test_refresh_sec_edgar_selfhost.py::test_after_t0_a_refresh_commits_everything_under_the_lock
+    runs that path end to end)."""
+    assert LOCK_INSIDE_MAIN == {"tools/refresh_sec_edgar.py"}, "a new exemption needs its own premise test"
+    assert LOCK_INSIDE_MAIN <= {r for r, _p, _b in WRITERS}
+    _r, path, _b = next(w for w in WRITERS if w[0] == "tools/refresh_sec_edgar.py")
+    R = _load("tools/refresh_sec_edgar.py", path)
+    root = t0 / "live"
+    (root / "data").mkdir(parents=True)
+    db = root / "data" / "catalog.db"
+    monkeypatch.setattr(cp, "BUILD_PATH", str(db))
+    db.write_bytes(b"")
+    monkeypatch.setattr(R, "ROOT", str(root))
+    with pytest.raises(cutover.CutoverRefused, match="single-writer lock"):
+        R.update_catalog([("ACME", "2020-01-01", "2026-06-30", "Acme", 1)], apply_d1=False)
+    src = _repo_walk.read_code(path)
+    assert "with _waiting_writer_lock():" in src, "the daily refresh no longer waits for the lock around its writes"
+    # the after-T0 refusal of --d1 / --audit / --respan is RUN (review C269-1): tests/test_sec_edgar_d1_chokepoint.py
+    # ::test_after_t0_main_refuses_the_d1_audit_and_respan_roads_before_any_open

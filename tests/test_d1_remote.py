@@ -124,9 +124,9 @@ def test_only_the_two_econ_databases(sent, before_t0, monkeypatch):
 
 # The files that reach D1 remotely by another road TODAY (2026-09-24). They move into d1_remote in plan
 # step 1; this list may only SHRINK. A new file on it is a new unguarded write path after T0.
-LEGACY_REMOTE_D1 = {
-    "tools/refresh_sec_edgar.py",
-}
+LEGACY_REMOTE_D1 = set()
+# Left on 2026-11-16: tools/refresh_sec_edgar.py, whose _d1_json now runs core.d1_remote.wrangler_execute
+# (its own 7403 OAuth fallback and 10000 retries kept; refused after T0).
 # Left on 2026-09-24 (plan step 1): the six D1 readers moved onto d1_remote.rows / run_json; five files
 # named `--remote` only in a docstring, a comment or a tool's own --remote-truth option; then
 # core/sync_state_d1.py, whose execute_remote (the daily sync's and sync_catalog_d1's bulk writer) now runs
