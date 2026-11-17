@@ -27,8 +27,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from . import r2_util  # noqa: E402
 
+from . import catalog_path  # noqa: E402 - the one catalogue resolver
+
 ROOT = r2_util.ROOT
-CATALOG = os.path.join(ROOT, "data", "catalog.db")
+CATALOG = catalog_path.under(ROOT)
 DEFAULT_PREFIX = "series"
 
 
@@ -404,18 +406,19 @@ def _catalog_path() -> str:
     (econdl._catalog.default_db: the override before T0; after T0 the build, and an override naming any
     other file is refused), so the ids and their resolution come from the SAME file - before this, the ids
     came from the checkout while the resolver followed the override. Unset: the checkout's CATALOG, as before.
-    The override lets a run read a COPY of the production catalogue instead of opening it in place (R1780)."""
-    if os.environ.get("ECONDL_CATALOG"):
-        from econdl import _catalog                                  # noqa: PLC0415
-        return _catalog.default_db()
-    return CATALOG
+    The override lets a run read a COPY of the production catalogue instead of opening it in place (R1780).
+    Whether an override is set is read from default_db() itself (it answers its own default without one),
+    so the override has one owner, the exempt client (t0_ready legacy-catalogue, 2026-11-16)."""
+    from econdl import _catalog                                      # noqa: PLC0415
+    chosen = _catalog.default_db()
+    return CATALOG if chosen == _catalog._DEFAULT_DB else chosen
 
 
 def _catalog_ids(limit: int | None, source: list | None):
     path = _catalog_path()
     if not os.path.exists(path):
         raise FileNotFoundError(f"catalogue not found: {path}")
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn = catalog_path.connect_path(path, write=False, timeout=5.0)  # after T0: the build only
     try:
         q = "SELECT series_id, source_id FROM series"
         if source:

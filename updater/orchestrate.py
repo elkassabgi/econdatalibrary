@@ -1088,10 +1088,7 @@ def _uncatalogued_by_form(source_id: str, unmapped) -> bool:
     if not all(isinstance(k, str) and _re.fullmatch(form, k) for k in keys):
         return False
     try:
-        import sqlite3 as _sq                                            # noqa: PLC0415
-        _cat = (os.environ.get("ECONDL_CATALOG")
-                or os.path.join(config.ROOT, "data", "catalog.db"))
-        with _sq.connect(f"file:{_cat}?mode=ro", uri=True) as _c:
+        with _catalogue_ro() as _c:
             low = sorted(r[0].lower() for r in _c.execute(
                 "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
                 (source_id + ":", source_id + ";")))
@@ -1855,10 +1852,7 @@ def _derive_changed_csvs(unit, res, blob, store=None):
             # metadata counts as served (fail closed).
             _meta = None
             try:
-                import sqlite3 as _sq
-                _cat = (os.environ.get("ECONDL_CATALOG")
-                        or os.path.join(config.ROOT, "data", "catalog.db"))
-                with _sq.connect(f"file:{_cat}?mode=ro", uri=True) as _c:
+                with _catalogue_ro() as _c:
                     _meta = _oecd_metadata_flows(_c)
             except Exception:                               # noqa: BLE001 - a check must never raise
                 _meta = None
@@ -1896,10 +1890,7 @@ def _derive_changed_csvs(unit, res, blob, store=None):
             sample_n = 0
             scope = _catalog_scope(unit.source_id)
             try:
-                import sqlite3 as _sq
-                _cat = (os.environ.get("ECONDL_CATALOG")
-                        or os.path.join(config.ROOT, "data", "catalog.db"))
-                with _sq.connect(f"file:{_cat}?mode=ro", uri=True) as _c:
+                with _catalogue_ro() as _c:
                     # PK RANGE, not `source_id=?`. `series` has one index — the series_id
                     # primary key — so the column form full-scans an 11.9 GB file. Measured
                     # 2026-08-30: ecb 7.37 s warm (389 s cold) vs 0.0002 s, same answer.
@@ -2109,10 +2100,7 @@ def _derive_changed_csvs(unit, res, blob, store=None):
             # a plausible lie with a long half-life (ledger R152).
             n_ids = None
             try:
-                import sqlite3 as _sq
-                _cat = (os.environ.get("ECONDL_CATALOG")
-                        or os.path.join(config.ROOT, "data", "catalog.db"))
-                with _sq.connect(f"file:{_cat}?mode=ro", uri=True) as _c:
+                with _catalogue_ro() as _c:
                     # PK RANGE, not `source_id=?`. `series` has one index — the series_id
                     # primary key — so the column form full-scans an 11.9 GB file. Measured
                     # 2026-08-30: ecb 7.37 s warm (389 s cold) vs 0.0002 s, same answer.
@@ -3094,10 +3082,8 @@ def _catalog_series_count(source_id: str) -> int:
     The name is kept so the caller and its comments still read correctly; the docstring above
     is now the contract.
     """
-    import sqlite3
-    cat = os.environ.get("ECONDL_CATALOG") or os.path.join(config.ROOT, "data", "catalog.db")
     try:
-        con = sqlite3.connect(f"file:{cat}?mode=ro", uri=True)
+        con = _catalogue_ro()
         try:
             row = con.execute(
                 "SELECT 1 FROM series WHERE series_id >= ? AND series_id < ? LIMIT 1",
@@ -3271,6 +3257,34 @@ def _ecb_held_ids(key, native):
     return sorted(native[h] for h in hits if h in native)
 
 
+def _catalogue_file() -> str:
+    """The catalogue the orchestrator reads: $ECONDL_CATALOG when it is set, else <config.ROOT>/data/
+    catalog.db - as before (t0_ready legacy-catalogue, 2026-11-16). The override is asked of econdl's
+    default_db(), which owns it (tests/test_catalog_path.py EXEMPT_FILES): before T0 it returns the override,
+    after T0 the build, refusing an override naming any other file. No override = default_db() answers its
+    own default; then config.ROOT's file is used, so a test or a run that relocates ROOT is unchanged."""
+    import core.derive_csv  # noqa: F401,PLC0415 - puts this checkout's clients/python first on sys.path
+    from core import catalog_path                                       # noqa: PLC0415
+    from econdl import _catalog as _econdl_catalog                      # noqa: PLC0415
+    chosen = _econdl_catalog.default_db()
+    if chosen == _econdl_catalog._DEFAULT_DB:
+        return catalog_path.under(config.ROOT)
+    return chosen
+
+
+def _catalogue_ro():
+    """_catalogue_file() opened READ-ONLY through core.catalog_path.connect_path (after T0: the build only).
+    sqlite's own 5 s busy timeout, as the plain opens had; a missing file raises sqlite3.OperationalError,
+    as `file:...?mode=ro` did, so every caller's except clause sees the same exception class."""
+    import sqlite3                                                       # noqa: PLC0415
+    from core import catalog_path                                       # noqa: PLC0415
+    path = _catalogue_file()
+    try:
+        return catalog_path.connect_path(path, write=False, timeout=5.0)
+    except FileNotFoundError as e:
+        raise sqlite3.OperationalError(f"unable to open database file: {e}") from None
+
+
 _DERIVE_ALL_FALLBACK = True
 """Read by _catalog_ids_for; False only inside _map_changed for a MERGE-MEASURED set (a module
 switch, not a keyword, so the many test doubles of _catalog_ids_for(source, keys) keep working)."""
@@ -3294,14 +3308,13 @@ def _map_changed(source_id: str, changed_keys, merge_measured: bool):
 def _catalog_ids_for(source_id: str, changed_keys):
     """Map changed store series_keys to catalog series_ids (see hook comment).
     Returns (ids_to_derive, unmapped_keys). Reads the catalog read-only from
-    $ECONDL_CATALOG or <root>/data/catalog.db. The derive-all fallback below runs only while
+    $ECONDL_CATALOG or <root>/data/catalog.db (_catalogue_ro). The derive-all fallback below runs only while
     _DERIVE_ALL_FALLBACK is True (see _map_changed)."""
     import sqlite3
     # ecb store files this call could not read for containment (review R1136): they were claimed
     # by the NAME rule, which never claims a mirror, so the caller must demote, not stay quiet.
     _catalog_ids_for.ecb_unreadable = []
-    cat = os.environ.get("ECONDL_CATALOG") or os.path.join(config.ROOT, "data", "catalog.db")
-    con = sqlite3.connect(f"file:{cat}?mode=ro", uri=True)
+    con = _catalogue_ro()
     try:
         exact, unmapped = [], []
         seen = set()
