@@ -228,14 +228,34 @@ def _quiet(stmt) -> bool:
     return isinstance(stmt, ast.Assign) and all(c.startswith("os.path.") or c in ("re.compile", "len") for c in calls)
 
 
+def _calls_are_pure(nodes) -> bool:
+    return all(ast.unparse(c.func).startswith("os.path.") or ast.unparse(c.func) in ("re.compile", "len")
+               for x in nodes if x is not None for c in ast.walk(x) if isinstance(c, ast.Call))
+
+
+def _quiet_def(stmt) -> bool:
+    """A def or class whose load-time parts do nothing: no call (other than the pure ones) in its decorators,
+    default arguments or annotations; for a class also its bases and keywords, and every body statement quiet
+    (or itself a quiet def, or `pass`)."""
+    if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        a = stmt.args
+        anns = [x.annotation for x in a.posonlyargs + a.args + a.kwonlyargs + [a.vararg, a.kwarg] if x is not None]
+        return _calls_are_pure(stmt.decorator_list + a.defaults + a.kw_defaults + anns + [stmt.returns])
+    if isinstance(stmt, ast.ClassDef):
+        return (_calls_are_pure(stmt.decorator_list + stmt.bases + [k.value for k in stmt.keywords])
+                and all(isinstance(s, ast.Pass) or _quiet(s) or _quiet_def(s) for s in stmt.body))
+    return False
+
+
 def _entry_refuses_after_t0(tree) -> bool:
     mains = [n for n in tree.body if isinstance(n, ast.If) and "__main__" in ast.unparse(n.test)]
     if mains:
         # the refusal is the block's first statement, AND nothing above it does anything when the module is
         # loaded (review AR-281 C281-4: a module-level makedirs, logging file or touch ran before the refusal)
-        above = [s for s in tree.body if s is not mains[0]
-                 and not isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
-        return bool(mains[0].body) and _is_refusal(mains[0].body[0]) and all(_quiet(s) for s in above)
+        # a def or class counts too: its decorators, default arguments and annotations, and a class's bases and
+        # body, run when the module loads (review AR-284 C284-1, P1-P6)
+        above = [s for s in tree.body if s is not mains[0]]
+        return bool(mains[0].body) and _is_refusal(mains[0].body[0]) and all(_quiet(s) or _quiet_def(s) for s in above)
     for s in tree.body:
         if _is_refusal(s):
             return True
@@ -266,6 +286,10 @@ def test_the_library_importer_rule_can_fail():
                  'logging.basicConfig(filename="x.log")\nif __name__ == "__main__":\n    ' + R + '    main()\n',
                  'open("x", "a").close()\nif __name__ == "__main__":\n    ' + R + '    main()\n',
                  'X = json.load(open("x"))\nif __name__ == "__main__":\n    ' + R + '    main()\n',
+                 '@(lambda f: (open("x", "a"), f)[1])\ndef g():\n    pass\nif __name__ == "__main__":\n    ' + R + '    main()\n',
+                 'def g(x=os.open("x", 1)):\n    pass\nif __name__ == "__main__":\n    ' + R + '    main()\n',
+                 'class C:\n    os.makedirs("x")\nif __name__ == "__main__":\n    ' + R + '    main()\n',
+                 'class C(base(open("x", "w"))):\n    pass\nif __name__ == "__main__":\n    ' + R + '    main()\n',
                  'import os\nx = 1\n'):
         assert not _entry_refuses_after_t0(ast.parse(code)), code
     for code in ('if __name__ == "__main__":\n    ' + R + '    main()\n',
@@ -314,17 +338,30 @@ def test_a_library_importer_refuses_after_t0_before_anything_and_runs_before(t0,
         called.clear()
         if block is not None:
             # C281-4: loading the module (everything above __main__) must make no folder and write no file
+            # C284-1: also os.open with a creating or writing flag and io.open (pathlib's touch/write_text, and a
+            # module the importer imports - P9)
+            import io
             real_open, real_makedirs, real_mkdir = builtins.open, os.makedirs, os.mkdir
+            real_os_open, real_io_open = os.open, io.open
+            writing = os.O_CREAT | os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_TRUNC
+
+            def opener(real):
+                return lambda f, mode="r", *a, **k: trap("open for write at load")() \
+                    if isinstance(mode, str) and any(c in mode for c in "wax+") else real(f, mode, *a, **k)
             monkeypatch.setattr(os, "makedirs", trap("os.makedirs at load"))
             monkeypatch.setattr(os, "mkdir", trap("os.mkdir at load"))
-            monkeypatch.setattr(builtins, "open", lambda f, mode="r", *a, **k: trap("open for write at load")()
-                                if any(c in mode for c in "wax+") else real_open(f, mode, *a, **k))
+            monkeypatch.setattr(os, "open", lambda f, flags, *a, **k: trap("os.open for write at load")()
+                                if flags & writing else real_os_open(f, flags, *a, **k))
+            monkeypatch.setattr(builtins, "open", opener(real_open))
+            monkeypatch.setattr(io, "open", opener(real_io_open))
             try:
                 m = _load(rel, path)
             finally:
                 monkeypatch.setattr(os, "makedirs", real_makedirs)
                 monkeypatch.setattr(os, "mkdir", real_mkdir)
+                monkeypatch.setattr(os, "open", real_os_open)
                 monkeypatch.setattr(builtins, "open", real_open)
+                monkeypatch.setattr(io, "open", real_io_open)
             g = dict(vars(m))
             g.update(main=trap("main"), run=trap("run"))
             code = compile(ast.Module(body=block.body, type_ignores=[]), path, "exec")
