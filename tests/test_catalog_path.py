@@ -366,7 +366,11 @@ LEGACY = os.path.join(ROOT, "tests", "catalog_db_legacy.txt")
 NAMES_CATALOGUE = re.compile(r"catalog\.db|ECONDL_CATALOG|\bCATALOG_DB\b|[\"']catalog[\"']\s*[+,]\s*[\"']\.db[\"']")
 # A narrow exemption: only the named function of the named file is left out of the scan.
 EXEMPT_FUNCTIONS = {"updater/run.py": frozenset({"_selfhost_preflight"}),   # names ECONDL_CATALOG to REFUSE it
-                    "updater/blob.py": frozenset({"refuse_unless_live_checkout"})}   # the same refusal (R1217)
+                    "updater/blob.py": frozenset({"refuse_unless_live_checkout"}),   # the same refusal (R1217)
+                    # test fixtures: hand the devserver child its TEMPORARY fixture catalogue ($ECONDL_CATALOG)
+                    # and name their own temporary copies; none opens the real catalogue (premise pinned below)
+                    "api/test_conformance.py": frozenset({"store", "test_metadata_description_citation_fallback",
+                                                          "test_status_data_unavailable_vs_resolver_empty_distinct"})}
 # Whole files outside the resolver BY DESIGN, each with the premise that makes it safe pinned below.
 EXEMPT_FILES = {
     # The PUBLISHED client (pip install econdl): standalone, so it cannot import core.catalog_path, and its
@@ -466,6 +470,50 @@ def test_the_exempt_clients_flag_rule_is_cores(tmp_path, monkeypatch):
         return real(p, *a, **k)
     monkeypatch.setattr(_catalog.os, "stat", unreadable)
     assert _catalog._cut_over() is True
+
+
+def _conformance_functions():
+    import ast
+    tree = ast.parse(open(os.path.join(ROOT, "api", "test_conformance.py"), encoding="utf-8").read())
+    return {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+
+
+def test_the_conformance_exemption_names_only_temporary_fixtures():
+    """The premise of EXEMPT_FUNCTIONS["api/test_conformance.py"] (t0_ready legacy-catalogue, 2026-11-17): the three
+    functions never open the real catalogue. The `store` fixture builds a catalogue in a tempfile.mkdtemp() folder,
+    hands it to the devserver child as $ECONDL_CATALOG (the devserver's documented input) and restores the
+    variable; the two tests copy THAT fixture into their own tempfile.mkdtemp() folder and open only the copy."""
+    import ast
+    assert EXEMPT_FUNCTIONS["api/test_conformance.py"] == frozenset({
+        "store", "test_metadata_description_citation_fallback",
+        "test_status_data_unavailable_vs_resolver_empty_distinct"}), "a new exemption needs its premise checked here"
+    fns = _conformance_functions()
+    store = ast.unparse(fns["store"])
+    assert "tmp = tempfile.mkdtemp(" in store and "paths = conformance_fixture.build(tmp)" in store
+    sets = [n for n in ast.walk(fns["store"]) if isinstance(n, ast.Assign)
+            and any("os.environ" in ast.unparse(t) for t in n.targets)]
+    # the two exports, and the restore loop's `os.environ[k] = v` over the saved `prev` values - nothing else
+    assert {ast.unparse(n.targets[0]): ast.unparse(n.value) for n in sets} == {
+        "os.environ['ECONDL_DATA']": "paths['data_root']", "os.environ['ECONDL_CATALOG']": "paths['catalog']",
+        "os.environ[k]": "v"}
+    assert "finally:" in store and "prev.items()" in store, "the fixture restores the variables"
+    assert not [n for n in ast.walk(fns["store"]) if isinstance(n, ast.Call) and ast.unparse(n.func) == "sqlite3.connect"]
+    for name in ("test_metadata_description_citation_fallback", "test_status_data_unavailable_vs_resolver_empty_distinct"):
+        fn = fns[name]
+        assigns = {ast.unparse(n.targets[0]): ast.unparse(n.value) for n in ast.walk(fn) if isinstance(n, ast.Assign)}
+        assert assigns["src_cat"] == "store['catalog']", name
+        assert assigns["tmpdir"].startswith("tempfile.mkdtemp("), name
+        assert assigns["tmp_cat"] == "os.path.join(tmpdir, 'catalog.db')", name
+        opens = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and ast.unparse(n.func) == "sqlite3.connect"]
+        assert opens and all(ast.unparse(o.args[0]) == "tmp_cat" for o in opens), name
+
+
+def test_the_conformance_exemption_can_fail():
+    """Dropping the three functions is what clears the file - and nothing else in it names the catalogue."""
+    import _repo_walk
+    src = open(os.path.join(ROOT, "api", "test_conformance.py"), encoding="utf-8").read()
+    assert NAMES_CATALOGUE.search(_repo_walk.code_text(src)), "without the exemption the file names the catalogue"
+    assert not NAMES_CATALOGUE.search(_code_only(src, ".py", "api/test_conformance.py"))
 
 
 def test_the_catalogue_ratchet_can_fail():

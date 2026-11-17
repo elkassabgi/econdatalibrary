@@ -1,7 +1,6 @@
 # Files whose CODE names the catalogue (catalog.db, ECONDL_CATALOG, or the name split in two) outside
 # core/catalog_path.py - re-derived 2026-09-24 with the R1176 detection (clients/ included, comments
 # ignored). This list may only SHRINK: move each file to core.catalog_path.connect and delete its line.
-api/test_conformance.py
 core/catalog.py
 tools/delist_timeless_tables.py
 tools/flowgrain_insee_melodi.py
