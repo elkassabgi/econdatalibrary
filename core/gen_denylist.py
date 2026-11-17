@@ -52,7 +52,7 @@ import sqlite3
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-DB = os.path.join(ROOT, "data", "catalog.db")
+DB = None   # the catalogue main() reads; None = this checkout's (core.catalog_path.under(ROOT)); tests set a path
 OUT = os.path.join(ROOT, "api", "worker", "src", "denylist.ts")
 
 # Sources that carry WRITTEN redistribution permission — kept downloadable even
@@ -187,7 +187,7 @@ HEADER = '''// -----------------------------------------------------------------
 // GENERATED FILE -- do not edit by hand. Regenerate with:
 //     python -m core.gen_denylist        (then redeploy the worker)
 //
-// The set below is DERIVED FROM catalog.db so it can never drift from the site,
+// The set below is DERIVED FROM the catalogue so it can never drift from the site,
 // which gates on license.reservable. A source is blocked iff its license is not
 // verified-redistributable (license.reservable = 0), minus the granted
 // exceptions below, plus a legacy safety floor so a regeneration never silently
@@ -283,6 +283,21 @@ def required_carveouts(committed: str) -> dict[str, list[str]]:
     return req
 
 
+def _catalogue_ro():
+    """DB (default: this checkout's catalogue) READ-ONLY through core.catalog_path (t0_ready legacy-catalogue,
+    2026-11-17); after T0 the build only. sqlite's own 5 s busy timeout, as the plain open had. A missing file
+    raises sqlite3.OperationalError, the class the old open raised at its first SELECT, and creates nothing (the
+    plain open made an empty file)."""
+    import sys                                                           # noqa: PLC0415
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import catalog_path                                       # noqa: PLC0415 - the one resolver
+    try:
+        return catalog_path.connect_path(DB or catalog_path.under(ROOT), write=False, timeout=5.0)
+    except FileNotFoundError as e:
+        raise sqlite3.OperationalError(f"unable to open database file: {e}") from None
+
+
 def main() -> None:
     # `None` means "read the committed file yourself", which is how the readers tell a
     # checkout WITHOUT a worker (legitimately no floor) apart from a committed file that
@@ -293,7 +308,7 @@ def main() -> None:
     carve_required = required_carveouts(committed)
     tail = committed_tail()
 
-    c = sqlite3.connect(DB)
+    c = _catalogue_ro()
     reservable0 = {
         r[0] for r in c.execute(
             "SELECT s.source_id FROM source s "

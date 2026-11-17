@@ -8,11 +8,8 @@ core/export_d1.py
 core/export_d1_i18n_delta.py
 core/export_d1_new_series.py
 core/export_d1_sources.py
-core/gen_denylist.py
 core/load_d1_chunked.py
 core/load_d1_rest.py
-core/sync_catalog_d1.py
-core/sync_state_d1.py
 pipeline/title_bea.py
 tools/apply_series_names.py
 tools/delist_timeless_tables.py

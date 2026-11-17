@@ -172,7 +172,7 @@ def world(tmp_path, monkeypatch):
     con.close()
     ids = tmp_path / "ids.txt"
     ids.write_text("src:K00000\nsrc:K00001\nsrc:K00002\n", encoding="utf-8")
-    monkeypatch.setattr(sc, "CATALOG_DB", db)
+    monkeypatch.setattr(sc, "CATALOGUE", db)
     monkeypatch.setattr(sc, "_manifest_path", lambda root: manifest)
     monkeypatch.setattr(sc, "_gated_ids", lambda: set())
     sent = {}
