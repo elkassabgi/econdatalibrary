@@ -103,6 +103,17 @@ def test_a_missing_catalogue_raises_sqlite_s_error_and_creates_nothing(mods, nam
 
 
 @pytest.mark.parametrize("name", NAMES)
+def test_a_missing_file_in_an_existing_data_dir_raises_and_no_file_is_created(mods, name, tmp_path, monkeypatch):
+    # data/ exists, so a creating open WOULD succeed here and leave an empty catalog.db behind
+    m = mods[name]
+    (tmp_path / "data").mkdir()
+    monkeypatch.setattr(m, "ROOT", str(tmp_path))
+    with pytest.raises(sqlite3.OperationalError):
+        m._catalogue_ro()
+    assert list((tmp_path / "data").iterdir()) == []
+
+
+@pytest.mark.parametrize("name", NAMES)
 def test_after_t0_a_worktree_catalogue_is_refused(mods, name, tmp_path, monkeypatch):
     m = mods[name]
     _cat(tmp_path)
