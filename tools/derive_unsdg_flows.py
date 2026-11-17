@@ -93,8 +93,10 @@ def main() -> int:
     # 1,749-row catalogue because nothing compared the two counts, and 178 objects from a
     # retired provenance landed on R2. A mismatch here means the catalogue and the store
     # disagree about what exists -- stop and look, do not upload the difference.
-    import sqlite3
-    con = sqlite3.connect(os.path.join(MAIN, "data", "catalog.db"), timeout=120)
+    if MAIN not in sys.path:
+        sys.path.insert(0, MAIN)
+    from core import catalog_path                                       # noqa: PLC0415 - the one resolver
+    con = catalog_path.connect_path(catalog_path.under(MAIN), write=False, timeout=120)   # it only reads
     cat = {r[0].split(":", 1)[1] for r in
            con.execute("SELECT series_id FROM series WHERE source_id='unsdg'")}
     con.close()
