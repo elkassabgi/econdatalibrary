@@ -36,7 +36,9 @@ from __future__ import annotations
 import argparse, datetime as dt, io, os, re, shutil, sqlite3, subprocess, sys, time, urllib.parse, urllib.request
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-CATALOG = os.path.join(ROOT, "data", "catalog.db")
+if ROOT not in sys.path:                                              # run as a script, tools/ is on the path
+    sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 STORE = os.path.join(ROOT, "data", "clean_full")
 D1 = "econ-catalog"
 BUCKET, CSV_PREFIX = "econ-data", "series"
@@ -124,7 +126,7 @@ def main() -> int:
         sys.path.insert(0, ROOT)
     from core import cutover                                          # noqa: PLC0415
     cutover.refuse_if_cut_over('delist_timeless_tables (a completed 2026-09-05 one-shot on D1 and R2)')
-    ap = argparse.ArgumentParser(); ap.add_argument("--apply", action="store_true"); a = ap.parse_args()
+    ap = argparse.ArgumentParser(allow_abbrev=False); ap.add_argument("--apply", action="store_true"); a = ap.parse_args()
     stamp = dt.datetime.now().strftime("%Y%m%d")
     inlist = ",".join(sq(s) for s in IDS)
 
@@ -167,11 +169,11 @@ def main() -> int:
     # ---- local state
     local_n = None
     try:
-        con = sqlite3.connect(f"file:{CATALOG}?mode=ro", uri=True, timeout=30)
+        con = catalog_path.connect_path(catalog_path.under(ROOT), write=False, timeout=30)
         local_n = con.execute(f"SELECT COUNT(*) FROM series WHERE series_id IN ({inlist})").fetchone()[0]; con.close()
-    except sqlite3.OperationalError as e:
-        print(f"local catalog.db not readable right now ({e}); will retry in apply")
-    print(f"local catalog.db series rows present: {local_n}")
+    except (sqlite3.OperationalError, FileNotFoundError) as e:     # a missing file: as the old mode=ro open
+        print(f"local catalogue not readable right now ({e}); will retry in apply")
+    print(f"local catalogue series rows present: {local_n}")
     cbs_local = [f for f in CBS_STORE_FILES if os.path.exists(os.path.join(STORE, "cbs_nl", f))]
     print(f"local cbs_nl store parquets present: {len(cbs_local)} of {len(CBS_STORE_FILES)}")
 
@@ -202,18 +204,18 @@ def main() -> int:
     while True:
         attempt += 1
         try:
-            con = sqlite3.connect(CATALOG, timeout=60.0); con.execute("PRAGMA busy_timeout=60000")
+            con = catalog_path.connect_path(catalog_path.under(ROOT), write=True, timeout=60.0); con.execute("PRAGMA busy_timeout=60000")
             lrows = con.execute(f"SELECT series_id, title FROM series WHERE series_id IN ({inlist})").fetchall()
             lpred = fts_pred([{"series_id": s, "title": t} for s, t in lrows]) if lrows else pred
             con.execute(f"DELETE FROM series WHERE series_id IN ({inlist})")
             con.execute(f"DELETE FROM series_fts WHERE {lpred}")
             con.commit()
             local_after = con.execute(f"SELECT COUNT(*) FROM series WHERE series_id IN ({inlist})").fetchone()[0]
-            con.close(); print(f"4 local catalog.db: {len(lrows)} -> {local_after} (attempt {attempt})"); break
-        except sqlite3.OperationalError as e:
+            con.close(); print(f"4 local catalogue: {len(lrows)} -> {local_after} (attempt {attempt})"); break
+        except (sqlite3.OperationalError, FileNotFoundError) as e:   # a missing file is a failure, never created
             if "locked" not in str(e).lower() or time.time() > deadline:
-                print(f"4 local catalog.db FAILED: {e} - D1 and R2 are already clean; re-run to finish local"); return 1
-            if attempt % 6 == 1: print(f"   local catalog.db locked; retrying (attempt {attempt})", flush=True)
+                print(f"4 local catalogue FAILED: {e} - D1 and R2 are already clean; re-run to finish local"); return 1
+            if attempt % 6 == 1: print(f"   local catalogue locked; retrying (attempt {attempt})", flush=True)
             time.sleep(10)
     # ---- 5. source_counts
     r = subprocess.run([sys.executable, os.path.join(ROOT, "core", "sync_catalog_d1.py"), "--refresh-counts", ",".join(SOURCES)],
@@ -238,4 +240,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    if "--apply" not in sys.argv[1:]:
+        sys.exit(main())                     # a dry run reads only: no lock
+    else:
+        with catalog_path.write_session():   # after T0: the single-writer lock (main() refuses after T0 anyway)
+            sys.exit(main())
