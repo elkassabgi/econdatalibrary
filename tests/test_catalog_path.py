@@ -478,6 +478,46 @@ def _conformance_functions():
     return {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
 
 
+def _bindings(fn, var):
+    """Every statement or node that binds `var` inside `fn`: an assignment of any kind (=, +=, annotated, walrus),
+    a for / comprehension / with target, del, an except name, an argument, an import alias, global/nonlocal and
+    a match capture. Each statement counts once; a nested def or lambda that binds it counts too."""
+    import ast
+    out = []
+    for n in ast.walk(fn):
+        if isinstance(n, (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.For, ast.AsyncFor, ast.With, ast.AsyncWith,
+                          ast.Delete, ast.NamedExpr, ast.comprehension)):
+            targets = (n.targets if isinstance(n, (ast.Assign, ast.Delete)) else
+                       [i.optional_vars for i in n.items if i.optional_vars is not None]
+                       if isinstance(n, (ast.With, ast.AsyncWith)) else [n.target])
+            if any(isinstance(x, ast.Name) and x.id == var for t in targets for x in ast.walk(t)):
+                out.append(n)
+        elif isinstance(n, ast.ExceptHandler) and n.name == var:
+            out.append(n)
+        elif isinstance(n, ast.arg) and n.arg == var:
+            out.append(n)
+        elif isinstance(n, (ast.Import, ast.ImportFrom)) and any((a.asname or a.name.split('.')[0]) == var
+                                                                for a in n.names):
+            out.append(n)
+        elif isinstance(n, (ast.Global, ast.Nonlocal)) and var in n.names:
+            out.append(n)
+        elif isinstance(n, (ast.MatchAs, ast.MatchStar)) and n.name == var:
+            out.append(n)
+    return out
+
+
+def test_the_binding_rule_can_fail():
+    import ast
+    good = "def f():\n    tmpdir = tempfile.mkdtemp(prefix='x')\n"
+    assert len(_bindings(ast.parse(good).body[0], "tmpdir")) == 1
+    for extra in ("    tmpdir += 'y'\n", "    tmpdir: str = 'y'\n", "    (tmpdir := 'y')\n",
+                  "    for tmpdir in []:\n        pass\n", "    [0 for tmpdir in []]\n",
+                  "    with open('x') as tmpdir:\n        pass\n", "    del tmpdir\n",
+                  "    try:\n        pass\n    except Exception as tmpdir:\n        pass\n",
+                  "    import os as tmpdir\n", "    global tmpdir\n", "    a, tmpdir = 1, 2\n"):
+        assert len(_bindings(ast.parse(good + extra).body[0], "tmpdir")) == 2, extra
+
+
 def test_the_conformance_exemption_names_only_temporary_fixtures():
     """The premise of EXEMPT_FUNCTIONS["api/test_conformance.py"] (t0_ready legacy-catalogue, 2026-11-17): the three
     functions never open the real catalogue. The `store` fixture builds a catalogue in a tempfile.mkdtemp() folder,
@@ -500,10 +540,19 @@ def test_the_conformance_exemption_names_only_temporary_fixtures():
     assert not [n for n in ast.walk(fns["store"]) if isinstance(n, ast.Call) and ast.unparse(n.func) == "sqlite3.connect"]
     for name in ("test_metadata_description_citation_fallback", "test_status_data_unavailable_vs_resolver_empty_distinct"):
         fn = fns[name]
-        assigns = {ast.unparse(n.targets[0]): ast.unparse(n.value) for n in ast.walk(fn) if isinstance(n, ast.Assign)}
-        assert assigns["src_cat"] == "store['catalog']", name
-        assert assigns["tmpdir"].startswith("tempfile.mkdtemp("), name
-        assert assigns["tmp_cat"] == "os.path.join(tmpdir, 'catalog.db')", name
+        # review AR-283 round 2 (R1925): `tmpdir = mkdtemp(...) and <real dir>` and `tmpdir += ...` passed a check
+        # of the last assignment's text. Each of the three names is bound EXACTLY ONCE in the function, by any
+        # binding form, and that one binding is a plain assignment of exactly the expected expression.
+        for var, ok in (
+                ("src_cat", lambda v: ast.unparse(v) == "store['catalog']"),
+                ("tmpdir", lambda v: isinstance(v, ast.Call) and ast.unparse(v.func) == "tempfile.mkdtemp"
+                 and not v.args and all(k.arg == "prefix" and isinstance(k.value, ast.Constant) for k in v.keywords)),
+                ("tmp_cat", lambda v: ast.unparse(v) == "os.path.join(tmpdir, 'catalog.db')")):
+            binds = _bindings(fn, var)
+            assert len(binds) == 1, (name, var, [ast.unparse(b) if isinstance(b, ast.AST) else b for b in binds])
+            b = binds[0]
+            assert isinstance(b, ast.Assign) and len(b.targets) == 1 and isinstance(b.targets[0], ast.Name) \
+                and ok(b.value), (name, var, ast.unparse(b))
         opens = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and ast.unparse(n.func) == "sqlite3.connect"]
         assert opens and all(ast.unparse(o.args[0]) == "tmp_cat" for o in opens), name
 
