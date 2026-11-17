@@ -37,6 +37,7 @@ NEEDLE = "refresh_r2_catalog"
 ALLOWED = {
     "core/catalog.py": "the schema's SQL comment says which tool regenerates catalog.db (not guidance)",
     "core/cutover.py": "CLOUD_STEPS - the list next_steps names as skipped",
+    "tools/selfhost/t0_ready.py": "RETIRE_AT_T0 - names the tool to DELETE it at T0, never to run it",
 }
 
 

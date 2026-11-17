@@ -245,6 +245,75 @@ def test_this_checkout_is_not_ready_until_the_13f_rename_merges():
     assert ("thirteen-f", T.thirteen_f) in T.CHECKS and ("ci-drained", T.ci_drained) in T.CHECKS
 
 
+def test_retired_tools_fails_while_a_retired_file_is_present(tmp_path):
+    """Can fail: a retired file in the checkout is NOT READY, and the line names it, its reason and when to delete
+    it; with the file gone the check passes."""
+    (tmp_path / "tools").mkdir()
+    f = tmp_path / "tools" / "refresh_r2_catalog.py"
+    f.write_text("x = 1\n")
+    ok, detail = T.retired_tools(str(tmp_path))
+    assert not ok
+    assert "tools/refresh_r2_catalog.py" in detail and T.RETIRE_AT_T0["tools/refresh_r2_catalog.py"] in detail
+    assert "ci-drained" in detail
+    f.unlink()
+    assert T.retired_tools(str(tmp_path)) == (True, f"{len(T.RETIRE_AT_T0)} retired, none left")
+
+
+def test_retired_tools_reads_the_real_checkout():
+    """Control on this checkout: the check fails exactly while a RETIRE_AT_T0 file is still here (today:
+    tools/refresh_r2_catalog.py, which the CI writers' R2 catalogue copy still needs before T0)."""
+    assert "tools/refresh_r2_catalog.py" in T.RETIRE_AT_T0
+    present = [p for p in T.RETIRE_AT_T0 if os.path.exists(os.path.join(ROOT, *p.split("/")))]
+    ok, detail = T.retired_tools()
+    assert ok is (not present), detail
+    for p in present:
+        assert p in detail
+
+
+def test_refresh_r2_catalog_is_retired_not_exempted():
+    """The owner's decision (2026-11-17) is to delete it at T0, not to exempt it from the catalogue ratchet. While
+    the file exists it stays on tests/catalog_db_legacy.txt, so legacy-catalogue and retired-tools both refuse T0;
+    exempting it instead must also take it off RETIRE_AT_T0 - a visible change of the decision."""
+    p = "tools/refresh_r2_catalog.py"
+    if os.path.exists(os.path.join(ROOT, *p.split("/"))):
+        with open(os.path.join(ROOT, "tests", "catalog_db_legacy.txt"), encoding="utf-8") as fh:
+            legacy = {l.strip() for l in fh if l.strip() and not l.startswith("#")}
+        assert p in legacy
+
+
+def test_refresh_r2_catalog_is_not_deleted_while_a_workflow_still_pulls_its_copy():
+    """The real ordering guard (review of this step, finding 1): main() runs every check, so the position in CHECKS
+    orders nothing. The risk is a deletion PR merged while updater-daily/updater-heavy still pull the R2 catalogue
+    copy every run - the copy would then go stale with no tool to refresh it. So while any workflow names the
+    object, the tool must exist; the deletion PR removes those pull steps with the tool."""
+    wf_dir = os.path.join(ROOT, ".github", "workflows")
+    pulling = [f for f in sorted(os.listdir(wf_dir)) if f.endswith((".yml", ".yaml"))
+               and "_aqueduct/catalog.db.zst" in open(os.path.join(wf_dir, f), encoding="utf-8").read()]
+    if pulling:
+        assert os.path.isfile(os.path.join(ROOT, "tools", "refresh_r2_catalog.py")), (
+            f"{pulling} still pull the R2 catalogue copy: delete tools/refresh_r2_catalog.py only with those steps, "
+            "after the CI writers are disabled and drained")
+
+
+def test_retired_tools_counts_a_dangling_link_as_present(tmp_path):
+    """lexists, not exists: a link left where the file was is not a deletion."""
+    (tmp_path / "tools").mkdir()
+    link = tmp_path / "tools" / "refresh_r2_catalog.py"
+    try:
+        link.symlink_to(tmp_path / "gone.py")
+    except (OSError, NotImplementedError):
+        pytest.skip("this OS or account cannot create a symlink")
+    assert T.retired_tools(str(tmp_path))[0] is False
+
+
+def test_retired_tools_is_listed_after_ci_drained_and_before_the_flag():
+    """Readability only: main() runs every check whatever the order, so this pins how the line reads, not when the
+    deletion happens (the workflow test above guards that)."""
+    names = [n for n, _ in T.CHECKS]
+    assert ("retired-tools", T.retired_tools) in T.CHECKS
+    assert names.index("ci-writers") < names.index("ci-drained") < names.index("retired-tools") < names.index("flag")
+
+
 def test_it_writes_nothing():
     """No write verb in the tool: it only reads files, runs pytest and gh list, and GETs the edge."""
     src = open(os.path.join(ROOT, "tools", "selfhost", "t0_ready.py"), encoding="utf-8").read()

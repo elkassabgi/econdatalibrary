@@ -240,6 +240,8 @@ The workflow is `updater-daily.yml`, cron 06:00 UTC, concurrency group `aqueduct
 
 ## Checklist D — R2 catalog refresh
 
+**Retired at T0 (owner's decision, 2026-11-17).** This checklist holds only until the CI writers (updater-daily, updater-heavy) are disabled and drained, because they are the only readers of the R2 copy. Then a PR deletes `tools/refresh_r2_catalog.py`, before the CUTOVER flag; `tools/selfhost/t0_ready.py` refuses READY while the file exists (check `retired-tools`, list `RETIRE_AT_T0`). After T0 there is no R2 copy to refresh.
+
 **When:** any source demoting to "csv coherence unmet" / logging "no catalog mapping" every run — CI pulls `_aqueduct/catalog.db.zst` from R2 read-only to map changed store keys to catalogue ids, and a lagging copy fails the map *silently and forever*, because a `partial` never sets `last_success_utc` and so never trips RED-SLA either (tools/refresh_r2_catalog.py:1-10; measured 2026-08-02: R2 copy 57.6% short, 28 sources failing to map). Also required after ANY cataloguing (tools/catalog_complete.py:8).
 
 **Command:**

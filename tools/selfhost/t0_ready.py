@@ -18,6 +18,9 @@ Each check is mechanical and names what fails:
   ci-writers         updater-daily, updater-heavy and sec-edgar-daily are disabled on GitHub (gh workflow list)
   ci-drained         and none of their runs is still queued, pending, waiting or in progress (gh run list):
                      a disabled workflow is not a drained one, and a late run is old code (R1207)
+  retired-tools      every file in RETIRE_AT_T0 is gone from THIS checkout. The step is a deletion PR, merged and
+                     pulled into the production checkout AFTER ci-writers and ci-drained pass (the CI writers
+                     still read what these tools write until then) and BEFORE the flag. Each entry records why.
   thirteen-f         the 13F rename is in THIS checkout (registry: sec_edgar_13f, no sec_edgar) and has run on
                      the live state.db (nothing left under sec_edgar) - by content, not by commit id (R1207)
   edge-state         the deployed edge reports edge_state "users" (plan step 5 is done)
@@ -58,6 +61,26 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, ROOT)
 CI_WRITERS = ("updater-daily", "updater-heavy", "sec-edgar-daily")
 LAUNCHER = os.path.join(ROOT, "tools", "run_local_heavy.ps1")
+
+# Files deleted AT T0: after ci-writers and ci-drained pass, before the flag. Not earlier, and each reason says why.
+# tools/refresh_r2_catalog.py - the owner's decision of 2026-11-17 (retire it, rather than exempt it from the
+# catalogue ratchet). It is the only writer of the R2 catalogue copy _aqueduct/catalog.db.zst, which
+# updater-daily and updater-heavy pull on every run to map changed store keys to catalogue ids; a source
+# catalogued before T0 is unmapped in CI until that copy is refreshed (it was last refreshed by hand on
+# 2026-09-30). So it is still needed while those workflows run. After T0 the copy is frozen, the tool refuses
+# as its first statement, and it has no work. It is the last line of tests/catalog_db_legacy.txt, so its
+# deletion is also what lets legacy-catalogue pass. The deletion PR (only after updater-daily and updater-heavy
+# are disabled and drained) deletes or edits: the tool; its line in tests/catalog_db_legacy.txt; its COPY_TOOLS
+# entry and --help case in tests/test_retired_at_t0_tools.py; its entries in tests/test_gate_readers_fail_closed.py
+# and tests/test_object_writers_ratchet.py; tests/test_refresh_guards_source_table.py; and the "Pull catalog.db"
+# steps of both workflows (tests/test_selfhost_t0_ready.py refuses the deletion while a workflow still pulls the
+# copy). NEEDLE and ALLOWED in tests/test_catalog_next_steps.py STAY, including the t0_ready.py exception: this
+# entry stays (a deleted file passes), and core/cutover.py CLOUD_STEPS and the seven tools' pre-T0 NEXT lines
+# still name the tool. Between that pull and the flag those NEXT lines name a deleted tool; the CI writers are
+# already off then, so nothing reads the copy and the line is moot.
+RETIRE_AT_T0 = {
+    "tools/refresh_r2_catalog.py": "the R2 catalogue copy it refreshes is read only by the CI writers",
+}
 
 
 def legacy_catalogue(root: str = ROOT) -> tuple[bool, str]:
@@ -171,6 +194,16 @@ def ci_drained(run=subprocess.run) -> tuple[bool, str]:
         waiting += [f"{name}#{x['databaseId']}={x['status']}" for x in json.loads(r.stdout)
                     if x.get("status") != "completed"]
     return not waiting, ("not completed: " + ", ".join(waiting[:10])) if waiting else "no run left to happen"
+
+
+def retired_tools(root: str = ROOT) -> tuple[bool, str]:
+    """Every RETIRE_AT_T0 file is gone. lexists, so a dangling link still counts as present (it is not deleted)."""
+    left = [p for p in sorted(RETIRE_AT_T0) if os.path.lexists(os.path.join(root, *p.split("/")))]
+    if not left:
+        return True, f"{len(RETIRE_AT_T0)} retired, none left"
+    return False, ("still present: " + "; ".join(f"{p} ({RETIRE_AT_T0[p]})" for p in left)
+                   + " - delete it in a PR (with its test and legacy-list entries) once ci-writers and ci-drained"
+                     " pass, then pull that PR into this checkout")
 
 
 def thirteen_f(root: str = ROOT, state_path: str | None = None) -> tuple[bool, str]:
@@ -536,7 +569,7 @@ def flag() -> tuple[bool, str]:
 
 CHECKS = [("legacy-catalogue", legacy_catalogue), ("legacy-remote-d1", legacy_remote_d1), ("ratchets", ratchets),
           ("launcher", launcher), ("preflight", preflight), ("ci-writers", ci_writers),
-          ("ci-drained", ci_drained), ("thirteen-f", thirteen_f),
+          ("ci-drained", ci_drained), ("retired-tools", retired_tools), ("thirteen-f", thirteen_f),
           ("edge-state", edge_state), ("state-db", state_db), ("d1-only-sources", d1_only_sources),
           ("sec-edgar-local", sec_edgar_local), ("sec-edgar-runner", sec_edgar_runner),
           ("heartbeat-reader", heartbeat_reader), ("served-stats", served_stats),
