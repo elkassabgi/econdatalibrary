@@ -120,7 +120,7 @@ def mrig(rig, monkeypatch):
         return out
     monkeypatch.setattr(orchestrate, "order_units", order_spy)
     monkeypatch.setattr(orchestrate, "_drain_leftover_retries",
-                        lambda cands, blob, store: candidates.append(sorted(cands)))
+                        lambda cands, blob, store, **_k: candidates.append(sorted(cands)))
     for s in [SRC] + list(CMPS):
         rig.state.log_run(s, "_all", "ok", dur_s=3 * 3600.0)       # same cost band: 3 h on record
     for s, d in CMPS.items():

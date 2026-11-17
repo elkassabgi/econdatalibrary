@@ -1396,6 +1396,7 @@ class UnitBook:
             return e, [], list(order)
         end, drained, not_reached = e + budget, [], []
         pending, rnd = list(order), 1
+        taken: dict = {}                     # ids each source's turns took this pass: one _CSV_RETRY_CAP per pass
         while pending:
             again = []
             for i, s in enumerate(pending):
@@ -1406,11 +1407,13 @@ class UnitBook:
                     again = []
                     break
                 n = self.retry_queue[s][0]
+                cap_left = orch._CSV_RETRY_CAP - taken.get(s, 0)
                 mine = orch.leftover_source_min(left, per_source)
-                use = mine if drain_rate is None else min(mine, min(n, orch._CSV_RETRY_CAP) / drain_rate)
+                use = mine if drain_rate is None else min(mine, min(n, cap_left) / drain_rate)
                 gone = 0
                 if drain_rate is not None:
-                    gone = min(n, orch._CSV_RETRY_CAP, int(math.floor(use * drain_rate + 1e-9)))
+                    gone = min(n, cap_left, int(math.floor(use * drain_rate + 1e-9)))
+                    taken[s] = taken.get(s, 0) + gone
                     if gone >= n:
                         del self.retry_queue[s]
                     else:
@@ -1418,7 +1421,7 @@ class UnitBook:
                 e += use
                 drained.append((s, use))
                 # production's rule for another round: ids attempted and still queued, and cleared some or ran out
-                if n - gone > 0 and (gone > 0 or use >= mine - 1.0 / 60.0):
+                if n - gone > 0 and (gone > 0 or use >= mine - 1.0 / 60.0) and taken.get(s, 0) < orch._CSV_RETRY_CAP:
                     again.append(s)
             if not again or rnd >= orch._DRAIN_MAX_ROUNDS or end - e < orch._DRAIN_FLOOR_MIN:
                 break

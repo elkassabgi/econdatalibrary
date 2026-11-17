@@ -285,7 +285,7 @@ def test_a_scheduled_pass_never_drains_a_skip_units_retries(tmp_path, monkeypatc
         return out
 
     monkeypatch.setattr(orchestrate, "drain_candidates", spy)
-    monkeypatch.setattr(orchestrate, "_drain_leftover_retries", lambda cand, blob, st: [])
+    monkeypatch.setattr(orchestrate, "_drain_leftover_retries", lambda cand, blob, st, **_k: [])
     monkeypatch.setattr(orchestrate, "_has_adapter", lambda unit: True)
     try:
         orchestrate.run_once(sources=sorted(SKIP) + ["eia"], dry=False, store=store, scheduled=True)

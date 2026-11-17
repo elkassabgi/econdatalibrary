@@ -2371,7 +2371,7 @@ _DERIVE_ALL_CAP = 5000
 _CSV_RETRY_CAP = 20_000
 
 
-def _drain_csv_retry_queue(unit, blob, store, deadline_ts=None, id_gate=None, skip=None) -> dict:
+def _drain_csv_retry_queue(unit, blob, store, deadline_ts=None, id_gate=None, skip=None, cap=None) -> dict:
     """Drain the csv retry queue for one unit, bounded per run (the rules are at the call site in run_once).
     A function so its fence trip can be RUN against a StateStore in a test (review R1254 item 1).
 
@@ -2386,6 +2386,9 @@ def _drain_csv_retry_queue(unit, blob, store, deadline_ts=None, id_gate=None, sk
     (review AR-285 F3: wid's check of 20,000 ids took ~7.7 min before a derive of a few hundred).
     skip: ids already TRIED in this pass (the leftover drain's later rounds): left out, so no id is attempted, or its
     refailure counted, twice in one pass.
+    cap: the ids this call may take from the queue head; None = _CSV_RETRY_CAP. The leftover drain passes what is
+    left of the source's PER-PASS cap after its earlier turns, so its rounds never take more than _CSV_RETRY_CAP
+    ids of one source in one pass (tests/test_drain_retry_on_no_change.py::test_the_per_pass_cap_holds).
     Returns {queued, attempted, cleared, still_queued, held_back, tried, untried} for the caller's line: `tried` the
     ids the derive actually reached, `untried` the ids of this call it did not reach and did not hold back."""
     _summary = {"queued": 0, "attempted": 0, "cleared": 0, "still_queued": 0, "held_back": 0, "tried": [],
@@ -2412,8 +2415,14 @@ def _drain_csv_retry_queue(unit, blob, store, deadline_ts=None, id_gate=None, sk
             # attempts bumped, nothing moves to csv_desktop_owed - and says why.
             print(f"[orchestrator] {unit.source_id}: {_held} - the retry drain keeps today's routing",
                   flush=True)
+    _cap = _CSV_RETRY_CAP if cap is None else max(0, min(int(cap), _CSV_RETRY_CAP))
+    if _retry_rows and _cap == 0:
+        print(f"[orchestrator] {unit.source_id}: csv retry queue {len(_retry_rows):,} -> none attempted, the per-pass "
+              f"cap of {_CSV_RETRY_CAP:,} id(s) is spent - all still queued", flush=True)
+        _summary["still_queued"] = len(_retry_rows)
+        return _summary
     if _retry_rows:
-        _retry_ids = [r["series_id"] for r in _retry_rows][:_CSV_RETRY_CAP]
+        _retry_ids = [r["series_id"] for r in _retry_rows][:_cap]
         if id_gate is not None and deadline_ts is not None:
             return _drain_gated_chunks(unit, blob, store, _retry_rows, _retry_ids, deadline_ts, id_gate, _summary)
         if id_gate is not None:
@@ -2442,7 +2451,7 @@ def _drain_csv_retry_queue(unit, blob, store, deadline_ts=None, id_gate=None, sk
               flush=True)
         _summary.update(attempted=len(_retry_ids), cleared=len(_cleared),
                         still_queued=len(_refailed) + _summary["held_back"]
-                        + max(0, len(_retry_rows) - _CSV_RETRY_CAP),
+                        + max(0, len(_retry_rows) - _cap),
                         tried=list(_reached),
                         untried=max(0, len(_retry_rows) - len(_reached) - _summary["held_back"]))
     return _summary
@@ -2897,7 +2906,9 @@ def _drain_leftover_retries(candidates: dict, blob, store, route=None) -> list:
             s_ = summ if isinstance(summ, dict) else {}
             # ANOTHER ROUND only for a source whose turn tried ids and left ids it did not reach (not ids it refailed
             # or held back): it never re-tries an id in the same pass, so a refailure is counted once per pass
-            if err is None and s_.get("attempted", 0) > 0 and s_.get("untried", s_.get("still_queued", 0)) > 0:
+            # and only while its PER-PASS cap is not spent (_CSV_RETRY_CAP ids of one source per pass, all rounds)
+            if (err is None and s_.get("attempted", 0) > 0 and s_.get("untried", s_.get("still_queued", 0)) > 0
+                    and len(tried.get(sid, ())) < _CSV_RETRY_CAP):
                 again.append(sid)
         if not again or rnd >= _DRAIN_MAX_ROUNDS:
             break
@@ -2943,7 +2954,7 @@ def _leftover_turn(units, sid, blob, store, deadline, budget, margin, per_source
         done_ids = (tried if tried is not None else {}).setdefault(sid, set())
         summ = _drain_csv_retry_queue(unit, blob, store, deadline_ts=src_deadline,
                                       id_gate=_r2_mirror_gate(sid, src_deadline, cache=caches.setdefault(sid, {})),
-                                      skip=set(done_ids))
+                                      skip=set(done_ids), cap=_CSV_RETRY_CAP - len(done_ids))
         done_ids.update((summ or {}).get("tried") or [] if isinstance(summ, dict) else [])
     except (KeyboardInterrupt, SystemExit):
         raise
