@@ -13,9 +13,12 @@ redistribute until the verified per-source pass, Stage 0b, confirms its real lic
 Run: python core/build_registry.py
 """
 from __future__ import annotations
-import json, os
+import json, os, sys
 import yaml
 import catalog as cat   # same dir
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))  # core.cutover
+from core import cutover  # noqa: E402 - refused at entry after T0 (review AR-281 C281-3)
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 CLEAN = os.path.join(ROOT, "data", "clean_full")
@@ -132,4 +135,6 @@ def main():
 
 
 if __name__ == "__main__":
+    # a retired legacy registry tool (Stage 0): its source upsert drops terms_url, so after T0 it refuses first
+    cutover.refuse_if_cut_over("core/build_registry.py (a retired legacy registry tool; after T0 the updater is the catalogue's only writer)")
     main()
