@@ -3,8 +3,4 @@
 # ignored). This list may only SHRINK: move each file to core.catalog_path.connect and delete its line.
 api/test_conformance.py
 core/catalog.py
-tools/delist_timeless_tables.py
-tools/flowgrain_insee_melodi.py
-tools/flowgrain_ons_uk.py
-tools/make_servable.py
 tools/refresh_r2_catalog.py

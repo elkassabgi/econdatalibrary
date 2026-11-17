@@ -24,7 +24,7 @@ local store IS the published store, so it reads that (updater.blob.store_reader)
 listing is refused - before, 0 flows with --catalog deleted every row of the source and wrote none.
 
   python tools/flowgrain_insee_melodi.py --dry-run          # scan + sizes, writes nothing
-  python tools/flowgrain_insee_melodi.py --catalog          # write catalog.db rows
+  python tools/flowgrain_insee_melodi.py --catalog          # write the catalogue rows
   python tools/flowgrain_insee_melodi.py --upload           # PUT CSVs to the CSV store (R2 before T0)
 """
 from __future__ import annotations
@@ -36,7 +36,27 @@ import requests
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-CATALOG = os.environ.get("ECONDL_CATALOG") or os.path.join(ROOT, "data", "catalog.db")
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
+
+# The catalogue this tool reads and writes. None = resolve at the open (_catalogue(): $ECONDL_CATALOG when set,
+# else this checkout's data/ catalogue - the old expression); tests set a path here.
+CATALOG: str | None = None
+
+
+def _catalogue() -> str:
+    """$ECONDL_CATALOG when it is set, else <ROOT>/data's catalogue - exactly the old module constant, now read at
+    the open (t0_ready legacy-catalogue, 2026-11-17). The override is asked of econdl._catalog.default_db(),
+    which owns it (tests/test_catalog_path.py EXEMPT_FILES): before T0 it returns the override; after T0 the
+    build, refusing an override that names any other file. Opened with core.catalog_path.connect_path, which
+    never creates a missing catalogue and after T0 accepts only the build."""
+    if CATALOG:
+        return CATALOG
+    client = os.path.join(ROOT, "clients", "python")                   # this checkout's client, as derive_csv
+    if client not in sys.path:
+        sys.path.insert(0, client)
+    from econdl import _catalog as _econdl_catalog                      # noqa: PLC0415
+    chosen = _econdl_catalog.default_db()
+    return catalog_path.under(ROOT) if chosen == _econdl_catalog._DEFAULT_DB else chosen
 BUCKET = "econ-data"
 SOURCE = "insee_melodi"
 PREFIX = f"clean_full/{SOURCE}/"
@@ -90,7 +110,7 @@ def build_csv(tbl):
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(allow_abbrev=False)  # the lock choice in __main__ reads the exact flag
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--catalog", action="store_true")
     ap.add_argument("--upload", action="store_true")
@@ -111,8 +131,12 @@ def main():
     if not flows:
         raise SystemExit(f"no parquets under {PREFIX} - refusing to report an empty source")
 
-    lic = sqlite3.connect(f"file:{CATALOG}?mode=ro", uri=True).execute(
-        "SELECT license_id FROM source WHERE source_id=?", (SOURCE,)).fetchone()
+    cat = _catalogue()
+    ro = catalog_path.connect_path(cat, write=False, timeout=5.0)    # sqlite's own 5 s, as the plain open had
+    try:
+        lic = ro.execute("SELECT license_id FROM source WHERE source_id=?", (SOURCE,)).fetchone()
+    finally:
+        ro.close()
     if not lic or not lic[0]:
         raise SystemExit(f"{SOURCE} has no source/licence row — refusing to catalogue")
     lic = lic[0]
@@ -155,7 +179,7 @@ def main():
         print(f"   {f[:34]:34s} rows={n:>9,}  csv={b/1e6:>8.1f} MB", flush=True)
 
     if a.catalog:
-        conn = sqlite3.connect(CATALOG)
+        conn = catalog_path.connect_path(cat, write=True, timeout=5.0)   # no busy_timeout PRAGMA follows
         conn.execute("DELETE FROM series WHERE source_id=?", (SOURCE,))
         conn.executemany(
             "INSERT OR REPLACE INTO series (series_id,source_id,title,frequency,unit,geography,"
@@ -172,4 +196,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if "--catalog" not in sys.argv[1:]:
+        main()                               # --dry-run / --upload do not write the catalogue: no lock
+    else:
+        with catalog_path.write_session():   # after T0: the single-writer lock
+            main()

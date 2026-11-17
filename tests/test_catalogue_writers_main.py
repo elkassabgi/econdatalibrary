@@ -45,6 +45,9 @@ ARGS = {
     "tools/statcan_new_cubes.py": {"write": ["--apply"], "dry": []},
     "tools/fix_statcan_frequency.py": {"write": ["--apply"], "dry": []},
     "tools/sync_source_rows_d1_to_local.py": {"write": ["--source", "zz", "--apply"], "dry": ["--source", "zz"]},
+    "tools/flowgrain_insee_melodi.py": {"write": ["--catalog"], "dry": ["--dry-run"]},
+    "tools/flowgrain_ons_uk.py": {"write": ["--catalog"], "dry": ["--dry-run"]},
+    "tools/delist_timeless_tables.py": {"write": ["--apply"], "dry": []},
     "tools/apply_series_names.py": {"write": ["--apply"], "dry": ["--measure"]},
     "tools/refresh_flowgrain_dates.py": {"write": ["--source", "zz", "--apply"], "dry": ["--source", "zz", "--dry-run"]},
 }
@@ -145,6 +148,8 @@ EXPECTED_WRITERS = {
     "tools/title_unhcr_from_siblings.py", "tools/title_vdem_from_codebook.py",
     "tools/refresh_sec_edgar.py",                                                  # joined 2026-11-16 (t0_ready)
     "tools/sync_source_rows_d1_to_local.py",                                       # joined 2026-11-17 (t0_ready)
+    "tools/flowgrain_insee_melodi.py", "tools/flowgrain_ons_uk.py",
+    "tools/delist_timeless_tables.py",                                             # joined 2026-11-17 (t0_ready)
     "core/backfill_coverage.py", "pipeline/title_bea.py", "tools/apply_series_names.py",
     "tools/refresh_flowgrain_dates.py",                                            # joined 2026-11-17 (t0_ready)
 }

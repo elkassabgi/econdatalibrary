@@ -207,6 +207,8 @@ def test_flowgrain_after_t0_reads_the_local_store_and_writes_the_blob_store(tmp_
     flag.write_text("t0")
     monkeypatch.setattr(cutover, "FLAG_PATH", str(flag))
     assert cutover.is_cut_over(), "precondition: the flag reads as set"
+    from core import catalog_path                          # after T0 the catalogue it reads must be THE build
+    monkeypatch.setattr(catalog_path, "BUILD_PATH", m.CATALOG)
     data_root = tmp_path / "clean_full"
     (data_root / src).mkdir(parents=True)
     (data_root / src / "DS_L.parquet").write_bytes(_parquet_bytes(["L=1"]))
