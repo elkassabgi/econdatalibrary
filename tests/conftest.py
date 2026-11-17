@@ -25,12 +25,20 @@ _FORBIDDEN = ("--pull-state", "--push-state")
 #     covered by the empty CLOUDFLARE_API_TOKEN set in _no_cloud_credentials_in_a_test, and its tests fake
 #     urlopen;
 #   * a wrangler started INSIDE a bash or PowerShell script that a test runs: the guard sees only the
-#     command line Python starts (`bash script.sh`). Those tests put a fake npx first on PATH.
+#     command line Python starts (`bash script.sh`). Those tests put a fake npx first on PATH;
+#   * a Python tool run as a child process (`[sys.executable, "tools/x.py"]`) that then starts wrangler
+#     itself: the child is a new interpreter that loads no conftest, so it has no guard.
 # The name is the cutover hook's own pattern (tools/selfhost/cutover_hook.py `_W`: wrangler, wrangler@<version>,
-# .cmd/.js/.mjs/.ps1/.exe) plus wrangler-dist/cli.js. It is refused only where it would RUN: as the program
-# (after wrappers such as nice/env/cmd /c/bash -c), or anywhere after an npx/pnpm/yarn/bunx/npm/node launcher.
+# .cmd/.js/.mjs/.ps1/.exe), widened here to any version after @ (wrangler@^4, 'wrangler@>=3') and to .bat, plus
+# npm:wrangler and wrangler-dist/cli.js. It is refused only where it would RUN: as the program (after wrappers
+# such as nice/cmd /c/bash -c), or ANYWHERE after a launcher in the same command (npx/pnpx/pnpm/yarn/bunx/bun/
+# npm/node, env/sudo/timeout/nohup/xargs/corepack/deno), so a launcher's own options (`env -u HOME`,
+# `timeout -s KILL 60`) cannot hide it. Backticks and $( ) cut a command the way ; and | do.
 # A plain mention (`grep wrangler`, `rg wrangler`, `pytest -k wrangler`, a stand-in's argument) is not refused.
-_LAUNCHERS = frozenset({"npx", "pnpx", "pnpm", "yarn", "bunx", "bun", "npm", "node"})
+# Behind a launcher it IS (`timeout 60 pytest -k wrangler`): refusing too much fails one test loudly; refusing
+# too little reaches production.
+_LAUNCHERS = frozenset({"npx", "pnpx", "pnpm", "yarn", "bunx", "bun", "npm", "node",
+                        "env", "sudo", "timeout", "nohup", "xargs", "corepack", "deno"})
 _WRAPPERS = frozenset({"nice", "env", "sudo", "cmd", "bash", "sh", "call", "start", "time", "timeout", "pwsh",
                        "powershell", "exec"})
 
@@ -46,14 +54,16 @@ def _hook_wrangler_name():
     spec = importlib.util.spec_from_file_location("_cutover_hook_for_tests", path)
     hook = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(hook)
-    tail = r"\b.*?"
-    assert hook._W.endswith(tail), f"tools/selfhost/cutover_hook.py _W changed shape: {hook._W!r}"
-    return re.compile(hook._W[:-len(tail)], re.IGNORECASE)
+    tail, version, exts = r"\b.*?", r"(?:@[\w.\-]+)?", r"(?:\.cmd|\.js|\.mjs|\.ps1|\.exe)?"
+    if not (version in hook._W and exts in hook._W and hook._W.endswith(tail)):     # not assert: -O drops it
+        raise RuntimeError(f"tools/selfhost/cutover_hook.py _W changed shape: {hook._W!r}")
+    name = hook._W[:-len(tail)].replace(version, r"(?:@\S+?)?").replace(exts, exts[:-2] + r"|\.bat)?")
+    return re.compile(name, re.IGNORECASE)
 
 
 _WRANGLER_NAME = _hook_wrangler_name()
 _WRANGLER_DIST = re.compile(r"(?:^|[/\\])wrangler-dist[/\\]cli\.m?js$", re.IGNORECASE)
-_LEX = re.compile(r'"([^"]*)"|\'([^\']*)\'|([;&|()\r\n]+)|([^\s"\';&|()]+)')
+_LEX = re.compile(r'"([^"]*)"|\'([^\']*)\'|([;&|()`\r\n]+)|([^\s"\';&|()`]+)')
 
 
 def _base(token):
@@ -62,7 +72,8 @@ def _base(token):
 
 
 def _is_wrangler(token):
-    return bool(_WRANGLER_NAME.fullmatch(re.split(r"[/\\]", token)[-1]) or _WRANGLER_DIST.search(token))
+    name = re.sub(r"^npm:", "", re.split(r"[/\\]", token)[-1], flags=re.IGNORECASE)
+    return bool(_WRANGLER_NAME.fullmatch(name) or _WRANGLER_DIST.search(token))
 
 
 def _segments(text, depth=0):
@@ -98,8 +109,11 @@ def _starts_a_wrangler(args):
             continue
         if _is_wrangler(seg[i]):
             return True
-        if _base(seg[i]) in _LAUNCHERS and any(_is_wrangler(t) for t in seg[i + 1:]):
-            return True
+        launched = False
+        for t in seg:
+            if launched and _is_wrangler(t):
+                return True
+            launched = launched or _base(t) in _LAUNCHERS
     return False
 
 pytest_plugins = ["pytester"]          # the guard's own can-fail test runs an isolated pytest
