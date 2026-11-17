@@ -114,8 +114,15 @@ def gate_rotating(health_path, now):
         age_h = (now - made).total_seconds() / 3600.0
         if not 0 <= age_h <= GATE_VERDICT_MAX_AGE_HOURS:
             return None, None, f"the health check's verdict is {age_h:.1f} hours old, so it is not of this run"
+        # A row held at ATTENTION by the CSV-RETRY BACKLOG alone that was ROTATING without it
+        # (health: rotating_before_backlog) stays in the calm list: the backlog has its own section in this report,
+        # and moving such a source under "Needs attention" every morning is what the owner's order of 2026-10-11
+        # removed (review AR-285 F4). Any other hold keeps it out: such a row has csv_retry_backlog_hold False.
         return ({str(r["source"]) for r in rep["sources"]
-                 if r.get("health") == "ROTATING" and (r.get("run_location") or "cloud") == "cloud"},
+                 if (r.get("health") == "ROTATING"
+                     or (r.get("health") == "ATTENTION" and r.get("csv_retry_backlog_hold") is True
+                         and r.get("rotating_before_backlog") is True))
+                 and (r.get("run_location") or "cloud") == "cloud"},
                 made, None)
     except Exception as e:                                            # noqa: BLE001
         return None, None, f"the health check's verdict could not be read ({repr(e)[:120]})"
@@ -415,16 +422,19 @@ def csv_retry_lines(groups, now, backlog_of, days) -> list:
     stamps = [age(v[1]) for v in groups.values()]
     known = [a for a in stamps if a is not None]
     n_back = sum(1 for s, v in groups.items() if backlog_of(v, now))
+    # "OLDEST CURRENT ENQUEUE", not "oldest debt" (review AR-285 F5): enqueue_csv_retry restarts an id's time when it
+    # is queued again, so a source that re-defers its ids every run reads young however long it has owed them.
     head = (f"  csv retry queue (ids whose served CSV waits for a re-derive; it lags the store): {total:,} ids in "
-            f"{len(groups)} source(s), oldest {max(known):.0f} days" if known else
+            f"{len(groups)} source(s), oldest current enqueue {max(known):.0f} days" if known else
             f"  csv retry queue (ids whose served CSV waits for a re-derive; it lags the store): {total:,} ids in "
-            f"{len(groups)} source(s), oldest unknown")
-    out = [head + f"; {n_back} past the health check's {float(days):g}-day BACKLOG mark:"]
+            f"{len(groups)} source(s), oldest current enqueue unknown")
+    out = [head + f" (an id queued again restarts its time, so a debt can be older than shown); {n_back} past the "
+           f"health check's {float(days):g}-day BACKLOG mark:"]
     for sid, v in sorted(groups.items(), key=lambda kv: (-(age(kv[1][1]) or 0.0), kv[0])):
         a = age(v[1])
         nul = int(v[2]) if len(v) > 2 and v[2] else 0
         mark = "BACKLOG (ATTENTION)" if backlog_of(v, now) else ""
-        out.append(f"     {sid:38} {int(v[0]):>9,} ids  oldest "
+        out.append(f"     {sid:38} {int(v[0]):>9,} ids  oldest enqueue "
                    + (f"{a:6.1f}d" if a is not None else "     ?")
                    + (f" ({nul:,} unstamped)" if nul else "") + (f"  {mark}" if mark else ""))
     return out + ["  " + CSV_RETRY_DRAIN_NOT_RECORDED, ""]
@@ -784,7 +794,8 @@ def main() -> None:
         lines.append("")
     if progress:
         lines.append("  in progress (normal) - too large for one run; in its last run each attempted a part "
-                     "of its work, nothing failed, and the health check found nothing else wrong:")
+                     "of its work, nothing failed, and the health check found nothing else wrong (apart from a "
+                     "csv retry backlog, which the csv retry queue section shows):")
         for r in sorted(progress, key=lambda x: x[0]):
             lines.append(f"  .. {r[0]:20} tried={tried_age(r[5]):>8}  {str(r[4] or '')[:90]}")
         lines.append("")
@@ -924,7 +935,8 @@ def main() -> None:
             f"In progress (normal) ({len(progress)})</h3>"
             f"<div style='font-size:12px;color:{grey};margin:0 0 6px;'>Too large for one run. In its last "
             "run (see Last tried) each attempted a part of its work, nothing failed, and the health check "
-            "found nothing else wrong. The rest waits for later runs.</div>"
+            "found nothing else wrong (apart from a csv retry backlog, which the csv retry queue note shows). "
+            "The rest waits for later runs.</div>"
             "<table role='presentation' width='100%' style='border-collapse:collapse;background:#f9fafb;"
             "border:1px solid #e5e7eb;border-radius:8px;'><tr>"
             f"{_th}Source</th>{_th}Data through</th>{_th}Last tried</th>{_th}Detail</th></tr>"

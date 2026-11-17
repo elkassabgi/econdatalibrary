@@ -17,7 +17,12 @@ WHAT THESE TESTS HOLD:
   (3) the drain: each source has its own deadline min(pass deadline, start + AQUEDUCT_RETRY_DRAIN_PER_SOURCE_MIN,
       default 15), handed to _drain_csv_retry_queue AND _r2_mirror_gate, so a first source that never empties
       cannot starve the second;
-  (4) the rotation: the oldest-enqueued order rotates by the UTC day, so each source is first once in n days.
+  (4) the rotation: candidates go in ring order from the UTC day's pointer; the ring is the sources THIS pass could
+      drain (review AR-285 F2), so a cloud-routed queue takes no ring day;
+  (5) review AR-285: the drain is work-conserving (a lone never-emptying source uses the whole budget; a later
+      round never re-tries an id of this pass; a source that refails everything fast gets no second round); the
+      mirror check runs a chunk at a time, so its cost follows what the slice derives; a ROTATING source held by
+      the backlog alone stays in the digest's calm list, while another hold beside it does not.
 Replay parity (tools/measure_ci_lag.py against the real run_once) is in test_replay_parity_leftover_drain.py.
 Nothing touches the network or a path outside tmp_path.
 """
@@ -194,10 +199,12 @@ def test_the_digest_section_lines():
               "imf_imts_direct": (1_470, _iso(now - dt.timedelta(days=3)), 0), "gone": (0, None, 0)}
     lines = sd.csv_retry_lines(groups, now, health.csv_retry_backlog_of, health.CSV_RETRY_BACKLOG_DAYS)
     text = "\n".join(lines)
-    assert "70,453 ids in 2 source(s), oldest 85 days; 1 past the health check's 7-day BACKLOG mark" in lines[0]
+    assert "70,453 ids in 2 source(s), oldest current enqueue 85 days" in lines[0]
+    assert "an id queued again restarts its time" in lines[0], "review AR-285 F5: say what the age measures"
+    assert "1 past the health check's 7-day BACKLOG mark" in lines[0]
     usda = next(l for l in lines if "usda" in l)
     imts = next(l for l in lines if "imf_imts_direct" in l)
-    assert "68,983 ids" in usda and "85.0d" in usda and "BACKLOG (ATTENTION)" in usda
+    assert "68,983 ids" in usda and "oldest enqueue" in usda and "85.0d" in usda and "BACKLOG (ATTENTION)" in usda
     assert "1,470 ids" in imts and "3.0d" in imts and "BACKLOG" not in imts
     assert lines.index(usda) < lines.index(imts), "oldest first"
     assert "gone" not in text
@@ -245,9 +252,9 @@ def test_both_digest_bodies_carry_the_queue_section(tmp_path, monkeypatch, capsy
     rows = [(f"usda:S{i}", "usda", old) for i in range(3)] + [("wid:S0", "wid", new)]
     sent = _digest(tmp_path, monkeypatch, capsys, rows)
     for name, body in (("TEXT", sent["body"]), ("HTML", H.unescape(sent["html"]))):
-        assert "4 ids in 2 source(s), oldest 40 days" in body, name
-        assert re.search(r"usda\s+3 ids\s+oldest\s+40\.0d\s+BACKLOG \(ATTENTION\)", body), name
-        assert re.search(r"wid\s+1 ids\s+oldest\s+1\.0d", body), name
+        assert "4 ids in 2 source(s), oldest current enqueue 40 days" in body, name
+        assert re.search(r"usda\s+3 ids\s+oldest enqueue\s+40\.0d\s+BACKLOG \(ATTENTION\)", body), name
+        assert re.search(r"wid\s+1 ids\s+oldest enqueue\s+1\.0d", body), name
         assert "NOT RECORDED" in body, name
     assert "<b>csv retry queue</b>" in sent["html"]
 
@@ -257,6 +264,62 @@ def test_an_unreadable_queue_is_said_not_shown_empty(tmp_path, monkeypatch, caps
     assert "csv retry queue: could not be read (LookupError)" in sent["body"]
     assert "csv retry queue: empty" not in sent["body"]
     assert "could not be read" in sent["html"]
+
+
+CLOUD = "cnb"                 # a real, live registry id with no run_location: the cloud gate judges it
+
+
+def _gate_verdict(tmp_path, st):
+    import json
+    from updater import send_digest as sd
+    p = tmp_path / "health.json"
+    p.write_text(json.dumps(health.assess(store=st)), encoding="utf-8")
+    return sd.gate_rotating(str(p), dt.datetime.now(dt.timezone.utc))
+
+
+def _rotating_cloud(st, now):
+    st.upsert_source(CLOUD, status="ok", last_success_utc=now.isoformat(), last_attempt_utc=now.isoformat())
+    st.upsert_unit(CLOUD, "_all", status="partial", last_obs_date=now.date().isoformat(),
+                   last_attempt_utc=now.isoformat(), last_success_utc=now.isoformat(), last_error=DEFERRAL)
+
+
+def test_a_backlog_keeps_a_rotating_source_in_the_digests_calm_list(tmp_path):
+    """Review AR-285 F4 / the owner's order of 2026-10-11: health holds the source at ATTENTION (never ROTATING), but
+    the email classes do not change - its rows stay "in progress (normal)", not under "Needs attention"."""
+    st = StateStore(path=":memory:")
+    now = dt.datetime.now(dt.timezone.utc)
+    _rotating_cloud(st, now)
+    calm, _t, off = _gate_verdict(tmp_path, st)
+    assert off is None and CLOUD in calm, "precondition: a clean deferral is in the calm list"
+    _queue(st, 3, _iso(now - dt.timedelta(days=30)), source=CLOUD)
+    row = next(r for r in health.assess(store=st)["sources"] if r["source"] == CLOUD)
+    assert row["health"] == "ATTENTION" and row["rotating_before_backlog"] is True and row["csv_retry_backlog_hold"]
+    calm, _t, off = _gate_verdict(tmp_path, st)
+    assert off is None and CLOUD in calm, "the backlog must not move a ROTATING source under Needs attention"
+
+
+def test_another_hold_beside_the_backlog_still_leaves_the_calm_list(tmp_path):
+    st = StateStore(path=":memory:")
+    now = dt.datetime.now(dt.timezone.utc)
+    _rotating_cloud(st, now)
+    _queue(st, 3, _iso(now - dt.timedelta(days=30)), source=CLOUD)
+    st.note_full_rederive_owed(CLOUD, vintage="v", note="n")
+    row = next(r for r in health.assess(store=st)["sources"] if r["source"] == CLOUD)
+    assert row["csv_retry_backlog_hold"] is False and row["rotating_before_backlog"] is False
+    calm, _t, _off = _gate_verdict(tmp_path, st)
+    assert CLOUD not in calm, "an owed re-derive is real trouble: it stays under Needs attention"
+
+
+def test_an_ok_source_with_a_backlog_is_not_called_rotating(tmp_path):
+    st = StateStore(path=":memory:")
+    now = dt.datetime.now(dt.timezone.utc)
+    st.upsert_source(CLOUD, status="ok", last_success_utc=now.isoformat(), last_attempt_utc=now.isoformat())
+    st.upsert_unit(CLOUD, "_all", status="ok", last_obs_date=now.date().isoformat(), last_attempt_utc=now.isoformat(),
+                   last_success_utc=now.isoformat())
+    _queue(st, 3, _iso(now - dt.timedelta(days=30)), source=CLOUD)
+    row = next(r for r in health.assess(store=st)["sources"] if r["source"] == CLOUD)
+    assert row["health"] == "ATTENTION" and row["rotating_before_backlog"] is False
+    assert CLOUD not in _gate_verdict(tmp_path, st)[0]
 
 
 # ---- (3) + (4) the drain ----------------------------------------------------------------------------
@@ -294,47 +357,82 @@ class _U:
 
 @pytest.fixture
 def drain(monkeypatch):
-    """_drain_leftover_retries on a virtual clock. The derive never empties a queue: it uses all the time it is
-    given (deadline_ts) - the usda / wid shape. Records (source, minutes given) and the mirror gate's deadline."""
+    """_drain_leftover_retries on a virtual clock. By default the derive never empties a queue: it uses all the time
+    it is given (deadline_ts) - the usda / wid shape. `fast` sources instead return at once with every id refailed.
+    Records (source, minutes given, deadline), the mirror gate's (source, deadline) and each call's skip set."""
     clock = _Clock(20_000 * 86400 + 3600)
-    calls, gates = [], []
+    calls, gates, skips = [], [], []
+    fast: set = set()
     monkeypatch.delenv("AQUEDUCT_RETRY_DRAIN_PER_SOURCE_MIN", raising=False)
     monkeypatch.setattr(orchestrate, "time", clock)
     monkeypatch.setattr(orchestrate, "_here", lambda: "local")
     monkeypatch.setattr(orchestrate, "_served_by_lane", lambda sid: False)
     monkeypatch.setattr(orchestrate, "_leftover_drain_min", lambda: 45.0)
     monkeypatch.setattr(orchestrate, "_drain_margin_min", lambda: 15.0)
-    monkeypatch.setattr(orchestrate, "_r2_mirror_gate", lambda sid, d=None: gates.append((sid, d)) or None)
+    monkeypatch.setattr(orchestrate, "_r2_mirror_gate",
+                        lambda sid, d=None, cache=None: gates.append((sid, d)) or None)
 
-    def fake(unit, blob, store, deadline_ts=None, id_gate=None):
+    def fake(unit, blob, store, deadline_ts=None, id_gate=None, skip=None):
         calls.append((unit.source_id, round((deadline_ts - clock.t) / 60.0, 6), deadline_ts))
+        skips.append((unit.source_id, set(skip or ())))
+        if unit.source_id in fast:                    # 3 ids, all refailed at once: nothing left untried
+            clock.t += 1.0
+            return {"queued": 3, "attempted": 3, "cleared": 0, "still_queued": 3, "held_back": 0,
+                    "tried": ["x1", "x2", "x3"], "untried": 0}
         clock.t = deadline_ts
-        return {"queued": 1, "attempted": 1, "cleared": 0, "still_queued": 1, "held_back": 0}
+        return {"queued": 1, "attempted": 1, "cleared": 0, "still_queued": 1, "held_back": 0,
+                "tried": [f"{unit.source_id}:t{len(calls)}"], "untried": 1}
     monkeypatch.setattr(orchestrate, "_drain_csv_retry_queue", fake)
 
-    def run(queued, day=0):
+    def run(queued, day=0, route=None):
         monkeypatch.setattr(orchestrate, "_drain_rotation_day", lambda: day)
         calls.clear()
         gates.clear()
-        cands = {s: [_U(s)] for s in queued}
-        orchestrate._drain_leftover_retries(cands, None, _Store(queued))
+        skips.clear()
+        t0 = clock.t
+        cands = {s: [_U(s)] for s in queued if route is None or s in route}
+        orchestrate._drain_leftover_retries(cands, None, _Store(queued), route=route)
+        run.used = (clock.t - t0) / 60.0
         return list(calls), list(gates)
+    run.fast, run.skips = fast, skips
     return run
 
 
 QUEUE = {"usda": (68_983, "2026-08-24T00:19:56+00:00"), "imf_imts_direct": (1_470, "2026-11-05T02:26:12+00:00")}
+WID = {"wid": (39_230, "2026-10-18T01:12:58+00:00")}
+
+
+def test_a_single_never_emptying_source_uses_the_whole_budget(drain):
+    """Review AR-285 F1 (probe_idle.py): main used 45 of 45 min for wid alone, the first cut 15. Work-conserving."""
+    calls, _g = drain(WID)
+    assert [(s, m) for s, m, _d in calls] == [("wid", 15.0)] * 3 and drain.used == 45.0
+    calls, _g = drain(dict(WID, **QUEUE), day=1)            # ring imf_imts_direct, usda, wid: usda first
+    assert drain.used == 45.0, "two never-emptying sources: still the whole budget"
 
 
 def test_a_never_emptying_first_source_cannot_starve_the_second(drain):
     calls, gates = drain(QUEUE, day=1)                    # ring imf_imts_direct, usda: day 1 puts usda first
-    assert [(s, m) for s, m, _d in calls] == [("usda", 15.0), ("imf_imts_direct", 15.0)]
-    # the mirror check gets the SAME per-source deadline as the derive
+    assert [(s, m) for s, m, _d in calls] == [("usda", 15.0), ("imf_imts_direct", 15.0), ("usda", 15.0)]
+    # the mirror check gets the SAME per-source deadline as the derive, turn by turn
     assert [(s, d) for s, d in gates] == [(s, d) for s, _m, d in calls]
+
+
+def test_a_later_round_skips_what_this_pass_already_tried(drain):
+    drain(WID)
+    assert [sk for _s, sk in drain.skips] == [set(), {"wid:t1"}, {"wid:t1", "wid:t2"}]
+
+
+def test_a_source_that_refails_everything_fast_gets_no_second_round(drain):
+    drain.fast.add("imf_imts_direct")
+    calls, _g = drain(QUEUE, day=0)                       # imts first: 3 ids, all refailed in 1 s
+    assert [s for s, _m, _d in calls] == ["imf_imts_direct", "usda", "usda", "usda"]
+    assert [m for s, m, _d in calls if s == "usda"] == [15.0, 15.0, pytest.approx(14.983333, abs=1e-5)]
 
 
 def test_the_share_is_configurable_and_never_unbounded(drain, monkeypatch):
     monkeypatch.setenv("AQUEDUCT_RETRY_DRAIN_PER_SOURCE_MIN", "20")
-    assert [(s, m) for s, m, _d in drain(QUEUE, day=1)[0]] == [("usda", 20.0), ("imf_imts_direct", 20.0)]
+    assert [(s, m) for s, m, _d in drain(QUEUE, day=1)[0]] == [("usda", 20.0), ("imf_imts_direct", 20.0),
+                                                                ("usda", 5.0)]
     for bad in ("0", "-3", "x"):
         monkeypatch.setenv("AQUEDUCT_RETRY_DRAIN_PER_SOURCE_MIN", bad)
         assert orchestrate._drain_per_source_min() == 15.0, bad
@@ -342,14 +440,28 @@ def test_the_share_is_configurable_and_never_unbounded(drain, monkeypatch):
 
 def test_the_pass_deadline_still_binds(drain, monkeypatch):
     monkeypatch.setattr(orchestrate, "_leftover_drain_min", lambda: 20.0)
-    calls, _g = drain(dict(QUEUE, wid=(39_230, "2026-10-18T01:12:58+00:00")), day=1)
+    calls, _g = drain(dict(QUEUE, **WID), day=1)
     assert [(s, m) for s, m, _d in calls] == [("usda", 15.0), ("wid", 5.0)], "imts not reached: 0 min left"
 
 
 def test_the_rotation_moves_the_head_each_day(drain):
-    q = dict(QUEUE, wid=(39_230, "2026-10-18T01:12:58+00:00"))      # ring: imf_imts_direct, usda, wid
+    q = dict(QUEUE, **WID)                                # ring: imf_imts_direct, usda, wid
     heads = [drain(q, day=day)[0][0][0] for day in (0, 1, 2, 3)]
     assert heads == ["imf_imts_direct", "usda", "wid", "imf_imts_direct"]
+
+
+def test_the_ring_is_this_passs_route_not_the_whole_queue(drain):
+    """Review AR-285 F2: 13 of the 20 queued sources were cloud-routed. They must not take ring days, or the local
+    source after them alphabetically holds the head. Route = usda, wid: the head alternates day by day."""
+    cloud = {f"imf_{c}_direct": (100, "2026-10-25") for c in "abcdefghijklm"}    # 13 sources before usda, wid
+    q = dict(cloud, usda=QUEUE["usda"], **WID)
+    heads = [drain(q, day=d, route={"usda", "wid"})[0][0][0] for d in range(6)]
+    assert heads == ["usda", "wid"] * 3
+    assert orchestrate.drain_ring(q, {"usda", "wid"}) == ["usda", "wid"]
+    assert orchestrate.drain_ring(q, {"usda", "wid"}, lane=("wid",)) == ["usda"]
+    # negative control: the whole-queue ring (the first cut) keeps usda first on the 13 cloud days and more
+    whole = [orchestrate.rotate_drain_order(["usda", "wid"], d, orchestrate.drain_ring(q))[0] for d in range(15)]
+    assert whole.count("usda") >= 13
 
 
 def test_rotate_drain_order():
@@ -404,3 +516,82 @@ def test_the_start_line_names_the_rotation(drain, capsys):
     drain(QUEUE, day=1)
     out = capsys.readouterr().out
     assert "at most 15 min per source, in rotation order from usda (UTC day 1): usda, imf_imts_direct" in out
+    assert "csv retry drain round 2: 15.0 min left go to 2 source(s) that still hold ids" in out
+
+
+# ---- (5) the mirror check runs a chunk at a time (review AR-285 F3) ---------------------------------
+
+@pytest.fixture
+def chunks(monkeypatch):
+    """_drain_gated_chunks with a scripted gate and a scripted derive + booking on a virtual clock."""
+    clock = _Clock(20_000 * 86400)
+    rec = {"gate": [], "derive": []}
+    monkeypatch.setattr(orchestrate, "time", clock)
+    monkeypatch.delenv("AQUEDUCT_RETRY_GATE_CHUNK", raising=False)
+
+    def run(n, *, hold=(), stop_after=None, gate_s=0.0, per_id_s=0.0, budget_min=15.0):
+        rec["gate"].clear()
+        rec["derive"].clear()
+        held = set(hold)
+
+        def gate(ids):
+            rec["gate"].append(len(ids))
+            clock.t += gate_s
+            return [s for s in ids if s not in held], {s: "unproven: f" for s in ids if s in held}
+
+        def book(unit, blob, store, ids, budget):
+            rec["derive"].append(len(ids))
+            clock.t += per_id_s * len(ids)
+            stop = stop_after is not None and len(rec["derive"]) >= stop_after
+            return list(ids), set(), stop, list(ids)
+        monkeypatch.setattr(orchestrate, "_drain_derive_and_book", book)
+        ids = [f"wid:S{i:05d}" for i in range(n)]
+        rows = [{"series_id": s} for s in ids]
+        summ = {"queued": n, "attempted": 0, "cleared": 0, "still_queued": 0, "held_back": 0, "tried": [],
+                "untried": 0}
+        return orchestrate._drain_gated_chunks(_U("wid"), None, None, rows, ids, clock.t + budget_min * 60.0, gate,
+                                               summ)
+    return run, rec
+
+
+def test_the_check_follows_what_the_slice_derives_not_the_cap(chunks):
+    run, rec = chunks
+    s = run(20_000, stop_after=1)                         # the derive's budget ended in the first chunk
+    assert rec["gate"] == [500] and rec["derive"] == [500], "20,000 ids were checked for a 500-id slice"
+    assert s["attempted"] == 500 and s["untried"] == 19_500 and len(s["tried"]) == 500
+
+
+def test_every_chunk_is_checked_then_derived_until_the_end(chunks):
+    run, rec = chunks
+    s = run(1_200)
+    assert rec["gate"] == [500, 500, 200] and rec["derive"] == [500, 500, 200]
+    assert s["attempted"] == s["cleared"] == 1_200 and s["still_queued"] == 0 and s["untried"] == 0
+
+
+def test_a_held_head_chunk_does_not_stop_the_slice(chunks):
+    """The R1842 fixed-head class: a first chunk the check holds back whole must not end the turn."""
+    run, rec = chunks
+    s = run(1_000, hold={f"wid:S{i:05d}" for i in range(500)})
+    assert rec["gate"] == [500, 500] and rec["derive"] == [500]
+    assert s["held_back"] == 500 and s["attempted"] == 500 and s["untried"] == 0
+
+
+def test_the_deadline_ends_the_chunks_and_counts_the_rest_untried(chunks):
+    run, rec = chunks
+    s = run(5_000, per_id_s=1.0, budget_min=15.0)         # 900 s: one chunk of 500 (500 s), then 400 s left
+    assert rec["derive"] == [500, 500] and s["attempted"] == 1_000 and s["untried"] == 4_000
+
+
+def test_the_chunk_size_is_configurable_and_never_unbounded(monkeypatch):
+    monkeypatch.setenv("AQUEDUCT_RETRY_GATE_CHUNK", "50")
+    assert orchestrate._gate_chunk() == 50
+    for bad in ("0", "-1", "x"):
+        monkeypatch.setenv("AQUEDUCT_RETRY_GATE_CHUNK", bad)
+        assert orchestrate._gate_chunk() == 500, bad
+
+
+def test_the_drain_takes_the_chunk_path_only_with_a_gate_and_a_deadline():
+    import inspect
+    src = inspect.getsource(orchestrate._drain_csv_retry_queue)
+    assert "if id_gate is not None and deadline_ts is not None:" in src
+    assert "return _drain_gated_chunks(unit, blob, store, _retry_rows, _retry_ids, deadline_ts, id_gate, _summary)" in src

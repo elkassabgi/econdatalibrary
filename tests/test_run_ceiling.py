@@ -227,7 +227,7 @@ def test_run_once_hands_the_drain_over_only_when_the_csv_fence_held():
     callers = sorted({fn.name for fn in ast.walk(tree) if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
                       for n in ast.walk(fn) if isinstance(n, ast.Call)
                       and getattr(n.func, "id", None) == "_drain_csv_retry_queue"})
-    assert callers == ["_drain_leftover_retries", "run_once"], callers
+    assert callers == ["_leftover_turn", "run_once"], callers
     every = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_drain_csv_retry_queue"]
     assert len(every) == 2, [ast.unparse(c) for c in every]
     gates = [n for n in ast.walk(run_once) if isinstance(n, ast.If) and ast.unparse(n.test) == "not _csv_fence_tripped"
@@ -239,7 +239,15 @@ def test_the_drain_arms_its_own_fence_around_derive():
     """_drain_csv_retry_queue arms exactly one alarm, from _csv_fence_min(), around derive_and_put; it rebinds none
     of the alarm helpers and reaches no module state by the roads a parser can name."""
     import ast
-    fn = _fn_ast("_drain_csv_retry_queue")
+    # the derive + booking moved into _drain_derive_and_book (review AR-285 F3); the fence moved with it, and
+    # neither caller arms another one
+    for caller in ("_drain_csv_retry_queue", "_drain_gated_chunks"):
+        c = _fn_ast(caller)
+        assert any(isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_drain_derive_and_book"
+                   for n in ast.walk(c)), caller
+        assert not any(isinstance(n, ast.Name) and n.id in ("_unit_deadline", "_csv_fence_min")
+                       for n in ast.walk(c)), caller
+    fn = _fn_ast("_drain_derive_and_book")
     sites = [(ast.unparse(i.context_expr.args[0]), ast.unparse(i.context_expr.args[1]),
               {ast.unparse(n.func) for s in w.body for n in ast.walk(s) if isinstance(n, ast.Call)})
              for w in ast.walk(fn) if isinstance(w, ast.With) for i in w.items

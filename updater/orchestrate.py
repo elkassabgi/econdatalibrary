@@ -2371,7 +2371,7 @@ _DERIVE_ALL_CAP = 5000
 _CSV_RETRY_CAP = 20_000
 
 
-def _drain_csv_retry_queue(unit, blob, store, deadline_ts=None, id_gate=None) -> dict:
+def _drain_csv_retry_queue(unit, blob, store, deadline_ts=None, id_gate=None, skip=None) -> dict:
     """Drain the csv retry queue for one unit, bounded per run (the rules are at the call site in run_once).
     A function so its fence trip can be RUN against a StateStore in a test (review R1254 item 1).
 
@@ -2381,8 +2381,15 @@ def _drain_csv_retry_queue(unit, blob, store, deadline_ts=None, id_gate=None) ->
     in-loop drain always had.
     id_gate: ids -> (ids to derive, {id: why not}); an id it holds back is not attempted and stays queued with its
     attempts unchanged (the leftover drain's mirror check, _r2_mirror_gate).
-    Returns {queued, attempted, cleared, still_queued, held_back} for the caller's line."""
-    _summary = {"queued": 0, "attempted": 0, "cleared": 0, "still_queued": 0, "held_back": 0}
+    WITH BOTH a gate and a deadline (the leftover drain under r2) the ids are checked and derived IN CHUNKS of
+    _gate_chunk() (_drain_gated_chunks): the check's cost follows what the slice can derive, not the 20,000-id cap
+    (review AR-285 F3: wid's check of 20,000 ids took ~7.7 min before a derive of a few hundred).
+    skip: ids already TRIED in this pass (the leftover drain's later rounds): left out, so no id is attempted, or its
+    refailure counted, twice in one pass.
+    Returns {queued, attempted, cleared, still_queued, held_back, tried, untried} for the caller's line: `tried` the
+    ids the derive actually reached, `untried` the ids of this call it did not reach and did not hold back."""
+    _summary = {"queued": 0, "attempted": 0, "cleared": 0, "still_queued": 0, "held_back": 0, "tried": [],
+                "untried": 0}
     _retry_rows = store.csv_retries(unit.source_id)
     # Purge rows that are not catalog ids BEFORE spending budget on them —
     # raw store keys (the old crash path's residue) fail every attempt by
@@ -2395,6 +2402,8 @@ def _drain_csv_retry_queue(unit, blob, store, deadline_ts=None, id_gate=None) ->
               f"malformed csv-retry id(s) — raw store keys (no "
               f"'{unit.source_id}:' prefix) queued by the old crash path; "
               f"they can never resolve", flush=True)
+    if skip:
+        _retry_rows = [r for r in _retry_rows if r["series_id"] not in skip]
     _summary["queued"] = len(_retry_rows)
     if _retry_rows and _declares_misses_from(unit.source_id):
         _held = _csv_misses_hold_note(unit.source_id)
@@ -2405,6 +2414,8 @@ def _drain_csv_retry_queue(unit, blob, store, deadline_ts=None, id_gate=None) ->
                   flush=True)
     if _retry_rows:
         _retry_ids = [r["series_id"] for r in _retry_rows][:_CSV_RETRY_CAP]
+        if id_gate is not None and deadline_ts is not None:
+            return _drain_gated_chunks(unit, blob, store, _retry_rows, _retry_ids, deadline_ts, id_gate, _summary)
         if id_gate is not None:
             _retry_ids, _held = id_gate(_retry_ids)
             _summary["held_back"] = len(_held)
@@ -2423,68 +2434,7 @@ def _drain_csv_retry_queue(unit, blob, store, deadline_ts=None, id_gate=None) ->
                 _summary["still_queued"] = len(_retry_rows)
                 return _summary
             _budget = {"budget_min": _left}
-        from . import derive as _derive_mod
-        # ITS OWN HARD FENCE (R1246 finding 4). derive_and_put now lets the fence through and
-        # stops at once (1 s wait slices, queue cancelled, running PUTs left to finish unbooked),
-        # and hands back what it DID on the exception. On a trip: every id it PUT is cleared
-        # like any success; every other id counts as not derived - a plain id stays queued, a
-        # flow-grain id moves to the desktop debt (that path's rule below). An id a background
-        # worker finishes after the trip stays queued (or owed) and is derived again: never booked as
-        # derived here. The process cannot exit before that worker's PUT returns (review R1254 item 3).
-        try:
-            with _unit_deadline(unit.key + " (csv retry drain)", _csv_fence_min()):
-                _out = _derive_mod.derive_and_put(
-                    _retry_ids, blob if blob is not None else _resolve_blob(),
-                    **({"flow_grain": True} if _csv_grain(unit.source_id) == "flow" else {}),
-                    **_derive_width_kw(unit.source_id),
-                    **_budget) or {}
-            # TRIED and failed again - not the ids the budget never reached (derive lists those in `failed` too)
-            _tried_failed = set(str(s) for s in (_out.get("failed") or [])) - set(
-                str(s) for s in (_out.get("deferred_ids") or []))
-            _reasons = dict(_out.get("failed_reasons") or {})
-        except UnitTimeout as _trip:
-            _part = getattr(_trip, "derive_partial", None) or {}
-            _done = set(str(s) for s in (_part.get("put_ids") or []))
-            _big = {str(k): v for k, v in (_part.get("deferred_large") or {}).items()}
-            # a too-large id keeps its own booking (reason and row count): listed as not derived too, the
-            # flow rule below re-booked it "budget-deferred" with rows None (review R1254 item 5)
-            _out = {"failed": [s for s in _retry_ids if str(s) not in _done and str(s) not in _big],
-                    "deferred_large": _big}
-            _tried_failed = set(str(s) for s in (_part.get("failed") or []))
-            _reasons = dict(_part.get("failed_reasons") or {})
-            print(f"[orchestrator] {unit.key}: csv retry drain exceeded its fence - {len(_done):,} "
-                  f"id(s) derived and cleared, {len(_out['failed']):,} kept as not derived",
-                  flush=True)
-        _refailed = set(str(s) for s in (_out.get("failed") or []))
-        # A queued id that turns out too large for the runner leaves the retry
-        # queue (it can never succeed there) and moves to csv_desktop_owed.
-        _large_q = {str(k): int(v) for k, v in
-                    (_out.get("deferred_large") or {}).items()}
-        _book_csv_desktop_owed(store, unit.source_id, _large_q)
-        if _csv_misses(unit.source_id) == "desktop_owed":
-            # (ilostat's R1144, ported into the drain when it moved out of run_once): every id that did not
-            # derive - refailed, budget-deferred, or not reached before a fence trip - goes to csv_desktop_owed
-            _refailed = _drain_residue_to_debts(store, unit.source_id, _out, _refailed)
-        elif _csv_grain(unit.source_id) == "flow":
-            # FLOW-GRAIN IDS DO NOT BELONG IN THIS QUEUE AT ALL (condition 2): a
-            # legacy or refailed row can never succeed on a later runner. Move every
-            # one that did not derive to the desktop debt and drop it from the queue.
-            _dead = sorted(set(_refailed) | set(str(s) for s in (_out.get("deferred_ids") or [])))
-            if _dead:
-                _book_csv_desktop_owed(store, unit.source_id, {s: None for s in _dead},
-                                       reason=_DESKTOP_OWED_BUDGET)
-                _refailed = set()
-        _cleared = [s for s in _retry_ids if s not in _refailed]
-        if _cleared:
-            store.clear_csv_retries(_cleared)
-            _record_for_catalog_sync([s for s in _cleared if s not in _large_q
-                                      and s not in set(str(x) for x in (_out.get("failed") or []))])
-        # AN ATTEMPT IS COUNTED (review AR-413 O5). A refailure used to stay queued with attempts unchanged, so the
-        # counter read 2 after 20 refailing fed_board drains, and csv_retries could not put a permanently failing
-        # head behind ids never tried. Only ids that were TRIED, failed again and STAY queued are counted.
-        _bump = sorted(s for s in _refailed if s in _tried_failed)
-        if _bump:
-            store.note_csv_retry_refailed({s: _reasons.get(s) for s in _bump})
+        _cleared, _refailed, _stop, _reached = _drain_derive_and_book(unit, blob, store, _retry_ids, _budget)
         print(f"[orchestrator] {unit.source_id}: csv retry queue "
               f"{len(_retry_rows):,} -> attempted {len(_retry_ids):,}, "
               f"cleared {len(_cleared):,}, still queued {len(_refailed):,}"
@@ -2492,8 +2442,146 @@ def _drain_csv_retry_queue(unit, blob, store, deadline_ts=None, id_gate=None) ->
               flush=True)
         _summary.update(attempted=len(_retry_ids), cleared=len(_cleared),
                         still_queued=len(_refailed) + _summary["held_back"]
-                        + max(0, len(_retry_rows) - _CSV_RETRY_CAP))
+                        + max(0, len(_retry_rows) - _CSV_RETRY_CAP),
+                        tried=list(_reached),
+                        untried=max(0, len(_retry_rows) - len(_reached) - _summary["held_back"]))
     return _summary
+
+
+def _drain_derive_and_book(unit, blob, store, _retry_ids, _budget) -> tuple:
+    """Derive `_retry_ids` (queued ids of `unit`'s source) under `_budget` and book the outcome: the body of
+    _drain_csv_retry_queue moved out unchanged, so the chunked leftover drain (_drain_gated_chunks) books every
+    chunk by the same rules (fence trip, too-large -> csv_desktop_owed, csv_misses and flow-grain debts, cleared,
+    attempts). Returns (cleared ids, ids still queued, stop, reached ids) - stop: the derive's budget or fence ended
+    it, so a chunk loop must not start another chunk; reached: the ids the derive TRIED (not the ones its budget or
+    fence never reached)."""
+    _fence_tripped = False
+    from . import derive as _derive_mod
+    # ITS OWN HARD FENCE (R1246 finding 4). derive_and_put now lets the fence through and
+    # stops at once (1 s wait slices, queue cancelled, running PUTs left to finish unbooked),
+    # and hands back what it DID on the exception. On a trip: every id it PUT is cleared
+    # like any success; every other id counts as not derived - a plain id stays queued, a
+    # flow-grain id moves to the desktop debt (that path's rule below). An id a background
+    # worker finishes after the trip stays queued (or owed) and is derived again: never booked as
+    # derived here. The process cannot exit before that worker's PUT returns (review R1254 item 3).
+    try:
+        with _unit_deadline(unit.key + " (csv retry drain)", _csv_fence_min()):
+            _out = _derive_mod.derive_and_put(
+                _retry_ids, blob if blob is not None else _resolve_blob(),
+                **({"flow_grain": True} if _csv_grain(unit.source_id) == "flow" else {}),
+                **_derive_width_kw(unit.source_id),
+                **_budget) or {}
+        # TRIED and failed again - not the ids the budget never reached (derive lists those in `failed` too)
+        _tried_failed = set(str(s) for s in (_out.get("failed") or [])) - set(
+            str(s) for s in (_out.get("deferred_ids") or []))
+        _reasons = dict(_out.get("failed_reasons") or {})
+        _unreached = set(str(s) for s in (_out.get("deferred_ids") or []))
+        _reached = [s for s in _retry_ids if str(s) not in _unreached]
+    except UnitTimeout as _trip:
+        _fence_tripped = True
+        _part = getattr(_trip, "derive_partial", None) or {}
+        _done = set(str(s) for s in (_part.get("put_ids") or []))
+        _big = {str(k): v for k, v in (_part.get("deferred_large") or {}).items()}
+        # a too-large id keeps its own booking (reason and row count): listed as not derived too, the
+        # flow rule below re-booked it "budget-deferred" with rows None (review R1254 item 5)
+        _out = {"failed": [s for s in _retry_ids if str(s) not in _done and str(s) not in _big],
+                "deferred_large": _big}
+        _tried_failed = set(str(s) for s in (_part.get("failed") or []))
+        _reasons = dict(_part.get("failed_reasons") or {})
+        _reached = [s for s in _retry_ids if str(s) in _done or str(s) in _tried_failed or str(s) in _big]
+        print(f"[orchestrator] {unit.key}: csv retry drain exceeded its fence - {len(_done):,} "
+              f"id(s) derived and cleared, {len(_out['failed']):,} kept as not derived",
+              flush=True)
+    _refailed = set(str(s) for s in (_out.get("failed") or []))
+    # A queued id that turns out too large for the runner leaves the retry
+    # queue (it can never succeed there) and moves to csv_desktop_owed.
+    _large_q = {str(k): int(v) for k, v in
+                (_out.get("deferred_large") or {}).items()}
+    _book_csv_desktop_owed(store, unit.source_id, _large_q)
+    if _csv_misses(unit.source_id) == "desktop_owed":
+        # (ilostat's R1144, ported into the drain when it moved out of run_once): every id that did not
+        # derive - refailed, budget-deferred, or not reached before a fence trip - goes to csv_desktop_owed
+        _refailed = _drain_residue_to_debts(store, unit.source_id, _out, _refailed)
+    elif _csv_grain(unit.source_id) == "flow":
+        # FLOW-GRAIN IDS DO NOT BELONG IN THIS QUEUE AT ALL (condition 2): a
+        # legacy or refailed row can never succeed on a later runner. Move every
+        # one that did not derive to the desktop debt and drop it from the queue.
+        _dead = sorted(set(_refailed) | set(str(s) for s in (_out.get("deferred_ids") or [])))
+        if _dead:
+            _book_csv_desktop_owed(store, unit.source_id, {s: None for s in _dead},
+                                   reason=_DESKTOP_OWED_BUDGET)
+            _refailed = set()
+    _cleared = [s for s in _retry_ids if s not in _refailed]
+    if _cleared:
+        store.clear_csv_retries(_cleared)
+        _record_for_catalog_sync([s for s in _cleared if s not in _large_q
+                                  and s not in set(str(x) for x in (_out.get("failed") or []))])
+    # AN ATTEMPT IS COUNTED (review AR-413 O5). A refailure used to stay queued with attempts unchanged, so the
+    # counter read 2 after 20 refailing fed_board drains, and csv_retries could not put a permanently failing
+    # head behind ids never tried. Only ids that were TRIED, failed again and STAY queued are counted.
+    _bump = sorted(s for s in _refailed if s in _tried_failed)
+    if _bump:
+        store.note_csv_retry_refailed({s: _reasons.get(s) for s in _bump})
+    _stop = bool(_out.get("deferred_ids")) or _fence_tripped
+    return _cleared, _refailed, _stop, _reached
+
+
+def _gate_chunk() -> int:
+    """Ids per mirror-check + derive chunk of the leftover drain under r2: AQUEDUCT_RETRY_GATE_CHUNK, default 500
+    (wid derives ~28 ids/min, so a 15-min share is ~400 ids). A non-positive or unreadable value falls back to 500."""
+    try:
+        c = int(os.environ.get("AQUEDUCT_RETRY_GATE_CHUNK", "") or 500)
+    except ValueError:
+        c = 500
+    return c if c > 0 else 500
+
+
+def _drain_gated_chunks(unit, blob, store, rows, cand, deadline_ts, id_gate, summary) -> dict:
+    """_drain_csv_retry_queue with a gate AND a deadline: check `cand` (the capped queue head) a chunk at a time and
+    derive each chunk's kept ids before checking the next, until the deadline, the derive's own budget or fence, or
+    the end of `cand`. An id the check holds back stays queued, attempts unchanged, and the next chunk is checked:
+    a held head does not stop the slice (the R1842 fixed-head class). Same summary keys as the caller."""
+    sid = unit.source_id
+    chunk = _gate_chunk()
+    attempted = cleared = held = held_checked = 0
+    reached: list = []
+    i = 0
+    while i < len(cand):
+        if time.time() >= deadline_ts:
+            break
+        part = cand[i:i + chunk]
+        i += len(part)
+        keep, why = id_gate(part)
+        held += len(why)
+        # an id the check did not reach before the deadline is not "held back" for the next round: it is untried
+        held_checked += sum(1 for v in why.values() if not str(v).startswith("not checked"))
+        if not keep:
+            continue
+        left = (deadline_ts - time.time()) / 60.0          # AFTER this chunk's check: its HEADs and hashes are charged
+        if left < 0.01:
+            i -= len(keep)                                  # checked, kept, never derived: not "reached"
+            break
+        _c, _r, stop, _reached = _drain_derive_and_book(unit, blob, store, keep, {"budget_min": left})
+        attempted += len(keep)
+        cleared += len(_c)
+        reached += list(_reached)
+        if stop:
+            break
+    summary["held_back"] = held
+    if attempted == 0:
+        print(f"[orchestrator] {sid}: csv retry queue {len(rows):,} -> none attempted, {held:,} held back (see the "
+              f"lines above), all still queued"
+              + ("; the drain's time was spent before the derive (mirror check)" if time.time() >= deadline_ts
+                 else ""), flush=True)
+        summary["still_queued"] = len(rows)
+        return summary
+    print(f"[orchestrator] {sid}: csv retry queue {len(rows):,} -> attempted {attempted:,}, cleared {cleared:,}, "
+          f"still queued {len(rows) - cleared:,}" + (f", held back {held:,}" if held else "")
+          + f" (checked and derived in chunks of {chunk:,}: {min(i, len(cand)):,} of {len(cand):,} reached)",
+          flush=True)
+    summary.update(attempted=attempted, cleared=cleared, still_queued=len(rows) - cleared, tried=reached,
+                   untried=max(0, len(rows) - len(reached) - held_checked))
+    return summary
 
 
 # THE LEFTOVER DRAIN (review AR-413, decisions D1-D6 of 2026-10-31). The in-loop drain runs only inside the CSV
@@ -2507,12 +2595,16 @@ def _drain_csv_retry_queue(unit, blob, store, deadline_ts=None, id_gate=None) ->
 #     derive budget (AQUEDUCT_DERIVE_BUDGET_MIN, 45) when no ceiling is set; nothing starts below _DRAIN_FLOOR_MIN;
 #   * each source's drain is the same _drain_csv_retry_queue (cap, fence, flow-grain and desktop_owed rules), with
 #     ITS OWN deadline: min(the pass deadline, its start + AQUEDUCT_RETRY_DRAIN_PER_SOURCE_MIN, default 15). The
-#     same deadline bounds its mirror check (_r2_mirror_gate);
+#     same deadline bounds its mirror check (_r2_mirror_gate), which under r2 runs a chunk at a time between derives
+#     (_drain_gated_chunks, review AR-285 F3). The drain is WORK-CONSERVING (AR-285 F1): time a round leaves goes, in
+#     further rounds, to the sources that still hold ids (_drain_leftover_retries), so one never-emptying source
+#     still uses the whole budget when it is alone;
 #   * THE ORDER ROTATES (2026-11-17). It was oldest-enqueued first with the whole pass budget to the first source.
 #     A source whose queue never empties (usda 68,983 ids, wid 39,230 on the state copy of 2026-11-14) kept the
 #     oldest stamp, went first on every pass and took the whole budget, so later sources (imf_imts_direct, three
 #     unctad sources) were not reached in 13 passes. Now the candidates go in RING order: the ring is every
-#     source with queued ids sorted by id, its pointer moves by one each UTC day (rotate_drain_order: ring[day %
+#     source with queued ids that THIS pass could drain (drain_ring: this pass's route, lanes out), sorted by id,
+#     its pointer moves by one each UTC day (rotate_drain_order: ring[day %
 #     n]), and the source the pointer stands on goes first whenever it is a candidate. No state records when a
 #     source was last drained, so the day is the rotation's clock. Oldest-first was the order of #212 (AR-413), not a decision
 #     with a reason against rotating: no rule in AR-413's record or the ledger depends on it;
@@ -2549,9 +2641,17 @@ def leftover_source_min(left_min: float, per_source_min: float) -> float:
     return max(0.0, min(left_min, per_source_min))
 
 
-def drain_ring(queued: dict) -> list:
-    """The rotation's ring: every source with queued ids ({source_id: (n, oldest)} of csv_retry_sources), sorted."""
-    return sorted(s for s, v in (queued or {}).items() if (v or (0, None))[0] > 0)
+def drain_ring(queued: dict, route=None, lane=()) -> list:
+    """The rotation's ring: the sources with queued ids ({source_id: (n, oldest)} of csv_retry_sources) that THIS
+    pass could drain - in `route` (run_once's units that passed the location, PROTECTED and GIANT SKIP filters;
+    None = no filter) and not served by a lane - sorted by id.
+
+    NOT the whole queue (review AR-285 F2): on the 2026-11-14 copy 13 of the 20 queued sources were cloud-routed,
+    which the leftover drain never runs; each of their ring days handed the head to the local source that follows
+    them alphabetically (unctad_criticalmineralstradebypart first on 8 of 20 days, wid in the top 3 on 5 of 20)."""
+    r = None if route is None else set(route)
+    return sorted(s for s, v in (queued or {}).items()
+                  if (v or (0, None))[0] > 0 and (r is None or s in r) and s not in set(lane or ()))
 
 
 def _drain_rotation_day() -> int:
@@ -2653,7 +2753,7 @@ class _HeadOnlyS3:
         raise RuntimeError("the csv retry drain's mirror check never reads a whole object")
 
 
-def _r2_mirror_gate(source_id: str, deadline_ts: "float | None" = None):
+def _r2_mirror_gate(source_id: str, deadline_ts: "float | None" = None, cache: "dict | None" = None):
     """The leftover drain's mirror check, or None where none is needed (backend local/selfhost, or after T0).
 
     Under AQUEDUCT_BACKEND=r2 the derive READS this machine's mirror and WRITES the served CSV, and a no_change,
@@ -2670,6 +2770,11 @@ def _r2_mirror_gate(source_id: str, deadline_ts: "float | None" = None):
     b = (os.environ.get("AQUEDUCT_BACKEND", "local") or "local").strip().lower()
     if b != "r2" or cutover.is_cut_over():
         return None
+    # KEPT ACROSS CALLS (review AR-285 F3): the chunked drain calls the gate once per chunk, and `cache` (one dict
+    # per source per pass, from _drain_leftover_retries) carries each file's verdict across that source's turns, so a
+    # file is compared once per pass, not once per chunk or turn. A file is named once per gate.
+    seen = cache if cache is not None else {}
+    named: set = set()
 
     def gate(ids):
         from core import derive_csv as _dc, r2_util                   # noqa: PLC0415
@@ -2682,7 +2787,7 @@ def _r2_mirror_gate(source_id: str, deadline_ts: "float | None" = None):
             print(f"[orchestrator] {source_id}: csv retry drain HOLDS BACK all {len(ids):,} id(s): no R2 client to "
                   f"compare the mirror with ({type(e).__name__}: {str(e)[:80]})", flush=True)
             return [], {s: "no R2 client" for s in ids}
-        seen, keep, held, named = {}, [], {}, set()
+        keep, held, named_now = [], {}, set()
         for i, sid in enumerate(ids):
             if deadline_ts is not None and time.time() >= deadline_ts:
                 rest = ids[i:]
@@ -2708,21 +2813,23 @@ def _r2_mirror_gate(source_id: str, deadline_ts: "float | None" = None):
                 continue
             f, c = bad
             held[sid] = f"{c['verdict']}: {f}"
+            named_now.add(f)
             if f not in named:
                 named.add(f)
                 print(f"[orchestrator] {source_id}: csv retry drain HOLDS BACK the ids reading a file that is not "
                       f"R2's object ({c['verdict']}): {c['local']} | R2 {c['r2']}", flush=True)
         if held:
             print(f"[orchestrator] {source_id}: {len(held):,} of {len(ids):,} id(s) held back by the mirror check "
-                  f"({len(named):,} file(s)); they stay queued until the mirror is level with R2", flush=True)
+                  f"({len(named_now):,} file(s)); they stay queued until the mirror is level with R2", flush=True)
         return keep, held
     return gate
 
 
-def _drain_leftover_retries(candidates: dict, blob, store) -> list:
+def _drain_leftover_retries(candidates: dict, blob, store, route=None) -> list:
     """Drain the retry queues of `candidates` ({source_id: [units]}: sources whose every unit this pass was an
-    earned no_change, NOT DUE or BUDGET SKIPPED) in the pass's leftover time. Rules: the block comment above. Returns
-    [(source_id, summary or None)] for the sources it drained."""
+    earned no_change, NOT DUE or BUDGET SKIPPED) in the pass's leftover time. Rules: the block comment above.
+    `route`: the sources this pass could drain (run_once's _drain_route), for the rotation ring; None = the whole
+    queue. Returns [(source_id, summary or None)], one entry per TURN (a source can have several, one per round)."""
     done: list = []
     if not candidates:
         return done
@@ -2743,8 +2850,9 @@ def _drain_leftover_retries(candidates: dict, blob, store) -> list:
     if lane:
         print(f"[orchestrator] csv retry drain: served_by lane, never drained here: {', '.join(lane)}", flush=True)
     day = _drain_rotation_day()
-    # the candidates (lanes left out) in RING order from the UTC day's pointer (the block comment above)
-    order = rotate_drain_order(drain_order(candidates, queued, lane)[1], day, drain_ring(queued))
+    # the candidates (lanes left out) in RING order from the UTC day's pointer (the block comment above); the ring is
+    # the sources THIS pass could drain (review AR-285 F2)
+    order = rotate_drain_order(drain_order(candidates, queued, lane)[1], day, drain_ring(queued, route, lane))
     if not order:
         return done
     budget = _leftover_drain_min()
@@ -2760,58 +2868,105 @@ def _drain_leftover_retries(candidates: dict, blob, store) -> list:
           f"parked ids, {budget:.1f} min of leftover time ({margin:.0f}-min margin kept), at most "
           f"{per_source:g} min per source, in rotation order from {order[0]} (UTC day {day}): "
           f"{', '.join(order[:12])}{' ...' if len(order) > 12 else ''}", flush=True)
-    for i, sid in enumerate(order):
+    # WORK-CONSERVING ROUNDS (review AR-285 F1). Round 1 gives each source, in rotation order, its own share. Time
+    # the round did not use goes to the sources that still hold ids, round after round, each again at most its
+    # share, until the pass budget is spent. One pass over the order with no second round left most of the budget
+    # idle: wid alone used 15 of 45 min, where the old whole-budget rule used 45 (probe_idle.py). A source goes into
+    # the next round only when its turn tried ids and left ids queued that it did not reach; a later turn leaves out
+    # every id an earlier turn of this pass tried (skip), so a source whose ids all fail fast, or that the mirror
+    # check holds back, is not run again, and no refailure is counted twice in one pass.
+    caches: dict = {}                                       # one mirror-check cache per source for the whole pass
+    tried: dict = {}                                        # ids each source's turns TRIED this pass (never twice)
+    pending, rnd = list(order), 1
+    while pending:
+        again = []
+        for i, sid in enumerate(pending):
+            left = (deadline - time.time()) / 60.0
+            if left < _DRAIN_FLOOR_MIN:
+                if rnd == 1:
+                    print(f"[orchestrator] csv retry drain: leftover time spent - {len(pending) - i} source(s) not "
+                          f"drained this pass: {', '.join(pending[i:i + 12])}"
+                          f"{' ...' if len(pending) - i > 12 else ''}", flush=True)
+                again = []
+                break
+            summ, err, ran_out, ran = _leftover_turn(candidates[sid], sid, blob, store, deadline, budget, margin,
+                                                      per_source, caches, tried)
+            if not ran:
+                continue
+            done.append((sid, summ))
+            s_ = summ if isinstance(summ, dict) else {}
+            # ANOTHER ROUND only for a source whose turn tried ids and left ids it did not reach (not ids it refailed
+            # or held back): it never re-tries an id in the same pass, so a refailure is counted once per pass
+            if err is None and s_.get("attempted", 0) > 0 and s_.get("untried", s_.get("still_queued", 0)) > 0:
+                again.append(sid)
+        if not again or rnd >= _DRAIN_MAX_ROUNDS:
+            break
+        rnd += 1
         left = (deadline - time.time()) / 60.0
         if left < _DRAIN_FLOOR_MIN:
-            print(f"[orchestrator] csv retry drain: leftover time spent - {len(order) - i} source(s) not drained "
-                  f"this pass: {', '.join(order[i:i + 12])}{' ...' if len(order) - i > 12 else ''}", flush=True)
             break
-        units = candidates[sid]
-        unit = units[0]
-        mine = leftover_source_min(min(left, budget), per_source)   # this source's own share of the pass budget
-        ttl = int((mine + margin) * 60.0) + 1                  # mine <= _drain_max_min(): the TTL is capped too
-        got = []
-        for u in units:
-            if not store.claim_lease(u.key, owner=OWNER, ttl_s=ttl):
-                break
-            got.append(u.key)
-        if len(got) != len(units):
-            for k in got:
-                store.release_lease(k, owner=OWNER)
-            held = store.lease_holder(units[len(got)].key) if hasattr(store, "lease_holder") else None
-            print(f"[orchestrator] csv retry drain skipped for {sid}: {units[len(got)].key} is leased by "
-                  f"{(held or {}).get('owner', 'another run')} - its ids stay queued", flush=True)
-            continue
-        print(f"[orchestrator] >>> {unit.key} (csv retry drain)", flush=True)
-        t = time.time()
-        # ITS OWN DEADLINE, never past the pass's: a source that never empties uses its share and the next one runs
-        src_deadline = min(deadline, t + leftover_source_min((deadline - t) / 60.0, per_source) * 60.0)
-        summ, err = None, None
-        try:
-            summ = _drain_csv_retry_queue(unit, blob, store, deadline_ts=src_deadline,
-                                          id_gate=_r2_mirror_gate(sid, src_deadline))
-        except (KeyboardInterrupt, SystemExit):
-            raise
-        except BaseException as e:                                   # noqa: BLE001 - one source's drain, never the pass
-            err = e
-            try:
-                print(f"[orchestrator] csv retry drain FAILED for {sid} - {ascii(e)[:300]}; its ids stay queued, "
-                      f"the pass goes on", flush=True)
-            except Exception:                                        # noqa: BLE001
-                pass
-        finally:
-            for k in got:
-                try:
-                    store.release_lease(k, owner=OWNER)
-                except Exception:                                    # noqa: BLE001
-                    pass
-        s_ = summ if isinstance(summ, dict) else {}
-        tail = ("FAILED" if err is not None else
-                f"attempted {s_.get('attempted', 0):,}, cleared {s_.get('cleared', 0):,}, "
-                f"still queued {s_.get('still_queued', 0):,}")
-        print(f"[orchestrator] <<< {unit.key} took {time.time() - t:,.0f}s (csv retry drain: {tail})", flush=True)
-        done.append((sid, summ))
+        print(f"[orchestrator] csv retry drain round {rnd}: {left:.1f} min left go to {len(again)} source(s) that "
+              f"still hold ids: {', '.join(again[:12])}{' ...' if len(again) > 12 else ''}", flush=True)
+        pending = again
     return done
+
+
+_DRAIN_MAX_ROUNDS = 100       # a backstop only: each round needs a turn that tried ids and left some unreached
+
+
+def _leftover_turn(units, sid, blob, store, deadline, budget, margin, per_source, caches, tried=None) -> tuple:
+    """One source's turn of the leftover drain: its leases, its own deadline min(the pass deadline, now + its
+    share), the drain and its gate under that deadline, the >>> / <<< lines. Returns (summary or None, the error or
+    None, whether the turn ran to its own deadline, whether it ran at all - False when a lease was refused)."""
+    left = (deadline - time.time()) / 60.0
+    unit = units[0]
+    mine = leftover_source_min(min(left, budget), per_source)   # this source's own share of the pass budget
+    ttl = int((mine + margin) * 60.0) + 1                      # mine <= _drain_max_min(): the TTL is capped too
+    got = []
+    for u in units:
+        if not store.claim_lease(u.key, owner=OWNER, ttl_s=ttl):
+            break
+        got.append(u.key)
+    if len(got) != len(units):
+        for k in got:
+            store.release_lease(k, owner=OWNER)
+        held = store.lease_holder(units[len(got)].key) if hasattr(store, "lease_holder") else None
+        print(f"[orchestrator] csv retry drain skipped for {sid}: {units[len(got)].key} is leased by "
+              f"{(held or {}).get('owner', 'another run')} - its ids stay queued", flush=True)
+        return None, None, False, False
+    print(f"[orchestrator] >>> {unit.key} (csv retry drain)", flush=True)
+    t = time.time()
+    # ITS OWN DEADLINE, never past the pass's: a source that never empties uses its share and the next one runs
+    src_deadline = min(deadline, t + leftover_source_min((deadline - t) / 60.0, per_source) * 60.0)
+    summ, err = None, None
+    try:
+        done_ids = (tried if tried is not None else {}).setdefault(sid, set())
+        summ = _drain_csv_retry_queue(unit, blob, store, deadline_ts=src_deadline,
+                                      id_gate=_r2_mirror_gate(sid, src_deadline, cache=caches.setdefault(sid, {})),
+                                      skip=set(done_ids))
+        done_ids.update((summ or {}).get("tried") or [] if isinstance(summ, dict) else [])
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException as e:                                   # noqa: BLE001 - one source's drain, never the pass
+        err = e
+        try:
+            print(f"[orchestrator] csv retry drain FAILED for {sid} - {ascii(e)[:300]}; its ids stay queued, "
+                  f"the pass goes on", flush=True)
+        except Exception:                                        # noqa: BLE001
+            pass
+    finally:
+        for k in got:
+            try:
+                store.release_lease(k, owner=OWNER)
+            except Exception:                                    # noqa: BLE001
+                pass
+    ran_out = time.time() >= src_deadline - 1.0
+    s_ = summ if isinstance(summ, dict) else {}
+    tail = ("FAILED" if err is not None else
+            f"attempted {s_.get('attempted', 0):,}, cleared {s_.get('cleared', 0):,}, "
+            f"still queued {s_.get('still_queued', 0):,}")
+    print(f"[orchestrator] <<< {unit.key} took {time.time() - t:,.0f}s (csv retry drain: {tail})", flush=True)
+    return summ, err, ran_out, True
 
 
 def _split_retry_rows(source_id: str, rows: list) -> "tuple[list, list[str]]":
@@ -3941,6 +4096,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
     # source. Checked there, not in the gate's branch, so the loop's own order (gate, _has_adapter, is_due) and what
     # a skipped unit costs inside the loop stay exactly as before.
     _skipped_for_drain: list = []
+    _drain_route: set = set()
 
     for unit in units:
         if sources and unit.source_id not in sources:
@@ -3998,6 +4154,9 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                       f"longer clamped to a CI writer, so this flag may now freeze a unit that could finish. "
                       f"Re-measure and remove desktop_lane per its exit condition.", flush=True)
             continue
+        # THIS PASS'S ROUTE for the leftover drain's rotation ring (review AR-285 F2): only sources this pass
+        # could drain. A source routed elsewhere, PROTECTED or GIANT SKIP never gets here.
+        _drain_route.add(unit.source_id)
         # AFTER the filters, deliberately: checked first it would count units that were
         # never in scope — a two-source dispatch reported "100 source(s) NOT ATTEMPTED".
         # A skip count is only meaningful over units that would otherwise have RUN.
@@ -4561,7 +4720,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 print(f"[orchestrator] csv retry drain: {_u.key} was BUDGET SKIPPED and has no working adapter "
                       f"(PENDING or BROKEN) - {_u.source_id} is not drained this pass", flush=True)
         try:
-            _drain_leftover_retries(drain_candidates(_drain_ok, _drain_block), blob, store)
+            _drain_leftover_retries(drain_candidates(_drain_ok, _drain_block), blob, store, route=_drain_route)
         except (KeyboardInterrupt, SystemExit):
             raise
         except BaseException as e:                       # noqa: BLE001 - the drain never ends a pass that ran

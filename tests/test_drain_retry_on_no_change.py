@@ -474,18 +474,20 @@ def test_ids_the_derive_budget_never_reached_keep_their_counter(rig, monkeypatch
     assert all(r["attempts"] == 1 for r in q.values()), "an id never tried keeps its attempts counter"
 
 
-def test_a_queue_whose_head_always_fails_reaches_its_tail_next_pass(rig, monkeypatch):
-    """AR-413 P10 at small scale: cap 4, 5 queued, the first 4 always fail."""
+def test_a_queue_whose_head_always_fails_reaches_its_tail_in_the_next_round(rig, monkeypatch):
+    """AR-413 P10 at small scale: cap 4, 5 queued, the first 4 always fail. Since the work-conserving rounds (review
+    AR-285 F1) the never-tried tail is reached in the SAME pass, by a second turn that leaves out the ids the first
+    turn tried: each refailing head id is counted once in the pass, never twice."""
     monkeypatch.setattr(orchestrate, "_CSV_RETRY_CAP", 4)
     ids = _ids(5)
     rig.seed(SRC, ids)
     rig.fail = set(ids[:4])
+    q0 = rig.queue()
     rig.run()
-    assert ids[4] not in rig.derived
-    rig.derived.clear()
-    rig.run()
-    assert ids[4] in rig.derived, "the never-tried tail goes first once the head has refailed"
-    assert ids[4] not in rig.queue()
+    assert rig.derived.count(ids[4]) == 1 and ids[4] not in rig.queue(), "the tail is reached in round 2"
+    assert all(rig.derived.count(s) == 1 for s in ids[:4]), "no id is tried twice in one pass"
+    q = rig.queue()
+    assert set(q) == set(ids[:4]) and all(q[s]["attempts"] == q0[s]["attempts"] + 1 for s in ids[:4])
 
 
 # ---- (d) where nothing drains -----------------------------------------------------------------------
@@ -767,7 +769,8 @@ def _module_ast():
 
 def test_every_call_of_the_drain_in_the_module_and_its_gates():
     """_drain_csv_retry_queue is called from exactly two functions: run_once (once, under `not _csv_fence_tripped`,
-    inside the CSV gate) and _drain_leftover_retries (once, inside its per-source loop, after the lease claim).
+    inside the CSV gate) and _leftover_turn (once, after the lease claim; _drain_leftover_retries runs each turn
+    through it).
     _drain_leftover_retries is called once, from run_once, under `not dry`, after the unit loop."""
     import ast
     tree = _module_ast()
@@ -777,7 +780,7 @@ def test_every_call_of_the_drain_in_the_module_and_its_gates():
             for n in ast.walk(fn):
                 if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_drain_csv_retry_queue":
                     callers.setdefault(fn.name, []).append(n)
-    assert sorted(callers) == ["_drain_leftover_retries", "run_once"], sorted(callers)
+    assert sorted(callers) == ["_leftover_turn", "run_once"], sorted(callers)
     assert all(len(v) == 1 for v in callers.values()), {k: len(v) for k, v in callers.items()}
     fns = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
     run_once = fns["run_once"]
@@ -792,7 +795,8 @@ def test_every_call_of_the_drain_in_the_module_and_its_gates():
     assert len(dry_gate) == 1, "the leftover drain is a top-level `if not dry:` of run_once, after the loop"
     loop = [i for i, n in enumerate(run_once.body) if isinstance(n, ast.For) and ast.unparse(n.target) == "unit"]
     assert len(loop) == 1 and run_once.body.index(dry_gate[0]) == loop[0] + 1, "right after the unit loop"
-    ld = fns["_drain_leftover_retries"]
-    src = ast.unparse(ld)
-    assert src.index("store.claim_lease") < src.index("_drain_csv_retry_queue(")
+    src = ast.unparse(fns["_drain_leftover_retries"])
     assert "_here() == 'cloud'" in src and "_served_by_lane" in src
+    assert src.count("_leftover_turn(") == 1, "each turn goes through _leftover_turn"
+    turn = ast.unparse(fns["_leftover_turn"])
+    assert turn.index("store.claim_lease") < turn.index("_drain_csv_retry_queue(")

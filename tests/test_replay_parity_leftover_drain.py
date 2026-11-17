@@ -85,8 +85,10 @@ def _iso_ts(ts):
 
 
 class Harness:
-    def __init__(self, tmp_path, monkeypatch, rate=None, declared=None, tail=90.0, rot=0, late=False):
+    def __init__(self, tmp_path, monkeypatch, rate=None, declared=None, tail=90.0, rot=0, late=False,
+                 extra_queue=None):
         self.mp, self.rate, self.tail = monkeypatch, rate, tail
+        self.extra_queue = dict(extra_queue or {})     # queued sources that are NOT units of this pass (cloud-routed)
         self.declared = dict(declared or {})
         self.cad = dict(BASE, **{s: "monthly" for s in self.declared})
         # noon (or 23:57 when `late`: every drain here starts >= 5 min in, so after midnight) of a UTC day at least
@@ -164,7 +166,7 @@ class Harness:
                 (ago(40), "d", "ok", 1200.0), (ago(40), "c", "ok", 6000.0)]
         rows += [(ago(70), s, "partial", 18000.0) for s in self.declared]
         db.executemany("INSERT INTO runs(ts_utc, source_id, unit_id, status, dur_s) VALUES (?, ?, '_all', ?, ?)", rows)
-        queue = dict(QUEUE, **{s: (5, "2026-10-01") for s in self.declared})
+        queue = dict(QUEUE, **{s: (5, "2026-10-01") for s in self.declared}, **self.extra_queue)
         for sid, (n, day) in queue.items():
             db.executemany("INSERT INTO csv_retry_queue(series_id, source_id, enqueued_utc, attempts) VALUES (?,?,?,0)",
                            [(f"{sid}:s{i:04d}", sid, f"{day}T00:00:00+00:00") for i in range(n)])
@@ -200,7 +202,7 @@ class Harness:
         return Result(status="partial", obs=0, new_vintage=None, merged_rows=0, changed_keys={},
                       error="stopped before the run ceiling", window_stop="progress" if done > 0 else "none")
 
-    def drain(self, unit, blob, store, deadline_ts=None, id_gate=None):
+    def drain(self, unit, blob, store, deadline_ts=None, id_gate=None, skip=None):
         """The derive inside the leftover drain, on the virtual clock: all the time it is given, or `rate` ids/min."""
         assert deadline_ts is not None, "the in-loop drain is stubbed out of this differential"
         left = (deadline_ts - self.clock.t) / 60.0
@@ -210,7 +212,10 @@ class Harness:
         if self.rate is not None:
             gone = ids[:min(len(ids), orchestrate._CSV_RETRY_CAP, int(use * self.rate + 1e-9))]
             store.clear_csv_retries(gone)
-        return {"queued": len(ids), "attempted": len(ids), "cleared": 0, "still_queued": 0, "held_back": 0}
+            return {"queued": len(ids), "attempted": len(ids), "cleared": len(gone),
+                    "still_queued": len(ids) - len(gone), "held_back": 0}
+        # no rate: a source that never empties (how many ids cleared is unknown, the replay's upper bound)
+        return {"queued": len(ids), "attempted": len(ids), "cleared": 0, "still_queued": len(ids), "held_back": 0}
 
     def production(self, budget, capsys):
         self.mp.setenv("AQUEDUCT_RUN_BUDGET_MIN", str(budget))
@@ -257,7 +262,9 @@ def test_the_replay_reads_the_per_source_share(tmp_path, monkeypatch, capsys, pe
     for k in ("drained", "not_drained", "end_min", "queue"):
         assert p[k] == r[k], f"{k}: run_once {p[k]!r} replay {r[k]!r}\n{out[-2500:]}"
     if per == "5":
-        assert p["drained"] == [("b", 5.0), ("c", 5.0), ("n", 5.0)] and p["end_min"] == 40.0
+        # WORK-CONSERVING (review AR-285 F1): three rounds of 5 min each use the whole 45; n empties in round 3
+        assert p["drained"] == [("b", 5.0), ("c", 5.0), ("n", 5.0)] * 3 and p["end_min"] == 70.0
+        assert p["queue"] == {"b": 70, "c": 20, "d": 10}
     else:                                   # the old whole-budget behaviour comes back only when asked for
         assert p["drained"] == [("b", 45.0)] and p["not_drained"] == ["c", "n"]
 
@@ -333,10 +340,11 @@ def test_a_hard_stop_has_no_drain_and_a_capped_drain_holds_the_pass():
     b = m.UnitBook({"g": "monthly", "q": "monthly"}, st, rows, {"g": 300.0, "q": 5.0}, {}, retry_queue=queue)
     r = b.run_pass(t0, 200.0)
     assert r["hard_stop"] == "g" and r["retry_drained"] == [] and r["retry_not_drained"] == []
-    # nothing ran: 2880-min budget, so the drain is capped at 45 and q's own share at 15 - the pass holds 15 min
+    # nothing ran: 2880-min budget, so the drain is capped at 45; q's share is 15 and, alone and never emptying,
+    # it gets three rounds of it (work-conserving, review AR-285 F1) - the pass holds 45 min
     b = m.UnitBook({"q": "monthly"}, st, rows, {"q": 5.0}, {}, retry_queue=queue)
     r = b.run_pass(t0, 2880.0)
-    assert r["ran"] == [] and r["retry_drained"] == [("q", 15.0)] and r["used_min"] == 15.0
+    assert r["ran"] == [] and r["retry_drained"] == [("q", 15.0)] * 3 and r["used_min"] == 45.0
 
 
 def test_the_replay_drain_uses_the_production_functions(monkeypatch):
@@ -349,16 +357,18 @@ def test_the_replay_drain_uses_the_production_functions(monkeypatch):
             monkeypatch.setattr(orchestrate, k, v)
         b = m.UnitBook({"q": "monthly"}, st, rows, {"q": 5.0}, {}, retry_queue={"q": (10, "x")})
         return b.run_pass(t0, 100.0)["retry_drained"]
-    assert used() == [("q", 15.0)]                                   # min(min(100 - 15, 45), 15)
+    assert used() == [("q", 15.0)] * 3                               # min(100 - 15, 45) in shares of 15
     assert used(leftover_drain_budget_min=lambda r, mg, cap: 7.0) == [("q", 7.0)]
     monkeypatch.undo()
     assert used(drain_candidates=lambda ok, blk: {}) == []
     monkeypatch.undo()
     assert used(drain_order=lambda c, q, lane=(): ({}, [])) == []
     monkeypatch.undo()
-    assert used(_drain_per_source_min=lambda: 30.0) == [("q", 30.0)]
+    assert used(_drain_per_source_min=lambda: 30.0) == [("q", 30.0), ("q", 15.0)]
     monkeypatch.undo()
-    assert used(leftover_source_min=lambda left, per: 3.0) == [("q", 3.0)]
+    assert used(leftover_source_min=lambda left, per: 3.0) == [("q", 3.0)] * 15
+    monkeypatch.undo()
+    assert used(_DRAIN_MAX_ROUNDS=2) == [("q", 15.0)] * 2
     monkeypatch.undo()
     assert used(rotate_drain_order=lambda order, day, ring=None: []) == []
 
@@ -368,10 +378,14 @@ def test_the_extracted_functions_are_what_run_once_and_the_drain_call():
     assert "drain_candidates(_drain_ok, _drain_block)" in inspect.getsource(orchestrate.run_once)
     src = inspect.getsource(orchestrate._drain_leftover_retries)
     assert "drain_order(candidates, queued)[0]" in src
-    assert "rotate_drain_order(drain_order(candidates, queued, lane)[1], day, drain_ring(queued))" in src
+    assert "rotate_drain_order(drain_order(candidates, queued, lane)[1], day, drain_ring(queued, route, lane))" in src
     assert "day = _drain_rotation_day()" in src and "per_source = _drain_per_source_min()" in src
-    assert src.count("leftover_source_min(") == 2
-    assert "deadline_ts=src_deadline" in src and "_r2_mirror_gate(sid, src_deadline)" in src
+    assert "_DRAIN_MAX_ROUNDS" in src and src.count("_leftover_turn(") == 1
+    turn = inspect.getsource(orchestrate._leftover_turn)
+    assert turn.count("leftover_source_min(") == 2
+    assert "deadline_ts=src_deadline" in turn and "_r2_mirror_gate(sid, src_deadline, cache=" in turn
+    assert "skip=set(done_ids)" in turn
+    assert "route=_drain_route" in inspect.getsource(orchestrate.run_once)
     assert "leftover_drain_budget_min(" in inspect.getsource(orchestrate._leftover_drain_min)
     assert orchestrate.leftover_drain_budget_min(None, 15.0, 45.0) == 45.0
     assert orchestrate.leftover_drain_budget_min(30.0, 15.0, 45.0) == 15.0
@@ -399,22 +413,15 @@ def test_the_loader_reads_the_queue(tmp_path):
     assert b.retry_queue == {"u": [2, "2026-09-30T00:00:00+00:00"]}         # moved by the shift
 
 
-def test_the_loader_reads_the_whole_queue_as_the_ring(tmp_path):
-    """Production's ring is every source with queued ids, also those the replay does not model."""
-    import sqlite3
-    db = tmp_path / "s.db"
-    con = sqlite3.connect(db)
-    con.execute("CREATE TABLE unit_state(source_id TEXT, unit_id TEXT, strategy TEXT, upstream_vintage TEXT, "
-                "last_success_utc TEXT, last_attempt_utc TEXT, status TEXT, last_obs_date TEXT, obs_count INTEGER, "
-                "attempt_count INTEGER, last_error TEXT)")
-    con.execute("CREATE TABLE runs(id INTEGER PRIMARY KEY AUTOINCREMENT, ts_utc TEXT, source_id TEXT, unit_id TEXT, "
-                "status TEXT, obs INTEGER, dur_s REAL, note TEXT)")
-    con.execute("CREATE TABLE csv_retry_queue(series_id TEXT PRIMARY KEY, source_id TEXT, enqueued_utc TEXT, "
-                "attempts INTEGER DEFAULT 0, last_error TEXT)")
-    con.executemany("INSERT INTO csv_retry_queue VALUES (?, ?, ?, 0, NULL)",
-                    [("u:1", "u", "2026-10-02T00:00:00+00:00"), ("x:1", "x", "2026-10-01T00:00:00+00:00")])
-    con.commit()
-    con.close()
-    b = m.load_unit_book(str(db), m._parse("2026-10-28T00:00:00Z"), dt.timedelta(0), cadences={"u": "monthly"},
-                         window_stop=set())
-    assert sorted(b.retry_ring) == ["u", "x"] and list(b.retry_queue) == ["u"]
+
+@pytest.mark.parametrize("rot", [1, 3])
+def test_a_queued_source_outside_this_pass_is_not_in_the_ring(tmp_path, monkeypatch, capsys, rot):
+    """Review AR-285 F2: the ring is the sources THIS pass could drain. A queued source that is not a unit of the
+    pass (a cloud-routed one; "a0" sorts before every unit) must not take a ring position. With it in the ring, rot 1
+    points at b (b, c, d, n); without it, rot 1 points at c (c, d, n, b) - so the order shows which ring was used."""
+    h = Harness(tmp_path, monkeypatch, rot=rot, extra_queue={"a0": (7, "2026-06-01")})
+    start, p, out = h.production(50, capsys)
+    r, _raw = h.replay(start, 50)
+    want = {1: [("c", 15.0), ("d", 15.0)], 3: [("n", 15.0), ("b", 15.0)]}[rot]
+    assert p["drained"] == r["drained"] == want, out[-1500:]
+    assert p["queue"]["a0"] == 7, "never drained: not this pass's source"

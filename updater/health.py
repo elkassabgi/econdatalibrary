@@ -875,9 +875,12 @@ def assess(store=None) -> dict:
         # it changes the verdict (then it is the reason and must survive the [:10] cut); APPENDED when the verdict is
         # already ATTENTION or RED, so the remedy of the hold that set it stays attention[0] (review F1: fed_board's
         # cap-hit remedy). A worse verdict (RED-*) or another hold stands, and gates as before.
-        backlog, backlog_hold = csv_retry_backlog_of(retry_q.get(sid), now), False
+        backlog, backlog_hold, rotating_before = csv_retry_backlog_of(retry_q.get(sid), now), False, False
         if backlog:
             if health in ("OK", "ROTATING"):
+                # the verdict this row had WITHOUT the backlog: the digest keeps a ROTATING source in its calm list
+                # (send_digest.gate_rotating; owner's order 2026-10-11; review AR-285 F4)
+                rotating_before = health == "ROTATING"
                 health = "ATTENTION"
                 backlog_hold = True
                 attention = [backlog["text"]] + list(attention)
@@ -916,6 +919,8 @@ def assess(store=None) -> dict:
                                   if backlog else None),
             # True when the backlog alone holds this row at ATTENTION: gate_failures does not count it (yet)
             "csv_retry_backlog_hold": backlog_hold,
+            # True when that hold moved a ROTATING row: the digest still lists its rows as in progress (normal)
+            "rotating_before_backlog": rotating_before,
         })
 
     # An owed row whose source has LEFT the registry must not vanish with it — the loop

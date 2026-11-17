@@ -42,7 +42,12 @@ def test_drain_wired_into_run_loop_and_nondemoting():
     from updater import orchestrate as O
     # the drain body moved into _drain_csv_retry_queue (review R1254 item 1); run_once calls it
     assert "_drain_csv_retry_queue(unit, blob, store)" in inspect.getsource(O.run_once)
-    src = inspect.getsource(O.run_once) + inspect.getsource(O._drain_csv_retry_queue)
+    # the derive + booking moved into _drain_derive_and_book (review AR-285 F3: the chunked leftover drain books
+    # every chunk by the same rules); _drain_csv_retry_queue calls it
+    assert "_drain_derive_and_book(unit, blob, store, _retry_ids, _budget)" in inspect.getsource(
+        O._drain_csv_retry_queue)
+    src = (inspect.getsource(O.run_once) + inspect.getsource(O._drain_csv_retry_queue)
+           + inspect.getsource(O._drain_derive_and_book))
     assert "store.csv_retries(unit.source_id)" in src
     assert "store.clear_csv_retries(_cleared)" in src
     assert "_CSV_RETRY_CAP" in src
