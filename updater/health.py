@@ -753,6 +753,13 @@ def assess(store=None) -> dict:
                            f"R2's parquets, then `tools/derive_csv_bulk.py --source {sid} --clear-owed-only "
                            f"--after-desktop-derive`; a bulk campaign cannot pay it and is refused. "
                            f"Note: {_n[:240]}; keys: {_note.split(' keys=', 1)[1][:300] if ' keys=' in _note else '?'}")
+            elif sid == "noaa":
+                # NCEI renamed the Canadian stations CA0 -> CAN: the bulk tool writes a renamed store
+                # key under its CATALOGUED CA0 id, never as an uncatalogued CAN object, and refuses
+                # the stamp while any catalogued CA0 id it streamed was left unwritten (AR-282).
+                _remedy = (f"run tools/derive_csv_bulk.py --source {sid} --only-catalogued; renamed "
+                           f"Canadian keys (CAN0...) are written under their catalogued CA0 ids, and "
+                           f"its zero-error campaign stamp clears this row only when none was skipped")
             else:
                 _remedy = (f"run tools/derive_csv_bulk.py --source {sid}; its zero-error "
                            f"campaign stamp clears this row")
