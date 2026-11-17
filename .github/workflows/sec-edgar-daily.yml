@@ -88,8 +88,9 @@ jobs:
         # while api/worker/package.json pins 3.114.17 - but the 2026-09-05 11:25Z run failed
         # identically WITH the pinned 3.114.17, so the mismatch was not the cause; the per-company
         # series_fts DELETE added on 2026-08-24, a full scan that times out on D1 (7429), is the
-        # candidate the tool no longer emits (R730). The refresher calls
-        # api/worker/node_modules/.bin/wrangler, prints both streams separately, and fails the
+        # candidate the tool no longer emits (R730). The refresher calls the local wrangler
+        # (node api/worker/node_modules/wrangler/bin/wrangler.js, through core.d1_remote.wrangler_execute
+        # since 2026-11-16), prints both streams separately, and fails the
         # step when data moved but the D1 batch or the freshness stamp did not land.
         working-directory: api/worker
         run: npm ci --ignore-scripts --no-audit --no-fund

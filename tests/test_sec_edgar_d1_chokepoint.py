@@ -102,6 +102,29 @@ def _catalogue(root):
     return p
 
 
+def test_the_audit_opens_the_catalogue_read_only(tmp_path, monkeypatch):
+    """Review of #269 finding 2: the read opens were untested (write=True survived). The audit's open must be
+    read-only, and on the tool's own file before T0."""
+    p = _catalogue(tmp_path)
+    monkeypatch.setattr(R, "ROOT", str(tmp_path))
+    seen = []
+    real = catalog_path.connect_path
+
+    def spy(path, *, write, **kw):
+        con = real(path, write=write, **kw)
+        seen.append((os.path.normcase(os.fspath(path)), write))
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            con.execute("INSERT INTO series (series_id) VALUES ('x')")
+        return con
+    monkeypatch.setattr(catalog_path, "connect_path", spy)
+
+    class Empty:
+        def list_objects_v2(self, **kw):
+            return {"Contents": [], "IsTruncated": False}
+    R.audit(Empty())
+    assert seen == [(os.path.normcase(str(p)), False)]
+
+
 def test_before_t0_the_tool_s_own_catalogue_is_written(tmp_path, monkeypatch):
     p = _catalogue(tmp_path)
     monkeypatch.setattr(R, "ROOT", str(tmp_path))
