@@ -39,7 +39,7 @@ sys.path.insert(0, ROOT)
 # ingesters writing) that wedged past 15 minutes. AQUEDUCT_PLAN_CATALOG points it at a fast
 # local COPY -- safe because chunk boundaries only need to PARTITION each PK range, which any
 # snapshot of the catalogue does regardless of drift.
-CATALOG = os.environ.get("AQUEDUCT_PLAN_CATALOG") or os.path.join(ROOT, "data", "catalog.db")
+CATALOG = os.environ.get("AQUEDUCT_PLAN_CATALOG") or None   # None: this checkout's catalogue
 JOURNAL = os.path.join(ROOT, "data", "_fts_rebuild_journal.jsonl")
 
 DB = "econ-catalog"
@@ -64,9 +64,23 @@ def d1(sql: str) -> dict:
     return block
 
 
+def _catalogue_ro(path=None):
+    """The catalogue, READ-ONLY, through core.catalog_path (t0_ready legacy-catalogue): `path` when one is given,
+    else this checkout's data/ catalogue - as before; after T0 the build only (any other path is refused).
+    sqlite's own 5 s busy timeout, as the old open had. A missing file raises sqlite3.OperationalError, the
+    class the old open raised, and nothing is created."""
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import catalog_path                                       # noqa: PLC0415 - the one resolver
+    try:
+        return catalog_path.connect_path(path or catalog_path.under(ROOT), write=False, timeout=5.0)
+    except FileNotFoundError as e:
+        raise sqlite3.OperationalError(f"unable to open database file: {e}") from None
+
+
 def chunk_plan():
     """[(label, lo, hi)] partitioning every source's PK range, big sources split locally."""
-    con = sqlite3.connect("file:%s?mode=ro" % CATALOG.replace("\\", "/"), uri=True)
+    con = _catalogue_ro(CATALOG)
     rows = con.execute(
         "SELECT source_id, COUNT(*) FROM series GROUP BY source_id ORDER BY source_id"
     ).fetchall()
