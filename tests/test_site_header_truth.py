@@ -38,6 +38,22 @@ GEN = os.path.join(ROOT, "catalog", "gen_site.py")
 # and standing alone, so a series-key separator such as WS_CBS_PUB__Q__US (bis.html) does not.
 PLACEHOLDER = re.compile(r"(?<![A-Za-z0-9])__[A-Z][A-Z0-9_]*__(?![A-Za-z0-9])")
 BAND = re.compile(r"under\s+construction", re.I)
+# The owner-accepted band line itself (origin/main 84a55c58a, identical in render_index and in
+# index.html). Counting the phrase is not enough: a copy with the licensing sentence deleted, or
+# hidden with display:none, still says "under construction". Any change to the band must be a
+# deliberate change to this hash.
+BAND_SHA256 = "2811dfc96541ffb32e2703977cc070ce1a614708ab7b1ab335dcc5c945b48ea4"
+BAND_MARK = "<strong>Under Construction</strong>"
+
+
+def band_lines(text: str) -> list:
+    return [l.strip("\r") for l in text.split("\n") if BAND_MARK in l]
+
+
+def band_is_intact(text: str) -> bool:
+    import hashlib
+    lines = band_lines(text)
+    return len(lines) == 1 and hashlib.sha256(lines[0].encode("utf-8")).hexdigest() == BAND_SHA256
 STALE_FIELD = ("Data updated", 'id="sb-data"', "tago(")
 ISO = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 STRIP_START = '  var API="https://econdl-api.elkassabgi.workers.dev";'
@@ -83,6 +99,8 @@ def header_defects(name: str, html: str, canonical: tuple, G) -> list:
     want = 1 if name == "index.html" else 0
     if bands != want:
         out.append(f"{name}: {bands} 'Under Construction' bands, expected {want}")
+    if want and not band_is_intact(html):
+        out.append(f"{name}: the Under Construction band is not the owner-accepted line (BAND_SHA256)")
     for s in STALE_FIELD:
         if s in html:
             out.append(f"{name}: stale status field {s!r}")
@@ -126,7 +144,7 @@ def test_generator_template_is_clean(G):
     assert not BAND.search(G.HEAD)
     assert gen.count("<strong>Under Construction</strong>") == 1
     import inspect
-    assert "<strong>Under Construction</strong>" in inspect.getsource(G.render_index)
+    assert band_is_intact(inspect.getsource(G.render_index))
     for s in STALE_FIELD:
         assert s not in G.HEAD, s
     assert "fdate('__SITE_UPDATED__')" in G.HEAD
@@ -192,7 +210,15 @@ def test_controls_each_predicate_rejects_a_planted_defect(G):
     m = BAND.search(index)
     no_band = index[:m.start()] + "Being Built" + index[m.end():]
     two_bands = index.replace("</body>", "<div>Under Construction</div></body>")
-    for label, html in (("band removed", no_band), ("band doubled", two_bands)):
+    disclosure = "Datasets and their licensing are still being verified and may change. "
+    assert index.count(disclosure) == 1
+    no_disclosure = index.replace(disclosure, "")
+    hidden = index.replace('<div role="status" style="background:', '<div role="status" style="display:none;background:', 1)
+    moved = index[:m.start()] + "Being Built" + index[m.end():]
+    moved = moved.replace("</body>", "<!-- under construction --></body>")
+    for label, html in (("band removed", no_band), ("band doubled", two_bands),
+                        ("licensing sentence deleted", no_disclosure), ("band hidden", hidden),
+                        ("band replaced by a comment", moved)):
         assert html != index, label
         assert header_defects("index.html", html, canonical, G), f"control '{label}' was not rejected"
     assert not PLACEHOLDER.search("obj.__proto__ and __init__ and WS_CBS_PUB__Q__US.parquet")
