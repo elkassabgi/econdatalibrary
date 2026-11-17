@@ -4,13 +4,7 @@
 api/test_conformance.py
 core/backfill_coverage.py
 core/catalog.py
-core/export_d1.py
-core/export_d1_i18n_delta.py
-core/export_d1_new_series.py
-core/export_d1_sources.py
 core/gen_denylist.py
-core/load_d1_chunked.py
-core/load_d1_rest.py
 core/sync_catalog_d1.py
 core/sync_state_d1.py
 pipeline/title_bea.py
@@ -19,10 +13,5 @@ tools/delist_timeless_tables.py
 tools/flowgrain_insee_melodi.py
 tools/flowgrain_ons_uk.py
 tools/make_servable.py
-tools/migrate_noaa_shard.py
-tools/rebuild_series_fts.py
 tools/refresh_flowgrain_dates.py
 tools/refresh_r2_catalog.py
-tools/repair_stale_csvs.py
-tools/resync_and_repair.py
-tools/sync_titles_to_d1.py

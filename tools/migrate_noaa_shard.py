@@ -39,7 +39,6 @@ from core import sync_catalog_d1 as cat  # noqa: E402  (_parent_rows)
 
 SHARD = "econ-catalog-climate"
 SOURCE = "noaa"
-CATALOG_DB = os.path.join(ROOT, "data", "catalog.db")
 OUT_DIR = os.path.join(ROOT, "data", "_noaa_shard_sql")
 DONE_LIST = os.path.join(OUT_DIR, "_pushed.txt")
 FAILED_MARK = os.path.join(OUT_DIR, "_failed.txt")
@@ -53,9 +52,23 @@ STMT_BYTES = 80_000
 ROWS_PER_STMT = 400  # fetchmany batch size only; statements are cut by STMT_BYTES
 
 
+def _catalogue_ro(path=None):
+    """The catalogue, READ-ONLY, through core.catalog_path (t0_ready legacy-catalogue): `path` when one is given,
+    else this checkout's data/ catalogue - as before; after T0 the build only (any other path is refused).
+    sqlite's own 5 s busy timeout, as the old open had. A missing file raises sqlite3.OperationalError, the
+    class the old open raised, and nothing is created."""
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import catalog_path                                       # noqa: PLC0415 - the one resolver
+    try:
+        return catalog_path.connect_path(path or catalog_path.under(ROOT), write=False, timeout=5.0)
+    except FileNotFoundError as e:
+        raise sqlite3.OperationalError(f"unable to open database file: {e}") from None
+
+
 def emit() -> None:
     os.makedirs(OUT_DIR, exist_ok=True)
-    conn = sqlite3.connect(CATALOG_DB)
+    conn = _catalogue_ro()
     conn.row_factory = sqlite3.Row
     total = conn.execute("SELECT COUNT(*) FROM series WHERE source_id=?",
                          (SOURCE,)).fetchone()[0]
@@ -227,11 +240,11 @@ def push(force_wipe: bool = False) -> None:
 
 
 def verify() -> int:
-    conn = sqlite3.connect(CATALOG_DB)
+    conn = _catalogue_ro()
     local = conn.execute("SELECT COUNT(*) FROM series WHERE source_id=?",
                          (SOURCE,)).fetchone()[0]
     remote = _d1(SHARD, f"SELECT COUNT(*) AS n FROM series WHERE source_id='{SOURCE}';")["results"][0]["n"]
-    print(f"verify: catalog.db={local:,}  shard={remote:,}  "
+    print(f"verify: catalogue={local:,}  shard={remote:,}  "
           f"{'MATCH' if local == remote else 'MISMATCH'}")
     # spot-compare 3 rows end-to-end
     for r in conn.execute("SELECT series_id,title FROM series WHERE source_id=? "

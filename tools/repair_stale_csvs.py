@@ -83,7 +83,7 @@ def _at_risk() -> set[str]:
     any partial follows it.
     """
     db = os.path.join(ROOT, "data", "_aqueduct", "state.db")
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)   # plain-open: the updater's state.db, read-only
     cols = [r[1] for r in con.execute("PRAGMA table_info(runs)")]
     hist: dict[str, list[str]] = {}
     for row in con.execute("SELECT * FROM runs ORDER BY rowid"):
@@ -100,11 +100,24 @@ def _at_risk() -> set[str]:
     return out
 
 
+def _catalogue_ro(path=None):
+    """The catalogue, READ-ONLY, through core.catalog_path (t0_ready legacy-catalogue): `path` when one is given,
+    else this checkout's data/ catalogue - as before; after T0 the build only (any other path is refused).
+    sqlite's own 5 s busy timeout, as the old open had. A missing file raises sqlite3.OperationalError, the
+    class the old open raised, and nothing is created."""
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import catalog_path                                       # noqa: PLC0415 - the one resolver
+    try:
+        return catalog_path.connect_path(path or catalog_path.under(ROOT), write=False, timeout=5.0)
+    except FileNotFoundError as e:
+        raise sqlite3.OperationalError(f"unable to open database file: {e}") from None
+
+
 def _sample_ids(src: str, k: int, seed: int) -> list[str]:
     """Random across the FULL key range, never a prefix — a head sample once nearly
     certified a 13%-complete derive (R167)."""
-    cat = os.path.join(ROOT, "data", "catalog.db")
-    con = sqlite3.connect(f"file:{cat}?mode=ro", uri=True)
+    con = _catalogue_ro()
     ids = [r[0] for r in con.execute(
         "SELECT series_id FROM series WHERE source_id=?", (src,))]
     if not ids:
@@ -169,7 +182,7 @@ def main() -> int:
     print(f"MODE: {'APPLY (will re-derive proven-stale sources)' if a.apply else 'REPORT ONLY'}")
 
     from core import r2_util
-    cat = sqlite3.connect(f"file:{os.path.join(ROOT,'data','catalog.db')}?mode=ro", uri=True)
+    cat = _catalogue_ro()
     sizes = {r[0]: r[1] for r in cat.execute(
         "SELECT source_id, count(*) FROM series GROUP BY source_id")}
 

@@ -10,11 +10,111 @@ checkout, which has a .env. Worktrees and CI were safe only because they hold no
 So every process a test starts is checked: a command line that carries --pull-state or --push-state is
 refused, and the test FAILS at teardown even when the tool under test catches the refusal (a swallowed
 error must not read as a pass)."""
+import re
 import subprocess
 
 import pytest
 
 _FORBIDDEN = ("--pull-state", "--push-state")
+# NO TEST STARTS A REAL WRANGLER. The wrangler PROCESS roads (core/d1_remote.execute_wrangler, _wrangler and
+# execute_file, the deploy and secret tools) reach production from a machine with a Cloudflare login. Tests
+# fake subprocess.run or core.d1_remote._wrangler; a wrangler process that gets past the fake is refused here,
+# through subprocess.Popen (so subprocess.run too) and os.system.
+# What it does NOT cover:
+#   * the REST road: core/d1_remote.query() reaches D1 through urllib, which this guard cannot see. It is
+#     covered by the empty CLOUDFLARE_API_TOKEN set in _no_cloud_credentials_in_a_test, and its tests fake
+#     urlopen;
+#   * a wrangler started INSIDE a bash or PowerShell script that a test runs: the guard sees only the
+#     command line Python starts (`bash script.sh`). Those tests put a fake npx first on PATH;
+#   * a Python tool run as a child process (`[sys.executable, "tools/x.py"]`) that then starts wrangler
+#     itself: the child is a new interpreter that loads no conftest, so it has no guard.
+# The name is the cutover hook's own pattern (tools/selfhost/cutover_hook.py `_W`: wrangler, wrangler@<version>,
+# .cmd/.js/.mjs/.ps1/.exe), widened here to any version after @ (wrangler@^4, 'wrangler@>=3') and to .bat, plus
+# npm:wrangler and wrangler-dist/cli.js. It is refused only where it would RUN: as the program (after wrappers
+# such as nice/cmd /c/bash -c), or ANYWHERE after a launcher in the same command (npx/pnpx/pnpm/yarn/bunx/bun/
+# npm/node, env/sudo/timeout/nohup/xargs/corepack/deno), so a launcher's own options (`env -u HOME`,
+# `timeout -s KILL 60`) cannot hide it. Backticks and $( ) cut a command the way ; and | do.
+# A plain mention (`grep wrangler`, `rg wrangler`, `pytest -k wrangler`, a stand-in's argument) is not refused.
+# Behind a launcher it IS (`timeout 60 pytest -k wrangler`): refusing too much fails one test loudly; refusing
+# too little reaches production.
+_LAUNCHERS = frozenset({"npx", "pnpx", "pnpm", "yarn", "bunx", "bun", "npm", "node",
+                        "env", "sudo", "timeout", "nohup", "xargs", "corepack", "deno"})
+_WRAPPERS = frozenset({"nice", "env", "sudo", "cmd", "bash", "sh", "call", "start", "time", "timeout", "pwsh",
+                       "powershell", "exec"})
+
+
+def _hook_wrangler_name():
+    """The cutover hook's `_W` without its trailing `\\b.*?`, so it can name ONE token. Read from the hook
+    itself (no copy to drift); a hook whose pattern changed shape fails the whole suite here, loudly."""
+    import importlib.util
+    import os
+    import core
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(core.__file__))),
+                        "tools", "selfhost", "cutover_hook.py")
+    spec = importlib.util.spec_from_file_location("_cutover_hook_for_tests", path)
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+    tail, version, exts = r"\b.*?", r"(?:@[\w.\-]+)?", r"(?:\.cmd|\.js|\.mjs|\.ps1|\.exe)?"
+    if not (version in hook._W and exts in hook._W and hook._W.endswith(tail)):     # not assert: -O drops it
+        raise RuntimeError(f"tools/selfhost/cutover_hook.py _W changed shape: {hook._W!r}")
+    name = hook._W[:-len(tail)].replace(version, r"(?:@\S+?)?").replace(exts, exts[:-2] + r"|\.bat)?")
+    return re.compile(name, re.IGNORECASE)
+
+
+_WRANGLER_NAME = _hook_wrangler_name()
+_WRANGLER_DIST = re.compile(r"(?:^|[/\\])wrangler-dist[/\\]cli\.m?js$", re.IGNORECASE)
+_LEX = re.compile(r'"([^"]*)"|\'([^\']*)\'|([;&|()`\r\n]+)|([^\s"\';&|()`]+)')
+
+
+def _base(token):
+    name = re.split(r"[/\\]", token)[-1].lower()
+    return re.sub(r"\.(exe|cmd|ps1|bat)$", "", name)
+
+
+def _is_wrangler(token):
+    name = re.sub(r"^npm:", "", re.split(r"[/\\]", token)[-1], flags=re.IGNORECASE)
+    return bool(_WRANGLER_NAME.fullmatch(name) or _WRANGLER_DIST.search(token))
+
+
+def _segments(text, depth=0):
+    """The commands in a command line: cut at ; & | ( ) and newlines outside quotes. A quoted part is one token
+    AND, when it holds spaces, a command of its own (`bash -c "npx wrangler ..."`)."""
+    segs, cur = [], []
+    for m in _LEX.finditer(text):
+        quoted = m.group(1) if m.group(1) is not None else m.group(2)
+        if quoted is not None:
+            cur.append(quoted)
+            if depth < 4 and re.search(r"\s", quoted.strip()):
+                segs.extend(_segments(quoted, depth + 1))
+        elif m.group(3):
+            segs.append(cur)
+            cur = []
+        else:
+            cur.append(m.group(4))
+    segs.append(cur)
+    return [s for s in segs if s]
+
+
+def _starts_a_wrangler(args):
+    """True when this command line would RUN wrangler (see the comment above)."""
+    if isinstance(args, bytes):
+        args = args.decode(errors="replace")
+    text = args if isinstance(args, str) else subprocess.list2cmdline([str(a) for a in args])
+    for seg in _segments(text):
+        i = 0
+        while i < len(seg) and (seg[i].startswith("-") or re.fullmatch(r"/[A-Za-z]|\d+|[A-Za-z_]\w*=.*", seg[i])
+                                or _base(seg[i]) in _WRAPPERS):
+            i += 1
+        if i == len(seg):
+            continue
+        if _is_wrangler(seg[i]):
+            return True
+        launched = False
+        for t in seg:
+            if launched and _is_wrangler(t):
+                return True
+            launched = launched or _base(t) in _LAUNCHERS
+    return False
 
 pytest_plugins = ["pytester"]          # the guard's own can-fail test runs an isolated pytest
 
@@ -146,11 +246,12 @@ def _no_process_leak(request):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "state_sync_refusal_expected: the guard's own can-fail test")
+    config.addinivalue_line("markers", "wrangler_refusal_expected: the wrangler guard's own can-fail test")
 
 
 @pytest.fixture(autouse=True)
 def _no_state_sync_from_a_test(request):
-    started = []
+    started, wrangler = [], []
     real = subprocess.Popen
 
     class _Guarded(real):
@@ -160,6 +261,9 @@ def _no_state_sync_from_a_test(request):
             if any(f in flat for f in _FORBIDDEN):
                 started.append(flat)
                 raise RuntimeError(f"a test started a state sync: {flat[:160]} (tests/conftest.py, R1204)")
+            if _starts_a_wrangler(args):
+                wrangler.append(flat)
+                raise RuntimeError(f"a test started a real wrangler: {flat[:160]} (tests/conftest.py)")
             super().__init__(args, *a, **k)
     import os
     real_system = os.system
@@ -168,11 +272,16 @@ def _no_state_sync_from_a_test(request):
         if any(f in str(cmd) for f in _FORBIDDEN):          # R1213: os.system bypassed the Popen guard
             started.append(str(cmd))
             raise RuntimeError(f"a test started a state sync: {str(cmd)[:160]} (tests/conftest.py, R1204)")
+        if _starts_a_wrangler(str(cmd)):
+            wrangler.append(str(cmd))
+            raise RuntimeError(f"a test started a real wrangler: {str(cmd)[:160]} (tests/conftest.py)")
         return real_system(cmd)
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(subprocess, "Popen", _Guarded)
         mp.setattr(os, "system", _system)
         yield
+    if not request.node.get_closest_marker("wrangler_refusal_expected"):
+        assert not wrangler, f"this test started a real wrangler (refused, but the attempt is the bug): {wrangler}"
     if request.node.get_closest_marker("state_sync_refusal_expected"):
         return
     assert not started, f"this test started a state sync (refused, but the attempt is the bug): {started}"

@@ -100,6 +100,20 @@ def remote_count(token: str, table: str) -> int:
     return d1_remote.query(DB_NAME, f"SELECT COUNT(*) AS n FROM {table}", timeout=60)["results"][0]["n"]
 
 
+def _catalogue_ro():
+    """The catalogue, READ-ONLY, through core.catalog_path (t0_ready legacy-catalogue): this checkout's
+    data/ catalogue before T0, as before; after T0 the build only. sqlite's own 5 s busy timeout, as the
+    plain open had. A missing file raises sqlite3.OperationalError, the class the old open raised (at the open,
+    or at the first SELECT of the empty file a plain open made), and nothing is created."""
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import catalog_path                                       # noqa: PLC0415 - the one resolver
+    try:
+        return catalog_path.connect_path(catalog_path.under(ROOT), write=False, timeout=5.0)
+    except FileNotFoundError as e:
+        raise sqlite3.OperationalError(f"unable to open database file: {e}") from None
+
+
 def main() -> None:
     token = os.environ.get("CLOUDFLARE_API_TOKEN")
     if not token:
@@ -117,7 +131,7 @@ def main() -> None:
             log(f"  !! GIVING UP on {os.path.basename(p)} after retries — "
                 "continuing (verification will catch the gap)")
     # VERIFY: remote vs local counts (R1: outcomes in the data)
-    local = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"))
+    local = _catalogue_ro()
     tables = [r[0] for r in local.execute(
         "SELECT name FROM sqlite_master WHERE type='table' "
         "AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%_fts%'")]
