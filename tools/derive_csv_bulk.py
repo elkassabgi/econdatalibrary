@@ -337,7 +337,7 @@ def main() -> int:
                     help="append every failed PUT's key+reason here (default: "
                          "<source>_failed_puts.tsv beside the store)")
     ap.add_argument("--only-catalogued", action="store_true",
-                    help="write ONLY series with a catalog.db row. Without this the stream "
+                    help="write ONLY series with a catalogue row. Without this the stream "
                          "writes every series_key in the parquet — R364 measured 1,927 objects "
                          "for a 1,749-row catalogue on whr, and wid would mint 393,196 "
                          "uncatalogued objects (2,858,393 store keys vs 2,465,197 catalogued). "
@@ -797,9 +797,8 @@ def main() -> int:
 
     catalogued = None
     if a.only_catalogued:
-        import sqlite3
-        _con = sqlite3.connect(
-            f"file:{os.path.join(ROOT, 'data', 'catalog.db')}?mode=ro", uri=True)
+        from core import catalog_path                                   # noqa: PLC0415 - the one resolver
+        _con = catalog_path.connect_path(catalog_path.under(ROOT), write=False, timeout=5.0)
         _con.execute("PRAGMA busy_timeout = 180000")
         catalogued = {r[0] for r in _con.execute(
             "select series_id from series where source_id=?", (a.source,))}

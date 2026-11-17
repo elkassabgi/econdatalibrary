@@ -2,7 +2,6 @@
 # core/catalog_path.py - re-derived 2026-09-24 with the R1176 detection (clients/ included, comments
 # ignored). This list may only SHRINK: move each file to core.catalog_path.connect and delete its line.
 api/test_conformance.py
-catalog/gen_site.py
 core/backfill_coverage.py
 core/catalog.py
 core/export_d1.py
@@ -14,12 +13,9 @@ core/load_d1_chunked.py
 core/load_d1_rest.py
 core/sync_catalog_d1.py
 core/sync_state_d1.py
-jobs/process_sec_edgar.py
 pipeline/title_bea.py
 tools/apply_series_names.py
 tools/delist_timeless_tables.py
-tools/derive_csv_bulk.py
-tools/derive_unsdg_flows.py
 tools/flowgrain_insee_melodi.py
 tools/flowgrain_ons_uk.py
 tools/make_servable.py

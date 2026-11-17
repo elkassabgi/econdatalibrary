@@ -41,7 +41,20 @@ from datetime import date, datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-DB_PATH = os.path.join(ROOT, "data", "catalog.db")
+
+
+def _catalogue_ro(timeout: float = 120):
+    """The catalogue, READ-ONLY, through core.catalog_path (t0_ready legacy-catalogue, 2026-11-16): this
+    checkout's data/catalog.db before T0, as before; after T0 the build only. A missing file raises
+    sqlite3.OperationalError, as the `file:...?mode=ro` open did."""
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import catalog_path                                       # noqa: PLC0415
+    try:
+        return catalog_path.connect_path(catalog_path.under(ROOT), write=False, timeout=timeout)
+    except FileNotFoundError as e:
+        raise sqlite3.OperationalError(f"unable to open database file: {e}") from None
+
 CATALOG_JSON = os.path.join(HERE, "catalog.json")
 OUT_DIR = os.path.join(HERE, "site")
 
@@ -988,7 +1001,7 @@ def load_registry():
     # page at all while the API served 783,100 / 5,154 / 194 series. The fleet writes
     # continuously by design, so "run it when nothing is writing" is not a real window.
     # mode=ro also makes it impossible for a page build to corrupt the catalogue.
-    con = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=120)
+    con = _catalogue_ro(timeout=120)
     con.execute("PRAGMA busy_timeout=120000")
     con.row_factory = sqlite3.Row
 
@@ -1329,7 +1342,7 @@ def read_state_facts(path=None):
         return None
     try:
         uri = "file:" + path.replace("\\", "/") + "?mode=ro"
-        con = sqlite3.connect(uri, uri=True, timeout=60)
+        con = sqlite3.connect(uri, uri=True, timeout=60)   # plain-open: the updater's state.db, read-only
         try:
             ls = con.execute("SELECT source_id, last_success_utc FROM source_state "
                              "WHERE last_success_utc IS NOT NULL AND last_success_utc != ''").fetchall()
@@ -2702,8 +2715,7 @@ def _earliest_data_year():
     historical GDP series genuinely begin in year 1 CE. Floored to a century so
     the claim always understates ('2,000+'). Returns None if unmeasurable."""
     try:
-        _p = os.path.join(HERE, "..", "data", "catalog.db")
-        db = sqlite3.connect(f"file:{_p}?mode=ro", uri=True, timeout=120)
+        db = _catalogue_ro(timeout=120)
         db.execute("PRAGMA busy_timeout=120000")
         row = db.execute(
             "SELECT MIN(start_date) FROM series "

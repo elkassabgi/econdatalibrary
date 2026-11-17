@@ -549,7 +549,7 @@ def _smoke_test() -> int:
     else:
         print("\n[smoke] submissions.zip not present -- skipping pointer demo.")
 
-    print("\n[smoke] done. (No writes to data/catalog.db or data/clean/.)")
+    print("\n[smoke] done. (No writes to the catalogue or data/clean/.)")
     return 0
 
 
