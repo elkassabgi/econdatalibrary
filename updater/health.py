@@ -37,6 +37,12 @@ UPSTREAM_RECHECK_DAYS = 180.0
 # source is not stale at >3 days). >2 years with no new obs is genuinely dead for
 # any frequency up to annual, so it flags real death without false-alarming slow series.
 STALE_SERIES_DAYS = 730
+# CSV-RETRY BACKLOG (2026-11-17): a source whose OLDEST csv_retry_queue row is more than this many days old is
+# held at ATTENTION. Until then nothing read the queue: on the state copy of 2026-11-14 it held 848,541 ids in 20
+# sources, the oldest from 2026-08-23, and every one of those sources could read OK. A held id is a served CSV
+# that lags the store. NOT in the CI gate yet (gate_failures skips a row this signal alone holds): on that copy
+# 18 of the 20 sources were past 7 days, and a gate that is red every day is not read.
+CSV_RETRY_BACKLOG_DAYS = 7.0
 
 
 # The lateness clock's period for a cadence where it differs from the scheduling one: an irregular
@@ -398,6 +404,44 @@ def _resolver_prefix_grain() -> set | None:
         return None
 
 
+def csv_retry_backlog_of(entry, now) -> "dict | None":
+    """The CSV-RETRY BACKLOG of one source, or None when it has none past CSV_RETRY_BACKLOG_DAYS.
+
+    `entry` is StateStore.csv_retry_backlog()'s (ids, oldest enqueued_utc, ids with no stamp) for the source, or
+    None. Flagged when the oldest stamped row is MORE than CSV_RETRY_BACKLOG_DAYS old, or when any row has no
+    readable stamp (its age cannot be shown to be young, so it is not called young). Returns {"ids",
+    "oldest_days" (None when unknown), "unstamped", "text"}; the digest uses the same rule through this function."""
+    if not entry:
+        return None
+    n, lo, nul = (tuple(entry) + (0,))[:3]
+    n, nul = int(n or 0), int(nul or 0)
+    if n <= 0:
+        return None
+    age = None
+    if lo:
+        # a stamp with no zone reads as UTC (now_utc() writes +00:00; a legacy row may not), the digest's rule
+        try:
+            t = datetime.fromisoformat(str(lo).replace("Z", "+00:00"))
+            t = t if t.tzinfo is not None else t.replace(tzinfo=timezone.utc)
+            age = max(0.0, (now - t).total_seconds() / 86400.0)
+        except (ValueError, TypeError):
+            age = None
+    unreadable = bool(lo) and age is None
+    if nul == 0 and not unreadable and (age is None or age <= CSV_RETRY_BACKLOG_DAYS):
+        return None
+    if age is not None and age > CSV_RETRY_BACKLOG_DAYS:
+        oldest = f"oldest {age:.0f} days"
+    else:
+        age = None
+        oldest = "oldest unknown"
+    if nul:
+        oldest += f" ({nul:,} with no enqueued time)"
+    elif unreadable:
+        oldest += f" (enqueued time unreadable: {str(lo)[:32]})"
+    return {"ids": n, "oldest_days": None if age is None else round(age, 1), "unstamped": nul,
+            "text": f"CSV-RETRY BACKLOG: {n:,} ids, {oldest} - served CSVs lag the store"}
+
+
 def assess(store=None) -> dict:
     store = store or StateStore()
     now = datetime.now(timezone.utc)
@@ -409,7 +453,9 @@ def assess(store=None) -> dict:
     dowed: dict = {}
     for r in store.csv_desktop_owed():
         dowed.setdefault(r["source_id"], []).append(r)
-    reg = {e["source_id"]: e for e in registry.load().get("sources", [])}
+    # csv_retry_queue per source, ONE GROUP BY: {source_id: (ids, oldest enqueued_utc, ids with no stamp)}
+    retry_q = store.csv_retry_backlog()
+    reg ={e["source_id"]: e for e in registry.load().get("sources", [])}
     rows = []
     for sid, e in sorted(reg.items()):
         cadence = e.get("cadence", "monthly")
@@ -824,6 +870,19 @@ def assess(store=None) -> dict:
                 f"{e.get('desktop_lane_exit') or 'NOT DECLARED'}"] + list(attention)
             if health in ("OK", "ROTATING"):
                 health = "ATTENTION"
+        # CSV-RETRY BACKLOG (see CSV_RETRY_BACKLOG_DAYS): LAST of the holds, so `backlog_hold` is True only when this
+        # signal ALONE moved the verdict off OK/ROTATING; gate_failures skips exactly those rows. PREPENDED only when
+        # it changes the verdict (then it is the reason and must survive the [:10] cut); APPENDED when the verdict is
+        # already ATTENTION or RED, so the remedy of the hold that set it stays attention[0] (review F1: fed_board's
+        # cap-hit remedy). A worse verdict (RED-*) or another hold stands, and gates as before.
+        backlog, backlog_hold = csv_retry_backlog_of(retry_q.get(sid), now), False
+        if backlog:
+            if health in ("OK", "ROTATING"):
+                health = "ATTENTION"
+                backlog_hold = True
+                attention = [backlog["text"]] + list(attention)
+            else:
+                attention = list(attention) + [backlog["text"]]
 
         rows.append({
             "source": sid, "strategy": e.get("strategy"), "cadence": cadence,
@@ -852,6 +911,11 @@ def assess(store=None) -> dict:
             "n_discontinued": len(discontinued),
             "discontinued_series": discontinued[:10],
             "attention": attention[:10],
+            # {"ids", "oldest_days" (None = a row has no stamp), "unstamped"} past CSV_RETRY_BACKLOG_DAYS, else None
+            "csv_retry_backlog": ({k: backlog[k] for k in ("ids", "oldest_days", "unstamped")}
+                                  if backlog else None),
+            # True when the backlog alone holds this row at ATTENTION: gate_failures does not count it (yet)
+            "csv_retry_backlog_hold": backlog_hold,
         })
 
     # An owed row whose source has LEFT the registry must not vanish with it — the loop
@@ -914,8 +978,11 @@ def gate_failures(report: dict) -> list[str]:
     under a heading saying so, because "we cannot see this from here" is a different
     statement from "this is fine", and only one of them is true."""
     bad = ("RED-SLA", "RED-DATA", "RED-UNRUN", "ATTENTION", "PENDING")
+    # NOT YET A GATE: a row held at ATTENTION by the CSV-RETRY BACKLOG alone (csv_retry_backlog_hold) is shown in
+    # the table, the summary, health.json and the digest, but does not fail this gate (CSV_RETRY_BACKLOG_DAYS).
     return [f"{r['health']:<10} {r['source']}" for r in report["sources"]
-            if r.get("live") and r["health"] in bad and _judged_here(r)]
+            if r.get("live") and r["health"] in bad and _judged_here(r)
+            and not r.get("csv_retry_backlog_hold")]
 
 
 def _judged_here(row: dict) -> bool:
@@ -1090,6 +1157,11 @@ def main():
         for line in silent:
             print(f"\n{line}")
         fails = gate_failures(report)
+        held = [r for r in report["sources"] if r.get("csv_retry_backlog_hold")]
+        if held:
+            print(f"\nCSV-RETRY BACKLOG ({len(held)} source(s) held at ATTENTION by it alone; shown, NOT gated yet):")
+            for r in held:
+                print(f"  {r['source']:<36} {(r.get('attention') or ['?'])[0]}")
         if fails:
             print(f"\nHEALTH GATE FAILED: {len(fails)} live-tier source(s) "
                   f"unhealthy (§5.3 — red run, GH notification):")

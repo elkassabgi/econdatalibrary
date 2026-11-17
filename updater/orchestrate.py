@@ -2502,12 +2502,21 @@ def _drain_csv_retry_queue(unit, blob, store, deadline_ts=None, id_gate=None) ->
 # update() on a changed upstream: months for a
 # quarterly or annual publisher, while the resumable fetchers hand over every key on their first pass and the
 # desktop defers most of them to the queue. So AFTER the unit loop, in the pass's LEFTOVER time only, those
-# sources' queues are drained, oldest-enqueued source first, under ONE budget for the whole pass:
+# sources' queues are drained under ONE budget for the whole pass, in a ROTATED order (below):
 #   * the budget is the run ceiling's remainder minus _DRAIN_MARGIN_MIN (the push-state headroom stays), or the
 #     derive budget (AQUEDUCT_DERIVE_BUDGET_MIN, 45) when no ceiling is set; nothing starts below _DRAIN_FLOOR_MIN;
 #   * each source's drain is the same _drain_csv_retry_queue (cap, fence, flow-grain and desktop_owed rules), with
-#     the pass budget's remainder as its derive budget;
-#   * it holds the source's unit leases for that budget plus the margin; a lease held by another run skips the
+#     ITS OWN deadline: min(the pass deadline, its start + AQUEDUCT_RETRY_DRAIN_PER_SOURCE_MIN, default 15). The
+#     same deadline bounds its mirror check (_r2_mirror_gate);
+#   * THE ORDER ROTATES (2026-11-17). It was oldest-enqueued first with the whole pass budget to the first source.
+#     A source whose queue never empties (usda 68,983 ids, wid 39,230 on the state copy of 2026-11-14) kept the
+#     oldest stamp, went first on every pass and took the whole budget, so later sources (imf_imts_direct, three
+#     unctad sources) were not reached in 13 passes. Now the candidates go in RING order: the ring is every
+#     source with queued ids sorted by id, its pointer moves by one each UTC day (rotate_drain_order: ring[day %
+#     n]), and the source the pointer stands on goes first whenever it is a candidate. No state records when a
+#     source was last drained, so the day is the rotation's clock. Oldest-first was the order of #212 (AR-413), not a decision
+#     with a reason against rotating: no rule in AR-413's record or the ledger depends on it;
+#   * it holds the source's unit leases for its own budget plus the margin; a lease held by another run skips the
 #     source with a printed line (no `locked` run row);
 #   * NOTHING is written to unit_state, source_state or runs: the no_change / NOT DUE records stay exactly as the
 #     loop wrote them (imf_imts_direct settles its handed mark on last_error), and the drain's time is on its own
@@ -2521,6 +2530,53 @@ def _drain_csv_retry_queue(unit, blob, store, deadline_ts=None, id_gate=None) ->
 #     SystemExit leave.
 _DRAIN_MARGIN_MIN = 15.0
 _DRAIN_FLOOR_MIN = 1.0
+_DRAIN_PER_SOURCE_MIN = 15.0
+
+
+def _drain_per_source_min() -> float:
+    """One source's share of the leftover drain: AQUEDUCT_RETRY_DRAIN_PER_SOURCE_MIN, default 15. A non-positive or
+    unreadable value falls back to 15, never to "the whole pass budget" (that is the starvation this bounds)."""
+    try:
+        p = float(os.environ.get("AQUEDUCT_RETRY_DRAIN_PER_SOURCE_MIN", "") or _DRAIN_PER_SOURCE_MIN)
+    except ValueError:
+        p = _DRAIN_PER_SOURCE_MIN
+    return p if p > 0 else _DRAIN_PER_SOURCE_MIN
+
+
+def leftover_source_min(left_min: float, per_source_min: float) -> float:
+    """Minutes one source of the leftover drain may use: min(what is left of the pass budget, its own share). The
+    replay (tools/measure_ci_lag.py) sizes each source with this same rule."""
+    return max(0.0, min(left_min, per_source_min))
+
+
+def drain_ring(queued: dict) -> list:
+    """The rotation's ring: every source with queued ids ({source_id: (n, oldest)} of csv_retry_sources), sorted."""
+    return sorted(s for s, v in (queued or {}).items() if (v or (0, None))[0] > 0)
+
+
+def _drain_rotation_day() -> int:
+    """The UTC day number (days since the epoch) of now: the leftover drain's rotation clock."""
+    return int(time.time() // 86400)
+
+
+def rotate_drain_order(order, day: int, ring=None) -> list:
+    """`order` (drain_order's candidates) put in RING order from the day's pointer.
+
+    `ring` is every source with queued ids (csv_retry_sources' keys), sorted by id; the pointer is ring[day % len]
+    and each candidate sorts by its distance after the pointer. A STABLE ring, not the candidate list: this pass's
+    candidates (no_change / NOT DUE / BUDGET SKIPPED) change from pass to pass and the oldest-enqueued order moves as
+    queues drain, so a rotation of the candidate list itself gave no bound (review of this change, F3: 20 sources,
+    3 reached per pass, 80% daily membership -> median worst gap 43 days). With the ring, a source is reached on
+    the day the pointer stands on it whenever it is a candidate that day, whatever the others do; the ring changes
+    only when a source's queue empties or a new source queues. No ring (or a candidate not in it): the ring is the
+    sorted candidates. The replay calls it with its own pass time and ring."""
+    order = list(order)
+    if not order:
+        return order
+    r = sorted(set(ring or ()) | set(order))
+    pos = {s: i for i, s in enumerate(r)}
+    k = int(day) % len(r)
+    return sorted(order, key=lambda s: ((pos[s] - k) % len(r), s))
 
 
 def _drain_margin_min() -> float:
@@ -2686,11 +2742,14 @@ def _drain_leftover_retries(candidates: dict, blob, store) -> list:
     lane = sorted(s for s in have if _served_by_lane(s))
     if lane:
         print(f"[orchestrator] csv retry drain: served_by lane, never drained here: {', '.join(lane)}", flush=True)
-    order = drain_order(candidates, queued, lane)[1]       # oldest-enqueued first, lanes left out
+    day = _drain_rotation_day()
+    # the candidates (lanes left out) in RING order from the UTC day's pointer (the block comment above)
+    order = rotate_drain_order(drain_order(candidates, queued, lane)[1], day, drain_ring(queued))
     if not order:
         return done
     budget = _leftover_drain_min()
     margin = _drain_margin_min()
+    per_source = _drain_per_source_min()
     if budget < _DRAIN_FLOOR_MIN:
         print(f"[orchestrator] csv retry drain after the unit loop: no leftover time ({budget:.1f} min after the "
               f"{margin:.0f}-min margin) - {len(order)} source(s) with parked ids not drained: "
@@ -2698,8 +2757,9 @@ def _drain_leftover_retries(candidates: dict, blob, store) -> list:
         return done
     deadline = time.time() + budget * 60.0
     print(f"[orchestrator] csv retry drain after the unit loop: {len(order)} no_change/NOT DUE/BUDGET SKIPPED source(s) with "
-          f"parked ids, {budget:.1f} min of leftover time ({margin:.0f}-min margin kept), oldest-enqueued first",
-          flush=True)
+          f"parked ids, {budget:.1f} min of leftover time ({margin:.0f}-min margin kept), at most "
+          f"{per_source:g} min per source, in rotation order from {order[0]} (UTC day {day}): "
+          f"{', '.join(order[:12])}{' ...' if len(order) > 12 else ''}", flush=True)
     for i, sid in enumerate(order):
         left = (deadline - time.time()) / 60.0
         if left < _DRAIN_FLOOR_MIN:
@@ -2708,7 +2768,8 @@ def _drain_leftover_retries(candidates: dict, blob, store) -> list:
             break
         units = candidates[sid]
         unit = units[0]
-        ttl = int((min(left, budget) + margin) * 60.0) + 1     # budget <= _drain_max_min(): the TTL is capped too
+        mine = leftover_source_min(min(left, budget), per_source)   # this source's own share of the pass budget
+        ttl = int((mine + margin) * 60.0) + 1                  # mine <= _drain_max_min(): the TTL is capped too
         got = []
         for u in units:
             if not store.claim_lease(u.key, owner=OWNER, ttl_s=ttl):
@@ -2723,10 +2784,12 @@ def _drain_leftover_retries(candidates: dict, blob, store) -> list:
             continue
         print(f"[orchestrator] >>> {unit.key} (csv retry drain)", flush=True)
         t = time.time()
+        # ITS OWN DEADLINE, never past the pass's: a source that never empties uses its share and the next one runs
+        src_deadline = min(deadline, t + leftover_source_min((deadline - t) / 60.0, per_source) * 60.0)
         summ, err = None, None
         try:
-            summ = _drain_csv_retry_queue(unit, blob, store, deadline_ts=deadline,
-                                          id_gate=_r2_mirror_gate(sid, deadline))
+            summ = _drain_csv_retry_queue(unit, blob, store, deadline_ts=src_deadline,
+                                          id_gate=_r2_mirror_gate(sid, src_deadline))
         except (KeyboardInterrupt, SystemExit):
             raise
         except BaseException as e:                                   # noqa: BLE001 - one source's drain, never the pass
@@ -4336,7 +4399,8 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                     _drain_csv_retry_queue(unit, blob, store)
                 # A `csv_misses: desktop_owed` id still in csv_failed or csv_deferred here is one whose
                 # csv_desktop_owed booking FAILED (derive failure, crash, fence trip or budget deferral). It
-                # goes only to csv_retry_queue, which cannot drain on r2 and which health does not read. The
+                # goes only to csv_retry_queue, which cannot drain on r2 and which health reads only as a backlog
+                # older than 7 days (CSV-RETRY BACKLOG), not per id. The
                 # change signal is already spent, so this pass must NOT record its build receipt (below):
                 # a later pass of the unit then falls back and books the full debt (review AR-477 r4 F1).
                 # The same holds when the UNMAPPED-KEYS record could not be written (zero-mapped, fence trip

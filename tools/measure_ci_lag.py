@@ -1080,7 +1080,8 @@ class UnitBook:
 
     def __init__(self, cadences: dict, state: dict, runs_rows: list, work: dict, outcome: dict,
                  censored=(), assumed_ok=(), order: str = "production", clocked_extra=(), whole_flow=None,
-                 due_from_attempt: bool = False, window_stop=(), retry_queue=None, desktop_lane=None):
+                 due_from_attempt: bool = False, window_stop=(), retry_queue=None, desktop_lane=None,
+                 retry_ring=None):
         from updater.strategies.base import Strategy
         from updater.strategies import base
         from updater import orchestrate as orch
@@ -1114,6 +1115,9 @@ class UnitBook:
                             [r for r in runs_rows if r[1] in self.units])
         # csv_retry_queue per source: {source: [queued ids, oldest enqueued_utc]} (load_unit_book reads the copy's)
         self.retry_queue = {s: [int(n), lo] for s, (n, lo) in (retry_queue or {}).items() if s in self.units and n}
+        # the leftover drain's rotation RING (orchestrate.drain_ring): EVERY source with queued ids in the copy, also
+        # those this book does not replay (production's csv_retry_sources reads the whole queue); None = this book's
+        self.retry_ring = set(retry_ring if retry_ring is not None else self.retry_queue) | set(self.retry_queue)
         self.attempts = Counter()
         self.finished = Counter()
 
@@ -1357,16 +1361,20 @@ class UnitBook:
             break
         drained, not_drained = [], []
         if hard is None:                                   # a hard stop kills the updater: no drain follows
-            e, drained, not_drained = self._leftover_drain(drain_ok, drain_block, e, budget_min, drain_rate)
+            e, drained, not_drained = self._leftover_drain(drain_ok, drain_block, e, budget_min, drain_rate,
+                                                           start=start)
         return {"used_min": e, "advanced": advanced, "hard_stop": hard, "stopped": stopped, "ran": ran,
                 "budget_skipped": budget_skipped, "not_due": not_due, "retry_drained": drained,
                 "retry_not_drained": not_drained, "giant_skipped": giant_skipped}
 
-    def _leftover_drain(self, drain_ok, drain_block, e, budget_min, drain_rate):
+    def _leftover_drain(self, drain_ok, drain_block, e, budget_min, drain_rate, start=None):
         """orchestrate._drain_leftover_retries after the unit loop (PRs #212/#213), with production's candidate
-        rule (drain_candidates), order (drain_order: oldest-enqueued first) and budget (leftover_drain_budget_min:
+        rule (drain_candidates), order (drain_order's candidates, then rotate_drain_order on self.retry_ring - every
+        source with queued ids in the copy, less those the replay emptied - by the UTC day of the drain's start,
+        `start` + e; no `start` = day 0) and budget (leftover_drain_budget_min:
         min(time to the run deadline - margin, cap), margin and cap read by production's own helpers; nothing below
-        _DRAIN_FLOOR_MIN starts). Each source drains with what is left of that budget and holds the pass for it.
+        _DRAIN_FLOOR_MIN starts). Each source drains with leftover_source_min(what is left of that budget, its share
+        _drain_per_source_min()) and holds the pass for it (2026-11-17: a per-source deadline).
 
         The derive's speed is NOT in the copy, so it is an input: `drain_rate` ids per minute, or None = every source
         reached uses ALL the time left (an upper bound on the drain's occupancy; the queue is then not reduced,
@@ -1377,6 +1385,9 @@ class UnitBook:
         orch = self._orch
         cands = orch.drain_candidates(drain_ok, drain_block)
         _have, order = orch.drain_order(cands, {s: tuple(v) for s, v in self.retry_queue.items()})
+        day = 0 if start is None else int((start.timestamp() + e * 60.0) // 86400)
+        order = orch.rotate_drain_order(order, day, sorted(self.retry_ring))
+        per_source = orch._drain_per_source_min()
         if not order:
             return e, [], []
         budget = orch.leftover_drain_budget_min(max(0.0, budget_min - e), orch._drain_margin_min(),
@@ -1389,11 +1400,13 @@ class UnitBook:
             if left < orch._DRAIN_FLOOR_MIN:
                 return e, drained, list(order[i:])
             n = self.retry_queue[s][0]
-            use = left if drain_rate is None else min(left, min(n, orch._CSV_RETRY_CAP) / drain_rate)
+            mine = orch.leftover_source_min(left, per_source)
+            use = mine if drain_rate is None else min(mine, min(n, orch._CSV_RETRY_CAP) / drain_rate)
             if drain_rate is not None:
                 gone = min(n, orch._CSV_RETRY_CAP, int(math.floor(use * drain_rate + 1e-9)))
                 if gone >= n:
                     del self.retry_queue[s]
+                    self.retry_ring.discard(s)              # production's next csv_retry_sources no longer lists it
                 else:
                     self.retry_queue[s][0] = n - gone
             e += use
@@ -1481,8 +1494,9 @@ def load_unit_book(db_path: str, copy_utc: dt.datetime, shift: dt.timedelta, cad
         else:
             assumed.append(sid)
     # the leftover drain's input (orchestrate._drain_leftover_retries reads StateStore.csv_retry_sources)
-    queue = {}
+    queue, ring = {}, None
     if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='csv_retry_queue'").fetchone():
+        ring = [r[0] for r in con.execute("SELECT DISTINCT source_id FROM csv_retry_queue")]
         queue = {sid: (n, mv(lo)) for sid, n, lo in con.execute(
             f"SELECT source_id, COUNT(*), MIN(enqueued_utc) FROM csv_retry_queue WHERE source_id IN ({q}) "
             f"GROUP BY source_id", srcs)}
@@ -1491,7 +1505,7 @@ def load_unit_book(db_path: str, copy_utc: dt.datetime, shift: dt.timedelta, cad
     # registry desktop_lane (review AR-467), read through production registry.to_units; book_kw may override it
     book_kw.setdefault("desktop_lane", {s: v for s, v in local_desktop_lane_from_registry().items() if s in srcs})
     return UnitBook(cadences, state, rows, work, outcome, censored, assumed, window_stop=ws & set(srcs),
-                    retry_queue=queue, **book_kw)
+                    retry_queue=queue, retry_ring=ring, **book_kw)
 
 
 # ------------------------------------------------------------------ the simulator

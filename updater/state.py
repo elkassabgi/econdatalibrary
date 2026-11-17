@@ -293,6 +293,14 @@ class StateStore:
         return {sid: (n, lo) for sid, n, lo in self.db.execute(
             "SELECT source_id, COUNT(*), MIN(enqueued_utc) FROM csv_retry_queue GROUP BY source_id")}
 
+    def csv_retry_backlog(self) -> dict:
+        """{source_id: (queued rows, oldest enqueued_utc, rows with no enqueued_utc)} - one GROUP BY, for the health
+        signal CSV-RETRY BACKLOG. The NULL count is separate because MIN() ignores NULL: a NULL-stamped legacy row
+        beside a new one would otherwise read as young (the AR-461 F2b case of csv_retry_count_before)."""
+        return {sid: (int(n or 0), lo, int(nul or 0)) for sid, n, lo, nul in self.db.execute(
+            "SELECT source_id, COUNT(*), MIN(enqueued_utc), SUM(CASE WHEN enqueued_utc IS NULL THEN 1 ELSE 0 END) "
+            "FROM csv_retry_queue GROUP BY source_id")}
+
     def csv_retry_count_before(self, source_id, before_utc) -> tuple:
         """(rows of `source_id` enqueued before `before_utc` OR with no stamp, MIN(enqueued_utc)) - the
         csv_misses_from hold's legacy count (orchestrate._csv_misses_holds). A NULL stamp COUNTS: MIN()

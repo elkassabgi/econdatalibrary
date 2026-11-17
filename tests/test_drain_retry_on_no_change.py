@@ -14,7 +14,9 @@ with the strategy replaced by a fake:
       (last_error kept byte for byte, dur_s untouched, no extra runs row); a `>>> ... (csv retry drain)` /
       `<<< ... took Ns` pair is printed;
   (b) ONE leftover budget for the pass: the run remainder minus the margin; with no time left nothing drains;
-      sources go oldest-enqueued first and a source the budget did not reach is named; _CSV_RETRY_CAP holds;
+      sources go oldest-enqueued first (with the rotation switched off; the rotation and the per-source share
+      are tested in test_csv_retry_backlog.py) and a source the budget did not reach is named;
+      _CSV_RETRY_CAP holds;
   (c) attempts: a TRIED refailure stays queued with attempts + 1 and enqueued_utc kept; an id the derive budget
       never reached keeps its counter; least-tried ids go first, so a queue whose head always fails reaches its
       tail on the next pass;
@@ -130,9 +132,13 @@ class _Rig:
 def rig(tmp_path, monkeypatch):
     for k in ("AQUEDUCT_BACKEND", "AQUEDUCT_LIVE_ONLY", "GITHUB_ACTIONS", "AQUEDUCT_RUN_LOCATION",
               "AQUEDUCT_RUN_BUDGET_MIN", "AQUEDUCT_UNIT_TIMEOUT_MIN", "AQUEDUCT_DERIVE_BUDGET_MIN",
-              "AQUEDUCT_RETRY_DRAIN_MARGIN_MIN", "ECONDL_DATA"):
+              "AQUEDUCT_RETRY_DRAIN_MARGIN_MIN", "AQUEDUCT_RETRY_DRAIN_MAX_MIN", "AQUEDUCT_RETRY_DRAIN_PER_SOURCE_MIN",
+              "ECONDL_DATA"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("AQUEDUCT_DERIVE_WORKERS", "1")
+    # the rotation switched off (drain_order's oldest-enqueued list as it is), so a two-source test does not depend
+    # on the real date; the rotation and the per-source share have their own tests (test_csv_retry_backlog.py)
+    monkeypatch.setattr(orchestrate, "rotate_drain_order", lambda order, day, ring=None: list(order))
     monkeypatch.setattr(orchestrate, "_RUN_DEADLINE_TS", orchestrate._RUN_DEADLINE_TS)   # run_once sets it
     data = tmp_path / "data"
     monkeypatch.setattr(config, "DATA_ROOT", str(data / "clean_full"))
@@ -376,6 +382,8 @@ def test_a_2880_minute_run_budget_still_caps_the_drain_and_its_lease(rig, monkey
     """AR-413 F1: run_local_heavy.ps1 sets AQUEDUCT_RUN_BUDGET_MIN=2880. Remainder minus margin alone gave one drain
     2,865 minutes; the cap is AQUEDUCT_RETRY_DRAIN_MAX_MIN, default the derive budget (45), and the lease follows."""
     monkeypatch.setenv("AQUEDUCT_RUN_BUDGET_MIN", "2880")
+    # a per-source share above the cap, so the CAP is what binds here (the share: test_csv_retry_backlog.py)
+    monkeypatch.setenv("AQUEDUCT_RETRY_DRAIN_PER_SOURCE_MIN", "60")
     seen = _spy_derive_budget(monkeypatch)
     ttls = []
     real = rig.state.claim_lease
@@ -569,7 +577,8 @@ def test_the_drain_lease_lives_for_its_budget_plus_the_margin(rig, monkeypatch):
     rig.seed(SRC, _ids(1))
     rig.run()
     drain_ttls = [t for k, t in ttls if k == f"{SRC}/_all"]
-    assert drain_ttls and 24 * 60 < drain_ttls[-1] <= 40 * 60 + 2, drain_ttls   # (40-15) + 15 min
+    # min((40-15), the 15-min per-source share) + the 15-min margin
+    assert drain_ttls and 24 * 60 < drain_ttls[-1] <= 30 * 60 + 2, drain_ttls
 
 
 # ---- (e) the mirror check under r2 ------------------------------------------------------------------
