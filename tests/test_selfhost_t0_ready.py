@@ -55,8 +55,12 @@ def test_a_missing_legacy_list_is_a_failure_not_a_pass(tmp_path):
 
 
 def test_the_real_lists_are_read():
-    """Positive control on the repo as it is today: both lists are non-empty, so both checks fail."""
-    assert T.legacy_catalogue()[0] is False and T.legacy_remote_d1()[0] is False
+    """Control on the repo as it is today: the catalogue list is non-empty, so its check fails; the remote-D1
+    list became empty on 2026-11-16 (tools/refresh_sec_edgar.py moved onto core.d1_remote), so its check passes
+    - and says it counted zero, i.e. it really read the bare `set()` (a non-empty list fails test above)."""
+    assert T.legacy_catalogue()[0] is False
+    ok, why = T.legacy_remote_d1()
+    assert ok is True and why.startswith("0 file(s)"), why
 
 
 @pytest.mark.parametrize("src,ok", [

@@ -116,14 +116,15 @@ class D1Unreachable(RuntimeError):
     a missing node and a network error used to escape as other exception types)."""
 
 
-def _wrangler(args: list[str], *, timeout: int, retries: int = 2):
+def _wrangler(args: list[str], *, timeout: int, retries: int = 2, env: dict | None = None):
     """Run wrangler; retry ONLY its intermittent auth error (code 10000, on stdout or stderr), `retries`
-    times. Every way of not reaching D1 raises D1Unreachable."""
+    times. Every way of not reaching D1 raises D1Unreachable. `env`: the environment wrangler runs with
+    (default: this process's)."""
     import subprocess                                                           # noqa: PLC0415
     import time                                                                 # noqa: PLC0415
     if not os.path.isfile(WRANGLER_JS):
         raise D1Unreachable(f"no wrangler at {WRANGLER_JS} (run npm ci in api/worker); cannot reach D1")
-    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    env = dict(os.environ if env is None else env, PYTHONIOENCODING="utf-8")
     for attempt in range(retries + 1):
         try:
             r = subprocess.run(["node", WRANGLER_JS, *args], cwd=WORKER_DIR, capture_output=True, text=True,
@@ -136,6 +137,18 @@ def _wrangler(args: list[str], *, timeout: int, retries: int = 2):
             return r
         time.sleep(10)
     raise AssertionError("unreachable")
+
+
+def wrangler_execute(database: str, args: list[str], *, timeout: int = 600, env: dict | None = None):
+    """ONE `wrangler d1 execute <database> --remote <args>` run, returned as wrangler's CompletedProcess, for a
+    caller that keeps its own retry and output rules (tools/refresh_sec_edgar.py's _d1_json: its OAuth
+    fallback on error 7403, its three tries on error 10000). No retry here. Refuses after T0: it takes any
+    statement or --file, and D1 is the frozen copy then (a read after T0 goes through run_json / query)."""
+    if database not in DATABASES:
+        raise ValueError(f"unknown D1 database {database!r}; known: {sorted(DATABASES)}")
+    if is_cut_over():
+        raise CutoverRefused(f"refused: wrangler d1 execute --remote on {database} after T0 (D1 is frozen)")
+    return _wrangler(["d1", "execute", database, "--remote", *args], timeout=timeout, retries=0, env=env)
 
 
 def statement_results(stdout: str) -> list[dict]:
