@@ -19,8 +19,12 @@ import pyarrow.parquet as pq
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 sys.path.insert(0, ROOT)
 from core import catalog  # noqa: E402
-from core import catalog_path  # noqa: E402 - the single-writer lock (plan step 1)
+from core import cutover  # noqa: E402
 from connectors.base import SeriesMeta  # noqa: E402
+
+# a retired legacy ingest (tools/refresh_sec_edgar.py refreshes sec_edgar): its rebuild_fts rewrites the WHOLE
+# series_fts and its source upsert drops terms_url, so after T0 it refuses first - before any folder, read or lock
+cutover.refuse_if_cut_over("jobs/ingest_sec_edgar.py (a retired legacy ingest; after T0 the updater is the catalogue's only writer)")
 
 RAW = os.path.join(ROOT, "data", "raw", "sec_edgar")
 OUT = os.path.join(ROOT, "data", "clean_grouped", "sec_edgar")
@@ -39,7 +43,6 @@ cik2tick = {}
 for v in ct.values():
     cik2tick.setdefault(int(v["cik_str"]), v["ticker"])
 
-catalog_path.write_session_for_process()   # after T0: the single-writer lock until exit (catalog.connect() writes)
 db = catalog.connect()
 fts = catalog.init(db)
 catalog.upsert_source(db, "sec_edgar", "U.S. SEC EDGAR (company financials)", "us-public-domain",

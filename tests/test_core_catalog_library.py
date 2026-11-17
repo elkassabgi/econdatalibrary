@@ -1,8 +1,8 @@
 """core/catalog.py, the catalogue LIBRARY, opens through core.catalog_path (t0_ready legacy-catalogue, 2026-11-17).
 
 Its premise (refused after T0 without the lock, read-write with it, never creates a missing file, 600 s) is RUN
-in tests/test_catalogue_writers_main.py::test_the_library_writer_premise, and its importers' entries are pinned
-there too. This file checks what that test cannot: the two ways the module is imported both resolve
+in tests/test_catalogue_writers_main.py::test_the_library_writer_premise, and its importers' refusals at entry
+after T0 are run there too. This file checks what that test cannot: the two ways the module is imported both resolve
 core.catalog_path - as core.catalog (jobs/), and as plain `catalog` with core/ first on the path
 (core/apply_stage0b.py and core/build_registry.py, run as `python core/<file>.py`)."""
 import os

@@ -157,12 +157,16 @@ LOCK_INSIDE_MAIN = {"tools/refresh_sec_edgar.py"}
 
 # LIBRARY writers: a module (no __main__ block, no script body) whose FUNCTION opens the catalogue for write for
 # whoever imports it. It cannot take the lock itself (a library holding the machine-wide lock until the process
-# exits would block the updater; a lock inside connect() would be let go before the caller writes), so the rule
-# moves to its IMPORTERS: each importer's entry holds the lock - a __main__ block that is ONE
-# `with catalog_path.write_session():` around everything, or a top-level script that calls
-# write_session_for_process() before its first connect. The importers are DISCOVERED and compared with the
-# committed set, so a new importer fails here until it takes the lock and is added. After T0 the library's
-# open itself refuses a write without the lock (connect_path), which test_the_library_writer_premise RUNS.
+# exits would block the updater; a lock inside connect() would be let go before the caller writes).
+# core/catalog.py's importers are RETIRED legacy scripts (UPDATER_BUILD_PLAN D-1; nothing schedules them) whose
+# writes would damage the live build after T0 - upsert_source drops terms_url, rebuild_fts rewrites the WHOLE
+# series_fts (review AR-281 C281-3). So each importer REFUSES AT ENTRY after T0, before any read and before any
+# lock, rather than becoming a lock-holding writer: the first statement of its __main__ block, or, for a
+# top-level script, a top-level statement before anything but imports, path set-up and constants.
+# DISCOVERY IS STATIC (C281-1): it sees `from core import catalog`, `import core.catalog`, `from core.catalog
+# import ...`, a relative `from . import catalog` in core/ and a plain `import catalog` anywhere - not an
+# importlib call or a transitive caller. Those are the early warning. THE GUARD is connect_path refusing an
+# unlocked write to the build after T0, which test_the_library_writer_premise RUNS.
 LIBRARY_WRITERS = {
     "core/catalog.py": {"core/apply_stage0b.py", "core/build_registry.py", "jobs/ingest_eurostat.py",
                         "jobs/ingest_sec_edgar.py", "jobs/run_connector.py"},
@@ -171,16 +175,18 @@ LIBRARY_WRITERS = {
 
 def _imports_core_catalog(rel, tree) -> bool:
     for n in ast.walk(tree):
-        if isinstance(n, ast.ImportFrom) and n.module == "core" and any(a.name == "catalog" for a in n.names):
+        if isinstance(n, ast.ImportFrom) and n.module == "core" and not n.level \
+                and any(a.name == "catalog" for a in n.names):
             return True
         if isinstance(n, ast.ImportFrom) and n.module == "core.catalog":
             return True
-        if isinstance(n, ast.Import) and any(a.name == "core.catalog" for a in n.names):
+        if isinstance(n, ast.Import) and any(a.name in ("core.catalog", "catalog") for a in n.names):
+            return True                                        # plain `import catalog` (core/ on the path)
+        if isinstance(n, ast.ImportFrom) and n.module == "catalog" and not n.level:
             return True
-        if rel.startswith("core/") and isinstance(n, ast.Import) and any(a.name == "catalog" for a in n.names):
-            return True                                        # `import catalog as cat` from core/ itself
-        if rel.startswith("core/") and isinstance(n, ast.ImportFrom) and n.module == "catalog" and not n.level:
-            return True
+        if rel.startswith("core/") and isinstance(n, ast.ImportFrom) and n.level == 1 \
+                and (n.module == "catalog" or (n.module is None and any(a.name == "catalog" for a in n.names))):
+            return True                                        # `from . import catalog` / `from .catalog import`
     return False
 
 
@@ -194,40 +200,124 @@ def _library_importers():
     return out
 
 
-def _entry_holds_the_lock(tree) -> bool:
+def _is_refusal(stmt) -> bool:
+    return (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
+            and ast.unparse(stmt.value.func) == "cutover.refuse_if_cut_over")
+
+
+def _quiet(stmt) -> bool:
+    """A top-level statement that reads, writes or opens nothing: an import, the docstring, sys.path set-up, or an
+    assignment whose only calls are os.path.* (ROOT = os.path.dirname(...))."""
+    if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+        return True
+    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
+        return True
+    calls = [ast.unparse(c.func) for c in ast.walk(stmt) if isinstance(c, ast.Call)]
+    if isinstance(stmt, ast.Expr) and calls and calls[0] == "sys.path.insert":
+        return all(c == "sys.path.insert" or c.startswith("os.path.") for c in calls)
+    return isinstance(stmt, ast.Assign) and all(c.startswith("os.path.") for c in calls)
+
+
+def _entry_refuses_after_t0(tree) -> bool:
     mains = [n for n in tree.body if isinstance(n, ast.If) and "__main__" in ast.unparse(n.test)]
     if mains:
-        b = mains[0].body
-        return (len(b) == 1 and isinstance(b[0], ast.With) and len(b[0].items) == 1
-                and ast.unparse(b[0].items[0].context_expr) == "catalog_path.write_session()")
-    lock_at = next((i for i, s in enumerate(tree.body) if isinstance(s, ast.Expr) and isinstance(s.value, ast.Call)
-                    and ast.unparse(s.value.func) == "catalog_path.write_session_for_process"), None)
-    open_at = next((i for i, s in enumerate(tree.body) if "catalog.connect(" in ast.unparse(s)
-                    or "cat.connect(" in ast.unparse(s)), None)
-    return lock_at is not None and (open_at is None or lock_at < open_at)
+        return bool(mains[0].body) and _is_refusal(mains[0].body[0])
+    for s in tree.body:
+        if _is_refusal(s):
+            return True
+        if not _quiet(s):
+            return False
+    return False
 
 
-def test_every_library_writer_s_importer_holds_the_lock_at_its_entry():
+def test_every_library_writer_s_importer_refuses_at_entry_after_t0():
     want = set().union(*LIBRARY_WRITERS.values())
     found = _library_importers()
     assert found == want, (f"importers of a library writer changed - joined: {sorted(found - want)}; left: "
-                           f"{sorted(want - found)}. A new importer's entry must hold the lock, then join here")
-    bad = [rel for rel in sorted(found) if not _entry_holds_the_lock(_repo_walk.parse_code(os.path.join(ROOT, rel)))]
-    assert not bad, f"these importers of a library writer do not hold the lock at their entry: {bad}"
+                           f"{sorted(want - found)}. A new importer must refuse at entry after T0 (or be reviewed "
+                           f"as a writer of the live build), then join here")
+    bad = [rel for rel in sorted(found) if not _entry_refuses_after_t0(_repo_walk.parse_code(os.path.join(ROOT, rel)))]
+    assert not bad, f"these importers of a library writer do not refuse at their entry after T0: {bad}"
 
 
 def test_the_library_importer_rule_can_fail():
+    R = 'cutover.refuse_if_cut_over("x")\n'
     for code in ('if __name__ == "__main__":\n    main()\n',
-                 'if __name__ == "__main__":\n    with catalog_path.write_session():\n        main()\n    main()\n',
-                 'db = catalog.connect()\ncatalog_path.write_session_for_process()\n',
-                 'db = catalog.connect()\n'):
-        assert not _entry_holds_the_lock(ast.parse(code)), code
-    for code in ('if __name__ == "__main__":\n    with catalog_path.write_session():\n        main()\n',
-                 'catalog_path.write_session_for_process()\ndb = catalog.connect()\n'):
-        assert _entry_holds_the_lock(ast.parse(code)), code
+                 'if __name__ == "__main__":\n    main()\n    ' + R,
+                 'if __name__ == "__main__":\n    with catalog_path.write_session():\n        main()\n',
+                 'os.makedirs(OUT)\n' + R,
+                 'ct = json.load(open(p))\n' + R,
+                 'db = catalog.connect()\n' + R,
+                 'import os\nx = 1\n'):
+        assert not _entry_refuses_after_t0(ast.parse(code)), code
+    for code in ('if __name__ == "__main__":\n    ' + R + '    main()\n',
+                 '"""doc"""\nimport os, sys\nROOT = os.path.dirname(os.path.abspath(__file__))\n'
+                 'sys.path.insert(0, ROOT)\nfrom core import catalog\n' + R + 'db = catalog.connect()\n'):
+        assert _entry_refuses_after_t0(ast.parse(code)), code
     assert _imports_core_catalog("jobs/x.py", ast.parse("from core import catalog, storage"))
     assert _imports_core_catalog("core/x.py", ast.parse("import catalog as cat"))
+    assert _imports_core_catalog("tools/x.py", ast.parse("import catalog"))
+    assert _imports_core_catalog("core/x.py", ast.parse("from . import catalog"))
+    assert _imports_core_catalog("core/x.py", ast.parse("from .catalog import connect"))
     assert not _imports_core_catalog("jobs/x.py", ast.parse("from core import catalog_path"))
+    assert not _imports_core_catalog("tools/x.py", ast.parse("from catalog_tools import catalog"))
+
+
+def _importer_entry(rel):
+    path = os.path.join(ROOT, rel)
+    tree = _repo_walk.parse_code(path)
+    mains = [n for n in tree.body if isinstance(n, ast.If) and "__main__" in ast.unparse(n.test)]
+    return path, (mains[0] if mains else None)
+
+
+@pytest.mark.parametrize("rel", sorted(set().union(*LIBRARY_WRITERS.values())))
+def test_a_library_importer_refuses_after_t0_before_anything_and_runs_before(t0, monkeypatch, rel, tmp_path):
+    """RUN: after T0 the entry raises CutoverRefused before its work starts (main()/run() never called, no
+    folder made, no file read, no catalogue opened); before T0 it reaches its work as before."""
+    import builtins
+    from core import catalog
+    path, block = _importer_entry(rel)
+    monkeypatch.syspath_prepend(os.path.join(ROOT, "core"))        # core/ scripts import `catalog` by its bare name
+    called = []
+
+    def trap(name):
+        def f(*a, **k):
+            called.append(name)
+            raise _Stop()
+        return f
+    monkeypatch.setattr(catalog, "connect", trap("catalog.connect"))
+    monkeypatch.setattr(cp, "connect_path", trap("connect_path"))
+    monkeypatch.setattr(sys, "argv", [path])
+    for before_t0 in (False, True):
+        if before_t0:
+            (t0 / "CUTOVER").unlink()
+        called.clear()
+        if block is not None:
+            m = _load(rel, path)
+            g = dict(vars(m))
+            g.update(main=trap("main"), run=trap("run"))
+            code = compile(ast.Module(body=block.body, type_ignores=[]), path, "exec")
+            run_it = lambda: exec(code, g)                         # noqa: E731,S102 - the file's own __main__ code
+        else:
+            real_open, real_makedirs = builtins.open, os.makedirs
+            monkeypatch.setattr(os, "makedirs", trap("os.makedirs"))
+            monkeypatch.setattr(builtins, "open", lambda f, *a, **k: real_open(f, *a, **k) if str(f).endswith(".py")
+                                else trap("open")())
+            run_it = lambda: runpy.run_path(path, run_name="__main__")  # noqa: E731
+        try:
+            if not before_t0:
+                with pytest.raises(cutover.CutoverRefused, match="retired legacy"):
+                    run_it()
+                assert called == [], f"{rel}: after T0 it reached {called} before refusing"
+            else:
+                with pytest.raises(_Stop):
+                    run_it()
+                assert called, f"{rel}: before T0 it never reached its work"
+        finally:
+            if block is None:
+                monkeypatch.setattr(os, "makedirs", real_makedirs)
+                monkeypatch.setattr(builtins, "open", real_open)
+    assert cp._held is None
 
 
 def test_the_library_writer_premise(t0, monkeypatch):

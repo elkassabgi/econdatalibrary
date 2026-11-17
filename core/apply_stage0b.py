@@ -17,8 +17,8 @@ from __future__ import annotations
 import json, os, re, sys
 import catalog as cat
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))  # core.catalog_path
-from core import catalog_path  # noqa: E402 - the single-writer lock around the entry (plan step 1)
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))  # core.cutover
+from core import cutover  # noqa: E402 - refused at entry after T0 (review AR-281 C281-3)
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 CLEAN = os.path.join(ROOT, "data", "clean_full")
@@ -119,5 +119,7 @@ def main():
 
 
 if __name__ == "__main__":
-    with catalog_path.write_session():   # after T0: the single-writer lock (cat.connect() writes)
-        main()
+    # a retired legacy registry tool: its source upsert (INSERT OR REPLACE without terms_url) would damage the
+    # build after T0, so it refuses first - before any read - and never becomes a lock-holding writer
+    cutover.refuse_if_cut_over("core/apply_stage0b.py (a retired legacy registry tool; after T0 the updater is the catalogue's only writer)")
+    main()

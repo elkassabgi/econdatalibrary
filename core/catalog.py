@@ -52,8 +52,9 @@ CREATE INDEX IF NOT EXISTS ix_series_source_id ON series(source_id);
 def connect(db: str | None = None) -> sqlite3.Connection:
     """The catalogue, READ-WRITE: `db`, else this checkout's data/ catalogue (the old default). Opened through
     core.catalog_path.connect_path: before T0 the same file as always; after T0 only the build, and the write
-    needs the single-writer lock held by this process - every importer's entry takes it
-    (tests/test_catalogue_writers_main.py LIBRARY_WRITERS). A missing catalogue is an error, NEVER created
+    needs the single-writer lock held by this process. Its importers are retired legacy scripts that refuse
+    at entry after T0 (tests/test_catalogue_writers_main.py LIBRARY_WRITERS), so after T0 an unlocked call is
+    refused here, by the open. A missing catalogue is an error, NEVER created
     here: the old open made an empty file, which init() then turned into an empty catalogue."""
     path = os.path.abspath(db) if db else catalog_path.under(_ROOT)
     # WAIT FOR A BUSY DATABASE INSTEAD OF FAILING ON IT. sqlite's default is 5 s, which is far
