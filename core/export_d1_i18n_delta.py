@@ -24,10 +24,10 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 
 _THIS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(_THIS, ".."))
-CATALOG = os.path.join(ROOT, "data", "catalog.db")
 OUT_DIR = os.path.join(ROOT, "dist", "d1", "i18n")
 
 MAX_BYTES = 10_000_000   # ~10 MB/file (well under the remote-execute cap)
@@ -36,6 +36,17 @@ MAX_STMTS = 1500         # belt-and-suspenders statement cap per file
 
 def _lit(v: str) -> str:
     return "'" + v.replace("'", "''") + "'"
+
+
+def _catalogue_ro():
+    """The catalogue, READ-ONLY, through core.catalog_path (t0_ready legacy-catalogue): this checkout's
+    data/ catalogue before T0, as before; after T0 the build only. sqlite's own 5 s busy timeout, as the
+    plain open had. A missing file raises FileNotFoundError: it is never created (a plain open made an
+    empty one)."""
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import catalog_path                                       # noqa: PLC0415 - the one resolver
+    return catalog_path.connect_path(catalog_path.under(ROOT), write=False, timeout=5.0)
 
 
 def _iter_translated(conn: sqlite3.Connection):
@@ -65,7 +76,7 @@ def main() -> None:
         if f.startswith("part_") and f.endswith(".sql"):
             os.remove(os.path.join(OUT_DIR, f))
 
-    conn = sqlite3.connect(CATALOG)
+    conn = _catalogue_ro()
     rows = list(_iter_translated(conn))
     conn.close()
 
@@ -105,7 +116,7 @@ def main() -> None:
         print(f"  {os.path.basename(path)}  {n:>6,} stmts  {mb:5.1f} MB")
 
     # ---- VERIFY: replay every file into a throwaway SQLite (== D1 parser) ----
-    mem = sqlite3.connect(":memory:")
+    mem = sqlite3.connect(":memory:")   # plain-open: an in-memory probe, not the catalogue
     mem.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY, metadata TEXT)")
     # seed one known id so at least one UPDATE actually lands and round-trips
     probe = rows[0][0] if rows else None

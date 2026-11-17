@@ -33,7 +33,6 @@ import sys
 
 _THIS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(_THIS, ".."))
-CATALOG = os.path.join(ROOT, "data", "catalog.db")
 TITLES_DIR = os.path.join(ROOT, "dist", "titles")
 OUT_DIR = os.path.join(ROOT, "dist", "d1", "newseries")
 
@@ -68,6 +67,17 @@ def titled_ids(sources: list[str]) -> set[str]:
     return ids
 
 
+def _catalogue_ro():
+    """The catalogue, READ-ONLY, through core.catalog_path (t0_ready legacy-catalogue): this checkout's
+    data/ catalogue before T0, as before; after T0 the build only. sqlite's own 5 s busy timeout, as the
+    plain open had. A missing file raises FileNotFoundError: it is never created (a plain open made an
+    empty one)."""
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import catalog_path                                       # noqa: PLC0415 - the one resolver
+    return catalog_path.connect_path(catalog_path.under(ROOT), write=False, timeout=5.0)
+
+
 def main(argv: list[str]) -> None:
     if not argv:
         print("usage: python core/export_d1_new_series.py <source> [...]")
@@ -79,7 +89,7 @@ def main(argv: list[str]) -> None:
 
     want = titled_ids(argv)
     print(f"titled ids requested: {len(want):,}")
-    conn = sqlite3.connect(CATALOG)
+    conn = _catalogue_ro()
     collist = ", ".join(f'"{c}"' for c in COLS)
     # pull only the rows that exist AND carry a non-raw title (title != stripped id)
     rows = []
@@ -140,7 +150,7 @@ def main(argv: list[str]) -> None:
     print(f"wrote {len(files)} INSERT file(s) + _fts_rebuild.sql to {OUT_DIR}")
 
     # VERIFY: replay inserts into in-memory SQLite
-    mem = sqlite3.connect(":memory:")
+    mem = sqlite3.connect(":memory:")   # plain-open: an in-memory replay check, not the catalogue
     mem.execute(f"CREATE TABLE series ({', '.join(c+' TEXT' for c in COLS)}, PRIMARY KEY(series_id))")
     for p in files:
         mem.executescript(open(p, encoding="utf-8", newline="").read())

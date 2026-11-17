@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import sys
 
 _THIS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(_THIS, ".."))
-CATALOG = os.path.join(ROOT, "data", "catalog.db")
 STATE = os.path.join(ROOT, "data", "_aqueduct", "state.db")
 OUT_DIR = os.path.join(ROOT, "dist", "d1")
 OUT = os.path.join(OUT_DIR, "econ_catalog.sql")
@@ -28,6 +28,17 @@ OUT = os.path.join(OUT_DIR, "econ_catalog.sql")
 _CATALOG_TABLES = ["license", "source", "series"]
 _STATE_TABLES = ["unit_state", "source_state"]
 _BATCH = 20  # rows per multi-VALUES INSERT (D1 caps statement length ~ SQLITE_TOOBIG)
+
+
+def _catalogue_ro():
+    """The catalogue, READ-ONLY, through core.catalog_path (t0_ready legacy-catalogue): this checkout's
+    data/ catalogue before T0, as before; after T0 the build only. sqlite's own 5 s busy timeout, as the
+    plain open had. A missing file raises FileNotFoundError: it is never created (a plain open made an
+    empty one)."""
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import catalog_path                                       # noqa: PLC0415 - the one resolver
+    return catalog_path.connect_path(catalog_path.under(ROOT), write=False, timeout=5.0)
 
 
 def _sql_lit(v) -> str:
@@ -74,7 +85,7 @@ def main() -> None:
         "--   python core/load_d1_chunked.py   (chunked, through core.d1_remote; refused after T0)",
     ]
 
-    cat = sqlite3.connect(CATALOG)
+    cat = _catalogue_ro()
     try:
         for t in _CATALOG_TABLES:
             counts[t] = _dump_table(cat, t, lines)
@@ -92,7 +103,7 @@ def main() -> None:
         cat.close()
 
     if os.path.exists(STATE):
-        st = sqlite3.connect(STATE)
+        st = sqlite3.connect(STATE)   # plain-open: the updater's state.db, only SELECTed here
         try:
             for t in _STATE_TABLES:
                 counts[t] = _dump_table(st, t, lines)
@@ -115,7 +126,7 @@ def main() -> None:
     verify_db = OUT + ".verify.sqlite"
     if os.path.exists(verify_db):
         os.remove(verify_db)
-    mem = sqlite3.connect(verify_db)
+    mem = sqlite3.connect(verify_db)   # plain-open: a scratch replay file beside the dump, not the catalogue
     try:
         _VCHUNK = 2000  # statements per executescript block
         for i in range(0, len(lines), _VCHUNK):

@@ -17,7 +17,6 @@ import os, sqlite3, sys
 
 _THIS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(_THIS)
-CATALOG = os.path.join(ROOT, "data", "catalog.db")
 OUT_DIR = os.path.join(ROOT, "dist", "d1", "sources")
 SCOLS = ["series_id", "source_id", "title", "frequency", "unit", "geography",
          "category", "license_id", "start_date", "end_date", "last_updated", "metadata"]
@@ -33,6 +32,17 @@ def _lit(v):
     return "'" + str(v).replace("'", "''") + "'"
 
 
+def _catalogue_ro():
+    """The catalogue, READ-ONLY, through core.catalog_path (t0_ready legacy-catalogue): this checkout's
+    data/ catalogue before T0, as before; after T0 the build only. sqlite's own 5 s busy timeout, as the
+    plain open had. A missing file raises FileNotFoundError: it is never created (a plain open made an
+    empty one)."""
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import catalog_path                                       # noqa: PLC0415 - the one resolver
+    return catalog_path.connect_path(catalog_path.under(ROOT), write=False, timeout=5.0)
+
+
 def main(argv):
     if not argv:
         print("usage: python core/export_d1_sources.py <source> [...]"); raise SystemExit(2)
@@ -41,7 +51,7 @@ def main(argv):
         if f.endswith(".sql"):
             os.remove(os.path.join(OUT_DIR, f))
 
-    conn = sqlite3.connect(f"file:{CATALOG}?mode=ro", uri=True)
+    conn = _catalogue_ro()
     conn.row_factory = sqlite3.Row
     qmarks = ",".join("?" * len(argv))
 
@@ -97,7 +107,7 @@ def main(argv):
                     f"SELECT series_id,title,geography FROM series WHERE source_id={lit};\n")
     print(f"wrote {len(files)} part file(s) + _fts.sql to {OUT_DIR}")
 
-    mem = sqlite3.connect(":memory:")
+    mem = sqlite3.connect(":memory:")   # plain-open: an in-memory replay check, not the catalogue
     mem.execute(f"CREATE TABLE series ({', '.join(c + ' TEXT' for c in SCOLS)}, PRIMARY KEY(series_id))")
     mem.execute(f"CREATE TABLE source ({', '.join(c + ' TEXT' for c in src_cols)}, PRIMARY KEY(source_id))")
     mem.execute(f"CREATE TABLE license ({', '.join(c + ' TEXT' for c in lic_cols)}, PRIMARY KEY(license_id))")
