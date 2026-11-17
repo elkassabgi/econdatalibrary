@@ -2,9 +2,5 @@
 # core/catalog_path.py - re-derived 2026-09-24 with the R1176 detection (clients/ included, comments
 # ignored). This list may only SHRINK: move each file to core.catalog_path.connect and delete its line.
 api/test_conformance.py
-core/backfill_coverage.py
 core/catalog.py
-pipeline/title_bea.py
-tools/apply_series_names.py
-tools/refresh_flowgrain_dates.py
 tools/refresh_r2_catalog.py

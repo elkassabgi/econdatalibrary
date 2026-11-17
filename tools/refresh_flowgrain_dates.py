@@ -82,11 +82,11 @@ import pyarrow as pa            # noqa: E402
 import pyarrow.compute as pc    # noqa: E402
 import pyarrow.parquet as pq    # noqa: E402
 
+from core import catalog_path, cutover  # noqa: E402 - the one catalogue resolver (plan step 1)
 from updater import blob, config  # noqa: E402
 
 API = os.environ.get("ECONDL_API", "https://econdl-api.elkassabgi.workers.dev")
 UA = {"User-Agent": "Mozilla/5.0 econdl-refresh-flowgrain-dates"}
-CATALOG = os.path.join(ROOT, "data", "catalog.db")
 D1_DB = "econ-catalog"
 CHUNK = 40              # ids per --command IN-list: ~3 KB of SQL, well under cmd.exe's 8,191
 RECEIPT_DIR = "D:/temp/claude"
@@ -128,8 +128,8 @@ def store_truth(src: str) -> tuple[dict, list]:
 
 
 def local_rows(src: str) -> dict:
-    con = sqlite3.connect(f"file:{CATALOG}?mode=ro", uri=True)
-    con.execute("PRAGMA busy_timeout=180000")
+    con = catalog_path.connect_path(catalog_path.under(ROOT), write=False, timeout=5.0)
+    con.execute("PRAGMA busy_timeout=180000")   # the real busy timeout, as before
     # PK RANGE, never `WHERE source_id=?`: `series` carries only its primary-key index, so a
     # source_id predicate is a SCAN of the whole 13.5M-row live catalogue under the crawlers'
     # write lock (R715, R721 — this tool's first dry run sat in exactly that scan). The range
@@ -188,7 +188,12 @@ def live_meta(sid: str) -> tuple[int, str | None, str | None]:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
+    # It READS D1 and the served store and WRITES the local catalogue, then D1. After T0 D1 is frozen and its
+    # write is refused - AFTER the local write had landed. So it refuses first, before any read or write
+    # (tests/test_verifiers_6d.py: a cloud reader that writes local data refuses after T0); a self-hosted port
+    # (the store against the local catalogue only) is owed.
+    cutover.refuse_if_cut_over("refresh_flowgrain_dates (compares the store with local AND D1, writes both)")
+    ap = argparse.ArgumentParser(allow_abbrev=False)  # the lock choice in __main__ reads the exact flag
     ap.add_argument("--source", required=True)
     ap.add_argument("--dry-run", action="store_true", help="measure and print the plan; write nothing")
     ap.add_argument("--apply", action="store_true", help="write local + D1, then verify")
@@ -236,7 +241,7 @@ def main() -> int:
     truth, files = store_truth(src)
     print(f"store: {len(files)} files, {len(truth):,} table prefixes")
     loc = local_rows(src)
-    print(f"local catalog.db: {len(loc):,} rows for {src}")
+    print(f"local catalogue: {len(loc):,} rows for {src}")
     ids = sorted(loc)
     d1, rr = d1_rows(ids)
     print(f"D1: {len(d1):,} rows returned for {len(ids):,} ids (rows_read={rr:,})")
@@ -334,7 +339,7 @@ def main() -> int:
 
     # ---- local ----
     todo_local = [(p["truth"][0], p["truth"][1], p["series_id"]) for p in plan if p["need_local"]]
-    con = sqlite3.connect(CATALOG, timeout=180)
+    con = catalog_path.connect_path(catalog_path.under(ROOT), write=True, timeout=180)
     con.execute("PRAGMA busy_timeout=180000")
     cur = con.executemany("UPDATE series SET start_date=?, end_date=? WHERE series_id=?", todo_local)
     con.commit()
@@ -385,4 +390,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    if "--apply" not in sys.argv[1:]:
+        sys.exit(main())                     # a dry run reads only: no lock
+    else:
+        with catalog_path.write_session():   # after T0: the single-writer lock (main() refuses after T0 anyway)
+            sys.exit(main())

@@ -41,10 +41,21 @@ sys.path.insert(0, ROOT)
 
 import pyarrow.parquet as pq  # noqa: E402
 
-from jobs import ingest_bea_full as ing  # noqa: E402  (call, load_manifest, _pk)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
+
+
+class _LazyIngest:
+    """jobs.ingest_bea_full (call, load_manifest, _pk), imported at its FIRST USE: its import requires the BEA
+    key, and tests/test_catalogue_writers_main.py imports every catalogue writer (this one since it opens the
+    catalogue through core.catalog_path) to run its __main__ entry. Both modes use it before their open."""
+    def __getattr__(self, name):
+        from jobs import ingest_bea_full                                  # noqa: PLC0415
+        return getattr(ingest_bea_full, name)
+
+
+ing = _LazyIngest()
 
 STORE = os.path.join(ROOT, "data", "clean_full", "bea")
-CATALOG = os.path.join(ROOT, "data", "catalog.db")
 YEARS = ["2024", "2023", "2019", "2015"]
 
 
@@ -333,7 +344,7 @@ def rerun_regional() -> int:
     else. Then rebuild the local fts slice."""
     M = ing.load_manifest()
     d = build_regional(M["param_values"])
-    con = sqlite3.connect(CATALOG, timeout=7200)
+    con = catalog_path.connect_path(catalog_path.under(ROOT), write=True, timeout=7200)
     con.execute("PRAGMA busy_timeout=7200000")
     rows = con.execute("SELECT series_id, title FROM series WHERE source_id='bea'").fetchall()
     updates, kept = [], 0
@@ -371,7 +382,7 @@ def main() -> int:
         for k, t in titles.get(ds_name, {}).items():
             merged.setdefault(k, t)
 
-    con = sqlite3.connect(CATALOG, timeout=7200)
+    con = catalog_path.connect_path(catalog_path.under(ROOT), write=True, timeout=7200)
     con.execute("PRAGMA busy_timeout=7200000")
     cur = con.execute(
         "SELECT series_id, title FROM series WHERE source_id='bea'")
@@ -408,6 +419,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    if "--only-regional" in sys.argv:
-        sys.exit(rerun_regional())
-    sys.exit(main())
+    with catalog_path.write_session():   # after T0: the single-writer lock (both modes write)
+        if "--only-regional" in sys.argv:
+            sys.exit(rerun_regional())
+        sys.exit(main())
