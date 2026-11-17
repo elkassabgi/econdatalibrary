@@ -192,6 +192,32 @@ def test_title_bea_after_t0_needs_the_lock(mods, tmp_path, monkeypatch, cut):
     assert _rows(db, "SELECT title FROM series WHERE series_id='bea:T1'") == [("T1",)]
 
 
+@pytest.mark.parametrize("argv,called", [([], "main"), (["--only-regional"], "rerun_regional")])
+def test_title_bea_entry_holds_the_lock_in_both_modes(mods, tmp_path, monkeypatch, cut, argv, called):
+    """Review AR-279 C1: the __main__ dispatch itself, run after T0 - each mode's function is called with the
+    lock held (tests/test_catalogue_writers_main.py runs the entry with default arguments only, so a
+    --only-regional branch moved out of write_session() passed every test there)."""
+    import ast
+    m = mods["pipeline/title_bea.py"]
+    cut(tmp_path / "build.db")
+    tree = ast.parse(open(m.__file__, encoding="utf-8").read())
+    block = next(n for n in tree.body if isinstance(n, ast.If) and "__main__" in ast.unparse(n.test))
+    seen = []
+
+    def probe(name):
+        def f(*a, **k):
+            seen.append((name, catalog_path._held is not None))
+            return 0
+        return f
+    g = dict(vars(m))
+    g.update(main=probe("main"), rerun_regional=probe("rerun_regional"))
+    monkeypatch.setattr(sys, "argv", ["title_bea.py"] + argv)
+    with pytest.raises(SystemExit):
+        exec(compile(ast.Module(body=block.body, type_ignores=[]), m.__file__, "exec"), g)  # noqa: S102
+    assert seen == [(called, True)], f"{argv}: called with (function, lock held) = {seen}"
+    assert catalog_path._held is None, "the lock is let go when the entry returns"
+
+
 # ---- tools/apply_series_names.py -------------------------------------------------------------------------------
 def _names(tmp_path, monkeypatch, m):
     root = tmp_path / "names_root"
