@@ -1342,7 +1342,7 @@ def read_state_facts(path=None):
         return None
     try:
         uri = "file:" + path.replace("\\", "/") + "?mode=ro"
-        con = sqlite3.connect(uri, uri=True, timeout=60)
+        con = sqlite3.connect(uri, uri=True, timeout=60)   # plain-open: the updater's state.db, read-only
         try:
             ls = con.execute("SELECT source_id, last_success_utc FROM source_state "
                              "WHERE last_success_utc IS NOT NULL AND last_success_utc != ''").fetchall()
