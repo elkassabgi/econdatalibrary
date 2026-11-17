@@ -165,6 +165,19 @@ def _wrangler_spellings(tmp):
         f'"{npx}" wrangler@4 d1 execute econ-catalog --remote --command "SELECT 1"',
         f'"{tmp / "cmd"}" /c "{npx}" wrangler --version',
         f'"{tmp / "bash"}" -c "{npx} -y wrangler@4 --version"',
+        # round 2 (R2-1): a launcher's own options cannot hide wrangler; any version after @; .bat; backticks
+        [str(tmp / "env"), "-u", "HOME", npx, "wrangler", "--version"],
+        [str(tmp / "sudo"), "-u", "root", npx, "wrangler", "--version"],
+        [str(tmp / "timeout"), "-s", "KILL", "60", npx, "wrangler", "--version"],
+        [str(tmp / "nohup"), npx, "wrangler", "--version"],
+        [str(tmp / "xargs"), npx, "wrangler", "--version"],
+        [npx, "wrangler@^4", "--version"],
+        f'"{npx}" "wrangler@>=3" --version',
+        [str(tmp / "wrangler.bat"), "--version"],
+        f'`"{npx}" wrangler --version`',
+        f'$("{npx}" wrangler --version)',
+        [str(tmp / "corepack"), "pnpm", "dlx", "wrangler", "--version"],
+        [str(tmp / "deno"), "run", "-A", "npm:wrangler", "--version"],
     ]
 
 
@@ -202,10 +215,41 @@ def test_the_matcher_names_every_spelling(tmp_path):
     "git log -- api/worker/wrangler.toml",
     [sys.executable, "-B", "standin.py", "wrangler", "secret", "put", "X"],     # a stand-in's argument
     [sys.executable, "-c", "print('ok')", "--name=no-wrangler-here", "wranglers"],
+    "node scripts/check.js --config wrangler.toml",
+    "cat api/worker/wrangler.soak.toml",
+    "git grep -n wrangler@4",
+    "echo wrangler",
+    "git commit -m 'wrangler: bump'",
+    "npm ci --prefix api/worker",
+    "bash tools/selfhost/deploy_soak.sh",
+    "env FOO=1 python -c pass",
+    "timeout 60 python -m pytest -q",
+    "xargs grep -l wranglers",
+    "deno run -A npm:prettier",
+    "nohup python -m http.server",
+    "`echo wrangler.toml`",
+    "npx prettier --write wrangler.toml",
 ])
 def test_a_mention_of_wrangler_is_not_refused(argv):
     """Negative controls: the guard refuses a wrangler that would RUN, not every mention of the word."""
     assert not _guard()._starts_a_wrangler(argv)
+
+
+@pytest.mark.parametrize("cmd", [
+    "env -u HOME npx wrangler d1", "sudo -u root npx wrangler d1", "timeout -s KILL 60 npx wrangler d1",
+    "nohup npx wrangler d1", "xargs npx wrangler d1", "`npx wrangler d1`", "npx wrangler@^4 d1",
+    "npx 'wrangler@>=3' d1", "wrangler.bat d1", "corepack pnpm dlx wrangler d1", "deno run -A npm:wrangler d1",
+    "/usr/bin/env -i PATH=/x npx wrangler@4.1.0-beta.2+build d1", "echo x; `nohup npx wrangler.bat d1`",
+])
+def test_the_round_2_forms_are_refused(cmd):
+    """R2-1 can-fail cases, as the shell strings the reviewer named (not run: matcher only)."""
+    assert _guard()._starts_a_wrangler(cmd)
+
+
+def test_a_mention_behind_a_launcher_is_refused_on_purpose():
+    """The accepted cost of the launcher rule, pinned so a change to it is a decision: over-refusing fails a test
+    loudly; under-refusing reaches production."""
+    assert _guard()._starts_a_wrangler("timeout 60 pytest -k wrangler")
 
 
 def test_an_ordinary_process_that_mentions_wrangler_still_runs():
