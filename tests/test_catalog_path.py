@@ -366,7 +366,11 @@ LEGACY = os.path.join(ROOT, "tests", "catalog_db_legacy.txt")
 NAMES_CATALOGUE = re.compile(r"catalog\.db|ECONDL_CATALOG|\bCATALOG_DB\b|[\"']catalog[\"']\s*[+,]\s*[\"']\.db[\"']")
 # A narrow exemption: only the named function of the named file is left out of the scan.
 EXEMPT_FUNCTIONS = {"updater/run.py": frozenset({"_selfhost_preflight"}),   # names ECONDL_CATALOG to REFUSE it
-                    "updater/blob.py": frozenset({"refuse_unless_live_checkout"})}   # the same refusal (R1217)
+                    "updater/blob.py": frozenset({"refuse_unless_live_checkout"}),   # the same refusal (R1217)
+                    # test fixtures: hand the devserver child its TEMPORARY fixture catalogue ($ECONDL_CATALOG)
+                    # and name their own temporary copies; none opens the real catalogue (premise pinned below)
+                    "api/test_conformance.py": frozenset({"store", "test_metadata_description_citation_fallback",
+                                                          "test_status_data_unavailable_vs_resolver_empty_distinct"})}
 # Whole files outside the resolver BY DESIGN, each with the premise that makes it safe pinned below.
 EXEMPT_FILES = {
     # The PUBLISHED client (pip install econdl): standalone, so it cannot import core.catalog_path, and its
@@ -466,6 +470,190 @@ def test_the_exempt_clients_flag_rule_is_cores(tmp_path, monkeypatch):
         return real(p, *a, **k)
     monkeypatch.setattr(_catalog.os, "stat", unreadable)
     assert _catalog._cut_over() is True
+
+
+def _conformance_functions():
+    import ast
+    tree = ast.parse(open(os.path.join(ROOT, "api", "test_conformance.py"), encoding="utf-8").read())
+    return {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+
+
+def _bindings(fn, var):
+    """Every statement or node that binds `var` inside `fn`: an assignment of any kind (=, +=, annotated, walrus),
+    a for / comprehension / with target, del, an except name, an argument, an import alias, global/nonlocal and
+    a match capture. Each statement counts once; a nested def or lambda that binds it counts too."""
+    import ast
+    out = []
+    for n in ast.walk(fn):
+        if isinstance(n, (ast.Assign, ast.AugAssign, ast.AnnAssign, ast.For, ast.AsyncFor, ast.With, ast.AsyncWith,
+                          ast.Delete, ast.NamedExpr, ast.comprehension)):
+            targets = (n.targets if isinstance(n, (ast.Assign, ast.Delete)) else
+                       [i.optional_vars for i in n.items if i.optional_vars is not None]
+                       if isinstance(n, (ast.With, ast.AsyncWith)) else [n.target])
+            if any(isinstance(x, ast.Name) and x.id == var for t in targets for x in ast.walk(t)):
+                out.append(n)
+        elif isinstance(n, ast.ExceptHandler) and n.name == var:
+            out.append(n)
+        elif isinstance(n, ast.arg) and n.arg == var:
+            out.append(n)
+        elif isinstance(n, (ast.Import, ast.ImportFrom)) and any((a.asname or a.name.split('.')[0]) == var
+                                                                for a in n.names):
+            out.append(n)
+        elif isinstance(n, (ast.Global, ast.Nonlocal)) and var in n.names:
+            out.append(n)
+        elif isinstance(n, (ast.MatchAs, ast.MatchStar)) and n.name == var:
+            out.append(n)
+    return out
+
+
+_PATCHABLE = {"tempfile", "os", "os.path", "shutil"}
+
+
+def _module_attribute_writes(tree):
+    import ast
+    names = set(_PATCHABLE)
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            names |= {a.asname for a in n.names if a.asname and a.name in _PATCHABLE}
+        elif isinstance(n, ast.ImportFrom) and n.module == "os":
+            names |= {a.asname or a.name for a in n.names if a.name == "path"}
+    out = []
+    for n in ast.walk(tree):
+        targets = (n.targets if isinstance(n, ast.Assign) else [n.target] if isinstance(n, (ast.AugAssign, ast.AnnAssign))
+                   else [])
+        out += [ast.unparse(t) for t in targets if isinstance(t, ast.Attribute) and ast.unparse(t.value) in names]
+        if isinstance(n, ast.Call) and ast.unparse(n.func) in ("setattr", "delattr") and n.args \
+                and ast.unparse(n.args[0]) in names:
+            out.append(ast.unparse(n))
+    return out
+
+
+def test_the_module_rules_can_fail():
+    import ast
+    fn = ast.parse("def f():\n    import os.path as tempfile\n    tmpdir = tempfile.mkdtemp(prefix='x')\n").body[0]
+    b = _bindings(fn, "tempfile")
+    assert len(b) == 1 and b[0].names[0].asname == "tempfile", "P: an alias binding is seen, and it is not plain"
+    for code in ("import tempfile as _tf\n_tf.mkdtemp = lambda **k: 'x'\n", "tempfile.mkdtemp = None\n",
+                 "setattr(shutil, 'copy', None)\n", "os.path.join = None\n", "from os import path as p\np.join = 1\n"):
+        assert _module_attribute_writes(ast.parse(code)), code
+    assert not _module_attribute_writes(ast.parse("x = tempfile.mkdtemp()\nos.environ['A'] = 'b'\n"))
+
+
+def test_the_binding_rule_can_fail():
+    import ast
+    good = "def f():\n    tmpdir = tempfile.mkdtemp(prefix='x')\n"
+    assert len(_bindings(ast.parse(good).body[0], "tmpdir")) == 1
+    for extra in ("    tmpdir += 'y'\n", "    tmpdir: str = 'y'\n", "    (tmpdir := 'y')\n",
+                  "    for tmpdir in []:\n        pass\n", "    [0 for tmpdir in []]\n",
+                  "    with open('x') as tmpdir:\n        pass\n", "    del tmpdir\n",
+                  "    try:\n        pass\n    except Exception as tmpdir:\n        pass\n",
+                  "    import os as tmpdir\n", "    global tmpdir\n", "    a, tmpdir = 1, 2\n"):
+        assert len(_bindings(ast.parse(good + extra).body[0], "tmpdir")) == 2, extra
+
+
+def test_the_conformance_exemption_names_only_temporary_fixtures():
+    """The premise of EXEMPT_FUNCTIONS["api/test_conformance.py"] (t0_ready legacy-catalogue, 2026-11-17): the three
+    functions never open the real catalogue. The `store` fixture builds a catalogue in a tempfile.mkdtemp() folder,
+    hands it to the devserver child as $ECONDL_CATALOG (the devserver's documented input) and restores the
+    variable; the two tests copy THAT fixture into their own tempfile.mkdtemp() folder and open only the copy."""
+    import ast
+    assert EXEMPT_FUNCTIONS["api/test_conformance.py"] == frozenset({
+        "store", "test_metadata_description_citation_fallback",
+        "test_status_data_unavailable_vs_resolver_empty_distinct"}), "a new exemption needs its premise checked here"
+    fns = _conformance_functions()
+    store = ast.unparse(fns["store"])
+    assert "tmp = tempfile.mkdtemp(" in store and "paths = conformance_fixture.build(tmp)" in store
+    sets = [n for n in ast.walk(fns["store"]) if isinstance(n, ast.Assign)
+            and any("os.environ" in ast.unparse(t) for t in n.targets)]
+    # the two exports, and the restore loop's `os.environ[k] = v` over the saved `prev` values - nothing else
+    assert {ast.unparse(n.targets[0]): ast.unparse(n.value) for n in sets} == {
+        "os.environ['ECONDL_DATA']": "paths['data_root']", "os.environ['ECONDL_CATALOG']": "paths['catalog']",
+        "os.environ[k]": "v"}
+    assert "finally:" in store and "prev.items()" in store, "the fixture restores the variables"
+    assert not [n for n in ast.walk(fns["store"]) if isinstance(n, ast.Call) and ast.unparse(n.func) == "sqlite3.connect"]
+    for name in ("test_metadata_description_citation_fallback", "test_status_data_unavailable_vs_resolver_empty_distinct"):
+        fn = fns[name]
+        # review AR-283 round 2 (R1925): `tmpdir = mkdtemp(...) and <real dir>` and `tmpdir += ...` passed a check
+        # of the last assignment's text. Each of the three names is bound EXACTLY ONCE in the function, by any
+        # binding form, and that one binding is a plain assignment of exactly the expected expression.
+        for var, ok in (
+                ("src_cat", lambda v: ast.unparse(v) == "store['catalog']"),
+                ("tmpdir", lambda v: isinstance(v, ast.Call) and ast.unparse(v.func) == "tempfile.mkdtemp"
+                 and not v.args and all(k.arg == "prefix" and isinstance(k.value, ast.Constant) for k in v.keywords)),
+                ("tmp_cat", lambda v: ast.unparse(v) == "os.path.join(tmpdir, 'catalog.db')")):
+            binds = _bindings(fn, var)
+            assert len(binds) == 1, (name, var, [ast.unparse(b) if isinstance(b, ast.AST) else b for b in binds])
+            b = binds[0]
+            assert isinstance(b, ast.Assign) and len(b.targets) == 1 and isinstance(b.targets[0], ast.Name) \
+                and ok(b.value), (name, var, ast.unparse(b))
+        # round 3 (P): the modules those expressions name are the real ones - each bound at most once in the
+        # test, and only by a plain `import <name>` (an alias such as `import os.path as tempfile` repointed it)
+        for mod in ("tempfile", "os", "shutil"):
+            binds = _bindings(fn, mod)
+            assert len(binds) <= 1 and all(isinstance(b, ast.Import) and len(b.names) == 1
+                                           and b.names[0].name == mod and b.names[0].asname is None for b in binds), \
+                (name, mod, [ast.unparse(b) if isinstance(b, ast.AST) else b for b in binds])
+        opens = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and ast.unparse(n.func) == "sqlite3.connect"]
+        assert opens and all(ast.unparse(o.args[0]) == "tmp_cat" for o in opens), name
+    # Q: nothing in the file replaces an attribute of those modules (an assignment or a setattr), under their own
+    # name or a module-level alias
+    tree = ast.parse(open(os.path.join(ROOT, "api", "test_conformance.py"), encoding="utf-8").read())
+    assert not _module_attribute_writes(tree), _module_attribute_writes(tree)
+
+
+# Review AR-283 (R1923): checking a few opener SHAPES proved nothing - a repointed path, a copy of the real file,
+# an ATTACH, a --catalog argument and os.environ.update all named the real catalogue and passed. So the rule is
+# on what the exemption hides: in EVERY top-level def of an exempted name (a dead duplicate def included), the
+# lines that name the catalogue (NAMES_CATALOGUE over _repo_walk.code_text, the ratchet's own reader) are
+# EXACTLY these. Any other naming line, anywhere in the three functions, fails.
+_CONFORMANCE_NAMING_LINES = {
+    "store": ["prev = {k: os.environ.get(k) for k in ('ECONDL_DATA', 'ECONDL_CATALOG')}",
+              "os.environ['ECONDL_CATALOG'] = paths['catalog']"],
+    "test_metadata_description_citation_fallback": ["tmp_cat = os.path.join(tmpdir, 'catalog.db')"],
+    "test_status_data_unavailable_vs_resolver_empty_distinct": ["tmp_cat = os.path.join(tmpdir, 'catalog.db')"],
+}
+
+
+def _naming_lines_of_each_def(src):
+    import ast
+    import _repo_walk
+    out = []
+    for n in ast.parse(src).body:
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in _CONFORMANCE_NAMING_LINES:
+            code = _repo_walk.code_text(ast.get_source_segment(src, n))
+            out.append((n.name, [l.strip() for l in code.splitlines() if NAMES_CATALOGUE.search(l)]))
+    return out
+
+
+def test_the_conformance_exemption_hides_only_the_four_known_lines():
+    assert set(_CONFORMANCE_NAMING_LINES) == EXEMPT_FUNCTIONS["api/test_conformance.py"]
+    src = open(os.path.join(ROOT, "api", "test_conformance.py"), encoding="utf-8").read()
+    got = _naming_lines_of_each_def(src)
+    assert sorted(name for name, _l in got) == sorted(_CONFORMANCE_NAMING_LINES), \
+        f"each exempted name is defined exactly once at top level: {[name for name, _l in got]}"
+    for name, lines in got:
+        assert lines == _CONFORMANCE_NAMING_LINES[name], (name, lines)
+
+
+def test_the_four_line_rule_can_fail():
+    src = open(os.path.join(ROOT, "api", "test_conformance.py"), encoding="utf-8").read()
+    anchor = "    paths = conformance_fixture.build(tmp)\n"
+    assert src.count(anchor) == 1
+    for extra in ("    paths['catalog'] = os.path.join(_REPO, 'data', 'catalog.db')\n",
+                  "    os.environ.update(ECONDL_CATALOG=paths['data_root'])\n",
+                  "    x = sqlite3.connect('x').execute(\"ATTACH 'data/catalog.db' AS live\")\n"):
+        lines = dict(_naming_lines_of_each_def(src.replace(anchor, anchor + extra)))["store"]
+        assert lines != _CONFORMANCE_NAMING_LINES["store"], extra
+    dup = "def store():\n    return 1\n\n\n" + src
+    assert [n for n, _l in _naming_lines_of_each_def(dup)].count("store") == 2
+
+
+def test_the_conformance_exemption_can_fail():
+    """Dropping the three functions is what clears the file - and nothing else in it names the catalogue."""
+    import _repo_walk
+    src = open(os.path.join(ROOT, "api", "test_conformance.py"), encoding="utf-8").read()
+    assert NAMES_CATALOGUE.search(_repo_walk.code_text(src)), "without the exemption the file names the catalogue"
+    assert not NAMES_CATALOGUE.search(_code_only(src, ".py", "api/test_conformance.py"))
 
 
 def test_the_catalogue_ratchet_can_fail():
