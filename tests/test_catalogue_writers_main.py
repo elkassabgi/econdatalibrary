@@ -216,7 +216,8 @@ def _is_refusal(stmt) -> bool:
 
 def _quiet(stmt) -> bool:
     """A top-level statement that reads, writes or opens nothing: an import, the docstring, sys.path set-up, or an
-    assignment whose only calls are os.path.* (ROOT = os.path.dirname(...))."""
+    assignment whose only calls are os.path.*, re.compile or len (ROOT = os.path.dirname(...), a regex constant,
+    OUT = sys.argv[1] if len(sys.argv) > 1 else ...)."""
     if isinstance(stmt, (ast.Import, ast.ImportFrom)):
         return True
     if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
@@ -224,13 +225,17 @@ def _quiet(stmt) -> bool:
     calls = [ast.unparse(c.func) for c in ast.walk(stmt) if isinstance(c, ast.Call)]
     if isinstance(stmt, ast.Expr) and calls and calls[0] == "sys.path.insert":
         return all(c == "sys.path.insert" or c.startswith("os.path.") for c in calls)
-    return isinstance(stmt, ast.Assign) and all(c.startswith("os.path.") for c in calls)
+    return isinstance(stmt, ast.Assign) and all(c.startswith("os.path.") or c in ("re.compile", "len") for c in calls)
 
 
 def _entry_refuses_after_t0(tree) -> bool:
     mains = [n for n in tree.body if isinstance(n, ast.If) and "__main__" in ast.unparse(n.test)]
     if mains:
-        return bool(mains[0].body) and _is_refusal(mains[0].body[0])
+        # the refusal is the block's first statement, AND nothing above it does anything when the module is
+        # loaded (review AR-281 C281-4: a module-level makedirs, logging file or touch ran before the refusal)
+        above = [s for s in tree.body if s is not mains[0]
+                 and not isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+        return bool(mains[0].body) and _is_refusal(mains[0].body[0]) and all(_quiet(s) for s in above)
     for s in tree.body:
         if _is_refusal(s):
             return True
@@ -257,9 +262,15 @@ def test_the_library_importer_rule_can_fail():
                  'os.makedirs(OUT)\n' + R,
                  'ct = json.load(open(p))\n' + R,
                  'db = catalog.connect()\n' + R,
+                 'os.makedirs(OUT)\nif __name__ == "__main__":\n    ' + R + '    main()\n',
+                 'logging.basicConfig(filename="x.log")\nif __name__ == "__main__":\n    ' + R + '    main()\n',
+                 'open("x", "a").close()\nif __name__ == "__main__":\n    ' + R + '    main()\n',
+                 'X = json.load(open("x"))\nif __name__ == "__main__":\n    ' + R + '    main()\n',
                  'import os\nx = 1\n'):
         assert not _entry_refuses_after_t0(ast.parse(code)), code
     for code in ('if __name__ == "__main__":\n    ' + R + '    main()\n',
+                 'import re\nRX = re.compile("a")\ndef f():\n    open("x", "w")\n'
+                 'if __name__ == "__main__":\n    ' + R + '    main()\n',
                  '"""doc"""\nimport os, sys\nROOT = os.path.dirname(os.path.abspath(__file__))\n'
                  'sys.path.insert(0, ROOT)\nfrom core import catalog\n' + R + 'db = catalog.connect()\n'):
         assert _entry_refuses_after_t0(ast.parse(code)), code
@@ -302,7 +313,18 @@ def test_a_library_importer_refuses_after_t0_before_anything_and_runs_before(t0,
             (t0 / "CUTOVER").unlink()
         called.clear()
         if block is not None:
-            m = _load(rel, path)
+            # C281-4: loading the module (everything above __main__) must make no folder and write no file
+            real_open, real_makedirs, real_mkdir = builtins.open, os.makedirs, os.mkdir
+            monkeypatch.setattr(os, "makedirs", trap("os.makedirs at load"))
+            monkeypatch.setattr(os, "mkdir", trap("os.mkdir at load"))
+            monkeypatch.setattr(builtins, "open", lambda f, mode="r", *a, **k: trap("open for write at load")()
+                                if any(c in mode for c in "wax+") else real_open(f, mode, *a, **k))
+            try:
+                m = _load(rel, path)
+            finally:
+                monkeypatch.setattr(os, "makedirs", real_makedirs)
+                monkeypatch.setattr(os, "mkdir", real_mkdir)
+                monkeypatch.setattr(builtins, "open", real_open)
             g = dict(vars(m))
             g.update(main=trap("main"), run=trap("run"))
             code = compile(ast.Module(body=block.body, type_ignores=[]), path, "exec")
