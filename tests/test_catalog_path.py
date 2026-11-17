@@ -506,6 +506,39 @@ def _bindings(fn, var):
     return out
 
 
+_PATCHABLE = {"tempfile", "os", "os.path", "shutil"}
+
+
+def _module_attribute_writes(tree):
+    import ast
+    names = set(_PATCHABLE)
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            names |= {a.asname for a in n.names if a.asname and a.name in _PATCHABLE}
+        elif isinstance(n, ast.ImportFrom) and n.module == "os":
+            names |= {a.asname or a.name for a in n.names if a.name == "path"}
+    out = []
+    for n in ast.walk(tree):
+        targets = (n.targets if isinstance(n, ast.Assign) else [n.target] if isinstance(n, (ast.AugAssign, ast.AnnAssign))
+                   else [])
+        out += [ast.unparse(t) for t in targets if isinstance(t, ast.Attribute) and ast.unparse(t.value) in names]
+        if isinstance(n, ast.Call) and ast.unparse(n.func) in ("setattr", "delattr") and n.args \
+                and ast.unparse(n.args[0]) in names:
+            out.append(ast.unparse(n))
+    return out
+
+
+def test_the_module_rules_can_fail():
+    import ast
+    fn = ast.parse("def f():\n    import os.path as tempfile\n    tmpdir = tempfile.mkdtemp(prefix='x')\n").body[0]
+    b = _bindings(fn, "tempfile")
+    assert len(b) == 1 and b[0].names[0].asname == "tempfile", "P: an alias binding is seen, and it is not plain"
+    for code in ("import tempfile as _tf\n_tf.mkdtemp = lambda **k: 'x'\n", "tempfile.mkdtemp = None\n",
+                 "setattr(shutil, 'copy', None)\n", "os.path.join = None\n", "from os import path as p\np.join = 1\n"):
+        assert _module_attribute_writes(ast.parse(code)), code
+    assert not _module_attribute_writes(ast.parse("x = tempfile.mkdtemp()\nos.environ['A'] = 'b'\n"))
+
+
 def test_the_binding_rule_can_fail():
     import ast
     good = "def f():\n    tmpdir = tempfile.mkdtemp(prefix='x')\n"
@@ -553,8 +586,19 @@ def test_the_conformance_exemption_names_only_temporary_fixtures():
             b = binds[0]
             assert isinstance(b, ast.Assign) and len(b.targets) == 1 and isinstance(b.targets[0], ast.Name) \
                 and ok(b.value), (name, var, ast.unparse(b))
+        # round 3 (P): the modules those expressions name are the real ones - each bound at most once in the
+        # test, and only by a plain `import <name>` (an alias such as `import os.path as tempfile` repointed it)
+        for mod in ("tempfile", "os", "shutil"):
+            binds = _bindings(fn, mod)
+            assert len(binds) <= 1 and all(isinstance(b, ast.Import) and len(b.names) == 1
+                                           and b.names[0].name == mod and b.names[0].asname is None for b in binds), \
+                (name, mod, [ast.unparse(b) if isinstance(b, ast.AST) else b for b in binds])
         opens = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and ast.unparse(n.func) == "sqlite3.connect"]
         assert opens and all(ast.unparse(o.args[0]) == "tmp_cat" for o in opens), name
+    # Q: nothing in the file replaces an attribute of those modules (an assignment or a setattr), under their own
+    # name or a module-level alias
+    tree = ast.parse(open(os.path.join(ROOT, "api", "test_conformance.py"), encoding="utf-8").read())
+    assert not _module_attribute_writes(tree), _module_attribute_writes(tree)
 
 
 # Review AR-283 (R1923): checking a few opener SHAPES proved nothing - a repointed path, a copy of the real file,
