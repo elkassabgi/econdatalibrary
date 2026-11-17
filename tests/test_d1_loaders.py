@@ -208,12 +208,13 @@ def test_sync_titles_push_collects_failures_and_stops_on_a_refusal(monkeypatch, 
     import sqlite3
     m = _titles()
     monkeypatch.setattr(m, "OUTDIR", str(tmp_path / "out"))
-    cat = tmp_path / "catalog.db"
+    (tmp_path / "data").mkdir()
+    cat = tmp_path / "data" / "catalog.db"   # catalog_path.under(ROOT): the tool keeps no CATALOG constant
     with sqlite3.connect(cat) as c:
         c.execute("CREATE TABLE series (series_id TEXT, title TEXT)")
         c.execute("INSERT INTO series VALUES ('idb:x', 'A real title')")
     c.close()
-    monkeypatch.setattr(m, "CATALOG", str(cat))
+    monkeypatch.setattr(m, "ROOT", str(tmp_path))
     monkeypatch.setattr(d1_remote, "run_json", lambda db, sql, **kw: [{"results": [{"series_id": "idb:x"}]}])
     sent = []
 

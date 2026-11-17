@@ -184,7 +184,7 @@ def test_with_the_real_subprocess_and_wranglers_own_bytes_the_receipt_is_whole(r
         ".encode('utf-8') + ('\\u2728 Success! Uploaded secret ' + sys.argv[4] +'\\n').encode('utf-8'))\n",
         encoding="utf-8")
     seen = tmp_path / "stdin.bin"
-    monkeypatch.setattr(P, "command", lambda name: [sys.executable, "-B", str(standin), "wrangler", "secret", "put", name, str(seen)])
+    monkeypatch.setattr(P, "command", lambda name: [sys.executable, "-B", str(standin), "not-a-real-cli", "secret", "put", name, str(seen)])
     assert P.main(rig.args) == 0
     out, err = capfd.readouterr()
     assert "Traceback" not in err and "UnicodeDecodeError" not in err, err[-300:]

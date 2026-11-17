@@ -39,7 +39,6 @@ import sqlite3
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CATALOG = os.path.join(ROOT, "data", "catalog.db")
 OUTDIR = os.path.join(ROOT, "dist", "d1", "titlesync")
 BATCH = 20
 
@@ -83,6 +82,20 @@ def raw_ids_in_d1(source: str):
     return [r["series_id"] for r in rows]
 
 
+def _catalogue_ro(path=None):
+    """The catalogue, READ-ONLY, through core.catalog_path (t0_ready legacy-catalogue): `path` when one is given,
+    else this checkout's data/ catalogue - as before; after T0 the build only (any other path is refused).
+    sqlite's own 5 s busy timeout, as the old open had. A missing file raises sqlite3.OperationalError, the
+    class the old open raised, and nothing is created."""
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import catalog_path                                       # noqa: PLC0415 - the one resolver
+    try:
+        return catalog_path.connect_path(path or catalog_path.under(ROOT), write=False, timeout=5.0)
+    except FileNotFoundError as e:
+        raise sqlite3.OperationalError(f"unable to open database file: {e}") from None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("sources", nargs="+")
@@ -93,7 +106,7 @@ def main() -> int:
         shutil.rmtree(OUTDIR)
     os.makedirs(OUTDIR, exist_ok=True)
 
-    con = sqlite3.connect("file:%s?mode=ro" % CATALOG.replace(os.sep, "/"), uri=True)
+    con = _catalogue_ro()
     files: list[str] = []
     for src in a.sources:
         ids = raw_ids_in_d1(src)
