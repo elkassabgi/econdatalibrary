@@ -391,7 +391,9 @@ def test_run_once_routes_a_misses_sources_drain_through_the_helper():
     import inspect
     # the drain moved out of run_once into _drain_csv_retry_queue (econ #90); run_once must still call it
     assert "_drain_csv_retry_queue(unit, blob, store)" in inspect.getsource(orchestrate.run_once)
-    src = inspect.getsource(orchestrate._drain_csv_retry_queue)
+    # the booking moved into _drain_derive_and_book (review AR-285 F3), which _drain_csv_retry_queue calls
+    assert "_drain_derive_and_book(" in inspect.getsource(orchestrate._drain_csv_retry_queue)
+    src = inspect.getsource(orchestrate._drain_derive_and_book)
     assert "_drain_residue_to_debts(store, unit.source_id, _out, _refailed)" in src
 
 

@@ -229,7 +229,7 @@ def test_a_no_progress_stop_makes_the_unit_a_leftover_drain_candidate(tmp_path, 
     sim = Sim(tmp_path, monkeypatch, {"g_census_like": dict(TINY["g_census_like"], margin_min=70),
                                       "g_prog": dict(TINY["g_census_like"], margin_min=5)})
     seen = []
-    monkeypatch.setattr(orchestrate, "_drain_leftover_retries", lambda c, b, s: seen.append(sorted(c)))
+    monkeypatch.setattr(orchestrate, "_drain_leftover_retries", lambda c, b, s, **_k: seen.append(sorted(c)))
     sim.run_pass(60, capsys)
     assert sim.turns("g_census_like") == [1] and sim.turns("g_prog") == [1]
     assert seen == [["g_census_like"]], seen
@@ -244,7 +244,7 @@ def test_a_non_turn_and_a_budget_skip_both_feed_the_leftover_drain_in_one_pass(t
         "g_prog": dict(TINY["g_census_like"], margin_min=5),
         "u_giant": dict(est_s=8000, success_d=60, kind="blind", run_min=100)})
     seen = []
-    monkeypatch.setattr(orchestrate, "_drain_leftover_retries", lambda c, b, s: seen.append(sorted(c)))
+    monkeypatch.setattr(orchestrate, "_drain_leftover_retries", lambda c, b, s, **_k: seen.append(sorted(c)))
     out = sim.run_pass(60, capsys)
     assert "BUDGET SKIP u_giant/_all" in out and sim.turns("u_giant") == []
     assert sim.turns("g_census_like") == [1] and sim.turns("g_prog") == [1]

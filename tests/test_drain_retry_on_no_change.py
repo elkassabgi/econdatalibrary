@@ -14,7 +14,9 @@ with the strategy replaced by a fake:
       (last_error kept byte for byte, dur_s untouched, no extra runs row); a `>>> ... (csv retry drain)` /
       `<<< ... took Ns` pair is printed;
   (b) ONE leftover budget for the pass: the run remainder minus the margin; with no time left nothing drains;
-      sources go oldest-enqueued first and a source the budget did not reach is named; _CSV_RETRY_CAP holds;
+      sources go oldest-enqueued first (with the rotation switched off; the rotation and the per-source share
+      are tested in test_csv_retry_backlog.py) and a source the budget did not reach is named;
+      _CSV_RETRY_CAP holds;
   (c) attempts: a TRIED refailure stays queued with attempts + 1 and enqueued_utc kept; an id the derive budget
       never reached keeps its counter; least-tried ids go first, so a queue whose head always fails reaches its
       tail on the next pass;
@@ -130,9 +132,13 @@ class _Rig:
 def rig(tmp_path, monkeypatch):
     for k in ("AQUEDUCT_BACKEND", "AQUEDUCT_LIVE_ONLY", "GITHUB_ACTIONS", "AQUEDUCT_RUN_LOCATION",
               "AQUEDUCT_RUN_BUDGET_MIN", "AQUEDUCT_UNIT_TIMEOUT_MIN", "AQUEDUCT_DERIVE_BUDGET_MIN",
-              "AQUEDUCT_RETRY_DRAIN_MARGIN_MIN", "ECONDL_DATA"):
+              "AQUEDUCT_RETRY_DRAIN_MARGIN_MIN", "AQUEDUCT_RETRY_DRAIN_MAX_MIN", "AQUEDUCT_RETRY_DRAIN_PER_SOURCE_MIN",
+              "ECONDL_DATA"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("AQUEDUCT_DERIVE_WORKERS", "1")
+    # the rotation switched off (drain_order's oldest-enqueued list as it is), so a two-source test does not depend
+    # on the real date; the rotation and the per-source share have their own tests (test_csv_retry_backlog.py)
+    monkeypatch.setattr(orchestrate, "rotate_drain_order", lambda order, day, ring=None: list(order))
     monkeypatch.setattr(orchestrate, "_RUN_DEADLINE_TS", orchestrate._RUN_DEADLINE_TS)   # run_once sets it
     data = tmp_path / "data"
     monkeypatch.setattr(config, "DATA_ROOT", str(data / "clean_full"))
@@ -376,6 +382,8 @@ def test_a_2880_minute_run_budget_still_caps_the_drain_and_its_lease(rig, monkey
     """AR-413 F1: run_local_heavy.ps1 sets AQUEDUCT_RUN_BUDGET_MIN=2880. Remainder minus margin alone gave one drain
     2,865 minutes; the cap is AQUEDUCT_RETRY_DRAIN_MAX_MIN, default the derive budget (45), and the lease follows."""
     monkeypatch.setenv("AQUEDUCT_RUN_BUDGET_MIN", "2880")
+    # a per-source share above the cap, so the CAP is what binds here (the share: test_csv_retry_backlog.py)
+    monkeypatch.setenv("AQUEDUCT_RETRY_DRAIN_PER_SOURCE_MIN", "60")
     seen = _spy_derive_budget(monkeypatch)
     ttls = []
     real = rig.state.claim_lease
@@ -436,6 +444,72 @@ def test_the_per_pass_cap_holds(rig, monkeypatch):
     assert len(rig.derived) == 2 and len(rig.queue()) == 3
 
 
+def test_the_per_pass_cap_holds_when_turns_end_on_time(monkeypatch):
+    """AR-285 round 3 (mutant R1): a turn that ends on TIME, not on the cap, sends the source into later rounds.
+    Each later turn must get only what is LEFT of the per-pass cap, or the pass tries more than _CSV_RETRY_CAP ids
+    of one source. Hermetic: a fake clock, a fake store, and a fake drain that reaches 10 ids per turn and then
+    runs out of its share. Cap 25, 1,000 queued: the turns must be given 25, 15, 5 and try 25 ids in all."""
+    import time as _time
+
+    class Clock:
+        def __init__(self, t):
+            self.t = t
+
+        def time(self):
+            return self.t
+
+        def __getattr__(self, n):
+            return getattr(_time, n)
+
+    class Store:
+        def __init__(self, q):
+            self.q = q
+
+        def csv_retry_sources(self):
+            return dict(self.q)
+
+        def claim_lease(self, key, owner, ttl_s=3600):
+            return True
+
+        def release_lease(self, key, owner=None):
+            pass
+
+    class Unit:
+        def __init__(self, s):
+            self.source_id, self.key = s, s + "/_all"
+
+    clock = Clock(20409 * 86400 + 3600.0)
+    monkeypatch.setattr(orchestrate, "time", clock)
+    monkeypatch.setattr(orchestrate, "_here", lambda: "local")
+    monkeypatch.setattr(orchestrate, "_served_by_lane", lambda s: False)
+    monkeypatch.setattr(orchestrate, "_leftover_drain_min", lambda: 45.0)
+    monkeypatch.setattr(orchestrate, "_drain_margin_min", lambda: 15.0)
+    monkeypatch.setattr(orchestrate, "_drain_per_source_min", lambda: 5.0)
+    monkeypatch.setattr(orchestrate, "_r2_mirror_gate", lambda sid, d=None, cache=None: None)
+    monkeypatch.setattr(orchestrate, "_CSV_RETRY_CAP", 25)
+    caps, tried = [], []
+
+    def fake_drain(unit, blob, store, deadline_ts=None, id_gate=None, skip=None, cap=None):
+        caps.append(cap)
+        eff = orchestrate._CSV_RETRY_CAP if cap is None else max(0, min(int(cap), orchestrate._CSV_RETRY_CAP))
+        n = store.q[unit.source_id][0] - len(skip or ())
+        k = min(10, eff, n)                    # the turn's TIME runs out after 10 ids, before its cap
+        ids = [f"{unit.source_id}:{len(skip or ()) + i}" for i in range(k)]
+        assert not set(ids) & set(skip or ()), "no id is tried twice in one pass"
+        tried.extend(ids)
+        clock.t = deadline_ts                  # the turn used its whole share
+        return {"queued": n, "attempted": k, "cleared": 0, "still_queued": n, "held_back": 0, "tried": ids,
+                "untried": n - k}
+
+    monkeypatch.setattr(orchestrate, "_drain_csv_retry_queue", fake_drain)
+    turns = orchestrate._drain_leftover_retries({"x": [Unit("x")]}, None, Store({"x": (1000, "2026-10-01")}),
+                                                route={"x"})
+    assert len(turns) >= 2, "the scenario needs later rounds: the first turn ended on time with ids unreached"
+    assert len(tried) > 0
+    assert len(tried) <= orchestrate._CSV_RETRY_CAP, (caps, len(tried))
+    assert caps == [25, 15, 5] and len(tried) == 25, (caps, len(tried))
+
+
 # ---- (c) attempts -----------------------------------------------------------------------------------
 
 def test_a_tried_refailure_counts_and_keeps_its_age(rig):
@@ -467,13 +541,18 @@ def test_ids_the_derive_budget_never_reached_keep_their_counter(rig, monkeypatch
 
 
 def test_a_queue_whose_head_always_fails_reaches_its_tail_next_pass(rig, monkeypatch):
-    """AR-413 P10 at small scale: cap 4, 5 queued, the first 4 always fail."""
+    """AR-413 P10 at small scale: cap 4, 5 queued, the first 4 always fail. The cap is PER PASS across the
+    work-conserving rounds (AR-285 F1), so the tail waits for the next pass; there it goes first (ORDER BY attempts)."""
     monkeypatch.setattr(orchestrate, "_CSV_RETRY_CAP", 4)
     ids = _ids(5)
     rig.seed(SRC, ids)
     rig.fail = set(ids[:4])
+    q0 = rig.queue()
     rig.run()
-    assert ids[4] not in rig.derived
+    assert ids[4] not in rig.derived, "the per-pass cap holds across rounds"
+    assert all(rig.derived.count(s) == 1 for s in ids[:4]), "no id is tried twice in one pass"
+    q = rig.queue()
+    assert all(q[s]["attempts"] == q0[s]["attempts"] + 1 for s in ids[:4])
     rig.derived.clear()
     rig.run()
     assert ids[4] in rig.derived, "the never-tried tail goes first once the head has refailed"
@@ -569,7 +648,8 @@ def test_the_drain_lease_lives_for_its_budget_plus_the_margin(rig, monkeypatch):
     rig.seed(SRC, _ids(1))
     rig.run()
     drain_ttls = [t for k, t in ttls if k == f"{SRC}/_all"]
-    assert drain_ttls and 24 * 60 < drain_ttls[-1] <= 40 * 60 + 2, drain_ttls   # (40-15) + 15 min
+    # min((40-15), the 15-min per-source share) + the 15-min margin
+    assert drain_ttls and 24 * 60 < drain_ttls[-1] <= 30 * 60 + 2, drain_ttls
 
 
 # ---- (e) the mirror check under r2 ------------------------------------------------------------------
@@ -758,7 +838,8 @@ def _module_ast():
 
 def test_every_call_of_the_drain_in_the_module_and_its_gates():
     """_drain_csv_retry_queue is called from exactly two functions: run_once (once, under `not _csv_fence_tripped`,
-    inside the CSV gate) and _drain_leftover_retries (once, inside its per-source loop, after the lease claim).
+    inside the CSV gate) and _leftover_turn (once, after the lease claim; _drain_leftover_retries runs each turn
+    through it).
     _drain_leftover_retries is called once, from run_once, under `not dry`, after the unit loop."""
     import ast
     tree = _module_ast()
@@ -768,7 +849,7 @@ def test_every_call_of_the_drain_in_the_module_and_its_gates():
             for n in ast.walk(fn):
                 if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_drain_csv_retry_queue":
                     callers.setdefault(fn.name, []).append(n)
-    assert sorted(callers) == ["_drain_leftover_retries", "run_once"], sorted(callers)
+    assert sorted(callers) == ["_leftover_turn", "run_once"], sorted(callers)
     assert all(len(v) == 1 for v in callers.values()), {k: len(v) for k, v in callers.items()}
     fns = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
     run_once = fns["run_once"]
@@ -783,7 +864,8 @@ def test_every_call_of_the_drain_in_the_module_and_its_gates():
     assert len(dry_gate) == 1, "the leftover drain is a top-level `if not dry:` of run_once, after the loop"
     loop = [i for i, n in enumerate(run_once.body) if isinstance(n, ast.For) and ast.unparse(n.target) == "unit"]
     assert len(loop) == 1 and run_once.body.index(dry_gate[0]) == loop[0] + 1, "right after the unit loop"
-    ld = fns["_drain_leftover_retries"]
-    src = ast.unparse(ld)
-    assert src.index("store.claim_lease") < src.index("_drain_csv_retry_queue(")
+    src = ast.unparse(fns["_drain_leftover_retries"])
     assert "_here() == 'cloud'" in src and "_served_by_lane" in src
+    assert src.count("_leftover_turn(") == 1, "each turn goes through _leftover_turn"
+    turn = ast.unparse(fns["_leftover_turn"])
+    assert turn.index("store.claim_lease") < turn.index("_drain_csv_retry_queue(")

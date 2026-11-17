@@ -114,8 +114,15 @@ def gate_rotating(health_path, now):
         age_h = (now - made).total_seconds() / 3600.0
         if not 0 <= age_h <= GATE_VERDICT_MAX_AGE_HOURS:
             return None, None, f"the health check's verdict is {age_h:.1f} hours old, so it is not of this run"
+        # A row held at ATTENTION by the CSV-RETRY BACKLOG alone that was ROTATING without it
+        # (health: rotating_before_backlog) stays in the calm list: the backlog has its own section in this report,
+        # and moving such a source under "Needs attention" every morning is what the owner's order of 2026-10-11
+        # removed (review AR-285 F4). Any other hold keeps it out: such a row has csv_retry_backlog_hold False.
         return ({str(r["source"]) for r in rep["sources"]
-                 if r.get("health") == "ROTATING" and (r.get("run_location") or "cloud") == "cloud"},
+                 if (r.get("health") == "ROTATING"
+                     or (r.get("health") == "ATTENTION" and r.get("csv_retry_backlog_hold") is True
+                         and r.get("rotating_before_backlog") is True))
+                 and (r.get("run_location") or "cloud") == "cloud"},
                 made, None)
     except Exception as e:                                            # noqa: BLE001
         return None, None, f"the health check's verdict could not be read ({repr(e)[:120]})"
@@ -191,7 +198,8 @@ def is_in_progress(source_id, status, late, last_attempt, cadence, rotating, ver
 # NOT SAID IN THE MAIL, AND AN OPEN ITEM OLDER THAN THIS NOTE: the state file alone also holds three records
 # of work that is owed (csv_retry_queue, full_rederive_owed, csv_desktop_owed; updater/state.py,
 # enqueue_csv_retry, note_full_rederive_owed, note_csv_desktop_owed). A refused save loses what this run
-# wrote there too.
+# wrote there too. (Since 2026-11-17 the mail shows the csv_retry_queue's size and age in its own section,
+# csv_retry_lines; the loss on a refused save is still not said.)
 # The sentence also does not say "a later run checks these sources again". A dispatch that names a source
 # runs it also when it is outside the live tier (orchestrate.py, the live-only rule), and such a source may
 # have no later scheduled run. So the words are "when they next run": true with or without a schedule.
@@ -373,6 +381,63 @@ def giant_lane_lines(entries, rows, now, held) -> list:
                 else f"last success unreadable ({str(ts)[:25]})" if ts else "never succeeded")
         out.append(f"     {label:22} {sid:30} {seen} (cadence {e.get('cadence') or '?'})")
     return out + [""]
+
+
+CSV_RETRY_DRAIN_NOT_RECORDED = ("Which sources the last leftover drain did not reach is NOT RECORDED in the state "
+                                "file (only the desktop pass log names them, 'not drained this pass'), so this "
+                                "report cannot say.")
+
+
+def read_csv_retry_queue(state_path: str):
+    """{source_id: (ids, oldest enqueued_utc, ids with no stamp)} from csv_retry_queue (one GROUP BY, the query of
+    StateStore.csv_retry_backlog). A state file with no such table RAISES: StateStore always creates it, so its
+    absence is not "an empty queue" and main() says the queue could not be read."""
+    con = sqlite3.connect(f"file:{state_path}?mode=ro", uri=True)
+    try:
+        if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='csv_retry_queue'").fetchone():
+            raise LookupError("the state file has no csv_retry_queue table")
+        return {sid: (int(n or 0), lo, int(nul or 0)) for sid, n, lo, nul in con.execute(
+            "SELECT source_id, COUNT(*), MIN(enqueued_utc), SUM(CASE WHEN enqueued_utc IS NULL THEN 1 ELSE 0 END) "
+            "FROM csv_retry_queue GROUP BY source_id")}
+    finally:
+        con.close()
+
+
+def csv_retry_lines(groups, now, backlog_of, days) -> list:
+    """Text lines for the CSV RETRY QUEUE section: the fleet total, each source's count and oldest age (oldest
+    first), the health gate's BACKLOG mark (`backlog_of` is health.csv_retry_backlog_of and `days` its
+    CSV_RETRY_BACKLOG_DAYS, so the digest and the gate use one rule), and the sentence that the last drain's
+    unreached sources are not recorded.
+
+    Until 2026-11-17 the queue was "NOT SAID IN THE MAIL" (the note above state_not_saved_note): 848,541 ids in 20
+    sources sat there, the oldest from 2026-08-23, while the mail listed only non-ok unit rows."""
+    groups = {s: v for s, v in (groups or {}).items() if int((v or (0,))[0] or 0) > 0}
+    if not groups:
+        return ["  csv retry queue: empty (no served CSV is waiting for a re-derive)", ""]
+
+    def age(lo):
+        t = _utc(lo)
+        return None if t is None else max(0.0, (now - t).total_seconds() / 86400.0)
+    total = sum(int(v[0]) for v in groups.values())
+    stamps = [age(v[1]) for v in groups.values()]
+    known = [a for a in stamps if a is not None]
+    n_back = sum(1 for s, v in groups.items() if backlog_of(v, now))
+    # "OLDEST CURRENT ENQUEUE", not "oldest debt" (review AR-285 F5): enqueue_csv_retry restarts an id's time when it
+    # is queued again, so a source that re-defers its ids every run reads young however long it has owed them.
+    head = (f"  csv retry queue (ids whose served CSV waits for a re-derive; it lags the store): {total:,} ids in "
+            f"{len(groups)} source(s), oldest current enqueue {max(known):.0f} days" if known else
+            f"  csv retry queue (ids whose served CSV waits for a re-derive; it lags the store): {total:,} ids in "
+            f"{len(groups)} source(s), oldest current enqueue unknown")
+    out = [head + f" (an id queued again restarts its time, so a debt can be older than shown); {n_back} past the "
+           f"health check's {float(days):g}-day BACKLOG mark:"]
+    for sid, v in sorted(groups.items(), key=lambda kv: (-(age(kv[1][1]) or 0.0), kv[0])):
+        a = age(v[1])
+        nul = int(v[2]) if len(v) > 2 and v[2] else 0
+        mark = "BACKLOG (ATTENTION)" if backlog_of(v, now) else ""
+        out.append(f"     {sid:38} {int(v[0]):>9,} ids  oldest enqueue "
+                   + (f"{a:6.1f}d" if a is not None else "     ?")
+                   + (f" ({nul:,} unstamped)" if nul else "") + (f"  {mark}" if mark else ""))
+    return out + ["  " + CSV_RETRY_DRAIN_NOT_RECORDED, ""]
 
 
 def read_guard_beat(timeout_s: float = GUARD_BEAT_READ_S):
@@ -619,6 +684,14 @@ def main() -> None:
     except Exception as _ge:                                          # noqa: BLE001
         _giant = [f"  giant units: could not be listed ({type(_ge).__name__}) - the scheduled desktop pass "
                   f"skips every registry desktop_lane: skip source (ATTENTION); check them by hand", ""]
+    # CSV RETRY QUEUE: computed once, rendered in both bodies. An unreadable queue is SAID, never an empty section.
+    try:
+        from updater.health import CSV_RETRY_BACKLOG_DAYS, csv_retry_backlog_of  # noqa: PLC0415
+        _csvq = csv_retry_lines(read_csv_retry_queue(STATE), dt.datetime.now(dt.timezone.utc),
+                                csv_retry_backlog_of, CSV_RETRY_BACKLOG_DAYS)
+    except Exception as _qe:                                          # noqa: BLE001
+        _csvq = [f"  csv retry queue: could not be read ({type(_qe).__name__}) - its size and age are unknown "
+                 f"this morning; " + CSV_RETRY_DRAIN_NOT_RECORDED, ""]
 
     ok = [r for r in rows if r[1] in ("ok", "no_change")]
     warn = [r for r in rows if r[1] in ("partial", "transient_fail")]
@@ -721,7 +794,8 @@ def main() -> None:
         lines.append("")
     if progress:
         lines.append("  in progress (normal) - too large for one run; in its last run each attempted a part "
-                     "of its work, nothing failed, and the health check found nothing else wrong:")
+                     "of its work, nothing failed, and the health check found nothing else wrong (apart from a "
+                     "csv retry backlog, which the csv retry queue section shows):")
         for r in sorted(progress, key=lambda x: x[0]):
             lines.append(f"  .. {r[0]:20} tried={tried_age(r[5]):>8}  {str(r[4] or '')[:90]}")
         lines.append("")
@@ -754,6 +828,7 @@ def main() -> None:
                              f"({newest[:34]}){mark}")
             lines.append("")
     lines += _giant
+    lines += _csvq
     # PUBLISHER NOTICES (2026-11-05): what the workstation's watcher found that is ending or changing.
     _beat = read_guard_beat()
     _notices = notices_lines(_beat, dt.datetime.now(dt.timezone.utc))
@@ -834,6 +909,11 @@ def main() -> None:
         notes_html += _note("<b>giant units</b><br>" + "<br>".join(
             f"<b style='color:{amber};'>{esc(l.strip())}</b>" if "ATTENTION" in l else esc(l.strip())
             for l in _giant if l.strip()))
+    if _csvq:
+        notes_html += _note("<b>csv retry queue</b><pre style='margin:4px 0 0;font-size:11.5px;white-space:pre-wrap;'>"
+                            + "\n".join(
+                                f"<b style='color:{amber};'>{esc(l.rstrip())}</b>" if "BACKLOG (ATTENTION)" in l
+                                else esc(l.rstrip()) for l in _csvq if l.strip()) + "</pre>")
 
     progress_html = ""
     if progress:
@@ -855,7 +935,8 @@ def main() -> None:
             f"In progress (normal) ({len(progress)})</h3>"
             f"<div style='font-size:12px;color:{grey};margin:0 0 6px;'>Too large for one run. In its last "
             "run (see Last tried) each attempted a part of its work, nothing failed, and the health check "
-            "found nothing else wrong. The rest waits for later runs.</div>"
+            "found nothing else wrong (apart from a csv retry backlog, which the csv retry queue note shows). "
+            "The rest waits for later runs.</div>"
             "<table role='presentation' width='100%' style='border-collapse:collapse;background:#f9fafb;"
             "border:1px solid #e5e7eb;border-radius:8px;'><tr>"
             f"{_th}Source</th>{_th}Data through</th>{_th}Last tried</th>{_th}Detail</th></tr>"

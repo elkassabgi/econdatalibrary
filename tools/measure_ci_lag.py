@@ -1357,49 +1357,77 @@ class UnitBook:
             break
         drained, not_drained = [], []
         if hard is None:                                   # a hard stop kills the updater: no drain follows
-            e, drained, not_drained = self._leftover_drain(drain_ok, drain_block, e, budget_min, drain_rate)
+            route = {u.source_id for u in order} - set(giant_skipped)     # run_once's _drain_route
+            e, drained, not_drained = self._leftover_drain(drain_ok, drain_block, e, budget_min, drain_rate,
+                                                           start=start, route=route)
         return {"used_min": e, "advanced": advanced, "hard_stop": hard, "stopped": stopped, "ran": ran,
                 "budget_skipped": budget_skipped, "not_due": not_due, "retry_drained": drained,
                 "retry_not_drained": not_drained, "giant_skipped": giant_skipped}
 
-    def _leftover_drain(self, drain_ok, drain_block, e, budget_min, drain_rate):
-        """orchestrate._drain_leftover_retries after the unit loop (PRs #212/#213), with production's candidate
-        rule (drain_candidates), order (drain_order: oldest-enqueued first) and budget (leftover_drain_budget_min:
-        min(time to the run deadline - margin, cap), margin and cap read by production's own helpers; nothing below
-        _DRAIN_FLOOR_MIN starts). Each source drains with what is left of that budget and holds the pass for it.
+    def _leftover_drain(self, drain_ok, drain_block, e, budget_min, drain_rate, start=None, route=None):
+        """orchestrate._drain_leftover_retries after the unit loop (PRs #212/#213, #285), with production's candidate
+        rule (drain_candidates), order (drain_order's candidates in rotate_drain_order's ring order: the ring is
+        drain_ring of the queue over `route` - this pass's units less GIANT SKIP, run_once's _drain_route - and the
+        day is the UTC day of the drain's start, `start` + e; no `start` = day 0) and budget
+        (leftover_drain_budget_min: min(time to the run deadline - margin, cap), margin and cap read by production's
+        own helpers; nothing below _DRAIN_FLOOR_MIN starts). Each TURN takes leftover_source_min(what is left, the
+        share _drain_per_source_min()), and the drain is WORK-CONSERVING like production: after a round, the sources
+        that still hold ids and either cleared some or used their whole share get further rounds until the budget is
+        spent (at most orch._DRAIN_MAX_ROUNDS).
 
-        The derive's speed is NOT in the copy, so it is an input: `drain_rate` ids per minute, or None = every source
-        reached uses ALL the time left (an upper bound on the drain's occupancy; the queue is then not reduced,
-        because how many ids cleared is unknown). With a rate, a source takes min(time left, its ids / rate) for at
-        most _CSV_RETRY_CAP ids and that many leave its queue. NOT modelled: the in-loop drain of a unit that ran,
-        ids enqueued by later passes, the mirror check, lease refusals. Returns (minutes used, [(source, minutes)],
-        [sources with queued ids not reached])."""
+        The derive's speed is NOT in the copy, so it is an input: `drain_rate` ids per minute, or None = every turn
+        uses ALL of its share (an upper bound on the drain's occupancy; the queue is then not reduced, because how
+        many ids cleared is unknown). With a rate, a turn takes min(its share, its ids / rate) for at most
+        _CSV_RETRY_CAP ids and that many leave its queue. NOT modelled: the in-loop drain of a unit that ran, ids
+        enqueued by later passes, the mirror check, lease refusals. Returns (minutes used, [(source, minutes)] one
+        per turn, [sources with queued ids not reached in the first round])."""
         orch = self._orch
         cands = orch.drain_candidates(drain_ok, drain_block)
-        _have, order = orch.drain_order(cands, {s: tuple(v) for s, v in self.retry_queue.items()})
+        queued = {s: tuple(v) for s, v in self.retry_queue.items()}
+        _have, order = orch.drain_order(cands, queued)
+        day = 0 if start is None else int((start.timestamp() + e * 60.0) // 86400)
+        order = orch.rotate_drain_order(order, day, orch.drain_ring(queued, route))
+        per_source = orch._drain_per_source_min()
         if not order:
             return e, [], []
         budget = orch.leftover_drain_budget_min(max(0.0, budget_min - e), orch._drain_margin_min(),
                                                 orch._drain_max_min())
         if budget < orch._DRAIN_FLOOR_MIN:
             return e, [], list(order)
-        end, drained = e + budget, []
-        for i, s in enumerate(order):
-            left = end - e
-            if left < orch._DRAIN_FLOOR_MIN:
-                return e, drained, list(order[i:])
-            n = self.retry_queue[s][0]
-            use = left if drain_rate is None else min(left, min(n, orch._CSV_RETRY_CAP) / drain_rate)
-            if drain_rate is not None:
-                gone = min(n, orch._CSV_RETRY_CAP, int(math.floor(use * drain_rate + 1e-9)))
-                if gone >= n:
-                    del self.retry_queue[s]
-                else:
-                    self.retry_queue[s][0] = n - gone
-            e += use
-            drained.append((s, use))
-        return e, drained, []
-
+        end, drained, not_reached = e + budget, [], []
+        pending, rnd = list(order), 1
+        taken: dict = {}                     # ids each source's turns took this pass: one _CSV_RETRY_CAP per pass
+        while pending:
+            again = []
+            for i, s in enumerate(pending):
+                left = end - e
+                if left < orch._DRAIN_FLOOR_MIN:
+                    if rnd == 1:
+                        not_reached = list(pending[i:])
+                    again = []
+                    break
+                n = self.retry_queue[s][0]
+                cap_left = orch._CSV_RETRY_CAP - taken.get(s, 0)
+                mine = orch.leftover_source_min(left, per_source)
+                use = mine if drain_rate is None else min(mine, min(n, cap_left) / drain_rate)
+                gone = 0
+                if drain_rate is not None:
+                    gone = min(n, cap_left, int(math.floor(use * drain_rate + 1e-9)))
+                    taken[s] = taken.get(s, 0) + gone
+                    if gone >= n:
+                        del self.retry_queue[s]
+                    else:
+                        self.retry_queue[s][0] = n - gone
+                e += use
+                drained.append((s, use))
+                # production's rule for another round: ids attempted and still queued, and cleared some or ran out
+                if n - gone > 0 and (gone > 0 or use >= mine - 1.0 / 60.0) and taken.get(s, 0) < orch._CSV_RETRY_CAP:
+                    again.append(s)
+            if not again or rnd >= orch._DRAIN_MAX_ROUNDS or end - e < orch._DRAIN_FLOOR_MIN:
+                break
+            rnd += 1
+            pending = again
+        return e, drained, not_reached
 
 CENSORED_BOUNDS = ("newest", "kills", "tightest")
 
