@@ -17,4 +17,29 @@
 #   until     optional YYYY-MM-DD: the date the change takes effect, for an announced change
 # Checked at build time by catalog/gen_site.py load_source_changes (a bad entry stops the build).
 version: 1
-entries: []
+entries:
+  - date: 2026-10-01
+    sources: [noaa]
+    status: in_effect
+    change: >-
+      NCEI renamed its Canadian weather stations. In GHCN-Daily version 3.35, released on 1 October 2026,
+      Environment Canada stations moved from network code 0 to network code N, so an id such as CA004047080
+      is now CAN04047080. The monthly (GSOM) and yearly (GSOY) summaries we carry now use the new ids.
+    effect: >-
+      Starting 18 November 2026, we refresh 354,295 Canadian monthly and yearly series that were held at
+      their August 2026 data. Series ids and download URLs do not change: they keep the CA0 form. In each
+      CSV, only the first column (series_id) changes, from gsom:CA0... to gsom:CAN... (gsoy the same). If
+      your code filters on that column, match the CAN form.
+    link: https://www.ncei.noaa.gov/pub/data/ghcn/daily/status.txt
+  - date: 2026-10-01
+    sources: [noaa]
+    status: in_effect
+    change: >-
+      NCEI's current files no longer include some Canadian stations and elements that we catalogued, in
+      either id form. They also include Canadian stations that our catalogue does not list yet.
+    effect: >-
+      7,970 catalogued Canadian series keep their August 2026 data and will not update: 7,808 are on 280
+      stations that NCEI no longer publishes, and 162 are elements that NCEI no longer publishes. About
+      1,756 Canadian stations (20,942 series) that NCEI publishes under CAN ids are not in this catalogue
+      yet, so they cannot be downloaded here yet.
+    link: https://www.ncei.noaa.gov/pub/data/ghcn/daily/status.txt
