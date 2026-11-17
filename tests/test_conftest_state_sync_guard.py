@@ -143,3 +143,52 @@ def test_a_test_that_leaves_the_process_changed_fails_and_the_next_does_not_inhe
 def test_an_ordinary_process_still_runs():
     r = subprocess.run([sys.executable, "-c", "print('ok')"], capture_output=True, text=True)
     assert r.returncode == 0 and r.stdout.strip() == "ok"
+
+
+# ---- no test starts a real wrangler -------------------------------------------------------------------------
+# Each spelling names a wrangler that DOES NOT EXIST under tmp_path: if the guard ever regressed, the process
+# would fail to start or exit on a missing file - it can never reach Cloudflare.
+def _wrangler_spellings(tmp):
+    js = str(tmp / "node_modules" / "wrangler" / "bin" / "wrangler.js")
+    return [
+        ["node", js, "d1", "execute", "econ-catalog", "--remote", "--command", "SELECT 1"],
+        [str(tmp / "wrangler.cmd"), "--version"],
+        [str(tmp / "WRANGLER.EXE"), "--version"],
+        [str(tmp / "bin" / "wrangler"), "--version"],
+        f'"{sys.executable}" "{js}" --version',
+    ]
+
+
+@pytest.mark.wrangler_refusal_expected
+def test_a_real_wrangler_started_by_a_test_is_refused(tmp_path):
+    for argv in _wrangler_spellings(tmp_path):
+        with pytest.raises(RuntimeError, match="real wrangler"):
+            subprocess.run(argv, shell=isinstance(argv, str))
+        with pytest.raises(RuntimeError, match="real wrangler"):
+            subprocess.Popen(argv, shell=isinstance(argv, str))
+    with pytest.raises(RuntimeError, match="real wrangler"):
+        os.system(f'"{sys.executable}" "{tmp_path / "wrangler.js"}" --version')
+
+
+def test_a_word_that_only_contains_wrangler_is_not_refused():
+    """Negative control: the guard matches a program or argument NAMED wrangler, not every mention."""
+    r = subprocess.run([sys.executable, "-c", "print('ok')", "--name=no-wrangler-here", "wranglers"],
+                       capture_output=True, text=True)
+    assert r.returncode == 0 and r.stdout.strip() == "ok"
+
+
+def test_the_teardown_check_catches_a_swallowed_wrangler_refusal(pytester, tmp_path):
+    """A tool that catches the refusal must not turn the attempt into a pass."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    pytester.makeconftest(open(os.path.join(here, "conftest.py"), encoding="utf-8").read())
+    missing = str(tmp_path / "wrangler.js").replace("\\", "/")
+    pytester.makepyfile(
+        "import subprocess, sys\n"
+        "def test_swallows():\n"
+        "    try:\n"
+        f"        subprocess.run(['node', {missing!r}, '--version'])\n"
+        "    except RuntimeError:\n"
+        "        pass\n")
+    r = pytester.runpytest("-p", "no:cacheprovider")
+    r.assert_outcomes(passed=1, errors=1)
+    assert "started a real wrangler" in r.stdout.str()

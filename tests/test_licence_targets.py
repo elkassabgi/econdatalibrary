@@ -283,10 +283,23 @@ def test_before_t0_a_d1_failure_stops_before_the_purge(tmp_path, monkeypatch):
 
 
 def test_execute_wrangler_refuses_after_t0(tmp_path, monkeypatch):
+    """The refusal is checked with wrangler replaced: if it ever regressed, this test must fail here, not send a
+    real `wrangler d1 execute --remote` from a machine that holds a Cloudflare login. execute_wrangler starts
+    wrangler through subprocess.run (and the other roads through _wrangler); both are fakes that record the
+    call and fail the test. The statement is a harmless read: the refusal does not depend on its text."""
+    import subprocess
+    reached = []
+
+    def no_wrangler(*a, **k):
+        reached.append(a)
+        pytest.fail(f"execute_wrangler reached wrangler after T0: {a!r}")
+    monkeypatch.setattr(subprocess, "run", no_wrangler)
+    monkeypatch.setattr(d1_remote, "_wrangler", no_wrangler)
     (tmp_path / "CUTOVER").write_text("")
     monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "CUTOVER"))
     with pytest.raises(cutover.CutoverRefused):
-        d1_remote.execute_wrangler("econ-catalog", ["DELETE FROM series"])
+        d1_remote.execute_wrangler("econ-catalog", ["SELECT 1"])
+    assert reached == []
 
 
 # ---- tools/delist_source_rows.py on the same helper -----------------------------------------------------

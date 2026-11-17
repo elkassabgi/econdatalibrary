@@ -10,11 +10,17 @@ checkout, which has a .env. Worktrees and CI were safe only because they hold no
 So every process a test starts is checked: a command line that carries --pull-state or --push-state is
 refused, and the test FAILS at teardown even when the tool under test catches the refusal (a swallowed
 error must not read as a pass)."""
+import re
 import subprocess
 
 import pytest
 
 _FORBIDDEN = ("--pull-state", "--push-state")
+# NO TEST STARTS A REAL WRANGLER. Every D1, R2 and deploy road goes through wrangler, and on a machine with a
+# Cloudflare login a real one reaches production. Tests fake subprocess.run or core.d1_remote._wrangler; a
+# wrangler process that gets past the fake is refused here: any program or argument named wrangler,
+# wrangler.js, wrangler.cmd, wrangler.ps1 or wrangler.exe, in an argv list or a shell string.
+_WRANGLER = re.compile(r"(?:^|[\s\"'/\\])wrangler(?:\.js|\.cmd|\.ps1|\.exe)?(?=$|[\s\"'])", re.IGNORECASE)
 
 pytest_plugins = ["pytester"]          # the guard's own can-fail test runs an isolated pytest
 
@@ -146,11 +152,12 @@ def _no_process_leak(request):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "state_sync_refusal_expected: the guard's own can-fail test")
+    config.addinivalue_line("markers", "wrangler_refusal_expected: the wrangler guard's own can-fail test")
 
 
 @pytest.fixture(autouse=True)
 def _no_state_sync_from_a_test(request):
-    started = []
+    started, wrangler = [], []
     real = subprocess.Popen
 
     class _Guarded(real):
@@ -160,6 +167,9 @@ def _no_state_sync_from_a_test(request):
             if any(f in flat for f in _FORBIDDEN):
                 started.append(flat)
                 raise RuntimeError(f"a test started a state sync: {flat[:160]} (tests/conftest.py, R1204)")
+            if _WRANGLER.search(flat):
+                wrangler.append(flat)
+                raise RuntimeError(f"a test started a real wrangler: {flat[:160]} (tests/conftest.py)")
             super().__init__(args, *a, **k)
     import os
     real_system = os.system
@@ -168,11 +178,16 @@ def _no_state_sync_from_a_test(request):
         if any(f in str(cmd) for f in _FORBIDDEN):          # R1213: os.system bypassed the Popen guard
             started.append(str(cmd))
             raise RuntimeError(f"a test started a state sync: {str(cmd)[:160]} (tests/conftest.py, R1204)")
+        if _WRANGLER.search(str(cmd)):
+            wrangler.append(str(cmd))
+            raise RuntimeError(f"a test started a real wrangler: {str(cmd)[:160]} (tests/conftest.py)")
         return real_system(cmd)
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(subprocess, "Popen", _Guarded)
         mp.setattr(os, "system", _system)
         yield
+    if not request.node.get_closest_marker("wrangler_refusal_expected"):
+        assert not wrangler, f"this test started a real wrangler (refused, but the attempt is the bug): {wrangler}"
     if request.node.get_closest_marker("state_sync_refusal_expected"):
         return
     assert not started, f"this test started a state sync (refused, but the attempt is the bug): {started}"
