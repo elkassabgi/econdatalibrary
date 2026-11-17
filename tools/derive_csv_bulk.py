@@ -55,6 +55,55 @@ def csv_key(prefix: str, source: str, series_key: str) -> str:
     return f"{prefix}/{urllib.parse.quote(f'{source}:{series_key}', safe='')}.csv"
 
 
+def noaa_catalogued_ca(con) -> set:
+    """Every catalogued noaa id on a Canadian station (`noaa:<flow>:CA...`), by PK range - two index
+    seeks, never a scan of the source's 3.1M rows."""
+    out = set()
+    for flow in ("gsom", "gsoy"):
+        out.update(r[0] for r in con.execute(
+            "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
+            (f"noaa:{flow}:CA", f"noaa:{flow}:CB")))
+    return out
+
+
+def target_ids(source: str, store_key: str, noaa_ca) -> list:
+    """The catalogue ids one streamed STORE key is written under. `<source>:<store_key>` for every
+    source but one.
+
+    noaa's renamed Canadian stations (econdl._resolve.noaa_store_station_forms): NCEI publishes
+    `CA00xxxxxxx` as `CAN0xxxxxxx` now, the store holds the CAN key, and the catalogue keeps the CA0
+    id. A CAN key is written under each form the catalogue holds - normally only the CA0 id - and
+    under NOTHING when neither form is catalogued: a CAN object that no catalogue row names is a
+    second public id for a catalogued series, or an uncatalogued station's CSV published by a
+    re-derive. Writing `noaa:<CAN key>` left all 354,295 CA0 objects on the old vintage while the
+    campaign reported zero errors and paid the debt (review AR-282)."""
+    if source != "noaa":
+        return [f"{source}:{store_key}"]
+    from econdl import _resolve                                       # noqa: PLC0415
+    forms = _resolve.noaa_catalogue_ids_for_store_key(store_key)
+    if len(forms) == 1:
+        return [forms[0]]
+    return [f for f in forms if f in noaa_ca]
+
+
+def noaa_ca0_missed(noaa_ca, streamed_ca: set, written: set) -> list:
+    """Catalogued CA0 ids whose renamed store key WAS streamed but whose object was neither written nor
+    skipped as already current. Computed from the CATALOGUE side, independently of target_ids, so a
+    campaign whose mapping went wrong cannot certify itself: any id listed here blocks the clear."""
+    from econdl import _resolve                                       # noqa: PLC0415
+    out = []
+    for cid in noaa_ca:
+        parts = cid.split(":")
+        if len(parts) != 4:
+            continue
+        _, flow, st, el = parts
+        forms = _resolve.noaa_store_station_forms(st)
+        if len(forms) > 1 and any(f"{flow}:{s}:{el}" in streamed_ca for s in forms) \
+                and cid not in written:
+            out.append(cid)
+    return sorted(out)
+
+
 def csv_key_prefix(prefix: str, source: str) -> str:
     """The listing prefix covering every series of one source."""
     return f"{prefix}/{urllib.parse.quote(source + ':', safe='')}"
@@ -320,6 +369,15 @@ def _durable_clear(source: str, refuse_unmapped: bool = False, streamed_keys=Non
     print(f"full_rederive_owed cleared for {source} and pushed to the authoritative "
           f"store", flush=True)
     return True
+
+
+def _open_catalogue_ro():
+    """The ONE catalogue open in this file: read-only (a write=True open after T0 without the writer lock
+    is refused). tests/test_site_derive_catalogue_resolver.py pins that there is exactly one."""
+    from core import catalog_path                                       # noqa: PLC0415 - the one resolver
+    con = catalog_path.connect_path(catalog_path.under(ROOT), write=False, timeout=5.0)
+    con.execute("PRAGMA busy_timeout = 180000")
+    return con
 
 
 def main() -> int:
@@ -647,6 +705,24 @@ def main() -> int:
     con = duckdb.connect()
     con.execute("PRAGMA threads=4")
 
+    # noaa ONLY: the catalogued Canadian ids, read ALWAYS (with or without --only-catalogued), because
+    # they decide which object a renamed CAN store key is written under (target_ids). An unreadable
+    # catalogue refuses: without it every renamed key would be skipped and the CA0 objects left stale.
+    noaa_ca = None
+    if a.source == "noaa":
+        try:
+            _c = _open_catalogue_ro()
+            try:
+                noaa_ca = noaa_catalogued_ca(_c)
+            finally:
+                _c.close()
+        except Exception as _e:                                        # noqa: BLE001
+            print(f"REFUSING: noaa needs its catalogued Canadian ids to map renamed CAN store keys to "
+                  f"their CA0 ids, and the catalogue could not be read ({type(_e).__name__}).")
+            return 2
+        print(f"noaa: {len(noaa_ca):,} catalogued Canadian id(s); renamed CAN keys are written under "
+              f"the catalogued form, never as uncatalogued CAN objects", flush=True)
+
     # ---- byte-exactness gate -------------------------------------------------------
     if a.verify:
         from core.derive_csv import _series_csv_bytes
@@ -697,7 +773,9 @@ def main() -> int:
         bad = 0
         for k in sample:
             mine = _csv_bytes(k, grouped[k])
-            theirs = _series_csv_bytes(f"{a.source}:{k}")
+            # through the id the object is WRITTEN under (noaa: a renamed key's catalogued CA0 id)
+            _ids = target_ids(a.source, k, noaa_ca) or [f"{a.source}:{k}"]
+            theirs = _series_csv_bytes(_ids[0])
             if mine != theirs:
                 bad += 1
                 if bad <= 3:
@@ -797,9 +875,7 @@ def main() -> int:
 
     catalogued = None
     if a.only_catalogued:
-        from core import catalog_path                                   # noqa: PLC0415 - the one resolver
-        _con = catalog_path.connect_path(catalog_path.under(ROOT), write=False, timeout=5.0)
-        _con.execute("PRAGMA busy_timeout = 180000")
+        _con = _open_catalogue_ro()
         catalogued = {r[0] for r in _con.execute(
             "select series_id from series where source_id=?", (a.source,))}
         _con.close()
@@ -811,22 +887,49 @@ def main() -> int:
     # EVERY key this campaign streamed (derived, or counted uncatalogued: no served CSV), for an exempt source's
     # stamp: it clears an unmapped-keys row only when the row's keys are all here (AR-461 F4).
     _streamed = set() if _exempt else None
+    # noaa: the renamed Canadian stations are written under their CATALOGUED id (target_ids); the CA keys
+    # streamed and the CA ids handled are kept so the clear can prove no catalogued CA0 id was skipped.
+    _streamed_ca: set = set()
+    _handled_ca: set = set()
+    _ca_source: dict = {}            # catalogued CA id -> the store key it was written from
+    _renamed_uncat = 0
     for k, rows in _stream(con, paths, qualify=a.qualify_with_shard):
         seen += 1
         if _streamed is not None:
             _streamed.add(k)
-        if catalogued is not None and f"{a.source}:{k}" not in catalogued:
+        ids = target_ids(a.source, k, noaa_ca)
+        if noaa_ca is not None and k.split(":")[1:2] and k.split(":")[1].startswith("CA"):
+            _streamed_ca.add(k)
+            if not ids:
+                _renamed_uncat += 1
+        if catalogued is not None:
+            ids = [i for i in ids if i in catalogued]
+        if not ids:
             uncat += 1
             continue
-        key = csv_key(a.prefix, a.source, k)
-        if key in existing:
-            counts["skip"] += 1
-            continue
-        if a.dry_run:
-            if seen <= 3:
-                print(f"  would PUT {key} ({len(_csv_bytes(k, rows))} B)")
-            continue
-        q.put((key, _csv_bytes(k, rows)))
+        body = None
+        for sid in ids:
+            key = csv_key(a.prefix, a.source, sid[len(a.source) + 1:])
+            if noaa_ca is not None and sid in noaa_ca:
+                # BOTH FORMS IN THE STORE (CA0 and CAN keys of one station and element) would map to the
+                # same object, and the second PUT would silently replace the first: refuse, as the
+                # resolver does, rather than serve whichever key streamed last.
+                if _ca_source.setdefault(sid, k) != k:
+                    raise SystemExit(
+                        f"REFUSING: {sid} is held in the store under BOTH {_ca_source[sid]!r} and {k!r}. "
+                        f"NCEI publishes one form at a time; writing both would keep only the last "
+                        f"(econdl._resolve refuses this id too). The debt stands.")
+                _handled_ca.add(sid)
+            if key in existing:
+                counts["skip"] += 1
+                continue
+            if body is None:
+                body = _csv_bytes(k, rows)       # the id column carries the native store key
+            if a.dry_run:
+                if seen <= 3:
+                    print(f"  would PUT {key} ({len(body)} B)")
+                continue
+            q.put((key, body))
 
     if not a.dry_run:
         q.join()
@@ -834,8 +937,16 @@ def main() -> int:
             q.put(STOP)
         q.join()
     if uncat:
-        print(f"only-catalogued: SKIPPED {uncat:,} store series with no catalogue row "
-              f"(they are real data — cataloguing them is a separate decision)", flush=True)
+        print(f"SKIPPED {uncat:,} store series with no catalogue row"
+              f"{f' ({_renamed_uncat:,} of them renamed noaa CAN keys catalogued in neither form)' if _renamed_uncat else ''}"
+              f" (they are real data — cataloguing them is a separate decision)", flush=True)
+    # noaa: every catalogued CA0 id whose renamed key was streamed must have been handled, or the
+    # campaign did not repay the debt for it - whatever its error count says.
+    _ca_missed = (noaa_ca0_missed(noaa_ca, _streamed_ca, _handled_ca)
+                  if noaa_ca is not None else [])
+    if _ca_missed:
+        print(f"noaa: {len(_ca_missed):,} catalogued CA0 id(s) were streamed under their renamed CAN "
+              f"key but NOT written, e.g. {_ca_missed[:3]}", flush=True)
     print(f"done: {seen:,} series streamed, put {counts['put']:,}, "
           f"skipped {counts['skip']:,}, errors {counts['err']:,}")
     if failed_log is not None:
@@ -865,7 +976,7 @@ def main() -> int:
         except Exception:                                    # noqa: BLE001
             _cutoff_predates_debt = True   # unreadable state: refuse toward standing
     if (not a.dry_run and counts["err"] == 0 and counts["put"] > 0
-            and not a.skip_existing and not _cutoff_predates_debt):
+            and not a.skip_existing and not _cutoff_predates_debt and not _ca_missed):
         try:
             _durable_clear(a.source, **({"refuse_unmapped": True, "streamed_keys": _streamed}
                                         if _exempt else {}))
@@ -879,10 +990,11 @@ def main() -> int:
                "--skip-existing skips the stale objects a debt names" if a.skip_existing
                else "the --skip-newer-than cutoff predates the debt — the stale "
                     "population was skipped" if _cutoff_predates_debt
+               else "catalogued noaa CA0 ids were not written" if _ca_missed
                else "0 PUTs — nothing was rewritten")
         print(f"full_rederive_owed NOT cleared ({why}); if a debt row exists it stands, "
               f"which is the honest state", flush=True)
-    return 1 if counts["err"] else 0
+    return 1 if counts["err"] or _ca_missed else 0
 
 
 if __name__ == "__main__":

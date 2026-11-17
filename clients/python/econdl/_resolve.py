@@ -31,6 +31,7 @@ import glob
 import json
 import os
 import re  # noqa: F401  (used by some generated resolver bodies)
+import threading
 from dataclasses import dataclass
 from typing import Callable
 
@@ -992,6 +993,82 @@ def _resolve_treasury(series_id: str, root: str) -> Resolution:
 
 
 # --- noaa ------------------------------------------------------------------
+# CANADIAN STATIONS WERE RENAMED BY THE PUBLISHER. NCEI now publishes the stations it called
+# `CA00xxxxxxx` as `CAN0xxxxxxx` (gsom/access/CA004047080.csv answers 404, CAN04047080.csv 200).
+# The fetcher copies STATION verbatim, so the store holds the CAN form while the catalogue, built
+# before the rename, holds the CA0 form. The mapping is exact: the leading `CA0` becomes `CAN` and
+# the id stays 11 characters. Measured over the 362,265 catalogued Canadian ids that resolved to
+# no rows: 354,295 resolve under it.
+#
+# The catalogue ids are NOT re-keyed: they are public. The resolver matches either form instead,
+# so the same code stays right if NCEI ever reverts the rename. Only `CA0` stations map; `CA1`
+# (CoCoRaHS), `CAW` and every other prefix are untouched, as is any id that is not 11 long.
+_NOAA_CA_OLD, _NOAA_CA_NEW = "CA0", "CAN"
+_NOAA_STATION_LEN = 11
+
+
+def noaa_store_station_forms(station: str) -> tuple:
+    """The store station ids a CATALOGUE station may be held under, catalogue form first.
+
+    `CA004047080` -> ('CA004047080', 'CAN04047080'); any other station -> (station,)."""
+    if len(station) == _NOAA_STATION_LEN and station.startswith(_NOAA_CA_OLD):
+        return (station, _NOAA_CA_NEW + station[len(_NOAA_CA_OLD):])
+    return (station,)
+
+
+def noaa_catalogue_station_forms(station: str) -> tuple:
+    """The catalogue station ids a STORE station may be catalogued under, store form first.
+
+    The inverse of noaa_store_station_forms: `CAN04047080` -> ('CAN04047080', 'CA004047080').
+    Tools that go from the store to the catalogue (catalog_noaa, derive_noaa_missing,
+    catalog_complete) use it so that a renamed station is recognised as already catalogued,
+    instead of gaining a second public id beside the one it has."""
+    if len(station) == _NOAA_STATION_LEN and station.startswith(_NOAA_CA_NEW):
+        return (station, _NOAA_CA_OLD + station[len(_NOAA_CA_NEW):])
+    return (station,)
+
+
+def noaa_catalogue_ids_for_store_key(store_key: str) -> tuple:
+    """Every catalogue id a noaa store key `<flow>:<station>:<element>` may be catalogued under,
+    the native form (`noaa:<store_key>`) first."""
+    parts = store_key.split(":")
+    if len(parts) != 3:
+        return (f"noaa:{store_key}",)
+    flow, station, element = parts
+    return tuple(f"noaa:{flow}:{s}:{element}" for s in noaa_catalogue_station_forms(station))
+
+
+_NOAA_KEYS_LOCK = threading.Lock()
+_NOAA_KEYS: dict = {}
+
+
+def _noaa_shard_keys(path: str) -> frozenset:
+    """Distinct series_key values of one noaa shard PLUS its live half, cached per file state.
+
+    Read once per (path, size, mtime) and process: gsom__CA is ~46M rows and ~213k keys, about
+    three seconds, against a per-id read that already scans the same file. The cache key carries
+    the file's size and mtime, so a shard rewritten by a refresh is read again rather than
+    answered from the old key set."""
+    paths = with_live_half(path)
+    paths = list(paths) if isinstance(paths, (list, tuple)) else [paths]
+    stamp = []
+    for p in paths:
+        st = os.stat(p)
+        stamp.append((os.path.abspath(p), st.st_size, st.st_mtime_ns))
+    stamp = tuple(stamp)
+    with _NOAA_KEYS_LOCK:
+        hit = _NOAA_KEYS.get(stamp)
+    if hit is not None:
+        return hit
+    col = ds.dataset(paths).to_table(columns=["series_key"]).column("series_key")
+    keys = frozenset(pc.unique(col).to_pylist())
+    with _NOAA_KEYS_LOCK:
+        for k in [k for k in _NOAA_KEYS if k[0][0] == stamp[0][0]]:
+            del _NOAA_KEYS[k]                 # drop a stale state of the same shard
+        _NOAA_KEYS[stamp] = keys
+    return keys
+
+
 def _resolve_noaa(series_id: str, root: str) -> Resolution:
     # catalog: noaa:gsom:USW00094728:TAVG
     # store: per-flow, per-station-prefix files  gsom__<2-char station prefix>.parquet
@@ -1016,6 +1093,26 @@ def _resolve_noaa(series_id: str, root: str) -> Resolution:
     if not os.path.exists(path):
         raise ResolveError(f"{series_id}: expected NOAA file {path!r} not found")
     native_key = f"{flow}:{station}:{element}"
+    forms = noaa_store_station_forms(station)
+    if len(forms) > 1:
+        # A RENAMED CANADIAN STATION (see noaa_store_station_forms). Pick the ONE form the store
+        # holds, so the predicate stays a single exact equality - the shape every consumer of this
+        # Resolution already handles. An OR over both forms would read correctly here, but the
+        # streaming derive writes rows batch by batch and could not tell that it had mixed two
+        # series until it had already written them.
+        candidates = [f"{flow}:{s}:{element}" for s in forms]
+        keys = _noaa_shard_keys(path)
+        present = [k for k in candidates if k in keys]
+        if len(present) > 1:
+            raise ResolveError(
+                f"{series_id}: the store holds this station under BOTH {present[0]!r} and "
+                f"{present[1]!r}. NCEI publishes one form at a time, so both at once means the "
+                "shard is not a single restatement - refusing rather than serving either series "
+                "as this id, or a mixture of the two.")
+        if present:
+            native_key = present[0]
+        # Neither form present: keep the catalogue form, so the read finds zero rows and
+        # read_native / the derive refuse exactly as they did before this mapping existed.
     return Resolution(
         series_id, "noaa", path, "series_key",
         pc.equal(ds.field("series_key"), native_key),
