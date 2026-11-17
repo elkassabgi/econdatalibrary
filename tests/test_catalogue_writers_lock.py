@@ -200,8 +200,10 @@ def _python_files():
 
 
 # A LIBRARY writer (core/catalog.py: its connect() opens for write for whoever imports it) does not take the
-# lock itself; its importers' entries do - pinned, with the premise RUN, by tests/test_catalogue_writers_main.py
-# (LIBRARY_WRITERS, test_the_library_writer_premise, which also checks the two sets are the same).
+# lock itself. Its importers are retired legacy scripts that REFUSE at entry after T0, and after T0 an unlocked
+# write through it is refused by connect_path - pinned, with the premise and each refusal RUN, by
+# tests/test_catalogue_writers_main.py (LIBRARY_WRITERS, test_the_library_writer_premise, which also checks the
+# two sets are the same).
 LIBRARY_WRITERS = {"core/catalog.py"}
 
 
