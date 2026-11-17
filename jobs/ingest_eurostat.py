@@ -24,6 +24,8 @@ import pyarrow.parquet as pq
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 sys.path.insert(0, ROOT)
+from core import cutover  # noqa: E402 - refused at entry after T0 (review AR-281 C281-3)
+
 RAW = os.path.join(ROOT, "data", "raw", "eurostat")
 OUT = os.path.join(ROOT, "data", "clean_grouped", "eurostat")
 
@@ -151,4 +153,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # a retired legacy ingest (the updater refreshes eurostat): its rebuild_fts rewrites the WHOLE series_fts and
+    # its source upsert drops terms_url, so after T0 it refuses first, --dry included
+    cutover.refuse_if_cut_over("jobs/ingest_eurostat.py (a retired legacy ingest; after T0 the updater is the catalogue's only writer)")
     main()

@@ -45,6 +45,9 @@ ARGS = {
     "tools/statcan_new_cubes.py": {"write": ["--apply"], "dry": []},
     "tools/fix_statcan_frequency.py": {"write": ["--apply"], "dry": []},
     "tools/sync_source_rows_d1_to_local.py": {"write": ["--source", "zz", "--apply"], "dry": ["--source", "zz"]},
+    "tools/flowgrain_insee_melodi.py": {"write": ["--catalog"], "dry": ["--dry-run"]},
+    "tools/flowgrain_ons_uk.py": {"write": ["--catalog"], "dry": ["--dry-run"]},
+    "tools/delist_timeless_tables.py": {"write": ["--apply"], "dry": []},
     "tools/apply_series_names.py": {"write": ["--apply"], "dry": ["--measure"]},
     "tools/refresh_flowgrain_dates.py": {"write": ["--source", "zz", "--apply"], "dry": ["--source", "zz", "--dry-run"]},
 }
@@ -145,6 +148,9 @@ EXPECTED_WRITERS = {
     "tools/title_unhcr_from_siblings.py", "tools/title_vdem_from_codebook.py",
     "tools/refresh_sec_edgar.py",                                                  # joined 2026-11-16 (t0_ready)
     "tools/sync_source_rows_d1_to_local.py",                                       # joined 2026-11-17 (t0_ready)
+    "core/catalog.py",                                       # joined 2026-11-17 (t0_ready): a LIBRARY writer, below
+    "tools/flowgrain_insee_melodi.py", "tools/flowgrain_ons_uk.py",
+    "tools/delist_timeless_tables.py",                                             # joined 2026-11-17 (t0_ready)
     "core/backfill_coverage.py", "pipeline/title_bea.py", "tools/apply_series_names.py",
     "tools/refresh_flowgrain_dates.py",                                            # joined 2026-11-17 (t0_ready)
 }
@@ -156,6 +162,203 @@ EXPECTED_WRITERS = {
 # in _refresh_local); after T0 its other write roads (--respan, and the pre-T0 R2 path) are refused before any
 # open, and connect_path(write=True) refuses any write without the lock.
 LOCK_INSIDE_MAIN = {"tools/refresh_sec_edgar.py"}
+
+
+# LIBRARY writers: a module (no __main__ block, no script body) whose FUNCTION opens the catalogue for write for
+# whoever imports it. It cannot take the lock itself (a library holding the machine-wide lock until the process
+# exits would block the updater; a lock inside connect() would be let go before the caller writes).
+# core/catalog.py's importers are RETIRED legacy scripts (UPDATER_BUILD_PLAN D-1; nothing schedules them) whose
+# writes would damage the live build after T0 - upsert_source drops terms_url, rebuild_fts rewrites the WHOLE
+# series_fts (review AR-281 C281-3). So each importer REFUSES AT ENTRY after T0, before any read and before any
+# lock, rather than becoming a lock-holding writer: the first statement of its __main__ block, or, for a
+# top-level script, a top-level statement before anything but imports, path set-up and constants.
+# DISCOVERY IS STATIC (C281-1): it sees `from core import catalog`, `import core.catalog`, `from core.catalog
+# import ...`, a relative `from . import catalog` in core/ and a plain `import catalog` anywhere - not an
+# importlib call or a transitive caller. Those are the early warning. THE GUARD is connect_path refusing an
+# unlocked write to the build after T0, which test_the_library_writer_premise RUNS.
+LIBRARY_WRITERS = {
+    "core/catalog.py": {"core/apply_stage0b.py", "core/build_registry.py", "jobs/ingest_eurostat.py",
+                        "jobs/ingest_sec_edgar.py", "jobs/run_connector.py"},
+}
+
+
+def _imports_core_catalog(rel, tree) -> bool:
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ImportFrom) and n.module == "core" and not n.level \
+                and any(a.name == "catalog" for a in n.names):
+            return True
+        if isinstance(n, ast.ImportFrom) and n.module == "core.catalog":
+            return True
+        if isinstance(n, ast.Import) and any(a.name in ("core.catalog", "catalog") for a in n.names):
+            return True                                        # plain `import catalog` (core/ on the path)
+        if isinstance(n, ast.ImportFrom) and n.module == "catalog" and not n.level:
+            return True
+        if rel.startswith("core/") and isinstance(n, ast.ImportFrom) and n.level == 1 \
+                and (n.module == "catalog" or (n.module is None and any(a.name == "catalog" for a in n.names))):
+            return True                                        # `from . import catalog` / `from .catalog import`
+    return False
+
+
+def _library_importers():
+    out = set()
+    for rel, p in _repo_walk.code_files((".py",), ROOT):
+        if rel in LIBRARY_WRITERS:
+            continue
+        if _imports_core_catalog(rel, _repo_walk.parse_code(p)):
+            out.add(rel)
+    return out
+
+
+def _is_refusal(stmt) -> bool:
+    return (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
+            and ast.unparse(stmt.value.func) == "cutover.refuse_if_cut_over")
+
+
+def _quiet(stmt) -> bool:
+    """A top-level statement that reads, writes or opens nothing: an import, the docstring, sys.path set-up, or an
+    assignment whose only calls are os.path.* (ROOT = os.path.dirname(...))."""
+    if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+        return True
+    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
+        return True
+    calls = [ast.unparse(c.func) for c in ast.walk(stmt) if isinstance(c, ast.Call)]
+    if isinstance(stmt, ast.Expr) and calls and calls[0] == "sys.path.insert":
+        return all(c == "sys.path.insert" or c.startswith("os.path.") for c in calls)
+    return isinstance(stmt, ast.Assign) and all(c.startswith("os.path.") for c in calls)
+
+
+def _entry_refuses_after_t0(tree) -> bool:
+    mains = [n for n in tree.body if isinstance(n, ast.If) and "__main__" in ast.unparse(n.test)]
+    if mains:
+        return bool(mains[0].body) and _is_refusal(mains[0].body[0])
+    for s in tree.body:
+        if _is_refusal(s):
+            return True
+        if not _quiet(s):
+            return False
+    return False
+
+
+def test_every_library_writer_s_importer_refuses_at_entry_after_t0():
+    want = set().union(*LIBRARY_WRITERS.values())
+    found = _library_importers()
+    assert found == want, (f"importers of a library writer changed - joined: {sorted(found - want)}; left: "
+                           f"{sorted(want - found)}. A new importer must refuse at entry after T0 (or be reviewed "
+                           f"as a writer of the live build), then join here")
+    bad = [rel for rel in sorted(found) if not _entry_refuses_after_t0(_repo_walk.parse_code(os.path.join(ROOT, rel)))]
+    assert not bad, f"these importers of a library writer do not refuse at their entry after T0: {bad}"
+
+
+def test_the_library_importer_rule_can_fail():
+    R = 'cutover.refuse_if_cut_over("x")\n'
+    for code in ('if __name__ == "__main__":\n    main()\n',
+                 'if __name__ == "__main__":\n    main()\n    ' + R,
+                 'if __name__ == "__main__":\n    with catalog_path.write_session():\n        main()\n',
+                 'os.makedirs(OUT)\n' + R,
+                 'ct = json.load(open(p))\n' + R,
+                 'db = catalog.connect()\n' + R,
+                 'import os\nx = 1\n'):
+        assert not _entry_refuses_after_t0(ast.parse(code)), code
+    for code in ('if __name__ == "__main__":\n    ' + R + '    main()\n',
+                 '"""doc"""\nimport os, sys\nROOT = os.path.dirname(os.path.abspath(__file__))\n'
+                 'sys.path.insert(0, ROOT)\nfrom core import catalog\n' + R + 'db = catalog.connect()\n'):
+        assert _entry_refuses_after_t0(ast.parse(code)), code
+    assert _imports_core_catalog("jobs/x.py", ast.parse("from core import catalog, storage"))
+    assert _imports_core_catalog("core/x.py", ast.parse("import catalog as cat"))
+    assert _imports_core_catalog("tools/x.py", ast.parse("import catalog"))
+    assert _imports_core_catalog("core/x.py", ast.parse("from . import catalog"))
+    assert _imports_core_catalog("core/x.py", ast.parse("from .catalog import connect"))
+    assert not _imports_core_catalog("jobs/x.py", ast.parse("from core import catalog_path"))
+    assert not _imports_core_catalog("tools/x.py", ast.parse("from catalog_tools import catalog"))
+
+
+def _importer_entry(rel):
+    path = os.path.join(ROOT, rel)
+    tree = _repo_walk.parse_code(path)
+    mains = [n for n in tree.body if isinstance(n, ast.If) and "__main__" in ast.unparse(n.test)]
+    return path, (mains[0] if mains else None)
+
+
+@pytest.mark.parametrize("rel", sorted(set().union(*LIBRARY_WRITERS.values())))
+def test_a_library_importer_refuses_after_t0_before_anything_and_runs_before(t0, monkeypatch, rel, tmp_path):
+    """RUN: after T0 the entry raises CutoverRefused before its work starts (main()/run() never called, no
+    folder made, no file read, no catalogue opened); before T0 it reaches its work as before."""
+    import builtins
+    from core import catalog
+    path, block = _importer_entry(rel)
+    monkeypatch.syspath_prepend(os.path.join(ROOT, "core"))        # core/ scripts import `catalog` by its bare name
+    called = []
+
+    def trap(name):
+        def f(*a, **k):
+            called.append(name)
+            raise _Stop()
+        return f
+    monkeypatch.setattr(catalog, "connect", trap("catalog.connect"))
+    monkeypatch.setattr(cp, "connect_path", trap("connect_path"))
+    monkeypatch.setattr(sys, "argv", [path])
+    for before_t0 in (False, True):
+        if before_t0:
+            (t0 / "CUTOVER").unlink()
+        called.clear()
+        if block is not None:
+            m = _load(rel, path)
+            g = dict(vars(m))
+            g.update(main=trap("main"), run=trap("run"))
+            code = compile(ast.Module(body=block.body, type_ignores=[]), path, "exec")
+            run_it = lambda: exec(code, g)                         # noqa: E731,S102 - the file's own __main__ code
+        else:
+            real_open, real_makedirs = builtins.open, os.makedirs
+            monkeypatch.setattr(os, "makedirs", trap("os.makedirs"))
+            monkeypatch.setattr(builtins, "open", lambda f, *a, **k: real_open(f, *a, **k) if str(f).endswith(".py")
+                                else trap("open")())
+            run_it = lambda: runpy.run_path(path, run_name="__main__")  # noqa: E731
+        try:
+            if not before_t0:
+                with pytest.raises(cutover.CutoverRefused, match="retired legacy"):
+                    run_it()
+                assert called == [], f"{rel}: after T0 it reached {called} before refusing"
+            else:
+                with pytest.raises(_Stop):
+                    run_it()
+                assert called, f"{rel}: before T0 it never reached its work"
+        finally:
+            if block is None:
+                monkeypatch.setattr(os, "makedirs", real_makedirs)
+                monkeypatch.setattr(builtins, "open", real_open)
+    assert cp._held is None
+
+
+def test_the_library_writer_premise(t0, monkeypatch):
+    """core.catalog.connect() after T0: refused without the lock, read-write with it; never creates a missing
+    file; before T0 its default is the checkout's data/ catalogue; 600 s, as before. The writer ratchets of
+    tests/test_catalogue_writers_lock.py skip exactly these files."""
+    assert set(LIBRARY_WRITERS) == {"core/catalog.py"}, "a new library writer needs its own premise test"
+    assert set(LIBRARY_WRITERS) <= {r for r, _p, _b in WRITERS} and all(b is None for r, _p, b in WRITERS
+                                                                          if r in LIBRARY_WRITERS)
+    import test_catalogue_writers_lock as L
+    assert L.LIBRARY_WRITERS == set(LIBRARY_WRITERS), "the two ratchet files exempt the same library writers"
+    import sqlite3
+    from core import catalog
+    db = t0 / "catalog.db"                      # the fixture's build (BUILD_PATH), an empty file
+    with pytest.raises(cutover.CutoverRefused, match="single-writer lock"):
+        catalog.connect(str(db))
+    with cp.write_session():
+        con = catalog.connect(str(db))
+        catalog.init(con)
+        catalog.upsert_source(con, "zz", "ZZ", "cc0", "attr")
+        assert con.execute("SELECT source_id FROM source").fetchall()[0]["source_id"] == "zz"
+        con.close()
+    missing = t0 / "data" / "catalog.db"
+    missing.parent.mkdir()
+    (t0 / "CUTOVER").unlink()
+    with pytest.raises(FileNotFoundError):
+        catalog.connect(str(missing))
+    assert not missing.exists()
+    seen = []
+    monkeypatch.setattr(cp, "connect_path", lambda path, **kw: seen.append((path, kw)) or sqlite3.connect(":memory:"))
+    catalog.connect().close()
+    assert seen == [(cp.under(catalog._ROOT), {"write": True, "timeout": 600})]
 
 
 def test_the_discovery_finds_exactly_the_committed_writers():
@@ -188,7 +391,7 @@ def test_a_script_takes_the_lock_unconditionally_at_top_level():
     """R1199 M1/M2: a lock on a branch never taken, or inside a function never called, passed the order check."""
     bad = []
     for rel, path, block in WRITERS:
-        if block is not None:
+        if block is not None or rel in LIBRARY_WRITERS:
             continue
         tree = _repo_walk.parse_code(path)
         calls = [s for s in tree.body if isinstance(s, ast.Expr) and isinstance(s.value, ast.Call)
@@ -343,7 +546,7 @@ def test_statcan_backup_reads_only_the_build_after_t0(t0, tmp_path):
         m.backup_sqlite(str(other), str(tmp_path / "bak.db"))
 
 
-@pytest.mark.parametrize("rel,path,block", [w for w in WRITERS if w[2] is None], ids=lambda v: v if isinstance(v, str) and "/" in v and not os.path.isabs(v) else "")
+@pytest.mark.parametrize("rel,path,block", [w for w in WRITERS if w[2] is None and w[0] not in LIBRARY_WRITERS], ids=lambda v: v if isinstance(v, str) and "/" in v and not os.path.isabs(v) else "")
 def test_a_script_holds_the_lock_at_its_open(t0, monkeypatch, rel, path, block):
     seen = []
 

@@ -62,6 +62,25 @@ SOURCE_FILE_EXCLUSIONS = {
 }
 
 
+_CLIENTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "clients", "python")
+
+
+def catalogue_ids_for(source: str, key: str) -> tuple:
+    """Every catalogue id a store key may already be catalogued under, `<source>:<key>` first.
+
+    One exception to the plain rule: noaa's renamed Canadian stations. NCEI now publishes
+    `CA00xxxxxxx` as `CAN0xxxxxxx`; the catalogue keeps the CA0 id and the resolver serves it from
+    the CAN rows (econdl._resolve.noaa_store_station_forms). Without this, a run for noaa would
+    INSERT a second public id for each of those series."""
+    if source == "noaa":
+        if _CLIENTS not in sys.path:
+            sys.path.insert(0, _CLIENTS)
+        from econdl import _resolve                                   # noqa: PLC0415
+        return _resolve.noaa_catalogue_ids_for_store_key(key)
+    return (f"{source}:{key}",)
+
+
 def complete(con, source):
     existing = {r[0] for r in con.execute("SELECT series_id FROM series WHERE source_id=?", (source,))}
     licrow = con.execute("SELECT license_id FROM series WHERE source_id=? AND license_id IS NOT NULL "
@@ -152,7 +171,8 @@ def complete(con, source):
         for v in blob.read_table(path, columns=[key_col]).column(key_col).to_pylist():
             keys.add(str(v))
 
-    missing = sorted(k for k in keys if f"{source}:{k}" not in existing)
+    missing = sorted(k for k in keys
+                     if not any(i in existing for i in catalogue_ids_for(source, k)))
     print(f"  {source:14} key_col={key_col:10} parquet_keys={len(keys):>7,}  "
           f"catalogued={len(existing):>7,}  missing={len(missing):>6,}")
     if not missing:

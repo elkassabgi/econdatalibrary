@@ -34,6 +34,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
+sys.path.insert(0, os.path.join(ROOT, "clients", "python"))   # econdl: the station-form rule
+
+from econdl import _resolve as _R                              # noqa: E402
 
 import noaa_elements as E                                      # noqa: E402
 
@@ -74,6 +77,25 @@ def title_for(name, element, freq, station) -> tuple[str, bool]:
     # back to its GHCN id rather than emitting a title that starts with " — ".
     who = (name or "").strip() or station
     return f"{who} — {label} — {FREQ_WORD.get(freq, freq)}", ok
+
+
+def catalogue_id_for(con, store_key: str) -> tuple[str, bool]:
+    """The catalogue id a store key is written under -> (id, both_forms_catalogued).
+
+    Normally `noaa:<store_key>`. A RENAMED Canadian station is the exception: NCEI now publishes
+    `CA00xxxxxxx` as `CAN0xxxxxxx`, and the catalogue already names the series under its CA0 id,
+    which the resolver serves from the CAN rows (econdl._resolve.noaa_store_station_forms). So a
+    CAN key whose CA0 id is catalogued refreshes THAT row; writing `noaa:<CAN key>` would give the
+    same series a second public id. A CAN station never catalogued in either form (a station new
+    since the rename) keeps its native id - inventing a CA0 id for it is the rejected option."""
+    forms = _R.noaa_catalogue_ids_for_store_key(store_key)
+    if len(forms) == 1:
+        return forms[0], False
+    have = [f for f in forms
+            if con.execute("select 1 from series where series_id=?", (f,)).fetchone()]
+    if len(have) > 1:
+        return forms[0], True
+    return (have[0] if have else forms[0]), False
 
 
 def main() -> int:
@@ -133,7 +155,7 @@ def main() -> int:
                                "start", "end", country_code, latitude, longitude, elevation
                         from read_parquet({lst})''')
 
-    written = unresolved = 0
+    written = unresolved = legacy = both = 0
     samples = []
     while True:
         chunk = cur.fetchmany(BATCH)
@@ -145,10 +167,13 @@ def main() -> int:
             if not ok:
                 unresolved += 1
             geo = cc.get((ccode or "").strip(), (ccode or "").strip())
-            rows.append((f"{SOURCE}:{sk}", SOURCE, title, freq, None, geo, "Climate",
+            sid, two = catalogue_id_for(con, sk)
+            legacy += sid != f"{SOURCE}:{sk}"
+            both += two
+            rows.append((sid, SOURCE, title, freq, None, geo, "Climate",
                          LICENSE_ID, start, end, meta))
             if len(samples) < 4:
-                samples.append((f"{SOURCE}:{sk}", title, geo, start, end, lat, lon, elev))
+                samples.append((sid, title, geo, start, end, lat, lon, elev))
         if a.apply:
             con.executemany(
                 """INSERT OR REPLACE INTO series
@@ -160,6 +185,10 @@ def main() -> int:
 
     print(f"\nrows {'written' if a.apply else 'that would be written'}: {written:,}")
     print(f"element codes left as a raw code: {unresolved:,}")
+    print(f"renamed Canadian keys written under their catalogued CA0 id: {legacy:,}")
+    if both:
+        print(f"  !! {both:,} renamed key(s) are catalogued under BOTH forms - written under the "
+              f"native id; the resolver refuses such a series if the store ever holds both")
     for s in samples:
         print(f"   {s[0]}")
         print(f"      {s[1]}")
@@ -185,7 +214,7 @@ def main() -> int:
     except sqlite3.Error as e:
         print(f"series_fts rebuild skipped: {e}")
     print("\nNEXT, and required before these are usable: derive their CSVs "
-          "(tools/derive_csv_bulk.py --source noaa), add 'noaa' to api/worker/src/util.ts "
+          "(tools/derive_csv_bulk.py --source noaa --only-catalogued), add 'noaa' to api/worker/src/util.ts "
           "SUPPORTED_SOURCES, and sync to D1. A catalogue row without a CSV is a listed series "
           "that will not download — exactly what the ten demo rows were.")
     return 0
