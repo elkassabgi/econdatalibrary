@@ -177,6 +177,52 @@ def _track_page(name: str, body: str) -> dict:
     return ent
 
 
+# --- "Website updated" on the hand-maintained pages ------------------------------
+# WHAT WAS WRONG: the status strip was copied into the hand-maintained pages
+#   (KEEP_UNGENERATED) on 2026-08-21 together with its `__SITE_UPDATED__` placeholder.
+#   Only _write() substitutes it, and _write() never touches those pages, so /download,
+#   /status, /mcp, /account and /404 showed the literal "Website updated:
+#   __SITE_UPDATED__" to every visitor.
+# THE FIX: a full build stamps each hand page's strip with the build date, exactly as
+#   _write() stamps a generated page, so the label means the same thing on every page.
+#   The fingerprint is taken with the stamp put back to the placeholder, so the date
+#   alone never counts as a content change (same rule as _write()).
+# The stamp is found by an exact pattern and must occur exactly ONCE per page: zero or
+#   two matches stop the build, because a page whose strip was edited by hand would
+#   otherwise keep its placeholder silently.
+_SITE_STAMP_RE = re.compile(r"(textContent='Website updated: '\+fdate\(')([^']*)('\))")
+
+
+def set_site_stamp(page: str, value: str, name: str = "page") -> str:
+    """Return `page` with its one "Website updated" stamp set to `value`."""
+    n = len(_SITE_STAMP_RE.findall(page))
+    if n != 1:
+        raise SystemExit(f"{name}: expected exactly 1 'Website updated' stamp, found {n}")
+    return _SITE_STAMP_RE.sub(lambda m: m.group(1) + value + m.group(3), page)
+
+
+def stamp_hand_pages(out_dir: str = None, today: str = None) -> list:
+    """Fingerprint every hand-maintained page with its stamp normalised, then write the
+    build date into the stamp. Line endings are kept byte for byte. Returns the names
+    whose bytes changed."""
+    out_dir = out_dir or OUT_DIR
+    today = today or TODAY
+    changed = []
+    for name in sorted(n for n in KEEP_UNGENERATED if n.endswith(".html")):
+        path = os.path.join(out_dir, name)
+        if not os.path.isfile(path):
+            continue
+        with open(path, encoding="utf-8", newline="") as f:
+            raw = f.read()
+        _track_page(name, set_site_stamp(raw, "__SITE_UPDATED__", name).replace("\r\n", "\n"))
+        new = set_site_stamp(raw, today, name)
+        if new != raw:
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                f.write(new)
+            changed.append(name)
+    return changed
+
+
 # Non-dataset pages that belong in the sitemap, with the change cadence each one
 # genuinely has. Any entry that is missing from OUT_DIR, or that carries a robots
 # noindex, is dropped by main() — that is how account.html / 404.html /
@@ -2233,6 +2279,17 @@ h1,.hero h1,.dhero h1{font-size:2rem}
 }
 """
 
+# THE STATUS STRIP SHOWS ONE DATE: "Website updated" (the day this page was written).
+# Until 2026-11-17 it also showed "Data updated: <d.as_of>" from /v1/stats. That as_of is
+# the date of the series COUNT behind the headline figures, not the date any data last
+# changed, so the strip told every visitor the data was months old while sources refresh
+# daily. The only true per-source freshness the API serves is /v1/last-updates, and that
+# route is not edge-cached on the serving path, so fetching it from every page would put
+# a database read behind every page view. The field is removed rather than faked; the
+# Status board (status.html) shows each source's real last update. To bring it back, add a
+# freshness field to the cached /v1/stats answer first (a worker change), then read it here.
+# tests/test_site_header_truth.py fails if the field, any unsubstituted __PLACEHOLDER__
+# or the old homepage band comes back on any page.
 HEAD = """<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -2293,7 +2350,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 </head><body>
 <div class="status-bar" id="status-bar"><div class="sb-in">
 <span><span id="sb-dot" style="color:#9ca3af;font-size:.7rem">&#9679;</span> <span id="sb-text">Checking status&hellip;</span></span>
-<span style="display:flex;gap:1.5rem"><span id="sb-site"></span><span id="sb-data"></span></span>
+<span style="display:flex;gap:1.5rem"><span id="sb-site"></span></span>
 </div></div>
 <nav class="nav"><div class="nav-in"><div class="brand"><a href="index.html">Econ Data <span class="d">Library</span></a><a href="https://elkassabgidata.com" class="fam-tag" title="Part of the ElkassabgiData family — one account, every library">part of ElkassabgiData</a></div>
 <button class="nav-toggle" onclick="document.querySelector('.nav-links').classList.toggle('open')" aria-label="Toggle navigation">&#9776;</button>
@@ -2306,25 +2363,12 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
     var d=m?new Date(+m[1],+m[2]-1,+m[3]):new Date(s); /* date-only: local, no UTC shift */
     if(isNaN(d))return s;
     return d.toLocaleDateString('en-US',{{year:'numeric',month:'long',day:'numeric'}});}}catch(e){{return s;}}}}
-  /* hf js/site.js:125-134 -- the strip's second field is a relative age, not a bare date. */
-  function tago(s){{try{{
-    var m=/^(\\d{{4}})-(\\d{{2}})-(\\d{{2}})/.exec(s);
-    var t=m?new Date(+m[1],+m[2]-1,+m[3]):new Date(s);
-    if(isNaN(t))return '';
-    var diff=Math.floor((new Date()-t)/1000);
-    if(diff<60)return 'just now';
-    if(diff<3600)return Math.floor(diff/60)+' minutes ago';
-    if(diff<86400)return Math.floor(diff/3600)+' hours ago';
-    if(diff<604800)return Math.floor(diff/86400)+' days ago';
-    return '';}}catch(e){{return '';}}}}
   // Hourly bucket, NOT per-load. /v1/stats is edge-cached 6h (s-maxage=21600); a
   // millisecond cache-buster defeats it and sends every visitor to the origin (R709).
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){{if(!r.ok)throw 0;return r.json();}}).then(function(d){{
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
     document.getElementById('sb-site').textContent='Website updated: '+fdate('__SITE_UPDATED__');
-    if(d.as_of){{var _ag=tago(d.as_of);
-      document.getElementById('sb-data').textContent='Data updated: '+fdate(d.as_of)+(_ag?' ('+_ag+')':'');}}
   }}).catch(function(){{
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -4278,6 +4322,10 @@ def main(argv=None):
     _write(os.path.join(OUT_DIR, "stats.html"), render_stats())
     _write(os.path.join(OUT_DIR, "source_changes.html"), render_source_changes())
 
+    # The hand-maintained pages get the same "Website updated" stamp (see stamp_hand_pages).
+    _hand = stamp_hand_pages()
+    print(f"  hand-maintained pages stamped {TODAY}: " + (", ".join(_hand) or "none changed"))
+
     # ---- sitemap.xml --------------------------------------------------------
     # WHAT WAS WRONG: the sitemap held the two hub URLs plus the dataset pages and
     # NOTHING else, so eight real, indexable pages (docs, api, cite, contact,
@@ -4298,7 +4346,10 @@ def main(argv=None):
             # Hand-maintained page (KEEP_UNGENERATED): fingerprint it off disk so
             # it obeys exactly the same "unchanged content keeps its date" rule.
             with open(path, encoding="utf-8") as f:
-                _track_page(name, f.read())
+                _body = f.read()
+            if _SITE_STAMP_RE.search(_body):
+                _body = set_site_stamp(_body, "__SITE_UPDATED__", name)
+            _track_page(name, _body)
         if _LASTMOD[name]["noindex"]:
             skipped.append(f"{name} (noindex)")
             continue

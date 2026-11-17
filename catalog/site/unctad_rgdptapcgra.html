@@ -302,7 +302,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 </head><body>
 <div class="status-bar" id="status-bar"><div class="sb-in">
 <span><span id="sb-dot" style="color:#9ca3af;font-size:.7rem">&#9679;</span> <span id="sb-text">Checking status&hellip;</span></span>
-<span style="display:flex;gap:1.5rem"><span id="sb-site"></span><span id="sb-data"></span></span>
+<span style="display:flex;gap:1.5rem"><span id="sb-site"></span></span>
 </div></div>
 <nav class="nav"><div class="nav-in"><div class="brand"><a href="index.html">Econ Data <span class="d">Library</span></a><a href="https://elkassabgidata.com" class="fam-tag" title="Part of the ElkassabgiData family — one account, every library">part of ElkassabgiData</a></div>
 <button class="nav-toggle" onclick="document.querySelector('.nav-links').classList.toggle('open')" aria-label="Toggle navigation">&#9776;</button>
@@ -315,25 +315,12 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
     var d=m?new Date(+m[1],+m[2]-1,+m[3]):new Date(s); /* date-only: local, no UTC shift */
     if(isNaN(d))return s;
     return d.toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});}catch(e){return s;}}
-  /* hf js/site.js:125-134 -- the strip's second field is a relative age, not a bare date. */
-  function tago(s){try{
-    var m=/^(\d{4})-(\d{2})-(\d{2})/.exec(s);
-    var t=m?new Date(+m[1],+m[2]-1,+m[3]):new Date(s);
-    if(isNaN(t))return '';
-    var diff=Math.floor((new Date()-t)/1000);
-    if(diff<60)return 'just now';
-    if(diff<3600)return Math.floor(diff/60)+' minutes ago';
-    if(diff<86400)return Math.floor(diff/3600)+' hours ago';
-    if(diff<604800)return Math.floor(diff/86400)+' days ago';
-    return '';}catch(e){return '';}}
   // Hourly bucket, NOT per-load. /v1/stats is edge-cached 6h (s-maxage=21600); a
   // millisecond cache-buster defeats it and sends every visitor to the origin (R709).
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
     document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-10-20');
-    if(d.as_of){var _ag=tago(d.as_of);
-      document.getElementById('sb-data').textContent='Data updated: '+fdate(d.as_of)+(_ag?' ('+_ag+')':'');}
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
