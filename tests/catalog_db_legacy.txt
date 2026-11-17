@@ -6,9 +6,5 @@ core/backfill_coverage.py
 core/catalog.py
 pipeline/title_bea.py
 tools/apply_series_names.py
-tools/delist_timeless_tables.py
-tools/flowgrain_insee_melodi.py
-tools/flowgrain_ons_uk.py
-tools/make_servable.py
 tools/refresh_flowgrain_dates.py
 tools/refresh_r2_catalog.py

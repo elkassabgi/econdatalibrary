@@ -42,7 +42,7 @@ import urllib.parse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from core import cutover                                      # noqa: E402
+from core import catalog_path, cutover                        # noqa: E402
 
 
 def _prepare_process():
@@ -276,9 +276,12 @@ def main(sources):
             if line.strip():
                 print("  " + line.strip(), flush=True)
 
-        con = sqlite3.connect(os.path.join(ROOT, "data", "catalog.db"))  # plain-open: BEFORE T0 only, the checkout's catalogue as this tool always read it (after T0 main_selfhosted uses catalog_path.connect)
+        # BEFORE T0 only (after T0 main_selfhosted reads catalog_path.connect()): the checkout's catalogue, as this
+        # tool always read it, now read-only and never created; sqlite's own 5 s, as the plain open had
+        con = catalog_path.connect_path(catalog_path.under(ROOT), write=False, timeout=5.0)
         ids = [x[0] for x in con.execute(
             "SELECT series_id FROM series WHERE source_id=?", (src,))]
+        con.close()
         # List R2 ONCE. Written as `[i for i in ids if i not in r2_csvs(client, src)]`
         # this re-listed the entire prefix per id — 40,016 full listings for fao_pp,
         # which burned 14 minutes without writing a single object while looking
