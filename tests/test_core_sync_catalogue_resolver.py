@@ -115,6 +115,16 @@ def test_emit_sql_a_missing_catalogue_is_still_skipped(tmp_path, monkeypatch, sp
     assert not (tmp_path / "none.db").exists()
 
 
+def test_emit_sql_a_directory_catalogue_raises_sqlite_s_error(tmp_path):
+    """C277-2: a path that exists but is not a file passes the exists check; the open must fail with
+    sqlite3.OperationalError (the class the old mode=ro open raised), not FileNotFoundError."""
+    st = _state(tmp_path / "state.db")
+    (tmp_path / "out").mkdir()
+    (tmp_path / "dir.db").mkdir()
+    with pytest.raises(sqlite3.OperationalError, match="unable to open database file"):
+        sync_state_d1.emit_sql(str(st), str(tmp_path / "out"), gated=set(), catalogue=str(tmp_path / "dir.db"))
+
+
 def test_emit_sql_without_data_through_never_resolves_the_catalogue(tmp_path, monkeypatch, spy):
     """The self-hosted origin calls emit_sql(data_through=False) after T0: no override rule may stop it."""
     st = _state(tmp_path / "state.db")

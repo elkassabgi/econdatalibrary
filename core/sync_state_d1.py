@@ -374,7 +374,10 @@ def emit_sql(state_db: str, out_dir: str, gated: set[str] | None = None, catalog
         pass                     # the caller computes it elsewhere (the self-hosted origin: from its copy)
     elif os.path.exists(cat_path):
         from core import catalog_path                                   # noqa: PLC0415 - the one resolver
-        cconn = catalog_path.connect_path(cat_path, write=False, timeout=5.0)   # read-only, sqlite's own 5 s
+        try:                # a directory, or a file removed after the exists check: sqlite's own error class
+            cconn = catalog_path.connect_path(cat_path, write=False, timeout=5.0)   # read-only, sqlite's own 5 s
+        except FileNotFoundError as e:
+            raise sqlite3.OperationalError(f"unable to open database file: {e}") from None
         try:
             dt_rows = data_through_rows(cconn, gated)
         finally:
