@@ -33,8 +33,12 @@ import time
 
 import pyarrow.parquet as pq
 
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:                                  # run as a script, core/ is on the path
+    sys.path.insert(0, _ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
+
 REPO = r"E:\research\econfindatalibrary"
-DB = os.path.join(REPO, "data", "catalog.db")
 
 
 def scan(source):
@@ -92,7 +96,9 @@ def main():
     print("  %s: scanned %d file(s), %s distinct series keys in %.1fs"
           % (source, nfiles, format(len(agg), ","), time.time() - t0))
 
-    con = sqlite3.connect(DB)
+    # REPO's catalogue, as before (after T0 connect_path accepts only the build, which IS REPO's file). A dry
+    # run opens read-only; sqlite's own 5 s busy timeout, as the plain open had (no PRAGMA follows).
+    con = catalog_path.connect_path(catalog_path.under(REPO), write=apply_, timeout=5.0)
     con.row_factory = sqlite3.Row
     rows = con.execute(
         "SELECT series_id FROM series WHERE source_id=? AND start_date IS NULL AND end_date IS NULL",
@@ -136,4 +142,5 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    with catalog_path.write_session():   # after T0: the single-writer lock
+        sys.exit(main())

@@ -48,7 +48,7 @@ CLOUD_COST = {
 # Reads only to WRITE the cloud copy, and that write is refused after T0 (core.d1_remote refuses every D1 write;
 # the R2 guard every R2 write) - they fail loudly, never quietly. Their self-hosted ports are owed.
 CLOUD_WRITE_REFUSED = {
-    "core/sync_state_d1.py", "tools/rebuild_series_fts.py", "tools/refresh_flowgrain_dates.py",
+    "core/sync_state_d1.py", "tools/rebuild_series_fts.py",
     "tools/stamp_source_data_through.py", "tools/derive_statcan_tables.py",
 }
 # No cloud call at run time: builds a D1 SQL FILE (loading it is a separate, refused wrangler step).
