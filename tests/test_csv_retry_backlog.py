@@ -372,7 +372,7 @@ def drain(monkeypatch):
     monkeypatch.setattr(orchestrate, "_r2_mirror_gate",
                         lambda sid, d=None, cache=None: gates.append((sid, d)) or None)
 
-    def fake(unit, blob, store, deadline_ts=None, id_gate=None, skip=None):
+    def fake(unit, blob, store, deadline_ts=None, id_gate=None, skip=None, cap=None):
         calls.append((unit.source_id, round((deadline_ts - clock.t) / 60.0, 6), deadline_ts))
         skips.append((unit.source_id, set(skip or ())))
         if unit.source_id in fast:                    # 3 ids, all refailed at once: nothing left untried

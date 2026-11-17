@@ -202,18 +202,21 @@ class Harness:
         return Result(status="partial", obs=0, new_vintage=None, merged_rows=0, changed_keys={},
                       error="stopped before the run ceiling", window_stop="progress" if done > 0 else "none")
 
-    def drain(self, unit, blob, store, deadline_ts=None, id_gate=None, skip=None):
-        """The derive inside the leftover drain, on the virtual clock: all the time it is given, or `rate` ids/min."""
+    def drain(self, unit, blob, store, deadline_ts=None, id_gate=None, skip=None, cap=None):
+        """The derive inside the leftover drain, on the virtual clock: all the time it is given, or `rate` ids/min.
+        `cap`: what is left of the source's per-pass cap (production passes it); the cleared ids are reported as
+        `tried`, so production charges the per-pass cap exactly as the replay does (it counts the ids that left)."""
         assert deadline_ts is not None, "the in-loop drain is stubbed out of this differential"
+        cap = orchestrate._CSV_RETRY_CAP if cap is None else min(cap, orchestrate._CSV_RETRY_CAP)
         left = (deadline_ts - self.clock.t) / 60.0
         ids = [r["series_id"] for r in store.csv_retries(unit.source_id)]
-        use = left if self.rate is None else min(left, min(len(ids), orchestrate._CSV_RETRY_CAP) / self.rate)
+        use = left if self.rate is None else min(left, min(len(ids), cap) / self.rate)
         self.clock.t += use * 60.0
         if self.rate is not None:
-            gone = ids[:min(len(ids), orchestrate._CSV_RETRY_CAP, int(use * self.rate + 1e-9))]
+            gone = ids[:min(len(ids), cap, int(use * self.rate + 1e-9))]
             store.clear_csv_retries(gone)
             return {"queued": len(ids), "attempted": len(ids), "cleared": len(gone),
-                    "still_queued": len(ids) - len(gone), "held_back": 0}
+                    "still_queued": len(ids) - len(gone), "held_back": 0, "tried": list(gone)}
         # no rate: a source that never empties (how many ids cleared is unknown, the replay's upper bound)
         return {"queued": len(ids), "attempted": len(ids), "cleared": 0, "still_queued": len(ids), "held_back": 0}
 

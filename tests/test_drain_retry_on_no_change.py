@@ -474,20 +474,23 @@ def test_ids_the_derive_budget_never_reached_keep_their_counter(rig, monkeypatch
     assert all(r["attempts"] == 1 for r in q.values()), "an id never tried keeps its attempts counter"
 
 
-def test_a_queue_whose_head_always_fails_reaches_its_tail_in_the_next_round(rig, monkeypatch):
-    """AR-413 P10 at small scale: cap 4, 5 queued, the first 4 always fail. Since the work-conserving rounds (review
-    AR-285 F1) the never-tried tail is reached in the SAME pass, by a second turn that leaves out the ids the first
-    turn tried: each refailing head id is counted once in the pass, never twice."""
+def test_a_queue_whose_head_always_fails_reaches_its_tail_next_pass(rig, monkeypatch):
+    """AR-413 P10 at small scale: cap 4, 5 queued, the first 4 always fail. The cap is PER PASS across the
+    work-conserving rounds (AR-285 F1), so the tail waits for the next pass; there it goes first (ORDER BY attempts)."""
     monkeypatch.setattr(orchestrate, "_CSV_RETRY_CAP", 4)
     ids = _ids(5)
     rig.seed(SRC, ids)
     rig.fail = set(ids[:4])
     q0 = rig.queue()
     rig.run()
-    assert rig.derived.count(ids[4]) == 1 and ids[4] not in rig.queue(), "the tail is reached in round 2"
+    assert ids[4] not in rig.derived, "the per-pass cap holds across rounds"
     assert all(rig.derived.count(s) == 1 for s in ids[:4]), "no id is tried twice in one pass"
     q = rig.queue()
-    assert set(q) == set(ids[:4]) and all(q[s]["attempts"] == q0[s]["attempts"] + 1 for s in ids[:4])
+    assert all(q[s]["attempts"] == q0[s]["attempts"] + 1 for s in ids[:4])
+    rig.derived.clear()
+    rig.run()
+    assert ids[4] in rig.derived, "the never-tried tail goes first once the head has refailed"
+    assert ids[4] not in rig.queue()
 
 
 # ---- (d) where nothing drains -----------------------------------------------------------------------
