@@ -251,11 +251,49 @@ def test_an_upstream_deletion_does_not_block_the_refresh_for_ever(tmp_path, monk
 
 
 def test_one_retired_series_is_named_and_the_rest_still_merge(tmp_path, monkeypatch, capsys):
-    _store(tmp_path, STORE3)
+    """Retired = absent AND its stored newest is old (8 real WS_CBPOL series ended 1998-12)."""
+    _store(tmp_path, STORE + [("M.JP", dt.date(1998, 12, 1), 0.5)])
     res, _ = _run(tmp_path, monkeypatch, {"M": [M_NEW], "D": [D_SAME]})
     assert res.status == "ok", res
     assert set(res.changed_keys) == {"WS_CBPOL:CA", "WS_CBPOL:US"}
     assert "['M.JP'] absent from the body" in capsys.readouterr().out
+
+
+def test_a_stable_cut_at_the_start_of_the_last_series_never_seals_it(tmp_path, monkeypatch):
+    """AR-270 C2: a cut exactly at the first line of the LAST series drops that whole series. The
+    body ends cleanly, hashes the same on both fetches, its new last series is complete, and one
+    absence is within MISSING_KEYS_TOLERATED. The store holds a RECENT date for the dropped series,
+    so it is not retired: the pass must not report success and must not save the hash (a saved hash
+    would freeze the series with green health until upstream changes)."""
+    recent = dt.date.today().replace(day=1)
+    _store(tmp_path, STORE + [("M.ZA", recent, 7.0)])
+    cut = M_NEW                                  # CA, US complete; the cut fell where M.ZA began
+    res, calls = _run(tmp_path, monkeypatch, {"M": [cut], "D": [D_SAME]})
+    assert res.status != "ok", res
+    assert res.status == "partial" and "WS_CBPOL:M" in res.error and "M.ZA" in res.error, res
+    assert res.changed_keys == {}, res.changed_keys
+    assert "WS_CBPOL:M" not in _vint(tmp_path), "the hash of a cut body must not be saved"
+    assert ("M.CA", dt.date(2026, 10, 1), 2.5) not in _rows(tmp_path)
+
+
+def test_the_retired_threshold_is_health_s_discontinued_line():
+    from updater import health
+    assert B.RETIRED_AFTER_DAYS == health.STALE_SERIES_DAYS
+
+
+def test_the_strategy_runs_the_sdmx_phase_when_the_stored_vintage_is_the_zip_vintage(tmp_path, monkeypatch):
+    """AR-270 finding 5, through BulkSnapshotIfChanged (not update() directly). Whatever vintage the
+    unit row holds - even one equal to a zip-only probe token - detect_change must not skip, or the
+    served policy rates freeze until a quarterly zip republish."""
+    from updater.strategies.bulk_snapshot_if_changed import BulkSnapshotIfChanged
+    monkeypatch.setattr(B, "_validator", lambda url, sess: "len=1")
+    monkeypatch.setattr(B.ig, "BULK", {"CBS": "https://x/CBS.zip", "LBS": "https://x/LBS.zip"})
+    zip_token = "bis:" + hashlib.sha256(b"CBS=len=1;LBS=len=1").hexdigest()[:16]   # the old probe
+    unit = types.SimpleNamespace(config={}, key="bis/_all", source_id="bis")
+    strat = BulkSnapshotIfChanged()
+    for stored in (zip_token, "date-tail", None):
+        assert strat.detect_change(unit, {"upstream_vintage": stored}) is not None, stored
+    assert B.current_vintage(unit) is None
 
 
 def test_a_body_that_differs_between_two_fetches_never_merges(tmp_path, monkeypatch):

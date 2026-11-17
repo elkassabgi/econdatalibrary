@@ -45,9 +45,10 @@ phase below refreshes every flow in SERVED_SDMX_FLOWS from stats.bis.org:
     the header's field count (a mid-line cut); every row's STRUCTURE_ID is the pinned DSD and
     ACTION is 'I'; a second fetch hashes the same (a cut that changes between calls); the last
     series in the body reaches its own stored newest date and at most MISSING_KEYS_TOLERATED
-    stored series are absent (a deterministic cut at a line boundary - merge only grows, so it
-    would freeze those series silently; not a row-count rule, which one deleted upstream value
-    would trip for ever). Only keys the store already holds are merged (R278; new upstream keys are counted
+    stored series are absent, each with a stored newest older than RETIRED_AFTER_DAYS (a
+    deterministic cut at a line boundary - merge only grows, so it would freeze those series
+    silently; not a row-count rule, which one deleted upstream value would trip for ever). NOTE
+    the second fetch does NOT catch a stable cut: a cut that repeats exactly hashes the same. Only keys the store already holds are merged (R278; new upstream keys are counted
     and skipped - nothing new is catalogued, and the D1 catalogue sync is frozen anyway).
   * FETCH FIRST, MERGE LAST. The bodies are fetched and validated before the CBS/LBS zips, so
     the zips' long merges cannot spend the Deadline and defer the served data; but they MERGE
@@ -155,16 +156,16 @@ def _validator(url, sess) -> "str | None":
 
 
 def current_vintage(unit) -> "str | None":
-    """Hash of both bulk objects' size validators. Moves iff BIS republishes either zip."""
-    sess = requests.Session()
-    parts = []
-    for name, url in sorted(ig.BULK.items()):
-        v = _validator(url, sess)
-        if not v:
-            return None                                      # unknown -> let cadence decide
-        parts.append(f"{name}={v}")
-    h = hashlib.sha256(";".join(parts).encode()).hexdigest()[:16]
-    return f"bis:{h}"
+    """ALWAYS None (undeterminable -> bulk_snapshot_if_changed fetches, cadence-gated).
+
+    Until 2026-11-16 this hashed the two CBS/LBS zip validators. That probe cannot speak for the
+    SERVED data: the policy rates come from the SDMX API, which has no honest validator (see the
+    module docstring), so a zip-only token that matched the stored vintage would make the strategy
+    skip update() and freeze every catalogued id until a quarterly zip republish (AR-270 finding
+    5). It only worked because finalize stores 'date-tail', which no probe token ever equals. The
+    zips keep their own per-file gate inside update() (the _bulk_vintages.json sidecar), and the
+    SDMX slices theirs (body sha256), so nothing is lost by not probing here."""
+    return None
 
 
 def _load(out_dir) -> dict:
@@ -309,15 +310,30 @@ def _check_body(body, flow, freq, stored_newest):
     if len(missing) > MISSING_KEYS_TOLERATED:
         return None, ("transient", f"{len(missing)} stored series absent from the body (e.g. "
                                    f"{sorted(missing)[0]}; tolerated {MISSING_KEYS_TOLERATED})"), 0
+    # A tolerated absence must ALSO look retired: a stable cut exactly at the first line of the
+    # LAST series drops that whole series, every other check passes, and the sidecar would seal
+    # the hash - that series frozen with green health (AR-270 C2, the frozen-store class at one
+    # series). So an absent series whose stored newest is recent books a named transient and the
+    # hash is not saved; only an old one (ended upstream long ago) is tolerated.
+    recent = sorted(k for k in missing if not _older_than(stored_newest[k], RETIRED_AFTER_DAYS))
+    if recent:
+        return None, ("transient", f"stored series {recent} absent from the body although the store "
+                                   f"has them to {stored_newest[recent[0]]} (newer than "
+                                   f"{RETIRED_AFTER_DAYS} days, so not retired: a cut at a series "
+                                   f"boundary?)"), 0
     if missing:
         print(f"[bis] {flow}:{freq}: stored series {sorted(missing)} absent from the body - not "
-              f"refreshed this pass (retired upstream?)", flush=True)
+              f"refreshed this pass (stored newest older than {RETIRED_AFTER_DAYS} days: retired "
+              f"upstream)", flush=True)
     return kept, None, len(new_keys)
 
 
 # Stored series of one FREQ that may be absent from a body while the rest still merge (printed). One
 # retired upstream series must not block the other 48 for ever: the store never forgets a key.
 MISSING_KEYS_TOLERATED = 1
+# An absent stored series counts as retired only when its stored newest is older than this. The same
+# value as updater/health.py STALE_SERIES_DAYS (its "discontinued" line), pinned by test.
+RETIRED_AFTER_DAYS = 730
 
 
 def _stored_layout(path) -> "dict | None":
