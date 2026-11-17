@@ -39,7 +39,7 @@ def unchanged_queue(tmp_path, monkeypatch):
     con.close()
     pending = tmp_path / "pending_catalog_sync.txt"
     pending.write_text(QUEUE, encoding="utf-8")
-    monkeypatch.setattr(cat, "CATALOG_DB", db)
+    monkeypatch.setattr(cat, "CATALOGUE", db)
     monkeypatch.setattr(cat, "PENDING", str(pending))
     monkeypatch.setattr(cat, "_manifest_path", lambda root: manifest_path)
     monkeypatch.setattr(cat, "_gated_ids", lambda: set())

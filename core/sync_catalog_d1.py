@@ -48,7 +48,7 @@ import uuid
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
 
 from core.sync_state_d1 import (CATALOG_SHARD_FOR, MAX_FILE_BYTES,  # noqa: E402
-                                ROWS_PER_STMT, ROOT, _gated_ids, _lit, execute_remote)
+                                ROWS_PER_STMT, ROOT, _default_catalogue, _gated_ids, _lit, execute_remote)
 
 # Ids per `DELETE FROM series_fts WHERE series_id IN (...)`. Deliberately NOT ROWS_PER_STMT:
 # that column is UNINDEXED, so the cost is one full table scan PER STATEMENT regardless of
@@ -110,8 +110,10 @@ def whole_source_reconcile(source, rows, skipped_by_diff, n_groups=1):
         return None
     return source
 
-CATALOG_DB = os.path.abspath(os.environ.get("ECONDL_CATALOG")
-                             or os.path.join(ROOT, "data", "catalog.db"))
+# The catalogue this sync reads. None = resolve at the open (_default_catalogue: $ECONDL_CATALOG, else this
+# checkout's); tests set a path here. It was read at import; resolving at the open keeps an import of this
+# library (several tools import it for its statement builders) from failing after T0 on a stale override.
+CATALOGUE: str | None = None
 # Written by the orchestrator: one series_id per line, appended whenever a CSV is
 # derived. Consumed and truncated by this script so a series is synced once.
 PENDING = os.path.join(
@@ -431,7 +433,7 @@ def _has_fts_delete(path: str) -> bool:
 def verify_replay(cols: list[str], rows: list[dict], files: list[str], fts_ids: set | None = None) -> None:
     """Replay the emitted SQL into a fresh in-memory SQLite and assert row-for-row
     equality with what we intended to send. Broken SQL never reaches remote D1."""
-    mem = sqlite3.connect(":memory:")
+    mem = sqlite3.connect(":memory:")   # plain-open: an in-memory replay check, not the catalogue
     # NO declared column types: SQLite then stores each literal as it was written (int, float, text, NULL) with no
     # affinity conversion, so the replay can be compared with the rows EXACTLY, every column (review R1316).
     mem.execute(f"CREATE TABLE series ({', '.join(cols)}, PRIMARY KEY (series_id))")
@@ -530,7 +532,12 @@ def main(argv: list[str] | None = None) -> None:
     # busy timeout; this one did not, so a concurrent catalogue build -- an ordinary thing, since
     # cataloguing a source and syncing another are independent jobs -- aborted the sync outright
     # with "database is locked". A read-only connection still has to wait out a writer's lock.
-    conn = sqlite3.connect(f"file:{CATALOG_DB}?mode=ro", uri=True, timeout=300.0)
+    from core import catalog_path                                       # noqa: PLC0415 - the one resolver
+    try:                    # read-only; a missing file: sqlite's own error class, as the mode=ro open raised
+        conn = catalog_path.connect_path(os.path.abspath(CATALOGUE or _default_catalogue(ROOT)), write=False,
+                                         timeout=300.0)
+    except FileNotFoundError as e:
+        raise sqlite3.OperationalError(f"unable to open database file: {e}") from None
     conn.execute("PRAGMA busy_timeout = 300000")
 
     # SEED FIRST: it reads the CATALOGUE, not the pending queue, so it must not be gated

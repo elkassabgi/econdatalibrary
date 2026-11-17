@@ -33,7 +33,7 @@ def scratch(tmp_path, monkeypatch):
     con.close()
     ids = tmp_path / "ids.txt"
     ids.write_text(f"{GATED}:a\n{KEPT}:a\n", encoding="utf-8")
-    monkeypatch.setattr(cat, "CATALOG_DB", db)
+    monkeypatch.setattr(cat, "CATALOGUE", db)
     monkeypatch.setattr(cat, "_manifest_path", lambda root: str(tmp_path / "sent.db"))
     monkeypatch.setattr(cat, "_gated_ids", lambda: {GATED})
     sent = []

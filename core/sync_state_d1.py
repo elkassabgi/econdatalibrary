@@ -298,6 +298,24 @@ def data_through_stmts(dt_rows: list[tuple[str, str]]) -> list[str]:
     return stmts
 
 
+def _default_catalogue(root: str) -> str:
+    """The catalogue to read when the caller names none: $ECONDL_CATALOG when it is set, else
+    <root>/data's catalogue - exactly the old expression (t0_ready legacy-catalogue, 2026-11-17). The
+    override is asked of econdl._catalog.default_db(), which owns it (tests/test_catalog_path.py
+    EXEMPT_FILES): before T0 it returns the override; after T0 the build, refusing an override that names
+    any other file. With no override default_db() answers its own default, and then <root>'s file is used,
+    so a test or a run that relocates the root is unchanged."""
+    client = os.path.join(_REPO, "clients", "python")                  # this checkout's client, as derive_csv
+    if client not in sys.path:
+        sys.path.insert(0, client)
+    from core import catalog_path                                       # noqa: PLC0415 - the one resolver
+    from econdl import _catalog as _econdl_catalog                      # noqa: PLC0415
+    chosen = _econdl_catalog.default_db()
+    if chosen == _econdl_catalog._DEFAULT_DB:
+        return catalog_path.under(root)
+    return chosen
+
+
 def emit_sql(state_db: str, out_dir: str, gated: set[str] | None = None, catalogue: str | None = None,
              data_through: bool = True, discontinued: set[str] | None = None) -> tuple[list[str], dict[str, int]]:
     """Emit chunked upsert .sql files for every NON-GATED row of the freshness tables.
@@ -313,7 +331,7 @@ def emit_sql(state_db: str, out_dir: str, gated: set[str] | None = None, catalog
     gated = _gated_ids() if gated is None else {s.lower() for s in gated}
     frozen = _discontinued_ids() if discontinued is None else {s.lower() for s in discontinued}
     # Strictly read-only: this script must never write (or WAL-touch) state.db.
-    conn = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True)
+    conn = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True)   # plain-open: the updater's state.db, read-only
     counts: dict[str, int] = {}
     recorded: dict[str, int] = {}
     stmts: list[str] = []
@@ -349,12 +367,17 @@ def emit_sql(state_db: str, out_dir: str, gated: set[str] | None = None, catalog
     # table (not an ALTER on source_state): CREATE IF NOT EXISTS is idempotent
     # where ADD COLUMN is fatal-on-rerun, and a fresh D1 stays workable.
     # verify_replay ignores it deliberately — it audits the state projection.
-    cat_path = catalogue or os.environ.get("ECONDL_CATALOG") or os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "catalog.db")
+    # The catalogue is resolved only when it is read (t0_ready legacy-catalogue): with data_through=False
+    # (the self-hosted origin) nothing here asks for it, so no override rule can stop that caller.
+    cat_path = (catalogue or _default_catalogue(_REPO)) if data_through else None
     if not data_through:
         pass                     # the caller computes it elsewhere (the self-hosted origin: from its copy)
     elif os.path.exists(cat_path):
-        cconn = sqlite3.connect(f"file:{cat_path}?mode=ro", uri=True)
+        from core import catalog_path                                   # noqa: PLC0415 - the one resolver
+        try:                # a directory, or a file removed after the exists check: sqlite's own error class
+            cconn = catalog_path.connect_path(cat_path, write=False, timeout=5.0)   # read-only, sqlite's own 5 s
+        except FileNotFoundError as e:
+            raise sqlite3.OperationalError(f"unable to open database file: {e}") from None
         try:
             dt_rows = data_through_rows(cconn, gated)
         finally:
@@ -418,8 +441,8 @@ def verify_replay(state_db: str, files: list[str], counts: dict[str, int],
     """
     gated = _gated_ids() if gated is None else {s.lower() for s in gated}
     frozen = _discontinued_ids() if discontinued is None else {s.lower() for s in discontinued}
-    src = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True)
-    mem = sqlite3.connect(":memory:")
+    src = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True)   # plain-open: the updater's state.db, read-only
+    mem = sqlite3.connect(":memory:")   # plain-open: an in-memory replay check, not the catalogue
     try:
         for _pass in (1, 2):
             for p in files:

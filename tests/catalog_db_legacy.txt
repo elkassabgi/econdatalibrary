@@ -4,9 +4,6 @@
 api/test_conformance.py
 core/backfill_coverage.py
 core/catalog.py
-core/gen_denylist.py
-core/sync_catalog_d1.py
-core/sync_state_d1.py
 pipeline/title_bea.py
 tools/apply_series_names.py
 tools/delist_timeless_tables.py

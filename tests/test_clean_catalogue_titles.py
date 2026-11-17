@@ -175,7 +175,7 @@ def test_the_sync_diff_hashes_the_cleaned_row(tmp_path, monkeypatch, capsys):
     m.close()
     ids = tmp_path / "ids.txt"
     ids.write_text("src:A\n", encoding="utf-8")
-    monkeypatch.setattr(sc, "CATALOG_DB", db)
+    monkeypatch.setattr(sc, "CATALOGUE", db)
     monkeypatch.setattr(sc, "_manifest_path", lambda root: str(tmp_path / "sent.db"))
     monkeypatch.setattr(sc, "_gated_ids", lambda: set())
     sc.main(["--ids-file", str(ids), "--dry-run"])
@@ -203,7 +203,7 @@ def test_the_sync_sends_a_broken_title_cleaned_and_counts_it(tmp_path, monkeypat
     con.close()
     ids = tmp_path / "ids.txt"
     ids.write_text("src:A\nsrc:B\n", encoding="utf-8")
-    monkeypatch.setattr(sc, "CATALOG_DB", db)
+    monkeypatch.setattr(sc, "CATALOGUE", db)
     monkeypatch.setattr(sc, "_manifest_path", lambda root: str(tmp_path / "sent.db"))
     monkeypatch.setattr(sc, "_gated_ids", lambda: set())
     sent = {}
