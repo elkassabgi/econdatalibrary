@@ -1198,7 +1198,53 @@ def load_registry():
         roll["categories"] = sorted(set(cats.get(sid, [])))
         roll["geographies"] = sorted(set(geos.get(sid, [])))
 
+    apply_served_facts(series_roll)
     return licenses, sources, series_roll, source_meta
+
+
+SERVED_FACTS = os.path.join(HERE, "served_facts.json")
+
+
+def load_served_facts(path=None):
+    """catalog/served_facts.json: what the public API serves, MEASURED (n_series per source from
+    /v1/catalog?source=<id> total; optional per-source frequency codes). None when absent or unreadable.
+
+    WHY (2026-11-17, pre-deploy review C1). The local catalogue can run ahead of the served one: statcan's
+    lane catalogued 1,270 new ids that the frozen serving catalogue does not hold (/v1/series answers
+    "unknown series id"), so a page built from the local file said 467,611 series while the API serves
+    466,341. A page is a promise about what a user can download, so it may never claim more than is served."""
+    p = path or SERVED_FACTS
+    if not os.path.exists(p):
+        print(f"  WARNING: no {os.path.basename(p)} - page counts are NOT capped at the served counts")
+        return None
+    try:
+        with open(p, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        counts = {str(k): int(v) for k, v in doc["n_series"].items()}
+        freqs = {str(k): [str(c) for c in v["codes"]] for k, v in (doc.get("frequencies") or {}).items()}
+    except Exception as e:                                   # noqa: BLE001
+        raise SystemExit(f"FATAL: {p} is unreadable ({type(e).__name__}: {e}) - a page could claim more "
+                         "series than the API serves") from None
+    return {"n_series": counts, "frequencies": freqs, "measured_utc": doc.get("measured_utc")}
+
+
+def apply_served_facts(series_roll, facts=None):
+    """Hold every source's n_series at or below its served count (never raise it), and use the served frequency
+    codes where served_facts.json lists them. Returns {source_id: (local, served)} for the sources it lowered."""
+    facts = load_served_facts() if facts is None else facts
+    if not facts:
+        return {}
+    lowered = {}
+    for src, roll in series_roll.items():
+        served = facts["n_series"].get(src)
+        if served is not None and roll.get("n_series", 0) > served:
+            lowered[src] = (roll["n_series"], served)
+            roll["n_series"] = served
+            print("  served cap: %s n_series %d -> %d (the API serves %d, measured %s)"
+                  % (src, lowered[src][0], served, served, facts.get("measured_utc")))
+        if src in facts["frequencies"]:
+            roll["frequencies"] = sorted(set(facts["frequencies"][src]))
+    return lowered
 
 
 def load_sidecar():
