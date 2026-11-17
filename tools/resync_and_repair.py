@@ -118,12 +118,26 @@ def sync(src: str, workers: int = 16) -> int:
     return len(names)
 
 
+def _catalogue_ro(path=None):
+    """The catalogue, READ-ONLY, through core.catalog_path (t0_ready legacy-catalogue): `path` when one is given,
+    else this checkout's data/ catalogue - as before; after T0 the build only (any other path is refused).
+    sqlite's own 5 s busy timeout, as the old open had. A missing file raises sqlite3.OperationalError, the
+    class the old open raised, and nothing is created."""
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    from core import catalog_path                                       # noqa: PLC0415 - the one resolver
+    try:
+        return catalog_path.connect_path(path or catalog_path.under(ROOT), write=False, timeout=5.0)
+    except FileNotFoundError as e:
+        raise sqlite3.OperationalError(f"unable to open database file: {e}") from None
+
+
 def stale_sample(src: str, k: int, seed: int):
     """(mismatches, compared, example). Run AFTER sync, so the mirror is the store."""
     from core import r2_util
     from core.derive_csv import _series_csv_bytes
     s3 = r2_util.client()
-    con = sqlite3.connect(f"file:{os.path.join(ROOT,'data','catalog.db')}?mode=ro", uri=True)
+    con = _catalogue_ro()
     ids = [r[0] for r in con.execute(
         "SELECT series_id FROM series WHERE source_id=?", (src,))]
     if not ids:
