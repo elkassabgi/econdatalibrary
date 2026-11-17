@@ -508,6 +508,53 @@ def test_the_conformance_exemption_names_only_temporary_fixtures():
         assert opens and all(ast.unparse(o.args[0]) == "tmp_cat" for o in opens), name
 
 
+# Review AR-283 (R1923): checking a few opener SHAPES proved nothing - a repointed path, a copy of the real file,
+# an ATTACH, a --catalog argument and os.environ.update all named the real catalogue and passed. So the rule is
+# on what the exemption hides: in EVERY top-level def of an exempted name (a dead duplicate def included), the
+# lines that name the catalogue (NAMES_CATALOGUE over _repo_walk.code_text, the ratchet's own reader) are
+# EXACTLY these. Any other naming line, anywhere in the three functions, fails.
+_CONFORMANCE_NAMING_LINES = {
+    "store": ["prev = {k: os.environ.get(k) for k in ('ECONDL_DATA', 'ECONDL_CATALOG')}",
+              "os.environ['ECONDL_CATALOG'] = paths['catalog']"],
+    "test_metadata_description_citation_fallback": ["tmp_cat = os.path.join(tmpdir, 'catalog.db')"],
+    "test_status_data_unavailable_vs_resolver_empty_distinct": ["tmp_cat = os.path.join(tmpdir, 'catalog.db')"],
+}
+
+
+def _naming_lines_of_each_def(src):
+    import ast
+    import _repo_walk
+    out = []
+    for n in ast.parse(src).body:
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in _CONFORMANCE_NAMING_LINES:
+            code = _repo_walk.code_text(ast.get_source_segment(src, n))
+            out.append((n.name, [l.strip() for l in code.splitlines() if NAMES_CATALOGUE.search(l)]))
+    return out
+
+
+def test_the_conformance_exemption_hides_only_the_four_known_lines():
+    assert set(_CONFORMANCE_NAMING_LINES) == EXEMPT_FUNCTIONS["api/test_conformance.py"]
+    src = open(os.path.join(ROOT, "api", "test_conformance.py"), encoding="utf-8").read()
+    got = _naming_lines_of_each_def(src)
+    assert sorted(name for name, _l in got) == sorted(_CONFORMANCE_NAMING_LINES), \
+        f"each exempted name is defined exactly once at top level: {[name for name, _l in got]}"
+    for name, lines in got:
+        assert lines == _CONFORMANCE_NAMING_LINES[name], (name, lines)
+
+
+def test_the_four_line_rule_can_fail():
+    src = open(os.path.join(ROOT, "api", "test_conformance.py"), encoding="utf-8").read()
+    anchor = "    paths = conformance_fixture.build(tmp)\n"
+    assert src.count(anchor) == 1
+    for extra in ("    paths['catalog'] = os.path.join(_REPO, 'data', 'catalog.db')\n",
+                  "    os.environ.update(ECONDL_CATALOG=paths['data_root'])\n",
+                  "    x = sqlite3.connect('x').execute(\"ATTACH 'data/catalog.db' AS live\")\n"):
+        lines = dict(_naming_lines_of_each_def(src.replace(anchor, anchor + extra)))["store"]
+        assert lines != _CONFORMANCE_NAMING_LINES["store"], extra
+    dup = "def store():\n    return 1\n\n\n" + src
+    assert [n for n, _l in _naming_lines_of_each_def(dup)].count("store") == 2
+
+
 def test_the_conformance_exemption_can_fail():
     """Dropping the three functions is what clears the file - and nothing else in it names the catalogue."""
     import _repo_walk
