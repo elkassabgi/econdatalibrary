@@ -298,6 +298,10 @@ def test_t11_after_t0_every_owed_id_is_payable(env):
     flag = env.tmp / "CUTOVER"
     flag.write_text("x")
     env.mp.setattr(cutover, "FLAG_PATH", str(flag))
+    # after T0 the catalogue the orchestrator reads is THE build (core.catalog_path; updater/run.py refuses a run
+    # whose $ECONDL_CATALOG names another file): the test's catalogue plays the build
+    from core import catalog_path
+    env.mp.setattr(catalog_path, "BUILD_PATH", os.environ["ECONDL_CATALOG"])
     _release(env.st)
     env.st.note_csv_desktop_owed(SRC, [(H[0], None, "owed")])
     _fake(env)
@@ -771,6 +775,8 @@ def _after_t0_env(env):
     flag = env.tmp / "CUTOVER"
     flag.write_text("x")
     env.mp.setattr(cutover, "FLAG_PATH", str(flag))
+    from core import catalog_path                  # after T0 the orchestrator reads THE build: the test's catalogue
+    env.mp.setattr(catalog_path, "BUILD_PATH", os.environ["ECONDL_CATALOG"])
     return blob_mod.SelfhostBlob.__new__(blob_mod.SelfhostBlob)       # the served store after T0 (never touched)
 
 

@@ -104,12 +104,12 @@ def _published_keys() -> set[str]:
     would drift the moment one is added or withdrawn. If the catalogue is unreadable we fail
     transient rather than guessing a smaller set and quietly shrinking the source.
     """
-    import sqlite3
-    path = os.path.join(config.ROOT, "data", "catalog.db")
+    from core import catalog_path                                       # noqa: PLC0415 - the one resolver
+    path = catalog_path.under(config.ROOT)
     if not os.path.exists(path):
-        raise TransientError(f"{SOURCE}: catalog.db not present at {path}; cannot determine "
+        raise TransientError(f"{SOURCE}: the catalogue is not present at {path}; cannot determine "
                              f"which legacy ids to project")
-    con = sqlite3.connect(path)
+    con = catalog_path.connect_path(path, write=False, timeout=5.0)   # it only reads
     try:
         rows = con.execute("SELECT series_id FROM series WHERE source_id=?",
                            (SOURCE,)).fetchall()
