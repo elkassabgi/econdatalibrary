@@ -82,6 +82,20 @@ def test_a_git_failure_in_a_checkout_raises(tmp_path):
         list(W.code_files((".py",), str(tmp_path)))
 
 
+def test_a_corrupt_index_raises_not_no_files(checkout):
+    """Review C268-1: a corrupt .git/index lets `rev-parse` succeed (exit 0) and then fails `ls-files` (exit 128).
+    That must raise, not return [] - a ratchet that scans no files passes everything."""
+    import subprocess
+    checkout("tools/tracked.py")
+    (checkout.repo / ".git" / "index").write_bytes(b"this is not a git index" * 8)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    rev = subprocess.run(["git", "-C", str(checkout.repo), "rev-parse", "--show-toplevel"], capture_output=True, env=env)
+    ls = subprocess.run(["git", "-C", str(checkout.repo), "ls-files", "-z", "--cached"], capture_output=True, env=env)
+    assert rev.returncode == 0 and ls.returncode != 0, (rev.returncode, ls.returncode)   # the premise
+    with pytest.raises(RuntimeError, match=r"git ls-files failed .*\(exit"):
+        list(W.code_files((".py",), str(checkout.repo)))
+
+
 def test_an_empty_git_folder_inside_another_repository_raises(checkout):
     """git searches upward from an empty .git and answers for the PARENT (exit 0, no files under it): that is
     not this folder's file list (review of #268, finding 2)."""
