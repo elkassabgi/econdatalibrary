@@ -14,10 +14,23 @@ journal_mode=delete and shared with the crawlers; one big COMMIT held them off f
 plus the FTS row for each inserted id (INSERT only - series_fts is fts5(series_id UNINDEXED, ...),
 so any DELETE by id is a full scan).
 
-Direction is D1 -> local ONLY, rows the local copy does not have. Nothing is updated, nothing is
-deleted, D1 is never written. Dry run by default.
+Direction is D1 -> local ONLY, rows the local copy does not have. Nothing is updated (unless
+--update-differing), nothing is deleted, D1 is never written. Dry run by default.
+
+--update-differing (2026-11-17, review C2 of the sec_edgar repair): a row present on both sides
+DIFFERS when ANY series column both sides carry disagrees - metadata, last_updated, frequency, unit,
+geography, category, license_id, as well as start/end/title - and the UPDATE copies every one of
+those columns from D1, not only the span and the title. The receipt names the columns that
+differed for each id ("differing_columns"). The FTS row is not touched by an UPDATE (as before: a
+series_fts DELETE by id is a full scan), so a title or geography change reaches search only on the
+next FTS rebuild.
+
+The catalogue is opened through core.catalog_path (t0_ready legacy-catalogue): read-only for the
+reads, write=True for the apply, and the __main__ block holds the single-writer lock for an --apply
+run (tests/test_catalogue_writers_main.py). The tool is refused after T0 before anything else.
 
     python tools/sync_source_rows_d1_to_local.py --source sec_edgar [--apply] [--chunk 400]
+                                                 [--update-differing] [--receipt-dir DIR]
 """
 from __future__ import annotations
 import argparse
@@ -29,7 +42,22 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB = os.path.join(ROOT, "data", "catalog.db")
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver
+
+DB = catalog_path.under(ROOT)
+# The receipt's default folder: the checkout's logs/ (git-ignored). It was a temp folder on the system drive (where
+# no work may go) when that folder existed, and the checkout root otherwise.
+RECEIPT_DIR = os.path.join(ROOT, "logs")
+
+
+def _same(a, b) -> bool:
+    """One column's two values agree. Text-compared, as the span columns always were (str() on both sides),
+    so a D1 JSON number and a local integer of the same value agree; NULL agrees only with NULL."""
+    if a is None or b is None:
+        return a is None and b is None
+    return str(a) == str(b)
 
 
 def d1_rows(source: str):
@@ -46,15 +74,21 @@ def d1_rows(source: str):
 
 
 def local_rows(source: str) -> dict:
-    """{series_id: (start_date, end_date, title)} by primary-key range."""
-    con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=120)
+    """{series_id: {column: value}} - EVERY series column - by primary-key range. Read-only."""
+    con = catalog_path.connect_path(DB, write=False, timeout=120)
     con.execute("PRAGMA busy_timeout=120000")
     try:
-        return {r[0]: (r[1], r[2], r[3]) for r in con.execute(
-            "SELECT series_id, start_date, end_date, title FROM series WHERE series_id >= ? AND series_id < ?",
-            (source + ":", source + ";"))}
+        cur = con.execute("SELECT * FROM series WHERE series_id >= ? AND series_id < ?",
+                          (source + ":", source + ";"))
+        cols = [d[0] for d in cur.description]
+        return {r[0]: dict(zip(cols, r)) for r in cur}
     finally:
         con.close()
+
+
+def differing_columns(d1_row: dict, local_row: dict) -> list:
+    """The series columns both sides carry (series_id aside) whose values disagree, in the local order."""
+    return [c for c in local_row if c != "series_id" and c in d1_row and not _same(d1_row[c], local_row[c])]
 
 
 def local_ids(source: str) -> set:
@@ -68,7 +102,9 @@ def main() -> int:
         sys.path.insert(0, ROOT)
     from core import cutover                                          # noqa: PLC0415
     cutover.refuse_if_cut_over('sync_source_rows_d1_to_local - it copies FROZEN D1 rows into the live catalogue (and would bring back rows removed after T0)')
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    # allow_abbrev=False: __main__ takes the writer lock on the exact "--apply"; a prefix such as "--app" must not
+    # reach main() as --apply without it (tests/test_catalogue_writers_main.py)
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     ap.add_argument("--source", required=True)
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--dry-run", action="store_true",
@@ -76,8 +112,11 @@ def main() -> int:
                          "guard can tell a free run from a charged one (R323)")
     ap.add_argument("--chunk", type=int, default=400)
     ap.add_argument("--update-differing", action="store_true",
-                    help="also UPDATE local rows whose start_date/end_date/title differ from D1 (D1 is the truth for a "
-                         "CI-catalogued source, R737 item c); reported either way")
+                    help="also UPDATE local rows where ANY series column both sides carry differs from D1, copying "
+                         "every such column (D1 is the truth for a CI-catalogued source, R737 item c; review C2); "
+                         "the differing rows are reported either way")
+    ap.add_argument("--receipt-dir", default=RECEIPT_DIR,
+                    help="folder for the JSON receipt (default: the checkout's logs/, git-ignored)")
     a = ap.parse_args()
     if not os.path.exists(DB):
         print(f"no local catalogue at {DB}"); return 2
@@ -90,15 +129,21 @@ def main() -> int:
     # served-state verify compares the two stores by COUNT only, so a `--skip-local` respan, a
     # non-fatal local branch, or a CI-only write leaves them apart invisibly (the control row
     # sec_edgar:AAPL sat at 2026-04-17 locally and 2026-07-17 on D1).
-    differing = [r for r in rows if r.get("series_id") in loc and
-                 (str(r.get("start_date")), str(r.get("end_date")), r.get("title")) !=
-                 (str(loc[r["series_id"]][0]), str(loc[r["series_id"]][1]), loc[r["series_id"]][2])]
+    # Review C2 (2026-11-17): EVERY series column both sides carry, not only start/end/title - a stale
+    # metadata, last_updated, frequency, unit, geography, category or license_id was invisible before.
+    diff_cols = {r["series_id"]: differing_columns(r, loc[r["series_id"]])
+                 for r in rows if r.get("series_id") in loc}
+    differing = [r for r in rows if diff_cols.get(r.get("series_id"))]
     print(f"{t0:%H:%M:%SZ} {a.source}: D1 rows {len(rows):,} (rows_read {rows_read:,}); local rows {len(have):,}; "
-          f"on D1 and NOT local: {len(missing):,}; on both and DIFFERING (start/end/title): {len(differing):,}", flush=True)
+          f"on D1 and NOT local: {len(missing):,}; on both and DIFFERING (any column): {len(differing):,}", flush=True)
     for r in differing[:8]:
         l = loc[r["series_id"]]
-        print(f"   differ {r['series_id']:<26} local ({l[0]}, {l[1]}) D1 ({r.get('start_date')}, {r.get('end_date')})"
-              f"{'  title differs' if l[2] != r.get('title') else ''}")
+        cols = diff_cols[r["series_id"]]
+        other = [c for c in cols if c not in ("start_date", "end_date", "title")]
+        print(f"   differ {r['series_id']:<26} local ({l.get('start_date')}, {l.get('end_date')}) "
+              f"D1 ({r.get('start_date')}, {r.get('end_date')})"
+              f"{'  title differs' if 'title' in cols else ''}"
+              f"{'  also: ' + ', '.join(other) if other else ''}")
     if len(differing) > 8:
         print(f"   ... {len(differing) - 8:,} more differing")
     for r in missing[:12]:
@@ -107,27 +152,33 @@ def main() -> int:
         print(f"   ... {len(missing) - 12:,} more")
     receipt = {"utc": t0.isoformat(), "source": a.source, "d1_rows": len(rows), "d1_rows_read": rows_read,
                "local_rows_before": len(have), "missing": [r["series_id"] for r in missing],
-               "differing": [r["series_id"] for r in differing], "apply": a.apply, "update_differing": a.update_differing}
-    rpath = os.path.join("D:/temp/claude" if os.path.isdir("D:/temp/claude") else ROOT,
-                         f"sync_rows_{a.source}_{t0:%Y%m%dT%H%M%SZ}.json")
+               "differing": [r["series_id"] for r in differing], "apply": a.apply, "update_differing": a.update_differing,
+               "differing_columns": {r["series_id"]: diff_cols[r["series_id"]] for r in differing}}
+    os.makedirs(a.receipt_dir, exist_ok=True)
+    rpath = os.path.join(a.receipt_dir, f"sync_rows_{a.source}_{t0:%Y%m%dT%H%M%SZ}.json")
     todo_upd = differing if (a.apply and a.update_differing) else []
     if not a.apply or (not missing and not todo_upd):
         json.dump(receipt, open(rpath, "w", encoding="utf-8"), indent=1)
         print(f"dry run - nothing written; receipt {rpath}" if not a.apply else f"nothing to write; receipt {rpath}")
         return 0
 
-    con = sqlite3.connect(DB, timeout=120, isolation_level=None)
+    # The write road: before T0 the checkout's catalogue read-write (mode=rw, never created); after T0 this tool
+    # is refused above, and connect_path(write=True) would refuse anyway without the writer lock __main__ holds.
+    con = catalog_path.connect_path(DB, write=True, timeout=120, isolation_level=None)
     con.execute("PRAGMA busy_timeout=120000")
     updated = 0
     if todo_upd:
+        # ALL the columns both sides carry, from D1 (review C2), in the local table's order.
+        local_cols = [c[1] for c in con.execute("PRAGMA table_info(series)")]
+        upd_cols = [c for c in local_cols if c != "series_id" and c in todo_upd[0]]
+        upd = f"UPDATE series SET {', '.join(c + '=?' for c in upd_cols)} WHERE series_id=?"
         for k in range(0, len(todo_upd), a.chunk):
             part = todo_upd[k:k + a.chunk]
             for attempt in range(12):
                 try:
                     con.execute("BEGIN IMMEDIATE")
                     for r in part:
-                        con.execute("UPDATE series SET start_date=?, end_date=?, title=? WHERE series_id=?",
-                                    (r.get("start_date"), r.get("end_date"), r.get("title"), r["series_id"]))
+                        con.execute(upd, [r.get(c) for c in upd_cols] + [r["series_id"]])
                         updated += 1
                     con.execute("COMMIT")
                     break
@@ -191,4 +242,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    if "--apply" not in sys.argv[1:]:
+        sys.exit(main())                     # a dry run reads only: no lock
+    else:
+        with catalog_path.write_session():   # after T0: the single-writer lock (main() refuses after T0 anyway)
+            sys.exit(main())

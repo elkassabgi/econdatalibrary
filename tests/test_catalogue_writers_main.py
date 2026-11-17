@@ -44,6 +44,7 @@ ARGS = {
     "tools/clean_catalogue_titles.py": {"write": ["--apply"], "dry": []},
     "tools/statcan_new_cubes.py": {"write": ["--apply"], "dry": []},
     "tools/fix_statcan_frequency.py": {"write": ["--apply"], "dry": []},
+    "tools/sync_source_rows_d1_to_local.py": {"write": ["--source", "zz", "--apply"], "dry": ["--source", "zz"]},
 }
 
 
@@ -141,6 +142,7 @@ EXPECTED_WRITERS = {
     "tools/title_riksbank_fx.py", "tools/title_unctad_span_variants.py", "tools/title_unesco_dem_wb_codes.py",
     "tools/title_unhcr_from_siblings.py", "tools/title_vdem_from_codebook.py",
     "tools/refresh_sec_edgar.py",                                                  # joined 2026-11-16 (t0_ready)
+    "tools/sync_source_rows_d1_to_local.py",                                       # joined 2026-11-17 (t0_ready)
 }
 
 # Writers whose entry must NOT hold the lock for the whole run, each with the premise that makes it safe pinned
