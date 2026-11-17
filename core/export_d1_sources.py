@@ -35,12 +35,15 @@ def _lit(v):
 def _catalogue_ro():
     """The catalogue, READ-ONLY, through core.catalog_path (t0_ready legacy-catalogue): this checkout's
     data/ catalogue before T0, as before; after T0 the build only. sqlite's own 5 s busy timeout, as the
-    plain open had. A missing file raises FileNotFoundError: it is never created (a plain open made an
-    empty one)."""
+    plain open had. A missing file raises sqlite3.OperationalError, the class the old open raised (at the open,
+    or at the first SELECT of the empty file a plain open made), and nothing is created."""
     if ROOT not in sys.path:
         sys.path.insert(0, ROOT)
     from core import catalog_path                                       # noqa: PLC0415 - the one resolver
-    return catalog_path.connect_path(catalog_path.under(ROOT), write=False, timeout=5.0)
+    try:
+        return catalog_path.connect_path(catalog_path.under(ROOT), write=False, timeout=5.0)
+    except FileNotFoundError as e:
+        raise sqlite3.OperationalError(f"unable to open database file: {e}") from None
 
 
 def main(argv):

@@ -4,7 +4,8 @@ load_d1_chunked.py and load_d1_rest.py.
 
 Before T0: <ROOT>/data's catalogue, READ-ONLY, with sqlite's own 5 s busy timeout (the plain opens had no
 timeout argument and no busy_timeout PRAGMA after them, so 5 s is the effective value and it is pinned here).
-A missing catalogue raises FileNotFoundError and creates nothing (a plain sqlite3.connect made an empty file).
+A missing catalogue raises sqlite3.OperationalError (the class the old opens raised) and creates nothing (a
+plain sqlite3.connect made an empty file).
 After T0: the build only; a worktree's own catalogue is refused. Hermetic: temporary roots, no network."""
 import json
 import os
@@ -84,7 +85,7 @@ def test_the_open_is_read_only_with_sqlite_s_own_timeout(mod, tmp_path, monkeypa
 @pytest.mark.parametrize("mod", MODULES, ids=lambda m: m.__name__)
 def test_a_missing_catalogue_is_an_error_and_nothing_is_created(mod, tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "ROOT", str(tmp_path / "nowhere"))
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(sqlite3.OperationalError):
         mod._catalogue_ro()
     assert not (tmp_path / "nowhere").exists()
 
@@ -136,7 +137,7 @@ def test_export_d1_on_a_missing_catalogue_writes_no_dump(tmp_path, monkeypatch):
     """Before: the plain open CREATED an empty catalogue and an empty dump - one that DROPs every D1 table."""
     out = _point(export_d1, monkeypatch, tmp_path, OUT=str(tmp_path / "dist" / "econ_catalog.sql"),
                  STATE=str(tmp_path / "no_state.db"))
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(sqlite3.OperationalError):
         export_d1.main()
     assert not (out / "econ_catalog.sql").exists()
     assert not (tmp_path / "data").exists()
