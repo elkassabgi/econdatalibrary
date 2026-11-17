@@ -13,9 +13,12 @@ redistribute until the verified per-source pass, Stage 0b, confirms its real lic
 Run: python core/build_registry.py
 """
 from __future__ import annotations
-import json, os
+import json, os, sys
 import yaml
 import catalog as cat   # same dir
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))  # core.catalog_path
+from core import catalog_path  # noqa: E402 - the single-writer lock around the entry (plan step 1)
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 CLEAN = os.path.join(ROOT, "data", "clean_full")
@@ -132,4 +135,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    with catalog_path.write_session():   # after T0: the single-writer lock (cat.connect() writes)
+        main()

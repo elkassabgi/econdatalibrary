@@ -199,9 +199,17 @@ def _python_files():
         yield rel, _repo_walk.parse_code(p)          # utf-8-sig; a file that does not parse fails (R1209)
 
 
+# A LIBRARY writer (core/catalog.py: its connect() opens for write for whoever imports it) does not take the
+# lock itself; its importers' entries do - pinned, with the premise RUN, by tests/test_catalogue_writers_main.py
+# (LIBRARY_WRITERS, test_the_library_writer_premise, which also checks the two sets are the same).
+LIBRARY_WRITERS = {"core/catalog.py"}
+
+
 def test_every_resolver_writer_takes_the_lock():
     bad = []
     for rel, tree in _python_files():
+        if rel in LIBRARY_WRITERS:
+            continue
         if any(True for _ in _resolver_write_opens(tree)):
             if not any(n.func.attr in LOCKERS for n in _calls(tree)):
                 bad.append(rel)

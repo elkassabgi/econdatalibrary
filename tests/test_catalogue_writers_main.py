@@ -143,6 +143,7 @@ EXPECTED_WRITERS = {
     "tools/title_unhcr_from_siblings.py", "tools/title_vdem_from_codebook.py",
     "tools/refresh_sec_edgar.py",                                                  # joined 2026-11-16 (t0_ready)
     "tools/sync_source_rows_d1_to_local.py",                                       # joined 2026-11-17 (t0_ready)
+    "core/catalog.py",                                       # joined 2026-11-17 (t0_ready): a LIBRARY writer, below
 }
 
 # Writers whose entry must NOT hold the lock for the whole run, each with the premise that makes it safe pinned
@@ -152,6 +153,113 @@ EXPECTED_WRITERS = {
 # in _refresh_local); after T0 its other write roads (--respan, and the pre-T0 R2 path) are refused before any
 # open, and connect_path(write=True) refuses any write without the lock.
 LOCK_INSIDE_MAIN = {"tools/refresh_sec_edgar.py"}
+
+
+# LIBRARY writers: a module (no __main__ block, no script body) whose FUNCTION opens the catalogue for write for
+# whoever imports it. It cannot take the lock itself (a library holding the machine-wide lock until the process
+# exits would block the updater; a lock inside connect() would be let go before the caller writes), so the rule
+# moves to its IMPORTERS: each importer's entry holds the lock - a __main__ block that is ONE
+# `with catalog_path.write_session():` around everything, or a top-level script that calls
+# write_session_for_process() before its first connect. The importers are DISCOVERED and compared with the
+# committed set, so a new importer fails here until it takes the lock and is added. After T0 the library's
+# open itself refuses a write without the lock (connect_path), which test_the_library_writer_premise RUNS.
+LIBRARY_WRITERS = {
+    "core/catalog.py": {"core/apply_stage0b.py", "core/build_registry.py", "jobs/ingest_eurostat.py",
+                        "jobs/ingest_sec_edgar.py", "jobs/run_connector.py"},
+}
+
+
+def _imports_core_catalog(rel, tree) -> bool:
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ImportFrom) and n.module == "core" and any(a.name == "catalog" for a in n.names):
+            return True
+        if isinstance(n, ast.ImportFrom) and n.module == "core.catalog":
+            return True
+        if isinstance(n, ast.Import) and any(a.name == "core.catalog" for a in n.names):
+            return True
+        if rel.startswith("core/") and isinstance(n, ast.Import) and any(a.name == "catalog" for a in n.names):
+            return True                                        # `import catalog as cat` from core/ itself
+        if rel.startswith("core/") and isinstance(n, ast.ImportFrom) and n.module == "catalog" and not n.level:
+            return True
+    return False
+
+
+def _library_importers():
+    out = set()
+    for rel, p in _repo_walk.code_files((".py",), ROOT):
+        if rel in LIBRARY_WRITERS:
+            continue
+        if _imports_core_catalog(rel, _repo_walk.parse_code(p)):
+            out.add(rel)
+    return out
+
+
+def _entry_holds_the_lock(tree) -> bool:
+    mains = [n for n in tree.body if isinstance(n, ast.If) and "__main__" in ast.unparse(n.test)]
+    if mains:
+        b = mains[0].body
+        return (len(b) == 1 and isinstance(b[0], ast.With) and len(b[0].items) == 1
+                and ast.unparse(b[0].items[0].context_expr) == "catalog_path.write_session()")
+    lock_at = next((i for i, s in enumerate(tree.body) if isinstance(s, ast.Expr) and isinstance(s.value, ast.Call)
+                    and ast.unparse(s.value.func) == "catalog_path.write_session_for_process"), None)
+    open_at = next((i for i, s in enumerate(tree.body) if "catalog.connect(" in ast.unparse(s)
+                    or "cat.connect(" in ast.unparse(s)), None)
+    return lock_at is not None and (open_at is None or lock_at < open_at)
+
+
+def test_every_library_writer_s_importer_holds_the_lock_at_its_entry():
+    want = set().union(*LIBRARY_WRITERS.values())
+    found = _library_importers()
+    assert found == want, (f"importers of a library writer changed - joined: {sorted(found - want)}; left: "
+                           f"{sorted(want - found)}. A new importer's entry must hold the lock, then join here")
+    bad = [rel for rel in sorted(found) if not _entry_holds_the_lock(_repo_walk.parse_code(os.path.join(ROOT, rel)))]
+    assert not bad, f"these importers of a library writer do not hold the lock at their entry: {bad}"
+
+
+def test_the_library_importer_rule_can_fail():
+    for code in ('if __name__ == "__main__":\n    main()\n',
+                 'if __name__ == "__main__":\n    with catalog_path.write_session():\n        main()\n    main()\n',
+                 'db = catalog.connect()\ncatalog_path.write_session_for_process()\n',
+                 'db = catalog.connect()\n'):
+        assert not _entry_holds_the_lock(ast.parse(code)), code
+    for code in ('if __name__ == "__main__":\n    with catalog_path.write_session():\n        main()\n',
+                 'catalog_path.write_session_for_process()\ndb = catalog.connect()\n'):
+        assert _entry_holds_the_lock(ast.parse(code)), code
+    assert _imports_core_catalog("jobs/x.py", ast.parse("from core import catalog, storage"))
+    assert _imports_core_catalog("core/x.py", ast.parse("import catalog as cat"))
+    assert not _imports_core_catalog("jobs/x.py", ast.parse("from core import catalog_path"))
+
+
+def test_the_library_writer_premise(t0, monkeypatch):
+    """core.catalog.connect() after T0: refused without the lock, read-write with it; never creates a missing
+    file; before T0 its default is the checkout's data/ catalogue; 600 s, as before. The writer ratchets of
+    tests/test_catalogue_writers_lock.py skip exactly these files."""
+    assert set(LIBRARY_WRITERS) == {"core/catalog.py"}, "a new library writer needs its own premise test"
+    assert set(LIBRARY_WRITERS) <= {r for r, _p, _b in WRITERS} and all(b is None for r, _p, b in WRITERS
+                                                                          if r in LIBRARY_WRITERS)
+    import test_catalogue_writers_lock as L
+    assert L.LIBRARY_WRITERS == set(LIBRARY_WRITERS), "the two ratchet files exempt the same library writers"
+    import sqlite3
+    from core import catalog
+    db = t0 / "catalog.db"                      # the fixture's build (BUILD_PATH), an empty file
+    with pytest.raises(cutover.CutoverRefused, match="single-writer lock"):
+        catalog.connect(str(db))
+    with cp.write_session():
+        con = catalog.connect(str(db))
+        catalog.init(con)
+        catalog.upsert_source(con, "zz", "ZZ", "cc0", "attr")
+        assert con.execute("SELECT source_id FROM source").fetchall()[0]["source_id"] == "zz"
+        con.close()
+    missing = t0 / "data" / "catalog.db"
+    missing.parent.mkdir()
+    (t0 / "CUTOVER").unlink()
+    with pytest.raises(FileNotFoundError):
+        catalog.connect(str(missing))
+    assert not missing.exists()
+    seen = []
+    monkeypatch.setattr(cp, "connect_path", lambda path, **kw: seen.append((path, kw)) or sqlite3.connect(":memory:"))
+    catalog.connect().close()
+    assert seen == [(cp.under(catalog._ROOT), {"write": True, "timeout": 600})]
 
 
 def test_the_discovery_finds_exactly_the_committed_writers():
@@ -184,7 +292,7 @@ def test_a_script_takes_the_lock_unconditionally_at_top_level():
     """R1199 M1/M2: a lock on a branch never taken, or inside a function never called, passed the order check."""
     bad = []
     for rel, path, block in WRITERS:
-        if block is not None:
+        if block is not None or rel in LIBRARY_WRITERS:
             continue
         tree = _repo_walk.parse_code(path)
         calls = [s for s in tree.body if isinstance(s, ast.Expr) and isinstance(s.value, ast.Call)
@@ -339,7 +447,7 @@ def test_statcan_backup_reads_only_the_build_after_t0(t0, tmp_path):
         m.backup_sqlite(str(other), str(tmp_path / "bak.db"))
 
 
-@pytest.mark.parametrize("rel,path,block", [w for w in WRITERS if w[2] is None], ids=lambda v: v if isinstance(v, str) and "/" in v and not os.path.isabs(v) else "")
+@pytest.mark.parametrize("rel,path,block", [w for w in WRITERS if w[2] is None and w[0] not in LIBRARY_WRITERS], ids=lambda v: v if isinstance(v, str) and "/" in v and not os.path.isabs(v) else "")
 def test_a_script_holds_the_lock_at_its_open(t0, monkeypatch, rel, path, block):
     seen = []
 

@@ -7,13 +7,17 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 
 try:                                   # imported as core.catalog (jobs/) or as plain `catalog` from core/ (apply_stage0b,
     from core.titles import clean_title  # build_registry) - one rule for title line breaks either way
 except ImportError:
     from titles import clean_title
 
-DB = os.path.join(os.path.dirname(__file__), "..", "data", "catalog.db")
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:             # imported as plain `catalog` from core/: core.catalog_path needs the root
+    sys.path.insert(0, _ROOT)
+from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS license (
@@ -38,7 +42,7 @@ CREATE TABLE IF NOT EXISTS series (
 --
 -- source_id is THE filter this catalogue is queried by: derive_csv, the coherence map, the D1
 -- exporters and every audit tool select on it. Declared here, in the schema, rather than
--- applied by hand to the live file: tools/refresh_r2_catalog.py regenerates catalog.db, so a
+-- applied by hand to the live file: tools/refresh_r2_catalog.py regenerates the catalogue, so a
 -- hand-built index silently disappears at the next refresh and the next person re-diagnoses
 -- the same hang from scratch.
 CREATE INDEX IF NOT EXISTS ix_series_source_id ON series(source_id);
@@ -46,15 +50,19 @@ CREATE INDEX IF NOT EXISTS ix_series_source_id ON series(source_id);
 
 
 def connect(db: str | None = None) -> sqlite3.Connection:
-    path = os.path.abspath(db or DB)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    """The catalogue, READ-WRITE: `db`, else this checkout's data/ catalogue (the old default). Opened through
+    core.catalog_path.connect_path: before T0 the same file as always; after T0 only the build, and the write
+    needs the single-writer lock held by this process - every importer's entry takes it
+    (tests/test_catalogue_writers_main.py LIBRARY_WRITERS). A missing catalogue is an error, NEVER created
+    here: the old open made an empty file, which init() then turned into an empty catalogue."""
+    path = os.path.abspath(db) if db else catalog_path.under(_ROOT)
     # WAIT FOR A BUSY DATABASE INSTEAD OF FAILING ON IT. sqlite's default is 5 s, which is far
     # shorter than real work on this file: the catalogue is 8.5 GB, a long-running reader
     # (core/derive_csv.py scanning one source) holds its lock for minutes, and the index build
     # added to SCHEMA below is itself a multi-minute write. At 5 s an ingester's init() would
     # raise "database is locked" and take the whole job down for something that only needed
     # patience. 10 minutes is longer than any single operation observed here.
-    conn = sqlite3.connect(path, timeout=600)
+    conn = catalog_path.connect_path(path, write=True, timeout=600)
     conn.row_factory = sqlite3.Row
     return conn
 

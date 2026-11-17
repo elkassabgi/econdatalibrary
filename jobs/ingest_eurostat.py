@@ -24,6 +24,8 @@ import pyarrow.parquet as pq
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 sys.path.insert(0, ROOT)
+from core import catalog_path  # noqa: E402 - the single-writer lock around the entry (plan step 1)
+
 RAW = os.path.join(ROOT, "data", "raw", "eurostat")
 OUT = os.path.join(ROOT, "data", "clean_grouped", "eurostat")
 
@@ -151,4 +153,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    with catalog_path.write_session():   # after T0: the single-writer lock (catalog.connect() writes)
+        main()

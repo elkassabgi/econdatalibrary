@@ -19,6 +19,7 @@ import pyarrow.parquet as pq
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 sys.path.insert(0, ROOT)
 from core import catalog  # noqa: E402
+from core import catalog_path  # noqa: E402 - the single-writer lock (plan step 1)
 from connectors.base import SeriesMeta  # noqa: E402
 
 RAW = os.path.join(ROOT, "data", "raw", "sec_edgar")
@@ -38,6 +39,7 @@ cik2tick = {}
 for v in ct.values():
     cik2tick.setdefault(int(v["cik_str"]), v["ticker"])
 
+catalog_path.write_session_for_process()   # after T0: the single-writer lock until exit (catalog.connect() writes)
 db = catalog.connect()
 fts = catalog.init(db)
 catalog.upsert_source(db, "sec_edgar", "U.S. SEC EDGAR (company financials)", "us-public-domain",

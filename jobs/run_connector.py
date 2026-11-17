@@ -16,6 +16,7 @@ sys.path.insert(0, ROOT)
 
 from core.licenses import assert_reservable          # noqa: E402
 from core import catalog, storage                    # noqa: E402
+from core import catalog_path                        # noqa: E402 - the single-writer lock (plan step 1)
 
 
 def load_connector(source_id):
@@ -74,7 +75,8 @@ def demo(db):
 
 
 if __name__ == "__main__":
-    src = sys.argv[1] if len(sys.argv) > 1 else "worldbank"
-    database = run(src)
-    if src == "worldbank":
-        demo(database)
+    with catalog_path.write_session():   # after T0: the single-writer lock (catalog.connect() writes)
+        src = sys.argv[1] if len(sys.argv) > 1 else "worldbank"
+        database = run(src)
+        if src == "worldbank":
+            demo(database)
