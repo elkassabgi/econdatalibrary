@@ -55,9 +55,8 @@ def _hook_wrangler_name():
     hook = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(hook)
     tail, version, exts = r"\b.*?", r"(?:@[\w.\-]+)?", r"(?:\.cmd|\.js|\.mjs|\.ps1|\.exe)?"
-    for part in (version, exts):
-        assert part in hook._W, f"tools/selfhost/cutover_hook.py _W changed shape: {hook._W!r}"
-    assert hook._W.endswith(tail), f"tools/selfhost/cutover_hook.py _W changed shape: {hook._W!r}"
+    if not (version in hook._W and exts in hook._W and hook._W.endswith(tail)):     # not assert: -O drops it
+        raise RuntimeError(f"tools/selfhost/cutover_hook.py _W changed shape: {hook._W!r}")
     name = hook._W[:-len(tail)].replace(version, r"(?:@\S+?)?").replace(exts, exts[:-2] + r"|\.bat)?")
     return re.compile(name, re.IGNORECASE)
 

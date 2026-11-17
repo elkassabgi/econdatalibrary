@@ -178,6 +178,13 @@ def _wrangler_spellings(tmp):
         f'$("{npx}" wrangler --version)',
         [str(tmp / "corepack"), "pnpm", "dlx", "wrangler", "--version"],
         [str(tmp / "deno"), "run", "-A", "npm:wrangler", "--version"],
+        # ...and with NO npx behind them, so only the new launcher or the backtick cut can refuse each one
+        [str(tmp / "env"), "-u", "HOME", js, "--version"],
+        [str(tmp / "sudo"), "-u", "root", js, "--version"],
+        [str(tmp / "nohup"), js, "--version"],
+        [str(tmp / "xargs"), js, "--version"],
+        [str(tmp / "corepack"), "yarn@4", "dlx", js, "--version"],
+        f'"{tmp / "echo"}" `"{js}" --version`',
     ]
 
 
@@ -240,6 +247,10 @@ def test_a_mention_of_wrangler_is_not_refused(argv):
     "nohup npx wrangler d1", "xargs npx wrangler d1", "`npx wrangler d1`", "npx wrangler@^4 d1",
     "npx 'wrangler@>=3' d1", "wrangler.bat d1", "corepack pnpm dlx wrangler d1", "deno run -A npm:wrangler d1",
     "/usr/bin/env -i PATH=/x npx wrangler@4.1.0-beta.2+build d1", "echo x; `nohup npx wrangler.bat d1`",
+    # no npx: each is refused ONLY by its own new launcher, or by the backtick cut
+    "env -u HOME wrangler d1", "sudo -u root wrangler d1", "nohup wrangler d1", "xargs wrangler d1",
+    "corepack yarn@4 dlx wrangler d1", "timeout -s KILL 60 wrangler d1", "deno run -A npm:wrangler d1",
+    "echo `wrangler d1`",
 ])
 def test_the_round_2_forms_are_refused(cmd):
     """R2-1 can-fail cases, as the shell strings the reviewer named (not run: matcher only)."""
