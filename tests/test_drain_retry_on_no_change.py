@@ -444,6 +444,72 @@ def test_the_per_pass_cap_holds(rig, monkeypatch):
     assert len(rig.derived) == 2 and len(rig.queue()) == 3
 
 
+def test_the_per_pass_cap_holds_when_turns_end_on_time(monkeypatch):
+    """AR-285 round 3 (mutant R1): a turn that ends on TIME, not on the cap, sends the source into later rounds.
+    Each later turn must get only what is LEFT of the per-pass cap, or the pass tries more than _CSV_RETRY_CAP ids
+    of one source. Hermetic: a fake clock, a fake store, and a fake drain that reaches 10 ids per turn and then
+    runs out of its share. Cap 25, 1,000 queued: the turns must be given 25, 15, 5 and try 25 ids in all."""
+    import time as _time
+
+    class Clock:
+        def __init__(self, t):
+            self.t = t
+
+        def time(self):
+            return self.t
+
+        def __getattr__(self, n):
+            return getattr(_time, n)
+
+    class Store:
+        def __init__(self, q):
+            self.q = q
+
+        def csv_retry_sources(self):
+            return dict(self.q)
+
+        def claim_lease(self, key, owner, ttl_s=3600):
+            return True
+
+        def release_lease(self, key, owner=None):
+            pass
+
+    class Unit:
+        def __init__(self, s):
+            self.source_id, self.key = s, s + "/_all"
+
+    clock = Clock(20409 * 86400 + 3600.0)
+    monkeypatch.setattr(orchestrate, "time", clock)
+    monkeypatch.setattr(orchestrate, "_here", lambda: "local")
+    monkeypatch.setattr(orchestrate, "_served_by_lane", lambda s: False)
+    monkeypatch.setattr(orchestrate, "_leftover_drain_min", lambda: 45.0)
+    monkeypatch.setattr(orchestrate, "_drain_margin_min", lambda: 15.0)
+    monkeypatch.setattr(orchestrate, "_drain_per_source_min", lambda: 5.0)
+    monkeypatch.setattr(orchestrate, "_r2_mirror_gate", lambda sid, d=None, cache=None: None)
+    monkeypatch.setattr(orchestrate, "_CSV_RETRY_CAP", 25)
+    caps, tried = [], []
+
+    def fake_drain(unit, blob, store, deadline_ts=None, id_gate=None, skip=None, cap=None):
+        caps.append(cap)
+        eff = orchestrate._CSV_RETRY_CAP if cap is None else max(0, min(int(cap), orchestrate._CSV_RETRY_CAP))
+        n = store.q[unit.source_id][0] - len(skip or ())
+        k = min(10, eff, n)                    # the turn's TIME runs out after 10 ids, before its cap
+        ids = [f"{unit.source_id}:{len(skip or ()) + i}" for i in range(k)]
+        assert not set(ids) & set(skip or ()), "no id is tried twice in one pass"
+        tried.extend(ids)
+        clock.t = deadline_ts                  # the turn used its whole share
+        return {"queued": n, "attempted": k, "cleared": 0, "still_queued": n, "held_back": 0, "tried": ids,
+                "untried": n - k}
+
+    monkeypatch.setattr(orchestrate, "_drain_csv_retry_queue", fake_drain)
+    turns = orchestrate._drain_leftover_retries({"x": [Unit("x")]}, None, Store({"x": (1000, "2026-10-01")}),
+                                                route={"x"})
+    assert len(turns) >= 2, "the scenario needs later rounds: the first turn ended on time with ids unreached"
+    assert len(tried) > 0
+    assert len(tried) <= orchestrate._CSV_RETRY_CAP, (caps, len(tried))
+    assert caps == [25, 15, 5] and len(tried) == 25, (caps, len(tried))
+
+
 # ---- (c) attempts -----------------------------------------------------------------------------------
 
 def test_a_tried_refailure_counts_and_keeps_its_age(rig):
