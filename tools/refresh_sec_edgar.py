@@ -819,7 +819,7 @@ def respan(client, spec, apply=False, apply_d1=False, skip_local=False, local_ch
     db = catalog_path.under(ROOT)
     local = {}
     if os.path.exists(db):
-        con = catalog_path.connect_path(db, write=False, timeout=5.0)  # read-only (sqlite's own 5 s, as before)
+        con = catalog_path.connect_path(db, write=False, timeout=5.0)  # read-only; the PRAGMA below sets the real 120 s
         con.execute("PRAGMA busy_timeout=120000")
         for i in range(0, len(sids), 400):
             chunk = sids[i:i + 400]

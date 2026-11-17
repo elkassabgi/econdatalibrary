@@ -146,3 +146,27 @@ def test_after_t0_a_worktree_s_catalogue_is_refused_not_written(tmp_path, monkey
     c = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
     assert c.execute("SELECT count(*) FROM series").fetchone() == (0,)
     c.close()
+
+
+@pytest.mark.parametrize("argv", [["--d1"], ["--audit"], ["--respan", "0000320193"],
+                                  ["--d1", "--apply"], ["--respan", "0000320193", "--apply"]])
+def test_after_t0_main_refuses_the_d1_audit_and_respan_roads_before_any_open(tmp_path, monkeypatch, argv):
+    """Review C269-1: the refusal of --d1 / --audit / --respan after T0 is RUN, not counted in the source.
+    Nothing is opened, made or run before the refusal."""
+    monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "CUTOVER"))
+    (tmp_path / "CUTOVER").write_text("")
+    touched = []
+
+    def boom(name):
+        def f(*a, **k):
+            touched.append(name)
+            raise AssertionError(f"{name} ran before the refusal")
+        return f
+    monkeypatch.setattr(catalog_path, "connect_path", boom("connect_path"))
+    monkeypatch.setattr(catalog_path, "connect", boom("connect"))
+    monkeypatch.setattr(subprocess, "run", boom("subprocess.run"))
+    monkeypatch.setattr(R.os, "makedirs", boom("makedirs"))
+    monkeypatch.setattr(sys, "argv", ["refresh_sec_edgar.py", *argv])
+    with pytest.raises(cutover.CutoverRefused, match="after T0 there is no D1"):
+        R.main()
+    assert touched == []

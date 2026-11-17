@@ -416,5 +416,5 @@ def test_the_lock_inside_main_premise(t0, monkeypatch):
         R.update_catalog([("ACME", "2020-01-01", "2026-06-30", "Acme", 1)], apply_d1=False)
     src = _repo_walk.read_code(path)
     assert "with _waiting_writer_lock():" in src, "the daily refresh no longer waits for the lock around its writes"
-    for flag in ("a.d1 or a.audit or a.respan",):
-        assert src.count(flag) >= 2, "the after-T0 refusal of the other write roads moved"
+    # the after-T0 refusal of --d1 / --audit / --respan is RUN (review C269-1): tests/test_sec_edgar_d1_chokepoint.py
+    # ::test_after_t0_main_refuses_the_d1_audit_and_respan_roads_before_any_open
