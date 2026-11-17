@@ -26,13 +26,60 @@ merge dedups) rather than silently skipped. A download or parse failure -> trans
 that zip only, so CBS failing cannot stop LBS publishing. A zip that parses to ZERO rows ->
 structural_unit and its vintage is NOT advanced, so a parser break resurfaces on a later pass
 instead of being sealed in.
+
+THE SERVED DATA IS NOT IN THE ZIPS (added 2026-11-16). Every catalogued bis id is
+`bis:WS_CBPOL:<country>` (central bank policy rates), served by _resolve_bis from
+clean_full/bis/WS_CBPOL.parquet at native key 'M.<country>'. That file was written once by the
+first-pass SDMX ingest (jobs/ingest_bis_full.py) on 2026-06-30 and nothing refreshed it, so users
+got May policy rates while this unit reported success on the uncatalogued CBS/LBS zips. The SDMX
+phase below refreshes every flow in SERVED_SDMX_FLOWS from stats.bis.org:
+
+  * ONE REQUEST PER FREQ the store holds for the flow (`/data/BIS,<flow>/<FREQ>`), the served
+    FREQ first. The whole-flow request is NOT usable: measured 2026-11-16, three HTTP 200s
+    (curl exit 0) returned three DIFFERENT bodies, each cut mid-line (24.0 / 28.6 / 37.8 MB),
+    while '/M' (1.43 MB) and '/D' (42.5 MB) each hashed identically on repeat.
+  * CHANGE GATE = sha256 of the body against `_sdmx_vintages.json` (the CBS/LBS sidecar is not
+    touched). BIS has no honest validator here: the ETag is base64 of the REQUEST time
+    ('guest$<ms>$*$1$WS_CBPOL', new on every call) and there is no Last-Modified.
+  * A CHANGED body must pass, before it can merge: it ends with a newline and its last line has
+    the header's field count (a mid-line cut); every row's STRUCTURE_ID is the pinned DSD and
+    ACTION is 'I'; a second fetch hashes the same (a cut that changes between calls); the last
+    series in the body reaches its own stored newest date and at most MISSING_KEYS_TOLERATED
+    stored series are absent, each with a stored newest older than RETIRED_AFTER_DAYS (a
+    deterministic cut at a line boundary - merge only grows, so it would freeze those series
+    silently; not a row-count rule, which one deleted upstream value would trip for ever). NOTE
+    the second fetch does NOT catch a stable cut: a cut that repeats exactly hashes the same. Only keys the store already holds are merged (R278; new upstream keys are counted
+    and skipped - nothing new is catalogued, and the D1 catalogue sync is frozen anyway).
+  * FETCH FIRST, MERGE LAST. The bodies are fetched and validated before the CBS/LBS zips, so
+    the zips' long merges cannot spend the Deadline and defer the served data; but they MERGE
+    only after the zips, outside the Deadline (about 735k rows, seconds). The workstation route
+    kills a pass hard (taskkill, no SIGALRM on Windows), and a kill between this merge and
+    update() returning loses the CSV phase while the sidecar says "current" - the R1131/R1137
+    class. Merging last shrinks that window from the whole CBS/LBS phase to the seconds between
+    the merge and the return. A FREQ that fails never blocks another: 'D' serves no catalogue id
+    and must never hold back 'M'.
+  * THE CHANGED SET IS FOLDED TO THE CATALOGUE GRAIN. merge_and_write(report_changed_keys=True)
+    measures which store keys changed value; 'M.<cc>' folds to 'WS_CBPOL:<cc>' (the exact tier
+    of orchestrate._catalog_ids_for maps it to bis:WS_CBPOL:<cc>), and 'D.<cc>' is dropped (no
+    catalogue id serves it). Result.changed_keys is therefore ALWAYS set, possibly {}: no
+    catalogue id is served from CBS.parquet or LBS.parquet, so a pass that merged only the zips
+    changed nothing a user can download. That claim is guarded at run time: a catalogued bis
+    flow outside SERVED_SDMX_FLOWS books a named transient, so {} cannot hide it.
+  * NOT MONITORED BY THE GATE: bis is `live: false` (workstation route), and the cadence is
+    monthly, so served M data can lag upstream by up to about two cadence periods.
+  * MEMORY: validating the 'D' slice holds ~710k parsed rows as Python objects (order of 1-2 GB);
+    fine on the workstation route, re-measure before bis is ever routed to a CI runner.
 """
 from __future__ import annotations
+import csv
 import datetime as dt
 import hashlib
+import io
 import json
 import os
+
 import tempfile
+import time
 
 import pyarrow as pa
 import requests
@@ -40,11 +87,20 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import CURSOR_CAP, Deadline, Tally, finalize, merge_cursors
+from ._common import CURSOR_CAP, Deadline, Tally, cursors_from_parquet, finalize, merge_cursors
 from ._vintage import http_vintage
 from jobs import ingest_bis_cbs_lbs as ig      # BULK urls + the EXTRACTED pure parser
+from jobs import ingest_bis_full as sdmx       # SDMX base url + the EXTRACTED SDMX-CSV parser
 
 SOURCE = "bis"
+# The catalogued SDMX dataflows - the ONLY bis data a user can download. A curated constant pinned
+# by test (the defillama SERVED_CHAINS precedent), checked against the catalogue at run time.
+SERVED_SDMX_FLOWS = ("WS_CBPOL",)
+# The DSD each served flow's rows must carry (STRUCTURE_ID column). A new version is a possible
+# re-grain (R22), so it refuses as structural until a human checks it.
+SDMX_STRUCTURE = {"WS_CBPOL": "BIS:WS_CBPOL(1.0)"}
+SDMX_SIDECAR = "_sdmx_vintages.json"
+SDMX_PACE_S = 2.0          # seconds between SDMX requests (public API, no key)
 DEDUP = ("series_key", "obs_date")
 SIDECAR = "_bulk_vintages.json"
 BUDGET_MIN = 25
@@ -100,16 +156,16 @@ def _validator(url, sess) -> "str | None":
 
 
 def current_vintage(unit) -> "str | None":
-    """Hash of both bulk objects' size validators. Moves iff BIS republishes either zip."""
-    sess = requests.Session()
-    parts = []
-    for name, url in sorted(ig.BULK.items()):
-        v = _validator(url, sess)
-        if not v:
-            return None                                      # unknown -> let cadence decide
-        parts.append(f"{name}={v}")
-    h = hashlib.sha256(";".join(parts).encode()).hexdigest()[:16]
-    return f"bis:{h}"
+    """ALWAYS None (undeterminable -> bulk_snapshot_if_changed fetches, cadence-gated).
+
+    Until 2026-11-16 this hashed the two CBS/LBS zip validators. That probe cannot speak for the
+    SERVED data: the policy rates come from the SDMX API, which has no honest validator (see the
+    module docstring), so a zip-only token that matched the stored vintage would make the strategy
+    skip update() and freeze every catalogued id until a quarterly zip republish (AR-270 finding
+    5). It only worked because finalize stores 'date-tail', which no probe token ever equals. The
+    zips keep their own per-file gate inside update() (the _bulk_vintages.json sidecar), and the
+    SDMX slices theirs (body sha256), so nothing is lost by not probing here."""
+    return None
 
 
 def _load(out_dir) -> dict:
@@ -156,6 +212,267 @@ def _table(rows):
     })
 
 
+# --------------------------------------------------------------------------------------------- #
+# SDMX phase: the catalogued flows (see the module docstring)
+# --------------------------------------------------------------------------------------------- #
+def _served_native(flow, store_key) -> "str | None":
+    """The catalogue native ('<flow>:<country>', i.e. the id minus 'bis:') that a store key serves,
+    or None. The exact inverse of clients/python/econdl/_resolve.py::_resolve_bis, which maps
+    bis:<flow>:<country> to native key 'M.<country>' (tests round-trip it through the resolver)."""
+    parts = str(store_key).split(".")
+    if flow in SERVED_SDMX_FLOWS and len(parts) == 2 and parts[0] == "M" and parts[1]:
+        return f"{flow}:{parts[1]}"
+    return None
+
+
+def _catalogue_flows() -> "set | None":
+    """The bis dataflows the catalogue serves (bis:<flow>:...), or None when it cannot be read.
+    PK range, never `source_id=?` (one index) and never LIKE (R492)."""
+    from core import catalog_path                    # noqa: PLC0415 - the one catalogue resolver
+    cat = catalog_path.under(config.ROOT)
+    if not os.path.exists(cat):
+        return None
+    try:
+        con = catalog_path.connect_path(cat, write=False)
+        try:
+            ids = [r[0] for r in con.execute(
+                "SELECT series_id FROM series WHERE series_id >= ? AND series_id < ?",
+                (SOURCE + ":", SOURCE + ";"))]
+        finally:
+            con.close()
+    except Exception:                                        # noqa: BLE001
+        return None
+    return {i.split(":")[1] for i in ids if i.count(":") >= 2}
+
+
+def _sdmx_get(sess, flow, freq) -> "tuple[int, bytes]":
+    """(HTTP status, body) for one FREQ slice of a flow. The version-less selector follows the
+    flow's current version; the STRUCTURE_ID pin is what refuses a version change."""
+    url = f"{sdmx.BASE}/data/BIS,{flow}/{freq}?detail=dataonly"
+    last = None
+    for attempt in range(2):
+        try:
+            r = sess.get(url, headers={**UA, "Accept": sdmx.CSVMIME}, timeout=(30, 300))
+            return r.status_code, r.content
+        except Exception as e:                               # noqa: BLE001
+            last = e
+            time.sleep(SDMX_PACE_S * (attempt + 1))
+    raise last
+
+
+def _check_body(body, flow, freq, stored_newest):
+    """Validate one SDMX-CSV body. Returns (rows, None, n_new_keys) or (None, (kind, why), 0),
+    kind 'transient' (a cut or partial body: a later pass may get a whole one) or 'structural'
+    (the shape itself changed: a later pass will not help)."""
+    if not body.endswith(b"\n"):
+        return None, ("transient", "body does not end with a newline (stream cut mid-line)"), 0
+    try:
+        text = body.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return None, ("structural", "body is not UTF-8"), 0
+    lines = text.splitlines()
+    if not lines:
+        return None, ("structural", "empty body"), 0
+    rd = list(csv.reader(lines))
+    hdr = rd[0]
+    if len(rd[-1]) != len(hdr):
+        return None, ("transient", f"last line has {len(rd[-1])} of {len(hdr)} fields (stream cut)"), 0
+    want = SDMX_STRUCTURE.get(flow)
+    si = hdr.index("STRUCTURE_ID") if "STRUCTURE_ID" in hdr else None
+    ai = hdr.index("ACTION") if "ACTION" in hdr else None
+    if si is None or ai is None:
+        return None, ("structural", "no STRUCTURE_ID/ACTION column"), 0
+    bad = sum(1 for r in rd[1:] if len(r) != len(hdr) or r[si] != want or r[ai] != "I")
+    del rd                                   # ~710k rows for 'D': do not hold two parses at once
+    if bad:
+        return None, ("structural", f"{bad} row(s) not {want} / ACTION I / full width"), 0
+    try:
+        parsed = list(sdmx.iter_rows(io.StringIO(text)))
+    except sdmx.NoObservations as e:
+        return None, ("structural", f"no observations: {e}"), 0
+    kept = [r for r in parsed if r[0] in stored_newest]
+    new_keys = {r[0] for r in parsed} - set(stored_newest)
+    if not kept:
+        return None, ("structural", f"0 of {len(stored_newest)} stored series in a "
+                                    f"{len(parsed)}-row body"), 0
+    # A cut AT a line boundary drops the newest rows of the series being sent (BIS streams each
+    # series in ascending date order) and every series after it. So: the LAST series must reach
+    # its own stored newest date, and at most MISSING_KEYS_TOLERATED stored series may be absent.
+    # Deliberately NOT a row-count rule: merge never deletes, so one deleted or blanked upstream
+    # value would make every later body shorter than the store, and the block would never clear
+    # (review F1, the R299 class).
+    last_key = kept[-1][0]
+    last_newest = max(r[1] for r in kept if r[0] == last_key).isoformat()
+    if last_newest < stored_newest[last_key]:
+        return None, ("transient", f"the body's last series {last_key} ends {last_newest}, before "
+                                   f"the store's {stored_newest[last_key]} (stream cut at a line?)"), 0
+    missing = set(stored_newest) - {r[0] for r in kept}
+    if len(missing) > MISSING_KEYS_TOLERATED:
+        return None, ("transient", f"{len(missing)} stored series absent from the body (e.g. "
+                                   f"{sorted(missing)[0]}; tolerated {MISSING_KEYS_TOLERATED})"), 0
+    # A tolerated absence must ALSO look retired: a stable cut exactly at the first line of the
+    # LAST series drops that whole series, every other check passes, and the sidecar would seal
+    # the hash - that series frozen with green health (AR-270 C2, the frozen-store class at one
+    # series). So an absent series whose stored newest is recent books a named transient and the
+    # hash is not saved; only an old one (ended upstream long ago) is tolerated.
+    recent = sorted(k for k in missing if not _older_than(stored_newest[k], RETIRED_AFTER_DAYS))
+    if recent:
+        return None, ("transient", f"stored series {recent} absent from the body although the store "
+                                   f"has them to {stored_newest[recent[0]]} (newer than "
+                                   f"{RETIRED_AFTER_DAYS} days, so not retired: a cut at a series "
+                                   f"boundary?)"), 0
+    if missing:
+        print(f"[bis] {flow}:{freq}: stored series {sorted(missing)} absent from the body - not "
+              f"refreshed this pass (stored newest older than {RETIRED_AFTER_DAYS} days: retired "
+              f"upstream)", flush=True)
+    return kept, None, len(new_keys)
+
+
+# Stored series of one FREQ that may be absent from a body while the rest still merge (printed). One
+# retired upstream series must not block the other 48 for ever: the store never forgets a key.
+MISSING_KEYS_TOLERATED = 1
+# An absent stored series counts as retired only when its stored newest is older than this. The same
+# value as updater/health.py STALE_SERIES_DAYS (its "discontinued" line), pinned by test.
+RETIRED_AFTER_DAYS = 730
+
+
+def _stored_layout(path) -> "dict | None":
+    """{FREQ: {stored key: newest stored obs date ISO}} read through the store layer (R36), or None."""
+    if not blob.exists(path):
+        return None
+    t = blob.read_table(path, columns=["series_key", "obs_date"])
+    out: dict = {}
+    for k, d in zip(t.column("series_key").to_pylist(), t.column("obs_date").to_pylist()):
+        if k is None or d is None:
+            continue
+        m = out.setdefault(str(k).split(".")[0], {})
+        iso = d.isoformat()
+        if iso > m.get(k, ""):
+            m[k] = iso
+    return out
+
+
+def _sdmx_prefetch(out_dir, sess, tally, dl, vint) -> dict:
+    """Fetch + validate every changed FREQ slice of every served flow. NO store write.
+    Returns {flow: [(freq, sha, arrow table)]} of the slices that may merge."""
+    ready: dict = {}
+    requested = 0
+    cat = _catalogue_flows()
+    if cat is None:
+        print(f"[bis] catalogue unreadable - refreshing the pinned SERVED_SDMX_FLOWS "
+              f"{list(SERVED_SDMX_FLOWS)} without the catalogue cross-check", flush=True)
+    else:
+        for f in sorted(cat - set(SERVED_SDMX_FLOWS)):
+            tally.transient_unit(f"{f}: catalogued but bis.py has no refresh path for it "
+                                 f"(permanent until SERVED_SDMX_FLOWS covers it)")
+    for flow in SERVED_SDMX_FLOWS:
+        path = os.path.join(out_dir, f"{flow}.parquet")
+        try:
+            layout = _stored_layout(path)
+        except Exception as e:                               # noqa: BLE001
+            tally.transient_unit(f"{flow}: store unreadable ({type(e).__name__})")
+            continue
+        if not layout:
+            tally.transient_unit(f"{flow}: store file absent or empty - refusing to refresh "
+                                 f"a served flow from nothing")
+            continue
+        order = sorted(layout, key=lambda fr: (fr != "M", fr))     # the served FREQ first
+        for fr in order:
+            label = f"{flow}:{fr}"
+            if dl.spent():
+                print(f"[bis] budget {BUDGET_MIN} min spent - {label} deferred to a later pass",
+                      flush=True)
+                tally.deferred_unit(label)
+                continue
+            if requested:
+                time.sleep(SDMX_PACE_S)
+            requested += 1
+            try:
+                st, body = _sdmx_get(sess, flow, fr)
+            except Exception as e:                           # noqa: BLE001
+                tally.transient_unit(f"{label}: request failed ({type(e).__name__})")
+                continue
+            if st != 200:
+                tally.transient_unit(f"{label}: HTTP {st} for a FREQ the store holds")
+                continue
+            sha = hashlib.sha256(body).hexdigest()
+            if (vint.get(label) or {}).get("sha256") == sha:
+                continue                                     # unchanged upstream: costs nothing more
+            rows, problem, n_new = _check_body(body, flow, fr, layout[fr])
+            if problem:
+                kind, why = problem
+                (tally.structural_unit if kind == "structural" else tally.transient_unit)(
+                    f"{label}: {why}")
+                continue
+            time.sleep(SDMX_PACE_S)
+            try:
+                st2, body2 = _sdmx_get(sess, flow, fr)
+            except Exception as e:                           # noqa: BLE001
+                tally.transient_unit(f"{label}: confirming request failed ({type(e).__name__})")
+                continue
+            if st2 != 200 or hashlib.sha256(body2).hexdigest() != sha:
+                tally.transient_unit(f"{label}: body differed between two fetches (cut stream?)")
+                continue
+            if n_new:
+                print(f"[bis] {label}: {n_new} upstream series not in the store - skipped "
+                      f"(only stored keys are refreshed, R278)", flush=True)
+            ready.setdefault(flow, []).append((fr, sha, _table(rows)))   # Arrow, not tuples, while the zips run
+    return ready
+
+
+def _sdmx_merge(out_dir, ready, tally, vint, cursors) -> "tuple[dict, int, object]":
+    """Merge the validated slices (one merge per flow), advance their hashes, and return
+    (changed_keys at catalogue grain, store rows after, newest obs date)."""
+    changed_cat: dict = {}
+    total = 0
+    maxd = None
+    for flow, slices in ready.items():
+        path = os.path.join(out_dir, f"{flow}.parquet")
+        label = flow + ":" + "+".join(fr for fr, _, _ in slices)
+        try:
+            before = blob.row_count(path)
+            new = pa.concat_tables([t for _, _, t in slices])
+            n, md, changed = merge.merge_and_write(path, new, mode="merge",
+                                                   dedup_keys=DEDUP, report_changed_keys=True)
+        except Exception as e:                               # noqa: BLE001
+            tally.transient_unit(f"{label}: merge refused ({type(e).__name__}: {str(e)[:80]})")
+            continue
+        total += n
+        if md and (maxd is None or str(md) > str(maxd)):
+            maxd = md
+        for k, v in (changed or {}).items():
+            nat = _served_native(flow, k)
+            if nat is not None:
+                changed_cat[nat] = v
+        if n > before:
+            tally.added_unit(n - before, label)
+        elif changed:
+            tally.revised_unit(label)
+        else:
+            tally.empty_unit(label)
+        got = cursors_from_parquet(path)                     # the file this process just wrote
+        for k, v in got.items():
+            nat = _served_native(flow, k)
+            if nat is not None and len(cursors) < CURSOR_CAP:
+                cursors[nat] = v
+        today = dt.date.today().isoformat()
+        for fr, sha, _ in slices:
+            vint[f"{flow}:{fr}"] = {"sha256": sha, "pulled": today}
+        blob.write_bytes_atomic(os.path.join(out_dir, SDMX_SIDECAR),
+                                json.dumps(vint, indent=2, sort_keys=True).encode("utf-8"))
+    return changed_cat, total, maxd
+
+
+def _load_sdmx(out_dir) -> dict:
+    raw = blob.read_bytes(os.path.join(out_dir, SDMX_SIDECAR))
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return {}
+
+
 def update(unit, since) -> Result:
     out_dir = config.source_dir(SOURCE)
     os.makedirs(out_dir, exist_ok=True)
@@ -166,6 +483,10 @@ def update(unit, since) -> Result:
     maxd = None
     cursors: dict = {}          # §5.7 changed-series set, per republished bulk zip
     dl = Deadline(minutes=BUDGET_MIN)
+
+    # SDMX phase, step 1 of 2: fetch + validate the served flows BEFORE the zips (no store write).
+    vint = _load_sdmx(out_dir)
+    ready = _sdmx_prefetch(out_dir, sess, tally, dl, vint)
 
     for name, url in sorted(ig.BULK.items()):
         path = os.path.join(out_dir, f"{name}.parquet")
@@ -240,8 +561,42 @@ def update(unit, since) -> Result:
               f"individually reported; the orchestrator's derive-all path covers small "
               f"catalogs", flush=True)
     _save(out_dir, sidecar)
+
+    # SDMX phase, step 2 of 2: merge the validated served slices LAST, outside the Deadline.
+    served_cursors: dict = {}
+    changed_keys, sdmx_rows, sdmx_maxd = _sdmx_merge(out_dir, ready, tally, vint, served_cursors)
+    published += sdmx_rows
+    if sdmx_maxd and (maxd is None or str(sdmx_maxd) > str(maxd)):
+        maxd = sdmx_maxd
+    # The served series' cursors go FIRST, so a zip that filled CURSOR_CAP cannot crowd them out.
+    if served_cursors:
+        merged_cur = dict(served_cursors)
+        for k, v in cursors.items():
+            if len(merged_cur) >= CURSOR_CAP:
+                break
+            merged_cur[k] = v
+        cursors = merged_cur
+
     if published == 0:
         published = sum(blob.row_count(os.path.join(out_dir, f))
                         for f in blob.list_parquets(out_dir))
-    return finalize(tally, published, maxd or (since or None), source=SOURCE,
-                    series_cursors=cursors or None)
+    last_obs = maxd or (since or None)
+    try:
+        res = finalize(tally, published, last_obs, source=SOURCE,
+                       series_cursors=cursors or None)
+    except DefinitiveError as e:
+        # THE SERVED CHANGED SET MUST SURVIVE A STRUCTURAL RAISE (the hagstofa Route B / _giant
+        # precedent): a zip that parsed to 0 rows, or a refused SDMX slice, raises in finalize, and
+        # the orchestrator maps a raise to `partial` with NO Result - no CSV phase for the policy
+        # rates this pass DID merge. Re-raised unchanged when nothing served changed.
+        if not changed_keys:
+            raise
+        print(f"[bis] finalize raised structural with {len(changed_keys)} served id(s) changed - "
+              f"returning partial WITH the changed set: {str(e)[:120]}", flush=True)
+        return Result(status="partial", obs=published, last_obs_date=last_obs,
+                      new_vintage="date-tail", series_cursors=cursors or None,
+                      changed_keys=changed_keys, error=str(e))
+    # ALWAYS set (possibly {}): the merge-measured change of what the catalogue serves. CBS/LBS
+    # serve no catalogue id, so their merges contribute nothing here (see the module docstring).
+    res.changed_keys = changed_keys
+    return res
