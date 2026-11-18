@@ -101,9 +101,11 @@ def test_cap_lowers_never_raises_and_overrides_frequencies(G):
     assert roll["a"]["frequencies"] == ["A", "M"] and roll["b"]["frequencies"] == ["A"]
 
 
-def test_missing_facts_file_is_loud_and_changes_nothing(G, tmp_path, capsys):
-    assert G.load_served_facts(str(tmp_path / "absent.json")) is None
-    assert "NOT capped" in capsys.readouterr().out
+def test_missing_or_unreadable_facts_file_refuses(G, tmp_path):
+    """A missing file used to print a warning and leave every page uncapped; since 2026-11-18 it refuses
+    (tests/test_served_facts_refresh.py has the age and coverage refusals)."""
+    with pytest.raises(SystemExit, match="refresh_served_facts"):
+        G.load_served_facts(str(tmp_path / "absent.json"))
     bad = tmp_path / "bad.json"
     bad.write_text("{not json", encoding="utf-8")
     with pytest.raises(SystemExit):
@@ -113,4 +115,4 @@ def test_missing_facts_file_is_loud_and_changes_nothing(G, tmp_path, capsys):
 def test_full_build_applies_the_cap(G):
     import inspect
     src = inspect.getsource(G.load_registry)
-    assert "apply_served_facts(series_roll)" in src
+    assert "apply_served_facts(series_roll, required=page_source_ids(sources, licenses, series_roll))" in src

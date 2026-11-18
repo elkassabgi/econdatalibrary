@@ -25,7 +25,9 @@ Design rules (ARCHITECTURE.md s3, STRATEGY.md):
   - No fabricated metadata. Every field traces to the DB or catalog.json. Fields
     we don't have are simply omitted.
 
-Run:  python catalog/gen_site.py
+Run:  python tools/refresh_served_facts.py      # FIRST, every build: measure what the API serves
+      python catalog/gen_site.py               # refuses if catalog/served_facts.json is missing,
+                                               # older than SERVED_FACTS_MAX_AGE_HOURS, or lacks a page source
 """
 from __future__ import annotations
 
@@ -687,11 +689,16 @@ def build_meta_desc(rec, shared=frozenset()):
     facts = []
     if rec.get("n_series"):
         facts.append(f"{rec['n_series']:,} series")
-    cov = _coverage_clause(rec)
+    elif rec.get("not_yet_served"):
+        facts.append("not yet served")
+    # served 0: the page hides its coverage row, so the meta description does not state one either
+    cov = None if rec.get("not_yet_served") else _coverage_clause(rec)
     if cov:
         facts.append(cov)
     lic = short_license(rec.get("license_label"))
     access = "Free download" if rec.get("reservable") else "Catalogued metadata"
+    if rec.get("not_yet_served"):
+        access = "Download not yet available"
 
     def assemble(head, with_lic):
         bits = []
@@ -1198,7 +1205,7 @@ def load_registry():
         roll["categories"] = sorted(set(cats.get(sid, [])))
         roll["geographies"] = sorted(set(geos.get(sid, [])))
 
-    apply_served_facts(series_roll)
+    apply_served_facts(series_roll, required=page_source_ids(sources, licenses, series_roll))
     return licenses, sources, series_roll, source_meta
 
 
@@ -1212,11 +1219,16 @@ def load_served_facts(path=None):
     WHY (2026-11-17, pre-deploy review C1). The local catalogue can run ahead of the served one: statcan's
     lane catalogued 1,270 new ids that the frozen serving catalogue does not hold (/v1/series answers
     "unknown series id"), so a page built from the local file said 467,611 series while the API serves
-    466,341. A page is a promise about what a user can download, so it may never claim more than is served."""
+    466,341. A page is a promise about what a user can download, so it may never claim more than is served.
+
+    REFUSES (2026-11-18): a MISSING file and a STALE one both stop the build. A missing file used to print a
+    warning and leave every page uncapped, which is the failure the file exists to prevent; a file from an
+    earlier day caps today's pages at yesterday's serving state. The file is written by
+    tools/refresh_served_facts.py, and that is the FIRST step of every build (REFRESH_COMMAND)."""
     p = path or SERVED_FACTS
     if not os.path.exists(p):
-        print(f"  WARNING: no {os.path.basename(p)} - page counts are NOT capped at the served counts")
-        return None
+        raise SystemExit(f"FATAL: no {p} - without it no page count is capped at what the API serves. "
+                         f"Measure it first: {REFRESH_COMMAND}")
     try:
         with open(p, encoding="utf-8") as fh:
             doc = json.load(fh)
@@ -1225,15 +1237,87 @@ def load_served_facts(path=None):
     except Exception as e:                                   # noqa: BLE001
         raise SystemExit(f"FATAL: {p} is unreadable ({type(e).__name__}: {e}) - a page could claim more "
                          "series than the API serves") from None
+    if any(v < 0 for v in counts.values()):
+        raise SystemExit(f"FATAL: {p} holds a negative series count - not a measurement")
+    check_served_facts_age(doc.get("measured_utc"), p)
     return {"n_series": counts, "frequencies": freqs, "measured_utc": doc.get("measured_utc")}
 
 
-def apply_served_facts(series_roll, facts=None):
+# How old served_facts.json may be when a build reads it. The refresh is the first step of the SAME manual
+# build (it takes minutes; nothing in CI runs this generator - deploy-site.yml only uploads catalog/site), so
+# a correct build reads a file measured minutes ago. 24 h leaves room for a build that is started, reviewed
+# and finished the next morning, and no more: the served catalogue changes whenever a D1 catalogue sync
+# lands, and a page capped at an older measurement can claim series the API no longer serves.
+SERVED_FACTS_MAX_AGE_HOURS = 24
+# The one emergency override (the API down, a page fix that cannot wait). It never covers a MISSING file, and
+# it is announced in the build log every time it is used.
+SERVED_FACTS_STALE_ENV = "ECONDL_ALLOW_STALE_SERVED_FACTS"
+REFRESH_COMMAND = "python tools/refresh_served_facts.py"
+
+
+def check_served_facts_age(measured_utc, path="served_facts.json", now=None):
+    """SystemExit unless `measured_utc` is a real UTC stamp no older than SERVED_FACTS_MAX_AGE_HOURS (and not
+    in the future). With SERVED_FACTS_STALE_ENV=1 a stale file is allowed, LOUDLY. Returns the age in hours."""
+    from datetime import timezone
+    try:
+        t = datetime.strptime(str(measured_utc), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise SystemExit(f"FATAL: {path} measured_utc {measured_utc!r} is not a UTC timestamp "
+                         f"(YYYY-MM-DDTHH:MM:SSZ). Re-measure: {REFRESH_COMMAND}") from None
+    now = now or datetime.now(timezone.utc)
+    age_h = (now - t).total_seconds() / 3600.0
+    if age_h < -0.1:
+        raise SystemExit(f"FATAL: {path} measured_utc {measured_utc} is in the future (clock or file wrong)")
+    if age_h <= SERVED_FACTS_MAX_AGE_HOURS:
+        return age_h
+    if os.environ.get(SERVED_FACTS_STALE_ENV) == "1":
+        bar = "!" * 100
+        print(f"\n{bar}\n!!  {SERVED_FACTS_STALE_ENV}=1: building from a STALE served_facts.json, measured "
+              f"{measured_utc} ({age_h:.1f} h old, limit {SERVED_FACTS_MAX_AGE_HOURS} h).\n!!  Page counts are "
+              f"capped at THAT day's serving state, not today's. Do not deploy this build without saying so.\n"
+              f"{bar}\n")
+        return age_h
+    raise SystemExit(f"FATAL: {path} was measured {measured_utc}, {age_h:.1f} h ago (limit "
+                     f"{SERVED_FACTS_MAX_AGE_HOURS} h). Re-measure first: {REFRESH_COMMAND}")
+
+
+def page_source_ids(sources, licenses, series_roll):
+    """The sources that get a dataset page: the predicate main() applies through build_record (licence
+    reservable, not denylisted, at least one catalogued series). Each one needs a served_facts.json entry."""
+    return {sid for sid in sources
+            if series_roll.get(sid)
+            and bool((licenses.get(sources[sid].get("license_id")) or {}).get("reservable", 0))
+            and sid not in DENYLISTED}
+
+
+def page_records(sources, licenses, series_roll, sidecar, source_meta):
+    """The records main() writes a page for. Membership comes ONLY from page_source_ids, so the served-facts
+    check, the refresh tool and the page writer share one definition (re-review of #292, C2). build_record's
+    own `reservable` gate must agree; if it does not, the build stops instead of writing a wrong page."""
+    records = []
+    for sid in sorted(page_source_ids(sources, licenses, series_roll)):
+        rec = build_record(sid, sources[sid], licenses, series_roll.get(sid),
+                           (sidecar or {}).get(sid), (source_meta or {}).get(sid))
+        if not rec["reservable"]:
+            raise SystemExit(f"FATAL: page_source_ids picked {sid}, but build_record says it is not "
+                             f"reservable. The two gates disagree; fix the predicate before building.")
+        records.append(rec)
+    return records
+
+
+def apply_served_facts(series_roll, facts=None, required=()):
     """Hold every source's n_series at or below its served count (never raise it), and use the served frequency
-    codes where served_facts.json lists them. Returns {source_id: (local, served)} for the sources it lowered."""
+    codes where served_facts.json lists them. Returns {source_id: (local, served)} for the sources it lowered.
+
+    `required` are the sources that will get a page: one with NO entry in the file stops the build, because
+    an absent entry would leave that page uncapped (pre-build review C1, 2026-11-18). A source measured at 0
+    is marked `not_yet_served`: its page says so and never falls back to the local count."""
     facts = load_served_facts() if facts is None else facts
-    if not facts:
-        return {}
+    missing = sorted(set(required) - set(facts["n_series"]))
+    if missing:
+        raise SystemExit(f"FATAL: {len(missing)} source(s) that get a page have no served count in "
+                         f"served_facts.json: {missing[:20]}{' ...' if len(missing) > 20 else ''}. "
+                         f"Re-measure: {REFRESH_COMMAND}")
     lowered = {}
     for src, roll in series_roll.items():
         served = facts["n_series"].get(src)
@@ -1242,6 +1326,10 @@ def apply_served_facts(series_roll, facts=None):
             roll["n_series"] = served
             print("  served cap: %s n_series %d -> %d (the API serves %d, measured %s)"
                   % (src, lowered[src][0], served, served, facts.get("measured_utc")))
+        if served == 0:
+            roll["n_series"] = 0
+            roll["not_yet_served"] = True
+            print("  not yet served: %s (the API serves 0 series, measured %s)" % (src, facts.get("measured_utc")))
         if src in facts["frequencies"]:
             roll["frequencies"] = sorted(set(facts["frequencies"][src]))
     return lowered
@@ -1910,6 +1998,8 @@ def build_record(sid, src, lic, roll, side, s5=None):
         "desc_full": desc_full,
         "desc_short": desc_short,
         "n_series": (roll or {}).get("n_series", 0),
+        # served_facts.json measured 0: the page says "not yet served", never the local count
+        "not_yet_served": bool((roll or {}).get("not_yet_served")),
         "cov_start": cov_start,
         "cov_end": cov_end,
         "frequencies": (roll or {}).get("frequencies", []),
@@ -2036,6 +2126,13 @@ def jsonld_description(rec, page_desc=None):
             or f"{rec['name']} — dataset catalogued in the {SITE_NAME}.")
 
 
+# A source whose measured served count is 0 (served_facts.json): licensed for redistribution, nothing to
+# download yet. Its page and both JSON-LD blocks say so and offer no download (review of PR #292, C1).
+NOT_YET_SERVED_USAGE = ("Not yet served. The licence permits redistribution, but the API serves no series "
+                        "for this source yet, so no download is offered.")
+NOT_YET_SERVED_SENTENCE = "Catalogued by the Elkassabgi Data Library; the data is not yet served here."
+
+
 def dataset_jsonld(rec, page_desc=None):
     """Build a VALID schema.org/Dataset object. Required-by-Google fields:
     name, description; strongly recommended: license, creator/publisher,
@@ -2069,7 +2166,10 @@ def dataset_jsonld(rec, page_desc=None):
 
     # variableMeasured: the source's COMPLETE indicator list, verbatim from its own
     # series titles, or nothing at all (see _measure_stems / MEASURES_MAX).
-    if rec.get("measures"):
+    # served 0 (not_yet_served): no variableMeasured / temporalCoverage / repeatFrequency, because
+    # the page hides those rows and the metadata must not claim more than the page (re-review of #292).
+    _nys = bool(rec.get("not_yet_served"))
+    if rec.get("measures") and not _nys:
         obj["variableMeasured"] = list(rec["measures"])
 
     # spatialCoverage: DELIBERATELY NOT EMITTED. Measured 2026-08-01: `series.geography`
@@ -2082,7 +2182,9 @@ def dataset_jsonld(rec, page_desc=None):
     # It stays omitted until the registry carries a coded place column.
 
     # temporalCoverage as an ISO-8601 interval, only when both ends are sane.
-    if rec["cov_start"] and rec["cov_end"]:
+    if _nys:
+        pass
+    elif rec["cov_start"] and rec["cov_end"]:
         obj["temporalCoverage"] = f"{rec['cov_start']}/{rec['cov_end']}"
     elif rec["cov_start"]:
         obj["temporalCoverage"] = f"{rec['cov_start']}/.."
@@ -2090,7 +2192,7 @@ def dataset_jsonld(rec, page_desc=None):
     if rec["last_updated"]:
         obj["dateModified"] = rec["last_updated"]
 
-    if rec["frequencies"]:
+    if rec["frequencies"] and not _nys:
         isos = [FREQ_ISO[f] for f in rec["frequencies"] if f in FREQ_ISO]
         if isos:
             obj["repeatFrequency"] = isos if len(isos) > 1 else isos[0]
@@ -2107,7 +2209,10 @@ def dataset_jsonld(rec, page_desc=None):
 
     # distribution: ONLY for reservable sources do we advertise a download.
     # Non-reservable -> metadata-only catalog entry; we never imply re-serve.
-    if rec["reservable"]:
+    if rec.get("not_yet_served"):
+        obj["isAccessibleForFree"] = False
+        obj["usageInfo"] = NOT_YET_SERVED_USAGE
+    elif rec["reservable"]:
         dist = {
             "@type": "DataDownload",
             "name": f"{rec['id']} — CSV",
@@ -2166,12 +2271,15 @@ def croissant_jsonld(rec, page_desc=None):
         obj["license"] = _lic
     if rec["categories"]:
         obj["keywords"] = list(rec["categories"])
-    if rec["cov_start"] and rec["cov_end"]:
+    if rec["cov_start"] and rec["cov_end"] and not rec.get("not_yet_served"):
         obj["temporalCoverage"] = f"{rec['cov_start']}/{rec['cov_end']}"
     if rec.get("citation_long") or rec.get("citation_short"):
         obj["citation"] = rec.get("citation_long") or rec.get("citation_short")
 
-    if rec["reservable"]:
+    if rec.get("not_yet_served"):
+        obj["isAccessibleForFree"] = False
+        obj["usageInfo"] = NOT_YET_SERVED_USAGE
+    elif rec["reservable"]:
         obj["distribution"] = [
             {
                 "@type": "cr:FileObject",
@@ -2587,8 +2695,9 @@ def render_dataset_page(rec):
     # Honesty transform for GATED sources: the baked metadata sentence
     # "Compiled and redistributed by the Elkassabgi Data Library." is true only
     # for reservable sources. On a gated page it would misstate what we do.
-    if not rec["reservable"]:
-        _honest = ("Catalogued (metadata only) by the Elkassabgi Data Library; "
+    if not rec["reservable"] or rec.get("not_yet_served"):
+        _honest = (NOT_YET_SERVED_SENTENCE if rec["reservable"] else
+                   "Catalogued (metadata only) by the Elkassabgi Data Library; "
                    "the data itself is not redistributed here.")
         for _k in ("desc_short", "desc_full", "description_processing"):
             if rec.get(_k):
@@ -2615,8 +2724,11 @@ def render_dataset_page(rec):
 
     head = render_head(title, meta_desc, rec["page_url"], PAGE_CSS, jsonld_block)
 
+    nys = bool(rec.get("not_yet_served"))     # served_facts.json measured 0: no download claim anywhere
     badges = []
-    if rec["reservable"]:
+    if nys:
+        badges.append('<span class="badge meta">Not yet served</span>')
+    elif rec["reservable"]:
         badges.append('<span class="badge open">Open &middot; redistributed</span>')
     else:
         badges.append('<span class="badge meta">Metadata only</span>')
@@ -2624,7 +2736,9 @@ def render_dataset_page(rec):
     for c in rec["categories"][:6]:
         badges.append(f'<span class="badge cat">{esc(c)}</span>')
 
-    if rec["reservable"]:
+    if nys:
+        callout = f'<div class="callout meta"><b>Not yet served.</b> {esc(NOT_YET_SERVED_USAGE[16:])}</div>'
+    elif rec["reservable"]:
         callout = (
             '<div class="callout open"><b>Redistributable.</b> This source is served '
             "as canonical Parquet under the license below, with attribution and "
@@ -2642,7 +2756,9 @@ def render_dataset_page(rec):
     cov_rows = []
     if rec["n_series"]:
         cov_rows.append(("Series catalogued", f"{rec['n_series']:,}"))
-    if rec["cov_start"] or rec["cov_end"]:
+    elif rec.get("not_yet_served"):
+        cov_rows.append(("Series served", "Not yet served"))
+    if (rec["cov_start"] or rec["cov_end"]) and not nys:
         # Never render a bare "?" for a bound we do not have. It read as a broken page
         # ("Coverage ? – 2018-12-31" on ggdc and maddison, reported 2026-08-02), and it is
         # also the wrong claim: we are not uncertain about the coverage, we simply have no
@@ -2659,15 +2775,15 @@ def render_dataset_page(rec):
         else:
             span = f"through {rec['cov_end']}"
         cov_rows.append(("Temporal coverage", span))
-    if rec["frequencies"]:
+    if rec["frequencies"] and not nys:
         cov_rows.append(
             ("Frequencies", ", ".join(FREQ_LABEL.get(f, f) for f in rec["frequencies"]))
         )
-    if rec["n_geo"]:
+    if rec["n_geo"] and not nys:
         cov_rows.append(("Distinct geographies", f"{rec['n_geo']:,}"))
     if rec["categories"]:
         cov_rows.append(("Categories", ", ".join(rec["categories"])))
-    if rec["measured_obs"]:
+    if rec["measured_obs"] and not nys:
         cov_rows.append(("Measured observations", f"{rec['measured_obs']:,}"))
     if rec["last_updated"]:
         cov_rows.append(("Registry last updated", rec["last_updated"]))
@@ -2680,7 +2796,7 @@ def render_dataset_page(rec):
         )
     if rec["attribution"]:
         lic_rows.append(("Required attribution", esc(rec["attribution"])))
-    lic_rows.append(("Redistribution", "Permitted (served here)" if rec["reservable"] else "Not permitted (metadata only)"))
+    lic_rows.append(("Redistribution", ("Permitted (not yet served here)" if nys else "Permitted (served here)") if rec["reservable"] else "Not permitted (metadata only)"))
     lic_rows.append(("Commercial use", "Yes" if rec["commercial_ok"] else "Restricted / no"))
     lic_rows.append(("Modification", "Restricted" if rec["no_modify"] else "Permitted"))
     if rec["homepage"]:
@@ -2691,7 +2807,7 @@ def render_dataset_page(rec):
     # Access / mirrors. Download + API rows ONLY for reservable sources — a gated
     # source's page must never advertise a download of data we don't redistribute
     # (the API 451s it anyway; the page must say the same thing).
-    if rec["reservable"]:
+    if rec["reservable"] and not nys:
         acc_rows = [
             ("Download",
              (f'<a href="download.html?source={esc(rec["id"])}">Select &amp; download '
@@ -2701,6 +2817,12 @@ def render_dataset_page(rec):
               'per-series files are still being published. The API returns 404 for it until '
               'that completes, so we are not offering a button that would fail.')),
             ("API", f'<a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span>'),
+            ("Canonical landing", f'<a href="{esc(rec["page_url"])}">{esc(rec["page_url"])}</a>'),
+        ]
+    elif nys:
+        acc_rows = [
+            ("Download", "<em>Not yet served</em> &mdash; the API serves no series for this source yet, "
+                         "so no download is offered."),
             ("Canonical landing", f'<a href="{esc(rec["page_url"])}">{esc(rec["page_url"])}</a>'),
         ]
     else:
@@ -2796,6 +2918,8 @@ def render_dataset_page(rec):
         html = html.replace(
             "Compiled and redistributed by the Elkassabgi Data Library.",
             "Catalogued (metadata only) by the Elkassabgi Data Library; the data itself is not redistributed here.")
+    elif rec.get("not_yet_served"):
+        html = html.replace("Compiled and redistributed by the Elkassabgi Data Library.", NOT_YET_SERVED_SENTENCE)
     return html
 
 
@@ -2945,6 +3069,9 @@ def _catalog_idx(records):
         }
         for r in records
     ]
+    for x, r in zip(idx, records):
+        if r.get("not_yet_served"):         # only when true, so every other row's JSON is unchanged
+            x["not_yet_served"] = True
     from collections import Counter
     dist = Counter(x["pillar"] for x in idx)
     print("  catalog pillars:", {k: dist.get(k, 0) for k, _i, _l in PILLARS})
@@ -3050,9 +3177,70 @@ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hi
 """
 
 
+def not_yet_served_note(records):
+    """(count, sentence) for the pages marked not_yet_served (served count 0). The sentence is "" when there
+    are none, so a site-wide claim that every source is downloadable stays true either way (re-review of #292)."""
+    n = sum(1 for r in records if r.get("not_yet_served"))
+    if not n:
+        return 0, ""
+    which = "1 more source is" if n == 1 else f"{n} more sources are"
+    return n, (f" {which} licensed for re-hosting but not yet served: the API serves no series for "
+               f"{'it' if n == 1 else 'them'} yet, so {'its page offers' if n == 1 else 'their pages offer'} "
+               f"no download.")
+
+
+def gate_site_claims(html, n_nys, pairs):
+    """Swap each site-wide claim that every source is downloadable for its not-yet-served wording. With no
+    not_yet_served source the page is returned unchanged, byte for byte (re-review r3 of #292). Each claim
+    must occur exactly once, so a template edit that drops or doubles one stops the build here."""
+    if not n_nys:
+        return html
+    for old, new in pairs:
+        if html.count(old) != 1:
+            raise RuntimeError(f"gen_site: site-wide claim found {html.count(old)} times, expected 1: {old[:70]!r}")
+        html = html.replace(old, new)
+    return html
+
+
+def index_nys_claims(n_nys, nys_note):
+    """(main wording, wording when n_nys > 0) for every claim on index.html that all sources are served."""
+    are = "1 listed source is" if n_nys == 1 else f"{n_nys} listed sources are"
+    its = "its page says" if n_nys == 1 else "their pages say"
+    return [
+        ("<p>Everything in the library is real, downloadable data — if we can’t host a source, we don’t list it.</p>",
+         f"<p>Everything in the library is real data licensed for re-hosting — if we can’t host a source, we don’t "
+         f"list it. {are} not yet served: {its} so and offer no download.</p>"),
+        ("<!-- ── Every source is fully hosted ── -->", "<!-- ── Sources licensed for re-hosting ── -->"),
+        ('<h2 class="section-title">Every source, fully hosted</h2>',
+         '<h2 class="section-title">Every source licensed for re-hosting</h2>'),
+        ("<p>Every dataset here is served from our store",
+         "<p>Each of these datasets is served from our store"),
+        ("Licensed for re-hosting, with Python and R clients ready to go.</p>",
+         "Licensed for re-hosting, with Python and R clients ready to go." + esc(nys_note) + "</p>"),
+        ("we simply don't list it — no dead-end pages, no teasers. The moment a publisher grants permission, its "
+         "data appears here as a full download.</p>",
+         "we simply don't list it — no teasers. A listed source that the API does not serve yet is marked “not yet "
+         "served” on its page and offers no download; once it is served, its page offers the full download.</p>"),
+    ]
+
+
+CATALOG_NYS_CLAIMS = [
+    ("// access-tier filter removed — every source is redistributed/hosted",
+     "// access-tier filter removed — every source is licensed for re-hosting"),
+]
+
+DOCS_NYS_CLAIMS = [
+    ("Sources whose licenses forbid re-hosting are not listed at all — we never catalog a dead-end we can't "
+     "actually serve.",
+     "Sources whose licenses forbid re-hosting are not listed at all. A source we may re-host but do not serve "
+     "yet is marked “not yet served” on its page."),
+]
+
+
 def render_index(records, generated):
     n_total = len(records)
-    n_open = sum(1 for r in records if r["reservable"])
+    n_nys, nys_note = not_yet_served_note(records)
+    n_open = sum(1 for r in records if r["reservable"] and not r.get("not_yet_served"))
     n_meta = n_total - n_open
     n_series_total = sum(r.get("n_series", 0) or 0 for r in records)
     n_active = sum(1 for r in records if (r.get("n_series", 0) or 0) > 0)
@@ -3498,7 +3686,7 @@ fetch(STATS_URL).then(function (r) { return r.json(); }).then(function (d) {
     # The page fetches /v1/stats live; the worker serves R2 _aqueduct/stats.json,
     # refreshed by each census run.
     years = _earliest_data_year()
-    return (
+    return gate_site_claims((
         tpl
         .replace("__FAQ__", faq_html)
         .replace("__YEARS__", f"{years:,}+" if years else "&mdash;")
@@ -3508,7 +3696,7 @@ fetch(STATS_URL).then(function (r) { return r.json(); }).then(function (d) {
         .replace("__NOPEN__", str(n_open))
         .replace("__NMETA__", str(n_meta))
         .replace("__GEN__", generated or TODAY)
-    )
+    ), n_nys, index_nys_claims(n_nys, nys_note))
 
 
 def render_catalog(records, generated):
@@ -3523,8 +3711,11 @@ def render_catalog(records, generated):
     idx = _catalog_idx(records)
     data = _idx_json(idx)
     n_total = len(records)
-    n_open = sum(1 for r in records if r["reservable"])
+    n_nys, _ = not_yet_served_note(records)
+    n_open = sum(1 for r in records if r["reservable"] and not r.get("not_yet_served"))
     n_meta = n_total - n_open
+    n_lead = (f"{n_total} sources, all downloadable" if not n_nys else
+              f"{n_total} sources, {n_open} downloadable now and {n_nys} not yet served")
 
     catalog_ld = {
         "@context": "https://schema.org/",
@@ -3564,7 +3755,7 @@ def render_catalog(records, generated):
 <section class="cat-hero">
   <div class="container">
     <h1>Data Catalog</h1>
-    <p>__N__ sources, all downloadable &middot; search datasets in English, or series in 6 languages via the live API</p>
+    <p>__NLEAD__ &middot; search datasets in English, or series in 6 languages via the live API</p>
   </div>
 </section>
 <div class="wrapc">
@@ -3654,9 +3845,9 @@ function renderLocal(){
  const desc=parts.join(' · ');
  document.getElementById('count').textContent=rows.length+' of '+IDX.length+' datasets'+(desc?' — '+desc:'');
  const out=rows.map(r=>{
-  const badge='<span class="badge open">redistributed</span>';
+  const badge=r.not_yet_served?'<span class="badge meta">not yet served</span>':'<span class="badge open">redistributed</span>';
   const cats=(r.cats||[]).slice(0,4).map(c=>'<span class="badge cat">'+esc(c)+'</span>').join('');
-  const ser=r.n_series?'<span class="count">'+r.n_series.toLocaleString()+' series</span>':'';
+  const ser=r.n_series?'<span class="count">'+r.n_series.toLocaleString()+' series</span>':(r.not_yet_served?'<span class="count">not yet served</span>':'');
   return '<a class="card" href="'+r.page+'"><div class="cid">'+esc(r.id)+'</div>'+
    '<h3>'+esc(r.name)+'</h3>'+
    (r.desc?'<p>'+esc(r.desc)+'</p>':'')+
@@ -3719,14 +3910,15 @@ render();
 </body></html>
 """
     )
-    return (
+    return gate_site_claims((
         body.replace("__DATA__", data)
         .replace("__CHIPS__", chips)
         .replace("__REGIONS__", region_opts)
+        .replace("__NLEAD__", n_lead)
         .replace("__N__", str(n_total))
         .replace("__NOPEN__", str(n_open))
         .replace("__NMETA__", str(n_meta))
-    )
+    ), n_nys, CATALOG_NYS_CLAIMS)
 
 
 # Only what is genuinely page-local: <pre>, <table>, <code> and the headings all
@@ -3776,13 +3968,18 @@ def _info_page(title, meta_desc, page, body, og_type="website"):
             + f'<div class="wrap">\n{body}\n</div></body></html>')
 
 
-def render_docs():
+def render_docs(records=()):
+    # "its data is served" is true only for sources not marked not_yet_served: say so when there are any.
+    n_nys, _ = not_yet_served_note(records)
+    served = ("its data is served" if not n_nys else
+              f"its data is served (except the {n_nys} marked “not yet served”, whose pages offer no "
+              f"download until the API serves them)")
     body = """
 <p class="lead">How the library works: one namespace, honest licensing, reproducible downloads, and a public update pipeline.</p>
 <h2>The namespace</h2>
 <p>Every series has a stable id of the form <code>source:series_key[:geography]</code> — for example <code>worldbank:NY.GDP.MKTP.CD:USA</code>. The id is permanent, appears in every download, and resolves over the API.</p>
 <h2>Two catalog tiers</h2>
-<p>Every source in the library has a license that permits re-hosting: its data is served from our store as citation-headed CSV, over the API, and in bundles, with license and attribution attached to every series. Sources whose licenses forbid re-hosting are not listed at all — we never catalog a dead-end we can't actually serve. Nothing restricted is ever silently redistributed.</p>
+<p>Every source in the library has a license that permits re-hosting: __DOCSSERVED__ from our store as citation-headed CSV, over the API, and in bundles, with license and attribution attached to every series. Sources whose licenses forbid re-hosting are not listed at all — we never catalog a dead-end we can't actually serve. Nothing restricted is ever silently redistributed.</p>
 <h2>Reproducibility</h2>
 <p>Bundles are snapshot-pinned: a bundle manifest records the snapshot date and the exact member series, so the same request reproduces the same data. Every CSV carries its license and producer-first citation in a comment header.</p>
 <h2>The update pipeline</h2>
@@ -3793,6 +3990,7 @@ def render_docs():
 <h2>One account, one family</h2>
 <p>The free ElkassabgiData key works across the family — this library, <a href="https://hfdatalibrary.com">HF Data Library</a> (1-minute U.S. equity data) and <a href="https://ipdatalibrary.com">IP Data Library</a> (patent &amp; innovation measures). Get a key from the <a href="download.html">Download page</a>.</p>
 """
+    body = gate_site_claims(body.replace("__DOCSSERVED__", served), n_nys, DOCS_NYS_CLAIMS)
     return _info_page("Documentation", "How Econ Data Library works: namespace, licensing tiers, reproducible bundles, update pipeline.", "docs.html", body)
 
 
@@ -4214,18 +4412,7 @@ def main(argv=None):
     # not on the public site. (Supersedes the 2026-07-15 "keep pending as a
     # metadata-only reference" rule; refused sources stay purged.)
     # ------------------------------------------------------------------ #
-    records = []
-    for sid in sorted(sources):
-        rec = build_record(
-            sid,
-            sources[sid],
-            licenses,
-            series_roll.get(sid),
-            sidecar.get(sid),
-            source_meta.get(sid),
-        )
-        if bool(rec["reservable"]) and bool(series_roll.get(sid)):
-            records.append(rec)
+    records = page_records(sources, licenses, series_roll, sidecar, source_meta)
 
     _LASTMOD_PREV.update(_load_lastmod_state())
     if not _LASTMOD_PREV:
@@ -4361,7 +4548,7 @@ def main(argv=None):
     _write(os.path.join(OUT_DIR, "catalog.html"), render_catalog(records, generated))
 
     # docs / api / cite (hf-parity information pages)
-    _write(os.path.join(OUT_DIR, "docs.html"), render_docs())
+    _write(os.path.join(OUT_DIR, "docs.html"), render_docs(records))
     _write(os.path.join(OUT_DIR, "api.html"), render_api())
     _write(os.path.join(OUT_DIR, "cite.html"), render_cite())
     _write(os.path.join(OUT_DIR, "contact.html"), render_contact())
