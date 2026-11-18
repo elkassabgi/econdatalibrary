@@ -390,6 +390,9 @@ FORWARD_DATE_DEFECTS = {
     "ksh_stadat": "gsz0069: 34 single-point series dated 2100-12-31",
     # the 2100 bound is statfin:vtp:152i.px, titled "Taxes and tax-like payments, annually, 1975-2025*"
     "statfin": "vtp:152i.px: 1975-2025 table stored to 2100-12-31",
+    # the only forward rows are ER:ZWE.M and ER:ZWE.Q (Zimbabwe exchange rates) ending 2027-03-31:
+    # no exchange rate is observable in 2027, and ER publishes no forecasts (review R1943)
+    "imf_er_direct": "ER:ZWE.M and ER:ZWE.Q: exchange rates stored to 2027-03-31",
 }
 
 # SQL: the end of the period containing the build date, per series frequency (named parameters

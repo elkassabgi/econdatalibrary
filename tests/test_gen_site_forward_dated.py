@@ -113,6 +113,16 @@ def test_known_parse_damage_gets_no_qualifier(G):
     assert rec["forward_year"] == 2100 and G.forward_sentence(rec) is None
 
 
+@pytest.mark.parametrize("sid", ["ksh_stadat", "statfin", "imf_er_direct"])
+def test_every_listed_defect_source_gets_no_qualifier_on_page_or_meta(G, sid):
+    assert sid in G.FORWARD_DATE_DEFECTS and G.FORWARD_DATE_DEFECTS[sid], "listed, with its evidence"
+    con = _db([(f"{sid}:x", "M", "1957-01-31", "2027-03-31"), (f"{sid}:y", None, "1950-12-31", "2020-12-31")])
+    rec = _rec(G, sid, _roll(G, con)[sid])
+    assert rec["forward_year"] == 2027, "the data IS forward; only the wording is withheld"
+    assert G.forward_sentence(rec) is None
+    assert "Forward-dated" not in G.render_dataset_page(rec) and "forward-dated" not in G.build_meta_desc(rec)
+
+
 def test_sentinels_are_not_forward_years(G):
     con = _db([("sen:a", None, "1950-12-31", "9999-12-31"), ("sen:b", None, "1950-12-31", "2020-12-31")])
     roll = _roll(G, con)["sen"]
