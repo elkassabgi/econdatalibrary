@@ -213,6 +213,19 @@ def clear_tail_parts(area_id, parts_root: str) -> int:
 # wrong pass publishes the loss.
 GUARD_TAIL_LOSS_BP = 100                      # basis points of the old tail pairs: 100 = 1%
 GUARD_SERIES_DROP_ALLOW: frozenset = frozenset()   # series_keys the publisher withdrew, by name
+# CLEARING A REFUSAL (R1938). A name list does not scale: area_46 has 14,163,345 tail series, so a
+# real withdrawal there can drop thousands of names. A refusal is cleared by ONE reviewed, one-shot,
+# COUNT-BASED clearance per area, appended to CLEARANCE_FILE in the store directory:
+#   {"area": "46", "max_series_dropped": 1200, "max_tail_lost": 90000,
+#    "reviewed_refusal": "20261118T110000Z", "by": "<who reviewed it>", "utc": "<when, ISO>"}
+# The reviewer reads the refusal's guard.json (parts/_refresh_refused/area_<id>/<stamp>/), checks
+# that the drop is the publisher's (not an early-stopped sweep), and writes the counts it accepts.
+# The NEXT rebuild of that area may then drop up to max_series_dropped series and lose up to
+# max_tail_lost tail pairs. It never clears an EMPTY sweep or a change below the window. It is
+# spent by the first rebuild that passes (the area's last_refresh moves past its utc) and expires
+# after GUARD_CLEARANCE_DAYS, so it can never become a standing allowance.
+CLEARANCE_FILE = "_guard_clearances.jsonl"
+GUARD_CLEARANCE_DAYS = 14
 GUARD_DROPPED_EXAMPLES = 10
 GUARD_MEMORY_LIMIT = "4GB"      # DuckDB spills past this (R690: the desktop runs the owner's jobs too)
 GUARD_THREADS = 2
@@ -222,11 +235,14 @@ def _sql_path(p: str) -> str:
     return os.path.abspath(p).replace("\\", "/").replace("'", "''")
 
 
-def row_loss_guard(old_path: str, new_path: str, tail_start: int, spill_dir: str | None = None) -> dict:
+def row_loss_guard(old_path: str, new_path: str, tail_start: int, spill_dir: str | None = None,
+                   clearance: dict | None = None) -> dict:
     """Compare a rebuilt candidate (new_path) with the final it would replace (old_path).
 
     Returns a dict with ok (bool), reasons (list of str) and the counts. Never raises for a
-    verdict; an error while measuring propagates, and the caller treats that as a refusal."""
+    verdict; an error while measuring propagates, and the caller treats that as a refusal.
+    `clearance` is a reviewed one-shot clearance (guard_clearance()): it raises the series-drop and
+    tail-loss limits for this one rebuild, never the empty-sweep or below-window rules."""
     import duckdb                       # lazy: the guard relaunches this script (R664 rule 2)
 
     cut = dt.date(tail_start, 1, 1).isoformat()
@@ -243,7 +259,7 @@ def row_loss_guard(old_path: str, new_path: str, tail_start: int, spill_dir: str
         def fp(p):
             r = con.execute(
                 f"SELECT count(*), coalesce(sum(hash(series_key, obs_date, value))::HUGEINT, 0) "
-                f"FROM read_parquet('{p}') WHERE obs_date < DATE '{cut}'").fetchone()
+                f"FROM read_parquet('{p}') WHERE obs_date < DATE '{cut}' OR obs_date IS NULL").fetchone()
             return int(r[0]), int(r[1])
 
         pre_old, pre_new = fp(o), fp(n)
@@ -252,11 +268,12 @@ def row_loss_guard(old_path: str, new_path: str, tail_start: int, spill_dir: str
             # only on the failure path: name how many pairs went missing below the window
             pre_lost = int(con.execute(f"""
                 WITH a AS (SELECT series_key, obs_date, count(*) c FROM read_parquet('{o}')
-                           WHERE obs_date < DATE '{cut}' GROUP BY ALL),
+                           WHERE obs_date < DATE '{cut}' OR obs_date IS NULL GROUP BY ALL),
                      b AS (SELECT series_key, obs_date, count(*) c FROM read_parquet('{n}')
-                           WHERE obs_date < DATE '{cut}' GROUP BY ALL)
+                           WHERE obs_date < DATE '{cut}' OR obs_date IS NULL GROUP BY ALL)
                 SELECT coalesce(sum(greatest(a.c - coalesce(b.c, 0), 0)), 0)
-                FROM a LEFT JOIN b USING (series_key, obs_date)""").fetchone()[0])
+                FROM a LEFT JOIN b ON a.series_key IS NOT DISTINCT FROM b.series_key
+                                  AND a.obs_date IS NOT DISTINCT FROM b.obs_date""").fetchone()[0])
 
         tail_old, tail_new, tail_lost, tail_gained = (int(x) for x in con.execute(f"""
             WITH a AS (SELECT series_key, obs_date, count(*) c FROM read_parquet('{o}')
@@ -266,32 +283,46 @@ def row_loss_guard(old_path: str, new_path: str, tail_start: int, spill_dir: str
             SELECT coalesce(sum(a.c), 0), coalesce(sum(b.c), 0),
                    coalesce(sum(greatest(coalesce(a.c, 0) - coalesce(b.c, 0), 0)), 0),
                    coalesce(sum(greatest(coalesce(b.c, 0) - coalesce(a.c, 0), 0)), 0)
-            FROM a FULL OUTER JOIN b USING (series_key, obs_date)""").fetchone())
+            FROM a FULL OUTER JOIN b ON a.series_key IS NOT DISTINCT FROM b.series_key
+                                    AND a.obs_date = b.obs_date""").fetchone())
+        # A NULL series_key is matched as a key everywhere below (IS NOT DISTINCT FROM): with `USING`
+        # and `NOT list_contains(...)` a NULL key never matched and never counted, so a vanished
+        # NULL-key series passed the per-series rule unseen (review R1938).
 
         # series that had tail rows and have none in the new tail, minus the allow list
         dropped_n, dropped_eg = con.execute(f"""
             WITH a AS (SELECT DISTINCT series_key FROM read_parquet('{o}') WHERE obs_date >= DATE '{cut}'),
                  b AS (SELECT DISTINCT series_key FROM read_parquet('{n}') WHERE obs_date >= DATE '{cut}'),
-                 d AS (SELECT series_key FROM a ANTI JOIN b USING (series_key)
-                       WHERE NOT list_contains(?::VARCHAR[], series_key))
+                 d AS (SELECT a.series_key FROM a ANTI JOIN b
+                           ON a.series_key IS NOT DISTINCT FROM b.series_key
+                       WHERE NOT coalesce(list_contains(?::VARCHAR[], a.series_key), false))
             SELECT (SELECT count(*) FROM d),
-                   (SELECT coalesce(list(series_key), []) FROM
-                        (SELECT series_key FROM d ORDER BY 1 LIMIT {int(GUARD_DROPPED_EXAMPLES)}))""",
+                   (SELECT coalesce(list(coalesce(series_key, '<NULL series_key>')), []) FROM
+                        (SELECT series_key FROM d ORDER BY 1 NULLS FIRST
+                         LIMIT {int(GUARD_DROPPED_EXAMPLES)}))""",
             [sorted(GUARD_SERIES_DROP_ALLOW)]).fetchone()
         dropped_n, dropped_eg = int(dropped_n), list(dropped_eg or [])
     finally:
         con.close()             # a paused DuckDB cursor blocks os.replace on Windows (R664)
 
     floor = tail_old * int(GUARD_TAIL_LOSS_BP) // 10_000
+    allow_series, cleared = 0, None
+    if clearance:
+        allow_series = int(clearance["max_series_dropped"])
+        floor = max(floor, int(clearance["max_tail_lost"]))
+        cleared = {k: clearance.get(k) for k in ("max_series_dropped", "max_tail_lost",
+                                                 "reviewed_refusal", "by", "utc")}
     reasons = []
     if pre_old != pre_new:
         reasons.append(f"rows below {cut} changed: old {pre_old[0]:,} rows, new {pre_new[0]:,} rows, "
                        f"{pre_lost:,} pair(s) lost, fingerprints differ")
     if tail_old > 0 and tail_new == 0:
         reasons.append(f"EMPTY sweep: the tail from {cut} had {tail_old:,} rows and the rebuild has none")
-    if dropped_n:
+    if dropped_n > allow_series:
         reasons.append(f"{dropped_n:,} series with tail rows from {cut} have none in the rebuild "
-                       f"(not on GUARD_SERIES_DROP_ALLOW), e.g. {', '.join(dropped_eg)}")
+                       f"(not on GUARD_SERIES_DROP_ALLOW"
+                       + (f", above the reviewed clearance of {allow_series:,}" if cleared else "")
+                       + f"), e.g. {', '.join(dropped_eg)}")
     if tail_lost > floor:
         reasons.append(f"{tail_lost:,} tail pair(s) from {cut} lost, above the floor of {floor:,} "
                        f"(old tail {tail_old:,} rows)")
@@ -299,7 +330,49 @@ def row_loss_guard(old_path: str, new_path: str, tail_start: int, spill_dir: str
             "pre_rows_old": pre_old[0], "pre_rows_new": pre_new[0], "pre_lost": pre_lost,
             "tail_rows_old": tail_old, "tail_rows_new": tail_new,
             "tail_lost": tail_lost, "tail_gained": tail_gained, "tail_loss_floor": floor,
-            "series_dropped": dropped_n, "series_dropped_eg": dropped_eg}
+            "series_dropped": dropped_n, "series_dropped_eg": dropped_eg, "clearance": cleared}
+
+
+def guard_clearance(out_dir: str, area_id, now: dt.datetime | None = None,
+                    state: dict | None = None) -> dict | None:
+    """The newest reviewed clearance for one area that is still valid, or None (see CLEARANCE_FILE).
+    Valid = well-formed, not older than GUARD_CLEARANCE_DAYS, and not yet spent: the area has not
+    refreshed since it was written. A malformed line is ignored, so it can only leave a refusal in
+    place, never widen one."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    aid = str(area_id)
+    best = None
+    try:
+        with open(os.path.join(out_dir, CLEARANCE_FILE), encoding="utf-8") as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        return None
+    for ln in lines:
+        try:
+            r = json.loads(ln)
+            if str(r["area"]) != aid:
+                continue
+            t = dt.datetime.fromisoformat(r["utc"])
+            t = t if t.tzinfo else t.replace(tzinfo=dt.timezone.utc)
+            if (int(r["max_series_dropped"]) < 0 or int(r["max_tail_lost"]) < 0
+                    or not r.get("by") or not r.get("reviewed_refusal")):
+                continue
+        except (ValueError, KeyError, TypeError):
+            continue
+        if not (now - dt.timedelta(days=GUARD_CLEARANCE_DAYS) <= t <= now):
+            continue
+        if best is None or t > best[0]:
+            best = (t, r)
+    if best is None:
+        return None
+    rec = (load_state(out_dir) if state is None else state).get(aid)
+    try:
+        last = dt.datetime.fromisoformat(rec["last_refresh"]).astimezone(dt.timezone.utc)
+    except (TypeError, KeyError, ValueError):
+        last = None
+    if last is not None and last >= best[0]:
+        return None                       # spent: a rebuild passed after it was written
+    return best[1]
 
 
 def replace_final(candidate: str, final: str) -> None:
@@ -459,6 +532,35 @@ def _read_lines(path: str) -> tuple[list, int]:
     except FileNotFoundError:
         pass
     return recs, bad
+
+
+def publish_summary(out_dir: str = OUT, now: dt.datetime | None = None) -> dict:
+    """The owed/refused facts as one small JSON-able dict, for the daily digest. The digest runs on
+    CI, where data/ is absent, so the workstation's guard beat (tools/guard_heartbeat.py) carries this
+    dict and the digest renders it (R1938). Times are stored, not ages, so the reader ages them
+    against its own clock. Raises on an unreadable record; the beat records that as `unreadable`."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    if not os.path.isdir(out_dir):
+        return {"measured_utc": now.isoformat(timespec="seconds"), "dir_present": False}
+    owed, bad = owed_areas(out_dir)
+    refused = refused_still_due(out_dir)
+    oldest_utc, oldest_area, unreadable_times = None, None, 0
+    for a, r in owed.items():
+        try:
+            t = dt.datetime.fromisoformat(r["rebuilt_utc"])
+            t = t if t.tzinfo else t.replace(tzinfo=dt.timezone.utc)
+        except (KeyError, TypeError, ValueError):
+            unreadable_times += 1
+            continue
+        if oldest_utc is None or t < oldest_utc:
+            oldest_utc, oldest_area = t, a
+    newest_ref = max(refused.values()) if refused else None
+    return {"measured_utc": now.isoformat(timespec="seconds"), "dir_present": True,
+            "owed": len(owed), "oldest_owed_utc": oldest_utc.isoformat() if oldest_utc else None,
+            "oldest_owed_area": oldest_area, "owed_time_unreadable": unreadable_times,
+            "bad_lines": bad, "refused": len(refused),
+            "refused_areas": sorted(refused, key=lambda x: (len(x), x))[:10],
+            "newest_refusal_utc": newest_ref.isoformat() if newest_ref else None}
 
 
 def owed_areas(out_dir: str = OUT) -> tuple[dict, int]:

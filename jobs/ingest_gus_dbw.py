@@ -531,7 +531,8 @@ def finish_area(aid, final: str, state: dict, tail_start: int) -> bool:
         log(f"REFRESH area {aid}: rebuild failed ({e}); the served copy is untouched")
         return False
     try:
-        guard = R.row_loss_guard(final, cand, tail_start, spill_dir=GUARD_SPILL)
+        guard = R.row_loss_guard(final, cand, tail_start, spill_dir=GUARD_SPILL,
+                                 clearance=R.guard_clearance(OUT, aid, state=state))
     except Exception as e:                       # noqa: BLE001 - cannot measure = refuse
         guard = {"ok": False, "reasons": [f"the guard could not run: {type(e).__name__}: {e}"]}
     if not guard["ok"]:

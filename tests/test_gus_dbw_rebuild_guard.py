@@ -334,3 +334,103 @@ def test_the_candidate_is_never_a_parquet_name_and_startup_sweeps_it():
     assert not G.CANDIDATE_SUFFIX.endswith(".parquet")
     import inspect
     assert "CANDIDATE_SUFFIX" in inspect.getsource(G.main)
+
+
+# ------------------------------------------------------------------ R1938: NULL series_key
+def test_a_vanished_null_key_series_is_refused(tmp_path):
+    """`NOT list_contains(list, NULL)` is NULL and an ANTI JOIN USING never matches NULL, so a series
+    whose key is NULL used to vanish from the tail uncounted (review R1938)."""
+    nulls = [(None, d, 1.0) for d in TAIL_DATES]
+    old = _write(str(tmp_path / "old.parquet"), HISTORY + OLD_TAIL + nulls)
+    new = _write(str(tmp_path / "new.parquet"), HISTORY + OLD_TAIL)
+    g = R.row_loss_guard(old, new, TAIL)
+    assert not g["ok"] and g["series_dropped"] == 1 and g["series_dropped_eg"] == ["<NULL series_key>"]
+    assert g["tail_lost"] == 3
+
+
+def test_a_null_key_series_present_on_both_sides_is_neither_dropped_nor_lost(tmp_path):
+    """Negative control: NULL keys match as keys, so identical NULL-key rows are no loss."""
+    nulls = [(None, d, 1.0) for d in TAIL_DATES]
+    old = _write(str(tmp_path / "old.parquet"), HISTORY + [(None, dt.date(2011, 1, 1), 2.0)] + OLD_TAIL + nulls)
+    g = R.row_loss_guard(old, old, TAIL)
+    assert g["ok"] and g["series_dropped"] == 0 and g["tail_lost"] == 0 and g["pre_lost"] == 0
+
+
+def test_a_lost_null_date_row_is_refused(tmp_path):
+    """A row with a NULL obs_date is in neither `< cut` nor `>= cut`; the rebuild drops it (pc.less is
+    NULL there), so it is counted with the rows below the window."""
+    old = _write(str(tmp_path / "old.parquet"), HISTORY + [("v1:s1:k1", None, 9.0)] + OLD_TAIL)
+    new = _write(str(tmp_path / "new.parquet"), HISTORY + OLD_TAIL)
+    g = R.row_loss_guard(old, new, TAIL)
+    assert not g["ok"] and g["pre_lost"] == 1
+
+
+# ------------------------------------------------------------------ R1938: clearing a refusal by count
+def _clear(env, now=None, **over):
+    rec = {"area": "1", "max_series_dropped": 1, "max_tail_lost": 3,
+           "reviewed_refusal": "20261118T110000Z", "by": "reviewer",
+           "utc": (now or dt.datetime.now(dt.timezone.utc)).isoformat(timespec="seconds")}
+    rec.update(over)
+    os.makedirs(env["out"], exist_ok=True)
+    with open(os.path.join(env["out"], R.CLEARANCE_FILE), "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec) + "\n")
+    return rec
+
+
+def _drop_t5(env):
+    _tail_part(env, [r for r in OLD_TAIL if r[0] != "v1:s1:t5"])
+
+
+def test_a_reviewed_count_clearance_passes_the_next_rebuild_once(env):
+    _drop_t5(env)
+    before, state = _md5(env["final"]), {}
+    assert G.finish_area(1, env["final"], state, TAIL) is False          # refused without it
+    _assert_refused(env, before, state)
+    _clear(env)
+    _drop_t5(env)
+    assert G.finish_area(1, env["final"], state, TAIL) is True
+    g = _owed_lines(env)[0]["guard"]
+    assert g["series_dropped"] == 1 and g["clearance"]["by"] == "reviewer"
+    assert R.guard_clearance(env["out"], 1, state=state) is None, "a used clearance must be spent"
+
+
+def test_a_clearance_below_the_measured_drop_still_refuses(env):
+    _clear(env, max_series_dropped=0)
+    _drop_t5(env)
+    before, state = _md5(env["final"]), {}
+    assert G.finish_area(1, env["final"], state, TAIL) is False
+    _assert_refused(env, before, state)
+
+
+def test_a_clearance_never_clears_an_empty_sweep(env):
+    _clear(env, max_series_dropped=10 ** 9, max_tail_lost=10 ** 9)
+    os.makedirs(env["tail_dir"], exist_ok=True)
+    before, state = _md5(env["final"]), {}
+    assert G.finish_area(1, env["final"], state, TAIL) is False
+    _assert_refused(env, before, state)
+
+
+def test_expired_other_area_and_malformed_clearances_are_ignored(env):
+    now = dt.datetime.now(dt.timezone.utc)
+    _clear(env, now=now - dt.timedelta(days=R.GUARD_CLEARANCE_DAYS + 1))   # expired
+    _clear(env, area="2")                                                  # another area
+    _clear(env, by="")                                                     # nobody reviewed it
+    _clear(env, max_series_dropped="many")                                 # not a count
+    with open(os.path.join(env["out"], R.CLEARANCE_FILE), "a", encoding="utf-8") as f:
+        f.write('{"area": "1", "max_ser')                                  # torn
+    assert R.guard_clearance(env["out"], 1) is None
+    _drop_t5(env)
+    before, state = _md5(env["final"]), {}
+    assert G.finish_area(1, env["final"], state, TAIL) is False
+    _assert_refused(env, before, state)
+
+
+def test_a_clearance_written_before_the_last_refresh_is_spent(tmp_path):
+    with_state = {"1": {"last_refresh": "2026-11-18T12:00:00+00:00"}}
+    d = str(tmp_path)
+    with open(os.path.join(d, R.CLEARANCE_FILE), "w", encoding="utf-8") as f:
+        f.write(json.dumps({"area": "1", "max_series_dropped": 5, "max_tail_lost": 5, "by": "r",
+                            "reviewed_refusal": "x", "utc": "2026-11-18T11:00:00+00:00"}) + "\n")
+    now = dt.datetime(2026, 11, 18, 13, tzinfo=dt.timezone.utc)
+    assert R.guard_clearance(d, 1, now=now, state=with_state) is None
+    assert R.guard_clearance(d, 1, now=now, state={})["max_series_dropped"] == 5
