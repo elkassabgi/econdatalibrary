@@ -2,9 +2,9 @@
  "generated": "2026-11-18",
  "pages": {
   "404.html": {
-   "lastmod": "2026-11-17",
+   "lastmod": "2026-11-18",
    "noindex": true,
-   "sha256": "70b27466133c98f8a05d828571561394f80eb71a492b1c41f4b0ba7d4fe8e63f"
+   "sha256": "2630df1efe37e9a9d3ee1ccfd39763debd68969493100940fe11b6a5922617b4"
   },
   "abs.html": {
    "lastmod": "2026-11-18",
@@ -49,7 +49,7 @@
   "bfs.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "9f67e2d8a3afa7c016ba0a5a77e664e866439969f81015c875c2a95bb5962744"
+   "sha256": "7a5da98c0f320e864833eb69b188f3bc7bacacb1d45f2f02ee84bea0d4f0ccb1"
   },
   "bis.html": {
    "lastmod": "2026-11-18",
@@ -64,7 +64,7 @@
   "boc.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "6bd1867a537bea21a6c0ee66ef5244da18569abdd879f3f41d3dccd8274832d2"
+   "sha256": "505bcaaacbcb2b55378bce816ed1f83e444d301d87c927473a9e1c6712ebf34b"
   },
   "boe.html": {
    "lastmod": "2026-11-18",
@@ -84,7 +84,7 @@
   "cbs_nl.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "7e4be422d69e33eb6c9d4b837edab7178dcb967c6ef556678de85d69ce053d4e"
+   "sha256": "ae3b7783d5e0c7accd8b8d00fbce5bcebfdb99e815dd5440a4f00b6cf9d72e45"
   },
   "census.html": {
    "lastmod": "2026-11-18",
@@ -124,7 +124,7 @@
   "cso.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "d893e8d47285e0e460fde25662f4835484309715cce5abbcdd7dddfb1fefc392"
+   "sha256": "3a64d4ea03de00201a0a42558dd9f67f2dc07f476d1e441b708b5f8a4ce7200d"
   },
   "damodaran.html": {
    "lastmod": "2026-11-18",
@@ -149,7 +149,7 @@
   "dst.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "2c7d0d632228d79424d4eede1758ee27ec4796fc705de43ab8cad5df437b6a2c"
+   "sha256": "8bd0e01d76c55fd04e9e68fc154e97b5bc6a3f52849e67b2dcb6f3d12776dc66"
   },
   "ecb.html": {
    "lastmod": "2026-11-18",
@@ -194,7 +194,7 @@
   "eurostat.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "be6e77f5da699169afaadf3ffa94f9064af9fb1cbb348817c8530c71006bd4c3"
+   "sha256": "5c20605b5dcd32ecbae5a8af802c6a0d3f3f646652ca9d397beb662c9ad47692"
   },
   "fao_ae.html": {
    "lastmod": "2026-11-18",
@@ -239,17 +239,17 @@
   "fao_ga.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "e5756a21e80ed696ecfd426466ae81462270e1dab79fe53d0929d96649bf4f13"
+   "sha256": "6c4484a3327aa4b992d7052ca12206afaf781e86d23eec3ac1ead46268e95092"
   },
   "fao_gb.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "cc503dd2e335fb9616a3814fc4ce6e1530192cf685eca0d063cd5ba68823b3d0"
+   "sha256": "d67ffe210c460cfa49ffe1740054ff7416806f2eef524be70d8f6cc8a5b8b5be"
   },
   "fao_ge.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "4735a9709893528aa3fda754f7bdc48b60376d17b52157453c5d6f2fa7171d79"
+   "sha256": "435d959d23e9bd0c74946667b081b5e760233c06f4d39275c302dfaaa721d35a"
   },
   "fao_gf.html": {
    "lastmod": "2026-11-18",
@@ -269,17 +269,17 @@
   "fao_gr.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "f518d29f4ac22daaf91831a8d684d3ee8a910f6e65116a5aeb766e59a250bb78"
+   "sha256": "151f6925c33920386f7231b7c36fd1985121cb78487329c068b638e7182ab332"
   },
   "fao_gt.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "f6b003951366a2bf9d4c20c310215587640a8915d35c2a798c1f619f400a1c98"
+   "sha256": "02911abb8004fc55af2b96c56bfdb13cb4db98ac6cb777bdad835458cb3ffba6"
   },
   "fao_gy.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "90c738963921a1569823a384029d6edd84615266c7e63b893bf390da108b53fb"
+   "sha256": "56228258b1d7b07dc78f155b8600ddccb91e180ce18df9037bd08ab0dcb8818e"
   },
   "fao_ic.html": {
    "lastmod": "2026-11-18",
@@ -289,7 +289,7 @@
   "fao_oa.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "b4d555a998975b320c410b87602634276be60b99449549461966e0c6c3e734dc"
+   "sha256": "71e8a6fa765622c94293cdcb54b4fece269afe19dec582208b1533a65afe8fe3"
   },
   "fao_pp.html": {
    "lastmod": "2026-11-18",
@@ -354,7 +354,7 @@
   "gapminder.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "d77dade09574528a34e81b63639554487079831629df1874492fb20045fa6cde"
+   "sha256": "eb3b12c47cef259df3344fb09f2b4f9021e8bde778aacb90de1fae430aa7e813"
   },
   "gcb.html": {
    "lastmod": "2026-11-18",
@@ -384,12 +384,12 @@
   "gus_dbw.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "f4bd0c9e2348164bc332a84ced0174c684c685afb13fcdf5836b7ddef3bac529"
+   "sha256": "ee87e3c13a95ae5689cd187ef93925403944b72067361450eb100656d2e651d8"
   },
   "hagstofa.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "2e32ddc15f9714af72bc0885d1b53fe0bae3c66fd9894f164d30571bb6ee7095"
+   "sha256": "f30cb18a20945b26503a5792fe049df6ca5fdacf1b8f90364fd11c9fe14a3b46"
   },
   "harvard_atlas.html": {
    "lastmod": "2026-11-18",
@@ -404,17 +404,17 @@
   "ilostat.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "5b91f7bf8488ebdc0b501e2f05a429ab22e1a77e155be092c02e2be40364559b"
+   "sha256": "cdc29a30fe4cf14b8de5909e4dc4f47fb0b5e31bf381f555c6fe43b796f6106c"
   },
   "imf_afrreo_direct.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "862fd92fa1ca782ccadc67d528b3cc67da4fc1fc5121c89e3e4da2e20542f04f"
+   "sha256": "e8da4316e99a01c2ffdb14ce5f8837fae3ee309cbee07a93d415a76774b26d48"
   },
   "imf_apdreo_direct.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "a435b3ab549f4de432a00cd38e84976d1780c593ff9e386456563f326fe99576"
+   "sha256": "e8d329ed232758fab3b3cea4f8ddb4f8e666c9b8aff1ea54d9f4ea59635ee353"
   },
   "imf_bop_direct.html": {
    "lastmod": "2026-11-18",
@@ -479,7 +479,7 @@
   "imf_fm_direct.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "416c525b9bb827e2f06e919cd345a2a6c709b6671556f9480dd32fbb0d247dc5"
+   "sha256": "4cc3a01978c65303d20fa60f53197c14ded880b80bc55183c70f05ae105845f1"
   },
   "imf_fsibsis_direct.html": {
    "lastmod": "2026-11-18",
@@ -559,7 +559,7 @@
   "imf_gsli_direct.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "a3660857889f7da95b19aebf38dabf7262561c2760c6ee26ec3fc0519d99ef56"
+   "sha256": "68479992db40ad64f879aa0d646e1d93923c8fa52175f2f5ad2bdcb8a66d6fd2"
   },
   "imf_gssdo_direct.html": {
    "lastmod": "2026-11-18",
@@ -599,7 +599,7 @@
   "imf_mcdreo_direct.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "33f91a7ad9fc64d170fb877082ffcccb74449e213ff181904ffcca2c073c2c4b"
+   "sha256": "739f3a9bbb32da05fe822b4c9c8dff654c1a18887d18cda7db5cceaaa1b58f61"
   },
   "imf_mfsdc_direct.html": {
    "lastmod": "2026-11-18",
@@ -654,7 +654,7 @@
   "imf_psbs_direct.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "ee7f9a7b221a3cd971cc84e377c39be5e2062c5792786ba0c9828c64cc229324"
+   "sha256": "636587756fddcf0d1ce8b939899136aa8c1027c8a44d0eff808838c575e5641c"
   },
   "imf_qgfs_direct.html": {
    "lastmod": "2026-11-18",
@@ -669,12 +669,12 @@
   "imf_weo.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "2038abcbd947b69cf7a96a1abafa2be59fe2e756d353fc150357b685bf76463e"
+   "sha256": "80eeb7cb2a64450323bbc5050dc736ed260541ed4d7358c0c878a1a6a927fdec"
   },
   "imf_whdreo_direct.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "cdd943e1b0bc34a309412e05ab0c71a4c876c8c602cdfcfc93bea52343482b44"
+   "sha256": "9d1167f941562ed91af8091e69b21f96da0d03345e770073b1db7d37e3807069"
   },
   "imf_world_direct.html": {
    "lastmod": "2026-11-18",
@@ -699,12 +699,12 @@
   "ipea.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "5c9654b319e701fa1fca30defce635d2a67b8c716385085b620be9620a222679"
+   "sha256": "21bb629dbcb27c7ff8a30de810680a29ab4e37f40f6c42ad808aba248903e513"
   },
   "istat.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "1490ec981b03d2bc4b9c86a8b8697fb756a3a0c7e92e29b1171454f4e9ea2c67"
+   "sha256": "d4b356b47dc13fd7126e91b21f5e29cdba32e907d1c12282b3285e0fe0b61944"
   },
   "kof_globalization.html": {
    "lastmod": "2026-11-18",
@@ -759,7 +759,7 @@
   "ons_uk.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "553c70cb68f5776cc9861dc5c6819b6292f7999f4f0b6540f0064f7c3b8fa552"
+   "sha256": "0135409b385feb550c4c00042f3e4aebd9d8e7aafdab4ac78b591e9f3179838a"
   },
   "oxcgrt.html": {
    "lastmod": "2026-11-18",
@@ -789,7 +789,7 @@
   "rba.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "86abb43bdb2ffd641cb3f95a3c9ac4db08b7dc32060f44c15fd6751a172e8ae6"
+   "sha256": "9e113baa895e14a2e1233c6c111d93b1915c8a3c9c84b5e8761db55b97b7d07f"
   },
   "riksbank.html": {
    "lastmod": "2026-11-18",
@@ -799,7 +799,7 @@
   "scb.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "280343a2633704f2032fd48719d7fbe0470102c6ddfe2d2c6224d544a4ecbf92"
+   "sha256": "72af0cca50366ef235be2f2e9266be41ca28e9af0cd7532c8cae7a0a602363a6"
   },
   "sec_edgar.html": {
    "lastmod": "2026-11-18",
@@ -809,7 +809,7 @@
   "snb.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "fbe52cc569d65342eaabe1c71ba9486288eececcef255b3ac891e5b9d4cf6139"
+   "sha256": "104a55047c23550b20bb97186c5f49b05bd752ea345ac70c8148544e365a665e"
   },
   "source_changes.html": {
    "lastmod": "2026-11-17",
@@ -819,12 +819,12 @@
   "ssb.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "b83e9a7388aea37f58dc536da691049dcad894e82fa2c488a9ae1e2b11b295db"
+   "sha256": "dbcfc9fe9fef9ae3e0f7bb80a80f406c0748b42878056688ff79147301f30ca9"
   },
   "stat_estonia.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "7ac891649e06a46e5448cca01c4539bade7a38a36392cdf67a36982bc29662e1"
+   "sha256": "4f36cff19685f6afc5d72d66fa1d46c189d0d676c6e65fb245dfb7547b87a343"
   },
   "stat_latvia.html": {
    "lastmod": "2026-11-18",
@@ -834,12 +834,12 @@
   "stat_slovenia.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "753bf53fd8f3b8f35c62638023a4f531f7a1d51fb295d725340f4dd21acf3876"
+   "sha256": "1e3cdf425559d63b7e9ae2c8ce20c0404150ac7db290e938c2e6f7badc9952f2"
   },
   "statcan.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "6c86983e7dd78685e5375cab8a0f3db5c1ea81e15bf6346d766491f0260ae6c3"
+   "sha256": "afd3b70624e1b9c35277891726e9d540f6538b2469dc1482ec7ed1bd46d41b8a"
   },
   "statfin.html": {
    "lastmod": "2026-11-18",
@@ -884,7 +884,7 @@
   "un_wpp.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "8ba265419d856ca84116c80e0d84fbfb38424c4f211081169521e9e49f3a063a"
+   "sha256": "d4bfecccf0e008d2fd067a82ccb491a41e7da9e9a245162a95f87481c58e9dfa"
   },
   "unctad_associatedplasticstradebypartner.html": {
    "lastmod": "2026-11-18",
@@ -1459,7 +1459,7 @@
   "unctad_taupa.html": {
    "lastmod": "2026-11-18",
    "noindex": false,
-   "sha256": "1cf81340fc61363fc43a0f041737276df3ad5c039c806ed6f62a3b9948a87a57"
+   "sha256": "50bdba7c7b3b6e47dc8a3df90cf3a20b425d5d3a7915970778b4dafb9d7c36ae"
   },
   "unctad_termsoftrade.html": {
    "lastmod": "2026-11-18",
