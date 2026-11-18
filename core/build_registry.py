@@ -63,7 +63,10 @@ def discover(yml: dict) -> dict[str, dict]:
         for s in json.load(open(CATJSON, encoding="utf-8")).get("sources", []):
             d = srcs.setdefault(s["id"], {"id": s["id"]})
             d["name"] = s.get("name") or d.get("name") or s["id"]
-            d["description"] = s.get("description")
+            # NOT the sidecar `description`: it is crawler documentation (repo paths, checkpoint
+            # files, line numbers) for 91 of its 102 sources, never a public description
+            # (2026-11-18, the same defect gen_site.py published on every dataset page).
+            d["description"] = None
             d["access"] = s.get("access")
             d["catalogued"] = True
     # AUTHORITATIVE license/attribution/homepage from sources.yaml

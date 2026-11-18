@@ -57,6 +57,11 @@ def _catalogue_ro(timeout: float = 120):
 
 CATALOG_JSON = os.path.join(HERE, "catalog.json")
 OUT_DIR = os.path.join(HERE, "site")
+DATASET_DESC_MIN = 50       # characters; see render_dataset_page
+
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+import public_text_guard                                                # noqa: E402
 
 # Files that live in OUT_DIR but are NOT generated here. They are hand-maintained and
 # MUST survive the orphan sweep below. Deleting download.html in particular would break
@@ -1883,9 +1888,19 @@ def build_record(sid, src, lic, roll, side, s5=None):
     # consumer, and the rebuilt page was unchanged.
     reservable = bool(lrow.get("reservable", 0)) and sid not in DENYLISTED
 
-    # Description: prefer the operational sidecar note; fall back to attribution.
-    desc_full = (side or {}).get("description") or src.get("attribution")
-    desc_short = first_sentence(desc_full)
+    # Description: the page lead is the PUBLIC subtitle (SOURCE_SUBTITLES, else the one derived from
+    # the source's own series titles), and nothing else.
+    #
+    # WAS WRONG until 2026-11-18: `(side or {}).get("description") or src.get("attribution")`. The
+    # sidecar `description` (gitignored catalog/catalog.json) is CRAWLER DOCUMENTATION - for 91 of its
+    # 102 sources an ingester module docstring - so istat's lead and "Full description" published
+    # repo paths, checkpoint file names and source line numbers. `attribution` is no better as a lead:
+    # it is a credit line (shared verbatim by up to 11 pages) and the page already prints it under
+    # "Required attribution". So neither is read here. There is no long description any more: the
+    # repo holds no public long-form prose per source, and writing some would be inventing claims
+    # about a publisher's dataset. public_text_guard fails the build if internal text returns.
+    desc_short = " ".join(((SOURCE_SUBTITLES.get(sid) or (roll or {}).get("auto_subtitle") or "")).split()) or None
+    desc_full = None
 
     cov_start = sane_date(roll.get("min_start")) if roll else None
     cov_end = sane_date(roll.get("max_end")) if roll else None
@@ -1923,11 +1938,12 @@ def build_record(sid, src, lic, roll, side, s5=None):
         "measures": (roll or {}).get("measures") or [],
         "n_geo": (roll or {}).get("n_geo", 0),
         "last_updated": sane_date((roll or {}).get("last_updated")),
-        # operational (sidecar) extras -- display only
+        # operational (sidecar) extras. Only the two that render as plain public facts are kept:
+        # `cadence` feeds refresh_rows (a word such as "monthly", gated by the real wiring) and
+        # `measured_obs` is a number. `strategy` (an updater enum such as "overwrite_if_changed"),
+        # `storage_layout` (internal store paths) and `scripts` (repo file names) are internal and
+        # are no longer carried into the record at all (2026-11-18).
         "cadence": (side or {}).get("cadence"),
-        "strategy": (side or {}).get("strategy"),
-        "storage_layout": (side or {}).get("storage_layout"),
-        "scripts": (side or {}).get("scripts") or [],
         "measured_obs": (side or {}).get("measured_obs"),
         # The 200 URL, not the 308 one (see site_url): this single field feeds the
         # canonical, og:url, schema.org Dataset.url, the Croissant url, the visible
@@ -2030,10 +2046,12 @@ def jsonld_description(rec, page_desc=None):
     So the description is the page's OWN meta description: assembled per page from
     counted registry facts (what the series measure, the producer, the series total,
     the measured coverage years, the licence), unique across the catalogue, and
-    already the text this page shows search engines. The old values remain only as
-    a fallback so the required field can never be empty."""
-    return (page_desc or rec.get("desc_short") or rec.get("attribution")
-            or f"{rec['name']} — dataset catalogued in the {SITE_NAME}.")
+    already the text this page shows search engines. Since 2026-11-18 the fallback
+    is build_meta_desc too (it was desc_short / attribution, which kept the sidecar
+    note one missing argument away from Dataset Search)."""
+    # Fallback (standalone callers only): the same public meta-description builder, never the
+    # sidecar note or the credit line.
+    return page_desc or build_meta_desc(rec)
 
 
 def dataset_jsonld(rec, page_desc=None):
@@ -2611,6 +2629,12 @@ def render_dataset_page(rec):
     # licence credit line shared with up to 10 other pages.
     ds_ld = dataset_jsonld(rec, meta_desc)
     cr_ld = croissant_jsonld(rec, meta_desc)
+    # Dataset.description is REQUIRED by Dataset Search and shown in its results; a stub is as bad
+    # as a missing one. Every published page must carry at least DATASET_DESC_MIN characters.
+    for _blk, _ld in (("schema.org Dataset", ds_ld), ("Croissant", cr_ld)):
+        if len((_ld.get("description") or "").strip()) < DATASET_DESC_MIN:
+            raise SystemExit(f"REFUSED: {rec['id']} {_blk} description is under {DATASET_DESC_MIN} "
+                             f"characters: {_ld.get('description')!r}")
     jsonld_block = jsonld_script(ds_ld) + "\n" + jsonld_script(cr_ld)
 
     head = render_head(title, meta_desc, rec["page_url"], PAGE_CSS, jsonld_block)
@@ -2719,10 +2743,11 @@ def render_dataset_page(rec):
     # "Update cadence: monthly" on a database that has no updater yet reads as a promise, and "not yet
     # wired" on one that has run before, or is paused on purpose, is untrue).
     acc_rows.extend(refresh_rows(rec["id"], rec["cadence"]))
-    if rec["strategy"]:
-        acc_rows.append(("Update strategy", esc(rec["strategy"]).replace("_", " ")))
-    if rec["storage_layout"]:
-        acc_rows.append(("Storage layout", esc(rec["storage_layout"])))
+    # "Update strategy" and "Storage layout" rows REMOVED 2026-11-18: the first printed an updater
+    # enum ("overwrite if changed", "giant changed units") that describes our machinery, not the data;
+    # the second printed internal store paths (data/clean_full/<src>/<FLOW>.parquet, checkpoint
+    # sidecars). Neither tells a visitor anything they can act on. The refresh rows above already say,
+    # in public terms, whether and how often the database is refreshed.
 
     def kv(rows):
         return "\n".join(f"<dt>{k}</dt><dd>{v}</dd>" for k, v in rows)
@@ -2773,9 +2798,8 @@ def render_dataset_page(rec):
     body.append("<h2>Access &amp; mirrors</h2>")
     body.append(f'<dl class="kv">{kv(acc_rows)}</dl>')
 
-    if rec["desc_full"] and rec["desc_full"] != rec["desc_short"]:
-        body.append("<h2>Full description</h2>")
-        body.append(f'<p class="lead">{esc(rec["desc_full"])}</p>')
+    # The "Full description" section is gone (2026-11-18): its only content was the sidecar
+    # crawler note. desc_full is always None now; the guard below would refuse it anyway.
 
     # Show the embedded structured data so it is inspectable on the page too.
     body.append("<h2>Structured metadata</h2>")
@@ -4238,6 +4262,9 @@ def main(argv=None):
         # ElkassabgiData family plate at the very bottom of EVERY page (below the
         # page's own footer), just before </body>.
         html = html.replace("</body>", FAMILY_BAND + FOOTER + "</body>", 1)
+        # Public-text guard: refuse (non-zero exit, this file NOT written) when any visible text,
+        # JSON-LD string or meta/og content carries internal engineering text (2026-11-18).
+        public_text_guard.assert_public(os.path.basename(path), html)
         # Fingerprint HERE -- after the family plate (a change to it IS a change to
         # the page) but BEFORE __SITE_UPDATED__ is substituted. That placeholder is
         # the one piece of every page that moves with the calendar rather than with
@@ -4284,6 +4311,9 @@ def main(argv=None):
             html = f.read()
         fresh = {r["id"]: r for r in _catalog_idx([r for r in records if r["id"] in hub_rows])}
         html, changes = splice_hub_rows(html, fresh, hub_rows)
+        _leak = public_text_guard.scan_json_values(list(fresh.values()), "hub-rows")
+        if _leak:
+            raise public_text_guard.InternalTextLeak(f"REFUSED: --hub-rows would publish internal text: {_leak[:5]}")
         with open(hub, "w", encoding="utf-8", newline="") as f:
             f.write(html)
         for sid, delta in changes:
@@ -4350,6 +4380,9 @@ def main(argv=None):
     for sid, why in PAUSED.items():
         if sid in meta:
             meta[sid]["paused"] = why
+    _leak = public_text_guard.scan_json_values(meta, "sources_meta.json")
+    if _leak:
+        raise public_text_guard.InternalTextLeak(f"REFUSED: sources_meta.json would publish internal text: {_leak[:5]}")
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     _no_desc = [k for k, v in meta.items() if not v["desc"]]
