@@ -42,7 +42,17 @@ def _md5(p):
 
 
 HISTORY = [(f"v1:s1:k{i}", dt.date(2010 + i % 10, 12, 31), float(i)) for i in range(50)]
-OLD_TAIL = [(f"v1:s1:t{i}", dt.date(2025, 12, 31), float(i)) for i in range(300)]
+# 100 series x 3 tail dates, DATE-MAJOR: OLD_TAIL[:k] for k <= 100 withdraws k pairs from k different
+# series without emptying any series, so the per-series rule stays out of the floor tests' way.
+TAIL_DATES = (dt.date(2025, 3, 31), dt.date(2025, 6, 30), dt.date(2025, 12, 31))
+OLD_TAIL = [(f"v1:s1:t{i}", d, float(i)) for d in TAIL_DATES for i in range(100)]
+
+
+def _small_env(env, n_series, dates=TAIL_DATES[:2]):
+    """Rewrite the fixture's final with a SMALL tail (n_series x len(dates) pairs) - the R1937 shape."""
+    tail = [(f"v1:s1:u{i}", d, float(i)) for d in dates for i in range(n_series)]
+    _write(env["final"], HISTORY + tail)
+    return tail
 
 
 @pytest.fixture
@@ -144,15 +154,103 @@ def test_a_silent_empty_tail_sweep_is_refused(env):
 
 
 def test_tail_loss_just_above_the_floor_is_refused_and_at_the_floor_passes(env, monkeypatch):
-    monkeypatch.setattr(R, "GUARD_TAIL_LOSS_ABS", 10)
-    monkeypatch.setattr(R, "GUARD_TAIL_LOSS_FRAC", 0.0)
-    _tail_part(env, OLD_TAIL[11:])                        # 11 lost > floor 10
+    monkeypatch.setattr(R, "GUARD_TAIL_LOSS_BP", 400)    # 4% of 300 pairs = floor 12
+    _tail_part(env, OLD_TAIL[13:])                        # 13 lost > floor 12
     before, state = _md5(env["final"]), {}
     assert G.finish_area(1, env["final"], state, TAIL) is False
     _assert_refused(env, before, state)
-    _tail_part(env, OLD_TAIL[10:])                        # 10 lost == floor 10
+    _tail_part(env, OLD_TAIL[12:])                        # 12 lost == floor 12
     assert G.finish_area(1, env["final"], state, TAIL) is True
     assert len(_owed_lines(env)) == 1
+
+
+def test_the_floor_is_a_fraction_with_no_absolute_term(tmp_path):
+    """R1937: the old max(100, 1%) floor was 100 on 165 of 194 areas. 1% of 300 is 3; of 40 it is 0."""
+    a = _write(str(tmp_path / "a.parquet"), HISTORY + OLD_TAIL)
+    assert R.row_loss_guard(a, a, TAIL)["tail_loss_floor"] == 3
+    b = _write(str(tmp_path / "b.parquet"), HISTORY + OLD_TAIL[:40])
+    assert R.row_loss_guard(b, b, TAIL)["tail_loss_floor"] == 0
+
+
+# ------------------------------------------------------------------ R1937: small tails and series
+def test_a_small_tail_that_goes_empty_is_refused(env):
+    """A tail under 100 pairs that comes back EMPTY. The old floor of 100 passed this."""
+    _small_env(env, 20)                                   # 40 tail pairs
+    os.makedirs(env["tail_dir"], exist_ok=True)           # the sweep "completed" with nothing
+    before, state = _md5(env["final"]), {}
+    assert G.finish_area(1, env["final"], state, TAIL) is False
+    _assert_refused(env, before, state)
+    g = json.load(open(os.path.join(env["refused"], os.listdir(env["refused"])[0], "guard.json")))
+    assert any(r.startswith("EMPTY sweep") for r in g["reasons"])
+
+
+def test_the_empty_sweep_rule_refuses_on_its_own(env, monkeypatch):
+    """With the floor at 100% and every series allow-listed, ONLY the empty-sweep rule can refuse."""
+    tail = _small_env(env, 20)
+    monkeypatch.setattr(R, "GUARD_TAIL_LOSS_BP", 10_000)
+    monkeypatch.setattr(R, "GUARD_SERIES_DROP_ALLOW", frozenset(k for k, _d, _v in tail))
+    os.makedirs(env["tail_dir"], exist_ok=True)
+    before, state = _md5(env["final"]), {}
+    assert G.finish_area(1, env["final"], state, TAIL) is False
+    _assert_refused(env, before, state)
+
+
+def test_one_lost_pair_in_a_small_tail_is_refused(env):
+    """40 tail pairs, one withdrawn, every series still present: floor 0, so refused. Old floor: 100."""
+    tail = _small_env(env, 20)
+    _tail_part(env, tail[1:])
+    before, state = _md5(env["final"]), {}
+    assert G.finish_area(1, env["final"], state, TAIL) is False
+    _assert_refused(env, before, state)
+
+
+def test_a_small_area_whole_series_drop_is_refused(env):
+    """One whole series (3 pairs) vanishes from a 300-pair tail: 3 lost == floor 3, so ONLY the
+    per-series rule refuses it (R1936)."""
+    _tail_part(env, [r for r in OLD_TAIL if r[0] != "v1:s1:t5"])
+    before, state = _md5(env["final"]), {}
+    assert G.finish_area(1, env["final"], state, TAIL) is False
+    _assert_refused(env, before, state)
+    g = json.load(open(os.path.join(env["refused"], os.listdir(env["refused"])[0], "guard.json")))
+    assert g["series_dropped"] == 1 and g["series_dropped_eg"] == ["v1:s1:t5"] and g["tail_lost"] == 3
+
+
+def test_an_allow_listed_series_drop_passes(env, monkeypatch):
+    monkeypatch.setattr(R, "GUARD_SERIES_DROP_ALLOW", frozenset({"v1:s1:t5"}))
+    _tail_part(env, [r for r in OLD_TAIL if r[0] != "v1:s1:t5"])
+    state = {}
+    assert G.finish_area(1, env["final"], state, TAIL) is True
+    assert _owed_lines(env)[0]["guard"]["series_dropped"] == 0
+
+
+def test_the_allow_list_is_empty_by_default():
+    assert R.GUARD_SERIES_DROP_ALLOW == frozenset()
+
+
+# ------------------------------------------------------------------ R1937: the refused folder is capped
+def test_refused_parts_are_capped_to_the_newest_per_area(tmp_path):
+    parts, refused = str(tmp_path / "_refresh"), str(tmp_path / "_refresh_refused")
+    t0 = dt.datetime(2026, 11, 18, 0, 0, 0, tzinfo=dt.timezone.utc)
+    for i in range(R.REFUSED_KEEP_PER_AREA + 2):
+        _write(os.path.join(parts, "area_1", "v1_s1_y2025.parquet"), OLD_TAIL)
+        R.quarantine_tail_parts(1, parts, refused, {"ok": False}, when=t0 + dt.timedelta(hours=i))
+    kept = sorted(os.listdir(os.path.join(refused, "area_1")))
+    want = [(t0 + dt.timedelta(hours=i)).strftime("%Y%m%dT%H%M%SZ")
+            for i in range(2, R.REFUSED_KEEP_PER_AREA + 2)]
+    assert kept == want, "the newest refusals must be kept and only those"
+
+
+def test_refused_still_due_lists_only_refusals_after_the_last_refresh(tmp_path):
+    out = str(tmp_path)
+    root = os.path.join(out, R.REFUSED_SUBDIR)
+    for a, stamp in (("1", "20261118T100000Z"), ("2", "20261110T100000Z"), ("3", "20261118T100000Z")):
+        os.makedirs(os.path.join(root, "area_" + a, stamp))
+    state = {}
+    R.mark_refreshed("2", state, when=dt.datetime(2026, 11, 15, 0, 0, 0, tzinfo=dt.timezone.utc))
+    R.mark_refreshed("3", state, when=dt.datetime(2026, 11, 1, 0, 0, 0, tzinfo=dt.timezone.utc))
+    R.save_state(state, out)
+    got = R.refused_still_due(out)
+    assert set(got) == {"1", "3"}, "area 2 refreshed after its refusal; 1 never refreshed; 3 refused later"
 
 
 def test_a_guard_that_cannot_run_refuses(env, monkeypatch):

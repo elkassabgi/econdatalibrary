@@ -339,6 +339,44 @@ def firstpass_ages(store_root: str, names, now: float):
             out.append((name, (now - newest) / 3600.0, newest_name))
     return sorted(out, key=lambda r: -r[1])
 
+
+def gus_dbw_publish_lines(gus_dir: str, now: dt.datetime) -> list:
+    """What gus_dbw's crawler has rebuilt but nobody has published, and what its row-loss guard is
+    holding back (PR #291, R1936/R1937). The crawler only RECORDS a debt (_publish_owed.jsonl) and
+    never publishes, so without this line a passed rebuild would sit unserved with nothing saying so.
+    An unreadable record is SAID, never an empty line."""
+    try:
+        from jobs.gus_dbw_refresh import owed_areas, refused_still_due      # noqa: PLC0415
+        owed, bad = owed_areas(gus_dir)
+        refused = refused_still_due(gus_dir)
+    except Exception as e:                                                   # noqa: BLE001
+        return [f"     gus_dbw publish: ATTENTION the owed-publish record could not be read "
+                f"({type(e).__name__}) - how many rebuilt areas are unserved is unknown"]
+    out = []
+    if owed:
+        ages = []
+        for a, r in owed.items():
+            try:
+                t = dt.datetime.fromisoformat(r["rebuilt_utc"])
+                t = t if t.tzinfo else t.replace(tzinfo=dt.timezone.utc)
+                ages.append(((now - t).total_seconds() / 3600.0, a))
+            except (KeyError, TypeError, ValueError):
+                ages.append((float("nan"), a))
+        known = [x for x in ages if x[0] == x[0]]
+        oldest = (f"oldest rebuilt {max(known)[0]:.1f}h ago (area_{max(known)[1]})" if known
+                  else "rebuild time unreadable")
+        out.append(f"     gus_dbw publish: {len(owed)} area(s) rebuilt and OWED to the publisher, {oldest}")
+    else:
+        out.append("     gus_dbw publish: 0 areas owed")
+    if bad:
+        out.append(f"     gus_dbw publish: ATTENTION {bad} unreadable line(s) in the owed/published records")
+    if refused:
+        newest = max(refused.values())
+        names = ", ".join("area_" + a for a in sorted(refused, key=lambda x: (len(x), x))[:10])
+        out.append(f"     gus_dbw guard: ATTENTION {len(refused)} area(s) refused and still due, newest refusal "
+                   f"{(now - newest).total_seconds() / 3600.0:.1f}h ago ({names})")
+    return out
+
 GUARD_BEAT_KEY = "_aqueduct/guard_heartbeat.json"
 NOTICES_RUN_LATE_H = 30.0     # the runner is due once a day from 09:00 UTC; a day plus retries is late
 
@@ -676,6 +714,12 @@ def main() -> None:
             os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                          "data", "clean_full"),
             FIRSTPASS_DIRS, _time.time())
+    # gus_dbw's owed publishes + guard refusals: computed once, rendered in both bodies (same reason as fp)
+    _gpub = []
+    if any(r[0] == "gus_dbw" for r in fp):
+        _gpub = gus_dbw_publish_lines(
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "data", "clean_full", "gus_dbw"), dt.datetime.now(dt.timezone.utc))
     # GIANT UNITS: computed once, rendered in both bodies (same reason as fp). An unreadable rule is SAID, never a
     # silently empty section: a desktop_lane: skip store does not refresh on the scheduled pass.
     try:
@@ -826,6 +870,7 @@ def main() -> None:
                 mark = "  STALE" if age_h > FIRSTPASS_STALE_HOURS else ""
                 lines.append(f"     {name:12} last wrote {age_h:5.1f}h ago "
                              f"({newest[:34]}){mark}")
+            lines += _gpub
             lines.append("")
     lines += _giant
     lines += _csvq
@@ -904,7 +949,9 @@ def main() -> None:
         notes_html += _note(
             "<b>first-pass crawlers</b> — no unit_state row, so they are invisible to the health "
             f"gate:<table role='presentation' style='margin-top:5px;font-size:12px;'>{_rows}"
-            "</table>")
+            "</table>" + "".join(
+                (f"<b style='color:{amber};'>{esc(l.strip())}</b><br>" if "ATTENTION" in l
+                 else f"{esc(l.strip())}<br>") for l in _gpub))
     if _giant:
         notes_html += _note("<b>giant units</b><br>" + "<br>".join(
             f"<b style='color:{amber};'>{esc(l.strip())}</b>" if "ATTENTION" in l else esc(l.strip())

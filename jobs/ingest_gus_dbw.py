@@ -501,7 +501,7 @@ REFRESH_BUDGET_H = 6.0
 # under parts/ so no upload or listing of the store ever sees them; the guard's DuckDB spill goes to
 # _tmp/, which core/upload_r2 excludes as well.
 CANDIDATE_SUFFIX = ".cand"
-REFUSED_PARTS = os.path.join(PARTS, "_refresh_refused")
+REFUSED_PARTS = os.path.join(OUT, R.REFUSED_SUBDIR)      # one definition: the digest reads it too
 GUARD_SPILL = os.path.join(OUT, "_tmp", "guard_spill")
 
 
@@ -557,7 +557,7 @@ def finish_area(aid, final: str, state: dict, tail_start: int) -> bool:
     log(f"REFRESH area {aid}: {res['rows_before']:,} -> {res['rows_after']:,} obs "
         f"({delta:+,}; kept {res['kept']:,} below {tail_start}, replaced "
         f"{res['dropped']:,} with {res['added']:,}; guard: {guard['tail_lost']:,} tail pair(s) "
-        f"lost, floor {guard['tail_loss_floor']:,})")
+        f"lost, floor {guard['tail_loss_floor']:,}; {guard.get('series_dropped', 0):,} series dropped)")
     # THE DEBT IS RECORDED BEFORE THE AREA IS MARKED REFRESHED: if the record cannot be written,
     # the area stays due, so the next run rebuilds it again and records it then - a rebuilt area
     # is never both current locally and forgotten by the publisher.

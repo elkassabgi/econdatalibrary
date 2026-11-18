@@ -196,10 +196,24 @@ def clear_tail_parts(area_id, parts_root: str) -> int:
 #   * INSIDE the window the publisher may withdraw a little (area_43 lost 3 placeholder pairs on
 #     2026-11-18, the test_an_upstream_withdrawal_is_mirrored case). A loss above the floor is a
 #     refusal, not a publish.
-# The floor is a JUDGEMENT, not a measurement: 100 pairs or 1% of the old tail pairs, whichever is
-# larger. A refusal keeps the area due and costs one re-sweep; a wrong pass would publish the loss.
-GUARD_TAIL_LOSS_ABS = 100
-GUARD_TAIL_LOSS_FRAC = 0.01
+#   * AN EMPTY SWEEP is refused outright: a tail that had rows and now has none (R1937).
+#   * NO SERIES MAY VANISH from the tail: a series_key that had tail rows and has none in the new
+#     tail is refused, unless it is on GUARD_SERIES_DROP_ALLOW (R1936 required the per-series check).
+#     A sweep that stops early loses whole series, and a whole small series is far under any floor.
+#
+# THE FLOOR is a fraction only, in integer basis points: floor(tail_old * 100 / 10,000) = 1%.
+# It used to be max(100, 1%). R1937: that let an EMPTY sweep pass on every area whose tail had
+# 1-100 pairs (14 of 194 on snap_20261117), and the 100 term was above 1% on 165 of 194 areas
+# (area_12: 100 of 306 pairs = 33%). Measured 2026-11-18 on every area with a real refresh pair
+# (R2's pre-publish copy vs snap_20261117, 16 areas; the other 177 were md5-identical to R2 and
+# one area is new): the only loss was area_43, 3 of 7,869 pairs = 0.038% and no series dropped,
+# 26x under the floor. The 1% itself is still a JUDGEMENT. Its cost: a tail under 100 pairs gets
+# a floor of 0, so ANY withdrawal there is refused and the area stays due until someone looks -
+# refusals are logged as ERROR and counted in the daily digest. A refusal costs a re-sweep; a
+# wrong pass publishes the loss.
+GUARD_TAIL_LOSS_BP = 100                      # basis points of the old tail pairs: 100 = 1%
+GUARD_SERIES_DROP_ALLOW: frozenset = frozenset()   # series_keys the publisher withdrew, by name
+GUARD_DROPPED_EXAMPLES = 10
 GUARD_MEMORY_LIMIT = "4GB"      # DuckDB spills past this (R690: the desktop runs the owner's jobs too)
 GUARD_THREADS = 2
 
@@ -253,21 +267,39 @@ def row_loss_guard(old_path: str, new_path: str, tail_start: int, spill_dir: str
                    coalesce(sum(greatest(coalesce(a.c, 0) - coalesce(b.c, 0), 0)), 0),
                    coalesce(sum(greatest(coalesce(b.c, 0) - coalesce(a.c, 0), 0)), 0)
             FROM a FULL OUTER JOIN b USING (series_key, obs_date)""").fetchone())
+
+        # series that had tail rows and have none in the new tail, minus the allow list
+        dropped_n, dropped_eg = con.execute(f"""
+            WITH a AS (SELECT DISTINCT series_key FROM read_parquet('{o}') WHERE obs_date >= DATE '{cut}'),
+                 b AS (SELECT DISTINCT series_key FROM read_parquet('{n}') WHERE obs_date >= DATE '{cut}'),
+                 d AS (SELECT series_key FROM a ANTI JOIN b USING (series_key)
+                       WHERE NOT list_contains(?::VARCHAR[], series_key))
+            SELECT (SELECT count(*) FROM d),
+                   (SELECT coalesce(list(series_key), []) FROM
+                        (SELECT series_key FROM d ORDER BY 1 LIMIT {int(GUARD_DROPPED_EXAMPLES)}))""",
+            [sorted(GUARD_SERIES_DROP_ALLOW)]).fetchone()
+        dropped_n, dropped_eg = int(dropped_n), list(dropped_eg or [])
     finally:
         con.close()             # a paused DuckDB cursor blocks os.replace on Windows (R664)
 
-    floor = max(GUARD_TAIL_LOSS_ABS, int(GUARD_TAIL_LOSS_FRAC * tail_old))
+    floor = tail_old * int(GUARD_TAIL_LOSS_BP) // 10_000
     reasons = []
     if pre_old != pre_new:
         reasons.append(f"rows below {cut} changed: old {pre_old[0]:,} rows, new {pre_new[0]:,} rows, "
                        f"{pre_lost:,} pair(s) lost, fingerprints differ")
+    if tail_old > 0 and tail_new == 0:
+        reasons.append(f"EMPTY sweep: the tail from {cut} had {tail_old:,} rows and the rebuild has none")
+    if dropped_n:
+        reasons.append(f"{dropped_n:,} series with tail rows from {cut} have none in the rebuild "
+                       f"(not on GUARD_SERIES_DROP_ALLOW), e.g. {', '.join(dropped_eg)}")
     if tail_lost > floor:
         reasons.append(f"{tail_lost:,} tail pair(s) from {cut} lost, above the floor of {floor:,} "
                        f"(old tail {tail_old:,} rows)")
     return {"ok": not reasons, "reasons": reasons, "cutoff": cut,
             "pre_rows_old": pre_old[0], "pre_rows_new": pre_new[0], "pre_lost": pre_lost,
             "tail_rows_old": tail_old, "tail_rows_new": tail_new,
-            "tail_lost": tail_lost, "tail_gained": tail_gained, "tail_loss_floor": floor}
+            "tail_lost": tail_lost, "tail_gained": tail_gained, "tail_loss_floor": floor,
+            "series_dropped": dropped_n, "series_dropped_eg": dropped_eg}
 
 
 def replace_final(candidate: str, final: str) -> None:
@@ -297,7 +329,59 @@ def quarantine_tail_parts(area_id, parts_root: str, refused_root: str, guard: di
         os.replace(p, os.path.join(dest, os.path.basename(p)))
     with open(os.path.join(dest, "guard.json"), "w", encoding="utf-8") as f:
         json.dump(guard, f, indent=1, sort_keys=True, default=str)
+    prune_refused(os.path.join(refused_root, "area_%s" % area_id))
     return dest
+
+
+# A refused area stays due, so a persistent cause refuses it again on every pass. Each refusal
+# moves a full tail sweep here, so the directory is CAPPED (R1937): the newest few refusals per
+# area are kept as evidence, older ones are removed. Stamps are %Y%m%dT%H%M%SZ, so name order
+# is time order.
+REFUSED_KEEP_PER_AREA = 3
+REFUSED_SUBDIR = os.path.join("parts", "_refresh_refused")
+
+
+def prune_refused(area_dir: str, keep: int = REFUSED_KEEP_PER_AREA) -> int:
+    """Remove all but the newest `keep` refusal folders of one area; return how many were removed."""
+    import shutil
+    try:
+        stamps = sorted(e.name for e in os.scandir(area_dir) if e.is_dir())
+    except FileNotFoundError:
+        return 0
+    old = stamps[:-keep] if keep > 0 else stamps
+    for s in old:
+        shutil.rmtree(os.path.join(area_dir, s))
+    return len(old)
+
+
+def refused_still_due(out_dir: str = OUT) -> dict:
+    """{area: newest refusal UTC datetime} for areas whose newest refusal is later than their last
+    recorded refresh - the areas the guard is holding back now. For the digest (R1937)."""
+    root = os.path.join(out_dir, REFUSED_SUBDIR)
+    state = load_state(out_dir)
+    out: dict = {}
+    try:
+        areas = [e for e in os.scandir(root) if e.is_dir() and e.name.startswith("area_")]
+    except FileNotFoundError:
+        return out
+    for e in areas:
+        stamps = []
+        for s in os.scandir(e.path):
+            try:
+                stamps.append(dt.datetime.strptime(s.name, "%Y%m%dT%H%M%SZ").replace(tzinfo=dt.timezone.utc))
+            except ValueError:
+                continue
+        if not stamps:
+            continue
+        aid, newest = e.name[len("area_"):], max(stamps)
+        rec = state.get(aid)
+        try:
+            last = dt.datetime.fromisoformat(rec["last_refresh"]).astimezone(dt.timezone.utc)
+        except (TypeError, KeyError, ValueError):
+            last = None              # never refreshed (or unreadable): the refusal is current
+        if last is None or newest > last:
+            out[aid] = newest
+    return out
 
 
 # ----------------------------------------------------------------- the owed-publish record
