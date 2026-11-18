@@ -31,25 +31,38 @@ from html.parser import HTMLParser
 
 # (label, compiled pattern). Each one names a class of internal text seen on, or
 # plausible for, a page built from engineering notes.
+#
+# Every pattern is shaped like a CODE or FILE reference, never like an English word, because a
+# public subtitle legitimately says "Fixed telephone lines 2020", "International poverty line
+# 2.15 USD", "Spare parts/components", "Exports of tools/equipment", "core/periphery spreads" or
+# "Border checkpoint crossings" (all pinned as negative controls in the tests). So: a repo path
+# needs a file extension, a line reference needs a range or a "x.py:N" shape, and checkpoint and
+# parts/ count only as file or directory names.
+_EXT = r"(?:py|ps1|sh|cmd|ya?ml|json|jsonl|db|ts|js|toml|txt|parquet|log)"
 PATTERNS = [
-    ("repo path jobs/", re.compile(r"(?<![\w/.])jobs/")),
-    ("repo path core/", re.compile(r"(?<![\w/.])core/")),
-    ("repo path updater/", re.compile(r"(?<![\w/.])updater/")),
-    ("repo path tools/", re.compile(r"(?<![\w/.])tools/\w")),
-    ("store path data/clean_full", re.compile(r"data/clean_(?:full|grouped)")),
+    ("repo file path", re.compile(
+        r"(?<![\w/.])(?:jobs|core|updater|tools|configs|clients|api|catalog|scripts)/[\w./{}<>-]*\.%s\b" % _EXT)),
+    ("store path data/clean_full", re.compile(r"data/(?:clean_(?:full|grouped)|raw)/")),
     ("state dir _aqueduct", re.compile(r"_aqueduct")),
-    ("python/db file name", re.compile(r"\b\w+\.(?:py|db)\b")),
+    ("python/db file name", re.compile(r"\b\w+\.(?:py|db|ps1)\b")),
     ("source line reference", re.compile(r"\b\w+\.py:\d+")),
-    ("line-number reference", re.compile(r"\blines? \d+(?:\s*[-–]\s*\d+)?\b(?! (?:of|per)\b)")),
+    ("line-number range", re.compile(r"\blines \d+\s*[-–]\s*\d+\b")),
     ("CLI flag", re.compile(r"(?<![\w-])--[a-z][\w-]+")),
-    ("checkpoint marker .done", re.compile(r"\.done\b")),
-    ("checkpoint", re.compile(r"\bcheckpoint", re.I)),
+    ("checkpoint marker .done", re.compile(r"(?<=\S)\.done\b")),
+    ("checkpoint file", re.compile(r"\b\w*checkpoint\w*\.\w+\b|_checkpoint\b|\.ckpt\b", re.I)),
     ("internal sidecar _x.json", re.compile(r"(?<![\w/])_\w+\.json\b")),
-    ("parts/ directory", re.compile(r"(?<![\w])parts/")),
+    ("parts/ directory", re.compile(r"(?:/|\b_)parts/|\bparts/(?:ckpt\b|[\w{}-]*[/_{][\w{}/.-]*\.%s\b)" % _EXT)),
     ("<PLACEHOLDER>", re.compile(r"<[A-Z][A-Z_]+>")),
-    ("U+FFFD replacement char", re.compile("�")),
-    ("mojibake Ã", re.compile("Ã")),
-    ("mojibake â€", re.compile("â€")),
+    # a bare boolean as a whole title segment ("true - IRIIP", "All Items - true"): a parser default
+    # that reached a label, never a word a publisher wrote there
+    ("boolean title segment", re.compile(r"(?:^|[;:]\s*|\s[-–—]\s)(?:true|false)(?=\s[-–—]\s|\s*[;:]|\s*$)")),
+    ("U+FFFD replacement char", re.compile(chr(0xFFFD))),
+    # UTF-8 read as cp1252: "Ã" followed by a Latin-1 / cp1252 continuation glyph ("Ã©", "Ã–", "Ã¶").
+    # A bare "Ã" is real Portuguese ("SÃO PAULO") and must pass.
+    ("mojibake A-tilde", re.compile(r"Ã[\u0080-¿ŒœŠšŸŽžƒ"
+                                    r"ˆ˜–—‘-„†-•…‰‹"
+                                    r"›€™]")),
+    ("mojibake a-circumflex euro", re.compile(chr(0xE2) + chr(0x20AC))),
 ]
 
 _SKIP_TAGS = {"script", "style", "code", "pre"}
@@ -170,4 +183,6 @@ def assert_public(name: str, html: str):
         raise InternalTextLeak(
             f"REFUSED: {name} would publish internal engineering text ({len(hits)} hit(s)):\n"
             + "\n".join(lines)
-            + "\nFix the field that produced it (gen_site.build_record); do not widen the guard.")
+            + "\nFix the field that produced it (gen_site.build_record). If a hit is a FALSE positive - a real"
+              " publisher title that happens to look like code - give that source a SOURCE_SUBTITLES override"
+              " in gen_site.py; do not loosen or widen these patterns.")

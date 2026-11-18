@@ -845,6 +845,11 @@ def _measure_stems(sid, heads):
     return stems
 
 
+_PLACEHOLDER_SEGMENTS = {"true", "false", "not aggregated"}
+_NUMERIC_STEM = re.compile(r"^[\d\s.,;:/()–—-]+$")
+AUTO_SUBTITLE_MIN = 12
+
+
 def _derive_subtitles(con):
     """A short human subtitle per source, derived from its own series titles.
 
@@ -865,7 +870,11 @@ def _derive_subtitles(con):
     for sid, title in con.execute("SELECT source_id, title FROM series"):
         t = re.sub(r"\s+[–—]\s+", " - ", (title or "").strip())
         t = re.sub(r"\s*\((?:Annually|Monthly|Quarterly|Daily|Weekly)\)\s*$", "", t, flags=re.I)
-        per[sid].append([p.strip() for p in t.split(" - ") if p.strip()])
+        # Placeholder segments are dropped (2026-11-18): IMF titles carry a parser's boolean default
+        # ("true - IRIIP", "All Items - true") and the codelist's "Not Aggregated" as whole segments.
+        # Neither is something the series measure, so neither may lead a subtitle.
+        per[sid].append([p.strip() for p in t.split(" - ")
+                         if p.strip() and p.strip().lower() not in _PLACEHOLDER_SEGMENTS])
     subs = {}
     for sid, rows in per.items():
         n = len(rows)
@@ -890,7 +899,12 @@ def _derive_subtitles(con):
                 s = " - ".join(r[i] for i in keep if len(r) > i)
                 stems[s or r[0]] += 1
             top = [s for s, _ in stems.most_common(3) if s]
-        out = "; ".join(dict.fromkeys(t for t in top if t))
+        # A stem that is only years / numbers / punctuation ("2022", "2003") says nothing about the
+        # data; drop it, and if what is left is shorter than AUTO_SUBTITLE_MIN characters, publish NO
+        # derived subtitle (build_record then leads with the source's registry name instead).
+        out = "; ".join(dict.fromkeys(t for t in top if t and not _NUMERIC_STEM.match(t)))
+        if len(out) < AUTO_SUBTITLE_MIN:
+            out = ""
         if len(out) > 140:
             out = out[:137] + "…"
         subs[sid] = out
@@ -1666,7 +1680,7 @@ def subtract_withheld(con, series_roll, withheld=None):
     (like the carve-out subtraction, never a predicate in the GROUP BY). When any is held, the source's coverage
     facets (first start, last end, geographies, last update) are re-measured over the rows a user can reach -
     a primary-key RANGE read of that source only (AR-341 re-review N4). Its "Measured observations" figure is NOT
-    changed here: it comes from catalog/catalog.json (gen_catalog.py), which this generator cannot re-measure."""
+    changed here: it comes from the gitignored sidecar catalog/catalog.json, which this generator cannot re-measure."""
     for src, sids in sorted((WITHHELD if withheld is None else withheld).items()):
         if src not in series_roll or not sids:
             continue
@@ -1899,7 +1913,10 @@ def build_record(sid, src, lic, roll, side, s5=None):
     # "Required attribution". So neither is read here. There is no long description any more: the
     # repo holds no public long-form prose per source, and writing some would be inventing claims
     # about a publisher's dataset. public_text_guard fails the build if internal text returns.
-    desc_short = " ".join(((SOURCE_SUBTITLES.get(sid) or (roll or {}).get("auto_subtitle") or "")).split()) or None
+    # When no usable subtitle exists (_derive_subtitles publishes none for a stem list that is only
+    # years or placeholders), the lead is the source's registry NAME - a public field, not new copy.
+    desc_short = " ".join(((SOURCE_SUBTITLES.get(sid) or (roll or {}).get("auto_subtitle")
+                            or src.get("name") or "")).split()) or None
     desc_full = None
 
     cov_start = sane_date(roll.get("min_start")) if roll else None
