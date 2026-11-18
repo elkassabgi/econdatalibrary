@@ -3189,6 +3189,54 @@ def not_yet_served_note(records):
                f"no download.")
 
 
+def gate_site_claims(html, n_nys, pairs):
+    """Swap each site-wide claim that every source is downloadable for its not-yet-served wording. With no
+    not_yet_served source the page is returned unchanged, byte for byte (re-review r3 of #292). Each claim
+    must occur exactly once, so a template edit that drops or doubles one stops the build here."""
+    if not n_nys:
+        return html
+    for old, new in pairs:
+        if html.count(old) != 1:
+            raise RuntimeError(f"gen_site: site-wide claim found {html.count(old)} times, expected 1: {old[:70]!r}")
+        html = html.replace(old, new)
+    return html
+
+
+def index_nys_claims(n_nys, nys_note):
+    """(main wording, wording when n_nys > 0) for every claim on index.html that all sources are served."""
+    are = "1 listed source is" if n_nys == 1 else f"{n_nys} listed sources are"
+    its = "its page says" if n_nys == 1 else "their pages say"
+    return [
+        ("<p>Everything in the library is real, downloadable data — if we can’t host a source, we don’t list it.</p>",
+         f"<p>Everything in the library is real data licensed for re-hosting — if we can’t host a source, we don’t "
+         f"list it. {are} not yet served: {its} so and offer no download.</p>"),
+        ("<!-- ── Every source is fully hosted ── -->", "<!-- ── Sources licensed for re-hosting ── -->"),
+        ('<h2 class="section-title">Every source, fully hosted</h2>',
+         '<h2 class="section-title">Every source licensed for re-hosting</h2>'),
+        ("<p>Every dataset here is served from our store",
+         "<p>Each of these datasets is served from our store"),
+        ("Licensed for re-hosting, with Python and R clients ready to go.</p>",
+         "Licensed for re-hosting, with Python and R clients ready to go." + esc(nys_note) + "</p>"),
+        ("we simply don't list it — no dead-end pages, no teasers. The moment a publisher grants permission, its "
+         "data appears here as a full download.</p>",
+         "we simply don't list it — no teasers. A listed source that the API does not serve yet is marked “not yet "
+         "served” on its page and offers no download; once it is served, its page offers the full download.</p>"),
+    ]
+
+
+CATALOG_NYS_CLAIMS = [
+    ("// access-tier filter removed — every source is redistributed/hosted",
+     "// access-tier filter removed — every source is licensed for re-hosting"),
+]
+
+DOCS_NYS_CLAIMS = [
+    ("Sources whose licenses forbid re-hosting are not listed at all — we never catalog a dead-end we can't "
+     "actually serve.",
+     "Sources whose licenses forbid re-hosting are not listed at all. A source we may re-host but do not serve "
+     "yet is marked “not yet served” on its page."),
+]
+
+
 def render_index(records, generated):
     n_total = len(records)
     n_nys, nys_note = not_yet_served_note(records)
@@ -3443,7 +3491,7 @@ df = pd.read_csv(io.StringIO(r.text), comment="#")
       <div class="acard" style="border-left:4px solid var(--green)">
         <span class="badge open" style="margin-bottom:.5rem;display:inline-block">Redistributed</span>
         <h3>__NOPEN__ sources — all real, all downloadable</h3>
-        <p>Each of these datasets is served from our store as citation-headed CSV, over the free REST API, and in snapshot-pinned bundles — with license and attribution attached to every series. Licensed for re-hosting, with Python and R clients ready to go.__NYSNOTE__</p>
+        <p>Every dataset here is served from our store as citation-headed CSV, over the free REST API, and in snapshot-pinned bundles — with license and attribution attached to every series. Licensed for re-hosting, with Python and R clients ready to go.</p>
         <p style="margin-top:.5rem"><strong>Best for:</strong> direct downloads, reproducible research bundles, API pipelines.</p>
       </div>
     </div>
@@ -3638,7 +3686,7 @@ fetch(STATS_URL).then(function (r) { return r.json(); }).then(function (d) {
     # The page fetches /v1/stats live; the worker serves R2 _aqueduct/stats.json,
     # refreshed by each census run.
     years = _earliest_data_year()
-    return (
+    return gate_site_claims((
         tpl
         .replace("__FAQ__", faq_html)
         .replace("__YEARS__", f"{years:,}+" if years else "&mdash;")
@@ -3646,10 +3694,9 @@ fetch(STATS_URL).then(function (r) { return r.json(); }).then(function (d) {
         .replace("__NACTIVE__", str(n_active))
         .replace("__N__", str(n_total))
         .replace("__NOPEN__", str(n_open))
-        .replace("__NYSNOTE__", esc(nys_note))
         .replace("__NMETA__", str(n_meta))
         .replace("__GEN__", generated or TODAY)
-    )
+    ), n_nys, index_nys_claims(n_nys, nys_note))
 
 
 def render_catalog(records, generated):
@@ -3863,7 +3910,7 @@ render();
 </body></html>
 """
     )
-    return (
+    return gate_site_claims((
         body.replace("__DATA__", data)
         .replace("__CHIPS__", chips)
         .replace("__REGIONS__", region_opts)
@@ -3871,7 +3918,7 @@ render();
         .replace("__N__", str(n_total))
         .replace("__NOPEN__", str(n_open))
         .replace("__NMETA__", str(n_meta))
-    )
+    ), n_nys, CATALOG_NYS_CLAIMS)
 
 
 # Only what is genuinely page-local: <pre>, <table>, <code> and the headings all
@@ -3943,7 +3990,7 @@ def render_docs(records=()):
 <h2>One account, one family</h2>
 <p>The free ElkassabgiData key works across the family — this library, <a href="https://hfdatalibrary.com">HF Data Library</a> (1-minute U.S. equity data) and <a href="https://ipdatalibrary.com">IP Data Library</a> (patent &amp; innovation measures). Get a key from the <a href="download.html">Download page</a>.</p>
 """
-    body = body.replace("__DOCSSERVED__", served)
+    body = gate_site_claims(body.replace("__DOCSSERVED__", served), n_nys, DOCS_NYS_CLAIMS)
     return _info_page("Documentation", "How Econ Data Library works: namespace, licensing tiers, reproducible bundles, update pipeline.", "docs.html", body)
 
 

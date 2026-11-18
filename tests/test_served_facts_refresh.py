@@ -227,6 +227,64 @@ def test_site_wide_claims_name_the_not_yet_served_sources(G):
     assert n == 2 and "2 more sources are" in note and "no download" in note
 
 
+# main's exact site-wide wording (origin/main catalog/gen_site.py), typed out here rather than read from the
+# generator's claim tables, so a change to those tables cannot also move what this test expects.
+MAIN_INDEX_CLAIMS = [
+    "<p>Everything in the library is real, downloadable data — if we can’t host a source, we don’t list it.</p>",
+    "<!-- ── Every source is fully hosted ── -->",
+    '<h2 class="section-title">Every source, fully hosted</h2>',
+    "<p>Every dataset here is served from our store as citation-headed CSV, over the free REST API, and in "
+    "snapshot-pinned bundles — with license and attribution attached to every series. Licensed for re-hosting, "
+    "with Python and R clients ready to go.</p>",
+    "If a source's license doesn't permit re-hosting, we simply don't list it — no dead-end pages, no teasers. "
+    "The moment a publisher grants permission, its data appears here as a full download.</p>",
+    "sources — all real, all downloadable</h3>",
+]
+MAIN_CATALOG_CLAIMS = [
+    "sources, all downloadable &middot; search datasets",
+    "// access-tier filter removed — every source is redistributed/hosted",
+]
+MAIN_DOCS_CLAIMS = [
+    "its data is served from our store",
+    "Sources whose licenses forbid re-hosting are not listed at all — we never catalog a dead-end we can't "
+    "actually serve.",
+]
+# any of these in a page that lists a served-0 source is a false site-wide claim
+UNIVERSAL = ["Everything in the library is real, downloadable", "fully hosted", "Every dataset here",
+             "sources, all downloadable", "dead-end", "every source is redistributed/hosted", "appears here as a full download"]
+
+
+def test_index_and_catalog_claims_are_gated_on_not_yet_served(G, fixture_catalogue, monkeypatch):
+    """render_index, render_catalog and render_docs with no served-0 record carry main's wording exactly; with
+    one, no unconditional "every source is downloadable" claim is left and the served-0 source is named."""
+    _, sources, licenses, roll = fixture_catalogue
+    monkeypatch.setattr(G, "_earliest_data_year", lambda: 1)
+    recs = [G.build_record(s, sources[s], licenses, roll[s], None, None) for s in EXPECTED_PAGES]
+    one = [dict(recs[0], not_yet_served=True)] + recs[1:]
+    pages = lambda rs: {"index": G.render_index(rs, "2026-01-01"), "catalog": G.render_catalog(rs, "2026-01-01"),
+                        "docs": G.render_docs(rs)}
+    main_claims = {"index": MAIN_INDEX_CLAIMS, "catalog": MAIN_CATALOG_CLAIMS, "docs": MAIN_DOCS_CLAIMS}
+    none_p, one_p = pages(recs), pages(one)
+    for name, html in none_p.items():
+        for c in main_claims[name]:
+            assert html.count(c) == 1, (name, c)
+        # catalog.html always carries the round-1 card ternary (r.not_yet_served?...'not yet served'), so the
+        # catalog is checked by its hero lead instead
+        assert ("downloadable now" not in html) if name == "catalog" else ("not yet served" not in html), name
+    for name, html in one_p.items():
+        for u in UNIVERSAL:
+            assert u not in html, (name, u)
+        assert "not yet served" in html, name
+    assert "1 listed source is not yet served" in one_p["index"]
+    assert "1 more source is licensed for re-hosting but not yet served" in one_p["index"]
+    assert "3 sources, 2 downloadable now and 1 not yet served" in one_p["catalog"]
+    assert "sources — all real, all downloadable</h3>" in one_p["index"]       # n_open, which excludes it
+    assert ">2 sources — all real" in one_p["index"] and ">3 sources — all real" in none_p["index"]
+    # the gate refuses a template that lost a claim rather than shipping it unswapped
+    with pytest.raises(RuntimeError, match="expected 1"):
+        G.gate_site_claims("no claims here", 1, G.CATALOG_NYS_CLAIMS)
+
+
 # ---- the refresh tool, through a fake HTTP layer --------------------------------------------------------
 class FakeAPI:
     def __init__(self, answers):
