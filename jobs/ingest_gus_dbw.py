@@ -497,6 +497,80 @@ REFRESH_PARTS = os.path.join(PARTS, "_refresh")
 # runs out of budget stops cleanly; per-area state is durable, so the next run continues.
 REFRESH_BUDGET_H = 6.0
 
+# The row-loss guard's working files (R1936). A refused rebuild's tail parts go to REFUSED_PARTS,
+# under parts/ so no upload or listing of the store ever sees them; the guard's DuckDB spill goes to
+# _tmp/, which core/upload_r2 excludes as well.
+CANDIDATE_SUFFIX = ".cand"
+REFUSED_PARTS = os.path.join(PARTS, "_refresh_refused")
+GUARD_SPILL = os.path.join(OUT, "_tmp", "guard_spill")
+
+
+def _remove_quietly(p: str) -> None:
+    try:
+        if os.path.exists(p):
+            os.remove(p)
+    except OSError:
+        pass
+
+
+def finish_area(aid, final: str, state: dict, tail_start: int) -> bool:
+    """After a COMPLETE refresh sweep of one area: rebuild a candidate, guard it, replace the final,
+    record the owed publish, mark the area refreshed. True only when all of that happened; False
+    leaves the area due (the final untouched unless the replace itself succeeded and only the
+    owed record failed - then the next run rebuilds and records it). Split out of refresh_pass so
+    the post-sweep path can be tested without the network (R1936)."""
+    parts = R.tail_parts_for_area(aid, REFRESH_PARTS)
+    # The rebuild writes a CANDIDATE beside the final; the final is replaced only after the
+    # row-loss guard passes it (R1936). The candidate's name does not end in .parquet, so no
+    # store listing, resolver or upload can ever mistake it for an area.
+    cand = final + CANDIDATE_SUFFIX
+    try:
+        res = R.rebuild_with_tail(final, parts, tail_start, out_path=cand)
+    except Exception as e:                       # noqa: BLE001
+        _remove_quietly(cand)
+        log(f"REFRESH area {aid}: rebuild failed ({e}); the served copy is untouched")
+        return False
+    try:
+        guard = R.row_loss_guard(final, cand, tail_start, spill_dir=GUARD_SPILL)
+    except Exception as e:                       # noqa: BLE001 - cannot measure = refuse
+        guard = {"ok": False, "reasons": [f"the guard could not run: {type(e).__name__}: {e}"]}
+    if not guard["ok"]:
+        _remove_quietly(cand)
+        try:
+            where = R.quarantine_tail_parts(aid, REFRESH_PARTS, REFUSED_PARTS, guard)
+        except Exception as e:                   # noqa: BLE001
+            where = f"NOT moved ({type(e).__name__}: {e})"
+        log(f"REFRESH area {aid}: ERROR row-loss guard REFUSED the rebuild - "
+            + "; ".join(guard["reasons"])
+            + f". The final is untouched, the area stays due, nothing is owed for publish; "
+              f"tail parts quarantined at {where}")
+        return False
+    try:
+        R.replace_final(cand, final)
+    except Exception as e:                       # noqa: BLE001
+        _remove_quietly(cand)
+        log(f"REFRESH area {aid}: rebuild passed the guard but could not replace the final "
+            f"({e}); the served copy is untouched, retried next run")
+        return False
+    R.clear_tail_parts(aid, REFRESH_PARTS)
+    delta = res['rows_after'] - res['rows_before']
+    log(f"REFRESH area {aid}: {res['rows_before']:,} -> {res['rows_after']:,} obs "
+        f"({delta:+,}; kept {res['kept']:,} below {tail_start}, replaced "
+        f"{res['dropped']:,} with {res['added']:,}; guard: {guard['tail_lost']:,} tail pair(s) "
+        f"lost, floor {guard['tail_loss_floor']:,})")
+    # THE DEBT IS RECORDED BEFORE THE AREA IS MARKED REFRESHED: if the record cannot be written,
+    # the area stays due, so the next run rebuilds it again and records it then - a rebuilt area
+    # is never both current locally and forgotten by the publisher.
+    try:
+        R.note_publish_owed(OUT, aid, final, guard, res)
+    except Exception as e:                       # noqa: BLE001
+        log(f"REFRESH area {aid}: ERROR the owed-publish record was NOT written "
+            f"({type(e).__name__}: {e}); the area is left due so the next run records it")
+        return False
+    R.mark_refreshed(aid, state, rows_before=res['rows_before'], rows_after=res['rows_after'])
+    R.save_state(state, OUT)
+    return True
+
 
 def refresh_pass(var_areas: list, entries, pmap: dict, ck: dict) -> None:
     """Re-sweep the recent-year tail of every area that is due, and upsert it.
@@ -574,21 +648,10 @@ def refresh_pass(var_areas: list, entries, pmap: dict, ck: dict) -> None:
                 f"(a partial fetch must never look like an upstream withdrawal)")
             skipped += 1
             continue
-        parts = R.tail_parts_for_area(aid, REFRESH_PARTS)
-        try:
-            res = R.rebuild_with_tail(final, parts, tail_start)
-        except Exception as e:                       # noqa: BLE001
-            log(f"REFRESH area {aid}: rebuild failed ({e}); the served copy is untouched")
+        if finish_area(aid, final, state, tail_start):
+            refreshed += 1
+        else:
             skipped += 1
-            continue
-        R.clear_tail_parts(aid, REFRESH_PARTS)
-        R.mark_refreshed(aid, state, rows_before=res['rows_before'], rows_after=res['rows_after'])
-        R.save_state(state, OUT)
-        delta = res['rows_after'] - res['rows_before']
-        log(f"REFRESH area {aid}: {res['rows_before']:,} -> {res['rows_after']:,} obs "
-            f"({delta:+,}; kept {res['kept']:,} below {tail_start}, replaced "
-            f"{res['dropped']:,} with {res['added']:,})")
-        refreshed += 1
     log(f"REFRESH: {refreshed} area(s) rebuilt, {skipped} left for the next run")
 
 # ---------------------------------------------------------------- main
@@ -602,6 +665,7 @@ def main():
     swept = 0
     for pat in (os.path.join(PARTS, "area_*", "*.tmp"),
                 os.path.join(OUT, "*.tmp"),
+                os.path.join(OUT, "*" + CANDIDATE_SUFFIX),        # a rebuild candidate a kill left
                 os.path.join(CACHE, "*.tmp")):
         for stale in glob.glob(pat):
             try:
