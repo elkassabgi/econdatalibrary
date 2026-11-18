@@ -1,6 +1,10 @@
 {
  "_about": "What the public API serves, measured. gen_site.py never lets a page claim more series than n_series here, and uses `frequencies` in place of the local catalogue's for a listed source. Refresh n_series by GET /v1/catalog?source=<id>&limit=1 -> total for every source.",
- "measured_utc": "2026-11-17T21:20:27Z",
+ "measured_utc": "2026-11-18T11:45:05Z",
+ "fetched_utc": {
+  "first": "2026-11-18T17:11:51Z",
+  "last": "2026-11-18T17:15:04Z"
+ },
  "instrument": "GET https://econdl-api.elkassabgi.workers.dev/v1/catalog?source=<id>&limit=1 -> total",
  "n_series": {
   "abs": 18,
@@ -324,6 +328,1292 @@
   "worldbank_esg": 5295,
   "worldbank_wdi": 1484,
   "yale_epi": 79234
+ },
+ "edge_cache": {
+  "abs": {
+   "cf_cache_status": "HIT",
+   "age_s": 19482
+  },
+  "adb": {
+   "cf_cache_status": "HIT",
+   "age_s": 19482
+  },
+  "barro_lee": {
+   "cf_cache_status": "HIT",
+   "age_s": 19482
+  },
+  "bcb": {
+   "cf_cache_status": "HIT",
+   "age_s": 19482
+  },
+  "bcrp": {
+   "cf_cache_status": "HIT",
+   "age_s": 19608
+  },
+  "bea": {
+   "cf_cache_status": "HIT",
+   "age_s": 19482
+  },
+  "bfs": {
+   "cf_cache_status": "HIT",
+   "age_s": 19482
+  },
+  "bis": {
+   "cf_cache_status": "HIT",
+   "age_s": 19481
+  },
+  "bls": {
+   "cf_cache_status": "HIT",
+   "age_s": 19481
+  },
+  "boc": {
+   "cf_cache_status": "HIT",
+   "age_s": 19481
+  },
+  "boe": {
+   "cf_cache_status": "HIT",
+   "age_s": 19481
+  },
+  "bundesbank": {
+   "cf_cache_status": "HIT",
+   "age_s": 19481
+  },
+  "cbs_nl": {
+   "cf_cache_status": "HIT",
+   "age_s": 19481
+  },
+  "census": {
+   "cf_cache_status": "HIT",
+   "age_s": 19481
+  },
+  "cepii_baci": {
+   "cf_cache_status": "HIT",
+   "age_s": 19480
+  },
+  "cepii_gravity": {
+   "cf_cache_status": "HIT",
+   "age_s": 19480
+  },
+  "cnb": {
+   "cf_cache_status": "HIT",
+   "age_s": 19480
+  },
+  "comtrade": {
+   "cf_cache_status": "HIT",
+   "age_s": 19480
+  },
+  "cso": {
+   "cf_cache_status": "HIT",
+   "age_s": 19480
+  },
+  "damodaran": {
+   "cf_cache_status": "HIT",
+   "age_s": 19480
+  },
+  "defillama": {
+   "cf_cache_status": "HIT",
+   "age_s": 19480
+  },
+  "dst": {
+   "cf_cache_status": "HIT",
+   "age_s": 19480
+  },
+  "ecb": {
+   "cf_cache_status": "HIT",
+   "age_s": 19479
+  },
+  "edgar_jrc": {
+   "cf_cache_status": "HIT",
+   "age_s": 19479
+  },
+  "efw": {
+   "cf_cache_status": "HIT",
+   "age_s": 19479
+  },
+  "ei_statreview": {
+   "cf_cache_status": "HIT",
+   "age_s": 19479
+  },
+  "eia": {
+   "cf_cache_status": "HIT",
+   "age_s": 19479
+  },
+  "ember": {
+   "cf_cache_status": "HIT",
+   "age_s": 19479
+  },
+  "epu": {
+   "cf_cache_status": "HIT",
+   "age_s": 19479
+  },
+  "etr": {
+   "cf_cache_status": "HIT",
+   "age_s": 19479
+  },
+  "eurostat": {
+   "cf_cache_status": "HIT",
+   "age_s": 19479
+  },
+  "fao_ae": {
+   "cf_cache_status": "HIT",
+   "age_s": 19478
+  },
+  "fao_af": {
+   "cf_cache_status": "HIT",
+   "age_s": 19478
+  },
+  "fao_ec": {
+   "cf_cache_status": "HIT",
+   "age_s": 19478
+  },
+  "fao_ep": {
+   "cf_cache_status": "HIT",
+   "age_s": 19478
+  },
+  "fao_es": {
+   "cf_cache_status": "HIT",
+   "age_s": 19478
+  },
+  "fao_et": {
+   "cf_cache_status": "HIT",
+   "age_s": 19478
+  },
+  "fao_ew": {
+   "cf_cache_status": "HIT",
+   "age_s": 19478
+  },
+  "fao_fo": {
+   "cf_cache_status": "HIT",
+   "age_s": 19478
+  },
+  "fao_ga": {
+   "cf_cache_status": "HIT",
+   "age_s": 19478
+  },
+  "fao_gb": {
+   "cf_cache_status": "HIT",
+   "age_s": 19477
+  },
+  "fao_ge": {
+   "cf_cache_status": "HIT",
+   "age_s": 19477
+  },
+  "fao_gf": {
+   "cf_cache_status": "HIT",
+   "age_s": 19477
+  },
+  "fao_gl": {
+   "cf_cache_status": "HIT",
+   "age_s": 19477
+  },
+  "fao_gn": {
+   "cf_cache_status": "HIT",
+   "age_s": 19477
+  },
+  "fao_gr": {
+   "cf_cache_status": "HIT",
+   "age_s": 19477
+  },
+  "fao_gt": {
+   "cf_cache_status": "HIT",
+   "age_s": 19477
+  },
+  "fao_gy": {
+   "cf_cache_status": "HIT",
+   "age_s": 19477
+  },
+  "fao_ic": {
+   "cf_cache_status": "HIT",
+   "age_s": 19477
+  },
+  "fao_oa": {
+   "cf_cache_status": "HIT",
+   "age_s": 19477
+  },
+  "fao_pp": {
+   "cf_cache_status": "HIT",
+   "age_s": 19477
+  },
+  "fao_qa": {
+   "cf_cache_status": "HIT",
+   "age_s": 19476
+  },
+  "fao_qcl": {
+   "cf_cache_status": "HIT",
+   "age_s": 19476
+  },
+  "fao_ql": {
+   "cf_cache_status": "HIT",
+   "age_s": 19476
+  },
+  "fao_qp": {
+   "cf_cache_status": "HIT",
+   "age_s": 19476
+  },
+  "fao_rp": {
+   "cf_cache_status": "HIT",
+   "age_s": 19476
+  },
+  "faostat": {
+   "cf_cache_status": "HIT",
+   "age_s": 19476
+  },
+  "fdic": {
+   "cf_cache_status": "HIT",
+   "age_s": 19476
+  },
+  "fed_board": {
+   "cf_cache_status": "HIT",
+   "age_s": 19476
+  },
+  "fhfa": {
+   "cf_cache_status": "HIT",
+   "age_s": 19476
+  },
+  "frankfurter": {
+   "cf_cache_status": "HIT",
+   "age_s": 19476
+  },
+  "fsi_fundforpeace": {
+   "cf_cache_status": "HIT",
+   "age_s": 19476
+  },
+  "gapminder": {
+   "cf_cache_status": "HIT",
+   "age_s": 19475
+  },
+  "gcb": {
+   "cf_cache_status": "HIT",
+   "age_s": 19475
+  },
+  "ggdc": {
+   "cf_cache_status": "HIT",
+   "age_s": 19475
+  },
+  "gpi": {
+   "cf_cache_status": "HIT",
+   "age_s": 19475
+  },
+  "gppd": {
+   "cf_cache_status": "HIT",
+   "age_s": 19475
+  },
+  "gti": {
+   "cf_cache_status": "HIT",
+   "age_s": 19475
+  },
+  "gus_dbw": {
+   "cf_cache_status": "HIT",
+   "age_s": 19475
+  },
+  "hagstofa": {
+   "cf_cache_status": "HIT",
+   "age_s": 19475
+  },
+  "harvard_atlas": {
+   "cf_cache_status": "HIT",
+   "age_s": 19475
+  },
+  "idb": {
+   "cf_cache_status": "HIT",
+   "age_s": 19474
+  },
+  "ilostat": {
+   "cf_cache_status": "HIT",
+   "age_s": 19474
+  },
+  "imf_afrreo_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19474
+  },
+  "imf_apdreo_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19474
+  },
+  "imf_bop_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19474
+  },
+  "imf_bopagg_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19474
+  },
+  "imf_cofer_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19474
+  },
+  "imf_commodity": {
+   "cf_cache_status": "HIT",
+   "age_s": 19474
+  },
+  "imf_cpi_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19474
+  },
+  "imf_ctot_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19474
+  },
+  "imf_dip_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19474
+  },
+  "imf_eer_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19474
+  },
+  "imf_er_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19473
+  },
+  "imf_fas_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19474
+  },
+  "imf_fd_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19473
+  },
+  "imf_fdi_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19473
+  },
+  "imf_fm_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19473
+  },
+  "imf_fsibsis_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19473
+  },
+  "imf_fsic_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19473
+  },
+  "imf_fsicdm_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19473
+  },
+  "imf_fsire": {
+   "cf_cache_status": "HIT",
+   "age_s": 19473
+  },
+  "imf_gender_budgeting": {
+   "cf_cache_status": "HIT",
+   "age_s": 19473
+  },
+  "imf_gfsbs_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19473
+  },
+  "imf_gfscofog_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19473
+  },
+  "imf_gfsfalcs": {
+   "cf_cache_status": "HIT",
+   "age_s": 19472
+  },
+  "imf_gfssfcp_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19472
+  },
+  "imf_gfssoef_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19472
+  },
+  "imf_gfssoo_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19472
+  },
+  "imf_gfsssuc_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19472
+  },
+  "imf_gsatf_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19472
+  },
+  "imf_gslepm_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19472
+  },
+  "imf_gslgrghts_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19472
+  },
+  "imf_gsli_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19472
+  },
+  "imf_gssdo_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19472
+  },
+  "imf_hpd_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19471
+  },
+  "imf_icsd_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19471
+  },
+  "imf_ifs": {
+   "cf_cache_status": "HIT",
+   "age_s": 19471
+  },
+  "imf_imts_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19471
+  },
+  "imf_irfcl_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19471
+  },
+  "imf_ls_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19471
+  },
+  "imf_mcdreo_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19471
+  },
+  "imf_mfsdc_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19471
+  },
+  "imf_mfsfmp_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19471
+  },
+  "imf_mfsir_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19471
+  },
+  "imf_mfsma_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19471
+  },
+  "imf_mfsofc_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19471
+  },
+  "imf_namain_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19470
+  },
+  "imf_pgi": {
+   "cf_cache_status": "HIT",
+   "age_s": 19470
+  },
+  "imf_pi_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19470
+  },
+  "imf_pip_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19470
+  },
+  "imf_piwca_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19470
+  },
+  "imf_psbs_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19470
+  },
+  "imf_qgfs_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19470
+  },
+  "imf_sdg_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19470
+  },
+  "imf_weo": {
+   "cf_cache_status": "HIT",
+   "age_s": 19470
+  },
+  "imf_whdreo_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19470
+  },
+  "imf_world_direct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19470
+  },
+  "insee_bdm": {
+   "cf_cache_status": "HIT",
+   "age_s": 19469
+  },
+  "insee_melodi": {
+   "cf_cache_status": "HIT",
+   "age_s": 19469
+  },
+  "ipea": {
+   "cf_cache_status": "HIT",
+   "age_s": 19469
+  },
+  "istat": {
+   "cf_cache_status": "HIT",
+   "age_s": 19469
+  },
+  "kof_globalization": {
+   "cf_cache_status": "HIT",
+   "age_s": 19469
+  },
+  "ksh_stadat": {
+   "cf_cache_status": "HIT",
+   "age_s": 19469
+  },
+  "maddison": {
+   "cf_cache_status": "HIT",
+   "age_s": 19469
+  },
+  "nasa_giss": {
+   "cf_cache_status": "HIT",
+   "age_s": 19469
+  },
+  "noaa": {
+   "cf_cache_status": "HIT",
+   "age_s": 19469
+  },
+  "norgesbank": {
+   "cf_cache_status": "HIT",
+   "age_s": 19469
+  },
+  "nyfed": {
+   "cf_cache_status": "HIT",
+   "age_s": 19469
+  },
+  "oecd": {
+   "cf_cache_status": "HIT",
+   "age_s": 19469
+  },
+  "ofr": {
+   "cf_cache_status": "HIT",
+   "age_s": 19469
+  },
+  "ons_uk": {
+   "cf_cache_status": "HIT",
+   "age_s": 19468
+  },
+  "oxcgrt": {
+   "cf_cache_status": "HIT",
+   "age_s": 19468
+  },
+  "penn_world_table": {
+   "cf_cache_status": "HIT",
+   "age_s": 19468
+  },
+  "pip": {
+   "cf_cache_status": "HIT",
+   "age_s": 19468
+  },
+  "ppi": {
+   "cf_cache_status": "HIT",
+   "age_s": 19468
+  },
+  "pwt": {
+   "cf_cache_status": "HIT",
+   "age_s": 19468
+  },
+  "rba": {
+   "cf_cache_status": "HIT",
+   "age_s": 19468
+  },
+  "riksbank": {
+   "cf_cache_status": "HIT",
+   "age_s": 19468
+  },
+  "scb": {
+   "cf_cache_status": "HIT",
+   "age_s": 19468
+  },
+  "sec_edgar": {
+   "cf_cache_status": "HIT",
+   "age_s": 19468
+  },
+  "snb": {
+   "cf_cache_status": "HIT",
+   "age_s": 19468
+  },
+  "ssb": {
+   "cf_cache_status": "HIT",
+   "age_s": 19468
+  },
+  "stat_estonia": {
+   "cf_cache_status": "HIT",
+   "age_s": 19468
+  },
+  "stat_latvia": {
+   "cf_cache_status": "HIT",
+   "age_s": 19468
+  },
+  "stat_slovenia": {
+   "cf_cache_status": "HIT",
+   "age_s": 19468
+  },
+  "statcan": {
+   "cf_cache_status": "HIT",
+   "age_s": 19467
+  },
+  "statfin": {
+   "cf_cache_status": "HIT",
+   "age_s": 19467
+  },
+  "stats_nz": {
+   "cf_cache_status": "HIT",
+   "age_s": 19467
+  },
+  "swiid": {
+   "cf_cache_status": "HIT",
+   "age_s": 19467
+  },
+  "transparency_ti": {
+   "cf_cache_status": "HIT",
+   "age_s": 19467
+  },
+  "treasury": {
+   "cf_cache_status": "HIT",
+   "age_s": 19467
+  },
+  "ucdp": {
+   "cf_cache_status": "HIT",
+   "age_s": 19467
+  },
+  "un_wpp": {
+   "cf_cache_status": "HIT",
+   "age_s": 19467
+  },
+  "unctad_associatedplasticstradebypartner": {
+   "cf_cache_status": "HIT",
+   "age_s": 19467
+  },
+  "unctad_biotrademerch": {
+   "cf_cache_status": "HIT",
+   "age_s": 19467
+  },
+  "unctad_biotrademerchgdpshare": {
+   "cf_cache_status": "HIT",
+   "age_s": 19467
+  },
+  "unctad_biotrademerchmarketindices": {
+   "cf_cache_status": "HIT",
+   "age_s": 19467
+  },
+  "unctad_biotrademerchprodconcent": {
+   "cf_cache_status": "HIT",
+   "age_s": 19466
+  },
+  "unctad_biotrademerchrca": {
+   "cf_cache_status": "HIT",
+   "age_s": 19466
+  },
+  "unctad_biotrademerchshare": {
+   "cf_cache_status": "HIT",
+   "age_s": 19466
+  },
+  "unctad_bopcaba": {
+   "cf_cache_status": "HIT",
+   "age_s": 19466
+  },
+  "unctad_ciocgeaia": {
+   "cf_cache_status": "HIT",
+   "age_s": 19466
+  },
+  "unctad_cioiuibbicoeair4a": {
+   "cf_cache_status": "HIT",
+   "age_s": 19466
+  },
+  "unctad_commoditypricea": {
+   "cf_cache_status": "HIT",
+   "age_s": 19466
+  },
+  "unctad_commoditypriceindicesa": {
+   "cf_cache_status": "HIT",
+   "age_s": 19466
+  },
+  "unctad_commoditypriceindicesm": {
+   "cf_cache_status": "HIT",
+   "age_s": 19466
+  },
+  "unctad_commoditypricem": {
+   "cf_cache_status": "HIT",
+   "age_s": 19466
+  },
+  "unctad_concentdiversindices": {
+   "cf_cache_status": "HIT",
+   "age_s": 19465
+  },
+  "unctad_concentstructindices": {
+   "cf_cache_status": "HIT",
+   "age_s": 19465
+  },
+  "unctad_contportthroughput": {
+   "cf_cache_status": "HIT",
+   "age_s": 19465
+  },
+  "unctad_cpi_annual": {
+   "cf_cache_status": "HIT",
+   "age_s": 19465
+  },
+  "unctad_cpia": {
+   "cf_cache_status": "HIT",
+   "age_s": 19465
+  },
+  "unctad_cpta": {
+   "cf_cache_status": "HIT",
+   "age_s": 19465
+  },
+  "unctad_creativegoodsgr": {
+   "cf_cache_status": "HIT",
+   "age_s": 19465
+  },
+  "unctad_creativegoodsvalue": {
+   "cf_cache_status": "HIT",
+   "age_s": 19465
+  },
+  "unctad_creativeservgroupe": {
+   "cf_cache_status": "HIT",
+   "age_s": 19465
+  },
+  "unctad_creativeservindivtot": {
+   "cf_cache_status": "HIT",
+   "age_s": 19465
+  },
+  "unctad_criticalmineralstradebypart": {
+   "cf_cache_status": "HIT",
+   "age_s": 19465
+  },
+  "unctad_curraccbalance": {
+   "cf_cache_status": "HIT",
+   "age_s": 19465
+  },
+  "unctad_digitallydeliverableservices": {
+   "cf_cache_status": "HIT",
+   "age_s": 19465
+  },
+  "unctad_ecommerceinternational": {
+   "cf_cache_status": "HIT",
+   "age_s": 19465
+  },
+  "unctad_ecommercetotal": {
+   "cf_cache_status": "HIT",
+   "age_s": 19465
+  },
+  "unctad_environmentalgoodsrca": {
+   "cf_cache_status": "HIT",
+   "age_s": 19464
+  },
+  "unctad_environmentalgoodstrade": {
+   "cf_cache_status": "HIT",
+   "age_s": 19464
+  },
+  "unctad_exchangeratecrosstab": {
+   "cf_cache_status": "HIT",
+   "age_s": 19464
+  },
+  "unctad_fdiflowsstock": {
+   "cf_cache_status": "HIT",
+   "age_s": 19464
+  },
+  "unctad_fdiiaofasa": {
+   "cf_cache_status": "HIT",
+   "age_s": 19464
+  },
+  "unctad_fleetbeneficialowners": {
+   "cf_cache_status": "HIT",
+   "age_s": 19464
+  },
+  "unctad_fmcpa": {
+   "cf_cache_status": "HIT",
+   "age_s": 19464
+  },
+  "unctad_fmcpia21": {
+   "cf_cache_status": "HIT",
+   "age_s": 19464
+  },
+  "unctad_ftri": {
+   "cf_cache_status": "HIT",
+   "age_s": 19464
+  },
+  "unctad_gasbeaiogasa": {
+   "cf_cache_status": "HIT",
+   "age_s": 19464
+  },
+  "unctad_gasbtbia": {
+   "cf_cache_status": "HIT",
+   "age_s": 19463
+  },
+  "unctad_gasbtoia": {
+   "cf_cache_status": "HIT",
+   "age_s": 19463
+  },
+  "unctad_gdpcomponent": {
+   "cf_cache_status": "HIT",
+   "age_s": 19463
+  },
+  "unctad_gdpgbtoevbkoeatasa": {
+   "cf_cache_status": "HIT",
+   "age_s": 19463
+  },
+  "unctad_gdptapccac2pa": {
+   "cf_cache_status": "HIT",
+   "age_s": 19463
+  },
+  "unctad_gdptotal": {
+   "cf_cache_status": "HIT",
+   "age_s": 19463
+  },
+  "unctad_genderdomesticvalueadded": {
+   "cf_cache_status": "HIT",
+   "age_s": 19463
+  },
+  "unctad_gendertradableindustries": {
+   "cf_cache_status": "HIT",
+   "age_s": 19463
+  },
+  "unctad_gni": {
+   "cf_cache_status": "HIT",
+   "age_s": 19463
+  },
+  "unctad_goodsandservbalancebpm6": {
+   "cf_cache_status": "HIT",
+   "age_s": 19463
+  },
+  "unctad_goodsandservicesbpm6": {
+   "cf_cache_status": "HIT",
+   "age_s": 19463
+  },
+  "unctad_goodsandservtradeopennessbpm6": {
+   "cf_cache_status": "HIT",
+   "age_s": 19462
+  },
+  "unctad_govexpenditures": {
+   "cf_cache_status": "HIT",
+   "age_s": 19462
+  },
+  "unctad_gstptradematrix": {
+   "cf_cache_status": "HIT",
+   "age_s": 19462
+  },
+  "unctad_hiddenplasticstradebypartner": {
+   "cf_cache_status": "HIT",
+   "age_s": 19462
+  },
+  "unctad_ictgoods": {
+   "cf_cache_status": "HIT",
+   "age_s": 19462
+  },
+  "unctad_ictproductionsector": {
+   "cf_cache_status": "HIT",
+   "age_s": 19462
+  },
+  "unctad_ictuseeconactivity": {
+   "cf_cache_status": "HIT",
+   "age_s": 19462
+  },
+  "unctad_ictuseeconactivityisic4": {
+   "cf_cache_status": "HIT",
+   "age_s": 19462
+  },
+  "unctad_ictuseenterprsize": {
+   "cf_cache_status": "HIT",
+   "age_s": 19462
+  },
+  "unctad_ictuselocation": {
+   "cf_cache_status": "HIT",
+   "age_s": 19462
+  },
+  "unctad_iffcrimesrelated": {
+   "cf_cache_status": "HIT",
+   "age_s": 19462
+  },
+  "unctad_ifftrademisinvoicing": {
+   "cf_cache_status": "HIT",
+   "age_s": 19461
+  },
+  "unctad_inclusivegrowth": {
+   "cf_cache_status": "HIT",
+   "age_s": 19461
+  },
+  "unctad_intratrade": {
+   "cf_cache_status": "HIT",
+   "age_s": 19461
+  },
+  "unctad_lsbci": {
+   "cf_cache_status": "HIT",
+   "age_s": 19461
+  },
+  "unctad_lsci": {
+   "cf_cache_status": "HIT",
+   "age_s": 19461
+  },
+  "unctad_lscia": {
+   "cf_cache_status": "HIT",
+   "age_s": 19461
+  },
+  "unctad_lscim": {
+   "cf_cache_status": "HIT",
+   "age_s": 19461
+  },
+  "unctad_lsciq": {
+   "cf_cache_status": "HIT",
+   "age_s": 19461
+  },
+  "unctad_merchantfleet": {
+   "cf_cache_status": "HIT",
+   "age_s": 19461
+  },
+  "unctad_merchtheilindices": {
+   "cf_cache_status": "HIT",
+   "age_s": 19461
+  },
+  "unctad_merchvolumequarterly": {
+   "cf_cache_status": "HIT",
+   "age_s": 19461
+  },
+  "unctad_mfbcoboa": {
+   "cf_cache_status": "HIT",
+   "age_s": 19460
+  },
+  "unctad_mmcascioeaiopa": {
+   "cf_cache_status": "HIT",
+   "age_s": 19460
+  },
+  "unctad_mpcadioeaia": {
+   "cf_cache_status": "HIT",
+   "age_s": 19460
+  },
+  "unctad_mtba": {
+   "cf_cache_status": "HIT",
+   "age_s": 19460
+  },
+  "unctad_mttasa": {
+   "cf_cache_status": "HIT",
+   "age_s": 19460
+  },
+  "unctad_mttgra": {
+   "cf_cache_status": "HIT",
+   "age_s": 19460
+  },
+  "unctad_neera": {
+   "cf_cache_status": "HIT",
+   "age_s": 19460
+  },
+  "unctad_nonplasticsubststradebypartner": {
+   "cf_cache_status": "HIT",
+   "age_s": 19460
+  },
+  "unctad_oceanservices": {
+   "cf_cache_status": "HIT",
+   "age_s": 19460
+  },
+  "unctad_oceantrade": {
+   "cf_cache_status": "HIT",
+   "age_s": 19460
+  },
+  "unctad_pci": {
+   "cf_cache_status": "HIT",
+   "age_s": 19459
+  },
+  "unctad_plasticstradebypartner": {
+   "cf_cache_status": "HIT",
+   "age_s": 19459
+  },
+  "unctad_plsci": {
+   "cf_cache_status": "HIT",
+   "age_s": 19459
+  },
+  "unctad_popagestruct": {
+   "cf_cache_status": "HIT",
+   "age_s": 19459
+  },
+  "unctad_popdependency": {
+   "cf_cache_status": "HIT",
+   "age_s": 19459
+  },
+  "unctad_poptotal": {
+   "cf_cache_status": "HIT",
+   "age_s": 19459
+  },
+  "unctad_portcalls": {
+   "cf_cache_status": "HIT",
+   "age_s": 19459
+  },
+  "unctad_portcallsarrivals": {
+   "cf_cache_status": "HIT",
+   "age_s": 19459
+  },
+  "unctad_portcallsarrivalss": {
+   "cf_cache_status": "HIT",
+   "age_s": 19459
+  },
+  "unctad_portcallss": {
+   "cf_cache_status": "HIT",
+   "age_s": 19459
+  },
+  "unctad_rca": {
+   "cf_cache_status": "HIT",
+   "age_s": 19458
+  },
+  "unctad_reericba": {
+   "cf_cache_status": "HIT",
+   "age_s": 19458
+  },
+  "unctad_reerigdba": {
+   "cf_cache_status": "HIT",
+   "age_s": 19458
+  },
+  "unctad_remittances": {
+   "cf_cache_status": "HIT",
+   "age_s": 19458
+  },
+  "unctad_rfia": {
+   "cf_cache_status": "HIT",
+   "age_s": 19458
+  },
+  "unctad_rgdptapcgra": {
+   "cf_cache_status": "HIT",
+   "age_s": 19458
+  },
+  "unctad_sbeaiotsvsaga": {
+   "cf_cache_status": "HIT",
+   "age_s": 19458
+  },
+  "unctad_sbtisvsaga": {
+   "cf_cache_status": "HIT",
+   "age_s": 19458
+  },
+  "unctad_sdglulfrg": {
+   "cf_cache_status": "HIT",
+   "age_s": 19458
+  },
+  "unctad_sdgporfvol": {
+   "cf_cache_status": "HIT",
+   "age_s": 19458
+  },
+  "unctad_seabornetrade": {
+   "cf_cache_status": "HIT",
+   "age_s": 19457
+  },
+  "unctad_seafarers": {
+   "cf_cache_status": "HIT",
+   "age_s": 19457
+  },
+  "unctad_shipbuilding": {
+   "cf_cache_status": "HIT",
+   "age_s": 19457
+  },
+  "unctad_shipscrapping": {
+   "cf_cache_status": "HIT",
+   "age_s": 19457
+  },
+  "unctad_soigapotta": {
+   "cf_cache_status": "HIT",
+   "age_s": 19457
+  },
+  "unctad_sotwmfvbcoboa": {
+   "cf_cache_status": "HIT",
+   "age_s": 19457
+  },
+  "unctad_srbca": {
+   "cf_cache_status": "HIT",
+   "age_s": 19457
+  },
+  "unctad_tabbapotta": {
+   "cf_cache_status": "HIT",
+   "age_s": 19457
+  },
+  "unctad_tabmcioeaiopa": {
+   "cf_cache_status": "HIT",
+   "age_s": 19457
+  },
+  "unctad_tabmscioeaiopa": {
+   "cf_cache_status": "HIT",
+   "age_s": 19457
+  },
+  "unctad_tabpcioeaia": {
+   "cf_cache_status": "HIT",
+   "age_s": 19457
+  },
+  "unctad_tariff": {
+   "cf_cache_status": "HIT",
+   "age_s": 19457
+  },
+  "unctad_taupa": {
+   "cf_cache_status": "HIT",
+   "age_s": 19457
+  },
+  "unctad_termsoftrade": {
+   "cf_cache_status": "HIT",
+   "age_s": 19456
+  },
+  "unctad_totandcomservicesquarterly": {
+   "cf_cache_status": "HIT",
+   "age_s": 19456
+  },
+  "unctad_tradefoodcatbyproc": {
+   "cf_cache_status": "HIT",
+   "age_s": 19456
+  },
+  "unctad_tradefoodprocbycat": {
+   "cf_cache_status": "HIT",
+   "age_s": 19456
+  },
+  "unctad_tradefoodproccatcatrca": {
+   "cf_cache_status": "HIT",
+   "age_s": 19456
+  },
+  "unctad_tradefoodproccatprocrca": {
+   "cf_cache_status": "HIT",
+   "age_s": 19456
+  },
+  "unctad_trademerchbalance": {
+   "cf_cache_status": "HIT",
+   "age_s": 19456
+  },
+  "unctad_trademerchgr": {
+   "cf_cache_status": "HIT",
+   "age_s": 19456
+  },
+  "unctad_trademerchtotal": {
+   "cf_cache_status": "HIT",
+   "age_s": 19456
+  },
+  "unctad_tradepriceindicesq": {
+   "cf_cache_status": "HIT",
+   "age_s": 19456
+  },
+  "unctad_tradeservcatbypartner": {
+   "cf_cache_status": "HIT",
+   "age_s": 19456
+  },
+  "unctad_tradeservcattotal": {
+   "cf_cache_status": "HIT",
+   "age_s": 19456
+  },
+  "unctad_tradeservict": {
+   "cf_cache_status": "HIT",
+   "age_s": 19456
+  },
+  "unctad_ucpia": {
+   "cf_cache_status": "HIT",
+   "age_s": 19455
+  },
+  "unctad_ucpim": {
+   "cf_cache_status": "HIT",
+   "age_s": 19455
+  },
+  "unctad_vesselvaluebyownership": {
+   "cf_cache_status": "HIT",
+   "age_s": 19455
+  },
+  "unctad_vesselvaluebyregistration": {
+   "cf_cache_status": "HIT",
+   "age_s": 19455
+  },
+  "unctad_wastewatertreatment": {
+   "cf_cache_status": "HIT",
+   "age_s": 19455
+  },
+  "unctad_wstbtocabgoea": {
+   "cf_cache_status": "HIT",
+   "age_s": 19455
+  },
+  "undp_hdr": {
+   "cf_cache_status": "HIT",
+   "age_s": 19455
+  },
+  "unesco_clte": {
+   "cf_cache_status": "HIT",
+   "age_s": 19455
+  },
+  "unesco_cltt": {
+   "cf_cache_status": "HIT",
+   "age_s": 19455
+  },
+  "unesco_dem": {
+   "cf_cache_status": "HIT",
+   "age_s": 19455
+  },
+  "unesco_film": {
+   "cf_cache_status": "HIT",
+   "age_s": 19454
+  },
+  "unesco_inno": {
+   "cf_cache_status": "HIT",
+   "age_s": 19454
+  },
+  "unesco_natmon": {
+   "cf_cache_status": "HIT",
+   "age_s": 19454
+  },
+  "unesco_sdg": {
+   "cf_cache_status": "HIT",
+   "age_s": 19454
+  },
+  "unhcr": {
+   "cf_cache_status": "HIT",
+   "age_s": 19454
+  },
+  "unsdg": {
+   "cf_cache_status": "HIT",
+   "age_s": 19454
+  },
+  "usda": {
+   "cf_cache_status": "HIT",
+   "age_s": 19454
+  },
+  "vdem": {
+   "cf_cache_status": "HIT",
+   "age_s": 19454
+  },
+  "wgi": {
+   "cf_cache_status": "HIT",
+   "age_s": 19454
+  },
+  "who_hwf": {
+   "cf_cache_status": "HIT",
+   "age_s": 19454
+  },
+  "who_rs": {
+   "cf_cache_status": "HIT",
+   "age_s": 19453
+  },
+  "who_sdg": {
+   "cf_cache_status": "HIT",
+   "age_s": 19453
+  },
+  "whr": {
+   "cf_cache_status": "HIT",
+   "age_s": 19453
+  },
+  "wid": {
+   "cf_cache_status": "HIT",
+   "age_s": 19453
+  },
+  "wikidata": {
+   "cf_cache_status": "HIT",
+   "age_s": 19453
+  },
+  "worldbank": {
+   "cf_cache_status": "HIT",
+   "age_s": 19453
+  },
+  "worldbank_esg": {
+   "cf_cache_status": "HIT",
+   "age_s": 19453
+  },
+  "worldbank_wdi": {
+   "cf_cache_status": "HIT",
+   "age_s": 19453
+  },
+  "yale_epi": {
+   "cf_cache_status": "HIT",
+   "age_s": 19453
+  }
  },
  "frequencies": {
   "statcan": {

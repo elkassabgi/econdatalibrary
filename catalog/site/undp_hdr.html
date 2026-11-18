@@ -318,7 +318,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -331,7 +331,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">undp_hdr</div>
 <h1>United Nations Development Programme, Human Development Report Office (HDRO)</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Creative Commons Attribution 3.0 IGO (CC BY 3.0 IGO)</span><span class="badge cat">Development Indicators</span><span class="badge cat">Society &amp; Well-Being</span></div>
-<p class="lead">UNDP Human Development Report (HDR) Statistical Annexes — 190+ countries. License: CC BY 3.0 IGO Source: https://hdr.undp.org/data-center/documentation-and-downloads No API key required (direct XLSX download from hdr.undp.org). Coverage: * HDI (Human Development Index), 1990–2023 * GDI (Gender…</p>
+<p class="lead">Human Development Index (value); Gender Development Index (value); Gender Inequality Index (value)</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -354,28 +354,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/undp_hdr">https://econdatalibrary.com/undp_hdr</a></dd>
 <dt>Update cadence</dt><dd>annual</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>overwrite if changed</dd>
-<dt>Storage layout</dt><dd>single parquet: data/clean_full/undp_hdr/undp_hdr.parquet (~1.5 MB). Schema: series_key (string), obs_date date32 (Dec 31 of year), value float64. Keys: {indicator}:{ISO3} from composite CSV, or {prefix}:{iso} from annex XLSX (prefixes hdi/gdi/gii/ihdi/mpi).</dd></dl>
-<h2>Full description</h2>
-<p class="lead">UNDP Human Development Report (HDR) Statistical Annexes — 190+ countries.
-
-License: CC BY 3.0 IGO
-Source: https://hdr.undp.org/data-center/documentation-and-downloads
-No API key required (direct XLSX download from hdr.undp.org).
-
-Coverage:
-  * HDI (Human Development Index), 1990–2023
-  * GDI (Gender Development Index)
-  * GII (Gender Inequality Index)
-  * IHDI (Inequality-adjusted HDI)
-  * MPI (Multidimensional Poverty Index)
-  * Education Index, Life Expectancy Index, GNI per capita
-  * Mean years of schooling, Expected years of schooling
-  * Life expectancy at birth
-  * GNI per capita (2017 PPP$)
-
-Run: python jobs/ingest_undp_hdr.py</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

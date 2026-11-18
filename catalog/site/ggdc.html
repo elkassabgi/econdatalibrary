@@ -314,7 +314,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -327,7 +327,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">ggdc</div>
 <h1>Groningen Growth and Development Centre (GGDC), University of Groningen - Maddison Project Database</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Creative Commons Attribution 4.0 (CC BY 4.0)</span><span class="badge cat">Long-Run &amp; Historical</span></div>
-<p class="lead">GGDC (Groningen Growth and Development Centre) data ingest. Sources: Penn World Tables 10.0: URL: https://www.rug.nl/ggdc/docs/pwt100.xlsx 183 countries, 1950-2019, 48 macro/productivity variables Ref: Feenstra, Inklaar &amp; Timmer (2015), AER Maddison Project Database 2020: URL:…</p>
+<p class="lead">Share of household consumption at current PPPs; Share of government consumption at current PPPs; Share of gross capital formation at curr…</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -350,32 +350,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/ggdc">https://econdatalibrary.com/ggdc</a></dd>
 <dt>Update cadence</dt><dd>irregular</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>overwrite if changed</dd>
-<dt>Storage layout</dt><dd>multi-file under data/clean_full/ggdc/: pwt10.parquet, pwt11.parquet, maddison2020.parquet, maddison2023.parquet (all zstd). Schema: series_key prefixed by version (&#x27;PWT10:{var}:{ccode}&#x27;, &#x27;PWT11:...&#x27;, &#x27;MADDISON:...&#x27;, &#x27;MADDISON23:...&#x27;), obs_date(date32, Dec-31), value(float64). save() does one pq.write_table each (non-atomic).</dd></dl>
-<h2>Full description</h2>
-<p class="lead">GGDC (Groningen Growth and Development Centre) data ingest.
-
-Sources:
-  Penn World Tables 10.0:
-    URL: https://www.rug.nl/ggdc/docs/pwt100.xlsx
-    183 countries, 1950-2019, 48 macro/productivity variables
-    Ref: Feenstra, Inklaar &amp; Timmer (2015), AER
-
-  Maddison Project Database 2020:
-    URL: https://www.rug.nl/ggdc/historicaldevelopment/maddison/data/mpd2020.xlsx
-    169 countries, 1 AD–2018, GDP pc and population (2011 int&#x27;l $)
-    Ref: Maddison Project Database 2020, Bolt &amp; van Zanden (2020)
-
-Output:
-  data/clean_full/ggdc/pwt10.parquet
-  data/clean_full/ggdc/maddison2020.parquet
-
-Series key format:
-  PWT10:{variable}:{countrycode}   e.g. PWT10:rgdpe:USA
-  MADDISON:{variable}:{countrycode} e.g. MADDISON:gdppc:CHN
-
-Run: python jobs/ingest_ggdc.py</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

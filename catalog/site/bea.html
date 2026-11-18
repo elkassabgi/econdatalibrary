@@ -320,7 +320,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -333,7 +333,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">bea</div>
 <h1>Bureau of Economic Analysis</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">U.S. Government Work (public domain)</span><span class="badge cat">International Trade</span><span class="badge cat">Macroeconomics</span><span class="badge cat">National Accounts</span></div>
-<p class="lead">FULL-COVERAGE ingest of the ENTIRE U.S. BEA API catalog. Crawls all 12 BEA data datasets (NIPA, NIUnderlyingDetail, FixedAssets, GDPbyIndustry, UnderlyingGDPbyIndustry, InputOutput, ITA, IIP, IntlServTrade, IntlServSTA, Regional, MNE) via GetData and writes GROUPED Parquet -- ONE file per…</p>
+<p class="lead">U.S. national accounts (NIPA) — GDP components, trade in goods and services, quarterly and annual</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -356,25 +356,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/bea">https://econdatalibrary.com/bea</a></dd>
 <dt>Update cadence</dt><dd>monthly</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>extend by date</dd>
-<dt>Storage layout</dt><dd>overwrite-multi-file (grouped): one zstd parquet per table/cube under data/clean_full/bea/&lt;dataset&gt;/&lt;group&gt;.parquet (~600 files across 12 dataset dirs: NIPA 252, Regional 105, etc.). Columns series_key, obs_date, value (+ time_series_id / year extra cols for ITA/IIP/IntlServ*/MNE). State in data/raw/bea/_done_groups.json (atomic temp+replace); manifest at data/raw/bea/catalog_manifest.json.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">FULL-COVERAGE ingest of the ENTIRE U.S. BEA API catalog.
-
-Crawls all 12 BEA data datasets (NIPA, NIUnderlyingDetail, FixedAssets,
-GDPbyIndustry, UnderlyingGDPbyIndustry, InputOutput, ITA, IIP, IntlServTrade,
-IntlServSTA, Regional, MNE) via GetData and writes GROUPED Parquet --
-ONE file per table/cube, with a series-key column inside -- to
-data/clean_full/bea/&lt;dataset&gt;/. License: us-public-domain (public domain).
-
-Anti-bloat: ~600 files total for the whole source, each holding many series.
-Resume: a done-set JSON lets re-runs skip already-written groups.
-
-Usage:
-  python jobs/ingest_bea_full.py --datasets NIPA            # one dataset
-  python jobs/ingest_bea_full.py                            # everything
-  python jobs/ingest_bea_full.py --resume                   # skip done groups</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

@@ -313,7 +313,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -326,7 +326,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">faostat</div>
 <h1>FAOSTAT</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Redistributable, non-commercial (provider terms verified)</span><span class="badge cat">Agriculture &amp; Food</span></div>
-<p class="lead">FULL-COVERAGE grouped ingest of FAOSTAT bulk domains. Source: FAO FAOSTAT (CC BY 4.0). license_id = cc-by-4.0. Strategy -------- FAOSTAT publishes a machine manifest listing EVERY domain + its bulk zip URL: https://bulks-faostat.fao.org/production/datasets_E.json We download ALL domain bulk zips…</p>
+<p class="lead">Producer price, Wheat - United States of America (USD/tonne); Producer price, Maize (corn) - United States of America (USD/tonne); Produc…</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -347,49 +347,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/faostat">https://econdatalibrary.com/faostat</a></dd>
 <dt>Update cadence</dt><dd>monthly <em>(workstation update pass)</em></dd>
-<dt>Automated refresh</dt><dd>on the workstation update pass, not the cloud daily run &mdash; last fully completed automated run 2026-10-21. See the <a href="status.html">Source Status board</a>.</dd>
-<dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
-<dt>Storage layout</dt><dd>Per-domain grouped parquet: data/clean_full/faostat/&lt;DatasetCode&gt;.parquet (68 files), columns series_key, obs_date(date32), value(float64), flag(string), zstd, flushed in 500k-row groups. Plus _ingest_summary.json sidecar. Raw zips cached under data/raw/faostat/&lt;CODE&gt;.zip (68 zips).</dd></dl>
-<h2>Full description</h2>
-<p class="lead">FULL-COVERAGE grouped ingest of FAOSTAT bulk domains.
-
-Source: FAO FAOSTAT (CC BY 4.0). license_id = cc-by-4.0.
-
-Strategy
---------
-FAOSTAT publishes a machine manifest listing EVERY domain + its bulk zip URL:
-    https://bulks-faostat.fao.org/production/datasets_E.json
-We download ALL domain bulk zips (the &quot;(Normalized).zip&quot; long-format files),
-stream the single normalized CSV inside each, and write ONE grouped Parquet per
-domain to data/clean_full/faostat/&lt;DatasetCode&gt;.parquet with columns:
-    series_key, obs_date (date32), value (float64), flag (string)
-
-Normalized FAOSTAT schema varies per domain, so the parser is header-driven:
-  * Geography / dimension columns (Area, Item, Element, Indicator, Reporter,
-    Partner, Survey, Currency, Cost Category, Institution, Food Group, ...) are
-    every column that is NOT one of the reserved roles below.
-  * TIME comes from `Year` (single year, or a range like &quot;2014-2016&quot; -&gt; end yr).
-    Some domains add `Months` (calendar month -&gt; that month/year; non-calendar
-    qualifiers like &quot;Annual value&quot;, &quot;Meher season&quot; stay in the series key).
-  * VALUE from `Value`; FLAG from `Flag` (data-quality letter).
-  * `Year Code`, `Months Code`, the `(M49)`/`(CPC)`/`(FAO)`/`(ISO3)` code twins,
-    `Note` and `Flag` are excluded from the series key to keep it stable &amp; lean.
-
-series_key = pipe-joined dimension values (codes preferred for stability, plus
-the human label so the key is self-describing), e.g.
-    &quot;QCL|Area=2|Item=221|Element=5312|Almonds, in shell|Area harvested&quot;
-The grouped Parquet keeps the FULL dimensionality (nothing collapsed/dropped).
-
-Memory is bounded: each domain is streamed row-by-row from the zip and flushed
-to Parquet in 1,000,000-row batches, so even the 52M-row Trade matrix never
-holds more than one batch in RAM.
-
-Usage:
-  python jobs/ingest_faostat.py --list          # enumerate catalog, no download
-  python jobs/ingest_faostat.py --dry 3         # download+parse 3 small domains
-  python jobs/ingest_faostat.py                 # FULL run (all 68 domains)
-  python jobs/ingest_faostat.py --only QCL,TM   # specific domains
-  python jobs/ingest_faostat.py --skip TM       # all except listed</p>
+<dt>Automated refresh</dt><dd>on the workstation update pass, not the cloud daily run &mdash; last fully completed automated run 2026-10-21. See the <a href="status.html">Source Status board</a>.</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

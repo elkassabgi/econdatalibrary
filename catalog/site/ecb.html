@@ -317,7 +317,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -330,7 +330,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">ecb</div>
 <h1>ECB Data Portal / euro reference rates</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">ECB terms (attribution required, no modification)</span><span class="badge cat">Exchange Rates</span><span class="badge cat">Interest Rates</span></div>
-<p class="lead">FULL-COVERAGE grouped ingest of the entire ECB Data Portal (SDMX 2.1). Source: ECB Data Portal (data-api.ecb.europa.eu). license_id = ecb-attrib-nomodify (from configs/sources.yaml: &quot;Source: ECB -- available free at the ECB; values not modified&quot;). We do NOT modify values; the Clean tier stores the…</p>
+<p class="lead">Euro reference exchange rate: US dollar per EUR; Euro reference exchange rate: Pound sterling per EUR; Euro reference exchange rate: Japa…</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -350,52 +350,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/ecb">https://econdatalibrary.com/ecb</a></dd>
 <dt>Update cadence</dt><dd>daily</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>sdmx delta</dd>
-<dt>Storage layout</dt><dd>grouped parquet, many files (~542 on disk): &lt;AGENCY&gt;__&lt;FLOW&gt;.parquet for whole pulls, &lt;AGENCY&gt;__&lt;FLOW&gt;__&lt;FREQ&gt;.parquet for frequency chunks, &lt;AGENCY&gt;__&lt;FLOW&gt;__&lt;FREQ&gt;__&lt;VAL&gt;[__&lt;YEAR&gt;].parquet for sub/decade/year splits. Schema series_key(str, ECB pre-joined key e.g. EXR.D.USD.EUR.SP00.A), obs_date(date32), value(float64), freq(str). Sidecars _manifest.json, _catalog.json. Writers stream to .part then atomic os.replace.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">FULL-COVERAGE grouped ingest of the entire ECB Data Portal (SDMX 2.1).
-
-Source: ECB Data Portal (data-api.ecb.europa.eu). license_id = ecb-attrib-nomodify
-(from configs/sources.yaml: &quot;Source: ECB -- available free at the ECB; values not
-modified&quot;). We do NOT modify values; the Clean tier stores the raw observation.
-
-Strategy (verified live against data-api.ecb.europa.eu, June 2026):
-  * Catalog = EVERY dataflow from /service/dataflow  (213 flows across agencies
-    ECB, ECB.DISS, ESTAT, EUROSTAT, IMF -- ALL hosted at the ECB endpoint).
-  * Data pulled as SDMX-CSV (?format=csvdata) with &amp;detail=dataonly, which strips
-    the ~25 bulky attribute columns (TITLE, OBS_COM, COLLECTION, ...) WITHOUT
-    changing the observation count and is ~10-30x faster to transfer. The CSV
-    header is then:  KEY, &lt;dim1..dimN&gt;, TIME_PERIOD, OBS_VALUE.
-  * SERIES KEY = the CSV `KEY` column, which the ECB already emits pre-joined
-    (e.g. &quot;EXR.D.USD.EUR.SP00.A&quot;) -&gt; stored verbatim as column `series_key`.
-    FREQ (when present as a column) -&gt; stored as `freq`.
-  * Most flows pull whole in one request. The handful of GIANTS (EXR ~197MB,
-    MIR ~124MB, YC ~11M rows, BSI, ICP/HICP, STS, SEC, IRS, FM, BOP, RPP, ...)
-    are FREQUENCY-CHUNKED via the SDMX positional path key (the DSD dimension
-    order, FREQ value + dots for the rest, e.g. EXR key &quot;D.....&quot;).  If a single
-    frequency chunk is still huge/fails, it is SUB-SPLIT by the next splitting
-    dimension&#x27;s codelist values (e.g. YC daily -&gt; by INSTRUMENT_FM curve type).
-    Each chunk is an independent, restart-safe request that lands in its own
-    parquet part, so a process kill costs at most one chunk.
-
-OUTPUT: grouped Parquet under data/clean_full/ecb/ -&gt;
-    &lt;AGENCY&gt;__&lt;FLOW&gt;.parquet                      (whole-flow pulls)
-    &lt;AGENCY&gt;__&lt;FLOW&gt;__&lt;FREQ&gt;.parquet              (frequency chunks)
-    &lt;AGENCY&gt;__&lt;FLOW&gt;__&lt;FREQ&gt;__&lt;VAL&gt;.parquet       (sub-split chunks)
-  columns: series_key (str), obs_date (date32), value (float64), freq (str).
-A sidecar _manifest.json records per-flow stats (NOT catalog.db, which is off-limits).
-
-Memory is bounded: every HTTP body streams to a temp .csv.gz on disk, is parsed
-row-by-row, and flushed to the Parquet writer in RecordBatches; no flow is held
-whole in RAM. The distinct-series set per file is capped to bound memory.
-
-Usage:
-  python jobs/ingest_ecb.py --list                 # enumerate catalog, no data
-  python jobs/ingest_ecb.py --only EXR,YC          # just these flows
-  python jobs/ingest_ecb.py --workers 4            # FULL run, 4 concurrent flows
-  python jobs/ingest_ecb.py --report               # re-read parquet, print true totals
-  python jobs/ingest_ecb.py                        # FULL run (default workers=4)</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

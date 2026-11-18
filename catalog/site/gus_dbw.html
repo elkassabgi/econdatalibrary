@@ -312,7 +312,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -325,7 +325,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">gus_dbw</div>
 <h1>Statistics Poland — Knowledge Databases / DBW API (Dziedzinowe Bazy Wiedzy)</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">gus-pl-open</span><span class="badge cat">Macroeconomics</span></div>
-<p class="lead">GUS Poland — DBW (Dziedzinowe Bazy Wiedzy) API, full crawl. License: Open data (GUS public data policy, CC BY 4.0) Source: https://api-dbw.stat.gov.pl/ (replaces the dead sdmx.stat.gov.pl) No API key required; optional registered key via env GUS_DBW_CLIENT_ID (sent as X-ClientId header). Endpoints…</p>
+<p class="lead">Agricultural prices (Statistics Poland DBW area 10); Industry (Statistics Poland DBW area 100); Services prices (Statistics Poland DBW ar…</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -345,40 +345,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/gus_dbw">https://econdatalibrary.com/gus_dbw</a></dd>
 <dt>Update cadence</dt><dd>monthly <em>(target &mdash; not yet automated)</em></dd>
-<dt>Automated refresh</dt><dd>not yet wired &mdash; the data here is the verified initial load. See the <a href="status.html">Source Status board</a>.</dd>
-<dt>Update strategy</dt><dd>extend by date</dd>
-<dt>Storage layout</dt><dd>per-area parquet (area_{id}.parquet) merged from per-section part files under parts/area_{id}/v{var}_s{sec}.parquet; plus _cache/ (metadata JSON), _checkpoint.json, and logs/gus_dbw.DONE sentinel. area_15.parquet alone is ~109 MB. Schema: series_key (GUSDBW:var:sec:positions[:measure]), obs_date, value.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">GUS Poland — DBW (Dziedzinowe Bazy Wiedzy) API, full crawl.
-
-License: Open data (GUS public data policy, CC BY 4.0)
-Source: https://api-dbw.stat.gov.pl/ (replaces the dead sdmx.stat.gov.pl)
-No API key required; optional registered key via env GUS_DBW_CLIENT_ID
-(sent as X-ClientId header).
-
-Endpoints (api/1.2.0):
-  * /area/area-area?lang=en                       → flat tree of subject areas
-  * /area/area-variable?id-obszaru={a}&amp;lang=en    → variables of an area
-  * /variable/variable-meta?id-zmiennej={v}&amp;lang=en → sections (przekroje) with
-        frequency (id-czestotliwosc) and year range (szereg-czasowy)
-  * /dictionaries/periods-dictionary?lang=en      → id-okres → symbol (M01..M12,
-        K1..K4, P1/P2, R...; id-okres=282 = annual)
-  * /variable/variable-data-section?id-zmienna=&amp;id-przekroj=&amp;id-rok=&amp;id-okres=
-        &amp;ile-na-stronie=5000&amp;numer-strony=&amp;lang=en → observations (&quot;wartosc&quot;)
-
-RATE LIMITS (anonymous): 5 req/s, 100 req/15min, 1000 req/12h, 10000 req/7days.
-  → 45 s minimum between requests (anonymous), 9 s with X-ClientId
-    (registered tier: 10/s, 500/15min, 5000/12h, 50000/7d).
-  This source takes WEEKS at anonymous rates — it is a long-haul crawler built
-  around aggressive checkpointing: a JSON checkpoint of completed
-  variable×section pairs, metadata cached on disk so restarts spend no budget,
-  and one parquet part file per completed variable×section. When every
-  variable of an area is done, parts merge into area_{id}.parquet.
-
-series_key: GUSDBW:{var_id}:{section_id}:{id-pozycja-* values}[:m{measure}]
-obs_date:   annual → Dec 31; quarter → quarter start; month/half/week → start.
-
-Run: python jobs/ingest_gus_dbw.py</p>
+<dt>Automated refresh</dt><dd>not yet wired &mdash; the data here is the verified initial load. See the <a href="status.html">Source Status board</a>.</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

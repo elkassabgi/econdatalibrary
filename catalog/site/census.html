@@ -314,7 +314,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -327,7 +327,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">census</div>
 <h1>U.S. Census Bureau</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">U.S. Government Work (public domain)</span><span class="badge cat">Economy</span><span class="badge cat">Macroeconomics</span></div>
-<p class="lead">FULL-COVERAGE grouped ingest of U.S. Census Bureau TIME-SERIES datasets. Enumerates every dataset in https://api.census.gov/data.json, keeps the ones whose c_dataset starts with &quot;timeseries/&quot;, and pulls each one FULLY via the Census API (api.census.gov). ONE Parquet per dataset under…</p>
+<p class="lead">International Trade; International Data Base; Economic Indicators</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -350,34 +350,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/census">https://econdatalibrary.com/census</a></dd>
 <dt>Update cadence</dt><dd>monthly <em>(workstation update pass)</em></dd>
-<dt>Automated refresh</dt><dd>on the workstation update pass, not the cloud daily run &mdash; no automated run has completed without errors yet. See the <a href="status.html">Source Status board</a>.</dd>
-<dt>Update strategy</dt><dd>extend by date</dd>
-<dt>Storage layout</dt><dd>per-series files — one parquet per timeseries dataset, named safe_name(path) = path with &#x27;timeseries/&#x27; stripped and &#x27;/&#x27;-&gt;&#x27;__&#x27; (e.g. qwi__sa.parquet), under data/clean_full/census/ (~83 files). Plus _manifest.json (append-only run log; same path can appear multiple times) and logs.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">FULL-COVERAGE grouped ingest of U.S. Census Bureau TIME-SERIES datasets.
-
-Enumerates every dataset in https://api.census.gov/data.json, keeps the ones whose
-c_dataset starts with &quot;timeseries/&quot;, and pulls each one FULLY via the Census API
-(api.census.gov). ONE Parquet per dataset under data/clean_full/census/, in long
-&quot;wide-record&quot; form: every retrievable variable as a column (Census returns strings),
-plus a constructed `series_key` (the non-time dimension columns joined) and the
-time/period columns. us-public-domain.
-
-Strategy per dataset (driven by data.json + variables.json + geography.json):
-  * time-based (&quot;time&quot; required/present)  -&gt; one pull per no-parent geo level with
-        time=from+1900 (full history in a single response); plus child geo levels
-        iterated over their required parent(s).
-  * YEAR / year+quarter only (asm area/benchmark, qwi) -&gt; enumerate the year(s)
-        (and quarters) discovered from the API, iterate geographies.
-  * no predicate at all (pseo, some asm value/benchmark) -&gt; single pull per geo.
-The Census API caps get= at 50 variables, so variables are chunked (&lt;=45) with the
-key columns repeated in every chunk and the chunks merged on those keys.
-
-Usage:
-  python jobs/ingest_census.py --list                # just print the catalog census
-  python jobs/ingest_census.py --only timeseries/govs # one dataset
-  python jobs/ingest_census.py --group eits           # one group
-  python jobs/ingest_census.py                        # FULL run (all 93)</p>
+<dt>Automated refresh</dt><dd>on the workstation update pass, not the cloud daily run &mdash; no automated run has completed without errors yet. See the <a href="status.html">Source Status board</a>.</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

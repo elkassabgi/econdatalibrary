@@ -322,7 +322,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -335,7 +335,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">boe</div>
 <h1>Bank of England</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">UK Open Government Licence v3.0</span><span class="badge cat">Exchange Rates</span><span class="badge cat">Government Bonds &amp; Yields</span><span class="badge cat">Interest Rates</span><span class="badge cat">Money &amp; Banking</span></div>
-<p class="lead">Full-coverage grouped ingest of the Bank of England IADB (Interactive statistical DataBase). Enumeration (separate step, jobs/_boe_enumerate.py) crawls the database&#x27;s &quot;Combined A to Z&quot; category index across all facets and unions every series code it can reach -&gt; data/raw/boe/_series_codes.json.…</p>
+<p class="lead">Monthly average of UK resident banks&#x27; sterling weighted average interest rate; Quarterly percentage share of UK resident MFIs&#x27; (excl. Cen…</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -356,43 +356,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/boe">https://econdatalibrary.com/boe</a></dd>
 <dt>Update cadence</dt><dd>monthly</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>extend by date</dd>
-<dt>Storage layout</dt><dd>grouped by 3-char series-code prefix: &lt;prefix&gt;.parquet (~37 logical families, 116 files on disk = parquet+.done+.titles.json each) under data/clean_full/boe. Schema: series_key, obs_date(date32), value(float64). Sidecars: &lt;prefix&gt;.titles.json (code-&gt;description), &lt;prefix&gt;.done (stats), _manifest.jsonl, _errors.log. Input: data/raw/boe/_series_codes.json.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">Full-coverage grouped ingest of the Bank of England IADB (Interactive
-statistical DataBase).
-
-Enumeration (separate step, jobs/_boe_enumerate.py) crawls the database&#x27;s
-&quot;Combined A to Z&quot; category index across all facets and unions every series code
-it can reach -&gt; data/raw/boe/_series_codes.json. This job consumes that list.
-
-Pull: the IADB CSV export
-  /boeapps/database/_iadb-fromshowcolumns.asp?csv.x=yes&amp;SeriesCodes=&lt;a,b,..&gt;
-returns a wide CSV (a SERIES/DESCRIPTION block, then DATE,&lt;code&gt;,&lt;code&gt;,... rows)
-for up to ~50 series at a time over the FULL history. We request the full date
-range and clamp happens server-side.
-
-Grouped storage (ANTI-BLOAT): ONE Parquet per 3-character series-code PREFIX
-(e.g. &quot;XUD&quot;,&quot;IUM&quot;,&quot;CFM&quot;,&quot;RPM&quot;,&quot;VPQ&quot; ...). The 3-char prefix is the documented
-type+frequency family, so each file is dense and holds many series. ~37 files
-for the whole source (NOT one-file-per-series). Columns:
-  series_key   : BoE series code (e.g. &quot;XUDLUSS&quot;)      -- canonical series id
-  obs_date     : date32  (parsed from &quot;02 Jan 1975&quot;)
-  value        : float64 (null where the cell is blank)
-Plus a sidecar  &lt;prefix&gt;.titles.json  mapping series_key -&gt; description.
-
-License: ogl-uk-3.0 (Open Government Licence v3.0; the reservable id in
-configs/sources.yaml for source &quot;boe&quot;).
-
-Resumable: each prefix writes &lt;prefix&gt;.parquet + &lt;prefix&gt;.done (json stats);
-a present .done is skipped. Memory is bounded -- we process one prefix at a
-time and stream batches to a ParquetWriter.
-
-Usage:
-  python jobs/ingest_boe.py --dry 3        # process 3 small prefixes, print, no commit-to-catalog
-  python jobs/ingest_boe.py                # full run (all prefixes)
-  python jobs/ingest_boe.py --workers 6 --batch 50</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

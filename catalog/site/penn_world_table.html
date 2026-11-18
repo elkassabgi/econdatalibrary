@@ -315,7 +315,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -328,7 +328,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">penn_world_table</div>
 <h1>Penn World Table 11.0</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Creative Commons Attribution 4.0 (CC BY 4.0)</span><span class="badge cat">Long-Run &amp; Historical</span><span class="badge cat">Macroeconomics</span></div>
-<p class="lead">FULL-COVERAGE grouped ingest of the ENTIRE Penn World Table 11.0 panel. Source: Penn World Table 11.0 (CC BY 4.0). license_id = cc-by-4.0. Cite: Feenstra, Inklaar &amp; Timmer (2015), &quot;The Next Generation of the Penn World Table&quot;, American Economic Review 105(10), 3150-3182. DOI 10.34894/FABVLR.…</p>
+<p class="lead">Real consumption of households and government, at current PPPs (in mil. 2021US$); Real domestic absorption (real consumption plus investm…</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -349,53 +349,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/penn_world_table">https://econdatalibrary.com/penn_world_table</a></dd>
 <dt>Update cadence</dt><dd>annual</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>overwrite if changed</dd>
-<dt>Storage layout</dt><dd>one parquet per VARIABLE: data/clean_full/penn_world_table/&lt;variable&gt;.parquet (42 files), columns series_key/obs_date/value, series_key=&#x27;&lt;variable&gt;|&lt;ISO3&gt;&#x27;; annual values dated Dec-31. Raw workbook cached at data/raw/penn_world_table/pwt110.xlsx. Plus _ingest_summary.json.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">FULL-COVERAGE grouped ingest of the ENTIRE Penn World Table 11.0 panel.
-
-Source: Penn World Table 11.0 (CC BY 4.0).  license_id = cc-by-4.0.
-Cite: Feenstra, Inklaar &amp; Timmer (2015), &quot;The Next Generation of the Penn World
-Table&quot;, American Economic Review 105(10), 3150-3182.  DOI 10.34894/FABVLR.
-
-CATALOG / ENUMERATION
----------------------
-PWT ships as ONE Excel workbook (pwt110.xlsx) on the GGDC Dataverse. There is no
-incremental API and no per-series endpoint: a release is a single full annual
-panel. The &quot;catalog&quot; is therefore the cross product of every economy x every
-variable in the workbook&#x27;s `Data` sheet. PWT 11.0 = 185 economies x 1950-2023 x
-42 numeric variables. We download the workbook (polite UA, retry/backoff), then
-parse EVERY (countrycode, variable) pair -- no sampling, no curated subset.
-
-VARIABLES
----------
-The `Data` sheet has 51 columns. We publish the 42 NUMERIC variables (real GDP /
-employment / population levels; current-price GDP, capital &amp; TFP; national-
-accounts variables; exchange rates &amp; GDP price levels; expenditure shares in
-CGDPo; price levels of expenditure categories &amp; capital; plus cor_exp). The 5
-`i_*` &quot;Data information variables&quot; (i_cig, i_xm, i_xr, i_outlier, i_irr) are
-CATEGORICAL TEXT labels (Benchmark / Extrapolated / Interpolated / Outlier ...),
-not numeric series, so they are not emitted as float observations; their meaning
-is recorded in metadata instead. currency_unit is an identifier, not data.
-
-GROUPED STORAGE (anti-bloat)
-----------------------------
-ONE Parquet per VARIABLE -&gt;  data/clean_full/penn_world_table/&lt;variable&gt;.parquet
-with columns
-    series_key (string), obs_date (date32), value (float64)
-where series_key = &quot;&lt;variable&gt;|&lt;ISO3&gt;&quot;.  All 185 economies of a variable live
-inside that ONE file. 42 variables =&gt; 42 files for the whole source -- NOT one-
-file-per-series (which would be ~7,770 tiny files). Annual values are dated
-Dec-31 of the year, matching the eurostat / faostat annual convention.
-
-A per-source JSON summary (_ingest_summary.json) records coverage. catalog.db is
-NOT touched here; data/clean/ is NOT touched here.
-
-Usage:
-  python jobs/ingest_penn_world_table.py --dry      # parse + report, no writes
-  python jobs/ingest_penn_world_table.py            # FULL run (download if needed, write all)
-  python jobs/ingest_penn_world_table.py --force-download   # re-download the workbook</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

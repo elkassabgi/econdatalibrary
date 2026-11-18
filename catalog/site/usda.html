@@ -313,7 +313,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -326,7 +326,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">usda</div>
 <h1>USDA NASS + ERS</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">U.S. Government Work (public domain)</span><span class="badge cat">Agriculture</span><span class="badge cat">Agriculture &amp; Food</span></div>
-<p class="lead">Grouped ingest of USDA NASS Quick Stats bulk files (FULL coverage). Source of truth: the Quick Stats bulk .txt.gz dumps at https://www.nass.usda.gov/datasets/ -- these are the ENTIRE Quick Stats database (every survey + census observation, national/state/county/district/ watershed/zip), far more…</p>
+<p class="lead">U.S. agricultural statistics — crop production and values by commodity (USDA NASS)</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -347,33 +347,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/usda">https://econdatalibrary.com/usda</a></dd>
 <dt>Update cadence</dt><dd>monthly</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
-<dt>Storage layout</dt><dd>per-cube directory of rolling part files: data/clean_full/usda/&lt;cube&gt;/part_NNN.parquet (each capped at PART_ROWS=1,000,000 rows, flushed in BATCH_ROWS=200k row-groups, zstd) plus a per-cube &#x27;_complete&#x27; sentinel; cubes = animals_products, crops (25 parts), demographics, economics, environmental. Plus _manifest.json (source_id, license, per-cube rows/series, totals: 57,629,841 rows / 15,534,339 series). Wide schema: series_key + ~31 self-describing NASS dimension columns + obs_date(date32) + value(float64) + value_flag(string). series_key = &#x27;usda:&#x27; + pipe-joined KEY_COLS.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">Grouped ingest of USDA NASS Quick Stats bulk files (FULL coverage).
-
-Source of truth: the Quick Stats bulk .txt.gz dumps at
-https://www.nass.usda.gov/datasets/ -- these are the ENTIRE Quick Stats
-database (every survey + census observation, national/state/county/district/
-watershed/zip), far more complete than per-series api_GET calls.
-
-Storage pattern (mirrors ingest_eurostat / ingest_sec_edgar):
-  ONE Parquet per &quot;cube&quot; = per bulk file group:
-    crops, animals_products, demographics, economics, environmental,
-    census2002, census2007, census2007zipcode, census2012,
-    census2017, census2017zipcode, census2022
-  Each Parquet has a `series_key` column (a stable composite id) plus the
-  full set of self-describing NASS dimension columns, obs_date, value,
-  raw value flags, and the time descriptors. Written in streamed row-group
-  batches so memory stays bounded even for the &gt;100M-row crops cube.
-
-License: us-public-domain (USDA NASS Quick Stats is U.S. public domain).
-
-Usage:
-  python jobs/ingest_usda.py --probe qs.crops_20260603.txt.gz   # profile one file
-  python jobs/ingest_usda.py --dry                              # parse all, no writes (counts only)
-  python jobs/ingest_usda.py                                    # full run -&gt; Parquet</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

@@ -320,7 +320,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -333,7 +333,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">statcan</div>
 <h1>Statistics Canada</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Statistics Canada Open Licence</span><span class="badge cat">Macroeconomics</span></div>
-<p class="lead">Full-coverage grouped ingest of Statistics Canada (WDS). Enumerates the ENTIRE cube catalog via getAllCubesListLite (~8,200 cubes), then for each cube pulls the full-table CSV bulk download (getFullTableDownloadCSV -&gt; zip URL on www150), streams the data CSV, and writes ONE Parquet per cube.…</p>
+<p class="lead">CIMT; Period of immigration by first official language spoken, place of birth, admission category, and pre-admission experience: Canada, …</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -355,35 +355,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/statcan">https://econdatalibrary.com/statcan</a></dd>
 <dt>Update cadence</dt><dd>weekly <em>(its own update lane)</em></dd>
-<dt>Automated refresh</dt><dd>refreshed by its own update lane, not the cloud daily run. See the <a href="status.html">Source Status board</a>.</dd>
-<dt>Update strategy</dt><dd>giant changed units</dd>
-<dt>Storage layout</dt><dd>per-series files: one zstd parquet per productId (~8,207 cubes, .done markers present), columns series_key(VECTOR), obs_date(date32), value, geo, uom, coordinate, status; plus _manifest.jsonl, _errors.log, _sizecache.json, _tmp/ zip staging.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">Full-coverage grouped ingest of Statistics Canada (WDS).
-
-Enumerates the ENTIRE cube catalog via getAllCubesListLite (~8,200 cubes), then
-for each cube pulls the full-table CSV bulk download (getFullTableDownloadCSV -&gt;
-zip URL on www150), streams the data CSV, and writes ONE Parquet per cube.
-
-Parquet columns (grouped, one file per productId):
-  series_key  : StatCan VECTOR id (e.g. &quot;v41690973&quot;)  -- the canonical series key
-  obs_date    : date32  (REF_DATE parsed: YYYY / YYYY-MM / YYYY-MM-DD)
-  value       : float64 (null when suppressed/&quot;..&quot;)
-  geo         : geography label
-  uom         : unit of measure
-  coordinate  : StatCan dimension coordinate (e.g. &quot;1.1.2&quot;)
-  status      : STATUS flag (&quot;..&quot;=unavailable, E=use w/ caution, F=too unreliable, etc.)
-
-License: statcan-open (Statistics Canada Open Licence).
-
-Memory is bounded: zips stream to a temp file, the CSV is parsed row-by-row, and
-rows are flushed to the Parquet writer in batches (so even the 2 GB cube is fine).
-Resumable: a cube with an existing .parquet + .done marker is skipped.
-
-Usage:
-  python jobs/ingest_statcan.py --dry 5      # enumerate + process 5 small cubes, print
-  python jobs/ingest_statcan.py              # full run (all cubes)
-  python jobs/ingest_statcan.py --workers 6  # set concurrency (default 6)</p>
+<dt>Automated refresh</dt><dd>refreshed by its own update lane, not the cloud daily run. See the <a href="status.html">Source Status board</a>.</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

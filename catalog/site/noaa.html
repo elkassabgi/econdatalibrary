@@ -317,7 +317,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -330,7 +330,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">noaa</div>
 <h1>NOAA NCEI / Climate Data Online</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">U.S. Government Work (public domain)</span><span class="badge cat">Climate</span><span class="badge cat">Environment &amp; Climate</span></div>
-<p class="lead">Full-coverage ingest of NOAA NCEI GSOM + GSOY climate summaries. Source: NOAA NCEI bulk archive GSOM (Global Summary of the Month): https://www.ncei.noaa.gov/data/gsom/access/ GSOY (Global Summary of the Year): https://www.ncei.noaa.gov/data/gsoy/access/ License: us-public-domain. Attribution:…</p>
+<p class="lead">Monthly; Annual; SANTA ROSA</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -351,44 +351,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/noaa">https://econdatalibrary.com/noaa</a></dd>
 <dt>Update cadence</dt><dd>monthly</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
-<dt>Storage layout</dt><dd>overwrite-multi-file, grouped by 2-char GHCN country/network prefix: data/clean_full/noaa/&lt;ds&gt;__&lt;PREFIX&gt;.parquet (obs) + &lt;ds&gt;__&lt;PREFIX&gt;__series.parquet (series meta sidecar), ds in {gsom,gsoy}. ~834 parquet files total currently; ~552M obs (COVERAGE LARGE). Obs schema: dataset, station, series_key (&#x27;&lt;station&gt;:&lt;element&gt;&#x27;), obs_date (date32), element, value (float64), attributes. Raw cache: data/raw/noaa/{gsom,gsoy}/*.csv (~214K station CSVs), plus _manifest.json, _&lt;ds&gt;_failures.json, station_ids.txt, doc/ghcnd-stations.txt.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">Full-coverage ingest of NOAA NCEI GSOM + GSOY climate summaries.
-
-Source: NOAA NCEI bulk archive
-  GSOM (Global Summary of the Month):  https://www.ncei.noaa.gov/data/gsom/access/
-  GSOY (Global Summary of the Year):   https://www.ncei.noaa.gov/data/gsoy/access/
-License: us-public-domain.  Attribution: &quot;Source: NOAA (public domain)&quot;.
-
-The bulk archive publishes ONE wide CSV per weather station (STATION, DATE,
-LATITUDE, LONGITUDE, ELEVATION, NAME, then ~55 climate elements each paired
-with an &lt;ELEM&gt;_ATTRIBUTES column).  Counts (enumerated 2026-06):
-  GSOM: 127,905 station CSVs    GSOY: 86,018 station CSVs
-
-GROUPED storage (anti-bloat -- NEVER one file per station):
-  We melt each wide CSV to LONG form
-      (dataset, station, series_key, obs_date, element, value, attributes)
-  and accumulate rows into SHARDS keyed by the 2-char GHCN country/network
-  prefix of the station id (US, AS, CA, ...).  Output:
-      data/clean_full/noaa/gsom__&lt;PREFIX&gt;.parquet      (obs, many stations)
-      data/clean_full/noaa/gsom__&lt;PREFIX&gt;__series.parquet  (series meta)
-  ~250 prefixes x 2 datasets + sidecars =&gt; a few hundred files total.
-  series_key = &quot;&lt;station&gt;:&lt;element&gt;&quot;  (one series per station x element).
-
-Stages (resumable):
-  --enumerate   (re)fetch the station-id manifests + station metadata
-  --download    fetch every station CSV (skips files already on disk)
-  --build       parse raw CSVs -&gt; grouped long parquet shards + verify
-  --verify      re-read shards and print obs/series/coverage report
-Default (no flag) = --build.
-
-Usage:
-  python jobs/ingest_noaa.py --download
-  python jobs/ingest_noaa.py --download --dataset gsoy --workers 6
-  python jobs/ingest_noaa.py --build
-  python jobs/ingest_noaa.py --verify</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

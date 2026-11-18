@@ -311,7 +311,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -324,7 +324,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">harvard_atlas</div>
 <h1>The Growth Lab at Harvard University — Atlas of Economic Complexity (Harvard Dataverse)</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Creative Commons Zero (CC0)</span><span class="badge cat">International Trade</span></div>
-<p class="lead">Harvard Growth Lab – Atlas of Economic Complexity ingest. Downloads from Harvard Dataverse: 1. Growth Projections and Complexity Rankings (ECI, growth forecasts) doi:10.7910/DVN/XTAQMC 2. International Trade Data – Services (country-year services trade) doi:10.7910/DVN/NDDMSN 3. International Trade…</p>
+<p class="lead">Atlas of Economic Complexity — economic complexity indices plus product-level trade values and global market shares</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -344,22 +344,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/harvard_atlas">https://econdatalibrary.com/harvard_atlas</a></dd>
 <dt>Update cadence</dt><dd>annual</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>overwrite if changed</dd>
-<dt>Storage layout</dt><dd>multiple per-dataset parquets (one per CSV): eci_rankings.parquet, services_country_year.parquet, services_cp_{1,2,4,6}.parquet, hs12_country_year.parquet, hs12_cp_{hs1,hs2}.parquet (9 files). Schema: series_key (ATLAS:...), obs_date, value.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">Harvard Growth Lab – Atlas of Economic Complexity ingest.
-
-Downloads from Harvard Dataverse:
-  1. Growth Projections and Complexity Rankings (ECI, growth forecasts)
-     doi:10.7910/DVN/XTAQMC
-  2. International Trade Data – Services (country-year services trade)
-     doi:10.7910/DVN/NDDMSN
-  3. International Trade Data – HS12 (country-product and country-year)
-     doi:10.7910/DVN/YAVJDF
-
-Converts to long-format parquet: {series_key, obs_date, value}.
-Run: python jobs/ingest_harvard_atlas.py</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

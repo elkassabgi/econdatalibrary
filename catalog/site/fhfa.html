@@ -321,7 +321,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -334,7 +334,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">fhfa</div>
 <h1>FHFA House Price Index</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">U.S. Government Work (public domain)</span><span class="badge cat">Housing</span><span class="badge cat">Housing &amp; Real Estate</span></div>
-<p class="lead">Full-coverage ingest of the FHFA House Price Index (HPI) datasets. Source page: https://www.fhfa.gov/data/hpi/datasets License: us-public-domain. GROUPED storage (anti-bloat): a handful of Parquet cubes under data/clean_full/fhfa/, ONE file per logical cube, each holding MANY series keyed by a…</p>
+<p class="lead">FHFA House Price Index - all-transactions; FHFA House Price Index - expanded-data; FHFA House Price Index - purchase-only</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -355,45 +355,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/fhfa">https://econdatalibrary.com/fhfa</a></dd>
 <dt>Update cadence</dt><dd>monthly</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
-<dt>Storage layout</dt><dd>Grouped cubes: data/clean_full/fhfa/&lt;cube&gt;.parquet for cubes {hpi_master, hpi_at_3zip_quarterly, annual_national, annual_state, annual_cbsa, annual_county, annual_zip3, annual_zip5, annual_tract} (obs: dataset, series_key, obs_date(date32), value cols index_nsa/index_sa/rstderr or hpi/hpi_1990/hpi_2000/annual_change) + &lt;cube&gt;__series.parquet (series meta) + &lt;cube&gt;.meta.json + top-level fhfa.meta.json. zstd, written whole (pandas-&gt;pyarrow, no streaming). Raw at data/raw/fhfa/ (9 files).</dd></dl>
-<h2>Full description</h2>
-<p class="lead">Full-coverage ingest of the FHFA House Price Index (HPI) datasets.
-
-Source page: https://www.fhfa.gov/data/hpi/datasets   License: us-public-domain.
-
-GROUPED storage (anti-bloat): a handful of Parquet cubes under
-data/clean_full/fhfa/, ONE file per logical cube, each holding MANY series
-keyed by a `series_key` column. No one-file-per-series.
-
-Cubes written
--------------
-  hpi_master                FHFA&#x27;s own consolidated master.csv: USA/CensusDiv,
-                            State, MSA levels x {traditional, distress-free,
-                            expanded-data, manufactured, non-metro,
-                            developmental} x {purchase-only, all-transactions} x
-                            {monthly, quarterly}.  Columns carry both
-                            index_nsa and index_sa.
-  hpi_at_3zip_quarterly     Developmental quarterly All-Transactions index for
-                            three-digit ZIP codes (NSA only; not in master).
-  annual_national             annual_state              |  Annual All-Transactions &quot;experimental&quot; indexes
-  annual_cbsa               |  (cumulative nominal appreciation). Three index
-  annual_county             |  bases per obs: native (hpi), 1990 base, 2000
-  annual_zip3               |  base, plus annual_change %.  These geographies
-  annual_zip5               |  (county, zip3, zip5, tract) are NOT in master.
-  annual_tract              /
-
-Each cube =&gt; &lt;cube&gt;.parquet (obs) + &lt;cube&gt;__series.parquet (series meta) +
-&lt;cube&gt;.meta.json (verification stats). A top-level fhfa.meta.json aggregates.
-
-obs_date convention: monthly -&gt; first of month; quarterly -&gt; quarter END;
-annual -&gt; Dec 31.
-
-Usage:
-  python jobs/ingest_fhfa.py --download   # (re)download raw files
-  python jobs/ingest_fhfa.py              # parse raw -&gt; grouped parquet + verify
-  python jobs/ingest_fhfa.py --download --build   # do both</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

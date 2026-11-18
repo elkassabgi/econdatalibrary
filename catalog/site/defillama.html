@@ -313,7 +313,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -326,7 +326,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">defillama</div>
 <h1>DeFiLlama</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Written permission (DeFiLlama, 2026) — attribution required, non-commercial</span><span class="badge cat">Digital Assets</span></div>
-<p class="lead">Full-coverage grouped ingest of DeFiLlama. Writes GROUPED Parquet to data/clean_full/defillama/ -- one file per cube, each holding MANY series via a series-key column. License: defillama-open. Families (phases): catalog - protocols/chains/pools/stablecoins master lists (metadata) overview -…</p>
+<p class="lead">Total DeFi TVL (USD); DeFi TVL on Ethereum (USD); DeFi TVL on BNB Smart Chain (BSC) (USD)</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -347,30 +347,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/defillama">https://econdatalibrary.com/defillama</a></dd>
 <dt>Update cadence</dt><dd>daily</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>overwrite if changed</dd>
-<dt>Storage layout</dt><dd>single parquet per cube/family: catalog metadata (_catalog_protocols/chains/stablecoins/yield_pools.parquet), one file per overview (type,dataType) (fees_dailyFees.parquet ...), chains_tvl.parquet, stablecoins_total/circulating.parquet, tvl_protocol_shard00-29.parquet (30 hash-sharded), yields_pool_shard00-59.parquet (60 hash-sharded) built from _yields_stage.jsonl (~113 files total). Overview/yields files use series_key/obs_date/value (+ tvl_usd/apy/apy_base/apy_reward for yields).</dd></dl>
-<h2>Full description</h2>
-<p class="lead">Full-coverage grouped ingest of DeFiLlama.
-
-Writes GROUPED Parquet to data/clean_full/defillama/ -- one file per cube,
-each holding MANY series via a series-key column. License: defillama-open.
-
-Families (phases):
-  catalog    - protocols/chains/pools/stablecoins master lists (metadata)
-  overview   - fees/revenue/dexs/options/aggregators/etc. -&gt; ONE file per
-               (type,dataType) holding ALL protocols&#x27; full daily history
-  chains     - per-chain historical TVL -&gt; ONE file (chain-tvl.parquet)
-  stablecoins- per-asset circulating history -&gt; grouped files
-  tvl        - per-protocol TVL + chain-split history -&gt; sharded grouped files
-  yields     - per-pool APY/TVL history -&gt; sharded grouped files
-
-Usage:
-  python jobs/ingest_defillama.py &lt;phase&gt; [--limit N] [--shard k/n]
-  phases: catalog overview chains stablecoins tvl yields  (or &#x27;all&#x27; lists order)
-
-Anti-bloat: at most a few hundred Parquet files for the whole source.
-Concurrency &lt;= 6, polite UA, retry/backoff.</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

@@ -316,7 +316,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -329,7 +329,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">eia</div>
 <h1>U.S. Energy Information Administration</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">U.S. Government Work (public domain)</span><span class="badge cat">Energy</span></div>
-<p class="lead">FULL-COVERAGE ingest of the U.S. EIA bulk download files. Source: https://api.eia.gov/bulk/manifest.txt -- lists every bulk dataset zip (PET, NG, ELEC, EBA, COAL, TOTAL, SEDS, STEO, INTL, EMISS, NUC_STATUS, PET_IMPORTS, IEO, AEO.&lt;year&gt;, ...). Each zip contains a single line-delimited JSON file:…</p>
+<p class="lead">Texas; California; Louisiana</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -350,56 +350,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/eia">https://econdatalibrary.com/eia</a></dd>
 <dt>Update cadence</dt><dd>daily</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
-<dt>Storage layout</dt><dd>Grouped: ONE data Parquet per bulk dataset at data/clean_full/eia/&lt;DATASET&gt;.parquet (columns series_id, obs_date date32, value float64, period str, freq str) written via streaming ParquetWriter in 1M-row row-groups; ONE meta sidecar per dataset at data/clean_full/eia/_meta/&lt;DATASET&gt;.parquet (series_id,name,units,freq,geography,iso3166,start,end,copyright,source,n_obs); run summary _summary.json. Raw zips cached at data/raw/eia/&lt;DATASET&gt;.zip. ~316M obs measured; the giant EBA dataset streams and never sits in RAM whole.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">FULL-COVERAGE ingest of the U.S. EIA bulk download files.
-
-Source: https://api.eia.gov/bulk/manifest.txt  -- lists every bulk dataset zip
-(PET, NG, ELEC, EBA, COAL, TOTAL, SEDS, STEO, INTL, EMISS, NUC_STATUS,
-PET_IMPORTS, IEO, AEO.&lt;year&gt;, ...). Each zip contains a single line-delimited
-JSON file: most lines are SERIES records, some are CATEGORY (taxonomy) records.
-
-SERIES record (one per line):
-  {&quot;series_id&quot;,&quot;name&quot;,&quot;units&quot;,&quot;f&quot;,&quot;unitsshort&quot;,&quot;description&quot;,&quot;copyright&quot;,
-   &quot;source&quot;,&quot;iso3166&quot;,&quot;geography&quot;,&quot;start&quot;,&quot;end&quot;,&quot;last_updated&quot;,
-   &quot;data&quot;: [[period, value], ...]}
-CATEGORY record (no observations -&gt; skipped):
-  {&quot;category_id&quot;,&quot;parent_category_id&quot;,&quot;name&quot;,&quot;notes&quot;,&quot;childseries&quot;}
-
-Period tokens by frequency `f`:
-  A  annual      &quot;YYYY&quot;                 -&gt; Dec-31
-  Q  quarterly   &quot;YYYYQn&quot;               -&gt; first day of quarter
-  M  monthly     &quot;YYYYMM&quot;               -&gt; 1st of month
-  W  weekly      &quot;YYYYMMDD&quot;             -&gt; that date
-  D  daily       &quot;YYYYMMDD&quot;             -&gt; that date
-  H  hourly UTC  &quot;YYYYMMDDThh&quot;          -&gt; that date  (hour kept in `period`)
-  HL hourly local&quot;YYYYMMDDThh-07&quot;       -&gt; that date  (hour+tz kept in `period`)
-
-GROUPED storage (mirrors jobs/ingest_bls.py / ingest_eurostat.py /
-ingest_sec_edgar.py): ONE Parquet per bulk dataset -&gt;
-data/clean_full/eia/&lt;DATASET&gt;.parquet with a `series_id` column inside.
-Columns: series_id, obs_date (date32), value (float64), period (str, raw EIA
-period token -&gt; lossless for hourly), freq (str). Memory is bounded: the zip&#x27;s
-single text member is streamed line-by-line and flushed to the ParquetWriter in
-row-group batches (the 148M-row EBA dataset never sits in RAM whole).
-
-Sidecar metadata: ONE Parquet per dataset -&gt;
-data/clean_full/eia/_meta/&lt;DATASET&gt;.parquet with one row per series
-(series_id, name, units, freq, geography, iso3166, start, end, copyright,
-source, n_obs) so the catalog ingest can build SeriesMeta rows without
-re-reading the giant data file.
-
-License: us-public-domain (configs/sources.yaml). EIA ToS: attribute to EIA;
-public-domain values; copyright carve-out is captured per-series in the
-`copyright` sidecar column for serve-time filtering.
-
-Usage:
-  python jobs/ingest_eia.py --probe            # parse small datasets, print, no big writes
-  python jobs/ingest_eia.py --only NG,STEO     # one/few datasets
-  python jobs/ingest_eia.py                     # full run (all bulk datasets)
-  python jobs/ingest_eia.py --skip-download     # reuse already-downloaded zips</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

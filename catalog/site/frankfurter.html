@@ -312,7 +312,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -325,7 +325,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">frankfurter</div>
 <h1>Frankfurter API (ECB FX)</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">ECB terms (attribution required, no modification)</span><span class="badge cat">Exchange Rates</span></div>
-<p class="lead">Full-coverage ingest of Frankfurter (ECB euro foreign-exchange reference rates). Frankfurter serves the ECB daily reference rates with EUR as base. The full daily history runs 1999-01-04..today. We pull the ENTIRE range year-by-year (polite, retried) and union every currency that has EVER appeared…</p>
+<p class="lead">EUR/ARS -- ARS per euro (ECB reference rate); EUR/AUD -- Australian Dollar per euro (ECB reference rate); EUR/BGN -- BGN per euro (ECB re…</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -345,32 +345,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/frankfurter">https://econdatalibrary.com/frankfurter</a></dd>
 <dt>Update cadence</dt><dd>daily</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>extend by date</dd>
-<dt>Storage layout</dt><dd>Single grouped parquet: data/clean_full/frankfurter/frankfurter_fx_eur.parquet, columns series_key (e.g. &#x27;EURUSD&#x27;), obs_date(date32), value(float64), zstd. Entire dataset built in-memory in a dict then written once. No raw dir, no sidecar.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">Full-coverage ingest of Frankfurter (ECB euro foreign-exchange reference rates).
-
-Frankfurter serves the ECB daily reference rates with EUR as base. The full
-daily history runs 1999-01-04..today. We pull the ENTIRE range year-by-year
-(polite, retried) and union every currency that has EVER appeared -- including
-currencies the ECB has since stopped publishing (CYP, EEK, GRD, SIT, SKK, ROL,
-TRL, LTL, LVL, MTL, RUB, ARS, BGN, DZD, HRK, MAD, TWD), not just the ~30 that
-are currently active.
-
-GROUPED storage (anti-bloat): ONE Parquet for the whole source --
-  data/clean_full/frankfurter/frankfurter_fx_eur.parquet
-with columns:
-  series_key  (e.g. &quot;EURUSD&quot; == EUR-base reference rate for USD)
-  obs_date    (date32)
-  value       (units of the quoted currency per 1 EUR)
-
-License = ecb-attrib-nomodify (reservable id from configs/sources.yaml).
-Attribution: &quot;FX data from the ECB via Frankfurter&quot;.
-
-Usage:
-  python jobs/ingest_frankfurter.py --dry   # enumerate only, no writes
-  python jobs/ingest_frankfurter.py         # full run</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

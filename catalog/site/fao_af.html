@@ -318,7 +318,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -331,7 +331,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">fao_af</div>
 <h1>FAOSTAT -- Agricultural Science and Technology Indicators (ASTI): Researchers (domain AF), Food and Agriculture Organization of the United Nations (FAO)</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Redistributable, non-commercial (provider terms verified)</span><span class="badge cat">Agriculture &amp; Food</span></div>
-<p class="lead">Source: FAO (FAOSTAT). Licensed under CC BY 4.0.</p>
+<p class="lead">Researchers, total, Agricultural researchers (FTE); Per 100,000 farmers, Agricultural researchers (FTE)</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
