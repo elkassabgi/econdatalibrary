@@ -216,7 +216,8 @@ def test_hub_rows_guard(G, tmp_path, monkeypatch, desc, refused):
     hub = _hub(G, [_hub_row("old blurb")])
     (out / "catalog.html").write_text(hub, encoding="utf-8")
     monkeypatch.setattr(G, "OUT_DIR", str(out))
-    monkeypatch.setattr(G, "load_registry", lambda: ({}, {SID: {}}, {SID: {"n_series": 1}}, {}))
+    monkeypatch.setattr(G, "load_registry", lambda: ({"x": {"reservable": 1}}, {SID: {"license_id": "x"}},
+                                                     {SID: {"n_series": 1}}, {}))
     monkeypatch.setattr(G, "load_sidecar", lambda: ({}, "2026-09-10"))
     monkeypatch.setattr(G, "build_record", lambda sid, *a: {"id": sid, "reservable": 1, "license_id": "x"})
     monkeypatch.setattr(G, "build_page_seo", lambda records: {})

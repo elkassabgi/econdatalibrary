@@ -177,7 +177,10 @@ def test_a_served_zero_page_offers_no_download_anywhere(G, fixture_catalogue):
         # description_key is outside render_dataset_page's early field rewrite, so only its page-level sweep
         # can catch the sentence there
         s5 = {"description_key": ["Key facts. Compiled and redistributed by the Elkassabgi Data Library."]}
-        rec = G.build_record("e", sources["e"], licenses, r["e"], dict(side), s5)
+        # a realistic registry name: the page's Dataset description is built from it, and a
+        # description under 50 characters is refused (PR #294); the floor is not lowered for a fixture
+        rec = G.build_record("e", dict(sources["e"], name="Example Statistics Office — Consumer Prices"),
+                             licenses, r["e"], dict(side), s5)
         return (G.render_dataset_page(rec), G.dataset_jsonld(rec), G.croissant_jsonld(rec),
                 G.build_meta_desc(rec))
 
