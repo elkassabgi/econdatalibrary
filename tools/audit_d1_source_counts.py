@@ -36,9 +36,12 @@ correction; the local mode is for routine drift detection.
 
 EXIT CODES.  0 = every cached count agrees.  1 = at least one disagrees.  2 = could not look
 (the distinction R704 exists to preserve: a check that scanned nothing must never read as a pass).
+2 also covers a usage error (argparse), e.g. --db with --remote-truth, and a --db that is missing
+or, after T0, is not the build.
 
 USAGE
     python tools/audit_d1_source_counts.py                  # free, local truth
+    python tools/audit_d1_source_counts.py --db COPY.db     # free, local truth from a catalogue copy
     python tools/audit_d1_source_counts.py --remote-truth   # authoritative, 2 scans
     python tools/audit_d1_source_counts.py --fix            # print the repair SQL (writes nothing)
 """
@@ -71,8 +74,12 @@ def d1(db: str, sql: str) -> tuple[list, int]:
     return d1_remote.rows(db, sql)
 
 
-def local_counts(sources) -> dict:
+def local_counts(sources, path=None) -> dict:
     """Count each source in the local catalogue, using the PRIMARY KEY range.
+
+    `path` is the --db argument; None means LOCAL, the resolver's catalogue (plan step 1). It is
+    opened with catalog_path.connect_path, so before T0 a copy works and after T0 only the build
+    does - a copy, a worktree's data/catalog.db or a stale path is refused there, not here.
 
     The obvious form -- `SELECT source_id, COUNT(*) FROM series GROUP BY source_id` -- is a full
     scan of an ~11.9 GB table which AT THE TIME had no index on source_id. It took over 900 s and
@@ -96,13 +103,25 @@ def local_counts(sources) -> dict:
         unreportable, which would have been a coverage REGRESSION against the reconciliation this
         check replaces (whose superseded WORKLOG line reads "drifted 0, uncached 0").
     """
-    if not os.path.exists(LOCAL):
-        raise RuntimeError(f"local catalogue not found at {LOCAL}")
-    gb = os.path.getsize(LOCAL) / 1e9
-    age_d = (dt.datetime.now() - dt.datetime.fromtimestamp(os.path.getmtime(LOCAL))).days
-    con = catalog_path.connect_path(LOCAL, write=False, timeout=300.0)
-    con.execute("PRAGMA busy_timeout = 300000")   # crawlers hold this file continuously
+    explicit = path is not None
+    path = LOCAL if path is None else os.fspath(path)
+    # OPEN FIRST: connect_path applies the T0 rule and the missing-file error (FileNotFoundError, never
+    # a new empty file), so a refused --db is reported as refused, before this tool stats anything.
+    # Everything after the open is inside the try, so a failing stat cannot leak the connection.
+    con = catalog_path.connect_path(path, write=False, timeout=300.0)
     try:
+        con.execute("PRAGMA busy_timeout = 300000")   # crawlers hold this file continuously
+        gb = os.path.getsize(path) / 1e9
+        age_d = (dt.datetime.now() - dt.datetime.fromtimestamp(os.path.getmtime(path))).days
+        # A COPY'S MTIME IS ITS COPY TIME. The catalogue carries no build or sync timestamp (core/
+        # catalog.py: license, source, series, series_fts -- and series.last_updated is free text
+        # per series, so MAX() would be a full scan of the table this mode exists to avoid). With
+        # --db the age below therefore cannot vouch for the content: say so every time, because a
+        # stale copy made today reads "0d old" and the warning further down would stay silent.
+        if explicit:
+            print(f"  NOTE: --db age is the file mtime ({age_d}d); a copy's mtime is its copy time,"
+                  f"\n      not the catalogue's. The age of a copy's CONTENT cannot be judged here -"
+                  f"\n      prefer --remote-truth unless you know when this copy was taken.", flush=True)
         # STALENESS IS THE FAILURE MODE OF THIS WHOLE MODE, so say the age out loud. In CI the
         # local catalogue is a snapshot pulled from R2, and that object is refreshed only by a
         # hand-run tools/refresh_r2_catalog.py. A snapshot older than the thing it is auditing
@@ -115,7 +134,7 @@ def local_counts(sources) -> dict:
         local_srcs = {r[0] for r in con.execute("SELECT source_id FROM source")
                       if isinstance(r[0], str)}
         sources = set(sources) | local_srcs
-        print(f"  counting {len(sources):,} source(s) in the local catalogue "
+        print(f"  counting {len(sources):,} source(s) in the local catalogue {path} "
               f"({gb:.2f} GB, {age_d}d old) by PK range ...", flush=True)
         out = {}
         for src in sorted(sources):
@@ -170,7 +189,16 @@ def main(argv=None) -> int:
                     help="compare against D1's own series (2 full scans) instead of local")
     ap.add_argument("--fix", action="store_true",
                     help="print the repair SQL for each mismatch; writes NOTHING")
+    ap.add_argument("--db", default=None,
+                    help="the local-truth catalogue, opened read-only (default: the resolver's - "
+                         "the checkout's before T0, the build after; after T0 any other path is "
+                         "refused, and a missing path is never created). Make a copy with the "
+                         "sqlite backup API (sqlite3 .backup / Connection.backup) or copy its -wal "
+                         "with it: a plain copy of the live file can drop recent commits. A copy's "
+                         "age cannot be judged from its mtime, and the tool says so.")
     a = ap.parse_args(argv)
+    if a.db is not None and a.remote_truth:
+        ap.error("--db names the LOCAL truth; --remote-truth does not read a local catalogue")
 
     truth_label = "D1 series" if a.remote_truth else "the local catalogue"
     print(f"source_counts audit -- cache vs {truth_label}")
@@ -196,7 +224,7 @@ def main(argv=None) -> int:
                     truth[(db, row["source_id"])] = row["n"]
                 print(f"    {len(rows):,} source(s), rows_read={r:,}", flush=True)
         if not a.remote_truth:
-            truth = local_counts({src for (_db, src) in cache})
+            truth = local_counts({src for (_db, src) in cache}, a.db)
     except Exception as e:                                    # noqa: BLE001
         # EXIT 2, never 0. A check that could not look is not a check that passed (R704).
         print(f"  COULD NOT LOOK: {e}", file=sys.stderr)
