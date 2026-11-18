@@ -21,6 +21,21 @@
   <script>
   (function () {
     'use strict';
+    // ONE script, two arrivals told apart by window.opener -- the same structure as the econ
+    // callback (catalog/site/auth/callback.html) and the ip callback.
+    //
+    //  1. POPUP -- EKD.login() opened us. The SDK in the opener owns the PKCE verifier, so hand
+    //     the code over and close.
+    //  2. TOP-LEVEL -- the silent prompt=none resume on a portal page navigated THIS tab here.
+    //     No opener, no SDK listening: redeem the code, store the session, go back.
+    //
+    // WHAT WAS WRONG (audit 2026-11-18): this page had the silent branch in one script and the
+    // pop-up hand-off in a SECOND, unguarded script. On the silent path the second script still
+    // ran: it broadcast an empty code to other portal tabs and called window.close() after
+    // 200 ms, which is shorter than the token exchange, so the tab closed before ekd_rt was
+    // stored. Every portal visit with a family session closed the tab, and because ekd_* was
+    // never stored the next visit did the same. A signed-out visitor (login_required) lost the
+    // tab the same way. The pop-up work now runs ONLY inside the hasOpener branch.
     var ACCOUNTS = 'https://accounts.elkassabgidata.com';
     var SS = { v: 'ekd_silent_v', s: 'ekd_silent_s', r: 'ekd_silent_r', done: 'ekd_silent_done' };
     function ss(k){ try { return sessionStorage.getItem(k); } catch(e){ return null; } }
@@ -28,59 +43,51 @@
     function ssDel(k){ try { sessionStorage.removeItem(k); } catch(e){} }
     function lsSet(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
     function safeReturn(u){ if (typeof u!=='string'||u.charAt(0)!=='/'||u.charAt(1)==='/') return '/'; return u; }
-    var hasOpener = false;
+    function back() {
+      var dest = safeReturn(ss(SS.r) || '/');
+      ssDel(SS.v); ssDel(SS.s); ssDel(SS.r);
+      try { location.replace(dest); } catch(e) { location.href = dest; }
+    }
+
+    // The IdP 303'd here with the family code + state in the URL FRAGMENT (never sent to any
+    // server). Read it ONCE, before anything strips it, so both branches see the same values.
+    var p, code, state, err, hasOpener = false;
+    try { p = new URLSearchParams(location.hash.slice(1)); } catch(e) { p = new URLSearchParams(''); }
+    code = p.get('code') || ''; state = p.get('state') || ''; err = p.get('error') || '';
     try { hasOpener = !!(window.opener && !window.opener.closed); } catch(e) {}
-    if (!hasOpener) {
-      var q, code, state, err;
-      try { q = new URLSearchParams(location.hash.slice(1)); } catch(e) { q = new URLSearchParams(''); }
-      code = q.get('code') || ''; state = q.get('state') || ''; err = q.get('error') || '';
-      try { history.replaceState(null,'',location.pathname); } catch(e) {}
-      // Spend the attempt BEFORE anything can fail, as a timestamp so the bouncer
-      // can re-arm it once stale. Any path leaving it unset is a redirect loop.
-      ssSet(SS.done, String(Date.now()));
-      var back = function () {
-        var dest = safeReturn(ss(SS.r) || '/');
-        ssDel(SS.v); ssDel(SS.s); ssDel(SS.r);
-        try { location.replace(dest); } catch(e) { location.href = dest; }
-      };
-      if (err || !code) { back(); return; }
-      var ver = ss(SS.v), want = ss(SS.s);
-      if (!ver || !want || state !== want) { back(); return; }
-      fetch(ACCOUNTS + '/token/exchange', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: code, code_verifier: ver, client_origin: location.origin })
-      }).then(function(r){ return r.ok ? r.json() : null; })
-        .then(function(d){
-          if (!d || !d.access_token) return null;
-          if (d.refresh_token) lsSet('ekd_rt', d.refresh_token);
-          lsSet('ekd_at', JSON.stringify({ t: d.access_token, e: Date.now() + (Number(d.expires_in||900)*1000) }));
-        }).catch(function(){}).then(back);
+    // Strip the code from the address bar / history immediately.
+    try { history.replaceState(null, '', location.pathname); } catch(e) {}
+
+    // -- Branch 1: popup. Hand the code to the opener (same origin) and close.
+    if (hasOpener) {
+      var msg = { type: 'ekd_auth', code: code, state: state };
+      var delivered = false;
+      try { window.opener.postMessage(msg, location.origin); delivered = true; } catch(e) {} // same-origin only
+      // Fallback when the opener cannot be posted to: same-origin BroadcastChannel.
+      if (!delivered && 'BroadcastChannel' in window) {
+        try { var bc = new BroadcastChannel('ekd_auth'); bc.postMessage(msg); bc.close(); } catch(e) {}
+      }
+      setTimeout(function () { try { window.close(); } catch(e) {} }, 200);
       return;
     }
-  })();
-  </script>
-  <script>
-  (function () {
-    // The IdP 303'd here with the family code + state in the URL FRAGMENT (never
-    // sent to any server). Hand it back to the opener (same origin) and close.
-    try {
-      var p = new URLSearchParams(location.hash.slice(1));
-      var msg = { type: 'ekd_auth', code: p.get('code') || '', state: p.get('state') || '' };
-      // Strip the code from the address bar / history immediately.
-      try { history.replaceState(null, '', location.pathname); } catch (e) {}
-      var delivered = false;
-      try {
-        if (window.opener && !window.opener.closed) {
-          window.opener.postMessage(msg, location.origin); // same-origin only
-          delivered = true;
-        }
-      } catch (e) {}
-      // Fallback for opener-less contexts (e.g. COOP): same-origin BroadcastChannel.
-      if (!delivered && 'BroadcastChannel' in window) {
-        try { var bc = new BroadcastChannel('ekd_auth'); bc.postMessage(msg); bc.close(); } catch (e) {}
-      }
-    } catch (e) {}
-    setTimeout(function () { try { window.close(); } catch (e) {} }, 200);
+
+    // -- Branch 2: top-level silent return. Never closes the tab.
+    // Spend the attempt BEFORE anything can fail, as a timestamp so the bouncer
+    // can re-arm it once stale. Any path leaving it unset is a redirect loop.
+    ssSet(SS.done, String(Date.now()));
+    // login_required is the ordinary answer for a signed-out visitor, not an error.
+    if (err || !code) { back(); return; }
+    var ver = ss(SS.v), want = ss(SS.s);
+    if (!ver || !want || state !== want) { back(); return; }
+    fetch(ACCOUNTS + '/token/exchange', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: code, code_verifier: ver, client_origin: location.origin })
+    }).then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(d){
+        if (!d || !d.access_token) return null;
+        if (d.refresh_token) lsSet('ekd_rt', d.refresh_token);
+        lsSet('ekd_at', JSON.stringify({ t: d.access_token, e: Date.now() + (Number(d.expires_in||900)*1000) }));
+      }).catch(function(){}).then(back);
   })();
   </script>
 </body>
