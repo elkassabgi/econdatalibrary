@@ -59,6 +59,11 @@ def _catalogue_ro(timeout: float = 120):
 
 CATALOG_JSON = os.path.join(HERE, "catalog.json")
 OUT_DIR = os.path.join(HERE, "site")
+DATASET_DESC_MIN = 50       # characters; see render_dataset_page
+
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+import public_text_guard                                                # noqa: E402
 
 # Files that live in OUT_DIR but are NOT generated here. They are hand-maintained and
 # MUST survive the orphan sweep below. Deleting download.html in particular would break
@@ -847,6 +852,11 @@ def _measure_stems(sid, heads):
     return stems
 
 
+_PLACEHOLDER_SEGMENTS = {"true", "false", "not aggregated"}
+_NUMERIC_STEM = re.compile(r"^[\d\s.,;:/()–—-]+$")
+AUTO_SUBTITLE_MIN = 12
+
+
 def _derive_subtitles(con):
     """A short human subtitle per source, derived from its own series titles.
 
@@ -867,18 +877,25 @@ def _derive_subtitles(con):
     for sid, title in con.execute("SELECT source_id, title FROM series"):
         t = re.sub(r"\s+[–—]\s+", " - ", (title or "").strip())
         t = re.sub(r"\s*\((?:Annually|Monthly|Quarterly|Daily|Weekly)\)\s*$", "", t, flags=re.I)
-        per[sid].append([p.strip() for p in t.split(" - ") if p.strip()])
+        # Placeholder segments are BLANKED, not removed (2026-11-18): IMF titles carry a parser's
+        # boolean default ("true - IRIIP", "All Items - true") and the codelist's "Not Aggregated" as
+        # whole segments, and neither is something the series measure. Removing them shifted every
+        # later segment one column left in only SOME titles, so the column analysis below compared
+        # unlike things (imf_gssdo_direct: age bands became "Annual - Female"). A blank keeps each
+        # segment in its column; blanks are skipped wherever segments are read or joined.
+        per[sid].append(["" if p.strip().lower() in _PLACEHOLDER_SEGMENTS else p.strip()
+                         for p in t.split(" - ") if p.strip()])
     subs = {}
     for sid, rows in per.items():
         n = len(rows)
         if n <= 40:
-            c = Counter(" - ".join(r) for r in rows)
+            c = Counter(" - ".join(p for p in r if p) for r in rows)
             top = [s for s, _ in c.most_common(3)]
         else:
             width = max(len(r) for r in rows)
             keep = []
             for i in range(width):
-                vals = Counter(r[i] for r in rows if len(r) > i)
+                vals = Counter(r[i] for r in rows if len(r) > i and r[i])
                 if not vals:
                     continue
                 low_card = len(vals) <= 30
@@ -889,14 +906,21 @@ def _derive_subtitles(con):
                     break
             stems = Counter()
             for r in rows:
-                s = " - ".join(r[i] for i in keep if len(r) > i)
-                stems[s or r[0]] += 1
+                s = " - ".join(r[i] for i in keep if len(r) > i and r[i])
+                stems[s or next((p for p in r if p), "")] += 1
             top = [s for s, _ in stems.most_common(3) if s]
-        out = "; ".join(dict.fromkeys(t for t in top if t))
+        # A stem that is only years / numbers / punctuation ("2022", "2003") says nothing about the
+        # data; drop it, and if what is left is shorter than AUTO_SUBTITLE_MIN characters, publish NO
+        # derived subtitle (build_record then leads with the source's registry name instead).
+        out = "; ".join(dict.fromkeys(t for t in top if t and not _NUMERIC_STEM.match(t)))
+        if len(out) < AUTO_SUBTITLE_MIN:
+            out = ""
         if len(out) > 140:
             out = out[:137] + "…"
-        subs[sid] = out
-    measures = {sid: _measure_stems(sid, [r[0] for r in rows if r])
+        subs[sid] = "" if sid in SUBTITLE_SUPPRESS else out
+    # A suppressed source's stems are a country list; it must not reach variableMeasured either.
+    measures = {sid: ([] if sid in SUBTITLE_SUPPRESS else
+                      _measure_stems(sid, [next((p for p in r if p), "") for r in rows if any(r)]))
                 for sid, rows in per.items()}
     return subs, measures
 
@@ -906,6 +930,17 @@ def _derive_subtitles(con):
 # against the store's actual series — never invented coverage. Full-catalog
 # audit 2026-07-15; the derived fallback remains for sources whose own series
 # titles already read well (BLS, EIA, Maddison, most FAO domains, ...).
+#
+# Sources whose DERIVED subtitle is never published (2026-11-18): the lead falls back to the
+# registry name, exactly as for a source whose stems are only years (scb). Each entry is a
+# multi-country dataset whose leading title segment is the country, so the derived stems are a
+# list of countries. A geography register that catches this class is a follow-up; until then the
+# list is explicit and reviewable. (eia's "Texas; California; Louisiana" is a recorded residual.)
+SUBTITLE_SUPPRESS = frozenset({
+    "imf_gsatf_direct",      # derived stems were "Benin; Myanmar; Pakistan" for a worldwide survey
+    "imf_gslgrghts_direct",  # derived stems were "Afghanistan, Islamic Republic of; Angola; Albania"
+})
+
 SOURCE_SUBTITLES = {
     # --- Added 2026-07-31 ------------------------------------------------------------
     # These 16 sources carry NO human series titles at all: their `title` column holds the
@@ -1749,7 +1784,7 @@ def subtract_withheld(con, series_roll, withheld=None):
     (like the carve-out subtraction, never a predicate in the GROUP BY). When any is held, the source's coverage
     facets (first start, last end, geographies, last update) are re-measured over the rows a user can reach -
     a primary-key RANGE read of that source only (AR-341 re-review N4). Its "Measured observations" figure is NOT
-    changed here: it comes from catalog/catalog.json (gen_catalog.py), which this generator cannot re-measure."""
+    changed here: it comes from the gitignored sidecar catalog/catalog.json, which this generator cannot re-measure."""
     for src, sids in sorted((WITHHELD if withheld is None else withheld).items()):
         if src not in series_roll or not sids:
             continue
@@ -1951,12 +1986,33 @@ def topic_labels(cats):
     return sorted(out)
 
 
+_TRAILING_PAREN_PAIR = re.compile(r"\(([^()]*)\)\s*\(([^()]*)\)\s*$")
+
+
+def _collapse_repeated_name_suffix(name):
+    """Display-level only: drop a trailing parenthetical that repeats the end of the one before it.
+    13 IMF rows read "... (SDG; direct from api.imf.org) (direct from api.imf.org)", because
+    tools/catalog_imf_direct.py appends the suffix to a --name that already carries it. The catalogue
+    row is NOT changed here (that root fix is a separate, reviewed catalogue write); every page field
+    reads the name through build_record, so one call here fixes H1, title, lead, meta, JSON-LD and card."""
+    if not name:
+        return name
+    m = _TRAILING_PAREN_PAIR.search(name)
+    if m:
+        first, second = m.group(1).strip(), m.group(2).strip()
+        if second and (first == second or first.endswith("; " + second)):
+            return name[:m.start()] + "(" + m.group(1) + ")"
+    return name
+
+
 def build_record(sid, src, lic, roll, side, s5=None):
     """Assemble everything we know about one dataset from the registry + sidecar.
     Returns a plain dict; downstream renderers never touch the DB again.
     `s5` carries the source-level Task#5 metadata (description_key / citation_* /
     processing) baked into the series rows."""
     s5 = s5 or {}
+    if src.get("name"):
+        src = dict(src, name=_collapse_repeated_name_suffix(src["name"]))
     license_id = src.get("license_id")
     lrow = lic.get(license_id, {})
     # TWO independent gates, and the page needs both. `license.reservable` says the LICENCE
@@ -1971,9 +2027,22 @@ def build_record(sid, src, lic, roll, side, s5=None):
     # consumer, and the rebuilt page was unchanged.
     reservable = bool(lrow.get("reservable", 0)) and sid not in DENYLISTED
 
-    # Description: prefer the operational sidecar note; fall back to attribution.
-    desc_full = (side or {}).get("description") or src.get("attribution")
-    desc_short = first_sentence(desc_full)
+    # Description: the page lead is the PUBLIC subtitle (SOURCE_SUBTITLES, else the one derived from
+    # the source's own series titles), and nothing else.
+    #
+    # WAS WRONG until 2026-11-18: `(side or {}).get("description") or src.get("attribution")`. The
+    # sidecar `description` (gitignored catalog/catalog.json) is CRAWLER DOCUMENTATION - for 91 of its
+    # 102 sources an ingester module docstring - so istat's lead and "Full description" published
+    # repo paths, checkpoint file names and source line numbers. `attribution` is no better as a lead:
+    # it is a credit line (shared verbatim by up to 11 pages) and the page already prints it under
+    # "Required attribution". So neither is read here. There is no long description any more: the
+    # repo holds no public long-form prose per source, and writing some would be inventing claims
+    # about a publisher's dataset. public_text_guard fails the build if internal text returns.
+    # When no usable subtitle exists (_derive_subtitles publishes none for a stem list that is only
+    # years or placeholders), the lead is the source's registry NAME - a public field, not new copy.
+    desc_short = " ".join(((SOURCE_SUBTITLES.get(sid) or (roll or {}).get("auto_subtitle")
+                            or src.get("name") or "")).split()) or None
+    desc_full = None
 
     cov_start = sane_date(roll.get("min_start")) if roll else None
     cov_end = sane_date(roll.get("max_end")) if roll else None
@@ -2013,11 +2082,12 @@ def build_record(sid, src, lic, roll, side, s5=None):
         "measures": (roll or {}).get("measures") or [],
         "n_geo": (roll or {}).get("n_geo", 0),
         "last_updated": sane_date((roll or {}).get("last_updated")),
-        # operational (sidecar) extras -- display only
+        # operational (sidecar) extras. Only the two that render as plain public facts are kept:
+        # `cadence` feeds refresh_rows (a word such as "monthly", gated by the real wiring) and
+        # `measured_obs` is a number. `strategy` (an updater enum such as "overwrite_if_changed"),
+        # `storage_layout` (internal store paths) and `scripts` (repo file names) are internal and
+        # are no longer carried into the record at all (2026-11-18).
         "cadence": (side or {}).get("cadence"),
-        "strategy": (side or {}).get("strategy"),
-        "storage_layout": (side or {}).get("storage_layout"),
-        "scripts": (side or {}).get("scripts") or [],
         "measured_obs": (side or {}).get("measured_obs"),
         # The 200 URL, not the 308 one (see site_url): this single field feeds the
         # canonical, og:url, schema.org Dataset.url, the Croissant url, the visible
@@ -2120,10 +2190,12 @@ def jsonld_description(rec, page_desc=None):
     So the description is the page's OWN meta description: assembled per page from
     counted registry facts (what the series measure, the producer, the series total,
     the measured coverage years, the licence), unique across the catalogue, and
-    already the text this page shows search engines. The old values remain only as
-    a fallback so the required field can never be empty."""
-    return (page_desc or rec.get("desc_short") or rec.get("attribution")
-            or f"{rec['name']} — dataset catalogued in the {SITE_NAME}.")
+    already the text this page shows search engines. Since 2026-11-18 the fallback
+    is build_meta_desc too (it was desc_short / attribution, which kept the sidecar
+    note one missing argument away from Dataset Search)."""
+    # Fallback (standalone callers only): the same public meta-description builder, never the
+    # sidecar note or the credit line.
+    return page_desc or build_meta_desc(rec)
 
 
 # A source whose measured served count is 0 (served_facts.json): licensed for redistribution, nothing to
@@ -2720,6 +2792,12 @@ def render_dataset_page(rec):
     # licence credit line shared with up to 10 other pages.
     ds_ld = dataset_jsonld(rec, meta_desc)
     cr_ld = croissant_jsonld(rec, meta_desc)
+    # Dataset.description is REQUIRED by Dataset Search and shown in its results; a stub is as bad
+    # as a missing one. Every published page must carry at least DATASET_DESC_MIN characters.
+    for _blk, _ld in (("schema.org Dataset", ds_ld), ("Croissant", cr_ld)):
+        if len((_ld.get("description") or "").strip()) < DATASET_DESC_MIN:
+            raise SystemExit(f"REFUSED: {rec['id']} {_blk} description is under {DATASET_DESC_MIN} "
+                             f"characters: {_ld.get('description')!r}")
     jsonld_block = jsonld_script(ds_ld) + "\n" + jsonld_script(cr_ld)
 
     head = render_head(title, meta_desc, rec["page_url"], PAGE_CSS, jsonld_block)
@@ -2841,10 +2919,11 @@ def render_dataset_page(rec):
     # "Update cadence: monthly" on a database that has no updater yet reads as a promise, and "not yet
     # wired" on one that has run before, or is paused on purpose, is untrue).
     acc_rows.extend(refresh_rows(rec["id"], rec["cadence"]))
-    if rec["strategy"]:
-        acc_rows.append(("Update strategy", esc(rec["strategy"]).replace("_", " ")))
-    if rec["storage_layout"]:
-        acc_rows.append(("Storage layout", esc(rec["storage_layout"])))
+    # "Update strategy" and "Storage layout" rows REMOVED 2026-11-18: the first printed an updater
+    # enum ("overwrite if changed", "giant changed units") that describes our machinery, not the data;
+    # the second printed internal store paths (data/clean_full/<src>/<FLOW>.parquet, checkpoint
+    # sidecars). Neither tells a visitor anything they can act on. The refresh rows above already say,
+    # in public terms, whether and how often the database is refreshed.
 
     def kv(rows):
         return "\n".join(f"<dt>{k}</dt><dd>{v}</dd>" for k, v in rows)
@@ -2895,9 +2974,8 @@ def render_dataset_page(rec):
     body.append("<h2>Access &amp; mirrors</h2>")
     body.append(f'<dl class="kv">{kv(acc_rows)}</dl>')
 
-    if rec["desc_full"] and rec["desc_full"] != rec["desc_short"]:
-        body.append("<h2>Full description</h2>")
-        body.append(f'<p class="lead">{esc(rec["desc_full"])}</p>')
+    # The "Full description" section is gone (2026-11-18): its only content was the sidecar
+    # crawler note. desc_full is always None now; the guard below would refuse it anyway.
 
     # Show the embedded structured data so it is inspectable on the page too.
     body.append("<h2>Structured metadata</h2>")
@@ -4425,6 +4503,9 @@ def main(argv=None):
         # ElkassabgiData family plate at the very bottom of EVERY page (below the
         # page's own footer), just before </body>.
         html = html.replace("</body>", FAMILY_BAND + FOOTER + "</body>", 1)
+        # Public-text guard: refuse (non-zero exit, this file NOT written) when any visible text,
+        # JSON-LD string or meta/og content carries internal engineering text (2026-11-18).
+        public_text_guard.assert_public(os.path.basename(path), html)
         # Fingerprint HERE -- after the family plate (a change to it IS a change to
         # the page) but BEFORE __SITE_UPDATED__ is substituted. That placeholder is
         # the one piece of every page that moves with the calendar rather than with
@@ -4471,6 +4552,9 @@ def main(argv=None):
             html = f.read()
         fresh = {r["id"]: r for r in _catalog_idx([r for r in records if r["id"] in hub_rows])}
         html, changes = splice_hub_rows(html, fresh, hub_rows)
+        _leak = public_text_guard.scan_json_values(list(fresh.values()), "hub-rows")
+        if _leak:
+            raise public_text_guard.InternalTextLeak(f"REFUSED: --hub-rows would publish internal text: {_leak[:5]}")
         with open(hub, "w", encoding="utf-8", newline="") as f:
             f.write(html)
         for sid, delta in changes:
@@ -4537,6 +4621,9 @@ def main(argv=None):
     for sid, why in PAUSED.items():
         if sid in meta:
             meta[sid]["paused"] = why
+    _leak = public_text_guard.scan_json_values(meta, "sources_meta.json")
+    if _leak:
+        raise public_text_guard.InternalTextLeak(f"REFUSED: sources_meta.json would publish internal text: {_leak[:5]}")
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     _no_desc = [k for k, v in meta.items() if not v["desc"]]
