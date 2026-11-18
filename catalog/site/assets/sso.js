@@ -101,7 +101,17 @@
   //
   // hasKey() is deliberately NOT touched. It guards the bounce that FETCHES the api_key, and
   // widening it is what broke downloads before.
-  function signedIn() { return !!(localStorage.getItem(K) || localStorage.getItem(F) || localStorage.getItem('ekd_rt')); }
+  //
+  // ...EXCEPT after an explicit sign-out. account.html's sign-out clears ekd_rt only through
+  // the SDK (EKD.logout()), so when the SDK failed to load, ekd_rt survives next to the
+  // ekd_signed_out marker. Without this check the nav would then show the name on every page,
+  // and backfillName() would re-write the name and email that sign-out removed. The marker
+  // only overrides the bare-ekd_rt case: a stored key or a confirmed edl_family wins over it.
+  function signedOutMarked() {
+    try { return !!(sessionStorage.getItem('ekd_signed_out') || localStorage.getItem('ekd_signed_out')); }
+    catch (e) { return false; }
+  }
+  function signedIn() { return !!(localStorage.getItem(K) || localStorage.getItem(F) || (localStorage.getItem('ekd_rt') && !signedOutMarked())); }
 
   // Fill in the display name AFTER the page is up, not before it appears.
   //
@@ -122,7 +132,8 @@
       // Same widening as signedIn(): a pop-up sign-in on a page that is not account.html leaves
       // edl_family unset but ekd_rt present, and that visitor needs their name filled in too —
       // otherwise the pill they just earned reads "Account" forever.
-      if (!(localStorage.getItem(F) || localStorage.getItem('ekd_rt'))) return;
+      // A bare ekd_rt next to a sign-out marker is a session the visitor ended: see signedIn().
+      if (!(localStorage.getItem(F) || (localStorage.getItem('ekd_rt') && (hasKey() || !signedOutMarked())))) return;
       if (localStorage.getItem(N)) return;                                // already known
       var raw = localStorage.getItem('ekd_at');
       if (!raw) return;
@@ -311,6 +322,18 @@
     }
   } catch (e) {}
 
+  // PAINT THE NAV ONCE, HERE, ON EVERY PAGE LOAD THAT GETS PAST STEP 1. Every exit below this
+  // line used to have to remember to call updateUI(), and three did not: step 4 ("skipped"
+  // within RECHECK_MS, "capped" after MAX_TRIES), step 5 (non-production host) and step 1b
+  // (whose digest .catch can end the page with nothing painted). A family-only visitor
+  // (pop-up sign-in: ekd_rt, no edl_key) reaches step 4 on every nav click inside 20 s and on
+  // every page after five checks, so the pill read their name on one page and "Sign in" on
+  // the next. Reported 2026-11-18. hfdatalibrary.com paints the same way: once per page,
+  // independent of the resume logic. updateUI() is idempotent and a no-op when signed out.
+  // Placed AFTER the referrer block above, which can retire the ekd_signed_out marker that
+  // signedIn() reads. Step 1 returns before this line and paints for itself.
+  onReady(updateUI); onReady(backfillName);
+
   // An explicit sign-out this browser session means "stay out" — never auto-resume over it.
   if (!hasKey() && !localStorage.getItem(F)
       && !sessionStorage.getItem('ekd_signed_out')
@@ -358,7 +381,7 @@
   if (hasKey()) {
     note('have-key', 'a key is already stored in this browser');
     if (hp.has('sso_recheck')) history.replaceState({}, document.title, location.pathname + location.search);
-    onReady(updateUI); onReady(backfillName); onReady(showNote);
+    onReady(showNote);   // the nav was already painted above, before step 1b
     return;
   }
 
