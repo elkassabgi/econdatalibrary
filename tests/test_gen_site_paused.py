@@ -215,7 +215,7 @@ def test_only_updates_this_sources_paused_key_in_sources_meta(G, tmp_path, monke
     (out / "sources_meta.json").write_text(json.dumps(meta, ensure_ascii=False, separators=(",", ":"),
                                                       sort_keys=True), encoding="utf-8")
     monkeypatch.setattr(G, "OUT_DIR", str(out))
-    monkeypatch.setattr(G, "load_registry", lambda: ({}, {"aaa": {}, "insee_melodi": {}},
+    monkeypatch.setattr(G, "load_registry", lambda: ({"x": {"reservable": 1}}, {"aaa": {"license_id": "x"}, "insee_melodi": {"license_id": "x"}},
                                                      {"aaa": {"n_series": 1}, "insee_melodi": {"n_series": 94}}, {}))
     monkeypatch.setattr(G, "load_sidecar", lambda: ({}, "2026-10-18"))
     monkeypatch.setattr(G, "build_record", lambda sid, *a: {"id": sid, "reservable": 1, "license_id": "x"})

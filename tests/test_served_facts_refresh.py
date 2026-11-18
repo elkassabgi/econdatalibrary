@@ -171,27 +171,60 @@ def test_a_served_zero_page_offers_no_download_anywhere(G, fixture_catalogue):
               "Compiled and redistributed", "Permitted (served here)"]
 
     def render(served):
-        r = {"e": dict(roll["e"], n_series=2, n_geo=3, min_start="2001-01-01", max_end="2020-12-31")}
+        r = {"e": dict(roll["e"], n_series=2, n_geo=3, min_start="2001-01-01", max_end="2020-12-31",
+                       frequencies=["M"], measures=["Consumer price index"])}
         G.apply_served_facts(r, {"n_series": {"e": served}, "frequencies": {}, "measured_utc": "x"}, required={"e"})
         # description_key is outside render_dataset_page's early field rewrite, so only its page-level sweep
         # can catch the sentence there
         s5 = {"description_key": ["Key facts. Compiled and redistributed by the Elkassabgi Data Library."]}
         rec = G.build_record("e", sources["e"], licenses, r["e"], dict(side), s5)
-        return G.render_dataset_page(rec), G.dataset_jsonld(rec), G.croissant_jsonld(rec)
+        return (G.render_dataset_page(rec), G.dataset_jsonld(rec), G.croissant_jsonld(rec),
+                G.build_meta_desc(rec))
 
-    html, ds, cr = render(2)                                         # control: served
+    # the metadata must not claim coverage, frequency or variables that the served-0 page hides
+    ds_keys, cr_keys = ["temporalCoverage", "repeatFrequency", "variableMeasured"], ["temporalCoverage"]
+
+    html, ds, cr, meta = render(2)                                   # control: served
     for c in claims:
         assert c in html, f"control lost {c!r} - the absence checks below would be blind"
     assert ds["distribution"] and ds["isAccessibleForFree"] is True and cr["distribution"]
+    assert all(k in ds for k in ds_keys) and all(k in cr for k in cr_keys), "control lost a JSON-LD key"
+    assert "2001" in meta, "control meta description lost its coverage clause"
 
-    html, ds, cr = render(0)
+    html, ds, cr, meta = render(0)
     present = [c for c in claims if c in html]
     assert not present, f"a served-0 page still claims: {present}"
-    assert "Not yet served" in html and "not yet served" in G.build_meta_desc(
-        G.build_record("e", sources["e"], licenses, dict(roll["e"], n_series=0, not_yet_served=True), None, None))
+    assert "Not yet served" in html and "not yet served" in meta and "2001" not in meta
+    assert not [k for k in ds_keys if k in ds] and not [k for k in cr_keys if k in cr]
     for ld in (ds, cr):
         assert "distribution" not in ld and ld["isAccessibleForFree"] is False
         assert ld["usageInfo"] == G.NOT_YET_SERVED_USAGE
+
+
+def test_main_writes_pages_for_exactly_page_source_ids(G, fixture_catalogue, monkeypatch):
+    """main()'s page list comes from page_records, which takes membership from page_source_ids alone. Planting
+    a different predicate must change the pages: if main() had its own filter again, this would not move."""
+    _, sources, licenses, roll = fixture_catalogue
+    ids = lambda: [r["id"] for r in G.page_records(sources, licenses, roll, {}, {})]
+    assert ids() == EXPECTED_PAGES
+    monkeypatch.setattr(G, "page_source_ids", lambda s, l, r: {"a"})
+    assert ids() == ["a"]
+    monkeypatch.setattr(G, "page_source_ids", lambda s, l, r: {"b"})        # a gate disagreement stops the build
+    with pytest.raises(SystemExit, match="gates disagree"):
+        ids()
+
+
+def test_site_wide_claims_name_the_not_yet_served_sources(G):
+    """docs.html, the home page and the catalogue hero say "every source / all downloadable". With a served-0
+    source that must change, and with none it must read as before."""
+    ok = {"id": "a", "reservable": True}
+    nys = {"id": "z", "reservable": True, "not_yet_served": True}
+    assert G.not_yet_served_note([ok]) == (0, "")
+    docs_none, docs_one = G.render_docs([ok]), G.render_docs([ok, nys])
+    assert "its data is served from our store" in docs_none and "not yet served" not in docs_none
+    assert "except the 1 marked" in docs_one and "not yet served" in docs_one
+    n, note = G.not_yet_served_note([ok, nys, dict(nys, id="y")])
+    assert n == 2 and "2 more sources are" in note and "no download" in note
 
 
 # ---- the refresh tool, through a fake HTTP layer --------------------------------------------------------
