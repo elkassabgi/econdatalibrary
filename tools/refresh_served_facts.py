@@ -249,6 +249,12 @@ def run(argv=None, *, get=http_get, now=utcnow, sleep=time.sleep, sources=None, 
     ap.add_argument("--db", help="the catalogue to read the page sources from (default: this checkout's)")
     a = ap.parse_args(argv)
 
+    # After T0 the workers.dev API answers from the FROZEN cloud copy, and this tool writes the local file that
+    # gen_site builds every "served" claim from - so it refuses (tests/test_verifiers_6d.py, module docstring).
+    from core import cutover
+    cutover.refuse_if_cut_over("refresh_served_facts - it measures the workers.dev API, which serves the frozen "
+                               "cloud copy after T0, and writes catalog/served_facts.json from it")
+
     if a.source:
         sids = sorted(set(a.source))
     elif sources is not None:

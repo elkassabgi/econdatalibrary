@@ -392,3 +392,13 @@ def test_the_written_file_satisfies_gen_site(G, tmp_path, monkeypatch):
     roll = {"a": {"n_series": 10}, "z": {"n_series": 4}}
     G.apply_served_facts(roll, facts, required={"a", "z"})
     assert roll["a"]["n_series"] == 8 and roll["z"].get("not_yet_served") is True
+
+
+def test_refresh_refuses_after_t0_and_writes_nothing(tmp_path, monkeypatch):
+    from core import cutover
+    flag = tmp_path / "CUTOVER"
+    flag.write_text("T0", encoding="utf-8")
+    monkeypatch.setattr(cutover, "FLAG_PATH", str(flag))
+    with pytest.raises(cutover.CutoverRefused):
+        _run(tmp_path, {"a": (200, 8, {})}, ["a"])
+    assert not (tmp_path / "served_facts.json").exists()
