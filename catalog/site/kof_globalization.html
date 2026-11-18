@@ -316,7 +316,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -329,7 +329,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">kof_globalization</div>
 <h1>KOF Swiss Economic Institute, ETH Zurich — KOF Globalisation Index</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">custom-terms-kof_globalization</span><span class="badge cat">International Trade</span><span class="badge cat">Society &amp; Well-Being</span></div>
-<p class="lead">KOF Globalisation Index ingest. Source: https://kof.ethz.ch/en/forecasts-and-indicators/indicators/kof-globalisation-index.html Authors: Gygli, Haelg, Potrafke &amp; Sturm (ETH Zurich) License: Free for academic use Coverage: 203 countries, 1970-2022, 24 globalisation sub-indices Indices: KOF…</p>
+<p class="lead">KOF Political Globalisation Index, de facto; KOF Political Globalisation Index, de jure; KOF Interpersonal Globalisation Index</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -352,28 +352,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/kof_globalization">https://econdatalibrary.com/kof_globalization</a></dd>
 <dt>Update cadence</dt><dd>annual</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>overwrite if changed</dd>
-<dt>Storage layout</dt><dd>single parquet data/clean_full/kof_globalization/kof_globalization.parquet (~1.4MB; schema series_key:string KOF:{index}:{ISO}, obs_date:date32 (Dec-31), value:float64, zstd). Skip-if-exists guard at lines 152-154; one full XLSX download then one write (lines 165-170).</dd></dl>
-<h2>Full description</h2>
-<p class="lead">KOF Globalisation Index ingest.
-
-Source: https://kof.ethz.ch/en/forecasts-and-indicators/indicators/kof-globalisation-index.html
-Authors: Gygli, Haelg, Potrafke &amp; Sturm (ETH Zurich)
-License: Free for academic use
-Coverage: 203 countries, 1970-2022, 24 globalisation sub-indices
-
-Indices:
-  KOF Globalisation Index (overall)
-  KOF Economic Globalisation (trade, finance)
-  KOF Social Globalisation (personal contact, info flows, cultural proximity)
-  KOF Political Globalisation (embassies, treaties, IGO memberships)
-  KOF De Facto vs De Jure sub-indices
-
-series_key: KOF:{index}:{iso3}   e.g. KOF:KOFGI:CHE
-
-Output: data/clean_full/kof_globalization/kof_globalization.parquet
-Run: python jobs/ingest_kof_globalization.py</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

@@ -314,7 +314,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -327,7 +327,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">epu</div>
 <h1>Economic Policy Uncertainty (Scott R. Baker, Nicholas Bloom, Steven J. Davis)</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Creative Commons Attribution 4.0 (CC BY 4.0)</span><span class="badge cat">Macroeconomics</span></div>
-<p class="lead">Economic Policy Uncertainty (EPU) Index ingest. Source: https://www.policyuncertainty.com/ Authors: Baker, Bloom &amp; Davis License: Free for academic use Coverage: 25+ countries, monthly news-based economic policy uncertainty indices, some going back to 1985 or earlier. Downloads country-level EPU…</p>
+<p class="lead">Economic Policy Uncertainty Index - Spain; Australia News-Based EPU Index - Australia; Brazil News-Based EPU Index - Brazil</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -350,25 +350,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/epu">https://econdatalibrary.com/epu</a></dd>
 <dt>Update cadence</dt><dd>monthly</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>overwrite if changed</dd>
-<dt>Storage layout</dt><dd>Single Parquet: data/clean_full/epu/epu.parquet, columns series_key (EPU:{clean_colname}:{code}; All_Country file uses EPU:epu:{country}), obs_date (date32, 1st-of-month), value (float64). No raw cache, no per-country files. Side logs _epu_log.txt / _epu_err.txt. Tiny annual/monthly index source.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">Economic Policy Uncertainty (EPU) Index ingest.
-
-Source: https://www.policyuncertainty.com/
-Authors: Baker, Bloom &amp; Davis
-License: Free for academic use
-Coverage: 25+ countries, monthly news-based economic policy uncertainty indices,
-          some going back to 1985 or earlier.
-
-Downloads country-level EPU indices from policyuncertainty.com.
-Also includes global EPU aggregates and equity-market-specific VIX variants.
-
-series_key: EPU:{country_code}   e.g. EPU:USA
-
-Output: data/clean_full/epu/epu.parquet
-Run: python jobs/ingest_epu.py</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

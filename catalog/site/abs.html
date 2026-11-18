@@ -322,7 +322,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -335,7 +335,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">abs</div>
 <h1>Australian Bureau of Statistics</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Creative Commons Attribution 4.0 (CC BY 4.0)</span><span class="badge cat">Labour Markets</span><span class="badge cat">National Accounts</span><span class="badge cat">Prices &amp; Inflation</span><span class="badge cat">Retail Trade</span></div>
-<p class="lead">FULL-COVERAGE grouped ingest of the Australian Bureau of Statistics (ABS) SDMX API. Catalog : https://data.api.abs.gov.au/rest/dataflow/ABS?detail=allstubs (~1223 flows) Data pull: https://data.api.abs.gov.au/rest/data/&lt;FLOW&gt;/all?format=csvfile (compact, codes only) GROUPED storage (mirrors…</p>
+<p class="lead">CPI All groups, index numbers (Australia, quarterly); CPI All groups, % change from previous quarter (Australia); Monthly CPI indicator, …</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -356,40 +356,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/abs">https://econdatalibrary.com/abs</a></dd>
 <dt>Update cadence</dt><dd>monthly</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>sdmx delta</dd>
-<dt>Storage layout</dt><dd>overwrite-multi-file: one zstd parquet per dataflow at data/clean_full/abs/&lt;FLOW&gt;.parquet (~1222 files), each with columns (series_key, obs_date, value); oversized flows (&gt;8M obs) written as a single multi-rowgroup parquet split by FREQ via ParquetWriter. Sidecar catalog at data/clean_full/abs_catalog.parquet.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">FULL-COVERAGE grouped ingest of the Australian Bureau of Statistics (ABS) SDMX API.
-
-Catalog  : https://data.api.abs.gov.au/rest/dataflow/ABS?detail=allstubs  (~1223 flows)
-Data pull: https://data.api.abs.gov.au/rest/data/&lt;FLOW&gt;/all?format=csvfile (compact, codes only)
-
-GROUPED storage (mirrors jobs/ingest_eurostat.py): ONE Parquet per dataflow under
-    data/clean_full/abs/&lt;FLOW&gt;.parquet
-with columns (series_key, obs_date, value) -- many series inside each file. The
-series_key is the dotted SDMX data key: every dimension code column between the
-DATAFLOW column and TIME_PERIOD, joined with &#x27;.&#x27;. This matches the existing
-connectors/abs/connector.py key convention (e.g. &quot;1.10001.10.50.Q&quot;).
-
-The ABS compact CSV (format=csvfile) is:
-    DATAFLOW, &lt;dim1&gt;, &lt;dim2&gt;, ..., TIME_PERIOD, OBS_VALUE, &lt;attributes...&gt;
-Column positions vary per flow, so we locate TIME_PERIOD / OBS_VALUE by name and
-treat every column strictly between DATAFLOW (col 0) and TIME_PERIOD as a dimension.
-
-License = cc-by-4.0 (reservable id from configs/sources.yaml -&gt; sources.abs.license).
-
-Resilience: the ABS API is flaky. Each dataflow is streamed and parsed independently;
-network errors retry with exponential backoff; a 404 / empty body is treated as
-&quot;no data for this flow&quot; and skipped. Already-written .parquet files are skipped so
-the job is fully resumable after a crash. A flow whose download exceeds a size guard
-is split by its FREQ (or first) dimension and written as one Parquet per split value.
-
-Usage:
-  python jobs/ingest_abs_full.py --list           # just enumerate the catalog
-  python jobs/ingest_abs_full.py --dry 5           # parse 5 flows, print, no writes
-  python jobs/ingest_abs_full.py                   # full run (resumable)
-  python jobs/ingest_abs_full.py --only CPI,LF     # restrict to named flows</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

@@ -316,7 +316,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -329,7 +329,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">who_rs</div>
 <h1>World Health Organization (WHO), Global Health Observatory (GHO)</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">cc-by-nc-sa-3.0-igo-who_rs</span><span class="badge cat">Health</span></div>
-<p class="lead">World Health Organization, Global Health Observatory</p>
+<p class="lead">Road safety — traffic mortality, registered vehicles, and related population denominators</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>

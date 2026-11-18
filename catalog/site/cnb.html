@@ -314,7 +314,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -327,7 +327,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">cnb</div>
 <h1>Czech National Bank (Česká národní banka, CNB)</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">custom-terms-cnb</span><span class="badge cat">Money &amp; Banking</span></div>
-<p class="lead">Czech National Bank (CNB) — Exchange rate fixing, 1991–present. License: Open data (CNB public data policy) Source: https://www.cnb.cz/en/financial_markets/foreign_exchange_market/ No API key required. Coverage: * ~30 currencies vs CZK, daily business day rates, 1991–present * AUD, BGN, BRL, CAD,…</p>
+<p class="lead">CNB exchange rate fixing</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -350,24 +350,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/cnb">https://econdatalibrary.com/cnb</a></dd>
 <dt>Update cadence</dt><dd>daily</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>extend by date</dd>
-<dt>Storage layout</dt><dd>single-file — data/clean_full/cnb/cnb.parquet, one pa.table written once. series_key = CNB_FX:{CCY}_CZK, rates normalized to per-1-unit (raw value / amount multiplier).</dd></dl>
-<h2>Full description</h2>
-<p class="lead">Czech National Bank (CNB) — Exchange rate fixing, 1991–present.
-
-License: Open data (CNB public data policy)
-Source: https://www.cnb.cz/en/financial_markets/foreign_exchange_market/
-No API key required.
-
-Coverage:
-  * ~30 currencies vs CZK, daily business day rates, 1991–present
-  * AUD, BGN, BRL, CAD, CHF, CNY, DKK, EUR, GBP, HKD, HUF, IDR, ILS,
-    INR, ISK, JPY, KRW, MXN, MYR, NOK, NZD, PHP, PLN, RON, SEK, SGD,
-    THB, TRY, USD, XDR, ZAR
-  * Year files: pipe-delimited, daily data per calendar year
-
-Run: python jobs/ingest_cnb.py</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

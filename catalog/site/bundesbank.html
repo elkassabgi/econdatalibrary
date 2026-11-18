@@ -311,7 +311,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -324,7 +324,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">bundesbank</div>
 <h1>Deutsche Bundesbank</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">custom-terms-bundesbank</span><span class="badge cat">Money &amp; Banking</span></div>
-<p class="lead">Deutsche Bundesbank SDMX REST connector — keyless open data. License: DL-DE-BY-2.0 Source: https://api.statistiken.bundesbank.de/rest/data/{flowID} No API key required. Available flows discovered via probe (catalog endpoint not supported): BBEX3 — Exchange rates (EUR vs. all currencies) ~2M obs…</p>
+<p class="lead">Exchange rates, interest rates, money and banking, and macroeconomic time series for Germany and the euro area</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -346,29 +346,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/bundesbank">https://econdatalibrary.com/bundesbank</a></dd>
 <dt>Update cadence</dt><dd>monthly</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>overwrite if changed</dd>
-<dt>Storage layout</dt><dd>one parquet per flow -&gt; data/clean_full/bundesbank/&lt;flow&gt;.parquet for 7 hardcoded flows (BBEX3, BBNZ1, BBDP1, BBSIS, BBFI1, BBFI3, BBBP1). Schema: series_key (format &#x27;BBK:&lt;flow&gt;:&lt;id=val:...&gt;&#x27;), obs_date(date32), value(float64). Whole flow built in a Python list then pq.write_table (no streaming writer). _bundesbank_log.txt sidecar.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">Deutsche Bundesbank SDMX REST connector — keyless open data.
-
-License: DL-DE-BY-2.0
-Source: https://api.statistiken.bundesbank.de/rest/data/{flowID}
-No API key required.
-
-Available flows discovered via probe (catalog endpoint not supported):
-  BBEX3  — Exchange rates (EUR vs. all currencies) ~2M obs
-  BBNZ1  — Securities statistics
-  BBDP1  — Balance of payments
-  BBSIS  — Stock market indices
-  BBFI1  — Public finance / government statistics I
-  BBFI3  — Public finance / government statistics III
-  BBBP1  — Banking system / bank position statistics
-
-Note: API ignores startPeriod/endPeriod for XML format — returns full history.
-      Responses can be 1+ GB. Uses streaming iterparse for memory efficiency.
-
-Run: python jobs/ingest_bundesbank.py</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

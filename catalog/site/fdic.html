@@ -313,7 +313,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -326,7 +326,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">fdic</div>
 <h1>Federal Deposit Insurance Corporation (FDIC) - BankFind Suite API</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">U.S. Government Work (public domain)</span><span class="badge cat">Money &amp; Banking</span></div>
-<p class="lead">FDIC bank data ingest — full history from banks.data.fdic.gov. Public Domain (US government data). No API key required. Endpoints covered: financials — quarterly call-report data per institution (the main dataset) institutions — all FDIC-insured bank attributes (snapshot) history — institution name…</p>
+<p class="lead">Total securities; Total deposits; Net loans and leases</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -346,27 +346,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/fdic">https://econdatalibrary.com/fdic</a></dd>
 <dt>Update cadence</dt><dd>quarterly</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>extend by date</dd>
-<dt>Storage layout</dt><dd>Per-endpoint parquet: data/clean_full/fdic/{financials,institutions,history,failures,summary}.parquet. financials is LONG (series_key=&#x27;CERT={cert}:{field}&#x27;, obs_date(date32), value(float64)); the other four are WIDE (one row per record, all selected fields as typed columns). financials flushes every &gt;5M rows via _append_parquet (read-existing+concat+rewrite). No raw dir.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">FDIC bank data ingest — full history from banks.data.fdic.gov.
-
-Public Domain (US government data). No API key required.
-
-Endpoints covered:
-  financials  — quarterly call-report data per institution (the main dataset)
-  institutions — all FDIC-insured bank attributes (snapshot)
-  history      — institution name changes / mergers
-  failures     — failed bank list (1934–present)
-  summary      — industry-level aggregate stats by quarter
-
-Output: data/clean_full/fdic/&lt;endpoint&gt;.parquet
-  financials stored in long format: series_key = &quot;CERT={cert}:{field}&quot;, obs_date, value
-  Others stored wide (one row per record with all available fields).
-
-Run: python jobs/ingest_fdic.py
-     python jobs/ingest_fdic.py --only financials</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

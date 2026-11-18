@@ -315,7 +315,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -328,7 +328,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">insee_bdm</div>
 <h1>Institut national de la statistique et des études économiques (INSEE) — BDM (Banque de Données Macroéconomiques)</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Etalab Open Licence 2.0</span><span class="badge cat">Macroeconomics</span></div>
-<p class="lead">INSEE BDM (Banque de Donnees Macroeconomiques) full ingest. 150,000+ French macroeconomic time series. No API key required. API: https://api.insee.fr/series/BDM/V1 (SDMX 2.1 StructureSpecific format) Strategy: 1. Get all categorisations -&gt; extract distinct Dataflow IDs (388 entries -&gt; ~100 unique…</p>
+<p class="lead">Annual national accounts base 2020; Annual national accounts base 2014; Annual national accounts base 2010</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -348,24 +348,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/insee_bdm">https://econdatalibrary.com/insee_bdm</a></dd>
 <dt>Update cadence</dt><dd>monthly</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>sdmx delta</dd>
-<dt>Storage layout</dt><dd>overwrite-multi-file — one parquet per dataflow, data/clean_full/insee_bdm/{FLOW_ID}.parquet (verified 201 files; schema idbank, obs_date, value, dataflow). Whole BDM corpus is ~150k series across the flows.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">INSEE BDM (Banque de Donnees Macroeconomiques) full ingest.
-
-150,000+ French macroeconomic time series. No API key required.
-API: https://api.insee.fr/series/BDM/V1 (SDMX 2.1 StructureSpecific format)
-
-Strategy:
-1. Get all categorisations -&gt; extract distinct Dataflow IDs (388 entries -&gt; ~100 unique flows)
-2. For each dataflow: fetch all observations using data/SERIES_BDM/{FLOW_ID}
-3. Write one Parquet per dataflow to data/clean_full/insee_bdm/
-
-License: Licence Ouverte / Open Licence 2.0 — commercial redistribution OK.
-Attribution: Source: INSEE BDM (Licence Ouverte 2.0) www.insee.fr
-
-Run: python jobs/ingest_insee_bdm.py [--dry]</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

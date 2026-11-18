@@ -312,7 +312,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -325,7 +325,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">ksh_stadat</div>
 <h1>Hungarian Central Statistical Office (HCSO/KSH) — Summary tables (STADAT)</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Creative Commons Attribution 4.0 (CC BY 4.0)</span><span class="badge cat">Macroeconomics</span></div>
-<p class="lead">KSH Hungary (Központi Statisztikai Hivatal) — STADAT tables via toc.json + CSV. License: Free to use with attribution to KSH (www.ksh.hu) Source: https://www.ksh.hu/stadat (the SDMX host is dead; this is the working channel) No API key required. Coverage: all ~1,632 STADAT tables across 27 themes…</p>
+<p class="lead">Total; Monthly; Corresponding period of previous year = 100.0%</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -345,39 +345,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/ksh_stadat">https://econdatalibrary.com/ksh_stadat</a></dd>
 <dt>Update cadence</dt><dd>irregular</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
-<dt>Storage layout</dt><dd>per-theme parquet in data/clean_full/ksh_stadat/ (27 theme files, 2KB-564KB; schema series_key:string KSH:{table_id}:{row}:{col}, obs_date:date32 (annual Dec-31, quarterly/monthly first-of-period), value:float64, zstd) plus cached _catalog.json (~1.1MB). Per-theme skip-if-exists (lines 622-627); fetch every catalog CSV in the theme, 3-orientation parse, dedup on (key,date), one write at theme end (lines 665-674). Resumable at THEME granularity; an interrupted theme writes nothing and fully restarts.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">KSH Hungary (Központi Statisztikai Hivatal) — STADAT tables via toc.json + CSV.
-
-License: Free to use with attribution to KSH (www.ksh.hu)
-Source: https://www.ksh.hu/stadat (the SDMX host is dead; this is the working channel)
-No API key required.
-
-Coverage: all ~1,632 STADAT tables across 27 themes (ara prices, gdp national
-accounts, mun labour, nep population, ene energy, ...), English edition.
-
-Channel:
-  * Catalog: GET https://www.ksh.hu/stadat_files/toc.json
-  * Data:    GET https://www.ksh.hu/stadat_files/{theme}/en/{id}.csv
-             where theme = first 3 chars of the table id.
-
-Notes:
-  * KSH&#x27;s F5 WAF rejects minimal clients → full browser headers are required
-    (this script intentionally does NOT use the library User-Agent).
-  * CSVs are semicolon-delimited presentation tables: title row, one or more
-    header rows (quoted cells may contain newlines), comma decimal separators,
-    space thousands separators, &#x27;x&#x27;/&#x27;..&#x27; placeholders.
-  * Time may live in the first column (Year rows) or in the column headers;
-    both orientations are handled. Tables with no parseable time dimension
-    are logged and skipped.
-
-Output: one parquet per theme (first 3 chars of table id), long format
-        {series_key, obs_date, value}; resumable (skips existing parquets).
-series_key: KSH:{table_id}:{row_label}:{col_label} (separators sanitized).
-
-Run: python jobs/ingest_ksh_stadat.py</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

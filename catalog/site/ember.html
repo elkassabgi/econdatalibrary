@@ -326,7 +326,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -339,7 +339,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">ember</div>
 <h1>Ember (electricity)</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Creative Commons Attribution 4.0 (CC BY 4.0)</span><span class="badge cat">Energy</span></div>
-<p class="lead">FULL-coverage ingest of Ember&#x27;s published electricity/energy data (CC BY 4.0). Ember publishes every dataset shown on ember-energy.org/data as flat CSVs on a public Google Cloud Storage bucket (emb-prod-bkt-publicdata). The bucket is openly LISTABLE via the GCS JSON API, so we enumerate the ENTIRE…</p>
+<p class="lead">Total electricity generation; Clean generation share; Solar generation</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -360,42 +360,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/ember">https://econdatalibrary.com/ember</a></dd>
 <dt>Update cadence</dt><dd>monthly</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
-<dt>Storage layout</dt><dd>Grouped: ONE Parquet per source CSV at data/clean_full/ember/&lt;dataset_id&gt;.parquet (~59 files; columns series_key, obs_date date32, value float64, plus present descriptive dims among geography/area/state/category/subcategory/variable/unit/dimension/series). _summary.json run report. Full catalog listing cached at data/raw/ember/ember_manifest_full.json. ~8.1M obs measured.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">FULL-coverage ingest of Ember&#x27;s published electricity/energy data (CC BY 4.0).
-
-Ember publishes every dataset shown on ember-energy.org/data as flat CSVs on a public
-Google Cloud Storage bucket (emb-prod-bkt-publicdata). The bucket is openly LISTABLE
-via the GCS JSON API, so we enumerate the ENTIRE catalog rather than hand-curating a
-slice. We take every *current* CSV under `public-downloads/` and EXCLUDE the
-`*-archive/` point-in-time snapshots (those are historical copies of the current files,
-not new data).
-
-GROUPED STORAGE (anti-bloat): ONE Parquet per source CSV -&gt;
-  data/clean_full/ember/&lt;dataset_id&gt;.parquet
-Each Parquet is a faithful long table carrying a `series_key` column (the comma-joined
-identifying dimensions), plus obs_date, value, unit, and the descriptive dimension
-columns. 86 source CSVs -&gt; at most ~86 Parquet files for the whole source.
-
-Schema families handled:
-  A. global/europe/india/us &quot;*_full_release_long_format&quot; -&gt; Category/Subcategory/
-     Variable/Unit/Value with Year or Date (+ optional State for us/india).
-  B. capacity monthly wind/solar (Month,Year,...,Installed Capacity,...).
-  C. customs / solar-export long tables (Area,Date,...,Amount (USD)/(kg)/(items)).
-  D. european wholesale price (Country,ISO3,Date,Price).
-  E. methane / NECP / RES-tracker / ISET / methane_imeo (assorted dim+value+year).
-  F. wide &quot;graphic&quot;/chart helper + Turkiye/price-chart files (columns are geos/fuels)
-     -&gt; melted to long so every cell is one observation.
-For any file we cannot map to a known shape, we fall back to a generic melter that
-keeps non-numeric columns as the key and melts numeric columns to long.
-
-Usage:
-  python jobs/ingest_ember.py --discover        # enumerate catalog only, no download
-  python jobs/ingest_ember.py --dry             # download+parse, print, NO parquet
-  python jobs/ingest_ember.py                    # full run (download + write parquet)
-  python jobs/ingest_ember.py --only yearly_full_release_long_format   # one dataset</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

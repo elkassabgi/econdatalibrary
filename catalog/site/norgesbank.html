@@ -312,7 +312,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -325,7 +325,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">norgesbank</div>
 <h1>Norges Bank</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Norwegian Licence for Open Government Data 2.0</span><span class="badge cat">Money &amp; Banking</span></div>
-<p class="lead">Norges Bank — Norwegian Central Bank SDMX-JSON API. License: Open data (Norges Bank terms) Source: https://data.norges-bank.no/ No API key required. Coverage (23 dataflows): * Exchange rates (USD/NOK, EUR/NOK, 40+ currencies, daily 1994–present) * Policy interest rate * Financial indicators (NIBOR,…</p>
+<p class="lead">LE - O_V; LE - V; LE - VWAR</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -345,28 +345,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/norgesbank">https://econdatalibrary.com/norgesbank</a></dd>
 <dt>Update cadence</dt><dd>monthly</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>sdmx delta</dd>
-<dt>Storage layout</dt><dd>single parquet (combined): data/clean_full/norgesbank/norgesbank.parquet (~12 MB, ~16K obs is the COVERAGE &#x27;nyfed&#x27; line — norgesbank itself is small/medium). Schema: series_key (str, &#x27;{flow}:{dim.dim.dim}&#x27;), obs_date (date32), value (float64). Written once at end of run (no checkpointing); resume reads the whole file back in first. Sibling per-dataflow .parquet files are from a separate script.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">Norges Bank — Norwegian Central Bank SDMX-JSON API.
-
-License: Open data (Norges Bank terms)
-Source: https://data.norges-bank.no/
-No API key required.
-
-Coverage (23 dataflows):
-  * Exchange rates (USD/NOK, EUR/NOK, 40+ currencies, daily 1994–present)
-  * Policy interest rate
-  * Financial indicators (NIBOR, NOWA, T-bills)
-  * Government securities (yields, zero-coupon)
-  * Money market rates
-  * Short-term interest rates
-
-API format: GET /api/data/{DATAFLOW}?format=sdmx-json
-SDMX-JSON v1.0 format — series dimensions encoded as &quot;0:1:2:0&quot; indices.
-
-Run: python jobs/ingest_norgesbank.py</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

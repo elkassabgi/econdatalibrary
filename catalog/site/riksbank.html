@@ -313,7 +313,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -326,7 +326,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">riksbank</div>
 <h1>Sveriges Riksbank (Central Bank of Sweden)</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">riksbank-open-data</span><span class="badge cat">Money &amp; Banking</span></div>
-<p class="lead">Sveriges Riksbank (Sweden) — SWEA exchange rates and interest rates, 1994–present. License: Open data (Riksbank public data) Source: https://api.riksbank.se/swea/v1/ No API key required. Coverage: * ~117 series: SEK FX rates, policy rate, repo rate, government bond yields, inflation expectations,…</p>
+<p class="lead">Policy rate; Deposit rate; Lending rate</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -349,27 +349,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/riksbank">https://econdatalibrary.com/riksbank</a></dd>
 <dt>Update cadence</dt><dd>daily</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>extend by date</dd>
-<dt>Storage layout</dt><dd>single parquet: data/clean_full/riksbank/riksbank.parquet (~2.3 MB; series_key=&#x27;RIKSBANK:&lt;seriesId&gt;&#x27;, obs_date date32, value float64) plus sidecar _series_catalog.json (the /Series catalog) and a _riksbank_log.txt. Checkpoints overwrite the whole parquet every 10 series (lines 175-182) and again at the end.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">Sveriges Riksbank (Sweden) — SWEA exchange rates and interest rates, 1994–present.
-
-License: Open data (Riksbank public data)
-Source: https://api.riksbank.se/swea/v1/
-No API key required.
-
-Coverage:
-  * ~117 series: SEK FX rates, policy rate, repo rate, government bond yields,
-    inflation expectations, mortgage rates, interbank rates
-  * Daily/weekly/monthly observations
-
-Strategy:
-  * GET /swea/v1/Series → catalog of all series IDs
-  * For each: GET /swea/v1/Observations/{id}/{from}/{to}
-  * Rate limit: ~30 req/min; script backs off on 429
-
-Run: python jobs/ingest_riksbank.py</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

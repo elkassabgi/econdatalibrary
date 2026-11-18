@@ -312,7 +312,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -325,7 +325,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">bfs</div>
 <h1>Swiss Federal Statistical Office (Bundesamt für Statistik / Office fédéral de la statistique, FSO/BFS)</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">opendata.swiss — open use, source must be provided</span><span class="badge cat">Macroeconomics</span></div>
-<p class="lead">Swiss Federal Statistical Office (BFS/OFS) — PxWeb ingest. License: OPEN-BY-ASK (free for non-commercial use with attribution) Source: https://www.bfs.admin.ch/bfs/de/home/statistiken.html No API key required. Coverage: ~673 tables in the BFS PxWeb database (German API): * National accounts (GDP,…</p>
+<p class="lead">Ständige und nichtständige Wohnbevölkerung nach Jahr, Kanton (-) / Bezirk (&gt;&gt;) / Gemeinde (......), Bevölkerungstyp, Wohnort vor 1 Jahr, …</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -345,32 +345,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/bfs">https://econdatalibrary.com/bfs</a></dd>
 <dt>Update cadence</dt><dd>monthly</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>sdmx delta</dd>
-<dt>Storage layout</dt><dd>single parquet: data/clean_full/bfs/bfs.parquet (zstd, ~14MB), columns (series_key=&#x27;BFS:{dbid}:{dim}={code}:...&#x27;, obs_date, value). Written incrementally to the SAME path as a checkpoint every 50 tables and once at the end.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">Swiss Federal Statistical Office (BFS/OFS) — PxWeb ingest.
-
-License: OPEN-BY-ASK (free for non-commercial use with attribution)
-Source: https://www.bfs.admin.ch/bfs/de/home/statistiken.html
-No API key required.
-
-Coverage: ~673 tables in the BFS PxWeb database (German API):
-  * National accounts (GDP, GNI, output)
-  * Labour market (employment, wages, unemployment)
-  * Prices (CPI, producer prices)
-  * Trade (imports/exports)
-  * Population and demography
-  * Housing and construction
-  * Industry and services
-  * Finance and insurance
-  * Health and education
-
-PxWeb multi-table root: GET /api/v1/en/  → list all table IDs
-Data query: POST /api/v1/de/{dbid}/{table}.px/  → JSON-stat2
-NOTE: English API returns 400 for individual tables; use German endpoint for data.
-
-Run: python jobs/ingest_bfs.py</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

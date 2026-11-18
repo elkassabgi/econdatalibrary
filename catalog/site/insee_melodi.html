@@ -315,7 +315,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -328,7 +328,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">insee_melodi</div>
 <h1>Institut national de la statistique et des études économiques (INSEE) — Melodi API</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Etalab Open Licence 2.0</span><span class="badge cat">Macroeconomics</span></div>
-<p class="lead">INSEE Melodi API ingest -- all 109 dataflows, keyless. Melodi is INSEE&#x27;s new unified data catalog API. No authentication needed (&#x27;libre&#x27; / keyless plan). 30 req/min rate limit. 109 dataflows covering: national accounts (CNA), employment, prices, foreign trade, industry, construction, services,…</p>
+<p class="lead">Activity, employment and unemployment; Consumption Price Index (CPI); Degrees and training</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -348,24 +348,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/insee_melodi">https://econdatalibrary.com/insee_melodi</a></dd>
 <dt>Update cadence</dt><dd>monthly <em>(paused)</em></dd>
-<dt>Automated refresh</dt><dd><strong>paused</strong> &mdash; updates are on hold until its incomplete tables are repaired. See the <a href="status.html">Source Status board</a>.</dd>
-<dt>Update strategy</dt><dd>sdmx delta</dd>
-<dt>Storage layout</dt><dd>overwrite-multi-file — one parquet per dataflow, data/clean_full/insee_melodi/{FLOW_CODE}.parquet (verified 79 files; schema flow, series_key, obs_date, value). series_key is the sorted non-TIME dimension tuple. Some flows large (DS_BPE* ~25 MB each).</dd></dl>
-<h2>Full description</h2>
-<p class="lead">INSEE Melodi API ingest -- all 109 dataflows, keyless.
-
-Melodi is INSEE&#x27;s new unified data catalog API. No authentication needed
-(&#x27;libre&#x27; / keyless plan). 30 req/min rate limit.
-
-109 dataflows covering: national accounts (CNA), employment, prices,
-foreign trade, industry, construction, services, demographics, and more.
-Each dataflow&#x27;s data is fetched from /data/{FLOW_CODE} as JSON.
-
-License: Licence Ouverte / Open Licence 2.0 — commercial redistribution OK.
-Attribution: Source: INSEE Melodi (Licence Ouverte 2.0) www.insee.fr
-API: https://api.insee.fr/melodi (keyless, 30 req/min)
-
-Run: python jobs/ingest_insee_melodi.py [--dry]</p>
+<dt>Automated refresh</dt><dd><strong>paused</strong> &mdash; updates are on hold until its incomplete tables are repaired. See the <a href="status.html">Source Status board</a>.</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

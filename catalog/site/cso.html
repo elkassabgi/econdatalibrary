@@ -312,7 +312,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -325,7 +325,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">cso</div>
 <h1>Central Statistics Office (CSO), Ireland</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Creative Commons Attribution 4.0 (CC BY 4.0)</span><span class="badge cat">Macroeconomics</span></div>
-<p class="lead">CSO Ireland (Central Statistics Office) — PxStat full ingest. License: Creative Commons Attribution 4.0 (CC BY 4.0) Source: https://data.cso.ie / https://ws.cso.ie/public/api.restful/ No API key required. Coverage: ~10,000+ tables across 9 themes: * Census (population by age, sex, nationality,…</p>
+<p class="lead">Population; Private Households in Permanent Housing Units; Population Aged 15 Years and Over</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -345,28 +345,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/cso">https://econdatalibrary.com/cso</a></dd>
 <dt>Update cadence</dt><dd>irregular</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>overwrite if changed</dd>
-<dt>Storage layout</dt><dd>overwrite-multiple-files: one parquet per subject group (e.g. 26_Labour_Market.parquet, 29_National_Accounts.parquet) — ~46 files — plus cached _catalog.json. Schema series_key(str like CSO:&lt;MtrCode&gt;:DIM=code...), obs_date(date32; annual Dec-31, monthly/quarterly/weekly first-of-period), value(float64). In-function de-dup via a &#x27;seen&#x27; (key,date) set.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">CSO Ireland (Central Statistics Office) — PxStat full ingest.
-
-License: Creative Commons Attribution 4.0 (CC BY 4.0)
-Source: https://data.cso.ie / https://ws.cso.ie/public/api.restful/
-No API key required.
-
-Coverage: ~10,000+ tables across 9 themes:
-  * Census (population by age, sex, nationality, housing, etc.)
-  * Economy (national accounts, trade, finance, prices)
-  * Labour Market and Earnings
-  * People and Society (health, housing, crime, education)
-  * Business Sectors (agriculture, industry, transport, tourism)
-  * Environment (energy, climate, ecosystem)
-  * Other Public Sector Bodies (Central Bank, Dept of Health, etc.)
-  * High Value Datasets
-  * Themed Publications
-
-Run: python jobs/ingest_cso_ireland.py</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

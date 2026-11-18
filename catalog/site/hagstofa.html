@@ -312,7 +312,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -325,7 +325,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">hagstofa</div>
 <h1>Statistics Iceland (Hagstofa Íslands)</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Creative Commons Attribution 4.0 (CC BY 4.0)</span><span class="badge cat">Macroeconomics</span></div>
-<p class="lead">Statistics Iceland (Hagstofa Íslands) — PxWeb ingest. License: Creative Commons Attribution 4.0 (CC BY 4.0) Source: https://www.statice.is/ No API key required. Coverage: All databases in the Statistics Iceland PxWeb system: * Efnahagur (Economy): GDP, trade, prices, public finance * Atvinnuvegir…</p>
+<p class="lead">from January 2008; from January 2005; Population by municipality, sex, citizenship and quarters 2011-2026</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -345,27 +345,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/hagstofa">https://econdatalibrary.com/hagstofa</a></dd>
 <dt>Update cadence</dt><dd>monthly</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>sdmx delta</dd>
-<dt>Storage layout</dt><dd>per-database parquet: Efnahagur.parquet, Atvinnuvegir.parquet, Ibuar.parquet, Samfelag.parquet, Umhverfi.parquet (5 files) plus _catalog.json. Schema: series_key (ICE:{db}:{path}:dim=code...), obs_date, value.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">Statistics Iceland (Hagstofa Íslands) — PxWeb ingest.
-
-License: Creative Commons Attribution 4.0 (CC BY 4.0)
-Source: https://www.statice.is/
-No API key required.
-
-Coverage: All databases in the Statistics Iceland PxWeb system:
-  * Efnahagur (Economy): GDP, trade, prices, public finance
-  * Atvinnuvegir (Industry): fishing, agriculture, manufacturing
-  * Ibuar (Population): demographics, births, deaths, migration
-  * Samfelag (Society): education, health, housing
-
-PxWeb multi-database: GET {BASE}/en      → list databases
-                       GET {BASE}/en/{db}/{path}  → catalog or table
-                       POST {BASE}/en/{db}/{path}/{id}/  → data (JSON-stat2)
-
-Run: python jobs/ingest_hagstofa.py</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

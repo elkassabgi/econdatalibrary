@@ -317,7 +317,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -330,7 +330,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">worldbank_esg</div>
 <h1>World Bank Sovereign ESG</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Creative Commons Attribution 4.0 (CC BY 4.0)</span><span class="badge cat">Environment &amp; Climate</span><span class="badge cat">Governance &amp; Institutions</span><span class="badge cat">Society &amp; Well-Being</span></div>
-<p class="lead">FULL-COVERAGE ingest of the World Bank Sovereign ESG database (API source=75). Catalog = ALL 71 ESG indicators (enumerated live from https://api.worldbank.org/v2/source/75/indicator ). For each indicator we pull EVERY economy x year via…</p>
+<p class="lead">Control of Corruption; Political Stability; Rule of Law</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -351,36 +351,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/worldbank_esg">https://econdatalibrary.com/worldbank_esg</a></dd>
 <dt>Update cadence</dt><dd>weekly</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>extend by date</dd>
-<dt>Storage layout</dt><dd>grouped per-indicator: data/clean_full/worldbank_esg/&lt;IND&gt;.parquet (71 files; columns country/obs_date/value) + _manifest.json (per-indicator api_total_rows, nonnull_obs, economies, year_min/max). Mirror raw JSON under data/raw/worldbank_esg/&lt;IND&gt;.json (71). ~36 MB clean (wb_esg ~599K obs).</dd></dl>
-<h2>Full description</h2>
-<p class="lead">FULL-COVERAGE ingest of the World Bank Sovereign ESG database (API source=75).
-
-Catalog = ALL 71 ESG indicators (enumerated live from
-  https://api.worldbank.org/v2/source/75/indicator ).
-
-For each indicator we pull EVERY economy x year via
-  https://api.worldbank.org/v2/country/all/indicator/&lt;IND&gt;?source=75
-in a single large page (per_page=20000; the largest indicator has ~15k rows).
-
-GROUPED storage (mirrors jobs/ingest_worldbank_wdi.py): ONE Parquet per indicator,
-all economies inside -&gt; columns (country, obs_date, value). 71 indicators =&gt; 71
-Parquet files for the whole source. No per-series files.
-
-Economy code fix: when queried with source=75 the API returns BLANK
-country.id / countryiso3code for the ~34 aggregate economies (World, Euro area,
-Sub-Saharan Africa, ...). We repair this with a name-&gt;code map built from the
-canonical /v2/country reference list (keys stripped of trailing spaces), so every
-row gets a proper WDI code (WLD, EMU, SSF, LCN, ...) exactly like the WDI bulk.
-
-License: cc-by-4.0 (reservable id from configs/sources.yaml -&gt; worldbank_esg).
-
-Does NOT touch data/catalog.db or data/clean/ (per task constraints).
-
-Run:
-  python jobs/ingest_worldbank_esg.py --dry      # enumerate + 2 indicators, no writes
-  python jobs/ingest_worldbank_esg.py            # full run</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

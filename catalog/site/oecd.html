@@ -321,7 +321,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -334,7 +334,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">oecd</div>
 <h1>OECD Data Explorer (from 2024-07-01)</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Creative Commons Attribution 4.0 (CC BY 4.0)</span><span class="badge cat">Macroeconomics</span></div>
-<p class="lead">FULL-COVERAGE grouped ingest of the entire OECD SDMX catalog (Data Explorer). Source: OECD (CC BY 4.0). license_id = cc-by-4.0 (from configs/sources.yaml). Strategy (verified against sdmx.oecd.org, NSI Web Service v8.19.8.0): * Catalog = every dataflow from /public/rest/dataflow/all/all/latest…</p>
+<p class="lead">GDP, real, growth rate, quarter-on-quarter (%, s.a.) - USA; GDP, real, growth rate, quarter-on-quarter (%, s.a.) - JPN; GDP, real, growth…</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -355,43 +355,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/oecd">https://econdatalibrary.com/oecd</a></dd>
 <dt>Update cadence</dt><dd>monthly <em>(workstation update pass)</em></dd>
-<dt>Automated refresh</dt><dd>on the workstation update pass, not the cloud daily run &mdash; no automated run has completed without errors yet. See the <a href="status.html">Source Status board</a>.</dd>
-<dt>Update strategy</dt><dd>giant changed units</dd>
-<dt>Storage layout</dt><dd>overwrite-multi-file, ONE parquet per dataflow: data/clean_full/oecd/&lt;AGENCY&gt;__&lt;DATAFLOW_ID&gt;.parquet (currently 1413 files; ~6.0B obs, COVERAGE GIANT, ~57 GB on disk). Schema: series_key (str, dim cols joined by &#x27;.&#x27;), obs_date (date32), value (float64), obs_status (str), time_raw (str). Each flow streamed to data/raw/oecd/_tmp/&lt;...&gt;.csv then parsed once into a .part and os.replace&#x27;d. Run state/logs in data/raw/oecd/: manifest.json, dataflows_all.xml, ingest_results.jsonl, run.log/pid.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">FULL-COVERAGE grouped ingest of the entire OECD SDMX catalog (Data Explorer).
-
-Source: OECD (CC BY 4.0). license_id = cc-by-4.0 (from configs/sources.yaml).
-
-Strategy (verified against sdmx.oecd.org, NSI Web Service v8.19.8.0):
-  * Catalog = every dataflow from /public/rest/dataflow/all/all/latest (1509 flows).
-  * Most flows are served from the DEFAULT root  https://sdmx.oecd.org/public .
-    27 flows are isExternalReference=true and route to alternate roots
-    (sti-public / dcd-public / archive) -- we resolve each flow&#x27;s structureURL root.
-  * Data pulled as SDMX-CSV (Accept: application/vnd.sdmx.data+csv) via
-       /rest/data/&lt;agency&gt;,&lt;id&gt;,&lt;ver&gt;/all?dimensionAtObservation=AllDimensions
-  * SDMX-CSV header = DATAFLOW, &lt;dim1..dimN&gt;, TIME_PERIOD, OBS_VALUE, &lt;attrs...&gt;.
-    SERIES KEY = the dimension columns (everything strictly between DATAFLOW and
-    TIME_PERIOD), joined with &#x27;.&#x27;  -&gt; stored as column `series_key`.
-  * OECD caps a response at ~1e6 observations; very large flows return HTTP 500 /
-    never complete. FALLBACK: split the query by REF_AREA using the SDMX path-key
-    (REF_AREA value + dots for the remaining dims, in DSD position order); the set
-    of real reporters comes from /rest/availableconstraint/.../all?mode=available.
-
-OUTPUT: ONE Parquet per dataflow -&gt;
-    data/clean_full/oecd/&lt;AGENCY&gt;__&lt;DATAFLOW_ID&gt;.parquet
-  columns: series_key (str), obs_date (date32), value (float64),
-           obs_status (str), time_raw (str)
-A coarse per-dataflow row also gets written to a sidecar manifest (NOT catalog.db).
-
-Memory is bounded: each dataflow is streamed to a temp .csv on disk, parsed in a
-single pass, and written once; temp files are deleted after.
-
-Usage:
-  python jobs/ingest_oecd.py --catalog            # (re)download dataflow list, print counts
-  python jobs/ingest_oecd.py --dry 8              # process first 8 flows, no Parquet writes
-  python jobs/ingest_oecd.py --workers 6          # FULL run (default workers=6)
-  python jobs/ingest_oecd.py --only DSD_FOO@DF_BAR   # process one flow (debug)</p>
+<dt>Automated refresh</dt><dd>on the workstation update pass, not the cloud daily run &mdash; no automated run has completed without errors yet. See the <a href="status.html">Source Status board</a>.</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

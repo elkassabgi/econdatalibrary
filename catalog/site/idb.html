@@ -314,7 +314,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -327,7 +327,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">idb</div>
 <h1>Inter-American Development Bank (IDB) — Open Data Portal / Numbers for Development</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">audit-restricted-idb</span><span class="badge cat">Development Indicators</span></div>
-<p class="lead">IDB (Inter-American Development Bank) CKAN open-data ingest. Source: https://data.iadb.org (CKAN portal, no API key required) License: CC BY (IDB open data) Fetches all 217+ datasets from the IDB CKAN portal via the datastore API. Converts each resource to long-format parquet: {series_key,…</p>
+<p class="lead">Population and Housing Censuses Indicators of Latin America and the Caribbean: 1960-2017; Center for Learning Improvement Information (CI…</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -350,23 +350,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/idb">https://econdatalibrary.com/idb</a></dd>
 <dt>Update cadence</dt><dd>irregular</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
-<dt>Storage layout</dt><dd>per-resource files: data/clean_full/idb/&lt;pkg_slug&gt;__&lt;resource_id[:8]&gt;.parquet (observed ~555 files). Schema series_key(str), obs_date(date32), value(float64). series_key = IDB:&lt;slug&gt;:&lt;indicator&gt;:&lt;country&gt; (or IDB:&lt;slug&gt;:&lt;numeric_col&gt;:&lt;country&gt; for wide resources).</dd></dl>
-<h2>Full description</h2>
-<p class="lead">IDB (Inter-American Development Bank) CKAN open-data ingest.
-
-Source: https://data.iadb.org  (CKAN portal, no API key required)
-License: CC BY (IDB open data)
-
-Fetches all 217+ datasets from the IDB CKAN portal via the datastore API.
-Converts each resource to long-format parquet: {series_key, obs_date, value}.
-
-For datasets with clear indicator+country+date+value structure, these are used
-directly. For other shapes, numeric columns become separate series.
-
-Run: python jobs/ingest_idb.py
-     python jobs/ingest_idb.py --list    # list packages, no download</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

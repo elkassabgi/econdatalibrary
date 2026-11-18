@@ -312,7 +312,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -325,7 +325,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">wid</div>
 <h1>World Inequality Database (WID.world)</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">cc-by-nc-sa-4.0-wid</span><span class="badge cat">Inequality &amp; Poverty</span></div>
-<p class="lead">World Inequality Database (WID) — income &amp; wealth inequality, 200+ countries, 1820–present. License: CC BY 4.0 Source: https://wid.world/data/ No API key required. Coverage: * Pre-tax and post-tax income shares (top 1%, top 10%, bottom 50%) * Wealth shares and averages * National income, GDP,…</p>
+<p class="lead">World Inequality Database — distributional national accounts: income and wealth shares, averages and thresholds by percentile group</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -345,28 +345,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/wid">https://econdatalibrary.com/wid</a></dd>
 <dt>Update cadence</dt><dd>annual</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
-<dt>Storage layout</dt><dd>per-country parquet: data/clean_full/wid/&lt;CODE&gt;.parquet (119 present; series_key=WID:{variable}:{percentile}:{age}:{pop}:{country} / obs_date / value). PLUS a legacy single data/clean_full/wid/wid.parquet (~328 MB) that current main() never writes. Side-car _wid_log.txt.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">World Inequality Database (WID) — income &amp; wealth inequality, 200+ countries, 1820–present.
-
-License: CC BY 4.0
-Source: https://wid.world/data/
-No API key required.
-
-Coverage:
-  * Pre-tax and post-tax income shares (top 1%, top 10%, bottom 50%)
-  * Wealth shares and averages
-  * National income, GDP, population
-  * Gini coefficients
-  * All countries + US states + German states + regions
-  * ~1820-present (varies by country)
-
-Bulk download: https://wid.world/bulk_download/WID_data_{ISO}.csv
-Format: country;variable;percentile;year;value;age;pop
-
-Run: python jobs/ingest_wid.py</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

@@ -315,7 +315,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -328,7 +328,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">bis</div>
 <h1>Bank for International Settlements</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">BIS terms (attribution, non-commercial)</span><span class="badge cat">Interest Rates</span></div>
-<p class="lead">Download and ingest BIS CBS (Consolidated Banking Statistics) and LBS (Locational Banking Statistics) from the BIS Data Portal bulk downloads. These are NOT accessible via the BIS SDMX v1 API (returns 404) but ARE available as full CSV zip files at data.bis.org/static/bulk/. CBS = WS_CBS_PUB…</p>
+<p class="lead">Central bank policy rates — end-of-period rates across central banks (BIS)</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -348,21 +348,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/bis">https://econdatalibrary.com/bis</a></dd>
 <dt>Update cadence</dt><dd>monthly <em>(workstation update pass)</em></dd>
-<dt>Automated refresh</dt><dd>on the workstation update pass, not the cloud daily run &mdash; last fully completed automated run 2026-10-21. See the <a href="status.html">Source Status board</a>.</dd>
-<dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
-<dt>Storage layout</dt><dd>grouped: one parquet per non-giant dataflow (&lt;DID&gt;.parquet); giants chunked into &lt;DID&gt;__&lt;FREQ&gt;.parquet and MEGA giants into &lt;DID&gt;__&lt;FREQ&gt;__&lt;VAL&gt;.parquet (e.g. WS_CBS_PUB__Q__US.parquet). _manifest.json + _catalog.json sidecars. Schema: series_key, obs_date(date32), value(float64), freq. Note this writes WS_*.parquet into the SAME data/clean_full/bis dir that ingest_bis_cbs_lbs.py writes CBS.parquet/LBS.parquet to.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">Download and ingest BIS CBS (Consolidated Banking Statistics) and LBS
-(Locational Banking Statistics) from the BIS Data Portal bulk downloads.
-
-These are NOT accessible via the BIS SDMX v1 API (returns 404) but ARE
-available as full CSV zip files at data.bis.org/static/bulk/.
-
-CBS = WS_CBS_PUB (consolidated positions of internationally-active banking groups)
-LBS = WS_LBS_D_PUB (locational stats - includes both LBSR and LBSN dimensions)
-
-License: bis-attrib-nc (non-commercial, attribution required).
-Run: python jobs/ingest_bis_cbs_lbs.py</p>
+<dt>Automated refresh</dt><dd>on the workstation update pass, not the cloud daily run &mdash; last fully completed automated run 2026-10-21. See the <a href="status.html">Source Status board</a>.</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

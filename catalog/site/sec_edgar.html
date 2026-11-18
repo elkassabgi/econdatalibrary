@@ -316,7 +316,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -329,7 +329,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">sec_edgar</div>
 <h1>U.S. SEC EDGAR</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">U.S. Government Work (public domain)</span><span class="badge cat">Company Fundamentals</span><span class="badge cat">Equities &amp; Markets</span></div>
-<p class="lead">Phase-0 bootstrap: download the SEC EDGAR bulk archives for the initial backfill. companyfacts.zip (~1.39 GB) -- every company&#x27;s XBRL financial-statement facts (the NUMBERS we host) submissions.zip (~1.54 GB) -- every filing&#x27;s metadata (the POINTERS we index; documents stay on sec.gov) Polite by…</p>
+<p class="lead">Company financial fundamentals extracted from SEC EDGAR filings</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -354,19 +354,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/sec_edgar">https://econdatalibrary.com/sec_edgar</a></dd>
 <dt>Update cadence</dt><dd>daily</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>bulk snapshot if changed</dd>
-<dt>Storage layout</dt><dd>TWO stages. Raw: data/raw/sec_edgar/companyfacts.zip + submissions.zip (~2.9GB combined) from this fetch script. Clean: one parquet per ticker/identifier under data/clean_grouped/sec_edgar/&lt;TICKER&gt;.parquet (~17,274 files) written by the separate jobs/ingest_sec_edgar.py — note this lands in clean_grouped, NOT clean_full (clean_full/sec_edgar is empty). ~123M obs total.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">Phase-0 bootstrap: download the SEC EDGAR bulk archives for the initial backfill.
-
-  companyfacts.zip  (~1.39 GB) -- every company&#x27;s XBRL financial-statement facts (the NUMBERS we host)
-  submissions.zip   (~1.54 GB) -- every filing&#x27;s metadata (the POINTERS we index; documents stay on sec.gov)
-
-Polite by design: descriptive User-Agent (SEC requires it or returns 403), streamed
-to disk, resumable (HTTP Range), retried. Source: U.S. SEC EDGAR (public domain).
-
-Run:  python jobs/fetch_sec_edgar_bulk.py</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

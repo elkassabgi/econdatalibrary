@@ -314,7 +314,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -327,7 +327,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">istat</div>
 <h1>Istat (Italian National Institute of Statistics)</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">cc-by-4.0-istat</span><span class="badge cat">Italy</span></div>
-<p class="lead">Complete ISTAT dataflows the normal pull left INCOMPLETE. The normal ISTAT sweep (the retired SDMX ingester (its parsers now live in jobs/_sdmx_common.py), providers &quot;istat&quot; + &quot;istat_esploradati&quot;) writes one Parquet per dataflow into data/clean_full/istat/. A subset of flows never land because a…</p>
+<p class="lead">Local units and persons employed; Enterprises and persons employed; Persons convicted by final judgement</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -350,46 +350,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/istat">https://econdatalibrary.com/istat</a></dd>
 <dt>Update cadence</dt><dd>monthly <em>(workstation update pass)</em></dd>
-<dt>Automated refresh</dt><dd>on the workstation update pass, not the cloud daily run &mdash; last fully completed automated run 2026-07-14. See the <a href="status.html">Source Status board</a>.</dd>
-<dt>Update strategy</dt><dd>sdmx delta</dd>
-<dt>Storage layout</dt><dd>per-flow parquet files in data/clean_full/istat/ (755 files present, many MB-scale, e.g. 101_1015.parquet ~2.9MB; schema series_key:string, obs_date:date32, value:float64, zstd, sorted by (key,date)). SAME dir+filename convention as the retired SDMX ingester (its parsers now live in jobs/_sdmx_common.py) so the two jobs dedupe via skip-existing across both. Plus JSON checkpoints _sliced_done.json / _sliced_unrecoverable.json (atomic tmp+os.replace, lines 603-607). Full mode: incomplete = no parquet (is_incomplete, lines 610-614); present flows skipped+marked done (lines 697-700). --only mode INTENTIONALLY ignores skip-existing and the done checkpoint and OVERWRITES the target flow (lines 654-665, 697).</dd></dl>
-<h2>Full description</h2>
-<p class="lead">Complete ISTAT dataflows the normal pull left INCOMPLETE.
-
-The normal ISTAT sweep (the retired SDMX ingester (its parsers now live in jobs/_sdmx_common.py), providers &quot;istat&quot; +
-&quot;istat_esploradati&quot;) writes one Parquet per dataflow into
-data/clean_full/istat/.  A subset of flows never land because a single SDMX
-data response is too large for the endpoint: the host returns HTTP 500 / times
-out, the body exceeds what we can parse, or (via the relay aggregator historically) the
-flow blows past the 100K-series cap.
-
-This job sweeps the ISTAT catalog, finds every flow that has NO parquet yet
-(or is marked errored), and retrieves it WITHOUT overloading the endpoint:
-
-  1. Plain full pull           GET /data/IT1,{flow}/        (sdmx-csv)
-  2. Time slicing              startPeriod/endPeriod in decade windows
-     (pre-1960, 1960-69, ... 2030-39), accumulating + de-duping obs.
-  3. Per-year slicing          for any decade that still 500s / is too big.
-  4. Dimension slicing         split the key-path on the most granular
-     dimension (territory/category/...), one request per code, when the
-     time axis alone can&#x27;t shrink the response. Requires the DSD, fetched
-     from whichever ISTAT host answers.
-
-Anything that survives all of the above on BOTH hosts is recorded in
-_sliced_unrecoverable.json with the exact reason -- never fabricated, never
-silently dropped.  Completed flow ids are checkpointed in _sliced_done.json
-so the run is fully resumable (a watcher relaunches this after ISTAT, whose
-esploradati host is chronically flaky, recovers).
-
-Output: data/clean_full/istat/{flow_id}.parquet  -- SAME dir + filename
-convention as the retired SDMX ingester (its parsers now live in jobs/_sdmx_common.py), so skip-existing dedupes across both jobs.
-Schema: {series_key: string, obs_date: date32, value: float64}, zstd.
-
-Run:
-  python jobs/ingest_istat_sliced.py                 # full incomplete sweep
-  python jobs/ingest_istat_sliced.py --only A,B      # just these flow ids
-  python jobs/ingest_istat_sliced.py --list          # list incomplete, no DL
-  python jobs/ingest_istat_sliced.py --max-size-mb 500</p>
+<dt>Automated refresh</dt><dd>on the workstation update pass, not the cloud daily run &mdash; last fully completed automated run 2026-07-14. See the <a href="status.html">Source Status board</a>.</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

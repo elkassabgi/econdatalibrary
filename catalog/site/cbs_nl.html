@@ -312,7 +312,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -325,7 +325,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">cbs_nl</div>
 <h1>Statistics Netherlands (Centraal Bureau voor de Statistiek, CBS)</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Creative Commons Attribution 4.0 (CC BY 4.0)</span><span class="badge cat">Macroeconomics</span></div>
-<p class="lead">CBS Netherlands OData v3 ingest — full statistical catalog. License: CC BY 4.0 (Statistics Netherlands open data) Source: opendata.cbs.nl/OData (v3 REST API) Catalog: https://opendata.cbs.nl/ODataCatalog/Tables?$format=json Strategy: * List all tables from the OData catalog (~8000+ tables) * For…</p>
+<p class="lead">Verzorgingshuizen; per provincie, 1995</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -345,24 +345,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/cbs_nl">https://econdatalibrary.com/cbs_nl</a></dd>
 <dt>Update cadence</dt><dd>irregular <em>(target &mdash; not yet automated)</em></dd>
-<dt>Automated refresh</dt><dd>not yet wired &mdash; the data here is the verified initial load. See the <a href="status.html">Source Status board</a>.</dd>
-<dt>Update strategy</dt><dd>overwrite if changed</dd>
-<dt>Storage layout</dt><dd>per-series files — one {tableId}.parquet per CBS table under data/clean_full/cbs_nl/ (~2180 files); huge tables flushed via {tableId}.part{i}.parquet + {tableId}.ckpt.json then concatenated into the final parquet and parts/ckpt removed.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">CBS Netherlands OData v3 ingest — full statistical catalog.
-
-License: CC BY 4.0 (Statistics Netherlands open data)
-Source: opendata.cbs.nl/OData (v3 REST API)
-Catalog: https://opendata.cbs.nl/ODataCatalog/Tables?$format=json
-
-Strategy:
-  * List all tables from the OData catalog (~8000+ tables)
-  * For each table: GET /OData/{tableId}/TypedDataSet paginated
-  * Map Period dimension → obs_date; all other dims → series_key
-  * One Parquet per table; fully resumable
-
-Run: python jobs/ingest_cbs_nl.py
-     python jobs/ingest_cbs_nl.py --only 83439NED,37230NED</p>
+<dt>Automated refresh</dt><dd>not yet wired &mdash; the data here is the verified initial load. See the <a href="status.html">Source Status board</a>.</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

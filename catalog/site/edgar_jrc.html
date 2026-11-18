@@ -314,7 +314,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -327,7 +327,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">edgar_jrc</div>
 <h1>EDGAR -- Emissions Database for Global Atmospheric Research (Joint Research Centre, European Commission)</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">Creative Commons Attribution 4.0 (CC BY 4.0)</span><span class="badge cat">Environment &amp; Climate</span></div>
-<p class="lead">EU JRC EDGAR greenhouse gas and air pollutant emissions ingest. Source: https://edgar.jrc.ec.europa.eu/ License: GHG totals CC BY 4.0; IEA_EDGAR_CO2 also CC BY-NC-ND 4.0 (non-commercial OK) Coverage: 1970-2024 (GHG), 1970-2022 (air pollutants), all countries Downloads country-total annual emissions…</p>
+<p class="lead">CO2 emissions, Aruba; CO2 emissions, Afghanistan; CO2 emissions, Angola</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -350,24 +350,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/edgar_jrc">https://econdatalibrary.com/edgar_jrc</a></dd>
 <dt>Update cadence</dt><dd>annual</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>overwrite if changed</dd>
-<dt>Storage layout</dt><dd>Single Parquet: data/clean_full/edgar_jrc/edgar_jrc.parquet with columns series_key (EDGAR:{gas}:{iso3}), obs_date (date32, Dec-31 annual), value (float64). Small annual source (comparable to ember&#x27;s ~8M tier). No raw cache, no per-gas files. Side logs _edgar_jrc_log.txt / _edgar_jrc_err.txt.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">EU JRC EDGAR greenhouse gas and air pollutant emissions ingest.
-
-Source: https://edgar.jrc.ec.europa.eu/
-License: GHG totals CC BY 4.0; IEA_EDGAR_CO2 also CC BY-NC-ND 4.0 (non-commercial OK)
-Coverage: 1970-2024 (GHG), 1970-2022 (air pollutants), all countries
-
-Downloads country-total annual emissions ZIP files from JRC EDGAR 2025 release.
-Gases: CO2 (fossil+IEA), CO2bio, CH4, N2O, F-gases, total GHG (AR5), NOx, PM2.5
-Air pollutants (v8.1): SO2, BC, CO, NH3, NMVOC, OC, PM10, PM2.5, NOx
-
-series_key: EDGAR:{gas}:{iso3}   e.g. EDGAR:CO2:USA  EDGAR:CH4:DEU
-
-Output: data/clean_full/edgar_jrc/edgar_jrc.parquet
-Run: python jobs/ingest_edgar_jrc.py</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,

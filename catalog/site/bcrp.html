@@ -317,7 +317,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
   fetch(API+"/v1/stats?h="+Math.floor(Date.now()/3600000)).then(function(r){if(!r.ok)throw 0;return r.json();}).then(function(d){
     document.getElementById('sb-dot').style.color='#059669';
     document.getElementById('sb-text').textContent='All systems operational';
-    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-17');
+    document.getElementById('sb-site').textContent='Website updated: '+fdate('2026-11-18');
   }).catch(function(){
     document.getElementById('sb-dot').style.color='#d97706';
     document.getElementById('sb-text').textContent='Status check unavailable';
@@ -330,7 +330,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <div class="pid">bcrp</div>
 <h1>Banco Central de Reserva del Perú (BCRP) — Estadísticas / BCRPData</h1>
 <div class="badges"><span class="badge open">Open &middot; redistributed</span><span class="badge lic">custom-terms-bcrp</span><span class="badge cat">Money &amp; Banking</span></div>
-<p class="lead">BCRP (Banco Central de Reserva del Perú) — Peruvian exchange rate data. License: Open data (public domain) Source: https://estadisticas.bcrp.gob.pe/ No API key required. Coverage: * Daily exchange rates: USD/PEN, EUR/PEN, GBP/PEN, JPY/PEN (buying, selling, spot) NOTE: Only daily PD* series work via…</p>
+<p class="lead">Peruvian macro-financial series — exchange rates, interest rates and prices (BCRPData)</p>
 </section>
 <div class="wrap">
 <div class="callout open"><b>Redistributable.</b> This source is served as canonical Parquet under the license below, with attribution and provenance preserved.</div>
@@ -353,28 +353,7 @@ display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap
 <dt>API</dt><dd><a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span></dd>
 <dt>Canonical landing</dt><dd><a href="https://econdatalibrary.com/bcrp">https://econdatalibrary.com/bcrp</a></dd>
 <dt>Update cadence</dt><dd>daily</dd>
-<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd>
-<dt>Update strategy</dt><dd>extend by date</dd>
-<dt>Storage layout</dt><dd>single parquet: data/clean_full/bcrp/bcrp.parquet (zstd), columns (series_key=&#x27;BCRP:{label}&#x27;, obs_date, value). 6 daily FX series (USD/EUR/GBP/JPY vs PEN). Plus _bcrp_log.txt.</dd></dl>
-<h2>Full description</h2>
-<p class="lead">BCRP (Banco Central de Reserva del Perú) — Peruvian exchange rate data.
-
-License: Open data (public domain)
-Source: https://estadisticas.bcrp.gob.pe/
-No API key required.
-
-Coverage:
-  * Daily exchange rates: USD/PEN, EUR/PEN, GBP/PEN, JPY/PEN (buying, selling, spot)
-
-NOTE: Only daily PD* series work via the public JSON API.
-Monthly/quarterly/annual PN* series return empty responses.
-
-API: https://estadisticas.bcrp.gob.pe/estadisticas/series/api/{code}/json/{start}/{end}
-  * Single series only — batched requests fail
-  * Daily period format: YYYY-M-D
-  * Response period names: &quot;02.Ene.97&quot; (DD.MonthSP.YY)
-
-Run: python jobs/ingest_bcrp.py</p>
+<dt>Automated refresh</dt><dd><strong>live</strong> &mdash; this database is on the daily update run</dd></dl>
 <h2>Structured metadata</h2>
 <details><summary>schema.org/Dataset (Google Dataset Search)</summary><pre>{
   &quot;@context&quot;: &quot;https://schema.org/&quot;,
