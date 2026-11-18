@@ -918,7 +918,9 @@ def _derive_subtitles(con):
         if len(out) > 140:
             out = out[:137] + "…"
         subs[sid] = "" if sid in SUBTITLE_SUPPRESS else out
-    measures = {sid: _measure_stems(sid, [next((p for p in r if p), "") for r in rows if any(r)])
+    # A suppressed source's stems are a country list; it must not reach variableMeasured either.
+    measures = {sid: ([] if sid in SUBTITLE_SUPPRESS else
+                      _measure_stems(sid, [next((p for p in r if p), "") for r in rows if any(r)]))
                 for sid, rows in per.items()}
     return subs, measures
 
@@ -1984,12 +1986,33 @@ def topic_labels(cats):
     return sorted(out)
 
 
+_TRAILING_PAREN_PAIR = re.compile(r"\(([^()]*)\)\s*\(([^()]*)\)\s*$")
+
+
+def _collapse_repeated_name_suffix(name):
+    """Display-level only: drop a trailing parenthetical that repeats the end of the one before it.
+    13 IMF rows read "... (SDG; direct from api.imf.org) (direct from api.imf.org)", because
+    tools/catalog_imf_direct.py appends the suffix to a --name that already carries it. The catalogue
+    row is NOT changed here (that root fix is a separate, reviewed catalogue write); every page field
+    reads the name through build_record, so one call here fixes H1, title, lead, meta, JSON-LD and card."""
+    if not name:
+        return name
+    m = _TRAILING_PAREN_PAIR.search(name)
+    if m:
+        first, second = m.group(1).strip(), m.group(2).strip()
+        if second and (first == second or first.endswith("; " + second)):
+            return name[:m.start()] + "(" + m.group(1) + ")"
+    return name
+
+
 def build_record(sid, src, lic, roll, side, s5=None):
     """Assemble everything we know about one dataset from the registry + sidecar.
     Returns a plain dict; downstream renderers never touch the DB again.
     `s5` carries the source-level Task#5 metadata (description_key / citation_* /
     processing) baked into the series rows."""
     s5 = s5 or {}
+    if src.get("name"):
+        src = dict(src, name=_collapse_repeated_name_suffix(src["name"]))
     license_id = src.get("license_id")
     lrow = lic.get(license_id, {})
     # TWO independent gates, and the page needs both. `license.reservable` says the LICENCE

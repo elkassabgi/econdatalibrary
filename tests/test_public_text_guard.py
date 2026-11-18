@@ -314,6 +314,47 @@ def test_suppressed_source_publishes_no_derived_subtitle_anywhere(G):
                          {"n_series": 3, "auto_subtitle": s["zzh_control"]}, None)
     assert "Benin" in G.render_dataset_page(ctl), "control: the page check above would be blind"
 
+    # C9: variableMeasured and sources_meta.json. Multi-word country heads, fewer than MEASURES_MAX, so
+    # _measure_stems WOULD publish them as a complete variable list for a source that is not listed.
+    import sqlite3
+    heads = ["Republic of Benin", "Union of Myanmar", "Islamic Republic of Pakistan", "Republic of Angola"]
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE series (source_id TEXT, title TEXT)")
+    con.executemany("INSERT INTO series VALUES (?, ?)",
+                    [(sid, f"{h} - Annual - Share of adults with an account")
+                     for sid in (sup, "zzm_control") for h in heads])
+    _s, meas = G._derive_subtitles(con)
+    assert meas["zzm_control"] == heads, "control: the measures check below would be blind"
+    assert meas[sup] == [], meas[sup]
+    rec = G.build_record(sup, {"name": name, "license_id": "x"}, {},
+                         {"n_series": 4, "auto_subtitle": _s[sup], "measures": meas[sup]}, None)
+    ds = G.dataset_jsonld(rec)
+    assert "variableMeasured" not in ds or not any("Benin" in str(v) for v in ds["variableMeasured"]), ds
+    sources_meta_row = {"name": rec["name"], "desc": rec["subtitle"] or ""}  # as main() writes it
+    assert sources_meta_row["desc"] == "" and "Benin" not in str(sources_meta_row)
+    ctl = G.build_record("zzm_control", {"name": name, "license_id": "x"}, {},
+                         {"n_series": 4, "auto_subtitle": _s["zzm_control"], "measures": meas["zzm_control"]}, None)
+    assert "Benin" in str(G.dataset_jsonld(ctl).get("variableMeasured")), "control: variableMeasured check is blind"
+
+
+def test_repeated_name_suffix_is_collapsed_for_display(G):
+    """13 IMF catalogue rows read '... (SDG; direct from api.imf.org) (direct from api.imf.org)'. The page
+    shows the suffix once; the catalogue row is untouched (root fix is a separate catalogue write)."""
+    imf = "International Monetary Fund — IMF Reported SDG Data (SDG; direct from api.imf.org) (direct from api.imf.org)"
+    want = "International Monetary Fund — IMF Reported SDG Data (SDG; direct from api.imf.org)"
+    assert G._collapse_repeated_name_suffix(imf) == want
+    assert G._collapse_repeated_name_suffix("Example (direct) (direct)") == "Example (direct)"
+    rec = G.build_record("zzn", {"name": imf, "license_id": "x"}, {}, {"n_series": 3}, None)
+    assert rec["name"] == want and rec["desc_short"] == want, rec
+    page = G.render_dataset_page(rec)
+    assert "(direct from api.imf.org) (direct from api.imf.org)" not in page
+    # controls: two DIFFERENT parentheticals, a lone one, and none at all stay exactly as written
+    for keep in ("Statistics Sweden (Statistiska centralbyrån, SCB)",
+                 "Bank of Example (BOE) (historical series)",
+                 "U.S. Census Bureau",
+                 "Example Office (Annual; quarterly) (monthly)"):
+        assert G._collapse_repeated_name_suffix(keep) == keep, keep
+
 
 def test_blank_placeholder_does_not_empty_the_fallback(G):
     """imf_gsatf_direct-like titles that lead with 'Not Aggregated': the fallback must read the first
