@@ -79,7 +79,22 @@ def save_state(state: dict, out_dir: str = OUT) -> None:
     tmp = _state_path(out_dir) + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=0, sort_keys=True)
-    os.replace(tmp, _state_path(out_dir))
+    # The guard beat (tools/guard_heartbeat.py, every 5 min) reads this file for the digest summary.
+    # On Windows a reader holding it open makes os.replace fail with WinError 5: retry briefly, then
+    # let the last failure propagate (R1938 round 4).
+    import time
+    for attempt in range(SAVE_STATE_TRIES):
+        try:
+            os.replace(tmp, _state_path(out_dir))
+            return
+        except PermissionError:
+            if attempt == SAVE_STATE_TRIES - 1:
+                raise
+            time.sleep(SAVE_STATE_WAIT_S)
+
+
+SAVE_STATE_TRIES = 5
+SAVE_STATE_WAIT_S = 0.2
 
 
 def mark_refreshed(area_id, state: dict, when: dt.datetime | None = None,
@@ -220,6 +235,8 @@ GUARD_SERIES_DROP_ALLOW: frozenset = frozenset()   # series_keys the publisher w
 #    "reviewed_refusal": "20261118T110000Z", "by": "<who reviewed it>", "utc": "<when, ISO>"}
 # The reviewer reads the refusal's guard.json (parts/_refresh_refused/area_<id>/<stamp>/), checks
 # that the drop is the publisher's (not an early-stopped sweep), and writes the counts it accepts.
+# The line is TIED to that refusal: reviewed_refusal must name a kept guard.json of the same area,
+# the counts may not exceed what it measured, and utc must carry an explicit offset.
 # The NEXT rebuild of that area may then drop up to max_series_dropped series and lose up to
 # max_tail_lost tail pairs. It never clears an EMPTY sweep or a change below the window. It is
 # spent by the first rebuild that passes (the area's last_refresh moves past its utc) and expires
@@ -336,9 +353,12 @@ def row_loss_guard(old_path: str, new_path: str, tail_start: int, spill_dir: str
 def guard_clearance(out_dir: str, area_id, now: dt.datetime | None = None,
                     state: dict | None = None) -> dict | None:
     """The newest reviewed clearance for one area that is still valid, or None (see CLEARANCE_FILE).
-    Valid = well-formed, not older than GUARD_CLEARANCE_DAYS, and not yet spent: the area has not
-    refreshed since it was written. A malformed line is ignored, so it can only leave a refusal in
-    place, never widen one."""
+    Valid = well-formed with integer counts and a `utc` carrying an explicit offset; `reviewed_refusal`
+    names a kept parts/_refresh_refused/area_<id>/<stamp>/guard.json of THIS area, and both counts are
+    at most what that refusal measured (series_dropped, tail_lost); not older than GUARD_CLEARANCE_DAYS;
+    and not yet spent: the area has not refreshed since it was written. A line that fails any of these
+    is ignored, so it can only leave a refusal in place, never widen one. Refusals are pruned to the
+    newest REFUSED_KEEP_PER_AREA, so a clearance for a pruned refusal is void and must be re-reviewed."""
     now = now or dt.datetime.now(dt.timezone.utc)
     aid = str(area_id)
     best = None
@@ -353,11 +373,22 @@ def guard_clearance(out_dir: str, area_id, now: dt.datetime | None = None,
             if str(r["area"]) != aid:
                 continue
             t = dt.datetime.fromisoformat(r["utc"])
-            t = t if t.tzinfo else t.replace(tzinfo=dt.timezone.utc)
-            if (int(r["max_series_dropped"]) < 0 or int(r["max_tail_lost"]) < 0
-                    or not r.get("by") or not r.get("reviewed_refusal")):
+            if t.tzinfo is None or t.utcoffset() is None:
+                continue                  # a naive time is ambiguous (local vs UTC): rejected
+            ms, mt = r["max_series_dropped"], r["max_tail_lost"]
+            if (not isinstance(ms, int) or not isinstance(mt, int) or isinstance(ms, bool)
+                    or isinstance(mt, bool) or ms < 0 or mt < 0 or not r.get("by")):
                 continue
-        except (ValueError, KeyError, TypeError):
+            # TIED TO THE REFUSAL IT REVIEWED: the stamp must name this area's kept guard.json, and
+            # the clearance may not exceed what that refusal measured.
+            stamp = str(r["reviewed_refusal"])
+            dt.datetime.strptime(stamp, "%Y%m%dT%H%M%SZ")        # also rules out a path in the field
+            with open(os.path.join(out_dir, REFUSED_SUBDIR, "area_%s" % aid, stamp, "guard.json"),
+                      encoding="utf-8") as gf:
+                seen = json.load(gf)
+            if ms > int(seen["series_dropped"]) or mt > int(seen["tail_lost"]):
+                continue
+        except (ValueError, KeyError, TypeError, OSError):
             continue
         if not (now - dt.timedelta(days=GUARD_CLEARANCE_DAYS) <= t <= now):
             continue

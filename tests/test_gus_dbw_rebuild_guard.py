@@ -366,25 +366,48 @@ def test_a_lost_null_date_row_is_refused(tmp_path):
 
 
 # ------------------------------------------------------------------ R1938: clearing a refusal by count
+def _newest_refusal(env, area="1"):
+    d = os.path.join(env["out"], R.REFUSED_SUBDIR, f"area_{area}")
+    stamp = sorted(os.listdir(d))[-1]
+    return stamp, json.load(open(os.path.join(d, stamp, "guard.json"), encoding="utf-8"))
+
+
 def _clear(env, now=None, **over):
-    rec = {"area": "1", "max_series_dropped": 1, "max_tail_lost": 3,
-           "reviewed_refusal": "20261118T110000Z", "by": "reviewer",
+    """Append a clearance tied to the area's newest kept refusal (counts default to what it measured)."""
+    stamp, seen = _newest_refusal(env, str(over.get("area", "1")))
+    rec = {"area": "1", "max_series_dropped": seen["series_dropped"], "max_tail_lost": seen["tail_lost"],
+           "reviewed_refusal": stamp, "by": "reviewer",
            "utc": (now or dt.datetime.now(dt.timezone.utc)).isoformat(timespec="seconds")}
     rec.update(over)
-    os.makedirs(env["out"], exist_ok=True)
     with open(os.path.join(env["out"], R.CLEARANCE_FILE), "a", encoding="utf-8") as f:
         f.write(json.dumps(rec) + "\n")
     return rec
 
 
-def _drop_t5(env):
-    _tail_part(env, [r for r in OLD_TAIL if r[0] != "v1:s1:t5"])
+def _drop_t5(env, extra=()):
+    """Drop the whole series t5 (3 pairs) plus the pairs `extra` (OLD_TAIL indices, no whole series)."""
+    gone = {OLD_TAIL[i] for i in extra}
+    _tail_part(env, [r for r in OLD_TAIL if r[0] != "v1:s1:t5" and r not in gone])
+
+
+def _refuse(env, extra=()):
+    _drop_t5(env, extra)
+    before, state = _md5(env["final"]), {}
+    assert G.finish_area(1, env["final"], state, TAIL) is False          # refused without a clearance
+    return before, state
+
+
+def _still_refused(env, before, state):
+    assert G.finish_area(1, env["final"], state, TAIL) is False
+    assert _md5(env["final"]) == before and _owed_lines(env) == [] and "1" not in state
+
+
+# 10 pairs of series t10..t19 on the first tail date: each series keeps its other two dates
+TEN_PAIRS = tuple(range(10, 20))
 
 
 def test_a_reviewed_count_clearance_passes_the_next_rebuild_once(env):
-    _drop_t5(env)
-    before, state = _md5(env["final"]), {}
-    assert G.finish_area(1, env["final"], state, TAIL) is False          # refused without it
+    before, state = _refuse(env)
     _assert_refused(env, before, state)
     _clear(env)
     _drop_t5(env)
@@ -395,42 +418,131 @@ def test_a_reviewed_count_clearance_passes_the_next_rebuild_once(env):
 
 
 def test_a_clearance_below_the_measured_drop_still_refuses(env):
+    before, state = _refuse(env)
     _clear(env, max_series_dropped=0)
     _drop_t5(env)
-    before, state = _md5(env["final"]), {}
-    assert G.finish_area(1, env["final"], state, TAIL) is False
-    _assert_refused(env, before, state)
+    _still_refused(env, before, state)
+
+
+def test_tail_loss_above_max_tail_lost_refuses_with_the_series_drop_cleared(env):
+    """series_dropped (1) is within the clearance, the tail loss (13) is not (max_tail_lost 4 > floor 3):
+    max_tail_lost alone decides it."""
+    before, state = _refuse(env, TEN_PAIRS)
+    assert _newest_refusal(env)[1]["tail_lost"] == 13
+    _clear(env, max_series_dropped=1, max_tail_lost=4)
+    assert R.guard_clearance(env["out"], 1, state=state) is not None
+    _drop_t5(env, TEN_PAIRS)
+    _still_refused(env, before, state)
+
+
+def test_tail_loss_within_max_tail_lost_passes(env):
+    """Negative control of the test above: the same rebuild with max_tail_lost 13 passes."""
+    before, state = _refuse(env, TEN_PAIRS)
+    _clear(env, max_series_dropped=1, max_tail_lost=13)
+    _drop_t5(env, TEN_PAIRS)
+    assert G.finish_area(1, env["final"], state, TAIL) is True
+    assert _owed_lines(env)[0]["guard"]["tail_lost"] == 13
 
 
 def test_a_clearance_never_clears_an_empty_sweep(env):
-    _clear(env, max_series_dropped=10 ** 9, max_tail_lost=10 ** 9)
     os.makedirs(env["tail_dir"], exist_ok=True)
     before, state = _md5(env["final"]), {}
     assert G.finish_area(1, env["final"], state, TAIL) is False
-    _assert_refused(env, before, state)
+    _clear(env)                                     # the full measured drop: 100 series, 300 pairs
+    assert R.guard_clearance(env["out"], 1, state=state)["max_tail_lost"] == 300
+    os.makedirs(env["tail_dir"], exist_ok=True)
+    _still_refused(env, before, state)
 
 
 def test_expired_other_area_and_malformed_clearances_are_ignored(env):
+    before, state = _refuse(env)
     now = dt.datetime.now(dt.timezone.utc)
     _clear(env, now=now - dt.timedelta(days=R.GUARD_CLEARANCE_DAYS + 1))   # expired
-    _clear(env, area="2")                                                  # another area
     _clear(env, by="")                                                     # nobody reviewed it
-    _clear(env, max_series_dropped="many")                                 # not a count
+    _clear(env, max_series_dropped="1")                                    # not an integer
+    _clear(env, max_tail_lost=True)                                        # a bool is not a count
+    _clear(env, max_series_dropped=-1)                                     # negative
     with open(os.path.join(env["out"], R.CLEARANCE_FILE), "a", encoding="utf-8") as f:
         f.write('{"area": "1", "max_ser')                                  # torn
-    assert R.guard_clearance(env["out"], 1) is None
+    assert R.guard_clearance(env["out"], 1, state=state) is None
     _drop_t5(env)
-    before, state = _md5(env["final"]), {}
-    assert G.finish_area(1, env["final"], state, TAIL) is False
-    _assert_refused(env, before, state)
+    _still_refused(env, before, state)
+
+
+# ---- the tie to the reviewed refusal (round 4): each rejection beside a positive control
+def _plant_refusal(d, area, stamp, series_dropped=4, tail_lost=9):
+    p = os.path.join(d, R.REFUSED_SUBDIR, f"area_{area}", stamp)
+    os.makedirs(p)
+    with open(os.path.join(p, "guard.json"), "w", encoding="utf-8") as f:
+        json.dump({"ok": False, "series_dropped": series_dropped, "tail_lost": tail_lost}, f)
+
+
+def _one(d, **over):
+    rec = {"area": "1", "max_series_dropped": 4, "max_tail_lost": 9, "reviewed_refusal": "20261118T100000Z",
+           "by": "r", "utc": "2026-11-18T11:00:00+00:00"}
+    rec.update(over)
+    with open(os.path.join(d, R.CLEARANCE_FILE), "w", encoding="utf-8") as f:
+        f.write(json.dumps(rec) + "\n")
+    return R.guard_clearance(d, 1, now=dt.datetime(2026, 11, 18, 13, tzinfo=dt.timezone.utc), state={})
+
+
+def test_the_clearance_must_name_a_kept_refusal_of_this_area_within_its_counts(tmp_path):
+    d = str(tmp_path)
+    _plant_refusal(d, "1", "20261118T100000Z")
+    _plant_refusal(d, "2", "20261118T090000Z")
+    assert _one(d)["max_series_dropped"] == 4                               # positive control
+    assert _one(d, max_series_dropped=3, max_tail_lost=0) is not None       # below measured is fine
+    assert _one(d, reviewed_refusal="20261118T080000Z") is None             # no such refusal
+    assert _one(d, reviewed_refusal="20261118T090000Z") is None             # another area's refusal
+    assert _one(d, area="2") is None                     # a line for area 2, even naming area 1's stamp
+    assert _one(d, reviewed_refusal="../area_2/20261118T090000Z") is None   # not a stamp
+    assert _one(d, max_series_dropped=5) is None                            # above measured series
+    assert _one(d, max_tail_lost=10) is None                                # above measured tail loss
+    assert _one(d, utc="2026-11-18T11:00:00") is None                       # naive time
+    assert _one(d, utc="2026-11-18T06:00:00-05:00") is not None             # explicit non-UTC offset
+
+
+def test_a_refusal_whose_guard_could_not_run_cannot_be_cleared(tmp_path):
+    d = str(tmp_path)
+    p = os.path.join(d, R.REFUSED_SUBDIR, "area_1", "20261118T100000Z")
+    os.makedirs(p)
+    with open(os.path.join(p, "guard.json"), "w", encoding="utf-8") as f:
+        json.dump({"ok": False, "reasons": ["the guard could not run: OSError"]}, f)
+    assert _one(d) is None
 
 
 def test_a_clearance_written_before_the_last_refresh_is_spent(tmp_path):
-    with_state = {"1": {"last_refresh": "2026-11-18T12:00:00+00:00"}}
     d = str(tmp_path)
-    with open(os.path.join(d, R.CLEARANCE_FILE), "w", encoding="utf-8") as f:
-        f.write(json.dumps({"area": "1", "max_series_dropped": 5, "max_tail_lost": 5, "by": "r",
-                            "reviewed_refusal": "x", "utc": "2026-11-18T11:00:00+00:00"}) + "\n")
+    _plant_refusal(d, "1", "20261118T100000Z")
+    _one(d)
     now = dt.datetime(2026, 11, 18, 13, tzinfo=dt.timezone.utc)
-    assert R.guard_clearance(d, 1, now=now, state=with_state) is None
-    assert R.guard_clearance(d, 1, now=now, state={})["max_series_dropped"] == 5
+    assert R.guard_clearance(d, 1, now=now, state={"1": {"last_refresh": "2026-11-18T12:00:00+00:00"}}) is None
+    assert R.guard_clearance(d, 1, now=now, state={})["max_series_dropped"] == 4
+
+
+# ------------------------------------------------------------------ round 4: save_state vs a reader
+def test_save_state_retries_a_transient_permission_error(tmp_path, monkeypatch):
+    real, calls = os.replace, []
+
+    def flaky(a, b):
+        calls.append(1)
+        if len(calls) <= 2:
+            raise PermissionError(5, "Access is denied")
+        return real(a, b)
+    monkeypatch.setattr(R.os, "replace", flaky)
+    monkeypatch.setattr(R, "SAVE_STATE_WAIT_S", 0.0)
+    R.save_state({"1": {"last_refresh": "x"}}, str(tmp_path))
+    assert len(calls) == 3 and R.load_state(str(tmp_path)) == {"1": {"last_refresh": "x"}}
+
+
+def test_save_state_gives_up_after_its_bound(tmp_path, monkeypatch):
+    calls = []
+
+    def never(a, b):
+        calls.append(1)
+        raise PermissionError(5, "Access is denied")
+    monkeypatch.setattr(R.os, "replace", never)
+    monkeypatch.setattr(R, "SAVE_STATE_WAIT_S", 0.0)
+    with pytest.raises(PermissionError):
+        R.save_state({}, str(tmp_path))
+    assert len(calls) == R.SAVE_STATE_TRIES == 5
