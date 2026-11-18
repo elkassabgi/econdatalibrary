@@ -877,22 +877,25 @@ def _derive_subtitles(con):
     for sid, title in con.execute("SELECT source_id, title FROM series"):
         t = re.sub(r"\s+[–—]\s+", " - ", (title or "").strip())
         t = re.sub(r"\s*\((?:Annually|Monthly|Quarterly|Daily|Weekly)\)\s*$", "", t, flags=re.I)
-        # Placeholder segments are dropped (2026-11-18): IMF titles carry a parser's boolean default
-        # ("true - IRIIP", "All Items - true") and the codelist's "Not Aggregated" as whole segments.
-        # Neither is something the series measure, so neither may lead a subtitle.
-        per[sid].append([p.strip() for p in t.split(" - ")
-                         if p.strip() and p.strip().lower() not in _PLACEHOLDER_SEGMENTS])
+        # Placeholder segments are BLANKED, not removed (2026-11-18): IMF titles carry a parser's
+        # boolean default ("true - IRIIP", "All Items - true") and the codelist's "Not Aggregated" as
+        # whole segments, and neither is something the series measure. Removing them shifted every
+        # later segment one column left in only SOME titles, so the column analysis below compared
+        # unlike things (imf_gssdo_direct: age bands became "Annual - Female"). A blank keeps each
+        # segment in its column; blanks are skipped wherever segments are read or joined.
+        per[sid].append(["" if p.strip().lower() in _PLACEHOLDER_SEGMENTS else p.strip()
+                         for p in t.split(" - ") if p.strip()])
     subs = {}
     for sid, rows in per.items():
         n = len(rows)
         if n <= 40:
-            c = Counter(" - ".join(r) for r in rows)
+            c = Counter(" - ".join(p for p in r if p) for r in rows)
             top = [s for s, _ in c.most_common(3)]
         else:
             width = max(len(r) for r in rows)
             keep = []
             for i in range(width):
-                vals = Counter(r[i] for r in rows if len(r) > i)
+                vals = Counter(r[i] for r in rows if len(r) > i and r[i])
                 if not vals:
                     continue
                 low_card = len(vals) <= 30
@@ -903,8 +906,8 @@ def _derive_subtitles(con):
                     break
             stems = Counter()
             for r in rows:
-                s = " - ".join(r[i] for i in keep if len(r) > i)
-                stems[s or r[0]] += 1
+                s = " - ".join(r[i] for i in keep if len(r) > i and r[i])
+                stems[s or next((p for p in r if p), "")] += 1
             top = [s for s, _ in stems.most_common(3) if s]
         # A stem that is only years / numbers / punctuation ("2022", "2003") says nothing about the
         # data; drop it, and if what is left is shorter than AUTO_SUBTITLE_MIN characters, publish NO
@@ -914,8 +917,8 @@ def _derive_subtitles(con):
             out = ""
         if len(out) > 140:
             out = out[:137] + "…"
-        subs[sid] = out
-    measures = {sid: _measure_stems(sid, [r[0] for r in rows if r])
+        subs[sid] = "" if sid in SUBTITLE_SUPPRESS else out
+    measures = {sid: _measure_stems(sid, [next((p for p in r if p), "") for r in rows if any(r)])
                 for sid, rows in per.items()}
     return subs, measures
 
@@ -925,6 +928,17 @@ def _derive_subtitles(con):
 # against the store's actual series — never invented coverage. Full-catalog
 # audit 2026-07-15; the derived fallback remains for sources whose own series
 # titles already read well (BLS, EIA, Maddison, most FAO domains, ...).
+#
+# Sources whose DERIVED subtitle is never published (2026-11-18): the lead falls back to the
+# registry name, exactly as for a source whose stems are only years (scb). Each entry is a
+# multi-country dataset whose leading title segment is the country, so the derived stems are a
+# list of countries. A geography register that catches this class is a follow-up; until then the
+# list is explicit and reviewable. (eia's "Texas; California; Louisiana" is a recorded residual.)
+SUBTITLE_SUPPRESS = frozenset({
+    "imf_gsatf_direct",      # derived stems were "Benin; Myanmar; Pakistan" for a worldwide survey
+    "imf_gslgrghts_direct",  # derived stems were "Afghanistan, Islamic Republic of; Angola; Albania"
+})
+
 SOURCE_SUBTITLES = {
     # --- Added 2026-07-31 ------------------------------------------------------------
     # These 16 sources carry NO human series titles at all: their `title` column holds the

@@ -284,6 +284,65 @@ def test_boolean_and_placeholder_segments_never_lead_a_subtitle(G):
     assert "Clothing and footwear" in s["zzc"]
 
 
+def test_suppressed_source_publishes_no_derived_subtitle_anywhere(G):
+    """imf_gsatf_direct's shape: 'Not Aggregated - <country> - Annual - <indicator>' with more than 30
+    countries and indicators, so no column is kept and the fallback names the countries with most series
+    ('Benin; Myanmar; Pakistan' for a worldwide survey). Such sources are listed in SUBTITLE_SUPPRESS:
+    no derived subtitle, and the lead, meta description, Dataset, Croissant and catalog card fall back to
+    the registry name. A geography register that catches this class without a list is a follow-up."""
+    countries = ["Benin", "Myanmar", "Pakistan"] + [f"Country{i:02d}" for i in range(38)]
+    indicators = [f"Indicator number {j} of financial access" for j in range(35)]
+    def rows(sid):
+        return [(sid, f"Not Aggregated - {c} - Annual - {indicators[(2 * k + j) % 35]}")
+                for k, c in enumerate(countries) for j in range(2 if k > 2 else 5)]
+    sup = "imf_gsatf_direct"
+    assert sup in G.SUBTITLE_SUPPRESS and "imf_gslgrghts_direct" in G.SUBTITLE_SUPPRESS
+    s = _subs(G, rows(sup) + rows("zzh_control"))
+    assert s[sup] == "", s[sup]
+    # control: the SAME rows under a source that is not listed still publish - the rule is the list
+    assert s["zzh_control"].startswith("Benin"), s["zzh_control"]
+    name = "IMF -- Gender Statistics: Access to Finance"
+    rec = G.build_record(sup, {"name": name, "license_id": "x"}, {}, {"n_series": 3, "auto_subtitle": s[sup]}, None)
+    assert rec["desc_short"] == name and not rec["subtitle"], rec
+    outs = {"page": G.render_dataset_page(rec), "dataset": str(G.dataset_jsonld(rec)),
+            "croissant": str(G.croissant_jsonld(rec)), "meta": G.build_meta_desc(rec),
+            "catalog": G.render_catalog([rec], "2026-01-01")}
+    for where, text in outs.items():
+        for country in ("Benin", "Myanmar", "Pakistan"):
+            assert country not in text, f"{country} leaked into the {where} output"
+    ctl = G.build_record("zzh_control", {"name": name, "license_id": "x"}, {},
+                         {"n_series": 3, "auto_subtitle": s["zzh_control"]}, None)
+    assert "Benin" in G.render_dataset_page(ctl), "control: the page check above would be blind"
+
+
+def test_blank_placeholder_does_not_empty_the_fallback(G):
+    """imf_gsatf_direct-like titles that lead with 'Not Aggregated': the fallback must read the first
+    NON-blank segment, else every row stems to '' and the source loses its subtitle."""
+    rows = [("zzb", f"Not Aggregated - Account measure {j:02d} of adults") for j in range(45)]
+    rows += [("zzb", "Not Aggregated - Account measure 00 of adults")] * 4
+    assert _subs(G, rows)["zzb"].startswith("Account measure 00 of adults"), _subs(G, rows)["zzb"]
+
+
+def test_single_segment_titles_keep_their_top_stems(G):
+    """FAOSTAT / Energy Institute shape: one segment per title, far more than 30 distinct. The first (and
+    only) segment IS the measure, so the fallback must still publish the most common ones."""
+    rows = [("zzf", f"Emissions measure {j:02d}, All Crops") for j in range(45)]
+    rows += [("zzf", "Emissions measure 00, All Crops")] * 4
+    assert _subs(G, rows)["zzf"].startswith("Emissions measure 00, All Crops"), _subs(G, rows)["zzf"]
+
+
+def test_placeholder_blanks_keep_columns_aligned(G):
+    """imf_gssdo_direct's shape: the age column is 'Not Aggregated' on the totals. Removing that segment
+    moved 'Annual' into the age column on those rows only, and the subtitle read 'Annual - Female; ...'."""
+    bands = ["0-4 yrs", "5-9 yrs", "10-14 yrs", "15-19 yrs", "20-24 yrs", "25-29 yrs", "30-34 yrs",
+             "35-39 yrs", "40-44 yrs", "45-49 yrs"]
+    rows = [("zzs", f"Not Aggregated - Annual - {sex} - Population")
+            for sex in ("Female", "Male") for _ in range(13)]
+    rows += [("zzs", f"{b} - Annual - {sex} - Population") for b in bands for sex in ("Female", "Male")]
+    s = _subs(G, rows)["zzs"]
+    assert s and not any(stem.startswith("Annual") for stem in s.split("; ")), s
+
+
 def test_year_only_or_tiny_subtitle_is_not_published_and_the_lead_is_the_name(G):
     s = _subs(G, [("zzy", "2022"), ("zzy", "2024"), ("zzy", "2021"), ("zzt", "Prices"),
                   ("zzk", "Consumer price index, all items")])
