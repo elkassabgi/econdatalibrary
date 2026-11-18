@@ -363,6 +363,75 @@ MAX_SANE_YEAR = 2200
 
 
 # ---------------------------------------------------------------------------- #
+#  Forward-dated series (AR_PREDEPLOY 2026-11-17 condition C5; design review R1941)
+# ---------------------------------------------------------------------------- #
+# A page that reads "582 series, 1801–2150" invites the reader to take 2150 as an observed date.
+# The coverage BOUNDS stay as they are (= /v1/sources data_through, which is a plain MAX by design and
+# is read by status.html and the R client); what is added is ONE qualifier, and only when the source
+# holds series that are forward BEYOND THEIR OWN PERIOD: the series' end_date is later than the end of
+# the period that contains the build date, at that series' frequency. A 2026-12-31 annual stamp seen on
+# 2026-11-18 is the CURRENT period, not a forecast (11 sources reach the future only that way), so it
+# earns no qualifier. Unknown or irregular frequency is judged as annual, the coarsest common period.
+#
+# The default wording is NEUTRAL ("forward-dated values"). Measured 2026-11-18 on the catalogue copy,
+# a title keyword test cannot decide "projection": it misses bfs's "Periodensterbetafeln (1876-2150)",
+# every un_wpp variant and most boc scenarios, and fires on 34 statcan "Future outlook" titles. So the
+# word "projections" (or any other) is used ONLY for a source listed here, and an entry is added only
+# with the publisher's own wording quoted and linked in the PR that adds it. Empty on purpose.
+SOURCE_FORWARD_NOTES = {
+}
+FORWARD_DEFAULT_LABEL = "forward-dated values"
+
+# Sources whose forward-dated rows are KNOWN parse damage, not publisher dates: the qualifier would
+# turn a wrong bound into an explicit claim, so it is withheld until the rows are re-pulled (R265/R22).
+# Each entry names its evidence, measured 2026-11-18 on the catalogue copy; remove it after the re-pull.
+FORWARD_DATE_DEFECTS = {
+    # all 34 forward series are KSH gsz0069 ICNPO rows with start_date = end_date = 2100-12-31
+    "ksh_stadat": "gsz0069: 34 single-point series dated 2100-12-31",
+    # the 2100 bound is statfin:vtp:152i.px, titled "Taxes and tax-like payments, annually, 1975-2025*"
+    "statfin": "vtp:152i.px: 1975-2025 table stored to 2100-12-31",
+}
+
+# SQL: the end of the period containing the build date, per series frequency (named parameters
+# from forward_cutoffs). Frequencies present in the catalogue 2026-11-18: NULL, M, A, irregular,
+# quarterly, Q, D, W, S.
+_FORWARD_CUTOFF_SQL = ("(CASE frequency WHEN 'M' THEN :fwd_m WHEN 'Q' THEN :fwd_q "
+                       "WHEN 'quarterly' THEN :fwd_q WHEN 'S' THEN :fwd_s WHEN 'W' THEN :fwd_w "
+                       "WHEN 'D' THEN :fwd_d ELSE :fwd_a END)")
+_FORWARD_PRED_SQL = (f"(end_date > {_FORWARD_CUTOFF_SQL} "
+                     f"AND end_date < '{MAX_SANE_YEAR + 1:04d}')")
+
+
+def forward_cutoffs(build_date):
+    """{named SQL parameter: ISO date} - the last day of the period containing `build_date`
+    (an ISO string or a date) for each frequency the cutoff SQL distinguishes."""
+    import calendar                                                     # noqa: PLC0415
+    from datetime import timedelta                                      # noqa: PLC0415
+    d = date.fromisoformat(str(build_date)[:10])
+    q_month = ((d.month - 1) // 3 + 1) * 3
+    return {
+        "fwd_a": f"{d.year}-12-31",
+        "fwd_s": f"{d.year}-06-30" if d.month <= 6 else f"{d.year}-12-31",
+        "fwd_q": date(d.year, q_month, calendar.monthrange(d.year, q_month)[1]).isoformat(),
+        "fwd_m": date(d.year, d.month, calendar.monthrange(d.year, d.month)[1]).isoformat(),
+        "fwd_w": (d + timedelta(days=6 - d.weekday())).isoformat(),
+        "fwd_d": d.isoformat(),
+    }
+
+
+def forward_label(sid):
+    return SOURCE_FORWARD_NOTES.get(sid) or FORWARD_DEFAULT_LABEL
+
+
+def forward_sentence(rec):
+    """The page qualifier, or None. Only for a served source with a forward year."""
+    y = rec.get("forward_year")
+    if not y or rec.get("not_yet_served") or rec.get("id") in FORWARD_DATE_DEFECTS:
+        return None
+    return f"Some series extend to {y} ({forward_label(rec['id'])})."
+
+
+# ---------------------------------------------------------------------------- #
 #  Helpers
 # ---------------------------------------------------------------------------- #
 def esc(s) -> str:
@@ -700,6 +769,15 @@ def build_meta_desc(rec, shared=frozenset()):
     cov = None if rec.get("not_yet_served") else _coverage_clause(rec)
     if cov:
         facts.append(cov)
+    # the page's forward-dated qualifier, compact (the meta budget is DESC_MAX characters)
+    if forward_sentence(rec):
+        fwd = f"incl. {forward_label(rec['id'])}"
+        if not (cov and str(rec.get("cov_end") or "")[:4] == str(rec["forward_year"])):
+            fwd += f" to {rec['forward_year']}"       # the year is new information only when the range lacks it
+        if cov:
+            facts[-1] = f"{cov} ({fwd})"
+        else:
+            facts.append(fwd)
     lic = short_license(rec.get("license_label"))
     access = "Free download" if rec.get("reservable") else "Catalogued metadata"
     if rec.get("not_yet_served"):
@@ -1081,6 +1159,21 @@ SOURCE_SUBTITLES = {
 }
 
 
+# The per-source roll-up (one GROUP BY over `series`), with named parameters from forward_cutoffs.
+ROLLUP_SQL = """
+        SELECT source_id,
+               COUNT(*)                       AS n_series,
+               MIN(start_date)                AS min_start,
+               MAX(end_date)                  AS max_end,
+               COUNT(DISTINCT geography)      AS n_geo,
+               MAX(last_updated)              AS last_updated,
+               SUM(CASE WHEN %(fwd)s THEN 1 ELSE 0 END) AS n_forward,
+               MAX(CASE WHEN %(fwd)s THEN end_date END) AS max_forward
+        FROM series
+        GROUP BY source_id
+    """ % {"fwd": _FORWARD_PRED_SQL}
+
+
 def load_registry():
     # READ-ONLY, and wait for the writers (2026-08-25). The site generator never writes
     # this database - it has no INSERT/UPDATE/DELETE and no commit() - but it opened it
@@ -1108,17 +1201,7 @@ def load_registry():
     # An unparsable denylist yields no prefixes and this degrades to the old unfiltered count,
     # loudly (see load_series_carveouts).
     series_roll = {}
-    q = """
-        SELECT source_id,
-               COUNT(*)                       AS n_series,
-               MIN(start_date)                AS min_start,
-               MAX(end_date)                  AS max_end,
-               COUNT(DISTINCT geography)      AS n_geo,
-               MAX(last_updated)              AS last_updated
-        FROM series
-        GROUP BY source_id
-    """
-    for r in con.execute(q):
+    for r in con.execute(ROLLUP_SQL, forward_cutoffs(TODAY)):
         series_roll[r["source_id"]] = dict(r)
 
     # SUBTRACT carved series per affected source, rather than excluding them inside the
@@ -1797,6 +1880,14 @@ def subtract_withheld(con, series_roll, withheld=None):
                 "WHERE series_id >= ? AND series_id < ? AND series_id NOT IN (%s)" % q,
                 [src + ":", src + ";", *sids]).fetchone()
             series_roll[src].update(min_start=r[0], max_end=r[1], n_geo=r[2], last_updated=r[3])
+            if "n_forward" in series_roll[src]:        # the forward count, over the same reachable rows
+                f = con.execute(
+                    "SELECT SUM(CASE WHEN %s THEN 1 ELSE 0 END), MAX(CASE WHEN %s THEN end_date END) FROM series "
+                    "WHERE series_id >= :lo AND series_id < :hi AND series_id NOT IN (%s)"
+                    % (_FORWARD_PRED_SQL, _FORWARD_PRED_SQL, ",".join(f":w{i}" for i in range(len(sids)))),
+                    dict(forward_cutoffs(TODAY), lo=src + ":", hi=src + ";",
+                         **{f"w{i}": s for i, s in enumerate(sids)})).fetchone()
+                series_roll[src].update(n_forward=f[0] or 0, max_forward=f[1])
             print("  withheld: %s n_series -%d (tables the worker withholds from users); coverage "
                   "re-measured without them: %s .. %s" % (src, n, r[0], r[1]))
 
@@ -2050,6 +2141,13 @@ def build_record(sid, src, lic, roll, side, s5=None):
     last_obs = sane_date((side or {}).get("last_obs"))
     if last_obs and (not cov_end or last_obs > cov_end):
         cov_end = last_obs
+    # Forward-dated qualifier: from the catalogue's per-series count (load_registry). The sidecar
+    # last_obs above can also move cov_end forward, so it is judged by the same rule (annual period,
+    # since the sidecar carries no frequency) and cannot put a forward bound on a page unqualified.
+    max_fwd = sane_date((roll or {}).get("max_forward")) if (roll or {}).get("n_forward") else None
+    if last_obs and last_obs > forward_cutoffs(TODAY)["fwd_a"] and (not max_fwd or last_obs > max_fwd):
+        max_fwd = last_obs
+    forward_year = int(max_fwd[:4]) if max_fwd else None
 
     rec = {
         "id": sid,
@@ -2071,6 +2169,7 @@ def build_record(sid, src, lic, roll, side, s5=None):
         "not_yet_served": bool((roll or {}).get("not_yet_served")),
         "cov_start": cov_start,
         "cov_end": cov_end,
+        "forward_year": forward_year,
         "frequencies": (roll or {}).get("frequencies", []),
         "categories": (sorted(set(topic_labels((roll or {}).get("categories", []))
                                   + source_topics(sid)))
@@ -2853,6 +2952,8 @@ def render_dataset_page(rec):
         else:
             span = f"through {rec['cov_end']}"
         cov_rows.append(("Temporal coverage", span))
+    if forward_sentence(rec):
+        cov_rows.append(("Forward-dated series", esc(forward_sentence(rec))))
     if rec["frequencies"] and not nys:
         cov_rows.append(
             ("Frequencies", ", ".join(FREQ_LABEL.get(f, f) for f in rec["frequencies"]))
