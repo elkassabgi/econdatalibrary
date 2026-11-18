@@ -2110,6 +2110,13 @@ def jsonld_description(rec, page_desc=None):
             or f"{rec['name']} — dataset catalogued in the {SITE_NAME}.")
 
 
+# A source whose measured served count is 0 (served_facts.json): licensed for redistribution, nothing to
+# download yet. Its page and both JSON-LD blocks say so and offer no download (review of PR #292, C1).
+NOT_YET_SERVED_USAGE = ("Not yet served. The licence permits redistribution, but the API serves no series "
+                        "for this source yet, so no download is offered.")
+NOT_YET_SERVED_SENTENCE = "Catalogued by the Elkassabgi Data Library; the data is not yet served here."
+
+
 def dataset_jsonld(rec, page_desc=None):
     """Build a VALID schema.org/Dataset object. Required-by-Google fields:
     name, description; strongly recommended: license, creator/publisher,
@@ -2181,7 +2188,10 @@ def dataset_jsonld(rec, page_desc=None):
 
     # distribution: ONLY for reservable sources do we advertise a download.
     # Non-reservable -> metadata-only catalog entry; we never imply re-serve.
-    if rec["reservable"]:
+    if rec.get("not_yet_served"):
+        obj["isAccessibleForFree"] = False
+        obj["usageInfo"] = NOT_YET_SERVED_USAGE
+    elif rec["reservable"]:
         dist = {
             "@type": "DataDownload",
             "name": f"{rec['id']} — CSV",
@@ -2245,7 +2255,10 @@ def croissant_jsonld(rec, page_desc=None):
     if rec.get("citation_long") or rec.get("citation_short"):
         obj["citation"] = rec.get("citation_long") or rec.get("citation_short")
 
-    if rec["reservable"]:
+    if rec.get("not_yet_served"):
+        obj["isAccessibleForFree"] = False
+        obj["usageInfo"] = NOT_YET_SERVED_USAGE
+    elif rec["reservable"]:
         obj["distribution"] = [
             {
                 "@type": "cr:FileObject",
@@ -2661,8 +2674,9 @@ def render_dataset_page(rec):
     # Honesty transform for GATED sources: the baked metadata sentence
     # "Compiled and redistributed by the Elkassabgi Data Library." is true only
     # for reservable sources. On a gated page it would misstate what we do.
-    if not rec["reservable"]:
-        _honest = ("Catalogued (metadata only) by the Elkassabgi Data Library; "
+    if not rec["reservable"] or rec.get("not_yet_served"):
+        _honest = (NOT_YET_SERVED_SENTENCE if rec["reservable"] else
+                   "Catalogued (metadata only) by the Elkassabgi Data Library; "
                    "the data itself is not redistributed here.")
         for _k in ("desc_short", "desc_full", "description_processing"):
             if rec.get(_k):
@@ -2689,8 +2703,11 @@ def render_dataset_page(rec):
 
     head = render_head(title, meta_desc, rec["page_url"], PAGE_CSS, jsonld_block)
 
+    nys = bool(rec.get("not_yet_served"))     # served_facts.json measured 0: no download claim anywhere
     badges = []
-    if rec["reservable"]:
+    if nys:
+        badges.append('<span class="badge meta">Not yet served</span>')
+    elif rec["reservable"]:
         badges.append('<span class="badge open">Open &middot; redistributed</span>')
     else:
         badges.append('<span class="badge meta">Metadata only</span>')
@@ -2698,7 +2715,9 @@ def render_dataset_page(rec):
     for c in rec["categories"][:6]:
         badges.append(f'<span class="badge cat">{esc(c)}</span>')
 
-    if rec["reservable"]:
+    if nys:
+        callout = f'<div class="callout meta"><b>Not yet served.</b> {esc(NOT_YET_SERVED_USAGE[16:])}</div>'
+    elif rec["reservable"]:
         callout = (
             '<div class="callout open"><b>Redistributable.</b> This source is served '
             "as canonical Parquet under the license below, with attribution and "
@@ -2718,7 +2737,7 @@ def render_dataset_page(rec):
         cov_rows.append(("Series catalogued", f"{rec['n_series']:,}"))
     elif rec.get("not_yet_served"):
         cov_rows.append(("Series served", "Not yet served"))
-    if rec["cov_start"] or rec["cov_end"]:
+    if (rec["cov_start"] or rec["cov_end"]) and not nys:
         # Never render a bare "?" for a bound we do not have. It read as a broken page
         # ("Coverage ? – 2018-12-31" on ggdc and maddison, reported 2026-08-02), and it is
         # also the wrong claim: we are not uncertain about the coverage, we simply have no
@@ -2735,15 +2754,15 @@ def render_dataset_page(rec):
         else:
             span = f"through {rec['cov_end']}"
         cov_rows.append(("Temporal coverage", span))
-    if rec["frequencies"]:
+    if rec["frequencies"] and not nys:
         cov_rows.append(
             ("Frequencies", ", ".join(FREQ_LABEL.get(f, f) for f in rec["frequencies"]))
         )
-    if rec["n_geo"]:
+    if rec["n_geo"] and not nys:
         cov_rows.append(("Distinct geographies", f"{rec['n_geo']:,}"))
     if rec["categories"]:
         cov_rows.append(("Categories", ", ".join(rec["categories"])))
-    if rec["measured_obs"]:
+    if rec["measured_obs"] and not nys:
         cov_rows.append(("Measured observations", f"{rec['measured_obs']:,}"))
     if rec["last_updated"]:
         cov_rows.append(("Registry last updated", rec["last_updated"]))
@@ -2756,7 +2775,7 @@ def render_dataset_page(rec):
         )
     if rec["attribution"]:
         lic_rows.append(("Required attribution", esc(rec["attribution"])))
-    lic_rows.append(("Redistribution", "Permitted (served here)" if rec["reservable"] else "Not permitted (metadata only)"))
+    lic_rows.append(("Redistribution", ("Permitted (not yet served here)" if nys else "Permitted (served here)") if rec["reservable"] else "Not permitted (metadata only)"))
     lic_rows.append(("Commercial use", "Yes" if rec["commercial_ok"] else "Restricted / no"))
     lic_rows.append(("Modification", "Restricted" if rec["no_modify"] else "Permitted"))
     if rec["homepage"]:
@@ -2767,7 +2786,7 @@ def render_dataset_page(rec):
     # Access / mirrors. Download + API rows ONLY for reservable sources — a gated
     # source's page must never advertise a download of data we don't redistribute
     # (the API 451s it anyway; the page must say the same thing).
-    if rec["reservable"]:
+    if rec["reservable"] and not nys:
         acc_rows = [
             ("Download",
              (f'<a href="download.html?source={esc(rec["id"])}">Select &amp; download '
@@ -2777,6 +2796,12 @@ def render_dataset_page(rec):
               'per-series files are still being published. The API returns 404 for it until '
               'that completes, so we are not offering a button that would fail.')),
             ("API", f'<a href="account.html">Get a free API key</a>, then <span class="mono">GET /v1/series/&lt;id&gt;.csv</span>'),
+            ("Canonical landing", f'<a href="{esc(rec["page_url"])}">{esc(rec["page_url"])}</a>'),
+        ]
+    elif nys:
+        acc_rows = [
+            ("Download", "<em>Not yet served</em> &mdash; the API serves no series for this source yet, "
+                         "so no download is offered."),
             ("Canonical landing", f'<a href="{esc(rec["page_url"])}">{esc(rec["page_url"])}</a>'),
         ]
     else:
@@ -2872,6 +2897,8 @@ def render_dataset_page(rec):
         html = html.replace(
             "Compiled and redistributed by the Elkassabgi Data Library.",
             "Catalogued (metadata only) by the Elkassabgi Data Library; the data itself is not redistributed here.")
+    elif rec.get("not_yet_served"):
+        html = html.replace("Compiled and redistributed by the Elkassabgi Data Library.", NOT_YET_SERVED_SENTENCE)
     return html
 
 
@@ -3733,7 +3760,7 @@ function renderLocal(){
  const desc=parts.join(' · ');
  document.getElementById('count').textContent=rows.length+' of '+IDX.length+' datasets'+(desc?' — '+desc:'');
  const out=rows.map(r=>{
-  const badge='<span class="badge open">redistributed</span>';
+  const badge=r.not_yet_served?'<span class="badge meta">not yet served</span>':'<span class="badge open">redistributed</span>';
   const cats=(r.cats||[]).slice(0,4).map(c=>'<span class="badge cat">'+esc(c)+'</span>').join('');
   const ser=r.n_series?'<span class="count">'+r.n_series.toLocaleString()+' series</span>':(r.not_yet_served?'<span class="count">not yet served</span>':'');
   return '<a class="card" href="'+r.page+'"><div class="cid">'+esc(r.id)+'</div>'+

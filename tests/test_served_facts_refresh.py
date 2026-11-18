@@ -114,16 +114,84 @@ def test_served_zero_renders_not_yet_served_never_the_local_count(G):
     assert "not yet served" in desc and "1,234" not in desc and "Free download" not in desc
 
 
-def test_page_source_predicate_matches_build_record(G):
-    sources = {"a": {"license_id": "open"}, "b": {"license_id": "closed"}, "c": {"license_id": "open"},
-               "d": {"license_id": "open"}}
-    licenses = {"open": {"reservable": 1}, "closed": {"reservable": 0}}
-    roll = {"a": {"n_series": 1}, "b": {"n_series": 1}, "d": {"n_series": 1}}      # c has no series
-    deny = next(iter(G.DENYLISTED)) if G.DENYLISTED else None
-    if deny:
-        sources[deny] = {"license_id": "open"}
-        roll[deny] = {"n_series": 1}
-    assert G.page_source_ids(sources, licenses, roll) == {"a", "d"}
+# One fixture catalogue for every predicate test. Every clause has a source that only it excludes:
+#   b  licence not reservable          c  no series          dd  denylisted (planted into G.DENYLISTED)
+#   ab shares a prefix with a ('ab:1' must not count as a series of 'a')
+FIXTURE_SQL = """
+    CREATE TABLE license (license_id TEXT PRIMARY KEY, reservable INTEGER);
+    CREATE TABLE source (source_id TEXT PRIMARY KEY, license_id TEXT);
+    CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT);
+    INSERT INTO license VALUES ('open', 1), ('closed', 0);
+    INSERT INTO source VALUES ('a', 'open'), ('b', 'closed'), ('c', 'open'), ('dd', 'open'), ('ab', 'open'),
+                              ('e', 'open');
+    INSERT INTO series VALUES ('a:1', 'a'), ('b:1', 'b'), ('dd:1', 'dd'), ('ab:1', 'ab'), ('e:1', 'e'), ('e:2', 'e');
+"""
+EXPECTED_PAGES = ["a", "ab", "e"]
+
+
+@pytest.fixture
+def fixture_catalogue(G, monkeypatch):
+    monkeypatch.setattr(G, "DENYLISTED", set(G.DENYLISTED) | {"dd"})
+    monkeypatch.setattr(G, "RESOLVABLE", set(G.RESOLVABLE or ()) | {"a", "ab", "e"})   # the download link renders
+    con = sqlite3.connect(":memory:")
+    con.executescript(FIXTURE_SQL)
+    sources = {r[0]: {"source_id": r[0], "license_id": r[1]} for r in con.execute("SELECT * FROM source")}
+    licenses = {r[0]: {"license_id": r[0], "reservable": r[1]} for r in con.execute("SELECT * FROM license")}
+    roll = {}                                   # gen_site's rollup shape: only sources WITH series appear
+    for sid, n in con.execute("SELECT source_id, COUNT(*) FROM series GROUP BY source_id"):
+        roll[sid] = {"source_id": sid, "n_series": n, "min_start": None, "max_end": None, "n_geo": 0,
+                     "last_updated": None, "frequencies": [], "categories": [], "geographies": []}
+    return con, sources, licenses, roll
+
+
+def test_page_predicate_equals_mains_page_filter(G, fixture_catalogue):
+    """page_source_ids must pick exactly the sources main() writes a page for (build_record's reservable AND a
+    rollup entry), on the same fixture - every exclusion clause is exercised, the denylisted one included."""
+    _, sources, licenses, roll = fixture_catalogue
+    mains = {sid for sid in sources
+             if G.build_record(sid, sources[sid], licenses, roll.get(sid), None, None)["reservable"]
+             and bool(roll.get(sid))}
+    assert sorted(G.page_source_ids(sources, licenses, roll)) == sorted(mains) == EXPECTED_PAGES
+
+
+def test_tool_measures_exactly_gen_sites_page_sources(G, fixture_catalogue):
+    con, sources, licenses, roll = fixture_catalogue
+    sids, skipped = R.page_sources(con, G)
+    assert sids == sorted(G.page_source_ids(sources, licenses, roll)) == EXPECTED_PAGES
+    assert skipped == 1                                          # dd: would be a page but for the denylist
+
+
+def test_a_served_zero_page_offers_no_download_anywhere(G, fixture_catalogue):
+    """Render the page, its Dataset JSON-LD and its Croissant for a source the API serves 0 of. Control: the
+    same source served 2 shows every claim, so the absence assertions can see them."""
+    _, sources, licenses, roll = fixture_catalogue
+    side = {"measured_obs": 99, "description": "Prices. Compiled and redistributed by the Elkassabgi Data Library."}
+    claims = ["Open &middot; redistributed", "Redistributable.", "Select &amp; download", "Measured observations",
+              "Distinct geographies", "download.html?source=", "DataDownload", "cr:FileObject",
+              "Compiled and redistributed", "Permitted (served here)"]
+
+    def render(served):
+        r = {"e": dict(roll["e"], n_series=2, n_geo=3, min_start="2001-01-01", max_end="2020-12-31")}
+        G.apply_served_facts(r, {"n_series": {"e": served}, "frequencies": {}, "measured_utc": "x"}, required={"e"})
+        # description_key is outside render_dataset_page's early field rewrite, so only its page-level sweep
+        # can catch the sentence there
+        s5 = {"description_key": ["Key facts. Compiled and redistributed by the Elkassabgi Data Library."]}
+        rec = G.build_record("e", sources["e"], licenses, r["e"], dict(side), s5)
+        return G.render_dataset_page(rec), G.dataset_jsonld(rec), G.croissant_jsonld(rec)
+
+    html, ds, cr = render(2)                                         # control: served
+    for c in claims:
+        assert c in html, f"control lost {c!r} - the absence checks below would be blind"
+    assert ds["distribution"] and ds["isAccessibleForFree"] is True and cr["distribution"]
+
+    html, ds, cr = render(0)
+    present = [c for c in claims if c in html]
+    assert not present, f"a served-0 page still claims: {present}"
+    assert "Not yet served" in html and "not yet served" in G.build_meta_desc(
+        G.build_record("e", sources["e"], licenses, dict(roll["e"], n_series=0, not_yet_served=True), None, None))
+    for ld in (ds, cr):
+        assert "distribution" not in ld and ld["isAccessibleForFree"] is False
+        assert ld["usageInfo"] == G.NOT_YET_SERVED_USAGE
 
 
 # ---- the refresh tool, through a fake HTTP layer --------------------------------------------------------
@@ -221,20 +289,6 @@ def test_dry_run_writes_nothing_and_prints_the_diff(tmp_path, capsys):
 def test_single_source_mode_never_writes(tmp_path):
     rc, _, out = _run(tmp_path, {"a": (200, 9, {})}, None, ["--source", "a"])
     assert rc == 0 and not os.path.exists(out)
-
-
-def test_page_sources_skips_denylisted_unreservable_and_empty():
-    con = sqlite3.connect(":memory:")
-    con.executescript("""
-        CREATE TABLE license (license_id TEXT PRIMARY KEY, reservable INTEGER);
-        CREATE TABLE source (source_id TEXT PRIMARY KEY, license_id TEXT);
-        CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT);
-        INSERT INTO license VALUES ('open', 1), ('closed', 0);
-        INSERT INTO source VALUES ('a', 'open'), ('b', 'closed'), ('c', 'open'), ('d', 'open'), ('ab', 'open');
-        INSERT INTO series VALUES ('a:1', 'a'), ('b:1', 'b'), ('d:1', 'd'), ('ab:1', 'ab');
-    """)
-    sids, skipped = R.page_sources(con, {"d"})
-    assert sids == ["a", "ab"] and skipped == 1                    # 'a:' range does not match 'ab:1'
 
 
 def test_the_written_file_satisfies_gen_site(G, tmp_path, monkeypatch):

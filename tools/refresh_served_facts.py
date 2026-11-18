@@ -10,9 +10,9 @@ catalog/gen_site.py caps every page's series count at what the API serves (load_
 2026-11-18 REFUSES to build when the file is missing, older than gen_site.SERVED_FACTS_MAX_AGE_HOURS, or has
 no entry for a source that gets a page. This tool is the one writer of that file.
 
-WHAT IS MEASURED. Exactly the sources that get a page, by gen_site's own predicate (page_source_ids):
-a `source` row whose licence is reservable, not in the worker's denylist (core.gen_denylist.committed_gate -
-those answer 451 and get no page), with at least one catalogued series. The catalogue is opened READ-ONLY
+WHAT IS MEASURED. Exactly the sources that get a page, decided by CALLING gen_site.page_source_ids (the
+predicate gen_site's own refusal uses): a `source` row whose licence is reservable, not in the worker's
+denylist (gen_site.DENYLISTED - those answer 451 and get no page), with at least one catalogued series. The catalogue is opened READ-ONLY
 through core.catalog_path. For each one:
 
     GET https://econdl-api.elkassabgi.workers.dev/v1/catalog?source=<id>&limit=1  ->  total
@@ -122,23 +122,20 @@ def measure_one(sid: str, get=http_get, now=utcnow, sleep=time.sleep) -> dict:
 
 
 # ---- which sources -------------------------------------------------------------------------------------
-def page_sources(con, denylisted: set) -> tuple[list, int]:
-    """(sorted page source ids, number skipped as denylisted). gen_site.page_source_ids' predicate, read cheaply:
-    the source and license tables, plus one primary-key range probe per source for "has a series"."""
-    reservable = {r[0] for r in con.execute("SELECT license_id FROM license WHERE reservable = 1")}
-    out, skipped = [], 0
-    for sid, lic in con.execute("SELECT source_id, license_id FROM source ORDER BY source_id").fetchall():
-        if lic not in reservable:
-            continue
-        has = con.execute("SELECT 1 FROM series WHERE series_id >= ? AND series_id < ? LIMIT 1",
-                          (sid + ":", sid + ";")).fetchone()
-        if not has:
-            continue
-        if sid in denylisted:
-            skipped += 1
-            continue
-        out.append(sid)
-    return out, skipped
+def page_sources(con, gen) -> tuple[list, int]:
+    """(sorted page source ids, number of would-be pages skipped as denylisted), decided by gen_site's OWN
+    predicate `gen.page_source_ids` - the same call gen_site's refusal uses, so the two cannot drift. Its
+    inputs are read cheaply: the source and license tables, and one primary-key range probe per source for
+    "has a series" (page_source_ids needs only truthiness there, not gen_site's 13.9M-row rollup)."""
+    licenses = {r[0]: {"reservable": r[1]} for r in con.execute("SELECT license_id, reservable FROM license")}
+    sources = {r[0]: {"license_id": r[1]} for r in con.execute("SELECT source_id, license_id FROM source")}
+    has_series = {sid: True for sid in sources
+                  if con.execute("SELECT 1 FROM series WHERE series_id >= ? AND series_id < ? LIMIT 1",
+                                 (sid + ":", sid + ";")).fetchone()}
+    pages = gen.page_source_ids(sources, licenses, has_series)
+    denied = {s for s in has_series if s in gen.DENYLISTED
+              and bool((licenses.get(sources[s]["license_id"]) or {}).get("reservable", 0))}
+    return sorted(pages), len(denied)
 
 
 def open_catalogue(db: str | None):
@@ -146,9 +143,14 @@ def open_catalogue(db: str | None):
     return catalog_path.connect_path(db or catalog_path.under(ROOT), write=False)
 
 
-def load_denylisted() -> set:
-    from core.gen_denylist import committed_gate
-    return committed_gate()
+def load_gen_site():
+    """catalog/gen_site.py as a module (it is a script, not a package member). Importing it reads only repo
+    files (the denylist, withheld list, registry); it opens no catalogue and makes no request."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("gen_site_for_refresh", os.path.join(ROOT, "catalog", "gen_site.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 # ---- the run -------------------------------------------------------------------------------------------
@@ -254,7 +256,7 @@ def run(argv=None, *, get=http_get, now=utcnow, sleep=time.sleep, sources=None, 
     else:
         con = open_catalogue(a.db)
         try:
-            sids, skipped = page_sources(con, load_denylisted())
+            sids, skipped = page_sources(con, load_gen_site())
         finally:
             con.close()
         print(f"  page sources: {len(sids)} (denylisted, no page, not measured: {skipped})")
