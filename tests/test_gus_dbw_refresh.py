@@ -219,6 +219,9 @@ def test_an_incomplete_sweep_never_rebuilds_the_area():
     from jobs import ingest_gus_dbw as G
     src = inspect.getsource(G.refresh_pass)
     i_guard = src.index("if not area_ok:")
-    i_rebuild = src.index("rebuild_with_tail")
+    # the rebuild moved into finish_area (R1936); refresh_pass reaches it only through that call
+    assert "rebuild_with_tail" not in src
+    i_rebuild = src.index("finish_area(")
     assert i_guard < i_rebuild, "the completeness check must gate the rebuild"
     assert "continue" in src[i_guard:i_rebuild]
+    assert "rebuild_with_tail" in inspect.getsource(G.finish_area)
