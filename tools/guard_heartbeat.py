@@ -383,6 +383,21 @@ def _sec_edgar_problem(rec, now) -> "str | None":
     return None
 
 
+GUS_DBW_DIR = os.path.join(ROOT, "data", "clean_full", "gus_dbw")
+
+
+def _gus_dbw_beat(gus_dir: "str | None" = None) -> dict:
+    """gus_dbw's owed publishes and guard refusals (jobs/gus_dbw_refresh.publish_summary) for the daily
+    digest. The digest runs on CI, where data/ is absent, so without this the owed/refused lines could
+    never reach the owner (R1938). Never raises: a fault is `unreadable`, never "0 owed"."""
+    try:
+        from jobs.gus_dbw_refresh import publish_summary     # noqa: PLC0415
+        return publish_summary(gus_dir or GUS_DBW_DIR)
+    except BaseException as e:                               # noqa: BLE001 - the beat must go out regardless
+        return {"measured_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+                "unreadable": f"{type(e).__name__}: {e}"[:200]}
+
+
 NOTICES_STATUS_LOCAL = os.path.join(ROOT, "logs", "notices.last.json")
 NOTICES_QUEUE_LOCAL = os.path.join(ROOT, "data", "_maintenance", "queue.jsonl")
 NOTICES_ITEMS_MAX = 10
@@ -583,6 +598,7 @@ def publish(stall_check: bool = False) -> int:
         body["notices"] = {"unreadable": f"{type(e).__name__}: {e}"[:200]}
     # the launcher watchdog's own state; /v1/guard-heartbeat copies none of it (that route serves whitelisted counts)
     body["launcher_watchdog"] = _launcher_watchdog_beat()
+    body["gus_dbw"] = _gus_dbw_beat()
     if stall_check:
         body["scheduler_stall"] = _stall_summary()
     data = json.dumps(body, indent=2).encode("utf-8")

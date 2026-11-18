@@ -104,7 +104,7 @@ def test_main_hub_rows_writes_only_catalog_html(G, tmp_path, monkeypatch):
     hub = _hub(G, [_row("aaa", 1), _row("insee_melodi", 139, "2026-07-28")], "\r\n")
     (out / "catalog.html").write_bytes(hub.encode("utf-8"))
     monkeypatch.setattr(G, "OUT_DIR", str(out))
-    monkeypatch.setattr(G, "load_registry", lambda: ({}, {"aaa": {}, "insee_melodi": {}},
+    monkeypatch.setattr(G, "load_registry", lambda: ({"x": {"reservable": 1}}, {"aaa": {"license_id": "x"}, "insee_melodi": {"license_id": "x"}},
                                                      {"aaa": {"n_series": 7}, "insee_melodi": {"n_series": 95}}, {}))
     monkeypatch.setattr(G, "load_sidecar", lambda: ({}, "2026-10-20"))
     monkeypatch.setattr(G, "build_record", lambda sid, _s, _l, roll, *a: {"id": sid, "reservable": 1, "license_id": "x"})

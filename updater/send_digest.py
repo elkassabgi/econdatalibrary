@@ -339,6 +339,83 @@ def firstpass_ages(store_root: str, names, now: float):
             out.append((name, (now - newest) / 3600.0, newest_name))
     return sorted(out, key=lambda r: -r[1])
 
+
+GUS_DBW_SUMMARY_OLD_H = 2.0   # the guard beat carries the summary every 5 minutes: GUARD_BEAT_OLD_H's rule
+GUS_DBW_UNKNOWN = "     gus_dbw publish: ATTENTION UNKNOWN ({why}) - owed and refused areas cannot be told this morning"
+
+
+def _age_h(iso, now):
+    t = dt.datetime.fromisoformat(iso)
+    t = t if t.tzinfo else t.replace(tzinfo=dt.timezone.utc)
+    return (now - t).total_seconds() / 3600.0
+
+
+def gus_dbw_summary_lines(summary: dict, now: dt.datetime) -> list:
+    """Text lines from one jobs.gus_dbw_refresh.publish_summary() dict: what gus_dbw's crawler has
+    rebuilt but nobody has published, and what its row-loss guard is holding back (PR #291,
+    R1936-R1938). The crawler only RECORDS a debt and never publishes, so without this line a passed
+    rebuild would sit unserved with nothing saying so. ONE renderer for both sources of the dict (the
+    local store and the workstation beat), so the two can never word a fact differently (R676)."""
+    out = []
+    owed = int(summary.get("owed") or 0)
+    if owed:
+        try:
+            oldest = (f"oldest rebuilt {_age_h(summary['oldest_owed_utc'], now):.1f}h ago "
+                      f"(area_{summary.get('oldest_owed_area')})")
+        except (KeyError, TypeError, ValueError):
+            oldest = "rebuild time unreadable"
+        out.append(f"     gus_dbw publish: {owed} area(s) rebuilt and OWED to the publisher, {oldest}")
+    else:
+        out.append("     gus_dbw publish: 0 areas owed")
+    if summary.get("bad_lines"):
+        out.append(f"     gus_dbw publish: ATTENTION {summary['bad_lines']} unreadable line(s) in the "
+                   f"owed/published records")
+    refused = int(summary.get("refused") or 0)
+    if refused:
+        try:
+            when = f"{_age_h(summary['newest_refusal_utc'], now):.1f}h ago"
+        except (KeyError, TypeError, ValueError):
+            when = "at an unreadable time"
+        names = ", ".join("area_" + str(x) for x in (summary.get("refused_areas") or [])[:10])
+        out.append(f"     gus_dbw guard: ATTENTION {refused} area(s) refused and still due, newest refusal "
+                   f"{when} ({names})")
+    return out
+
+
+def gus_dbw_publish_lines(gus_dir: str, now: dt.datetime) -> list:
+    """The gus_dbw lines from the LOCAL store (a run on the workstation). An unreadable record is SAID,
+    never an empty line."""
+    try:
+        from jobs.gus_dbw_refresh import publish_summary                  # noqa: PLC0415
+        summary = publish_summary(gus_dir, now)
+    except Exception as e:                                                   # noqa: BLE001
+        return [f"     gus_dbw publish: ATTENTION the owed-publish record could not be read "
+                f"({type(e).__name__}) - how many rebuilt areas are unserved is unknown"]
+    return gus_dbw_summary_lines(summary, now)
+
+
+def gus_dbw_beat_lines(beat, now: dt.datetime) -> list:
+    """The gus_dbw lines from the workstation's guard beat (the CI digest: data/ is absent on the runner,
+    so the local record cannot be read there - R1938). A missing, unreadable or stale summary is an
+    ATTENTION UNKNOWN line, never silence and never "0 owed"."""
+    if not isinstance(beat, dict) or "unreadable" in beat:
+        why = beat.get("unreadable") if isinstance(beat, dict) else "no beat"
+        return [GUS_DBW_UNKNOWN.format(why="the workstation beat could not be read: " + str(why)[:100])]
+    g = beat.get("gus_dbw")
+    if not isinstance(g, dict):
+        return [GUS_DBW_UNKNOWN.format(why="summary missing from the workstation beat")]
+    try:
+        age = _age_h(g["measured_utc"], now)
+    except (KeyError, TypeError, ValueError):
+        return [GUS_DBW_UNKNOWN.format(why="summary has no readable measured_utc")]
+    if age > GUS_DBW_SUMMARY_OLD_H:
+        return [GUS_DBW_UNKNOWN.format(why=f"summary stale, {age:.1f}h old > {GUS_DBW_SUMMARY_OLD_H:.0f}h")]
+    if "unreadable" in g:
+        return [GUS_DBW_UNKNOWN.format(why="the workstation could not read the record: " + str(g["unreadable"])[:100])]
+    if not g.get("dir_present"):
+        return [GUS_DBW_UNKNOWN.format(why="the workstation has no gus_dbw store directory")]
+    return gus_dbw_summary_lines(g, now)
+
 GUARD_BEAT_KEY = "_aqueduct/guard_heartbeat.json"
 NOTICES_RUN_LATE_H = 30.0     # the runner is due once a day from 09:00 UTC; a day plus retries is late
 
@@ -676,6 +753,16 @@ def main() -> None:
             os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                          "data", "clean_full"),
             FIRSTPASS_DIRS, _time.time())
+    # The workstation's guard beat: read ONCE, used by the gus_dbw lines, the notices and the watchdog.
+    _beat = read_guard_beat()
+    # gus_dbw's owed publishes + guard refusals: computed once, rendered in both bodies (same reason as fp).
+    # The digest is sent from CI, where data/ is absent (R1938): there the lines come from the beat.
+    if any(r[0] == "gus_dbw" for r in fp):
+        _gpub = gus_dbw_publish_lines(
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "data", "clean_full", "gus_dbw"), dt.datetime.now(dt.timezone.utc))
+    else:
+        _gpub = gus_dbw_beat_lines(_beat, dt.datetime.now(dt.timezone.utc))
     # GIANT UNITS: computed once, rendered in both bodies (same reason as fp). An unreadable rule is SAID, never a
     # silently empty section: a desktop_lane: skip store does not refresh on the scheduled pass.
     try:
@@ -826,11 +913,15 @@ def main() -> None:
                 mark = "  STALE" if age_h > FIRSTPASS_STALE_HOURS else ""
                 lines.append(f"     {name:12} last wrote {age_h:5.1f}h ago "
                              f"({newest[:34]}){mark}")
+            lines += _gpub
             lines.append("")
+    elif _gpub:
+        lines.append("  gus_dbw (from the workstation beat; this runner has no first-pass store):")
+        lines += _gpub
+        lines.append("")
     lines += _giant
     lines += _csvq
     # PUBLISHER NOTICES (2026-11-05): what the workstation's watcher found that is ending or changing.
-    _beat = read_guard_beat()
     _notices = notices_lines(_beat, dt.datetime.now(dt.timezone.utc))
     lines += _notices
     # LAUNCHER WATCHDOG (2026-11-12): the same beat, its GAVE-UP / CANNOT TELL / stale-look / pinned-hash lines
@@ -904,7 +995,14 @@ def main() -> None:
         notes_html += _note(
             "<b>first-pass crawlers</b> — no unit_state row, so they are invisible to the health "
             f"gate:<table role='presentation' style='margin-top:5px;font-size:12px;'>{_rows}"
-            "</table>")
+            "</table>" + "".join(
+                (f"<b style='color:{amber};'>{esc(l.strip())}</b><br>" if "ATTENTION" in l
+                 else f"{esc(l.strip())}<br>") for l in _gpub))
+    elif _gpub:
+        notes_html += _note(
+            "<b>gus_dbw</b> — from the workstation beat (this runner has no first-pass store):<br>" + "".join(
+                (f"<b style='color:{amber};'>{esc(l.strip())}</b><br>" if "ATTENTION" in l
+                 else f"{esc(l.strip())}<br>") for l in _gpub))
     if _giant:
         notes_html += _note("<b>giant units</b><br>" + "<br>".join(
             f"<b style='color:{amber};'>{esc(l.strip())}</b>" if "ATTENTION" in l else esc(l.strip())

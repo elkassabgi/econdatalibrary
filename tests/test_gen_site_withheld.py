@@ -72,7 +72,7 @@ def test_only_writes_that_one_page_and_nothing_else(G, tmp_path, monkeypatch):
     out.mkdir()
     (out / "keep.html").write_text("untouched", encoding="utf-8")
     monkeypatch.setattr(G, "OUT_DIR", str(out))
-    monkeypatch.setattr(G, "load_registry", lambda: ({}, {"aaa": {}, "insee_melodi": {}},
+    monkeypatch.setattr(G, "load_registry", lambda: ({"x": {"reservable": 1}}, {"aaa": {"license_id": "x"}, "insee_melodi": {"license_id": "x"}},
                                                      {"aaa": {"n_series": 1}, "insee_melodi": {"n_series": 94}}, {}))
     monkeypatch.setattr(G, "load_sidecar", lambda: ({}, "2026-10-17"))
     monkeypatch.setattr(G, "build_record", lambda sid, *a: {"id": sid, "reservable": 1, "license_id": "x"})
