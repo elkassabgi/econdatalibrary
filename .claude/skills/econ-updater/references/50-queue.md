@@ -2104,7 +2104,7 @@ the bulk campaign and `tools/derive_csv_bulk.py` refuses a dst campaign (R498). 
    - RELEASE CONDITION, per table, operator only: the selection fix above, a clean re-pull of that table (R22), its
      served CSV read back with real (not all-zero) data, then `python tools/withheld_list.py release dst:DST:<T>
      --apply`, `python tools/gen_withheld_floor.py --from-store`, commit, and the dst page again
-     (`catalog/gen_site.py --only dst` + a page-only Pages deploy). No fetcher releases a dst id
+     (`tools/refresh_served_facts.py`, then `catalog/gen_site.py --only dst` + a page-only Pages deploy). No fetcher releases a dst id
      (`withheld_list.py` refuses `--until complete` for a source no fetcher un-hides).
    - NOT covered by the decision (the owner's call): 23 single-series store tables are at least half zeros but not
      all (22 catalogued; e.g. VAN8K 41 of 42 rows 0, DKSTAT 45/47, DNVPEJER 242/260, RAS301/302/308 16/17), and 698

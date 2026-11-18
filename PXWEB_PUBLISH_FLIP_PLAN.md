@@ -42,7 +42,7 @@ Run from a shell where `econfindatalibrary/.env` has the R2 write creds + wrangl
      reservable=1) and repoint. Verified audit says stat_estonia itself IS redistributable.
 5. **source attribution** — confirm the 9 `source` rows carry attribution/homepage/terms so the
    CC-BY citation header (series.ts) is populated (attribution is a binding licence condition).
-6. **site** — `python catalog/gen_site.py && wrangler pages deploy catalog/site --project-name=econdatalibrary`.
+6. **site** — `python tools/refresh_served_facts.py && python catalog/gen_site.py && wrangler pages deploy catalog/site --project-name=econdatalibrary` (gen_site refuses without a served_facts.json measured in the last 24 h).
 7. **git push** — `pipeline-robustness` → `origin/main`. Local `main` is DIVERGED (48 ahead / 7
    behind) — Ahmed reconciles (this is the one true blocker).
 8. **daily wiring** — confirm/wire the 9 into the daily updater (the "updated" half of the goal);

@@ -25,7 +25,9 @@ Design rules (ARCHITECTURE.md s3, STRATEGY.md):
   - No fabricated metadata. Every field traces to the DB or catalog.json. Fields
     we don't have are simply omitted.
 
-Run:  python catalog/gen_site.py
+Run:  python tools/refresh_served_facts.py      # FIRST, every build: measure what the API serves
+      python catalog/gen_site.py               # refuses if catalog/served_facts.json is missing,
+                                               # older than SERVED_FACTS_MAX_AGE_HOURS, or lacks a page source
 """
 from __future__ import annotations
 
@@ -687,11 +689,15 @@ def build_meta_desc(rec, shared=frozenset()):
     facts = []
     if rec.get("n_series"):
         facts.append(f"{rec['n_series']:,} series")
+    elif rec.get("not_yet_served"):
+        facts.append("not yet served")
     cov = _coverage_clause(rec)
     if cov:
         facts.append(cov)
     lic = short_license(rec.get("license_label"))
     access = "Free download" if rec.get("reservable") else "Catalogued metadata"
+    if rec.get("not_yet_served"):
+        access = "Download not yet available"
 
     def assemble(head, with_lic):
         bits = []
@@ -1198,7 +1204,7 @@ def load_registry():
         roll["categories"] = sorted(set(cats.get(sid, [])))
         roll["geographies"] = sorted(set(geos.get(sid, [])))
 
-    apply_served_facts(series_roll)
+    apply_served_facts(series_roll, required=page_source_ids(sources, licenses, series_roll))
     return licenses, sources, series_roll, source_meta
 
 
@@ -1212,11 +1218,16 @@ def load_served_facts(path=None):
     WHY (2026-11-17, pre-deploy review C1). The local catalogue can run ahead of the served one: statcan's
     lane catalogued 1,270 new ids that the frozen serving catalogue does not hold (/v1/series answers
     "unknown series id"), so a page built from the local file said 467,611 series while the API serves
-    466,341. A page is a promise about what a user can download, so it may never claim more than is served."""
+    466,341. A page is a promise about what a user can download, so it may never claim more than is served.
+
+    REFUSES (2026-11-18): a MISSING file and a STALE one both stop the build. A missing file used to print a
+    warning and leave every page uncapped, which is the failure the file exists to prevent; a file from an
+    earlier day caps today's pages at yesterday's serving state. The file is written by
+    tools/refresh_served_facts.py, and that is the FIRST step of every build (REFRESH_COMMAND)."""
     p = path or SERVED_FACTS
     if not os.path.exists(p):
-        print(f"  WARNING: no {os.path.basename(p)} - page counts are NOT capped at the served counts")
-        return None
+        raise SystemExit(f"FATAL: no {p} - without it no page count is capped at what the API serves. "
+                         f"Measure it first: {REFRESH_COMMAND}")
     try:
         with open(p, encoding="utf-8") as fh:
             doc = json.load(fh)
@@ -1225,15 +1236,72 @@ def load_served_facts(path=None):
     except Exception as e:                                   # noqa: BLE001
         raise SystemExit(f"FATAL: {p} is unreadable ({type(e).__name__}: {e}) - a page could claim more "
                          "series than the API serves") from None
+    if any(v < 0 for v in counts.values()):
+        raise SystemExit(f"FATAL: {p} holds a negative series count - not a measurement")
+    check_served_facts_age(doc.get("measured_utc"), p)
     return {"n_series": counts, "frequencies": freqs, "measured_utc": doc.get("measured_utc")}
 
 
-def apply_served_facts(series_roll, facts=None):
+# How old served_facts.json may be when a build reads it. The refresh is the first step of the SAME manual
+# build (it takes minutes; nothing in CI runs this generator - deploy-site.yml only uploads catalog/site), so
+# a correct build reads a file measured minutes ago. 24 h leaves room for a build that is started, reviewed
+# and finished the next morning, and no more: the served catalogue changes whenever a D1 catalogue sync
+# lands, and a page capped at an older measurement can claim series the API no longer serves.
+SERVED_FACTS_MAX_AGE_HOURS = 24
+# The one emergency override (the API down, a page fix that cannot wait). It never covers a MISSING file, and
+# it is announced in the build log every time it is used.
+SERVED_FACTS_STALE_ENV = "ECONDL_ALLOW_STALE_SERVED_FACTS"
+REFRESH_COMMAND = "python tools/refresh_served_facts.py"
+
+
+def check_served_facts_age(measured_utc, path="served_facts.json", now=None):
+    """SystemExit unless `measured_utc` is a real UTC stamp no older than SERVED_FACTS_MAX_AGE_HOURS (and not
+    in the future). With SERVED_FACTS_STALE_ENV=1 a stale file is allowed, LOUDLY. Returns the age in hours."""
+    from datetime import timezone
+    try:
+        t = datetime.strptime(str(measured_utc), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise SystemExit(f"FATAL: {path} measured_utc {measured_utc!r} is not a UTC timestamp "
+                         f"(YYYY-MM-DDTHH:MM:SSZ). Re-measure: {REFRESH_COMMAND}") from None
+    now = now or datetime.now(timezone.utc)
+    age_h = (now - t).total_seconds() / 3600.0
+    if age_h < -0.1:
+        raise SystemExit(f"FATAL: {path} measured_utc {measured_utc} is in the future (clock or file wrong)")
+    if age_h <= SERVED_FACTS_MAX_AGE_HOURS:
+        return age_h
+    if os.environ.get(SERVED_FACTS_STALE_ENV) == "1":
+        bar = "!" * 100
+        print(f"\n{bar}\n!!  {SERVED_FACTS_STALE_ENV}=1: building from a STALE served_facts.json, measured "
+              f"{measured_utc} ({age_h:.1f} h old, limit {SERVED_FACTS_MAX_AGE_HOURS} h).\n!!  Page counts are "
+              f"capped at THAT day's serving state, not today's. Do not deploy this build without saying so.\n"
+              f"{bar}\n")
+        return age_h
+    raise SystemExit(f"FATAL: {path} was measured {measured_utc}, {age_h:.1f} h ago (limit "
+                     f"{SERVED_FACTS_MAX_AGE_HOURS} h). Re-measure first: {REFRESH_COMMAND}")
+
+
+def page_source_ids(sources, licenses, series_roll):
+    """The sources that get a dataset page: the predicate main() applies through build_record (licence
+    reservable, not denylisted, at least one catalogued series). Each one needs a served_facts.json entry."""
+    return {sid for sid in sources
+            if series_roll.get(sid)
+            and bool((licenses.get(sources[sid].get("license_id")) or {}).get("reservable", 0))
+            and sid not in DENYLISTED}
+
+
+def apply_served_facts(series_roll, facts=None, required=()):
     """Hold every source's n_series at or below its served count (never raise it), and use the served frequency
-    codes where served_facts.json lists them. Returns {source_id: (local, served)} for the sources it lowered."""
+    codes where served_facts.json lists them. Returns {source_id: (local, served)} for the sources it lowered.
+
+    `required` are the sources that will get a page: one with NO entry in the file stops the build, because
+    an absent entry would leave that page uncapped (pre-build review C1, 2026-11-18). A source measured at 0
+    is marked `not_yet_served`: its page says so and never falls back to the local count."""
     facts = load_served_facts() if facts is None else facts
-    if not facts:
-        return {}
+    missing = sorted(set(required) - set(facts["n_series"]))
+    if missing:
+        raise SystemExit(f"FATAL: {len(missing)} source(s) that get a page have no served count in "
+                         f"served_facts.json: {missing[:20]}{' ...' if len(missing) > 20 else ''}. "
+                         f"Re-measure: {REFRESH_COMMAND}")
     lowered = {}
     for src, roll in series_roll.items():
         served = facts["n_series"].get(src)
@@ -1242,6 +1310,10 @@ def apply_served_facts(series_roll, facts=None):
             roll["n_series"] = served
             print("  served cap: %s n_series %d -> %d (the API serves %d, measured %s)"
                   % (src, lowered[src][0], served, served, facts.get("measured_utc")))
+        if served == 0:
+            roll["n_series"] = 0
+            roll["not_yet_served"] = True
+            print("  not yet served: %s (the API serves 0 series, measured %s)" % (src, facts.get("measured_utc")))
         if src in facts["frequencies"]:
             roll["frequencies"] = sorted(set(facts["frequencies"][src]))
     return lowered
@@ -1910,6 +1982,8 @@ def build_record(sid, src, lic, roll, side, s5=None):
         "desc_full": desc_full,
         "desc_short": desc_short,
         "n_series": (roll or {}).get("n_series", 0),
+        # served_facts.json measured 0: the page says "not yet served", never the local count
+        "not_yet_served": bool((roll or {}).get("not_yet_served")),
         "cov_start": cov_start,
         "cov_end": cov_end,
         "frequencies": (roll or {}).get("frequencies", []),
@@ -2642,6 +2716,8 @@ def render_dataset_page(rec):
     cov_rows = []
     if rec["n_series"]:
         cov_rows.append(("Series catalogued", f"{rec['n_series']:,}"))
+    elif rec.get("not_yet_served"):
+        cov_rows.append(("Series served", "Not yet served"))
     if rec["cov_start"] or rec["cov_end"]:
         # Never render a bare "?" for a bound we do not have. It read as a broken page
         # ("Coverage ? – 2018-12-31" on ggdc and maddison, reported 2026-08-02), and it is
@@ -2945,6 +3021,9 @@ def _catalog_idx(records):
         }
         for r in records
     ]
+    for x, r in zip(idx, records):
+        if r.get("not_yet_served"):         # only when true, so every other row's JSON is unchanged
+            x["not_yet_served"] = True
     from collections import Counter
     dist = Counter(x["pillar"] for x in idx)
     print("  catalog pillars:", {k: dist.get(k, 0) for k, _i, _l in PILLARS})
@@ -3656,7 +3735,7 @@ function renderLocal(){
  const out=rows.map(r=>{
   const badge='<span class="badge open">redistributed</span>';
   const cats=(r.cats||[]).slice(0,4).map(c=>'<span class="badge cat">'+esc(c)+'</span>').join('');
-  const ser=r.n_series?'<span class="count">'+r.n_series.toLocaleString()+' series</span>':'';
+  const ser=r.n_series?'<span class="count">'+r.n_series.toLocaleString()+' series</span>':(r.not_yet_served?'<span class="count">not yet served</span>':'');
   return '<a class="card" href="'+r.page+'"><div class="cid">'+esc(r.id)+'</div>'+
    '<h3>'+esc(r.name)+'</h3>'+
    (r.desc?'<p>'+esc(r.desc)+'</p>':'')+
