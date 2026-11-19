@@ -39,6 +39,7 @@ SECTIONS = [
     ("fp", "first-pass crawlers, which have no unit_state row"),
     ("progress", "sources that are in progress (too large for one run, nothing failed)"),
     ("not_saved", "that the record of the run was not saved (the state push did not succeed)"),
+    ("_stuck", "the stuck-run alarm: the same failure run after run (health.repeat_failures)"),
 ]
 
 

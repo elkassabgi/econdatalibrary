@@ -692,11 +692,22 @@ def main() -> None:
     run_status = os.environ.get("RUN_STATUS", "unknown")   # ${{ job.status }} from the yml
     run_id = os.environ.get("GITHUB_RUN_ID", "local")
 
-    con = sqlite3.connect(f"file:{STATE}?mode=ro", uri=True)
-    rows = con.execute(
-        "SELECT source_id, status, last_obs_date, last_success_utc, last_error, "
-        "last_attempt_utc FROM unit_state ORDER BY source_id").fetchall()
-    con.close()
+    # A MISSING OR UNREADABLE state.db (the pull_state step failed) used to crash this step before any mail was
+    # built. The mail must still go and must SAY it: no source row, the run counted unhealthy, and the stuck
+    # section's own "could not be read" line.
+    state_err = None
+    try:
+        if not os.path.isfile(STATE):
+            raise FileNotFoundError(STATE)
+        con = sqlite3.connect(f"file:{STATE}?mode=ro", uri=True)
+        try:
+            rows = con.execute(
+                "SELECT source_id, status, last_obs_date, last_success_utc, last_error, "
+                "last_attempt_utc FROM unit_state ORDER BY source_id").fetchall()
+        finally:
+            con.close()
+    except Exception as _se:                                          # noqa: BLE001
+        state_err, rows = _se, []
 
     # unit_state accumulates a row for every source that has EVER run, including ones
     # since removed from the registry. Those leftovers kept their last status forever, so
@@ -771,6 +782,29 @@ def main() -> None:
     except Exception as _ge:                                          # noqa: BLE001
         _giant = [f"  giant units: could not be listed ({type(_ge).__name__}) - the scheduled desktop pass "
                   f"skips every registry desktop_lane: skip source (ATTENTION); check them by hand", ""]
+    # STUCK-RUN ALARM (updater/health.py repeat_failures): computed ONCE from the runs history over its OWN read-only
+    # connection, rendered FIRST in both bodies. Not read from health.json: this step runs `if: always()`, also when
+    # health wrote no verdict. An unreadable input (no state.db, no runs table, no registry) is SAID, never an empty
+    # section, and the mail still goes. Phase 1: it changes no verdict and no gate.
+    _snow = dt.datetime.now(dt.timezone.utc)
+    _stuck_prefix, _smarks = "", {}
+    try:
+        from updater.health import (read_runs_readonly, repeat_failures, discontinued_ids_or_none,  # noqa: PLC0415
+                                    load_stuck_acks_doc, stuck_section_lines, stuck_subject_prefix, stuck_marks)
+        if _entries is None:
+            raise RuntimeError("registry.yaml could not be read")    # never name every runs source_id instead
+        _sres = repeat_failures(read_runs_readonly(STATE), _entries, discontinued_ids_or_none(),
+                                load_stuck_acks_doc(), _snow, gated=_gated_ids())
+        _stuck = stuck_section_lines(_sres, _snow)
+        _stuck_prefix, _smarks = stuck_subject_prefix(_sres), stuck_marks(_sres)
+    except Exception as _ste:                                         # noqa: BLE001
+        try:
+            from updater.health import stuck_unreadable_lines         # noqa: PLC0415
+            _stuck = stuck_unreadable_lines(_ste)
+        except Exception:                                             # noqa: BLE001
+            _stuck = ["Stuck: the same failure run after run - UNKNOWN",
+                      f"  stuck alarm: could not be read ({type(_ste).__name__}) - repeat failures are unknown "
+                      f"this morning"]
     # CSV RETRY QUEUE: computed once, rendered in both bodies. An unreadable queue is SAID, never an empty section.
     try:
         from updater.health import CSV_RETRY_BACKLOG_DAYS, csv_retry_backlog_of  # noqa: PLC0415
@@ -801,7 +835,7 @@ def main() -> None:
         warn = [r for r in warn if r[0] in _live_ids]
         bad = [r for r in bad if r[0] in _live_ids]
 
-    healthy = run_status.lower() == "success" and not bad
+    healthy = run_status.lower() == "success" and not bad and state_err is None
 
     feed = "https://econdl-api.elkassabgi.workers.dev/v1/last-updates"
     runlog = f"https://github.com/elkassabgi/econdatalibrary/actions/runs/{run_id}"
@@ -856,10 +890,18 @@ def main() -> None:
     # COMPUTED ONCE, rendered in BOTH bodies (state_not_saved_note above holds the rule).
     not_saved = state_not_saved_note(os.environ.get("PULL_STATE_OUTCOME"), os.environ.get("PUSH_STATE_OUTCOME"),
                                      os.environ.get("PUSH_STATE_REFUSED"))
+    if state_err is not None:
+        not_saved = [f"The run record (state.db) could not be read ({type(state_err).__name__}): no source row "
+                     f"is shown this morning."] + list(not_saved)
     subject = (f"econdatalibrary daily: OK — {len(ok)} sources current"
                if healthy else
                f"econdatalibrary daily: ATTENTION — run={run_status}, {len(bad)} failed, "
                f"{len(attention)} need attention, {len(progress)} in progress")
+    subject = _stuck_prefix + subject          # "K stuck (N new) · ..." when the stuck alarm has a line
+
+    def stuck_mark(source_id) -> str:
+        n = _smarks.get(source_id)
+        return f" STUCKx{n}" if n else ""
 
     # Ordering, not filtering. Measured 2026-09-03: 20 of 37 attention rows were permanent by
     # construction — a subset declaration or a budget window away from clearable — and a list
@@ -869,14 +911,16 @@ def main() -> None:
     # kind_of is module-level (above main) so a test can call it (review AR-477 r5 F3).
 
     # ---- plain-text fallback (some clients / previews) ----
-    lines = [f"Run {run_id}: {run_status}",
-             f"{len(ok)} ok/no_change · {len(attention)} need attention · {len(progress)} in progress · "
-             f"{len(bad)} failed", ""]
+    lines = [f"Run {run_id}: {run_status}"]
+    if _stuck:                                  # FIRST, directly after the run line (never empty: see above)
+        lines += _stuck + [""]
+    lines += [f"{len(ok)} ok/no_change · {len(attention)} need attention · {len(progress)} in progress · "
+              f"{len(bad)} failed", ""]
     if not_saved:
         lines += ["  " + s for s in not_saved]
         lines.append("")
     for r in sorted(attention + bad, key=lambda x: (kind_of(x[4])[0], x[0])):
-        lines.append(f"  !! {r[0]:20} {kind_of(r[4])[1]:8} {r[1]:15} tried={tried_age(r[5]):>8}{late_mark(r[0], r[5]):<13}  err={str(r[4] or '')[:72]}")
+        lines.append(f"  !! {r[0]:20} {kind_of(r[4])[1]:8} {r[1]:15} tried={tried_age(r[5]):>8}{late_mark(r[0], r[5]):<13}{stuck_mark(r[0])}  err={str(r[4] or '')[:72]}")
     if attention or bad:
         lines.append("")
     if progress:
@@ -1054,7 +1098,7 @@ def main() -> None:
             f'<td style="padding:7px 10px;border-top:1px solid #e5e7eb;'
             f'font-family:Consolas,monospace;font-size:13px;">{esc(r[2])}</td>'
             f'<td style="padding:7px 10px;border-top:1px solid #e5e7eb;color:{grey};'
-            f'font-family:Consolas,monospace;font-size:13px;">{esc(tried_age(r[5]) + late_mark(r[0], r[5]))}</td>'
+            f'font-family:Consolas,monospace;font-size:13px;">{esc(tried_age(r[5]) + late_mark(r[0], r[5]) + stuck_mark(r[0]))}</td>'
             f'<td style="padding:7px 10px;border-top:1px solid #e5e7eb;color:{grey};'
             f'font-size:12px;">{esc(str(r[4] or "")[:110])}</td></tr>')
 
@@ -1082,6 +1126,15 @@ def main() -> None:
             f'<td style="padding:5px 10px;border-top:1px solid #f3f4f6;'
             f'font-family:Consolas,monospace;font-size:12.5px;">{esc(r[2])}</td></tr>')
 
+    # THE STUCK SECTION, the same lines as the text body, directly after the header chips.
+    stuck_html = ""
+    if _stuck:
+        stuck_html = (f"<h3 style='font-family:Georgia,serif;font-size:15px;margin:6px 0 6px;color:{red};'>"
+                      f"{esc(_stuck[0])}</h3>"
+                      "<pre style='margin:0 0 12px;padding:8px 11px;background:#fef2f2;border:1px solid #fecaca;"
+                      "border-radius:8px;font-size:12px;white-space:pre-wrap;'>"
+                      + esc(chr(10).join(l.strip() for l in _stuck[1:] if l.strip())) + "</pre>")
+
     banner_color = green if healthy else red
     banner_word = "All systems normal" if healthy else "Needs attention"
     html_doc = f"""<!doctype html><html><body style="margin:0;padding:0;background:#f4f5f7;">
@@ -1098,6 +1151,7 @@ def main() -> None:
     <table role="presentation" cellspacing="8" style="border-collapse:separate;margin:0 auto 14px;"><tr>
       {chip(len(ok), "current", green)}{chip(len(progress), "in progress", grey)}{chip(len(attention), "need attention", amber)}{chip(len(bad), "failed", red)}
     </tr></table>
+    {stuck_html}
     {"<h3 style='font-family:Georgia,serif;font-size:15px;margin:14px 0 6px;color:" + red + ";'>Needs attention</h3><table role='presentation' width='100%' style='border-collapse:collapse;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;'><tr><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Source</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Status</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Data through</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Last tried</th><th align='left' style='padding:7px 10px;font-size:11px;color:" + grey + ";text-transform:uppercase;'>Detail</th></tr>" + attention_rows + "</table>" if (attention or bad) else ""}
     {progress_html}
     {notes_html}

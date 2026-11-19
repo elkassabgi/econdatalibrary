@@ -197,7 +197,15 @@ def rig(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "path", list(sys.path))
     calls = []
     fake = types.ModuleType("jobs.ingest_usda")
-    fake.main = lambda: calls.append(sorted(os.listdir(raw)))
+    # The ingest's surface as update() uses it since #303; all_committed is True here (the
+    # real-ingest stamp cases live in tests/test_usda_atomic_reingest.py).
+    fake.OUT = str(out)
+    fake.main = lambda keep_old=False: calls.append(sorted(os.listdir(raw)))
+    fake.served_parts = lambda: []
+    fake.drop_all_old = lambda: []
+    fake.all_committed = lambda names: sorted(names) == sorted(
+        f"qs.{s}_{VINTAGE}.txt.gz" for s in usda.SECTORS)
+    fake.committed_inputs = lambda: {}
     monkeypatch.setitem(sys.modules, "jobs.ingest_usda", fake)
     try:
         import jobs

@@ -134,11 +134,17 @@ def _key(v: dict, prefix: str) -> str | None:
 def current_vintage(unit, source_id: str):
     """No cheap upstream vintage exists: GHO exposes no dataset-level updated-at, and the only
     honest token would be a hash of every row, which costs the whole fetch. So this is an
-    always-fetch source (the `date-tail` sentinel finalize already emits). A FABRICATED token
-    would either freeze the source or make it re-pull for ever — worldbank's rule, same here.
-    The full pass is ~60 requests across the three sources, and merge dedup makes a re-run
-    harmless."""
-    return "date-tail"
+    always-fetch source, and the probe says so with None ("undeterminable"): the strategy then
+    fetches at every due tick. A FABRICATED token would either freeze the source or make it
+    re-pull for ever — worldbank's rule, same here. The full pass is ~60 requests across the
+    three sources, and merge dedup makes a re-run harmless.
+
+    NOT the literal "date-tail". It returned that until 2026-11, meaning "always fetch", but
+    finalize stamps the same literal as new_vintage, so the unit stored it, the probe compared
+    equal, and the orchestrator booked an earned no_change with no fetch on every due tick:
+    who_hwf/who_rs were last fetched 2026-08-02 and who_sdg 2026-08-11 while health read them
+    fresh. The strategies now also read that literal as None (base.probe_token)."""
+    return None
 
 
 def run(source_id: str, prefix: str, budget_env: str = "WHO_BASE_BUDGET_MIN") -> Result:

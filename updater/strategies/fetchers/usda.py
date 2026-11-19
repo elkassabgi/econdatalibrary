@@ -23,17 +23,27 @@ census observations already inside the sector dumps: ingesting both creates exac
 (series_key, obs_date) duplicates and inflates every count. The ingest excludes them by default
 and this passes no flag to change that.
 
-CLEARING THE `_complete` SENTINEL IS THE WHOLE POINT OF THE REFRESH. The ingest marks a finished
-cube with a `_complete` file and SKIPS it on re-run — correct for resuming an interrupted
-backfill, and fatal for an update, because a new vintage would be downloaded and then ignored.
-The sentinels are removed for exactly the sectors whose dump was downloaded THIS run - a dump
-already on disk from an earlier run is not new, and clearing its cube would re-ingest it.
+WHAT DECIDES A RE-INGEST IS THE INGEST, NOT THE SENTINEL (2026-11-19). Each live cube carries
+_build.json naming the dump it was parsed from (fname + size); jobs/ingest_usda.py skips a cube
+only when that names the dump now on disk, and otherwise rebuilds it whole in
+data/usda_staging/<cube>.new, verifies it (footers read, part rows == parsed rows) and swaps it
+in. This fetcher still removes `_complete` for every sector whose dump it downloaded THIS run (a
+dump already on disk keeps it); that is now only a hint - the ingest restores it on a cube
+that is already a verified build of the same file.
+BEFORE this, a cube without `_complete` was "resumed" by counting the LIVE cube's rows and
+skipping that many rows of the NEW dump, so a new vintage only appended its tail onto the old
+parts (the 2026-10-02 run left demographics' 10 parts all dated 2026-06-03 under a fresh
+`_complete`). The publish below uploads exactly the live cubes' parts; stale part indexes on R2
+are tools/usda_r2_stale_parts.py's job, run by hand.
 
-THE GATE TOKEN IS STAMPED ON A CLEAN RUN. finalize() stamps new_vintage="date-tail" (it is shared
-with the date-tail fetchers) and the strategy fills in the probed token only when new_vintage is
-None, so before 2026-11 the stored upstream_vintage was "date-tail", never equal to the probe,
-and every monthly cadence re-ingested ~57.8M rows whether NASS had published or not. update()
-now stamps the listing hash on ok/no_change (the faostat pattern) and None otherwise.
+THE GATE TOKEN IS STAMPED ONLY ON A CLEAN, FULLY COMMITTED RUN. finalize() stamps
+new_vintage="date-tail" (it is shared with the date-tail fetchers) and the strategy fills in
+the probed token only when new_vintage is None, so before 2026-11 the stored upstream_vintage
+was "date-tail", never equal to the probe, and every monthly cadence re-ingested ~57.8M rows
+whether NASS had published or not. update() now stamps the hash of the listing it used, and
+ONLY when the run is ok/no_change AND J.all_committed() says the five live cubes are verified
+builds of exactly the five listed files; anything less (a partial, a cube still on an older
+dump, a build that did not verify) stamps None, so the next cadence tries again.
 
 THE 2026-10 MOVE. After the 2026-10-02 run NASS moved its site. Measured 2026-11-18 (HEAD):
     https://www.nass.usda.gov/datasets/   -> 301 -> https://www-origin.nass.usda.gov/datasets -> 404
@@ -272,8 +282,8 @@ def update(unit, since) -> Result:
         fname, date, url = got[sector]
         dest = os.path.join(raw, fname)
         if os.path.exists(dest) and os.path.getsize(dest) > 1_000_000:
-            # NOT new: its _complete sentinel (if any) was cleared when it was downloaded,
-            # so a cube left incomplete by an earlier run still resumes in the ingest.
+            # NOT new: its sentinel is left alone. Whether the cube is rebuilt is the ingest's
+            # call (its _build.json against this dump), so an interrupted rebuild still finishes.
             print(f"[{SOURCE}] {sector}: {fname} already downloaded", flush=True)
             present.append(sector)
             continue
@@ -324,28 +334,36 @@ def update(unit, since) -> Result:
 
     sys.path.insert(0, root)
     from jobs import ingest_usda as J
+    if os.path.normcase(os.path.abspath(J.OUT)) != os.path.normcase(os.path.abspath(out)):
+        raise TransientError(f"{SOURCE}: the ingest writes {J.OUT} but the store is {out} - "
+                             f"refusing to rebuild or publish a directory the other does not see")
 
     argv = sys.argv
     try:
         sys.argv = ["ingest_usda.py"]                          # no --with-census, see docstring
-        J.main()
+        # keep_old: each swapped cube's previous copy stays in data/usda_staging/<cube>.old
+        # until the publish below has run (dropped by J.drop_all_old()).
+        J.main(keep_old=True)
     except Exception as e:                                     # noqa: BLE001
         raise TransientError(f"{SOURCE}: ingest failed: {e!r}") from e
     finally:
         sys.argv = argv
 
+    # THE PUBLISH SET IS THE LIVE CUBES' PARTS, NOTHING ELSE (J.served_parts): never a glob that
+    # could pick up a staged or retired copy. A part index the new vintage no longer has (the old
+    # cube had more parts) is NOT deleted from R2 here - that is tools/usda_r2_stale_parts.py, a
+    # separate, explicitly-invoked step (backup, delete, key-set equality as the proof).
     total = 0
     published = 0
-    for p in sorted(glob.glob(os.path.join(out, "**", "*.parquet"), recursive=True)):
+    import pyarrow.parquet as pq
+    parts = J.served_parts()
+    for p in parts:
         if blob.publish_file(p):
             published += 1
-    import pyarrow.parquet as pq
-    for p in glob.glob(os.path.join(out, "**", "*.parquet"), recursive=True):
-        try:
-            total += pq.ParquetFile(p).metadata.num_rows
-        except Exception:                                      # noqa: BLE001
-            pass
-    print(f"[{SOURCE}] published {published:,} object(s), {total:,} rows in the store",
+        total += pq.read_metadata(p).num_rows
+    dropped = J.drop_all_old()          # each re-verifies its live cube before removing .old
+    print(f"[{SOURCE}] published {published:,} object(s), {total:,} rows in the store"
+          + (f"; retired the previous copy of {', '.join(dropped)}" if dropped else ""),
           flush=True)
     tally.added_unit(total, "quickstats")
 
@@ -359,7 +377,14 @@ def update(unit, since) -> Result:
                    series_cursors=cursors or None)
     # finalize() stamps new_vintage="date-tail", which never equals current_vintage(), so the
     # gate could never skip and every cadence re-ingested the whole database. Stamp the hash of
-    # the listing THIS run used on a clean ok/no_change (the faostat pattern); a partial still
-    # owes a sector, so None there and the orchestrator keeps the old stored vintage.
-    res.new_vintage = _vintage_of(got) if res.status in ("ok", "no_change") else None
+    # the listing THIS run used - but only on a clean ok/no_change AND when the five live cubes
+    # are verified builds of exactly the five listed files (J.all_committed). A clean status
+    # alone is not enough: it says nothing failed, not that every cube was rebuilt from this
+    # vintage. Anything less stamps None, so the stored vintage stays and the next cadence retries.
+    listed = [got[s][0] for s in SECTORS]
+    clean = res.status in ("ok", "no_change")
+    res.new_vintage = _vintage_of(got) if clean and J.all_committed(listed) else None
+    if clean and res.new_vintage is None:
+        print(f"[{SOURCE}] vintage NOT stamped: the live cubes are not all verified builds of "
+              f"{', '.join(listed)} (committed: {J.committed_inputs()})", flush=True)
     return res

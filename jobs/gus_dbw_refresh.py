@@ -32,6 +32,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -176,7 +177,8 @@ def rebuild_with_tail(final_path: str, tail_parts: list[str], tail_start: int,
 
 
 def tail_parts_for_area(area_id, parts_root: str) -> list[str]:
-    """Every per-year part the refresh sweep wrote for this area, oldest first."""
+    """Every *.parquet on disk in this area's refresh dir, by name - whichever sweep wrote it. This is
+    NOT what a rebuild merges: select_tail_parts picks the current sweep's parts from this list."""
     d = os.path.join(parts_root, "area_%s" % area_id)
     if not os.path.isdir(d):
         return []
@@ -192,6 +194,259 @@ def clear_tail_parts(area_id, parts_root: str) -> int:
         except OSError:
             pass
     return n
+
+
+# ----------------------------------------------------------------- the sweep identity
+# WHY (ledger R1554 class: a cache completed later holds two vintages). parts/_refresh/area_<id>/
+# outlives the sweep that wrote it. A sweep that ends INCOMPLETE leaves its year parts there and the
+# area is not rebuilt; the next sweep re-fetches every (var, section, year) - refresh_pass starts each
+# area with an empty `ryears`, so refresh sweeps do NOT resume across passes - and overwrites the
+# same-named parts, but only for the keys that still return rows. A year that now returns 0 rows
+# writes no part (fetch_section: `if rows:`), a section dropped from the metadata or a year that left
+# the window is not fetched at all, and so their OLD parts survived and were merged by every later
+# rebuild: withdrawn data resurrected, and after a year boundary a y<tail_start part duplicated rows
+# the rebuild keeps below the cutoff. The row-loss guard counts lost rows; it cannot see these.
+#
+# THE RULE (current sweep only; cross-sweep accumulation was never the design - see above). Each
+# refresh sweep of an area has a SWEEP ID. begin_sweep writes a fresh manifest, _sweep.jsonl, in the
+# area's refresh dir; fetch_section appends one line per (var, section, year) it completed - with the
+# row count and the part file, or rows 0 and no file (the ZERO-ROW MARKER) - and stamps the sweep id
+# into every part's parquet footer. select_tail_parts then merges ONLY the parts the CURRENT sweep's
+# manifest names with rows > 0, each verified against its footer (sweep id and row count). Every
+# other *.parquet in the dir is EXCLUDED and reported with its reason; nothing is deleted here.
+#
+# Neither file is a served path: both live under parts/, which every store reader excludes
+# (core/upload_r2 _EXCL_DIRS), and the manifest's name does not end in .parquet.
+SWEEP_FILE = "_sweep.jsonl"
+SWEEP_META_ID = b"gus_dbw.refresh_sweep_id"
+SWEEP_META_UTC = b"gus_dbw.refresh_fetched_utc"
+SWEEP_EXCLUDED_EXAMPLES = 10
+
+
+def new_sweep_id(area_id, now: dt.datetime | None = None) -> str:
+    import secrets
+    stamp = (now or dt.datetime.now(dt.timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
+    return f"a{area_id}-{stamp}-{os.getpid()}-{secrets.token_hex(4)}"
+
+
+def year_key(var, sec, year) -> str:
+    return f"v{var}:s{sec}:y{year}"
+
+
+def part_name(var, sec, year) -> str:
+    return f"v{var}_s{sec}_y{year}.parquet"
+
+
+def begin_sweep(area_dir: str, area_id, now: dt.datetime | None = None) -> str:
+    """Start a new sweep of one area: atomically REPLACE its manifest with a fresh header and return
+    the new sweep id. Parts already in the dir are left alone; they are simply not this sweep's."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    sid = new_sweep_id(area_id, now)
+    os.makedirs(area_dir, exist_ok=True)
+    path = os.path.join(area_dir, SWEEP_FILE)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"kind": "begin", "sweep": sid, "area": str(area_id),
+                            "started_utc": now.isoformat(timespec="seconds")}, sort_keys=True) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    replace_retrying(tmp, path)
+    return sid
+
+
+def replace_retrying(src: str, dst: str) -> None:
+    """os.replace, retried on PermissionError: on Windows a reader holding `dst` open (an operator's
+    listing tool, the guard beat) makes the replace fail with WinError 5 (R1938 round 4). The last
+    failure propagates."""
+    import time
+    for attempt in range(SAVE_STATE_TRIES):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == SAVE_STATE_TRIES - 1:
+                raise
+            time.sleep(SAVE_STATE_WAIT_S)
+
+
+def record_sweep_year(area_dir: str, sweep_id: str, var, sec, year, rows: int,
+                      file: str | None, now: dt.datetime | None = None) -> None:
+    """Append one completed (var, section, year) of the sweep. rows == 0 with file None is the
+    zero-row marker: this sweep asked and the publisher returned nothing for that key."""
+    _append_line(os.path.join(area_dir, SWEEP_FILE),
+                 {"kind": "year", "sweep": sweep_id, "key": year_key(var, sec, year),
+                  "rows": int(rows), "file": file,
+                  "utc": (now or dt.datetime.now(dt.timezone.utc)).isoformat(timespec="seconds")})
+
+
+def sweep_metadata(sweep_id: str, now: dt.datetime | None = None) -> dict:
+    """The footer key/values write_part stamps into a refresh part."""
+    return {SWEEP_META_ID: sweep_id.encode("utf-8"),
+            SWEEP_META_UTC: (now or dt.datetime.now(dt.timezone.utc)).isoformat(timespec="seconds")
+            .encode("utf-8")}
+
+
+def read_sweep_manifest(area_dir: str) -> dict:
+    """{'sweep': id or None, 'started_utc', 'years': {key: record}, 'problems': [str]}.
+    Any line that cannot be trusted - torn, from another sweep, a key recorded twice - is a problem:
+    the caller refuses the rebuild rather than guess which lines to believe."""
+    out = {"sweep": None, "started_utc": None, "years": {}, "problems": []}
+    try:
+        with open(os.path.join(area_dir, SWEEP_FILE), encoding="utf-8") as f:
+            lines = [ln for ln in f if ln.strip()]
+    except FileNotFoundError:
+        out["problems"].append("no sweep manifest (parts written before sweep identities, or no sweep began)")
+        return out
+    for i, ln in enumerate(lines):
+        try:
+            r = json.loads(ln)
+            if not isinstance(r, dict):
+                raise ValueError("not an object")
+        except ValueError:
+            out["problems"].append(f"manifest line {i + 1} unreadable (torn write?)")
+            continue
+        if i == 0:
+            if r.get("kind") != "begin" or not r.get("sweep"):
+                out["problems"].append("manifest does not start with a begin line")
+                return out
+            out["sweep"], out["started_utc"] = r["sweep"], r.get("started_utc")
+            continue
+        if r.get("kind") != "year" or r.get("sweep") != out["sweep"]:
+            out["problems"].append(f"manifest line {i + 1} is not a year line of sweep {out['sweep']}")
+            continue
+        k = r.get("key")
+        rows = r.get("rows")
+        if (not isinstance(k, str) or not re.fullmatch(r"v\d+:s\d+:y\d+", k)
+                or not isinstance(rows, int) or isinstance(rows, bool) or rows < 0):
+            out["problems"].append(f"manifest line {i + 1} malformed")
+            continue
+        if k in out["years"]:
+            out["problems"].append(f"key {k} recorded twice in sweep {out['sweep']}")
+            continue
+        out["years"][k] = r
+    return out
+
+
+def _footer(path: str) -> tuple[str | None, int]:
+    md = pq.read_metadata(path)
+    kv = md.metadata or {}
+    sid = kv.get(SWEEP_META_ID)
+    return (sid.decode("utf-8") if sid is not None else None), md.num_rows
+
+
+def select_tail_parts(area_id, parts_root: str, tail_start: int | None = None) -> dict:
+    """Which refresh parts of one area the rebuild may merge, under the current-sweep rule.
+
+    Returns {'sweep', 'included': [path], 'excluded': [{'file', 'reason'}], 'problems': [str]}.
+    INCLUDED: the parts the current sweep's manifest names with rows > 0, each one present with
+    this sweep's id and the recorded row count in its footer. EXCLUDED (reported, never merged, never
+    deleted here): every other *.parquet in the dir - an older sweep's leftover, a part written before
+    sweep identities existed, a key this sweep recorded EMPTY (the zero-row marker), a key this sweep
+    never fetched. PROBLEMS make the area unrebuildable: no or untrustworthy manifest, a part the
+    manifest names that is missing or whose footer disagrees. Footers are read only for parts the
+    manifest names (and the older part a zero-row marker supersedes, to count what it held), so
+    selecting an area with no manifest reads no parquet at all. Run it only from the crawler itself
+    or with the crawler stopped: on Windows an open footer blocks the crawler's os.replace.
+
+    `zero_keys` lists the year keys this sweep recorded EMPTY (finish_area measures what the FINAL
+    held for them: zero_marker_loss). `superseded_parts_on_disk` lists the older parts on disk that
+    held rows for such a key - only seen when an earlier sweep left one; in steady state the dir was
+    cleared by the last rebuild, which is why the loss is measured against the final. A manifest key
+    below `tail_start` is a problem: the refresh never fetches below the window."""
+    d = os.path.join(parts_root, "area_%s" % area_id)
+    on_disk = {os.path.basename(p): p for p in tail_parts_for_area(area_id, parts_root)}
+    man = read_sweep_manifest(d)
+    sel = {"sweep": man["sweep"], "started_utc": man["started_utc"], "included": [],
+           "excluded": [], "problems": list(man["problems"]), "superseded_parts_on_disk": [], "zero_keys": [],
+           "keys": sorted(man["years"])}
+    claimed: dict = {}                    # file name -> (reason it is NOT merged) or None (merged)
+    for k, rec in sorted(man["years"].items()):
+        f = rec.get("file")
+        if tail_start is not None and int(_split_key(k)[2]) < int(tail_start):
+            sel["problems"].append(f"{k}: below the refresh window (tail from {tail_start})")
+            continue
+        if rec["rows"] == 0:
+            # THE ZERO-ROW MARKER: this sweep asked for the key and got nothing, so any part of that
+            # key on disk is an older vintage and must not come back.
+            if f is not None:
+                sel["problems"].append(f"{k}: recorded empty but names a file {f!r}")
+            old = part_name(*_split_key(k))
+            sel["zero_keys"].append(k)
+            claimed[old] = f"zero-row marker: sweep {man['sweep']} found no rows for {k}"
+            if old in on_disk:
+                try:
+                    osid, orows = _footer(on_disk[old])
+                except Exception as e:                # noqa: BLE001
+                    osid, orows = f"<unreadable: {type(e).__name__}>", None
+                if orows != 0:
+                    sel["superseded_parts_on_disk"].append({"file": old, "rows": orows, "sweep": osid})
+            continue
+        if f != part_name(*_split_key(k)):
+            sel["problems"].append(f"{k}: manifest names part {f!r}, expected {part_name(*_split_key(k))!r}")
+            continue
+        if f not in on_disk:
+            sel["problems"].append(f"{k}: manifest names part {f!r} with {rec['rows']:,} rows, not on disk")
+            continue
+        try:
+            sid, n = _footer(on_disk[f])
+        except Exception as e:                        # noqa: BLE001 - unreadable = cannot trust it
+            sel["problems"].append(f"{f}: footer unreadable ({type(e).__name__}: {e})")
+            continue
+        if sid != man["sweep"]:
+            sel["problems"].append(f"{f}: footer sweep {sid!r} is not the manifest's {man['sweep']!r}")
+            continue
+        if n != rec["rows"]:
+            sel["problems"].append(f"{f}: footer has {n:,} rows, the manifest recorded {rec['rows']:,}")
+            continue
+        claimed[f] = None
+        sel["included"].append(on_disk[f])
+    for name in sorted(on_disk):
+        if name in claimed and claimed[name] is None:
+            continue
+        reason = claimed.get(name) or (
+            "no sweep manifest: not attributable to any sweep" if man["sweep"] is None
+            else f"not fetched by the current sweep {man['sweep']} (an older sweep's part)")
+        sel["excluded"].append({"file": name, "reason": reason})
+    sel["included"].sort()
+    return sel
+
+
+def zero_marker_loss(final_path: str, zero_keys: list, spill_dir: str | None = None) -> list:
+    """[{'key', 'final_rows'}] for every zero-row key whose section-year the FINAL still holds: rows
+    with series_key 'GUSDBW:<var>:<sec>:...' and year(obs_date) == <year>. That is what the rebuild
+    removes for a section-year the publisher now returns nothing for - a loss the 1% floor and the
+    per-series rule can both pass (a series keeps its other years), so it is reported on its own.
+    One streaming DuckDB pass over the final, restricted to the zero keys' years."""
+    if not zero_keys:
+        return []
+    import duckdb                                    # lazy, as in row_loss_guard
+    want = sorted({tuple(int(x) for x in _split_key(k)) for k in zero_keys})
+    years = sorted({y for _v, _s, y in want})
+    con = duckdb.connect()
+    try:
+        con.execute(f"SET memory_limit='{GUARD_MEMORY_LIMIT}'")
+        con.execute(f"SET threads={GUARD_THREADS}")
+        if spill_dir:
+            os.makedirs(spill_dir, exist_ok=True)
+            con.execute(f"SET temp_directory='{_sql_path(spill_dir)}'")
+        con.execute("CREATE TEMP TABLE z (v BIGINT, s BIGINT, y BIGINT)")
+        con.executemany("INSERT INTO z VALUES (?, ?, ?)", [list(t) for t in want])
+        rows = con.execute(f"""
+            WITH f AS (SELECT TRY_CAST(split_part(series_key, ':', 2) AS BIGINT) v,
+                              TRY_CAST(split_part(series_key, ':', 3) AS BIGINT) s,
+                              year(obs_date) y
+                       FROM read_parquet('{_sql_path(final_path)}')
+                       WHERE year(obs_date) IN ({",".join(str(int(y)) for y in years)}))
+            SELECT z.v, z.s, z.y, count(*) FROM f JOIN z USING (v, s, y)
+            GROUP BY ALL ORDER BY 1, 2, 3""").fetchall()
+    finally:
+        con.close()
+    return [{"key": year_key(v, s, y), "final_rows": int(n)} for v, s, y, n in rows if n]
+
+
+def _split_key(k: str) -> tuple[str, str, str]:
+    v, s, y = k.split(":")
+    return v[1:], s[1:], y[1:]
 
 
 # ----------------------------------------------------------------- the row-loss guard
@@ -431,6 +686,10 @@ def quarantine_tail_parts(area_id, parts_root: str, refused_root: str, guard: di
     os.makedirs(dest, exist_ok=True)
     for p in tail_parts_for_area(area_id, parts_root):
         os.replace(p, os.path.join(dest, os.path.basename(p)))
+    man = os.path.join(parts_root, "area_%s" % area_id, SWEEP_FILE)
+    if os.path.exists(man):                       # evidence: which sweep wrote the refused parts
+        import shutil
+        shutil.copy2(man, os.path.join(dest, SWEEP_FILE))
     with open(os.path.join(dest, "guard.json"), "w", encoding="utf-8") as f:
         json.dump(guard, f, indent=1, sort_keys=True, default=str)
     prune_refused(os.path.join(refused_root, "area_%s" % area_id))
@@ -458,6 +717,27 @@ def prune_refused(area_dir: str, keep: int = REFUSED_KEEP_PER_AREA) -> int:
     return len(old)
 
 
+SWEEP_REFUSED_FILE = "_sweep_refused.json"
+
+
+def note_sweep_refused(refused_root: str, area_id, sweep, problems: list,
+                       when: dt.datetime | None = None) -> str:
+    """Record that a rebuild was refused because the sweep's parts could not be trusted. Moves and
+    deletes nothing (unlike quarantine_tail_parts): one small JSON beside the area's refusal folders,
+    replaced by the next such refusal, so refused_still_due - and through it the digest - counts it."""
+    d = os.path.join(refused_root, "area_%s" % area_id)
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, SWEEP_REFUSED_FILE)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"area": str(area_id), "sweep": sweep, "n_problems": len(problems),
+                   "problems": list(problems)[:SWEEP_EXCLUDED_EXAMPLES],
+                   "utc": (when or dt.datetime.now(dt.timezone.utc)).isoformat(timespec="seconds")},
+                  f, indent=1, sort_keys=True)
+    replace_retrying(tmp, path)
+    return path
+
+
 def refused_still_due(out_dir: str = OUT) -> dict:
     """{area: newest refusal UTC datetime} for areas whose newest refusal is later than their last
     recorded refresh - the areas the guard is holding back now. For the digest (R1937)."""
@@ -475,6 +755,14 @@ def refused_still_due(out_dir: str = OUT) -> dict:
                 stamps.append(dt.datetime.strptime(s.name, "%Y%m%dT%H%M%SZ").replace(tzinfo=dt.timezone.utc))
             except ValueError:
                 continue
+        try:                                    # a manifest refusal (note_sweep_refused): no folder
+            with open(os.path.join(e.path, SWEEP_REFUSED_FILE), encoding="utf-8") as f:
+                t = dt.datetime.fromisoformat(json.load(f)["utc"])
+            stamps.append(t if t.tzinfo else t.replace(tzinfo=dt.timezone.utc))
+        except FileNotFoundError:
+            pass
+        except (ValueError, KeyError, TypeError, OSError):
+            stamps.append(dt.datetime.now(dt.timezone.utc))      # unreadable record: say refused
         if not stamps:
             continue
         aid, newest = e.name[len("area_"):], max(stamps)

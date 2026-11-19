@@ -1305,6 +1305,11 @@ def main() -> None:
     if not getattr(a, "dry_run", False) and (not a.source or "statcan" in a.source):
         from updater import writer_lock                            # noqa: PLC0415
         writer_lock.hold_or_refuse("statcan_writer", "core.derive_csv with statcan in scope")
+    # ONE WRITER FOR usda (2026-11-19): jobs/ingest_usda.py holds logs/usda_writer.lock while it rebuilds
+    # and swaps cubes; a derive of usda in that window would write CSVs from a cube being replaced.
+    if not getattr(a, "dry_run", False) and (not a.source or "usda" in a.source):
+        from updater import writer_lock                            # noqa: PLC0415
+        writer_lock.hold("usda_writer", "core.derive_csv with usda in scope")
 
     # PREFLIGHT (ledger R383). This tool WRITES to R2 but READS through the econdl resolver,
     # which reads data/clean_full/ — the LOCAL mirror. Under AQUEDUCT_BACKEND=r2 that is a
