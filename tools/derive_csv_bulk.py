@@ -423,6 +423,11 @@ def main() -> int:
     if a.source == "statcan" and not a.dry_run:
         from updater import writer_lock                             # noqa: PLC0415
         writer_lock.hold_or_refuse("statcan_writer", "tools/derive_csv_bulk.py --source statcan")
+    # ONE WRITER FOR usda (2026-11-19): jobs/ingest_usda.py holds logs/usda_writer.lock while it rebuilds and
+    # swaps cubes; this tool reads clean_full/usda and writes its CSVs.
+    if a.source == "usda" and not a.dry_run:
+        from updater import writer_lock                             # noqa: PLC0415
+        writer_lock.hold("usda_writer", "tools/derive_csv_bulk.py --source usda")
 
     # THIS TOOL CANNOT PAY A csv_misses SOURCE'S DEBT (R1137, R1149). For ilostat it would PUT
     # 'ilostat:ilostat:...' objects (0 of 400 sampled store keys are catalogue ids) and a zero-error run
