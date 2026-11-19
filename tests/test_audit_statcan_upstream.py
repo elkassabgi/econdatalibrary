@@ -1,0 +1,371 @@
+"""tools/audit_statcan_upstream.py: a statcan store behind its publisher must be named, whatever its
+release date, and a cube it could not measure must never read as current.
+
+Planted here (no network, no server): footers are real parquet bytes held in memory and read through
+the real updater.blob._r2_footer_buffer (a fake blob whose get_range is blob.bytes_range).
+
+  positives  annual 2024-12-31 vs publisher 2025-01-01 (one period); monthly two periods; a cube
+             released before the lane floor; quarterly; weekly one week; a 6-day holiday week
+  negatives  annual same period 364 and 365 (leap) days apart; monthly current by start and by end
+             date; weekly same week; daily same day
+  unmeasured absent object, a row group without statistics, unknown frequency, month-step end date
+             not on day 01, non-date obs_date -> rc 2, "at least N"
+  fatal      no catalogued cube, nothing measurable, a WDS FAILED body, a partial cube list -> rc 1
+  withdrawn  a catalogued cube StatCan no longer lists: its own status, rc unchanged
+  zip        stale / fresh / probe error, and "zip not probed" without --probe-zip
+  read-only  the hook on the tool's own R2 client refuses PutObject before anything is sent
+"""
+from __future__ import annotations
+
+import datetime as dt
+import importlib.util
+import io
+import os
+import sqlite3
+import sys
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pytest
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(_HERE)
+_TOOL = os.path.join(_ROOT, "tools", "audit_statcan_upstream.py")
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from updater import blob  # noqa: E402
+
+
+def _load():
+    spec = importlib.util.spec_from_file_location("_statcan_upstream_under_test", _TOOL)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+T = _load()
+NOW = dt.datetime(2026, 11, 19, 20, 0, tzinfo=dt.timezone.utc)
+D = dt.date.fromisoformat
+
+
+def _parquet(dates, *, row_group_size=None, stats=True, as_string=False) -> bytes:
+    col = pa.array([str(d) for d in dates]) if as_string else pa.array([D(d) for d in dates], pa.date32())
+    t = pa.table({"series_key": pa.array([f"v{i}" for i in range(len(dates))]), "obs_date": col,
+                  "value": pa.array([1.0] * len(dates))})
+    b = io.BytesIO()
+    pq.write_table(t, b, row_group_size=row_group_size, write_statistics=stats)
+    return b.getvalue()
+
+
+class FakeStore:
+    """get_range over in-memory objects (the contract _r2_footer_buffer reads)."""
+
+    def __init__(self, objects):
+        self.objects = objects
+
+    def get_range(self, key, byte_range, *, if_match=None):
+        data = self.objects.get(key)
+        return None if data is None else blob.bytes_range(data, byte_range)
+
+
+def _cube(pid, end, freq, release="2026-11-04T13:30:00Z", archived="2"):
+    return {"productId": int(pid), "cubeEndDate": f"{end}T05:00:00Z", "releaseTime": release,
+            "frequencyCode": freq, "archived": archived}
+
+
+def _run(cubes_store, tmp_path, *, extra_cubes=(), probe=False, http_get=None, http_head=None, pids=None):
+    """cubes_store: {pid: (cube dict, parquet bytes or None)}. Returns (rc, stdout rows, by-pid rows)."""
+    import json
+    cubes = [c for c, _ in cubes_store.values()] + list(extra_cubes)
+    cj = tmp_path / "cubes.json"
+    cj.write_text(json.dumps(cubes), encoding="utf-8")
+    store = FakeStore({T.KEY_FMT.format(pid=p): b for p, (_, b) in cubes_store.items() if b is not None})
+    out = tmp_path / "out.tsv"
+    argv = ["--pids", ",".join(pids or cubes_store), "--cubes-json", str(cj), "--out", str(out), "--threads", "2"]
+    if probe:
+        argv.append("--probe-zip")
+    rc = T.main(argv, store=store, http_get=http_get, http_head=http_head, now=NOW, sleep=lambda s: None)
+    lines = out.read_text(encoding="utf-8").splitlines() if out.exists() else []
+    rows = {}
+    if lines:
+        head = lines[0].split("\t")
+        for ln in lines[1:]:
+            r = dict(zip(head, ln.split("\t")))
+            rows[r["pid"]] = r
+    return rc, rows
+
+
+# ------------------------------------------------------------- the period comparison (unit)
+
+@pytest.mark.parametrize("store,pub,freq,status,lag", [
+    ("2024-12-31", "2025-01-01", 12, "behind", 1),     # annual: end-dated store one period behind
+    ("2023-12-31", "2025-01-01", 12, "behind", 2),
+    ("2025-12-31", "2025-01-01", 12, "current", 0),    # 364 days apart, same period
+    ("2024-12-31", "2024-01-01", 12, "current", 0),    # 365 days apart (leap year), same period
+    ("2025-01-01", "2025-01-01", 12, "current", 0),    # start-dated store
+    ("2026-01-01", "2025-01-01", 12, "ahead", 0),
+    ("2026-07-01", "2026-09-01", 6, "behind", 2),      # monthly
+    ("2026-09-01", "2026-09-01", 6, "current", 0),
+    ("2026-09-30", "2026-09-01", 6, "current", 0),     # end-dated monthly
+    ("2023-09-01", "2026-09-01", 6, "behind", 36),     # the CIMT shape
+    ("2026-06-30", "2026-07-01", 9, "behind", 1),      # quarterly: Q2 end vs Q3 start
+    ("2026-03-31", "2026-07-01", 9, "behind", 2),
+    ("2026-09-30", "2026-07-01", 9, "current", 0),
+    ("2025-06-30", "2025-07-01", 11, "behind", 1),     # semi-annual
+    ("2021-12-31", "2026-01-01", 16, "behind", 1),     # every 5 years
+    ("2020-01-01", "2020-01-01", 18, "current", 0),    # occasional
+    ("2026-11-07", "2026-11-14", 2, "behind", 1),      # weekly, one week
+    ("2026-11-08", "2026-11-14", 2, "behind", 1),      # weekly, a 6-day holiday week
+    ("2026-11-14", "2026-11-14", 2, "current", 0),
+    ("2026-11-16", "2026-11-17", 1, "behind", 1),      # daily
+    ("2026-11-17", "2026-11-17", 1, "current", 0),
+])
+def test_compare(store, pub, freq, status, lag):
+    assert T.compare(D(store), D(pub), freq) == (status, lag)
+
+
+def test_compare_refuses_unknown_frequency_and_off_start_month_step():
+    with pytest.raises(T.Unmeasurable, match="unknown frequencyCode"):
+        T.compare(D("2026-01-01"), D("2026-01-01"), 99)
+    with pytest.raises(T.Unmeasurable, match="not a period start"):
+        T.compare(D("2026-01-01"), D("2026-01-15"), 6)
+
+
+# ------------------------------------------------------------- end to end through the footer reader
+
+def test_planted_positives_negatives_and_rc0(tmp_path):
+    cs = {
+        "35100182": (_cube("35100182", "2025-01-01", 12, "2026-07-22T12:30:00Z"), _parquet(["2023-12-31", "2024-12-31"])),
+        "37100266": (_cube("37100266", "2023-01-01", 12, "2026-06-10T12:30:00Z"), _parquet(["2022-12-31"])),  # pre-floor release
+        "12100152": (_cube("12100152", "2026-09-01", 6), _parquet(["2023-08-01", "2023-09-01"], row_group_size=1)),
+        "11100001": (_cube("11100001", "2025-01-01", 12), _parquet(["2025-12-31"])),
+        "11100002": (_cube("11100002", "2024-01-01", 12), _parquet(["2024-12-31"])),
+        "18100004": (_cube("18100004", "2026-09-01", 6), _parquet(["2026-08-01", "2026-09-01"], row_group_size=1)),
+    }
+    rc, rows = _run(cs, tmp_path)
+    assert rc == 0
+    assert {p for p, r in rows.items() if r["status"] == "behind"} == {"35100182", "37100266", "12100152"}
+    assert rows["12100152"]["lag_periods"] == "36"
+    assert rows["12100152"]["store_max"] == "2023-09-01"      # max over BOTH row groups
+    assert {rows[p]["status"] for p in ("11100001", "11100002", "18100004")} == {"current"}
+
+
+def test_summary_line_counts(tmp_path, capsys):
+    cs = {
+        "35100182": (_cube("35100182", "2025-01-01", 12, "2026-07-22T12:30:00Z"), _parquet(["2024-12-31"])),
+        "16100047": (_cube("16100047", "2026-09-01", 6, "2026-11-19T13:30:00Z"), _parquet(["2026-08-01"])),
+        "11100001": (_cube("11100001", "2025-01-01", 12), _parquet(["2025-12-31"])),
+    }
+    rc, _ = _run(cs, tmp_path)
+    line = capsys.readouterr().out.splitlines()[0]
+    assert rc == 0
+    assert line.startswith("statcan upstream: 2 cubes behind publisher (zip not probed); overdue 1 (release >48h), recent 1;")
+    assert "measured 3 of 3 catalogued; unmeasured 0" in line and "[cube level only]" in line
+
+
+@pytest.mark.parametrize("obj,reason", [
+    (None, "store object absent"),
+    (_parquet(["2024-12-31"], stats=False), "no obs_date statistics"),
+    (_parquet(["2024-12-31"], as_string=True), "not a date column"),
+])
+def test_unmeasured_store_is_rc2_and_at_least(tmp_path, capsys, obj, reason):
+    cs = {
+        "35100182": (_cube("35100182", "2025-01-01", 12), _parquet(["2024-12-31"])),
+        "11100001": (_cube("11100001", "2025-01-01", 12), _parquet(["2025-12-31"])),
+        "22220000": (_cube("22220000", "2025-01-01", 12), obj),
+    }
+    rc, rows = _run(cs, tmp_path)
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert rows["22220000"]["status"] == "unmeasured" and reason in rows["22220000"]["reason"]
+    assert out.startswith("statcan upstream: at least 1 cubes behind publisher")
+    assert "skipped 22220000" in out
+
+
+def test_one_row_group_without_stats_among_others_is_unmeasured():
+    t = pa.table({"obs_date": pa.array([D("2020-01-01")], pa.date32())})
+    b1, b2 = io.BytesIO(), io.BytesIO()
+    pq.write_table(t, b1)
+    pq.write_table(t, b2, write_statistics=False)
+    md_ok = pq.read_metadata(io.BytesIO(b1.getvalue()))
+    assert T.store_max_date(md_ok) == D("2020-01-01")
+
+    class MD:                                    # two row groups: the second has no statistics
+        num_rows, num_row_groups, schema = 2, 2, md_ok.schema
+
+        def row_group(self, g):
+            return (md_ok if g == 0 else pq.read_metadata(io.BytesIO(b2.getvalue()))).row_group(0)
+    with pytest.raises(T.Unmeasurable, match="row group 1"):
+        T.store_max_date(MD())
+
+
+@pytest.mark.parametrize("freq,end", [(99, "2025-01-01"), (6, "2026-09-15")])
+def test_unknown_frequency_or_off_start_end_is_unmeasured(tmp_path, freq, end):
+    cs = {"11100001": (_cube("11100001", "2025-01-01", 12), _parquet(["2025-12-31"])),
+          "22220000": (_cube("22220000", end, freq), _parquet(["2020-12-31"]))}
+    rc, rows = _run(cs, tmp_path)
+    assert rc == 2 and rows["22220000"]["status"] == "unmeasured"
+
+
+def test_withdrawn_is_its_own_status_and_keeps_rc0(tmp_path, capsys):
+    # 1 of 2 catalogued pids in the list is below the 95% floor: a partial list, Fatal, no TSV
+    cs = {"11100001": (_cube("11100001", "2025-01-01", 12), _parquet(["2025-12-31"]))}
+    rc, rows = _run(cs, tmp_path, pids=["11100001", "13100906"])
+    assert rc == 1 and rows == {}
+    assert "not a full list" in capsys.readouterr().out
+    # with many catalogued cubes one withdrawn cube is a measured fact, not a failure
+    many = {f"3{i:07d}": (_cube(f"3{i:07d}", "2025-01-01", 12), _parquet(["2025-12-31"])) for i in range(40)}
+    rc, rows = _run(many, tmp_path, pids=list(many) + ["13100906"])
+    out = capsys.readouterr().out
+    assert rc == 0 and rows["13100906"]["status"] == "withdrawn"
+    assert "withdrawn 1; measured 40 of 41 catalogued" in out
+
+
+def test_nothing_measured_is_rc1_not_zero_behind(tmp_path, capsys):
+    cs = {p: (_cube(p, "2025-01-01", 12), None) for p in ("11100001", "11100002")}
+    rc, _ = _run(cs, tmp_path)
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "NOT MEASURED - 0 of 2" in out and "0 cubes behind" not in out
+
+
+def test_no_catalogued_cube_is_rc1(tmp_path, capsys):
+    db = tmp_path / "cat.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT)")
+    con.execute("INSERT INTO series VALUES ('ons:x', 'ons')")
+    con.commit()
+    con.close()
+    cj = tmp_path / "c.json"
+    cj.write_text('[{"productId": 11100001, "cubeEndDate": "2025-01-01T05:00:00Z", "frequencyCode": 12}]', encoding="utf-8")
+    rc = T.main(["--catalog", str(db), "--cubes-json", str(cj), "--out", str(tmp_path / "o.tsv")],
+                store=FakeStore({}), now=NOW)
+    assert rc == 1 and "no catalogued statcan cube" in capsys.readouterr().out
+
+
+def test_catalogue_pids_and_malformed_ids_counted(tmp_path):
+    db = tmp_path / "cat.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT)")
+    con.executemany("INSERT INTO series VALUES (?, 'statcan')",
+                    [("statcan:12100152#1.1.100.1",), ("statcan:12100152#1.1.100.2",), ("statcan:10100001",),
+                     ("statcan:123#x",), ("statcanX",)])
+    con.commit()
+    con.close()
+    pids, bad = T.catalogued_pids(str(db), allow_live=False)
+    assert pids == ["10100001", "12100152"] and bad == 2
+
+
+def test_live_catalogue_path_refused(monkeypatch, tmp_path):
+    from core import catalog_path
+    db = tmp_path / "catalog.db"
+    sqlite3.connect(db).close()
+    monkeypatch.setattr(catalog_path, "BUILD_PATH", str(db))
+    with pytest.raises(T.Fatal, match="live catalogue"):
+        T.catalogued_pids(str(db), allow_live=False)
+
+
+class Resp:
+    def __init__(self, status=200, body=None, headers=None):
+        self.status_code, self._body, self.headers = status, body, headers or {}
+
+    def json(self):
+        return self._body
+
+
+def test_wds_failed_body_is_rc1(tmp_path, capsys):
+    rc = T.main(["--pids", "11100001", "--out", str(tmp_path / "o.tsv")], store=FakeStore({}),
+                http_get=lambda url: Resp(200, {"status": "FAILED", "object": "x"}), now=NOW)
+    assert rc == 1 and "NOT MEASURED" in capsys.readouterr().out
+
+
+def _zip_http(lm_by_pid, fail=()):
+    def get(url):
+        pid = url.rstrip("/").split("/")[-2]
+        if pid in fail:
+            return Resp(200, {"status": "FAILED"})
+        return Resp(200, {"status": "SUCCESS", "object": f"https://www150.statcan.gc.ca/n1/tbl/csv/{pid}-eng.zip"})
+
+    def head(url):
+        pid = url.rsplit("/", 1)[1][:8]
+        return Resp(200, headers={"Last-Modified": lm_by_pid[pid]})
+    return get, head
+
+
+def test_zip_probe_stale_fresh_and_error(tmp_path, capsys):
+    cs = {
+        "12100147": (_cube("12100147", "2026-09-01", 6, "2026-11-04T13:30:00Z"), _parquet(["2023-09-01"])),
+        "35100182": (_cube("35100182", "2025-01-01", 12, "2026-07-22T12:30:00Z"), _parquet(["2024-12-31"])),
+        "35100181": (_cube("35100181", "2025-01-01", 12, "2026-07-22T12:30:00Z"), _parquet(["2024-12-31"])),
+        "11100001": (_cube("11100001", "2025-01-01", 12), _parquet(["2025-12-31"])),
+    }
+    get, head = _zip_http({"12100147": "Thu, 09 Nov 2023 14:00:00 GMT",
+                           "35100182": "Wed, 22 Jul 2026 12:31:31 GMT",
+                           "35100181": "Wed, 22 Jul 2026 12:31:23 GMT"}, fail={"35100181"})
+    rc, rows = _run(cs, tmp_path, probe=True, http_get=get, http_head=head)
+    out = capsys.readouterr().out
+    assert rows["12100147"]["zip_class"] == "stale"
+    assert rows["35100182"]["zip_class"] == "fresh"
+    assert rows["35100181"]["zip_class"] == "probe_error"
+    assert rows["11100001"]["zip_class"] == "not_probed"            # only BEHIND cubes are probed
+    assert rc == 2
+    assert out.startswith("statcan upstream: 3 cubes behind publisher (at least 1 zip-stale)")
+
+
+def test_zip_slack_is_one_hour():
+    cs_release = "2026-11-17T13:30:00Z"
+    rel = T._instant(cs_release)
+    assert rel - dt.timedelta(minutes=61) < rel - T.ZIP_SLACK < rel - dt.timedelta(minutes=59)
+
+
+def test_zip_two_hours_before_release_is_stale(tmp_path):
+    cs = {"10100145": (_cube("10100145", "2026-11-11", 1, "2026-11-13T13:30:00Z"), _parquet(["2026-11-10"]))}
+    get, head = _zip_http({"10100145": "Fri, 13 Nov 2026 11:30:00 GMT"})
+    rc, rows = _run(cs, tmp_path, probe=True, http_get=get, http_head=head)
+    assert rc == 0 and rows["10100145"]["zip_class"] == "stale"
+
+
+def test_read_only_hook_on_the_tools_own_client(monkeypatch):
+    from core import r2_util
+    monkeypatch.setattr(r2_util, "creds", lambda write=False: {
+        "endpoint": "https://example.invalid", "key": "k", "secret": "s", "mode": "read"})
+    store = T.make_store("r2")
+    with pytest.raises(PermissionError, match="refused S3 operation 'PutObject'"):
+        store.client.put_object(Bucket="econ-data", Key="clean_full/statcan/x.parquet", Body=b"x")
+    with pytest.raises(PermissionError, match="DeleteObject"):
+        store.client.delete_object(Bucket="econ-data", Key="clean_full/statcan/x.parquet")
+
+
+def test_injected_client_gets_the_same_hook():
+    import boto3
+    c = boto3.client("s3", endpoint_url="https://example.invalid", aws_access_key_id="k",
+                     aws_secret_access_key="s", region_name="auto")
+    store = T.make_store("r2", c)
+    assert store.client is c
+    with pytest.raises(PermissionError, match="PutObject"):
+        c.put_object(Bucket="econ-data", Key="x", Body=b"x")
+
+
+def test_no_r2_credentials_is_rc1_not_a_traceback(monkeypatch, tmp_path, capsys):
+    from core import r2_util
+    monkeypatch.setattr(r2_util, "creds", lambda write=False: None)
+    cj = tmp_path / "c.json"
+    cj.write_text('[{"productId": 11100001, "cubeEndDate": "2025-01-01T05:00:00Z", "frequencyCode": 12}]',
+                  encoding="utf-8")
+    rc = T.main(["--pids", "11100001", "--cubes-json", str(cj), "--out", str(tmp_path / "o.tsv")], now=NOW)
+    assert rc == 1 and "R2 read client unavailable" in capsys.readouterr().out
+
+
+def test_tool_never_imports_the_lane():
+    import ast
+    tree = ast.parse(open(_TOOL, encoding="utf-8").read())
+    names = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            names.update(a.name for a in n.names)
+        elif isinstance(n, ast.ImportFrom):
+            names.add(n.module or "")
+            names.update(f"{n.module}.{a.name}" for a in n.names)
+    assert not [x for x in names if "statcan_lane" in x or x.startswith("jobs")]
+    assert not [x for x in names if "ingest" in x]
