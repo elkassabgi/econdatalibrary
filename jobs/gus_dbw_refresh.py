@@ -348,16 +348,16 @@ def select_tail_parts(area_id, parts_root: str, tail_start: int | None = None) -
     selecting an area with no manifest reads no parquet at all. Run it only from the crawler itself
     or with the crawler stopped: on Windows an open footer blocks the crawler's os.replace.
 
-    `superseded_by_zero` lists the parts on disk that HELD rows for a key this sweep recorded empty:
-    a whole section-year the publisher now returns nothing for. The 1% floor and the per-series rule
-    can both pass such a loss, so it is reported on its own (finish_area logs it and carries it into
-    guard.json and the owed record). A manifest key below `tail_start` is a problem: the refresh
-    never fetches below the window, so such a line is not this pass's."""
+    `zero_keys` lists the year keys this sweep recorded EMPTY (finish_area measures what the FINAL
+    held for them: zero_marker_loss). `superseded_parts_on_disk` lists the older parts on disk that
+    held rows for such a key - only seen when an earlier sweep left one; in steady state the dir was
+    cleared by the last rebuild, which is why the loss is measured against the final. A manifest key
+    below `tail_start` is a problem: the refresh never fetches below the window."""
     d = os.path.join(parts_root, "area_%s" % area_id)
     on_disk = {os.path.basename(p): p for p in tail_parts_for_area(area_id, parts_root)}
     man = read_sweep_manifest(d)
     sel = {"sweep": man["sweep"], "started_utc": man["started_utc"], "included": [],
-           "excluded": [], "problems": list(man["problems"]), "superseded_by_zero": [],
+           "excluded": [], "problems": list(man["problems"]), "superseded_parts_on_disk": [], "zero_keys": [],
            "keys": sorted(man["years"])}
     claimed: dict = {}                    # file name -> (reason it is NOT merged) or None (merged)
     for k, rec in sorted(man["years"].items()):
@@ -371,6 +371,7 @@ def select_tail_parts(area_id, parts_root: str, tail_start: int | None = None) -
             if f is not None:
                 sel["problems"].append(f"{k}: recorded empty but names a file {f!r}")
             old = part_name(*_split_key(k))
+            sel["zero_keys"].append(k)
             claimed[old] = f"zero-row marker: sweep {man['sweep']} found no rows for {k}"
             if old in on_disk:
                 try:
@@ -378,7 +379,7 @@ def select_tail_parts(area_id, parts_root: str, tail_start: int | None = None) -
                 except Exception as e:                # noqa: BLE001
                     osid, orows = f"<unreadable: {type(e).__name__}>", None
                 if orows != 0:
-                    sel["superseded_by_zero"].append({"file": old, "rows": orows, "sweep": osid})
+                    sel["superseded_parts_on_disk"].append({"file": old, "rows": orows, "sweep": osid})
             continue
         if f != part_name(*_split_key(k)):
             sel["problems"].append(f"{k}: manifest names part {f!r}, expected {part_name(*_split_key(k))!r}")
@@ -408,6 +409,39 @@ def select_tail_parts(area_id, parts_root: str, tail_start: int | None = None) -
         sel["excluded"].append({"file": name, "reason": reason})
     sel["included"].sort()
     return sel
+
+
+def zero_marker_loss(final_path: str, zero_keys: list, spill_dir: str | None = None) -> list:
+    """[{'key', 'final_rows'}] for every zero-row key whose section-year the FINAL still holds: rows
+    with series_key 'GUSDBW:<var>:<sec>:...' and year(obs_date) == <year>. That is what the rebuild
+    removes for a section-year the publisher now returns nothing for - a loss the 1% floor and the
+    per-series rule can both pass (a series keeps its other years), so it is reported on its own.
+    One streaming DuckDB pass over the final, restricted to the zero keys' years."""
+    if not zero_keys:
+        return []
+    import duckdb                                    # lazy, as in row_loss_guard
+    want = sorted({tuple(int(x) for x in _split_key(k)) for k in zero_keys})
+    years = sorted({y for _v, _s, y in want})
+    con = duckdb.connect()
+    try:
+        con.execute(f"SET memory_limit='{GUARD_MEMORY_LIMIT}'")
+        con.execute(f"SET threads={GUARD_THREADS}")
+        if spill_dir:
+            os.makedirs(spill_dir, exist_ok=True)
+            con.execute(f"SET temp_directory='{_sql_path(spill_dir)}'")
+        con.execute("CREATE TEMP TABLE z (v BIGINT, s BIGINT, y BIGINT)")
+        con.executemany("INSERT INTO z VALUES (?, ?, ?)", [list(t) for t in want])
+        rows = con.execute(f"""
+            WITH f AS (SELECT TRY_CAST(split_part(series_key, ':', 2) AS BIGINT) v,
+                              TRY_CAST(split_part(series_key, ':', 3) AS BIGINT) s,
+                              year(obs_date) y
+                       FROM read_parquet('{_sql_path(final_path)}')
+                       WHERE year(obs_date) IN ({",".join(str(int(y)) for y in years)}))
+            SELECT z.v, z.s, z.y, count(*) FROM f JOIN z USING (v, s, y)
+            GROUP BY ALL ORDER BY 1, 2, 3""").fetchall()
+    finally:
+        con.close()
+    return [{"key": year_key(v, s, y), "final_rows": int(n)} for v, s, y, n in rows if n]
 
 
 def _split_key(k: str) -> tuple[str, str, str]:
@@ -683,6 +717,27 @@ def prune_refused(area_dir: str, keep: int = REFUSED_KEEP_PER_AREA) -> int:
     return len(old)
 
 
+SWEEP_REFUSED_FILE = "_sweep_refused.json"
+
+
+def note_sweep_refused(refused_root: str, area_id, sweep, problems: list,
+                       when: dt.datetime | None = None) -> str:
+    """Record that a rebuild was refused because the sweep's parts could not be trusted. Moves and
+    deletes nothing (unlike quarantine_tail_parts): one small JSON beside the area's refusal folders,
+    replaced by the next such refusal, so refused_still_due - and through it the digest - counts it."""
+    d = os.path.join(refused_root, "area_%s" % area_id)
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, SWEEP_REFUSED_FILE)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"area": str(area_id), "sweep": sweep, "n_problems": len(problems),
+                   "problems": list(problems)[:SWEEP_EXCLUDED_EXAMPLES],
+                   "utc": (when or dt.datetime.now(dt.timezone.utc)).isoformat(timespec="seconds")},
+                  f, indent=1, sort_keys=True)
+    replace_retrying(tmp, path)
+    return path
+
+
 def refused_still_due(out_dir: str = OUT) -> dict:
     """{area: newest refusal UTC datetime} for areas whose newest refusal is later than their last
     recorded refresh - the areas the guard is holding back now. For the digest (R1937)."""
@@ -700,6 +755,14 @@ def refused_still_due(out_dir: str = OUT) -> dict:
                 stamps.append(dt.datetime.strptime(s.name, "%Y%m%dT%H%M%SZ").replace(tzinfo=dt.timezone.utc))
             except ValueError:
                 continue
+        try:                                    # a manifest refusal (note_sweep_refused): no folder
+            with open(os.path.join(e.path, SWEEP_REFUSED_FILE), encoding="utf-8") as f:
+                t = dt.datetime.fromisoformat(json.load(f)["utc"])
+            stamps.append(t if t.tzinfo else t.replace(tzinfo=dt.timezone.utc))
+        except FileNotFoundError:
+            pass
+        except (ValueError, KeyError, TypeError, OSError):
+            stamps.append(dt.datetime.now(dt.timezone.utc))      # unreadable record: say refused
         if not stamps:
             continue
         aid, newest = e.name[len("area_"):], max(stamps)

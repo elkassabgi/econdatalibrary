@@ -106,8 +106,46 @@ def test_a_year_returning_zero_rows_does_not_resurrect_its_old_part(env):
     assert not any(k.startswith("GUSDBW:1:2:") for k, _d, _v in got), "a zero-row year resurrected"
     assert got == sorted(HISTORY + HIST_2024 + S1_2025)
     g = _owed(env)[0]["guard"]["sweep"]
-    assert g["superseded_by_zero"] == 1 and g["superseded_by_zero_rows"] == len(S2_2025)
-    assert g["superseded_by_zero_eg"][0]["file"] == "v1_s2_y2025.parquet"
+    assert g["zero_keys"] == 1 and g["superseded_by_zero"] == 0, "the final never held section 2"
+    assert g["superseded_parts_on_disk"] == 1
+    assert g["superseded_parts_on_disk_eg"][0] == {"file": "v1_s2_y2025.parquet", "rows": len(S2_2025),
+                                                   "sweep": "a1-OLD-1-0000"}
+
+
+def test_steady_state_zero_row_loss_is_measured_against_the_final(env):
+    """Verification probe of #304: after a rebuild the refresh dir is cleared, so a section-year GUS
+    stops returning has no old part to compare with. 5 of 1,015 tail pairs vanish and no series
+    vanishes (each keeps 2026): the guard passes it, so the loss must be reported on its own, from
+    the FINAL's rows, in the log, guard.json and the owed record."""
+    big25 = [(f"GUSDBW:1:1:b{i}", dt.date(2025, 12, 31), float(i)) for i in range(1000)]
+    s2_25 = [(f"GUSDBW:1:2:w{i}", dt.date(2025, 12, 31), float(i)) for i in range(5)]
+    s2_26 = [(f"GUSDBW:1:2:w{i}", dt.date(2026, 6, 30), float(i)) for i in range(5)]
+    _write(env["final"], HISTORY + big25 + s2_25 + s2_26)
+    assert R.tail_parts_for_area(1, G.REFRESH_PARTS) == []
+    _, keys = _sweep(env, {(1, 1, 2025): big25, (1, 2, 2025): [], (1, 2, 2026): s2_26})
+    logs = []
+    import pytest as _pt
+    mp = _pt.MonkeyPatch()
+    mp.setattr(G, "log", lambda m: logs.append(m))
+    try:
+        assert G.finish_area(1, env["final"], {}, TAIL, expected_keys=keys) is True
+    finally:
+        mp.undo()
+    g = _owed(env)[0]["guard"]
+    assert g["sweep"]["superseded_by_zero"] == 1 and g["sweep"]["superseded_by_zero_rows"] == 5
+    assert g["sweep"]["superseded_by_zero_eg"] == [{"key": "v1:s2:y2025", "final_rows": 5}]
+    assert g["tail_lost"] == 5 and g["series_dropped"] == 0, "the guard alone passes this loss"
+    assert any("returned NO rows" in m and "v1:s2:y2025 (5 rows)" in m for m in logs)
+
+
+def test_a_refused_rebuild_carries_the_zero_row_loss_into_guard_json(env, monkeypatch):
+    _write(env["final"], HISTORY + HIST_2024 + S1_2025 + S2_2025)
+    _, keys = _sweep(env, {(1, 1, 2025): S1_2025, (1, 2, 2025): []})     # 5 whole series vanish
+    assert G.finish_area(1, env["final"], {}, TAIL, expected_keys=keys) is False
+    stamp = os.listdir(env["refused"])
+    stamp = [x for x in stamp if os.path.isdir(os.path.join(env["refused"], x))][0]
+    g = json.load(open(os.path.join(env["refused"], stamp, "guard.json"), encoding="utf-8"))
+    assert g["sweep"]["superseded_by_zero"] == 1 and g["sweep"]["superseded_by_zero_rows"] == len(S2_2025)
 
 
 def test_normal_multi_pass_accumulation_still_works(env):
@@ -127,8 +165,11 @@ def _assert_untouched(env, before, state, n_parts):
     assert _rows(env["final"]) == before
     assert not os.path.exists(env["final"] + G.CANDIDATE_SUFFIX)
     assert _owed(env) == [] and "1" not in state
-    assert not os.path.exists(env["refused"]), "a manifest problem must NOT quarantine (it moves parts)"
+    assert os.listdir(env["refused"]) == [R.SWEEP_REFUSED_FILE], \
+        "a manifest problem must NOT quarantine (it moves parts); it leaves only its refusal record"
     assert len(R.tail_parts_for_area(1, G.REFRESH_PARTS)) == n_parts
+    assert "1" in R.refused_still_due(env["out"]), "the digest must see a manifest refusal"
+    assert R.publish_summary(env["out"])["refused"] == 1
 
 
 def test_legacy_parts_with_no_manifest_refuse_then_a_new_sweep_excludes_them(env):
@@ -287,3 +328,77 @@ def test_the_stat_only_report_opens_no_file(env, monkeypatch):
 
 def test_the_report_read_mode_refuses_without_the_crawler_stopped_flag(capsys):
     assert X.main(["--read"]) == 2
+
+
+# ------------------------------------------------------------------ verification round 1 (#304)
+def test_a_manifest_refusal_is_counted_by_the_digest_until_the_area_refreshes(env):
+    _write(os.path.join(env["dir"], "v1_s1_y2025.parquet"), S1_2025)          # legacy, no manifest
+    state = {}
+    assert G.finish_area(1, env["final"], state, TAIL) is False
+    rec = json.load(open(os.path.join(env["refused"], R.SWEEP_REFUSED_FILE), encoding="utf-8"))
+    assert rec["area"] == "1" and rec["sweep"] is None and rec["n_problems"] == 1
+    assert R.publish_summary(env["out"])["refused_areas"] == ["1"]
+    _, keys = _sweep(env, {(1, 1, 2025): S1_2025})
+    assert G.finish_area(1, env["final"], state, TAIL, expected_keys=keys) is True
+    R.save_state(state, env["out"])
+    later = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=1)
+    state["1"]["last_refresh"] = later.isoformat()
+    R.save_state(state, env["out"])
+    assert R.refused_still_due(env["out"]) == {}, "a later refresh clears the refusal"
+
+
+def _fake_area(monkeypatch, env, fetched):
+    """refresh_pass over one area (id 1) with one variable and one section, no network."""
+    monkeypatch.setattr(G, "cached_get", lambda name, path: (
+        [{"id-zmienna": 1}] if name.startswith("vars_") else
+        {"przekroje": [{"id-przekroj": 1, "id-czestotliwosc": 7, "szereg-czasowy": "2004-2026"}]}))
+    monkeypatch.setattr(G, "candidate_periods", lambda *a: [282])
+    monkeypatch.setattr(G, "year_range", lambda pz: (2004, 2026))
+    monkeypatch.setattr(R, "tail_start_year", lambda *a, **k: TAIL)
+    monkeypatch.setattr(R, "area_due", lambda *a, **k: True)
+    monkeypatch.setattr(G, "save_ckpt", lambda ck: None)
+    monkeypatch.setattr(G, "log", lambda m: None)
+
+    def fetch_year(var, sec, year, cands, pmap, out_rows, seen):
+        rows = fetched[0].get(year, [])
+        out_rows.extend(rows)
+        return {282: len(rows)}
+
+    monkeypatch.setattr(G, "fetch_year", fetch_year)
+
+
+def test_two_refresh_passes_get_two_sweep_ids_and_both_rebuild(env, monkeypatch):
+    """Behavioural (verification mutant M2: reusing the manifest's sweep id instead of begin_sweep
+    survived every source-level test)."""
+    fetched = [{2025: S1_2025, 2026: S1_2026}]
+    _fake_area(monkeypatch, env, fetched)
+    G.refresh_pass([{"id": 1}], [], {282: ("A", 0)}, {})
+    fetched[0] = {2025: [(k, d, v + 1) for k, d, v in S1_2025], 2026: S1_2026}
+    G.refresh_pass([{"id": 1}], [], {282: ("A", 0)}, {})
+    owed = _owed(env)
+    assert len(owed) == 2, "both passes must rebuild"
+    s1, s2 = owed[0]["guard"]["sweep"]["sweep"], owed[1]["guard"]["sweep"]["sweep"]
+    assert s1 and s2 and s1 != s2
+    assert _rows(env["final"]) == sorted(HISTORY + HIST_2024 + [(k, d, v + 1) for k, d, v in S1_2025]
+                                         + S1_2026)
+
+
+def test_a_sweep_that_cannot_begin_skips_only_its_area(env, monkeypatch):
+    fetched = [{2025: S1_2025}]
+    _fake_area(monkeypatch, env, fetched)
+    _write(os.path.join(env["out"], "area_2.parquet"), HISTORY + HIST_2024 + S1_2025)
+    real = R.begin_sweep
+
+    def begin(area_dir, aid, now=None):
+        if str(aid) == "1":
+            raise PermissionError("WinError 5")
+        return real(area_dir, aid, now)
+
+    monkeypatch.setattr(R, "begin_sweep", begin)
+    G.refresh_pass([{"id": 1}, {"id": 2}], [], {282: ("A", 0)}, {})
+    assert [r["area"] for r in _owed(env)] == ["2"], "area 1 skipped, area 2 still rebuilt"
+
+
+def test_startup_sweeps_refresh_tmp_files():
+    src = inspect.getsource(G.main)
+    assert 'os.path.join(PARTS, "_refresh", "area_*", "*.tmp")' in src

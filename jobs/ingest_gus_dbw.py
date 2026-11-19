@@ -552,23 +552,37 @@ def finish_area(aid, final: str, state: dict, tail_start: int,
             + (f" (+{len(sel['problems']) - R.SWEEP_EXCLUDED_EXAMPLES} more)"
                if len(sel["problems"]) > R.SWEEP_EXCLUDED_EXAMPLES else "")
             + ". NOT rebuilt; the final is untouched and the area stays due")
+        try:
+            R.note_sweep_refused(REFUSED_PARTS, aid, sel["sweep"], sel["problems"])
+        except Exception as e:                   # noqa: BLE001
+            log(f"REFRESH area {aid}: the sweep refusal record was NOT written ({type(e).__name__}: {e})")
         return False
     if sel["excluded"]:
         eg = ", ".join(f"{x['file']} ({x['reason']})" for x in sel["excluded"][:R.SWEEP_EXCLUDED_EXAMPLES])
         log(f"REFRESH area {aid}: {len(sel['excluded']):,} part(s) in the refresh dir are NOT from sweep "
             f"{sel['sweep']} and are excluded from the rebuild, e.g. {eg}")
-    if sel["superseded_by_zero"]:
-        lost = sum(x["rows"] or 0 for x in sel["superseded_by_zero"])
-        eg = ", ".join(f"{x['file']} ({x['rows']} rows)" for x in sel["superseded_by_zero"][:R.SWEEP_EXCLUDED_EXAMPLES])
-        log(f"REFRESH area {aid}: {len(sel['superseded_by_zero']):,} section-year(s) returned NO rows in "
-            f"sweep {sel['sweep']} where an older part held {lost:,} rows - their old parts are NOT "
-            f"merged, e.g. {eg}")
+    # WHAT A ZERO-ROW MARKER REMOVES FROM THE FINAL. In steady state the last rebuild cleared the
+    # refresh dir, so there is no old part to compare with: the loss is measured on the final itself.
+    try:
+        zlost = R.zero_marker_loss(final, sel["zero_keys"], spill_dir=GUARD_SPILL)
+    except Exception as e:                       # noqa: BLE001 - cannot measure = refuse
+        log(f"REFRESH area {aid}: ERROR the zero-row loss could not be measured ({type(e).__name__}: {e}); "
+            f"NOT rebuilt, the area stays due")
+        return False
+    if zlost:
+        eg = ", ".join(f"{x['key']} ({x['final_rows']:,} rows)" for x in zlost[:R.SWEEP_EXCLUDED_EXAMPLES])
+        log(f"REFRESH area {aid}: {len(zlost):,} section-year(s) returned NO rows in sweep {sel['sweep']} "
+            f"while the final holds {sum(x['final_rows'] for x in zlost):,} rows for them - the rebuild "
+            f"removes those rows, e.g. {eg}")
     sweep_note = {"sweep": sel["sweep"], "included": len(sel["included"]),
                   "excluded": len(sel["excluded"]),
                   "excluded_eg": sel["excluded"][:R.SWEEP_EXCLUDED_EXAMPLES],
-                  "superseded_by_zero": len(sel["superseded_by_zero"]),
-                  "superseded_by_zero_rows": sum(x["rows"] or 0 for x in sel["superseded_by_zero"]),
-                  "superseded_by_zero_eg": sel["superseded_by_zero"][:R.SWEEP_EXCLUDED_EXAMPLES]}
+                  "zero_keys": len(sel["zero_keys"]),
+                  "superseded_by_zero": len(zlost),
+                  "superseded_by_zero_rows": sum(x["final_rows"] for x in zlost),
+                  "superseded_by_zero_eg": zlost[:R.SWEEP_EXCLUDED_EXAMPLES],
+                  "superseded_parts_on_disk": len(sel["superseded_parts_on_disk"]),
+                  "superseded_parts_on_disk_eg": sel["superseded_parts_on_disk"][:R.SWEEP_EXCLUDED_EXAMPLES]}
     parts = sel["included"]
     # The rebuild writes a CANDIDATE beside the final; the final is replaced only after the
     # row-loss guard passes it (R1936). The candidate's name does not end in .parquet, so no
@@ -666,7 +680,13 @@ def refresh_pass(var_areas: list, entries, pmap: dict, ck: dict) -> None:
         area_dir = os.path.join(REFRESH_PARTS, f"area_{aid}")
         # A NEW sweep identity for every sweep of the area: only the parts this sweep writes and
         # records are merged by finish_area, whatever earlier sweeps left in area_dir.
-        sweep_id = R.begin_sweep(area_dir, aid)
+        try:
+            sweep_id = R.begin_sweep(area_dir, aid)
+        except Exception as e:                   # noqa: BLE001 - confined to this area
+            log(f"REFRESH area {aid}: ERROR the sweep could not begin ({type(e).__name__}: {e}); "
+                f"area skipped, retried next run")
+            skipped += 1
+            continue
         area_ok = True
         ryears: set = set()
         fetched = 0
@@ -720,6 +740,7 @@ def main():
     # *.parquet), just disk litter — sweep them so a multi-week crawl stays clean.
     swept = 0
     for pat in (os.path.join(PARTS, "area_*", "*.tmp"),
+                os.path.join(PARTS, "_refresh", "area_*", "*.tmp"),     # write_part / begin_sweep
                 os.path.join(OUT, "*.tmp"),
                 os.path.join(OUT, "*" + CANDIDATE_SUFFIX),        # a rebuild candidate a kill left
                 os.path.join(CACHE, "*.tmp")):
