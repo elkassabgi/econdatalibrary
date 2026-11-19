@@ -380,10 +380,11 @@ def _spy_derive_budget(monkeypatch):
 
 def test_a_2880_minute_run_budget_still_caps_the_drain_and_its_lease(rig, monkeypatch):
     """AR-413 F1: run_local_heavy.ps1 sets AQUEDUCT_RUN_BUDGET_MIN=2880. Remainder minus margin alone gave one drain
-    2,865 minutes; the cap is AQUEDUCT_RETRY_DRAIN_MAX_MIN, default the derive budget (45), and the lease follows."""
+    2,865 minutes; the cap is AQUEDUCT_RETRY_DRAIN_MAX_MIN, default 120 (it was the derive budget, 45), and the
+    lease follows."""
     monkeypatch.setenv("AQUEDUCT_RUN_BUDGET_MIN", "2880")
     # a per-source share above the cap, so the CAP is what binds here (the share: test_csv_retry_backlog.py)
-    monkeypatch.setenv("AQUEDUCT_RETRY_DRAIN_PER_SOURCE_MIN", "60")
+    monkeypatch.setenv("AQUEDUCT_RETRY_DRAIN_PER_SOURCE_MIN", "200")
     seen = _spy_derive_budget(monkeypatch)
     ttls = []
     real = rig.state.claim_lease
@@ -394,15 +395,36 @@ def test_a_2880_minute_run_budget_still_caps_the_drain_and_its_lease(rig, monkey
     monkeypatch.setattr(rig.state, "claim_lease", spy)
     rig.seed(SRC, _ids(1))
     rig.run()
-    assert 44.0 < seen["budget"] <= 45.0, seen
+    assert 119.0 < seen["budget"] <= 120.0, seen
     drain_ttls = [t for k, t in ttls if k == f"{SRC}/_all"]
-    assert drain_ttls and drain_ttls[-1] <= (45 + 15) * 60 + 1, drain_ttls
+    assert drain_ttls and drain_ttls[-1] <= (120 + 15) * 60 + 1, drain_ttls
     monkeypatch.setenv("AQUEDUCT_RETRY_DRAIN_MAX_MIN", "10")
     rig.seed(SRC, _ids(1))
     rig.run()
     assert 9.0 < seen["budget"] <= 10.0, seen
-    monkeypatch.setenv("AQUEDUCT_RETRY_DRAIN_MAX_MIN", "0")          # never "unbounded"
-    assert orchestrate._drain_max_min() == 45.0
+    for bad in ("0", "-5", "nope"):                                   # never "unbounded"
+        monkeypatch.setenv("AQUEDUCT_RETRY_DRAIN_MAX_MIN", bad)
+        assert orchestrate._drain_max_min() == 120.0, bad
+    monkeypatch.delenv("AQUEDUCT_RETRY_DRAIN_MAX_MIN")
+    monkeypatch.setenv("AQUEDUCT_DERIVE_BUDGET_MIN", "30")            # no longer tied to the derive budget
+    assert orchestrate._drain_max_min() == 120.0
+
+
+@pytest.mark.parametrize("run_min, want", [(95, 80.0), (100, 85.0), (228, 120.0)])
+def test_the_drain_stops_at_remainder_minus_margin_below_the_cap_and_at_the_cap_above(rig, monkeypatch,
+                                                                                     run_min, want):
+    """The default cap (120) bounds a long window only: a 100-min run leaves 100 - 15 = 85 < 120 and the drain gets
+    85 (the margin is kept); a 228-min run (the size of a 2026-11-18 pass) leaves 213 > 120 and the drain gets 120.
+    The per-source share is set above both, so the PASS budget is what the derive sees."""
+    monkeypatch.setenv("AQUEDUCT_RUN_BUDGET_MIN", str(run_min))
+    monkeypatch.setenv("AQUEDUCT_RETRY_DRAIN_PER_SOURCE_MIN", "500")
+    seen = _spy_derive_budget(monkeypatch)
+    rig.seed(SRC, _ids(1))
+    rig.run()
+    assert want - 1.0 < seen["budget"] <= want, seen
+    # the same rule without the unit loop in front of it
+    monkeypatch.setattr(orchestrate, "_RUN_DEADLINE_TS", time.time() + run_min * 60.0)
+    assert want - 0.1 < orchestrate._leftover_drain_min() <= want
 
 
 def test_sources_drain_oldest_enqueued_first_under_one_pass_budget(rig, monkeypatch, capsys):
@@ -442,6 +464,33 @@ def test_the_per_pass_cap_holds(rig, monkeypatch):
     rig.seed(SRC, _ids(5))
     rig.run()
     assert len(rig.derived) == 2 and len(rig.queue()) == 3
+
+
+@pytest.mark.parametrize("fail_all, still", [(False, 3), (True, 5)])
+def test_the_printed_still_queued_counts_the_ids_past_the_cap(rig, monkeypatch, capsys, fail_all, still):
+    """2026-11-18: eia's drain line read "still queued 0" with 26,717 ids left past the 20,000 cap; the line
+    counted only the ids that failed again, the summary (the <<< line) counted the rest too. A queue LARGER than
+    the cap: the printed figure is refailed + held back + past the cap, the same number as the summary's."""
+    monkeypatch.setattr(orchestrate, "_CSV_RETRY_CAP", 2)
+    rig.seed(SRC, _ids(5))
+    if fail_all:
+        rig.fail = set(_ids(5))
+    rig.run()
+    assert len(rig.derived) == 2 and len(rig.queue()) == still, "the store agrees with the figure"
+    out = capsys.readouterr().out
+    cleared = 0 if fail_all else 2
+    assert (f"csv retry queue 5 -> attempted 2, cleared {cleared}, still queued {still}, "
+            f"3 not attempted (past the cap of 2)") in out, out
+    assert f"(csv retry drain: attempted 2, cleared {cleared}, still queued {still})" in out, out
+
+
+def test_a_queue_within_the_cap_prints_no_past_the_cap_note(rig, capsys):
+    rig.seed(SRC, _ids(3))
+    rig.fail = {_ids(3)[0]}
+    rig.run()
+    out = capsys.readouterr().out
+    assert "csv retry queue 3 -> attempted 3, cleared 2, still queued 1\n" in out, out
+    assert "past the cap" not in out
 
 
 def test_the_per_pass_cap_holds_when_turns_end_on_time(monkeypatch):
