@@ -126,6 +126,16 @@ def hold_or_refuse(name: str, what: str) -> None:
     raise SystemExit(f"REFUSING {what}: could not take {lock_path(name)} (another writer took it first)")
 
 
+def hold(name: str, what: str) -> None:
+    """hold_or_refuse, RE-ENTRANT: a no-op when THIS process already holds `name`. hold_or_refuse alone
+    refuses its own second call (its acquire sees a live owner - itself), which breaks a tool whose main()
+    runs twice in one process (tests do) or two guarded steps of one run (usda, 2026-11-19)."""
+    rec = owner(name)
+    if rec is not None and rec.get("pid") == os.getpid():
+        return
+    hold_or_refuse(name, what)
+
+
 def refuse_if_held(name: str, what: str) -> None:
     """For every OTHER writer: exit loudly when the region's owner is alive (or unjudgeable)."""
     rec = owner(name)

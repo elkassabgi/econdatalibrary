@@ -169,6 +169,13 @@ def main() -> int:
         # THE CSV STORE (plan step 1): R2 before T0, the self-hosted blob store after it - never local files
         from updater import blob as _blob, derive as _derive              # noqa: PLC0415
         store = _blob.csv_store(a.bucket)
+        # HOLD THE usda STORE REGION from here to exit (updater/writer_lock.py): jobs/ingest_usda.py
+        # takes the same lock while it rebuilds and swaps cubes, so no CSV is written from a cube
+        # that is being replaced, and no rebuild starts under a writing derive. Taken after the
+        # store (and its bucket check) is built and before the first write; writer_lock.hold is
+        # re-entrant for a process that already holds it.
+        from updater import writer_lock                                      # noqa: PLC0415
+        writer_lock.hold("usda_writer", "tools/derive_usda_tables.py (a writing run)")
         if a.skip_existing:
             pref = f"{a.prefix}/{urllib.parse.quote(SOURCE + ':', safe='')}"
             existing.update(store.list_keys(pref))

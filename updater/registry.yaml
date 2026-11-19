@@ -7370,8 +7370,9 @@ sources:
   review: true
   adapter:
     vintage_signal: new dated bulk file appearing under data/raw/usda (qs.<sector>_YYYYMMDD.txt.gz; current vintage 20260603),
-      or HEAD Last-Modified/Content-Length on https://www.nass.usda.gov/datasets/qs.<sector>.txt.gz; on change delete the
-      affected cube dirs (+_complete + _manifest.json) and re-ingest.
+      or HEAD Last-Modified/Content-Length on https://www.nass.usda.gov/datasets/qs.<sector>.txt.gz. On a new dump the
+      fetcher downloads it and runs jobs/ingest_usda.py, which rebuilds every cube whose live _build.json does not name that
+      dump (fname + size) in data/usda_staging/<cube>.new, verifies it and swaps it in whole; no cube dir is deleted by hand.
     since_param: n/a
     out_paths_note: 'MULTI-DIR: per-cube part files under data/clean_full/usda/{animals_products,crops,demographics,economics,environmental}/part_NNN.parquet
       + per-cube _complete sentinel + _manifest.json. NOTE two scripts: bulk jobs/ingest_usda.py (this, S5) vs the orchestrated
@@ -7380,28 +7381,31 @@ sources:
       restarts) due to sandbox killing long jobs. Orchestrated connector path alone needs a key.
     key_env: none for bulk pipeline; USDA_API_KEY only for the separate connectors/usda connector path
     confidence: high
-    open_question: Vintage refresh MUST delete cube dirs + _complete before dropping a new dated file (skip-rows resume mis-aligns
-      on reordered snapshots) — confirm download_all.sh vintage bump + cube wipe is automated, not manual; decide whether
-      to keep --with-census off (default, avoids dup rows).
+    open_question: decide whether to keep --with-census off (default, avoids dup rows). (Closed 2026-11-19 - the skip-rows
+      resume across vintages, which kept old parts and appended the new dump's tail, is replaced by the staged atomic
+      rebuild in jobs/ingest_usda.py; a resume now happens only inside a staging dir built from the same input.)
   matrix:
     refresh_mechanism:
     - checkpoint-resume
     force_refresh_procedure:
-    - 'Two stages. (1) Refresh the raw bulk files (delete old, re-download new vintage): edit the YYYYMMDD filenames in D:/research/econfindatalibrary/data/raw/usda/download_all.sh
-      to the new vintage, delete stale qs.*.txt.gz, then run that script (curl from https://www.nass.usda.gov/datasets). (2)
-      Clear the clean output so a new vintage is fully re-ingested (the _complete sentinels otherwise SKIP each cube): rm
-      -rf D:/research/econfindatalibrary/data/clean_full/usda/{animals_products,crops,demographics,economics,environmental}
-      D:/research/econfindatalibrary/data/clean_full/usda/_manifest.json ; then run the auto-restart loop: bash D:/research/econfindatalibrary/data/raw/usda/run_until_done.sh  (or
-      directly python.exe D:/research/econfindatalibrary/jobs/ingest_usda.py). To remove just one cube, delete that cube''s
-      directory (incl. its _complete marker and part_*.parquet). Add --with-census to also ingest the 7 census slice files
-      (off by default to avoid duplicates).'
+    - 'The ingest rebuilds a cube by itself whenever the dump on disk differs from the one its live _build.json names, so a
+      new vintage needs only (1) the new qs.<sector>_YYYYMMDD.txt.gz in data/raw/usda (the fetcher downloads it) and (2)
+      python jobs/ingest_usda.py. Per cube it recovers any interrupted swap, then parses the dump into data/usda_staging/<cube>.new
+      (outside data/clean_full, so no reader sees it), verifies footers + part rows == parsed rows, commits there (_build.json
+      verified + _complete), renames the live cube to data/usda_staging/<cube>.old and the staged build into place, re-verifies,
+      and only then removes .old. A kill at any step leaves one complete cube - live, or for the instant between the two renames in staging, which the next run''s recovery puts back first; a staged build resumes only when its
+      _build.json names the same input, otherwise it is wiped. The run holds logs/usda_writer.lock (updater/writer_lock.py)
+      and refuses while another usda writer holds it. To force a cube to rebuild from the same dump, delete only its live
+      _build.json. Never rm -rf a live cube dir: that unserves it until the rebuild ends. Part indexes the new cube no longer
+      has stay on R2 until tools/usda_r2_stale_parts.py --apply (run by hand) backs them up and deletes them. Add --with-census
+      to also ingest the 7 census slice files (off by default to avoid duplicates).'
     incremental_path:
     - Not feasible as obs-level since=last_obs — NASS bulk dumps are full-database snapshots (every survey+census obs) keyed
       by YEAR/FREQ/END_CODE with no since field; the ingest streams whole files. A new monthly vintage replaces the prior
-      snapshot wholesale. The only correct refresh is re-download the new dated bulk file + re-ingest the affected cubes (delete
-      their _complete markers). True delta would require diffing two snapshots offline (compare new vs old qs.<sector>.txt.gz
+      snapshot wholesale. The only correct refresh is re-download the new dated bulk file + re-run the ingest (it rebuilds each cube whose _build.json names another dump; no
+      cube dir or _complete marker is deleted by hand). True delta would require diffing two snapshots offline (compare new vs old qs.<sector>.txt.gz
       on series_key+date) — possible but expensive (57.6M rows) and not currently implemented. Within a single vintage the
-      part-rolling + _complete logic already gives crash-resume, not data incrementality.
+      staged part-rolling build gives crash-resume (same input only), not data incrementality.
     keys_or_blockers:
     - 'For the bulk pipeline: NO API key (downloads public-domain .txt.gz via curl). For the orchestrated connector path only:
       USDA_API_KEY env var required (core.config.require). Blocker on ingest: memory/runtime on the >100M-row crops input
