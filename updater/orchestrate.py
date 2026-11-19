@@ -28,6 +28,7 @@ from . import merge
 from . import registry
 from .state import StateStore, now_utc
 from .strategies import get as get_strategy
+from .strategies.base import DATE_TAIL
 from .strategies.fetchers import implemented as fetcher_implemented
 from .strategies.fetchers._common import sane_since
 from .errors import TransientError, DefinitiveError
@@ -4358,8 +4359,11 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             # no_change is exactly what §5.2 forbids.
             probe = getattr(strat, "_cur", None)
             stored_vintage = (us or {}).get("upstream_vintage")
+            # Never EARNED on finalize's "date-tail" placeholder: equal placeholders prove nothing
+            # about upstream (who_hwf/who_rs/who_sdg booked no_change on it for months without a
+            # fetch). The probe strategies already read it as None; this is the second line.
             if (not dry and probe is not None and stored_vintage is not None
-                    and probe == stored_vintage):
+                    and probe != DATE_TAIL and probe == stored_vintage):
                 ts = now_utc()
                 store.upsert_unit(unit.source_id, unit.unit_id, strategy=unit.strategy,
                                   status="no_change", last_success_utc=ts,

@@ -14,7 +14,7 @@ carried through to the Result without a second probe.
 from __future__ import annotations
 
 from . import register
-from .base import Strategy, Unit, Result
+from .base import Strategy, Unit, Result, probe_token
 from .fetchers import get as get_fetcher
 
 
@@ -23,6 +23,7 @@ class OverwriteIfChanged(Strategy):
     def detect_change(self, unit: Unit, unit_state: dict | None) -> str | None:
         f = get_fetcher(unit.source_id)
         cur = f.current_vintage(unit) if hasattr(f, "current_vintage") else None
+        cur = probe_token(cur)      # finalize's "date-tail" placeholder is no token (base.DATE_TAIL)
         self._cur = cur
         stored = (unit_state or {}).get("upstream_vintage")
         if cur is not None and stored is not None and cur == stored:
