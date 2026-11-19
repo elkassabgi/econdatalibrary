@@ -197,9 +197,14 @@ def _table_cursors(out: str) -> dict:
     return {k: full[k] for k in window}
 
 
-def update(unit, since) -> Result:
-    root = os.path.dirname(os.path.dirname(os.path.dirname(
+def _root() -> str:
+    """The repo root (data/raw/usda lives under it). A function so tests can point it at a temp dir."""
+    return os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.dirname(os.path.abspath(__file__)))))
+
+
+def update(unit, since) -> Result:
+    root = _root()
     raw = os.path.join(root, "data", "raw", SOURCE)
     out = config.source_dir(SOURCE)
     os.makedirs(raw, exist_ok=True)

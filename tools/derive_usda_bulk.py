@@ -154,12 +154,10 @@ def main() -> int:
     # HOLD THE usda STORE REGION from here to exit (updater/writer_lock.py): jobs/ingest_usda.py
     # takes the same lock while it rebuilds and swaps cubes, so no CSV is written from a cube
     # that is being replaced, and no rebuild starts under a writing derive. Taken after the
-    # store (and its bucket check) is built and before the first write; re-entrant for a
-    # process that already holds it (hold_or_refuse alone refuses its own second call).
+    # store (and its bucket check) is built and before the first write; writer_lock.hold is
+    # re-entrant for a process that already holds it.
     from updater import writer_lock                                      # noqa: PLC0415
-    _held = writer_lock.owner("usda_writer")
-    if not (_held and _held.get("pid") == os.getpid()):
-        writer_lock.hold_or_refuse("usda_writer", "tools/derive_usda_bulk.py (a writing run)")
+    writer_lock.hold("usda_writer", "tools/derive_usda_bulk.py (a writing run)")
     q = duckdb.connect(); q.execute("PRAGMA memory_limit='6GB'")
     put = skipped = 0
     for cid, rows in _stream(q, files):

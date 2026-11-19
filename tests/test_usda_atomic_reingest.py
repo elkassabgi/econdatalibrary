@@ -405,6 +405,13 @@ class _FakeR2:
     def delete_object(self, Bucket, Key):
         self.objects.pop(Key, None)
 
+    def size(self, key):
+        return len(self.objects[key]) if key in self.objects else None
+
+    def etag(self, key):
+        import hashlib
+        return hashlib.md5(self.objects[key]).hexdigest() if key in self.objects else None
+
 
 def _load_stale_tool():
     import importlib.util
@@ -460,3 +467,143 @@ def test_stale_cleanup_refuses_while_r2_lacks_live_parts(env, monkeypatch):
     J.main()
     assert tool.main(["--apply"]) == 1
     assert "clean_full/usda/demographics/part_009.parquet" in _FakeR2.objects
+
+
+# ----------------------------------------------------------------------------- the production call shape
+def test_recovery_with_old_and_an_uncommitted_new_rolls_back_and_never_swaps(env, monkeypatch):
+    write_dump(env.raw, "demographics", "20260603", V1)
+    J.main()
+    write_dump(env.raw, "demographics", "20261118", V3)
+    undo = _kill_writer_at(monkeypatch, 8)
+    with pytest.raises(KeyboardInterrupt):
+        J.main()
+    undo()
+    os.rename(env.live(), os.path.join(J.staging_root(), "demographics.old"))   # kill after rename 1
+    assert J.recover_cube("demographics").startswith("rolled back")
+    assert cube_rows(env.live()) == expect(V1), "an uncommitted build must never be swapped in"
+    assert J.read_build(os.path.join(J.staging_root(), "demographics.new"))["verified"] is False
+    J.main()                                                     # and it still resumes to the new file
+    assert cube_rows(env.live()) == expect(V3)
+
+
+def test_keep_old_writes_the_manifest_from_the_live_cubes_and_drop_all_old_clears_staging(env):
+    import json
+    write_dump(env.raw, "demographics", "20260603", V1)
+    J.main()
+    write_dump(env.raw, "demographics", "20261118", V2)
+    J.main(keep_old=True)
+    assert _stage_entries() == ["demographics.old"], "keep_old keeps the previous copy"
+    m = json.load(open(os.path.join(env.out, "_manifest.json"), encoding="utf-8"))
+    assert m["total_rows"] == 5 and m["cube_detail"]["demographics"]["rows"] == 5
+    assert m["cube_detail"]["demographics"]["parts"] == ["part_000.parquet", "part_001.parquet"]
+    assert J.drop_all_old() == ["demographics"]
+    assert _stage_entries() == [] and cube_rows(env.live()) == expect(V2)
+
+
+class _Resp:
+    def __init__(self, data):
+        self.data, self.headers = data, {"Content-Length": str(len(data))}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def raise_for_status(self):
+        pass
+
+    def iter_content(self, chunk_size=1):
+        yield self.data
+
+
+def test_the_fetcher_rebuilds_publishes_the_live_parts_then_retires_old(env, monkeypatch):
+    """update(): main(keep_old=True) -> publish exactly the live parts (while .old still exists) ->
+    drop_all_old; manifest == live. No network: the listing and the download session are fakes."""
+    import json
+    from updater import blob, config
+    from updater.strategies.fetchers import usda as F
+    root = os.path.dirname(env.data)
+    upstream = os.path.join(root, "upstream")
+    os.makedirs(upstream)
+    monkeypatch.setattr(F, "_root", lambda: root)
+    monkeypatch.setattr(config, "source_dir", lambda s: env.out)
+
+    class Sess:
+        def get(self, url, headers=None, timeout=None, stream=False):
+            return _Resp(open(os.path.join(upstream, url.rsplit("/", 1)[-1]), "rb").read())
+    monkeypatch.setattr(F.requests, "Session", Sess)
+
+    listing = {}
+    for s in J.SECTOR_FILES:
+        p = write_dump(upstream, s, "20260603", V1)
+        listing[s] = (os.path.basename(p), "20260603")
+    monkeypatch.setattr(F, "_listing", lambda sess=None: dict(listing))
+
+    events = []
+    real_main, real_drop = J.main, J.drop_all_old
+
+    def main_spy(*a, **k):
+        events.append(("main", k.get("keep_old")))
+        return real_main(*a, **k)
+
+    def drop_spy():
+        events.append(("drop", None))
+        return real_drop()
+
+    def publish_spy(path):
+        cube = os.path.basename(os.path.dirname(path))
+        events.append(("publish", os.path.relpath(path, env.out).replace(os.sep, "/"),
+                       os.path.isdir(os.path.join(J.staging_root(), cube + ".old"))))
+        return os.path.getsize(path)
+    monkeypatch.setattr(J, "main", main_spy)
+    monkeypatch.setattr(J, "drop_all_old", drop_spy)
+    monkeypatch.setattr(blob, "publish_file", publish_spy)
+
+    res = F.update(None, None)
+    assert res.status == "ok", res
+    p = write_dump(upstream, "demographics", "20261118", V2)
+    listing["demographics"] = (os.path.basename(p), "20261118")
+    events.clear()
+    res = F.update(None, None)
+    assert res.status == "ok", res
+
+    assert events[0] == ("main", True), events[:2]
+    pubs = [e for e in events if e[0] == "publish"]
+    assert events[-1] == ("drop", None) and all(events.index(e) < len(events) - 1 for e in pubs)
+    want = sorted(os.path.relpath(q, env.out).replace(os.sep, "/") for q in J.served_parts())
+    assert sorted(e[1] for e in pubs) == want, "publish exactly the live parts"
+    assert all(".old" not in e[1] and ".new" not in e[1] for e in pubs)
+    assert any(e[2] for e in pubs if e[1].startswith("demographics/")), \
+        "the previous copy must still exist while the publish runs"
+    assert _stage_entries() == [], "and is retired after it"
+    assert cube_rows(env.live()) == expect(V2)
+    m = json.load(open(os.path.join(env.out, "_manifest.json"), encoding="utf-8"))
+    live_rows = {g: sum(pq.read_metadata(q).num_rows for q in J.cube_parts(env.live(g)))
+                 for g in J.SECTOR_FILES}
+    assert {g: m["cube_detail"][g]["rows"] for g in J.SECTOR_FILES} == live_rows
+    assert m["cube_detail"]["demographics"]["rows"] == 5
+
+
+def test_stale_apply_refuses_when_a_live_key_on_r2_holds_old_bytes(env, monkeypatch):
+    """An interrupted publish can leave OLD bytes under a low-numbered key: same key set, wrong bytes."""
+    from updater import blob
+    from core import cutover
+    monkeypatch.setattr(cutover, "is_cut_over", lambda: False)
+    _FakeR2.objects = {}
+    monkeypatch.setattr(blob, "R2Blob", _FakeR2)
+    tool = _load_stale_tool()
+    for s in J.SECTOR_FILES:
+        write_dump(env.raw, s, "20260603", V1)
+    J.main()
+    old_bytes = {blob._path_to_key(p): open(p, "rb").read() for p in J.served_parts()}
+    write_dump(env.raw, "demographics", "20261118", V2)
+    J.main()
+    for p in J.served_parts():                                   # publish everything ...
+        _FakeR2.objects[blob._path_to_key(p)] = open(p, "rb").read()
+    k0 = "clean_full/usda/demographics/part_000.parquet"
+    _FakeR2.objects[k0] = old_bytes[k0]                          # ... but part_000 kept its old bytes
+    for k in ("clean_full/usda/demographics/part_002.parquet", "clean_full/usda/demographics/part_003.parquet"):
+        _FakeR2.objects[k] = old_bytes[k]
+    assert tool.main(["--apply"]) == 1
+    assert "clean_full/usda/demographics/part_003.parquet" in _FakeR2.objects, "nothing deleted"

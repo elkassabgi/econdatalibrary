@@ -2407,7 +2407,13 @@ def _drain_csv_retry_queue(unit, blob, store, deadline_ts=None, id_gate=None, sk
         if _held is not None and _held.get("pid") != os.getpid():
             print(f"[orchestrator] csv retry drain skipped for {unit.source_id}: "
                   f"{writer_lock.lock_path(_REGION_LOCKS[unit.source_id])} is held by pid {_held.get('pid')} "
-                  f"({_held.get('what') or _held.get('unverified') or 'unnamed'}) - its ids stay queued", flush=True)
+                  f"({_held.get('what') or _held.get('unverified') or 'unnamed'}) - its ids stay queued"
+                  + (" [LOCK OWNER UNJUDGEABLE - failing closed; check the pid and the lock file]"
+                     if _held.get("unverified") else ""), flush=True)
+            # Carried in the summary, not only printed, so a caller / digest can count lock-skipped drains (a
+            # fail-closed lock that never clears would otherwise starve the queue silently - follow-up in #303).
+            _summary["region_locked"] = {"lock": _REGION_LOCKS[unit.source_id], "pid": _held.get("pid"),
+                                         "what": _held.get("what"), "unverified": _held.get("unverified")}
             return _summary
     _retry_rows = store.csv_retries(unit.source_id)
     # Purge rows that are not catalog ids BEFORE spending budget on them —
