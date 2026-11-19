@@ -120,6 +120,9 @@ def _run(cubes_store, tmp_path, *, extra_cubes=(), probe=False, http_get=None, h
     ("2026-11-14", "2026-11-14", 2, "current", 0),
     ("2026-11-16", "2026-11-17", 1, "behind", 1),      # daily
     ("2026-11-17", "2026-11-17", 1, "current", 0),
+    ("2026-11-21", "2026-11-14", 2, "ahead", 0),       # weekly, a week beyond the publisher
+    ("2026-11-20", "2026-11-14", 2, "current", 0),
+    ("2026-11-18", "2026-11-17", 1, "ahead", 0),       # daily, a day beyond
 ])
 def test_compare(store, pub, freq, status, lag):
     assert T.compare(D(store), D(pub), freq) == (status, lag)
@@ -162,6 +165,45 @@ def test_summary_line_counts(tmp_path, capsys):
     assert rc == 0
     assert line.startswith("statcan upstream: 2 cubes behind publisher (zip not probed); overdue 1 (release >48h), recent 1;")
     assert "measured 3 of 3 catalogued; unmeasured 0" in line and "[cube level only]" in line
+
+
+def test_summary_overdue_recent_ahead_archived_are_each_counted(tmp_path, capsys):
+    cs = {
+        "35100182": (_cube("35100182", "2025-01-01", 12, "2026-07-22T12:30:00Z"), _parquet(["2024-12-31"])),
+        "35100181": (_cube("35100181", "2025-01-01", 12, "2026-07-22T12:30:00Z", archived="1"), _parquet(["2024-12-31"])),
+        "16100047": (_cube("16100047", "2026-09-01", 6, "2026-11-19T13:30:00Z"), _parquet(["2026-08-01"])),
+        "11100001": (_cube("11100001", "2025-01-01", 12), _parquet(["2026-12-31"])),            # ahead
+        "11100002": (_cube("11100002", "2025-01-01", 12), _parquet(["2025-12-31"])),
+    }
+    rc, rows = _run(cs, tmp_path)
+    line = capsys.readouterr().out.splitlines()[0]
+    assert rc == 0 and rows["11100001"]["status"] == "ahead"
+    assert "3 cubes behind publisher (zip not probed); overdue 2 (release >48h), recent 1;" in line
+    assert "archived among behind 1; ahead 1; withdrawn 0; measured 5 of 5 catalogued" in line
+
+
+def test_malformed_catalogue_ids_reach_the_summary(tmp_path, capsys):
+    db = tmp_path / "cat.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT)")
+    con.executemany("INSERT INTO series VALUES (?, 'statcan')",
+                    [("statcan:11100001#1",), ("statcan:123#x",), ("statcanX",)])
+    con.commit()
+    con.close()
+    import json
+    cj = tmp_path / "c.json"
+    cj.write_text(json.dumps([_cube("11100001", "2025-01-01", 12)]), encoding="utf-8")
+    store = FakeStore({T.KEY_FMT.format(pid="11100001"): _parquet(["2025-12-31"])})
+    rc = T.main(["--catalog", str(db), "--cubes-json", str(cj), "--out", str(tmp_path / "o.tsv")],
+                store=store, now=NOW)
+    assert rc == 0 and "malformed statcan series ids 2" in capsys.readouterr().out
+
+
+def test_naive_release_instant_is_unmeasured(tmp_path):
+    cs = {"11100001": (_cube("11100001", "2025-01-01", 12), _parquet(["2025-12-31"])),
+          "22220000": (_cube("22220000", "2025-01-01", 12, release="2026-07-22T12:30:00"), _parquet(["2024-12-31"]))}
+    rc, rows = _run(cs, tmp_path)
+    assert rc == 2 and "without a time zone" in rows["22220000"]["reason"]
 
 
 @pytest.mark.parametrize("obj,reason", [

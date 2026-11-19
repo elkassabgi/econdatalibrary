@@ -52,6 +52,13 @@ EXIT CODES. An inability to measure is a failure, never a pass:
   2  some cubes (or probes) could not be measured - the summary says "at least N" and lists them;
   1  nothing usable: the cube list or the catalogue could not be read, the cube list fails its sanity
      check, no cube is catalogued, or no cube at all could be measured.
+rc 0 does NOT mean "nothing behind": BEHIND cubes are a measured finding, not a failure to measure.
+Anything that schedules this tool must alarm on the behind count in the summary line (or the TSV),
+never on rc alone - an rc-only alarm would stay silent about exactly what this tool exists to show.
+
+WEEKLY CUBES. The predicate assumes the store and the publisher date a week the same way. Measured
+2026-11-19 on the 18 non-archived weekly cubes: all 13 current ones hold store_max == cubeEndDate
+exactly, and the 5 behind ones are 9 to 18 weeks behind - no one-week artefact of a start-dated store.
 
 Usage:
   python tools/audit_statcan_upstream.py --catalog F:/copy/catalog.db --out F:/x/statcan_upstream.tsv
