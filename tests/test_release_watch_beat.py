@@ -178,3 +178,56 @@ def test_b8_12_free_text_in_the_beat_is_scrubbed(tmp_path, monkeypatch):
 def test_b8_12_the_public_route_copies_none_of_it():
     src = open(os.path.join(ROOT, "api", "worker", "src", "guardHeartbeat.ts"), encoding="utf-8").read()
     assert "release_watch" not in src and "release" not in src.lower()
+
+
+def test_the_beat_reads_the_files_the_watch_writes():
+    """Verification C6: the guard beat's two paths are the watch's own constants, so a rename cannot leave the beat
+    reading a file nothing writes."""
+    assert os.path.normcase(GH.RELEASE_WATCH_RECORD_LOCAL) == os.path.normcase(RW.RECORD_PATH)
+    assert os.path.normcase(GH.RELEASE_WATCH_STATUS_LOCAL) == os.path.normcase(RW.STATUS_PATH)
+
+
+def test_the_worst_case_record_token_re_allows_fits_under_the_cap(tmp_path, monkeypatch):
+    """Verification C2: the largest record the code can produce - 3 units, a trimmed 20-event history of the longest
+    tokens TOKEN_RE accepts (9-digit version, 7-digit fraction, Z), errors and a runner note past their caps - must
+    still be carried, never 'record over size cap'. The measured size is pinned with headroom."""
+    import re
+    from datetime import timedelta
+    worst = "999999999|2026-12-31T23:59:59.1234567Z"
+    assert re.fullmatch(RW.TOKEN_RE, worst) and len(worst) == 38
+    rec_p, st = _point(monkeypatch, tmp_path)
+    rec = None
+    for sid, uid in RW.PHASE1_UNITS:
+        for i in range(RW.EVENTS_MAX + 10):
+            p = f"{999999999 - i}|2026-12-31T23:59:59.1234567Z"
+            rec = RW.apply_outcome(rec, sid, uid, {"p": p, "error": None}, NOW - timedelta(days=60 - i))
+        rec = RW.apply_outcome(rec, sid, uid, {"p": None, "error": "e" * 500}, NOW)
+    RW.write_atomic(str(rec_p), rec)
+    _status(st, rc=96, note="n" * 500)
+    b = GH._release_watch_beat()
+    assert "unreadable" not in b, b
+    assert all(len(u["events"]) == RW.EVENTS_MAX and u["trimmed"] for u in b["units"].values())
+    size = len(json.dumps(b, separators=(",", ":")))
+    assert size <= RW.BEAT_MAX_BYTES - 1024, f"{size} B leaves under 1 KB of headroom under {RW.BEAT_MAX_BYTES}"
+
+
+def test_the_digest_rebuilds_from_out_of_a_real_beat(tmp_path, monkeypatch):
+    """The beat leaves `from` out where it is the previous event's `to`; the digest must put it back, including the
+    first kept move of a trimmed history (which keeps its own `from`)."""
+    from datetime import timedelta
+    rec_p, st = _point(monkeypatch, tmp_path)
+    _status(st)
+    _write_record(rec_p, {BIO: ["10003|a", "10004|b", "10005|c"]})
+    b = {"utc": NOW.isoformat(), "release_watch": GH._release_watch_beat()}
+    assert "from" not in b["release_watch"]["units"][RW.unit_key(BIO, "_all")]["events"][1]
+    v = RW.digest_view(b, [(BIO, "_all", "10004|b")], None, set(), NOW, 2.0, 30.0)
+    assert v["suffix"][(BIO, "_all")].startswith("release: PUBLISHER MOVED 10004|b -> 10005|c since "), v["suffix"]
+    rec = None
+    for i in range(30):
+        rec = RW.apply_outcome(rec, BIO, "_all", {"p": f"1{i:04d}|t", "error": None}, NOW - timedelta(days=40 - i))
+    RW.write_atomic(str(rec_p), rec)
+    b = {"utc": NOW.isoformat(), "release_watch": GH._release_watch_beat()}
+    ev = b["release_watch"]["units"][RW.unit_key(BIO, "_all")]["events"]
+    assert ev[1]["from"] == "10010|t" and "from" not in ev[2]
+    v = RW.digest_view(b, [], None, set(), NOW, 2.0, 30.0)
+    assert v["suffix"][(BIO, "_all")].startswith("release: PUBLISHER MOVED 10010|t -> 10029|t since on or before ")

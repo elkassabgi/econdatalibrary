@@ -888,10 +888,13 @@ def beat_value(record_path: str = None, status_path: str = None, gated_reader=No
                       "last_probe_utc": u.get("last_probe_utc"), "last_probe_ok": u.get("last_probe_ok") is True,
                       "last_ok_probe_utc": u.get("last_ok_probe_utc"), "cnc_days": int(u.get("cnc_days") or 0),
                       "last_error": scrub(_t(u.get("last_error"), ERROR_MAX)), "trimmed": trimmed,
-                      "events": [dict({"to": _t(e.get("to")), "from": _t(e.get("from")),
-                                       "since_utc": e.get("since_utc")}, **({"initial": True} if e.get("initial")
-                                                                            else {}))
-                                 for e in ev]}
+                      # `from` is carried only where it cannot be derived (the first kept event after a trim):
+                      # everywhere else it is the previous event's `to`, and open_move rebuilds it. This is what
+                      # keeps the worst case TOKEN_RE allows under BEAT_MAX_BYTES (a test pins it).
+                      "events": [dict({"to": _t(e.get("to")), "since_utc": e.get("since_utc")},
+                                      **({"initial": True} if e.get("initial") else {}),
+                                      **({"from": _t(e.get("from"))} if (i == 1 and trimmed) else {}))
+                                 for i, e in enumerate(ev)]}
     pending = {k: {"cnc_days": int(v.get("cnc_days") or 0), "last_probe_utc": v.get("last_probe_utc"),
                    "last_error": scrub(_t(v.get("last_error"), ERROR_MAX))}
                for k, v in ((rec or {}).get("pending") or {}).items() if keep(k) and isinstance(v, dict)}
@@ -989,6 +992,9 @@ def open_move(events, T, trimmed: bool):
     (or any non-initial event when T is absent). Its since-date is that of the open run's FIRST event. P equal to
     the previous P changes nothing (no event is ever appended for it), so a move stays open until T catches up."""
     ev = [e for e in (events or []) if isinstance(e, dict)]
+    # the beat leaves out `from` where it is the previous event's `to` (beat_value): put it back
+    ev = [dict(e, **({"from": ev[i - 1].get("to")} if (i > 0 and "from" not in e) else {}))
+          for i, e in enumerate(ev)]
     if not ev:
         return None
     newest = ev[-1]
@@ -1003,10 +1009,11 @@ def open_move(events, T, trimmed: bool):
     if not run:
         return None
     since = run[0].get("since_utc")
-    if trimmed and not hits:
-        # the open run may have begun inside the trimmed stretch: the oldest KEPT event is the only bound we hold
-        since = ev[0].get("since_utc")
-    return {"from": run[0].get("from"), "to": newest.get("to"), "since": since,
+    # When the history was trimmed and the last event with to == T is not a KEPT move (T absent, or T only at event
+    # 0), the open run may have begun inside the trimmed stretch: its start is not known, only that it is no later
+    # than the first kept move. Said as "on or before", never as a date it may not be.
+    bound = bool(trimmed) and (not hits or hits[-1] == 0)
+    return {"from": run[0].get("from"), "to": newest.get("to"), "since": since, "bound": bound,
             "trimmed": bool(trimmed),
             "t_unseen": T is not None and not hits and not trimmed}
 
@@ -1070,10 +1077,11 @@ def digest_view(beat, unit_rows, acks_doc, gated, now: _dt.datetime, beat_old_h:
     if acks_err:
         lines.append(f"  release_acks.yaml IGNORED: {acks_err} - every line shows")
     units, pending = rw.get("units") or {}, rw.get("pending") or {}
-    counts = {"same": 0, "new": 0, "moved-open": 0, "acknowledged": 0, "no record": 0, "could not check": 0}
+    counts = {"same": 0, "publisher unchanged, store unmeasured": 0, "new": 0, "moved-open": 0, "acknowledged": 0,
+              "no record": 0, "could not check": 0}
     if stale:
         counts["unknown (stale beat)"] = 0
-    longest, standalone, acked_lines, used, suffix, no_token = 0, [], [], set(), {}, 0
+    longest, standalone, acked_lines, used, suffix = 0, [], [], set(), {}
     for sid, uid in PHASE1_UNITS:
         if sid.lower() in gated:
             continue                                     # neither named nor counted (R888)
@@ -1103,7 +1111,8 @@ def digest_view(beat, unit_rows, acks_doc, gated, now: _dt.datetime, beat_old_h:
         if u.get("last_probe_ok") is not True:
             longest = max(longest, cnc)
         if mv:
-            when = (f"since {_day(mv['since'])}" + (" (history trimmed)" if mv["trimmed"] else ""))
+            when = (("since on or before " if mv.get("bound") else "since ") + _day(mv["since"])
+                    + (" (history trimmed)" if mv["trimmed"] else ""))
             text = f"PUBLISHER MOVED {scrub(mv['from'])} -> {scrub(mv['to'])} {when}"
             if T is not None:
                 text += f"; store stamped {scrub(T)}"
@@ -1130,14 +1139,15 @@ def digest_view(beat, unit_rows, acks_doc, gated, now: _dt.datetime, beat_old_h:
         elif stale:                                      # "same" is never judged from a stale beat (C1)
             counts["unknown (stale beat)"] += 1
             suffix[(sid, uid)] = "release: unknown (workstation beat stale)"
+        elif u.get("last_probe_ok") is True and T is None:
+            # R2.2 rule 2: no store token, so this is NEVER "same" (R1951: a morning "same 3" would read as "the
+            # store holds the release"). It says only that the PUBLISHER has not moved since the watch's first look.
+            counts["publisher unchanged, store unmeasured"] += 1
+            suffix[(sid, uid)] = (f"release: publisher unchanged as of {_day(u.get('last_probe_utc'))}; "
+                                  f"store unmeasured (no store token)")
         elif u.get("last_probe_ok") is True:
             counts["same"] += 1
             suffix[(sid, uid)] = f"release: same as of {_day(u.get('last_probe_utc'))}"
-            if T is None:
-                # R2.2 rule 2: with no store token, "same" says only that the PUBLISHER has not moved since the
-                # watch's first look, never that the store holds this release. Said on the line and counted.
-                no_token += 1
-                suffix[(sid, uid)] += " (publisher unchanged; store token not recorded)"
         else:
             counts["could not check"] += 1
             suffix[(sid, uid)] = (f"release: could not check x{cnc} d (last real probe "
@@ -1147,8 +1157,7 @@ def digest_view(beat, unit_rows, acks_doc, gated, now: _dt.datetime, beat_old_h:
                               f"{_day(u.get('last_ok_probe_utc'))}; {scrub(u.get('last_error'))})")
     n = sum(counts.values())
     lines.append(f"  release watch: units {n}, " + ", ".join(f"{k} {v}" for k, v in counts.items())
-                 + f" (longest could-not-check streak {longest} d)"
-                 + (f"; no store token on record for {no_token} of the same" if no_token else ""))
+                 + f" (longest could-not-check streak {longest} d)")
     lines += standalone
     if acked_lines:
         lines.append("  release watch, acknowledged (moved here, not hidden; updater/release_acks.yaml):")

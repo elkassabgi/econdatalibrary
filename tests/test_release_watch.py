@@ -75,13 +75,14 @@ def test_b8_1_a_dead_runner_reads_late_and_no_line_says_a_bare_same():
     rec = record_of([(5, "10003|2026-07-15T11:40:26"), (4, "10003|2026-07-15T11:40:26")])
     for sid in (CAT, PROC):
         rec = record_of([(4, "10002|2026-05-27T15:49:10")], sid=sid, rec=rec)
-    v = view(beat_of(rec, run=ok_run(hours_ago=72)))
+    stamped = [(BIO, "_all", "10003|2026-07-15T11:40:26"), (CAT, "_all", "10002|2026-05-27T15:49:10"),
+               (PROC, "_all", "10002|2026-05-27T15:49:10")]
+    v = view(beat_of(rec, run=ok_run(hours_ago=72)), rows=stamped)
     late = [l for l in v["lines"] if "release watch LATE (last ok run " in l]
     assert late and (NOW - timedelta(hours=72)).strftime("%Y-%m-%d") in late[0]
     assert len(v["suffix"]) == 3
     for s in v["suffix"].values():
-        assert re.fullmatch(r"release: same as of \d{4}-\d{2}-\d{2} \(publisher unchanged; store token not "
-                            r"recorded\)", s), s
+        assert re.fullmatch(r"release: same as of \d{4}-\d{2}-\d{2}", s), s
     for l in v["lines"]:
         if any(sid in l for sid in (BIO, CAT, PROC)) and re.search(r"\bsame\b", l):
             assert re.search(r"same as of \d{4}-\d{2}-\d{2}", l), l
@@ -248,7 +249,8 @@ def test_b8_9_t_not_among_the_kept_events_of_a_trimmed_history_says_so():
     assert rec["units"][K_BIO]["trimmed"] and "10005|t" not in [e["to"] for e in kept]
     v = view(beat_of(rec, run=ok_run()), rows=[(BIO, "_all", "10005|t")])
     s = v["suffix"][(BIO, "_all")]
-    assert s.startswith(f"release: PUBLISHER MOVED {kept[1]['from']} -> 10029|t since {day(60).date()} "
+    assert s.startswith(f"release: PUBLISHER MOVED {kept[1]['from']} -> 10029|t since on or before "
+                        f"{day(60 - 11).date()} "
                         f"(history trimmed)"), s
 
 
@@ -262,6 +264,7 @@ def test_b8_9_r5_note_history_trimmed_is_said_even_when_t_is_event_0():
     assert [e["to"] for e in ev[1:]].count("A|0") == 0, "the return to T lies in the trimmed stretch"
     v = view(beat_of(rec, run=ok_run()), rows=[(BIO, "_all", "A|0")])
     assert "(history trimmed)" in v["suffix"][(BIO, "_all")], v["suffix"]
+    assert f"since on or before {day(77 - (25 - 19)).date()}" in v["suffix"][(BIO, "_all")], v["suffix"]
     untrimmed = record_of([(10, "A|0"), (8, "B|1"), (6, "A|0"), (4, "C|9")])
     assert "trimmed" not in view(beat_of(untrimmed, run=ok_run()), rows=[(BIO, "_all", "A|0")])["suffix"][(BIO, "_all")]
 
@@ -288,10 +291,26 @@ def test_a_could_not_check_streak_gets_a_line_at_3_days_not_at_2():
 
 def test_the_counter_is_the_steady_state():
     rec = record_of([(3, "10003|a")])
-    v = view(beat_of(rec, run=ok_run()))
-    assert v["lines"][1] == ("  release watch: units 3, same 1, new 0, moved-open 0, acknowledged 0, no record 2, "
-                             "could not check 0 (longest could-not-check streak 0 d); no store token on record "
-                             "for 1 of the same")
+    v = view(beat_of(rec, run=ok_run()), rows=[(BIO, "_all", "10003|a")])
+    assert v["lines"][1] == ("  release watch: units 3, same 1, publisher unchanged, store unmeasured 0, new 0, "
+                             "moved-open 0, acknowledged 0, no record 2, could not check 0 (longest could-not-check "
+                             "streak 0 d)")
+
+
+def test_a_unit_with_no_store_token_is_never_counted_or_called_same():
+    """R2.2 rule 2 / R1951 (verification C1): with no T (the trio today), the publisher being unchanged is not
+    "same" - the store's holding is unmeasured. Its own bucket, its own wording, for every placeholder T."""
+    rec = record_of([(3, "10003|a")])
+    for sid in (CAT, PROC):
+        rec = record_of([(3, "10002|x")], sid=sid, rec=rec)
+    for rows in ([], [(BIO, "_all", None), (CAT, "_all", "date-tail"), (PROC, "_all", "force")]):
+        v = view(beat_of(rec, run=ok_run()), rows=rows)
+        t = text(v)
+        assert "same 0, publisher unchanged, store unmeasured 3," in t, t
+        assert not re.search(r"\bsame as of\b", t), t
+        for s in v["suffix"].values():
+            assert re.fullmatch(r"release: publisher unchanged as of \d{4}-\d{2}-\d{2}; store unmeasured "
+                                r"\(no store token\)", s), s
     assert len(v["lines"]) == 3, "steady state is the heading and the counter only"
 
 
@@ -451,7 +470,7 @@ def test_b8_13_the_section_and_the_held_line_suffix_reach_both_bodies(tmp_path, 
     import html as H
     moved = "PUBLISHER MOVED 10002|x -> 10003|y since"
     for body, esc in ((m["body"], str), (m["html"], H.escape)):
-        assert esc("release watch: units 3, same 1, new 0, moved-open 1") in body
+        assert esc("release watch: units 3, same 0, publisher unchanged, store unmeasured 1, new 0, moved-open 1") in body
         assert esc(moved) in body
         held = [l for l in body.splitlines() if f"{CAT}/_all" in l and "UNIT" in l]
         assert held and esc(f"| release: {moved}") in held[0], held
@@ -470,7 +489,7 @@ def test_b8_13_a_gated_unit_is_in_neither_body(tmp_path, monkeypatch):
     beat = _live_beat({BIO: [(0, "10003|a")], PROC: [(0, "10009|z")]})
     m = _digest(tmp_path, monkeypatch, beat, gated={PROC})
     for body in (m["body"], m["html"]):
-        assert "release watch: units 2, same 1," in body and PROC not in body and "10009|z" not in body
+        assert "release watch: units 2, same 0, publisher unchanged, store unmeasured 1," in body and PROC not in body and "10009|z" not in body
 
 
 # ------------------------------------------------------------------ review round 1 (AR on this PR)
