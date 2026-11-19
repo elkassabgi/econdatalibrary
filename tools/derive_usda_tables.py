@@ -143,12 +143,6 @@ def main() -> int:
     a = ap.parse_args()
     if not a.dry_run and not a.bucket:
         ap.error("--bucket is required unless --dry-run")
-    # Holds the usda store region for this whole run (updater/writer_lock.py): jobs/ingest_usda.py
-    # takes the same lock while it rebuilds and swaps cubes, so a derive never reads a cube that is
-    # about to be replaced, and a rebuild never starts under a derive. A dry run writes nothing.
-    if not a.dry_run:
-        from updater import writer_lock                                  # noqa: PLC0415
-        writer_lock.hold_or_refuse("usda_writer", "tools/derive_usda_tables.py (a writing run)")
 
     files = sorted(f.replace("\\", "/")
                    for f in glob.glob(os.path.join(STORE, "**", "*.parquet"), recursive=True))
@@ -175,6 +169,15 @@ def main() -> int:
         # THE CSV STORE (plan step 1): R2 before T0, the self-hosted blob store after it - never local files
         from updater import blob as _blob, derive as _derive              # noqa: PLC0415
         store = _blob.csv_store(a.bucket)
+        # HOLD THE usda STORE REGION from here to exit (updater/writer_lock.py): jobs/ingest_usda.py
+        # takes the same lock while it rebuilds and swaps cubes, so no CSV is written from a cube
+        # that is being replaced, and no rebuild starts under a writing derive. Taken after the
+        # store (and its bucket check) is built and before the first write; re-entrant for a
+        # process that already holds it (hold_or_refuse alone refuses its own second call).
+        from updater import writer_lock                                      # noqa: PLC0415
+        _held = writer_lock.owner("usda_writer")
+        if not (_held and _held.get("pid") == os.getpid()):
+            writer_lock.hold_or_refuse("usda_writer", "tools/derive_usda_tables.py (a writing run)")
         if a.skip_existing:
             pref = f"{a.prefix}/{urllib.parse.quote(SOURCE + ':', safe='')}"
             existing.update(store.list_keys(pref))
