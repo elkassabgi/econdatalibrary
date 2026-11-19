@@ -563,3 +563,24 @@ def test_tokens_longer_than_the_beat_cap_still_clear():
             e["from"] = e["from"][:RW.TOKEN_MAX] if e["from"] else None
     v = view(b, rows=[(BIO, "_all", long)])
     assert "MOVED" not in text(v) and "NEW" not in text(v)
+
+
+# A STAMP_PROBE fetcher stores "<token>#fetched=<YYYY-MM-DD>" in unit_state.upstream_vintage
+# (strategies.base.STAMP_SEP == "#fetched=", pinned below). The watch compares the TOKEN part to an event's `to`.
+def test_stamp_sep_is_the_fetched_suffix():
+    from updater.strategies.base import STAMP_SEP
+    assert STAMP_SEP == "#fetched="
+
+
+def test_a_stamped_store_vintage_reads_as_its_token():
+    assert RW.store_tokens([(BIO, "_all", "10004|b#fetched=2026-11-19")]) == {(BIO, "_all"): "10004|b"}
+    assert RW.store_tokens([(BIO, "_all", "date-tail#fetched=2026-11-19")]) == {}
+
+
+@pytest.mark.parametrize("sid", [BIO, CAT, PROC])
+def test_a_stamped_trio_unit_is_same_not_moved_and_not_unmeasured(sid):
+    rec = record_of([(10, "10003|a"), (8, "10004|b")], sid=sid)
+    v = view(beat_of(rec, run=ok_run()), rows=[(sid, "_all", "10004|b#fetched=2026-11-19")])
+    s = v["suffix"][(sid, "_all")]
+    assert s.startswith("release: same as of "), s
+    assert "MOVED" not in text(v) and "unmeasured" not in s and "NEW RELEASE" not in s

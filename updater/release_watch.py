@@ -907,10 +907,14 @@ def beat_value(record_path: str = None, status_path: str = None, gated_reader=No
 # ------------------------------------------------------------------ the digest (CI)
 def store_tokens(rows) -> dict:
     """{(sid, uid): T} from unit_state rows (source_id, unit_id, upstream_vintage). NULL, '' and the placeholders
-    `date-tail` / `force` are not a token (R2.2)."""
+    `date-tail` / `force` are not a token (R2.2). A STAMP_PROBE fetcher stores "<token>#fetched=<date>"
+    (strategies.base.STAMP_SEP); T is the token part, so an admitted unit compares equal to its event `to`."""
+    from updater.strategies.base import stamp_token     # noqa: PLC0415  (stdlib-only module)
     out = {}
     for r in rows or ():
         sid, uid, v = r[0], r[1], r[2]
+        if isinstance(v, str):
+            v = stamp_token(v)
         if isinstance(v, str) and v.strip() and v.strip() not in NOT_A_TOKEN:
             out[(str(sid), str(uid))] = v
     return out
