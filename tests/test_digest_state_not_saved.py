@@ -339,8 +339,11 @@ def _mail(tmp_path, monkeypatch, capsys, pull, push, refused):
 def test_both_bodies_say_it_near_the_top(tmp_path, monkeypatch, capsys, push, refused, note):
     sent = _mail(tmp_path, monkeypatch, capsys, "success", push, refused)
     lines = sent["body"].splitlines()
-    assert lines[0] == "Run 123: failure" and lines[2] == ""
-    assert lines[3:6] == ["  " + s for s in note] and lines[6] == "", lines[:8]
+    # the stuck-run alarm section stands between the run line and the counts (health.repeat_failures): find the
+    # counts line rather than pin its index
+    c = next(i for i, l in enumerate(lines) if " need attention · " in l)
+    assert lines[0] == "Run 123: failure" and lines[1].startswith("Stuck: ") and lines[c + 1] == ""
+    assert lines[c + 2:c + 5] == ["  " + s for s in note] and lines[c + 5] == "", lines[:c + 7]
     assert "!! cso" in sent["body"] and sent["body"].index(note[0]) < sent["body"].index("!! cso")
     html = sent["html"]
     block = "<br>".join(H.escape(s) for s in note)
@@ -361,4 +364,6 @@ def test_both_bodies_say_nothing_of_it_otherwise(tmp_path, monkeypatch, capsys, 
     for text in (sent["body"], sent["html"]):
         assert "record of this run" not in text and "stays published" not in text
         assert "record was not saved" not in text
-    assert sent["body"].splitlines()[3].startswith("  !! cso"), "the first row follows the counts, as before"
+    lines = sent["body"].splitlines()
+    c = next(i for i, l in enumerate(lines) if " need attention · " in l)     # after the stuck section
+    assert lines[c + 2].startswith("  !! cso"), "the first row follows the counts, as before"

@@ -38,6 +38,20 @@ CADENCE_DAYS = {
 # re-running its full cost every single day.
 PARTIAL_RETRY_DAYS = 7
 
+# finalize() stamps this placeholder as new_vintage on every Result (_common.finalize), so it is what
+# a unit stores when its fetcher names no release token. It is NOT a release token and must never be
+# one: a probe that returns it compares EQUAL to the stored placeholder, detect_change() answers
+# "unchanged", and the orchestrator books an earned no_change with no fetch - advancing last_success
+# for ever while nothing is fetched. who_hwf/who_rs/who_sdg sealed themselves this way from 2026-08
+# (their probe returned the literal). probe_token() turns it into None ("cannot tell") so the probe
+# strategies fetch instead.
+DATE_TAIL = "date-tail"
+
+
+def probe_token(cur):
+    """A probed vintage as detect_change() may compare it: the date-tail placeholder reads as None."""
+    return None if cur == DATE_TAIL else cur
+
 
 @dataclass
 class Unit:

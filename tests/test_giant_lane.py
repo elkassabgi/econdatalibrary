@@ -23,7 +23,8 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 from updater import orchestrate, registry, config  # noqa: E402
 from updater.state import StateStore, now_utc  # noqa: E402
 
-SKIP = {"unctad_tradefoodprocbycat", "unctad_tradefoodcatbyproc"}
+# usda (2026-11-19, PR #300): a rollout hold until its first supervised -Only run; exit text in the registry.
+SKIP = {"unctad_tradefoodprocbycat", "unctad_tradefoodcatbyproc", "usda"}
 LAST = {"unctad_biotrademerch"}
 
 

@@ -68,8 +68,21 @@ def env(tmp_path, monkeypatch):
             "refused": str(parts / "_refresh_refused" / "area_1")}
 
 
-def _tail_part(env, rows, name="v1_s1_y2025.parquet"):
-    return _write(os.path.join(env["tail_dir"], name), rows)
+def _tail_part(env, rows):
+    """One COMPLETE refresh sweep whose only key (v1, s1, 2025) returned `rows`: a new sweep identity,
+    the part stamped with it, and the year recorded in the sweep manifest - what refresh_pass does."""
+    sid = R.begin_sweep(env["tail_dir"], 1)
+    name = R.part_name(1, 1, 2025)
+    path = os.path.join(env["tail_dir"], name)
+    if rows:
+        G.write_part(path, rows, metadata=R.sweep_metadata(sid))
+    R.record_sweep_year(env["tail_dir"], sid, 1, 1, 2025, len(rows), name if rows else None)
+    return path
+
+
+def _empty_sweep(env):
+    """A sweep that "completed" (no exception) and brought back nothing: its key is a zero-row marker."""
+    return _tail_part(env, [])
 
 
 def _owed_lines(env):
@@ -147,7 +160,7 @@ def test_a_changed_value_below_the_window_is_refused(env, monkeypatch):
 
 def test_a_silent_empty_tail_sweep_is_refused(env):
     # the sweep "completed" (no exception) but brought back nothing: 300 tail pairs would vanish
-    os.makedirs(env["tail_dir"], exist_ok=True)
+    _empty_sweep(env)
     before, state = _md5(env["final"]), {}
     assert G.finish_area(1, env["final"], state, TAIL) is False
     _assert_refused(env, before, state)
@@ -176,7 +189,7 @@ def test_the_floor_is_a_fraction_with_no_absolute_term(tmp_path):
 def test_a_small_tail_that_goes_empty_is_refused(env):
     """A tail under 100 pairs that comes back EMPTY. The old floor of 100 passed this."""
     _small_env(env, 20)                                   # 40 tail pairs
-    os.makedirs(env["tail_dir"], exist_ok=True)           # the sweep "completed" with nothing
+    _empty_sweep(env)                                     # the sweep "completed" with nothing
     before, state = _md5(env["final"]), {}
     assert G.finish_area(1, env["final"], state, TAIL) is False
     _assert_refused(env, before, state)
@@ -189,7 +202,7 @@ def test_the_empty_sweep_rule_refuses_on_its_own(env, monkeypatch):
     tail = _small_env(env, 20)
     monkeypatch.setattr(R, "GUARD_TAIL_LOSS_BP", 10_000)
     monkeypatch.setattr(R, "GUARD_SERIES_DROP_ALLOW", frozenset(k for k, _d, _v in tail))
-    os.makedirs(env["tail_dir"], exist_ok=True)
+    _empty_sweep(env)
     before, state = _md5(env["final"]), {}
     assert G.finish_area(1, env["final"], state, TAIL) is False
     _assert_refused(env, before, state)
@@ -445,12 +458,12 @@ def test_tail_loss_within_max_tail_lost_passes(env):
 
 
 def test_a_clearance_never_clears_an_empty_sweep(env):
-    os.makedirs(env["tail_dir"], exist_ok=True)
+    _empty_sweep(env)
     before, state = _md5(env["final"]), {}
     assert G.finish_area(1, env["final"], state, TAIL) is False
     _clear(env)                                     # the full measured drop: 100 series, 300 pairs
     assert R.guard_clearance(env["out"], 1, state=state)["max_tail_lost"] == 300
-    os.makedirs(env["tail_dir"], exist_ok=True)
+    _empty_sweep(env)
     _still_refused(env, before, state)
 
 
