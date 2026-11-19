@@ -8,6 +8,40 @@
 $root = "E:\research\econfindatalibrary"
 $logsDir = Join-Path $root "logs"
 $guardLog = Join-Path $logsDir "_guard.log"
+# >>> LAUNCHER WATCHDOG HOOK >>>
+# Added 2026-11-12: after the 2026-11-11 Windows Update restart only EconGuard.cmd ran at log-on. The launcher
+# watchdog relaunches IpGuard, HfRunner, HfRunnerDaily, HfDailyDispatch and EconSlotDispatch through their own
+# .cmd when their loop is gone (never EconOrigin; it never kills anything). It runs only when its sha256 is the
+# pinned one; otherwise one line goes to _guard.log. Every tick writes hook.status in the watchdog folder.
+# Pause: create STOP in the watchdog folder (README.md there).
+# Remove: powershell -NoProfile -ExecutionPolicy Bypass -File F:\launcher_watchdog\install_hook.ps1 -Remove
+try {
+  $lwFile = 'F:\launcher_watchdog\launcher_watchdog.ps1'
+  $lwSha = 'A145DC9C61AE23AAC3034A6BE3C3EEF41C22DEF03A71FCF28876C92E0A1E0C21'
+  $lwStatus = 'F:\launcher_watchdog\hook.status'
+  $lwState = 'failed'; $lwWhy = ''
+  try {
+    if (-not (Test-Path -LiteralPath $lwFile -PathType Leaf)) {
+      $lwState = 'missing'; $lwWhy = $lwFile
+      Add-Content -Path $guardLog -Value ("{0}  LAUNCHER WATCHDOG not run: {1} is missing" -f (Get-Date -Format s), $lwFile)
+    } else {
+      $lwHave = (Get-FileHash -LiteralPath $lwFile -Algorithm SHA256 -ErrorAction Stop).Hash
+      if ($lwHave -ne $lwSha) {
+        $lwState = 'sha-mismatch'; $lwWhy = ("sha256 {0}, pinned {1}" -f $lwHave, $lwSha)
+        Add-Content -Path $guardLog -Value ("{0}  LAUNCHER WATCHDOG not run: sha256 of {1} is {2}, pinned {3}" -f (Get-Date -Format s), $lwFile, $lwHave, $lwSha)
+      } else {
+        Start-Process 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$lwFile) `
+          -WorkingDirectory 'F:\launcher_watchdog' -WindowStyle Hidden -ErrorAction Stop
+        $lwState = 'started'
+      }
+    }
+  } catch {
+    $lwWhy = $_.Exception.Message
+    try { Add-Content -Path $guardLog -Value ("{0}  LAUNCHER WATCHDOG hook failed: {1}" -f (Get-Date -Format s), $lwWhy) } catch { }
+  }
+  Set-Content -LiteralPath $lwStatus -Encoding ASCII -Value ("{0} {1} {2}" -f (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'), $lwState, ($lwWhy -replace '\s+', ' '))
+} catch { }
+# <<< LAUNCHER WATCHDOG HOOK <<<
 
 # Pinned interpreter (cutover plan B.7): bare "python" resolves through PATH and
 # can hit the WindowsApps store shim; the crawlers must always get this exact exe.
