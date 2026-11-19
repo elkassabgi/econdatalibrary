@@ -497,8 +497,8 @@ _STUCK_BRACKET = _re.compile(
     r"sub-unit\(s\) (?:transient-failed; will retry\s*|returned 200 but parsed 0 rows[^\[]*|REFUSED by the API[^\[]*)"
     r"\[(.*?)\](?:;|$)", _re.S)
 # The deferral bracket (_common.finalize, both wordings health._DEFERRAL_BASE reads): sub-units NOT attempted.
-_STUCK_DEFERRED = _re.compile(r"deferred by budget(?:, not reached in this pass| and taken next tick) \[(.*?)\](?:;|$)",
-                              _re.S)
+# Matched by the stable prefix of both stored tails (health._DEFERRAL_BASE is the one reader of the old tail's text).
+_STUCK_DEFERRED = _re.compile(r"deferred by budget[^\[;]{0,40} \[(.*?)\](?:;|$)", _re.S)
 _STUCK_ITEM_SPLIT = _re.compile(r", (?=[^,:\[\]]{1,120}: )")
 _STUCK_MORE = _re.compile(r"(?:^|, )\+\d+ more$")          # _common._named's elision, always at the bracket's end
 _STUCK_SHRINK = _re.compile(r"(?:^|\[|, )([^\s,\[\]]+?): refusing shrink")
