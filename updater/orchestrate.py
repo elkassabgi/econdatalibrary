@@ -2444,14 +2444,19 @@ def _drain_csv_retry_queue(unit, blob, store, deadline_ts=None, id_gate=None, sk
                 return _summary
             _budget = {"budget_min": _left}
         _cleared, _refailed, _stop, _reached = _drain_derive_and_book(unit, blob, store, _retry_ids, _budget)
+        # ONE FIGURE for the printed line and the summary: the ids that failed again (or the budget never reached),
+        # the ids the gate held back, AND the ids past this call's cap, never attempted. The line used to print only
+        # the first: eia's read "still queued 0" with 26,717 ids left beyond the 20,000 cap.
+        _over_cap = max(0, len(_retry_rows) - _cap)
+        _still = len(_refailed) + _summary["held_back"] + _over_cap
         print(f"[orchestrator] {unit.source_id}: csv retry queue "
               f"{len(_retry_rows):,} -> attempted {len(_retry_ids):,}, "
-              f"cleared {len(_cleared):,}, still queued {len(_refailed):,}"
-              + (f", held back {_summary['held_back']:,}" if _summary["held_back"] else ""),
+              f"cleared {len(_cleared):,}, still queued {_still:,}"
+              + (f", held back {_summary['held_back']:,}" if _summary["held_back"] else "")
+              + (f", {_over_cap:,} not attempted (past the cap of {_cap:,})" if _over_cap else ""),
               flush=True)
         _summary.update(attempted=len(_retry_ids), cleared=len(_cleared),
-                        still_queued=len(_refailed) + _summary["held_back"]
-                        + max(0, len(_retry_rows) - _cap),
+                        still_queued=_still,
                         tried=list(_reached),
                         untried=max(0, len(_retry_rows) - len(_reached) - _summary["held_back"]))
     return _summary
@@ -2600,8 +2605,9 @@ def _drain_gated_chunks(unit, blob, store, rows, cand, deadline_ts, id_gate, sum
 # quarterly or annual publisher, while the resumable fetchers hand over every key on their first pass and the
 # desktop defers most of them to the queue. So AFTER the unit loop, in the pass's LEFTOVER time only, those
 # sources' queues are drained under ONE budget for the whole pass, in a ROTATED order (below):
-#   * the budget is the run ceiling's remainder minus _DRAIN_MARGIN_MIN (the push-state headroom stays), or the
-#     derive budget (AQUEDUCT_DERIVE_BUDGET_MIN, 45) when no ceiling is set; nothing starts below _DRAIN_FLOOR_MIN;
+#   * the budget is the run ceiling's remainder minus _DRAIN_MARGIN_MIN (the push-state headroom stays), capped at
+#     _drain_max_min() (AQUEDUCT_RETRY_DRAIN_MAX_MIN, default 120; review AR-413 F1), and the cap alone when no
+#     ceiling is set; nothing starts below _DRAIN_FLOOR_MIN;
 #   * each source's drain is the same _drain_csv_retry_queue (cap, fence, flow-grain and desktop_owed rules), with
 #     ITS OWN deadline: min(the pass deadline, its start + AQUEDUCT_RETRY_DRAIN_PER_SOURCE_MIN, default 15). The
 #     same deadline bounds its mirror check (_r2_mirror_gate), which under r2 runs a chunk at a time between derives
@@ -2632,6 +2638,7 @@ def _drain_gated_chunks(unit, blob, store, rows, cand, deadline_ts, id_gate, sum
 _DRAIN_MARGIN_MIN = 15.0
 _DRAIN_FLOOR_MIN = 1.0
 _DRAIN_PER_SOURCE_MIN = 15.0
+_DRAIN_MAX_DEFAULT_MIN = 120.0    # the whole pass's leftover-drain cap (_drain_max_min); was the derive budget, 45
 
 
 def _drain_per_source_min() -> float:
@@ -2697,18 +2704,21 @@ def _drain_margin_min() -> float:
 
 
 def _drain_max_min() -> float:
-    """The CAP on the whole pass's leftover drain: AQUEDUCT_RETRY_DRAIN_MAX_MIN, default the derive budget
-    (AQUEDUCT_DERIVE_BUDGET_MIN, 45). A non-positive or unreadable value falls back to 45, never to "unbounded"."""
+    """The CAP on the whole pass's leftover drain: AQUEDUCT_RETRY_DRAIN_MAX_MIN, default _DRAIN_MAX_DEFAULT_MIN
+    (120). A non-positive or unreadable value falls back to 120, never to "unbounded".
+
+    WHY 120, NOT THE DERIVE BUDGET (45) IT WAS. The cap exists for AR-413 F1: with AQUEDUCT_RUN_BUDGET_MIN=2880
+    (run_local_heavy.ps1's default, unclamped under -SkipCiCheck or after T0) "remainder minus margin" alone gave
+    one drain 2,865 min. Any FINITE cap closes that; 45 was borrowed from the derive budget, not sized. On a
+    clamped scheduled pass the remainder minus the margin binds first whenever it is below the cap, so the cap only
+    decides how much of a long leftover window is used: at 45, a pass with ~80 min left used 45. At 120 the
+    unclamped worst case is 120 min of drain (each source's turn still at most its per-source share, its lease TTL
+    that share plus the margin), not ~47 h."""
     try:
-        d = float(os.environ.get("AQUEDUCT_DERIVE_BUDGET_MIN", "45") or 45)
+        c = float(os.environ.get("AQUEDUCT_RETRY_DRAIN_MAX_MIN", "") or _DRAIN_MAX_DEFAULT_MIN)
     except ValueError:
-        d = 45.0
-    d = d if d > 0 else 45.0
-    try:
-        c = float(os.environ.get("AQUEDUCT_RETRY_DRAIN_MAX_MIN", "") or d)
-    except ValueError:
-        c = d
-    return c if c > 0 else 45.0
+        c = _DRAIN_MAX_DEFAULT_MIN
+    return c if c > 0 else _DRAIN_MAX_DEFAULT_MIN
 
 
 def _leftover_drain_min() -> float:
@@ -2716,7 +2726,14 @@ def _leftover_drain_min() -> float:
     _drain_max_min()); with no ceiling (AQUEDUCT_RUN_BUDGET_MIN <= 0) the cap. Never negative.
 
     CAPPED (review AR-413 F1): run_local_heavy.ps1 sets AQUEDUCT_RUN_BUDGET_MIN=2880, so "remainder minus margin"
-    alone gave one source's drain 2,865 minutes - a pass that sat in drains for up to ~47 h holding its locks."""
+    alone gave one source's drain 2,865 minutes - a pass that sat in drains for up to ~47 h holding its locks.
+
+    THE TRADE-OFF OF THE 120 DEFAULT (it was 45). The budget is 2,880 again whenever run_local_heavy.ps1 skips its
+    clamp (after T0, or -SkipCiCheck): there the cap ALONE bounds the drain, so such a pass may now sit up to 120 min
+    in drains after the unit loop, holding the run lock, instead of 45. That stays finite and is the whole of F1's
+    fix: 120, not 2,865. Each source's turn is still at most its share (_drain_per_source_min, 15), so no unit
+    lease is held past share + margin. On a clamped pass the remainder minus the margin binds whenever it is
+    below 120, and the margin and the runner's push allowance and hard stop are untouched."""
     cap = _drain_max_min()
     rem = _remaining_run_min()
     return leftover_drain_budget_min(rem, _drain_margin_min() if rem is not None else 0.0, cap)

@@ -2,7 +2,8 @@
 
 After the unit loop run_once drains the csv_retry_queue of the sources whose every unit was NOT DUE, BUDGET SKIPPED,
 an earned no_change or a declared non-turn, in RING order (rotate_drain_order: the ring is every source with queued
-ids sorted by id, its pointer ring[day % n] by the UTC day of the drain's start), in min(time to the run deadline - 15, 45) minutes, each source at most min(what is left, 15)
+ids sorted by id, its pointer ring[day % n] by the UTC day of the drain's start), in min(time to the run deadline - 15, the cap) minutes (the cap: AQUEDUCT_RETRY_DRAIN_MAX_MIN, default 120; the
+PENCIL below was drawn at 45 and its Harness pins 45, both sides reading the same env), each source at most min(what is left, 15)
 (AQUEDUCT_RETRY_DRAIN_PER_SOURCE_MIN), and the pass does not end (and push) before it is done. The replay had no
 drain: its passes ended at the unit loop.
 
@@ -86,7 +87,7 @@ def _iso_ts(ts):
 
 class Harness:
     def __init__(self, tmp_path, monkeypatch, rate=None, declared=None, tail=90.0, rot=0, late=False,
-                 extra_queue=None):
+                 extra_queue=None, cap="45"):
         self.mp, self.rate, self.tail = monkeypatch, rate, tail
         self.extra_queue = dict(extra_queue or {})     # queued sources that are NOT units of this pass (cloud-routed)
         self.declared = dict(declared or {})
@@ -117,6 +118,10 @@ class Harness:
                   "AQUEDUCT_BACKEND", "AQUEDUCT_RETRY_DRAIN_MARGIN_MIN", "AQUEDUCT_RETRY_DRAIN_MAX_MIN",
                   "AQUEDUCT_DERIVE_BUDGET_MIN", "AQUEDUCT_RETRY_DRAIN_PER_SOURCE_MIN"):
             monkeypatch.delenv(k, raising=False)
+        # THE PENCIL'S CAP. The pencil was drawn at the old default (45); run_once and the replay both read it from
+        # this one env, so pinning it keeps the arithmetic. cap=None runs at the production default (120).
+        if cap is not None:
+            monkeypatch.setenv("AQUEDUCT_RETRY_DRAIN_MAX_MIN", cap)
         mp = monkeypatch
         now = lambda: _iso_ts(self.clock.t)                         # noqa: E731
         mp.setattr(orchestrate, "time", self.clock)
@@ -343,11 +348,12 @@ def test_a_hard_stop_has_no_drain_and_a_capped_drain_holds_the_pass():
     b = m.UnitBook({"g": "monthly", "q": "monthly"}, st, rows, {"g": 300.0, "q": 5.0}, {}, retry_queue=queue)
     r = b.run_pass(t0, 200.0)
     assert r["hard_stop"] == "g" and r["retry_drained"] == [] and r["retry_not_drained"] == []
-    # nothing ran: 2880-min budget, so the drain is capped at 45; q's share is 15 and, alone and never emptying,
-    # it gets three rounds of it (work-conserving, review AR-285 F1) - the pass holds 45 min
+    # nothing ran: 2880-min budget (run_local_heavy.ps1 unclamped), so the drain is capped at the default 120
+    # (AR-413 F1: never 2,865); q's share is 15 and, alone and never emptying, it gets eight rounds of it
+    # (work-conserving, review AR-285 F1) - the pass holds 120 min (45 at the old cap)
     b = m.UnitBook({"q": "monthly"}, st, rows, {"q": 5.0}, {}, retry_queue=queue)
     r = b.run_pass(t0, 2880.0)
-    assert r["ran"] == [] and r["retry_drained"] == [("q", 15.0)] * 3 and r["used_min"] == 45.0
+    assert r["ran"] == [] and r["retry_drained"] == [("q", 15.0)] * 8 and r["used_min"] == 120.0
 
 
 def test_the_replay_drain_uses_the_production_functions(monkeypatch):
@@ -355,11 +361,18 @@ def test_the_replay_drain_uses_the_production_functions(monkeypatch):
     st = {"q": {"last_success_utc": "2026-09-30T00:00:00+00:00", "status": "ok"}}
     rows = [("2026-09-01T00:00:00+00:00", "q", "_all", "ok", 300.0)]
 
-    def used(**patch):
+    def used(cap="45", **patch):
+        # the cases below were drawn at the old cap (45); cap=None is the production default (120)
+        if cap is None:
+            monkeypatch.delenv("AQUEDUCT_RETRY_DRAIN_MAX_MIN", raising=False)
+        else:
+            monkeypatch.setenv("AQUEDUCT_RETRY_DRAIN_MAX_MIN", cap)
         for k, v in patch.items():
             monkeypatch.setattr(orchestrate, k, v)
         b = m.UnitBook({"q": "monthly"}, st, rows, {"q": 5.0}, {}, retry_queue={"q": (10, "x")})
         return b.run_pass(t0, 100.0)["retry_drained"]
+    assert used(cap=None) == [("q", 15.0)] * 5 + [("q", 10.0)]      # min(100 - 15, 120) = 85: the margin binds
+    monkeypatch.undo()
     assert used() == [("q", 15.0)] * 3                               # min(100 - 15, 45) in shares of 15
     assert used(leftover_drain_budget_min=lambda r, mg, cap: 7.0) == [("q", 7.0)]
     monkeypatch.undo()
@@ -393,6 +406,24 @@ def test_the_extracted_functions_are_what_run_once_and_the_drain_call():
     assert orchestrate.leftover_drain_budget_min(None, 15.0, 45.0) == 45.0
     assert orchestrate.leftover_drain_budget_min(30.0, 15.0, 45.0) == 15.0
     assert orchestrate.leftover_drain_budget_min(10.0, 15.0, 45.0) == 0.0
+    # the default cap (120) on a clamped ceiling: the margin still binds below it, the cap above it
+    cap = orchestrate._DRAIN_MAX_DEFAULT_MIN
+    assert cap == 120.0
+    assert orchestrate.leftover_drain_budget_min(95.0, 15.0, cap) == 80.0
+    assert orchestrate.leftover_drain_budget_min(228.0, 15.0, cap) == 120.0
+    assert orchestrate.leftover_drain_budget_min(None, 15.0, cap) == 120.0
+
+
+def test_the_default_cap_keeps_the_margin_on_a_clamped_ceiling(tmp_path, monkeypatch, capsys):
+    """Review C4 of the 120-min default: a clamped ceiling whose remainder minus the margin is BELOW the cap. The
+    pencil's pass (budget 100, unit loop to 25) leaves 75, so the drain gets 75 - 15 = 60 < 120 and the pass ends at
+    85: the margin binds, not the cap. Fails if the margin stops binding."""
+    h = Harness(tmp_path, monkeypatch, cap=None)
+    start, p, out = h.production(100, capsys)
+    r, _raw = h.replay(start, 100)
+    for k in ("drained", "not_drained", "end_min", "queue"):
+        assert p[k] == r[k], f"{k}: run_once {p[k]!r} replay {r[k]!r}" + out[-2500:]
+    assert sum(x for _s, x in p["drained"]) == 60.0 and p["end_min"] == 85.0, p
 
 
 def test_the_loader_reads_the_queue(tmp_path):
