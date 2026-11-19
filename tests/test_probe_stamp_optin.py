@@ -414,6 +414,29 @@ def test_a_deferral_note_with_a_probe_note_is_still_a_clean_deferral():
     assert health._is_clean_deferral_note(note + "; probe note: rel:A")
 
 
+def test_admitted_fetcher_under_manual_vintage_is_stamped(monkeypatch):
+    """manual_vintage passes its fetcher to _carry_probe like the other three (gii is not built by run_once,
+    so this is the strategy directly)."""
+    f = Fake("ed:2", admitted=True)
+    _use(monkeypatch, S6, f)
+    s = S6.ManualVintage()
+    unit = Unit("gii", "_all", "manual_vintage")
+    assert s.detect_change(unit, {"upstream_vintage": _stamp("ed:1"), "status": "ok"}) == "ed:2"
+    assert s.run(unit, None).new_vintage == _stamp("ed:2")
+    assert f.calls == ["gii/_all"]
+
+
+@pytest.mark.parametrize("mod,cls", ALL, ids=ALL_IDS)
+def test_an_unparseable_fetch_date_does_not_gate(monkeypatch, mod, cls):
+    _use(monkeypatch, mod, Fake("v1", admitted=True))
+    assert base.split_stamp("v1#fetched=garbage") == ("v1#fetched=garbage", None)
+    s = cls()
+    assert s._probe_matches(Fake("v1", admitted=True), "v1",
+                            {"upstream_vintage": "v1#fetched=garbage", "status": "ok"}) is False
+    assert s.detect_change(Unit("x", "_all", "s"),
+                           {"upstream_vintage": "v1#fetched=garbage", "status": "ok"}) is not None
+
+
 # (g) manual_vintage + "force" unchanged ---------------------------------------------------------
 
 def test_manual_vintage_first_run_semantics_are_unchanged(monkeypatch):
