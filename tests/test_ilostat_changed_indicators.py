@@ -157,6 +157,11 @@ class _FakeR2:
     def get(self, key):
         return self.objs.get(key)
 
+    def get_range(self, key, byte_range, *, if_match=None):   # blob footer reads (ranged GETs)
+        from updater.blob import bytes_range
+        data = self.get(key)
+        return None if data is None else bytes_range(data, byte_range)
+
     def put_atomic(self, key, body):
         self.puts += 1
         self.objs[key] = body

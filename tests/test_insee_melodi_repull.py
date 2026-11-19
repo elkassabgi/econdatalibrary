@@ -618,6 +618,11 @@ class FakeR2:
     def get(self, key):
         return self.objs.get(key)
 
+    def get_range(self, key, byte_range, *, if_match=None):   # blob footer reads (ranged GETs)
+        from updater.blob import bytes_range
+        data = self.get(key)
+        return None if data is None else bytes_range(data, byte_range)
+
     def put_if(self, key, data, *, if_match=None, if_none_match=False):
         import hashlib
         cur = self.objs.get(key)
