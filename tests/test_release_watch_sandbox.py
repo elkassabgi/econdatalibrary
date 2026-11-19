@@ -222,10 +222,10 @@ def test_env_is_set_before_config_is_imported(tmp_path, repo):
 
 # ------------------------------------------------------------------ B8.7 no write, no state, no POST
 WRITES = {
-    "blob_write": "from updater import blob\nblob.write_bytes_atomic(os.path.join(os.environ['TEMP'], 'x.bin'), b'1')\n"
+    "blob_write": "from updater import blob\nblob.write_bytes_atomic(os.path.join(os.environ['HOME'], 'x.bin'), b'1')\n"
                   "return 'wrote'",
-    "blob_read": "from updater import blob\nreturn str(blob.read_bytes(os.path.join(os.environ['TEMP'], 'x.bin')))",
-    "blob_class": "from updater import blob\nreturn str(blob.LocalBlob(os.environ['TEMP']).get('k'))",
+    "blob_read": "from updater import blob\nreturn str(blob.read_bytes(os.path.join(os.environ['HOME'], 'x.bin')))",
+    "blob_class": "from updater import blob\nreturn str(blob.LocalBlob(os.environ['HOME']).get('k'))",
     "merge": "from updater import merge\nmerge.merge_and_write('x.parquet', None)\nreturn 'merged'",
     "sqlite": "import sqlite3\nsqlite3.connect(':memory:')\nreturn 'connected'",
     "post": "import requests\nrequests.post('https://unctadstat-user-api.unctad.org/x/cur/Facts')\nreturn 'posted'",
