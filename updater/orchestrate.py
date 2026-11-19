@@ -28,7 +28,7 @@ from . import merge
 from . import registry
 from .state import StateStore, now_utc
 from .strategies import get as get_strategy
-from .strategies.base import DATE_TAIL
+from .strategies.base import DATE_TAIL, NO_STAMP, PROBE_NOTE, stamp_token
 from .strategies.fetchers import implemented as fetcher_implemented
 from .strategies.fetchers._common import sane_since
 from .errors import TransientError, DefinitiveError
@@ -259,6 +259,23 @@ def _repr_of(e) -> str:
         return repr(e)
     except Exception:  # noqa: BLE001 - the record is still written; a KeyboardInterrupt or SystemExit passes through
         return f"<{type(e).__name__}: its repr raised>"
+
+
+def _with_probe_note(note, strat):
+    """The runs-row note of a FULL pass of a probe strategy, with the pre-run probe token appended as a
+    non-failure segment: "probe note: <token>" ("none" when the probe could not tell).
+
+    SHADOW EVIDENCE (2026-11-19). The probe strategies may store a probe only for a fetcher admitted by
+    STAMP_PROBE (strategies/base.py), and admission needs evidence that every pass which added or revised
+    rows coincided with a moved token (R1154). This note is that evidence, one per full pass, on the runs row
+    only (never unit_state.last_error). health strips it before any gate, alarm or digest reads a note
+    (base.NON_FAILURE_NOTES, health.read_runs). Other strategies (no probe: no `_cur`) get the note
+    unchanged."""
+    if not hasattr(strat, "_cur"):
+        return note
+    cur = getattr(strat, "_cur", None)
+    tok = "none" if cur is None else str(cur).replace("; ", ";")[:120]
+    return "; ".join(x for x in (note, f"{PROBE_NOTE} {tok}") if x)
 
 
 def _clip_err(msg, limit: int = 1400) -> str:
@@ -4362,8 +4379,9 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             # Never EARNED on finalize's "date-tail" placeholder: equal placeholders prove nothing
             # about upstream (who_hwf/who_rs/who_sdg booked no_change on it for months without a
             # fetch). The probe strategies already read it as None; this is the second line.
+            # stamp_token: an admitted fetcher's stamp carries its fetch date (base.STAMP_SEP)
             if (not dry and probe is not None and stored_vintage is not None
-                    and probe != DATE_TAIL and probe == stored_vintage):
+                    and probe != DATE_TAIL and probe == stamp_token(stored_vintage)):
                 ts = now_utc()
                 store.upsert_unit(unit.source_id, unit.unit_id, strategy=unit.strategy,
                                   status="no_change", last_success_utc=ts,
@@ -4434,6 +4452,12 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             # what a first run passes.
             with _unit_deadline(unit.key, _unit_window_min()):
                 res = strat.run(unit, since=sane_since((us or {}).get("last_obs_date")))
+            # NO_STAMP (strategies/base.py): the fetcher asks that THIS pass store no vintage at all (ons_uk's
+            # capped rotation still owes datasets). It never reaches the state, nor the owed-rederive rows
+            # below that print res.new_vintage; the record stores None, so the next due tick fetches.
+            _no_stamp = res.new_vintage == NO_STAMP
+            if _no_stamp:
+                res.new_vintage = None
             status = res.status
             if _window_stop_no_progress(unit, res):
                 # A WINDOW STOP BEFORE ANY DURABLE PROGRESS IS NOT A TURN (review AR-415 B). Recording it as
@@ -4675,7 +4699,8 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 # only advance the recorded vintage on a clean success — a partial/failed
                 # run must NOT bump it, or the next detect_change would skip a source that
                 # never fully fetched (silent staleness on partials).
-                upstream_vintage=((res.new_vintage or vintage) if ok else (us or {}).get("upstream_vintage")),
+                upstream_vintage=((None if _no_stamp else (res.new_vintage or vintage)) if ok
+                                  else (us or {}).get("upstream_vintage")),
                 status=status,
                 last_obs_date=new_last,
                 obs_count=(res.obs if res.obs else (us or {}).get("obs_count")),
@@ -4691,7 +4716,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
                 store.upsert_source(unit.source_id, strategy=unit.strategy, cadence=unit.cadence,
                                     status="ok", last_success_utc=now_utc(), last_attempt_utc=now_utc())
             store.log_run(unit.source_id, unit.unit_id, status, obs=(res.obs or 0),
-                          dur_s=round(time.time() - t0, 1), note=err_note)
+                          dur_s=round(time.time() - t0, 1), note=_with_probe_note(err_note, strat))
             results.append((unit.key, status))
         except UnitTimeout as e:
             # Its own branch so the log names the cap rather than reporting a generic

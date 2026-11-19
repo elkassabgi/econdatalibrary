@@ -23,7 +23,7 @@ from datetime import date, datetime, time as dtime, timedelta, timezone
 
 from . import config, registry
 from .state import StateStore
-from .strategies.base import CADENCE_DAYS, NON_FAILURE_NOTES
+from .strategies.base import CADENCE_DAYS, NON_FAILURE_NOTES, PROBE_NOTE
 
 # A source is RED once it is this many cadence-periods past its last success / newest obs.
 SLA_TOLERANCE = 2.0
@@ -522,12 +522,30 @@ STUCK_GAPS = ("  not seen here: units never attempted (the SLA gate and the rout
               "with no runs between two digests a line can be marked new twice")
 
 
+def strip_probe_note(note):
+    """A runs note without the shadow "probe note: <token>" segment orchestrate._with_probe_note appends to every
+    full pass of a probe strategy. The token differs from pass to pass by design, so the alarm's error class
+    (_stuck_norm) and its regexes must never see it. None stays None; a note that was only the probe note becomes
+    None, as the row was before the note existed."""
+    if note is None:
+        return None
+    s = str(note)
+    if PROBE_NOTE not in s:
+        return note
+    kept = "; ".join(seg for seg in s.split("; ") if not seg.startswith(PROBE_NOTE))
+    return kept or None
+
+
 def read_runs(con) -> list:
     """Every `runs` row as a dict, ordered by (ts_utc, id): the ONE query the alarm reads, on ANY sqlite connection
     (StateStore.all_runs, `--stuck`'s read-only one, and the digest's own). Raises when there is no runs table:
-    the callers SAY the alarm could not be read, never print an empty section."""
-    return [dict(zip(_RUNS_COLS, r)) for r in con.execute(
+    the callers SAY the alarm could not be read, never print an empty section. The shadow probe note is stripped
+    (strip_probe_note)."""
+    rows = [dict(zip(_RUNS_COLS, r)) for r in con.execute(
         "SELECT id, ts_utc, source_id, unit_id, status, note FROM runs ORDER BY ts_utc, id")]
+    for r in rows:
+        r["note"] = strip_probe_note(r["note"])
+    return rows
 
 
 def read_runs_readonly(path) -> list:

@@ -59,15 +59,13 @@ class BulkSnapshotIfChanged(Strategy):
         cur = f.current_vintage(unit) if hasattr(f, "current_vintage") else None
         cur = probe_token(cur)      # finalize's "date-tail" placeholder is no token (base.DATE_TAIL)
         self._cur = cur
-        stored = (unit_state or {}).get("upstream_vintage")
-        if cur is not None and stored is not None and cur == stored:
+        # equal to the stored vintage, after a clean pass, within an admitted stamp's max age (base)
+        if self._probe_matches(f, cur, unit_state):
             return None             # upstream bulk unchanged -> skip the re-download entirely
         return cur or "force"       # changed / first run / undeterminable -> fetch (cadence-gated)
 
     def run(self, unit: Unit, since: str | None) -> Result:
-        r = get_fetcher(unit.source_id).update(unit, since)
-        # Carry the cheaply-probed vintage through so the orchestrator can persist
-        # it (and skip next time) when the fetcher itself didn't return one.
-        if r.new_vintage is None and getattr(self, "_cur", None):
-            r.new_vintage = self._cur
-        return r
+        f = get_fetcher(unit.source_id)
+        # Carry the cheaply-probed (PRE-RUN) vintage through so the orchestrator can persist it when the
+        # fetcher itself didn't return one - never over NO_STAMP (Strategy._carry_probe).
+        return self._carry_probe(f.update(unit, since), f)
