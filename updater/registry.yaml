@@ -875,29 +875,35 @@ sources:
   out_dir: cepii_baci
   review: true
   adapter:
-    vintage_signal: Scrape/poll the CEPII BACI download page for the latest vintage V-string in the zip filename (currently
-      hardcoded BACI_HS17_V202401b.zip / BACI_HS96_V202401b.zip); a new V-string = new data. Per-vintage gate is os.path.exists
-      of the parquet + >1MB cached-zip size check. No change feed; polling the download page is the only signal.
+    vintage_signal: >-
+      The fetcher scrapes CEPII's product page for BACI_HS<nn>_V<yyyymm>[letter].zip and takes the highest V-string per
+      classification; the unit token is _token() over the (HS17, HS96) releases, stamped only when both are in place. Per-file
+      gate (2026-11-19): a classification is rebuilt only when its _baci_<hs>.release.json sidecar names a different release
+      (or the parquet footer disagrees with the sidecar). No change feed; polling the page is the only signal.
     since_param: n/a
-    out_paths_note: 'single-file-per-vintage: baci_hs17.parquet and baci_hs96.parquet under data/clean_full/cepii_baci/; raw
-      zips data/raw/cepii_baci/{HS17,HS96}.zip. Streamed in 500k-row batches via one ParquetWriter per vintage; .part download
-      renamed atomically.'
+    out_paths_note: >-
+      Served names are stable: baci_hs17.parquet, baci_hs96.parquet, cepii_baci_pairs.parquet under data/clean_full/cepii_baci/,
+      each with an underscore .json release sidecar beside it. Raw zips are release-keyed at data/raw/cepii_baci/<release>/<HS>.zip
+      (+ .zip.json with bytes/sha256; resumable .part with Range). Rebuilds stage in data/_staging_cepii_baci/ (outside
+      clean_full, R1949) and replace only after verification.
     rate_note: No key; direct download verified 200 OK. Large download (timeout=600s, streamed); single GET per vintage, no
       rate limit.
     key_env: none
     confidence: high
-    open_question: 'Vintage discovery is not automated -- the FILES dict is hardcoded to V202401b and nothing detects new
-      releases (effectively manual today). Worth confirming a human will bump FILES, or building the CEPII-page scraper. CRITICAL:
-      if FILES is updated but the cached raw zip is NOT cleared, the >1MB size check passes and the OLD vintage is silently
-      reused.'
+    open_question: >-
+      Resolved 2026-11-19: the V202401b pin and the release-blind caches are gone. The served parquets run to 2024, so
+      they are a later release than V202401b (probably V202601, not proven); only _country_codes.json came from V202401b.
+      Open: the first run under the new gate is a FORCED supervised run (cadence annual, hours with the download), and
+      serving it needs the catalogue re-run (titles carry the V-string) and a verbatim cepii_baci licence entry.
   matrix:
     refresh_mechanism:
-    - skip-if-series-exists
+    - release-sidecar gate (rebuild when the advertised release differs)
     force_refresh_procedure:
-    - 'Edit FILES in jobs/ingest_cepii_baci.py to the new vintage URLs first IF a new release exists, then clear outputs (and
-      the cached zips so the new vintage actually downloads) and run: rm -f D:/research/econfindatalibrary/data/clean_full/cepii_baci/*.parquet
-      ; rm -f D:/research/econfindatalibrary/data/raw/cepii_baci/*.zip ; python.exe D:/research/econfindatalibrary/jobs/ingest_cepii_baci.py   (to
-      merely re-parse the same vintage, deleting just the parquets suffices — the cached zip is reused).'
+    - >-
+      From the repo root, supervised: python -m updater.run --source cepii_baci --force (the fetcher reads the release from
+      CEPII's page). To re-parse the SAME release, delete only data/clean_full/cepii_baci/_baci_<hs>.release.json; never
+      delete the served parquets or cepii_baci_pairs.parquet - the rebuild replaces them only after it verifies.
+      Standalone: python jobs/ingest_cepii_baci.py [--release V...]; it refuses an older release than the store holds.
     incremental_path:
     - 'BACI is shipped as annual CSVs inside one vintage zip; CEPII has no delta API, so true incremental is not feasible.
       Best achievable: (1) parameterize the vintage V-string (or scrape the CEPII download page for the latest) so new releases
@@ -909,8 +915,10 @@ sources:
     - No key — direct download verified 200 OK. Large download (timeout=600s, streamed). No rate limit beyond a single GET
       per vintage. No env vars.
     storage_layout:
-    - single-file-per-vintage — baci_hs17.parquet and baci_hs96.parquet under data/clean_full/cepii_baci/; raw zips cached
-      under data/raw/cepii_baci/{HS17,HS96}.zip. Streamed in 500k-row batches via one ParquetWriter per vintage (no part files).
+    - >-
+      single-file-per-classification - baci_hs17.parquet and baci_hs96.parquet under data/clean_full/cepii_baci/ with
+      _baci_<hs>.release.json sidecars; raw zips under data/raw/cepii_baci/<release>/<HS>.zip. Parsed in 500k-row batches
+      into a staged part outside clean_full, verified, then os.replace'd.
 - source_id: cepii_gravity
   # PROMOTED 2026-08-01 on a proven run, not on hope. The workstation pass completed it
   # in 3,355 s and derived 50,000 CSVs with 0 failures, and
@@ -7367,11 +7375,26 @@ sources:
   cadence: monthly
   refresh_cost: large
   out_dir: usda
+  # desktop_lane: skip (2026-11-19, PR #300 review r2): a ROLLOUT HOLD, not a giant-lane measurement. #300 makes
+  # the fetcher reach NASS again and #303 rebuilds each cube atomically, so the next scheduled pass would run
+  # the first full re-ingest since 2026-10-02 unsupervised and publish it to R2 over cubes that hold appended
+  # tail parts, while the stale higher part indexes stay on R2 until tools/usda_r2_stale_parts.py --apply.
+  # That first run is supervised instead. run_local_heavy.ps1 -Only usda still runs it (no --scheduled).
+  desktop_lane: skip
+  desktop_lane_exit: >-
+    Owner: Ahmed. Remove in a follow-up PR after all of: (1) one supervised run_local_heavy.ps1 -Only usda
+    with at least 150 min clear (it is clamped to the next CI writer like the pass, so start it that far ahead
+    of one, or with -SkipCiCheck when CI is known idle); (2) its log shows five REBUILD/swapped lines, "vintage
+    stamped", and manifest rows == parsed rows; (3) tools/usda_r2_stale_parts.py report, then --apply on the
+    owner's yes, ending in key-set and ETag equality; (4) the ~69k usda CSV re-derive started.
   review: true
   adapter:
-    vintage_signal: new dated bulk file appearing under data/raw/usda (qs.<sector>_YYYYMMDD.txt.gz; current vintage 20260603),
-      or HEAD Last-Modified/Content-Length on https://www.nass.usda.gov/datasets/qs.<sector>.txt.gz; on change delete the
-      affected cube dirs (+_complete + _manifest.json) and re-ingest.
+    vintage_signal: the five dated sector dumps (qs.<sector>_YYYYMMDD.txt.gz; vintage 20261118 on 2026-11-18) linked from
+      https://www.nass.usda.gov/datasets (NO trailing slash - the slash form 301s to a 404 since 2026-10), each downloaded
+      from its own href, /sites/default/files/datasets/<fname>; the gate token is a hash of the (sector, date) pairs,
+      stamped only when all five live cubes are verified builds of exactly the listed files. On a new dump the
+      fetcher downloads it and runs jobs/ingest_usda.py, which rebuilds every cube whose live _build.json does not name that
+      dump (fname + size) in data/usda_staging/<cube>.new, verifies it and swaps it in whole; no cube dir is deleted by hand.
     since_param: n/a
     out_paths_note: 'MULTI-DIR: per-cube part files under data/clean_full/usda/{animals_products,crops,demographics,economics,environmental}/part_NNN.parquet
       + per-cube _complete sentinel + _manifest.json. NOTE two scripts: bulk jobs/ingest_usda.py (this, S5) vs the orchestrated
@@ -7380,28 +7403,32 @@ sources:
       restarts) due to sandbox killing long jobs. Orchestrated connector path alone needs a key.
     key_env: none for bulk pipeline; USDA_API_KEY only for the separate connectors/usda connector path
     confidence: high
-    open_question: Vintage refresh MUST delete cube dirs + _complete before dropping a new dated file (skip-rows resume mis-aligns
-      on reordered snapshots) — confirm download_all.sh vintage bump + cube wipe is automated, not manual; decide whether
-      to keep --with-census off (default, avoids dup rows).
+    open_question: decide whether to keep --with-census off (default, avoids dup rows). (Closed 2026-11-19 - the skip-rows
+      resume across vintages, which kept old parts and appended the new dump's tail, is replaced by the staged atomic
+      rebuild in jobs/ingest_usda.py; a resume now happens only inside a staging dir built from the same input.)
   matrix:
     refresh_mechanism:
     - checkpoint-resume
     force_refresh_procedure:
-    - 'Two stages. (1) Refresh the raw bulk files (delete old, re-download new vintage): edit the YYYYMMDD filenames in D:/research/econfindatalibrary/data/raw/usda/download_all.sh
-      to the new vintage, delete stale qs.*.txt.gz, then run that script (curl from https://www.nass.usda.gov/datasets). (2)
-      Clear the clean output so a new vintage is fully re-ingested (the _complete sentinels otherwise SKIP each cube): rm
-      -rf D:/research/econfindatalibrary/data/clean_full/usda/{animals_products,crops,demographics,economics,environmental}
-      D:/research/econfindatalibrary/data/clean_full/usda/_manifest.json ; then run the auto-restart loop: bash D:/research/econfindatalibrary/data/raw/usda/run_until_done.sh  (or
-      directly python.exe D:/research/econfindatalibrary/jobs/ingest_usda.py). To remove just one cube, delete that cube''s
-      directory (incl. its _complete marker and part_*.parquet). Add --with-census to also ingest the 7 census slice files
-      (off by default to avoid duplicates).'
+    - 'The ingest rebuilds a cube by itself whenever the dump on disk differs from the one its live _build.json names, so a
+      new vintage needs only (1) the new qs.<sector>_YYYYMMDD.txt.gz in data/raw/usda (the fetcher downloads it from the
+      href on https://www.nass.usda.gov/datasets, i.e. https://www.nass.usda.gov/sites/default/files/datasets/<fname>) and (2)
+      python jobs/ingest_usda.py. Per cube it recovers any interrupted swap, then parses the dump into data/usda_staging/<cube>.new
+      (outside data/clean_full, so no reader sees it), verifies footers + part rows == parsed rows, commits there (_build.json
+      verified + _complete), renames the live cube to data/usda_staging/<cube>.old and the staged build into place, re-verifies,
+      and only then removes .old. A kill at any step leaves one complete cube - live, or for the instant between the two renames in staging, which the next run''s recovery puts back first; a staged build resumes only when its
+      _build.json names the same input, otherwise it is wiped. The run holds logs/usda_writer.lock (updater/writer_lock.py)
+      and refuses while another usda writer holds it. To force a cube to rebuild from the same dump, delete only its live
+      _build.json. Never rm -rf a live cube dir: that unserves it until the rebuild ends. Part indexes the new cube no longer
+      has stay on R2 until tools/usda_r2_stale_parts.py --apply (run by hand) backs them up and deletes them. Add --with-census
+      to also ingest the 7 census slice files (off by default to avoid duplicates).'
     incremental_path:
     - Not feasible as obs-level since=last_obs — NASS bulk dumps are full-database snapshots (every survey+census obs) keyed
       by YEAR/FREQ/END_CODE with no since field; the ingest streams whole files. A new monthly vintage replaces the prior
-      snapshot wholesale. The only correct refresh is re-download the new dated bulk file + re-ingest the affected cubes (delete
-      their _complete markers). True delta would require diffing two snapshots offline (compare new vs old qs.<sector>.txt.gz
+      snapshot wholesale. The only correct refresh is re-download the new dated bulk file + re-run the ingest (it rebuilds each cube whose _build.json names another dump; no
+      cube dir or _complete marker is deleted by hand). True delta would require diffing two snapshots offline (compare new vs old qs.<sector>.txt.gz
       on series_key+date) — possible but expensive (57.6M rows) and not currently implemented. Within a single vintage the
-      part-rolling + _complete logic already gives crash-resume, not data incrementality.
+      staged part-rolling build gives crash-resume (same input only), not data incrementality.
     keys_or_blockers:
     - 'For the bulk pipeline: NO API key (downloads public-domain .txt.gz via curl). For the orchestrated connector path only:
       USDA_API_KEY env var required (core.config.require). Blocker on ingest: memory/runtime on the >100M-row crops input

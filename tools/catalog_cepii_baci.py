@@ -52,8 +52,8 @@ def main() -> int:
     ap.add_argument("--lastmod", default=None,
                     help="observed Last-Modified of the vintage file (upgrades the month-"
                          "precision version date; never invent one)")
-    ap.add_argument("--zip", default=os.path.join(ROOT, "data", "raw", "cepii_baci",
-                                                  "HS96.zip"))
+    ap.add_argument("--zip", default=None,
+                    help="default: data/raw/cepii_baci/<--vintage>/HS96.zip (release-keyed cache)")
     ap.add_argument("--apply", action="store_true")
     a = ap.parse_args()
 
@@ -81,7 +81,24 @@ def main() -> int:
                        f"month precision — no observed file date yet)"
     print(f"last-update statement: {upd}")
 
-    names = country_names(a.zip)
+    # The store records which release it holds (jobs/ingest_cepii_baci.py, 2026-11-19); a title
+    # naming a release the store does not hold would misstate every row.
+    # The titles describe the PAIRS projection, so the projection's own sidecar and the country
+    # codes it was mapped with must both name --vintage. Absent = unknown = refuse (fail closed).
+    from updater.strategies.fetchers.cepii_baci import CODES_SIDECAR, _pairs_release
+    sdir = config.source_dir(SOURCE)
+    held = _pairs_release(sdir)
+    try:
+        with open(os.path.join(sdir, CODES_SIDECAR), encoding="utf-8") as fh:
+            codes_rel = json.load(fh).get("release")
+    except (OSError, ValueError):
+        codes_rel = None
+    if held != ver or codes_rel != ver:
+        print(f"the pairs projection is {held!r} and its country codes {codes_rel!r}, not "
+              f"--vintage {ver} - refusing (run the fetcher for {ver} first)")
+        return 1
+    zip_path = a.zip or os.path.join(ROOT, "data", "raw", "cepii_baci", ver, "HS96.zip")
+    names = country_names(zip_path)
     print(f"country names: {len(names)}")
 
     # --- per-series coverage from the projection --------------------------------------

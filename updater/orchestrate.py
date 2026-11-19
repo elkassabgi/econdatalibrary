@@ -2389,6 +2389,10 @@ _DERIVE_ALL_CAP = 5000
 _CSV_RETRY_CAP = 20_000
 
 
+# Sources whose store a separate rebuild job owns while it runs: source_id -> updater/writer_lock name.
+_REGION_LOCKS = {"usda": "usda_writer"}
+
+
 def _drain_csv_retry_queue(unit, blob, store, deadline_ts=None, id_gate=None, skip=None, cap=None) -> dict:
     """Drain the csv retry queue for one unit, bounded per run (the rules are at the call site in run_once).
     A function so its fence trip can be RUN against a StateStore in a test (review R1254 item 1).
@@ -2411,6 +2415,24 @@ def _drain_csv_retry_queue(unit, blob, store, deadline_ts=None, id_gate=None, sk
     ids the derive actually reached, `untried` the ids of this call it did not reach and did not hold back."""
     _summary = {"queued": 0, "attempted": 0, "cleared": 0, "still_queued": 0, "held_back": 0, "tried": [],
                 "untried": 0}
+    # A STORE REGION UNDER REBUILD IS NOT DERIVED FROM (usda, 2026-11-19). jobs/ingest_usda.py holds the
+    # `usda_writer` lock while it rebuilds and swaps cubes; a drain in ANOTHER process would derive CSVs from the
+    # cube about to be replaced and clear their queued ids. Skipped, the ids stay queued for the next pass. The
+    # fresh csv phase needs no check: it follows the fetcher's own ingest in THIS process, after the lock is freed.
+    if unit.source_id in _REGION_LOCKS:
+        from . import writer_lock                                                  # noqa: PLC0415
+        _held = writer_lock.owner(_REGION_LOCKS[unit.source_id])
+        if _held is not None and _held.get("pid") != os.getpid():
+            print(f"[orchestrator] csv retry drain skipped for {unit.source_id}: "
+                  f"{writer_lock.lock_path(_REGION_LOCKS[unit.source_id])} is held by pid {_held.get('pid')} "
+                  f"({_held.get('what') or _held.get('unverified') or 'unnamed'}) - its ids stay queued"
+                  + (" [LOCK OWNER UNJUDGEABLE - failing closed; check the pid and the lock file]"
+                     if _held.get("unverified") else ""), flush=True)
+            # Carried in the summary, not only printed, so a caller / digest can count lock-skipped drains (a
+            # fail-closed lock that never clears would otherwise starve the queue silently - follow-up in #303).
+            _summary["region_locked"] = {"lock": _REGION_LOCKS[unit.source_id], "pid": _held.get("pid"),
+                                         "what": _held.get("what"), "unverified": _held.get("unverified")}
+            return _summary
     _retry_rows = store.csv_retries(unit.source_id)
     # Purge rows that are not catalog ids BEFORE spending budget on them —
     # raw store keys (the old crash path's residue) fail every attempt by

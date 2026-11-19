@@ -1,0 +1,18 @@
+# Acknowledgements for the release watch (updater/release_watch.py; the digest's release-watch section).
+#
+# An ack MOVES an open "PUBLISHER MOVED <from> -> <to>" line to the "acknowledged" sub-list until it expires. It
+# never hides one, and it is never a claim that the store holds the release. Each entry is its own reviewed change:
+# a pull request plus the adversarial review.
+#
+# Every entry needs:
+#   source_id, unit_id     exact ids
+#   to_token               the open move's <to>, exactly. An ack naming any other token does not apply (a newer move
+#                          alarms again) and is listed as "stale release ack - remove it".
+#   reason_quote           VERBATIM text (the giant's issue, or the publisher), no paraphrase
+#   reason_url             the http(s) page the quote is from
+#   by                     who acknowledged it
+#   acked_utc, expires_utc YYYY-MM-DD; acked_utc not in the future; expires_utc at most 30 days after acked_utc
+# ONE invalid entry voids the WHOLE file: the digest says so and every line shows.
+# After expires_utc the line returns to the main list marked ACK EXPIRED.
+# The line clears for good only when the unit stamps the real token (unit_state.upstream_vintage == <to>).
+acks: []

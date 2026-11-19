@@ -40,6 +40,7 @@ SECTIONS = [
     ("progress", "sources that are in progress (too large for one run, nothing failed)"),
     ("not_saved", "that the record of the run was not saved (the state push did not succeed)"),
     ("_stuck", "the stuck-run alarm: the same failure run after run (health.repeat_failures)"),
+    ("_release", "the release watch: publisher releases against the store's token (updater/release_watch.py)"),
 ]
 
 

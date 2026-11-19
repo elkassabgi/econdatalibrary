@@ -445,6 +445,24 @@ def _notices_beat():
     return out
 
 
+RELEASE_WATCH_RECORD_LOCAL = os.path.join(ROOT, "data", "_release_watch", "record.json")
+RELEASE_WATCH_STATUS_LOCAL = os.path.join(ROOT, "logs", "release_watch.last.json")
+
+
+def _release_watch_beat():
+    """body["release_watch"] (updater/release_watch.py beat_value): the release watch's record, scrubbed of gated
+    ids, plus its runner's status file, for the CI digest, which applies the rules against its own state.db. It
+    only READS two small files; the probes run in tools/selfhost/run_release_watch.ps1, never in the tick.
+    /v1/guard-heartbeat copies none of it (that route serves whitelisted counts only). Never raises, and catches
+    BaseException: a fault in one section must not stop the beat (R1810). Any fault, a corrupt record or one over
+    the size cap is {"unreadable": ...}, never a partial record."""
+    try:
+        from updater import release_watch as rw              # noqa: PLC0415
+        return rw.beat_value(RELEASE_WATCH_RECORD_LOCAL, RELEASE_WATCH_STATUS_LOCAL)
+    except BaseException as e:                               # noqa: BLE001 - the beat must go out regardless
+        return {"unreadable": f"{type(e).__name__}: {e}"[:200]}
+
+
 LAUNCHER_WATCHDOG_DIR = r"F:\launcher_watchdog"
 LW_MAX_AGE_MIN = 30.0      # the hook starts one look per guard tick (5 min); six missed ticks is not a slow tick
 LW_ATTENTION = ("GAVE-UP", "cannot-tell", "bad-stamp", "no-write", "launch-failed", "disagree", "alive-stale")
@@ -596,6 +614,10 @@ def publish(stall_check: bool = False) -> int:
         body["notices"] = _notices_beat()
     except BaseException as e:                               # noqa: BLE001 - the beat must go out regardless
         body["notices"] = {"unreadable": f"{type(e).__name__}: {e}"[:200]}
+    try:
+        body["release_watch"] = _release_watch_beat()
+    except BaseException as e:                               # noqa: BLE001 - the beat must go out regardless
+        body["release_watch"] = {"unreadable": f"{type(e).__name__}: {e}"[:200]}
     # the launcher watchdog's own state; /v1/guard-heartbeat copies none of it (that route serves whitelisted counts)
     body["launcher_watchdog"] = _launcher_watchdog_beat()
     body["gus_dbw"] = _gus_dbw_beat()
