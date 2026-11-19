@@ -55,8 +55,12 @@ Any refusal marks the run, so a probe that caught the exception still reads COUL
 The child prints exactly one JSON line {"p": P|null, "error": null|"<kind>: <text>"}. The parent maps a non-zero
 exit, a timeout, any other stdout, a null p, a sandbox refusal, or a P that is not a `version|lastUpdated` token
 (TOKEN_RE: nothing else can leave through P) to COULD NOT CHECK; nothing else is success.
-RESIDUAL, stated: os.stat-type metadata calls have no audit event (they reveal size and existence, not content),
-and a raw socket to a literal IP address is not refused (it needs content to send, and every read is guarded).
+A socket may connect only to an address a lookup of a probe host returned; binds only to loopback port 0 (urllib3's
+import-time IPv6 test). The child's error TEXT never travels: what is recorded, beaten and mailed is a fixed phrase
+plus an exception type from a closed list (the raw text is printed only by --probe). Listing a directory outside
+the read allow-list is refused.
+RESIDUAL, stated: os.stat-type metadata calls have no audit event, so a compromised probe could encode a file's
+size or time into a token-shaped P (a few dozen bits a run; never content, since every read is guarded).
 
 RUNBOOK (operator)
   PUBLISHER MOVED <from> -> <to> since <date>
@@ -80,6 +84,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import os
+import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -270,7 +275,8 @@ def write_atomic(path: str, obj) -> None:
 
 
 # ------------------------------------------------------------------ the child
-_GUARD = {"tripped": [], "roots": (), "allowed": (), "writable": (), "on": False, "audit": False}
+_GUARD = {"tripped": [], "roots": (), "allowed": (), "writable": (), "listable": (), "ips": set(), "on": False,
+          "audit": False}
 # The hosts the phase-1 probe may reach: jobs/ingest_unctad_ds.META's host (a test pins the two together).
 PROBE_HOSTS = frozenset({"unctadstat-api.unctad.org"})
 # A phase-1 token is the publisher's `version|lastUpdated` (_unctad._token). Anything else from a child is refused
@@ -355,6 +361,15 @@ def _writes(args) -> bool:
         return True
 
 
+def _unlistable(p):
+    """Listing a directory outside the read allow-list (plus the repo root itself, which import needs) is refused."""
+    s = _fs(p)
+    if s is None or not _GUARD["listable"]:
+        return None
+    full = os.path.normcase(os.path.abspath(_norm(s)))
+    return None if (_under(full, _GUARD["listable"]) or full in _GUARD["listable"]) else "listing outside the allow-list"
+
+
 def _unwritable(p):
     """A write, create, delete or rename outside the sandbox's own temp is refused."""
     s = _fs(p)
@@ -386,11 +401,25 @@ def _audit_reason(event: str, args) -> "str | None":
     if event in _AUDIT_PATH_EVENTS:
         for a in args[:_AUDIT_PATH_EVENTS[event]]:
             why = _refusal(a)
-            if why is None and event not in ("os.listdir", "os.scandir"):
+            if why is None and event in ("os.listdir", "os.scandir"):
+                why = _unlistable(a)
+            elif why is None:
                 why = _outside(a) if (event in _READ_FIRST and a is args[0]) else _unwritable(a)
             if why:
                 return why
         return None
+    if event in ("socket.connect", "socket.sendto", "socket.sendmsg"):
+        addr = args[1] if len(args) > 1 else None
+        host = addr[0] if isinstance(addr, tuple) and addr else None
+        # only an address that a lookup of a PROBE_HOSTS name returned (install_audit_guard's getaddrinfo wrapper)
+        return None if host in _GUARD["ips"] else "a connection to an address no probe host resolved to"
+    if event == "socket.bind":
+        # urllib3 tests for IPv6 at import by binding ('::1', 0); a loopback bind sends nothing. Anything else is
+        # refused, and connect() above still needs a probe host's address.
+        addr = args[1] if len(args) > 1 else None
+        if isinstance(addr, tuple) and len(addr) >= 2 and addr[0] in ("::1", "127.0.0.1") and addr[1] == 0:
+            return None
+        return "binding a socket is not allowed in a probe"
     if event in _AUDIT_REFUSED:
         return "not allowed in a probe"
     if event == "ctypes.dlopen":
@@ -398,16 +427,17 @@ def _audit_reason(event: str, args) -> "str | None":
         # symbol lookup (ctypes.dlsym) and foreign call (ctypes.call_function) is refused above.
         return None if (not args or args[0] is None) else "loading a native library is not allowed in a probe"
     if event in ("socket.getaddrinfo", "socket.gethostbyname", "socket.gethostbyname_ex"):
-        return None if str(args[0]).lower().rstrip(".") in PROBE_HOSTS else f"host {str(args[0])[:60]} not allowed"
+        # never echo the name: a refusal text must carry nothing the child chose
+        return None if str(args[0]).lower().rstrip(".") in PROBE_HOSTS else "a host that is not a probe host"
     if event == "http.client.send":
         conn, data = args[0], args[1]
         host = str(getattr(conn, "host", "")).lower().rstrip(".")
         if host not in PROBE_HOSTS:
-            return f"http to {host[:60]} not allowed"
+            return "http to a host that is not a probe host"
         head = bytes(data[:8]) if isinstance(data, (bytes, bytearray, memoryview)) else b""
         if head and head[:1].isupper() and not head.startswith(_HTTP_OK) and b" " in head \
                 and head.split(b" ", 1)[0].isalpha() and head.split(b" ", 1)[0].isupper():
-            return f"http {head.split(b' ', 1)[0].decode('ascii', 'replace')} not allowed"
+            return "an http method other than GET or HEAD"
         return None
     if event == "urllib.Request":
         _url, data, _h, method = (list(args) + [None] * 4)[:4]
@@ -430,13 +460,23 @@ def _audit(event, args):
         raise WatchSideEffect(f"{event} refused ({why})")
 
 
-def install_audit_guard(roots, allowed, writable) -> None:
+def install_audit_guard(roots, allowed, writable, listable=()) -> None:
     """FIRST thing in the child (before the site directories, so no .pth line runs unguarded). An audit hook
     cannot be removed: it covers routes the attribute patches below cannot see (_io.open, io.FileIO, os.open
     by any name, \\\\?\\ paths, subprocess, shutil's native copy, ctypes, urllib, raw http.client)."""
     _GUARD["roots"] = tuple(os.path.normcase(os.path.abspath(r)) for r in roots)
     _GUARD["allowed"] = tuple(os.path.normcase(os.path.abspath(r)) for r in allowed if r)
     _GUARD["writable"] = tuple(os.path.normcase(os.path.abspath(r)) for r in writable if r)
+    _GUARD["listable"] = _GUARD["allowed"] + tuple(os.path.normcase(os.path.abspath(r)) for r in listable if r)
+    import socket
+    orig = socket.getaddrinfo
+
+    def getaddrinfo(host, *a, **k):
+        res = orig(host, *a, **k)                       # the audit event refuses any other host before this
+        if str(host).lower().rstrip(".") in PROBE_HOSTS:
+            _GUARD["ips"].update(r[4][0] for r in res if r and len(r) > 4 and r[4])
+        return res
+    socket.getaddrinfo = getaddrinfo
     sys.addaudithook(_audit)
     _GUARD["audit"] = True
 
@@ -589,7 +629,7 @@ def child_main(argv=None) -> int:
         # stdlib ctypes binds kernel32 when it is imported (Windows); something in the probe chain imports it. Bound
         # here, before the hook, so the hook can refuse every NEW library, symbol and foreign call afterwards.
         import ctypes                                   # noqa: F401
-        install_audit_guard(roots, allowed, [sandbox])  # FIRST: before any .pth line or import runs
+        install_audit_guard(roots, allowed, [sandbox], [code_root])  # FIRST: before any .pth line or import
         import site
         for d in sites:
             site.addsitedir(d)
@@ -648,6 +688,13 @@ def _site_dirs() -> list:
                                                                                       "dist-packages")]
 
 
+_ERR_TYPES = frozenset({
+    "none", "HTTPError", "ConnectionError", "ConnectTimeout", "ReadTimeout", "Timeout", "SSLError", "ProxyError",
+    "ChunkedEncodingError", "ContentDecodingError", "JSONDecodeError", "RequestException", "TooManyRedirects",
+    "ValueError", "KeyError", "TypeError", "LookupError", "RuntimeError", "OSError", "SystemExit", "ImportError",
+    "ModuleNotFoundError", "AttributeError", "UnsupportedLayout"})
+
+
 def classify(rc, stdout: str, timed_out: bool, token_re=TOKEN_RE) -> dict:
     """{"p": str|None, "kind": ..., "error": str|None} from one child's exit. Only a clean, single JSON line with a
     string p is success."""
@@ -666,9 +713,17 @@ def classify(rc, stdout: str, timed_out: bool, token_re=TOKEN_RE) -> dict:
         return {"p": None, "kind": "protocol", "error": f"protocol: {str(e)[:100]}"}
     p, err = d["p"], d["error"]
     if err or not (isinstance(p, str) and p):
-        err = str(err or "none: the probe returned no token")
-        kind = "sandbox" if err.startswith("WatchSideEffect") else "probe"
-        return {"p": None, "kind": kind, "error": f"{kind}: {err}"}
+        # THE CHILD'S TEXT NEVER TRAVELS. `error` is free text a compromised probe could fill with what it read (a
+        # directory listing came out this way in review), so what is recorded, beaten and mailed is a FIXED phrase
+        # plus an exception type from a closed list. The raw text stays in `detail`, which only --probe prints.
+        raw = str(err or "none: the probe returned no token")
+        if raw.startswith("WatchSideEffect"):
+            kind, fixed = "sandbox", "sandbox: a guarded route was refused (run --probe by hand for the route)"
+        else:
+            m = re.match(r"[A-Za-z_][A-Za-z0-9_]{0,40}", raw)
+            t = m.group(0) if m and m.group(0) in _ERR_TYPES else "another error"
+            kind, fixed = "probe", f"probe: {t}"
+        return {"p": None, "kind": kind, "error": fixed, "detail": raw[:400]}
     if not _token_ok(p, token_re):
         return {"p": None, "kind": "shape", "error": "shape: the child's token is not a version|lastUpdated token"}
     return {"p": p, "kind": "ok", "error": None}
@@ -750,7 +805,10 @@ def desktop_main(now_fn=utcnow, probe=run_child, record_path: str = None) -> int
 
 def probe_main(sid: str, uid: str) -> int:
     o = run_child(sid, uid)
-    o = dict(o, error=_scrubber()(o.get("error")) if o.get("error") else None)
+    s = _scrubber()
+    # by hand only: the operator also sees the child's own `detail` (scrubbed); the record never holds it
+    o = dict(o, error=s(o.get("error")) if o.get("error") else None,
+             **({"detail": s(o["detail"])} if o.get("detail") else {}))
     print(json.dumps(o, indent=1))
     return 0 if o.get("p") else 1
 

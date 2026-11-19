@@ -154,9 +154,9 @@ def test_audit_rules_for_raw_http(monkeypatch):
     class Conn:
         host = "unctadstat-api.unctad.org"
     assert RW._audit_reason("http.client.send", (Conn(), b"GET /api/x HTTP/1.1\r\n")) is None
-    assert "POST" in RW._audit_reason("http.client.send", (Conn(), b"POST /x HTTP/1.1\r\n"))
+    assert "other than GET" in RW._audit_reason("http.client.send", (Conn(), b"POST /x HTTP/1.1\r\n"))
     Conn.host = "example.org"
-    assert "not allowed" in RW._audit_reason("http.client.send", (Conn(), b"GET / HTTP/1.1\r\n"))
+    assert "not a probe host" in RW._audit_reason("http.client.send", (Conn(), b"GET / HTTP/1.1\r\n"))
     assert RW._audit_reason("socket.getaddrinfo", ("unctadstat-api.unctad.org", 443)) is None
     assert RW._audit_reason("socket.getaddrinfo", ("example.org", 443))
     assert RW._audit_reason("urllib.Request", ("https://x", None, {}, "PUT"))
@@ -254,5 +254,37 @@ def test_only_phase_1_units_are_probed(tmp_path, repo):
     d.mkdir()
     (d / "stub_any.py").write_text("def probe(sid, uid):\n    return 'p'\n", encoding="utf-8")
     o = RW.run_child("unctad_trademerchtotal", "_all", guard_root=str(repo), stub=(str(d), "stub_any"))
-    assert o["kind"] == "probe" and "not a phase-1 unit" in o["error"]
+    assert o["kind"] == "probe" and o["error"] == "probe: LookupError" and "not a phase-1 unit" in o["detail"]
+
+
+def test_the_childs_error_text_never_becomes_the_recorded_error(tmp_path, repo):
+    """Review round 2: a probe that raised with a directory listing in its message carried it into last_error, the
+    beat and the mail. The recorded error is a fixed phrase and a type from a closed list."""
+    o = _probe(tmp_path, repo, "raise RuntimeError('LISTING=' + %r)" % PLANT, "stub_err_text")
+    assert o["error"] == "probe: RuntimeError" and PLANT not in o["error"]
+    body = "class Leak%s(Exception):\n    pass\nraise Leak%s('x')" % ("x" * 3, "x" * 3)
+    assert _probe(tmp_path, repo, body, "stub_err_type")["error"] == "probe: another error"
+    forged = "os.write(1, b'{\"p\": null, \"error\": \"WatchSideEffect' + %r.encode() + b'\"}\\n')\nos._exit(0)" % PLANT
+    o = _probe(tmp_path, repo, forged, "stub_err_forged")
+    assert o["kind"] == "sandbox" and PLANT not in o["error"]
+
+
+def test_a_raw_socket_to_an_unresolved_address_is_refused(tmp_path, repo):
+    """Review round 2: DNS was guarded but connect() to a literal address was not."""
+    body = ("import socket\ns = socket.socket()\ns.settimeout(0.5)\n"
+            "s.connect(('192.0.2.1', 443))\nreturn 'connected'")
+    _refused(_probe(tmp_path, repo, body, "stub_raw_socket"))
+
+
+def test_listing_outside_the_allow_list_is_refused(tmp_path, repo):
+    _refused(_probe(tmp_path, repo, "return ','.join(os.listdir(R))", "stub_list_repo"))
+
+
+def test_audit_rules_for_sockets(monkeypatch):
+    monkeypatch.setitem(RW._GUARD, "ips", {"203.0.113.7"})
+    assert RW._audit_reason("socket.connect", (None, ("203.0.113.7", 443))) is None
+    assert RW._audit_reason("socket.connect", (None, ("192.0.2.1", 443)))
+    assert RW._audit_reason("socket.connect", (None, "/tmp/unix.sock"))
+    assert RW._audit_reason("socket.bind", (None, ("0.0.0.0", 0)))
+    assert RW._audit_reason("socket.bind", (None, ("::1", 0))) is None, "urllib3's import-time IPv6 test"
     assert RW.main(["--probe", "unctad_trademerchtotal", "_all"]) == 2
