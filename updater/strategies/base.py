@@ -82,7 +82,7 @@ STAMP_SEP = "#fetched="
 # could not say it: the probe strategies fill a None with the probe token.
 NO_STAMP = "no-stamp"
 
-# The statuses after which a stored vintage may gate the next tick. After any other one (partial,
+# The statuses after which a stored vintage may gate a later due pass. After any other one (partial,
 # transient_fail, ...) the next due tick fetches whatever the probe says: run_once keeps the OLD vintage on a
 # not-clean pass, and a probe that returns to that value (a replica's ETag, a gh:/http: token kind switch on
 # a GitHub 403) would otherwise book an earned no_change over the unfinished pass.
@@ -325,8 +325,8 @@ class Strategy(ABC):
     def _carry_probe(self, r: Result, fetcher=None) -> Result:
         """Hand the PRE-RUN probe (self._cur, read by detect_change before the pull) to the orchestrator.
 
-        Never re-probe here: a release that lands during the pull must still read as changed at the next
-        tick (R1154, R1283 M2). Whether the value is STORED stays the orchestrator's decision: only a clean
+        Never re-probe here: a release that lands during the pull must still read as changed at a later
+        due pass (R1154, R1283 M2). Whether the value is STORED stays the orchestrator's decision: only a clean
         pass advances upstream_vintage.
           * NO_STAMP passes through untouched (it is neither None nor DATE_TAIL, so no branch below fills it);
           * a token the fetcher set itself wins;
