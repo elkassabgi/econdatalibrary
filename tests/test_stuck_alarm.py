@@ -369,6 +369,18 @@ def test_held_exit_text_is_scrubbed_by_whole_token():
     assert rf(rows, gated=None)["held"][0]["exit"] == H.STUCK_WITHHELD_NO_GATE
 
 
+@pytest.mark.parametrize("text", ["zzq2 failed", "2zzq failed", "ZZQ_table: boom", "x/zzq: boom", "zzq.csv",
+                                  "ZZQ-2024", "[zzq]", "zzq", "zzq at the start", "at the end zzq", "a: zzq"])
+def test_scrub_withholds_an_id_that_no_letter_touches(text):
+    """Digits are bounds too: a gated id is never named (re-verify of #302: "zzq2" and "2zzq" were shown)."""
+    assert H._stuck_scrubber({"zzq"})(text) == H.STUCK_WITHHELD
+
+
+@pytest.mark.parametrize("text", ["the xzzqy release", "azzq", "zzqb", "a spilled release"])
+def test_scrub_keeps_a_word_that_merely_contains_the_id(text):
+    assert H._stuck_scrubber({"zzq", "pil"})(text) == text
+
+
 def test_blind_list_uses_the_same_eligibility():
     trunc = "2/40 sub-unit(s) transient-failed; will retry [a: x, +12 more]"
     rows = [(at(1), "dead_src", "_all", "partial", trunc), (at(1), GATED, "_all", "partial", trunc),

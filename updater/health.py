@@ -505,7 +505,7 @@ _STUCK_SHRINK = _re.compile(r"(?:^|\[|, )([^\s,\[\]]+?): refusing shrink")
 STUCK_ACKS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stuck_acks.yaml")
 DISCONTINUED_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "discontinued.yaml")
 STUCK_ACK_MIN_NOTE = 20          # a note_contains shorter than this matches too much to scope an ack
-STUCK_NEW_WITHIN_HOURS = 24.0    # NEW = fires now, and did not on its runs up to (newest run - this): one digest
+STUCK_NEW_WITHIN_HOURS = 24.0    # NEW = fires now, and did not on its runs up to (newest runs row - this); fixed window
 _ACK_KEYS = {"source_id", "unit_id", "token", "note_contains", "reason_quote", "reason_url", "ledger",
              "acked_utc", "expires_utc", "by"}
 _ACK_REQUIRED = ("source_id", "unit_id", "note_contains", "reason_quote", "reason_url", "acked_utc", "expires_utc")
@@ -516,7 +516,10 @@ STUCK_WITHHELD_NO_GATE = "[withheld: the denylist could not be read]"
 STUCK_GAPS = ("  not seen here: units never attempted (the SLA gate and the route watchdog cover them), a probe "
               "that always answers no_change, deferral-only partials (tools/audit_sweep_advance.py); "
               "window_stopped handling has no real runs rows yet; and a local pass that loses the state push "
-              "(another writer won) drops its runs rows, so the section undercounts after such a pass")
+              "(another writer won) drops its runs rows, so the section undercounts after such a pass. "
+              "\"new\" means: crossed within a fixed 24 h before the newest runs row, not since the last digest - "
+              "after a skipped or late digest a 24-48 h old crossing is not marked new (it is still counted), and "
+              "with no runs between two digests a line can be marked new twice")
 
 
 def read_runs(con) -> list:
@@ -884,9 +887,11 @@ def _stuck_scrubber(gated):
     low = sorted(g for g in gated if g)
     if not low:
         return lambda s: s
-    # WHOLE-TOKEN: an id bounded by anything but a letter or digit ("_" and "/" are bounds, so "<id>_table" and
-    # "<id>/x" are caught), never a substring of a longer word (an id inside "spilled" is not a mention).
-    pat = _re.compile(r"(?<![a-z0-9])(?:" + "|".join(_re.escape(g) for g in low) + r")(?![a-z0-9])")
+    # WHOLE-WORD BY LETTERS: an id is withheld wherever no LETTER touches it on either side. Digits, "_", "/", "-",
+    # "." and brackets are all bounds, so "<id>2", "2<id>", "<id>_table", "x/<id>", "<id>.csv" and "[<id>]" are
+    # caught; only an id inside a longer word ("spilled") is not a mention. Digits were bounds-not on the first cut
+    # and let "<id>2" through (re-verify of #302): a gated id is never named, so the rule leans to withholding.
+    pat = _re.compile(r"(?<![a-z])(?:" + "|".join(_re.escape(g) for g in low) + r")(?![a-z])")
     return lambda s: STUCK_WITHHELD if (s and pat.search(str(s).lower())) else s
 
 
@@ -952,9 +957,13 @@ def repeat_failures(runs_rows, entries, discontinued, acks, now, gated=None) -> 
             blind[sid] += n_blind
         if not hit:
             continue
-        # NEW: fires now, but did NOT fire on its runs up to the table's newest run minus STUCK_NEW_WITHIN_HOURS (the
-        # previous digest). A unit can record 2-3 runs between digests; asking only whether its LAST run crossed
-        # left 8 of 12 real first appearances unmarked in a 60-day replay (review of #302).
+        # NEW: fires now, but did NOT fire on its runs up to the table's newest run minus STUCK_NEW_WITHIN_HOURS. A unit
+        # can record 2-3 runs between digests; asking only whether its LAST run crossed left 8 of 12 real first
+        # appearances unmarked in a 60-day replay (review of #302).
+        # LIMIT, said in the section footer too: the window is a FIXED 24 h anchored on the newest runs row, NOT
+        # "since the last digest" (nothing records when a digest was sent). After a skipped or late digest a crossing
+        # 24-48 h old is not counted as new (it is still in K); with no runs between two digests a line can count as
+        # new twice.
         if newest_t is None:
             is_new = False
         else:
