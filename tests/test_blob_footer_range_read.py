@@ -266,3 +266,112 @@ def test_local_backend_unchanged(tmp_path, monkeypatch):
     assert blob.row_count(str(tmp_path / "missing.parquet")) == 0
     (tmp_path / "bad.parquet").write_bytes(b"junk")
     assert blob.row_count(str(tmp_path / "bad.parquet")) == 0
+
+
+class _FakeStore:
+    """BlobStore's head() contract for SelfhostBlob: {"path": <file>} or None."""
+
+    def __init__(self, paths):
+        self.paths = paths
+
+    def head(self, key):
+        p = self.paths.get(key)
+        return None if p is None else {"path": p}
+
+
+_RANGES = ["bytes=-10", "bytes=-1", "bytes=-100000000", "bytes=0-0", "bytes=0-9", "bytes=5-9",
+           "bytes=17-", "bytes=1000-1999", "bytes=-4096"]
+
+
+def test_selfhostblob_get_range_behaviour(tmp_path, monkeypatch):
+    data = _parquet(60_000, row_group_size=500, cols=3)
+    p = tmp_path / "blob.bin"
+    p.write_bytes(data)
+    sb = blob.SelfhostBlob(root=str(tmp_path / "unused"))
+    sb._store = _FakeStore({KEY: str(p)})
+    assert sb.get(KEY) == data
+    for rng in _RANGES:
+        body, total, token = sb.get_range(KEY, rng)
+        assert (body, total, token) == blob._file_range(str(p), rng, None), rng
+        assert (body, total) == blob.bytes_range(sb.get(KEY), rng)[:2], rng   # a slice of get()
+    assert sb.get_range("absent/key.parquet", "bytes=-10") is None
+    # the version token is honoured: a stale if_match raises rather than mix two versions
+    _b, _t, token = sb.get_range(KEY, "bytes=-10")
+    assert sb.get_range(KEY, "bytes=-10", if_match=token)[0] == data[-10:]
+    with pytest.raises(IOError):
+        sb.get_range(KEY, "bytes=-10", if_match="0:0")
+    # and the footer read through it gives the whole file's metadata
+    monkeypatch.setattr(blob, "_FOOTER_TAIL_BYTES", 4096)  # force the second, conditional GET
+    buf = blob._r2_footer_buffer(sb, KEY)
+    assert pq.read_metadata(io.BytesIO(buf)).to_dict() == pq.read_metadata(io.BytesIO(data)).to_dict()
+
+
+class _DeletedOnRange(FakeS3):
+    """The tail GET finds the object; every footer-range GET finds it gone (404). After
+    `suffix_hits` tail GETs, the object is gone for the tail GET too - or never, if None."""
+
+    def __init__(self, objects, suffix_hits):
+        super().__init__(objects)
+        self.suffix_hits = suffix_hits
+        self.saved = dict(objects)
+
+    def get_object(self, Bucket, Key, Range=None, IfMatch=None):
+        suffix = Range is not None and Range.startswith("bytes=-")
+        n_suffix = sum(1 for c in self.calls if c[1] and c[1].startswith("bytes=-")) + (1 if suffix else 0)
+        if suffix and (self.suffix_hits is None or n_suffix <= self.suffix_hits):
+            self.objects = dict(self.saved)
+        else:
+            self.objects = {}
+        return super().get_object(Bucket=Bucket, Key=Key, Range=Range, IfMatch=IfMatch)
+
+
+def test_deleted_between_gets_on_every_attempt_reports_as_deleted(monkeypatch):
+    data = _parquet(60_000, row_group_size=500, cols=1)
+    monkeypatch.setattr(blob, "_FOOTER_TAIL_BYTES", 4096)
+    for fn in (blob.row_count, blob.read_metadata, blob.read_schema):
+        fake = _DeletedOnRange({KEY: data}, suffix_hits=3)
+        r2 = blob.R2Blob()
+        r2._client = fake
+        monkeypatch.setattr(blob, "_r2_routed", lambda r2=r2: r2)
+        if fn is blob.row_count:
+            assert fn(PATH) == 0                           # today's answer for a deleted object
+        else:
+            with pytest.raises(FileNotFoundError):
+                fn(PATH)
+        suffixes = [c for c in fake.calls if c[1].startswith("bytes=-")]
+        assert len(suffixes) == 4, fake.calls              # 3 attempts + the final check
+        _no_full_get(fake)
+
+
+def test_changing_on_every_attempt_but_present_raises(monkeypatch):
+    data = _parquet(60_000, row_group_size=500, cols=1)
+    monkeypatch.setattr(blob, "_FOOTER_TAIL_BYTES", 4096)
+    fake = _DeletedOnRange({KEY: data}, suffix_hits=None)  # the final tail GET still finds it
+    r2 = blob.R2Blob()
+    r2._client = fake
+    monkeypatch.setattr(blob, "_r2_routed", lambda: r2)
+    with pytest.raises(IOError):
+        blob.row_count(PATH)
+
+
+class _NoEtag(FakeS3):
+    def get_object(self, **kw):
+        resp = super().get_object(**kw)
+        resp.pop("ETag", None)
+        return resp
+
+
+def test_missing_etag_refuses_an_unconditional_second_get(monkeypatch):
+    data = _parquet(60_000, row_group_size=500, cols=1)
+    monkeypatch.setattr(blob, "_FOOTER_TAIL_BYTES", 4096)
+    fake = _NoEtag({KEY: data})
+    r2 = blob.R2Blob()
+    r2._client = fake
+    monkeypatch.setattr(blob, "_r2_routed", lambda: r2)
+    for fn in (blob.row_count, blob.read_metadata):
+        with pytest.raises(IOError):
+            fn(PATH)
+    assert all(c[1].startswith("bytes=-") for c in fake.calls), fake.calls   # no footer GET was sent
+    # a footer that fits in the first window needs no second GET, so no ETag is needed
+    monkeypatch.setattr(blob, "_FOOTER_TAIL_BYTES", 1 << 20)
+    assert blob.row_count(PATH) == 60_000

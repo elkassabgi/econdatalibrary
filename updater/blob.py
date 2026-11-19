@@ -408,13 +408,17 @@ def _r2_footer_buffer(r2, key: str) -> bytes | None:
     ranged GETs of the object's tail only. None when the object is absent (as R2Blob.get returns).
 
     WHY (2026-11-19). row_count used to r2.get() the whole object to read a few KB of footer. For
-    unctad_biotrademerch that is 18,834,328,493 bytes, ~9 minutes on every pass, and the 08-30 run died
-    in botocore's ResponseStreamingError at 17.3 GB - a count killed by a download it never needed.
+    unctad_biotrademerch that is 18,834,328,493 bytes, downloaded whole on every pass that admits the
+    source (it was budget-skipped in every pass from 11-13 to 11-18), and the 08-30 run died in
+    botocore's ResponseStreamingError at 17.3 GB - a count killed by a download it never needed.
 
     How: a suffix GET of the last _FOOTER_TAIL_BYTES gives the 8-byte trailer (footer length + "PAR1")
     and the object's total size (Content-Range). If the footer is longer than that tail, ONE more GET of
     exactly the footer's bytes, conditional on the first GET's ETag so a replaced object cannot splice
     two versions; a replaced object (412) or one deleted in between restarts the read, at most 3 times.
+    A tail response with no ETag cannot make that second GET conditional, so it raises IOError instead.
+    After 3 restarts one last suffix GET decides: an object deleted by then gives None (today's answer
+    for a deleted object); one still there but changing on every read raises IOError.
     The returned buffer is "PAR1" + footer + trailer: a parquet file with no data pages, whose metadata
     is byte-for-byte the footer pyarrow would parse from the whole object.
 
@@ -423,7 +427,7 @@ def _r2_footer_buffer(r2, key: str) -> bytes | None:
     have given it; a tail with bad magic or an impossible footer length is returned as-is, so pyarrow
     raises the same ArrowInvalid it raises on the whole object. Transport errors propagate as before."""
     from botocore.exceptions import ClientError
-    for attempt in range(3):
+    for _attempt in range(3):
         got = r2.get_range(key, f"bytes=-{_FOOTER_TAIL_BYTES}")
         if got is None:
             return None
@@ -436,10 +440,12 @@ def _r2_footer_buffer(r2, key: str) -> bytes | None:
         if need + 4 > total:
             return tail                                    # footer longer than the file: pyarrow refuses it
         if need > len(tail):
+            if not etag:
+                raise IOError(f"{key}: the tail GET carried no ETag - the footer GET cannot be conditional")
             try:
                 got = r2.get_range(key, f"bytes={total - need}-{total - 1}", if_match=etag)
             except ClientError as e:
-                if _is_precondition_failed(e) and attempt < 2:
+                if _is_precondition_failed(e):
                     continue                               # replaced between the two GETs: start over
                 raise
             if got is None:
@@ -448,6 +454,8 @@ def _r2_footer_buffer(r2, key: str) -> bytes | None:
             if len(tail) != need:
                 raise IOError(f"{key}: ranged GET of the {need}-byte footer returned {len(tail)} bytes")
         return b"PAR1" + tail[-need:]
+    if r2.get_range(key, f"bytes=-{_FOOTER_TAIL_BYTES}") is None:
+        return None                                        # deleted by now: answer as get() would (0 / FileNotFoundError)
     raise IOError(f"{key}: object changed during 3 footer reads")
 
 
