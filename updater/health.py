@@ -1063,7 +1063,10 @@ def stuck_line_text(l, now) -> str:
         parts.append(f"acknowledged (expires {l['ack_expires']})")
     if l.get("exit"):
         parts.append(f"exit: {l['exit']}")
-    return "  " + " · ".join(parts) + f' · "{l["excerpt"]}"'
+    # the release watch's verdict for this unit (send_digest.release_watch_join sets it on the STRUCTURED hit; this
+    # module never imports the watch). Absent everywhere else, so `--stuck` and the health gate are unchanged.
+    rel = f' | {l["release"]}' if l.get("release") else ""
+    return "  " + " · ".join(parts) + f' · "{l["excerpt"]}"' + rel
 
 
 def stuck_section_lines(res, now) -> list:
