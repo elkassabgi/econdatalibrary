@@ -104,6 +104,11 @@ def main() -> int:
                     help="byte-compare this many RANDOM tables against the resolver FIRST; "
                          "refuse to write unless every one matches")
     a = ap.parse_args()
+    # Holds the usda store region for this whole run (updater/writer_lock.py): jobs/ingest_usda.py
+    # takes the same lock while it rebuilds and swaps cubes. A dry run writes nothing.
+    if not a.dry_run:
+        from updater import writer_lock                                  # noqa: PLC0415
+        writer_lock.hold_or_refuse("usda_writer", "tools/derive_usda_bulk.py (a writing run)")
 
     import duckdb
     files = _files()

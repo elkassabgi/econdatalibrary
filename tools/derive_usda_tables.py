@@ -143,6 +143,12 @@ def main() -> int:
     a = ap.parse_args()
     if not a.dry_run and not a.bucket:
         ap.error("--bucket is required unless --dry-run")
+    # Holds the usda store region for this whole run (updater/writer_lock.py): jobs/ingest_usda.py
+    # takes the same lock while it rebuilds and swaps cubes, so a derive never reads a cube that is
+    # about to be replaced, and a rebuild never starts under a derive. A dry run writes nothing.
+    if not a.dry_run:
+        from updater import writer_lock                                  # noqa: PLC0415
+        writer_lock.hold_or_refuse("usda_writer", "tools/derive_usda_tables.py (a writing run)")
 
     files = sorted(f.replace("\\", "/")
                    for f in glob.glob(os.path.join(STORE, "**", "*.parquet"), recursive=True))

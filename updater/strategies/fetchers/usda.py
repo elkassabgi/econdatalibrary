@@ -22,10 +22,17 @@ census observations already inside the sector dumps: ingesting both creates exac
 (series_key, obs_date) duplicates and inflates every count. The ingest excludes them by default
 and this passes no flag to change that.
 
-CLEARING THE `_complete` SENTINEL IS THE WHOLE POINT OF THE REFRESH. The ingest marks a finished
-cube with a `_complete` file and SKIPS it on re-run — correct for resuming an interrupted
-backfill, and fatal for an update, because a new vintage would be downloaded and then ignored.
-The sentinels are removed for exactly the sectors whose datestamp moved.
+WHAT DECIDES A RE-INGEST IS THE INGEST, NOT THE SENTINEL (2026-11-19). Each live cube carries
+_build.json naming the dump it was parsed from (fname + size); jobs/ingest_usda.py skips a cube
+only when that names the dump now on disk, and otherwise rebuilds it whole in
+data/usda_staging/<cube>.new, verifies it (footers read, part rows == parsed rows) and swaps it
+in. This fetcher still removes `_complete` for every sector it handed a dump to; that is now only
+a hint - the ingest restores it on a cube that is already a verified build of the same file.
+BEFORE this, a cube without `_complete` was "resumed" by counting the LIVE cube's rows and
+skipping that many rows of the NEW dump, so a new vintage only appended its tail onto the old
+parts (the 2026-10-02 run left demographics' 10 parts all dated 2026-06-03 under a fresh
+`_complete`). The publish below uploads exactly the live cubes' parts; stale part indexes on R2
+are tools/usda_r2_stale_parts.py's job, run by hand.
 """
 from __future__ import annotations
 
@@ -261,28 +268,36 @@ def update(unit, since) -> Result:
 
     sys.path.insert(0, root)
     from jobs import ingest_usda as J
+    if os.path.normcase(os.path.abspath(J.OUT)) != os.path.normcase(os.path.abspath(out)):
+        raise TransientError(f"{SOURCE}: the ingest writes {J.OUT} but the store is {out} - "
+                             f"refusing to rebuild or publish a directory the other does not see")
 
     argv = sys.argv
     try:
         sys.argv = ["ingest_usda.py"]                          # no --with-census, see docstring
-        J.main()
+        # keep_old: each swapped cube's previous copy stays in data/usda_staging/<cube>.old
+        # until the publish below has run (dropped by J.drop_all_old()).
+        J.main(keep_old=True)
     except Exception as e:                                     # noqa: BLE001
         raise TransientError(f"{SOURCE}: ingest failed: {e!r}") from e
     finally:
         sys.argv = argv
 
+    # THE PUBLISH SET IS THE LIVE CUBES' PARTS, NOTHING ELSE (J.served_parts): never a glob that
+    # could pick up a staged or retired copy. A part index the new vintage no longer has (the old
+    # cube had more parts) is NOT deleted from R2 here - that is tools/usda_r2_stale_parts.py, a
+    # separate, explicitly-invoked step (backup, delete, key-set equality as the proof).
     total = 0
     published = 0
-    for p in sorted(glob.glob(os.path.join(out, "**", "*.parquet"), recursive=True)):
+    import pyarrow.parquet as pq
+    parts = J.served_parts()
+    for p in parts:
         if blob.publish_file(p):
             published += 1
-    import pyarrow.parquet as pq
-    for p in glob.glob(os.path.join(out, "**", "*.parquet"), recursive=True):
-        try:
-            total += pq.ParquetFile(p).metadata.num_rows
-        except Exception:                                      # noqa: BLE001
-            pass
-    print(f"[{SOURCE}] published {published:,} object(s), {total:,} rows in the store",
+        total += pq.read_metadata(p).num_rows
+    dropped = J.drop_all_old()          # each re-verifies its live cube before removing .old
+    print(f"[{SOURCE}] published {published:,} object(s), {total:,} rows in the store"
+          + (f"; retired the previous copy of {', '.join(dropped)}" if dropped else ""),
           flush=True)
     tally.added_unit(total, "quickstats")
 
