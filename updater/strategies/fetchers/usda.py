@@ -7,10 +7,11 @@ all, meaning the updater has never once attempted the whole Quick Stats database
 THE VINTAGE IS MEASURED (the R164 rule). NASS publishes the complete database as five dated
 sector dumps on its own datasets page:
 
-    https://www.nass.usda.gov/datasets/
-    -> qs.animals_products_20260801.txt.gz, qs.crops_20260801.txt.gz,
-       qs.demographics_20260801.txt.gz, qs.economics_20260801.txt.gz,
-       qs.environmental_20260801.txt.gz          IDENTICAL across two fetches
+    https://www.nass.usda.gov/datasets          (NO trailing slash - see THE 2026-10 MOVE below)
+    -> qs.animals_products_20261118.txt.gz, qs.crops_20261118.txt.gz,
+       qs.demographics_20261118.txt.gz, qs.economics_20261118.txt.gz,
+       qs.environmental_20261118.txt.gz
+       each linked as /sites/default/files/datasets/<fname>
 
 The five sectors are exactly the five cube directories in the store, and their record counts sum
 to the API's own get_counts total — the ingest's docstring records that check. So the token is a
@@ -26,13 +27,38 @@ WHAT DECIDES A RE-INGEST IS THE INGEST, NOT THE SENTINEL (2026-11-19). Each live
 _build.json naming the dump it was parsed from (fname + size); jobs/ingest_usda.py skips a cube
 only when that names the dump now on disk, and otherwise rebuilds it whole in
 data/usda_staging/<cube>.new, verifies it (footers read, part rows == parsed rows) and swaps it
-in. This fetcher still removes `_complete` for every sector it handed a dump to; that is now only
-a hint - the ingest restores it on a cube that is already a verified build of the same file.
+in. This fetcher still removes `_complete` for every sector whose dump it downloaded THIS run (a
+dump already on disk keeps it); that is now only a hint - the ingest restores it on a cube
+that is already a verified build of the same file.
 BEFORE this, a cube without `_complete` was "resumed" by counting the LIVE cube's rows and
 skipping that many rows of the NEW dump, so a new vintage only appended its tail onto the old
 parts (the 2026-10-02 run left demographics' 10 parts all dated 2026-06-03 under a fresh
 `_complete`). The publish below uploads exactly the live cubes' parts; stale part indexes on R2
 are tools/usda_r2_stale_parts.py's job, run by hand.
+
+THE GATE TOKEN IS STAMPED ONLY ON A CLEAN, FULLY COMMITTED RUN. finalize() stamps
+new_vintage="date-tail" (it is shared with the date-tail fetchers) and the strategy fills in
+the probed token only when new_vintage is None, so before 2026-11 the stored upstream_vintage
+was "date-tail", never equal to the probe, and every monthly cadence re-ingested ~57.8M rows
+whether NASS had published or not. update() now stamps the hash of the listing it used, and
+ONLY when the run is ok/no_change AND J.all_committed() says the five live cubes are verified
+builds of exactly the five listed files. A cube still on an older dump, or a build that did
+not verify, DEMOTES the run to partial (named transient unit "vintage_uncommitted") - returning
+None is not enough, because the strategy refills None with the probed token and the orchestrator
+stores it on ok. On a partial the stored vintage stays put and the next cadence tries again.
+
+THE 2026-10 MOVE. After the 2026-10-02 run NASS moved its site. Measured 2026-11-18 (HEAD):
+    https://www.nass.usda.gov/datasets/   -> 301 -> https://www-origin.nass.usda.gov/datasets -> 404
+    https://www.nass.usda.gov/datasets    -> 200, lists the five sector dumps
+    https://www.nass.usda.gov/datasets/qs.crops_20261118.txt.gz                     -> 404
+    https://www.nass.usda.gov/sites/default/files/datasets/qs.crops_20261118.txt.gz -> 200
+The old code listed from the slash URL and built downloads as PAGE + fname, so every pass after
+2026-10-02 ended transient_fail with a bare "page unreachable". Now the listing comes from the
+no-slash URL, each download URL is the page's own href joined to the PAGE constant (urljoin -
+never to the redirected response URL, which pointed at www-origin), and a 404/410 or a page
+that links no dump stays a TransientError but SAYS the publisher moved it and names the URL.
+It stays transient on purpose: a DefinitiveError is booked `partial`, which would turn usda's
+red SLA amber and log ~1 s runs into the admission-reserve history (review, 2026-11-18).
 """
 from __future__ import annotations
 
@@ -42,12 +68,13 @@ import os
 import re
 import shutil
 import sys
+from urllib.parse import urljoin
 
 import pyarrow as pa
 import requests
 
 from ... import blob, config
-from ...errors import DefinitiveError, TransientError
+from ...errors import TransientError
 from ..base import Result
 from ._common import (CURSOR_CAP, Tally, cursors_from_table, finalize, load_rotation,
                       merge_cursor_map, rotate_after, save_rotation)
@@ -80,25 +107,58 @@ SOURCE = "usda"
 # same public id — the ambiguity moves, it does not close. Fixing it means RE-KEYING
 # served ids, which is Ahmed's decision, not this declaration's (RESERVED).
 DEDUP = ("series_key", "obs_date", "REFERENCE_PERIOD_DESC")
-PAGE = "https://www.nass.usda.gov/datasets/"
+# NO trailing slash: "/datasets/" 301s to www-origin.nass.usda.gov/datasets, a 404 (measured
+# 2026-11-18). Downloads are urljoin(PAGE, href) - always this constant, never the response URL.
+PAGE = "https://www.nass.usda.gov/datasets"
 UA = {"User-Agent": "Econ-Fin Data Library admin@econdatalibrary.com"}
 SECTORS = ("animals_products", "crops", "demographics", "economics", "environmental")
 RE_DUMP = re.compile(r"(qs\.([a-z_]+)_(\d{8})\.txt\.gz)")
+RE_HREF = re.compile(r"""href\s*=\s*["']([^"']+)["']""", re.I)
+GONE = (404, 410)
 
 
 def _listing(sess=None) -> dict:
-    """{'crops': ('qs.crops_20260801.txt.gz', '20260801'), ...} from NASS's own page."""
+    """{'crops': ('qs.crops_20261118.txt.gz', '20261118', '<absolute download url>'), ...}
+    from NASS's own datasets page. Every failure is a TransientError (see the module note);
+    a gone page or a page linking no dump says so and names the URL."""
     sess = sess or requests.Session()
     try:
         r = sess.get(PAGE, headers=UA, timeout=180)
         r.raise_for_status()
     except Exception as e:                                     # noqa: BLE001
-        raise TransientError(f"{SOURCE}: NASS datasets page unreachable: {e!r}") from e
+        code = getattr(getattr(e, "response", None), "status_code", None)
+        if code in GONE:
+            raise TransientError(
+                f"{SOURCE}: NASS datasets page {PAGE} answers HTTP {code} - the publisher has "
+                f"MOVED OR REMOVED it, a retry will not fix this; find the new listing "
+                f"(docs/runbook/usda.md): {e!r}") from e
+        raise TransientError(f"{SOURCE}: NASS datasets page {PAGE} unreachable: {e!r}") from e
     out = {}
-    for fname, sector, date in RE_DUMP.findall(r.text):
-        if sector in SECTORS:
-            out[sector] = (fname, date)
+    for href in RE_HREF.findall(r.text):
+        # The filename is the LAST path segment matched whole, so the undated census files
+        # (qs.census2017.txt.gz) and anything that merely contains the pattern are skipped.
+        m = RE_DUMP.fullmatch(href.split("?", 1)[0].split("#", 1)[0].rsplit("/", 1)[-1])
+        if not m or m.group(2) not in SECTORS:
+            continue
+        fname, sector, date = m.groups()
+        if sector in out and out[sector][1] >= date:
+            continue                                 # a sector listed twice: keep the NEWEST
+        out[sector] = (fname, date, urljoin(PAGE, href))
+    if not out:
+        raise TransientError(
+            f"{SOURCE}: NASS datasets page {PAGE} answered but links no "
+            f"qs.<sector>_YYYYMMDD.txt.gz dump - the page layout changed, a retry will not fix "
+            f"this; existing data kept.")
     return out
+
+
+def _vintage_of(got: dict) -> str | None:
+    """The gate token: a hash over the five (sector, datestamp) pairs; None unless all five."""
+    if any(s not in got for s in SECTORS):
+        return None
+    pairs = sorted((s, got[s][1]) for s in SECTORS)
+    return f"{SOURCE}:" + hashlib.sha256(
+        "|".join(f"{s}={d}" for s, d in pairs).encode()).hexdigest()[:16]
 
 
 def current_vintage(unit):
@@ -108,11 +168,7 @@ def current_vintage(unit):
         got = _listing()
     except TransientError:
         return None
-    if len(got) < len(SECTORS):
-        return None
-    pairs = sorted((s, d) for s, (_f, d) in got.items())
-    return f"{SOURCE}:" + hashlib.sha256(
-        "|".join(f"{s}={d}" for s, d in pairs).encode()).hexdigest()[:16]
+    return _vintage_of(got)
 
 
 def _table_cursors(out: str) -> dict:
@@ -216,21 +272,24 @@ def update(unit, since) -> Result:
     if missing:
         # A sector the store holds is no longer published: a publisher change, not a quiet
         # month. Refusing beats re-ingesting four fifths of the database over the top of five.
-        raise DefinitiveError(
-            f"{SOURCE}: NASS no longer lists {', '.join(missing)} — the page offers "
-            f"{', '.join(sorted(got)) or 'nothing'}. Existing data kept.")
+        # TRANSIENT, not Definitive, for the reason in the module note (SLA colour, reserve).
+        raise TransientError(
+            f"{SOURCE}: NASS page {PAGE} no longer lists {', '.join(missing)} — it offers "
+            f"{', '.join(sorted(got)) or 'nothing'}; a retry will not fix this. Existing data kept.")
 
     tally = Tally()
-    fetched = []
+    present = []        # on disk at this listing's datestamp: the ingest may run over it
+    downloaded = []     # fetched THIS run: only these cubes are new
     for sector in SECTORS:
-        fname, date = got[sector]
+        fname, date, url = got[sector]
         dest = os.path.join(raw, fname)
         if os.path.exists(dest) and os.path.getsize(dest) > 1_000_000:
+            # NOT new: its sentinel is left alone. Whether the cube is rebuilt is the ingest's
+            # call (its _build.json against this dump), so an interrupted rebuild still finishes.
             print(f"[{SOURCE}] {sector}: {fname} already downloaded", flush=True)
-            fetched.append(sector)
+            present.append(sector)
             continue
-        url = PAGE + fname
-        print(f"[{SOURCE}] {sector}: downloading {fname}", flush=True)
+        print(f"[{SOURCE}] {sector}: downloading {url}", flush=True)
         try:
             with sess.get(url, headers=UA, timeout=3600, stream=True) as r:
                 r.raise_for_status()
@@ -244,14 +303,24 @@ def update(unit, since) -> Result:
                     os.remove(tmp)
                     raise TransientError(
                         f"{SOURCE}/{sector}: truncated download — {n:,} of {declared:,} bytes")
+                # THE SENTINEL MUST GO OR THE NEW VINTAGE IS PARSED AND DISCARDED - and it goes
+                # BEFORE the new dump lands, so a kill between the two leaves an old dump with
+                # no sentinel (harmless re-ingest), never a new dump behind a stale sentinel
+                # (which the next run would read as "already downloaded" and never ingest).
+                marker = os.path.join(out, sector, "_complete")
+                if os.path.exists(marker):
+                    os.remove(marker)
+                    print(f"[{SOURCE}] {sector}: cleared _complete so the new vintage is "
+                          f"ingested", flush=True)
                 os.replace(tmp, dest)
         except TransientError:
             raise
         except Exception as e:                                 # noqa: BLE001
             tally.transient_unit(sector)
-            print(f"[{SOURCE}] {sector}: download failed: {e!r}", flush=True)
+            print(f"[{SOURCE}] {sector}: download of {url} failed: {e!r}", flush=True)
             continue
-        fetched.append(sector)
+        downloaded.append(sector)
+        present.append(sector)
         # Remove stale dumps for this sector so the ingest cannot pick an older datestamp.
         for old in glob.glob(os.path.join(raw, f"qs.{sector}_*.txt.gz")):
             if os.path.basename(old) != fname:
@@ -260,16 +329,10 @@ def update(unit, since) -> Result:
                 except OSError:
                     pass
 
-    if not fetched:
+    if not present:
         raise TransientError(f"{SOURCE}: no sector dump downloaded this run")
-
-    # THE SENTINEL MUST GO OR THE NEW VINTAGE IS PARSED AND DISCARDED.
-    for sector in fetched:
-        marker = os.path.join(out, sector, "_complete")
-        if os.path.exists(marker):
-            os.remove(marker)
-            print(f"[{SOURCE}] {sector}: cleared _complete so the new vintage is ingested",
-                  flush=True)
+    print(f"[{SOURCE}] {len(downloaded)} sector dump(s) new this run, "
+          f"{len(present) - len(downloaded)} already on disk", flush=True)
 
     sys.path.insert(0, root)
     from jobs import ingest_usda as J
@@ -306,11 +369,37 @@ def update(unit, since) -> Result:
           flush=True)
     tally.added_unit(total, "quickstats")
 
+    # THE STAMP GUARD DEMOTES; IT DOES NOT RETURN None (review r2, 2026-11-19). A None here is
+    # refilled by bulk_snapshot_if_changed.run() with the probed token, and the orchestrator
+    # stores (res.new_vintage or vintage) on ok - so "ok but not all committed" would still seal
+    # the gate on a vintage the cubes do not hold. So when the five live cubes are not verified
+    # builds of exactly the five listed files (J.all_committed), the run books a NAMED transient
+    # unit: finalize returns partial, `ok` is False, upstream_vintage stays where it was, and the
+    # next cadence tries again. It is booked after the whole run, so the run's duration is real
+    # (a ~1 s partial would poison the admission reserve, R1947).
+    listed = [got[s][0] for s in SECTORS]
+    committed = J.all_committed(listed)
+    if not committed:
+        tally.transient_unit("vintage_uncommitted")
+        print(f"[{SOURCE}] vintage NOT stamped and run demoted: the live cubes are not all "
+              f"verified builds of {', '.join(listed)} (committed: {J.committed_inputs()})",
+              flush=True)
+
     cursors = _table_cursors(out)
     if len(cursors) >= CURSOR_CAP:
         print(f"[{SOURCE}] cursor set hit the {CURSOR_CAP:,} cap — usda has 69,704 catalogued "
               f"tables, so ~{69704 - CURSOR_CAP:,} are not individually reported this run and "
               f"their CSVs wait for a later one (the derive budget drains the rest across "
               f"runs; neither bound is silent)", flush=True)
-    return finalize(tally, total, since or None, source=SOURCE,
-                    series_cursors=cursors or None)
+    res = finalize(tally, total, since or None, source=SOURCE,
+                   series_cursors=cursors or None)
+    # finalize() stamps new_vintage="date-tail", which never equals current_vintage(), so the
+    # gate could never skip and every cadence re-ingested the whole database. Stamp the hash of
+    # the listing THIS run used, on a clean ok/no_change with all five cubes committed. A
+    # partial (including the demotion above) gets None; that is safe ONLY because the
+    # orchestrator does not advance upstream_vintage on a partial, whatever new_vintage says.
+    clean = res.status in ("ok", "no_change")
+    res.new_vintage = _vintage_of(got) if clean and committed else None
+    if clean:
+        print(f"[{SOURCE}] vintage stamped: {res.new_vintage}", flush=True)
+    return res
