@@ -389,6 +389,13 @@ def test_injected_client_gets_the_same_hook():
         c.put_object(Bucket="econ-data", Key="x", Body=b"x")
 
 
+def test_r2_backend_refused_after_t0(monkeypatch):
+    from core import cutover
+    monkeypatch.setattr(cutover, "is_cut_over", lambda: True)
+    with pytest.raises(T.Fatal, match="--backend selfhost"):
+        T.make_store("r2")
+
+
 def test_no_r2_credentials_is_rc1_not_a_traceback(monkeypatch, tmp_path, capsys):
     from core import r2_util
     monkeypatch.setattr(r2_util, "creds", lambda write=False: None)

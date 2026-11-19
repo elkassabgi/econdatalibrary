@@ -198,6 +198,9 @@ def make_store(backend: str, client=None):
         return blob.SelfhostBlob()
     if backend != "r2":
         raise Fatal(f"unknown backend {backend!r}")
+    from core.cutover import is_cut_over
+    if is_cut_over():                            # the R2 copy is frozen after T0: its answer would be stale
+        raise Fatal("after T0 the R2 copy is frozen - run with --backend selfhost")
     store = blob.R2Blob(write=False, pool=32)
     if client is not None:
         store._client = client
