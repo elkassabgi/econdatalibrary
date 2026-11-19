@@ -1,0 +1,21 @@
+# Acknowledgements for the stuck-run alarm (updater/health.py repeat_failures; the digest's first section).
+#
+# An ack MOVES a stuck line to the "acknowledged" sub-list until it expires. It never hides one, and it is not
+# `upstream_verified` (R762: that is a completeness claim with a long mute, the wrong tool for a standing failure).
+# Each entry is its own reviewed change: a pull request plus the adversarial review.
+#
+# Every entry needs:
+#   source_id, unit_id     exact ids, no wildcards (* ? [ ])
+#   token                  the sub-unit for a SUBUNIT line; omit it for a UNIT or KILLED line
+#   note_contains          at least 20 characters of the failure text; it must occur in the streak's dominant error
+#                          class (digits and URLs are compared normalised). A changed error alarms again.
+#   reason_quote           VERBATIM text from the publisher (no paraphrase, no placeholder)
+#   reason_url             the http(s) page the quote is from
+#   acked_utc, expires_utc YYYY-MM-DD; acked_utc not in the future; expires_utc at most 60 days after acked_utc
+#                          and at most 60 days from today
+# Optional: ledger, by.
+# ONE invalid entry voids the WHOLE file: the digest says so and every line shows.
+# After expires_utc the line returns to the main list marked ACK EXPIRED. An ack that matches nothing is listed
+# as "stale ack - remove it".
+# Quotes and their sources only: no operating detail belongs in this file.
+acks: []

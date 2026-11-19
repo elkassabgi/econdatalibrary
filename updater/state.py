@@ -453,8 +453,18 @@ class StateStore:
         return [dict(r) for r in self.db.execute(
             "SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,))]
 
+    def all_runs(self):
+        """Every runs row, ordered by (ts_utc, id): the input of health.repeat_failures (the stuck-run alarm).
+        One query, health.read_runs, so this reader and the digest's read-only one cannot drift. `runs` is small
+        (4,428 rows on the state copy of 2026-11-17)."""
+        from .health import read_runs                                          # noqa: PLC0415
+        return read_runs(self.db)
+
     def last_kill_utc(self) -> dict:
-        """{(source_id, unit_id): ts_utc of its newest `killed_external` run} - for ORDERING only.
+        """{(source_id, unit_id): ts_utc of its newest `killed_external` run} - for ORDERING here.
+
+        It is no longer the only reader of `killed_external`: health.repeat_failures (the stuck-run alarm) reads the
+        same rows to ALARM, counting a kill as a non-success run of its unit's streak (labelled KILLED).
 
         See orchestrate.last_turn_utc: a hard-stopped unit writes no unit_state stamp, so this row is
         the only record that it had a turn. `runs` is small (1,840 rows on 2026-09-17), so one

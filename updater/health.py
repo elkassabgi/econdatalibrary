@@ -11,12 +11,15 @@ freshness is judged on DATA recency (last_obs drift), not just on last_success.
   python -m updater.health           # colored table + write data/_aqueduct/health.json
   python -m updater.health --json    # emit JSON only
   python -m updater.health --red     # only show sources needing attention; exit 1 if any
+  python -m updater.health --stuck   # the stuck-run alarm (same failure run after run), read-only; writes nothing
 """
 from __future__ import annotations
 import json
+import os
 import re as _re
 import sys
-from datetime import datetime, time as dtime, timedelta, timezone
+from collections import Counter
+from datetime import date, datetime, time as dtime, timedelta, timezone
 
 from . import config, registry
 from .state import StateStore
@@ -28,6 +31,16 @@ SLA_TOLERANCE = 2.0
 DATA_SLACK_PERIODS = 1.0
 ATTENTION_STATUSES = ("partial", "definitive_fail", "transient_fail", "running")
 STUCK_TRANSIENT_DAYS = 14   # actively attempted, failing, and this far from a success
+# STUCK-RUN ALARM (repeat_failures below; phase 1 = SHOWN in health.json, `--stuck` and the digest, NOT gated).
+# Measured on the state copy of 2026-11-17 (4,428 runs rows): unit-grain N = 2, 3 and 4 fire the same 6 eligible
+# units and N = 5 drops a weekly giant with 4 runs over 80 days, so 3; the 24 h span keeps three retries inside one
+# night from firing. Sub-unit grain N = 4, 5 and 6 fire the same 9 tokens in 2 sources, so 5, over at least 7 days.
+STUCK_RUNS = 3
+STUCK_MIN_SPAN_HOURS = 24.0
+STUCK_SUBUNIT_RUNS = 5
+STUCK_SUBUNIT_MIN_SPAN_DAYS = 7.0
+# An acknowledgement in updater/stuck_acks.yaml lives at most this long: it MOVES a line, it never mutes one (R762).
+STUCK_ACK_MAX_DAYS = 60
 # How long an `upstream_verified` claim is trusted before it must be re-probed. A
 # dataset that is finished today can resume publishing tomorrow, so the exemption it
 # buys is deliberately perishable rather than permanent.
@@ -442,6 +455,690 @@ def csv_retry_backlog_of(entry, now) -> "dict | None":
             "text": f"CSV-RETRY BACKLOG: {n:,} ids, {oldest} - served CSVs lag the store"}
 
 
+# =============================================================================================== STUCK-RUN ALARM
+# THE SAME FAILURE RUN AFTER RUN (2026-11-18). Nothing above reads the run HISTORY: _stuck_transient reads
+# unit_state, which is the LAST run only, is blind to `partial` by design, to sub-units, and to `killed_external`,
+# which writes no unit_state row. usda failed every run for 10 days with the same 404, and its digest row read the
+# same on day 1 and day 45, because `tried=` makes it look fresh.
+#
+# The rules read ONLY the `runs` rows, grouped per (source_id, unit_id) and ordered by (ts_utc, id), so a later
+# success clears an alarm at once and there is no memory between days (R277: a digest is not a queue of ghosts).
+#   SUCCESS      ok, no_change, or a partial that is not all-failed (a clean deferral partial is a success)
+#   NON-SUCCESS  transient_fail, definitive_fail, killed_external, or a partial whose first "(a)/(b) sub-unit(s)
+#                transient-failed | returned 200 but parsed 0 | REFUSED" has a == b, searched in the FULL note
+#   NEUTRAL      window_stopped, running, and a transient_fail that reports "(+N rows)" with N > 0: a capped or
+#                hard-limited pass that merged rows is PROGRESSING, not stuck. Replayed over 60 days of runs,
+#                eurostat (capped, +3-17M rows a pass) turned this alarm on and off 4 times without it.
+#                NEUTRAL neither extends nor breaks a streak.
+#   any other status is UNKNOWN: it breaks the streak and the section counts it, so it is never silent.
+# Rule U: >= STUCK_RUNS trailing NON-SUCCESS runs spanning >= STUCK_MIN_SPAN_HOURS. The error text need not be the
+#   same (insee_melodi's 12-run streak had 5 normalised classes; an equal-class rule resets on a reworded message),
+#   but the line says SAME or "n classes". KILLED when the streak holds a killed_external run: that unit cannot
+#   finish inside its window, and a retry will not fix it.
+# Rule S: a failed-sub-unit token named in the unit's runs of the last STUCK_SUBUNIT_MIN_SPAN_DAYS (back to its
+#   newest ok/no_change), and named in >= STUCK_SUBUNIT_RUNS runs over >= STUCK_SUBUNIT_MIN_SPAN_DAYS. Walking back, only ok/no_change, or a partial whose COMPLETE deferral list
+#   (and complete failure list) leaves the token out - so the token was attempted and did not fail - breaks the
+#   streak. Any other run that does not name it is UNKNOWN: a rotating slice that never attempted the token
+#   (stat_slovenia's 1012308S/1517309S), or a truncated bracket ("+N more]"). UNKNOWN neither counts nor breaks,
+#   and the line prints how many there were.
+# Lines that share one error class and one first-failure day are ONE line (on 2026-10-31 one upstream outage would
+# otherwise be 66 lines). A registry `desktop_lane: skip` unit is listed apart, under "held by the registry", with
+# its exit: the scheduled pass does not attempt it, so its streak cannot clear by itself (giant units section).
+# PHASE 1 CHANGES NO VERDICT AND NO GATE. A gate that turns red at once on standing items is R244's "always red,
+# so not read". Gating an unacknowledged line is a separate reviewed change after 14 days of digests.
+# Denylisted sources are NEVER named or counted here (R888), and free text is scrubbed of their ids, failing closed.
+_STUCK_FAIL_STATUSES = ("transient_fail", "definitive_fail", "killed_external")
+_STUCK_NEUTRAL_STATUSES = ("window_stopped", "running")
+_STUCK_SUCCESS_STATUSES = ("ok", "no_change", "partial")
+_STUCK_ALL_FAILED = _re.compile(r"(\d+)/(\d+) sub-unit\(s\) (?:transient-failed|returned 200 but parsed 0|REFUSED)")
+_STUCK_PROGRESS = _re.compile(r"\(\+([1-9]\d*) (?:new )?rows\)")
+# The failed-sub-unit brackets _common.finalize (and census's REFUSED note) write.
+_STUCK_BRACKET = _re.compile(
+    r"sub-unit\(s\) (?:transient-failed; will retry\s*|returned 200 but parsed 0 rows[^\[]*|REFUSED by the API[^\[]*)"
+    r"\[(.*?)\](?:;|$)", _re.S)
+# The deferral bracket (_common.finalize, both wordings health._DEFERRAL_BASE reads): sub-units NOT attempted.
+# Matched by the stable prefix of both stored tails (health._DEFERRAL_BASE is the one reader of the old tail's text).
+_STUCK_DEFERRED = _re.compile(r"deferred by budget[^\[;]{0,40} \[(.*?)\](?:;|$)", _re.S)
+_STUCK_ITEM_SPLIT = _re.compile(r", (?=[^,:\[\]]{1,120}: )")
+_STUCK_MORE = _re.compile(r"(?:^|, )\+\d+ more$")          # _common._named's elision, always at the bracket's end
+_STUCK_SHRINK = _re.compile(r"(?:^|\[|, )([^\s,\[\]]+?): refusing shrink")
+STUCK_ACKS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stuck_acks.yaml")
+DISCONTINUED_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "discontinued.yaml")
+STUCK_ACK_MIN_NOTE = 20          # a note_contains shorter than this matches too much to scope an ack
+STUCK_NEW_WITHIN_HOURS = 24.0    # NEW = fires now, and did not on its runs up to (newest runs row - this); fixed window
+_ACK_KEYS = {"source_id", "unit_id", "token", "note_contains", "reason_quote", "reason_url", "ledger",
+             "acked_utc", "expires_utc", "by"}
+_ACK_REQUIRED = ("source_id", "unit_id", "note_contains", "reason_quote", "reason_url", "acked_utc", "expires_utc")
+_RUNS_COLS = ("id", "ts_utc", "source_id", "unit_id", "status", "note")
+STUCK_WITHHELD = "[withheld]"
+STUCK_WITHHELD_NO_GATE = "[withheld: the denylist could not be read]"
+# What this alarm cannot see, printed under every section so a quiet one is not read as "nothing is wrong".
+STUCK_GAPS = ("  not seen here: units never attempted (the SLA gate and the route watchdog cover them), a probe "
+              "that always answers no_change, deferral-only partials (tools/audit_sweep_advance.py); "
+              "window_stopped handling has no real runs rows yet; and a local pass that loses the state push "
+              "(another writer won) drops its runs rows, so the section undercounts after such a pass. "
+              "\"new\" means: crossed within a fixed 24 h before the newest runs row, not since the last digest - "
+              "after a skipped or late digest a 24-48 h old crossing is not marked new (it is still counted), and "
+              "with no runs between two digests a line can be marked new twice")
+
+
+def read_runs(con) -> list:
+    """Every `runs` row as a dict, ordered by (ts_utc, id): the ONE query the alarm reads, on ANY sqlite connection
+    (StateStore.all_runs, `--stuck`'s read-only one, and the digest's own). Raises when there is no runs table:
+    the callers SAY the alarm could not be read, never print an empty section."""
+    return [dict(zip(_RUNS_COLS, r)) for r in con.execute(
+        "SELECT id, ts_utc, source_id, unit_id, status, note FROM runs ORDER BY ts_utc, id")]
+
+
+def read_runs_readonly(path) -> list:
+    """read_runs over a READ-ONLY connection of its own. A missing file raises (mode=ro never creates one)."""
+    import sqlite3                                                           # noqa: PLC0415
+    if not os.path.isfile(path):
+        raise FileNotFoundError(path)
+    con = sqlite3.connect("file:" + str(path).replace("\\", "/") + "?mode=ro", uri=True)
+    try:
+        return read_runs(con)
+    finally:
+        con.close()
+
+
+def discontinued_ids_or_none(path=None):
+    """Source ids in updater/discontinued.yaml, or None when the file cannot be read (then nothing is excluded by
+    that rule, and the section says so: an unreadable exclusion list must not hide lines)."""
+    try:
+        import yaml                                                          # noqa: PLC0415
+        with open(path or DISCONTINUED_PATH, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh) or {}
+        return {s["source_id"] for s in doc.get("sources", []) if isinstance(s, dict) and s.get("source_id")}
+    except Exception:                                                        # noqa: BLE001
+        return None
+
+
+def load_stuck_acks_doc(path=None):
+    """The parsed updater/stuck_acks.yaml, or the exception that reading it raised (repeat_failures reports it and
+    ignores the whole file)."""
+    try:
+        import yaml                                                          # noqa: PLC0415
+        with open(path or STUCK_ACKS_PATH, encoding="utf-8") as fh:
+            return yaml.safe_load(fh)
+    except Exception as e:                                                   # noqa: BLE001
+        return e
+
+
+def gated_ids_or_none():
+    """The committed denylist's ids (lower case), or None when it cannot be read (then free text is withheld)."""
+    try:
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        from core.gen_denylist import committed_gate                         # noqa: PLC0415
+        return {s.lower() for s in committed_gate()}
+    except Exception:                                                        # noqa: BLE001
+        return None
+
+
+def _stuck_ts(s):
+    try:
+        t = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+def _stuck_all_failed(note) -> bool:
+    m = _STUCK_ALL_FAILED.search(note)
+    return bool(m) and m.group(1) == m.group(2)
+
+
+def _stuck_class(status, note) -> str:
+    """'success' | 'fail' | 'neutral' | 'unknown' for one runs row (rules in the block comment above)."""
+    if status in _STUCK_NEUTRAL_STATUSES:
+        return "neutral"
+    if status == "transient_fail" and _STUCK_PROGRESS.search(note):
+        return "neutral"
+    if status in _STUCK_FAIL_STATUSES:
+        return "fail"
+    if status == "partial" and _stuck_all_failed(note):
+        return "fail"
+    if status in _STUCK_SUCCESS_STATUSES:
+        return "success"
+    return "unknown"
+
+
+def _stuck_norm_text(note) -> str:
+    """Digits become N and URLs become URL, so a count or a date does not make two runs of one failure differ."""
+    n = _re.sub(r"https?://\S+", "URL", str(note or ""))
+    n = _re.sub(r"\d+", "N", n)
+    return " ".join(n.split())
+
+
+def _stuck_norm(status, note) -> str:
+    """The error CLASS of a run: the status, the normalised text, and the URL HOSTS it names. The hosts are kept
+    apart from the 70-character prefix so they cannot be cut off: two same-day 404s from different publishers are
+    two failures, not one outage (review of #302)."""
+    hosts = ",".join(sorted(set(_re.findall(r"https?://([^/\s'\"]+)", str(note or "")))))
+    return f"{status}|{_stuck_norm_text(note)[:70]}" + (f"|{hosts}" if hosts else "")
+
+
+def _stuck_items(body) -> list:
+    if body.lstrip().startswith("{"):
+        # ecb/estat name a failed dataflow by its key dict: "{'agency': 'ECB', 'id': 'CSEC', ...}: error, {...}".
+        # Splitting that on ", " gave tokens such as 'dsd' and 'dsd_agency' (the replay of 2026-09-21).
+        out = []
+        for d in _re.findall(r"\{[^{}]*\}", body):
+            ag, ident = _re.search(r"'agency':\s*'([^']*)'", d), _re.search(r"'id':\s*'([^']*)'", d)
+            out.append(f"{ag.group(1)}/{ident.group(1)}" if (ag and ident) else d[:80])
+        return out
+    parts = _STUCK_ITEM_SPLIT.split(body) if ": " in body else body.split(", ")
+    out = []
+    for part in parts:
+        t = part.split(": ")[0].strip()[:80]
+        if t and not _re.fullmatch(r"\+\d+ more", t):
+            out.append(t)
+    return out
+
+
+def _stuck_view(note) -> tuple:
+    """(failed tokens, blind, deferred) for one note. `blind` is True when the run may hold failed sub-units this
+    cannot see: a failure bracket ending in "+N more", or a "refusing shrink" with no parseable file. `deferred` is
+    the set of sub-units the run did NOT attempt when its deferral bracket is complete, else None."""
+    toks, blind = set(), False
+    for m in _STUCK_BRACKET.finditer(note):
+        body = m.group(1).strip()
+        if _STUCK_MORE.search(body):
+            blind = True
+        toks.update(_stuck_items(body))
+    for m in _STUCK_SHRINK.finditer(note):
+        toks.add("shrink:" + m.group(1)[:80])
+    if "refusing shrink" in note and not _STUCK_SHRINK.search(note):
+        blind = True
+    deferred = None
+    for m in _STUCK_DEFERRED.finditer(note):
+        body = m.group(1).strip()
+        if _STUCK_MORE.search(body):
+            deferred = None
+            break
+        deferred = (deferred or set()) | set(_stuck_items(body))
+    return toks, blind, deferred
+
+
+def _stuck_excerpt(note) -> str:
+    return " ".join(str(note or "").split())[:100]
+
+
+def _stuck_unit(runs):
+    """Rule U for one unit's runs [(ts, id, status, note)], oldest first: the line dict, or None."""
+    streak = []
+    for ts, _rid, status, note in reversed(runs):
+        kind = _stuck_class(status, note)
+        if kind == "neutral":
+            continue
+        if kind == "fail":
+            streak.append((ts, status, note))
+            continue
+        break
+    k = len(streak)
+    newest_t, first_t = (_stuck_ts(streak[0][0]), _stuck_ts(streak[-1][0])) if streak else (None, None)
+    span_h = (newest_t - first_t).total_seconds() / 3600.0 if (newest_t and first_t) else -1.0
+    if k >= STUCK_RUNS and span_h >= STUCK_MIN_SPAN_HOURS:
+        classes = Counter(_stuck_norm(st, n) for _ts, st, n in streak)
+        top, top_n = classes.most_common(1)[0]
+        return {"grain": "KILLED" if any(st == "killed_external" for _ts, st, _n in streak) else "UNIT",
+                "runs": k, "since": streak[-1][0], "span_d": round(span_h / 24.0, 1),
+                "n_classes": len(classes), "class_key": top, "top_class": f"{top_n}x {top.split('|')[1]}",
+                "excerpt": _stuck_excerpt(streak[0][2]),
+                # what an ack is checked against: every run of the streak, NEWEST first (see _stuck_ack_for)
+                "ack_texts": {None: [(ts, _stuck_norm_text(n)) for ts, _st, n in streak]},
+                "tokens": [], "unknown": 0}
+    return None
+
+
+def _stuck_subunit(runs):
+    """Rule S for one unit: (line dict or None, number of its runs that are blind to some sub-units)."""
+    seq = []
+    for ts, _rid, status, note in runs:
+        rc = _stuck_class(status, note)
+        if rc != "neutral":                    # a budget stop or a progressing pass says nothing of a sub-unit
+            toks, blind, deferred = _stuck_view(note)
+            seq.append((ts, status, note, toks, blind, deferred))
+    n_blind = sum(1 for s in seq if s[4])
+    if not seq:
+        return None, n_blind
+    # CANDIDATES: every token named in the last STUCK_SUBUNIT_MIN_SPAN_DAYS before the unit's newest run, back to
+    # its newest ok/no_change. Not only the newest run's tokens: a rotator's newest slice often did not attempt
+    # the token, and keying on it alone turned ecb's line on and off with the slices (replay, 2026-09-19..10-11).
+    newest_t = _stuck_ts(seq[-1][0])
+    cands: set = set()
+    for ts, status, _note, toks, _blind, _deferred in reversed(seq):
+        if status in ("ok", "no_change"):
+            break
+        t = _stuck_ts(ts)
+        if newest_t and t and (newest_t - t).total_seconds() > STUCK_SUBUNIT_MIN_SPAN_DAYS * 86400:
+            break
+        cands |= toks
+    fired = {}
+    for tok in sorted(cands):
+        count = unknown = 0
+        first = last = None
+        texts = []
+        for ts, status, note, toks, blind, deferred in reversed(seq):
+            if tok in toks:
+                count += 1
+                first = ts
+                last = last or (ts, note)
+                texts.append((ts, _stuck_norm_text(note)))
+                continue
+            if status in ("ok", "no_change") or (not blind and deferred is not None and tok not in deferred):
+                break                          # attempted, and it did not fail
+            unknown += 1
+        a, b = _stuck_ts(first), _stuck_ts(last[0] if last else None)
+        span_d = (b - a).total_seconds() / 86400.0 if (a and b) else -1.0
+        if count >= STUCK_SUBUNIT_RUNS and span_d >= STUCK_SUBUNIT_MIN_SPAN_DAYS:
+            fired[tok] = (count, unknown, first, span_d, last, texts)
+    if not fired:
+        return None, n_blind
+    _lts, last_note = max(v[4] for v in fired.values())
+    return {"grain": "SUBUNIT", "runs": max(v[0] for v in fired.values()),
+            "unknown": max(v[1] for v in fired.values()), "since": min(v[2] for v in fired.values()),
+            "span_d": round(max(v[3] for v in fired.values()), 1), "tokens": sorted(fired),
+            "n_classes": 1, "class_key": "", "top_class": "", "excerpt": _stuck_excerpt(last_note),
+            "ack_texts": {t: v[5] for t, v in fired.items()}}, n_blind
+
+
+def _ack_date(v):
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    s = str(v).strip()
+    return date.fromisoformat(s[:10]) if len(s) >= 10 else date.fromisoformat(s)
+
+
+def _validate_stuck_acks(doc, today) -> tuple:
+    """([valid ack], None) or ([], why). ONE bad entry voids the WHOLE file, and the section says so: the file
+    fails loud and toward showing every line (an ack that cannot be trusted is not partly trusted)."""
+    if isinstance(doc, BaseException):
+        return [], f"could not be read ({type(doc).__name__})"
+    if doc is None:
+        return [], None
+    if not isinstance(doc, dict) or set(doc) - {"acks"}:
+        return [], "the top level must be a mapping whose only key is `acks`"
+    items = doc.get("acks")
+    if items is None:
+        return [], None
+    if not isinstance(items, list):
+        return [], "`acks` must be a list"
+    out = []
+    for i, a in enumerate(items, 1):
+        where = f"ack #{i}"
+        if not isinstance(a, dict):
+            return [], f"{where} is not a mapping"
+        extra = sorted(set(a) - _ACK_KEYS)
+        if extra:
+            return [], f"{where} has unknown key(s) {extra}"
+        for k in _ACK_REQUIRED:
+            if a.get(k) is None or not str(a.get(k)).strip():
+                return [], f"{where} has no {k}"
+        if "token" in a and (not isinstance(a["token"], str) or not a["token"].strip()):
+            return [], f"{where} has an empty token"
+        for k in ("source_id", "unit_id", "token"):
+            if k in a and any(c in str(a[k]) for c in "*?[]"):
+                return [], f"{where}: {k} holds a wildcard"
+        if len(str(a["note_contains"]).strip()) < STUCK_ACK_MIN_NOTE:
+            return [], f"{where}: note_contains is shorter than {STUCK_ACK_MIN_NOTE} characters"
+        quote = str(a["reason_quote"]).strip()
+        if quote.startswith("<") and quote.endswith(">"):
+            return [], f"{where}: reason_quote is a placeholder, not a verbatim quote"
+        if not _re.fullmatch(r"https?://\S+", str(a["reason_url"]).strip()):
+            return [], f"{where}: reason_url is not an http(s) URL"
+        try:
+            acked, expires = _ack_date(a["acked_utc"]), _ack_date(a["expires_utc"])
+        except (TypeError, ValueError):
+            return [], f"{where}: acked_utc / expires_utc is not a date"
+        if acked > today:
+            return [], f"{where}: acked_utc {acked} is in the future"
+        if expires < acked or (expires - acked).days > STUCK_ACK_MAX_DAYS or (expires - today).days > STUCK_ACK_MAX_DAYS:
+            return [], f"{where}: expires_utc {expires} is more than {STUCK_ACK_MAX_DAYS} days away"
+        out.append({"source_id": str(a["source_id"]), "unit_id": str(a["unit_id"]),
+                    "token": a.get("token"), "note_contains": str(a["note_contains"]).strip(),
+                    "acked": acked, "expires": expires})
+    return out, None
+
+
+def _stuck_ack_for(acks, sid, uid, token, texts):
+    """The ack covering this line, or (None, None). `texts` are the streak's (ts, normalised note), NEWEST first.
+    It must match the NEWEST run's error AND every run since acked_utc: an error that changed after the ack was
+    written is a new failure, and it alarms (review of #302: matching the dominant class kept a changed error
+    out of K)."""
+    for i, a in enumerate(acks):
+        if not (a["source_id"] == sid and a["unit_id"] == uid and a["token"] == token and texts):
+            continue
+        nc = _stuck_norm_text(a["note_contains"])
+        since = [t for ts, t in texts if (_stuck_ts(ts) is None or _stuck_ts(ts).date() >= a["acked"])]
+        if nc in texts[0][1] and all(nc in t for t in since):
+            return i, a
+    return None, None
+
+
+def _stuck_apply_acks(line, acks, today, used) -> list:
+    """[(line, 'ack'|'stuck')]. An ack covers its exact source, unit, token and error text only: the newest run and
+    every run since acked_utc must carry it, so a new token or a changed error on the same unit alarms normally.
+    An EXPIRED ack puts the line back, marked ACK EXPIRED. Either way the line keeps its "failing since" (the ack
+    does not restart the clock)."""
+    sid, uid = line["source_id"], line["unit_id"]
+    keys = line["tokens"] if line["grain"] == "SUBUNIT" else [None]
+    acked, expired, open_ = {}, {}, []
+    for tok in keys:
+        i, a = _stuck_ack_for(acks, sid, uid, tok, line["ack_texts"].get(tok, []))
+        if a is None:
+            open_.append(tok)
+            continue
+        used.add(i)
+        if today > a["expires"]:
+            expired[tok] = a["expires"]
+        else:
+            acked[tok] = a["expires"]
+    out = []
+    if open_ or expired:
+        v = dict(line)
+        if line["grain"] == "SUBUNIT":
+            v["tokens"] = sorted(t for t in open_ + list(expired))
+        if expired:
+            v["ack_expired"] = min(expired.values()).isoformat()
+        out.append((v, "stuck"))
+    if acked:
+        v = dict(line)
+        if line["grain"] == "SUBUNIT":
+            v["tokens"] = sorted(acked)
+        v["ack_expires"] = min(acked.values()).isoformat()
+        out.append((v, "ack"))
+    return out
+
+
+def _stuck_group(lines) -> list:
+    """Lines of the SAME single error class whose streaks began the SAME day become ONE line: one upstream outage
+    is one thing to read, not 66 (the replay of 2026-10-31)."""
+    buckets: dict = {}
+    for l in lines:
+        key = ((l["grain"], l["class_key"], str(l["since"])[:10])
+               if l["grain"] in ("UNIT", "KILLED") and l["n_classes"] == 1 and not l.get("ack_expired") else None)
+        buckets.setdefault(key if key else id(l), []).append(l)
+    out = []
+    for members in buckets.values():
+        if len(members) == 1:
+            out.append(members[0])
+            continue
+        members = sorted(members, key=lambda x: (x["source_id"], x["unit_id"]))
+        g = dict(members[0])
+        g.update(group=[f"{m['source_id']}/{m['unit_id']}" for m in members],
+                 group_sources=sorted({m["source_id"] for m in members}),
+                 runs=max(m["runs"] for m in members), runs_min=min(m["runs"] for m in members),
+                 since=min(m["since"] for m in members), last_tried=max(m["last_tried"] for m in members),
+                 last_success=max((m["last_success"] for m in members if m["last_success"]), default=None),
+                 new=any(m.get("new") for m in members))
+        out.append(g)
+    return out
+
+
+def _stuck_scrubber(gated):
+    """A text filter for every free-text field. FAILS CLOSED: with no readable denylist nothing free is shown."""
+    if gated is None:
+        return lambda s: STUCK_WITHHELD_NO_GATE if s else s
+    low = sorted(g for g in gated if g)
+    if not low:
+        return lambda s: s
+    # WHOLE-WORD BY LETTERS: an id is withheld wherever no LETTER touches it on either side. Digits, "_", "/", "-",
+    # "." and brackets are all bounds, so "<id>2", "2<id>", "<id>_table", "x/<id>", "<id>.csv" and "[<id>]" are
+    # caught; only an id inside a longer word ("spilled") is not a mention. Digits were bounds-not on the first cut
+    # and let "<id>2" through (re-verify of #302): a gated id is never named, so the rule leans to withholding.
+    pat = _re.compile(r"(?<![a-z])(?:" + "|".join(_re.escape(g) for g in low) + r")(?![a-z])")
+    return lambda s: STUCK_WITHHELD if (s and pat.search(str(s).lower())) else s
+
+
+def repeat_failures(runs_rows, entries, discontinued, acks, now, gated=None) -> dict:
+    """The stuck-run alarm, a PURE function of its inputs (the rules are in the block comment above).
+
+    runs_rows    the whole `runs` table as mappings (read_runs); entries the registry's `sources` list;
+    discontinued a set of source ids, or None when updater/discontinued.yaml could not be read;
+    acks         the parsed updater/stuck_acks.yaml (or the exception reading it raised); gated the lower-case
+                 denylist ids, or None (then every free-text field is withheld). now a tz-aware datetime.
+    Returns {"stuck", "acknowledged", "held", "ack_expired", "stale_acks", "acks_error", "excluded",
+    "excluded_named", "blind", "read", "discontinued_unreadable", "new"}. A source with no registry entry, or a
+    denylisted one, is left out SILENTLY: neither named nor counted."""
+    reg = {e.get("source_id"): e for e in (entries or []) if isinstance(e, dict)}
+    disc = discontinued if discontinued is not None else set()
+    scrub = _stuck_scrubber(gated)
+    per: dict = {}
+    n_rows, newest, unknown_status = 0, None, Counter()
+    for r in runs_rows:
+        n_rows += 1
+        ts = r["ts_utc"]
+        if ts is not None and (newest is None or str(ts) > newest):
+            newest = str(ts)
+        per.setdefault((str(r["source_id"]), str(r["unit_id"])), []).append(
+            (str(ts or ""), r["id"] or 0, r["status"], str(r["note"] or "")))
+    newest_t = _stuck_ts(newest)
+
+    def excluded_why(sid):
+        if gated is not None and sid.lower() in gated:
+            return "gated"
+        e = reg.get(sid)
+        if e is None:
+            return "no_registry"
+        if not bool(e.get("live", False)):              # registry.to_units' reading of the flag (R676)
+            return "not_live"
+        if e.get("paused"):
+            return "paused"
+        if sid in disc:
+            return "discontinued"
+        return None
+
+    def fires(runs):
+        return _stuck_unit(runs) or _stuck_subunit(runs)[0]
+
+    fired, held, excluded, excluded_named, blind = [], [], Counter(), {}, Counter()
+    for (sid, uid), runs in sorted(per.items()):
+        runs.sort(key=lambda x: (x[0], x[1]))
+        why = excluded_why(sid)
+        if why in ("gated", "no_registry"):
+            continue                                    # silent: a count is a mention (R888)
+        line = _stuck_unit(runs)
+        sub, n_blind = _stuck_subunit(runs)
+        hit = line or sub
+        if why:
+            if hit:
+                excluded[why] += 1
+                excluded_named.setdefault(why, set()).add(sid)
+            continue
+        for _ts, _rid, status, note in runs:
+            if _stuck_class(status, note) == "unknown":
+                unknown_status[str(status)] += 1
+        if n_blind:
+            blind[sid] += n_blind
+        if not hit:
+            continue
+        # NEW: fires now, but did NOT fire on its runs up to the table's newest run minus STUCK_NEW_WITHIN_HOURS. A unit
+        # can record 2-3 runs between digests; asking only whether its LAST run crossed left 8 of 12 real first
+        # appearances unmarked in a 60-day replay (review of #302).
+        # LIMIT, said in the section footer too: the window is a FIXED 24 h anchored on the newest runs row, NOT
+        # "since the last digest" (nothing records when a digest was sent). After a skipped or late digest a crossing
+        # 24-48 h old is not counted as new (it is still in K); with no runs between two digests a line can count as
+        # new twice.
+        if newest_t is None:
+            is_new = False
+        else:
+            cutoff = newest_t - timedelta(hours=STUCK_NEW_WITHIN_HOURS)
+            is_new = not fires([r for r in runs if (_stuck_ts(r[0]) or newest_t) <= cutoff])
+        success = [ts for ts, _rid, st, note in runs if _stuck_class(st, note) == "success"]
+        e = reg.get(sid) or {}
+        hit = dict(hit, source_id=sid, unit_id=uid, last_tried=runs[-1][0], new=is_new,
+                   last_success=max(success) if success else None)
+        if giant_skip_held(e):
+            hit["exit"] = " ".join(str(e.get("desktop_lane_exit") or "no desktop_lane_exit declared").split())[:200]
+            held.append(hit)
+            continue
+        fired.append(hit)
+
+    today = now.date()
+    valid, acks_error = _validate_stuck_acks(acks, today)
+    used: set = set()
+    stuck, acknowledged = [], []
+    for line in fired:
+        for variant, where in _stuck_apply_acks(line, valid, today, used):
+            if where == "ack":
+                acknowledged.append(variant)
+            else:
+                stuck.append(variant)
+    order = lambda x: (-x["runs"], x["source_id"], x["unit_id"])          # noqa: E731
+    stuck = sorted(_stuck_group(stuck), key=order)
+    acknowledged.sort(key=order)
+    held.sort(key=order)
+
+    def clean(l):
+        l = {k: v for k, v in l.items() if k not in ("ack_texts", "class_key")}
+        l["excerpt"], l["top_class"] = scrub(l["excerpt"]), scrub(l["top_class"])
+        if l.get("exit"):
+            l["exit"] = scrub(l["exit"])
+        l["tokens"] = [scrub(t) for t in l["tokens"]]
+        if gated is not None:
+            l["unit_id"] = scrub(l["unit_id"])
+        return l
+
+    return {
+        "stuck": [clean(l) for l in stuck], "acknowledged": [clean(l) for l in acknowledged],
+        "held": [clean(l) for l in held],
+        "new": sum(1 for l in stuck if l.get("new")),
+        "ack_expired": [{"source_id": l["source_id"], "unit_id": l["unit_id"], "expired": l["ack_expired"]}
+                        for l in stuck if l.get("ack_expired")],
+        "stale_acks": [{"source_id": a["source_id"], "unit_id": a["unit_id"], "token": scrub(a["token"]),
+                        "note_contains": scrub(a["note_contains"]), "expires": a["expires"].isoformat()}
+                       for i, a in enumerate(valid) if i not in used],
+        "acks_error": acks_error,
+        "excluded": dict(excluded), "excluded_named": {k: sorted(v) for k, v in excluded_named.items()},
+        "blind": dict(blind.most_common()),
+        "read": {"rows": n_rows, "newest_ts": newest, "unknown_status": dict(unknown_status)},
+        "discontinued_unreadable": discontinued is None,
+    }
+
+
+def _stuck_age(ts, now) -> str:
+    t = _stuck_ts(ts)
+    if t is None:
+        return "?"
+    h = (now - t).total_seconds() / 3600.0
+    if h < 0:
+        return "?"
+    return f"{h:.0f}h ago" if h < 36 else f"{h / 24:.0f}d ago"
+
+
+def stuck_line_text(l, now) -> str:
+    """One alarm line, the same words in the text body, the HTML body and `--stuck`."""
+    ls = _stuck_ts(l.get("last_success"))
+    since_success = (f"{(now - ls).total_seconds() / 86400:.0f}d since a success" if ls
+                     else "no success in the runs history")
+    if l.get("group"):
+        g = l["group"]
+        head = [f"{len(g)} units, one error class: {', '.join(g[:3])}{', ...' if len(g) > 3 else ''}",
+                l["grain"], f"{l['runs_min']}-{l['runs']} runs" if l["runs_min"] != l["runs"] else f"{l['runs']} runs"]
+    else:
+        head = [f"{l['source_id']}/{l['unit_id']}", l["grain"], f"{l['runs']} runs"]
+    # A SUBUNIT line's unit may well "succeed" (a partial that is not all-failed) while one sub-unit fails on, so
+    # the unit's last success says nothing about it and is not printed there.
+    parts = head + [f"failing since {str(l['since'])[:10]}"]
+    if l["grain"] != "SUBUNIT":
+        parts.append(since_success)
+    parts.append(f"last tried {_stuck_age(l['last_tried'], now)}")
+    if l["grain"] == "SUBUNIT":
+        toks = l["tokens"]
+        parts.append(f"{len(toks)} sub-unit(s): {', '.join(toks[:3])}{', ...' if len(toks) > 3 else ''}")
+        if l.get("unknown"):
+            parts.append(f"{l['unknown']} run(s) unknown (slice or truncated)")
+    else:
+        parts.append("SAME" if l["n_classes"] == 1 else f"{l['n_classes']} classes (top {str(l['top_class'])[:60]})")
+    if l.get("new"):
+        parts.append("NEW")
+    if l.get("ack_expired"):
+        parts.append(f"ACK EXPIRED {l['ack_expired']}")
+    if l.get("ack_expires"):
+        parts.append(f"acknowledged (expires {l['ack_expires']})")
+    if l.get("exit"):
+        parts.append(f"exit: {l['exit']}")
+    return "  " + " · ".join(parts) + f' · "{l["excerpt"]}"'
+
+
+def stuck_section_lines(res, now) -> list:
+    """The section, as lines. NEVER empty: it always says what it read, and says so when nothing is stuck."""
+    k, a, n = len(res["stuck"]), len(res["acknowledged"]), res.get("new", 0)
+    out = [f"Stuck: the same failure run after run - {k} stuck ({n} new)" + (f", +{a} acknowledged" if a else ""),
+           f"  stuck alarm: read {res['read']['rows']} runs rows, newest {res['read']['newest_ts']}"]
+    if res.get("acks_error"):
+        out.append(f"  stuck_acks.yaml IGNORED: {res['acks_error']} - every line shows")
+    if not res["stuck"]:
+        out.append(f"  nothing stuck: no unit failed {STUCK_RUNS}+ runs in a row over {STUCK_MIN_SPAN_HOURS:.0f} h, "
+                   f"and no sub-unit {STUCK_SUBUNIT_RUNS}+ runs over {STUCK_SUBUNIT_MIN_SPAN_DAYS:.0f} d")
+    out += [stuck_line_text(l, now) for l in res["stuck"]]
+    if res["acknowledged"]:
+        out.append("  acknowledged (moved here, not hidden; updater/stuck_acks.yaml):")
+        out += ["  " + stuck_line_text(l, now) for l in res["acknowledged"]]
+    if res.get("held"):
+        out.append("  held by the registry (desktop_lane: skip - not attempted by the scheduled pass, so these "
+                   "cannot clear by themselves; not counted above; see the giant units section):")
+        out += ["  " + stuck_line_text(l, now) for l in res["held"]]
+    for s in res["stale_acks"]:
+        out.append(f"  stale ack - remove it: {s['source_id']}/{s['unit_id']}"
+                   + (f" token={s['token']}" if s.get("token") else "")
+                   + f' note_contains="{str(s["note_contains"])[:60]}" matched nothing in the newest run')
+    ex = res.get("excluded") or {}
+    if ex:
+        named = res.get("excluded_named") or {}
+        bits = [f"{ex[w]} {label} ({', '.join(named.get(w, []))})"
+                for w, label in (("not_live", "not live"), ("paused", "paused"), ("discontinued", "discontinued"))
+                if ex.get(w)]
+        out.append("  excluded, would fire: " + "; ".join(bits))
+    if res.get("discontinued_unreadable"):
+        out.append("  discontinued.yaml could not be read - no source is excluded as discontinued")
+    if res.get("blind"):
+        out.append("  sub-unit view partial for: " + ", ".join(
+            f"{sid} ({n} runs truncated)" for sid, n in res["blind"].items()))
+    unk = res["read"].get("unknown_status") or {}
+    if unk:
+        out.append("  runs with an unknown status, read as streak breaks: "
+                   + ", ".join(f"{s} ({c})" for s, c in sorted(unk.items())))
+    out.append(STUCK_GAPS)
+    out.append("  (shown, not gated: this section changes no health verdict)")
+    return out
+
+
+def stuck_unreadable_lines(err) -> list:
+    return ["Stuck: the same failure run after run - UNKNOWN",
+            f"  stuck alarm: could not be read ({type(err).__name__}) - repeat failures are unknown this morning"]
+
+
+def stuck_subject_prefix(res) -> str:
+    k, a, n = len(res["stuck"]), len(res["acknowledged"]), res.get("new", 0)
+    if not k:
+        return ""
+    return f"{k} stuck ({n} new" + (f", +{a} acknowledged" if a else "") + ") · "
+
+
+def stuck_marks(res) -> dict:
+    """{source_id: longest streak among its MAIN-list lines}: the digest's `!!` rows carry STUCKx<n>."""
+    out: dict = {}
+    for l in res["stuck"]:
+        for sid in (l.get("group_sources") or [l["source_id"]]):
+            out[sid] = max(out.get(sid, 0), l["runs"])
+    return out
+
+
+def stuck_report(store=None, now=None, entries=None) -> dict:
+    """repeat_failures over a StateStore, with the committed acks, discontinued list and denylist."""
+    store = store or StateStore()
+    if entries is None:
+        entries = registry.load().get("sources", [])
+    return repeat_failures(store.all_runs(), entries, discontinued_ids_or_none(), load_stuck_acks_doc(),
+                           now or datetime.now(timezone.utc), gated=gated_ids_or_none())
+
+
 def assess(store=None) -> dict:
     store = store or StateStore()
     now = datetime.now(timezone.utc)
@@ -456,6 +1153,24 @@ def assess(store=None) -> dict:
     # csv_retry_queue per source, ONE GROUP BY: {source_id: (ids, oldest enqueued_utc, ids with no stamp)}
     retry_q = store.csv_retry_backlog()
     reg ={e["source_id"]: e for e in registry.load().get("sources", [])}
+    # STUCK-RUN ALARM: computed ONCE per assess from the runs history. Shown in each row and in the table; it
+    # changes NO verdict and NO gate (phase 1). An unreadable history is SAID (repeat_failure None + the error).
+    try:
+        stuck_res = stuck_report(store, now, list(reg.values()))
+        stuck_by: dict = {}
+        for _kind in ("stuck", "acknowledged", "held"):
+            for _l in stuck_res[_kind]:
+                for _sid in (_l.get("group_sources") or [_l["source_id"]]):
+                    stuck_by.setdefault(_sid, []).append({
+                        "list": _kind, "unit_id": _l["unit_id"], "grain": _l["grain"], "runs": _l["runs"],
+                        "since": _l["since"], "last_success": _l["last_success"], "tokens": _l["tokens"][:3],
+                        "ack_expires": _l.get("ack_expires"), "ack_expired": _l.get("ack_expired")})
+        stuck_summary = {"stuck": len(stuck_res["stuck"]), "new": stuck_res["new"],
+                         "acknowledged": len(stuck_res["acknowledged"]), "held": len(stuck_res["held"]),
+                         "read": stuck_res["read"], "acks_error": stuck_res["acks_error"], "error": None}
+    except Exception as _se:                                     # noqa: BLE001 - a section, never the verdict
+        stuck_by = None
+        stuck_summary = {"error": f"{type(_se).__name__}: {str(_se)[:160]}"}
     rows = []
     for sid, e in sorted(reg.items()):
         cadence = e.get("cadence", "monthly")
@@ -921,6 +1636,9 @@ def assess(store=None) -> dict:
             "csv_retry_backlog_hold": backlog_hold,
             # True when that hold moved a ROTATING row: the digest still lists its rows as in progress (normal)
             "rotating_before_backlog": rotating_before,
+            # STUCK-RUN ALARM lines of this source ([] = none; None = the runs history could not be read). Shown only:
+            # `health` above is computed without it (phase 1).
+            "repeat_failure": (stuck_by.get(sid, []) if stuck_by is not None else None),
         })
 
     # An owed row whose source has LEFT the registry must not vanish with it — the loop
@@ -952,7 +1670,8 @@ def assess(store=None) -> dict:
     for r in rows:
         summary[r["health"]] = summary.get(r["health"], 0) + 1
     return {"generated_utc": now.isoformat(timespec="seconds"),
-            "sla_tolerance_periods": SLA_TOLERANCE, "summary": summary, "sources": rows}
+            "sla_tolerance_periods": SLA_TOLERANCE, "summary": summary, "sources": rows,
+            "repeat_failures": stuck_summary}
 
 
 def gate_failures(report: dict) -> list[str]:
@@ -1094,7 +1813,19 @@ def route_silence(report: dict) -> "list[str]":
     return out
 
 
-_KNOWN_ARGS = {"--json", "--red", "--fail-past-2x-sla"}
+_KNOWN_ARGS = {"--json", "--red", "--fail-past-2x-sla", "--stuck"}
+
+
+def stuck_cli(now=None) -> list:
+    """`python -m updater.health --stuck`: the digest's section, by hand. Reads config.STATE_DB over a READ-ONLY
+    connection and writes nothing (no health.json, no migration). Every failure is a line, never a traceback."""
+    now = now or datetime.now(timezone.utc)
+    try:
+        res = repeat_failures(read_runs_readonly(config.STATE_DB), registry.load().get("sources", []),
+                              discontinued_ids_or_none(), load_stuck_acks_doc(), now, gated=gated_ids_or_none())
+    except Exception as e:                                                   # noqa: BLE001
+        return stuck_unreadable_lines(e)
+    return stuck_section_lines(res, now)
 
 
 def main():
@@ -1107,6 +1838,10 @@ def main():
         print(f"updater.health: unknown argument(s) {unknown}; "
               f"known: {sorted(_KNOWN_ARGS)}", file=sys.stderr)
         sys.exit(2)
+    if "--stuck" in sys.argv:
+        for line in stuck_cli():
+            print(line)
+        return
     report = assess()
     config.ensure_dirs()
     out = os.path.join(config.STATE_DIR, "health.json")
@@ -1127,6 +1862,8 @@ def main():
         if red_only and r["health"] not in bad:
             continue
         note = ""
+        _rf = [x for x in (r.get("repeat_failure") or []) if x["list"] == "stuck"]
+        stuck_mark = f"STUCKx{max(x['runs'] for x in _rf)} " if _rf else ""
         if r["attention"]:
             note = "attn=" + ",".join(r["attention"])
         elif r["n_discontinued"]:
@@ -1135,7 +1872,7 @@ def main():
         oa = "" if r["newest_obs_age_d"] is None else f"{r['newest_obs_age_d']:.0f}d"
         ra = "" if r.get("last_attempt_age_d") is None else f"{r['last_attempt_age_d']:.0f}d"
         print(f"{r['health']:<13} {r['source']:<18} {r['cadence'][:8]:<9} {sa:>8} {ra:>6} {oa:>8}  "
-              f"{str(r['newest_obs'] or '-'):<11} {note}")
+              f"{str(r['newest_obs'] or '-'):<11} {stuck_mark}{note}")
 
     if "--red" in sys.argv:
         n = sum(report["summary"].get(k, 0) for k in bad)
