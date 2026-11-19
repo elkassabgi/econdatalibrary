@@ -891,9 +891,10 @@ sources:
     key_env: none
     confidence: high
     open_question: >-
-      Resolved 2026-11-19: the V202401b pin and the release-blind caches are gone. Open: the served store still held
-      V202401b at that date; the first V202601 pull is a FORCED supervised run (cadence annual), and serving it needs the
-      catalogue re-run (titles carry the V-string) and a verbatim cepii_baci licence entry.
+      Resolved 2026-11-19: the V202401b pin and the release-blind caches are gone. The served parquets run to 2024, so
+      they are a later release than V202401b (probably V202601, not proven); only _country_codes.json came from V202401b.
+      Open: the first run under the new gate is a FORCED supervised run (cadence annual, hours with the download), and
+      serving it needs the catalogue re-run (titles carry the V-string) and a verbatim cepii_baci licence entry.
   matrix:
     refresh_mechanism:
     - release-sidecar gate (rebuild when the advertised release differs)

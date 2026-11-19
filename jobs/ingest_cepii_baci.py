@@ -14,9 +14,11 @@ Run: python jobs/ingest_cepii_baci.py            (release read from CEPII's prod
 
 EVERYTHING IS KEYED ON THE RELEASE (2026-11-19). Until then download() returned ANY cached
 data/raw/cepii_baci/<HS>.zip over 1 MB and ingest_zip() returned early whenever
-baci_<hs>.parquet existed, while FILES pinned V202401b. The fetcher asked for V202601 by URL,
-got the cached V202401b zip back, skipped the ingest because the parquet existed, and booked the
-run as success with the V202401b rows. Now:
+baci_<hs>.parquet existed, while FILES pinned V202401b. Neither the cache nor the skip looked at
+the release: a fetcher run that asked for V202601 by URL could get a cached zip of any release
+back, skip the ingest because the parquet existed, and book the run as success. (The served
+parquets themselves run to 2024, so they are a later release than V202401b - probably V202601,
+not proven; only _country_codes.json came from V202401b.) Now:
 
   * the raw zip lives at data/raw/cepii_baci/<release>/<HS>.zip with a <HS>.zip.json sidecar
     (release, url, bytes, sha256); it is reused only when that sidecar names the release asked.

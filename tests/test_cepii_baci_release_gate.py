@@ -1,7 +1,7 @@
 """cepii_baci: a new CEPII release must actually reach the store, and nothing else may move it.
 
 Before 2026-11-19 download() returned any cached <HS>.zip and ingest_zip() returned early when the
-parquet existed, so the fetcher asked for V202601 and re-booked V202401b as success. These tests
+parquet existed, so a run that asked for V202601 could re-book whatever was cached as success. These tests
 drive the REAL fetcher update() and the REAL ingest on tiny zips through a fake HTTP session (no
 network, no localhost server). Each guard has a test that fails when the guard is removed (R346).
 """
@@ -142,7 +142,7 @@ def _years(p):
 
 
 def _install_old(e):
-    """The served store as it stands: V202401b parquets with no release sidecar, legacy zips."""
+    """A pre-sidecar store: parquets with no release sidecar, V202401b codes, legacy zips."""
     _publish_release(e, OLD, [2020, 2021])
     e.release = {"HS17": OLD, "HS96": OLD}
     res = F.update(None, None)

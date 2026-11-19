@@ -3,8 +3,9 @@
 308,561,322 rows across two HS classifications. The source was REGISTERED with a strategy and a
 script and had NO fetcher, so the orchestrator could never run it — and the cost of that is now
 visible: jobs/ingest_cepii_baci.py hardcodes `V202401b`, while CEPII's download page today
-offers **V202601**. The stored data is two vintages behind and nothing in the system noticed,
-because nothing was ever asked to look.
+offers **V202601**. (Correction 2026-11-19: the served parquets run to 2024, so they are NOT
+V202401b - most likely V202601, not proven. Only _country_codes.json came from V202401b. The
+defect was that the cache and the skip were keyed on file names, not on the release.)
 
 THE VINTAGE IS MEASURED, NOT ASSUMED (the R164 rule cepii_gravity's fetcher records). CEPII's
 own product page lists every release as `BACI_HS<nn>_V<yyyymm>[letter].zip`:
@@ -50,7 +51,7 @@ codes — a silently dropped country is a wrong total, not a smaller one.
 
 THE RELEASE NEVER REACHED THE STORE (fixed 2026-11-19). This module asked for V202601 by URL,
 but jobs/ingest_cepii_baci.download() returned any cached <HS>.zip and ingest_zip() returned
-early whenever the parquet existed, so the V202401b rows were re-booked as `ok` and nothing new
+early whenever the parquet existed, so whatever was cached was re-booked as `ok` and nothing new
 was ingested. finalize() also stamps new_vintage="date-tail", so the page token was never stored
 and the gate never closed. Now every file carries a release sidecar (_baci_<hs>.release.json,
 _country_codes.json "release", _cepii_baci_pairs.release.json); a classification is rebuilt
