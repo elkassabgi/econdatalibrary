@@ -560,16 +560,65 @@ def test_vintage_is_stamped_when_clean_and_all_five_cubes_committed(env, monkeyp
 
 
 def test_vintage_is_not_stamped_when_a_cube_is_not_a_build_of_the_listed_file(env, monkeypatch):
-    """The run reports ok (nothing failed) but demographics is still the 20260603 build while the
-    listing names 20261118 - e.g. the ingest skipped it. A clean status alone must not stamp."""
+    """Nothing failed, but demographics is still the 20260603 build while the listing names
+    20261118 - e.g. the ingest skipped it. The run must be DEMOTED to partial with a named unit,
+    not merely return None (the strategy refills None; see the run_once test below)."""
     F, upstream, listing = _fetcher_rig(env, monkeypatch)
     assert F.update(None, None).new_vintage == F._vintage_of(listing)          # control
     listing["demographics"] = _entry(write_dump(upstream, "demographics", "20261118", V2), "20261118")
     monkeypatch.setattr(J, "main", lambda *a, **k: None)                       # no rebuild
     res = F.update(None, None)
-    assert res.status in ("ok", "no_change"), res
     assert not J.all_committed([listing[s][0] for s in J.SECTOR_FILES])
+    assert res.status == "partial", res
+    assert "vintage_uncommitted" in (res.error or "")
     assert res.new_vintage is None
+
+
+@pytest.fixture
+def orch(env, monkeypatch, tmp_path):
+    """The REAL orchestrator run_once over a temp state.db (pattern: test_date_tail_probe_seal)."""
+    from updater import config, orchestrate
+    from updater.state import StateStore
+    for k in ("AQUEDUCT_BACKEND", "AQUEDUCT_LIVE_ONLY", "GITHUB_ACTIONS", "AQUEDUCT_RUN_LOCATION",
+              "AQUEDUCT_RUN_BUDGET_MIN", "AQUEDUCT_UNIT_TIMEOUT_MIN", "AQUEDUCT_DERIVE_BUDGET_MIN",
+              "ECONDL_DATA"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setattr(orchestrate, "_RUN_DEADLINE_TS", orchestrate._RUN_DEADLINE_TS)
+    # The CSV re-derive stage is not under test here: a clean no-op, so it cannot demote the run.
+    monkeypatch.setattr(orchestrate, "_derive_changed_csvs", lambda unit, res, blob, store=None: ([], None, [], {}))
+    sdir = tmp_path / "state"
+    sdir.mkdir()
+    monkeypatch.setattr(config, "DATA_ROOT", os.path.dirname(env.out))
+    monkeypatch.setattr(config, "STATE_DIR", str(sdir))
+    monkeypatch.setattr(config, "STATE_DB", str(sdir / "state.db"))
+    st = StateStore(str(sdir / "state.db"))
+
+    def run(stored):
+        st.upsert_unit("usda", "_all", strategy="bulk_snapshot_if_changed", status="ok",
+                       upstream_vintage=stored, last_success_utc="2020-01-01T00:00:00+00:00",
+                       last_attempt_utc="2020-01-01T00:00:00+00:00")
+        results = orchestrate.run_once(sources=["usda"], store=st, blob=None, dry=False)
+        row = st.db.execute("SELECT status, upstream_vintage FROM unit_state "
+                            "WHERE source_id='usda' AND unit_id='_all'").fetchone()
+        return results, tuple(row)
+    yield run
+    st.close()
+
+
+def test_run_once_does_not_advance_the_vintage_when_a_cube_is_uncommitted(env, monkeypatch, orch):
+    """END TO END: probe -> BulkSnapshotIfChanged.run (which refills a None new_vintage with the
+    probed token) -> the orchestrator's unit_state write. In the ok-but-uncommitted case the
+    stored upstream_vintage must NOT move to the listing hash."""
+    F, upstream, listing = _fetcher_rig(env, monkeypatch)
+    _res, (status, stored) = orch("usda:previous")                    # control: a clean run seals
+    assert status == "ok" and stored == F._vintage_of(listing), (_res, status, stored)
+
+    listing["demographics"] = _entry(write_dump(upstream, "demographics", "20261118", V2), "20261118")
+    monkeypatch.setattr(J, "main", lambda *a, **k: None)              # the ingest rebuilds nothing
+    new_hash = F._vintage_of(listing)
+    results, (status, stored) = orch("usda:previous")
+    assert status == "partial", (results, status, stored)
+    assert stored == "usda:previous" and stored != new_hash, (results, status, stored)
 
 
 def test_vintage_is_not_stamped_on_a_partial(env, monkeypatch):

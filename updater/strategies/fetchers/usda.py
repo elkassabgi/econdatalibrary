@@ -42,8 +42,10 @@ the probed token only when new_vintage is None, so before 2026-11 the stored ups
 was "date-tail", never equal to the probe, and every monthly cadence re-ingested ~57.8M rows
 whether NASS had published or not. update() now stamps the hash of the listing it used, and
 ONLY when the run is ok/no_change AND J.all_committed() says the five live cubes are verified
-builds of exactly the five listed files; anything less (a partial, a cube still on an older
-dump, a build that did not verify) stamps None, so the next cadence tries again.
+builds of exactly the five listed files. A cube still on an older dump, or a build that did
+not verify, DEMOTES the run to partial (named transient unit "vintage_uncommitted") - returning
+None is not enough, because the strategy refills None with the probed token and the orchestrator
+stores it on ok. On a partial the stored vintage stays put and the next cadence tries again.
 
 THE 2026-10 MOVE. After the 2026-10-02 run NASS moved its site. Measured 2026-11-18 (HEAD):
     https://www.nass.usda.gov/datasets/   -> 301 -> https://www-origin.nass.usda.gov/datasets -> 404
@@ -367,6 +369,22 @@ def update(unit, since) -> Result:
           flush=True)
     tally.added_unit(total, "quickstats")
 
+    # THE STAMP GUARD DEMOTES; IT DOES NOT RETURN None (review r2, 2026-11-19). A None here is
+    # refilled by bulk_snapshot_if_changed.run() with the probed token, and the orchestrator
+    # stores (res.new_vintage or vintage) on ok - so "ok but not all committed" would still seal
+    # the gate on a vintage the cubes do not hold. So when the five live cubes are not verified
+    # builds of exactly the five listed files (J.all_committed), the run books a NAMED transient
+    # unit: finalize returns partial, `ok` is False, upstream_vintage stays where it was, and the
+    # next cadence tries again. It is booked after the whole run, so the run's duration is real
+    # (a ~1 s partial would poison the admission reserve, R1947).
+    listed = [got[s][0] for s in SECTORS]
+    committed = J.all_committed(listed)
+    if not committed:
+        tally.transient_unit("vintage_uncommitted")
+        print(f"[{SOURCE}] vintage NOT stamped and run demoted: the live cubes are not all "
+              f"verified builds of {', '.join(listed)} (committed: {J.committed_inputs()})",
+              flush=True)
+
     cursors = _table_cursors(out)
     if len(cursors) >= CURSOR_CAP:
         print(f"[{SOURCE}] cursor set hit the {CURSOR_CAP:,} cap — usda has 69,704 catalogued "
@@ -377,14 +395,11 @@ def update(unit, since) -> Result:
                    series_cursors=cursors or None)
     # finalize() stamps new_vintage="date-tail", which never equals current_vintage(), so the
     # gate could never skip and every cadence re-ingested the whole database. Stamp the hash of
-    # the listing THIS run used - but only on a clean ok/no_change AND when the five live cubes
-    # are verified builds of exactly the five listed files (J.all_committed). A clean status
-    # alone is not enough: it says nothing failed, not that every cube was rebuilt from this
-    # vintage. Anything less stamps None, so the stored vintage stays and the next cadence retries.
-    listed = [got[s][0] for s in SECTORS]
+    # the listing THIS run used, on a clean ok/no_change with all five cubes committed. A
+    # partial (including the demotion above) gets None; that is safe ONLY because the
+    # orchestrator does not advance upstream_vintage on a partial, whatever new_vintage says.
     clean = res.status in ("ok", "no_change")
-    res.new_vintage = _vintage_of(got) if clean and J.all_committed(listed) else None
-    if clean and res.new_vintage is None:
-        print(f"[{SOURCE}] vintage NOT stamped: the live cubes are not all verified builds of "
-              f"{', '.join(listed)} (committed: {J.committed_inputs()})", flush=True)
+    res.new_vintage = _vintage_of(got) if clean and committed else None
+    if clean:
+        print(f"[{SOURCE}] vintage stamped: {res.new_vintage}", flush=True)
     return res
