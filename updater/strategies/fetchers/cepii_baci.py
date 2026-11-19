@@ -47,10 +47,22 @@ Country codes are BACI's UN numerics; ISO3 comes from the country_codes_*.csv IN
 publisher's own zip, extracted at ingest into a _country_codes.json sidecar (blob-published,
 so CI and workstation read the same mapping). An unmapped code FAILS the build listing the
 codes — a silently dropped country is a wrong total, not a smaller one.
+
+THE RELEASE NEVER REACHED THE STORE (fixed 2026-11-19). This module asked for V202601 by URL,
+but jobs/ingest_cepii_baci.download() returned any cached <HS>.zip and ingest_zip() returned
+early whenever the parquet existed, so the V202401b rows were re-booked as `ok` and nothing new
+was ingested. finalize() also stamps new_vintage="date-tail", so the page token was never stored
+and the gate never closed. Now every file carries a release sidecar (_baci_<hs>.release.json,
+_country_codes.json "release", _cepii_baci_pairs.release.json); a classification is rebuilt
+only when its sidecar differs from the advertised release; rebuilds stage OUTSIDE
+data/clean_full and replace only after verification; and the stamped vintage is _token() over
+the releases actually in place — the same helper current_vintage() uses, so a finished run
+closes the gate.
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import sys
@@ -60,7 +72,7 @@ import requests
 from ... import blob, config
 from ...errors import DefinitiveError, TransientError
 from ..base import Result
-from ._common import Tally, finalize
+from ._common import Tally, finalize, merge_cursors
 
 SOURCE = "cepii_baci"
 PAGE = "https://www.cepii.fr/CEPII/en/bdd_modele/bdd_modele_item.asp?id=37"
@@ -80,8 +92,20 @@ def _releases(sess=None) -> dict:
         raise TransientError(f"{SOURCE}: CEPII product page unreachable: {e!r}") from e
     out = {}
     for hs, v in RE_REL.findall(r.text):
-        out[f"HS{hs}"] = f"V{v}"
+        # MAX, not last-wins (2026-11-19): the page can list an older release after the current
+        # one, and this value now picks the download URL. V-strings sort lexically
+        # (V202401 < V202401b < V202601).
+        k, v = f"HS{hs}", f"V{v}"
+        if k not in out or v > out[k]:
+            out[k] = v
     return out
+
+
+def _token(pairs) -> str:
+    """THE vintage token: one helper for the probe and for the stamp, so they cannot drift."""
+    pairs = sorted(pairs)
+    h = hashlib.sha256("|".join(f"{k}={v}" for k, v in pairs).encode()).hexdigest()[:16]
+    return f"{SOURCE}:{h}"
 
 
 def current_vintage(unit):
@@ -94,16 +118,74 @@ def current_vintage(unit):
         rel = _releases()
     except TransientError:
         return None
-    pairs = sorted((k, v) for k, v in rel.items() if k in WANT_HS)
+    pairs = [(k, v) for k, v in rel.items() if k in WANT_HS]
     if not pairs:
         return None
-    h = hashlib.sha256("|".join(f"{k}={v}" for k, v in pairs).encode()).hexdigest()[:16]
-    return f"{SOURCE}:{h}"
+    return _token(pairs)
+
+
+PAIRS_SIDECAR = "_cepii_baci_pairs.release.json"
+
+
+def staging_dir() -> str:
+    """OUTSIDE data/clean_full (R1949), on the same volume as the store so os.replace is atomic."""
+    return os.path.join(os.path.dirname(os.path.abspath(config.DATA_ROOT)), "_staging_cepii_baci")
+
+
+def raw_dir() -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(config.DATA_ROOT)), "raw", SOURCE)
+
+
+def _inside(child: str, parent: str) -> bool:
+    c = os.path.normcase(os.path.abspath(child))
+    p = os.path.normcase(os.path.abspath(parent))
+    try:
+        return os.path.commonpath([c, p]) == p
+    except ValueError:
+        return False
+
+
+def _codes_release(out_dir: str):
+    raw = blob.read_bytes(os.path.join(out_dir, CODES_SIDECAR))
+    try:
+        return json.loads(raw.decode("utf-8")).get("release") if raw else None
+    except (ValueError, UnicodeDecodeError, AttributeError):
+        return None
+
+
+def _pairs_state(out_dir: str):
+    """The pairs sidecar, but only while the pairs file's footer still shows its row count."""
+    try:
+        with open(os.path.join(out_dir, PAIRS_SIDECAR), encoding="utf-8") as fh:
+            st = json.load(fh)
+        import pyarrow.parquet as _pq
+        rows = _pq.read_metadata(os.path.join(out_dir, PAIRS_BASENAME)).num_rows
+    except Exception:                                          # noqa: BLE001
+        return None
+    return st if rows == st.get("rows") else None
+
+
+def _pairs_release(out_dir: str):
+    st = _pairs_state(out_dir)
+    return st.get("release") if st else None
 
 
 def update(unit, since) -> Result:
+    """Install the advertised release of each WANT_HS classification, verified, then project.
+
+    Rebuilds ONLY what is not already at the advertised release (per-file release sidecars, see
+    jobs/ingest_cepii_baci.py). The stamped vintage is _token() over the releases actually in
+    place, and only when every classification is in place; otherwise the run is partial and the
+    orchestrator keeps the old vintage. Order: HS96 replaced -> its own country codes ->
+    projection; a failed HS96 never touches the codes or the projection.
+    """
     out_dir = config.source_dir(SOURCE)
     os.makedirs(out_dir, exist_ok=True)
+    stage, raw = staging_dir(), raw_dir()
+    for d in (stage, raw):
+        if _inside(d, config.DATA_ROOT):
+            raise DefinitiveError(f"{SOURCE}: {d} is inside the store root {config.DATA_ROOT}; "
+                                  f"every reader would list it (R1949)")
     sess = requests.Session()
     rel = _releases(sess)
     todo = {k: rel[k] for k in WANT_HS if k in rel}
@@ -121,48 +203,121 @@ def update(unit, since) -> Result:
 
     tally = Tally()
     total = 0
+    rebuilt, codes_refreshed = set(), False
     for hs, ver in sorted(todo.items()):
-        url = f"https://www.cepii.fr/DATA_DOWNLOAD/baci/data/BACI_{hs}_{ver}.zip"
+        url = J.release_url(hs, ver)
+        codes_ok = hs != "HS96" or _codes_release(out_dir) == ver
+        if J.parquet_current(hs, ver, out_dir) and codes_ok:
+            n = (J._read_json(J.sidecar_path(hs, out_dir)) or {}).get("rows", 0)
+            tally.empty_unit(f"{hs} {ver} already in place")
+            total += n
+            print(f"[{SOURCE}] {hs} {ver}: already in place ({n:,} rows)", flush=True)
+            continue
         print(f"[{SOURCE}] {hs} {ver} -> {url}", flush=True)
         try:
-            zip_path = J.download(hs, url)
+            zip_path = J.download(hs, url, release=ver, raw_dir=raw, sess=sess)
         except Exception as e:                                 # noqa: BLE001
-            tally.transient_unit(hs)
-            print(f"[{SOURCE}] {hs}: download failed: {e!r}", flush=True)
+            tally.transient_unit(f"{hs} {ver} download — {type(e).__name__} {str(e)[:80]}")
             continue
         try:
-            n = J.ingest_zip(hs, zip_path)
+            out = J.ingest_zip(hs, zip_path, release=ver, out_dir=out_dir, stage_dir=stage)
+        except J.ReleaseRefused as e:
+            tally.structural_unit(f"{hs} {ver} refused — {str(e)[:160]}")
+            continue
         except Exception as e:                                 # noqa: BLE001
-            raise TransientError(f"{SOURCE}: {hs} parse failed: {e!r}") from e
-        if not n:
+            # incl. a reader holding the parquet at replace time: old kept, verified part kept
+            tally.transient_unit(f"{hs} {ver} ingest — {type(e).__name__} {str(e)[:80]}")
+            continue
+        if not out["rows"]:
             tally.structural_unit(f"{hs} {ver}: zip parsed 0 rows")
             continue
         if hs == "HS96":
-            # the pairs projection maps countries with THIS vintage's own crosswalk
-            extract_country_codes(zip_path, out_dir)
-        tally.added_unit(n, hs)
-        total += n
-        print(f"[{SOURCE}] {hs} {ver}: {n:,} rows", flush=True)
+            # the pairs projection maps countries with THIS release's own crosswalk, written only
+            # after HS96 itself is in place
+            try:
+                extract_country_codes(zip_path, out_dir, release=ver)
+                codes_refreshed = True
+            except DefinitiveError as e:
+                tally.structural_unit(f"HS96 {ver} country codes — {str(e)[:160]}")
+                continue
+        if out["rebuilt"]:
+            rebuilt.add(hs)
+            tally.added_unit(out["rows"], hs)
+        else:
+            tally.empty_unit(f"{hs} {ver} already ingested")
+        total += out["rows"]
+        print(f"[{SOURCE}] {hs} {ver}: {out['rows']:,} rows "
+              f"({'rebuilt' if out['rebuilt'] else 'unchanged'})", flush=True)
 
-    # publish whatever the ingest wrote; it uses its own ParquetWriter, so bytes are already
-    # correct on disk and only need to reach R2 (the publish_file case).
+    # publish every parquet, unconditionally: a run that replaced a file and died before its
+    # publish is healed by the next pass, which finds the file current and skips the ingest.
     published = 0
     for name in sorted(os.listdir(out_dir)):
         if name.endswith(".parquet") and blob.publish_file(os.path.join(out_dir, name)):
             published += 1
     print(f"[{SOURCE}] published {published} object(s)", flush=True)
 
-    # SERVING SURFACE: rebuild the pair-grain projection from the vintage that just landed.
-    # A failed projection must NOT sink the vintage publish (the data is good and stored) —
-    # but it must not be silent either: transient -> the run reports partial and the projection
-    # is retried next tick, which is exactly the "CSVs stale relative to store" semantics the
-    # csv-coherence gate exists for.
-    try:
-        n_pairs = build_pairs_projection(out_dir)
-        print(f"[{SOURCE}] pairs projection rebuilt: {n_pairs:,} tidy rows", flush=True)
-    except Exception as e:                                     # noqa: BLE001
-        tally.transient_unit(f"pairs projection failed — {type(e).__name__} {str(e)[:70]}")
-    return finalize(tally, total, since or None, source=SOURCE)
+    in_place = {hs: ver for hs, ver in todo.items() if J.parquet_current(hs, ver, out_dir)}
+    hs96_ver = todo.get("HS96")
+    hs96_ready = in_place.get("HS96") == hs96_ver and _codes_release(out_dir) == hs96_ver
+
+    # SERVING SURFACE: the pair-grain projection, rebuilt when its release differs from HS96's.
+    # A failed projection must NOT sink the publish (the data is good and stored), but it must
+    # not be silent either: transient -> partial, no vintage advance, retried next tick.
+    # NOT when anything was refused this run (AR, 2026-11-19): finalize() then raises, the cursors
+    # never reach the orchestrator, and a projection already moved would read current next run.
+    cursors, projected = {}, False
+    if (hs96_ready and not tally.structural
+            and ("HS96" in rebuilt or codes_refreshed or _pairs_release(out_dir) != hs96_ver)):
+        try:
+            hs96 = J.parquet_path("HS96", out_dir)
+            remote = blob.stored_size(hs96)
+            if remote is not None and remote != os.path.getsize(hs96):
+                raise TransientError(f"published HS96 is {remote:,} B, local {os.path.getsize(hs96):,} B")
+            n_pairs = build_pairs_projection(out_dir)
+            # rederive_owed: the served CSVs still hold the previous values until the orchestrator
+            # books the full re-derive this run signals. A kill before that booking must not lose
+            # the signal, so the flag stays and every later run that reaches update() re-signals
+            # until the next release replaces this sidecar.
+            J._write_json_atomic(os.path.join(out_dir, PAIRS_SIDECAR),
+                                 {"release": hs96_ver, "rows": n_pairs, "rederive_owed": True})
+            merge_cursors(cursors, os.path.join(out_dir, PAIRS_BASENAME))
+            projected = True
+            if "HS96" not in rebuilt:
+                # served values were rebuilt (codes refreshed / projection behind HS96) with no new
+                # raw rows: a revision, so the run is `ok` and the CSV phase runs
+                tally.revised_unit("pairs projection rebuilt")
+            print(f"[{SOURCE}] pairs projection rebuilt from {hs96_ver}: {n_pairs:,} tidy rows",
+                  flush=True)
+        except Exception as e:                                 # noqa: BLE001
+            tally.transient_unit(f"pairs projection failed — {type(e).__name__} {str(e)[:70]}")
+    elif not tally.structural and not tally.transient:
+        st = _pairs_state(out_dir)
+        if st and st.get("release") == hs96_ver and st.get("rederive_owed"):
+            merge_cursors(cursors, os.path.join(out_dir, PAIRS_BASENAME))
+            projected = True
+            tally.revised_unit(f"served CSV re-derive owed since the {hs96_ver} projection")
+
+    not_in_place = [f"{hs}={ver}" for hs, ver in sorted(todo.items()) if in_place.get(hs) != ver]
+    if in_place.get("HS96") == hs96_ver and _codes_release(out_dir) != hs96_ver:
+        not_in_place.append(f"country codes={_codes_release(out_dir)}")
+    if hs96_ready and _pairs_release(out_dir) != hs96_ver and not tally.transient:
+        not_in_place.append(f"pairs projection={_pairs_release(out_dir)}")
+    if not_in_place and not (tally.transient or tally.structural):
+        # Never let ok/no_change stand over a store that is not at the advertised release: the
+        # strategy would fill in the probed token and seal it (bulk_snapshot_if_changed:70).
+        tally.transient_unit(f"not at the advertised release: {', '.join(not_in_place)}")
+
+    res = finalize(tally, total, since or None, source=SOURCE, series_cursors=cursors or None)
+    if projected:
+        # A new release restates EVERY served pair; the cursor set is capped below the ~90,582
+        # served ids, so say the evidence is truncated and the orchestrator books a full re-derive.
+        res.cursor_cap_hit = True
+    if res.status in ("ok", "no_change") and not not_in_place:
+        res.new_vintage = _token(todo.items())
+    else:
+        res.new_vintage = None
+    return res
 
 
 # --------------------------------------------------------------------------------------- #
@@ -175,7 +330,7 @@ _HS_FOR_PAIRS = "baci_hs96.parquet"      # HS96 ONLY — longest span, one vocab
                                          # double-count with HS17 (same flows, different codes)
 
 
-def extract_country_codes(zip_path: str, out_dir: str) -> dict:
+def extract_country_codes(zip_path: str, out_dir: str, release: str | None = None) -> dict:
     """numeric UN code -> ISO3, from the country_codes_*.csv INSIDE the publisher's zip.
 
     Written as a blob sidecar so CI and the workstation read the SAME mapping the vintage
@@ -199,7 +354,7 @@ def extract_country_codes(zip_path: str, out_dir: str) -> dict:
         raise DefinitiveError(f"{SOURCE}: country_codes csv parsed only {len(mapping)} rows "
                               f"from {names[0]} — schema changed?")
     blob.write_bytes_atomic(os.path.join(out_dir, CODES_SIDECAR),
-                            _json.dumps({"from": os.path.basename(names[0]),
+                            _json.dumps({"from": os.path.basename(names[0]), "release": release,
                                          "codes": mapping}, indent=1).encode("utf-8"))
     return mapping
 
