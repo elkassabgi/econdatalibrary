@@ -330,3 +330,17 @@ if (Test-Path $notices) {
     -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$notices,'-IfDue') `
     -WorkingDirectory $root -WindowStyle Hidden
 }
+
+# --- RELEASE WATCH, DAILY (added 2026-11-19) --------------------------------------------------------------
+# updater/release_watch.py --desktop reads the publisher's keyless release token for the phase-1 unctad units
+# (one sandboxed child each) and keeps data\_release_watch\record.json; the guard beat carries it to the daily
+# digest. It never opens the updater's state or the catalogue, so it has no T0 gate. -IfDue exits at once unless
+# a run is due (09:00 UTC or later, no ok run started today, no attempt in the last 2 h, no other run holding
+# logs\release_watch.lock); the script writes its own log and status file (logs\release_watch_*.log,
+# logs\release_watch.last.json), so nothing is redirected here.
+$releaseWatch = Join-Path (Join-Path (Join-Path $root 'tools') 'selfhost') 'run_release_watch.ps1'
+if (Test-Path $releaseWatch) {
+  Start-Process 'powershell.exe' `
+    -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$releaseWatch,'-IfDue') `
+    -WorkingDirectory $root -WindowStyle Hidden
+}

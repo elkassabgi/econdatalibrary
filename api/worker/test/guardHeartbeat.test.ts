@@ -58,6 +58,25 @@ test("the sec_edgar local run crosses as a verdict only: ok, not ok, or an older
   assert.equal(good.sec_edgar_local_ok, true);
 });
 
+test("a beat carrying the release watch serves the SAME key set and none of its content (release watch B8.12)", async () => {
+  const keys = Object.keys(await (await handleGuardHeartbeat(envWith(BEAT))).json() as object).sort();
+  assert.deepEqual(keys, ["emptiness_ran", "fetch_without_write", "jobs_alive", "jobs_tracked", "sec_edgar_local_ok",
+                          "table_ok", "utc"]);
+  const withWatch = { ...BEAT, release_watch: {
+    schema: "ekd-release-watch/1",
+    run: { started_utc: "2026-11-20T09:00:00Z", rc: 0, last_ok_started_utc: "2026-11-20T09:00:00Z" },
+    units: { "unctad_biotrademerch/_all": { last_p: "10003|2026-07-15T11:40:26", last_probe_ok: true, cnc_days: 0,
+      events: [{ to: "10003|2026-07-15T11:40:26", from: null, since_utc: "2026-11-20T09:00:00Z", initial: true }] } },
+    pending: { "unctad_tradefoodcatbyproc/_all": { cnc_days: 2, last_error: "timeout: no answer" } } } };
+  const body = await (await handleGuardHeartbeat(envWith(withWatch))).json() as Record<string, unknown>;
+  assert.deepEqual(Object.keys(body).sort(), keys, "the key set is unchanged");
+  assert.deepEqual(body, await (await handleGuardHeartbeat(envWith(BEAT))).json(), "and so is every value");
+  const text = JSON.stringify(body);
+  for (const secret of ["release", "unctad", "10003", "timeout"]) {
+    assert.equal(text.includes(secret), false, secret);
+  }
+});
+
 test("the router sends /v1/guard-heartbeat to this handler (R1226: deleting the line passed)", () => {
   const src = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
   assert.match(src, /path === "\/v1\/guard-heartbeat"\) return await cachedGuardHeartbeat\(url, env, ctx, local\)/);

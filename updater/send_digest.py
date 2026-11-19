@@ -597,6 +597,44 @@ def notices_lines(beat, now) -> list:
     return out + ([""] if out else [])
 
 
+def release_watch_lines(beat, unit_rows, acks, gated, now) -> list:
+    """The release-watch section as lines (updater/release_watch.py digest_view holds the rules). unit_rows are
+    unit_state (source_id, unit_id, upstream_vintage) rows from THIS run's state.db, or the exception reading them
+    raised; acks the parsed updater/release_acks.yaml (or its exception); gated _gated_ids() (None = name nothing).
+    Uses the notices section's own clocks: GUARD_BEAT_OLD_H for a stale beat, NOTICES_RUN_LATE_H for LATE."""
+    from updater.release_watch import digest_view                         # noqa: PLC0415
+    return digest_view(beat, unit_rows, acks, gated, now, GUARD_BEAT_OLD_H, NOTICES_RUN_LATE_H)["lines"]
+
+
+def release_watch_view(beat, state_path, gated, now) -> dict:
+    """{"lines", "suffix"} for main(). Never raises: an unreadable section is SAID, and leaves no suffix.
+    AFTER T0 this section reaches the mail exactly as far as the notices section does: read_guard_beat reads R2
+    only and has no cutover branch (release-watch design, Revision 5, B5); both wait on the T0 digest plan."""
+    try:
+        _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if _root not in sys.path:
+            sys.path.insert(0, _root)
+        from updater import release_watch as rw                           # noqa: PLC0415
+        try:
+            rows = rw.read_store_tokens(state_path)
+        except Exception as e:                                            # noqa: BLE001 - said in the section
+            rows = e
+        return rw.digest_view(beat, rows, rw.load_acks_doc(), gated, now, GUARD_BEAT_OLD_H, NOTICES_RUN_LATE_H)
+    except Exception as e:                                                # noqa: BLE001 - a section, not the run
+        return {"lines": [f"  release watch: could not be rendered ({type(e).__name__}) - publisher releases are "
+                          f"unknown this morning", ""], "suffix": {}}
+
+
+def release_watch_join(sres, suffix) -> None:
+    """Put each unit's release verdict on its stuck-alarm line: `hit["release"]` for every hit in _sres["stuck"] and
+    _sres["held"], matched on the STRUCTURED (source_id, unit_id), never on rendered text (R2.8)."""
+    for kind in ("stuck", "held"):
+        for hit in sres.get(kind) or []:
+            v = suffix.get((hit.get("source_id"), hit.get("unit_id")))
+            if v:
+                hit["release"] = v
+
+
 _KINDS_CACHE: list = []
 
 
@@ -782,6 +820,10 @@ def main() -> None:
     except Exception as _ge:                                          # noqa: BLE001
         _giant = [f"  giant units: could not be listed ({type(_ge).__name__}) - the scheduled desktop pass "
                   f"skips every registry desktop_lane: skip source (ATTENTION); check them by hand", ""]
+    # RELEASE WATCH (updater/release_watch.py, phase 1: the unctad trio): computed ONCE from the beat and this run's
+    # state.db (read-only), rendered in both bodies; its per-unit verdict also rides on the stuck alarm's lines.
+    _relw = release_watch_view(_beat, STATE, _gated_ids(), dt.datetime.now(dt.timezone.utc))
+    _release = _relw["lines"]
     # STUCK-RUN ALARM (updater/health.py repeat_failures): computed ONCE from the runs history over its OWN read-only
     # connection, rendered FIRST in both bodies. Not read from health.json: this step runs `if: always()`, also when
     # health wrote no verdict. An unreadable input (no state.db, no runs table, no registry) is SAID, never an empty
@@ -795,6 +837,7 @@ def main() -> None:
             raise RuntimeError("registry.yaml could not be read")    # never name every runs source_id instead
         _sres = repeat_failures(read_runs_readonly(STATE), _entries, discontinued_ids_or_none(),
                                 load_stuck_acks_doc(), _snow, gated=_gated_ids())
+        release_watch_join(_sres, _relw["suffix"])     # STRUCTURED join on (source_id, unit_id), never on text
         _stuck = stuck_section_lines(_sres, _snow)
         _stuck_prefix, _smarks = stuck_subject_prefix(_sres), stuck_marks(_sres)
     except Exception as _ste:                                         # noqa: BLE001
@@ -968,6 +1011,9 @@ def main() -> None:
     # PUBLISHER NOTICES (2026-11-05): what the workstation's watcher found that is ending or changing.
     _notices = notices_lines(_beat, dt.datetime.now(dt.timezone.utc))
     lines += _notices
+    # RELEASE WATCH (2026-11-19): the counter, and a line only for NEW / MOVED / could not check / LATE / stale
+    if _release:
+        lines += _release
     # LAUNCHER WATCHDOG (2026-11-12): the same beat, its GAVE-UP / CANNOT TELL / stale-look / pinned-hash lines
     _lwatch = launcher_watchdog_lines(_beat, dt.datetime.now(dt.timezone.utc))
     lines += _lwatch
@@ -1109,6 +1155,11 @@ def main() -> None:
                         "<pre style='margin:0;padding:8px 11px;background:#f9fafb;border:1px solid #e5e7eb;"
                         "border-radius:8px;font-size:12px;white-space:pre-wrap;'>"
                         + esc(chr(10).join(l for l in _notices if l)) + "</pre>")
+    if _release:
+        notices_html += ("<h3 style='font-family:Georgia,serif;font-size:15px;margin:14px 0 6px;'>Release watch</h3>"
+                         "<pre style='margin:0;padding:8px 11px;background:#f9fafb;border:1px solid #e5e7eb;"
+                         "border-radius:8px;font-size:12px;white-space:pre-wrap;'>"
+                         + esc(chr(10).join(l.strip() for l in _release if l.strip())) + "</pre>")
     if _lwatch:
         notices_html += ("<h3 style='font-family:Georgia,serif;font-size:15px;margin:14px 0 6px;'>Launcher watchdog</h3>"
                          "<pre style='margin:0;padding:8px 11px;background:#f9fafb;border:1px solid #e5e7eb;"

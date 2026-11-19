@@ -367,6 +367,9 @@ NAMES_CATALOGUE = re.compile(r"catalog\.db|ECONDL_CATALOG|\bCATALOG_DB\b|[\"']ca
 # A narrow exemption: only the named function of the named file is left out of the scan.
 EXEMPT_FUNCTIONS = {"updater/run.py": frozenset({"_selfhost_preflight"}),   # names ECONDL_CATALOG to REFUSE it
                     "updater/blob.py": frozenset({"refuse_unless_live_checkout"}),   # the same refusal (R1217)
+                    # the release-watch probe child's env points ECONDL_CATALOG at a path that cannot exist (premise
+                    # pinned in tests/test_release_watch_sandbox.py: test_b8_6_the_child_env_is_exactly_the_allow_list)
+                    "updater/release_watch.py": frozenset({"child_env"}),
                     # test fixtures: hand the devserver child its TEMPORARY fixture catalogue ($ECONDL_CATALOG)
                     # and name their own temporary copies; none opens the real catalogue (premise pinned below)
                     "api/test_conformance.py": frozenset({"store", "test_metadata_description_citation_fallback",
