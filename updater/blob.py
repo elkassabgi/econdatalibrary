@@ -130,7 +130,7 @@ def read_schema(path: str):
     absent on a CI runner under AQUEDUCT_BACKEND=r2 (ledger R36)."""
     r2 = _r2_routed()
     if r2 is not None:
-        data = r2.get(_path_to_key(path))
+        data = _r2_footer_buffer(r2, _path_to_key(path))   # the schema is in the footer: tail GETs only
         if data is None:
             raise FileNotFoundError(f"R2 object absent for {path!r}")
         return pq.read_schema(io.BytesIO(data))
@@ -144,14 +144,13 @@ def read_metadata(path: str):
     row-group statistics) can be answered from the FOOTER instead of decoding data.
     Locally that is a couple of seeks; there is no decode at any file size.
 
-    NOTE the honest limit under the R2 backend: the object still has to come over the
-    wire in full before its footer can be read, so this saves the DECODE, not the GET.
-    That is the difference between "expensive" and "impossible" — oecd's largest flow
-    file is 1,792,000,000 rows and cannot be decoded on any runner we own.
+    Under the R2 backend only the object's TAIL comes over the wire (_r2_footer_buffer: one
+    ranged GET, two for a footer over 1 MiB) - before 2026-11-19 the whole object was
+    downloaded to read it, which saved the decode but not the GET.
     """
     r2 = _r2_routed()
     if r2 is not None:
-        data = r2.get(_path_to_key(path))
+        data = _r2_footer_buffer(r2, _path_to_key(path))
         if data is None:
             raise FileNotFoundError(f"R2 object absent for {path!r}")
         return pq.read_metadata(io.BytesIO(data))
@@ -398,10 +397,64 @@ def commit_local_file(tmp_path: str, path: str) -> None:
             r2.put_file(key, path)
 
 
+# How much of an object's tail the FIRST ranged GET asks for when only its parquet footer is needed.
+# The footer is the thrift FileMetaData (one entry per row group x column) plus 8 bytes; a footer larger
+# than this costs exactly one more ranged GET, never the object.
+_FOOTER_TAIL_BYTES = 1 << 20
+
+
+def _r2_footer_buffer(r2, key: str) -> bytes | None:
+    """Bytes that pq.read_metadata parses to the SAME FileMetaData as the whole object - fetched with
+    ranged GETs of the object's tail only. None when the object is absent (as R2Blob.get returns).
+
+    WHY (2026-11-19). row_count used to r2.get() the whole object to read a few KB of footer. For
+    unctad_biotrademerch that is 18,834,328,493 bytes, ~9 minutes on every pass, and the 08-30 run died
+    in botocore's ResponseStreamingError at 17.3 GB - a count killed by a download it never needed.
+
+    How: a suffix GET of the last _FOOTER_TAIL_BYTES gives the 8-byte trailer (footer length + "PAR1")
+    and the object's total size (Content-Range). If the footer is longer than that tail, ONE more GET of
+    exactly the footer's bytes, conditional on the first GET's ETag so a replaced object cannot splice
+    two versions; a replaced object (412) or one deleted in between restarts the read, at most 3 times.
+    The returned buffer is "PAR1" + footer + trailer: a parquet file with no data pages, whose metadata
+    is byte-for-byte the footer pyarrow would parse from the whole object.
+
+    Errors keep today's TYPE: when the tail IS the whole object (an object no bigger than the window -
+    including one under 8 bytes) the whole object is returned and pyarrow parses exactly what get() would
+    have given it; a tail with bad magic or an impossible footer length is returned as-is, so pyarrow
+    raises the same ArrowInvalid it raises on the whole object. Transport errors propagate as before."""
+    from botocore.exceptions import ClientError
+    for attempt in range(3):
+        got = r2.get_range(key, f"bytes=-{_FOOTER_TAIL_BYTES}")
+        if got is None:
+            return None
+        tail, total, etag = got
+        if len(tail) >= total:
+            return tail                                    # the whole object: parse exactly what get() gave
+        if len(tail) < 8 or tail[-4:] != b"PAR1":
+            return tail                                    # not a parquet trailer: pyarrow raises its own error
+        need = int.from_bytes(tail[-8:-4], "little") + 8   # footer + length + magic
+        if need + 4 > total:
+            return tail                                    # footer longer than the file: pyarrow refuses it
+        if need > len(tail):
+            try:
+                got = r2.get_range(key, f"bytes={total - need}-{total - 1}", if_match=etag)
+            except ClientError as e:
+                if _is_precondition_failed(e) and attempt < 2:
+                    continue                               # replaced between the two GETs: start over
+                raise
+            if got is None:
+                continue                                   # deleted in between: the next suffix GET says so
+            tail = got[0]
+            if len(tail) != need:
+                raise IOError(f"{key}: ranged GET of the {need}-byte footer returned {len(tail)} bytes")
+        return b"PAR1" + tail[-need:]
+    raise IOError(f"{key}: object changed during 3 footer reads")
+
+
 def row_count(path: str) -> int:
     r2 = _r2_routed()
     if r2 is not None:
-        data = r2.get(_path_to_key(path))
+        data = _r2_footer_buffer(r2, _path_to_key(path))
         if data is None:
             return 0
         try:
@@ -421,6 +474,37 @@ def row_count(path: str) -> int:
 # ---------------------------------------------------------------------------
 
 R2_BUCKET = "econ-data"
+
+
+def _file_range(path: str, byte_range: str, if_match: str | None):
+    """A ranged read of a local file with R2Blob.get_range's contract: (body, total_size, version token).
+    The token stands in for an ETag (size + mtime); a mismatch with `if_match` raises IOError - the file
+    changed between two reads - rather than return bytes from two versions."""
+    st = os.stat(path)
+    token = f"{st.st_size}:{st.st_mtime_ns}"
+    if if_match is not None and if_match != token:
+        raise IOError(f"{path}: changed between two ranged reads")
+    n = st.st_size
+    start, end = _parse_range(n, byte_range)
+    if start > end:
+        return b"", n, token
+    with open(path, "rb") as f:
+        f.seek(start)
+        return f.read(end - start + 1), n, token
+
+
+def _parse_range(n: int, byte_range: str) -> tuple[int, int]:
+    """(start, end) inclusive of an HTTP byte range against an object of n bytes; start > end = nothing."""
+    a, _, b = byte_range.split("=", 1)[1].partition("-")
+    if a == "":
+        return max(0, n - int(b)), n - 1
+    return int(a), min(int(b) if b else n - 1, n - 1)
+
+
+def bytes_range(data: bytes, byte_range: str):
+    """get_range's contract over bytes already in memory - for in-memory Blob twins (test fakes)."""
+    start, end = _parse_range(len(data), byte_range)
+    return (data[start:end + 1] if start <= end else b""), len(data), None
 
 
 class LocalBlob:
@@ -445,6 +529,11 @@ class LocalBlob:
             return None
         with open(p, "rb") as f:
             return f.read()
+
+    def get_range(self, key: str, byte_range: str, *, if_match: str | None = None):
+        """R2Blob.get_range's twin on a file (same return shape, None when absent)."""
+        p = self._path(key)
+        return _file_range(p, byte_range, if_match) if os.path.exists(p) else None
 
     def put_atomic(self, key: str, data: bytes, *, plain: bool = False) -> None:   # local files: bytes as given
         p = self._path(key)
@@ -590,6 +679,38 @@ class R2Blob:
                 return None
             raise
         return resp["Body"].read()
+
+    def get_range(self, key: str, byte_range: str, *, if_match: str | None = None):
+        """ONE ranged GET: (body, object_total_size, etag), or None when the object is absent.
+
+        `byte_range` is an HTTP Range value ("bytes=-N" for the last N bytes, "bytes=a-b"). An empty
+        object answers a suffix range with 416 (nothing to satisfy it): that is returned as (b"", 0, None),
+        the same empty bytes get() returns for it. `if_match` makes the GET conditional on the ETag a
+        previous GET saw, so two ranges cannot come from two versions of the object; a mismatch raises
+        the ClientError (412) for the caller to decide."""
+        from botocore.exceptions import ClientError
+        kw = {"Range": byte_range}
+        if if_match:
+            kw["IfMatch"] = if_match
+        try:
+            resp = self.client.get_object(Bucket=self.bucket, Key=key, **kw)
+        except ClientError as e:
+            if _is_404(e):
+                return None
+            r = getattr(e, "response", None) or {}
+            if (str(r.get("Error", {}).get("Code", "")) == "InvalidRange"
+                    or r.get("ResponseMetadata", {}).get("HTTPStatusCode") == 416):
+                return b"", 0, None
+            raise
+        crange = resp.get("ContentRange") or ""
+        if "/" not in crange:
+            # A 200 with no Content-Range: the server sent the WHOLE object. Read it (correct, just not
+            # cheap) and say so, rather than return a count from a guess.
+            print(f"[blob] WARNING {key}: Range {byte_range!r} ignored, whole object returned", flush=True)
+            body = resp["Body"].read()
+            return body, len(body), resp.get("ETag")
+        body = resp["Body"].read()
+        return body, int(crange.rsplit("/", 1)[1]), resp.get("ETag")
 
     def put_atomic(self, key: str, data: bytes, *, plain: bool = False) -> None:
         # Single PUT — atomic per key on R2 (plan D-3); botocore already retries
@@ -924,6 +1045,11 @@ class SelfhostBlob:
             return None
         with open(meta["path"], "rb") as f:
             return f.read()
+
+    def get_range(self, key: str, byte_range: str, *, if_match: str | None = None):
+        """R2Blob.get_range's twin on the stored file (same return shape, None when absent)."""
+        meta = self.store.head(key)
+        return None if meta is None else _file_range(meta["path"], byte_range, if_match)
 
     def put_atomic(self, key: str, data: bytes, *, plain: bool = False) -> None:
         _refuse_or_own_store_write(f"put {key}", key)
