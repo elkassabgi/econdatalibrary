@@ -59,8 +59,16 @@ A socket may connect only to an address a lookup of a probe host returned; binds
 import-time IPv6 test). The child's error TEXT never travels: what is recorded, beaten and mailed is a fixed phrase
 plus an exception type from a closed list (the raw text is printed only by --probe). Listing a directory outside
 the read allow-list is refused.
-RESIDUAL, stated: os.stat-type metadata calls have no audit event, so a compromised probe could encode a file's
-size or time into a token-shaped P (a few dozen bits a run; never content, since every read is guarded).
+WHAT THIS IS, AND IS NOT. These guards are in the child's own interpreter, so they stop ACCIDENTS - a fetcher, or
+a library it calls, that reads .env or a store, writes, or POSTs - and they are what makes a desktop run evidence
+of keylessness (R4.ALT): the production probe path is shown, by test, to work with every guard on. They are NOT a
+security boundary against DELIBERATELY hostile code in the probe: Python code can reach the guard's own state
+(sys.modules, gc) and switch it off, and PEP 578 says audit hooks are not a sandbox. A boundary against hostile code
+needs the operating system (a low-rights account or AppContainer with no read access to the checkout's secrets,
+and a firewall rule for the child); that is not built in phase 1. Accidental-route residuals, stated: os.stat-type
+metadata has no audit event (a token-shaped P could carry a few dozen bits of size or time), the recorded
+exception type is one of a closed list (a few bits a run), and _overlapped is refused at import because Windows
+overlapped sockets connect with no socket.* audit event.
 
 RUNBOOK (operator)
   PUBLISHER MOVED <from> -> <to> since <date>
@@ -389,6 +397,7 @@ _AUDIT_REFUSED = ("subprocess.Popen", "os.system", "os.exec", "os.spawn", "os.po
                   "ctypes.call_function", "sqlite3.connect", "webbrowser.open", "winreg.CreateKey",
                   "winreg.SetValue", "winreg.DeleteKey")
 _HTTP_OK = (b"GET ", b"HEAD ")
+_IMPORT_REFUSED = frozenset({"_overlapped", "asyncio.windows_events", "_socket_overlapped"})
 
 
 def _audit_reason(event: str, args) -> "str | None":
@@ -422,6 +431,9 @@ def _audit_reason(event: str, args) -> "str | None":
         return "binding a socket is not allowed in a probe"
     if event in _AUDIT_REFUSED:
         return "not allowed in a probe"
+    if event == "import" and args and str(args[0]) in _IMPORT_REFUSED:
+        # Windows overlapped I/O connects and binds in C with no socket.* audit event (review round 3)
+        return "a module that reaches the network without an audit event"
     if event == "ctypes.dlopen":
         # dlopen(NULL) is how `import ctypes` binds pythonapi on POSIX; any NAMED library is refused, and every
         # symbol lookup (ctypes.dlsym) and foreign call (ctypes.call_function) is refused above.

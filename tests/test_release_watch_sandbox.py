@@ -100,6 +100,7 @@ AUDIT_ROUTES = {
                    "return 'posted'",
     "ctypes": "import ctypes\nlib = ctypes.CDLL('msvcrt' if os.name == 'nt' else 'libc.so.6')\nreturn str(lib)",
     "other_host": "import socket\nsocket.getaddrinfo('example.org', 443)\nreturn 'resolved'",
+    "overlapped_import": "import _overlapped\nreturn 'imported'",
 }
 
 
