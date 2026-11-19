@@ -74,13 +74,12 @@ class GiantChangedUnits(Strategy):
         cur = f.current_vintage(unit) if hasattr(f, "current_vintage") else None
         cur = probe_token(cur)      # finalize's "date-tail" placeholder is no token (base.DATE_TAIL)
         self._cur = cur
-        stored = (unit_state or {}).get("upstream_vintage")
-        if cur is not None and stored is not None and cur == stored:
+        # equal to the stored vintage, after a clean pass, within an admitted stamp's max age (base)
+        if self._probe_matches(f, cur, unit_state):
             return None
         return cur or "force"
 
     def run(self, unit: Unit, since: str | None) -> Result:
-        r = get_fetcher(unit.source_id).update(unit, since)
-        if r.new_vintage is None and getattr(self, "_cur", None):
-            r.new_vintage = self._cur
-        return r
+        f = get_fetcher(unit.source_id)
+        # The PRE-RUN probe, when the fetcher returned none - never over NO_STAMP (Strategy._carry_probe).
+        return self._carry_probe(f.update(unit, since), f)

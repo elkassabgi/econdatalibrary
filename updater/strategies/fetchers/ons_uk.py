@@ -74,7 +74,7 @@ import pyarrow as pa
 
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
-from ..base import Result
+from ..base import NO_STAMP, Result
 from ._common import Tally, finalize
 from ._common import cancellable_pool
 from jobs import ingest_ons_uk as ig   # reuse catalog walk + THE key builder
@@ -437,6 +437,9 @@ def update(unit, since) -> Result:
                    series_cursors=cursors)
     if capped:
         # More datasets still owe work — do NOT let the strategy stamp a "fully current"
-        # unit vintage, or the remaining backlog would be skipped next tick.
-        res.new_vintage = None
+        # unit vintage, or the remaining backlog would be skipped next tick. NO_STAMP, not None:
+        # the strategy filled a None with the probe token (bulk_snapshot_if_changed, before
+        # 2026-11-19), which is exactly that stamp. NO_STAMP is never refilled
+        # (base.Strategy._carry_probe) and the orchestrator stores None for it.
+        res.new_vintage = NO_STAMP
     return res

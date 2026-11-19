@@ -38,6 +38,12 @@ def http_vintage(url, session=None, tries=3):
                 return None
             time.sleep(2 ** a)
             continue
+        if not 200 <= r.status_code < 300:
+            # ONLY A 2xx NAMES THE FILE. A 404/403/410 (or any other non-2xx) answers with the headers of an
+            # ERROR PAGE, which stay the same from run to run: returned as a token, a probe URL that went dead
+            # reads "unchanged" for ever and can seal its unit (review of the date-tail stamp, 2026-11-19).
+            # None means "cannot tell", so the strategy fetches and update() reports what it finds.
+            return None
         h = r.headers
         return h.get("ETag") or h.get("Last-Modified") or h.get("Content-Length")
     return None

@@ -80,12 +80,12 @@ class ManualVintage(Strategy):
 
         # A determinable token that matches what we hold -> nothing new. A different
         # token -> a NEW edition shipped; fetch + overwrite_if_changed the whole release.
-        return None if cur == stored else cur
+        # "Matches" also needs a clean last pass, and an admitted stamp's max age (base._probe_matches).
+        return None if self._probe_matches(f, cur, unit_state) else cur
 
     def run(self, unit: Unit, since: str | None) -> Result:
-        r = get_fetcher(unit.source_id).update(unit, since)
+        f = get_fetcher(unit.source_id)
         # Carry the probed vintage token through to the Result so the orchestrator
-        # persists it as upstream_vintage (the fetcher may also set its own, which wins).
-        if r.new_vintage is None and getattr(self, "_cur", None):
-            r.new_vintage = self._cur
-        return r
+        # persists it as upstream_vintage (the fetcher may also set its own, which wins;
+        # NO_STAMP is never refilled - Strategy._carry_probe).
+        return self._carry_probe(f.update(unit, since), f)

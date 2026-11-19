@@ -11,7 +11,7 @@ A unit is marked `ok` only after run() reports a successful atomic publish.
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 # A NON-FAILURE tail a fetcher may join onto its result error ("; not hosted note: ..."): tables
 # the publisher lists but serves no data for, named for the reader. health._deferral_only strips it
@@ -23,7 +23,8 @@ ROTATION_NOTE = "rotation note:"
 # held rows per table (stat_estonia, R1830's shape). A refusal or a defect is NEVER only in this note:
 # the fetcher also books it transient, which keeps the source in ATTENTION.
 MERGE_NOTE = "merge note:"
-NON_FAILURE_NOTES = ("csv coverage note:", NOT_HOSTED_NOTE, ROTATION_NOTE, MERGE_NOTE)
+NON_FAILURE_NOTES = ("csv coverage note:", NOT_HOSTED_NOTE, ROTATION_NOTE, MERGE_NOTE,
+                     "probe note:")      # = PROBE_NOTE (defined with the probe stamp, below)
 
 # nominal days between upstream updates per cadence (0.9 slack applied in cadence_due)
 CADENCE_DAYS = {
@@ -51,6 +52,81 @@ DATE_TAIL = "date-tail"
 def probe_token(cur):
     """A probed vintage as detect_change() may compare it: the date-tail placeholder reads as None."""
     return None if cur == DATE_TAIL else cur
+
+
+# ---- the pre-run probe stamp: OPT-IN per fetcher (2026-11-19) ------------------------------------------
+#
+# finalize() stamps DATE_TAIL on every Result, so a probe-gated unit whose fetcher names no token stores the
+# placeholder and is fetched at every due tick. Stamping the pre-run probe instead would let an unchanged
+# release be skipped - but only where the probe provably moves on every change the fetch would take AND the
+# fetch provably takes what the probe saw. The review of a default-on stamp found probes that see a newer
+# release than the fetch ingests (a cached zip), probes that cover 1 of 21 or 1 of 23 fetched files, and
+# probes of a different URL than the one fetched; for those the placeholder is the only backstop. So:
+#
+#   STAMP_PROBE = True     a fetcher module sets this to have its pre-run probe stored on a clean pass.
+#                          Absent or False (the default): exactly the old behaviour. NO unit sets it yet;
+#                          a fetcher is admitted only on shadow evidence (the probe note below): every run
+#                          that added or revised rows coincided with a moved probe token (R1154).
+#   STAMP_MAX_AGE_DAYS     for an admitted fetcher, a stamp older than this forces a real fetch although the
+#                          probe has not moved (the bis.py / fhfa.py MAX_AGE_DAYS backstop). Default below.
+#
+# An admitted stamp is stored as "<token>#fetched=<YYYY-MM-DD>": the date of the fetch that took it, which an
+# earned no_change does not move (it never writes upstream_vintage), so the age is measured from the last real
+# fetch. orchestrate.run_once compares the token part (stamp_token).
+STAMP_MAX_AGE_DAYS = 30
+STAMP_SEP = "#fetched="
+
+# A fetcher's update() returns this as new_vintage to say "store NO vintage for this pass, not even the
+# probe": its pass returned ok/no_change while work is still owed (ons_uk's capped rotation). It never
+# reaches the state: orchestrate.run_once stores None for it, so the next due tick fetches. A plain None
+# could not say it: the probe strategies fill a None with the probe token.
+NO_STAMP = "no-stamp"
+
+# The statuses after which a stored vintage may gate a later due pass. After any other one (partial,
+# transient_fail, ...) the next due tick fetches whatever the probe says: run_once keeps the OLD vintage on a
+# not-clean pass, and a probe that returns to that value (a replica's ETag, a gh:/http: token kind switch on
+# a GitHub 403) would otherwise book an earned no_change over the unfinished pass.
+CLEAN_STATUSES = ("ok", "no_change")
+
+# The prefix of the shadow note run_once appends to the runs row of every full pass of a probe strategy:
+# "probe note: <the pre-run token>" (or "none"). health strips it before reading a note (NON_FAILURE_NOTES,
+# health.read_runs), so it changes no gate, alarm or digest line.
+PROBE_NOTE = "probe note:"
+
+
+def stamps_probe(fetcher) -> bool:
+    return getattr(fetcher, "STAMP_PROBE", False) is True
+
+
+def release_token(cur):
+    """The probed vintage as a value an ADMITTED fetcher may store, or None: no probe, the DATE_TAIL
+    placeholder, NO_STAMP, or a bare integer (http_vintage's Content-Length fallback - a byte count does not
+    move on a same-size revision)."""
+    tok = probe_token(cur)
+    if tok is None or tok == NO_STAMP or str(tok).strip().isdigit():
+        return None
+    return tok
+
+
+def split_stamp(stored):
+    """(token, fetched date or None) of a stored vintage; a vintage without the suffix has no date."""
+    s = "" if stored is None else str(stored)
+    if STAMP_SEP in s:
+        tok, _, day = s.rpartition(STAMP_SEP)
+        try:
+            return tok, date.fromisoformat(day)
+        except ValueError:
+            return s, None
+    return stored, None
+
+
+def stamp_token(stored):
+    """The token part of a stored vintage (itself when it carries no fetch date)."""
+    return split_stamp(stored)[0]
+
+
+def _today() -> date:
+    return datetime.now(timezone.utc).date()
 
 
 @dataclass
@@ -222,6 +298,54 @@ class Strategy(ABC):
             return _due_after(min(CADENCE_DAYS.get(unit.cadence, 7), PARTIAL_RETRY_DAYS),
                               st.get("last_attempt_utc"), now)
         return True
+
+    def _probe_matches(self, fetcher, cur, unit_state) -> bool:
+        """May the probe strategies skip this unit as unchanged? (They also need cadence: is_due.)
+
+        * a probe and a stored vintage, and the probe equals it - for an ADMITTED fetcher (STAMP_PROBE) the
+          token part of its stamp, and only while the stamp is younger than its max age;
+        * and the unit's last recorded pass was clean (CLEAN_STATUSES). A unit with no recorded status
+          (a fresh row) is not refused on that ground.
+        """
+        us = unit_state or {}
+        stored = us.get("upstream_vintage")
+        if cur is None or stored is None:
+            return False
+        st = us.get("status")
+        if st is not None and st not in CLEAN_STATUSES:
+            return False
+        if stamps_probe(fetcher):
+            tok, fetched = split_stamp(stored)
+            if fetched is None or tok != cur:
+                return False
+            max_age = getattr(fetcher, "STAMP_MAX_AGE_DAYS", STAMP_MAX_AGE_DAYS)
+            return (_today() - fetched).days < max_age
+        return cur == stored
+
+    def _carry_probe(self, r: Result, fetcher=None) -> Result:
+        """Hand the PRE-RUN probe (self._cur, read by detect_change before the pull) to the orchestrator.
+
+        Never re-probe here: a release that lands during the pull must still read as changed at a later
+        due pass (R1154, R1283 M2). Whether the value is STORED stays the orchestrator's decision: only a clean
+        pass advances upstream_vintage.
+          * NO_STAMP passes through untouched (it is neither None nor DATE_TAIL, so no branch below fills it);
+          * a token the fetcher set itself wins;
+          * an ADMITTED fetcher (STAMP_PROBE) whose Result carries None or finalize's DATE_TAIL gets
+            "<probe>#fetched=<today>", when the probe is a usable token (release_token);
+          * any other fetcher: exactly the old fill - a None is filled with the probe, DATE_TAIL is left.
+        """
+        if r is None:
+            return r
+        cur = getattr(self, "_cur", None)
+        if fetcher is not None and stamps_probe(fetcher):
+            if r.new_vintage in (None, DATE_TAIL):
+                tok = release_token(cur)
+                if tok is not None:
+                    r.new_vintage = f"{tok}{STAMP_SEP}{_today().isoformat()}"
+            return r
+        if r.new_vintage is None and cur:
+            r.new_vintage = cur
+        return r
 
     @abstractmethod
     def detect_change(self, unit: Unit, unit_state: dict | None) -> str | None:
