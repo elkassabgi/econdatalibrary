@@ -875,29 +875,35 @@ sources:
   out_dir: cepii_baci
   review: true
   adapter:
-    vintage_signal: Scrape/poll the CEPII BACI download page for the latest vintage V-string in the zip filename (currently
-      hardcoded BACI_HS17_V202401b.zip / BACI_HS96_V202401b.zip); a new V-string = new data. Per-vintage gate is os.path.exists
-      of the parquet + >1MB cached-zip size check. No change feed; polling the download page is the only signal.
+    vintage_signal: >-
+      The fetcher scrapes CEPII's product page for BACI_HS<nn>_V<yyyymm>[letter].zip and takes the highest V-string per
+      classification; the unit token is _token() over the (HS17, HS96) releases, stamped only when both are in place. Per-file
+      gate (2026-11-19): a classification is rebuilt only when its _baci_<hs>.release.json sidecar names a different release
+      (or the parquet footer disagrees with the sidecar). No change feed; polling the page is the only signal.
     since_param: n/a
-    out_paths_note: 'single-file-per-vintage: baci_hs17.parquet and baci_hs96.parquet under data/clean_full/cepii_baci/; raw
-      zips data/raw/cepii_baci/{HS17,HS96}.zip. Streamed in 500k-row batches via one ParquetWriter per vintage; .part download
-      renamed atomically.'
+    out_paths_note: >-
+      Served names are stable: baci_hs17.parquet, baci_hs96.parquet, cepii_baci_pairs.parquet under data/clean_full/cepii_baci/,
+      each with an underscore .json release sidecar beside it. Raw zips are release-keyed at data/raw/cepii_baci/<release>/<HS>.zip
+      (+ .zip.json with bytes/sha256; resumable .part with Range). Rebuilds stage in data/_staging_cepii_baci/ (outside
+      clean_full, R1949) and replace only after verification.
     rate_note: No key; direct download verified 200 OK. Large download (timeout=600s, streamed); single GET per vintage, no
       rate limit.
     key_env: none
     confidence: high
-    open_question: 'Vintage discovery is not automated -- the FILES dict is hardcoded to V202401b and nothing detects new
-      releases (effectively manual today). Worth confirming a human will bump FILES, or building the CEPII-page scraper. CRITICAL:
-      if FILES is updated but the cached raw zip is NOT cleared, the >1MB size check passes and the OLD vintage is silently
-      reused.'
+    open_question: >-
+      Resolved 2026-11-19: the V202401b pin and the release-blind caches are gone. The served parquets run to 2024, so
+      they are a later release than V202401b (probably V202601, not proven); only _country_codes.json came from V202401b.
+      Open: the first run under the new gate is a FORCED supervised run (cadence annual, hours with the download), and
+      serving it needs the catalogue re-run (titles carry the V-string) and a verbatim cepii_baci licence entry.
   matrix:
     refresh_mechanism:
-    - skip-if-series-exists
+    - release-sidecar gate (rebuild when the advertised release differs)
     force_refresh_procedure:
-    - 'Edit FILES in jobs/ingest_cepii_baci.py to the new vintage URLs first IF a new release exists, then clear outputs (and
-      the cached zips so the new vintage actually downloads) and run: rm -f D:/research/econfindatalibrary/data/clean_full/cepii_baci/*.parquet
-      ; rm -f D:/research/econfindatalibrary/data/raw/cepii_baci/*.zip ; python.exe D:/research/econfindatalibrary/jobs/ingest_cepii_baci.py   (to
-      merely re-parse the same vintage, deleting just the parquets suffices — the cached zip is reused).'
+    - >-
+      From the repo root, supervised: python -m updater.run --source cepii_baci --force (the fetcher reads the release from
+      CEPII's page). To re-parse the SAME release, delete only data/clean_full/cepii_baci/_baci_<hs>.release.json; never
+      delete the served parquets or cepii_baci_pairs.parquet - the rebuild replaces them only after it verifies.
+      Standalone: python jobs/ingest_cepii_baci.py [--release V...]; it refuses an older release than the store holds.
     incremental_path:
     - 'BACI is shipped as annual CSVs inside one vintage zip; CEPII has no delta API, so true incremental is not feasible.
       Best achievable: (1) parameterize the vintage V-string (or scrape the CEPII download page for the latest) so new releases
@@ -909,8 +915,10 @@ sources:
     - No key — direct download verified 200 OK. Large download (timeout=600s, streamed). No rate limit beyond a single GET
       per vintage. No env vars.
     storage_layout:
-    - single-file-per-vintage — baci_hs17.parquet and baci_hs96.parquet under data/clean_full/cepii_baci/; raw zips cached
-      under data/raw/cepii_baci/{HS17,HS96}.zip. Streamed in 500k-row batches via one ParquetWriter per vintage (no part files).
+    - >-
+      single-file-per-classification - baci_hs17.parquet and baci_hs96.parquet under data/clean_full/cepii_baci/ with
+      _baci_<hs>.release.json sidecars; raw zips under data/raw/cepii_baci/<release>/<HS>.zip. Parsed in 500k-row batches
+      into a staged part outside clean_full, verified, then os.replace'd.
 - source_id: cepii_gravity
   # PROMOTED 2026-08-01 on a proven run, not on hope. The workstation pass completed it
   # in 3,355 s and derived 50,000 CSVs with 0 failures, and
