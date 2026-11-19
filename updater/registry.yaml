@@ -7369,9 +7369,10 @@ sources:
   out_dir: usda
   review: true
   adapter:
-    vintage_signal: new dated bulk file appearing under data/raw/usda (qs.<sector>_YYYYMMDD.txt.gz; current vintage 20260603),
-      or HEAD Last-Modified/Content-Length on https://www.nass.usda.gov/datasets/qs.<sector>.txt.gz; on change delete the
-      affected cube dirs (+_complete + _manifest.json) and re-ingest.
+    vintage_signal: the five dated sector dumps (qs.<sector>_YYYYMMDD.txt.gz; vintage 20261118 on 2026-11-18) linked from
+      https://www.nass.usda.gov/datasets (NO trailing slash - the slash form 301s to a 404 since 2026-10), each downloaded
+      from its own href, /sites/default/files/datasets/<fname>; the gate token is a hash of the (sector, date) pairs. On
+      change delete the affected cube dirs (+_complete + _manifest.json) and re-ingest.
     since_param: n/a
     out_paths_note: 'MULTI-DIR: per-cube part files under data/clean_full/usda/{animals_products,crops,demographics,economics,environmental}/part_NNN.parquet
       + per-cube _complete sentinel + _manifest.json. NOTE two scripts: bulk jobs/ingest_usda.py (this, S5) vs the orchestrated
@@ -7388,7 +7389,7 @@ sources:
     - checkpoint-resume
     force_refresh_procedure:
     - 'Two stages. (1) Refresh the raw bulk files (delete old, re-download new vintage): edit the YYYYMMDD filenames in D:/research/econfindatalibrary/data/raw/usda/download_all.sh
-      to the new vintage, delete stale qs.*.txt.gz, then run that script (curl from https://www.nass.usda.gov/datasets). (2)
+      to the new vintage, delete stale qs.*.txt.gz, then run that script (curl from https://www.nass.usda.gov/sites/default/files/datasets/<fname>, the hrefs on https://www.nass.usda.gov/datasets). (2)
       Clear the clean output so a new vintage is fully re-ingested (the _complete sentinels otherwise SKIP each cube): rm
       -rf D:/research/econfindatalibrary/data/clean_full/usda/{animals_products,crops,demographics,economics,environmental}
       D:/research/econfindatalibrary/data/clean_full/usda/_manifest.json ; then run the auto-restart loop: bash D:/research/econfindatalibrary/data/raw/usda/run_until_done.sh  (or

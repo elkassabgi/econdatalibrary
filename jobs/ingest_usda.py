@@ -2,7 +2,8 @@
 """Grouped ingest of USDA NASS Quick Stats bulk files (FULL coverage).
 
 Source of truth: the Quick Stats bulk .txt.gz dumps at
-https://www.nass.usda.gov/datasets/ -- these are the ENTIRE Quick Stats
+https://www.nass.usda.gov/datasets (no trailing slash since 2026-10; each file is
+at /sites/default/files/datasets/<fname>) -- these are the ENTIRE Quick Stats
 database (every survey + census observation, national/state/county/district/
 watershed/zip), far more complete than per-series api_GET calls.
 
