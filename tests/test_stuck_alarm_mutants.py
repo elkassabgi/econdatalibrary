@@ -41,6 +41,17 @@ MUTANTS = {
         '        if kind == "neutral":\n            continue\n', '        if kind == "neutral":\n            break\n'),
     "9_ack_hides": (
         "acknowledged.append(variant)", "pass"),
+    # the review of #302: the grouping key. Each dropped part must make a test fail.
+    "g_noclass": ('key = ((l["grain"], l["class_key"], str(l["since"])[:10])',
+                  'key = ((l["grain"], str(l["since"])[:10])'),
+    "g_noday": ('key = ((l["grain"], l["class_key"], str(l["since"])[:10])',
+                'key = ((l["grain"], l["class_key"])'),
+    "g_hide": ("g.update(group=[f\"{m['source_id']}/{m['unit_id']}\" for m in members],",
+               "g.update(group=[f\"{m['source_id']}/{m['unit_id']}\" for m in members[:1]],"),
+    # ... and the two fixes of that review
+    "n_last_run_only": ("is_new = not fires([r for r in runs if (_stuck_ts(r[0]) or newest_t) <= cutoff])",
+                        "is_new = not fires(runs[:-1])"),
+    "a_dominant_only": ("if nc in texts[0][1] and all(nc in t for t in since):", "if any(nc in t for _ts, t in texts):"),
 }
 
 

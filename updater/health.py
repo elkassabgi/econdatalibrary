@@ -505,7 +505,7 @@ _STUCK_SHRINK = _re.compile(r"(?:^|\[|, )([^\s,\[\]]+?): refusing shrink")
 STUCK_ACKS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stuck_acks.yaml")
 DISCONTINUED_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "discontinued.yaml")
 STUCK_ACK_MIN_NOTE = 20          # a note_contains shorter than this matches too much to scope an ack
-STUCK_NEW_WITHIN_HOURS = 36.0    # a streak is "new" when its crossing run is the latest daily run's
+STUCK_NEW_WITHIN_HOURS = 24.0    # NEW = fires now, and did not on its runs up to (newest run - this): one digest
 _ACK_KEYS = {"source_id", "unit_id", "token", "note_contains", "reason_quote", "reason_url", "ledger",
              "acked_utc", "expires_utc", "by"}
 _ACK_REQUIRED = ("source_id", "unit_id", "note_contains", "reason_quote", "reason_url", "acked_utc", "expires_utc")
@@ -610,8 +610,11 @@ def _stuck_norm_text(note) -> str:
 
 
 def _stuck_norm(status, note) -> str:
-    """The error CLASS of a run."""
-    return f"{status}|{_stuck_norm_text(note)[:70]}"
+    """The error CLASS of a run: the status, the normalised text, and the URL HOSTS it names. The hosts are kept
+    apart from the 70-character prefix so they cannot be cut off: two same-day 404s from different publishers are
+    two failures, not one outage (review of #302)."""
+    hosts = ",".join(sorted(set(_re.findall(r"https?://([^/\s'\"]+)", str(note or "")))))
+    return f"{status}|{_stuck_norm_text(note)[:70]}" + (f"|{hosts}" if hosts else "")
 
 
 def _stuck_items(body) -> list:
@@ -677,11 +680,12 @@ def _stuck_unit(runs):
     if k >= STUCK_RUNS and span_h >= STUCK_MIN_SPAN_HOURS:
         classes = Counter(_stuck_norm(st, n) for _ts, st, n in streak)
         top, top_n = classes.most_common(1)[0]
-        dominant = next(n for _ts, st, n in streak if _stuck_norm(st, n) == top)      # its newest run
         return {"grain": "KILLED" if any(st == "killed_external" for _ts, st, _n in streak) else "UNIT",
                 "runs": k, "since": streak[-1][0], "span_d": round(span_h / 24.0, 1),
-                "n_classes": len(classes), "class_key": top, "top_class": f"{top_n}x {top.split('|', 1)[1]}",
-                "excerpt": _stuck_excerpt(streak[0][2]), "match_text": _stuck_norm_text(dominant),
+                "n_classes": len(classes), "class_key": top, "top_class": f"{top_n}x {top.split('|')[1]}",
+                "excerpt": _stuck_excerpt(streak[0][2]),
+                # what an ack is checked against: every run of the streak, NEWEST first (see _stuck_ack_for)
+                "ack_texts": {None: [(ts, _stuck_norm_text(n)) for ts, _st, n in streak]},
                 "tokens": [], "unknown": 0}
     return None
 
@@ -713,11 +717,13 @@ def _stuck_subunit(runs):
     for tok in sorted(cands):
         count = unknown = 0
         first = last = None
+        texts = []
         for ts, status, note, toks, blind, deferred in reversed(seq):
             if tok in toks:
                 count += 1
                 first = ts
                 last = last or (ts, note)
+                texts.append((ts, _stuck_norm_text(note)))
                 continue
             if status in ("ok", "no_change") or (not blind and deferred is not None and tok not in deferred):
                 break                          # attempted, and it did not fail
@@ -725,7 +731,7 @@ def _stuck_subunit(runs):
         a, b = _stuck_ts(first), _stuck_ts(last[0] if last else None)
         span_d = (b - a).total_seconds() / 86400.0 if (a and b) else -1.0
         if count >= STUCK_SUBUNIT_RUNS and span_d >= STUCK_SUBUNIT_MIN_SPAN_DAYS:
-            fired[tok] = (count, unknown, first, span_d, last)
+            fired[tok] = (count, unknown, first, span_d, last, texts)
     if not fired:
         return None, n_blind
     _lts, last_note = max(v[4] for v in fired.values())
@@ -733,7 +739,7 @@ def _stuck_subunit(runs):
             "unknown": max(v[1] for v in fired.values()), "since": min(v[2] for v in fired.values()),
             "span_d": round(max(v[3] for v in fired.values()), 1), "tokens": sorted(fired),
             "n_classes": 1, "class_key": "", "top_class": "", "excerpt": _stuck_excerpt(last_note),
-            "match_text": _stuck_norm_text(last_note)}, n_blind
+            "ack_texts": {t: v[5] for t, v in fired.items()}}, n_blind
 
 
 def _ack_date(v):
@@ -792,27 +798,35 @@ def _validate_stuck_acks(doc, today) -> tuple:
             return [], f"{where}: expires_utc {expires} is more than {STUCK_ACK_MAX_DAYS} days away"
         out.append({"source_id": str(a["source_id"]), "unit_id": str(a["unit_id"]),
                     "token": a.get("token"), "note_contains": str(a["note_contains"]).strip(),
-                    "expires": expires})
+                    "acked": acked, "expires": expires})
     return out, None
 
 
-def _stuck_ack_for(acks, sid, uid, token, match_text):
+def _stuck_ack_for(acks, sid, uid, token, texts):
+    """The ack covering this line, or (None, None). `texts` are the streak's (ts, normalised note), NEWEST first.
+    It must match the NEWEST run's error AND every run since acked_utc: an error that changed after the ack was
+    written is a new failure, and it alarms (review of #302: matching the dominant class kept a changed error
+    out of K)."""
     for i, a in enumerate(acks):
-        if (a["source_id"] == sid and a["unit_id"] == uid and a["token"] == token
-                and _stuck_norm_text(a["note_contains"]) in match_text):
+        if not (a["source_id"] == sid and a["unit_id"] == uid and a["token"] == token and texts):
+            continue
+        nc = _stuck_norm_text(a["note_contains"])
+        since = [t for ts, t in texts if (_stuck_ts(ts) is None or _stuck_ts(ts).date() >= a["acked"])]
+        if nc in texts[0][1] and all(nc in t for t in since):
             return i, a
     return None, None
 
 
 def _stuck_apply_acks(line, acks, today, used) -> list:
-    """[(line, 'ack'|'stuck')]. An ack covers its exact source, unit, token and the text of the streak's DOMINANT
-    error class only: a new token or a changed error on the same unit alarms normally. An EXPIRED ack puts the line
-    back, marked ACK EXPIRED. Either way the line keeps its "failing since" (the ack does not restart the clock)."""
+    """[(line, 'ack'|'stuck')]. An ack covers its exact source, unit, token and error text only: the newest run and
+    every run since acked_utc must carry it, so a new token or a changed error on the same unit alarms normally.
+    An EXPIRED ack puts the line back, marked ACK EXPIRED. Either way the line keeps its "failing since" (the ack
+    does not restart the clock)."""
     sid, uid = line["source_id"], line["unit_id"]
     keys = line["tokens"] if line["grain"] == "SUBUNIT" else [None]
     acked, expired, open_ = {}, {}, []
     for tok in keys:
-        i, a = _stuck_ack_for(acks, sid, uid, tok, line["match_text"])
+        i, a = _stuck_ack_for(acks, sid, uid, tok, line["ack_texts"].get(tok, []))
         if a is None:
             open_.append(tok)
             continue
@@ -867,8 +881,13 @@ def _stuck_scrubber(gated):
     """A text filter for every free-text field. FAILS CLOSED: with no readable denylist nothing free is shown."""
     if gated is None:
         return lambda s: STUCK_WITHHELD_NO_GATE if s else s
-    low = [g for g in gated if g]
-    return lambda s: STUCK_WITHHELD if (s and any(g in str(s).lower() for g in low)) else s
+    low = sorted(g for g in gated if g)
+    if not low:
+        return lambda s: s
+    # WHOLE-TOKEN: an id bounded by anything but a letter or digit ("_" and "/" are bounds, so "<id>_table" and
+    # "<id>/x" are caught), never a substring of a longer word (an id inside "spilled" is not a mention).
+    pat = _re.compile(r"(?<![a-z0-9])(?:" + "|".join(_re.escape(g) for g in low) + r")(?![a-z0-9])")
+    return lambda s: STUCK_WITHHELD if (s and pat.search(str(s).lower())) else s
 
 
 def repeat_failures(runs_rows, entries, discontinued, acks, now, gated=None) -> dict:
@@ -933,9 +952,14 @@ def repeat_failures(runs_rows, entries, discontinued, acks, now, gated=None) -> 
             blind[sid] += n_blind
         if not hit:
             continue
-        last_t = _stuck_ts(runs[-1][0])
-        is_new = bool(newest_t and last_t and (newest_t - last_t).total_seconds() <= STUCK_NEW_WITHIN_HOURS * 3600
-                      and not fires(runs[:-1]))
+        # NEW: fires now, but did NOT fire on its runs up to the table's newest run minus STUCK_NEW_WITHIN_HOURS (the
+        # previous digest). A unit can record 2-3 runs between digests; asking only whether its LAST run crossed
+        # left 8 of 12 real first appearances unmarked in a 60-day replay (review of #302).
+        if newest_t is None:
+            is_new = False
+        else:
+            cutoff = newest_t - timedelta(hours=STUCK_NEW_WITHIN_HOURS)
+            is_new = not fires([r for r in runs if (_stuck_ts(r[0]) or newest_t) <= cutoff])
         success = [ts for ts, _rid, st, note in runs if _stuck_class(st, note) == "success"]
         e = reg.get(sid) or {}
         hit = dict(hit, source_id=sid, unit_id=uid, last_tried=runs[-1][0], new=is_new,
@@ -962,8 +986,10 @@ def repeat_failures(runs_rows, entries, discontinued, acks, now, gated=None) -> 
     held.sort(key=order)
 
     def clean(l):
-        l = {k: v for k, v in l.items() if k not in ("match_text", "class_key")}
+        l = {k: v for k, v in l.items() if k not in ("ack_texts", "class_key")}
         l["excerpt"], l["top_class"] = scrub(l["excerpt"]), scrub(l["top_class"])
+        if l.get("exit"):
+            l["exit"] = scrub(l["exit"])
         l["tokens"] = [scrub(t) for t in l["tokens"]]
         if gated is not None:
             l["unit_id"] = scrub(l["unit_id"])

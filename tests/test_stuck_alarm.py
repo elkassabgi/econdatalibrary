@@ -164,6 +164,14 @@ def test_new_counts_only_a_streak_that_crossed_in_the_newest_run():
     assert rf(usda_rows(6))["new"] == 0
 
 
+def test_new_counts_a_streak_that_crossed_with_two_runs_since_the_last_digest():
+    """A unit records 2-3 runs between digests: the crossing run need not be its last one."""
+    rows = [(at(3), "usda", "_all", "transient_fail", USDA_404), (at(2), "usda", "_all", "transient_fail", USDA_404),
+            (at(0, 12), "usda", "_all", "transient_fail", USDA_404), (at(0), "usda", "_all", "transient_fail", USDA_404)]
+    res = rf(rows)
+    assert ids(res) == [("usda", "_all")] and res["new"] == 1 and res["stuck"][0]["new"] is True
+
+
 # ------------------------------------------------------------------ eurostat: a capped pass that merges rows
 def test_eurostat_capped_progress_is_neutral_not_stuck():
     """Replayed over 60 days the unit-only rule turned eurostat on and off 4 times: a capped or hard-limited pass
@@ -298,6 +306,31 @@ def test_one_outage_across_many_units_is_one_line():
     assert "5 units, one error class" in H.stuck_line_text(res["stuck"][0], T0)
 
 
+def test_grouping_needs_the_same_class_and_the_same_first_day():
+    note = ("detect:UNEXPECTED:HTTPError('404 Client Error: Not Found for url: "
+            "https://unctadstat-api.unctad.org/api/reportMetadata/US.{}/en')")
+    rows = [(at(d), f"grp{i}", "_all", "transient_fail", note.format(f"T{i}")) for i in range(3) for d in (2, 1, 0)]
+    # the same day, an unrelated failure: NOT part of the outage
+    rows += [(at(d), "grp3", "_all", "transient_fail", USDA_404.replace("usda", "grp3")) for d in (2, 1, 0)]
+    # the same class, but a streak that began days earlier: NOT part of today's outage either
+    rows += [(at(d), "grp4", "_all", "transient_fail", note.format("T4")) for d in (6, 4, 2, 1, 0)]
+    res = rf(rows)
+    groups = [l for l in res["stuck"] if l.get("group")]
+    assert len(groups) == 1 and groups[0]["group"] == ["grp0/_all", "grp1/_all", "grp2/_all"], res["stuck"]
+    assert sorted(ids(res)) == [("grp0", "_all"), ("grp3", "_all"), ("grp4", "_all")]
+
+
+def test_same_day_404s_from_different_hosts_are_not_one_outage():
+    a = "detect:UNEXPECTED:HTTPError('404 Client Error: Not Found for url: https://api.alpha.example/x/{}')"
+    b = "detect:UNEXPECTED:HTTPError('404 Client Error: Not Found for url: https://api.beta.example/x/{}')"
+    rows = [(at(d), "grp0", "_all", "transient_fail", a.format(1)) for d in (2, 1, 0)]
+    rows += [(at(d), "grp1", "_all", "transient_fail", a.format(2)) for d in (2, 1, 0)]
+    rows += [(at(d), "grp2", "_all", "transient_fail", b.format(3)) for d in (2, 1, 0)]
+    res = rf(rows)
+    assert len(res["stuck"]) == 2
+    assert [l.get("group") for l in res["stuck"] if l.get("group")] == [["grp0/_all", "grp1/_all"]]
+
+
 # ------------------------------------------------------------------ exclusions
 def test_exclusions_paused_not_live_discontinued_unregistered_gated():
     rows = []
@@ -321,6 +354,19 @@ def test_gated_id_is_scrubbed_from_free_text_and_fails_closed():
     blind = rf(rows, gated=None)
     flat = "\n".join(H.stuck_section_lines(blind, T0))
     assert GATED not in flat and H.STUCK_WITHHELD_NO_GATE in flat
+
+
+def test_held_exit_text_is_scrubbed_by_whole_token():
+    rows = [(at(36 + 10 * i), "giant_src", "_all", "killed_external", KILLED) for i in range(3)]
+    named = [dict(e, desktop_lane_exit=f"Wait for {GATED}/tables to finish.") if e["source_id"] == "giant_src" else e
+             for e in ENTRIES]
+    res = rf(rows, entries=named)
+    assert res["held"][0]["exit"] == H.STUCK_WITHHELD
+    inside = [dict(e, desktop_lane_exit=f"the x{GATED}y release is spilled") if e["source_id"] == "giant_src"
+              else e for e in ENTRIES]
+    res = rf(rows, entries=inside)
+    assert res["held"][0]["exit"] == f"the x{GATED}y release is spilled"      # a substring of a word is not a mention
+    assert rf(rows, gated=None)["held"][0]["exit"] == H.STUCK_WITHHELD_NO_GATE
 
 
 def test_blind_list_uses_the_same_eligibility():
@@ -389,7 +435,28 @@ def test_a_token_mismatch_still_fires_and_the_ack_is_stale():
     assert hit["stuck"] == [] and ids(hit, "acknowledged") == [("bea", "_all")] and hit["stale_acks"] == []
 
 
-def test_an_ack_must_match_the_dominant_class():
+USDA_401 = ("usda: NASS datasets page unreachable: HTTPError('401 Client Error: Unauthorized for url: "
+            "https://www-origin.nass.usda.gov/datasets')")
+
+
+def test_a_changed_error_after_the_ack_returns_the_line_and_counts_in_k():
+    rows = usda_rows(6) + [(at(0, -6), "usda", "_all", "transient_fail", USDA_401),
+                           (at(0, -12), "usda", "_all", "transient_fail", USDA_401)]
+    res = rf(rows, acks=ack(note_contains="404 Client Error: Not Found for url"), now=T0 + timedelta(hours=13))
+    assert ids(res) == [("usda", "_all")] and res["acknowledged"] == []
+    assert H.stuck_subject_prefix(res).startswith("1 stuck (")
+
+
+def test_an_ack_needs_every_run_since_it_was_written_to_match():
+    rows = [(at(9), "usda", "_all", "transient_fail", USDA_404), (at(8), "usda", "_all", "transient_fail", USDA_404),
+            (at(5), "usda", "_all", "transient_fail", USDA_401), (at(0), "usda", "_all", "transient_fail", USDA_404)]
+    res = rf(rows, acks=ack(acked_utc="2026-11-10", note_contains="404 Client Error: Not Found for url"))
+    assert ids(res) == [("usda", "_all")] and res["acknowledged"] == []          # the 401 of 11-12 is since the ack
+    ok = rf(rows, acks=ack(acked_utc="2026-11-13", note_contains="404 Client Error: Not Found for url"))
+    assert ok["stuck"] == [] and ids(ok, "acknowledged") == [("usda", "_all")]   # every run since 11-13 is the 404
+
+
+def test_an_ack_must_match_the_newest_error():
     rows = [(at(6), "usda", "_all", "transient_fail", "usda: connection reset by peer while reading the index"),
             (at(4), "usda", "_all", "transient_fail", USDA_404), (at(2), "usda", "_all", "transient_fail", USDA_404),
             (at(0), "usda", "_all", "transient_fail", USDA_404)]
