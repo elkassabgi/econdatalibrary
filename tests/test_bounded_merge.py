@@ -278,6 +278,11 @@ class _FakeR2:
     def get(self, key):
         return self.objects.get(key)
 
+    def get_range(self, key, byte_range, *, if_match=None):   # blob footer reads (ranged GETs)
+        from updater.blob import bytes_range
+        data = self.get(key)
+        return None if data is None else bytes_range(data, byte_range)
+
     def download_file(self, bucket, key, dst):
         from botocore.exceptions import ClientError
         if key not in self.objects:
