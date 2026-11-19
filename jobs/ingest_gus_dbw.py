@@ -568,6 +568,11 @@ def finish_area(aid, final: str, state: dict, tail_start: int,
     except Exception as e:                       # noqa: BLE001 - cannot measure = refuse
         log(f"REFRESH area {aid}: ERROR the zero-row loss could not be measured ({type(e).__name__}: {e}); "
             f"NOT rebuilt, the area stays due")
+        try:                                     # visible to refused_still_due / the digest
+            R.note_sweep_refused(REFUSED_PARTS, aid, sel["sweep"],
+                                 [f"the zero-row loss could not be measured: {type(e).__name__}: {e}"])
+        except Exception as e2:                  # noqa: BLE001
+            log(f"REFRESH area {aid}: the sweep refusal record was NOT written ({type(e2).__name__}: {e2})")
         return False
     if zlost:
         eg = ", ".join(f"{x['key']} ({x['final_rows']:,} rows)" for x in zlost[:R.SWEEP_EXCLUDED_EXAMPLES])

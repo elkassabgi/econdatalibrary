@@ -402,3 +402,18 @@ def test_a_sweep_that_cannot_begin_skips_only_its_area(env, monkeypatch):
 def test_startup_sweeps_refresh_tmp_files():
     src = inspect.getsource(G.main)
     assert 'os.path.join(PARTS, "_refresh", "area_*", "*.tmp")' in src
+
+
+def test_an_unmeasurable_zero_row_loss_refuses_visibly(env, monkeypatch):
+    """Re-verify of #304: a persistent DuckDB failure in zero_marker_loss must show in the digest."""
+    _, keys = _sweep(env, {(1, 1, 2025): S1_2025, (1, 2, 2025): []})
+
+    def broken(*a, **k):
+        raise OSError("duckdb spill failed")
+
+    monkeypatch.setattr(R, "zero_marker_loss", broken)
+    before, state = _rows(env["final"]), {}
+    assert G.finish_area(1, env["final"], state, TAIL, expected_keys=keys) is False
+    _assert_untouched(env, before, state, 1)
+    rec = json.load(open(os.path.join(env["refused"], R.SWEEP_REFUSED_FILE), encoding="utf-8"))
+    assert "zero-row loss could not be measured" in rec["problems"][0]
