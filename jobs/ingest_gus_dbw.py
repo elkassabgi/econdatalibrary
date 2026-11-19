@@ -398,7 +398,7 @@ def fetch_year(var: int, sec: int, year: int, cands: list[int], pmap: dict,
 def fetch_section(aid: int, var: int, sec: int, yr: tuple[int, int] | None,
                   cands: list[int], pmap: dict, ck: dict,
                   done_year_sections: set, section_dir: str | None = None,
-                  ckpt_key: str = "done_year_sections") -> int:
+                  ckpt_key: str = "done_year_sections", sweep_id: str | None = None) -> int:
     """Sweep years × candidate periods and WRITE the section's data, returning the
     total rows written this call.
 
@@ -421,6 +421,9 @@ def fetch_section(aid: int, var: int, sec: int, yr: tuple[int, int] | None,
     # checkpoint under its own key. Passing the refresh's year set under the backfill's key
     # would overwrite "done_year_sections" in the shared checkpoint - the backfill and the
     # refresh would then read each other's progress as their own.
+    # sweep_id is the REFRESH's sweep identity (gus_dbw_refresh.begin_sweep): every part is stamped
+    # with it and every completed year - including one that returned NO rows (the zero-row marker) -
+    # is recorded in the area's sweep manifest, so the rebuild merges only this sweep's parts.
     section_dir = section_dir or os.path.join(PARTS, f"area_{aid}")
     os.makedirs(section_dir, exist_ok=True)
     skey = f"v{var}:s{sec}"
@@ -444,9 +447,14 @@ def fetch_section(aid: int, var: int, sec: int, yr: tuple[int, int] | None,
             for pid, n in per.items():
                 if n > 0:
                     ever_hit.add(pid)
+            fname = R.part_name(var, sec, y)
             if rows:                           # write the part BEFORE checkpointing the year
-                write_part(os.path.join(section_dir, f"v{var}_s{sec}_y{y}.parquet"), rows)
+                write_part(os.path.join(section_dir, fname), rows,
+                           metadata=R.sweep_metadata(sweep_id) if sweep_id else None)
                 total += len(rows)
+            if sweep_id:                       # after the part is durable; rows 0 = zero-row marker
+                R.record_sweep_year(section_dir, sweep_id, var, sec, y, len(rows),
+                                    fname if rows else None)
             done_year_sections.add(ykey)
             ck[ckpt_key] = sorted(done_year_sections)
             save_ckpt(ck)
@@ -470,19 +478,21 @@ def fetch_section(aid: int, var: int, sec: int, yr: tuple[int, int] | None,
     return len(rows)
 
 
-def write_part(path: str, rows: list[tuple]):
+def write_part(path: str, rows: list[tuple], metadata: dict | None = None):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tbl = pa.table({
         "series_key": pa.array([r[0] for r in rows], pa.string()),
         "obs_date":   pa.array([r[1] for r in rows], pa.date32()),
         "value":      pa.array([r[2] for r in rows], pa.float64()),
     })
+    if metadata:                     # the refresh's sweep identity, read back from the footer
+        tbl = tbl.replace_schema_metadata(metadata)
     # Atomic publish: a crash mid-write must never leave a corrupt part that a
     # saved year-checkpoint would later treat as complete and merge.
     tmp = f"{path}.{os.getpid()}.tmp"
     try:
         pq.write_table(tbl, tmp, compression="zstd")
-        os.replace(tmp, path)
+        R.replace_retrying(tmp, path)            # a reader's open handle on Windows (R1938 r4)
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
@@ -513,13 +523,72 @@ def _remove_quietly(p: str) -> None:
         pass
 
 
-def finish_area(aid, final: str, state: dict, tail_start: int) -> bool:
+def finish_area(aid, final: str, state: dict, tail_start: int,
+                expected_keys: set | None = None) -> bool:
     """After a COMPLETE refresh sweep of one area: rebuild a candidate, guard it, replace the final,
     record the owed publish, mark the area refreshed. True only when all of that happened; False
     leaves the area due (the final untouched unless the replace itself succeeded and only the
     owed record failed - then the next run rebuilds and records it). Split out of refresh_pass so
-    the post-sweep path can be tested without the network (R1936)."""
-    parts = R.tail_parts_for_area(aid, REFRESH_PARTS)
+    the post-sweep path can be tested without the network (R1936).
+
+    ONLY THE CURRENT SWEEP'S PARTS ARE MERGED (R1554 class). The area's refresh dir also holds parts
+    from earlier, incomplete sweeps and from before sweep identities existed; a year that now returns
+    0 rows, a section the metadata dropped, or a year that left the window kept its OLD part there,
+    and merging every *.parquet resurrected it. select_tail_parts names the parts the current sweep's
+    manifest recorded; everything else is excluded and logged. A manifest that cannot be trusted
+    refuses the rebuild and leaves the area due - nothing is moved or deleted for that (no
+    quarantine: it moves parts, and its prune removes old refusal folders). `expected_keys` is the
+    set of year keys refresh_pass attempted in this sweep; the manifest must record exactly those."""
+    sel = R.select_tail_parts(aid, REFRESH_PARTS, tail_start)
+    if expected_keys is not None and set(sel["keys"]) != set(expected_keys):
+        miss = sorted(set(expected_keys) - set(sel["keys"]))
+        extra = sorted(set(sel["keys"]) - set(expected_keys))
+        sel["problems"].append(f"manifest keys differ from the keys this sweep attempted: "
+                               f"{len(miss)} unrecorded (e.g. {miss[:3]}), {len(extra)} unexpected "
+                               f"(e.g. {extra[:3]})")
+    if sel["problems"]:
+        log(f"REFRESH area {aid}: ERROR the sweep's parts cannot be trusted - "
+            + "; ".join(sel["problems"][:R.SWEEP_EXCLUDED_EXAMPLES])
+            + (f" (+{len(sel['problems']) - R.SWEEP_EXCLUDED_EXAMPLES} more)"
+               if len(sel["problems"]) > R.SWEEP_EXCLUDED_EXAMPLES else "")
+            + ". NOT rebuilt; the final is untouched and the area stays due")
+        try:
+            R.note_sweep_refused(REFUSED_PARTS, aid, sel["sweep"], sel["problems"])
+        except Exception as e:                   # noqa: BLE001
+            log(f"REFRESH area {aid}: the sweep refusal record was NOT written ({type(e).__name__}: {e})")
+        return False
+    if sel["excluded"]:
+        eg = ", ".join(f"{x['file']} ({x['reason']})" for x in sel["excluded"][:R.SWEEP_EXCLUDED_EXAMPLES])
+        log(f"REFRESH area {aid}: {len(sel['excluded']):,} part(s) in the refresh dir are NOT from sweep "
+            f"{sel['sweep']} and are excluded from the rebuild, e.g. {eg}")
+    # WHAT A ZERO-ROW MARKER REMOVES FROM THE FINAL. In steady state the last rebuild cleared the
+    # refresh dir, so there is no old part to compare with: the loss is measured on the final itself.
+    try:
+        zlost = R.zero_marker_loss(final, sel["zero_keys"], spill_dir=GUARD_SPILL)
+    except Exception as e:                       # noqa: BLE001 - cannot measure = refuse
+        log(f"REFRESH area {aid}: ERROR the zero-row loss could not be measured ({type(e).__name__}: {e}); "
+            f"NOT rebuilt, the area stays due")
+        try:                                     # visible to refused_still_due / the digest
+            R.note_sweep_refused(REFUSED_PARTS, aid, sel["sweep"],
+                                 [f"the zero-row loss could not be measured: {type(e).__name__}: {e}"])
+        except Exception as e2:                  # noqa: BLE001
+            log(f"REFRESH area {aid}: the sweep refusal record was NOT written ({type(e2).__name__}: {e2})")
+        return False
+    if zlost:
+        eg = ", ".join(f"{x['key']} ({x['final_rows']:,} rows)" for x in zlost[:R.SWEEP_EXCLUDED_EXAMPLES])
+        log(f"REFRESH area {aid}: {len(zlost):,} section-year(s) returned NO rows in sweep {sel['sweep']} "
+            f"while the final holds {sum(x['final_rows'] for x in zlost):,} rows for them - the rebuild "
+            f"removes those rows, e.g. {eg}")
+    sweep_note = {"sweep": sel["sweep"], "included": len(sel["included"]),
+                  "excluded": len(sel["excluded"]),
+                  "excluded_eg": sel["excluded"][:R.SWEEP_EXCLUDED_EXAMPLES],
+                  "zero_keys": len(sel["zero_keys"]),
+                  "superseded_by_zero": len(zlost),
+                  "superseded_by_zero_rows": sum(x["final_rows"] for x in zlost),
+                  "superseded_by_zero_eg": zlost[:R.SWEEP_EXCLUDED_EXAMPLES],
+                  "superseded_parts_on_disk": len(sel["superseded_parts_on_disk"]),
+                  "superseded_parts_on_disk_eg": sel["superseded_parts_on_disk"][:R.SWEEP_EXCLUDED_EXAMPLES]}
+    parts = sel["included"]
     # The rebuild writes a CANDIDATE beside the final; the final is replaced only after the
     # row-loss guard passes it (R1936). The candidate's name does not end in .parquet, so no
     # store listing, resolver or upload can ever mistake it for an area.
@@ -535,6 +604,7 @@ def finish_area(aid, final: str, state: dict, tail_start: int) -> bool:
                                  clearance=R.guard_clearance(OUT, aid, state=state))
     except Exception as e:                       # noqa: BLE001 - cannot measure = refuse
         guard = {"ok": False, "reasons": [f"the guard could not run: {type(e).__name__}: {e}"]}
+    guard["sweep"] = sweep_note                  # into guard.json (refused) and the owed record (passed)
     if not guard["ok"]:
         _remove_quietly(cand)
         try:
@@ -613,6 +683,15 @@ def refresh_pass(var_areas: list, entries, pmap: dict, ck: dict) -> None:
         var_ids = sorted({int(e['id-zmienna']) for e in vlist
                           if isinstance(e, dict) and e.get('id-zmienna') is not None})
         area_dir = os.path.join(REFRESH_PARTS, f"area_{aid}")
+        # A NEW sweep identity for every sweep of the area: only the parts this sweep writes and
+        # records are merged by finish_area, whatever earlier sweeps left in area_dir.
+        try:
+            sweep_id = R.begin_sweep(area_dir, aid)
+        except Exception as e:                   # noqa: BLE001 - confined to this area
+            log(f"REFRESH area {aid}: ERROR the sweep could not begin ({type(e).__name__}: {e}); "
+                f"area skipped, retried next run")
+            skipped += 1
+            continue
         area_ok = True
         ryears: set = set()
         fetched = 0
@@ -639,7 +718,8 @@ def refresh_pass(var_areas: list, entries, pmap: dict, ck: dict) -> None:
                 try:
                     fetched += fetch_section(aid, var, sec, (tail_start, hi), cands, pmap,
                                              ck, ryears, section_dir=area_dir,
-                                             ckpt_key='refresh_year_sections')
+                                             ckpt_key='refresh_year_sections',
+                                             sweep_id=sweep_id)
                 except Exception as e:               # noqa: BLE001
                     log(f"  REFRESH var {var} sec {sec} ERR: {e}")
                     area_ok = False
@@ -649,7 +729,7 @@ def refresh_pass(var_areas: list, entries, pmap: dict, ck: dict) -> None:
                 f"(a partial fetch must never look like an upstream withdrawal)")
             skipped += 1
             continue
-        if finish_area(aid, final, state, tail_start):
+        if finish_area(aid, final, state, tail_start, expected_keys=ryears):
             refreshed += 1
         else:
             skipped += 1
@@ -665,6 +745,7 @@ def main():
     # *.parquet), just disk litter — sweep them so a multi-week crawl stays clean.
     swept = 0
     for pat in (os.path.join(PARTS, "area_*", "*.tmp"),
+                os.path.join(PARTS, "_refresh", "area_*", "*.tmp"),     # write_part / begin_sweep
                 os.path.join(OUT, "*.tmp"),
                 os.path.join(OUT, "*" + CANDIDATE_SUFFIX),        # a rebuild candidate a kill left
                 os.path.join(CACHE, "*.tmp")):
