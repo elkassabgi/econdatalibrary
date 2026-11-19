@@ -517,6 +517,126 @@ class _Resp:
         yield self.data
 
 
+FILES_URL = "https://www.nass.usda.gov/sites/default/files/datasets/"
+
+
+def _entry(path, date):
+    """A _listing() value: (fname, date, absolute download url from the page's href)."""
+    return (os.path.basename(path), date, FILES_URL + os.path.basename(path))
+
+
+def _fetcher_rig(env, monkeypatch, fail=()):
+    """The usda fetcher over the REAL ingest in env: a fake listing and download session
+    serving dumps from <root>/upstream; a download whose basename is in `fail` raises."""
+    from updater import blob, config
+    from updater.strategies.fetchers import usda as F
+    root = os.path.dirname(env.data)
+    upstream = os.path.join(root, "upstream")
+    os.makedirs(upstream, exist_ok=True)
+    monkeypatch.setattr(F, "_root", lambda: root)
+    monkeypatch.setattr(config, "source_dir", lambda s: env.out)
+    monkeypatch.setattr(blob, "publish_file", lambda path: os.path.getsize(path))
+
+    class Sess:
+        def get(self, url, headers=None, timeout=None, stream=False):
+            name = url.rsplit("/", 1)[-1]
+            if name in fail:
+                raise OSError(f"connection reset on {name}")
+            return _Resp(open(os.path.join(upstream, name), "rb").read())
+    monkeypatch.setattr(F.requests, "Session", Sess)
+    listing = {}
+    for s in J.SECTOR_FILES:
+        listing[s] = _entry(write_dump(upstream, s, "20260603", V1), "20260603")
+    monkeypatch.setattr(F, "_listing", lambda sess=None: dict(listing))
+    return F, upstream, listing
+
+
+def test_vintage_is_stamped_when_clean_and_all_five_cubes_committed(env, monkeypatch):
+    F, _up, listing = _fetcher_rig(env, monkeypatch)
+    res = F.update(None, None)
+    assert res.status == "ok", res
+    assert J.all_committed([listing[s][0] for s in J.SECTOR_FILES])
+    assert res.new_vintage == F._vintage_of(listing) and res.new_vintage.startswith("usda:")
+
+
+def test_vintage_is_not_stamped_when_a_cube_is_not_a_build_of_the_listed_file(env, monkeypatch):
+    """Nothing failed, but demographics is still the 20260603 build while the listing names
+    20261118 - e.g. the ingest skipped it. The run must be DEMOTED to partial with a named unit,
+    not merely return None (the strategy refills None; see the run_once test below)."""
+    F, upstream, listing = _fetcher_rig(env, monkeypatch)
+    assert F.update(None, None).new_vintage == F._vintage_of(listing)          # control
+    listing["demographics"] = _entry(write_dump(upstream, "demographics", "20261118", V2), "20261118")
+    monkeypatch.setattr(J, "main", lambda *a, **k: None)                       # no rebuild
+    res = F.update(None, None)
+    assert not J.all_committed([listing[s][0] for s in J.SECTOR_FILES])
+    assert res.status == "partial", res
+    assert "vintage_uncommitted" in (res.error or "")
+    assert res.new_vintage is None
+
+
+@pytest.fixture
+def orch(env, monkeypatch, tmp_path):
+    """The REAL orchestrator run_once over a temp state.db (pattern: test_date_tail_probe_seal)."""
+    from updater import config, orchestrate
+    from updater.state import StateStore
+    for k in ("AQUEDUCT_BACKEND", "AQUEDUCT_LIVE_ONLY", "GITHUB_ACTIONS", "AQUEDUCT_RUN_LOCATION",
+              "AQUEDUCT_RUN_BUDGET_MIN", "AQUEDUCT_UNIT_TIMEOUT_MIN", "AQUEDUCT_DERIVE_BUDGET_MIN",
+              "ECONDL_DATA"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setattr(orchestrate, "_RUN_DEADLINE_TS", orchestrate._RUN_DEADLINE_TS)
+    # The CSV re-derive stage is not under test here: a clean no-op, so it cannot demote the run.
+    monkeypatch.setattr(orchestrate, "_derive_changed_csvs", lambda unit, res, blob, store=None: ([], None, [], {}))
+    sdir = tmp_path / "state"
+    sdir.mkdir()
+    monkeypatch.setattr(config, "DATA_ROOT", os.path.dirname(env.out))
+    monkeypatch.setattr(config, "STATE_DIR", str(sdir))
+    monkeypatch.setattr(config, "STATE_DB", str(sdir / "state.db"))
+    st = StateStore(str(sdir / "state.db"))
+
+    def run(stored):
+        st.upsert_unit("usda", "_all", strategy="bulk_snapshot_if_changed", status="ok",
+                       upstream_vintage=stored, last_success_utc="2020-01-01T00:00:00+00:00",
+                       last_attempt_utc="2020-01-01T00:00:00+00:00")
+        results = orchestrate.run_once(sources=["usda"], store=st, blob=None, dry=False)
+        row = st.db.execute("SELECT status, upstream_vintage FROM unit_state "
+                            "WHERE source_id='usda' AND unit_id='_all'").fetchone()
+        return results, tuple(row)
+    yield run
+    st.close()
+
+
+def test_run_once_does_not_advance_the_vintage_when_a_cube_is_uncommitted(env, monkeypatch, orch):
+    """END TO END: probe -> BulkSnapshotIfChanged.run (which refills a None new_vintage with the
+    probed token) -> the orchestrator's unit_state write. In the ok-but-uncommitted case the
+    stored upstream_vintage must NOT move to the listing hash."""
+    F, upstream, listing = _fetcher_rig(env, monkeypatch)
+    _res, (status, stored) = orch("usda:previous")                    # control: a clean run seals
+    assert status == "ok" and stored == F._vintage_of(listing), (_res, status, stored)
+
+    listing["demographics"] = _entry(write_dump(upstream, "demographics", "20261118", V2), "20261118")
+    monkeypatch.setattr(J, "main", lambda *a, **k: None)              # the ingest rebuilds nothing
+    new_hash = F._vintage_of(listing)
+    results, (status, stored) = orch("usda:previous")
+    assert status == "partial", (results, status, stored)
+    assert stored == "usda:previous" and stored != new_hash, (results, status, stored)
+
+
+def test_vintage_is_not_stamped_on_a_partial(env, monkeypatch):
+    """One sector's download fails: transient unit -> partial -> None, whatever the cubes hold."""
+    F, upstream, listing = _fetcher_rig(env, monkeypatch)
+    F.update(None, None)
+    new = write_dump(upstream, "crops", "20261118", V2)
+    listing["crops"] = _entry(new, "20261118")
+    monkeypatch.setattr(F.requests, "Session", type("S", (), {
+        "get": lambda self, url, **k: (_ for _ in ()).throw(OSError("reset"))
+        if url.endswith(os.path.basename(new)) else
+        _Resp(open(os.path.join(upstream, url.rsplit("/", 1)[-1]), "rb").read())}))
+    res = F.update(None, None)
+    assert res.status == "partial", res
+    assert "crops" in (res.error or "")
+    assert res.new_vintage is None
+
+
 def test_the_fetcher_rebuilds_publishes_the_live_parts_then_retires_old(env, monkeypatch):
     """update(): main(keep_old=True) -> publish exactly the live parts (while .old still exists) ->
     drop_all_old; manifest == live. No network: the listing and the download session are fakes."""
@@ -537,7 +657,7 @@ def test_the_fetcher_rebuilds_publishes_the_live_parts_then_retires_old(env, mon
     listing = {}
     for s in J.SECTOR_FILES:
         p = write_dump(upstream, s, "20260603", V1)
-        listing[s] = (os.path.basename(p), "20260603")
+        listing[s] = _entry(p, "20260603")
     monkeypatch.setattr(F, "_listing", lambda sess=None: dict(listing))
 
     events = []
@@ -562,11 +682,13 @@ def test_the_fetcher_rebuilds_publishes_the_live_parts_then_retires_old(env, mon
 
     res = F.update(None, None)
     assert res.status == "ok", res
+    assert res.new_vintage == F._vintage_of(listing)
     p = write_dump(upstream, "demographics", "20261118", V2)
-    listing["demographics"] = (os.path.basename(p), "20261118")
+    listing["demographics"] = _entry(p, "20261118")
     events.clear()
     res = F.update(None, None)
     assert res.status == "ok", res
+    assert res.new_vintage == F._vintage_of(listing)
 
     assert events[0] == ("main", True), events[:2]
     pubs = [e for e in events if e[0] == "publish"]
