@@ -308,6 +308,72 @@ def test_live_catalogue_path_refused(monkeypatch, tmp_path):
         T.catalogued_pids(str(db), allow_live=False)
 
 
+def _post_t0(monkeypatch, tmp_path):
+    """Simulate T0 the way production sees it: the flag FILE exists at cutover.FLAG_PATH. Patching the
+    function would miss core.catalog_path, which imports is_cut_over by name (review R1973)."""
+    from core import cutover
+    flag = tmp_path / "CUTOVER"
+    flag.write_text("", encoding="utf-8")
+    monkeypatch.setattr(cutover, "FLAG_PATH", str(flag))
+    from core import catalog_path
+    assert cutover.is_cut_over() and catalog_path.is_cut_over()
+
+
+def _statcan_db(path, pids):
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT)")
+    con.executemany("INSERT INTO series VALUES (?, 'statcan')", [(f"statcan:{p}#1",) for p in pids])
+    con.commit()
+    con.close()
+
+
+def test_post_t0_catalog_copy_refused_with_the_route(monkeypatch, tmp_path, capsys):
+    import json
+    from core import catalog_path
+    build = tmp_path / "build" / "catalog.db"
+    build.parent.mkdir()
+    _statcan_db(build, ["11100001"])
+    copy = tmp_path / "copy.db"
+    _statcan_db(copy, ["11100001"])
+    monkeypatch.setattr(catalog_path, "BUILD_PATH", str(build))
+    _post_t0(monkeypatch, tmp_path)
+    with pytest.raises(Exception, match="after T0"):         # connect_path itself refuses the copy
+        catalog_path.connect_path(str(copy), write=False).close()
+    cj = tmp_path / "c.json"
+    cj.write_text(json.dumps([_cube("11100001", "2025-01-01", 12)]), encoding="utf-8")
+    store = FakeStore({T.KEY_FMT.format(pid="11100001"): _parquet(["2025-12-31"])})
+    for extra in ([], ["--live-catalogue"]):
+        rc = T.main(["--catalog", str(copy), *extra, "--cubes-json", str(cj), "--out", str(tmp_path / "o.tsv")],
+                    store=store, now=NOW)
+        out = capsys.readouterr().out
+        assert rc == 1 and "NOT MEASURED" in out and "after T0 the only readable catalogue is the build" in out
+        assert f"--catalog {build} --live-catalogue" in out and "pass a copy" not in out
+
+
+def test_post_t0_build_needs_live_catalogue_and_is_then_read(monkeypatch, tmp_path, capsys):
+    import json
+    from core import catalog_path
+    build = tmp_path / "build" / "catalog.db"
+    build.parent.mkdir()
+    _statcan_db(build, ["11100001", "22220000"])
+    monkeypatch.setattr(catalog_path, "BUILD_PATH", str(build))
+    _post_t0(monkeypatch, tmp_path)
+    cj = tmp_path / "c.json"
+    cj.write_text(json.dumps([_cube("11100001", "2025-01-01", 12), _cube("22220000", "2025-01-01", 12)]),
+                  encoding="utf-8")
+    store = FakeStore({T.KEY_FMT.format(pid="11100001"): _parquet(["2025-12-31"]),
+                       T.KEY_FMT.format(pid="22220000"): _parquet(["2024-12-31"])})
+    rc = T.main(["--catalog", str(build), "--cubes-json", str(cj), "--out", str(tmp_path / "o.tsv")],
+                store=store, now=NOW)
+    out = capsys.readouterr().out
+    assert rc == 1 and "pass --live-catalogue to read it" in out and "pass a copy" not in out
+    assert T.catalogued_pids(str(build), allow_live=True) == (["11100001", "22220000"], 0)
+    rc = T.main(["--catalog", str(build), "--live-catalogue", "--cubes-json", str(cj),
+                 "--out", str(tmp_path / "o.tsv")], store=store, now=NOW)
+    out = capsys.readouterr().out
+    assert rc == 0 and "1 cubes behind publisher" in out and "measured 2 of 2 catalogued" in out
+
+
 class Resp:
     def __init__(self, status=200, body=None, headers=None):
         self.status_code, self._body, self.headers = status, body, headers or {}

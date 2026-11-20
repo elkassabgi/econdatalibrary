@@ -18,7 +18,10 @@ WHAT IT READS (and nothing else; it writes only its own TSV):
   1. ONE GET of WDS getAllCubesListLite (productId, cubeEndDate, releaseTime, frequencyCode,
      archived), or --cubes-json for a saved copy of that response;
   2. the catalogued statcan cube ids, from --catalog (opened read-only through
-     core.catalog_path.connect_path) or --pids;
+     core.catalog_path.connect_path) or --pids. BEFORE T0 --catalog takes a COPY; the live paths
+     (the build and the checkout's data/catalog.db) need --live-catalogue. AFTER T0 connect_path
+     opens only the build, so a copy is refused and the one --catalog route is
+     --catalog <the build> --live-catalogue (still a read-only open);
   3. for each cube, ONLY the parquet footer of clean_full/statcan/<pid>.parquet, through
      updater.blob._r2_footer_buffer (ranged tail GETs - the reader PR #305 added; no new R2
      reader here). The store's last date is the max of the obs_date row-group statistics.
@@ -62,8 +65,9 @@ WEEKLY CUBES. The predicate assumes the store and the publisher date a week the 
 exactly, and the 5 behind ones are 9 to 18 weeks behind - no one-week artefact of a start-dated store.
 
 Usage:
-  python tools/audit_statcan_upstream.py --catalog F:/copy/catalog.db --out F:/x/statcan_upstream.tsv
-  python tools/audit_statcan_upstream.py --pids 12100147,35100182 --probe-zip --out x.tsv
+  before T0:  python tools/audit_statcan_upstream.py --catalog F:/copy/catalog.db --out F:/x/statcan_upstream.tsv
+  after T0:   python tools/audit_statcan_upstream.py --catalog <core.catalog_path.BUILD_PATH> --live-catalogue --out x.tsv
+  either:     python tools/audit_statcan_upstream.py --pids 12100147,35100182 --probe-zip --out x.tsv
 """
 from __future__ import annotations
 
@@ -316,10 +320,23 @@ def catalogued_pids(catalog: str, allow_live: bool) -> tuple[list[str], int]:
     """(sorted distinct 8-digit pids, count of statcan series ids that do not yield one)."""
     from core import catalog_path
     real = os.path.normcase(os.path.realpath(catalog))
-    live = {os.path.normcase(os.path.realpath(p)) for p in (catalog_path.BUILD_PATH, catalog_path.CHECKOUT_PATH)}
-    if real in live and not allow_live:
-        raise Fatal(f"refused: {catalog} is a live catalogue; pass a copy (or --live-catalogue for the "
-                    "system's own scheduled run)")
+    build = os.path.normcase(os.path.realpath(catalog_path.BUILD_PATH))
+    # catalog_path.is_cut_over is the function connect_path itself calls, so both refusals agree on T0.
+    if catalog_path.is_cut_over():
+        # After T0 connect_path opens ONLY the build: a copy cannot be read, so the one --catalog route
+        # is the build itself with --live-catalogue (still a mode=ro open). --pids needs no catalogue.
+        if real != build:
+            raise Fatal(f"refused: after T0 the only readable catalogue is the build {catalog_path.BUILD_PATH} "
+                        f"(core.catalog_path refuses {catalog}); run with --catalog {catalog_path.BUILD_PATH} "
+                        "--live-catalogue (opened read-only) or use --pids")
+        if not allow_live:
+            raise Fatal(f"refused: {catalog} is the live catalogue build; after T0 it is the only readable "
+                        "catalogue, so pass --live-catalogue to read it (opened read-only) or use --pids")
+    else:
+        live = {build, os.path.normcase(os.path.realpath(catalog_path.CHECKOUT_PATH))}
+        if real in live and not allow_live:
+            raise Fatal(f"refused: {catalog} is a live catalogue; pass a copy (or --live-catalogue for the "
+                        "system's own scheduled run)")
     try:
         con = catalog_path.connect_path(catalog, write=False)
         try:
@@ -483,9 +500,9 @@ def main(argv=None, *, store=None, client=None, http_get=None, http_head=None, n
     ap = _Parser(description=__doc__.split("\n\n", 1)[0], epilog=EXIT_CONTRACT,
                  formatter_class=argparse.RawDescriptionHelpFormatter)
     src = ap.add_mutually_exclusive_group(required=True)
-    src.add_argument("--catalog", help="a COPY of the catalogue (read-only open)")
+    src.add_argument("--catalog", help="before T0 a COPY of the catalogue; after T0 only the build, with --live-catalogue (read-only open)")
     src.add_argument("--pids", help="comma-separated 8-digit product ids")
-    ap.add_argument("--live-catalogue", action="store_true", help="allow the live catalogue path (scheduled run only)")
+    ap.add_argument("--live-catalogue", action="store_true", help="allow the live catalogue path (the scheduled run; after T0 the only --catalog route)")
     ap.add_argument("--cubes-json", help="a saved getAllCubesListLite response instead of the GET")
     ap.add_argument("--backend", choices=("auto", "r2", "local"), default="auto",
                     help="auto: r2 before T0, the local parquet store after it (r2 is refused after T0)")
