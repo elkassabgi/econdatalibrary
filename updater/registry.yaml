@@ -10098,8 +10098,12 @@ sources:
       (newest obs 2021-01-01, 2,040d old), so all NINE catalogued WHO_RS indicators were
       queried directly at ghoapi.azureedge.net on 2026-08-03 and their newest TimeDim with a
       non-null NumericValue read off: RS_196 and RS_198 reach 2021; RS_194 2017; RS_246 2016;
-      RS_1845 and RS_576 2010; RS_208, RS_212 and RS_217 carry rows but no numeric values at
-      all. WHO's own maximum across the nine is therefore 2021, which our store already holds.
+      RS_1845 and RS_576 2010; RS_208, RS_212 and RS_217 have NumericValue null on every row
+      and carry their numbers in the text field Value instead (corrected 2026-11-20 - the earlier
+      text said "no numeric values at all"; re-fetch: RS_208 89 of 175 rows, RS_212 249 of 700,
+      RS_217 309 of 350 strictly numeric, all TimeDim 2017, which the fetcher now reads for these
+      three codes only). WHO's own maximum across the nine is therefore 2021, which our store
+      already holds.
       Road-safety indicators come from the Global Status Report, published every few years, so
       the age is the publication cycle and not a missed release.
   cadence: monthly

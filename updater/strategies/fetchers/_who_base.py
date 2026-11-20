@@ -30,11 +30,28 @@ WHO_RS:RS_1845.AFG.A carries 2010-01-01 for TimeDim 2010).
 WHICH INDICATORS: taken from the CATALOGUE — the ids we actually publish — never a hardcoded
 list, so the set cannot drift from what we serve (same rule as worldbank's _published_keys).
 
-COVERAGE, measured against WHO on the full indicator set: who_rs 2,207/2,207 and who_hwf
-4,421/4,421 are fully available; who_sdg is 18,902/28,160 because `SDGAIRBOD` returns
-@odata.count 0 at WHO (9,258 keys). Those rows are KEPT — merge never shrinks — and the gap is
+COVERAGE is measured at SERIES grain, never indicator grain (R252). CORRECTED 2026-11-20: this
+paragraph used to say "who_rs 2,207/2,207 and who_hwf 4,421/4,421 are fully available". For
+who_rs that was false. R252 measured 1,558 of 2,207 published keys (70.6%) on the first real
+fetch, and the forced run of 2026-11-20 fetched rows for 1,944 keys of which 1,356 map to the
+2,207 catalogued ids (851 catalogued ids got no rows). 647 of those 851 belong to RS_208, RS_212
+and RS_217, which carry their numbers in the text field `Value` with `NumericValue` null; the
+TEXT-VALUE SWITCH below takes them (who_rs only). The other 204 are RS_198 keys that WHO now
+publishes under different dimension codes, an open re-key question. who_hwf was not re-measured
+here. who_sdg is 18,902/28,160 because `SDGAIRBOD` returns @odata.count 0 at WHO (9,258 keys).
+Rows WHO no longer serves are KEPT — merge never shrinks — and the empty-indicator gap is
 reported every run rather than silently dropped. SDGAIRBODA (which we also publish) does serve,
 so SDGAIRBOD looks superseded; that is a lead to confirm with WHO, not a fact to act on here.
+
+TEXT-VALUE SWITCH (per source, opt-in, empty by default). A row is kept when NumericValue is
+non-null (it always wins). When NumericValue is null, the row is kept ONLY if its IndicatorCode
+is in the `text_value_indicators` set the SOURCE passes to run(), and str(Value).strip() is
+exactly `^-?\\d+(\\.\\d+)?$` (ASCII digits). Everything else stays skipped: ranges ("11 - 24"),
+multi-part ("13 (GB), 23 (NI)"), footnote letters ("18.4h"), "<1", "No", "None", mojibake.
+Only who_rs passes a set ({RS_208, RS_212, RS_217}); who_hwf and who_sdg pass nothing, so their
+behaviour is unchanged. A shared rule could mint uncatalogued keys there, so it is NOT shared.
+The values were compared before the change: the relay-era store's 647 values for these keys
+equal WHO's text values (647 of 647).
 
 HONEST STATUS: an indicator that fails after retries -> transient_unit (kept, retried); one
 that legitimately returns no rows -> empty_unit; parsed rows -> added_unit. A budget stop is
@@ -44,6 +61,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -131,6 +149,33 @@ def _key(v: dict, prefix: str) -> str | None:
     return f"{prefix}:" + ".".join(parts) + ".A"
 
 
+_TEXT_NUMBER = re.compile(r"^-?\d+(\.\d+)?$", re.ASCII)
+
+
+def _row_value(v: dict, text_value_indicators=frozenset()) -> float | None:
+    """The row's value, or None to skip it.
+
+    NumericValue wins whenever it is present. Only when it is null, and only for an indicator in
+    the caller's `text_value_indicators`, is the text field `Value` read, and only when it is a
+    plain decimal number after strip(). See TEXT-VALUE SWITCH in the module docstring.
+    """
+    nv = v.get("NumericValue")
+    if nv is not None:
+        try:
+            return float(nv)
+        except (TypeError, ValueError):
+            return None
+    if v.get("IndicatorCode") not in text_value_indicators:
+        return None
+    tv = v.get("Value")
+    if tv is None:
+        return None
+    s = str(tv).strip()
+    if not _TEXT_NUMBER.fullmatch(s):
+        return None
+    return float(s)
+
+
 def current_vintage(unit, source_id: str):
     """No cheap upstream vintage exists: GHO exposes no dataset-level updated-at, and the only
     honest token would be a hash of every row, which costs the whole fetch. So this is an
@@ -147,7 +192,11 @@ def current_vintage(unit, source_id: str):
     return None
 
 
-def run(source_id: str, prefix: str, budget_env: str = "WHO_BASE_BUDGET_MIN") -> Result:
+def run(source_id: str, prefix: str, budget_env: str = "WHO_BASE_BUDGET_MIN",
+        text_value_indicators: frozenset = frozenset()) -> Result:
+    """`text_value_indicators`: indicator codes of THIS source whose number WHO puts in the text
+    field `Value` (NumericValue null). Empty by default; only who_rs passes a set."""
+    text_value_indicators = frozenset(text_value_indicators)
     out_dir = config.source_dir(source_id)
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, f"{source_id}.parquet")
@@ -169,6 +218,7 @@ def run(source_id: str, prefix: str, budget_env: str = "WHO_BASE_BUDGET_MIN") ->
     dates: list[dt.date] = []
     vals: list[float] = []
     empty_at_who: list[str] = []
+    text_taken: dict[str, int] = {}
     last_code = ""
     done = 0
 
@@ -198,17 +248,21 @@ def run(source_id: str, prefix: str, budget_env: str = "WHO_BASE_BUDGET_MIN") ->
             continue
         n = 0
         for v in rows:
-            val, yr = v.get("NumericValue"), v.get("TimeDim")
-            if val is None or yr is None:
+            yr = v.get("TimeDim")
+            if yr is None:
+                continue
+            fv = _row_value(v, text_value_indicators)
+            if fv is None:
                 continue
             k = _key(v, prefix)
             if not k:
                 continue
             try:
                 fy = int(yr)
-                fv = float(val)
             except (TypeError, ValueError):
                 continue
+            if v.get("NumericValue") is None:
+                text_taken[code] = text_taken.get(code, 0) + 1
             keys.append(k)
             dates.append(dt.date(fy, 1, 1))       # period-START, matching the stored convention
             vals.append(fv)
@@ -222,6 +276,9 @@ def run(source_id: str, prefix: str, budget_env: str = "WHO_BASE_BUDGET_MIN") ->
         print(f"[{source_id}] {len(empty_at_who)} indicator(s) listed by WHO but serving 0 "
               f"rows: {', '.join(empty_at_who[:8])}{' …' if len(empty_at_who) > 8 else ''} — "
               f"existing rows kept (merge never shrinks)", flush=True)
+    if text_taken:
+        print(f"[{source_id}] rows parsed from the text Value field (NumericValue null): "
+              + ", ".join(f"{c} {text_taken[c]:,}" for c in sorted(text_taken)), flush=True)
 
     if not keys:
         return finalize(tally, before, None, source=source_id)
