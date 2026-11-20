@@ -210,3 +210,31 @@ def test_only_who_rs_declares_text_value_indicators():
     assert who_rs.TEXT_VALUE_INDICATORS == frozenset(TEXT_CODES)
     assert not hasattr(who_hwf, "TEXT_VALUE_INDICATORS")
     assert not hasattr(who_sdg, "TEXT_VALUE_INDICATORS")
+
+
+# ---------------------------------------------------------------- the per-indicator counter line
+
+TEXT_LINE = "rows parsed from the text Value field"
+
+
+def test_who_rs_prints_the_exact_text_value_count_per_code(harness, capsys):
+    capsys.readouterr()
+    harness(lambda: who_rs.update(None, None))
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if TEXT_LINE in ln]
+    # the fixture gives exactly the 6 ACCEPTED strings per switched code with NumericValue null
+    assert len(ACCEPTED) == 6
+    assert lines == ["[who_rs] rows parsed from the text Value field (NumericValue null): "
+                     "RS_208 6, RS_212 6, RS_217 6"]
+
+
+@pytest.mark.parametrize("mod", [who_hwf, who_sdg])
+def test_hwf_and_sdg_print_no_text_value_line(harness, capsys, mod):
+    capsys.readouterr()
+    harness(lambda: mod.update(None, None))
+    assert TEXT_LINE not in capsys.readouterr().out
+
+
+def test_run_without_the_switch_prints_no_text_value_line(harness, capsys):
+    capsys.readouterr()
+    harness(lambda: _who_base.run("who_rs", "WHO_RS"))
+    assert TEXT_LINE not in capsys.readouterr().out
