@@ -106,6 +106,12 @@ def main():
         for v in vals:
             k = key_of(v, pref)
             yr = v.get("TimeDim")
+            # NOTE (2026-11-20): this NumericValue-only rule does NOT match the fetcher for
+            # who_rs. RS_208, RS_212 and RS_217 have NumericValue null on every row and carry
+            # their numbers in the text field Value; updater/strategies/fetchers/who_rs.py passes
+            # them to _who_base.run as text_value_indicators. Their 647 catalogued ids come from
+            # the relay era, so this tool would not catalogue them today. Apply the same switch
+            # here (_who_base._row_value) before re-cataloguing who_rs with this tool.
             if not k or yr is None or v.get("NumericValue") is None:
                 continue
             try:

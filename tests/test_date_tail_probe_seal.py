@@ -121,7 +121,8 @@ def rig(tmp_path, monkeypatch):
 def test_a_who_unit_storing_the_placeholder_is_fetched(rig, monkeypatch, source):
     calls = []
 
-    def fake_run(source_id, prefix, budget_env="WHO_BASE_BUDGET_MIN"):
+    def fake_run(source_id, prefix, budget_env="WHO_BASE_BUDGET_MIN",
+                 text_value_indicators=frozenset()):
         calls.append(source_id)
         return Result(status="no_change", obs=0, new_vintage=DATE_TAIL, error="no new rows")
     monkeypatch.setattr(_who_base, "run", fake_run)
