@@ -385,6 +385,7 @@ def test_injected_client_gets_the_same_hook():
                      aws_secret_access_key="s", region_name="auto")
     store = T.make_store("r2", c)
     assert store.client is c
+    assert T.describe_store(store) == "r2 econ-data"          # the default pre-T0 run names its bucket
     with pytest.raises(PermissionError, match="PutObject"):
         c.put_object(Bucket="econ-data", Key="x", Body=b"x")
 
