@@ -22,11 +22,16 @@ WHAT IT READS (and nothing else; it writes only its own TSV):
   3. for each cube, ONLY the parquet footer of clean_full/statcan/<pid>.parquet, through
      updater.blob._r2_footer_buffer (ranged tail GETs - the reader PR #305 added; no new R2
      reader here). The store's last date is the max of the obs_date row-group statistics.
+     WHERE (--backend, default auto): before T0 the R2 copy (READ key); after T0 the LOCAL parquet
+     store under updater.config.DATA_ROOT, by the same keys, as updater.blob.store_reader() picks it.
+     After T0 the R2 copy is frozen, so an explicit --backend r2 is refused (rc 1). The self-hosted
+     blob store is never used: it holds series/ CSVs only, and opening it opens its index for writing.
   4. with --probe-zip, for BEHIND cubes only: WDS getFullTableDownloadCSV (the zip URL) and a HEAD
      of that URL, for its Last-Modified.
 It never imports jobs/statcan_lane.py, never takes the lane's lock, and has no write path to R2, D1,
 the updater state or the catalogue. On R2 a botocore before-call hook, registered first on the client
-this tool uses, refuses every operation except GetObject and HeadObject.
+this tool uses, refuses every operation except GetObject and HeadObject. The local backend has no write
+method at all: it opens files read-only by key (LocalStoreReader's key check) and does nothing else.
 
 SCOPE: CUBE LEVEL ONLY. "current" here means the cube's newest stored date reaches the publisher's
 cube end period. It cannot see members inside a cube that stopped early (24100057 holds members
@@ -47,14 +52,8 @@ For month-step frequencies a cubeEndDate not on day 01 breaks that reading and i
 reported for information: the number of frequency steps (calendar steps - an "occasional" cube that
 misses one release can show more than 1).
 
-EXIT CODES. An inability to measure is a failure, never a pass:
-  0  every catalogued cube was measured (and with --probe-zip every probe answered);
-  2  some cubes (or probes) could not be measured - the summary says "at least N" and lists them;
-  1  nothing usable: the cube list or the catalogue could not be read, the cube list fails its sanity
-     check, no cube is catalogued, or no cube at all could be measured.
-rc 0 does NOT mean "nothing behind": BEHIND cubes are a measured finding, not a failure to measure.
-Anything that schedules this tool must alarm on the behind count in the summary line (or the TSV),
-never on rc alone - an rc-only alarm would stay silent about exactly what this tool exists to show.
+EXIT CODES: see EXIT_CONTRACT below (also printed by --help). In short 0 = all measured,
+2 = partial, 1 = nothing usable or a usage error. Alarm on the behind count, never on rc alone.
 
 WEEKLY CUBES. The predicate assumes the store and the publisher date a week the same way. Measured
 2026-11-19 on the 18 non-archived weekly cubes: all 13 current ones hold store_max == cubeEndDate
@@ -95,6 +94,19 @@ OVERDUE_AFTER = dt.timedelta(hours=48)   # a release older than this should have
 MIN_LIST_FRACTION = 0.95                 # share of catalogued pids the cube list must contain
 ALLOWED_OPERATIONS = frozenset({"GetObject", "HeadObject"})
 
+EXIT_CONTRACT = """\
+exit codes (an inability to measure is a failure, never a pass):
+  0  every catalogued cube was measured (and with --probe-zip every probe answered);
+  2  PARTIAL: some cubes (or probes) could not be measured - the summary says "at least N" and
+     lists them. Only a run that measured something returns 2;
+  1  nothing usable: a usage error (bad arguments - argparse's own 2 is remapped to 1, so 2
+     always means a partial measurement), the cube list or the catalogue could not be read, the
+     cube list fails its sanity check, no cube is catalogued, no store backend, or no cube at all
+     could be measured.
+rc 0 does NOT mean "nothing behind": BEHIND cubes are a measured finding, not a failure to measure.
+ALARM ON THE BEHIND COUNT in the summary line (or the TSV), NEVER ON rc ALONE - an rc-only alarm
+stays silent about exactly what this tool exists to show."""
+
 
 class Unmeasurable(Exception):
     """A cube (or probe) this run could not measure. The message is the reason in the TSV."""
@@ -113,6 +125,10 @@ def _ym(d: dt.date) -> int:
 def compare(store_max: dt.date, pub_end: dt.date, freq) -> tuple[str, int]:
     """(status, lag) for one cube: status is current | behind | ahead. Raises Unmeasurable for a
     frequency this tool does not know, or a month-step cubeEndDate that is not a period start."""
+    if isinstance(freq, bool) or not isinstance(freq, (int, str)):
+        # a list/dict raises TypeError on the dict lookup and kills the worker pool; a bool would pass
+        # as 0/1. Either is a malformed cube-list entry: unmeasured, never a crash and never a pass.
+        raise Unmeasurable(f"malformed frequencyCode {freq!r}")
     if freq in MONTH_STEP:
         step = MONTH_STEP[freq]
         if pub_end.day != 1:
@@ -188,19 +204,43 @@ def _refuse_other_operations(model=None, **_kwargs):
         raise PermissionError(f"audit_statcan_upstream is read-only: refused S3 operation {name!r}")
 
 
-def make_store(backend: str, client=None):
-    """The blob this tool reads footers through. r2: R2Blob with the READ key, plus the allow-list hook
-    installed FIRST on the very client R2Blob will use. selfhost: SelfhostBlob (after T0 the r2 client
-    refuses every call; the self-hosted store has the same keys). `client`: an S3 client already built
-    by core.r2_util.client(write=False) elsewhere (a desktop launcher); it gets the same hook."""
+class LocalParquetStore:
+    """Read-only ranged reads of the LOCAL parquet store (updater.config.DATA_ROOT = the clean_full
+    directory), by object key, with R2Blob.get_range's contract - so updater.blob._r2_footer_buffer
+    stays the one footer reader. Keys are checked by LocalStoreReader._path (clean_full/ prefix, no
+    '..', no drive, inside the root). There is no put or delete: this class only opens files to read."""
+
+    def __init__(self, data_root: str | None = None):
+        from updater import blob
+        self._reader = blob.LocalStoreReader(data_root)
+        self.data_root = self._reader.data_root
+        if not os.path.isdir(self.data_root):
+            raise Fatal(f"local parquet store {self.data_root} is not a directory")
+
+    def get_range(self, key: str, byte_range: str, *, if_match: str | None = None):
+        from updater import blob
+        p = self._reader._path(key)
+        return blob._file_range(p, byte_range, if_match) if os.path.isfile(p) else None
+
+
+def make_store(backend: str, client=None, *, data_root: str | None = None):
+    """The store this tool reads footers through. auto (the default): r2 before T0, local after it - the
+    choice updater.blob.store_reader() makes. local: LocalParquetStore under DATA_ROOT (or `data_root`).
+    r2: R2Blob with the READ key, plus the allow-list hook installed FIRST on the very client R2Blob will
+    use; refused after T0, when the R2 copy is frozen and its answer would be stale. `client`: an S3
+    client already built by core.r2_util.client(write=False) elsewhere (a desktop launcher); it gets the
+    same hook. The self-hosted blob store (SelfhostBlob / BlobStore) is never built: it holds no
+    clean_full/ keys, and constructing it opens its index for writing."""
     from updater import blob
-    if backend == "selfhost":
-        return blob.SelfhostBlob()
+    from core.cutover import is_cut_over
+    if backend == "auto":
+        backend = "local" if is_cut_over() else "r2"
+    if backend == "local":
+        return LocalParquetStore(data_root)
     if backend != "r2":
         raise Fatal(f"unknown backend {backend!r}")
-    from core.cutover import is_cut_over
     if is_cut_over():                            # the R2 copy is frozen after T0: its answer would be stale
-        raise Fatal("after T0 the R2 copy is frozen - run with --backend selfhost")
+        raise Fatal("after T0 the R2 copy is frozen - run with --backend local (or the default, auto)")
     store = blob.R2Blob(write=False, pool=32)
     if client is not None:
         store._client = client
@@ -417,19 +457,32 @@ def write_tsv(path: str, rows) -> None:
     os.replace(tmp, path)
 
 
+class _Parser(argparse.ArgumentParser):
+    """argparse exits 2 on a usage error, which is this tool's PARTIAL code: remap it to 1."""
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(1, f"{self.prog}: error: {message}\n")
+
+
 def main(argv=None, *, store=None, client=None, http_get=None, http_head=None, now=None,
          sleep=time.sleep) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
+    ap = _Parser(description=__doc__.split("\n\n", 1)[0], epilog=EXIT_CONTRACT,
+                 formatter_class=argparse.RawDescriptionHelpFormatter)
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--catalog", help="a COPY of the catalogue (read-only open)")
     src.add_argument("--pids", help="comma-separated 8-digit product ids")
     ap.add_argument("--live-catalogue", action="store_true", help="allow the live catalogue path (scheduled run only)")
     ap.add_argument("--cubes-json", help="a saved getAllCubesListLite response instead of the GET")
-    ap.add_argument("--backend", choices=("r2", "selfhost"), default="r2")
+    ap.add_argument("--backend", choices=("auto", "r2", "local"), default="auto",
+                    help="auto: r2 before T0, the local parquet store after it (r2 is refused after T0)")
     ap.add_argument("--probe-zip", action="store_true", help="HEAD the full-table zip of BEHIND cubes")
     ap.add_argument("--threads", type=int, default=16)
     ap.add_argument("--out", required=True, help="TSV path")
-    a = ap.parse_args(argv)
+    try:
+        a = ap.parse_args(argv)
+    except SystemExit as e:                      # --help (0) or a usage error (1, see _Parser)
+        return e.code if isinstance(e.code, int) else 1
     now = now or dt.datetime.now(dt.timezone.utc)
     try:
         bad = 0

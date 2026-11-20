@@ -392,8 +392,137 @@ def test_injected_client_gets_the_same_hook():
 def test_r2_backend_refused_after_t0(monkeypatch):
     from core import cutover
     monkeypatch.setattr(cutover, "is_cut_over", lambda: True)
-    with pytest.raises(T.Fatal, match="--backend selfhost"):
+    with pytest.raises(T.Fatal, match="--backend local"):
         T.make_store("r2")
+
+
+# ------------------------------------------------------------- after T0: the LOCAL parquet store (R1969)
+
+def _no_selfhost(monkeypatch):
+    """Any construction of the self-hosted blob store fails the test (it opens the live index for writing)."""
+    class Boom:
+        def __init__(self, *a, **k):
+            raise AssertionError("SelfhostBlob constructed")
+
+    def boom_module():
+        raise AssertionError("tools/selfhost/blobstore.py loaded")
+    monkeypatch.setattr(blob, "SelfhostBlob", Boom)
+    monkeypatch.setattr(blob, "_blobstore_module", boom_module)
+
+
+def _local_root(tmp_path, objects):
+    root = tmp_path / "data" / "clean_full"
+    for pid, data in objects.items():
+        f = root / "statcan" / f"{pid}.parquet"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(data)
+    return root
+
+
+def test_auto_after_t0_measures_the_local_parquet_store(monkeypatch, tmp_path, capsys):
+    """A planted behind cube and a current one, on disk under a tmp DATA_ROOT, measured with no store
+    injected: auto must pick the local backend after T0 and read the footers through _r2_footer_buffer."""
+    import json
+    from core import cutover
+    from updater import config
+    _no_selfhost(monkeypatch)
+    monkeypatch.setattr(cutover, "is_cut_over", lambda: True)
+    big = _parquet([f"2020-{m:02d}-01" for m in range(1, 13)] * 3000 + ["2024-12-31"], row_group_size=500)
+    assert len(big) > blob._FOOTER_TAIL_BYTES // 64          # several row groups, a real footer
+    root = _local_root(tmp_path, {"11100001": big, "11100002": _parquet(["2025-12-31"])})
+    monkeypatch.setattr(config, "DATA_ROOT", str(root))
+    calls = []
+    real = blob._r2_footer_buffer
+    monkeypatch.setattr(blob, "_r2_footer_buffer", lambda st, k: calls.append(type(st).__name__) or real(st, k))
+    cj = tmp_path / "c.json"
+    cj.write_text(json.dumps([_cube("11100001", "2025-01-01", 12), _cube("11100002", "2025-01-01", 12)]),
+                  encoding="utf-8")
+    out = tmp_path / "o.tsv"
+    rc = T.main(["--pids", "11100001,11100002", "--cubes-json", str(cj), "--out", str(out)], now=NOW)
+    text = capsys.readouterr().out
+    assert rc == 0, text
+    rows = {ln.split("\t")[0]: ln for ln in out.read_text(encoding="utf-8").splitlines()[1:]}
+    assert "\tbehind\t" in rows["11100001"] and "2024-12-31" in rows["11100001"]
+    assert "\tcurrent\t" in rows["11100002"]
+    assert "1 cubes behind publisher" in text
+    assert calls == ["LocalParquetStore", "LocalParquetStore"]
+
+
+def test_local_backend_absent_object_and_bad_root(monkeypatch, tmp_path):
+    _no_selfhost(monkeypatch)
+    root = _local_root(tmp_path, {})
+    (root / "statcan").mkdir(parents=True)
+    st = T.make_store("local", data_root=str(root))
+    with pytest.raises(T.Unmeasurable, match="store object absent"):
+        T.read_store_max(st, "11100001")
+    with pytest.raises(ValueError):                           # LocalStoreReader's key check still applies
+        st.get_range("clean_full/../x.parquet", "bytes=-8")
+    with pytest.raises(T.Fatal, match="is not a directory"):
+        T.make_store("local", data_root=str(tmp_path / "nowhere"))
+
+
+def test_local_store_has_no_write_method():
+    names = {n for n in dir(T.LocalParquetStore) if not n.startswith("__")}
+    assert names == {"get_range"}
+
+
+def test_auto_before_t0_is_r2(monkeypatch):
+    from core import cutover, r2_util
+    _no_selfhost(monkeypatch)
+    monkeypatch.setattr(cutover, "is_cut_over", lambda: False)
+    monkeypatch.setattr(r2_util, "creds", lambda write=False: {
+        "endpoint": "https://example.invalid", "key": "k", "secret": "s", "mode": "read"})
+    assert isinstance(T.make_store("auto"), blob.R2Blob)
+
+
+def test_no_selfhost_store_is_ever_constructed(monkeypatch, tmp_path):
+    """Every backend path, with the self-hosted store booby-trapped; and no code path names it."""
+    import ast
+    import io as _io
+    import tokenize
+    from core import cutover
+    _no_selfhost(monkeypatch)
+    root = _local_root(tmp_path, {"11100001": _parquet(["2025-12-31"])})
+    for cut in (True, False):
+        monkeypatch.setattr(cutover, "is_cut_over", lambda cut=cut: cut)
+        for backend in ("auto", "local", "r2", "selfhost"):
+            try:
+                T.make_store(backend, data_root=str(root))
+            except (T.Fatal, Exception) as e:                 # r2 without creds / refused / unknown
+                assert "constructed" not in str(e) and "loaded" not in str(e)
+    src = open(_TOOL, encoding="utf-8").read()
+    doc = {ln for n in ast.walk(ast.parse(src))
+           if isinstance(n, (ast.Module, ast.FunctionDef, ast.ClassDef)) and n.body
+           and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant)
+           for ln in range(n.body[0].lineno, n.body[0].end_lineno + 1)}
+    code = " ".join(t.string for t in tokenize.generate_tokens(_io.StringIO(src).readline)
+                    if t.type == tokenize.NAME and t.start[0] not in doc)
+    for word in ("SelfhostBlob", "BlobStore", "_blobstore_module", "from_env", "csv_store", "selfhost"):
+        assert word not in code.split(), word
+
+
+# ------------------------------------------------------------- exit codes (R1969)
+
+def test_usage_error_and_partial_run_have_different_codes(tmp_path, capsys):
+    usage = T.main(["--pids", "11100001"])                                  # --out missing
+    bad_choice = T.main(["--pids", "11100001", "--out", "x", "--backend", "selfhost"])
+    cs = {"11100001": (_cube("11100001", "2025-01-01", 12), _parquet(["2025-12-31"])),
+          "22220000": (_cube("22220000", "2025-01-01", 12), None)}
+    partial, _ = _run(cs, tmp_path)
+    assert usage == 1 and bad_choice == 1 and partial == 2
+    assert T.main(["--help"]) == 0
+    help_text = capsys.readouterr().out
+    assert "ALARM ON THE BEHIND COUNT" in help_text and "NEVER ON rc ALONE" in help_text
+    assert "2  PARTIAL" in help_text
+
+
+@pytest.mark.parametrize("freq", [[12], {"a": 1}, True, None, 12.0])
+def test_malformed_frequency_code_is_unmeasured_not_a_crash(tmp_path, freq):
+    cs = {"11100001": (_cube("11100001", "2025-01-01", 12), _parquet(["2025-12-31"])),
+          "22220000": (_cube("22220000", "2025-01-01", freq), _parquet(["2020-12-31"]))}
+    rc, rows = _run(cs, tmp_path)
+    assert rc == 2 and rows["22220000"]["status"] == "unmeasured"
+    assert "malformed frequencyCode" in rows["22220000"]["reason"]
 
 
 def test_no_r2_credentials_is_rc1_not_a_traceback(monkeypatch, tmp_path, capsys):
