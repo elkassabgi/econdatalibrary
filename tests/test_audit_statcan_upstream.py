@@ -719,3 +719,156 @@ def test_tool_never_imports_the_lane():
             names.update(f"{n.module}.{a.name}" for a in n.names)
     assert not [x for x in names if "statcan_lane" in x or x.startswith("jobs")]
     assert not [x for x in names if "ingest" in x]
+
+
+# ------------------------------------------------------------- guard branches (review R1977, mutants RW*)
+
+def test_day_step_lag_rounds_up():
+    """RW25: 13 days at a 7-day step is 2 weeks behind, not 1 (the 6-day case alone cannot tell
+    ceiling from floor, because max(1, 0) is 1 too)."""
+    assert T.compare(D("2026-11-01"), D("2026-11-14"), 2) == ("behind", 2)
+    assert T.compare(D("2026-11-08"), D("2026-11-14"), 2) == ("behind", 1)        # the 6-day holiday week
+
+
+@pytest.mark.parametrize("end", ["20250101", "2025-1-1", 20250101])
+def test_short_or_basic_format_publisher_date_is_unmeasured(tmp_path, end):
+    """RW03: Python 3.11+ date.fromisoformat accepts '20250101'; the length check must refuse it."""
+    with pytest.raises(T.Unmeasurable, match="unparseable publisher date"):
+        T._date_part(end)
+    c = _cube("22220000", "2025-01-01", 12)
+    c["cubeEndDate"] = end
+    cs = {"11100001": (_cube("11100001", "2025-01-01", 12), _parquet(["2025-12-31"])),
+          "22220000": (c, _parquet(["2020-12-31"]))}
+    rc, rows = _run(cs, tmp_path)
+    assert rc == 2 and rows["22220000"]["status"] == "unmeasured"
+    assert "unparseable publisher date" in rows["22220000"]["reason"]
+
+
+def test_zero_row_store_is_unmeasured_with_its_reason(tmp_path):
+    """RW07: an empty table is still written with one row group, so the reason must say 0 rows."""
+    empty = _parquet([])
+    md = pq.read_metadata(io.BytesIO(empty))
+    assert md.num_rows == 0 and md.num_row_groups == 1
+    cs = {"11100001": (_cube("11100001", "2025-01-01", 12), _parquet(["2025-12-31"])),
+          "22220000": (_cube("22220000", "2025-01-01", 12), empty)}
+    rc, rows = _run(cs, tmp_path)
+    assert rc == 2 and rows["22220000"]["status"] == "unmeasured"
+    assert rows["22220000"]["reason"] == "store has 0 rows"
+
+
+def test_all_null_obs_date_has_no_min_max_and_is_unmeasured(tmp_path):
+    """RW05: an all-null obs_date column carries statistics (not None) without min/max."""
+    t = pa.table({"obs_date": pa.array([None, None], pa.date32())})
+    b = io.BytesIO()
+    pq.write_table(t, b)
+    st = pq.read_metadata(io.BytesIO(b.getvalue())).row_group(0).column(0).statistics
+    assert st is not None and not st.has_min_max
+    cs = {"11100001": (_cube("11100001", "2025-01-01", 12), _parquet(["2025-12-31"])),
+          "22220000": (_cube("22220000", "2025-01-01", 12), b.getvalue())}
+    rc, rows = _run(cs, tmp_path)
+    assert rc == 2 and rows["22220000"]["reason"] == "no obs_date statistics in row group 0"
+
+
+def _cube_list_run(tmp_path, http_get):
+    return T.main(["--pids", "11100001", "--out", str(tmp_path / "o.tsv")],
+                  store=FakeStore({T.KEY_FMT.format(pid="11100001"): _parquet(["2025-12-31"])}),
+                  http_get=http_get, now=NOW)
+
+
+def test_cube_list_non_200_is_rc1_even_with_a_list_body(tmp_path, capsys):
+    """RW08: a 503 whose body happens to be a valid cube list must not be measured."""
+    body = [_cube("11100001", "2025-01-01", 12)]
+    assert _cube_list_run(tmp_path, lambda url: Resp(200, body)) == 0              # negative control
+    capsys.readouterr()
+    assert _cube_list_run(tmp_path, lambda url: Resp(503, body)) == 1
+    assert "getAllCubesListLite answered HTTP 503" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("bad", ["11100001", 11100001, None, ["x"], {"cubeEndDate": "2025-01-01"}])
+def test_cube_list_bad_element_is_rc1(tmp_path, capsys, bad):
+    """RW09: a non-object element, or an object without productId, is Fatal (rc 1) - never a traceback."""
+    import json
+    body = [_cube("11100001", "2025-01-01", 12), bad]
+    assert _cube_list_run(tmp_path, lambda url: Resp(200, body)) == 1
+    assert "element without productId" in capsys.readouterr().out
+    cj = tmp_path / "c.json"                                    # the --cubes-json route too
+    cj.write_text(json.dumps(body), encoding="utf-8")
+    rc = T.main(["--pids", "11100001", "--cubes-json", str(cj), "--out", str(tmp_path / "o.tsv")],
+                store=FakeStore({}), now=NOW)
+    assert rc == 1 and "element without productId" in capsys.readouterr().out
+
+
+def test_unreadable_catalogue_names_its_reason(monkeypatch, tmp_path, capsys):
+    """RW28: a catalogue that cannot be read is 'catalogue unreadable', not 'no catalogued cube'."""
+    _pre_t0(monkeypatch, tmp_path)
+    db = tmp_path / "copy.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE other (x)")                       # no series table
+    con.commit()
+    con.close()
+    with pytest.raises(T.Fatal, match="catalogue unreadable"):
+        T.catalogued_pids(str(db), allow_live=False)
+    rc = T.main(["--catalog", str(db), "--cubes-json", str(tmp_path / "unused.json"),
+                 "--out", str(tmp_path / "o.tsv")], store=FakeStore({}), now=NOW)
+    out = capsys.readouterr().out
+    assert rc == 1 and "catalogue unreadable" in out and "no catalogued statcan cube" not in out
+
+
+def test_one_bad_pid_among_many_good_is_rc1_not_withdrawn(tmp_path, capsys):
+    """RW29: with 40 good ids one bad id would pass the 95% list check as 'withdrawn' with rc 0."""
+    many = {f"3{i:07d}": (_cube(f"3{i:07d}", "2025-01-01", 12), _parquet(["2025-12-31"])) for i in range(40)}
+    rc, rows = _run(many, tmp_path, pids=list(many))                # negative control
+    assert rc == 0 and len(rows) == 40
+    capsys.readouterr()
+    for bad in ("1110000x", "1234567", "123456789"):
+        out_tsv = tmp_path / "out.tsv"
+        if out_tsv.exists():
+            out_tsv.unlink()
+        rc, rows = _run(many, tmp_path, pids=list(many) + [bad])
+        out = capsys.readouterr().out
+        assert rc == 1 and rows == {}, (bad, out)
+        assert "not 8-digit product ids" in out and bad in out
+
+
+def _behind_cube():
+    return {"12100147": (_cube("12100147", "2026-09-01", 6, "2026-11-04T13:30:00Z"), _parquet(["2023-09-01"]))}
+
+
+def test_zip_url_must_be_https(tmp_path):
+    """RW10: an http:// zip URL is refused (probe_error), never HEADed and classed."""
+    heads = []
+
+    def get(url):
+        return Resp(200, {"status": "SUCCESS", "object": "http://www150.statcan.gc.ca/n1/tbl/csv/12100147-eng.zip"})
+
+    def head(url):
+        heads.append(url)
+        return Resp(200, headers={"Last-Modified": "Thu, 09 Nov 2023 14:00:00 GMT"})
+    rc, rows = _run(_behind_cube(), tmp_path, probe=True, http_get=get, http_head=head)
+    assert rc == 2 and rows["12100147"]["zip_class"] == "probe_error"
+    assert "gave no zip URL" in rows["12100147"]["reason"] and heads == []
+
+
+@pytest.mark.parametrize("status", [404, 403, 304, 500])
+def test_zip_head_not_200_is_probe_error_even_with_last_modified(tmp_path, status):
+    """RW11: a non-200 HEAD that still carries Last-Modified must not be classed fresh or stale."""
+    get, _ = _zip_http({})
+
+    def head(url):
+        return Resp(status, headers={"Last-Modified": "Thu, 09 Nov 2023 14:00:00 GMT"})
+    rc, rows = _run(_behind_cube(), tmp_path, probe=True, http_get=get, http_head=head)
+    assert rc == 2 and rows["12100147"]["zip_class"] == "probe_error"
+    assert rows["12100147"]["reason"] == f"zip HEAD HTTP {status}"
+
+
+def test_zip_naive_last_modified_is_probe_error_not_a_traceback(tmp_path, capsys):
+    """RW12: RFC 2822 '-0000' parses to a NAIVE datetime; compared with the aware release time it would
+    raise TypeError and kill the run. It must end as probe_error with rc 2."""
+    from email.utils import parsedate_to_datetime
+    lm = "Thu, 09 Nov 2023 14:00:00 -0000"
+    assert parsedate_to_datetime(lm).tzinfo is None
+    get, head = _zip_http({"12100147": lm})
+    rc, rows = _run(_behind_cube(), tmp_path, probe=True, http_get=get, http_head=head)
+    assert rc == 2 and rows["12100147"]["zip_class"] == "probe_error"
+    assert rows["12100147"]["reason"] == "zip Last-Modified without a time zone"
+    assert "zip probe errors 1" in capsys.readouterr().out
