@@ -445,7 +445,59 @@ def test_auto_after_t0_measures_the_local_parquet_store(monkeypatch, tmp_path, c
     assert "\tbehind\t" in rows["11100001"] and "2024-12-31" in rows["11100001"]
     assert "\tcurrent\t" in rows["11100002"]
     assert "1 cubes behind publisher" in text
+    assert f"[store: local {os.path.abspath(str(root))}]" in text
     assert calls == ["LocalParquetStore", "LocalParquetStore"]
+
+
+def _big_footer_parquet(last="2024-12-31") -> bytes:
+    """A parquet whose footer is longer than the 1 MiB tail window: the footer reader must make its
+    second, conditional read (138 of 8,264 local statcan stores have such footers, 2026-11-20)."""
+    n, cols = 600, 40
+    data = {f"c{j:02d}_{'x' * 40}": pa.array([float(i) for i in range(n)]) for j in range(cols)}
+    data["obs_date"] = pa.array([D("2020-01-01")] * (n - 1) + [D(last)], pa.date32())
+    b = io.BytesIO()
+    pq.write_table(pa.table(data), b, row_group_size=1, write_statistics=True)
+    raw = b.getvalue()
+    assert int.from_bytes(raw[-8:-4], "little") > blob._FOOTER_TAIL_BYTES
+    return raw
+
+
+def test_local_big_footer_second_read_is_conditional(monkeypatch, tmp_path):
+    _no_selfhost(monkeypatch)
+    raw = _big_footer_parquet()
+    root = _local_root(tmp_path, {"11100001": raw})
+    st = T.make_store("local", data_root=str(root))
+    seen = []
+    real = blob._file_range
+    monkeypatch.setattr(blob, "_file_range", lambda p, r, m: seen.append((r, m)) or real(p, r, m))
+    assert T.read_store_max(st, "11100001") == D("2024-12-31")
+    assert len(seen) == 2 and seen[0][1] is None
+    f = root / "statcan" / "11100001.parquet"
+    assert seen[1][1] == f"{f.stat().st_size}:{f.stat().st_mtime_ns}"      # the first read's token
+    assert pq.read_metadata(str(f)).num_row_groups == 600
+
+
+def test_local_big_footer_replaced_between_reads_is_unmeasured(monkeypatch, tmp_path):
+    """The file is replaced after the tail read: the conditional footer read must refuse, never splice
+    two versions or answer from the new file under the old file's tail."""
+    _no_selfhost(monkeypatch)
+    root = _local_root(tmp_path, {"11100001": _big_footer_parquet()})
+    f = root / "statcan" / "11100001.parquet"
+    replacement = _big_footer_parquet(last="2026-12-31")
+    st = T.make_store("local", data_root=str(root))
+    real = blob._file_range
+    n = []
+
+    def swap(p, r, m):
+        out = real(p, r, m)
+        if not n:
+            f.write_bytes(replacement + b"")
+            os.utime(f, ns=(1, 1))                                          # a different token for sure
+        n.append(r)
+        return out
+    monkeypatch.setattr(blob, "_file_range", swap)
+    with pytest.raises(T.Unmeasurable, match="footer read failed"):
+        T.read_store_max(st, "11100001")
 
 
 def test_local_backend_absent_object_and_bad_root(monkeypatch, tmp_path):
@@ -510,6 +562,7 @@ def test_usage_error_and_partial_run_have_different_codes(tmp_path, capsys):
           "22220000": (_cube("22220000", "2025-01-01", 12), None)}
     partial, _ = _run(cs, tmp_path)
     assert usage == 1 and bad_choice == 1 and partial == 2
+    assert "[store: injected FakeStore]" in capsys.readouterr().out
     assert T.main(["--help"]) == 0
     help_text = capsys.readouterr().out
     assert "ALARM ON THE BEHIND COUNT" in help_text and "NEVER ON rc ALONE" in help_text

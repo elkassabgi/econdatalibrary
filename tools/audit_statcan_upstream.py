@@ -23,7 +23,9 @@ WHAT IT READS (and nothing else; it writes only its own TSV):
      updater.blob._r2_footer_buffer (ranged tail GETs - the reader PR #305 added; no new R2
      reader here). The store's last date is the max of the obs_date row-group statistics.
      WHERE (--backend, default auto): before T0 the R2 copy (READ key); after T0 the LOCAL parquet
-     store under updater.config.DATA_ROOT, by the same keys, as updater.blob.store_reader() picks it.
+     store under updater.config.DATA_ROOT, by the same keys - store_reader()'s T0 rule (unlike
+     store_reader, AQUEDUCT_BACKEND=selfhost does not move a pre-T0 run off R2, the authoritative copy
+     then). The summary line ends with "[store: ...]", naming the bucket or local root it measured.
      After T0 the R2 copy is frozen, so an explicit --backend r2 is refused (rc 1). The self-hosted
      blob store is never used: it holds series/ CSVs only, and opening it opens its index for writing.
   4. with --probe-zip, for BEHIND cubes only: WDS getFullTableDownloadCSV (the zip URL) and a HEAD
@@ -225,7 +227,8 @@ class LocalParquetStore:
 
 def make_store(backend: str, client=None, *, data_root: str | None = None):
     """The store this tool reads footers through. auto (the default): r2 before T0, local after it - the
-    choice updater.blob.store_reader() makes. local: LocalParquetStore under DATA_ROOT (or `data_root`).
+    T0 rule of updater.blob.store_reader() (which, unlike this, also reads local before T0 under
+    AQUEDUCT_BACKEND=selfhost; before T0 R2 is the authoritative copy, so this tool stays there). local: LocalParquetStore under DATA_ROOT (or `data_root`).
     r2: R2Blob with the READ key, plus the allow-list hook installed FIRST on the very client R2Blob will
     use; refused after T0, when the R2 copy is frozen and its answer would be stale. `client`: an S3
     client already built by core.r2_util.client(write=False) elsewhere (a desktop launcher); it gets the
@@ -251,6 +254,16 @@ def make_store(backend: str, client=None, *, data_root: str | None = None):
     events.register_first("before-call.*.*", _refuse_other_operations, unique_id="statcan-upstream-ro-all")
     events.register_first("before-call.s3", _refuse_other_operations, unique_id="statcan-upstream-ro-s3")
     return store
+
+
+def describe_store(store) -> str:
+    """Which store a run measured, for the summary line: a behind count must name its instrument."""
+    if isinstance(store, LocalParquetStore):
+        return f"local {store.data_root}"
+    bucket = getattr(store, "bucket", None)
+    if bucket:
+        return f"r2 {bucket}"
+    return f"injected {type(store).__name__}" if store is not None else "none"
 
 
 def read_store_max(store, pid: str) -> dt.date:
@@ -507,6 +520,7 @@ def main(argv=None, *, store=None, client=None, http_get=None, http_head=None, n
         return 1
     write_tsv(a.out, rows)
     line, rc = summarise(rows, catalogued=len(pids), probe=a.probe_zip, bad_ids=bad)
+    line += f" [store: {describe_store(store)}]"
     print(line)
     skipped = [r for r in rows if r["status"] == "unmeasured" or r["zip_class"] == "probe_error"]
     for r in skipped[:20]:
