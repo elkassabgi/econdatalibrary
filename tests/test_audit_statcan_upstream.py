@@ -327,6 +327,58 @@ def _statcan_db(path, pids):
     con.close()
 
 
+def _pre_t0(monkeypatch, tmp_path):
+    """Pin BEFORE T0: point cutover.FLAG_PATH at a file that does not exist (a runner that has the real
+    flag must not turn these into post-T0 tests)."""
+    from core import cutover
+    monkeypatch.setattr(cutover, "FLAG_PATH", str(tmp_path / "NO_CUTOVER_FLAG"))
+    from core import catalog_path
+    assert not cutover.is_cut_over() and not catalog_path.is_cut_over()
+
+
+def test_pre_t0_live_build_is_read_with_live_catalogue(monkeypatch, tmp_path, capsys):
+    """Before T0 --live-catalogue opens the live build (review R1974, mutant RVF: a refusal that ignored
+    allow_live passed every other test)."""
+    import json
+    from core import catalog_path
+    build = tmp_path / "build" / "catalog.db"
+    build.parent.mkdir()
+    _statcan_db(build, ["11100001", "22220000"])
+    monkeypatch.setattr(catalog_path, "BUILD_PATH", str(build))
+    monkeypatch.setattr(catalog_path, "CHECKOUT_PATH", str(tmp_path / "checkout" / "catalog.db"))
+    _pre_t0(monkeypatch, tmp_path)
+    with pytest.raises(T.Fatal, match="pass a copy"):
+        T.catalogued_pids(str(build), allow_live=False)
+    assert T.catalogued_pids(str(build), allow_live=True) == (["11100001", "22220000"], 0)
+    cj = tmp_path / "c.json"
+    cj.write_text(json.dumps([_cube("11100001", "2025-01-01", 12), _cube("22220000", "2025-01-01", 12)]),
+                  encoding="utf-8")
+    store = FakeStore({T.KEY_FMT.format(pid="11100001"): _parquet(["2025-12-31"]),
+                       T.KEY_FMT.format(pid="22220000"): _parquet(["2024-12-31"])})
+    rc = T.main(["--catalog", str(build), "--live-catalogue", "--cubes-json", str(cj),
+                 "--out", str(tmp_path / "o.tsv")], store=store, now=NOW)
+    out = capsys.readouterr().out
+    assert rc == 0 and "1 cubes behind publisher" in out and "measured 2 of 2 catalogued" in out
+
+
+def test_pre_t0_checkout_catalogue_refused_without_live_catalogue(monkeypatch, tmp_path):
+    """Before T0 the checkout's data/catalog.db is live too, not only the build (review R1974, mutant RVA:
+    a live set of {build} alone passed every other test)."""
+    from core import catalog_path
+    checkout = tmp_path / "checkout" / "data" / "catalog.db"
+    checkout.parent.mkdir(parents=True)
+    _statcan_db(checkout, ["11100001"])
+    monkeypatch.setattr(catalog_path, "BUILD_PATH", str(tmp_path / "build" / "catalog.db"))
+    monkeypatch.setattr(catalog_path, "CHECKOUT_PATH", str(checkout))
+    _pre_t0(monkeypatch, tmp_path)
+    with pytest.raises(T.Fatal, match="is a live catalogue; pass a copy"):
+        T.catalogued_pids(str(checkout), allow_live=False)
+    assert T.catalogued_pids(str(checkout), allow_live=True) == (["11100001"], 0)
+    copy = tmp_path / "copy.db"                       # negative control: a copy is read without the flag
+    _statcan_db(copy, ["11100001"])
+    assert T.catalogued_pids(str(copy), allow_live=False) == (["11100001"], 0)
+
+
 def test_post_t0_catalog_copy_refused_with_the_route(monkeypatch, tmp_path, capsys):
     import json
     from core import catalog_path

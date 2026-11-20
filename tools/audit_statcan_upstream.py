@@ -21,7 +21,10 @@ WHAT IT READS (and nothing else; it writes only its own TSV):
      core.catalog_path.connect_path) or --pids. BEFORE T0 --catalog takes a COPY; the live paths
      (the build and the checkout's data/catalog.db) need --live-catalogue. AFTER T0 connect_path
      opens only the build, so a copy is refused and the one --catalog route is
-     --catalog <the build> --live-catalogue (still a read-only open);
+     --catalog <the build> --live-catalogue (still a read-only open). Two limits on "read-only" for a
+     live catalogue: (a) it assumes the catalogue stays journal_mode=DELETE - a mode=ro open of a WAL
+     database still creates its -wal/-shm files; (b) the open holds a SQLite SHARED lock for as long
+     as the one statcan SELECT runs, so a writer's commit waits for that SELECT to finish;
   3. for each cube, ONLY the parquet footer of clean_full/statcan/<pid>.parquet, through
      updater.blob._r2_footer_buffer (ranged tail GETs - the reader PR #305 added; no new R2
      reader here). The store's last date is the max of the obs_date row-group statistics.
@@ -502,7 +505,9 @@ def main(argv=None, *, store=None, client=None, http_get=None, http_head=None, n
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--catalog", help="before T0 a COPY of the catalogue; after T0 only the build, with --live-catalogue (read-only open)")
     src.add_argument("--pids", help="comma-separated 8-digit product ids")
-    ap.add_argument("--live-catalogue", action="store_true", help="allow the live catalogue path (the scheduled run; after T0 the only --catalog route)")
+    ap.add_argument("--live-catalogue", action="store_true", help="allow the live catalogue path (the scheduled run; after T0 the only --catalog route). "
+                         "Opened mode=ro; holds a SQLite shared lock while the statcan SELECT runs, and assumes "
+                         "journal_mode=DELETE (a WAL catalogue would get -wal/-shm files)")
     ap.add_argument("--cubes-json", help="a saved getAllCubesListLite response instead of the GET")
     ap.add_argument("--backend", choices=("auto", "r2", "local"), default="auto",
                     help="auto: r2 before T0, the local parquet store after it (r2 is refused after T0)")
