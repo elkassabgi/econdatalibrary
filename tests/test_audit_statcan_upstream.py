@@ -471,6 +471,9 @@ def test_zip_probe_stale_fresh_and_error(tmp_path, capsys):
     assert rows["11100001"]["zip_class"] == "not_probed"            # only BEHIND cubes are probed
     assert rc == 2
     assert out.startswith("statcan upstream: 3 cubes behind publisher (at least 1 zip-stale)")
+    # RX28: a probe error is listed among the skipped lines, with its reason (it is not "unmeasured")
+    assert rows["35100181"]["status"] == "behind"
+    assert "  skipped 35100181: getFullTableDownloadCSV gave no zip URL" in out.splitlines()
 
 
 def test_zip_slack_is_one_hour():
@@ -486,11 +489,20 @@ def test_zip_two_hours_before_release_is_stale(tmp_path):
     assert rc == 0 and rows["10100145"]["zip_class"] == "stale"
 
 
+def _no_network(client):
+    """A broken read-only hook must fail the test, never open a socket: a request that gets past the
+    before-call hook reaches before-send, and this handler stops it there (botocore sends nothing)."""
+    def _stop(**_kw):
+        raise AssertionError("an S3 request got past the read-only hook to before-send")
+    client.meta.events.register_first("before-send.*.*", _stop, unique_id="test-no-network")
+
+
 def test_read_only_hook_on_the_tools_own_client(monkeypatch):
     from core import r2_util
     monkeypatch.setattr(r2_util, "creds", lambda write=False: {
         "endpoint": "https://example.invalid", "key": "k", "secret": "s", "mode": "read"})
     store = T.make_store("r2")
+    _no_network(store.client)
     with pytest.raises(PermissionError, match="refused S3 operation 'PutObject'"):
         store.client.put_object(Bucket="econ-data", Key="clean_full/statcan/x.parquet", Body=b"x")
     with pytest.raises(PermissionError, match="DeleteObject"):
@@ -501,6 +513,7 @@ def test_injected_client_gets_the_same_hook():
     import boto3
     c = boto3.client("s3", endpoint_url="https://example.invalid", aws_access_key_id="k",
                      aws_secret_access_key="s", region_name="auto")
+    _no_network(c)
     store = T.make_store("r2", c)
     assert store.client is c
     assert T.describe_store(store) == "r2 econ-data"          # the default pre-T0 run names its bucket
@@ -643,7 +656,9 @@ def test_auto_before_t0_is_r2(monkeypatch):
     monkeypatch.setattr(cutover, "is_cut_over", lambda: False)
     monkeypatch.setattr(r2_util, "creds", lambda write=False: {
         "endpoint": "https://example.invalid", "key": "k", "secret": "s", "mode": "read"})
-    assert isinstance(T.make_store("auto"), blob.R2Blob)
+    store = T.make_store("auto")
+    assert isinstance(store, blob.R2Blob)
+    _no_network(store.client)
 
 
 def test_no_selfhost_store_is_ever_constructed(monkeypatch, tmp_path):
@@ -872,3 +887,203 @@ def test_zip_naive_last_modified_is_probe_error_not_a_traceback(tmp_path, capsys
     assert rc == 2 and rows["12100147"]["zip_class"] == "probe_error"
     assert rows["12100147"]["reason"] == "zip Last-Modified without a time zone"
     assert "zip probe errors 1" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------- review R1979 (mutants RX02-RX32)
+
+@pytest.mark.parametrize("field,value,reason", [
+    ("releaseTime", None, "unparseable instant None"),                       # RX05
+    ("releaseTime", 5, "unparseable instant 5"),                             # RX05
+    ("releaseTime", "not-a-time", "unparseable instant 'not-a-time'"),       # RX32: 10 chars, not ISO
+    ("cubeEndDate", "2025/01/01T05:00:00Z", "unparseable publisher date"),   # RX31: 10+ chars, not ISO
+])
+def test_malformed_release_or_end_is_unmeasured_not_a_crash(tmp_path, capsys, field, value, reason):
+    bad = _cube("22220000", "2025-01-01", 12)
+    bad[field] = value
+    cs = {"11100001": (_cube("11100001", "2025-01-01", 12), _parquet(["2025-12-31"])),
+          "22220000": (bad, _parquet(["2024-12-31"]))}
+    rc, rows = _run(cs, tmp_path)
+    assert rc == 2
+    assert rows["22220000"]["status"] == "unmeasured" and rows["22220000"]["reason"].startswith(reason)
+    assert rows["11100001"]["status"] == "current"
+    assert "skipped 22220000: unparseable" in capsys.readouterr().out
+
+
+def _mixed_catalogue(path):
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY, source_id TEXT)")
+    con.executemany("INSERT INTO series VALUES (?, ?)", [
+        ("statcan:10100001#1", "statcan"),
+        ("statcan:10100001#2", "statcan"),
+        ("abcdefgh11100001", "statcan"),       # RX18: 8 chars + 8 digits, but no "statcan:" prefix
+        ("statcanX", "statcan"),
+        ("statcan:12100147#1", "ons"),          # RX23: a statcan-shaped id under ANOTHER source_id
+        ("ons:x", "ons"),
+        ("fred:GDP", "fred"),
+    ])
+    con.commit()
+    con.close()
+
+
+def test_catalogue_with_other_sources_counts_only_statcan_rows(monkeypatch, tmp_path, capsys):
+    """RX18 + RX23: only source_id='statcan' rows are read, and only "statcan:<8 digits>" ids yield a pid."""
+    _pre_t0(monkeypatch, tmp_path)
+    db = tmp_path / "cat.db"
+    _mixed_catalogue(db)
+    pids, bad = T.catalogued_pids(str(db), allow_live=False)
+    assert pids == ["10100001"] and bad == 2
+    import json
+    cj = tmp_path / "c.json"
+    cj.write_text(json.dumps([_cube("10100001", "2025-01-01", 12), _cube("12100147", "2026-09-01", 6)]),
+                  encoding="utf-8")
+    store = FakeStore({T.KEY_FMT.format(pid="10100001"): _parquet(["2025-12-31"])})
+    rc = T.main(["--catalog", str(db), "--cubes-json", str(cj), "--out", str(tmp_path / "o.tsv")],
+                store=store, now=NOW)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "measured 1 of 1 catalogued; unmeasured 0; malformed statcan series ids 2 [cube level only]" in out
+
+
+def test_tsv_escapes_tab_and_newline_in_a_field(tmp_path):
+    """RX25: a tab or newline inside a field (here the raw releaseTime) must not split a TSV row."""
+    bad = _cube("22220000", "2025-01-01", 12, release="x\ty\nz")
+    cs = {"11100001": (_cube("11100001", "2025-01-01", 12), _parquet(["2025-12-31"])),
+          "22220000": (bad, _parquet(["2024-12-31"]))}
+    rc, rows = _run(cs, tmp_path)
+    lines = (tmp_path / "out.tsv").read_text(encoding="utf-8").split("\n")
+    assert lines[-1] == "" and len(lines) == 4                  # header + 2 rows + the final newline
+    assert all(len(ln.split("\t")) == len(T.COLUMNS) for ln in lines[:-1])
+    assert rc == 2 and rows["22220000"]["release_time"] == "x y z"
+
+
+def test_empty_pids_items_are_ignored(tmp_path, capsys):
+    """RX29: a trailing or doubled comma is not a bad product id."""
+    import json
+    cj = tmp_path / "c.json"
+    cj.write_text(json.dumps([_cube("11100001", "2025-01-01", 12)]), encoding="utf-8")
+    store = FakeStore({T.KEY_FMT.format(pid="11100001"): _parquet(["2025-12-31"])})
+    rc = T.main(["--pids", "11100001,", "--cubes-json", str(cj), "--out", str(tmp_path / "o.tsv")],
+                store=store, now=NOW)
+    out = capsys.readouterr().out
+    assert rc == 0 and "measured 1 of 1 catalogued" in out
+    rc = T.main(["--pids", " ,11100001,, ", "--cubes-json", str(cj), "--out", str(tmp_path / "o2.tsv")],
+                store=store, now=NOW)
+    assert rc == 0
+
+
+def test_overdue_boundary_is_strictly_more_than_48h(tmp_path, capsys):
+    """RX12: a release exactly 48.0 h old is recent; 48.1 h is overdue. (The test is on release_age_h as
+    the TSV writes it, to one decimal - 48 h + 1 min also reads 48.0 and is counted recent.)"""
+    cs = {"35100182": (_cube("35100182", "2025-01-01", 12, "2026-11-17T20:00:00Z"), _parquet(["2024-12-31"])),
+          "35100181": (_cube("35100181", "2025-01-01", 12, "2026-11-17T19:54:00Z"), _parquet(["2024-12-31"]))}
+    rc, rows = _run(cs, tmp_path)
+    line = capsys.readouterr().out.splitlines()[0]
+    assert rows["35100182"]["release_age_h"] == "48.0" and rows["35100181"]["release_age_h"] == "48.1"
+    assert rc == 0 and "2 cubes behind publisher (zip not probed); overdue 1 (release >48h), recent 1;" in line
+
+
+def test_store_without_obs_date_column_is_unmeasured(tmp_path):
+    """RX02: without the column check names.index raises ValueError and kills the run."""
+    t = pa.table({"ref_date": pa.array([D("2024-12-31")], pa.date32())})
+    b = io.BytesIO()
+    pq.write_table(t, b)
+    cs = {"11100001": (_cube("11100001", "2025-01-01", 12), _parquet(["2025-12-31"])),
+          "22220000": (_cube("22220000", "2025-01-01", 12), b.getvalue())}
+    rc, rows = _run(cs, tmp_path)
+    assert rc == 2 and rows["22220000"]["reason"] == "store has no obs_date column"
+
+
+def test_non_date_statistic_is_unmeasured():
+    """RX03: a Date column whose statistic is not a date (a corrupt footer) is not a max."""
+    md = pq.read_metadata(io.BytesIO(_parquet(["2024-12-31"])))
+
+    class St:
+        has_min_max, max = True, "2024-12-31"
+
+    class Col:
+        statistics = St()
+
+    class RG:
+        def column(self, i):
+            return Col()
+
+    class MD:
+        num_rows, num_row_groups, schema = 1, 1, md.schema
+
+        def row_group(self, g):
+            return RG()
+    with pytest.raises(T.Unmeasurable, match="obs_date statistic is str, not a date"):
+        T.store_max_date(MD())
+
+
+def test_empty_cube_list_is_fatal(tmp_path):
+    """RX06: an empty JSON array is not a cube list."""
+    cj = tmp_path / "c.json"
+    cj.write_text("[]", encoding="utf-8")
+    with pytest.raises(T.Fatal, match="non-empty JSON array"):
+        T.load_cube_list(str(cj))
+
+
+def test_zip_head_without_last_modified_names_its_reason(tmp_path):
+    """RX14: no Last-Modified is its own reason, not a generic probe failure."""
+    get, _ = _zip_http({})
+    rc, rows = _run(_behind_cube(), tmp_path, probe=True, http_get=get, http_head=lambda url: Resp(200, headers={}))
+    assert rc == 2 and rows["12100147"]["zip_class"] == "probe_error"
+    assert rows["12100147"]["reason"] == "zip HEAD has no Last-Modified"
+
+
+def test_zip_url_needs_status_success(tmp_path):
+    """RX15: a FAILED answer that still carries an https URL is not a zip URL."""
+    heads = []
+
+    def get(url):
+        return Resp(200, {"status": "FAILED", "object": "https://www150.statcan.gc.ca/n1/tbl/csv/12100147-eng.zip"})
+
+    def head(url):
+        heads.append(url)
+        return Resp(200, headers={"Last-Modified": "Thu, 09 Nov 2023 14:00:00 GMT"})
+    rc, rows = _run(_behind_cube(), tmp_path, probe=True, http_get=get, http_head=head)
+    assert rc == 2 and rows["12100147"]["reason"] == "getFullTableDownloadCSV gave no zip URL" and heads == []
+
+
+def test_catalogue_fatal_passes_through_unwrapped(monkeypatch, tmp_path):
+    """RX17: a Fatal raised while reading the catalogue keeps its own message."""
+    from core import catalog_path
+    _pre_t0(monkeypatch, tmp_path)
+    db = tmp_path / "copy.db"
+    _statcan_db(db, ["11100001"])
+
+    def boom(*a, **k):
+        raise T.Fatal("planted catalogue refusal")
+    monkeypatch.setattr(catalog_path, "connect_path", boom)
+    with pytest.raises(T.Fatal) as ei:
+        T.catalogued_pids(str(db), allow_live=False)
+    assert str(ei.value) == "planted catalogue refusal"
+
+
+def test_hook_lets_get_and_head_through(monkeypatch):
+    """RX11: GetObject and HeadObject pass the read-only hook (and are then stopped by _no_network)."""
+    from core import r2_util
+    monkeypatch.setattr(r2_util, "creds", lambda write=False: {
+        "endpoint": "https://example.invalid", "key": "k", "secret": "s", "mode": "read"})
+    from core import cutover
+    monkeypatch.setattr(cutover, "is_cut_over", lambda: False)
+    store = T.make_store("r2")
+    _no_network(store.client)
+    for call in (lambda: store.client.get_object(Bucket="econ-data", Key="clean_full/statcan/x.parquet"),
+                 lambda: store.client.head_object(Bucket="econ-data", Key="clean_full/statcan/x.parquet")):
+        with pytest.raises(AssertionError, match="got past the read-only hook"):
+            call()
+    with pytest.raises(PermissionError, match="ListObjectsV2"):
+        store.client.list_objects_v2(Bucket="econ-data")
+
+
+def test_unknown_backend_is_fatal(monkeypatch):
+    """RX26: an unknown backend name never falls through to R2."""
+    from core import cutover, r2_util
+    monkeypatch.setattr(cutover, "is_cut_over", lambda: False)
+    monkeypatch.setattr(r2_util, "creds", lambda write=False: {
+        "endpoint": "https://example.invalid", "key": "k", "secret": "s", "mode": "read"})
+    for name in ("selfhost", "R2", ""):
+        with pytest.raises(T.Fatal, match="unknown backend"):
+            T.make_store(name)

@@ -259,8 +259,9 @@ def make_store(backend: str, client=None, *, data_root: str | None = None):
         events = store.client.meta.events        # builds the lazy client now, so the hook is on it
     except Exception as e:
         raise Fatal(f"R2 read client unavailable ({type(e).__name__})") from None
+    # ONE hook. before-call.*.* matches every service and operation; a second "before-call.s3" handler
+    # was proven redundant (review R1979: either one alone refuses every S3 call), so it is not kept.
     events.register_first("before-call.*.*", _refuse_other_operations, unique_id="statcan-upstream-ro-all")
-    events.register_first("before-call.s3", _refuse_other_operations, unique_id="statcan-upstream-ro-s3")
     return store
 
 
