@@ -114,3 +114,5 @@ crons = ["*/30 * * * *"]
 
 [observability]
 enabled = true
+# Log one request in ten (head sampling) to reduce log volume. 1 = every request.
+head_sampling_rate = 0.1

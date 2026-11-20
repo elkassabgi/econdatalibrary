@@ -15,7 +15,7 @@
   "compatibility_flags": ["nodejs_compat"],
   "account_id": "ce51d5c7fe3859098751b89bbebeab7a",
   "workers_dev": true,
-  "observability": { "enabled": true },
+  "observability": { "enabled": true, "head_sampling_rate": 0.1 },
 
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["AssistantState"] }
