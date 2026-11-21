@@ -62,7 +62,7 @@ import requests
 from ... import config, blob, merge
 from ...errors import TransientError, DefinitiveError
 from ..base import Result
-from ._common import (Tally, finalize, load_rotation, parse_retry_after_s,
+from ._common import (Deadline, Tally, finalize, load_rotation, parse_retry_after_s,
                       rotate_after, sane_since, save_rotation,
                       structural_on_zero_rows)
 
@@ -108,6 +108,31 @@ _RETRY_AFTER_STATUSES = (429, 503)
 # The old exponential back-off (no usable header) is NOT counted here: it is unchanged.
 RETRY_AFTER_PASS_FRACTION = 1 / 3
 ROTATION_FILE = "_rotation.json"
+
+# WALL-CLOCK FETCH BUDGET (2026-11-21). The Retry-After budget above bounds only the sleeps a
+# throttling server asks for; nothing bounded the pass itself. BFS got slower without throttling
+# anyone: pass durations in the daily runs were 1,027-1,442 s from 10-28 to 11-10, then 1,705 s
+# (11-11), 1,789 s (11-12), and on 11-19, 11-20 and 11-21 the orchestrator's 45-minute unit
+# timeout killed the pass (2,700 s). Because bfs merges ONCE, after the loop, each kill
+# discarded the whole pass (the R249 kill=discard class) and nothing had stored since 11-12.
+# Measured 2026-11-21 09:3xZ: 10 metadata GETs spread over the 628-table catalogue took
+# 0.84-2.48 s each, all HTTP 200 - latency, not 429s. So the pass stops STARTING tables once
+# this budget is spent (it cannot cut a request in flight; the worst in-flight request is
+# MAX_ATTEMPTS x (TIMEOUT + 30 s) plus back-off), defers the rest (deferred_unit: not attempted,
+# not a failure, R303), merges what it fetched and saves the rotation bookmark so the next pass
+# starts where this one stopped (R190). The clock starts at the top of update(), so it also
+# covers the catalogue GET and the store read. 25 min leaves 20 min of the 45 for the merge of
+# the single ~5.4M-row store file and the orchestrator's own work (the 11-12 pass took 1,789 s
+# in total). Same shape as statfin (STATFIN_BUDGET_MIN, 30) and the other PxWeb fetchers.
+BUDGET_MIN_DEFAULT = 25.0
+
+
+def _budget_min() -> float:
+    try:
+        v = float(os.environ.get("BFS_BUDGET_MIN", "") or BUDGET_MIN_DEFAULT)
+    except ValueError:
+        v = BUDGET_MIN_DEFAULT
+    return v if v > 0 else BUDGET_MIN_DEFAULT
 
 
 def _retry_after_pass_budget_s() -> float:
@@ -407,6 +432,8 @@ def update(unit, since) -> Result:
     path = os.path.join(out_dir, "bfs.parquet")
     before = blob.row_count(path)
 
+    budget_min = _budget_min()
+    dl = Deadline(minutes=budget_min)                   # wall clock for the whole pass
     sess = requests.Session()
     sess._bfs_ra_left = _retry_after_pass_budget_s()   # per-pass Retry-After sleep budget
 
@@ -431,25 +458,39 @@ def update(unit, since) -> Result:
     dates: list[dt.date] = []
     vals: list[float] = []
 
-    # ROTATION, used only after a Retry-After budget stop (R190): a stop over the publisher's
-    # fixed catalog order would otherwise re-walk the same prefix on every throttled pass and
-    # never reach the tail. The bookmark is the last table ATTEMPTED; it is saved only when a
-    # pass stops on the budget, and only after its merge, so a pass that never stops starts
-    # where the last stopped one left off and keeps that start.
+    # ROTATION, used only after a pass STOPS EARLY - on the Retry-After budget or on the
+    # wall-clock budget (R190): a stop over the publisher's fixed catalog order would otherwise
+    # re-walk the same prefix on every stopped pass and never reach the tail. The bookmark is
+    # the last table ATTEMPTED; it is saved only when a pass stops early, and only after its
+    # merge, so a pass that never stops starts where the last stopped one left off and keeps
+    # that start.
     catalog = rotate_after(list(catalog), load_rotation(out_dir, ROTATION_FILE),
                            key=lambda it: it.get("dbid", "") if isinstance(it, dict) else "")
-    ra_stop = None          # the transient label of the table the budget stopped on
+    ra_stop = None          # the transient label of the table the Retry-After budget stopped on
+    budget_stop = False     # the wall-clock budget was spent before this table
     n_deferred = 0
+    n_attempted = 0
     last_attempted = ""
 
     for item in catalog:
         dbid = item.get("dbid", "")
         if not dbid:
             continue
+        if ra_stop is None and not budget_stop and dl.spent():
+            budget_stop = True
+            print(f"[{SOURCE}] fetch budget of {budget_min:g} min spent after "
+                  f"{dl.elapsed_min():.1f} min - {n_attempted} table(s) attempted, stopped "
+                  f"after {last_attempted or '(none)'}; the rest are deferred to the next pass",
+                  flush=True)
         if ra_stop is not None:
             tally.deferred_unit(f"{dbid}: not attempted, Retry-After budget spent")
             n_deferred += 1
             continue
+        if budget_stop:
+            tally.deferred_unit(f"{dbid}: not attempted, fetch budget spent")
+            n_deferred += 1
+            continue
+        n_attempted += 1
         last_attempted = dbid
         url = f"{BASE_DE}/{dbid}/{dbid}.px/"
         since_max = dbid_max.get(dbid)  # None => table not yet on disk -> full fetch
@@ -558,7 +599,7 @@ def update(unit, since) -> Result:
         # §5.7's exact rule — all 582 changed keys unmapped, every run demoted to
         # partial ("582 rows for it but none matched"), CSVs never re-derived.
         last_obs = max(cursors.values()) if cursors else (since or None)
-        if ra_stop is not None and last_attempted:
+        if (ra_stop is not None or budget_stop) and last_attempted:
             save_rotation(out_dir, last_attempted, ROTATION_FILE)
         return finalize(tally, before, last_obs, source=SOURCE,
                         series_cursors={f"BFS:{db}": d for db, d in cursors.items()},
@@ -570,7 +611,7 @@ def update(unit, since) -> Result:
         "value":      pa.array(vals, pa.float64()),
     })
     n, maxd = merge.merge_and_write(path, new_tbl, mode="merge", dedup_keys=DEDUP)
-    if ra_stop is not None and last_attempted:
+    if (ra_stop is not None or budget_stop) and last_attempted:
         save_rotation(out_dir, last_attempted, ROTATION_FILE)   # after the merge, never before
     last_obs = maxd or (max(cursors.values()) if cursors else None)
     # Same store-prefixed reporting as the quiet path above (catalog id 'bfs:BFS:{dbid}').
