@@ -137,8 +137,9 @@ def test_a_broken_window_reader_falls_back_to_45(monkeypatch):
     assert B._budget_min() == 30.0
 
 
-def test_the_margin_covers_the_worst_get_in_flight_and_the_merge():
-    """After the last deadline check a metadata GET can still run MAX_ATTEMPTS x TIMEOUT plus its
-    back-off (~6.1 min), Retry-After sleeps inside it (~3 min) and then the merge (<2 min on 11-12)."""
-    worst_get_min = (B.MAX_ATTEMPTS * B.TIMEOUT + sum(min(2 ** a, 20) for a in range(B.MAX_ATTEMPTS))) / 60
-    assert B.BUDGET_MARGIN_MIN >= worst_get_min + 3 + 2
+def test_the_margin_covers_the_worst_post_in_flight_and_the_merge():
+    """After the last deadline check a data POST can still run MAX_ATTEMPTS x (TIMEOUT + 30 s) plus
+    its back-off (~8.1 min), Retry-After sleeps inside it (~3.1 min) and then the merge (<2 min)."""
+    worst_post_min = (B.MAX_ATTEMPTS * (B.TIMEOUT + 30)
+                      + sum(min(2 ** a, 20) for a in range(B.MAX_ATTEMPTS - 1))) / 60
+    assert B.BUDGET_MARGIN_MIN >= worst_post_min + 3.1 + 2

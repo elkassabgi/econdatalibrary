@@ -126,10 +126,11 @@ ROTATION_FILE = "_rotation.json"
 # orchestrator clamps a late unit's window to what is left of the run (_unit_window_min), and
 # _melodi_state.unit_window_s() reads that (the armed alarm when one is live). The margin covers
 # what can still happen after the last check: the deadline is checked before the metadata GET
-# AND again before the data POST, so the worst request in flight is one GET (MAX_ATTEMPTS x
-# TIMEOUT + back-off, ~6.1 min) plus any Retry-After sleeps inside it (~3 min), then the merge
-# of the one ~5.4M-row store file (under 2 min on 11-12, review R1989). 15 min of margin; 30 min
-# of fetch at the usual 45-min window. BFS_BUDGET_MIN may LOWER it, never raise it.
+# AND again before the data POST, so the worst request in flight is one POST started just before
+# the deadline (MAX_ATTEMPTS x (TIMEOUT + 30 s) + back-off, ~8.1 min) plus any Retry-After sleeps
+# inside it (~3.1 min), then the merge of the one ~5.4M-row store file (under 2 min on 11-12):
+# ~13.2 min (review R1989 re-verify). 15 min of margin; 30 min of fetch at the usual 45-min
+# window. BFS_BUDGET_MIN may LOWER it, never raise it.
 BUDGET_MARGIN_MIN = 15.0
 BUDGET_FLOOR_MIN = 5.0
 
