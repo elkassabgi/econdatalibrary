@@ -3,7 +3,7 @@
 // updater/discontinued.yaml, tools/audit_schedule_coverage.py, updater/health.py,
 // updater/strategies/base.py and updater/strategies/fetchers/statcan.py; the rule is
 // core/freshness_vocab.py, mirrored in src/freshness.ts.
-export const FRESHNESS_CLASSES_TAG = "fc-635bc6a7b25e";
+export const FRESHNESS_CLASSES_TAG = "fc-c2accd5c29a0";
 // updater.health.SLA_TOLERANCE: a source is late past this many cadence periods since its last success.
 export const SLA_TOLERANCE = 2;
 // updater.strategies.base.CADENCE_DAYS - the health gate's clock (irregular = 7), NOT util.ts's
@@ -352,6 +352,7 @@ export const DISCONTINUED: ReadonlySet<string> = new Set<string>([
 ]);
 // registry `rotating: true`: judged on its latest pass (one that refreshed the source counts as current).
 export const ROTATING: ReadonlySet<string> = new Set<string>([
+  "bfs",
   "ecb",
 ]);
 // registry `served_by: lane`: judged on its reporter's latest verdict.

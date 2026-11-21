@@ -356,6 +356,16 @@ sources:
   # dimension could be read (BFS PxWeb returns positional codes, real years live in
   # valueTexts), ZERO were behind.
   cadence: irregular
+  # rotating: true - DECLARED 2026-11-21 (review R1989 #2). bfs is now a budget rotator: its fetch stops
+  # at the unit window minus 15 min (fetchers/bfs.py _budget_min) and defers the rest with a rotation
+  # bookmark, because the pass outgrew the 45-min unit timeout (1,789 s on 11-12, then killed at 2,700 s
+  # on 11-19, 11-20 and 11-21 - each kill merged nothing, as bfs merges once). A stopped pass ends
+  # `partial` and never stamps last_success (R231), so without this declaration _stuck_transient would
+  # measure from the 11-12 success and turn the first whole-pass failure after 11-26 into RED-SLA (the
+  # ecb 2026-11-10 shape). bfs has no RotationCycle: its rotation bookmark is saved only AFTER the one
+  # merge, while a cycle file records visits during the loop, so a kill would close a cycle over rows
+  # never merged. Re-check this once two consecutive passes have run on the new code.
+  rotating: true
   refresh_cost: large
   out_dir: bfs
   review: true
