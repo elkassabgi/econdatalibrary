@@ -483,7 +483,7 @@ PS1_MARGIN_MIN = 25          # $marginMin
 PS1_MIN_USABLE = 20          # `if ($untilCron -lt 20)` -> ABORT
 PS1_WANT_BLOCK = 150         # $WantBlockMin
 PS1_MAX_HOURS = 36           # $MaxHours
-PS1_MIN_HOURS = 20           # $MinHours
+PS1_MIN_HOURS = 14           # $MinHours (20 until 2026-11-11; tests/test_local_min_hours.py pins it to the ps1)
 PS1_GRACE_MIN = 10           # $graceMin (the HARD STOP fires this long after the budget)
 PS1_BUDGET_CAP = 2880        # AQUEDUCT_RUN_BUDGET_MIN default before the clamp
 # PR #214 (AR-405 G2): tools/cadence_decision.ps1 Get-PostPullBudget's parameter defaults, and the pull the pre-pull
