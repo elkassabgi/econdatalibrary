@@ -116,23 +116,36 @@ ROTATION_FILE = "_rotation.json"
 # timeout killed the pass (2,700 s). Because bfs merges ONCE, after the loop, each kill
 # discarded the whole pass (the R249 kill=discard class) and nothing had stored since 11-12.
 # Measured 2026-11-21 09:3xZ: 10 metadata GETs spread over the 628-table catalogue took
-# 0.84-2.48 s each, all HTTP 200 - latency, not 429s. So the pass stops STARTING tables once
-# this budget is spent (it cannot cut a request in flight; the worst in-flight request is
-# MAX_ATTEMPTS x (TIMEOUT + 30 s) plus back-off), defers the rest (deferred_unit: not attempted,
-# not a failure, R303), merges what it fetched and saves the rotation bookmark so the next pass
-# starts where this one stopped (R190). The clock starts at the top of update(), so it also
-# covers the catalogue GET and the store read. 25 min leaves 20 min of the 45 for the merge of
-# the single ~5.4M-row store file and the orchestrator's own work (the 11-12 pass took 1,789 s
-# in total). Same shape as statfin (STATFIN_BUDGET_MIN, 30) and the other PxWeb fetchers.
-BUDGET_MIN_DEFAULT = 25.0
+# 0.84-2.48 s each, all HTTP 200 - latency, not 429s; the [mem] trace of the three killed runs
+# stays flat for the whole 45 min (review R1989), so the kill lands in the fetch loop, not in
+# the store read or the merge. So the pass stops STARTING tables once this budget is spent,
+# defers the rest (deferred_unit: not attempted, not a failure, R303), merges what it fetched
+# and saves the rotation bookmark so the next pass starts where this one stopped (R190).
+#
+# THE BUDGET IS THE UNIT'S OWN WINDOW MINUS A MARGIN, not a fixed number (review R1989 #3): the
+# orchestrator clamps a late unit's window to what is left of the run (_unit_window_min), and
+# _melodi_state.unit_window_s() reads that (the armed alarm when one is live). The margin covers
+# what can still happen after the last check: the deadline is checked before the metadata GET
+# AND again before the data POST, so the worst request in flight is one GET (MAX_ATTEMPTS x
+# TIMEOUT + back-off, ~6.1 min) plus any Retry-After sleeps inside it (~3 min), then the merge
+# of the one ~5.4M-row store file (under 2 min on 11-12, review R1989). 15 min of margin; 30 min
+# of fetch at the usual 45-min window. BFS_BUDGET_MIN may LOWER it, never raise it.
+BUDGET_MARGIN_MIN = 15.0
+BUDGET_FLOOR_MIN = 5.0
 
 
 def _budget_min() -> float:
     try:
-        v = float(os.environ.get("BFS_BUDGET_MIN", "") or BUDGET_MIN_DEFAULT)
+        from ._melodi_state import unit_window_s                     # noqa: PLC0415
+        window_min = unit_window_s()[0] / 60.0
+    except Exception:                                                # noqa: BLE001
+        window_min = 45.0
+    auto = max(BUDGET_FLOOR_MIN, window_min - BUDGET_MARGIN_MIN)
+    try:
+        env = float(os.environ.get("BFS_BUDGET_MIN", "") or 0)
     except ValueError:
-        v = BUDGET_MIN_DEFAULT
-    return v if v > 0 else BUDGET_MIN_DEFAULT
+        env = 0.0
+    return min(env, auto) if env > 0 else auto
 
 
 def _retry_after_pass_budget_s() -> float:
@@ -423,6 +436,13 @@ def _dbid_max(path: str) -> dict[str, dt.date]:
     return out
 
 
+def _say_budget_stop(budget_min, dl, n_attempted, last_attempted) -> None:
+    print(f"[{SOURCE}] fetch budget of {budget_min:.1f} min spent after "
+          f"{dl.elapsed_min():.1f} min - {n_attempted} table(s) attempted, stopped "
+          f"after {last_attempted or '(none)'}; the rest are deferred to a later pass",
+          flush=True)
+
+
 # --------------------------------------------------------------------------- #
 # contract entry point
 # --------------------------------------------------------------------------- #
@@ -478,10 +498,7 @@ def update(unit, since) -> Result:
             continue
         if ra_stop is None and not budget_stop and dl.spent():
             budget_stop = True
-            print(f"[{SOURCE}] fetch budget of {budget_min:g} min spent after "
-                  f"{dl.elapsed_min():.1f} min - {n_attempted} table(s) attempted, stopped "
-                  f"after {last_attempted or '(none)'}; the rest are deferred to the next pass",
-                  flush=True)
+            _say_budget_stop(budget_min, dl, n_attempted, last_attempted)
         if ra_stop is not None:
             tally.deferred_unit(f"{dbid}: not attempted, Retry-After budget spent")
             n_deferred += 1
@@ -491,7 +508,7 @@ def update(unit, since) -> Result:
             n_deferred += 1
             continue
         n_attempted += 1
-        last_attempted = dbid
+        prev_attempted, last_attempted = last_attempted, dbid
         url = f"{BASE_DE}/{dbid}/{dbid}.px/"
         since_max = dbid_max.get(dbid)  # None => table not yet on disk -> full fetch
 
@@ -532,7 +549,18 @@ def update(unit, since) -> Result:
             time.sleep(RATE)
             continue
 
-        # 3) data POST
+        # 3) data POST - only while the budget lasts. A slow metadata GET can carry the pass past
+        # the deadline; the POST (the longer request) is then not sent and THIS table is deferred
+        # like the rest: not attempted, so the bookmark stays on the table before it and the next
+        # pass starts here (review R1989 #3).
+        if dl.spent():
+            budget_stop = True
+            n_attempted -= 1
+            last_attempted = prev_attempted
+            _say_budget_stop(budget_min, dl, n_attempted, last_attempted)
+            tally.deferred_unit(f"{dbid}: not attempted, fetch budget spent")
+            n_deferred += 1
+            continue
         body = {"query": query_vars, "response": {"format": "json-stat2"}}
         try:
             resp = _post_json(sess, url, body)

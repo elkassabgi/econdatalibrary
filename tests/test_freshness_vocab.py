@@ -115,7 +115,7 @@ def test_nothing_retired_is_in_the_workers_supported_sources(cls):
 
 # ---- 4. the declarations ----------------------------------------------------------------------------------
 def test_today_s_declarations(cls):
-    assert cls["rotating"] == ["ecb"]
+    assert cls["rotating"] == ["bfs", "ecb"]
     assert cls["lane"] == ["statcan"]
     assert set(cls["paused"]) == {"insee_melodi"}
     assert "cso" not in cls["rotating"], "cso is late by the owner's decision; it must not be declared"
