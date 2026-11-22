@@ -1419,3 +1419,24 @@ def test_the_history_floor_runs_before_the_vectorless_row_floor(world, monkeypat
     lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=lambda: ({}, None))
     c = _state(world)["cubes"][str(PID)]
     assert "HISTORY FLOOR" in c["last_error"] and "vectorless" not in c["last_error"]
+
+
+def test_the_merge_line_names_each_outcome():
+    up = {"release": "r", "zip_end": "2026-03-01", "publisher_end": "2026-06-01", "lag": 3, "freq": 6}
+    c = {"merged": "r", "upstream": dict(up, **{"class": "ahead"})}
+    assert lane._merge_line("1", "merged", c) == ("[lane] 1: merge merged (the zip ends 2026-03-01, after the "
+                                                   "publisher's cube end 2026-06-01)")
+    c["upstream"]["class"] = "current"
+    assert lane._merge_line("1", "unchanged", c) == "[lane] 1: merge unchanged"
+    c["upstream"].update({"class": "stale_upstream", "release": "older"})
+    assert lane._merge_line("1", "merged", c) == "[lane] 1: merge merged", "an old record says nothing now"
+    assert lane._merge_line("1", "transient", {"last_error": "x"}) == "[lane] 1: merge transient (x)"
+    assert lane._merge_line("1", "absent", {}) == "[lane] 1: merge absent"
+
+
+def test_an_armed_cube_with_an_empty_stored_copy_has_nothing_to_protect(world, monkeypatch):
+    _history_world(world, monkeypatch, [])
+    _net(monkeypatch, [_row("2014-01", "Aden", "v3", "2.1", "2.5")], (1, 1))
+    lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=lambda: ({}, None))
+    c = _state(world)["cubes"][str(PID)]
+    assert not c.get("quarantined") and "history-floor" not in str(c.get("last_error"))
