@@ -94,7 +94,8 @@ POST_T0_READY = False
 PREFIX = "series"
 
 # THE BACKLOG'S START. 505 cubes were released between 2026-07-29 and 2026-09-17 while the fetcher
-# read a single-day feed as a since-feed (statcan.py `_changed_releases`); nothing older is owed.
+# read a single-day feed as a since-feed (statcan.py `_changed_releases`). Nothing released before it
+# is owed, EXCEPT the measured RECONCILE_PIDS below.
 FLOOR = "2026-07-29"
 # THE PRE-FLOOR RECONCILE (owner leave 2026-11-22). The floor hid every cube whose LATEST release is
 # before it, so a held cube released between its stored copy (written 2026-06-03..06-05, restored to R2
@@ -102,8 +103,9 @@ FLOOR = "2026-07-29"
 # later than the stored copy), not by end date - an end date can prove a cube behind, never current
 # (R1968): getAllCubesListLite at 05:35:06Z x the local mirror's file times, over every catalogued cube
 # (F:/work/econ_finish/statcan_lane_pr/reconcile_class_20261122.log). 143 cubes: 136 the detector reads
-# behind by end date (tools/audit_statcan_upstream.py, R2 run 2026-11-19) + 7 it reads current whose
-# zips carry revised values. NOT 10100085: its release (2017) is older than its stored copy and its own
+# behind by end date (tools/audit_statcan_upstream.py, R2 run 2026-11-19) + 7 it reads current but
+# owed by the same release rule (3 of the 7 were checked against today's zips: all 3 carry revised
+# values; the other 4 were not checked). NOT 10100085: its release (2017) is older than its stored copy and its own
 # zip ends where the store ends (1992-11-19) - a publisher-metadata question, not owed work.
 # A member is owed until merged at its release; later it is an ordinary cube. Inert after that.
 RECONCILE_PIDS = frozenset("""
@@ -578,10 +580,10 @@ def _deterministic(c: dict, pid: str, reason: str) -> None:
 def publisher_ends(get=None) -> tuple:
     """({pid: {"end": "YYYY-MM-DD" | None, "freq": frequencyCode}}, error | None) from ONE
     getAllCubesListLite GET - the endpoint whose cubeEndDate convention the detector measured (the
-    FIRST day of the last period for month-step frequencies, the week's end for weekly). Read at
-    enumeration, BEFORE any fetch: a release between this read and a download can only make the zip
-    newer than the end it is compared with, never older (no false stale). Never raises: an end date
-    it cannot read makes the cube's record `unmeasured`, never `current`, and never blocks a merge."""
+    FIRST day of the last period for month-step frequencies, the week's end for weekly). run() reads it
+    AFTER the release list and BEFORE any fetch, and only when a cube is merge-owed (the order and the
+    one-enumeration false stale it allows are explained there). Never raises: an end date it cannot
+    read makes the cube's record `unmeasured`, never `current`, and never blocks a merge."""
     try:
         j = (get or sc._get)("getAllCubesListLite", tries=ENDS_TRIES, timeout=ENDS_TIMEOUT_S)
         cubes = j if isinstance(j, list) else (j.get("object") if isinstance(j, dict) else None)
@@ -937,7 +939,9 @@ def run(enumerate_releases=None, put=None, now_fn=_now, max_cubes=None, ends_fn=
             if c.get("quarantined") and c.get("fail_release") != rt:
                 c.pop("quarantined", None)           # re-released: tried again
                 c["fails"] = 0
-        if merge_owed(c):
+        # NOT a quarantined cube: merge_owed() is true for it, but order_owed() never works it, so it
+        # must not trigger the end-date GET on every idle hourly enumeration (verification review V-F2).
+        if merge_owed(c) and not c.get("quarantined"):
             owed_now.append((str(pid), c))
     # THE PUBLISHER'S END DATES AFTER THE RELEASES and before any fetch, and only when a merge is owed
     # (design review round 2, R2012 F1). Read the other way round, a release landing between the two

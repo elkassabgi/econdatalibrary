@@ -1216,6 +1216,15 @@ def test_the_end_dates_are_read_only_when_a_merge_is_owed(world, monkeypatch):
     # an hour later, nothing new released: the lane enumerates, owes nothing, reads no end dates
     lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=_ends_now, now_fn=_hours(2))
     assert calls == [1] and _state(world)["last_enum_utc"] > lane._iso(lane._now() + dt.timedelta(hours=1))
+    # a QUARANTINED cube is merge-owed on paper but never worked: it must not trigger the read either
+    # (verification review V-F2: 49 quarantined cubes would make the GET every idle hour)
+    st = _state(world)
+    st["cubes"]["10100001"] = {"release": REL, "quarantined": True, "fail_release": REL, "fails": 3}
+    (world / "_lane_state.json").write_text(json.dumps(st))
+    lane.run(enumerate_releases=_rel({PID: REL, 10100001: REL}), put=_Bucket(), ends_fn=_ends_now,
+             now_fn=_hours(4))
+    assert calls == [1], "a quarantined cube triggered the end-date read"
+    assert _state(world)["last_enum_utc"] > lane._iso(lane._now() + dt.timedelta(hours=3))
 
 
 def test_publisher_ends_reads_the_cube_list_and_fails_quietly(monkeypatch):
@@ -1289,26 +1298,40 @@ def _copy_cube(world, pid):
 
 
 def test_a_reconcile_member_is_owed_merged_and_served_and_nothing_else_old_is(world, monkeypatch, capsys):
-    for p in ("10100001", "10100002", "10100003"):
+    for p in ("10100001", "10100002", "10100003", "10100004"):
         _copy_cube(world, p)
-    monkeypatch.setattr(lane, "RECONCILE_PIDS", frozenset({"10100001"}))
+    monkeypatch.setattr(lane, "RECONCILE_PIDS", frozenset({"10100001", "10100004"}))
     _net(monkeypatch, NEW, (5, 3))
     rel = {10100001: "2026-06-10T12:30",                            # a member, released before the floor
+           10100004: "2001-03-05T12:30",                            # a member released LONG before it: the
+                                                                    # enumeration must reach every listed cube
            10100002: "2026-07-28T23:59",                            # NOT a member, one minute before the floor
            10100003: "2026-07-29T00:01",                            # ON the floor date: owed, as before
            PID: REL}
     lane.run(enumerate_releases=_since_rel(rel), put=_Bucket(), ends_fn=lambda: ({}, None))
     st = _state(world)
-    assert set(st["cubes"]) == {"10100001", "10100003", str(PID)}, "no entry for a non-member before the floor"
-    for p, r in (("10100001", "2026-06-10T12:30"), ("10100003", "2026-07-29T00:01"), (str(PID), REL)):
+    assert set(st["cubes"]) == {"10100001", "10100003", "10100004", str(PID)}, \
+        "no entry for a non-member before the floor"
+    for p, r in (("10100001", "2026-06-10T12:30"), ("10100004", "2001-03-05T12:30"),
+                 ("10100003", "2026-07-29T00:01"), (str(PID), REL)):
         assert st["cubes"][p]["merged"] == st["cubes"][p]["served"] == r
     out = capsys.readouterr().out
-    assert "[lane] reconcile: 1 of 1 pre-floor cube(s) newly owed; 1 listed; missing from the publisher list: []" in out
+    assert "[lane] reconcile: 2 of 2 pre-floor cube(s) newly owed; 2 listed; missing from the publisher list: []" in out
     # a later enumeration with nothing new prints no reconcile line
     lane.run(enumerate_releases=_since_rel(rel), put=_Bucket(), ends_fn=lambda: ({}, None), now_fn=_hours(2))
     assert "reconcile:" not in capsys.readouterr().out
     assert lane.select_releases({10100002: "2026-07-28T23:59"}, lane.FLOOR) == {}
     assert lane.select_releases({10100003: "2026-07-29T00:00"}, lane.FLOOR) == {10100003: "2026-07-29T00:00"}
+
+
+def test_a_member_re_released_after_the_floor_is_not_counted_as_reconciled(world, monkeypatch, capsys):
+    """The receipt counts a member only when its release is BEFORE the floor (V1): a member re-released
+    since is an ordinary owed cube, and counting it would inflate the 143 receipt."""
+    monkeypatch.setattr(lane, "RECONCILE_PIDS", frozenset({str(PID)}))
+    _net(monkeypatch, NEW, (5, 3))
+    lane.run(enumerate_releases=_since_rel({PID: REL}), put=_Bucket(), ends_fn=lambda: ({}, None))
+    assert "reconcile:" not in capsys.readouterr().out
+    assert _state(world)["cubes"][str(PID)]["merged"] == REL
 
 
 def test_a_reconcile_member_missing_from_the_publisher_list_is_named(world, monkeypatch, capsys):
@@ -1346,7 +1369,12 @@ def test_a_refresh_that_cuts_the_history_is_held_on_its_first_attempt(world, mon
     assert o["history_held"] == [{"pid": str(PID), "release": REL, "new_first": "2014-01-01",
                                   "stored_first": "2013-01-01"}]
     assert o["quarantined"] == [str(PID)] and o["oldest_owed_release"] is None
-    assert f"[lane] {PID}: HELD by the history floor" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert f"[lane] {PID}: HELD by the history floor" in out
+    assert f"[lane] {PID}: merge definitive (HISTORY FLOOR" in out, "a hold is never logged as transient"
+    why = c["history_hold"]["reason"]
+    assert len(why) > 300 and why.startswith("HISTORY FLOOR") and "(b) replace with the new vintage" in why \
+        and "owner's decision" in why, "the full decision text survives (last_error is cut at 300)"
     lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=lambda: ({}, None), now_fn=_hours(2))
     assert len(calls) == 1, "held for this release: not downloaded again"
 
