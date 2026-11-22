@@ -68,7 +68,9 @@ export function isSoak(env: { SOAK?: string }): boolean {
 /** /v1/edge-status: what the off-machine check (tools/selfhost/watch_edge.py) compares with the committed
  *  wrangler.toml. Public and harmless: three booleans, a two-valued state, two raw config values, a public commit id
  *  and the tag of the freshness classes this build carries (src/freshnessClasses.ts, a hash of public files;
- *  compare it with the committed file to see whether a registry change that moved a class is deployed). It
+ *  compare it with the committed file to see whether a registry change that moved a class is deployed). The
+ *  tag is THIS build's only: with FORWARD on, the origin answers the freshness routes with its own build and
+ *  does not answer this route, so the tag then says nothing about the classes users see. It
  *  touches no storage, so it can never become a cost path, and never names the origin's address. */
 export function edgeStatus(env: EdgeEnv & { EDGE_STATE?: string; GIT_COMMIT?: string; SOAK?: string }): Response {
   return new Response(JSON.stringify({
