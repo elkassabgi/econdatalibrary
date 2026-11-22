@@ -6,6 +6,7 @@
 // Every "does nothing" below has a control beside it: the same call WITHOUT the switch runs its
 // statements on the same recording database, so a rig that could not see the work would fail.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { mock, test } from "node:test";
 
 import worker from "../src/index.ts";
@@ -113,7 +114,13 @@ test("/v1/edge-status says whether the worker is a soak worker", async () => {
     assert.equal(body.soak, want);
     assert.equal(body.forward, true);
     assert.deepEqual(Object.keys(body).sort(),
-      ["commit", "edge_state", "edge_state_raw", "forward", "forward_raw", "origin_configured", "soak"]);
+      ["commit", "edge_state", "edge_state_raw", "forward", "forward_raw", "freshness_classes", "origin_configured",
+       "soak"]);
+    // the tag is the committed file's own, read from the file's text (not from the import the handler uses)
+    const committed = /FRESHNESS_CLASSES_TAG = "(fc-[0-9a-f]{12})"/.exec(
+      readFileSync(new URL("../src/freshnessClasses.ts", import.meta.url), "utf8"));
+    assert.ok(committed, "src/freshnessClasses.ts carries a tag");
+    assert.equal(body.freshness_classes, committed![1]);
   }
   const r = rig({ ...FORWARDING, SOAK: "1" });
   const res = (await get(r, "/v1/edge-status")).out;
