@@ -1207,6 +1207,37 @@ def test_a_record_no_cube_waits_on_is_cleared_before_it_ages_into_a_red(world, c
     assert not _verdict_or_red(world, clock.t).startswith("RED")
 
 
+def test_a_record_is_kept_while_its_hold_runs_even_when_no_cube_waits_on_it(world, clock, statcan, capsys):
+    """Round-3 mutant M9: the clear rule waits for the hold to END. The same state as the test above (the only
+    merge-owed cube STRUCK, no refused_http), but `until` is still ahead: an iteration that enumerates during the
+    hold keeps the record in the state and the beat. The lane is then idle (its one cube waits 5 h), so the clear
+    rule runs again at the next enumeration (ENUM_MIN_INTERVAL_MIN after the last), after `until`: the record goes."""
+    statcan.add("10100111", "2026-11-18T13:30")
+    _seed(world, ["10100111"], "2026-10-15T08:30", "2026-11-18T13:00:00Z")
+    t0 = _t("2026-11-18T14:30Z")
+    until = t0 + dt.timedelta(minutes=25)
+    st = _state(world)
+    st["cubes"]["10100111"].update(release="2026-11-18T13:30", fails=1, fail_release="2026-11-18T13:30",
+                                   first_strike_utc=_z(t0 - dt.timedelta(minutes=30)),
+                                   retry_after=_z(t0 + dt.timedelta(hours=5)))
+    st["breaker"] = {"status": 403, "cubes": ["10100111"], "trips": 1, "tripped_utc": _z(t0 - dt.timedelta(minutes=5)),
+                     "until": _z(until), "since": _z(t0 - dt.timedelta(minutes=5))}
+    (world / "_lane_state.json").write_text(json.dumps(st))
+    for t in (t0, t0 + dt.timedelta(minutes=20)):
+        clock.t = t
+        lane.run(put=_Bucket(), now_fn=clock)
+        rec = _state(world).get("breaker")
+        assert rec and rec["status"] == 403 and rec["until"] == _z(until), rec
+        assert _progress(world).get("breaker"), _progress(world)
+    assert _state(world)["last_enum_utc"] == _z(t0)          # the first iteration enumerated, inside the hold
+    assert "circuit breaker cleared" not in capsys.readouterr().out
+    clock.t = t0 + dt.timedelta(minutes=lane.ENUM_MIN_INTERVAL_MIN)
+    lane.run(put=_Bucket(), now_fn=clock)
+    assert _state(world)["last_enum_utc"] == _z(clock.t)
+    assert "breaker" not in _state(world) and "breaker" not in _progress(world)
+    assert "circuit breaker cleared: no merge-owed cube waits on it" in capsys.readouterr().out
+
+
 def test_the_breaker_and_enumeration_backoffs_stay_under_the_guards_stall_kill():
     src = open(os.path.join(ROOT, "tools", "machine", "RELAUNCH_GUARD.ps1.workstation-copy"),
                encoding="utf-8-sig").read()
