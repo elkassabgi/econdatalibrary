@@ -56,6 +56,18 @@
    "note": "statcan: 1 cube(s) keep FAILING in the lane (transient, again and again - e.g. a store fault R753): 1: store fault; 0 cube(s) owe a merge, 0 owe serving, 2 released cube(s) not held (catalogue debt)"
   },
   {
+   "branch": "cubes failing while draining",
+   "outcome": "DefinitiveError",
+   "current": false,
+   "note": "statcan: 1 cube(s) keep FAILING in the lane (transient, again and again - e.g. a store fault R753): 1: store fault; 17 cube(s) owe a merge, 0 owe serving, 2 released cube(s) not held (catalogue debt)"
+  },
+  {
+   "branch": "enumeration failing",
+   "outcome": "DefinitiveError",
+   "current": false,
+   "note": "statcan: the lane cannot ENUMERATE StatCan's cube list - failing since 2026-10-20T05:00:00Z (7.0 h, allowed 6 h), 9 attempt(s), last: TransientError: statcan getAllCubesListLite HTTP 403 (server='cloudflare' cf-ray='x'). No new release is seen while this lasts."
+  },
+  {
    "branch": "dead (old beat)",
    "outcome": "DefinitiveError",
    "current": false,

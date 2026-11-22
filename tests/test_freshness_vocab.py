@@ -189,6 +189,15 @@ def _verdict_cases():
         ("behind, not progressing", False, st,
          dict(fresh, last_progress_utc=_z(30), owed=dict(tail, merge=23, oldest_owed_release="2026-09-08"))),
         ("cubes failing", False, st, dict(fresh, owed=dict(tail, failing=["1: store fault"]))),
+        # 2026-11-22 (R2026, design review R2027 C2): FAILING is read before the owed age, so a draining lane
+        # cannot hide it; and an enumeration failing for over 6 h is red although the lane beats
+        ("cubes failing while draining", False, st,
+         dict(fresh, last_progress_utc=_z(1), owed=dict(tail, merge=17, oldest_owed_release="2026-09-08",
+                                                        failing=["1: store fault"]))),
+        ("enumeration failing", False, st,
+         dict(fresh, enum_fail={"since": _z(7), "count": 9, "http_status": 403,
+                                "last_error": "TransientError: statcan getAllCubesListLite HTTP 403 "
+                                              "(server='cloudflare' cf-ray='x')"})),
         ("dead (old beat)", False, st, dict(fresh, beat_utc=_z(10))),
         ("store unreachable", False, st, dict(fresh, state="store_unreachable")),
         ("no progress published", False, None, None),

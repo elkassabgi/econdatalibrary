@@ -154,7 +154,7 @@ def world(tmp_path, monkeypatch):
             return cubes
         return {"status": "SUCCESS", "object": "https://example.invalid/t.zip"}
 
-    def _download(url, dest, tries=5):
+    def _download(url, dest, tries=5, meta=None):
         net["downloads"] += 1
         _zip(dest, net["rows"])
         return os.path.getsize(dest)
