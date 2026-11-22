@@ -1506,3 +1506,45 @@ def test_an_empty_refresh_of_an_armed_cube_is_left_to_the_count_gates(world, mon
     assert c.get("fails") == 1 and not c.get("quarantined") and "history_hold" not in c
     assert "HISTORY FLOOR" not in str(c.get("last_error"))
     assert (world / f"{PID}.parquet").read_bytes() == before
+
+
+def test_a_cube_waiting_out_a_backoff_triggers_no_end_read_until_it_is_due(world, monkeypatch):
+    """V2-F1: a cube in backoff leaves the lane idle (order_owed skips it); it must not make the hourly
+    enumeration read the end dates. Once due, the enumeration that works it reads them first."""
+    _net(monkeypatch, NEW, (5, 3), corrupt=True)                    # transient: the cube backs off
+    calls = []
+
+    def _ends_now():
+        calls.append(1)
+        return {str(PID): {"end": "2026-06-01", "freq": 6}}, None
+    lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=_ends_now)
+    assert calls == [1] and _state(world)["cubes"][str(PID)]["transient_fails"] == 1
+    st = _state(world)
+    st["cubes"][str(PID)]["retry_after"] = lane._iso(lane._now() + dt.timedelta(hours=12))
+    (world / "_lane_state.json").write_text(json.dumps(st))
+    lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=_ends_now, now_fn=_hours(2))
+    assert calls == [1], "a cube in backoff triggered the end-date read"
+    assert _state(world)["last_enum_utc"] > lane._iso(lane._now() + dt.timedelta(hours=1)), "it did enumerate"
+    _net(monkeypatch, NEW, (5, 3))
+    lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=_ends_now, now_fn=_hours(13))
+    c = _state(world)["cubes"][str(PID)]
+    assert calls == [1, 1] and c["merged"] == REL and c["upstream"]["class"] == "stale_upstream"
+
+
+def test_a_re_released_quarantined_cube_gets_its_end_read(world, monkeypatch):
+    """V2-F2: quarantined on its FIRST visit (no end on record), then re-released: the lift of the
+    quarantine and the end read happen in the same enumeration, so the merge is classified."""
+    _net(monkeypatch, NEW[:4], (5, 3))                              # short: refused three times
+    for n in (0, 1, 2):
+        lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=lambda: ({}, "down"),
+                 now_fn=_hours(n))
+    st = _state(world)
+    assert st["cubes"][str(PID)]["quarantined"] is True
+    st["cubes"][str(PID)].pop("publisher", None)                    # no earlier end on record
+    (world / "_lane_state.json").write_text(json.dumps(st))
+    _net(monkeypatch, NEW, (5, 3))
+    lane.run(enumerate_releases=_rel({PID: "2026-09-19T08:30"}), put=_Bucket(), ends_fn=_ends("2026-06-01"),
+             now_fn=_hours(4))
+    c = _state(world)["cubes"][str(PID)]
+    assert c["merged"] == "2026-09-19T08:30" and c["publisher"]["end"] == "2026-06-01"
+    assert c["upstream"]["class"] == "stale_upstream", c["upstream"]

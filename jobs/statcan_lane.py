@@ -939,9 +939,11 @@ def run(enumerate_releases=None, put=None, now_fn=_now, max_cubes=None, ends_fn=
             if c.get("quarantined") and c.get("fail_release") != rt:
                 c.pop("quarantined", None)           # re-released: tried again
                 c["fails"] = 0
-        # NOT a quarantined cube: merge_owed() is true for it, but order_owed() never works it, so it
-        # must not trigger the end-date GET on every idle hourly enumeration (verification review V-F2).
-        if merge_owed(c) and not c.get("quarantined"):
+        # NOT a quarantined cube, and NOT one waiting out a backoff: merge_owed() is true for both, but
+        # order_owed() works neither in this iteration, so they must not trigger the end-date GET on every
+        # idle hourly enumeration (verification review V-F2, V2-F1). The enumeration that works them
+        # (re-released, or due again) reads the ends first.
+        if merge_owed(c) and not c.get("quarantined") and _due(c, now):
             owed_now.append((str(pid), c))
     # THE PUBLISHER'S END DATES AFTER THE RELEASES and before any fetch, and only when a merge is owed
     # (design review round 2, R2012 F1). Read the other way round, a release landing between the two
