@@ -1094,7 +1094,8 @@ def test_a_zip_that_ends_before_the_publisher_is_stale_upstream_not_merged(world
     assert c["merged"] == c["served"] == REL, "the merge itself is unchanged: a stale zip still merges"
     assert ("v1", "2026-02-01", 2.5, "Windsor - other locations") in _rows(world / f"{PID}.parquet")
     o = _owed(world)
-    assert o["stale_upstream"] == [f"{PID} (zip ends 2026-03-01, publisher 2026-06-01, 3 period(s))"]
+    assert o["stale_upstream"] == [{"pid": str(PID), "release": REL, "zip_end": "2026-03-01",
+                                    "publisher_end": "2026-06-01", "lag": 3}]
     assert o["upstream"]["stale_upstream"] == 1 and o["oldest_owed_release"] is None, "off the owed clock"
 
 
@@ -1155,7 +1156,8 @@ def test_an_unread_publisher_end_is_unmeasured_and_the_merge_goes_on(world, monk
     assert f"[lane] {PID}: merge merged (publisher end unmeasured: publisher end not read: TransientError: x)" in out
     c = _state(world)["cubes"][str(PID)]
     assert c["merged"] == c["served"] == REL and c["upstream"]["class"] == "unmeasured"
-    assert _owed(world)["upstream_unmeasured"] == [str(PID)]
+    assert _owed(world)["upstream_unmeasured"] == [
+        {"pid": str(PID), "release": REL, "reason": "publisher end not read: TransientError: x"}]
 
 
 def test_a_raising_classifier_never_undoes_a_published_merge(world, monkeypatch):
@@ -1170,28 +1172,50 @@ def test_a_raising_classifier_never_undoes_a_published_merge(world, monkeypatch)
     assert c["upstream"]["class"] == "unmeasured" and "classifier raised KeyError" in c["upstream"]["reason"]
 
 
-def test_the_end_is_read_before_the_releases_and_before_the_fetch(world, monkeypatch):
-    """A release between the two reads may make the zip NEWER than the end read, never older: the end
-    is read first, so a later publisher end cannot turn a current zip into a false stale."""
-    _net(monkeypatch, NEW, (5, 3))                                   # the zip ends 2026-03-01
+def test_the_end_is_read_after_the_releases_and_before_the_fetch(world, monkeypatch):
+    """Round-2 review R2012 F1 (T12b). StatCan releases between the release read and the end read; the
+    zip the lane then fetches is still the OLD one (inside the rebuild window). Read after the releases,
+    the end is the NEW one and the old zip reads stale_upstream - true of it. Read before them (the
+    rev-1 order) it read 'current' and settled the new release over old data. And an end that moves
+    AFTER the fetch is never seen."""
+    _net(monkeypatch, NEW, (5, 3))                                   # the (old) zip ends 2026-03-01
     pub = {"end": "2026-03-01"}
+    reads = []
 
     def _ends_now():
+        reads.append(pub["end"])
         return {str(PID): {"end": pub["end"], "freq": 6}}, None
 
     def _enum(since):
-        pub["end"] = "2026-06-01"                                    # StatCan moves on after the end read
-        return {PID: REL}
+        out = {PID: REL}
+        pub["end"] = "2026-06-01"                                    # the release lands after this read
+        return out
     real_download = sc._download
 
     def _download(url, dest, tries=5):
-        pub["end"] = "2026-09-01"
-        return real_download(url, dest, tries)
+        got = real_download(url, dest, tries)
+        pub["end"] = "2026-09-01"                                    # moves after the fetch: never seen
+        return got
     monkeypatch.setattr(sc, "_download", _download)
     lane.run(enumerate_releases=_enum, put=_Bucket(), ends_fn=_ends_now)
     c = _state(world)["cubes"][str(PID)]
-    assert c["upstream"]["class"] == "current" and c["upstream"]["publisher_end"] == "2026-03-01"
-    assert c["publisher"]["end"] == "2026-03-01"
+    assert reads == ["2026-06-01"], "one end read, after the release list and before the fetch"
+    assert c["upstream"]["class"] == "stale_upstream" and c["upstream"]["publisher_end"] == "2026-06-01"
+    assert c["publisher"]["end"] == "2026-06-01"
+
+
+def test_the_end_dates_are_read_only_when_a_merge_is_owed(world, monkeypatch):
+    _net(monkeypatch, NEW, (5, 3))
+    calls = []
+
+    def _ends_now():
+        calls.append(1)
+        return {str(PID): {"end": "2026-03-01", "freq": 6}}, None
+    lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=_ends_now)
+    assert calls == [1]
+    # an hour later, nothing new released: the lane enumerates, owes nothing, reads no end dates
+    lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=_ends_now, now_fn=_hours(2))
+    assert calls == [1] and _state(world)["last_enum_utc"] > lane._iso(lane._now() + dt.timedelta(hours=1))
 
 
 def test_publisher_ends_reads_the_cube_list_and_fails_quietly(monkeypatch):
@@ -1319,7 +1343,8 @@ def test_a_refresh_that_cuts_the_history_is_held_on_its_first_attempt(world, mon
     assert "HISTORY FLOOR" in c["last_error"] and c.get("merged") is None
     assert (world / f"{PID}.parquet").read_bytes() == before, "the store is untouched"
     o = _owed(world)
-    assert o["history_held"] == [f"{PID} (refreshed table's first valued date 2014-01-01, stored 2013-01-01)"]
+    assert o["history_held"] == [{"pid": str(PID), "release": REL, "new_first": "2014-01-01",
+                                  "stored_first": "2013-01-01"}]
     assert o["quarantined"] == [str(PID)] and o["oldest_owed_release"] is None
     assert f"[lane] {PID}: HELD by the history floor" in capsys.readouterr().out
     lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=lambda: ({}, None), now_fn=_hours(2))
@@ -1375,7 +1400,8 @@ def test_a_held_record_is_listed_only_for_the_release_it_holds():
                           "history_hold": {"release": "r1", "new_first": "x", "stored_first": "y"}}}}
     assert lane.summarise(st)["history_held"] == []
     st["cubes"]["1"]["history_hold"]["release"] = "r2"
-    assert lane.summarise(st)["history_held"] == ["1 (refreshed table's first valued date x, stored y)"]
+    assert lane.summarise(st)["history_held"] == [{"pid": "1", "release": "r2", "new_first": "x",
+                                                   "stored_first": "y"}]
 
 
 def test_an_unarmed_cube_with_a_later_start_merges_as_before(world, monkeypatch):

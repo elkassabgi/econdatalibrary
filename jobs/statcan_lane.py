@@ -132,6 +132,8 @@ ENUM_ALL = dt.date(1900, 1, 1)
 # been rebuilt since 2023-11-09 (HEAD Last-Modified), and four of them now START later at the publisher
 # (cubeStartDate 2014-01-01) than our stored history (2013 or 1988; local mirror footers 2026-11-22).
 # Armed BEFORE the rebuilt zip exists, so its first merge cannot splice our older vintage under the new.
+# LIMITS: it guards THIS LANE's merge only - not jobs/ingest_statcan.py (the bulk ingester) or any other
+# writer - and it judges the cube as a whole: a refresh that keeps one valued 1988 series passes.
 HISTORY_FLOOR_PIDS = frozenset({"12100147", "12100148", "12100149", "12100150", "12100151", "12100152"})
 # The publisher end-date read is informational: bounded, and its failure never blocks a merge.
 ENDS_TRIES, ENDS_TIMEOUT_S = 2, 300
@@ -300,19 +302,21 @@ def summarise(st: dict) -> dict:
         rel = c.get("release")
         hh = c.get("history_hold") or {}
         if c.get("quarantined") and hh.get("release") and hh.get("release") == rel == c.get("fail_release"):
-            held.append(f"{p} (refreshed table's first valued date {hh.get('new_first')}, stored "
-                        f"{hh.get('stored_first')})")
+            held.append({"pid": p, "release": rel, "new_first": hh.get("new_first"),
+                         "stored_first": hh.get("stored_first")})
         if c.get("quarantined"):
             quar.append(p)
             continue
         u = c.get("upstream") or {}
         if u.get("release") and u.get("release") == c.get("merged") == rel and u.get("class") in upstream:
             upstream[u["class"]] += 1
+            # DICTS keyed by pid AND release, so a reader can acknowledge one release of one cube
+            # (round-2 review F2: the frozen CIMT zips would otherwise alarm every day)
             if u["class"] == "stale_upstream":
-                stale.append(f"{p} (zip ends {u.get('zip_end')}, publisher {u.get('publisher_end')}, "
-                             f"{u.get('lag')} period(s))")
+                stale.append({"pid": p, "release": rel, "zip_end": u.get("zip_end"),
+                              "publisher_end": u.get("publisher_end"), "lag": u.get("lag")})
             elif u["class"] == "unmeasured":
-                unmeasured.append(p)
+                unmeasured.append({"pid": p, "release": rel, "reason": u.get("reason")})
         if int(c.get("transient_fails") or 0) >= TRANSIENT_RED_AFTER:
             failing.append(f"{p} ({c.get('transient_fails')}x: {str(c.get('last_error'))[:100]})")
         if merge_owed(c):
@@ -329,9 +333,10 @@ def summarise(st: dict) -> dict:
     return {"merge": len(owe_m), "serve": len(owe_s), "quarantined": sorted(quar),
             "serve_refused": sorted(refused), "failing": sorted(failing),
             "new_cubes": len(new), "oldest_new_cube": min(new.values()) if new else None,
-            "oldest_owed_release": oldest, "stale_upstream": sorted(stale),
-            "upstream_unmeasured": sorted(unmeasured), "history_held": sorted(held),
-            "upstream": upstream}
+            "oldest_owed_release": oldest,
+            "stale_upstream": sorted(stale, key=lambda d: d["pid"]),
+            "upstream_unmeasured": sorted(unmeasured, key=lambda d: d["pid"]),
+            "history_held": sorted(held, key=lambda d: d["pid"]), "upstream": upstream}
 
 
 def merge_owed(c: dict) -> bool:
@@ -919,15 +924,10 @@ def run(enumerate_releases=None, put=None, now_fn=_now, max_cubes=None, ends_fn=
         progress.beat("idle", current=None)
         return {"enumerated": False, "worked": 0}
     floor = st["floor"]
-    # THE PUBLISHER'S END DATES FIRST, then the releases: an end read before a release can only be
-    # older than the zip that release brings (no false stale_upstream).
-    ends, ends_err = (ends_fn or publisher_ends)()
+    # _changed_releases prints "released on/after 1900-01-01": it is asked for every cube (ENUM_ALL).
     listed = (enumerate_releases or sc._changed_releases)(ENUM_ALL)
     rel = select_releases(listed, floor)
-    if ends_err:
-        print(f"[lane] publisher end dates NOT read this enumeration ({ends_err}): every merge this "
-              f"iteration is recorded 'upstream unmeasured'", flush=True)
-    recon_new = 0
+    recon_new, owed_now = 0, []
     for pid, rt in rel.items():
         c = st["cubes"].setdefault(str(pid), {})
         if c.get("release") != rt:
@@ -938,9 +938,25 @@ def run(enumerate_releases=None, put=None, now_fn=_now, max_cubes=None, ends_fn=
                 c.pop("quarantined", None)           # re-released: tried again
                 c["fails"] = 0
         if merge_owed(c):
-            e = ends.get(str(pid))
+            owed_now.append((str(pid), c))
+    # THE PUBLISHER'S END DATES AFTER THE RELEASES and before any fetch, and only when a merge is owed
+    # (design review round 2, R2012 F1). Read the other way round, a release landing between the two
+    # reads was owed, its OLD end was compared with a zip fetched inside StatCan's rebuild window (28-127 s
+    # after the release clock), and the old zip read "current" and settled the new release. In this order
+    # that zip reads stale_upstream, which is true of it. The one false stale this order allows - a cube
+    # owed for an older release whose new end arrives before its new release is listed - lasts one
+    # enumeration: the next one owes the new release and the cube is fetched again.
+    if owed_now:
+        ends, ends_err = (ends_fn or publisher_ends)()
+        if ends_err:
+            print(f"[lane] publisher end dates NOT read this enumeration ({ends_err}): every merge this "
+                  f"iteration is recorded 'upstream unmeasured'", flush=True)
+        for pid, c in owed_now:
+            e = ends.get(pid)
             c["publisher"] = ({"end": e["end"], "freq": e["freq"], "read_utc": _iso(now)} if e else
                               {"error": ends_err or "not in the publisher's cube list", "read_utc": _iso(now)})
+    # The receipt line: once when members become owed, and at EVERY enumeration (about hourly when idle)
+    # while a member is missing from the publisher's list - a withdrawn member stays visible.
     missing = sorted(RECONCILE_PIDS - {str(p) for p in listed})
     if recon_new or missing:
         print(f"[lane] reconcile: {recon_new} of {len(RECONCILE_PIDS)} pre-floor cube(s) newly owed; "
