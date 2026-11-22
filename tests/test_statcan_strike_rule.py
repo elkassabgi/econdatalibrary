@@ -571,11 +571,11 @@ def test_a_mass_refusal_for_ever_never_strikes_and_turns_red_failing_within_a_bo
         if not red:
             v = _verdict_or_red(world, t)
             if v.startswith("RED"):
-                assert "keep FAILING" in v and IP not in v, v
+                assert "circuit breaker has held every merge back" in v and IP not in v, v
                 red.append(t)
     _drive(world, clock, t0 + dt.timedelta(hours=19), check)
-    print(f"MEASURED 6 cubes, HTTP {code} for ever: red FAILING after {red[0] - t0}")
-    assert red and red[0] - t0 <= dt.timedelta(hours=8)
+    print(f"MEASURED 6 cubes, HTTP {code} for ever: red (breaker held) after {red[0] - t0}")
+    assert red and dt.timedelta(hours=6) < red[0] - t0 <= dt.timedelta(hours=6, minutes=10)
     # the cube-list GETs after the first hour stay at the idle rate (<= 3 an hour), never every 5 minutes
     for hour in range(1, 19):
         lo, hi = t0 + dt.timedelta(hours=hour), t0 + dt.timedelta(hours=hour + 1)
@@ -635,7 +635,7 @@ def test_a_half_open_breaker_probes_one_cube_and_frees_the_rest_when_it_answers(
     assert "circuit breaker cleared" in capsys.readouterr().out
 
 
-def test_a_half_open_refusal_trips_again_at_once_and_doubles_the_hold(world, clock, statcan):
+def test_a_half_open_iteration_trips_again_after_3_same_status_refusals_untried_cubes_first(world, clock, statcan):
     pids = CLASS_A[:4]
     for p in pids:
         statcan.add(p, "2026-11-18T13:30")
@@ -643,12 +643,32 @@ def test_a_half_open_refusal_trips_again_at_once_and_doubles_the_hold(world, clo
     _seed(world, pids, "2026-10-15T08:30", "2026-11-18T13:00:00Z")
     clock.t = t0 = _t("2026-11-18T14:30Z")
     lane.run(put=_Bucket(), now_fn=clock)
+    untried = [p for p in pids if p not in _state(world)["breaker"]["cubes"]]
     statcan.calls.clear()
     clock.t = t0 + dt.timedelta(minutes=10)
     r = lane.run(put=_Bucket(), now_fn=clock)
-    assert r["breaker"] == 403 and len({p for t, k, p, s in statcan.calls if k == "zip"}) == 1
+    tried = [p for t, k, p, s in statcan.calls if k == "zip"]
+    assert r["breaker"] == 403 and len(set(tried)) == lane.BREAKER_MIN_CUBES and tried[0] == untried[0], tried
     b = _state(world)["breaker"]
-    assert b["trips"] == 2 and b["until"] == _z(clock.t + dt.timedelta(minutes=20))
+    assert b["trips"] == 2 and b["until"] == _z(clock.t + dt.timedelta(minutes=20)) and b["since"] == _z(t0)
+
+
+def test_a_half_open_iteration_that_runs_out_of_cubes_trips_again(world, clock, statcan):
+    """Only 2 cubes are due at the hold's end and both are refused with the trip's status: no 3rd refusal, but the
+    iteration must not end undecided (it would probe again 5 min later)."""
+    pids = CLASS_A[:3]
+    for p in pids:
+        statcan.add(p, "2026-11-18T13:30")
+    statcan.zip_status = lambda pid, t: 403
+    _seed(world, pids, "2026-10-15T08:30", "2026-11-18T13:00:00Z")
+    clock.t = t0 = _t("2026-11-18T14:30Z")
+    lane.run(put=_Bucket(), now_fn=clock)
+    st = _state(world)
+    st["cubes"][pids[2]]["retry_after"] = _z(t0 + dt.timedelta(hours=5))   # only 2 due at the hold's end
+    (world / "_lane_state.json").write_text(json.dumps(st))
+    clock.t = t0 + dt.timedelta(minutes=10)
+    r = lane.run(put=_Bucket(), now_fn=clock)
+    assert r["breaker"] == 403 and _state(world)["breaker"]["trips"] == 2
 
 
 # --------------------------------------------------------------------------- #
@@ -746,6 +766,257 @@ def test_an_ended_hold_with_nothing_left_to_merge_is_cleared_not_published_for_e
     lane.run(put=_Bucket(), now_fn=clock)
     assert "breaker" not in _state(world) and "breaker" not in _progress(world)
     assert "circuit breaker cleared: nothing is left to merge" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- #
+# the half-open state, from the verification review's probes (review_verify, R2028: P1-P3, P6, P7; V1-V5)
+# --------------------------------------------------------------------------- #
+def _per_hour(calls, kind, t0, hours):
+    return [sum(1 for t, k, _p, _s in calls if k == kind and t0 + dt.timedelta(hours=h) <= t
+                < t0 + dt.timedelta(hours=h + 1)) for h in range(hours)]
+
+
+def _rekeyed():
+    return [_row(p, "Canada", vec, coord, str(float(i + k)))
+            for i, p in enumerate(("2026-08", "2026-09", "2026-10"))
+            for k, (vec, coord) in enumerate((("x1", "9.1"), ("x2", "9.2")))]
+
+
+def test_a_strike_after_the_fetch_keeps_its_wait_through_a_breaker_close(world, clock, statcan):
+    """P1 / V2: a cube refused in a 403 trip, fetched at the hold's end with a re-keyed table, gets a strike; the
+    close in the same iteration frees the OTHER refused cubes, never this one (its refused_http went with the strike)."""
+    pids = CLASS_A[:4]
+    for p in pids:
+        statcan.add(p, "2026-11-18T13:30")
+    statcan.zip_status = lambda pid, t: 403
+    _seed(world, pids, "2026-10-15T08:30", "2026-11-18T13:00:00Z")
+    clock.t = t0 = _t("2026-11-18T14:30Z")
+    lane.run(put=_Bucket(), now_fn=clock)                               # 3 x 403 -> trip
+    victim = sorted(_state(world)["breaker"]["cubes"])[0]
+    statcan.cubes[victim]["new"] = _rekeyed()                           # the key gate strikes it
+    statcan.zip_status = lambda pid, t: 200
+    statcan.calls.clear()
+    for _ in range(32):
+        clock.step()
+        lane.run(put=_Bucket(), now_fn=clock)
+    fetches = sorted({t for t, k, p, s in statcan.calls if k == "zip" and p == victim})
+    c = _state(world)["cubes"][victim]
+    assert len(fetches) >= 2 and fetches[1] - fetches[0] >= dt.timedelta(hours=1), [str(f - t0) for f in fetches]
+    assert c["fails"] >= 1 and "refused_http" not in c
+
+
+@pytest.mark.parametrize("mode", ["reset", "503", "nozip"])
+def test_a_half_open_attempt_is_one_per_hold_whatever_it_meets(world, clock, statcan, monkeypatch, mode):
+    """P2 / V1: after a 403 trip the host answers with a connection reset, a different status, or a WDS 200 with no
+    zip URL. Every outcome leaves the half-open state, so the cube list is read at most once per hold and the
+    strikes keep their spacing."""
+    pids = CLASS_A[:4]
+    for p in pids:
+        statcan.add(p, "2026-11-18T13:30")
+    statcan.zip_status = lambda pid, t: 403
+    _seed(world, pids, "2026-10-15T08:30", "2026-11-18T13:00:00Z")
+    clock.t = t0 = _t("2026-11-18T14:30Z")
+    lane.run(put=_Bucket(), now_fn=clock)
+    real = statcan.get
+
+    def get(url, *a, **k):
+        t = statcan.clock.t
+        if mode == "reset" and "zips.example.invalid" in url:
+            statcan.calls.append((t, "zip", url.rsplit("/", 1)[1][:8], "reset"))
+            raise requests.ConnectionError("Connection reset by peer")
+        if mode == "nozip" and "getFullTableDownloadCSV" in url:
+            statcan.calls.append((t, "table", url.split("/")[-2], "FAILED"))
+            return _Resp(200, obj={"status": "FAILED", "object": "service unavailable"})
+        return real(url, *a, **k)
+    monkeypatch.setattr(requests, "get", get)
+    if mode == "503":
+        statcan.zip_status = lambda pid, t: 503
+    statcan.calls.clear()
+    hours, strikes_at = 13, {}
+    while clock.t < t0 + dt.timedelta(hours=hours):
+        clock.step()
+        lane.run(put=_Bucket(), now_fn=clock)
+        for p, c in _state(world)["cubes"].items():
+            if p in pids and int(c.get("fails") or 0) > len(strikes_at.get(p, [])):
+                strikes_at.setdefault(p, []).append(clock.t)
+                assert not c.get("quarantined") or clock.t - strikes_at[p][0] >= dt.timedelta(hours=12)
+    lite = _per_hour(statcan.calls, "lite", t0, hours)
+    print(f"MEASURED half-open mode {mode}: cube-list GETs per hour {lite}; strikes "
+          f"{ {p: len(ts) for p, ts in strikes_at.items()} }", file=sys.__stdout__, flush=True)
+    assert max(lite[1:]) <= 3, lite
+    for p, ts in strikes_at.items():
+        gaps = [b - a for a, b in zip(ts, ts[1:])]
+        assert all(g >= dt.timedelta(hours=1) for g in gaps), (p, [str(g) for g in gaps])
+    if mode in ("reset", "503"):
+        kind = "zip"
+        per_hold = [len({p for t, k, p, _s in statcan.calls if k == kind and t == tt})
+                    for tt in sorted({t for t, k, _p, _s in statcan.calls if k == kind})]
+        assert max(per_hold) == 1, "one attempt per hold"
+        assert _state(world)["breaker"]["trips"] >= 5
+
+
+@pytest.mark.parametrize("code,nbad", [(403, 3), (404, 3), (404, 6)])
+def test_cubes_refused_for_ever_do_not_hold_the_others_back(world, clock, statcan, code, nbad):
+    """P3 / P3c / V3: a few cubes refused for ever sort first (older release) and trip the breaker; the cubes that
+    answer are tried first in the half-open iteration and merge within one hold. The refused ones still turn red."""
+    bad, good = list(CLASS_A[:nbad]), list(CLASS_A[nbad:nbad + 20])
+    for p in bad:
+        statcan.add(p, "2026-11-18T13:00")
+    for p in good:
+        statcan.add(p, "2026-11-18T13:30")
+    statcan.zip_status = lambda pid, t: code if pid in bad else 200
+    _seed(world, bad + good, "2026-10-15T08:30", "2026-11-18T12:50:00Z")
+    clock.t = t0 = _t("2026-11-18T14:30Z")
+    done, red = None, None
+    while clock.t < t0 + dt.timedelta(hours=9):
+        lane.run(put=_Bucket(), now_fn=clock)
+        cubes = _state(world)["cubes"]
+        if done is None and all(cubes[p].get("merged") == "2026-11-18T13:30" for p in good):
+            done = clock.t - t0
+        if red is None and _verdict_or_red(world, clock.t).startswith("RED"):
+            red = clock.t - t0
+        clock.step()
+    print(f"MEASURED {nbad} cube(s) HTTP {code} for ever: 20 others merged after {done}; red after {red}",
+          file=sys.__stdout__, flush=True)
+    assert done is not None and done <= dt.timedelta(minutes=lane.BREAKER_BACKOFF_MAX_MIN + 10)    # V3: <= 70 min
+    assert red is not None and red <= dt.timedelta(hours=8)
+
+
+def test_after_the_first_cycle_a_new_batch_is_not_held_back_either(world, clock, statcan):
+    """P3b: the same 3 refused cubes, then StatCan releases the 20 again: they merge within an hour."""
+    bad, good = list(CLASS_A[:3]), list(CLASS_A[3:23])
+    for p in bad:
+        statcan.add(p, "2026-11-18T13:00")
+    for p in good:
+        statcan.add(p, "2026-11-18T13:30")
+    statcan.zip_status = lambda pid, t: 404 if pid in bad else 200
+    _seed(world, bad + good, "2026-10-15T08:30", "2026-11-18T12:50:00Z")
+    clock.t = _t("2026-11-18T14:30Z")
+
+    def until_merged(rel, limit_h):
+        start = clock.t
+        while clock.t < start + dt.timedelta(hours=limit_h):
+            lane.run(put=_Bucket(), now_fn=clock)
+            if all(_state(world)["cubes"][p].get("merged") == rel for p in good):
+                return clock.t - start
+            clock.step()
+        return None
+    assert until_merged("2026-11-18T13:30", 30) is not None
+    for p in good:
+        statcan.cubes[p]["release"] = "2026-11-19T08:30"
+    clock.t = max(clock.t, _t("2026-11-19T08:35Z"))
+    second = until_merged("2026-11-19T08:30", 30)
+    assert second is not None and second <= dt.timedelta(hours=1), second
+
+
+def test_a_half_open_refusal_with_another_status_does_not_trip_again_but_holds_again(world, clock, statcan, capsys):
+    """RV03 / V1: after a 403 trip the first half-open attempt meets 404: its strike stands (404 is about that cube),
+    nothing is put back, and the hold is armed again (one attempt per hold)."""
+    pids = CLASS_A[:4]
+    for p in pids:
+        statcan.add(p, "2026-11-18T13:30")
+    statcan.zip_status = lambda pid, t: 403
+    _seed(world, pids, "2026-10-15T08:30", "2026-11-18T13:00:00Z")
+    clock.t = t0 = _t("2026-11-18T14:30Z")
+    lane.run(put=_Bucket(), now_fn=clock)
+    untried = [p for p in pids if p not in _state(world)["breaker"]["cubes"]]
+    assert len(untried) == 1
+    statcan.zip_status = lambda pid, t: 404
+    statcan.calls.clear()
+    clock.t = t0 + dt.timedelta(minutes=10)
+    r = lane.run(put=_Bucket(), now_fn=clock)
+    assert "breaker" not in r, "another status does not trip again"
+    assert [p for t, k, p, s in statcan.calls if k == "zip"] == untried, "the untried cube goes first; one attempt"
+    st = _state(world)
+    assert st["cubes"][untried[0]]["fails"] == 1, "its own strike stands"
+    b = st["breaker"]
+    assert b["status"] == 403 and b["trips"] == 2 and b["until"] == _z(clock.t + dt.timedelta(minutes=20))
+    assert "circuit breaker armed again" in capsys.readouterr().out
+
+
+def test_a_serve_owed_cube_is_served_in_a_later_iteration_while_a_hold_lasts(world, clock, statcan):
+    """RV21 / C1: serving goes on through a hold, not only in the trip's own iteration."""
+    pids = CLASS_A[:3]
+    for p in pids:
+        statcan.add(p, "2026-11-18T13:30")
+    statcan.zip_status = lambda pid, t: 403
+    _seed(world, pids, "2026-10-15T08:30", "2026-11-18T13:00:00Z")
+    clock.t = t0 = _t("2026-11-18T14:30Z")
+    lane.run(put=_Bucket(), now_fn=clock)
+    st = _state(world)
+    assert lane._breaker_holds(st, t0 + dt.timedelta(minutes=5))
+    st["cubes"][str(PID)] = {"release": "2026-11-18T13:31", "merged": "2026-11-18T13:31", "served": None}
+    (world / "_lane_state.json").write_text(json.dumps(st))
+    clock.t = t0 + dt.timedelta(minutes=5)
+    b = _Bucket()
+    lane.run(put=b, now_fn=clock)
+    assert _state(world)["cubes"][str(PID)]["served"] == "2026-11-18T13:31" and b.put
+    assert not [c for c in statcan.calls if c[1] == "zip" and c[0] == clock.t], "and no merge while held"
+
+
+def test_a_re_release_drops_an_old_strikes_wait(world, clock, statcan):
+    """L08 / L09 / V4: a cube with 2 strikes on its old release waits until first + 12 h; StatCan re-releases it,
+    and the enumeration that lists the new release works it at once."""
+    statcan.add("10100111", "2026-11-18T13:30")
+    _seed(world, ["10100111"], "2026-10-15T08:30", "2026-11-18T13:00:00Z")
+    t0 = _t("2026-11-18T14:30Z")
+    st = _state(world)
+    st["cubes"]["10100111"].update(release="2026-11-18T13:30", fails=2, fail_release="2026-11-18T13:30",
+                                   first_strike_utc=_z(t0 - dt.timedelta(hours=1)),
+                                   retry_after=_z(t0 + dt.timedelta(hours=11)))
+    st["last_enum_utc"] = _z(t0 - dt.timedelta(hours=2))
+    (world / "_lane_state.json").write_text(json.dumps(st))
+    statcan.cubes["10100111"]["release"] = "2026-11-18T18:50"          # re-released
+    clock.t = t0
+    lane.run(put=_Bucket(), now_fn=clock)
+    c = _state(world)["cubes"]["10100111"]
+    assert c["merged"] == "2026-11-18T18:50" and not c.get("fails"), c
+
+
+def test_a_stale_publisher_end_is_not_read_current_while_the_enumeration_fails(world, clock, statcan):
+    """P6 / RV23 / R2012: an earlier `publisher` record must not settle a merge as current without a fresh list."""
+    statcan.add("10100111", "2026-11-18T13:30")
+    _seed(world, ["10100111"], "2026-10-15T08:30", "2026-11-18T13:00:00Z")
+    st = _state(world)
+    st["cubes"]["10100111"]["release"] = "2026-11-18T13:30"
+    st["cubes"]["10100111"]["publisher"] = {"end": "2026-10-01", "freq": 6, "read_utc": "2026-11-18T13:00:00Z"}
+    (world / "_lane_state.json").write_text(json.dumps(st))
+    statcan.lite_status = lambda t: 403
+    clock.t = _t("2026-11-18T14:30Z")
+    lane.run(put=_Bucket(), now_fn=clock)
+    c = _state(world)["cubes"]["10100111"]
+    assert c["merged"] == "2026-11-18T13:30" and c["upstream"]["class"] == "unmeasured", c["upstream"]
+
+
+def test_an_unexpected_exception_in_the_fetch_published_nothing(world, clock, statcan, monkeypatch):
+    """P7 / V5: e.g. a full disk while writing the zip (OSError, not caught by _download)."""
+    statcan.add("10100111", "2026-11-18T13:30")
+    _seed(world, ["10100111"], "2026-10-15T08:30", "2026-11-18T13:00:00Z")
+    st = _state(world)
+    st["cubes"]["10100111"]["release"] = "2026-11-18T13:30"
+    (world / "_lane_state.json").write_text(json.dumps(st))
+
+    def boom(pid):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(sc, "_fetch_cube_whole", boom)
+    clock.t = _t("2026-11-18T14:30Z")
+    lane.run(put=_Bucket(), now_fn=clock)
+    c = _state(world)["cubes"]["10100111"]
+    assert "merge_in_flight" not in c and c["transient_fails"] == 1 and "OSError" in c["last_error"]
+
+
+def test_the_breaker_red_starts_after_6_h_in_every_state():
+    st = {"cubes": {}}
+
+    def brk(h, since=None):
+        return {"status": 403, "cubes": ["10100111"], "trips": 7, "until": _z(VNOW + dt.timedelta(minutes=30)),
+                "since": since or _z(VNOW - dt.timedelta(hours=h))}
+    assert sc.verdict(st, _beat(breaker=brk(5.9)), VNOW)[0] == "ok"
+    for p in (_beat(breaker=brk(6.1)), _beat(breaker=brk(0, since="garbage")),
+              _beat(breaker=brk(6.1), owed=DRAINING, last_progress_utc=_z(VNOW - dt.timedelta(hours=1)))):
+        with pytest.raises(DefinitiveError, match="circuit breaker has held every merge back"):
+            sc.verdict(st, p, VNOW)
+    assert "circuit breaker" in _heartbeat()._lane_problem(_beat(breaker=brk(6.1)), VNOW)
 
 
 def test_the_breaker_and_enumeration_backoffs_stay_under_the_guards_stall_kill():

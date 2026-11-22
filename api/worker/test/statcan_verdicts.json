@@ -62,6 +62,12 @@
    "note": "statcan: 1 cube(s) keep FAILING in the lane (transient, again and again - e.g. a store fault R753): 1: store fault; 17 cube(s) owe a merge, 0 owe serving, 2 released cube(s) not held (catalogue debt)"
   },
   {
+   "branch": "breaker held over 6 h",
+   "outcome": "DefinitiveError",
+   "current": false,
+   "note": "statcan: the lane's circuit breaker has held every merge back since 2026-10-20T05:00:00Z (7.0 h, allowed 6 h) - StatCan refuses with HTTP 403; 9 trip(s), cubes ['1']"
+  },
+  {
    "branch": "enumeration failing",
    "outcome": "DefinitiveError",
    "current": false,

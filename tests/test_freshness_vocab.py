@@ -194,6 +194,8 @@ def _verdict_cases():
         ("cubes failing while draining", False, st,
          dict(fresh, last_progress_utc=_z(1), owed=dict(tail, merge=17, oldest_owed_release="2026-09-08",
                                                         failing=["1: store fault"]))),
+        ("breaker held over 6 h", False, st,
+         dict(fresh, breaker={"status": 403, "cubes": ["1"], "trips": 9, "until": _z(-0.5), "since": _z(7)})),
         ("enumeration failing", False, st,
          dict(fresh, enum_fail={"since": _z(7), "count": 9, "http_status": 403,
                                 "last_error": "TransientError: statcan getAllCubesListLite HTTP 403 "

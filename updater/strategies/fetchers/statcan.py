@@ -17,6 +17,7 @@ Verdicts (design review finding 7 - `partial` is not an honest signal for a drai
                      working (3 h while idle): the lane is dead or wedged;
                      or the enumeration has failed for longer than ENUM_FAIL_RED_HOURS (the lane is up and
                      beating, but sees no release);
+                     or the circuit breaker has held merges for longer than BREAKER_RED_HOURS;
                      or named cubes keep failing transiently (TRANSIENT_RED_AFTER in a row) - checked before
                      the owed age, so a DRAINING lane cannot hide it (2026-11-22);
                      or the OLDEST owed release is older than OWED_AGE_MAX_DAYS and nothing finished lately:
@@ -137,6 +138,11 @@ NEW_CUBE_DEBT_AMBER_DAYS = 30
 # fresh, so DEAD cannot fire - this is what turns it red: an enumeration failing for longer than this, since the
 # first failure of the streak. It cannot see new releases while that lasts.
 ENUM_FAIL_RED_HOURS = 6.0
+# THE CIRCUIT BREAKER (2026-11-22, R2026/R2028). One HTTP status refusing 3 cubes in an iteration holds every merge
+# back (jobs/statcan_lane.py `breaker`); after each hold at most 3 attempts decide, so a refusal that lasts reaches
+# each cube's own TRANSIENT_RED_AFTER slowly. This bounds it instead: a breaker that has held merges
+# for longer than this, since its first trip with no answer from StatCan between, is red.
+BREAKER_RED_HOURS = 6.0
 
 # THE VERDICTS THAT SAY THE LANE IS CURRENT (owner decision 2026-10-20: statcan must not read "late" on
 # the public API while its lane keeps it current). verdict() below has two such outcomes: `ok`, and the
@@ -605,6 +611,15 @@ def verdict(state, progress, now):
                 f"({'unreadable' if since_h is None else f'{since_h:.1f} h'}, allowed {ENUM_FAIL_RED_HOURS:.0f} h), "
                 f"{e.get('count')} attempt(s), last: {str(e.get('last_error'))[:200]}. No new release is seen "
                 f"while this lasts.")
+    br = progress.get("breaker")
+    if br:
+        b = br if isinstance(br, dict) else {}
+        br_h = _hours_since(b.get("since"), now)
+        if br_h is None or br_h > BREAKER_RED_HOURS:
+            raise DefinitiveError(
+                f"statcan: the lane's circuit breaker has held every merge back since {b.get('since')} "
+                f"({'unreadable' if br_h is None else f'{br_h:.1f} h'}, allowed {BREAKER_RED_HOURS:.0f} h) - StatCan "
+                f"refuses with HTTP {b.get('status')}; {b.get('trips')} trip(s), cubes {list(b.get('cubes') or [])[:10]}")
     owed = progress.get("owed") or {}
     # BEFORE the owed-age block too (design review F2/C2 option (a)): a cube failing transiently again and again
     # is red whether or not the lane is draining an old backlog. DRAINING and FAILING both read not current on the
