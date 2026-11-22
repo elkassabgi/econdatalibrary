@@ -1466,3 +1466,15 @@ def test_an_armed_cube_with_an_empty_stored_copy_has_nothing_to_protect(world, m
     lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=lambda: ({}, None))
     c = _state(world)["cubes"][str(PID)]
     assert not c.get("quarantined") and "history-floor" not in str(c.get("last_error"))
+
+
+def test_an_empty_refresh_of_an_armed_cube_is_left_to_the_count_gates(world, monkeypatch):
+    """0 parsed rows: the history floor does not judge (no first date exists); the existing gates refuse
+    it as before - one deterministic failure, not an immediate history hold."""
+    before = _history_world(world, monkeypatch, STORED_2013)
+    _net(monkeypatch, [], (0, 0))
+    lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=lambda: ({}, None))
+    c = _state(world)["cubes"][str(PID)]
+    assert c.get("fails") == 1 and not c.get("quarantined") and "history_hold" not in c
+    assert "HISTORY FLOOR" not in str(c.get("last_error"))
+    assert (world / f"{PID}.parquet").read_bytes() == before
