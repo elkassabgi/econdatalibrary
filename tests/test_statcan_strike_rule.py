@@ -1184,6 +1184,29 @@ def test_the_breaker_red_starts_after_6_h_in_every_state():
     assert "circuit breaker" in _heartbeat()._lane_problem(_beat(breaker=brk(6.1)), VNOW)
 
 
+def test_a_record_no_cube_waits_on_is_cleared_before_it_ages_into_a_red(world, clock, statcan, capsys):
+    """W2 / mutant W2b: the hold has ended and the only merge-owed cube is STRUCK (its own wait, no refused_http):
+    the breaker holds nothing, so its record goes - kept, its `since` would read red after 6 h naming a refusal
+    that no longer holds anything back."""
+    statcan.add("10100111", "2026-11-18T13:30")
+    _seed(world, ["10100111"], "2026-10-15T08:30", "2026-11-18T13:00:00Z")
+    t0 = _t("2026-11-18T14:30Z")
+    st = _state(world)
+    st["cubes"]["10100111"].update(release="2026-11-18T13:30", fails=1, fail_release="2026-11-18T13:30",
+                                   first_strike_utc=_z(t0 - dt.timedelta(minutes=30)),
+                                   retry_after=_z(t0 + dt.timedelta(hours=5)))
+    st["breaker"] = {"status": 403, "cubes": ["10100111"], "trips": 3, "tripped_utc": _z(t0 - dt.timedelta(hours=1)),
+                     "until": _z(t0 - dt.timedelta(minutes=5)), "since": _z(t0 - dt.timedelta(hours=5, minutes=50))}
+    (world / "_lane_state.json").write_text(json.dumps(st))
+    clock.t = t0
+    lane.run(put=_Bucket(), now_fn=clock)
+    assert "breaker" not in _state(world) and "breaker" not in _progress(world)
+    assert "circuit breaker cleared: no merge-owed cube waits on it" in capsys.readouterr().out
+    clock.t = t0 + dt.timedelta(hours=1)
+    lane.run(put=_Bucket(), now_fn=clock)
+    assert not _verdict_or_red(world, clock.t).startswith("RED")
+
+
 def test_the_breaker_and_enumeration_backoffs_stay_under_the_guards_stall_kill():
     src = open(os.path.join(ROOT, "tools", "machine", "RELAUNCH_GUARD.ps1.workstation-copy"),
                encoding="utf-8-sig").read()
