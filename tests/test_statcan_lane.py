@@ -115,6 +115,27 @@ def world(tmp_path, monkeypatch):
     return d
 
 
+class _NetworkCalled(RuntimeError):
+    """Raised by the network guard. Not a requests exception, so statcan._call does not retry it."""
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    """NO TEST REACHES STATCAN (R1091). The lane's publisher-end read never raises (an unreadable end is
+    'unmeasured'), so a forgotten fake would PASS quietly; this guard records every attempt and fails the
+    test at teardown instead (design review R2010, F5)."""
+    import requests
+    calls = []
+
+    def _refuse(url=None, *a, **k):
+        calls.append(str(url))
+        raise _NetworkCalled(f"a test reached the network: {url}")
+    for name in ("get", "post", "head"):
+        monkeypatch.setattr(requests, name, _refuse)
+    yield calls
+    assert not calls, f"tests must not reach the network; attempted: {calls}"
+
+
 def _net(monkeypatch, rows, counts, *, corrupt=False, calls=None):
     monkeypatch.setattr(sc, "_cube_counts", lambda pid: counts)
     monkeypatch.setattr(sc, "_get", lambda ep, **k: {"status": "SUCCESS",
@@ -1031,3 +1052,370 @@ def test_every_store_merge_of_the_lane_passes_the_limit():
     src = open(lane.__file__, encoding="utf-8").read()
     assert src.count("merge.merge_and_write_bounded(") == 2
     assert src.count("memory_limit=_merge_memory())") == 2
+
+
+# --------------------------------------------------------------------------- #
+# 2026-11-22 (owner leave): stale_upstream, the pre-floor reconcile, the CIMT history floor
+# --------------------------------------------------------------------------- #
+def _ends(end, freq=6, err=None, pid=PID):
+    """An injected publisher_ends: {pid: {end, freq}} as getAllCubesListLite gives it, or an error."""
+    return lambda: ({} if err else {str(pid): {"end": end, "freq": freq}}, err)
+
+
+def _since_rel(mapping):
+    """An enumeration that HONOURS `since` (drops releases before it), as _changed_releases does - so a
+    lane that does not ask for every cube loses its pre-floor reconcile members."""
+    return lambda since: {p: rt for p, rt in mapping.items() if rt[:10] >= since.isoformat()}
+
+
+def _owed(d):
+    return json.loads((d / "_lane_progress.json").read_text())["owed"]
+
+
+def test_network_guard_records_and_fails_a_reaching_test(_no_network):
+    """The guard itself can fail: a call is recorded and refused (and cleared here so this test passes)."""
+    with pytest.raises(_NetworkCalled):
+        sc._get("getAllCubesListLite", tries=1, timeout=1)
+    assert _no_network == [f"{sc.BASE}/getAllCubesListLite"]
+    _no_network.clear()
+
+
+def test_a_zip_that_ends_before_the_publisher_is_stale_upstream_not_merged(world, monkeypatch, capsys):
+    _net(monkeypatch, NEW, (5, 3))                                  # the zip ends 2026-03-01
+    b = _Bucket()
+    lane.run(enumerate_releases=_rel({PID: REL}), put=b, ends_fn=_ends("2026-06-01"))
+    out = capsys.readouterr().out
+    assert (f"[lane] {PID}: merge stale_upstream (merged; the full-table zip ends 2026-03-01, the publisher's "
+            f"cube ends 2026-06-01: 3 period(s) behind, frequency 6)") in out
+    assert f"[lane] {PID}: merge merged\n" not in out
+    c = _state(world)["cubes"][str(PID)]
+    u = c["upstream"]
+    assert (u["class"], u["lag"], u["release"], u["zip_end"]) == ("stale_upstream", 3, REL, "2026-03-01")
+    assert c["merged"] == c["served"] == REL, "the merge itself is unchanged: a stale zip still merges"
+    assert ("v1", "2026-02-01", 2.5, "Windsor - other locations") in _rows(world / f"{PID}.parquet")
+    o = _owed(world)
+    assert o["stale_upstream"] == [f"{PID} (zip ends 2026-03-01, publisher 2026-06-01, 3 period(s))"]
+    assert o["upstream"]["stale_upstream"] == 1 and o["oldest_owed_release"] is None, "off the owed clock"
+
+
+def test_a_zip_that_reaches_the_publisher_is_current_and_logged_as_before(world, monkeypatch, capsys):
+    _net(monkeypatch, SAME, (4, 3))                                  # the zip ends 2026-02-01
+    lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=_ends("2026-02-01"))
+    assert f"[lane] {PID}: merge merged\n" in capsys.readouterr().out
+    assert _state(world)["cubes"][str(PID)]["upstream"]["class"] == "current"
+    # the UNCHANGED path (an identical later release) writes the record too
+    lane.run(enumerate_releases=_rel({PID: "2026-09-19T08:30"}), put=_Bucket(), now_fn=_hours(2),
+             ends_fn=_ends("2026-06-01"))
+    c = _state(world)["cubes"][str(PID)]
+    assert c["served"] == "2026-09-19T08:30" and c["upstream"]["release"] == "2026-09-19T08:30"
+    assert c["upstream"]["class"] == "stale_upstream"
+    assert "merge stale_upstream (unchanged;" in capsys.readouterr().out
+    o = _owed(world)
+    assert o["stale_upstream"] and o["upstream"] == {"current": 0, "ahead": 0, "stale_upstream": 1, "unmeasured": 0}
+
+
+@pytest.mark.parametrize("zip_end, end, freq, want", [
+    ("2024-12-31", "2025-01-01", 12, ("stale_upstream", 1)),        # annual, period-end store
+    ("2025-12-31", "2025-01-01", 12, ("current", 0)),
+    ("2025-01-01", "2025-01-01", 12, ("current", 0)),               # period-start store
+    ("2025-10-01", "2026-01-01", 9, ("stale_upstream", 1)),         # quarterly
+    ("2026-01-01", "2026-01-01", 9, ("current", 0)),
+    ("2026-11-07", "2026-11-07", 2, ("current", 0)),                # weekly: compare()'s own rule
+    ("2026-11-06", "2026-11-07", 2, ("stale_upstream", 1)),
+    ("2026-11-13", "2026-11-07", 2, ("current", 0)),
+    ("2026-11-14", "2026-11-07", 2, ("ahead", 0)),
+    ("2023-09-01", "2026-09-01", 6, ("stale_upstream", 36)),        # CIMT
+])
+def test_the_comparison_is_by_frequency(zip_end, end, freq, want):
+    r = lane.classify_upstream(zip_end, {"end": end, "freq": freq})
+    assert (r["class"], r["lag"]) == want
+
+
+@pytest.mark.parametrize("zip_end, pub, why", [
+    ("2026-03-01", {"error": "HTTP 503"}, "publisher end not read: HTTP 503"),
+    ("2026-03-01", {}, "no record"),
+    ("2026-03-01", {"end": None, "freq": 6}, "unparseable publisher date"),
+    ("2026-03-01", {"end": "2026-06-15", "freq": 6}, "not a period start"),
+    ("2026-03-01", {"end": "2026-06-01", "freq": 99}, "unknown frequencyCode"),
+    ("2026-03-01", {"end": "2026-06-01", "freq": True}, "malformed frequencyCode"),
+    ("2026-03-01", {"end": "2026-06-01", "freq": "6"}, "unknown frequencyCode"),
+    (None, {"end": "2026-06-01", "freq": 6}, "no end date"),
+    ("not-a-date", {"end": "2026-06-01", "freq": 6}, "unparseable zip end"),
+])
+def test_what_cannot_be_compared_is_unmeasured_never_current(zip_end, pub, why):
+    r = lane.classify_upstream(zip_end, pub)
+    assert r["class"] == "unmeasured" and why in r["reason"]
+
+
+def test_an_unread_publisher_end_is_unmeasured_and_the_merge_goes_on(world, monkeypatch, capsys):
+    _net(monkeypatch, NEW, (5, 3))
+    lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=_ends(None, err="TransientError: x"))
+    out = capsys.readouterr().out
+    assert "publisher end dates NOT read this enumeration (TransientError: x)" in out
+    assert f"[lane] {PID}: merge merged (publisher end unmeasured: publisher end not read: TransientError: x)" in out
+    c = _state(world)["cubes"][str(PID)]
+    assert c["merged"] == c["served"] == REL and c["upstream"]["class"] == "unmeasured"
+    assert _owed(world)["upstream_unmeasured"] == [str(PID)]
+
+
+def test_a_raising_classifier_never_undoes_a_published_merge(world, monkeypatch):
+    _net(monkeypatch, NEW, (5, 3))
+
+    def _boom(*a, **k):
+        raise KeyError("boom")
+    monkeypatch.setattr(lane, "classify_upstream", _boom)
+    lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=_ends("2026-03-01"))
+    c = _state(world)["cubes"][str(PID)]
+    assert c["merged"] == c["served"] == REL and not c.get("transient_fails")
+    assert c["upstream"]["class"] == "unmeasured" and "classifier raised KeyError" in c["upstream"]["reason"]
+
+
+def test_the_end_is_read_before_the_releases_and_before_the_fetch(world, monkeypatch):
+    """A release between the two reads may make the zip NEWER than the end read, never older: the end
+    is read first, so a later publisher end cannot turn a current zip into a false stale."""
+    _net(monkeypatch, NEW, (5, 3))                                   # the zip ends 2026-03-01
+    pub = {"end": "2026-03-01"}
+
+    def _ends_now():
+        return {str(PID): {"end": pub["end"], "freq": 6}}, None
+
+    def _enum(since):
+        pub["end"] = "2026-06-01"                                    # StatCan moves on after the end read
+        return {PID: REL}
+    real_download = sc._download
+
+    def _download(url, dest, tries=5):
+        pub["end"] = "2026-09-01"
+        return real_download(url, dest, tries)
+    monkeypatch.setattr(sc, "_download", _download)
+    lane.run(enumerate_releases=_enum, put=_Bucket(), ends_fn=_ends_now)
+    c = _state(world)["cubes"][str(PID)]
+    assert c["upstream"]["class"] == "current" and c["upstream"]["publisher_end"] == "2026-03-01"
+    assert c["publisher"]["end"] == "2026-03-01"
+
+
+def test_publisher_ends_reads_the_cube_list_and_fails_quietly(monkeypatch):
+    monkeypatch.setattr(sc, "_LITE_FLOOR", 2)
+    lite = [{"productId": 12100152, "cubeEndDate": "2026-09-01T04:00:00Z", "frequencyCode": 6},
+            {"productId": 10100085, "cubeEndDate": "", "frequencyCode": 2}, "junk", {"cubeEndDate": "x"}]
+    got = []
+
+    def _get(ep, **k):
+        got.append((ep, k))
+        return lite
+    ends, err = lane.publisher_ends(_get)
+    assert err is None and got == [("getAllCubesListLite", {"tries": lane.ENDS_TRIES, "timeout": lane.ENDS_TIMEOUT_S})]
+    assert ends == {"12100152": {"end": "2026-09-01", "freq": 6}, "10100085": {"end": None, "freq": 2}}
+    assert lane.publisher_ends(lambda ep, **k: {"object": lite})[0]["12100152"]["end"] == "2026-09-01"
+    assert "below the 2 floor" in lane.publisher_ends(lambda ep, **k: lite[:1])[1]
+    assert "no list" in lane.publisher_ends(lambda ep, **k: {"status": "FAILED"})[1]
+
+    def _raise(ep, **k):
+        raise sc.TransientError("statcan getAllCubesListLite HTTP 503")
+    ends, err = lane.publisher_ends(_raise)
+    assert ends == {} and "TransientError" in err and "503" in err
+
+
+def test_an_old_stale_record_does_not_count_for_a_later_release():
+    st = {"cubes": {"1": {"release": "r2", "merged": "r2", "served": "r2",
+                          "upstream": {"release": "r1", "class": "stale_upstream", "zip_end": "a",
+                                       "publisher_end": "b", "lag": 1}},
+                    "2": {"release": "r2", "merged": "r1", "served": "r1",
+                          "upstream": {"release": "r1", "class": "unmeasured"}}}}
+    o = lane.summarise(st)
+    assert o["stale_upstream"] == [] and o["upstream_unmeasured"] == []
+    assert o["upstream"] == {"current": 0, "ahead": 0, "stale_upstream": 0, "unmeasured": 0}
+
+
+def test_the_reporter_and_ci_judge_the_same_with_or_without_the_new_lists(world, monkeypatch):
+    gh = _heartbeat()
+    _net(monkeypatch, NEW, (5, 3))
+    lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=_ends("2026-06-01"))
+    st = _state(world)
+    prog = json.loads((world / "_lane_progress.json").read_text())
+    assert prog["owed"]["stale_upstream"], "the record under test carries a stale entry"
+    bare = json.loads(json.dumps(prog))
+    for k in ("stale_upstream", "upstream_unmeasured", "history_held", "upstream"):
+        bare["owed"].pop(k)
+    now = dt.datetime.now(dt.timezone.utc)
+    assert sc.verdict(st, prog, now) == sc.verdict(st, bare, now)
+    assert gh._lane_problem(prog, now) == gh._lane_problem(bare, now) is None
+
+
+# --- the pre-floor reconcile ------------------------------------------------- #
+BRIEF_39 = set("""10100085 13100768 13100783 13100810 13100879 18100007 18100139 18100140 23100001 23100073
+23100268 23100272 35100181 35100182 35100185 36100042 36100652 37100264 37100265 37100266 37100267 37100268
+37100271 37100272 37100273 37100274 37100279 37100280 37100281 37100282 37100283 37100284 37100285 37100286
+37100287 37100288 37100292 38100032 38100141""".split())
+
+
+def test_the_reconcile_and_history_constants_are_the_measured_sets():
+    r = lane.RECONCILE_PIDS
+    assert len(r) == 143 and all(len(p) == 8 and p.isdigit() for p in r)
+    assert len(BRIEF_39) == 39 and BRIEF_39 - r == {"10100085"}, "38 of the brief's 39; 10100085 is not owed"
+    assert {"32100099", "36100038", "36100474", "36100608", "36100610", "36100611", "36100655"} <= r
+    assert lane.HISTORY_FLOOR_PIDS == {f"121001{n}" for n in range(47, 53)}
+    assert not (r & lane.HISTORY_FLOOR_PIDS)
+    assert lane.ENUM_ALL.isoformat() < lane.FLOOR
+
+
+def _copy_cube(world, pid):
+    import shutil
+    shutil.copy(world / f"{PID}.parquet", world / f"{pid}.parquet")
+
+
+def test_a_reconcile_member_is_owed_merged_and_served_and_nothing_else_old_is(world, monkeypatch, capsys):
+    for p in ("10100001", "10100002", "10100003"):
+        _copy_cube(world, p)
+    monkeypatch.setattr(lane, "RECONCILE_PIDS", frozenset({"10100001"}))
+    _net(monkeypatch, NEW, (5, 3))
+    rel = {10100001: "2026-06-10T12:30",                            # a member, released before the floor
+           10100002: "2026-07-28T23:59",                            # NOT a member, one minute before the floor
+           10100003: "2026-07-29T00:01",                            # ON the floor date: owed, as before
+           PID: REL}
+    lane.run(enumerate_releases=_since_rel(rel), put=_Bucket(), ends_fn=lambda: ({}, None))
+    st = _state(world)
+    assert set(st["cubes"]) == {"10100001", "10100003", str(PID)}, "no entry for a non-member before the floor"
+    for p, r in (("10100001", "2026-06-10T12:30"), ("10100003", "2026-07-29T00:01"), (str(PID), REL)):
+        assert st["cubes"][p]["merged"] == st["cubes"][p]["served"] == r
+    out = capsys.readouterr().out
+    assert "[lane] reconcile: 1 of 1 pre-floor cube(s) newly owed; 1 listed; missing from the publisher list: []" in out
+    # a later enumeration with nothing new prints no reconcile line
+    lane.run(enumerate_releases=_since_rel(rel), put=_Bucket(), ends_fn=lambda: ({}, None), now_fn=_hours(2))
+    assert "reconcile:" not in capsys.readouterr().out
+    assert lane.select_releases({10100002: "2026-07-28T23:59"}, lane.FLOOR) == {}
+    assert lane.select_releases({10100003: "2026-07-29T00:00"}, lane.FLOOR) == {10100003: "2026-07-29T00:00"}
+
+
+def test_a_reconcile_member_missing_from_the_publisher_list_is_named(world, monkeypatch, capsys):
+    monkeypatch.setattr(lane, "RECONCILE_PIDS", frozenset({str(PID), "99999998"}))
+    _net(monkeypatch, NEW, (5, 3))
+    lane.run(enumerate_releases=_since_rel({PID: "2026-07-01T08:30"}), put=_Bucket(), ends_fn=lambda: ({}, None))
+    out = capsys.readouterr().out
+    assert "reconcile: 1 of 2 pre-floor cube(s) newly owed; 1 listed; missing from the publisher list: ['99999998']" in out
+    assert _state(world)["cubes"][str(PID)]["merged"] == "2026-07-01T08:30"
+
+
+# --- the history floor ------------------------------------------------------- #
+def _history_world(world, monkeypatch, stored):
+    """PID armed, its stored copy replaced by `stored` rows (series_key, date, value)."""
+    monkeypatch.setattr(lane, "HISTORY_FLOOR_PIDS", frozenset({str(PID)}))
+    _stored(world / f"{PID}.parquet", [(k, d, v, "Aden", "2.1") for k, d, v in stored])
+    return (world / f"{PID}.parquet").read_bytes()
+
+
+STORED_2013 = [("v3", "2013-01-01", 1.0), ("v3", "2014-01-01", 2.0)]
+
+
+def test_a_refresh_that_cuts_the_history_is_held_on_its_first_attempt(world, monkeypatch, capsys):
+    before = _history_world(world, monkeypatch, STORED_2013)
+    calls = []
+    _net(monkeypatch, [_row("2014-01", "Aden", "v3", "2.1", "2.5"), _row("2014-02", "Aden", "v3", "2.1", "3")],
+         (2, 1), calls=calls)
+    lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=lambda: ({}, None))
+    c = _state(world)["cubes"][str(PID)]
+    assert len(calls) == 1 and c["quarantined"] is True and c["fail_release"] == REL
+    assert c["history_hold"]["stored_first"] == "2013-01-01" and c["history_hold"]["new_first"] == "2014-01-01"
+    assert "HISTORY FLOOR" in c["last_error"] and c.get("merged") is None
+    assert (world / f"{PID}.parquet").read_bytes() == before, "the store is untouched"
+    o = _owed(world)
+    assert o["history_held"] == [f"{PID} (refreshed table's first valued date 2014-01-01, stored 2013-01-01)"]
+    assert o["quarantined"] == [str(PID)] and o["oldest_owed_release"] is None
+    assert f"[lane] {PID}: HELD by the history floor" in capsys.readouterr().out
+    lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=lambda: ({}, None), now_fn=_hours(2))
+    assert len(calls) == 1, "held for this release: not downloaded again"
+
+
+def test_blank_old_periods_cannot_slip_past_the_history_floor(world, monkeypatch):
+    """The merge keeps the LAST row per key whatever its value: a refresh that keeps 2013 with a blank
+    value would blank the stored 2013 value. The gate compares the first VALUED dates."""
+    before = _history_world(world, monkeypatch, STORED_2013)
+    _net(monkeypatch, [_row("2013-01", "Aden", "v3", "2.1", ""), _row("2014-01", "Aden", "v3", "2.1", "2.5")],
+         (2, 1))
+    lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=lambda: ({}, None))
+    c = _state(world)["cubes"][str(PID)]
+    assert c["quarantined"] is True and c["history_hold"]["new_first"] == "2014-01-01"
+    assert (world / f"{PID}.parquet").read_bytes() == before
+
+
+def test_a_refresh_with_no_value_at_all_is_held(world, monkeypatch):
+    before = _history_world(world, monkeypatch, STORED_2013)
+    _net(monkeypatch, [_row("2013-01", "Aden", "v3", "2.1", ""), _row("2014-01", "Aden", "v3", "2.1", "")], (2, 1))
+    lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=lambda: ({}, None))
+    c = _state(world)["cubes"][str(PID)]
+    assert c["quarantined"] is True and c["history_hold"]["new_first"] is None
+    assert (world / f"{PID}.parquet").read_bytes() == before
+
+
+def test_a_refresh_that_keeps_the_history_merges_and_clears_an_old_hold(world, monkeypatch):
+    _history_world(world, monkeypatch, STORED_2013)
+    _net(monkeypatch, [_row("2014-01", "Aden", "v3", "2.1", "2.5")], (1, 1))
+    lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=lambda: ({}, None))
+    assert _state(world)["cubes"][str(PID)]["quarantined"] is True
+    # re-released: judged again - still cut, held again for the NEW release
+    later = lambda: lane._now() + dt.timedelta(minutes=lane.ENUM_MIN_INTERVAL_MIN + 1)  # noqa: E731
+    lane.run(enumerate_releases=_rel({PID: "2026-09-19T08:30"}), put=_Bucket(), ends_fn=lambda: ({}, None),
+             now_fn=later)
+    c = _state(world)["cubes"][str(PID)]
+    assert c["quarantined"] is True and c["history_hold"]["release"] == "2026-09-19T08:30"
+    # re-released with the history kept: it merges, and the hold and its list entry are gone
+    _net(monkeypatch, [_row("2013-01", "Aden", "v3", "2.1", "1"), _row("2014-01", "Aden", "v3", "2.1", "2.5")],
+         (2, 1))
+    much_later = lambda: lane._now() + dt.timedelta(minutes=3 * lane.ENUM_MIN_INTERVAL_MIN)  # noqa: E731
+    lane.run(enumerate_releases=_rel({PID: "2026-09-26T08:30"}), put=_Bucket(), ends_fn=lambda: ({}, None),
+             now_fn=much_later)
+    c = _state(world)["cubes"][str(PID)]
+    assert c["merged"] == "2026-09-26T08:30" and not c.get("quarantined") and "history_hold" not in c
+    assert _owed(world)["history_held"] == []
+    assert ("v3", "2014-01-01", 2.5, "Aden") in _rows(world / f"{PID}.parquet")
+
+
+def test_a_held_record_is_listed_only_for_the_release_it_holds():
+    st = {"cubes": {"1": {"release": "r2", "quarantined": True, "fail_release": "r2",
+                          "history_hold": {"release": "r1", "new_first": "x", "stored_first": "y"}}}}
+    assert lane.summarise(st)["history_held"] == []
+    st["cubes"]["1"]["history_hold"]["release"] = "r2"
+    assert lane.summarise(st)["history_held"] == ["1 (refreshed table's first valued date x, stored y)"]
+
+
+def test_an_unarmed_cube_with_a_later_start_merges_as_before(world, monkeypatch):
+    _stored(world / f"{PID}.parquet", [("v3", d, v, "Aden", "2.1") for _k, d, v in STORED_2013])
+    assert str(PID) not in lane.HISTORY_FLOOR_PIDS
+    _net(monkeypatch, [_row("2014-01", "Aden", "v3", "2.1", "2.5")], (1, 1))
+    lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=lambda: ({}, None))
+    c = _state(world)["cubes"][str(PID)]
+    assert c["merged"] == REL and not c.get("quarantined")
+    assert ("v3", "2013-01-01", 1.0, "Aden") in _rows(world / f"{PID}.parquet"), "keep-old, as today"
+
+
+def test_the_history_floor_fails_closed(world, monkeypatch):
+    before = _history_world(world, monkeypatch, STORED_2013)
+    _net(monkeypatch, [_row("2014-01", "Aden", "v3", "2.1", "2.5")], (1, 1))
+
+    def _unreadable(path):
+        raise OSError("disk went away")
+    monkeypatch.setattr(lane, "_first_valued", _unreadable)
+    lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=lambda: ({}, None))
+    c = _state(world)["cubes"][str(PID)]
+    assert c["transient_fails"] == 1 and not c.get("quarantined") and c.get("merged") is None
+    assert "history-floor gate could not read" in c["last_error"]
+    assert (world / f"{PID}.parquet").read_bytes() == before
+
+
+def test_a_stored_copy_with_rows_but_no_value_cannot_be_judged(world, monkeypatch):
+    before = _history_world(world, monkeypatch, [("v3", "2013-01-01", None), ("v3", "2014-01-01", None)])
+    _net(monkeypatch, [_row("2014-01", "Aden", "v3", "2.1", "2.5")], (1, 1))
+    lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=lambda: ({}, None))
+    c = _state(world)["cubes"][str(PID)]
+    assert c["transient_fails"] == 1 and not c.get("quarantined") and "cannot judge" in c["last_error"]
+    assert (world / f"{PID}.parquet").read_bytes() == before
+
+
+def test_the_history_floor_runs_before_the_vectorless_row_floor(world, monkeypatch):
+    monkeypatch.setattr(lane, "HISTORY_FLOOR_PIDS", frozenset({str(PID)}))
+    _stored(world / f"{PID}.parquet", [(f"1.{i}", "2013-01-01", float(i), "Windsor", f"1.{i}") for i in range(1, 11)])
+    trimmed = [_row("2014-01", "Windsor", "", f"1.{i}", str(i)) for i in range(1, 9)]      # fewer rows AND cut
+    _net(monkeypatch, trimmed, (99, 1))
+    lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=lambda: ({}, None))
+    c = _state(world)["cubes"][str(PID)]
+    assert "HISTORY FLOOR" in c["last_error"] and "vectorless" not in c["last_error"]
