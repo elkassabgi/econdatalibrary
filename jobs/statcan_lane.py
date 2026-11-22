@@ -35,6 +35,18 @@ WHAT IT DOES NOT DO (v1). Brand-new cubes (released, not held) are NOT ingested:
 under `new_cubes` in the debt file and counted by the reporter. Ingesting them is the same fetch,
 but nothing could serve them until catalogued, and why each is absent has not been checked.
 
+THREE ADDITIONS (owner leave 2026-11-22; design F:/work/econ_finish/statcan_lane_pr/DESIGN.md):
+  * STALE UPSTREAM. Every merged cube gets an `upstream` record: the end of the parsed zip against the
+    publisher's cubeEndDate (getAllCubesListLite, read at enumeration, BEFORE the fetch), compared by
+    frequency with tools/audit_statcan_upstream.compare (imported, not copied). A zip that ends before
+    the publisher's last period is logged "merge stale_upstream", not "merge merged", and named in
+    the progress record. The merge itself is unchanged: a stale zip can still carry revisions.
+  * PRE-FLOOR RECONCILE. RECONCILE_PIDS names the held cubes whose latest release is BEFORE FLOOR and
+    later than their stored copy (measured 2026-11-22). They are owed like any released cube.
+  * HISTORY FLOOR. For the six CIMT cubes (HISTORY_FLOOR_PIDS) a refreshed table whose first VALUED
+    date is later than the stored copy's is held (quarantined for that release), never merged: a
+    keep-old merge would splice the stored older vintage under the new one.
+
 BEFORE T0 ONLY (self-hosting plan, 2026-09-28). The lane merges into the R2 store and serves R2, so it
 REFUSES once econ is cut over (core.cutover): its post-T0 backend and writer lock are a T0 design
 decision, not a default. Until then it reads the catalogue through core.catalog_path and writes every
@@ -82,8 +94,51 @@ POST_T0_READY = False
 PREFIX = "series"
 
 # THE BACKLOG'S START. 505 cubes were released between 2026-07-29 and 2026-09-17 while the fetcher
-# read a single-day feed as a since-feed (statcan.py `_changed_releases`); nothing older is owed.
+# read a single-day feed as a since-feed (statcan.py `_changed_releases`). Nothing released before it
+# is owed, EXCEPT the measured RECONCILE_PIDS below.
 FLOOR = "2026-07-29"
+# THE PRE-FLOOR RECONCILE (owner leave 2026-11-22). The floor hid every cube whose LATEST release is
+# before it, so a held cube released between its stored copy (written 2026-06-03..06-05, restored to R2
+# on 2026-09-05) and the floor was never owed. Measured 2026-11-22 by the lane's own owed rule (release
+# later than the stored copy), not by end date - an end date can prove a cube behind, never current
+# (R1968): getAllCubesListLite at 05:35:06Z x the local mirror's file times, over every catalogued cube
+# (F:/work/econ_finish/statcan_lane_pr/reconcile_class_20261122.log). 143 cubes: 136 the detector reads
+# behind by end date (tools/audit_statcan_upstream.py, R2 run 2026-11-19) + 7 it reads current but
+# owed by the same release rule (3 of the 7 were checked against today's zips: all 3 carry revised
+# values; the other 4 were not checked). NOT 10100085: its release (2017) is older than its stored copy and its own
+# zip ends where the store ends (1992-11-19) - a publisher-metadata question, not owed work.
+# A member is owed until merged at its release; later it is an ordinary cube. Inert after that.
+RECONCILE_PIDS = frozenset("""
+11100062 11100063 11100064 11100094 11100095 11100096 11100097 11100098 11100099
+11100106 11100111 11100114 11100115 11100116 11100117 11100118 11100119 11100120
+11100121 11100122 11100124 11100133 13100768 13100783 13100810 13100879 18100007
+18100021 18100139 18100140 18100287 18100290 22100004 22100005 22100006 23100001
+23100073 23100081 23100082 23100083 23100084 23100086 23100253 23100254 23100268
+23100272 23100305 23100306 27100005 27100006 27100007 27100008 27100009 27100010
+27100011 27100012 27100013 27100014 27100026 27100027 27100028 27100029 32100017
+32100056 32100099 32100356 32100358 33100005 33100570 35100001 35100002 35100026
+35100060 35100061 35100062 35100063 35100064 35100066 35100067 35100068 35100069
+35100071 35100073 35100074 35100075 35100119 35100125 35100126 35100127 35100156
+35100157 35100170 35100177 35100178 35100179 35100180 35100181 35100182 35100183
+35100184 35100185 35100186 35100187 35100188 35100189 35100190 35100191 35100206
+35100207 35100208 36100038 36100042 36100474 36100608 36100610 36100611 36100652
+36100653 36100654 36100655 36100669 37100264 37100265 37100266 37100267 37100268
+37100271 37100272 37100273 37100274 37100279 37100280 37100281 37100282 37100283
+37100284 37100285 37100286 37100287 37100288 37100292 38100032 38100141
+""".split())
+# The enumeration asks for EVERY listed cube (one request either way) and the lane applies the floor
+# itself - `release[:10] >= floor`, the test _changed_releases applies - plus the reconcile set. A member
+# whose release ever moved backward cannot drop out silently this way.
+ENUM_ALL = dt.date(1900, 1, 1)
+# THE HISTORY FLOOR (owner leave 2026-11-22). StatCan's full-table zips of these six CIMT cubes have not
+# been rebuilt since 2023-11-09 (HEAD Last-Modified), and four of them now START later at the publisher
+# (cubeStartDate 2014-01-01) than our stored history (2013 or 1988; local mirror footers 2026-11-22).
+# Armed BEFORE the rebuilt zip exists, so its first merge cannot splice our older vintage under the new.
+# LIMITS: it guards THIS LANE's merge only - not jobs/ingest_statcan.py (the bulk ingester) or any other
+# writer - and it judges the cube as a whole: a refresh that keeps one valued 1988 series passes.
+HISTORY_FLOOR_PIDS = frozenset({"12100147", "12100148", "12100149", "12100150", "12100151", "12100152"})
+# The publisher end-date read is informational: bounded, and its failure never blocks a merge.
+ENDS_TRIES, ENDS_TIMEOUT_S = 2, 300
 # An idle launch (nothing owed, nothing due for retry) calls StatCan at most this often. The guard
 # ticks every ~5 min, and the enumeration is one ~8,270-cube request.
 ENUM_MIN_INTERVAL_MIN = 60.0
@@ -117,6 +172,20 @@ BACKOFF_MIN, BACKOFF_MAX_MIN = 10.0, 12 * 60.0
 TRANSIENT_RED_AFTER = 6
 
 _TOOL = os.path.join(ROOT, "tools", "derive_statcan_tables.py")
+_UPSTREAM = os.path.join(ROOT, "tools", "audit_statcan_upstream.py")
+
+
+def _upstream():
+    """tools/audit_statcan_upstream.py (PR #312), for its PURE functions only (compare, _date_part,
+    Unmeasurable): the period comparison measured on getAllCubesListLite. Importing it reads nothing and
+    builds no client; the detector itself never imports this lane."""
+    m = sys.modules.get("_audit_statcan_upstream_for_lane")
+    if m is None:
+        spec = importlib.util.spec_from_file_location("_audit_statcan_upstream_for_lane", _UPSTREAM)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        sys.modules["_audit_statcan_upstream_for_lane"] = m
+    return m
 
 
 def _tool():
@@ -225,11 +294,31 @@ def summarise(st: dict) -> dict:
     quarantined cubes, serve-refused cubes, and cubes failing transiently TRANSIENT_RED_AFTER times
     in a row (lane review P3: a cube failing for ever read `ok` until its release aged out)."""
     owe_m, owe_s, quar, refused, failing, oldest = [], [], [], [], [], None
+    # THREE MORE NAMED LISTS (2026-11-22), also kept off the owed-age clock: a publisher's frozen zip
+    # or a cut history is not the lane falling behind. Each record counts only for the release the
+    # cube holds NOW, so a flag never outlives a later release. The reporter does not read them; the
+    # reader is named in DESIGN.md (the daily maintenance check of logs/statcan_lane.progress.json).
+    stale, unmeasured, held = [], [], []
+    upstream = {"current": 0, "ahead": 0, "stale_upstream": 0, "unmeasured": 0}
     for p, c in st.get("cubes", {}).items():
         rel = c.get("release")
+        hh = c.get("history_hold") or {}
+        if c.get("quarantined") and hh.get("release") and hh.get("release") == rel == c.get("fail_release"):
+            held.append({"pid": p, "release": rel, "new_first": hh.get("new_first"),
+                         "stored_first": hh.get("stored_first")})
         if c.get("quarantined"):
             quar.append(p)
             continue
+        u = c.get("upstream") or {}
+        if u.get("release") and u.get("release") == c.get("merged") == rel and u.get("class") in upstream:
+            upstream[u["class"]] += 1
+            # DICTS keyed by pid AND release, so a reader can acknowledge one release of one cube
+            # (round-2 review F2: the frozen CIMT zips would otherwise alarm every day)
+            if u["class"] == "stale_upstream":
+                stale.append({"pid": p, "release": rel, "zip_end": u.get("zip_end"),
+                              "publisher_end": u.get("publisher_end"), "lag": u.get("lag")})
+            elif u["class"] == "unmeasured":
+                unmeasured.append({"pid": p, "release": rel, "reason": u.get("reason")})
         if int(c.get("transient_fails") or 0) >= TRANSIENT_RED_AFTER:
             failing.append(f"{p} ({c.get('transient_fails')}x: {str(c.get('last_error'))[:100]})")
         if merge_owed(c):
@@ -246,7 +335,10 @@ def summarise(st: dict) -> dict:
     return {"merge": len(owe_m), "serve": len(owe_s), "quarantined": sorted(quar),
             "serve_refused": sorted(refused), "failing": sorted(failing),
             "new_cubes": len(new), "oldest_new_cube": min(new.values()) if new else None,
-            "oldest_owed_release": oldest}
+            "oldest_owed_release": oldest,
+            "stale_upstream": sorted(stale, key=lambda d: d["pid"]),
+            "upstream_unmeasured": sorted(unmeasured, key=lambda d: d["pid"]),
+            "history_held": sorted(held, key=lambda d: d["pid"]), "upstream": upstream}
 
 
 def merge_owed(c: dict) -> bool:
@@ -482,6 +574,122 @@ def _deterministic(c: dict, pid: str, reason: str) -> None:
               f"again until StatCan re-releases it: {reason[:200]}", flush=True)
 
 
+# --------------------------------------------------------------------------- #
+# the publisher's end date (stale_upstream) and the history floor
+# --------------------------------------------------------------------------- #
+def publisher_ends(get=None) -> tuple:
+    """({pid: {"end": "YYYY-MM-DD" | None, "freq": frequencyCode}}, error | None) from ONE
+    getAllCubesListLite GET - the endpoint whose cubeEndDate convention the detector measured (the
+    FIRST day of the last period for month-step frequencies, the week's end for weekly). run() reads it
+    AFTER the release list and BEFORE any fetch, and only when a cube is merge-owed (the order and the
+    one-enumeration false stale it allows are explained there). Never raises: an end date it cannot
+    read makes the cube's record `unmeasured`, never `current`, and never blocks a merge."""
+    try:
+        j = (get or sc._get)("getAllCubesListLite", tries=ENDS_TRIES, timeout=ENDS_TIMEOUT_S)
+        cubes = j if isinstance(j, list) else (j.get("object") if isinstance(j, dict) else None)
+        if not isinstance(cubes, list) or len(cubes) < sc._LITE_FLOOR:
+            n = len(cubes) if isinstance(cubes, list) else "no list"
+            return {}, f"getAllCubesListLite returned {n} cube(s), below the {sc._LITE_FLOOR} floor"
+        out = {}
+        for o in cubes:
+            if isinstance(o, dict) and o.get("productId") is not None:
+                end = o.get("cubeEndDate")
+                out[str(o["productId"])] = {"end": end[:10] if isinstance(end, str) and end else None,
+                                            "freq": o.get("frequencyCode")}
+        return out, None
+    except Exception as e:                                           # noqa: BLE001
+        return {}, f"{type(e).__name__}: {str(e)[:160]}"
+
+
+def classify_upstream(zip_end, pub: dict) -> dict:
+    """{class, lag, reason} for a parsed zip that ends at `zip_end` (ISO date, the parser's own max
+    obs_date over every row) against the publisher record `pub` ({"end", "freq"} or {"error"}).
+    class: current | ahead | stale_upstream | unmeasured. The comparison is the detector's compare():
+    by frequency, a store date anywhere inside the publisher's last period is current. Raises nothing
+    the caller does not catch (see _upstream_record)."""
+    U = _upstream()
+    if not pub or pub.get("error"):
+        return {"class": "unmeasured", "lag": None,
+                "reason": f"publisher end not read: {(pub or {}).get('error') or 'no record'}"}
+    if not zip_end:
+        return {"class": "unmeasured", "lag": None, "reason": "the parse gave no end date"}
+    try:
+        pub_end = U._date_part(pub.get("end"))
+        cls, lag = U.compare(dt.date.fromisoformat(str(zip_end)[:10]), pub_end, pub.get("freq"))
+    except U.Unmeasurable as e:
+        return {"class": "unmeasured", "lag": None, "reason": str(e)[:200]}
+    except ValueError as e:
+        return {"class": "unmeasured", "lag": None, "reason": f"unparseable zip end {zip_end!r} ({e})"}
+    return {"class": "stale_upstream" if cls == "behind" else cls, "lag": lag, "reason": None}
+
+
+def _upstream_record(rel, s: dict, pub: dict) -> dict:
+    """The cube's `upstream` record for release `rel`. CANNOT RAISE (design review F9): it is written
+    after the merge is recorded, and a crash here must never turn a published merge into a retry."""
+    try:
+        r = classify_upstream(s.get("end"), pub)
+    except Exception as e:                                           # noqa: BLE001
+        r = {"class": "unmeasured", "lag": None,
+             "reason": f"the classifier raised {type(e).__name__}: {str(e)[:120]}"}
+    pub = pub or {}
+    r.update(release=rel, zip_start=s.get("start"), zip_end=s.get("end"),
+             publisher_end=pub.get("end"), freq=pub.get("freq"), end_read_utc=pub.get("read_utc"))
+    return r
+
+
+def _first_valued(path: str):
+    """min(obs_date) over the rows WITH A VALUE (exact, DuckDB) - None when no row has one. Raises on
+    a read error. Valued, because the merge keeps the LAST row per (series_key, obs_date) whatever its
+    value: a refreshed table that keeps the old periods with blank values would blank stored history."""
+    import duckdb                                                    # noqa: PLC0415
+    f = path.replace("\\", "/").replace("'", "''")
+    con = duckdb.connect()
+    try:
+        con.execute(f"SET memory_limit='{merge.BOUNDED_MEMORY_LIMIT}'")
+        v = con.execute(f"SELECT min(obs_date) FROM read_parquet('{f}') WHERE value IS NOT NULL").fetchone()[0]
+    finally:
+        con.close()
+    if v is not None and not isinstance(v, dt.date):
+        raise TypeError(f"min(obs_date) is {type(v).__name__}, not a date")
+    return v
+
+
+def _history_gate(pid: str, c: dict, stored_copy: str, before: int, new_path: str, n_new: int,
+                  s: dict, rel, now: dt.datetime):
+    """For an ARMED cube (HISTORY_FLOOR_PIDS): None to go on, or the merge outcome when the refreshed
+    table must not be merged. Runs before every other gate. Fails CLOSED: a date it cannot read is a
+    transient (retried, never merged blindly); a NULL only means 'nothing to judge' when the FOOTER
+    says 0 rows (R503)."""
+    if pid not in HISTORY_FLOOR_PIDS:
+        return None
+    if n_new == 0 or before == 0:
+        return None          # 0 new rows: the count gates refuse it; 0 stored rows: nothing to protect
+    try:
+        stored_first = _first_valued(stored_copy)
+        new_first = _first_valued(new_path)
+    except Exception as e:                                           # noqa: BLE001
+        _backoff(c, f"history-floor gate could not read the first valued dates: {type(e).__name__}: {e}", now)
+        return "transient"
+    if stored_first is None:
+        _backoff(c, "history-floor gate: the stored copy has rows but no value - cannot judge", now)
+        return "transient"
+    if new_first is not None and new_first <= stored_first:
+        return None
+    why = (f"HISTORY FLOOR: the refreshed table's first valued date is "
+           f"{new_first.isoformat() if new_first else 'none (no value at all)'}, the stored copy's is "
+           f"{stored_first.isoformat()}: StatCan has cut history this store holds. NOT merged (keep-old would "
+           f"splice the stored older vintage under the new one). A person decides: (a) keep-old merge - remove "
+           f"{pid} from HISTORY_FLOOR_PIDS in a reviewed PR; it takes effect at StatCan's NEXT release of the "
+           f"cube after the pull and a lane restart; (b) replace with the new vintage - that deletes stored "
+           f"history StatCan no longer serves: the owner's decision.")
+    c.update(quarantined=True, fails=sc.QUARANTINE_AFTER, fail_release=rel, last_error=why[:300],
+             history_hold={"release": rel, "stored_first": stored_first.isoformat(),
+                           "new_first": new_first.isoformat() if new_first else None,
+                           "new_last": s.get("end"), "reason": why, "recorded_utc": _iso(now)})
+    print(f"[lane] {pid}: HELD by the history floor for its {rel} release - {why}", flush=True)
+    return "definitive"
+
+
 def merge_cube(pid: str, c: dict, st: dict, progress: Progress, now: dt.datetime) -> str:
     """Refresh one held cube's store object. Returns 'merged', 'unchanged', 'transient',
     'definitive' or 'absent'. On success sets c['merged'] (and c['served'] too when nothing a user
@@ -507,6 +715,8 @@ def merge_cube(pid: str, c: dict, st: dict, progress: Progress, now: dt.datetime
     # PUTs - users kept the old CSVs for ever. A merge that finds a prior attempt still in flight
     # therefore serves, whatever the merge reports.
     prior_in_flight = c.get("merge_in_flight")
+    # the publisher's end as read at enumeration - BEFORE the fetch below (publisher_ends)
+    pub = dict(c.get("publisher") or {})
     c["merge_in_flight"] = rel
     save_state(st)
     progress.beat("merging", current={"pid": pid, "phase": "merge", "release": rel,
@@ -531,6 +741,9 @@ def merge_cube(pid: str, c: dict, st: dict, progress: Progress, now: dt.datetime
             return "definitive"
         progress.beat(bytes_downloaded=int(s.get("zip_bytes") or 0))
         n_new, n_series = int(s["n_obs"]), int(s["n_series"])
+        held = _history_gate(pid, c, copy[0], before, new_path, n_new, s, rel, now)
+        if held is not None:
+            return held
         try:
             total, both = sc._key_overlap(copy[0], new_path)
         except Exception as e:                                       # noqa: BLE001
@@ -577,6 +790,8 @@ def merge_cube(pid: str, c: dict, st: dict, progress: Progress, now: dt.datetime
              retry_after=None, last_error=None)
     c.pop("fail_release", None)
     c.pop("merge_in_flight", None)
+    c.pop("history_hold", None)            # a release that passed the history floor clears an old hold
+    c["upstream"] = _upstream_record(rel, s, pub)      # after the merge is recorded; cannot raise
     progress.beat(cubes_merged=1, rows_merged=delta)
     # "UNCHANGED, SO ALREADY SERVED" holds only against a serve THIS LANE recorded. On a cube's
     # first visit the served CSVs were built by whatever ran before - and the old fetcher merged
@@ -672,9 +887,36 @@ def order_owed(st: dict, now: dt.datetime) -> list:
     return [p for _r, _b, p in sorted(rows)]
 
 
-def run(enumerate_releases=None, put=None, now_fn=_now, max_cubes=None) -> dict:
+def select_releases(listed: dict, floor: str) -> dict:
+    """The releases the lane owes from one enumeration of EVERY listed cube: a release on/after the
+    floor (`release[:10] >= floor`, _changed_releases' own test), or a RECONCILE_PIDS member at any
+    date. Keys are compared as strings: _changed_releases returns int product ids."""
+    return {pid: rt for pid, rt in listed.items()
+            if str(rt)[:10] >= floor or str(pid) in RECONCILE_PIDS}
+
+
+def _merge_line(pid: str, r: str, c: dict) -> str:
+    """The log line of one merge outcome. "merge merged" stays the text for a current cube; a zip that
+    ends before the publisher's cube says so (the reason this exists: CIMT logged "merged" for a 2023 zip)."""
+    if r in ("transient", "definitive"):
+        return f"[lane] {pid}: merge {r} ({c.get('last_error')})"
+    u = c.get("upstream") or {}
+    if r in ("merged", "unchanged") and u.get("release") and u.get("release") == c.get("merged"):
+        if u.get("class") == "stale_upstream":
+            return (f"[lane] {pid}: merge stale_upstream ({r}; the full-table zip ends {u.get('zip_end')}, the "
+                    f"publisher's cube ends {u.get('publisher_end')}: {u.get('lag')} period(s) behind, "
+                    f"frequency {u.get('freq')})")
+        if u.get("class") == "unmeasured":
+            return f"[lane] {pid}: merge {r} (publisher end unmeasured: {u.get('reason')})"
+        if u.get("class") == "ahead":
+            return (f"[lane] {pid}: merge {r} (the zip ends {u.get('zip_end')}, after the publisher's cube "
+                    f"end {u.get('publisher_end')})")
+    return f"[lane] {pid}: merge {r}"
+
+
+def run(enumerate_releases=None, put=None, now_fn=_now, max_cubes=None, ends_fn=None) -> dict:
     """One launch: enumerate (unless idle and recent), then work every owed cube to empty.
-    Injected `enumerate_releases` / `put` are for tests; production uses StatCan and R2."""
+    Injected `enumerate_releases` / `put` / `ends_fn` are for tests; production uses StatCan and R2."""
     st = load_state()
     progress = Progress(st)
     now = now_fn()
@@ -683,14 +925,49 @@ def run(enumerate_releases=None, put=None, now_fn=_now, max_cubes=None) -> dict:
     if idle and last is not None and (now - last).total_seconds() < ENUM_MIN_INTERVAL_MIN * 60:
         progress.beat("idle", current=None)
         return {"enumerated": False, "worked": 0}
-    rel = (enumerate_releases or sc._changed_releases)(dt.date.fromisoformat(st["floor"]))
+    floor = st["floor"]
+    # _changed_releases prints "released on/after 1900-01-01": it is asked for every cube (ENUM_ALL).
+    listed = (enumerate_releases or sc._changed_releases)(ENUM_ALL)
+    rel = select_releases(listed, floor)
+    recon_new, owed_now = 0, []
     for pid, rt in rel.items():
         c = st["cubes"].setdefault(str(pid), {})
         if c.get("release") != rt:
             c["release"] = rt
+            if str(pid) in RECONCILE_PIDS and str(rt)[:10] < floor:
+                recon_new += 1
             if c.get("quarantined") and c.get("fail_release") != rt:
                 c.pop("quarantined", None)           # re-released: tried again
                 c["fails"] = 0
+        # NOT a quarantined cube, and NOT one waiting out a backoff: merge_owed() is true for both, but
+        # order_owed() works neither in this iteration, so they must not trigger the end-date GET on every
+        # idle hourly enumeration (verification review V-F2, V2-F1). The enumeration that works them
+        # (re-released, or due again) reads the ends first.
+        if merge_owed(c) and not c.get("quarantined") and _due(c, now):
+            owed_now.append((str(pid), c))
+    # THE PUBLISHER'S END DATES AFTER THE RELEASES and before any fetch, and only when a merge is owed
+    # (design review round 2, R2012 F1). Read the other way round, a release landing between the two
+    # reads was owed, its OLD end was compared with a zip fetched inside StatCan's rebuild window (28-127 s
+    # after the release clock), and the old zip read "current" and settled the new release. In this order
+    # that zip reads stale_upstream, which is true of it. The one false stale this order allows - a cube
+    # owed for an older release whose new end arrives before its new release is listed - lasts one
+    # enumeration: the next one owes the new release and the cube is fetched again.
+    if owed_now:
+        ends, ends_err = (ends_fn or publisher_ends)()
+        if ends_err:
+            print(f"[lane] publisher end dates NOT read this enumeration ({ends_err}): every merge this "
+                  f"iteration is recorded 'upstream unmeasured'", flush=True)
+        for pid, c in owed_now:
+            e = ends.get(pid)
+            c["publisher"] = ({"end": e["end"], "freq": e["freq"], "read_utc": _iso(now)} if e else
+                              {"error": ends_err or "not in the publisher's cube list", "read_utc": _iso(now)})
+    # The receipt line: once when members become owed, and at EVERY enumeration (about hourly when idle)
+    # while a member is missing from the publisher's list - a withdrawn member stays visible.
+    missing = sorted(RECONCILE_PIDS - {str(p) for p in listed})
+    if recon_new or missing:
+        print(f"[lane] reconcile: {recon_new} of {len(RECONCILE_PIDS)} pre-floor cube(s) newly owed; "
+              f"{len(RECONCILE_PIDS) - len(missing)} listed; missing from the publisher list: "
+              f"{missing[:20]}{' ...' if len(missing) > 20 else ''}", flush=True)
     st["last_enum_utc"] = _iso(now)
     save_state(st)
     progress.beat("working", current=None)
@@ -735,9 +1012,7 @@ def run(enumerate_releases=None, put=None, now_fn=_now, max_cubes=None) -> dict:
                 c["not_held"] = True
             else:
                 held += 1
-            print(f"[lane] {pid}: merge {r}"
-                  + (f" ({c.get('last_error')})" if r in ("transient", "definitive") else ""),
-                  flush=True)
+            print(_merge_line(pid, r, c), flush=True)
             save_state(st)                                   # BEFORE serving: two-phase
             blob.write_bytes_atomic(DEBT, json.dumps(debt, sort_keys=True).encode("utf-8"))
             if r not in ("merged",):
