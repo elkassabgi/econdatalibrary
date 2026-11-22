@@ -26,6 +26,8 @@
 
 // The header names shared with src/localMode.ts, by value: node --test (type stripping) cannot resolve
 // an extension-less import, and test/edge.test.ts pins these equal to localMode's.
+import { FRESHNESS_CLASSES_TAG } from "./freshnessClasses.ts";
+
 export const ORIGIN_SECRET_HEADER = "x-econ-origin-secret";
 export const COUNT_HEADER = "x-econ-count";
 export const ORIGIN_MARK_HEADER = "x-econ-origin";
@@ -64,7 +66,9 @@ export function isSoak(env: { SOAK?: string }): boolean {
 }
 
 /** /v1/edge-status: what the off-machine check (tools/selfhost/watch_edge.py) compares with the committed
- *  wrangler.toml. Public and harmless: three booleans, a two-valued state, two raw config values and a public commit id. It
+ *  wrangler.toml. Public and harmless: three booleans, a two-valued state, two raw config values, a public commit id
+ *  and the tag of the freshness classes this build carries (src/freshnessClasses.ts, a hash of public files;
+ *  compare it with the committed file to see whether a registry change that moved a class is deployed). It
  *  touches no storage, so it can never become a cost path, and never names the origin's address. */
 export function edgeStatus(env: EdgeEnv & { EDGE_STATE?: string; GIT_COMMIT?: string; SOAK?: string }): Response {
   return new Response(JSON.stringify({
@@ -75,6 +79,7 @@ export function edgeStatus(env: EdgeEnv & { EDGE_STATE?: string; GIT_COMMIT?: st
     forward_raw: env.FORWARD ?? "",
     edge_state_raw: env.EDGE_STATE ?? "",
     origin_configured: Boolean(env.ORIGIN_URL && env.ORIGIN_SECRET),
+    freshness_classes: FRESHNESS_CLASSES_TAG,
   }), { headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
 }
 

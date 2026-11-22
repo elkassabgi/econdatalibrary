@@ -474,16 +474,19 @@ test("FORWARD on without an origin configured answers 503 and forwards nothing",
 });
 
 // ---- the edge's own writes: users db with FORWARD on, econ D1 / R2 unchanged without ------------------
+// read from the committed file's text, so the expectation does not come from the import the handler uses
+const TAG = /FRESHNESS_CLASSES_TAG = "(fc-[0-9a-f]{12})"/.exec(
+  readFileSync(new URL("../src/freshnessClasses.ts", import.meta.url), "utf8"))![1];
 const MODES = [
   { name: "FORWARD on -> users db only", forward: true,
     vars: { FORWARD: "on", EDGE_STATE: "", ORIGIN_URL: "http://127.0.0.1:9", ORIGIN_SECRET: "s", GIT_COMMIT: "c0ffee" },
-    status: { commit: "c0ffee", soak: false, forward: true, edge_state: "users", forward_raw: "on", edge_state_raw: "", origin_configured: true } },
+    status: { commit: "c0ffee", soak: false, forward: true, edge_state: "users", forward_raw: "on", edge_state_raw: "", origin_configured: true, freshness_classes: TAG } },
   { name: "EDGE_STATE users, FORWARD off (plan step 5) -> users db only", forward: true,
     vars: { FORWARD: "", EDGE_STATE: "users", ORIGIN_URL: "", ORIGIN_SECRET: "" },
-    status: { commit: null, soak: false, forward: false, edge_state: "users", forward_raw: "", edge_state_raw: "users", origin_configured: false } },
+    status: { commit: null, soak: false, forward: false, edge_state: "users", forward_raw: "", edge_state_raw: "users", origin_configured: false, freshness_classes: TAG } },
   { name: "neither -> econ D1 / R2 only (as before)", forward: false,
     vars: { FORWARD: "", EDGE_STATE: "", ORIGIN_URL: "", ORIGIN_SECRET: "" },
-    status: { commit: null, soak: false, forward: false, edge_state: "econ", forward_raw: "", edge_state_raw: "", origin_configured: false } },
+    status: { commit: null, soak: false, forward: false, edge_state: "econ", forward_raw: "", edge_state_raw: "", origin_configured: false, freshness_classes: TAG } },
 ];
 
 for (const mode of MODES) {
