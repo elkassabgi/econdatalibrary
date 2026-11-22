@@ -141,7 +141,7 @@ def _net(monkeypatch, rows, counts, *, corrupt=False, calls=None):
     monkeypatch.setattr(sc, "_get", lambda ep, **k: {"status": "SUCCESS",
                                                      "object": "https://example.invalid/t.zip"})
 
-    def _download(url, dest, tries=5):
+    def _download(url, dest, tries=5, meta=None):
         if calls is not None:
             calls.append(url)
         _zip(dest, rows)
@@ -465,8 +465,10 @@ def test_an_uncatalogued_cube_is_settled_with_its_ids_as_debt(world, monkeypatch
 def test_a_short_table_is_refused_three_times_then_quarantined_until_re_released(world, monkeypatch):
     before = (world / f"{PID}.parquet").read_bytes()
     _net(monkeypatch, NEW[:4], (5, 3))
-    for n in (1, 2, 3):
-        lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket())
+    # THE STRIKES ARE SPACED (2026-11-22, R2026): 1 h after the first, then not before first + 12 h - three
+    # consecutive 5-minute iterations no longer quarantine (tests/test_statcan_strike_rule.py pins that).
+    for n, h in ((1, 0), (2, 1), (3, 12)):
+        lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), now_fn=_hours(h))
         c = _state(world)["cubes"][str(PID)]
         assert c["fails"] == n and c.get("merged") is None
     assert c["quarantined"] is True
@@ -475,8 +477,9 @@ def test_a_short_table_is_refused_three_times_then_quarantined_until_re_released
     _net(monkeypatch, NEW, (5, 3))
     # with only a quarantined cube on record the lane is IDLE, so it re-enumerates hourly, not on
     # every guard tick: the re-release is seen on the first launch past ENUM_MIN_INTERVAL_MIN
-    assert lane.run(enumerate_releases=_rel({PID: "2026-09-19T08:30"}), put=_Bucket())["enumerated"] is False
-    later = lambda: lane._now() + dt.timedelta(minutes=lane.ENUM_MIN_INTERVAL_MIN + 1)  # noqa: E731
+    assert lane.run(enumerate_releases=_rel({PID: "2026-09-19T08:30"}), put=_Bucket(),
+                    now_fn=_hours(12))["enumerated"] is False
+    later = _hours(12 + (lane.ENUM_MIN_INTERVAL_MIN + 1) / 60.0)
     lane.run(enumerate_releases=_rel({PID: "2026-09-19T08:30"}), put=_Bucket(), now_fn=later)
     c = _state(world)["cubes"][str(PID)]
     assert not c.get("quarantined") and c["merged"] == "2026-09-19T08:30", "a new release retries it"
@@ -731,7 +734,7 @@ def test_the_draining_verdict_survives_idle_iterations_and_a_relaunch(world, mon
     monkeypatch.setattr(sc, "_get", lambda ep, **k: {"status": "SUCCESS",
                                                      "object": f"https://example.invalid/{ep}.zip"})
 
-    def _download(url, dest, tries=5):
+    def _download(url, dest, tries=5, meta=None):
         _zip(dest, NEW)
         if "10100001" in url:                     # this cube's transfer keeps breaking: owed, backing off
             with open(dest, "r+b") as f:
@@ -1192,8 +1195,8 @@ def test_the_end_is_read_after_the_releases_and_before_the_fetch(world, monkeypa
         return out
     real_download = sc._download
 
-    def _download(url, dest, tries=5):
-        got = real_download(url, dest, tries)
+    def _download(url, dest, tries=5, meta=None):
+        got = real_download(url, dest, tries, meta=meta)
         pub["end"] = "2026-09-01"                                    # moves after the fetch: never seen
         return got
     monkeypatch.setattr(sc, "_download", _download)
@@ -1535,7 +1538,7 @@ def test_a_re_released_quarantined_cube_gets_its_end_read(world, monkeypatch):
     """V2-F2: quarantined on its FIRST visit (no end on record), then re-released: the lift of the
     quarantine and the end read happen in the same enumeration, so the merge is classified."""
     _net(monkeypatch, NEW[:4], (5, 3))                              # short: refused three times
-    for n in (0, 1, 2):
+    for n in (0, 1, 12):                                             # spaced: 1 h, then first + 12 h (R2026)
         lane.run(enumerate_releases=_rel({PID: REL}), put=_Bucket(), ends_fn=lambda: ({}, "down"),
                  now_fn=_hours(n))
     st = _state(world)
@@ -1544,7 +1547,7 @@ def test_a_re_released_quarantined_cube_gets_its_end_read(world, monkeypatch):
     (world / "_lane_state.json").write_text(json.dumps(st))
     _net(monkeypatch, NEW, (5, 3))
     lane.run(enumerate_releases=_rel({PID: "2026-09-19T08:30"}), put=_Bucket(), ends_fn=_ends("2026-06-01"),
-             now_fn=_hours(4))
+             now_fn=_hours(14))
     c = _state(world)["cubes"][str(PID)]
     assert c["merged"] == "2026-09-19T08:30" and c["publisher"]["end"] == "2026-06-01"
     assert c["upstream"]["class"] == "stale_upstream", c["upstream"]

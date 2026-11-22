@@ -15,8 +15,13 @@ nothing written to the store:
 Verdicts (design review finding 7 - `partial` is not an honest signal for a draining backlog):
     DefinitiveError  no beat, or a beat older than max(2 h, the current cube's estimate x 1.5) while
                      working (3 h while idle): the lane is dead or wedged;
-                     or the OLDEST owed release is older than OWED_AGE_MAX_DAYS: alive, not keeping up;
-                     or named cubes keep failing transiently (TRANSIENT_RED_AFTER in a row)
+                     or the enumeration has failed for longer than ENUM_FAIL_RED_HOURS (the lane is up and
+                     beating, but sees no release);
+                     or the circuit breaker has held merges for longer than BREAKER_RED_HOURS;
+                     or named cubes keep failing transiently (TRANSIENT_RED_AFTER in a row) - checked before
+                     the owed age, so a DRAINING lane cannot hide it (2026-11-22);
+                     or the OLDEST owed release is older than OWED_AGE_MAX_DAYS and nothing finished lately:
+                     alive, not keeping up
     partial          alive and current, but something needs a human: QUARANTINED cubes, merged cubes
                      whose served ids cannot be reproduced, or new-cube coverage debt older than
                      NEW_CUBE_DEBT_AMBER_DAYS
@@ -24,7 +29,8 @@ Verdicts (design review finding 7 - `partial` is not an honest signal for a drai
 WHERE THOSE LAND (lane review, stated rather than implied). The orchestrator books a fetcher's
 DefinitiveError as `partial` too (orchestrate.py, `except DefinitiveError`), so in the health table
 both read ATTENTION, and neither advances last_success - staleness then escalates on its own. This
-unit runs on statcan's weekly cadence, so it can take ~6.5 days to look. The PROMPT red is CI's:
+unit runs on statcan's weekly cadence when ok (nightly while partial: 12 runs on 12 days, 2026-11-05..16), so
+it can take ~6.5 days to look. The PROMPT red is CI's:
 tools/guard_heartbeat.py --check applies this same `verdict` to the lane's beat every day and fails
 the run (statcan is run_location: local, which the cloud health gate does not judge).
 changed_keys is {}: the lane serves what it merges, and the registry's `served_by: lane` keeps the
@@ -102,7 +108,9 @@ TMP_DIR = os.path.join(OUT_DIR, "_incr_tmp")
 # 310.9 s = 707 s, i.e. 2.8e-6 s/B; doubled for the merge's 2 GB default memory limit (the
 # measurement ran at 4 GB) and one network.
 EST_SECONDS_PER_STORED_BYTE = 5.6e-6
-# A cube that fails DETERMINISTICALLY this many times on one release is quarantined by the lane.
+# A cube that fails DETERMINISTICALLY this many times on one release is quarantined by the lane - only when
+# those strikes span at least jobs/statcan_lane.QUARANTINE_MIN_SPAN_H (12 h; 2026-11-22, R2026: three strikes in
+# three consecutive 5-minute iterations quarantined 44 cubes on refusals that lasted minutes to an hour).
 QUARANTINE_AFTER = 3
 
 # THE REPORTER'S THRESHOLDS.
@@ -125,6 +133,16 @@ FUTURE_SKEW_HOURS = 0.25
 # Released cubes we do not hold are booked as coverage debt by the lane; past this age the debt is
 # named (partial) so it cannot grow silently (lane review).
 NEW_CUBE_DEBT_AMBER_DAYS = 30
+# THE ENUMERATION (2026-11-22, R2026). A lane that cannot read getAllCubesListLite no longer dies (210 relaunch
+# deaths on 11-17/18): it stays up, keeps beating and backs off (jobs/statcan_lane.py `enum_fail`). Its beat is
+# fresh, so DEAD cannot fire - this is what turns it red: an enumeration failing for longer than this, since the
+# first failure of the streak. It cannot see new releases while that lasts.
+ENUM_FAIL_RED_HOURS = 6.0
+# THE CIRCUIT BREAKER (2026-11-22, R2026/R2028). One HTTP status refusing 3 cubes in an iteration holds every merge
+# back (jobs/statcan_lane.py `breaker`); after each hold at most 3 attempts decide, so a refusal that lasts reaches
+# each cube's own TRANSIENT_RED_AFTER slowly. This bounds it instead: a breaker that has held merges
+# for longer than this, since its first trip with no answer from StatCan between, is red.
+BREAKER_RED_HOURS = 6.0
 
 # THE VERDICTS THAT SAY THE LANE IS CURRENT (owner decision 2026-10-20: statcan must not read "late" on
 # the public API while its lane keeps it current). verdict() below has two such outcomes: `ok`, and the
@@ -152,10 +170,65 @@ def _ingester():
     return ing
 
 
+# THE HTTP STATUSES THAT MEAN "NOT NOW" (2026-11-22, ledger R2026). Both helpers below - the WDS calls and the zip
+# download - use this ONE set, so they cannot drift. The host answers through Cloudflare (server: cloudflare,
+# cf-ray), and 401/403 there is an edge refusal that lasted about an hour on 2026-11-18 (all 39 zips answered 200
+# again the next day, Last-Modified before the refusal); 408/425 and Cloudflare's 520-526/530 are timeouts and
+# origin faults. Booked DEFINITIVE they quarantined 35 cubes in 16 minutes and killed the lane's enumeration 210
+# times in a row. They are retried here (the tries below) and then raised TRANSIENT: the lane backs off and a cube
+# that keeps failing turns red FAILING (TRANSIENT_RED_AFTER), never quietly quarantined.
+TRANSIENT_HTTP = frozenset({401, 403, 408, 425, 429, 500, 502, 503, 504,
+                            520, 521, 522, 523, 524, 525, 526, 530})
+# The first bytes of a refused body are LOGGED (stdout) - never put into an exception text: an exception text
+# becomes last_error, the progress file, the guard-heartbeat object and the stored unit note, and a Cloudflare
+# block page can hold the client's IP address (design review F7).
+BODY_HEAD_BYTES = 200
+
+
+def _http_error(cls, msg, status):
+    """A TransientError/DefinitiveError that carries the HTTP status (the lane's circuit breaker counts it)."""
+    e = cls(msg)
+    e.http_status = int(status)
+    return e
+
+
+def _refusal_headers(r) -> str:
+    """'server=<..> cf-ray=<..>' of a refused response. Safe to publish: no body bytes."""
+    h = getattr(r, "headers", None) or {}
+    try:
+        server, ray = h.get("server"), h.get("cf-ray")
+    except Exception:                                                # noqa: BLE001
+        server = ray = None
+    return f"server={server!r} cf-ray={ray!r}"
+
+
+def _log_refusal(what, r, a, tries, transient, head) -> str:
+    """Print one stdout line for a refused response (every try) and return the PUBLISHABLE detail."""
+    hdr = _refusal_headers(r)
+    print(f"    statcan {what}: HTTP {r.status_code} (try {a + 1}/{tries}, "
+          f"{'transient' if transient else 'definitive'}) {hdr} body={bytes(head or b'')[:BODY_HEAD_BYTES]!r}",
+          flush=True)
+    return hdr
+
+
+def _body_head(r) -> bytes:
+    try:
+        return bytes(r.content or b"")[:BODY_HEAD_BYTES]
+    except Exception:                                                # noqa: BLE001
+        return b""
+
+
+def _stream_head(r) -> bytes:
+    try:
+        return bytes(next(r.iter_content(chunk_size=BODY_HEAD_BYTES), b"") or b"")[:BODY_HEAD_BYTES]
+    except Exception:                                                # noqa: BLE001
+        return b""
+
+
 def _get(endpoint, tries=5, timeout=120):
-    """GET a WDS endpoint. Returns parsed JSON on 200. TransientError on
-    timeout/5xx/429/network/truncated-body (retried by a later pass); DefinitiveError on a
-    hard non-200 (!=429)."""
+    """GET a WDS endpoint. Returns parsed JSON on 200. TransientError on timeout/network/bad JSON and on every
+    status in TRANSIENT_HTTP after `tries`; DefinitiveError at once on any other non-200. Both carry
+    `.http_status` when StatCan answered with a status."""
     return _call("GET", endpoint, None, tries, timeout)
 
 
@@ -183,11 +256,14 @@ def _call(method, endpoint, payload, tries, timeout):
                 if a == tries - 1:
                     raise TransientError(f"statcan {endpoint}: bad json on 200 ({e})")
                 time.sleep(min(2 ** a, 30)); continue
-        if r.status_code in (429, 500, 502, 503, 504):
+        transient = r.status_code in TRANSIENT_HTTP
+        hdr = _log_refusal(endpoint, r, a, tries, transient, _body_head(r))
+        if transient:
             if a == tries - 1:
-                raise TransientError(f"statcan {endpoint} HTTP {r.status_code}")
+                raise _http_error(TransientError, f"statcan {endpoint} HTTP {r.status_code} ({hdr})",
+                                  r.status_code)
             time.sleep(min(2 ** a, 30)); continue
-        raise DefinitiveError(f"statcan {endpoint} HTTP {r.status_code}")
+        raise _http_error(DefinitiveError, f"statcan {endpoint} HTTP {r.status_code} ({hdr})", r.status_code)
 
 
 _LITE_FLOOR = 1000     # StatCan publishes >8,000 cubes; a short list is a structural break
@@ -277,21 +353,31 @@ def _remove_quietly(p):
         pass
 
 
-def _download(url, dest, tries=5):
-    """Stream `url` to `dest`. TransientError on timeout / network / 429 / 5xx after `tries`, and on
-    a body shorter or longer than its Content-Length (a truncated transfer must never reach the
-    parser as if it were the table). DefinitiveError on any other non-200."""
+def _download(url, dest, tries=5, meta=None):
+    """Stream `url` to `dest`. TransientError on timeout / network / any status in TRANSIENT_HTTP after `tries`,
+    and on a body shorter or longer than its Content-Length (a truncated transfer must never reach the
+    parser as if it were the table). DefinitiveError at once on any other non-200. Both carry `.http_status`
+    when the host answered with a status. `meta` (a dict, optional) receives the 200 response's Last-Modified,
+    server and cf-ray, for the count-gate log line."""
     for a in range(tries):
         try:
             with requests.get(url, headers={"User-Agent": UA["User-Agent"]}, timeout=900,
                               stream=True) as r:
-                if r.status_code in (429, 500, 502, 503, 504):
+                if r.status_code != 200:
+                    transient = r.status_code in TRANSIENT_HTTP
+                    hdr = _log_refusal(f"zip {url}", r, a, tries, transient, _stream_head(r))
+                    if not transient:
+                        raise _http_error(DefinitiveError, f"statcan zip {url} HTTP {r.status_code} ({hdr})",
+                                          r.status_code)
                     if a == tries - 1:
-                        raise TransientError(f"statcan zip {url} HTTP {r.status_code}")
+                        raise _http_error(TransientError, f"statcan zip {url} HTTP {r.status_code} ({hdr})",
+                                          r.status_code)
                     time.sleep(min(2 ** a, 30))
                     continue
-                if r.status_code != 200:
-                    raise DefinitiveError(f"statcan zip {url} HTTP {r.status_code}")
+                if meta is not None:
+                    h = r.headers
+                    meta.update(last_modified=h.get("Last-Modified"), server=h.get("server"),
+                                cf_ray=h.get("cf-ray"))
                 want = r.headers.get("Content-Length")
                 got = 0
                 with open(dest, "wb") as f:
@@ -338,7 +424,7 @@ def _vectorless(st, want_series):
     return st.get("layout") == "census" or (want_series == 1 and int(st["n_series"]) > 1)
 
 
-def _check_complete(pid, st, want_rows, want_series):
+def _check_complete(pid, st, want_rows, want_series, note=None):
     """Raise DefinitiveError unless the parse is provably complete. Returns True when update() must
     also require at least the stored rows (see below).
 
@@ -350,11 +436,13 @@ def _check_complete(pid, st, want_rows, want_series):
     16,797,696 parsed cells (161,240 more, and not its 5,158,862 null cells), coordinate-keyed
     12100147 publishes 19,940,793 against 18,225,522 rows with the parser dropping NOTHING - so
     equality would refuse a correct table for ever (NUMBERS.md 2026-09-23). There the parse must
-    skip no row for any reason but a blank line, and must hold at least the stored rows."""
+    skip no row for any reason but a blank line, and must hold at least the stored rows.
+    `note` (e.g. the zip's Last-Modified) is appended to a refusal's text."""
+    tail = f"; {note}" if note else ""
     bad_skips = {k: v for k, v in (st.get("skipped") or {}).items() if k not in _HARMLESS_SKIPS}
     if _vectorless(st, want_series):
         if bad_skips:
-            raise DefinitiveError(f"statcan {pid}: the parse of a vectorless cube dropped rows {bad_skips}")
+            raise DefinitiveError(f"statcan {pid}: the parse of a vectorless cube dropped rows {bad_skips}{tail}")
         return True
     got_rows, got_series = int(st["n_obs"]), int(st["n_series"])
     bad = []
@@ -364,7 +452,7 @@ def _check_complete(pid, st, want_rows, want_series):
         bad.append(f"{got_series:,} series parsed vs nbSeriesCube {want_series:,}")
     if bad:
         raise DefinitiveError(f"statcan {pid}: incomplete against StatCan's own counts - "
-                              f"{'; '.join(bad)}; rows skipped by the parser {st.get('skipped')}")
+                              f"{'; '.join(bad)}; rows skipped by the parser {st.get('skipped')}{tail}")
     return False
 
 
@@ -388,7 +476,8 @@ def _fetch_cube_whole(pid):
     zpath, out = stem + ".zip", stem + ".parquet"
     ok = False
     try:
-        zip_bytes = _download(url, zpath)
+        zmeta = {}
+        zip_bytes = _download(url, zpath, meta=zmeta)
         try:
             st = _ingester().parse_zip_to_parquet(zpath, out)
         except (zipfile.BadZipFile, zlib.error, EOFError) as e:
@@ -407,8 +496,26 @@ def _fetch_cube_whole(pid):
         except RuntimeError as e:
             # the ingester's own refusals: no data CSV in the zip, or an unrecognised layout
             raise DefinitiveError(f"statcan {pid}: {e}") from e
-        st["needs_stored_floor"] = _check_complete(pid, st, want_rows, want_series)
+        # THE COUNT GATE IS LOGGED ON EVERY DECISION (2026-11-22, R2025/R2026): 20 refusals of the lane passed on
+        # the next 5-17 min retry with the same zip Last-Modified, and nothing recorded the counts or the file's
+        # time - so the next diagnosis can tell a pre-release copy from a short table.
+        lm = zmeta.get("last_modified")
+        got = (f"parsed {int(st['n_obs']):,} rows / {int(st['n_series']):,} series vs getCubeMetadata "
+               f"{want_rows:,} / {want_series:,}")
+        try:
+            st["needs_stored_floor"] = _check_complete(pid, st, want_rows, want_series,
+                                                       note=f"zip Last-Modified {lm}")
+        except DefinitiveError:
+            print(f"    statcan {pid}: count gate REFUSED - {got}; zip Last-Modified {lm}", flush=True)
+            raise
+        if st["needs_stored_floor"]:
+            print(f"    statcan {pid}: count gate passed - vectorless, counts not compared (no row dropped; "
+                  f"the stored floor applies); {got}; zip Last-Modified {lm}", flush=True)
+        else:
+            print(f"    statcan {pid}: count gate passed - {got}; zip Last-Modified {lm}", flush=True)
         st["zip_bytes"] = zip_bytes
+        st["zip_last_modified"] = lm
+        st["want_rows"], st["want_series"] = want_rows, want_series
         ok = True
         return out, st
     finally:
@@ -491,7 +598,33 @@ def verdict(state, progress, now):
     if progress.get("state") == "store_unreachable":
         raise DefinitiveError("statcan: the lane found the store holding ZERO cubes - the store is "
                               "unreachable from its backend (R753)")
+    # BEFORE the owed-age block (design review F2/C2): a lane still working its old backlog reads DRAINING and
+    # returns there, which would hide an enumeration that has failed for hours.
+    ef = progress.get("enum_fail")
+    if ef:
+        since = ef.get("since") if isinstance(ef, dict) else None
+        since_h = _hours_since(since, now)
+        if since_h is None or since_h > ENUM_FAIL_RED_HOURS:
+            e = ef if isinstance(ef, dict) else {}
+            raise DefinitiveError(
+                f"statcan: the lane cannot ENUMERATE StatCan's cube list - failing since {since} "
+                f"({'unreadable' if since_h is None else f'{since_h:.1f} h'}, allowed {ENUM_FAIL_RED_HOURS:.0f} h), "
+                f"{e.get('count')} attempt(s), last: {str(e.get('last_error'))[:200]}. No new release is seen "
+                f"while this lasts.")
+    br = progress.get("breaker")
+    if br:
+        b = br if isinstance(br, dict) else {}
+        br_h = _hours_since(b.get("since"), now)
+        if br_h is None or br_h > BREAKER_RED_HOURS:
+            raise DefinitiveError(
+                f"statcan: the lane's circuit breaker has held every merge back since {b.get('since')} "
+                f"({'unreadable' if br_h is None else f'{br_h:.1f} h'}, allowed {BREAKER_RED_HOURS:.0f} h) - StatCan "
+                f"refuses with HTTP {b.get('status')}; {b.get('trips')} trip(s), cubes {list(b.get('cubes') or [])[:10]}")
     owed = progress.get("owed") or {}
+    # BEFORE the owed-age block too (design review F2/C2 option (a)): a cube failing transiently again and again
+    # is red whether or not the lane is draining an old backlog. DRAINING and FAILING both read not current on the
+    # public side, so only CI's verdict changes.
+    failing = owed.get("failing") or []
     oldest = owed.get("oldest_owed_release")
     newest = None
     for c in (state.get("cubes") or {}).values():
@@ -500,6 +633,10 @@ def verdict(state, progress, now):
             newest = mo
     tail = (f"{owed.get('merge', 0)} cube(s) owe a merge, {owed.get('serve', 0)} owe serving, "
             f"{owed.get('new_cubes', 0)} released cube(s) not held (catalogue debt)")
+    if failing:
+        raise DefinitiveError(
+            f"statcan: {len(failing)} cube(s) keep FAILING in the lane (transient, again and again - "
+            f"e.g. a store fault R753): {'; '.join(failing[:10])}; {tail}")
     if oldest:
         try:
             age_d = (now.date() - dt.date.fromisoformat(str(oldest)[:10])).days
@@ -521,11 +658,6 @@ def verdict(state, progress, now):
                 f"is {oldest} ({age_d} days, over {OWED_AGE_MAX_DAYS}), last finished work "
                 f"{'never' if prog_h is None else f'{prog_h:.1f} h ago'} (allowed {drain_allowed:.1f} h); "
                 f"{tail}")
-    failing = owed.get("failing") or []
-    if failing:
-        raise DefinitiveError(
-            f"statcan: {len(failing)} cube(s) keep FAILING in the lane (transient, again and again - "
-            f"e.g. a store fault R753): {'; '.join(failing[:10])}; {tail}")
     amber = []
     quarantined = owed.get("quarantined") or []
     if quarantined:

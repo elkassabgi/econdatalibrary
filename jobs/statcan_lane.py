@@ -47,6 +47,21 @@ THREE ADDITIONS (owner leave 2026-11-22; design F:/work/econ_finish/statcan_lane
     date is later than the stored copy's is held (quarantined for that release), never merged: a
     keep-old merge would splice the stored older vintage under the new one.
 
+THE STRIKE RULE (2026-11-22, ledger R2026; design F:/work/econ_finish/statcan_strike_pr/DESIGN.md). On 2026-11-18
+an edge refusal of about an hour quarantined 35 cubes in 16 minutes, and pre-release zips served for minutes
+quarantined 9 more by the count gate. Four changes, so a refusal that lasts minutes or hours cannot park a cube for a
+release cycle, and a refusal that lasts for ever still turns red or quarantines within a bounded time:
+  * SPACED STRIKES. A deterministic failure waits 1 h, then 6 h; the 3rd strike on one release quarantines only
+    when the strikes span QUARANTINE_MIN_SPAN_H (12 h). A re-release drops the old strikes and their spacing.
+  * "NOT NOW" CODES ARE TRANSIENT (statcan.TRANSIENT_HTTP: 401, 403, 408, 425, 429, 5xx, 520-526, 530).
+  * THE ENUMERATION CANNOT END THE PROCESS: a failure is recorded (`enum_fail`), logged and backed off; verdict()
+    reads it red after statcan.ENUM_FAIL_RED_HOURS (6 h).
+  * A CIRCUIT BREAKER: one HTTP status refusing BREAKER_MIN_CUBES (3) cubes in one iteration books no strike for
+    it, stops the merge attempts (serving goes on) and holds every merge-owed cube back for 10-60 min; after the
+    hold, at most 3 attempts decide: closed, tripped again, or held again.
+  Every refusal is logged with its status, server and cf-ray (and the first body bytes, in the log line only), and
+  every count-gate decision with the parsed and published counts and the zip's Last-Modified.
+
 BEFORE T0 ONLY (self-hosting plan, 2026-09-28). The lane merges into the R2 store and serves R2, so it
 REFUSES once econ is cut over (core.cutover): its post-T0 backend and writer lock are a T0 design
 decision, not a default. Until then it reads the catalogue through core.catalog_path and writes every
@@ -170,6 +185,30 @@ BACKOFF_MIN, BACKOFF_MAX_MIN = 10.0, 12 * 60.0
 # This many transient failures in a row (10+20+40+80+160 min of backoff, ~5 h) and the cube is named
 # to the reporter as FAILING - red - with its last error (lane review P3).
 TRANSIENT_RED_AFTER = 6
+# STRIKES ARE SPACED IN TIME (2026-11-22, ledger R2026; design F:/work/econ_finish/statcan_strike_pr/DESIGN.md).
+# A deterministic failure used to set no retry_after, so its 3 strikes landed in 3 consecutive 5-minute iterations:
+# on 2026-11-18 an edge refusal of about an hour quarantined 35 cubes in 16 minutes, and a pre-release zip served
+# for minutes quarantined 9 more by the count gate (20 such refusals passed 5-17 minutes later). Now strike 1 waits
+# 1 h, every later strike 6 h, and a cube is quarantined only by its 3rd strike on ONE release when the strikes span
+# at least QUARANTINE_MIN_SPAN_H - read from the first strike's stamp, never from retry_after.
+STRIKE_RETRY_MIN = (60.0, 360.0)          # after strike 1; after every later strike
+QUARANTINE_MIN_SPAN_H = 12.0
+# THE ENUMERATION BACKOFF (R2026). getAllCubesListLite answered 403 for ~19 h on 11-17/18 and the bare call killed
+# the process 210 times. A failure now backs off 10, 20, 40, 60, 60 ... min. Every attempt writes a stdout line,
+# and the cap stays well under the guard's 3 h stall kill (RELAUNCH_GUARD $STALL_HOURS, keyed on the log's mtime).
+ENUM_BACKOFF_MIN, ENUM_BACKOFF_MAX_MIN = 10.0, 60.0
+# THE CIRCUIT BREAKER (R2026). One HTTP status refusing this many cubes in one iteration is the host, not the
+# cubes: no strike is booked for it, merge attempts stop, serving goes on, and every merge-owed cube is held back
+# by a lane-level record until its `until` (10, 20, 40, 60, 60 ... min) - so the cube list and the end dates are
+# read once per hold (2 GETs), never every 5 minutes (design review F1/C1). When a hold ends the breaker is
+# HALF-OPEN: any answer from StatCan (another status included) closes it; BREAKER_MIN_CUBES attempts with no answer
+# trip it again (if the trip's status was among them) or arm the hold again - see run() and _probe (verification
+# review V1-V3, W1-W2).
+BREAKER_MIN_CUBES = 3
+BREAKER_BACKOFF_MIN, BREAKER_BACKOFF_MAX_MIN = 10.0, 60.0
+# What a breaker trip puts back for a cube it refused with a strike (design review C3): the state before the attempt.
+_RESTORE_FIELDS = ("fails", "fail_release", "first_strike_utc", "retry_after", "quarantined", "last_error",
+                   "transient_fails", "merge_in_flight")
 
 _TOOL = os.path.join(ROOT, "tools", "derive_statcan_tables.py")
 _UPSTREAM = os.path.join(ROOT, "tools", "audit_statcan_upstream.py")
@@ -276,6 +315,14 @@ class Progress:
             self.d["last_progress_utc"] = self.st["last_progress_utc"] = _iso(_now())
         self.d["beat_utc"] = _iso(_now())
         self.d["owed"] = summarise(self.st)
+        # A failing enumeration and a breaker hold are published from the STATE at every beat, so a relaunch and
+        # an idle iteration carry them (R1100). verdict() turns the first red after ENUM_FAIL_RED_HOURS.
+        for k in ("enum_fail", "breaker"):
+            v = self.st.get(k)
+            if v:
+                self.d[k] = dict(v) if isinstance(v, dict) else v
+            else:
+                self.d.pop(k, None)
         body = json.dumps(self.d, sort_keys=True).encode("utf-8")
         blob.write_bytes_atomic(PROGRESS, body)
         try:
@@ -354,6 +401,36 @@ def serve_owed(c: dict) -> bool:
 def _due(c: dict, now: dt.datetime) -> bool:
     ra = _parse_iso(c.get("retry_after"))
     return ra is None or ra <= now
+
+
+def _breaker_holds(st: dict, now: dt.datetime) -> bool:
+    """OPEN: True while a circuit-breaker trip holds every merge-owed cube back (serving is not held)."""
+    b = st.get("breaker")
+    until = _parse_iso(b.get("until")) if isinstance(b, dict) else None
+    return until is not None and until > now
+
+
+def _trip_refused(st: dict, c: dict) -> bool:
+    """True when a breaker record exists and the cube waits out a TRANSIENT backoff from that trip's status. A
+    strike pops refused_http (_deterministic), so a struck cube is never this (verification review V2)."""
+    b = st.get("breaker")
+    return isinstance(b, dict) and b.get("status") is not None and c.get("refused_http") == b.get("status")
+
+
+def _probe(st: dict, now: dt.datetime):
+    """HALF-OPEN: a trip's hold has ended and StatCan has not answered since. When no merge-owed cube is due, the
+    first cube waiting out a TRANSIENT backoff from the trip's status (`_trip_refused`) is attempted anyway, so a
+    recovered host is found within one hold, not one cube backoff. Never a struck cube: a strike's wait stands. The
+    half-open iteration always decides (run(): closed, tripped again or held again), so a probe is attempted at
+    most once per hold. Returns the pid, or None."""
+    b = st.get("breaker")
+    if not isinstance(b, dict) or _breaker_holds(st, now):
+        return None
+    owed = [(p, c) for p, c in st["cubes"].items() if merge_owed(c) and not c.get("quarantined")]
+    if any(_due(c, now) for _p, c in owed):
+        return None
+    cands = sorted((c["release"], c.get("bytes") or 0, p) for p, c in owed if _trip_refused(st, c))
+    return cands[0][2] if cands else None
 
 
 # --------------------------------------------------------------------------- #
@@ -564,14 +641,45 @@ def _backoff(c: dict, reason: str, now: dt.datetime) -> None:
     c["last_error"] = reason[:300]
 
 
-def _deterministic(c: dict, pid: str, reason: str) -> None:
+def _quarantine(c: dict, pid: str, reason: str) -> None:
+    c["quarantined"] = True
+    print(f"[lane] {pid}: QUARANTINED after {c.get('fails')} failures on its {c.get('release')} release (first "
+          f"strike {c.get('first_strike_utc')}) - not attempted again until StatCan re-releases it: "
+          f"{reason[:200]}", flush=True)
+
+
+def _deterministic(c: dict, pid: str, reason: str, now: dt.datetime, defer_quarantine: bool = False) -> bool:
+    """Book one DETERMINISTIC strike on the cube's current release, spaced in time (STRIKE_RETRY_MIN), and
+    quarantine on the QUARANTINE_AFTER-th strike only when the strikes span QUARANTINE_MIN_SPAN_H. Strike 1 always
+    OVERWRITES first_strike_utc (a stale stamp from an older release must not shorten the span); on a later strike a
+    missing or unreadable stamp starts the span now, which can only delay a quarantine. With `defer_quarantine` a
+    strike that would quarantine does not: it returns True and the caller decides (the circuit breaker, R2026)."""
     rel = c.get("release")
     n = int(c.get("fails") or 0) + 1 if c.get("fail_release") == rel else 1
-    c.update(fails=n, fail_release=rel, last_error=reason[:300])
-    if n >= sc.QUARANTINE_AFTER:
-        c["quarantined"] = True
-        print(f"[lane] {pid}: QUARANTINED after {n} failures on its {rel} release - not attempted "
-              f"again until StatCan re-releases it: {reason[:200]}", flush=True)
+    first = _parse_iso(c.get("first_strike_utc")) if n > 1 else None
+    if first is None:
+        first = now
+    c.update(fails=n, fail_release=rel, first_strike_utc=_iso(first), last_error=reason[:300])
+    # A STRIKE'S WAIT STANDS: no breaker close frees it and no half-open probe skips it, whichever gate struck
+    # (verification review F3/V2 - a stale refused_http from an earlier transient refusal let a close free it)
+    c.pop("refused_http", None)
+    span_h = (now - first).total_seconds() / 3600.0
+    if n >= sc.QUARANTINE_AFTER and span_h >= QUARANTINE_MIN_SPAN_H:
+        if defer_quarantine:
+            c["retry_after"] = _iso(now + dt.timedelta(minutes=STRIKE_RETRY_MIN[1]))
+            print(f"[lane] {pid}: strike {n} on its {rel} release (first strike {_iso(first)}) would quarantine it; "
+                  f"held for this iteration's circuit-breaker decision: {reason[:200]}", flush=True)
+            return True
+        _quarantine(c, pid, reason)
+        return False
+    ra = now + dt.timedelta(minutes=STRIKE_RETRY_MIN[0] if n == 1 else STRIKE_RETRY_MIN[1])
+    if n >= sc.QUARANTINE_AFTER - 1:
+        ra = max(ra, first + dt.timedelta(hours=QUARANTINE_MIN_SPAN_H))
+    c["retry_after"] = _iso(ra)
+    print(f"[lane] {pid}: strike {n} of {sc.QUARANTINE_AFTER} on its {rel} release (first strike {_iso(first)}); "
+          f"next try not before {_iso(ra)} - a quarantine needs {sc.QUARANTINE_AFTER} strikes over at least "
+          f"{QUARANTINE_MIN_SPAN_H:.0f} h: {reason[:200]}", flush=True)
+    return False
 
 
 # --------------------------------------------------------------------------- #
@@ -690,10 +798,13 @@ def _history_gate(pid: str, c: dict, stored_copy: str, before: int, new_path: st
     return "definitive"
 
 
-def merge_cube(pid: str, c: dict, st: dict, progress: Progress, now: dt.datetime) -> str:
+def merge_cube(pid: str, c: dict, st: dict, progress: Progress, now: dt.datetime, attempt=None) -> str:
     """Refresh one held cube's store object. Returns 'merged', 'unchanged', 'transient',
     'definitive' or 'absent'. On success sets c['merged'] (and c['served'] too when nothing a user
-    reads changed)."""
+    reads changed). `attempt` (a dict, optional, never persisted) receives what run()'s circuit breaker needs:
+    http_status (StatCan refused the fetch with a status), fetched (the fetch returned), pending_quarantine
+    (the strike would quarantine; held for the breaker decision)."""
+    attempt = {} if attempt is None else attempt
     import pyarrow.parquet as pq                                     # noqa: PLC0415
     path = os.path.join(sc.OUT_DIR, f"{pid}.parquet")
     try:
@@ -719,6 +830,16 @@ def merge_cube(pid: str, c: dict, st: dict, progress: Progress, now: dt.datetime
     pub = dict(c.get("publisher") or {})
     c["merge_in_flight"] = rel
     save_state(st)
+
+    def nothing_published():
+        # THIS ATTEMPT PUBLISHED NOTHING (2026-11-22; the report found 49 of 49 quarantined cubes still flagged):
+        # the flag goes back to what it was BEFORE the attempt - never a plain pop, so a merge an EARLIER attempt
+        # may have published (R1098 P1) still forces its serve. Called only where no write can have happened.
+        if prior_in_flight is None:
+            c.pop("merge_in_flight", None)
+        else:
+            c["merge_in_flight"] = prior_in_flight
+
     progress.beat("merging", current={"pid": pid, "phase": "merge", "release": rel,
                                       "started_utc": _iso(_now()), "est_min": c.get("est_min")})
     copy = new_path = None
@@ -730,34 +851,62 @@ def merge_cube(pid: str, c: dict, st: dict, progress: Progress, now: dt.datetime
             before = pq.read_metadata(copy[0]).num_rows
         except Exception as e:                                       # noqa: BLE001
             _backoff(c, f"stored cube unreadable: {type(e).__name__}: {e}", now)
+            nothing_published()
             return "transient"
         try:
             new_path, s = sc._fetch_cube_whole(int(pid))
         except TransientError as e:
+            attempt["http_status"] = getattr(e, "http_status", None)
             _backoff(c, f"whole-table fetch failed: {e}", now)
+            if attempt["http_status"] is not None:
+                c["refused_http"] = attempt["http_status"]     # a breaker that closes makes it due again
+            # (no status - a reset, a timeout: no answer at all. A cube that waits on a breaker keeps waiting on
+            # it, so the record and its one-decision-per-hold rule stay in force - verification review V1)
+            nothing_published()
             return "transient"
         except DefinitiveError as e:
-            _deterministic(c, pid, f"whole-table fetch refused: {e}")
+            attempt["http_status"] = getattr(e, "http_status", None)
+            # no status: StatCan ANSWERED (200) with something unusable - no zip URL, a short or unparseable table.
+            # For the circuit breaker that is a host that answers (run(): a half-open iteration closes on it).
+            attempt["host_answered"] = attempt["http_status"] is None
+            # a refusal WITH an HTTP status may be one of many this iteration: its quarantine waits for run()'s
+            # circuit-breaker decision (design review C3)
+            attempt["pending_quarantine"] = _deterministic(
+                c, pid, f"whole-table fetch refused: {e}", now,
+                defer_quarantine=attempt["http_status"] is not None)
+            nothing_published()
             return "definitive"
+        except Exception as e:                                       # noqa: BLE001
+            # NOT a StatCan answer (e.g. a full disk while writing the zip - _download does not catch OSError):
+            # transient, and it published nothing (verification review F5)
+            _backoff(c, f"unexpected {type(e).__name__} in the whole-table fetch: {e}", now)
+            traceback.print_exc()
+            nothing_published()
+            return "transient"
+        attempt["fetched"] = attempt["host_answered"] = True
         progress.beat(bytes_downloaded=int(s.get("zip_bytes") or 0))
         n_new, n_series = int(s["n_obs"]), int(s["n_series"])
         held = _history_gate(pid, c, copy[0], before, new_path, n_new, s, rel, now)
         if held is not None:
+            nothing_published()
             return held
         try:
             total, both = sc._key_overlap(copy[0], new_path)
         except Exception as e:                                       # noqa: BLE001
             _backoff(c, f"key check failed: {type(e).__name__}: {e}", now)
+            nothing_published()
             return "transient"
         floor = int(st["parsed_rows"].get(pid, before))
         if s.get("needs_stored_floor") and n_new < floor:
             _deterministic(c, pid, f"the vectorless table has {n_new:,} rows, fewer than the "
                                    f"{floor:,} of its last accepted parse; not merged. If StatCan "
-                                   f"really trimmed it, set parsed_rows[{pid}] in _lane_state.json")
+                                   f"really trimmed it, set parsed_rows[{pid}] in _lane_state.json", now)
+            nothing_published()
             return "definitive"
         if total and both < total * sc.KEY_OVERLAP_MIN:
             _deterministic(c, pid, f"only {both:,} of {total:,} stored keys reappear "
-                                   f"(< {sc.KEY_OVERLAP_MIN:.0%}): re-keyed upstream; not merged")
+                                   f"(< {sc.KEY_OVERLAP_MIN:.0%}): re-keyed upstream; not merged", now)
+            nothing_published()
             return "definitive"
         reported = (not s.get("series_capped")) and n_series <= merge.CHANGED_KEYS_CAP
         try:
@@ -770,13 +919,17 @@ def merge_cube(pid: str, c: dict, st: dict, progress: Progress, now: dt.datetime
                                                       stored_copy=copy[0], memory_limit=_merge_memory())
                 ch = None
         except (OSError, MemoryError) as e:
+            # may follow the publish (merge.py re-raises after `published`): merge_in_flight stays set
             _backoff(c, f"merge failed on this machine: {type(e).__name__}: {e}", now)
             return "transient"
         except DefinitiveError as e:
             if sc._environmental(e):
                 _backoff(c, f"merge failed on this machine: {e}", now)
                 return "transient"
-            _deterministic(c, pid, f"merge guard refused over {before:,} stored rows: {e}")
+            # not sc._environmental(e): the merge guard's data refusal, raised with no cause BEFORE any write
+            # (merge.py: every uncaused DefinitiveError precedes the publish - design review H1)
+            _deterministic(c, pid, f"merge guard refused over {before:,} stored rows: {e}", now)
+            nothing_published()
             return "definitive"
     finally:
         sc._remove_quietly(new_path)
@@ -789,6 +942,8 @@ def merge_cube(pid: str, c: dict, st: dict, progress: Progress, now: dt.datetime
     c.update(merged=rel, max_obs=md or c.get("max_obs"), rows=n, fails=0, transient_fails=0,
              retry_after=None, last_error=None)
     c.pop("fail_release", None)
+    c.pop("first_strike_utc", None)
+    c.pop("refused_http", None)
     c.pop("merge_in_flight", None)
     c.pop("history_hold", None)            # a release that passed the history floor clears an old hold
     c["upstream"] = _upstream_record(rel, s, pub)      # after the merge is recorded; cannot raise
@@ -875,16 +1030,29 @@ def _est_min(pid: str):
 
 
 def order_owed(st: dict, now: dt.datetime) -> list:
-    """Pids owing work and due, OLDEST owed release first, stored size breaking ties."""
+    """Pids owing work and due, OLDEST owed release first, stored size breaking ties. While a circuit-breaker
+    trip holds (`_breaker_holds`), merge-owed cubes are not due; serve-owed cubes still are. When the hold has
+    ended (`_probe`), one merge-owed cube may be worked although its own retry_after is ahead. While a breaker
+    record exists, the cubes the trip refused (`_trip_refused`) and every cube with a transient failure of its own
+    go LAST: a few cubes refused for ever, or failing for their own reason, sorted first by their old release, must
+    not decide the half-open iteration before the other cubes are tried (verification review F2/V3, G1/W1)."""
+    hold = _breaker_holds(st, now)
+    probe = _probe(st, now)
+    rec = isinstance(st.get("breaker"), dict)
     rows = []
     for p, c in st["cubes"].items():
-        if c.get("quarantined") or not _due(c, now):
+        if c.get("quarantined"):
             continue
         if merge_owed(c):
-            rows.append((c["release"], c.get("bytes") or 0, p))
+            if hold or not (_due(c, now) or p == probe):
+                continue
+            rows.append((1 if rec and (_trip_refused(st, c) or int(c.get("transient_fails") or 0) > 0) else 0,
+                         c["release"], c.get("bytes") or 0, p))
         elif serve_owed(c):
-            rows.append((c["merged"], c.get("bytes") or 0, p))
-    return [p for _r, _b, p in sorted(rows)]
+            if not _due(c, now):
+                continue
+            rows.append((0, c["merged"], c.get("bytes") or 0, p))
+    return [p for _f, _r, _b, p in sorted(rows)]
 
 
 def select_releases(listed: dict, floor: str) -> dict:
@@ -921,29 +1089,80 @@ def run(enumerate_releases=None, put=None, now_fn=_now, max_cubes=None, ends_fn=
     progress = Progress(st)
     now = now_fn()
     last = _parse_iso(st.get("last_enum_utc"))
+    ef = st.get("enum_fail") or None
     idle = not order_owed(st, now)
-    if idle and last is not None and (now - last).total_seconds() < ENUM_MIN_INTERVAL_MIN * 60:
-        progress.beat("idle", current=None)
+    recent = last is not None and (now - last).total_seconds() < ENUM_MIN_INTERVAL_MIN * 60
+    # A FAILING ENUMERATION BACKS OFF (enum_fail.retry_after): an idle lane does not call StatCan before it.
+    enum_due = not ef or _due(ef, now)
+    if idle and (recent or not enum_due):
+        progress.beat("enumeration_failing" if ef else "idle", current=None)
         return {"enumerated": False, "worked": 0}
     floor = st["floor"]
-    # _changed_releases prints "released on/after 1900-01-01": it is asked for every cube (ENUM_ALL).
-    listed = (enumerate_releases or sc._changed_releases)(ENUM_ALL)
-    rel = select_releases(listed, floor)
+    # THE ENUMERATION CANNOT END THE PROCESS (2026-11-22, R2026). A 403 or 524 from getAllCubesListLite, a short
+    # list (TransientError) or a code fault killed every launch - 210 relaunch deaths on 11-17/18. Now it is
+    # recorded (`enum_fail`, in the state, published in every beat), logged and backed off; the lane stays up and
+    # still works the cubes already owed. verdict() reads it red after statcan.ENUM_FAIL_RED_HOURS, so a
+    # permanent failure is not hidden. SystemExit and KeyboardInterrupt still end the process.
+    listed = None
+    if enum_due:
+        try:
+            # _changed_releases prints "released on/after 1900-01-01": it is asked for every cube (ENUM_ALL).
+            listed = (enumerate_releases or sc._changed_releases)(ENUM_ALL)
+        except Exception as e:                                       # noqa: BLE001 - recorded, red after a bound
+            _enum_failed(st, e, now)
+            save_state(st)
+            if idle:
+                progress.beat("enumeration_failing", current=None)
+                return {"enumerated": False, "worked": 0, "enum_failed": True}
+        else:
+            if ef:
+                print(f"[lane] {_iso(now)} the enumeration answered again after {ef.get('count')} failed "
+                      f"attempt(s) since {ef.get('since')}", flush=True)
+            st.pop("enum_fail", None)
     recon_new, owed_now = 0, []
+    rel = select_releases(listed, floor) if listed is not None else {}
     for pid, rt in rel.items():
         c = st["cubes"].setdefault(str(pid), {})
         if c.get("release") != rt:
             c["release"] = rt
             if str(pid) in RECONCILE_PIDS and str(rt)[:10] < floor:
                 recon_new += 1
-            if c.get("quarantined") and c.get("fail_release") != rt:
+            if (c.get("quarantined") or int(c.get("fails") or 0) > 0) and c.get("fail_release") != rt:
+                # RE-RELEASED: the strikes on the old release no longer count - the quarantine lifts (as before)
+                # and so does their spacing, or a re-release could wait up to 12 h behind an old strike.
                 c.pop("quarantined", None)           # re-released: tried again
                 c["fails"] = 0
+                c.pop("first_strike_utc", None)
+                c.pop("retry_after", None)
+    hold = _breaker_holds(st, now)
+    # A RECORD NOTHING WAITS ON GOES (verification review G2/W2): once its hold has ended and no merge-owed cube
+    # waits out a transient backoff from its status, it holds nothing, and its `since` must not age into a red.
+    brec = st.get("breaker") if isinstance(st.get("breaker"), dict) else None
+    if st.get("breaker") and not hold and not any(
+            merge_owed(c) and not c.get("quarantined") and brec is not None
+            and c.get("refused_http") == brec.get("status") for c in st["cubes"].values()):
+        print(f"[lane] circuit breaker cleared: no merge-owed cube waits on it ({st['breaker']})", flush=True)
+        st.pop("breaker", None)
+    probe = _probe(st, now)
+
+    def works_now(pid, c):
         # NOT a quarantined cube, and NOT one waiting out a backoff: merge_owed() is true for both, but
         # order_owed() works neither in this iteration, so they must not trigger the end-date GET on every
         # idle hourly enumeration (verification review V-F2, V2-F1). The enumeration that works them
-        # (re-released, or due again) reads the ends first.
-        if merge_owed(c) and not c.get("quarantined") and _due(c, now):
+        # (re-released, or due again) reads the ends first. A circuit-breaker hold counts the same way; the one
+        # half-open probe is worked, so it is read.
+        return merge_owed(c) and not c.get("quarantined") and not hold and (_due(c, now) or pid == probe)
+    if listed is None:
+        # NO FRESH RELEASE LIST: the cubes worked this iteration are owed from an earlier one. Their publisher end
+        # is not read (it would be read without the release list it must follow, R2012), so their upstream record
+        # is `unmeasured`, never `current`.
+        for pid, c in st["cubes"].items():
+            if works_now(pid, c):
+                c["publisher"] = {"error": "the cube list was not read this iteration (enumeration failing)",
+                                  "read_utc": _iso(now)}
+    for pid in rel:
+        c = st["cubes"][str(pid)]
+        if works_now(str(pid), c):
             owed_now.append((str(pid), c))
     # THE PUBLISHER'S END DATES AFTER THE RELEASES and before any fetch, and only when a merge is owed
     # (design review round 2, R2012 F1). Read the other way round, a release landing between the two
@@ -963,12 +1182,13 @@ def run(enumerate_releases=None, put=None, now_fn=_now, max_cubes=None, ends_fn=
                               {"error": ends_err or "not in the publisher's cube list", "read_utc": _iso(now)})
     # The receipt line: once when members become owed, and at EVERY enumeration (about hourly when idle)
     # while a member is missing from the publisher's list - a withdrawn member stays visible.
-    missing = sorted(RECONCILE_PIDS - {str(p) for p in listed})
-    if recon_new or missing:
-        print(f"[lane] reconcile: {recon_new} of {len(RECONCILE_PIDS)} pre-floor cube(s) newly owed; "
-              f"{len(RECONCILE_PIDS) - len(missing)} listed; missing from the publisher list: "
-              f"{missing[:20]}{' ...' if len(missing) > 20 else ''}", flush=True)
-    st["last_enum_utc"] = _iso(now)
+    if listed is not None:
+        missing = sorted(RECONCILE_PIDS - {str(p) for p in listed})
+        if recon_new or missing:
+            print(f"[lane] reconcile: {recon_new} of {len(RECONCILE_PIDS)} pre-floor cube(s) newly owed; "
+                  f"{len(RECONCILE_PIDS) - len(missing)} listed; missing from the publisher list: "
+                  f"{missing[:20]}{' ...' if len(missing) > 20 else ''}", flush=True)
+        st["last_enum_utc"] = _iso(now)
     save_state(st)
     progress.beat("working", current=None)
     debt = _read_json(DEBT, {"cubes": {}, "new_cubes": {}})
@@ -991,15 +1211,37 @@ def run(enumerate_releases=None, put=None, now_fn=_now, max_cubes=None, ends_fn=
         if c.get("bytes") is None and merge_owed(c):
             c["bytes"], c["est_min"] = _est_min(pid)
     held = absent = worked = 0
+    refused: dict = {}          # HTTP status -> [(pid, snapshot before the attempt, outcome, pending quarantine)]
+    tripped = None              # the status that tripped the breaker in this iteration
+    stop = False                # no more merge attempts in this iteration (a trip, or a hold armed again)
+    # HALF-OPEN at the start of this iteration: an earlier trip's hold has ended and no fetch has returned since.
+    # The merge attempts decide - cubes with a failure of their own and the trip's cubes LAST (order_owed) - and
+    # the half-open state ends within this iteration (verification review V1-V3, W1-W2):
+    #   StatCan answers (the fetch returned, a 200 it could not use, or ANOTHER status) -> the breaker closes and
+    #     the rest goes on under the closed rule (a new status can trip a new breaker);
+    #   BREAKER_MIN_CUBES attempts with no answer (the trip's status, no answer at all, a fault before the fetch)
+    #     -> it trips again if any of them was the trip's status (no strike, hold doubles), else the hold is armed
+    #     again (doubles); each attempt's own outcome stands;
+    #   the due cubes run out first, none answered -> the same, after the loop.
+    # So at most BREAKER_MIN_CUBES merge attempts per hold, and the cube list is read once per hold (2 GETs: the
+    # list and the end dates).
+    b0 = st.get("breaker") if isinstance(st.get("breaker"), dict) else None
+    half_open_status = b0.get("status") if b0 is not None and not _breaker_holds(st, now) else None
+    decided = half_open_status is None
+    ho_tries, ho_last = 0, None             # half-open attempts this iteration, and the last one (pid, why)
     for pid in order_owed(st, now):
         if max_cubes is not None and worked >= max_cubes:
             break
         c = st["cubes"][pid]
         now = now_fn()
         if merge_owed(c):
+            if stop:
+                continue            # the breaker tripped (or armed again) this iteration: serving goes on
             c["bytes"], c["est_min"] = _est_min(pid)       # fresh: a new release changes the size
+            snap = {k: c[k] for k in _RESTORE_FIELDS if k in c}
+            attempt: dict = {}
             try:
-                r = merge_cube(pid, c, st, progress, now)
+                r = merge_cube(pid, c, st, progress, now, attempt)
             except Exception as e:                                   # noqa: BLE001
                 _backoff(c, f"unexpected {type(e).__name__}: {e}", now)
                 traceback.print_exc()
@@ -1013,6 +1255,30 @@ def run(enumerate_releases=None, put=None, now_fn=_now, max_cubes=None, ends_fn=
             else:
                 held += 1
             print(_merge_line(pid, r, c), flush=True)
+            status = attempt.get("http_status") if r in ("transient", "definitive") else None
+            if status is not None:
+                refused.setdefault(status, []).append((pid, snap, r, bool(attempt.get("pending_quarantine"))))
+            if not decided and r != "absent":                  # 'absent' asked StatCan nothing: not a decision
+                ho_tries += 1
+                ho_last = (pid, str(c.get("last_error") or r))
+                if attempt.get("host_answered") or (status is not None and status != half_open_status):
+                    # STATCAN ANSWERED: the fetch returned, a 200 it could not use, or ANOTHER status (an answer
+                    # about this cube, not the trip's refusal - verification review G2/W2). The breaker closes; a
+                    # refusal counted here still counts toward a new trip under the closed rule.
+                    decided = True
+                    _breaker_close(st, pid)
+                elif ho_tries >= BREAKER_MIN_CUBES:
+                    # BREAKER_MIN_CUBES half-open attempts and no answer (the trip's status, no answer at all, or a
+                    # fault before the fetch): one cube failing for its own reason does not decide alone (G1/W1)
+                    decided, stop = True, True
+                    if refused.get(half_open_status):          # this iteration's refusals with the trip's status
+                        _trip_breaker(st, half_open_status, refused[half_open_status], now)
+                        tripped = half_open_status
+                    else:
+                        _rearm_breaker(st, now, *ho_last)
+            elif status is not None and len(refused[status]) >= BREAKER_MIN_CUBES and not stop:
+                _trip_breaker(st, status, refused[status], now)
+                tripped, stop = status, True
             save_state(st)                                   # BEFORE serving: two-phase
             blob.write_bytes_atomic(DEBT, json.dumps(debt, sort_keys=True).encode("utf-8"))
             if r not in ("merged",):
@@ -1025,17 +1291,126 @@ def run(enumerate_releases=None, put=None, now_fn=_now, max_cubes=None, ends_fn=
             blob.write_bytes_atomic(DEBT, json.dumps(debt, sort_keys=True).encode("utf-8"))
         worked += 1
         progress.beat()
+    # A HALF-OPEN ITERATION THAT RAN OUT OF CUBES before it decided (fewer than BREAKER_MIN_CUBES attempts, none
+    # answered): it trips again with the trip-status refusals it saw, or arms the hold again, so the next hold is
+    # armed and nothing is retried every 5 minutes (no loop, V1).
+    if not decided and ho_tries:
+        if refused.get(half_open_status):
+            _trip_breaker(st, half_open_status, refused[half_open_status], now)
+            tripped = half_open_status
+        else:
+            _rearm_breaker(st, now, *ho_last)
+        save_state(st)
+    # THE QUARANTINES HELD FOR THE BREAKER DECISION (design review C3): a status that refused fewer than
+    # BREAKER_MIN_CUBES cubes this iteration is about those cubes, so a strike that reached the quarantine rule
+    # quarantines now. A tripped status's cubes were put back by _trip_breaker.
+    applied = 0
+    for status, rows in refused.items():
+        if status == tripped:
+            continue
+        for pid, _snap, _r, pending in rows:
+            if pending:
+                c = st["cubes"][pid]
+                _quarantine(c, pid, str(c.get("last_error") or ""))
+                applied += 1
+    if applied:
+        save_state(st)
     # THE STORE-ABSENT GUARD (R753): cubes released and NONE found in the store means the store
     # is unreachable from this backend, not that StatCan released only new cubes.
     if absent and not held:
-        listed = [f for f in blob.list_parquets(sc.OUT_DIR) if not os.path.basename(f).startswith("_")]
-        if not listed:
+        stored = [f for f in blob.list_parquets(sc.OUT_DIR) if not os.path.basename(f).startswith("_")]
+        if not stored:
             progress.beat("store_unreachable", current=None)
             raise SystemExit(f"statcan lane: the store holds ZERO cubes under {sc.OUT_DIR} "
                              f"(backend={config.BACKEND}) while {absent} released cube(s) were "
                              f"looked for - the store is unreachable, not a quiet publisher")
-    progress.beat("idle", current=None)
-    return {"enumerated": True, "worked": worked, "held": held, "absent": absent}
+    progress.beat("enumeration_failing" if st.get("enum_fail") else "idle", current=None)
+    out = {"enumerated": listed is not None, "worked": worked, "held": held, "absent": absent}
+    if tripped is not None:
+        out["breaker"] = tripped
+    if listed is None and st.get("enum_fail"):
+        out["enum_failed"] = True
+    return out
+
+
+def _enum_failed(st: dict, e: BaseException, now: dt.datetime) -> None:
+    """Record one failed enumeration in the state (`enum_fail`), back off, and say so on STDOUT with flush - the
+    guard's stall check reads the newest log that is not *.err.log (design review F8.3). A fault that is not a
+    StatCan answer (a code bug) also prints its traceback there: it must be readable, and it turns red like any
+    other failure after statcan.ENUM_FAIL_RED_HOURS. The text carries no body bytes (statcan._call keeps them in
+    its own log line)."""
+    ef = st.get("enum_fail") or {}
+    n = int(ef.get("count") or 0) + 1
+    since = ef.get("since") or _iso(now)
+    nxt = now + dt.timedelta(minutes=min(ENUM_BACKOFF_MIN * 2 ** (n - 1), ENUM_BACKOFF_MAX_MIN))
+    err = f"{type(e).__name__}: {str(e)[:300]}"
+    st["enum_fail"] = {"since": since, "count": n, "last_utc": _iso(now), "retry_after": _iso(nxt),
+                       "http_status": getattr(e, "http_status", None), "last_error": err}
+    print(f"[lane] {_iso(now)} ENUMERATION FAILED (attempt {n} since {since}): {err} - the lane stays up and "
+          f"tries again at {_iso(nxt)}; statcan reads red once this has lasted {sc.ENUM_FAIL_RED_HOURS:.0f} h",
+          flush=True)
+    if not isinstance(e, (TransientError, DefinitiveError)):
+        traceback.print_exception(type(e), e, e.__traceback__, file=sys.stdout)
+        sys.stdout.flush()
+
+
+def _breaker_close(st: dict, pid: str) -> None:
+    """The half-open attempt got an answer from StatCan (the fetch returned, or a 200 it could not use): the host
+    answers again. The trip's record goes, and every cube that waits out a TRANSIENT backoff from that trip's status
+    (`refused_http`) is due again - it waited for the host, not for itself. A struck cube carries no refused_http
+    (_deterministic pops it), so its wait stands."""
+    b = st.pop("breaker", None)
+    status = b.get("status") if isinstance(b, dict) else None
+    freed = []
+    for p, c in st["cubes"].items():
+        if status is not None and c.get("refused_http") == status and c.get("retry_after") and not c.get("quarantined"):
+            c.pop("retry_after", None)
+            freed.append(p)
+    print(f"[lane] circuit breaker cleared: StatCan answered {pid}'s fetch; {len(freed)} cube(s) waiting out a "
+          f"transient backoff from HTTP {status} are due again ({b})", flush=True)
+
+
+def _rearm_breaker(st: dict, now: dt.datetime, pid: str, why: str) -> None:
+    """The half-open attempts got no answer and none was a refusal with the trip's status (no answer at all, a
+    fault before the fetch): the hold is armed again and doubles (cap BREAKER_BACKOFF_MAX_MIN), so no merge is
+    attempted until it ends (verification review F1/V1). Each attempt's own outcome (a backoff) stands."""
+    b = st["breaker"]
+    trips = int(b.get("trips") or 0) + 1
+    until = now + dt.timedelta(minutes=min(BREAKER_BACKOFF_MIN * 2 ** (trips - 1), BREAKER_BACKOFF_MAX_MIN))
+    b.update(trips=trips, until=_iso(until), rearmed_utc=_iso(now), last_probe=pid)
+    print(f"[lane] circuit breaker armed again: the half-open attempts (last {pid}) got no answer from StatCan "
+          f"({why[:160]}) - merge attempts wait until {_iso(until)} (trip {trips}, HTTP {b.get('status')})",
+          flush=True)
+
+
+def _trip_breaker(st: dict, status: int, rows: list, now: dt.datetime) -> None:
+    """HTTP `status` refused BREAKER_MIN_CUBES or more cubes this iteration: the host, not the cubes. Every cube it
+    refused with a strike gets its fields back as they were before the attempt (quarantine included - its
+    QUARANTINED line was held, never printed) and is booked TRANSIENT instead; a transient refusal already is. The
+    lane-level hold keeps every merge-owed cube back until `until` (no strike, no transient count for them)."""
+    prev = st.get("breaker") if isinstance(st.get("breaker"), dict) else {}
+    trips = int(prev.get("trips") or 0) + 1
+    until = now + dt.timedelta(minutes=min(BREAKER_BACKOFF_MIN * 2 ** (trips - 1), BREAKER_BACKOFF_MAX_MIN))
+    pids = []
+    for pid, snap, r, _pending in rows:
+        pids.append(pid)
+        if r != "definitive":
+            continue
+        c = st["cubes"][pid]
+        why = str(c.get("last_error") or "")
+        for k in _RESTORE_FIELDS:
+            c.pop(k, None)
+        c.update(snap)
+        _backoff(c, f"CIRCUIT BREAKER (HTTP {status} refused {len(rows)} cube(s) in one iteration) - booked "
+                    f"transient, no strike: {why}", now)
+        c["refused_http"] = status
+    # `since` is the streak's first trip (kept by a re-trip and a re-arm, gone with the record when StatCan
+    # answers): statcan.verdict() reads a breaker held longer than BREAKER_RED_HOURS as red
+    st["breaker"] = {"status": status, "cubes": pids, "trips": trips, "tripped_utc": _iso(now),
+                     "until": _iso(until), "since": prev.get("since") or _iso(now)}
+    print(f"[lane] CIRCUIT BREAKER: HTTP {status} refused {len(rows)} cube(s) in this iteration "
+          f"({', '.join(pids)}) - no strike is booked for HTTP {status}; merge attempts stop until {_iso(until)} "
+          f"(trip {trips}); serving goes on", flush=True)
 
 
 def pin_backend(environ=None, cfg=None) -> None:
@@ -1071,7 +1446,8 @@ def main(argv=None) -> int:
     # log pair every 5 minutes (~288 a day) that nothing prunes; a lane holding the lock for its
     # whole life would refuse every other statcan writer - including every all-source
     # core.derive_csv run - for ever. So: iterate, take the lock for the iteration, release it,
-    # sleep. An exception ends the process loudly and the guard relaunches it.
+    # sleep. An exception ends the process loudly and the guard relaunches it - EXCEPT a failed enumeration, which
+    # run() records and backs off (2026-11-22, R2026: 210 relaunch deaths on one 403).
     #
     # BEFORE T0 ONLY (module docstring). After the cutover the lane would merge into and serve the frozen
     # R2 copy, so it REFUSES - but it STAYS RESIDENT and re-checks the flag every iteration, touching
