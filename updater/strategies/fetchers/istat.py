@@ -683,7 +683,8 @@ def update(unit, since) -> Result:
         flows_done += 1
         time.sleep(RATE)
 
-        # ONE EXIT PER FLOW: every outcome falls through to the bookmark below (no `continue`).
+        # ONE EXIT PER FLOW: every outcome falls through to the bookmark below. The one `continue`
+        # there is CUT BY HOST DEATH.
         if outcome == "transient":
             # Every host failed this flow -> keep existing data, re-queue (run partial).
             tally.transient_unit(f"{flow_id}: every host failed")
@@ -744,7 +745,8 @@ def update(unit, since) -> Result:
         # run walked the same flows again; and a flow that fails on every run would pin the
         # bookmark before it. It names the last flow whose attempt FINISHED. A flow cut by a kill
         # in mid-attempt is not named, so the next run starts at that flow (it re-runs; nothing is
-        # skipped). A flow never started (budget, run ceiling, all hosts dead) is never named.
+        # skipped). A flow never started (budget, run ceiling, all hosts dead) is never named, and
+        # neither is the flow IN WHICH the last usable host died (see CUT BY HOST DEATH below).
         # WHAT IT ASSERTS (R287 asks this): "every flow up to here was tried and its rows are in
         # the store", not "its rows reached the CSV step". It is read only by load_rotation above.
         # The CSV step derives from the Result's series_cursors, which this loop seeds from the
@@ -757,8 +759,18 @@ def update(unit, since) -> Result:
         # flow makes finalize() raise, which loses that run's hand-over as it always has. A list
         # of flows merged but not handed over (wid's "owed" marks) would close both cases; it is
         # not built.
-        # During an outage, flows that failed because the hosts died are tried flows too, so they
-        # are passed and wait for the next rotation (R784 (a): advance on attempt).
+        #
+        # CUT BY HOST DEATH (review of PR #325, F1). A flow that ends `transient` with EVERY host
+        # in _DEAD_HOSTS was not answered by any host: the last usable host died during it. The
+        # 2026-11-19/20 shape is one such flow - sdmx.istat.it redirect-loops on its one GET,
+        # esploradati fails its TCP probe, and the run stops "after 1 flow(s) attempted". Naming
+        # that flow would pass it on a night when no working host was asked about it, and it would
+        # wait a whole rotation. So it is treated like a kill: it is not named, and the next run
+        # starts at it. The next pass of the loop meets the all-hosts-dead (or a budget / ceiling)
+        # stop and ends the run. A flow that failed while some host was still usable is named
+        # (R784 (a): advance on attempt).
+        if outcome == "transient" and all(b in _DEAD_HOSTS for _l, b in HOSTS):
+            continue
         last_attempted = fn
         save_rotation(out_dir, last_attempted)
         now_m = time.monotonic()

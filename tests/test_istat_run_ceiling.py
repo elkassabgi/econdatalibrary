@@ -20,6 +20,11 @@ network, no server, no R2):
      and nothing is skipped (R273, R784).
   4. CONTROL: with no ceiling (or a far one) the run walks every flow exactly as before.
   5. A progress line every 50 flows or 5 minutes.
+  6. (review of PR #325, F1) The flow in which the last usable host dies is NOT named: on the
+     2026-11-19/20 shape (sdmx redirect-loops, esploradati fails its TCP probe) the bookmark stays,
+     and the next run starts at that flow.
+  7. (F2, R784 (b)) The LAST flow before a ceiling stop is named whether it was transient,
+     structural or tripped the merge guard, and the next run starts after it.
 
 The expected bound is written here from the stated rule and istat's existing constants (RETRIES,
 HOST_TIMEOUT), not read from the new code, so this file runs unchanged against the old fetcher.
@@ -37,9 +42,13 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import requests  # noqa: E402
+
 from updater import orchestrate  # noqa: E402  (puts updater.orchestrate in sys.modules)
+from updater.errors import DefinitiveError  # noqa: E402
 from updater.strategies.fetchers import _common, istat  # noqa: E402
 
+SDMX = "https://sdmx.istat.it/SDMXWS/rest/"
 ESPLORA = "https://esploradati.istat.it/SDMXWS/rest/"
 EPOCH = 1_800_000_000.0          # the fake clock's epoch base
 MARGIN_MIN = 5.0                 # AQUEDUCT_ISTAT_MARGIN_MIN, set explicitly below
@@ -86,17 +95,23 @@ def _csv(flow):
 
 class _Istat:
     """Fake ISTAT. plan[flow] is 'ok' (200 + one row), 'empty' (404 NoRecordsFound), 'transient'
-    (503) or 'kill'. Every GET costs `delay` fake seconds. `starts` records each flow's FIRST GET
-    time, in the order the flows were started."""
+    (503), 'structural' (a 200 with a real body that parses 0 rows as CSV and as XML) or 'kill'.
+    Every GET costs `delay` fake seconds. sdmx='redirect' makes every sdmx.istat.it GET raise
+    TooManyRedirects, as that host does today. `starts` records each flow's FIRST GET time, in the
+    order the flows were started; `gets` counts every GET."""
 
-    def __init__(self, clock, plan=None, delay=60.0):
-        self.clock, self.plan, self.delay = clock, dict(plan or {}), float(delay)
+    def __init__(self, clock, plan=None, delay=60.0, sdmx="serve"):
+        self.clock, self.plan, self.delay, self.sdmx = clock, dict(plan or {}), float(delay), sdmx
         self.starts: dict = {}
+        self.gets = 0
 
     def get(self, url, headers=None, timeout=None):
         assert url.startswith(tuple(b for _l, b in istat.HOSTS)), url
+        self.gets += 1
         flow = url.split(f"{istat.AGENCY},", 1)[1].split("/", 1)[0]
         self.starts.setdefault(flow, self.clock.t)
+        if self.sdmx == "redirect" and url.startswith(SDMX):
+            raise requests.TooManyRedirects("Exceeded 30 redirects.")
         what = self.plan.get(flow, "ok")
         if what == "kill":
             raise _Kill(flow)
@@ -105,6 +120,8 @@ class _Istat:
             return _Resp(200, _csv(flow))
         if what == "empty":
             return _Resp(404, b"NoRecordsFound")
+        if what == "structural":
+            return _Resp(200, b"<?xml version='1.0'?><nothing>" + b"x" * 400 + b"</nothing>")
         return _Resp(503, b"")
 
 
@@ -148,9 +165,10 @@ def rig(tmp_path, monkeypatch):
             }), str(out / f"F{i:02d}.parquet"))
         return [f"F{i:02d}" for i in range(1, n + 1)]
 
-    def run(plan=None, delay=60.0, ceiling_s=None):
+    def run(plan=None, delay=60.0, ceiling_s=None, sdmx="serve"):
         """One real update(). ceiling_s: seconds from NOW on the fake clock, or None."""
-        host = _Istat(clock, plan, delay)
+        host = _Istat(clock, plan, delay, sdmx)
+        r.last_host = host                       # readable even when update() raises
         monkeypatch.setattr(istat.requests, "Session", lambda: host)
         monkeypatch.setattr(orchestrate, "_RUN_DEADLINE_TS",
                             None if ceiling_s is None else clock.time() + ceiling_s)
@@ -218,20 +236,25 @@ def test_no_flow_starts_inside_the_margin_and_the_run_defers_before_the_ceiling(
     assert _late(host2.starts, t1, ceiling_s, per_flow) == []
 
 
-@pytest.mark.parametrize("where", ["get", "rate", "store"])
+@pytest.mark.parametrize("where", ["get", "rate", "store", "save"])
 def test_the_two_x_longest_term_stops_a_flow_the_floor_alone_would_start(rig, where):
     """Every flow costs 501 s of fake time. Four flows run; a fifth would start with 1,250 s left:
     above margin + floor (300 + 912 = 1,212 s) but below margin + 2 x longest (300 + 1,002 =
-    1,302 s). Only the 2 x longest term refuses it. The 501 s sits in the GET, in the RATE pause, or
-    in the store read before the fetch (on r2 that read downloads the flow's whole object), so the
-    `longest` span must cover all three: from the flow's checks to its bookmark."""
+    1,302 s). Only the 2 x longest term refuses it. The 501 s sits in the GET, in the RATE pause, in
+    the store read before the fetch (on r2 that read downloads the flow's whole object), or in the
+    bookmark save (an R2 PUT on r2), so the `longest` span must cover all four: from the flow's
+    checks to after its bookmark."""
     names = rig.flows(8)
-    delay = {"get": 500.0, "rate": 1.0, "store": 0.0}[where]
+    delay = {"get": 500.0, "rate": 1.0, "store": 0.0, "save": 0.0}[where]
     if where == "rate":
         rig.mp.setattr(istat, "RATE", 500.0)
     if where == "store":
         real_max_obs = istat._max_obs
         rig.mp.setattr(istat, "_max_obs", lambda path: (rig.clock.sleep(500.0), real_max_obs(path))[1])
+    if where == "save":
+        real_save = istat.save_rotation
+        rig.mp.setattr(istat, "save_rotation",
+                       lambda out_dir, key: (rig.clock.sleep(500.0), real_save(out_dir, key))[1])
     per_flow = 501.0
     ceiling_s = 4 * per_flow + 1250.0
     assert MARGIN_S + FLOOR_S <= 1250.0 < MARGIN_S + 2 * per_flow      # the case is the one described
@@ -322,3 +345,73 @@ def test_a_progress_line_every_five_minutes_and_every_fifty_flows(rig, capsys):
     rig.run(delay=0.0, ceiling_s=None)
     lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("[istat] progress:")]
     assert len(lines) == 1 and "50/55 flow(s) attempted, 50 merged" in lines[0], lines
+
+
+@pytest.mark.parametrize("shape", ["sdmx_redirects_esploradati_tcp_dead", "both_tcp_dead"])
+def test_the_flow_in_which_the_last_host_dies_is_not_named(rig, shape, capsys):
+    """Review of PR #325, F1. The 2026-11-19/20 shape: sdmx.istat.it answers its one GET with a
+    redirect loop and is marked dead, esploradati fails its TCP probe, and the run stops "after 1
+    flow(s) attempted". No working host was asked about that flow (F04), so the bookmark must stay at
+    F03 and the next run must start AT F04 - not pass it and leave it a whole rotation. The second
+    shape asks no host at all (both TCP probes fail)."""
+    rig.flows(6)
+    _common.save_rotation(str(rig.out), "F03.parquet")
+    reachable = {"sdmx_redirects_esploradati_tcp_dead": {SDMX}, "both_tcp_dead": set()}[shape]
+    rig.mp.setattr(istat, "_tcp_reachable", lambda base: base in reachable)
+    res, host, _t0 = rig.run(delay=1.0, ceiling_s=None, sdmx="redirect")
+    out = capsys.readouterr().out
+    assert "stopping after 1 flow(s) attempted" in out, out
+    assert host.gets == (1 if reachable else 0), f"premise: {host.gets} GET(s)"
+    assert res.status == "partial", res.error
+    assert rig.bookmark() == "F03.parquet", (
+        f"the bookmark moved to {rig.bookmark()!r} on a night no working host was asked anything")
+
+    # ISTAT is back: the next run starts at the flow the outage cut.
+    rig.mp.setattr(istat, "_tcp_reachable", lambda base: True)
+    res2, host2, _t1 = rig.run(delay=1.0, ceiling_s=None)
+    assert list(host2.starts)[:2] == ["F04", "F05"], list(host2.starts)
+    assert res2.status == "ok", res2.error
+
+
+@pytest.mark.parametrize("outcome", ["transient", "structural", "merge_guard"])
+def test_a_failing_last_flow_before_the_ceiling_stop_is_named_and_run_2_starts_after_it(rig, outcome):
+    """Review of PR #325, F2; R784 (b): a budget and a rotation are one mechanism, so test a sub-unit
+    that both FAILS and is the last before the stop, over two runs sharing one bookmark. With the
+    first test's shape (61-s flows, a 30-min ceiling) flows F01-F10 start; here F10 is transient (503
+    from both hosts on every attempt), structural (a 200 whose real body parses 0 rows) or trips the
+    merge guard. The ceiling stop follows it. The bookmark must name F10 and run 2 must start at F11.
+    A save skipped on that outcome leaves F09, and run 2 walks F10 again."""
+    names = rig.flows(30)
+    plan = {"F10": outcome} if outcome != "merge_guard" else {}
+    if outcome == "merge_guard":
+        real_merge = istat.merge.merge_and_write
+
+        def merge_and_write(path, tbl, **kw):
+            if path.endswith("F10.parquet"):
+                raise RuntimeError("guard: would shrink")
+            return real_merge(path, tbl, **kw)
+
+        rig.mp.setattr(istat.merge, "merge_and_write", merge_and_write)
+    if outcome == "structural":
+        # finalize() raises on a structural flow (no Result); the bookmark was saved before that.
+        with pytest.raises(DefinitiveError, match="F10"):
+            rig.run(plan=plan, delay=60.0, ceiling_s=30 * 60.0)
+    else:
+        res, _host, _t0 = rig.run(plan=plan, delay=60.0, ceiling_s=30 * 60.0)
+        assert res.status == "partial", res.error
+    assert list(rig.last_host.starts) == names[:10], list(rig.last_host.starts)
+    assert rig.bookmark() == "F10.parquet", (
+        f"the last flow before the stop was {outcome} and the bookmark reads {rig.bookmark()!r}")
+    _res2, host2, _t1 = rig.run(delay=60.0, ceiling_s=30 * 60.0)
+    assert list(host2.starts)[:1] == ["F11"], list(host2.starts)[:3]
+
+
+@pytest.mark.parametrize("extra, n_started", [(-0.5, 0), (0.5, 1)])
+def test_the_floor_is_912_s_with_the_backoff(rig, extra, n_started):
+    """The first flow of a run starts only with margin + FLOOR_S (300 + 912 s) left, where 912 s is
+    RETRIES x 300 s PLUS the 4 s and 8 s backoff sleeps. Half a second under it: no flow starts and
+    the run defers; half a second over: exactly one 61-s flow starts."""
+    names = rig.flows(5)
+    res, host, _t0 = rig.run(delay=60.0, ceiling_s=MARGIN_S + FLOOR_S + extra)
+    assert list(host.starts) == names[:n_started], list(host.starts)
+    assert res.status == "partial" and "deferred by budget" in res.error, res.error
