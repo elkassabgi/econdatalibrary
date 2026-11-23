@@ -373,14 +373,25 @@ def test_the_flow_in_which_the_last_host_dies_is_not_named(rig, shape, capsys):
     assert res2.status == "ok", res2.error
 
 
-@pytest.mark.parametrize("outcome", ["transient", "structural", "merge_guard"])
-def test_a_failing_last_flow_before_the_ceiling_stop_is_named_and_run_2_starts_after_it(rig, outcome):
+@pytest.mark.parametrize("outcome, sdmx", [
+    pytest.param("transient", "serve", id="transient"),
+    pytest.param("structural", "serve", id="structural"),
+    pytest.param("merge_guard", "serve", id="merge_guard"),
+    pytest.param("transient", "redirect", id="transient_sdmx_redirects"),
+])
+def test_a_failing_last_flow_before_the_ceiling_stop_is_named_and_run_2_starts_after_it(rig, outcome, sdmx):
     """Review of PR #325, F2; R784 (b): a budget and a rotation are one mechanism, so test a sub-unit
     that both FAILS and is the last before the stop, over two runs sharing one bookmark. With the
     first test's shape (61-s flows, a 30-min ceiling) flows F01-F10 start; here F10 is transient (503
     from both hosts on every attempt), structural (a 200 whose real body parses 0 rows) or trips the
     merge guard. The ceiling stop follows it. The bookmark must name F10 and run 2 must start at F11.
-    A save skipped on that outcome leaves F09, and run 2 walks F10 again."""
+    A save skipped on that outcome leaves F09, and run 2 walks F10 again.
+
+    `transient_sdmx_redirects` is today's production shape (re-review of #325, condition 2):
+    sdmx.istat.it redirect-loops on every run, so it is in _DEAD_HOSTS from F01's first GET, and
+    esploradati answers 503 on every F10 attempt. A host is still usable (esploradati), so F10 is
+    named. A rule that skips the save when ANY host is dead (instead of ALL) passes the three cases
+    above, where both hosts serve, and fails only here."""
     names = rig.flows(30)
     plan = {"F10": outcome} if outcome != "merge_guard" else {}
     if outcome == "merge_guard":
@@ -395,14 +406,18 @@ def test_a_failing_last_flow_before_the_ceiling_stop_is_named_and_run_2_starts_a
     if outcome == "structural":
         # finalize() raises on a structural flow (no Result); the bookmark was saved before that.
         with pytest.raises(DefinitiveError, match="F10"):
-            rig.run(plan=plan, delay=60.0, ceiling_s=30 * 60.0)
+            rig.run(plan=plan, delay=60.0, ceiling_s=30 * 60.0, sdmx=sdmx)
     else:
-        res, _host, _t0 = rig.run(plan=plan, delay=60.0, ceiling_s=30 * 60.0)
+        res, _host, _t0 = rig.run(plan=plan, delay=60.0, ceiling_s=30 * 60.0, sdmx=sdmx)
         assert res.status == "partial", res.error
     assert list(rig.last_host.starts) == names[:10], list(rig.last_host.starts)
+    if sdmx == "redirect":
+        assert SDMX in istat._DEAD_HOSTS, "premise: sdmx.istat.it was not marked dead"
+        assert len(istat._DEAD_HOSTS) < len(istat.HOSTS), "premise: every host died"
     assert rig.bookmark() == "F10.parquet", (
-        f"the last flow before the stop was {outcome} and the bookmark reads {rig.bookmark()!r}")
-    _res2, host2, _t1 = rig.run(delay=60.0, ceiling_s=30 * 60.0)
+        f"the last flow before the stop was {outcome} (sdmx {sdmx}) and the bookmark reads "
+        f"{rig.bookmark()!r}")
+    _res2, host2, _t1 = rig.run(delay=60.0, ceiling_s=30 * 60.0, sdmx=sdmx)
     assert list(host2.starts)[:1] == ["F11"], list(host2.starts)[:3]
 
 
