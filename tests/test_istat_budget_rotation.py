@@ -66,13 +66,17 @@ def test_the_budget_is_paired_with_rotation_not_a_fixed_order():
 
 def test_the_bookmark_is_only_saved_for_flows_actually_reached():
     """Saving a bookmark for a flow the run never got to would skip it for ever — the
-    silent half of R190."""
+    silent half of R190. Since 2026-11-23 the bookmark is saved INSIDE the loop after every
+    attempted flow, whatever its outcome (R273, R784), and nowhere else;
+    tests/test_istat_run_ceiling.py drives that through the real update(). This pins the order
+    in the source: the flow is tried, then named, then saved."""
     s = _src()
-    assert "if last_attempted:" in s
-    i = s.find("last_attempted = fn")
-    j = s.find("tally.added_unit(m)")
-    assert i != -1 and j != -1 and i > j, (
-        "last_attempted must be set AFTER the flow's rows are merged, not before it is tried")
+    tried = s.find("flows_done += 1")
+    named = s.find("last_attempted = fn")
+    saved = s.find("save_rotation(out_dir, last_attempted)")
+    assert -1 not in (tried, named, saved), "the attempt, the bookmark or its save is gone"
+    assert tried < named < saved, "the bookmark must name a flow only AFTER it was tried"
+    assert s.count("save_rotation(") == 1, "one writer of the bookmark, so no older value overwrites it"
 
 
 def test_rotate_after_actually_resumes(tmp_path):
