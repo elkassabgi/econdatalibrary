@@ -50,7 +50,8 @@ Secrets, if the Worker ever needs one: `npx wrangler secret put <NAME>` from `ap
 Deploy the Worker (econdl-api) ONLY with `tools/selfhost/deploy_edge.sh` (ledger R2038):
 ```
 # Git Bash, never PowerShell: there `bash` is the WSL launcher, with its own git, node and login.
-# Start from a FRESH clone of main (the wrapper refuses any other checkout).
+# Start from a FRESH clone of main (an old worktree can hold an old api/worker; the wrapper itself
+# refuses only a checkout that is not main at origin/main, or that has changes under api/worker).
 cd api/worker
 npm ci                 # the lockfile's wrangler; without node_modules, npx fetches the newest one
 npm run typecheck      # tsc --noEmit, must be clean
