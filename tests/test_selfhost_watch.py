@@ -87,7 +87,9 @@ def test_a_200_answer_without_a_40_hex_commit_fails_in_the_default_state(monkeyp
         body["commit"] = commit
     _status(monkeypatch, 200, body)
     bad = W.check_status("https://e", WANT)
-    assert len(bad) == 1 and bad[0].startswith(("NO-COMMIT", "BAD-COMMIT")), bad
+    # the exact name: no commit at all is NO-COMMIT (the R2038 window itself), any other value is BAD-COMMIT
+    want_prefix = "NO-COMMIT: " if commit in ("<absent>", None, "", 0) else "BAD-COMMIT: "
+    assert len(bad) == 1 and bad[0].startswith(want_prefix), bad
     assert "deploy_edge.sh" in bad[0] and "\n" not in bad[0]
     # control: the same body with a real commit passes
     _status(monkeypatch, 200, {**body, "commit": SHA})
