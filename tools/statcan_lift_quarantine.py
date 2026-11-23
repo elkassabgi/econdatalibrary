@@ -659,7 +659,8 @@ def apply(a, pids: list, now_fn=None, clock=None) -> int:
                   f"write is not started. Nothing was written but the backup.", flush=True)
             return 1
         receipt_path = os.path.join(RECEIPTS, f"{stamp}_receipt.json")
-        body = {"utc_lift": _iso(now), "tool": os.path.relpath(__file__, ROOT).replace("\\", "/"),
+        # (no os.path.relpath here: it raises when ROOT and this file are on two drives, as a test's ROOT can be)
+        body = {"utc_lift": _iso(now), "tool": "tools/statcan_lift_quarantine.py",
                 "tool_sha256": sha256(_read_file(__file__)), "r2_key": blob._path_to_key(lane.STATE),
                 "before_sha256": sha256(raw), "after_sha256": sha256(after), "backup": backup,
                 "lock": writer_lock.owner(LOCK_NAME), "procs": ev["procs"], "code_files": code_files(),

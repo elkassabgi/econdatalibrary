@@ -376,6 +376,8 @@ def test_apply_lifts_exactly_the_planned_fields_and_leaves_a_backup_and_a_receip
     assert rec["before_sha256"] == b and rec["after_sha256"] == a and set(rec["cubes"]) == set(tool.LIFT)
     assert rec["cubes"]["34100162"]["before"]["retry_after"] == "2026-11-30T00:00:00Z"   # the planted retry_after
     assert open(rec["backup"], "rb").read() == raw and rec["utc_lift"] == _z(NOW)
+    assert rec["tool"] == "tools/statcan_lift_quarantine.py"         # never os.path.relpath (two drives raise)
+    assert rec["tool_sha256"] == tool.sha256(open(tool.__file__, "rb").read())
     assert not os.path.exists(writer_lock.lock_path(lane.LOCK_NAME))
 
 
