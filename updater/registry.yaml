@@ -10097,9 +10097,15 @@ sources:
   strategy: bulk_snapshot_if_changed
   strategy_reason: >-
     WHO's OWN Global Health Observatory API (ghoapi.azureedge.net), migrated off the the relay aggregator
-    mirror 2026-08-02 (banned, CLAUDE.md 0 / ledger R251). Indicators come from the CATALOGUE and
-    the whole set is re-pulled each tick; GHO exposes no dataset-level updated-at, so the vintage
-    is the date-tail sentinel rather than a fabricated token.
+    mirror 2026-08-02 (banned, CLAUDE.md 0 / ledger R251). Indicators come from the CATALOGUE.
+    GHO exposes no dataset-level updated-at, so current_vintage() returns None and
+    bulk_snapshot_if_changed asks for a fetch whenever the unit is due (cadence monthly); an
+    orchestrator gate (PROTECTED, BUDGET SKIP, a held lease) can still skip a due pass. A clean
+    pass stores finalize's literal "date-tail" as the vintage, and that value never gates a fetch:
+    the probe is None, base.probe_token turns a "date-tail" probe into None, and run_once refuses
+    an earned no_change on a "date-tail" probe. Before 2026-11 the probe returned that same
+    literal, it compared equal with the stored one, and the unit booked no_change with no fetch
+    for months.
   upstream_verified:
     latest_obs: '2021-01-01'
     checked: '2026-08-03'
