@@ -44,14 +44,30 @@ Until this runs, the Worker serves catalog / sources / last-updates / metadata /
 D1, but /v1/series/{id}.csv returns 501 (honestly). The dev shim already serves .csv locally.
 
 ## 4. Worker — bind + deploy + custom domain
-Fill `api/worker/wrangler.toml` with the D1 `database_id` (step 1) and the R2 bucket (step 2),
-then:
+Fill `api/worker/wrangler.toml` with the D1 `database_id` (step 1) and the R2 bucket (step 2).
+Secrets, if the Worker ever needs one: `npx wrangler secret put <NAME>` from `api/worker`.
+
+Deploy the Worker (econdl-api) ONLY with `tools/selfhost/deploy_edge.sh` (ledger R2038):
 ```
+# Git Bash, never PowerShell: there `bash` is the WSL launcher, with its own git, node and login.
+# Start from a FRESH clone of main (an old worktree can hold an old api/worker; the wrapper itself
+# refuses only a checkout that is not main at origin/main, or that has changes under api/worker).
 cd api/worker
-wrangler secret put ...        # any secrets the Worker needs
-wrangler deploy
-wrangler deployments domains add v1.<yourdomain>   # custom domain, NOT *.workers.dev / r2.dev
+npm ci                 # the lockfile's wrangler; without node_modules, npx fetches the newest one
+npm run typecheck      # tsc --noEmit, must be clean
+cd ../..
+bash tools/selfhost/deploy_edge.sh
 ```
+The wrapper refuses a checkout that is not `main` equal to `origin/main`, or that has changes under
+`api/worker`. It sets `GIT_COMMIT` from `git rev-parse HEAD` and fails unless `/v1/edge-status`
+answers that commit. Its receipt is the line `verified: <edge>/v1/edge-status answers <sha>`.
+Never deploy this Worker any other way: wrangler's own deploy command replaces the plain vars with
+the empty `[vars]` of `wrangler.toml`, so `GIT_COMMIT` is lost, `/v1/edge-status` reports no commit,
+and `tools/selfhost/watch_edge.py` cannot see Worker changes that are not live. The `deploy` script
+in `api/worker/package.json` refuses on purpose and points here.
+
+Custom domain (NOT *.workers.dev / r2.dev): in the dashboard, Workers & Pages -> econdl-api ->
+Settings -> Domains & Routes -> Add Custom Domain.
 
 ## 5. Verify live
 ```

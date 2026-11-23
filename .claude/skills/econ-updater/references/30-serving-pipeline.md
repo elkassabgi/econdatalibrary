@@ -101,12 +101,16 @@ Order matters: catalogue → derive → R2-catalog refresh → D1 → util.ts �
 
 6. **DEPLOY — editing util.ts changes nothing until this runs.** The constant takes effect only on deploy, and nothing in `.github/workflows` deploys the worker; treating the edited text file as "served" once mislabelled 425,462 series live while unreachable (R345, tools/verify_source_served.py:33-42).
    ```
+   # Git Bash (never PowerShell), in a fresh clone of main
    cd api/worker
-   npm install
+   npm ci                 # the lockfile's wrangler, not the newest one
    npm run typecheck      # tsc --noEmit, must be clean
-   npx wrangler deploy    # = npm run deploy
+   cd ../..
+   bash tools/selfhost/deploy_edge.sh    # the ONLY way: it sets GIT_COMMIT (R2038)
    ```
-   (api/worker/README.md:110-117.)
+   (api/DEPLOY.md section 4. The receipt is the wrapper's line `verified: ... answers <sha>`. Wrangler's own
+   deploy command, and the old `deploy` script of api/worker/package.json, drop GIT_COMMIT; that script now
+   refuses.)
 
 7. **Live check against the deployed API** (not the repo — staged ≠ deployed, global ledger M-20260715-02):
    ```

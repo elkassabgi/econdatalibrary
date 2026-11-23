@@ -16,7 +16,8 @@ Pipeline per source (each step verified, dry-run by default):
      sharing the name stem can NEVER be swept (imf_fsi vs imf_fsi[bsis]_direct is exactly
      the R112/R129 unanchored-substring trap; the '%3A'/'/' terminators kill it).
   5. Caller then: remove the id from util.ts SUPPORTED_SOURCES, retire any registry entry
-     (+count bump SAME commit, R347), wrangler deploy, live /v1/sources absence check,
+     (+count bump SAME commit, R347), worker deploy (tools/selfhost/deploy_edge.sh), live /v1/sources
+     absence check,
      refresh_r2_catalog, coverage re-measure. Those are deliberate manual/reviewed steps.
 
 WHERE each step acts is core/licence_targets.py's job (docs/ECON_SELF_HOSTING_PLAN.md, change 5): the R2

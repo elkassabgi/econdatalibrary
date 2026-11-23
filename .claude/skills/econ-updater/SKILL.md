@@ -42,7 +42,9 @@ Violating any of these has cost days. Each is cited to the ledger entry where it
    commit** (R347 — the mismatch stops ALL sources, not the new one: validation refuses the
    run before anything fetches, and it cost a 14-hour total outage).
 5. **An edit to `api/worker/src/util.ts` changes NOTHING a user can reach** until
-   `cd api/worker && npx wrangler deploy` runs — nothing auto-deploys the worker (R345:
+   `bash tools/selfhost/deploy_edge.sh` runs (Git Bash, a fresh clone of main, `npm ci` in
+   api/worker first; api/DEPLOY.md section 4; it is the ONLY way, because wrangler's own
+   deploy command drops GIT_COMMIT, R2038) — nothing auto-deploys the worker (R345:
    425,462 series were reported "live" while every id answered 501). Verify on the LIVE
    surface: `/v1/sources` must list the source.
 6. **Verify against the running system, never against a file you just edited** (R345, R296,

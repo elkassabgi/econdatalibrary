@@ -154,7 +154,7 @@ def main() -> int:
     print("\n" + cutover.next_steps(
         "NEXT (Checklist B): tools/derive_imts_tables.py --dry-run, then the standard "
         "pipeline: refresh_r2_catalog, sync_catalog_d1 --source imf_imts_direct, resolver "
-        "entry + util.ts, typecheck, wrangler deploy, live /v1/sources, "
+        "entry + util.ts, typecheck, worker deploy (tools/selfhost/deploy_edge.sh), live /v1/sources, "
         "verify_source_served exit 0."))
     return 0
 

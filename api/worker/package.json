@@ -8,7 +8,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test test/*.test.ts",
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "node -e \"console.error('refused: deploy econdl-api only with tools/selfhost/deploy_edge.sh, from a fresh clone of main, in Git Bash. It sets GIT_COMMIT and checks /v1/edge-status. Steps: api/DEPLOY.md section 4 (ledger R2038).'); process.exit(1)\" --"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240909.0",

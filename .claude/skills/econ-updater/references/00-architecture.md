@@ -33,7 +33,7 @@
 5. **catalog.db.** CI pulls it from `r2://econ-data/_aqueduct/catalog.db.zst` each run (updater-daily.yml:161-176, streamed in updater-heavy.yml:185-205); derived ids are appended to `data/_aqueduct/pending_catalog_sync.txt` (orchestrate.py:263-282, 381).
 6. **D1 (`econ-catalog`).** Post-run: `core/sync_state_d1.py` (freshness) then `core/sync_catalog_d1.py` (new series rows), both executed as `npx wrangler d1 execute econ-catalog --remote --file=...` from `api/worker` with the version-pinned wrangler (sync_state_d1.py:20-26).
 7. **Worker.** `api/worker/` serves `/v1/catalog`, `/v1/last-updates`, metadata from D1 and `/v1/series/{id}.csv` via R2 GET; a source not in `SUPPORTED_SOURCES` (util.ts:19) answers 501.
-8. **Deploy — MANUAL ONLY.** `cd api/worker && wrangler deploy` (api/DEPLOY.md:46-53; `npm run deploy` in api/worker/package.json:10) → live `econdl-api` worker. **Nothing in `.github/workflows/` deploys the worker** — verified by grep: the only workflow `deploy` match is `pages deploy catalog/site` in deploy-site.yml:62, which is the STATIC SITE, not the worker. Pushing worker code publishes nothing until someone runs wrangler by hand.
+8. **Deploy — MANUAL ONLY, and ONLY through `bash tools/selfhost/deploy_edge.sh`** (Git Bash, a fresh clone of main, `npm ci` in api/worker first; api/DEPLOY.md section 4; it sets GIT_COMMIT and fails unless /v1/edge-status answers it, R2038; the `deploy` script in api/worker/package.json refuses on purpose) → live `econdl-api` worker. **Nothing in `.github/workflows/` deploys the worker** — verified by grep: the only workflow `deploy` match is `pages deploy catalog/site` in deploy-site.yml:62, which is the STATIC SITE, not the worker. Pushing worker code publishes nothing until someone runs wrangler by hand.
 
 ## State semantics (the part everyone gets wrong)
 
@@ -64,7 +64,7 @@
 | `sec-edgar-daily.yml` | cron `0 8 * * *` + dispatch | `tools/refresh_sec_edgar.py --days 4 --apply --d1` (outside the orchestrator: per-COMPANY grouped parquet, not series_key shape) + R2 read-back proof parquet==CSV | Not orchestrator-managed; no state.db involvement |
 | `hello.yml` | dispatch | echo (Phase-0 gate) | Nothing |
 
-**The api/worker deploys ONLY via manual `npx wrangler deploy` in `api/worker`** (api/DEPLOY.md:46-53; api/worker/package.json:10). Grep of all 7 workflows for `wrangler deploy`: zero matches (deploy-site.yml's `pages deploy` is the only deploy of any kind). A pushed worker change is invisible until deployed by hand — same trap class as econdatalibrary.com's manual Pages deploy.
+**The api/worker deploys ONLY via a manual run of `bash tools/selfhost/deploy_edge.sh`** (api/DEPLOY.md section 4; wrangler's own deploy command drops GIT_COMMIT, R2038). Grep of all 7 workflows for a worker deploy command: zero matches (deploy-site.yml's `pages deploy` is the only deploy of any kind). A pushed worker change is invisible until deployed by hand — same trap class as econdatalibrary.com's manual Pages deploy.
 
 ## Hard numbers
 
