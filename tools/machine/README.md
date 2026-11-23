@@ -66,15 +66,18 @@ What was measured on a harmless dummy (`F:\work\maintenance\20261123_guard_exit_
 |---|---|---|---|---|
 | old `start ""` (control) | conhost + `OpenConsole.exe -Embedding` +0.06 s | 11 -> 12 -> 11 | caller's job | the cmd |
 | new, run by `cmd /c` from an agent tool shell | conhost child only | 11 -> 11 -> 11 | not in a job | WmiPrvSE.exe |
-| new, opened by explorer (as at log-on) | conhost child only | 11 -> 11 -> 11 (the cmd's own window 0.5 s) | not in a job | WmiPrvSE.exe |
+| new, opened by explorer (the log-on path, but NOT a real log-on: timing and WMI readiness at log-on are not measured) | conhost child only | 11 -> 11 -> 11 (the cmd's own window 0.5 s) | not in a job | WmiPrvSE.exe |
 | new, Create made to fail (missing folder, ReturnValue 8) | fallback: as the old form | 11 -> 12 -> 11 | caller's job | the cmd |
 | `start "" conhost.exe --headless ...` | the dummy never started | - | - | - |
 | hidden `Start-Process` from a short-lived powershell | conhost child only | 11 -> 11 | caller's job | the short powershell |
 
 Only the Create form keeps the loop out of BOTH the Windows Terminal host and the caller's job.
 The running loop since 2026-11-22T21:50:48Z (pid 30880) was started the same way by an agent
-(`F:\work\maintenance\2026-11-22_1124_guard_review\wmi_start.ps1`) and has run its local-heavy
-pass and published its beat since, so that environment is proven for the real loop.
+(`F:\work\maintenance\2026-11-22_1124_guard_review\wmi_start.ps1`). Since then its heartbeat is
+fresh, a local-heavy pass under it succeeded (`logs\local_heavy.last_success` 2026-11-23T02:40:41Z),
+and `logs\_guard_loop.log` has no line at all after 2026-11-21T21:10:59Z, so no publish failure
+(read 2026-11-23T09:03Z). So a WMI start from an agent shell is proven for the real loop; a start at a
+real log-on is not measured.
 
 ## What a dead loop's log tells you (the loop's exit trace, 2026-11-23)
 
@@ -96,7 +99,7 @@ only the constants swapped and started the way the new launcher starts the loop 
 | the script ends by itself (`exit`) | 5 of 5 | line, rc 0 |
 | Ctrl+C on its console (`GenerateConsoleCtrlEvent`) | 5 of 5 | ends at once, line, rc 0 |
 | console window closed (`WM_CLOSE`, as a click on X) | 0 of 5 | ends at once, NO line, rc 0xC000013A |
-| `TerminateProcess` (Task Manager End task, `taskkill /F`, `Stop-Process`) | 0 of 5 | ends at once, NO line, rc 1 |
+| `TerminateProcess` (and, by their documentation, Task Manager End task, `taskkill /F`, `Stop-Process`) | 0 of 5 | ends at once, NO line, rc 1 |
 | its conhost killed | - | the loop does NOT end: it ticks on (5 of 5) |
 | a terminating error in the loop body (.NET, `throw`, inside a catch) | - | a trap line, the loop goes on (the test, twice) |
 | log-off, shutdown, a crash | not measured | |
@@ -112,17 +115,22 @@ a Ctrl+C-disabled flag and ignores the event (first smoke run, 08:47Z).
 
 Never while a loop runs. Never from inside a local-heavy pass (`logs\local_heavy.lock` present).
 
-1. Prove there is no loop, in ONE PowerShell command, from a shell whose own command line does
-   not contain the path (type it, do not paste it into a `-Command` argument):
+1. Prove there is no loop, in ONE PowerShell command. The path is split in two strings on purpose,
+   so the checking command's own command line can never match it (R260):
    `Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like ('*-File "' + 'E:\research\econfindatalibrary\RELAUNCH_GUARD_LOOP' + '.ps1"*') }`
    must return nothing, AND `logs\guard_loop.heartbeat` must be more than 10 minutes old. A
    process the reader cannot open shows a null command line, so never trust the count alone.
-2. Start it: double-click `EconGuard.cmd` in the Startup folder, or run it from any shell. Because
-   the launcher creates the loop through WMI, the loop is outside that shell's job (R799).
+2. Start it: double-click `EconGuard.cmd` in the Startup folder, or run it from any shell. When
+   Create returns 0 the loop is outside that shell's job (R799), because WmiPrvSE creates it. On the
+   FALLBACK path it is NOT: the old `start ""` line inherits the caller's job (measured IN A JOB). If
+   the launcher line says `falling back` and the file was run from an agent's tool shell, the loop
+   lives in that shell's job and dies with it (R799/R2032): treat it as NOT started.
 3. Receipts (each one can fail; report section 8 plus the 2026-11-23 plan review, C7):
-   1. `logs\_guard_loop.log` ends with the launcher line `Create returned 0, loop pid <P>` and then
-      `loop starting pid <P>`, the same `<P>`. A `falling back to start` line means the loop is in a
-      Windows Terminal window: do not close that window; find out why Create failed.
+   1. `logs\_guard_loop.log` ends with the launcher line `Create returned 0, loop pid <P>`. After
+      INSTALL step 2 (the new loop script) it is followed by `loop starting pid <P>`, the same `<P>`;
+      the OLD loop script never writes that line, so before step 2 only the launcher line can be
+      checked. A `falling back to start` line means the loop is in a Windows Terminal window: do not
+      close that window; find out why Create failed (and see step 2 about the job).
    2. The step-1 filter now returns exactly ONE process, pid `<P>`, parent `WmiPrvSE.exe`, and its
       `SessionId` equals explorer.exe's.
    3. `python -I -B F:\work\guard_death_20261121\job_membership.py <P>` prints `not in a job`.
@@ -145,8 +153,13 @@ named `*.cmd` or `*.bat` there would start a second loop. Copy bytes with `Copy-
 `Get-Content | Set-Content` (Windows PowerShell 5.1 writes a BOM).
 
 0. After the PR is merged: `git -C E:\research\econfindatalibrary pull --ff-only` (E: on `main`).
-   E: has `core.autocrlf=true`, so the copies there are CRLF; the live files today are LF. Both
-   work; `tools/check_guard_copies.py` compares normalised lines, not bytes.
+   This pull deploys EVERY change merged since E: was last pulled, not only this one (R803): E: was
+   on `main` at b2ed2ebe7 at 2026-11-23T09:21Z, 19 commits behind 899ffc3f5 (`git rev-list --count`). Then prove E: holds this change,
+   because the step-3 receipt cannot see a stale E: (it compares E:'s copy with a live file copied
+   from that same copy):
+   `git -C E:\research\econfindatalibrary merge-base --is-ancestor <merge sha of this PR> HEAD`
+   must exit 0. E: has `core.autocrlf=true`, so the copies there are CRLF; the live files today are
+   LF. Both work; `tools/check_guard_copies.py` compares normalised lines, not bytes.
 1. **The launcher, any time after step 0** (it is not running between log-ons):
    ```powershell
    $st = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup'

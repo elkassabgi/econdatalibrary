@@ -166,6 +166,61 @@ def _launcher():
     return raw, raw.decode("ascii")
 
 
+def _command_body(text: str) -> str:
+    ps = [ln for ln in text.splitlines() if ln.startswith("powershell ")]
+    assert len(ps) == 1, ps
+    m = re.fullmatch(r'powershell -NoProfile -ExecutionPolicy Bypass -Command "(.*)"', ps[0])
+    assert m, ps[0]
+    return m.group(1)
+
+
+# Functions win over cmdlets in PowerShell's command lookup, so these shadow the two CIM cmdlets: the
+# launcher's own -Command body runs unchanged, with no WMI call, on any engine (CI included).
+SHADOW = """function New-CimInstance { param([string]$ClassName, [switch]$ClientOnly, $Property)
+  [pscustomobject]@{ ClassName = $ClassName; ShowWindow = $Property.ShowWindow } }
+function Invoke-CimMethod { param([string]$ClassName, [string]$MethodName, $Arguments)
+  Set-Content -Path $env:TEST_CALL_FILE -Encoding utf8 -Value ($ClassName + '|' + $MethodName + '|' + $Arguments.CommandLine + '|' + $Arguments.CurrentDirectory + '|' + $Arguments.ProcessStartupInformation.ShowWindow)
+  switch ($env:TEST_CIM_MODE) {
+    'ok' { [pscustomobject]@{ ReturnValue = 0; ProcessId = 4242 } }
+    'rv8' { [pscustomobject]@{ ReturnValue = 8; ProcessId = $null } }
+    'none' { $null }
+    'throw' { throw 'planted-wmi-failure' }
+  } }
+"""
+
+
+@pytest.mark.parametrize("mode, rc, text", [
+    ("ok", 0, "launcher EconGuard.cmd: Win32_Process.Create returned 0, loop pid 4242"),
+    ("rv8", 2, "launcher EconGuard.cmd: Win32_Process.Create returned 8, falling back to start (a Windows Terminal window)"),
+    ("none", 2, "launcher EconGuard.cmd: Win32_Process.Create gave no result, falling back to start (a Windows Terminal window)"),
+    ("throw", 2, "launcher EconGuard.cmd: Win32_Process.Create threw planted-wmi-failure, falling back to start (a Windows Terminal window)"),
+])
+def test_the_launcher_exit_code_decides_the_fallback(tmp_path, mode, rc, text):
+    """The .cmd falls back to `start ""` on `if errorlevel 1`: only a Create that returned 0 may exit 0, and
+    every other outcome must exit non-zero (a 0 there means no loop at all), each with ONE log line."""
+    exe = engine()
+    if exe is None:
+        if os.environ.get("GITHUB_ACTIONS"):
+            pytest.fail("no PowerShell engine on the CI runner: this test must run there, a skip is not a pass")
+        pytest.skip("no PowerShell engine (powershell or pwsh) on this machine")
+    _raw, launcher = _launcher()
+    log = str(tmp_path / "launcher.log")
+    body = swap(_command_body(launcher), "'E:\\research\\econfindatalibrary\\logs\\_guard_loop.log'",
+                "'" + log.replace("'", "''") + "'")
+    env = dict(os.environ, ECON_GUARD_LOOP_CMD=LOOP_CMD, TEST_CIM_MODE=mode,
+               TEST_CALL_FILE=str(tmp_path / "call.txt"))
+    r = subprocess.run([exe, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", SHADOW + body],
+                       capture_output=True, timeout=120, env=env, cwd=str(tmp_path))
+    out = (r.stdout or b"").decode("utf-8", "replace") + (r.stderr or b"").decode("utf-8", "replace")
+    with open(log, encoding="utf-8-sig", errors="replace") as fh:
+        lines = [ln for ln in fh.read().splitlines() if ln.strip()]
+    assert r.returncode == rc, f"engine {exe}: rc {r.returncode}, want {rc}\n{lines}\n{out[-2000:]}"
+    assert len(lines) == 1 and re.fullmatch(r"\S+Z  " + re.escape(text), lines[0]), (lines, out[-2000:])
+    with open(tmp_path / "call.txt", encoding="utf-8-sig") as fh:
+        call = fh.read().strip()
+    assert call == "Win32_Process|Create|" + LOOP_CMD + "|E:\\research\\econfindatalibrary|0", call
+
+
 def test_the_launcher_starts_the_loop_hidden_through_wmi():
     raw, text = _launcher()
     assert all(b < 128 for b in raw), "the launcher must be ASCII"
