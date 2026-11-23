@@ -94,19 +94,40 @@ class FakeR2:
         self.objects[Key] = bytes(Body)
 
 
-def _real_state():
-    """(exists, mtime) of every real path the tool could write in the checkout the suite runs in."""
-    out = {}
-    for rel in (("logs", "statcan_writer.lock"), ("logs", "statcan_lift_quarantine"),
-                ("logs", "statcan_lane.progress.json")):
-        p = os.path.join(ROOT, *rel)
-        out[p] = (os.path.exists(p), os.path.getmtime(p) if os.path.exists(p) else None)
-    return out
+def _real_receipts():
+    """The real checkout's receipts dir (exists, names) - only this tool writes there; the lane never does."""
+    p = os.path.join(ROOT, "logs", "statcan_lift_quarantine")
+    return os.path.isdir(p), sorted(os.listdir(p)) if os.path.isdir(p) else []
+
+
+def _under_real(path) -> bool:
+    real = os.path.normcase(os.path.realpath(ROOT))
+    got = os.path.normcase(os.path.realpath(str(path)))
+    return got == real or got.startswith(real + os.sep)
 
 
 @pytest.fixture(autouse=True)
 def iso(tmp_path, monkeypatch):
-    real = _real_state()
+    # SENTINELS ON THIS PROCESS'S WRITES, NOT ON THE REAL FILES' TIMES (verification review V1): the live lane
+    # rewrites logs/statcan_lane.progress.json and creates logs/statcan_writer.lock in the production checkout while
+    # tools/pretest.py runs this suite there, so a time compare would blame the test for the lane's own writes.
+    real_acquire, real_write, real_local = writer_lock.acquire, blob.write_bytes_atomic, tool._write_local
+
+    def acquire(name, what=""):
+        assert not _under_real(writer_lock.lock_path(name)), f"a test took the REAL lock {writer_lock.lock_path(name)}"
+        return real_acquire(name, what=what)
+
+    def write_bytes_atomic(path, data):
+        assert not _under_real(path), f"a test wrote the REAL store path {path}"
+        return real_write(path, data)
+
+    def write_local(path, data):
+        assert not _under_real(path), f"a test wrote the REAL mirror {path}"
+        return real_local(path, data)
+    monkeypatch.setattr(writer_lock, "acquire", acquire)
+    monkeypatch.setattr(blob, "write_bytes_atomic", write_bytes_atomic)
+    monkeypatch.setattr(tool, "_write_local", write_local)
+    receipts = _real_receipts()
     code_t = NOW - dt.timedelta(minutes=60)
     files = {}
     for rel, attr in ((("jobs", "statcan_lane.py"), lane), (("updater", "strategies", "fetchers", "statcan.py"), sc)):
@@ -142,7 +163,11 @@ def iso(tmp_path, monkeypatch):
     r2 = FakeR2()
     monkeypatch.setattr(blob.R2Blob, "client", property(lambda self: r2))
     yield {"tmp": tmp_path, "d": d, "r2": r2, "procs": procs, "files": files, "code_t": code_t}
-    assert _real_state() == real, "a test changed a real path of the checkout"
+    for name, path in (("lane.STATE", lane.STATE), ("lane.PROGRESS", lane.PROGRESS), ("sc.OUT_DIR", sc.OUT_DIR),
+                       ("lane.LOCAL_PROGRESS", lane.LOCAL_PROGRESS), ("writer_lock.LOCK_DIR", writer_lock.LOCK_DIR),
+                       ("tool.RECEIPTS", tool.RECEIPTS)):
+        assert not _under_real(path), f"{name} points at the real checkout: {path}"
+    assert _real_receipts() == receipts, "a test wrote the real receipts dir"
 
 
 # --------------------------------------------------------------------------- #
@@ -253,6 +278,9 @@ def _table(tmp_path, edit):
      "table2 row 36100434"),
     ("C moved to B", lambda l: [x.replace("10100145\tPERSISTENT_OFFSET", "10100145\tSTALE_COPY") for x in l],
      "C2 10100145"),
+    ("missing D row", lambda l: [x for x in l if not x.startswith("36100488")], "table2 classes C+D"),
+    ("D row read as C", lambda l: [x.replace("36100488\tSERIES_DROPPED", "36100488\tPERSISTENT_OFFSET") for x in l],
+     "table2 classes C+D"),
     ("duplicate row", lambda l: l + [l[1]], "appears twice"),
     ("unknown class", lambda l: [x.replace("SERIES_DROPPED", "OTHER") for x in l], "unknown class"),
     ("no release column", lambda l: [x.rsplit("\t", 1)[0] for x in l], "needs the columns"),
@@ -495,7 +523,11 @@ def test_apply_refuses_with_an_offline_copy(iso, capsys):
     objs, files = dict(iso["r2"].objects), _files(iso["tmp"])
     rc = _run("--from-table2", TABLE2, "--apply", "--state-file", str(sf), "--expect-before-sha", "a" * 64,
               "--expect-after-sha", "b" * 64)
-    assert rc == 1 and "R10" in capsys.readouterr().out
+    assert rc == 1 and "REFUSE R10" in capsys.readouterr().out
+    _unchanged(iso, objs, files)
+    rc = _run("--from-table2", TABLE2, "--apply", "--progress-file", str(sf), "--expect-before-sha", "a" * 64,
+              "--expect-after-sha", "b" * 64)                    # a progress copy alone refuses too
+    assert rc == 1 and "REFUSE R10" in capsys.readouterr().out
     _unchanged(iso, objs, files)
 
 
@@ -874,6 +906,10 @@ def _h(h):
     ({"release": REL_A, "merged": "2026-10-15T12:30", "fails": 1, "first_strike_utc": _h(0.5), "retry_after": _h(1.5)},
      2, ("HELD_STRIKE", "pass")),
     ({"release": REL_A, "merged": "2026-10-15T12:30", "fails": 1, "retry_after": None}, 2, ("OLD_RULE", "fail")),
+    ({"release": REL_A, "merged": "2026-10-15T12:30", "fails": 1, "first_strike_utc": _h(0.5), "retry_after": _h(0.6)},
+     2, ("OLD_RULE", "fail")),                                               # a strike without the 1 h spacing
+    ({"release": REL_A, "merged": "2026-10-15T12:30", "fails": 0, "transient_fails": 1, "refused_http": 403}, 1,
+     ("HELD_TRANSIENT", "pass")),                                            # freed by a breaker close (review V2)
     ({"release": REL_A, "merged": "2026-10-15T12:30", "fails": 0, "transient_fails": 2, "retry_after": _h(1),
       "last_error": "whole-table fetch failed: statcan zip ... HTTP 403"}, 1, ("HELD_TRANSIENT", "pass")),
     ({"release": REL_A, "merged": "2026-10-15T12:30", "fails": 0, "transient_fails": 6, "retry_after": _h(5)}, 5,
@@ -889,10 +925,10 @@ def test_classify_judges_the_fixed_outcome_fields_in_order(cube, now_h, want):
     assert tool.classify(cube, REL_A, LIFTED, LIFTED + dt.timedelta(hours=now_h), 0) == want
 
 
-def _receipt(iso, cubes):
+def _receipt(iso, cubes, status="LIFTED", tf=0):
     p = iso["tmp"] / "receipt.json"
-    p.write_text(json.dumps({"utc_lift": _z(LIFTED), "cubes": {
-        pid: {"class": tool.LIFT[pid][0], "release": tool.LIFT[pid][1], "after_transient_fails": 0}
+    p.write_text(json.dumps({"utc_lift": _z(LIFTED), "status": status, "cubes": {
+        pid: {"class": tool.LIFT[pid][0], "release": tool.LIFT[pid][1], "after_transient_fails": tf}
         for pid in cubes}}))
     return str(p)
 
@@ -1020,3 +1056,225 @@ def test_end_to_end_a_lifted_class_a_cube_merges_and_a_lifted_class_b_cube_is_he
     (world / "_lane_state.json").write_text(json.dumps(st, sort_keys=True))
     rc = _run("--check", receipt)
     assert rc == 1 and "OLD_RULE" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- #
+# verification review round 1 (V2-V7): the states the lane's OWN writers leave, the receipt on every exit, the
+# receipt's status, the scan's spellings, and the regex alternatives - each pinned by the lane's own text
+# --------------------------------------------------------------------------- #
+def _lifted_cube():
+    c = _cube("10100111")
+    for k in ("quarantined", "fail_release", "retry_after"):
+        c.pop(k)
+    c["fails"] = 0
+    return c
+
+
+def test_classify_the_states_the_lanes_own_writers_leave():
+    t = LIFTED + dt.timedelta(minutes=5)
+    c = _lifted_cube()
+    lane._backoff(c, "whole-table fetch failed: statcan zip x HTTP 403", t)
+    assert tool.classify(c, REL_A, LIFTED, t, 0) == ("HELD_TRANSIENT", "pass")
+    c["refused_http"] = 403                                   # a breaker close pops its retry_after (review V2, P1)
+    st = {"cubes": {"10100111": c}, "breaker": {"status": 403}}
+    lane._breaker_close(st, "10100141")
+    assert "retry_after" not in c and tool.classify(c, REL_A, LIFTED, t, 0) == ("HELD_TRANSIENT", "pass")
+    c = _lifted_cube()
+    lane._deterministic(c, "10100111", "whole-table fetch refused: x", t)
+    assert tool.classify(c, REL_A, LIFTED, t + dt.timedelta(minutes=1), 0) == ("HELD_STRIKE", "pass")
+    lane._deterministic(c, "10100111", "whole-table fetch refused: x", t + dt.timedelta(hours=1))
+    lane._deterministic(c, "10100111", "whole-table fetch refused: x", t + dt.timedelta(hours=12))
+    assert c["quarantined"] is True
+    assert tool.classify(c, REL_A, LIFTED, t + dt.timedelta(hours=12, minutes=1), 0) == ("QUARANTINED_NEW_RULE", "pass")
+    c = _lifted_cube()                                       # a trip puts the pre-attempt snapshot back, then backs off
+    snap = {k: c[k] for k in lane._RESTORE_FIELDS if k in c}
+    lane._deterministic(c, "10100111", "whole-table fetch refused: statcan zip x HTTP 404", t)
+    st = {"cubes": {"10100111": c}}
+    lane._trip_breaker(st, 404, [("10100111", snap, "definitive", False)], t)
+    assert tool.classify(c, REL_A, LIFTED, t, 0) == ("HELD_TRANSIENT", "pass")
+
+
+@pytest.mark.parametrize("text,src", [
+    ("the ingest record (10100111.done) says it is held; the store does not have it - a store fault (R753), not a new cube",
+     "says it is held; the store does not \""),                   # the lane's f-string is split over two lines
+    ("stored cube unreadable: ArrowInvalid: Parquet magic bytes not found", "stored cube unreadable"),
+    ("the store could not be asked: ConnectionError: x", "the store could not be asked"),
+])
+def test_every_store_fault_text_the_lane_writes_is_not_held(text, src):
+    assert src in lane.__loader__.get_source(lane.__name__)        # the lane still writes this text
+    c = dict(_lifted_cube(), transient_fails=1, retry_after=_h(1), last_error=text)
+    assert tool.classify(c, REL_A, LIFTED, LIFTED + dt.timedelta(minutes=10), 0) == ("NOT_HELD", "fail")
+
+
+@pytest.mark.parametrize("text,src", [
+    ("merge failed on this machine: OutOfMemoryException: x", "merge failed on this machine"),
+    ("key check failed: ArrowInvalid: x", "key check failed"),
+    ("unexpected OSError in the whole-table fetch: disk full", "unexpected {type(e).__name__} in the whole-table"),
+    ("unexpected KeyError: 'x'", "_backoff(c, f\"unexpected {type(e).__name__}: {e}\""),
+    ("history-floor gate could not read the first valued dates: x", "history-floor gate could not read"),
+])
+def test_every_this_machine_transient_text_is_held_red_not_a_pass(text, src):
+    assert src in lane.__loader__.get_source(lane.__name__)
+    c = dict(_lifted_cube(), transient_fails=1, retry_after=_h(1), last_error=text)
+    assert tool.classify(c, REL_A, LIFTED, LIFTED + dt.timedelta(minutes=10), 0) == ("HELD_TRANSIENT_RED", "wait")
+
+
+@pytest.mark.parametrize("status", ["FAILED_NOTHING_CHANGED", "WRITING", "READBACK_FAILED", "UNKNOWN",
+                                    "OTHER_DOCUMENT", "WRITTEN_NOT_VERIFIED", None])
+def test_check_judges_only_a_verified_lift(iso, monkeypatch, capsys, status):
+    _seed(iso)                                                   # every cube still quarantined: nothing lifted
+    rc = _run("--check", _receipt(iso, ["10100111", "16100047"], status=status))
+    out = capsys.readouterr().out
+    assert rc == 1 and "this receipt records no verified lift" in out and "OLD_RULE" not in out
+
+
+def test_check_counts_transients_against_the_receipts_own_after_value(iso, monkeypatch, capsys):
+    def edit(st):
+        _merge(st, "10100111")
+        st["cubes"]["16100047"]["transient_fails"] = 2           # lifted with 2, unchanged since: UNTOUCHED
+    rc, out = _check_at(iso, monkeypatch, capsys, 1, edit)
+    assert rc == 0 and "HELD_TRANSIENT 1" in out                # receipt says 0: 2 > 0 reads as a new transient...
+    st = _doc()
+    for p in ("10100111", "16100047"):
+        c = st["cubes"][p]
+        for k in ("quarantined", "fail_release", "retry_after"):
+            c.pop(k, None)
+        c["fails"] = 0
+    _merge(st, "10100111")
+    st["cubes"]["16100047"]["transient_fails"] = 2
+    _seed(iso, raw=json.dumps(st, sort_keys=True).encode())
+    monkeypatch.setattr(tool, "_now", lambda: LIFTED + dt.timedelta(hours=1))
+    rc = _run("--check", _receipt(iso, ["10100111", "16100047"], tf=2))
+    out = capsys.readouterr().out
+    assert rc == 3 and "UNTOUCHED" in out                        # ...but with the receipt's 2 it is untouched
+
+
+def test_apply_records_each_cubes_transient_count_in_the_receipt(iso, capsys):
+    _seed(iso, edit=_cube_edit("10100111", transient_fails=2))
+    rc, out, b, a = _apply_after_plan(capsys, "--pids", "10100111")
+    assert rc == 0
+    rec = json.load(open(re.search(r"receipt (\S+_receipt\.json)", out).group(1), encoding="utf-8"))
+    assert rec["cubes"]["10100111"]["after_transient_fails"] == 2 and rec["status"] == "LIFTED"
+    assert re.search(r"^  10100111 A .* transient_fails 2 ", out, re.M)    # the plan shows it (review C11)
+
+
+def test_a_good_put_and_a_read_back_that_keeps_failing_leaves_a_readback_failed_receipt(iso, capsys, monkeypatch):
+    b, a = _go(iso, capsys)
+    iso["r2"].after_put_get_error = RuntimeError("read timeout")
+    monkeypatch.setattr(tool.time, "sleep", lambda s: None)
+    rc = _run("--from-table2", TABLE2, "--apply", "--expect-before-sha", b, "--expect-after-sha", a)
+    out = capsys.readouterr().out
+    assert rc == 1 and "READ-BACK FAILED 3 times" in out and "NOT VERIFIED" in out
+    assert tool.sha256(iso["r2"].objects[KEY]) == a              # the write landed; nobody claims it did
+    rec = json.load(open(re.search(r"Receipt (\S+_receipt\.json)", out).group(1), encoding="utf-8"))
+    assert rec["status"] == "READBACK_FAILED" and rec["after_sha256"] == a and os.path.exists(rec["backup"])
+    assert not os.path.exists(writer_lock.lock_path(lane.LOCK_NAME))
+
+
+def test_a_read_back_that_fails_once_is_retried(iso, capsys, monkeypatch):
+    b, a = _go(iso, capsys)
+    r2, n = iso["r2"], {"gets": 0}
+    real_get = r2.get_object
+
+    def get(Bucket, Key, **kw):
+        if r2.puts and Key == KEY:
+            n["gets"] += 1
+            if n["gets"] == 1:
+                raise RuntimeError("one blip")
+        return real_get(Bucket, Key, **kw)
+    monkeypatch.setattr(r2, "get_object", get)
+    monkeypatch.setattr(tool.time, "sleep", lambda s: None)
+    assert _run("--from-table2", TABLE2, "--apply", "--expect-before-sha", b, "--expect-after-sha", a) == 0
+
+
+def test_an_intent_receipt_exists_while_the_write_runs(iso, capsys, monkeypatch):
+    b, a = _go(iso, capsys)
+    real, seen = blob.write_bytes_atomic, {}
+
+    def write(path, data):
+        rs = [f for f in os.listdir(tool.RECEIPTS) if f.endswith("_receipt.json")]
+        seen["status"] = json.load(open(os.path.join(tool.RECEIPTS, rs[0]), encoding="utf-8"))["status"]
+        return real(path, data)
+    monkeypatch.setattr(blob, "write_bytes_atomic", write)
+    assert _run("--from-table2", TABLE2, "--apply", "--expect-before-sha", b, "--expect-after-sha", a) == 0
+    assert seen["status"] == "WRITING"
+
+
+def test_a_mirror_that_does_not_read_back_as_the_after_document_is_not_verified(iso, capsys, monkeypatch):
+    b, a = _go(iso, capsys)
+    raw = iso["r2"].objects[KEY]
+    monkeypatch.setattr(tool, "mirror_bytes", lambda: raw if iso["r2"].puts else None)
+    rc = _run("--from-table2", TABLE2, "--apply", "--expect-before-sha", b, "--expect-after-sha", a)
+    out = capsys.readouterr().out
+    assert rc == 1 and "check mirror_is_after: FAIL" in out
+    rec = json.load(open(re.search(r"receipt (\S+_receipt\.json)", out).group(1), encoding="utf-8"))
+    assert rec["status"] == "WRITTEN_NOT_VERIFIED" and rec["checks"]["mirror_is_after"] is False
+
+
+def test_a_mirror_read_that_raises_after_the_write_is_not_verified_and_leaves_a_receipt(iso, capsys, monkeypatch):
+    b, a = _go(iso, capsys)
+
+    def boom():
+        if iso["r2"].puts:
+            raise PermissionError("held open")
+        return None
+    monkeypatch.setattr(tool, "mirror_bytes", boom)
+    rc = _run("--from-table2", TABLE2, "--apply", "--expect-before-sha", b, "--expect-after-sha", a)
+    out = capsys.readouterr().out
+    assert rc == 1 and "the mirror cannot be read back: PermissionError" in out and "WRITTEN BUT NOT VERIFIED" in out
+
+
+def test_a_mirror_that_cannot_be_put_back_after_a_failed_put_says_so(iso, capsys, monkeypatch):
+    b, a = _go(iso, capsys)
+    raw = iso["r2"].objects[KEY]
+    iso["r2"].put_error = RuntimeError("PUT refused")
+
+    def deny(path, data):
+        raise PermissionError("held open")
+    monkeypatch.setattr(tool, "_write_local", deny)
+    rc = _run("--from-table2", TABLE2, "--apply", "--expect-before-sha", b, "--expect-after-sha", a)
+    out = capsys.readouterr().out
+    assert rc == 1 and "the mirror could not be put back: PermissionError" in out and "(NOT VERIFIED)" in out
+    assert iso["r2"].objects[KEY] == raw
+
+
+def test_the_plan_prints_a_held_lock_and_the_bounds_are_pinned(iso, capsys, monkeypatch):
+    _seed(iso)
+    monkeypatch.setattr(writer_lock, "owner", lambda name: {"pid": LANE_PID, "what": "jobs/statcan_lane.py"})
+    rc, out, _s = _plan(capsys, "--from-table2", TABLE2)
+    assert "R4 writer lock" in out and 'HELD by {"pid": 48712, "what": "jobs/statcan_lane.py"}' in out
+    assert (tool.LOCK_HOLD_MAX_S, tool.BEAT_MAX_AGE_MIN, tool.CHECK_DEADLINE_H, tool.READBACK_TRIES) == (240.0, 15.0,
+                                                                                                         24.0, 3)
+
+
+@pytest.mark.parametrize("spent,want", [(239.0, 0), (241.0, 1)])
+def test_the_lock_hold_bound_is_240_s(iso, capsys, spent, want):
+    b, a = _go(iso, capsys)
+    ticks = iter([0.0] + [spent] * 10)
+    rc = tool.apply(_ns(expect_before_sha=b, expect_after_sha=a), sorted(tool.LIFT), clock=lambda: next(ticks))
+    assert rc == want
+
+
+def test_the_scan_is_case_blind_and_sees_every_interpreter_name(monkeypatch):
+    import psutil
+    table = [_P(1, "python.exe", ["python", "-u", r"JOBS\STATCAN_LANE.PY"]),
+             _P(2, "python3.14t.exe", ["python3.14t", "-u", "jobs/statcan_lane.py"]),
+             _P(3, "PYTHONW.EXE", ["pythonw", "-m", "jobs.statcan_lane"]),
+             _P(4, "pyw.exe", ["pyw", "jobs/statcan_lane.py"]),
+             _P(5, "pycharm64.exe", ["pycharm64", "statcan_lane.py"])]
+    monkeypatch.setattr(psutil, "process_iter", lambda *a, **k: iter(table))
+    found, unreadable = REAL_LANE_PROCESSES()
+    assert [p["pid"] for p in found] == [1, 2, 3, 4] and unreadable == []
+
+
+def test_an_old_lane_spelled_in_upper_case_beside_a_new_one_refuses(iso, capsys, monkeypatch):
+    import psutil
+    _seed(iso)
+    new = _proc(iso)
+    table = [_P(LANE_PID, "python.exe", new["cmdline"], new["cwd"], new["create_time"]),
+             _P(777, "python.exe", ["python", "-u", r"JOBS\STATCAN_LANE.PY"], str(iso["tmp"]),
+                _ep(NOW - dt.timedelta(days=2)))]
+    monkeypatch.setattr(psutil, "process_iter", lambda *a, **k: iter(table))
+    monkeypatch.setattr(tool, "lane_processes", REAL_LANE_PROCESSES)
+    rc, out, _s = _plan(capsys, "--from-table2", TABLE2)
+    assert rc == 1 and "R5 pid 777" in out and "before the last write of the strike-rule code" in out

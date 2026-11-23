@@ -68,6 +68,8 @@ RECEIPTS = os.path.join(ROOT, "logs", "statcan_lift_quarantine")
 # The apply holds the lane's lock; the lane waits on it (it logs "another writer holds" once and sleeps 300 s). The
 # whole read-check-backup part must end within this, or the write is not started (review F13).
 LOCK_HOLD_MAX_S = 240.0
+# The read-back after the write: a GET that raises is tried again before the receipt says READBACK_FAILED.
+READBACK_TRIES, READBACK_WAIT_S = 3, 2.0
 # The lane beats at the end of every 5-minute iteration: a beat older than this is not a loop that is alive (R6).
 BEAT_MAX_AGE_MIN = 15.0
 # --check: a cube still untouched this long after the lift is a FAIL, not PENDING (design section 6).
@@ -98,7 +100,7 @@ _SIG_B = "whole-table fetch refused: statcan {pid}: incomplete against StatCan's
 _STORE_FAULT = re.compile(r"the store does not have it|stored cube unreadable|the store could not be asked|R753")
 # --check: a transient whose cause is THIS machine, not a StatCan answer: not a pass at the deadline (review F3 d).
 _NOT_STATCAN = re.compile(r"merge failed on this machine|key check failed|^unexpected |history-floor gate could not")
-_PY_NAME = re.compile(r"(?i)^(python|pythonw|py)(\d+(\.\d+)*)?(\.exe)?$")
+_PY_NAME = re.compile(r"(?i)^(python[\w.-]*|pyw?(\.exe)?)$")
 _ISO = "%Y-%m-%dT%H:%M:%SZ"
 
 
@@ -350,6 +352,7 @@ def lane_processes() -> tuple:
         except Exception as e:                                       # noqa: BLE001
             unreadable.append(f"pid {p.pid}: name unreadable ({type(e).__name__})")
             continue
+        # every interpreter name form is looked at - python, python3, python3.14t, pythonw, py, pyw, any case (V5)
         if not _PY_NAME.match(str(name)):
             continue
         try:
@@ -359,7 +362,7 @@ def lane_processes() -> tuple:
         except Exception as e:                                       # noqa: BLE001
             unreadable.append(f"pid {p.pid} ({name}): {type(e).__name__}: {str(e)[:80]}")
             continue
-        if any("statcan_lane" in str(a) for a in cmd):
+        if any("statcan_lane" in str(a).lower() for a in cmd):     # Windows paths are case-blind (review V5)
             found.append({"pid": p.pid, "cmdline": cmd, "cwd": cwd, "create_time": ct})
     return found, unreadable
 
@@ -563,7 +566,8 @@ def report(ev: dict, a, now: dt.datetime, mode: str) -> None:
             c = st["cubes"][p]
             b, af = ev["changes"][p]
             print(f"  {p} {LIFT[p][0]} release {c.get('release')} merged {c.get('merged')} served {c.get('served')} "
-                  f"mif {c.get('merge_in_flight')} bytes {c.get('bytes')}: {_fmt(b)} -> {_fmt(af)}", flush=True)
+                  f"mif {c.get('merge_in_flight')} transient_fails {c.get('transient_fails')} bytes {c.get('bytes')}: "
+                  f"{_fmt(b)} -> {_fmt(af)}", flush=True)
         q0 = len(lane.summarise(st)["quarantined"])
         q1 = len(lane.summarise(ev["after_state"])["quarantined"])
         order = lane.order_owed(ev["after_state"], now)
@@ -663,6 +667,10 @@ def apply(a, pids: list, now_fn=None, clock=None) -> int:
                 "cubes": {p: {"class": LIFT[p][0], "release": LIFT[p][1], "before": b, "after": af,
                               "after_transient_fails": int(ev["after_state"]["cubes"][p].get("transient_fails") or 0)}
                           for p, (b, af) in ev["changes"].items()}}
+        # THE INTENT RECEIPT, BEFORE THE WRITE (verification review V3): every exit from here on leaves a receipt that
+        # names the backup and both shas; the status below replaces WRITING on every path that returns.
+        body["status"] = "WRITING"
+        _receipt(receipt_path, body)
         try:
             blob.write_bytes_atomic(lane.STATE, after)            # the lane's own writer: mirror, then one R2 PUT
         except Exception as e:                                    # noqa: BLE001 - which document does R2 hold now?
@@ -697,8 +705,28 @@ def apply(a, pids: list, now_fn=None, clock=None) -> int:
                       f"neither the before nor the after. A person reads it first. Receipt {receipt_path}", flush=True)
                 return 1
             print("[lift] R2 holds the after document although the write raised: verifying", flush=True)
-        rb = blob.read_bytes(lane.STATE)
-        mir = mirror_bytes()
+        rb, why = None, None
+        for attempt in range(READBACK_TRIES):
+            try:
+                rb = blob.read_bytes(lane.STATE)
+                break
+            except Exception as e:                                # noqa: BLE001
+                why = f"{type(e).__name__}: {str(e)[:160]}"
+                if attempt + 1 < READBACK_TRIES:
+                    time.sleep(READBACK_WAIT_S)
+        else:
+            body["status"] = "READBACK_FAILED"
+            body["readback_error"] = why
+            _receipt(receipt_path, body)
+            print(f"[lift] READ-BACK FAILED {READBACK_TRIES} times ({why}): the write returned, but what R2 holds is "
+                  f"NOT VERIFIED - the before ({sha256(raw)}) or the after ({sha256(after)}). A person reads it before "
+                  f"anything else. Receipt {receipt_path}", flush=True)
+            return 1
+        try:
+            mir = mirror_bytes()
+        except Exception as e:                                    # noqa: BLE001 - e.g. a PermissionError: not verified
+            print(f"[lift] the mirror cannot be read back: {type(e).__name__}: {str(e)[:160]}", flush=True)
+            mir = None
         checks = {"r2_read_back_is_after": rb == after, "mirror_is_after": mir == after}
         st_rb, probs = parse_state(rb)
         checks["read_back_parses"] = st_rb is not None and not probs
@@ -748,11 +776,23 @@ def classify(c, lifted_rel: str, lifted: dt.datetime, now: dt.datetime, after_tf
         if fs is not None and fs >= lifted and ra is not None and ra - fs >= dt.timedelta(minutes=lane.STRIKE_RETRY_MIN[0]):
             return "HELD_STRIKE", "pass"
         return "OLD_RULE", "fail"
-    if tf > after_tf and ra is not None and ra > lifted:
+    # A TRANSIENT SINCE THE LIFT, judged on the count alone (verification review V2). Every lane writer of the fields
+    # judged here, at 8025b45ed (grep retry_after / transient_fails / refused_http / not_held over jobs/statcan_lane.py):
+    #   _backoff               transient_fails + 1, retry_after = now + 10 min .. 12 h        -> HELD_TRANSIENT
+    #   _deterministic         fails + 1, first_strike_utc, retry_after (or a quarantine)     -> HELD_STRIKE / quarantined
+    #   _trip_breaker          the pre-attempt snapshot back, then _backoff, refused_http     -> HELD_TRANSIENT
+    #   _breaker_close         POPS retry_after of a cube waiting on the trip's status        -> HELD_TRANSIENT (no ra)
+    #   merge success          fails 0, transient_fails 0, retry_after None, merged = release -> MERGED
+    #   serve success/refusal  served = merged / serve_refusal + retry_after                  -> MERGED / MERGED_NOT_SERVED
+    #   run() RE-RELEASED      new release; quarantined, fails, first_strike_utc, retry_after dropped -> RE_RELEASED
+    #   run() 'absent'         merged = served = release, not_held                          -> NOT_HELD (first)
+    # The lift pops retry_after and every later writer sets it ahead of `now`, so a retry_after at or before the lift
+    # cannot occur; a breaker close leaves NONE. So the transient count decides, never the retry_after.
+    if tf > after_tf:
         if tf >= lane.TRANSIENT_RED_AFTER or _NOT_STATCAN.search(le):
             return "HELD_TRANSIENT_RED", "wait"
         return "HELD_TRANSIENT", "pass"
-    if fs is None and tf == after_tf and (ra is None or ra <= lifted):
+    if fs is None and tf == after_tf and ra is None:
         return "UNTOUCHED", "wait"
     return "UNCLASSIFIED", "fail"
 
@@ -764,6 +804,14 @@ def check(a, now_fn=None) -> int:
     lifted = _parse_iso(rec.get("utc_lift"))
     if lifted is None or not isinstance(rec.get("cubes"), dict) or not rec["cubes"]:
         print(f"[lift] FAIL: {a.check} is not a lift receipt (no utc_lift or no cubes)", flush=True)
+        return 1
+    if rec.get("status") != "LIFTED":
+        # ONLY A VERIFIED LIFT IS JUDGED (verification review V4): on a refused PUT nothing was lifted, and judging
+        # those cubes would name them OLD_RULE re-quarantines; on an unverified write nobody knows what R2 holds.
+        print(f"[lift] FAIL: this receipt records no verified lift: status {rec.get('status')!r}. "
+              + ("Nothing was lifted - plan again." if rec.get("status") == "FAILED_NOTHING_CHANGED" else
+                 "The write's outcome is not known: a person reads the lane state first (a plan prints every named "
+                 "cube's fields; a cube without `quarantined` was lifted) before anything else is run."), flush=True)
         return 1
     try:
         raw = read_state(a)
