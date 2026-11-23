@@ -99,12 +99,29 @@ def find_deploys(text: str) -> list[tuple[int, str, str]]:
         line, ctx = _line_span(text, m.start(), m.end())
         hits.append((line, "wrangler-action command", ctx))
     for m in _ACTION_USE.finditer(text):
-        line, ctx = _line_span(text, m.start(), m.end())
+        line, ctx = _step_block(text, m.start())
         hits.append((line, "wrangler-action use", ctx))
     for m in _NPM.finditer(text):
         line, ctx = _line_span(text, m.start(), m.end())
         hits.append((line, "npm run deploy", ctx))
     return hits
+
+
+def _step_block(text: str, at: int) -> tuple[int, str]:
+    """(line, context) for a wrangler-action use, with the WHOLE step as its context: the `uses:` line and every
+    following line indented at least as deep as its key (its `with:` block). So an allow-list phrase can name
+    what the step runs (`command: pages deploy ...`), and a second step without a command cannot borrow it
+    (mutation run 3, M11b: a phrase on the `uses:` line alone allowed every use in the file)."""
+    lines = text[text.rfind("\n", 0, at) + 1:].split("\n")
+    first = lines[0].rstrip("\r")
+    key_col = len(first) - len(first.lstrip(" -"))
+    block = [first]
+    for ln in lines[1:]:
+        body = ln.rstrip("\r")
+        if body.strip() and len(body) - len(body.lstrip(" ")) < key_col:
+            break
+        block.append(body)
+    return text.count("\n", 0, at) + 1, re.sub(r"\s+", " ", " ".join(block)).strip()
 
 
 # ------------------------------------------------------------------------------------------- the allow-list
@@ -124,8 +141,8 @@ ALLOWED = [
     (".claude/skills/econ-updater/references/50-queue.md", "guard imf_*_direct!)",
      "history: the 2026-08-06 IMF retirement plan as it was written"),
     ("WORKLOG.md", "classifies as `deploy`", "history: a 2026-08-30 work-log entry"),
-    (".github/workflows/deploy-site.yml", "uses: cloudflare/wrangler-action@v3",
-     "the static site's Pages deploy (its command: is `pages deploy catalog/site`), not the worker"),
+    (".github/workflows/deploy-site.yml", "command: pages deploy catalog/site --project-name=econdatalibrary",
+     "the step whose command is the static site's Pages deploy, not the worker"),
     ("assistant/package.json", '"deploy": "wrangler deploy"', "another worker (elkassabgidata-assistant)"),
     ("assistant/README.md", "elkassabgidata-assistant.elkassabgi.workers.dev", "another worker"),
     ("assistant/README.md", "ANTHROPIC_MAX_OUTPUT_TOKENS", "another worker"),
@@ -235,6 +252,18 @@ LOOK_ALIKES = [
 @pytest.mark.parametrize("text", PLANTED)
 def test_control_every_deploy_shape_is_seen(text):
     assert len(find_deploys(text)) == 1, (text, find_deploys(text))
+
+
+def test_control_a_second_action_step_cannot_borrow_the_first_steps_command():
+    wf = ("jobs:\n  site:\n    steps:\n"
+          "      - name: Deploy to Cloudflare Pages\n        uses: cloudflare/wrangler-action@v3\n        with:\n"
+          "          apiToken: t\n          command: pages deploy catalog/site --project-name=econdatalibrary\n\n"
+          "      # a comment at the step level ends the block\n"
+          "      - name: x\n        uses: cloudflare/wrangler-action@v3\n        with:\n          apiToken: t\n")
+    uses = [h for h in find_deploys(wf) if h[1] == "wrangler-action use"]
+    assert [h[0] for h in uses] == [5, 12], uses
+    assert "command: pages deploy catalog/site" in uses[0][2]
+    assert "command:" not in uses[1][2] and "comment" not in uses[0][2], uses
 
 
 @pytest.mark.parametrize("text", LOOK_ALIKES)
