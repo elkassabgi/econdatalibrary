@@ -173,6 +173,13 @@ def _z(hours_ago):
 def _verdict_cases():
     """(branch, current?, state, progress) for every outcome of statcan.verdict()."""
     st = {"cubes": {"1": {"max_obs": "2026-09-01"}}}
+    q = {"quarantined": True, "fails": 3, "merged": "2026-08-01T08:30", "served": "2026-08-01T08:30"}
+    held = {"cubes": {"10100145": dict(q, release="2026-09-25T08:30", fail_release="2026-09-25T08:30")}}
+    recent = {"cubes": {"10100145": dict(q, release="2026-10-13T08:30", fail_release="2026-10-13T08:30")}}
+    hist = {"cubes": {"12100147": dict(q, release="2026-09-25T08:30", fail_release="2026-09-25T08:30",
+                                       history_hold={"release": "2026-09-25T08:30"})}}
+    carried = {"cubes": {"10100145": {"release": "2026-10-16T08:30", "owed_since": "2026-09-25T08:30",
+                                      "merged": "2026-08-01T08:30", "served": "2026-08-01T08:30"}}}
     tail = {"merge": 0, "serve": 0, "new_cubes": 2}
     fresh = {"beat_utc": _z(0.5), "state": "idle", "owed": dict(tail)}
     return [
@@ -203,6 +210,22 @@ def _verdict_cases():
         ("dead (old beat)", False, st, dict(fresh, beat_utc=_z(10))),
         ("store unreachable", False, st, dict(fresh, state="store_unreachable")),
         ("no progress published", False, None, None),
+        # 2026-11-23 (R2026/R2074, review C1/C5): a hold stays on the owed clock. The clock is read from the STATE
+        # (the reporter passes the whole lane state), else from the beat (CI passes no cubes).
+        ("behind: quarantined past the SLA", False, held, dict(fresh, owed=dict(tail, quarantined=["10100145"]))),
+        ("behind: quarantined past the SLA + serve refused", False, held,
+         dict(fresh, owed=dict(tail, quarantined=["10100145"], serve_refused=["2: split map"]))),
+        ("behind: quarantined past the SLA while draining", False, held,
+         dict(fresh, last_progress_utc=_z(1), owed=dict(tail, merge=17, oldest_owed_release="2026-09-08",
+                                                        quarantined=["10100145"]))),
+        ("behind: read from the beat only", False, {"cubes": {}},
+         dict(fresh, owed=dict(tail, quarantined=["10100145"], owed_since_clock=[
+             {"pid": "10100145", "owed_since": "2026-09-25T08:30", "kind": "quarantined"}]))),
+        ("behind: a history hold", False, hist, dict(fresh, owed=dict(tail, quarantined=["12100147"]))),
+        ("behind: owed across a re-release", False, carried,
+         dict(fresh, owed=dict(tail, merge=1, oldest_owed_release="2026-10-16T08:30"))),
+        ("amber quarantined inside the SLA (owed-since clock read)", True, recent,
+         dict(fresh, owed=dict(tail, quarantined=["10100145"]))),
     ]
 
 
@@ -228,8 +251,10 @@ def test_the_lane_grammar_matches_exactly_the_current_verdicts():
     notes = _verdict_notes()
     for v in notes:
         assert bool(rx.match(v["note"])) is v["current"], v
-        # the verdict's own outcome agrees: current = ok or the amber partial, never a raise
-        assert (v["outcome"] in ("ok", "partial") and "DRAINING" not in v["note"]) is v["current"], v
+        # the verdict's own outcome agrees: current = ok or the amber partial, never a raise, never DRAINING and
+        # never the BEHIND note (a cube on the owed-since clock past the SLA, 2026-11-23)
+        assert (v["outcome"] in ("ok", "partial") and "DRAINING" not in v["note"]
+                and "cube(s) are BEHIND" not in v["note"]) is v["current"], v
     # the shared tail alone never matches, with or without the "statcan: " opening
     for t in ("0 cube(s) owe a merge, 0 owe serving, 2 released cube(s) not held (catalogue debt)",
               "statcan: 2 released cube(s) not held (catalogue debt)", "statcan: ", ""):

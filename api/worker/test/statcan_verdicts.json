@@ -90,6 +90,48 @@
    "outcome": "DefinitiveError",
    "current": false,
    "note": "statcan: the lane has published no progress/state under this backend (<LANE_PROGRESS>) - jobs/statcan_lane.py has never run here, or the store is unreachable. Nothing refreshes statcan without it."
+  },
+  {
+   "branch": "behind: quarantined past the SLA",
+   "outcome": "partial",
+   "current": false,
+   "note": "statcan: 1 cube(s) are BEHIND - each owes a merge since a release over 14 days old that the release clock does not show (oldest 2026-09-25, 25 days): 10100145 (owed since 2026-09-25, quarantined) | 1 cube(s) QUARANTINED (each failed 3x on one release): 10100145; 0 cube(s) owe a merge, 0 owe serving, 2 released cube(s) not held (catalogue debt)"
+  },
+  {
+   "branch": "behind: quarantined past the SLA + serve refused",
+   "outcome": "partial",
+   "current": false,
+   "note": "statcan: 1 cube(s) are BEHIND - each owes a merge since a release over 14 days old that the release clock does not show (oldest 2026-09-25, 25 days): 10100145 (owed since 2026-09-25, quarantined) | 1 cube(s) QUARANTINED (each failed 3x on one release): 10100145 | 1 merged cube(s) whose served ids cannot be reproduced (split map or catalogue needs a human): 2: split map; 0 cube(s) owe a merge, 0 owe serving, 2 released cube(s) not held (catalogue debt)"
+  },
+  {
+   "branch": "behind: quarantined past the SLA while draining",
+   "outcome": "partial",
+   "current": false,
+   "note": "statcan: the lane is DRAINING - behind (oldest owed release 2026-09-08, 42 days) but it finished work 1.0 h ago; 17 cube(s) owe a merge, 0 owe serving, 2 released cube(s) not held (catalogue debt)"
+  },
+  {
+   "branch": "behind: read from the beat only",
+   "outcome": "partial",
+   "current": false,
+   "note": "statcan: 1 cube(s) are BEHIND - each owes a merge since a release over 14 days old that the release clock does not show (oldest 2026-09-25, 25 days): 10100145 (owed since 2026-09-25, quarantined) | 1 cube(s) QUARANTINED (each failed 3x on one release): 10100145; 0 cube(s) owe a merge, 0 owe serving, 2 released cube(s) not held (catalogue debt)"
+  },
+  {
+   "branch": "behind: a history hold",
+   "outcome": "partial",
+   "current": false,
+   "note": "statcan: 1 cube(s) are BEHIND - each owes a merge since a release over 14 days old that the release clock does not show (oldest 2026-09-25, 25 days): 12100147 (owed since 2026-09-25, history hold) | 1 cube(s) QUARANTINED (each failed 3x on one release): 12100147; 0 cube(s) owe a merge, 0 owe serving, 2 released cube(s) not held (catalogue debt)"
+  },
+  {
+   "branch": "behind: owed across a re-release",
+   "outcome": "partial",
+   "current": false,
+   "note": "statcan: 1 cube(s) are BEHIND - each owes a merge since a release over 14 days old that the release clock does not show (oldest 2026-09-25, 25 days): 10100145 (owed since 2026-09-25, owed across a re-release); 1 cube(s) owe a merge, 0 owe serving, 2 released cube(s) not held (catalogue debt)"
+  },
+  {
+   "branch": "amber quarantined inside the SLA (owed-since clock read)",
+   "outcome": "partial",
+   "current": true,
+   "note": "statcan: 1 cube(s) QUARANTINED (each failed 3x on one release): 10100145; 0 cube(s) owe a merge, 0 owe serving, 2 released cube(s) not held (catalogue debt)"
   }
  ]
 }

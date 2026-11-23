@@ -117,6 +117,25 @@ Honest-status contract (Tally + finalize):
 
 ## 4. If it stops updating — diagnose in this order
 
+> **A NOTE THAT OPENS "statcan: N cube(s) are BEHIND" (added by hand 2026-11-23, with the change that writes it).**
+> This page is generated from a checkout that holds `data/`; the paragraph below is the fetcher's module docstring
+> (`updater/strategies/fetchers/statcan.py`), so the next regeneration carries it in section 3 and drops this copy.
+>
+> WHAT "BEHIND" MEANS, AND WHO ACTS ON IT (2026-11-23, ledger R2026/R2074/R2075). A quarantined cube is not kept
+> current, so it stays on an owed clock: the public side (/v1/sources, /v1/last-updates) reads statcan "late" while
+> the note opens "statcan: N cube(s) are BEHIND", and that is the truth, not a fault to clear. CI stays GREEN on it
+> by design (it is `partial`, R244: a job red for weeks stops being read); R2026's "a hold stays on the owed clock"
+> is met on the public clock only, and DRAINING / RED / tools/guard_heartbeat.py are unchanged. Do NOT "fix" it by
+> un-quarantining, by acknowledging it, or by editing the whitelist. What clears it: StatCan re-releasing the cube
+> and the lane merging it, or the measurements a held class still needs (classes C and D: the diagnosis
+> F:/work/econ_finish/statcan_quarantine_20261122/REPORT.md, one zip GET each, with the owner's leave). A
+> `history hold` cube needs the OWNER's (a)/(b) decision (statcan_lane._history_gate). The clock of a cube is its
+> `owed_since` - the oldest release it has owed a merge for, kept across re-releases by jobs/statcan_lane.run() -
+> else its current release.
+>
+> For the daily maintenance: a BEHIND note is a KNOWN state, not a NEW item. It changes only when its cube list
+> changes; a cube that leaves the list was merged. Report the list; do not open a fix for it.
+
 Run everything from `E:\research\econfindatalibrary`.
 
 ```bash

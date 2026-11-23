@@ -18,7 +18,9 @@ and promised a next update for sources nothing runs any more (ksh: 2027-06-24). 
                Late when that pass died whole (transient_fail), refused structurally, failed half or more
                of what it attempted, or ran outside the window.
              * `served_by: lane` (statcan): current while the reporter's latest verdict says the lane is
-               current (updater/strategies/fetchers/statcan.py LANE_CURRENT_PATTERN).
+               current (updater/strategies/fetchers/statcan.py LANE_CURRENT_PATTERN). A quarantined cube, or
+               one a re-release restarted, owed past the SLA is not current (2026-11-23: the BEHIND note,
+               R2026/R2074); the pattern itself did not change for it.
            The grammar alone is not enough and is not used alone: cso's latest note is a pure deferral
            too ("4 sub-unit(s) attempted, none failed; 10740 deferred ..."), and cso is late.
   paused   a registry `paused:` key (insee_melodi today). From the registry, never from a state row, so

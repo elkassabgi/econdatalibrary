@@ -339,7 +339,10 @@ def summarise(st: dict) -> dict:
     """The counts the reporter judges: owed merges, owed serves, the OLDEST owed release (held
     against the SLA), and three NAMED lists that need a human and so are kept out of that clock -
     quarantined cubes, serve-refused cubes, and cubes failing transiently TRANSIENT_RED_AFTER times
-    in a row (lane review P3: a cube failing for ever read `ok` until its release aged out)."""
+    in a row (lane review P3: a cube failing for ever read `ok` until its release aged out).
+    Quarantined cubes are NOT off every clock (2026-11-23, R2026: a hold stays on the owed clock):
+    `owed_since_clock` / `oldest_owed_since` (statcan.owed_since_clock) carry them, and the cubes a
+    re-release would otherwise reset, to the reporter's BEHIND note - the public side reads late."""
     owe_m, owe_s, quar, refused, failing, oldest = [], [], [], [], [], None
     # THREE MORE NAMED LISTS (2026-11-22), also kept off the owed-age clock: a publisher's frozen zip
     # or a cut history is not the lane falling behind. Each record counts only for the release the
@@ -379,18 +382,24 @@ def summarise(st: dict) -> dict:
             m = c.get("merged")
             oldest = m if oldest is None or (m and m < oldest) else oldest
     new = st.get("new_cubes", {})
+    # THE OWED-SINCE CLOCK (2026-11-23, R2026/R2074): the quarantined cubes - history holds included - and every
+    # cube re-released while it still owed a merge, each with the oldest release it owes. ADDED keys only; every
+    # key above keeps its meaning (oldest_owed_release still leaves quarantined cubes out, so DRAINING, RED and
+    # CI behave as before). The reporter reads them from the state itself; CI reads them from this beat.
+    clock = sc.owed_since_clock(st.get("cubes", {}))
     return {"merge": len(owe_m), "serve": len(owe_s), "quarantined": sorted(quar),
             "serve_refused": sorted(refused), "failing": sorted(failing),
             "new_cubes": len(new), "oldest_new_cube": min(new.values()) if new else None,
             "oldest_owed_release": oldest,
+            "owed_since_clock": clock, "oldest_owed_since": clock[0]["owed_since"] if clock else None,
             "stale_upstream": sorted(stale, key=lambda d: d["pid"]),
             "upstream_unmeasured": sorted(unmeasured, key=lambda d: d["pid"]),
             "history_held": sorted(held, key=lambda d: d["pid"]), "upstream": upstream}
 
 
 def merge_owed(c: dict) -> bool:
-    rel = c.get("release")
-    return bool(rel) and (c.get("merged") is None or c["merged"] < rel)
+    """The cube owes a merge (statcan.cube_merge_owed - one rule, shared with the reporter's owed-since clock)."""
+    return sc.cube_merge_owed(c)
 
 
 def serve_owed(c: dict) -> bool:
@@ -946,6 +955,7 @@ def merge_cube(pid: str, c: dict, st: dict, progress: Progress, now: dt.datetime
     c.pop("refused_http", None)
     c.pop("merge_in_flight", None)
     c.pop("history_hold", None)            # a release that passed the history floor clears an old hold
+    c.pop("owed_since", None)              # merged at its release: nothing older is owed (statcan.owed_since_clock)
     c["upstream"] = _upstream_record(rel, s, pub)      # after the merge is recorded; cannot raise
     progress.beat(cubes_merged=1, rows_merged=delta)
     # "UNCHANGED, SO ALREADY SERVED" holds only against a serve THIS LANE recorded. On a cube's
@@ -1124,6 +1134,13 @@ def run(enumerate_releases=None, put=None, now_fn=_now, max_cubes=None, ends_fn=
     for pid, rt in rel.items():
         c = st["cubes"].setdefault(str(pid), {})
         if c.get("release") != rt:
+            # THE OWED-SINCE CLOCK (2026-11-23, R2074): a release that replaces one the cube still owed a merge for
+            # must not restart the cube's owed age - the re-release below lifts a quarantine, and the strike rule
+            # needs >= QUARANTINE_MIN_SPAN_H to put it back. Recorded BEFORE `release` moves; kept across later
+            # re-releases while it is valid (statcan.owed_since_valid); popped by a merge. Work ORDER is
+            # unchanged (order_owed reads `release`); only the reporter's owed-since clock reads it.
+            if c.get("release") and merge_owed(c) and not sc.owed_since_valid(c):
+                c["owed_since"] = c["release"]
             c["release"] = rt
             if str(pid) in RECONCILE_PIDS and str(rt)[:10] < floor:
                 recon_new += 1
@@ -1252,6 +1269,7 @@ def run(enumerate_releases=None, put=None, now_fn=_now, max_cubes=None, ends_fn=
                 debt.setdefault("new_cubes", {})[pid] = c["release"]
                 c["merged"] = c["served"] = c["release"]   # nothing held: nothing to refresh
                 c["not_held"] = True
+                c.pop("owed_since", None)                  # nothing held, so nothing is owed (new-cube debt)
             else:
                 held += 1
             print(_merge_line(pid, r, c), flush=True)
