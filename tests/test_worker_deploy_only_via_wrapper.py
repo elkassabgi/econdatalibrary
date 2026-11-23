@@ -14,7 +14,9 @@ WHAT THIS PINS.
   2. A RATCHET over every TRACKED text file (tests/_repo_walk.tracked_files): each place that names a
      deploy-class wrangler command - deploy, publish (wrangler 3 keeps it as an alias of deploy), versions
      upload / deploy, rollback; any letter case; options between; a line break between; list form; a
-     wrangler-action `command:`; `npm run deploy` - must sit on an allow-listed (path, phrase) with a reason.
+     wrangler-action `command:` (a block scalar too), and EVERY use of the wrangler GitHub Action, which
+     deploys when it names no command; `npm run deploy` - must sit on an allow-listed (path, phrase) with a
+     reason.
      A new instruction anywhere fails here. A stale allow-list entry fails too.
   3. The instruction surfaces this change rewrote name the wrapper, and api/DEPLOY.md section 4 carries the
      whole recipe (Git Bash, a fresh clone of main, `npm ci`, the `verified:` receipt).
@@ -50,8 +52,11 @@ EXPECTED_DEPLOY = ("node -e \"console.error('refused: deploy econdl-api only wit
 _WR = re.compile(r"(?<![\w-])wrangler(?:@[^\s\"',\]]+)?(?:\.(?:cmd|exe|ps1|bat))?(?![\w./-])", re.IGNORECASE)
 _TOK = re.compile(r"[^\s\"',\[\]\\`()]+")
 _VALUE_OPTS = {"-c", "--config", "-e", "--env", "--name", "--cwd", "--experimental-json-config"}
-_ACTION = re.compile(r"^[ \t-]*command:[ \t]*[\"']?(?!pages\b)(deploy|publish|versions|rollback)\b.*$",
-                     re.IGNORECASE | re.MULTILINE)
+_ACTION = re.compile(r"^[ \t-]*command:[ \t]*(?:[|>][-+]?[ \t]*\r?\n[ \t]*)?[\"']?(?!pages\b)"
+                     r"(deploy|publish|versions|rollback)\b.*$", re.IGNORECASE | re.MULTILINE)
+# Any use of the wrangler GitHub Action: with no `command:` it runs `wrangler deploy` (review AR, K2), so each
+# use must be allow-listed with what it runs.
+_ACTION_USE = re.compile(r"cloudflare/wrangler-action\b", re.IGNORECASE)
 _NPM = re.compile(r"\bnpm\s+(?:run|run-script)\s+deploy\b", re.IGNORECASE)
 
 
@@ -93,6 +98,9 @@ def find_deploys(text: str) -> list[tuple[int, str, str]]:
     for m in _ACTION.finditer(text):
         line, ctx = _line_span(text, m.start(), m.end())
         hits.append((line, "wrangler-action command", ctx))
+    for m in _ACTION_USE.finditer(text):
+        line, ctx = _line_span(text, m.start(), m.end())
+        hits.append((line, "wrangler-action use", ctx))
     for m in _NPM.finditer(text):
         line, ctx = _line_span(text, m.start(), m.end())
         hits.append((line, "npm run deploy", ctx))
@@ -116,6 +124,8 @@ ALLOWED = [
     (".claude/skills/econ-updater/references/50-queue.md", "guard imf_*_direct!)",
      "history: the 2026-08-06 IMF retirement plan as it was written"),
     ("WORKLOG.md", "classifies as `deploy`", "history: a 2026-08-30 work-log entry"),
+    (".github/workflows/deploy-site.yml", "uses: cloudflare/wrangler-action@v3",
+     "the static site's Pages deploy (its command: is `pages deploy catalog/site`), not the worker"),
     ("assistant/package.json", '"deploy": "wrangler deploy"', "another worker (elkassabgidata-assistant)"),
     ("assistant/README.md", "elkassabgidata-assistant.elkassabgi.workers.dev", "another worker"),
     ("assistant/README.md", "ANTHROPIC_MAX_OUTPUT_TOKENS", "another worker"),
@@ -202,6 +212,8 @@ PLANTED = [
     "WRANGLER DEPLOY",
     "      command: deploy",
     "    - command: 'publish'",
+    "        with:\n          command: |\n            deploy --var X:y",
+    "      - uses: cloudflare/wrangler-action@v3\n        with:\n          apiToken: t",
     "npm run deploy",
     "npm run-script deploy -- --var GIT_COMMIT:x",
 ]
@@ -214,6 +226,7 @@ LOOK_ALIKES = [
     "api/worker/wrangler.toml deploy",
     "WRANGLER_CI_OVERRIDE_NAME deploy",
     "          command: pages deploy catalog/site",
+    "          command: |\n            pages deploy catalog/site",
     "npm run typecheck",
     "the deploy is manual; see wrangler.soak.toml",
 ]
