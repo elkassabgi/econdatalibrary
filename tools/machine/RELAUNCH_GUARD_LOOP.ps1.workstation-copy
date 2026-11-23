@@ -27,6 +27,21 @@
 #    and its own docstring states it cannot catch a short outage; the beat is the instrument
 #    for that, and it was useless while it stayed on the workstation. See
 #    tools/guard_heartbeat.py; the daily run fails on a stale beat.
+# 4. THE LOOP LEAVES A LINE WHEN IT ENDS (2026-11-23). It died on 2026-08-02 (R260) and again on
+#    2026-11-21 between 21:22 and 21:29Z with no line anywhere, so neither cause could be
+#    measured (report F:\work\guard_death_20261121\REPORT.md). Three lines now go to
+#    logs/_guard_loop.log:
+#    - "loop starting pid N" when the script starts;
+#    - "loop trap pid N: <error> (line L)" when a terminating error reaches the while body. The
+#      trap is the FIRST statement INSIDE the loop on purpose: a trap at script scope around the
+#      try/finally ENDS the loop instead of keeping it, and the outer try without this trap turns
+#      an error the loop used to survive into an exit (measured on Windows PowerShell 5.1, plan
+#      review F:\work\maintenance\20261123_guard_exit_trace\review\VERDICT_plan.md, t1-t12).
+#      It waits 60 s and then goes on with the next statement, so an error that repeats on every
+#      tick cannot spin the guard;
+#    - "loop exiting pid N" from the finally: on the script's own end and on a Ctrl+C (5 of 5 each),
+#      NOT on a console close or a TerminateProcess (0 of 5 each; measured on 5.1, 2026-11-23).
+#    What the lines prove is in tools/machine/README.md ("What a dead loop's log tells you").
 $ErrorActionPreference = 'Continue'
 $root  = 'E:\research\econfindatalibrary'
 $guard = Join-Path $root 'RELAUNCH_GUARD.ps1'
@@ -36,7 +51,20 @@ $loopLog = Join-Path $root 'logs\_guard_loop.log'
 # through PATH, which differs between an interactive shell and this hidden background process.
 $python = "C:\Users\aelkassabgi\AppData\Local\Programs\Python\Python314\python.exe"
 
+$loopStart = (Get-Date).ToUniversalTime().ToString('o')
+$script:lastTrap = 'none'
+try { Add-Content -Path $loopLog -Value ("$loopStart  loop starting pid $PID") -Encoding utf8 } catch {}
+
+try {
 while ($true) {
+  trap {
+    $tt = (Get-Date).ToUniversalTime().ToString('o')
+    $what = ($_.Exception.GetType().FullName + ': ' + $_.Exception.Message + ' (line ' + $_.InvocationInfo.ScriptLineNumber + ')') -replace '[\r\n]+', ' '
+    $script:lastTrap = "$tt $what"
+    try { Add-Content -Path $loopLog -Value ("$tt  loop trap pid ${PID}: $what - the loop goes on in 60 s") -Encoding utf8 } catch {}
+    [System.Threading.Thread]::Sleep(60000)
+    continue
+  }
   $ts = (Get-Date).ToUniversalTime().ToString('o')
   try {
     $j = Start-Job -ScriptBlock { param($g) & $g } -ArgumentList $guard
@@ -75,4 +103,10 @@ while ($true) {
   }
 
   Start-Sleep -Seconds 300
+}
+} finally {
+  # .NET append, not a cmdlet: it is the shortest path to the disk when the engine is going down.
+  try {
+    [System.IO.File]::AppendAllText($loopLog, ((Get-Date).ToUniversalTime().ToString('o') + "  loop exiting pid $PID (started $loopStart; last trapped error: $($script:lastTrap))" + [Environment]::NewLine))
+  } catch {}
 }
