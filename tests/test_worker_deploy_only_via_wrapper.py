@@ -24,11 +24,15 @@ WHAT THIS PINS.
      whole recipe (Git Bash, a fresh clone of main, `npm ci`, the `verified:` receipt).
   4. Every tracked workflow (.yml, .yaml) and composite action (action.yml, action.yaml) is PARSED, with
      duplicate keys refused, and every step whose `uses` contains "wrangler" is judged by what it runs: its
+     `uses` must be the action an ACTION_STEPS entry pins (owner/repo, any letter case, any @ref), its
      `command` input split per line as the action splits it (absent, null or blank = `deploy`, the action's
-     default), each line EQUAL to the command of an ACTION_STEPS entry, and every input it sets named by that
-     entry. An entry allows one step; a file that does not parse, and a shape the walk cannot judge, fail.
-     Item 2's step-block phrase let a step with NO command pass when its block held the phrase in a comment
-     or an env value (review of PR #320, condition C6; ledger R2042).
+     default), each line EQUAL to the command of that entry, and every input it sets named by that entry.
+     A `with` key is named exactly as the runner names it, INPUT_ + the key with each space replaced by `_`,
+     upper-cased, and nothing trimmed: `"command "` is the input COMMAND_, so the action finds no command and
+     runs `wrangler deploy` (review of PR #323, ledger R2060). A key that is not plain ASCII letters, digits,
+     `_` or `-` is refused outright. An entry allows one step; a file that does not parse, and a shape the
+     walk cannot judge, fail. Item 2's step-block phrase let a step with NO command pass when its block held
+     the phrase in a comment or an env value (review of PR #320, condition C6; ledger R2042).
 Planted shapes prove the matcher can fire; planted look-alikes prove it does not fire on everything.
 """
 from __future__ import annotations
@@ -354,15 +358,19 @@ def test_the_rewritten_instructions_name_the_wrapper():
 # other text rule still runs on those files.
 DEPLOY_SITE = ".github/workflows/deploy-site.yml"
 
-# (path, the exact command, the inputs the step may set, reason). An entry allows ONE step of its file: every
-# line of the step's command equals the command exactly, and every input the step sets is named here (compared
-# as the runner compares input names: case and spaces do not count). A second step does not ride it (R2042),
-# and an entry that allows no step is stale.
+# (path, the action, the exact command, the inputs the step may set, reason). An entry allows ONE step of its
+# file: its `uses` is the pinned action (owner/repo compared in any letter case, any @ref; a fork, another owner,
+# a docker image, a local path or a subdirectory is not it), every line of its command equals the command
+# exactly, and every input it sets is named here. Input names are compared as the runner hands them to the
+# action (_input_name: spaces to `_`, upper case, NO trim), so a padded key is another input (R2060). A second
+# step does not ride an entry (R2042), and an entry that allows no step is stale.
 ACTION_STEPS = [
-    (DEPLOY_SITE, "pages deploy catalog/site --project-name=econdatalibrary --branch=main",
+    (DEPLOY_SITE, "cloudflare/wrangler-action", "pages deploy catalog/site --project-name=econdatalibrary --branch=main",
      ("apiToken", "accountId", "command"), "the static site's Pages deploy, not the worker"),
 ]
 ACTION_DEFAULT_COMMAND = "deploy"            # what the action runs when `command` is absent or blank
+_PLAIN_INPUT = re.compile(r"[A-Za-z0-9_-]+")  # the only `with` key spelling a wrangler step may use
+_PINNED_USES = re.compile(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@[^\s@]+")   # owner/repo@ref, nothing around it
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
@@ -392,12 +400,23 @@ def _load(text: str):
 
 
 def _input_name(key) -> str:
-    """An input name as the runner hands it to the action (INPUT_<NAME>): upper case, spaces as underscores."""
-    return str(key).strip().upper().replace(" ", "_")
+    """An input name as the runner hands it to the action, copied from its source and NOTHING more: actions/runner
+    Handlers/Handler.cs AddInputsToEnvironment sets `INPUT_{key.Replace(' ', '_').ToUpperInvariant()}`, and
+    @actions/core getInput reads `INPUT_` + name.replace(/ /g, '_').toUpperCase(). No trim: `"command "` is
+    COMMAND_, a different input, and the action then finds no `command` (R2060). Outside ASCII Python's upper()
+    is not .NET's ToUpperInvariant, which is why wrangler_step refuses a key that is not _PLAIN_INPUT."""
+    return str(key).replace(" ", "_").upper()
 
 
 def _is_wrangler(uses) -> bool:
     return isinstance(uses, str) and "wrangler" in uses.lower()
+
+
+def action_of(uses) -> str | None:
+    """The `owner/repo`, lower-cased, of `uses: owner/repo@ref` (GitHub resolves owner and repo in any letter
+    case); None for any other shape (a docker image, a local path, a subdirectory, no ref, surrounding space)."""
+    m = _PINNED_USES.fullmatch(uses) if isinstance(uses, str) else None
+    return m.group(1).lower() if m else None
 
 
 def _is_action_file(rel: str) -> bool:
@@ -420,10 +439,15 @@ def wrangler_step(step: dict) -> tuple[list[str], set[str], list[str]]:
     if not isinstance(w, dict):
         return [], set(), [f"`with` is a {type(w).__name__}, not a mapping: cannot judge what the step runs"]
     names: dict[str, list] = {}
+    problems = []
     for k in w:
+        if not (isinstance(k, str) and _PLAIN_INPUT.fullmatch(k)):
+            problems.append(f"the `with` key {k!r} is not a plain input name (ASCII letters, digits, `_`, `-`): the "
+                            f"runner passes it untrimmed as {'INPUT_' + _input_name(k)!r}, which may not be the "
+                            "input it looks like")
         names.setdefault(_input_name(k), []).append(k)
-    problems = [f"`with` spells the {n} input {len(ks)} ways ({ks}): cannot tell which one the action reads"
-                for n, ks in names.items() if len(ks) > 1]
+    problems += [f"`with` spells the {n} input {len(ks)} ways ({ks}): cannot tell which one the action reads"
+                 for n, ks in names.items() if len(ks) > 1]
     keys = names.get(_input_name("command"), [])
     if len(keys) > 1:
         return [], set(names), problems
@@ -441,13 +465,14 @@ def wrangler_step(step: dict) -> tuple[list[str], set[str], list[str]]:
 
 
 def _env_inputs(env, where: str) -> list[tuple[str, str]]:
-    """An env block that sets INPUT_<NAME> could feed an input the step does not set: refused near a wrangler step."""
+    """An env block that sets INPUT_<NAME> could feed an input the step does not set: refused near a wrangler step.
+    Broad on purpose (not _input_name): any key that holds INPUT_ in any letter case, anywhere, padded or not."""
     if env is None:
         return []
     if not isinstance(env, dict):
         return [(where, f"`env` is a {type(env).__name__}, not a mapping: cannot tell what it sets")]
-    return [(where, f"`env` sets {k}, which the action would read as an input") for k in env
-            if _input_name(k).startswith("INPUT_")]
+    return [(where, f"`env` sets {k!r}, which the action could read as an input") for k in env
+            if "INPUT_" in str(k).upper()]
 
 
 def _walk(doc, rel: str) -> tuple[list[tuple[str, str]], list[tuple[str, dict]]]:
@@ -502,15 +527,17 @@ def action_step_verdicts(text: str, rel: str) -> list[tuple[str, list[str], list
     file: one row per wrangler step, then one per shape the walk could not judge. A row passes when `problems` is
     empty. A file that does not parse RAISES (yaml.YAMLError): it is never skipped."""
     problems, steps = _walk(_load(text), rel)
-    entries = [(i, cmd, {_input_name(k) for k in keys}) for i, (path, cmd, keys, _why) in enumerate(ACTION_STEPS)
-               if path == rel]
+    entries = [(i, action.lower(), cmd, {_input_name(k) for k in keys})
+               for i, (path, action, cmd, keys, _why) in enumerate(ACTION_STEPS) if path == rel]
     used: set[int] = set()
     rows = []
     for where, step in steps:
         commands, inputs, bad = wrangler_step(step)
+        uses = action_of(step.get("uses"))
         allowed_by = None
         if not bad:
-            fits = [i for i, cmd, keys in entries if all(c == cmd for c in commands) and inputs <= keys]
+            fits = [i for i, action, cmd, keys in entries
+                    if uses == action and all(c == cmd for c in commands) and inputs <= keys]
             free = [i for i in fits if i not in used]
             if free:
                 allowed_by = free[0]
@@ -518,7 +545,8 @@ def action_step_verdicts(text: str, rel: str) -> list[tuple[str, list[str], list
             elif fits:
                 bad.append(f"its ACTION_STEPS entry already allowed an earlier step in {rel}")
             else:
-                bad.append(f"runs {commands} with inputs {sorted(inputs)}: no ACTION_STEPS entry for {rel} allows it")
+                bad.append(f"uses {step.get('uses')!r}, runs {commands} with inputs {sorted(inputs)}: no "
+                           f"ACTION_STEPS entry for {rel} allows it")
         rows.append((where, commands, bad, allowed_by))
     return rows + [(where, [], [p], None) for where, p in problems]
 
@@ -597,11 +625,11 @@ def test_every_wrangler_step_runs_an_allowed_command():
     assert not bad, ("a step whose `uses` names a wrangler action must run exactly what an ACTION_STEPS entry "
                      "allows; with no command it runs `wrangler deploy`, which deploys econdl-api without "
                      "GIT_COMMIT (R2038):\n  " + "\n  ".join(bad))
-    for i, (path, cmd, _keys, _why) in enumerate(ACTION_STEPS):
+    for i, (path, _action, cmd, _keys, _why) in enumerate(ACTION_STEPS):
         n = sum(1 for r in rows if r[4] == i)
         assert n == 1, f"ACTION_STEPS entry ({path}, {cmd!r}) allows {n} steps; it must allow exactly one (stale?)"
     # the positive control, by value: the whole tree has ONE wrangler step, deploy-site.yml's, and it is allowed
-    assert [(r[0], r[1], r[2]) for r in rows] == [(DEPLOY_SITE, "jobs.deploy.steps[1]", [ACTION_STEPS[0][1]])], rows
+    assert [(r[0], r[1], r[2]) for r in rows] == [(DEPLOY_SITE, "jobs.deploy.steps[1]", [ACTION_STEPS[0][2]])], rows
     text = _read(ROOT, DEPLOY_SITE)
     assert wrangler_uses_lines(text) == {line for line, kind, _c in find_deploys(text) if kind == "wrangler-action use"}
 
@@ -615,7 +643,34 @@ _REAL = ("      - name: Deploy to Cloudflare Pages\n        uses: cloudflare/wra
 _WORKER = ("      - name: Deploy the worker\n        uses: cloudflare/wrangler-action@v3\n        with:\n"
            "          apiToken: t\n          accountId: a\n")
 _STEP = "      - name: s\n        uses: cloudflare/wrangler-action@v3\n        with:\n          apiToken: t\n"
+# Review of PR #323 (ledger R2060). F2: a padded key is ANOTHER input to the runner (no trim), so a step whose
+# only command key is padded runs `wrangler deploy`. F3: a step that is not the pinned action, with the allowed
+# inputs, runs code the ratchet never read. Each is planted through the pure judge AND as deploy-site.yml's own
+# step through the full path (text scan + parse, on a throwaway repository).
+_PADDED_OR_UNPINNED = {
+    'the key "command " (quoted, trailing space)': _WORKER + f'          "command ": {_CMD}\n',
+    'the key " command" (quoted, leading space)': _WORKER + f'          " command": {_CMD}\n',
+    'the key "command<TAB>" (quoted)': _WORKER + f'          "command\\t": {_CMD}\n',
+    "the key command<NBSP>, unquoted (invisible)": _WORKER + f"          command\u00a0: {_CMD}\n",
+    'the key "apiToken " beside the real command': _REAL.replace("apiToken:", '"apiToken ":'),
+    "a fork with the allowed inputs": _REAL.replace("cloudflare/wrangler-action@v3", "someone/wrangler-action@v3"),
+    "a docker image with the allowed inputs": _REAL.replace("cloudflare/wrangler-action@v3", "docker://node-wrangler:3"),
+    "a look-alike owner with the allowed inputs": _REAL.replace("cloudflare/wrangler-action@v3",
+                                                                "cloudf1are/wrangler-action@v3"),
+}
 ACTION_PLANTED = {
+    **_PADDED_OR_UNPINNED,
+    # F3: other shapes that are not the pinned action, each with the allowed inputs
+    "a subdirectory of the pinned repository": _REAL.replace("wrangler-action@v3", "wrangler-action/sub@v3"),
+    "another repository of the owner": _REAL.replace("wrangler-action@v3", "wrangler-actions@v3"),
+    "the pinned repository with no ref": _REAL.replace("wrangler-action@v3", "wrangler-action"),
+    "a local action path": _REAL.replace("cloudflare/wrangler-action@v3", "./.github/actions/wrangler"),
+    "a uses value with a leading space": _REAL.replace("cloudflare/wrangler-action@v3",
+                                                       '" cloudflare/wrangler-action@v3"'),
+    # a key outside ASCII: Python's upper() reads `ap<dotless i>Token` as APITOKEN; refused, not trusted
+    "a key with a non-ASCII letter": _REAL.replace("apiToken:", "ap\u0131Token:"),
+    "a key YAML reads as a number": _REAL + "          1: x\n",
+    "a padded, lower-case env key that names an input": _REAL + '        env:\n          " input_command": deploy\n',
     # the two C6 shapes, each alone and after the real step
     "no command, the C6 phrase in a comment": _WORKER + f"          # {_C6_PHRASE}\n",
     "no command, the C6 phrase in a comment, after the real step": _REAL + _WORKER + f"          # {_C6_PHRASE}\n",
@@ -690,6 +745,8 @@ ACTION_ALLOWED_SHAPES = {
     "a folded block scalar": _REAL.replace(f"command: {_CMD}\n", f"command: >-\n            {_CMD}\n"),
     "inputs spelled in another case": _REAL.replace("command:", "Command:").replace("apiToken:", "APITOKEN:"),
     "the real step without accountId": _REAL.replace("          accountId: a\n", ""),
+    "the action in another letter case": _REAL.replace("cloudflare/wrangler-action@v3", "Cloudflare/Wrangler-Action@v3"),
+    "the action pinned by a commit sha": _REAL.replace("@v3", "@" + "0123456789abcdef" * 2 + "01234567"),
     "another action with command: deploy (not wrangler)": _REAL + "      - uses: some/other-action@v1\n"
         "        with:\n          command: deploy\n",
 }
@@ -714,6 +771,15 @@ def test_parse_check_refuses_a_shape_it_cannot_judge(name):
 def test_parse_check_accepts_the_allowed_step(name):
     rows = action_step_verdicts(_WF + ACTION_ALLOWED_SHAPES[name], DEPLOY_SITE)
     assert [(r[2], r[3]) for r in rows] == [([], 0)], (name, rows)
+
+
+@pytest.mark.parametrize("key, runner", [
+    ("command", "COMMAND"), ("Command", "COMMAND"), ("apiToken", "APITOKEN"), ("api token", "API_TOKEN"),
+    ("pre-commands", "PRE-COMMANDS"), ("command ", "COMMAND_"), (" command", "_COMMAND"),
+    ("command\t", "COMMAND\t"), ("command\u00a0", "COMMAND\u00a0"), ("\tcommand", "\tCOMMAND")])
+def test_input_names_map_as_the_runner_maps_them(key, runner):
+    """By value, from the runner's source (Handler.cs AddInputsToEnvironment): spaces to `_`, upper case, no trim."""
+    assert _input_name(key) == runner
 
 
 def test_parse_check_refuses_a_repeated_key():
@@ -801,6 +867,45 @@ def test_control_the_text_scan_of_a_workflow_is_not_satisfied_by_a_phrase(tmp_pa
     _throwaway_repo(clean, {DEPLOY_SITE: _WF + _REAL})
     hits, _scanned = _scan(str(clean))
     assert [h[2] for h in hits] == ["wrangler-action use"] and _judge_hits(hits, str(clean)) == (set(), []), hits
+
+
+def _full_path(root: str) -> tuple[list[str], list]:
+    """Everything the ratchet reports for a tree: the text scan's bad lines plus the parse's, and the parse rows."""
+    hits, _scanned = _scan(root)
+    _used, text_bad = _judge_hits(hits, root)
+    parse_bad, rows, _files = _scan_action_steps(root)
+    return text_bad + parse_bad, rows
+
+
+@pytest.mark.parametrize("name", list(_PADDED_OR_UNPINNED))
+def test_control_a_padded_or_unpinned_deploy_site_step_fails_the_full_path(tmp_path, name):
+    """F2 / F3 of the #323 review (R2060): deploy-site.yml's ONE wrangler step, padded or not the pinned action,
+    fails the whole ratchet. Before the fix the four padded command keys and the fork passed it."""
+    _throwaway_repo(tmp_path, {DEPLOY_SITE: _WF + _PADDED_OR_UNPINNED[name]})
+    bad, rows = _full_path(str(tmp_path))
+    assert bad and all(b.startswith(DEPLOY_SITE) for b in bad), (name, bad, rows)
+    assert [(r[0], r[4]) for r in rows if r[1] == "jobs.deploy.steps[1]"] == [(DEPLOY_SITE, None)], (name, rows)
+
+
+def test_control_the_padded_plants_hold_what_they_name():
+    """By code point, so a plant that an editor or a replacement changed fails here instead of testing nothing."""
+    p = _PADDED_OR_UNPINNED
+    assert ('"command ":' in p['the key "command " (quoted, trailing space)']
+            and '" command":' in p['the key " command" (quoted, leading space)']
+            and '"command' + chr(92) + 't":' in p['the key "command<TAB>" (quoted)']
+            and "command" + chr(0xA0) + ":" in p["the key command<NBSP>, unquoted (invisible)"]
+            and '"apiToken ":' in p['the key "apiToken " beside the real command']
+            and "ap" + chr(0x131) + "Token:" in ACTION_PLANTED["a key with a non-ASCII letter"])
+    # and YAML keeps the NBSP in the unquoted key (a plain scalar trims only spaces and tabs)
+    assert _load(_WF + p["the key command<NBSP>, unquoted (invisible)"])["jobs"]["deploy"]["steps"][1]["with"] == \
+        {"apiToken": "t", "accountId": "a", "command" + chr(0xA0): _CMD}
+
+
+def test_control_the_real_step_passes_the_full_path(tmp_path):
+    _throwaway_repo(tmp_path, {DEPLOY_SITE: _WF + _REAL})
+    bad, rows = _full_path(str(tmp_path))
+    assert (bad, [(r[0], r[1], r[2], r[3], r[4]) for r in rows]) == \
+        ([], [(DEPLOY_SITE, "jobs.deploy.steps[1]", [_CMD], [], 0)]), (bad, rows)
 
 
 # ------------------------------------------------------------------------------------- npm run deploy refuses
