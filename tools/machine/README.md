@@ -24,17 +24,158 @@ log and remove steps. `tools/check_guard_copies.py` does not compare it (there i
 
 1. **Startup folder** runs `EconGuard.cmd` at logon. Scheduled Tasks are blocked by policy on
    this machine, so the Startup folder is the only reboot-surviving trigger available.
-2. It launches `RELAUNCH_GUARD_LOOP.ps1` hidden — a `while ($true)` watchdog that ticks every
+2. It starts `RELAUNCH_GUARD_LOOP.ps1` through `Win32_Process.Create` with `ShowWindow 0`
+   (since 2026-11-23; see "The launcher" below) — a `while ($true)` watchdog that ticks every
    300 s, stamps `logs/guard_loop.heartbeat`, and publishes the beat to R2 so CI can see a dead
    workstation (the daily run fails on a stale beat).
 3. Each tick runs `RELAUNCH_GUARD.ps1` once, bounded to 120 s. That script relaunches any tracked
    job that is not currently running, skipping any with a `logs/<name>.DONE` sentinel.
 
+## The launcher (EconGuard.cmd, changed 2026-11-23)
+
+Until 2026-11-23 the launcher ran `start "" powershell -WindowStyle Hidden ... -File <loop>`.
+That form hands the new console to Windows Terminal (ledger R2031): the loop owned a VISIBLE
+Windows Terminal window inside Windows Terminal's job, and a click on its X, Ctrl+C in it, or a
+Windows Terminal restart (an update is staged) can end the loop. A closed console leaves no log line
+(measured on a conhost console, below; the Windows Terminal path itself was not tested). That is the
+leading, unproven candidate for the death of 2026-11-21 (report
+`F:\work\guard_death_20261121\REPORT.md`).
+
+Now:
+
+- The loop's command line is defined ONCE, on the `set "ECON_GUARD_LOOP_CMD=..."` line. Its
+  `-File "E:\research\econfindatalibrary\RELAUNCH_GUARD_LOOP.ps1"` part is byte-identical to
+  before, so every check that matches that literal still finds the loop. The full command line
+  has one space less: `start ""` gave `powershell  -NoProfile ...` (two spaces), Create gives one.
+  No check in this repo or in the known machine-local tools compares the full command line.
+- A short-lived `powershell -Command` reads that line from the environment (so its own command
+  line does not carry the literal, R260) and calls `Win32_Process.Create` with `ShowWindow 0`
+  and `CurrentDirectory E:\research\econfindatalibrary`.
+- It writes ONE line to `logs\_guard_loop.log`:
+  `<utc>  launcher EconGuard.cmd: Win32_Process.Create returned 0, loop pid <P>`.
+- If Create does not return 0 (or throws, or PowerShell cannot run), the old `start ""` line runs
+  instead, and the log line says `falling back to start (a Windows Terminal window)`. A loop in
+  a WT window is better than no loop.
+- **There is NO refusal.** Running `EconGuard.cmd` while a loop runs starts a SECOND loop, and two
+  loops mean double crawler launches on every tick. Check first (step 1 of "Starting the loop").
+
+What was measured on a harmless dummy (`F:\work\maintenance\20261123_guard_exit_trace\receipts\`,
+2026-11-23), each test `.cmd` made from the shipped bytes with only the paths swapped:
+
+| form | console host | WT windows | job | parent |
+|---|---|---|---|---|
+| old `start ""` (control) | conhost + `OpenConsole.exe -Embedding` +0.06 s | 11 -> 12 -> 11 | caller's job | the cmd |
+| new, run by `cmd /c` from an agent tool shell | conhost child only | 11 -> 11 -> 11 | not in a job | WmiPrvSE.exe |
+| new, opened by explorer (as at log-on) | conhost child only | 11 -> 11 -> 11 (the cmd's own window 0.5 s) | not in a job | WmiPrvSE.exe |
+| new, Create made to fail (missing folder, ReturnValue 8) | fallback: as the old form | 11 -> 12 -> 11 | caller's job | the cmd |
+| `start "" conhost.exe --headless ...` | the dummy never started | - | - | - |
+| hidden `Start-Process` from a short-lived powershell | conhost child only | 11 -> 11 | caller's job | the short powershell |
+
+Only the Create form keeps the loop out of BOTH the Windows Terminal host and the caller's job.
+The running loop since 2026-11-22T21:50:48Z (pid 30880) was started the same way by an agent
+(`F:\work\maintenance\2026-11-22_1124_guard_review\wmi_start.ps1`) and has run its local-heavy
+pass and published its beat since, so that environment is proven for the real loop.
+
+## What a dead loop's log tells you (the loop's exit trace, 2026-11-23)
+
+The loop writes three kinds of line to `logs\_guard_loop.log`:
+
+- `<utc>  loop starting pid <P>` — the script started.
+- `<utc>  loop trap pid <P>: <type>: <message> (line <L>) - the loop goes on in 60 s` — a
+  terminating error reached the while body. The loop waits 60 s and goes on with the next
+  statement. The trap is the first statement INSIDE the loop: at script scope it ends the loop.
+- `<utc>  loop exiting pid <P> (started <utc>; last trapped error: <...>)` — from the outer
+  `finally`.
+
+Measured on Windows PowerShell 5.1, 2026-11-23, on dummies built from the shipped loop bytes with
+only the constants swapped and started the way the new launcher starts the loop (Create,
+`ShowWindow 0`). Five runs per row (`F:\work\maintenance\20261123_guard_exit_trace\receipts\exit_matrix.out`):
+
+| how the loop ends | "loop exiting" line | what happened |
+|---|---|---|
+| the script ends by itself (`exit`) | 5 of 5 | line, rc 0 |
+| Ctrl+C on its console (`GenerateConsoleCtrlEvent`) | 5 of 5 | ends at once, line, rc 0 |
+| console window closed (`WM_CLOSE`, as a click on X) | 0 of 5 | ends at once, NO line, rc 0xC000013A |
+| `TerminateProcess` (Task Manager End task, `taskkill /F`, `Stop-Process`) | 0 of 5 | ends at once, NO line, rc 1 |
+| its conhost killed | - | the loop does NOT end: it ticks on (5 of 5) |
+| a terminating error in the loop body (.NET, `throw`, inside a catch) | - | a trap line, the loop goes on (the test, twice) |
+| log-off, shutdown, a crash | not measured | |
+
+So: a dead loop WITH a `loop exiting` line ended inside PowerShell (the script ended, or a Ctrl+C).
+A dead loop WITHOUT one was killed from outside (TerminateProcess), lost its console window (a close),
+crashed, or went down with a log-off or shutdown (unmeasured). With the new launcher the console has no
+window to close and nobody can type Ctrl+C into it, so in practice "no line" means killed or crashed,
+or a log-off/shutdown. A Ctrl+C test from an agent's tool shell is void: a child of that shell inherits
+a Ctrl+C-disabled flag and ignores the event (first smoke run, 08:47Z).
+
+## Starting the loop (after a death, or to install a new loop script)
+
+Never while a loop runs. Never from inside a local-heavy pass (`logs\local_heavy.lock` present).
+
+1. Prove there is no loop, in ONE PowerShell command, from a shell whose own command line does
+   not contain the path (type it, do not paste it into a `-Command` argument):
+   `Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like ('*-File "' + 'E:\research\econfindatalibrary\RELAUNCH_GUARD_LOOP' + '.ps1"*') }`
+   must return nothing, AND `logs\guard_loop.heartbeat` must be more than 10 minutes old. A
+   process the reader cannot open shows a null command line, so never trust the count alone.
+2. Start it: double-click `EconGuard.cmd` in the Startup folder, or run it from any shell. Because
+   the launcher creates the loop through WMI, the loop is outside that shell's job (R799).
+3. Receipts (each one can fail; report section 8 plus the 2026-11-23 plan review, C7):
+   1. `logs\_guard_loop.log` ends with the launcher line `Create returned 0, loop pid <P>` and then
+      `loop starting pid <P>`, the same `<P>`. A `falling back to start` line means the loop is in a
+      Windows Terminal window: do not close that window; find out why Create failed.
+   2. The step-1 filter now returns exactly ONE process, pid `<P>`, parent `WmiPrvSE.exe`, and its
+      `SessionId` equals explorer.exe's.
+   3. `python -I -B F:\work\guard_death_20261121\job_membership.py <P>` prints `not in a job`.
+   4. `<P>` has a `conhost.exe` child, and NO `OpenConsole.exe -Embedding` was created within
+      0.3 s AFTER `<P>`'s creation time (the launcher's own cmd window may have one 1-2 s EARLIER;
+      that one is not the loop's).
+   5. The Windows Terminal window count is the same before and after
+      (`python -I -B F:\work\guard_death_20261121\review\rv_wt_windows.py`, read after the launcher
+      has exited).
+   6. Two heartbeats with different stamps in `logs\guard_loop.heartbeat` (the first comes up to
+      about 2.5 min after the start), `F:\launcher_watchdog\hook.status` advances, and no new
+      `heartbeat publish threw` or `EXCEEDED 90s` line in `logs\_guard_loop.log`.
+   7. The next local-heavy pass succeeds (`logs\local_heavy.last_success` advances).
+
+## INSTALL of the 2026-11-23 change (owner, or a later one-time approved step)
+
+Two files, two steps. Do NOT do either during a log-on (cmd reads a batch file while it runs it).
+Keep backups OUTSIDE the Startup folder: explorer opens EVERY file there at log-on, so a backup
+named `*.cmd` or `*.bat` there would start a second loop. Copy bytes with `Copy-Item`, never
+`Get-Content | Set-Content` (Windows PowerShell 5.1 writes a BOM).
+
+0. After the PR is merged: `git -C E:\research\econfindatalibrary pull --ff-only` (E: on `main`).
+   E: has `core.autocrlf=true`, so the copies there are CRLF; the live files today are LF. Both
+   work; `tools/check_guard_copies.py` compares normalised lines, not bytes.
+1. **The launcher, any time after step 0** (it is not running between log-ons):
+   ```powershell
+   $st = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup'
+   New-Item -ItemType Directory -Force 'F:\econ_guard_backups' | Out-Null
+   Copy-Item -LiteralPath (Join-Path $st 'EconGuard.cmd') -Destination ('F:\econ_guard_backups\EconGuard.cmd.bak-' + (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ'))
+   Copy-Item -LiteralPath 'E:\research\econfindatalibrary\tools\machine\EconGuard.cmd.startup-copy' -Destination (Join-Path $st 'EconGuard.cmd')
+   ```
+2. **The loop script, ONLY when no loop runs** — the next time the loop is found dead, or when the
+   owner chooses to stop it at a quiet moment (no `logs\local_heavy.lock`). Never edit the running
+   script. Then "Starting the loop" above, steps 1-3:
+   ```powershell
+   Copy-Item -LiteralPath 'E:\research\econfindatalibrary\RELAUNCH_GUARD_LOOP.ps1' -Destination ('F:\econ_guard_backups\RELAUNCH_GUARD_LOOP.ps1.bak-' + (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ'))
+   Copy-Item -LiteralPath 'E:\research\econfindatalibrary\tools\machine\RELAUNCH_GUARD_LOOP.ps1.workstation-copy' -Destination 'E:\research\econfindatalibrary\RELAUNCH_GUARD_LOOP.ps1'
+   ```
+   The extra receipt for this step: the new loop's FIRST line in `logs\_guard_loop.log` is
+   `loop starting pid <P>` — the old script never writes it.
+3. **Receipt for both:** `python tools\check_guard_copies.py` run in `E:\research\econfindatalibrary`
+   prints `all reboot-survival scripts match their versioned copies`.
+
+Until step 1 is done, `tests/test_guard_copies_in_sync.py` FAILS in every clone on this
+workstation (it compares the clone's launcher copy with the live Startup file). Until step 2 is
+done it also fails in `E:` (the loop pair). CI runs on ubuntu, where the test skips.
+
 ## Restoring after a machine rebuild
 
-Copy each file back to its live location, then check the two absolute paths at the top of
-`RELAUNCH_GUARD.ps1` — `$root` and `$python` — and the `-File` path inside `EconGuard.cmd`.
-Nothing else in them is machine-specific.
+Copy each file back to its live location, then check the absolute paths: `$root` and `$python` at
+the top of `RELAUNCH_GUARD.ps1` and `RELAUNCH_GUARD_LOOP.ps1`; in `EconGuard.cmd`, the loop path on
+the `set "ECON_GUARD_LOOP_CMD=..."` line and the log path and `CurrentDirectory` inside the
+`powershell -Command` line. Nothing else in them is machine-specific.
 
 ## Keeping these honest
 

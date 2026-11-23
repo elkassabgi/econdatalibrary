@@ -3,4 +3,21 @@ rem EconGuard ??? reboot-survival launcher for the econ ingestion fleet.
 rem Starts the persistent watchdog loop (relaunches cbs_nl / gus_dbw if dead,
 rem every 5 min; respects logs/<job>.DONE sentinels). Recreated on the new
 rem 48-core workstation 2026-07-11 per CUTOVER_AND_BACKFILL_PLAN.md Phase B.7.
-start "" powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "E:\research\econfindatalibrary\RELAUNCH_GUARD_LOOP.ps1"
+rem
+rem 2026-11-23: NO WINDOWS TERMINAL WINDOW FOR THE LOOP (ledger R2031). The old line, start "" powershell
+rem -WindowStyle Hidden ..., handed the loop's console to Windows Terminal: the loop owned a visible WT
+rem window inside WT's job, and closing that window, Ctrl+C in it or a WT restart ended the loop with no
+rem log line. Now Win32_Process.Create starts the loop with ShowWindow 0: it gets an inbox conhost with
+rem a hidden window and no WT window, and its parent is WmiPrvSE, so it is also outside the job of
+rem whoever runs this file (R799, R2032). Receipts: tools/machine/README.md.
+rem The loop's command line is on the set line. Its -File literal is the same as before, so a check
+rem that matches -File "E:\...\RELAUNCH_GUARD_LOOP.ps1" still finds the loop. The launcher reads it
+rem from the environment, so the launcher's own command line does not carry it (R260).
+rem The launcher writes one line to logs\_guard_loop.log: what Create returned, and the loop pid.
+rem If Create does not return 0, the old start line runs instead: a loop in a WT window is better
+rem than no loop, and the log line says so.
+rem NO REFUSAL: this file starts a SECOND loop if one is running. Check first (README).
+set "ECON_GUARD_LOOP_CMD=powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "E:\research\econfindatalibrary\RELAUNCH_GUARD_LOOP.ps1""
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$log = 'E:\research\econfindatalibrary\logs\_guard_loop.log'; $rc = 2; $m = 'no result'; try { $su = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }; $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $env:ECON_GUARD_LOOP_CMD; CurrentDirectory = 'E:\research\econfindatalibrary'; ProcessStartupInformation = $su }; if ($r -and $r.ReturnValue -eq 0) { $rc = 0; $m = 'Win32_Process.Create returned 0, loop pid ' + $r.ProcessId } elseif ($r) { $m = 'Win32_Process.Create returned ' + $r.ReturnValue + ', falling back to start (a Windows Terminal window)' } else { $m = 'Win32_Process.Create gave no result, falling back to start (a Windows Terminal window)' } } catch { $m = 'Win32_Process.Create threw ' + $_.Exception.Message + ', falling back to start (a Windows Terminal window)' }; try { Add-Content -Path $log -Value ((Get-Date).ToUniversalTime().ToString('o') + '  launcher EconGuard.cmd: ' + $m) -Encoding utf8 } catch {}; exit $rc"
+if errorlevel 1 start "" %ECON_GUARD_LOOP_CMD%
+exit /b 0
