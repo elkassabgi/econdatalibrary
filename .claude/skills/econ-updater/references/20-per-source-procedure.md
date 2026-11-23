@@ -106,7 +106,8 @@ the orchestrator lines for THIS run, not the state dump (R347's near-miss).
 Follow `30-serving-pipeline.md` exactly: derive (byte-verified) → verify both directions →
 catalogue (licence gate first) → D1 sync (which now carries the parent source+license rows —
 without them the source is fetchable but INVISIBLE in /v1/sources) → util.ts →
-**`cd api/worker && npx wrangler deploy`** → live `/v1/sources` check. The deploy is manual
+**`bash tools/selfhost/deploy_edge.sh`** (Git Bash, a fresh clone of main, `npm ci` in api/worker
+first; api/DEPLOY.md section 4; the ONLY way, R2038) → live `/v1/sources` check. The deploy is manual
 and mandatory: an undeployed util.ts edit is the R345 failure, 425,462 series "live" at 501.
 
 ## Step 7 — close the loop

@@ -98,7 +98,8 @@ You need a Cloudflare account with Workers, D1, and R2 enabled.
 5. **Custom domain.** In the dashboard: Workers & Pages → `econdl-api` →
    Settings → Domains & Routes → **Add Custom Domain** (e.g. `api.<your-domain>`).
    This auto-provisions TLS. Alternatively uncomment the `[[routes]]` block in
-   `wrangler.toml` (zone must already be on Cloudflare) and redeploy.
+   `wrangler.toml` (zone must already be on Cloudflare) and redeploy with
+   `tools/selfhost/deploy_edge.sh` (see Deploy below).
 
 6. **Secrets.** None are required for the current endpoints (D1 + R2 are
    bindings, not secrets). If you later add an upstream key or an auth token:
@@ -109,12 +110,20 @@ You need a Cloudflare account with Workers, D1, and R2 enabled.
 
 ## Deploy
 
+Deploy ONLY with `tools/selfhost/deploy_edge.sh`, from a fresh clone of `main`, in Git Bash (never
+PowerShell: there `bash` is the WSL launcher). The full steps and the reasons are in
+[`../DEPLOY.md`](../DEPLOY.md) section 4 (ledger R2038).
+
 ```bash
 cd api/worker
-npm install
+npm ci                 # the lockfile's wrangler, not the newest one
 npm run typecheck      # tsc --noEmit, must be clean
-npm run deploy         # wrangler deploy
+cd ../..
+bash tools/selfhost/deploy_edge.sh   # receipt: "verified: .../v1/edge-status answers <sha>"
 ```
+
+The `deploy` script in `package.json` refuses on purpose: wrangler's own deploy command drops
+`GIT_COMMIT`, and then `/v1/edge-status` cannot say which code is live.
 
 Smoke-test after deploy (replace the host):
 ```bash

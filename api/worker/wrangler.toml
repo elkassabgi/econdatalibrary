@@ -13,7 +13,8 @@
 # Custom-domain route note: bind a Workers Custom Domain (e.g. api.<your-domain>)
 # in the Cloudflare dashboard (Workers & Pages -> this Worker -> Settings ->
 # Domains & Routes -> Add Custom Domain) OR uncomment the [[routes]] block below
-# and run `wrangler deploy`. A Custom Domain auto-manages the TLS cert; a route
+# and deploy with tools/selfhost/deploy_edge.sh (the only way; it sets GIT_COMMIT,
+# ledger R2038). A Custom Domain auto-manages the TLS cert; a route
 # pattern requires the zone to already be on Cloudflare. See README.md.
 # ---------------------------------------------------------------------------
 

@@ -28,7 +28,8 @@ def test_after_t0_the_line_names_the_swap_and_marks_the_old_steps(tmp_path, monk
     keep = "NEXT: util.ts removal + registry retire/count bump + deploy + live absence check + refresh_r2_catalog."
     out = cutover.next_steps(keep)
     assert " ".join(keep.split()) in out and "Do NOT run" not in out
-    assert out.split("EXCEPT", 1)[1].startswith(" refresh_r2_catalog, sync_catalog_d1, the cloud `wrangler deploy`")
+    assert out.split("EXCEPT", 1)[1].startswith(
+        " refresh_r2_catalog, sync_catalog_d1, the cloud worker deploy of this change (tools/selfhost/deploy_edge.sh)")
     assert "Commit any code, util.ts or registry edit" in out
 
 

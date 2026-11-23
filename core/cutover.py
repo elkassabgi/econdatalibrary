@@ -49,13 +49,17 @@ def refuse_if_cut_over(what: str) -> None:
             "the cloud copy is frozen and nothing may write to it")
 
 
-CLOUD_STEPS = ("refresh_r2_catalog", "sync_catalog_d1", "the cloud `wrangler deploy`")
+# The third name: before T0 a catalogue tool's line asks for a worker deploy of its change (through
+# tools/selfhost/deploy_edge.sh, the only way to deploy the edge, R2038). After T0 the swap publishes that
+# change, so that deploy is skipped; deploy_edge.sh itself stays the way to deploy the edge's own code.
+CLOUD_STEPS = ("refresh_r2_catalog", "sync_catalog_d1",
+               "the cloud worker deploy of this change (tools/selfhost/deploy_edge.sh)")
 
 
 def next_steps(pre_t0: str) -> str:
     """A catalogue tool's closing "NEXT:" line. Before T0 it is `pre_t0`, unchanged. After T0 three of the steps
     such a line names write the frozen cloud copy or are refused - refresh_r2_catalog, sync_catalog_d1 and the
-    cloud worker's `wrangler deploy` (R1234: seven tools still pointed at refresh_r2_catalog). The others still
+    cloud worker deploy of the change (R1234: seven tools still pointed at refresh_r2_catalog). The others still
     stand (a derive, util.ts, a registry edit, a live check), so the line keeps them and names ONLY those three as
     skipped (R1238: "do NOT run" over the whole line forbade steps that are still required); what publishes is the
     blue/green swap, which serves the COMMITTED checkout - so a code or registry edit is committed first."""

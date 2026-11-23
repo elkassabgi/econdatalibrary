@@ -10,15 +10,24 @@ Three checks, each a FAILURE when it cannot measure (a blind check is louder tha
      while nothing updates would otherwise pass).
   2. THE DEPLOYED EDGE IS THE EXPECTED ONE - /v1/edge-status must report the same effective state AND the
      same raw FORWARD / EDGE_STATE values that api/worker/wrangler.toml in this checkout commits. Whenever
-     the committed state is not the default (FORWARD on, or EDGE_STATE users), a missing route (404) or a
-     missing commit id is a FAILURE: the old worker has no route, and "no route" must never read as fine
-     (review R1174 blocker - a stale deploy passed).
+     the committed state is not the default (FORWARD on, or EDGE_STATE users), a missing route (404) is a
+     FAILURE: the old worker has no route, and "no route" must never read as fine (review R1174 blocker - a
+     stale deploy passed). A 200 answer with no commit id, or with one that is not a 40-hex git sha, is a
+     FAILURE in every state (R2038): the only deploy path, tools/selfhost/deploy_edge.sh, always sets it, and
+     without it the compare below is blind. /v1/edge-status is read ONCE per run (R1507: two requests can
+     reach two versions), and that one answer feeds this check and the compare.
   3. NO WRITES TO THE RETIRED CLOUD COPY - from T0 (--no-writes-since, an ISO UTC moment such as
      2026-10-05T14:00:00Z) any R2 write on the econ bucket, and any D1 row or write query on the two econ
      catalogue databases, read from Cloudflare's GraphQL analytics, is a failure. The window is the last
      WINDOW_DAYS days clipped at T0 (the datasets refuse ranges over 32 days, R1174). The SAME queries
      carry positive controls - buckets and the users database that are active every day (measured 8 of
      8 days, NUMBERS) - and no activity for a control means the check is BLIND, never "zero writes".
+
+Plus one WARNING, never a failure: main has api/worker changes that the deployed commit lacks (deploys follow
+merges with a lag; the warning names the changed paths), or the compare could not run (named, never silent).
+A warning is printed (`WARN ...`) and, in GitHub Actions, written as a `::warning::` annotation, which
+`gh run view` shows on a green run. It is not mailed on its own (a daily mail for lag would reach the owner
+before any maintainer, R1988); a failure mail carries the warnings too.
 
 Exit 1 on any failure, with an email through Resend when RESEND_API_KEY is set; the red workflow run is
 the second delivery path. Needs CF_ANALYTICS_TOKEN (Account Analytics: Read) for check 3 only.
@@ -29,6 +38,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import sys
 import tomllib
 import urllib.error
@@ -47,6 +57,27 @@ R2_READ_ACTIONS = frozenset({"GetObject", "HeadObject", "HeadBucket", "ListBucke
                              "ListObjects", "ListObjectsV2", "ListMultipartUploads", "ListParts",
                              "UsageSummary", "GetBucketEncryption", "GetBucketLocation",
                              "GetBucketCors", "GetBucketLifecycleConfiguration"})
+# The commit id deploy_edge.sh sets: `git rev-parse HEAD`, 40 lowercase hex (the soak scripts use the same rule).
+SHA = re.compile(r"[0-9a-f]{40}")
+DEPLOY_HINT = "deploy only with tools/selfhost/deploy_edge.sh, which sets GIT_COMMIT (ledger R2038)"
+LAG_PATHS_SHOWN = 5
+
+
+def _show(value, limit: int = 80) -> str:
+    """A value read from the edge, safe to print: repr (so a served newline cannot start a new output line,
+    and a served '::error::' cannot become a workflow command) and cut to `limit` characters."""
+    s = repr(value)
+    return s if len(s) <= limit else s[:limit] + "...(cut)"
+
+
+def _is_sha(value) -> bool:
+    return isinstance(value, str) and SHA.fullmatch(value) is not None
+
+
+def _annotation(message: str) -> str:
+    """A GitHub Actions warning annotation, escaped as the Actions toolkit escapes command data."""
+    data = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    return "::warning title=selfhost-watch::" + data
 
 
 def committed_config(path: str = WRANGLER) -> dict:
@@ -96,52 +127,77 @@ def check_up(edge: str, now: dt.datetime) -> list[str]:
     return bad
 
 
-def check_status(edge: str, want: dict) -> list[str]:
+def read_status(edge: str) -> tuple[int, object]:
+    """The ONE read of /v1/edge-status per run (R1507): main() passes this answer to both users of it."""
+    return get_json(edge + "/v1/edge-status")
+
+
+def check_status(edge: str, want: dict, status: tuple[int, object] | None = None) -> list[str]:
     required = want["forward"] or want["edge_state"] != "econ"
-    code, body = get_json(edge + "/v1/edge-status")
+    code, body = status if status is not None else read_status(edge)
     if code == 404:
         return (["/v1/edge-status is missing, but this checkout commits "
                  f"forward={want['forward']} edge_state={want['edge_state']}: the deployed edge is older"]
                 if required else [])
     if code != 200 or not isinstance(body, dict):
-        return [f"/v1/edge-status: HTTP {code} {str(body)[:120] if body else ''}".rstrip()]
+        return [f"/v1/edge-status: HTTP {code} {_show(body, 120) if body else ''}".rstrip()]
     bad = []
+    commit = body.get("commit")
     for k in ("forward", "edge_state", "forward_raw", "edge_state_raw"):
         if body.get(k) != want[k]:
-            bad.append(f"deployed edge has {k}={body.get(k)!r}, this checkout commits {want[k]!r}"
-                       f" (deployed commit {body.get('commit')!r})")
-    if required and not body.get("commit"):
-        bad.append("the deployed edge carries no commit id (deploy through tools/selfhost/deploy_edge.sh)")
+            bad.append(f"deployed edge has {k}={_show(body.get(k))}, this checkout commits {want[k]!r}"
+                       f" (deployed commit {_show(commit)})")
+    # R2038: the 2026-11-21 deploy bypassed deploy_edge.sh, so the commit was null for two days while every
+    # run printed OK. A commit is required in EVERY committed state now, not only when it is not the default.
+    if not commit:
+        bad.append("NO-COMMIT: the deployed edge carries no commit id, so worker changes that are not live "
+                   f"cannot be ruled out; {DEPLOY_HINT}")
+    elif not _is_sha(commit):
+        bad.append(f"BAD-COMMIT: the deployed edge reports commit {_show(commit)}, not a 40-hex git sha, so "
+                   f"worker changes that are not live cannot be ruled out; {DEPLOY_HINT}")
     # SOAK = "1" belongs to the soak worker only (api/worker/wrangler.soak.toml). On the edge it turns the
     # page-view routes into 404s with no error anywhere. An edge deployed before the field existed has no
     # `soak` key; that reads as "not a soak worker".
     if body.get("soak") not in (None, False):
-        bad.append(f"deployed edge has soak={body.get('soak')!r}: the page-view routes of the edge answer 404 "
-                   f"(deployed commit {body.get('commit')!r})")
+        bad.append(f"deployed edge has soak={_show(body.get('soak'))}: the page-view routes of the edge answer "
+                   f"404 (deployed commit {_show(commit)})")
     if want.get("soak"):
         bad.append("api/worker/wrangler.toml commits SOAK: that variable belongs to wrangler.soak.toml only")
     return bad
 
 
-def undeployed_worker_changes(edge: str) -> str | None:
-    """A WARNING (not a failure: deploys are Ahmed's and follow merges with a lag) when this checkout's
-    api/worker differs from the deployed commit's - main has worker changes that are not live (AR-151
-    finding 7). None when they match, or when nothing can be compared (reported as such)."""
+def undeployed_worker_changes(edge: str, status: tuple[int, object] | None = None) -> str | None:
+    """A WARNING (not a failure: deploys follow merges with a lag) when this checkout's api/worker differs
+    from the deployed commit's - main has worker changes that are not live (AR-151 finding 7). It names the
+    changed paths, so a diff of test files only reads as one.
+
+    None ONLY when the compare ran and found no difference. Every case where it cannot run is a NAMED
+    warning, never None (R2038: None for "no commit" read the same as "no difference", and the watch printed
+    OK for two days while main had worker changes that were not live): UNREAD (no 200 answer, or git could not
+    run), NO-COMMIT / BAD-COMMIT (check_status reports those as failures too)."""
     import subprocess                                                        # noqa: PLC0415
-    code, body = get_json(edge + "/v1/edge-status")
-    commit = body.get("commit") if code == 200 and isinstance(body, dict) else None
+    code, body = status if status is not None else read_status(edge)
+    if code != 200 or not isinstance(body, dict):
+        return f"UNREAD: /v1/edge-status answered HTTP {code}, so worker changes that are not live cannot be ruled out"
+    commit = body.get("commit")
     if not commit:
-        return None
+        return "NO-COMMIT: api/worker cannot be compared with the deployed edge, which reports no commit id"
+    if not _is_sha(commit):
+        return f"BAD-COMMIT: api/worker cannot be compared with the deployed edge, which reports commit {_show(commit)}"
     try:
-        r = subprocess.run(["git", "diff", "--quiet", commit, "HEAD", "--", "api/worker"], cwd=ROOT,
-                           capture_output=True, timeout=60)
+        r = subprocess.run(["git", "diff", "--name-only", "--exit-code", commit, "HEAD", "--", "api/worker"],
+                           cwd=ROOT, capture_output=True, timeout=60)
     except Exception as e:  # noqa: BLE001
-        return f"could not compare the deployed commit {commit} with this checkout ({type(e).__name__})"
+        return f"UNREAD: could not compare the deployed commit {commit[:12]} with this checkout ({type(e).__name__})"
     if r.returncode == 0:
         return None
     if r.returncode == 1:
-        return f"main has api/worker changes after the deployed commit {commit[:12]}: they are not live"
-    return f"the deployed commit {commit[:12]} is not in this checkout's history (git exit {r.returncode})"
+        paths = [p for p in r.stdout.decode("utf-8", "replace").splitlines() if p.strip()]
+        shown = ", ".join(paths[:LAG_PATHS_SHOWN])
+        more = f" and {len(paths) - LAG_PATHS_SHOWN} more" if len(paths) > LAG_PATHS_SHOWN else ""
+        return (f"LAG: main has api/worker changes after the deployed commit {commit[:12]}: they are not live "
+                f"({len(paths)} path(s): {shown}{more})")
+    return f"UNREAD: the deployed commit {commit[:12]} is not in this checkout's history (git exit {r.returncode})"
 
 
 def graphql(token: str, query: str, variables: dict) -> dict:
@@ -255,7 +311,8 @@ def main(argv: list[str] | None = None, now: dt.datetime | None = None) -> int:
     want = committed_config()
     failures: list[str] = []
     failures += [f"UP: {m}" for m in check_up(a.edge, now)]
-    failures += [f"STATUS: {m}" for m in check_status(a.edge, want)]
+    status = read_status(a.edge)                  # ONE answer for the status check and the compare (R1507)
+    failures += [f"STATUS: {m}" for m in check_status(a.edge, want, status)]
     if a.no_writes_since:
         try:
             t0 = parse_t0(a.no_writes_since)
@@ -273,13 +330,16 @@ def main(argv: list[str] | None = None, now: dt.datetime | None = None) -> int:
                     failures.append(f"WRITES: BLIND - {type(e).__name__}: {str(e)[:300]}")
     print(f"edge {a.edge}; committed forward={want['forward']} edge_state={want['edge_state']}; "
           f"writes check {'from ' + a.no_writes_since if a.no_writes_since else 'off'}")
-    warn = undeployed_worker_changes(a.edge)
-    if warn:
-        print("WARN " + warn)
+    warn = undeployed_worker_changes(a.edge, status)
+    warnings = [warn] if warn else []
+    for w in warnings:
+        print("WARN " + w)
+        if os.environ.get("GITHUB_ACTIONS") == "true":    # shown by `gh run view` and on the run page
+            print(_annotation(w))
     if failures:
-        body = "\n".join(failures)
-        print("FAIL\n" + body)
-        send_alert(f"[econ self-host] {len(failures)} check(s) failed", body)
+        print("FAIL\n" + "\n".join(failures))
+        send_alert(f"[econ self-host] {len(failures)} check(s) failed",
+                   "\n".join(failures + ["WARN " + w for w in warnings]))
         return 1
     print("OK")
     return 0

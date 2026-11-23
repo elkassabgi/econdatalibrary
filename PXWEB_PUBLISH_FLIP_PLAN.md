@@ -28,7 +28,7 @@ Run from a shell where `econfindatalibrary/.env` has the R2 write creds + wrangl
    `wrangler d1 execute econ-catalog --remote --file=...`. (Exports ONLY `series` + FTS — does
    NOT touch the license table, so deployed reservable flags are undisturbed.)
 3. **supportedSources** (else the Worker returns 501 not_migrated): add the 9 to
-   `SUPPORTED_SOURCES` in `api/worker/wrangler.toml`, then `(cd api/worker && wrangler deploy)`.
+   `SUPPORTED_SOURCES` in `api/worker/wrangler.toml`, then deploy with `bash tools/selfhost/deploy_edge.sh` (api/DEPLOY.md section 4).
 4. **reservable flags** (LOCAL catalog.db — needed for site gen + `gen_denylist`, NOT for the D1
    series export). Collateral-checked:
    - SAFE (single-source licenses): `UPDATE license SET reservable=1 WHERE license_id IN

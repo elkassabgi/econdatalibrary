@@ -44,7 +44,7 @@ DONE means ALL of: catalogued + served (live 200 from the deployed endpoint, res
 | Trust or report any probe that says "absent / missing / 0 found" | Null-result protocol |
 | Delete, purge, re-key, bulk-write, shrink anything | Destructive-operation protocol |
 | Run a batch of statements against D1 | D1 batch protocol |
-| `npx wrangler deploy` or publish the site | Deploy protocol |
+| Deploy the worker (only `bash tools/selfhost/deploy_edge.sh`) or publish the site | Deploy protocol |
 | Tell the owner a number, a status, or "it is done" | Reporting protocol |
 | Attach a cause to an observation | Diagnosis protocol |
 | Launch or watch a job that runs > 60 s | Long-job protocol |

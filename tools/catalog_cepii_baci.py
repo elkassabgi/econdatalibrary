@@ -179,7 +179,8 @@ def main() -> int:
     print("\n" + cutover.next_steps(
         "NEXT (per the skill's serving pipeline): derive CSVs (tools/derive_csv_bulk.py "
         "--source cepii_baci --verify 300), verify_source_served, refresh_r2_catalog, "
-        "sync_catalog_d1 --source cepii_baci, util.ts, wrangler deploy, live /v1/sources."))
+        "sync_catalog_d1 --source cepii_baci, util.ts, worker deploy (tools/selfhost/deploy_edge.sh), "
+        "live /v1/sources."))
     return 0
 
 

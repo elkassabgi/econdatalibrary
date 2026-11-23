@@ -97,7 +97,7 @@ def main() -> int:
         for slug, n, st in broken:
             print(f"   {st}  {slug}  ({n:,} series)")
         print("\nFix by adding the new slug to IDB_RENAMED in api/worker/src/series.ts AND to")
-        print("RENAMED above, then deploying the worker - `npx wrangler deploy` is MANUAL (R345),")
+        print("RENAMED above, then deploying the worker with tools/selfhost/deploy_edge.sh - the deploy is MANUAL (R345),")
         print("so an edit alone changes nothing a user can reach.")
         return 1
     print(f"All {len(slugs)} dataset backlinks resolve at the publisher.")

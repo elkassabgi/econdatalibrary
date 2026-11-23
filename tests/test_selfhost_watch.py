@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools", "selfhost"))
 import watch_edge as W  # noqa: E402
 
 NOW = dt.datetime(2026, 10, 20, 12, 0, tzinfo=dt.timezone.utc)
+SHA = "8025b45ed7d736b7de98238cde9d6f15d1cc0502"          # a real 40-hex commit (econ main, 2026-11-22)
 ECON, USERS = ["e1", "e2"], "u1"
 WANT = {"forward": False, "edge_state": "econ", "forward_raw": "", "edge_state_raw": "",
         "econ_d1_ids": ECON, "users_d1_id": USERS}
@@ -61,28 +62,49 @@ def test_a_missing_route_passes_only_while_the_committed_state_is_the_default(mo
 
 def test_every_status_field_is_compared_and_a_commit_is_required(monkeypatch):
     want = {**WANT, "edge_state": "users", "edge_state_raw": "users"}
-    good = {"forward": False, "edge_state": "users", "forward_raw": "", "edge_state_raw": "users", "commit": "abc"}
+    good = {"forward": False, "edge_state": "users", "forward_raw": "", "edge_state_raw": "users", "commit": SHA}
     _status(monkeypatch, 200, good)
     assert W.check_status("https://e", want) == []
     for k, v in [("forward", True), ("edge_state", "econ"), ("forward_raw", "on"), ("edge_state_raw", "")]:
         _status(monkeypatch, 200, {**good, k: v})
         bad = W.check_status("https://e", want)
-        assert len(bad) == 1 and k in bad[0] and "abc" in bad[0], k
+        assert len(bad) == 1 and k in bad[0] and SHA in bad[0], k
     _status(monkeypatch, 200, {**good, "commit": None})
     assert any("commit" in m for m in W.check_status("https://e", want))
+
+
+# R2038: the 2026-11-21 deploy bypassed deploy_edge.sh; /v1/edge-status answered 200 with commit null for two
+# days, the committed state was the DEFAULT, and every run printed OK. These are the bodies of that window
+# and its relatives: each must FAIL the status check in the default state as well.
+NO_OR_BAD_COMMIT = [None, "", 0, SHA[:39], SHA.upper(), SHA + "\n", "-c" + "a" * 38, 12345, ["x"], {"a": 1},
+                    "x\n::error::planted"]
+
+
+@pytest.mark.parametrize("commit", NO_OR_BAD_COMMIT + ["<absent>"], ids=repr)
+def test_a_200_answer_without_a_40_hex_commit_fails_in_the_default_state(monkeypatch, commit):
+    body = {"forward": False, "edge_state": "econ", "forward_raw": "", "edge_state_raw": ""}
+    if commit != "<absent>":
+        body["commit"] = commit
+    _status(monkeypatch, 200, body)
+    bad = W.check_status("https://e", WANT)
+    assert len(bad) == 1 and bad[0].startswith(("NO-COMMIT", "BAD-COMMIT")), bad
+    assert "deploy_edge.sh" in bad[0] and "\n" not in bad[0]
+    # control: the same body with a real commit passes
+    _status(monkeypatch, 200, {**body, "commit": SHA})
+    assert W.check_status("https://e", WANT) == []
 
 
 def test_a_deployed_edge_that_calls_itself_a_soak_worker_is_a_failure(monkeypatch, tmp_path):
     """SOAK = "1" belongs to the soak worker only; on the edge the page-view routes would answer 404 with no
     error anywhere. An edge deployed before the field existed has no `soak` key: not a failure."""
-    good = {"forward": False, "edge_state": "econ", "forward_raw": "", "edge_state_raw": "", "commit": "abc"}
+    good = {"forward": False, "edge_state": "econ", "forward_raw": "", "edge_state_raw": "", "commit": SHA}
     for body in (good, {**good, "soak": False}):
         _status(monkeypatch, 200, body)
         assert W.check_status("https://e", WANT) == [], body
     for value in (True, "true", 1, "1"):                      # anything but false / absent is a failure
         _status(monkeypatch, 200, {**good, "soak": value})
         bad = W.check_status("https://e", WANT)
-        assert len(bad) == 1 and f"soak={value!r}" in bad[0] and "abc" in bad[0]
+        assert len(bad) == 1 and f"soak={value!r}" in bad[0] and SHA in bad[0]
     # a checkout that commits SOAK fails against a plain edge ...
     _status(monkeypatch, 200, good)
     assert len(W.check_status("https://e", {**WANT, "soak": True})) == 1
@@ -205,28 +227,142 @@ def test_a_truncated_answer_is_refused():
         W.rows_of({"x": [{}] * 5}, "x", 5)
 
 
+GOOD_STATUS = (200, {"forward": False, "edge_state": "econ", "forward_raw": "", "edge_state_raw": "", "commit": SHA})
+
+
 def _quiet(monkeypatch):
     monkeypatch.setattr(W, "check_up", lambda edge, now: [])
-    monkeypatch.setattr(W, "check_status", lambda edge, want: [])
-    monkeypatch.setattr(W, "undeployed_worker_changes", lambda edge: None)
+    monkeypatch.setattr(W, "read_status", lambda edge: GOOD_STATUS)
+    monkeypatch.setattr(W, "check_status", lambda edge, want, status=None: [])
+    monkeypatch.setattr(W, "undeployed_worker_changes", lambda edge, status=None: None)
     monkeypatch.delenv("RESEND_API_KEY", raising=False)
 
 
-@pytest.mark.parametrize("rc,expect", [(0, None), (1, "not live"), (128, "not in this checkout")])
-def test_undeployed_worker_changes_is_a_warning(monkeypatch, rc, expect):
+@pytest.mark.parametrize("rc,out,expect", [(0, b"", None),
+                                           (1, b"api/worker/test/x.test.ts\n", "not live"),
+                                           (128, b"", "not in this checkout")])
+def test_undeployed_worker_changes_is_a_warning(monkeypatch, rc, out, expect):
     import subprocess
-    monkeypatch.setattr(W, "get_json", lambda url, timeout=60: (200, {"commit": "abc123def456789"}))
+    monkeypatch.setattr(W, "get_json", lambda url, timeout=60: (200, {"commit": SHA}))
     seen = {}
 
     def run(cmd, **kw):
         seen["cmd"] = cmd
-        return subprocess.CompletedProcess(cmd, rc)
+        return subprocess.CompletedProcess(cmd, rc, stdout=out, stderr=b"")
     monkeypatch.setattr(subprocess, "run", run)
     got = W.undeployed_worker_changes("https://e")
     assert (got is None) if expect is None else (expect in got)
-    assert seen["cmd"] == ["git", "diff", "--quiet", "abc123def456789", "HEAD", "--", "api/worker"]
-    monkeypatch.setattr(W, "get_json", lambda url, timeout=60: (404, None))
-    assert W.undeployed_worker_changes("https://e") is None, "no route, no commit: nothing to compare"
+    assert seen["cmd"] == ["git", "diff", "--name-only", "--exit-code", SHA, "HEAD", "--", "api/worker"]
+
+
+def test_the_lag_warning_names_the_changed_paths(monkeypatch):
+    """A diff of test files only must read as one (review condition 10: on 2026-11-19 the live watch said
+    'not live' about api/worker/test/guardHeartbeat.test.ts alone)."""
+    import subprocess
+    paths = [f"api/worker/test/t{i}.test.ts" for i in range(7)]
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(
+        cmd, 1, stdout=("\n".join(paths) + "\n").encode(), stderr=b""))
+    got = W.undeployed_worker_changes("https://e", (200, {"commit": SHA}))
+    assert got.startswith("LAG: ") and "7 path(s)" in got and SHA[:12] in got
+    assert all(p in got for p in paths[:5]) and paths[5] not in got and "and 2 more" in got
+
+
+# Every case where the compare cannot run is a NAMED warning, never None (R2038: None for "no commit" read the
+# same as "no difference"). None is kept for exactly one case: the compare ran and found nothing.
+@pytest.mark.parametrize("status,prefix", [((200, {"commit": None}), "NO-COMMIT"),
+                                           ((200, {}), "NO-COMMIT"),
+                                           ((200, {"commit": ""}), "NO-COMMIT"),
+                                           ((200, {"commit": SHA + "\n"}), "BAD-COMMIT"),
+                                           ((200, {"commit": SHA[:12]}), "BAD-COMMIT"),
+                                           ((200, {"commit": "--output=x" + "a" * 30}), "BAD-COMMIT"),
+                                           ((200, {"commit": 12345}), "BAD-COMMIT"),
+                                           ((200, {"commit": ["x"]}), "BAD-COMMIT"),
+                                           ((404, None), "UNREAD"),
+                                           ((503, None), "UNREAD"),
+                                           ((0, "URLError: down"), "UNREAD"),
+                                           ((200, ["not", "a", "dict"]), "UNREAD")], ids=repr)
+def test_a_compare_that_cannot_run_is_a_named_warning_not_none(monkeypatch, status, prefix):
+    import subprocess
+
+    def run(cmd, **kw):
+        raise AssertionError(f"git must not run on a commit that is not a 40-hex sha: {cmd}")
+    monkeypatch.setattr(subprocess, "run", run)
+    got = W.undeployed_worker_changes("https://e", status)
+    assert isinstance(got, str) and got.startswith(prefix + ": "), got
+    assert "\n" not in got
+    # the compare itself failing is UNREAD too, not None
+    def boom(cmd, **kw):
+        raise OSError("git missing")
+    monkeypatch.setattr(subprocess, "run", boom)
+    assert W.undeployed_worker_changes("https://e", (200, {"commit": SHA})).startswith("UNREAD: ")
+
+
+def _main_with(monkeypatch, capsys, status, warn_rc=0, actions=None):
+    """main() with the network replaced: /v1/edge-status answers `status`, the git compare answers `warn_rc`.
+    Counts the reads of /v1/edge-status and captures the alert mail."""
+    import subprocess
+    reads, mails = [], []
+
+    def fake(url, timeout=60):
+        if url.endswith("/v1/edge-status"):
+            reads.append(url)
+            return status
+        return (200, _updates([NOW.isoformat()])) if url.endswith("last-updates") else (200, {"sources": []})
+    monkeypatch.setattr(W, "get_json", fake)
+    monkeypatch.setattr(W, "send_alert", lambda subject, body: mails.append((subject, body)))
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(
+        cmd, warn_rc, stdout=b"api/worker/src/edge.ts\n" if warn_rc == 1 else b"", stderr=b""))
+    if actions is None:
+        monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    else:
+        monkeypatch.setenv("GITHUB_ACTIONS", actions)
+    rc = W.main([], now=NOW)
+    return rc, capsys.readouterr().out, reads, mails
+
+
+def test_the_r2038_window_is_a_red_run_with_a_mail(monkeypatch, capsys):
+    """The live state of 2026-11-21..23: 200, default state, commit null. It printed OK; now it fails, the
+    failure mail carries the named warning too, and /v1/edge-status is read ONCE."""
+    body = {"forward": False, "edge_state": "econ", "forward_raw": "", "edge_state_raw": "", "commit": None}
+    rc, out, reads, mails = _main_with(monkeypatch, capsys, (200, body))
+    assert rc == 1 and "STATUS: NO-COMMIT" in out and "WARN NO-COMMIT" in out and "\nOK" not in out
+    assert len(reads) == 1, reads
+    assert len(mails) == 1 and mails[0][0] == "[econ self-host] 1 check(s) failed"
+    assert "NO-COMMIT" in mails[0][1] and "WARN NO-COMMIT" in mails[0][1]
+    # control: the same run with the deployed commit passes, reads once, mails nothing
+    rc, out, reads, mails = _main_with(monkeypatch, capsys, (200, {**body, "commit": SHA}))
+    assert rc == 0 and out.rstrip().endswith("OK") and "WARN" not in out and len(reads) == 1 and mails == []
+
+
+@pytest.mark.parametrize("actions", [None, "false", "true"])
+def test_a_lag_warning_is_printed_and_annotated_but_not_mailed(monkeypatch, capsys, actions):
+    body = {"forward": False, "edge_state": "econ", "forward_raw": "", "edge_state_raw": "", "commit": SHA}
+    rc, out, reads, mails = _main_with(monkeypatch, capsys, (200, body), warn_rc=1, actions=actions)
+    assert rc == 0 and "WARN LAG: " in out and "api/worker/src/edge.ts" in out and out.rstrip().endswith("OK")
+    assert mails == [], "a lag warning alone is not mailed (R1988: the owner must not be the first reader)"
+    notes = [ln for ln in out.splitlines() if ln.startswith("::")]
+    if actions == "true":
+        assert len(notes) == 1 and notes[0].startswith("::warning title=selfhost-watch::LAG: ")
+    else:
+        assert notes == [], "an annotation only inside GitHub Actions"
+
+
+def test_a_served_value_cannot_become_a_workflow_command(monkeypatch, capsys):
+    """A commit value carrying a newline and '::error::' gives exactly ONE output line that starts with '::'
+    (the escaped warning annotation), never a second one."""
+    body = {"forward": False, "edge_state": "econ", "forward_raw": "", "edge_state_raw": "",
+            "commit": "x\n::error::planted"}
+    rc, out, reads, mails = _main_with(monkeypatch, capsys, (200, body), actions="true")
+    starts = [ln for ln in out.splitlines() if ln.startswith("::")]
+    assert rc == 1 and len(starts) == 1 and starts[0].startswith("::warning title=selfhost-watch::BAD-COMMIT"), starts
+    assert W._annotation("50% a\r\nb") == "::warning title=selfhost-watch::50%25 a%0D%0Ab"
+
+
+def test_a_long_served_value_is_cut(monkeypatch):
+    body = {"forward": "z" * 500, "edge_state": "econ", "forward_raw": "", "edge_state_raw": "", "commit": SHA}
+    _status(monkeypatch, 200, body)
+    bad = W.check_status("https://e", WANT)
+    assert len(bad) == 1 and "...(cut)" in bad[0] and len(bad[0]) < 300
 
 
 def test_writes_check_without_a_token_is_blind_and_fails(monkeypatch, capsys):

@@ -1,6 +1,6 @@
 """Post-deploy smoke test of every public route, plus the R675 search regression.
 
-`npx wrangler deploy` is manual and nothing else checks the running system afterwards. tsc and the
+A worker deploy (tools/selfhost/deploy_edge.sh) is manual and nothing else checks the running system afterwards. tsc and the
 unit tests say the code is well-formed; only a request says a route still answers.
 
 TWO THINGS THIS EXISTS TO CATCH, both of which have actually happened:
