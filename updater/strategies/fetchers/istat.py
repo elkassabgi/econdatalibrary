@@ -41,7 +41,9 @@ each flow's max obs_date so a frozen flow can't hide behind the unit-level max.
 """
 from __future__ import annotations
 import datetime as dt
+import math
 import os
+import sys
 import time
 
 import pyarrow as pa
@@ -172,13 +174,14 @@ RATE = 1.0            # seconds between flows (polite; the ingester used 1.5)
 #
 # READ THIS BEFORE TRUSTING IT ON THE DESKTOP. Deadline honours AQUEDUCT_BUDGET_MIN_OVERRIDE
 # by REPLACING this constant (_common.py:119-136), and tools/run_local_heavy.ps1 sets that
-# override to 360. So this bounds istat at 30 min in CI and at SIX HOURS on the local runner
-# — better than the unbounded stall measured on 2026-09-01 (50 minutes at 5.5 CPU-seconds,
-# no per-flow logging, 16 due sources waiting), but not the same as bounded. The override
-# exists to ENLARGE budgets for the dedicated 382 GB machine, so narrowing it globally would
-# re-cap every other local source; a per-source override is the honest fix and is not built.
-# Until then, a local pass that must not be held by istat should exclude it with -Only.
-# The remainder is never lost either way — the rotation bookmark resumes it.
+# override to 360. So this bounds istat at 30 min in CI and at SIX HOURS on the local runner.
+# The override exists to ENLARGE budgets for the dedicated 382 GB machine, so narrowing it
+# globally would re-cap every other local source.
+#
+# SINCE 2026-11-23 THE PASS'S RUN CEILING BOUNDS istat AS WELL (see THE RUN CEILING below). On
+# 2026-11-22 the 360-min budget let istat start flows until the local pass's hard stop killed it
+# after 188 min with no Result, and the bookmark (then saved only after the loop) did not move.
+# The ceiling check does not read this budget or the override, so the override cannot lift it.
 BUDGET_MIN = float(os.environ.get("ISTAT_BUDGET_MIN", "30"))
 
 TIMEOUT = 120         # per request, default
@@ -197,6 +200,12 @@ HOST_TIMEOUT = {
 }
 RETRIES = 3           # per host, for transient (timeout/5xx/conn) errors
 
+
+def _backoff_s(attempt: int) -> float:
+    """The sleep before retry pass `attempt` (1-based) in _fetch_flow. One definition, so the
+    run-ceiling floor below is computed from the same numbers the retry loop sleeps."""
+    return min(4 * attempt, 30)
+
 # THRESHOLD > ONE FLOW'S RETRIES, OR THE RETRY LOOP KILLS A LIVE HOST BY ITSELF. The first
 # cut set this to 3 — exactly RETRIES — and _fetch_flow's own backoff loop calls _try_host
 # once per attempt against the same base, so ONE slow flow produced 3 increments and marked
@@ -207,6 +216,65 @@ RETRIES = 3           # per host, for transient (timeout/5xx/conn) errors
 # tests/test_istat_dead_host.py, which drives the REAL retry loop rather than the counter.
 _HOST_DEAD_AFTER = 3 * RETRIES + 1
 TRANSIENT_HTTP = (429, 500, 502, 503, 504)
+
+# THE RUN CEILING (2026-11-23; the census / wid / imf_imts_direct pattern). When the
+# orchestrator has set a run ceiling (orchestrate._RUN_DEADLINE_TS, from AQUEDUCT_RUN_BUDGET_MIN,
+# which tools/run_local_heavy.ps1 clamps to the time left in the pass), a flow is started only if
+#     time left >= margin + max(2 x the longest flow this run, FLOW_FLOOR_S)
+# Otherwise the loop stops, and the flows not reached are booked as ONE deferred unit (not
+# transient) that names their count, as the budget stop does. So the run returns a Result
+# (cursors, CSV step) BEFORE the pass's hard stop kills it.
+#   margin        AQUEDUCT_ISTAT_MARGIN_MIN, default 5 min: the tail for finalize and the
+#                 orchestrator's CSV step. CHOSEN, not measured (as census and wid).
+#   FLOW_FLOOR_S  the allowance before any flow of this run is timed: one flow whose every CSV
+#                 GET on ONE live host runs to that host's timeout, RETRIES x 300 s + the backoff
+#                 sleeps = 912 s (15.2 min). One live host is today's case (sdmx.istat.it is
+#                 redirect-looping and is marked dead on the first flow). It is not the worst
+#                 case: with both hosts live and timing out a flow costs 3 x (120 + 300) + 12 =
+#                 1,272 s, and a 200 that parses 0 rows adds an XML GET per attempt (about 30 min
+#                 on one host). The 2 x longest term covers those once one such flow has been seen.
+# The check reads neither BUDGET_MIN nor AQUEDUCT_BUDGET_MIN_OVERRIDE. run_once always sets a
+# ceiling (AQUEDUCT_RUN_BUDGET_MIN, default 240 min; CI sets its own), so the check is off only
+# when AQUEDUCT_RUN_BUDGET_MIN <= 0 or update() is called outside run_once. A flow is never cut
+# once started: a flow that overruns its allowance can still reach the hard stop (per-request
+# bounding is a separate change).
+MARGIN_FLOOR_MIN_DEFAULT = 5.0
+FLOW_FLOOR_S = (RETRIES * max([TIMEOUT, *HOST_TIMEOUT.values()])
+                + sum(_backoff_s(a) for a in range(1, RETRIES)))
+# A progress line every PROGRESS_EVERY_FLOWS attempted flows or PROGRESS_EVERY_S seconds,
+# whichever comes first, so a working sweep cannot look like a hang (2026-11-22: 188 min, 451
+# flows merged, not one log line).
+PROGRESS_EVERY_FLOWS = 50
+PROGRESS_EVERY_S = 300.0
+
+
+def _margin_floor_s() -> float:
+    """AQUEDUCT_ISTAT_MARGIN_MIN in seconds. Read at each update so a test or a run can set it. A
+    value that is not a finite number >= 0 falls back to the default and says so: a bad value must
+    not remove the margin."""
+    raw = os.environ.get("AQUEDUCT_ISTAT_MARGIN_MIN")
+    if raw is None or raw == "":
+        return MARGIN_FLOOR_MIN_DEFAULT * 60
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        v = float("nan")
+    if not (math.isfinite(v) and v >= 0):
+        print(f"[istat] AQUEDUCT_ISTAT_MARGIN_MIN={raw!r} is not a finite number >= 0 - using "
+              f"{MARGIN_FLOOR_MIN_DEFAULT:g} min", flush=True)
+        return MARGIN_FLOOR_MIN_DEFAULT * 60
+    return v * 60
+
+
+def _window_end_ts():
+    """The pass's run ceiling as an epoch timestamp, or None when none is set. Read through
+    sys.modules (as census, wid and imf_imts_direct do), so this module never imports the
+    orchestrator."""
+    orch = sys.modules.get("updater.orchestrate")
+    ts = getattr(orch, "_RUN_DEADLINE_TS", None) if orch is not None else None
+    if isinstance(ts, bool) or not isinstance(ts, (int, float)) or not math.isfinite(ts):
+        return None
+    return float(ts)
 
 # Files in the istat dir that are NOT dataflow parquets.
 _SKIP_FILES = {"_sliced_done.json", "_sliced_unrecoverable.json"}
@@ -384,7 +452,7 @@ def _fetch_flow(sess, flow_id, start_period, had_prior: bool):
             transient_bases = [b for b in transient_bases if b not in _DEAD_HOSTS]
             if not transient_bases:
                 break
-            time.sleep(min(4 * attempt, 30))
+            time.sleep(_backoff_s(attempt))
             still = []
             for base in transient_bases:
                 k, d, v, kind = _try_host(sess, base, flow_id, start_period)
@@ -504,13 +572,30 @@ def update(unit, since) -> Result:
     dl = Deadline(minutes=BUDGET_MIN)
     last_attempted = None
 
+    # THE RUN CEILING (see the constants block). Read HERE, at update time, never at import.
+    end_ts = _window_end_ts()
+    floor_s = _margin_floor_s()
+    if end_ts is None:
+        print(f"[istat] no run ceiling set - the window-end check is off "
+              f"(budget {dl.budget_min:g} min only)", flush=True)
+    else:
+        print(f"[istat] run ceiling "
+              f"{dt.datetime.fromtimestamp(end_ts, dt.timezone.utc):%Y-%m-%dT%H:%M:%S}Z "
+              f"({(end_ts - time.time()) / 60:.1f} min left); a flow starts only with at least "
+              f"{floor_s / 60:g} min + max(2 x the longest flow, {FLOW_FLOOR_S / 60:.1f} min) left",
+              flush=True)
+    longest = 0.0                  # the longest flow this run, start of its checks to its bookmark
+    n_merged = 0                   # flows whose rows went through merge_and_write this run
+    t_run = time.monotonic()
+    t_progress = t_run
+
     n_sub = len(files)
     for fn in files:
         if dl.spent():
             print(f"[istat] budget of {BUDGET_MIN:g} min spent after {dl.elapsed_min():.1f} "
                   f"min — {flows_done} flow(s) attempted, {n_sub - flows_done} left for a "
-                  f"later pass, which RESUMES after {last_attempted!r} rather than restarting "
-                  f"(deferred, not failed; merged rows keep their derive)", flush=True)
+                  f"later pass, which RESUMES after {last_attempted or bookmark!r} rather than "
+                  f"restarting (deferred, not failed; merged rows keep their derive)", flush=True)
             # deferred_unit, NOT transient_unit (R303, and tests/test_tally_deferred_is_not_
             # _a_failure.py enforces it — my first cut used transient and turned the suite red).
             # "Transient" says something went wrong and retrying may help; "deferred" says
@@ -519,6 +604,21 @@ def update(unit, since) -> Result:
             # the operator to investigate.
             tally.deferred_unit(f"budget spent after {flows_done} flow(s)")
             break
+        if end_ts is not None:
+            left_s = end_ts - time.time()
+            need_s = floor_s + max(2.0 * longest, FLOW_FLOOR_S)
+            if left_s < need_s:
+                n_left = n_sub - flows_done
+                print(f"[istat] run ceiling: {left_s / 60:.1f} min left, under the "
+                      f"{need_s / 60:.1f}-min need ({floor_s / 60:g} min margin + max(2 x the "
+                      f"longest flow {longest:.0f} s, {FLOW_FLOOR_S / 60:.1f} min)) - "
+                      f"{flows_done} flow(s) attempted, {n_merged} merged, {n_left} deferred to "
+                      f"a later pass, which RESUMES after {last_attempted or bookmark!r} "
+                      f"(deferred, not failed)", flush=True)
+                # deferred_unit, as the budget stop above: nothing failed (R303).
+                tally.deferred_unit(f"run ceiling: {n_left} flow(s) not started")
+                break
+        f0 = time.monotonic()
         path = os.path.join(out_dir, fn)
         flow_id = fn[: -len(".parquet")]
         before = blob.row_count(path)
@@ -583,13 +683,13 @@ def update(unit, since) -> Result:
         flows_done += 1
         time.sleep(RATE)
 
+        # ONE EXIT PER FLOW: every outcome falls through to the bookmark below. The one `continue`
+        # there is CUT BY HOST DEATH.
         if outcome == "transient":
             # Every host failed this flow -> keep existing data, re-queue (run partial).
             tally.transient_unit(f"{flow_id}: every host failed")
             total += before
-            continue
-
-        if outcome == "structural":
+        elif outcome == "structural":
             # A 200 real body now parsing 0 rows, or the flow withdrawn from BOTH
             # catalogs while it previously held data -> schema/structural break.
             # finalize() raises DefinitiveError; existing data is kept by merge.
@@ -597,60 +697,101 @@ def update(unit, since) -> Result:
                 f"{flow_id}: real body parsed 0 rows, or withdrawn from both catalogs, "
                 f"over {before:,} stored")
             total += before
-            continue
-
-        if outcome == "empty":
+        elif outcome == "empty":
             # Valid flow, nothing newer in the window (the common quiet-tail case).
             tally.empty_unit()
             total += before
-            continue
+        else:
+            # outcome == ok: we have newer rows. Defensive length align (mirrors ingester).
+            m = min(len(keys), len(dates), len(vals))
+            keys, dates, vals = keys[:m], dates[:m], vals[:m]
+            if m == 0:
+                tally.empty_unit()
+                total += before
+            else:
+                new_tbl = pa.table({
+                    "series_key": pa.array(keys, pa.string()),
+                    "obs_date":   pa.array(dates, pa.date32()),
+                    "value":      pa.array(vals, pa.float64()),
+                })
+                try:
+                    n, md = merge.merge_and_write(path, new_tbl, mode="merge", dedup_keys=DEDUP)
+                except Exception:
+                    # merge guard tripped (would shrink / drop a column): keep old data, surface
+                    # as transient so a later pass re-runs the flow with a fresh pull (the run is
+                    # `partial`; base.Strategy.is_due decides when that pass comes).
+                    tally.transient_unit(f"{flow_id}: merge guard tripped over {before:,} stored")
+                    total += before
+                else:
+                    total += n
+                    n_merged += 1
+                    # A flow that served a 200 with real rows is a SUCCESSFUL sub-unit (data
+                    # flowed), even when every row is at/below the stored boundary and the merge
+                    # nets zero new rows (the boundary-YEAR re-sweep makes that the normal
+                    # idempotent steady state). Count it added_unit(>0) so it does NOT feed the
+                    # all-empty structural floor — otherwise a perfectly healthy re-run where every
+                    # active flow re-returns its boundary year (zero net-new) would have
+                    # empty==attempted and falsely raise. The REAL net-new delta is carried by
+                    # `obs` (total) and merge's row count.
+                    tally.added_unit(m)
+                    if md:
+                        cursors[flow_id] = md
+                        if last_obs is None or md > last_obs:
+                            last_obs = md
 
-        # outcome == ok: we have newer rows. Defensive length align (mirrors ingester).
-        m = min(len(keys), len(dates), len(vals))
-        keys, dates, vals = keys[:m], dates[:m], vals[:m]
-        if m == 0:
-            tally.empty_unit()
-            total += before
+        # THE BOOKMARK, AFTER EVERY ATTEMPTED FLOW, WHATEVER ITS OUTCOME (R273, R784). Until
+        # 2026-11-23 it was saved once, after the loop, and moved only on `ok`: a run killed by the
+        # pass's hard stop (2026-11-22, 188 min, 451 flows merged) kept no position and the next
+        # run walked the same flows again; and a flow that fails on every run would pin the
+        # bookmark before it. It names the last flow whose attempt FINISHED. A flow cut by a kill
+        # in mid-attempt is not named, so the next run starts at that flow (it re-runs; nothing is
+        # skipped). A flow never started (budget, run ceiling, all hosts dead) is never named, and
+        # neither is the flow IN WHICH the last usable host died (see CUT BY HOST DEATH below).
+        # WHAT IT ASSERTS (R287 asks this): "every flow up to here was tried and its rows are in
+        # the store", not "its rows reached the CSV step". It is read only by load_rotation above.
+        # The CSV step derives from the Result's series_cursors, which this loop seeds from the
+        # store for every flow it walks. THE COST, stated: a run that is KILLED returns no Result,
+        # so the flows it merged are handed to the CSV step only when a later run walks them
+        # again, one rotation later, not on the next run. Before this change the next run did walk
+        # them again, but only because the bookmark had not moved - the same re-walk that kept
+        # the tail of the list from ever being reached (R190). A run that stops at the ceiling or
+        # the budget returns a Result and hands over every flow it walked - unless a structural
+        # flow makes finalize() raise, which loses that run's hand-over as it always has. A list
+        # of flows merged but not handed over (wid's "owed" marks) would close both cases; it is
+        # not built.
+        #
+        # CUT BY HOST DEATH (review of PR #325, F1). A flow that ends `transient` with EVERY host
+        # in _DEAD_HOSTS was not answered by any host: the last usable host died during it. The
+        # 2026-11-19/20 shape is one such flow - sdmx.istat.it redirect-loops on its one GET,
+        # esploradati fails its TCP probe, and the run stops "after 1 flow(s) attempted". Naming
+        # that flow would pass it on a night when no working host was asked about it, and it would
+        # wait a whole rotation. So it is treated like a kill: it is not named, and the next run
+        # starts at it. The next pass of the loop meets the all-hosts-dead (or a budget / ceiling)
+        # stop and ends the run. A flow that failed while some host was still usable is named
+        # (R784 (a): advance on attempt).
+        if outcome == "transient" and all(b in _DEAD_HOSTS for _l, b in HOSTS):
             continue
-
-        new_tbl = pa.table({
-            "series_key": pa.array(keys, pa.string()),
-            "obs_date":   pa.array(dates, pa.date32()),
-            "value":      pa.array(vals, pa.float64()),
-        })
-        try:
-            n, md = merge.merge_and_write(path, new_tbl, mode="merge", dedup_keys=DEDUP)
-        except Exception:
-            # merge guard tripped (would shrink / drop a column): keep old data, surface
-            # as transient so a later pass re-runs the flow with a fresh pull (the run is
-            # `partial`; base.Strategy.is_due decides when that pass comes).
-            tally.transient_unit(f"{flow_id}: merge guard tripped over {before:,} stored")
-            total += before
-            continue
-
-        total += n
-        # A flow that served a 200 with real rows is a SUCCESSFUL sub-unit (data flowed),
-        # even when every row is at/below the stored boundary and the merge nets zero new
-        # rows (the boundary-YEAR re-sweep makes that the normal idempotent steady state).
-        # Count it added_unit(>0) so it does NOT feed the all-empty structural floor —
-        # otherwise a perfectly healthy re-run where every active flow re-returns its
-        # boundary year (zero net-new) would have empty==attempted and falsely raise.
-        # The REAL net-new delta is carried by `obs` (total) and merge's row count.
-        tally.added_unit(m)
         last_attempted = fn
-        if md:
-            cursors[flow_id] = md
-            if last_obs is None or md > last_obs:
-                last_obs = md
+        save_rotation(out_dir, last_attempted)
+        now_m = time.monotonic()
+        longest = max(longest, now_m - f0)
+        if flows_done % PROGRESS_EVERY_FLOWS == 0 or now_m - t_progress >= PROGRESS_EVERY_S:
+            t_progress = now_m
+            ceiling = ("no run ceiling" if end_ts is None
+                       else f"{(end_ts - time.time()) / 60:.1f} min left to the run ceiling")
+            # Flows are deferred only at a stop (budget or run ceiling), and that stop's line gives
+            # the deferred count; here the same flows are still "left" (not reached yet).
+            print(f"[istat] progress: {flows_done}/{n_sub} flow(s) attempted, {n_merged} merged, "
+                  f"{tally.empty} empty, {tally.transient} transient, {tally.structural} "
+                  f"structural, {n_sub - flows_done} left; {(now_m - t_run) / 60:.1f} min elapsed, "
+                  f"{ceiling}; bookmark {fn}", flush=True)
 
     # empty_window_floor = n_sub - 1: a steady-state run where ALL flows are quiet (each
     # ISTAT flow updates only a few times a year) is legitimate no_change, NOT a break;
     # real breaks are caught precisely per-flow via structural_unit(). A whole-host
     # outage routes to 'partial' via transient_unit() instead of the floor.
-    # Persist the resume point ONLY for flows actually reached. Saving a bookmark the run
-    # never got to would skip them for ever — the silent half of R190.
-    if last_attempted:
-        save_rotation(out_dir, last_attempted)
+    # The resume point was saved inside the loop, once per attempted flow; there is no second
+    # writer here, so nothing can overwrite it with an older value.
 
     return finalize(tally, total, last_obs, source=SOURCE,
                     series_cursors=cursors,
