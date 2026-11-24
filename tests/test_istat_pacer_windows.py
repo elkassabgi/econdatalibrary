@@ -316,6 +316,25 @@ def test_d6_a_backward_wall_step_during_the_sleep_adds_nothing(state):
     assert tok.mslip is not None and abs(tok.mslip) < 1e-6
 
 
+class LateAcrossStep(MonoClock):
+    """The first long sleep carries a 1-h BACKWARD wall step AND wakes 10 s late in true time."""
+
+    def sleep(self, s):
+        if self.step_on_sleep and s > 1.0:
+            s += 10.0
+        super().sleep(s)
+
+
+def test_d6_a_late_wake_across_a_backward_step_is_still_late(state, capsys):
+    """The slip check is on the monotonic clock: on the wall clock a 10-s-late wake after a 1-h backward
+    step reads as 3,590 s EARLY, and the token would be sent late."""
+    _seed(state, next=T0 + 30.0)
+    clock = LateAcrossStep(step_on_sleep=-3600.0)
+    tok = pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=clock)
+    assert pacer.stats()["abandoned"] == 1, capsys.readouterr().out
+    assert tok.mslip is not None and tok.mslip <= pacer.SLIP_MAX_S
+
+
 class OtherProcessPenalty(FakeClock):
     """ANOTHER process records a 429 (writes pen into the shared record) while this one waits for its slot.
     This process's own _LOCAL_PEN never hears of it."""
