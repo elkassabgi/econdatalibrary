@@ -45,6 +45,12 @@ A fail-safe token cannot rely on the shared folder: it prints `[istat-pacer] FAI
 process's own log, and a line the pacer could not append prints `[istat-pacer] UNLOGGED <line>`.
 `tools/check_istat_rate.py` reads both and is the only instrument for a combined-rate figure.
 
+THE LOCK WAIT RUNS ON REAL TIME (review_A condition 6), unlike every other pacer wait, which honours the
+caller's `clock`. On purpose: the lock is held by another PROCESS for real milliseconds, and a test's fake
+clock advances only when it is slept, so it cannot measure a holder's hold. The cost is in scaled tests only:
+there LOCK_WAIT_MAX_S is set in real seconds by the test itself (tests/_istat_pacer_child.py --lock-wait),
+and a stall that is transient in production can outlast it.
+
 THIS IS NOT ENFORCED FOR: a curl, a browser, or any process outside this code. An ad-hoc HTTP request or TCP
 probe to any ISTAT host from this workstation spends the same budget; send it through `acquire`, or from a
 second egress.
@@ -397,6 +403,8 @@ def next_slot(record, now, participant, own_last, turn_live=None, *, own_gap=Non
     if turn_live is None:
         turn_live = rec.turn > now
     gap = float(own_gap) if own_gap is not None else own_gap_s(participant)
+    # NOT clamped here: acquire() clamps the real last start to now (condition 2) and may then pass a LATER
+    # value on purpose (the fail-safe floor). own_last + gap is the caller's earliest allowed start.
     own_last = float(own_last or 0.0)
     if participant == "updater":
         slot = max(now, rec.next, rec.pen, own_last + gap)
@@ -730,20 +738,26 @@ def _unlogged(lines) -> None:
 
 
 def _locked_rmw(clock, fn):
-    """Lock, read, fn(rec_or_None, bad_reason, now) -> (new_record or None, lines, result); write if a new
-    record; append lines; unlock. A RecordNewer record is never overwritten. Raises _PacerFailure before a
-    write; never after it."""
+    """Lock, read, fn(rec_or_None, bad_reason, now, mono_now) -> (new_record or None, lines, result); write if
+    a new record; append lines; unlock. A RecordNewer record is never overwritten. Raises _PacerFailure before
+    a write; never after it.
+
+    THE TWO CLOCKS ARE READ TOGETHER, wall first, monotonic second, after the parse (review_A condition 1): a
+    slot comes from `now` and its monotonic copy is mono_now + (slot - now). Read in this order, a stall
+    between the two reads can only make the monotonic slot LATE (never early, so no token starts before its
+    slot); the wall half of the slip check then refuses such a token."""
     fd = _open_and_lock()
     try:
         raw = _read_record(fd)
-        now = clock.time()
         try:
             rec, bad = parse_record(raw), None
         except RecordNewer as e:
             raise _PacerFailure(f"record written by a NEWER pacer ({e}); not overwritten") from None
         except RecordError as e:
             rec, bad = None, str(e)
-        new, lines, result = fn(rec, bad, now)
+        now = clock.time()
+        mono_now = _mono_of(clock)
+        new, lines, result = fn(rec, bad, now, mono_now)
         if new is not None:
             _write_record(fd, new)                     # COMMIT POINT
         if lines:
@@ -816,20 +830,22 @@ def _failsafe_leave() -> None:
 def _shared_step(participant, host, kind, path_class, flow, deadline_ts, clock, pending):
     """One locked read-modify-write. -> ("slot", Token) | ("wait", retry_at). Raises WindowEnd (record not
     written) or _PacerFailure (nothing committed)."""
-    def fn(rec, bad, now):
-        own_last = _OWN_LAST.get(participant, 0.0)
+    def fn(rec, bad, now, mono_now):
+        # review_A condition 2: an own last start LATER than now can only be a backward wall step; clamped
+        # to now it still keeps a full gap of TRUE time after the real last start.
+        own_last = min(_OWN_LAST.get(participant, 0.0), now)
         gap = own_gap_s(participant)
         if _LAST_FS_START[0]:
             # After a fail-safe token (which the shared record never saw) the first shared slot is no earlier
             # than that token + FAILSAFE_GAP_S, so the transition back adds nothing to the 4 + k bound (review).
-            own_last = max(own_last, _LAST_FS_START[0] + FAILSAFE_GAP_S - gap)
+            own_last = max(own_last, min(_LAST_FS_START[0], now) + FAILSAFE_GAP_S - gap)
         if _LOCAL_PEN:
             # A penalty this process knows holds in shared mode too, and survives a torn record; writing it
             # makes it shared at the next good lock (review finding 1).
             base = rec if rec is not None else _just_sent(now)
             if _LOCAL_PEN > base.pen:
                 rec = base._replace(pen=_LOCAL_PEN)
-        mono_now = _mono_of(clock)
+        # mono_now was read by _locked_rmw right after `now` (condition 1): never re-read here
         slot, retry_at, new = next_slot(rec, now, participant, own_last, own_gap=gap, mono_now=mono_now)
         lines = list(pending)
         if bad is not None:
@@ -839,10 +855,13 @@ def _shared_step(participant, host, kind, path_class, flow, deadline_ts, clock, 
             # A bad record is repaired as "just sent" (rec is then None, or the just-sent record with this
             # process's penalty merged in). D1b: a record whose `next` the clamp moved (residue far in the
             # future) is written back clamped, so nobody waits for the wall clock to reach the residue.
+            # review_A condition 3: a pen beyond the cap is written back clamped too; re-clamped from `now` at
+            # every read and never written, it slid forward and a crawler behind it never got a token.
             repair = None
             if bad is not None:
                 repair = _clamp(rec if rec is not None else _just_sent(now), now)
-            elif rec is not None and rec.next > _future_limit(now, min(rec.pen, now + PENALTY_MAX_S)):
+            elif rec is not None and (rec.next > _future_limit(now, min(rec.pen, now + PENALTY_MAX_S))
+                                      or rec.pen > now + PENALTY_MAX_S):
                 repair = _clamp(rec, now)
             if repair is not None:
                 repair = _with_mono(_apply_mono(repair, now, mono_now), now, mono_now)
@@ -899,7 +918,7 @@ def _acquire_loop(participant, host, kind, path_class, flow, deadline_ts, clock,
             kind_, val = "fail", f"unexpected {type(e).__name__}: {e}"
         if kind_ == "fail":
             now = clock.time()
-            own_last = _OWN_LAST.get(participant, 0.0)
+            own_last = min(_OWN_LAST.get(participant, 0.0), now)      # condition 2: a backward wall step
             if not retried_after_failure:
                 # V1(a): never start at once after a failure. Wait FAILSAFE_GAP_S, then try the lock again.
                 earliest = max(now + FAILSAFE_GAP_S, own_last + FAILSAFE_GAP_S, _LOCAL_PEN)
@@ -950,9 +969,15 @@ def _acquire_loop(participant, host, kind, path_class, flow, deadline_ts, clock,
                 pending.append((now, f"X {_iso(now)} tok={tok.id} reason=penalty slip={now - tok.slot:.3f}"))
                 continue
         _wait_for_slot(clock, tok, 0.0)
+        # THE LAST CLOCK READS of this token: the slip check AND the token's start both use them (condition 4),
+        # so nothing is read after the check. The slip is the LARGER of the wall and the monotonic slips
+        # (condition 1): the monotonic half catches a late wake across a backward wall step (D6), the wall half
+        # a stall between the two reads under the lock (which makes only the monotonic slot late). A forward
+        # wall step during the wait costs one re-reservation: the safe direction.
         now = clock.time()
         mono = _mono_of(clock)
-        slip = (mono - tok.mslot) if (mono is not None and tok.mslot is not None) else (now - tok.slot)
+        mono_slip = (mono - tok.mslot) if (mono is not None and tok.mslot is not None) else None
+        slip = now - tok.slot if mono_slip is None else max(mono_slip, now - tok.slot)
         if now < _LOCAL_PEN:
             # A 429 arrived (in this process) after this slot was reserved: do not send into the penalty.
             with _PROC_LOCK:
@@ -970,18 +995,20 @@ def _acquire_loop(participant, host, kind, path_class, flow, deadline_ts, clock,
                  f"(> {SLIP_MAX_S:g} s); taking a new one")
             pending.append((now, f"X {_iso(now)} tok={tok.id} reason=late slip={slip:.3f}"))
             continue
-        tok.mslip = slip if tok.mslot is not None else None
+        tok.mslip = mono_slip
         with _PROC_LOCK:
             _STATS["shared"] += 1
-        return _finish(tok, clock, t_call)
+        return _finish(tok, clock, t_call, now=now)
 
 
-def _finish(tok: Token, clock, t_call: float) -> Token:
-    now = clock.time()
+def _finish(tok: Token, clock, t_call: float, now=None) -> Token:
+    """The token's start is `now` when the caller passes the read its slip check used (condition 4)."""
+    if now is None:
+        now = clock.time()
     tok.start = now
     tok.waited = max(0.0, now - t_call)
     with _PROC_LOCK:
-        _OWN_LAST[tok.participant] = max(_OWN_LAST.get(tok.participant, 0.0), now)
+        _OWN_LAST[tok.participant] = now               # the LAST start (a backward step is clamped at read)
         _STATS["tokens"] += 1
         _STATS["waited_s"] += tok.waited
     return tok
@@ -1061,9 +1088,8 @@ def penalize(seconds, participant, clock=time) -> float:
     p = _f(participant)
     line = (now, f"P {_iso(now)} {now:.3f} pid={os.getpid()} part={p} seconds={s:.3f} until={until:.3f}")
 
-    def fn(rec, bad, now2):
+    def fn(rec, bad, now2, mono):
         # D7: an empty or torn record is "a request was just sent" here too; D2: keep the monotonic copy
-        mono = _mono_of(clock)
         base = _apply_mono(_clamp(rec if rec is not None else _just_sent(now2), now2), now2, mono)
         return _with_mono(base._replace(pen=max(base.pen, until)), now2, mono), [line], None
     try:
@@ -1077,9 +1103,8 @@ def penalize(seconds, participant, clock=time) -> float:
 
 
 def _write_turn(clock, value_fn, what: str) -> bool:
-    def fn(rec, bad, now):
+    def fn(rec, bad, now, mono):
         # D7: an empty or torn record is "a request was just sent" here too; D2: keep the monotonic copy
-        mono = _mono_of(clock)
         base = _apply_mono(_clamp(rec if rec is not None else _just_sent(now), now), now, mono)
         turn = value_fn(now)
         line = (now, f"T {_iso(now)} {now:.3f} pid={os.getpid()} turn={turn:.3f} what={what}")

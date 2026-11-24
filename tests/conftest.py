@@ -334,7 +334,11 @@ def _istat_pacer_zero_wait(request):
     marked `istat_pacer_real` runs the real module (its folder is the tmp one _no_production_paths set). Either
     way the test FAILS at teardown when the pacer slept more than ISTAT_PACER_REAL_SLEEP_MAX_S of REAL time in
     this process, and the module's per-process memory (own last start, fail-safe episode, counters) starts
-    empty and is cleared after. Harmless while nothing imports the pacer: it only sets module attributes."""
+    empty and is cleared after. Harmless while nothing imports the pacer: it only sets module attributes.
+
+    LIMIT (review_A condition 7): the guard counts THIS process only. A child process a test starts (the
+    Windows subprocess tests' tests/_istat_pacer_child.py, which sleep for real by design and are skipped on
+    Linux CI) is not counted here; those tests bound each child's own reported sleep instead."""
     import os
     pacer = _import_istat_pacer()
     if pacer is None:                                    # a tree without the pacer

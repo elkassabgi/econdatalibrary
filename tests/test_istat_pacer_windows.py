@@ -340,6 +340,74 @@ def test_d6_a_late_wake_across_a_backward_step_is_still_late(state, capsys):
     assert tok.mslip is not None and tok.mslip <= pacer.SLIP_MAX_S
 
 
+class StallAfterRead(MonoClock):
+    """A thread stall of `stall_s` right after the k-th clock read (wall or monotonic) of one acquire: both
+    clocks run on while the thread does nothing (review_A condition 1, the oracle's P3 shape)."""
+
+    def __init__(self, stall_at, stall_s=30.0):
+        super().__init__()
+        self.n, self.stall_at, self.stall_s = 0, stall_at, stall_s
+
+    def _tick(self):
+        self.n += 1
+        if self.n == self.stall_at:
+            self.t += self.stall_s
+            self.m += self.stall_s
+
+    def time(self):
+        v = self.t
+        self._tick()
+        return v
+
+    def monotonic(self):
+        v = self.m
+        self._tick()
+        return v
+
+
+def test_condition1_a_stall_after_any_clock_read_never_returns_a_late_token(state):
+    """V2(b), review_A condition 1: wherever a 30-s stall falls among the clock reads of one acquire, the token
+    it returns was inside [slot, slot + SLIP_MAX_S] at its last read, on the wall AND the monotonic clock. A
+    stall between the wall and the monotonic read under the lock made only the monotonic slot late; the wall
+    half of the slip check is what refuses that token. (A stall AFTER the last read is the caller's residual,
+    NOTES item 27: no pacer can see it.)"""
+    _seed(state, next=T0 + 30.0)
+    probe = StallAfterRead(stall_at=0)
+    pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=probe)
+    n_reads = probe.n
+    assert n_reads >= 4
+    for k in range(1, n_reads + 1):
+        pacer._reset_process_state()
+        _seed(state, next=T0 + 30.0)
+        clock = StallAfterRead(stall_at=k)
+        tok = pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=clock)
+        assert tok.start - tok.slot <= pacer.SLIP_MAX_S + 1e-9, (k, n_reads, tok.start - tok.slot)
+        assert tok.mslip is not None and tok.mslip <= pacer.SLIP_MAX_S + 1e-9, (k, tok.mslip)
+        assert tok.start >= tok.slot - 1e-9, (k, "early")
+
+
+def test_condition2_own_last_after_a_backward_wall_step(state):
+    """review_A condition 2: the SAME process after a 1-h backward wall step waits at most the fail-safe gap of
+    true time (its own last start, 1 h 'in the future', is clamped to now), and at least one gap."""
+    _seed(state)
+    clock = MonoClock()
+    pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=clock)
+    m0 = clock.m
+    clock.step(-3600.0)
+    pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=clock)
+    assert pacer.GAP_S - 1e-6 <= clock.m - m0 <= pacer.FAILSAFE_GAP_S + 1e-6, clock.m - m0
+
+
+def test_condition3_a_pen_beyond_the_cap_is_written_back_and_does_not_slide(state):
+    """review_A condition 3: a crc-valid pen far beyond the 48-h cap. A crawler (which takes no slot while it
+    waits) writes the clamped pen back, so its token comes 48 h after it first looked, not never."""
+    _put_record(state, pacer.format_record(pacer.Record(next=T0 - 100.0, pen=9_999_999_999.0, seq=1)))
+    clock = FakeClock()
+    tok = pacer.acquire("crawler", "esploradati.istat.it", "http", "data", deadline_ts=T0 + 72 * 3600.0,
+                        clock=clock)
+    assert tok.slot <= T0 + pacer.PENALTY_MAX_S + 1e-6, (tok.slot - T0) / 3600.0
+
+
 class OtherProcessPenalty(FakeClock):
     """ANOTHER process records a 429 (writes pen into the shared record) while this one waits for its slot.
     This process's own _LOCAL_PEN never hears of it."""
@@ -625,7 +693,21 @@ def _run(cmds, timeout=180):
                 p.kill()
     for p, o in zip(procs, outs):
         assert p.returncode == 0, o
+        _child_real_sleep_ok(o)
     return outs
+
+
+# V7's 2-s real-sleep guard (tests/conftest.py) counts the PARENT process only (review_A condition 7). These
+# children sleep for real BY DESIGN (scaled real-time runs, skipped on Linux CI), so each one reports what it
+# slept inside the pacer and the parent bounds it: a runaway child wait fails the test instead of passing.
+CHILD_REAL_SLEEP_MAX_S = 90.0
+
+
+def _child_real_sleep_ok(out):
+    lines = [ln for ln in (out or "").splitlines() if ln.startswith("REAL_SLEPT ")]
+    assert lines, "a child did not report REAL_SLEPT (it must, see tests/_istat_pacer_child.py)"
+    slept = float(lines[-1].split()[1])
+    assert slept <= CHILD_REAL_SLEEP_MAX_S, f"a child slept {slept:.1f} s inside the pacer (> {CHILD_REAL_SLEEP_MAX_S:g})"
 
 
 def _rows(paths):

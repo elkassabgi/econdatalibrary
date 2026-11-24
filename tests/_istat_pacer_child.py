@@ -133,6 +133,8 @@ def main() -> int:
     if out:
         out.close()
     print("STATS " + json.dumps(pacer.stats()), flush=True)
+    # V7 covers ONE process; the parent test reads this line to bound what a child slept inside the pacer
+    print(f"REAL_SLEPT {pacer._REAL_SLEPT_S:.3f}", flush=True)
     return 0
 
 
