@@ -41,8 +41,10 @@ each flow's max obs_date so a frozen flow can't hide behind the unit-level max.
 
 WINDOW STOP (registry `window_stop: true`, 2026-11-24; plan review R2100, VERDICT_planA). update()
 stops at the pass's run ceiling, or at its per-turn cap (AQUEDUCT_ISTAT_TURN_MAX_MIN): no flow starts
-within margin + max(2 x the longest flow, FLOW_FLOOR_S) of it, and every GET is clamped to end by
-that point minus the margin. The start gate reserves window_admission_reserve_min() = margin 5 (chosen)
+within margin + max(2 x the longest flow, FLOW_FLOOR_S) + the CSV allowance (CSV_S_PER_FLOW per flow
+handed over) of it, and every GET is clamped to end by that point minus the margin. The cap bounds the
+whole TURN: the Result carries its end (turn_end_ts) and run_once bounds the CSV phase by it (phase B
+review B1). The start gate reserves window_admission_reserve_min() = margin 5 (chosen)
 + FLOW_FLOOR_S 15.2 + setup 1 (chosen) = 21.2 min, not the latest real run. Result.window_stop is set
 only by those stops: "none" when no flow was started (a non-turn, a `window_stopped` row), else
 "progress". The every-host-dead break, the budget stop and the end of the list leave it None, so an
@@ -334,7 +336,8 @@ def window_stop_tail_min() -> float:
     the updater calls it): margin floor + FLOW_FLOOR_S = 20.2 by default, through the SAME helper and constant as
     update()'s check. Before any flow is timed no flow starts with less than this left. The flow started just
     before that point ends after it (a few seconds to a few minutes on the measured passes; every GET is clamped
-    to ceiling - margin), and the 2 x longest term is NOT in this figure. Not census's or wid's figure (the margin
+    to ceiling - margin), and the 2 x longest term is NOT in this figure, nor the CSV allowance (CSV_S_PER_FLOW per
+    flow handed over, which tools/measure_ci_lag.py's CsvStep models). Not census's or wid's figure (the margin
     alone): their first check needs only the floor; istat's needs margin + FLOW_FLOOR_S."""
     return (_margin_floor_s() + FLOW_FLOOR_S) / 60.0
 
@@ -351,20 +354,28 @@ def window_stop_piece_min() -> float:
 # predecessors, and the leftover csv retry drain and the `desktop_lane: last` unit lose it. The cap gives some of
 # it back. AQUEDUCT_ISTAT_TURN_MAX_MIN = T: the turn ends as it would end at a run ceiling T minutes after it
 # started - the same check, the same request clamp, the same bookmark save, the same window_stop signal, the same
-# Result. So a capped turn starts no flow within margin + max(2 x longest, FLOW_FLOOR_S) of its own end and holds
-# about T - window_stop_tail_min() minutes of flows. AQUEDUCT_BUDGET_MIN_OVERRIDE does NOT lift it (the override
-# reaches only Deadline).
+# Result. So a capped turn starts no flow within margin + max(2 x longest, FLOW_FLOOR_S) + the CSV allowance (below)
+# of its own end. AQUEDUCT_BUDGET_MIN_OVERRIDE does NOT lift it (the override reaches only Deadline).
+# THE CAP BOUNDS THE TURN, NOT ONLY update() (phase B review B1): the Result carries the cap's end
+# (Result.turn_end_ts) and run_once bounds the CSV phase after the fetch - the fresh derive and the retry drain -
+# by it (orchestrate._UNIT_TURN_END_TS). Before, that phase read only the run ceiling and could add two 45-min
+# budgets (measured on 2026-10-24 and 10-25) to a "60-min" turn.
 #
-# TURN_MAX_MIN_DEFAULT = 60, CHOSEN from the C5 simulation (2026-11-24; F:/work/econ_finish/istat_windowstop/
-# sim/c5_56_c1.0.json and, the same budgets in reverse order, sim/c5_56_rev.json): tools/measure_ci_lag.py
-# UnitBook.run_pass (production order and admission, called) over 56 nightly passes with the measured November
-# budgets, from a copy of state.db as of 2026-11-17, against post-#325 main (istat undeclared, stopping at the
-# ceiling). What held in BOTH orders: the leftover drain had 2,313 / 2,443 min with cap 60 against main's 2,476 /
-# 2,292, but 1,220 / 1,140 with cap 90, 823 / 794 with cap 120 and 286 / 285 with no cap; istat had 55-56 turns and
-# 2,189 / 2,229 min with cap 60 (main: 14-18 turns, 2,597 / 2,896 min); eia finished 36-40 times in every declared
-# arm against main's 28-29. What did NOT hold: the eia longest gap (72-97 h in every arm, by order) and which cap
-# gave eia the most finishes - so they decide nothing. Hard stops: 0-2 in every arm. Model limits: each unit's work
-# is its newest real run, istat never finishes, the drain minutes are an upper bound.
+# TURN_MAX_MIN_DEFAULT = 60, RE-DECIDED from the C6 simulation (2026-11-24: the C5 run again, with the CSV phase
+# modelled; F:/work/econ_finish/istat_windowstop/sim/c6_<order>_<pace>_<density>.json, table c6_table.out): the same
+# replay (tools/measure_ci_lag.py UnitBook.run_pass, production order and admission, called; 56 passes with the
+# measured November budgets, in date order and reversed; the state copy of 2026-11-17), plus CsvStep - istat's fetch
+# flow by flow (15.48 s a flow, measured on 2026-11-22; 24.47 s paced at 4 GETs/min), 5.65 catalogue ids a flow
+# (14,267 / 2,526), the derive at 0.4 ids/s (measured), run_once's budget rule. Base density, in BOTH orders and
+# both paces: a cap-60 turn, CSV phase included, is at most 39.9 min (main post-#325: up to 229.8) and leaves no
+# CSV debt (main: 18,920-39,709 ids queued by the end); the leftover drain gets 2,307-2,439 min against main's
+# 2,606-2,927 (79-94 %), against 1,126-1,209 with cap 90, 774-813 with cap 120 and 338-513 with no cap; eia finishes
+# 37-39 times (main 30-34). The cost: istat walks 4,455-4,536 flows in 56 nights unpaced (one rotation of 2,526 in
+# ~31 nights), 3,410-3,472 paced (~41 nights); cap 90 walks 4,853-6,367. What did NOT decide it: which arm gives eia
+# the most finishes and its longest gap (both flip with the order). Dense sensitivity (20.3 ids a flow, every night,
+# the 183_* region's density): cap 60 still bounds the turn (60.1 min) and queues the least of the declared arms
+# (20,067-34,678 ids against main's 79,404-158,043). Model limits: equal flows and ids, istat never finishes, the
+# leftover drain never drains istat's queue, the other units' work terms are their newest real runs.
 TURN_MAX_MIN_DEFAULT = 60.0
 
 
@@ -396,6 +407,41 @@ def _turn_max_s() -> "float | None":
               f"raised to {floor:g} min", flush=True)
         v = floor
     return v * 60.0
+
+
+# THE CSV ALLOWANCE (2026-11-24, phase B review B1). Every flow update() walks is handed to run_once's CSV step
+# (its cursor, see the seeding in update()), and that step runs inside the turn: bounded by the run ceiling, and
+# since the review also by the per-turn cap (Result.turn_end_ts). A fetch that ran to its stop point left the step
+# only the margin, so most of what it handed over was deferred to csv_retry_queue - which the next turn's fetch
+# then squeezed again (C6, cap 60 with no allowance: 18,297-18,449 ids queued after 56 nights). So the stop check
+# keeps CSV_S_PER_FLOW seconds per flow handed over so far: a flow starts only with at least margin + max(2 x the
+# longest flow, FLOW_FLOOR_S) + (cursors so far) x CSV_S_PER_FLOW left, at the run ceiling and at the cap alike.
+# CSV_S_PER_FLOW_DEFAULT = 14.1 s, MEASURED: the mean catalogue ids a flow hands over, 14,267 catalogued series
+# (docs/runbook/istat.md) / 2,526 flows = 5.65, at the derive's 0.4 ids/s (printed by derive on 2026-11-13, 11-14
+# and 11-16; ALREADY CURRENT ids cost the same). The real rotation is lumpy (183_277 alone carried ~4,800 ids on
+# 2026-10-25), so a dense stretch still defers ids to the queue, and a sparse one leaves the step time for the
+# drain; the mean is what keeps the queue level over a rotation. AQUEDUCT_ISTAT_CSV_S_PER_FLOW: unset or empty ->
+# the default; "0" or "off" -> no allowance; a value that is not a finite number >= 0 -> the default, and it says
+# so. The first flow of a run needs no allowance (nothing handed over yet), so the start gate's reserve is unchanged.
+CSV_S_PER_FLOW_DEFAULT = 14.1
+
+
+def _csv_s_per_flow() -> float:
+    """The CSV allowance in seconds per flow handed over (see CSV_S_PER_FLOW_DEFAULT). Read at each update."""
+    raw = os.environ.get("AQUEDUCT_ISTAT_CSV_S_PER_FLOW")
+    if raw is None or raw.strip() == "":
+        return CSV_S_PER_FLOW_DEFAULT
+    if raw.strip().lower() in ("0", "off", "none"):
+        return 0.0
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        v = float("nan")
+    if not (math.isfinite(v) and v >= 0):
+        print(f"[istat] AQUEDUCT_ISTAT_CSV_S_PER_FLOW={raw!r} is not a finite number >= 0 - using the default "
+              f"({CSV_S_PER_FLOW_DEFAULT:g} s)", flush=True)
+        return CSV_S_PER_FLOW_DEFAULT
+    return v
 
 # Files in the istat dir that are NOT dataflow parquets.
 _SKIP_FILES = {"_sliced_done.json", "_sliced_unrecoverable.json"}
@@ -763,14 +809,16 @@ def update(unit, since) -> Result:
     # THE PER-TURN CAP (see TURN_MAX_MIN_DEFAULT): when it ends the turn before the run ceiling does, it IS this
     # turn's ceiling - the same check, clamp, bookmark, signal and Result below.
     stop_name = "run ceiling"
-    turn_max_s = _turn_max_s()
+    turn_end_ts = None             # the cap's end when the cap ends this turn: Result.turn_end_ts (run_once bounds
+    turn_max_s = _turn_max_s()     # the CSV phase by it too)
     if turn_max_s is not None:
         turn_end = time.time() + turn_max_s
         if end_ts is None or turn_end < end_ts:
-            end_ts, stop_name = turn_end, "per-turn cap"
+            end_ts, stop_name, turn_end_ts = turn_end, "per-turn cap", turn_end
             print(f"[istat] per-turn cap {turn_max_s / 60:g} min (AQUEDUCT_ISTAT_TURN_MAX_MIN; "
-                  f"AQUEDUCT_BUDGET_MIN_OVERRIDE does not lift it): this turn ends as at a run ceiling then",
-                  flush=True)
+                  f"AQUEDUCT_BUDGET_MIN_OVERRIDE does not lift it): this turn, its CSV step included, ends as at a "
+                  f"run ceiling then", flush=True)
+    csv_s = _csv_s_per_flow()      # THE CSV ALLOWANCE, per flow handed over (see CSV_S_PER_FLOW_DEFAULT)
     # Every GET ends by the ceiling minus the margin (_get's clamp), so the margin is left for the hand-over.
     req_end_ts = None if end_ts is None else end_ts - floor_s
     if end_ts is None:
@@ -780,8 +828,8 @@ def update(unit, since) -> Result:
         print(f"[istat] {stop_name} "
               f"{dt.datetime.fromtimestamp(end_ts, dt.timezone.utc):%Y-%m-%dT%H:%M:%S}Z "
               f"({(end_ts - time.time()) / 60:.1f} min left); a flow starts only with at least "
-              f"{floor_s / 60:g} min + max(2 x the longest flow, {FLOW_FLOOR_S / 60:.1f} min) left",
-              flush=True)
+              f"{floor_s / 60:g} min + max(2 x the longest flow, {FLOW_FLOOR_S / 60:.1f} min) + {csv_s:g} s per "
+              f"flow handed over (the CSV step's allowance) left", flush=True)
     longest = 0.0                  # the longest flow this run, start of its checks to its bookmark
     n_merged = 0                   # flows whose rows went through merge_and_write this run
     stopped_at_ceiling = False     # the run-ceiling check ended the loop (Result.window_stop below)
@@ -805,7 +853,8 @@ def update(unit, since) -> Result:
             break
         if end_ts is not None:
             left_s = end_ts - time.time()
-            need_s = floor_s + max(2.0 * longest, FLOW_FLOOR_S)
+            csv_need_s = csv_s * len(cursors)          # the CSV step of the flows handed over so far
+            need_s = floor_s + max(2.0 * longest, FLOW_FLOOR_S) + csv_need_s
             if left_s < need_s:
                 n_left = n_sub - flows_done
                 # The ceiling check runs BEFORE the all-hosts-dead check, so a host that died in the last
@@ -813,7 +862,8 @@ def update(unit, since) -> Result:
                 dead = (f"; hosts dead this run: {', '.join(sorted(_DEAD_HOSTS))}" if _DEAD_HOSTS else "")
                 print(f"[istat] {stop_name}: {left_s / 60:.1f} min left, under the "
                       f"{need_s / 60:.1f}-min need ({floor_s / 60:g} min margin + max(2 x the "
-                      f"longest flow {longest:.0f} s, {FLOW_FLOOR_S / 60:.1f} min)) - "
+                      f"longest flow {longest:.0f} s, {FLOW_FLOOR_S / 60:.1f} min) + {csv_need_s / 60:.1f} min "
+                      f"for the CSV step of {len(cursors)} flow(s)) - "
                       f"{flows_done} flow(s) attempted, {n_merged} merged, {n_left} deferred to "
                       f"a later pass, which RESUMES after {last_attempted or bookmark!r} "
                       f"(deferred, not failed){dead}", flush=True)
@@ -1086,4 +1136,8 @@ def update(unit, since) -> Result:
         # outage), the budget stop, and the end of the list. An outage must stay visible to health and to the
         # outage signal, never read as "the window was short".
         res.window_stop = "none" if (flows_done == 0 and not cursors) else "progress"
+    # THE TURN'S OWN END (phase B review B1): when the per-turn cap ends this turn, run_once bounds the CSV phase
+    # after it - the fresh derive and the retry drain - by the cap's end as by the run ceiling, however the fetch
+    # ended (cap, outage, end of the list). With the run ceiling first, None: the ceiling bounds it already.
+    res.turn_end_ts = turn_end_ts
     return res

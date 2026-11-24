@@ -3,9 +3,11 @@
 WHY. Since PR #325 istat stops at the run ceiling on its own (tests/test_istat_run_ceiling.py), but it was
 UNDECLARED, so on the workstation (no hard per-unit timeout) the start gate reserved its LATEST REAL RUN
 (orchestrate.admission_reserve). A run that ends at the ceiling is as long as the time it was given, so the
-reserve tracks the longest pass and refuses every shorter one (R1838's lock-out). The local pass of 2026-11-23
-22:45 printed: "BUDGET SKIP istat/_all (due): the gate reserves 187 min (its latest real run: ...) and 81 min
-remain in this pass". A declared unit reserves only what it needs to stop cleanly and hand over.
+reserve tracks the longest pass it was given, and a pass with less time left than that skips istat - until the
+60-day decay brings the reserve down to the normal one (90 min for istat's cost). Bounded by the decay, not a
+permanent lock-out (R1838's class). The local pass of 2026-11-23 22:45 printed: "BUDGET SKIP istat/_all (due):
+the gate reserves 187 min (its latest real run: ...) and 81 min remain in this pass". A declared unit reserves
+only what it needs to stop cleanly and hand over.
 
 WHAT THESE TESTS PIN, through the REAL istat.update() (fake session, fake clock; no network, no R2) and, where
 it is about recording, the REAL run_once over the REAL registry entry:
@@ -113,6 +115,9 @@ def rig(tmp_path, monkeypatch):
               "AQUEDUCT_LIVE_ONLY", "GITHUB_ACTIONS", "AQUEDUCT_UNIT_TIMEOUT_MIN"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("AQUEDUCT_BUDGET_MIN_OVERRIDE", "360")      # what run_local_heavy.ps1 sets
+    # these tests pin the margin / floor / cap arithmetic; the CSV allowance is pinned on its own (the CSV
+    # ALLOWANCE section below), with the variable set or unset there
+    monkeypatch.setenv("AQUEDUCT_ISTAT_CSV_S_PER_FLOW", "0")
     monkeypatch.setattr(istat.config, "source_dir", lambda sid: str(out))
     monkeypatch.setattr(istat, "time", clock)
     monkeypatch.setattr(_common, "time", clock)
@@ -326,9 +331,10 @@ class _Strat(Strategy):
         return istat.update(unit, since)
 
 
-def _run_once(rig, monkeypatch, budget_min, probe_s=0.0):
+def _run_once(rig, monkeypatch, budget_min, probe_s=0.0, derive=None, drain=None):
     """One REAL run_once over the REAL istat registry unit, on the rig's fake clock (orchestrate and istat read
-    the same one), with the CSV phase and the drains stubbed. Not a single-source dispatch, so the gate applies."""
+    the same one), with the CSV phase and the drains stubbed (`derive` / `drain`: recorders in their place). Not a
+    single-source dispatch, so the gate applies."""
     unit = _istat_unit()
     store = StateStore(str(rig.out.parent.parent / "state.db"))
     mp = monkeypatch
@@ -342,8 +348,8 @@ def _run_once(rig, monkeypatch, budget_min, probe_s=0.0):
     mp.setattr(orchestrate, "_protected", lambda u: False)
     mp.setattr(orchestrate, "_is_live", lambda u: True)
     mp.setattr(orchestrate, "_served_by_lane", lambda sid: False)
-    mp.setattr(orchestrate, "_derive_changed_csvs", lambda unit, res, blob, st: ([], None, [], {}))
-    mp.setattr(orchestrate, "_drain_csv_retry_queue", lambda *a, **k: None)
+    mp.setattr(orchestrate, "_derive_changed_csvs", derive or (lambda unit, res, blob, st: ([], None, [], {})))
+    mp.setattr(orchestrate, "_drain_csv_retry_queue", drain or (lambda *a, **k: None))
     mp.setattr(orchestrate, "_drain_leftover_retries", lambda *a, **k: None)
     mp.setattr(orchestrate, "get_strategy", lambda name: _Strat(rig.clock, probe_s))
     mp.setattr(fetchers, "get", lambda sid: istat)
@@ -523,3 +529,154 @@ def test_the_shipped_default_caps_a_turn_at_60_min(rig, capsys):
     res, host = rig.run(delay=60.0, ceiling_s=10 * 3600.0)
     assert len(host.starts) == 40 and res.window_stop == "progress", (len(host.starts), res.window_stop)
     assert "[istat] per-turn cap 60 min" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------------ B1: the cap bounds the TURN (phase B review)
+#
+# The CSV step after the fetch was outside the cap: run_once's fresh derive and retry drain read only the run
+# ceiling (two 45-min budgets after istat's fetch on 2026-10-24 and 10-25). Now (a) the Result carries the cap's end
+# (turn_end_ts), which run_once's CSV phase respects (tests/test_unit_turn_end.py pins the orchestrator side), and
+# (b) the fetch keeps a CSV ALLOWANCE per flow it hands over, so the step has time inside the turn.
+# Flows here take 61 s (a 60-s GET, the 1-s RATE pause); 2 x longest = 122 s stays under the 912-s floor, so the
+# need before flow k (k flows handed over) is 300 + 912 + k x S seconds.
+
+def test_the_allowance_stops_the_fetch_earlier_by_its_share_per_flow_handed_over(rig, capsys):
+    """Cap 60, S = 30 s: flow k starts only while 3,600 - 61 k >= 1,212 + 30 k, so k <= 26: 27 flows (40 with no
+    allowance, pinned above). The stop line says what the allowance kept."""
+    rig.mp.setenv("AQUEDUCT_ISTAT_TURN_MAX_MIN", "60")
+    rig.mp.setenv("AQUEDUCT_ISTAT_CSV_S_PER_FLOW", "30")
+    names = rig.flows(60)
+    res, host = rig.run(delay=60.0, ceiling_s=10 * 3600.0)
+    assert list(host.starts) == names[:27], len(host.starts)
+    out = capsys.readouterr().out
+    assert "13.5 min for the CSV step of 27 flow(s)" in out, out[-1500:]
+    assert res.status == "partial" and res.window_stop == "progress", res.error
+    assert sorted(res.series_cursors) == names[:27]
+
+
+@pytest.mark.parametrize("ceiling_s, cap", [(60 * 60.0, "0"), (10 * 3600.0, "60")], ids=["run_ceiling", "cap"])
+def test_the_allowance_holds_at_the_run_ceiling_and_at_the_cap_alike(rig, ceiling_s, cap):
+    """The same 27 flows whether the window end is a 60-min run ceiling (cap off) or the 60-min cap."""
+    rig.mp.setenv("AQUEDUCT_ISTAT_TURN_MAX_MIN", cap)
+    rig.mp.setenv("AQUEDUCT_ISTAT_CSV_S_PER_FLOW", "30")
+    rig.flows(60)
+    _res, host = rig.run(delay=60.0, ceiling_s=ceiling_s)
+    assert len(host.starts) == 27, len(host.starts)
+
+
+class _EmptyIstat(_Istat):
+    """Every GET answers 404 NoRecordsFound (a quiet tail): nothing merges, so a flow is handed over only when its
+    file already holds rows (the cursor seeded from the store). Both hosts are asked: 121 s a flow."""
+
+    def get(self, url, headers=None, timeout=None):
+        self.gets += 1
+        flow = url.split(f"{istat.AGENCY},", 1)[1].split("/", 1)[0]
+        self.starts.setdefault(flow, self.clock.t)
+        self.clock.t += self.delay
+        return _Resp(404, b"NoRecordsFound")
+
+
+@pytest.mark.parametrize("rows, allowance, n", [(False, "30", 20), (False, "0", 20), (True, "0", 20),
+                                                (True, "30", 16)],
+                         ids=["nothing_handed_over", "control_off", "handed_over_off", "handed_over"])
+def test_the_allowance_counts_only_flows_handed_over(rig, rows, allowance, n):
+    """NEGATIVE CONTROL: flows of 121 s that merge nothing. With empty files nothing is handed to the CSV step, so
+    the allowance changes nothing: 3,600 - 121 k >= 1,212 -> 20 flows, as with it off. The same flows WITH stored
+    rows are handed over (their cursors), and S = 30 s then stops the fetch at 3,600 - 121 k >= 1,212 + 30 k ->
+    16 flows."""
+    rig.mp.setenv("AQUEDUCT_ISTAT_TURN_MAX_MIN", "60")
+    rig.mp.setenv("AQUEDUCT_ISTAT_CSV_S_PER_FLOW", allowance)
+    rig.flows(60, rows=rows)
+    host = _EmptyIstat(rig.clock, 60.0)
+    rig.mp.setattr(istat.requests, "Session", lambda: host)
+    rig.mp.setattr(orchestrate, "_RUN_DEADLINE_TS", rig.clock.time() + 10 * 3600.0)
+    res = istat.update(None, None)
+    assert len(host.starts) == n, (len(host.starts), res.error)
+    assert len(res.series_cursors or {}) == (n if rows else 0), res.series_cursors
+
+
+@pytest.mark.parametrize("raw", ["0", "off"])
+def test_control_the_allowance_off(rig, raw):
+    rig.mp.setenv("AQUEDUCT_ISTAT_TURN_MAX_MIN", "60")
+    rig.mp.setenv("AQUEDUCT_ISTAT_CSV_S_PER_FLOW", raw)
+    rig.flows(60)
+    _res, host = rig.run(delay=60.0, ceiling_s=10 * 3600.0)
+    assert len(host.starts) == 40, len(host.starts)
+
+
+def test_the_shipped_defaults_a_60_min_cap_and_14_1_s_per_flow(rig, capsys):
+    """Both variables unset: cap 60, S = 14.1 s (CSV_S_PER_FLOW_DEFAULT: 14,267 catalogued series / 2,526 flows at
+    0.4 ids/s). Flow k starts while 3,600 - 61 k >= 1,212 + 14.1 k: k <= 31, so 32 flows."""
+    assert istat.CSV_S_PER_FLOW_DEFAULT == 14.1
+    assert round(14267 / 2526 / 0.4, 1) == istat.CSV_S_PER_FLOW_DEFAULT       # the measured mean, not a guess
+    rig.mp.delenv("AQUEDUCT_ISTAT_CSV_S_PER_FLOW", raising=False)
+    rig.mp.delenv("AQUEDUCT_ISTAT_TURN_MAX_MIN", raising=False)
+    rig.flows(60)
+    _res, host = rig.run(delay=60.0, ceiling_s=10 * 3600.0)
+    assert len(host.starts) == 32, len(host.starts)
+    assert "+ 14.1 s per flow handed over" in capsys.readouterr().out
+
+
+def test_a_bad_allowance_takes_the_default_and_says_so(rig, capsys):
+    rig.mp.setenv("AQUEDUCT_ISTAT_TURN_MAX_MIN", "60")
+    rig.mp.setenv("AQUEDUCT_ISTAT_CSV_S_PER_FLOW", "-3")
+    rig.flows(60)
+    _res, host = rig.run(delay=60.0, ceiling_s=10 * 3600.0)
+    assert "AQUEDUCT_ISTAT_CSV_S_PER_FLOW='-3' is not a finite number >= 0 - using the default (14.1 s)" in \
+        capsys.readouterr().out
+    assert len(host.starts) == 32, len(host.starts)
+
+
+def test_the_result_carries_the_caps_end_whenever_the_cap_ends_the_turn(rig):
+    """turn_end_ts = the cap's end (start + 60 min) on a capped stop AND on a turn that walks the whole list (an
+    `ok`): run_once bounds the CSV phase by it however the fetch ended."""
+    rig.mp.setenv("AQUEDUCT_ISTAT_TURN_MAX_MIN", "60")
+    rig.flows(60)
+    t0 = rig.clock.time()
+    res, _h = rig.run(delay=60.0, ceiling_s=10 * 3600.0)
+    assert res.turn_end_ts == pytest.approx(t0 + 3600.0), (res.turn_end_ts, t0)
+    for p in rig.out.glob("F*.parquet"):
+        if p.name > "F05.parquet":
+            p.unlink()
+    _common.save_rotation(str(rig.out), "")
+    t1 = rig.clock.time()
+    res2, _h2 = rig.run(delay=60.0, ceiling_s=10 * 3600.0)
+    assert res2.status == "ok" and res2.turn_end_ts == pytest.approx(t1 + 3600.0), (res2.status, res2.turn_end_ts)
+
+
+@pytest.mark.parametrize("ceiling_s, cap", [(30 * 60.0, "60"), (10 * 3600.0, "0")], ids=["ceiling_first", "no_cap"])
+def test_negative_control_no_turn_end_when_the_cap_does_not_end_the_turn(rig, ceiling_s, cap):
+    """The run ceiling comes first (30 min, cap 60), or the cap is off: turn_end_ts None - the ceiling bounds the
+    CSV phase already, as before."""
+    rig.mp.setenv("AQUEDUCT_ISTAT_TURN_MAX_MIN", cap)
+    rig.flows(10)
+    res, _h = rig.run(delay=60.0, ceiling_s=ceiling_s)
+    assert res.turn_end_ts is None, res.turn_end_ts
+
+
+def test_run_once_bounds_istats_csv_phase_by_the_caps_end(rig, monkeypatch):
+    """Through the REAL run_once and the REAL istat.update(): a 240-min pass, cap 60, 60 flows of 61 s -> 40 flows,
+    the fetch returns ~40.7 min in. The CSV phase then gets what is left of the CAP (~19.3 min) for the fresh derive
+    and the retry drain, not min(45, ~199) = 45 as before (the review's 40 + 90 min turn)."""
+    rig.mp.setenv("AQUEDUCT_ISTAT_TURN_MAX_MIN", "60")
+    rig.flows(60)
+    host = _Istat(rig.clock, 60.0, False, "serve")
+    monkeypatch.setattr(istat.requests, "Session", lambda: host)
+    seen = {}
+    t0 = rig.clock.time()
+
+    def _derive(unit, res, blob, st):
+        seen["derive"] = orchestrate._capped_derive_budget()["budget_min"]
+        seen["fetch_end_min"] = (rig.clock.time() - t0) / 60.0
+        return [], None, [], {}
+
+    def _drain(unit, blob, store, *a, **k):
+        seen["drain"] = orchestrate._capped_derive_budget()["budget_min"]
+
+    statuses, _st = _run_once(rig, monkeypatch, 240, derive=_derive, drain=_drain)
+    assert statuses == ["partial"], statuses
+    left_of_cap = 60.0 - seen["fetch_end_min"]
+    assert 15.0 < left_of_cap < 25.0, seen
+    assert seen["derive"] == pytest.approx(left_of_cap, abs=0.05), seen
+    assert seen["drain"] == pytest.approx(left_of_cap, abs=0.05) and seen["derive"] < 45.0, seen
+    assert orchestrate._UNIT_TURN_END_TS is None
