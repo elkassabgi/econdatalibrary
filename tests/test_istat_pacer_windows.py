@@ -8,7 +8,8 @@ a folder under pytest's basetemp, never the machine's E: folder (DESIGN 6.8).
 Scaled time (the children's constants are scaled by gap / 16): gap 0.26 s, closed window 1.0 s (16/60), so
 4 x gap = 1.04 > 1.0 and no closed window may hold more than 4 starts. The slip bound is 0.025 s (+5 ms between
 acquire() returning and the child's own clock read), so 4 x gap - slip > window still holds. The lock wait is
-0.25 s (production 5 s): long against a lock held for milliseconds, short enough to keep the suite quick.
+0.25 s (production 5 s): long against a lock held for milliseconds, short enough to keep the suite quick;
+TB1 and TB2, which slow every locked read by 10 ms, use 1.0 s (BUSY_LW).
 
 The bound is asserted on ACTUAL starts (the child's clock right before its fake send), never on reserved slots
 (V2), and each start must lie in [slot, slot + slip]."""
@@ -33,6 +34,7 @@ pytestmark = [
 ]
 
 GAP, WINDOW, LW, SLIP, EPS = 0.26, 1.0, 0.25, 0.025, 0.005
+BUSY_LW = 1.0                      # TB1/TB2: the lock wait under a slowed read (see TB1's docstring)
 FS = 4 * GAP
 CHILD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_istat_pacer_child.py")
 CHECKER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "check_istat_rate.py")
@@ -653,7 +655,8 @@ def _assert_bound(rows, require_shared=True):
     late = [r for r in rows if not (r["slot"] - 1e-6 <= r["start"] <= r["slot"] + SLIP + EPS)]
     assert not late, f"{len(late)} start(s) outside [slot, slot + {SLIP + EPS}]: {late[:3]}"
     if require_shared:
-        assert {r["mode"] for r in rows} == {"shared"}, sorted({r["mode"] for r in rows})
+        fs = [(r["part"], r["reason"]) for r in rows if r["mode"] != "shared"]
+        assert not fs, f"{len(fs)} token(s) not in shared mode: {fs[:3]}"
     shared = sorted(r["slot"] for r in rows if r["mode"] == "shared")
     close = [(a, b) for a, b in zip(shared, shared[1:]) if b - a < GAP - 1e-6]
     assert not close, f"{len(close)} pair(s) of reserved slots closer than the gap: {close[:3]}"
@@ -673,12 +676,17 @@ def _checker(log_dir, rows, window=WINDOW, extra=()):
 
 
 def test_tb1_two_processes_updater_and_crawler(tmp_path):
-    """TB1 (M12, M13; V2, V3): updater + crawler, 60 tokens each, simulated request time 0-0.5 s, a 10-ms slow
-    read inside the lock. The bound holds on actual starts, every token is shared, and the checker agrees."""
+    """TB1 (M12; V2, V3): updater + crawler, 60 tokens each, simulated request time 0-0.5 s, a 10-ms slow read
+    inside the lock. The bound holds on actual starts, every token is shared, and the checker agrees. The lock
+    wait is 1.0 s here (BUSY_LW): polling a lock is not fair, and with a slowed read and the D3 pre-check a
+    0.25-s wait starved a waiter now and then (a flake, not a breach: the fail-safe is safe). M13 has its own
+    deterministic test (the lock probe)."""
     d = tmp_path / "pacer"
     outs = [tmp_path / "u.jsonl", tmp_path / "c.jsonl"]
-    logs = _run([_cmd(d, outs[0], "updater", 60, work_min=0.0, work_max=0.5, rmw_delay=0.01, seed=1),
-                 _cmd(d, outs[1], "crawler", 60, work_min=0.0, work_max=0.1, rmw_delay=0.01, seed=2)])
+    logs = _run([_cmd(d, outs[0], "updater", 60, work_min=0.0, work_max=0.5, rmw_delay=0.01, seed=1,
+                      lock_wait=BUSY_LW),
+                 _cmd(d, outs[1], "crawler", 60, work_min=0.0, work_max=0.1, rmw_delay=0.01, seed=2,
+                      lock_wait=BUSY_LW)])
     rows = _rows(outs)
     assert len(rows) == 120
     mx = _assert_bound(rows)
@@ -691,12 +699,14 @@ def test_tb1_two_processes_updater_and_crawler(tmp_path):
 
 def test_tb2_three_processes_updater_crawler_tool(tmp_path):
     """TB2 (M12): updater + crawler + tool. The crawler and the tool are both low priority and wake at the SAME
-    retry time (the record's next), so a read-modify-write without the lock gives two tokens at one instant."""
+    retry time (the record's next), so a read-modify-write without the lock gives two tokens at one instant.
+    Lock wait 1.0 s, as TB1."""
     d = tmp_path / "pacer"
     outs = [tmp_path / f"{n}.jsonl" for n in ("u", "c", "t")]
-    logs = _run([_cmd(d, outs[0], "updater", 30, work_min=0.2, work_max=0.6, rmw_delay=0.01, seed=3),
-                 _cmd(d, outs[1], "crawler", 30, rmw_delay=0.01, seed=4),
-                 _cmd(d, outs[2], "tool:catalog", 30, rmw_delay=0.01, seed=5)])
+    logs = _run([_cmd(d, outs[0], "updater", 30, work_min=0.2, work_max=0.6, rmw_delay=0.01, seed=3,
+                      lock_wait=BUSY_LW),
+                 _cmd(d, outs[1], "crawler", 30, rmw_delay=0.01, seed=4, lock_wait=BUSY_LW),
+                 _cmd(d, outs[2], "tool:catalog", 30, rmw_delay=0.01, seed=5, lock_wait=BUSY_LW)])
     rows = _rows(outs)
     assert len(rows) == 90
     _assert_bound(rows)
