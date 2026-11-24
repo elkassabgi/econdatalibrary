@@ -309,7 +309,9 @@ def _just_sent(now) -> Record:
 def _future_limit(now: float, pen: float) -> float:
     """The latest `next` a legitimate reservation can leave, plus FUTURE_SLACK_S. base = max(now, pen). A
     bad-record (or clamped) slot is base + N_MAX x GAP_S, and up to N_MAX FIFO reservers can queue behind it,
-    each one GAP_S later: next <= base + 2 x N_MAX x GAP_S (128 s)."""
+    each one GAP_S later: next <= base + 2 x N_MAX x GAP_S (128 s). LIMIT: this holds for at most N_MAX + 1
+    reservations outstanding at once (each participant process has at most one: acquire() returns before the
+    next call); a 6th outstanding FIFO reservation after a bad record would be clamped onto the first."""
     return max(now, pen) + 2 * N_MAX * GAP_S + FUTURE_SLACK_S
 
 
@@ -396,11 +398,12 @@ _FS: dict = {}                         # fail-safe episode: since, banner_at, re
 _LOGGED_ONCE: set = set()
 _STATS: dict = {}
 _FS_SEQ = [0]
+_LAST_FS_START = [0.0]                 # start of this process's last fail-safe token
 
 # TEST SEAMS. Production never sets them.
 _TEST_OVERRIDE = None                  # V7: tests/conftest.py installs a recording zero-wait pacer here
 _REAL_SLEPT_S = 0.0                    # V7: real seconds this process slept inside the pacer
-_OPENED_PATHS: list = []               # 6.8: every state path this process opened (bounded)
+_OPENED_PATHS: list = []               # 6.8: every state path this process TRIED to open (bounded), refused or not
 _real_perf = time.perf_counter         # bound at import: a test that patches time.* cannot hide real sleep
 _real_sleep = time.sleep
 _real_monotonic = time.monotonic
@@ -423,6 +426,7 @@ def _reset_process_state() -> None:
         _STATS.clear()
         _STATS.update(_new_stats())
         _FS_SEQ[0] = 0
+        _LAST_FS_START[0] = 0.0
         del _OPENED_PATHS[:]
         _REAL_SLEPT_S = 0.0
 
@@ -543,9 +547,9 @@ def _open_and_lock() -> int:
     for at most LOCK_WAIT_MAX_S. A PermissionError from os.open under churn is contention (R2057)."""
     if msvcrt is None:
         raise _PacerFailure("no msvcrt on this platform (fail-safe always)")
+    path = os.path.join(STATE_DIR, LOCK_NAME)
+    _note_path(path)                                   # recorded BEFORE the refusal: the 6.8 guard reads it
     d = _check_state_dir()
-    path = os.path.join(d, LOCK_NAME)
-    _note_path(path)
     try:
         os.makedirs(d, exist_ok=True)
     except OSError as e:
@@ -726,13 +730,26 @@ def _shared_step(participant, host, kind, path_class, flow, deadline_ts, clock, 
     written) or _PacerFailure (nothing committed)."""
     def fn(rec, bad, now):
         own_last = _OWN_LAST.get(participant, 0.0)
-        slot, retry_at, new = next_slot(rec, now, participant, own_last)
+        gap = own_gap_s(participant)
+        if _LAST_FS_START[0]:
+            # After a fail-safe token (which the shared record never saw) the first shared slot is no earlier
+            # than that token + FAILSAFE_GAP_S, so the transition back adds nothing to the 4 + k bound (review).
+            own_last = max(own_last, _LAST_FS_START[0] + FAILSAFE_GAP_S - gap)
+        if _LOCAL_PEN:
+            # A penalty this process knows holds in shared mode too, and survives a torn record; writing it
+            # makes it shared at the next good lock (review finding 1).
+            base = rec if rec is not None else _just_sent(now)
+            if _LOCAL_PEN > base.pen:
+                rec = base._replace(pen=_LOCAL_PEN)
+        slot, retry_at, new = next_slot(rec, now, participant, own_last, own_gap=gap)
         lines = list(pending)
-        if bad is not None and rec is None:
+        if bad is not None:
             _log_once(f"bad-record:{bad}", f"[istat-pacer] record {bad}: read as 'a request was just sent'")
         if slot is None:
             _deadline_check(max(retry_at, now), deadline_ts, "earliest eligible time")   # before any write
-            repair = _clamp(_just_sent(now), now) if bad is not None else None
+            # a bad record is repaired as "just sent" (rec is then None, or the just-sent record with this
+            # process's penalty merged in)
+            repair = _clamp(rec if rec is not None else _just_sent(now), now) if bad is not None else None
             return repair, lines, ("wait", retry_at)
         _deadline_check(slot, deadline_ts, "slot")                                     # before any write
         if participant == "updater" and _TURN_RENEW:
@@ -808,6 +825,7 @@ def _acquire_loop(participant, host, kind, path_class, flow, deadline_ts, clock,
             with _PROC_LOCK:
                 _FS["tokens"] = _FS.get("tokens", 0) + 1
                 _STATS["failsafe"] += 1
+                _LAST_FS_START[0] = max(_LAST_FS_START[0], start)
             return _finish(tok, clock, t_call)
         retried_after_failure = False
         if _FS:
@@ -824,6 +842,14 @@ def _acquire_loop(participant, host, kind, path_class, flow, deadline_ts, clock,
         tok = val                                       # committed: use this slot exactly once
         _sleep_until(clock, tok.slot)
         now = clock.time()
+        if now < _LOCAL_PEN:
+            # A 429 arrived (in this process) after this slot was reserved: do not send into the penalty.
+            with _PROC_LOCK:
+                _STATS["abandoned"] += 1
+            _log(f"[istat-pacer] token {tok.id} abandoned: a penalty until {_iso(_LOCAL_PEN)} began after it "
+                 f"was reserved")
+            pending.append((now, f"X {_iso(now)} tok={tok.id} reason=penalty slip={now - tok.slot:.3f}"))
+            continue
         if now > tok.slot + SLIP_MAX_S:
             # V2(b): woke too late. Do not send; the next lock session logs the X line.
             with _PROC_LOCK:
@@ -853,6 +879,16 @@ def started(token, clock=time) -> float:
     anything runs between acquire() and the send. outcome() logs it with its slip."""
     t = clock.time()
     token.start = t
+    try:
+        late = token.mode in ("shared", "failsafe") and t - float(token.slot) > SLIP_MAX_S
+    except (TypeError, ValueError):
+        late = False
+    if late:
+        # Not enforced here (the caller is about to send); counted, logged, and the receipt fails on it.
+        with _PROC_LOCK:
+            _STATS["late_sends"] = _STATS.get("late_sends", 0) + 1
+        _log(f"[istat-pacer] LATE SEND tok={token.id}: {t - float(token.slot):.3f} s after its slot "
+             f"(> {SLIP_MAX_S:g} s); send at once after acquire()")
     return t
 
 
@@ -913,7 +949,8 @@ def penalize(seconds, participant, clock=time) -> float:
         with _PROC_LOCK:
             _locked_rmw(clock, fn)
     except Exception as e:                             # noqa: BLE001
-        _log(f"[istat-pacer] penalty NOT shared ({e}); it holds in this process only")
+        _log(f"[istat-pacer] penalty NOT shared yet ({e}); it holds in this process, and its next good lock "
+             f"writes it for everyone")
         _unlogged([line])
     return until
 
@@ -1076,7 +1113,9 @@ def retry_after_seconds(value, now=None, log=None) -> float:
         return PENALTY_MIN_S
     s = str(value).strip()
     if _DIGITS.fullmatch(s):
-        secs = float(int(s))
+        # a valid delta-seconds of any length: more than 12 digits is past the cap anyway (and int() of
+        # 4,300+ digits raises on 3.11+, float() of a 400-digit int overflows)
+        secs = float(int(s)) if len(s.lstrip("0")) <= 12 else PENALTY_MAX_S
     else:
         try:
             d = _eu.parsedate_to_datetime(s)

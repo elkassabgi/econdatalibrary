@@ -164,7 +164,8 @@ def test_a_failure_before_the_commit_is_failsafe_and_never_starts_at_once(state,
     monkeypatch.undo()
     monkeypatch.setattr(pacer, "STATE_DIR", str(state))
     nxt = pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=clock)
-    assert nxt.mode == "shared" and nxt.slot >= tok.start + pacer.GAP_S
+    # the first shared slot after a fail-safe token waits the FAIL-SAFE gap (the record never saw that token)
+    assert nxt.mode == "shared" and nxt.slot >= tok.start + pacer.FAILSAFE_GAP_S
     assert "shared mode restored" in capsys.readouterr().out
 
 
@@ -319,7 +320,8 @@ def test_the_production_folder_is_refused_under_pytest_and_never_created(tmp_pat
     tok = pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=clock)
     assert tok.mode == "failsafe" and "refused under pytest" in tok.reason
     assert not (tmp_path / "prod").exists()
-    assert not any(str(fake_prod) in p for p in pacer._OPENED_PATHS)
+    assert any(str(fake_prod) in p for p in pacer._OPENED_PATHS)        # the attempt is recorded for the guard
+    del pacer._OPENED_PATHS[:]          # a stand-in, not the machine's folder: keep the teardown guard quiet
 
 
 def test_a_busy_lock_gives_the_failsafe_after_the_bounded_wait(state, monkeypatch, capsys):
@@ -343,7 +345,58 @@ def test_a_busy_lock_gives_the_failsafe_after_the_bounded_wait(state, monkeypatc
     assert tok.mode == "failsafe" and tok.start >= t_ask + pacer.FAILSAFE_GAP_S
     assert "FAIL-SAFE: lock busy for more than 0.2 s" in out
     nxt = pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=clock)
-    assert nxt.mode == "shared" and nxt.slot >= tok.start + pacer.GAP_S
+    assert nxt.mode == "shared" and nxt.slot >= tok.start + pacer.FAILSAFE_GAP_S
+
+
+def test_a_penalty_that_could_not_be_shared_still_holds_and_is_shared_later(state, monkeypatch, capsys):
+    """Review finding 1: penalize() whose lock attempt fails must still hold this process in SHARED mode, and
+    its next good lock writes the penalty for everyone."""
+    _seed(state)
+    clock = FakeClock()
+    real_open = pacer._open_and_lock
+
+    def busy():
+        raise pacer._PacerFailure("injected: lock busy")
+    monkeypatch.setattr(pacer, "_open_and_lock", busy)
+    until = pacer.penalize(3600, "updater", clock=clock)
+    assert "penalty NOT shared yet" in capsys.readouterr().out
+    monkeypatch.setattr(pacer, "_open_and_lock", real_open)
+    tok = pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=clock)
+    assert tok.mode == "shared" and tok.slot >= until == T0 + 3600.0
+    assert _record(state).pen >= until                               # now shared
+
+
+def test_a_torn_record_keeps_this_process_penalty(state):
+    _seed(state)
+    clock = FakeClock()
+    until = pacer.penalize(7200, "crawler", clock=clock)
+    _put_record(state, b"torn")
+    tok = pacer.acquire("crawler", "esploradati.istat.it", "http", "data", clock=clock)
+    assert tok.start >= until
+
+
+class PenaltyDuringSleep(FakeClock):
+    """A 429 seen by this process while its reserved token sleeps."""
+
+    def __init__(self):
+        super().__init__()
+        self.fired = False
+
+    def sleep(self, s):
+        if not self.fired and s > 1.0:
+            self.fired = True
+            pacer.penalize(600, "updater", clock=self)
+        super().sleep(s)
+
+
+def test_a_penalty_after_the_reservation_abandons_it(state, capsys):
+    """Review finding 4: a slot reserved before a 429 is not sent into the penalty."""
+    _seed(state, next=T0 + 30.0)
+    clock = PenaltyDuringSleep()
+    tok = pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=clock)
+    assert clock.fired and tok.slot >= T0 + 600.0
+    assert pacer.stats()["abandoned"] == 1
+    assert any("reason=penalty" in x for x in _log_lines(state, "X"))
 
 
 # ─────────────────────────────── real subprocesses (real clock, scaled) ───────────────────────────────
@@ -417,6 +470,7 @@ def _assert_bound(rows, require_shared=True):
 def _checker(log_dir, rows, window=WINDOW, extra=()):
     lo, hi = min(r["start"] for r in rows) - 1, max(r["start"] for r in rows) + 1
     logs = [os.path.join(str(log_dir), n) for n in os.listdir(str(log_dir)) if n.startswith("requests_")]
+    assert logs, f"no request log in {log_dir}"   # without --log the checker would read the MACHINE's folder
     cmd = [sys.executable, "-B", CHECKER, "--from", str(lo), "--to", str(hi), "--window", str(window),
            "--slip-max", str(SLIP + EPS)] + [x for p in logs for x in ("--log", p)] + list(extra)
     r = subprocess.run(cmd, capture_output=True, text=True, env=_env(), timeout=120)
@@ -467,7 +521,9 @@ def test_tb3_a_holder_killed_inside_the_lock(tmp_path):
         assert holder.stdout.readline().strip() == "LOCKED"
         survivor = subprocess.Popen(_cmd(d, tmp_path / "s.jsonl", "updater", 6), stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, text=True, env=_env())
-        time.sleep(4.0)
+        deadline = time.time() + 30.0                 # kill once the survivor has sent 2 fail-safe tokens
+        while len(_rows([tmp_path / "s.jsonl"])) < 2 and time.time() < deadline and survivor.poll() is None:
+            time.sleep(0.05)
         holder.kill()
         holder.wait(10)
         out = survivor.communicate(timeout=60)[0]
@@ -484,7 +540,7 @@ def test_tb3_a_holder_killed_inside_the_lock(tmp_path):
     assert all(b["start"] - a["start"] >= FS - EPS for a, b in zip(fs, fs[1:]))
     after = [r for r in rows if r["start"] > fs[-1]["start"]]
     assert after and {r["mode"] for r in after} == {"shared"}
-    assert after[0]["start"] - fs[-1]["start"] >= GAP - EPS
+    assert after[0]["start"] - fs[-1]["start"] >= FS - EPS           # back to shared only after the fail-safe gap
     assert "FAIL-SAFE: lock busy" in out and out.count("FAILSAFE-TOKEN R ") == len(fs)
     _assert_bound(rows, require_shared=False)
 

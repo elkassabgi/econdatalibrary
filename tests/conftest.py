@@ -174,6 +174,21 @@ def _no_cloud_credentials_in_a_test(tmp_path_factory):
         yield
 
 
+def _import_istat_pacer():
+    """jobs/_istat_pacer, or None in a tree WITHOUT it. A tree that has the file but cannot import it fails
+    loudly: silently running every test without the redirect and the stub is the R503 shape (a guard's own
+    failure branch disarming it)."""
+    import importlib.util
+    try:
+        spec = importlib.util.find_spec("jobs._istat_pacer")
+    except (ImportError, ValueError):                    # no `jobs` package on the path at all
+        spec = None
+    if spec is None:
+        return None
+    from jobs import _istat_pacer                        # the file exists: an error here must fail the run
+    return _istat_pacer
+
+
 @pytest.fixture(autouse=True)
 def _no_production_paths(tmp_path_factory):
     """AND NO TEST REACHES THE MACHINE'S OWN SELF-HOSTING PATHS. core.catalog_path.LOCK_PATH is E:\\econ_live\\
@@ -202,10 +217,7 @@ def _no_production_paths(tmp_path_factory):
         from econdl import _catalog as econdl_catalog
     except Exception:                                    # noqa: BLE001 - a test tree without the client
         econdl_catalog = None
-    try:
-        from jobs import _istat_pacer                    # the machine's ISTAT pacer state (DESIGN 6.8)
-    except Exception:                                    # noqa: BLE001 - a tree without the pacer
-        _istat_pacer = None
+    _istat_pacer = _import_istat_pacer()                 # the machine's ISTAT pacer state (DESIGN 6.8)
     own = tmp_path_factory.getbasetemp() / "machine-paths" / uuid.uuid4().hex
     with pytest.MonkeyPatch.context() as mp:
         if _istat_pacer is not None:
@@ -323,19 +335,25 @@ def _istat_pacer_zero_wait(request):
     way the test FAILS at teardown when the pacer slept more than ISTAT_PACER_REAL_SLEEP_MAX_S of REAL time in
     this process, and the module's per-process memory (own last start, fail-safe episode, counters) starts
     empty and is cleared after. Harmless while nothing imports the pacer: it only sets module attributes."""
-    try:
-        from jobs import _istat_pacer as pacer
-    except Exception:                                    # noqa: BLE001 - a tree without the pacer
+    import os
+    pacer = _import_istat_pacer()
+    if pacer is None:                                    # a tree without the pacer
         yield
         return
     real = request.node.get_closest_marker("istat_pacer_real") is not None
+    production = os.path.normcase(os.path.abspath(pacer.PRODUCTION_STATE_DIR))   # read BEFORE any test patch
     pacer._reset_process_state()
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(pacer, "_TEST_OVERRIDE", None if real else ZeroWaitIstatPacer())
         mp.setattr(pacer, "_REAL_SLEPT_S", 0.0)
         yield
         slept = pacer._REAL_SLEPT_S
+        tried = [p for p in pacer._OPENED_PATHS
+                 if os.path.normcase(os.path.abspath(p)).startswith(production + os.sep)]
     pacer._reset_process_state()
+    if tried:
+        pytest.fail(f"{request.node.nodeid} made the ISTAT pacer try the MACHINE's state folder {production} "
+                    f"({tried[:2]}); a test must use its own folder (DESIGN 6.8)", pytrace=False)
     if slept > ISTAT_PACER_REAL_SLEEP_MAX_S:
         pytest.fail(f"{request.node.nodeid} slept {slept:.2f} s of REAL time inside jobs/_istat_pacer "
                     f"(limit {ISTAT_PACER_REAL_SLEEP_MAX_S:g} s): give the pacer a fake clock, or let the "

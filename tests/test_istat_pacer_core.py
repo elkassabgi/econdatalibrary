@@ -428,6 +428,28 @@ def test_v6_retry_after_delta_seconds_and_http_date(value, expect):
     assert lines == []
 
 
+@pytest.mark.parametrize("digits", [13, 400, 5000])
+def test_v6_a_huge_delta_seconds_is_capped_not_an_exception(digits):
+    """A valid delta-seconds of any length: 400 digits overflowed float() and 5,000 raised in int() (review)."""
+    lines = []
+    assert pacer.retry_after_seconds("9" * digits, now=T0, log=lines.append) == 48 * 3600.0
+    assert lines == []
+
+
+@real
+def test_v2_started_counts_and_logs_a_late_send(linux_like, capsys):
+    """started() does not refuse (the caller is about to send) but a late send is counted, logged, and the
+    outcome line carries the slip for the receipt."""
+    clock = FakeClock()
+    tok = pacer.acquire("crawler", "esploradati.istat.it", "http", "data", clock=clock)
+    clock.t += 5.0
+    pacer.started(tok, clock=clock)
+    pacer.outcome(tok, "200", 0.1)
+    out = capsys.readouterr().out
+    assert f"LATE SEND tok={tok.id}: 5.000 s after its slot" in out and "slip=5.000" in out
+    assert pacer.stats()["late_sends"] == 1
+
+
 @pytest.mark.parametrize("value", ["soon", "12.5", "-5", "1e3", "Fri, 99 Foo 2027", "  later  "])
 def test_v6_an_unparseable_retry_after_is_60_s_and_one_log_line(value):
     lines = []
@@ -543,7 +565,43 @@ def test_6_8_no_test_reaches_the_machine_pacer_folder(tmp_path_factory):
     sd = os.path.normcase(os.path.abspath(pacer.STATE_DIR))
     assert not pacer._is_production_dir(pacer.STATE_DIR)
     assert os.path.commonpath([sd, base]) == base, (sd, base)
-    assert not any(pacer._is_production_dir(os.path.dirname(p)) for p in pacer._OPENED_PATHS)
+
+
+_INNER_PROD = '''
+import pytest
+from jobs import _istat_pacer as pacer
+
+class Clock:
+    t = 1800000000.0
+    def time(self):
+        return self.t
+    def sleep(self, s):
+        self.t += s
+
+@pytest.mark.istat_pacer_real
+def test_forgets_the_redirect(monkeypatch):
+    monkeypatch.setattr(pacer, "STATE_DIR", pacer.PRODUCTION_STATE_DIR)
+    if pacer.msvcrt is None:
+        monkeypatch.setattr(pacer, "msvcrt", object())
+    tok = pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=Clock())
+    assert tok.mode == "failsafe" and "refused under pytest" in tok.reason
+'''
+
+
+def test_6_8_a_test_that_points_the_pacer_at_the_machine_folder_fails(pytester, monkeypatch, tmp_path):
+    """The teardown guard can FAIL: an inner test that points STATE_DIR at the production folder is refused by
+    the pacer (nothing created) AND failed by the conftest guard. "Production" is a tmp stand-in for the whole
+    inner run (set before its fixtures read it), so even a broken refusal cannot reach E:."""
+    stand_in = tmp_path / "machine" / "istat_pacer"
+    monkeypatch.setattr(pacer, "PRODUCTION_STATE_DIR", str(stand_in))
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "conftest.py"), encoding="utf-8") as fh:
+        pytester.makeconftest(fh.read())
+    pytester.makepyfile(test_inner=_INNER_PROD)
+    res = pytester.runpytest_inprocess("-p", "no:cacheprovider")
+    res.assert_outcomes(passed=1, errors=1)
+    assert "try the MACHINE's state folder" in res.stdout.str()
+    assert not (tmp_path / "machine").exists()
 
 
 @real

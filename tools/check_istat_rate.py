@@ -12,10 +12,15 @@ not put in the shared log (`[istat-pacer] FAILSAFE-TOKEN <R line>`, `[istat-pace
   * the maximum slip (actual start - slot) and any start outside [slot, slot + SLIP_MAX_S];
   * GETs per flow for the updater (the input DESIGN Q6 assumes); penalties; outcomes.
 
+Every closed window that INTERSECTS the range is counted, including the starts within one window on either side
+of it. Without --log it reads every month from (--from minus 48 h + 133 s: a slot at a penalty end can be
+reserved that long before it starts) to --to.
+
 Exit 0 only when tokens > 0, the overall maximum <= the budget, and every start is inside its slot's validity.
 Exit 1 when a window holds more than the budget, or a start fell outside [slot, slot + SLIP_MAX_S].
-Exit 2 when it cannot measure: no log, an unreadable file, an unparseable line, or 0 tokens in the range.
-Inability to measure is a failure, never a pass.
+Exit 2 when it cannot measure: no log, a NAMED log missing, an unreadable file, an unparseable line, an outcome
+line whose reservation is in no log read, or 0 tokens in the range. Inability to measure is a failure, never a
+pass.
 
 Usage:
   python tools/check_istat_rate.py --from 2026-11-25T03:00:00Z --to 2026-11-25T05:00:00Z
@@ -102,11 +107,18 @@ def iso(t: float) -> str:
         return f"{t:.3f}"
 
 
+def reservation_lookback_s() -> float:
+    """How long before its start a token can be RESERVED: a slot at a 429 penalty end (up to 48 h) behind a
+    full queue. Its R line is in the log of the month it was reserved in."""
+    return pacer.PENALTY_MAX_S + 2 * pacer.N_MAX * pacer.GAP_S + pacer.FUTURE_SLACK_S
+
+
 def default_logs(t_from: float, t_to: float) -> list:
-    """requests_YYYYMM.log for every UTC month in [t_from, t_to]."""
+    """requests_YYYYMM.log for every UTC month in [t_from - the reservation lookback, t_to]: an R line can sit
+    in an earlier month than its start (review)."""
     out = []
-    d = dt.datetime.fromtimestamp(max(t_from, 0), dt.timezone.utc).replace(day=1, hour=0, minute=0, second=0,
-                                                                          microsecond=0)
+    d = dt.datetime.fromtimestamp(max(t_from - reservation_lookback_s(), 0), dt.timezone.utc)
+    d = d.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     end = dt.datetime.fromtimestamp(max(t_to, 0), dt.timezone.utc)
     while d <= end:
         out.append(os.path.join(pacer.STATE_DIR, f"requests_{d:%Y%m}.log"))
@@ -114,8 +126,10 @@ def default_logs(t_from: float, t_to: float) -> list:
     return out
 
 
-def max_in_window(starts, window: float):
-    """(max count of starts in any CLOSED window [t, t + window], the t of the first such window)."""
+def max_in_window(starts, window: float, lo=None, hi=None):
+    """(max count of starts in any CLOSED window [t, t + window], the t of the first such window). With lo/hi,
+    only windows whose start t is in [lo, hi] are considered (the windows that intersect a range); the count
+    still includes every start given, inside the range or not."""
     s = sorted(starts)
     best, best_t, j = 0, None, 0
     for i in range(len(s)):
@@ -123,13 +137,16 @@ def max_in_window(starts, window: float):
             j = i
         while j + 1 < len(s) and s[j + 1] <= s[i] + window:
             j += 1
+        if (lo is not None and s[i] < lo) or (hi is not None and s[i] > hi):
+            continue
         if j - i + 1 > best:
             best, best_t = j - i + 1, s[i]
     return best, best_t
 
 
-def windows_over(starts, window: float, threshold: int):
-    """Start times t of closed windows [t, t + window] (t at a start) holding more than `threshold` starts."""
+def windows_over(starts, window: float, threshold: int, lo=None, hi=None):
+    """Start times t of closed windows [t, t + window] (t at a start, in [lo, hi]) holding more than
+    `threshold` starts."""
     s = sorted(starts)
     out, j = [], 0
     for i in range(len(s)):
@@ -137,6 +154,8 @@ def windows_over(starts, window: float, threshold: int):
             j = i
         while j + 1 < len(s) and s[j + 1] <= s[i] + window:
             j += 1
+        if (lo is not None and s[i] < lo) or (hi is not None and s[i] > hi):
+            continue
         if j - i + 1 > threshold:
             out.append((s[i], j - i + 1))
     return out
@@ -230,17 +249,37 @@ def analyse(recs, t_from, t_to, window, budget, limit, slip_max):
             t["outcome"] = outs[0]["outcome"] if outs else None
         t["slip"] = t["start"] - t["slot"]
         starts.append(t)
+    # An outcome whose reservation is not in the logs read (an R line in an unread month, or a lost line) is
+    # still a send: count it at its start, and the measurement is incomplete (review).
+    orphans = []
+    for tok, outs in outcomes.items():
+        if tok in seen_ids:
+            continue
+        for o in outs:
+            if "start" in o:
+                orphans.append({"tok": tok, "slot": o["start"], "start": o["start"], "slip": 0.0, "part": "?",
+                                "kind": "?", "class": "?", "flow": "-", "mode": "?", "host": "?",
+                                "outcome": o["outcome"], "orphan": True})
+    starts += orphans
     in_range = [t for t in starts if t_from <= t["start"] <= t_to]
+    span = [t for t in starts if t_from - window <= t["start"] <= t_to + window]
     late = [t for t in in_range if t["slip"] > slip_max + 1e-6]
     early = [t for t in in_range if t["slip"] < -1e-3]
     ab_in_range = [t for t in tokens.values() if t.get("abandoned") and t_from <= t["slot"] <= t_to]
-    return in_range, ab_in_range, no_start, late, early, both, dup_conflicts, penalties, turns
+    orphans_in_span = [t for t in orphans if t_from - window <= t["start"] <= t_to + window]
+    return (in_range, span, orphans_in_span, ab_in_range, no_start, late, early, both, dup_conflicts,
+            penalties, turns)
 
 
-def report(in_range, ab, no_start, late, early, both, dups, penalties, turns, t_from, t_to, window, budget,
-           limit, slip_max):
+def report(in_range, span, orphans, ab, no_start, late, early, both, dups, penalties, turns, t_from, t_to,
+           window, budget, limit, slip_max):
     print(f"range {iso(t_from)} .. {iso(t_to)}; closed window {window:g} s; budget {budget}; "
           f"ISTAT's limit {limit}; slip max {slip_max:g} s")
+    print(f"every closed window that INTERSECTS the range is counted, with the starts just outside it "
+          f"({len(span) - len(in_range)} start(s) in the {window:g} s on either side)")
+    if orphans:
+        print(f"  ORPHAN OUTCOMES: {len(orphans)} outcome line(s) with no reservation line in the logs read "
+              f"(counted at their start): {[t['tok'] for t in orphans][:10]}")
     at_slot = sum(1 for t in in_range if t.get("at_slot"))
     print(f"tokens started in range: {len(in_range)}  (abandoned, never sent: {len(ab)}; counted at their "
           f"slot for want of an outcome line with start=: {at_slot})")
@@ -249,14 +288,16 @@ def report(in_range, ab, no_start, late, early, both, dups, penalties, turns, t_
         print(f"  {part:<13} {kind:<4} {cls:<14} {n}")
     fs = [t for t in in_range if t["mode"] == "failsafe"]
     print(f"fail-safe tokens: {len(fs)}")
-    starts = [t["start"] for t in in_range]
-    mx, at = max_in_window(starts, window)
+    starts = [t["start"] for t in span]
+    lo, hi = t_from - window, t_to
+    mx, at = max_in_window(starts, window, lo, hi)
     print(f"MAX starts in any closed {window:g}-s window, overall: {mx}"
           + (f" (window from {iso(at)})" if at is not None else ""))
     for part in sorted({t["part"] for t in in_range}):
-        pm, pat = max_in_window([t["start"] for t in in_range if t["part"] == part], window)
+        pm, pat = max_in_window([t["start"] for t in span if t["part"] == part], window, lo, hi)
         print(f"  {part:<13} max {pm}" + (f" (from {iso(pat)})" if pat is not None else ""))
-    over_b, over_l = windows_over(starts, window, budget), windows_over(starts, window, limit)
+    over_b = windows_over(starts, window, budget, lo, hi)
+    over_l = windows_over(starts, window, limit, lo, hi)
     print(f"windows over the budget ({budget}): {len(over_b)}; over ISTAT's limit ({limit}): {len(over_l)}")
     for t0, n in over_b[:20]:
         print(f"  OVER BUDGET {iso(t0)}: {n} starts")
@@ -311,6 +352,13 @@ def main(argv=None) -> int:
     print(f"check_istat_rate: {len(existing)} of {len(paths)} request log(s) present, "
           f"{len(a.process_log)} process log(s)")
     problems = [f"no such log: {p}" for p in paths if p not in existing]
+    named_missing = [p for p in a.log + a.process_log if not os.path.isfile(p)]
+    if named_missing:
+        # a log the caller NAMED and that is not there is a measurement gap, never "nothing happened" (review)
+        for p in named_missing:
+            print(f"  named log missing: {p}")
+        print(f"CANNOT MEASURE: {len(named_missing)} named log(s) missing (exit 2)")
+        return 2
     if not existing and not a.process_log:
         for p in problems:
             print("  " + p)
@@ -323,10 +371,10 @@ def main(argv=None) -> int:
     if unreadable:
         print(f"CANNOT MEASURE: {len(unreadable)} unreadable or unparseable line(s)/file(s) (exit 2)")
         return 2
-    in_range, ab, no_start, late, early, both, dups, pens, turns = analyse(
+    (in_range, span, orphans, ab, no_start, late, early, both, dups, pens, turns) = analyse(
         recs, t_from, t_to, a.window, a.budget, a.limit, a.slip_max)
-    mx, late, early = report(in_range, ab, no_start, late, early, both, dups, pens, turns, t_from, t_to,
-                             a.window, a.budget, a.limit, a.slip_max)
+    mx, late, early = report(in_range, span, orphans, ab, no_start, late, early, both, dups, pens, turns, t_from,
+                             t_to, a.window, a.budget, a.limit, a.slip_max)
     if not in_range:
         print("CANNOT MEASURE: 0 tokens in the range (exit 2)")
         return 2
@@ -334,6 +382,10 @@ def main(argv=None) -> int:
         print(f"FAIL: max {mx} in a closed {a.window:g}-s window (budget {a.budget}); "
               f"{len(late)} late and {len(early)} early start(s) (exit 1)")
         return 1
+    if orphans:
+        print(f"CANNOT MEASURE: {len(orphans)} outcome line(s) whose reservation is in no log read - read the "
+              f"earlier month's log too (exit 2)")
+        return 2
     print(f"OK: {len(in_range)} token(s), max {mx} in any closed {a.window:g}-s window <= budget {a.budget} (exit 0)")
     return 0
 

@@ -156,6 +156,40 @@ def test_v2_an_abandoned_token_is_not_a_start(tmp_path, capsys):
     assert "abandoned, never sent: 2" in capsys.readouterr().out
 
 
+def test_a_named_log_that_is_missing_cannot_measure(tmp_path, capsys):
+    """Review 2(a): another log (or a process log) existing must not hide a named log that is not there."""
+    ok = _write(tmp_path / "ok.log", [R(T0 + 16 * i, f"11-{i}") for i in range(4)])
+    assert chk.main(RANGE + ["--log", ok, "--log", str(tmp_path / "gone.log")]) == 2
+    guard = _write(tmp_path / "guard.log", ["nothing"])
+    assert chk.main(RANGE + ["--log", str(tmp_path / "gone.log"), "--process-log", guard]) == 2
+    assert chk.main(RANGE + ["--log", ok, "--process-log", str(tmp_path / "gone_guard.log")]) == 2
+    assert "named log missing" in capsys.readouterr().out
+
+
+def test_an_outcome_without_its_reservation_is_counted_and_cannot_measure(tmp_path, capsys):
+    """Review 2(b): the R line sits in the month the slot was RESERVED in. An O line whose R line is in no log
+    read is still a send: it is counted, and the run cannot measure (exit 2) - or fails (exit 1) if it breaks
+    the budget even so."""
+    lines = [R(T0 + 16 * i, f"11-{i}") for i in range(3)] + [O("99-1", T0 + 50, T0 + 50)]
+    assert run(tmp_path, lines) == 2
+    out = capsys.readouterr().out
+    assert "ORPHAN OUTCOMES: 1" in out and "overall: 4" in out
+    lines = [R(T0 + 16 * i, f"11-{i}") for i in range(4)] + [O("99-1", T0 + 55, T0 + 55)]
+    assert run(tmp_path, lines) == 1
+
+
+def test_windows_that_straddle_the_range_start_are_counted(tmp_path, capsys):
+    """Review 2(c): 5 starts in [from - 30, from + 30] break the budget although only 3 are in the range."""
+    t_from = T0 + 1000.0
+    lines = [R(t_from - 30 + 15 * i, f"11-{i}") for i in range(5)]
+    log = _write(tmp_path / "requests_e.log", lines)
+    assert chk.main(["--from", str(t_from), "--to", str(t_from + 3600), "--log", log]) == 1
+    assert "overall: 5" in capsys.readouterr().out
+    t_to = T0 + 1000.0                                  # and at the range end
+    log = _write(tmp_path / "requests_f.log", [R(t_to - 30 + 15 * i, f"12-{i}") for i in range(5)])
+    assert chk.main(["--from", str(t_to - 3600), "--to", str(t_to), "--log", log]) == 1
+
+
 def test_gets_per_flow_penalties_and_outcomes_are_reported(tmp_path, capsys):
     lines = [R(T0, "a", flow="22_289"), R(T0 + 16, "b", flow="22_289"), R(T0 + 32, "c", flow="151_874"),
              R(T0 + 48, "d", part="crawler", flow="-"), O("a", T0, T0, "200"), O("b", T0 + 16, T0 + 16, "404"),
