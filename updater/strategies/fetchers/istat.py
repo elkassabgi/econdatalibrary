@@ -51,7 +51,7 @@ import pyarrow.compute as pc
 import requests
 
 from ... import config, blob, merge
-from ...errors import TransientError
+from ...errors import DefinitiveError, TransientError
 from ..base import Result
 from ._common import (Deadline, Tally, finalize, load_rotation, rotate_after,
                       save_rotation)
@@ -235,9 +235,14 @@ TRANSIENT_HTTP = (429, 500, 502, 503, 504)
 #                 on one host). The 2 x longest term covers those once one such flow has been seen.
 # The check reads neither BUDGET_MIN nor AQUEDUCT_BUDGET_MIN_OVERRIDE. run_once always sets a
 # ceiling (AQUEDUCT_RUN_BUDGET_MIN, default 240 min; CI sets its own), so the check is off only
-# when AQUEDUCT_RUN_BUDGET_MIN <= 0 or update() is called outside run_once. A flow is never cut
-# once started: a flow that overruns its allowance can still reach the hard stop (per-request
-# bounding is a separate change).
+# when AQUEDUCT_RUN_BUDGET_MIN <= 0 or update() is called outside run_once.
+# THE REQUESTS ARE CLAMPED TOO (2026-11-24, C8): every GET's timeout is at most the time left to
+# ceiling - margin, no GET or retry backoff starts after it, and a flow cut there is deferred
+# (_get, _fetch_flow, _WindowEnd). So a flow that overruns its allowance (measured on 2026-11-22: one
+# flow ~1,044 s, above the 912-s floor) can no longer carry its GETs past ceiling - margin. NOT
+# clamped: the flow's store reads before its first GET and its merge after the body (bounded by the
+# flow's size, not the clock), the 10-s TCP probe, the 1-s RATE pause, and a body that trickles in
+# (a requests timeout bounds each read gap, not the whole body).
 MARGIN_FLOOR_MIN_DEFAULT = 5.0
 FLOW_FLOOR_S = (RETRIES * max([TIMEOUT, *HOST_TIMEOUT.values()])
                 + sum(_backoff_s(a) for a in range(1, RETRIES)))
@@ -287,6 +292,12 @@ _NONTRIVIAL_BODY = 256  # a 200 body smaller than this is not a "real" structure
 # --------------------------------------------------------------------------- #
 # HTTP — one request, classified for the date-tail caller
 # --------------------------------------------------------------------------- #
+class _WindowEnd(Exception):
+    """A request (or a retry's backoff) would run past the margin before the run ceiling, so it is not started,
+    or it was cut by its clamped timeout. Raised out of _get / _fetch_flow to update(), which books the flow as
+    DEFERRED (not failed) and stops the run, exactly as the run-ceiling check does (census's _WindowStop)."""
+
+
 class _Resp:
     """Outcome of one GET: kind in {ok, empty, transient, http<code>}."""
     __slots__ = ("content", "kind", "status")
@@ -297,7 +308,7 @@ class _Resp:
         self.status = status
 
 
-def _get(sess, url, accept, timeout=TIMEOUT) -> _Resp:
+def _get(sess, url, accept, timeout=TIMEOUT, req_end_ts=None) -> _Resp:
     """ONE GET (no internal backoff — retry/host-fallback is orchestrated by the
     caller so a dead host doesn't burn the whole budget before the other is tried).
     Returns a classified _Resp:
@@ -308,6 +319,13 @@ def _get(sess, url, accept, timeout=TIMEOUT) -> _Resp:
                     WITHDRAWN from this host's catalog (a structural-break candidate;
                     the caller still tries the OTHER host before concluding it)
       transient  -> timeout / 5xx / 429 / conn drop (retryable on this host)
+
+    THE REQUEST IS CLAMPED TO THE WINDOW (2026-11-24, review of the istat window_stop plan, C8; census's
+    AR-407 O1). `req_end_ts` is the run ceiling minus the margin (update() passes it; None = no ceiling).
+    The timeout is at most the time left to it (never under 1 s), and with no time left the GET is not
+    started. Both raise _WindowEnd. A timeout that the CLAMP caused is not a transport failure, so it does not
+    count towards marking the host dead. A requests timeout bounds the connect and each read GAP, not the
+    whole body: a body that trickles in can still end after req_end_ts (stated residual, as in census).
     """
     hdrs = {**UA, "Accept": accept}
     if timeout == TIMEOUT:                       # caller took the default -> host may raise it
@@ -315,6 +333,12 @@ def _get(sess, url, accept, timeout=TIMEOUT) -> _Resp:
             if url.startswith(_base):
                 timeout = _t
                 break
+    host_timeout = timeout
+    if req_end_ts is not None:
+        left = req_end_ts - time.time()
+        if left <= 0:
+            raise _WindowEnd("request not started: the margin before the run ceiling is reached")
+        timeout = max(1.0, min(float(timeout), left))
     try:
         r = sess.get(url, headers=hdrs, timeout=timeout)
         _note_success(_base_of(url))   # a reply of ANY status proves the transport
@@ -330,7 +354,11 @@ def _get(sess, url, accept, timeout=TIMEOUT) -> _Resp:
         if _b:
             _mark_dead(_b, "is redirect-looping")
         return _Resp(kind="transient")
-    except (requests.Timeout, requests.ConnectionError):
+    except (requests.Timeout, requests.ConnectionError) as e:
+        if isinstance(e, requests.Timeout) and timeout < host_timeout:
+            # The CLAMP cut it, not the host: the window ended. Not counted against the base.
+            raise _WindowEnd(f"request cut at the margin before the run ceiling after {timeout:.0f} s "
+                             f"({type(e).__name__})") from e
         # Transport, not protocol: count it against the base (see _TRANSPORT_FAILS).
         _note_transport_failure(_base_of(url))
         return _Resp(kind="transient")
@@ -365,13 +393,17 @@ def _parse(content):
     return parse_sdmx_csv(content)
 
 
-def _try_host(sess, base, flow_id, start_period):
+def _try_host(sess, base, flow_id, start_period, req_end_ts=None):
     """One host attempt. Returns (keys, dates, vals, kind) with kind in
     {ok, empty, gone, structural, transient}. On a 200-but-0-rows CSV, tries XML once;
     a 200 with a NON-TRIVIAL body that still parses 0 rows is 'structural' (schema
-    break), while a tiny/empty 200 or a 404 NoRecordsFound is 'empty'."""
+    break), while a tiny/empty 200 or a 404 NoRecordsFound is 'empty'.
+
+    Both GETs are clamped to `req_end_ts` (see _get). THE XML PATH: when the CSV body parses 0 rows and no time
+    is left for the XML GET, _WindowEnd propagates and the flow is DEFERRED - it is never booked structural on a
+    CSV body alone, and the next pass starts at it."""
     url = _data_url(base, flow_id, start_period)
-    resp = _get(sess, url, CSV_ACCEPT)
+    resp = _get(sess, url, CSV_ACCEPT, req_end_ts=req_end_ts)
     if resp.kind in ("transient", "empty", "gone"):
         return [], [], [], resp.kind
     # ok
@@ -379,7 +411,7 @@ def _try_host(sess, base, flow_id, start_period):
     big = bool(resp.content) and len(resp.content) >= _NONTRIVIAL_BODY
     if not v:
         # 200 but no parsed rows from CSV — try XML in case the host served an odd body.
-        resp2 = _get(sess, url, XML_ACCEPT)
+        resp2 = _get(sess, url, XML_ACCEPT, req_end_ts=req_end_ts)
         if resp2.kind == "ok":
             k, d, v = _parse(resp2.content)
             big = big or (bool(resp2.content) and len(resp2.content) >= _NONTRIVIAL_BODY)
@@ -392,9 +424,10 @@ def _try_host(sess, base, flow_id, start_period):
     return [], [], [], ("structural" if big else "empty")
 
 
-def _fetch_flow(sess, flow_id, start_period, had_prior: bool):
+def _fetch_flow(sess, flow_id, start_period, had_prior: bool, req_end_ts=None):
     """Fetch a flow's date-tail across hosts. Returns (keys, dates, vals, outcome)
-    where outcome in {ok, empty, transient, structural}.
+    where outcome in {ok, empty, transient, structural}. Raises _WindowEnd when a GET or a retry's
+    backoff would cross `req_end_ts` (the run ceiling minus the margin; None = no ceiling).
 
     Strategy (cheap + honest): one first pass over BOTH hosts with NO backoff — a host
     that 500s/times-out is recorded and we move straight to the next host (so a dead
@@ -429,7 +462,7 @@ def _fetch_flow(sess, flow_id, start_period, had_prior: bool):
         if not _tcp_reachable(base):
             _mark_dead(base, f"is unreachable (TCP connect failed in {_TCP_PROBE_TIMEOUT}s)")
             continue
-        k, d, v, kind = _try_host(sess, base, flow_id, start_period)
+        k, d, v, kind = _try_host(sess, base, flow_id, start_period, req_end_ts=req_end_ts)
         if kind == "ok":
             return k, d, v, "ok"
         if kind == "transient":
@@ -452,10 +485,14 @@ def _fetch_flow(sess, flow_id, start_period, had_prior: bool):
             transient_bases = [b for b in transient_bases if b not in _DEAD_HOSTS]
             if not transient_bases:
                 break
+            if req_end_ts is not None and req_end_ts - time.time() <= _backoff_s(attempt):
+                # no backoff (and so no retry) is started that would reach the margin before the ceiling
+                raise _WindowEnd(f"retry abandoned: the {_backoff_s(attempt):g}-s backoff would reach the margin "
+                                 f"before the run ceiling")
             time.sleep(_backoff_s(attempt))
             still = []
             for base in transient_bases:
-                k, d, v, kind = _try_host(sess, base, flow_id, start_period)
+                k, d, v, kind = _try_host(sess, base, flow_id, start_period, req_end_ts=req_end_ts)
                 if kind == "ok":
                     return k, d, v, "ok"
                 if kind == "transient":
@@ -575,6 +612,8 @@ def update(unit, since) -> Result:
     # THE RUN CEILING (see the constants block). Read HERE, at update time, never at import.
     end_ts = _window_end_ts()
     floor_s = _margin_floor_s()
+    # Every GET ends by the ceiling minus the margin (_get's clamp), so the margin is left for the hand-over.
+    req_end_ts = None if end_ts is None else end_ts - floor_s
     if end_ts is None:
         print(f"[istat] no run ceiling set - the window-end check is off "
               f"(budget {dl.budget_min:g} min only)", flush=True)
@@ -679,7 +718,22 @@ def update(unit, since) -> Result:
             break
 
         sp = _start_period(max_d)
-        keys, dates, vals, outcome = _fetch_flow(sess, flow_id, sp, had_prior=before > 0)
+        try:
+            keys, dates, vals, outcome = _fetch_flow(sess, flow_id, sp, had_prior=before > 0,
+                                                     req_end_ts=req_end_ts)
+        except _WindowEnd as e:
+            # THE FLOW IS CUT AT THE WINDOW END (the request clamp, C8). It was started, so it counts as
+            # attempted, but it is DEFERRED, not failed (R303), and it is NOT named in the bookmark: like a
+            # flow cut by a kill, the next pass starts AT it (re-run, nothing skipped). Nothing of it merged.
+            flows_done += 1
+            n_left = n_sub - flows_done + 1
+            print(f"[istat] run ceiling: {flow_id} cut at the margin before the run ceiling ({e}) - "
+                  f"{flows_done} flow(s) attempted, {n_merged} merged, {n_left} deferred to a later pass, "
+                  f"which RESUMES at {fn!r} (deferred, not failed)", flush=True)
+            tally.deferred_unit(f"run ceiling: {flow_id} cut at the window end ({e}); "
+                                f"{n_left} flow(s) not finished")
+            total += before
+            break
         flows_done += 1
         time.sleep(RATE)
 
@@ -755,10 +809,9 @@ def update(unit, since) -> Result:
         # again, one rotation later, not on the next run. Before this change the next run did walk
         # them again, but only because the bookmark had not moved - the same re-walk that kept
         # the tail of the list from ever being reached (R190). A run that stops at the ceiling or
-        # the budget returns a Result and hands over every flow it walked - unless a structural
-        # flow makes finalize() raise, which loses that run's hand-over as it always has. A list
-        # of flows merged but not handed over (wid's "owed" marks) would close both cases; it is
-        # not built.
+        # the budget returns a Result and hands over every flow it walked - and since 2026-11-24 so
+        # does a run with a structural flow (ROUTE B at the end of update()). A list of flows merged
+        # but not handed over (wid's "owed" marks) would close the kill case; it is not built.
         #
         # CUT BY HOST DEATH (review of PR #325, F1). A flow that ends `transient` with EVERY host
         # in _DEAD_HOSTS was not answered by any host: the last usable host died during it. The
@@ -793,6 +846,26 @@ def update(unit, since) -> Result:
     # The resume point was saved inside the loop, once per attempted flow; there is no second
     # writer here, so nothing can overwrite it with an older value.
 
-    return finalize(tally, total, last_obs, source=SOURCE,
-                    series_cursors=cursors,
-                    empty_window_floor=max(n_sub - 1, 1))
+    try:
+        return finalize(tally, total, last_obs, source=SOURCE,
+                        series_cursors=cursors,
+                        empty_window_floor=max(n_sub - 1, 1))
+    except DefinitiveError as e:
+        # ROUTE B (census.py's shape, hagstofa's AR-407 O7; review of the istat window_stop plan, C1). finalize()
+        # raises on ANY structural flow, and the orchestrator then books `partial` with NO Result: no CSV step,
+        # no series cursors. Measured on the state copy (review VERDICT_planA F3): 9 of 40 istat runs since
+        # 2026-09-01 ended in that raise, and every run that attempted 69 or more flows raised except one where
+        # every flow failed - so what a long run merged almost never reached the served CSVs. Now the run is
+        # `partial` WITH the cursors of every flow it walked, and the note still names every structural flow
+        # (finalize's own text) plus what else the run left (transient, deferred). A structural flow's stored
+        # data is untouched (merge never ran for it). With no cursor to hand over, or for any other raise (the
+        # all-empty floor: nothing merged), the raise stands as before.
+        if not (tally.structural and cursors):
+            raise
+        rest = [x for x in (f"{tally.transient} transient-failed" if tally.transient else "",
+                            f"{tally.deferred} deferred, not reached in this pass" if tally.deferred else "") if x]
+        note = (f"{e}; {len(cursors)} walked flow(s) handed over to the CSV step anyway"
+                + (f"; also {', '.join(rest)}" if rest else ""))
+        print(f"[istat] {note}", flush=True)
+        return Result(status="partial", obs=total, last_obs_date=last_obs, new_vintage="date-tail",
+                      series_cursors=dict(cursors), merged_rows=None, error=note)
