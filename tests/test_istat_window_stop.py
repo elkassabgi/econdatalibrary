@@ -451,6 +451,20 @@ def test_a_flow_cut_by_the_request_clamp_is_progress(rig):
     assert orchestrate._window_stop_no_progress(_istat_unit(), res) is False
 
 
+@pytest.mark.parametrize("rows", [True, False], ids=["stored_rows", "empty_flows"])
+def test_a_flow_cut_by_the_clamp_with_no_real_failure_is_deferred_and_still_progress(rig, rows):
+    """The DEFERRED case of a clamp cut (PR A): F01's CSV GET is a 200 whose body parses 0 rows and takes 950 s, so
+    no time is left for its XML GET (ceiling - margin is 913 s away) - no host attempt failed. The flow is deferred,
+    not transient, and the signal is still "progress": a flow was started (the mutant that drops this case's signal,
+    B0a, survived the first final-head run; A1 had moved the old test of it to the transient case above)."""
+    rig.flows(3, rows=rows)
+    res, host = _run_plan(rig, {"F01": "structural"}, 300 + FLOOR_S + 1.0, delay=950.0)
+    assert res.status == "partial" and "cut at the window end" in res.error, res.error
+    assert "transient-failed" not in res.error and "none failed" in res.error, res.error
+    assert res.window_stop == "progress", res.window_stop
+    assert orchestrate._window_stop_no_progress(_istat_unit(), res) is False
+
+
 # ------------------------------------------------------------------ C7: the per-turn cap
 
 @pytest.mark.parametrize("override", ["360", "100000"])
