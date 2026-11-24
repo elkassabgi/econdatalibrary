@@ -25,6 +25,7 @@ cs and dc never finish - a rotation longer than any pass):
 from __future__ import annotations
 
 import datetime as dt
+import math
 import os
 import sys
 import types
@@ -153,3 +154,150 @@ def test_negative_control_a_book_without_the_ceiling_stop_diverges(tmp_path, mon
     r = h.replay_pass(start, 200)
     assert ("cs", "partial") in [x[1:3] for x in p["rows"]]
     assert ("cs", "killed_external") in [x[1:3] for x in r["rows"]], r["rows"]
+
+
+# ------------------------------------------------------------------ THE CSV PHASE (phase B review B1)
+#
+# The fetchers above return no cursors, so run_once's CSV phase never ran in this differential, and the replay
+# booked a stopped turn as its fetch alone - the gap the review found (a cap-60 istat turn read 39.8 min while in
+# production the CSV step then ran two 45-min budgets). Here both stopping units WALK FLOWS (60 s each) and hand
+# each walked flow over as a cursor; the CSV phase is stubbed one level down, at the derive, so run_once's own
+# sequence runs - _begin_unit_turn_end, the fresh derive (budget from the REAL _capped_derive_budget), the in-loop
+# retry drain (same), the deferral enqueue into the REAL csv_retry_queue - and the replay's CsvStep must match it:
+# every decision, every runs row (dur to 0.1 s, run_once's rounding), every stamp, the minutes used, and the
+# queue each pass leaves. dc is capped at 60 min, hands over its turn end (Result.turn_end_ts), keeps a CSV
+# allowance of 120 s per handed-over flow (istat's rule) and starts with 500 queued ids; cs is the undeclared
+# baseline (no allowance, run ceiling only).
+FLOW_S, IDS_PER_FLOW, IDS_PER_MIN, ALLOC_S = 60.0, 10, 6.0, 120.0
+DC_QUEUED = 500                          # dc's csv_retry_queue at the start, planted on both sides
+
+
+class CsvHarness(CapHarness):
+    def __init__(self, tmp_path, monkeypatch, turn_bound=True, alloc_s=ALLOC_S, book_csv=True,
+                 book_turn_bound=None):
+        super().__init__(tmp_path, monkeypatch)
+        self.turn_bound, self.alloc_s, self.n_turn = turn_bound, alloc_s, 0
+        bt = turn_bound if book_turn_bound is None else book_turn_bound
+        steps = {DC: m.CsvStep(FLOW_S, IDS_PER_FLOW, IDS_PER_MIN, alloc_s=alloc_s, turn_bound=bt),
+                 CS: m.CsvStep(FLOW_S, IDS_PER_FLOW, IDS_PER_MIN)}
+        self.book = m.load_unit_book(self.db_path, self.book_t0, dt.timedelta(0), cadences=dict(self.cad),
+                                     window_stop=set(self.decl), ceiling_stop={CS}, turn_cap={DC: CAP_MIN},
+                                     work_override={CS: NEVER, DC: NEVER},
+                                     csv_step=steps if book_csv else None,
+                                     csv_queue={DC: DC_QUEUED} if book_csv else None)
+        self.store.enqueue_csv_retry(DC, [f"dc0#{i}" for i in range(DC_QUEUED)], "planted")
+        self.left = dict(self.book.remaining)
+        monkeypatch.setattr(orchestrate, "_derive_changed_csvs", self._derive)
+        monkeypatch.setattr(orchestrate, "_drain_csv_retry_queue", self._drain)
+
+    def _spend(self, n_ids):
+        """One derive_and_put over n_ids at IDS_PER_MIN, with the budget the REAL _capped_derive_budget gives now
+        (it reads the run ceiling and the unit's turn end): (ids done, minutes)."""
+        b = orchestrate._capped_derive_budget().get("budget_min")
+        need = n_ids / IDS_PER_MIN
+        if need <= b:
+            self.clock.t += need * 60.0
+            return n_ids
+        self.clock.t += b * 60.0
+        return min(n_ids, int(math.floor(b * IDS_PER_MIN + 1e-9)))
+
+    def _derive(self, unit, res, blob, st):
+        ids = [f"{k}#{j}" for k in sorted(res.series_cursors or {}) for j in range(IDS_PER_FLOW)]
+        if not ids:
+            return [], None, [], {}
+        done = self._spend(len(ids))
+        return [], None, ids[done:], {}
+
+    def _drain(self, unit, blob, store, *a, **k):
+        ids = [r["series_id"] for r in store.csv_retries(unit.source_id)][:orchestrate._CSV_RETRY_CAP]
+        if ids:
+            store.clear_csv_retries(ids[:self._spend(len(ids))])
+
+    def work(self, unit):
+        sid = unit.source_id
+        if sid not in (CS, DC):
+            return P.Harness.work(self, unit)
+        self.ran.append(sid)
+        dl = orchestrate._RUN_DEADLINE_TS
+        cap_end = self.clock.t + CAP_MIN * 60.0 if sid == DC else None
+        end = dl if cap_end is None else min(dl, cap_end)
+        tail = (CS_TAIL if sid == CS else self.mods[DC].window_stop_tail_min()) * 60.0
+        alloc = self.alloc_s if sid == DC else 0.0
+        n = 0
+        while end - self.clock.t >= tail + n * alloc:         # istat's stop check, before every flow
+            self.clock.t += FLOW_S
+            n += 1
+        self.left[sid] -= n * FLOW_S / 60.0
+        self.n_turn += 1
+        cursors = {f"{sid}{self.n_turn}f{i}": "2026-01-01" for i in range(n)}
+        turn_end = cap_end if (self.turn_bound and cap_end is not None and cap_end < dl) else None
+        signal = None if sid == CS else ("progress" if n else "none")
+        return Result(status="partial", obs=0, new_vintage=None, series_cursors=cursors or None,
+                      error="stopped before the run ceiling", window_stop=signal, turn_end_ts=turn_end)
+
+    def queues(self):
+        return ({s: len(self.store.csv_retries(s)) for s in (CS, DC)},
+                {s: self.book.csv_queue.get(s, 0) for s in (CS, DC)})
+
+
+def _norm(rows):
+    return [(ts, s, st, round(d, 1)) for ts, s, st, d in rows]
+
+
+def _csv_passes(tmp_path, monkeypatch, capsys, **kw):
+    h = CsvHarness(tmp_path, monkeypatch, **kw)
+    out = []
+    for budget, gap in PASSES:
+        if gap:
+            h.clock.t += gap
+        start, p = h.production_pass(budget, capsys)
+        r = h.replay_pass(start, budget)
+        out.append((p, r, h.queues()))
+    return h, out
+
+
+def test_the_replay_and_run_once_agree_on_the_csv_phase_of_a_capped_and_a_ceiling_stopping_unit(tmp_path, monkeypatch,
+                                                                                                capsys):
+    h, out = _csv_passes(tmp_path, monkeypatch, capsys)
+    for i, (p, r, (qp, qr)) in enumerate(out, 1):
+        for k in ("ran", "budget_skipped", "not_due", "state", "end_min"):
+            assert p[k] == r[k], f"pass {i} {k}: run_once {p[k]!r}\n replay {r[k]!r}"
+        assert _norm(p["rows"]) == _norm(r["rows"]), f"pass {i} rows: run_once {p['rows']!r}\n replay {r['rows']!r}"
+        assert qp == qr, f"pass {i} csv_retry_queue: run_once {qp} replay {qr}"
+    log = h.book.csv_log
+    # the differential exercised every branch: a fresh derive cut by its budget, a drain, a turn bound by its cap
+    assert any(x["deferred"] > 0 for x in log) and any(x["drained"] > 0 for x in log), log
+    # a capped turn whose retry drain was cut by its TURN END: the whole turn is exactly the cap
+    assert any(x["sid"] == DC and x.get("turn_end") is not None and x["drained"] > 0
+               and abs(x["fetch_min"] + x["fresh_min"] + x["drain_min"] - CAP_MIN) < 1e-6 for x in log), log
+
+
+def test_the_csv_phase_is_in_the_turn_the_pencil(tmp_path, monkeypatch, capsys):
+    """Pass 1 (200 min), pencil, on run_once's side: small 0 -> 5. dc, capped at 60 min (its turn ends at 65):
+    flows of 60 s while (65 - now) >= 20 min + n x 120 s -> 14 flows (5 -> 19), 140 ids = 23.3 min of derive
+    (-> 42.3), then the drain of the 500 planted ids with min(45, 65 - 42.3 = 22.7) min -> 136 ids, to 65.0. The
+    turn is the cap, 60 min (its row 3,600 s); before the turn end it would have been 14 + 23.3 + 45. cs reserves
+    its 150-min run decayed by 10 days of waiting (140 min): 65 + 140 > 200 -> BUDGET SKIP. Queue dc 500 - 136."""
+    h, out = _csv_passes(tmp_path, monkeypatch, capsys)
+    p1, _r1, (q1, _qr) = out[0]
+    rows = {x[1]: x for x in p1["rows"]}
+    assert p1["ran"] == ["small", DC], p1["ran"]
+    assert rows[DC][2:] == ("partial", 3600.0), rows[DC]
+    assert [s for s, _n in p1["budget_skipped"]] == [CS], p1["budget_skipped"]
+    assert p1["end_min"] == 65.0
+    assert q1 == {CS: 0, DC: 364}, q1
+
+
+def test_negative_control_a_replay_without_the_csv_phase_diverges(tmp_path, monkeypatch, capsys):
+    """The replay of PR #327 as reviewed (no CsvStep: a stopped turn is its fetch alone) against run_once with the
+    CSV phase: the rows differ, so this differential can fail."""
+    _h, out = _csv_passes(tmp_path, monkeypatch, capsys, book_csv=False)
+    p1, r1, _q = out[0]
+    assert _norm(p1["rows"]) != _norm(r1["rows"]), (p1["rows"], r1["rows"])
+
+
+def test_negative_control_a_replay_that_ignores_the_turn_end_diverges(tmp_path, monkeypatch, capsys):
+    """run_once bounds dc's CSV phase by its turn end; a replay that bounds it by the run ceiling only books a
+    longer dc turn and a different pass."""
+    _h, out = _csv_passes(tmp_path, monkeypatch, capsys, book_turn_bound=False)
+    assert any(_norm(p["rows"]) != _norm(r["rows"]) for p, r, _q in out), "the turn end was never exercised"
