@@ -9,7 +9,9 @@ Scaled time (the children's constants are scaled by gap / 16): gap 0.26 s, close
 4 x gap = 1.04 > 1.0 and no closed window may hold more than 4 starts. The slip bound is 0.025 s (+5 ms between
 acquire() returning and the child's own clock read), so 4 x gap - slip > window still holds. The lock wait is
 0.25 s (production 5 s): long against a lock held for milliseconds, short enough to keep the suite quick;
-TB1 and TB2, which slow every locked read by 10 ms, use 1.0 s (BUSY_LW).
+TB1 and TB2, which slow every locked read by 10 ms, use 2.0 s (BUSY_LW). TB1/TB2 accept NO fail-safe token
+and at most MAX_FALLBACK designed outcome fallbacks per run, and print both counts in every run (review_A
+ADDENDUM 2, ledger R2166: a wider acceptance let a lock-wait-0 mutant pass them).
 
 The bound is asserted on ACTUAL starts (the child's clock right before its fake send), never on reserved slots
 (V2), and each start must lie in [slot, slot + slip]."""
@@ -35,6 +37,7 @@ pytestmark = [
 
 GAP, WINDOW, LW, SLIP, EPS = 0.26, 1.0, 0.25, 0.025, 0.005
 BUSY_LW = 2.0                      # TB1/TB2: the lock wait under a slowed read (see TB1's docstring)
+MAX_FALLBACK = 2                   # TB1/TB2: at most this many `ERROR outcome not logged` per run (R2166)
 FS = 4 * GAP
 CHILD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_istat_pacer_child.py")
 CHECKER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "check_istat_rate.py")
@@ -147,11 +150,45 @@ class LockProbeClock(FakeClock):
 
 
 def test_the_lock_is_never_held_while_waiting_for_the_slot(state):
-    """M13, deterministically: the lock is held only for the read-modify-write, never across the sleep."""
+    """M13, deterministically: the lock is held only for the read-modify-write, never across the sleep. This
+    is the updater's slot branch (the D3 pre-check wait and the final wait); the low-priority wait branch and
+    the fail-safe wait have their own probes below (review_A ADDENDUM 2, ledger R2166: one probe covers one
+    sleep site, not the class)."""
     _seed(state, next=T0 + 30.0)
     clock = LockProbeClock(os.path.join(str(state), pacer.LOCK_NAME))
     tok = pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=clock)
     assert tok.slot == T0 + 30.0 and clock.probes and all(clock.probes), clock.probes
+
+
+@pytest.mark.parametrize("behind", ["slot", "penalty"])
+def test_the_lock_is_never_held_while_a_low_priority_caller_waits(state, behind):
+    """M13b, deterministically: a crawler never reserves the future, so behind a reserved slot (or a shared
+    penalty) it takes the "wait" branch and sleeps until the retry time. That sleep must be outside the lock:
+    held across it, every other process would time out and go fail-safe, and a fail-safe token cannot see a
+    penalty another process wrote."""
+    if behind == "slot":
+        _seed(state, next=T0 + 30.0)
+    else:
+        _seed(state, pen=T0 + 90.0)
+    clock = LockProbeClock(os.path.join(str(state), pacer.LOCK_NAME))
+    tok = pacer.acquire("crawler", "esploradati.istat.it", "http", "data", clock=clock)
+    assert tok.mode == "shared", (tok.mode, clock.probes)
+    assert tok.slot >= T0 + (30.0 if behind == "slot" else 90.0) - 1e-6, (tok.slot, clock.probes)
+    assert clock.probes and all(clock.probes), clock.probes
+
+
+def test_the_lock_is_never_held_during_the_failsafe_wait(state, monkeypatch):
+    """The third sleep site: after a failure (here a record write that fails) the caller waits FAILSAFE_GAP_S
+    before it tries the lock again (V1). Nothing may hold the lock during that wait."""
+    _seed(state)
+
+    def broken_write(fd, rec):
+        raise OSError("injected: write failed")
+    monkeypatch.setattr(pacer, "_write_record", broken_write)
+    clock = LockProbeClock(os.path.join(str(state), pacer.LOCK_NAME))
+    tok = pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=clock)
+    assert tok.mode == "failsafe" and tok.start >= T0 + pacer.FAILSAFE_GAP_S, (tok.mode, tok.start)
+    assert clock.probes and all(clock.probes), clock.probes
 
 
 def test_log_append_failure_after_the_commit_sends_once_at_the_committed_slot(state, monkeypatch, capsys):
@@ -753,28 +790,45 @@ def _assert_bound(rows, require_shared=True, allowed=4):
     return mx
 
 
-def _assert_busy_bound(rows):
-    """TB1/TB2 under a slowed locked read (re-review condition 3): three processes polling one lock is not
-    fair, so on a loaded machine a waiter can miss even the 2-s scaled wait twice in a row and send a
-    FAIL-SAFE token - the designed, safe fallback. Accepted only when its reason is a busy lock and it obeys
-    V1 (at least FAILSAFE_GAP_S after the same process's previous start); the window bound is then V1(b)'s
-    4 + k, k = the processes that went fail-safe. Slot gaps and slips are as strict as ever (M12 is caught
-    by the gaps)."""
-    fs = [r for r in rows if r["mode"] == "failsafe"]
-    bad = [(r["part"], r["reason"]) for r in fs if "lock busy" not in (r["reason"] or "")]
-    assert not bad, f"fail-safe token(s) for another reason than a busy lock: {bad[:3]}"
-    for r in fs:
-        mine = sorted(x["start"] for x in rows if x["pid"] == r["pid"] and x["start"] < r["start"])
-        assert not mine or r["start"] - mine[-1] >= FS - EPS, ("V1: a fail-safe start too soon", r, mine[-1:])
-    return _assert_bound(rows, require_shared=False, allowed=4 + len({r["pid"] for r in fs}))
+def _fallbacks(logs):
+    """The DESIGNED outcome fallback: an outcome() that cannot take the lock within its wait prints `ERROR
+    outcome not logged` and then the line as `[istat-pacer] UNLOGGED O ...`."""
+    return sum(ln.count("ERROR outcome not logged") for o in logs for ln in o.splitlines())
 
 
 def _unexpected_errors(logs):
-    """Pacer ERROR lines other than the DESIGNED fallback: an outcome() that cannot take the lock within its
-    wait prints `ERROR outcome not logged` and then the line as `[istat-pacer] UNLOGGED O ...` (re-review
-    condition 3: TB2 hit it 1 run in 4 under load). Every other ERROR still fails the test."""
+    """Pacer ERROR lines other than the designed outcome fallback (re-review condition 3: TB2 hit it in 4 of
+    20 runs under load, one line each). Every other ERROR fails the test; the fallback itself is capped at
+    MAX_FALLBACK per run (R2166)."""
     return [ln for o in logs for ln in o.splitlines()
             if "ERROR" in ln and "ERROR outcome not logged" not in ln]
+
+
+def _tb_counts(name, rows, logs, capsys):
+    """Print the fail-safe and fallback counts of a TB1/TB2 run, ALWAYS (review_A ADDENDUM 2): a receipt then
+    shows whether a run used the fallback, not only that it passed. Printed past pytest's capture, before any
+    assertion, so a failing run shows them too."""
+    fs = sum(1 for r in rows if r["mode"] != "shared")
+    fb = _fallbacks(logs)
+    mx = _max_in_window([r["start"] for r in rows]) if rows else 0
+    with capsys.disabled():
+        print(f"\n{name} COUNTS failsafe={fs} fallback={fb} max_in_window={mx} tokens={len(rows)}", flush=True)
+    return fs, fb
+
+
+def _assert_tb_result(rows, logs, tmp_path, d):
+    """TB1/TB2's acceptance (review_A ADDENDUM 2, ledger R2166): EVERY token shared (no fail-safe token is
+    accepted: the 2-s scaled wait gave none in 20 + 4 + 5 runs), at most 4 actual starts in any closed
+    window, slots a gap apart, every start within the slip, at most MAX_FALLBACK outcome fallbacks and no
+    other ERROR, and the checker exits 0."""
+    mx = _assert_bound(rows)                         # require_shared=True, allowed=4
+    fb = _fallbacks(logs)
+    assert fb <= MAX_FALLBACK, f"{fb} `ERROR outcome not logged` fallbacks in one run (allowed {MAX_FALLBACK})"
+    assert not _unexpected_errors(logs), _unexpected_errors(logs)
+    rc, out = _checker(d, rows, extra=_process_logs(tmp_path, logs))
+    assert rc == 0, out
+    assert f"overall: {mx}" in out, out
+    return mx
 
 
 def _process_logs(tmp_path, logs):
@@ -797,12 +851,13 @@ def _checker(log_dir, rows, window=WINDOW, extra=()):
     return r.returncode, r.stdout
 
 
-def test_tb1_two_processes_updater_and_crawler(tmp_path):
-    """TB1 (M12; V2, V3): updater + crawler, 60 tokens each, simulated request time 0-0.5 s, a 10-ms slow read
-    inside the lock. The bound holds on actual starts and the checker agrees. The lock
-    wait is 2.0 s here (BUSY_LW): polling a lock is not fair, and with a slowed read and the D3 pre-check a
-    0.25-s wait starved a waiter now and then (a flake, not a breach: the fail-safe is safe; see _assert_busy_bound). M13 has its own
-    deterministic test (the lock probe)."""
+def test_tb1_two_processes_updater_and_crawler(tmp_path, capsys):
+    """TB1 (M12, LW0; V2, V3): updater + crawler, 60 tokens each, simulated request time 0-0.5 s, a 10-ms slow
+    read inside the lock. The bound holds on actual starts and the checker agrees. The lock wait is 2.0 s
+    here (BUSY_LW): polling a lock is not fair, and with a slowed read and the D3 pre-check a 0.25-s wait
+    starved a waiter now and then. EVERY token must be shared and the outcome fallback is capped
+    (_assert_tb_result), so a pacer that times out on a contended lock (LW0) fails here. M13, M13b and the
+    fail-safe-wait case have their own deterministic tests (the lock probes)."""
     d = tmp_path / "pacer"
     outs = [tmp_path / "u.jsonl", tmp_path / "c.jsonl"]
     logs = _run([_cmd(d, outs[0], "updater", 60, work_min=0.0, work_max=0.5, rmw_delay=0.01, seed=1,
@@ -810,19 +865,16 @@ def test_tb1_two_processes_updater_and_crawler(tmp_path):
                  _cmd(d, outs[1], "crawler", 60, work_min=0.0, work_max=0.1, rmw_delay=0.01, seed=2,
                       lock_wait=BUSY_LW)])
     rows = _rows(outs)
+    _tb_counts("TB1", rows, logs, capsys)
     assert len(rows) == 120
-    mx = _assert_busy_bound(rows)
     assert {r["part"] for r in rows} == {"updater", "crawler"}
-    assert not _unexpected_errors(logs), _unexpected_errors(logs)
-    rc, out = _checker(d, rows, extra=_process_logs(tmp_path, logs))
-    assert rc == (0 if mx <= 4 else 1), out          # the checker fails anything over 4 (V1(b) is 4 + k)
-    assert f"overall: {mx}" in out
+    _assert_tb_result(rows, logs, tmp_path, d)
 
 
-def test_tb2_three_processes_updater_crawler_tool(tmp_path):
-    """TB2 (M12): updater + crawler + tool. The crawler and the tool are both low priority and wake at the SAME
-    retry time (the record's next), so a read-modify-write without the lock gives two tokens at one instant.
-    Lock wait 2.0 s and _assert_busy_bound, as TB1."""
+def test_tb2_three_processes_updater_crawler_tool(tmp_path, capsys):
+    """TB2 (M12, LW0): updater + crawler + tool. The crawler and the tool are both low priority and wake at the
+    SAME retry time (the record's next), so a read-modify-write without the lock gives two tokens at one
+    instant. Lock wait 2.0 s and _assert_tb_result, as TB1."""
     d = tmp_path / "pacer"
     outs = [tmp_path / f"{n}.jsonl" for n in ("u", "c", "t")]
     logs = _run([_cmd(d, outs[0], "updater", 30, work_min=0.2, work_max=0.6, rmw_delay=0.01, seed=3,
@@ -830,11 +882,9 @@ def test_tb2_three_processes_updater_crawler_tool(tmp_path):
                  _cmd(d, outs[1], "crawler", 30, rmw_delay=0.01, seed=4, lock_wait=BUSY_LW),
                  _cmd(d, outs[2], "tool:catalog", 30, rmw_delay=0.01, seed=5, lock_wait=BUSY_LW)])
     rows = _rows(outs)
+    _tb_counts("TB2", rows, logs, capsys)
     assert len(rows) == 90
-    mx = _assert_busy_bound(rows)
-    assert not _unexpected_errors(logs), _unexpected_errors(logs)
-    rc, out = _checker(d, rows, extra=_process_logs(tmp_path, logs))
-    assert rc == (0 if mx <= 4 else 1), out          # the checker fails anything over 4 (V1(b) is 4 + k)
+    _assert_tb_result(rows, logs, tmp_path, d)
 
 
 def test_tb3_a_holder_killed_inside_the_lock(tmp_path):
