@@ -365,12 +365,18 @@ class StallAfterRead(MonoClock):
         return v
 
 
-def test_condition1_a_stall_after_any_clock_read_never_returns_a_late_token(state):
-    """V2(b), review_A condition 1: wherever a 30-s stall falls among the clock reads of one acquire, the token
-    it returns was inside [slot, slot + SLIP_MAX_S] at its last read, on the wall AND the monotonic clock. A
-    stall between the wall and the monotonic read under the lock made only the monotonic slot late; the wall
-    half of the slip check is what refuses that token. (A stall AFTER the last read is the caller's residual,
-    NOTES item 27: no pacer can see it.)"""
+@pytest.mark.parametrize("stall_s", [30.0, 5.0, 1.5])
+def test_condition1_a_stall_after_any_clock_read_never_returns_a_late_token(state, stall_s):
+    """V2(b), review_A condition 1: wherever a stall falls among the clock reads of one acquire, the token it
+    returns was inside [slot, slot + SLIP_MAX_S] at its last read, on the wall AND the monotonic clock, and
+    never EARLY. A stall between the wall and the monotonic read under the lock made only the monotonic slot
+    late; the wall half of the slip check is what refuses that token.
+
+    The stalls SHORTER than the 30-s wait (5 s, and 1.5 s, which is under SLIP_MAX_S) pin the READ ORDER
+    (re-review condition 1, ledger R2153): read monotonic first and wall second, and such a stall puts the
+    monotonic slot BEFORE the wall slot, so the token starts 5 s / 1.5 s early. A 30-s stall cannot show it:
+    it is as long as the wait, so the slot becomes `now`. (A stall AFTER the last read is the caller's
+    residual, NOTES item 27: no pacer can see it.)"""
     _seed(state, next=T0 + 30.0)
     probe = StallAfterRead(stall_at=0)
     pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=probe)
@@ -379,7 +385,7 @@ def test_condition1_a_stall_after_any_clock_read_never_returns_a_late_token(stat
     for k in range(1, n_reads + 1):
         pacer._reset_process_state()
         _seed(state, next=T0 + 30.0)
-        clock = StallAfterRead(stall_at=k)
+        clock = StallAfterRead(stall_at=k, stall_s=stall_s)
         tok = pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=clock)
         assert tok.start - tok.slot <= pacer.SLIP_MAX_S + 1e-9, (k, n_reads, tok.start - tok.slot)
         assert tok.mslip is not None and tok.mslip <= pacer.SLIP_MAX_S + 1e-9, (k, tok.mslip)
@@ -747,6 +753,24 @@ def _assert_bound(rows, require_shared=True):
     return mx
 
 
+def _unexpected_errors(logs):
+    """Pacer ERROR lines other than the DESIGNED fallback: an outcome() that cannot take the lock within its
+    wait prints `ERROR outcome not logged` and then the line as `[istat-pacer] UNLOGGED O ...` (re-review
+    condition 3: TB2 hit it 1 run in 4 under load). Every other ERROR still fails the test."""
+    return [ln for o in logs for ln in o.splitlines()
+            if "ERROR" in ln and "ERROR outcome not logged" not in ln]
+
+
+def _process_logs(tmp_path, logs):
+    """Each child's output as a file, for the checker's --process-log (it counts UNLOGGED lines)."""
+    extra = []
+    for i, o in enumerate(logs):
+        p = tmp_path / f"child_{i}.out"
+        p.write_text(o, encoding="utf-8")
+        extra += ["--process-log", str(p)]
+    return extra
+
+
 def _checker(log_dir, rows, window=WINDOW, extra=()):
     lo, hi = min(r["start"] for r in rows) - 1, max(r["start"] for r in rows) + 1
     logs = [os.path.join(str(log_dir), n) for n in os.listdir(str(log_dir)) if n.startswith("requests_")]
@@ -773,8 +797,8 @@ def test_tb1_two_processes_updater_and_crawler(tmp_path):
     assert len(rows) == 120
     mx = _assert_bound(rows)
     assert {r["part"] for r in rows} == {"updater", "crawler"}
-    assert not any("ERROR" in o for o in logs), logs
-    rc, out = _checker(d, rows)
+    assert not _unexpected_errors(logs), _unexpected_errors(logs)
+    rc, out = _checker(d, rows, extra=_process_logs(tmp_path, logs))
     assert rc == 0, out
     assert f"overall: {mx}" in out
 
@@ -792,8 +816,8 @@ def test_tb2_three_processes_updater_crawler_tool(tmp_path):
     rows = _rows(outs)
     assert len(rows) == 90
     _assert_bound(rows)
-    assert not any("ERROR" in o for o in logs), logs
-    rc, out = _checker(d, rows)
+    assert not _unexpected_errors(logs), _unexpected_errors(logs)
+    rc, out = _checker(d, rows, extra=_process_logs(tmp_path, logs))
     assert rc == 0, out
 
 
