@@ -203,20 +203,28 @@ def test_run_once_hands_the_latest_real_run_to_admission(tmp_path, monkeypatch):
 # ---- the wait RESETS on a recent kill or attempt (review AR-450 round 4) ----------------------------------------
 # The mutant "wait counted from last_success only" survived: a unit with an old success and recent kills (istat's
 # shape) would take the decayed (normal) reserve on every pass and be admitted and killed every pass.
+# The unit is `bea` (local, monthly, UNDECLARED). It was istat until istat declared window_stop (2026-11-23): a
+# declared unit reserves its fetcher's own figure, so it no longer exercises this rule. The shape is planted.
+UNDECLARED_LOCAL = "bea"
+
 
 def _reserve_after(tmp_path, monkeypatch, *, kill_days=None, attempt_days=None):
     from datetime import datetime, timedelta, timezone
+    from updater import registry
     from updater.state import StateStore
+    sid = UNDECLARED_LOCAL
+    (unit,) = [u for u in registry.all_units() if u.source_id == sid]
+    assert unit.config.get("window_stop") is False, f"premise: {sid} must not declare window_stop"
     monkeypatch.setattr(orchestrate, "hard_timeout_available", lambda: False)
     store = StateStore(str(tmp_path / "state.db"))
     now = datetime.now(timezone.utc)
     iso = lambda d: (now - timedelta(days=d)).isoformat(timespec="seconds")   # noqa: E731
-    store.upsert_unit("istat", "_all", strategy="sdmx_delta", status="partial",
+    store.upsert_unit(sid, "_all", strategy=unit.strategy, status="partial",
                       last_success_utc=iso(100), last_attempt_utc=iso(attempt_days if attempt_days else 100))
     turn = kill_days if kill_days is not None else attempt_days
     status = "killed_external" if kill_days is not None else "partial"
     store.db.execute("INSERT INTO runs(ts_utc,source_id,unit_id,status,obs,dur_s,note) VALUES (?,?,?,?,?,?,?)",
-                     (iso(turn), "istat", "_all", status, 0, TFP, "planted"))
+                     (iso(turn), sid, "_all", status, 0, TFP, "planted"))
     store.db.commit()
     real = orchestrate.admission_reserve
     seen = {}
@@ -227,10 +235,10 @@ def _reserve_after(tmp_path, monkeypatch, *, kill_days=None, attempt_days=None):
         raise SystemExit(0)
     monkeypatch.setattr(orchestrate, "admission_reserve", wrap)
     try:
-        orchestrate.run_once(sources=["istat"], dry=True, store=store)
+        orchestrate.run_once(sources=[sid], dry=True, store=store)
     except SystemExit:
         pass
-    return seen["istat"]
+    return seen[sid]
 
 
 def test_a_recent_kill_resets_the_wait_despite_an_old_success(tmp_path, monkeypatch):

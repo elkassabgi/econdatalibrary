@@ -1080,7 +1080,17 @@ class UnitBook:
 
     def __init__(self, cadences: dict, state: dict, runs_rows: list, work: dict, outcome: dict,
                  censored=(), assumed_ok=(), order: str = "production", clocked_extra=(), whole_flow=None,
-                 due_from_attempt: bool = False, window_stop=(), retry_queue=None, desktop_lane=None):
+                 due_from_attempt: bool = False, window_stop=(), retry_queue=None, desktop_lane=None,
+                 ceiling_stop=(), turn_cap=None, work_override=None):
+        """ceiling_stop, turn_cap, work_override (2026-11-24, the istat window_stop plan review's C5 simulation):
+          ceiling_stop  UNDECLARED units whose fetcher nevertheless stops at the run ceiling by its own rule (istat
+                        since PR #325, before its declaration): admitted and ordered as undeclared units (their
+                        latest real run, the decay), stopped as a declared unit stops (its fetcher's tail), and the
+                        stop is a `partial` turn with dur = minutes used, progress or not (no window_stop signal);
+          turn_cap      {source: minutes}: the fetcher's per-turn cap - the turn ends as at a run ceiling that many
+                        minutes after it started (istat's AQUEDUCT_ISTAT_TURN_MAX_MIN), for a clocked unit only;
+          work_override {source: minutes}: the remaining work when the copy cannot give it (istat's rotation is
+                        longer than any pass, and its long runs end `partial`)."""
         from updater.strategies.base import Strategy
         from updater.strategies import base
         from updater import orchestrate as orch
@@ -1104,7 +1114,12 @@ class UnitBook:
                       for s, c in sorted(cadences.items())}
         self.state = {s: dict(state.get(s) or {}) for s in self.units}
         self.work = {s: float(work.get(s, 0.0)) for s in self.units}
+        for s, v in (work_override or {}).items():
+            if s in self.work:
+                self.work[s] = float(v)
         self.remaining = dict(self.work)
+        self.ceiling_stop = frozenset(ceiling_stop or ()) - ws
+        self.turn_cap = {s: float(v) for s, v in (turn_cap or {}).items() if v}
         self.outcome = {s: outcome.get(s, "ok") for s in self.units}
         self.censored, self.assumed_ok = set(censored), set(assumed_ok)
         self.db = sqlite3.connect(":memory:")
@@ -1183,12 +1198,17 @@ class UnitBook:
     def _clocked(self, sid: str, w_on: bool) -> bool:
         # A DECLARED unit stops at the run ceiling in production today (its fetcher reads _RUN_DEADLINE_TS, PRs
         # #205-#211, declared by #215), so it is clocked whether or not W is on. W on adds the plan's candidates.
-        return self._declared(sid) or (w_on and (sid in W_CLOCKED or sid.startswith(W_CLOCKED_PREFIX)
-                                                 or sid in self.clocked_extra))
+        # A ceiling_stop unit's fetcher stops at the ceiling too (undeclared: istat after #325, before declaring).
+        return self._declared(sid) or sid in self.ceiling_stop or (
+            w_on and (sid in W_CLOCKED or sid.startswith(W_CLOCKED_PREFIX) or sid in self.clocked_extra))
+
+    def _stops_by_fetcher(self, sid: str) -> bool:
+        """Stops by ITS FETCHER's rule (_declared_stop): a declared unit or a ceiling_stop one."""
+        return self._declared(sid) or sid in self.ceiling_stop
 
     def _resumable(self, sid: str) -> bool:
-        return (self._declared(sid) or sid in W_CLOCKED or sid.startswith(W_CLOCKED_PREFIX)
-                or sid in self.clocked_extra)
+        return (self._declared(sid) or sid in self.ceiling_stop or sid in W_CLOCKED
+                or sid.startswith(W_CLOCKED_PREFIX) or sid in self.clocked_extra)
 
     def _kept(self, sid: str, minutes: float) -> float:
         """Progress a stop keeps out of `minutes` of update window: all of it, or for a whole-flow source only the
@@ -1306,6 +1326,8 @@ class UnitBook:
             R = self.remaining[sid]
             clocked = self._clocked(sid, w_on)
             limit = budget_min - e if clocked else stop_min - e
+            if clocked and sid in self.turn_cap:
+                limit = min(limit, self.turn_cap[sid])     # the per-turn cap is this turn's own ceiling
             if R <= limit:
                 e += R
                 t_end = start + dt.timedelta(minutes=e)
@@ -1325,7 +1347,7 @@ class UnitBook:
                 continue
             t_end = start + dt.timedelta(minutes=e + limit)
             if clocked:
-                if self._declared(sid):
+                if self._stops_by_fetcher(sid):
                     # the FETCHER's own stop rule (_declared_stop): it returns at its stop point, before the
                     # ceiling, and the pass goes on with the next unit
                     used, kept = self._declared_stop(sid, limit)
@@ -1340,8 +1362,10 @@ class UnitBook:
                     drain_block.discard((sid, u.key))      # nothing touched its store: a drain candidate (#215)
                     drain_ok.setdefault(sid, []).append(u)
                 else:
-                    # a declared unit's progressing stop is its fetcher's `partial`; an undeclared one times out
-                    status = "partial" if self._declared(sid) else "transient_fail"
+                    # a declared unit's progressing stop is its fetcher's `partial`, and so is EVERY stop of a
+                    # ceiling_stop unit (no window_stop signal: run_once records the partial); an undeclared
+                    # clocked one (W on) times out
+                    status = "partial" if self._stops_by_fetcher(sid) else "transient_fail"
                     self.state[sid]["last_attempt_utc"], self.state[sid]["status"] = _iso(t_end), status
                     self._row(t_end, sid, status, used)
                     ran.append((sid, used, "stopped"))

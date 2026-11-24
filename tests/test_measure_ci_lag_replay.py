@@ -917,11 +917,13 @@ def _cli_inputs(tmp_path):
                 "attempt_count INTEGER, last_error TEXT)")
     con.execute("CREATE TABLE runs(id INTEGER PRIMARY KEY AUTOINCREMENT, ts_utc TEXT, source_id TEXT, unit_id TEXT, "
                 "status TEXT, obs INTEGER, dur_s REAL, note TEXT)")
+    # oecd: UNDECLARED, an old success and a partial since. It was istat until istat declared window_stop
+    # (2026-11-24): a declared unit is ordered by declared_last_turn_utc, which reads the attempt under any clock.
     con.execute("INSERT INTO unit_state(source_id, unit_id, last_success_utc, last_attempt_utc, status) VALUES "
-                "('istat', '_all', '2026-07-14T00:00:00+00:00', '2026-10-25T23:00:00+00:00', 'partial')")
+                "('oecd', '_all', '2026-07-14T00:00:00+00:00', '2026-10-25T23:00:00+00:00', 'partial')")
     con.execute("INSERT INTO runs(ts_utc, source_id, unit_id, status, dur_s) VALUES "
-                "('2026-10-25T23:00:00+00:00', 'istat', '_all', 'partial', 3000.0)")
-    # bea: ok, success 09-01 - between istat's success and its attempt, in the same cost band (50 min)
+                "('2026-10-25T23:00:00+00:00', 'oecd', '_all', 'partial', 3000.0)")
+    # bea: ok, success 09-01 - between oecd's success and its attempt, in the same cost band (50 min)
     con.execute("INSERT INTO unit_state(source_id, unit_id, last_success_utc, last_attempt_utc, status) VALUES "
                 "('bea', '_all', '2026-09-01T00:00:00+00:00', '2026-09-01T00:00:00+00:00', 'ok')")
     con.execute("INSERT INTO runs(ts_utc, source_id, unit_id, status, dur_s) VALUES "
@@ -970,11 +972,11 @@ def test_cmd_replay61_runs_each_extension_end_to_end(tmp_path, monkeypatch, caps
                          tmp_path / "k.json")
     assert "CONDITIONAL on the bound 'no single oecd flow takes longer than 60 min' (given by --flow-bound)" in out
     assert all("clk+=oecd(60)" in r for r in rows) and js[0]["cfg"]["whole_flow"] == [["oecd", 60.0]]
-    # --due-from-attempt: istat (partial since 10-25, success 07-14) leaves the owed set at the start
+    # --due-from-attempt: oecd (partial since 10-25, success 07-14) leaves the owed set at the start
     out, rows, js = _cli(monkeypatch, capsys, base, ["--due-from-attempt"], tmp_path / "a.json")
     _o, _r, js0 = _cli(monkeypatch, capsys, base, [], tmp_path / "d2.json")
     assert all("due=att" in r for r in rows)
-    assert js0[0]["owed_start"] - js[0]["owed_start"] == pytest.approx(50.0)     # istat's 3,000-s turn
+    assert js0[0]["owed_start"] - js[0]["owed_start"] == pytest.approx(50.0)     # oecd's 3,000-s turn
 
 
 def test_cli_inputs_carry_the_cut_and_simulate_carries_the_order(tmp_path, monkeypatch):
@@ -992,13 +994,13 @@ def test_cli_inputs_carry_the_cut_and_simulate_carries_the_order(tmp_path, monke
     assert {r.created for r in cut.dropped} == late                          # the 18:00Z runs at their real lags
     assert not any(r.created in late for r in cut.runs)
     assert T("2026-10-20T17:49") in {r.created for r in cut.runs if r.wf == DAILY}   # 06:00Z's late run stays
-    # simulate() hands the order to the unit book: istat (success 07-14, attempt 10-25) and bea (success 09-01),
+    # simulate() hands the order to the unit book: oecd (success 07-14, attempt 10-25) and bea (success 09-01),
     # both in band 2, swap places in the first pass
     def first_pass(order):
         cfg = m.ReplayConfig(policy="today", min_hours=6.0, backoff_h=8.0, order=order, pull_min=2.0, push_min=7.0)
         rp, _o, _d = m.simulate(cfg, inp)
         ran = [x[0] for x in rp.passes[0]["ran"]]
-        return ran.index("istat") < ran.index("bea")
+        return ran.index("oecd") < ran.index("bea")
     # Since 2026-11-06 production IS B2, so both orders put bea first ...
     assert not first_pass("production") and not first_pass("attempt")
     # ... and to show simulate() still carries `order`, the production arm runs the PRE-B2 clock (success first),

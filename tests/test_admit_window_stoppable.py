@@ -34,7 +34,9 @@ DECLARED = {"census": 17.0, "wid": 20.0, "imf_imts_direct": 55.0,
             "unctad_nonplasticsubststradebypartner": 75.0,
             # 2026-11-06 (review AR-450): on _unctad's windowed update, the same 75-min reserve
             "unctad_creativegoodsvalue": 75.0, "unctad_criticalmineralstradebypart": 75.0,
-            "unctad_gstptradematrix": 75.0, "unctad_tradeservcatbypartner": 75.0}
+            "unctad_gstptradematrix": 75.0, "unctad_tradeservcatbypartner": 75.0,
+            # 2026-11-24: istat stops at the run ceiling since PR #325; margin 5 + one flow (912 s) + 1 min of setup
+            "istat": 21.2}
 UNDECLARED_GIANT = "oecd"                      # resumable, but does not stop at the window end
 
 
@@ -47,7 +49,7 @@ def _posix_platform(monkeypatch):
 FETCHER_DIR = os.path.join(os.path.dirname(orchestrate.__file__), "strategies", "fetchers")
 ENV = ("AQUEDUCT_CENSUS_MARGIN_MIN", "AQUEDUCT_WID_MARGIN_MIN", "AQUEDUCT_IMTS_MARGIN_MIN",
        "AQUEDUCT_IMTS_MERGE_RESERVE_MIN", "AQUEDUCT_UNCTAD_MARGIN_MIN", "AQUEDUCT_UNCTAD_ASSEMBLY_RESERVE_MIN",
-       "CENSUS_TIMEOUT_LARGE")
+       "CENSUS_TIMEOUT_LARGE", "AQUEDUCT_ISTAT_MARGIN_MIN")
 
 
 @pytest.fixture(autouse=True)
@@ -99,7 +101,7 @@ def test_a_declared_unit_whose_own_reserve_does_not_fit_is_skipped_and_the_line_
     assert "unctad_nonplasticsubststradebypartner" not in admitted          # 75 > 60
     need, basis = skips["unctad_nonplasticsubststradebypartner"]
     assert need == 75.0 and basis.startswith("declared by its window-stopping fetcher"), out[-3000:]
-    assert sorted(admitted) == ["census", "imf_imts_direct", "wid"]
+    assert sorted(admitted) == ["census", "imf_imts_direct", "istat", "wid"]
     assert skips[UNDECLARED_GIANT][1] == "worst case, not an estimate"
 
 
@@ -132,7 +134,7 @@ def test_a_disabled_unit_timeout_keeps_reserving_nothing_for_everyone(tmp_path, 
 def test_never_run_declared_unit_uses_its_declared_reserve(tmp_path, monkeypatch, capsys):
     """est None: today's rule reserves the 90-min worst case; a declared unit's own figure wins."""
     admitted, skips, out = _run(tmp_path, monkeypatch, capsys, budget=30, sources=ALL, cost=False)
-    assert sorted(admitted) == ["census", "wid"], out[-3000:]
+    assert sorted(admitted) == ["census", "istat", "wid"], out[-3000:]
     assert skips[UNDECLARED_GIANT] == (90.0, "worst case, not an estimate")
     assert skips["imf_imts_direct"][0] == 55.0
 
@@ -389,3 +391,19 @@ def test_unctad_stop_check_and_reserve_move_together(tmp_path, monkeypatch):
         np_mod.update(None, None)
     assert (np_mod.window_admission_reserve_min()
             == (got["floor_s"] + got["reserve_s"]) / 60 + _unctad.ADMISSION_NETWORK_MIN == 54.0)
+
+
+def test_istat_stop_check_and_reserve_move_together(monkeypatch):
+    """C3 of the istat plan review: the gate's reserve and the fetcher's stop check read the SAME helper. update()
+    computes its floor through _margin_floor_s(); the reserve is that floor + FLOW_FLOOR_S + the setup allowance."""
+    from updater.strategies.fetchers import istat
+    assert "floor_s = _margin_floor_s()" in inspect.getsource(istat.update)
+    extra = istat.FLOW_FLOOR_S / 60 + istat.ADMISSION_SETUP_MIN
+    monkeypatch.setenv("AQUEDUCT_ISTAT_MARGIN_MIN", "12.5")
+    assert istat._margin_floor_s() == 750.0
+    assert istat.window_admission_reserve_min() == pytest.approx(12.5 + extra)
+    assert istat.window_stop_tail_min() == pytest.approx(12.5 + istat.FLOW_FLOOR_S / 60)
+    for bad in ("bad", "nan", "-1"):
+        monkeypatch.setenv("AQUEDUCT_ISTAT_MARGIN_MIN", bad)
+        assert istat.window_admission_reserve_min() == pytest.approx(5.0 + extra)
+    monkeypatch.delenv("AQUEDUCT_ISTAT_MARGIN_MIN")

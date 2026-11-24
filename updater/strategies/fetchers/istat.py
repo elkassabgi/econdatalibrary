@@ -38,6 +38,16 @@ structural break raises DefinitiveError; existing data is always preserved by me
 NOTE: this is a LARGE source (~755 flows). The year date-tail keeps each request tiny
 (only new periods), but the orchestrator run processes ALL flows. series_cursors carry
 each flow's max obs_date so a frozen flow can't hide behind the unit-level max.
+
+WINDOW STOP (registry `window_stop: true`, 2026-11-24; plan review R2100, VERDICT_planA). update()
+stops at the pass's run ceiling, or at its per-turn cap (AQUEDUCT_ISTAT_TURN_MAX_MIN): no flow starts
+within margin + max(2 x the longest flow, FLOW_FLOOR_S) of it, and every GET is clamped to end by
+that point minus the margin. The start gate reserves window_admission_reserve_min() = margin 5 (chosen)
++ FLOW_FLOOR_S 15.2 + setup 1 (chosen) = 21.2 min, not the latest real run. Result.window_stop is set
+only by those stops: "none" when no flow was started (a non-turn, a `window_stopped` row), else
+"progress". The every-host-dead break, the budget stop and the end of the list leave it None, so an
+ISTAT outage stays a recorded `partial` turn. A structural flow no longer loses the run's hand-over:
+the run returns `partial` WITH the cursors of every walked flow (ROUTE B, as census).
 """
 from __future__ import annotations
 import datetime as dt
@@ -280,6 +290,109 @@ def _window_end_ts():
     if isinstance(ts, bool) or not isinstance(ts, (int, float)) or not math.isfinite(ts):
         return None
     return float(ts)
+
+
+# THE DECLARATION (registry `window_stop: true`, 2026-11-24; the census / wid pattern; plan review R2100,
+# VERDICT_planA). Undeclared, istat on the workstation (no hard per-unit timeout) reserves at the start gate at
+# least its LATEST REAL RUN, falling to the normal reserve over 60 days of waiting (orchestrate.admission_reserve,
+# RESERVE_DECAY_DAYS). A run that ends at the run ceiling (the check above) is as long as the time it was given,
+# so that reserve tracks the longest pass it was given. It is bounded by the 60-day decay, not a permanent
+# lock-out, but its floor is the normal reserve (90 min for istat's cost), so with less than 90 min left at its
+# position an undeclared istat is never admitted. The measured instances are 2026-11-18 (155 min, from the
+# 9,385-s run of 11-17) and 2026-11-23 (187 min, from the 11-22 kill, killed_external 11,306 s, on code from
+# BEFORE the run-ceiling check). A declared unit reserves only what it needs to START A FLOW, STOP CLEANLY AND
+# HAND OVER, which these functions state from the SAME helper and constant as the check in update(), so the gate
+# and the fetcher cannot disagree.
+#
+# ADMISSION_SETUP_MIN: the time between the start gate and update()'s first check (the lease, the store
+# listing and the bookmark read; detect_change is free for sdmx_delta). CHOSEN, not measured: no log line times
+# it. Without it a unit admitted at exactly margin + floor could only stop at once ("none", not a turn).
+ADMISSION_SETUP_MIN = 1.0
+
+
+def window_admission_reserve_min() -> float:
+    """THE START GATE'S RESERVE for istat, in minutes (registry `window_stop: true`; read by
+    orchestrate._window_stop_reserve): window_stop_tail_min() + ADMISSION_SETUP_MIN = 5 + 15.2 + 1 = 21.2 by
+    default.
+
+    The tail (margin + FLOW_FLOOR_S) is what update()'s run-ceiling check needs before the FIRST flow of a run;
+    the setup allowance covers the time from the gate to that check, so a unit admitted at this reserve starts a
+    flow. Both come from the SAME helper (_margin_floor_s: AQUEDUCT_ISTAT_MARGIN_MIN, default 5, chosen) and the
+    SAME constant at call time. The margin is the hand-over: finalize (with ROUTE B), then the orchestrator's CSV
+    step for the cursors of the flows walked, whose soft budget is capped by the time left to the ceiling
+    (orchestrate._capped_derive_budget), so ids it does not reach go to csv_retry_queue, deferred.
+
+    THE OVERRUN BOUND: every GET is clamped to ceiling - margin (_get). Not clamped: a flow's store reads and
+    merge, the 10-s TCP probe, the 1-s RATE pause, and a body that trickles in. The measured single-flow maximum
+    is about 1,044 s (2026-11-22), above FLOW_FLOOR_S = 912 s; its GETs can no longer pass ceiling - margin."""
+    return window_stop_tail_min() + ADMISSION_SETUP_MIN
+
+
+def window_stop_tail_min() -> float:
+    """WHERE istat STOPS, in minutes before the run ceiling (for tools/measure_ci_lag.py's replay; nothing in
+    the updater calls it): margin floor + FLOW_FLOOR_S = 20.2 by default, through the SAME helper and constant as
+    update()'s check. Before any flow is timed no flow starts with less than this left. The flow started just
+    before that point ends after it (a few seconds to a few minutes on the measured passes; every GET is clamped
+    to ceiling - margin), and the 2 x longest term is NOT in this figure. Not census's or wid's figure (the margin
+    alone): their first check needs only the floor; istat's needs margin + FLOW_FLOOR_S."""
+    return (_margin_floor_s() + FLOW_FLOOR_S) / 60.0
+
+
+def window_stop_piece_min() -> float:
+    """The window an istat stop needs to count as PROGRESS, in minutes: 0. update() reports window_stop "none"
+    only when a window stop came before any flow was started and no cursor is handed over, and the first flow is
+    started whenever the first window check passes."""
+    return 0.0
+
+
+# THE PER-TURN CAP (2026-11-24, condition C7 of the plan review; the coordinator's decision). While istat is due
+# - always, until it sets last_success again - a declared istat takes every pass's slack after its band-3
+# predecessors, and the leftover csv retry drain and the `desktop_lane: last` unit lose it. The cap gives some of
+# it back. AQUEDUCT_ISTAT_TURN_MAX_MIN = T: the turn ends as it would end at a run ceiling T minutes after it
+# started - the same check, the same request clamp, the same bookmark save, the same window_stop signal, the same
+# Result. So a capped turn starts no flow within margin + max(2 x longest, FLOW_FLOOR_S) of its own end and holds
+# about T - window_stop_tail_min() minutes of flows. AQUEDUCT_BUDGET_MIN_OVERRIDE does NOT lift it (the override
+# reaches only Deadline).
+#
+# TURN_MAX_MIN_DEFAULT = 60, CHOSEN from the C5 simulation (2026-11-24; F:/work/econ_finish/istat_windowstop/
+# sim/c5_56_c1.0.json): tools/measure_ci_lag.py UnitBook.run_pass (production order and admission, called) over 56
+# nightly passes with the measured November budgets, from a copy of state.db as of 2026-11-17. Against post-#325 main
+# (istat undeclared, stopping at the ceiling): no cap gave istat 4,412 min in 55 turns but left the leftover drain
+# 286 min (main: 2,476); cap 60 gave istat 2,189 min in 55 turns (main: 2,597 in 14), the drain 2,313 min, eia 39
+# finishes (main 29) with its longest gap 71.9 h (main 97.6), and the same hard stops (1) and biotrademerch
+# admissions (1) as main. Caps 90 and 120 sat between (drain 1,220 / 823 min, eia 37, eia gap 95 h). Model limits:
+# each unit's work is its newest real run, istat never finishes, the drain minutes are an upper bound.
+TURN_MAX_MIN_DEFAULT = 60.0
+
+
+def _turn_max_s() -> "float | None":
+    """The per-turn cap in seconds, or None for no cap. Read at each update so a test or a run can set it.
+    AQUEDUCT_ISTAT_TURN_MAX_MIN: unset or empty -> TURN_MAX_MIN_DEFAULT; "0" or "off" -> no cap; a value that is
+    not a finite number > 0 -> the default, and it says so. A cap below window_admission_reserve_min() is raised to
+    it, and it says so: under it no flow could ever start, so every capped turn would be a "none" non-turn."""
+    raw = os.environ.get("AQUEDUCT_ISTAT_TURN_MAX_MIN")
+    default = TURN_MAX_MIN_DEFAULT
+    if raw is None or raw.strip() == "":
+        v = default
+    elif raw.strip().lower() in ("0", "off", "none"):
+        v = None
+    else:
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            v = float("nan")
+        if not (math.isfinite(v) and v > 0):
+            print(f"[istat] AQUEDUCT_ISTAT_TURN_MAX_MIN={raw!r} is not a finite number > 0 - using the default "
+                  f"({'no cap' if default is None else f'{default:g} min'})", flush=True)
+            v = default
+    if v is None:
+        return None
+    floor = window_admission_reserve_min()
+    if v < floor:
+        print(f"[istat] per-turn cap {v:g} min is under the {floor:g}-min reserve, so no flow could start - "
+              f"raised to {floor:g} min", flush=True)
+        v = floor
+    return v * 60.0
 
 # Files in the istat dir that are NOT dataflow parquets.
 _SKIP_FILES = {"_sliced_done.json", "_sliced_unrecoverable.json"}
@@ -612,19 +725,31 @@ def update(unit, since) -> Result:
     # THE RUN CEILING (see the constants block). Read HERE, at update time, never at import.
     end_ts = _window_end_ts()
     floor_s = _margin_floor_s()
+    # THE PER-TURN CAP (see TURN_MAX_MIN_DEFAULT): when it ends the turn before the run ceiling does, it IS this
+    # turn's ceiling - the same check, clamp, bookmark, signal and Result below.
+    stop_name = "run ceiling"
+    turn_max_s = _turn_max_s()
+    if turn_max_s is not None:
+        turn_end = time.time() + turn_max_s
+        if end_ts is None or turn_end < end_ts:
+            end_ts, stop_name = turn_end, "per-turn cap"
+            print(f"[istat] per-turn cap {turn_max_s / 60:g} min (AQUEDUCT_ISTAT_TURN_MAX_MIN; "
+                  f"AQUEDUCT_BUDGET_MIN_OVERRIDE does not lift it): this turn ends as at a run ceiling then",
+                  flush=True)
     # Every GET ends by the ceiling minus the margin (_get's clamp), so the margin is left for the hand-over.
     req_end_ts = None if end_ts is None else end_ts - floor_s
     if end_ts is None:
         print(f"[istat] no run ceiling set - the window-end check is off "
               f"(budget {dl.budget_min:g} min only)", flush=True)
     else:
-        print(f"[istat] run ceiling "
+        print(f"[istat] {stop_name} "
               f"{dt.datetime.fromtimestamp(end_ts, dt.timezone.utc):%Y-%m-%dT%H:%M:%S}Z "
               f"({(end_ts - time.time()) / 60:.1f} min left); a flow starts only with at least "
               f"{floor_s / 60:g} min + max(2 x the longest flow, {FLOW_FLOOR_S / 60:.1f} min) left",
               flush=True)
     longest = 0.0                  # the longest flow this run, start of its checks to its bookmark
     n_merged = 0                   # flows whose rows went through merge_and_write this run
+    stopped_at_ceiling = False     # the run-ceiling check ended the loop (Result.window_stop below)
     t_run = time.monotonic()
     t_progress = t_run
 
@@ -648,14 +773,18 @@ def update(unit, since) -> Result:
             need_s = floor_s + max(2.0 * longest, FLOW_FLOOR_S)
             if left_s < need_s:
                 n_left = n_sub - flows_done
-                print(f"[istat] run ceiling: {left_s / 60:.1f} min left, under the "
+                # The ceiling check runs BEFORE the all-hosts-dead check, so a host that died in the last
+                # flow is reported here as a ceiling stop: name the dead hosts so the outage stays readable.
+                dead = (f"; hosts dead this run: {', '.join(sorted(_DEAD_HOSTS))}" if _DEAD_HOSTS else "")
+                print(f"[istat] {stop_name}: {left_s / 60:.1f} min left, under the "
                       f"{need_s / 60:.1f}-min need ({floor_s / 60:g} min margin + max(2 x the "
                       f"longest flow {longest:.0f} s, {FLOW_FLOOR_S / 60:.1f} min)) - "
                       f"{flows_done} flow(s) attempted, {n_merged} merged, {n_left} deferred to "
                       f"a later pass, which RESUMES after {last_attempted or bookmark!r} "
-                      f"(deferred, not failed)", flush=True)
+                      f"(deferred, not failed){dead}", flush=True)
                 # deferred_unit, as the budget stop above: nothing failed (R303).
-                tally.deferred_unit(f"run ceiling: {n_left} flow(s) not started")
+                tally.deferred_unit(f"{stop_name}: {n_left} flow(s) not started")
+                stopped_at_ceiling = True
                 break
         f0 = time.monotonic()
         path = os.path.join(out_dir, fn)
@@ -727,12 +856,13 @@ def update(unit, since) -> Result:
             # flow cut by a kill, the next pass starts AT it (re-run, nothing skipped). Nothing of it merged.
             flows_done += 1
             n_left = n_sub - flows_done + 1
-            print(f"[istat] run ceiling: {flow_id} cut at the margin before the run ceiling ({e}) - "
+            print(f"[istat] {stop_name}: {flow_id} cut at the margin before the run ceiling ({e}) - "
                   f"{flows_done} flow(s) attempted, {n_merged} merged, {n_left} deferred to a later pass, "
                   f"which RESUMES at {fn!r} (deferred, not failed)", flush=True)
-            tally.deferred_unit(f"run ceiling: {flow_id} cut at the window end ({e}); "
+            tally.deferred_unit(f"{stop_name}: {flow_id} cut at the window end ({e}); "
                                 f"{n_left} flow(s) not finished")
             total += before
+            stopped_at_ceiling = True          # a window stop with this flow started: "progress" below
             break
         flows_done += 1
         time.sleep(RATE)
@@ -847,9 +977,9 @@ def update(unit, since) -> Result:
     # writer here, so nothing can overwrite it with an older value.
 
     try:
-        return finalize(tally, total, last_obs, source=SOURCE,
-                        series_cursors=cursors,
-                        empty_window_floor=max(n_sub - 1, 1))
+        res = finalize(tally, total, last_obs, source=SOURCE,
+                       series_cursors=cursors,
+                       empty_window_floor=max(n_sub - 1, 1))
     except DefinitiveError as e:
         # ROUTE B (census.py's shape, hagstofa's AR-407 O7; review of the istat window_stop plan, C1). finalize()
         # raises on ANY structural flow, and the orchestrator then books `partial` with NO Result: no CSV step,
@@ -867,5 +997,16 @@ def update(unit, since) -> Result:
         note = (f"{e}; {len(cursors)} walked flow(s) handed over to the CSV step anyway"
                 + (f"; also {', '.join(rest)}" if rest else ""))
         print(f"[istat] {note}", flush=True)
-        return Result(status="partial", obs=total, last_obs_date=last_obs, new_vintage="date-tail",
-                      series_cursors=dict(cursors), merged_rows=None, error=note)
+        res = Result(status="partial", obs=total, last_obs_date=last_obs, new_vintage="date-tail",
+                     series_cursors=dict(cursors), merged_rows=None, error=note)
+    if stopped_at_ceiling:
+        # THE WINDOW-STOP SIGNAL (Result.window_stop; registry window_stop: true), set ONLY when the
+        # run-ceiling check, a request cut at the window end, or the per-turn cap ended the loop. "none" only
+        # when no flow was started and no cursor is handed over: orchestrate.run_once then records no unit
+        # state and logs a `window_stopped` row. A stop after a flow was started, failed or not, is "progress"
+        # (recorded `partial`), and so is a ROUTE B hand-over (it carries cursors). Every other end of the run
+        # leaves window_stop None, so it is recorded as the turn it is: the every-host-dead break (an ISTAT
+        # outage), the budget stop, and the end of the list. An outage must stay visible to health and to the
+        # outage signal, never read as "the window was short".
+        res.window_stop = "none" if (flows_done == 0 and not cursors) else "progress"
+    return res
