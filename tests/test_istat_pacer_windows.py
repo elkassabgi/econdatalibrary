@@ -297,9 +297,12 @@ def test_d2_a_backward_wall_step_waits_at_most_the_failsafe_gap(state):
     assert pacer.GAP_S - 1e-6 <= clock.m - m_first <= pacer.FAILSAFE_GAP_S + 1e-6, clock.m - m_first
 
 
-def test_d2_a_monotonic_copy_from_another_boot_never_blocks(state):
-    """A copy written in another boot (its mw is larger than this boot's monotonic now) is ignored."""
-    _put_record(state, pacer.format_record(pacer.Record(next=T0 - 100.0, seq=1, mnext=50_000.0, mw=49_990.0)))
+@pytest.mark.parametrize("mnext,mw", [(50_000.0, 49_990.0),            # another boot, far away
+                                      (1_050.0, 1_040.0)])              # another boot, INSIDE the 133-s distance
+def test_d2_a_monotonic_copy_from_another_boot_never_blocks(state, mnext, mw):
+    """A copy written in another boot (its mw is later than this boot's monotonic now) is ignored, also when
+    its distance would look plausible (50 s here): only the mw check can tell that one apart."""
+    _put_record(state, pacer.format_record(pacer.Record(next=T0 - 100.0, seq=1, mnext=mnext, mw=mw)))
     clock = MonoClock()                                                  # monotonic 1000 < mw
     tok = pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=clock)
     assert tok.slot == T0 and clock.m == 1000.0
@@ -557,7 +560,9 @@ def test_a_torn_record_keeps_this_process_penalty(state):
 
 
 class PenaltyDuringSleep(FakeClock):
-    """A 429 seen by this process while its reserved token sleeps."""
+    """A 429 seen by this process while its reserved token sleeps, and its lock attempt FAILS: the penalty
+    is in this process only (not in the shared record), so the D3 pre-check of the record cannot see it and
+    the wake check of the local penalty is what holds the token."""
 
     def __init__(self):
         super().__init__()
@@ -566,12 +571,21 @@ class PenaltyDuringSleep(FakeClock):
     def sleep(self, s):
         if not self.fired and s > 1.0:
             self.fired = True
-            pacer.penalize(600, "updater", clock=self)
+            real = pacer._open_and_lock
+
+            def busy(wait=None):
+                raise pacer._PacerFailure("injected: lock busy")
+            pacer._open_and_lock = busy
+            try:
+                pacer.penalize(600, "updater", clock=self)
+            finally:
+                pacer._open_and_lock = real
         super().sleep(s)
 
 
 def test_a_penalty_after_the_reservation_abandons_it(state, capsys):
-    """Review finding 4: a slot reserved before a 429 is not sent into the penalty."""
+    """Review finding 4: a slot reserved before a 429 this process saw (but could not share) is not sent
+    into the penalty."""
     _seed(state, next=T0 + 30.0)
     clock = PenaltyDuringSleep()
     tok = pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=clock)

@@ -275,6 +275,7 @@ def test_d2_a_valid_monotonic_copy_moves_next_later_never_earlier(no_qpm):
 
 
 @pytest.mark.parametrize("mnext,mw,why", [(50_016.0, 50_000.0, "another boot: mw is later than now"),
+                                          (1_050.0, 1_040.0, "another boot at a PLAUSIBLE distance (50 s)"),
                                           (1000.0 + 500.0, 999.0, "implausible distance"),
                                           (999.0, 990.0, "in the past"), (0.0, 0.0, "no copy")])
 def test_d2_an_invalid_monotonic_copy_is_ignored(mnext, mw, why, no_qpm):
