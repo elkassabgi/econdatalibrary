@@ -24,7 +24,9 @@ WHAT THIS PINS.
      whole recipe (Git Bash, a fresh clone of main, `npm ci`, the `verified:` receipt).
   4. Every tracked workflow (.yml, .yaml) and composite action (action.yml, action.yaml) is PARSED, with
      duplicate keys refused, and every step whose `uses` contains "wrangler" is judged by what it runs: its
-     `uses` must be the action an ACTION_STEPS entry pins (owner/repo, any letter case, any @ref), its
+     `uses` must be the action an ACTION_STEPS entry pins (owner/repo, any letter case), at a ref that
+     ACTION_REFS lists for it, compared exactly (a fork commit is reachable through the parent's name, so
+     the name alone does not pin the code; review of PR #323, ledger R2072), its
      `command` input split per line as the action splits it (absent, null or blank = `deploy`, the action's
      default), each line EQUAL to the command of that entry, and every input it sets named by that entry.
      A `with` key is named exactly as the runner names it, INPUT_ + the key with each space replaced by `_`,
@@ -359,18 +361,27 @@ def test_the_rewritten_instructions_name_the_wrapper():
 DEPLOY_SITE = ".github/workflows/deploy-site.yml"
 
 # (path, the action, the exact command, the inputs the step may set, reason). An entry allows ONE step of its
-# file: its `uses` is the pinned action (owner/repo compared in any letter case, any @ref; a fork, another owner,
-# a docker image, a local path or a subdirectory is not it), every line of its command equals the command
-# exactly, and every input it sets is named here. Input names are compared as the runner hands them to the
-# action (_input_name: spaces to `_`, upper case, NO trim), so a padded key is another input (R2060). A second
-# step does not ride an entry (R2042), and an entry that allows no step is stale.
+# file: its `uses` is the pinned action (owner/repo compared in any letter case; a fork, another owner, a
+# docker image, a local path or a subdirectory is not it) at a ref ACTION_REFS lists for it, every line of its
+# command equals the command exactly, and every input it sets is named here. Input names are compared as the
+# runner hands them to the action (_input_name: spaces to `_`, upper case, NO trim), so a padded key is another
+# input (R2060). A second step does not ride an entry (R2042), and an entry that allows no step is stale.
 ACTION_STEPS = [
     (DEPLOY_SITE, "cloudflare/wrangler-action", "pages deploy catalog/site --project-name=econdatalibrary --branch=main",
      ("apiToken", "accountId", "command"), "the static site's Pages deploy, not the worker"),
 ]
+# The refs at which each pinned action may be used, compared EXACTLY (a git ref is case-sensitive). The
+# owner/repo pin alone does not pin the code that runs: GitHub resolves the ref on the named repository, and a
+# commit that lives only in a fork is reachable through the parent's name (a fork-network sha, or
+# `refs/pull/<n>/head`), so `cloudflare/wrangler-action@refs/pull/1/head` with the allowed inputs passed the
+# owner/repo pin (review of PR #323, ledger R2072). A new ref (a version bump, a sha pin) goes here in the same
+# commit that starts to use it; a listed ref that no allowed step uses is stale.
+ACTION_REFS = {
+    "cloudflare/wrangler-action": ("v3",),
+}
 ACTION_DEFAULT_COMMAND = "deploy"            # what the action runs when `command` is absent or blank
 _PLAIN_INPUT = re.compile(r"[A-Za-z0-9_-]+")  # the only `with` key spelling a wrangler step may use
-_PINNED_USES = re.compile(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@[^\s@]+")   # owner/repo@ref, nothing around it
+_PINNED_USES = re.compile(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@([^\s@]+)")   # owner/repo@ref, nothing around it
 
 
 class _UniqueKeyLoader(yaml.SafeLoader):
@@ -417,6 +428,13 @@ def action_of(uses) -> str | None:
     case); None for any other shape (a docker image, a local path, a subdirectory, no ref, surrounding space)."""
     m = _PINNED_USES.fullmatch(uses) if isinstance(uses, str) else None
     return m.group(1).lower() if m else None
+
+
+def ref_of(uses) -> str | None:
+    """The `ref` of `uses: owner/repo@ref`, exactly as written (a git ref is case-sensitive); None for every
+    shape action_of refuses."""
+    m = _PINNED_USES.fullmatch(uses) if isinstance(uses, str) else None
+    return m.group(2) if m else None
 
 
 def _is_action_file(rel: str) -> bool:
@@ -534,10 +552,12 @@ def action_step_verdicts(text: str, rel: str) -> list[tuple[str, list[str], list
     for where, step in steps:
         commands, inputs, bad = wrangler_step(step)
         uses = action_of(step.get("uses"))
+        ref = ref_of(step.get("uses"))
         allowed_by = None
         if not bad:
             fits = [i for i, action, cmd, keys in entries
-                    if uses == action and all(c == cmd for c in commands) and inputs <= keys]
+                    if uses == action and ref in ACTION_REFS.get(action, ())
+                    and all(c == cmd for c in commands) and inputs <= keys]
             free = [i for i in fits if i not in used]
             if free:
                 allowed_by = free[0]
@@ -632,6 +652,13 @@ def test_every_wrangler_step_runs_an_allowed_command():
     assert [(r[0], r[1], r[2]) for r in rows] == [(DEPLOY_SITE, "jobs.deploy.steps[1]", [ACTION_STEPS[0][2]])], rows
     text = _read(ROOT, DEPLOY_SITE)
     assert wrangler_uses_lines(text) == {line for line, kind, _c in find_deploys(text) if kind == "wrangler-action use"}
+    # ACTION_REFS lists exactly the (action, ref) pairs the allowed steps use: a listed ref no step uses is
+    # stale, and every pinned action has its refs listed (R2072)
+    assert set(ACTION_REFS) == {action.lower() for _p, action, _c, _k, _w in ACTION_STEPS}, ACTION_REFS
+    _problems, steps = _walk(_load(text), DEPLOY_SITE)
+    allowed_at = {r[1] for r in rows if r[0] == DEPLOY_SITE and r[4] is not None}
+    used = {(action_of(s.get("uses")), ref_of(s.get("uses"))) for where, s in steps if where in allowed_at}
+    assert used == {(a, ref) for a, refs in ACTION_REFS.items() for ref in refs}, used
 
 
 _C6_PHRASE = "command: pages deploy catalog/site --project-name=econdatalibrary"   # 899ffc3f5's allow phrase
@@ -657,6 +684,14 @@ _PADDED_OR_UNPINNED = {
     "a docker image with the allowed inputs": _REAL.replace("cloudflare/wrangler-action@v3", "docker://node-wrangler:3"),
     "a look-alike owner with the allowed inputs": _REAL.replace("cloudflare/wrangler-action@v3",
                                                                 "cloudf1are/wrangler-action@v3"),
+    # R2072: the pinned name at a ref ACTION_REFS does not list, each with the allowed inputs. A fork's commit is
+    # reachable through the parent's name, so these could run code nobody reviewed.
+    "a pull-request ref of the pinned action": _REAL.replace("wrangler-action@v3", "wrangler-action@refs/pull/1/head"),
+    "a commit sha of the pinned action": _REAL.replace("wrangler-action@v3", "wrangler-action@" + "0123456789abcdef" * 2
+                                                       + "01234567"),
+    "another tag of the pinned action": _REAL.replace("wrangler-action@v3", "wrangler-action@v2"),
+    "the listed tag in another letter case": _REAL.replace("wrangler-action@v3", "wrangler-action@V3"),
+    "a branch of the pinned action": _REAL.replace("wrangler-action@v3", "wrangler-action@main"),
 }
 ACTION_PLANTED = {
     **_PADDED_OR_UNPINNED,
@@ -746,10 +781,21 @@ ACTION_ALLOWED_SHAPES = {
     "inputs spelled in another case": _REAL.replace("command:", "Command:").replace("apiToken:", "APITOKEN:"),
     "the real step without accountId": _REAL.replace("          accountId: a\n", ""),
     "the action in another letter case": _REAL.replace("cloudflare/wrangler-action@v3", "Cloudflare/Wrangler-Action@v3"),
-    "the action pinned by a commit sha": _REAL.replace("@v3", "@" + "0123456789abcdef" * 2 + "01234567"),
     "another action with command: deploy (not wrangler)": _REAL + "      - uses: some/other-action@v1\n"
         "        with:\n          command: deploy\n",
 }
+
+
+def test_parse_check_accepts_a_sha_pin_only_once_it_is_listed(monkeypatch):
+    """A sha pin (the usual hardening) passes once ACTION_REFS lists that sha, and not before (R2072): the
+    allow-list is the one place a ref is approved. Until 2026-11-24 any ref passed here."""
+    sha = "0123456789abcdef" * 2 + "01234567"
+    text = _WF + _REAL.replace("@v3", "@" + sha)
+    assert any(r[2] for r in action_step_verdicts(text, DEPLOY_SITE))              # not listed: refused
+    monkeypatch.setitem(ACTION_REFS, "cloudflare/wrangler-action", ("v3", sha))
+    assert [(r[2], r[3]) for r in action_step_verdicts(text, DEPLOY_SITE)] == [([], 0)]
+    upper = _WF + _REAL.replace("@v3", "@" + sha.upper())                         # exact, not case-folded
+    assert any(r[2] for r in action_step_verdicts(upper, DEPLOY_SITE))
 
 
 @pytest.mark.parametrize("name", list(ACTION_PLANTED))
@@ -899,6 +945,17 @@ def test_control_the_padded_plants_hold_what_they_name():
     # and YAML keeps the NBSP in the unquoted key (a plain scalar trims only spaces and tabs)
     assert _load(_WF + p["the key command<NBSP>, unquoted (invisible)"])["jobs"]["deploy"]["steps"][1]["with"] == \
         {"apiToken": "t", "accountId": "a", "command" + chr(0xA0): _CMD}
+    # R2072: each ref plant is the real step with ONLY its ref changed, and that ref is not listed
+    for name, ref in (("a pull-request ref of the pinned action", "refs/pull/1/head"),
+                      ("a commit sha of the pinned action", "0123456789abcdef" * 2 + "01234567"),
+                      ("another tag of the pinned action", "v2"),
+                      ("the listed tag in another letter case", "V3"),
+                      ("a branch of the pinned action", "main")):
+        step = _load(_WF + p[name])["jobs"]["deploy"]["steps"][1]
+        assert step["uses"] == "cloudflare/wrangler-action@" + ref, (name, step["uses"])
+        assert step["with"] == {"apiToken": "t", "accountId": "a", "command": _CMD}, name
+        assert ref not in ACTION_REFS["cloudflare/wrangler-action"], name
+    assert len("0123456789abcdef" * 2 + "01234567") == 40
 
 
 def test_control_the_real_step_passes_the_full_path(tmp_path):
