@@ -19,6 +19,7 @@ Honesty additions per UPDATER_BUILD_PLAN.md §1.3/§5:
   the `csv_retry_queue` state table.
 """
 from __future__ import annotations
+import math
 import os
 import sys
 import time
@@ -645,10 +646,48 @@ _RUN_DEADLINE_TS: float | None = None
 _PAST_CEILING_MIN = 1.0
 
 
+# A UNIT'S OWN TURN END (2026-11-24, phase B review B1 of the istat window_stop PRs; Result.turn_end_ts). A fetcher
+# with its own per-turn cap (istat's AQUEDUCT_ISTAT_TURN_MAX_MIN) ends update() at the cap, but the turn went on:
+# run_once's CSV phase after it - the fresh derive at min(AQUEDUCT_DERIVE_BUDGET_MIN 45, time left to the RUN
+# ceiling), then the unit's csv retry drain at another min(45, ...) - read only the run ceiling. Measured on E:
+# (logs/local_heavy_updater_20261024-214510.log, 20261025-220113.log): two 45-min budgets after istat's fetch, even
+# after a turn that walked one flow. Set from the Result just before that unit's CSV phase and cleared in the
+# unit's `finally`, it makes _remaining_run_min() the time to the EARLIER of the two ends, so every reader in the
+# phase is bounded by the turn: _capped_derive_budget (fresh derive, owed repay, retry drain), _csv_fence_min (the
+# phase's fence, the drain's fence). Outside a unit's CSV phase it is None and nothing changes. The derive budget is
+# soft (derive_and_put stops at the next id), so the turn can overrun its end by the id in flight.
+_UNIT_TURN_END_TS: float | None = None
+
+
+def _begin_unit_turn_end(res) -> "float | None":
+    """run_once, just before a unit's CSV phase: take the unit's own turn end from its Result (None, or a value that
+    is not a finite number, means none). A helper, so run_once declares no `global` but _RUN_DEADLINE_TS
+    (tests/test_run_ceiling.py pins that)."""
+    global _UNIT_TURN_END_TS
+    ts = getattr(res, "turn_end_ts", None)
+    try:
+        ts = None if ts is None else float(ts)
+    except (TypeError, ValueError):
+        ts = None
+    if ts is not None and not math.isfinite(ts):
+        ts = None
+    _UNIT_TURN_END_TS = ts
+    return ts
+
+
+def _end_unit_turn_end() -> None:
+    """run_once, in the unit's `finally`: the turn end belongs to that unit's CSV phase only."""
+    global _UNIT_TURN_END_TS
+    _UNIT_TURN_END_TS = None
+
+
 def _remaining_run_min() -> float | None:
-    if _RUN_DEADLINE_TS is None:
+    """Minutes to the run ceiling - or, inside a unit's CSV phase whose fetcher gave its own turn end, to the earlier
+    of the two (_UNIT_TURN_END_TS). None when neither is set."""
+    ends = [t for t in (_RUN_DEADLINE_TS, _UNIT_TURN_END_TS) if t is not None]
+    if not ends:
         return None
-    return max(0.0, (_RUN_DEADLINE_TS - time.time()) / 60.0)
+    return max(0.0, (min(ends) - time.time()) / 60.0)
 
 
 def _unit_window_min() -> float:
@@ -4550,6 +4589,9 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             # read by the build receipt). _UNHOMED_SOURCES is this unit's own: cleared here, read after the phase.
             _unhomed = False
             _UNHOMED_SOURCES.discard(unit.source_id)
+            # THE UNIT'S OWN TURN END bounds its CSV phase like the run ceiling (Result.turn_end_ts; cleared in the
+            # `finally` below; see _UNIT_TURN_END_TS).
+            _begin_unit_turn_end(res)
             if _should_derive_csvs(status, getattr(res, "changed_keys", None)) and not dry and not _served_by_lane(unit.source_id):
                 # HARD FENCE around the WHOLE csv phase (2026-08-18): abs's
                 # post-merge phase ran 115 silent minutes past every soft budget
@@ -4757,6 +4799,7 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             _record(store, unit, "transient_fail", err=_clip_err("UNEXPECTED:" + _repr_of(e)), dur=time.time() - t0)
             results.append((unit.key, "error"))
         finally:
+            _end_unit_turn_end()                 # the unit's own turn end ends with its turn, however it ended
             store.release_lease(unit.key, owner=OWNER)
             # Per-unit cost, printed even on failure. Peak RSS is what turns "the
             # runner OOMed" into "THIS source needs 15 GB" — the fact that decides
