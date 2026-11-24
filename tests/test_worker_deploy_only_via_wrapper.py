@@ -370,7 +370,9 @@ ACTION_STEPS = [
     (DEPLOY_SITE, "cloudflare/wrangler-action", "pages deploy catalog/site --project-name=econdatalibrary --branch=main",
      ("apiToken", "accountId", "command"), "the static site's Pages deploy, not the worker"),
 ]
-# The refs at which each pinned action may be used, compared EXACTLY (a git ref is case-sensitive). The
+# The refs at which each pinned action may be used, compared EXACTLY: not a prefix, not a substring, not
+# case-folded (a ref name is case-sensitive; git resolves an upper-case sha to the same commit, so refusing one
+# is a safe over-refusal). Only a listed 40-hex sha pins the code; a tag such as v3 can be moved. The
 # owner/repo pin alone does not pin the code that runs: GitHub resolves the ref on the named repository, and a
 # commit that lives only in a fork is reachable through the parent's name (a fork-network sha, or
 # `refs/pull/<n>/head`), so `cloudflare/wrangler-action@refs/pull/1/head` with the allowed inputs passed the
@@ -692,6 +694,9 @@ _PADDED_OR_UNPINNED = {
     "another tag of the pinned action": _REAL.replace("wrangler-action@v3", "wrangler-action@v2"),
     "the listed tag in another letter case": _REAL.replace("wrangler-action@v3", "wrangler-action@V3"),
     "a branch of the pinned action": _REAL.replace("wrangler-action@v3", "wrangler-action@main"),
+    # EXACT, not a prefix or a substring of a listed ref (review of R2072, ledger R2101)
+    "a ref that starts with the listed tag": _REAL.replace("wrangler-action@v3", "wrangler-action@v3.15.0"),
+    "a ref that contains the listed tag": _REAL.replace("wrangler-action@v3", "wrangler-action@refs/tags/v3"),
 }
 ACTION_PLANTED = {
     **_PADDED_OR_UNPINNED,
@@ -925,8 +930,9 @@ def _full_path(root: str) -> tuple[list[str], list]:
 
 @pytest.mark.parametrize("name", list(_PADDED_OR_UNPINNED))
 def test_control_a_padded_or_unpinned_deploy_site_step_fails_the_full_path(tmp_path, name):
-    """F2 / F3 of the #323 review (R2060): deploy-site.yml's ONE wrangler step, padded or not the pinned action,
-    fails the whole ratchet. Before the fix the four padded command keys and the fork passed it."""
+    """F2 / F3 of the #323 review (R2060): deploy-site.yml's ONE wrangler step, padded, not the pinned action, or
+    the pinned action at a ref ACTION_REFS does not list (R2072), fails the whole ratchet. Before the #323 fix the
+    four padded command keys and the fork passed it; before the R2072 fix every ref plant passed it."""
     _throwaway_repo(tmp_path, {DEPLOY_SITE: _WF + _PADDED_OR_UNPINNED[name]})
     bad, rows = _full_path(str(tmp_path))
     assert bad and all(b.startswith(DEPLOY_SITE) for b in bad), (name, bad, rows)
@@ -950,7 +956,9 @@ def test_control_the_padded_plants_hold_what_they_name():
                       ("a commit sha of the pinned action", "0123456789abcdef" * 2 + "01234567"),
                       ("another tag of the pinned action", "v2"),
                       ("the listed tag in another letter case", "V3"),
-                      ("a branch of the pinned action", "main")):
+                      ("a branch of the pinned action", "main"),
+                      ("a ref that starts with the listed tag", "v3.15.0"),
+                      ("a ref that contains the listed tag", "refs/tags/v3")):
         step = _load(_WF + p[name])["jobs"]["deploy"]["steps"][1]
         assert step["uses"] == "cloudflare/wrangler-action@" + ref, (name, step["uses"])
         assert step["with"] == {"apiToken": "t", "accountId": "a", "command": _CMD}, name
