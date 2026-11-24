@@ -121,6 +121,37 @@ def test_tokens_are_shared_exactly_gap_apart_and_error_free(state, capsys):
         os.close(fd)
 
 
+class LockProbeClock(FakeClock):
+    """While the pacer waits for its slot, try the lock from ANOTHER handle: it must be free (M13)."""
+
+    def __init__(self, lock_path):
+        super().__init__()
+        self.lock_path = lock_path
+        self.probes = []
+
+    def sleep(self, s):
+        import msvcrt
+        fd = os.open(self.lock_path, os.O_RDWR | os.O_BINARY)
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, pacer.LOCK_REGION)
+            os.lseek(fd, 0, 0)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, pacer.LOCK_REGION)
+            self.probes.append(True)
+        except OSError:
+            self.probes.append(False)
+        finally:
+            os.close(fd)
+        super().sleep(s)
+
+
+def test_the_lock_is_never_held_while_waiting_for_the_slot(state):
+    """M13, deterministically: the lock is held only for the read-modify-write, never across the sleep."""
+    _seed(state, next=T0 + 30.0)
+    clock = LockProbeClock(os.path.join(str(state), pacer.LOCK_NAME))
+    tok = pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=clock)
+    assert tok.slot == T0 + 30.0 and clock.probes and all(clock.probes), clock.probes
+
+
 def test_log_append_failure_after_the_commit_sends_once_at_the_committed_slot(state, monkeypatch, capsys):
     """V3: the record write is the commit point. A request-log failure AFTER it is logged, and the token uses
     its committed slot exactly once: no second (fail-safe) token, no 64-s wait, seq advanced by one."""
