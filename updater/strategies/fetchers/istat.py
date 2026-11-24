@@ -401,7 +401,7 @@ def _try_host(sess, base, flow_id, start_period, req_end_ts=None):
 
     Both GETs are clamped to `req_end_ts` (see _get). THE XML PATH: when the CSV body parses 0 rows and no time
     is left for the XML GET, _WindowEnd propagates and the flow is DEFERRED - it is never booked structural on a
-    CSV body alone, and the next pass starts at it."""
+    CSV body alone, and a later pass starts at it (the bookmark does not name it)."""
     url = _data_url(base, flow_id, start_period)
     resp = _get(sess, url, CSV_ACCEPT, req_end_ts=req_end_ts)
     if resp.kind in ("transient", "empty", "gone"):
