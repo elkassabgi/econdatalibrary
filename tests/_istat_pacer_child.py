@@ -9,7 +9,8 @@ request would go; it is written, with the token's slot and mode, as one JSON lin
 
 Modes:
   default       take --tokens tokens as --participant, "working" --work-min..--work-max s after each send
-  --hold-lock S take the raw pacer lock, print LOCKED, hold it S s (or until killed), release, exit
+  --hold-lock S take the raw pacer lock, print LOCKED, hold it S s (or until killed, or until the file named
+                by --release-on exists), release, exit
 Seams for the tests (all scaled, all optional):
   --rmw-delay S      sleep S inside every locked read (a slow disk), so a missing lock shows as a race
   --stall-on N --stall-s S --stall-flag F   on the N-th record write, write F and hold the lock S more seconds
@@ -60,6 +61,7 @@ def main() -> int:
     ap.add_argument("--work-max", type=float, default=0.0)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--hold-lock", type=float, default=None)
+    ap.add_argument("--release-on", default=None)
     ap.add_argument("--rmw-delay", type=float, default=0.0)
     ap.add_argument("--stall-on", type=int, default=0)
     ap.add_argument("--stall-s", type=float, default=0.0)
@@ -74,7 +76,9 @@ def main() -> int:
     if a.hold_lock is not None:
         fd = pacer._open_and_lock()
         print("LOCKED", flush=True)
-        time.sleep(a.hold_lock)
+        t_end = time.time() + a.hold_lock
+        while time.time() < t_end and not (a.release_on and os.path.exists(a.release_on)):
+            time.sleep(0.01)
         pacer._unlock_close(fd)
         print("RELEASED", flush=True)
         return 0

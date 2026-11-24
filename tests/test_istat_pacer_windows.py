@@ -551,18 +551,28 @@ def test_tb3_a_holder_killed_inside_the_lock(tmp_path):
 
 
 def test_tb4_lock_busy_longer_than_the_wait(tmp_path):
-    """TB4 (M13): the lock is held 3.0 s, far past the 0.25-s wait. The other process logs the FAIL-SAFE line,
-    sends no earlier than lock-wait + 64 s-scaled after it asked, then returns to shared mode."""
+    """TB4 (M13): the lock is held far past the 0.25-s wait, until the other process has sent its first token
+    (so start-up time under load cannot shorten the incident). The other process logs the FAIL-SAFE line, sends
+    no earlier than lock-wait + 64 s-scaled after it asked, then returns to shared mode."""
     d = tmp_path / "pacer"
-    holder = subprocess.Popen(_cmd(d, tmp_path / "h.jsonl", hold_lock=3.0), stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT, text=True, env=_env())
+    release = tmp_path / "release"
+    holder = subprocess.Popen(_cmd(d, tmp_path / "h.jsonl", hold_lock=30.0, release_on=release),
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=_env())
     try:
         assert holder.stdout.readline().strip() == "LOCKED"
-        out = _run([_cmd(d, tmp_path / "o.jsonl", "updater", 4)])[0]
+        other = subprocess.Popen(_cmd(d, tmp_path / "o.jsonl", "updater", 4), stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, text=True, env=_env())
+        deadline = time.time() + 30.0
+        while not _rows([tmp_path / "o.jsonl"]) and time.time() < deadline and other.poll() is None:
+            time.sleep(0.05)
+        release.write_text("x")
+        out = other.communicate(timeout=60)[0]
+        assert other.returncode == 0, out
         holder.wait(10)
     finally:
-        if holder.poll() is None:
-            holder.kill()
+        for p in (holder,):
+            if p.poll() is None:
+                p.kill()
     rows = sorted(_rows([tmp_path / "o.jsonl"]), key=lambda r: r["start"])
     assert rows[0]["mode"] == "failsafe"
     assert rows[0]["start"] - rows[0]["t_begin"] >= LW + FS - EPS
