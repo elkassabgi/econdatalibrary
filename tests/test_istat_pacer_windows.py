@@ -150,7 +150,9 @@ def test_log_append_failure_after_the_commit_sends_once_at_the_committed_slot(st
 
 def test_a_failure_before_the_commit_is_failsafe_and_never_starts_at_once(state, monkeypatch, capsys):
     """V1(a): a token whose record write fails waits FAILSAFE_GAP_S, tries the lock again, and only then
-    sends as fail-safe; nothing was committed."""
+    sends as fail-safe; nothing was committed. The record is VALID (seeded), so the 64-s floor on the first
+    shared slot afterwards is the pacer's own rule, not the "missing record means just sent" rule."""
+    _seed(state)
     clock = FakeClock()
 
     def broken_write(fd, rec):
@@ -513,8 +515,11 @@ def test_tb2_three_processes_updater_crawler_tool(tmp_path):
 def test_tb3_a_holder_killed_inside_the_lock(tmp_path):
     """TB3: a child takes the lock and blocks; the survivor starts; the holder is killed (TerminateProcess).
     During the incident the survivor never starts faster than the fail-safe rate (its first start is at least
-    lock-wait + 64 s-scaled after it asked, V1) and it returns to shared mode after the kill."""
+    lock-wait + 64 s-scaled after it asked, V1) and it returns to shared mode after the kill, its first shared
+    slot no earlier than its last fail-safe token + 64 s-scaled. The record is seeded VALID (next in the past),
+    so that floor is the pacer's rule and not the bad-record rule."""
     d = tmp_path / "pacer"
+    _seed(d, next=time.time() - 100.0)
     holder = subprocess.Popen(_cmd(d, tmp_path / "h.jsonl", hold_lock=60), stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True, env=_env())
     try:
