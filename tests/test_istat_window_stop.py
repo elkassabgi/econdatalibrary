@@ -434,10 +434,12 @@ def test_a_route_b_hand_over_without_a_window_stop_sets_no_signal(rig):
 
 def test_a_flow_cut_by_the_request_clamp_is_progress(rig):
     """Both hosts time out on F01, which starts with margin + floor + 1 s left: the clamp cuts it at ceiling -
-    margin (PR A). It was started, so the signal is "progress" even with no cursor (empty flows)."""
+    margin (PR A). It was started, so the signal is "progress" even with no cursor (empty flows). Four GETs had
+    timed out at the hosts' own timeouts first, so the flow is TRANSIENT, not deferred (PR A, phase B review A1)."""
     rig.flows(3, rows=False)
     res, host = _run_plan(rig, {"F01": "timeout"}, 300 + FLOOR_S + 1.0)
-    assert res.status == "partial" and "cut at the window end" in res.error, res.error
+    assert res.status == "partial", res.error
+    assert "F01: 4 host attempt(s) failed, then the window ended at the run ceiling" in res.error, res.error
     assert not res.series_cursors
     assert res.window_stop == "progress", res.window_stop
     assert orchestrate._window_stop_no_progress(_istat_unit(), res) is False
@@ -501,13 +503,15 @@ def test_a_cap_under_the_reserve_is_raised_to_it_so_a_flow_can_start(rig, capsys
 def test_the_cap_bounds_a_turn_with_no_run_ceiling_and_clamps_its_requests(rig):
     """No run ceiling at all (outside run_once): the cap still ends the turn, and its requests are clamped to the
     cap's end minus the margin. Cap 25 min; F01 times out on both hosts: 120 + 300, 4, 120 + 300, 8, then 120 s
-    and a 300-s GET clamped to the 228 s left - the flow is cut at 1,200 s, deferred, "progress"."""
+    and a 300-s GET clamped to the 228 s left - the flow is cut at 1,200 s, "progress". Five GETs had timed out at
+    the hosts' own timeouts first, so it is TRANSIENT at the per-turn cap (phase B review A1), not deferred."""
     rig.mp.setenv("AQUEDUCT_ISTAT_TURN_MAX_MIN", "25")
     rig.flows(3)
     t0 = rig.clock.t
     res, host = _run_plan(rig, {"F01": "timeout"}, None)
     assert rig.clock.t - t0 <= 25 * 60.0 - 300.0 + 1.0, rig.clock.t - t0
-    assert res.status == "partial" and "per-turn cap: F01 cut at the window end" in res.error, res.error
+    assert res.status == "partial", res.error
+    assert "F01: 5 host attempt(s) failed, then the window ended at the per-turn cap" in res.error, res.error
     assert res.window_stop == "progress", res.window_stop
 
 
