@@ -8,8 +8,10 @@ WHY (review of the istat window_stop plan, 2026-11-24, VERDICT_planA F3, conditi
       catches that raise and returns `partial` WITH the cursors of every walked flow, naming the structural ones.
   C8. Requests were not clamped to the run ceiling: one flow measured ~1,044 s on 2026-11-22, above the 912-s
       allowance, and two live hosts timing out cost 1,272 s. Every GET's timeout is now at most the time left to
-      ceiling - margin; no GET or retry backoff starts after it; a flow cut there is DEFERRED, not failed, not
-      named in the bookmark, and not counted against the host.
+      ceiling - margin; no GET or retry backoff starts after it; the clamp-cut GET is not counted against the host.
+      A flow cut there is DEFERRED (not failed, not named in the bookmark) when it met no real failure, and
+      TRANSIENT (named, health reads it as a failure) after at least one - the phase B review's A1: two hosts that
+      hang gave four genuine timeouts before the cut, and the deferral read as a clean run in the stuck alarm.
 
 Through the REAL istat.update() with a fake session and a fake clock (no network, no R2); one test goes through
 the REAL run_once to show the cursors reach the CSV step. Every test that pins a new behaviour fails on origin/main
@@ -30,7 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import requests  # noqa: E402
 
-from updater import orchestrate, registry  # noqa: E402
+from updater import health, orchestrate, registry  # noqa: E402
 from updater.errors import DefinitiveError  # noqa: E402
 from updater.state import StateStore  # noqa: E402
 from updater.strategies.base import Strategy  # noqa: E402
@@ -232,16 +234,19 @@ def test_run_once_derives_the_walked_flows_of_a_run_with_a_structural_flow(rig, 
 def test_two_live_hosts_timing_out_no_longer_carry_a_flow_past_the_margin(rig):
     """The 1,272-s flow: both hosts live and every GET timing out (sdmx 120 s, esploradati 300 s, 3 passes, 4 + 8 s
     backoff). It starts with margin + floor + 1 s left - the first-flow check admits it - so unclamped it ends 359 s
-    after ceiling - margin. Clamped, the run returns by ceiling - margin, the flow is DEFERRED (not transient), it is
-    not named in the bookmark (the next run starts at it), and the clamp-cut GET is not counted against the host."""
+    after ceiling - margin. Clamped, the run returns by ceiling - margin and the clamp-cut GET is not counted against
+    the host. Four GETs had already timed out at the hosts' own timeouts, so the flow is TRANSIENT, not deferred
+    (phase B review A1; this test pinned `deferred` before) and named in the bookmark like any flow whose hosts all
+    failed (R784 (a)): the next run starts after it."""
     rig.flows(3)
     _common.save_rotation(str(rig.out), "F01.parquet")
     ceiling_s = MARGIN_S + FLOOR_S + 1.0
     res = rig.run(_Host(rig.clock, {"F02": "timeout"}), ceiling_s)
     assert rig.clock.t <= ceiling_s - MARGIN_S + 1.0, f"returned {rig.clock.t - (ceiling_s - MARGIN_S):.0f} s late"
-    assert res.status == "partial" and "cut at the window end" in res.error, res.error
-    assert "transient-failed" not in res.error, res.error
-    assert rig.bookmark() == "F01.parquet", rig.bookmark()
+    assert res.status == "partial" and "1/1 sub-unit(s) transient-failed" in res.error, res.error
+    assert "F02: 4 host attempt(s) failed, then the window ended" in res.error, res.error
+    assert health._stuck_class(res.status, res.error) == "fail", res.error
+    assert rig.bookmark() == "F02.parquet", rig.bookmark()
     # 913 s to ceiling - margin: 120 + 300, backoff 4, 120 + 300, backoff 8 leave 61 s, so the 5th GET is given 61 s
     given = [g[3] for g in rig.host.gets]
     assert len(given) == 5 and given[:4] == [120, 300, 120, 300], given
@@ -249,8 +254,62 @@ def test_two_live_hosts_timing_out_no_longer_carry_a_flow_past_the_margin(rig):
     assert istat._TRANSPORT_FAILS.get(SDMX, 0) == 2 and not istat._DEAD_HOSTS, (istat._TRANSPORT_FAILS,
                                                                                   istat._DEAD_HOSTS)
     res2 = rig.run(_Host(rig.clock), None)
-    assert [g[0] for g in rig.host.gets][:1] == ["F02"], rig.host.gets[:2]
+    assert [g[0] for g in rig.host.gets][:1] == ["F03"], rig.host.gets[:2]
     assert res2.status == "ok", res2.error
+
+
+class _Hang(_Host):
+    """Every GET on the hosts in `hang` runs to the timeout it was GIVEN, then raises ReadTimeout; on sdmx.istat.it,
+    when it is not in `hang`, every GET redirect-loops (its shape since 2026-08-23)."""
+
+    def __init__(self, clock, hang=(SDMX, ESPLORA)):
+        super().__init__(clock)
+        self.hang = tuple(hang)
+
+    def get(self, url, headers=None, timeout=None):
+        base = SDMX if url.startswith(SDMX) else ESPLORA
+        flow = url.split(f"{istat.AGENCY},", 1)[1].split("/", 1)[0]
+        self.gets.append((flow, base, (headers or {}).get("Accept"), timeout, self.clock.t))
+        if base not in self.hang:
+            raise requests.TooManyRedirects("Exceeded 30 redirects.")
+        self.clock.t += float(timeout)
+        raise requests.ReadTimeout("planted: read timed out")
+
+
+def test_two_hanging_hosts_with_the_first_flow_at_the_tail_read_as_a_failure_not_a_clean_deferral(rig):
+    """THE REVIEWER'S PROBE (phase B review A1, review/probe_clamp.out), through the REAL update(): both hosts live
+    and hanging, the first flow started with margin + floor + 0.5 s left. GETs 120, 300, 120, 300 (four genuine
+    host timeouts), then the clamp cuts the fifth. Before: booked DEFERRED, the note "0 sub-unit(s) attempted, none
+    failed; 1 deferred by budget", health's stuck class `success`, and the bookmark pinned at F01 turn after turn.
+    Now: TRANSIENT, health reads `fail`, and the bookmark names F01, so the next turn does not repeat it."""
+    rig.flows(5)
+    ceiling_s = MARGIN_S + FLOOR_S + 0.5
+    res = rig.run(_Hang(rig.clock), ceiling_s)
+    timeouts = [g[3] for g in rig.host.gets]
+    assert timeouts[:4] == [120, 300, 120, 300] and len(timeouts) == 5 and timeouts[4] < 120, timeouts
+    assert res.status == "partial" and "1/1 sub-unit(s) transient-failed" in res.error, res.error
+    assert "none failed" not in res.error and not health._is_clean_deferral_note(res.error), res.error
+    assert health._stuck_class(res.status, res.error) == "fail", res.error
+    assert rig.bookmark() == "F01.parquet", rig.bookmark()
+    for c in (istat._DEAD_HOSTS, istat._TRANSPORT_FAILS, istat._TCP_PROBED):
+        c.clear()
+    res2 = rig.run(_Hang(rig.clock), ceiling_s)                   # the next turn starts after F01
+    assert rig.host.gets[0][0] == "F02", rig.host.gets[:1]
+    assert health._stuck_class(res2.status, res2.error) == "fail", res2.error
+
+
+def test_control_one_hanging_host_fits_the_floor_and_is_transient_as_before(rig):
+    """CONTROL (the reviewer's): sdmx redirect-loops (dead after one GET), esploradati hangs. The flow's three
+    300-s GETs and 4 + 8 s of backoff fit the 912-s floor, so the clamp never cuts it: `every host failed`,
+    transient, health `fail`, named in the bookmark. The same on 4083d833a."""
+    rig.flows(5)
+    ceiling_s = MARGIN_S + FLOOR_S + 0.5
+    res = rig.run(_Hang(rig.clock, hang=(ESPLORA,)), ceiling_s)
+    assert [g[3] for g in rig.host.gets if g[1] == ESPLORA] == [300, 300, 300], rig.host.gets
+    assert res.status == "partial" and "F01: every host failed" in res.error, res.error
+    assert "window ended" not in res.error, res.error
+    assert health._stuck_class(res.status, res.error) == "fail", res.error
+    assert rig.bookmark() == "F01.parquet", rig.bookmark()
 
 
 def test_no_retry_backoff_starts_that_would_cross_the_margin(rig, monkeypatch):
@@ -282,7 +341,9 @@ def test_every_get_ends_by_the_margin_before_the_ceiling(rig):
 def test_the_xml_fallback_is_not_started_past_the_margin_and_the_flow_is_deferred_not_structural(rig):
     """THE XML PATH. sdmx redirect-loops (dead after one GET); esploradati answers F01's CSV with a 200 whose body
     parses 0 rows, slowly (950 s), so no time is left for the XML GET. The flow is DEFERRED: never booked
-    structural on the CSV body alone, finalize() does not raise, and the next run starts at F01."""
+    structural on the CSV body alone, finalize() does not raise, and the next run starts at F01.
+    ALSO A1's NEGATIVE CONTROL: the cut flow met no real failure - the redirect loop is not one (_failed_for_real) -
+    so it stays a clean deferral (health `success`), not transient."""
     rig.flows(3)
     ceiling_s = MARGIN_S + FLOOR_S + 1.0
 
@@ -299,6 +360,8 @@ def test_the_xml_fallback_is_not_started_past_the_margin_and_the_flow_is_deferre
     assert accepts == [istat.CSV_ACCEPT], accepts              # the XML GET was not started
     assert res.status == "partial" and "cut at the window end" in res.error, res.error
     assert "structural" not in res.error and "parsed 0 rows" not in res.error, res.error
+    assert "transient-failed" not in res.error and "none failed" in res.error, res.error
+    assert health._stuck_class(res.status, res.error) == "success", res.error
     assert rig.bookmark() in ("", None), rig.bookmark()
 
 

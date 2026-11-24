@@ -237,9 +237,10 @@ TRANSIENT_HTTP = (429, 500, 502, 503, 504)
 # ceiling (AQUEDUCT_RUN_BUDGET_MIN, default 240 min; CI sets its own), so the check is off only
 # when AQUEDUCT_RUN_BUDGET_MIN <= 0 or update() is called outside run_once.
 # THE REQUESTS ARE CLAMPED TOO (2026-11-24, C8): every GET's timeout is at most the time left to
-# ceiling - margin, no GET or retry backoff starts after it, and a flow cut there is deferred
-# (_get, _fetch_flow, _WindowEnd). So a flow that overruns its allowance (measured on 2026-11-22: one
-# flow ~1,044 s, above the 912-s floor) can no longer carry its GETs past ceiling - margin. NOT
+# ceiling - margin, no GET or retry backoff starts after it, and a flow cut there is deferred, or
+# transient when it met a real failure first (phase B review A1) (_get, _fetch_flow, _WindowEnd).
+# So a flow that overruns its allowance (measured on 2026-11-22: one flow ~1,044 s, above the
+# 912-s floor) can no longer carry its GETs past ceiling - margin. NOT
 # clamped: the flow's store reads before its first GET and its merge after the body (bounded by the
 # flow's size, not the clock), the 10-s TCP probe, the 1-s RATE pause, and a body that trickles in
 # (a requests timeout bounds each read gap, not the whole body).
@@ -294,8 +295,17 @@ _NONTRIVIAL_BODY = 256  # a 200 body smaller than this is not a "real" structure
 # --------------------------------------------------------------------------- #
 class _WindowEnd(Exception):
     """A request (or a retry's backoff) would run past the margin before the run ceiling, so it is not started,
-    or it was cut by its clamped timeout. Raised out of _get / _fetch_flow to update(), which books the flow as
-    DEFERRED (not failed) and stops the run, exactly as the run-ceiling check does (census's _WindowStop)."""
+    or it was cut by its clamped timeout. Raised out of _get / _fetch_flow to update(), which stops the run, exactly
+    as the run-ceiling check does (census's _WindowStop).
+
+    `failed_attempts` (set by _fetch_flow): how many of THIS flow's host attempts had already failed for real (a
+    transient answer: a timeout at the host's own timeout, a 5xx/429, a dropped or refused connection; NOT a
+    redirect loop, see _failed_for_real) before the window ended. update() books a flow with none DEFERRED (nothing
+    went wrong, the window ended) and a flow with at least one TRANSIENT (phase B review A1: two hosts that hang
+    gave four genuine timeouts and the clamp cut the fifth GET; booked deferred, the run read as a clean deferral
+    and health's stuck alarm read success)."""
+
+    failed_attempts = 0
 
 
 class _Resp:
@@ -400,7 +410,7 @@ def _try_host(sess, base, flow_id, start_period, req_end_ts=None):
     break), while a tiny/empty 200 or a 404 NoRecordsFound is 'empty'.
 
     Both GETs are clamped to `req_end_ts` (see _get). THE XML PATH: when the CSV body parses 0 rows and no time
-    is left for the XML GET, _WindowEnd propagates and the flow is DEFERRED - it is never booked structural on a
+    is left for the XML GET, _WindowEnd propagates and the flow is cut (_WindowEnd) - it is never booked structural on a
     CSV body alone, and a later pass starts at it (the bookmark does not name it)."""
     url = _data_url(base, flow_id, start_period)
     resp = _get(sess, url, CSV_ACCEPT, req_end_ts=req_end_ts)
@@ -448,6 +458,27 @@ def _fetch_flow(sess, flow_id, start_period, had_prior: bool, req_end_ts=None):
       empty      -> a host conclusively returned no data (404 NoRecordsFound / no slice)
       transient  -> ONLY when no host gave any conclusive answer (all transient)
     """
+    fails = [0]                   # this flow's genuine failed host attempts, for _WindowEnd.failed_attempts
+    try:
+        return _fetch_flow_counted(sess, flow_id, start_period, had_prior, req_end_ts, fails)
+    except _WindowEnd as e:
+        e.failed_attempts = fails[0]
+        raise
+
+
+def _failed_for_real(base) -> bool:
+    """After a `transient` answer from `base`: was it a real failure of the host (a timeout at its own timeout, a
+    5xx/429, a dropped or refused connection), as opposed to a redirect loop? A redirect loop marks the base dead
+    at once (_get) with its transport streak under _HOST_DEAD_AFTER - sdmx.istat.it's shape since 2026-08-23, so
+    the first GET there loops on every run - and it says nothing about this flow. A base the streak itself killed
+    did fail for real."""
+    return not (base in _DEAD_HOSTS and _TRANSPORT_FAILS.get(base, 0) < _HOST_DEAD_AFTER)
+
+
+def _fetch_flow_counted(sess, flow_id, start_period, had_prior, req_end_ts, fails):
+    """_fetch_flow's body. `fails` is a one-item list: each host attempt that answers `transient` and failed for
+    real (_failed_for_real) adds 1, so the caller can say how many attempts had failed when the window cut the
+    flow (see _WindowEnd)."""
     transient_bases = []
     saw_structural = False
     saw_gone = False
@@ -467,6 +498,7 @@ def _fetch_flow(sess, flow_id, start_period, had_prior: bool, req_end_ts=None):
             return k, d, v, "ok"
         if kind == "transient":
             transient_bases.append(base)
+            fails[0] += _failed_for_real(base)
         elif kind == "structural":
             saw_structural = True
         elif kind == "gone":
@@ -497,6 +529,7 @@ def _fetch_flow(sess, flow_id, start_period, had_prior: bool, req_end_ts=None):
                     return k, d, v, "ok"
                 if kind == "transient":
                     still.append(base)
+                    fails[0] += _failed_for_real(base)
                 elif kind == "structural":
                     saw_structural = True
                 elif kind == "gone":
@@ -663,6 +696,18 @@ def update(unit, since) -> Result:
         before = blob.row_count(path)
         max_d = _max_obs(path)
         if max_d is not None:
+            # EVERY WALKED FLOW IS HANDED OVER, NOT ONLY THE ONES WHOSE MERGE CHANGED THE STORE (checked for the
+            # phase B review, A2; a merge-measured `changed_keys` would derive only those). A flow can merge nothing
+            # this run and still hold a CSV the step must derive: it merged in an earlier run that handed nothing
+            # over - a run KILLED by the pass's hard stop returns no Result (2026-11-22: 451 flows merged), a run
+            # with a structural flow raised before ROUTE B (9 of 40 runs since 2026-09-01), and a csv-fence trip
+            # queues nothing for istat (orchestrate._book_fence_trip is desktop_owed only). Re-walking it is what
+            # derives it; a changed-only hand-over would leave those CSVs stale until ISTAT revises the flow again.
+            # Ids the derive budget does not reach do stay in csv_retry_queue and drain from there (run_once).
+            # THE COST: the step re-derives unchanged flows. 2026-10-24: 465 flows walked, all transient (nothing
+            # merged), two 45-min derive budgets (7,341 then 2,952 ids deferred), turn 13,751 s. 2026-10-25: one
+            # flow walked, 896 ids handled in 45 min, all 896 ALREADY CURRENT, then a 45-min retry drain; turn
+            # 5,594 s. derive's ALREADY CURRENT check skips the upload, not the work (~0.4 ids/s either way).
             cursors[flow_id] = max_d.isoformat()   # seed cursor from on-disk frontier
             if last_obs is None or max_d.isoformat() > last_obs:
                 last_obs = max_d.isoformat()
@@ -718,30 +763,47 @@ def update(unit, since) -> Result:
             break
 
         sp = _start_period(max_d)
+        window_cut = None              # a _WindowEnd that cut this flow AFTER a real failure (see below)
         try:
             keys, dates, vals, outcome = _fetch_flow(sess, flow_id, sp, had_prior=before > 0,
                                                      req_end_ts=req_end_ts)
         except _WindowEnd as e:
             # THE FLOW IS CUT AT THE WINDOW END (the request clamp, C8). It was started, so it counts as
-            # attempted, but it is DEFERRED, not failed (R303), and it is NOT named in the bookmark: like a
-            # flow cut by a kill, the next pass starts AT it (re-run, nothing skipped). Nothing of it merged.
-            flows_done += 1
-            n_left = n_sub - flows_done + 1
-            print(f"[istat] run ceiling: {flow_id} cut at the margin before the run ceiling ({e}) - "
-                  f"{flows_done} flow(s) attempted, {n_merged} merged, {n_left} deferred to a later pass, "
-                  f"which RESUMES at {fn!r} (deferred, not failed)", flush=True)
-            tally.deferred_unit(f"run ceiling: {flow_id} cut at the window end ({e}); "
-                                f"{n_left} flow(s) not finished")
-            total += before
-            break
+            # attempted. Nothing of it merged. TWO CASES, by what the flow met before the cut:
+            #  - no failed host attempt (its first GET was cut, or a slow 200 left no time for the XML GET): it is
+            #    DEFERRED, not failed (R303), and NOT named in the bookmark - like a flow cut by a kill, the next
+            #    pass starts AT it (re-run, nothing skipped);
+            #  - at least one REAL failed attempt (phase B review A1; _WindowEnd.failed_attempts): it is TRANSIENT,
+            #    exactly as a flow whose hosts all failed, and it falls through to the bookmark below like that flow
+            #    (named, R784 (a), unless every host is dead: CUT BY HOST DEATH); the run then stops (after the
+            #    bookmark). Booked deferred, two hosts that hang (four real timeouts, then the clamp cut the fifth
+            #    GET) gave "0 sub-unit(s) attempted, none failed", which health's stuck alarm reads as a success,
+            #    and pinned the bookmark at that flow turn after turn.
+            if not getattr(e, "failed_attempts", 0):
+                flows_done += 1
+                n_left = n_sub - flows_done + 1
+                print(f"[istat] run ceiling: {flow_id} cut at the margin before the run ceiling ({e}) - "
+                      f"{flows_done} flow(s) attempted, {n_merged} merged, {n_left} deferred to a later pass, "
+                      f"which RESUMES at {fn!r} (deferred, not failed)", flush=True)
+                tally.deferred_unit(f"run ceiling: {flow_id} cut at the window end ({e}); "
+                                    f"{n_left} flow(s) not finished")
+                total += before
+                break
+            window_cut = e
+            keys, dates, vals, outcome = [], [], [], "transient"
         flows_done += 1
-        time.sleep(RATE)
+        if window_cut is None:
+            time.sleep(RATE)
 
         # ONE EXIT PER FLOW: every outcome falls through to the bookmark below. The one `continue`
         # there is CUT BY HOST DEATH.
         if outcome == "transient":
             # Every host failed this flow -> keep existing data, re-queue (run partial).
-            tally.transient_unit(f"{flow_id}: every host failed")
+            if window_cut is not None:
+                tally.transient_unit(f"{flow_id}: {window_cut.failed_attempts} host attempt(s) failed, then the "
+                                     f"window ended ({window_cut})")
+            else:
+                tally.transient_unit(f"{flow_id}: every host failed")
             total += before
         elif outcome == "structural":
             # A 200 real body now parsing 0 rows, or the flow withdrawn from BOTH
@@ -828,6 +890,18 @@ def update(unit, since) -> Result:
         save_rotation(out_dir, last_attempted)
         now_m = time.monotonic()
         longest = max(longest, now_m - f0)
+        if window_cut is not None:
+            # A1: the window ended inside this flow after a real failure. Stop now, as the run-ceiling check
+            # would before the next flow (less than the margin is left); the flows after it are deferred, not
+            # failed. (With every host dead the `continue` above reaches that check instead, which says so.)
+            n_left = n_sub - flows_done
+            if n_left:
+                tally.deferred_unit(f"run ceiling: {n_left} flow(s) not started")
+            print(f"[istat] run ceiling: {flow_id} cut at the margin before the run ceiling ({window_cut}) after "
+                  f"{window_cut.failed_attempts} failed host attempt(s) - transient, not deferred; {flows_done} "
+                  f"flow(s) attempted, {n_merged} merged, {n_left} deferred to a later pass, which RESUMES after "
+                  f"{fn!r}", flush=True)
+            break
         if flows_done % PROGRESS_EVERY_FLOWS == 0 or now_m - t_progress >= PROGRESS_EVERY_S:
             t_progress = now_m
             ceiling = ("no run ceiling" if end_ts is None
