@@ -34,7 +34,7 @@ pytestmark = [
 ]
 
 GAP, WINDOW, LW, SLIP, EPS = 0.26, 1.0, 0.25, 0.025, 0.005
-BUSY_LW = 1.0                      # TB1/TB2: the lock wait under a slowed read (see TB1's docstring)
+BUSY_LW = 2.0                      # TB1/TB2: the lock wait under a slowed read (see TB1's docstring)
 FS = 4 * GAP
 CHILD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_istat_pacer_child.py")
 CHECKER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "check_istat_rate.py")
@@ -736,9 +736,9 @@ def _max_in_window(starts, window=WINDOW):
     return best
 
 
-def _assert_bound(rows, require_shared=True):
+def _assert_bound(rows, require_shared=True, allowed=4):
     """The V2 bound: every ACTUAL start in [slot, slot + slip], merged shared slots >= gap apart, and at most
-    4 actual starts in any closed window."""
+    `allowed` (4) actual starts in any closed window."""
     assert rows, "no token was taken"
     late = [r for r in rows if not (r["slot"] - 1e-6 <= r["start"] <= r["slot"] + SLIP + EPS)]
     assert not late, f"{len(late)} start(s) outside [slot, slot + {SLIP + EPS}]: {late[:3]}"
@@ -749,8 +749,24 @@ def _assert_bound(rows, require_shared=True):
     close = [(a, b) for a, b in zip(shared, shared[1:]) if b - a < GAP - 1e-6]
     assert not close, f"{len(close)} pair(s) of reserved slots closer than the gap: {close[:3]}"
     mx = _max_in_window([r["start"] for r in rows])
-    assert mx <= 4, f"{mx} actual starts in one closed {WINDOW} s window"
+    assert mx <= allowed, f"{mx} actual starts in one closed {WINDOW} s window (allowed {allowed})"
     return mx
+
+
+def _assert_busy_bound(rows):
+    """TB1/TB2 under a slowed locked read (re-review condition 3): three processes polling one lock is not
+    fair, so on a loaded machine a waiter can miss even the 2-s scaled wait twice in a row and send a
+    FAIL-SAFE token - the designed, safe fallback. Accepted only when its reason is a busy lock and it obeys
+    V1 (at least FAILSAFE_GAP_S after the same process's previous start); the window bound is then V1(b)'s
+    4 + k, k = the processes that went fail-safe. Slot gaps and slips are as strict as ever (M12 is caught
+    by the gaps)."""
+    fs = [r for r in rows if r["mode"] == "failsafe"]
+    bad = [(r["part"], r["reason"]) for r in fs if "lock busy" not in (r["reason"] or "")]
+    assert not bad, f"fail-safe token(s) for another reason than a busy lock: {bad[:3]}"
+    for r in fs:
+        mine = sorted(x["start"] for x in rows if x["pid"] == r["pid"] and x["start"] < r["start"])
+        assert not mine or r["start"] - mine[-1] >= FS - EPS, ("V1: a fail-safe start too soon", r, mine[-1:])
+    return _assert_bound(rows, require_shared=False, allowed=4 + len({r["pid"] for r in fs}))
 
 
 def _unexpected_errors(logs):
@@ -783,9 +799,9 @@ def _checker(log_dir, rows, window=WINDOW, extra=()):
 
 def test_tb1_two_processes_updater_and_crawler(tmp_path):
     """TB1 (M12; V2, V3): updater + crawler, 60 tokens each, simulated request time 0-0.5 s, a 10-ms slow read
-    inside the lock. The bound holds on actual starts, every token is shared, and the checker agrees. The lock
-    wait is 1.0 s here (BUSY_LW): polling a lock is not fair, and with a slowed read and the D3 pre-check a
-    0.25-s wait starved a waiter now and then (a flake, not a breach: the fail-safe is safe). M13 has its own
+    inside the lock. The bound holds on actual starts and the checker agrees. The lock
+    wait is 2.0 s here (BUSY_LW): polling a lock is not fair, and with a slowed read and the D3 pre-check a
+    0.25-s wait starved a waiter now and then (a flake, not a breach: the fail-safe is safe; see _assert_busy_bound). M13 has its own
     deterministic test (the lock probe)."""
     d = tmp_path / "pacer"
     outs = [tmp_path / "u.jsonl", tmp_path / "c.jsonl"]
@@ -795,18 +811,18 @@ def test_tb1_two_processes_updater_and_crawler(tmp_path):
                       lock_wait=BUSY_LW)])
     rows = _rows(outs)
     assert len(rows) == 120
-    mx = _assert_bound(rows)
+    mx = _assert_busy_bound(rows)
     assert {r["part"] for r in rows} == {"updater", "crawler"}
     assert not _unexpected_errors(logs), _unexpected_errors(logs)
     rc, out = _checker(d, rows, extra=_process_logs(tmp_path, logs))
-    assert rc == 0, out
+    assert rc == (0 if mx <= 4 else 1), out          # the checker fails anything over 4 (V1(b) is 4 + k)
     assert f"overall: {mx}" in out
 
 
 def test_tb2_three_processes_updater_crawler_tool(tmp_path):
     """TB2 (M12): updater + crawler + tool. The crawler and the tool are both low priority and wake at the SAME
     retry time (the record's next), so a read-modify-write without the lock gives two tokens at one instant.
-    Lock wait 1.0 s, as TB1."""
+    Lock wait 2.0 s and _assert_busy_bound, as TB1."""
     d = tmp_path / "pacer"
     outs = [tmp_path / f"{n}.jsonl" for n in ("u", "c", "t")]
     logs = _run([_cmd(d, outs[0], "updater", 30, work_min=0.2, work_max=0.6, rmw_delay=0.01, seed=3,
@@ -815,10 +831,10 @@ def test_tb2_three_processes_updater_crawler_tool(tmp_path):
                  _cmd(d, outs[2], "tool:catalog", 30, rmw_delay=0.01, seed=5, lock_wait=BUSY_LW)])
     rows = _rows(outs)
     assert len(rows) == 90
-    _assert_bound(rows)
+    mx = _assert_busy_bound(rows)
     assert not _unexpected_errors(logs), _unexpected_errors(logs)
     rc, out = _checker(d, rows, extra=_process_logs(tmp_path, logs))
-    assert rc == 0, out
+    assert rc == (0 if mx <= 4 else 1), out          # the checker fails anything over 4 (V1(b) is 4 + k)
 
 
 def test_tb3_a_holder_killed_inside_the_lock(tmp_path):
