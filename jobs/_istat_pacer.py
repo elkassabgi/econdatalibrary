@@ -85,6 +85,8 @@ TURN_DEFAULT_S = 30 * 60.0             # begin_turn(None): now + 30 min, renewed
 LOCK_WAIT_MAX_S = 5.0                  # bounded lock wait, then fail-safe
 LOCK_POLL_S = 0.05                     # poll the lock every 50 ms
 SLIP_MAX_S = 2.0                       # V2: < 4 x GAP_S - 60 = 4 s
+LAST_CHECK_S = 0.5                     # D3: the shared penalty is re-read this long before a slot ...
+PEN_CHECK_LOCK_S = 0.3                 # ... under a lock waited for at most this long (busy = skip the check)
 FUTURE_SLACK_S = 5.0                   # a `next` further than N_MAX x GAP_S + this is clamped
 WAIT_LOG_EVERY_S = 30 * 60.0           # a long wait logs at its start and every 30 min (C10)
 FAILSAFE_BANNER_EVERY_S = 30 * 60.0
@@ -156,10 +158,12 @@ class Token:
     """Token(id, slot, waited, mode) plus what the request log needs. `start` is the ACTUAL send start."""
 
     __slots__ = ("id", "slot", "waited", "mode", "participant", "host", "kind", "path_class", "flow",
-                 "start", "reason")
+                 "start", "reason", "mslot", "mslip")
 
     def __init__(self, id, slot, waited, mode, participant="", host="", kind="", path_class="", flow=None,
                  start=None, reason=None):
+        self.mslot = None                  # the slot on time.monotonic(), when the clock has one (D6)
+        self.mslip = None                  # the monotonic slip of the actual start
         self.id = id
         self.slot = slot
         self.waited = waited
@@ -198,6 +202,8 @@ class Record(NamedTuple):
     turn: float = 0.0
     pen: float = 0.0
     seq: int = 0
+    mnext: float = 0.0          # D2: `next` on time.monotonic() (0 = no copy)
+    mw: float = 0.0             # D2: time.monotonic() at the write (a larger value than now = another boot)
 
     def __getitem__(self, key):                       # rec["next"] as well as rec[0]
         if isinstance(key, str):
@@ -209,6 +215,7 @@ class Record(NamedTuple):
 
 
 _FIELDS = ("next", "upd", "low", "turn", "pen")
+_MONO_FIELDS = ("mnext", "mw")
 _EPOCH_MAX = 9999999999.0
 
 
@@ -233,6 +240,8 @@ def format_record(rec) -> bytes:
     for name in _FIELDS:
         parts.append(f"{name}={_epoch_text(getattr(rec, name))}")
     parts.append(f"seq={int(rec.seq) % 10 ** 12:012d}")
+    for name in _MONO_FIELDS:
+        parts.append(f"{name}={_epoch_text(getattr(rec, name))}")
     body = " ".join(parts)
     crc = zlib.crc32(body.encode("ascii")) & 0xFFFFFFFF
     return (body + f" crc={crc:08x}\n").encode("ascii")
@@ -278,10 +287,11 @@ def parse_record(raw) -> Record:
             raise RecordError("torn (bad field)")
         vals[k] = v
     try:
-        rec = Record(*(float(vals[n]) for n in _FIELDS), seq=int(vals["seq"]))
+        rec = Record(*(float(vals[n]) for n in _FIELDS), seq=int(vals["seq"]),
+                     **{n: float(vals[n]) for n in _MONO_FIELDS})
     except (KeyError, ValueError):
         raise RecordError("torn (bad field)") from None
-    for n in _FIELDS:
+    for n in _FIELDS + _MONO_FIELDS:
         _epoch(getattr(rec, n))
     return rec
 
@@ -294,7 +304,8 @@ def _coerce_record(record) -> Record:
     if hasattr(record, "get") or hasattr(record, "__getitem__"):
         get = record.get if hasattr(record, "get") else (lambda k, d=0: record[k])
         try:
-            return Record(*(float(get(n, 0.0) or 0.0) for n in _FIELDS), seq=int(get("seq", 0) or 0))
+            return Record(*(float(get(n, 0.0) or 0.0) for n in _FIELDS), seq=int(get("seq", 0) or 0),
+                          **{n: float(get(n, 0.0) or 0.0) for n in _MONO_FIELDS})
         except (TypeError, ValueError, KeyError, IndexError) as e:
             raise RecordError(f"not a record: {type(e).__name__}") from None
     raise RecordError(f"not a record: {type(record).__name__}")
@@ -330,37 +341,73 @@ def _clamp(rec: Record, now: float) -> Record:
     upd = min(rec.upd, limit)
     low = min(rec.low, now) if rec.low > now + FUTURE_SLACK_S else rec.low
     turn = min(rec.turn, now + TURN_MARKER_MAX_S)
-    return Record(nxt, upd, low, turn, pen, int(rec.seq))
+    return Record(nxt, upd, low, turn, pen, int(rec.seq), rec.mnext, rec.mw)
+
+
+def _mono_of(clock):
+    """The clock's monotonic reading, or None when it has none (a test's fake clock: the copy is then off)."""
+    m = getattr(clock, "monotonic", None)
+    return float(m()) if m is not None else None
+
+
+def _mono_valid(rec: Record, mono_now) -> bool:
+    """D2: the monotonic copy counts only within one boot (mw <= now) and at a legitimate distance."""
+    if mono_now is None or rec.mw <= 0.0 or rec.mw > mono_now + 1e-6:
+        return False
+    d = rec.mnext - mono_now
+    return 0.0 < d <= 2 * N_MAX * GAP_S + FUTURE_SLACK_S
+
+
+def _apply_mono(rec: Record, now: float, mono_now) -> Record:
+    """D2: a valid monotonic copy moves the wall `next` LATER (a forward wall step cannot shorten a gap);
+    it never moves it earlier, and an invalid one is ignored (another boot cannot block)."""
+    if _mono_valid(rec, mono_now):
+        later = now + (rec.mnext - mono_now)
+        if later > rec.next:
+            return rec._replace(next=later)
+    return rec
+
+
+def _with_mono(rec: Record, now: float, mono_now) -> Record:
+    """Stamp the monotonic copy of `next` onto a record about to be written (cleared without a monotonic
+    clock, so a fake-clock writer never leaves a stale copy behind)."""
+    if mono_now is None:
+        return rec._replace(mnext=0.0, mw=0.0)
+    return rec._replace(mnext=mono_now + max(0.0, rec.next - now), mw=mono_now)
 
 
 # ───────────────────────────────────────────── 6.2 the PURE core ─────────────────────────────────────────────
-def next_slot(record, now, participant, own_last, turn_live=None, *, own_gap=None):
+def next_slot(record, now, participant, own_last, turn_live=None, *, own_gap=None, mono_now=None):
     """-> (slot or None, retry_at, new_record or None). No I/O.
 
     Updater: FIFO reservation, slot = max(now, next, pen, own_last + own_gap); next = slot + GAP_S.
     Low priority: slot = now only when now >= next, now >= pen, now >= own_last + own_gap and, while the turn
     marker is live, now >= low + LOW_TURN_GAP_S; otherwise no slot and retry_at = the earliest time it could
-    pass. A record that is None, empty, torn or of an unknown version reads as "a request was just sent"."""
+    pass. A record that is None, empty, torn or of an unknown version reads as "a request was just sent".
+    mono_now (optional): the reader's time.monotonic(); a valid monotonic copy of next moves next later
+    (D2), and the new record carries a fresh copy."""
     now = float(now)
     try:
         rec = _coerce_record(record) if record is not None else _just_sent(now)
-        for n in _FIELDS:
+        for n in _FIELDS + _MONO_FIELDS:
             _epoch(getattr(rec, n))
     except RecordError:
         rec = _just_sent(now)
-    rec = _clamp(rec, now)
+    rec = _apply_mono(_clamp(rec, now), now, mono_now)
     if turn_live is None:
         turn_live = rec.turn > now
     gap = float(own_gap) if own_gap is not None else own_gap_s(participant)
     own_last = float(own_last or 0.0)
     if participant == "updater":
         slot = max(now, rec.next, rec.pen, own_last + gap)
-        return slot, slot, rec._replace(next=slot + GAP_S, upd=slot, seq=rec.seq + 1)
+        new = rec._replace(next=slot + GAP_S, upd=slot, seq=rec.seq + 1)
+        return slot, slot, _with_mono(new, now, mono_now)
     earliest = max(rec.next, rec.pen, own_last + gap)
     if turn_live:
         earliest = max(earliest, rec.low + LOW_TURN_GAP_S)
     if now >= earliest:
-        return now, now, rec._replace(next=now + GAP_S, low=now, seq=rec.seq + 1)
+        new = rec._replace(next=now + GAP_S, low=now, seq=rec.seq + 1)
+        return now, now, _with_mono(new, now, mono_now)
     return None, earliest, None
 
 
@@ -478,14 +525,53 @@ def _sleep(clock, seconds: float) -> None:
 
 
 def _sleep_until(clock, target: float) -> None:
-    """Sleep until clock.time() >= target. A clock that never advances is a broken test clock: refuse."""
+    """Wait until the wall time `target`, by DURATION (D6): the duration is read once from the wall clock and
+    then slept against a monotonic deadline, so a wall step during the sleep neither adds to the wait nor
+    cuts it. A clock without monotonic() (a test's fake clock) is slept on its own time(). A clock that never
+    advances is a broken test clock: refuse."""
+    dur = target - clock.time()
+    if dur <= 0:
+        return
+    mono = getattr(clock, "monotonic", None)
+    read = mono if mono is not None else clock.time
+    deadline = read() + dur
     stuck = 0
     while True:
-        now = clock.time()
-        if now >= target:
+        before = read()
+        if before >= deadline:
             return
-        _sleep(clock, target - now)
-        if clock.time() <= now:
+        _sleep(clock, deadline - before)
+        if read() <= before:
+            stuck += 1
+            if stuck > 10000:
+                raise RuntimeError("istat pacer: the clock does not advance on sleep")
+        else:
+            stuck = 0
+
+
+def _slot_remaining(clock, tok) -> float:
+    """Seconds until the token's slot: on the monotonic clock when the token has a monotonic slot (D6)."""
+    mono = _mono_of(clock)
+    if mono is not None and getattr(tok, "mslot", None) is not None:
+        return tok.mslot - mono
+    return tok.slot - clock.time()
+
+
+def _wait_for_slot(clock, tok, offset: float) -> None:
+    """Sleep until (slot + offset), against the monotonic slot when there is one: a wall step during the
+    sleep changes nothing (D6). Without one (a fake clock), by the wall-clock duration."""
+    mono = getattr(clock, "monotonic", None)
+    if mono is None or getattr(tok, "mslot", None) is None:
+        _sleep_until(clock, tok.slot + offset)
+        return
+    target = tok.mslot + offset
+    stuck = 0
+    while True:
+        before = float(mono())
+        if before >= target:
+            return
+        _sleep(clock, target - before)
+        if float(mono()) <= before:
             stuck += 1
             if stuck > 10000:
                 raise RuntimeError("istat pacer: the clock does not advance on sleep")
@@ -542,9 +628,11 @@ def _note_path(p: str) -> None:
         _OPENED_PATHS.append(p)
 
 
-def _open_and_lock() -> int:
+def _open_and_lock(wait=None) -> int:
     """os.open the never-deleted lock file and take bytes [0, 256) with LK_NBLCK, polling every LOCK_POLL_S
-    for at most LOCK_WAIT_MAX_S. A PermissionError from os.open under churn is contention (R2057)."""
+    for at most `wait` (default LOCK_WAIT_MAX_S). A PermissionError from os.open under churn is contention
+    (R2057)."""
+    wait_s = LOCK_WAIT_MAX_S if wait is None else float(wait)
     if msvcrt is None:
         raise _PacerFailure("no msvcrt on this platform (fail-safe always)")
     path = os.path.join(STATE_DIR, LOCK_NAME)
@@ -571,8 +659,8 @@ def _open_and_lock() -> int:
                 return fd
             except OSError:
                 os.close(fd)
-        if _real_monotonic() - t0 >= LOCK_WAIT_MAX_S:
-            raise _PacerFailure(f"lock busy for more than {LOCK_WAIT_MAX_S:g} s: {path}")
+        if _real_monotonic() - t0 >= wait_s:
+            raise _PacerFailure(f"lock busy for more than {wait_s:g} s: {path}")
         t1 = _real_perf()
         _real_sleep(LOCK_POLL_S)
         _add_real(_real_perf() - t1)
@@ -741,20 +829,29 @@ def _shared_step(participant, host, kind, path_class, flow, deadline_ts, clock, 
             base = rec if rec is not None else _just_sent(now)
             if _LOCAL_PEN > base.pen:
                 rec = base._replace(pen=_LOCAL_PEN)
-        slot, retry_at, new = next_slot(rec, now, participant, own_last, own_gap=gap)
+        mono_now = _mono_of(clock)
+        slot, retry_at, new = next_slot(rec, now, participant, own_last, own_gap=gap, mono_now=mono_now)
         lines = list(pending)
         if bad is not None:
             _log_once(f"bad-record:{bad}", f"[istat-pacer] record {bad}: read as 'a request was just sent'")
         if slot is None:
             _deadline_check(max(retry_at, now), deadline_ts, "earliest eligible time")   # before any write
-            # a bad record is repaired as "just sent" (rec is then None, or the just-sent record with this
-            # process's penalty merged in)
-            repair = _clamp(rec if rec is not None else _just_sent(now), now) if bad is not None else None
+            # A bad record is repaired as "just sent" (rec is then None, or the just-sent record with this
+            # process's penalty merged in). D1b: a record whose `next` the clamp moved (residue far in the
+            # future) is written back clamped, so nobody waits for the wall clock to reach the residue.
+            repair = None
+            if bad is not None:
+                repair = _clamp(rec if rec is not None else _just_sent(now), now)
+            elif rec is not None and rec.next > _future_limit(now, min(rec.pen, now + PENALTY_MAX_S)):
+                repair = _clamp(rec, now)
+            if repair is not None:
+                repair = _with_mono(_apply_mono(repair, now, mono_now), now, mono_now)
             return repair, lines, ("wait", retry_at)
         _deadline_check(slot, deadline_ts, "slot")                                     # before any write
         if participant == "updater" and _TURN_RENEW:
             new = new._replace(turn=max(new.turn, now + min(TURN_DEFAULT_S, TURN_MARKER_MAX_S)))
         tok = Token(f"{os.getpid()}-{new.seq}", slot, 0.0, "shared", participant, host, kind, path_class, flow)
+        tok.mslot = None if mono_now is None else mono_now + (slot - now)       # D6: the slot on the monotonic clock
         lines.append((now, _r_line(tok, now)))
         return new, lines, ("slot", tok)
     result = _locked_rmw(clock, fn)
@@ -840,8 +937,22 @@ def _acquire_loop(participant, host, kind, path_class, flow, deadline_ts, clock,
             _sleep_until(clock, min(retry_at, now + WAIT_LOG_EVERY_S))
             continue
         tok = val                                       # committed: use this slot exactly once
-        _sleep_until(clock, tok.slot)
+        if _slot_remaining(clock, tok) > LAST_CHECK_S:
+            # D3: a penalty ANOTHER process set after this slot was reserved. Re-read it before the last
+            # LAST_CHECK_S of the wait (so no file I/O comes after the final slip check).
+            _wait_for_slot(clock, tok, -LAST_CHECK_S)
+            pen = _peek_pen(clock)
+            if pen is not None and pen > tok.slot + 1e-6:
+                now = clock.time()
+                with _PROC_LOCK:
+                    _STATS["abandoned"] += 1
+                _log(f"[istat-pacer] token {tok.id} abandoned: a penalty until {_iso(pen)} covers its slot")
+                pending.append((now, f"X {_iso(now)} tok={tok.id} reason=penalty slip={now - tok.slot:.3f}"))
+                continue
+        _wait_for_slot(clock, tok, 0.0)
         now = clock.time()
+        mono = _mono_of(clock)
+        slip = (mono - tok.mslot) if (mono is not None and tok.mslot is not None) else (now - tok.slot)
         if now < _LOCAL_PEN:
             # A 429 arrived (in this process) after this slot was reserved: do not send into the penalty.
             with _PROC_LOCK:
@@ -850,14 +961,16 @@ def _acquire_loop(participant, host, kind, path_class, flow, deadline_ts, clock,
                  f"was reserved")
             pending.append((now, f"X {_iso(now)} tok={tok.id} reason=penalty slip={now - tok.slot:.3f}"))
             continue
-        if now > tok.slot + SLIP_MAX_S:
-            # V2(b): woke too late. Do not send; the next lock session logs the X line.
+        if slip > SLIP_MAX_S:
+            # V2(b): woke too late (measured on the monotonic clock when there is one, D6). Do not send; the
+            # next lock session logs the X line.
             with _PROC_LOCK:
                 _STATS["abandoned"] += 1
-            _log(f"[istat-pacer] token {tok.id} abandoned: woke {now - tok.slot:.3f} s after its slot "
+            _log(f"[istat-pacer] token {tok.id} abandoned: woke {slip:.3f} s after its slot "
                  f"(> {SLIP_MAX_S:g} s); taking a new one")
-            pending.append((now, f"X {_iso(now)} tok={tok.id} reason=late slip={now - tok.slot:.3f}"))
+            pending.append((now, f"X {_iso(now)} tok={tok.id} reason=late slip={slip:.3f}"))
             continue
+        tok.mslip = slip if tok.mslot is not None else None
         with _PROC_LOCK:
             _STATS["shared"] += 1
         return _finish(tok, clock, t_call)
@@ -879,15 +992,19 @@ def started(token, clock=time) -> float:
     anything runs between acquire() and the send. outcome() logs it with its slip."""
     t = clock.time()
     token.start = t
+    mono = _mono_of(clock)
+    if mono is not None and getattr(token, "mslot", None) is not None:
+        token.mslip = mono - token.mslot
     try:
-        late = token.mode in ("shared", "failsafe") and t - float(token.slot) > SLIP_MAX_S
+        slip = token.mslip if getattr(token, "mslip", None) is not None else t - float(token.slot)
+        late = token.mode in ("shared", "failsafe") and slip > SLIP_MAX_S
     except (TypeError, ValueError):
         late = False
     if late:
         # Not enforced here (the caller is about to send); counted, logged, and the receipt fails on it.
         with _PROC_LOCK:
             _STATS["late_sends"] = _STATS.get("late_sends", 0) + 1
-        _log(f"[istat-pacer] LATE SEND tok={token.id}: {t - float(token.slot):.3f} s after its slot "
+        _log(f"[istat-pacer] LATE SEND tok={token.id}: {slip:.3f} s after its slot "
              f"(> {SLIP_MAX_S:g} s); send at once after acquire()")
     return t
 
@@ -902,6 +1019,8 @@ def outcome(token, text, elapsed_s) -> None:
         t_line = float(start) + max(0.0, el)
         line = (f"O {_iso(t_line)} tok={_f(token.id)} outcome={_f(text)} el={el:.3f} start={float(start):.3f} "
                 f"slip={float(start) - float(token.slot):.3f}")
+        if getattr(token, "mslip", None) is not None:
+            line += f" mslip={float(token.mslip):.3f}"      # D6: the slip on the monotonic clock
         lines = [(t_line, line)]
         if token.mode != "shared":
             _unlogged(lines)
@@ -943,8 +1062,10 @@ def penalize(seconds, participant, clock=time) -> float:
     line = (now, f"P {_iso(now)} {now:.3f} pid={os.getpid()} part={p} seconds={s:.3f} until={until:.3f}")
 
     def fn(rec, bad, now2):
-        base = _clamp(rec if rec is not None else _just_sent(now2), now2)
-        return base._replace(pen=max(base.pen, until)), [line], None
+        # D7: an empty or torn record is "a request was just sent" here too; D2: keep the monotonic copy
+        mono = _mono_of(clock)
+        base = _apply_mono(_clamp(rec if rec is not None else _just_sent(now2), now2), now2, mono)
+        return _with_mono(base._replace(pen=max(base.pen, until)), now2, mono), [line], None
     try:
         with _PROC_LOCK:
             _locked_rmw(clock, fn)
@@ -957,10 +1078,12 @@ def penalize(seconds, participant, clock=time) -> float:
 
 def _write_turn(clock, value_fn, what: str) -> bool:
     def fn(rec, bad, now):
-        base = _clamp(rec if rec is not None else _just_sent(now), now)
+        # D7: an empty or torn record is "a request was just sent" here too; D2: keep the monotonic copy
+        mono = _mono_of(clock)
+        base = _apply_mono(_clamp(rec if rec is not None else _just_sent(now), now), now, mono)
         turn = value_fn(now)
         line = (now, f"T {_iso(now)} {now:.3f} pid={os.getpid()} turn={turn:.3f} what={what}")
-        return base._replace(turn=turn), [line], True
+        return _with_mono(base._replace(turn=turn), now, mono), [line], True
     try:
         with _PROC_LOCK:
             return bool(_locked_rmw(clock, fn))
@@ -992,6 +1115,24 @@ def end_turn(clock=time) -> bool:
     with _PROC_LOCK:
         _TURN_RENEW = False
     return _write_turn(clock, lambda now: now, "end")
+
+
+def _peek_pen(clock):
+    """D3: the shared penalty end (wall time) read under a SHORT lock (PEN_CHECK_LOCK_S), or None when it
+    cannot be read now (no shared state, a busy lock, a bad record). Writes nothing. Never raises."""
+    if msvcrt is None:
+        return None
+    try:
+        with _PROC_LOCK:
+            fd = _open_and_lock(wait=PEN_CHECK_LOCK_S)
+            try:
+                raw = _read_record(fd)
+            finally:
+                _unlock_close(fd)
+        rec = parse_record(raw)
+    except Exception:                                  # noqa: BLE001
+        return None
+    return _clamp(rec, clock.time()).pen
 
 
 def _read_turn(clock):

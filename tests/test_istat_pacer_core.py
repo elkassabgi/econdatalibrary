@@ -263,6 +263,34 @@ def test_residue_beyond_any_legitimate_queue_is_clamped(no_qpm):
     assert pacer.next_slot(_rec(next=T0 + lim + 1), T0, "updater", 0.0)[0] == T0 + pacer.FAILSAFE_GAP_S
 
 
+def test_d2_a_valid_monotonic_copy_moves_next_later_never_earlier(no_qpm):
+    """D2 (pure): the copy counts within one boot (mw <= mono_now) at a distance in (0, 133 s]."""
+    m = 1000.0
+    rec = _rec(next=T0 - 1, mnext=m + 15.0, mw=m - 1.0)
+    assert pacer.next_slot(rec, T0, "updater", 0.0, mono_now=m)[0] == T0 + 15.0          # forward wall step
+    rec = _rec(next=T0 + 50, mnext=m + 10.0, mw=m - 1.0)
+    assert pacer.next_slot(rec, T0, "updater", 0.0, mono_now=m)[0] == T0 + 50.0          # never earlier
+    s, retry, _ = pacer.next_slot(_rec(next=T0 - 1, mnext=m + 15.0, mw=m - 1.0), T0, "crawler", 0.0, mono_now=m)
+    assert s is None and retry == T0 + 15.0
+
+
+@pytest.mark.parametrize("mnext,mw,why", [(50_016.0, 50_000.0, "another boot: mw is later than now"),
+                                          (1000.0 + 500.0, 999.0, "implausible distance"),
+                                          (999.0, 990.0, "in the past"), (0.0, 0.0, "no copy")])
+def test_d2_an_invalid_monotonic_copy_is_ignored(mnext, mw, why, no_qpm):
+    rec = _rec(next=T0 - 1, mnext=mnext, mw=mw)
+    assert pacer.next_slot(rec, T0, "updater", 0.0, mono_now=1000.0)[0] == T0, why
+
+
+def test_d2_the_new_record_carries_a_fresh_copy_and_a_fake_clock_clears_it(no_qpm):
+    slot, _, new = pacer.next_slot(_rec(next=T0 - 1), T0, "updater", 0.0, mono_now=1000.0)
+    assert new.mw == 1000.0 and new.mnext == 1000.0 + (new.next - T0) == 1016.0
+    _, _, new2 = pacer.next_slot(_rec(next=T0 - 1, mnext=1016.0, mw=1000.0), T0, "updater", 0.0)
+    assert new2.mnext == 0.0 and new2.mw == 0.0
+    back = pacer.parse_record(pacer.format_record(new))
+    assert back.mnext == new.mnext and back.mw == new.mw
+
+
 def test_ta5_turn_and_penalty_are_clamped(no_qpm):
     rec = _rec(next=T0 - 1, turn=T0 + 100 * 3600.0, pen=T0 + 100 * 3600.0, low=T0 + 9999.0)
     s, _, new = pacer.next_slot(rec, T0, "updater", 0.0)
@@ -418,7 +446,9 @@ def test_a_wrong_argument_raises_and_sends_nothing(args, linux_like):
                                           ("Fri, 15 Jan 2027 07:00:00 GMT", 60.0),            # in the past
                                           ("Mon, 18 Jan 2027 08:00:00 GMT", 48 * 3600.0),     # 3 days ahead
                                           ("Friday, 15-Jan-27 08:05:00 GMT", 300.0),          # RFC 850
-                                          ("Fri Jan 15 08:05:00 2027", 300.0)])               # asctime
+                                          ("Fri Jan 15 08:05:00 2027", 300.0),                # asctime (D5)
+                                          ("Fri, 15 Jan 2027 08:05:00 -0000", 300.0),         # -0000 (D5)
+                                          ("Fri, 15 Jan 2027 09:05:00 +0100", 300.0)])
 def test_v6_retry_after_delta_seconds_and_http_date(value, expect):
     now = 1800000000.0 - 1800000000.0 % 86400                    # any fixed now
     import datetime as dt

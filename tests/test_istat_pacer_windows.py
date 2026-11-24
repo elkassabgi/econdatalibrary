@@ -222,11 +222,13 @@ def test_a_late_wake_abandons_the_token_and_takes_a_new_one(state, capsys):
     clock = OvershootClock(10.0)
     tok = pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=clock)
     out = capsys.readouterr().out
-    assert "abandoned: woke 10.000 s after its slot" in out
-    assert pacer.stats()["abandoned"] == 1 and tok.slot >= T0 + 40.0
+    import re
+    m = re.search(r"abandoned: woke (\d+\.\d+) s after its slot", out)
+    assert m and float(m.group(1)) > 9.0, out           # the overshoot lands on the D3 pre-check sleep (-0.5 s)
+    assert pacer.stats()["abandoned"] == 1 and tok.slot >= T0 + 39.0
     assert tok.start - tok.slot <= pacer.SLIP_MAX_S
     x = _log_lines(state, "X")
-    assert len(x) == 1 and "reason=late slip=10.000" in x[0]
+    assert len(x) == 1 and "reason=late slip=9." in x[0]
     assert len(_log_lines(state, "R")) == 2
 
 
@@ -241,6 +243,133 @@ def test_the_outcome_line_carries_the_actual_start(state):
     o = _log_lines(state, "O")
     assert len(o) == 1
     assert f"start={t_send:.3f}" in o[0] and "slip=1.250" in o[0] and "outcome=200" in o[0]
+
+
+# ───────────── the coordinator's D1b, D2, D3, D6, D7 (review_A/PHASE1.md sections 5 and 7) ─────────────
+class MonoClock(FakeClock):
+    """Wall time AND a system-wide monotonic clock (as time.monotonic is on this machine). step() moves the
+    WALL clock only; step_on_sleep makes the first long sleep carry a wall step."""
+
+    def __init__(self, step_on_sleep=0.0):
+        super().__init__()
+        self.m = 1000.0
+        self.step_on_sleep = step_on_sleep
+
+    def monotonic(self):
+        return self.m
+
+    def step(self, dt):
+        self.t += dt
+
+    def sleep(self, s):
+        self.sleeps.append(s)
+        s = max(0.0, s)
+        self.t += s
+        self.m += s
+        if self.step_on_sleep and s > 1.0:
+            self.t += self.step_on_sleep
+            self.step_on_sleep = 0.0
+
+
+def test_d2_a_forward_wall_step_does_not_shorten_the_gap(state):
+    """D2: a FORWARD wall step of 1 h right after a start. With the wall clock alone the next token starts at
+    once (true time 0 s later); the monotonic copy of next keeps it one gap later in TRUE time."""
+    _seed(state)
+    clock = MonoClock()
+    pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=clock)
+    m_first = clock.m
+    clock.step(3600.0)
+    pacer.acquire("crawler", "esploradati.istat.it", "http", "data", clock=clock)
+    assert clock.m - m_first >= pacer.GAP_S - 1e-6, clock.m - m_first
+    rec = _record(state)
+    assert rec.mw > 0 and rec.mnext > rec.mw                             # the copy is written
+
+
+def test_d2_a_backward_wall_step_waits_at_most_the_failsafe_gap(state):
+    """D2: a BACKWARD wall step of 1 h makes the stored wall next look 1 h ahead; the clamp bounds the wait
+    to 64 s of true time, and the monotonic copy keeps it at least one gap."""
+    _seed(state)
+    clock = MonoClock()
+    pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=clock)
+    m_first = clock.m
+    clock.step(-3600.0)
+    pacer.acquire("crawler", "esploradati.istat.it", "http", "data", clock=clock)
+    assert pacer.GAP_S - 1e-6 <= clock.m - m_first <= pacer.FAILSAFE_GAP_S + 1e-6, clock.m - m_first
+
+
+def test_d2_a_monotonic_copy_from_another_boot_never_blocks(state):
+    """A copy written in another boot (its mw is larger than this boot's monotonic now) is ignored."""
+    _put_record(state, pacer.format_record(pacer.Record(next=T0 - 100.0, seq=1, mnext=50_000.0, mw=49_990.0)))
+    clock = MonoClock()                                                  # monotonic 1000 < mw
+    tok = pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=clock)
+    assert tok.slot == T0 and clock.m == 1000.0
+
+
+def test_d6_a_backward_wall_step_during_the_sleep_adds_nothing(state):
+    """D6: the slot wait is by duration on the monotonic clock. A 1-h backward wall step during a 30-s wait
+    must not add an hour (a 'sleep until the wall clock reaches the slot' loop does)."""
+    _seed(state, next=T0 + 30.0)
+    clock = MonoClock(step_on_sleep=-3600.0)
+    tok = pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=clock)
+    assert tok.slot == T0 + 30.0
+    assert 30.0 - 1e-6 <= clock.m - 1000.0 <= 30.0 + 1e-6, clock.m - 1000.0
+    assert tok.mslip is not None and abs(tok.mslip) < 1e-6
+
+
+class OtherProcessPenalty(FakeClock):
+    """ANOTHER process records a 429 (writes pen into the shared record) while this one waits for its slot.
+    This process's own _LOCAL_PEN never hears of it."""
+
+    def __init__(self, state_dir):
+        super().__init__()
+        self.state_dir = state_dir
+        self.fired = False
+
+    def sleep(self, s):
+        if not self.fired and s > 1.0:
+            self.fired = True
+            rec = _record(self.state_dir)
+            _put_record(self.state_dir, pacer.format_record(rec._replace(pen=self.t + 300.0)))
+        super().sleep(s)
+
+
+def test_d3_a_penalty_set_by_another_process_holds_a_reserved_slot(state, capsys):
+    """D3: a slot reserved before ANOTHER process's 429 is not sent into the penalty: the pre-check before the
+    last 0.5 s of the wait drops it, and the new token starts after the penalty."""
+    _seed(state, next=T0 + 30.0)
+    clock = OtherProcessPenalty(state)
+    tok = pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=clock)
+    assert clock.fired and pacer._LOCAL_PEN == 0.0
+    assert tok.slot >= T0 + 300.0, tok
+    assert any("reason=penalty" in x for x in _log_lines(state, "X"))
+    assert "covers its slot" in capsys.readouterr().out
+
+
+def test_d1b_a_crawler_behind_residue_writes_the_clamp_back(state):
+    """D1b: a low-priority reader that cannot take a slot writes the clamped record back, so it is not held
+    in 64-s steps until the wall clock reaches a far-future residue."""
+    _seed(state, next=T0 + 36000.0)
+    clock = FakeClock()
+    tok = pacer.acquire("crawler", "esploradati.istat.it", "http", "data", clock=clock)
+    assert tok.slot == T0 + pacer.FAILSAFE_GAP_S, tok.slot - T0
+
+
+@pytest.mark.parametrize("payload", [b"", b"ekd-istat-pacer/1 torn\n"])
+@pytest.mark.parametrize("writer", ["begin_turn", "end_turn", "penalize"])
+def test_d7_side_writers_keep_empty_or_torn_as_just_sent(state, payload, writer):
+    """D7 / G8: begin_turn, end_turn and penalize rebuild an empty or torn record as 'a request was just
+    sent' (next >= now + 64 s), never as a free record (next = 0)."""
+    _put_record(state, payload)
+    clock = FakeClock()
+    if writer == "begin_turn":
+        assert pacer.begin_turn(T0 + 600.0, clock=clock)
+    elif writer == "end_turn":
+        assert pacer.end_turn(clock=clock)
+    else:
+        pacer.penalize(30, "crawler", clock=clock)
+    assert _record(state).next >= T0 + pacer.FAILSAFE_GAP_S
+    tok = pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=clock)
+    assert tok.slot >= T0 + pacer.FAILSAFE_GAP_S
 
 
 def test_window_end_leaves_the_record_unchanged(state):
