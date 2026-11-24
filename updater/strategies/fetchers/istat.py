@@ -355,13 +355,15 @@ def window_stop_piece_min() -> float:
 # reaches only Deadline).
 #
 # TURN_MAX_MIN_DEFAULT = 60, CHOSEN from the C5 simulation (2026-11-24; F:/work/econ_finish/istat_windowstop/
-# sim/c5_56_c1.0.json): tools/measure_ci_lag.py UnitBook.run_pass (production order and admission, called) over 56
-# nightly passes with the measured November budgets, from a copy of state.db as of 2026-11-17. Against post-#325 main
-# (istat undeclared, stopping at the ceiling): no cap gave istat 4,412 min in 55 turns but left the leftover drain
-# 286 min (main: 2,476); cap 60 gave istat 2,189 min in 55 turns (main: 2,597 in 14), the drain 2,313 min, eia 39
-# finishes (main 29) with its longest gap 71.9 h (main 97.6), and the same hard stops (1) and biotrademerch
-# admissions (1) as main. Caps 90 and 120 sat between (drain 1,220 / 823 min, eia 37, eia gap 95 h). Model limits:
-# each unit's work is its newest real run, istat never finishes, the drain minutes are an upper bound.
+# sim/c5_56_c1.0.json and, the same budgets in reverse order, sim/c5_56_rev.json): tools/measure_ci_lag.py
+# UnitBook.run_pass (production order and admission, called) over 56 nightly passes with the measured November
+# budgets, from a copy of state.db as of 2026-11-17, against post-#325 main (istat undeclared, stopping at the
+# ceiling). What held in BOTH orders: the leftover drain had 2,313 / 2,443 min with cap 60 against main's 2,476 /
+# 2,292, but 1,220 / 1,140 with cap 90, 823 / 794 with cap 120 and 286 / 285 with no cap; istat had 55-56 turns and
+# 2,189 / 2,229 min with cap 60 (main: 14-18 turns, 2,597 / 2,896 min); eia finished 36-40 times in every declared
+# arm against main's 28-29. What did NOT hold: the eia longest gap (72-97 h in every arm, by order) and which cap
+# gave eia the most finishes - so they decide nothing. Hard stops: 0-2 in every arm. Model limits: each unit's work
+# is its newest real run, istat never finishes, the drain minutes are an upper bound.
 TURN_MAX_MIN_DEFAULT = 60.0
 
 
