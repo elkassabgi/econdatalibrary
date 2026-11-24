@@ -202,8 +202,16 @@ def _no_production_paths(tmp_path_factory):
         from econdl import _catalog as econdl_catalog
     except Exception:                                    # noqa: BLE001 - a test tree without the client
         econdl_catalog = None
+    try:
+        from jobs import _istat_pacer                    # the machine's ISTAT pacer state (DESIGN 6.8)
+    except Exception:                                    # noqa: BLE001 - a tree without the pacer
+        _istat_pacer = None
     own = tmp_path_factory.getbasetemp() / "machine-paths" / uuid.uuid4().hex
     with pytest.MonkeyPatch.context() as mp:
+        if _istat_pacer is not None:
+            # E:\research\econfindatalibrary\logs\istat_pacer is the lock and request log EVERY ISTAT request
+            # on this workstation shares. A test that took it would pace production, or be paced by it.
+            mp.setattr(_istat_pacer, "STATE_DIR", str(own / "istat_pacer"))
         mp.setattr(catalog_path, "LOCK_PATH", str(own / "state" / "writer.lock"))
         mp.setattr(cutover, "FLAG_PATH", str(own / "CUTOVER"))
         mp.setattr(catalog_path, "BUILD_PATH", str(own / "live" / "data" / "catalog.db"))
@@ -247,6 +255,91 @@ def _no_process_leak(request):
 def pytest_configure(config):
     config.addinivalue_line("markers", "state_sync_refusal_expected: the guard's own can-fail test")
     config.addinivalue_line("markers", "wrangler_refusal_expected: the wrangler guard's own can-fail test")
+    config.addinivalue_line("markers", "istat_pacer_real: this test runs the REAL jobs/_istat_pacer (tmp folder, "
+                                       "never the machine's); every other test gets the zero-wait stub")
+
+
+ISTAT_PACER_REAL_SLEEP_MAX_S = 2.0
+
+
+class ZeroWaitIstatPacer:
+    """THE RECORDING, ZERO-WAIT ISTAT PACER every test gets unless it opts in to the real one (verdict V7).
+
+    On Linux CI the real pacer is in fail-safe ALWAYS (one token per 64 s); on the workstation a tmp folder is
+    in shared mode (16 s per token). A test that reaches the fetcher's update() or the crawler with a real clock
+    would then sleep for real. So this stand-in answers every call at once: a token whose slot is the caller's
+    clock now (mode "stub"), and it raises WindowEnd only where a zero wait would (now > deadline - 1 s, the
+    real rule). Every call is recorded in `calls` for the rigs to assert on. It is installed through the
+    module's _TEST_OVERRIDE seam, which the real functions check first, so it reaches every importer whatever
+    its import style."""
+
+    def __init__(self):
+        self.calls = []
+
+    @staticmethod
+    def _now(clock):
+        import time as _time
+        return (clock if clock is not None else _time).time()
+
+    def acquire(self, participant, host, kind, path_class, *, deadline_ts=None, flow=None, clock=None):
+        from jobs import _istat_pacer as pacer
+        now = self._now(clock)
+        self.calls.append(("acquire", participant, host, kind, path_class, flow, deadline_ts, now))
+        if deadline_ts is not None and now > float(deadline_ts) - 1.0:
+            raise pacer.WindowEnd("zero-wait stub: now is later than deadline - 1 s", slot=now,
+                                  deadline_ts=deadline_ts)
+        return pacer.Token(f"stub-{len(self.calls)}", now, 0.0, "stub", participant, pacer.host_of(host), kind,
+                           path_class, flow, start=now)
+
+    def outcome(self, token, text, elapsed_s):
+        self.calls.append(("outcome", getattr(token, "id", None), text, elapsed_s))
+
+    def penalize(self, seconds, participant, clock=None):
+        now = self._now(clock)
+        self.calls.append(("penalize", seconds, participant, now))
+        return now + float(seconds)
+
+    def begin_turn(self, end_ts=None, clock=None):
+        self.calls.append(("begin_turn", end_ts))
+        return True
+
+    def end_turn(self, clock=None):
+        self.calls.append(("end_turn",))
+        return True
+
+    def yield_to_turn(self, log=None, clock=None):
+        self.calls.append(("yield_to_turn",))
+        return 0.0
+
+    def describe(self):
+        self.calls.append(("describe",))
+        return "[istat-pacer] state (test stub); mode stub (zero-wait); gap 16 s; budget 4/min"
+
+
+@pytest.fixture(autouse=True)
+def _istat_pacer_zero_wait(request):
+    """AND NO TEST SLEEPS FOR REAL ON THE ISTAT PACER (verdict V7). Every test gets ZeroWaitIstatPacer; a test
+    marked `istat_pacer_real` runs the real module (its folder is the tmp one _no_production_paths set). Either
+    way the test FAILS at teardown when the pacer slept more than ISTAT_PACER_REAL_SLEEP_MAX_S of REAL time in
+    this process, and the module's per-process memory (own last start, fail-safe episode, counters) starts
+    empty and is cleared after. Harmless while nothing imports the pacer: it only sets module attributes."""
+    try:
+        from jobs import _istat_pacer as pacer
+    except Exception:                                    # noqa: BLE001 - a tree without the pacer
+        yield
+        return
+    real = request.node.get_closest_marker("istat_pacer_real") is not None
+    pacer._reset_process_state()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(pacer, "_TEST_OVERRIDE", None if real else ZeroWaitIstatPacer())
+        mp.setattr(pacer, "_REAL_SLEPT_S", 0.0)
+        yield
+        slept = pacer._REAL_SLEPT_S
+    pacer._reset_process_state()
+    if slept > ISTAT_PACER_REAL_SLEEP_MAX_S:
+        pytest.fail(f"{request.node.nodeid} slept {slept:.2f} s of REAL time inside jobs/_istat_pacer "
+                    f"(limit {ISTAT_PACER_REAL_SLEEP_MAX_S:g} s): give the pacer a fake clock, or let the "
+                    f"zero-wait stub answer (verdict V7)", pytrace=False)
 
 
 @pytest.fixture(autouse=True)
