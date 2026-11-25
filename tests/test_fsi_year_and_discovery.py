@@ -135,7 +135,7 @@ def _xlsx(year, countries=tuple(COUNTRIES), year_cell="int", no_year=False, cols
     ws.append(["Country"] + ([] if no_year else ["Year"]) + ["Rank"] + list(cols))
     for i, c in enumerate(countries):
         yc = {"int": year, "datetime": dt.datetime(year, 1, 1), "str": str(year),
-              "mixed": year if i else year - 1}[year_cell]
+              "mixed": year if i else year - 1, "bad-one": year if i else "n/a"}[year_cell]
         vals = [_v(i, j, year, bump) for j in range(len(cols))]
         if plant and plant[0] == c:
             vals[cols.index(plant[1])] = plant[2]
@@ -198,6 +198,34 @@ def test_name_and_folder_years():
     assert F.name_year(PROFILES) is None
 
 
+FIXTURE = os.path.join(ROOT, "tests", "fixtures", "fsi", "excel_anchors_20261125.html")
+PADDED = '<a href=" https://fragilestatesindex.org/wp-content/uploads/2023/06/FSI-2023-DOWNLOAD.xlsx ">'
+
+
+def test_the_committed_page_fixture_holds_36_anchors_one_padded_and_yields_the_18_years():
+    html = open(FIXTURE, encoding="utf-8").read()
+    xlsx = [h for h in F.hrefs(html) if h.lower().endswith(".xlsx")]
+    assert len(xlsx) == 36 and html.count(PADDED) == 1
+    assert xlsx.count(REAL[2023]) == 2                       # the padded href is read, padding stripped
+    kept, left_out, dup = F.year_links(html)
+    assert kept == REAL and left_out == [] and dup == {}
+
+
+def test_a_padded_href_alone_is_found():
+    kept, _l, _d = F.year_links(_page(PADDED).text)
+    assert kept == {2023: REAL[2023]}
+
+
+def test_the_committed_page_runs_end_to_end(store, monkeypatch):
+    _pin(monkeypatch, JUL_2024)
+    _seed(store, list(REAL))
+    page = _Resp(200, open(FIXTURE, "rb").read())
+    site = _serve(monkeypatch, {PAGE: page, **_files(list(REAL))})
+    res = F.update(None, "2023-12-31")
+    assert res.status == "no_change", (res.status, res.error)
+    assert sorted(site.gets[1:]) == sorted(REAL.values())    # each year fetched once
+
+
 def test_the_verbatim_page_keeps_all_18_years_and_drops_the_distractors():
     kept, left_out, dup = F.year_links(ALL.text)
     assert kept == REAL and left_out == [] and dup == {}
@@ -221,16 +249,19 @@ def test_an_fsi_2024_file_under_a_2025_folder_lands_on_2024(store, monkeypatch):
     assert st[("FSI_FP:Total:Country 01", dt.date(2024, 12, 31))] == 77.7
     assert not any(d.year == 2025 for _k, d in st)
     assert FOREIGN not in site.gets and PROFILES not in site.gets
-    assert res.status == "partial" and res.error.startswith("newest data gap: the newest FSI year held is 2024; "
-                                                            "2025 is overdue"), res.error
+    assert res.status == "ok", (res.status, res.error)        # the gap is a note, never a demotion (R2209)
+    assert res.error.startswith("newest data gap: the newest FSI year held is 2024; 2025 and 2026 are overdue"), \
+        res.error
 
 
 @pytest.mark.parametrize("url, body, why", [
-    (U2024_FAR, _xlsx(2024), "the Year column says 2024 but the upload folder is 2026"),
+    (U2024_FAR, _xlsx(2024), "the year is 2024 but the upload folder is 2026"),
+    (U2024_FAR, _xlsx(2024, no_year=True), "the year is 2024 but the upload folder is 2026"),
     (U2024, _xlsx(2023), "the Year column says 2023 but the file name says 2024"),
-    (U2024, _xlsx(2024, no_year=True), "no Year column"),
     (U2024, _xlsx(2024, year_cell="mixed"), "the Year column holds [2023, 2024]"),
-], ids=["folder-year-plus-2", "name-vs-column", "no-year-column", "two-years"])
+    (U2024, _xlsx(2024, year_cell="bad-one"), "the Year column holds [2024] and 1 unreadable cell(s)"),
+], ids=["folder-year-plus-2", "no-year-column-folder-plus-2", "name-vs-column", "two-years",
+        "r1-a-row-with-values-and-an-unreadable-year"])
 def test_a_year_disagreement_refuses_and_merges_nothing(store, monkeypatch, url, body, why):
     _pin(monkeypatch, NOV_2026)
     _seed(store, [2022, 2023])
@@ -243,6 +274,50 @@ def test_a_year_disagreement_refuses_and_merges_nothing(store, monkeypatch, url,
     assert str(e.value).startswith("fsi_fundforpeace: 2024: "), str(e.value)[:72]
     assert "(3/3 sub-unit(s) REFUSED by the fetcher" in str(e.value) and _stuck_fail(e)
     assert store.read_bytes() == before
+
+
+def test_a_file_without_a_year_column_is_labelled_from_its_name_with_a_note(store, monkeypatch):
+    _pin(monkeypatch, JUL_2024)
+    _seed(store, [2022, 2023])
+    _serve(monkeypatch, {PAGE: _page(f'<a href="{U2024_REL}">', ANCHORS[2023], ANCHORS[2022]),
+                         U2024: _ok(_xlsx(2024, no_year=True)), **_files([2023, 2022])})
+    res = F.update(None, "2023-12-31")
+    assert res.status == "ok", (res.status, res.error)
+    assert res.error.startswith("year(s) 2024: no Year column, labelled from the file name"), res.error
+    assert ("FSI_FP:Total:Country 01", dt.date(2024, 12, 31)) in _stored(store)
+
+
+def _with_footer(year):
+    """Reviewer probe P3: an FSI file with a footer note row (no indicator value)."""
+    wb = openpyxl.load_workbook(io.BytesIO(_xlsx(year)))
+    ws = wb.active
+    ws.append(["Source: The Fund for Peace, fragilestatesindex.org"])
+    bio = io.BytesIO()
+    wb.save(bio)
+    return bio.getvalue()
+
+
+def test_p3_a_footer_note_row_refuses_nothing(store, monkeypatch):
+    _pin(monkeypatch, JUL_2024)
+    _seed(store, [2022, 2023])
+    _serve(monkeypatch, {PAGE: _page(ANCHORS[2023], ANCHORS[2022]),
+                         REAL[2023]: _ok(_with_footer(2023)), REAL[2022]: _ok(_xlsx(2022))})
+    res = F.update(None, "2023-12-31")
+    assert res.status == "no_change", (res.status, res.error)
+
+
+def test_change_from_previous_year_is_skipped_and_the_stored_series_stay(store, monkeypatch):
+    _pin(monkeypatch, JUL_2024)
+    chg = {(f"FSI_FP:Change from Previous Year:Country {i:02d}", dt.date(2020, 12, 31)): 0.5 for i in (1, 2)}
+    _seed(store, [2020, 2021], extra=chg)
+    cols2020 = tuple(INDICATORS) + ("Change from Previous Year",)
+    _serve(monkeypatch, {PAGE: _page(ANCHORS[2021], ANCHORS[2020]),
+                         REAL[2021]: _ok(_xlsx(2021)), REAL[2020]: _ok(_xlsx(2020, cols=cols2020))})
+    res = F.update(None, "2021-12-31")
+    assert res.status in ("ok", "no_change"), (res.status, res.error)
+    st = _stored(store)
+    assert {k for k in st if k[0].startswith("FSI_FP:Change from Previous Year:")} == set(chg)   # kept, none new
+    assert all(st[k] == v for k, v in chg.items())
 
 
 @pytest.mark.parametrize("cell", ["datetime", "str"])
@@ -280,6 +355,31 @@ def test_a_newest_file_with_other_indicator_columns_is_refused(store, monkeypatc
     assert store.read_bytes() == before
 
 
+def test_p2_two_transient_newest_years_do_not_make_a_structural_refusal(store, monkeypatch):
+    """Reviewer probe P2: the real files differ ('Change from Previous Year' in 2019/2020). With 2023 and 2022
+    transient, the column rule must not compare 2021 with 2020: it checks only the newest LISTED year."""
+    _pin(monkeypatch, NOV_2026)
+    _seed(store, [2020, 2021, 2022, 2023])
+    cols2020 = tuple(INDICATORS) + ("Change from Previous Year",)
+    _serve(monkeypatch, {PAGE: _page(ANCHORS[2023], ANCHORS[2022], ANCHORS[2021], ANCHORS[2020]),
+                         REAL[2023]: requests.Timeout("t"), REAL[2022]: requests.Timeout("t"),
+                         REAL[2021]: _ok(_xlsx(2021)), REAL[2020]: _ok(_xlsx(2020, cols=cols2020))})
+    res = F.update(None, "2023-12-31")
+    assert res.status == "partial" and "2/3 sub-unit(s) transient-failed" in res.error, (res.status, res.error)
+
+
+def test_p2b_older_years_with_other_columns_are_not_compared(store, monkeypatch):
+    """P2 with a column the skip list does not remove (synthetic): the 2020 file carries one more indicator."""
+    _pin(monkeypatch, NOV_2026)
+    _seed(store, [2020, 2021, 2022, 2023])
+    cols2020 = tuple(INDICATORS) + ("Q9: Synthetic Extra Indicator",)
+    _serve(monkeypatch, {PAGE: _page(ANCHORS[2023], ANCHORS[2022], ANCHORS[2021], ANCHORS[2020]),
+                         REAL[2023]: requests.Timeout("t"), REAL[2022]: requests.Timeout("t"),
+                         REAL[2021]: _ok(_xlsx(2021)), REAL[2020]: _ok(_xlsx(2020, cols=cols2020))})
+    res = F.update(None, "2023-12-31")
+    assert res.status == "partial", (res.status, res.error)
+
+
 def test_two_links_for_one_year_refuse_before_any_file(store, monkeypatch):
     _pin(monkeypatch, NOV_2026)
     site = _serve(monkeypatch, {PAGE: _page(ANCHORS[2023], f'<a href="{DUP2023}">')})
@@ -297,7 +397,9 @@ def test_two_links_for_one_year_refuse_before_any_file(store, monkeypatch):
     (requests.exceptions.ChunkedEncodingError("c"), "the excel page did not answer (ChunkedEncodingError)"),
     (requests.TooManyRedirects("r"), "the excel page did not answer (TooManyRedirects)"),
     (_page(f'<a href="{FOREIGN}">', f'<a href="{PROFILES}">'), "the excel page holds no fsi-<YYYY>"),
-], ids=["503", "403", "timeout", "chunked", "redirects", "only-distractors"])
+    (_page('<a href="http://[broken/x/fsi-2024.xlsx">', ANCHORS[2023]),
+     "the excel page holds a link that will not parse (ValueError"),
+], ids=["503", "403", "timeout", "chunked", "redirects", "only-distractors", "p4-malformed-href"])
 def test_a_page_failure_uses_the_fallback_and_is_partial_reason_first(store, monkeypatch, answer, why):
     _pin(monkeypatch, JUL_2024)                                   # no gap at this clock: the fallback alone
     _seed(store, list(REAL))
@@ -321,20 +423,21 @@ def test_a_404_on_a_listed_year_is_partial_naming_it_and_the_others_merge(store,
 
 @pytest.mark.parametrize("when, gap", [
     (dt.datetime(2024, 7, 31, 23, 0, tzinfo=UTC), None),
-    (dt.datetime(2025, 7, 31, 23, 0, tzinfo=UTC), None),
-    (dt.datetime(2025, 8, 1, 0, 30, tzinfo=UTC), "2024 is overdue"),
-    (NOV_2026, "2024 and 2025 are overdue"),
+    (dt.datetime(2025, 7, 31, 23, 0, tzinfo=UTC), "2024 is overdue"),
+    (dt.datetime(2025, 8, 1, 0, 30, tzinfo=UTC), "2024 and 2025 are overdue"),
+    (NOV_2026, "2024, 2025 and 2026 are overdue"),
 ], ids=["2024-07-31", "2025-07-31", "2025-08-01", "2026-11-25"])
-def test_the_gap_rule(store, monkeypatch, when, gap):
+def test_the_gap_rule_is_a_note_never_a_demotion(store, monkeypatch, when, gap):
     _pin(monkeypatch, when)
     _seed(store, [2021, 2022, 2023])
     _serve(monkeypatch, {PAGE: SMALL, **_files([2023, 2022, 2021])})
     res = F.update(None, "2023-12-31")
+    assert res.status == "no_change", (res.status, res.error)       # R2209: never partial for the gap
     if gap is None:
-        assert res.status == "no_change", (res.status, res.error)
+        assert "newest data gap" not in res.error, res.error
     else:
-        assert res.status == "partial", (res.status, res.error)
         assert res.error.startswith(f"newest data gap: the newest FSI year held is 2023; {gap}"), res.error
+        assert "no per-year XLSX after 2023" in res.error and "fsi-2024-rankings" in res.error
 
 
 def test_a_transient_year_is_partial_and_the_others_merge(store, monkeypatch):
@@ -425,6 +528,22 @@ def test_a_96_percent_key_share_is_merged(store, monkeypatch):
     assert res.status == "no_change", (res.status, res.error)
 
 
+def test_p1_a_new_year_that_renames_a_fifth_of_the_countries_is_refused(store, monkeypatch):
+    """Reviewer probe P1 (R2210): 2022+2023 seeded with 50 countries; a NEW 2024 file renames 10. Across all
+    years read the renamed countries are still found (in 2022 and 2023), so only the NEWEST file's keys can see
+    the fork: 40 of 50 = 80%."""
+    _pin(monkeypatch, NOV_2026)
+    _seed(store, [2022, 2023], countries=FLOOR)
+    before = store.read_bytes()
+    renamed = tuple(FLOOR[:40]) + tuple(f"Renamed {i:02d}" for i in range(1, 11))
+    _serve(monkeypatch, {PAGE: _page(f'<a href="{U2024_REL}">', ANCHORS[2023], ANCHORS[2022]),
+                         U2024: _ok(_xlsx(2024, countries=renamed)),
+                         REAL[2023]: _ok(_xlsx(2023, countries=FLOOR)), REAL[2022]: _ok(_xlsx(2022, countries=FLOOR))})
+    with pytest.raises(DefinitiveError, match=r"an id fork: the 2024 file holds 80\.0% of the 650 stored keys"):
+        F.update(None, "2023-12-31")
+    assert store.read_bytes() == before
+
+
 # ---------------------------------------------------------------- one discovery per run, one line
 
 def test_probe_and_fetch_share_one_discovery_and_print_one_line(store, monkeypatch, capsys):
@@ -459,7 +578,9 @@ def test_the_ingester_writes_nothing_on_an_existing_store(store, monkeypatch, ca
                                 U2024: _ok(_xlsx(2024)), **_files([2023])})
     assert J.main() is None
     assert site.gets == [] and store.read_bytes() == before
-    assert "python -m updater.run --source fsi_fundforpeace --force" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "gh workflow run updater-daily.yml -f source=fsi_fundforpeace -f force=true" in out
+    assert "updater.run" not in out                                  # never a local run (R406)
 
 
 def test_the_ingester_cold_start_runs_the_fetcher(store, monkeypatch):

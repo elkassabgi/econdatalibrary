@@ -2153,27 +2153,35 @@ sources:
     since_param: n/a
     out_paths_note: 'Single file data/clean_full/fsi_fundforpeace/fsi_fundforpeace.parquet (series_key=FSI_FP:{indicator}:{country},
       names as the file writes them, never normalised). Written only through merge.merge_and_write (never-shrink). The
-      year label is the file''s own Year column, checked against the file name and the upload folder (folder = year or
-      year + 1); a disagreement refuses the run. Every year is decided BEFORE the merge: any structural year, a duplicate
-      label year, a newest file whose indicator columns differ from the previous year''s, or under 95% of the current
-      stored keys -> REFUSED, nothing merged. A revision with no new row books a revision (CSVs re-derive, R549).'
+      year label is the file''s own Year column when it has one (one year over the rows with values; it must match the
+      file name), else the file-name year with a note; the upload folder must be the year or year + 1. Every year is
+      decided BEFORE the merge: any structural year, a duplicate label year, the newest LISTED year''s indicator columns
+      differing from the listed year before it (only when both were read), or an id fork -> REFUSED, nothing merged.
+      ID-FORK FLOOR (R2210): share = |current stored keys & keys of the NEWEST file read| / |current stored keys|, the
+      current keys being the full FSI_FP:{col}:{country} keys with an observation in the store''s newest year; under 95%
+      refuses (measured on the newest file alone, so countries renamed in a new year cannot pass on the older files).
+      "Change from Previous Year" (a signed difference, 2019-2020 files) is skipped; the 35 stored series stay
+      (never-shrink). A revision with no new row books a revision (CSVs re-derive, R549).'
     rate_note: 'Keyless; fragilestatesindex.org only (WordPress on WP Engine behind Cloudflare). One GET of the excel page
       per run (60s timeout), then one GET per year file (60s). A transient year (timeout, connection error, 429, 5xx) is
       partial and the other years merge; a 404 on a listed file is PARTIAL naming the year.'
     key_env: none
     confidence: high
-    open_question: 'CLOSED 2026-11-25: the mirror is gone; the excel page is the source. STILL OPEN: (1) no FSI 2024 or 2025
-      data file was linked on the excel page, the analysis-2024 page or the global-data page on 2026-11-25 (the FSI 2024
-      REPORT was posted 2025-02-18 under /uploads/2025/02/), so the gap partial fires on every run until one is; whether
-      FSI still publishes the per-year XLSX is the coordinator''s measured decision (no discontinued.yaml entry here). (2)
-      Negative values are dropped, which leaves only the non-negative half of the 35 served ''Change from Previous Year''
-      series (2019, 2020); keeping negatives would mint new keys (owner decision).'
+    open_question: 'CLOSED 2026-11-25: the mirror is gone; the excel page is the source. STILL OPEN: (1) no per-year XLSX after
+      2023 was linked on the excel page, the analysis-2024 page or the global-data page on 2026-11-25; FSI 2024 is
+      published only as a Tableau view on /global-data/ (fsi-2024-rankings; embed id epoch-ms 2024-06-19, so the 2024
+      DATA came about June 2024; the 2025-02-18 item under /uploads/2025/02/ is the 2024 REPORT PDF). So every run writes
+      a gap NOTE (reason first, no status demotion, R2209) until a newer XLSX is linked; whether FSI still publishes the
+      per-year XLSX is the coordinator''s measured decision (no discontinued.yaml entry, no upstream_verified claim). (2)
+      The 35 served ''Change from Previous Year'' series (2019, 2020) hold only their non-negative half; the column is
+      now skipped and the merge keeps them (owner decision).'
   matrix:
     refresh_mechanism:
     - merge-single-file
     force_refresh_procedure:
-    - 'From the repo root: `python -u -m updater.run --source fsi_fundforpeace --force` (AQUEDUCT_BACKEND=r2 for the served
-      store). The fetcher discovers every year on the excel page and merges; no URL edit is needed for a new year. Do NOT
+    - 'Dispatch updater-daily.yml with source=fsi_fundforpeace force=true (`gh workflow run updater-daily.yml -f
+      source=fsi_fundforpeace -f force=true`), the sanctioned path; never a local `updater.run`, which writes outside CI''s
+      state lineage (R406, R340). The fetcher discovers every year on the excel page and merges; no URL edit is needed for a new year. Do NOT
       delete the parquet first: the merge needs no clean slate, and an empty store disarms the 95% key floor.
       jobs/ingest_fsi_fundforpeace.py runs the same fetcher update() ONLY on a cold start (no store); on an existing store
       it writes nothing and prints this command. No API key.'

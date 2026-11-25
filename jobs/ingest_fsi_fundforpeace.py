@@ -11,9 +11,10 @@ Output: data/clean_full/fsi_fundforpeace/fsi_fundforpeace.parquet
 Run: python jobs/ingest_fsi_fundforpeace.py
   main() writes ONLY when NO store exists, and then through the fetcher's own update()
   (updater/strategies/fetchers/fsi_fundforpeace.py: the same discovery, year checks, refusals and merge). On an
-  existing store it writes NOTHING and prints the command to use instead (python -m updater.run --source
-  fsi_fundforpeace --force): a write outside the orchestrator books no state row, runs no CSV phase and queues no
-  catalogue sync (R549). The old main() walked a hard-coded YEAR_URLS list (dead WordPress paths) and a deleted
+  existing store it writes NOTHING and prints the sanctioned path to use instead, a dispatch of updater-daily.yml
+  (gh workflow run updater-daily.yml -f source=fsi_fundforpeace -f force=true; never a local updater.run, which
+  writes outside CI's state lineage, R406/R340): a write outside the orchestrator books no state row, runs no CSV
+  phase and queues no catalogue sync (R549). The old main() walked a hard-coded YEAR_URLS list (dead WordPress paths) and a deleted
   GitHub mirror and wrote with a local pq.write_table, outside the never-shrink merge. That list, its parser and
   that write were removed on 2026-11-25.
 """
@@ -21,7 +22,7 @@ from __future__ import annotations
 import os, sys, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
-FORCED_RUN = "python -m updater.run --source fsi_fundforpeace --force"
+FORCED_RUN = "gh workflow run updater-daily.yml -f source=fsi_fundforpeace -f force=true"   # sanctioned (R406)
 
 
 def log(m):
@@ -37,7 +38,7 @@ def main():
     path = os.path.join(config.source_dir(F.SOURCE), "fsi_fundforpeace.parquet")
     if blob.exists(path):
         log(f"fsi_fundforpeace: a store exists ({path}); this script writes only on a cold start and wrote "
-            f"nothing. To refresh it, run from the repo root: {FORCED_RUN}")
+            f"nothing. To refresh it, dispatch the CI updater: {FORCED_RUN}")
         return None
     res = F.update(None, None)
     log(f"fsi_fundforpeace: {res.status}: {res.error}")
