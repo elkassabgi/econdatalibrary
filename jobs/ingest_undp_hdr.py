@@ -11,7 +11,9 @@ updater/strategies/fetchers/undp_hdr.py imports.
 Run: python jobs/ingest_undp_hdr.py
   COLD START ONLY. main() writes only when NO store exists, and then through the fetcher's own update() (the same
   edition discovery, refusals and merge). On an existing store it writes NOTHING and prints the command to use
-  instead (python -m updater.run --source undp_hdr --force): a write outside the orchestrator books no state row,
+  instead, the sanctioned path (a dispatch of updater-daily.yml: gh workflow run updater-daily.yml -f source=undp_hdr
+  -f force=true; never a local updater.run, which writes outside CI's state lineage, R406/R340): a write outside the
+  orchestrator books no state row,
   runs no CSV phase and queues no catalogue sync, and the next pass would then re-merge the same values as
   no_change, so the served CSVs would keep the old edition with no alarm (R549). The old main() walked a
   hard-coded 2023-24 list (the HDR23-24 composite CSV, a 2024 annex zip, an HDI trends XLSX and five 2023-24
@@ -131,7 +133,7 @@ def ingest_composite_csv(content: bytes, all_keys, all_dates, all_vals, strict: 
     return count
 
 
-FORCED_RUN = "python -m updater.run --source undp_hdr --force"
+FORCED_RUN = "gh workflow run updater-daily.yml -f source=undp_hdr -f force=true"   # the sanctioned path (R406)
 
 
 def main():
@@ -144,7 +146,7 @@ def main():
     path = undp_hdr.store_path()
     if blob.exists(path):
         log(f"undp_hdr: a store exists ({path}); this script writes only on a cold start and wrote nothing. "
-            f"To refresh it, run from the repo root: {FORCED_RUN}")
+            f"To refresh it, dispatch the CI updater: {FORCED_RUN}")
         return None
     res = undp_hdr.update(None, None)
     log(f"undp_hdr: {res.status}: {res.error}")

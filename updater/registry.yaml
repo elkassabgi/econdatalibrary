@@ -5079,11 +5079,12 @@ sources:
       never a fallback to an older edition.'
     key_env: none
     confidence: medium
-    open_question: 'Edition discovery closed 2026-11-25 (downloads page, newest HDR number). The gap partial fires when
+    open_question: 'Edition discovery closed 2026-11-25 (downloads page, newest HDR number). The gap NOTE (reason first,
+      no status demotion: a partial would hide the RED-DATA data clock and re-download every pass, R2209) is written when
       the merged edition''s hdi:<ISO3> data ends below (UTC run year - 3): HDR23-24 (Last-Modified 2024-03-13) ends 2022
-      and HDR25 (2025-05-05) ends 2023, so before a spring release the newest correct year is run year - 3. It fires
+      and HDR25 (2025-05-05) ends 2023, so before a spring release the newest correct year is run year - 3. It is written
       only at a run: this annual unit runs at its due date (about 2027-06-20 after the 2026-07-27 success) or by a forced
-      run, and a partial then makes it due on every pass. STILL OPEN: the annex name-keyed series (hdi/gdi/gii:<country
+      dispatch. STILL OPEN: the annex name-keyed series (hdi/gdi/gii:<country
       name>, 630 in the catalogue copy of 2026-11-16, all ending 2022) are not refreshed by anything, and were not before
       this fix either (the old fetcher read only the composite CSV; the old ingester returned when a store existed);
       their fate is an owner decision.'
@@ -5091,7 +5092,8 @@ sources:
     refresh_mechanism:
     - merge-single-file
     force_refresh_procedure:
-    - 'From the repo root: `python -u -m updater.run --source undp_hdr --force` (AQUEDUCT_BACKEND=r2 for the served store).
+    - 'Dispatch updater-daily.yml with source=undp_hdr force=true (`gh workflow run updater-daily.yml -f source=undp_hdr -f
+      force=true`), the sanctioned path; never a local `updater.run`, which writes outside CI''s state lineage (R406, R340).
       The fetcher discovers the newest edition and merges it; no URL edit is needed for a new edition. Do NOT delete the
       parquet first: the merge needs no clean slate, and an empty store disarms the older-than-store and key-share refusals
       (only the since refusal stays armed, through the state''s last_obs_date), and the store holds keys the composite

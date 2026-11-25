@@ -536,19 +536,20 @@ def test_the_gap_fires_only_below_run_year_minus_3(store, monkeypatch, when, end
         _serve(monkeypatch, {PAGE: WITH_26, U26: _csv_resp(B26)})
     res = H.update(None, f"{ends}-12-31")
     gap = ends < when.year - 3
-    assert (res.status == "partial") is gap, (when, ends, res.status, res.error)
     assert res.error.startswith("newest data gap:") is gap, res.error
-    if not gap:
-        assert res.status == "no_change", (res.status, res.error)
+    # The gap is a NOTE, never a demotion (R2209): the status stays no_change either way.
+    assert res.status == "no_change", (when, ends, res.status, res.error)
 
 
-def test_a_gap_partial_with_no_change_derives_no_csv(store, monkeypatch):
+def test_a_gap_note_with_no_change_is_not_partial_and_derives_no_csv(store, monkeypatch):
     from updater import derive, orchestrate
     _pin(monkeypatch, DUE_2027)
     _seed(store, C25)
     _serve(monkeypatch, {PAGE: TODAY, U25: _csv_resp(B25)})
     res = H.update(None, "2023-12-31")
-    assert res.status == "partial" and res.changed_keys == {}, (res.status, res.changed_keys)
+    assert res.status == "no_change" and res.changed_keys == {}, (res.status, res.changed_keys)
+    assert res.error.startswith("newest data gap: the 2025 edition's hdi data ends 2023"), res.error
+    assert orchestrate._should_derive_csvs(res.status, res.changed_keys) is False
 
     def _no_derive(*a, **k):
         raise AssertionError("the CSV phase derived an undp series on a pass that changed nothing")
@@ -651,7 +652,9 @@ def test_the_ingester_writes_nothing_on_an_existing_store_even_when_hdr26_is_lin
     assert J.main() is None
     assert store.read_bytes() == before
     assert site.gets == [] and site.heads == []
-    assert "python -m updater.run --source undp_hdr --force" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "gh workflow run updater-daily.yml -f source=undp_hdr -f force=true" in out
+    assert "updater.run" not in out                                  # never a local run (R406)
 
 
 def test_the_ingester_writes_nothing_on_a_2023_store_when_the_server_has_only_23_24(store, monkeypatch):

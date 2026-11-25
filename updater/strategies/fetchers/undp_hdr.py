@@ -31,10 +31,12 @@ country-NAME keys from the retired annex cold start (hdi:Afghanistan ..., ending
 year. So "the newest year" of a table is the newest obs year over keys matching hdi:<three capitals>.
   * Refused, nothing merged: the edition's hdi year is older than the store's or than `since` (EQUAL passes: a
     re-fetch of the same edition is valid).
-  * Gap PARTIAL (R1300): the edition's hdi year is below (UTC run year - 3). Measured releases: HDR23-24
-    (Last-Modified 2024-03-13) has data to 2022, HDR25 (2025-05-05) to 2023, so before each spring release the
-    newest correct data year is (run year - 3) and after it (run year - 2). Firing below (run year - 3) never
-    fires falsely; it fires once a whole release has been missed.
+  * Gap NOTE (R1300), reason first, with NO status demotion (R2209: a partial is an ATTENTION status decided
+    before health's RED-DATA data-clock branch, and is_due counts the cadence from last_success, so a gap partial
+    would hide the data-clock alarm and re-download on every pass after the due date): the edition's hdi year is
+    below (UTC run year - 3). Measured releases: HDR23-24 (Last-Modified 2024-03-13) has data to 2022, HDR25
+    (2025-05-05) to 2023, so before each spring release the newest correct data year is (run year - 3) and after
+    it (run year - 2). Firing below (run year - 3) never fires falsely; it fires once a whole release is missed.
 
 HOW LOUD (each rule is pinned in tests/test_undp_hdr_newest_edition.py):
   * the chosen CSV: a transient (timeout, connection error, 429, 5xx) stops with nothing merged (partial); any
@@ -50,7 +52,7 @@ A REFUSAL raises DefinitiveError with its reason FIRST (the digest shows 72 char
 MERGE, NOT OVERWRITE: an overwrite would remove stored rows UNDP no longer ships, which is the owner's decision.
 The merge reports which keys changed their value (report_changed_keys): a pass that revises values without adding
 a row books a revision, so it reads ok and the CSV phase re-derives (R549), and Result.changed_keys hands the CSV
-phase exactly the changed series ({} on a pass that changed nothing, also on a partial that is due every pass).
+phase exactly the changed series ({} on a pass that changed nothing).
 
 KNOWN LIMITS, NOT GUARDED: (1) the older-edition refusal compares observation years, because the store records no
 edition stamp, so a same-year older edition can still merge over a newer one when only the older is reachable;
@@ -347,15 +349,19 @@ def update(unit, since) -> Result:
     res = finalize(tally, n, md, source=SOURCE, series_cursors=_series_maxes(tbl))
     res.changed_keys = changed
 
-    # 6. Partial reasons, FIRST in the note: discovery failed (pinned fallback), and the data gap (R1300).
+    # 6. Reasons FIRST in the note. A discovery failure (pinned fallback) DEMOTES to partial: that is ours to fix.
+    # The data gap (R1300) is a NOTE ONLY, with no demotion (R2209): partial is an ATTENTION status, decided
+    # before health's RED-DATA branch, so a gap partial would hide the data-clock alarm; and is_due measures the
+    # cadence from last_success, so a partial would re-run the full download on every pass after the due date.
     why = []
     if fallback:
         why.append(fallback)
     if hdi_year < run_year - 3:
         why.append(f"newest data gap: the {year} edition's hdi data ends {hdi_year}, below the UTC run year "
                    f"{run_year} - 3 = {run_year - 3}; a newer HDR edition is missing or not discoverable")
-    if why:
+    if fallback:
         res.status = "partial"
+    if why:
         res.error = "; ".join(why) + f"; merged {year}; {res.error}"
     else:
         res.error = f"{res.error}; edition {year} ({fname})"
