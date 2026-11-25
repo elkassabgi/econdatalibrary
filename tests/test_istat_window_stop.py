@@ -45,14 +45,29 @@ from updater.state import StateStore  # noqa: E402
 from updater.strategies import fetchers  # noqa: E402
 from updater.strategies.base import Strategy  # noqa: E402
 from updater.strategies.fetchers import _common, istat  # noqa: E402
+from jobs import _istat_pacer  # noqa: E402  (the shared pacer: its gap is in the floor)
 
 SDMX = "https://sdmx.istat.it/SDMXWS/rest/"
 ESPLORA = "https://esploradati.istat.it/SDMXWS/rest/"
 EPOCH = 1_800_000_000.0
-# One flow's allowance, from the stated rule: every CSV GET on esploradati runs to its 300-s timeout, RETRIES
-# times, plus the backoff sleeps min(4 x attempt, 30) between the retry passes: 3 x 300 + 4 + 8 = 912 s.
-FLOOR_S = (istat.RETRIES * istat.HOST_TIMEOUT[ESPLORA]
+# One flow's allowance, from the stated rule: every CSV GET on esploradati waits for ONE shared-pacer slot (the
+# pacer's gap, 60 / 4 + 1 = 16 s, since 2026-11-25) and runs to its 300-s timeout, RETRIES times, plus the
+# backoff sleeps min(4 x attempt, 30) between the retry passes: 3 x (300 + 16) + 4 + 8 = 960 s.
+PACER_GAP_S = 60.0 / _istat_pacer.BUDGET_PER_MIN + 1.0
+FLOOR_S = (istat.RETRIES * (istat.HOST_TIMEOUT[ESPLORA] + PACER_GAP_S)
            + sum(min(4 * a, 30) for a in range(1, istat.RETRIES)))
+TAIL_MIN = (300 + FLOOR_S) / 60.0                 # margin 5 + one flow: 21.0 min, from the rule
+RESERVE_MIN = TAIL_MIN + 1.0                      # + the 1-min setup allowance: 22.0 min
+
+
+def _n_flows(window_s, per_flow, csv_s=0.0, margin_s=300.0):
+    """How many equal flows of `per_flow` fake seconds START before a window end `window_s` away, by the stated
+    rule: flow k (0-based; every earlier flow handed over, so k flows) starts only while
+    window_s - k x per_flow >= margin + max(2 x the longest flow so far, FLOOR_S) + k x csv_s."""
+    n = 0
+    while window_s - n * per_flow >= margin_s + max(2 * per_flow if n else 0.0, FLOOR_S) + n * csv_s:
+        n += 1
+    return n
 
 
 def _istat_unit():
@@ -93,7 +108,7 @@ class _Istat:
         self.starts: dict = {}
         self.gets = 0
 
-    def get(self, url, headers=None, timeout=None):
+    def get(self, url, headers=None, timeout=None, **_kw):   # **_kw: allow_redirects (pacing)
         self.gets += 1
         flow = url.split(f"{istat.AGENCY},", 1)[1].split("/", 1)[0]
         self.starts.setdefault(flow, self.clock.t)
@@ -177,7 +192,8 @@ def test_the_tail_is_margin_plus_one_flows_allowance_and_the_reserve_adds_the_se
     assert istat.window_admission_reserve_min() == pytest.approx(tail + istat.ADMISSION_SETUP_MIN, abs=1e-9)
     assert istat.window_admission_reserve_min() > istat.window_stop_tail_min()
     if margin is None:
-        assert istat.window_admission_reserve_min() == 21.2          # the default the registry pin carries
+        # the default the registry pin carries, from the rule (it was 21.2 before the pacer's gap entered FLOOR_S)
+        assert istat.window_admission_reserve_min() == pytest.approx(RESERVE_MIN, abs=1e-9) and RESERVE_MIN == 22.0
 
 
 @pytest.mark.parametrize("bad", ["abc", "-1", "nan"])
@@ -291,7 +307,7 @@ def test_control_a_run_that_finishes_sets_no_signal(rig):
 def test_tonights_pass_admits_istat_on_its_declared_reserve(tmp_path, monkeypatch, capsys):
     """The 2026-11-23 22:45 shape: istat's latest real run 187 min (a `partial`), the workstation (no hard
     timeout), a pass with 81 min left. Undeclared, the gate printed BUDGET SKIP with "reserves 187 min (its
-    latest real run ...)"; declared, istat passes on its 21.2-min reserve. Nothing past the gate runs (the
+    latest real run ...)"; declared, istat passes on its 22-min reserve (RESERVE_MIN). Nothing past the gate runs (the
     _has_adapter recorder, the test_admit_window_stoppable pattern)."""
     for k in ("AQUEDUCT_ISTAT_MARGIN_MIN", "AQUEDUCT_LIVE_ONLY", "GITHUB_ACTIONS", "AQUEDUCT_UNIT_TIMEOUT_MIN"):
         monkeypatch.delenv(k, raising=False)
@@ -312,7 +328,8 @@ def test_tonights_pass_admits_istat_on_its_declared_reserve(tmp_path, monkeypatc
         pass
     out = capsys.readouterr().out
     assert "BUDGET SKIP istat/_all" not in out, out[-3000:]
-    assert "WINDOW STOP istat/_all: passes the start gate on its declared 21.2-min reserve" in out, out[-3000:]
+    assert f"WINDOW STOP istat/_all: passes the start gate on its declared {RESERVE_MIN:g}-min reserve" in out, \
+        out[-3000:]
     assert "istat" in admitted
 
 
@@ -360,12 +377,15 @@ def _run_once(rig, monkeypatch, budget_min, probe_s=0.0, derive=None, drain=None
 
 
 def test_run_once_a_ceiling_stop_before_any_flow_is_a_window_stopped_row_and_no_state(rig, monkeypatch):
-    """Admitted with 21.3 min left (above the 21.2-min reserve); its probe planted at 70 s - MORE than the 1-min
-    setup allowance - so update() starts with 20.13 min left, under the 20.2-min tail: it stops before any flow.
+    """Admitted with RESERVE_MIN + 0.1 = 22.1 min left (above the 22.0-min reserve); its probe planted at 70 s -
+    MORE than the 1-min setup allowance - so update() starts with 20.93 min left, under the 21.0-min tail: it stops
+    before any flow.
     run_once writes a `window_stopped` runs row and NO unit state (istat stays due, its order key moves back).
     Undeclared (origin/main), the gate refuses it."""
     rig.flows(5)
-    statuses, st = _run_once(rig, monkeypatch, budget_min=21.3, probe_s=70.0)
+    budget_min = RESERVE_MIN + 0.1
+    assert budget_min > RESERVE_MIN and budget_min - 70.0 / 60.0 < TAIL_MIN       # the case is the one described
+    statuses, st = _run_once(rig, monkeypatch, budget_min=budget_min, probe_s=70.0)
     assert statuses == ["window_stopped"], statuses
     assert st is None, st
 
@@ -399,7 +419,7 @@ class _PlanIstat(_Istat):
         super().__init__(clock, delay)
         self.plan = dict(plan)
 
-    def get(self, url, headers=None, timeout=None):
+    def get(self, url, headers=None, timeout=None, **_kw):   # **_kw: allow_redirects (pacing)
         flow = url.split(f"{istat.AGENCY},", 1)[1].split("/", 1)[0]
         what = self.plan.get(flow)
         if what is None:
@@ -470,22 +490,25 @@ def test_a_flow_cut_by_the_clamp_with_no_real_failure_is_deferred_and_still_prog
 @pytest.mark.parametrize("override", ["360", "100000"])
 def test_the_cap_ends_the_turn_as_a_ceiling_would_and_the_override_does_not_lift_it(rig, override, capsys):
     """AQUEDUCT_ISTAT_TURN_MAX_MIN=60, the run ceiling 10 h away: flows of 61 s start only while at least margin +
-    max(2 x longest, floor) = 1,212 s are left to the cap, so 40 flows start and the turn returns ~41 min in. The
+    max(2 x longest, floor) = 1,260 s are left to the cap, so 39 flows start (_n_flows) and the turn returns ~40 min
+    in. The
     stop is the ceiling stop's: deferred, the last flow named in the bookmark, window_stop "progress"."""
     rig.mp.setenv("AQUEDUCT_BUDGET_MIN_OVERRIDE", override)
     rig.mp.setenv("AQUEDUCT_ISTAT_TURN_MAX_MIN", "60")
     names = rig.flows(60)
+    n = _n_flows(3600.0, 61.0)
+    assert n == 39, n
     res, host = rig.run(delay=60.0, ceiling_s=10 * 3600.0)
     starts = list(host.starts)
-    assert starts == names[:40], (len(starts), starts[-2:])
+    assert starts == names[:n], (len(starts), starts[-2:])
     assert max(host.starts.values()) <= 3600.0 - (300 + FLOOR_S), "a flow started inside the cap's tail"
     assert res.status == "partial" and "per-turn cap" in res.error and "deferred by budget" in res.error, res.error
     assert res.window_stop == "progress", res.window_stop
     out = capsys.readouterr().out
     assert "[istat] per-turn cap 60 min" in out and "[istat] per-turn cap:" in out, out[-1500:]
-    assert _common.load_rotation(str(rig.out)) == "F40.parquet"
+    assert _common.load_rotation(str(rig.out)) == f"{names[n - 1]}.parquet"
     res2, host2 = rig.run(delay=60.0, ceiling_s=10 * 3600.0)
-    assert list(host2.starts)[:1] == ["F41"], list(host2.starts)[:2]
+    assert list(host2.starts)[:1] == [names[n]], list(host2.starts)[:2]
 
 
 @pytest.mark.parametrize("raw", ["0", "off", None])
@@ -507,16 +530,16 @@ def test_a_bad_cap_value_takes_the_default_and_says_so(rig, capsys):
     res, host = rig.run(delay=60.0, ceiling_s=10 * 3600.0)
     assert "AQUEDUCT_ISTAT_TURN_MAX_MIN='abc' is not a finite number > 0 - using the default (60 min)" in \
         capsys.readouterr().out
-    assert len(host.starts) == 40, len(host.starts)
+    assert len(host.starts) == _n_flows(3600.0, 61.0), len(host.starts)
 
 
 def test_a_cap_under_the_reserve_is_raised_to_it_so_a_flow_can_start(rig, capsys):
-    """A 5-min cap could never start a flow ("none" for ever): it is raised to the 21.2-min reserve, under which
+    """A 5-min cap could never start a flow ("none" for ever): it is raised to the 22.0-min reserve, under which
     exactly one 61-s flow starts."""
     rig.mp.setenv("AQUEDUCT_ISTAT_TURN_MAX_MIN", "5")
     names = rig.flows(5)
     res, host = rig.run(delay=60.0, ceiling_s=10 * 3600.0)
-    assert "per-turn cap 5 min is under the 21.2-min reserve" in capsys.readouterr().out
+    assert f"per-turn cap 5 min is under the {RESERVE_MIN:g}-min reserve" in capsys.readouterr().out
     assert list(host.starts) == names[:1] and res.window_stop == "progress", (list(host.starts), res.window_stop)
 
 
@@ -537,11 +560,12 @@ def test_the_cap_bounds_a_turn_with_no_run_ceiling_and_clamps_its_requests(rig):
 
 def test_the_shipped_default_caps_a_turn_at_60_min(rig, capsys):
     """TURN_MAX_MIN_DEFAULT = 60 (chosen from the C5 simulation, see istat.py): with the variable unset and the run
-    ceiling 10 h away, a turn starts flows only while 1,212 s are left to its 60-min cap - 40 flows of 61 s."""
+    ceiling 10 h away, a turn starts flows only while 1,260 s are left to its 60-min cap - 39 flows of 61 s."""
     assert istat.TURN_MAX_MIN_DEFAULT == 60.0
     rig.flows(60)
     res, host = rig.run(delay=60.0, ceiling_s=10 * 3600.0)
-    assert len(host.starts) == 40 and res.window_stop == "progress", (len(host.starts), res.window_stop)
+    n = _n_flows(3600.0, 61.0)
+    assert len(host.starts) == n and res.window_stop == "progress", (len(host.starts), res.window_stop)
     assert "[istat] per-turn cap 60 min" in capsys.readouterr().out
 
 
@@ -551,38 +575,40 @@ def test_the_shipped_default_caps_a_turn_at_60_min(rig, capsys):
 # ceiling (two 45-min budgets after istat's fetch on 2026-10-24 and 10-25). Now (a) the Result carries the cap's end
 # (turn_end_ts), which run_once's CSV phase respects (tests/test_unit_turn_end.py pins the orchestrator side), and
 # (b) the fetch keeps a CSV ALLOWANCE per flow it hands over, so the step has time inside the turn.
-# Flows here take 61 s (a 60-s GET, the 1-s RATE pause); 2 x longest = 122 s stays under the 912-s floor, so the
-# need before flow k (k flows handed over) is 300 + 912 + k x S seconds.
+# Flows here take 61 s (a 60-s GET, the 1-s RATE pause); 2 x longest = 122 s stays under the 960-s floor, so the
+# need before flow k (k flows handed over) is 300 + 960 + k x S seconds (_n_flows).
 
 def test_the_allowance_stops_the_fetch_earlier_by_its_share_per_flow_handed_over(rig, capsys):
-    """Cap 60, S = 30 s: flow k starts only while 3,600 - 61 k >= 1,212 + 30 k, so k <= 26: 27 flows (40 with no
+    """Cap 60, S = 30 s: flow k starts only while 3,600 - 61 k >= 1,260 + 30 k, so k <= 25: 26 flows (39 with no
     allowance, pinned above). The stop line says what the allowance kept."""
     rig.mp.setenv("AQUEDUCT_ISTAT_TURN_MAX_MIN", "60")
     rig.mp.setenv("AQUEDUCT_ISTAT_CSV_S_PER_FLOW", "30")
     names = rig.flows(60)
+    n = _n_flows(3600.0, 61.0, 30.0)
+    assert n == 26 < _n_flows(3600.0, 61.0), n
     res, host = rig.run(delay=60.0, ceiling_s=10 * 3600.0)
-    assert list(host.starts) == names[:27], len(host.starts)
+    assert list(host.starts) == names[:n], len(host.starts)
     out = capsys.readouterr().out
-    assert "13.5 min for the CSV step of 27 flow(s)" in out, out[-1500:]
+    assert f"{n * 30 / 60:.1f} min for the CSV step of {n} flow(s)" in out, out[-1500:]
     assert res.status == "partial" and res.window_stop == "progress", res.error
-    assert sorted(res.series_cursors) == names[:27]
+    assert sorted(res.series_cursors) == names[:n]
 
 
 @pytest.mark.parametrize("ceiling_s, cap", [(60 * 60.0, "0"), (10 * 3600.0, "60")], ids=["run_ceiling", "cap"])
 def test_the_allowance_holds_at_the_run_ceiling_and_at_the_cap_alike(rig, ceiling_s, cap):
-    """The same 27 flows whether the window end is a 60-min run ceiling (cap off) or the 60-min cap."""
+    """The same 26 flows whether the window end is a 60-min run ceiling (cap off) or the 60-min cap."""
     rig.mp.setenv("AQUEDUCT_ISTAT_TURN_MAX_MIN", cap)
     rig.mp.setenv("AQUEDUCT_ISTAT_CSV_S_PER_FLOW", "30")
     rig.flows(60)
     _res, host = rig.run(delay=60.0, ceiling_s=ceiling_s)
-    assert len(host.starts) == 27, len(host.starts)
+    assert len(host.starts) == _n_flows(3600.0, 61.0, 30.0), len(host.starts)
 
 
 class _EmptyIstat(_Istat):
     """Every GET answers 404 NoRecordsFound (a quiet tail): nothing merges, so a flow is handed over only when its
     file already holds rows (the cursor seeded from the store). Both hosts are asked: 121 s a flow."""
 
-    def get(self, url, headers=None, timeout=None):
+    def get(self, url, headers=None, timeout=None, **_kw):   # **_kw: allow_redirects (pacing)
         self.gets += 1
         flow = url.split(f"{istat.AGENCY},", 1)[1].split("/", 1)[0]
         self.starts.setdefault(flow, self.clock.t)
@@ -595,9 +621,10 @@ class _EmptyIstat(_Istat):
                          ids=["nothing_handed_over", "control_off", "handed_over_off", "handed_over"])
 def test_the_allowance_counts_only_flows_handed_over(rig, rows, allowance, n):
     """NEGATIVE CONTROL: flows of 121 s that merge nothing. With empty files nothing is handed to the CSV step, so
-    the allowance changes nothing: 3,600 - 121 k >= 1,212 -> 20 flows, as with it off. The same flows WITH stored
-    rows are handed over (their cursors), and S = 30 s then stops the fetch at 3,600 - 121 k >= 1,212 + 30 k ->
+    the allowance changes nothing: 3,600 - 121 k >= 1,260 -> 20 flows, as with it off. The same flows WITH stored
+    rows are handed over (their cursors), and S = 30 s then stops the fetch at 3,600 - 121 k >= 1,260 + 30 k ->
     16 flows."""
+    assert (_n_flows(3600.0, 121.0), _n_flows(3600.0, 121.0, 30.0)) == (20, 16)       # the counts, from the rule
     rig.mp.setenv("AQUEDUCT_ISTAT_TURN_MAX_MIN", "60")
     rig.mp.setenv("AQUEDUCT_ISTAT_CSV_S_PER_FLOW", allowance)
     rig.flows(60, rows=rows)
@@ -615,12 +642,13 @@ def test_control_the_allowance_off(rig, raw):
     rig.mp.setenv("AQUEDUCT_ISTAT_CSV_S_PER_FLOW", raw)
     rig.flows(60)
     _res, host = rig.run(delay=60.0, ceiling_s=10 * 3600.0)
-    assert len(host.starts) == 40, len(host.starts)
+    assert len(host.starts) == _n_flows(3600.0, 61.0), len(host.starts)
 
 
 def test_the_shipped_defaults_a_60_min_cap_and_14_1_s_per_flow(rig, capsys):
     """Both variables unset: cap 60, S = 14.1 s (CSV_S_PER_FLOW_DEFAULT: 14,267 catalogued series / 2,526 flows at
-    0.4 ids/s). Flow k starts while 3,600 - 61 k >= 1,212 + 14.1 k: k <= 31, so 32 flows."""
+    0.4 ids/s). Flow k starts while 3,600 - 61 k >= 1,260 + 14.1 k: k <= 31, so 32 flows."""
+    assert _n_flows(3600.0, 61.0, 14.1) == 32
     assert istat.CSV_S_PER_FLOW_DEFAULT == 14.1
     assert round(14267 / 2526 / 0.4, 1) == istat.CSV_S_PER_FLOW_DEFAULT       # the measured mean, not a guess
     rig.mp.delenv("AQUEDUCT_ISTAT_CSV_S_PER_FLOW", raising=False)
@@ -669,8 +697,8 @@ def test_negative_control_no_turn_end_when_the_cap_does_not_end_the_turn(rig, ce
 
 
 def test_run_once_bounds_istats_csv_phase_by_the_caps_end(rig, monkeypatch):
-    """Through the REAL run_once and the REAL istat.update(): a 240-min pass, cap 60, 60 flows of 61 s -> 40 flows,
-    the fetch returns ~40.7 min in. The CSV phase then gets what is left of the CAP (~19.3 min) for the fresh derive
+    """Through the REAL run_once and the REAL istat.update(): a 240-min pass, cap 60, 60 flows of 61 s -> 39 flows,
+    the fetch returns ~39.7 min in. The CSV phase then gets what is left of the CAP (~20.3 min) for the fresh derive
     and the retry drain, not min(45, ~199) = 45 as before (the review's 40 + 90 min turn)."""
     rig.mp.setenv("AQUEDUCT_ISTAT_TURN_MAX_MIN", "60")
     rig.flows(60)

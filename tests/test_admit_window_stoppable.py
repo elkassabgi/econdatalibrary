@@ -35,8 +35,9 @@ DECLARED = {"census": 17.0, "wid": 20.0, "imf_imts_direct": 55.0,
             # 2026-11-06 (review AR-450): on _unctad's windowed update, the same 75-min reserve
             "unctad_creativegoodsvalue": 75.0, "unctad_criticalmineralstradebypart": 75.0,
             "unctad_gstptradematrix": 75.0, "unctad_tradeservcatbypartner": 75.0,
-            # 2026-11-24: istat stops at the run ceiling since PR #325; margin 5 + one flow (912 s) + 1 min of setup
-            "istat": 21.2}
+            # 2026-11-24: istat stops at the run ceiling since PR #325; margin 5 + one flow + 1 min of setup. One flow is
+            # 960 s since 2026-11-25: 3 x (300 s + the shared pacer's 16-s gap) + 4 + 8 (912 s before), so 22.0 (21.2)
+            "istat": 5.0 + (3 * (300 + 60.0 / 4 + 1) + 4 + 8) / 60.0 + 1.0}
 UNDECLARED_GIANT = "oecd"                      # resumable, but does not stop at the window end
 
 
@@ -397,7 +398,9 @@ def test_istat_stop_check_and_reserve_move_together(monkeypatch):
     """C3 of the istat plan review: the gate's reserve and the fetcher's stop check read the SAME helper. update()
     computes its floor through _margin_floor_s(); the reserve is that floor + FLOW_FLOOR_S + the setup allowance."""
     from updater.strategies.fetchers import istat
-    assert "floor_s = _margin_floor_s()" in inspect.getsource(istat.update)
+    # update() is the pacer's per-run frame since 2026-11-25; the run (and its check) is _update()
+    assert "_update(unit, since)" in inspect.getsource(istat.update)
+    assert "floor_s = _margin_floor_s()" in inspect.getsource(istat._update)
     extra = istat.FLOW_FLOOR_S / 60 + istat.ADMISSION_SETUP_MIN
     monkeypatch.setenv("AQUEDUCT_ISTAT_MARGIN_MIN", "12.5")
     assert istat._margin_floor_s() == 750.0

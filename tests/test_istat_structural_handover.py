@@ -37,13 +37,15 @@ from updater.errors import DefinitiveError  # noqa: E402
 from updater.state import StateStore  # noqa: E402
 from updater.strategies.base import Strategy  # noqa: E402
 from updater.strategies.fetchers import _common, istat  # noqa: E402
+from jobs import _istat_pacer  # noqa: E402  (the shared pacer: its gap is in the floor)
 
 SDMX = "https://sdmx.istat.it/SDMXWS/rest/"
 ESPLORA = "https://esploradati.istat.it/SDMXWS/rest/"
 EPOCH = 1_800_000_000.0
 MARGIN_S = 300.0                         # AQUEDUCT_ISTAT_MARGIN_MIN 5, set below
-FLOOR_S = (istat.RETRIES * istat.HOST_TIMEOUT[ESPLORA]
-           + sum(min(4 * a, 30) for a in range(1, istat.RETRIES)))          # 912 s, from the stated rule
+PACER_GAP_S = 60.0 / _istat_pacer.BUDGET_PER_MIN + 1.0      # one shared-pacer slot wait per GET (16 s)
+FLOOR_S = (istat.RETRIES * (istat.HOST_TIMEOUT[ESPLORA] + PACER_GAP_S)
+           + sum(min(4 * a, 30) for a in range(1, istat.RETRIES)))          # 960 s, from the stated rule
 STRUCT_BODY = b"<?xml version='1.0'?><nothing>" + b"x" * 400 + b"</nothing>"
 
 
@@ -80,7 +82,7 @@ class _Host:
         self.clock, self.plan, self.delay, self.slow = clock, dict(plan or {}), float(delay), dict(slow or {})
         self.gets: list = []
 
-    def get(self, url, headers=None, timeout=None):
+    def get(self, url, headers=None, timeout=None, **_kw):   # **_kw: allow_redirects (pacing)
         flow = url.split(f"{istat.AGENCY},", 1)[1].split("/", 1)[0]
         base = SDMX if url.startswith(SDMX) else ESPLORA
         self.gets.append((flow, base, (headers or {}).get("Accept"), timeout, self.clock.t))
@@ -249,10 +251,12 @@ def test_two_live_hosts_timing_out_no_longer_carry_a_flow_past_the_margin(rig):
     assert "F02: 4 host attempt(s) failed, then the window ended" in res.error, res.error
     assert health._stuck_class(res.status, res.error) == "fail", res.error
     assert rig.bookmark() == "F02.parquet", rig.bookmark()
-    # 913 s to ceiling - margin: 120 + 300, backoff 4, 120 + 300, backoff 8 leave 61 s, so the 5th GET is given 61 s
+    # FLOOR_S + 1 = 961 s to ceiling - margin: 120 + 300, backoff 4, 120 + 300, backoff 8 leave 109 s, so the 5th
+    # GET is given 109 s (61 s before the pacer's gap entered FLOOR_S; the zero-wait stub adds no fake time)
     given = [g[3] for g in rig.host.gets]
     assert len(given) == 5 and given[:4] == [120, 300, 120, 300], given
-    assert given[4] == pytest.approx(61.0, abs=1e-3), given
+    left5 = FLOOR_S + 1.0 - (120 + 300 + 4 + 120 + 300 + 8)
+    assert left5 == 109.0 and given[4] == pytest.approx(left5, abs=1e-3), given
     assert istat._TRANSPORT_FAILS.get(SDMX, 0) == 2 and not istat._DEAD_HOSTS, (istat._TRANSPORT_FAILS,
                                                                                   istat._DEAD_HOSTS)
     res2 = rig.run(_Host(rig.clock), None)
@@ -268,7 +272,7 @@ class _Hang(_Host):
         super().__init__(clock)
         self.hang = tuple(hang)
 
-    def get(self, url, headers=None, timeout=None):
+    def get(self, url, headers=None, timeout=None, **_kw):   # **_kw: allow_redirects (pacing)
         base = SDMX if url.startswith(SDMX) else ESPLORA
         flow = url.split(f"{istat.AGENCY},", 1)[1].split("/", 1)[0]
         self.gets.append((flow, base, (headers or {}).get("Accept"), timeout, self.clock.t))
@@ -302,7 +306,7 @@ def test_two_hanging_hosts_with_the_first_flow_at_the_tail_read_as_a_failure_not
 
 def test_control_one_hanging_host_fits_the_floor_and_is_transient_as_before(rig):
     """CONTROL (the reviewer's): sdmx redirect-loops (dead after one GET), esploradati hangs. The flow's three
-    300-s GETs and 4 + 8 s of backoff fit the 912-s floor, so the clamp never cuts it: `every host failed`,
+    300-s GETs and 4 + 8 s of backoff fit the 960-s floor, so the clamp never cuts it: `every host failed`,
     transient, health `fail`, named in the bookmark. The same on 4083d833a."""
     rig.flows(5)
     ceiling_s = MARGIN_S + FLOOR_S + 0.5
@@ -315,20 +319,23 @@ def test_control_one_hanging_host_fits_the_floor_and_is_transient_as_before(rig)
 
 
 def test_no_retry_backoff_starts_that_would_cross_the_margin(rig, monkeypatch):
-    """The second retry's backoff is planted at 100 s while only 69 s are left to ceiling - margin: it is not
-    started, and the run returns 69 s BEFORE ceiling - margin. A backoff slept anyway would return after it."""
+    """The second retry's backoff is planted at 150 s while only 117 s (FLOOR_S + 1 - 120 - 300 - 4 - 120 - 300) are
+    left to ceiling - margin: it is not started, and the run returns 117 s BEFORE ceiling - margin. A backoff slept
+    anyway would return after it. (100 s against 69 s left before the pacer's gap entered FLOOR_S.)"""
     rig.flows(2)
-    monkeypatch.setattr(istat, "_backoff_s", lambda attempt: 4.0 if attempt == 1 else 100.0)
+    left = FLOOR_S + 1.0 - (120 + 300 + 4 + 120 + 300)
+    assert left == 117.0 < 150.0
+    monkeypatch.setattr(istat, "_backoff_s", lambda attempt: 4.0 if attempt == 1 else 150.0)
     ceiling_s = MARGIN_S + FLOOR_S + 1.0
     res = rig.run(_Host(rig.clock, {"F01": "timeout"}), ceiling_s)
-    assert rig.clock.t == pytest.approx(ceiling_s - MARGIN_S - 69.0, abs=1e-3), rig.clock.t
+    assert rig.clock.t == pytest.approx(ceiling_s - MARGIN_S - left, abs=1e-3), rig.clock.t
     assert len(rig.host.gets) == 4 and "backoff would reach the margin" in res.error, (rig.host.gets, res.error)
 
 
 def test_every_get_ends_by_the_margin_before_the_ceiling(rig):
     """Property over a run: no GET is given more time than is left to ceiling - margin (floor 1 s), and none
     STARTS after it. F01 answers in 1 s, so the 2 x longest term stays small and F02 - both hosts timing out, 1,272 s
-    unclamped - starts with 1,310 s left (>= margin + floor). On origin/main its GETs kept the host timeouts (120 /
+    unclamped - starts with 1,358 s left (>= margin + floor). On origin/main its GETs kept the host timeouts (120 /
     300 s) and ran 359 s past ceiling - margin."""
     rig.flows(6)
     ceiling_s = MARGIN_S + FLOOR_S + 100.0
@@ -342,7 +349,8 @@ def test_every_get_ends_by_the_margin_before_the_ceiling(rig):
 
 def test_the_xml_fallback_is_not_started_past_the_margin_and_the_flow_is_deferred_not_structural(rig):
     """THE XML PATH. sdmx redirect-loops (dead after one GET); esploradati answers F01's CSV with a 200 whose body
-    parses 0 rows, slowly (950 s), so no time is left for the XML GET. The flow is DEFERRED: never booked
+    parses 0 rows, slowly (FLOOR_S + 40 = 1,000 s; 950 s before the pacer's gap entered FLOOR_S), so no time is left
+    for the XML GET. The flow is DEFERRED: never booked
     structural on the CSV body alone, finalize() does not raise, and the next run starts at F01.
     ALSO A1's NEGATIVE CONTROL: the cut flow met no real failure - the redirect loop is not one (_failed_for_real) -
     so it stays a clean deferral (health `success`), not transient."""
@@ -350,13 +358,13 @@ def test_the_xml_fallback_is_not_started_past_the_margin_and_the_flow_is_deferre
     ceiling_s = MARGIN_S + FLOOR_S + 1.0
 
     class _H(_Host):
-        def get(self, url, headers=None, timeout=None):
+        def get(self, url, headers=None, timeout=None, **_kw):   # **_kw: allow_redirects (pacing)
             if url.startswith(SDMX):
                 self.gets.append(("F01", SDMX, None, timeout, self.clock.t))
                 raise requests.TooManyRedirects("Exceeded 30 redirects.")
             return super().get(url, headers, timeout)
 
-    host = _H(rig.clock, {"F01": "structural"}, slow={"F01": 950.0})
+    host = _H(rig.clock, {"F01": "structural"}, slow={"F01": FLOOR_S + 40.0})
     res = rig.run(host, ceiling_s)
     accepts = [g[2] for g in host.gets if g[1] == ESPLORA]
     assert accepts == [istat.CSV_ACCEPT], accepts              # the XML GET was not started

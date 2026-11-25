@@ -117,13 +117,63 @@ each flow's max obs_date so a frozen flow can't hide behind the unit-level max.
 
 WINDOW STOP (registry `window_stop: true`, 2026-11-24; plan review R2100, VERDICT_planA). update()
 stops at the pass's run ceiling, or at its per-turn cap (AQUEDUCT_ISTAT_TURN_MAX_MIN): no flow starts
-within margin + max(2 x the longest flow, FLOW_FLOOR_S) of it, and every GET is clamped to end by
-that point minus the margin. The start gate reserves window_admission_reserve_min() = margin 5 (chosen)
-+ FLOW_FLOOR_S 15.2 + setup 1 (chosen) = 21.2 min, not the latest real run. Result.window_stop is set
+within margin + max(2 x the longest flow, FLOW_FLOOR_S) + the CSV allowance (CSV_S_PER_FLOW per flow
+handed over) of it, and every GET is clamped to end by that point minus the margin. The cap bounds the
+whole TURN: the Result carries its end (turn_end_ts) and run_once bounds the CSV phase by it (phase B
+review B1). The start gate reserves window_admission_reserve_min() = margin 5 (chosen)
++ FLOW_FLOOR_S 16.0 (one pacer slot wait per GET included) + setup 1 (chosen) = 22.0 min, not the latest
+real run. Result.window_stop is set
 only by those stops: "none" when no flow was started (a non-turn, a `window_stopped` row), else
 "progress". The every-host-dead break, the budget stop and the end of the list leave it None, so an
 ISTAT outage stays a recorded `partial` turn. A structural flow no longer loses the run's hand-over:
 the run returns `partial` WITH the cursors of every walked flow (ROUTE B, as census).
+
+PACING (2026-11-25; DESIGN F:/work/econ_finish/istat_pacing/DESIGN.md, review VERDICT_design V1-V14).
+ISTAT, "SDMX web services" (https://www.istat.it/en/classifications-and-tools/sdmx-web-services/, read
+2026-11-24): "a limit of 5 queries per minute has been set for each IP", and a block of 1 to 2 days when
+it is exceeded (secondary: ondata.github.io/guida-api-istat). Until this change this fetcher had NO
+limiter: by omission, not by decision - the crawler's ISTAT_QPM came in commits that touched only the
+crawler, and nothing here read it (R132/R46). In the 2026-11-22 turn at least 17 of its own GETs started
+in one closed 60 s (DESIGN section 4, from 18 store writes). Now every request takes a token of ONE
+budget per machine shared by every ISTAT host
+and every process (jobs/_istat_pacer.py: 16 s between token starts, at most 4 in any closed 60 s):
+  - a token before every GET and every TCP probe, taken BEFORE the request clamp, with the request end
+    as its deadline; a slot past it is a deferral (_WindowEnd), never a failure and never a dead host;
+  - allow_redirects=False on every GET: a 3xx is ONE request. A same-host redirect to a different path
+    is followed once, with its own token (V5(a)); a self-, cross-host or second redirect marks the host
+    unusable for the run (today's sdmx.istat.it: 3 tokens per run - 1 TCP probe and 2 GETs, because its 302
+    to the site root is a same-host redirect and is followed once - instead of ~31 requests; review B 3a);
+  - a 429 moves the shared next slot to its Retry-After (60 s to 48 h) for every participant;
+  - update() writes the turn marker (begin_turn) before its loop and clears it (end_turn) in a
+    `finally`, so the crawler starts no new flow while istat's turn runs; the progress lines carry
+    `pacer: <n> token(s), waited <s> s, mode <mode>`.
+An ad-hoc HTTP request or TCP probe to any ISTAT host from this workstation spends the shared budget.
+Send it through `jobs/_istat_pacer.acquire`, or from a second egress. A curl or a browser hit is not
+paced. The repo's own request paths all take tokens: this fetcher, jobs/ingest_istat_sliced.py (also
+`--list` and `--only`, which run _preflight() first: one TCP connect and one GET per host, two GETs on a host
+whose 3xx is followed once, then the whole catalogue: get_dataflows, up to 3 URLs x 5 attempts per host),
+tools/catalog_istat_flows.py (`--apply` with `--refresh-names` or a cache miss; a dry run sends nothing)
+and tools/probe_istat_hosts.py. The combined rate is measured only by
+`python tools/check_istat_rate.py --from <utc> --to <utc>`; it counts FAILSAFE-TOKEN and UNLOGGED lines from
+the process logs too (pass `--process-log` the pass log and the guard_istat_sliced_*.log files). WHERE TO COUNT
+the pacer's trouble lines on the workstation, per pass: `[istat-pacer] FAIL-SAFE`, `FAILSAFE-TOKEN` and
+`UNLOGGED` in logs/local_heavy_updater_<stamp>.log (this fetcher, one log per pass) and in
+logs/guard_istat_sliced_<stamp>.log (the crawler, one log per guard launch), and `ERROR outcome not logged` in
+both: the phase-A tests saw a lock busy past its wait in 4 of 20 TB2 runs, cause unknown, so the production rate
+is what says whether the 5-s lock wait is enough.
+LIMITS, stated, not enforced:
+  - OLD CODE IS NOT PACED. Any checkout at a commit before this change - E:/research/econ_wt_* worktrees, the
+    F: clones, an old crawler process still running at pull time - sends unpaced. Run istat code only from a
+    checkout that has jobs/_istat_pacer.py, and check the old crawler is gone before the first paced turn
+    (verdict V9: a guard_istat_sliced_*.log written after the pull that carries an `[istat-pacer]` line).
+  - ONE TOKEN PER socket.create_connection CALL. create_connection tries every address getaddrinfo returns, so if
+    an ISTAT name ever resolves to several addresses a failed first connect is followed by another under the same
+    token. The repo records one IPv4 address per host (.13, .1, .61); not measured, because no test resolves an
+    ISTAT name.
+  - V5 IS UNPROVEN FOR DATA URLs. No log before this change shows whether esploradati answers a DATA URL with a
+    same-host 3xx (requests followed redirects silently). The first paced pass's receipt is the count of 3xx
+    outcomes per host in the request log (`O ... outcome=<3xx>-><Location>:<follow|dead>` lines): a host whose
+    data URLs 3xx to another path is followed once per request (two tokens); any other 3xx ends that host's run.
 ```
 
 </details>

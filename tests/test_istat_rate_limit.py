@@ -1,9 +1,17 @@
 """istat: obey the publisher's 5 req/min, and stop poking once blocked.
 
-WHY. ISTAT documents "5 query al minuto per ogni IP" and blocks offenders for
-"compresa tra 1 e 2 giorni" (ondata.github.io/guida-api-istat, read 2026-08-30). The
-crawler had NO limiter: RATE=1.5s between slices is 40 requests/minute, and the logs peak
-at 11-12/min (30/min on 2026-07-27). That breach is real and this is its fix.
+WHY. ISTAT, "SDMX web services" (https://www.istat.it/en/classifications-and-tools/sdmx-web-services/, read
+2026-11-24): "a limit of 5 queries per minute has been set for each IP", and a block of 1 to 2 days when it is
+exceeded. Secondary: ondata.github.io/guida-api-istat (read 2026-08-30: "5 query al minuto per ogni IP", block
+"compresa tra 1 e 2 giorni"). The crawler had NO limiter: RATE=1.5s between slices is 40 requests/minute, and
+the logs peak at 11-12/min (30/min on 2026-07-27). That breach is real and this was its first fix.
+
+THE PACING TESTS MOVED (2026-11-25). The per-process _throttle() these tests pinned is gone: its clock started at
+0 in every new process, so a guard relaunch or a manual `--only` run was a second bucket, and the fetcher had no
+limiter at all. Every request now takes a token of ONE machine-wide budget (jobs/_istat_pacer.py), pinned by
+tests/test_istat_pacer_core.py (the rule, ISTAT_QPM may only lower it), tests/test_istat_crawler_pacing.py (a
+token per http_get ATTEMPT, through the real http_get - the call-site mutation the old file's last section
+guarded against) and tests/test_istat_fetcher_pacing.py. What stays here is the block detector.
 
 WHAT IS *NOT* CLAIMED, because I claimed it and was wrong (R512). The current outage is NOT
 established as a ban on us. `esploradati.istat.it` (193.204.90.13) times out from here AND
@@ -33,11 +41,9 @@ from jobs import ingest_istat_sliced as istat                       # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _reset():
-    istat._last_request_at = 0.0
     istat._conn_streak = 0
     istat._blocks_seen = 0
     yield
-    istat._last_request_at = 0.0
     istat._conn_streak = 0
     istat._blocks_seen = 0
 
@@ -55,27 +61,14 @@ def _clock(monkeypatch):
     return state
 
 
-def test_requests_are_paced_under_the_published_ceiling(monkeypatch):
-    st = _clock(monkeypatch)
-    for _ in range(6):
-        istat._throttle()
-    # 6 requests, 5 gaps. Every gap must be >= 60/ISTAT_QPM seconds.
-    gap = 60.0 / istat.ISTAT_QPM
-    assert st["slept"] == pytest.approx([gap] * 5), st["slept"]
-    assert istat.ISTAT_QPM < 5, (
+def test_the_default_istat_qpm_sits_below_the_published_ceiling():
+    """ISTAT_QPM is now only the crawler's OWN-gap floor in the shared pacer (it may lower, never raise); its
+    default must still sit BELOW the publisher's 5, as the shared budget does (4/min)."""
+    from jobs import _istat_pacer
+    assert float(istat.ISTAT_QPM) < 5 and _istat_pacer.BUDGET_PER_MIN < 5, (
         "the publisher's documented ceiling is 5/min; the default must sit BELOW it, not at "
         "it, or clock skew and their counting window put us over")
-
-
-def test_pacing_does_not_sleep_when_calls_are_already_slow(monkeypatch):
-    """A real data pull takes minutes. The limiter must not add delay on top of that — it is
-    a floor on the gap, not a fixed tax per request."""
-    st = _clock(monkeypatch)
-    istat._throttle()
-    st["t"] += 600                       # ten minutes of actual downloading
-    st["slept"].clear()
-    istat._throttle()
-    assert st["slept"] == [], "already past the gap; must not sleep again"
+    assert not hasattr(istat, "_throttle"), "the per-process limiter is back: a second bucket per process"
 
 
 def test_a_reply_of_any_kind_clears_the_streak():
@@ -152,8 +145,9 @@ def test_a_healthy_response_never_triggers_a_block(monkeypatch):
 
 # ── driven through the REAL http_get ────────────────────────────────────────
 # Everything above calls the helpers directly, and a reviewer showed that is not enough:
-# deleting the `_throttle()` CALL SITE from http_get -- the one line that makes the limiter
+# deleting the limiter's CALL SITE from http_get -- the one line that makes the limiter
 # exist in production -- left every test green. Same shape as R511. These drive http_get.
+# (The call site is the shared pacer's token now: tests/test_istat_crawler_pacing.py pins it.)
 
 def _drive(monkeypatch, raiser=None, status=200):
     """Run http_get with the network replaced, returning the fake clock's state."""
@@ -177,16 +171,16 @@ def _drive(monkeypatch, raiser=None, status=200):
     return st
 
 
-def test_http_get_itself_paces_requests(monkeypatch):
-    """THE MUTATION THAT SURVIVED: deleting `_throttle()` from http_get must fail HERE."""
+def test_http_get_itself_takes_a_token_per_request(monkeypatch):
+    """THE MUTATION THAT SURVIVED (now on the shared pacer's call site): http_get must take a token for every
+    request it sends. The conftest's recording stub answers the pacer here."""
+    from jobs import _istat_pacer
     st = _drive(monkeypatch)
     for _ in range(4):
         istat.http_get("https://esploradati.istat.it/x", istat.CSV_ACCEPT)
-    gap = 60.0 / istat.ISTAT_QPM
-    paced = [x for x in st["slept"] if abs(x - gap) < 1e-9]
-    assert len(paced) >= 3, (
-        f"http_get issued 4 requests and slept {st['slept']} — the limiter is not on the "
-        f"production path, only in the helper")
+    toks = [c for c in _istat_pacer._TEST_OVERRIDE.calls if c[0] == "acquire"]
+    assert st["calls"]["n"] == 4 and len(toks) == 4, (st["calls"], toks)
+    assert all(c[1] == "crawler" and _istat_pacer.host_of(c[2]) == "esploradati.istat.it" for c in toks), toks
 
 
 def test_a_successful_reply_clears_a_real_streak(monkeypatch):

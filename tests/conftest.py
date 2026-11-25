@@ -174,6 +174,21 @@ def _no_cloud_credentials_in_a_test(tmp_path_factory):
         yield
 
 
+def _import_istat_pacer():
+    """jobs/_istat_pacer, or None in a tree WITHOUT it. A tree that has the file but cannot import it fails
+    loudly: silently running every test without the redirect and the stub is the R503 shape (a guard's own
+    failure branch disarming it)."""
+    import importlib.util
+    try:
+        spec = importlib.util.find_spec("jobs._istat_pacer")
+    except (ImportError, ValueError):                    # no `jobs` package on the path at all
+        spec = None
+    if spec is None:
+        return None
+    from jobs import _istat_pacer                        # the file exists: an error here must fail the run
+    return _istat_pacer
+
+
 @pytest.fixture(autouse=True)
 def _no_production_paths(tmp_path_factory):
     """AND NO TEST REACHES THE MACHINE'S OWN SELF-HOSTING PATHS. core.catalog_path.LOCK_PATH is E:\\econ_live\\
@@ -202,8 +217,13 @@ def _no_production_paths(tmp_path_factory):
         from econdl import _catalog as econdl_catalog
     except Exception:                                    # noqa: BLE001 - a test tree without the client
         econdl_catalog = None
+    _istat_pacer = _import_istat_pacer()                 # the machine's ISTAT pacer state (DESIGN 6.8)
     own = tmp_path_factory.getbasetemp() / "machine-paths" / uuid.uuid4().hex
     with pytest.MonkeyPatch.context() as mp:
+        if _istat_pacer is not None:
+            # E:\research\econfindatalibrary\logs\istat_pacer is the lock and request log EVERY ISTAT request
+            # on this workstation shares. A test that took it would pace production, or be paced by it.
+            mp.setattr(_istat_pacer, "STATE_DIR", str(own / "istat_pacer"))
         mp.setattr(catalog_path, "LOCK_PATH", str(own / "state" / "writer.lock"))
         mp.setattr(cutover, "FLAG_PATH", str(own / "CUTOVER"))
         mp.setattr(catalog_path, "BUILD_PATH", str(own / "live" / "data" / "catalog.db"))
@@ -244,9 +264,202 @@ def _no_process_leak(request):
                 pytrace=False)
 
 
+class NetworkRefused(ConnectionRefusedError):
+    """Raised by _no_network_beyond_loopback. An OSError on purpose: code that swallows a failed connect still
+    sees a failed connect, and the guard fails the test at teardown anyway."""
+
+
+_LOOPBACK_NAMES = frozenset({"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"})
+
+
+def _host_text(host) -> str:
+    if isinstance(host, (bytes, bytearray)):
+        host = bytes(host).decode("ascii", "replace")
+    return str(host).strip().rstrip(".").lower()
+
+
+def _is_istat_name(host) -> bool:
+    h = _host_text(host)
+    return h == "istat.it" or h.endswith(".istat.it")
+
+
+def _is_local_address(host) -> bool:
+    import ipaddress
+    h = _host_text(host)
+    if h in _LOOPBACK_NAMES:
+        return True
+    h = h.strip("[]").split("%", 1)[0]
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_unspecified
+
+
+@pytest.fixture(autouse=True)
+def _no_network_beyond_loopback(request):
+    """AND NO TEST REACHES THE NETWORK BEYOND THIS MACHINE (review B of the ISTAT pacer, phase 1, item 1; 2026-11-25).
+
+    The tests that touch ISTAT code replace `requests.get`, a Session factory or socket.create_connection with a
+    fake, and the ISTAT pacer is a zero-wait stub in every test (V7). A test whose fake is BYPASSED - a switch from
+    requests.get to a Session, a name bound with `from x import y` at import time - would send a REAL, UNPACED
+    request to ISTAT from this workstation's IP (tools/pretest.py runs this suite in the production checkout), and
+    ISTAT blocks an IP for 1 to 2 days. So in every test: a socket connect (connect / connect_ex, which
+    create_connection, urllib3, http.client and ssl all reach) to anything but a loopback (or unspecified) address
+    is refused, and so is any DNS lookup of an ISTAT name (`istat.it`, `*.istat.it`). The test FAILS at teardown
+    even when the code under test swallows the refusal, as the state-sync guard does. What it does NOT see: a child
+    process (a new interpreter loads no conftest), asyncio's Windows proactor (ConnectEx, not connect), and a raw
+    `_socket.socket` connect (review B 3b: it slips past this guard; no ISTAT code makes one)."""
+    import socket as _s
+    refused = []
+    real_connect, real_connect_ex = _s.socket.connect, _s.socket.connect_ex
+    real_gai, real_ghbn, real_ghbn_ex = _s.getaddrinfo, _s.gethostbyname, _s.gethostbyname_ex
+    af_unix = getattr(_s, "AF_UNIX", None)
+
+    def _check(sock, address, what):
+        if af_unix is not None and getattr(sock, "family", None) == af_unix:
+            return
+        host = address[0] if isinstance(address, (tuple, list)) and address else address
+        if isinstance(host, (str, bytes, bytearray)) and _is_local_address(host):
+            return
+        refused.append(f"{what} {address!r}")
+        raise NetworkRefused(f"test network guard: {what} to {address!r} refused (only loopback; tests/conftest.py)")
+
+    def connect(self, address):
+        _check(self, address, "connect")
+        return real_connect(self, address)
+
+    def connect_ex(self, address):
+        _check(self, address, "connect_ex")
+        return real_connect_ex(self, address)
+
+    def _dns(name, what):
+        if _is_istat_name(name):
+            refused.append(f"{what} {name!r}")
+            raise NetworkRefused(f"test network guard: DNS lookup of ISTAT name {name!r} refused (tests/conftest.py)")
+
+    def getaddrinfo(host, *a, **k):
+        _dns(host, "getaddrinfo")
+        return real_gai(host, *a, **k)
+
+    def gethostbyname(host):
+        _dns(host, "gethostbyname")
+        return real_ghbn(host)
+
+    def gethostbyname_ex(host):
+        _dns(host, "gethostbyname_ex")
+        return real_ghbn_ex(host)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(_s.socket, "connect", connect)
+        mp.setattr(_s.socket, "connect_ex", connect_ex)
+        mp.setattr(_s, "getaddrinfo", getaddrinfo)
+        mp.setattr(_s, "gethostbyname", gethostbyname)
+        mp.setattr(_s, "gethostbyname_ex", gethostbyname_ex)
+        yield
+    if refused:
+        pytest.fail(f"{request.node.nodeid} tried the network beyond loopback (refused, but the attempt is the bug): "
+                    f"{refused[:3]}", pytrace=False)
+
+
 def pytest_configure(config):
     config.addinivalue_line("markers", "state_sync_refusal_expected: the guard's own can-fail test")
     config.addinivalue_line("markers", "wrangler_refusal_expected: the wrangler guard's own can-fail test")
+    config.addinivalue_line("markers", "istat_pacer_real: this test runs the REAL jobs/_istat_pacer (tmp folder, "
+                                       "never the machine's); every other test gets the zero-wait stub")
+
+
+ISTAT_PACER_REAL_SLEEP_MAX_S = 2.0
+
+
+class ZeroWaitIstatPacer:
+    """THE RECORDING, ZERO-WAIT ISTAT PACER every test gets unless it opts in to the real one (verdict V7).
+
+    On Linux CI the real pacer is in fail-safe ALWAYS (one token per 64 s); on the workstation a tmp folder is
+    in shared mode (16 s per token). A test that reaches the fetcher's update() or the crawler with a real clock
+    would then sleep for real. So this stand-in answers every call at once: a token whose slot is the caller's
+    clock now (mode "stub"), and it raises WindowEnd only where a zero wait would (now > deadline - 1 s, the
+    real rule). Every call is recorded in `calls` for the rigs to assert on. It is installed through the
+    module's _TEST_OVERRIDE seam, which the real functions check first, so it reaches every importer whatever
+    its import style."""
+
+    def __init__(self):
+        self.calls = []
+
+    @staticmethod
+    def _now(clock):
+        import time as _time
+        return (clock if clock is not None else _time).time()
+
+    def acquire(self, participant, host, kind, path_class, *, deadline_ts=None, flow=None, clock=None):
+        from jobs import _istat_pacer as pacer
+        now = self._now(clock)
+        self.calls.append(("acquire", participant, host, kind, path_class, flow, deadline_ts, now))
+        if deadline_ts is not None and now > float(deadline_ts) - 1.0:
+            raise pacer.WindowEnd("zero-wait stub: now is later than deadline - 1 s", slot=now,
+                                  deadline_ts=deadline_ts)
+        return pacer.Token(f"stub-{len(self.calls)}", now, 0.0, "stub", participant, pacer.host_of(host), kind,
+                           path_class, flow, start=now)
+
+    def outcome(self, token, text, elapsed_s):
+        self.calls.append(("outcome", getattr(token, "id", None), text, elapsed_s))
+
+    def penalize(self, seconds, participant, clock=None):
+        now = self._now(clock)
+        self.calls.append(("penalize", seconds, participant, now))
+        return now + float(seconds)
+
+    def begin_turn(self, end_ts=None, clock=None):
+        self.calls.append(("begin_turn", end_ts))
+        return True
+
+    def end_turn(self, clock=None):
+        self.calls.append(("end_turn",))
+        return True
+
+    def yield_to_turn(self, log=None, clock=None):
+        self.calls.append(("yield_to_turn",))
+        return 0.0
+
+    def describe(self):
+        self.calls.append(("describe",))
+        return "[istat-pacer] state (test stub); mode stub (zero-wait); gap 16 s; budget 4/min"
+
+
+@pytest.fixture(autouse=True)
+def _istat_pacer_zero_wait(request):
+    """AND NO TEST SLEEPS FOR REAL ON THE ISTAT PACER (verdict V7). Every test gets ZeroWaitIstatPacer; a test
+    marked `istat_pacer_real` runs the real module (its folder is the tmp one _no_production_paths set). Either
+    way the test FAILS at teardown when the pacer slept more than ISTAT_PACER_REAL_SLEEP_MAX_S of REAL time in
+    this process, and the module's per-process memory (own last start, fail-safe episode, counters) starts
+    empty and is cleared after. Harmless while nothing imports the pacer: it only sets module attributes.
+
+    LIMIT (review_A condition 7): the guard counts THIS process only. A child process a test starts (the
+    Windows subprocess tests' tests/_istat_pacer_child.py, which sleep for real by design and are skipped on
+    Linux CI) is not counted here; those tests bound each child's own reported sleep instead."""
+    import os
+    pacer = _import_istat_pacer()
+    if pacer is None:                                    # a tree without the pacer
+        yield
+        return
+    real = request.node.get_closest_marker("istat_pacer_real") is not None
+    production = os.path.normcase(os.path.abspath(pacer.PRODUCTION_STATE_DIR))   # read BEFORE any test patch
+    pacer._reset_process_state()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(pacer, "_TEST_OVERRIDE", None if real else ZeroWaitIstatPacer())
+        mp.setattr(pacer, "_REAL_SLEPT_S", 0.0)
+        yield
+        slept = pacer._REAL_SLEPT_S
+        tried = [p for p in pacer._OPENED_PATHS
+                 if os.path.normcase(os.path.abspath(p)).startswith(production + os.sep)]
+    pacer._reset_process_state()
+    if tried:
+        pytest.fail(f"{request.node.nodeid} made the ISTAT pacer try the MACHINE's state folder {production} "
+                    f"({tried[:2]}); a test must use its own folder (DESIGN 6.8)", pytrace=False)
+    if slept > ISTAT_PACER_REAL_SLEEP_MAX_S:
+        pytest.fail(f"{request.node.nodeid} slept {slept:.2f} s of REAL time inside jobs/_istat_pacer "
+                    f"(limit {ISTAT_PACER_REAL_SLEEP_MAX_S:g} s): give the pacer a fake clock, or let the "
+                    f"zero-wait stub answer (verdict V7)", pytrace=False)
 
 
 @pytest.fixture(autouse=True)
