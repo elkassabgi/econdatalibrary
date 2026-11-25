@@ -21,7 +21,8 @@ plant is relative to the WALL clock at test time (T = now), and orchestrate.now_
 type, an ISO string (R2-C2, R4-C1): old code reads datetime.now there, new code reads now_utc - the same instant to
 the second. The assess tests pin health.datetime instead (assess takes no `now`).
 
-Must fail on main before this change: F2, G6b, G7b, the RE-CHECK / HELD line tests, the base / health unit tests.
+Must fail on main before this change: F2, G6b, G6c, G6d, G7b, the RE-CHECK / HELD line tests, the base / health
+unit tests.
 Must pass before and after: G1-G8, G13 (due-ness), G9 and the assess verdicts (G10b). Each guard names the mutant
 it kills; tools/monthly_recheck_mutants.py applies them on a git-archive copy.
 """
@@ -132,6 +133,16 @@ GUARDS = [
     #      Kills: the stricter residual.py rule, any non-clean row holds (-> not due). Fails on main before the change.
     _g("G6b-transient-does-not-hold", {"rows": (("ok", 398.7), ("transient_fail", 300.0), ("ok", 120.0),
                                                 ("no_change", 45.0), ("no_change", 30.0))}, want="due"),
+    # G6c: SIX rows in time order (id order); the OLDEST is partial, the newest 5 are clean: DUE. With exactly 5 rows
+    #      the oldest 5 and the newest 5 are the same set, so only a 6th row pins "newest by id" (review O-2).
+    #      Kills: rule 3 reads the oldest 5 (ORDER BY id ASC, review m3) (-> not due). Fails on main before the change.
+    _g("G6c-only-the-newest-5", {"rows": (("partial", 120.0),) + CLEAN5}, want="due"),
+    # G6d: a `locked` and a `window_stopped` row in the last 5, none partial or killed_external: DUE (rule 3 holds
+    #      on partial and killed_external only; window_stopped is also outside run_cost_estimate's window).
+    #      Kills: `locked` or `window_stopped` added to RECHECK_HOLD_STATUSES (-> not due). Fails on main before.
+    _g("G6d-locked-and-window-stopped-do-not-hold", {"rows": (("ok", 398.7), ("locked", 0.0), ("ok", 120.0),
+                                                              ("window_stopped", 30.0), ("no_change", 30.0))},
+       want="due"),
     # G7: a LIVE upstream_verified claim covers n. Kills: the uv exclusion removed (-> due)
     _g("G7-uv-live", entry_kw={"uv_checked_days": 10.0}),
     # G7b: the same claim EXPIRED (checked T - 200 d > 180): DUE. Kills: the exclusion ignores expiry (-> not due)
