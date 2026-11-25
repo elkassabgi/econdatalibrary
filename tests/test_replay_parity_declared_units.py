@@ -334,11 +334,12 @@ def test_every_declared_fetcher_exposes_its_stop_figures(clean_env):
     ws = m.local_window_stop_from_registry()
     got = {s: (fetchers.get(s).window_stop_tail_min(), fetchers.get(s).window_stop_piece_min()) for s in sorted(ws)}
     # 2026-11-06: four more unctad modules on the windowed update, the same figures as nonplastics
-    # 2026-11-23: istat - no flow starts within margin 5 + one flow's 912-s allowance of the ceiling; piece 0
+    # 2026-11-23: istat - no flow starts within margin 5 + one flow's allowance of the ceiling; piece 0. The allowance
+    # is 960 s since 2026-11-25 (3 x (300 s + the shared pacer's 16-s gap) + 4 + 8; it was 912 s), so 21.0 (20.2)
     assert got == {"census": (5.0, 0.0), "imf_imts_direct": (25.0, 30.0), NP: (65.0, 0.0), "wid": (5.0, 0.0),
                    "unctad_creativegoodsvalue": (65.0, 0.0), "unctad_criticalmineralstradebypart": (65.0, 0.0),
                    "unctad_gstptradematrix": (65.0, 0.0), "unctad_tradeservcatbypartner": (65.0, 0.0),
-                   "istat": (20.2, 0.0)}, got
+                   "istat": (5.0 + (3 * (300 + 60.0 / 4 + 1) + 4 + 8) / 60.0, 0.0)}, got
     b = m.UnitBook({s: "monthly" for s in ws}, {}, [], {s: 1.0 for s in ws}, {}, window_stop=ws)
     assert all(b.stop_figures(s)[2] == "fetcher" for s in ws) and not b.stop_fallback
 

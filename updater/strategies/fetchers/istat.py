@@ -45,11 +45,57 @@ within margin + max(2 x the longest flow, FLOW_FLOOR_S) + the CSV allowance (CSV
 handed over) of it, and every GET is clamped to end by that point minus the margin. The cap bounds the
 whole TURN: the Result carries its end (turn_end_ts) and run_once bounds the CSV phase by it (phase B
 review B1). The start gate reserves window_admission_reserve_min() = margin 5 (chosen)
-+ FLOW_FLOOR_S 15.2 + setup 1 (chosen) = 21.2 min, not the latest real run. Result.window_stop is set
++ FLOW_FLOOR_S 16.0 (one pacer slot wait per GET included) + setup 1 (chosen) = 22.0 min, not the latest
+real run. Result.window_stop is set
 only by those stops: "none" when no flow was started (a non-turn, a `window_stopped` row), else
 "progress". The every-host-dead break, the budget stop and the end of the list leave it None, so an
 ISTAT outage stays a recorded `partial` turn. A structural flow no longer loses the run's hand-over:
 the run returns `partial` WITH the cursors of every walked flow (ROUTE B, as census).
+
+PACING (2026-11-25; DESIGN F:/work/econ_finish/istat_pacing/DESIGN.md, review VERDICT_design V1-V14).
+ISTAT, "SDMX web services" (https://www.istat.it/en/classifications-and-tools/sdmx-web-services/, read
+2026-11-24): "a limit of 5 queries per minute has been set for each IP", and a block of 1 to 2 days when
+it is exceeded (secondary: ondata.github.io/guida-api-istat). Until this change this fetcher had NO
+limiter: by omission, not by decision - the crawler's ISTAT_QPM came in commits that touched only the
+crawler, and nothing here read it (R132/R46). In the 2026-11-22 turn at least 17 of its own GETs started
+in one closed 60 s (DESIGN section 4, from 18 store writes). Now every request takes a token of ONE
+budget per machine shared by every ISTAT host
+and every process (jobs/_istat_pacer.py: 16 s between token starts, at most 4 in any closed 60 s):
+  - a token before every GET and every TCP probe, taken BEFORE the request clamp, with the request end
+    as its deadline; a slot past it is a deferral (_WindowEnd), never a failure and never a dead host;
+  - allow_redirects=False on every GET: a 3xx is ONE request. A same-host redirect to a different path
+    is followed once, with its own token (V5(a)); a self-, cross-host or second redirect marks the host
+    unusable for the run (today's sdmx.istat.it: 2 tokens per run instead of ~31 requests);
+  - a 429 moves the shared next slot to its Retry-After (60 s to 48 h) for every participant;
+  - update() writes the turn marker (begin_turn) before its loop and clears it (end_turn) in a
+    `finally`, so the crawler starts no new flow while istat's turn runs; the progress lines carry
+    `pacer: <n> token(s), waited <s> s, mode <mode>`.
+An ad-hoc HTTP request or TCP probe to any ISTAT host from this workstation spends the shared budget.
+Send it through `jobs/_istat_pacer.acquire`, or from a second egress. A curl or a browser hit is not
+paced. The repo's own request paths all take tokens: this fetcher, jobs/ingest_istat_sliced.py (also
+`--list` and `--only`, which run _preflight() first: one TCP connect and one GET per host),
+tools/catalog_istat_flows.py (`--apply` with `--refresh-names` or a cache miss; a dry run sends nothing)
+and tools/probe_istat_hosts.py. The combined rate is measured only by
+`python tools/check_istat_rate.py --from <utc> --to <utc>`; it counts FAILSAFE-TOKEN and UNLOGGED lines from
+the process logs too (pass `--process-log` the pass log and the guard_istat_sliced_*.log files). WHERE TO COUNT
+the pacer's trouble lines on the workstation, per pass: `[istat-pacer] FAIL-SAFE`, `FAILSAFE-TOKEN` and
+`UNLOGGED` in logs/local_heavy_updater_<stamp>.log (this fetcher, one log per pass) and in
+logs/guard_istat_sliced_<stamp>.log (the crawler, one log per guard launch), and `ERROR outcome not logged` in
+both: the phase-A tests saw a lock busy past its wait in 4 of 20 TB2 runs, cause unknown, so the production rate
+is what says whether the 5-s lock wait is enough.
+LIMITS, stated, not enforced:
+  - OLD CODE IS NOT PACED. Any checkout at a commit before this change - E:/research/econ_wt_* worktrees, the
+    F: clones, an old crawler process still running at pull time - sends unpaced. Run istat code only from a
+    checkout that has jobs/_istat_pacer.py, and check the old crawler is gone before the first paced turn
+    (verdict V9: a guard_istat_sliced_*.log written after the pull that carries an `[istat-pacer]` line).
+  - ONE TOKEN PER socket.create_connection CALL. create_connection tries every address getaddrinfo returns, so if
+    an ISTAT name ever resolves to several addresses a failed first connect is followed by another under the same
+    token. The repo records one IPv4 address per host (.13, .1, .61); not measured, because no test resolves an
+    ISTAT name.
+  - V5 IS UNPROVEN FOR DATA URLs. No log before this change shows whether esploradati answers a DATA URL with a
+    same-host 3xx (requests followed redirects silently). The first paced pass's receipt is the count of 3xx
+    outcomes per host in the request log (`O ... outcome=<3xx>-><Location>:<follow|dead>` lines): a host whose
+    data URLs 3xx to another path is followed once per request (two tokens); any other 3xx ends that host's run.
 """
 from __future__ import annotations
 import datetime as dt
@@ -84,6 +130,20 @@ except ImportError:  # pragma: no cover - path fallback
     UA = _mod.UA
     parse_sdmx_csv = _mod.parse_sdmx_csv
     parse_sdmx_xml = _mod.parse_sdmx_xml
+
+# THE SHARED ISTAT PACER (jobs/_istat_pacer.py; DESIGN 6.9): imported as jobs._sdmx_common is. The by-path
+# fallback registers the module under its package name, so a process never holds two copies (two in-process
+# "own last start" values would be two buckets).
+try:
+    from jobs import _istat_pacer as _pacer  # type: ignore
+except ImportError:  # pragma: no cover - path fallback
+    import importlib.util as _ilu
+
+    _psrc = os.path.join(config.ROOT, "jobs", "_istat_pacer.py")
+    _pspec = _ilu.spec_from_file_location("jobs._istat_pacer", _psrc)
+    _pacer = _ilu.module_from_spec(_pspec)
+    sys.modules["jobs._istat_pacer"] = _pacer
+    _pspec.loader.exec_module(_pacer)  # type: ignore
 
 SOURCE = "istat"
 AGENCY = "IT1"
@@ -161,8 +221,48 @@ def _note_success(base: "str | None") -> None:
         _TRANSPORT_FAILS[base] = 0
 
 
+# THIS RUN'S REQUEST END (ceiling - margin, or None), for the TCP probe below: update() sets it and clears it
+# when the run ends, like _DEAD_HOSTS, so the probe keeps its one-argument shape (the test rigs replace it with
+# `lambda base: ...`).
+_RUN_REQ_END = [None]
+# THIS RUN'S PACER COUNTS, for the progress line: tokens taken, seconds waited for them, tokens per mode.
+_RUN_PACE: dict = {"tokens": 0, "waited_s": 0.0, "modes": {}}
+
+
+def _take_token(where: str, kind: str, path_class: str, deadline_ts, flow=None):
+    """ONE token of the shared ISTAT budget for ONE request (DESIGN 7), taken BEFORE the request clamp reads the
+    time left (C8a). The pacer refuses a slot later than deadline_ts - 1 s with WindowEnd (NoSendPlatform on WSL),
+    and that becomes _WindowEnd: the flow is DEFERRED (R303), never failed, and no host is marked dead. A pacer
+    wait is not a transport failure: only the `except` of the request itself calls _note_transport_failure (C7)."""
+    try:
+        tok = _pacer.acquire("updater", where, kind, path_class, deadline_ts=deadline_ts, flow=flow, clock=time)
+    except _pacer.WindowEnd as e:
+        raise _WindowEnd(f"no ISTAT pacer slot before the margin before the run ceiling ({e})") from e
+    _RUN_PACE["tokens"] += 1
+    _RUN_PACE["waited_s"] += float(getattr(tok, "waited", 0.0) or 0.0)
+    mode = str(getattr(tok, "mode", "?"))
+    _RUN_PACE["modes"][mode] = _RUN_PACE["modes"].get(mode, 0) + 1
+    return tok
+
+
+def _pace_text() -> str:
+    """`pacer: <n> token(s), waited <s> s, mode <mode>` for this run (DESIGN 7)."""
+    modes = _RUN_PACE["modes"]
+    if not modes:
+        mode = "-"
+    elif len(modes) == 1:
+        mode = next(iter(modes))
+    else:
+        mode = "mixed (" + ", ".join(f"{m} {n}" for m, n in sorted(modes.items())) + ")"
+    return f"pacer: {_RUN_PACE['tokens']} token(s), waited {_RUN_PACE['waited_s']:.1f} s, mode {mode}"
+
+
 def _tcp_reachable(base: str) -> bool:
-    """One cached TCP-connect probe per base per run. True when the socket opens."""
+    """One cached TCP-connect probe per base per run. True when the socket opens.
+
+    THE CONNECT TAKES A TOKEN (DESIGN Q2: ISTAT does not say a bare connect is free), first, with this run's
+    request end as its deadline; and the connect timeout is clamped to the time left, as _get clamps a GET. A
+    connect cut by that clamp is the window ending, not the host failing: _WindowEnd, nothing cached."""
     if base in _TCP_PROBED:
         return _TCP_PROBED[base]
     import socket
@@ -170,11 +270,26 @@ def _tcp_reachable(base: str) -> bool:
     u = urlparse(base)
     host = u.hostname or ""
     port = u.port or (443 if u.scheme == "https" else 80)
+    req_end_ts = _RUN_REQ_END[0]
+    tok = _take_token(host, "tcp", "tcp", req_end_ts)
+    timeout = float(_TCP_PROBE_TIMEOUT)
+    if req_end_ts is not None:
+        left = req_end_ts - time.time()
+        if left <= 0:
+            _pacer.outcome(tok, "window_end", 0.0)
+            raise _WindowEnd("TCP probe not started: the margin before the run ceiling is reached")
+        timeout = max(1.0, min(timeout, left))
+    t0 = time.time()
+    _pacer.started(tok, clock=time)
     try:
-        socket.create_connection((host, port), timeout=_TCP_PROBE_TIMEOUT).close()
-        ok = True
-    except OSError:
-        ok = False
+        socket.create_connection((host, port), timeout=timeout).close()
+        ok, what = True, "tcp-open"
+    except OSError as e:
+        ok, what = False, f"tcp-{type(e).__name__}"
+        if timeout < _TCP_PROBE_TIMEOUT and isinstance(e, (socket.timeout, TimeoutError)):
+            _pacer.outcome(tok, "window_end", time.time() - t0)
+            raise _WindowEnd(f"TCP probe cut at the margin before the run ceiling after {timeout:.0f} s") from e
+    _pacer.outcome(tok, what, time.time() - t0)
     _TCP_PROBED[base] = ok
     return ok
 
@@ -239,12 +354,15 @@ TRANSIENT_HTTP = (429, 500, 502, 503, 504)
 #   margin        AQUEDUCT_ISTAT_MARGIN_MIN, default 5 min: the tail for finalize and the
 #                 orchestrator's CSV step. CHOSEN, not measured (as census and wid).
 #   FLOW_FLOOR_S  the allowance before any flow of this run is timed: one flow whose every CSV
-#                 GET on ONE live host runs to that host's timeout, RETRIES x 300 s + the backoff
-#                 sleeps = 912 s (15.2 min). One live host is today's case (sdmx.istat.it is
-#                 redirect-looping and is marked dead on the first flow). It is not the worst
-#                 case: with both hosts live and timing out a flow costs 3 x (120 + 300) + 12 =
-#                 1,272 s, and a 200 that parses 0 rows adds an XML GET per attempt (about 30 min
-#                 on one host). The 2 x longest term covers those once one such flow has been seen.
+#                 GET on ONE live host runs to that host's timeout, each GET after ONE wait for its
+#                 shared-pacer slot (jobs/_istat_pacer.GAP_S, 16 s; since 2026-11-25), RETRIES x
+#                 (300 + 16) s + the backoff sleeps = 960 s (16.0 min). One live host is today's case
+#                 (sdmx.istat.it answers a 3xx and is marked dead on its first GET). It is not the
+#                 worst case: with both hosts live and timing out a flow costs 3 x (120 + 16 + 300 +
+#                 16) + 12 = 1,368 s, a 200 that parses 0 rows adds an XML GET per attempt (about 32
+#                 min on one host), and a 429 penalty or a fail-safe token (64 s) waits longer. The 2 x
+#                 longest term covers those once one such flow has been seen. The first flow of a run
+#                 also pays the TCP probes and sdmx's 3xx (at most 3 x 16 + 2 x 10 s, once per run).
 # The check reads neither BUDGET_MIN nor AQUEDUCT_BUDGET_MIN_OVERRIDE. run_once always sets a
 # ceiling (AQUEDUCT_RUN_BUDGET_MIN, default 240 min; CI sets its own), so the check is off only
 # when AQUEDUCT_RUN_BUDGET_MIN <= 0 or update() is called outside run_once.
@@ -252,12 +370,14 @@ TRANSIENT_HTTP = (429, 500, 502, 503, 504)
 # ceiling - margin, no GET or retry backoff starts after it, and a flow cut there is deferred, or
 # transient when it met a real failure first (phase B review A1) (_get, _fetch_flow, _WindowEnd).
 # So a flow that overruns its allowance (measured on 2026-11-22: one flow ~1,044 s, above the
-# 912-s floor) can no longer carry its GETs past ceiling - margin. NOT
+# 960-s floor) can no longer carry its GETs past ceiling - margin. Since 2026-11-25 the pacer's slot
+# is taken BEFORE the clamp reads the time left, and a slot later than ceiling - margin - 1 s is
+# refused (the flow is deferred); the 10-s TCP probe takes a token and is clamped the same way. NOT
 # clamped: the flow's store reads before its first GET and its merge after the body (bounded by the
-# flow's size, not the clock), the 10-s TCP probe, the 1-s RATE pause, and a body that trickles in
-# (a requests timeout bounds each read gap, not the whole body).
+# flow's size, not the clock), the 1-s RATE pause, and a body that trickles in (a requests timeout
+# bounds each read gap, not the whole body).
 MARGIN_FLOOR_MIN_DEFAULT = 5.0
-FLOW_FLOOR_S = (RETRIES * max([TIMEOUT, *HOST_TIMEOUT.values()])
+FLOW_FLOOR_S = (RETRIES * (max([TIMEOUT, *HOST_TIMEOUT.values()]) + _pacer.GAP_S)
                 + sum(_backoff_s(a) for a in range(1, RETRIES)))
 # A progress line every PROGRESS_EVERY_FLOWS attempted flows or PROGRESS_EVERY_S seconds,
 # whichever comes first, so a working sweep cannot look like a hang (2026-11-22: 188 min, 451
@@ -315,8 +435,8 @@ ADMISSION_SETUP_MIN = 1.0
 
 def window_admission_reserve_min() -> float:
     """THE START GATE'S RESERVE for istat, in minutes (registry `window_stop: true`; read by
-    orchestrate._window_stop_reserve): window_stop_tail_min() + ADMISSION_SETUP_MIN = 5 + 15.2 + 1 = 21.2 by
-    default.
+    orchestrate._window_stop_reserve): window_stop_tail_min() + ADMISSION_SETUP_MIN = 5 + 16.0 + 1 = 22.0 by
+    default (16.0 = FLOW_FLOOR_S, one pacer slot wait per GET included).
 
     The tail (margin + FLOW_FLOOR_S) is what update()'s run-ceiling check needs before the FIRST flow of a run;
     the setup allowance covers the time from the gate to that check, so a unit admitted at this reserve starts a
@@ -325,15 +445,16 @@ def window_admission_reserve_min() -> float:
     step for the cursors of the flows walked, whose soft budget is capped by the time left to the ceiling
     (orchestrate._capped_derive_budget), so ids it does not reach go to csv_retry_queue, deferred.
 
-    THE OVERRUN BOUND: every GET is clamped to ceiling - margin (_get). Not clamped: a flow's store reads and
-    merge, the 10-s TCP probe, the 1-s RATE pause, and a body that trickles in. The measured single-flow maximum
-    is about 1,044 s (2026-11-22), above FLOW_FLOOR_S = 912 s; its GETs can no longer pass ceiling - margin."""
+    THE OVERRUN BOUND: every GET and TCP probe is clamped to ceiling - margin (_get, _tcp_reachable), and its
+    pacer slot is refused past it. Not clamped: a flow's store reads and merge, the 1-s RATE pause, and a body
+    that trickles in. The measured single-flow maximum is about 1,044 s (2026-11-22, unpaced), above
+    FLOW_FLOOR_S = 960 s; its GETs can no longer pass ceiling - margin."""
     return window_stop_tail_min() + ADMISSION_SETUP_MIN
 
 
 def window_stop_tail_min() -> float:
     """WHERE istat STOPS, in minutes before the run ceiling (for tools/measure_ci_lag.py's replay; nothing in
-    the updater calls it): margin floor + FLOW_FLOOR_S = 20.2 by default, through the SAME helper and constant as
+    the updater calls it): margin floor + FLOW_FLOOR_S = 5 + 16.0 = 21.0 by default, through the SAME helper and constant as
     update()'s check. Before any flow is timed no flow starts with less than this left. The flow started just
     before that point ends after it (a few seconds to a few minutes on the measured passes; every GET is clamped
     to ceiling - margin), and the 2 x longest term is NOT in this figure, nor the CSV allowance (CSV_S_PER_FLOW per
@@ -479,7 +600,7 @@ class _Resp:
         self.status = status
 
 
-def _get(sess, url, accept, timeout=TIMEOUT, req_end_ts=None) -> _Resp:
+def _get(sess, url, accept, timeout=TIMEOUT, req_end_ts=None, flow=None) -> _Resp:
     """ONE GET (no internal backoff — retry/host-fallback is orchestrated by the
     caller so a dead host doesn't burn the whole budget before the other is tried).
     Returns a classified _Resp:
@@ -489,7 +610,8 @@ def _get(sess, url, accept, timeout=TIMEOUT, req_end_ts=None) -> _Resp:
       gone       -> 404 "Could not find Dataflow and/or DSD ..." — the flow has been
                     WITHDRAWN from this host's catalog (a structural-break candidate;
                     the caller still tries the OTHER host before concluding it)
-      transient  -> timeout / 5xx / 429 / conn drop (retryable on this host)
+      transient  -> timeout / 5xx / 429 / conn drop (retryable on this host), or a 3xx
+                    that is not followed (the host is then unusable for the run)
 
     THE REQUEST IS CLAMPED TO THE WINDOW (2026-11-24, review of the istat window_stop plan, C8; census's
     AR-407 O1). `req_end_ts` is the run ceiling minus the margin (update() passes it; None = no ceiling).
@@ -497,7 +619,18 @@ def _get(sess, url, accept, timeout=TIMEOUT, req_end_ts=None) -> _Resp:
     started. Both raise _WindowEnd. A timeout that the CLAMP caused is not a transport failure, so it does not
     count towards marking the host dead. A requests timeout bounds the connect and each read GAP, not the
     whole body: a body that trickles in can still end after req_end_ts (stated residual, as in census).
-    """
+
+    PACED (2026-11-25, DESIGN 7). A token of the shared ISTAT budget comes FIRST, with req_end_ts as its deadline
+    (a slot later than req_end_ts - 1 s is _WindowEnd before anything is sent: deferred, R303), then the clamp
+    with the real time left, then the GET with allow_redirects=False, so every request sent is one token and a
+    redirect hop is never sent unpaced (requests follows 30 by default: about 31 requests per sdmx.istat.it GET
+    on 2026-11-22). A 3xx is classified by _pacer.redirect_decision: a same-host redirect to a DIFFERENT path is
+    followed ONCE, with its own token (V5(a)); a self-redirect, a cross-host redirect, a 3xx without a Location
+    or a second redirect marks the base unusable for the run, logs the status and the Location, and answers
+    `transient` (its token stays spent), as TooManyRedirects did. A 429 shares its Retry-After (60 s to 48 h) as
+    a penalty for every participant (_pacer.penalize) and stays `transient`. Every request's outcome is logged
+    (_pacer.outcome). The pacer's wait is never counted by _note_transport_failure (C7): only a failure of the
+    request itself is."""
     hdrs = {**UA, "Accept": accept}
     if timeout == TIMEOUT:                       # caller took the default -> host may raise it
         for _base, _t in HOST_TIMEOUT.items():
@@ -505,39 +638,73 @@ def _get(sess, url, accept, timeout=TIMEOUT, req_end_ts=None) -> _Resp:
                 timeout = _t
                 break
     host_timeout = timeout
-    if req_end_ts is not None:
-        left = req_end_ts - time.time()
-        if left <= 0:
-            raise _WindowEnd("request not started: the margin before the run ceiling is reached")
-        timeout = max(1.0, min(float(timeout), left))
-    try:
-        r = sess.get(url, headers=hdrs, timeout=timeout)
-        _note_success(_base_of(url))   # a reply of ANY status proves the transport
-    except requests.TooManyRedirects:
-        # A HOST-level fault, not a flow-level one. sdmx.istat.it began answering every
-        # /SDMXWS/rest/ path with a 302 back to its own homepage - measured 2026-08-23,
-        # 12 hops and still looping, while esploradati.istat.it returns 200 with no
-        # redirect at all. TooManyRedirects was not in the except clause below, so it
-        # escaped as UNEXPECTED and killed the whole source BEFORE the working host was
-        # tried. istat last succeeded 2026-07-14 and had been attempted on every run for
-        # 40 days, recorded transient_fail each time.
-        _b = _base_of(url)
-        if _b:
-            _mark_dead(_b, "is redirect-looping")
-        return _Resp(kind="transient")
-    except (requests.Timeout, requests.ConnectionError) as e:
-        if isinstance(e, requests.Timeout) and timeout < host_timeout:
-            # The CLAMP cut it, not the host: the window ended. Not counted against the base.
-            raise _WindowEnd(f"request cut at the margin before the run ceiling after {timeout:.0f} s "
-                             f"({type(e).__name__})") from e
-        # Transport, not protocol: count it against the base (see _TRANSPORT_FAILS).
-        _note_transport_failure(_base_of(url))
-        return _Resp(kind="transient")
-    if r.status_code == 200:
+    base = _base_of(url)                         # a followed redirect stays on this host (V5(a))
+    followed = 0
+    while True:
+        tok = _take_token(url, "http", "data", req_end_ts, flow=flow)     # the slot BEFORE the clamp (C8a)
+        timeout = host_timeout
+        if req_end_ts is not None:
+            left = req_end_ts - time.time()
+            if left <= 0:
+                _pacer.outcome(tok, "window_end", 0.0)
+                raise _WindowEnd("request not started: the margin before the run ceiling is reached")
+            timeout = max(1.0, min(float(host_timeout), left))
+        t0 = time.time()
+        _pacer.started(tok, clock=time)
+        try:
+            r = sess.get(url, headers=hdrs, timeout=timeout, allow_redirects=False)
+        except requests.TooManyRedirects:
+            # Unreachable with allow_redirects=False; kept for a session that follows anyway. A HOST-level
+            # fault, not a flow-level one: sdmx.istat.it began answering every /SDMXWS/rest/ path with a 302
+            # back to its own homepage - measured 2026-08-23, 12 hops and still looping, while
+            # esploradati.istat.it returns 200 with no redirect at all. TooManyRedirects was not in the except
+            # clause below, so it escaped as UNEXPECTED and killed the whole source BEFORE the working host was
+            # tried. istat last succeeded 2026-07-14 and had been attempted on every run for 40 days, recorded
+            # transient_fail each time.
+            _pacer.outcome(tok, "TooManyRedirects", time.time() - t0)
+            if base:
+                _mark_dead(base, "is redirect-looping")
+            return _Resp(kind="transient")
+        except (requests.Timeout, requests.ConnectionError) as e:
+            _pacer.outcome(tok, "timeout" if isinstance(e, requests.Timeout) else "conn", time.time() - t0)
+            if isinstance(e, requests.Timeout) and timeout < host_timeout:
+                # The CLAMP cut it, not the host: the window ended. Not counted against the base.
+                raise _WindowEnd(f"request cut at the margin before the run ceiling after {timeout:.0f} s "
+                                 f"({type(e).__name__})") from e
+            # Transport, not protocol: count it against the base (see _TRANSPORT_FAILS).
+            _note_transport_failure(base)
+            return _Resp(kind="transient")
+        except BaseException as e:
+            _pacer.outcome(tok, type(e).__name__, time.time() - t0)
+            raise
+        el = time.time() - t0
+        status = r.status_code
+        _note_success(base)                      # a reply of ANY status proves the transport
+        if isinstance(status, int) and 300 <= status <= 399:
+            loc = (getattr(r, "headers", None) or {}).get("Location")
+            action, detail = _pacer.redirect_decision(url, status, loc, followed)
+            _pacer.outcome(tok, f"{status}->{loc or '-'}:{action}", el)
+            if action == "follow":
+                print(f"[istat] {url} answers {status} -> {loc}: a same-host redirect to another path, followed "
+                      f"once with its own token", flush=True)
+                followed, url = 1, detail
+                continue
+            if base:
+                _mark_dead(base, f"answers {status} -> {loc or '(no Location)'} ({detail}; not followed)")
+            return _Resp(kind="transient", status=status)
+        _pacer.outcome(tok, str(status), el)
+        break
+    if status == 200:
         return _Resp(content=r.content, kind="ok", status=200)
-    if r.status_code in TRANSIENT_HTTP:
-        return _Resp(kind="transient", status=r.status_code)
-    if r.status_code == 404:
+    if status == 429:
+        ra = (getattr(r, "headers", None) or {}).get("Retry-After")
+        until = _pacer.penalize(_pacer.retry_after_seconds(ra), "updater", clock=time)
+        print(f"[istat] {url} answers 429 (Retry-After {ra!r}): every ISTAT participant waits until "
+              f"{dt.datetime.fromtimestamp(until, dt.timezone.utc):%Y-%m-%dT%H:%M:%S}Z", flush=True)
+        return _Resp(kind="transient", status=429)
+    if status in TRANSIENT_HTTP:
+        return _Resp(kind="transient", status=status)
+    if status == 404:
         body = (r.content or b"").lstrip().lower()
         # "NoRecordsFound" = valid flow, just nothing in this date window -> empty.
         # "Could not find Dataflow and/or DSD ..." = flow withdrawn from catalog -> gone.
@@ -545,7 +712,7 @@ def _get(sess, url, accept, timeout=TIMEOUT, req_end_ts=None) -> _Resp:
             return _Resp(kind="gone", status=404)
         return _Resp(kind="empty", status=404)
     # 400/413 = no such slice; any other hard 4xx = host doesn't serve this. -> empty.
-    return _Resp(kind="empty", status=r.status_code)
+    return _Resp(kind="empty", status=status)
 
 
 def _data_url(base, flow_id, start_period):
@@ -574,7 +741,7 @@ def _try_host(sess, base, flow_id, start_period, req_end_ts=None):
     is left for the XML GET, _WindowEnd propagates and the flow is cut (_WindowEnd) - it is never booked structural on a
     CSV body alone, and a later pass starts at it (the bookmark does not name it)."""
     url = _data_url(base, flow_id, start_period)
-    resp = _get(sess, url, CSV_ACCEPT, req_end_ts=req_end_ts)
+    resp = _get(sess, url, CSV_ACCEPT, req_end_ts=req_end_ts, flow=flow_id)
     if resp.kind in ("transient", "empty", "gone"):
         return [], [], [], resp.kind
     # ok
@@ -582,7 +749,7 @@ def _try_host(sess, base, flow_id, start_period, req_end_ts=None):
     big = bool(resp.content) and len(resp.content) >= _NONTRIVIAL_BODY
     if not v:
         # 200 but no parsed rows from CSV — try XML in case the host served an odd body.
-        resp2 = _get(sess, url, XML_ACCEPT, req_end_ts=req_end_ts)
+        resp2 = _get(sess, url, XML_ACCEPT, req_end_ts=req_end_ts, flow=flow_id)
         if resp2.kind == "ok":
             k, d, v = _parse(resp2.content)
             big = big or (bool(resp2.content) and len(resp2.content) >= _NONTRIVIAL_BODY)
@@ -758,7 +925,29 @@ def _start_period(max_d: dt.date | None) -> str | None:
 # --------------------------------------------------------------------------- #
 # contract entry point
 # --------------------------------------------------------------------------- #
+_TURN_BEGUN = [False]
+
+
 def update(unit, since) -> Result:
+    """The contract entry point: one run of _update() inside the pacer's per-run frame (DESIGN 7). It prints the
+    pacer's state line once, and ends the updater's turn marker in a `finally`, so a flow that raises (a kill
+    included) cannot leave the crawler yielding to a turn nobody runs; the marker also expires by itself at the
+    turn's end (C10). The run's request end, read by the TCP probe, is cleared with it."""
+    _RUN_PACE.update(tokens=0, waited_s=0.0, modes={})
+    _RUN_REQ_END[0] = None
+    _TURN_BEGUN[0] = False
+    print(_pacer.describe(), flush=True)
+    try:
+        return _update(unit, since)
+    finally:
+        if _TURN_BEGUN[0]:
+            _TURN_BEGUN[0] = False
+            _pacer.end_turn(clock=time)
+        _RUN_REQ_END[0] = None
+        print(f"[istat] this run's {_pace_text()}", flush=True)
+
+
+def _update(unit, since) -> Result:
     out_dir = config.source_dir(SOURCE)
     os.makedirs(out_dir, exist_ok=True)
 
@@ -830,6 +1019,11 @@ def update(unit, since) -> Result:
               f"({(end_ts - time.time()) / 60:.1f} min left); a flow starts only with at least "
               f"{floor_s / 60:g} min + max(2 x the longest flow, {FLOW_FLOOR_S / 60:.1f} min) + {csv_s:g} s per "
               f"flow handed over (the CSV step's allowance) left", flush=True)
+    # THE PACER (DESIGN 7): the TCP probe's deadline is this run's request end, and the turn marker goes up
+    # before the first token, so the crawler starts no new flow while this turn runs (update() takes it down).
+    _RUN_REQ_END[0] = req_end_ts
+    _pacer.begin_turn(end_ts, clock=time)
+    _TURN_BEGUN[0] = True
     longest = 0.0                  # the longest flow this run, start of its checks to its bookmark
     n_merged = 0                   # flows whose rows went through merge_and_write this run
     stopped_at_ceiling = False     # the run-ceiling check ended the loop (Result.window_stop below)
@@ -1094,7 +1288,7 @@ def update(unit, since) -> Result:
             print(f"[istat] progress: {flows_done}/{n_sub} flow(s) attempted, {n_merged} merged, "
                   f"{tally.empty} empty, {tally.transient} transient, {tally.structural} "
                   f"structural, {n_sub - flows_done} left; {(now_m - t_run) / 60:.1f} min elapsed, "
-                  f"{ceiling}; bookmark {fn}", flush=True)
+                  f"{ceiling}; bookmark {fn}; {_pace_text()}", flush=True)
 
     # empty_window_floor = n_sub - 1: a steady-state run where ALL flows are quiet (each
     # ISTAT flow updates only a few times a year) is legitimate no_change, NOT a break;

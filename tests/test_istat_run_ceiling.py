@@ -46,15 +46,18 @@ import requests  # noqa: E402
 
 from updater import orchestrate  # noqa: E402  (puts updater.orchestrate in sys.modules)
 from updater.strategies.fetchers import _common, istat  # noqa: E402
+from jobs import _istat_pacer  # noqa: E402  (the shared pacer: its gap is in the floor)
 
 SDMX = "https://sdmx.istat.it/SDMXWS/rest/"
 ESPLORA = "https://esploradati.istat.it/SDMXWS/rest/"
 EPOCH = 1_800_000_000.0          # the fake clock's epoch base
 MARGIN_MIN = 5.0                 # AQUEDUCT_ISTAT_MARGIN_MIN, set explicitly below
 MARGIN_S = MARGIN_MIN * 60
-# One flow's retry allowance: every CSV GET on esploradati runs to its timeout, plus the backoff
-# sleeps between the retry passes (min(4 x attempt, 30) s). With RETRIES 3 and 300 s: 912 s.
-FLOOR_S = (istat.RETRIES * istat.HOST_TIMEOUT[ESPLORA]
+# One flow's retry allowance: every CSV GET on esploradati waits for ONE shared-pacer slot (the pacer's gap,
+# 60 / 4 + 1 = 16 s, since 2026-11-25) and runs to its timeout, plus the backoff sleeps between the retry
+# passes (min(4 x attempt, 30) s). With RETRIES 3 and 300 s: 3 x (300 + 16) + 4 + 8 = 960 s.
+PACER_GAP_S = 60.0 / _istat_pacer.BUDGET_PER_MIN + 1.0
+FLOOR_S = (istat.RETRIES * (istat.HOST_TIMEOUT[ESPLORA] + PACER_GAP_S)
            + sum(min(4 * a, 30) for a in range(1, istat.RETRIES)))
 
 
@@ -104,7 +107,7 @@ class _Istat:
         self.starts: dict = {}
         self.gets = 0
 
-    def get(self, url, headers=None, timeout=None):
+    def get(self, url, headers=None, timeout=None, **_kw):   # **_kw: allow_redirects (pacing)
         assert url.startswith(tuple(b for _l, b in istat.HOSTS)), url
         self.gets += 1
         flow = url.split(f"{istat.AGENCY},", 1)[1].split("/", 1)[0]
@@ -185,6 +188,21 @@ def rig(tmp_path, monkeypatch):
     istat._TCP_PROBED.clear()
 
 
+def _n_started(ceiling_s: float, per_flow: float) -> int:
+    """How many equal flows of `per_flow` fake seconds START before a ceiling `ceiling_s` away, by the stated
+    rule (margin + max(2 x the longest flow so far, FLOOR_S) must be left; the first flow has no longest)."""
+    n = 0
+    while ceiling_s - n * per_flow >= MARGIN_S + max(2 * per_flow if n else 0.0, FLOOR_S):
+        n += 1
+    return n
+
+
+# A ceiling at which EXACTLY F01-F10 start (61-s flows), set from the rule: F10 starts at 9 x 61 s with
+# margin + FLOOR_S + 30 s left, and F11 would start 61 s later with less than margin + FLOOR_S left. (Before the
+# pacer's gap entered FLOOR_S the tests used 30 min here, which gave the same ten flows.)
+CEIL_10_S = MARGIN_S + FLOOR_S + 9 * 61.0 + 30.0
+
+
 def _late(starts: dict, t0: float, ceiling_s: float, per_flow: float, before_get: float = 0.0) -> list:
     """Flows that started with less time left than the rule allows. Before flow i the longest flow
     so far is `per_flow` (every flow here costs the same) or 0 for the first flow of the run.
@@ -239,8 +257,8 @@ def test_no_flow_starts_inside_the_margin_and_the_run_defers_before_the_ceiling(
 
 @pytest.mark.parametrize("where", ["get", "rate", "store", "save"])
 def test_the_two_x_longest_term_stops_a_flow_the_floor_alone_would_start(rig, where):
-    """Every flow costs 501 s of fake time. Four flows run; a fifth would start with 1,250 s left:
-    above margin + floor (300 + 912 = 1,212 s) but below margin + 2 x longest (300 + 1,002 =
+    """Every flow costs 501 s of fake time. Four flows run; a fifth would start with 1,280 s left:
+    above margin + floor (300 + 960 = 1,260 s) but below margin + 2 x longest (300 + 1,002 =
     1,302 s). Only the 2 x longest term refuses it. The 501 s sits in the GET, in the RATE pause, in
     the store read before the fetch (on r2 that read downloads the flow's whole object), or in the
     bookmark save (an R2 PUT on r2), so the `longest` span must cover all four: from the flow's
@@ -257,8 +275,8 @@ def test_the_two_x_longest_term_stops_a_flow_the_floor_alone_would_start(rig, wh
         rig.mp.setattr(istat, "save_rotation",
                        lambda out_dir, key: (rig.clock.sleep(500.0), real_save(out_dir, key))[1])
     per_flow = 501.0
-    ceiling_s = 4 * per_flow + 1250.0
-    assert MARGIN_S + FLOOR_S <= 1250.0 < MARGIN_S + 2 * per_flow      # the case is the one described
+    ceiling_s = 4 * per_flow + 1280.0
+    assert MARGIN_S + FLOOR_S <= 1280.0 < MARGIN_S + 2 * per_flow      # the case is the one described
     res, host, t0 = rig.run(delay=delay, ceiling_s=ceiling_s)
     assert list(host.starts) == names[:4], list(host.starts)
     assert _late(host.starts, t0, ceiling_s, per_flow, 500.0 if where == "store" else 0.0) == []
@@ -281,15 +299,17 @@ def test_an_odd_ceiling_value_switches_the_check_off_as_in_census_and_wid(rig, o
 @pytest.mark.parametrize("bad", ["abc", "-1", "nan"])
 def test_a_bad_margin_value_falls_back_to_five_minutes(rig, bad, capsys):
     """A bad AQUEDUCT_ISTAT_MARGIN_MIN must not remove the margin: it falls back to 5 min and says
-    so, and the run stops exactly where the 5-min default stops it (10 flows of 61 s, 30-min
-    ceiling: see the first test)."""
+    so, and the run stops exactly where the 5-min default stops it (61-s flows, 30-min ceiling: the
+    count the rule gives, see the first test)."""
     rig.mp.setenv("AQUEDUCT_ISTAT_MARGIN_MIN", bad)
     rig.flows(30)
     res, host, t0 = rig.run(delay=60.0, ceiling_s=30 * 60.0)
     out = capsys.readouterr().out
     assert f"AQUEDUCT_ISTAT_MARGIN_MIN={bad!r} is not a finite number >= 0 - using 5 min" in out, out
     assert _late(host.starts, t0, 30 * 60.0, 61.0) == []
-    assert len(host.starts) == 10 and res.status == "partial", (len(host.starts), res.error)
+    n = _n_started(30 * 60.0, 61.0)
+    assert n == 9, n                     # 1,800 - 8 x 61 = 1,312 >= 1,260; 1,800 - 9 x 61 = 1,251 < 1,260
+    assert len(host.starts) == n and res.status == "partial", (len(host.starts), res.error)
 
 
 def test_a_kill_in_flow_5_leaves_the_bookmark_at_flow_4_whatever_its_outcome(rig):
@@ -383,7 +403,7 @@ def test_the_flow_in_which_the_last_host_dies_is_not_named(rig, shape, capsys):
 def test_a_failing_last_flow_before_the_ceiling_stop_is_named_and_run_2_starts_after_it(rig, outcome, sdmx):
     """Review of PR #325, F2; R784 (b): a budget and a rotation are one mechanism, so test a sub-unit
     that both FAILS and is the last before the stop, over two runs sharing one bookmark. With the
-    first test's shape (61-s flows, a 30-min ceiling) flows F01-F10 start; here F10 is transient (503
+    first test's shape (61-s flows, a ceiling CEIL_10_S away, set from the rule) flows F01-F10 start; here F10 is transient (503
     from both hosts on every attempt), structural (a 200 whose real body parses 0 rows) or trips the
     merge guard. The ceiling stop follows it. The bookmark must name F10 and run 2 must start at F11.
     A save skipped on that outcome leaves F09, and run 2 walks F10 again.
@@ -407,11 +427,11 @@ def test_a_failing_last_flow_before_the_ceiling_stop_is_named_and_run_2_starts_a
     if outcome == "structural":
         # finalize() raises on a structural flow; since 2026-11-24 (ROUTE B, C1) update() catches it and returns
         # `partial` WITH the walked flows' cursors, naming the structural flow. The bookmark was saved before that.
-        res, _host, _t0 = rig.run(plan=plan, delay=60.0, ceiling_s=30 * 60.0, sdmx=sdmx)
+        res, _host, _t0 = rig.run(plan=plan, delay=60.0, ceiling_s=CEIL_10_S, sdmx=sdmx)
         assert res.status == "partial" and "F10" in res.error and "handed over" in res.error, res.error
         assert sorted(res.series_cursors) == names[:10], sorted(res.series_cursors)
     else:
-        res, _host, _t0 = rig.run(plan=plan, delay=60.0, ceiling_s=30 * 60.0, sdmx=sdmx)
+        res, _host, _t0 = rig.run(plan=plan, delay=60.0, ceiling_s=CEIL_10_S, sdmx=sdmx)
         assert res.status == "partial", res.error
     assert list(rig.last_host.starts) == names[:10], list(rig.last_host.starts)
     if sdmx == "redirect":
@@ -420,15 +440,17 @@ def test_a_failing_last_flow_before_the_ceiling_stop_is_named_and_run_2_starts_a
     assert rig.bookmark() == "F10.parquet", (
         f"the last flow before the stop was {outcome} (sdmx {sdmx}) and the bookmark reads "
         f"{rig.bookmark()!r}")
-    _res2, host2, _t1 = rig.run(delay=60.0, ceiling_s=30 * 60.0, sdmx=sdmx)
+    _res2, host2, _t1 = rig.run(delay=60.0, ceiling_s=CEIL_10_S, sdmx=sdmx)
     assert list(host2.starts)[:1] == ["F11"], list(host2.starts)[:3]
 
 
 @pytest.mark.parametrize("extra, n_started", [(-0.5, 0), (0.5, 1)])
-def test_the_floor_is_912_s_with_the_backoff(rig, extra, n_started):
-    """The first flow of a run starts only with margin + FLOOR_S (300 + 912 s) left, where 912 s is
-    RETRIES x 300 s PLUS the 4 s and 8 s backoff sleeps. Half a second under it: no flow starts and
-    the run defers; half a second over: exactly one 61-s flow starts."""
+def test_the_floor_is_960_s_with_the_backoff_and_one_pacer_gap_per_get(rig, extra, n_started):
+    """The first flow of a run starts only with margin + FLOOR_S (300 + 960 s) left, where 960 s is
+    RETRIES x (300 s + one 16-s pacer slot wait) PLUS the 4 s and 8 s backoff sleeps (912 s before the
+    shared pacer). Half a second under it: no flow starts and the run defers; half a second over:
+    exactly one 61-s flow starts."""
+    assert FLOOR_S == 960.0, FLOOR_S                    # 3 x (300 + 60 / 4 + 1) + 4 + 8, from the rule
     names = rig.flows(5)
     res, host, _t0 = rig.run(delay=60.0, ceiling_s=MARGIN_S + FLOOR_S + extra)
     assert list(host.starts) == names[:n_started], list(host.starts)

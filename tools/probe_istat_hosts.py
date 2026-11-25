@@ -55,6 +55,13 @@ USAGE
 
 The log is append-only and fsync'd per sample, so a killed run keeps every sample it took
 (R1047: a figure quoted from an in-memory counter died with the job that held it).
+
+PACED (2026-11-25, DESIGN F:/work/econ_finish/istat_pacing/DESIGN.md section 7). A bare TCP connect may count
+against ISTAT's 5 queries per minute per IP (the publisher does not say it is free), so every connect to an
+ISTAT host takes a token of the workstation's ONE shared budget (jobs/_istat_pacer.py, participant tool:probe);
+the 127.0.0.1 control takes none. A sample's three ISTAT connects therefore spread over at least 32 s (more while
+the updater's istat turn runs), and each row records the token's measured start (`token_start_utc`, the 9th
+column; `--summarise` reads the first 8, so older logs still parse).
 """
 from __future__ import annotations
 
@@ -66,6 +73,9 @@ import socket
 import sys
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from jobs import _istat_pacer  # noqa: E402 - every ISTAT connect takes a token of the shared budget
+
 # Mirrors istat.py's HOSTS and _TCP_PROBE_TIMEOUT. If those move, move these and say so.
 TARGETS = [
     ("sdmx", "sdmx.istat.it", 443, "subject"),
@@ -76,16 +86,31 @@ TARGETS = [
 CONNECT_TIMEOUT = 10          # == istat.py _TCP_PROBE_TIMEOUT
 LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs",
                    "istat_host_probe.tsv")
-HEADER = "ts_utc\tlabel\thost\tport\trole\treachable\tconnect_s\terror\n"
+HEADER = "ts_utc\tlabel\thost\tport\trole\treachable\tconnect_s\terror\ttoken_start_utc\n"
 
 
 def probe(host: str, port: int):
+    """One connect. -> (reachable, connect_s, error, token start ISO or ""). An ISTAT host takes a token first."""
+    tok = None
+    if _istat_pacer.is_istat_host(host):
+        try:
+            tok = _istat_pacer.acquire("tool:probe", host, "tcp", "tcp", clock=time)
+        except _istat_pacer.WindowEnd as e:                    # NoSendPlatform (WSL): nothing is sent
+            return False, 0.0, f"NOT_SENT:{str(e)[:60]}", ""
     t0 = time.time()
+    if tok is not None:
+        _istat_pacer.started(tok, clock=time)                  # nothing between this and the connect
     try:
         socket.create_connection((host, port), timeout=CONNECT_TIMEOUT).close()
-        return True, time.time() - t0, ""
+        ok, err = True, ""
     except OSError as e:
-        return False, time.time() - t0, f"{type(e).__name__}:{str(e)[:60]}"
+        ok, err = False, f"{type(e).__name__}:{str(e)[:60]}"
+    secs = time.time() - t0
+    started = ""
+    if tok is not None:
+        _istat_pacer.outcome(tok, "tcp-open" if ok else f"tcp-{err.split(':')[0]}", secs)
+        started = dt.datetime.fromtimestamp(t0, dt.timezone.utc).isoformat(timespec="milliseconds")
+    return ok, secs, err, started
 
 
 def sample(fh) -> dict:
@@ -93,9 +118,9 @@ def sample(fh) -> dict:
     now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     got = {}
     for label, host, port, role in TARGETS:
-        ok, secs, err = probe(host, port)
+        ok, secs, err, started = probe(host, port)
         got[label] = ok
-        fh.write(f"{now}\t{label}\t{host}\t{port}\t{role}\t{int(ok)}\t{secs:.3f}\t{err}\n")
+        fh.write(f"{now}\t{label}\t{host}\t{port}\t{role}\t{int(ok)}\t{secs:.3f}\t{err}\t{started}\n")
     fh.flush()
     os.fsync(fh.fileno())
     return got
@@ -142,7 +167,7 @@ def summarise() -> int:
         return 2
 
     by_ts = collections.defaultdict(dict)
-    for ts, label, _h, _p, _role, reach, _secs, _err in rows:
+    for ts, label, _h, _p, _role, reach, _secs, _err in (p[:8] for p in rows):
         by_ts[ts][label] = reach == "1"
     samples = sorted(by_ts)
 

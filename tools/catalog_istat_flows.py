@@ -17,6 +17,16 @@ being up — it is flaky enough that the ingest carries a two-host fallback for 
 reason. A flow with no name in the catalogue keeps its ID as the title and is COUNTED, never
 given an invented one.
 
+PACED (2026-11-25, DESIGN F:/work/econ_finish/istat_pacing/DESIGN.md section 7). ISTAT allows 5 queries per
+minute per IP and blocks for 1 to 2 days above it (https://www.istat.it/en/classifications-and-tools/
+sdmx-web-services/, read 2026-11-24). The names GET (only with --refresh-names or a cache miss) takes a token of
+the workstation's ONE shared ISTAT budget (jobs/_istat_pacer.py, participant tool:catalog), and its opener does
+NOT follow redirects: a 3xx is an error for that host (urllib used to follow up to 10, unpaced). A dry run (no
+--apply) sends NOTHING: it reads the names cache or falls back to flow ids. LIMITS, stated: the names cache sits in
+this checkout's store (ROOT-relative), so an --apply run from any checkout without it sends the GET (paced); and
+main() opens the catalogue for write before it, which is why nobody runs this tool to test it (tests replace
+catalog_path.connect; R1940).
+
 --apply writes; without it this prints what it would do and changes nothing.
 """
 from __future__ import annotations
@@ -27,6 +37,8 @@ import json
 import os
 import sqlite3
 import sys
+import time
+import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 
@@ -35,6 +47,7 @@ import duckdb
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
+from jobs import _istat_pacer  # noqa: E402 - every ISTAT request takes a token of the shared budget
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 from derive_istat_flows import SOURCE, STORE, flow_id, part_expr   # noqa: E402
@@ -50,20 +63,47 @@ UA = {"User-Agent": "Econ-Fin Data Library admin@econdatalibrary.com",
       "Accept": "application/vnd.sdmx.structure+xml;version=2.1"}
 
 
-def dataflow_names(refresh: bool = False) -> dict:
-    """{flow_id: English name}, from cache unless --refresh-names."""
+def dataflow_names(refresh: bool = False, send: bool = True) -> dict:
+    """{flow_id: English name}, from cache unless --refresh-names. send=False (a dry run) never asks ISTAT: a
+    missing cache then gives {} (every title falls back to its flow id, counted) and says so."""
     if not refresh and os.path.exists(NAMES_CACHE):
         try:
             return json.load(open(NAMES_CACHE, encoding="utf-8"))
         except ValueError:
             pass
+    if not send:
+        print(f"  dry run: {'--refresh-names asked, but ' if refresh else ''}the names cache {NAMES_CACHE} "
+              f"is {'not read' if refresh else 'missing or unreadable'} and ISTAT is NOT asked (a dry run sends "
+              f"nothing); pass --apply to fetch the names (one paced GET per host)")
+        return {}
+    opener = _istat_pacer.no_redirect_opener()                 # a 3xx comes back as an HTTPError: not followed
     for base in HOSTS:
+        url = base + "dataflow/IT1?detail=allstubs"
         try:
-            req = urllib.request.Request(base + "dataflow/IT1?detail=allstubs", headers=UA)
-            root = ET.fromstring(urllib.request.urlopen(req, timeout=300).read())
+            tok = _istat_pacer.acquire("tool:catalog", url, "http", "dataflow", clock=time)
+        except _istat_pacer.WindowEnd as e:                    # NoSendPlatform (WSL): nothing is sent
+            print(f"  {base}: NOT SENT ({e})")
+            continue
+        t0 = time.time()
+        what = "?"
+        try:
+            req = urllib.request.Request(url, headers=UA)
+            _istat_pacer.started(tok, clock=time)
+            body = opener.open(req, timeout=300).read()
+            what = "200"
+            root = ET.fromstring(body)
+        except urllib.error.HTTPError as e:
+            loc = e.headers.get("Location") if e.headers is not None else None
+            what = f"{e.code}" + (f"->{loc}:not-followed" if loc else "")
+            print(f"  {base}: HTTP {e.code}" + (f" -> {loc} (a redirect is not followed: this host is skipped)"
+                                                if 300 <= e.code <= 399 else ""))
+            continue
         except Exception as e:                                 # noqa: BLE001
+            what = what if what == "200" else type(e).__name__
             print(f"  {base}: {type(e).__name__} {str(e)[:70]}")
             continue
+        finally:
+            _istat_pacer.outcome(tok, what, time.time() - t0)
         out = {}
         for el in root.iter():
             if el.tag.split("}")[-1] != "Dataflow" or not el.get("id"):
@@ -173,7 +213,7 @@ def main() -> int:
         print(f"licence {LICENSE_ID!r} is NOT reservable — refusing to create rows")
         return 1
 
-    names = dataflow_names(a.refresh_names)
+    names = dataflow_names(a.refresh_names, send=a.apply)      # a dry run sends nothing to ISTAT (review B)
     print(f"dataflow names available: {len(names):,}")
 
     files_all = sorted(f.replace("\\", "/")

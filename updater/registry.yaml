@@ -3166,7 +3166,9 @@ sources:
   # window_stop (2026-11-24; plan review R2100, VERDICT_planA): the fetcher stops at the pass's run ceiling
   # (PR #325), clamps every request to ceiling - margin and hands over a structural run (PR #326), and
   # declares its own admission reserve, window_admission_reserve_min = margin 5 (chosen) + one flow's
-  # allowance 15.2 (RETRIES x 300 s + backoff) + setup 1 (chosen) = 21.2 min. The start gate uses that, not
+  # allowance 16.0 (RETRIES x (300 s + the shared ISTAT pacer's 16-s gap) + backoff; 15.2 before the pacer,
+  # 2026-11-25) + setup 1 (chosen) = 22.0 min. Every istat request takes a token of jobs/_istat_pacer.py's
+  # one machine-wide budget (4/min, 16 s apart), shared with jobs/ingest_istat_sliced.py. The start gate uses that, not
   # its latest real run, which tracks the pass it was given (bounded by the 60-day decay; floor 90 min).
   # Measured: 155 min reserved on 2026-11-18, 187 on 11-23 (from the 11-22 kill, before #325).
   # Per-turn cap: AQUEDUCT_ISTAT_TURN_MAX_MIN, default 60 min (istat.py TURN_MAX_MIN_DEFAULT, re-decided from

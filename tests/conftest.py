@@ -264,6 +264,103 @@ def _no_process_leak(request):
                 pytrace=False)
 
 
+class NetworkRefused(ConnectionRefusedError):
+    """Raised by _no_network_beyond_loopback. An OSError on purpose: code that swallows a failed connect still
+    sees a failed connect, and the guard fails the test at teardown anyway."""
+
+
+_LOOPBACK_NAMES = frozenset({"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"})
+
+
+def _host_text(host) -> str:
+    if isinstance(host, (bytes, bytearray)):
+        host = bytes(host).decode("ascii", "replace")
+    return str(host).strip().rstrip(".").lower()
+
+
+def _is_istat_name(host) -> bool:
+    h = _host_text(host)
+    return h == "istat.it" or h.endswith(".istat.it")
+
+
+def _is_local_address(host) -> bool:
+    import ipaddress
+    h = _host_text(host)
+    if h in _LOOPBACK_NAMES:
+        return True
+    h = h.strip("[]").split("%", 1)[0]
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_unspecified
+
+
+@pytest.fixture(autouse=True)
+def _no_network_beyond_loopback(request):
+    """AND NO TEST REACHES THE NETWORK BEYOND THIS MACHINE (review B of the ISTAT pacer, phase 1, item 1; 2026-11-25).
+
+    The tests that touch ISTAT code replace `requests.get`, a Session factory or socket.create_connection with a
+    fake, and the ISTAT pacer is a zero-wait stub in every test (V7). A test whose fake is BYPASSED - a switch from
+    requests.get to a Session, a name bound with `from x import y` at import time - would send a REAL, UNPACED
+    request to ISTAT from this workstation's IP (tools/pretest.py runs this suite in the production checkout), and
+    ISTAT blocks an IP for 1 to 2 days. So in every test: a socket connect (connect / connect_ex, which
+    create_connection, urllib3, http.client and ssl all reach) to anything but a loopback (or unspecified) address
+    is refused, and so is any DNS lookup of an ISTAT name (`istat.it`, `*.istat.it`). The test FAILS at teardown
+    even when the code under test swallows the refusal, as the state-sync guard does. What it does NOT see: a child
+    process (a new interpreter loads no conftest), and asyncio's Windows proactor (ConnectEx, not connect)."""
+    import socket as _s
+    refused = []
+    real_connect, real_connect_ex = _s.socket.connect, _s.socket.connect_ex
+    real_gai, real_ghbn, real_ghbn_ex = _s.getaddrinfo, _s.gethostbyname, _s.gethostbyname_ex
+    af_unix = getattr(_s, "AF_UNIX", None)
+
+    def _check(sock, address, what):
+        if af_unix is not None and getattr(sock, "family", None) == af_unix:
+            return
+        host = address[0] if isinstance(address, (tuple, list)) and address else address
+        if isinstance(host, (str, bytes, bytearray)) and _is_local_address(host):
+            return
+        refused.append(f"{what} {address!r}")
+        raise NetworkRefused(f"test network guard: {what} to {address!r} refused (only loopback; tests/conftest.py)")
+
+    def connect(self, address):
+        _check(self, address, "connect")
+        return real_connect(self, address)
+
+    def connect_ex(self, address):
+        _check(self, address, "connect_ex")
+        return real_connect_ex(self, address)
+
+    def _dns(name, what):
+        if _is_istat_name(name):
+            refused.append(f"{what} {name!r}")
+            raise NetworkRefused(f"test network guard: DNS lookup of ISTAT name {name!r} refused (tests/conftest.py)")
+
+    def getaddrinfo(host, *a, **k):
+        _dns(host, "getaddrinfo")
+        return real_gai(host, *a, **k)
+
+    def gethostbyname(host):
+        _dns(host, "gethostbyname")
+        return real_ghbn(host)
+
+    def gethostbyname_ex(host):
+        _dns(host, "gethostbyname_ex")
+        return real_ghbn_ex(host)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(_s.socket, "connect", connect)
+        mp.setattr(_s.socket, "connect_ex", connect_ex)
+        mp.setattr(_s, "getaddrinfo", getaddrinfo)
+        mp.setattr(_s, "gethostbyname", gethostbyname)
+        mp.setattr(_s, "gethostbyname_ex", gethostbyname_ex)
+        yield
+    if refused:
+        pytest.fail(f"{request.node.nodeid} tried the network beyond loopback (refused, but the attempt is the bug): "
+                    f"{refused[:3]}", pytrace=False)
+
+
 def pytest_configure(config):
     config.addinivalue_line("markers", "state_sync_refusal_expected: the guard's own can-fail test")
     config.addinivalue_line("markers", "wrangler_refusal_expected: the wrangler guard's own can-fail test")

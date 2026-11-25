@@ -118,7 +118,7 @@ def test_one_slow_flow_through_the_REAL_retry_loop_does_not_kill_a_live_host(mon
     monkeypatch.setattr(istat.time, "sleep", lambda *_a, **_k: None)
     monkeypatch.setattr(istat, "_tcp_reachable", lambda base: base == ESPLORA)
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, headers=None, timeout=None, **_kw):   # **_kw: allow_redirects (pacing)
         if url.startswith(SDMX):
             raise requests.TooManyRedirects("Exceeded 30 redirects.")
         raise requests.Timeout("slow body")
@@ -143,7 +143,7 @@ def test_any_reply_clears_the_streak_even_a_404(monkeypatch):
 
     calls = {"n": 0}
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, headers=None, timeout=None, **_kw):   # **_kw: allow_redirects (pacing)
         calls["n"] += 1
         if calls["n"] <= 2:
             raise requests.Timeout("blip")

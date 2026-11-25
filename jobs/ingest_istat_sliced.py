@@ -35,6 +35,14 @@ Run:
   python jobs/ingest_istat_sliced.py --only A,B      # just these flow ids
   python jobs/ingest_istat_sliced.py --list          # list incomplete, no DL
   python jobs/ingest_istat_sliced.py --max-size-mb 500
+
+RATE LIMIT. ISTAT, "SDMX web services" (https://www.istat.it/en/classifications-and-tools/sdmx-web-services/,
+read 2026-11-24): "a limit of 5 queries per minute has been set for each IP", and a block of 1 to 2 days when it
+is exceeded (secondary: ondata.github.io/guida-api-istat). EVERY run mode sends requests - `--list` and `--only`
+too, because each runs _preflight() first (one TCP connect and one GET per host) - and every request and connect
+takes a token of the ONE machine-wide budget in jobs/_istat_pacer.py, shared with the updater's istat fetcher,
+any second crawler and the tools. While the updater's istat turn runs, this crawler starts no new flow or
+preflight (it yields) and takes at most one token per 61 s.
 """
 from __future__ import annotations
 import csv, datetime as dt, io, json, os, sys, time
@@ -53,6 +61,9 @@ from jobs._sdmx_common import (  # noqa: E402
     UA, NS,
     parse_sdmx_period, parse_sdmx_csv, parse_sdmx_xml,
 )
+# THE SHARED ISTAT PACER (DESIGN 7): every request this crawler sends takes a token of the ONE budget the
+# fetcher, the tools and any second crawler share (jobs/_istat_pacer.py). Imported after the path insert above.
+from jobs import _istat_pacer as _pacer  # noqa: E402
 
 # ── ISTAT provider config (mirrors PROVIDERS["istat"] / "istat_esploradati").
 #    Both hosts speak the same SDMX 2.1 REST dialect and the SAME agency (IT1)
@@ -75,9 +86,10 @@ HOSTS   = [
 ]
 # "Polite" was a guess, and it was 40 requests/minute against a publisher who documents a
 # ceiling of FIVE and blocks for 1-2 days above it. These sleeps sit between slices in the
-# callers; the real ceiling is now enforced centrally in http_get by _throttle(), which every
-# request funnels through. Kept as a small extra courtesy gap, not as the limiter.
-RATE        = 1.5      # seconds between slices; the HARD limit is ISTAT_QPM, see _throttle
+# callers; the real ceiling is enforced centrally: every request takes a token of the SHARED
+# machine-wide ISTAT budget (jobs/_istat_pacer.py, see _take_token / _paced_get). Kept as a small
+# extra courtesy gap, not as the limiter.
+RATE        = 1.5      # seconds between slices; the HARD limit is the shared pacer (16 s between tokens)
 TIMEOUT     = 300      # generous: esploradati can take minutes
 RETRIES     = 5        # generous retries with backoff for the flaky host
 MAX_SIZE    = 500 * 1024 * 1024   # ~500 MB single-response ceiling (overridable)
@@ -152,8 +164,21 @@ def _over_budget() -> bool:
 
 # ─────────────────────── ISTAT's published rate limit ──────────────────────
 # THE PUBLISHER DOCUMENTS 5 QUERIES PER MINUTE PER IP, AND BLOCKS FOR 1-2 DAYS WHEN YOU
-# EXCEED IT. (ondata.github.io/guida-api-istat, read 2026-08-30: "5 query al minuto per ogni
-# IP", block "compresa tra 1 e 2 giorni".) We had no limiter at all.
+# EXCEED IT. Primary: ISTAT, "SDMX web services",
+# https://www.istat.it/en/classifications-and-tools/sdmx-web-services/ (read 2026-11-24): "a limit
+# of 5 queries per minute has been set for each IP", and a block of 1 to 2 days when it is exceeded.
+# Secondary: ondata.github.io/guida-api-istat (read 2026-08-30: "5 query al minuto per ogni IP", block
+# "compresa tra 1 e 2 giorni"). We had no limiter at all.
+#
+# SINCE 2026-11-25 THE LIMITER IS SHARED, NOT PER PROCESS (DESIGN F:/work/econ_finish/istat_pacing/
+# DESIGN.md section 7). The old _throttle() spaced requests within ONE process, and its clock started at
+# 0 in every new process: every guard relaunch (a 5.3-min median) sent its first request unpaced, a manual
+# `--only` run was a second bucket, and the fetcher (istat.py) had no limiter at all. Every request here
+# now takes a token of jobs/_istat_pacer.py's ONE machine-wide budget (16 s between token starts, any
+# process, any ISTAT host), as a LOW-PRIORITY participant: it never reserves the future, and while the
+# updater's turn marker is live it takes at most one token per 61 s and starts no new flow
+# (yield_to_turn). ISTAT_QPM stays, and may only LOWER this crawler's own rate: its own gap is
+# max(16 s, 60 / ISTAT_QPM); a value above 4 is ignored with one log line (the pacer's own_gap_s).
 #
 # MEASURED 2026-08-30, and it is our own fault, not Istat being slow:
 #   * our log bursts to 11-12 requests/minute, against a documented ceiling of 5;
@@ -169,9 +194,8 @@ def _over_budget() -> bool:
 # it. A hot retry loop against a rate-limit block is not merely useless, it is the thing
 # preventing recovery. So this does two jobs -- pace requests below the ceiling, and when a
 # block is detected, STOP POKING and let it expire.
-ISTAT_QPM = int(os.environ.get("ISTAT_QPM", "4"))      # 4 < the documented 5, for margin
-_MIN_GAP_S = 60.0 / max(1, ISTAT_QPM)
-_last_request_at = 0.0
+# 4 < the documented 5, for margin. READ BY THE PACER (own_gap_s("crawler")): it can only lower the rate.
+ISTAT_QPM = os.environ.get("ISTAT_QPM", "4")
 
 # A streak of connect-level failures with no reply at all is the block signature. HTTP
 # errors do NOT count: a 500 means the server is talking to us.
@@ -193,13 +217,86 @@ _REPLIED_ERRORS = (
 )
 
 
-def _throttle() -> None:
-    """Space every request at least _MIN_GAP_S apart, process-wide."""
-    global _last_request_at
-    wait = _last_request_at + _MIN_GAP_S - time.time()
-    if wait > 0:
-        time.sleep(wait)
-    _last_request_at = time.time()
+class _AllHostsRetired(Exception):
+    """Every host of this run is retired (a 3xx that is not followed, or a TLS failure). V5(c): the crawler then
+    STOPS the run (exit 3, as preflight does) and writes NO verdict, so a host that answers a redirect for an
+    hour cannot turn the rest of the list into UNRECOVERABLE entries in a process that lives for days."""
+
+
+class _NoToken(Exception):
+    """The pacer sends nothing from this platform (NoSendPlatform: WSL shares the workstation's IP)."""
+
+
+def _all_hosts_retired() -> bool:
+    return bool(HOSTS) and all(urlsplit(b).netloc in _DEAD_HOSTS for _l, b in HOSTS)
+
+
+def _path_class(url: str) -> str:
+    """The request log's class for a URL (DESIGN 6.7)."""
+    path = urlsplit(url).path
+    if "/data/" in path:
+        return "data"
+    if "/codelist/" in path:
+        return "codelist"
+    if "/dataflow/" in path:
+        return "datastructure" if "references=datastructure" in url else "dataflow"
+    return "other"
+
+
+def _take_token(where: str, kind: str, path_class: str):
+    """ONE token of the shared ISTAT budget for ONE request or connect, taken right before it (DESIGN 7). The
+    crawler is a LOW-PRIORITY participant: it never reserves the future, and while the updater's turn marker is
+    live it takes at most one token per 61 s. Each token's wait EXTENDS the current flow's budget (_FLOW_DEADLINE),
+    so a pacer wait can never turn into "BUDGET exhausted ... deferred" (DESIGN Q4, M21)."""
+    global _FLOW_DEADLINE
+    try:
+        tok = _pacer.acquire("crawler", where, kind, path_class, clock=time)
+    except _pacer.WindowEnd as e:                 # NoSendPlatform (WSL); the crawler passes no deadline
+        raise _NoToken(str(e)) from e
+    waited = float(getattr(tok, "waited", 0.0) or 0.0)
+    if _FLOW_DEADLINE is not None and waited > 0:
+        _FLOW_DEADLINE += waited
+    return tok
+
+
+def _outcome_of(e: BaseException) -> str:
+    if isinstance(e, requests.exceptions.Timeout):
+        return "timeout"
+    if isinstance(e, requests.exceptions.ConnectionError):
+        return "conn"
+    return type(e).__name__
+
+
+def _paced_get(url: str, headers: dict, timeout: float, path_class: str):
+    """ONE paced GET with allow_redirects=False, plus AT MOST ONE followed redirect, each with its own token.
+
+    V5(a): a same-host 3xx to a DIFFERENT path is followed once (the defillama precedent, max_redirects = 1, R794);
+    a self-redirect, a cross-host redirect, a 3xx without a Location or a second redirect is NOT followed: the
+    caller gets that 3xx reply and `dead_reason`. Returns (response, elapsed_s, dead_reason or None). Raises what
+    requests.get raises (each outcome is logged first), or _NoToken."""
+    followed = 0
+    while True:
+        tok = _take_token(url, "http", path_class)
+        t = time.time()
+        _pacer.started(tok, clock=time)           # the ACTUAL start; no file I/O between it and the send
+        try:
+            r = requests.get(url, headers=headers, timeout=timeout, allow_redirects=False)
+        except BaseException as e:
+            _pacer.outcome(tok, _outcome_of(e), time.time() - t)
+            raise
+        el = time.time() - t
+        code = r.status_code
+        if isinstance(code, int) and 300 <= code <= 399:
+            loc = (getattr(r, "headers", None) or {}).get("Location")
+            action, detail = _pacer.redirect_decision(url, code, loc, followed)
+            _pacer.outcome(tok, f"{code}->{loc or '-'}:{action}", el)
+            if action == "follow":
+                log(f"  {code} -> {loc}: a same-host redirect to another path, followed once with its own token")
+                followed, url = 1, detail
+                continue
+            return r, el, detail
+        _pacer.outcome(tok, str(code), el)
+        return r, el, None
 
 
 def _note_reply() -> None:
@@ -245,17 +342,26 @@ def http_get(url: str, accept: str, timeout: int = TIMEOUT,
              retries: int = RETRIES) -> HttpResult:
     """GET with backoff. Distinguishes 200 / 4xx / 5xx / timeout / conn-error
     so the slicer can decide whether to subdivide (5xx/timeout/size) or give up
-    (persistent 4xx is a real 'no data')."""
+    (persistent 4xx is a real 'no data').
+
+    PACED (2026-11-25, DESIGN 7): every ATTEMPT takes a token of the shared budget (_paced_get), the 429 included;
+    allow_redirects=False, so a redirect hop is never sent unpaced; a 3xx that is not followed RETIRES the host for
+    the run after ONE request (it used to be retried 5 times with backoff as "replied but failed"); a 429 shares
+    its Retry-After with every participant (_pacer.penalize) instead of a local 60-s sleep; and once every host is
+    retired the run stops (_AllHostsRetired, V5(c))."""
     global _BUDGET_HIT
     if _over_budget():
         # Budget spent: stop issuing requests so the subdivision unwinds promptly.
         return HttpResult(None, None, "timeout", 0.0)
     host = urlsplit(url).netloc
     if host in _DEAD_HOSTS:
+        if _all_hosts_retired():
+            raise _AllHostsRetired(f"every ISTAT host of this run is retired ({', '.join(sorted(_DEAD_HOSTS))})")
         # Already known dead: fail instantly so the caller moves to the next HOST
         # rather than re-paying the handshake timeout on every slice.
         return HttpResult(None, None, "conn", 0.0)
     hdrs = {**UA, "Accept": accept}
+    pclass = _path_class(url)
     last = HttpResult(kind="conn")
     for attempt in range(retries):
         # Re-check EVERY attempt, not just on entry. Checking only at the top bounds
@@ -266,25 +372,44 @@ def http_get(url: str, accept: str, timeout: int = TIMEOUT,
         # placed after the pipe is already drained: present, plausible, unreachable.
         if attempt and _over_budget():
             return last
-        _throttle()          # never exceed the publisher's published 5 req/min per IP
         t = time.time()
         try:
-            r = requests.get(url, headers=hdrs, timeout=timeout)
-            el = time.time() - t
+            try:
+                r, el, dead = _paced_get(url, hdrs, timeout, pclass)   # never exceed ISTAT's 5 req/min per IP
+            except _NoToken as e:
+                log(f"  NO SEND ({e}): ...{url[-72:]}")
+                return HttpResult(None, None, "conn", 0.0)
             _note_reply()    # the server spoke to us: whatever else is wrong, we are not blocked
+            if dead is not None:
+                # V5: a 3xx that is not followed. ONE request, then the host is retired for the run (the token
+                # stays spent); the next HOST is tried, and with none left the run stops.
+                loc = (getattr(r, "headers", None) or {}).get("Location")
+                _DEAD_HOSTS.add(host)
+                log(f"  HOST {host} answers {r.status_code} -> {loc or '(no Location)'}; RETIRED for this run "
+                    f"({dead}): ...{url[-72:]}")
+                if _all_hosts_retired():
+                    raise _AllHostsRetired(f"every ISTAT host of this run is retired, the last by a "
+                                           f"{r.status_code} ({dead})")
+                return HttpResult(None, r.status_code, "conn", el)
             if r.status_code == 200:
                 return HttpResult(r.content, 200, "ok", el)
             if r.status_code in (400, 404, 413):
                 # Genuine "no such slice / not found / too large" -> definitive.
                 return HttpResult(None, r.status_code, "http", el)
             if r.status_code == 429:
-                log(f"  429 rate limit, sleeping 60s")
-                time.sleep(60)
+                # SHARED, not local: every participant waits (the fetcher too), and this loop's next attempt takes
+                # its token after the penalty, so there is no separate sleep here.
+                ra = (getattr(r, "headers", None) or {}).get("Retry-After")
+                until = _pacer.penalize(_pacer.retry_after_seconds(ra, log=log), "crawler", clock=time)
+                log(f"  429 rate limit (Retry-After {ra!r}): every ISTAT participant waits until "
+                    f"{dt.datetime.fromtimestamp(until, dt.timezone.utc):%H:%M:%S}Z")
                 last = HttpResult(None, 429, "http", el)
                 continue
             # 5xx and anything else: retry with backoff, remember as http error
             log(f"  HTTP {r.status_code} attempt {attempt+1} ({el:.0f}s): ...{url[-72:]}")
             last = HttpResult(None, r.status_code, "http", el)
+        except _AllHostsRetired:
+            raise
         except requests.exceptions.ReadTimeout:
             # THE SERVER REPLIED and then stalled mid-body. Counting this as "no reply" is
             # what made the detector fire on healthy runs: replayed over a real 80%-success
@@ -312,13 +437,16 @@ def http_get(url: str, accept: str, timeout: int = TIMEOUT,
             _DEAD_HOSTS.add(host)       # sticky: never pay this handshake again this run
             log(f"  SSL FAIL, host {host} RETIRED for this run "
                 f"({type(e).__name__}): ...{url[-72:]}")
+            if _all_hosts_retired():
+                raise _AllHostsRetired(f"every ISTAT host of this run is retired, the last by a TLS failure")
             return HttpResult(None, None, "conn", el)
         except _REPLIED_ERRORS as e:
             # EVERY ONE OF THESE HAPPENS AFTER THE SERVER ANSWERED, so none of them is
             # evidence of a block. TooManyRedirects is the one that mattered: sdmx.istat.it
             # self-redirects 302, which is a host TALKING to us, and the 0827 log carries
             # 2,443 of them. The first version routed all of these into the no-reply counter
-            # and would have declared a rate-limit ban on a redirect loop.
+            # and would have declared a rate-limit ban on a redirect loop. (With
+            # allow_redirects=False since 2026-11-25 a redirect is a 3xx reply, handled above.)
             el = time.time() - t
             log(f"  REPLIED-BUT-FAILED attempt {attempt+1} ({type(e).__name__}): ...{url[-72:]}")
             _note_reply()
@@ -810,13 +938,25 @@ def is_incomplete(flow_id: str, done: set, unrec: dict) -> bool:
 def _reachable(host: str, port: int = 443, timeout: float = 6.0) -> bool:
     """TCP-connect probe. Cheap, and it discriminates the two ISTAT failure modes that
     otherwise look identical in the log (both end as 'host unavailable' after minutes of
-    retries): a host that is DOWN at the network layer vs one that answers and misbehaves."""
+    retries): a host that is DOWN at the network layer vs one that answers and misbehaves.
+
+    PACED (DESIGN Q2): ISTAT does not say a bare connect is free, so the connect takes a token of the shared
+    budget first, like every request."""
     import socket
     try:
-        socket.create_connection((host, port), timeout=timeout).close()
-        return True
-    except OSError:
+        tok = _take_token(host, "tcp", "tcp")
+    except _NoToken as e:
+        log(f"  NO SEND ({e}): no TCP probe of {host}")
         return False
+    t = time.time()
+    _pacer.started(tok, clock=time)
+    try:
+        socket.create_connection((host, port), timeout=timeout).close()
+    except OSError as e:
+        _pacer.outcome(tok, f"tcp-{type(e).__name__}", time.time() - t)
+        return False
+    _pacer.outcome(tok, "tcp-open", time.time() - t)
+    return True
 
 
 def _preflight() -> bool:
@@ -829,12 +969,19 @@ def _preflight() -> bool:
     root (an infinite self-redirect), so it cannot serve the catalogue either. With both
     in that state there is nothing to crawl, and saying so in one line beats discovering
     it again in ten minutes.
+
+    PACED (2026-11-25, DESIGN 7): it first YIELDS to a live istat updater turn (the updater has priority; the
+    guard relaunches this process on a ~5-min median, so a preflight is the crawler's most frequent request),
+    and each TCP connect and each probe GET takes a token of the shared budget. A 3xx follows the one rule of
+    every ISTAT request (V5): a same-host redirect to another path is followed once with its own token; any other
+    3xx means the host does not serve SDMX here (a cross-host one too, which this probe used to count as alive).
     """
     import urllib.parse
     import requests
     # Declared here, not at the assignment: `global` must precede the first USE, and the loop
     # below reads HOSTS. Python rejects it otherwise, which is how this was caught.
     global HOSTS
+    _pacer.yield_to_turn(log, clock=time)
     alive = []
     for label, base in HOSTS:
         host = urllib.parse.urlparse(base).hostname
@@ -849,18 +996,21 @@ def _preflight() -> bool:
             # ~5 minutes, so an unthrottled probe here is ~12 requests/hour that bypass the
             # limiter entirely -- small, but it is the one loop that runs while everything
             # else is stopped, and exempting the watchdog from the rule is how the rule ends.
-            _throttle()
-            probe = requests.get(base + "dataflow/" + AGENCY, timeout=15,
-                                 allow_redirects=False,
-                                 headers={**UA, "Accept": STR_ACCEPT})
+            # Since 2026-11-25 that ceiling is the SHARED one: a token per probe GET, and the first
+            # request of a fresh process is paced against every other process too.
+            probe, _el, dead = _paced_get(base + "dataflow/" + AGENCY, {**UA, "Accept": STR_ACCEPT}, 15,
+                                          "preflight")
+        except _NoToken as e:
+            print(f"  preflight: {label} ({host}) NO SEND ({e}) - skipping", flush=True)
+            continue
         except requests.RequestException as e:
             print(f"  preflight: {label} ({host}) probe failed ({type(e).__name__}) - skipping",
                   flush=True)
             continue
-        loc = (probe.headers.get("Location") or "").rstrip("/")
-        if probe.status_code in (301, 302, 303, 307, 308) and                 urllib.parse.urlparse(loc or "").hostname in (host, None):
-            print(f"  preflight: {label} ({host}) SELF-REDIRECTS {probe.status_code} -> "
-                  f"{loc or '(same host)'} - not serving SDMX, skipping", flush=True)
+        if dead is not None:
+            loc = ((getattr(probe, "headers", None) or {}).get("Location") or "").rstrip("/")
+            print(f"  preflight: {label} ({host}) answers {probe.status_code} -> "
+                  f"{loc or '(no Location)'} ({dead}) - not serving SDMX, skipping", flush=True)
             continue
         alive.append(label)
     if not alive:
@@ -883,32 +1033,66 @@ def _preflight() -> bool:
 
 
 def main():
-    args = sys.argv[1:]
-    if args and args[0] in ("-h", "--help"):
-        print(__doc__); return
+    """The run, with V5(c)'s stop: when every host of the run is retired mid-run (a 3xx that is not followed, a
+    TLS failure), the crawler exits 3 - the code preflight uses for "upstream down, not a crawler fault" - and
+    writes NO verdict for the flow in progress. The guard relaunches it, and the next preflight re-probes."""
+    try:
+        _main()
+    except _AllHostsRetired as e:
+        log(f"  EVERY ISTAT HOST RETIRED ({e}) - stopping this run, exit 3 as preflight does; no verdict written "
+            f"for the flow in progress (re-probe on the next guard tick; nothing lost)")
+        raise SystemExit(3)
 
-    if not _preflight():
-        raise SystemExit(3)          # distinct code: upstream down, not a crawler fault
 
+def _parse_args(args):
+    """-> (only_ids, list_only, max_size), or None for --help. Raises SystemExit(2) on an argument it does not know
+    or a bad value. ALL BEFORE ANY REQUEST (review B phase 1, C4): the preflight used to run before the arguments
+    were parsed, so every call but a leading --help - a mistyped flag included - sent the preflight's connects
+    and GETs."""
     only_ids: set = set()
     list_only = False
-    max_size  = MAX_SIZE
+    max_size = MAX_SIZE
     i = 0
     while i < len(args):
         a = args[i]
+        if a in ("-h", "--help"):
+            return None
         if a == "--list":
             list_only = True
-        elif a.startswith("--only"):
+        elif a == "--only" or a.startswith("--only="):
             val = a.split("=", 1)[1] if "=" in a else (args[i + 1] if i + 1 < len(args) else "")
             if "=" not in a:
                 i += 1
             only_ids = set(filter(None, (x.strip() for x in val.split(","))))
-        elif a.startswith("--max-size-mb"):
+            if not only_ids:
+                print("ingest_istat_sliced: --only needs a comma-separated list of flow ids; nothing sent",
+                      flush=True)
+                raise SystemExit(2)
+        elif a == "--max-size-mb" or a.startswith("--max-size-mb="):
             val = a.split("=", 1)[1] if "=" in a else (args[i + 1] if i + 1 < len(args) else "")
             if "=" not in a:
                 i += 1
-            max_size = int(float(val) * 1024 * 1024)
+            try:
+                max_size = int(float(val) * 1024 * 1024)
+            except ValueError:
+                print(f"ingest_istat_sliced: --max-size-mb {val!r} is not a number; nothing sent", flush=True)
+                raise SystemExit(2)
+        else:
+            print(f"ingest_istat_sliced: unknown argument {a!r} (see --help); nothing sent", flush=True)
+            raise SystemExit(2)
         i += 1
+    return only_ids, list_only, max_size
+
+
+def _main():
+    args = sys.argv[1:]
+    parsed = _parse_args(args)                 # BEFORE any request: a bad argument or --help sends nothing
+    if parsed is None:
+        print(__doc__); return
+    only_ids, list_only, max_size = parsed
+
+    if not _preflight():
+        raise SystemExit(3)          # distinct code: upstream down, not a crawler fault
 
     os.makedirs(OUT_DIR, exist_ok=True)
     done  = set(_load_json(DONE_PATH, []))
@@ -969,10 +1153,17 @@ def main():
             done.add(fid)
             continue
 
+        # The updater's turn has priority (DESIGN Q4, C10): no new flow starts while its marker is live. The wait
+        # comes BEFORE the flow's budget starts, so it is never "BUDGET exhausted".
+        _pacer.yield_to_turn(log, clock=time)
         globals()["_FLOW_DEADLINE"] = time.time() + FLOW_BUDGET_S
         globals()["_BUDGET_HIT"] = False
         try:
             store, method, detail = pull_flow(flow, max_size=max_size)
+        except _AllHostsRetired:
+            # V5(c): no verdict for this flow (its last host died under it); keep what this run settled.
+            _save_json(DONE_PATH, sorted(done))
+            raise
         except Exception as e:
             log(f"  EXCEPTION pulling {fid}: {type(e).__name__}: {e}")
             unrec[fid] = {"reason": f"exception {type(e).__name__}: {e}",
