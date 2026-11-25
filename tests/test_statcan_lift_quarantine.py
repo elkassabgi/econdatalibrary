@@ -1,6 +1,7 @@
-"""tools/statcan_lift_quarantine.py - lift the statcan lane's quarantine on the 44 NAMED cubes (classes A and B of the
-2026-11-22 diagnosis, ledger R2025/R2026), and nothing else; every guard refuses before anything is written; the
-receipt after the lift can FAIL. Design: F:/work/econ_finish/statcan_lift_pr/DESIGN.md (review R2037).
+"""tools/statcan_lift_quarantine.py - lift the statcan lane's quarantine on the 42 NAMED cubes (classes A and B of the
+2026-11-22 diagnosis, ledger R2025/R2026, with R2162's correction: 36100400 and 36100658 are class D), and nothing
+else; every guard refuses before anything is written; the receipt after the lift can FAIL. Design:
+F:/work/econ_finish/statcan_lift_pr/DESIGN.md (review R2037).
 
 ISOLATION (design review F7). tools/pretest.py runs this suite in the production checkout. The autouse fixture
 `iso` points every path the tool can write - the store dir, the lane state/progress, the local progress copy, the
@@ -253,12 +254,15 @@ def _unchanged(iso, before_objects, before_files):
 # --------------------------------------------------------------------------- #
 def test_the_pinned_cubes_are_the_diagnosis_classes_a_and_b_and_nothing_else():
     assert sum(1 for c, _r in tool.LIFT.values() if c == "A") == 35
-    assert sum(1 for c, _r in tool.LIFT.values() if c == "B") == 9
+    assert sum(1 for c, _r in tool.LIFT.values() if c == "B") == 7
     assert sorted(tool.EXCLUDED.items()) == [("10100145", "C"), ("18100212", "C"), ("18100275", "C"),
-                                             ("36100487", "D"), ("36100488", "D")]
+                                             ("36100400", "D"), ("36100487", "D"), ("36100488", "D"),
+                                             ("36100658", "D")]
     assert not set(tool.LIFT) & set(tool.EXCLUDED)
     assert not set(tool.LIFT) & (lane.HISTORY_FLOOR_PIDS | lane.RECONCILE_PIDS)
-    ab, cd = tool.read_table2(TABLE2)            # the fixture is the diagnosis table's pid/class2/release columns
+    # the fixture is the 2026-11-22 diagnosis table's pid/class2/release columns, with R2162's 2-row correction
+    # (36100400 and 36100658: STALE_COPY -> SERIES_DROPPED); the F: original keeps STALE_COPY and now refuses
+    ab, cd = tool.read_table2(TABLE2)
     assert ab == tool.LIFT and cd == tool.EXCLUDED and tool.table2_problems(ab, cd) == []
     assert tool.LIFT_FIELDS == ("quarantined", "fails", "fail_release", "first_strike_utc", "retry_after")
 
@@ -281,6 +285,10 @@ def _table(tmp_path, edit):
     ("missing D row", lambda l: [x for x in l if not x.startswith("36100488")], "table2 classes C+D"),
     ("D row read as C", lambda l: [x.replace("36100488\tSERIES_DROPPED", "36100488\tPERSISTENT_OFFSET") for x in l],
      "table2 classes C+D"),
+    # the 2026-11-22 table AS WRITTEN, before R2162 re-classed its two rows: it names two class D cubes as B
+    ("the 11-22 table before R2162", lambda l: [x.replace("\tSERIES_DROPPED\t", "\tSTALE_COPY\t")
+                                                if x.startswith(("36100400\t", "36100658\t")) else x for x in l],
+     "only in the table ['36100400', '36100658']"),
     ("duplicate row", lambda l: l + [l[1]], "appears twice"),
     ("unknown class", lambda l: [x.replace("SERIES_DROPPED", "OTHER") for x in l], "unknown class"),
     ("no release column", lambda l: [x.rsplit("\t", 1)[0] for x in l], "needs the columns"),
@@ -322,9 +330,9 @@ def test_plan_prints_every_cubes_before_and_after_and_the_sha_pair_and_writes_no
     assert after == tool.sha256(tool.after_bytes(want_after))
     for p in tool.LIFT:
         assert re.search(rf"^  {p} [AB] release .*: \{{.*\"quarantined\": true.*\}} -> \{{\"fails\": 0\}}$", out, re.M), p
-    assert "table2" in out and "classes A+B 44 rows, C+D 5 rows" in out
-    assert "summarise() quarantined 50 -> 6" in out          # 44 lifted; the 5 C/D and the 50th stay
-    assert "44 of 44 named cube(s) due" in out
+    assert "table2" in out and "classes A+B 42 rows, C+D 7 rows" in out
+    assert "summarise() quarantined 50 -> 8" in out          # 42 lifted; the 7 C/D and the 50th stay
+    assert "42 of 42 named cube(s) due" in out
     assert "(plan takes no lock)" in out and "REFUSE" not in out
     _unchanged(iso, objs, files)
 
@@ -400,12 +408,12 @@ def _pids(*p):
 
 
 @pytest.mark.parametrize("sel,want", [
-    (_pids(OUTSIDE), f"C1 {OUTSIDE} is not one of the 44"),
+    (_pids(OUTSIDE), f"C1 {OUTSIDE} is not one of the 42"),
     (_pids("10100145"), "C2 10100145 is class C"),
     (_pids("36100487"), "C2 36100487 is class D"),
     (_pids("10100111", OUTSIDE), f"C1 {OUTSIDE}"),            # a good and a bad pid: the whole run refuses
 ])
-def test_a_cube_outside_the_44_refuses_the_whole_run(iso, capsys, sel, want):
+def test_a_cube_outside_the_pinned_42_refuses_the_whole_run(iso, capsys, sel, want):
     _seed(iso)
     objs, files = dict(iso["r2"].objects), _files(iso["tmp"])
     rc, out, _s = _plan(capsys, *sel)
@@ -414,6 +422,84 @@ def test_a_cube_outside_the_44_refuses_the_whole_run(iso, capsys, sel, want):
     out = capsys.readouterr().out
     assert rc == 1 and want in out and "Nothing was written" in out
     _unchanged(iso, objs, files)
+
+
+# --------------------------------------------------------------------------- #
+# R2162 (2026-11-24): 36100400 and 36100658 are class D, not B - this tool never lifts them again
+# --------------------------------------------------------------------------- #
+# The 2026-11-22 diagnosis booked both as class B (a stale pre-release zip), because the count gate's parse equalled
+# the held rows, and the 2026-11-23 apply lifted them. The lane then refused both again on the same 2026-11-05 zip
+# (guard_statcan_lane_1123_0753.log :526-531, :661-666): SERIES short of StatCan's own count (338 of 351, 728 of
+# 767) with nothing skipped by the parser. That is the class D signature, not class B.
+D_RECLASSED = ("36100400", "36100658")
+# Their two records on the 2026-11-22T09:06:11Z snapshot of the lane state, field for field (F:/work/econ_finish/
+# statcan_quarantine_20261122/snap__lane_state.json): quarantined by the OLD rule (3 strikes, no first_strike_utc),
+# never merged by the lane, a count-gate refusal. This is the shape the 2026-11-23 apply lifted. On it every
+# per-cube check (C3-C13) passes, so only the class label can refuse. The records are planted as they are, never
+# built from LIFT or EXCLUDED, so the same document is read whichever set the tool under test puts them in.
+_D_SNAPSHOT = {
+    "36100400": {"bytes": 28710, "est_min": 0.0, "fail_release": "2026-11-05T13:30", "fails": 3,
+                 "last_error": "whole-table fetch refused: statcan 36100400: incomplete against StatCan's own counts - "
+                               "9,802 rows parsed vs nbDatapointsCube 9,945; 338 series parsed vs nbSeriesCube 351; "
+                               "rows skipped by the parser {}",
+                 "merge_in_flight": "2026-11-05T13:30", "quarantined": True, "release": "2026-11-05T13:30"},
+    "36100658": {"bytes": 27625, "est_min": 0.0, "fail_release": "2026-11-05T13:30", "fails": 3,
+                 "last_error": "whole-table fetch refused: statcan 36100658: incomplete against StatCan's own counts - "
+                               "21,112 rows parsed vs nbDatapointsCube 22,126; 728 series parsed vs nbSeriesCube 767; "
+                               "rows skipped by the parser {}",
+                 "merge_in_flight": "2026-11-05T13:30", "quarantined": True, "release": "2026-11-05T13:30"},
+}
+
+
+def _plant_d(st):
+    for p, c in _D_SNAPSHOT.items():
+        st["cubes"][p] = dict(c)
+
+
+def test_r2162_both_cubes_are_class_d_and_not_liftable():
+    for p in D_RECLASSED:
+        assert p not in tool.LIFT, f"{p} is still liftable (class {tool.LIFT.get(p, ('?',))[0]})"
+        assert tool.EXCLUDED.get(p) == "D", p
+    assert not set(D_RECLASSED) & set(tool._B)
+
+
+@pytest.mark.parametrize("pids", [("36100400",), ("36100658",), ("36100400", "36100658"),
+                                  ("10100111", "36100400"),          # with a class A cube: the whole run refuses
+                                  ("16100047", "36100658")])         # with a class B cube: the whole run refuses
+def test_r2162_a_run_that_names_a_class_d_cube_refuses_and_writes_nothing(iso, capsys, pids):
+    raw = _seed(iso, edit=_plant_d)
+    objs, files = dict(iso["r2"].objects), _files(iso["tmp"])
+    sel = _pids(*pids)
+    rc, out, _s = _plan(capsys, *sel)
+    assert rc == 1 and "NOT READY" in out, f"the plan for {pids} did not refuse:\n{out[-2500:]}"
+    for p in pids:
+        if p in D_RECLASSED:
+            assert f"C2 {p} is class D" in out, out[-2500:]
+            assert not re.search(rf"^  {p} ", out, re.M), f"the plan printed a lift row for {p}"
+    _unchanged(iso, objs, files)
+    # an apply with the very shas an honest lift of exactly these cubes gives: still refused, nothing written
+    after, _c = tool.lift(json.loads(raw), list(pids))
+    rc = _run(*sel, "--apply", "--expect-before-sha", tool.sha256(raw),
+              "--expect-after-sha", tool.sha256(tool.after_bytes(after)))
+    out = capsys.readouterr().out
+    assert rc == 1 and "Nothing was written" in out, out[-2500:]
+    for p in pids:
+        if p in D_RECLASSED:
+            assert f"C2 {p} is class D" in out
+    _unchanged(iso, objs, files)
+
+
+def test_r2162_a_whole_table2_apply_lifts_the_42_and_leaves_both_d_cubes_as_they_were(iso, capsys):
+    raw = _seed(iso, edit=_plant_d)
+    rc, out, _b, _a = _apply_after_plan(capsys, "--from-table2", TABLE2)
+    assert rc == 0, out[-3000:]
+    st0, st1 = json.loads(raw), json.loads(iso["r2"].objects[KEY])
+    for p in D_RECLASSED:
+        assert st1["cubes"][p] == st0["cubes"][p] == _D_SNAPSHOT[p], p       # still quarantined, not one field moved
+    changed = {p for p, c in st1["cubes"].items() if c != st0["cubes"][p]}
+    assert changed == set(tool.LIFT) and len(changed) == 42
+    rec = json.load(open(re.search(r"receipt (\S+_receipt\.json)", out).group(1), encoding="utf-8"))
+    assert set(rec["cubes"]) == set(tool.LIFT) and not set(D_RECLASSED) & set(rec["cubes"])
 
 
 def _cube_edit(pid, **kw):
@@ -469,7 +555,9 @@ def test_every_cube_and_document_refusal_writes_nothing(iso, capsys, edit, want)
 @pytest.mark.parametrize("edit", [
     _cube_edit("10100111", merge_in_flight=_DEL),               # absent passes
     _cube_edit("10100111", transient_fails=5),                  # under TRANSIENT_RED_AFTER passes
-    _cube_edit("36100400", merged=_DEL, served=_DEL),           # a pre-lane copy (never merged by the lane) passes
+    # a pre-lane copy (never merged by the lane) passes. The two measured on the 11-22 snapshot were 36100400 and
+    # 36100658, class D since R2162; the property is held on a class B cube that stays in LIFT.
+    _cube_edit("36100434", merged=_DEL, served=_DEL),
 ])
 def test_must_not_refuse(iso, capsys, edit):
     _seed(iso, edit=edit)
@@ -984,6 +1072,25 @@ def test_check_refuses_a_file_that_is_not_a_receipt(iso, capsys, tmp_path):
     p = tmp_path / "r.json"
     p.write_text(json.dumps({"cubes": {}}))
     assert _run("--check", str(p)) == 1
+
+
+def test_r2162_check_of_the_11_23_receipt_judges_both_by_the_receipts_own_class(iso, monkeypatch, capsys):
+    """--check takes each cube's class and release from its RECEIPT, never from LIFT or EXCLUDED. The 2026-11-23
+    receipt names 36100400 and 36100658 as class B; held by the new rule (first strike 18:00Z, 3 strikes over 12 h,
+    as the +24 h check read them), they still PASS - the R2162 move changes no verdict of an existing receipt."""
+    st = _doc()
+    for p in D_RECLASSED:      # lifted 2026-11-23T17:20:59Z, first strike 18:00:4xZ, retry_after first + 12 h
+        st["cubes"][p] = dict(_D_SNAPSHOT[p], first_strike_utc=_h(0.66), retry_after=_h(12.66))
+    _seed(iso, raw=json.dumps(st, sort_keys=True).encode())
+    monkeypatch.setattr(tool, "_now", lambda: LIFTED + dt.timedelta(hours=24.4))
+    p = iso["tmp"] / "receipt.json"
+    p.write_text(json.dumps({"utc_lift": _z(LIFTED), "status": "LIFTED", "cubes": {
+        q: {"class": "B", "release": "2026-11-05T13:30", "after_transient_fails": 0} for q in D_RECLASSED}}))
+    rc = _run("--check", str(p))
+    out = capsys.readouterr().out
+    assert rc == 0 and "PASS" in out, out[-2000:]
+    for q in D_RECLASSED:
+        assert re.search(rf"^  {q} B QUARANTINED_NEW_RULE ", out, re.M), q
 
 
 # --------------------------------------------------------------------------- #
