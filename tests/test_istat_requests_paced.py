@@ -22,7 +22,16 @@ THE SWEEP, over every TRACKED file (git ls-files; tests/ excluded; jobs/_istat_p
   5. No *.ps1 / *.sh / *.yml / *.cmd line sends to an ISTAT host (Invoke-WebRequest, Invoke-RestMethod, curl,
      wget).
 Each rule is shown able to fail on a planted file, and the four known requesters are shown to be SEEN (a sweep
-that sees nothing passes everything)."""
+that sees nothing passes everything).
+
+WHAT THIS SWEEP DOES NOT SEE (review B phase 2, 3c: 8 of 9 planted unpaced requesters passed it). A green TE is NOT
+"every path is paced"; it is a static backstop for the common forms only. Not detected: a host built at run time
+(an f-string such as f"https://{sub}.istat.it/"); a send call with no `timeout=` keyword (`sess.get(URL)`); ONE token
+before a LOOP of sends; a token only in a branch that never runs (`if False:`); a subprocess that sends (curl run
+from Python); HOSTS reached through importlib.import_module; urllib.request.urlretrieve; a socket `.connect(ADDR)`
+with a variable address. The real defences are the runtime network guard (tests/conftest.py, which refuses any
+non-loopback connect and any ISTAT DNS lookup in a test) and the per-participant tests that count tokens against
+sends (test_istat_fetcher_pacing, test_istat_crawler_pacing, test_istat_tools_pacing)."""
 from __future__ import annotations
 
 import ast
