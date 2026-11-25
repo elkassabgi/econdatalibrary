@@ -368,7 +368,7 @@ class _Strategy:
     def __init__(self, catalog, fetch):
         self.catalog, self.fetch = catalog, fetch
 
-    def is_due(self, unit, us):
+    def is_due(self, unit, us, now=None):        # the production signature (orchestrate._unit_due passes now=)
         return True
 
     def detect_change(self, unit, us):

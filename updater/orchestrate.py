@@ -928,24 +928,190 @@ def _has_adapter(unit) -> bool:
     return True
 
 
-def _budget_skip_due_label(unit, store, force) -> str:
+# ---- THE DATA-CLOCK RE-CHECK: who may have one (2026-11-25; design monthly_recheck_20261124/DESIGN.md 4.3-4.4) ----
+#
+# base.clock_recheck_due says WHEN (the regular check would come after the gate's data clock; inside the lead and
+# the cap; spaced from the last attempt). recheck_verdict says WHO, for phase 1 (the design's rules 1-6; checked
+# here cheapest first, after the date test): a unit is covered only when
+#   1. its scheduling cadence AND its lateness cadence are monthly (data_cadence absent or monthly);
+#   2. its run cost (StateStore.run_cost_estimate, MAX of the last 5 runs) is known and at most the first band rung,
+#      RECHECK_MAX_COST_S (BAND_LADDER_SECONDS[0], 600 s);
+#   3. none of its last RECHECK_HISTORY_RUNS runs rows (newest by id) is `partial` or `killed_external`: a
+#      partial-prone unit would trade quiet green days for ATTENTION days. transient_fail, `locked` and
+#      `window_stopped` rows do not hold it;
+#   4. no LIVE structured upstream_verified claim covers its newest obs (the branch where the gate reads OK; an
+#      EXPIRED claim does not hold it - health.upstream_claim_covers);
+#   5. its source has exactly one unit, so the source's newest obs is the unit's;
+#   6. it does not declare window_stop (review round 4, R4-C4: a window-stopped non-turn writes no unit state, so
+#      the spacing from last_attempt would never engage; census, istat and imf_imts_direct declare it and are held
+#      by cost too).
+# A unit whose date test holds but that fails one of these prints `RE-CHECK HELD <unit> - <reason>`; one whose date
+# test does not hold prints nothing (each pass would otherwise print a HELD line per monthly unit). A missing
+# registry entry, success or newest obs means not covered, silently. On 2026-11-17's state copy this covers
+# exactly imf_commodity, nasa_giss and epu.
+RECHECK_CADENCE = "monthly"
+RECHECK_MAX_COST_S = BAND_LADDER_SECONDS[0]
+RECHECK_HISTORY_RUNS = 5
+RECHECK_HOLD_STATUSES = ("partial", "killed_external")
+_UNSET = object()
+
+
+def recent_run_statuses(db, source_id, unit_id, n=RECHECK_HISTORY_RUNS) -> list:
+    """The statuses of this unit's newest `n` runs rows, newest first: by id DESC, the order run_cost_estimate's
+    window reads. `db` is a sqlite connection (StateStore.db, or the replay book's own runs table)."""
+    return [r[0] for r in db.execute(
+        "SELECT status FROM runs WHERE source_id=? AND unit_id=? ORDER BY id DESC LIMIT ?",
+        (source_id, unit_id, int(n)))]
+
+
+def recheck_verdict(unit, us, entry, n_units, cost_s, statuses_of, newest_obs_of, now) -> tuple:
+    """(due, held, fire, regular) of the data-clock re-check for a unit `Strategy.is_due` has called not due.
+
+    ONE predicate for run_once (_unit_due) and the starvation replay (tools/measure_ci_lag.py UnitBook.is_due), so
+    the two cannot decide differently. Pure apart from its two readers, called only when needed:
+    statuses_of() -> recent_run_statuses, newest_obs_of() -> health.newest_observed (or the book's copy of it).
+    The DATE TEST comes first (the gate's own D and n), so a unit whose regular check comes before its clock is
+    decided without reading its history. held: why a unit whose date test holds gets no re-check, else None.
+    fire / regular: the data clock and the regular check, when both stamps were readable."""
+    from . import health                                     # lazy: health imports nothing from orchestrate
+    from .strategies import base as _base
+    ls = (us or {}).get("last_success_utc")
+    if entry is None or unit.cadence != RECHECK_CADENCE or not ls:
+        return False, None, None, None
+    n = newest_obs_of()
+    if not n:
+        return False, None, None, None
+    data_days = health.data_clock_days(entry)
+    cadence_days = _base.CADENCE_DAYS[RECHECK_CADENCE]
+    times = _base.clock_recheck_times(ls, n, data_days, cadence_days)
+    if times is None:
+        return False, None, None, None
+    fire, regular = times
+    if not _base.clock_recheck_due(ls, (us or {}).get("last_attempt_utc"), n, data_days, cadence_days, now):
+        return False, None, fire, regular
+    lat = entry.get("data_cadence") or entry.get("cadence", "monthly")
+    if lat != RECHECK_CADENCE:
+        held = f"scope: its lateness clock is {lat}, not {RECHECK_CADENCE} (phase 1)"
+    elif n_units != 1:
+        held = f"units: its source has {n_units} units, so the source's newest obs is not the unit's"
+    elif (unit.config or {}).get("window_stop") is True:
+        held = "window_stop: a window-stopped non-turn writes no unit state (phase 1)"
+    elif cost_s is None:
+        held = "cost unknown: no runs row on record"
+    elif cost_s > RECHECK_MAX_COST_S:
+        held = f"cost {cost_s:.1f} s > {RECHECK_MAX_COST_S:.0f} s (run_cost_estimate)"
+    else:
+        bad = [s for s in statuses_of() if s in RECHECK_HOLD_STATUSES]
+        if bad:
+            held = f"history: {bad[0]} in its last {RECHECK_HISTORY_RUNS} runs"
+        elif health.upstream_claim_covers(entry, n, now):
+            held = "upstream_verified: a live claim covers its newest obs"
+        else:
+            held = None
+    return held is None, held, fire, regular
+
+
+class DueVerdict:
+    """_unit_due's answer: truthy when the unit is due. by_rule: due by the data-clock re-check alone. held: why a
+    re-check whose date test holds was not taken. fire / regular: the data clock and the regular check, when known."""
+    __slots__ = ("due", "by_rule", "held", "fire", "regular")
+
+    def __init__(self, due, by_rule=False, held=None, fire=None, regular=None):
+        self.due, self.by_rule, self.held, self.fire, self.regular = bool(due), by_rule, held, fire, regular
+
+    def __bool__(self):
+        return self.due
+
+
+def _parse_now(stamp) -> "datetime":
+    """now_utc()'s ISO string (state.py) as an aware datetime: the one instant both halves of _unit_due read."""
+    from datetime import datetime, timezone
+    d = datetime.fromisoformat(str(stamp))
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+def _utc_label(d) -> str:
+    from datetime import timezone
+    return d.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+
+
+def _registry_entry(source_id):
+    """The 3-argument fallback only: one registry.load() (not cached; run_once passes its own by-id map)."""
+    for e in (registry.load() or {}).get("sources") or []:
+        if isinstance(e, dict) and e.get("source_id") == source_id:
+            return e
+    return None
+
+
+def _unit_due(strat, unit, us, store, entry=_UNSET, costs=None, now=None, announce=False) -> DueVerdict:
+    """Is `unit` due? `strat.is_due` - exactly as before - or, only when that says no, the data-clock re-check.
+
+    `now` is read ONCE (orchestrate.now_utc, the function the replay harness pins) and the same instant goes to
+    both halves. run_once passes entry=, costs= and now= (its by-id registry map, its pass-start cost estimate);
+    the fallbacks (one registry.load(), store.run_cost_estimate(), now_utc()) serve the 3-argument label form.
+
+    THE RE-CHECK CAN NEVER END THE RUN (review round 4, R4-C1). It reads the registry, the store and health on a
+    line run_once does not guard, so any exception in it is caught here: the answer falls back to `strat.is_due`'s,
+    and the pass says so (`RE-CHECK HELD <unit> - error <Type>`). announce: print the RE-CHECK / HELD line (the
+    loop's due check); the label computes the same answer silently."""
+    if now is None:
+        now = _parse_now(now_utc())
+    if strat.is_due(unit, us, now=now):
+        return DueVerdict(True)
+    try:
+        if not (us or {}).get("last_success_utc") or unit.cadence != RECHECK_CADENCE:
+            return DueVerdict(False)
+        if entry is _UNSET:
+            entry = _registry_entry(unit.source_id)
+        if entry is None:
+            return DueVerdict(False)
+        if costs is None:
+            costs = store.run_cost_estimate()
+        due, held, fire, regular = recheck_verdict(
+            unit, us, entry, len(registry.to_units(entry)), costs.get(unit.source_id),
+            lambda: recent_run_statuses(store.db, unit.source_id, unit.unit_id),
+            lambda: _health_newest_observed(store, unit.source_id, entry, now), now)
+    except Exception as e:  # noqa: BLE001 - the re-check adds passes; it must never take the run down
+        held = f"error {type(e).__name__}"
+        if announce:
+            print(f"[orchestrator] RE-CHECK HELD {unit.key} - {held}; the regular schedule decides", flush=True)
+        return DueVerdict(False, held=held)
+    if announce and due:
+        print(f"[orchestrator] RE-CHECK {unit.key} - data clock {_utc_label(fire)}, regular check "
+              f"{_utc_label(regular)}: due by the data-clock re-check", flush=True)
+    elif announce and held:
+        print(f"[orchestrator] RE-CHECK HELD {unit.key} - {held}", flush=True)
+    return DueVerdict(due, by_rule=due, held=held, fire=fire, regular=regular)
+
+
+def _health_newest_observed(store, source_id, entry, now):
+    from . import health                                     # lazy: no import cycle (health imports no orchestrate)
+    return health.newest_observed(store, source_id, entry, now)
+
+
+def _budget_skip_due_label(unit, store, force, entry=_UNSET, costs=None, now=None) -> str:
     """PRINT ONLY: would this budget-skipped unit have been due? For the BUDGET SKIP line, nothing else.
 
     The budget gate runs BEFORE the due check, so a skip line used to name units that were not due at all -
     21 lines printed against 15 units due on the 2026-10-28 13:45Z desktop pass - and a reader counting skip
     lines as "work that lost its turn" over-counted by six (starvation plan B3, ledger R1708). The label asks
-    the SAME question the due check below would ask (`Strategy.is_due` on the stored unit state, or `force`),
-    and is computed only for a unit the gate has already skipped. It decides nothing: the skip, its position
-    in the loop and every list it feeds are unchanged, which is why the due check was NOT moved ahead of the
-    gate (that would reorder it before `_has_adapter` and change what a skipped unit records).
+    the SAME question the due check below would ask (`_unit_due` on the stored unit state - Strategy.is_due or
+    the data-clock re-check - or `force`), and is computed only for a unit the gate has already skipped. It
+    decides nothing: the skip, its position in the loop and every list it feeds are unchanged, which is why the
+    due check was NOT moved ahead of the gate (that would reorder it before `_has_adapter` and change what a
+    skipped unit records). run_once passes entry=, costs= and now= (now_utc()'s ISO string, parsed here inside
+    the try); the 3-argument form reads its own.
 
     It must never be able to break the loop it annotates, so any failure prints as `due unknown (...)`.
     """
     if force:
         return "due (--force)"
     try:
+        if isinstance(now, str):
+            now = _parse_now(now)
         us = store.get_unit(unit.source_id, unit.unit_id)
-        return "due" if get_strategy(unit.strategy).is_due(unit, us) else "not due"
+        return "due" if _unit_due(get_strategy(unit.strategy), unit, us, store, entry=entry, costs=costs,
+                                  now=now) else "not due"
     except Exception as e:  # noqa: BLE001 - a label, never a decision
         return f"due unknown ({type(e).__name__})"
 
@@ -4049,10 +4215,15 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
     # Validate the registry up front — fail loudly rather than silently run a
     # malformed/incomplete registry (the documented coverage gate). The expected
     # count is the MEASURED number from updater/REGISTRY_RECONCILIATION.md (§5.6).
-    problems = registry.validate(registry.load(),
+    _reg = registry.load()
+    problems = registry.validate(_reg,
                                  expected_count=config.EXPECTED_SOURCE_COUNT)
     if problems:
         raise SystemExit("registry invalid (fix before running):\n  " + "\n  ".join(problems[:20]))
+    # THE REGISTRY BY ID, kept from the load just validated (one load per pass, as health.assess does): the
+    # data-clock re-check reads each unit's entry (_unit_due). registry.load() is not cached, so it is not re-read.
+    _reg_by_id = {e["source_id"]: e for e in ((_reg or {}).get("sources") or [])
+                  if isinstance(e, dict) and e.get("source_id")}
     units = registry.all_units()
     # THE csv_misses_from HOLD, decided ONCE for this run from the state it holds (DESIGN_v2 §7, AR-461 F2c):
     # reset first, so a second run_once in one process never inherits the last run's "released".
@@ -4294,8 +4465,10 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             # comparison used, not a fresh clock read, and `_need_min` is the RESERVE this
             # gate requires - a worst case, not an estimate of what the unit would take.
             # B3: `due` / `not due` says whether this skip cost the unit a turn it was owed. Label only.
+            _label = _budget_skip_due_label(unit, store, force, entry=_reg_by_id.get(unit.source_id),
+                                            costs=_costs, now=now_utc())
             print(f"[orchestrator] BUDGET SKIP {unit.source_id}/{unit.unit_id} "
-                  f"({_budget_skip_due_label(unit, store, force)}): the gate "
+                  f"({_label}): the gate "
                   f"reserves {_need_min:.0f} min ({_basis}) and "
                   f"{max(0.0, (run_deadline - _now) / 60.0):.0f} min remain in this pass - "
                   f"deferred to the next one", flush=True)
@@ -4351,7 +4524,11 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
         us = store.get_unit(unit.source_id, unit.unit_id)
         strat = get_strategy(unit.strategy)
 
-        if not force and not strat.is_due(unit, us):
+        # THE DUE CHECK: Strategy.is_due, or - only when that says no - the data-clock re-check (_unit_due; it
+        # prints its RE-CHECK / RE-CHECK HELD line and can never raise past its own try). One instant for both.
+        _due = None if force else _unit_due(strat, unit, us, store, entry=_reg_by_id.get(unit.source_id),
+                                            costs=_costs, now=_parse_now(now_utc()), announce=True)
+        if not force and not _due:
             # ANNOUNCED, like every other deliberate skip in this loop. This was the last
             # silent `continue` here, and the codebase's own rule (R101) is that a skip
             # leaving no trace is indistinguishable from a bug. It also became load-bearing
@@ -4362,8 +4539,10 @@ def run_once(sources=None, strategies=None, cadences=None, force=False, dry=Fals
             # cron does not pass --force, so that would have fired on the next quiet night.
             not_due.append(unit.source_id)
             _drain_ok.setdefault(unit.source_id, []).append(unit)
+            _clock = (f"data clock {_utc_label(_due.fire)}, regular check {_utc_label(_due.regular)}; "
+                      if _due.fire is not None and _due.regular is not None else "")
             print(f"[orchestrator] NOT DUE {unit.key} — cadence={unit.cadence}, "
-                  f"last_success={(us or {}).get('last_success_utc') or 'never'}; "
+                  f"last_success={(us or {}).get('last_success_utc') or 'never'}; {_clock}"
                   f"skipped (use --force to override)", flush=True)
             continue
 

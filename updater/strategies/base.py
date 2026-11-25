@@ -11,7 +11,7 @@ A unit is marked `ok` only after run() reports a successful atomic publish.
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 # A NON-FAILURE tail a fetcher may join onto its result error ("; not hosted note: ..."): tables
 # the publisher lists but serves no data for, named for the reader. health._deferral_only strips it
@@ -245,6 +245,75 @@ def _due_after(days: float, stamp: str | None, now: datetime | None = None) -> b
     except Exception:                                        # noqa: BLE001
         return True
     return (now - last).total_seconds() >= days * 86400 * 0.9
+
+
+# ---- THE DATA-CLOCK RE-CHECK (2026-11-25; design monthly_recheck_20261124/DESIGN.md section 4) ----------------
+#
+# Two clocks never read each other. The SCHEDULE re-checks a monthly unit 25.2 days after its last success
+# (cadence_due: 28 x 0.9). The GATE's data clock fires when the newest observed obs is older than the source's
+# data clock D (health.data_clock_days: 84 days for monthly). When the last success came more than D - 25.2 =
+# 58.8 days after the newest obs n, the next regular check comes AFTER the clock: RED-DATA then follows whatever
+# the publisher does. Measured on 2026-11-24: imf_commodity and nasa_giss went RED-DATA at the 09:07Z gate with a
+# regular check still due 2026-12-03T17:47Z, after clean `no_change` passes on 11-08 that came before the
+# October value was out. A calendar month is 30-31 days and the clean passes are 25.2-27.1 days apart, so each
+# pass lands 3-6 days earlier in the month: the miss recurs; a forced run only moves its phase.
+#
+# The rule: when the regular check would come after the clock, look at every scheduled pass that reaches the unit
+# from RECHECK_LEAD_DAYS before the clock to RECHECK_CAP_DAYS after it, then stop and leave the gate red. It
+# changes neither clock, no verdict and no stamp rule: a re-check is an ordinary pass. Which units it may cover is
+# orchestrate.recheck_verdict's (phase 1: monthly, cheap, clean, one unit, not window-stoppable).
+#
+# THE SPACING IS HALF A DAY, NOT ONE (review round 4, R4-C3). The phase-1 units are cloud units with ONE scheduled
+# pass a day, and the hour at which that pass reaches a unit moves by many hours: imf_commodity's kept passes reached
+# it at 05:08, 18:47, 07:24, 21:46, 00:21 and 12:59Z. With 1 day (21.6 h with the 0.9 slack) a pass that reaches
+# the unit more than 2.4 h earlier than the day before refuses that day's re-check. 0.5 day (10.8 h) still allows
+# at most one re-check per scheduled pass, and the same 0.9 slack as every other clock here (_due_after) applies.
+RECHECK_LEAD_DAYS = 7
+RECHECK_CAP_DAYS = 28
+RECHECK_RETRY_DAYS = 0.5
+
+
+def _utc_instant(stamp):
+    """An aware datetime for a state stamp or an obs_date, or None when there is none or it does not parse. A bare
+    YYYY-MM-DD is midnight UTC - the reading health._age_days gives an obs_date, so the clock here fires at the
+    instant the gate's age passes D - and a stamp without an offset is UTC, as every writer here writes UTC."""
+    if not stamp:
+        return None
+    s = str(stamp)
+    if len(s) == 10:
+        s += "T00:00:00+00:00"
+    try:
+        d = datetime.fromisoformat(s)
+    except (TypeError, ValueError):
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+def clock_recheck_times(last_success_utc, newest_obs, data_days, cadence_days):
+    """(fire, regular), or None when a stamp is missing or unreadable. fire = the newest observed obs + the data
+    clock in days (when the gate turns RED-DATA); regular = the last success + cadence_days x 0.9 (when
+    cadence_due next answers True)."""
+    s, n = _utc_instant(last_success_utc), _utc_instant(newest_obs)
+    if s is None or n is None or data_days is None or cadence_days is None:
+        return None
+    return n + timedelta(days=float(data_days)), s + timedelta(days=float(cadence_days) * 0.9)
+
+
+def clock_recheck_due(last_success_utc, last_attempt_utc, newest_obs, data_days, cadence_days,
+                      now: datetime | None = None) -> bool:
+    """Is a data-clock re-check due? Only when the regular check would come after the clock fires, `now` is at most
+    RECHECK_LEAD_DAYS before the clock and at most RECHECK_CAP_DAYS after it, and the last attempt is at least
+    RECHECK_RETRY_DAYS old (_due_after, with its 0.9 slack). False when a stamp is missing - the rule needs a
+    recorded success and an observed newest obs; the partial clock (Strategy.is_due) is not touched."""
+    t = clock_recheck_times(last_success_utc, newest_obs, data_days, cadence_days)
+    if t is None:
+        return False
+    fire, regular = t
+    now = now or datetime.now(timezone.utc)
+    return (regular > fire
+            and now >= fire - timedelta(days=RECHECK_LEAD_DAYS)
+            and now <= fire + timedelta(days=RECHECK_CAP_DAYS)
+            and _due_after(RECHECK_RETRY_DAYS, last_attempt_utc, now))
 
 
 class Strategy(ABC):

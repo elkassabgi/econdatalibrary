@@ -85,7 +85,7 @@ def test_forced_run_labels_the_skip_as_forced(tmp_path, monkeypatch, capsys):
 
 def test_a_label_that_cannot_be_computed_never_breaks_the_loop(tmp_path, monkeypatch, capsys):
     class Boom:
-        def is_due(self, unit, us):
+        def is_due(self, unit, us, now=None):        # the production signature (_unit_due passes now=)
             raise RuntimeError("no")
     monkeypatch.setattr(orchestrate, "get_strategy", lambda name: Boom())
     admitted, skips, out, _ = _run(tmp_path, monkeypatch, capsys, budget=30)
@@ -102,7 +102,11 @@ def _run_once_loop():
 
 def test_the_due_check_still_follows_the_budget_gate_and_the_adapter_check():
     """PRINT ONLY means nothing moved: in the unit loop the budget gate comes first, then _has_adapter, then the
-    due check that `continue`s. The label's is_due call lives in its helper, not in the loop."""
+    due check that `continue`s. The label's due call lives in its helper, not in the loop.
+
+    The due check is `_unit_due` since the data-clock re-check (2026-11-25): Strategy.is_due, then the re-check only
+    when that says no. The loop calls it ONCE and calls no `.is_due` of its own; `_unit_due` calls `strat.is_due`
+    first, so a strategy's own answer still decides before anything the re-check reads."""
     loop = _run_once_loop()
 
     def first_line(pred):
@@ -112,19 +116,25 @@ def test_the_due_check_still_follows_the_budget_gate_and_the_adapter_check():
     gate = first_line(lambda n: isinstance(n, ast.Constant) and isinstance(n.value, str)
                       and "BUDGET SKIP" in n.value)
     adapter = first_line(lambda n: isinstance(n, ast.Call) and ast.unparse(n.func) == "_has_adapter")
-    due = first_line(lambda n: isinstance(n, ast.Call) and ast.unparse(n.func) == "strat.is_due")
+    due = first_line(lambda n: isinstance(n, ast.Call) and ast.unparse(n.func) == "_unit_due")
     assert gate < adapter < due, (gate, adapter, due)
     calls = [ast.unparse(n.func) for n in ast.walk(loop) if isinstance(n, ast.Call)]
-    assert calls.count("strat.is_due") == 1, "the due check that decides appears once"
-    assert not any(c.endswith(".is_due") and c != "strat.is_due" for c in calls), calls
+    assert calls.count("_unit_due") == 1, "the due check that decides appears once"
+    assert not any(c.endswith(".is_due") for c in calls), calls
+    tree = ast.parse(inspect.getsource(orchestrate))
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_unit_due")
+    first = [ast.unparse(n.func) for n in sorted((n for n in ast.walk(fn) if isinstance(n, ast.Call)),
+                                                 key=lambda n: (n.lineno, n.col_offset))
+             if ast.unparse(n.func) in ("strat.is_due", "recheck_verdict")]
+    assert first and first[0] == "strat.is_due" and first.count("strat.is_due") == 1, first
 
 
 def test_the_order_pin_can_fail():
     """Negative control for the pin above: the same predicate over a loop with the due check hoisted first."""
-    src = "for unit in units:\n    if not strat.is_due(unit, us):\n        continue\n" \
+    src = "for unit in units:\n    if not _unit_due(strat, unit, us, store):\n        continue\n" \
           "    print('BUDGET SKIP x')\n    runnable = _has_adapter(unit)\n"
     loop = ast.parse(src).body[0]
-    due = min(n.lineno for n in ast.walk(loop) if isinstance(n, ast.Call) and ast.unparse(n.func) == "strat.is_due")
+    due = min(n.lineno for n in ast.walk(loop) if isinstance(n, ast.Call) and ast.unparse(n.func) == "_unit_due")
     gate = min(n.lineno for n in ast.walk(loop) if isinstance(n, ast.Constant) and "BUDGET SKIP" in str(n.value))
     assert not gate < due
 

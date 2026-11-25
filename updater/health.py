@@ -1160,6 +1160,71 @@ def stuck_report(store=None, now=None, entries=None) -> dict:
                            now or datetime.now(timezone.utc), gated=gated_ids_or_none())
 
 
+# ---- THE DATA CLOCK, READ BY assess() AND BY THE SCHEDULER (2026-11-25) ------------------------------------------
+# Extracted from assess() unchanged, so orchestrate's data-clock re-check (orchestrate.recheck_verdict) reads the
+# same `n` and `D` as the gate: one predicate, one place (Rules Digest #1). The WHY of each rule stays beside its
+# call in assess(); tests/test_monthly_recheck.py pins the formula over every registry entry.
+
+def data_clock_days(entry) -> float:
+    """The source's data clock in days: its lateness period (data_cadence if declared, else cadence; an irregular
+    publisher is judged on a year) x (SLA_TOLERANCE + DATA_SLACK_PERIODS), plus a measured `publication_lag_days`
+    clamped to publication_lag_cap. See the comments at its call in assess()."""
+    cadence = entry.get("cadence", "monthly")
+    period = CADENCE_DAYS.get(cadence, 7)
+    lat_cadence = entry.get("data_cadence") or cadence
+    data_days = (LATENESS_PERIOD.get(lat_cadence,
+                                     CADENCE_DAYS.get(lat_cadence, period))
+                 * (SLA_TOLERANCE + DATA_SLACK_PERIODS))
+    _lag = entry.get("publication_lag_days")
+    if isinstance(_lag, (int, float)) and not isinstance(_lag, bool):
+        data_days += min(max(0.0, float(_lag)), publication_lag_cap(lat_cadence, period))
+    return data_days
+
+
+def observed_values(units, cursors) -> list:
+    """The values the recency signal reads: every non-empty per-series cursor, then every unit's last_obs_date."""
+    obs_vals = [v for v in cursors.values() if v]
+    obs_vals += [u.get("last_obs_date") for u in units if u.get("last_obs_date")]
+    return obs_vals
+
+
+def recency(entry, obs_vals, now) -> tuple:
+    """(frontier, newest_obs) of `obs_vals` at `now`: _recency_signal, with the entry's structured upstream_verified
+    claim switching off its dead-minority suppression."""
+    return _recency_signal(obs_vals, now, has_uv_claim=isinstance(entry.get("upstream_verified"), dict))
+
+
+def newest_observed(store, sid, entry, now):
+    """The newest OBSERVED obs of `sid` at `now` - the value assess() judges the data clock on."""
+    return recency(entry, observed_values(store.units_for_source(sid), store.series_cursors(sid)), now)[1]
+
+
+def upstream_claim(entry, newest_obs, now) -> tuple:
+    """(state, check_age, malformed) of the entry's upstream_verified claim against `newest_obs` at `now`.
+    state: "live" (a structured claim our newest obs reaches, checked at most UPSTREAM_RECHECK_DAYS ago - assess
+    reads OK), "expired" (the same claim, checked longer ago - ATTENTION) or None (no claim covers it - RED-DATA
+    stands). malformed: the type name of an upstream_verified that is not a mapping (it cannot support a claim),
+    else None. See the comments at its call in assess()."""
+    uv = entry.get("upstream_verified")
+    malformed = None
+    if uv is not None and not isinstance(uv, dict):
+        malformed = type(uv).__name__
+        uv = {}
+    uv = uv or {}
+    u_latest, u_checked = uv.get("latest_obs"), uv.get("checked")
+    check_age = _age_days(u_checked, now) if u_checked else None
+    if (u_latest and newest_obs and str(newest_obs) >= str(u_latest)
+            and check_age is not None):
+        return ("expired" if check_age > UPSTREAM_RECHECK_DAYS else "live"), check_age, malformed
+    return None, check_age, malformed
+
+
+def upstream_claim_covers(entry, newest_obs, now) -> bool:
+    """True only where assess() reads OK on the claim: a LIVE claim. An expired one does not cover (it is
+    ATTENTION, and the data is owed a look)."""
+    return upstream_claim(entry, newest_obs, now)[0] == "live"
+
+
 def assess(store=None) -> dict:
     store = store or StateStore()
     now = datetime.now(timezone.utc)
@@ -1232,10 +1297,10 @@ def assess(store=None) -> dict:
         # This field CAN hide staleness, so declaring one without evidence is the abuse
         # case. It cuts both ways: a source polled annually that publishes monthly gets a
         # TIGHTER clock, not a looser one.
-        lat_cadence = e.get("data_cadence") or cadence
-        data_days = (LATENESS_PERIOD.get(lat_cadence,
-                                         CADENCE_DAYS.get(lat_cadence, period))
-                     * (SLA_TOLERANCE + DATA_SLACK_PERIODS))
+        #
+        # data_clock_days(e) computes it, with the publication-lag allowance below: the SAME function
+        # orchestrate's data-clock re-check reads, so the scheduler and the gate cannot disagree about D.
+        #
         # A PUBLISHER'S OWN LAG (2026-09-23). The clock counts from the stored obs_date and allows
         # one period of lag (DATA_SLACK_PERIODS), which a monthly publisher releasing ~2 months late
         # outruns: measured on fhfa (FHFA calendar + the store's month-START dating), the newest
@@ -1246,9 +1311,7 @@ def assess(store=None) -> dict:
         # a real int/float, clamped to 2 data periods (a string, a bool, inf or 1e9 cannot mute the
         # gate) - and by tests/test_health_publication_lag.py (a MEASURED comment beside it). It never
         # replaces the clock: a real freeze still turns red, only later by the allowance.
-        _lag = e.get("publication_lag_days")
-        if isinstance(_lag, (int, float)) and not isinstance(_lag, bool):
-            data_days += min(max(0.0, float(_lag)), publication_lag_cap(lat_cadence, period))
+        data_days = data_clock_days(e)
 
         src = store.get_source(sid)
         units = store.units_for_source(sid)
@@ -1300,14 +1363,13 @@ def assess(store=None) -> dict:
         # separately for display: the board should still be able to say the store reaches 2071.
         # If a unit holds nothing but forward-dated rows, recency is UNKNOWN (None) rather than
         # a fabricated "ahead of schedule" - last_success_utc still governs whether it ran.
-        obs_vals = [v for v in cursors.values() if v]
-        obs_vals += [u.get("last_obs_date") for u in units if u.get("last_obs_date")]
+        obs_vals = observed_values(units, cursors)
         # _recency_signal also refuses a dead-MINORITY max as the recency signal when the
         # frontier is forward-dated (unctad_pop*: the gate read retired series' 2011 end
         # date as the store's currency and RED-DATA'd three complete sources). Sources
         # with a structured upstream_verified claim keep the claim's expiring machinery.
-        frontier, newest_obs = _recency_signal(
-            obs_vals, now, has_uv_claim=isinstance(e.get("upstream_verified"), dict))
+        # recency() is that call; newest_observed() is the same read for the scheduler's re-check.
+        frontier, newest_obs = recency(e, obs_vals, now)
         obs_age = _age_days(newest_obs, now)
         # staleness is judged in BUSINESS days for daily sources (FX/market feeds
         # publish nothing Sat/Sun — calendar age red-flagged every Monday morning);
@@ -1380,24 +1442,20 @@ def assess(store=None) -> dict:
             # is the safe direction: suppression is the privileged outcome and must never be
             # granted by accident. It is SURFACED rather than swallowed, because a field in the
             # wrong shape is a defect someone should fix, not one to route around in silence.
-            uv = e.get("upstream_verified")
-            if uv is not None and not isinstance(uv, dict):
+            # upstream_claim() reads the claim; upstream_claim_covers() (its "live" state) is what holds a unit
+            # out of orchestrate's data-clock re-check.
+            claim, check_age, malformed = upstream_claim(e, newest_obs, now)
+            if malformed is not None:
                 attention = list(attention) + [
-                    f"upstream_verified is {type(uv).__name__}, not a mapping with "
+                    f"upstream_verified is {malformed}, not a mapping with "
                     f"latest_obs/checked — cannot support a completeness claim, ignored"]
-                uv = {}
-            uv = uv or {}
-            u_latest, u_checked = uv.get("latest_obs"), uv.get("checked")
-            check_age = _age_days(u_checked, now) if u_checked else None
-            if (u_latest and newest_obs and str(newest_obs) >= str(u_latest)
-                    and check_age is not None):
-                if check_age > UPSTREAM_RECHECK_DAYS:
-                    health = "ATTENTION"  # claim has expired — re-verify upstream
-                    attention = list(attention) + [
-                        f"upstream_verified is {check_age:.0f}d old "
-                        f"(>{UPSTREAM_RECHECK_DAYS:.0f}d) — re-probe {sid}"]
-                else:
-                    health = "OK"         # complete upstream, and we match it
+            if claim == "expired":
+                health = "ATTENTION"  # claim has expired — re-verify upstream
+                attention = list(attention) + [
+                    f"upstream_verified is {check_age:.0f}d old "
+                    f"(>{UPSTREAM_RECHECK_DAYS:.0f}d) — re-probe {sid}"]
+            elif claim == "live":
+                health = "OK"         # complete upstream, and we match it
             else:
                 health = "RED-DATA"       # job 'succeeds' but our NEWEST data is stale
         else:

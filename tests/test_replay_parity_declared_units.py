@@ -82,6 +82,21 @@ B = {"cadence": {"z": "monthly", "nt": "monthly"},
      "declared": {"nt": (10.0, 8.0, 5.0)},
      "state": [("z", 40, "ok")],
      "rows": [(40, "z", "ok", 120.0), (40, "nt", "partial", 6000.0)]}
+# Scenario R, the data-clock re-check (2026-11-25; design DESIGN.md section 9, F1 and G11): P0 - imf_commodity's row
+# of the 2026-11-17 state copy as offsets from the virtual start: last success 9.71 d ago (no_change), newest obs
+# 78.25 d ago, five clean runs in time order (the last 5 are id DESC) - under its REAL id, so both sides read the
+# real registry entry (monthly, no data_cadence; the harness does not patch registry.load). fire = start + 5.75 d,
+# the regular check start + 15.49 d. `small` is a daily unit the rule must not touch (a fake id: no entry).
+# PENCIL (spacing 0.5 d x 0.9 = 10.8 h): pass 1 imf re-checked (both sides); pass 2 (+6 h) imf NOT DUE (attempt
+# 6 h ago); pass 3 (+6 h) imf re-checked again (12 h); small runs in pass 1 only (daily, 0.9 d).
+IMF = "imf_commodity"
+R = {"cadence": {IMF: "monthly", "small": "daily"},
+     "declared": {},
+     "state": [(IMF, 9.71, "no_change"), ("small", 2, "ok")],
+     "rows": [(113.71, IMF, "ok", 398.7), (87.71, IMF, "no_change", 5.8), (61.71, IMF, "ok", 120.0),
+              (35.71, IMF, "no_change", 45.0), (9.71, IMF, "no_change", 30.0),
+              (40, "small", "ok", 300.0), (2, "small", "ok", 300.0)],
+     "obs": [(IMF, 78.25)]}
 
 
 class _Clock:
@@ -168,6 +183,11 @@ class Harness:
                        " VALUES (?, '_all', 'sim', ?, ?, ?)", (sid, ago(d), ago(d), st))
         db.executemany("INSERT INTO runs(ts_utc, source_id, unit_id, status, dur_s) VALUES (?, ?, '_all', ?, ?)",
                        [(ago(d), s, st, dur) for d, s, st, dur in self.sc["rows"]])
+        # the newest observed obs (unit last_obs_date and one cursor) that the data-clock re-check reads (scenario R)
+        for sid, d in self.sc.get("obs", ()):
+            db.execute("UPDATE unit_state SET last_obs_date=? WHERE source_id=? AND unit_id='_all'", (ago(d), sid))
+            db.execute("INSERT INTO series_cursor(source_id, series_key, last_obs_date) VALUES (?, ?, ?)",
+                       (sid, f"{sid.upper()}:PLANTED", ago(d)))
         db.commit()
         db.execute("PRAGMA wal_checkpoint(TRUNCATE)")   # load_unit_book reads ?immutable=1, which skips the WAL
 
@@ -240,6 +260,7 @@ class Harness:
 
 PASSES_A = ((100, None), (150, 6 * 3600), (130, 6 * 3600))
 PASSES_B = ((14, None), (14, 6 * 3600))
+PASSES_R = ((100, None), (100, 6 * 3600), (100, 6 * 3600))
 
 
 def _passes(tmp_path, monkeypatch, capsys, sc=A, passes=PASSES_A):
@@ -254,7 +275,7 @@ def _passes(tmp_path, monkeypatch, capsys, sc=A, passes=PASSES_A):
     return h, out
 
 
-@pytest.mark.parametrize("sc, passes", [(A, PASSES_A), (B, PASSES_B)], ids=["A", "B"])
+@pytest.mark.parametrize("sc, passes", [(A, PASSES_A), (B, PASSES_B), (R, PASSES_R)], ids=["A", "B", "R-recheck"])
 def test_the_replay_and_run_once_take_the_same_decisions_and_write_the_same_records(tmp_path, monkeypatch, capsys,
                                                                                      sc, passes):
     _h, out = _passes(tmp_path, monkeypatch, capsys, sc, passes)
@@ -287,6 +308,37 @@ def test_the_non_turn_pencil(tmp_path, monkeypatch, capsys):
     assert p1["state"]["nt"] == (None, None, None) and p1["end_min"] == 6.0           # not a turn; still due
     # due again (no state): 0 + 10 <= 14, window 14 - 8 = 6 fits one 5-min piece -> `partial`, returns at 5
     assert p2["ran"] == ["nt"] and [x[1:] for x in p2["rows"]] == [("nt", "partial", 300.0)] and p2["end_min"] == 5.0
+
+
+def test_f1_run_once_rechecks_a_unit_whose_regular_check_comes_after_its_data_clock(tmp_path, monkeypatch, capsys):
+    """F1: run_once on the harness clock, P0 relative to its virtual now. Before the change orchestrate's due check
+    prints NOT DUE (9.71 d < 25.2 d)."""
+    h = Harness(tmp_path, monkeypatch, R)
+    unit = next(u for u in h.units if u.source_id == IMF)
+    now = dt.datetime.fromtimestamp(h.clock.t, dt.timezone.utc)
+    assert not Strategy.is_due(None, unit, h.store.get_unit(IMF, "_all"), now=now), "precondition: not due by cadence"
+    _start, p = h.production_pass(100, capsys)
+    assert IMF in p["ran"] and IMF not in p["not_due"], p
+
+
+def test_the_recheck_pencil(tmp_path, monkeypatch, capsys):
+    """Scenario R's pencil on run_once's side (the parity test ties the replay to it), so the differential is not
+    vacuous: re-checked, spaced, re-checked; the daily unit is untouched by the rule."""
+    _h, out = _passes(tmp_path, monkeypatch, capsys, R, PASSES_R)
+    (p1, _), (p2, _), (p3, _) = out
+    assert sorted(p1["ran"]) == [IMF, "small"] and p2["ran"] == [] and p3["ran"] == [IMF], [p["ran"] for p, _ in out]
+    assert sorted(p2["not_due"]) == [IMF, "small"] and p3["not_due"] == ["small"]
+    assert [x[2] for x in p1["rows"] if x[1] == IMF] == ["no_change"]
+
+
+def test_negative_control_the_same_harness_detects_a_book_without_the_recheck(tmp_path, monkeypatch, capsys):
+    """G11's kill: a book whose due check does not call the re-check (the replay before this change) diverges in the
+    first pass - run_once re-checks imf_commodity, the book calls it NOT DUE."""
+    h = Harness(tmp_path, monkeypatch, R)
+    h.book._recheck_due = lambda sid, now, costs=None: False
+    start, p = h.production_pass(100, capsys)
+    r = h.replay_pass(start, 100)
+    assert IMF in p["ran"] and IMF in r["not_due"] and IMF not in r["ran"]
 
 
 def test_negative_control_the_same_harness_detects_the_replays_old_stop_rule(tmp_path, monkeypatch, capsys):
