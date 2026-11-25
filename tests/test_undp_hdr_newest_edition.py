@@ -318,8 +318,10 @@ def test_a_one_value_revision_reads_ok_and_the_csv_phase_derives_that_series(sto
 # ---------------------------------------------------------------- a transient on the CSV stops, nothing merged
 
 @pytest.mark.parametrize("answer", [_Resp(503), _Resp(500), _Resp(429), requests.Timeout("t"),
-                                    requests.ConnectionError("c")],
-                         ids=["503", "500", "429", "timeout", "connection-error"])
+                                    requests.ConnectionError("c"), requests.exceptions.ChunkedEncodingError("x"),
+                                    requests.exceptions.ContentDecodingError("x")],
+                         ids=["503", "500", "429", "timeout", "connection-error", "chunked-mid-download",
+                              "content-decoding"])
 def test_a_transient_newest_csv_stops_and_never_takes_hdr25(store, monkeypatch, answer):
     _pin(monkeypatch, NOV_2026)
     _seed(store, C25)

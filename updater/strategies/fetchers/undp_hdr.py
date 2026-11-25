@@ -282,9 +282,11 @@ def update(unit, since) -> Result:
     fname = url.rsplit("/", 1)[-1]
 
     # 2. Fetch exactly that CSV. A transient stops; any other failure is refused, never an older edition.
+    # ANY requests exception (also ChunkedEncodingError / ContentDecodingError mid-download, which escaped to the
+    # orchestrator as transient_fail "UNEXPECTED:" before) is a transient stop: nothing merged, store unchanged.
     try:
         r = requests.get(url, headers=UA, timeout=120, allow_redirects=True)
-    except (requests.Timeout, requests.ConnectionError) as e:
+    except requests.RequestException as e:
         tally.transient_unit(f"{label}: {type(e).__name__}; nothing merged")
         return finalize(tally, before, None, source=SOURCE)
     if r.status_code in _TRANSIENT_STATUS:
