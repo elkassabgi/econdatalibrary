@@ -5098,45 +5098,69 @@ sources:
   scripts:
   - jobs/ingest_undp_hdr.py
   strategy: overwrite_if_changed
-  strategy_reason: Small annual table; the composite CSV already carries the full 1990-present series so per-obs delta is
-    meaningless — detect a new edition and full-overwrite (cheap), gate on the edition-parameterized composite URL.
+  strategy_reason: 'Small annual table; the composite CSV already carries the full 1990-present series, so a per-obs delta
+    is meaningless. Each due run discovers the newest edition on the downloads page and merges its whole CSV (see
+    out_paths_note for why merge, not overwrite).'
   cadence: annual
   refresh_cost: fast
   out_dir: undp_hdr
   review: true
   adapter:
-    vintage_signal: probe the composite time-series CSV URL with the edition/year parameterized (next edition, e.g. 2024-25)
-      instead of hardcoded 2023-24; re-pull fully on a successful newer edition (optionally Last-Modified on the current composite
-      URL); URLs currently hardcoded to the 2023-24 HDR.
-    since_param: n/a
-    out_paths_note: single file data/clean_full/undp_hdr/undp_hdr.parquet (~1.5MB); keys {indicator}:{ISO3} from composite
-      CSV or {hdi|gdi|gii|ihdi|mpi}:{iso} from annex XLSX.
-    rate_note: no API key; direct HTTPS with custom UA, 120s timeout; annex XLSX path needs openpyxl; brittle multi-URL fallback
-      (0 obs aborts without overwriting, leaving prior file intact).
+    vintage_signal: 'ONE discovery per run (discover(), stored by current_vintage() and taken by update()): GET
+      https://hdr.undp.org/data-center/documentation-and-downloads (its server-rendered HTML carries the links), keep links
+      under https://hdr.undp.org/sites/default/files/ whose basename is exactly HDR<NN>[-<NN>]_Composite_indices_complete_time_series.csv,
+      take the newest by the LAST two-digit group (HDR25 = 2025, HDR23-24 = 2024). ANY page failure (timeout, 403, 503, no
+      matching link, only editions older than the pinned HDR25) uses the pinned HDR25 and makes the run PARTIAL with the
+      reason first; it is never a transient stop. The probe then HEADs the chosen CSV; token "<edition year>:<ETag|Last-Modified|Content-Length>".
+      The token is NOT stored: finalize() stamps date-tail and the fetcher has not opted in to the probe stamp (R1154),
+      so every due run fetches.'
+    since_param: 'n/a for the fetch; update() refuses an edition whose newest hdi:<ISO3> observation year is older than
+      since (or than the store''s); an equal year passes.'
+    out_paths_note: 'single file data/clean_full/undp_hdr/undp_hdr.parquet (~1.5MB); keys {indicator}:{ISO3} from the composite
+      CSV (the store may also hold {hdi|gdi|gii|ihdi|mpi}:{iso} keys from the retired annex-XLSX cold start). MERGED on each
+      edition, not overwritten: an overwrite would remove stored rows UNDP no longer ships, which is the owner''s decision.
+      The merge lets the edition win, refuses an edition with under 95% of the current stored keys (any family with an
+      observation in the store''s hdi:<ISO3> year), counts a revision that adds no row as a revision, and hands the CSV
+      phase the merge-measured changed set (R549). All year rules read the hdi:<ISO3> family only (not aggregates, not
+      the annex name keys). KNOWN LIMITS: a same-year older edition can still merge over a newer one if only the older
+      is reachable (no edition stamp is stored); nothing refreshes the annex name-keyed series.'
+    rate_note: 'no API key; direct HTTPS with custom UA. One GET of the downloads page (60s timeout) per run, and one GET
+      of the chosen composite CSV (120s timeout). A page failure is a pinned PARTIAL (REFUSED instead once the store holds
+      an edition newer than the pinned HDR25). A transient on the CSV (timeout,
+      connection error, 429, 5xx) stops the run with nothing merged; a non-200 or a body that is not a CSV is refused,
+      never a fallback to an older edition.'
     key_env: none
     confidence: medium
-    open_question: Confirm hdr.undp.org's next-edition composite-CSV URL/year naming pattern so edition detection can be parameterized
-      rather than hand-editing BASE_URL/COMPOSITE_URLS/FILES.
+    open_question: 'Edition discovery closed 2026-11-25 (downloads page, newest HDR number). The gap NOTE (reason first,
+      no status demotion: a partial would hide the RED-DATA data clock and re-download every pass, R2209) is written when
+      the merged edition''s hdi:<ISO3> data ends below (UTC run year - 3): HDR23-24 (Last-Modified 2024-03-13) ends 2022
+      and HDR25 (2025-05-05) ends 2023, so before a spring release the newest correct year is run year - 3. It is written
+      only at a run: this annual unit runs at its due date (about 2027-06-20 after the 2026-07-27 success) or by a forced
+      dispatch. STILL OPEN: the annex name-keyed series (hdi/gdi/gii:<country
+      name>, 630 in the catalogue copy of 2026-11-16, all ending 2022) are not refreshed by anything, and were not before
+      this fix either (the old fetcher read only the composite CSV; the old ingester returned when a store existed);
+      their fate is an owner decision.'
   matrix:
     refresh_mechanism:
-    - overwrite-single-file
+    - merge-single-file
     force_refresh_procedure:
-    - 'Delete the output then re-run: rm D:/research/econfindatalibrary/data/clean_full/undp_hdr/undp_hdr.parquet ; python.exe
-      D:/research/econfindatalibrary/jobs/ingest_undp_hdr.py  (guarded by os.path.exists at lines 252-254; no --force). For
-      a new HDR edition you must also edit BASE_URL (line 32), COMPOSITE_URLS (lines 44-48), and the FILES filenames (lines
-      34-41).'
+    - 'Dispatch updater-daily.yml with source=undp_hdr force=true (`gh workflow run updater-daily.yml -f source=undp_hdr -f
+      force=true`), the sanctioned path; never a local `updater.run`, which writes outside CI''s state lineage (R406, R340).
+      The fetcher discovers the newest edition and merges it; no URL edit is needed for a new edition. Do NOT delete the
+      parquet first: the merge needs no clean slate, and an empty store disarms the older-than-store and key-share refusals
+      (only the since refusal stays armed, through the state''s last_obs_date), and the store holds keys the composite
+      does not carry (the annex name keys), which a delete would lose. jobs/ingest_undp_hdr.py runs the same
+      fetcher update() ONLY on a cold start (no store); on an existing store it writes nothing and prints this command.'
     incremental_path:
-    - 'Not feasible as since=last_obs — HDR ships as annual report annex spreadsheets / one composite time-series CSV; no
-      per-obs since param. Best ''incremental'' = edition detection: probe the candidate composite-CSV URL for the next edition
-      (parameterize the year/edition string) and re-pull fully on success. The composite CSV already carries the full 1990-present
-      time series, so a full re-pull is cheap.'
+    - 'Not feasible as since=last_obs: HDR ships one composite time-series CSV per edition; no per-obs since param. Each due
+      run fetches the newest discovered edition''s whole CSV and merges it.'
     keys_or_blockers:
-    - NONE. No API key. Direct HTTPS download from hdr.undp.org with custom UA, 120s timeout. Requires openpyxl (XLSX path)
-      — imported lazily inside ingest_annex_xlsx. Fragile to URL changes (the script self-documents 'endpoints may have changed').
+    - NONE. No API key. Direct HTTPS download from hdr.undp.org with custom UA. Discovery depends on the downloads page
+      linking the composite CSV in its server-rendered HTML; when it does not, the run is PARTIAL on the pinned HDR25.
     storage_layout:
     - 'single parquet: data/clean_full/undp_hdr/undp_hdr.parquet (~1.5 MB). Schema: series_key (string), obs_date date32 (Dec
-      31 of year), value float64. Keys: {indicator}:{ISO3} from composite CSV, or {prefix}:{iso} from annex XLSX (prefixes
-      hdi/gdi/gii/ihdi/mpi).'
+      31 of year), value float64. Keys: {indicator}:{ISO3} from the composite CSV; hdi_rank_<year> columns are labels and
+      are never stored as a series.'
 - source_id: unesco_dem
   upstream_verified:
     latest_obs: '2025-01-01'
