@@ -481,7 +481,30 @@ def test_the_gap_rule_is_a_note_never_a_demotion(store, monkeypatch, when, gap):
     else:
         assert res.error.startswith(f"newest data gap: the newest FSI year held is 2023; {gap}"), res.error
         assert f"no per-year XLSX after 2023 was listed on {when.date().isoformat()}" in res.error, res.error
-        assert "fsi-2024-rankings" in res.error
+        assert ("on 2026-11-25 FSI 2024 was found only as a Tableau view on /global-data/ (fsi-2024-rankings)"
+                in res.error), res.error
+
+
+def test_p6_a_held_2024_xlsx_is_never_called_tableau_only(store, monkeypatch):
+    """Reviewer probe P6: the store gets a 2024 XLSX (newest held = 2024); the 2024-Tableau clause must not appear."""
+    _pin(monkeypatch, NOV_2026)
+    _seed(store, [2022, 2023])
+    _serve(monkeypatch, {PAGE: _page(f'<a href="{U2024_REL}">', ANCHORS[2023], ANCHORS[2022]),
+                         U2024: _ok(_xlsx(2024)), **_files([2023, 2022])})
+    res = F.update(None, "2023-12-31")
+    assert "newest FSI year held is 2024" in res.error, res.error
+    assert "only as a Tableau view" not in res.error, res.error
+
+
+def test_p7_a_listed_2024_file_that_404s_is_not_also_called_tableau_only(store, monkeypatch):
+    """Reviewer probe P7: a listed 2024 file answers 404; the note says it was not read, and nothing else about 2024."""
+    _pin(monkeypatch, NOV_2026)
+    _seed(store, [2022, 2023])
+    _serve(monkeypatch, {PAGE: _page(f'<a href="{U2024_REL}">', ANCHORS[2023], ANCHORS[2022]),
+                         U2024: _Resp(404, b"<html>404</html>"), **_files([2023, 2022])})
+    res = F.update(None, "2023-12-31")
+    assert "the 2024 file is listed but was not read" in res.error, res.error
+    assert "only as a Tableau view" not in res.error, res.error
 
 
 def test_the_gap_note_carries_the_runs_utc_date(store, monkeypatch):

@@ -54,7 +54,9 @@ GAP RULE (R1300). The 2018-2023 files were uploaded in months 4-7 of their index
 on /global-data/; its placeholder id is epoch-ms 2024-06-19) - month 6 of 2024. The item of 2025-02-18
 (/uploads/2025/02/) is the 2024 REPORT PDF, not data. So a year Y counts as overdue from August of Y: the expected
 newest year is the UTC run year from August, else the run year - 1. On 2026-11-25 the store ends 2023: 2024, 2025
-and 2026 are overdue, and the note says no per-year XLSX exists after 2023 (FSI 2024 only as the Tableau view).
+and 2026 are overdue, and the note says no per-year XLSX after 2023 was listed on the run's UTC date. Only in that
+case (newest held 2023, nothing newer listed) does it add the dated MEASUREMENT "on 2026-11-25 FSI 2024 was found
+only as a Tableau view on /global-data/ (fsi-2024-rankings)"; the run never reads /global-data/ itself.
 
 REVISIONS. The merge reports the keys whose value changed (report_changed_keys): a pass that revises values and
 adds no row books revised_unit (ok, so the CSV phase re-derives, R549), and Result.changed_keys hands the CSV phase
@@ -493,13 +495,19 @@ def _with_reasons(res, sel, missing, newest, now, no_year_col, span=None, listed
         if newest < expected:
             overdue = list(range(newest + 1, expected + 1))
             day = now.date().isoformat()                 # the run's UTC date (now is UTC: _as_utc)
-            seen = (f"the {listed_newest} file is listed but was not read on {day}"
-                    if listed_newest and listed_newest > newest
-                    else f"no per-year XLSX after {newest} was listed on {day}")
+            if listed_newest and listed_newest > newest:
+                seen = f"the {listed_newest} file is listed but was not read on {day}"
+            else:
+                seen = f"no per-year XLSX after {newest} was listed on {day}"
+                if newest == 2023:
+                    # A MEASUREMENT, with its own date - this run never reads /global-data/. Only where it is
+                    # true: the newest held year is 2023 and nothing newer is listed (not when 2024 is held or
+                    # a listed 2024 file was not read).
+                    seen += ("; on 2026-11-25 FSI 2024 was found only as a Tableau view on /global-data/ "
+                             "(fsi-2024-rankings)")
             notes.append(f"newest data gap: the newest FSI year held is {newest}; {_years_text(overdue)} "
                          f"{'is' if len(overdue) == 1 else 'are'} overdue (a year counts as overdue from August of "
-                         f"that year); {seen}; FSI 2024 is published only as a Tableau view on /global-data/ "
-                         f"(fsi-2024-rankings)")
+                         f"that year); {seen}")
     if no_year_col:
         notes.append(f"year(s) {', '.join(no_year_col)}: no Year column, labelled from the file name")
     if demote:
