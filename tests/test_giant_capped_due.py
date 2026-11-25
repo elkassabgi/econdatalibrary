@@ -73,7 +73,7 @@ class _Strategy:
         self.catalog, self.fetch, self.opt_in = catalog, fetch, opt_in
         self.fetched = []
 
-    def is_due(self, unit, us):
+    def is_due(self, unit, us, now=None):        # the production signature (orchestrate._unit_due passes now=)
         return True
 
     def detect_change(self, unit, us):

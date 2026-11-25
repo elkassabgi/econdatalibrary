@@ -1106,8 +1106,14 @@ class UnitBook:
     def __init__(self, cadences: dict, state: dict, runs_rows: list, work: dict, outcome: dict,
                  censored=(), assumed_ok=(), order: str = "production", clocked_extra=(), whole_flow=None,
                  due_from_attempt: bool = False, window_stop=(), retry_queue=None, desktop_lane=None,
-                 ceiling_stop=(), turn_cap=None, work_override=None, csv_step=None, csv_queue=None):
-        """csv_step {source: CsvStep}, csv_queue {source: ids} (2026-11-24, phase B review B1): a STOPPING turn of
+                 ceiling_stop=(), turn_cap=None, work_override=None, csv_step=None, csv_queue=None, recheck=None):
+        """recheck {source: {"entry", "n_units", "obs_vals"}} (2026-11-25, the data-clock re-check): the inputs
+        production's orchestrate.recheck_verdict reads for that source - its registry entry, its unit count and the
+        values health.recency reads for its newest obs. None (the default) = the re-check is OFF, the book's due
+        rule exactly as before; load_unit_book fills it from the copy. THE REPLAY HAS NO PUBLISHER: n never moves,
+        so a covered unit at risk is re-checked at every pass of its window. Its re-check count (self.rechecks) is
+        an UPPER bound on the cost (a publisher that never releases), never a forecast (review C7, the AR-421 trap).
+        csv_step {source: CsvStep}, csv_queue {source: ids} (2026-11-24, phase B review B1): a STOPPING turn of
         such a unit is its fetch walked flow by flow and then run_once's CSV phase (see CsvStep); csv_queue is the
         unit's csv_retry_queue at the start (default 0). Every such turn is logged in self.csv_log.
         ceiling_stop, turn_cap, work_override (2026-11-24, the istat window_stop plan review's C5 simulation):
@@ -1122,10 +1128,14 @@ class UnitBook:
         from updater.strategies.base import Strategy
         from updater.strategies import base
         from updater import orchestrate as orch
+        from updater import health
         from updater.state import StateStore
         self._is_due = Strategy.is_due
         self._base = base
-        self._orch, self._store = orch, StateStore
+        self._orch, self._store, self._health = orch, StateStore, health
+        self.recheck = dict(recheck or {})
+        self.rechecks = Counter()            # turns admitted by the data-clock re-check alone (an UPPER bound)
+        self.recheck_errors = Counter()      # production prints `RE-CHECK HELD ... - error`; counted here
         if order not in ORDERS:
             raise ValueError(f"order must be one of {ORDERS}")
         # The PR 2 extensions (see WHOLE_FLOW above); the defaults are PR #200's model exactly.
@@ -1163,7 +1173,13 @@ class UnitBook:
         self.attempts = Counter()
         self.finished = Counter()
 
-    def is_due(self, sid: str, now: dt.datetime) -> bool:
+    def is_due(self, sid: str, now: dt.datetime, costs: dict | None = None) -> bool:
+        """Production's due check (orchestrate._unit_due): the strategy's rule, or - only when it says no - the
+        data-clock re-check through the SAME orchestrate.recheck_verdict, fed from this book's own runs table.
+        `costs`: the pass-start run_cost_estimate, as run_once reads it (None: read from the book now)."""
+        return self._regular_due(sid, now) or self._recheck_due(sid, now, costs)
+
+    def _regular_due(self, sid: str, now: dt.datetime) -> bool:
         st = self.state[sid]
         if self.due_from_attempt and self._partial_behind_success(st):
             # --due-from-attempt (plan R10.2, istat's demand): production's partial-retry clock, from the attempt,
@@ -1173,6 +1189,24 @@ class UnitBook:
             return b._due_after(min(b.CADENCE_DAYS.get(self.units[sid].cadence, 7), b.PARTIAL_RETRY_DAYS),
                                 st.get("last_attempt_utc"), now)
         return self._is_due(None, self.units[sid], st, now)
+
+    def _recheck_due(self, sid: str, now: dt.datetime, costs: dict | None = None) -> bool:
+        """orchestrate.recheck_verdict on the book's inputs. Off (False) without recheck inputs for `sid`; a
+        missing entry or n is not covered; an exception is False, as _unit_due's catch makes it in production."""
+        rc, st, u = self.recheck.get(sid), self.state[sid], self.units[sid]
+        if not rc or not st.get("last_success_utc") or u.cadence != self._orch.RECHECK_CADENCE:
+            return False
+        try:
+            if costs is None:
+                costs = self._store.run_cost_estimate(_StoreShim(self.db))
+            entry = rc.get("entry")
+            return self._orch.recheck_verdict(
+                u, st, entry, rc.get("n_units", 0), costs.get(sid),
+                lambda: self._orch.recent_run_statuses(self.db, sid, u.unit_id),
+                lambda: self._health.recency(entry, rc.get("obs_vals") or [], now)[1], now)[0]
+        except Exception:                                  # noqa: BLE001 - production: RE-CHECK HELD ... - error
+            self.recheck_errors[sid] += 1
+            return False
 
     @staticmethod
     def _partial_behind_success(st: dict) -> bool:
@@ -1399,10 +1433,12 @@ class UnitBook:
                 budget_skipped.append((sid, need))
                 drain_ok.setdefault(sid, []).append(u)     # G1 (#213)
                 continue                                   # BUDGET SKIP
-            if not self.is_due(sid, t_unit):
+            if not self.is_due(sid, t_unit, costs=costs):
                 not_due.append(sid)
                 drain_ok.setdefault(sid, []).append(u)
                 continue                                   # NOT DUE
+            if not self._regular_due(sid, t_unit):
+                self.rechecks[sid] += 1                    # due by the data-clock re-check alone (upper bound)
             self.attempts[sid] += 1
             drain_block.add((sid, u.key))                  # lifted below only by a no_change or a non-turn
             R = self.remaining[sid]
@@ -1542,6 +1578,39 @@ class UnitBook:
 CENSORED_BOUNDS = ("newest", "kills", "tightest")
 
 
+def _recheck_inputs(con, srcs, cadences, shift) -> dict:
+    """UnitBook's `recheck` inputs from a state copy (2026-11-25): for each source that is monthly-scheduled and has
+    a registry entry (production registry.load(), the dict run_once keeps), its entry, its unit count
+    (registry.to_units) and the values health.observed_values reads - its series cursors and its units'
+    last_obs_date - moved by `shift` like every stamp here, so n keeps its place relative to the moved state.
+    Another source gets no inputs, which the book reads as not covered, as production's recheck_verdict does."""
+    from updater import health, registry
+    reg = {e["source_id"]: e for e in ((registry.load() or {}).get("sources") or [])
+           if isinstance(e, dict) and e.get("source_id")}
+    has = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    out = {}
+    for sid in srcs:
+        e = reg.get(sid)
+        if e is None or cadences.get(sid) != "monthly":
+            continue
+        cursors = {k: v for k, v in con.execute(
+            "SELECT series_key, last_obs_date FROM series_cursor WHERE source_id=?", (sid,))} \
+            if "series_cursor" in has else {}
+        units = [{"last_obs_date": v} for (v,) in con.execute(
+            "SELECT last_obs_date FROM unit_state WHERE source_id=?", (sid,))] if "unit_state" in has else []
+        vals = health.observed_values(units, cursors)
+        if shift:
+            vals = [_shift_obs(v, shift) for v in vals]
+        out[sid] = {"entry": e, "n_units": len(registry.to_units(e)), "obs_vals": vals}
+    return out
+
+
+def _shift_obs(v, shift):
+    """An obs_date (a bare YYYY-MM-DD is midnight UTC, as health reads it) moved by `shift`; unreadable: as is."""
+    d = _stamp_or_none(f"{v}T00:00:00+00:00" if len(str(v)) == 10 else v)
+    return _iso(d + shift) if d is not None else v
+
+
 def load_unit_book(db_path: str, copy_utc: dt.datetime, shift: dt.timedelta, cadences: dict | None = None,
                    desktop_windows: list | None = None, censored_bound: str = "newest",
                    censored_mult: float = 1.0, window_stop=None, **book_kw) -> UnitBook:
@@ -1624,6 +1693,8 @@ def load_unit_book(db_path: str, copy_utc: dt.datetime, shift: dt.timedelta, cad
         queue = {sid: (n, mv(lo)) for sid, n, lo in con.execute(
             f"SELECT source_id, COUNT(*), MIN(enqueued_utc) FROM csv_retry_queue WHERE source_id IN ({q}) "
             f"GROUP BY source_id", srcs)}
+    if "recheck" not in book_kw:
+        book_kw["recheck"] = _recheck_inputs(con, srcs, cadences, shift)
     con.close()
     ws = local_window_stop_from_registry() if window_stop is None else frozenset(window_stop)
     # registry desktop_lane (review AR-467), read through production registry.to_units; book_kw may override it
@@ -2187,6 +2258,9 @@ def replay_metrics(rp: Replay, owed_start: float, due_start: list, cfg: ReplayCo
                 "min_attempts": min(att.values()) if att else 0,
                 "never_finished": sorted(s for s, n in fin.items() if n == 0),
                 "attempts": att, "finished": fin})
+    # THE DATA-CLOCK RE-CHECK'S TURNS (2026-11-25): an UPPER bound - the replay has no publisher, so n never moves
+    # and a covered unit at risk is re-checked through its whole window (review C7). Never quote it as a forecast.
+    out["clock_rechecks_upper_bound"] = dict(getattr(rp.book, "rechecks", None) or {})
     out["drains"] = owed_end < owed_start and not out["never_finished"]
     out["cloud_ge2"] = all(out[wf]["runs_day"] >= 2.0 for wf in g.WRITERS)
     # THE DEFAULT FLOOR IS EACH WRITER'S OWN CRON COUNT A DAY (review AR-426). It was a literal 2.0, which was every
@@ -2474,6 +2548,9 @@ def cmd_replay61(args):
             m = replay_metrics(rp, owed0, due0, replace(cfg, cloud_floor=fl))
             rows.append(m)
             print(_fmt_row(m), flush=True)
+            if m["clock_rechecks_upper_bound"]:
+                print(f"    data-clock re-check turns {m['clock_rechecks_upper_bound']} - an UPPER bound: the replay "
+                      f"has no publisher, so n never moves and the re-check fires through its whole window", flush=True)
     if args.json:
         with open(args.json, "w", encoding="utf-8") as f:
             json.dump([{k: v for k, v in m.items() if k != "_replay"} for m in rows], f, indent=1, default=str)
