@@ -109,6 +109,8 @@ def rig(tmp_path, monkeypatch):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("AQUEDUCT_BUDGET_MIN_OVERRIDE", "360")
     monkeypatch.setenv("AQUEDUCT_ISTAT_MARGIN_MIN", "5")
+    # PR #326's clamp arithmetic, without PR #327's CSV allowance (tests/test_istat_window_stop.py pins that)
+    monkeypatch.setenv("AQUEDUCT_ISTAT_CSV_S_PER_FLOW", "0")
     monkeypatch.setattr(istat.config, "source_dir", lambda sid: str(out))
     monkeypatch.setattr(istat, "time", clock)
     monkeypatch.setattr(_common, "time", clock)

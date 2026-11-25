@@ -114,6 +114,16 @@ structural break raises DefinitiveError; existing data is always preserved by me
 NOTE: this is a LARGE source (~755 flows). The year date-tail keeps each request tiny
 (only new periods), but the orchestrator run processes ALL flows. series_cursors carry
 each flow's max obs_date so a frozen flow can't hide behind the unit-level max.
+
+WINDOW STOP (registry `window_stop: true`, 2026-11-24; plan review R2100, VERDICT_planA). update()
+stops at the pass's run ceiling, or at its per-turn cap (AQUEDUCT_ISTAT_TURN_MAX_MIN): no flow starts
+within margin + max(2 x the longest flow, FLOW_FLOOR_S) of it, and every GET is clamped to end by
+that point minus the margin. The start gate reserves window_admission_reserve_min() = margin 5 (chosen)
++ FLOW_FLOOR_S 15.2 + setup 1 (chosen) = 21.2 min, not the latest real run. Result.window_stop is set
+only by those stops: "none" when no flow was started (a non-turn, a `window_stopped` row), else
+"progress". The every-host-dead break, the budget stop and the end of the list leave it None, so an
+ISTAT outage stays a recorded `partial` turn. A structural flow no longer loses the run's hand-over:
+the run returns `partial` WITH the cursors of every walked flow (ROUTE B, as census).
 ```
 
 </details>

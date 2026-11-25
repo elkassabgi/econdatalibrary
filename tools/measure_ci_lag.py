@@ -1067,6 +1067,31 @@ def local_window_stop_from_registry(path: str | None = None) -> frozenset:
                      for u in registry.to_units(e) if (u.config or {}).get("window_stop") is True)
 
 
+@dataclass
+class CsvStep:
+    """THE CSV PHASE AFTER A FLOW-WALKING FETCHER'S TURN (2026-11-24, phase B review B1 of the istat window_stop PRs).
+    Without it the replay booked a stopped istat turn as its fetch alone (limit - tail), so a cap-60 turn read 39.8
+    min while in production run_once then derived the walked flows' CSVs and drained the unit's retry queue - two
+    45-min budgets on 2026-10-24 and 10-25 (logs/local_heavy_updater_20261024-214510.log, 20261025-220113.log).
+
+    The fetch is walked FLOW BY FLOW, each `flow_s` seconds, with the fetcher's own stop rule before each flow:
+    start one only while the time left to the window end is at least its tail + (flows handed over so far) x
+    `alloc_s` (istat's CSV allowance; 0 = none). Every walked flow hands over `ids_per_flow` catalogue ids. Then the
+    CSV phase as run_once runs it: the fresh derive with budget max(0.05, min(`derive_cap_min`, time left)) at
+    `ids_per_min`, the ids it does not reach DEFERRED to the unit's queue; then the in-loop retry drain of the ids
+    queued BEFORE this turn, with the same budget rule. "time left" is to the run ceiling, and with `turn_bound`
+    (Result.turn_end_ts, orchestrate._UNIT_TURN_END_TS) to the EARLIER of the run ceiling and the turn's own end
+    (its per-turn cap). Integer ids, as production: a budget that runs out derives floor(budget x rate) ids.
+    NOT modelled: the leftover drain after the unit loop never drains this queue (a lower bound on the drain, an
+    upper bound on the queue); the csv fence (no SIGALRM on the workstation); the derive's per-id spread."""
+    flow_s: float
+    ids_per_flow: float
+    ids_per_min: float
+    alloc_s: float = 0.0
+    turn_bound: bool = False
+    derive_cap_min: float = 45.0
+
+
 class UnitBook:
     """The owed work of the local units, advanced pass by pass with the production scheduling rules.
 
@@ -1080,7 +1105,20 @@ class UnitBook:
 
     def __init__(self, cadences: dict, state: dict, runs_rows: list, work: dict, outcome: dict,
                  censored=(), assumed_ok=(), order: str = "production", clocked_extra=(), whole_flow=None,
-                 due_from_attempt: bool = False, window_stop=(), retry_queue=None, desktop_lane=None):
+                 due_from_attempt: bool = False, window_stop=(), retry_queue=None, desktop_lane=None,
+                 ceiling_stop=(), turn_cap=None, work_override=None, csv_step=None, csv_queue=None):
+        """csv_step {source: CsvStep}, csv_queue {source: ids} (2026-11-24, phase B review B1): a STOPPING turn of
+        such a unit is its fetch walked flow by flow and then run_once's CSV phase (see CsvStep); csv_queue is the
+        unit's csv_retry_queue at the start (default 0). Every such turn is logged in self.csv_log.
+        ceiling_stop, turn_cap, work_override (2026-11-24, the istat window_stop plan review's C5 simulation):
+          ceiling_stop  UNDECLARED units whose fetcher nevertheless stops at the run ceiling by its own rule (istat
+                        since PR #325, before its declaration): admitted and ordered as undeclared units (their
+                        latest real run, the decay), stopped as a declared unit stops (its fetcher's tail), and the
+                        stop is a `partial` turn with dur = minutes used, progress or not (no window_stop signal);
+          turn_cap      {source: minutes}: the fetcher's per-turn cap - the turn ends as at a run ceiling that many
+                        minutes after it started (istat's AQUEDUCT_ISTAT_TURN_MAX_MIN), for a clocked unit only;
+          work_override {source: minutes}: the remaining work when the copy cannot give it (istat's rotation is
+                        longer than any pass, and its long runs end `partial`)."""
         from updater.strategies.base import Strategy
         from updater.strategies import base
         from updater import orchestrate as orch
@@ -1104,7 +1142,15 @@ class UnitBook:
                       for s, c in sorted(cadences.items())}
         self.state = {s: dict(state.get(s) or {}) for s in self.units}
         self.work = {s: float(work.get(s, 0.0)) for s in self.units}
+        for s, v in (work_override or {}).items():
+            if s in self.work:
+                self.work[s] = float(v)
         self.remaining = dict(self.work)
+        self.ceiling_stop = frozenset(ceiling_stop or ()) - ws
+        self.turn_cap = {s: float(v) for s, v in (turn_cap or {}).items() if v}
+        self.csv_step = {s: v for s, v in (csv_step or {}).items() if s in self.units}
+        self.csv_queue = {s: int((csv_queue or {}).get(s, 0)) for s in self.csv_step}
+        self.csv_log: list = []
         self.outcome = {s: outcome.get(s, "ok") for s in self.units}
         self.censored, self.assumed_ok = set(censored), set(assumed_ok)
         self.db = sqlite3.connect(":memory:")
@@ -1180,15 +1226,71 @@ class UnitBook:
         kept = piece * math.floor(window / piece + 1e-9)
         return (kept if kept > 0 else window), kept
 
+    def _csv_turn(self, sid: str, limit: float, e: float, budget_min: float, start=None) -> tuple:
+        """(minutes used, minutes of fetch kept) for a STOPPING turn of a unit with a CsvStep, starting `e` minutes
+        into a pass of `budget_min`, `limit` minutes before its window end (the run ceiling, or its per-turn cap):
+        the fetch flow by flow to the fetcher's stop rule, then run_once's CSV phase (CsvStep's docstring). A
+        declared unit that started no flow is a non-turn: no CSV phase (run_once skips it), used 0."""
+        cs = self.csv_step[sid]
+        tail, _piece, _src = self.stop_figures(sid)
+        tail = self._tail_default if tail is None else tail
+        win_s, rest_s = limit * 60.0, self.remaining[sid] * 60.0
+        t = 0.0
+        n = 0
+        while win_s - t >= tail * 60.0 + n * cs.alloc_s and t + cs.flow_s <= rest_s:
+            t += cs.flow_s                     # the stop check passed: one more flow, handed over at the end
+            n += 1
+        fetch = t / 60.0
+        row = {"t": None if start is None else _iso(start + dt.timedelta(minutes=e)), "sid": sid, "flows": n,
+               "fetch_min": fetch, "ids": 0, "fresh_min": 0.0, "fresh_done": 0, "deferred": 0, "drain_min": 0.0,
+               "drained": 0, "queue_before": self.csv_queue.get(sid, 0)}
+        if n == 0 and self._declared(sid):
+            row["queue_after"] = row["queue_before"]
+            self.csv_log.append(row)
+            return 0.0, 0.0
+        capped = sid in self.turn_cap and self.turn_cap[sid] < budget_min - e
+        turn_end = e + self.turn_cap[sid] if (cs.turn_bound and capped) else None
+        rate = cs.ids_per_min
+
+        def budget(at: float) -> float:
+            # orchestrate._capped_derive_budget at minute `at`: max(0.05, min(cap, time left)), time left to the run
+            # ceiling or, turn-bound, to the earlier of it and the turn's own end (_remaining_run_min)
+            rem = budget_min - at if turn_end is None else min(budget_min - at, turn_end - at)
+            return max(0.05, min(cs.derive_cap_min, max(0.0, rem)))
+
+        def derive(ids: int, at: float) -> tuple:
+            # (minutes, ids done) of one derive_and_put call over `ids` with the budget at minute `at`
+            if ids <= 0:
+                return 0.0, 0
+            b = budget(at)
+            if ids / rate <= b:
+                return ids / rate, ids
+            return b, min(ids, int(math.floor(b * rate + 1e-9)))
+
+        g = int(math.floor(n * cs.ids_per_flow + 1e-9))
+        u1, d1 = derive(g, e + fetch)
+        q = self.csv_queue.get(sid, 0)
+        u2, d2 = derive(min(q, self._orch._CSV_RETRY_CAP), e + fetch + u1)   # the in-loop drain: OLD ids only
+        self.csv_queue[sid] = q - d2 + (g - d1)                               # then this turn's deferrals queue
+        row.update(ids=g, fresh_min=u1, fresh_done=d1, deferred=g - d1, drain_min=u2, drained=d2,
+                   queue_after=self.csv_queue[sid], turn_end=turn_end)
+        self.csv_log.append(row)
+        return fetch + u1 + u2, fetch
+
     def _clocked(self, sid: str, w_on: bool) -> bool:
         # A DECLARED unit stops at the run ceiling in production today (its fetcher reads _RUN_DEADLINE_TS, PRs
         # #205-#211, declared by #215), so it is clocked whether or not W is on. W on adds the plan's candidates.
-        return self._declared(sid) or (w_on and (sid in W_CLOCKED or sid.startswith(W_CLOCKED_PREFIX)
-                                                 or sid in self.clocked_extra))
+        # A ceiling_stop unit's fetcher stops at the ceiling too (undeclared: istat after #325, before declaring).
+        return self._declared(sid) or sid in self.ceiling_stop or (
+            w_on and (sid in W_CLOCKED or sid.startswith(W_CLOCKED_PREFIX) or sid in self.clocked_extra))
+
+    def _stops_by_fetcher(self, sid: str) -> bool:
+        """Stops by ITS FETCHER's rule (_declared_stop): a declared unit or a ceiling_stop one."""
+        return self._declared(sid) or sid in self.ceiling_stop
 
     def _resumable(self, sid: str) -> bool:
-        return (self._declared(sid) or sid in W_CLOCKED or sid.startswith(W_CLOCKED_PREFIX)
-                or sid in self.clocked_extra)
+        return (self._declared(sid) or sid in self.ceiling_stop or sid in W_CLOCKED
+                or sid.startswith(W_CLOCKED_PREFIX) or sid in self.clocked_extra)
 
     def _kept(self, sid: str, minutes: float) -> float:
         """Progress a stop keeps out of `minutes` of update window: all of it, or for a whole-flow source only the
@@ -1306,6 +1408,8 @@ class UnitBook:
             R = self.remaining[sid]
             clocked = self._clocked(sid, w_on)
             limit = budget_min - e if clocked else stop_min - e
+            if clocked and sid in self.turn_cap:
+                limit = min(limit, self.turn_cap[sid])     # the per-turn cap is this turn's own ceiling
             if R <= limit:
                 e += R
                 t_end = start + dt.timedelta(minutes=e)
@@ -1325,7 +1429,11 @@ class UnitBook:
                 continue
             t_end = start + dt.timedelta(minutes=e + limit)
             if clocked:
-                if self._declared(sid):
+                if self._stops_by_fetcher(sid) and sid in self.csv_step:
+                    # a flow-walking fetcher with its CSV phase modelled (CsvStep): fetch to its stop rule, flow by
+                    # flow, then run_once's derive and retry drain; `used` is the whole turn, `kept` the fetch
+                    used, kept = self._csv_turn(sid, limit, e, budget_min, start)
+                elif self._stops_by_fetcher(sid):
                     # the FETCHER's own stop rule (_declared_stop): it returns at its stop point, before the
                     # ceiling, and the pass goes on with the next unit
                     used, kept = self._declared_stop(sid, limit)
@@ -1340,8 +1448,10 @@ class UnitBook:
                     drain_block.discard((sid, u.key))      # nothing touched its store: a drain candidate (#215)
                     drain_ok.setdefault(sid, []).append(u)
                 else:
-                    # a declared unit's progressing stop is its fetcher's `partial`; an undeclared one times out
-                    status = "partial" if self._declared(sid) else "transient_fail"
+                    # a declared unit's progressing stop is its fetcher's `partial`, and so is EVERY stop of a
+                    # ceiling_stop unit (no window_stop signal: run_once records the partial); an undeclared
+                    # clocked one (W on) times out
+                    status = "partial" if self._stops_by_fetcher(sid) else "transient_fail"
                     self.state[sid]["last_attempt_utc"], self.state[sid]["status"] = _iso(t_end), status
                     self._row(t_end, sid, status, used)
                     ran.append((sid, used, "stopped"))

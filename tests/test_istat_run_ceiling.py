@@ -134,6 +134,8 @@ def rig(tmp_path, monkeypatch):
     monkeypatch.delenv("ISTAT_BUDGET_MIN", raising=False)
     monkeypatch.setenv("AQUEDUCT_BUDGET_MIN_OVERRIDE", "360")      # what run_local_heavy.ps1 sets
     monkeypatch.setenv("AQUEDUCT_ISTAT_MARGIN_MIN", str(MARGIN_MIN))
+    # PR #325's stop arithmetic, without PR #327's CSV allowance (tests/test_istat_window_stop.py pins that)
+    monkeypatch.setenv("AQUEDUCT_ISTAT_CSV_S_PER_FLOW", "0")
     monkeypatch.setattr(istat.config, "source_dir", lambda sid: str(out))
     monkeypatch.setattr(istat, "time", clock)
     monkeypatch.setattr(_common, "time", clock)                    # Deadline reads the same clock

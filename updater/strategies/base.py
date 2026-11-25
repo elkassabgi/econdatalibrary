@@ -211,6 +211,12 @@ class Result:
     # It is not upstream_vintage: a partial does not advance that, although its bookings are in the state.
     # None (default) = nothing is written.
     build_receipt: str | None = None
+    # A UNIT'S OWN TURN END (2026-11-24, phase B review B1 of the istat window_stop PRs). The epoch time at which
+    # the FETCHER's own per-turn cap ends this turn (istat's AQUEDUCT_ISTAT_TURN_MAX_MIN), set only when that is
+    # earlier than the run ceiling. run_once bounds this unit's whole CSV phase by it exactly as by the run ceiling
+    # (orchestrate._remaining_run_min: the fresh derive's budget, the csv fence, the retry drain), so the cap bounds
+    # the TURN, not only update(). None (default): the run ceiling alone, as before.
+    turn_end_ts: float | None = None
 
 
 def cadence_due(cadence: str, last_success_utc: str | None, now: datetime | None = None) -> bool:
