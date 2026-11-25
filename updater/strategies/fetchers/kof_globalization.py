@@ -23,13 +23,30 @@ HOW LOUD (each rule is pinned in tests/test_kof_globalization_newest_edition.py)
   * a transient answer (timeout, connection error, 429, 5xx) for ANY year STOPS the walk with nothing merged.
     An older edition must never stand in for one we could not judge: the merge lets incoming rows win, so it
     would overwrite the newer edition's revisions;
-  * no year answers -> structural (DefinitiveError, existing data kept), so a human resolves the URL;
+  * no year answers -> refused (DefinitiveError, existing data kept), so a human resolves the URL;
   * the chosen edition fails to parse, or parses 0 rows -> structural, with the error named. Never a fallback
     to an older year;
   * the chosen edition's newest year is older than the store's newest year or than `since`, or it carries
-    under 95% of the stored keys -> structural, nothing merged: an older file or an id fork;
+    under 95% of the CURRENT stored keys -> refused, nothing merged: an older file or an id fork. "Current"
+    means the keys with an observation in the store's newest year (the keys the last merged edition carried).
+    Every key ever stored would be the wrong denominator: the merge never removes a key, so each edition that
+    drops some would lower every later share for good;
   * the merged edition's year is below (UTC run year - 1) -> PARTIAL, naming the gap (R1300): the newer
     edition is missing, or it is at a URL this module does not know.
+A REFUSAL puts its reason FIRST in the error (the digest shows 72 characters) and ends with a "1/1 sub-unit(s)
+REFUSED" clause, which health's stuck alarm reads to count the run as failed. Only the 0-row and parse-error
+exits keep finalize()'s "returned 200 but parsed 0 rows", because only there it is true.
+
+Every merged pass hands the orchestrator the MERGE-MEASURED changed set (Result.changed_keys), so the CSV
+phase re-derives exactly the series whose served values changed. Without it a gap partial (no change, but a
+partial is due on every pass) re-derived every kof series on every pass (review F1).
+
+KNOWN LIMIT, NOT GUARDED (review F5). The older-edition refusal compares observation years, because the store
+records no edition stamp. If a newer edition ends in the SAME year as an older one and its URL later reads gone
+(403, soft-404, moved file), the walk takes the older file and merges it over the newer revisions, status ok.
+Refusing such a tie when its merge changes values would also refuse KOF's own corrected re-issue of the current
+edition (the revision path below), and the two cannot be told apart without an edition stamp. A sidecar that
+records the merged edition year, read back through blob at the parquet's path, would close it (follow-up).
 
 MERGE, NOT OVERWRITE. The whole panel is re-estimated, so an overwrite looks natural, but it REMOVES stored
 rows that KOF no longer ships, and removing stored rows is the owner's decision. The merge keeps them, lets the
@@ -55,6 +72,7 @@ import pyarrow.compute as pc
 import requests
 
 from ... import config, blob, merge
+from ...errors import DefinitiveError
 from ._common import Tally, finalize
 from ._vintage import UA
 
@@ -246,13 +264,29 @@ def _series_maxes(tbl):
 
 
 def _stored(path):
-    """(newest stored obs_date, set of stored series keys); (None, empty set) when there is no store."""
+    """(newest stored obs_date, the CURRENT stored keys); (None, empty set) when there is no store.
+
+    Current = keys with an observation in the store's newest year: the keys the last merged edition carried.
+    A key an older edition dropped stays in the store (the merge never removes one) but is not current, so it
+    cannot lower the key share of every later edition."""
     if not blob.exists(path):
         return None, set()
     t = blob.read_table(path, columns=["series_key", "obs_date"])
     if t.num_rows == 0:
         return None, set()
-    return pc.max(t.column("obs_date")).as_py(), set(t.column("series_key").to_pylist())
+    newest = pc.max(t.column("obs_date")).as_py()
+    if newest is None:
+        return None, set()
+    current = t.filter(pc.equal(pc.year(t.column("obs_date")), newest.year))
+    return newest, set(current.column("series_key").to_pylist())
+
+
+def _refuse(label: str, reason: str):
+    """Raise a structural refusal with the REASON FIRST: the digest shows the first 72 characters, and
+    finalize()'s "returned 200 but parsed 0 rows" would be false here. The closing "1/1 sub-unit(s) REFUSED"
+    clause is the grammar health's stuck alarm reads (_STUCK_ALL_FAILED) to count the run as failed."""
+    raise DefinitiveError(f"{SOURCE}: {reason}; nothing merged, existing data kept "
+                          f"(1/1 sub-unit(s) REFUSED by the fetcher [{label}])")
 
 
 def _year_of(since):
@@ -288,8 +322,7 @@ def update(unit, since) -> Result:
         misses.append(f"{y}: {got}")
     if data is None:
         span = f"{years[0]}..{years[-1]}" if years else f"none (UTC run year {run_year})"
-        tally.structural_unit(f"no year-stamped edition answers for {span} ({'; '.join(misses)})")
-        return finalize(tally, before, None, source=SOURCE)   # raises DefinitiveError
+        _refuse(span, f"no year-stamped edition answers for {span} ({'; '.join(misses)})")
 
     # 2. Parse it. Any parse error, or 0 rows, is structural; never a fallback to an older year.
     label = f"{year} edition"
@@ -307,23 +340,23 @@ def update(unit, since) -> Result:
         tally.structural_unit(f"{label}: the xlsx parsed 0 rows (sheet layout changed?); no fallback")
         return finalize(tally, before, None, source=SOURCE)
 
-    # 3. Refuse an edition older than what we hold, and an id fork.
+    # 3. Refuse an edition older than what we hold, and an id fork. Reason first (see _refuse).
     newest = pc.max(tbl.column("obs_date")).as_py()
-    stored_newest, stored_keys = _stored(path)
+    stored_newest, current_keys = _stored(path)
     refuse = []
     if stored_newest is not None and newest.year < stored_newest.year:
-        refuse.append(f"its newest year {newest.year} is older than the store's {stored_newest.year}")
+        refuse.append(f"is older than the store (its newest year {newest.year} < the store's "
+                      f"{stored_newest.year})")
     since_year = _year_of(since)
     if since_year is not None and newest.year < since_year:
-        refuse.append(f"its newest year {newest.year} is older than since {since}")
-    if stored_keys:
-        share = len(stored_keys & set(keys)) / len(stored_keys)
+        refuse.append(f"is older than since (its newest year {newest.year} < since {since})")
+    if current_keys:
+        share = len(current_keys & set(keys)) / len(current_keys)
         if share < _MIN_KEY_SHARE:
-            refuse.append(f"it carries {share:.1%} of the {len(stored_keys):,} stored keys "
-                          f"(floor {_MIN_KEY_SHARE:.0%}; an id fork)")
+            refuse.append(f"is an id fork (it holds {share:.1%} of the {len(current_keys):,} stored keys current "
+                          f"in {stored_newest.year}; floor {_MIN_KEY_SHARE:.0%})")
     if refuse:
-        tally.structural_unit(f"{label} refused, nothing merged: " + "; ".join(refuse))
-        return finalize(tally, before, None, source=SOURCE)
+        _refuse(label, "; ".join(f"{label} {r}" for r in refuse))
 
     # 4. Merge, and count a revision that adds no row as a revision (R549).
     n, md, changed = merge.merge_and_write(path, tbl, mode="merge", dedup_keys=DEDUP, report_changed_keys=True)
@@ -335,6 +368,9 @@ def update(unit, since) -> Result:
     else:
         tally.empty_unit(label)
     res = finalize(tally, n, md, source=SOURCE, series_cursors=_series_maxes(tbl))
+    # The merge-measured changed set: the CSV phase derives exactly these ids ({} = nothing changed, also on a
+    # gap partial, which is due on every pass). Without it the phase takes every cursor key (review F1).
+    res.changed_keys = changed
 
     # 5. A newest edition below (UTC run year - 1) is a gap, recorded as partial (R1300).
     fname = f"KOFGI_{year}_public.xlsx"

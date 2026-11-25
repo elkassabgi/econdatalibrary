@@ -231,6 +231,7 @@ def test_a_2026_edition_is_fetched_and_its_values_land(store, monkeypatch):
     assert cells[(PLANT_KEY, PLANT_DATE)] == PLANT_VALUE   # a value only the 2026 edition holds
     assert cells[("KOF:KOFGI:DEU", dt.date(2023, 12, 31))] == _v(1, 2023, 0, 0.25)  # the revision won
     assert "edition 2026 (KOFGI_2026_public.xlsx)" in res.error
+    assert PLANT_KEY in res.changed_keys and len(res.changed_keys) == 12   # every key revised or extended
 
 
 def test_control_only_2025_answers_so_2025_is_fetched(store, monkeypatch):
@@ -242,6 +243,7 @@ def test_control_only_2025_answers_so_2025_is_fetched(store, monkeypatch):
     assert res.status == "no_change", (res.status, res.error)
     assert "edition 2025 (KOFGI_2025_public.xlsx)" in res.error
     assert (PLANT_KEY, PLANT_DATE) not in _cells(store)
+    assert res.changed_keys == {}
 
 
 def test_an_empty_store_takes_the_newest_edition(store, monkeypatch):
@@ -299,11 +301,24 @@ def test_a_soft_404_for_one_year_is_not_an_edition(store, monkeypatch):
     assert K.current_vintage(None).startswith("2025:")
 
 
+def _opening(exc_info) -> str:
+    """What the digest shows of a stored error (send_digest: err=...[:72])."""
+    return str(exc_info.value)[:72]
+
+
+def _stuck_alarm_counts_it_failed(exc_info) -> bool:
+    from updater import health
+    return health._stuck_class("partial", str(exc_info.value)) == "fail"
+
+
 def test_a_soft_404_for_every_year_is_structural(store, monkeypatch):
     _pin(monkeypatch, EVE_2026)
     _serve(monkeypatch, Site(**{f"y{y}": SOFT_404 for y in (2027, 2026, 2025, 2024)}))
-    with pytest.raises(DefinitiveError, match="no year-stamped edition answers for 2027..2024.*not an xlsx"):
+    with pytest.raises(DefinitiveError, match="no year-stamped edition answers for 2027..2024.*not an xlsx") as e:
         K.update(None, None)
+    assert _opening(e).startswith("kof_globalization: no year-stamped edition answers for 2027..2024"), _opening(e)
+    assert "parsed 0 rows" not in str(e.value)
+    assert _stuck_alarm_counts_it_failed(e)
     assert K.current_vintage(None) is None
     assert not store.exists()
 
@@ -355,16 +370,22 @@ def test_an_edition_older_than_the_store_is_refused(store, monkeypatch):
     _seed(store, ED_2026)                              # newest stored year 2024
     before = store.read_bytes()
     _serve(monkeypatch, Site(y2025=_ok(_xlsx(ED_2025))))   # the 2026 URL is gone; 2025 (to 2023) answers
-    with pytest.raises(DefinitiveError, match="older than the store's 2024"):
+    with pytest.raises(DefinitiveError, match=r"the store's 2024\)") as e:
         K.update(None, None)
+    assert _opening(e).startswith("kof_globalization: 2025 edition is older than the store"), _opening(e)
+    assert "parsed 0 rows" not in str(e.value)
+    assert _stuck_alarm_counts_it_failed(e)
     assert store.read_bytes() == before
 
 
 def test_an_edition_older_than_since_is_refused(store, monkeypatch):
     _pin(monkeypatch, NOV_2026)
     _serve(monkeypatch, Site(y2025=_ok(_xlsx(ED_2025))))
-    with pytest.raises(DefinitiveError, match="older than since 2024-12-31"):
+    with pytest.raises(DefinitiveError, match=r"since 2024-12-31\)") as e:
         K.update(None, "2024-12-31")
+    assert _opening(e).startswith("kof_globalization: 2025 edition is older than since"), _opening(e)
+    assert "parsed 0 rows" not in str(e.value)
+    assert _stuck_alarm_counts_it_failed(e)
     assert not store.exists()
 
 
@@ -374,9 +395,68 @@ def test_an_id_fork_is_refused(store, monkeypatch):
     before = store.read_bytes()
     forked = _xlsx(ED_2026, header=("code", "country", "year", "KOFGI_new", "KOFEcGI_new"))
     _serve(monkeypatch, Site(y2026=_ok(forked)))
-    with pytest.raises(DefinitiveError, match=r"0\.0% of the 12 stored keys"):
+    with pytest.raises(DefinitiveError, match=r"0\.0% of the 12 stored keys current in 2023") as e:
         K.update(None, "2023-12-31")
+    assert _opening(e).startswith("kof_globalization: 2026 edition is an id fork"), _opening(e)
+    assert "parsed 0 rows" not in str(e.value)
+    assert _stuck_alarm_counts_it_failed(e)
     assert store.read_bytes() == before
+
+
+# The key floor's boundary and its denominator (review F4, F6): 25 countries x 2 columns = 50 current keys.
+WIDE = [(f"C{i:02d}", f"Country {i:02d}") for i in range(1, 26)]
+
+
+def _wide_rows(last_year, drop_second_col_for=0):
+    """The 2025-style edition over WIDE; the KOFEcGI column is blank for the first `drop_second_col_for`
+    countries, so those keys are absent from the parsed edition."""
+    rows = []
+    for i, (iso, name) in enumerate(WIDE):
+        for yr in range(1970, last_year + 1):
+            b = None if i < drop_second_col_for else _v(i, yr, 1, 0.0)
+            rows.append((iso, name, yr, _v(i, yr, 0, 0.0), b))
+    return rows
+
+
+def _seed_wide(path, extra_orphans=0):
+    _seed(path, _wide_rows(2023))
+    if extra_orphans:                                  # keys an older edition carried, last observed in 2010
+        t = pq.read_table(str(path))
+        keys = [f"KOF:OLDIDX:C{i:02d}" for i in range(1, extra_orphans + 1) for _ in range(1970, 2011)]
+        dates = [dt.date(y, 12, 31) for _ in range(extra_orphans) for y in range(1970, 2011)]
+        old = pa.table({"series_key": pa.array(keys, pa.string()), "obs_date": pa.array(dates, pa.date32()),
+                        "value": pa.array([1.0] * len(keys), pa.float64())})
+        pq.write_table(pa.concat_tables([t, old]), str(path))
+
+
+def test_a_94_percent_key_share_is_refused(store, monkeypatch):
+    _pin(monkeypatch, NOV_2026)
+    _seed_wide(store)
+    before = store.read_bytes()
+    _serve(monkeypatch, Site(y2025=_ok(_xlsx(_wide_rows(2023, drop_second_col_for=3)))))   # 47 of 50
+    with pytest.raises(DefinitiveError, match=r"94\.0% of the 50 stored keys current in 2023") as e:
+        K.update(None, "2023-12-31")
+    assert _opening(e).startswith("kof_globalization: 2025 edition is an id fork"), _opening(e)
+    assert store.read_bytes() == before
+
+
+def test_a_96_percent_key_share_is_merged(store, monkeypatch):
+    _pin(monkeypatch, NOV_2026)
+    _seed_wide(store)
+    _serve(monkeypatch, Site(y2025=_ok(_xlsx(_wide_rows(2023, drop_second_col_for=2)))))   # 48 of 50
+    res = K.update(None, "2023-12-31")
+    assert res.status == "no_change", (res.status, res.error)
+
+
+def test_keys_an_older_edition_dropped_do_not_lower_the_share(store, monkeypatch):
+    """30 orphan keys (last obs 2010) beside 50 current ones: over every stored key the share would be
+    50/80 = 62.5% and the edition refused; over the current keys it is 100%."""
+    _pin(monkeypatch, NOV_2026)
+    _seed_wide(store, extra_orphans=30)
+    _serve(monkeypatch, Site(y2025=_ok(_xlsx(_wide_rows(2023)))))
+    res = K.update(None, "2023-12-31")
+    assert res.status == "no_change", (res.status, res.error)
+    assert sum(1 for k, _d in _cells(store) if k.startswith("KOF:OLDIDX:")) == 30 * 41   # orphans are kept
 
 
 # ---------------------------------------------------------------- revisions and the edition gap
@@ -390,6 +470,7 @@ def test_a_revision_that_adds_no_row_reads_ok_not_no_change(store, monkeypatch):
     assert res.status == "ok", (res.status, res.error)
     assert "revised stored values without adding rows" in res.error
     assert _cells(store)[("KOF:KOFGI:CHE", dt.date(2000, 12, 31))] == _v(0, 2000, 0, 0.5)
+    assert sorted(res.changed_keys) == sorted({f"KOF:{c}:{iso}" for c in ("KOFGI", "KOFECGI") for iso, _n in COUNTRIES})
 
 
 def test_a_missing_newer_edition_in_the_next_year_is_partial(store, monkeypatch):
@@ -400,6 +481,29 @@ def test_a_missing_newer_edition_in_the_next_year_is_partial(store, monkeypatch)
     assert res.status == "partial", (res.status, res.error)
     assert res.error.startswith("newest edition gap:")
     assert "2026 edition is missing" in res.error
+
+
+def test_a_gap_partial_with_no_change_derives_no_csv(store, monkeypatch):
+    """Review F1: a gap partial is due on every pass. With no changed value it must hand the CSV phase an EMPTY
+    merge-measured set, or the phase takes every cursor key and re-derives every kof series each pass."""
+    from updater import derive, orchestrate
+    _pin(monkeypatch, NEW_2027)
+    _seed(store, ED_2025)
+    _serve(monkeypatch, Site(y2025=_ok(_xlsx(ED_2025))))
+    res = K.update(None, "2023-12-31")
+    assert res.status == "partial" and res.changed_keys == {}, (res.status, res.changed_keys)
+    assert len(res.series_cursors) == 12                  # the cursors are still all there ...
+    assert orchestrate._should_derive_csvs(res.status, res.changed_keys) is True   # ... and a partial derives
+
+    def _no_derive(*a, **k):
+        raise AssertionError("the CSV phase derived a kof series on a pass that changed nothing")
+    monkeypatch.setattr(derive, "derive_and_put", _no_derive)
+
+    class _Unit:
+        source_id, unit_id, key = "kof_globalization", "_all", "kof_globalization/_all"
+
+    failed, note, deferred, reasons = orchestrate._derive_changed_csvs(_Unit(), res, blob=None)
+    assert (failed, note, deferred, reasons) == ([], None, [], {})
 
 
 def test_the_same_edition_late_in_its_own_next_year_is_not_a_gap(store, monkeypatch):
