@@ -432,13 +432,23 @@ def test_a_linked_csv_that_answers_404_is_refused_not_replaced_by_hdr25(store, m
 
 
 def test_a_parse_error_is_refused_with_its_name(store, monkeypatch):
-    _pin(monkeypatch, NOV_2026)
-    huge = b'iso3,country,hdicode,region,hdi_2024\nCHE,"' + b"x" * 200_000 + b'",x,y,0.9\n'
-    _serve(monkeypatch, {PAGE: WITH_26, U26: _csv_resp(huge)})
-    with pytest.raises(DefinitiveError, match="parse error Error: field larger than field limit") as e:
-        H.update(None, None)
-    assert _opening(e).startswith("undp_hdr: the 2026 composite CSV (HDR26_"), _opening(e)
-    assert "parsed 0 rows" not in str(e.value)
+    """csv.field_size_limit is PROCESS-WIDE: six ingesters raise it to 2147483647 when imported (e.g.
+    jobs/ingest_abs_full.py:57), and the abs and bis fetchers import theirs at module level. So in the full suite
+    the 200,000-byte field below would parse instead of raising (CI run 45568040117). The test sets the default
+    (131072) for itself and restores the old value."""
+    import csv
+    old = csv.field_size_limit()
+    csv.field_size_limit(131072)
+    try:
+        _pin(monkeypatch, NOV_2026)
+        huge = b'iso3,country,hdicode,region,hdi_2024\nCHE,"' + b"x" * 200_000 + b'",x,y,0.9\n'
+        _serve(monkeypatch, {PAGE: WITH_26, U26: _csv_resp(huge)})
+        with pytest.raises(DefinitiveError, match="parse error Error: field larger than field limit") as e:
+            H.update(None, None)
+        assert _opening(e).startswith("undp_hdr: the 2026 composite CSV (HDR26_"), _opening(e)
+        assert "parsed 0 rows" not in str(e.value)
+    finally:
+        csv.field_size_limit(old)
 
 
 def test_a_csv_with_no_indicator_columns_parses_0_rows_and_is_structural(store, monkeypatch):
