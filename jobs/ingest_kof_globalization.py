@@ -3,8 +3,9 @@
 
 Source: https://kof.ethz.ch/en/forecasts-and-indicators/indicators/kof-globalisation-index.html
 Authors: Gygli, Haelg, Potrafke & Sturm (ETH Zurich)
-License: Free for academic use
-Coverage: 203 countries, 1970-2022, 24 globalisation sub-indices
+License: re-hosted under KOF's written NC academic permission (DATABASE_LICENSES_VERBATIM.md)
+Coverage: the 2025 edition's newest stored observation is 2023-12-31 (state last_obs_date, runbook
+          2026-09-09); its first year and country count were not measured. 24 globalisation sub-indices
 
 Indices:
   KOF Globalisation Index (overall)
@@ -17,9 +18,12 @@ series_key: KOF:{index}:{iso3}   e.g. KOF:KOFGI:CHE
 
 Output: data/clean_full/kof_globalization/kof_globalization.parquet
 Run: python jobs/ingest_kof_globalization.py
+
+COLD START ONLY: it skips when the parquet exists. The scheduled refresh is the fetcher
+(updater/strategies/fetchers/kof_globalization.py), which merges each new edition into the store.
 """
 from __future__ import annotations
-import csv, datetime as dt, io, os, time
+import csv, datetime as dt, io, os, sys, time
 import requests, openpyxl
 import pyarrow as pa, pyarrow.parquet as pq
 
@@ -27,35 +31,39 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, 
 OUT  = os.path.join(ROOT, "data", "clean_full", "kof_globalization")
 UA   = {"User-Agent": "Econ-Fin Data Library admin@hfdatalibrary.com"}
 
-# KOF Zurich provides direct download of the full dataset
-KOF_URLS = [
-    # 2025 edition (203 countries, 1970-2022) — correct path uses /dual/kof-dam/
-    "https://ethz.ch/content/dam/ethz/special-interest/dual/kof-dam/documents/Globalization/2025/KOFGI_2025_public.xlsx",
-    # KOF time series API (XLSX format)
-    "https://datenservice.kof.ethz.ch/api/v1/public/collections/globidx_v2020?mime=xlsx",
-    # 2024 fallback
-    "https://ethz.ch/content/dam/ethz/special-interest/dual/kof-dam/documents/Globalization/2024/KOFGI_2024_public.xlsx",
-]
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+# The SAME year selector the fetcher uses (UTC run year + 1 down to 2024, newest first), so this script and
+# the scheduled refresh never disagree about which edition is newest. It replaced a hard-coded list whose
+# first entry was the 2025 file, and the time-series API fallback, whose content was never measured.
+from updater.strategies.fetchers.kof_globalization import edition_url, edition_years  # noqa: E402
+
+
+def kof_urls(now=None) -> list:
+    return [edition_url(y) for y in edition_years(now)]
 
 
 def log(m):
     print(f"[{time.strftime('%H:%M:%S')}] {m}", flush=True)
 
 
-def fetch(url: str) -> bytes | None:
+def fetch(url: str):
+    """(kind, bytes|None). 'ok': an xlsx body (starts PK\\x03\\x04, over 5,000 bytes). 'gone': 403/404, or a
+    200 that is not an xlsx (a soft-404 page) - that edition is not published. 'unjudged': anything else
+    after 2 attempts, so the caller must stop rather than take an older edition."""
     for attempt in range(2):
         try:
             r = requests.get(url, headers=UA, timeout=60, allow_redirects=True)
-            if r.status_code == 200 and len(r.content) > 5000:
+            if r.status_code == 200 and r.content.startswith(b"PK\x03\x04") and len(r.content) > 5000:
                 log(f"  {len(r.content)//1024:,} KB from {url[-70:]}")
-                return r.content
-            if r.status_code in (403, 404):
-                return None
+                return "ok", r.content
+            if r.status_code in (403, 404) or (r.status_code == 200 and not r.content.startswith(b"PK\x03\x04")):
+                return "gone", None
             log(f"  HTTP {r.status_code}: {url[-60:]}")
         except Exception as e:
             log(f"  ERR attempt {attempt+1}: {e}")
         time.sleep(3)
-    return None
+    return "unjudged", None
 
 
 def parse_kof_xlsx(data: bytes) -> tuple[list, list, list]:
@@ -111,7 +119,7 @@ def parse_kof_xlsx(data: bytes) -> tuple[list, list, list]:
 
         n_before = len(vals)
         for row in rows[header_idx + 1:]:
-            if not row or row[id_ci] is None or row[year_ci] is None:
+            if not row or len(row) <= max(id_ci, year_ci) or row[id_ci] is None or row[year_ci] is None:
                 continue
             try:
                 yr = int(float(str(row[year_ci]).strip()))
@@ -155,10 +163,13 @@ def main():
 
     log("=== KOF Globalisation Index Ingest ===")
 
-    for url in KOF_URLS:
+    for url in kof_urls():
         log(f"Trying {url[-70:]}...")
-        data = fetch(url)
-        if not data:
+        kind, data = fetch(url)
+        if kind == "unjudged":
+            log("  could not judge this edition; stopping (an older edition must not stand in for it)")
+            return
+        if kind == "gone":
             continue
         k, d, v = parse_kof_xlsx(data)
         if v:
@@ -171,8 +182,8 @@ def main():
             n = pq.read_metadata(out).num_rows
             log(f"=== KOF DONE: {n:,} obs ===")
             return
-        log("  No obs from this URL")
-        time.sleep(2)
+        log("  No obs from the newest edition; stopping (a changed layout must not fall back to an older edition)")
+        return
 
     log("All KOF URLs failed")
 

@@ -3234,44 +3234,54 @@ sources:
   scripts:
   - jobs/ingest_kof_globalization.py
   strategy: overwrite_if_changed
-  strategy_reason: 'Single tiny annual XLSX with no per-observation API and re-estimated each yearly edition; the correct
-    pattern is full overwrite when a new edition appears -- gate on the year-stamped URL/edition signal rather than blind
-    re-download. Not S6: a hardcoded URL is auto-fetchable.'
+  strategy_reason: 'Single tiny annual XLSX with no per-observation API and re-estimated each yearly edition; each due
+    run fetches the newest year-stamped edition and merges it (see out_paths_note for why merge, not overwrite). Not S6:
+    the year-stamped URL is auto-fetchable.'
   cadence: annual
   refresh_cost: fast
   out_dir: kof_globalization
   review: true
   adapter:
-    vintage_signal: 'Probe for a new year-stamped edition: HEAD/GET the ethz.ch dam URL for the next year (e.g. KOFGI_2026_public.xlsx)
-      or parse the KOF download page; current KOF_URLS (lines 31-38) hard-codes year URLs tried in order, first >5000 bytes
-      wins. No Last-Modified delta on the existing file is needed -- edition = new URL.'
-    since_param: n/a
+    vintage_signal: 'current_vintage() HEADs the year-stamped ethz.ch dam URL .../Globalization/<Y>/KOFGI_<Y>_public.xlsx
+      for Y from the UTC run year + 1 down to 2024, newest first (edition_years(), the SAME selector update() walks). The
+      first 200 that is not a text/* page and is over 5,000 bytes is the edition; token "<year>:<ETag|Last-Modified|Content-Length>";
+      a transient answer gives None. The token is NOT stored: finalize() stamps date-tail and STAMP_PROBE is not set
+      (R1154), so every due run fetches.'
+    since_param: 'n/a for the fetch; update() refuses an edition whose newest year is older than since (or than the
+      store''s newest year).'
     out_paths_note: 'Single file: data/clean_full/kof_globalization/kof_globalization.parquet (~1.4 MB; series_key KOF:{index}:{ISO},
-      annual Dec-31 obs). Overwrite atomically on a new edition.'
+      annual Dec-31 obs). MERGED on each edition, not overwritten: an overwrite would remove stored rows KOF no longer
+      ships, which is the owner''s decision. The merge lets the edition win, refuses an edition with under 95% of the
+      stored keys, and counts a revision that adds no row as a revision so the CSVs re-derive (R549).'
     rate_note: No API key (free for academic use). fetch() only 2 attempts, requires >5000 bytes, treats 403/404 as give-up-this-URL.
     key_env: none
     confidence: high
-    open_question: 'URL-rot: dam paths change between editions and a failed probe silently no-ops (''All KOF URLs failed'')
-      leaving stale data without erroring -- the edition-probe must alert a human when the new-year URL can''t be resolved.
-      Parser also takes the FIRST sheet yielding obs (line 143); confirm sheet order is stable across editions.'
+    open_question: 'URL-rot, PARTLY closed 2026-11-25: update() walks the year-stamped URLs newest first; a transient
+      for any year stops the walk with nothing merged; no answering year is structural; a merged edition below (UTC run
+      year - 1) is a PARTIAL naming the gap (R1300). STILL OPEN: KOF has renamed its files between editions (the KOF
+      page, read 2026-11-25, links 2024/2023_KOFGI.zip, 2025/KOFGI_2024.zip and 2025/KOFGI_2025_public.xlsx), so an
+      edition under another name is missed until the gap partial fires in the January after it. Parser takes the FIRST
+      sheet yielding obs; a newest edition that will not parse, or parses 0 rows, is structural, never a fallback.'
   matrix:
     refresh_mechanism:
     - overwrite-single-file
     force_refresh_procedure:
-    - 'From D:\research\econfindatalibrary: `Remove-Item data\clean_full\kof_globalization\kof_globalization.parquet -Force`,
-      then `python.exe jobs\ingest_kof_globalization.py`. For a newer edition, first add/replace the year-stamped URL at the
-      top of KOF_URLS (lines 31-38). No API key. (_kof_log.txt/_kof_err.txt are cosmetic, not read.)'
+    - 'From the repo root: `python -u -m updater.run --source kof_globalization --force` (AQUEDUCT_BACKEND=r2 for the
+      served store). The fetcher takes the newest year-stamped edition and merges it; no URL edit is needed for a new
+      edition. Do NOT delete the parquet first: the merge needs no clean slate, and an empty store disarms the
+      older-edition and key-share refusals. jobs/ingest_kof_globalization.py is the cold-start ingest only (it skips
+      when the parquet exists) and walks the same years. No API key.'
     incremental_path:
     - 'Not feasible / not worthwhile: source is a single annual XLSX with no per-observation API, and the dataset is tiny.
-      Correct pattern is full overwrite each new edition. Edition detection could HEAD the dam URL for a new year or parse
-      the KOF page, but there is no since=last_obs delta to build.'
+      Each due run re-fetches the newest whole edition and merges it; there is no since=last_obs delta to build.'
     keys_or_blockers:
-    - No API key (free for academic use). fetch() only 2 attempts, requires >5000 bytes, treats 403/404 as give-up-this-URL.
-      Primary host ethz.ch dam path; if all 3 URLs fail it writes nothing and logs 'All KOF URLs failed'.
+    - No API key. Primary host ethz.ch dam path only (the time-series API fallback was removed 2026-11-25, unmeasured).
+      The ingester's fetch() makes 2 attempts and stops on an edition it cannot judge; if no year answers it writes
+      nothing and logs 'All KOF URLs failed'.
     storage_layout:
     - single parquet data/clean_full/kof_globalization/kof_globalization.parquet (~1.4MB; schema series_key:string KOF:{index}:{ISO},
-      obs_date:date32 (Dec-31), value:float64, zstd). Skip-if-exists guard at lines 152-154; one full XLSX download then one
-      write (lines 165-170).
+      obs_date:date32 (Dec-31), value:float64, zstd). The ingester skips when the parquet exists; the fetcher merges
+      through merge.merge_and_write (never-shrink).
 # ksh — RETIRED 2026-07-29. Consolidated into ksh_stadat: 394 of its 415 tables were
 # already there (with MORE series each), and its 21 unique tables — 903 series — were
 # migrated and verified serving BEFORE removal. Its resolver entry, catalog rows, D1 rows
