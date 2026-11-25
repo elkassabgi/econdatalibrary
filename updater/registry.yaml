@@ -2135,46 +2135,56 @@ sources:
   scripts:
   - jobs/ingest_fsi_fundforpeace.py
   strategy: overwrite_if_changed
-  strategy_reason: Single small (~33KB) annual index; the multi-year GitHub tidy CSV mirror is the resilient de-facto full
-    source and exposes a clean commit-level vintage signal, so re-pull+overwrite when the mirror moves. No date endpoint;
-    not S6 (freely fetchable).
+  strategy_reason: 'Single small annual index, one static XLSX per year listed on https://fragilestatesindex.org/excel/;
+    each due run discovers the year files on that page, decides every year before any merge, and merges them all (FSI
+    may revise prior years). No date endpoint; not S6 (freely fetchable). The GitHub mirror (ksreyes) is deleted and is
+    not used.'
   cadence: annual
   refresh_cost: fast
   out_dir: fsi_fundforpeace
   review: true
   adapter:
-    vintage_signal: GitHub commit SHA / API Last-Modified for raw.githubusercontent.com/ksreyes/tidy-fragile-states-index
-      CSV (GET /repos/ksreyes/tidy-fragile-states-index/commits?path=<csv> HEAD SHA); fall back to HEAD on the per-year fragilestatesindex.org
-      XLSX if the mirror is unreachable.
+    vintage_signal: 'ONE discovery per run (discover(), stored by current_vintage() and taken by update()): GET https://fragilestatesindex.org/excel/,
+      keep links under https://fragilestatesindex.org/wp-content/uploads/ whose basename is exactly fsi-<YYYY>[-download].xlsx;
+      two links for one year -> REFUSED. ANY page failure (any requests exception, a non-200, no matching link) uses the
+      fetcher''s FALLBACK_URLS and makes the run PARTIAL with the reason first. Token = a content hash of the URL list
+      ("fallback:" when discovery failed); not stored (finalize stamps date-tail; no probe-stamp opt-in), so every due run
+      fetches.'
     since_param: n/a
-    out_paths_note: Single file data/clean_full/fsi_fundforpeace/fsi_fundforpeace.parquet (series_key=FSI_FP:{indicator}:{country}).
-      Non-atomic write — add .tmp+replace.
-    rate_note: Keyless; GitHub raw + fragilestatesindex.org. 30s timeout, 0.5s sleep/year. fragilestatesindex.org WordPress
-      upload paths are version-specific/fragile; GitHub mirror is the resilient fallback.
+    out_paths_note: 'Single file data/clean_full/fsi_fundforpeace/fsi_fundforpeace.parquet (series_key=FSI_FP:{indicator}:{country},
+      names as the file writes them, never normalised). Written only through merge.merge_and_write (never-shrink). The
+      year label is the file''s own Year column, checked against the file name and the upload folder (folder = year or
+      year + 1); a disagreement refuses the run. Every year is decided BEFORE the merge: any structural year, a duplicate
+      label year, a newest file whose indicator columns differ from the previous year''s, or under 95% of the current
+      stored keys -> REFUSED, nothing merged. A revision with no new row books a revision (CSVs re-derive, R549).'
+    rate_note: 'Keyless; fragilestatesindex.org only (WordPress on WP Engine behind Cloudflare). One GET of the excel page
+      per run (60s timeout), then one GET per year file (60s). A transient year (timeout, connection error, 429, 5xx) is
+      partial and the other years merge; a 404 on a listed file is PARTIAL naming the year.'
     key_env: none
     confidence: high
-    open_question: Reliance on a community GitHub mirror (ksreyes) — if that repo goes stale or disappears, freshness depends
-      on fragile per-year fragilestatesindex.org XLSX URLs; confirm the mirror is acceptable as primary.
+    open_question: 'CLOSED 2026-11-25: the mirror is gone; the excel page is the source. STILL OPEN: (1) no FSI 2024 or 2025
+      data file was linked on the excel page, the analysis-2024 page or the global-data page on 2026-11-25 (the FSI 2024
+      REPORT was posted 2025-02-18 under /uploads/2025/02/), so the gap partial fires on every run until one is; whether
+      FSI still publishes the per-year XLSX is the coordinator''s measured decision (no discontinued.yaml entry here). (2)
+      Negative values are dropped, which leaves only the non-negative half of the 35 served ''Change from Previous Year''
+      series (2019, 2020); keeping negatives would mint new keys (owner decision).'
   matrix:
     refresh_mechanism:
-    - overwrite-single-file
+    - merge-single-file
     force_refresh_procedure:
-    - 'Delete the parquet then run (no flags). PowerShell: Remove-Item ''D:\research\econfindatalibrary\data\clean_full\fsi_fundforpeace\fsi_fundforpeace.parquet''
-      -Force; python.exe D:\research\econfindatalibrary\jobs\ingest_fsi_fundforpeace.py . To add a new year, append (year,
-      url) to YEAR_URLS first. No API key.'
+    - 'From the repo root: `python -u -m updater.run --source fsi_fundforpeace --force` (AQUEDUCT_BACKEND=r2 for the served
+      store). The fetcher discovers every year on the excel page and merges; no URL edit is needed for a new year. Do NOT
+      delete the parquet first: the merge needs no clean slate, and an empty store disarms the 95% key floor.
+      jobs/ingest_fsi_fundforpeace.py runs the same fetcher update() ONLY on a cold start (no store); on an existing store
+      it writes nothing and prints this command. No API key.'
     incremental_path:
-    - 'Source is per-year files; a true delta = only fetch the newest year''s XLSX. Change: (1) add new (year,url) entries
-      to YEAR_URLS, (2) replace os.path.exists guard with a merge that reads existing parquet, appends only years not already
-      present (dedup on series_key+obs_date), rewrites. since=date pull not feasible -- no date-filtered endpoint; each year
-      is a discrete static file. ''Already partial'' in spirit because per-year files mean you can fetch just the new year,
-      but the code currently re-pulls every listed year on a fresh run.'
+    - 'Per-year static files; no since=date pull. Each due run re-fetches every listed year (FSI may revise) and merges.'
     keys_or_blockers:
-    - 'No API key (direct XLSX from fragilestatesindex.org, plus GitHub CSV mirror). 30s fetch timeout, time.sleep(0.5) between
-      years. Blocker: fragilestatesindex.org WordPress upload paths are version-specific and fragile; the GitHub mirror is
-      the resilient fallback. openpyxl + csv required.'
+    - 'No API key. Direct XLSX from fragilestatesindex.org; openpyxl required. Discovery depends on the excel page linking
+      the year files in its server-rendered HTML; when it does not, the run is PARTIAL on FALLBACK_URLS.'
     storage_layout:
-    - 'single file data/clean_full/fsi_fundforpeace/fsi_fundforpeace.parquet (33 KB), zstd. Schema: series_key=''FSI_FP:{indicator}:{country}'',
-      obs_date(date32, Dec-31 of year), value(float64). Whole-table write, non-atomic.'
+    - 'single file data/clean_full/fsi_fundforpeace/fsi_fundforpeace.parquet (about 33 KB), zstd. Schema: series_key=''FSI_FP:{indicator}:{country}'',
+      obs_date(date32, Dec-31 of the Year column''s year), value(float64). Written by the never-shrink merge.'
 - source_id: gapminder
   live: true
   scripts:
