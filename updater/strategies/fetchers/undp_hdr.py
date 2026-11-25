@@ -183,7 +183,10 @@ def current_vintage(unit):
     year, url, _fallback = sel
     try:
         r = requests.head(url, headers=UA, timeout=60, allow_redirects=True)
-    except (requests.Timeout, requests.ConnectionError):
+    except requests.RequestException:
+        # ANY requests exception (also TooManyRedirects, which escaped before: detect_change raised, the
+        # orchestrator booked transient_fail "detect:UNEXPECTED:" and skipped the fetch) -> None, "undeterminable".
+        # The strategy then fetches (cadence-gated), and update() takes the discovery stored above.
         return None
     if r.status_code != 200 or (r.headers.get("Content-Type") or "").lower().startswith("text/html"):
         return None

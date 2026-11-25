@@ -124,8 +124,9 @@ def _csv_resp(body):
 
 
 class Site:
-    def __init__(self, routes):
+    def __init__(self, routes, head_routes=None):
         self.routes = dict(routes)
+        self.head_routes = dict(head_routes or {})      # a HEAD-only answer for a URL, when it differs from GET
         self.gets, self.heads = [], []
 
     def _answer(self, url):
@@ -142,6 +143,10 @@ class Site:
 
     def head(self, url, headers=None, timeout=None, allow_redirects=True):
         self.heads.append(url)
+        if url in self.head_routes:
+            if isinstance(self.head_routes[url], BaseException):
+                raise self.head_routes[url]
+            return self.head_routes[url]
         a = self._answer(url)
         h = CaseInsensitiveDict(a.headers)
         if a.content:
@@ -149,8 +154,8 @@ class Site:
         return _Resp(a.status_code, b"", None, h)
 
 
-def _serve(monkeypatch, routes):
-    site = Site(routes)
+def _serve(monkeypatch, routes, head_routes=None):
+    site = Site(routes, head_routes)
     monkeypatch.setattr(H.requests, "get", site.get)
     monkeypatch.setattr(H.requests, "head", site.head)
     return site
@@ -339,6 +344,24 @@ def test_a_transient_probe_head_returns_none(monkeypatch):
     site = _serve(monkeypatch, {PAGE: TODAY, U25: _Resp(503)})
     assert H.current_vintage(None) is None
     assert site.heads == [U25]
+
+
+@pytest.mark.parametrize("err", [requests.TooManyRedirects("r"), requests.exceptions.ChunkedEncodingError("c")],
+                         ids=["too-many-redirects", "chunked"])
+def test_a_probe_head_error_returns_none_and_update_uses_the_one_discovery(store, monkeypatch, err):
+    """The HEAD raises (it escaped current_vintage before). The probe returns None, its documented
+    "undeterminable", and update() takes the discovery the probe stored: the page is read ONCE and the same
+    HDR25 CSV is fetched and merged; the stored CONTENT is unchanged (no_change). Not the bytes: a no_change merge
+    rewrites the file."""
+    _pin(monkeypatch, NOV_2026)
+    _seed(store, C25)
+    site = _serve(monkeypatch, {PAGE: TODAY, U25: _csv_resp(B25)}, head_routes={U25: err})
+    assert H.current_vintage(None) is None
+    res = H.update(None, "2023-12-31")
+    assert site.heads == [U25]
+    assert site.gets == [PAGE, U25]                         # one discovery; update() did not read the page again
+    assert res.status == "no_change" and res.changed_keys == {}, (res.status, res.error)
+    assert _cells(store) == C25
 
 
 # ---------------------------------------------------------------- any page failure is a loud pinned fallback
