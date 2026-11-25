@@ -45,7 +45,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import requests  # noqa: E402
 
 from updater import orchestrate  # noqa: E402  (puts updater.orchestrate in sys.modules)
-from updater.errors import DefinitiveError  # noqa: E402
 from updater.strategies.fetchers import _common, istat  # noqa: E402
 
 SDMX = "https://sdmx.istat.it/SDMXWS/rest/"
@@ -404,9 +403,11 @@ def test_a_failing_last_flow_before_the_ceiling_stop_is_named_and_run_2_starts_a
 
         rig.mp.setattr(istat.merge, "merge_and_write", merge_and_write)
     if outcome == "structural":
-        # finalize() raises on a structural flow (no Result); the bookmark was saved before that.
-        with pytest.raises(DefinitiveError, match="F10"):
-            rig.run(plan=plan, delay=60.0, ceiling_s=30 * 60.0, sdmx=sdmx)
+        # finalize() raises on a structural flow; since 2026-11-24 (ROUTE B, C1) update() catches it and returns
+        # `partial` WITH the walked flows' cursors, naming the structural flow. The bookmark was saved before that.
+        res, _host, _t0 = rig.run(plan=plan, delay=60.0, ceiling_s=30 * 60.0, sdmx=sdmx)
+        assert res.status == "partial" and "F10" in res.error and "handed over" in res.error, res.error
+        assert sorted(res.series_cursors) == names[:10], sorted(res.series_cursors)
     else:
         res, _host, _t0 = rig.run(plan=plan, delay=60.0, ceiling_s=30 * 60.0, sdmx=sdmx)
         assert res.status == "partial", res.error
