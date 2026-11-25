@@ -1,15 +1,20 @@
-"""Lift the statcan lane's quarantine on NAMED cubes - the 44 that the lane's old strike rule parked on 2026-11-13..18.
+"""Lift the statcan lane's quarantine on NAMED cubes - the 42 that the lane's old strike rule parked on 2026-11-13..18.
 
 WHY (2026-11-22, ledger R2025/R2026; diagnosis F:/work/econ_finish/statcan_quarantine_20261122/REPORT.md, review
 PASS WITH CONDITIONS). jobs/statcan_lane.py quarantines a cube after 3 deterministic strikes on one release, and only
 a re-release lifts it. Before PR #317 the 3 strikes had no spacing: an edge HTTP 403 of about an hour on 2026-11-18
-quarantined 35 cubes in 16 minutes (class A), and pre-release zips served for minutes quarantined 9 more through the
-count gate (class B). Those 44 are a LANE fault. PR #317 spaces strikes (1 h, then 6 h; a quarantine needs 3 strikes
-over at least 12 h), books 403 as transient and adds a circuit breaker - but the 44 stay quarantined until StatCan
-re-releases them (a month for most, up to a year for the annual 36100400 / 36100658). This tool lifts exactly those
-44, so the lane retries them under the NEW rule. Classes C (10100145, 18100212, 18100275) and D (36100487,
-36100488) are NOT lifted: their refusals are not shown to be the lane's fault. Design and review:
-F:/work/econ_finish/statcan_lift_pr/DESIGN.md, review_design/VERDICT.md.
+quarantined 35 cubes in 16 minutes (class A), and pre-release zips served for minutes quarantined 7 more through the
+count gate (class B). Those 42 are a LANE fault. PR #317 spaces strikes (1 h, then 6 h; a quarantine needs 3 strikes
+over at least 12 h), books 403 as transient and adds a circuit breaker - but the 42 stay quarantined until StatCan
+re-releases them (a month for most). This tool lifts exactly those 42, so the lane retries them under the NEW rule.
+Classes C (10100145, 18100212, 18100275) and D (36100400, 36100487, 36100488, 36100658) are NOT lifted: their
+refusals are not shown to be the lane's fault. Design and review: F:/work/econ_finish/statcan_lift_pr/DESIGN.md,
+review_design/VERDICT.md.
+
+RE-CLASSED 2026-11-24 (ledger R2162). The diagnosis booked 36100400 and 36100658 as class B, and the 2026-11-23 apply
+lifted them with the other 42 (44 cubes in that receipt). They are class D: see EXCLUDED below. A plan or an apply
+can no longer name them, by --pids or by --from-table2. --check is unchanged: it judges each cube by its receipt's
+own class and release, so a --check of the 2026-11-23 receipt still prints them as class B.
 
 WHAT IT CHANGES - per named cube, the lane's own re-release lift (run(), "RE-RELEASED") plus fail_release:
     pop quarantined; fails = 0; pop fail_release; pop first_strike_utc; pop retry_after
@@ -77,19 +82,31 @@ CHECK_DEADLINE_H = 24.0
 LIFT_FIELDS = ("quarantined", "fails", "fail_release", "first_strike_utc", "retry_after")
 TABLE2_CLASS = {"ACCESS_REFUSED": "A", "STALE_COPY": "B", "PERSISTENT_OFFSET": "C", "SERIES_DROPPED": "D"}
 
-# THE 44 (diagnosis table2.tsv, classes ACCESS_REFUSED and STALE_COPY; re-measured on the 2026-11-22T09:06:11Z
-# snapshot of the lane state: quarantined, 3 strikes, release == fail_release == the release below, merge_in_flight
-# == release, no first_strike_utc / refused_http / history_hold, last_error of the class's signature).
+# THE 42 (diagnosis table2.tsv, classes ACCESS_REFUSED and STALE_COPY, with the R2162 correction below; re-measured
+# on the 2026-11-22T09:06:11Z snapshot of the lane state: quarantined, 3 strikes, release == fail_release == the
+# release below, merge_in_flight == release, no first_strike_utc / refused_http / history_hold, last_error of the
+# class's signature).
 _A_RELEASE = "2026-11-18T13:30"
 _A = ("10100111 10100141 14100004 14100005 14100006 14100007 14100008 14100009 14100010 14100011 14100323 14100343 "
       "14100344 14100346 14100453 14100454 14100455 14100456 18100205 34100143 34100145 34100148 34100149 34100150 "
       "34100151 34100152 34100154 34100155 34100156 34100157 34100158 34100159 34100160 34100161 34100162").split()
 _B = {"16100047": "2026-11-13T13:30", "18100001": "2026-11-16T13:30", "18100004": "2026-11-16T13:30",
       "18100006": "2026-11-16T13:30", "18100256": "2026-11-16T13:30", "20100003": "2026-11-13T13:30",
-      "36100400": "2026-11-05T13:30", "36100434": "2026-10-30T12:30", "36100658": "2026-11-05T13:30"}
+      "36100434": "2026-10-30T12:30"}
 LIFT = {**{p: ("A", _A_RELEASE) for p in _A}, **{p: ("B", r) for p, r in _B.items()}}
 # Classes C (PERSISTENT_OFFSET) and D (SERIES_DROPPED): NOT a lane fault shown - never lifted by this tool.
-EXCLUDED = {"10100145": "C", "18100212": "C", "18100275": "C", "36100487": "D", "36100488": "D"}
+# 36100400 and 36100658 ARE CLASS D, NOT B (ledger R2162, 2026-11-24; F:/work/econ_finish/statcan_zipcheck_20261124/
+# REPORT.md, review correction C1). The 2026-11-22 diagnosis booked them B (a stale pre-release zip) because the count
+# gate's parse equalled the held rows (9,802 and 21,112). That equality is not the test. After the 2026-11-23 lift the
+# lane refused both again on the same 2026-11-05 zip, served at release time (strikes 1 and 2 at
+# guard_statcan_lane_1123_0753.log :526-531 and :661-666; quarantined by the new rule at the third, 12 h after the
+# first, per the #319 +24 h check): SERIES short of StatCan's own count (338 of 351, 728 of 767), the parser skipped
+# nothing ({}). Series missing inside the same periods is the class D signature (the publisher's file lacks series);
+# a stale copy is short in whole periods. NOT measured: these two zips' bytes were not analysed, and only the
+# 2026-11-05 release was seen. Before any lift or merge of a D cube (zipcheck review C6): name its missing vectors
+# from the held copy, and confirm the merge keeps them (a union, not a replace).
+EXCLUDED = {"10100145": "C", "18100212": "C", "18100275": "C", "36100487": "D", "36100488": "D",
+            "36100400": "D", "36100658": "D"}
 
 # THE STRIKE THAT PRECEDED ANY WRITE (design C12). A: the old _download's refusal of THIS cube's zip, exactly. B: the
 # count gate's refusal of THIS cube. Both are raised inside statcan._fetch_cube_whole, before merge_and_write_bounded.
@@ -187,7 +204,7 @@ def selection_problems(pids: list) -> list:
         if p in EXCLUDED:
             out.append(f"C2 {p} is class {EXCLUDED[p]} - classes C and D are never lifted by this tool")
         elif p not in LIFT:
-            out.append(f"C1 {p} is not one of the 44 pinned cubes (LIFT)")
+            out.append(f"C1 {p} is not one of the {len(LIFT)} pinned cubes (LIFT)")
     return out
 
 
@@ -855,8 +872,9 @@ def check(a, now_fn=None) -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0], allow_abbrev=False)
     sel = ap.add_mutually_exclusive_group()
-    sel.add_argument("--pids", help="comma-separated subset of the 44 pinned cubes")
-    sel.add_argument("--from-table2", help="the diagnosis table2.tsv: classes A+B, which must equal the pinned 44")
+    sel.add_argument("--pids", help=f"comma-separated subset of the {len(LIFT)} pinned cubes")
+    sel.add_argument("--from-table2", help=f"the diagnosis table2.tsv: classes A+B, which must equal the pinned "
+                                           f"{len(LIFT)} (with R2162's correction: 36100400 and 36100658 class D)")
     ap.add_argument("--apply", action="store_true", help="write (default: a read-only plan)")
     ap.add_argument("--expect-before-sha", help="--apply: sha256 of the document the plan read")
     ap.add_argument("--expect-after-sha", help="--apply: sha256 of the document the plan would write")
