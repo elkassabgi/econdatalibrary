@@ -2164,7 +2164,8 @@ sources:
       (never-shrink). A revision with no new row books a revision (CSVs re-derive, R549).'
     rate_note: 'Keyless; fragilestatesindex.org only (WordPress on WP Engine behind Cloudflare). One GET of the excel page
       per run (60s timeout), then one GET per year file (60s). A transient year (timeout, connection error, 429, 5xx) is
-      partial and the other years merge; a 404 on a listed file is PARTIAL naming the year.'
+      partial and the other years merge; a 404 on a file the page lists is a NOTE naming the year (no demotion, R2209:
+      the stored rows stand; a 404 under the fallback list is partial through the fallback).'
     key_env: none
     confidence: high
     open_question: 'CLOSED 2026-11-25: the mirror is gone; the excel page is the source. STILL OPEN: (1) no per-year XLSX after

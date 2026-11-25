@@ -411,14 +411,57 @@ def test_a_page_failure_uses_the_fallback_and_is_partial_reason_first(store, mon
     assert res.changed_keys == {}
 
 
-def test_a_404_on_a_listed_year_is_partial_naming_it_and_the_others_merge(store, monkeypatch):
+def test_a_404_on_a_page_listed_year_is_a_note_naming_it_and_the_others_merge(store, monkeypatch):
+    """Coordinator decision (R2209): a 404 on a URL the PAGE lists is a NOTE naming the year, not a partial: the
+    stored rows for that year stand, and a dead link must not make permanent ATTENTION and daily re-downloads."""
     _pin(monkeypatch, JUL_2024)
     _seed(store, [2021, 2022])
     _serve(monkeypatch, {PAGE: SMALL, **_files([2023, 2021], **{REAL[2022]: _Resp(404, b"<html>404</html>")})})
     res = F.update(None, "2022-12-31")
-    assert res.status == "partial", (res.status, res.error)
-    assert res.error.startswith("year(s) 2022 listed but the file answers 404 (fsi-2022-download.xlsx)"), res.error
+    assert res.status == "ok", (res.status, res.error)
+    assert res.error.startswith("year(s) 2022 listed but the file answers 404 (fsi-2022-download.xlsx); the stored "
+                                "rows for that year stand"), res.error
     assert ("FSI_FP:Total:Country 01", dt.date(2023, 12, 31)) in _stored(store)
+    assert ("FSI_FP:Total:Country 01", dt.date(2022, 12, 31)) in _stored(store)     # 2022's stored rows stand
+
+
+def test_p5_eleven_404_years_and_unchanged_others_do_not_raise_after_the_merge(store, monkeypatch):
+    """Reviewer probe P5, under the coordinator's decision B: 11 years answer 404 (2006-2016; the 2006-2017 files
+    share /uploads/data/) and 7 are unchanged. empty == attempted == 12 used to exceed finalize's default floor
+    (10) and raise AFTER merge_and_write, never naming the 404 years. Now: no raise, not partial, years named."""
+    _pin(monkeypatch, JUL_2024)
+    _seed(store, list(REAL))
+    gone = [y for y in sorted(REAL) if y <= 2016]
+    routes = {PAGE: ALL, **_files([y for y in REAL if y not in gone])}
+    routes.update({REAL[y]: _Resp(404, b"<html>404</html>") for y in gone})
+    _serve(monkeypatch, routes)
+    res = F.update(None, "2023-12-31")
+    assert res.status == "no_change", (res.status, res.error[:200])
+    assert res.error.startswith("year(s) 2006, 2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016 listed "
+                                "but the file answers 404"), res.error[:200]
+
+
+def test_a_404_under_the_fallback_list_stays_partial_through_the_fallback(store, monkeypatch):
+    _pin(monkeypatch, JUL_2024)
+    _seed(store, list(REAL))
+    _serve(monkeypatch, {PAGE: _Resp(503), **_files([y for y in REAL if y != 2015]),
+                         REAL[2015]: _Resp(404, b"<html>404</html>")})
+    res = F.update(None, "2023-12-31")
+    assert res.status == "partial", (res.status, res.error)
+    assert res.error.startswith("discovery failed: the excel page answered HTTP 503"), res.error
+    assert "year(s) 2015 listed but the file answers 404" in res.error
+
+
+def test_an_all_404_window_with_nothing_merged_still_raises(store, monkeypatch):
+    """The floor change is only on the merged path: when every listed year answers 404, finalize still calls it a
+    structural break (nothing merged)."""
+    _pin(monkeypatch, JUL_2024)
+    _seed(store, list(REAL))
+    before = store.read_bytes()
+    _serve(monkeypatch, {PAGE: ALL, **{u: _Resp(404, b"<html>404</html>") for u in REAL.values()}})
+    with pytest.raises(DefinitiveError, match="all 18 attempted sub-units returned empty/404"):
+        F.update(None, "2023-12-31")
+    assert store.read_bytes() == before
 
 
 @pytest.mark.parametrize("when, gap", [
@@ -437,7 +480,27 @@ def test_the_gap_rule_is_a_note_never_a_demotion(store, monkeypatch, when, gap):
         assert "newest data gap" not in res.error, res.error
     else:
         assert res.error.startswith(f"newest data gap: the newest FSI year held is 2023; {gap}"), res.error
-        assert "no per-year XLSX after 2023" in res.error and "fsi-2024-rankings" in res.error
+        assert f"no per-year XLSX after 2023 was listed on {when.date().isoformat()}" in res.error, res.error
+        assert "fsi-2024-rankings" in res.error
+
+
+def test_the_gap_note_carries_the_runs_utc_date(store, monkeypatch):
+    """C: the date comes from the injected clock, in UTC: 2026-11-24T20:00-06:00 is 2026-11-25T02:00Z."""
+    _pin(monkeypatch, dt.datetime(2026, 11, 24, 20, 0, tzinfo=dt.timezone(dt.timedelta(hours=-6))))
+    _seed(store, [2021, 2022, 2023])
+    _serve(monkeypatch, {PAGE: SMALL, **_files([2023, 2022, 2021])})
+    res = F.update(None, "2023-12-31")
+    assert "no per-year XLSX after 2023 was listed on 2026-11-25;" in res.error, res.error
+
+
+def test_the_gap_note_says_when_a_newer_listed_file_was_not_read(store, monkeypatch):
+    _pin(monkeypatch, NOV_2026)
+    _seed(store, [2022, 2023])
+    _serve(monkeypatch, {PAGE: _page(f'<a href="{U2024_REL}">', ANCHORS[2023], ANCHORS[2022]),
+                         U2024: _Resp(404, b"<html>404</html>"), **_files([2023, 2022])})
+    res = F.update(None, "2023-12-31")
+    assert res.status == "no_change", (res.status, res.error)
+    assert "the 2024 file is listed but was not read on 2026-11-25" in res.error, res.error
 
 
 def test_a_transient_year_is_partial_and_the_others_merge(store, monkeypatch):

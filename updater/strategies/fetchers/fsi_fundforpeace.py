@@ -38,13 +38,16 @@ where the current stored keys are the full FSI_FP:{col}:{country} keys with an o
 year. Under 95% refuses. It is measured on the newest file alone: across all years read, renamed countries would
 still be found in the older files and the fork would pass.
 
-PARTIAL, reason first (the good years are merged): discovery failed (fallback); a year whose listed URL answers 404
-(it was a silent empty unit); a transient year (finalize's own partial).
+PARTIAL, reason first (the good years are merged): discovery failed (fallback; a 404 under the fallback list is
+partial through it); a transient year (finalize's own partial).
 
-NOTES, reason first, with NO status demotion: the newest-year gap, and a file labelled from its name. The gap is a
-note, not a partial (R2209): partial is an ATTENTION status decided before health's RED-DATA data-clock branch, and
-is_due counts the cadence from last_success, so a gap partial would hide the data-clock alarm and re-download on
-every pass after the due date.
+NOTES, reason first, with NO status demotion: a year the PAGE lists whose file answers 404 (named; it was a silent
+empty unit before; our stored rows for it stand), the newest-year gap (dated with the run's UTC date), and a file
+labelled from its name. None of these is a partial (R2209): partial is an ATTENTION status decided before health's
+RED-DATA data-clock branch, and is_due counts the cadence from last_success, so a partial here would hide the
+data-clock alarm and re-download on every pass after the due date. A pass that merged good years is never an
+"empty window": finalize gets empty_window_floor = len(urls) + 1, so 404 years plus an unchanged merge cannot raise
+after the merge.
 
 GAP RULE (R1300). The 2018-2023 files were uploaded in months 4-7 of their index year (folders 2018/04, 2019/04,
 2020/05, 2021/05, 2022/07, 2023/06), and the FSI 2024 DATA appeared as a Tableau view (fsi-2024-rankings, embedded
@@ -460,29 +463,43 @@ def update(unit, since) -> Result:
         tally.revised_unit(span)
     else:
         tally.empty_unit(span)
-    res = finalize(tally, n, md, source=SOURCE, series_cursors=_series_maxes(tbl))
+    # A pass that merged good years is not an "empty window": with the floor at its default (10), 11 years that
+    # answer 404 plus one unchanged merge would make empty == attempted == 12 and finalize would raise AFTER the
+    # merge, never naming the 404 years (the 12 files for 2006-2017 share one folder, /uploads/data/).
+    res = finalize(tally, n, md, source=SOURCE, series_cursors=_series_maxes(tbl),
+                   empty_window_floor=len(urls) + 1)
     res.changed_keys = changed
     newest = max([g[0] for g in good] + ([stored_year] if stored_year else []))
-    return _with_reasons(res, sel, missing, newest, now, no_year_col, span)
+    listed_newest = max((name_year(u) or 0) for u in urls)
+    return _with_reasons(res, sel, missing, newest, now, no_year_col, span, listed_newest)
 
 
-def _with_reasons(res, sel, missing, newest, now, no_year_col, span=None):
-    """Reasons FIRST in the note. A discovery fallback or a 404 year makes the run PARTIAL; the newest-year gap
-    and a name-labelled file are NOTES only, with no status demotion (R2209)."""
+def _with_reasons(res, sel, missing, newest, now, no_year_col, span=None, listed_newest=None):
+    """Reasons FIRST in the note. A discovery fallback makes the run PARTIAL (a transient year already did, in
+    finalize). A year the PAGE lists whose file answers 404, the newest-year gap and a name-labelled file are NOTES
+    only, with no status demotion (R2209): our stored rows for that year stand, and a publisher's dead link must not
+    make permanent ATTENTION and a re-download on every pass. A 404 under the fallback list is still PARTIAL, through
+    the fallback itself."""
     demote, notes = [], []
     if sel["fallback"]:
         demote.append(sel["fallback"])
     if missing:
-        demote.append(f"year(s) {', '.join(lab for lab, _u in missing)} listed but the file answers 404 "
-                      f"({', '.join(u.rsplit('/', 1)[-1] for _l, u in missing)})")
+        missing = sorted(missing)                        # oldest first, whatever order the page listed them in
+        notes.append(f"year(s) {', '.join(lab for lab, _u in missing)} listed but the file answers 404 "
+                     f"({', '.join(u.rsplit('/', 1)[-1] for _l, u in missing)}); the stored rows for "
+                     f"{'that year' if len(missing) == 1 else 'those years'} stand")
     if newest is not None:
         expected = now.year if now.month >= _DUE_MONTH else now.year - 1
         if newest < expected:
             overdue = list(range(newest + 1, expected + 1))
+            day = now.date().isoformat()                 # the run's UTC date (now is UTC: _as_utc)
+            seen = (f"the {listed_newest} file is listed but was not read on {day}"
+                    if listed_newest and listed_newest > newest
+                    else f"no per-year XLSX after {newest} was listed on {day}")
             notes.append(f"newest data gap: the newest FSI year held is {newest}; {_years_text(overdue)} "
                          f"{'is' if len(overdue) == 1 else 'are'} overdue (a year counts as overdue from August of "
-                         f"that year); no per-year XLSX after {newest} on the excel page (on 2026-11-25 FSI 2024 "
-                         f"was published only as a Tableau view on /global-data/, fsi-2024-rankings)")
+                         f"that year); {seen}; FSI 2024 is published only as a Tableau view on /global-data/ "
+                         f"(fsi-2024-rankings)")
     if no_year_col:
         notes.append(f"year(s) {', '.join(no_year_col)}: no Year column, labelled from the file name")
     if demote:
