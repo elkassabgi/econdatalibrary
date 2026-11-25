@@ -31,15 +31,17 @@ HOW LOUD (each rule is pinned in tests/test_kof_globalization_newest_edition.py)
     means the keys with an observation in the store's newest year (the keys the last merged edition carried).
     Every key ever stored would be the wrong denominator: the merge never removes a key, so each edition that
     drops some would lower every later share for good;
-  * the merged edition's year is below (UTC run year - 1) -> PARTIAL, naming the gap (R1300): the newer
-    edition is missing, or it is at a URL this module does not know.
+  * the merged edition's year is below (UTC run year - 1) -> a NOTE naming the gap, reason first, with NO
+    status demotion (R1300, R2209: a partial is an ATTENTION status decided before health's RED-DATA data clock,
+    and is_due counts from last_success, so a gap partial would hide that alarm and re-download every pass): the
+    newer edition is missing, or it is at a URL this module does not know.
 A REFUSAL puts its reason FIRST in the error (the digest shows 72 characters) and ends with a "1/1 sub-unit(s)
 REFUSED" clause, which health's stuck alarm reads to count the run as failed. Only the 0-row and parse-error
 exits keep finalize()'s "returned 200 but parsed 0 rows", because only there it is true.
 
 Every merged pass hands the orchestrator the MERGE-MEASURED changed set (Result.changed_keys), so the CSV
-phase re-derives exactly the series whose served values changed. Without it a gap partial (no change, but a
-partial is due on every pass) re-derived every kof series on every pass (review F1).
+phase re-derives exactly the series whose served values changed. Without it a pass with no change re-derived
+every kof series (review F1).
 
 KNOWN LIMIT, NOT GUARDED (review F5). The older-edition refusal compares observation years, because the store
 records no edition stamp. If a newer edition ends in the SAME year as an older one and its URL later reads gone
@@ -368,14 +370,16 @@ def update(unit, since) -> Result:
     else:
         tally.empty_unit(label)
     res = finalize(tally, n, md, source=SOURCE, series_cursors=_series_maxes(tbl))
-    # The merge-measured changed set: the CSV phase derives exactly these ids ({} = nothing changed, also on a
-    # gap partial, which is due on every pass). Without it the phase takes every cursor key (review F1).
+    # The merge-measured changed set: the CSV phase derives exactly these ids ({} = nothing changed). Without it
+    # the phase takes every cursor key (review F1).
     res.changed_keys = changed
 
-    # 5. A newest edition below (UTC run year - 1) is a gap, recorded as partial (R1300).
+    # 5. A newest edition below (UTC run year - 1) is a gap (R1300): a NOTE, reason first, with NO status demotion
+    # (R2209). partial is an ATTENTION status decided before health's RED-DATA data-clock branch, and is_due counts
+    # the cadence from last_success, so a gap partial would hide the data-clock alarm and re-run the download on
+    # every pass after the due date.
     fname = f"KOFGI_{year}_public.xlsx"
     if year < run_year - 1:
-        res.status = "partial"
         res.error = (f"newest edition gap: the newest KOF edition that answers is {year} ({fname}) but the UTC "
                      f"run year is {run_year}, so the {run_year - 1} edition is missing or at a URL this fetcher "
                      f"does not know; merged {year}; {res.error}")

@@ -3263,19 +3263,20 @@ sources:
     confidence: high
     open_question: 'URL-rot, PARTLY closed 2026-11-25: update() walks the year-stamped URLs newest first; a transient
       for any year stops the walk with nothing merged; no answering year is structural; a merged edition below (UTC run
-      year - 1) is a PARTIAL naming the gap (R1300). STILL OPEN: KOF has renamed its files between editions (the KOF
-      page, read 2026-11-25, links 2024/2023_KOFGI.zip, 2025/KOFGI_2024.zip and 2025/KOFGI_2025_public.xlsx), so an
-      edition under another name is missed. The gap partial fires only at a run: this annual unit runs at its due date
-      (about 2027-06-20 after the 2026-07-27 success) or by a forced run, and a partial then makes it due on every pass
-      until an edition answers at the template path. Listing-page discovery (R78) would catch a renamed file. Parser
+      year - 1) writes a NOTE naming the gap, reason first, with NO status demotion (R1300; R2209: a partial would hide
+      the RED-DATA data clock and re-download every pass). STILL OPEN: KOF has renamed its files between editions (the
+      KOF page, read 2026-11-25, links 2024/2023_KOFGI.zip, 2025/KOFGI_2024.zip and 2025/KOFGI_2025_public.xlsx), so an
+      edition under another name is missed. The gap note is written only at a run: this annual unit runs at its due
+      date (about 2027-06-20 after the 2026-07-27 success) or by a forced dispatch. Listing-page discovery (R78) would catch a renamed file. Parser
       takes the FIRST sheet yielding obs; a newest edition that will not parse, or parses 0 rows, is structural, never
       a fallback.'
   matrix:
     refresh_mechanism:
     - merge-single-file
     force_refresh_procedure:
-    - 'From the repo root: `python -u -m updater.run --source kof_globalization --force` (AQUEDUCT_BACKEND=r2 for the
-      served store). The fetcher takes the newest year-stamped edition and merges it; no URL edit is needed for a new
+    - 'Dispatch updater-daily.yml with source=kof_globalization force=true (`gh workflow run updater-daily.yml -f
+      source=kof_globalization -f force=true`), the sanctioned path; never a local `updater.run`, which writes outside
+      CI''s state lineage (R406, R340). The fetcher takes the newest year-stamped edition and merges it; no URL edit is needed for a new
       edition. Do NOT delete the parquet first: the merge needs no clean slate, and an empty store disarms the
       older-than-store and key-share refusals (only the since refusal stays armed, through the state''s
       last_obs_date). jobs/ingest_kof_globalization.py is the cold-start ingest only (it skips

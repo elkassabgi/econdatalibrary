@@ -473,27 +473,30 @@ def test_a_revision_that_adds_no_row_reads_ok_not_no_change(store, monkeypatch):
     assert sorted(res.changed_keys) == sorted({f"KOF:{c}:{iso}" for c in ("KOFGI", "KOFECGI") for iso, _n in COUNTRIES})
 
 
-def test_a_missing_newer_edition_in_the_next_year_is_partial(store, monkeypatch):
+def test_a_missing_newer_edition_in_the_next_year_is_a_note_not_a_partial(store, monkeypatch):
+    """R2209: the gap is a NOTE, reason first, and the status is NOT demoted (a partial would hide the RED-DATA
+    data clock and re-download on every pass after the due date)."""
     _pin(monkeypatch, NEW_2027)
     _seed(store, ED_2025)
     _serve(monkeypatch, Site(y2025=_ok(_xlsx(ED_2025))))
     res = K.update(None, "2023-12-31")
-    assert res.status == "partial", (res.status, res.error)
+    assert res.status == "no_change", (res.status, res.error)
     assert res.error.startswith("newest edition gap:")
     assert "2026 edition is missing" in res.error
 
 
-def test_a_gap_partial_with_no_change_derives_no_csv(store, monkeypatch):
-    """Review F1: a gap partial is due on every pass. With no changed value it must hand the CSV phase an EMPTY
-    merge-measured set, or the phase takes every cursor key and re-derives every kof series each pass."""
+def test_a_gap_note_with_no_change_derives_no_csv(store, monkeypatch):
+    """Review F1: with no changed value the pass must hand the CSV phase an EMPTY merge-measured set, or the phase
+    takes every cursor key and re-derives every kof series."""
     from updater import derive, orchestrate
     _pin(monkeypatch, NEW_2027)
     _seed(store, ED_2025)
     _serve(monkeypatch, Site(y2025=_ok(_xlsx(ED_2025))))
     res = K.update(None, "2023-12-31")
-    assert res.status == "partial" and res.changed_keys == {}, (res.status, res.changed_keys)
+    assert res.status == "no_change" and res.changed_keys == {}, (res.status, res.changed_keys)
+    assert res.error.startswith("newest edition gap:")
     assert len(res.series_cursors) == 12                  # the cursors are still all there ...
-    assert orchestrate._should_derive_csvs(res.status, res.changed_keys) is True   # ... and a partial derives
+    assert orchestrate._should_derive_csvs(res.status, res.changed_keys) is False  # ... and no_change derives none
 
     def _no_derive(*a, **k):
         raise AssertionError("the CSV phase derived a kof series on a pass that changed nothing")
