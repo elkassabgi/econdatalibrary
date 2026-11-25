@@ -9,11 +9,14 @@ This module holds the ONE composite-CSV parser (ingest_composite_csv), which the
 updater/strategies/fetchers/undp_hdr.py imports.
 
 Run: python jobs/ingest_undp_hdr.py
-  COLD START (and any manual re-run) goes THROUGH THE FETCHER: main() calls the fetcher's own update(), so it
-  uses the same edition discovery, the same refusals and the same merge. The old main() walked a hard-coded
-  2023-24 list (the HDR23-24 composite CSV, a 2024 annex zip, an HDI trends XLSX and five 2023-24 annex XLSX
-  files) and wrote whatever answered, so after HDR25 a deleted store came back as an older edition. That list
-  and the annex-XLSX parser it fed were removed on 2026-11-25.
+  COLD START ONLY. main() writes only when NO store exists, and then through the fetcher's own update() (the same
+  edition discovery, refusals and merge). On an existing store it writes NOTHING and prints the command to use
+  instead (python -m updater.run --source undp_hdr --force): a write outside the orchestrator books no state row,
+  runs no CSV phase and queues no catalogue sync, and the next pass would then re-merge the same values as
+  no_change, so the served CSVs would keep the old edition with no alarm (R549). The old main() walked a
+  hard-coded 2023-24 list (the HDR23-24 composite CSV, a 2024 annex zip, an HDI trends XLSX and five 2023-24
+  annex XLSX files) and wrote whatever answered with a local pq.write_table. That list, the annex-XLSX parser it
+  fed and that write were removed on 2026-11-25.
 """
 from __future__ import annotations
 import datetime as dt, io, os, re, sys, time
@@ -128,11 +131,21 @@ def ingest_composite_csv(content: bytes, all_keys, all_dates, all_vals, strict: 
     return count
 
 
+FORCED_RUN = "python -m updater.run --source undp_hdr --force"
+
+
 def main():
-    """Cold start or manual re-run, through the fetcher (see the module docstring)."""
+    """Cold start only, through the fetcher (see the module docstring). Returns the Result, or None when a store
+    exists and nothing was written."""
     if ROOT not in sys.path:
         sys.path.insert(0, ROOT)
+    from updater import blob                            # noqa: PLC0415
     from updater.strategies.fetchers import undp_hdr   # noqa: PLC0415
+    path = undp_hdr.store_path()
+    if blob.exists(path):
+        log(f"undp_hdr: a store exists ({path}); this script writes only on a cold start and wrote nothing. "
+            f"To refresh it, run from the repo root: {FORCED_RUN}")
+        return None
     res = undp_hdr.update(None, None)
     log(f"undp_hdr: {res.status}: {res.error}")
     return res

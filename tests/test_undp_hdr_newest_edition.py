@@ -344,13 +344,16 @@ def test_a_transient_probe_head_returns_none(monkeypatch):
 @pytest.mark.parametrize("page, why", [
     (requests.Timeout("t"), "the downloads page did not answer (Timeout)"),
     (requests.ConnectionError("c"), "the downloads page did not answer (ConnectionError)"),
+    (requests.exceptions.ChunkedEncodingError("x"), "the downloads page did not answer (ChunkedEncodingError)"),
+    (requests.TooManyRedirects("x"), "the downloads page did not answer (TooManyRedirects)"),
     (_Resp(503), "the downloads page answered HTTP 503"),
     (_Resp(403, b"<html>challenge</html>"), "the downloads page answered HTTP 403"),
     (NOT_FOUND, "the downloads page answered HTTP 404"),
     (_Resp(200, JS_RENDERED), "the downloads page holds no HDR composite time-series CSV link"),
     (_page(ANCHORS_2026_11_25[1], ANCHORS_2026_11_25[10]), "the downloads page holds no HDR composite"),
     (_page(SYNTHETIC_2324), "the downloads page links only editions up to 2024, older than the pinned 2025"),
-], ids=["timeout", "connection", "503", "403-challenge", "404", "js-rendered", "only-distractors", "only-older"])
+], ids=["timeout", "connection", "chunked", "redirects", "503", "403-challenge", "404", "js-rendered",
+        "only-distractors", "only-older"])
 def test_any_page_failure_takes_the_pinned_edition_and_is_partial_reason_first(store, monkeypatch, page, why):
     _pin(monkeypatch, NOV_2026)
     _seed(store, C25)
@@ -571,6 +574,35 @@ def test_no_stamp_probe_and_no_fetcher_token():
     assert getattr(H, "STAMP_PROBE", False) is False
 
 
+# ---------------------------------------------------------------- N1(a): one discovery line per run
+
+def _discovery_lines(capsys):
+    return [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("[undp_hdr] discovery:")]
+
+
+def test_one_discovery_line_per_run_names_status_bytes_links_choice(store, monkeypatch, capsys):
+    _pin(monkeypatch, NOV_2026)
+    _serve(monkeypatch, {PAGE: TODAY, U25: _csv_resp(B25)})
+    H.current_vintage(None)
+    H.update(None, None)
+    assert _discovery_lines(capsys) == [
+        f"[undp_hdr] discovery: page HTTP 200, {len(TODAY.content):,} bytes, 1 composite link(s); chose {U25}; "
+        "fallback: none"]
+
+
+@pytest.mark.parametrize("page, head", [
+    (_Resp(403, b"<html>challenge</html>"), "page HTTP 403, 22 bytes, 0 composite link(s)"),
+    (requests.Timeout("t"), "page no answer, 0 bytes, 0 composite link(s)"),
+], ids=["403", "timeout"])
+def test_the_discovery_line_carries_the_fallback_reason(store, monkeypatch, capsys, page, head):
+    _pin(monkeypatch, NOV_2026)
+    _serve(monkeypatch, {PAGE: page, U25: _csv_resp(B25)})
+    H.update(None, None)
+    lines = _discovery_lines(capsys)
+    assert len(lines) == 1, lines
+    assert lines[0].startswith(f"[undp_hdr] discovery: {head}; chose {U25}; fallback: discovery failed: "), lines[0]
+
+
 # ---------------------------------------------------------------- the ingester goes through the fetcher
 
 def test_the_ingester_runs_the_fetcher_and_takes_hdr26(store, monkeypatch):
@@ -583,15 +615,38 @@ def test_the_ingester_runs_the_fetcher_and_takes_hdr26(store, monkeypatch):
     assert _cells(store)[(PLANT_KEY, PLANT_DATE)] == PLANT_VALUE
 
 
-def test_the_ingester_writes_nothing_when_the_server_has_only_23_24(store, monkeypatch):
-    """A 2023 store and a server that has HDR23-24 only (HDR25 gone): the pinned HDR25 answers 404, so the run
-    is refused and nothing is written; HDR23-24 is never fetched."""
+def test_the_ingester_writes_nothing_on_an_existing_store_even_when_hdr26_is_linked(store, monkeypatch, capsys):
+    """N2: main() writes ONLY on a cold start. An existing HDR25 store and a page that links HDR26: no request is
+    made, the store bytes are unchanged, and the forced-run command is printed."""
+    from jobs import ingest_undp_hdr as J
+    _pin(monkeypatch, NOV_2026)
+    _seed(store, C25)
+    before = store.read_bytes()
+    site = _serve(monkeypatch, {PAGE: WITH_26, U26: _csv_resp(B26), U25: _csv_resp(B25)})
+    assert J.main() is None
+    assert store.read_bytes() == before
+    assert site.gets == [] and site.heads == []
+    assert "python -m updater.run --source undp_hdr --force" in capsys.readouterr().out
+
+
+def test_the_ingester_writes_nothing_on_a_2023_store_when_the_server_has_only_23_24(store, monkeypatch):
     from jobs import ingest_undp_hdr as J
     _pin(monkeypatch, NOV_2026)
     _seed(store, C25)
     before = store.read_bytes()
     site = _serve(monkeypatch, {PAGE: _page(SYNTHETIC_2324), U2324: _csv_resp(B2324), U25: NOT_FOUND})
+    assert J.main() is None
+    assert site.gets == []
+    assert store.read_bytes() == before
+
+
+def test_a_cold_start_with_only_23_24_served_writes_nothing(store, monkeypatch):
+    """No store, a page that links HDR23-24 only, HDR25 gone: the pinned HDR25 answers 404, so the run is refused
+    and no store is written; HDR23-24 is never fetched."""
+    from jobs import ingest_undp_hdr as J
+    _pin(monkeypatch, NOV_2026)
+    site = _serve(monkeypatch, {PAGE: _page(SYNTHETIC_2324), U2324: _csv_resp(B2324), U25: NOT_FOUND})
     with pytest.raises(DefinitiveError, match="answers HTTP 404"):
         J.main()
     assert U2324 not in site.gets
-    assert store.read_bytes() == before
+    assert not store.exists()

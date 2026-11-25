@@ -20,9 +20,11 @@ HDR<NN>[-<NN>]_Composite_indices_complete_time_series.csv, and takes the newest 
 ANY PAGE FAILURE IS LOUD, AND NEVER TRANSIENT FOR EVER. A timeout, a 403 challenge, a 503, a page with no matching
 link (a layout change, or a page rendered by JavaScript), or a page that links only editions older than
 PINNED_EDITION: the run fetches the pinned edition (HDR25, the newest the page linked on 2026-11-25) and records a
-PARTIAL whose note starts with the reason. The pinned edition is the one the store already holds, so its
-revisions still reach users, and the partial keeps the unit in ATTENTION and due every pass. A transient stop
-with no merge applies to the chosen CSV's GET, not to the page.
+PARTIAL whose note starts with the reason. While the store's newest edition is HDR25, the pinned edition is the
+one the store holds, so its revisions still reach users. ONCE A NEWER EDITION IS MERGED, a fallback to the pinned
+HDR25 is REFUSED as older than the store (nothing merged; the run is still loud). Either way the unit stays in
+ATTENTION and due every pass until discovery works again. A transient stop with no merge applies to the chosen
+CSV's GET, not to the page. discover() prints one line per run (page status, bytes, links, choice, fallback).
 
 YEARS ARE OBSERVATION YEARS OF THE hdi:<ISO3> FAMILY. The store also holds aggregates (hdi:ZZA.VHHD ...) and
 country-NAME keys from the retired annex cold start (hdi:Afghanistan ..., ending 2022); neither may decide a
@@ -53,7 +55,9 @@ phase exactly the changed series ({} on a pass that changed nothing, also on a p
 KNOWN LIMITS, NOT GUARDED: (1) the older-edition refusal compares observation years, because the store records no
 edition stamp, so a same-year older edition can still merge over a newer one when only the older is reachable;
 an edition-stamp sidecar would close it. (2) This fetcher refreshes composite keys only. The annex name-keyed
-series (hdi/gdi/gii:<country name>) that the retired cold start wrote are not refreshed by anything.
+series (hdi/gdi/gii:<country name>; 630 in the catalogue copy of 2026-11-16, all ending 2022) are not refreshed
+by anything - as before this fix: the old fetcher read only the composite CSV, and the old ingester returned when
+a store existed.
 
 Parse logic is jobs/ingest_undp_hdr.ingest_composite_csv, called with strict=True (a parse error raises) and a
 year bound derived from the run clock.
@@ -126,24 +130,39 @@ def composite_links(html: str, base: str = DOWNLOADS_PAGE) -> list:
 
 
 def discover():
-    """(edition_year, url, fallback_reason or None). Never transient: any page failure falls back to the
-    pinned edition with its reason."""
+    """(edition_year, url, fallback_reason or None). Never transient: any page failure (any requests
+    exception, including ChunkedEncodingError and TooManyRedirects) falls back to the pinned edition with its
+    reason. Prints ONE line every call - the page status, its bytes, the composite links found, the chosen URL
+    and the fallback reason - so a dry run's log shows what the runner got from the page."""
     pin_y, pin_url = PINNED_EDITION
+    status, nbytes, links, why = "no answer", 0, [], None
     try:
         r = requests.get(DOWNLOADS_PAGE, headers=UA, timeout=60, allow_redirects=True)
-    except (requests.Timeout, requests.ConnectionError) as e:
+    except requests.RequestException as e:
         why = f"the downloads page did not answer ({type(e).__name__})"
     else:
+        status, nbytes = f"HTTP {r.status_code}", len(r.content or b"")
         if r.status_code != 200:
             why = f"the downloads page answered HTTP {r.status_code}"
         else:
             links = composite_links(r.text)
-            if links and links[0][0] >= pin_y:
-                return links[0][0], links[0][1], None
-            why = (f"the downloads page links only editions up to {links[0][0]}, older than the pinned {pin_y}"
-                   if links else "the downloads page holds no HDR composite time-series CSV link "
-                                 "(layout changed, or rendered by JavaScript?)")
-    return pin_y, pin_url, f"discovery failed: {why}; fell back to the pinned {pin_y} edition"
+            if not links:
+                why = ("the downloads page holds no HDR composite time-series CSV link "
+                       "(layout changed, or rendered by JavaScript?)")
+            elif links[0][0] < pin_y:
+                why = f"the downloads page links only editions up to {links[0][0]}, older than the pinned {pin_y}"
+    if why is None:
+        year, url, fallback = links[0][0], links[0][1], None
+    else:
+        year, url, fallback = pin_y, pin_url, f"discovery failed: {why}; fell back to the pinned {pin_y} edition"
+    print(f"[{SOURCE}] discovery: page {status}, {nbytes:,} bytes, {len(links)} composite link(s); "
+          f"chose {url}; fallback: {fallback or 'none'}", flush=True)
+    return year, url, fallback
+
+
+def store_path() -> str:
+    """The single store file (the ingester's cold-start guard reads it too)."""
+    return os.path.join(config.source_dir(SOURCE), "undp_hdr.parquet")
 
 
 def _take_selection():
@@ -251,9 +270,8 @@ def _refuse(label: str, reason: str):
 def update(unit, since) -> Result:
     from jobs.ingest_undp_hdr import ingest_composite_csv  # the one composite parser
 
-    out_dir = config.source_dir(SOURCE)
-    os.makedirs(out_dir, exist_ok=True)
-    path = os.path.join(out_dir, "undp_hdr.parquet")
+    path = store_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     before = blob.row_count(path)
     tally = Tally()
     run_year = _run_year(_utc_now())
