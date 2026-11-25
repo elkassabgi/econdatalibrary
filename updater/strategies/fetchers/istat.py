@@ -65,7 +65,8 @@ and every process (jobs/_istat_pacer.py: 16 s between token starts, at most 4 in
     as its deadline; a slot past it is a deferral (_WindowEnd), never a failure and never a dead host;
   - allow_redirects=False on every GET: a 3xx is ONE request. A same-host redirect to a different path
     is followed once, with its own token (V5(a)); a self-, cross-host or second redirect marks the host
-    unusable for the run (today's sdmx.istat.it: 2 tokens per run instead of ~31 requests);
+    unusable for the run (today's sdmx.istat.it: 3 tokens per run - 1 TCP probe and 2 GETs, because its 302
+    to the site root is a same-host redirect and is followed once - instead of ~31 requests; review B 3a);
   - a 429 moves the shared next slot to its Retry-After (60 s to 48 h) for every participant;
   - update() writes the turn marker (begin_turn) before its loop and clears it (end_turn) in a
     `finally`, so the crawler starts no new flow while istat's turn runs; the progress lines carry

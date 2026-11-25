@@ -308,7 +308,8 @@ def _no_network_beyond_loopback(request):
     create_connection, urllib3, http.client and ssl all reach) to anything but a loopback (or unspecified) address
     is refused, and so is any DNS lookup of an ISTAT name (`istat.it`, `*.istat.it`). The test FAILS at teardown
     even when the code under test swallows the refusal, as the state-sync guard does. What it does NOT see: a child
-    process (a new interpreter loads no conftest), and asyncio's Windows proactor (ConnectEx, not connect)."""
+    process (a new interpreter loads no conftest), asyncio's Windows proactor (ConnectEx, not connect), and a raw
+    `_socket.socket` connect (review B 3b: it slips past this guard; no ISTAT code makes one)."""
     import socket as _s
     refused = []
     real_connect, real_connect_ex = _s.socket.connect, _s.socket.connect_ex

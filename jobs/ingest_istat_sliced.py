@@ -39,8 +39,9 @@ Run:
 RATE LIMIT. ISTAT, "SDMX web services" (https://www.istat.it/en/classifications-and-tools/sdmx-web-services/,
 read 2026-11-24): "a limit of 5 queries per minute has been set for each IP", and a block of 1 to 2 days when it
 is exceeded (secondary: ondata.github.io/guida-api-istat). EVERY run mode sends requests - `--list` and `--only`
-too, because each runs _preflight() first (one TCP connect and one GET per host) - and every request and connect
-takes a token of the ONE machine-wide budget in jobs/_istat_pacer.py, shared with the updater's istat fetcher,
+too, because each runs _preflight() first (one TCP connect and one GET per host; two GETs on a host whose 3xx is
+followed once) and then downloads the whole catalogue (get_dataflows: up to 3 URLs x 5 attempts per host) - and
+every request and connect takes a token of the ONE machine-wide budget in jobs/_istat_pacer.py, shared with the updater's istat fetcher,
 any second crawler and the tools. While the updater's istat turn runs, this crawler starts no new flow or
 preflight (it yields) and takes at most one token per 61 s.
 """
@@ -1090,6 +1091,9 @@ def _main():
     if parsed is None:
         print(__doc__); return
     only_ids, list_only, max_size = parsed
+    # V9 receipt (review B condition 1): every launch that can send prints the pacer's state line once, before any
+    # request, as the fetcher's update() does. A guard_istat_sliced_*.log that carries it was written by new code.
+    print(_pacer.describe(), flush=True)
 
     if not _preflight():
         raise SystemExit(3)          # distinct code: upstream down, not a crawler fault

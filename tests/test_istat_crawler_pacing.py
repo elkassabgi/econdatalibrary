@@ -274,3 +274,78 @@ def test_list_sends_only_paced_requests(rig, monkeypatch, capsys):
     sends = [e for e in rig.events if e[0] in ("send", "connect")]
     assert sends and sends_are_paced(rig.events) == [], sends_are_paced(rig.events)
     assert all(a is False for _u, a in rig.sent)
+
+
+# ------------------------------------------------------------------ V9 receipt (review B condition 1)
+
+import re  # noqa: E402
+
+_FLOWS_XML = (b'<m:Structure xmlns:m="http://www.sdmx.org/resources/sdmxml/schemas/v2_1/message" '
+              b'xmlns:s="http://www.sdmx.org/resources/sdmxml/schemas/v2_1/structure" '
+              b'xmlns:c="http://www.sdmx.org/resources/sdmxml/schemas/v2_1/common"><m:Structures><s:Dataflows>'
+              b'<s:Dataflow id="F1" agencyID="IT1" version="1.0"><c:Name>one</c:Name></s:Dataflow>'
+              b'</s:Dataflows></m:Structures></m:Structure>')
+_STATE_RX = re.compile(r"^\[istat-pacer\] state .+; mode .+; gap 16 s; budget \d+/min$")
+
+
+def _loud_launch(rig, monkeypatch, capsys, argv):
+    """Run main() as the guard (no argument) or as --list; every connect and GET prints a marker line, so the
+    output shows whether the pacer's state line came before the first request."""
+    import socket
+    quiet_connect = socket.create_connection
+
+    def loud_connect(addr, timeout=None):
+        print(f"REQ connect {addr[0]}", flush=True)
+        return quiet_connect(addr, timeout)
+
+    monkeypatch.setattr(socket, "create_connection", loud_connect)
+
+    def answer(u, n):
+        print(f"REQ get {u}", flush=True)
+        return Resp(200, _FLOWS_XML) if "/dataflow/" in u else Resp(404, b"NoRecordsFound")
+
+    rig.net(answer)
+    monkeypatch.setattr(sys, "argv", ["ingest_istat_sliced.py"] + argv)
+    try:
+        ingest.main()
+    except SystemExit:
+        pass
+    return capsys.readouterr().out.splitlines()
+
+
+@pytest.mark.parametrize("argv", [[], ["--list"]])
+def test_v9_a_launch_prints_the_pacer_state_line_once_before_any_request(rig, monkeypatch, capsys, argv):
+    """V9: a guard_istat_sliced_*.log written by new code carries the pacer's state line, printed once per launch
+    BEFORE the first connect or GET (the fetcher's update() does the same). Old code never prints it."""
+    rig.recorder()
+    lines = _loud_launch(rig, monkeypatch, capsys, argv)
+    states = [i for i, ln in enumerate(lines) if ln.startswith("[istat-pacer] state ")]
+    reqs = [i for i, ln in enumerate(lines) if ln.startswith("REQ ")]
+    assert reqs, "premise: the launch sent nothing\n" + "\n".join(lines[-40:])
+    assert len(states) == 1, "\n".join(lines[-40:])
+    assert states[0] < reqs[0], "\n".join(lines[:40])
+    assert _STATE_RX.match(lines[states[0]]), lines[states[0]]
+
+
+def test_v9_help_prints_no_pacer_line_and_sends_nothing(rig, monkeypatch, capsys):
+    rig.recorder()
+    lines = _loud_launch(rig, monkeypatch, capsys, ["--help"])
+    assert not [ln for ln in lines if ln.startswith("[istat-pacer]") or ln.startswith("REQ ")], lines[-20:]
+    assert rig.sent == []
+
+
+@real
+@pytest.mark.skipif(sys.platform != "win32", reason="the shared record needs msvcrt")
+def test_v9_on_a_valid_production_record_the_real_line_says_mode_shared(rig, monkeypatch, capsys):
+    """The production shape (review B 3d): the machine's record exists and its last token is 1,000 s old. The old
+    crawler printed NO [istat-pacer] line on this record; the new one prints the state line, mode shared."""
+    monkeypatch.setattr(_istat_pacer, "_is_wsl", lambda: False)
+    _istat_pacer._reset_process_state()
+    early = Clock()
+    early.t = rig.clock.t - 1000.0
+    _istat_pacer.acquire("updater", "esploradati.istat.it", "http", "data", clock=early)
+    capsys.readouterr()
+    lines = _loud_launch(rig, monkeypatch, capsys, ["--list"])
+    states = [ln for ln in lines if ln.startswith("[istat-pacer] state ")]
+    assert len(states) == 1 and "; mode shared;" in states[0], "\n".join(lines[-40:])
+    assert _STATE_RX.match(states[0]), states[0]
