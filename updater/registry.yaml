@@ -9580,20 +9580,30 @@ sources:
     emission factors 72292) that FAOSTAT no longer publishes at any grain — the
     reproducing majority updates (restrict_to_published), the rest freezes.
   cadence: annual
-  # upstream_verified - PROBED 2026-08-24 against FAO's own release file:
-  #   GET https://bulks-faostat.fao.org/production/datasets_E.json
-  # reports DateUpdate 2025-10-28 for dataset GCE, which backs this source. Our last
-  # successful pull is 2026-08-09 - NEWER than FAO's own release date - and the strategy is
-  # overwrite_if_changed: the whole bulk file is re-downloaded when that stamp moves. So the
-  # store holds FAO's current published snapshot, and 2023-01-01 is FAO's newest actual period,
-  # not a stalled fetch. (This source also carries projections out to 2050-01-01; those are real
-  # data but say nothing about recency, so they are excluded from the recency signal.)
-  #
-  # Assertion with an expiry: lapses to ATTENTION after 180 days, and stops applying the
-  # moment our newest observation falls behind the declared value.
+  # upstream_verified - RE-MEASURED 2026-11-26. This replaces the 2026-08-24 text, which said the
+  # bulk file is re-downloaded when FAO's stamp moves; that is false for an annual unit. The
+  # measured facts and the real mechanism are in `method`.
   upstream_verified:
-    latest_obs: '2023-01-01'
-    checked: '2026-08-24'
+    latest_obs: '2024-01-01'
+    checked: '2026-11-26'
+    method: >-
+      GET https://bulks-faostat.fao.org/production/datasets_E.json at 2026-11-26T09:45:00Z
+      (CloudFront cache hit, Age 175783 s, Last-Modified 2026-11-23T17:43:12Z) reports DateUpdate
+      2026-11-06T00:00:00 for dataset GCE, which backs this source. Forced single-source run
+      45638159146 (dispatched 2026-11-25T14:48:51Z) merged that file: 'ok fao_ga/_all', 436,244 obs /
+      7,764 series, Health gate OK with newest observed period 2024-01-01 (period-start dating).
+      So 2024-01-01 is the newest actual period in FAO's current release, not a stalled fetch.
+      Mechanism: this unit is annual. It is refreshed only by a due run (328.5 d = 365 x 0.9 after
+      its last success, base.cadence_due) or by a forced run; there is no stamp probe, because
+      orchestrate prints NOT DUE
+      before detect_change runs. A new FAO release is NOT fetched by itself: re-read the index and
+      force a run when DateUpdate for GCE moves.
+      The store also carries projections to 2050-01-01 (7,153 of 7,713 values forward-dated on the
+      2026-10-10 state copy). They are excluded from the recency signal, and without this claim
+      health._recency_signal would read that signal as UNKNOWN (dead-minority suppression), so no
+      data clock would run at all; this claim keeps the clock and its expiry.
+      Lapses to ATTENTION after 180 days (after 2027-05-25), and stops applying the moment our
+      newest observation falls behind latest_obs.
   refresh_cost: medium
   out_dir: fao_ga
   review: true
@@ -9625,20 +9635,30 @@ sources:
     grain. The reproducing majority updates (restrict_to_published — upstream is a
     9.5x superset), the rest freezes.
   cadence: annual
-  # upstream_verified - PROBED 2026-08-24 against FAO's own release file:
-  #   GET https://bulks-faostat.fao.org/production/datasets_E.json
-  # reports DateUpdate 2025-10-28 for dataset GLE, which backs this source. Our last
-  # successful pull is 2026-08-09 - NEWER than FAO's own release date - and the strategy is
-  # overwrite_if_changed: the whole bulk file is re-downloaded when that stamp moves. So the
-  # store holds FAO's current published snapshot, and 2023-01-01 is FAO's newest actual period,
-  # not a stalled fetch. (This source also carries projections out to 2050-01-01; those are real
-  # data but say nothing about recency, so they are excluded from the recency signal.)
-  #
-  # Assertion with an expiry: lapses to ATTENTION after 180 days, and stops applying the
-  # moment our newest observation falls behind the declared value.
+  # upstream_verified - RE-MEASURED 2026-11-26. This replaces the 2026-08-24 text, which said the
+  # bulk file is re-downloaded when FAO's stamp moves; that is false for an annual unit. The
+  # measured facts and the real mechanism are in `method`.
   upstream_verified:
-    latest_obs: '2023-01-01'
-    checked: '2026-08-24'
+    latest_obs: '2024-01-01'
+    checked: '2026-11-26'
+    method: >-
+      GET https://bulks-faostat.fao.org/production/datasets_E.json at 2026-11-26T09:45:00Z
+      (CloudFront cache hit, Age 175783 s, Last-Modified 2026-11-23T17:43:12Z) reports DateUpdate
+      2026-11-06T00:00:00 for dataset GLE, which backs this source. Forced single-source run
+      45656065608 (dispatched 2026-11-25T16:38:25Z) merged that file: 'ok fao_ge/_all', 382,366 obs /
+      6,536 series, Health gate OK with newest observed period 2024-01-01 (period-start dating).
+      So 2024-01-01 is the newest actual period in FAO's current release, not a stalled fetch.
+      Mechanism: this unit is annual. It is refreshed only by a due run (328.5 d = 365 x 0.9 after
+      its last success, base.cadence_due) or by a forced run; there is no stamp probe, because
+      orchestrate prints NOT DUE
+      before detect_change runs. A new FAO release is NOT fetched by itself: re-read the index and
+      force a run when DateUpdate for GLE moves.
+      The store also carries projections to 2050-01-01 (5,911 of 6,210 values forward-dated on the
+      2026-10-10 state copy). They are excluded from the recency signal, and without this claim
+      health._recency_signal would read that signal as UNKNOWN (dead-minority suppression), so no
+      data clock would run at all; this claim keeps the clock and its expiry.
+      Lapses to ATTENTION after 180 days (after 2027-05-25), and stops applying the moment our
+      newest observation falls behind latest_obs.
   refresh_cost: medium
   out_dir: fao_ge
   review: true
@@ -9731,20 +9751,30 @@ sources:
     remainder decomposes to 5 dropped element classes FAOSTAT no longer publishes.
     The reproducing minority updates (restrict_to_published), the rest freezes.
   cadence: annual
-  # upstream_verified - PROBED 2026-08-24 against FAO's own release file:
-  #   GET https://bulks-faostat.fao.org/production/datasets_E.json
-  # reports DateUpdate 2025-10-28 for dataset GCE, which backs this source. Our last
-  # successful pull is 2026-08-09 - NEWER than FAO's own release date - and the strategy is
-  # overwrite_if_changed: the whole bulk file is re-downloaded when that stamp moves. So the
-  # store holds FAO's current published snapshot, and 2023-01-01 is FAO's newest actual period,
-  # not a stalled fetch. (This source also carries projections out to 2050-01-01; those are real
-  # data but say nothing about recency, so they are excluded from the recency signal.)
-  #
-  # Assertion with an expiry: lapses to ATTENTION after 180 days, and stops applying the
-  # moment our newest observation falls behind the declared value.
+  # upstream_verified - RE-MEASURED 2026-11-26. This replaces the 2026-08-24 text, which said the
+  # bulk file is re-downloaded when FAO's stamp moves; that is false for an annual unit. The
+  # measured facts and the real mechanism are in `method`.
   upstream_verified:
-    latest_obs: '2023-01-01'
-    checked: '2026-08-24'
+    latest_obs: '2024-01-01'
+    checked: '2026-11-26'
+    method: >-
+      GET https://bulks-faostat.fao.org/production/datasets_E.json at 2026-11-26T09:45:00Z
+      (CloudFront cache hit, Age 175783 s, Last-Modified 2026-11-23T17:43:12Z) reports DateUpdate
+      2026-11-06T00:00:00 for dataset GCE, which backs this source. Forced single-source run
+      45642910411 (dispatched 2026-11-25T15:14:28Z) merged that file: 'ok fao_gb/_all', 170,182 obs /
+      2,935 series, Health gate OK with newest observed period 2024-01-01 (period-start dating).
+      So 2024-01-01 is the newest actual period in FAO's current release, not a stalled fetch.
+      Mechanism: this unit is annual. It is refreshed only by a due run (328.5 d = 365 x 0.9 after
+      its last success, base.cadence_due) or by a forced run; there is no stamp probe, because
+      orchestrate prints NOT DUE
+      before detect_change runs. A new FAO release is NOT fetched by itself: re-read the index and
+      force a run when DateUpdate for GCE moves.
+      The store also carries projections to 2050-01-01 (2,608 of 2,900 values forward-dated on the
+      2026-10-10 state copy). They are excluded from the recency signal, and without this claim
+      health._recency_signal would read that signal as UNKNOWN (dead-minority suppression), so no
+      data clock would run at all; this claim keeps the clock and its expiry.
+      Lapses to ATTENTION after 180 days (after 2027-05-25), and stops applying the moment our
+      newest observation falls behind latest_obs.
   refresh_cost: medium
   out_dir: fao_gb
   review: true
@@ -9774,20 +9804,28 @@ sources:
     plus discontinued combos) — no element or item was re-coded. The reproducing
     majority updates (restrict_to_published), the rest freezes.
   cadence: annual
-  # upstream_verified - PROBED 2026-08-24 against FAO's own release file:
-  #   GET https://bulks-faostat.fao.org/production/datasets_E.json
-  # reports DateUpdate 2025-10-28 for dataset GN, which backs this source. Our last
-  # successful pull is 2026-08-09 - NEWER than FAO's own release date - and the strategy is
-  # overwrite_if_changed: the whole bulk file is re-downloaded when that stamp moves. So the
-  # store holds FAO's current published snapshot, and 2023-01-01 is FAO's newest actual period,
-  # not a stalled fetch. (This source also carries projections out to 2023-01-01; those are real
-  # data but say nothing about recency, so they are excluded from the recency signal.)
-  #
-  # Assertion with an expiry: lapses to ATTENTION after 180 days, and stops applying the
-  # moment our newest observation falls behind the declared value.
+  # upstream_verified - RE-MEASURED 2026-11-26. This replaces the 2026-08-24 text, which said the
+  # bulk file is re-downloaded when FAO's stamp moves; that is false for an annual unit. The
+  # measured facts and the real mechanism are in `method`.
   upstream_verified:
-    latest_obs: '2023-01-01'
-    checked: '2026-08-24'
+    latest_obs: '2024-01-01'
+    checked: '2026-11-26'
+    method: >-
+      GET https://bulks-faostat.fao.org/production/datasets_E.json at 2026-11-26T09:45:00Z
+      (CloudFront cache hit, Age 175783 s, Last-Modified 2026-11-23T17:43:12Z) reports DateUpdate
+      2026-11-06T00:00:00 for dataset GN, which backs this source. Forced single-source run
+      45658986245 (dispatched 2026-11-25T16:54:27Z) merged that file: 'ok fao_gn/_all', 113,422 obs /
+      3,986 series, Health gate OK with newest observed period 2024-01-01 (period-start dating).
+      So 2024-01-01 is the newest actual period in FAO's current release, not a stalled fetch.
+      Mechanism: this unit is annual. It is refreshed only by a due run (328.5 d = 365 x 0.9 after
+      its last success, base.cadence_due) or by a forced run; there is no stamp probe, because
+      orchestrate prints NOT DUE
+      before detect_change runs. A new FAO release is NOT fetched by itself: re-read the index and
+      force a run when DateUpdate for GN moves.
+      This source has no forward-dated values (0 on the 2026-10-10 state copy), so without this
+      claim the data clock fires at the 2026-12-31 gate (2024-01-01 + 1,095 d).
+      Lapses to ATTENTION after 180 days (after 2027-05-25), and stops applying the moment our
+      newest observation falls behind latest_obs.
   refresh_cost: small
   out_dir: fao_gn
   review: true
@@ -9849,20 +9887,30 @@ sources:
     GWP factors, so old CO2eq series are a different-basis vintage — frozen
     rather than mislabeled. Source='FAO TIER 1' pinned.
   cadence: annual
-  # upstream_verified - PROBED 2026-08-24 against FAO's own release file:
-  #   GET https://bulks-faostat.fao.org/production/datasets_E.json
-  # reports DateUpdate 2025-10-28 for dataset GT, which backs this source. Our last
-  # successful pull is 2026-08-09 - NEWER than FAO's own release date - and the strategy is
-  # overwrite_if_changed: the whole bulk file is re-downloaded when that stamp moves. So the
-  # store holds FAO's current published snapshot, and 2023-01-01 is FAO's newest actual period,
-  # not a stalled fetch. (This source also carries projections out to 2050-01-01; those are real
-  # data but say nothing about recency, so they are excluded from the recency signal.)
-  #
-  # Assertion with an expiry: lapses to ATTENTION after 180 days, and stops applying the
-  # moment our newest observation falls behind the declared value.
+  # upstream_verified - RE-MEASURED 2026-11-26. This replaces the 2026-08-24 text, which said the
+  # bulk file is re-downloaded when FAO's stamp moves; that is false for an annual unit. The
+  # measured facts and the real mechanism are in `method`.
   upstream_verified:
-    latest_obs: '2023-01-01'
-    checked: '2026-08-24'
+    latest_obs: '2024-01-01'
+    checked: '2026-11-26'
+    method: >-
+      GET https://bulks-faostat.fao.org/production/datasets_E.json at 2026-11-26T09:45:00Z
+      (CloudFront cache hit, Age 175783 s, Last-Modified 2026-11-23T17:43:12Z) reports DateUpdate
+      2026-11-06T00:00:00 for dataset GT, which backs this source. Forced single-source run
+      45792525223 (dispatched 2026-11-26T09:30:02Z) merged that file: 'ok fao_gt/_all', 173,237 obs /
+      2,955 series, Health gate OK with newest observed period 2024-01-01 (period-start dating).
+      So 2024-01-01 is the newest actual period in FAO's current release, not a stalled fetch.
+      Mechanism: this unit is annual. It is refreshed only by a due run (328.5 d = 365 x 0.9 after
+      its last success, base.cadence_due) or by a forced run; there is no stamp probe, because
+      orchestrate prints NOT DUE
+      before detect_change runs. A new FAO release is NOT fetched by itself: re-read the index and
+      force a run when DateUpdate for GT moves.
+      The store also carries projections to 2050-01-01 (2,198 of 2,857 values forward-dated on the
+      2026-10-10 state copy). They are excluded from the recency signal, and without this claim
+      health._recency_signal would read that signal as UNKNOWN (dead-minority suppression), so no
+      data clock would run at all; this claim keeps the clock and its expiry.
+      Lapses to ATTENTION after 180 days (after 2027-05-25), and stops applying the moment our
+      newest observation falls behind latest_obs.
   refresh_cost: medium
   out_dir: fao_gt
   review: true
@@ -9912,20 +9960,30 @@ sources:
     Area.Item.Element reproduces 59.6%; the rest is the dropped CO2eq/implied-EF
     family (R403 GWP-basis class), frozen.
   cadence: annual
-  # upstream_verified - PROBED 2026-08-24 against FAO's own release file:
-  #   GET https://bulks-faostat.fao.org/production/datasets_E.json
-  # reports DateUpdate 2025-10-28 for dataset GCE, which backs this source. Our last
-  # successful pull is 2026-08-09 - NEWER than FAO's own release date - and the strategy is
-  # overwrite_if_changed: the whole bulk file is re-downloaded when that stamp moves. So the
-  # store holds FAO's current published snapshot, and 2023-01-01 is FAO's newest actual period,
-  # not a stalled fetch. (This source also carries projections out to 2050-01-01; those are real
-  # data but say nothing about recency, so they are excluded from the recency signal.)
-  #
-  # Assertion with an expiry: lapses to ATTENTION after 180 days, and stops applying the
-  # moment our newest observation falls behind the declared value.
+  # upstream_verified - RE-MEASURED 2026-11-26. This replaces the 2026-08-24 text, which said the
+  # bulk file is re-downloaded when FAO's stamp moves; that is false for an annual unit. The
+  # measured facts and the real mechanism are in `method`.
   upstream_verified:
-    latest_obs: '2023-01-01'
-    checked: '2026-08-24'
+    latest_obs: '2024-01-01'
+    checked: '2026-11-26'
+    method: >-
+      GET https://bulks-faostat.fao.org/production/datasets_E.json at 2026-11-26T09:45:00Z
+      (CloudFront cache hit, Age 175783 s, Last-Modified 2026-11-23T17:43:12Z) reports DateUpdate
+      2026-11-06T00:00:00 for dataset GCE, which backs this source. Forced single-source run
+      45648467826 (dispatched 2026-11-25T15:44:46Z) merged that file: 'ok fao_gy/_all', 87,581 obs /
+      1,484 series, Health gate OK with newest observed period 2024-01-01 (period-start dating).
+      So 2024-01-01 is the newest actual period in FAO's current release, not a stalled fetch.
+      Mechanism: this unit is annual. It is refreshed only by a due run (328.5 d = 365 x 0.9 after
+      its last success, base.cadence_due) or by a forced run; there is no stamp probe, because
+      orchestrate prints NOT DUE
+      before detect_change runs. A new FAO release is NOT fetched by itself: re-read the index and
+      force a run when DateUpdate for GCE moves.
+      The store also carries projections to 2050-01-01 (1,394 of 1,485 values forward-dated on the
+      2026-10-10 state copy). They are excluded from the recency signal, and without this claim
+      health._recency_signal would read that signal as UNKNOWN (dead-minority suppression), so no
+      data clock would run at all; this claim keeps the clock and its expiry.
+      Lapses to ATTENTION after 180 days (after 2027-05-25), and stops applying the moment our
+      newest observation falls behind latest_obs.
   refresh_cost: small
   out_dir: fao_gy
   review: true
@@ -9949,20 +10007,30 @@ sources:
     Rice-cultivation series live in GCE; template Area.Item.Element reproduces
     52.4% (native-gas + area harvested); the dropped implied-EF/CO2eq tail freezes.
   cadence: annual
-  # upstream_verified - PROBED 2026-08-24 against FAO's own release file:
-  #   GET https://bulks-faostat.fao.org/production/datasets_E.json
-  # reports DateUpdate 2025-10-28 for dataset GCE, which backs this source. Our last
-  # successful pull is 2026-08-09 - NEWER than FAO's own release date - and the strategy is
-  # overwrite_if_changed: the whole bulk file is re-downloaded when that stamp moves. So the
-  # store holds FAO's current published snapshot, and 2023-01-01 is FAO's newest actual period,
-  # not a stalled fetch. (This source also carries projections out to 2050-01-01; those are real
-  # data but say nothing about recency, so they are excluded from the recency signal.)
-  #
-  # Assertion with an expiry: lapses to ATTENTION after 180 days, and stops applying the
-  # moment our newest observation falls behind the declared value.
+  # upstream_verified - RE-MEASURED 2026-11-26. This replaces the 2026-08-24 text, which said the
+  # bulk file is re-downloaded when FAO's stamp moves; that is false for an annual unit. The
+  # measured facts and the real mechanism are in `method`.
   upstream_verified:
-    latest_obs: '2023-01-01'
-    checked: '2026-08-24'
+    latest_obs: '2024-01-01'
+    checked: '2026-11-26'
+    method: >-
+      GET https://bulks-faostat.fao.org/production/datasets_E.json at 2026-11-26T09:45:00Z
+      (CloudFront cache hit, Age 175783 s, Last-Modified 2026-11-23T17:43:12Z) reports DateUpdate
+      2026-11-06T00:00:00 for dataset GCE, which backs this source. Forced single-source run
+      45646028761 (dispatched 2026-11-25T15:31:00Z) merged that file: 'ok fao_gr/_all', 19,977 obs /
+      325 series, Health gate OK with newest observed period 2024-01-01 (period-start dating).
+      So 2024-01-01 is the newest actual period in FAO's current release, not a stalled fetch.
+      Mechanism: this unit is annual. It is refreshed only by a due run (328.5 d = 365 x 0.9 after
+      its last success, base.cadence_due) or by a forced run; there is no stamp probe, because
+      orchestrate prints NOT DUE
+      before detect_change runs. A new FAO release is NOT fetched by itself: re-read the index and
+      force a run when DateUpdate for GCE moves.
+      The store also carries projections to 2050-01-01 (311 of 324 values forward-dated on the
+      2026-10-10 state copy). They are excluded from the recency signal, and without this claim
+      health._recency_signal would read that signal as UNKNOWN (dead-minority suppression), so no
+      data clock would run at all; this claim keeps the clock and its expiry.
+      Lapses to ATTENTION after 180 days (after 2027-05-25), and stops applying the moment our
+      newest observation falls behind latest_obs.
   refresh_cost: small
   out_dir: fao_gr
   review: true
