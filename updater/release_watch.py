@@ -609,8 +609,10 @@ def install_http_guards() -> None:
 
 def _production_probe(sid: str, uid: str):
     """The probe exactly as production runs it (R3.8): the unit from registry.to_units, strategies.get(...),
-    detect_change(u, None), then the token the strategy read."""
+    detect_change(u, None), then the token the strategy read. detect_change runs under the same csv
+    field-size scope as in updater/orchestrate.py run_once (core/csv_limit.FETCH_FIELD_LIMIT)."""
     from updater import registry, strategies
+    from core.csv_limit import FETCH_FIELD_LIMIT, field_size_limit
     entries = {e["source_id"]: e for e in registry.load().get("sources", [])}
     if sid not in entries:
         raise LookupError(f"{sid} has no registry entry")
@@ -618,7 +620,8 @@ def _production_probe(sid: str, uid: str):
     if not units:
         raise LookupError(f"{sid} has no unit {uid}")
     strat = strategies.get(units[0].strategy)
-    strat.detect_change(units[0], None)
+    with field_size_limit(FETCH_FIELD_LIMIT):
+        strat.detect_change(units[0], None)
     return getattr(strat, "_cur", None)
 
 

@@ -45,7 +45,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, 
 if ROOT not in sys.path:                                              # `python jobs/ingest_statcan.py`
     sys.path.insert(0, ROOT)
 from core.csv_limit import with_field_size_limit  # noqa: E402 - scoped, never set at import
-OUT =os.path.join(ROOT, "data", "clean_full", "statcan")
+OUT = os.path.join(ROOT, "data", "clean_full", "statcan")
 TMP = os.path.join(OUT, "_tmp")
 MANIFEST = os.path.join(OUT, "_manifest.jsonl")
 ERRLOG = os.path.join(OUT, "_errors.log")
@@ -62,7 +62,25 @@ FLUSH_ROWS = 100_000   # row-group batch size (bounds memory on huge cubes)
 
 # Large-field limit for the data-CSV reader in parse_zip_to_parquet(). Applied ONLY around that
 # reader (core/csv_limit.py): an import-time csv.field_size_limit() changed every reader in the process.
+# It is ALSO a cap: _capped_rows() refuses a field past it even when a wider scope is open (the updater
+# runs every fetcher under 2147483647), because StatCan's bad quoting (see _repair_long_row) can leave a
+# quote open and pull the rest of the cube into one field. Past 16 MiB that is csv.Error, never a row.
 CSV_FIELD_LIMIT = 1 << 24
+
+
+def _capped_rows(reader, cap=None):
+    """Yield the reader's rows; raise csv.Error on the first field longer than `cap` (CSV_FIELD_LIMIT).
+
+    csv.field_size_limit() is process state and a scope never lowers it (core/csv_limit.py), so under the
+    updater's 2147483647 scope the csv module alone would accept a field of up to 2 GiB here. This check
+    keeps this reader's own 16 MiB refusal whatever limit is in force, without lowering the limit under
+    other threads. The field is already read when it is checked: the cap bounds what is ACCEPTED (a
+    runaway quote fails the cube), and the global limit still bounds what is read."""
+    cap = CSV_FIELD_LIMIT if cap is None else cap
+    for row in reader:
+        if row and max(map(len, row)) > cap:                    # C-level scan: cubes run to ~2 GB
+            raise csv.Error(f"field larger than field limit ({cap})")
+        yield row
 
 # Sandbox-safety: several concurrent LARGE streaming downloads reliably get the
 # process killed here (network/IO watchdog), even though RAM stays tiny. So we use
@@ -466,7 +484,7 @@ def parse_zip_to_parquet(zpath, out_path):
             data_name = data_names[0]
             with z.open(data_name) as raw:
                 txt = io.TextIOWrapper(raw, encoding="utf-8-sig", errors="replace", newline="")
-                rdr = csv.reader(txt)
+                rdr = _capped_rows(csv.reader(txt))
                 hdr = next(rdr)
                 idx = {col: i for i, col in enumerate(hdr)}
                 if "VECTOR" in idx and "VALUE" in idx:

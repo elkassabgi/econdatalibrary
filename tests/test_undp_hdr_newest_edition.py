@@ -432,10 +432,14 @@ def test_a_linked_csv_that_answers_404_is_refused_not_replaced_by_hdr25(store, m
 
 
 def test_a_parse_error_is_refused_with_its_name(store, monkeypatch):
-    """csv.field_size_limit is PROCESS-WIDE: six ingesters raise it to 2147483647 when imported (e.g.
-    jobs/ingest_abs_full.py:57), and the abs and bis fetchers import theirs at module level. So in the full suite
-    the 200,000-byte field below would parse instead of raising (CI run 45568040117). The test sets the default
-    (131072) for itself and restores the old value."""
+    """csv.field_size_limit is PROCESS-WIDE: until PR #337 six ingesters raised it to 2147483647 when imported
+    (e.g. jobs/ingest_abs_full.py:57), so in the full suite the 200,000-byte field below parsed instead of
+    raising (CI run 45568040117). The test sets the default (131072) for itself and restores the old value.
+
+    WHICH PATH THIS PROVES: H.update called directly at the default limit - the standalone path (and
+    jobs/ingest_undp_hdr.py:151). In the updater, updater/orchestrate.py runs every fetcher under
+    core/csv_limit.FETCH_FIELD_LIMIT (2147483647), so there a 200,000-byte field parses and this refusal
+    does not happen."""
     import csv
     old = csv.field_size_limit()
     csv.field_size_limit(131072)

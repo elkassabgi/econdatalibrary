@@ -33,6 +33,7 @@ from .strategies.base import DATE_TAIL, NO_STAMP, PROBE_NOTE, stamp_token
 from .strategies.fetchers import implemented as fetcher_implemented
 from .strategies.fetchers._common import sane_since
 from .errors import TransientError, DefinitiveError
+from core.csv_limit import FETCH_FIELD_LIMIT as _FETCH_FIELD_LIMIT
 from core.csv_limit import field_size_limit as _csv_field_size_limit
 
 # The csv field-size limit every fetcher's probe and fetch runs under. Until 2026-11-25 six modules set
@@ -40,9 +41,12 @@ from core.csv_limit import field_size_limit as _csv_field_size_limit
 # abs or bis fetcher was imported (both import their ingester at module level, and _has_adapter()
 # imports each unit's fetcher as the run reaches it) parsed under this value - but only by import
 # order, and the statcan fetcher's lazy import of jobs/ingest_statcan.py set it back to 1 << 24 for
-# every fetcher after it. Scoping it around detect_change() and run() keeps that ability for every fetcher and makes
-# it deterministic, without changing any other reader in the process (core/csv_limit.py).
-FETCH_CSV_FIELD_LIMIT = min(sys.maxsize, 2_147_483_647)
+# every fetcher after it. Scoping it around detect_change() and run() keeps that ability for every
+# fetcher and makes it deterministic, without changing any other reader in the process
+# (core/csv_limit.py). jobs/ingest_statcan.py keeps its own 16 MiB refusal inside this scope
+# (_capped_rows). The CSV derive and the leftover drain run OUTSIDE it, at the default 131072: the served
+# CSV cells they read are obs_date and value, far below that.
+FETCH_CSV_FIELD_LIMIT = _FETCH_FIELD_LIMIT    # min(sys.maxsize, 2_147_483_647)
 
 # In-flight first-pass backfills — NEVER touched by updates. These are the
 # clean_full/<dir> names the running jobs write to (cbs_nl and gus_dbw; the relay-era

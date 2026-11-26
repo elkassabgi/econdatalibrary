@@ -33,36 +33,55 @@ import contextlib
 import csv
 import functools
 import inspect
+import sys
 import threading
 
+# The limit every updater fetcher's probe and fetch runs under (updater/orchestrate.py run_once, and the
+# release-watch probe that copies it, updater/release_watch.py _production_probe). One value, one place.
+FETCH_FIELD_LIMIT = min(sys.maxsize, 2_147_483_647)
+
 _LOCK = threading.Lock()
-_OPEN: list = []          # the limit of every scope that is open now (a scope may repeat a value)
+_OPEN: list = []          # one _Entry per scope that is open now (two scopes may carry the same value)
 _BASE: list = []          # [the value in force when the first open scope began]; empty when none is open
 
 
+class _Entry:
+    """One open scope. Compared by identity, so the close removes exactly the scope that opened."""
+    __slots__ = ("limit",)
+
+    def __init__(self, limit: int):
+        self.limit = limit
+
+
 def _in_force_locked() -> int:
-    return max([_BASE[0]] + _OPEN)
+    return max([_BASE[0]] + [e.limit for e in _OPEN])
 
 
 @contextlib.contextmanager
 def field_size_limit(limit: int):
     """Raise csv.field_size_limit to at least `limit` for the body; restore the old value after."""
     limit = int(limit)
-    with _LOCK:
-        if not _OPEN:
-            _BASE[:] = [csv.field_size_limit()]
-        _OPEN.append(limit)
-        csv.field_size_limit(_in_force_locked())
+    entry = _Entry(limit)
+    # The open and the close are both inside try/finally, and the close removes THIS scope's entry only if
+    # the open got as far as adding it. So an asynchronous exception (the updater's UnitTimeout comes from
+    # SIGALRM, armed just before this scope opens) cannot leave an entry behind, which would keep the
+    # raised limit for the rest of the process.
     try:
+        with _LOCK:
+            if not _OPEN:
+                _BASE[:] = [csv.field_size_limit()]
+            _OPEN.append(entry)
+            csv.field_size_limit(_in_force_locked())
         yield
     finally:
         with _LOCK:
-            _OPEN.remove(limit)
-            if _OPEN:
-                csv.field_size_limit(_in_force_locked())
-            else:
-                csv.field_size_limit(_BASE[0])
-                _BASE[:] = []
+            if any(e is entry for e in _OPEN):
+                _OPEN[:] = [e for e in _OPEN if e is not entry]
+                if _OPEN:
+                    csv.field_size_limit(_in_force_locked())
+                else:
+                    csv.field_size_limit(_BASE[0])
+                    _BASE[:] = []
 
 
 def with_field_size_limit(limit: int):

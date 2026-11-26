@@ -183,6 +183,29 @@ def test_c_never_lowers_a_higher_base():
         csv.field_size_limit(old)
 
 
+def test_c_an_exception_while_opening_leaves_nothing_open(default_limit, monkeypatch):
+    """Review F6: an asynchronous exception (UnitTimeout from SIGALRM) that lands after the scope added its
+    entry but before the body must not leave the entry behind - that would keep the raised limit forever."""
+    real = csv_limit._in_force_locked
+    calls = {"n": 0}
+
+    def boom():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise KeyboardInterrupt("alarm in the window")
+        return real()
+
+    monkeypatch.setattr(csv_limit, "_in_force_locked", boom)
+    with pytest.raises(KeyboardInterrupt):
+        with csv_limit.field_size_limit(1 << 24):
+            pass
+    assert csv_limit._OPEN == [] and csv_limit._BASE == []
+    assert csv.field_size_limit() == DEFAULT
+    with csv_limit.field_size_limit(1 << 22):
+        assert csv.field_size_limit() == 1 << 22
+    assert csv.field_size_limit() == DEFAULT
+
+
 def test_c_generator_holds_the_limit_for_its_whole_iteration(default_limit):
     @csv_limit.with_field_size_limit(1 << 24)
     def gen():
@@ -228,21 +251,78 @@ def test_c_overlapping_threads_do_not_restore_under_each_other(default_limit):
 
 
 # ---- (d) the updater scope ---------------------------------------------------------------------------------
+def _strat_calls_outside_scope(tree, scope_expr):
+    """(attr, line) of EVERY strat.detect_change / strat.run call that has no enclosing `with` carrying
+    scope_expr, plus the count of all such calls. Walks every Call node, not only the bodies of `with`."""
+    parents = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+    outside, seen = [], 0
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name) and node.func.value.id == "strat"
+                and node.func.attr in ("detect_change", "run")):
+            continue
+        seen += 1
+        p, covered = parents.get(node), False
+        while p is not None and not covered:
+            if isinstance(p, (ast.With, ast.AsyncWith)):
+                covered = scope_expr in [ast.unparse(i.context_expr) for i in p.items]
+            p = parents.get(p)
+        if not covered:
+            outside.append((node.func.attr, node.lineno))
+    return outside, seen
+
+
 def test_d_every_fetcher_probe_and_fetch_runs_inside_the_scope():
     tree = parse_code(os.path.join(ROOT, "updater", "orchestrate.py"))
-    targets = {"detect_change": 0, "run": 0}
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.With):
-            continue
-        items = [ast.unparse(i.context_expr) for i in node.items]
-        for stmt in ast.walk(ast.Module(body=node.body, type_ignores=[])):
-            if (isinstance(stmt, ast.Call) and isinstance(stmt.func, ast.Attribute)
-                    and isinstance(stmt.func.value, ast.Name) and stmt.func.value.id == "strat"
-                    and stmt.func.attr in targets):
-                assert "_csv_field_size_limit(FETCH_CSV_FIELD_LIMIT)" in items, (
-                    f"strat.{stmt.func.attr}() at line {stmt.lineno} runs outside the csv field-limit scope")
-                targets[stmt.func.attr] += 1
-    assert targets == {"detect_change": 1, "run": 1}, targets
+    outside, seen = _strat_calls_outside_scope(tree, "_csv_field_size_limit(FETCH_CSV_FIELD_LIMIT)")
+    assert seen >= 2, f"found only {seen} strat.detect_change/strat.run calls - the walk is not looking"
+    assert not outside, f"strat calls outside the csv field-limit scope: {outside}"
+
+
+def test_d_the_scope_walk_sees_a_call_outside_any_with():
+    """Negative control (review M11): a call outside any `with`, and one inside a `with` without the scope."""
+    planted = ast.parse("def f(strat, u):\n"
+                        "    with _csv_field_size_limit(FETCH_CSV_FIELD_LIMIT):\n"
+                        "        strat.run(u, since=None)\n"
+                        "    strat.detect_change(u, None)\n"
+                        "    with open('x'):\n"
+                        "        strat.run(u, since=None)\n")
+    outside, seen = _strat_calls_outside_scope(planted, "_csv_field_size_limit(FETCH_CSV_FIELD_LIMIT)")
+    assert seen == 3 and outside == [("detect_change", 4), ("run", 6)], (seen, outside)
+
+
+def test_d_release_watch_probe_runs_inside_the_scope():
+    """updater/release_watch.py _production_probe says it probes 'exactly as production'; production probes
+    under the fetch scope, so the copy must too."""
+    tree = parse_code(os.path.join(ROOT, "updater", "release_watch.py"))
+    outside, seen = _strat_calls_outside_scope(tree, "field_size_limit(FETCH_FIELD_LIMIT)")
+    assert seen >= 1 and not outside, (seen, outside)
+
+
+def _statcan_zip(work, field_len):
+    import zipfile
+    zp = os.path.join(work, f"cube_{field_len}.zip")
+    with zipfile.ZipFile(zp, "w", compression=zipfile.ZIP_DEFLATED) as z:
+        z.writestr("12345678.csv", "REF_DATE,GEO,DGUID,UOM,VECTOR,COORDINATE,VALUE,STATUS\n"
+                                   "2020," + "x" * field_len + ",,Dollars,v1,1.1,1.5,\n")
+    return zp
+
+
+def test_d_statcan_keeps_its_16_mib_refusal_under_the_fetch_scope(tmp_path, default_limit):
+    """Review F1: the updater opens a 2147483647 scope and a scope never lowers the limit, so the csv module
+    alone would let statcan read a 2 GiB field. jobs/ingest_statcan.py _capped_rows keeps its own 16 MiB
+    (1 << 24) refusal: a 17 MiB field fails with csv.Error, a 200 KB field passes."""
+    import jobs.ingest_statcan as S
+    with csv_limit.field_size_limit(csv_limit.FETCH_FIELD_LIMIT):
+        assert csv.field_size_limit() == csv_limit.FETCH_FIELD_LIMIT
+        st = S.parse_zip_to_parquet(_statcan_zip(str(tmp_path), 200_000), str(tmp_path / "ok.parquet"))
+        assert st["n_obs"] == 1
+        with pytest.raises(csv.Error, match=str(1 << 24)):
+            S.parse_zip_to_parquet(_statcan_zip(str(tmp_path), 17 * (1 << 20)), str(tmp_path / "big.parquet"))
+    assert csv.field_size_limit() == DEFAULT
 
 
 def test_d_the_values_did_not_change():
@@ -255,7 +335,7 @@ def test_d_the_values_did_not_change():
     big = min(sys.maxsize, 2_147_483_647)
     assert (A.CSV_FIELD_LIMIT, B.CSV_FIELD_LIMIT, E.CSV_FIELD_LIMIT, I.CSV_FIELD_LIMIT) == (big,) * 4
     assert S.CSV_FIELD_LIMIT == 1 << 24
-    assert O.FETCH_CSV_FIELD_LIMIT == big
+    assert O.FETCH_CSV_FIELD_LIMIT == big == csv_limit.FETCH_FIELD_LIMIT
     sys.path.insert(0, os.path.join(ROOT, "tools"))
     import apply_series_names as N
     assert N.CSV_FIELD_LIMIT == 10_000_000
