@@ -44,17 +44,18 @@ OUT_DIR = os.path.join(ROOT, "docs", "runbook")
 LEDGER = r"D:\research\hfdatalibrary\.claude\MISTAKES.md"
 UTIL_TS = os.path.join(ROOT, "api", "worker", "src", "util.ts")
 LICENCES = os.path.join(ROOT, "DATABASE_LICENSES_VERBATIM.md")
-# The ONLY sanctioned way for a person to run one source: a dispatch of the CI workflow, so the
-# run reads and writes CI's state lineage (R340, R406 failure class G). A local `updater.run`
-# writes outside it.
+# The ONLY sanctioned way for a person to run one cloud source: a manual dispatch THROUGH
+# tools/econ_dispatch.py (rule M, its docstring): it waits for an empty concurrency group, a free
+# lock and no desktop pass before it sends. A bare `gh workflow run` bypasses rule M, and a local
+# `updater.run` writes outside CI's state lineage (R340, R406 failure class G).
 DISPATCH_WORKFLOW = "updater-daily.yml"
-DISPATCH_REPO = "elkassabgi/econdatalibrary"
+DISPATCH_CMD = f"python tools/econ_dispatch.py manual --workflow {DISPATCH_WORKFLOW}"
 
 
 def refresh_commands(sid, e):
     """Steps 2 and 3 of a runbook's diagnose block: the dry check and the forced run.
 
-    A cloud source: a dispatch of the CI workflow. A `run_location: local` source: the desktop
+    A cloud source: a manual dispatch through tools/econ_dispatch.py (rule M). A `run_location: local` source: the desktop
     pass (tools/run_local_heavy.ps1), which pulls state, runs and pushes it back under the
     writer gate. A CI dispatch of a local-routed source is wrong: an explicit source overrides
     the routing (orchestrate.py), and these sources need more memory than a 16 GB runner has.
@@ -70,12 +71,12 @@ def refresh_commands(sid, e):
             f"powershell -File tools\\run_local_heavy.ps1 -Only {sid} -Force",
         ]
     return [
-        f"gh workflow run {DISPATCH_WORKFLOW} -R {DISPATCH_REPO} -f source={sid} -f dry_run=true",
+        f"{DISPATCH_CMD} --source {sid} --manual-dry-run",
         "",
         "# 3. Run it for real and READ THE REASON. Failures name themselves now.",
-        "#    A CI dispatch, never a local updater run: that writes outside CI's state lineage",
-        "#    (R340, R406).",
-        f"gh workflow run {DISPATCH_WORKFLOW} -R {DISPATCH_REPO} -f source={sid} -f force=true",
+        "#    A manual dispatch through econ_dispatch.py (rule M) - never a bare gh workflow run",
+        "#    and never a local updater run, which writes outside CI's state lineage (R340, R406).",
+        f"{DISPATCH_CMD} --source {sid} --force",
     ]
 
 
@@ -511,7 +512,7 @@ def render(sid, reg, st, runs, cat, served, with_store=False, findings=None):
     A("# 2. Is it even being ATTEMPTED? 'scheduled' is not 'attempted' (R246).")
     A("#    A daily run reaches ~20 of ~106 cloud sources; most are skipped on cadence, which is normal.")
     #    NEVER print a bare local `updater.run` here (R340, R406 failure class G): it writes
-    #    outside CI's state lineage. A cloud source is DISPATCHED; a run_location: local source
+    #    outside CI's state lineage. A cloud source goes through econ_dispatch.py manual; a run_location: local source
     #    goes through the desktop pass (it pulls and pushes state under the writer gate) - a CI
     #    dispatch of it overrides the routing and can exceed the 16 GB runner, which destroys
     #    the run and every source it already finished. tests/test_runbook_no_local_updater_run.py.

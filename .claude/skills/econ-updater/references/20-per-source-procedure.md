@@ -91,9 +91,12 @@ enforces the count only falls. YAML prose fields are quoted or `>-` block scalar
 
 ```bash
 # a real run, forced, with rows counted — "0 units processed, exit 0" proves NOTHING (R50)
-AQUEDUCT_BACKEND=r2 PYTHONIOENCODING=utf-8 python -m updater.run --source <source> --force
-# or via CI, which is the environment that matters:
-gh workflow run updater-daily.yml -f source=<source>
+# NEVER a bare local updater run (writes outside CI's state lineage, R340/R406) and NEVER a
+# bare `gh workflow run` (bypasses rule M, tools/econ_dispatch.py docstring).
+# cloud source - a manual dispatch through the dispatcher (it waits for an empty group):
+python tools/econ_dispatch.py manual --workflow updater-daily.yml --source <source> --force
+# run_location: local source - the desktop pass (pulls/pushes state under the writer gate):
+powershell -File tools\run_local_heavy.ps1 -Only <source> -Force
 gh run watch <id> --exit-status && gh run view <id> --log | grep -E "<source>"
 ```
 
