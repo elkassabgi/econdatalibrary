@@ -15,7 +15,7 @@
 | runs where | cloud (GitHub Actions) |
 | refresh cost | medium |
 | store dir | `data/clean_full/fao_gb/` |
-| upstream declared COMPLETE | latest_obs `2023-01-01`, checked `2026-08-24` — lapses to ATTENTION after 180 days |
+| upstream declared COMPLETE | latest_obs `2024-01-01`, checked `2026-11-26` — lapses to ATTENTION after 180 days |
 
 ## 2. Current state (from `data/_aqueduct/state.db`)
 
