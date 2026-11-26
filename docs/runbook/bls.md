@@ -147,10 +147,13 @@ python -c "import sys,sqlite3;sys.path.insert(0,'.');from updater import config;
 
 # 2. Is it even being ATTEMPTED? 'scheduled' is not 'attempted' (R246).
 #    A daily run reaches ~20 of ~106 cloud sources; most are skipped on cadence, which is normal.
-python -m updater.run --source bls --dry
+#    -WhatIf only confirms the desktop pass routes this source; it does not run the due-check.
+powershell -File tools\run_local_heavy.ps1 -Only bls -WhatIf
 
 # 3. Run it for real and READ THE REASON. Failures name themselves now.
-AQUEDUCT_BACKEND=r2 python -u -m updater.run --source bls --force
+#    This source is run_location: local - the desktop pass, never a CI dispatch
+#    (too big for a 16 GB runner) and never a bare local updater run (R340, R406).
+powershell -File tools\run_local_heavy.ps1 -Only bls -Force
 
 # 4. Is the PUBLISHER healthy, or is it us? Probe upstream directly, never a relay.
 #    (relay/aggregator mirrors are BANNED — every source must be reached at its own publisher.)

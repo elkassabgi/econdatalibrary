@@ -910,8 +910,10 @@ sources:
     - release-sidecar gate (rebuild when the advertised release differs)
     force_refresh_procedure:
     - >-
-      From the repo root, supervised: python -m updater.run --source cepii_baci --force (the fetcher reads the release from
-      CEPII's page). To re-parse the SAME release, delete only data/clean_full/cepii_baci/_baci_<hs>.release.json; never
+      Supervised, through the desktop pass: powershell -File tools\run_local_heavy.ps1 -Only cepii_baci -Force (the
+      fetcher reads the release from CEPII's page). Never a bare local updater run (it writes outside the state lineage,
+      R340/R406 class G), and never a CI dispatch (this source is run_location: local; its largest file needs more memory
+      than a 16 GB runner has, and an explicit source overrides the routing). To re-parse the SAME release, delete only data/clean_full/cepii_baci/_baci_<hs>.release.json; never
       delete the served parquets or cepii_baci_pairs.parquet - the rebuild replaces them only after it verifies.
       Standalone: python jobs/ingest_cepii_baci.py [--release V...]; it refuses an older release than the store holds.
     incremental_path:

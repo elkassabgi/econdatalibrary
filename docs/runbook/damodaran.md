@@ -91,10 +91,12 @@ python -c "import sys,sqlite3;sys.path.insert(0,'.');from updater import config;
 
 # 2. Is it even being ATTEMPTED? 'scheduled' is not 'attempted' (R246).
 #    A daily run reaches ~20 of ~106 cloud sources; most are skipped on cadence, which is normal.
-python -m updater.run --source damodaran --dry
+python tools/econ_dispatch.py manual --workflow updater-daily.yml --source damodaran --manual-dry-run
 
 # 3. Run it for real and READ THE REASON. Failures name themselves now.
-AQUEDUCT_BACKEND=r2 python -u -m updater.run --source damodaran --force
+#    A manual dispatch through econ_dispatch.py (rule M) - never a bare gh workflow run
+#    and never a local updater run, which writes outside CI's state lineage (R340, R406).
+python tools/econ_dispatch.py manual --workflow updater-daily.yml --source damodaran --force
 
 # 4. Is the PUBLISHER healthy, or is it us? Probe upstream directly, never a relay.
 #    (relay/aggregator mirrors are BANNED — every source must be reached at its own publisher.)

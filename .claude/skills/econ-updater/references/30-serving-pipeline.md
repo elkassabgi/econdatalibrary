@@ -32,19 +32,21 @@ All commands run from the repo root `E:\research\econfindatalibrary` unless note
 
 5. **Dry plan:**
    ```
-   python -m updater.run --source <sid> --dry
+   python tools/econ_dispatch.py manual --workflow updater-daily.yml --source <sid> --manual-dry-run
    ```
+   For a `run_location: local` source: `powershell -File tools\run_local_heavy.ps1 -Only <sid> -WhatIf` (it confirms the routing only). Never a bare local `python -m updater.run` (R340, R406) and never a bare `gh workflow run` (rule M).
    Proof: the registry validates, and the source materialises units. A misspelled/unitless source aborts loudly: `"N requested source(s) have no unit in the registry"` (updater/orchestrate.py:626-633). `--dry` reports what's due and changes nothing (updater/run.py:189-190).
 
-6. **Real local proof — `--force` is mandatory:**
+6. **Real proof — `--force` is mandatory:**
    ```
-   AQUEDUCT_BACKEND=r2 python -u -m updater.run --source <sid> --force
+   python tools/econ_dispatch.py manual --workflow updater-daily.yml --source <sid> --force
    ```
+   For a `run_location: local` source: `powershell -File tools\run_local_heavy.ps1 -Only <sid> -Force` (the desktop pass, never a CI dispatch). Never a bare local `updater.run`: it writes outside CI's state lineage (R340, R406).
    Without `--force` a not-due source reports "0 unit(s) processed" and the run goes green having exercised no fetcher code — a green light that means nothing (R35 "configured is not running", .github/workflows/updater-daily.yml:221-225; flags at updater/run.py:185-196: `--source/--strategy/--cadence` repeatable, `--force` = ignore cadence + change-detection).
 
 7. **CI proof (same rule):**
    ```
-   gh workflow run updater-daily.yml -f source=<sid> -f force=true
+   python tools/econ_dispatch.py manual --workflow updater-daily.yml --source <sid> --force
    ```
    The `force` input description says it plainly: "REQUIRED to prove a fetcher" (.github/workflows/updater-daily.yml:36-40). `source` accepts a comma/space-separated list; tokens are validated to `[a-z0-9_]` (updater-daily.yml:206-218). A manual dispatch with explicit `source` runs a non-live source despite `AQUEDUCT_LIVE_ONLY=1` — that is the designed pre-go-live delta proof (updater-daily.yml:117-122).
 
@@ -225,10 +227,10 @@ The workflow is `updater-daily.yml`, cron 06:00 UTC, concurrency group `aqueduct
 
 7. **Re-dispatch one source:**
    ```
-   gh workflow run updater-daily.yml -f source=<sid> -f force=true
+   python tools/econ_dispatch.py manual --workflow updater-daily.yml --source <sid> --force
    gh run watch    # or: gh run list --workflow updater-daily.yml --limit 1
    ```
-   `-f dry_run=true` prints the plan and writes nothing — no R2, no D1, no heartbeat (updater-daily.yml:31-35). `force` required to actually exercise a not-due source (updater-daily.yml:36-40, R35). Multiple sources: comma-separate the value (updater-daily.yml:206-218).
+   Through the dispatcher, never a bare `gh workflow run` (rule M). `--manual-dry-run` (the workflow's `dry_run` input) prints the plan and writes nothing — no R2, no D1, no heartbeat (updater-daily.yml:31-35). `force` required to actually exercise a not-due source (updater-daily.yml:36-40, R35). Multiple sources: comma-separate the value (updater-daily.yml:206-218).
 
 8. **Per-source deep dive** — `docs/runbook/<sid>.md`, regenerated from ground truth (never hand-edit):
    ```
