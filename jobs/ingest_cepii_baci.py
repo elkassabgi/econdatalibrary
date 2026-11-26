@@ -478,7 +478,8 @@ def main(argv=None):
                             allow_downgrade=a.allow_downgrade,
                             allow_shrink=a.allow_shrink)["rows"]
     log("NOTE: this job installs the raw files only. The country codes, the pairs projection and "
-        "the R2 publish are the fetcher's: run python -m updater.run --source cepii_baci --force")
+        "the R2 publish are the fetcher's: run it through the desktop pass, "
+        "powershell -File tools\\run_local_heavy.ps1 -Only cepii_baci -Force")
     log(f"GRAND TOTAL: {grand:,} BACI trade flow records")
 
 
