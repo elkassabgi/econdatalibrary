@@ -47,6 +47,7 @@ import pyarrow.parquet as pq
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 sys.path.insert(0, ROOT)
+from core.csv_limit import with_field_size_limit  # noqa: E402 - scoped, never set at import
 
 OUT = os.path.join(ROOT, "data", "clean_full", "abs")
 META_DIR = os.path.join(ROOT, "data", "clean_full")
@@ -54,7 +55,9 @@ UA = "Econ-Fin Data Library admin@hfdatalibrary.com"
 BASE = "https://data.api.abs.gov.au/rest"
 LICENSE_ID = "cc-by-4.0"
 
-csv.field_size_limit(min(sys.maxsize, 2_147_483_647))
+# Large-field limit for the SDMX-CSV reader in stream_rows(). Applied ONLY around that reader
+# (core/csv_limit.py): an import-time csv.field_size_limit() changed every reader in the process.
+CSV_FIELD_LIMIT = min(sys.maxsize, 2_147_483_647)
 
 SDMX_NS = {
     "s": "http://www.sdmx.org/resources/sdmxml/schemas/v2_1/structure",
@@ -145,6 +148,7 @@ def list_dataflows(s: requests.Session) -> list[dict]:
     return flows
 
 
+@with_field_size_limit(CSV_FIELD_LIMIT)
 def stream_rows(s: requests.Session, flow: str, key: str = "all",
                 params: Optional[dict] = None) -> Iterator[tuple[list[str], list[str]]]:
     """Yield (header, row) for a flow's compact CSV, streaming.

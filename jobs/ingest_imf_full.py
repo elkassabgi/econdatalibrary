@@ -65,6 +65,7 @@ import pyarrow.parquet as pq
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 sys.path.insert(0, ROOT)
+from core.csv_limit import with_field_size_limit  # noqa: E402 - scoped, never set at import
 
 OUT = os.path.join(ROOT, "data", "clean_full", "imf")
 MANIFEST = os.path.join(OUT, "_manifest.json")
@@ -107,7 +108,9 @@ MEGA = {
     "QNEA", "NA_MAIN", "WEO", "EER", "ER", "GDD", "WORLD", "NSDP",
 }
 
-csv.field_size_limit(min(sys.maxsize, 2_147_483_647))
+# Large-field limit for the SDMX-CSV reader in parse_tmp_to_parquet(). Applied ONLY around that
+# reader (core/csv_limit.py): an import-time csv.field_size_limit() changed every reader in the process.
+CSV_FIELD_LIMIT = min(sys.maxsize, 2_147_483_647)
 
 
 # --------------------------------------------------------------------------- #
@@ -285,6 +288,7 @@ def stream_query_to_tmp(agency: str, did: str, ver: str, key: str = "all"):
     return tmp.name, nbytes
 
 
+@with_field_size_limit(CSV_FIELD_LIMIT)
 def parse_tmp_to_parquet(tmp: str, out_path: str):
     """Parse a temp .gz SDMX-CSV into a grouped parquet. Returns stats dict.
 
