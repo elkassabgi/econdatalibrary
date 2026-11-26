@@ -65,6 +65,7 @@ import pyarrow.parquet as pq
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 sys.path.insert(0, ROOT)
+from core.csv_limit import with_field_size_limit  # noqa: E402 - scoped, never set at import
 
 OUT = os.path.join(ROOT, "data", "clean_full", "ecb")
 TMPDIR = os.path.join(ROOT, "data", "raw", "ecb", "_tmp")
@@ -143,7 +144,9 @@ DECADES = [("1990-01-01", "1999-12-31"), ("2000-01-01", "2009-12-31"),
            ("1970-01-01", "1989-12-31")]
 CONNECT_RETRIES = 5
 
-csv.field_size_limit(min(sys.maxsize, 2_147_483_647))
+# Large-field limit for the SDMX-CSV reader in BatchWriter.add_from_tmp(). Applied ONLY around that
+# reader (core/csv_limit.py): an import-time csv.field_size_limit() changed every reader in the process.
+CSV_FIELD_LIMIT = min(sys.maxsize, 2_147_483_647)
 _print_lock = threading.Lock()
 _dsd_cache: dict[str, list[str]] = {}
 _dsd_lock = threading.Lock()
@@ -511,6 +514,7 @@ class BatchWriter:
         self.writer.write_batch(batch)
         self._reset()
 
+    @with_field_size_limit(CSV_FIELD_LIMIT)
     def add_from_tmp(self, tmp_path: str) -> int:
         """Parse one gzipped SDMX-CSV temp file. Returns rows added."""
         n = 0

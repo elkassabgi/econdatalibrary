@@ -42,7 +42,10 @@ import pyarrow.parquet as pq
 import requests
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
-OUT = os.path.join(ROOT, "data", "clean_full", "statcan")
+if ROOT not in sys.path:                                              # `python jobs/ingest_statcan.py`
+    sys.path.insert(0, ROOT)
+from core.csv_limit import with_field_size_limit  # noqa: E402 - scoped, never set at import
+OUT =os.path.join(ROOT, "data", "clean_full", "statcan")
 TMP = os.path.join(OUT, "_tmp")
 MANIFEST = os.path.join(OUT, "_manifest.jsonl")
 ERRLOG = os.path.join(OUT, "_errors.log")
@@ -57,7 +60,9 @@ WDS_DL = "https://www150.statcan.gc.ca/t1/wds/rest/getFullTableDownloadCSV/{pid}
 # Structural columns present in every StatCan full-table CSV.
 FLUSH_ROWS = 100_000   # row-group batch size (bounds memory on huge cubes)
 
-csv.field_size_limit(1 << 24)
+# Large-field limit for the data-CSV reader in parse_zip_to_parquet(). Applied ONLY around that
+# reader (core/csv_limit.py): an import-time csv.field_size_limit() changed every reader in the process.
+CSV_FIELD_LIMIT = 1 << 24
 
 # Sandbox-safety: several concurrent LARGE streaming downloads reliably get the
 # process killed here (network/IO watchdog), even though RAM stays tiny. So we use
@@ -408,6 +413,7 @@ def _iter_census(rdr, idx, hdr, skipped=None):
                    row[sym] if (sym is not None and sym < len(row)) else None)
 
 
+@with_field_size_limit(CSV_FIELD_LIMIT)
 def parse_zip_to_parquet(zpath, out_path):
     """Parse one StatCan full-table zip into ONE parquet at out_path, streamed (bounded memory).
 

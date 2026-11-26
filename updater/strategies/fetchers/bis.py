@@ -91,6 +91,7 @@ from ._common import CURSOR_CAP, Deadline, Tally, cursors_from_parquet, finalize
 from ._vintage import http_vintage
 from jobs import ingest_bis_cbs_lbs as ig      # BULK urls + the EXTRACTED pure parser
 from jobs import ingest_bis_full as sdmx       # SDMX base url + the EXTRACTED SDMX-CSV parser
+from core.csv_limit import field_size_limit, with_field_size_limit
 
 SOURCE = "bis"
 # The catalogued SDMX dataflows - the ONLY bis data a user can download. A curated constant pinned
@@ -260,6 +261,14 @@ def _sdmx_get(sess, flow, freq) -> "tuple[int, bytes]":
     raise last
 
 
+def _bulk_rows(name, zip_path):
+    """ig.iter_rows under the large-field csv limit. Until 2026-11-25 this reader got that limit only
+    because importing jobs.ingest_bis_full (above) set it for the whole process; now it is scoped here."""
+    with field_size_limit(sdmx.CSV_FIELD_LIMIT):
+        yield from ig.iter_rows(name, zip_path)
+
+
+@with_field_size_limit(sdmx.CSV_FIELD_LIMIT)    # reads the same SDMX-CSV body as sdmx.iter_rows
 def _check_body(body, flow, freq, stored_newest):
     """Validate one SDMX-CSV body. Returns (rows, None, n_new_keys) or (None, (kind, why), 0),
     kind 'transient' (a cut or partial body: a later pass may get a whole one) or 'structural'
@@ -517,7 +526,7 @@ def update(unit, since) -> Result:
         before = blob.row_count(path) if blob.exists(path) else 0
         buf = []
         try:
-            for row in ig.iter_rows(name, tmp):
+            for row in _bulk_rows(name, tmp):
                 buf.append(row)
                 if len(buf) >= BATCH:
                     n, md = merge.merge_and_write(path, _table(buf), mode="merge",

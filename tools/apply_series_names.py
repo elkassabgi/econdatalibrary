@@ -38,10 +38,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from core import catalog_path  # noqa: E402 - the one catalogue resolver (plan step 1)
 from core.titles import clean_title  # noqa: E402 - one rule for title line breaks (2026-10-01)
+from core.csv_limit import with_field_size_limit  # noqa: E402 - scoped, never set at import
 SWEEP = os.path.join(ROOT, "data", "_series_names_staging", "econdl_sweep")
 PENDING = os.path.join(ROOT, "data", "_aqueduct", "pending_catalog_sync.txt")
 
-csv.field_size_limit(10_000_000)
+# Large-field limit for the sweep-CSV reader in stream_rows(). Applied ONLY around
+# that reader (core/csv_limit.py): an import-time csv.field_size_limit() changed every reader in the process.
+CSV_FIELD_LIMIT = 10_000_000
 
 
 def sources():
@@ -49,6 +52,7 @@ def sources():
                   if f.endswith(".csv"))
 
 
+@with_field_size_limit(CSV_FIELD_LIMIT)
 def stream_rows(src):
     p = os.path.join(SWEEP, "csv", f"{src}.csv")
     with io.open(p, "r", encoding="utf-8-sig", newline="") as fh:

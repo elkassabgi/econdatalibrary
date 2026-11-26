@@ -63,6 +63,7 @@ import pyarrow.parquet as pq
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # derived, never hardcoded
 sys.path.insert(0, ROOT)
+from core.csv_limit import with_field_size_limit  # noqa: E402 - scoped, never set at import
 
 OUT = os.path.join(ROOT, "data", "clean_full", "bis")
 MANIFEST = os.path.join(OUT, "_manifest.json")
@@ -113,7 +114,10 @@ SPLIT_HINT = {
 SPLIT_CAP = 90        # never explode a split into more than ~this many requests
 CHUNK_WORKERS = 6     # polite parallelism for chunk downloads within one flow
 
-csv.field_size_limit(min(sys.maxsize, 2_147_483_647))
+# Large-field limit for the SDMX-CSV reader in iter_rows() (and the fetcher's _check_body, which
+# reads the same body). Applied ONLY around those readers (core/csv_limit.py): an import-time
+# csv.field_size_limit() changed every reader in the process.
+CSV_FIELD_LIMIT = min(sys.maxsize, 2_147_483_647)
 
 
 # --------------------------------------------------------------------------- #
@@ -309,6 +313,7 @@ class NoObservations(ValueError):
     """The SDMX-CSV body has no header, or no TIME_PERIOD/OBS_VALUE column. str(e) is the note."""
 
 
+@with_field_size_limit(CSV_FIELD_LIMIT)
 def iter_rows(fh, counts=None):
     """Yield (series_key, obs_date, value, freq) from an open SDMX-CSV TEXT stream. PURE.
 
