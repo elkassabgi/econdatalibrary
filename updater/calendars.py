@@ -34,8 +34,9 @@ MEASURED 2026-11-27 on the Office of Financial Research API dumps of that mornin
   * the fnyr SOFR / OBFR / TGCR series alone (the New York Fed rates the nyfed fetcher reads from FRED),
     2018-04-03..2026-11-24: 85 rule days, 0 with data, 0 data-less weekdays missed; Saturday->Friday on: 6
     Fridays with data.
-tests/fixtures/business_calendar/ofr_weekday_closures.json records those dates; tests/test_health_business_calendar.py
-pins this rule to them in both directions, and pins 2026-2028 date by date.
+tests/fixtures/business_calendar/ofr_weekday_closures.json records those dates (written from the dumps by
+tools/measure_ofr_weekday_closures.py, which applies no rule; its header says how to re-measure);
+tests/test_health_business_calendar.py pins this rule to them in both directions, and pins 2026-2028 date by date.
 
 WHAT IT DOES NOT COVER. An unscheduled closure (a national day of mourning on which the publisher really does
 close) is not in any rule: on such a day the gate keeps its old behaviour and can read a false red for a day.

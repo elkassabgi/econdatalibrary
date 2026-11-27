@@ -155,13 +155,19 @@ def _without_calendar(monkeypatch, sid):
     monkeypatch.setattr(yaml, "safe_load", lambda *a, **k: reg)
 
 
-def _health(monkeypatch, sid, newest, now):
-    """assess() at the frozen instant `now` for a `sid` that succeeded at `now` holding `newest`."""
+def _report(monkeypatch, held, now):
+    """assess() at the frozen instant `now`; each {sid: newest} in `held` succeeded at `now` holding `newest`."""
     _freeze(monkeypatch, now)
     st = StateStore(path=":memory:")
-    st.upsert_source(sid, status="ok", last_success_utc=now.isoformat(), last_attempt_utc=now.isoformat())
-    st.upsert_unit(sid, "_all", status="ok", last_obs_date=newest, last_attempt_utc=now.isoformat())
-    return next(r for r in health.assess(store=st)["sources"] if r["source"] == sid)["health"]
+    for sid, newest in held.items():
+        st.upsert_source(sid, status="ok", last_success_utc=now.isoformat(), last_attempt_utc=now.isoformat())
+        st.upsert_unit(sid, "_all", status="ok", last_obs_date=newest, last_attempt_utc=now.isoformat())
+    return health.assess(store=st)
+
+
+def _health(monkeypatch, sid, newest, now):
+    """The verdict of `sid` in _report()."""
+    return next(r for r in _report(monkeypatch, {sid: newest}, now)["sources"] if r["source"] == sid)["health"]
 
 
 FRI_1127 = at("2026-11-27 09:30")     # the 06Z slot's gate ran at about 09:30Z on 2026-11-27
@@ -225,6 +231,30 @@ def test_today_a_holiday_counts_like_today_a_saturday():
     """The partial day we stand in is not business time on a holiday, as on a weekend."""
     assert health._business_age_days("2026-11-24", at("2026-11-26 09:30"), FED) == 2.0
     assert health._business_age_days("2026-11-24", at("2026-11-26 09:30")) == 2.395833
+
+
+def test_the_row_and_the_table_say_which_calendar_the_clock_applied(monkeypatch, capsys, tmp_path):
+    """obs_age stays calendar days (3.4 for ofr on 2026-11-27); data_clock_age_d is the age the verdict used,
+    and business_calendar names the calendar it applied - None for a daily source without one (cnb) and for a
+    source that is not daily (fhfa, weekly)."""
+    rep = _report(monkeypatch, {"ofr": "2026-11-24", "cnb": "2026-11-24", "fhfa": "2026-10-01"}, FRI_1127)
+    rows = {r["source"]: r for r in rep["sources"]}
+    assert (rows["ofr"]["health"], rows["ofr"]["business_calendar"]) == ("OK", FED)
+    assert (rows["ofr"]["newest_obs_age_d"], rows["ofr"]["data_clock_age_d"]) == (3.4, 2.4)
+    assert (rows["cnb"]["health"], rows["cnb"]["business_calendar"]) == ("RED-DATA", None)
+    assert (rows["cnb"]["newest_obs_age_d"], rows["cnb"]["data_clock_age_d"]) == (3.4, 3.4)
+    assert rows["fhfa"]["business_calendar"] is None
+    assert rows["fhfa"]["data_clock_age_d"] == round(rows["fhfa"]["newest_obs_age_d"], 1) == 57.4
+    assert all(r.get("business_calendar") in (None, FED) for r in rep["sources"])
+    # the table: the mark on ofr's line, and on no other line
+    monkeypatch.setattr(health, "assess", lambda *a, **k: rep)
+    monkeypatch.setattr(config, "STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["updater.health"])
+    health.main()
+    lines = capsys.readouterr().out.splitlines()
+    marked = [ln for ln in lines if "bcal=" in ln]
+    assert len(marked) == 1 and " ofr " in marked[0] and "bcal=us_federal_reserve:2.4bd" in marked[0], marked
+    assert (tmp_path / "health.json").exists()
 
 
 # ---- 4. nothing changes without the declaration ----

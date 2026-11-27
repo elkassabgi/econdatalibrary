@@ -1,7 +1,7 @@
 {
- "what": "Weekdays on which the publisher's daily data carry NO value, read from the data alone (no holiday rule applied). Written by a measurement script from the Office of Financial Research API dumps; tests/test_health_business_calendar.py pins updater/calendars.py to it.",
+ "what": "Weekdays on which the publisher's daily data carry NO value, read from the data alone (no holiday rule applied). Written by tools/measure_ofr_weekday_closures.py from the Office of Financial Research API dumps; tests/test_health_business_calendar.py pins updater/calendars.py to it.",
  "source": "data.financialresearch.gov/v1/series/dataset?dataset=fnyr and dataset=repo, fetched 2026-11-27 ~09:33Z (daily-maintenance run, files fnyr.json and repo.json)",
- "measured_utc": "2026-11-27T17:12:24Z",
+ "measured_utc": "2026-11-27T18:44:06Z",
  "ofr": {
   "population": "union of every series in fnyr (30) and repo (164)",
   "window": [
