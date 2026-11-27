@@ -3615,6 +3615,13 @@ sources:
   strategy_reason: Fetched via the St. Louis Fed API, which exposes a server-side observation_start date filter; derive it from each series'
     stored max(obs_date) and pull only the tail.
   cadence: daily
+  # MEASURED 2026-11-27 (branch fix/health-business-day-holidays): the New York Fed's SOFR, OBFR and TGCR
+  # (the rates this fetcher reads from FRED) carry no value on exactly the 85 weekdays 2018-04-03..2026-11-24
+  # that the us_federal_reserve rule names, and a value on every other weekday: 0 misses in each direction.
+  # Instrument: OFR's fnyr dataset, which republishes these rates (API dump of 2026-11-27). NOT measured: the
+  # SOFR averages and index series this fetcher also reads. Rule and evidence: updater/calendars.py; pinned
+  # by tests/test_health_business_calendar.py.
+  business_calendar: us_federal_reserve
   refresh_cost: fast
   out_dir: nyfed
   review: true
@@ -3764,6 +3771,14 @@ sources:
   strategy_reason: OFR v1/series/dataset endpoint accepts a server-side &mindate=YYYY-MM-DD date filter, so fetch only obs
     newer than stored max(obs_date) per dataset and merge/de-dup.
   cadence: daily
+  # MEASURED 2026-11-27 (branch fix/health-business-day-holidays): OFR's daily data follow the Federal
+  # Reserve Banks' holidays. In the OFR API dumps of 2026-11-27 (datasets fnyr + repo, 194 daily series),
+  # the weekdays 2016-03-01..2026-11-24 with no value in any series are exactly the 104 weekdays that the
+  # us_federal_reserve rule names: 0 misses in each direction. A Saturday holiday closes no Friday: all 7
+  # such Fridays carry values (effective fed funds and OBFR at least). Without this the 2026-11-27 gate
+  # read ofr RED-DATA while it held OFR's own newest obs (11-24; Thanksgiving 11-26 counted as a business
+  # day). Rule and evidence: updater/calendars.py; pinned by tests/test_health_business_calendar.py.
+  business_calendar: us_federal_reserve
   refresh_cost: fast
   out_dir: ofr
   review: true

@@ -15,6 +15,7 @@ import os
 import yaml
 
 from . import config
+from .calendars import BUSINESS_CALENDARS
 from .strategies.base import Unit
 
 VALID_STRATEGIES = {
@@ -139,6 +140,20 @@ def validate(reg: dict, expected_count: int | None = None, workflows_root: str |
             # remedy on a flow-grain source writes 0 objects and leaves the debt standing).
             problems.append(f"{sid}: csv_grain must be one of {sorted(CSV_GRAINS)}, "
                             f"got {e.get('csv_grain')!r}")
+        if "business_calendar" in e:
+            # business_calendar: <name> declares the publisher's holiday calendar; health._business_age_days then
+            # leaves its holidays out of the source's daily data clock (updater/calendars.py, 2026-11-27: ofr read
+            # RED-DATA on Thanksgiving's next day holding OFR's own newest obs). It makes the gate more lenient, so
+            # it is narrow: a known name only (a typo must not read as weekends-only while the registry claims a
+            # calendar), and on a cadence: daily source only - the one cadence aged in business days, so on any
+            # other the declaration would be read by nothing (R202).
+            bc = e.get("business_calendar")
+            if not isinstance(bc, str) or bc not in BUSINESS_CALENDARS:
+                problems.append(f"{sid}: business_calendar must be one of {sorted(BUSINESS_CALENDARS)}, "
+                                f"got {bc!r}")
+            if e.get("cadence") != "daily":
+                problems.append(f"{sid}: business_calendar is read only for cadence: daily, got cadence "
+                                f"{e.get('cadence')!r}")
         if "csv_merge_served" in e and not isinstance(e.get("csv_merge_served"), bool):
             # csv_merge_served: true merges each CSV upload with the served object (R1136). A typo
             # like "yes" must not silently switch it off - the derive reads `is True`.
