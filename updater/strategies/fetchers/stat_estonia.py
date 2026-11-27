@@ -46,6 +46,10 @@ _compare_subject, merge changed + added rows only after a reviewer has read the 
 read the table back against the publisher. Candidates by store signature (F: copies, one
 early key then detail): EH045, EH046, EH047, EM041, PM09, PM0281, RR302, TO0053, TO0083,
 TU131, RVR01 - the over-MAX_CELLS condition itself needs each table's metadata.
+THE TOOL FOR IT: tools/stat_estonia_grain_repair.py (dry run by default; --apply is one table, gated on
+--expect-new-series = the measured count, held 0 and dup 0, because this full-pull path skips the growth
+bounds). Its --census lists the D1-shape tables of the class from metadata GETs alone. Known members:
+TT065.PX and RRI07.PX (their boundary withheld 13,189 and 4,939 rows on the 2026-11-25 pass).
 
 
 HONEST STATUS (Tally + finalize): each table is a sub-unit. We do our OWN HTTP (rather
