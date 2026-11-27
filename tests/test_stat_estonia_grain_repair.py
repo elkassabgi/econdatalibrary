@@ -9,6 +9,10 @@ Kuu 13 x region 101 x sex 3 x age 4 = 220,584 cells, 15,756 per period), so a fu
 pins the analysis's expected receipt (new series 15,743). One FULL fetch costs ~12 s, so the other tests use
 SCALED: the same dimensions with 6 regions under MAX_CELLS 2,000 (936 cells per period, 13,104 whole) - the
 same cell class. The planted store holds the 13 Kuu-keyed national-total keys the analysis inferred (180 rows).
+The CI writer gate is stubbed CLEAR (a test never reaches GitHub); R2 is emulated by FakeR2 on a folder, with
+the ETag = md5 of the bytes (a single-part R2 PUT) and put_if as the only write it accepts.
+Review AR of PR #340 (F:/work/econ_finish/estonia_repair_pr/review/VERDICT.md): C1-C3 and m1-m6 are pinned below,
+one test per gate and per check after the write, so each of the review's mutants turns one test red.
 """
 from __future__ import annotations
 
@@ -20,6 +24,7 @@ import importlib.util
 import itertools
 import json
 import os
+import shutil
 import sys
 import types
 
@@ -32,12 +37,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from core import catalog_path, cutover  # noqa: E402
+from updater import blob, config  # noqa: E402
 from updater.strategies.fetchers import stat_estonia as S  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location("stat_estonia_grain_repair",
                                                os.path.join(ROOT, "tools", "stat_estonia_grain_repair.py"))
 T = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(T)
+REAL_GATE = T._ci_writer_gate
 
 Y = dt.date.today().year            # the fetcher's cold rule reads today's date: keep the table hot
 END = lambda y: dt.date(y, 12, 31)  # noqa: E731
@@ -96,17 +103,22 @@ N_NEW = SCALED.n_new                          # 923
 
 class Pub:
     """A stub andmed.stat.ee. tables {path: (variables, value_fn)}, folders {path: [items]} for the crawl.
-    no_post: a data POST fails the test (the census reads metadata only). `gone` raises TransientError."""
+    no_post: a data POST fails the test (the census reads metadata only). unreachable: the GET raises
+    TransientError; errors: the GET raises DefinitiveError (an unexpected HTTP code). reject / transient: the
+    n-th POST (0-based) answers 400 (None) / raises TransientError."""
 
-    def __init__(self, tables, folders=None, no_post=False, unreachable=()):
+    def __init__(self, tables, folders=None, no_post=False, unreachable=(), errors=(), reject=(), transient=()):
         self.tables, self.folders, self.no_post = tables, folders or {}, no_post
-        self.unreachable, self.gets, self.posts = set(unreachable), [], []
+        self.unreachable, self.errors, self.gets, self.posts = set(unreachable), set(errors), [], []
+        self.reject, self.transient = set(reject), set(transient)
 
     def meta(self, sess, url):
         path = url[len(BASE):].lstrip("/")
         self.gets.append(path)
         if path in self.unreachable:
             raise S.TransientError("stub 503")
+        if path in self.errors:
+            raise S.DefinitiveError("stub HTTP 418")
         if path in self.folders:
             return list(self.folders[path])
         return {"variables": [dict(v) for v in self.tables[path][0]]} if path in self.tables else None
@@ -115,7 +127,12 @@ class Pub:
         if self.no_post:
             raise AssertionError(f"a data POST was sent: {url}")
         path = url[len(BASE):].lstrip("/")
+        i = len(self.posts)
         self.posts.append((path, body))
+        if i in self.transient:
+            raise S.TransientError("stub 503 on a data POST")
+        if i in self.reject:
+            return None
         variables, fn = self.tables[path]
         q = body["query"]
         ids = [x["code"] for x in q]
@@ -154,6 +171,7 @@ def world(tmp_path, monkeypatch, capsys):
     sdir.mkdir(parents=True)
     monkeypatch.setattr(S.config, "source_dir", lambda s: str(sdir))
     monkeypatch.setattr(S.time, "sleep", lambda s: None)
+    monkeypatch.setattr(T, "_ci_writer_gate", lambda: (0, "CLEAR: stub"))        # never GitHub from a test
     out = tmp_path / "out"
     box = types.SimpleNamespace(tmp=tmp_path, store_root=store_root, sdir=sdir, out=out, mp=monkeypatch,
                                 subject=str(sdir / "sotsiaalelu.parquet"), ing=real)
@@ -172,13 +190,16 @@ def world(tmp_path, monkeypatch, capsys):
                                  "value": pa.array([r[2] for r in rows], pa.float64())}), box.subject)
         return box.subject
 
-    def tool(pub, *args):
+    def raw(pub, *args, out_dir=None):
+        """main() with exactly these arguments (no --store-root added)."""
         monkeypatch.setattr(S, "_get_meta", pub.meta)
         monkeypatch.setattr(S, "_post_data", pub.post)
         capsys.readouterr()
-        rc = T.main(list(args) + ["--store-root", str(store_root), "--out-dir", str(out), "--rate", "0.25"],
-                    session=object())
+        rc = T.main(list(args) + ["--out-dir", str(out_dir or out), "--rate", "0.25"], session=object())
         return rc, capsys.readouterr().out
+
+    def tool(pub, *args, out_dir=None):
+        return raw(pub, *args, "--store-root", str(store_root), out_dir=out_dir)
 
     def update(pub):
         (sdir / "_catalog.json").write_text(json.dumps([{"path": TT}]), encoding="utf-8")
@@ -193,7 +214,7 @@ def world(tmp_path, monkeypatch, capsys):
         assert len(js) == 1, js
         return json.loads(js[0].read_text(encoding="utf-8"))
 
-    box.plant, box.tool, box.update, box.receipt = plant, tool, update, receipt
+    box.plant, box.tool, box.raw, box.update, box.receipt = plant, tool, raw, update, receipt
     return box
 
 
@@ -403,7 +424,7 @@ def test_census_lists_the_planted_class_and_not_the_negative_controls(world):
                                               MONTHLY: "EXCLUDED_NOT_D1", NOTIME: "NO_TIME", GONE: "GONE"}, v
     assert v[TT][2:6] == ["True", "14", "15756", "220584"], v[TT]
     assert pub.posts == [] and sorted(pub.gets) == sorted([TT, SMALL, WIDE, MONTHLY, NOTIME, GONE])
-    assert "MEMBER (D1-shape, per period <= MAX_CELLS < whole) 1" in out and "EXCLUDED (same cells, not " \
+    assert "CELL class - the stored grain is not checked) 1;" in out and "EXCLUDED (same cells, not " \
         "D1-shape) 1" in out, out
 
 
@@ -437,3 +458,297 @@ def test_census_takes_no_apply(world):
     pub = Pub(census_tables(), no_post=True)
     rc, out = world.tool(pub, "--census", "--tables", TT, "--apply")
     assert rc == T.REFUSED and pub.gets == [], out
+
+
+# ---- review C3: the all-or-nothing chunk rule ---------------------------------------------------------------
+@pytest.mark.parametrize("how", ["reject", "transient"])
+def test_a_failed_chunk_ends_the_table_and_nothing_merges(world, how):
+    """A rejected (400/403) or transient first chunk ends the table at once: no later POST, nothing merges,
+    exit 1. Skipping the chunk instead would POST the other six and then meet `held` (exit 2)."""
+    p = world.plant()
+    before = _sha(p)
+    pub = Pub({TT: (tt_vars(reg=SCALED.reg), tt_value)}, **{how: {0}})
+    rc, out = world.tool(pub, "--tables", TT, "--apply", "--expect-new-series", str(N_NEW))
+    assert rc == T.FETCH_FAILED, out
+    assert ("rejected (400/403)" if how == "reject" else "data POST 1 of 7 failed") in out, out
+    assert len(pub.posts) == 1, "no POST after the failed chunk"
+    assert _sha(p) == before
+
+
+# ---- review C3: the exact expectation ------------------------------------------------------------------------
+@pytest.mark.parametrize("delta", [-1, 1])
+def test_expect_new_series_is_an_exact_equality(world, delta):
+    p = world.plant()
+    before = _sha(p)
+    rc, out = world.tool(tt_pub(), "--tables", TT, "--apply", "--expect-new-series", str(N_NEW + delta))
+    assert rc == T.REFUSED and f"!= the {N_NEW:,} new series measured now" in out, out
+    assert _sha(p) == before
+
+
+# ---- review C3: every check after the write is shown to fail -------------------------------------------------
+def _wrap_merge(world, after):
+    """merge_and_write as it is, then `after(result)` - to plant what a broken merge would leave."""
+    real = T.merge.merge_and_write
+
+    def wrapped(*a, **k):
+        return after(real(*a, **k))
+    world.mp.setattr(T.merge, "merge_and_write", wrapped)
+
+
+def _apply(world):
+    rc, out = world.tool(tt_pub(), "--tables", TT, "--apply", "--expect-new-series", str(N_NEW))
+    return rc, out, [ln for ln in out.splitlines() if "READ-BACK FAILED" in ln]
+
+
+def test_a_merge_row_count_that_does_not_add_up_is_a_defect(world):
+    world.plant()
+    _wrap_merge(world, lambda r: (r[0] + 1, r[1], r[2]))
+    rc, out, bad = _apply(world)
+    assert rc == T.DEFECT and any("merge: " in b and "added !=" in b for b in bad), out
+    assert world.receipt()["result"] == "read-back failed"
+
+
+def test_a_changed_key_report_that_does_not_match_is_a_defect(world):
+    world.plant()
+    _wrap_merge(world, lambda r: (r[0], r[1], dict(list(r[2].items())[1:])))
+    rc, out, bad = _apply(world)
+    assert rc == T.DEFECT and any("changed-key report" in b for b in bad), out
+
+
+def test_a_store_that_reads_back_another_value_is_a_defect(world):
+    p = world.plant()
+
+    def corrupt(r):
+        t = pq.read_table(p)
+        vals = t.column("value").to_pylist()
+        i = t.column("series_key").to_pylist().index(agg_key("00"))
+        vals[i] += 1.0
+        pq.write_table(t.set_column(2, "value", pa.array(vals, pa.float64())), p)
+        return r
+    _wrap_merge(world, corrupt)
+    rc, out, bad = _apply(world)
+    assert rc == T.DEFECT and any("store read-back: 0 publisher row(s) missing, 1 with another value" in b
+                                  for b in bad), out
+
+
+def test_a_derived_csv_that_differs_is_a_defect(world):
+    world.plant()
+    from core import derive_csv
+    real = derive_csv._series_csv_bytes
+    world.mp.setattr(derive_csv, "_series_csv_bytes",
+                     lambda cid: b"".join(real(cid).splitlines(keepends=True)[:-1]))    # one row short
+    rc, out, bad = _apply(world)
+    assert rc == T.DEFECT and any("derived CSV read-back" in b for b in bad), out
+    assert not any("store read-back" in b for b in bad), "the store is right; only the CSV differs"
+
+
+def test_a_merge_that_would_shrink_the_file_is_refused_by_the_exact_floor(world):
+    """Another table's repeated row in the same file collapses in the merge's dedup: the file would end one row
+    short of stored + added. The floor is exactly stored + added, so the merge refuses and nothing changes."""
+    p = world.plant([(f"{CTRL}:Sugu=1", END(Y - 1), 5.0)])
+    before = _sha(p)
+    rc, out, _ = _apply(world)
+    assert rc == T.REFUSED and "the merge refused (refusing shrink" in out, out
+    assert _sha(p) == before
+
+
+def test_a_crash_after_the_write_leaves_a_receipt_and_the_ids_file(world):
+    """m2: an exception after the write is re-raised, but only after the receipt and the ids file are written."""
+    p = world.plant()
+
+    def boom(*a, **k):
+        raise RuntimeError("read-back blew up")
+    world.mp.setattr(T, "read_back_store", boom)
+    with pytest.raises(RuntimeError, match="read-back blew up"):
+        world.tool(tt_pub(), "--tables", TT, "--apply", "--expect-new-series", str(N_NEW))
+    r = world.receipt()
+    assert r["result"].startswith("crashed during or after the write: RuntimeError"), r["result"]
+    assert next(world.out.glob("*.ids.txt")).read_text(encoding="utf-8") == f"stat_estonia:{PRE}\n"
+    assert len(_rows(p, PRE)) == SCALED.n_fetched, "the write had happened: the receipt says so"
+    assert T._AFTER_WRITE == {}
+
+
+# ---- review C2: changed rows ---------------------------------------------------------------------------------
+REVISED = {(str(Y - 5), "00"), (str(Y - 6), "3"), (str(Y - 7), "7")}
+
+
+def _revised_value(c):
+    v = tt_value(c)
+    if (c["Aasta"], c["Kuu"]) in REVISED and c[REGION] == "1" and c["Sugu"] == "1" and c[AGE] == "1":
+        return v + 1.0
+    return v
+
+
+def test_changed_rows_are_listed_and_need_their_exact_count(world):
+    p = world.plant()
+    pub = Pub({TT: (tt_vars(reg=SCALED.reg), _revised_value)})
+    rc, out = world.tool(pub, "--tables", TT)
+    r = world.receipt()
+    assert rc == T.OK and r["changed"] == 3 and len(r["changed_examples"]) == 3, (rc, r)
+    k, d, old, new = r["changed_examples"][0]
+    assert k == agg_key("00") and new == old + 1.0, r["changed_examples"]
+    assert out.count("changed row ") == 3 and "--expect-changed 3" in out, out
+    before = _sha(p)
+    for args in ((), ("--expect-changed", "0"), ("--expect-changed", "2")):
+        rc, out = world.tool(pub, "--tables", TT, "--apply", "--expect-new-series", str(N_NEW), *args)
+        assert rc == T.REFUSED and "changed row(s) measured now" in out, out
+        assert _sha(p) == before
+    rc, out = world.tool(pub, "--tables", TT, "--apply", "--expect-new-series", str(N_NEW), "--expect-changed", "3")
+    assert rc == T.OK, out
+    assert _rows(p, PRE)[(agg_key("00"), END(Y - 5))] == _revised_value(
+        {"Aasta": str(Y - 5), "Kuu": "00", REGION: "1", "Sugu": "1", AGE: "1"})
+
+
+# ---- review m1, and the absent subject file ------------------------------------------------------------------
+def test_a_dry_run_exits_2_when_apply_would_be_refused(world):
+    world.plant([(agg_key("00"), END(Y - 14), 1.0)])                     # held 1
+    rc, out = world.tool(tt_pub(), "--tables", TT)
+    assert rc == T.REFUSED and "--apply would be REFUSED: held 1:" in out and "apply with:" not in out, out
+
+
+def test_an_absent_subject_file_refuses(world):
+    rc, out = world.tool(tt_pub(), "--tables", TT)
+    assert rc == T.REFUSED and "is absent from the store" in out, out
+
+
+# ---- review C1 and m3: who else writes the file ---------------------------------------------------------------
+def test_apply_refuses_when_the_ci_writer_gate_is_not_clear(world):
+    p = world.plant()
+    before = _sha(p)
+    world.mp.setattr(T, "_ci_writer_gate", lambda: (3, "BLOCKED: updater-daily run in flight"))
+    pub = tt_pub()
+    rc, out = world.tool(pub, "--tables", TT, "--apply", "--expect-new-series", str(N_NEW))
+    assert rc == T.REFUSED and "CI writer gate is not CLEAR" in out and "BLOCKED: updater-daily" in out, out
+    assert pub.gets == [] and pub.posts == [], "the gate runs FIRST"
+    assert _sha(p) == before
+
+
+def test_the_gate_runs_tools_ci_writer_gate_and_reads_its_exit_code(monkeypatch):
+    import subprocess
+    seen = []
+
+    def fake_run(args, **kw):
+        seen.append((args, kw))
+        return types.SimpleNamespace(returncode=3, stdout="a note\nBLOCKED: heavy pending\n", stderr="")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert REAL_GATE() == (3, "BLOCKED: heavy pending")
+    args, kw = seen[0]
+    assert args[0] == sys.executable and args[1] == os.path.join(ROOT, "tools", "ci_writer_gate.py") and len(args) == 2
+    assert kw["timeout"] == T.GATE_TIMEOUT_S
+
+    def no_run(*a, **k):
+        raise FileNotFoundError("no gh")
+    monkeypatch.setattr(subprocess, "run", no_run)
+    rc, why = REAL_GATE()
+    assert rc is None and "FileNotFoundError" in why, "a gate that did not run is not CLEAR"
+
+
+def test_apply_before_t0_needs_r2_or_a_store_root(world):
+    world.plant()
+    pub = tt_pub()
+    rc, out = world.raw(pub, "--tables", TT, "--apply", "--expect-new-series", str(N_NEW))
+    assert rc == T.REFUSED and "before T0 the store of record is R2" in out and pub.gets == [], out
+
+
+def test_apply_after_t0_refuses_the_frozen_r2_copy(world):
+    (world.tmp / "CUTOVER").write_text("")
+    assert cutover.is_cut_over()
+    world.mp.setenv("AQUEDUCT_BACKEND", "r2")
+    pub = tt_pub()
+    rc, out = world.raw(pub, "--tables", TT, "--apply", "--expect-new-series", str(N_NEW))
+    assert rc == T.REFUSED and "after T0 the R2 copy is frozen" in out and pub.gets == [], out
+    assert catalog_path._held is None
+
+
+class FakeR2(blob.LocalBlob):
+    """R2 on a folder: the ETag is the md5 of the bytes (a single-part PUT), put_if is the conditional write, and an
+    unconditional PUT fails the test. before_put(fake, key) runs first - another writer landing at that moment."""
+
+    def __init__(self, root, before_put=None):
+        super().__init__(root=root)
+        self.before_put, self.puts = before_put, []
+
+    def put_atomic(self, key, data, **kw):
+        raise AssertionError(f"an unconditional PUT reached the store of record: {key}")
+
+    def put_if(self, key, data, *, if_match=None, if_none_match=False):
+        if self.before_put:
+            self.before_put(self, key)
+        cur = self.etag(key)
+        self.puts.append((key, if_match, cur))
+        if if_match is None or cur != if_match.strip('"'):
+            return None
+        blob.LocalBlob.put_atomic(self, key, data)
+        return self.etag(key)
+
+
+def _r2(world, before_put=None):
+    """The store of record emulated: the planted subject file in a bucket folder, an absent local mirror."""
+    subject = world.plant()
+    obj = world.tmp / "bucket" / "clean_full" / S.SOURCE / "sotsiaalelu.parquet"
+    obj.parent.mkdir(parents=True)
+    shutil.copy(subject, obj)
+    data_root = world.tmp / "mirror" / "data" / "clean_full"
+    fake = FakeR2(str(world.tmp / "bucket"), before_put)
+    world.mp.setattr(config, "DATA_ROOT", str(data_root))
+    world.mp.setattr(blob, "_r2_routed", lambda: fake)
+    world.mp.setenv("AQUEDUCT_BACKEND", "r2")
+    return fake, obj, data_root / S.SOURCE / "sotsiaalelu.parquet"
+
+
+def test_apply_under_r2_writes_one_conditional_put_and_mirrors_it(world):
+    fake, obj, mirror = _r2(world)
+    etag0 = hashlib.md5(obj.read_bytes()).hexdigest()
+    rc, out = world.raw(tt_pub(), "--tables", TT, "--apply", "--expect-new-series", str(N_NEW))
+    assert rc == T.OK, out
+    assert fake.puts == [("clean_full/stat_estonia/sotsiaalelu.parquet", etag0, etag0)], fake.puts
+    assert len(_rows(str(obj), PRE)) == SCALED.n_fetched
+    assert mirror.read_bytes() == obj.read_bytes(), "the local mirror holds the bytes R2 holds"
+    r = world.receipt()
+    assert (r["etag_at_measure"], r["etag_after_write"]) == (etag0, hashlib.md5(obj.read_bytes()).hexdigest()), r
+    assert r["ci_writer_gate"]["exit"] == 0 and r["result"] == "merged and read back", r
+
+
+def test_apply_under_r2_refuses_when_another_writer_moved_the_object(world):
+    def other_writer(fake, key):
+        t = pq.read_table(fake._path(key))
+        pq.write_table(t.slice(1), fake._path(key))        # a CI pass lands between the measure and the PUT
+    fake, obj, mirror = _r2(world, before_put=other_writer)
+    rc, out = world.raw(tt_pub(), "--tables", TT, "--apply", "--expect-new-series", str(N_NEW))
+    assert rc == T.REFUSED and "changed after it was measured" in out, out
+    assert len(fake.puts) == 1 and fake.puts[0][1] != fake.puts[0][2], fake.puts
+    assert len(_rows(str(obj), PRE)) < N_STORED, "the other writer's file stands; this tool wrote nothing"
+    assert not mirror.exists()
+    assert world.receipt()["result"] == "refused: the object changed after the measure"
+
+
+# ---- review m5 and m6: the census's errors, limit and resume ---------------------------------------------------
+def test_census_counts_an_unexpected_answer_and_an_unlisted_folder(world):
+    world.use(FULL)
+    pub = Pub(census_tables(), no_post=True, errors={SMALL})
+    rc, out = world.tool(pub, "--census", "--tables", TT, SMALL)
+    assert rc == T.FETCH_FAILED and "ERROR (unexpected answer) 1" in out, out
+    assert _verdicts(world.out)[SMALL][1] == "ERROR"
+    folders = {"": [{"id": "majandus", "type": "l"}, {"id": "gone_folder", "type": "l"}],
+               "majandus": [{"id": "x", "type": "l"}], "majandus/x": [{"id": "SMALL.PX", "type": "t"}]}
+    pub2 = Pub({SMALL: census_tables()[SMALL]}, folders=folders, no_post=True)
+    rc, out = world.tool(pub2, "--census", "--crawl", out_dir=world.tmp / "out2")
+    assert rc == T.FETCH_FAILED and "crawl folders not listed 1" in out and "CENSUS INCOMPLETE" in out, out
+
+
+def test_census_limit_and_resume_continue_where_it_stopped(world):
+    world.use(FULL)
+    tabs = [TT, SMALL, WIDE, MONTHLY]
+    res = str(world.tmp / "census_resume.json")
+    pub = Pub(census_tables(), no_post=True)
+    rc, out = world.tool(pub, "--census", "--tables", *tabs, "--limit", "2", "--resume", res,
+                         out_dir=world.tmp / "o1")
+    assert rc == T.FETCH_FAILED and "CENSUS PARTIAL: 2 table(s) not read yet" in out and pub.gets == tabs[:2], out
+    pub2 = Pub(census_tables(), no_post=True)
+    rc, out = world.tool(pub2, "--census", "--tables", *tabs, "--resume", res, out_dir=world.tmp / "o2")
+    assert rc == T.OK and pub2.gets == tabs[2:], out
+    assert {p: r[1] for p, r in _verdicts(world.tmp / "o2").items()} == {
+        TT: "MEMBER", SMALL: "OUTSIDE", WIDE: "OUTSIDE", MONTHLY: "EXCLUDED_NOT_D1"}
+    rc, out = world.tool(Pub(census_tables(), no_post=True), "--census", "--tables", TT, "--resume", res,
+                         out_dir=world.tmp / "o3")
+    assert rc == T.REFUSED and "another table list" in out, out
