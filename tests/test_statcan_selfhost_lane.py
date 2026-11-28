@@ -1717,6 +1717,9 @@ def test_G3_note_a_live_path_is_refused_on_its_text_and_never_stat_ed_opened_or_
     assert LC.refused(str(d / "state.json")) is None
     assert ("realpath", str(d / "state.json")) in seen, seen
     assert LC.refused(str(tmp_path / "a~1" / "state.json")) is None, "a tilde off the live drive is a plain name"
+    # a device prefix in front of a local copy is dropped, not refused as a device path
+    pre = "\\\\?\\" + str(d / "state.json") if os.name == "nt" else "\\\\?\\F:\\copies\\state.json"
+    assert LC.refused(pre) is None, pre
     assert LC.main(_census_args(d)) == 1 and "LOST 11111111" in capsys.readouterr().out
     # ... and a link into a refused place is still refused, by the resolve step
     live, link = tmp_path / "live", tmp_path / "link"
