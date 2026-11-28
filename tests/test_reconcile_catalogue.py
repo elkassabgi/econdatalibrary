@@ -1233,3 +1233,38 @@ def test_t19_the_manifest_copy_must_be_static(env, tmp_path):
     (tmp_path / "sent.db-wal").write_bytes(b"x")
     with pytest.raises(rc.Refused, match="static"):
         rc.Manifest(str(m))
+
+
+def _resolver_opens(ast, tree):
+    out = []
+    for f in ast.walk(tree):
+        if isinstance(f, ast.FunctionDef):
+            for n in ast.walk(f):
+                if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                        and n.func.attr in ("connect", "connect_path") and ast.unparse(n.func.value) == "catalog_path"):
+                    out.append(f.name)
+    return out
+
+
+def _plain_catalogue_opens(ast, tree):
+    held = {"catalogue", "build", "where", "cat_con"}
+    return [n.lineno for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "connect" and ast.unparse(n.func.value) == "sqlite3" and n.args
+            and {x.id for x in ast.walk(n.args[0]) if isinstance(x, ast.Name)} & held]
+
+
+def test_t19_the_catalogue_is_opened_only_by_the_two_helpers():
+    """Every resolver open sits in _catalogue_ro / _catalogue_rw (each returns the connection at once), and no
+    plain sqlite3 open takes a name that holds the catalogue. Planted opens in parsed snippets are the positive
+    controls."""
+    import ast                                                         # noqa: PLC0415
+    with open(rc.__file__, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    assert sorted(_resolver_opens(ast, tree)) == ["_catalogue_ro", "_catalogue_rw"]
+    assert _plain_catalogue_opens(ast, tree) == []
+    planted = ast.parse("import sqlite3" + chr(10) + "def f(catalogue):" + chr(10)
+                        + "    return sqlite3.connect(catalogue)" + chr(10))
+    assert len(_plain_catalogue_opens(ast, planted)) == 1              # positive control
+    planted2 = ast.parse("def g(catalogue):" + chr(10)
+                         + "    con = catalog_path.connect_path(catalogue, write=False)" + chr(10))
+    assert _resolver_opens(ast, planted2) == ["g"]                     # positive control

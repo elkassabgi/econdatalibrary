@@ -233,15 +233,15 @@ def _is_under(p, root) -> bool:
 
 def _under_e_repo(p) -> bool:
     """String tests only: the E: repository is never stat-ed or resolved by this check."""
-    root = _abs(catalog_path.LIVE_STORE_ROOT).rstrip("\\/")
+    e_root = _abs(catalog_path.LIVE_STORE_ROOT).rstrip("\\/")
     q = _abs(p)
-    if q == root or q.startswith(root + os.sep):
+    if q == e_root or q.startswith(e_root + os.sep):
         return True                                          # the spelled path: never resolved, never stat-ed
-    if os.path.splitdrive(q)[0] == os.path.splitdrive(root)[0]:
+    if os.path.splitdrive(q)[0] == os.path.splitdrive(e_root)[0]:
         return False                                         # another E: path: not resolved either (no E: access);
                                                              # it then fails the F: volume test
     q = _real(p)                                             # an F: path: resolved, so a junction to E: is seen
-    return q == root or q.startswith(root + os.sep)
+    return q == e_root or q.startswith(e_root + os.sep)
 
 
 def _volume(p) -> int:
@@ -297,6 +297,27 @@ def guard_catalogue(path, *, for_apply: bool = False) -> str:
         raise Refused("refused: --catalogue is required before T0 (the dry run reads an F: copy; no default)")
     guard_input(path, "--catalogue")
     return path
+
+
+# The catalogue is opened ONLY by these two, through the one resolver. Each returns the resolver's connection
+# straight away and is never assigned from core.catalog_path itself: the writers-lock taint rule
+# (tests/test_catalogue_writers_lock.py, R1203/R1216) follows NAMES file-wide, so a connection bound to `con`
+# tainted every own-file open that also uses `con`/`r`/`p` and flagged the tool's snapshot, ledger and result
+# files as if they were the catalogue. A connection is not a path; the path seeds (ENV_FILE, `root` in
+# _under_e_repo, `build` in guard_catalogue) stay tainted and reach no plain open (scratch/taint_chain.py).
+def _tune_catalogue(cat_con):
+    cat_con.text_factory = _text_or_bytes
+    cat_con.execute("PRAGMA busy_timeout=300000")
+    return cat_con
+
+
+def _catalogue_ro(where):
+    return _tune_catalogue(catalog_path.connect_path(where, write=False, timeout=300))
+
+
+def _catalogue_rw(where):
+    """Read-write, autocommit (isolation_level None) so fts_rebuild runs its own BEGIN IMMEDIATE ... COMMIT."""
+    return _tune_catalogue(catalog_path.connect_path(where, write=True, timeout=300, isolation_level=None))
 
 
 def guard_out(out) -> str:
@@ -800,10 +821,10 @@ def ensure_token(env_file: str | None = None) -> str:
     name = "D1_READ_TOKEN" if cutover.is_cut_over() else "CLOUDFLARE_API_TOKEN"
     if (os.environ.get(name) or "").strip():
         return f"{name}: from the process environment"
-    path = env_file or ENV_FILE
+    env_path = env_file or ENV_FILE
     val = None
-    if os.path.isfile(path):
-        with open(path, encoding="utf-8-sig") as fh:
+    if os.path.isfile(env_path):
+        with open(env_path, encoding="utf-8-sig") as fh:
             for ln in fh:
                 ln = ln.strip()
                 if not ln or ln.startswith("#") or "=" not in ln:
@@ -933,8 +954,7 @@ def allowed_count(budget: Budget, db: str, allow: Allow) -> int:
 
 
 def _allow_from_catalogue(catalogue: str, gate: set, c3n: set) -> Allow:
-    con = catalog_path.connect_path(catalogue, write=False, timeout=300)
-    con.text_factory = _text_or_bytes
+    con = _catalogue_ro(catalogue)
     try:
         return build_allow(con, gate, c3n)
     finally:
@@ -1500,9 +1520,7 @@ def classify(*, catalogue: str, snapshots: dict, out_dir: str, allow: Allow, run
     """The class rules of (b2) over local x D1, in primary-key order, over ALLOWED rows only. Writes
     classify.sqlite and returns the plan and the counts. Pure reads of the catalogue."""
     from core.titles import clean_title                                # noqa: PLC0415
-    con = catalog_path.connect_path(catalogue, write=False, timeout=300)
-    con.text_factory = _text_or_bytes
-    con.execute("PRAGMA busy_timeout=300000")
+    con = _catalogue_ro(catalogue)
     snaps = {}
     for db, p in snapshots.items():
         snaps[db] = sqlite3.connect(ro_uri(p, True), uri=True) if p and os.path.exists(p) else None  # plain-open: own snapshot
@@ -2236,9 +2254,7 @@ def cmd_rehearse(a) -> int:
         raise Refused("refused: the gate changed since the plan was made")
     c3n = load_c3(guard_input(a.c3, "--c3", own_list=True))
     queries = load_ids(guard_input(a.queries, "--queries")) if a.queries else None
-    con = catalog_path.connect_path(path, write=True, timeout=300, isolation_level=None)
-    con.text_factory = _text_or_bytes
-    con.execute("PRAGMA busy_timeout=300000")
+    con = _catalogue_rw(path)
     rec = {"step": "rehearse", "utc_start": utcnow(), "plan_sha256": a.plan_sha}
     try:
         allow = _allow_for_plan(con, plan, gate, c3n)
@@ -2303,9 +2319,7 @@ def cmd_apply(a) -> int:
     say("apply: hashing the build ...")
     if file_sha256(path) != plan["catalogue"]["sha256"]:
         raise Refused("refused: the build changed since the plan was made (sha256 differs)")
-    con = catalog_path.connect_path(path, write=True, timeout=300, isolation_level=None)
-    con.text_factory = _text_or_bytes
-    con.execute("PRAGMA busy_timeout=300000")
+    con = _catalogue_rw(path)
     rec = {"step": "apply", "utc_start": utcnow(), "plan_sha256": a.plan_sha, "fts_form": a.fts_form}
     try:
         allow = _allow_for_plan(con, plan, gate, c3n)
@@ -2369,7 +2383,7 @@ def search_compare(con, queries: list[str], classify_db: str, budget: Budget, al
     cdb.close()
     snaps = {db: (sqlite3.connect(ro_uri(p, True), uri=True) if p and os.path.exists(p) else None)  # plain-open: own snapshot
              for db, p in (snapshots or {}).items()}
-    origins = [sqlite3.connect(ro_uri(p), uri=True) for p in (origin or [])]  # plain-open: an origin COPY, read-only
+    origins = [sqlite3.connect(ro_uri(p, True), uri=True) for p in (origin or [])]  # plain-open: an origin COPY on F:, ro+immutable
     res = {"queries": [], "fail": 0, "d1_rows_read": 0}
     try:
         for q in queries:
@@ -2450,8 +2464,7 @@ def cmd_search(a) -> int:
     c3n = load_c3(guard_input(a.c3, "--c3", own_list=True))
     if D1_QUERY is None:
         say(ensure_token(a.env_file))
-    con = catalog_path.connect_path(catalogue, write=False, timeout=300)
-    con.text_factory = _text_or_bytes
+    con = _catalogue_ro(catalogue)
     try:
         allow = build_allow(con, gate, c3n)
         snaps = {db: os.path.join(a.snapshot_dir, f"d1_{db}.sqlite") for db in DATABASES} if a.snapshot_dir else None
