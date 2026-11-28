@@ -347,6 +347,29 @@ def test_rm18_a_delete_whose_row_changed_since_the_plan_is_refused(env):
     c.close()
 
 
+def test_rm18_a_refused_delete_after_a_written_cell_rolls_the_cell_back(env):
+    # Mutant RM16b survived on 3bd7304de: the refusals above fail on the FIRST write, so COMMIT and ROLLBACK leave
+    # the same file. Here a cell is written before the delete is refused: only a ROLLBACK undoes it.
+    tmp, fake = env
+    local, out, sha, plan = _plan_with(tmp, fake, [srow("c1src:1", unit="o1"), srow("a:del")],
+                                       [srow("c1src:1", unit="n1")], c1_rows=[("c1src", "unit")], deletes=["a:del"])
+    assert len(plan["writes"]["cells"]) == 1 and len(plan["writes"]["deletes"]) == 1       # cells run first
+    c = sqlite3.connect(local)
+    c.execute("UPDATE series SET title='edited' WHERE series_id='a:del'")
+    c.commit()
+    c.close()
+    con = cp.connect_path(local, write=True, isolation_level=None)
+    with pytest.raises(rc.Refused, match=r"changed since the plan was made \(delete\)"):
+        rc.apply_writes(con, plan, str(tmp), "t")
+    con.close()
+    rec = json.load(open(tmp / "t_writes.json"))
+    assert rec["done"]["cells"] == 1 and rec["rolled_back"] is True                         # it WAS written
+    c = sqlite3.connect(local)
+    assert c.execute("SELECT unit FROM series WHERE series_id='c1src:1'").fetchone()[0] == "o1"    # and undone
+    assert c.execute("SELECT title FROM series WHERE series_id='a:del'").fetchone()[0] == "edited"
+    c.close()
+
+
 def test_rm19_rm20_verify_v1_and_v3_catch_writes_that_did_not_happen(env):
     tmp, fake = env
     local, out, sha, plan = _plan_with(tmp, fake, [srow("c1src:1", unit="o1"), srow("a:del")],
@@ -602,6 +625,26 @@ def test_r2_l2_a_resume_reprojects_the_whole_read_and_refuses_above_the_budget(e
     assert rc.main(argv) == 2                              # the resume re-projects with the MEASURED e: refused
     assert "re-projects at" in _say(capsys)
     assert not [c for c in fake.calls if "FROM series WHERE" in c[1]]
+
+
+def test_rv2_m4_a_probe_in_the_same_out_is_not_a_resume(env, capsys):
+    # Mutant N11 survived on 3bd7304de: since round 2 L2 a resume ALSO refuses above the budget, so rv2's exit code
+    # is 2 on both branches. Which branch ran is what M4 is about: a probe's statements do not make a resume.
+    tmp, fake = env
+    fake.add(rc.PRIMARY, "series", [srow(f"alpha:{i:03d}") for i in range(60)])
+    fake.finish()
+    local = make_local(tmp / "local.db", [srow(f"alpha:{i:03d}") for i in range(60)])
+    out = tmp / "run"
+    assert rc.main(["probe", "--out", str(out), "--catalogue", local, "--budget-rows", "100000",
+                    "--page-rows", "5"]) == 0
+    assert rc.Budget(100000, str(out / "budget.sqlite")).statements > 0      # control: the probe did charge
+    spent = rc.Budget(100000, str(out / "budget.sqlite")).spent
+    _say(capsys)
+    code = rc.main(["read-d1", "--out", str(out), "--catalogue", local, "--budget-rows", str(spent + 12),
+                    "--page-rows", "5", "--probe", str(out / "probe.json")])
+    said = _say(capsys)
+    assert code == 2 and "refused: the projection" in said, said
+    assert "resuming" not in said, said
 
 
 # ---- L1: errors on a page ------------------------------------------------------------------------------------------
@@ -893,3 +936,53 @@ def test_r2_l6_guard_out_and_an_own_list_test_the_e_string_before_any_resolve(en
         rc.guard_input(os.path.join(cp.LIVE_STORE_ROOT, "tools", "selfhost", "reconcile", "c1_columns.tsv"), "--c1",
                        own_list=True)
     assert not [p for p in seen if p.lower().startswith("e:")], seen
+
+
+# ---- round 3 F1: a gated mention in a LOCAL cell read as bytes (invalid UTF-8 text, or a BLOB) ----------------------
+
+def _set_raw(local, sid, col, raw: bytes, as_text: bool) -> str:
+    c = sqlite3.connect(local)
+    c.execute(f"UPDATE series SET {col} = {'CAST(? AS TEXT)' if as_text else '?'} WHERE series_id = ?", (raw, sid))
+    c.commit()
+    got = c.execute(f"SELECT typeof({col}) FROM series WHERE series_id = ?", (sid,)).fetchone()[0]
+    c.close()
+    return got
+
+
+@pytest.mark.parametrize("as_text", [True, False], ids=["invalid_utf8_text", "blob"])
+def test_r3_f1_a_bytes_cell_naming_the_gate_on_one_side_is_not_stored(env, as_text):
+    # Allow.names_gated tested str only, and the catalogue is read with text_factory=_text_or_bytes: a local cell
+    # naming the gate as bytes reached classify.sqlite (raw), and plan.json / the C4-DEL row as {"$blob": hex}
+    tmp, fake = env
+    fake.add(rc.PRIMARY, "series", [srow("alpha:1", title="plain d1 title"), srow("alpha:3", title="control d1"),
+                                    srow("alpha:4", title="d1 four")])
+    fake.finish()
+    local = make_local(tmp / "l.db", [srow("alpha:1"), srow("alpha:3", title="control local"), srow("alpha:4"),
+                                      srow("alpha:9")])
+    raw = b"local names gatedsrc \xff\xfe" if as_text else b"blob names gatedsrc"
+    ctl = b"plain bytes \xff\xfe" if as_text else b"plain blob"                  # a bytes cell naming nothing
+    want = "text" if as_text else "blob"
+    assert [_set_raw(local, "alpha:1", "title", raw, as_text), _set_raw(local, "alpha:9", "title", raw, as_text),
+            _set_raw(local, "alpha:4", "title", ctl, as_text)] == [want] * 3          # control: really not a str
+    snaps, _ = snapshot(fake, local, tmp / "snap")
+    res = run_classify(local, snaps, tmp / "out", c1={("alpha", "series", "title")}, deletes={"alpha:9"})
+    rc.write_json(str(tmp / "out" / "plan.json"), {"writes": res["plan"]})
+    listed = cells(tmp / "out")
+    assert ("series", "alpha:1", "title") not in listed                             # the one-sided bytes mention
+    assert [c for c in res["plan"]["cells"] if c[1] == "alpha:1"] == []
+    assert res["plan"]["deletes"] == []                                             # not planned with its values
+    assert ("series", "alpha:9", "C4-DEL-WITHHELD") in rows(tmp / "out")            # FAILED, by its key only
+    assert res["stats"]["withheld_values"] is True and res["stats"]["del_withheld"] is True
+    assert ("series", "alpha:4", "title") in listed and ("series", "alpha:3", "title") in listed  # controls
+    hits, _ = _grep_outputs([tmp / "out"], ["gatedsrc", b"gatedsrc".hex(), b"gatedsrc".hex().upper()])
+    assert hits == [], hits
+    seen, _ = _grep_outputs([tmp / "out"], ["control local", ctl.hex()])           # positive control: the grep
+    assert {n for _f, n in seen} == {"control local", ctl.hex()}, seen             # sees text AND the hex form
+
+
+def test_r3_f1_names_gated_matches_bytes_as_it_matches_a_str():
+    a = rc.Allow({"alpha"}, {"gatedsrc"}, set())
+    assert a.names_gated(b"x GatedSrc \xff") and a.names_gated(bytearray(b"gatedsrc")) and a.names_gated("gatedsrc")
+    assert not a.names_gated(b"xgatedsrcx", b"\xff\xfe", None, 1, 2.5) and not a.names_gated(b"gatedsrc2")
+    assert a.row_names_gated({"series_id": "alpha:1", "title": b"about gatedsrc \xff"}, "series")
+    assert not a.row_names_gated({"series_id": "alpha:1", "title": b"plain \xff"}, "series")

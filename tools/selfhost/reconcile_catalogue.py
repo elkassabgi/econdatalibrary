@@ -832,9 +832,13 @@ class Allow:
         return hashlib.sha256("\n".join(sorted(self.sources)).encode("utf-8")).hexdigest()
 
     def names_gated(self, *texts) -> bool:
+        """Does a value name a gated id? A str, or a LOCAL cell read as bytes (text that is not valid UTF-8, or a
+        BLOB - see _text_or_bytes): bytes are decoded with errors="replace", so the ids that match in a str match
+        in its bytes too (round-3 review F1: a bytes cell named the gate on one side and escaped both guards)."""
         if self._rx is None:
             return False
-        return any(isinstance(t, str) and self._rx.search(t) for t in texts)
+        return any(self._rx.search(t if isinstance(t, str) else bytes(t).decode("utf-8", "replace"))
+                   for t in texts if isinstance(t, (str, bytes, bytearray)))
 
     def row_names_gated(self, row: dict | None, table: str | None = None) -> bool:
         """Does a NON-KEY value of the row name a gated id (or stand in for one)? With `table`, the row's key
@@ -843,7 +847,7 @@ class Allow:
             return False
         keys = KEY_COLS.get(table, frozenset()) if table else frozenset()
         vals = [v for k, v in row.items() if k not in keys]
-        return any(_is_withheld(v) for v in vals) or self.names_gated(*[v for v in vals if isinstance(v, str)])
+        return any(_is_withheld(v) for v in vals) or self.names_gated(*vals)
 
     def redact(self, table: str, row: dict, equal=None) -> tuple[dict, bool]:
         """A D1 row as it may be STORED: every NON-KEY text value in which a gated id appears is replaced by

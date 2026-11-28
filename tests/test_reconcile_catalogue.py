@@ -751,6 +751,36 @@ def test_t10_no_output_holds_a_gated_or_unhosted_row(env, capsys):
     assert snap_marker, "positive control: the snapshot does hold the redaction marker"
 
 
+@pytest.mark.parametrize("side", ["local", "d1"])
+def test_t10_no_output_a_gated_mention_on_one_side_only(env, side):
+    # Mutants M43/M43b survived on 3bd7304de: P1's alpha:13 names the gate on BOTH sides, so the receipt-time
+    # stand-in check and the classify-time text check each hid the other's removal. One side per run, so the
+    # YES line (withheld_values) is attributable to that side's guard (round-3 review F3).
+    tmp, fake = env
+    gated, plain = "names gatedsrc", "plain title"
+    fake.add(rc.PRIMARY, "series", [srow("alpha:1", title=f"d1 {plain if side == 'local' else gated}"),
+                                    srow("alpha:3", title="control d1")])
+    fake.finish()
+    local = make_local(tmp / "l.db", [srow("alpha:1", title=f"local {gated if side == 'local' else plain}"),
+                                      srow("alpha:3", title="control local")])
+    snaps, _ = snapshot(fake, local, tmp / "snap")
+    con = sqlite3.connect(snaps[rc.PRIMARY])
+    stored = dict(con.execute("SELECT series_id, title FROM series").fetchall())
+    con.close()
+    # control: only the named side carries it (D1's side is withheld at receipt; the local side is never stored)
+    assert stored["alpha:1"] == ("d1 plain title" if side == "local" else rc.WITHHELD_DIFFERS)
+    res = run_classify(local, snaps, tmp / "out")
+    listed = cells(tmp / "out")
+    assert ("series", "alpha:3", "title") in listed                   # control: a differing title is listed
+    assert ("series", "alpha:1", "title") not in listed               # local: M43; d1: M43b (a stand-in is no value)
+    assert res["stats"]["withheld_values"] is True
+    hits, _ = _grep_outputs([tmp / "out"], ["gatedsrc", rc.WITHHELD.decode("ascii"), rc.WITHHELD.hex(),
+                                            rc.WITHHELD.hex().upper()])
+    assert hits == [], hits
+    seen, _ = _grep_outputs([tmp / "out"], ["control local"])         # positive control: the grep sees cell text
+    assert seen, "the grep found no cell value at all: it would be blind"
+
+
 def test_t10_a_d1_only_hosted_row_is_listed_and_an_unhosted_source_is_only_a_yes(env):
     tmp, fake = env
     fake.add(rc.PRIMARY, "series", [srow("fhfa:legacy1"), srow("otherhost:1")])
@@ -989,6 +1019,17 @@ def test_t14_the_e_refusal_touches_nothing_on_e(env, monkeypatch):
         with pytest.raises(rc.Refused):
             rc.guard_input(p, "--x")
     assert not [p for p in seen if p.lower().startswith("e:")], seen
+
+
+def test_t14_refusals_a_drive_letter_path_on_posix(monkeypatch):
+    # Mutant N23 survived on 3bd7304de: on Windows os.name is "nt" and the POSIX branch never runs. It is the branch
+    # CI's Linux runner takes, so it is tested here with os.name seen as "posix" by the tool alone.
+    monkeypatch.setattr(rc, "os", type(os)("os_as_posix"))
+    rc.os.name, rc.os.fspath, rc.os.path = "posix", os.fspath, os.path
+    assert rc._win_form("E:\\research\\x.db") == "e:\\research\\x.db"
+    assert rc._win_form("F:/work/../y") == "f:\\y"
+    assert rc._drive_of("e:/a") == "E:"
+    assert rc._win_form("/home/runner/x.db") is None and rc._drive_of("relative/x") is None
 
 
 def test_t14_classify_after_t0_needs_the_s4c_inputs(env, capsys):
