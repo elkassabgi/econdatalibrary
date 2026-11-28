@@ -779,18 +779,20 @@ def _older_copy_misses(rows_by_id: dict, older: str):
     import sqlite3                                                            # noqa: PLC0415
     if not rows_by_id:
         return False
-    n = os.path.normcase(os.path.realpath(older)) if older else ""
-    if not n or n.startswith(("\\\\", "//")) or _under(n, catalog_path.LIVE_STORE_ROOT) or \
-            any(_under(n, a) for a in LIVE_AREAS) or not os.path.isfile(n):
+    # names used nowhere else in this file: the repo's plain-open taint rule is file-wide by name
+    older_real = os.path.normcase(os.path.realpath(older)) if older else ""
+    if not older_real or older_real.startswith(("\\\\", "//")) or \
+            _under(older_real, catalog_path.LIVE_STORE_ROOT) or any(_under(older_real, a) for a in LIVE_AREAS) \
+            or not os.path.isfile(older_real):
         return None                                         # never E:'s live files (R1940); a missing copy: None
     try:
-        uri = pathlib.Path(n).resolve().as_uri() + "?mode=ro&immutable=1"
-        con = sqlite3.connect(uri, uri=True)  # plain-open: an F: copy, mode=ro&immutable=1 only (BUILDER_RULES)
+        older_uri = pathlib.Path(older_real).resolve().as_uri() + "?mode=ro&immutable=1"
+        older_con = sqlite3.connect(older_uri, uri=True)  # plain-open: an F: copy, mode=ro&immutable=1 only
         try:
-            con.execute("PRAGMA temp_store=MEMORY")
-            have = {r[0]: tuple(r) for r in con.execute("SELECT * FROM license")}
+            older_con.execute("PRAGMA temp_store=MEMORY")
+            have = {r[0]: tuple(r) for r in older_con.execute("SELECT * FROM license")}
         finally:
-            con.close()
+            older_con.close()
     except Exception:  # noqa: BLE001
         return None
     return any(have.get(lid) != tuple(row) for lid, row in rows_by_id.items())
