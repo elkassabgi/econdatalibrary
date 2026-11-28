@@ -11,6 +11,7 @@ source with no runnable adapter is a RUN FAILURE in the orchestrator, not a skip
 """
 from __future__ import annotations
 import os
+import re
 
 import yaml
 
@@ -221,6 +222,18 @@ def validate(reg: dict, expected_count: int | None = None, workflows_root: str |
             # second writer back on the served objects.
             problems.append(f"{sid}: served_by must be one of {sorted(SERVED_BY)}, "
                             f"got {e.get('served_by')!r}")
+        if "lane_post_t0" in e:
+            # `lane_post_t0: jobs/<module>.py` names the lane that serves a `served_by: lane` source AFTER T0 (statcan:
+            # jobs/statcan_selfhost_lane.py, T0 item B3). The SHAPE only: one problem here refuses every source (R347),
+            # so a fact about one job file must not gate the fleet - that the file exists and is post-T0 ready is
+            # t0_ready's statcan-lane check, and tests/test_statcan_selfhost_lane.py (design review C9).
+            lp = e.get("lane_post_t0")
+            if e.get("served_by") != "lane":
+                problems.append(f"{sid}: lane_post_t0 needs served_by: lane")
+            if not isinstance(lp, str) or not re.fullmatch(r"jobs/[a-z0-9_]+\.py", lp):
+                problems.append(f"{sid}: lane_post_t0 must be a 'jobs/<name>.py' path, got {lp!r}")
+            elif lp == "jobs/statcan_lane.py":
+                problems.append(f"{sid}: lane_post_t0 is the PRE-T0 lane jobs/statcan_lane.py, which refuses after T0")
         if "rotating" in e:
             # `rotating: true` declares a budget ROTATOR whose passes end `partial` by design and so never
             # stamp a success (R231): the public "late" rule (core/freshness_vocab.py) judges it on its

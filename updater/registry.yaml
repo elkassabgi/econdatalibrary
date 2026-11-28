@@ -4712,6 +4712,10 @@ sources:
   # retry drain must not write them too (lane design review 2026-09-23, finding 3). Adding this key
   # does NOT change the source count (R347: no EXPECTED_SOURCE_COUNT bump).
   served_by: lane
+  # THE LANE AFTER T0 (T0 item B3, 2026-11-28): jobs/statcan_lane.py refuses once econ is cut over, and this module
+  # serves statcan from the self-hosted store instead (it refuses BEFORE T0). Read by tools/selfhost/t0_ready.py
+  # (statcan-lane) and tools/guard_heartbeat.py. A field add: no EXPECTED_SOURCE_COUNT bump (R347).
+  lane_post_t0: jobs/statcan_selfhost_lane.py
   cadence: weekly
   refresh_cost: giant
   out_dir: statcan

@@ -190,6 +190,40 @@ the top of `RELAUNCH_GUARD.ps1` and `RELAUNCH_GUARD_LOOP.ps1`; in `EconGuard.cmd
 the `set "ECON_GUARD_LOOP_CMD=..."` line and the log path and `CurrentDirectory` inside the
 `powershell -Command` line. Nothing else in them is machine-specific.
 
+WHICH RELAUNCH_GUARD COPY (T0 item B3). There are two: `RELAUNCH_GUARD.ps1.workstation-copy` is the guard BEFORE
+T0 (its statcan entry launches `jobs/statcan_lane.py`), and `RELAUNCH_GUARD.ps1.post-t0-copy` is the guard AFTER
+T0 (its statcan entry launches `jobs/statcan_selfhost_lane.py`; nothing else differs, and
+tests/test_statcan_selfhost_lane.py fails if anything else does - so a PR that changes the guard changes BOTH).
+Restore from the one that matches the machine: no `C:\ProgramData\econ\CUTOVER` file = the workstation copy; the
+file exists = the post-t0 copy. `tools/check_guard_copies.py` follows the same rule. A small PR after T0 makes the
+post-t0 copy the only one.
+
+## The S13 swap of the post-T0 guard (T0 item B3)
+
+`swap_guard_statcan_s13.ps1` installs `RELAUNCH_GUARD.ps1.post-t0-copy` as the live guard at T0 step S13: after the
+flag, with EconGuard STOPPED (S8a) and the pre-T0 lane stopped (S4), BEFORE EconGuard restarts. First
+`python tools/check_guard_copies.py` on the stopped machine must show the live guard in sync with the WORKSTATION
+copy (before the flag; after it, the tool compares with the post-T0 copy, so run it at S4-S8 or read its diff); then
+the dry run, then the real run - one pasted line each, the two sha256 values measured at S13 prep:
+
+    powershell -NoProfile -ExecutionPolicy Bypass -File E:\research\econfindatalibrary\tools\machine\swap_guard_statcan_s13.ps1 -ExpectLiveSha <LIVE> -ExpectCopySha <COPY> -DryRun
+
+The script refuses unless the live guard and the post-T0 copy differ ONLY in the statcan entry, and while
+`logs\statcan_selfhost.DONE` exists (the guard skips a .DONE'd job silently). What to do on each exit code:
+
+- 0 - swapped: restart EconGuard, then the receipts: `python tools\selfhost\t0_ready.py --s13` (PASS),
+  `logs\_guard.log` shows `relaunched statcan_selfhost` and no `relaunched statcan_lane`, and
+  `python tools\guard_heartbeat.py --check --local` reads the post-T0 lane's beat.
+- 1 or 5 - NOT swapped, the live guard is unchanged. Restarting EconGuard with the OLD guard is a NAMED DECISION:
+  statcan then has no working lane after T0 and reads red. Otherwise fix the premise (or measure the shas again)
+  and run the line again.
+- 4 - swapped, did not verify, ROLLED BACK to the backup: as for 1/5.
+- 6 - ROLLBACK FAILED: do NOT restart EconGuard until the printed manual-restore line has run and its hash matches.
+
+GOING BACK after T0 (the flag removed - the owner's road): restore the pre-S13 guard from the backup the swap printed
+(`F:\launcher_watchdog\backups\RELAUNCH_GUARD.ps1.bak-<stamp>`); with the flag gone the heartbeat judges the pre-T0
+lane again, and that lane is only guarded by the pre-S13 guard.
+
 ## Keeping these honest
 
 A copy drifts. `tools/check_guard_copies.py` diffs each copy against its live file and exits

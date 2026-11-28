@@ -55,6 +55,16 @@ def main() -> int:
                          "delete is permanent")
     a = ap.parse_args()
 
+    # AFTER T0 statcan's store region has ONE writer, whoever holds logs/statcan_writer.lock (the post-T0 lane,
+    # jobs/statcan_selfhost_lane.py), and the lane has no re-pull path: a cube removed here would be booked absent and
+    # never come back (T0 item B3, design review C7). Refused, whatever the other flags say.
+    from core import cutover as _cut                                      # noqa: PLC0415
+    if a.source == "statcan" and _cut.is_cut_over():
+        print("REFUSING - after T0 statcan's store belongs to its lane (jobs/statcan_selfhost_lane.py, "
+              "logs/statcan_writer.lock), which cannot re-pull a removed cube. Restore a cube from a backup "
+              "instead, with the lane stopped.")
+        return 2
+
     blockers = runs_in_flight()
     if blockers and not a.force_unsafe:
         print("REFUSING — a writer may be active (R5, single-writer store):")

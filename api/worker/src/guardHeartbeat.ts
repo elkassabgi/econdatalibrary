@@ -59,5 +59,8 @@ export async function handleGuardHeartbeat(env: Env): Promise<Response> {
     // the verdict only, never the record: true = the self-hosted sec_edgar daily run is healthy (or it is
     // before T0), false = it is not, null = the publisher is older than that run (tools/guard_heartbeat.py)
     sec_edgar_local_ok: "sec_edgar_local_problem" in beat ? beat.sec_edgar_local_problem === null : null,
+    // the same shape for the statcan lane (T0 item B3): true = the post-T0 lane is healthy (or it is before T0),
+    // false = it is not, null = the publisher is older than B3 (tools/guard_heartbeat.py statcan_lane_problem)
+    statcan_lane_ok: "statcan_lane_problem" in beat ? beat.statcan_lane_problem === null : null,
   }, 200, noStore);
 }

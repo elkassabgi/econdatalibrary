@@ -12,6 +12,9 @@ reports, and the human decides which side is right.
 
     python tools/check_guard_copies.py          # exit 1 on any drift
     python tools/check_guard_copies.py --diff   # show the differing lines
+
+RELAUNCH_GUARD.ps1 has two versioned copies (T0 item B3): the workstation copy before T0, the post-T0 copy after it
+(see pairs() below and tools/machine/README.md).
 """
 from __future__ import annotations
 import argparse
@@ -32,6 +35,22 @@ PAIRS = [
     (os.path.join(MACHINE, "RELAUNCH_GUARD.ps1.workstation-copy"),
      os.path.join(ROOT, "RELAUNCH_GUARD.ps1")),
 ]
+# TWO COPIES OF RELAUNCH_GUARD.ps1 (T0 item B3, design review C3): the workstation copy is the guard BEFORE T0 (it
+# launches jobs/statcan_lane.py); the post-T0 copy differs from it in the statcan entry only (it launches
+# jobs/statcan_selfhost_lane.py) and is installed at S13 by tools/machine/swap_guard_statcan_s13.ps1. Which one the
+# live guard must match - and which one restores a rebuilt machine - follows core.cutover's ONE rule. (Between the
+# flag and the S13 swap the guard is stopped, and this reports the live file as drifted: expected, for hours.)
+POST_T0_GUARD_COPY = os.path.join(MACHINE, "RELAUNCH_GUARD.ps1.post-t0-copy")
+
+
+def pairs() -> list:
+    """PAIRS, with the guard's copy chosen by the CUTOVER flag."""
+    sys.path.insert(0, ROOT)
+    from core import cutover                                        # noqa: PLC0415
+    if not cutover.is_cut_over():
+        return list(PAIRS)
+    return [(POST_T0_GUARD_COPY, live) if os.path.basename(live) == "RELAUNCH_GUARD.ps1" else (copy, live)
+            for copy, live in PAIRS]
 
 
 def _read(p):
@@ -48,7 +67,10 @@ def main() -> int:
     a = ap.parse_args()
 
     drift = 0
-    for copy_path, live_path in PAIRS:
+    chosen = pairs()
+    for copy_path, live_path in chosen:
+        if copy_path == POST_T0_GUARD_COPY:
+            print("  (after T0: RELAUNCH_GUARD.ps1 is compared with the POST-T0 copy)")
         name = os.path.basename(live_path)
         c, l = _read(copy_path), _read(live_path)
         if c is None:
