@@ -1718,6 +1718,8 @@ def test_G3_note_a_live_path_is_refused_on_its_text_and_never_stat_ed_opened_or_
     assert "network or device path" in why[_UNC_SPELLING], why
     assert "8.3-style component" in why["E:\\ECON_L~1\\state\\writer.lock"], why
     assert "is under E:\\econ_live" in why["\\??\\E:\\econ_live\\state\\writer.lock"], why
+    # a stream OF a root is under it already as text (the round-4 name rule would catch it too, with its own words)
+    assert "is under E:\\econ_live, a LIVE place (R1940)" in why["E:\\econ_live::$INDEX_ALLOCATION"], why
     # through the tool's entry point: each input in turn given as a live path, the others real copies
     good = {"--state": str(d / "state.json"), "--catalogue": str(d / "cat.sqlite"), "--store-dir": str(d / "store")}
     for flag in good:
