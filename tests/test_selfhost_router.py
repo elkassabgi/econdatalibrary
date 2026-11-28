@@ -566,7 +566,11 @@ def test_bytes_are_passed_on_as_they_arrive(pair):
     t0 = time.monotonic()
     got = b""
     while b"0123456789" not in got:
-        got += s.recv(4096)
+        # BOUNDED: once the peer closes, recv() returns b"" at once, for ever - the loop would spin with no end
+        # (the 10 s socket timeout bounds only a recv that waits). A close before the bytes is a failure.
+        b = s.recv(4096)
+        assert b, f"the router closed the connection before the first body bytes (got {got!r})"
+        got += b
     first = time.monotonic() - t0
     s.close()
     assert first < 1.0, f"the first body bytes took {first:.2f} s (the origin sends 10 bytes every 0.2 s)"
@@ -855,7 +859,7 @@ def test_a_client_that_leaves_mid_body_does_not_return_the_connection(pooled):
     """The origin must see a closed connection to stop work (the pre-pool rule): an unfinished response is never
     pooled."""
     port, conns, origin, srv = pooled
-    s = socket.create_connection(("127.0.0.1", port))
+    s = socket.create_connection(("127.0.0.1", port), timeout=10)     # BOUNDED: the recv below has no other end
     s.sendall(b"GET /v1/series/slow HTTP/1.1" + CRLF + b"Host: x" + CRLF + CRLF)
     s.recv(64)
     s.close()
@@ -879,6 +883,35 @@ def _router_for(tmp_path, origin_port):
     srv = router.serve(str(state), 0)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv
+
+
+def _raw_origin(handler_cls):
+    """A socketserver origin whose server_close() cannot hang the suite. socketserver.ThreadingTCPServer keeps
+    NON-daemon handler threads, and its server_close() JOINS them with no timeout. A Raw handler waits in
+    rfile.readline() until the router closes its end, and a connection in the router's pool stays open
+    (srv.shutdown() leaves the pool alone; only a later request closes an aged one). So one connection left
+    pooled - after a failed assertion, for example - makes the finally block of the test wait for ever, with
+    no output until GitHub's 6 h job limit (reproduced locally: a 0.5 s delay in OriginPool.put).
+    (CI runs 44005351754 and 46057146010 hung with no output in a window of 72 tests that holds these tests;
+    which test hung is not known.) Daemon threads are not joined; each Raw handler also sets a read timeout,
+    so an abandoned handler ends by itself."""
+    import socketserver
+
+    class Origin(socketserver.ThreadingTCPServer):
+        daemon_threads = True
+
+    origin = Origin(("127.0.0.1", 0), handler_cls)
+    threading.Thread(target=origin.serve_forever, daemon=True).start()
+    return origin
+
+
+def _until(pred, timeout=5.0):
+    """pred() polled until it holds, for at most `timeout` s. The router puts a connection back in its pool
+    AFTER the client has the whole answer, so a pool count read the moment _get returns can be early."""
+    end = time.monotonic() + timeout
+    while not pred() and time.monotonic() < end:
+        time.sleep(0.01)
+    return pred()
 
 
 def test_after_the_origin_closes_idle_connections_every_request_still_succeeds(tmp_path):
@@ -959,6 +992,8 @@ def test_a_1xx_answer_never_leaves_its_connection_in_the_pool(tmp_path):
     import socketserver
 
     class Raw(socketserver.StreamRequestHandler):
+        timeout = 10                                    # BOUNDED: readline() below otherwise waits for ever
+
         def handle(self):
             while True:
                 line = self.rfile.readline()
@@ -972,8 +1007,7 @@ def test_a_1xx_answer_never_leaves_its_connection_in_the_pool(tmp_path):
                 self.wfile.write(b"HTTP/1.1 200 OK\r\ncontent-length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
                 self.wfile.flush()
 
-    origin = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Raw)
-    threading.Thread(target=origin.serve_forever, daemon=True).start()
+    origin = _raw_origin(Raw)
     srv = _router_for(tmp_path, origin.server_address[1])
     try:
         _get(srv.server_address[1], "/v1/series/a")
@@ -993,6 +1027,8 @@ def _scripted_origin(answers):
     seen = {"connections": 0, "requests": 0}
 
     class Raw(socketserver.StreamRequestHandler):
+        timeout = 10                                    # BOUNDED: readline() below otherwise waits for ever
+
         def handle(self):
             seen["connections"] += 1
             while True:
@@ -1008,9 +1044,7 @@ def _scripted_origin(answers):
                 self.wfile.write(answer)
                 self.wfile.flush()
 
-    origin = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Raw)
-    threading.Thread(target=origin.serve_forever, daemon=True).start()
-    return origin, seen
+    return _raw_origin(Raw), seen
 
 
 OK_ANSWER = b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok"
@@ -1037,7 +1071,9 @@ def test_a_malformed_answer_on_a_reused_connection_is_not_retried(tmp_path):
     srv = _router_for(tmp_path, origin.server_address[1])
     try:
         assert _get(srv.server_address[1], "/v1/series/a")[0] == 200
-        assert srv.pool.idle_count("127.0.0.1", origin.server_address[1]) == 1, "precondition: pooled"
+        # waited for, not read at once: the router pools the connection just AFTER the client has the answer. An
+        # early read fails here, and with the old ThreadingTCPServer origin that failure hung in server_close()
+        assert _until(lambda: srv.pool.idle_count("127.0.0.1", origin.server_address[1]) == 1), "precondition: pooled"
         assert _get(srv.server_address[1], "/v1/series/b")[0] == 502
         assert seen["requests"] == 2, f"the malformed answer's request was sent again: {seen}"
     finally:
