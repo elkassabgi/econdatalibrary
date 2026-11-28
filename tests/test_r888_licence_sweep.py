@@ -95,6 +95,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(T.gen_denylist, "committed_carveouts", lambda src=None: {})
     monkeypatch.setattr(T, "tree_clean", lambda paths=T.HEAD_INPUTS: True)
     monkeypatch.setattr(T, "head_sha", lambda: "0" * 40)
+    monkeypatch.setattr(T, "tool_sha", lambda: "f" * 40)
     monkeypatch.setattr(T, "code_named", lambda ids: (set(), "0" * 40))
     monkeypatch.setattr(T, "history_members", lambda: set(FAKE) | set(FORMER))
     db = proof / "proof.db"
@@ -258,6 +259,20 @@ def test_history_members_reads_every_version(repo):
 def test_code_named_reads_tracked_files_at_head(repo):
     named, head = T.code_named({"named-clean", "clean-orphan", "named"})
     assert named == {"named-clean"} and len(head) == 40
+
+
+def test_history_refuses_a_shallow_clone(repo, tmp_path, monkeypatch):
+    shallow = tmp_path / "shallow"
+    subprocess.run(["git", "clone", "-q", "--depth", "1", repo.as_uri(), str(shallow)], check=True,
+                   capture_output=True)
+    monkeypatch.setattr(T, "ROOT", str(shallow))
+    with pytest.raises(T.Refused):
+        T.history_members()
+
+
+def test_tool_identity_is_the_head_blob_not_the_disk_bytes(repo):
+    with pytest.raises(T.Refused):            # this temporary repository has no tools/selfhost/... at HEAD
+        T.tool_sha()
 
 
 def test_tree_clean_sees_an_edit_and_an_untracked_input(repo):
@@ -637,6 +652,38 @@ def test_signatures_are_seen_before_and_gone_after(env):
     after = T.residue_scan(env["db"], T.Gate(FAKE), sigs=sigs)
     ok = [before["SIG_SEEN"], before["SIG_LIVE"], not after["SIG_LIVE"], not after["SIG_DEAD"], len(sigs) == 4]
     assert all(ok)
+
+
+def test_an_image_in_dead_space_at_a_chunk_edge_is_not_called_live(env, monkeypatch):
+    """Code review r3 C2: the bytes re-read from the previous chunk's tail must not be classified as live."""
+    db = os.path.join(env["proof"], "edge.db")
+    c = sqlite3.connect(db)
+    c.execute("PRAGMA secure_delete=OFF")
+    c.execute("CREATE TABLE license (license_id TEXT PRIMARY KEY, name TEXT)")
+    c.execute("CREATE TABLE t (a TEXT, b TEXT)")
+    c.execute("INSERT INTO t VALUES ('zzsig-alpha-unique', 'second-value-xyz')")   # the first cell: the page END
+    c.execute("CREATE TABLE z (x TEXT)")                              # a page AFTER t's, so t's tail is re-read
+    c.execute("INSERT INTO z VALUES ('after')")
+    c.commit()
+    c.close()
+    sig = T.record_image(("zzsig-alpha-unique", "second-value-xyz"), True)
+    monkeypatch.setattr(T, "RAW_CHUNK_PAGES", 1)                    # every page edge is a chunk edge
+    live = T.residue_scan(db, T.Gate(FAKE), sigs=[sig])
+    c = sqlite3.connect(db)
+    c.execute("PRAGMA secure_delete=OFF")
+    c.execute("DROP TABLE t")                                         # its page goes to the freelist, bytes intact
+    c.commit()
+    c.close()
+    dead = T.residue_scan(db, T.Gate(FAKE), sigs=[sig])
+    ok = [live["SIG_SEEN"], live["SIG_LIVE"], dead["SIG_SEEN"], dead["SIG_DEAD"], not dead["SIG_LIVE"],
+          dead["measured"]]
+    assert all(ok)
+
+
+def test_vacuum_with_a_page_cache(env):
+    add_free_pages(env["db"])
+    rc, out = run(["--vacuum", "--db", env["db"], "--tmpdir", tmpd(env, "cache"), "--cache-mib", "8"])
+    assert rc == 0 and "VACUUM page cache: 8 MiB" in out and freelist(env["db"]) == 0
 
 
 def test_vacuum_keeps_fts_rowids(env):

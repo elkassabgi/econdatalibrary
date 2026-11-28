@@ -112,9 +112,11 @@ PROOF_ROOTS = (r"F:\work\econ_finish\b32_r888_licence",)
 LIVE_AREAS = (r"E:\econ_live",)                 # plus catalog_path.LIVE_STORE_ROOT
 OLDER_COPY = r"F:\work\owed_pay\20261117\catalog_copy.db"   # read mode=ro&immutable=1 only (BUILDER_RULES)
 GATE_FILE = "api/worker/src/denylist.ts"
+TOOL_REL = "tools/selfhost/r888_licence_sweep.py"
 HEAD_INPUTS = (GATE_FILE, "api/worker/src/util.ts", "DATABASE_LICENSES_VERBATIM.md", "core/gen_denylist.py",
-               "tools/audit_license_coverage.py", "tools/audit_schedule_coverage.py",
-               "tools/selfhost/r888_licence_sweep.py")
+               "tools/audit_license_coverage.py", "tools/audit_schedule_coverage.py", "core/catalog_path.py",
+               "core/cutover.py", TOOL_REL)
+RAW_CHUNK_PAGES = 1024                          # pages per raw read (tests make it 1 to put every edge at a page)
 SIDE = ("-journal", "-wal", "-shm")
 SHARD_ROWS = 1_000_000                          # a rowid table with more rows than this is sharded
 CONTROL_SAMPLE = 20_000                         # rows per task on which the hosted-id control is counted
@@ -383,6 +385,8 @@ def history_members() -> set:
     that has left the gate must still never be written to a file). A version committed_gate() cannot parse
     contributes every quoted lower-case token it holds (over-inclusive - the safe direction here: such a row is only
     deleted without a backup). In memory only."""
+    if _git(["rev-parse", "--is-shallow-repository"]).decode().strip() != "false":
+        raise Refused("a shallow clone cannot show the gate's whole history (code review r3 L4)")
     revs = [r for r in _git(["log", "--format=%H", "--", GATE_FILE]).decode().split() if r]
     if not revs:
         raise Refused("the gate file has no git history here")
@@ -564,8 +568,9 @@ def file_state(p: str) -> tuple:
 
 
 def tool_sha() -> str:
-    with open(os.path.abspath(__file__), "rb") as f:
-        return hashlib.sha256(f.read()).hexdigest()
+    """The git blob id of this file at HEAD (code review r3 C3: a CRLF checkout hashes differently on disk, so the
+    reviewed identity is the committed blob; _check_inputs() refuses when the working file differs from HEAD)."""
+    return _git(["rev-parse", f"HEAD:{TOOL_REL}"]).decode().strip()
 
 
 def confirm_token(p: str, mode: str) -> str:
@@ -947,16 +952,22 @@ def residue_scan(p: str, gate: Gate, sigs=None) -> dict:
                                    npages)
             lockpg = (1 << 30) // ps + 1                    # the lock-byte page holds no data and is not read
             keep = max([gate.maxlen] + [len(s) for s in sigs]) - 1
-            chunk = 1024
+            if keep >= ps:
+                raise Refused("a signature is longer than a page")
+            chunk = RAW_CHUNK_PAGES
 
-            def region(abs_off: int, buf_base: int, buf: bytes) -> str:
+            def region(abs_off: int, first: int, buf: bytes, prev_page) -> str:
+                """DEAD (a free page, or a b-tree page's unallocated space) or LIVE, for the page holding
+                abs_off; the page comes from this chunk (pages first..) or is the previous chunk's last page."""
                 n = abs_off // ps + 1
                 if n in free:
                     return "DEAD"
-                off0 = (n - 1) * ps - buf_base
-                if off0 < 0 or off0 + ps > len(buf):
-                    return "LIVE"
-                pg = buf[off0:off0 + ps]
+                if prev_page is not None and n == prev_page[0]:
+                    pg = prev_page[1]
+                elif first <= n < first + len(buf) // ps:
+                    pg = buf[(n - first) * ps:(n - first + 1) * ps]
+                else:
+                    raise Refused("a signature's page is not in the scan window")   # cannot tell: never LIVE/NO
                 o = 100 if n == 1 else 0
                 if pg[o] in _BTREE:
                     within = abs_off - (n - 1) * ps
@@ -965,7 +976,7 @@ def residue_scan(p: str, gate: Gate, sigs=None) -> dict:
                 return "LIVE"
 
             for lo, hi in _page_ranges(npages, lockpg):
-                free_tail, raw_tail, pg_no = "", b"", lo
+                free_tail, raw_tail, pg_no, prev_page = "", b"", lo, None
                 while pg_no <= hi:
                     last = min(hi, pg_no + chunk - 1)
                     f.seek((pg_no - 1) * ps)
@@ -974,18 +985,23 @@ def residue_scan(p: str, gate: Gate, sigs=None) -> dict:
                     if len(buf) != want:
                         raise OSError("short read")
                     if sigs:
+                        # the tail of the previous chunk is re-read so that an image crossing the chunk edge is
+                        # seen; an image that lies wholly inside that tail was already counted there and is
+                        # skipped, and one that STARTS there is classified by its own page (code review r3 C2)
                         joined = raw_tail + buf
                         jbase = (pg_no - 1) * ps - len(raw_tail)
                         for k, s in enumerate(sigs):
                             i = joined.find(s)
                             while i >= 0:
-                                seen.add(k)
-                                if region(jbase + i, (pg_no - 1) * ps, buf) == "LIVE":
-                                    res["SIG_LIVE"] = True
-                                else:
-                                    res["SIG_DEAD"] = True
+                                if i + len(s) > len(raw_tail):
+                                    seen.add(k)
+                                    if region(jbase + i, pg_no, buf, prev_page) == "LIVE":
+                                        res["SIG_LIVE"] = True
+                                    else:
+                                        res["SIG_DEAD"] = True
                                 i = joined.find(s, i + 1)
                         raw_tail = buf[-keep:] if keep > 0 else b""
+                        prev_page = (last, buf[-ps:])
                     mv = memoryview(buf)
                     for k in range(last - pg_no + 1):
                         n = pg_no + k
@@ -1102,7 +1118,7 @@ def vacuum_preconditions(p: str) -> None:
         raise Refused("another handle has the database open, or the check could not tell (code review M2)")
 
 
-def vacuum_core(p: str, td: str, check: str) -> list:
+def vacuum_core(p: str, td: str, check: str, cache_mib: int = 0) -> list:
     """VACUUM with its preconditions; returns the receipt lines [(text, ok)]. The caller holds the writer lock."""
     os.environ["TMP"] = os.environ["TEMP"] = os.environ["SQLITE_TMPDIR"] = td
     vacuum_preconditions(p)
@@ -1115,6 +1131,11 @@ def vacuum_core(p: str, td: str, check: str) -> list:
                 raise Refused(f"PRAGMA {pragma.split('=')[0]} did not read back as required")
         con.execute("PRAGMA temp_store=MEMORY")
         con.execute("PRAGMA secure_delete=ON")
+        if cache_mib > 0:
+            # a big page cache keeps VACUUM's dirty pages in RAM instead of spilling them through journal syncs
+            # (the default-cache proof run grew its journal at about 4-5 MB/s); costs that much RAM
+            con.execute(f"PRAGMA cache_size = {-int(cache_mib) * 1024}")
+        say(f"VACUUM page cache: {'SQLite default' if cache_mib <= 0 else f'{cache_mib} MiB'}")
         con.execute("BEGIN EXCLUSIVE")                 # no other connection holds a lock right now
         con.execute("COMMIT")
         t_v = time.time()
@@ -1163,7 +1184,7 @@ NOT_COVERED = ("D1 (econ-catalog, econ-catalog-climate): this tool reads the loc
                "state.db, index.db, the S4c queue copies and every other file: not this tool's surface")
 
 
-def do_vacuum(p: str, live: bool, tmpdir: str, check: str) -> int:
+def do_vacuum(p: str, live: bool, tmpdir: str, check: str, cache_mib: int = 0) -> int:
     t0 = time.time()
     _check_inputs()
     gate = load_gate()
@@ -1174,7 +1195,7 @@ def do_vacuum(p: str, live: bool, tmpdir: str, check: str) -> int:
     with lock:
         if live and catalog_path._held is None:                             # noqa: SLF001
             raise Refused("the writer lock is not held")
-        checks = vacuum_core(p, td, check)
+        checks = vacuum_core(p, td, check, cache_mib)
         t_r = time.time()
         res = residue_scan(p, gate)
         checks += [(f"raw scan after VACUUM measured every page ({time.time() - t_r:.1f} s)", res["measured"]),
@@ -1234,7 +1255,7 @@ def do_plan(p: str, state: str) -> int:
 
 # ---------------------------------------------------------------------------------------------------------- --apply
 def do_apply(p: str, live: bool, state: str, confirm: str, tmpdir: str, check: str, backup: str, older: str,
-             no_vacuum: bool) -> int:
+             no_vacuum: bool, cache_mib: int = 0) -> int:
     if not state or not confirm or not backup:
         say("REFUSED: --apply needs --state (from --plan on this file), --confirm and --backup")
         return ERR
@@ -1355,7 +1376,7 @@ def do_apply(p: str, live: bool, state: str, confirm: str, tmpdir: str, check: s
                 f"unreferenced rows a tracked file names that carry a member (left for B34's code PR): "
                 f"{yn(bool(s0['named_mem']))}"]
         if not no_vacuum:
-            checks += vacuum_core(p, td, check)
+            checks += vacuum_core(p, td, check, cache_mib)
             t_r = time.time()
             res2 = residue_scan(p, gate, sigs=sigs)
             checks += [(f"raw scan after VACUUM measured every page ({time.time() - t_r:.1f} s)", res2["measured"]),
@@ -1758,6 +1779,7 @@ def main(argv=None) -> int:
     ap.add_argument("--no-vacuum", action="store_true", help="--apply: leave the VACUUM to a later --vacuum run")
     ap.add_argument("--tmpdir", default="", help="--apply / --vacuum: an empty folder under PROOF_ROOTS")
     ap.add_argument("--check", choices=("quick", "integrity"), default="quick")
+    ap.add_argument("--cache-mib", type=int, default=0, help="VACUUM: page cache in MiB (0 = SQLite default)")
     ap.add_argument("--compare-state", default="", help="--sweep: a plan state of the proof copy (v6 report)")
     ap.add_argument("--allow-free-pages", action="store_true", help="--sweep: free pages are INFO (S10b)")
     ap.add_argument("--licence-only", action="store_true", help="--sweep: license, source and sqlite_master only")
@@ -1766,14 +1788,15 @@ def main(argv=None) -> int:
     mode = next(x for x in ("plan", "apply", "vacuum", "sweep", "residue") if getattr(a, x))
     try:
         p = resolve_target(a.db, a.live)
-        say(f"B32 r888_licence_sweep  tool sha {tool_sha()[:12]}  mode {mode}{'  LIVE' if a.live else ''}  start "
+        say(f"B32 r888_licence_sweep  tool blob {tool_sha()[:12]}  mode {mode}{'  LIVE' if a.live else ''}  start "
             f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}")
         if mode == "plan":
             return do_plan(p, a.state)
         if mode == "apply":
-            return do_apply(p, a.live, a.state, a.confirm, a.tmpdir, a.check, a.backup, a.older_copy, a.no_vacuum)
+            return do_apply(p, a.live, a.state, a.confirm, a.tmpdir, a.check, a.backup, a.older_copy, a.no_vacuum,
+                            a.cache_mib)
         if mode == "vacuum":
-            return do_vacuum(p, a.live, a.tmpdir, a.check)
+            return do_vacuum(p, a.live, a.tmpdir, a.check, a.cache_mib)
         if mode == "sweep":
             return do_sweep(p, max(1, a.workers), a.compare_state, a.allow_free_pages, a.licence_only)
         return do_residue(p)
