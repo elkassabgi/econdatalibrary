@@ -589,7 +589,7 @@ def test_changed_rows_are_listed_and_need_their_exact_count(world):
     assert k == agg_key("00") and new == old + 1.0, r["changed_examples"]
     assert out.count("changed row ") == 3 and "--expect-changed 3" in out, out
     before = _sha(p)
-    for args in ((), ("--expect-changed", "0"), ("--expect-changed", "2")):
+    for args in ((), ("--expect-changed", "0"), ("--expect-changed", "2"), ("--expect-changed", "4")):
         rc, out = world.tool(pub, "--tables", TT, "--apply", "--expect-new-series", str(N_NEW), *args)
         assert rc == T.REFUSED and "changed row(s) measured now" in out, out
         assert _sha(p) == before
@@ -619,6 +619,21 @@ def test_apply_refuses_when_the_ci_writer_gate_is_not_clear(world):
     pub = tt_pub()
     rc, out = world.tool(pub, "--tables", TT, "--apply", "--expect-new-series", str(N_NEW))
     assert rc == T.REFUSED and "CI writer gate is not CLEAR" in out and "BLOCKED: updater-daily" in out, out
+    assert pub.gets == [] and pub.posts == [], "the gate runs FIRST"
+    assert _sha(p) == before
+
+
+@pytest.mark.parametrize("answer", [(2, "UNKNOWN: could not read CI runs"), (None, "FileNotFoundError: gh")],
+                         ids=["cannot-tell", "did-not-run"])
+def test_apply_refuses_when_the_gate_cannot_tell(world, answer):
+    """Round 2 T1: only exit 0 is CLEAR. 'Cannot tell' (2) and a gate that did not run (None) refuse, before any
+    request, exactly as BLOCKED (3) does."""
+    p = world.plant()
+    before = _sha(p)
+    world.mp.setattr(T, "_ci_writer_gate", lambda: answer)
+    pub = tt_pub()
+    rc, out = world.tool(pub, "--tables", TT, "--apply", "--expect-new-series", str(N_NEW))
+    assert rc == T.REFUSED and "CI writer gate is not CLEAR" in out, out
     assert pub.gets == [] and pub.posts == [], "the gate runs FIRST"
     assert _sha(p) == before
 
@@ -667,6 +682,7 @@ class FakeR2(blob.LocalBlob):
     def __init__(self, root, before_put=None):
         super().__init__(root=root)
         self.before_put, self.puts = before_put, []
+        self.bad_etag = False           # True: put_if answers an ETag that is not the md5 of what it stored
 
     def put_atomic(self, key, data, **kw):
         raise AssertionError(f"an unconditional PUT reached the store of record: {key}")
@@ -679,7 +695,7 @@ class FakeR2(blob.LocalBlob):
         if if_match is None or cur != if_match.strip('"'):
             return None
         blob.LocalBlob.put_atomic(self, key, data)
-        return self.etag(key)
+        return "0" * 32 if self.bad_etag else self.etag(key)
 
 
 def _r2(world, before_put=None):
@@ -720,6 +736,42 @@ def test_apply_under_r2_refuses_when_another_writer_moved_the_object(world):
     assert len(_rows(str(obj), PRE)) < N_STORED, "the other writer's file stands; this tool wrote nothing"
     assert not mirror.exists()
     assert world.receipt()["result"] == "refused: the object changed after the measure"
+
+
+def test_apply_under_r2_refuses_a_writer_between_the_merge_read_and_the_put(world):
+    """Round 2 T2: the other writer lands AFTER merge_and_write has read the object and BEFORE the PUT is issued -
+    the lost-update window itself. The PUT is conditional on the ETag read before the measure, so R2 refuses it.
+    An ETag re-read at PUT time would match the moved object and overwrite the other writer's rows."""
+    fake, obj, mirror = _r2(world)
+    real_get = T._ConditionalPut.get
+
+    def get_then_another_writer(self, key):
+        body = real_get(self, key)                          # the merge's read
+        t = pq.read_table(fake._path(key))
+        pq.write_table(t.slice(1), fake._path(key))         # a CI pass lands now
+        return body
+    world.mp.setattr(T._ConditionalPut, "get", get_then_another_writer)
+    rc, out = world.raw(tt_pub(), "--tables", TT, "--apply", "--expect-new-series", str(N_NEW))
+    assert rc == T.REFUSED and "changed after it was measured" in out, out
+    assert len(_rows(str(obj), PRE)) == N_STORED - 1, "the other writer's file stands, not a merge over it"
+    assert not mirror.exists()
+
+
+def test_apply_under_r2_fails_when_the_object_read_back_is_not_the_one_written(world):
+    """Round 2 T3: R2 answers an ETag that is not the md5 of the object read back. The copy is not proved, so it
+    is not mirrored and the run ends READ-BACK FAILED (exit 3). A stale local mirror is planted, as on a desktop
+    whose mirror predates the repair, so the derive below has a file to read."""
+    fake, obj, mirror = _r2(world)
+    fake.bad_etag = True
+    mirror.parent.mkdir(parents=True)
+    shutil.copy(obj, mirror)
+    stale = mirror.read_bytes()
+    rc, out = world.raw(tt_pub(), "--tables", TT, "--apply", "--expect-new-series", str(N_NEW))
+    bad = [ln for ln in out.splitlines() if "READ-BACK FAILED" in ln]
+    assert rc == T.DEFECT and any("R2 read-back: the object's md5" in b and "is not the ETag the PUT returned" in b
+                                  for b in bad), out
+    assert mirror.read_bytes() == stale, "an object that cannot be proved is not copied to the mirror"
+    assert world.receipt()["result"] == "read-back failed"
 
 
 # ---- review m5 and m6: the census's errors, limit and resume ---------------------------------------------------
