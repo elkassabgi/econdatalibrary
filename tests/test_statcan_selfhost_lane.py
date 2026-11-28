@@ -1624,6 +1624,13 @@ _LIVE_SPELLINGS = [
     "\\??\\UNC\\localhost\\E$\\econ_live\\state\\writer.lock",
     "E:\\ECON_L~1\\state\\writer.lock",
     "E:\\RESEAR~1\\ECONFI~1\\data\\catalog.db",
+    # code review round 4, F1: a trailing space on a middle name, a stream on a parent folder (NTFS opens both)
+    "E:\\research \\econfindatalibrary\\data\\catalog.db",
+    "E:\\research\\econfindatalibrary \\data\\catalog.db",
+    "E:\\research\\econfindatalibrary\\data \\catalog.db",
+    "E:\\research\\econfindatalibrary::$INDEX_ALLOCATION\\data\\catalog.db",
+    "E:\\research::$INDEX_ALLOCATION\\econfindatalibrary\\data\\catalog.db",
+    "E:\\::$INDEX_ALLOCATION\\econ_live\\state\\writer.lock",
 ] + (["E:\\econ_live.\\state\\writer.lock", "E:\\econ_live.", "//127.0.0.1/e$/econ_live/state/writer.lock"]
      if os.name == "nt" else [])
 _UNC_SPELLING = "\\\\localhost\\E$\\research\\econfindatalibrary\\data\\catalog.db"
@@ -1647,7 +1654,9 @@ def _is_live(s) -> bool:
     m = re.match(r"^\\\\[^\\]+\\([a-z])\$(\\.*)?$", s)        # \\host\E$\x -> e:\x
     if m:
         s = m.group(1) + ":" + (m.group(2) or "\\")
-    s = ntpath.normpath("\\".join(c.rstrip(". ") if c not in (".", "..") else c for c in s.split("\\")))
+    drive, rest = ntpath.splitdrive(s)                       # each name as NTFS may open it: no stream, no
+    s = ntpath.normpath(drive + "\\".join(                   # trailing space or dot (round 4, F1)
+        c.split(":", 1)[0].rstrip(". ") if c not in (".", "..") else c for c in rest.split("\\")))
     if s.startswith("e:") and re.search(r"~\d", s):
         return True
     return any(s == r or s.startswith(r + "\\") or s.startswith(r + ":") for r in _LIVE_BY_HAND)
@@ -1753,6 +1762,23 @@ def test_G3_note_a_path_that_resolves_to_a_network_path_is_refused(tmp_path, mon
     why = LC.refused(mapped)
     assert why and "resolves to \\\\server\\share\\state.json, a network or device path" in why, why
     assert LC.refused(str(tmp_path / "local" / "state.json")) is None, "the control: a local path is not refused"
+
+
+def test_G3_note_round4_each_name_is_read_as_ntfs_reads_it_before_any_resolve(tmp_path, monkeypatch):
+    """Code review round 4, F1, on a FAKE root spelled as text (F:\\fake\\live; the same on Linux CI): a trailing space
+    or a stream on a parent folder is refused as under the root, and any odd name on the root's drive is refused
+    outright - all on the text, with no spied call. The live-root spellings are in _LIVE_SPELLINGS."""
+    roots = ("F:\\fake\\live",)
+    seen = _touch_spies(monkeypatch)
+    for p in ("F:\\fake \\live\\catalog.db", "F:\\fake::$INDEX_ALLOCATION\\live\\catalog.db",
+              "F:\\fake\\live \\catalog.db", "F:\\::$INDEX_ALLOCATION\\fake\\live\\x"):
+        why = LC.refused(p, roots=roots)
+        assert why and "once each name is read as NTFS reads it" in why, (p, why)
+    for p in ("F:\\other \\x.db", "F:\\other\\x.db:stream", "F:\\other.\\x.db" if os.name != "nt" else "F:\\o \\x"):
+        why = LC.refused(p, roots=roots)
+        assert why and "a ':' or a trailing space or dot on the drive of" in why, (p, why)
+    assert seen == [], seen                                  # all decided on the text
+    assert LC.refused(str(tmp_path / "copy" / "state.json"), roots=roots) is None, "a plain name passes"
 
 
 def test_G3_the_census_pins_its_live_places_and_id_scheme_to_the_code_it_mirrors():

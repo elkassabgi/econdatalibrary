@@ -9,8 +9,9 @@ first post-T0 iteration. This tool counts them BEFORE the S13 guard swap, so the
 
 INPUTS - ALL COPIES. R1940: never E:'s data/ catalogue or state database, not even read-only, and the coordinator's
 brief: never E:'s store. This tool REFUSES any input under E:\\research\\econfindatalibrary\\data or E:\\econ_live.
-It decides on the path's TEXT first (any case, either slash, `..`, a device prefix, a stream of a root), and also
-refuses there any network or device path and an 8.3 short name on the live drive: those inputs are refused before
+It decides on the path's TEXT first (any case, either slash, `..`, a device prefix, a stream of a root, a stream or
+a trailing space or dot in any folder name), and also refuses there any network or device path, any name with a ':'
+or a trailing space or dot on the live drive, and an 8.3 short name there: those inputs are refused before
 anything touches them. A path that passes is then resolved once, so a junction or link into a live place is still
 refused, but that resolve touches it (refused() says what is and is not caught).
   --state          a copy of the lane state (data/clean_full/statcan/_lane_state.json)
@@ -101,18 +102,44 @@ def _under(form: str, root_form: str) -> bool:
     return form == r or form.startswith(r + ("\\" if win else "/")) or (win and form.startswith(r + ":"))
 
 
-def _short_name_on(form: str, root_form: str) -> bool:
-    """`form` has an 8.3 component on the root's drive: what it names is known only by asking the disk."""
+def _on_drive(form: str, root_form: str) -> bool:
+    """`form` is a Windows form on the drive of a Windows-form root."""
     if not _is_windows_form(root_form):
         return False
     d = ntpath.splitdrive(form)[0]
-    return bool(d) and d == ntpath.splitdrive(root_form)[0] and any(_SHORT_NAME.search(c) for c in form.split("\\"))
+    return bool(d) and d == ntpath.splitdrive(root_form)[0]
+
+
+def _short_name_on(form: str, root_form: str) -> bool:
+    """`form` has an 8.3 component on the root's drive: what it names is known only by asking the disk."""
+    return _on_drive(form, root_form) and any(_SHORT_NAME.search(c) for c in form.split("\\"))
+
+
+def _names(form: str) -> list:
+    """The folder and file names of a Windows form, after its drive."""
+    return [c for c in ntpath.splitdrive(form)[1].split("\\") if c]
+
+
+def _plain_names(form: str) -> str:
+    """`form` with each name after the drive read as NTFS may open it (code review round 4, F1): cut at its first ':'
+    (NTFS opens `<folder>::$INDEX_ALLOCATION` as the folder itself, also in the MIDDLE of a path) and stripped of
+    trailing spaces and dots (realpath's walk-up trims them where a name becomes the last one)."""
+    drive, rest = ntpath.splitdrive(form)
+    names = [c if c in (".", "..") else c.split(":", 1)[0].rstrip(" .") for c in rest.split("\\")]
+    return ntpath.normpath(drive + "\\".join(names))
+
+
+def _odd_name(form: str) -> bool:
+    """A name after the drive with a ':' (a stream) or a trailing space or dot."""
+    return any(":" in c or (c not in (".", "..") and c != c.rstrip(" .")) for c in _names(form))
 
 
 def refused(path: str, roots=None) -> "str | None":
     """A refusal when `path` is (under) one of the live places. Decided on the TEXT first, with nothing resolved,
     stat-ed or opened (os.path.realpath opens a handle on Windows): a path under a root, a stream of a root, any
-    network or device path, and an 8.3 short name on a root's drive are refused there. Only a path that passes is
+    network or device path, a path under a root once each name is read as NTFS reads it (a stream or a trailing space
+    or dot dropped, also in a middle name), any name with a ':' or a trailing space or dot on a root's drive, and an
+    8.3 short name on a root's drive are refused there. Only a path that passes is
     resolved (os.path.realpath, which touches it), so a junction, link or subst drive into a live place is still
     refused, and so is one that resolves to a network path (a mapped drive). The roots are compared as text and
     never resolved: if a root were itself a junction, a path spelled by its target would not be refused. A hard
@@ -126,6 +153,15 @@ def refused(path: str, roots=None) -> "str | None":
     for r, rf in forms:
         if _under(p, rf):
             return f"REFUSED: {path} is under {r}, a LIVE place (R1940) - give a COPY"
+    plain = _plain_names(p)
+    for r, rf in forms:
+        if _is_windows_form(rf) and _under(plain, rf):
+            return (f"REFUSED: {path} is under {r}, a LIVE place, once each name is read as NTFS reads it (a stream "
+                    f"or a trailing space or dot dropped) - give a plain path to a COPY")
+    for r, rf in forms:
+        if _on_drive(p, rf) and _odd_name(p):
+            return (f"REFUSED: {path} has a name with a ':' or a trailing space or dot on the drive of {r}, a LIVE "
+                    f"place - give a plain path")
     for r, rf in forms:
         if _short_name_on(p, rf):
             return (f"REFUSED: {path} has an 8.3-style component (~<digit>) on the drive of {r}, a LIVE place - "
