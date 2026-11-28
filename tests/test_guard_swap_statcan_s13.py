@@ -35,14 +35,14 @@ def tree(tmp_path):
     return tmp_path
 
 
-def _run(t, live_sha=None, copy_sha=None, dry=False, procs=None, flag=True):
+def _run(t, live_sha=None, copy_sha=None, dry=False, procs=None, flag=True, extra=()):
     root = t / "econ"
     if procs is not None:
         (t / "procs.json").write_text(json.dumps(procs))
     args = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", SCRIPT,
             "-ExpectLiveSha", live_sha or _sha(PRE), "-ExpectCopySha", copy_sha or _sha(POST),
             "-Root", str(root), "-FlagPath", str(t / ("CUTOVER" if flag else "NO_FLAG")),
-            "-BackupDir", str(t / "backups"), "-ProcessListJson", str(t / "procs.json")]
+            "-BackupDir", str(t / "backups"), "-ProcessListJson", str(t / "procs.json"), *extra]
     if dry:
         args.append("-DryRun")
     return subprocess.run(args, capture_output=True, text=True, timeout=300)
@@ -76,7 +76,7 @@ def test_the_dry_run_prints_every_check_and_writes_nothing(tree):
 
 @pytest.mark.parametrize("case", ["no_flag", "guard_loop", "old_lane", "live_sha", "copy_sha", "bad_sha_arg",
                                   "copy_launches_old", "copy_unparseable", "live_differs_elsewhere", "done_flag",
-                                  "live_is_not_pre_t0"])
+                                  "live_is_not_pre_t0", "copy_without_bom"])
 def test_every_premise_refuses_and_leaves_the_live_guard_untouched(tree, case):
     live = tree / "econ" / "RELAUNCH_GUARD.ps1"
     copy = tree / "econ" / "tools" / "machine" / "RELAUNCH_GUARD.ps1.post-t0-copy"
@@ -114,12 +114,57 @@ def test_every_premise_refuses_and_leaves_the_live_guard_untouched(tree, case):
     elif case == "live_is_not_pre_t0":
         live.write_bytes(open(PRE, "rb").read().replace(b"'jobs/statcan_lane.py') }", b"'jobs/other_lane.py') }"))
         kw["live_sha"], want = _sha(live), "is not the pre-T0 guard"
+    elif case == "copy_without_bom":
+        # code review F5: the copy carries non-ASCII text, so a BOM-less copy under PowerShell 5.1 is R196's
+        # truncation - refused before anything is written
+        raw = open(POST, "rb").read()
+        assert raw.startswith(b"\xef\xbb\xbf") and any(b > 127 for b in raw[3:])
+        copy.write_bytes(raw[3:])
+        kw["copy_sha"], want = _sha(copy), "has no UTF-8 BOM"
     before = _sha(live)
     r = _run(tree, **kw)
     assert r.returncode == want_rc, (case, r.returncode, r.stdout, r.stderr)
     assert want in r.stdout, (case, r.stdout)
     assert _sha(live) == before, "the live guard is untouched"
     assert not list((tree / "backups").glob("RELAUNCH_GUARD.ps1.bak-*")) if (tree / "backups").exists() else True
+
+
+# CODE REVIEW F5: the second compare-and-swap, the post-replace verify and the rollback, each driven by a test hook
+# that changes the live file at exactly that moment (the S13 line passes no hook).
+def _hook(t, name, body):
+    p = t / name
+    p.write_text("param([string]$p)\r\n" + body + "\r\n", encoding="ascii")
+    return str(p)
+
+
+def test_the_second_compare_and_swap_refuses_a_live_file_changed_during_the_swap(tree):
+    live = tree / "econ" / "RELAUNCH_GUARD.ps1"
+    hook = _hook(tree, "before.ps1", "Add-Content -LiteralPath $p -Value '# an edit made during the swap'")
+    r = _run(tree, extra=["-TestHookBeforeReplace", hook])
+    assert r.returncode == 5, (r.returncode, r.stdout, r.stderr)
+    assert "changed during the swap" in r.stdout
+    assert _sha(live) not in (_sha(PRE), _sha(POST)), "the other hand's edit stands; the copy was not installed"
+    assert not list((tree / "econ").glob("RELAUNCH_GUARD.tmp-*")), "the temp file is removed"
+
+
+def test_a_replace_that_does_not_verify_is_rolled_back(tree):
+    live = tree / "econ" / "RELAUNCH_GUARD.ps1"
+    hook = _hook(tree, "after.ps1", "Add-Content -LiteralPath $p -Value '# damaged after the replace'")
+    r = _run(tree, extra=["-TestHookAfterReplace", hook])
+    assert r.returncode == 4, (r.returncode, r.stdout, r.stderr)
+    assert "ROLLED BACK" in r.stdout and _sha(live) == _sha(PRE), "the live guard is the backup again"
+
+
+def test_a_rollback_that_fails_prints_the_manual_restore(tree):
+    live = tree / "econ" / "RELAUNCH_GUARD.ps1"
+    hook = _hook(tree, "after.ps1",
+                 "Add-Content -LiteralPath $p -Value '# damaged after the replace'\r\n"
+                 f"Get-ChildItem -LiteralPath '{tree / 'backups'}' -Filter 'RELAUNCH_GUARD.ps1.bak-*' | "
+                 "Remove-Item -Force")
+    r = _run(tree, extra=["-TestHookAfterReplace", hook])
+    assert r.returncode == 6, (r.returncode, r.stdout, r.stderr)
+    assert "ROLLBACK FAILED" in r.stdout and "MANUAL RESTORE" in r.stdout
+    assert _sha(live) not in (_sha(PRE), _sha(POST))
 
 
 def test_a_selfhost_lane_process_is_not_the_old_lane(tree):

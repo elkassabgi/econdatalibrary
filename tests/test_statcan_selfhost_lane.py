@@ -117,9 +117,11 @@ def _fresh_module_state():
     NL._blocked_logged.update(why=None, at=None)
     NL._wait_logged.update(at=None, why=None)
     NL._session.update(released_mono=None)
+    NL._run_flags.update(lock_blocked=False)
     yield
     NL._STORE.clear()
     NL._session.update(released_mono=None)
+    NL._run_flags.update(lock_blocked=False)
     if blob._process_session is not None:
         blob._process_session.__exit__(None, None, None)
         blob._process_session = None
@@ -438,7 +440,7 @@ def test_T5_a_held_writer_lock_defers_the_serve_without_a_failure_and_merges_go_
         assert _rows(t0 / f"{PID}.parquet") == WANT_ROWS
         assert _served(tmp_path) == {}
         assert not c.get("transient_fails") and not c.get("fails") and c.get("last_error") is None, c
-        assert c["retry_after"] == L._iso(clock.t + dt.timedelta(minutes=NL.LOCK_WAIT_RETRY_MIN))
+        assert c["retry_after"] == L._iso(NL._grid_retry(clock.t)) == "2026-12-01T13:00:00Z", "the grid point"
         assert c["writer_lock_wait_since"] == L._iso(clock.t)
         assert _progress(t0)["writer_lock_waits"] == 1
         assert "serve WAITS for the catalogue writer lock" in capsys.readouterr().out
@@ -956,6 +958,76 @@ def test_C2_a_48h_hold_of_the_writer_lock_enumerates_at_most_hourly(t0, tmp_path
     assert _served(tmp_path) == {}
 
 
+# CODE REVIEW F1: the 1-cube test above cannot see per-cube phases. Real merges take wall time, so cubes whose serves
+# first wait minutes apart kept their own minute of every hour, and each due iteration enumerates: the reviewer
+# measured 95 cube-list GETs in 48 h with 2 cubes and 564 with 12 (review_code/probes_run2.log, probes_run3.log).
+# Every shape below runs the REAL run() for 48 h against a REAL second process holding the lock, with the merge faked
+# to take the given minutes of the simulated clock.
+_C2_SHAPES = {
+    "one_cube_control": [(str(PID), REL, 0)],
+    "two_cubes_merged_20_min_apart": [(str(PID), REL, 0), ("11111111", "2026-09-13T08:30", 20)],
+    "a_release_day_of_12_cubes_5_min_each": [(str(30000000 + i), f"2026-09-{12 + i // 10:02d}T08:30", 5)
+                                             for i in range(12)],
+    # a merge longer than the grid step between two serve attempts of ONE iteration: a grid anchored at
+    # last_enum_utc splits here into two phases for the rest of the hold
+    "a_90_min_merge_between_two_cubes": [(str(PID), REL, 0), ("11111111", "2026-09-13T08:30", 90)],
+}
+
+
+def _timed_kw(clock, releases, log):
+    def enum(since):
+        log.append(("list", clock.t))
+        return dict(releases)
+
+    def ends():
+        log.append(("ends", clock.t))
+        return {}, "not read in tests"
+    return {"enumerate_releases": enum, "ends_fn": ends, "now_fn": clock}
+
+
+@pytest.mark.parametrize("shape", sorted(_C2_SHAPES))
+def test_C2_a_48h_hold_over_many_cubes_stays_on_one_grid(t0, tmp_path, monkeypatch, shape, capsys):
+    cubes = _C2_SHAPES[shape]
+    for pid, _rel, _m in cubes:
+        if pid != str(PID):
+            _stored(t0 / f"{pid}.parquet", [("w1", "2026-01-01", 1.0, "Canada", "1.1")])
+    minutes = {pid: m for pid, _rel, m in cubes}
+    clock, log = _Clock(), []
+    start = clock.t
+
+    def fake_merge(pid, c, st, progress, now, attempt=None):
+        clock.t += dt.timedelta(minutes=minutes[pid])      # a download + merge takes wall time
+        c["merged"] = c["release"]
+        c.pop("merge_in_flight", None)
+        return "merged"
+    monkeypatch.setattr(L, "merge_cube", fake_merge)
+    releases = {int(pid): rel for pid, rel, _m in cubes}
+    with _Holder():
+        while clock.t < start + dt.timedelta(hours=48):
+            assert NL.main(["--once"], run_kw=_timed_kw(clock, releases, log)) == 0
+            clock.t += dt.timedelta(seconds=L.IDLE_SLEEP_S)
+    lists = [t for k, t in log if k == "list"]
+    worst = max(sum(1 for _k, u in log if t <= u < t + dt.timedelta(minutes=60)) for _k, t in log)
+    st = _state(t0)["cubes"]
+    retries = {st[pid].get("retry_after") for pid, _rel, _m in cubes}
+    with capsys.disabled():
+        print(f"\nMEASURED C2 {shape}: {len(lists)} cube-list GETs and {len(log) - len(lists)} end-date GETs in 48 h, "
+              f"at most {worst} StatCan GETs in any 60 minutes; retry_after {sorted(retries)}")
+    assert all(st[pid]["merged"] == rel and st[pid].get("served") is None for pid, rel, _m in cubes)
+    assert len(retries) == 1, f"every waiting cube is due at ONE grid point: {sorted(retries)}"
+    assert len(lists) <= 49, f"{len(lists)} enumerations in 48 h - the idle rate is one an hour (R2027, F1)"
+    assert worst <= 3, f"{worst} StatCan GETs inside one hour (R2028's bound was 3)"
+    assert _served(tmp_path) == {}
+
+
+def test_C2_the_grid_is_the_top_of_the_utc_hour_strictly_after_now():
+    z = lambda s: dt.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)   # noqa: E731
+    assert NL.LOCK_WAIT_RETRY_MIN == 60.0
+    assert NL._grid_retry(z("2026-12-01T12:00:00Z")) == z("2026-12-01T13:00:00Z")
+    assert NL._grid_retry(z("2026-12-01T12:59:59Z")) == z("2026-12-01T13:00:00Z")
+    assert NL._grid_retry(z("2026-12-01T23:20:00Z")) == z("2026-12-02T00:00:00Z")
+
+
 # --------------------------------------------------------------------------- #
 # design review C4 - only "held elsewhere" waits; a lock that cannot be judged is BLOCKED
 # --------------------------------------------------------------------------- #
@@ -980,6 +1052,99 @@ def test_C4_a_lock_that_cannot_be_judged_is_blocked_red_and_the_process_stays(t0
     c = _state(t0)["cubes"][str(PID)]
     assert c["merged"] == REL and c.get("served") is None and "writer_lock_wait_since" not in c, "never a wait"
     assert catalog_path._held is None and _served(tmp_path) == {}
+    assert _state(t0)["blocked_hold"]["kind"] == "lock" and prog["blocked_hold"]["kind"] == "lock"
+
+
+def test_C4_F2_a_blocked_lock_holds_run_to_the_grid_reads_red_on_every_beat_and_clears(t0, tmp_path, monkeypatch):
+    """CODE REVIEW F2: the BLOCKED path set no retry, so the cube stayed due and every 5-minute iteration enumerated
+    (24 GETs in 2 h, review_code/probes_run2.log P2). Now the hold is in the lane state, run() is not called before its
+    grid point, every beat carries it (red, idle beats included), and it clears when the lock can be judged again."""
+    _net(monkeypatch)
+    good = catalog_path.LOCK_PATH
+    (tmp_path / "a_file").write_text("x")
+    monkeypatch.setattr(catalog_path, "LOCK_PATH", str(tmp_path / "a_file" / "writer.lock"))
+    seen = []
+    real_beat = L.Progress.beat
+
+    def spy(self, *a, **k):
+        r = real_beat(self, *a, **k)
+        prog = _progress(t0)
+        try:
+            sc.verdict({"cubes": {}}, prog, dt.datetime.now(dt.timezone.utc))
+            seen.append((prog.get("state"), "not red", "blocked_hold" in prog))
+        except DefinitiveError as e:
+            seen.append((prog.get("state"), str(e), "blocked_hold" in prog))
+        return r
+    monkeypatch.setattr(L.Progress, "beat", spy)
+    clock, log, states = _Clock(), [], []
+    start = clock.t
+    while clock.t < start + dt.timedelta(hours=2):
+        states.append(NL.main(["--once"], run_kw=_timed_kw(clock, {PID: REL}, log)))
+        clock.t += dt.timedelta(seconds=L.IDLE_SLEEP_S)
+    lists = [t for k, t in log if k == "list"]
+    print(f"MEASURED F2: {len(lists)} cube-list GETs in 2 h while BLOCKED, {len(seen)} beats, rc {sorted(set(states))}")
+    assert states == [2] * len(states), "BLOCKED after every iteration"
+    assert len(lists) <= 3, f"{len(lists)} getAllCubesListLite enumerations in 2 h while BLOCKED"
+    first = next(i for i, s in enumerate(seen) if s[2])
+    after = seen[first:]
+    assert after and all("BLOCKED" in msg for _s, msg, _h in after), after
+    assert any(s != "blocked" for s, _m, _h in after), "an idle/working beat came between - and it read red too"
+    h = _state(t0)["blocked_hold"]
+    assert h["since"] == L._iso(start) and h["retry_after"] == L._iso(start + dt.timedelta(hours=2)), h
+    # the lock can be judged again: at the next grid point the cube is served and the hold is over
+    monkeypatch.setattr(catalog_path, "LOCK_PATH", good)
+    clock.t = start + dt.timedelta(hours=2)
+    assert NL.main(["--once"], run_kw=_timed_kw(clock, {PID: REL}, log)) == 0
+    st = _state(t0)
+    assert "blocked_hold" not in st and st["cubes"][str(PID)]["served"] == REL
+    assert "blocked_hold" not in _progress(t0) and _progress(t0)["state"] != "blocked"
+
+
+def test_C4_F2_a_run_that_tried_no_serve_moves_the_lock_hold_to_the_next_grid_point(t0, tmp_path, monkeypatch):
+    """A lock hold whose grid point came, in a run that tried no serve (the lane yielded to a waiter): the lock was
+    not judged, so the hold stands - red - and moves to the NEXT grid point instead of keeping a past one (which
+    would call run() every iteration)."""
+    _net(monkeypatch)
+    good = catalog_path.LOCK_PATH
+    (tmp_path / "a_file").write_text("x")
+    monkeypatch.setattr(catalog_path, "LOCK_PATH", str(tmp_path / "a_file" / "writer.lock"))
+    clock = _Clock()
+    assert NL.main(["--once"], run_kw=_run_kw(clock)) == 2
+    assert _state(t0)["blocked_hold"]["retry_after"] == "2026-12-01T13:00:00Z"
+    monkeypatch.setattr(catalog_path, "LOCK_PATH", good)
+    os.makedirs(os.path.dirname(good), exist_ok=True)
+    open(good + ".want", "w").write("a waiter")
+    clock.t = dt.datetime(2026, 12, 1, 13, 0, tzinfo=dt.timezone.utc)
+    assert NL.main(["--once"], run_kw=_run_kw(clock)) == 2
+    h = _state(t0)["blocked_hold"]
+    assert h["retry_after"] == "2026-12-01T14:00:00Z" and h["since"] == "2026-12-01T12:00:00Z", h
+    assert _progress(t0)["state"] == "blocked"
+    os.remove(good + ".want")
+    clock.t = dt.datetime(2026, 12, 1, 14, 0, tzinfo=dt.timezone.utc)
+    assert NL.main(["--once"], run_kw=_run_kw(clock)) == 0
+    assert "blocked_hold" not in _state(t0) and _state(t0)["cubes"][str(PID)]["served"] == REL
+
+
+def test_C4_F2_a_refusal_inside_run_is_held_to_the_grid_too(t0, monkeypatch):
+    calls = []
+
+    def refusing_run(**k):
+        k["enumerate_releases"](L.ENUM_ALL)
+        raise SystemExit("REFUSING: planted")
+    monkeypatch.setattr(L, "run", refusing_run)
+    clock = _Clock()
+    for _ in range(6):                                          # 30 minutes
+        assert NL.iteration(run_kw=dict(_run_kw(clock, calls=calls))) == 2
+        clock.t += dt.timedelta(minutes=5)
+    assert calls == ["enum"], "run() is called once, then held to the grid point"
+    h = _state(t0)["blocked_hold"]
+    assert h["kind"] == "refusal" and "planted" in h["why"] and h["retry_after"] == "2026-12-01T13:00:00Z"
+    with pytest.raises(DefinitiveError, match="BLOCKED"):
+        sc.verdict({"cubes": {}}, _progress(t0), dt.datetime.now(dt.timezone.utc))
+    monkeypatch.setattr(L, "run", lambda **k: {"enumerated": True, "worked": 0})
+    clock.t = dt.datetime(2026, 12, 1, 13, 0, tzinfo=dt.timezone.utc)
+    assert NL.iteration(run_kw=dict(_run_kw(clock, calls=calls))) == 0
+    assert "blocked_hold" not in _state(t0), "a run that returned ends a refusal hold"
 
 
 # --------------------------------------------------------------------------- #
@@ -1062,6 +1227,63 @@ def test_C6_a_torn_record_or_a_lost_held_cube_is_blocked_before_run(t0, monkeypa
     assert prog["state"] == "blocked" and want in prog["blocked"], prog
 
 
+def test_C6_F3_a_catalogued_cube_lost_from_the_store_and_booked_not_held_is_blocked(world, tmp_path, monkeypatch):
+    """CODE REVIEW F3 (the reviewer's probe P3): a catalogued cube the lane state has never seen (no release since the
+    floor) loses its parquet; its next release is booked not_held and settled by run(). From the next iteration on
+    the preflight reads it as LOST (a catalogued cube is never new) - BLOCKED, and run() is not called again."""
+    lost = "22222222"
+    con = sqlite3.connect(tmp_path / "catalog.db")
+    con.execute("INSERT INTO series VALUES (?)", (f"statcan:{lost}",))      # catalogued (served before) ...
+    con.commit()
+    con.close()                                                              # ... but no parquet in the store
+    (tmp_path / "CUTOVER").write_text("")                                    # T0, after the catalogue write
+    t0 = world
+    _net(monkeypatch)
+    rels, calls = {PID: REL, int(lost): "2026-10-01T08:30"}, []
+    assert NL.main(["--once"], run_kw=_run_kw(releases=rels, calls=calls)) == 0
+    c = _state(t0)["cubes"][lost]
+    assert c.get("not_held") and c["served"] == "2026-10-01T08:30", "run() booked it settled (the pre-T0 code)"
+    assert NL.main(["--once"], run_kw=_run_kw(releases=rels, calls=calls)) == 2
+    prog = _progress(t0)
+    assert prog["state"] == "blocked" and "NOT HELD have catalogued ids and no parquet" in prog["blocked"], prog
+    assert lost in prog["blocked"] and calls == ["enum"], "the second iteration asked StatCan nothing"
+    # a not-held cube with NO catalogued id is a new cube, and one whose parquet is back is held again: both fine
+    _stored(t0 / f"{lost}.parquet", [("w1", "2026-01-01", 1.0, "Canada", "1.1")])
+    assert NL.store_problems()[0] is None
+    st = _state(t0)
+    st["cubes"]["77777777"] = {"release": REL, "merged": REL, "served": REL, "not_held": True}
+    (t0 / "_lane_state.json").write_text(json.dumps(st))
+    assert NL.store_problems()[0] is None
+
+
+def test_F4_the_lock_wait_red_comes_before_the_draining_return():
+    """CODE REVIEW F4: an owed release past 14 days with fresh progress returns DRAINING (amber); the lock-wait red
+    must be read before that return, or a lane starved of the lock that keeps merging reads amber for ever."""
+    now = dt.datetime.now(dt.timezone.utc)
+    z = lambda h: (now - dt.timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")      # noqa: E731
+    prog = {"beat_utc": z(0.1), "state": "idle", "current": None, "last_progress_utc": z(1),
+            "owed": {"merge": 3, "serve": 2, "new_cubes": 0,
+                     "oldest_owed_release": (now - dt.timedelta(days=20)).strftime("%Y-%m-%dT%H:%M")}}
+    assert "DRAINING" in sc.verdict({"cubes": {}}, prog, now)[1], "the control: without the wait it drains"
+    prog["writer_lock_wait"] = {"since": z(60), "cubes": 2, "holder": "held elsewhere"}
+    with pytest.raises(DefinitiveError, match="waited for the catalogue writer lock"):
+        sc.verdict({"cubes": {}}, prog, now)
+
+
+def test_F7_a_waiter_that_comes_during_the_gap_gets_the_lock_first(t0, monkeypatch):
+    """CODE REVIEW F7: the yield rule is asked again AFTER the gap sleep - the gap is when a waiter comes."""
+    served = []
+    _seam(monkeypatch, served)
+    os.makedirs(os.path.dirname(catalog_path.LOCK_PATH), exist_ok=True)
+    want = catalog_path.LOCK_PATH + ".want"
+    monkeypatch.setattr(NL.time, "sleep", lambda s: open(want, "w").write("a waiter, during the gap"))
+    assert NL._serve_owed_under_writer_lock("1", {"merged": REL}, {}, {}, None, _p(), L._now()) == "served"
+    c = {"merged": REL}
+    assert NL._serve_owed_under_writer_lock("2", c, {}, {}, None, _p(), L._now()) == "lock_wait"
+    assert served == [True] and "writer_lock_wait_since" in c and "a waiter's marker" in NL._wait_logged["why"]
+    assert catalog_path._held is None and _probe() == "took"
+
+
 # --------------------------------------------------------------------------- #
 # design review C7 - the statcan region's writers after T0, by behaviour
 # --------------------------------------------------------------------------- #
@@ -1075,6 +1297,27 @@ def test_C7_repull_file_refuses_statcan_after_t0_and_deletes_nothing(t0, monkeyp
     assert m.main() == 2
     assert "REFUSING - after T0 statcan's store belongs to its lane" in capsys.readouterr().out
     assert (t0 / f"{PID}.parquet").exists()
+
+
+def test_C7_F6_before_t0_repull_file_statcan_keeps_its_old_path(world, monkeypatch, capsys):
+    """CODE REVIEW F6: the refusal is AFTER T0 only - before it, statcan reaches the in-flight check as it always did."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_repull_for_b3_pre", os.path.join(ROOT, "tools", "repull_file.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+
+    class _Reached(Exception):
+        pass
+
+    def reached():
+        raise _Reached()
+    monkeypatch.setattr(m, "runs_in_flight", reached)
+    monkeypatch.setattr(sys, "argv", ["repull_file.py", "statcan", f"{PID}.parquet"])
+    assert not cutover.is_cut_over()
+    with pytest.raises(_Reached):
+        m.main()
+    assert "REFUSING" not in capsys.readouterr().out
+    assert (world / f"{PID}.parquet").exists()
 
 
 # Every non-test file that can WRITE a store path and can reach statcan's region (it names statcan, or it takes a

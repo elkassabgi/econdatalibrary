@@ -36,7 +36,12 @@ param(
     [string] $FlagPath = 'C:\ProgramData\econ\CUTOVER',
     [string] $BackupDir = 'F:\launcher_watchdog\backups',
     [string] $LogPath = '',
-    [string] $ProcessListJson = ''
+    [string] $ProcessListJson = '',
+    # TEST HOOKS (code review F5): a .ps1 run with the live guard's path as its argument just before the second
+    # compare-and-swap, or just after the replace, so a test can change the live file at exactly those moments.
+    # Never passed at S13; with neither set the swap runs exactly as without them.
+    [string] $TestHookBeforeReplace = '',
+    [string] $TestHookAfterReplace = ''
 )
 $ErrorActionPreference = 'Stop'
 $live = Join-Path $Root 'RELAUNCH_GUARD.ps1'
@@ -177,6 +182,7 @@ $swapped = $false
 try {
     [System.IO.File]::WriteAllBytes($tmp, [System.IO.File]::ReadAllBytes($src))
     if ((Get-Sha256Hex $tmp) -ne $ExpectCopySha) { throw "the temp copy $tmp does not match the post-T0 copy" }
+    if ($TestHookBeforeReplace) { & $TestHookBeforeReplace $live }
     if ((Get-Sha256Hex $live) -ne $ExpectLiveSha) {
         Remove-Item -LiteralPath $tmp -Force
         Write-SwapLine "NOT SWAPPED: the live guard changed during the swap - measure again"
@@ -184,6 +190,7 @@ try {
     }
     [System.IO.File]::Replace($tmp, $live, [NullString]::Value)
     $swapped = $true
+    if ($TestHookAfterReplace) { & $TestHookAfterReplace $live }
     $now = Get-Sha256Hex $live
     if ($now -ne $ExpectCopySha) { throw "after the replace the live guard's sha256 is $now, expected $ExpectCopySha" }
     Write-SwapLine ("SWAPPED: live guard sha256 now " + $now + ". Next (S13): restart EconGuard, then python tools\selfhost\t0_ready.py --s13")

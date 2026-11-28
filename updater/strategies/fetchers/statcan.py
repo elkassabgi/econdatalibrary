@@ -22,8 +22,9 @@ Verdicts (design review finding 7 - `partial` is not an honest signal for a drai
                      the owed age, so a DRAINING lane cannot hide it (2026-11-22);
                      or the OLDEST owed release is older than OWED_AGE_MAX_DAYS and nothing finished lately:
                      alive, not keeping up;
-                     or the lane beats state "blocked": alive, but it works no cube until a named reason
-                     clears (written only by the post-T0 lane, jobs/statcan_selfhost_lane.py, T0 item B3)
+                     or the lane beats state "blocked", or any beat carries a `blocked_hold`: alive, but it
+                     works no cube until a named reason clears (written only by the post-T0 lane,
+                     jobs/statcan_selfhost_lane.py, T0 item B3)
     partial          alive and current, but something needs a human: QUARANTINED cubes, merged cubes
                      whose served ids cannot be reproduced, or new-cube coverage debt older than
                      NEW_CUBE_DEBT_AMBER_DAYS
@@ -611,6 +612,13 @@ def verdict(state, progress, now):
         # a fresh beat must not read healthy then (T0 item B3). The pre-T0 lane never writes this state.
         raise DefinitiveError("statcan: the lane is BLOCKED and works no cube - "
                               f"{str(progress.get('blocked') or 'no reason recorded')[:300]}")
+    bh = progress.get("blocked_hold")
+    if bh:
+        # THE HOLD IS IN THE LANE STATE and on EVERY beat (B3 code review F2): an idle or working beat between two
+        # blocked ones carries it, so the red does not flicker to green with the beat's state name
+        h = bh if isinstance(bh, dict) else {}
+        raise DefinitiveError(f"statcan: the lane is BLOCKED since {h.get('since')} and works no cube until it clears "
+                              f"- {str(h.get('why') or 'no reason recorded')[:300]}; next try {h.get('retry_after')}")
     # BEFORE the owed-age block (design review F2/C2): a lane still working its old backlog reads DRAINING and
     # returns there, which would hide an enumeration that has failed for hours.
     ef = progress.get("enum_fail")

@@ -32,20 +32,25 @@ THE TWO LOCKS.
     it is taken ONLY around one cube's serve (_serve_owed_under_writer_lock) and let go at once; a served CSV write
     outside that session is refused (make_put); a lock found already held by this process ends the process (the OS
     frees an OS lock at exit). When another process holds it - the updater holds it for its whole run, up to 2,880
-    min after T0 (tools/run_local_heavy.ps1) - the cube's serve is NOT a failure: it waits LOCK_WAIT_RETRY_MIN and
-    tries again, with no strike and no transient count, while merges go on; a wait older than
-    statcan.LOCK_WAIT_RED_HOURS reads red. The lane also YIELDS (no new session while a desktop pass or a waiter's
-    .want marker is there, and a gap between sessions); a lock that cannot be judged at all is BLOCKED, never a wait.
+    min after T0 (tools/run_local_heavy.ps1) - the cube's serve is NOT a failure: it waits for the next point of
+    the ONE RETRY GRID (_grid_retry) and tries again, with no strike and no transient count, while merges go on; a
+    wait older than statcan.LOCK_WAIT_RED_HOURS reads red. The lane also YIELDS (no new session while a desktop pass
+    or a waiter's .want marker is there, and a gap between sessions); a lock that cannot be judged at all is
+    BLOCKED, never a wait.
     Merges take no catalogue lock. THE REGION RULE: after T0 the statcan region (the cube parquets and the lane's
     three sidecars) has ONE writer, whoever holds logs/statcan_writer.lock; the blob index and the catalogue are
     written only inside the serve session, or never (tests/test_statcan_selfhost_lane.py pins the writer inventory).
 
 BLOCKED. A lane that cannot work must not keep a healthy-looking beat, and must not crash-loop under the guard
-(R1279). Before each iteration it checks the store lists at least one cube, the blob store opens and the split map
-reads; any failure - and a refusal raised inside run() - publishes state "blocked" with the reason (the reporter
-reads it red, updater/strategies/fetchers/statcan.py) and the lane stays resident. A wrong backend or a checkout
-that is not the live one writes NOTHING (its beat goes stale and reads red after 2-3 h): writing a beat there would
-write the wrong store. Any other exception ends the process loudly, as in the old lane.
+(R1279). Before each iteration it checks the store lists at least one cube, the blob store opens, the split map
+reads, its own records parse and no held or catalogued cube has lost its parquet; any failure publishes state
+"blocked" with the reason (the reporter reads it red, updater/strategies/fetchers/statcan.py) and the lane stays
+resident, without calling run() - so without asking StatCan anything. A failure met INSIDE run() (a catalogue
+writer lock that cannot be judged, the lane's own refusal) is a HOLD in the lane state (`blocked_hold`): published
+on every beat (red), and run() - with its enumeration - is not called again before the hold's next grid point
+(code review F2: a raise with no retry enumerated every 5 minutes). A wrong backend or a checkout that is not the
+live one writes NOTHING (its beat goes stale and reads red after 2-3 h): writing a beat there would write the wrong
+store. Any other exception ends the process loudly, as in the old lane.
 """
 from __future__ import annotations
 
@@ -72,11 +77,12 @@ GUARD_JOB = "statcan_selfhost"                 # its entry in tools/machine/RELA
 BACKEND = "selfhost"
 LANE_PATH = os.path.join(ROOT, "jobs", "statcan_lane.py")
 PRIVATE_NAME = "_statcan_lane_for_post_t0"
-# A cube whose serve found the catalogue writer lock held (or yielded it, below) waits this long before it is tried
-# again. Not a backoff (no transient count, no strike): the holder is another writer doing its job, and the merges go
-# on meanwhile. NOT LESS THAN THE LANE'S IDLE ENUMERATION INTERVAL (jobs/statcan_lane.py ENUM_MIN_INTERVAL_MIN, 60):
-# run() enumerates StatCan on EVERY non-idle iteration and a cube that is due again makes the iteration non-idle, so a
-# 10-minute retry was 6 getAllCubesListLite calls an hour for a whole 48 h pass (design review C2, R2250; R2027).
+# A cube whose serve found the catalogue writer lock held (or yielded it, below) is tried again at the next point of
+# the ONE RETRY GRID, every LOCK_WAIT_RETRY_MIN (_grid_retry). Not a backoff (no transient count, no strike): the
+# holder is another writer doing its job, and the merges go on meanwhile. NOT LESS THAN THE LANE'S IDLE ENUMERATION
+# INTERVAL (jobs/statcan_lane.py ENUM_MIN_INTERVAL_MIN, 60): run() enumerates StatCan on EVERY non-idle iteration and a
+# cube that is due again makes the iteration non-idle, so a 10-minute retry was 6 getAllCubesListLite calls an hour
+# for a whole 48 h pass (design review C2, R2250; R2027). The same grid times the blocked hold (code review F2).
 LOCK_WAIT_RETRY_MIN = 60.0
 # THE YIELD RULE (design review C5). The other users of the catalogue writer lock fail at once (the updater) or wait
 # with a bound (the swap 30 min, a backup); the lane draining a serve backlog in back-to-back sessions would leave them
@@ -91,11 +97,6 @@ LOCAL_HEAVY_LOCK = os.path.join(ROOT, "logs", "local_heavy.lock")
 REFUSED_LOG_EVERY_S = 3600      # under the guard's 3 h stall check ($STALL_HOURS), which keys on the log's mtime
 BLOCKED_LOG_EVERY_S = 3600
 
-
-class LaneBlocked(Exception):
-    """Raised by the serve seam when the catalogue writer lock cannot be judged (an OSError on its file, a refused
-    hot-journal recovery = another process wrote the build WITHOUT the lock): iteration() publishes BLOCKED (red) and
-    the process stays - never a benign wait, never a crash per guard tick (design review C4)."""
 
 REFUSED_WHY = (f"{MODULE_ID} is statcan's lane AFTER T0 (the self-hosted store); before T0 jobs/statcan_lane.py "
                f"serves statcan from R2, so this one waits and writes nothing")
@@ -131,6 +132,13 @@ def _install(m) -> None:
                                               "holder": _wait_logged.get("why")}
             else:
                 self.d.pop("writer_lock_wait", None)
+            # THE BLOCKED HOLD ON EVERY BEAT (code review F2): an idle or working beat between two blocked ones must
+            # not read healthy, so the hold travels with the state, not with the beat's own state name
+            hold = self.st.get("blocked_hold")
+            if hold:
+                self.d["blocked_hold"] = hold
+            else:
+                self.d.pop("blocked_hold", None)
             return super().beat(state, current, **counters)
 
     m.Progress = MarkedProgress
@@ -162,16 +170,56 @@ def _load_lane():
 # --------------------------------------------------------------------------- #
 _wait_logged: dict = {"at": None, "why": None}
 _session: dict = {"released_mono": None}      # when this process last let the catalogue writer lock go
+_run_flags: dict = {"lock_blocked": False}    # this run() found the catalogue writer lock unusable (reset per run)
+
+
+def _grid_retry(now: dt.datetime) -> dt.datetime:
+    """THE ONE RETRY GRID (code review F1): the first whole multiple of LOCK_WAIT_RETRY_MIN since the Unix epoch after
+    `now` - the top of the next UTC hour. EVERY lock wait and the blocked hold retry there, whenever they were tried,
+    so all waiting cubes come due in ONE iteration per grid point, and run() enumerates in that iteration only.
+    Per-cube `now + 60 min` kept each cube's own minute (merges take wall time between serves), and every due
+    iteration is non-idle and enumerates: measured 95 cube-list GETs in 48 h with 2 cubes, 564 with 12. A grid
+    anchored at last_enum_utc is not enough either: every enumeration moves that anchor, so cubes tried before and
+    after a merge longer than the step split into two phases again for the rest of the hold
+    (tests/test_statcan_selfhost_lane.py, the C2 tests)."""
+    step = int(LOCK_WAIT_RETRY_MIN * 60)
+    nxt = (int(now.timestamp()) // step + 1) * step
+    return dt.datetime.fromtimestamp(nxt, dt.timezone.utc)
+
+
+def _set_hold(st: dict, why: str, kind: str, now: dt.datetime) -> dict:
+    """The lane-wide BLOCKED hold in the lane state (code review F2): kind "lock" (the catalogue writer lock cannot be
+    judged) or "refusal" (the lane's own refusal inside run()). It keeps its first `since`, names the reason and its
+    next try on the grid; iteration() calls no run() - so asks StatCan nothing - before that try."""
+    old = st.get("blocked_hold") if isinstance(st.get("blocked_hold"), dict) else {}
+    st["blocked_hold"] = {"kind": kind, "since": old.get("since") or L._iso(now), "why": why[:500],
+                          "retry_after": L._iso(_grid_retry(now))}
+    return st["blocked_hold"]
+
+
+def _clear_lock_hold(st: dict) -> None:
+    """The catalogue writer lock was judged (taken, or held by another process): a "lock" hold is over."""
+    h = st.get("blocked_hold")
+    if isinstance(h, dict) and h.get("kind") == "lock":
+        st.pop("blocked_hold", None)
+        print(f"[lane] the catalogue writer lock can be judged again - the BLOCKED hold since {h.get('since')} "
+              f"is over", flush=True)
+
+
+def _hold_text(h: dict) -> str:
+    return (f"{h.get('why')} - BLOCKED since {h.get('since')}, next try {h.get('retry_after')} "
+            f"(until then the lane asks StatCan nothing)")
 
 
 def _lock_wait(pid: str, c: dict, progress, now: dt.datetime, why: str) -> str:
-    """The lock is held elsewhere, or yielded to a waiter: the cube is tried again in LOCK_WAIT_RETRY_MIN. retry_after
-    keeps it out of order_owed meanwhile, so the iterations of a long hold stay idle and enumerate at most hourly
-    (R2027, R2250). No transient count, no last_error, no strike. The wait's start is kept on the cube
-    (writer_lock_wait_since) until the cube is served: the reporter reads a wait older than LOCK_WAIT_RED_HOURS red."""
+    """The lock is held elsewhere, or yielded to a waiter: the cube is tried again at the next grid point
+    (_grid_retry). retry_after keeps it out of order_owed meanwhile, so the iterations of a long hold stay idle and
+    enumerate at most once per grid point (R2027, R2250, code review F1). No transient count, no last_error, no
+    strike. The wait's start is kept on the cube (writer_lock_wait_since) until the cube is served: the reporter reads
+    a wait older than LOCK_WAIT_RED_HOURS red."""
     first = c.get("writer_lock_wait_since")
     c["writer_lock_wait_since"] = first or L._iso(now)
-    c["retry_after"] = L._iso(now + dt.timedelta(minutes=LOCK_WAIT_RETRY_MIN))
+    c["retry_after"] = L._iso(_grid_retry(now))
     mono = time.monotonic()
     if first is None or _wait_logged["at"] is None or mono - _wait_logged["at"] >= BLOCKED_LOG_EVERY_S:
         print(f"[lane] {pid}: serve WAITS for the catalogue writer lock ({why[:200]}); waiting since "
@@ -220,31 +268,49 @@ def _want_marker() -> "str | None":
     return f"a waiter's marker {p} is {age_min:.0f} min old" if age_min < WANT_FRESH_MIN else None
 
 
+def _yield_reason() -> "str | None":
+    """THE YIELD RULE's two signals (design review C5): a live desktop pass, or a fresh waiter's marker."""
+    return _pass_holder() or _want_marker()
+
+
 def _serve_owed_under_writer_lock(pid, c, debt, smap, put, progress, now):
     """SEAM 1: the lane's serve_owed_cube, inside core.catalog_path.writer_lock(), taken here and let go when the
     cube's serve returns (serve_cube joins its PUT queue before returning, so every PUT of the cube is inside).
     Only "held elsewhere" (CutoverRefused from the lock itself) is a wait; any other failure to take the lock is
-    BLOCKED (design review C4)."""
+    BLOCKED (design review C4): the lane-wide hold goes into the state (run() saves it after this returns), the rest
+    of this run tries the lock no more, and iteration() publishes BLOCKED and holds run() until the next grid point
+    (code review F2). run() ignores what this returns."""
     if catalog_path._held is not None:
         raise SystemExit(LEAK_WHY)
-    why = _pass_holder() or _want_marker()
+    if _run_flags["lock_blocked"]:
+        return "lock_blocked"                                        # this run met it already: no second try
+    why = _yield_reason()
     if why:
         return _lock_wait(pid, c, progress, now, f"yielding: {why}")
     last = _session["released_mono"]
     if last is not None and time.monotonic() - last < LOCK_GAP_S:
         time.sleep(LOCK_GAP_S - (time.monotonic() - last))          # leave other waiters a real gap
+        # ... and the gap is when a waiter comes (code review F7): ask again before taking the lock
+        why = _yield_reason()
+        if why:
+            return _lock_wait(pid, c, progress, now, f"yielding: {why}")
     stack = contextlib.ExitStack()
     try:
         stack.enter_context(catalog_path.writer_lock())
     except cutover.CutoverRefused as e:                              # held by another process: a wait
         stack.close()
+        _clear_lock_hold(progress.st)                                # the lock could be judged
         return _lock_wait(pid, c, progress, now, f"held elsewhere: {e}")
     except Exception as e:                                           # noqa: BLE001 - cannot judge the lock: BLOCKED
         stack.close()
-        raise LaneBlocked(f"the catalogue writer lock {catalog_path.LOCK_PATH} could not be taken "
-                          f"({type(e).__name__}: {str(e)[:300]})") from e
+        _run_flags["lock_blocked"] = True
+        h = _set_hold(progress.st, f"the catalogue writer lock {catalog_path.LOCK_PATH} could not be taken "
+                                   f"({type(e).__name__}: {str(e)[:300]})", "lock", now)
+        _say_blocked(_hold_text(h))
+        return "lock_blocked"
     try:
         with stack:
+            _clear_lock_hold(progress.st)
             c.pop("writer_lock_wait_since", None)
             return _ORIG["serve_owed_cube"](pid, c, debt, smap, put, progress, now)
     finally:
@@ -351,7 +417,40 @@ def store_problems():
     if lost:
         return (f"{len(lost)} cube(s) the lane state records as held have no parquet in {sc.OUT_DIR} "
                 f"(first: {', '.join(lost[:5])}) - restore them from a backup; the lane cannot re-pull them"), None
+    # ... AND NO "NOT HELD" CUBE IS A LOST ONE (code review F3). run() books a released cube it cannot find as not
+    # held and settles it; a CATALOGUED cube is never new, so a not-held cube with catalogued ids and no parquet is a
+    # lost store file whose release was booked settled (by run() one iteration before this check could see it, when
+    # the state had never seen the cube) - users keep its old CSVs and nothing says so.
+    try:
+        gone = _catalogued_not_held(st, names)
+    except Exception as e:                                           # noqa: BLE001
+        return (f"the catalogue {L.CATALOGUE} cannot be read to check the lane's not-held cubes "
+                f"({type(e).__name__}: {str(e)[:200]})"), None
+    if gone:
+        return (f"{len(gone)} cube(s) the lane state books as NOT HELD have catalogued ids and no parquet in "
+                f"{sc.OUT_DIR} (first: {', '.join(gone[:5])}) - lost store files, not new cubes: restore each "
+                f"parquet from a backup; its booked release stays unmerged until StatCan releases it again"), None
     return None, make_put(store)
+
+
+def _catalogued_not_held(st: dict, names: set) -> list:
+    """Pids the state books not_held, with no parquet in the store and at least one catalogued id - one primary-key
+    range read each (jobs/statcan_lane.py catalogued_ids' range), over ONE read-only connection."""
+    cand = sorted(p for p, c in st.get("cubes", {}).items()
+                  if isinstance(c, dict) and c.get("not_held") and f"{p}.parquet" not in names)
+    if not cand:
+        return []
+    con = catalog_path.connect_path(L.CATALOGUE, write=False, timeout=180)
+    try:
+        out = []
+        for p in cand:
+            lo = L._tool().unit_id(str(p))
+            if con.execute("SELECT 1 FROM series WHERE series_id >= ? AND series_id < ? LIMIT 1",
+                           (lo, lo + "$")).fetchone():
+                out.append(p)
+        return out
+    finally:
+        con.close()
 
 
 _blocked_logged: dict = {"why": None, "at": None}
@@ -360,8 +459,7 @@ _blocked_logged: dict = {"why": None, "at": None}
 def _say_blocked(why: str) -> None:
     mono = time.monotonic()
     if why != _blocked_logged["why"] or _blocked_logged["at"] is None or mono - _blocked_logged["at"] >= BLOCKED_LOG_EVERY_S:
-        print(f"[lane] {L._iso(L._now())} BLOCKED: {why} - nothing merged or served; retried every iteration",
-              flush=True)
+        print(f"[lane] {L._iso(L._now())} BLOCKED: {why} - nothing merged or served until it clears", flush=True)
         _blocked_logged.update(why=why, at=mono)
 
 
@@ -393,18 +491,48 @@ def iteration(max_cubes=None, run_kw=None) -> int:
     if why:
         publish_blocked(why)
         return 2
+    now = ((run_kw or {}).get("now_fn") or L._now)()
+    hold = L.load_state().get("blocked_hold")                  # store_problems() proved the state parses
+    if isinstance(hold, dict):
+        ra = L._parse_iso(hold.get("retry_after"))
+        if ra is not None and ra > now:
+            # HELD (code review F2): no run() before the hold's grid point - so no enumeration, no StatCan call
+            publish_blocked(_hold_text(hold))
+            return 2
+    _run_flags["lock_blocked"] = False
     try:
         r = L.run(max_cubes=max_cubes, put=put, **(run_kw or {}))
-    except LaneBlocked as e:
-        # the serve seam could not judge the catalogue writer lock (C4): red, resident, not a loop
-        publish_blocked(str(e))
-        return 2
     except SystemExit as e:
         if str(e) == LEAK_WHY:
             raise                                       # a lock leaked into this process: end it, the OS frees it
-        # the lane's own refusals inside run() (the split map, the store-absent guard): resident, red, not a loop
-        publish_blocked(f"the lane refused inside its run: {e}")
+        # the lane's own refusals inside run() (the split map, the store-absent guard): resident, red, held to the
+        # grid (not a loop, and not an enumeration every 5 minutes)
+        why = f"the lane refused inside its run: {e}"
+        try:
+            st = L.load_state()
+            why = _hold_text(_set_hold(st, why, "refusal", now))
+            L.save_state(st)
+        except Exception:                               # noqa: BLE001 - an unreadable state: the next preflight
+            pass                                        # sees it, before run()
+        publish_blocked(why)
         return 2
+    # AFTER A RUN THAT RETURNED: a "lock" hold stands while a cube still owes a serve (a run that tried no serve
+    # moves it to the next grid point); a "refusal" hold, or one with nothing left to serve, is over.
+    st = L.load_state()
+    hold = st.get("blocked_hold")
+    if isinstance(hold, dict):
+        owed = any(isinstance(c, dict) and L.serve_owed(c) and not c.get("quarantined")
+                   for c in st.get("cubes", {}).values())
+        if hold.get("kind") == "lock" and owed:
+            if not _run_flags["lock_blocked"]:
+                hold["retry_after"] = L._iso(_grid_retry(now))
+                L.save_state(st)
+            publish_blocked(_hold_text(hold))
+            return 2
+        st.pop("blocked_hold", None)
+        L.save_state(st)
+        print(f"[lane] {L._iso(L._now())} the BLOCKED hold since {hold.get('since')} is over "
+              f"({'the run returned' if hold.get('kind') != 'lock' else 'no cube owes a serve'})", flush=True)
     _blocked_logged.update(why=None, at=None)
     if r.get("worked") or r.get("enumerated"):
         print(f"[lane] {L._iso(L._now())} iteration: {r}", flush=True)
