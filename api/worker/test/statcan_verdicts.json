@@ -116,6 +116,18 @@
    "note": "statcan: the lane is BLOCKED since 2026-10-20T10:00:00Z and works no cube until it clears - the catalogue writer lock <lock> could not be taken (NotADirectoryError); next try 2026-10-20T12:30:00Z"
   },
   {
+   "branch": "lost-cube check failing inside 6 h (post-T0 lane)",
+   "outcome": "ok",
+   "current": true,
+   "note": "statcan: lane current - 0 cube(s) owe a merge, 0 owe serving, 2 released cube(s) not held (catalogue debt)"
+  },
+  {
+   "branch": "lost-cube check failing over 6 h (post-T0 lane)",
+   "outcome": "DefinitiveError",
+   "current": false,
+   "note": "statcan: the lane cannot CHECK its not-held cubes against the catalogue - failing since 2026-10-20T05:00:00Z (7.0 h, allowed 6 h), 1 booking(s) unchecked, last: OperationalError: database is locked. The merges go on; a lost store file is not seen while this lasts."
+  },
+  {
    "branch": "no progress published",
    "outcome": "DefinitiveError",
    "current": false,

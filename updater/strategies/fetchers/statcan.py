@@ -152,6 +152,12 @@ BREAKER_RED_HOURS = 6.0
 # and it read green while no CSV moved. This turns it red: the oldest wait (published by the lane over cubes that
 # still owe a serve and are not quarantined) older than the longest legitimate hold plus a margin.
 LOCK_WAIT_RED_HOURS = 54.0
+# THE LOST-CUBE CHECK (T0 item B3, code review round 2, G1). The post-T0 lane blocks on a cube its state books NOT HELD
+# that has catalogued ids and no parquet (a lost store file). That check reads the catalogue outside the writer lock;
+# a read that fails (a busy catalogue, a hot journal) is SKIPPED so the merges go on, and the lane publishes
+# `lost_check_fail` on every beat. A lost file is not seen while it lasts, so a check failing for longer than this,
+# since its first failure, is red.
+LOST_CHECK_RED_HOURS = 6.0
 
 # THE VERDICTS THAT SAY THE LANE IS CURRENT (owner decision 2026-10-20: statcan must not read "late" on
 # the public API while its lane keeps it current). verdict() below has two such outcomes: `ok`, and the
@@ -641,6 +647,17 @@ def verdict(state, progress, now):
                 f"statcan: the lane's circuit breaker has held every merge back since {b.get('since')} "
                 f"({'unreadable' if br_h is None else f'{br_h:.1f} h'}, allowed {BREAKER_RED_HOURS:.0f} h) - StatCan "
                 f"refuses with HTTP {b.get('status')}; {b.get('trips')} trip(s), cubes {list(b.get('cubes') or [])[:10]}")
+    lf = progress.get("lost_check_fail")
+    if lf:
+        # BEFORE the owed-age block too: the post-T0 lane keeps merging while this lasts (B3 code review round 2, G1)
+        f = lf if isinstance(lf, dict) else {}
+        lf_h = _hours_since(f.get("since"), now)
+        if lf_h is None or lf_h > LOST_CHECK_RED_HOURS:
+            raise DefinitiveError(
+                f"statcan: the lane cannot CHECK its not-held cubes against the catalogue - failing since "
+                f"{f.get('since')} ({'unreadable' if lf_h is None else f'{lf_h:.1f} h'}, allowed "
+                f"{LOST_CHECK_RED_HOURS:.0f} h), {f.get('pending')} booking(s) unchecked, last: "
+                f"{str(f.get('last_error'))[:200]}. The merges go on; a lost store file is not seen while this lasts.")
     lw = progress.get("writer_lock_wait")
     if lw:
         w = lw if isinstance(lw, dict) else {}

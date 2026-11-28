@@ -219,6 +219,14 @@ def _verdict_cases():
         ("blocked hold on an idle beat (post-T0 lane)", False, st,
          dict(fresh, blocked_hold={"kind": "lock", "since": _z(2), "why": "the catalogue writer lock <lock> could "
                                    "not be taken (NotADirectoryError)", "retry_after": _z(-0.5)})),
+        # B3 code review round 2, G1: a lost-cube check that cannot read the catalogue is SKIPPED (the merges go on)
+        # and reads red only once it has failed for LOST_CHECK_RED_HOURS
+        ("lost-cube check failing inside 6 h (post-T0 lane)", True, st,
+         dict(fresh, lost_check_fail={"since": _z(2), "count": 24, "pending": 1,
+                                      "last_error": "OperationalError: database is locked"})),
+        ("lost-cube check failing over 6 h (post-T0 lane)", False, st,
+         dict(fresh, lost_check_fail={"since": _z(7), "count": 84, "pending": 1,
+                                      "last_error": "OperationalError: database is locked"})),
         ("no progress published", False, None, None),
     ]
 

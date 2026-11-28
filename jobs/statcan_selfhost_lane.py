@@ -45,12 +45,17 @@ BLOCKED. A lane that cannot work must not keep a healthy-looking beat, and must 
 (R1279). Before each iteration it checks the store lists at least one cube, the blob store opens, the split map
 reads, its own records parse and no held or catalogued cube has lost its parquet; any failure publishes state
 "blocked" with the reason (the reporter reads it red, updater/strategies/fetchers/statcan.py) and the lane stays
-resident, without calling run() - so without asking StatCan anything. A failure met INSIDE run() (a catalogue
-writer lock that cannot be judged, the lane's own refusal) is a HOLD in the lane state (`blocked_hold`): published
-on every beat (red), and run() - with its enumeration - is not called again before the hold's next grid point
-(code review F2: a raise with no retry enumerated every 5 minutes). A wrong backend or a checkout that is not the
-live one writes NOTHING (its beat goes stale and reads red after 2-3 h): writing a beat there would write the wrong
-store. Any other exception ends the process loudly, as in the old lane.
+resident, without calling run() - so without asking StatCan anything. The one check that reads the CATALOGUE (a
+not-held cube with catalogued ids - lost_cube_check) runs outside the writer lock, so it never stops the merges it
+does not protect (code review round 2, G1): its answer is read once per booking and kept in the lane state, and a
+read that fails is skipped - the lane merges on and reads red only when the check has failed for
+statcan.LOST_CHECK_RED_HOURS. A failure met INSIDE run() (a catalogue writer lock that cannot be judged, the lane's
+own refusal) is a HOLD in the lane state (`blocked_hold`): published on every beat (red), and run() - with its
+enumeration - is not called again before the hold's next grid point (code review F2: a raise with no retry
+enumerated every 5 minutes). A lock hold whose cause was the lock FILE (an OSError) is judged again when the lane
+yields to a desktop pass or a waiter, by opening the file only (round 2, G2). A wrong backend or a checkout that is
+not the live one writes NOTHING (its beat goes stale and reads red after 2-3 h): writing a beat there would write
+the wrong store. Any other exception ends the process loudly, as in the old lane.
 """
 from __future__ import annotations
 
@@ -93,6 +98,16 @@ LOCK_WAIT_RETRY_MIN = 60.0
 #   * two sessions are at least LOCK_GAP_S apart (the lane sleeps the rest of the gap before the next one).
 LOCK_GAP_S = 60.0
 WANT_FRESH_MIN = 30.0
+# THE LOST-CUBE CHECK (code review F3; round 2, G1). A cube the state books NOT HELD with catalogued ids and no parquet
+# is a lost store file and BLOCKS the lane. That check is the lane's one catalogue read OUTSIDE the writer lock, so it
+# must not stop the merges it does not protect (they never read the catalogue). Measured before this change
+# (review_code/VERDICT_round2.md, P7): a catalogue held EXCLUSIVE by another writer stalled the iteration 309 s and
+# ended it BLOCKED with no merge, and a hot journal would have kept it so (only a lock holder rolls one back, and the
+# lane's own lock session is inside run(), which was never reached). So: the answer is read ONCE per not-held booking
+# and kept in the lane state (`lost_checked`); the read waits at most LOST_CHECK_BUSY_S for a busy catalogue; a read
+# that fails is SKIPPED - the iteration merges on, the failure is kept in the state (`lost_check_fail`, on every beat)
+# and the reporter reads it red after statcan.LOST_CHECK_RED_HOURS.
+LOST_CHECK_BUSY_S = 15.0
 LOCAL_HEAVY_LOCK = os.path.join(ROOT, "logs", "local_heavy.lock")
 REFUSED_LOG_EVERY_S = 3600      # under the guard's 3 h stall check ($STALL_HOURS), which keys on the log's mtime
 BLOCKED_LOG_EVERY_S = 3600
@@ -139,6 +154,13 @@ def _install(m) -> None:
                 self.d["blocked_hold"] = hold
             else:
                 self.d.pop("blocked_hold", None)
+            # ... and a lost-cube check that cannot read the catalogue (round 2, G1): the merges go on, the
+            # reporter reads it red past statcan.LOST_CHECK_RED_HOURS, on every beat
+            fail = self.st.get("lost_check_fail")
+            if fail:
+                self.d["lost_check_fail"] = fail
+            else:
+                self.d.pop("lost_check_fail", None)
             return super().beat(state, current, **counters)
 
     m.Progress = MarkedProgress
@@ -187,28 +209,34 @@ def _grid_retry(now: dt.datetime) -> dt.datetime:
     return dt.datetime.fromtimestamp(nxt, dt.timezone.utc)
 
 
-def _set_hold(st: dict, why: str, kind: str, now: dt.datetime) -> dict:
+def _set_hold(st: dict, why: str, kind: str, now: dt.datetime, oserror: bool = False) -> dict:
     """The lane-wide BLOCKED hold in the lane state (code review F2): kind "lock" (the catalogue writer lock cannot be
     judged) or "refusal" (the lane's own refusal inside run()). It keeps its first `since`, names the reason and its
-    next try on the grid; iteration() calls no run() - so asks StatCan nothing - before that try."""
+    next try on the grid; iteration() calls no run() - so asks StatCan nothing - before that try. `oserror` (a lock
+    hold only): the lock FILE could not be made or opened, which a yielding lane can judge again by opening the file
+    (round 2, G2); any other cause (a refused hot-journal recovery) is judged only by taking the lock."""
     old = st.get("blocked_hold") if isinstance(st.get("blocked_hold"), dict) else {}
     st["blocked_hold"] = {"kind": kind, "since": old.get("since") or L._iso(now), "why": why[:500],
                           "retry_after": L._iso(_grid_retry(now))}
+    if oserror:
+        st["blocked_hold"]["oserror"] = True
     return st["blocked_hold"]
 
 
-def _clear_lock_hold(st: dict) -> None:
-    """The catalogue writer lock was judged (taken, or held by another process): a "lock" hold is over."""
+def _clear_lock_hold(st: dict, how: str = "the catalogue writer lock can be judged again") -> None:
+    """The catalogue writer lock was judged (taken, or held by another process), or its file opens again while the
+    lane yields (G2): a "lock" hold is over."""
     h = st.get("blocked_hold")
     if isinstance(h, dict) and h.get("kind") == "lock":
         st.pop("blocked_hold", None)
-        print(f"[lane] the catalogue writer lock can be judged again - the BLOCKED hold since {h.get('since')} "
-              f"is over", flush=True)
+        print(f"[lane] {how} - the BLOCKED hold since {h.get('since')} is over", flush=True)
 
 
 def _hold_text(h: dict) -> str:
+    y = h.get("yielding") if isinstance(h.get("yielding"), dict) else None
+    note = (f"; not judged again since {y.get('since')}: the lane yields ({str(y.get('to'))[:200]})" if y else "")
     return (f"{h.get('why')} - BLOCKED since {h.get('since')}, next try {h.get('retry_after')} "
-            f"(until then the lane asks StatCan nothing)")
+            f"(until then the lane asks StatCan nothing){note}")
 
 
 def _lock_wait(pid: str, c: dict, progress, now: dt.datetime, why: str) -> str:
@@ -273,6 +301,37 @@ def _yield_reason() -> "str | None":
     return _pass_holder() or _want_marker()
 
 
+def _lock_file_problem() -> "str | None":
+    """Can the catalogue writer lock's FILE be made and opened - what core.catalog_path.writer_lock() does before it
+    locks? No lock is taken and no byte is written ("a+b" creates the file only when it is missing). None = yes."""
+    try:
+        os.makedirs(os.path.dirname(catalog_path.LOCK_PATH), exist_ok=True)
+        with open(catalog_path.LOCK_PATH, "a+b"):
+            pass
+    except OSError as e:
+        return f"{type(e).__name__}: {str(e)[:300]}"
+    return None
+
+
+def _yield_wait(pid: str, c: dict, progress, now: dt.datetime, why: str) -> str:
+    """The serve YIELDS (a live desktop pass, a waiter's marker), so the lock itself is not tried. A "lock" hold must
+    not stand on a stale reason for the whole pass meanwhile (code review round 2, G2: one lock fault, then a 48 h
+    pass, read BLOCKED for 48 h and merged once an hour). A hold whose cause was the lock FILE (an OSError) is judged
+    again here by opening the file only - if it opens, the hold is over and run() goes on every iteration; any other
+    hold (a refused hot-journal recovery, judged only by taking the lock) stands, and says that it was not judged
+    again because the lane yields."""
+    h = progress.st.get("blocked_hold")
+    if isinstance(h, dict) and h.get("kind") == "lock":
+        problem = _lock_file_problem() if h.get("oserror") else "not a lock-file fault"
+        if problem is None:
+            _clear_lock_hold(progress.st, "the catalogue writer lock's file opens again (the lane yields, so the "
+                                          "lock itself was not tried)")
+        else:
+            old = h.get("yielding") if isinstance(h.get("yielding"), dict) else {}
+            h["yielding"] = {"since": old.get("since") or L._iso(now), "to": why[:200]}
+    return _lock_wait(pid, c, progress, now, f"yielding: {why}")
+
+
 def _serve_owed_under_writer_lock(pid, c, debt, smap, put, progress, now):
     """SEAM 1: the lane's serve_owed_cube, inside core.catalog_path.writer_lock(), taken here and let go when the
     cube's serve returns (serve_cube joins its PUT queue before returning, so every PUT of the cube is inside).
@@ -286,14 +345,14 @@ def _serve_owed_under_writer_lock(pid, c, debt, smap, put, progress, now):
         return "lock_blocked"                                        # this run met it already: no second try
     why = _yield_reason()
     if why:
-        return _lock_wait(pid, c, progress, now, f"yielding: {why}")
+        return _yield_wait(pid, c, progress, now, why)
     last = _session["released_mono"]
     if last is not None and time.monotonic() - last < LOCK_GAP_S:
         time.sleep(LOCK_GAP_S - (time.monotonic() - last))          # leave other waiters a real gap
         # ... and the gap is when a waiter comes (code review F7): ask again before taking the lock
         why = _yield_reason()
         if why:
-            return _lock_wait(pid, c, progress, now, f"yielding: {why}")
+            return _yield_wait(pid, c, progress, now, why)
     stack = contextlib.ExitStack()
     try:
         stack.enter_context(catalog_path.writer_lock())
@@ -305,7 +364,8 @@ def _serve_owed_under_writer_lock(pid, c, debt, smap, put, progress, now):
         stack.close()
         _run_flags["lock_blocked"] = True
         h = _set_hold(progress.st, f"the catalogue writer lock {catalog_path.LOCK_PATH} could not be taken "
-                                   f"({type(e).__name__}: {str(e)[:300]})", "lock", now)
+                                   f"({type(e).__name__}: {str(e)[:300]})", "lock", now,
+                      oserror=isinstance(e, OSError))
         _say_blocked(_hold_text(h))
         return "lock_blocked"
     try:
@@ -378,36 +438,39 @@ def _blob_store():
 
 
 def store_problems():
-    """(reason, put): reason None and a put when the lane can work. Writes nothing to the store or the state."""
+    """(reason, put, names): reason None, a put and the store's file names when the lane can work. Writes nothing to
+    the store or the state, and reads no catalogue (the lost-cube check is lost_cube_check, round 2 G1)."""
     try:
         store = _blob_store()
     except Exception as e:                                           # noqa: BLE001
-        return f"the self-hosted blob store {blob.SELFHOST_BLOB_ROOT} cannot be opened ({type(e).__name__}: {e})", None
+        return (f"the self-hosted blob store {blob.SELFHOST_BLOB_ROOT} cannot be opened ({type(e).__name__}: {e})",
+                None, None)
     try:
         cubes = [f for f in blob.list_parquets(sc.OUT_DIR) if not os.path.basename(f).startswith("_")]
     except Exception as e:                                           # noqa: BLE001
-        return f"the store {sc.OUT_DIR} cannot be listed ({type(e).__name__}: {e})", None
+        return f"the store {sc.OUT_DIR} cannot be listed ({type(e).__name__}: {e})", None, None
     if not cubes:
         # BEFORE run(), never after: run() books every released cube it cannot find as held-by-nobody and saves
         # that before its own store-absent guard raises (jobs/statcan_lane.py, the R753 block)
-        return f"the store lists 0 cubes under {sc.OUT_DIR} - unreachable, not a quiet publisher (R753)", None
+        return f"the store lists 0 cubes under {sc.OUT_DIR} - unreachable, not a quiet publisher (R753)", None, None
     try:
         with open(L.SPLIT_MAP, encoding="utf-8") as fh:
             smap = json.load(fh)
     except (OSError, ValueError) as e:
-        return f"the split map {L.SPLIT_MAP} is unreadable ({e!r}); serving without it would re-key every split cube", None
+        return (f"the split map {L.SPLIT_MAP} is unreadable ({e!r}); serving without it would re-key every split "
+                f"cube", None, None)
     if not isinstance(smap, dict) or not smap:
-        return f"the split map {L.SPLIT_MAP} holds no split decisions", None
+        return f"the split map {L.SPLIT_MAP} holds no split decisions", None, None
     # THE LANE'S OWN RECORDS PARSE (design review C6b): load_state() and the debt read raise on a torn file - inside
     # run() that is a crash per guard tick; here it is BLOCKED. Neither is ever reset (a reset would re-owe nothing).
     try:
         st = L.load_state()
     except Exception as e:                                           # noqa: BLE001
-        return f"the lane state {L.STATE} is unreadable ({type(e).__name__}: {str(e)[:200]})", None
+        return f"the lane state {L.STATE} is unreadable ({type(e).__name__}: {str(e)[:200]})", None, None
     try:
         L._read_json(L.DEBT, {"cubes": {}, "new_cubes": {}})
     except Exception as e:                                           # noqa: BLE001
-        return f"the catalogue debt {L.DEBT} is unreadable ({type(e).__name__}: {str(e)[:200]})", None
+        return f"the catalogue debt {L.DEBT} is unreadable ({type(e).__name__}: {str(e)[:200]})", None, None
     # EVERY CUBE THE STATE CALLS HELD HAS ITS PARQUET (design review C6a). After T0 this store is the only copy, and
     # run() books a cube it cannot find as held-by-nobody and settles it; one lost file would go silent for ever.
     names = {os.path.basename(f) for f in cubes}
@@ -416,38 +479,98 @@ def store_problems():
                   and f"{p}.parquet" not in names)
     if lost:
         return (f"{len(lost)} cube(s) the lane state records as held have no parquet in {sc.OUT_DIR} "
-                f"(first: {', '.join(lost[:5])}) - restore them from a backup; the lane cannot re-pull them"), None
-    # ... AND NO "NOT HELD" CUBE IS A LOST ONE (code review F3). run() books a released cube it cannot find as not
-    # held and settles it; a CATALOGUED cube is never new, so a not-held cube with catalogued ids and no parquet is a
-    # lost store file whose release was booked settled (by run() one iteration before this check could see it, when
-    # the state had never seen the cube) - users keep its old CSVs and nothing says so.
-    try:
-        gone = _catalogued_not_held(st, names)
-    except Exception as e:                                           # noqa: BLE001
-        return (f"the catalogue {L.CATALOGUE} cannot be read to check the lane's not-held cubes "
-                f"({type(e).__name__}: {str(e)[:200]})"), None
+                f"(first: {', '.join(lost[:5])}) - restore them from a backup; the lane cannot re-pull them",
+                None, None)
+    return None, make_put(store), names
+
+
+def not_held_without_parquet(st: dict, names: set) -> dict:
+    """pid -> booked release, for every cube the state books not_held that has no `<pid>.parquet` among `names` -
+    the candidates of the lost-cube check. tools/selfhost/statcan_lost_cubes.py (the S13-prep census on copies, G3)
+    applies the same rule; tests/test_statcan_selfhost_lane.py pins the two against each other."""
+    cubes = st.get("cubes") if isinstance(st.get("cubes"), dict) else {}
+    return {str(p): c.get("release") for p, c in cubes.items()
+            if isinstance(c, dict) and c.get("not_held") and f"{p}.parquet" not in names}
+
+
+_lost_logged: dict = {"at": None}
+
+
+def lost_cube_check(st: dict, names: set, now: dt.datetime) -> "tuple[str | None, bool]":
+    """(reason to BLOCK or None, whether `st` changed). NO "NOT HELD" CUBE IS A LOST ONE (code review F3): run()
+    books a released cube it cannot find as not held and settles it; a CATALOGUED cube is never new, so a not-held
+    cube with catalogued ids and no parquet is a lost store file whose release was booked settled (by run(), one
+    iteration before this check can see it when the state had never seen the cube) - users keep its old CSVs and
+    nothing else says so. It BLOCKS the lane (a lost file is for a human to restore).
+
+    THE READ MUST NOT STOP THE MERGES (round 2, G1; LOST_CHECK_BUSY_S above):
+      * each booking is read ONCE: `lost_checked` {pid: {release, catalogued}} keeps the answer for the release the
+        cube was booked at; a new not-held booking (StatCan released it again) is read again, and an entry whose cube
+        has its parquet again (or is held again) is dropped. An answer "catalogued" is read again on every iteration
+        - the lane is BLOCKED then anyway - so ids removed from the catalogue end the block; if that read fails, the
+        kept answer stands;
+      * a read that fails (busy past LOST_CHECK_BUSY_S, a hot journal, a refusal) is SKIPPED: `lost_check_fail`
+        {since, count, pending, last_error} goes into the state, the merges go on, and the reporter reads it red past
+        statcan.LOST_CHECK_RED_HOURS; the next read that works removes it."""
+    cand = not_held_without_parquet(st, names)
+    old = st.get("lost_checked") if isinstance(st.get("lost_checked"), dict) else {}
+    known = {p: dict(a) for p, a in old.items()
+             if p in cand and isinstance(a, dict) and a.get("release") == cand[p]}
+    todo = sorted(p for p in cand if p not in known or known[p].get("catalogued"))
+    failed = None
+    if todo:
+        try:
+            hits = _catalogued(todo)
+        except Exception as e:                                       # noqa: BLE001 - skipped, never a block
+            failed = f"{type(e).__name__}: {str(e)[:200]}"
+        else:
+            for p in todo:
+                known[p] = {"release": cand[p], "catalogued": p in hits}
+    changed = False
+    if known != old:
+        if known:
+            st["lost_checked"] = known
+        else:
+            st.pop("lost_checked", None)
+        changed = True
+    prev = st.get("lost_check_fail") if isinstance(st.get("lost_check_fail"), dict) else None
+    if failed is not None:
+        pending = sum(1 for p in todo if p not in known)
+        st["lost_check_fail"] = {"since": (prev or {}).get("since") or L._iso(now),
+                                 "count": int((prev or {}).get("count") or 0) + 1, "pending": pending,
+                                 "last_error": failed}
+        changed = True
+        mono = time.monotonic()
+        if prev is None or _lost_logged["at"] is None or mono - _lost_logged["at"] >= BLOCKED_LOG_EVERY_S:
+            print(f"[lane] {L._iso(L._now())} the lost-cube check cannot read the catalogue {L.CATALOGUE} "
+                  f"({failed}) - SKIPPED, the merges go on; {pending} not-held booking(s) unchecked since "
+                  f"{st['lost_check_fail']['since']}", flush=True)
+            _lost_logged["at"] = mono
+    elif prev is not None:
+        st.pop("lost_check_fail", None)
+        changed = True
+        _lost_logged["at"] = None
+        print(f"[lane] {L._iso(L._now())} the lost-cube check reads the catalogue again (it failed since "
+              f"{prev.get('since')})", flush=True)
+    gone = sorted(p for p, a in known.items() if a.get("catalogued"))
     if gone:
         return (f"{len(gone)} cube(s) the lane state books as NOT HELD have catalogued ids and no parquet in "
                 f"{sc.OUT_DIR} (first: {', '.join(gone[:5])}) - lost store files, not new cubes: restore each "
-                f"parquet from a backup; its booked release stays unmerged until StatCan releases it again"), None
-    return None, make_put(store)
+                f"parquet from a backup; its booked release stays unmerged until StatCan releases it again"), changed
+    return None, changed
 
 
-def _catalogued_not_held(st: dict, names: set) -> list:
-    """Pids the state books not_held, with no parquet in the store and at least one catalogued id - one primary-key
-    range read each (jobs/statcan_lane.py catalogued_ids' range), over ONE read-only connection."""
-    cand = sorted(p for p, c in st.get("cubes", {}).items()
-                  if isinstance(c, dict) and c.get("not_held") and f"{p}.parquet" not in names)
-    if not cand:
-        return []
-    con = catalog_path.connect_path(L.CATALOGUE, write=False, timeout=180)
+def _catalogued(pids) -> set:
+    """The pids among `pids` with at least one catalogued id - one primary-key range read each (jobs/statcan_lane.py
+    catalogued_ids' range) over ONE read-only connection that waits at most LOST_CHECK_BUSY_S for a busy catalogue."""
+    con = catalog_path.connect_path(L.CATALOGUE, write=False, timeout=LOST_CHECK_BUSY_S)
     try:
-        out = []
-        for p in cand:
+        out = set()
+        for p in pids:
             lo = L._tool().unit_id(str(p))
             if con.execute("SELECT 1 FROM series WHERE series_id >= ? AND series_id < ? LIMIT 1",
                            (lo, lo + "$")).fetchone():
-                out.append(p)
+                out.add(p)
         return out
     finally:
         con.close()
@@ -487,12 +610,20 @@ def iteration(max_cubes=None, run_kw=None) -> int:
     """One iteration, with the region lock held by the caller. 0 = worked (or idle), 2 = blocked."""
     if catalog_path._held is not None:
         raise SystemExit(LEAK_WHY)
-    why, put = store_problems()
+    why, put, names = store_problems()
     if why:
         publish_blocked(why)
         return 2
     now = ((run_kw or {}).get("now_fn") or L._now)()
-    hold = L.load_state().get("blocked_hold")                  # store_problems() proved the state parses
+    st = L.load_state()                                         # store_problems() proved the state parses
+    # THE LOST-CUBE CHECK (code review F3; round 2, G1): a lost cube BLOCKS; a catalogue it cannot read does not
+    why, changed = lost_cube_check(st, names, now)
+    if changed:
+        L.save_state(st)                                        # this process holds the region lock (main)
+    if why:
+        publish_blocked(why)
+        return 2
+    hold = st.get("blocked_hold")
     if isinstance(hold, dict):
         ra = L._parse_iso(hold.get("retry_after"))
         if ra is not None and ra > now:

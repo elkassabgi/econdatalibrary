@@ -1,0 +1,149 @@
+"""statcan's LOST-CUBE census, on COPIES only and read-only (T0 item B3, code review round 2, G3; S13 prep).
+
+WHY. The post-T0 lane (jobs/statcan_selfhost_lane.py, lost_cube_check) BLOCKS - merges nothing, serves nothing -
+while its lane state books a cube NOT HELD (`not_held`) that has no parquet in the store and at least one catalogued
+id: a catalogued cube is never new, so that is a lost store file whose release was booked settled (code review F3).
+Bookings the PRE-T0 lane made count too (a cube absent from the store with no local .done, e.g. during the
+2026-09-05 partial restore, R753). If the live lane state already holds one at T0, the new lane is BLOCKED from its
+first post-T0 iteration. This tool counts them BEFORE the S13 guard swap, so the number is a receipt, not an alarm.
+
+INPUTS - ALL COPIES. R1940: never E:'s data/ catalogue or state database, not even read-only, and the coordinator's
+brief: never E:'s store. This tool REFUSES any input under E:\\research\\econfindatalibrary\\data or E:\\econ_live.
+  --state          a copy of the lane state (data/clean_full/statcan/_lane_state.json)
+  --catalogue      a copy of the catalogue - opened mode=ro&immutable=1 (no lock, no journal, no side file)
+  --store-dir      a folder holding a copy of the statcan parquets: only their NAMES are listed, no file is opened
+  --store-listing  or a text file with one store file name per line (a `dir /b` of a store copy)
+
+THE RULE is the lane's own: a cube the state books `not_held`, no `<pid>.parquet` in the store, and at least one
+series id in [statcan:<pid>, statcan:<pid>$) - tests/test_statcan_selfhost_lane.py pins this tool against
+jobs/statcan_selfhost_lane.py (not_held_without_parquet, lost_cube_check) and the id scheme against
+tools/derive_statcan_tables.py unit_id.
+
+EXIT 0: no lost cube. 1: lost cubes (each one listed - restore its parquet before S13). 2: an input is missing,
+unreadable or refused. It writes nothing anywhere.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import pathlib
+import sqlite3
+import sys
+
+# The LIVE places this tool must never read (R1940). Pinned against core.catalog_path (LIVE_STORE_ROOT\data and the
+# folder of LOCK_PATH's folder) by tests/test_statcan_selfhost_lane.py; not imported from it, so this tool opens
+# nothing through the resolver.
+REFUSED_ROOTS = (r"E:\research\econfindatalibrary\data", r"E:\econ_live")
+SOURCE = "statcan"
+
+
+def unit_id(pid: str) -> str:
+    """The cube's own series id - tools/derive_statcan_tables.py unit_id(pid), pinned equal by the tests."""
+    return f"{SOURCE}:{pid}"
+
+
+def refused(path: str, roots=None) -> "str | None":
+    """A refusal when `path` is (under) one of the live places."""
+    roots = REFUSED_ROOTS if roots is None else roots
+    p = os.path.normcase(os.path.realpath(path))
+    for r in roots:
+        rr = os.path.normcase(os.path.realpath(r)).rstrip("\\/")
+        if p == rr or p.startswith(rr + os.sep):
+            return f"REFUSED: {path} is under {r}, a LIVE place (R1940) - give a COPY"
+    return None
+
+
+def store_names(store_dir: "str | None" = None, listing: "str | None" = None) -> set:
+    """The parquet file names of the store copy: listed from the folder, or read from the listing file."""
+    if store_dir is not None:
+        return {f for f in os.listdir(store_dir) if f.endswith(".parquet")}
+    with open(listing, encoding="utf-8-sig") as fh:
+        return {os.path.basename(ln.strip()) for ln in fh if ln.strip().endswith(".parquet")}
+
+
+def not_held_without_parquet(st: dict, names: set) -> dict:
+    """pid -> booked release, for every cube the state books not_held with no `<pid>.parquet` (the lane's rule)."""
+    cubes = st.get("cubes") if isinstance(st, dict) and isinstance(st.get("cubes"), dict) else {}
+    return {str(p): c.get("release") for p, c in cubes.items()
+            if isinstance(c, dict) and c.get("not_held") and f"{p}.parquet" not in names}
+
+
+def catalogued_counts(catalogue: str, pids) -> dict:
+    """pid -> number of catalogued ids, for the pids that have at least one: one primary-key range read each."""
+    uri = pathlib.Path(catalogue).resolve().as_uri() + "?mode=ro&immutable=1"
+    con = sqlite3.connect(uri, uri=True)    # plain-open: a catalogue COPY, mode=ro&immutable=1 - no lock, no journal
+    try:
+        out = {}
+        for p in sorted(pids):
+            lo = unit_id(p)
+            n = con.execute("SELECT count(*) FROM series WHERE series_id >= ? AND series_id < ?",
+                            (lo, lo + "$")).fetchone()[0]
+            if n:
+                out[p] = n
+        return out
+    finally:
+        con.close()
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
+    ap.add_argument("--state", required=True, help="a COPY of the lane state (_lane_state.json)")
+    ap.add_argument("--catalogue", required=True, help="a COPY of the catalogue (opened mode=ro&immutable=1)")
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--store-dir", help="a folder with a COPY of the statcan parquets (names listed only)")
+    src.add_argument("--store-listing", help="a text file, one store file name per line")
+    a = ap.parse_args(argv)
+    store = a.store_dir if a.store_dir is not None else a.store_listing
+    for p in (a.state, a.catalogue, store):
+        why = refused(p)
+        if why:
+            print(why)
+            return 2
+    for p, is_dir in ((a.state, False), (a.catalogue, False), (store, a.store_dir is not None)):
+        if not (os.path.isdir(p) if is_dir else os.path.isfile(p)):
+            print(f"MISSING: {p}")
+            return 2
+    try:
+        with open(a.state, encoding="utf-8") as fh:
+            st = json.load(fh)
+    except (OSError, ValueError) as e:
+        print(f"UNREADABLE: the state copy {a.state} ({e!r})")
+        return 2
+    cubes = st.get("cubes") if isinstance(st, dict) and isinstance(st.get("cubes"), dict) else {}
+    if not cubes:
+        print(f"UNREADABLE: the state copy {a.state} books no cubes - not the lane state?")
+        return 2
+    try:
+        names = store_names(a.store_dir, a.store_listing)
+    except OSError as e:
+        print(f"UNREADABLE: the store copy {store} ({e!r})")
+        return 2
+    if not names:
+        print(f"UNREADABLE: the store copy {store} lists 0 parquets - not a store copy? (the lane BLOCKS on 0 too)")
+        return 2
+    not_held = sum(1 for c in cubes.values() if isinstance(c, dict) and c.get("not_held"))
+    cand = not_held_without_parquet(st, names)
+    print(f"state copy: {a.state} - {len(cubes)} cube(s), {not_held} booked not held")
+    print(f"store copy: {store} - {len(names)} parquet name(s)")
+    print(f"catalogue copy: {a.catalogue} (mode=ro&immutable=1)")
+    print(f"booked not held with no parquet: {len(cand)}")
+    try:
+        counts = catalogued_counts(a.catalogue, cand)
+    except sqlite3.Error as e:
+        print(f"UNREADABLE: the catalogue copy {a.catalogue} ({type(e).__name__}: {e})")
+        return 2
+    lost = sorted(counts)
+    for p in lost:
+        print(f"  LOST {p}: booked not held at release {cand[p]}, {counts[p]} catalogued id(s), no parquet")
+    if lost:
+        print(f"RESULT: {len(lost)} LOST cube(s) - the post-T0 lane would be BLOCKED from its first iteration. "
+              f"Restore each parquet from a backup before S13 (its booked release stays unmerged until StatCan "
+              f"releases the cube again).")
+        return 1
+    print("RESULT: 0 lost cubes - the post-T0 lane's lost-cube check passes on these copies")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

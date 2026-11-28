@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools", "selfhost"))
 
 import jobs.ingest_statcan as ing  # noqa: E402
 import jobs.statcan_selfhost_lane as NL  # noqa: E402
+import statcan_lost_cubes as LC  # noqa: E402 - tools/selfhost, the S13-prep census (code review round 2, G3)
 from blobstore import BlobStore  # noqa: E402
 from core import catalog_path, cutover, r2_util  # noqa: E402
 from updater import blob, writer_lock  # noqa: E402
@@ -118,6 +119,7 @@ def _fresh_module_state():
     NL._wait_logged.update(at=None, why=None)
     NL._session.update(released_mono=None)
     NL._run_flags.update(lock_blocked=False)
+    NL._lost_logged.update(at=None)
     yield
     NL._STORE.clear()
     NL._session.update(released_mono=None)
@@ -1100,29 +1102,86 @@ def test_C4_F2_a_blocked_lock_holds_run_to_the_grid_reads_red_on_every_beat_and_
     assert "blocked_hold" not in _progress(t0) and _progress(t0)["state"] != "blocked"
 
 
-def test_C4_F2_a_run_that_tried_no_serve_moves_the_lock_hold_to_the_next_grid_point(t0, tmp_path, monkeypatch):
-    """A lock hold whose grid point came, in a run that tried no serve (the lane yielded to a waiter): the lock was
-    not judged, so the hold stands - red - and moves to the NEXT grid point instead of keeping a past one (which
-    would call run() every iteration)."""
+@pytest.mark.parametrize("cause", ["lock_file_oserror", "refused_recovery"])
+def test_C4_F2_G2_a_lock_hold_whose_grid_point_comes_in_a_run_that_yields(t0, tmp_path, monkeypatch, cause):
+    """A lock hold whose grid point came in a run that YIELDED (a waiter's marker), so the lock itself was not tried.
+    CODE REVIEW ROUND 2, G2: the hold stood - red, with its old reason - for as long as the lane yielded (a 48 h pass)
+    and run() ran once an hour. Now a hold caused by the lock FILE (an OSError) is judged again by opening the file:
+    it opens, so the hold is over and the lane works on while it yields. A hold the file cannot judge (a refused
+    hot-journal recovery, judged only by taking the lock) stands, moves to the NEXT grid point (a past one would call
+    run() every iteration) and says it was not judged again because the lane yields."""
     _net(monkeypatch)
     good = catalog_path.LOCK_PATH
-    (tmp_path / "a_file").write_text("x")
-    monkeypatch.setattr(catalog_path, "LOCK_PATH", str(tmp_path / "a_file" / "writer.lock"))
+    real_recover = catalog_path._recover_hot_journal
+    if cause == "lock_file_oserror":
+        (tmp_path / "a_file").write_text("x")                      # the lock's folder is a FILE: makedirs raises
+        monkeypatch.setattr(catalog_path, "LOCK_PATH", str(tmp_path / "a_file" / "writer.lock"))
+    else:
+        def refuse():
+            raise RuntimeError("the catalogue at X could not be opened for recovery (planted)")
+        monkeypatch.setattr(catalog_path, "_recover_hot_journal", refuse)
     clock = _Clock()
     assert NL.main(["--once"], run_kw=_run_kw(clock)) == 2
-    assert _state(t0)["blocked_hold"]["retry_after"] == "2026-12-01T13:00:00Z"
-    monkeypatch.setattr(catalog_path, "LOCK_PATH", good)
+    h = _state(t0)["blocked_hold"]
+    assert h["retry_after"] == "2026-12-01T13:00:00Z" and bool(h.get("oserror")) is (cause == "lock_file_oserror"), h
+    monkeypatch.setattr(catalog_path, "LOCK_PATH", good)          # the lock file is fine again (both cases)
     os.makedirs(os.path.dirname(good), exist_ok=True)
     open(good + ".want", "w").write("a waiter")
     clock.t = dt.datetime(2026, 12, 1, 13, 0, tzinfo=dt.timezone.utc)
-    assert NL.main(["--once"], run_kw=_run_kw(clock)) == 2
-    h = _state(t0)["blocked_hold"]
-    assert h["retry_after"] == "2026-12-01T14:00:00Z" and h["since"] == "2026-12-01T12:00:00Z", h
-    assert _progress(t0)["state"] == "blocked"
+    rc = NL.main(["--once"], run_kw=_run_kw(clock))
+    st, prog = _state(t0), _progress(t0)
+    c = st["cubes"][str(PID)]
+    assert c.get("served") is None and c["retry_after"] == "2026-12-01T14:00:00Z", c
+    assert "a waiter's marker" in NL._wait_logged["why"], "the run yielded; the lock itself was not tried"
+    if cause == "lock_file_oserror":
+        assert rc == 0 and "blocked_hold" not in st and "blocked_hold" not in prog, st.get("blocked_hold")
+        assert prog["state"] != "blocked", prog
+    else:
+        h = st["blocked_hold"]
+        assert rc == 2 and h["retry_after"] == "2026-12-01T14:00:00Z" and h["since"] == "2026-12-01T12:00:00Z", h
+        assert h["yielding"]["since"] == "2026-12-01T13:00:00Z" and "a waiter's marker" in h["yielding"]["to"], h
+        assert prog["state"] == "blocked" and "not judged again since 2026-12-01T13:00:00Z" in prog["blocked"], prog
+        monkeypatch.setattr(catalog_path, "_recover_hot_journal", real_recover)
     os.remove(good + ".want")
     clock.t = dt.datetime(2026, 12, 1, 14, 0, tzinfo=dt.timezone.utc)
     assert NL.main(["--once"], run_kw=_run_kw(clock)) == 0
     assert "blocked_hold" not in _state(t0) and _state(t0)["cubes"][str(PID)]["served"] == REL
+
+
+def test_G2_P6_one_lock_file_fault_then_a_desktop_pass_does_not_read_blocked_for_the_whole_pass(t0, tmp_path,
+                                                                                               monkeypatch, capsys):
+    """CODE REVIEW ROUND 2, G2 (the reviewer's probe P6, review_code/VERDICT_round2.md): the lock FILE fails once and is
+    fine again, then a desktop pass runs. The lane yields at every grid point and never tries the lock, so it read
+    BLOCKED with the old reason for the whole pass (measured: rc 2 for 6 h, the hold still there) and called run() -
+    its merges - once an hour. Now the first grid-point run that yields judges the file, the hold is over, and from
+    then on every iteration runs while the serve waits for the pass."""
+    import psutil
+    _net(monkeypatch)
+    good = catalog_path.LOCK_PATH
+    (tmp_path / "a_file").write_text("x")
+    monkeypatch.setattr(catalog_path, "LOCK_PATH", str(tmp_path / "a_file" / "writer.lock"))
+    clock, calls = _Clock(), []
+    assert NL.main(["--once"], run_kw=_run_kw(clock, calls=calls)) == 2
+    monkeypatch.setattr(catalog_path, "LOCK_PATH", good)                 # the lock can be taken again
+    me = psutil.Process(os.getpid()).create_time()
+    lh = tmp_path / "logs" / "local_heavy.lock"
+    lh.parent.mkdir(exist_ok=True)
+    lh.write_text(f"{os.getpid()},{int((me + 62_135_596_800) * 10_000_000)}")   # a LIVE desktop pass
+    start, rcs = clock.t, []
+    while clock.t < start + dt.timedelta(hours=6):
+        clock.t += dt.timedelta(seconds=L.IDLE_SLEEP_S)
+        rcs.append((L._iso(clock.t), NL.main(["--once"], run_kw=_run_kw(clock, calls=calls))))
+    st, prog = _state(t0), _progress(t0)
+    with capsys.disabled():
+        print(f"\nMEASURED G2 P6: 6 h of a pass after one lock-file fault: rc {sorted({rc for _t, rc in rcs})}, "
+              f"{len(calls)} enumerations, hold {st.get('blocked_hold')}, beat state {prog.get('state')}")
+    assert "blocked_hold" not in st and "blocked_hold" not in prog, st.get("blocked_hold")
+    assert all(rc == 2 for t, rc in rcs if t < "2026-12-01T13:00:00Z"), "held to its grid point, as before"
+    assert all(rc == 0 for t, rc in rcs if t >= "2026-12-01T13:00:00Z"), rcs
+    c = st["cubes"][str(PID)]
+    assert c["merged"] == REL and c.get("served") is None and c.get("writer_lock_wait_since"), c
+    assert "a desktop pass is running" in str((prog.get("writer_lock_wait") or {}).get("holder")), prog
+    assert len(calls) <= 8, f"{len(calls)} enumerations in 6 h"
 
 
 def test_C4_F2_a_refusal_inside_run_is_held_to_the_grid_too(t0, monkeypatch):
@@ -1247,13 +1306,28 @@ def test_C6_F3_a_catalogued_cube_lost_from_the_store_and_booked_not_held_is_bloc
     prog = _progress(t0)
     assert prog["state"] == "blocked" and "NOT HELD have catalogued ids and no parquet" in prog["blocked"], prog
     assert lost in prog["blocked"] and calls == ["enum"], "the second iteration asked StatCan nothing"
+    assert _state(t0)["lost_checked"] == {lost: {"release": "2026-10-01T08:30", "catalogued": True}}
+    # ROUND 2, G1: the answer is KEPT - a catalogue that cannot be read now does not lift the block
+    real = NL._catalogued
+
+    def busy(pids):
+        raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(NL, "_catalogued", busy)
+    assert NL.main(["--once"], run_kw=_run_kw(releases=rels, calls=calls)) == 2 and calls == ["enum"]
+    prog = _progress(t0)
+    assert "NOT HELD have catalogued ids and no parquet" in prog["blocked"], prog
+    assert prog["lost_check_fail"]["pending"] == 0 and "database is locked" in prog["lost_check_fail"]["last_error"]
+    monkeypatch.setattr(NL, "_catalogued", real)
     # a not-held cube with NO catalogued id is a new cube, and one whose parquet is back is held again: both fine
     _stored(t0 / f"{lost}.parquet", [("w1", "2026-01-01", 1.0, "Canada", "1.1")])
-    assert NL.store_problems()[0] is None
-    st = _state(t0)
+    why, _put, names = NL.store_problems()
+    assert why is None and f"{lost}.parquet" in names
+    st = L.load_state()
+    assert NL.lost_cube_check(st, names, L._now())[0] is None
+    assert "lost_checked" not in st and "lost_check_fail" not in st, "held again: the kept answer is dropped"
     st["cubes"]["77777777"] = {"release": REL, "merged": REL, "served": REL, "not_held": True}
-    (t0 / "_lane_state.json").write_text(json.dumps(st))
-    assert NL.store_problems()[0] is None
+    assert NL.lost_cube_check(st, names, L._now()) == (None, True)
+    assert st["lost_checked"] == {"77777777": {"release": REL, "catalogued": False}}
 
 
 def test_F4_the_lock_wait_red_comes_before_the_draining_return():
@@ -1282,6 +1356,253 @@ def test_F7_a_waiter_that_comes_during_the_gap_gets_the_lock_first(t0, monkeypat
     assert NL._serve_owed_under_writer_lock("2", c, {}, {}, None, _p(), L._now()) == "lock_wait"
     assert served == [True] and "writer_lock_wait_since" in c and "a waiter's marker" in NL._wait_logged["why"]
     assert catalog_path._held is None and _probe() == "took"
+
+
+# --------------------------------------------------------------------------- #
+# code review round 2, G1 - the lost-cube check must not stop the merges
+# --------------------------------------------------------------------------- #
+# A second process holding the CATALOGUE itself - SQLite EXCLUSIVE, rollback-journal mode as the live one (ruling v2) -
+# until stdin gets a line (the reviewer's review_code/excl_holder.py). It writes no row.
+_EXCL = textwrap.dedent("""
+    import sqlite3, sys
+    con = sqlite3.connect(sys.argv[1], isolation_level=None)
+    con.execute("PRAGMA journal_mode=DELETE")
+    con.execute("BEGIN EXCLUSIVE")
+    print("held", flush=True)
+    sys.stdin.readline()
+    con.execute("ROLLBACK")
+    con.close()
+""")
+
+
+class _CatalogueHolder(_Holder):
+    def __init__(self, path):
+        self.path = str(path)
+
+    def __enter__(self):
+        self.p = subprocess.Popen([sys.executable, "-c", _EXCL, self.path, CHILD_MARK],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        assert self.p.stdout.readline().strip() == "held"
+        return self
+
+
+def _a_new_cube_in_the_debt(t0):
+    """An ordinary new cube: booked not held (no parquet, no catalogued id) - a lost-cube check candidate."""
+    st = {"version": 1, "floor": L.FLOOR, "cubes": {
+        "77777777": {"release": REL, "merged": REL, "served": REL, "not_held": True}},
+        "new_cubes": {"77777777": REL}}
+    (t0 / "_lane_state.json").write_text(json.dumps(st))
+
+
+def test_G1_P7_a_writer_holding_the_catalogue_does_not_stop_the_merges(t0, tmp_path, monkeypatch, capsys):
+    """CODE REVIEW ROUND 2, G1 (the reviewer's probe P7): the lost-cube check read the catalogue outside the writer
+    lock, every iteration with a not-held cube (every new cube in the catalogue debt), and a read that failed BLOCKED
+    the lane: a writer holding the catalogue EXCLUSIVE stalled the iteration 309 s and nothing was merged. Here the
+    writer is a real post-T0 one: it holds the writer lock AND the catalogue. Now the read gives up after
+    LOST_CHECK_BUSY_S and is SKIPPED (kept as lost_check_fail, on the beat), the cube is merged and its serve waits for
+    the lock; with the writer gone, the next iteration reads the booking once and the failure is over."""
+    import time as _t
+    _net(monkeypatch)
+    _a_new_cube_in_the_debt(t0)
+    calls = []
+    with _Holder(), _CatalogueHolder(tmp_path / "catalog.db"):
+        t = _t.monotonic()
+        rc = NL.main(["--once"], run_kw=_run_kw(calls=calls))
+        took = _t.monotonic() - t
+    s, prog = _state(t0), _progress(t0)
+    with capsys.disabled():
+        print(f"\nMEASURED G1 P7 (writer lock + catalogue held): rc={rc} took={took:.0f} s enumerations={len(calls)} "
+              f"state={prog.get('state')} lost_check_fail={s.get('lost_check_fail')}")
+    assert rc == 0 and calls == ["enum"], "a busy catalogue does not stop the merges (they never read it)"
+    assert took < 4 * NL.LOST_CHECK_BUSY_S + 60, f"{took:.0f} s - the check waits LOST_CHECK_BUSY_S, not 180 s"
+    c = s["cubes"][str(PID)]
+    assert c["merged"] == REL and c.get("served") is None and c.get("writer_lock_wait_since"), c
+    f = s["lost_check_fail"]
+    assert f["pending"] == 1 and f["count"] == 1 and "OperationalError" in f["last_error"], f
+    assert prog["lost_check_fail"] == f and prog["state"] != "blocked", prog
+    assert "lost_checked" not in s, "nothing was answered"
+    # the writer is gone: the booking is read now, its answer kept, and the failure is over
+    assert NL.main(["--once"], run_kw=_run_kw(calls=calls)) == 0
+    s = _state(t0)
+    assert "lost_check_fail" not in s and "lost_check_fail" not in _progress(t0)
+    assert s["lost_checked"] == {"77777777": {"release": REL, "catalogued": False}}
+
+
+def test_G1_P7_a_catalogue_held_WITHOUT_the_writer_lock_still_merges_then_the_serve_raises_the_legacy_alarm(
+        t0, tmp_path, monkeypatch):
+    """The reviewer's P7 exactly: a second process holds the catalogue EXCLUSIVE but NOT the writer lock. After T0
+    every catalogue writer holds that lock, so this is core.catalog_path's legacy-opener alarm (_recover_hot_journal:
+    "another process is writing it WITHOUT the writer lock"). The preflight no longer blocks - the cube is merged -
+    and the serve then takes the lock, its recovery cannot open the catalogue, and the lane is BLOCKED with THAT
+    reason (unchanged, by design). So the probe's `rc == 0` cannot hold in this shape; the merge is what G1 asks."""
+    _net(monkeypatch)
+    _a_new_cube_in_the_debt(t0)
+    calls = []
+    with _CatalogueHolder(tmp_path / "catalog.db"):
+        rc = NL.main(["--once"], run_kw=_run_kw(calls=calls))
+    s, prog = _state(t0), _progress(t0)
+    assert calls == ["enum"] and s["cubes"][str(PID)]["merged"] == REL, "merged: the preflight did not block"
+    assert s["lost_check_fail"]["pending"] == 1, s.get("lost_check_fail")
+    assert rc == 2 and prog["state"] == "blocked" and "could not be opened for recovery" in prog["blocked"], prog
+    assert s["blocked_hold"]["kind"] == "lock" and not s["blocked_hold"].get("oserror"), s["blocked_hold"]
+
+
+def test_G1_a_not_held_booking_is_read_once_and_a_failed_read_is_skipped_while_the_merges_go_on(t0, monkeypatch):
+    """ROUND 2, G1: ONE catalogue read per not-held booking (kept in `lost_checked`), not one per iteration; a new
+    booking of the same cube (StatCan released it again) is read again; a read that fails is skipped - every
+    iteration works, a new release is merged and served meanwhile - and kept as lost_check_fail on every beat."""
+    _net(monkeypatch)
+    monkeypatch.setattr(NL.time, "sleep", lambda s: None)        # the 60 s gap between two serves of this test
+    _a_new_cube_in_the_debt(t0)
+    reads = []
+    real = NL._catalogued
+    monkeypatch.setattr(NL, "_catalogued", lambda pids: reads.append(list(pids)) or real(pids))
+    clock, calls = _Clock(), []
+    for _ in range(3):
+        assert NL.main(["--once"], run_kw=_run_kw(clock, calls=calls)) == 0
+        clock.t += dt.timedelta(seconds=L.IDLE_SLEEP_S)
+    assert reads == [["77777777"]], "ONE read for the booking, not one per iteration"
+    assert _state(t0)["lost_checked"] == {"77777777": {"release": REL, "catalogued": False}}
+    # StatCan releases the cube again: run() books the new release not held, and the next check reads it again
+    rels = {PID: REL, 77777777: "2026-10-01T08:30"}
+    clock.t += dt.timedelta(hours=1)
+    assert NL.main(["--once"], run_kw=_run_kw(clock, releases=rels, calls=calls)) == 0
+    assert _state(t0)["cubes"]["77777777"]["release"] == "2026-10-01T08:30"
+    assert NL.main(["--once"], run_kw=_run_kw(clock, releases=rels, calls=calls)) == 0
+    assert reads == [["77777777"], ["77777777"]], "a NEW not-held booking is read again"
+    # a booking whose read FAILS: skipped, the lane works on, the failure is kept in the state and on the beat
+    s = _state(t0)
+    s["cubes"]["88888888"] = {"release": REL, "merged": REL, "served": REL, "not_held": True}
+    (t0 / "_lane_state.json").write_text(json.dumps(s))
+
+    def busy(pids):
+        reads.append(list(pids))
+        raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(NL, "_catalogued", busy)
+    rels2 = {PID: "2026-10-05T08:30", 77777777: "2026-10-01T08:30"}
+    start, rcs = clock.t, []
+    while clock.t < start + dt.timedelta(hours=2):
+        rcs.append(NL.main(["--once"], run_kw=_run_kw(clock, releases=rels2, calls=calls)))
+        clock.t += dt.timedelta(seconds=L.IDLE_SLEEP_S)
+    s, prog = _state(t0), _progress(t0)
+    assert rcs == [0] * len(rcs), "never BLOCKED by a check that cannot run"
+    c = s["cubes"][str(PID)]
+    assert c["merged"] == "2026-10-05T08:30" == c["served"], "a new release was merged AND served meanwhile"
+    f = s["lost_check_fail"]
+    assert f["since"] == L._iso(start) and f["count"] == len(rcs) and f["pending"] == 1, f
+    assert prog["lost_check_fail"] == f, "the failure is on the beat"
+    assert reads[2:] == [["88888888"]] * len(rcs), "only the unanswered booking is tried, once per iteration"
+
+
+def test_G1_the_failed_check_is_on_every_beat_and_red_only_past_LOST_CHECK_RED_HOURS(world):
+    now = dt.datetime.now(dt.timezone.utc)
+    z = lambda h: (now - dt.timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M:%SZ")      # noqa: E731
+    assert sc.LOST_CHECK_RED_HOURS == 6.0
+    st = L.load_state()
+    st["lost_check_fail"] = {"since": z(2), "count": 24, "pending": 1,
+                             "last_error": "OperationalError: database is locked"}
+    p = L.Progress(st)
+    p.beat("idle", current=None)
+    prog = json.loads(open(L.PROGRESS).read())
+    assert prog["lost_check_fail"] == st["lost_check_fail"] and prog["lane"] == NL.MODULE_ID, prog
+    assert sc.verdict({"cubes": {}}, prog, now)[0] in ("ok", "partial"), "inside 6 h: not red (the merges go on)"
+    st["lost_check_fail"]["since"] = z(7)
+    p.beat("idle", current=None)
+    prog = json.loads(open(L.PROGRESS).read())
+    with pytest.raises(DefinitiveError, match="cannot CHECK its not-held cubes against the catalogue"):
+        sc.verdict({"cubes": {}}, prog, now)
+    st.pop("lost_check_fail")
+    p.beat("idle", current=None)
+    assert "lost_check_fail" not in json.loads(open(L.PROGRESS).read()), "the next good read ends it on the beat"
+
+
+# --------------------------------------------------------------------------- #
+# code review round 2, G3 - the S13-prep census of lost not-held cubes, on copies
+# --------------------------------------------------------------------------- #
+def _census_copies(tmp_path, catalogued, store, cubes):
+    d = tmp_path / "copies"
+    (d / "store").mkdir(parents=True)
+    for name in store:
+        (d / "store" / name).write_bytes(b"")                  # names only: the census opens no store file
+    (d / "state.json").write_text(json.dumps({"version": 1, "cubes": cubes}))
+    con = sqlite3.connect(d / "cat.sqlite")
+    con.execute("CREATE TABLE series (series_id TEXT PRIMARY KEY)")
+    con.executemany("INSERT INTO series VALUES (?)", [(s,) for s in catalogued])
+    con.commit()
+    con.close()
+    return d
+
+
+def _census_args(d, store=None):
+    return ["--state", str(d / "state.json"), "--catalogue", str(d / "cat.sqlite")] + (
+        store or ["--store-dir", str(d / "store")])
+
+
+_CENSUS_CUBES = {
+    "11111111": {"release": REL, "merged": REL, "served": REL, "not_held": True},    # LOST: catalogued, no parquet
+    "22222222": {"release": REL, "merged": REL, "served": REL, "not_held": True},    # new: no catalogued id
+    "33333333": {"release": REL, "merged": REL, "served": REL, "not_held": True},    # its parquet is there
+    str(PID): {"release": REL, "merged": REL, "served": REL}}                         # held
+# 11111111 has two ids; "statcan:2222222" (7 digits) and "statcan:222222220" (9) sort outside 22222222's range
+_CENSUS_IDS = ["statcan:11111111#a", "statcan:11111111#b", "statcan:33333333", "statcan:2222222",
+               "statcan:222222220"]
+
+
+def test_G3_the_census_counts_the_lost_not_held_cubes_on_copies_as_the_lane_would(world, tmp_path, monkeypatch,
+                                                                                    capsys):
+    d = _census_copies(tmp_path, _CENSUS_IDS, [f"{PID}.parquet", "33333333.parquet", "_split_map.json"],
+                       _CENSUS_CUBES)
+    before = (d / "cat.sqlite").read_bytes()
+    assert LC.main(_census_args(d)) == 1
+    out = capsys.readouterr().out
+    assert "booked not held with no parquet: 2" in out and out.count("  LOST ") == 1, out
+    assert "LOST 11111111: booked not held at release 2026-09-12T08:30, 2 catalogued id(s), no parquet" in out, out
+    assert "RESULT: 1 LOST cube(s)" in out, out
+    assert (d / "cat.sqlite").read_bytes() == before and not (d / "cat.sqlite-journal").exists(), "read-only"
+    # THE LANE'S OWN RULE on the same copies (before T0 connect_path opens any path): the same candidates, the same
+    # lost cube
+    st = json.loads((d / "state.json").read_text())
+    names = LC.store_names(str(d / "store"))
+    assert LC.not_held_without_parquet(st, names) == NL.not_held_without_parquet(st, names)
+    monkeypatch.setattr(L, "CATALOGUE", str(d / "cat.sqlite"))
+    why, _changed = NL.lost_cube_check(st, names, L._now())
+    assert why and "1 cube(s) the lane state books as NOT HELD" in why and "11111111" in why, why
+    assert {p for p, a in st["lost_checked"].items() if a["catalogued"]} == {"11111111"}
+    # the same through a listing file (CRLF lines), and the negative control: its parquet restored -> 0 lost
+    (d / "listing.txt").write_text("\r\n".join([f"{PID}.parquet", "33333333.parquet", "11111111.parquet"]) + "\r\n")
+    assert LC.main(_census_args(d, ["--store-listing", str(d / "listing.txt")])) == 0
+    assert "RESULT: 0 lost cubes" in capsys.readouterr().out
+
+
+def test_G3_the_census_refuses_live_places_and_inputs_it_cannot_judge(tmp_path, monkeypatch, capsys):
+    d = _census_copies(tmp_path, _CENSUS_IDS, [f"{PID}.parquet"], _CENSUS_CUBES)
+    monkeypatch.setattr(LC, "REFUSED_ROOTS", (str(d),))
+    assert LC.main(_census_args(d)) == 2 and "REFUSED" in capsys.readouterr().out
+    monkeypatch.setattr(LC, "REFUSED_ROOTS", (str(tmp_path / "elsewhere"),))
+    assert LC.main(_census_args(d)) == 1, "the control: the same copies outside a refused place are read"
+    capsys.readouterr()
+    assert LC.refused(str(d / "sub" / "f"), roots=(str(d),)) and not LC.refused(str(d) + "x", roots=(str(d),))
+    (d / "state.json").rename(d / "state.moved")
+    assert LC.main(_census_args(d)) == 2 and "MISSING" in capsys.readouterr().out
+    (d / "state.json").write_text('{"cubes": {')
+    assert LC.main(_census_args(d)) == 2 and "UNREADABLE" in capsys.readouterr().out
+    (d / "state.json").write_text(json.dumps({"version": 1, "cubes": {}}))
+    assert LC.main(_census_args(d)) == 2 and "books no cubes" in capsys.readouterr().out
+    (d / "state.json").write_text(json.dumps({"version": 1, "cubes": _CENSUS_CUBES}))
+    (d / "store" / f"{PID}.parquet").unlink()
+    assert LC.main(_census_args(d)) == 2 and "lists 0 parquets" in capsys.readouterr().out
+
+
+def test_G3_the_census_pins_its_live_places_and_id_scheme_to_the_code_it_mirrors():
+    """REFUSED_ROOTS = core.catalog_path's live data folder and the folder of its lock's folder (read from the SOURCE:
+    tests/conftest.py points LOCK_PATH elsewhere for every test), and unit_id = tools/derive_statcan_tables.py's."""
+    import ntpath
+    src = open(os.path.join(ROOT, "core", "catalog_path.py"), encoding="utf-8").read()
+    consts = {t.id: n.value.value for n in ast.parse(src).body if isinstance(n, ast.Assign)
+              and isinstance(n.value, ast.Constant) for t in n.targets if isinstance(t, ast.Name)}
+    assert LC.REFUSED_ROOTS == (ntpath.join(consts["LIVE_STORE_ROOT"], "data"),
+                                ntpath.dirname(ntpath.dirname(consts["LOCK_PATH"]))), consts
+    assert LC.unit_id("24100058") == L._tool().unit_id("24100058") == "statcan:24100058"
 
 
 # --------------------------------------------------------------------------- #
