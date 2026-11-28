@@ -22,10 +22,30 @@ Verdicts (design review finding 7 - `partial` is not an honest signal for a drai
                      the owed age, so a DRAINING lane cannot hide it (2026-11-22);
                      or the OLDEST owed release is older than OWED_AGE_MAX_DAYS and nothing finished lately:
                      alive, not keeping up
+    partial          NOT current: cubes BEHIND on the owed-since clock (below) - owed a merge since a release
+                     older than OWED_AGE_MAX_DAYS while the release clock cannot show it (quarantined, held by
+                     the history floor, or re-released while still owed); or DRAINING (behind, still finishing)
     partial          alive and current, but something needs a human: QUARANTINED cubes, merged cubes
                      whose served ids cannot be reproduced, or new-cube coverage debt older than
                      NEW_CUBE_DEBT_AMBER_DAYS
     ok               alive, and every owed release is younger than OWED_AGE_MAX_DAYS
+WHAT "BEHIND" MEANS, AND WHO ACTS ON IT (2026-11-23, ledger R2026/R2074/R2075; plan
+F:/work/econ_finish/statcan_quarantine_status/PLAN.md and its review VERDICT_plan.md, conditions C1-C8).
+A quarantined cube is not kept current, so it stays on an owed clock: the public side (/v1/sources,
+/v1/last-updates) reads statcan "late" while the note opens "statcan: N cube(s) are BEHIND", and that
+is the truth, not a fault to clear. CI stays GREEN on it by design (it is `partial`, R244: a job red for
+weeks stops being read); R2026's "a hold stays on the owed clock" is met on the public clock only, and
+DRAINING / RED / tools/guard_heartbeat.py are unchanged. Do NOT "fix" it by acknowledging it, by
+editing the whitelist, or by lifting a quarantine without a reviewed diagnosis of that class (the #319
+lift, tools/statcan_lift_quarantine.py, is the reviewed path for classes A and B). What clears it:
+StatCan re-releasing the cube and the lane merging it, a reviewed lift followed by a merge, or the
+measurements a held class still needs (classes C and D: the diagnosis
+F:/work/econ_finish/statcan_quarantine_20261122/REPORT.md, one zip GET each, with the owner's leave). A
+`history hold` cube needs the OWNER's (a)/(b) decision (statcan_lane._history_gate). The clock of a
+cube is its `owed_since` - the oldest release it has owed a merge for, kept across re-releases by
+jobs/statcan_lane.run() - else its current release. Cubes quarantined before that field existed start
+from their current release, so the first reading undercounts (10100145 read 3 days on 2026-11-23
+against the 58 days diagnosed) and corrects at their next re-release.
 WHERE THOSE LAND (lane review, stated rather than implied). The orchestrator books a fetcher's
 DefinitiveError as `partial` too (orchestrate.py, `except DefinitiveError`), so in the health table
 both read ATTENTION, and neither advances last_success - staleness then escalates on its own. This
@@ -144,10 +164,14 @@ ENUM_FAIL_RED_HOURS = 6.0
 # for longer than this, since its first trip with no answer from StatCan between, is red.
 BREAKER_RED_HOURS = 6.0
 
-# THE VERDICTS THAT SAY THE LANE IS CURRENT (owner decision 2026-10-20: statcan must not read "late" on
-# the public API while its lane keeps it current). verdict() below has two such outcomes: `ok`, and the
-# amber `partial` - "alive and current, but something needs a human" (every owed release is younger
-# than OWED_AGE_MAX_DAYS). The orchestrator stores both kinds of `partial` - this amber one AND the red
+# THE VERDICTS THAT SAY THE LANE IS CURRENT. The owner's decision of 2026-10-20 is the source-grain rule
+# ("late" when the last full success is older than 2x the cadence); the option he chose said "I first fix
+# ecb and statcan, which are healthy, so they do not show 'late' by mistake" - an agent's premise, and
+# statcan held 4 quarantined cubes that morning (ledger R2075). So the exemption is for a lane that IS
+# current, and a quarantined cube owed past the SLA is not (R2026; the BEHIND note below). verdict() below
+# has two current outcomes: `ok`, and the amber `partial` - "alive and current, but something needs a
+# human" (every owed release, on the owed-since clock too, is younger than OWED_AGE_MAX_DAYS). The
+# orchestrator stores both kinds of `partial` - this amber one AND the red
 # DefinitiveError ones (dead lane, behind and not progressing, cubes failing) - as unit status `partial`
 # (orchestrate.py, `except DefinitiveError`), so the stored note is the only thing that tells them
 # apart. This pattern is a WHITELIST of the current verdicts' openings, anchored at the start:
@@ -156,7 +180,11 @@ BREAKER_RED_HOURS = 6.0
 #   "statcan: N merged cube(s) whose served ids ..."           amber
 #   "statcan: N released cube(s) not held, the oldest since"   amber (new-cube coverage debt)
 # DRAINING ("statcan: the lane is DRAINING - behind ...") is NOT current: the oldest owed release is
-# past OWED_AGE_MAX_DAYS. tools/gen_freshness_classes.py copies this pattern into the worker
+# past OWED_AGE_MAX_DAYS. Nor is BEHIND ("statcan: N cube(s) are BEHIND - ..."): a cube on the owed-since
+# clock is past OWED_AGE_MAX_DAYS. "cube(s) are" matches no alternative, and the BEHIND segment comes FIRST,
+# so the anchored pattern never reaches a QUARANTINED segment after it. This pattern did NOT change for
+# it (2026-11-23), so freshnessClasses.ts and its tag did not either and no worker deploy was owed.
+# tools/gen_freshness_classes.py copies this pattern into the worker
 # (api/worker/src/freshnessClasses.ts); tests/test_freshness_vocab.py runs verdict() through every
 # branch and pins which outcomes match. Change a verdict's opening words and that test fails.
 LANE_CURRENT_PATTERN = (r"^statcan: (?:lane current - |\d+ cube\(s\) QUARANTINED |"
@@ -574,6 +602,79 @@ def _hours_since(iso, now):
     return None if h < -FUTURE_SKEW_HOURS else max(h, 0.0)
 
 
+# THE OWED-SINCE CLOCK (2026-11-23, ledger R2026/R2074; review VERDICT_plan.md C1/C5). The oldest-owed clock
+# (summarise()'s oldest_owed_release) cannot see two kinds of owed cube: a QUARANTINED one (kept off it, so an
+# idle lane holding only such cubes does not read RED and fail CI every day, R244) and one RE-RELEASED while it
+# still owed a merge (its release - the clock - restarts, and a weekly cube's never passes 7 days). This clock
+# covers both. Kinds, as the note names them:
+OWED_KIND_HISTORY = "history hold"          # quarantined by the history floor (the owner's (a)/(b) decision)
+OWED_KIND_QUARANTINED = "quarantined"       # 3 spaced strikes on one release
+OWED_KIND_CARRIED = "owed across a re-release"
+
+
+def cube_merge_owed(c: dict) -> bool:
+    """A cube owes a merge: it has a release later than its merged one (or none merged). THE ONE RULE:
+    jobs/statcan_lane.merge_owed is this function (the lane imports this module, never the reverse)."""
+    rel = c.get("release")
+    return bool(rel) and (c.get("merged") is None or c["merged"] < rel)
+
+
+def owed_since_valid(c: dict) -> bool:
+    """`owed_since` (written by jobs/statcan_lane.run() when a release replaces one the cube still owed) counts
+    only while it is later than the cube's merged release: a merge pops it, and a stale one is ignored."""
+    s = c.get("owed_since")
+    m = c.get("merged")
+    return isinstance(s, str) and bool(s) and (m is None or s > m)
+
+
+def owed_since_clock(cubes) -> list:
+    """[{pid, owed_since, kind}], oldest clock first: EVERY merge-owed cube that is quarantined (history holds
+    included) or carries a valid owed_since - NOT the quarantined ones only, because run() lifts a quarantine on a
+    re-release and the strike rule needs strikes spanning jobs/statcan_lane.QUARANTINE_MIN_SPAN_H (12 h) to put it
+    back, so for those hours the cube is owed and not quarantined (review C1, probe_plan.py S2). A cube's clock is
+    its owed_since when valid (and earlier than its release), else its release."""
+    out = []
+    for pid, c in (cubes or {}).items():
+        if not isinstance(c, dict) or not cube_merge_owed(c):
+            continue
+        carried = owed_since_valid(c)
+        q = bool(c.get("quarantined"))
+        if not (q or carried):
+            continue
+        rel = c.get("release")
+        clk = c["owed_since"] if carried and str(c["owed_since"]) < str(rel) else rel
+        hh = c.get("history_hold") or {}
+        if q and isinstance(hh, dict) and hh.get("release") and hh.get("release") == rel == c.get("fail_release"):
+            kind = OWED_KIND_HISTORY            # summarise()'s history_held rule, exactly
+        elif q:
+            kind = OWED_KIND_QUARANTINED
+        else:
+            kind = OWED_KIND_CARRIED
+        out.append({"pid": str(pid), "owed_since": clk, "kind": kind})
+    return sorted(out, key=lambda e: (str(e["owed_since"]), e["pid"]))
+
+
+# The BEHIND note names at most this many cubes, as the QUARANTINED segment does (review C6).
+BEHIND_NAMED_MAX = 20
+
+
+def _behind(clock, now) -> list:
+    """The clock's entries past OWED_AGE_MAX_DAYS, as (entry, age in days or None). The owed-age block's rules:
+    `>` and an unreadable date counts as past. A malformed entry (not a dict) counts as past too."""
+    out = []
+    for e in clock or []:
+        if not isinstance(e, dict):
+            out.append(({"pid": "?", "owed_since": None, "kind": f"unreadable entry {str(e)[:40]!r}"}, None))
+            continue
+        try:
+            age = (now.date() - dt.date.fromisoformat(str(e.get("owed_since"))[:10])).days
+        except ValueError:
+            age = None
+        if age is None or age > OWED_AGE_MAX_DAYS:
+            out.append((e, age))
+    return sorted(out, key=lambda ea: (str(ea[0].get("owed_since")), str(ea[0].get("pid"))))
+
+
 def verdict(state, progress, now):
     """(status, message, newest_obs) for the lane's published record. Raises DefinitiveError for
     red. Pure: `update` supplies the record and the clock, tests supply their own."""
@@ -658,7 +759,24 @@ def verdict(state, progress, now):
                 f"is {oldest} ({age_d} days, over {OWED_AGE_MAX_DAYS}), last finished work "
                 f"{'never' if prog_h is None else f'{prog_h:.1f} h ago'} (allowed {drain_allowed:.1f} h); "
                 f"{tail}")
+    # THE OWED-SINCE CLOCK (2026-11-23, R2026/R2074, review C1/C5/C6). From the STATE when it holds cubes (the
+    # reporter, update(), passes the whole _lane_state.json - so a reporter on this code judges a lane still on
+    # older code, whose beat lacks the key, from the cubes themselves), else from the beat (CI:
+    # tools/guard_heartbeat.py passes {"cubes": {}}). NOT current, and `partial`, not a raise: CI stays green on
+    # it by design (guard_heartbeat._lane_problem), the public side reads late. FIRST in the note, so the
+    # anchored LANE_CURRENT_PATTERN never reaches the QUARANTINED segment that follows it.
+    cubes = state.get("cubes") or {}
+    behind = _behind(owed_since_clock(cubes) if cubes else (owed.get("owed_since_clock") or []), now)
     amber = []
+    if behind:
+        e0, a0 = behind[0]
+        named = ", ".join(f"{e.get('pid')} (owed since {str(e.get('owed_since'))[:10]}, {e.get('kind')})"
+                          for e, _a in behind[:BEHIND_NAMED_MAX])
+        more = f", and {len(behind) - BEHIND_NAMED_MAX} more" if len(behind) > BEHIND_NAMED_MAX else ""
+        amber.append(f"{len(behind)} cube(s) are BEHIND - each owes a merge since a release over "
+                     f"{OWED_AGE_MAX_DAYS} days old that the release clock does not show (oldest "
+                     f"{str(e0.get('owed_since'))[:10]}, {'unreadable' if a0 is None else f'{a0} days'}): "
+                     f"{named}{more}")
     quarantined = owed.get("quarantined") or []
     if quarantined:
         amber.append(f"{len(quarantined)} cube(s) QUARANTINED (each failed {QUARANTINE_AFTER}x on one "

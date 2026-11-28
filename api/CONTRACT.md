@@ -354,7 +354,11 @@ diverged, these are the pinned canonical shapes (the verify pass enforces them):
     their currency is judged on their LATEST pass, which must have run within the same window: a registry
     `rotating: true` source whose latest pass refreshed it - a budget deferral that failed nothing, a pass
     in which fewer than half of the attempted sub-units failed, or a completed fetch (today `ecb`) - and a `served_by: lane` source whose reporter's latest verdict says the lane is current (today
-    `statcan`).
+    `statcan`). The lane is NOT current while any cube - a quarantined one included - has owed a merge
+    since a release older than 2 x the cadence (14 days), even when a later release restarted that cube's
+    own release date. One known undercount: a cube held before the lane began recording that first owed
+    release starts its clock at its current release, so it can read younger than it is until its next
+    re-release.
   - `"paused"` — the registry marks the source `paused:` (updates on hold by decision; the source's page
     gives the reason). From the registry, never from a state row. `next_update_expected: null`. A paused
     source with no state row at all still gets a `freshness` object on `/v1/sources` (other fields null).

@@ -117,6 +117,29 @@ Honest-status contract (Tally + finalize):
 
 ## 4. If it stops updating — diagnose in this order
 
+> **A NOTE THAT OPENS "statcan: N cube(s) are BEHIND" (added by hand 2026-11-23, with the change that writes it).**
+> This page is generated from a checkout that holds `data/`; the paragraph below is the fetcher's module docstring
+> (`updater/strategies/fetchers/statcan.py`), so the next regeneration carries it in section 3 and drops this copy.
+>
+> WHAT "BEHIND" MEANS, AND WHO ACTS ON IT (2026-11-23, ledger R2026/R2074/R2075). A quarantined cube is not kept
+> current, so it stays on an owed clock: the public side (/v1/sources, /v1/last-updates) reads statcan "late" while
+> the note opens "statcan: N cube(s) are BEHIND", and that is the truth, not a fault to clear. CI stays GREEN on it
+> by design (it is `partial`, R244: a job red for weeks stops being read); R2026's "a hold stays on the owed clock"
+> is met on the public clock only, and DRAINING / RED / tools/guard_heartbeat.py are unchanged. Do NOT "fix" it by
+> acknowledging it, by editing the whitelist, or by lifting a quarantine without a reviewed diagnosis of that class
+> (the #319 lift, tools/statcan_lift_quarantine.py, is the reviewed path for classes A and B). What clears it:
+> StatCan re-releasing the cube and the lane merging it, a reviewed lift followed by a merge, or the measurements a
+> held class still needs (classes C and D: the diagnosis
+> F:/work/econ_finish/statcan_quarantine_20261122/REPORT.md, one zip GET each, with the owner's leave). A
+> `history hold` cube needs the OWNER's (a)/(b) decision (statcan_lane._history_gate). The clock of a cube is its
+> `owed_since` - the oldest release it has owed a merge for, kept across re-releases by jobs/statcan_lane.run() -
+> else its current release.
+>
+> For the daily maintenance: a BEHIND note is a KNOWN state, not a NEW item. Report its cube list and how it moved
+> since the last report; do not open a fix for it. A cube leaves the list when a merge of it is recorded (the lane pops
+> its owed_since), or when a reviewed lift takes it off quarantine with no owed_since (it is then on the ordinary owed
+> clock, and DRAINING or RED names the lane instead). A cube that joins the list is the event worth naming.
+
 Run everything from `E:\research\econfindatalibrary`.
 
 ```bash
