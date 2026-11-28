@@ -1602,7 +1602,9 @@ def test_G3_the_census_refuses_live_places_and_inputs_it_cannot_judge(tmp_path, 
     assert LC.main(_census_args(d)) == 2 and "lists 0 parquets" in capsys.readouterr().out
 
 
-# every spelling of a live place a mistaken argument can take: case, either slash, mixed, `..`, the \\?\ prefix
+# every spelling of a live place a mistaken argument can take, each refused on its TEXT: case, either slash, mixed,
+# `..`, a device prefix (mixed slashes too), a stream of a root, the live drive's admin share and other network or
+# device paths, 8.3 short names on the live drive; on Windows also trailing dots (GetFullPathNameW drops them)
 _LIVE_SPELLINGS = [
     "E:\\research\\econfindatalibrary\\data\\catalog.db",
     "e:/Research/EconFinDataLibrary/DATA/state.db",
@@ -1611,63 +1613,102 @@ _LIVE_SPELLINGS = [
     "E:\\econ_live",
     "E:/ECON_LIVE/state/writer.lock",
     "\\\\?\\E:\\econ_live\\state\\writer.lock",
-]
+    "\\\\?/E:\\econ_live\\state\\writer.lock",
+    "//./e:/econ_live/state",
+    "E:\\econ_live::$INDEX_ALLOCATION",
+    "E:\\research\\econfindatalibrary\\data:x",
+    "\\\\localhost\\E$\\research\\econfindatalibrary\\data\\catalog.db",
+    "\\\\?\\UNC\\localhost\\E$\\econ_live\\state\\writer.lock",
+    "\\\\?\\Volume{00000000-0000-0000-0000-000000000000}\\econ_live",
+    "E:\\ECON_L~1\\state\\writer.lock",
+    "E:\\RESEAR~1\\ECONFI~1\\data\\catalog.db",
+] + (["E:\\econ_live.\\state\\writer.lock", "E:\\econ_live.", "//127.0.0.1/e$/econ_live/state/writer.lock"]
+     if os.name == "nt" else [])
+_UNC_SPELLING = "\\\\localhost\\E$\\research\\econfindatalibrary\\data\\catalog.db"
+_LIVE_BY_HAND = ("e:\\research\\econfindatalibrary\\data", "e:\\econ_live")   # REFUSED_ROOTS, lower-cased by hand
 
 
-def _is_e(s) -> bool:
-    """An E: path (folded by hand here, not by the code under test)."""
+def _is_live(s) -> bool:
+    """A path that names a live place, or may: folded BY HAND here, not by the code under test. Under a live root (or
+    a stream of one), through an admin share or \\\\?\\UNC form of the live drive, or an 8.3 short name on E:. Only
+    these are blocked, so a run whose tmp folder or checkout is on E: still works (review note LOW-4)."""
+    import ntpath
     s = s.decode(errors="replace") if isinstance(s, bytes) else str(s)
+    if s.lower().startswith("file:"):                         # a sqlite URI: file:///E:/...?mode=ro
+        s = s[5:].split("?", 1)[0].lstrip("/")
     s = s.replace("/", "\\").lower()
-    for pre in ("\\\\?\\", "\\\\.\\"):
-        s = s[len(pre):] if s.startswith(pre) else s
-    return s.startswith("e:")
+    if s.startswith("\\\\?\\unc\\"):
+        s = "\\\\" + s[8:]
+    elif s[:4] in ("\\\\?\\", "\\\\.\\"):
+        s = s[4:]
+    m = re.match(r"^\\\\[^\\]+\\([a-z])\$(\\.*)?$", s)        # \\host\E$\x -> e:\x
+    if m:
+        s = m.group(1) + ":" + (m.group(2) or "\\")
+    s = ntpath.normpath("\\".join(c.rstrip(". ") if c not in (".", "..") else c for c in s.split("\\")))
+    if s.startswith("e:") and re.search(r"~\d", s):
+        return True
+    return any(s == r or s.startswith(r + "\\") or s.startswith(r + ":") for r in _LIVE_BY_HAND)
 
 
 def _touch_spies(monkeypatch) -> list:
-    """(call, path) for every call that can stat, open or resolve a file - B24's R2-L6 spy, wider. A call on any E:
+    """(call, path) for every call that can stat, open or resolve a file - B24's R2-L6 spy, wider. A call on a live
     path is recorded and BLOCKED (never passed on), so even a regressed refused() cannot touch a live place while
     this test runs; every other call is passed on, so a path that passes the check is still really resolved."""
     import builtins
     import ntpath
     seen = []
-    targets = [(os, "stat"), (os, "lstat"), (os, "open"), (os, "listdir"), (os, "scandir"), (os.path, "exists"),
-               (os.path, "isfile"), (os.path, "isdir"), (os.path, "realpath"), (os.path, "samefile"),
-               (builtins, "open"), (io, "open"), (sqlite3, "connect")]
+    targets = [(os, "stat"), (os, "lstat"), (os, "open"), (os, "listdir"), (os, "scandir"), (os, "access"),
+               (os, "readlink"), (os, "walk"), (os.path, "exists"), (os.path, "lexists"), (os.path, "isfile"),
+               (os.path, "isdir"), (os.path, "islink"), (os.path, "getsize"), (os.path, "realpath"),
+               (os.path, "samefile"), (builtins, "open"), (io, "open"), (sqlite3, "connect")]
     if hasattr(ntpath, "_getfinalpathname"):                 # the Windows call that opens the handle
         targets.append((ntpath, "_getfinalpathname"))
     for mod, name in targets:
         real = getattr(mod, name)
 
         def spy(*a, _real=real, _name=name, **k):
-            p = a[0] if a else k.get("path", k.get("file", k.get("database")))
+            p = a[0] if a else k.get("path", k.get("file", k.get("database", k.get("top"))))
             s = os.fspath(p) if isinstance(p, (str, bytes, os.PathLike)) else repr(p)
             seen.append((_name, s))
-            if _is_e(s):
-                raise AssertionError(f"the test spy BLOCKED {_name}({s!r}): an E: path reached a file call")
+            if _is_live(s):
+                raise AssertionError(f"the test spy BLOCKED {_name}({s!r}): a live path reached a file call")
             return _real(*a, **k)
         monkeypatch.setattr(mod, name, spy)
     return seen
 
 
 def _e_paths(seen) -> list:
-    """The recorded calls on ANY E: path."""
-    return [c for c in seen if _is_e(c[1])]
+    """The recorded calls on any live path."""
+    return [c for c in seen if _is_live(c[1])]
+
+
+def test_G3_note_the_hand_fold_of_the_spies_sees_every_live_spelling():
+    """The spies' own judge, checked: every spelling the census must refuse is one the spies would block, and a
+    plain E: path or a tilde elsewhere is not (so the spies cannot be blind, nor block the test's own files)."""
+    assert [p for p in _LIVE_SPELLINGS if not _is_live(p) and "Volume{" not in p] == []
+    assert _is_live("file:///E:/research/econfindatalibrary/data/catalog.db?mode=ro&immutable=1")
+    assert not _is_live("E:\\research\\econfindatalibrary\\tools\\x.py") and not _is_live("E:\\econ_livex")
+    assert not _is_live("F:\\work\\a~1\\state.json") and not _is_live("/tmp/pytest-of-runner/x")
 
 
 def test_G3_note_a_live_path_is_refused_on_its_text_and_never_stat_ed_opened_or_resolved(tmp_path, monkeypatch,
                                                                                           capsys):
     """Code re-review round 3, the G3 note (LOW): refused() called os.path.realpath on the path BEFORE deciding - on
     Windows that opens a handle (_getfinalpathname) - so a live path given by mistake was touched by the guard that
-    refuses it. Now the text decides first; only a path that passes is resolved."""
+    refuses it. Now the text decides first; only a path that passes is resolved. The same review's notes: a UNC path
+    to the live drive was never refused at all (now any network or device path is), and an 8.3 short name or a stream
+    of a root is refused on the text too."""
     d = _census_copies(tmp_path, _CENSUS_IDS, [f"{PID}.parquet"], _CENSUS_CUBES)
     seen = _touch_spies(monkeypatch)
-    for p in _LIVE_SPELLINGS:
-        assert LC.refused(p), p
+    why = {p: LC.refused(p) for p in _LIVE_SPELLINGS}
+    assert [p for p, w in why.items() if not w] == [], why
     assert seen == [], seen                                  # nothing at all was stat-ed, opened or resolved
+    assert "network or device path" in why[_UNC_SPELLING], why
+    assert "short (8.3) name" in why["E:\\ECON_L~1\\state\\writer.lock"], why
     # through the tool's entry point: each input in turn given as a live path, the others real copies
     good = {"--state": str(d / "state.json"), "--catalogue": str(d / "cat.sqlite"), "--store-dir": str(d / "store")}
     for flag in good:
-        for live in (_LIVE_SPELLINGS[0], _LIVE_SPELLINGS[5]):
+        for live in (_LIVE_SPELLINGS[0], _LIVE_SPELLINGS[5], _UNC_SPELLING):
             args = [x for f, v in good.items() for x in (f, live if f == flag else v)]
             assert LC.main(args) == 2, (flag, live)
             assert "REFUSED" in capsys.readouterr().out
@@ -1675,6 +1716,7 @@ def test_G3_note_a_live_path_is_refused_on_its_text_and_never_stat_ed_opened_or_
     # the controls. The spies record: a copy that passes the text test IS resolved, and the census reads it
     assert LC.refused(str(d / "state.json")) is None
     assert ("realpath", str(d / "state.json")) in seen, seen
+    assert LC.refused(str(tmp_path / "a~1" / "state.json")) is None, "a tilde off the live drive is a plain name"
     assert LC.main(_census_args(d)) == 1 and "LOST 11111111" in capsys.readouterr().out
     # ... and a link into a refused place is still refused, by the resolve step
     live, link = tmp_path / "live", tmp_path / "link"

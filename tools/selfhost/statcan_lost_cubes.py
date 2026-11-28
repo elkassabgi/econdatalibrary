@@ -8,8 +8,11 @@ Bookings the PRE-T0 lane made count too (a cube absent from the store with no lo
 first post-T0 iteration. This tool counts them BEFORE the S13 guard swap, so the number is a receipt, not an alarm.
 
 INPUTS - ALL COPIES. R1940: never E:'s data/ catalogue or state database, not even read-only, and the coordinator's
-brief: never E:'s store. This tool REFUSES any input under E:\\research\\econfindatalibrary\\data or E:\\econ_live -
-on the path's text first (any case, either slash), so a live path is refused before anything touches it.
+brief: never E:'s store. This tool REFUSES any input under E:\\research\\econfindatalibrary\\data or E:\\econ_live.
+It decides on the path's TEXT first (any case, either slash, `..`, a device prefix, a stream of a root), and also
+refuses there any network or device path and an 8.3 short name on the live drive: those inputs are refused before
+anything touches them. A path that passes is then resolved once, so a junction or link into a live place is still
+refused, but that resolve touches it (refused() says what is and is not caught).
   --state          a copy of the lane state (data/clean_full/statcan/_lane_state.json)
   --catalogue      a copy of the catalogue - opened mode=ro&immutable=1 (no lock, no journal, no side file)
   --store-dir      a folder holding a copy of the statcan parquets: only their NAMES are listed, no file is opened
@@ -49,19 +52,31 @@ def unit_id(pid: str) -> str:
 
 
 _DRIVE = re.compile(r"^[A-Za-z]:[\\/]")
-_DEVICE_PREFIXES = ("\\\\?\\", "\\\\.\\", "//?/", "//./")
+_SHORT_NAME = re.compile(r"~\d")                            # an 8.3 component, e.g. ECON_L~1
+
+
+def _fold_prefix(s: str) -> str:
+    r"""Drop a \\?\ or \\.\ device prefix (either slash, mixed too) in front of a drive path."""
+    if s[:4].replace("/", "\\") in ("\\\\?\\", "\\\\.\\") and _DRIVE.match(s[4:]):
+        return s[4:]
+    return s
+
+
+def _is_network_or_device(s: str) -> bool:
+    r"""A UNC path (\\host\share, \\localhost\E$), \\?\UNC\..., \\?\Volume{...} or any other device path: on Windows
+    every path that starts with two slashes once a drive prefix is dropped; on another OS one spelled with
+    backslashes. Decided on the text: such a path can name a live place in a way no text test can rule out."""
+    s = _fold_prefix(s)
+    return s.replace("/", "\\").startswith("\\\\") if os.name == "nt" else s.startswith("\\\\")
 
 
 def _text_form(path) -> str:
-    """`path` as normalised TEXT: never stat-ed, opened or resolved (code re-review round 3, the G3 note). A Windows
-    path (on Windows every path; on another OS one spelled with a drive letter) is folded with ntpath - both slash
-    forms, any case, `..` collapsed, a `\\\\?\\` or `\\\\.\\` prefix dropped - so the check means the same on CI's Linux
-    runner as on the desktop. abspath only joins the working folder to the text (GetFullPathNameW reads no file)."""
-    s = os.fspath(path)
-    for pre in _DEVICE_PREFIXES:
-        if s.startswith(pre) and _DRIVE.match(s[len(pre):]):
-            s = s[len(pre):]
-            break
+    r"""`path` as normalised TEXT: never stat-ed, opened or resolved (code re-review round 3, the G3 note). A Windows
+    path (on Windows every path; on another OS one spelled with a drive letter) is folded with ntpath: either slash,
+    any case, `..` collapsed, a \\?\ or \\.\ prefix dropped - the same on CI's Linux runner as on the desktop for
+    these spellings. On Windows only, abspath (GetFullPathNameW: text only, it reads no file) also joins the working
+    folder and drops trailing dots and spaces from the components."""
+    s = _fold_prefix(os.fspath(path))
     if os.name == "nt":
         return ntpath.normcase(ntpath.normpath(ntpath.abspath(s)))
     if _DRIVE.match(s):
@@ -69,23 +84,47 @@ def _text_form(path) -> str:
     return posixpath.normpath(posixpath.abspath(s))
 
 
+def _is_windows_form(root_form: str) -> bool:
+    return os.name == "nt" or bool(_DRIVE.match(root_form))
+
+
 def _under(form: str, root_form: str) -> bool:
-    sep = "\\" if os.name == "nt" or _DRIVE.match(root_form) else "/"
+    """`form` is the root, under it, or a stream of the root itself (root:stream, Windows forms)."""
+    win = _is_windows_form(root_form)
     r = root_form.rstrip("\\/")
-    return form == r or form.startswith(r + sep)
+    return form == r or form.startswith(r + ("\\" if win else "/")) or (win and form.startswith(r + ":"))
+
+
+def _short_name_on(form: str, root_form: str) -> bool:
+    """`form` has an 8.3 component on the root's drive: what it names is known only by asking the disk."""
+    if not _is_windows_form(root_form):
+        return False
+    d = ntpath.splitdrive(form)[0]
+    return bool(d) and d == ntpath.splitdrive(root_form)[0] and any(_SHORT_NAME.search(c) for c in form.split("\\"))
 
 
 def refused(path: str, roots=None) -> "str | None":
-    """A refusal when `path` is (under) one of the live places. Decided on the TEXT first: a live path given by mistake
-    is refused without being resolved, stat-ed or opened (os.path.realpath opens a handle on Windows). Only a path
-    that passes is resolved, so a junction or link into a live place is still seen. The roots are never resolved."""
+    """A refusal when `path` is (under) one of the live places. Decided on the TEXT first, with nothing resolved,
+    stat-ed or opened (os.path.realpath opens a handle on Windows): a path under a root, a stream of a root, any
+    network or device path, and an 8.3 short name on a root's drive are refused there. Only a path that passes is
+    resolved (os.path.realpath, which touches it), so a junction, link or subst drive into a live place is still
+    refused, and so is one that resolves to a network path (a mapped drive). The roots are compared as text and
+    never resolved: if a root were itself a junction, a path spelled by its target would not be refused (both are
+    plain folders, no reparse point, checked 2026-11-28)."""
     roots = REFUSED_ROOTS if roots is None else roots
     forms = [(r, _text_form(r)) for r in roots]
-    p = _text_form(path)
+    s = os.fspath(path)
+    if _is_network_or_device(s):
+        return f"REFUSED: {path} is a network or device path - give a COPY on a local drive (R1940)"
+    p = _text_form(s)
     for r, rf in forms:
         if _under(p, rf):
             return f"REFUSED: {path} is under {r}, a LIVE place (R1940) - give a COPY"
+        if _short_name_on(p, rf):
+            return f"REFUSED: {path} has a short (8.3) name on the drive of {r}, a LIVE place - give the long path"
     real = os.path.realpath(path)            # passed the text test: resolved only now
+    if _is_network_or_device(real):
+        return f"REFUSED: {path} resolves to {real}, a network or device path - give a COPY on a local drive"
     rp = _text_form(real)
     for r, rf in forms:
         if _under(rp, rf):
