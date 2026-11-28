@@ -153,6 +153,7 @@ EXPECTED_WRITERS = {
     "tools/delist_timeless_tables.py",                                             # joined 2026-11-17 (t0_ready)
     "core/backfill_coverage.py", "pipeline/title_bea.py", "tools/apply_series_names.py",
     "tools/refresh_flowgrain_dates.py",                                            # joined 2026-11-17 (t0_ready)
+    "tools/selfhost/r888_licence_sweep.py",                                        # joined 2026-11-28 (B32)
 }
 
 # Writers whose entry must NOT hold the lock for the whole run, each with the premise that makes it safe pinned
@@ -161,7 +162,12 @@ EXPECTED_WRITERS = {
 # updater for the whole fetch. So it WAITS for the lock and holds it only around its writes (_waiting_writer_lock
 # in _refresh_local); after T0 its other write roads (--respan, and the pre-T0 R2 path) are refused before any
 # open, and connect_path(write=True) refuses any write without the lock.
-LOCK_INSIDE_MAIN = {"tools/refresh_sec_edgar.py"}
+# tools/selfhost/r888_licence_sweep.py (B32): its live write (--apply / --vacuum --live) runs at the named step S4d,
+# BEFORE the CUTOVER flag, where write_session() takes no lock - so it takes catalog_path.writer_lock() itself,
+# around exactly those writes, before and after T0; its other modes only read (mode=ro), and its proof-copy
+# writes are refused after T0 (resolve_target). A lock around main() would make that writer_lock() call fail
+# ("already held") after T0. Premise pinned by test_the_b32_lock_inside_main_premise below.
+LOCK_INSIDE_MAIN = {"tools/refresh_sec_edgar.py", "tools/selfhost/r888_licence_sweep.py"}
 
 
 # LIBRARY writers: a module (no __main__ block, no script body) whose FUNCTION opens the catalogue for write for
@@ -670,7 +676,8 @@ def test_the_lock_inside_main_premise(t0, monkeypatch):
     without the lock is refused (the open itself refuses), and the daily refresh writes under the lock it
     waited for (tests/test_refresh_sec_edgar_selfhost.py::test_after_t0_a_refresh_commits_everything_under_the_lock
     runs that path end to end)."""
-    assert LOCK_INSIDE_MAIN == {"tools/refresh_sec_edgar.py"}, "a new exemption needs its own premise test"
+    assert LOCK_INSIDE_MAIN == {"tools/refresh_sec_edgar.py", "tools/selfhost/r888_licence_sweep.py"}, \
+        "a new exemption needs its own premise test"
     assert LOCK_INSIDE_MAIN <= {r for r, _p, _b in WRITERS}
     _r, path, _b = next(w for w in WRITERS if w[0] == "tools/refresh_sec_edgar.py")
     R = _load("tools/refresh_sec_edgar.py", path)
@@ -686,3 +693,16 @@ def test_the_lock_inside_main_premise(t0, monkeypatch):
     assert "with _waiting_writer_lock():" in src, "the daily refresh no longer waits for the lock around its writes"
     # the after-T0 refusal of --d1 / --audit / --respan is RUN (review C269-1): tests/test_sec_edgar_d1_chokepoint.py
     # ::test_after_t0_main_refuses_the_d1_audit_and_respan_roads_before_any_open
+
+
+def test_the_b32_lock_inside_main_premise(t0, monkeypatch):
+    """B32's premise, RUN after T0: a write to the build without the lock is refused by the open itself, and the
+    tool's two live write roads take writer_lock() around their writes (the --live runs before and after T0 are RUN
+    end to end by tests/test_r888_licence_sweep.py::test_live_apply_and_vacuum_take_the_writer_lock and
+    ::test_live_after_t0_works_only_with_the_lock); a proof-copy run is refused after T0 (::test_refusal_paths)."""
+    _r, path, _b = next(w for w in WRITERS if w[0] == "tools/selfhost/r888_licence_sweep.py")
+    with pytest.raises(cutover.CutoverRefused, match="single-writer lock"):
+        cp.connect_path(cp.BUILD_PATH, write=True)
+    src = _repo_walk.read_code(path)
+    assert src.count("lock = catalog_path.writer_lock() if live else contextlib.nullcontext()") == 2, \
+        "--apply and --vacuum no longer take the writer lock around their live writes"
