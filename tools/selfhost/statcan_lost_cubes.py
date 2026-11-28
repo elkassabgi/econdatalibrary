@@ -14,12 +14,13 @@ brief: never E:'s store. This tool REFUSES any input under E:\\research\\econfin
   --store-dir      a folder holding a copy of the statcan parquets: only their NAMES are listed, no file is opened
   --store-listing  or a text file with one store file name per line (a `dir /b` of a store copy)
 
-THE RULE is the lane's own: a cube the state books `not_held`, no `<pid>.parquet` in the store, and at least one
-series id in [statcan:<pid>, statcan:<pid>$) - tests/test_statcan_selfhost_lane.py pins this tool against
-jobs/statcan_selfhost_lane.py (not_held_without_parquet, lost_cube_check) and the id scheme against
-tools/derive_statcan_tables.py unit_id.
+THE RULES are the lane's own: a cube the state books `not_held`, no `<pid>.parquet` in the store, and at least one
+series id in [statcan:<pid>, statcan:<pid>$); and, beside it, the lane's other first-iteration block on the same
+inputs - a cube the state records as HELD (merged or served, not not_held) with no parquet (design review C6a).
+tests/test_statcan_selfhost_lane.py pins this tool against jobs/statcan_selfhost_lane.py (not_held_without_parquet,
+held_without_parquet, lost_cube_check) and the id scheme against tools/derive_statcan_tables.py unit_id.
 
-EXIT 0: no lost cube. 1: lost cubes (each one listed - restore its parquet before S13). 2: an input is missing,
+EXIT 0: no such cube. 1: some (each one listed - restore its parquet before S13). 2: an input is missing,
 unreadable or refused. It writes nothing anywhere.
 """
 from __future__ import annotations
@@ -60,6 +61,15 @@ def store_names(store_dir: "str | None" = None, listing: "str | None" = None) ->
         return {f for f in os.listdir(store_dir) if f.endswith(".parquet")}
     with open(listing, encoding="utf-8-sig") as fh:
         return {os.path.basename(ln.strip()) for ln in fh if ln.strip().endswith(".parquet")}
+
+
+def held_without_parquet(st: dict, names: set) -> list:
+    """The cubes the state records as HELD (merged or served, not not_held) with no `<pid>.parquet` - the lane's
+    other first-iteration block (design review C6a: restore them from a backup; the lane cannot re-pull them)."""
+    cubes = st.get("cubes") if isinstance(st, dict) and isinstance(st.get("cubes"), dict) else {}
+    return sorted(str(p) for p, c in cubes.items()
+                  if isinstance(c, dict) and (c.get("merged") or c.get("served")) and not c.get("not_held")
+                  and f"{p}.parquet" not in names)
 
 
 def not_held_without_parquet(st: dict, names: set) -> dict:
@@ -136,12 +146,18 @@ def main(argv=None) -> int:
     lost = sorted(counts)
     for p in lost:
         print(f"  LOST {p}: booked not held at release {cand[p]}, {counts[p]} catalogued id(s), no parquet")
-    if lost:
-        print(f"RESULT: {len(lost)} LOST cube(s) - the post-T0 lane would be BLOCKED from its first iteration. "
-              f"Restore each parquet from a backup before S13 (its booked release stays unmerged until StatCan "
-              f"releases the cube again).")
+    # the lane's OTHER first-iteration block on the same two inputs (design review C6a), counted beside it
+    held = held_without_parquet(st, names)
+    print(f"recorded HELD with no parquet: {len(held)}")
+    for p in held:
+        c = cubes.get(p) or {}
+        print(f"  HELD-LOST {p}: merged {c.get('merged')}, served {c.get('served')}, no parquet")
+    if lost or held:
+        print(f"RESULT: {len(lost)} LOST not-held cube(s) and {len(held)} held cube(s) with no parquet - the post-T0 "
+              f"lane would be BLOCKED from its first iteration. Restore each parquet from a backup before S13 (a "
+              f"lost not-held cube's booked release stays unmerged until StatCan releases the cube again).")
         return 1
-    print("RESULT: 0 lost cubes - the post-T0 lane's lost-cube check passes on these copies")
+    print("RESULT: 0 lost cubes - the post-T0 lane's store checks pass on these copies")
     return 0
 
 

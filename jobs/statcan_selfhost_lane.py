@@ -474,14 +474,21 @@ def store_problems():
     # EVERY CUBE THE STATE CALLS HELD HAS ITS PARQUET (design review C6a). After T0 this store is the only copy, and
     # run() books a cube it cannot find as held-by-nobody and settles it; one lost file would go silent for ever.
     names = {os.path.basename(f) for f in cubes}
-    lost = sorted(p for p, c in st.get("cubes", {}).items()
-                  if isinstance(c, dict) and (c.get("merged") or c.get("served")) and not c.get("not_held")
-                  and f"{p}.parquet" not in names)
+    lost = held_without_parquet(st, names)
     if lost:
         return (f"{len(lost)} cube(s) the lane state records as held have no parquet in {sc.OUT_DIR} "
                 f"(first: {', '.join(lost[:5])}) - restore them from a backup; the lane cannot re-pull them",
                 None, None)
     return None, make_put(store), names
+
+
+def held_without_parquet(st: dict, names: set) -> list:
+    """The cubes the state records as HELD (merged or served, not not_held) that have no `<pid>.parquet` among `names`
+    - each one BLOCKS the lane (design review C6a). tools/selfhost/statcan_lost_cubes.py counts them too (G3)."""
+    cubes = st.get("cubes") if isinstance(st.get("cubes"), dict) else {}
+    return sorted(str(p) for p, c in cubes.items()
+                  if isinstance(c, dict) and (c.get("merged") or c.get("served")) and not c.get("not_held")
+                  and f"{p}.parquet" not in names)
 
 
 def not_held_without_parquet(st: dict, names: set) -> dict:

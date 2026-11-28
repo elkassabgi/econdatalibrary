@@ -1557,7 +1557,8 @@ def test_G3_the_census_counts_the_lost_not_held_cubes_on_copies_as_the_lane_woul
     out = capsys.readouterr().out
     assert "booked not held with no parquet: 2" in out and out.count("  LOST ") == 1, out
     assert "LOST 11111111: booked not held at release 2026-09-12T08:30, 2 catalogued id(s), no parquet" in out, out
-    assert "RESULT: 1 LOST cube(s)" in out, out
+    assert "recorded HELD with no parquet: 0" in out and "HELD-LOST" not in out, out
+    assert "RESULT: 1 LOST not-held cube(s) and 0 held cube(s) with no parquet" in out, out
     assert (d / "cat.sqlite").read_bytes() == before and not (d / "cat.sqlite-journal").exists(), "read-only"
     # THE LANE'S OWN RULE on the same copies (before T0 connect_path opens any path): the same candidates, the same
     # lost cube
@@ -1572,6 +1573,14 @@ def test_G3_the_census_counts_the_lost_not_held_cubes_on_copies_as_the_lane_woul
     (d / "listing.txt").write_text("\r\n".join([f"{PID}.parquet", "33333333.parquet", "11111111.parquet"]) + "\r\n")
     assert LC.main(_census_args(d, ["--store-listing", str(d / "listing.txt")])) == 0
     assert "RESULT: 0 lost cubes" in capsys.readouterr().out
+    # the lane's OTHER first-iteration block, counted beside it: a cube recorded HELD whose parquet is gone
+    st["cubes"]["44444444"] = {"release": REL, "merged": REL, "served": REL}
+    (d / "state.json").write_text(json.dumps(st))
+    names = LC.store_names(listing=str(d / "listing.txt"))
+    assert LC.held_without_parquet(st, names) == NL.held_without_parquet(st, names) == ["44444444"]
+    assert LC.main(_census_args(d, ["--store-listing", str(d / "listing.txt")])) == 1
+    out = capsys.readouterr().out
+    assert "HELD-LOST 44444444: merged 2026-09-12T08:30" in out and "0 LOST not-held cube(s) and 1 held" in out, out
 
 
 def test_G3_the_census_refuses_live_places_and_inputs_it_cannot_judge(tmp_path, monkeypatch, capsys):
