@@ -1614,9 +1614,19 @@ _LIVE_SPELLINGS = [
 ]
 
 
+def _is_e(s) -> bool:
+    """An E: path (folded by hand here, not by the code under test)."""
+    s = s.decode(errors="replace") if isinstance(s, bytes) else str(s)
+    s = s.replace("/", "\\").lower()
+    for pre in ("\\\\?\\", "\\\\.\\"):
+        s = s[len(pre):] if s.startswith(pre) else s
+    return s.startswith("e:")
+
+
 def _touch_spies(monkeypatch) -> list:
-    """(call, path) for every call that can stat, open or resolve a file - B24's R2-L6 spy, wider. Each spy passes
-    the call on, so a path that passes the check is still really resolved."""
+    """(call, path) for every call that can stat, open or resolve a file - B24's R2-L6 spy, wider. A call on any E:
+    path is recorded and BLOCKED (never passed on), so even a regressed refused() cannot touch a live place while
+    this test runs; every other call is passed on, so a path that passes the check is still really resolved."""
     import builtins
     import ntpath
     seen = []
@@ -1630,21 +1640,18 @@ def _touch_spies(monkeypatch) -> list:
 
         def spy(*a, _real=real, _name=name, **k):
             p = a[0] if a else k.get("path", k.get("file", k.get("database")))
-            seen.append((_name, os.fspath(p) if isinstance(p, (str, bytes, os.PathLike)) else repr(p)))
+            s = os.fspath(p) if isinstance(p, (str, bytes, os.PathLike)) else repr(p)
+            seen.append((_name, s))
+            if _is_e(s):
+                raise AssertionError(f"the test spy BLOCKED {_name}({s!r}): an E: path reached a file call")
             return _real(*a, **k)
         monkeypatch.setattr(mod, name, spy)
     return seen
 
 
 def _e_paths(seen) -> list:
-    """The recorded calls on ANY E: path (folded by hand here, not by the code under test)."""
-    def e(s):
-        s = s.decode() if isinstance(s, bytes) else s
-        s = s.replace("/", "\\").lower()
-        for pre in ("\\\\?\\", "\\\\.\\"):
-            s = s[len(pre):] if s.startswith(pre) else s
-        return s.startswith("e:")
-    return [c for c in seen if e(c[1])]
+    """The recorded calls on ANY E: path."""
+    return [c for c in seen if _is_e(c[1])]
 
 
 def test_G3_note_a_live_path_is_refused_on_its_text_and_never_stat_ed_opened_or_resolved(tmp_path, monkeypatch,
