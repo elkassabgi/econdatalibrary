@@ -21,7 +21,9 @@ Verdicts (design review finding 7 - `partial` is not an honest signal for a drai
                      or named cubes keep failing transiently (TRANSIENT_RED_AFTER in a row) - checked before
                      the owed age, so a DRAINING lane cannot hide it (2026-11-22);
                      or the OLDEST owed release is older than OWED_AGE_MAX_DAYS and nothing finished lately:
-                     alive, not keeping up
+                     alive, not keeping up;
+                     or the lane beats state "blocked": alive, but it works no cube until a named reason
+                     clears (written only by the post-T0 lane, jobs/statcan_selfhost_lane.py, T0 item B3)
     partial          alive and current, but something needs a human: QUARANTINED cubes, merged cubes
                      whose served ids cannot be reproduced, or new-cube coverage debt older than
                      NEW_CUBE_DEBT_AMBER_DAYS
@@ -143,6 +145,12 @@ ENUM_FAIL_RED_HOURS = 6.0
 # each cube's own TRANSIENT_RED_AFTER slowly. This bounds it instead: a breaker that has held merges
 # for longer than this, since its first trip with no answer from StatCan between, is red.
 BREAKER_RED_HOURS = 6.0
+# THE CATALOGUE WRITER LOCK (T0 item B3, design review C1). After T0 the post-T0 lane serves a cube only inside the
+# catalogue writer lock, and the desktop pass holds that lock for its whole run - up to 2,880 min (48 h,
+# tools/run_local_heavy.ps1). A lane starved of the lock keeps MERGING, so its progress stamp and owed ages stay young
+# and it read green while no CSV moved. This turns it red: the oldest wait (published by the lane over cubes that
+# still owe a serve and are not quarantined) older than the longest legitimate hold plus a margin.
+LOCK_WAIT_RED_HOURS = 54.0
 
 # THE VERDICTS THAT SAY THE LANE IS CURRENT (owner decision 2026-10-20: statcan must not read "late" on
 # the public API while its lane keeps it current). verdict() below has two such outcomes: `ok`, and the
@@ -598,6 +606,11 @@ def verdict(state, progress, now):
     if progress.get("state") == "store_unreachable":
         raise DefinitiveError("statcan: the lane found the store holding ZERO cubes - the store is "
                               "unreachable from its backend (R753)")
+    if progress.get("state") == "blocked":
+        # the post-T0 lane stays resident when it cannot work (no crash loop under the guard, R1279) and says why;
+        # a fresh beat must not read healthy then (T0 item B3). The pre-T0 lane never writes this state.
+        raise DefinitiveError("statcan: the lane is BLOCKED and works no cube - "
+                              f"{str(progress.get('blocked') or 'no reason recorded')[:300]}")
     # BEFORE the owed-age block (design review F2/C2): a lane still working its old backlog reads DRAINING and
     # returns there, which would hide an enumeration that has failed for hours.
     ef = progress.get("enum_fail")
@@ -620,6 +633,16 @@ def verdict(state, progress, now):
                 f"statcan: the lane's circuit breaker has held every merge back since {b.get('since')} "
                 f"({'unreadable' if br_h is None else f'{br_h:.1f} h'}, allowed {BREAKER_RED_HOURS:.0f} h) - StatCan "
                 f"refuses with HTTP {b.get('status')}; {b.get('trips')} trip(s), cubes {list(b.get('cubes') or [])[:10]}")
+    lw = progress.get("writer_lock_wait")
+    if lw:
+        w = lw if isinstance(lw, dict) else {}
+        lw_h = _hours_since(w.get("since"), now)
+        if lw_h is None or lw_h > LOCK_WAIT_RED_HOURS:
+            raise DefinitiveError(
+                f"statcan: the lane has waited for the catalogue writer lock since {w.get('since')} "
+                f"({'unreadable' if lw_h is None else f'{lw_h:.1f} h'}, allowed {LOCK_WAIT_RED_HOURS:.0f} h) - "
+                f"{w.get('cubes')} cube(s) merged and not served; last holder seen: {str(w.get('holder'))[:200]}. "
+                f"Check logs/local_heavy.lock and E:\\econ_live\\state\\writer.lock's holder.")
     owed = progress.get("owed") or {}
     # BEFORE the owed-age block too (design review F2/C2 option (a)): a cube failing transiently again and again
     # is red whether or not the lane is draining an old backlog. DRAINING and FAILING both read not current on the

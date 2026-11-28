@@ -509,23 +509,74 @@ def test_the_stats_object_must_be_in_the_served_store():
     assert ("served-stats", T.served_stats) in T.CHECKS
 
 
-def test_statcan_lane_blocks_t0_until_the_lane_is_post_t0_ready(tmp_path):
-    """statcan's only update path is the lane when the registry says served_by: lane, and the lane refuses
-    after T0 until its self-hosted design lands - so T0 must wait for it (#65 port review, defect 2)."""
-    lane = tmp_path / "statcan_lane.py"
-    by_lane = [{"source_id": "statcan", "served_by": "lane"}]
-    lane.write_text("X = 1\nPOST_T0_READY = False\n", encoding="utf-8")
-    ok, detail = T.statcan_lane(str(lane), by_lane)
-    assert not ok and "pre-T0 only" in detail
-    lane.write_text("POST_T0_READY = True\n", encoding="utf-8")
-    assert T.statcan_lane(str(lane), by_lane)[0] is True
-    for bad in ("", "POST_T0_READY = flag()\n", "POST_T0_READY = False\nPOST_T0_READY = True\n"):
-        lane.write_text(bad, encoding="utf-8")
-        assert T.statcan_lane(str(lane), by_lane)[0] is False, bad          # cannot tell -> not ready
-    assert T.statcan_lane(str(lane), [{"source_id": "statcan"}])[0] is True  # not served by the lane
-    # the real lane on this branch is pre-T0 only, and the check is wired in
-    assert T.statcan_lane(os.path.join(ROOT, "jobs", "statcan_lane.py"), by_lane)[0] is False
+_GOOD_GUARD = ("$jobs = @(\n  @{ n = 'a'; match = 'a.py'; args = @('jobs/a.py') },\n"
+               "  @{ n = 'statcan_selfhost'; match = 'statcan_selfhost_lane.py'; "
+               "args = @('-u', 'jobs/statcan_selfhost_lane.py') }\n)\n")
+
+
+def _post_t0_tree(tmp_path, lane_text="POST_T0_READY = True\n", guard=_GOOD_GUARD):
+    (tmp_path / "jobs").mkdir(exist_ok=True)
+    (tmp_path / "jobs" / "statcan_selfhost_lane.py").write_text(lane_text, encoding="utf-8")
+    g = tmp_path / "post_t0_guard.ps1"
+    g.write_text(guard, encoding="utf-8")
+    return str(g)
+
+
+def test_statcan_lane_blocks_t0_until_the_post_t0_lane_and_its_guard_are_ready(tmp_path):
+    """statcan's only update path is its lane when the registry says served_by: lane; jobs/statcan_lane.py refuses
+    after T0, so T0 waits for the registry's lane_post_t0 (T0 item B3): it exists, declares ONE literal
+    POST_T0_READY = True, and the prepared post-T0 guard launches it and not jobs/statcan_lane.py."""
+    by_lane = [{"source_id": "statcan", "served_by": "lane", "lane_post_t0": "jobs/statcan_selfhost_lane.py"}]
+    g = _post_t0_tree(tmp_path)
+    ok, detail = T.statcan_lane(by_lane, root=str(tmp_path), guard_copy=g)
+    assert ok, detail
+    assert T.statcan_lane([{"source_id": "statcan"}], root=str(tmp_path), guard_copy=g)[0] is True   # no lane
+    ok, detail = T.statcan_lane([{"source_id": "statcan", "served_by": "lane"}], root=str(tmp_path), guard_copy=g)
+    assert not ok and "names no lane_post_t0" in detail
+    gone = [{**by_lane[0], "lane_post_t0": "jobs/nowhere_lane.py"}]
+    assert T.statcan_lane(gone, root=str(tmp_path), guard_copy=g)[0] is False
+    for bad in ("POST_T0_READY = False\n", "", "POST_T0_READY = flag()\n",
+                "POST_T0_READY = False\nPOST_T0_READY = True\n"):
+        g = _post_t0_tree(tmp_path, lane_text=bad)
+        assert T.statcan_lane(by_lane, root=str(tmp_path), guard_copy=g)[0] is False, bad   # cannot tell -> not ready
+    old = _GOOD_GUARD.replace("jobs/statcan_selfhost_lane.py", "jobs/statcan_lane.py")
+    commented = ("<#\n" + _GOOD_GUARD + "#>\n$x = 1\n", "# " + _GOOD_GUARD.replace("\n", "\n# "))
+    both = _GOOD_GUARD.replace(")\n", "  ,@{ n = 'statcan_lane'; match = 'statcan_lane.py'; "
+                                      "args = @('-u', 'jobs/statcan_lane.py') }\n)\n")
+    for guard in (old, both, *commented):
+        g = _post_t0_tree(tmp_path, guard=guard)
+        ok, detail = T.statcan_lane(by_lane, root=str(tmp_path), guard_copy=g)
+        assert not ok, guard
+    assert "still launches jobs/statcan_lane.py" in T.statcan_lane(
+        by_lane, root=str(tmp_path), guard_copy=_post_t0_tree(tmp_path, guard=both))[1]
+    # THIS BRANCH: the real registry, the real module and the real prepared post-T0 guard pass; the check is wired in
+    ok, detail = T.statcan_lane()
+    assert ok, detail
     assert ("statcan-lane", T.statcan_lane) in T.CHECKS
+
+
+def test_the_s13_receipt_reads_the_live_guard_and_is_never_part_of_ready(tmp_path, monkeypatch, capsys):
+    """statcan-runner can only pass after the S13 swap, which comes after READY and the flag: it is NOT in CHECKS
+    (R1929: an ordering rule needs a test that fails the premature change), and `--s13` runs exactly the two runner
+    checks. On the versioned PRE-T0 copy it fails (the receipt can fail); on the post-T0 copy it passes."""
+    names = [n for n, _ in T.CHECKS]
+    assert "statcan-runner" not in names and T.statcan_runner not in [f for _, f in T.CHECKS]
+    assert T.S13_CHECKS == [("sec-edgar-runner", T.sec_edgar_runner), ("statcan-runner", T.statcan_runner)]
+    machine = os.path.join(ROOT, "tools", "machine")
+    ok, detail = T.statcan_runner(os.path.join(machine, "RELAUNCH_GUARD.ps1.workstation-copy"))
+    assert not ok and "does not launch jobs/statcan_selfhost_lane.py" in detail and "still launches" in detail
+    assert T.statcan_runner(os.path.join(machine, "RELAUNCH_GUARD.ps1.post-t0-copy"))[0] is True
+    assert T.sec_edgar_runner(guard_path=os.path.join(machine, "RELAUNCH_GUARD.ps1.post-t0-copy"))[0] is True
+    assert T.statcan_runner(str(tmp_path / "absent.ps1"))[0] is False
+    ran = []
+    monkeypatch.setattr(T, "CHECKS", [("boom", lambda: pytest.fail("--s13 ran a READY check"))])
+    monkeypatch.setattr(T, "S13_CHECKS", [("a", lambda: ran.append("a") or (True, "x")),
+                                          ("b", lambda: ran.append("b") or (True, "y"))])
+    assert T.main(["--s13"]) == 0 and ran == ["a", "b"]
+    assert "S13 RECEIPT: OK" in capsys.readouterr().out
+    monkeypatch.setattr(T, "S13_CHECKS", [("a", lambda: (False, "no"))])
+    assert T.main(["--s13"]) == 1 and "S13 RECEIPT: NOT OK" in capsys.readouterr().out
+    assert T.main(["--bogus"]) == 2
 
 
 def test_the_withheld_list_must_be_in_the_served_store_and_match_r2():

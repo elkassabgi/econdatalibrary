@@ -148,20 +148,22 @@ def test_after_t0_a_failed_sec_edgar_local_run_fails_the_local_check(t0, capsys,
     assert "SEC_EDGAR LOCAL RUN: the last run" in capsys.readouterr().out
 
 
-def test_after_t0_a_missing_lane_beat_fails_and_names_the_t0_decision(t0, capsys, monkeypatch):
-    """The lane refuses after T0 (pre-T0 only), so statcan has no refresh path until its self-hosted
-    design lands. The local check must say that - not pass, and not call it a lane that never ran."""
+def test_after_t0_a_missing_lane_beat_fails_and_names_the_post_t0_lane(t0, capsys, monkeypatch):
+    """After T0 statcan is served by the registry's lane_post_t0 (T0 item B3). With no progress file the local check
+    must say that lane never ran - not pass, and not name the pre-T0 lane."""
     monkeypatch.setattr(gh, "LANE_PROGRESS_LOCAL", str(t0 / "no_lane.progress.json"))
     monkeypatch.setattr(gh, "_lane_expected", lambda: True)
     assert gh.publish() == 0
     assert gh.check(45, local=True) == 1
     out = capsys.readouterr().out
-    assert "refuses after T0" in out and "a T0 decision" in out, out
+    assert "jobs/statcan_selfhost_lane.py has never run there since T0" in out, out
+    assert "ONLY by jobs/statcan_selfhost_lane.py" in out, out
 
 
-def test_after_t0_a_stale_pre_t0_lane_beat_still_names_the_t0_decision(t0, capsys, monkeypatch):
-    """The real case (port review, defect 2): the lane wrote its progress file before T0, so the file EXISTS.
-    Judging it would say "dead or wedged, check the guard" about a lane that refuses by design."""
+def test_after_t0_a_stale_pre_t0_lane_beat_is_named_as_the_pre_t0_lanes(t0, capsys, monkeypatch):
+    """The real case (port review, defect 2; R1279 rule (b)): the pre-T0 lane wrote its progress file before T0, so
+    the file EXISTS and carries no post-T0 marker. Judging it would say "dead or wedged, check the guard"; it is named
+    for what it is instead."""
     beat = t0 / "lane.progress.json"
     beat.write_text(json.dumps({"state": "idle", "utc": "2026-09-01T00:00:00+00:00", "counters": {}}))
     monkeypatch.setattr(gh, "LANE_PROGRESS_LOCAL", str(beat))
@@ -169,7 +171,9 @@ def test_after_t0_a_stale_pre_t0_lane_beat_still_names_the_t0_decision(t0, capsy
     assert gh.publish() == 0
     assert gh.check(45, local=True) == 1
     out = capsys.readouterr().out
-    assert "refuses after T0" in out and "DEAD" not in out.upper().split("STATCAN LANE:")[-1][:40], out
+    assert "the pre-T0 lane's last beat" in out and "DEAD" not in out.upper().split("STATCAN LANE:")[-1][:40], out
+    body = json.loads(blob.SelfhostBlob().get(gh.KEY))
+    assert body["statcan_lane_problem"] and "pre-T0 lane's last beat" in body["statcan_lane_problem"]
 
 
 @pytest.mark.parametrize("case", ["stale", "unreachable", "unreadable", "emptiness"])

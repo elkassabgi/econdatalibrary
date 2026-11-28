@@ -345,4 +345,5 @@ def test_the_off_machine_check_fails_on_a_false_verdict(monkeypatch, capsys):
 
 def test_t0_ready_reads_the_route_strictly():
     src = open(os.path.join(ROOT, "tools", "selfhost", "t0_ready.py"), encoding="utf-8").read()
-    assert "check = functools.partial(guard_heartbeat.check_url, require_sec_edgar=True)" in src
+    # T0 item B3 added require_statcan=True beside it (the route must report the statcan lane too)
+    assert "check = functools.partial(guard_heartbeat.check_url, require_sec_edgar=True, require_statcan=True)" in src

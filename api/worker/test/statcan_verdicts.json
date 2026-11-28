@@ -86,6 +86,24 @@
    "note": "statcan: the lane found the store holding ZERO cubes - the store is unreachable from its backend (R753)"
   },
   {
+   "branch": "blocked (post-T0 lane)",
+   "outcome": "DefinitiveError",
+   "current": false,
+   "note": "statcan: the lane is BLOCKED and works no cube - the store lists 0 cubes under <store> - unreachable"
+  },
+  {
+   "branch": "writer lock wait inside 54 h",
+   "outcome": "ok",
+   "current": true,
+   "note": "statcan: lane current - 0 cube(s) owe a merge, 0 owe serving, 2 released cube(s) not held (catalogue debt)"
+  },
+  {
+   "branch": "writer lock wait over 54 h",
+   "outcome": "DefinitiveError",
+   "current": false,
+   "note": "statcan: the lane has waited for the catalogue writer lock since 2026-10-18T05:00:00Z (55.0 h, allowed 54 h) - 2 cube(s) merged and not served; last holder seen: held elsewhere. Check logs/local_heavy.lock and E:\\econ_live\\state\\writer.lock's holder."
+  },
+  {
    "branch": "no progress published",
    "outcome": "DefinitiveError",
    "current": false,

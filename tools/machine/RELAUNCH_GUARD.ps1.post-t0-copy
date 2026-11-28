@@ -1,0 +1,385 @@
+﻿# Self-healing watchdog for the econ ingestion fleet.
+# Run-once: relaunch any of the tracked jobs that isn't currently running.
+# Each ingest script is resumable (skips completed work), so relaunching is safe.
+# Intended to be invoked every few minutes by a Scheduled Task (survives the
+# enterprise process-kills / session cleanup that keep stopping the jobs), and
+# at logon (survives reboots).
+
+$root = "E:\research\econfindatalibrary"
+$logsDir = Join-Path $root "logs"
+$guardLog = Join-Path $logsDir "_guard.log"
+# >>> LAUNCHER WATCHDOG HOOK >>>
+# Added 2026-11-12: after the 2026-11-11 Windows Update restart only EconGuard.cmd ran at log-on. The launcher
+# watchdog relaunches IpGuard, HfRunner, HfRunnerDaily, HfDailyDispatch and EconSlotDispatch through their own
+# .cmd when their loop is gone (never EconOrigin; it never kills anything). It runs only when its sha256 is the
+# pinned one; otherwise one line goes to _guard.log. Every tick writes hook.status in the watchdog folder.
+# Pause: create STOP in the watchdog folder (README.md there).
+# Remove: powershell -NoProfile -ExecutionPolicy Bypass -File F:\launcher_watchdog\install_hook.ps1 -Remove
+try {
+  $lwFile = 'F:\launcher_watchdog\launcher_watchdog.ps1'
+  $lwSha = 'A145DC9C61AE23AAC3034A6BE3C3EEF41C22DEF03A71FCF28876C92E0A1E0C21'
+  $lwStatus = 'F:\launcher_watchdog\hook.status'
+  $lwState = 'failed'; $lwWhy = ''
+  try {
+    if (-not (Test-Path -LiteralPath $lwFile -PathType Leaf)) {
+      $lwState = 'missing'; $lwWhy = $lwFile
+      Add-Content -Path $guardLog -Value ("{0}  LAUNCHER WATCHDOG not run: {1} is missing" -f (Get-Date -Format s), $lwFile)
+    } else {
+      $lwHave = (Get-FileHash -LiteralPath $lwFile -Algorithm SHA256 -ErrorAction Stop).Hash
+      if ($lwHave -ne $lwSha) {
+        $lwState = 'sha-mismatch'; $lwWhy = ("sha256 {0}, pinned {1}" -f $lwHave, $lwSha)
+        Add-Content -Path $guardLog -Value ("{0}  LAUNCHER WATCHDOG not run: sha256 of {1} is {2}, pinned {3}" -f (Get-Date -Format s), $lwFile, $lwHave, $lwSha)
+      } else {
+        Start-Process 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$lwFile) `
+          -WorkingDirectory 'F:\launcher_watchdog' -WindowStyle Hidden -ErrorAction Stop
+        $lwState = 'started'
+      }
+    }
+  } catch {
+    $lwWhy = $_.Exception.Message
+    try { Add-Content -Path $guardLog -Value ("{0}  LAUNCHER WATCHDOG hook failed: {1}" -f (Get-Date -Format s), $lwWhy) } catch { }
+  }
+  Set-Content -LiteralPath $lwStatus -Encoding ASCII -Value ("{0} {1} {2}" -f (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'), $lwState, ($lwWhy -replace '\s+', ' '))
+} catch { }
+# <<< LAUNCHER WATCHDOG HOOK <<<
+
+# Pinned interpreter (cutover plan B.7): bare "python" resolves through PATH and
+# can hit the WindowsApps store shim; the crawlers must always get this exact exe.
+$python = "C:\Users\aelkassabgi\AppData\Local\Programs\Python\Python314\python.exe"
+
+# GUS registered tier: the crawler reads GUS_DBW_CLIENT_ID from its process env.
+# A guard started from a context without user env vars would silently relaunch
+# gus_dbw at the anonymous tier (5x slower) â€” inject from the user registry.
+if (-not $env:GUS_DBW_CLIENT_ID) {
+  $env:GUS_DBW_CLIENT_ID = [Environment]::GetEnvironmentVariable('GUS_DBW_CLIENT_ID','User')
+}
+
+# Tracked jobs: match-substring in the python command line + launch args.
+$jobs = @(
+  @{ n = 'cbs_nl';         match = 'ingest_cbs_nl.py';   args = @('jobs/ingest_cbs_nl.py') },
+  @{ n = 'gus_dbw';        match = 'ingest_gus_dbw.py';  args = @('jobs/ingest_gus_dbw.py') },
+  # A relay-backed ISTAT entry was REMOVED 2026-08-03. It relaunched a relay puller
+  # every five minutes, for ever. the relay aggregator is BANNED (CLAUDE.md 0 / ledger R251) - "no
+  # fetching, no probing the relay's API host, no relays or mirrors" - so a watchdog that
+  # RESURRECTS the banned puller is the most durable possible form of the violation: it
+  # survives being killed, by design. It was dormant only because the guard itself was down.
+  #
+  # Nothing is lost. istat_sliced below pulls the same data from ISTAT's OWN SDMX host
+  # (esploradati.istat.it), which is where it should have come from all along.
+  # ISTAT SDMX slicing-recovery: completes the ~4,874-dataflow ISTAT sweep that the
+  # flaky esploradati.istat.it host left partial (only ~389 landed). Resumable via
+  # _sliced_done.json; keeps being relaunched until complete, then write
+  # logs/istat_sliced.DONE to retire it (CC BY 3.0 IT â€” redistributable).
+  @{ n = 'istat_sliced';   match = 'ingest_istat_sliced.py'; args = @('jobs/ingest_istat_sliced.py') },
+  # statcan LANE AFTER T0 (T0 item B3, 2026-11-28): jobs/statcan_selfhost_lane.py refreshes every released
+  # statcan cube whole and serves its catalogued parts from the SELF-HOSTED store - statcan's ONLY update
+  # path after T0 (updater/strategies/fetchers/statcan.py is its reporter). One process that iterates every
+  # 5 min, holding logs/statcan_writer.lock while it works and the catalogue writer lock only around one
+  # cube's serve. It refuses BEFORE T0 (resident, writes nothing) and pins AQUEDUCT_BACKEND=selfhost itself
+  # (this launch passes no environment). -u so its lines reach the log as they happen: the stall check below
+  # keys on the log's mtime. THIS FILE IS THE POST-T0 GUARD: tools/machine/swap_guard_statcan_s13.ps1 installs
+  # it as RELAUNCH_GUARD.ps1 at S13; until then tools/machine/RELAUNCH_GUARD.ps1.workstation-copy (the pre-T0
+  # guard) is the machine's copy. The PRE-T0 entry it replaces, kept as the fallback recipe:
+  #   @{ n = 'statcan_lane';   match = 'statcan_lane.py';    args = @('-u', 'jobs/statcan_lane.py') }
+  @{ n = 'statcan_selfhost'; match = 'statcan_selfhost_lane.py'; args = @('-u', 'jobs/statcan_selfhost_lane.py') }
+)
+
+# --- LONG ONE-OFF JOBS (added 2026-08-03, after a reboot killed all three) -------------------
+# These are not crawlers: they FINISH. Until now they were launched by hand, so the 2026-08-03
+# restart silently ended a statcan derive, a noaa re-derive and the eurostat re-key measurement,
+# and nothing on the machine would ever have restarted them. Anything that has to be relaunched
+# by a person is not running — it is waiting for that person to notice.
+#
+# Run through tools/run_guarded_job.ps1, which writes logs/<n>.DONE ONLY on exit 0, so the guard
+# stops relaunching a job that genuinely completed while still resuming one that was killed,
+# crashed, or died in a reboot. Without that sentinel this table would restart finished jobs every
+# five minutes for ever.
+#
+# EACH ONE IS RESUMABLE, which is what makes relaunching safe rather than merely repeated:
+#   statcan   --skip-existing lists what is already in R2 and derives only the rest
+#   noaa      --skip-newer-than: a re-derive must OVERWRITE, so --skip-existing would skip
+#             everything; this skips only what THIS campaign has already rewritten
+#   eurostat  a --dry-run measurement, read-only, safe to repeat from the start
+$pwsh = 'powershell.exe'
+$runner = Join-Path (Join-Path $root 'tools') 'run_guarded_job.ps1'
+# ALL THREE LONG JOBS RETIRED 2026-09-02. Retired IN PLACE, not deleted, following the
+# relay-puller precedent in the entry list above: the argv is the recipe for the next run of
+# each campaign, and WORKLOG.md (2026-08-31, Phase 3 task 4) already queues a noaa re-derive
+# for the 550,347,528 merged observations whose CSVs were never rebuilt. Deleting the lines
+# would delete the only written record of `--skip-newer-than` vs `--skip-existing`, the
+# distinction that cost a 31% pass in R307.
+#
+# WHY RETIRED, and not merely sentinelled. Each job stops only because of a
+# `logs/<job>.DONE` file, and `.gitignore:24` ignores `logs/`. A machine rebuild, a pruned
+# log directory or a restore from backup leaves the array armed with no sentinels beside it.
+# `derive_noaa` cost that exactly once already: a null `ExitCode` from PowerShell 5.1 meant
+# the runner never recorded success, so the guard resurrected a FINISHED job ~48 times a day
+# for three weeks, each pass paging 3,139 ListObjects over `series/noaa%3A` before printing
+# "to derive: 0". Measured marginal cost $22.50/month, and `billing_guard.py:46`'s
+# WARN_R2_A = 400_000/day sits ABOVE the peak it produced (264,454 on 2026-08-28), so nothing
+# alarmed and nothing would.
+#
+# COMPLETION EVIDENCE, independent of the sentinels:
+#   derive_statcan   logs/derive_statcan_20260823T020739Z.log
+#                    "[8207/8207] ... units: 466,341  put 252,425  skipped 213,916  errors 0"
+#                    CAVEAT: 5 tables REFUSED (too large, no usable splitter), ~535M rows
+#                    never derived - 37100234, 37100277, 98100023, 98100174, 98100206.
+#                    Structural, not an interruption: relaunching cannot fix them. Carried
+#                    into docs/runbook/statcan.md so they do not live only in that log.
+#   derive_noaa      logs/derive_noaa_20260829T191812Z.log
+#                    "done: put 0 series CSVs, skipped 3,138,159 existing, 0 unresolvable"
+#   rekey_eurostat   logs/rekey_eurostat_20260803T224026Z.log
+#                    "[7754/7754] ... conflicting revisions: 66,628 ... --dry-run: nothing
+#                    written." SUPERSEDED: data/clean_full/eurostat/_rekeyed.json
+#                    (2026-09-01T07:34:16Z) reads files_seen 7654, clean 7654, conflicts 0,
+#                    so the real migration has since run and the gate at
+#                    updater/strategies/fetchers/eurostat.py:388-393 is satisfied.
+#
+# `foreach ($j in @())` iterates zero times in PowerShell 5.1, and nothing else in this file
+# or in RELAUNCH_GUARD_LOOP.ps1 reads $longJobs - no .Count, no divisor, no health line.
+$longJobs = @()
+# @{ n = 'derive_statcan'; match = 'derive_statcan_tables.py';
+#    jobArgs = @('-u','tools/derive_statcan_tables.py','--bucket','econ-data',
+#                '--max-rows','3000000','--skip-existing','--workers','20'); env = @{} },
+# @{ n = 'derive_noaa';    match = 'derive_csv';
+#    jobArgs = @('-u','-m','core.derive_csv','--bucket','econ-data','--source','noaa',
+#                '--workers','16','--skip-newer-than','2026-08-03T00:00:00Z'); env = @{} },
+# @{ n = 'rekey_eurostat'; match = 'rekey_eurostat.py';
+#    jobArgs = @('-u','tools/rekey_eurostat.py','--dry-run');
+#    env = @{ AQUEDUCT_BACKEND = 'r2' } }
+
+# Stop guarding a job once it has genuinely finished: a sentinel file
+# logs/<job>.DONE means "do not relaunch" (written by the operator when a job
+# completes, so the guard doesn't resurrect a finished pull).
+# Hours without a log write before a job is CONSIDERED for a stall kill. Only a
+# consideration: it must also show no CPU over a 20-second sample (R457, R453).
+$STALL_HOURS = 3
+
+$running = @((Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue).CommandLine)
+
+foreach ($j in $jobs) {
+  $doneFlag = Join-Path $logsDir ("{0}.DONE" -f $j.n)
+  if (Test-Path $doneFlag) { continue }
+
+  # A SECOND, SELF-EXPIRING SENTINEL FOR MAINTENANCE. `.DONE` means "this job COMPLETED" and is
+  # an interface with four readers - run_guarded_job.ps1 writes it only on exit 0,
+  # DATABASE_REFERENCE.md cites its ABSENCE as evidence a job is still guarded, and
+  # CUTOVER_AND_BACKFILL_PLAN.md puts it in the backup set, so a backup taken during a
+  # maintenance window would capture a lock as a completion certificate and a restore would
+  # retire the job for good. Borrowing it to hold the guard off during a copy-in is the
+  # sentinel-as-interface mistake this repo already records (R475, R287, R642).
+  #
+  # `.PAUSED` says what it means and CANNOT outlive its window: it carries a UTC stamp and is
+  # ignored - and removed - once older than PAUSE_MAX_MIN. `finally` does not run on a hard
+  # kill or a reboot, and the startup launcher fires only at logon, so a permanent flag left by
+  # an interrupted copy-in would silently retire the crawler with nothing to restart it.
+  $pauseFlag = Join-Path $logsDir ("{0}.PAUSED" -f $j.n)
+  if (Test-Path $pauseFlag) {
+    $PAUSE_MAX_MIN = 120
+    $ageMin = ((Get-Date).ToUniversalTime() - (Get-Item $pauseFlag).LastWriteTime.ToUniversalTime()).TotalMinutes
+    if ($ageMin -lt $PAUSE_MAX_MIN) {
+      Add-Content -Path $guardLog -Value ("{0}  PAUSED {1}: maintenance flag {2:N0} min old (limit {3:N0}) - not relaunching" `
+        -f (Get-Date -Format s), $j.n, $ageMin, $PAUSE_MAX_MIN)
+      continue
+    }
+    Add-Content -Path $guardLog -Value ("{0}  PAUSED {1}: flag is {2:N0} min old, past the {3:N0}-minute limit - removing it and resuming guard duty" `
+      -f (Get-Date -Format s), $j.n, $ageMin, $PAUSE_MAX_MIN)
+    Remove-Item $pauseFlag -ErrorAction SilentlyContinue
+  }
+
+  $alive = $false
+  foreach ($cmd in $running) { if ($cmd -and $cmd -like ("*{0}*" -f $j.match)) { $alive = $true; break } }
+
+  # A NAME MATCH IS NOT LIVENESS (R457). istat_sliced sat here for 15.5 HOURS as an
+  # orphan - parent gone, blocked writing into a pipe with no reader, 15 threads, zero
+  # CPU and zero I/O - and every tick this loop saw a process with the right command line
+  # and left it alone. Same shape as R446, where a wedged process held the local_heavy
+  # lock and froze 29 sources: a liveness token held by something incapable of working.
+  #
+  # TWO independent signals are required before killing anything, because getting this
+  # wrong in the other direction destroys live work: on 2026-08-23 cbs_nl looked hung on
+  # CPU alone (7s over 5 hours) and was in fact downloading 8 MB every 20 seconds. So a
+  # quiet log ALONE is not enough - output here is block-buffered and a healthy job can
+  # be silent for a long time.
+  if ($alive) {
+    $newest = Get-ChildItem (Join-Path $logsDir ("guard_{0}_*.log" -f $j.n)) -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -notlike "*.err.log" } |
+              Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($newest -and ((Get-Date) - $newest.LastWriteTime).TotalHours -gt $STALL_HOURS) {
+      $procs = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+                 Where-Object { $_.CommandLine -and $_.CommandLine -like ("*{0}*" -f $j.match) })
+      # CPU *and* I/O, because either alone gives a false reading. A slow download burns
+      # almost no CPU while working perfectly (cbs_nl: 0.45s CPU per 20s while pulling
+      # 8 MB), and a process blocked on a dead pipe burns neither. Only "no CPU AND no
+      # bytes moved" is conclusive, which is exactly the measurement that identified the
+      # istat_sliced orphan.
+      $cpu1 = 0.0; $io1 = 0.0
+      foreach ($pr in $procs) {
+        $o = Get-Process -Id $pr.ProcessId -ErrorAction SilentlyContinue
+        if ($o) { $cpu1 += $o.CPU }
+        $w = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $pr.ProcessId) -ErrorAction SilentlyContinue
+        if ($w) { $io1 += [double]$w.ReadTransferCount + [double]$w.WriteTransferCount + [double]$w.OtherTransferCount }
+      }
+      Start-Sleep -Seconds 20
+      $cpu2 = 0.0; $io2 = 0.0
+      foreach ($pr in $procs) {
+        $o = Get-Process -Id $pr.ProcessId -ErrorAction SilentlyContinue
+        if ($o) { $cpu2 += $o.CPU }
+        $w = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $pr.ProcessId) -ErrorAction SilentlyContinue
+        if ($w) { $io2 += [double]$w.ReadTransferCount + [double]$w.WriteTransferCount + [double]$w.OtherTransferCount }
+      }
+      # TWO CONSECUTIVE TICKS, never one sample (R54). A 20-second window is not evidence
+      # of death: cbs_nl pulls one page roughly every FOUR MINUTES, so any short sample can
+      # land in the gap between requests. That is not hypothetical - on 2026-07-25 an
+      # 8-second sample of this very crawler read 0 bytes in and 0 bytes out, I called it
+      # "silently dead for two days" and killed a job that was working perfectly.
+      #
+      # So a quiet sample only ARMS a suspicion, recorded in logs/<job>.stall_suspect.
+      # The kill needs the same verdict again on a later tick, which puts minutes between
+      # the two observations and spans any polite crawler's natural idle gap. One healthy
+      # request in between clears the flag.
+      $suspectFile = Join-Path $logsDir ("{0}.stall_suspect" -f $j.n)
+      $hadSuspect = Test-Path $suspectFile      # captured BEFORE this tick can set it
+      $quietNow = ((($cpu2 - $cpu1) -lt 0.05) -and (($io2 - $io1) -lt 5000))
+      if (-not $quietNow) {
+        Remove-Item $suspectFile -Force -ErrorAction SilentlyContinue
+      } elseif (-not $hadSuspect) {
+        Set-Content -Path $suspectFile -Value ((Get-Date -Format s) + " first quiet sample")
+        Add-Content -Path $guardLog -Value ("{0}  SUSPECT {1}: quiet sample, waiting for a second tick before acting (R54)" `
+          -f (Get-Date -Format s), $j.n)
+      }
+      if ($quietNow -and $hadSuspect) {
+        Remove-Item $suspectFile -Force -ErrorAction SilentlyContinue
+        Add-Content -Path $guardLog -Value ("{0}  STALLED {1}: no log write for {2:N1} h and no CPU over 20s - killing so it can relaunch" `
+          -f (Get-Date -Format s), $j.n, ((Get-Date) - $newest.LastWriteTime).TotalHours)
+        foreach ($pr in $procs) { & taskkill /PID $pr.ProcessId /T /F 2>&1 | Out-Null }
+        Start-Sleep -Seconds 3
+        $alive = $false
+      }
+    }
+  }
+
+  if (-not $alive) {
+    $ts = Get-Date -Format "MMdd_HHmm"
+    Start-Process $python -ArgumentList $j.args -WorkingDirectory $root -WindowStyle Hidden `
+      -RedirectStandardOutput (Join-Path $logsDir ("guard_{0}_{1}.log" -f $j.n, $ts)) `
+      -RedirectStandardError  (Join-Path $logsDir ("guard_{0}_{1}.err.log" -f $j.n, $ts))
+    Add-Content -Path $guardLog -Value ("{0}  relaunched {1}" -f (Get-Date -Format s), $j.n)
+  }
+}
+
+foreach ($j in $longJobs) {
+  $doneFlag = Join-Path $logsDir ("{0}.DONE" -f $j.n)
+  if (Test-Path $doneFlag) { continue }
+
+  # Match against the python command line, exactly as the crawler loop above does — the runner
+  # is a shim, so what is actually running is still `python -u ... <script>`.
+  $alive = $false
+  foreach ($cmd in $running) { if ($cmd -and $cmd -like ("*{0}*" -f $j.match)) { $alive = $true; break } }
+
+  if (-not $alive) {
+    # JOINED WITH '|', not passed as an array: PowerShell binds any array element starting with
+    # '-' as a parameter NAME, so `-JobArgs -u tools/x.py --dry-run` never binds and the runner
+    # dies before executing a line — while this guard has already logged "relaunched". That is
+    # the worst failure shape available: the log says it started and nothing did.
+    $argList = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$runner,
+                 '-Name',$j.n,'-Exe',$python,'-Root',$root,
+                 '-JobArgsJoined',($j.jobArgs -join '|'))
+    if ($j.env.Count -gt 0) {
+      # k=v pairs for the same reason: a [hashtable] cannot cross a `powershell -File` boundary.
+      # Kept out of the guard's own environment on purpose (see run_guarded_job.ps1).
+      $argList += '-EnvPairs'
+      foreach ($k in $j.env.Keys) { $argList += ("{0}={1}" -f $k, $j.env[$k]) }
+    }
+    Start-Process $pwsh -ArgumentList $argList -WorkingDirectory $root -WindowStyle Hidden
+    Add-Content -Path $guardLog -Value ("{0}  relaunched long job {1}" -f (Get-Date -Format s), $j.n)
+  }
+}
+
+# --- LOCAL HEAVY UPDATER (added 2026-07-31) ------------------------------------------
+# Sources carrying run_location: local are now genuinely EXCLUDED from the cloud daily run
+# (updater/orchestrate.py). That stopped them killing the runner - and would have left them
+# updating NOWHERE, because nothing on this machine invoked them. Scheduled Tasks are blocked
+# by policy here, so this guard loop is the only durable, reboot-surviving trigger available.
+#
+# The cadence decision lives in the script, not here: -IfDue exits 0 immediately unless a run
+# is genuinely due (>= 20h since the last COMPLETED pass) and no other pass holds the lock, so
+# calling it on every 5-minute tick is cheap and idempotent. The script also refuses to start
+# while a CI updater-daily run is in flight (R5: both writers compare-and-swap on the state
+# ETag, so an overlap throws away one run's state).
+$heavy = Join-Path (Join-Path $root 'tools') 'run_local_heavy.ps1'
+if (Test-Path $heavy) {
+  $heavyDone = Join-Path $logsDir 'local_heavy.DONE'
+  if (-not (Test-Path $heavyDone)) {
+    # PRUNE THE EMPTY PAIRS THIS BLOCK ITSELF CREATES. -IfDue exits immediately unless a pass
+    # is genuinely due, so ~288 ticks a day each leave two zero-byte files. Measured
+    # 2026-09-02: 8,092 such pairs - 16,184 files - against 681 pairs holding a real pass
+    # narration, and every glob over logs/ walked all of them. Worse than the cost, an empty
+    # file is the same shape a FAILED launch would leave, so the noise hid the one signal.
+    #
+    # A PAIR, NOT A FILE, and never one younger than 30 minutes. An empty stdout beside a
+    # NON-empty stderr is a launch that died before the script ran, which is exactly the case
+    # worth keeping; a recent pair may belong to a process that has not written yet.
+    $cut = (Get-Date).AddMinutes(-30)
+    Get-ChildItem -Path $logsDir -Filter 'guard_localheavy_*.log' -File -ErrorAction SilentlyContinue |
+      Where-Object { $_.Length -eq 0 -and $_.LastWriteTime -lt $cut } |
+      ForEach-Object {
+        $base = $_.FullName -replace '\.err\.log$','' -replace '\.log$',''
+        $o = "$base.log"; $e = "$base.err.log"
+        $oEmpty = (-not (Test-Path $o)) -or ((Get-Item $o).Length -eq 0)
+        $eEmpty = (-not (Test-Path $e)) -or ((Get-Item $e).Length -eq 0)
+        if ($oEmpty -and $eEmpty) {
+          Remove-Item -LiteralPath $o -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $e -Force -ErrorAction SilentlyContinue
+        }
+      }
+    $ts = Get-Date -Format "MMdd_HHmm"
+    Start-Process 'powershell.exe' `
+      -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$heavy,'-IfDue') `
+      -WorkingDirectory $root -WindowStyle Hidden `
+      -RedirectStandardOutput (Join-Path $logsDir ("guard_localheavy_{0}.log" -f $ts)) `
+      -RedirectStandardError  (Join-Path $logsDir ("guard_localheavy_{0}.err.log" -f $ts))
+  }
+}
+
+# --- SEC_EDGAR DAILY REFRESH, AFTER T0 (added 2026-10-03) --------------------------------------------
+# Before T0 the CI job sec-edgar-daily refreshes sec_edgar; after T0 this machine is the only place that does.
+# Scheduled Tasks are blocked by policy here, so it rides this loop like the local heavy pass. The cadence
+# lives in the script: -IfDue exits at once unless a run is due (08:00 UTC or later, no ok run started today,
+# no attempt in the last 2 h, no other run holding its lock). It writes its own log and status file
+# (logs\sec_edgar_local_*.log, logs\sec_edgar_local.last.json), which tools/guard_heartbeat.py publishes and
+# judges, so nothing is redirected here (a redirect would leave two empty files on every tick).
+# The flag test here only saves starting a shell every 5 minutes before T0; the script tests it again.
+$secEdgar = Join-Path (Join-Path (Join-Path $root 'tools') 'selfhost') 'run_sec_edgar_local.ps1'
+if ((Test-Path 'C:\ProgramData\econ\CUTOVER') -and (Test-Path $secEdgar)) {
+  Start-Process 'powershell.exe' `
+    -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$secEdgar,'-IfDue') `
+    -WorkingDirectory $root -WindowStyle Hidden
+}
+
+# --- PUBLISHER NOTICES, DAILY (added 2026-11-05) ----------------------------------------------------------
+# jobs/watch_notices.py reads the publishers' announcement feeds (updater/notices.yaml) and queues what is
+# ending or changing (data\_maintenance\queue.jsonl, private). It never opens the updater's state or the
+# catalogue, so it has no T0 gate. -IfDue exits at once unless a run is due (09:00 UTC or later, no ok run
+# started today, no attempt in the last 2 h, no other run holding logs\notices.lock); the script writes its
+# own log and status file (logs\notices_*.log, logs\notices.last.json), so nothing is redirected here.
+$notices = Join-Path (Join-Path (Join-Path $root 'tools') 'selfhost') 'run_notices.ps1'
+if (Test-Path $notices) {
+  Start-Process 'powershell.exe' `
+    -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$notices,'-IfDue') `
+    -WorkingDirectory $root -WindowStyle Hidden
+}
+
+# --- RELEASE WATCH, DAILY (added 2026-11-19) --------------------------------------------------------------
+# updater/release_watch.py --desktop reads the publisher's keyless release token for the phase-1 unctad units
+# (one sandboxed child each) and keeps data\_release_watch\record.json; the guard beat carries it to the daily
+# digest. It never opens the updater's state or the catalogue, so it has no T0 gate. -IfDue exits at once unless
+# a run is due (09:00 UTC or later, no ok run started today, no attempt in the last 2 h, no other run holding
+# logs\release_watch.lock); the script writes its own log and status file (logs\release_watch_*.log,
+# logs\release_watch.last.json), so nothing is redirected here.
+$releaseWatch = Join-Path (Join-Path (Join-Path $root 'tools') 'selfhost') 'run_release_watch.ps1'
+if (Test-Path $releaseWatch) {
+  Start-Process 'powershell.exe' `
+    -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$releaseWatch,'-IfDue') `
+    -WorkingDirectory $root -WindowStyle Hidden
+}

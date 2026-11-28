@@ -59,6 +59,16 @@ DEFAULT_MAX_AGE_MIN = 45.0
 # Jobs the guard is responsible for keeping alive. Reported so a beat distinguishes "the
 # watchdog is running" from "the watchdog is running AND its crawlers are up".
 TRACKED = ("ingest_cbs_nl.py", "ingest_gus_dbw.py", "ingest_istat_sliced.py", "statcan_lane.py")
+# AFTER T0 the statcan slot is the post-T0 lane (T0 item B3): jobs/statcan_lane.py refuses then and the post-T0 guard
+# (tools/machine/RELAUNCH_GUARD.ps1.post-t0-copy, swapped in at S13) launches jobs/statcan_selfhost_lane.py instead.
+STATCAN_LANE_SCRIPT, STATCAN_POST_T0_SCRIPT = "statcan_lane.py", "statcan_selfhost_lane.py"
+TRACKED_POST_T0 = tuple(STATCAN_POST_T0_SCRIPT if t == STATCAN_LANE_SCRIPT else t for t in TRACKED)
+
+
+def _tracked() -> tuple:
+    """The jobs the guard keeps alive NOW: TRACKED before T0, TRACKED_POST_T0 after (core.cutover's one rule)."""
+    from core import cutover                                 # noqa: PLC0415
+    return TRACKED_POST_T0 if cutover.is_cut_over() else TRACKED
 
 
 # A tracked process younger than this was (re)started within the last guard tick, which is a FACT
@@ -236,7 +246,7 @@ def _parse_process_table(stdout: bytes, returncode: int) -> "list | None":
 def _match_tracked(rows: list) -> "list[dict]":
     """Rows -> the tracked ingesters among them, with pid and age."""
     out = []
-    for t in TRACKED:
+    for t in _tracked():
         for p in rows:
             if not isinstance(p, dict):
                 continue
@@ -305,23 +315,52 @@ def _lane_expected() -> bool:
         return True                  # cannot tell: expect it, so a missing beat is not waved through
 
 
+def _lane_post_t0() -> "str | None":
+    """The registry's post-T0 statcan lane (statcan's `lane_post_t0`, T0 item B3), None when it names none or the
+    registry cannot be read (a reader then reports the missing lane - never a healthy one)."""
+    try:
+        from updater import registry                         # noqa: PLC0415
+        for e in registry.load().get("sources", []):
+            if e.get("source_id") == "statcan":
+                v = e.get("lane_post_t0")
+                return v if isinstance(v, str) and v else None
+    except Exception:                                        # noqa: BLE001
+        return None
+    return None
+
+
+def _lane_name() -> str:
+    """The lane that serves statcan NOW, for messages: the pre-T0 lane before T0, the registry's after."""
+    from core import cutover                                 # noqa: PLC0415
+    return (_lane_post_t0() or "the post-T0 lane (none named)") if cutover.is_cut_over() else "jobs/statcan_lane.py"
+
+
 def _lane_problem(beat, now) -> "str | None":
     """Why the statcan lane's beat is NOT healthy, or None. The rule is the reporter's own
     (statcan.verdict: dead/wedged past max(2 h, the current cube's estimate x 1.5), or the oldest
     owed release past its SLA) - one predicate, read here because statcan is run_location: local
     and the cloud health gate does not judge it (statcan lane design review, finding 8). A
-    quarantine is `partial` there and is NOT a failure here: it needs a human, not a red run."""
+    quarantine is `partial` there and is NOT a failure here: it needs a human, not a red run.
+
+    AFTER T0 (T0 item B3) the lane is the registry's `lane_post_t0` (jobs/statcan_selfhost_lane.py). The progress
+    file is SHARED with the pre-T0 lane, so after T0 it first holds that lane's LAST beat: a beat counts only when
+    it carries the post-T0 lane's own marker ("lane": <module>) - the state the machine will really be in between
+    T0 and the post-T0 lane's first beat is named for what it is (R1279 rule (b))."""
     from core import cutover                                 # noqa: PLC0415
     if cutover.is_cut_over() and _lane_expected():
-        # STILL A FAULT, named for what it is, WHATEVER THE BEAT FILE SAYS: the lane is pre-T0 only and
-        # refuses after the cutover, so any beat on disk is a pre-T0 one going stale - judging it would
-        # say "dead or wedged, check the guard" about a lane that refuses by design (port review,
-        # defect 2). statcan has NO refresh path until its self-hosted backend and writer lock are
-        # designed - a T0 decision (t0_ready's statcan-lane check refuses T0 until then).
-        return ("jobs/statcan_lane.py refuses after T0 (it serves the R2 copy), so statcan is NOT "
-                "refreshed until its self-hosted lane is designed (backend and writer lock: a T0 "
-                "decision)")
-    if beat is None:
+        module = _lane_post_t0()
+        if module is None:
+            return ("the registry names no post-T0 statcan lane (statcan's lane_post_t0) - jobs/statcan_lane.py "
+                    "refuses after T0, so statcan has NO refresh path")
+        if beat is None:
+            return f"no progress file on the workstation - {module} has never run there since T0"
+        if "unreadable" in beat:
+            return f"its progress file is unreadable ({beat['unreadable']})"
+        if beat.get("lane") != module:
+            return (f"the progress file is not {module}'s (lane {beat.get('lane')!r}, last beat "
+                    f"{beat.get('beat_utc')}): it is the pre-T0 lane's last beat, so {module} has not run since "
+                    f"T0 - is it in the live guard (the S13 swap of tools/machine/RELAUNCH_GUARD.ps1.post-t0-copy)?")
+    elif beat is None:
         return ("no progress file on the workstation - jobs/statcan_lane.py has never run there, "
                 "while the registry says it serves statcan") if _lane_expected() else None
     if "unreadable" in beat:
@@ -602,10 +641,20 @@ def publish(stall_check: bool = False) -> int:
         "jobs_detail": detail or [],
         "table_ok": detail is not None,
         "relaunch_window_s": RELAUNCH_WINDOW_S,
-        "tracked": list(TRACKED),
+        "tracked": list(_tracked()),
         "emptiness": _emptiness_verdict(),
         "statcan_lane": _lane_beat(),
     }
+    # THE LANE'S VERDICT, for the public route (T0 item B3; the sec_edgar shape): None before T0 - CI's R2 --check
+    # judges the pre-T0 lane from `statcan_lane` itself until T0 switches it off, and from S4 to S13 that lane is
+    # paused on purpose (T0 plan) - and after T0 the post-T0 lane's problem, or None when it is healthy. A verdict
+    # that cannot be computed is a problem, never None; the beat goes out regardless.
+    from core import cutover as _cutover                     # noqa: PLC0415
+    try:
+        body["statcan_lane_problem"] = (_lane_problem(body["statcan_lane"], dt.datetime.now(dt.timezone.utc))
+                                        if _cutover.is_cut_over() else None)
+    except BaseException as e:                               # noqa: BLE001 - the beat must go out regardless
+        body["statcan_lane_problem"] = f"could not judge the statcan lane: {type(e).__name__}: {e}"[:300]
     sec = _sec_edgar_beat()
     body["sec_edgar_local"] = sec
     # judged here as well as in check(): the public route carries only this verdict, never the record
@@ -634,7 +683,7 @@ def publish(stall_check: bool = False) -> int:
         c = r2_util.client(write=True)
         c.put_object(Bucket=BUCKET, Key=KEY, Body=data, ContentType="application/json")
     print(f"published {KEY}: {body['utc']} host={body['host']} "
-          + (f"jobs_alive={len(body['jobs_alive'])}/{len(TRACKED)}" if detail is not None
+          + (f"jobs_alive={len(body['jobs_alive'])}/{len(body['tracked'])}" if detail is not None
              else "jobs_alive=UNKNOWN (process table unreadable)"))
     if stall_check:
         print(_stall_tick(started))
@@ -733,7 +782,7 @@ def check(max_age_min: float, local: bool = False) -> int:
               "every day it misses widens the next scan window, up to the 120-day refusal.")
     if lane_bad:
         print(f"STATCAN LANE: {lane_bad}")
-        print("  statcan is refreshed and served ONLY by jobs/statcan_lane.py (a guard job); nothing "
+        print(f"  statcan is refreshed and served ONLY by {_lane_name()} (a guard job); nothing "
               "else in CI judges a run_location=local source.")
         return 1
     if sec_bad:
@@ -780,7 +829,7 @@ def check(max_age_min: float, local: bool = False) -> int:
     return 0
 
 
-def check_url(url: str, max_age_min: float, require_sec_edgar: bool = False) -> int:
+def check_url(url: str, max_age_min: float, require_sec_edgar: bool = False, require_statcan: bool = False) -> int:
     """The OFF-MACHINE check after T0: read the beat through the public /v1/guard-heartbeat route (the edge,
     then the workstation's origin), which serves only its timestamp and counts. Every failure to get a fresh
     beat is a failure - a workstation that is down answers "unavailable", and that is exactly the outage this
@@ -822,6 +871,19 @@ def check_url(url: str, max_age_min: float, require_sec_edgar: bool = False) -> 
                   "sec_edgar local run - deploy the worker route and pull the live checkout before T0")
             return 1
         print("  NOTE: the route or the workstation's publisher is older than the sec_edgar local run - that run is "
+              "UNMONITORED from here until both are updated.")
+    # THE STATCAN LANE (T0 item B3; R1279 rule (c): the post-T0 reader reports the lane). true = healthy, or it is
+    # before T0; false = the post-T0 lane is dead, wedged, blocked or behind; null = an older route or publisher.
+    if body.get("statcan_lane_ok") is False:
+        print("STATCAN LANE NOT HEALTHY: the post-T0 statcan lane (jobs/statcan_selfhost_lane.py) is dead, wedged, "
+              "blocked or behind (the reason is on the workstation: python tools/guard_heartbeat.py --check --local)")
+        return 1
+    if body.get("statcan_lane_ok") is None:
+        if require_statcan:
+            print("STATCAN LANE UNREPORTED: the route or the workstation's publisher is older than T0 item B3 - deploy "
+                  "the worker route and pull the live checkout before T0")
+            return 1
+        print("  NOTE: the route or the workstation's publisher is older than T0 item B3 - the statcan lane is "
               "UNMONITORED from here until both are updated.")
     print(f"guard heartbeat OK: {age:.1f} min old ({beat.isoformat()}) - {jobs}")
     return 0

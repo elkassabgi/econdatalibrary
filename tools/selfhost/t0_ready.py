@@ -36,14 +36,22 @@ Each check is mechanical and names what fails:
                      catalogue-only, 0 forward, 0 unreadable) and still current (the rows and the store listing
                      are fingerprinted again here). A writer NAMED in LOCAL_FRESHNESS_WRITERS proves nothing
                      about the rows it reads (R1195, AR-194). Fails while SEC_EDGAR_OWED lists unbuilt proofs
-  statcan-lane      when the registry serves statcan by jobs/statcan_lane.py, that lane declares POST_T0_READY =
-                    True: until its self-hosted backend and writer lock exist it refuses after T0, and statcan
-                    would have no update path at all. Flipping it also requires the post-T0 readers
-                    (guard_heartbeat.check_url, /v1/guard-heartbeat) to report the lane
+  statcan-lane      when the registry serves statcan by a lane (served_by: lane), its post-T0 lane - the entry's
+                    lane_post_t0 (jobs/statcan_selfhost_lane.py, T0 item B3) - exists and declares one literal
+                    POST_T0_READY = True (jobs/statcan_lane.py refuses after T0), and the PREPARED post-T0 guard
+                    (tools/machine/RELAUNCH_GUARD.ps1.post-t0-copy) launches it and not jobs/statcan_lane.py. The
+                    live guard is swapped to that copy at S13, after READY; its receipt is `--s13` below. The
+                    post-T0 readers (guard_heartbeat.check_url, /v1/guard-heartbeat) reporting the lane is proved
+                    by heartbeat-reader, which requires the route's statcan_lane_ok
   sec-edgar-runner  the live guard (RELAUNCH_GUARD.ps1) starts tools/selfhost/run_sec_edgar_local.ps1 -IfDue in
                     its code, and the runner exists: after T0 that is sec_edgar's only refresh (AR-210)
   flag              the flag does not exist yet (information: a READY with the flag present is a late check)
 Nothing here writes anything.
+
+    python tools/selfhost/t0_ready.py --s13      -> the S13 receipt only: sec-edgar-runner and statcan-runner (the
+                                                    LIVE guard launches the post-T0 lane and not the pre-T0 one), on
+                                                    the guard just swapped in. Not part of READY: it can only pass
+                                                    after the S13 swap, which comes after the flag.
 """
 from __future__ import annotations
 
@@ -461,8 +469,9 @@ def heartbeat_reader(run=subprocess.run, check=None) -> tuple[bool, str]:
         sys.path.insert(0, os.path.join(ROOT, "tools"))
         import functools
         import guard_heartbeat
-        # strict: a route that cannot report the sec_edgar local run is not a reader of it (AR-210 round 2)
-        check = functools.partial(guard_heartbeat.check_url, require_sec_edgar=True)
+        # strict: a route that cannot report the sec_edgar local run is not a reader of it (AR-210 round 2), nor one
+        # that cannot report the statcan lane (T0 item B3; R1279 rule (c)) - so T0 waits for B3's edge deploy and pull
+        check = functools.partial(guard_heartbeat.check_url, require_sec_edgar=True, require_statcan=True)
     return (check(url, 45.0) == 0), f"{url} checked (see the line above)"
 
 
@@ -518,30 +527,94 @@ def served_withheld(store=None, r2=None) -> tuple[bool, str]:
     return True, f"present, {n} ids, identical to R2's copy"
 
 
-def statcan_lane(lane_path=None, registry_sources=None) -> tuple[bool, str]:
-    """statcan's ONLY update path is jobs/statcan_lane.py when the registry says served_by: lane, and that lane
-    refuses after T0 until its self-hosted backend and writer lock are designed (its POST_T0_READY). Read by
-    PARSING the lane, never importing it (its import pins nothing, but a check must not run job code)."""
+PRE_T0_LANE = "jobs/statcan_lane.py"
+# The PREPARED post-T0 guard (T0 item B3, coordinator ruling G2): the versioned workstation copy keeps describing the
+# machine as it is until S13 (a restore before T0 still has the pre-T0 lane, and no drift test goes red); this copy is
+# what the S13 swap (tools/machine/swap_guard_statcan_s13.ps1) installs as the live RELAUNCH_GUARD.ps1.
+GUARD_POST_T0_COPY = os.path.join(ROOT, "tools", "machine", "RELAUNCH_GUARD.ps1.post-t0-copy")
+
+
+def _statcan_entry(registry_sources):
     if registry_sources is None:
         sys.path.insert(0, ROOT)
         from updater import registry
         registry_sources = registry.load().get("sources", [])
-    if not any(e.get("source_id") == "statcan" and e.get("served_by") == "lane" for e in registry_sources):
-        return True, "statcan is not served by the lane"
-    lane_path = lane_path or os.path.join(ROOT, "jobs", "statcan_lane.py")
-    with open(lane_path, encoding="utf-8") as fh:
-        tree = ast.parse(fh.read())
+    return next((e for e in registry_sources if e.get("source_id") == "statcan"), None)
+
+
+def _guard_code(src: str) -> str:
+    """A PowerShell guard's CODE: block comments (<# ... #>) and whole-line comments removed, so a launch that is only
+    written in a comment never counts (R1230, and sec_edgar_runner's rule)."""
+    src = re.sub(r"<#.*?#>", "", src, flags=re.S)
+    return "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
+
+
+def _guard_launches(code: str, script: str) -> bool:
+    """A `$jobs` entry in code whose args name `script` (a quoted 'jobs/<x>.py')."""
+    return re.search(r"args\s*=\s*@\([^)]*'" + re.escape(script) + r"'", code) is not None
+
+
+def _statcan_guard(guard_path: str, module: str) -> tuple[bool, str]:
+    try:
+        src = open(guard_path, encoding="utf-8-sig").read()
+    except OSError as e:
+        return False, f"cannot read the guard {guard_path} ({type(e).__name__})"
+    code = _guard_code(src)
+    problems = []
+    if not _guard_launches(code, module):
+        problems.append(f"{guard_path} does not launch {module} in its code")
+    if _guard_launches(code, PRE_T0_LANE):
+        problems.append(f"{guard_path} still launches {PRE_T0_LANE}, which refuses after T0")
+    return not problems, "; ".join(problems)
+
+
+def statcan_lane(registry_sources=None, root: str = ROOT, guard_copy: str | None = None) -> tuple[bool, str]:
+    """statcan's ONLY update path is its lane when the registry says served_by: lane. Before T0 that is
+    jobs/statcan_lane.py, which refuses after T0; after T0 it is the entry's lane_post_t0 (T0 item B3). That module
+    must exist and declare ONE literal POST_T0_READY = True - read by PARSING it, never importing it (a check must
+    not run job code) - and the prepared post-T0 guard must launch it and not the pre-T0 lane. The LIVE guard is
+    swapped to that copy only at S13, after READY: `statcan_runner` (the --s13 receipt), never part of CHECKS."""
+    e = _statcan_entry(registry_sources)
+    if e is None or e.get("served_by") != "lane":
+        return True, "statcan is not served by a lane"
+    module = e.get("lane_post_t0")
+    if not isinstance(module, str) or not module:
+        return False, (f"the registry's statcan entry names no lane_post_t0: after T0 {PRE_T0_LANE} refuses and "
+                       "statcan has no update path")
+    path = os.path.join(root, *module.split("/"))
+    try:
+        with open(path, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+    except (OSError, SyntaxError, ValueError) as err:
+        return False, f"{module} (the registry's lane_post_t0) cannot be read ({type(err).__name__}: {err})"
     vals = [n.value for n in tree.body if isinstance(n, ast.Assign)
             and any(isinstance(t, ast.Name) and t.id == "POST_T0_READY" for t in n.targets)]
     if len(vals) != 1 or not isinstance(vals[0], ast.Constant) or not isinstance(vals[0].value, bool):
-        return False, "jobs/statcan_lane.py has no single literal POST_T0_READY = True/False - cannot tell"
+        return False, f"{module} has no single literal POST_T0_READY = True/False - cannot tell"
     if not vals[0].value:
-        return False, ("jobs/statcan_lane.py is pre-T0 only (POST_T0_READY = False): after T0 it refuses and "
-                       "statcan has no update path - design its self-hosted backend and writer lock first")
-    return True, "the statcan lane declares itself post-T0 ready"
+        return False, f"{module} is not post-T0 ready (POST_T0_READY = False): after T0 statcan has no update path"
+    ok, why = _statcan_guard(guard_copy or os.path.join(root, "tools", "machine", "RELAUNCH_GUARD.ps1.post-t0-copy"),
+                             module)
+    if not ok:
+        return False, why
+    return True, (f"{module} declares itself post-T0 ready and the prepared post-T0 guard launches it (the live "
+                  f"guard is swapped at S13: t0_ready.py --s13)")
 
 
 GUARD = os.path.join(ROOT, "RELAUNCH_GUARD.ps1")              # the LIVE guard (untracked; tools/machine holds its copy)
+
+
+def statcan_runner(guard_path: str = GUARD, registry_sources=None) -> tuple[bool, str]:
+    """THE S13 RECEIPT (not in CHECKS - it can only pass after the swap, which is after the flag): the LIVE guard
+    launches the registry's lane_post_t0 and no longer launches jobs/statcan_lane.py."""
+    e = _statcan_entry(registry_sources)
+    if e is None or e.get("served_by") != "lane":
+        return True, "statcan is not served by a lane"
+    module = e.get("lane_post_t0")
+    if not isinstance(module, str) or not module:
+        return False, "the registry's statcan entry names no lane_post_t0"
+    ok, why = _statcan_guard(guard_path, module)
+    return ok, (why if not ok else f"the live guard launches {module} and not {PRE_T0_LANE}")
 
 
 def sec_edgar_runner(guard_path: str = GUARD, root: str = ROOT) -> tuple[bool, str]:
@@ -577,18 +650,31 @@ CHECKS = [("legacy-catalogue", legacy_catalogue), ("legacy-remote-d1", legacy_re
           ("flag", flag)]
 
 
-def main() -> int:
+# THE S13 RECEIPT (T0 plan S13: after the live guard swap, run t0_ready's runner checks again on the swapped guard).
+# Deliberately NOT in CHECKS: statcan-runner can only pass after S13, which is after READY and the flag (R1929).
+S13_CHECKS = [("sec-edgar-runner", sec_edgar_runner), ("statcan-runner", statcan_runner)]
+
+
+def main(argv: list | None = None) -> int:
+    argv = [] if argv is None else list(argv)
+    if argv not in ([], ["--s13"]):
+        print("usage: python tools/selfhost/t0_ready.py [--s13]", file=sys.stderr)
+        return 2
+    s13 = argv == ["--s13"]
     ok_all = True
-    for name, fn in CHECKS:
+    for name, fn in (S13_CHECKS if s13 else CHECKS):
         try:
             ok, detail = fn()
         except Exception as e:  # noqa: BLE001 - a check that cannot run is a failure, never a pass
             ok, detail = False, f"could not check: {type(e).__name__}: {e}"
         ok_all &= ok
         print(f"{'PASS' if ok else 'FAIL'}  {name:17s} {detail}")
-    print("READY" if ok_all else "NOT READY - do not create the CUTOVER flag")
+    if s13:
+        print("S13 RECEIPT: OK" if ok_all else "S13 RECEIPT: NOT OK - roll the guard swap back")
+    else:
+        print("READY" if ok_all else "NOT READY - do not create the CUTOVER flag")
     return 0 if ok_all else 1
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

@@ -33,7 +33,8 @@ test("the beat is served as a timestamp and counts only", async () => {
   assert.equal(r.headers.get("cache-control"), "no-store");
   const body = await r.json() as Record<string, unknown>;
   assert.deepEqual(body, { utc: BEAT.utc, table_ok: true, jobs_alive: 2, jobs_tracked: 3,
-                           emptiness_ran: true, fetch_without_write: 0, sec_edgar_local_ok: null });
+                           emptiness_ran: true, fetch_without_write: 0, sec_edgar_local_ok: null,
+                           statcan_lane_ok: null });
   const text = JSON.stringify(body);
   for (const secret of ["WORKSTATION-NAME", "ingest_a", "ingest_c", "some_source"]) {
     assert.equal(text.includes(secret), false, secret);
@@ -44,7 +45,8 @@ test("every field is the beat's own, not a constant (R1226: fixed true/0 mutants
   const r = await handleGuardHeartbeat(envWith({ ...BEAT, table_ok: false,
     emptiness: { ran: false, fetch_without_write: 3 } }));
   assert.deepEqual(await r.json(), { utc: BEAT.utc, table_ok: false, jobs_alive: 2, jobs_tracked: 3,
-                                     emptiness_ran: false, fetch_without_write: 3, sec_edgar_local_ok: null });
+                                     emptiness_ran: false, fetch_without_write: 3, sec_edgar_local_ok: null,
+                                     statcan_lane_ok: null });
 });
 
 test("the sec_edgar local run crosses as a verdict only: ok, not ok, or an older publisher", async () => {
@@ -58,9 +60,24 @@ test("the sec_edgar local run crosses as a verdict only: ok, not ok, or an older
   assert.equal(good.sec_edgar_local_ok, true);
 });
 
+test("the statcan lane crosses as a verdict only: ok, not ok, or an older publisher (T0 item B3)", async () => {
+  const problem = "the progress file is not jobs/statcan_selfhost_lane.py's (lane None, last beat X)";
+  const bad = await (await handleGuardHeartbeat(envWith({ ...BEAT, statcan_lane: { pid: 5151, owed: { merge: 3 } },
+    statcan_lane_problem: problem }))).json() as Record<string, unknown>;
+  assert.equal(bad.statcan_lane_ok, false);
+  for (const secret of ["selfhost_lane", "5151", "owed"]) {
+    assert.equal(JSON.stringify(bad).includes(secret), false, secret);
+  }
+  const good = await (await handleGuardHeartbeat(envWith({ ...BEAT, statcan_lane_problem: null }))).json() as Record<string, unknown>;
+  assert.equal(good.statcan_lane_ok, true);
+  const old = await (await handleGuardHeartbeat(envWith(BEAT))).json() as Record<string, unknown>;
+  assert.equal(old.statcan_lane_ok, null, "a publisher older than B3 is unreported, never ok");
+});
+
 test("a beat carrying the release watch serves the SAME key set and none of its content (release watch B8.12)", async () => {
   const keys = Object.keys(await (await handleGuardHeartbeat(envWith(BEAT))).json() as object).sort();
   assert.deepEqual(keys, ["emptiness_ran", "fetch_without_write", "jobs_alive", "jobs_tracked", "sec_edgar_local_ok",
+                          "statcan_lane_ok",
                           "table_ok", "utc"]);
   const withWatch = { ...BEAT, release_watch: {
     schema: "ekd-release-watch/1",

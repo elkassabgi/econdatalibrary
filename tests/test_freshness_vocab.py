@@ -202,6 +202,14 @@ def _verdict_cases():
                                               "(server='cloudflare' cf-ray='x')"})),
         ("dead (old beat)", False, st, dict(fresh, beat_utc=_z(10))),
         ("store unreachable", False, st, dict(fresh, state="store_unreachable")),
+        # T0 item B3: the post-T0 lane stays resident when it cannot work and beats why - red, never current
+        ("blocked (post-T0 lane)", False, st,
+         dict(fresh, state="blocked", blocked="the store lists 0 cubes under <store> - unreachable")),
+        # B3 design review C1: a lane starved of the catalogue writer lock keeps merging; past 54 h of waiting, red
+        ("writer lock wait inside 54 h", True, st,
+         dict(fresh, writer_lock_wait={"since": _z(30), "cubes": 2, "holder": "held elsewhere"})),
+        ("writer lock wait over 54 h", False, st,
+         dict(fresh, writer_lock_wait={"since": _z(55), "cubes": 2, "holder": "held elsewhere"})),
         ("no progress published", False, None, None),
     ]
 
