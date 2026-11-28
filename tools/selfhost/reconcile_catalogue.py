@@ -36,6 +36,11 @@ CLASSES (b2), first match wins:
          C7-gap source listed, not applied) > LOCAL-NULL (local NULL, D1 value: not taken) > DEFAULT (local wins)
   rows:  C3 (only in D1: not taken, unless the source is a named D1-direct writer -> C3-TAKEN), C4 (only local:
          kept, unless on item 17's approved delete list -> C4-DEL); an approved id on BOTH sides is a FAILED check
+  licence ROWS only in D1 (S4d/B32 deletes unreferenced local licence rows before S5): NEVER inserted; listed as
+         LIC-HELD-ROW (an item-36 decision) only when an allowed row that exists after the reconcile references
+         it, otherwise dropped and reported YES/NO only. A licence-reference cell whose D1 value names a licence
+         the build lacks carries TAKE-D1-REFUSED:TARGET-LICENCE-ABSENT-LOCALLY. Only series rows are ever
+         inserted or deleted (preflight refuses anything else).
   V7 (the sec_edgar level proof) counts EVERY differing sec_edgar cell and every sec_edgar C3 row BEFORE classes,
   except Road B's own null_over_local (id, column) pairs.
 
@@ -1533,7 +1538,21 @@ def classify(*, catalogue: str, snapshots: dict, out_dir: str, allow: Allow, run
     stats = {"misplaced": 0, "duplicate": 0, "shard_copy_differs": 0, "series_rows_local_allowed": 0,
              "c6_cells": 0, "c6_rows": 0, "c3_served": 0, "c3_local_removal": 0, "c3_parent_missing": 0,
              "del_both": 0, "del_withheld": False, "licence_held": 0, "roundtrip": 0, "local_invalid_utf8": 0,
-             "withheld_values": False}
+             "withheld_values": False, "licence_rows_held": 0, "d1_only_licence_dropped": False,
+             "licence_take_refused": 0}
+    # S4d (B32, T0 plan rev 6.5) deletes every UNREFERENCED local licence row before S5, so D1 may hold licence
+    # rows the build no longer has. Such a D1-only licence row is NEVER inserted by this tool: it is listed in the
+    # held licence class (LIC-HELD-ROW, owner item 36) only when an allowed row that EXISTS AFTER the reconcile
+    # (a kept local row, or a C3-TAKEN insert) references it; otherwise it is dropped and only a YES/NO line says
+    # that any was. refs_after collects those references; pending_lic holds the D1-only licence rows until the
+    # series pass (licence is classified first) has decided every row.
+    refs_after: set = set()
+    pending_lic: list = []
+
+    def keep_after(t, row, cols):
+        dig_after.add(_bucket(t, row, allow), cols, row)
+        if t in ("series", "source") and isinstance(row.get("license_id"), str):
+            refs_after.add(row["license_id"])
     streamed = 0
     d1_types, colstats = {}, {}
     for db, sc in snaps.items():
@@ -1599,14 +1618,14 @@ def classify(*, catalogue: str, snapshots: dict, out_dir: str, allow: Allow, run
                     stats["del_both"] += 1                           # review M9: B31 incomplete - a FAILED check
                     o.row(t, key, s, "C4-DEL-BOTH", "failed", "{}", None, d_db)
                     o.count(t, s, None, "rows_C4-DEL-BOTH")
-                    dig_after.add(_bucket(t, l, allow), lcols, l)
+                    keep_after(t, l, lcols)
                     continue
                 if l is not None and d is None:
                     if t == "series" and key in deletes and allow.row_names_gated(l):
                         stats["del_withheld"] = True                 # cannot be planned without its values: FAILED
                         stats["withheld_values"] = True
                         o.row(t, key, s, "C4-DEL-WITHHELD", "failed", "{}", None, None)
-                        dig_after.add(_bucket(t, l, allow), lcols, l)
+                        keep_after(t, l, lcols)
                         continue
                     if t == "series" and key in deletes:
                         lrow = {x: l[x] for x in lcols}
@@ -1616,7 +1635,7 @@ def classify(*, catalogue: str, snapshots: dict, out_dir: str, allow: Allow, run
                         continue                                    # not in the after digest
                     o.row(t, key, s, "C4", "keep", "{}", None, None)
                     o.count(t, s, None, "rows_C4")
-                    dig_after.add(_bucket(t, l, allow), lcols, l)
+                    keep_after(t, l, lcols)
                     continue
                 if d is not None and l is None:
                     fl = {}
@@ -1632,6 +1651,9 @@ def classify(*, catalogue: str, snapshots: dict, out_dir: str, allow: Allow, run
                     if allow.row_names_gated(d):                     # a value names a gated id: not taken, never
                         stats["withheld_values"] = True              # stored or counted - only the YES line
                         continue
+                    if t == "license":                               # S4d/B32: decided after the series pass,
+                        pending_lic.append((key, d, d_db))           # never inserted (see refs_after above)
+                        continue
                     if t == "series" and s in c3n:
                         if d.get("source_id") not in local_src or d.get("license_id") not in local_lic:
                             fl["parent_missing"] = True              # R346: refused before any write
@@ -1641,7 +1663,7 @@ def classify(*, catalogue: str, snapshots: dict, out_dir: str, allow: Allow, run
                         new = {x: d.get(x) for x in lcols}
                         plan["inserts"].append([t, key, {x: d[x] for x in lcols if x in d}])
                         o.count(t, s, None, "rows_C3-TAKEN")
-                        dig_after.add(_bucket(t, new, allow), lcols, new)
+                        keep_after(t, new, lcols)
                     else:
                         o.row(t, key, s, "C3", "not_taken", json.dumps(fl), json.dumps(d, default=_jdefault), d_db)
                         o.count(t, s, None, "rows_C3")
@@ -1685,6 +1707,11 @@ def classify(*, catalogue: str, snapshots: dict, out_dir: str, allow: Allow, run
                             sub.append("licence text")
                         else:
                             sub.append(licence_ref_direction(lv, dv, flags_local, flags_d1))
+                            if dv is not None and dv not in local_lic:
+                                # a "take D1" answer at item 36 would point this row at a licence the build does
+                                # not have (S4d deleted it, or it never came): REFUSED, and listed as such
+                                sub.append("TAKE-D1-REFUSED:TARGET-LICENCE-ABSENT-LOCALLY")
+                                stats["licence_take_refused"] += 1
                     elif kind == "numeric" and (unsafe_number(lv) or unsafe_number(dv)):
                         cls, dec = "ROUNDTRIP", LOCAL
                         stats["roundtrip"] += 1
@@ -1713,11 +1740,20 @@ def classify(*, catalogue: str, snapshots: dict, out_dir: str, allow: Allow, run
                         plan["cells"].append([t, key, col, kind, lv, dv, cls])
                         after[col] = dv
                 after.pop("_mchanged", None)
-                dig_after.add(_bucket(t, after, allow), lcols, after)
+                keep_after(t, after, lcols)
         local_count = con.execute("SELECT COUNT(*) FROM series").fetchone()[0]
         if local_count != streamed:
             raise Failed("local series: COUNT(*) differs from the rows the ordered read saw - a row with a NULL or "
                          "non-text key was missed")
+        for key, d, d_db in pending_lic:                              # every row is decided: refs_after is final
+            if key in refs_after:
+                o.row("license", key, None, "LIC-HELD-ROW", HELD,
+                      json.dumps({"d1_only": True, "referenced_after_the_reconcile": True}),
+                      json.dumps(d, default=_jdefault), d_db)
+                o.count("license", None, None, "rows_LIC-HELD-ROW")
+                stats["licence_rows_held"] += 1
+            else:
+                stats["d1_only_licence_dropped"] = True               # neither named nor counted: YES/NO only
     finally:
         o.close({"stats": stats, "utc": utcnow()})
         con.close()
@@ -1732,11 +1768,13 @@ def classify(*, catalogue: str, snapshots: dict, out_dir: str, allow: Allow, run
 SUMMARY_METRICS = ("cells_kept_local", "cells_taken_d1", "cells_verify_C6", "cells_held_licence",
                    "rows_C3_not_taken", "rows_C3_taken", "rows_C4_kept", "rows_C4_deleted", "rows_C4_del_both",
                    "equal_raw", "equal_after_normalisation", "cells_C7", "cells_C5", "cells_C2", "cells_C1",
-                   "cells_C1-GAP", "cells_LOCAL-NULL", "cells_DEFAULT", "cells_LIC-HELD", "cells_ROUNDTRIP")
+                   "cells_C1-GAP", "cells_LOCAL-NULL", "cells_DEFAULT", "cells_LIC-HELD", "cells_ROUNDTRIP",
+                   "rows_licence_d1_only_held")
 _METRIC_MAP = {"decision_local": "cells_kept_local", "decision_d1": "cells_taken_d1", "decision_verify":
                "cells_verify_C6", "decision_held": "cells_held_licence", "rows_C3": "rows_C3_not_taken",
                "rows_C3-TAKEN": "rows_C3_taken", "rows_C4": "rows_C4_kept", "rows_C4-DEL": "rows_C4_deleted",
-               "rows_C4-DEL-BOTH": "rows_C4_del_both", "equal_norm": "equal_after_normalisation"}
+               "rows_C4-DEL-BOTH": "rows_C4_del_both", "equal_norm": "equal_after_normalisation",
+               "rows_LIC-HELD-ROW": "rows_licence_d1_only_held"}
 
 
 def summarise(out_dir: str, result: dict, c7: C7, inputs: dict, compare_to: str | None, allow: Allow,
@@ -1762,6 +1800,8 @@ def summarise(out_dir: str, result: dict, c7: C7, inputs: dict, compare_to: str 
             "ORDER BY 2, 3")]
         for x in held_rows:
             x["audit"] = audit_line(x["key"])
+        held_lic_rows = [{"key": k, "d1_db": dd, "audit": audit_line(k)} for k, dd in db.execute(
+            "SELECT key, d1_db FROM rows WHERE tbl='license' AND cls='LIC-HELD-ROW' ORDER BY 1")]
         suspects = [dict(zip(("table", "source", "column", "cells"), r)) for r in db.execute(
             "SELECT tbl, source, col, COUNT(*) FROM cells WHERE sublabels LIKE '%MANIFEST-LOCAL-UNCHANGED%' "
             "GROUP BY 1,2,3 ORDER BY 1,2,3")]
@@ -1777,6 +1817,7 @@ def summarise(out_dir: str, result: dict, c7: C7, inputs: dict, compare_to: str 
             "SELECT tbl, key FROM rows WHERE cls='C4-DEL-BOTH' ORDER BY 1,2")]
         s = {"step": "classify", "utc": utcnow(), "per_source": dict(sorted(per.items())), "totals": totals,
              "stats": result["stats"], "licence_held": held, "licence_held_rows": held_rows,
+             "licence_rows_only_in_d1_held": held_lic_rows,
              "d1_side_change_suspects": suspects, "c5_columns": c5, "c5_absent_columns": c5_absent,
              "local_null_columns": local_null,
              "c7_gaps": {k: v for k, v in sorted(c7.gaps.items()) if k in allow.sources},
@@ -1851,6 +1892,13 @@ def render_md(s: dict) -> str:
           f" - {x['audit']}" for x in s["licence_held"]] or ["- none"]
     L += [f"  - licence row {x['key']} {x['column']}: local {x['local']!r}, D1 {x['d1']!r} ({x['direction']}) - "
           f"{x['audit']}" for x in s["licence_held_rows"]]
+    L += ["", "## Licence ROWS only in D1 (S4d/B32 removed unreferenced local licence rows) - HELD, never inserted", ""]
+    L += [f"- {x['key']} (in {x['d1_db']}): referenced after the reconcile by a kept or taken row; adding it is an "
+          f"item-36 decision - {x['audit']}" for x in s["licence_rows_only_in_d1_held"]] or ["- none"]
+    L += [f"- D1-only licence rows that nothing references after the reconcile were dropped: "
+          f"{'YES' if s['stats'].get('d1_only_licence_dropped') else 'NO'}",
+          f"- licence-reference cells whose D1 target licence is absent locally (a 'take D1' answer is REFUSED): "
+          f"{s['stats'].get('licence_take_refused', 0):,} (sublabel TAKE-D1-REFUSED:TARGET-LICENCE-ABSENT-LOCALLY)"]
     L += ["", "## D1-side change suspects (manifest: local unchanged, yet D1 differs)", ""]
     L += [f"- {x['table']}.{x['column']} on {x['source']}: {x['cells']:,}" for x in s["d1_side_change_suspects"]] \
         or ["- none (or no manifest copy in this run)"]
@@ -2001,9 +2049,13 @@ def preflight_writes(con, plan: dict, apply: bool = True) -> None:
     for k, why in checks:
         if c.get(k):
             raise Refused(f"refused before any write: {why}")
-    for t, _key, _col, _kind, _b, _a, cls in plan["writes"]["cells"]:
-        if cls == "LIC-HELD" or t == "license":
+    for t, _key, col, _kind, _b, _a, cls in plan["writes"]["cells"]:
+        if cls == "LIC-HELD" or t == "license" or (t, col) in LICENCE_REFS:
             raise Refused("refused before any write: the plan writes a licence cell (licence cells are HELD)")
+    for t, _key, _row in plan["writes"]["inserts"] + plan["writes"]["deletes"]:
+        if t != "series":                    # S4d/B32: a licence (or source) row is never inserted or deleted here
+            raise Refused("refused before any write: the plan inserts or deletes a licence or source row (only "
+                          "series rows are written automatically; a D1-only licence row is an item-36 decision)")
     src = {r[0] for r in con.execute("SELECT source_id FROM source")}
     lic = {r[0] for r in con.execute("SELECT license_id FROM license")}
     for _t, key, row in plan["writes"]["inserts"]:

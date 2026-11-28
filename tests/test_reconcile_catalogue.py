@@ -625,6 +625,91 @@ def test_t9_m8_c3_taken_without_parent_rows_is_refused_before_any_write(env):
     assert not os.path.exists(tmp / "t_before.json")              # refused before the plan file and any write
 
 
+# ---- S4d / B32 (T0 plan rev 6.5): local has no unreferenced licence rows; D1 may still have them --------------
+
+def _plant_s4d(tmp, fake):
+    """The build after S4d: lic-open and lic-a only. alpha:3 keeps a DANGLING reference to lic-dangle. D1 still has
+    lic-z (only a D1 value of alpha:2's held license_id cell references it), lic-dangle, lic-take (referenced by
+    the C3-TAKEN row sec_edgar:N), lic-old (referenced only by the not-taken D1-only row alpha:4) and lic-q
+    (referenced by nothing: never admitted)."""
+    fake.add(rc.PRIMARY, "series", [srow("alpha:1"), srow("alpha:2", license_id="lic-z"),
+                                    srow("alpha:3", license_id="lic-dangle"), srow("alpha:4", license_id="lic-old"),
+                                    srow("alpha:5", license_id="lic-a"), srow("sec_edgar:N", license_id="lic-take")])
+    fake.add(rc.PRIMARY, "source", [src("alpha"), src("sec_edgar")])
+    fake.add(rc.PRIMARY, "license", [lic(x) for x in ("lic-open", "lic-a", "lic-z", "lic-dangle", "lic-take",
+                                                      "lic-old", "lic-q")])
+    fake.finish()
+    return make_local(tmp / "l.db", [srow("alpha:1"), srow("alpha:2", license_id="lic-a"),
+                                     srow("alpha:3", license_id="lic-dangle"), srow("alpha:5"), srow("sec_edgar:A")],
+                      [src("alpha"), src("sec_edgar")], [lic("lic-open"), lic("lic-a")])
+
+
+def test_s4d_a_d1_only_licence_row_is_never_inserted_and_listed_only_when_referenced_after(env):
+    tmp, fake = env
+    local = _plant_s4d(tmp, fake)
+    snaps, _ = snapshot(fake, local, tmp / "snap")
+    out = tmp / "out"
+    res = run_classify(local, snaps, out)
+    lic_rows = {(k, c): dec for (t, k, c), (dec, _fl) in rows(out).items() if t == "license"}
+    # (1) listed in the HELD class only when a row that exists after the reconcile references it
+    assert lic_rows == {("lic-dangle", "LIC-HELD-ROW"): "held", ("lic-take", "LIC-HELD-ROW"): "held"}, lic_rows
+    assert res["stats"]["licence_rows_held"] == 2
+    assert all(t == "series" for t, _k, _r in res["plan"]["inserts"])   # never inserted automatically
+    assert ("series", "sec_edgar:N", "C3-TAKEN") in rows(out) and res["stats"]["c3_parent_missing"] == 1
+    # (3) lic-z and lic-old: dropped, YES only - no row, no count
+    assert res["stats"]["d1_only_licence_dropped"] is True
+    assert not q(out, "SELECT 1 FROM rows WHERE tbl='license' AND key IN ('lic-z','lic-old','lic-q')")
+    assert q(out, "SELECT DISTINCT metric FROM agg WHERE tbl='license' AND metric LIKE 'rows%'") == \
+        [("rows_LIC-HELD-ROW",)]
+    assert q(out, "SELECT SUM(n) FROM agg WHERE tbl='license' AND metric='rows_LIC-HELD-ROW'") == [(2,)]
+    # (2) the held licence-reference cell whose D1 target is absent locally carries the refusal; a target that
+    # exists locally does not (control)
+    c = cells(out)
+    assert c[("series", "alpha:2", "license_id")][0] == "LIC-HELD"
+    assert "TAKE-D1-REFUSED:TARGET-LICENCE-ABSENT-LOCALLY" in c[("series", "alpha:2", "license_id")][2]
+    assert c[("series", "alpha:5", "license_id")][0] == "LIC-HELD"
+    assert "TAKE-D1-REFUSED" not in c[("series", "alpha:5", "license_id")][2]
+    assert res["stats"]["licence_take_refused"] == 1
+    s = rc.summarise(str(out), res, rc.C7(), {"gate_sha256": "g"}, None, allow_for(local, snaps),
+                     rc.dropped_flags(snaps))
+    assert [x["key"] for x in s["licence_rows_only_in_d1_held"]] == ["lic-dangle", "lic-take"]
+    md = open(out / "summary.md", encoding="utf-8").read()
+    assert "nothing references after the reconcile were dropped: YES" in md
+    assert "a 'take D1' answer is REFUSED): 1" in md
+
+
+def test_s4d_no_d1_only_licence_says_no(env):
+    tmp, fake = env
+    fake.add(rc.PRIMARY, "series", [srow("alpha:1")])
+    fake.add(rc.PRIMARY, "license", [lic("lic-open"), lic("lic-q")])  # lic-q: referenced by nothing, never admitted
+    fake.finish()
+    local = make_local(tmp / "l.db", [srow("alpha:1")])
+    snaps, _ = snapshot(fake, local, tmp / "snap")
+    res = run_classify(local, snaps, tmp / "out")
+    assert res["stats"]["d1_only_licence_dropped"] is False and res["stats"]["licence_rows_held"] == 0
+
+
+def test_s4d_preflight_refuses_a_licence_row_or_a_licence_reference_write(env):
+    tmp, _fake = env
+    local = make_local(tmp / "l.db", [srow("alpha:1")])
+    con = cp.connect_path(local, write=True, isolation_level=None)
+    try:
+        ok = {"counts": {}, "writes": {"cells": [], "inserts": [], "deletes": []}}
+        rc.preflight_writes(con, ok, apply=False)                     # positive control: an empty plan passes
+        for bad in ({"inserts": [["license", "lic-z", {"license_id": "lic-z"}]]},
+                    {"deletes": [["license", "lic-open", {"license_id": "lic-open"}]]},
+                    {"inserts": [["source", "newsrc", {"source_id": "newsrc"}]]}):
+            plan = {"counts": {}, "writes": {"cells": [], "inserts": [], "deletes": [], **bad}}
+            with pytest.raises(rc.Refused, match="licence or source row"):
+                rc.preflight_writes(con, plan, apply=False)
+        cell = {"counts": {}, "writes": {"cells": [["series", "alpha:1", "license_id", "text", "lic-open", "lic-z",
+                                                    "C1"]], "inserts": [], "deletes": []}}
+        with pytest.raises(rc.Refused, match="licence cell"):
+            rc.preflight_writes(con, cell, apply=False)
+    finally:
+        con.close()
+
+
 # ---- T10: the allow-list - nothing outside it in ANY output, a traceback included ----------------------------
 
 def _grep_outputs(dirs, needles):
