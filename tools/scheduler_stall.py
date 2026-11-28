@@ -16,7 +16,8 @@ WHY (review AR-362 of PR #185). tools/ci_writer_gate.py fails CLOSED: a cron of 
 updater-heavy.yml blocks the desktop heavy pass from its time until GitHub creates its run, at most 12 h, and
 then the next cron blocks. So if GitHub stops creating scheduled runs while the workflows stay "active", the
 desktop pass is blocked for ever. Before this file the only warning was a line in a local log
-(run_local_heavy.ps1, after 2 x MinHours without a pass), and that line fires routinely. The alarms that
+(run_local_heavy.ps1, after $StarvationWarnHours = 48 h without a stamped pass; AR-469), and it stays on this
+machine. The alarms that
 leave the machine - the daily digest, health.route_silence, guard_heartbeat --check, selfhost-watch,
 billing-guard - all run in GitHub workflows, which the same stall stops. The owner would notice only a digest
 that did not arrive.

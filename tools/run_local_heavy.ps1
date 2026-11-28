@@ -45,7 +45,39 @@ param(
     # R35/R50 false-green this repo already documents for the CLOUD dispatch path, which
     # is why updater-daily.yml grew its own force input). Only meaningful with -Only.
     [switch]   $Force,
-    [int]      $MinHours = 20,
+    # The cadence FLOOR, in hours since the last stamped pass ENDED (local_heavy.last_success). 14, not 20
+    # (2026-11-11): on the schedule in force since 2026-11-05 a pass ends about 02:20-02:40Z, so 20 h made the
+    # next one eligible only from about 22:40Z, while the 12:00Z updater-heavy run had already finished at
+    # 18:19-20:46Z on most days. That evening gap was NOT idle: it is the only window the desktop lanes that
+    # must not overlap a pass get - the Fed Z1 heal (it waits for >= 150 gate-free minutes with the next pass
+    # >= 150 min away) and derive_csv_bulk's durable clear (gate free >= 30 min and since + 0.5 h <
+    # LOCAL_MIN_HOURS). At 14 h the replay gives the heal 0 opening ticks (32 at 20 h) and the clear about 110
+    # eligible minutes (about 785 at 20 h; review AR-469). derive_csv_bulk._writers_quiet applies its own 14 h
+    # rule (LOCAL_MIN_HOURS), so after this change the durable clear keeps about 110 minutes per 5.91 days.
+    # Nothing in this runner reserves the gap for them: the owed clear and the heal run under the 20 h floor
+    # BEFORE this value lands, and a window-reservation mechanism is a separate, later design.
+    # `measure_ci_lag.py replay61` over 2026-11-05T06:00Z..11-11T03:45Z (state copy 11-11T03:49Z, real ps1
+    # stamps, D3 8, W off, censored x1): 20 h gives 235 window min/day, 14 h gives 378, with the same 6
+    # passes, 6 stamped, 0 collisions and 0 evictions. 16 h gives 378 too, but loses 10 min after a pass that
+    # hard-stops at 02:41Z (censored x1.5 and x2: 376); 12, 10 and 8 measure exactly like 14 in every row (the
+    # $MaxHours / $WantBlockMin hold binds below it), so 14 is the largest value that gets all of it. A pass
+    # ending as late as 03:00Z is then eligible from 17:00Z, inside the 12:00Z heavy run. The PR that set this
+    # carries the full table. tools/derive_csv_bulk.py LOCAL_MIN_HOURS and measure_ci_lag.py PS1_MIN_HOURS carry
+    # this value, pinned by tests. Do not move it without re-running that replay (R1037: this clock is a
+    # scheduler of its own).
+    [int]      $MinHours = 14,
+    # The starvation WARNING threshold, in hours since the last stamped pass (the gate-refusal branch below).
+    # It was 2 x $MinHours: 28 h at 14 h, which a healthy route already reaches, so it would fire as noise.
+    # Derived from the cron table IN FORCE only (since 2026-11-05), because the longer gaps before it (up to
+    # 73.5 h, and 120 h on 10-31..11-05) were the gate starvation R1032 is about, not health. Wrapper logs
+    # 2026-11-05..11-11: stamped pass to stamped pass 23.9-24.1 h, and 47.8 h once (a pass on 11-09 that did
+    # not stamp). Hours since the last stamp when a pass started: 20.0-20.4 h, and 41.9 h once. 48 h is
+    # therefore past every healthy tick on this table: it means a second evening has gone by without a stamped
+    # pass. It is also below updater/health.py route_silence's 3 days (72 h), so this warning comes first.
+    # Pinned by tests/test_local_min_hours.py.
+    # TODO(AR-469 N4): re-check 48 h once about 30 days of this cron table exist (from about 2026-12-05): count
+    # the gate-refused ticks at 44 h or more since the stamp, and the healthy maximum of hours-since at a start.
+    [int]      $StarvationWarnHours = 48,
     # How long to keep waiting for a window worth using before taking whatever is free. Swept against 14 days
     # of real history: at 30 h the runner settles for a short pass at a busy hour and its end time re-anchors
     # the cadence there, which cost 4 collisions against 0 at 36 h. That comparison counts a collision as a
@@ -99,7 +131,7 @@ function Say($msg) {
 # long-running jobs ALIVE, not to run a job on a cadence. -IfDue bridges that.
 $stampFile = Join-Path $logDir 'local_heavy.last_success'
 # D3: written only by a pushed whole-route pass that advanced nothing (Test-NoProgressShouldStamp). It never
-# moves the 20-hour clock above; it only lets the window choice below hold short windows for a while.
+# moves the $MinHours clock above; it only lets the window choice below hold short windows for a while.
 $noProgFile = Join-Path $logDir 'local_heavy.last_noprogress'
 # The decisions this runner takes are pure functions in cadence_decision.ps1, tested against real PowerShell
 # (tools/test_cadence_decision.ps1). Loaded here, before the first decision that uses one.
@@ -159,7 +191,7 @@ if ($IfDue) {
     }
 
     # Ran recently enough? Stamp is written ONLY after a pass that actually executed, so an
-    # abort on a busy CI does not push the next attempt 20 hours out.
+    # abort on a busy CI does not push the next attempt $MinHours hours out.
     #
     # $MinHours is a FLOOR, not the schedule. How long it has been is carried forward to the window choice
     # below, because the cadence alone decided when passes ran and it locked onto the busiest hour of the day
@@ -304,11 +336,11 @@ if ($selfHosted) {
     if ($gateRc -eq 3) {
         # SILENT STARVATION IS THE FAILURE MODE OF THIS WHOLE MECHANISM (R1032): a gate that refuses every tick
         # looks exactly like a gate that is working, and the desktop ran 0 passes in 112 attempts on 2026-09-16
-        # before anyone noticed. A refusal is normal; going a day and a half without a pass is not.
-        if ($null -ne $script:SinceLastHours -and $script:SinceLastHours -ge (2 * $MinHours)) {
-            Say ("WARNING: no desktop pass has completed for " + [int]$script:SinceLastHours + " h. The gate " +
-                 "has refused every attempt. Local-route sources advance ONLY on these passes, so they are " +
-                 "not updating. Run 'python tools/measure_ci_lag.py replay' to see how much clear time the " +
+        # before anyone noticed. A refusal is normal; going longer than any healthy gap without a pass is not.
+        if ($null -ne $script:SinceLastHours -and $script:SinceLastHours -ge $StarvationWarnHours) {
+            Say ("WARNING: no stamped pass for " + [int]$script:SinceLastHours + " h, and the gate refused this " +
+                 "tick. Passes that ran but did not stamp (no progress, a failed push-state) count as missing. " +
+                 "Local-route sources advance ONLY on stamped passes, so they are not updating. Run 'python tools/measure_ci_lag.py replay' to see how much clear time the " +
                  "rule is actually leaving, and 'ci_writer_gate.py --until-block' for what it sees now.")
         }
         Say "ABORT: a cloud state writer is running or its scheduled run has not started yet."
@@ -823,7 +855,7 @@ if ($decision.Stamp) {
 }
 # D3: a SEPARATE stamp, written only by a scheduled whole-route pass that pulled the state, pushed it, and
 # advanced nothing (Test-NoProgressShouldStamp). Never on a push failure, a crash, a hard stop or a manual
-# -Only/-Force proof. The 20-hour clock above is untouched by it.
+# -Only/-Force proof. The $MinHours clock above is untouched by it.
 $noProg = Test-NoProgressShouldStamp -PushRc $pushRc -Crashed $crashed -HardStopped ($hardStopped -or $rc -eq 124) `
               -Manual ([bool]$Only -or [bool]$Force) -PulledState (-not $selfHosted) -Advanced $advanced
 if ($noProg.Stamp) {

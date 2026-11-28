@@ -203,7 +203,7 @@ function Get-PostPullBudget {
 function Test-CadenceShouldStamp {
     <#
       .SYNOPSIS
-      Should this pass stamp the 20-hour cadence clock?
+      Should this pass stamp the $MinHours cadence clock?
 
       Three ways to answer no, and one of them is "I do not know":
         * push-state failed        - nothing durable came of the pass;
