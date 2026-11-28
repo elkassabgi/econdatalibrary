@@ -1,0 +1,4 @@
+# C3 named D1-direct writers (b2 row class C3, ruling k): a row only in D1 is NOT taken unless its source is here.
+# Matching is by source (a D1 row carries no writer name). The review adds a source only with evidence.
+source	writer	evidence
+sec_edgar	sec-edgar-daily (tools/refresh_sec_edgar.py --d1); the D1 roads of tools/refresh_sec_edgar.py; tools/enrich_sec_edgar_tickers.py	R1193 (sec_edgar is the only D1-only freshness writer); refresh_sec_edgar.py:450-477; Road B brings its rows local at S5

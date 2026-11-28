@@ -1,0 +1,79 @@
+# The C7 writer map (DESIGN.md 1.4 layer 1): every catalogue writer, its receipt parser and grain.
+# The writer set = git grep -l -E "connect\(write=True|connect_path\(.*write=True|write_session\(\)" -- *.py (tests excluded)
+# plus the plan's three named extra writers. tests/test_reconcile_catalogue.py fails when the set changes.
+# parser: sync_rows | ids_file | json_list:<key> | none.  grain: ids | source | none (none = every run is a C7 gap
+# unless its booking lists ids).
+writer	parser	grain	receipt_pattern	evidence
+core/apply_title_wave.py	none	none		no receipt found in its code
+core/backfill_coverage.py	none	none		no receipt found in its code
+core/broaden_catalog.py	none	none		no receipt found in its code
+core/build_series_metadata.py	none	none		no receipt found in its code
+core/catalog.py	none	none		no receipt found in its code
+core/catalog_path.py	none	none		the resolver itself (names write_session); writes nothing
+pipeline/title_bea.py	none	none		no receipt found in its code
+tools/_cat_bea.py	none	none		no receipt found in its code
+tools/_cat_biotrademerch.py	none	none		no receipt found in its code
+tools/_cat_critmin.py	none	none		no receipt found in its code
+tools/_cat_efw.py	none	none		no receipt found in its code
+tools/_cat_nonplastic.py	none	none		no receipt found in its code
+tools/_cat_tradefoodcatbyproc.py	none	none		no receipt found in its code
+tools/_cat_tradefoodprocbycat.py	none	none		no receipt found in its code
+tools/_cat_tradeservcatbypartner.py	none	none		no receipt found in its code
+tools/apply_license_class.py	none	none		no receipt found in its code
+tools/apply_series_names.py	none	none		no receipt found in its code
+tools/catalog_census_tables.py	none	none		no receipt found in its code
+tools/catalog_cepii_baci.py	none	none		no receipt found in its code
+tools/catalog_complete.py	none	none		no receipt found in its code
+tools/catalog_dip_tables.py	none	none		no receipt found in its code
+tools/catalog_eia_tables.py	none	none		no receipt found in its code
+tools/catalog_fdic.py	none	none		no receipt found in its code
+tools/catalog_fed_board.py	none	none		no receipt found in its code
+tools/catalog_fhfa.py	none	none		no receipt found in its code
+tools/catalog_ilostat_indicators.py	none	none		no receipt found in its code
+tools/catalog_imf_direct.py	none	none		no receipt found in its code
+tools/catalog_imts_tables.py	none	none		no receipt found in its code
+tools/catalog_istat_flows.py	none	none		no receipt found in its code
+tools/catalog_mfs_tables.py	none	none		no receipt found in its code
+tools/catalog_noaa.py	none	none		no receipt found in its code
+tools/catalog_penn_world_table.py	none	none		no receipt found in its code
+tools/catalog_pip_tables.py	none	none		no receipt found in its code
+tools/catalog_pxweb_flowgrain.py	none	none		no receipt found in its code
+tools/catalog_statcan_tables.py	none	none		no receipt found in its code
+tools/catalog_table_grain.py	none	none		no receipt found in its code
+tools/catalog_unsdg_flows.py	none	none		no receipt found in its code
+tools/catalog_usda_tables.py	none	none		no receipt found in its code
+tools/catalog_who_api.py	none	none		no receipt found in its code
+tools/catalog_whr.py	none	none		no receipt found in its code
+tools/catalog_worldbank_esg_gaps.py	none	none		no receipt found in its code
+tools/clean_catalogue_titles.py	ids_file	ids	the --ids-out file, when the run used it	clean_catalogue_titles.py:16, 116
+tools/cso_repull_matrix.py	none	none		no receipt found in its code
+tools/cso_repull_subject.py	none	none		no receipt found in its code
+tools/delist_timeless_tables.py	none	none		no receipt found in its code
+tools/enrich_sec_edgar_tickers.py	none	none		no receipt found in its code
+tools/fix_statcan_frequency.py	ids_file	ids	logs/statcan_freq_fix/<UTC>_<pid>/changed_ids.txt	fix_statcan_frequency.py:26-28, 288-290
+tools/flowgrain_insee_melodi.py	none	none		no receipt found in its code
+tools/flowgrain_ons_uk.py	none	none		no receipt found in its code
+tools/make_servable.py	none	none		no receipt found in its code
+tools/prune_series_cursors.py	none	none		no receipt found in its code
+tools/refresh_flowgrain_dates.py	none	source	logs/refresh_flowgrain_dates_<source>_<UTC>.json	refresh_flowgrain_dates.py:321-330 (names its source; source grain)
+tools/refresh_sec_edgar.py	none	none		no receipt found in its code
+tools/rekey_fao_series.py	none	none		no receipt found in its code
+tools/repull_file.py	none	none		no receipt found in its code
+tools/statcan_new_cubes.py	none	source	its run folder (receipts per cube)	statcan_new_cubes.py:37-45; statcan is C2 anyway
+tools/sync_source_rows_d1_to_local.py	sync_rows	ids	logs/sync_rows_<source>_<UTC>.json	sync_source_rows_d1_to_local.py:285-293 (missing, differing, before_after, null_over_local)
+tools/title_bea_from_api.py	none	none		no receipt found in its code
+tools/title_damodaran_margins.py	none	none		no receipt found in its code
+tools/title_eia_eba_all.py	none	none		no receipt found in its code
+tools/title_eia_nuclear_status.py	none	none		no receipt found in its code
+tools/title_idb_from_ckan.py	none	none		no receipt found in its code
+tools/title_noaa_from_siblings.py	none	none		no receipt found in its code
+tools/title_rba_from_csv.py	none	none		no receipt found in its code
+tools/title_riksbank_fx.py	none	none		no receipt found in its code
+tools/title_unctad_span_variants.py	none	none		no receipt found in its code
+tools/title_unesco_dem_wb_codes.py	none	none		no receipt found in its code
+tools/title_unhcr_from_siblings.py	none	none		no receipt found in its code
+tools/title_vdem_from_codebook.py	none	none		no receipt found in its code
+tools/delist_source_rows.py	none	none		no receipt found in its code
+tools/retire_source.py	none	none		no receipt found in its code
+core/licence_targets.py	none	none		no receipt found in its code
+tools/selfhost/reconcile_catalogue.py	none	none		this tool: writes only at S11 (apply) or a plain copy (rehearse)

@@ -1,0 +1,9 @@
+# C1 (b2 rule 5): a column that ONLY the CI writers write, on a source that is not run_location: local -> D1 wins.
+# Reviewed list; an entry needs a file:line. Proposal from code (DESIGN.md F1, 3.3): the CI writers write D1
+# `series` columns only for sec_edgar (tools/refresh_sec_edgar.py --d1, run by .github/workflows/sec-edgar-daily.yml:118).
+# Every entry below is dominated by C6 (sec_edgar: verify only), so today C1 decides nothing; the list exists so a
+# writer the review finds can be added without a code change (coordinator 2026-11-28, Q1). Empty is allowed.
+source	table	column	writer	evidence
+sec_edgar	series	start_date	tools/refresh_sec_edgar.py --d1	tools/refresh_sec_edgar.py:469-472
+sec_edgar	series	end_date	tools/refresh_sec_edgar.py --d1	tools/refresh_sec_edgar.py:469-472
+sec_edgar	series	title	tools/refresh_sec_edgar.py --d1	tools/refresh_sec_edgar.py:469 (when the title changes)
