@@ -8,7 +8,8 @@ Bookings the PRE-T0 lane made count too (a cube absent from the store with no lo
 first post-T0 iteration. This tool counts them BEFORE the S13 guard swap, so the number is a receipt, not an alarm.
 
 INPUTS - ALL COPIES. R1940: never E:'s data/ catalogue or state database, not even read-only, and the coordinator's
-brief: never E:'s store. This tool REFUSES any input under E:\\research\\econfindatalibrary\\data or E:\\econ_live.
+brief: never E:'s store. This tool REFUSES any input under E:\\research\\econfindatalibrary\\data or E:\\econ_live -
+on the path's text first (any case, either slash), so a live path is refused before anything touches it.
   --state          a copy of the lane state (data/clean_full/statcan/_lane_state.json)
   --catalogue      a copy of the catalogue - opened mode=ro&immutable=1 (no lock, no journal, no side file)
   --store-dir      a folder holding a copy of the statcan parquets: only their NAMES are listed, no file is opened
@@ -27,8 +28,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import ntpath
 import os
 import pathlib
+import posixpath
+import re
 import sqlite3
 import sys
 
@@ -44,14 +48,48 @@ def unit_id(pid: str) -> str:
     return f"{SOURCE}:{pid}"
 
 
+_DRIVE = re.compile(r"^[A-Za-z]:[\\/]")
+_DEVICE_PREFIXES = ("\\\\?\\", "\\\\.\\", "//?/", "//./")
+
+
+def _text_form(path) -> str:
+    """`path` as normalised TEXT: never stat-ed, opened or resolved (code re-review round 3, the G3 note). A Windows
+    path (on Windows every path; on another OS one spelled with a drive letter) is folded with ntpath - both slash
+    forms, any case, `..` collapsed, a `\\\\?\\` or `\\\\.\\` prefix dropped - so the check means the same on CI's Linux
+    runner as on the desktop. abspath only joins the working folder to the text (GetFullPathNameW reads no file)."""
+    s = os.fspath(path)
+    for pre in _DEVICE_PREFIXES:
+        if s.startswith(pre) and _DRIVE.match(s[len(pre):]):
+            s = s[len(pre):]
+            break
+    if os.name == "nt":
+        return ntpath.normcase(ntpath.normpath(ntpath.abspath(s)))
+    if _DRIVE.match(s):
+        return ntpath.normcase(ntpath.normpath(s))
+    return posixpath.normpath(posixpath.abspath(s))
+
+
+def _under(form: str, root_form: str) -> bool:
+    sep = "\\" if os.name == "nt" or _DRIVE.match(root_form) else "/"
+    r = root_form.rstrip("\\/")
+    return form == r or form.startswith(r + sep)
+
+
 def refused(path: str, roots=None) -> "str | None":
-    """A refusal when `path` is (under) one of the live places."""
+    """A refusal when `path` is (under) one of the live places. Decided on the TEXT first: a live path given by mistake
+    is refused without being resolved, stat-ed or opened (os.path.realpath opens a handle on Windows). Only a path
+    that passes is resolved, so a junction or link into a live place is still seen. The roots are never resolved."""
     roots = REFUSED_ROOTS if roots is None else roots
-    p = os.path.normcase(os.path.realpath(path))
-    for r in roots:
-        rr = os.path.normcase(os.path.realpath(r)).rstrip("\\/")
-        if p == rr or p.startswith(rr + os.sep):
+    forms = [(r, _text_form(r)) for r in roots]
+    p = _text_form(path)
+    for r, rf in forms:
+        if _under(p, rf):
             return f"REFUSED: {path} is under {r}, a LIVE place (R1940) - give a COPY"
+    real = os.path.realpath(path)            # passed the text test: resolved only now
+    rp = _text_form(real)
+    for r, rf in forms:
+        if _under(rp, rf):
+            return f"REFUSED: {path} resolves to {real}, under {r}, a LIVE place (R1940) - give a COPY"
     return None
 
 

@@ -1602,6 +1602,89 @@ def test_G3_the_census_refuses_live_places_and_inputs_it_cannot_judge(tmp_path, 
     assert LC.main(_census_args(d)) == 2 and "lists 0 parquets" in capsys.readouterr().out
 
 
+# every spelling of a live place a mistaken argument can take: case, either slash, mixed, `..`, the \\?\ prefix
+_LIVE_SPELLINGS = [
+    "E:\\research\\econfindatalibrary\\data\\catalog.db",
+    "e:/Research/EconFinDataLibrary/DATA/state.db",
+    "E:\\research/econfindatalibrary\\data",
+    "E:\\research\\econfindatalibrary\\tools\\..\\data\\catalog.db",
+    "E:\\econ_live",
+    "E:/ECON_LIVE/state/writer.lock",
+    "\\\\?\\E:\\econ_live\\state\\writer.lock",
+]
+
+
+def _touch_spies(monkeypatch) -> list:
+    """(call, path) for every call that can stat, open or resolve a file - B24's R2-L6 spy, wider. Each spy passes
+    the call on, so a path that passes the check is still really resolved."""
+    import builtins
+    import ntpath
+    seen = []
+    targets = [(os, "stat"), (os, "lstat"), (os, "open"), (os, "listdir"), (os, "scandir"), (os.path, "exists"),
+               (os.path, "isfile"), (os.path, "isdir"), (os.path, "realpath"), (os.path, "samefile"),
+               (builtins, "open"), (io, "open"), (sqlite3, "connect")]
+    if hasattr(ntpath, "_getfinalpathname"):                 # the Windows call that opens the handle
+        targets.append((ntpath, "_getfinalpathname"))
+    for mod, name in targets:
+        real = getattr(mod, name)
+
+        def spy(*a, _real=real, _name=name, **k):
+            p = a[0] if a else k.get("path", k.get("file", k.get("database")))
+            seen.append((_name, os.fspath(p) if isinstance(p, (str, bytes, os.PathLike)) else repr(p)))
+            return _real(*a, **k)
+        monkeypatch.setattr(mod, name, spy)
+    return seen
+
+
+def _e_paths(seen) -> list:
+    """The recorded calls on ANY E: path (folded by hand here, not by the code under test)."""
+    def e(s):
+        s = s.decode() if isinstance(s, bytes) else s
+        s = s.replace("/", "\\").lower()
+        for pre in ("\\\\?\\", "\\\\.\\"):
+            s = s[len(pre):] if s.startswith(pre) else s
+        return s.startswith("e:")
+    return [c for c in seen if e(c[1])]
+
+
+def test_G3_note_a_live_path_is_refused_on_its_text_and_never_stat_ed_opened_or_resolved(tmp_path, monkeypatch,
+                                                                                          capsys):
+    """Code re-review round 3, the G3 note (LOW): refused() called os.path.realpath on the path BEFORE deciding - on
+    Windows that opens a handle (_getfinalpathname) - so a live path given by mistake was touched by the guard that
+    refuses it. Now the text decides first; only a path that passes is resolved."""
+    d = _census_copies(tmp_path, _CENSUS_IDS, [f"{PID}.parquet"], _CENSUS_CUBES)
+    seen = _touch_spies(monkeypatch)
+    for p in _LIVE_SPELLINGS:
+        assert LC.refused(p), p
+    assert seen == [], seen                                  # nothing at all was stat-ed, opened or resolved
+    # through the tool's entry point: each input in turn given as a live path, the others real copies
+    good = {"--state": str(d / "state.json"), "--catalogue": str(d / "cat.sqlite"), "--store-dir": str(d / "store")}
+    for flag in good:
+        for live in (_LIVE_SPELLINGS[0], _LIVE_SPELLINGS[5]):
+            args = [x for f, v in good.items() for x in (f, live if f == flag else v)]
+            assert LC.main(args) == 2, (flag, live)
+            assert "REFUSED" in capsys.readouterr().out
+    assert _e_paths(seen) == [], _e_paths(seen)
+    # the controls. The spies record: a copy that passes the text test IS resolved, and the census reads it
+    assert LC.refused(str(d / "state.json")) is None
+    assert ("realpath", str(d / "state.json")) in seen, seen
+    assert LC.main(_census_args(d)) == 1 and "LOST 11111111" in capsys.readouterr().out
+    # ... and a link into a refused place is still refused, by the resolve step
+    live, link = tmp_path / "live", tmp_path / "link"
+    live.mkdir()
+    try:
+        os.symlink(live, link, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        if os.name != "nt":
+            raise
+        import _winapi
+        _winapi.CreateJunction(str(live), str(link))         # no symlink privilege: a junction, as on the desktop
+    assert LC.refused(str(live / "catalog.db"), roots=(str(live),)), "the text test"
+    why = LC.refused(str(link / "catalog.db"), roots=(str(live),))
+    assert why and "resolves to" in why, why
+    assert LC.refused(str(tmp_path / "livex" / "catalog.db"), roots=(str(live),)) is None, "a near-miss name"
+
+
 def test_G3_the_census_pins_its_live_places_and_id_scheme_to_the_code_it_mirrors():
     """REFUSED_ROOTS = core.catalog_path's live data folder and the folder of its lock's folder (read from the SOURCE:
     tests/conftest.py points LOCK_PATH elsewhere for every test), and unit_id = tools/derive_statcan_tables.py's."""
