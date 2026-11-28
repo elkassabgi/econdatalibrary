@@ -50,8 +50,10 @@ def _src(rel):
 def _no_spill_variable(monkeypatch):
     """Every test here starts with ECONDL_DUCKDB_TMP unset. With it set, spill_root() ignores a
     patched SPILL_ROOT, so a test that patches SPILL_ROOT would sweep the machine's folder instead.
-    The tests that want the variable set it themselves."""
+    The tests that want the variable set it themselves. The warned-values memory starts empty, so a
+    warning test does not depend on which test warned first."""
     monkeypatch.delenv(VAR, raising=False)
+    monkeypatch.setattr(duck_spill, "_WARNED", set(), raising=False)
 
 
 @pytest.mark.parametrize("rel", TOOLS)
@@ -220,19 +222,26 @@ def _assert_siblings_intact(base):
 
 
 @pytest.fixture
-def env_base(tmp_path, monkeypatch):
-    """ECONDL_DUCKDB_TMP -> tmp_path/duckdb_tmp. SPILL_ROOT points at a second tmp folder, so a regression
-    that ignores the variable writes and sweeps THERE - never in the checkout's logs/."""
+def default_root(tmp_path, monkeypatch):
+    """SPILL_ROOT -> tmp_path/default_root (not created), so a regression that falls back to the default
+    root writes and sweeps THERE - never in the checkout's logs/."""
+    d = tmp_path / "default_root"
+    monkeypatch.setattr(duck_spill, "SPILL_ROOT", str(d))
+    return d
+
+
+@pytest.fixture
+def env_base(tmp_path, monkeypatch, default_root):
+    """ECONDL_DUCKDB_TMP -> tmp_path/duckdb_tmp (absolute), with SPILL_ROOT redirected as above."""
     base = tmp_path / "duckdb_tmp"
     base.mkdir()
-    monkeypatch.setattr(duck_spill, "SPILL_ROOT", str(tmp_path / "default_root"))
     monkeypatch.setenv(VAR, str(base))
     return base
 
 
-def test_default_root_is_unchanged_when_the_variable_is_unset(monkeypatch):
+def test_default_root_is_unchanged_when_the_variable_is_unset(monkeypatch, capsys):
     """No variable -> <repo>/logs/_duckspill, as before. An empty value counts as unset (the rule of the
-    other three readers: derive_csv, merge, _melodi_state)."""
+    other three readers: derive_csv, merge, _melodi_state), silently."""
     default = os.path.join(ROOT, "logs", "_duckspill")
     assert _norm(duck_spill.SPILL_ROOT) == _norm(default)
     assert _norm(duck_spill.spill_root()) == _norm(default)
@@ -240,10 +249,13 @@ def test_default_root_is_unchanged_when_the_variable_is_unset(monkeypatch):
     monkeypatch.setenv(VAR, "")
     assert _norm(duck_spill.spill_root()) == _norm(default)
     assert _norm(os.path.dirname(duck_spill.spill_path("t"))) == _norm(default)
+    assert capsys.readouterr().err == "", "unset or empty must not warn"
 
 
-def test_variable_set_gives_its_own_subfolder_never_the_folder_itself(env_base):
+def test_variable_set_gives_its_own_subfolder_never_the_folder_itself(env_base, capsys):
+    capsys.readouterr()
     root = duck_spill.spill_root()
+    assert capsys.readouterr().err == "", "an absolute value must not warn"
     assert _norm(root) == _norm(env_base / "_duckspill")
     assert _norm(root) != _norm(env_base), "the variable's folder itself is the C-1 defect"
     p = duck_spill.spill_path("t")
@@ -321,3 +333,54 @@ def test_connection_spill_in_an_empty_variable_folder_adds_only_the_subfolder(en
     assert os.listdir(env_base) == ["_duckspill"]
     assert os.listdir(env_base / "_duckspill") == []
     assert not (tmp_path / "default_root").exists()
+
+
+def test_with_the_variable_set_an_old_orphan_in_the_default_root_survives(env_base, default_root, monkeypatch):
+    """The tests above catch CREATION in the default root, not DELETION in it (review of PR #342, mutant R3).
+    With the variable set, neither sweep_orphans nor ensure_spill may reap <repo>/logs/_duckspill - on E:
+    that folder belongs to the runs without the variable (mirror_sync and the tools that hard-code it)."""
+    kept = default_root / "killed_1_other"
+    kept.mkdir(parents=True)
+    (kept / "duckdb_temp_storage_DEFAULT-0.tmp").write_bytes(b"d" * 16)
+    _make_old(kept)
+    orphan = env_base / "_duckspill" / "killed_999_dead"
+    orphan.mkdir(parents=True)
+    (orphan / "duckdb_temp_storage_DEFAULT-0.tmp").write_bytes(b"x" * 64)
+    _make_old(orphan)
+    removed, freed = duck_spill.sweep_orphans(older_than_hours=24)
+    assert (removed, freed) == (1, 64), "positive control: the old orphan in the subfolder must be reaped"
+    assert not orphan.exists()
+    assert (kept / "duckdb_temp_storage_DEFAULT-0.tmp").is_file(), (
+        "sweep_orphans reaped the DEFAULT root while ECONDL_DUCKDB_TMP was set")
+    monkeypatch.setattr(duck_spill, "_SWEPT", False)
+    duck_spill.ensure_spill("t")
+    assert (kept / "duckdb_temp_storage_DEFAULT-0.tmp").is_file(), (
+        "ensure_spill's sweep reaped the DEFAULT root while ECONDL_DUCKDB_TMP was set")
+    assert os.listdir(default_root) == ["killed_1_other"], "nothing new may be made in the default root"
+
+
+@pytest.mark.parametrize("value", ["relspill", "F:", " "])
+def test_a_non_absolute_variable_is_ignored_with_one_warning_line(value, default_root, tmp_path, monkeypatch,
+                                                                    capsys):
+    """A relative value (`relspill`), a bare drive (`F:`, drive-relative on Windows) or a blank resolves
+    against the cwd - the E: checkout for the T0 runs. It counts as unset: the spill goes to the default
+    root, as before the variable was read, and ONE warning line goes to stderr (once per value per
+    process, so a long run does not repeat it). It does not raise."""
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv(VAR, value)
+    capsys.readouterr()
+    assert _norm(duck_spill.spill_root()) == _norm(default_root)
+    assert _norm(duck_spill.spill_root()) == _norm(default_root)
+    assert _norm(os.path.dirname(duck_spill.spill_path("t"))) == _norm(default_root)
+    if value == "relspill":          # the one value that is safe to create relative to the tmp cwd
+        with duck_spill.connection_spill("t") as p:
+            assert _norm(os.path.dirname(p)) == _norm(default_root)
+        assert not os.path.exists(p)
+    out = capsys.readouterr()
+    lines = out.err.splitlines()
+    assert len(lines) == 1, f"expected ONE warning line on stderr, got {lines!r}"
+    assert VAR in lines[0] and repr(value) in lines[0] and "not an absolute path" in lines[0]
+    assert out.out == "", "the warning goes to stderr; a tool's stdout can carry its JSON"
+    assert os.listdir(cwd) == [], "a non-absolute value must not spill under the cwd"

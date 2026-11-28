@@ -17,7 +17,8 @@ both clean up. Measured 2026-09-22: 32 orphaned spill files had accumulated in `
 A SIGKILL still orphans, which is why `sweep_orphans()` exists for the caller that wants it.
 
 WHERE THE SPILL LIVES (`spill_root()`, read at every call, not at import). With ECONDL_DUCKDB_TMP
-unset or empty it is `<repo>/logs/_duckspill`, as before. With it set, it is
+unset, empty or not absolute it is `<repo>/logs/_duckspill`, as before (a non-absolute value also
+prints one warning line on stderr). With it set to an absolute path, it is
 `<ECONDL_DUCKDB_TMP>/_duckspill` - a dedicated SUBFOLDER, never the variable's folder itself.
 That folder is also the base of insee's persistent staging (`<base>/insee_melodi_staging`,
 updater/strategies/fetchers/_melodi_state.staging_dir), derive_csv's pid folders
@@ -37,6 +38,7 @@ from __future__ import annotations
 import contextlib
 import os
 import shutil
+import sys
 import time
 import uuid
 
@@ -46,19 +48,30 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SPILL_ROOT = os.path.join(ROOT, "logs", "_duckspill")
 ENV_VAR = "ECONDL_DUCKDB_TMP"
 ENV_SUBDIR = "_duckspill"     # the subfolder of ECONDL_DUCKDB_TMP; never the variable's folder itself
+_WARNED: set = set()          # the non-absolute values already warned about in this process
 
 
 def spill_root() -> str:
     """The folder the spill directories are made in, and the ONLY folder sweep_orphans() reaps.
 
-    Read at every call, so a variable set after import is honoured. ECONDL_DUCKDB_TMP set and not
-    empty -> `<ECONDL_DUCKDB_TMP>/_duckspill` (see the module note on why it is a subfolder);
-    otherwise SPILL_ROOT. "Empty means unset" is the rule the other three readers of the variable
-    use (core/derive_csv.py, updater/merge.py, _melodi_state.py).
+    Read at every call, so a variable set after import is honoured.
+    - ECONDL_DUCKDB_TMP set to an ABSOLUTE path -> `<ECONDL_DUCKDB_TMP>/_duckspill` (see the module
+      note on why it is a subfolder).
+    - Unset or empty -> SPILL_ROOT ("empty means unset", the rule of the other three readers:
+      core/derive_csv.py, updater/merge.py, _melodi_state.py).
+    - Set but NOT absolute (`relspill`, a bare drive `F:`, `F:relspill`, `" "`) -> SPILL_ROOT, and ONE
+      warning line on stderr per value per process. Such a value resolves against the cwd, which
+      for the T0 runs is the E: checkout. It does not raise: the spill only moves back to where it
+      was before this variable was read. stderr, because a tool's stdout can carry its JSON.
     """
     base = os.environ.get(ENV_VAR)
     if base:
-        return os.path.join(base, ENV_SUBDIR)
+        if os.path.isabs(base):
+            return os.path.join(base, ENV_SUBDIR)
+        if base not in _WARNED:
+            _WARNED.add(base)
+            print(f"[duck_spill] WARNING: {ENV_VAR}={base!r} is not an absolute path; it is ignored "
+                  f"and the spill goes to {SPILL_ROOT}", file=sys.stderr, flush=True)
     return SPILL_ROOT
 
 
