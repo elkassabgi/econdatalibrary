@@ -7463,18 +7463,12 @@ sources:
   cadence: monthly
   refresh_cost: large
   out_dir: usda
-  # desktop_lane: skip (2026-11-19, PR #300 review r2): a ROLLOUT HOLD, not a giant-lane measurement. #300 makes
-  # the fetcher reach NASS again and #303 rebuilds each cube atomically, so the next scheduled pass would run
-  # the first full re-ingest since 2026-10-02 unsupervised and publish it to R2 over cubes that hold appended
-  # tail parts, while the stale higher part indexes stay on R2 until tools/usda_r2_stale_parts.py --apply.
-  # That first run is supervised instead. run_local_heavy.ps1 -Only usda still runs it (no --scheduled).
-  desktop_lane: skip
-  desktop_lane_exit: >-
-    Owner: Ahmed. Remove in a follow-up PR after all of: (1) one supervised run_local_heavy.ps1 -Only usda
-    with at least 150 min clear (it is clamped to the next CI writer like the pass, so start it that far ahead
-    of one, or with -SkipCiCheck when CI is known idle); (2) its log shows five REBUILD/swapped lines, "vintage
-    stamped", and manifest rows == parsed rows; (3) tools/usda_r2_stale_parts.py report, then --apply on the
-    owner's yes, ending in key-set and ETag equality; (4) the ~69k usda CSV re-derive started.
+  # The 2026-11-19 rollout hold (desktop_lane: skip, PR #300 review r2) is lifted here, after its four exit
+  # steps: (1) the supervised run_local_heavy.ps1 -Only usda of 2026-11-28 (ok usda/_all, push-state accepted);
+  # (2) five REBUILD ... swapped live lines and "vintage stamped" in its log; (3) tools/usda_r2_stale_parts.py
+  # report, then --apply on the owner's yes, ending in key-set and ETag equality; (4) the full usda table CSV
+  # re-derive (tools/derive_usda_tables.py). The receipts for each step are in this change's PR body. From
+  # here the scheduled desktop pass attempts usda again when it is due (monthly) and drains its csv retry queue.
   review: true
   adapter:
     vintage_signal: the five dated sector dumps (qs.<sector>_YYYYMMDD.txt.gz; vintage 20261118 on 2026-11-18) linked from
